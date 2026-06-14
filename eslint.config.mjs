@@ -1,11 +1,24 @@
 // Flat ESLint config — enforces the modular-monolith boundaries (doc 05 §7).
 // The "modular monolith" is only real if the boundaries are mechanically enforced.
 import boundaries from 'eslint-plugin-boundaries';
+import tsParser from '@typescript-eslint/parser';
 
 export default [
+  // Generated / build output — never lint.
+  {
+    ignores: ['**/dist/**', '**/.next/**', '**/.turbo/**', '**/coverage/**'],
+  },
   {
     files: ['**/*.ts', '**/*.tsx'],
     plugins: { boundaries },
+    languageOptions: {
+      parser: tsParser,
+      parserOptions: {
+        ecmaVersion: 'latest',
+        sourceType: 'module',
+        ecmaFeatures: { jsx: true },
+      },
+    },
     settings: {
       'boundaries/elements': [
         { type: 'app',     pattern: 'apps/*' },

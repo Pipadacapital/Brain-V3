@@ -19,6 +19,7 @@
     "down": "docker compose down"
   },
   "devDependencies": {
+    "@typescript-eslint/parser": "^8.61.0",
     "eslint": "^9.10.0",
     "eslint-plugin-boundaries": "^5.0.0",
     "prettier": "^3.3.0",

@@ -4,6 +4,6 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       # build + cosign sign → push ECR (immutable digest) → bump Helm values → commit to gitops repo (doc 04 §L)
       - run: echo "TODO: build, sign, push, gitops bump"

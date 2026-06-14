@@ -1,0 +1,31 @@
+{
+  "name": "brain",
+  "private": true,
+  "packageManager": "pnpm@9.12.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "typecheck": "turbo run typecheck",
+    "lint": "turbo run lint",
+    "test": "turbo run test:unit",
+    "test:isolation": "turbo run test:isolation",
+    "test:parity": "turbo run test:parity",
+    "dev": "docker compose --profile core up -d && turbo run dev --filter=@brain/core --filter=@brain/web",
+    "dev:ingest": "docker compose --profile ingest up -d && turbo run dev --filter=@brain/collector --filter=@brain/stream-worker",
+    "dev:full": "docker compose --profile core --profile ingest up -d",
+    "seed": "node tools/seed/seed.mjs",
+    "down": "docker compose down"
+  },
+  "devDependencies": {
+    "@typescript-eslint/parser": "^8.61.0",
+    "eslint": "^9.10.0",
+    "eslint-plugin-boundaries": "^5.0.0",
+    "prettier": "^3.3.0",
+    "tsx": "^4.22.4",
+    "turbo": "^2.1.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}

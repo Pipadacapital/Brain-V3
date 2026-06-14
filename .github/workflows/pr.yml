@@ -1,0 +1,16 @@
+name: pr
+on: pull_request
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with: { node-version-file: .nvmrc, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      # Phase-1a BLOCKING gates (doc 05 §11/§12):
+      - run: pnpm turbo run lint typecheck test:unit --affected
+      - run: pnpm turbo run test:isolation --affected   # cross-tenant negative tests (every layer + seams)
+      - run: pnpm turbo run test:parity --affected       # metric-engine vs independent oracle
+      # TODO: docker build (affected apps) → trivy scan → smoke

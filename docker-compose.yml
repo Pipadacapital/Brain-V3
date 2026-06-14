@@ -1,0 +1,43 @@
+# Local dev — profiles per zone (doc 05 §10). `core` = control-plane + serving (default
+# for most feature work); `ingest` = the strict-SLA event path. Real containers (fidelity),
+# LocalStack for the thin AWS-API surface.
+services:
+  postgres:
+    image: postgres:16
+    profiles: ["core"]
+    environment: { POSTGRES_USER: brain, POSTGRES_PASSWORD: brain, POSTGRES_DB: brain }
+    ports: ["5432:5432"]
+  redis:
+    image: redis:7
+    profiles: ["core"]
+    ports: ["6379:6379"]
+  minio:
+    image: minio/minio
+    profiles: ["core"]
+    command: server /data --console-address ":9001"
+    environment: { MINIO_ROOT_USER: brain, MINIO_ROOT_PASSWORD: brainbrain }
+    ports: ["9000:9000", "9001:9001"]
+  starrocks:
+    image: starrocks/allin1-ubuntu:latest
+    profiles: ["core"]
+    ports: ["9030:9030", "8030:8030"]
+  litellm:
+    image: ghcr.io/berriai/litellm:main-latest
+    profiles: ["core"]
+    ports: ["4000:4000"]
+  localstack:
+    image: localstack/localstack
+    profiles: ["core"]
+    environment: { SERVICES: "s3,secretsmanager,kms,events" }
+    ports: ["4566:4566"]
+  redpanda:
+    image: redpandadata/redpanda:latest
+    profiles: ["ingest"]
+    command: ["redpanda","start","--overprovisioned","--smp","1","--memory","1G","--node-id","0","--kafka-addr","PLAINTEXT://0.0.0.0:9092","--advertise-kafka-addr","PLAINTEXT://localhost:9092"]
+    ports: ["9092:9092"]
+  apicurio:
+    image: apicurio/apicurio-registry-mem:latest
+    profiles: ["ingest"]
+    ports: ["8080:8080"]
+# Note: a local Iceberg REST catalog (lakekeeper/Nessie), Authentik, and Grafana/Loki
+# are added per-need; see doc 05 §10.

@@ -1,0 +1,8 @@
+{
+  "name": "@brain/collector",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": { "build": "tsc -b", "typecheck": "tsc --noEmit", "lint": "eslint .", "dev": "tsx watch src/main.ts", "test:unit": "vitest run --passWithNoTests" },
+  "dependencies": { "fastify": "^4.28.0", "@brain/contracts": "workspace:*", "@brain/events": "workspace:*", "@brain/observability": "workspace:*", "@brain/tenant-context": "workspace:*", "@brain/config": "workspace:*" }
+}

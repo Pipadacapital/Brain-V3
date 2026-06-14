@@ -1,0 +1,8 @@
+{
+  "name": "@brain/core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": { "build": "tsc -b", "typecheck": "tsc --noEmit", "lint": "eslint .", "dev": "tsx watch src/main.ts", "test:unit": "vitest run --passWithNoTests", "test:isolation": "vitest run isolation --passWithNoTests", "test:parity": "vitest run parity --passWithNoTests" },
+  "dependencies": { "fastify": "^4.28.0", "@brain/contracts": "workspace:*", "@brain/metric-engine": "workspace:*", "@brain/money": "workspace:*", "@brain/tenant-context": "workspace:*", "@brain/identity-core": "workspace:*", "@brain/audit": "workspace:*", "@brain/feature-flags": "workspace:*", "@brain/db": "workspace:*", "@brain/events": "workspace:*", "@brain/observability": "workspace:*", "@brain/ai-gateway-client": "workspace:*", "@brain/config": "workspace:*" }
+}

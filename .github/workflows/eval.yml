@@ -1,0 +1,9 @@
+name: eval
+on: { workflow_dispatch: {}, push: { paths: ["apps/core/src/modules/ai/**", "tools/eval/**"] } }
+jobs:
+  ai-eval:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # NLQ resolution (false-bind→0) + injection golden-set + narration-faithfulness (doc 04 §N.5)
+      - run: echo "TODO: run AI eval gates"

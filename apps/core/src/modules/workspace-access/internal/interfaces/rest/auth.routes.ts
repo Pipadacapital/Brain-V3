@@ -171,6 +171,12 @@ export function registerAuthRoutes(
       const auth = (request as AuthenticatedRequest).auth;
 
       await authService.logout(auth.jti, auth.userId, correlationId);
+      // Clear the httpOnly session cookie (set by the BFF session route) so the browser
+      // holds no stale, now-revoked token after logout.
+      (reply as unknown as { clearCookie(name: string, opts?: { path?: string }): unknown }).clearCookie(
+        'brain_session',
+        { path: '/' },
+      );
       return reply.send({ request_id: requestId, ok: true });
     },
   );

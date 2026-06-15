@@ -9,10 +9,10 @@
  *  - Correlation ID forwarding.
  *  - Proxy routes for connector + pixel endpoints.
  *  - Dashboard aggregate endpoints (MED-BFF-DASH-01):
- *      GET /v1/dashboard/brand-summary
- *      GET /v1/dashboard/connection-status
- *      GET /v1/dashboard/data-status
- *      GET /v1/dashboard/onboarding-progress
+ *      GET /api/v1/dashboard/brand-summary
+ *      GET /api/v1/dashboard/connection-status
+ *      GET /api/v1/dashboard/data-status
+ *      GET /api/v1/dashboard/onboarding-progress
  *
  * Scope: apps/web calls ONLY the BFF — never calls workspace-access or connector directly.
  * Data sources: Postgres only — ZERO StarRocks/OLAP calls (ADR-002).
@@ -235,7 +235,7 @@ export function registerBffRoutes(
    * Returns brand/org/membership counts for the current workspace.
    */
   fastify.get(
-    '/v1/dashboard/brand-summary',
+    '/api/v1/dashboard/brand-summary',
     { preHandler: [bffProtectedPreHandler] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       const requestId = randomUUID();
@@ -308,7 +308,7 @@ export function registerBffRoutes(
    * Returns connector_sync_status for the current brand.
    */
   fastify.get(
-    '/v1/dashboard/connection-status',
+    '/api/v1/dashboard/connection-status',
     { preHandler: [bffProtectedPreHandler] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       const requestId = randomUUID();
@@ -384,7 +384,7 @@ export function registerBffRoutes(
    * Returns pixel_installation + pixel_status for the current brand.
    */
   fastify.get(
-    '/v1/dashboard/data-status',
+    '/api/v1/dashboard/data-status',
     { preHandler: [bffProtectedPreHandler] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       const requestId = randomUUID();
@@ -466,7 +466,7 @@ export function registerBffRoutes(
    *   5. pixel_installed  — pixel_installation.installed_at IS NOT NULL
    */
   fastify.get(
-    '/v1/dashboard/onboarding-progress',
+    '/api/v1/dashboard/onboarding-progress',
     { preHandler: [bffProtectedPreHandler] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       const requestId = randomUUID();

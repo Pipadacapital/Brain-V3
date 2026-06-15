@@ -4,6 +4,7 @@
  */
 import Link from 'next/link';
 import { LayoutDashboard, Plug, Zap, Users, Settings } from 'lucide-react';
+import { UserMenu } from '@/components/dashboard/user-menu';
 
 const navItems = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -39,6 +40,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             ))}
           </ul>
         </nav>
+        <UserMenu />
       </aside>
 
       {/* Main content */}

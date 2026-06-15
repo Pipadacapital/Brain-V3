@@ -121,8 +121,12 @@ export const authApi = {
       idempotencyKey: generateRequestId(),
     }),
 
+  // Login goes through the BFF session route, which sets the httpOnly `brain_session`
+  // cookie (the raw /v1/auth/login route returns the token in the body and sets no
+  // cookie — unusable from the browser). All subsequent requests authenticate via
+  // that cookie (bridged to a Bearer header server-side).
   login: (body: LoginRequest) =>
-    bffFetch<LoginResponse>('/v1/auth/login', {
+    bffFetch<LoginResponse>('/v1/bff/session', {
       method: 'POST',
       body: JSON.stringify(body),
       idempotencyKey: generateRequestId(),

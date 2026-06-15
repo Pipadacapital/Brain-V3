@@ -160,6 +160,23 @@ export async function main(): Promise<void> {
     if (!request.headers['x-correlation-id']) {
       request.headers['x-correlation-id'] = randomUUID();
     }
+
+    // Browser BFF bridge: the web app authenticates via the httpOnly `brain_session`
+    // cookie (set by POST /api/v1/bff/session). Most API routes are guarded by
+    // validateSessionPreHandler, which reads `Authorization: Bearer`. The browser
+    // cannot set that header (the token is httpOnly), so translate the session cookie
+    // into a Bearer header app-wide. Any route reaching a Bearer guard then authenticates
+    // from the cookie. Routes with their own cookie-aware preHandler (bffProtectedPreHandler)
+    // read request.cookies directly and are unaffected. The cookie is sameSite=strict,
+    // which is the CSRF mitigation for M1; explicit CSRF tokens on mutations are a
+    // hardening follow-up (tracked alongside LOW-E2E-01 / auth hardening).
+    if (!request.headers.authorization) {
+      const cookies = (request as unknown as { cookies?: Record<string, string | undefined> }).cookies;
+      const sessionCookie = cookies?.['brain_session'];
+      if (sessionCookie) {
+        request.headers.authorization = `Bearer ${sessionCookie}`;
+      }
+    }
   });
 
   // Global error handler — always returns error envelope with request_id.

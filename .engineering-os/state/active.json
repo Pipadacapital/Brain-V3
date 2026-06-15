@@ -1,6 +1,34 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-06-15T07:19:27Z",
-  "updated_by": "system",
-  "active_requirements": []
+  "updated_at": "2026-06-15T13:30:00Z",
+  "updated_by": "backend-developer",
+  "active_requirements": [
+    {
+      "req_id": "chore-platform-foundations-sprint0",
+      "status": "shipped",
+      "stage": 8,
+      "current_owner": "platform-devops",
+      "title": "Brain Platform Foundations (Sprint 0)",
+      "lane": "high_stakes",
+      "run_dir": ".engineering-os/runs/2026-06-15T11-06-27Z__09ba6e__chore-platform-foundations-sprint0__rishabhporwal",
+      "last_journal_entry_at": "2026-06-15T14:17:20Z",
+      "backend_track_status": "COMPLETE",
+      "backend_tracks": [
+        "A",
+        "E-packages"
+      ],
+      "verification": {
+        "typecheck": "10/10 PASS",
+        "unit_tests": "75 tests PASS (contracts:8, observability:13, db:14, isolation-fuzz:30, others passWithNoTests)",
+        "lint": "no-raw-redis-key ERRORS on fixture; no-float-money WARNS on fixture; prod source clean",
+        "codegen": "gen:contracts emits types+openapi+avro+mcp",
+        "negative_controls": [
+          "NN-1 RLS zero-rows on null GUC",
+          "NN-6 PII dropped from span attrs",
+          "NN-7 raw key lint fires on fixture",
+          "I-S07 float money lint fires on fixture"
+        ]
+      }
+    }
+  ]
 }

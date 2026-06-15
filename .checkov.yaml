@@ -1,0 +1,77 @@
+# Checkov configuration for Brain IaC CI gate
+# Runs on infra/terraform/** in the infra.yml workflow
+# Enforces NN-3 (IRSA wildcards), NN-4 (S3 Object Lock), NN-5 (prefix IAM)
+# Config key format: checkov 3.x uses hyphenated keys (matching CLI flags).
+
+framework:
+  - terraform
+
+# Directories to scan
+directory:
+  - infra/terraform
+
+# Output format for CI artifact
+output:
+  - cli
+  - json
+
+# H-01 FIX: soft-fail is NOT set (defaults to false).
+# This means any CRITICAL/HIGH finding causes a non-zero exit and blocks the job.
+# The CI step in infra.yml no longer appends || true (which was swallowing this).
+# Do NOT add soft-fail: true here — it would silently bypass the NN-3/4/5 gate.
+
+# Checks to enforce (by check ID)
+# CKV_AWS_19: S3 server-side encryption
+# CKV_AWS_20: S3 no public ACL
+# CKV_AWS_53: S3 bucket object lock
+# CKV_AWS_145: S3 bucket KMS encryption
+# CKV_AWS_117: Lambda: VPC config (not applicable but kept for parity)
+# CKV_AWS_149: Secrets Manager: KMS CMK
+# CKV_AWS_219: Secrets Manager: automatic rotation
+# CKV_AWS_58: EKS: secrets encryption enabled
+# CKV_AWS_39: EKS: no public endpoint (dev inline-suppressed; staging/prod enforced)
+# CKV_AWS_24: RDS: encryption enabled
+# CKV_AWS_26: RDS: backup retention >= 7 days
+# CKV_AWS_16: ElastiCache: encryption at rest
+# CKV_AWS_28: ElastiCache: transit encryption
+# CKV_AWS_157: RDS: deletion protection (prod)
+# CKV2_AWS_6: S3: public access block
+# CKV2_AWS_61: S3: lifecycle policy
+check:
+  - CKV_AWS_19
+  - CKV_AWS_20
+  - CKV_AWS_53
+  - CKV_AWS_145
+  - CKV_AWS_117
+  - CKV_AWS_149
+  - CKV_AWS_219
+  - CKV_AWS_58
+  - CKV_AWS_39
+  - CKV_AWS_24
+  - CKV_AWS_26
+  - CKV_AWS_16
+  - CKV_AWS_28
+  - CKV_AWS_157
+  - CKV2_AWS_6
+  - CKV2_AWS_61
+
+# M-03 FIX: CKV_AWS_130 global skip REMOVED.
+# Previously a global skip_check on CKV_AWS_130 (EKS public endpoint) allowed
+# staging and prod to silently pass with endpoint_public_access=true.
+# Fix: dev env now sets public_endpoint=true with an inline suppression comment:
+#   # checkov:skip=CKV_AWS_130:dev-only bootstrap access; no VPN/bastion in Sprint-0
+# staging and prod set public_endpoint=false (module default) so they pass
+# CKV_AWS_130 without any suppression. No global skip needed.
+skip-check: []
+
+# Custom check directories (NN-3/4/5 custom Checkov checks)
+external-checks-dir:
+  - policy/checkov
+
+# Compact output in CI
+compact: true
+
+# Hard-fail on HIGH and above (CRITICAL implied).
+# This replaces the old severity: HIGH key (not a valid top-level key in checkov 3.x).
+# Combined with the absence of soft-fail, checkov exits non-zero on any HIGH/CRITICAL.
+hard-fail-on: HIGH

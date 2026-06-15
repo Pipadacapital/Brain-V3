@@ -1,0 +1,36 @@
+-- ============================================================
+-- StarRocks Silver table DDL template (Sprint-0 placeholder)
+-- Full Silver/Gold business marts are deferred to M1.
+-- This template encodes the invariants for all future Silver tables:
+--   - DISTRIBUTED BY HASH(brand_id, ...) — tenant-first hash distribution
+--   - brand_id as the first key column — isolation anchor
+--   - Row policy applied at creation (row_policy_template.sql)
+-- ============================================================
+
+-- Template (substitute <table_name> and additional PK columns):
+--
+-- CREATE TABLE IF NOT EXISTS brain_silver.<table_name> (
+--   brand_id      VARCHAR(36)   NOT NULL COMMENT 'Tenant key — row policy anchor (I-S01)',
+--   <pk_column>   <type>        NOT NULL COMMENT '<description>',
+--   ...
+--   created_at    DATETIME      NOT NULL COMMENT 'Record creation time (UTC)',
+--   updated_at    DATETIME      NOT NULL COMMENT 'Last upsert time (UTC)'
+-- )
+-- PRIMARY KEY (brand_id, <pk_column>)
+-- DISTRIBUTED BY HASH(brand_id, <pk_column>) BUCKETS 8
+-- ORDER BY (brand_id, <pk_column>)
+-- PROPERTIES (
+--   "replication_num"        = "3",           -- dev: 1; prod: 3
+--   "enable_persistent_index"= "true",        -- PK tables: persistent index for upsert perf
+--   "compression"            = "LZ4"
+-- );
+--
+-- After creating the table, apply row policy:
+-- CREATE ROW POLICY IF NOT EXISTS tenant_isolation
+--   ON brain_silver.<table_name>
+--   TO brain_analytics
+--   USING (brand_id = IFNULL(NULLIF(SESSION_VALUE('brain_current_brand_id'), ''),
+--                            '00000000-0000-0000-0000-000000000000'));
+
+-- PLACEHOLDER — no business marts in Sprint-0 (deferred to M1 per scope ruling 6).
+SELECT 'silver_template.sql — Sprint-0 placeholder. Business marts added in M1.' AS note;

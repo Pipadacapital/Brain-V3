@@ -10,5 +10,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test:unit": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@brain/money": "workspace:*"
   }
 }

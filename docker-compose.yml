@@ -1,43 +1,280 @@
-# Local dev — profiles per zone (doc 05 §10). `core` = control-plane + serving (default
-# for most feature work); `ingest` = the strict-SLA event path. Real containers (fidelity),
-# LocalStack for the thin AWS-API surface.
+# Local dev — profiles per zone (doc 05 §10).
+# core    = control-plane + serving (default for most feature work)
+# ingest  = strict-SLA event path (Redpanda + Apicurio)
+# observe = Grafana + Loki + Prometheus OTel stack
+# All profiles combined: docker compose --profile core --profile ingest --profile observe up -d
+#
+# Iceberg REST catalog (lakekeeper) is included in the ingest profile — it provides
+# the local equivalent of AWS Glue for Bronze table metadata.
+# MinIO is the local S3 equivalent; it is in core because the stream-worker, seed, and
+# testcontainer harness all need a writable object store.
+
 services:
+  # ────────────────────────────────────────────────────────────────────────────
+  # CORE profile — control plane + serving
+  # ────────────────────────────────────────────────────────────────────────────
   postgres:
     image: postgres:16
     profiles: ["core"]
-    environment: { POSTGRES_USER: brain, POSTGRES_PASSWORD: brain, POSTGRES_DB: brain }
+    environment:
+      POSTGRES_USER: brain
+      POSTGRES_PASSWORD: brain
+      POSTGRES_DB: brain
     ports: ["5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U brain -d brain"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   redis:
     image: redis:7
     profiles: ["core"]
     ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   minio:
-    image: minio/minio
+    image: minio/minio:RELEASE.2024-04-06T05-26-02Z
     profiles: ["core"]
     command: server /data --console-address ":9001"
-    environment: { MINIO_ROOT_USER: brain, MINIO_ROOT_PASSWORD: brainbrain }
+    environment:
+      MINIO_ROOT_USER: brain
+      MINIO_ROOT_PASSWORD: brainbrain
     ports: ["9000:9000", "9001:9001"]
-  starrocks:
-    image: starrocks/allin1-ubuntu:latest
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # MinIO bucket + prefix bootstrap (runs once; idempotent)
+  minio-init:
+    image: minio/mc:latest
     profiles: ["core"]
-    ports: ["9030:9030", "8030:8030"]
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+        mc alias set local http://minio:9000 brain brainbrain &&
+        mc mb --ignore-existing local/brain-bronze &&
+        mc mb --ignore-existing local/brain-audit &&
+        echo 'MinIO buckets ready: brain-bronze brain-audit'
+      "
+    restart: "no"
+
+  starrocks:
+    image: starrocks/allin1-ubuntu:3.3.2
+    profiles: ["core"]
+    ports:
+      - "9030:9030"   # MySQL protocol (FE)
+      - "8030:8030"   # HTTP REST (FE)
+      - "8040:8040"   # BE HTTP
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8030/api/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
+
+  # StarRocks post-startup bootstrap — row-policy template + external catalog (NN-2)
+  starrocks-init:
+    image: mysql:8.0
+    profiles: ["core"]
+    depends_on:
+      starrocks:
+        condition: service_healthy
+    volumes:
+      - ./db/starrocks:/sql:ro
+    entrypoint: >
+      /bin/sh -c "
+        echo 'Waiting for StarRocks FE...' &&
+        mysql -h starrocks -P 9030 -u root --connect-timeout=10 < /sql/bootstrap.sql &&
+        echo 'StarRocks bootstrap complete'
+      "
+    restart: "no"
+
   litellm:
     image: ghcr.io/berriai/litellm:main-latest
     profiles: ["core"]
     ports: ["4000:4000"]
+
   localstack:
-    image: localstack/localstack
+    image: localstack/localstack:3.4
     profiles: ["core"]
-    environment: { SERVICES: "s3,secretsmanager,kms,events" }
+    environment:
+      SERVICES: "s3,secretsmanager,kms,events"
     ports: ["4566:4566"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # INGEST profile — Redpanda + Apicurio + Iceberg REST catalog
+  # ────────────────────────────────────────────────────────────────────────────
   redpanda:
-    image: redpandadata/redpanda:latest
+    image: redpandadata/redpanda:v24.1.7
     profiles: ["ingest"]
-    command: ["redpanda","start","--overprovisioned","--smp","1","--memory","1G","--node-id","0","--kafka-addr","PLAINTEXT://0.0.0.0:9092","--advertise-kafka-addr","PLAINTEXT://localhost:9092"]
-    ports: ["9092:9092"]
+    command:
+      - redpanda
+      - start
+      - --overprovisioned
+      - --smp
+      - "1"
+      - --memory
+      - 1G
+      - --node-id
+      - "0"
+      - --kafka-addr
+      - PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr
+      - PLAINTEXT://localhost:9092
+      - --pandaproxy-addr
+      - 0.0.0.0:8082
+      - --advertise-pandaproxy-addr
+      - localhost:8082
+      - --schema-registry-addr
+      - 0.0.0.0:8081
+    ports:
+      - "9092:9092"   # Kafka API
+      - "8081:8081"   # Redpanda schema registry (unused; Apicurio is canonical)
+      - "8082:8082"   # Pandaproxy REST
+      - "9644:9644"   # Admin API
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9644/v1/status/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+
+  # Redpanda topic bootstrap (idempotent)
+  redpanda-init:
+    image: redpandadata/redpanda:v24.1.7
+    profiles: ["ingest"]
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+        rpk topic create dev.collector.event.v1 --brokers redpanda:9092
+          --config retention.ms=604800000
+          --partitions 12 --replicas 1 2>/dev/null || true &&
+        rpk topic create dev.collector.event.v1.backfill --brokers redpanda:9092
+          --config retention.ms=2592000000
+          --partitions 12 --replicas 1 2>/dev/null || true &&
+        rpk topic create dev.collector.event.v1.dlq --brokers redpanda:9092
+          --config retention.ms=2592000000
+          --partitions 12 --replicas 1 2>/dev/null || true &&
+        echo 'Redpanda topics ready'
+      "
+    restart: "no"
+
+  # Apicurio — FULL_TRANSITIVE compatibility enforced globally
   apicurio:
-    image: apicurio/apicurio-registry-mem:latest
+    image: apicurio/apicurio-registry-mem:2.6.3.Final
     profiles: ["ingest"]
+    environment:
+      REGISTRY_APIS_V2_DATE_FORMAT: "yyyy-MM-dd'T'HH:mm:ss'Z'"
+      # FULL_TRANSITIVE: every version must be compatible with ALL prior versions
+      REGISTRY_COMPAT_DEFAULT_RULE: "FULL_TRANSITIVE"
+      REGISTRY_COMPAT_DEFAULT_ARTIFACT_TYPE: "AVRO"
     ports: ["8080:8080"]
-# Note: a local Iceberg REST catalog (lakekeeper/Nessie), Authentik, and Grafana/Loki
-# are added per-need; see doc 05 §10.
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/apis/registry/v2/groups/default/artifacts"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  # Iceberg REST catalog (Nessie) — local equivalent of AWS Glue
+  # MinIO must be available for Nessie to write catalog state to S3
+  nessie:
+    image: projectnessie/nessie:0.90.2
+    profiles: ["ingest"]
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      NESSIE_VERSION_STORE_TYPE: IN_MEMORY
+      QUARKUS_HTTP_PORT: "19120"
+      QUARKUS_LOG_LEVEL: INFO
+    ports: ["19120:19120"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:19120/api/v2/config"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # OBSERVE profile — Grafana + Loki + Prometheus + OTel Collector
+  # ────────────────────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.52.0
+    profiles: ["observe"]
+    ports: ["9090:9090"]
+    volumes:
+      - ./infra/observe/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9090/-/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  loki:
+    image: grafana/loki:3.0.0
+    profiles: ["observe"]
+    ports: ["3100:3100"]
+    command: ["-config.file=/etc/loki/local-config.yaml"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3100/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  grafana:
+    image: grafana/grafana:10.4.2
+    profiles: ["observe"]
+    depends_on:
+      loki:
+        condition: service_healthy
+      prometheus:
+        condition: service_healthy
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: brain
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    ports: ["3000:3000"]
+    volumes:
+      - ./infra/observe/grafana/provisioning:/etc/grafana/provisioning:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.102.0
+    profiles: ["observe"]
+    depends_on:
+      prometheus:
+        condition: service_healthy
+      loki:
+        condition: service_healthy
+    volumes:
+      - ./infra/observe/otel-collector.yml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+      - "8889:8889"   # Prometheus metrics scrape
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:13133/"]
+      interval: 10s
+      timeout: 5s
+      retries: 15

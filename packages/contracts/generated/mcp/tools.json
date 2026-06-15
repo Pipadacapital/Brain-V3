@@ -1,0 +1,67 @@
+{
+  "tools": [
+    {
+      "name": "brain.collector.get_brand_event_count",
+      "description": "Returns the count of events for a given brand and event name within a time window. Read-only (I-S08).",
+      "read_only": true,
+      "scope": "analytics:read",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "brand_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "event_name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "from_date": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "to_date": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "brand_id",
+          "event_name",
+          "from_date",
+          "to_date"
+        ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "brand_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "event_name": {
+            "type": "string"
+          },
+          "count": {
+            "type": "integer"
+          },
+          "metric_version": {
+            "type": "integer"
+          },
+          "snapshot_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "brand_id",
+          "event_name",
+          "count",
+          "metric_version",
+          "snapshot_id"
+        ]
+      }
+    }
+  ]
+}

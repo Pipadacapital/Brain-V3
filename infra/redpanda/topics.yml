@@ -1,0 +1,60 @@
+# Redpanda topic declarations — source of truth for topic provisioning.
+# Applied by infra/terraform/modules/redpanda (production) and
+# docker-compose redpanda-init service (local dev).
+#
+# Naming: {env}.{domain}.{event}.v{n}
+# Partition key: brand_id + ":" + event_id  (brand-prefixed composite)
+
+topics:
+  - name: "{env}.collector.event.v1"
+    lane: live
+    partitions: 12
+    replication_factor: 1   # 1 for local/dev; 3 for prod
+    config:
+      retention.ms: "604800000"          # 7 days (live lane)
+      cleanup.policy: "delete"
+      compression.type: "snappy"
+      min.insync.replicas: "1"           # 2 for prod
+    description: "Live ingest lane — Pixel/collector → stream-worker"
+
+  - name: "{env}.collector.event.v1.backfill"
+    lane: backfill
+    partitions: 12
+    replication_factor: 1
+    config:
+      retention.ms: "2592000000"         # 30 days (backfill lane)
+      cleanup.policy: "delete"
+      compression.type: "snappy"
+      min.insync.replicas: "1"
+    description: "Backfill/replay lane — separate consumer group; same stream-worker code"
+
+  - name: "{env}.collector.event.v1.dlq"
+    lane: dlq
+    partitions: 12
+    replication_factor: 1
+    config:
+      retention.ms: "2592000000"         # 30 days (DLQ — enough for investigation)
+      cleanup.policy: "delete"
+      compression.type: "snappy"
+    description: "Dead-letter queue — schema rejection, parse failures, unrecoverable errors"
+
+consumer_groups:
+  - id: "brain.stream-worker.live"
+    topic: "{env}.collector.event.v1"
+    description: "Live enrichment → Bronze write"
+
+  - id: "brain.stream-worker.backfill"
+    topic: "{env}.collector.event.v1.backfill"
+    description: "Historical rebuild from Bronze → replay dedup"
+
+  - id: "brain.stream-worker.dlq-monitor"
+    topic: "{env}.collector.event.v1.dlq"
+    description: "DLQ monitor — alerts + quarantine routing"
+
+schema_registry:
+  compatibility: FULL_TRANSITIVE
+  artifact_group: brain
+  schemas:
+    - artifact_id: "collector.event.v1"
+      file: "infra/redpanda/schemas/collector.event.v1.avsc"
+      description: "Canonical event envelope — all collector events"

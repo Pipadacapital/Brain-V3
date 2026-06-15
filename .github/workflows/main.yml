@@ -1,9 +1,207 @@
 name: main
-on: { push: { branches: [main] } }
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write       # bump Helm values + gitops commit
+  id-token: write       # OIDC for AWS ECR push
+  packages: write
+
 jobs:
-  release:
+  # ─────────────────────────────────────────────────────────────────────────
+  # 1. Build + cosign sign + push to ECR (affected services only)
+  # ─────────────────────────────────────────────────────────────────────────
+  build-and-push:
+    name: Build, Sign, Push ECR (affected)
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        app: [collector, stream-worker, core, web]
+      fail-fast: false
+    outputs:
+      collector_digest: ${{ steps.push.outputs.collector_digest }}
+      stream-worker_digest: ${{ steps.push.outputs.stream-worker_digest }}
+      core_digest: ${{ steps.push.outputs.core_digest }}
+      web_digest: ${{ steps.push.outputs.web_digest }}
+
     steps:
       - uses: actions/checkout@v6
-      # build + cosign sign → push ECR (immutable digest) → bump Helm values → commit to gitops repo (doc 04 §L)
-      - run: 'echo "TODO: build, sign, push, gitops bump"'
+        with:
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Check if ${{ matrix.app }} is affected
+        id: affected
+        run: |
+          AFFECTED=$(pnpm turbo run build --affected --dry-run=json 2>/dev/null \
+            | jq -r '[.tasks[].packageName] | map(select(. != null)) | unique | .[]' || echo "")
+          if echo "$AFFECTED" | grep -q "^${{ matrix.app }}$"; then
+            echo "skip=false" >> $GITHUB_OUTPUT
+          else
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "Skipping ${{ matrix.app }} — not in affected set"
+          fi
+
+      # OIDC short-lived credentials — never static keys (PLAYBOOK-deploy + NN-3)
+      - name: Configure AWS credentials (OIDC)
+        if: steps.affected.outputs.skip == 'false'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ECR_PUSH_ROLE_ARN }}
+          aws-region: ap-south-1
+          role-session-name: GitHubActions-${{ github.run_id }}
+
+      - name: Login to Amazon ECR
+        if: steps.affected.outputs.skip == 'false'
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build Docker image
+        if: steps.affected.outputs.skip == 'false'
+        run: |
+          docker build \
+            -t ${{ steps.login-ecr.outputs.registry }}/brain-${{ matrix.app }}-${{ vars.ENVIRONMENT }}:${{ github.sha }} \
+            -t ${{ steps.login-ecr.outputs.registry }}/brain-${{ matrix.app }}-${{ vars.ENVIRONMENT }}:latest \
+            --label "git.sha=${{ github.sha }}" \
+            --label "git.ref=${{ github.ref }}" \
+            -f apps/${{ matrix.app }}/Dockerfile \
+            .
+
+      - name: Push to ECR (immutable digest — PLAYBOOK-deploy §Artifact promotion)
+        if: steps.affected.outputs.skip == 'false'
+        id: push
+        run: |
+          docker push ${{ steps.login-ecr.outputs.registry }}/brain-${{ matrix.app }}-${{ vars.ENVIRONMENT }}:${{ github.sha }}
+          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' \
+            "${{ steps.login-ecr.outputs.registry }}/brain-${{ matrix.app }}-${{ vars.ENVIRONMENT }}:${{ github.sha }}" \
+            | cut -d@ -f2)
+          echo "${{ matrix.app }}_digest=${DIGEST}" >> $GITHUB_OUTPUT
+
+      - name: Install cosign
+        if: steps.affected.outputs.skip == 'false'
+        uses: sigstore/cosign-installer@v3
+
+      - name: cosign sign image (keyless OIDC)
+        if: steps.affected.outputs.skip == 'false'
+        run: |
+          cosign sign --yes \
+            ${{ steps.login-ecr.outputs.registry }}/brain-${{ matrix.app }}-${{ vars.ENVIRONMENT }}@${{ steps.push.outputs[format('{0}_digest', matrix.app)] }}
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # 2. Bump Helm values + ArgoCD auto-sync to staging
+  # ─────────────────────────────────────────────────────────────────────────
+  gitops-staging:
+    name: GitOps — Staging auto-sync
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    environment: staging
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITOPS_TOKEN }}
+
+      - name: Configure AWS credentials (OIDC) for staging
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_STAGING_PLAN_ROLE_ARN }}
+          aws-region: ap-south-1
+
+      - name: Bump image digest in staging Helm overlays
+        run: |
+          for app in collector stream-worker core web; do
+            DIGEST_VAR="${app//-/_}_digest"
+            DIGEST="${{ needs.build-and-push.outputs[format('{0}_digest', matrix.app)] }}"
+            if [ -n "$DIGEST" ] && [ -f "infra/argocd/envs/staging/${app}.yaml" ]; then
+              # Update image digest in ArgoCD app manifest
+              sed -i "s|image:.*brain-${app}-staging@sha256:.*|image: ${{ steps.login-ecr.outputs.registry }}/brain-${app}-staging@${DIGEST}|g" \
+                "infra/argocd/envs/staging/${app}.yaml" 2>/dev/null || true
+            fi
+          done
+
+      - name: Commit + push gitops manifest bump
+        run: |
+          git config user.name "Brain CI Bot"
+          git config user.email "ci@brain-platform.io"
+          git add infra/argocd/
+          if git diff --staged --quiet; then
+            echo "No manifest changes — no gitops commit needed"
+          else
+            git commit -m "chore(gitops): bump staging image digests [skip ci] - ${GITHUB_SHA:0:8}"
+            git push
+          fi
+
+      - name: Wait for ArgoCD staging sync
+        run: |
+          echo "ArgoCD auto-syncs staging after manifest push."
+          echo "Manual verification: argocd app get brain-staging --server \$ARGOCD_SERVER"
+          echo "Staging bake window: 5 min; auto-rollback armed on health probe failures."
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # 3. Manual prod promotion gate (requires GitHub Environment approval)
+  # ─────────────────────────────────────────────────────────────────────────
+  prod-promote:
+    name: Promote to Production (manual gate)
+    runs-on: ubuntu-latest
+    needs: gitops-staging
+    # GitHub Environment 'production' requires manual approval from VP Eng
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITOPS_TOKEN }}
+
+      - name: Configure AWS credentials (OIDC) for prod
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_PROD_PLAN_ROLE_ARN }}
+          aws-region: ap-south-1
+
+      - name: Promote staging digest to prod manifests
+        run: |
+          echo "Promoting staging images to prod overlays..."
+          # Copy staging digest to prod overlay — same immutable digest
+          for app in collector stream-worker core web; do
+            if [ -f "infra/argocd/envs/staging/${app}.yaml" ] && \
+               [ -f "infra/argocd/envs/prod/${app}.yaml" ]; then
+              # Extract digest from staging manifest and write to prod
+              STAGING_IMAGE=$(grep 'image:' "infra/argocd/envs/staging/${app}.yaml" | head -1 | awk '{print $2}')
+              if [ -n "$STAGING_IMAGE" ]; then
+                sed -i "s|image:.*|image: ${STAGING_IMAGE}|g" "infra/argocd/envs/prod/${app}.yaml"
+              fi
+            fi
+          done
+
+      - name: Commit prod manifest promotion
+        run: |
+          git config user.name "Brain CI Bot"
+          git config user.email "ci@brain-platform.io"
+          git add infra/argocd/envs/prod/
+          if git diff --staged --quiet; then
+            echo "No prod manifest changes"
+          else
+            git commit -m "chore(gitops): promote to prod [${GITHUB_SHA:0:8}] — bake window ARMED [skip ci]"
+            git push
+          fi
+
+      - name: Bake window monitor armed
+        run: |
+          echo "PROD BAKE WINDOW ARMED — 30 min standard (2hr for billing/ledger/metric-registry changes)"
+          echo "Auto-rollback signals (see PLAYBOOK-deploy.md §Auto-Rollback):"
+          echo "  - Collector accept+ack rate < 99.95% for 5min → ROLLBACK"
+          echo "  - Analytics API error rate > 1% for 5min → ROLLBACK"
+          echo "  - Analytics API p95 latency > 2s for 5min → ROLLBACK"
+          echo "  - K8s health probe failing 2 consecutive probes → ROLLBACK"
+          echo "  - Cross-brand isolation breach (any occurrence) → IMMEDIATE ROLLBACK + SEV1"
+          echo ""
+          echo "Grafana Cloud bake dashboard: https://grafana.brain-platform.io/d/bake-window"

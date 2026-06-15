@@ -1,0 +1,54 @@
+# ============================================================
+# DQ test stubs — Sprint-0 (ruling 7)
+# These are empty test declarations; no live DQ runs in Sprint-0.
+# Real DQ assertions are added in M1 when Silver/Gold marts have real data.
+#
+# DQ framework categories (from packages/contracts/src/dq/):
+#   freshness       — max(event_time) < now - threshold
+#   completeness    — null-rate assertions on critical columns
+#   schema-validity — contract violation rate on ingest
+#   reconciliation  — Bronze row count vs Redpanda offset lag
+# ============================================================
+
+version: 2
+
+models:
+  - name: _empty_model
+    description: "Sprint-0 stub model — dbt compile CI only"
+    tests:
+      # These tests are declared but NOT run in Sprint-0 (no real data).
+      # They serve as structural stubs for the DQ framework.
+      # Remove the `# ` prefix and add real logic in M1.
+
+      # Freshness stub — will assert max(compiled_at) within threshold
+      # - dbt_expectations.expect_column_max_to_be_between:
+      #     column_name: compiled_at
+      #     min_value: "{{ modules.datetime.datetime.now() - modules.datetime.timedelta(hours=25) }}"
+      #     max_value: "{{ modules.datetime.datetime.now() }}"
+
+      # Completeness stub — will assert no nulls on critical columns
+      # - not_null:
+      #     column_name: model_name
+
+      # Uniqueness stub — will assert no duplicates on PK
+      # - unique:
+      #     column_name: model_name
+
+# ============================================================
+# DQ categories reference (Sprint-0: declarations only)
+# ============================================================
+# freshness:
+#   description: "max(event_time) on Silver tables must be < now - 2h (SLO boundary)"
+#   severity: warn  # → error when live data lands in M1
+#
+# completeness:
+#   description: "Critical columns (brand_id, occurred_at, event_id) must have 0% null rate"
+#   severity: error
+#
+# schema_validity:
+#   description: "Quarantine rate (DLQ / total events) must be < 0.1%"
+#   severity: error
+#
+# reconciliation:
+#   description: "Bronze row count must match Redpanda committed offset within 100 events"
+#   severity: warn

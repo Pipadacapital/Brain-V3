@@ -1,0 +1,29 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: core-prod
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/manifest-generate-paths: infra/helm/core
+  labels:
+    project: brain
+    environment: prod
+    service: core
+spec:
+  project: brain-prod
+  source:
+    repoURL: https://github.com/brain-platform/brain
+    targetRevision: main
+    path: infra/helm/core
+    helm:
+      valueFiles:
+        - values-prod.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: core
+  # NO automated sync for prod — manual promotion gate required
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+  revisionHistoryLimit: 10

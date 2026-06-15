@@ -1,16 +1,118 @@
 name: pr
 on: pull_request
+
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write  # OIDC for AWS (security scan image push to temp ECR)
+
 jobs:
-  ci:
+  # ─────────────────────────────────────────────────────────────────────────
+  # Phase-1a BLOCKING gates (doc 05 §11/§12)
+  # ─────────────────────────────────────────────────────────────────────────
+  lint-typecheck-unit:
+    name: Lint / Typecheck / Unit (affected)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v6
-        with: { node-version-file: .nvmrc, cache: pnpm }
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
       - run: pnpm install --frozen-lockfile
-      # Phase-1a BLOCKING gates (doc 05 §11/§12):
-      - run: pnpm turbo run lint typecheck test:unit --affected
-      - run: pnpm turbo run test:isolation --affected   # cross-tenant negative tests (every layer + seams)
-      - run: pnpm turbo run test:parity --affected       # metric-engine vs independent oracle
-      # TODO: docker build (affected apps) → trivy scan → smoke
+      - name: Turbo lint + typecheck + unit (affected only)
+        run: pnpm turbo run lint typecheck test:unit --affected
+      - name: Contract tests (affected)
+        run: pnpm turbo run test:contract --affected
+      - name: Isolation fuzz (affected)
+        run: pnpm turbo run test:isolation --affected
+      - name: Parity oracle (affected)
+        run: pnpm turbo run test:parity --affected
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Secret scan — gitleaks (every PR diff; must never find a secret)
+  # ─────────────────────────────────────────────────────────────────────────
+  secret-scan:
+    name: Secret Scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: gitleaks — scan PR diff for secrets
+        uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Container + dependency scan (affected apps only)
+  # ─────────────────────────────────────────────────────────────────────────
+  build-and-scan:
+    name: Build + Trivy + OSV (affected)
+    runs-on: ubuntu-latest
+    needs: lint-typecheck-unit
+    strategy:
+      matrix:
+        # Dynamically populated from turbo --affected; seed with known apps
+        app: [collector, stream-worker, core, web]
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Check if ${{ matrix.app }} is in affected set
+        id: affected
+        run: |
+          AFFECTED=$(pnpm turbo run build --affected --dry-run=json 2>/dev/null | jq -r '[.tasks[].packageName] | map(select(. != null)) | unique | .[]' || echo "")
+          if echo "$AFFECTED" | grep -q "^${{ matrix.app }}$"; then
+            echo "skip=false" >> $GITHUB_OUTPUT
+          else
+            echo "skip=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build Docker image (affected only)
+        if: steps.affected.outputs.skip == 'false'
+        run: |
+          docker build \
+            -t brain-${{ matrix.app }}:pr-${{ github.sha }} \
+            -f apps/${{ matrix.app }}/Dockerfile \
+            .
+
+      - name: Trivy image scan (HIGH/CRITICAL fail)
+        if: steps.affected.outputs.skip == 'false'
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: brain-${{ matrix.app }}:pr-${{ github.sha }}
+          format: table
+          exit-code: '1'
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+
+      - name: Trivy filesystem scan (deps)
+        if: steps.affected.outputs.skip == 'false'
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: apps/${{ matrix.app }}
+          format: table
+          exit-code: '1'
+          severity: HIGH,CRITICAL
+
+      - name: OSV Scanner
+        if: steps.affected.outputs.skip == 'false'
+        uses: google/osv-scanner-action/osv-scanner-action@v2.3.8
+        with:
+          scan-args: |-
+            --lockfile=pnpm-lock.yaml
+            --format=table

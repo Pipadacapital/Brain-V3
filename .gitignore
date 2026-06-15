@@ -11,6 +11,10 @@ coverage/
 .DS_Store
 .pnpm-store/
 
+# Terraform — provider plugins and local cache (never commit binaries; run `terraform init`)
+**/.terraform/
+!**/.terraform.lock.hcl
+
 # Engineering OS — derived/runtime files (everything else under .engineering-os/ stays committed)
 .engineering-os/index/
 .engineering-os/live.log

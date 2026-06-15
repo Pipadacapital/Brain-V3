@@ -1,0 +1,72 @@
+{
+  "_comment": "Iceberg Bronze table specification — Brain Platform (I-E02). This spec is non-retrofittable; partition spec and schema evolution policy are fixed at table creation. Source of truth for both local (Nessie REST catalog) and production (AWS Glue) table registration.",
+
+  "table_name": "brain_bronze.collector_events",
+  "catalog_type": "rest",
+  "catalog_uri": "${ICEBERG_REST_CATALOG_URI}",
+  "warehouse": "${BRONZE_WAREHOUSE_PATH}",
+
+  "schema": {
+    "type": "struct",
+    "fields": [
+      { "id": 1,  "name": "event_id",        "required": true,  "type": "uuid",    "doc": "Idempotency key component. Part of MERGE predicate: (brand_id, event_id)." },
+      { "id": 2,  "name": "brand_id",         "required": true,  "type": "uuid",    "doc": "Tenant key. Partition bucket key. Row isolation anchor." },
+      { "id": 3,  "name": "occurred_at",      "required": true,  "type": "timestamptz", "doc": "Event time (UTC). Partition days() key." },
+      { "id": 4,  "name": "ingested_at",      "required": true,  "type": "timestamptz", "doc": "Collector spool time (UTC). Monotonically increasing; used for watermark." },
+      { "id": 5,  "name": "schema_name",      "required": true,  "type": "string",  "doc": "Apicurio artifact ID." },
+      { "id": 6,  "name": "schema_version",   "required": true,  "type": "int",     "doc": "Apicurio schema version." },
+      { "id": 7,  "name": "event_type",       "required": true,  "type": "string",  "doc": "Semantic event type — page_view, order_placed, etc." },
+      { "id": 8,  "name": "correlation_id",   "required": true,  "type": "string",  "doc": "Distributed trace ID — propagated from collector." },
+      { "id": 9,  "name": "partition_key",    "required": true,  "type": "string",  "doc": "brand_id:event_id — derived, stored for log correlation." },
+      { "id": 10, "name": "payload",          "required": true,  "type": "string",  "doc": "JSON-encoded event body. No raw PII (I-S02)." },
+      { "id": 11, "name": "processing_flags", "required": false, "type": "string",  "doc": "Optional JSON metadata set by stream-worker (dedup status, watermark lag). Null on first write." },
+      { "id": 12, "name": "collector_version","required": false, "type": "string",  "doc": "Optional collector deployment version. Nullable — schema-evolution safe field." }
+    ]
+  },
+
+  "partition_spec": {
+    "_comment": "Non-retrofittable. bucket(brand_id) + days(occurred_at). brand_id first for tenant-scoped scan pruning. bucket(16) gives ~16 brand shards — increase N via partition evolution (additive) when tenant count grows beyond 100.",
+    "fields": [
+      {
+        "source_id": 2,
+        "field_id": 1000,
+        "name": "brand_id_bucket",
+        "transform": "bucket[16]",
+        "source_field": "brand_id"
+      },
+      {
+        "source_id": 3,
+        "field_id": 1001,
+        "name": "occurred_at_day",
+        "transform": "day",
+        "source_field": "occurred_at"
+      }
+    ]
+  },
+
+  "sort_order": {
+    "_comment": "Within each partition: brand_id ASC then occurred_at ASC — locality for per-brand time-range scans.",
+    "fields": [
+      { "source_id": 2, "direction": "asc", "null_order": "nulls-last" },
+      { "source_id": 3, "direction": "asc", "null_order": "nulls-last" }
+    ]
+  },
+
+  "properties": {
+    "write.format.default":            "parquet",
+    "write.parquet.compression-codec": "zstd",
+    "write.target-file-size-bytes":    "134217728",
+    "write.metadata.compression-codec":"gzip",
+    "format-version":                  "2",
+    "write.upsert.enabled":            "false",
+    "write.merge.mode":                "merge-on-read",
+
+    "_comment_retention": "24-month rolling retention. Snapshot expiry + orphan cleanup run weekly via Argo job (M1). Iceberg snapshot retention properties are set here and enforced by the maintenance job.",
+    "history.expire.max-snapshot-age-ms": "63072000000",
+    "history.expire.min-snapshots-to-keep": "1",
+
+    "_comment_isolation": "Per-brand S3 prefix isolation. ObjectStore path: warehouse/brand_id={brand_id}/year=YYYY/month=MM/day=DD/. KMS DEK per brand applied at the S3 bucket level via per-brand prefix + IRSA policy (NN-5, ADR-005).",
+    "write.object-storage.enabled": "true",
+    "write.object-storage.path": "${BRONZE_WAREHOUSE_PATH}"
+  }
+}

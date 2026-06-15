@@ -5,10 +5,18 @@
     "typecheck":      { "dependsOn": ["^build"] },
     "lint":           {},
     "test:unit":      { "dependsOn": ["^build"] },
-    "test:contract":  { "dependsOn": ["^build"] },
+    "test:contract":  { "dependsOn": ["^build", "gen:contracts"] },
     "test:isolation": { "dependsOn": ["^build"] },
     "test:parity":    { "dependsOn": ["^build"] },
-    "gen:contracts":  { "outputs": ["packages/contracts/generated/**"] },
+    "gen:contracts":  {
+      "outputs": [
+        "packages/contracts/generated/**",
+        "packages/contracts/generated/types/**",
+        "packages/contracts/generated/openapi/**",
+        "packages/contracts/generated/avro/**",
+        "packages/contracts/generated/mcp/**"
+      ]
+    },
     "dev":            { "cache": false, "persistent": true }
   }
 }

@@ -1,0 +1,41 @@
+################################################################################
+# Brain – ArgoCD App-of-Apps
+# Root application that manages all per-service ArgoCD Applications.
+# revisionHistoryLimit: 10 — keeps 10 rollback entries per PLAYBOOK-deploy.
+# Staging: auto-sync. Prod: manual promotion gate.
+################################################################################
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: brain-app-of-apps
+  namespace: argocd
+  labels:
+    project: brain
+    managed-by: argocd
+  annotations:
+    # Webhook-driven sync (not polling) — only reconcile when manifests change
+    argocd.argoproj.io/hook: PostSync
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: brain
+
+  source:
+    repoURL: https://github.com/brain-platform/brain
+    targetRevision: HEAD
+    path: infra/argocd/envs
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+
+  # ApplicationSet generator picks up all env-specific app manifests
+  # Each child Application controls one service in one environment

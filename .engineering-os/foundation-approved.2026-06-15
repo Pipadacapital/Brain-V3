@@ -11,7 +11,8 @@
 - Stack = managed-first (Redpanda Cloud, managed StarRocks, Grafana Cloud, node-pg-migrate, KafkaJS).
 - Auth IdP = self-hosted Authentik on EKS.
 - Deploy = ArgoCD + manual gates; canary/progressive delivery deferred to Phase 4.
-- Principal Architect = the Founder (holds the architecture-change ADR review per doc 12 §11).
+- Team shape = Advisor-determined (not fixed at Founder+5); minimum viable for the data critical path, scalable toward Scenario C. (Amended 2026-06-15.)
+- Principal Architect = Staff/Lead Data Engineer (Data-1), per Engineering Advisor decision — NOT the Founder; Founder remains Stakeholder. CTO retains ADR approval (doc 12 §11). (Amended 2026-06-15.)
 
 ## Source of record
 Drafted from the frozen requirement docs `docs/requirement docs/01..12` + the Attribution Engine Spec.
@@ -27,7 +28,7 @@ eae63e616025d871ebe6fbb2df25e528384bb9aaa23cdc9e3d220d71bd3b45ff  knowledge-base
 a8b6202e29fe885e45187e547d765e7259d133deeec462998e71767f6b52d322  knowledge-base/STACK.md
 f15e635f511d6cb78e61e2b7abf984159b5232ce6ee8f40590ca93ef7c6bb700  knowledge-base/THE-MOAT.md
 347db25d3fef6685f8dad34c7b8c032e706b4646a43aca2538aec6a28bd1e4e3  knowledge-base/TRIGGER-SURFACES.md
-880eeb8c1eaf7c72734867e8087467bd21828bc50dc371ae01724812a5dbf56c  knowledge-base/team-roster.md
+3c7d1bf5b99b17413c948e59a18f4d0b651492cc0b7af50b6a4be28c2452d963  knowledge-base/team-roster.md
 
 ## Open TODO-with-owner (do not block Foundation; tracked)
 - Realized-revenue horizon defaults (~25d COD / 7d prepaid) + reconciliation tolerance (±2–3%) — freeze in Sprint 0. Owner: Data Engineer.

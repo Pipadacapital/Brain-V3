@@ -266,17 +266,101 @@ export const pixelApi = {
 };
 
 // ── Dashboard (Postgres-only reads — arch plan §6.4) ─────────────────────────
+//
+// The BFF wraps every dashboard payload in a { request_id, data } envelope and uses
+// its own field names (org_name, shopify.syncState, step.key, …). These adapters
+// unwrap the envelope and map the BFF shape onto the component-facing types declared
+// in ./types, so the card components and their types stay unchanged.
+
+interface BffEnvelope<T> {
+  request_id: string;
+  data: T;
+}
+
+interface RawBrandSummary {
+  org_name: string | null;
+  brand_count: number;
+  member_count: number;
+  brands: Array<{ id: string; display_name: string; domain: string | null; status: string }>;
+}
+
+interface RawConnectionStatus {
+  shopify: {
+    connected: boolean;
+    status: string | null;
+    syncState: string | null;
+    lastSyncAt: string | null;
+  };
+  meta: { coming_soon: boolean };
+  google: { coming_soon: boolean };
+}
+
+interface RawDataStatus {
+  pixel: { installed: boolean; state: string | null; verifiedAt: string | null };
+}
+
+interface RawOnboarding {
+  steps: Array<{ key: string; label: string; completed: boolean }>;
+  completed_count: number;
+  total_count: number;
+  all_complete: boolean;
+}
+
+/** Maps an onboarding step key to the route that completes it (none for already-done steps). */
+const ONBOARDING_STEP_ROUTE: Record<string, string | undefined> = {
+  email_verified: undefined,
+  workspace_created: '/workspace/new',
+  brand_created: '/brand/new',
+  shopify_connected: '/settings/connectors',
+  pixel_installed: '/settings/pixel',
+};
 
 export const dashboardApi = {
-  getBrandSummary: () =>
-    bffFetch<DashboardBrandSummaryResponse>('/v1/dashboard/brand-summary'),
+  // null → no brand yet → card renders its "No Data Yet" empty state.
+  getBrandSummary: async (): Promise<DashboardBrandSummaryResponse | null> => {
+    const { data } = await bffFetch<BffEnvelope<RawBrandSummary>>('/v1/dashboard/brand-summary');
+    if (!data || data.brand_count === 0) return null;
+    return {
+      workspace_name: data.org_name ?? '',
+      brand_name: data.brands[0]?.display_name ?? '',
+      member_count: data.member_count,
+    };
+  },
 
-  getConnectionStatus: () =>
-    bffFetch<DashboardConnectionStatusResponse>('/v1/dashboard/connection-status'),
+  getConnectionStatus: async (): Promise<DashboardConnectionStatusResponse> => {
+    const { data } = await bffFetch<BffEnvelope<RawConnectionStatus>>(
+      '/v1/dashboard/connection-status',
+    );
+    const s = data?.shopify;
+    return {
+      connector_status: (s?.status ?? null) as DashboardConnectionStatusResponse['connector_status'],
+      // null sync_state → card shows its empty state.
+      sync_state: (s?.connected ? s.syncState : null) as DashboardConnectionStatusResponse['sync_state'],
+      last_sync_at: s?.lastSyncAt ?? null,
+      provider: (s?.connected ? 'shopify' : null) as DashboardConnectionStatusResponse['provider'],
+    };
+  },
 
-  getDataStatus: () =>
-    bffFetch<DashboardDataStatusResponse>('/v1/dashboard/data-status'),
+  getDataStatus: async (): Promise<DashboardDataStatusResponse> => {
+    const { data } = await bffFetch<BffEnvelope<RawDataStatus>>('/v1/dashboard/data-status');
+    const p = data?.pixel;
+    return {
+      // null pixel_state → card shows its empty state.
+      pixel_state: (p?.installed ? p.state : null) as DashboardDataStatusResponse['pixel_state'],
+      pixel_installed_at: p?.verifiedAt ?? null,
+    };
+  },
 
-  getOnboardingProgress: () =>
-    bffFetch<DashboardOnboardingResponse>('/v1/dashboard/onboarding-progress'),
+  getOnboardingProgress: async (): Promise<DashboardOnboardingResponse> => {
+    const { data } = await bffFetch<BffEnvelope<RawOnboarding>>(
+      '/v1/dashboard/onboarding-progress',
+    );
+    const steps = (data?.steps ?? []).map((s) => ({
+      id: s.key,
+      label: s.label,
+      completed: s.completed,
+      route: ONBOARDING_STEP_ROUTE[s.key],
+    }));
+    return { steps, all_complete: data?.all_complete ?? false };
+  },
 };

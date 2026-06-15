@@ -1,13 +1,3 @@
 {
-  "requirements": {
-    "chore-platform-foundations-sprint0": {
-      "spawns": 1,
-      "stage": 8,
-      "outstanding": [
-        "1"
-      ],
-      "last_route": "approved + deploy gate clear; spawning platform-devops S8",
-      "updated_at": "2026-06-15T14:11:36Z"
-    }
-  }
+  "requirements": {}
 }

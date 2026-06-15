@@ -5,13 +5,13 @@
   "active_requirements": [
     {
       "req_id": "chore-platform-foundations-sprint0",
-      "status": "approved",
+      "status": "shipped",
       "stage": 8,
       "current_owner": "platform-devops",
       "title": "Brain Platform Foundations (Sprint 0)",
       "lane": "high_stakes",
       "run_dir": ".engineering-os/runs/2026-06-15T11-06-27Z__09ba6e__chore-platform-foundations-sprint0__rishabhporwal",
-      "last_journal_entry_at": "2026-06-15T14:06:21Z",
+      "last_journal_entry_at": "2026-06-15T14:17:20Z",
       "backend_track_status": "COMPLETE",
       "backend_tracks": [
         "A",

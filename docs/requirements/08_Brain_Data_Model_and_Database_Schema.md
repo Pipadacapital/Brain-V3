@@ -2,7 +2,9 @@
 
 **Product:** Brain — the AI-native commerce operating system for DTC brands in India, UAE & GCC.
 **Document type:** the authoritative Data Model, Data Contracts, Logical & Physical Schema, Lakehouse Design, Storage Ownership, and Data Governance specification.
-**Status:** Final v1.3 (attribution-engine alignment). **Date:** 2026-06-15.
+**Status:** Final v1.5 (+ field-complete canonical dictionary). **Date:** 2026-06-15.
+**v1.5 addition (appended, §0–§36 unchanged):** §37 — the field-complete canonical dictionary proving **every field** in the Data Layer Storage Spec maps to a Brain canonical field; additive to §6/§11 (no field removed); adds canonical Silver dims (ad_account/campaign/set/creative, product_variant, order_line_item, order_status_history, refund, shipment_tracking_event). No new services/ledgers; Phase-1 build scope unchanged.
+**v1.4 addition (appended, §0–§35 unchanged):** §36 — multi-region/currency/tax-regime made first-class in the model (GCC go-to-market stays Phase 5); connector-registry extended (category/provider_type/region); new canonical domains RESERVED (accounting GL, marketplace+fees, messaging-as-touchpoint, reviews, capi_dispatch_log) — built none in Phase 1. Iceberg+StarRocks kept over the spec's stale BigQuery ref.
 **v1.3 addition (appended, §0–§34 unchanged):** §35 Attribution engine alignment — cart-attribute stitch, `silver.touchpoint` journey mart, `survey_responses`, multi-model comparison + triangulation marts, WhatsApp/influencer channels; reconciles the Attribution Engine Spec (Iceberg+StarRocks kept over the spec's stale BigQuery ref; single credit ledger stays the economic SoR).
 **v1.1 additions (appended, §0–§18 unchanged):** §19 Customer 360 architecture · §20 Feature registry / AI feature layer (reservation, no Feast) · §21 Recommendation learning & feedback · §22 Data-contract ownership matrix (6-role) · §23 Semantic-layer governance · §24 Identity risk review · §25 Data-quality framework (6 dimensions) · §26 End-to-end lineage framework.
 **v1.2 additions (appended, §0–§26 unchanged):** §27 Data product governance · §28 Dataset SLA framework · §29 Data observability governance · §30 Dataset catalog governance · §31 Metric governance hardening · §32 Feature governance hardening · §33 Experimentation readiness (reservation) · §34 Relationship intelligence readiness (reservation).
@@ -815,6 +817,189 @@ gold.attribution_triangulation PK(brand_id, channel, period)  -- platform_report
 **WhatsApp + influencer as acquisition channels** — `silver.marketing_spend.platform` enum extends to include `whatsapp` and `influencer`; WhatsApp sends + influencer spend are ingested as touchpoints (`touch_type` above), not delivery-only.
 
 **Ownership / replay / governance:** `touchpoint` + comparison marts are **derived** (rebuildable from Bronze, not SoR); `survey_responses` is **captured** (Postgres, replay n/a); all brand-scoped (RLS) + no-PII (hashed/mapped only — §3, §6.6 C2). **CAPI passback** (output-only, consent-gated, Meta/Google/TikTok, event-ID dedup, **never an attribution input**) is already specified in doc 01 §7.4.10 / doc 06 §11.1 — unchanged. The spec's `brain_person_id` = Brain's `brain_id`; `raw_events`/`identity_edges`/`persons` = Bronze / `identity_link` / `customer` (§6).
+
+
+---
+
+## 36. Data Layer Storage Spec alignment — multi-region readiness + reserved canonical domains
+
+Aligns the data model to the **Brain Data Layer Storage Spec** (the field-level data dictionary + multi-provider source catalog; companion to the Attribution Engine Spec). **No redesign** — the spec's principles *are* doc 08's design (medallion, conform-by-category, settled-label, append-only, provenance, no-PII). This section records the reconciliations + the additive deltas. **Decisions (founder-confirmed):** (1) region/currency/tax-regime is first-class in the **model now**, GCC **go-to-market stays Phase 5** (doc 04 §528/§656); (2) the new canonical domains are **reserved** (modeled, **built none in Phase 1**).
+
+**Reconciliations:**
+- **Iceberg + StarRocks kept** — the spec §19.1 BigQuery reference is superseded. The spec's four logical layers map onto Brain's medallion: **raw landing → Bronze; staging + canonical → Silver** (dbt staging→intermediate→canonical models); **marts → Gold**. No physical-tier change.
+- **`brain_id` = the resolved person** (= the spec's `brain_person_id`). The spec's per-row `brain_id` surrogate = Brain's generic `uuid` PK. Spec `raw_events` / `identity_edges` / `persons` = Bronze / `identity_link` / `customer` (§6).
+- **Provenance:** the spec's cross-cutting fields map to the universal envelope (doc 07 §4) + a connector reference (Delta 2).
+
+**Delta 1 — Region / currency / tax-regime (first-class NOW; GTM GCC Phase 5).**
+- Monetary columns are already `*_minor BIGINT` + `currency_code CHAR(3)` (§4). **Add**, on cross-region rollup facts: `reporting_currency_value_minor` (normalized to the brand's reporting currency via `fx_rate`, §5.4) alongside the original `transaction_currency`.
+- Every taxable value carries a **`tax_regime`** enum (`GST_IN | VAT_AE_5 | VAT_SA_15 | …`) + breakdown — never a bare tax number. `region` (`IN|AE|SA|…`) lives on `brand` (exists) and on region-varying rows.
+- **COD/RTO are region attributes, not India-only** (they recur across the GCC) — the ledger / True-CM2 logic already handles them; no India hard-coding.
+- This is a **model invariant built now** (cheap; expensive to retrofit); GCC connectors/launch/Arabic-RTL remain **Phase 5** (doc 04 §528/§656; doc 03 §65).
+
+**Delta 2 — Connector registry (extend `connector_instance`, §5.3).** Add `category` (`ads|storefront|marketplace|payments|logistics|accounting|messaging|reviews`), `provider_type` (`gateway|checkout_platform|bnpl|aggregator|direct_courier|…`), `region`. Multiple providers per category per brand are already allowed (the UNIQUE on `brand_id,connector_type,display_name`); every ingested row references its `connector_id`. The broader provider catalog (GoKwik/Cashfree/Stripe/Telr/Tap/Tabby/Tamara/Noon/Amazon/Aramex/DHL/Zoho/Tally/Klaviyo/…) is the **connector roadmap** (doc 04 §528 "GCC set on first signing"; doc 10 §7 V1 order) — each provider is an **adapter/folder, not a schema change** (conform-by-category, doc 05 §3.1).
+
+**Delta 3 — Reserved canonical domains (RESERVED — modeled here, built Phase 2+, NONE in Phase 1).** None is a new ledger (the realized-revenue + attribution-credit ledgers remain the only two, §7); all are brand-scoped (RLS) + no-PII + provenance-stamped.
+```
+-- Accounting / AICFO (Zoho/Tally/QuickBooks/Xero adapters) — RESERVED P2+
+chart_of_accounts(brand_id, account_id, account_name, account_type, account_code, parent_account_id)
+ledger_transactions(brand_id, transaction_id, entry_date, account_id, debit_minor, credit_minor, currency_code, voucher_type, reference)
+bills(brand_id, bill_id, vendor, bill_date, due_date, amount_minor, tax_minor, category, status)
+accounting_invoices(brand_id, invoice_id, customer_ref, invoice_date, amount_minor, tax_minor, status)  -- distinct from the billing invoice (§9)
+tax_ledger(brand_id, tax_record_id, regime, direction(input|output), rate_bps, taxable_minor, tax_minor, period)
+-- Marketplace (Amazon/Noon) — RESERVED P2+
+marketplace_fees(brand_id, order_id, fee_type, amount_minor, currency_code)  -- referral/fulfillment/closing → into CM2 (§12 order_margin_fact)
+-- (order_state gains channel='marketplace': no on-site journey → marketplace-level attribution only)
+-- Messaging as attributed owned-channel touchpoints — RESERVED P2+
+messaging_events(brand_id, message_event_id, channel(email|sms|whatsapp), provider, campaign_or_flow_id, recipient_brain_id,
+   event_type(sent|delivered|opened|clicked|bounced|unsub|replied), event_at, tracked_link_utms,
+   wa_conversation_category, wa_conversation_cost_minor)  -- WhatsApp conversation pricing → AICFO; tracked-link UTMs → touchpoint (§35)
+-- Reviews (support already = silver.support, §11) — RESERVED P2+
+reviews(brand_id, review_id, product_id, rating, verified_buyer, sentiment, created_at)
+-- CAPI dispatch log (CAPI passback is output-only, doc 01 §7.4.10) — RESERVED, built with the CAPI passback
+capi_dispatch_log(brand_id, event_id, platform, event_name, sent_at, match_keys_sent_json, response_status)  -- event_id matches the pixel event for dedup
+```
+When built, accounting + marketplace fees feed CM2/CM3 (AICFO); messaging becomes an attributed touchpoint (§35); reviews/support feed the AICOO. Reserved-event types (`messaging.*`, `marketplace.*`, `capi.*`) enter the doc 07 catalog only when built (doc 07 §21 deferred + §30 lifecycle).
+
+**Mapping (spec canonical → Brain):** identifiers/identity_edges/persons → §6; web events → `behavior_event` + §35; ad_* → `marketing_spend` + connector events; orders/line_items/refunds → `order_state`/`order_cost_component`/ledger (§7/§11); payments/settlements → `payment`/`settlement` (§11); shipments/ndr → `shipment` (§11); survey → `survey_responses` (§35); touchpoints → `silver.touchpoint` (§35); accounting/marketplace/messaging/reviews/capi → reserved above.
+
+
+---
+
+## 37. Canonical field dictionary — field-complete vs the Data Layer Storage Spec
+
+**Purpose:** guarantee **every field** in the Storage Spec exists in Brain's canonical model. This is the **field-complete** column set for the ingestion/canonical Silver + identity tables; it is **additive** to §6/§11 (which were representative) — **no field is removed**, and the medallion/ledger/identity architecture is unchanged. New tables here are canonical **Silver** tables (not new services/ledgers). Every row also carries the **provenance envelope** (doc 07 §4 + §36: `brand_id, source_system, category, connector_id, source_object_id, source_created_at, source_updated_at, ingested_at, sync_batch_id, dedup_key, region, transaction_currency, reporting_currency_value_minor`) and the raw payload in Bronze. Money = `*_minor BIGINT` + `currency_code`. PII = hashed/ref only.
+
+### 37.1 Identity & consent (spec §4 → doc 08 §6)
+```
+identity_link  -- = spec identifiers + identity_edges, folded
+  identifier_type {brain_anon_id, email_hash, phone_hash, platform_customer_id, auth_user_id, fbp, fbc, ga_client_id, click_id, device_signature, fp_cookie, ip, ua, name, pincode, location}
+  identifier_value (hashed if PII), click_id_platform, tier, confidence, edge_type(deterministic|probabilistic),
+  evidence_event_id, is_active, first_seen_at, last_seen_at
+customer (= spec persons)  -- brain_id (resolved person = spec brain_person_id), member_identifiers (via identity_link),
+  anonymous_id, lifecycle_state, merged_into, resolved_at, first_touch_at, ai_processing_consent, resolution_consent
+consent_record  -- purpose/category {analytics, ads, email, sms, whatsapp, personalization, ai_processing},
+  state(granted|denied|withdrawn), source, region, effective_at, consent_text_version, consent_snapshot_id
+```
+
+### 37.2 Web & behavioural events (spec §5 → `silver.behavior_event`, field-complete)
+```
+silver.behavior_event PK(brand_id,event_id)
+  event_id, event_name(=event_type){page_view|product_view|collection_view|search|add_to_cart|checkout_start|identify|purchase|custom},
+  brain_anon_id, brain_session_id, observed_brain_id(resolved person), client_timestamp, server_timestamp(occurred_at/ingested_at),
+  page_url, page_path, referrer, landing_url,
+  utm_source, utm_medium, utm_campaign, utm_content, utm_term,
+  click_ids{fbclid,gclid,wbraid,gbraid,ttclid,msclkid,sclid,epik,li_fat_id,twclid}, fbp, fbc, ga_client_id,
+  user_agent, device_type, os, browser, screen_resolution, viewport, language, timezone,
+  ip_hash, geo_country, geo_region, geo_city, consent_state(json),
+  product_id, variant_id, price_minor, currency_code, quantity, cart_token, cart_value_minor,
+  email_hash, phone_hash (identify/purchase only), pixel_version, channel, campaign_id,
+  dedup_state{hot|deduped}, identity_state{anonymous|resolved}, raw_event_id
+```
+
+### 37.3 Ad spend & performance (spec §6 → `marketing_spend` + NEW ad-structure dimensions)
+```
+silver.ad_account PK(brand_id,platform,account_id)   -- account_name, currency, timezone, spend_cap
+silver.ad_campaign PK(brand_id,campaign_id)          -- account_id, campaign_name, objective, status, buying_type,
+                                                     --   bid_strategy, daily_budget_minor, lifetime_budget_minor, start_time, stop_time
+silver.ad_set PK(brand_id,adset_id)                  -- campaign_id, name, optimization_goal, billing_event, bid_strategy,
+                                                     --   bid_amount_minor, budget_minor, targeting_summary(json), placements(json), schedule
+silver.ad_creative PK(brand_id,ad_id)                -- adset_id, ad_name, creative_id, format, creative_assets(json: headline/primary_text/
+                                                     --   description/cta/asset_refs/thumbnail), destination_url, url_tags(UTMs — THE join key), status
+silver.marketing_spend (= spec ad_metrics_daily) PK(brand_id,platform,account_id,campaign_id,adset_id,ad_id,spend_date)
+                                                     -- spend_minor, impressions, clicks, link_clicks, reach, frequency,
+                                                     --   video_views_3s, thruplays, ctr, cpc, cpm, platform_reported_conversions,
+                                                     --   platform_reported_conversion_value, breakdown_placement, breakdown_device,
+                                                     --   currency_code, reporting_currency_value_minor, is_final, fx_rate_id
+capi_dispatch_log (§36)                              -- event_id, platform, event_name, sent_at, match_keys_sent_json, response_status
+-- connector-specific extras kept in raw/Bronze: Google search_terms/keywords/quality_score; platform breakdowns
+```
+
+### 37.4 Catalog & storefront (spec §7 → `product` + NEW `product_variant` + `inventory_level`)
+```
+silver.product PK(brand_id,product_id)        -- title, handle, product_type, category, vendor, status, tags(json)
+silver.product_variant PK(brand_id,variant_id)-- product_id, sku, barcode, price_minor, compare_at_price_minor,
+                                              --   unit_cost_minor(COGS net recoverable tax), tax_treatment, inventory_item_id, options(json), cost_confidence
+silver.inventory_level PK(brand_id,inventory_item_id,location_id) -- available, reserved, reorder_point, updated_at
+```
+
+### 37.5 Orders & transactions (spec §8 → `order_state` field-complete + NEW `order_line_item`/`order_status_history`/`refund`)
+```
+silver.order_state PK(brand_id,order_id)  -- order_name, customer_id, email_hash, phone_hash,
+  created_at, processed_at, updated_at, cancelled_at, financial_status, fulfillment_status, order_status(canonical),
+  payment_provider, provider_type, is_cod, currency_code, subtotal_minor, total_discounts_minor,
+  total_tax_minor, tax_regime, total_shipping_minor, total_price_minor, discount_codes(json),
+  landing_site, referring_site, source_name{web|pos|marketplace|draft}, channel(+marketplace),
+  ship_country, ship_state_or_emirate, ship_city, ship_postcode, tags(json),
+  cart_attr_brain_anon_id, cart_attr_click_ids(json), cart_attr_first_utms(json),   -- the stitch (§35)
+  settled_status{provisional|delivered_confirmed|rto|cancelled}, net_realized_value_minor, recognition_label,
+  is_new_customer, observed_brain_id, raw_event_id
+  -- True-CM2 cost components remain in silver.order_cost_component (forward_shipping/cod_fee/packaging/marketplace_fee/return_cost/concession/payment_fee)
+silver.order_line_item PK(brand_id,line_item_id) -- order_id, product_id, variant_id, sku, quantity,
+                                                 --   unit_price_minor, line_discount_minor, line_tax_minor, unit_cost_snapshot_minor
+silver.order_status_history PK(brand_id,order_id,changed_at) -- status_type{financial|fulfillment|shipment|settlement}, from_status, to_status
+silver.refund PK(brand_id,refund_id)             -- order_id, amount_minor, reason, line_items(json), created_at  (also drives ledger event_type=refund, §7)
+```
+
+### 37.6 Customers (spec §9 → `silver.customer` field-complete; rollups in `customer_360` §19)
+```
+silver.customer PK(brand_id,brain_id) -- customer_id, email_hash, phone_hash, created_at, updated_at, first_order_at,
+  orders_count, total_spent_minor, aov_minor, ltv_minor, acquisition_channel, acquisition_cohort,
+  accepts_email, accepts_sms, accepts_whatsapp, country, state_or_emirate, city, postcode, tags(json),
+  identity_confidence, completeness
+```
+
+### 37.7 Payments & settlements (spec §10 → `payment`/`settlement` field-complete)
+```
+silver.payment PK(brand_id,payment_id) -- order_id, provider, provider_type{gateway|checkout_platform|bnpl}, amount_minor,
+  currency_code, status, method, provider_fee_minor, tax_on_fee_minor, cod_confirmation_status, captured_at, settled_at, settlement_id,
+  -- BNPL extras: installment_count, installment_schedule(json), down_payment_minor, merchant_fee_minor
+  -- checkout-platform extras (e.g. GoKwik): rto_risk_score, rto_risk_tier, address_quality_score, prepaid_conversion_flag
+silver.settlement PK(brand_id,settlement_id) -- provider, settled_at, gross_amount_minor, fees_minor, net_amount_minor, payment_ids(json), utr, currency_code
+```
+
+### 37.8 Shipping & logistics (spec §11 → `shipment` field-complete + NEW `shipment_tracking_event`)
+```
+silver.shipment PK(brand_id,shipment_id) -- order_id, provider, provider_type{aggregator|direct_courier}, awb, carrier,
+  current_status{manifested|picked|in_transit|out_for_delivery|delivered|undelivered|rto_initiated|rto_delivered|lost},
+  delivered_at, is_rto, rto_initiated_at, rto_delivered_at, is_cod, cod_amount_minor, cod_currency, cod_remitted, cod_remitted_at,
+  forward_shipping_cost_minor, rto_shipping_cost_minor, delivery_postcode, zone, city, state, country, ndr_count, ndr_reason
+silver.shipment_tracking_event PK(brand_id,shipment_id,event_at) -- provider_status_raw, status(canonical), location, ndr_reason
+```
+
+### 37.9 Messaging · survey · reviews · accounting · marketplace (spec §12–§16 → §35/§36)
+`messaging_events`, `reviews`, `chart_of_accounts`, `ledger_transactions`, `bills`, `accounting_invoices`, `tax_ledger`, `marketplace_fees`, `capi_dispatch_log` — full field sets in **§36 (reserved)**; `survey_responses` + `silver.touchpoint` in **§35**; `silver.support` in §11. Connector registry (`connector_instance` + §36 cols): `connector_id, brand_id, category, provider, provider_type, region, credentials_ref(secret_ref), status, last_synced_at, sync_cursor`.
+
+### 37.10 Coverage confirmation (spec domain → status)
+| Spec §/domain | Canonical home | Field-complete? |
+|---|---|---|
+| §4 identity/edges/persons/consent | §6 + §37.1 | ✅ (added click_id_platform, edge_type/confidence/evidence, first/last_seen, resolved/first_touch, channel consents, region) |
+| §5 web events | §37.2 `behavior_event` | ✅ (added page/referrer/landing, full UTM set, fbp/fbc/ga_client_id, device/os/browser/screen/viewport, geo, product/cart context, pixel_version) |
+| §6 ad spend | §37.3 (+ ad_account/campaign/set/creative) | ✅ (added structure dims incl. **destination_url+url_tags**, reach/frequency, video views, platform-reported, breakdowns) |
+| §7 catalog | §37.4 (+ product_variant) | ✅ (added handle/type/vendor/status/tags, variants, barcode, compare_at, inventory_item/location) |
+| §8 orders | §37.5 (+ line_item/status_history/refund) | ✅ (added line items, is_cod, financial/fulfillment status, discount_codes, landing/referring_site, ship address, settled_status/net_realized) |
+| §9 customers | §37.6 | ✅ (added orders_count/total_spent/aov/first_order_at/acquisition_*/accepts_*/geo) |
+| §10 payments | §37.7 | ✅ (added provider_type, tax_on_fee, cod_confirmation, BNPL + GoKwik RTO-risk extras) |
+| §11 logistics | §37.8 (+ tracking_event) | ✅ (added carrier vs provider, COD remittance, both cost legs, canonical status, per-scan events) |
+| §12–15 messaging/reviews/finance | §36 (reserved) + §35 | ✅ reserved field-complete |
+| §16 connector registry | §36 + §37.9 | ✅ |
+**Result: every field in the Data Layer Storage Spec maps to a canonical field in Brain.** Phase-1 build still ships only the Phase-1 connectors/domains (doc 10 §7); the reserved tables/fields are modeled, not built.
+
+
+---
+
+### 37.11 Canonicalization boundary — `raw_payload` vs canonical (Bucket-4/5 discipline)
+
+Per principle #1 (store the raw payload always), the complete provider object is retained in **Bronze `raw_payload`** — queryable and replayable. A field is **canonicalized only if** a named Brain capability depends on it (identity, attribution, journey, revenue/CM2, or the decision engine). To prevent canonical-model bloat, the following remain **`raw_payload`-only (not promoted)**, recoverable from Bronze if a future need is proven:
+- **Ads:** `targeting_summary` detail (audience/interests), creative binary asset refs/thumbnails beyond headline/primary_text/CTA, Google `keywords`/`search_terms`/`quality_score`, placement micro-breakdowns. *(Canonical keeps `destination_url`+`url_tags`, `format`, spend + metrics.)*
+- **Payments:** BNPL `installment_schedule` detail *(canonical keeps `installment_count` + `merchant_fee_minor`)*; raw acquirer/3DS response codes *(canonical keeps `status`/`method`/`provider_fee`)*.
+- **Web events:** raw `user_agent` string + full device fingerprint *(canonical keeps parsed `device_type`/`os`/`browser` + the device-signal fields probabilistic identity needs)*; raw IP *(only `ip_hash` is canonical)*.
+- **Marketplace:** Amazon `BuyerInfo`/masked buyer PII *(PII-restricted — never canonical)*, internal marketplace flags.
+- **Reviews:** review `body`/photo refs *(canonical keeps `rating`/`verified_buyer`/`sentiment`)*.
+
+**Rejected (Bucket 5 — modeled nowhere): nothing material.** Every Storage-Spec field is either canonical (§37.1–§37.9) or `raw_payload`-only (above); no business-critical field was dropped. Provider-specific operational fields with no Brain dependency simply live in `raw_payload`.
+
+**Promotion rule:** a raw field becomes canonical **only via a `packages/contracts` change** when a named Brain capability requires it — keeping the canonical model complete *and* lean.
+
 
 
 ---

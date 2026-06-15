@@ -40,7 +40,7 @@
 2. **One language end-to-end (TypeScript).** A small team shares one skill set, one set of types, and code across frontend, backend, and stream processing. The one place this won't reach is heavy ML (§18).
 3. **Open formats, no lock-in.** The brand's data lives in an open lakehouse (Apache Iceberg on object storage), so it is portable, exportable, and never trapped — directly serving the "the brand owns its data / no hostage data" promise (`BRD §18.5`, §20).
 4. **Honest-when-degraded & isolation-first.** The stack must make brand isolation structural and must label/contain failure, not hide it (`BRD §18.1`).
-5. **AWS-native, single region (ap-south-1).** India data residency by default; one cloud to operate (`BRD §18.5`).
+5. **AWS-native, single region (ap-south-1).** India data residency by default; one cloud to operate (`BRD §18.5`). The **data model is region/currency/tax-regime-ready from day one** (transaction + reporting currency in minor units; GST/VAT regime tags) so a new region is additive — the *go-to-market* for GCC remains a Phase-5 trigger (doc 08 §36).
 6. **Cost-routing discipline.** Cheapest-sufficient effort everywhere (deterministic logic ≫ statistical ≫ small model ≫ frontier model). This is the structural reason a %-of-GMV price survives (`BRD §16`).
 
 ## 2. The one architectural boundary

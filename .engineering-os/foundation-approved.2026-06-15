@@ -5,6 +5,8 @@
 **Approved on:** 2026-06-15.
 **Canon scope:** Phase 1 as-built (24-week plan, M0–M5, recommend-only AI, deterministic decisioning, single-region India AWS ap-south-1, modular monolith + 4 deployables).
 
+**Amendment 2026-06-15 (data-model v1.5 context-sync, Stakeholder-approved):** METRICS.md + TRIGGER-SURFACES.md amended (hashes below updated) to absorb doc 08 §36 Delta 1 — `reporting_currency_value_minor` FX-normalization pattern (METRICS) and `tax_regime`/`region` as live Phase-1 compliance-surface fields (TRIGGER-SURFACES). All other doc 03/08 v1.5 changes (field-complete §37 dictionary, 5 reserved canonical domains built-none-in-Phase-1) absorbed as team context — no STACK/HLD/INVARIANTS/COMPLIANCE change. Assessments: `.engineering-os/context-sync/2026-06-15-datamodel-v1.5/`.
+
 ## Ratified framing decisions
 - Canon scope = Phase 1 as-built (Phases 2–4 are future Foundation amendments).
 - Compliance = DPDP (India) + PDPL (UAE/KSA) as processor; PCI out-of-scope (SAQ-A, tokens only); SOC2 deferred to enterprise phase.
@@ -22,12 +24,12 @@ dac4aaa9b92ec1a984253c57850287c00958290aa19153fc52c2c189279661fa  knowledge-base
 f24957453183526401fd9a18a6c83c22bdb3569c5166114a61faf901bb7222b6  knowledge-base/ESCALATION-RUBRIC.md
 fe17c7acb3d088f79e7acab538a4b7a1fa730ea6d4b83e735c7a0de1e432eb7b  knowledge-base/HLD.md
 1cfe63d6acb5ad51d987b1031ca504f56c79440136fae658bd9e27f7f8ec1d23  knowledge-base/INVARIANTS.md
-eae63e616025d871ebe6fbb2df25e528384bb9aaa23cdc9e3d220d71bd3b45ff  knowledge-base/METRICS.md
+9ca4f072bfc574fbbf0a670ada191e7a5e4ad1e5f900c86c71bba7f1a85e1a0d  knowledge-base/METRICS.md
 7247a22164a7bb7caf11d78347e5d7ef25b5f3c730ecb37245349dbc21abcacf  knowledge-base/PLAYBOOK-deploy.md
 09cc348d7775d194f948c4622a6c3a1490777516769061ce23859feaf66b8a10  knowledge-base/PLAYBOOK-incident.md
 a8b6202e29fe885e45187e547d765e7259d133deeec462998e71767f6b52d322  knowledge-base/STACK.md
 f15e635f511d6cb78e61e2b7abf984159b5232ce6ee8f40590ca93ef7c6bb700  knowledge-base/THE-MOAT.md
-347db25d3fef6685f8dad34c7b8c032e706b4646a43aca2538aec6a28bd1e4e3  knowledge-base/TRIGGER-SURFACES.md
+cf263a411728a6c68039c084479237f75314552248cef5ac4954eca498ea8c2f  knowledge-base/TRIGGER-SURFACES.md
 3c7d1bf5b99b17413c948e59a18f4d0b651492cc0b7af50b6a4be28c2452d963  knowledge-base/team-roster.md
 
 ## Open TODO-with-owner (do not block Foundation; tracked)

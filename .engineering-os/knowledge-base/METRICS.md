@@ -4,6 +4,7 @@
 >
 > Scope: **Phase 1 as-built, recommend-only, DETERMINISTIC decisioning.**
 > Currencies: INR (primary) / AED / SAR. Money = integer minor units (`*_minor BIGINT`) + `currency_code CHAR(3)`; never floats.
+> **Multi-currency rollups (approved pattern, doc 08 §36 Delta 1):** for cross-region rollup facts, `reporting_currency_value_minor BIGINT` is the value FX-normalized to the brand's reporting currency via the `fx_rate` row pinned to that row's own `economic_effective_at` (alongside the original `transaction_currency`). This is the ONLY sanctioned multi-currency aggregation; blended or period-average FX remains banned for any ledger/metric computation (a per-row pinned rate is mandatory).
 > Sources: BRD §10.3–10.4, §21; PFS §6.5–6.6, §7.1–7.4; Data Model §5.4, §7, §12; Decision Engine Parts 1, 7, 11.
 
 ---

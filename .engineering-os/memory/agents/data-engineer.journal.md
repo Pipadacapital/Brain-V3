@@ -4,3 +4,7 @@
 
 ## 2026-06-15T07:19:27Z — system — bootstrap
 **Action:** Journal initialized by /eos-init on 2026-06-15T07:19:27Z.
+
+## 2026-06-15T00:00:00Z — Data Engineer — context-sync/2026-06-15-datamodel-v1.5
+**Stage:** context-sync · **Layer:** batch+lakehouse+stream · **Tier:** deterministic
+**Parity:** N/A (context-sync, no build) · **Replayable:** N/A · **Verification:** doc-08 §36/§37 absorbed; delta map written to .engineering-os/context-sync/2026-06-15-datamodel-v1.5/data-engineer-assessment.md · **Next:** M1 data-platform build — 10 net-new Silver tables, envelope extension (10 fields), tax_regime/region/reporting_currency on all taxable rows, 5 reserved domains blocked from Phase 1

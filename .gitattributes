@@ -1,0 +1,5 @@
+# Engineering OS — merge rules for append-only shared memory
+.engineering-os/memory/agents/*.journal.md merge=union
+.engineering-os/memory/features/*.md merge=union
+.engineering-os/decision-log/**/*.jsonl merge=union
+.engineering-os/state/registry.json merge=union

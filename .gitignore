@@ -6,6 +6,13 @@ coverage/
 .next/
 *.log
 .env
-.env.local
+.env.*
+!.env.example
 .DS_Store
 .pnpm-store/
+
+# Engineering OS — derived/runtime files (everything else under .engineering-os/ stays committed)
+.engineering-os/index/
+.engineering-os/live.log
+.engineering-os/dashboard.html
+.engineering-os/state/*.bak*

@@ -6,6 +6,12 @@
       "title": "Brain Platform Foundations (Sprint 0)",
       "first_seen": "2026-06-15T11:09:05Z",
       "lane": "high_stakes"
+    },
+    {
+      "req_id": "feat-m1-app-foundation",
+      "title": "Brain M1 Application Foundation",
+      "first_seen": "2026-06-15T15:38:27Z",
+      "lane": "high_stakes"
     }
   ]
 }

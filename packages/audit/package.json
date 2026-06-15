@@ -13,5 +13,8 @@
   },
   "dependencies": {
     "@brain/money": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0"
   }
 }

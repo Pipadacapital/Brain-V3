@@ -1,0 +1,115 @@
+{
+  "agent": "qa-agent",
+  "stage": 5,
+  "req_id": "feat-m1-app-foundation",
+  "reviewed_at": "2026-06-15T18:05:00Z",
+  "mode": "DELTA (reasoning scope); FULL suite (tests) — re-review r3",
+  "verdict": "PASS",
+  "gates": {
+    "no_critical": true,
+    "no_high": true,
+    "rls_isolation": "PASS — all 15 connector/pixel tests REAL (pgAvailable=true), all 14 M1 tables verified. NN-6 FULLY MET.",
+    "validity_clean": true,
+    "smoke_pass": true,
+    "migrations_clean": true
+  },
+  "suite": {
+    "typecheck": "75/75",
+    "unit": "122/122",
+    "lint": "75/75",
+    "isolation": "43 passed | 2 skipped — connector/pixel tests REAL (pgAvailable=true, all 15 run with real assertions)"
+  },
+  "iso_seed_01": {
+    "status": "FIXED",
+    "fix_description": "connector_instance upsert now uses ON CONFLICT (brand_id, provider) DO UPDATE SET shop_domain = EXCLUDED.shop_domain RETURNING id. pixel_installation uses ON CONFLICT (brand_id) DO UPDATE SET target_host = EXCLUDED.target_host RETURNING id. Returned IDs used for all FK-dependent inserts. pgAvailable=true on every run.",
+    "mirror_policy_ruling": "ACCEPTABLE — identical two-arg GUC predicate (current_setting('app.current_brand_id', TRUE)::uuid) as production. Negative controls hold: no-GUC test returns 0 rows (NULL predicate), cross-brand test returns 0 rows (brand_id mismatch). Testing AS brain_app directly would be strictly stronger but is not required — predicate contract proven. Gap is LOW, not a blocker.",
+    "nn6_full": true,
+    "tables_verified": 14
+  },
+  "high_findings_status": {
+    "ISO-SEED-01": "FIXED — UPSERT RETURNING pattern eliminates FK ordering bug. All 15 connector/pixel tests run with real assertions.",
+    "HIGH-MOUNT-01": "FIXED — connector+pixel routes mounted, 401 without session confirmed live in r3",
+    "HIGH-SCA-01": "FIXED — next@^15.5.16 confirmed, 19/19 routes",
+    "HIGH-SECRETS-01": "FIXED — AwsSecretsProvider implemented and wired conditionally",
+    "HIGH-SCA-02": "FIXED — fastify@5.8.5 (GHSA-jx2c-rxcm-jvmq was v4.x; v5.x resolves it)"
+  },
+  "med_findings_status": {
+    "MED-BFF-DASH-01": "FIXED — 4 dashboard endpoints HTTP 200 with real Postgres data (r2, confirmed)",
+    "MED-JWT-01": "FIXED — alg=HS256 + typ=JWT validated in verifyJwt (r2, confirmed)",
+    "MED-CALLBACK-01": "FIXED — brandId from server-side state record only (r2, confirmed)"
+  },
+  "open_findings": [
+    {
+      "id": "LOW-MUTATION-01",
+      "severity": "LOW",
+      "status": "OPEN",
+      "title": "No mutation test tooling (Stryker) configured"
+    },
+    {
+      "id": "LOW-COVERAGE-01",
+      "severity": "LOW",
+      "status": "OPEN",
+      "title": "No coverage config in vitest"
+    },
+    {
+      "id": "LOW-E2E-01",
+      "severity": "LOW",
+      "status": "OPEN",
+      "title": "No Playwright E2E tests"
+    },
+    {
+      "id": "LOW-STARROCKS-M01",
+      "severity": "LOW",
+      "status": "OPEN",
+      "title": "StarRocks M-01 engine row policy deferred — 2 isolation tests skipped (OSS allin1)"
+    }
+  ],
+  "smoke": {
+    "health": "HTTP 200 {\"status\":\"ok\",\"version\":\"0.1.0\"}",
+    "connector_without_session": "HTTP 401 UNAUTHORIZED",
+    "pixel_without_session": "HTTP 401 UNAUTHORIZED",
+    "shopify_install_without_session": "HTTP 401 UNAUTHORIZED"
+  },
+  "frontend_build": "19 routes, exit 0, next@^15.5.16",
+  "fastify": "5.8.5 (confirmed via pnpm --filter @brain/core why fastify)",
+  "validity": {
+    "exit": 0,
+    "files_scanned": 98,
+    "bypassrls": "clean",
+    "tautological": "clean",
+    "superuser_dsn": "clean"
+  },
+  "negative_control": [
+    {
+      "path": "tools/isolation-fuzz/src/pg.test.ts",
+      "protection_removed": "DROP POLICY IF EXISTS tenant_isolation ON isolation_test_rls",
+      "command": "SET ROLE isofuzz_app; SELECT * FROM isolation_test_rls WHERE brand_id = brand_B_uuid",
+      "captured_red_output": "policy_on=0 rows (expected 0), policy_off=1 rows (expected >0). RLS enforcement is REAL on non-superuser connection (isofuzz_app NOSUPERUSER NOBYPASSRLS).",
+      "result": "REAL — negative control confirmed. pg.test.ts proof test ran and printed in isolation test output."
+    },
+    {
+      "path": "tools/isolation-fuzz/src/pg.connector.test.ts",
+      "protection_removed": "GUC not set (no-GUC tests), GUC set to brand-A while querying brand-B rows (cross-brand tests)",
+      "command": "queryNoGuc('SELECT * FROM connector_instance') — fresh connection, no SET GUC",
+      "captured_red_output": "rowCount === 0 for all 5 tables: connector_instance, connector_sync_status, connector_cursor, pixel_installation, pixel_status. Cross-brand: brand-A GUC returns 0 rows from brand-B tables.",
+      "result": "REAL — pgAvailable=true confirmed. Tests executed real assertions. If GUC predicate were removed (USING TRUE), these tests would FAIL (rows would be returned)."
+    }
+  ],
+  "acceptance": {
+    "MET": 12,
+    "MET_AS_SCAFFOLD": 2,
+    "GAP": 0,
+    "scaffold_items": [
+      "Demo 2: Workspace+Brand (routes live, events stubbed, no E2E)",
+      "Demo 3: Invitations (routes live, NN-7 RLS confirmed, no E2E)"
+    ]
+  },
+  "bounce_target": "none",
+  "bounce_findings": [],
+  "summary": "All prior bounce findings FIXED and verified in r3. ISO-SEED-01 (HIGH): pg.connector.test.ts seed now uses UPSERT RETURNING — pgAvailable=true, all 15 connector/pixel isolation tests run with real positive+negative assertions. Mirror-policy approach ACCEPTABLE (identical predicate, real negative controls). NN-6 FULLY MET (all 14 M1 tables). fastify@5.8.5 confirmed. AwsSecretsProvider conditionally wired. No open HIGH or MEDIUM findings. 4 LOWs deferred. PASS.",
+  "state": {
+    "status": "build-review",
+    "stage": 5,
+    "owner": "qa-agent"
+  }
+}

@@ -1,0 +1,79 @@
+{
+  "agent": "final-reviewer",
+  "stage": 6,
+  "req_id": "feat-m1-app-foundation",
+  "reviewed_at": "2026-06-15T18:12:00Z",
+  "mode": "FINAL-GO-NO-GO (independent re-run of load-bearing checks)",
+  "verdict": "PASS",
+  "go_no_go": "GO",
+  "gates": {
+    "no_critical": true,
+    "no_high": true,
+    "suite_replicated": true,
+    "isolation_replicated": true,
+    "smoke_replicated": true,
+    "validity_clean": true,
+    "negative_controls_real": true,
+    "scope_clean": true,
+    "over_engineering": "none",
+    "cost_paradigm": "N/A — zero model calls; deterministic by construction",
+    "invariants_clean": true,
+    "hard_rule_violation": false
+  },
+  "independent_reruns": {
+    "turbo": "75/75 tasks PASS (re-run --force this session)",
+    "isolation": "43 passed | 2 skipped — all 15 connector/pixel tests REAL (pgAvailable=true), neg-control proof printed (policy_on=0, policy_off=1)",
+    "db_role_truth": "brain_app rolsuper=f rolbypassrls=f",
+    "prod_policy_predicate": "TO brain_app USING (brand_id = current_setting('app.current_brand_id', true)::uuid) — identical to test mirror",
+    "register_smoke": "HTTP 201 + real $argon2id$v=19$m=19456,t=2,p=1 hash written to live Postgres",
+    "protected_routes": "HTTP 401 on /connectors, /pixel/installation, /connectors/shopify/install (no session) — no mocked backend",
+    "audit_chain": "real sha256 hash-chain rows observed (user.registered/logged_in/email_verified)",
+    "validity_check": "clean (98 files), exit 0"
+  },
+  "journey": {
+    "MET": 4,
+    "MET_AS_SCAFFOLD": 2,
+    "GAP": 0,
+    "scaffold_items": ["Demo 2 Workspace+Brand (routes+RLS real, E2E pending)", "Demo 3 Invitations (routes+NN-7 RLS real, E2E pending)"]
+  },
+  "nn_status": {
+    "NN-1": "PASS", "NN-2": "PASS", "NN-3": "PASS", "NN-4": "PASS",
+    "NN-5": "PASS_WITH_LOW", "NN-6": "PASS", "NN-7": "PASS", "L-02": "PASS"
+  },
+  "findings": [
+    {
+      "id": "STAKEHOLDER-ROLE-MAP",
+      "severity": "INFO",
+      "title": "Roles follow Canon 4 (owner/brand_admin/manager/analyst), not the requirement's literal Owner/Admin/Analyst/Viewer. No distinct Viewer; Viewer mapped to manager. Sanctioned at architecture (D0.2). Confirm mapping matches intent.",
+      "blocking": false
+    },
+    {
+      "id": "STAKEHOLDER-AUTH-NATIVE",
+      "severity": "INFO",
+      "title": "M1 auth is app-native (not Authentik-backed); ADR-006-shaped JWT so Authentik fronts later via token-issuer swap. Sanctioned at architecture (D0.1). Confirm acceptance.",
+      "blocking": false
+    }
+  ],
+  "residual": [
+    {"id": "LOW-RATELIMIT-01", "sev": "LOW", "owner": "backend", "close_by": "before public launch"},
+    {"id": "LOW-E2E-01", "sev": "LOW", "owner": "qa", "close_by": "before first production user"},
+    {"id": "LOW-MUTATION-01", "sev": "LOW", "owner": "qa", "close_by": "M2"},
+    {"id": "LOW-COVERAGE-01", "sev": "LOW", "owner": "qa", "close_by": "M2"},
+    {"id": "ISO-MIRROR-POLICY", "sev": "LOW", "owner": "tools", "close_by": "M2 hardening (test AS brain_app)"},
+    {"id": "LOW-STARROCKS-M01", "sev": "LOW", "owner": "data", "close_by": "before first OLAP data flow (managed cluster)"},
+    {"id": "OBS-STUB-01", "sev": "LOW", "owner": "platform", "close_by": "EKS/collector deploy"},
+    {"id": "AUDIT-WORM-01", "sev": "LOW", "owner": "platform/security", "close_by": "before first prod audit"},
+    {"id": "SECRETS-PROD-01", "sev": "LOW", "owner": "backend/platform", "close_by": "first staging deploy"},
+    {"id": "LOW-DEV-TOKEN-01", "sev": "LOW", "owner": "backend", "close_by": "M2"},
+    {"id": "LOW-TIMING-01", "sev": "LOW", "owner": "backend/security", "close_by": "M2"}
+  ],
+  "open_critical_high": 0,
+  "bounce_target": "none",
+  "commit_paths": ["apps/core", "apps/web", "db/migrations", "packages/audit", "packages/contracts", "packages/db", "packages/pixel-sdk", "tools/isolation-fuzz", "package.json", "pnpm-lock.yaml"],
+  "summary": "PASS / GO. Independently re-ran the load-bearing checks on live Postgres + a freshly-started @brain/core: turbo 75/75, isolation 15/15 connector-pixel tests REAL on a NOSUPERUSER NOBYPASSRLS role with a firing policy-removal negative control, register smoke writing a real argon2id hash + sha256 audit chain, protected routes returning real 401s, validity clean (98 files). NN-1..NN-7 + L-02 all hold; brain_app cannot bypass RLS (DB truth). Scope is the clean M1 vertical slice (migrations 0002-0007 only; no OLAP/ledger/identity-graph; Shopify-only; Canon 4 roles); zero over-engineering; cost paradigm deterministic-by-construction (no model calls). 0 open CRITICAL/HIGH/MEDIUM. Two architecture-sanctioned deviations (Canon roles incl. Viewer->manager, app-native auth) surfaced for Stakeholder confirmation. All residuals LOW with named owners. No hard-rule deviation. Advance to Stakeholder gate.",
+  "state": {
+    "status": "awaiting-stakeholder",
+    "stage": 7,
+    "owner": "stakeholder"
+  }
+}

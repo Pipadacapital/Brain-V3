@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test:unit": "vitest run --passWithNoTests",
-    "test:isolation": "vitest run",
+    "test:unit": "vitest run --passWithNoTests src/mcp.test.ts src/redis.test.ts",
+    "test:isolation": "vitest run --no-file-parallelism",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

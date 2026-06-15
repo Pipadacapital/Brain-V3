@@ -1,7 +1,14 @@
 /**
- * Public interface for the `notification` module (core monolith bounded context).
- * RULE: only this file may be imported by other modules — enforced by the ESLint
- * boundary rule. All implementation lives under ./internal/ and is private.
- * Spec: docs/05_Brain_Implementation_Build_Plan.md §3.
+ * @module notification
+ *
+ * Public API for the notification module.
+ * M1 scope: transactional email (verify, reset, invite) via SES adapter.
+ * Consent/DND/tombstone/WhatsApp: Phase 3 defer.
+ *
+ * I-ST05: ALL outbound notifications go through this module.
+ * No other module may call SES or any email provider directly.
  */
-export {}; // TODO: expose the public operations of this bounded context.
+
+export type { NotificationService } from './service.js';
+export { NotificationServiceImpl } from './internal/notification.service.impl.js';
+export { createEmailAdapter, DevEmailAdapter, SesEmailAdapter } from './internal/ses-adapter.js';

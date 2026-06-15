@@ -28,7 +28,7 @@ jobs:
     name: terraform fmt -check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "~1.9"
@@ -51,7 +51,7 @@ jobs:
           - infra/terraform/envs/prod
       fail-fast: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "~1.9"
@@ -80,7 +80,7 @@ jobs:
           - infra/terraform/modules/observability
           - infra/terraform/modules/oidc-github
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "~1.9"
@@ -97,7 +97,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: tf-validate
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Set up Python (for custom Checkov checks)
         uses: actions/setup-python@v5
         with:
@@ -136,10 +136,16 @@ jobs:
     runs-on: ubuntu-latest
     needs: tf-validate
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      # OIDC: assume the CI plan role (NN-3: StringEquals, repo-scoped)
+      # OIDC: assume the CI plan role (NN-3: StringEquals, repo-scoped).
+      # PRE-BOOTSTRAP GUARD (Sprint-0): until the dev AWS account + OIDC plan role exist,
+      # the AWS_DEV_PLAN_ROLE_ARN repo variable is unset → the AWS-dependent plan steps
+      # skip cleanly. The STATIC NN-3/4/5 enforcement still runs in the `checkov` job
+      # (no AWS needed), so the policy gate is NOT weakened — only the plan-level
+      # (post-bootstrap) OPA check is deferred. Set AWS_DEV_PLAN_ROLE_ARN to activate.
       - name: Configure AWS credentials (OIDC)
+        if: ${{ vars.AWS_DEV_PLAN_ROLE_ARN != '' }}
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_DEV_PLAN_ROLE_ARN }}
@@ -151,12 +157,14 @@ jobs:
           terraform_version: "~1.9"
 
       - name: Install conftest
+        if: ${{ vars.AWS_DEV_PLAN_ROLE_ARN != '' }}
         run: |
           wget -q https://github.com/open-policy-agent/conftest/releases/download/v0.50.0/conftest_0.50.0_Linux_x86_64.tar.gz
           tar xzf conftest_0.50.0_Linux_x86_64.tar.gz
           sudo mv conftest /usr/local/bin/
 
       - name: terraform plan (dev — against real state bucket)
+        if: ${{ vars.AWS_DEV_PLAN_ROLE_ARN != '' }}
         # L-01 FIX: continue-on-error is intentionally BOOTSTRAP-ONLY.
         # The plan step may fail on first-ever run because the S3 state bucket
         # does not yet exist (it is created by infra/terraform/bootstrap/).

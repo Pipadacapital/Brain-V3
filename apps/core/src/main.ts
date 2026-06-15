@@ -155,26 +155,55 @@ export async function main(): Promise<void> {
     parseOptions: {},
   });
 
-  // Add correlation ID to every request.
-  app.addHook('onRequest', async (request, _reply) => {
+  // Add correlation ID to every request + the browser BFF bridge + CSRF defense.
+  app.addHook('onRequest', async (request, reply) => {
     if (!request.headers['x-correlation-id']) {
       request.headers['x-correlation-id'] = randomUUID();
     }
+
+    const cookies = (request as unknown as { cookies?: Record<string, string | undefined> }).cookies;
+    const sessionCookie = cookies?.['brain_session'];
 
     // Browser BFF bridge: the web app authenticates via the httpOnly `brain_session`
     // cookie (set by POST /api/v1/bff/session). Most API routes are guarded by
     // validateSessionPreHandler, which reads `Authorization: Bearer`. The browser
     // cannot set that header (the token is httpOnly), so translate the session cookie
-    // into a Bearer header app-wide. Any route reaching a Bearer guard then authenticates
-    // from the cookie. Routes with their own cookie-aware preHandler (bffProtectedPreHandler)
-    // read request.cookies directly and are unaffected. The cookie is sameSite=strict,
-    // which is the CSRF mitigation for M1; explicit CSRF tokens on mutations are a
-    // hardening follow-up (tracked alongside LOW-E2E-01 / auth hardening).
-    if (!request.headers.authorization) {
-      const cookies = (request as unknown as { cookies?: Record<string, string | undefined> }).cookies;
-      const sessionCookie = cookies?.['brain_session'];
-      if (sessionCookie) {
-        request.headers.authorization = `Bearer ${sessionCookie}`;
+    // into a Bearer header app-wide. Routes with their own cookie-aware preHandler
+    // (bffProtectedPreHandler) read request.cookies directly and are unaffected.
+    if (!request.headers.authorization && sessionCookie) {
+      request.headers.authorization = `Bearer ${sessionCookie}`;
+    }
+
+    // CSRF defense (double-submit) for cookie-authenticated state-changing requests.
+    // The cookie→Bearer bridge means any browser request carrying `brain_session` is
+    // authenticated; sameSite=strict already blocks cross-site cookie sends, and this
+    // adds explicit double-submit defense (SEC-0008-M01). Enforced ONLY when the
+    // request authenticates via the session cookie — so:
+    //   - public/no-session mutations (register, login, the session-creating routes,
+    //     OAuth callback, HMAC webhooks) are exempt,
+    //   - non-browser Bearer clients (a real Authorization header, no cookie) are exempt.
+    const method = request.method.toUpperCase();
+    const isMutation = method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'DELETE';
+    if (isMutation && sessionCookie) {
+      const path = (request.url.split('?')[0] ?? '');
+      const csrfExempt =
+        path === '/api/v1/bff/session' || // login — establishes the session
+        path === '/api/v1/auth/login' ||
+        path === '/api/v1/auth/register' ||
+        path === '/api/v1/auth/verify-email' ||
+        path === '/api/v1/auth/forgot-password' ||
+        path === '/api/v1/auth/reset-password' ||
+        path === '/api/v1/connectors/shopify/callback' || // OAuth (state-validated)
+        path.startsWith('/api/v1/webhooks/'); // HMAC-validated
+      if (!csrfExempt) {
+        const csrfCookie = cookies?.['brain_csrf'];
+        const csrfHeader = request.headers['x-csrf-token'];
+        if (!csrfCookie || !csrfHeader || csrfCookie !== csrfHeader) {
+          return reply.code(403).send({
+            request_id: (request.id as string) ?? randomUUID(),
+            error: { code: 'CSRF_MISMATCH', message: 'CSRF token missing or invalid.' },
+          });
+        }
       }
     }
   });

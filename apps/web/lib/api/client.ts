@@ -44,10 +44,35 @@ import type {
 /** All BFF routes proxied through Next.js API routes → frontend-api module */
 const BFF_BASE = '/api/bff';
 
+const CSRF_COOKIE = 'brain_csrf';
+const MUTATING = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+
 function generateRequestId(): string {
   return typeof crypto !== 'undefined' && crypto.randomUUID
     ? crypto.randomUUID()
     : Math.random().toString(36).slice(2);
+}
+
+/** Read a non-httpOnly cookie value by name (browser only). */
+function readCookie(name: string): string | undefined {
+  if (typeof document === 'undefined') return undefined;
+  const match = document.cookie.match(new RegExp(`(?:^|; )${name}=([^;]*)`));
+  return match ? decodeURIComponent(match[1]!) : undefined;
+}
+
+/**
+ * Double-submit CSRF token. The server (GET /api/v1/bff/csrf) sets a JS-readable
+ * `brain_csrf` cookie; we echo its value in the `x-csrf-token` header on every
+ * state-changing request. Bootstraps the cookie on first use.
+ */
+async function ensureCsrfToken(): Promise<string | undefined> {
+  if (typeof document === 'undefined') return undefined; // SSR — no cookie jar
+  let token = readCookie(CSRF_COOKIE);
+  if (!token) {
+    await fetch(`${BFF_BASE}/v1/bff/csrf`, { credentials: 'include' });
+    token = readCookie(CSRF_COOKIE);
+  }
+  return token;
 }
 
 /**
@@ -59,12 +84,19 @@ async function bffFetch<T>(
   options: RequestInit & { idempotencyKey?: string } = {},
 ): Promise<T> {
   const requestId = generateRequestId();
+  const method = (options.method ?? 'GET').toUpperCase();
+
+  // Double-submit CSRF token on state-changing requests (server enforces it for
+  // cookie-authenticated mutations). Exempt routes (login/register) ignore it.
+  const csrfToken = MUTATING.has(method) ? await ensureCsrfToken() : undefined;
+
   const headers: Record<string, string> = {
     // Only declare a JSON content-type when there is actually a body. A POST with
     // `Content-Type: application/json` and an empty body is rejected by Fastify's
     // body parser with a 400 (e.g. logout, session/refresh — no-body mutations).
     ...(options.body != null ? { 'Content-Type': 'application/json' } : {}),
     'X-Request-Id': requestId,
+    ...(csrfToken ? { 'x-csrf-token': csrfToken } : {}),
     ...(options.idempotencyKey
       ? { 'Idempotency-Key': options.idempotencyKey }
       : {}),

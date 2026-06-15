@@ -5,6 +5,7 @@
 import Link from 'next/link';
 import { LayoutDashboard, Plug, Zap, Users, Settings } from 'lucide-react';
 import { UserMenu } from '@/components/dashboard/user-menu';
+import { RequireSession } from '@/components/dashboard/require-session';
 
 const navItems = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -45,7 +46,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
       {/* Main content */}
       <div className="flex-1 flex flex-col min-w-0">
-        <main className="flex-1 p-8 overflow-auto">{children}</main>
+        <main className="flex-1 p-8 overflow-auto">
+          <RequireSession>{children}</RequireSession>
+        </main>
       </div>
     </div>
   );

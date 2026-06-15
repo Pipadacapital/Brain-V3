@@ -15,4 +15,5 @@ coverage/
 .engineering-os/index/
 .engineering-os/live.log
 .engineering-os/dashboard.html
+.engineering-os/spawn-heartbeat.jsonl
 .engineering-os/state/*.bak*

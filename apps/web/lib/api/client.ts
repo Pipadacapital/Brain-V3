@@ -21,6 +21,8 @@ import type {
   CurrentUserResponse,
   CreateWorkspaceRequest,
   WorkspaceResponse,
+  WorkspaceListResponse,
+  SessionRefreshResponse,
   CreateBrandRequest,
   BrandResponse,
   MemberResponse,
@@ -58,7 +60,10 @@ async function bffFetch<T>(
 ): Promise<T> {
   const requestId = generateRequestId();
   const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
+    // Only declare a JSON content-type when there is actually a body. A POST with
+    // `Content-Type: application/json` and an empty body is rejected by Fastify's
+    // body parser with a 400 (e.g. logout, session/refresh — no-body mutations).
+    ...(options.body != null ? { 'Content-Type': 'application/json' } : {}),
     'X-Request-Id': requestId,
     ...(options.idempotencyKey
       ? { 'Idempotency-Key': options.idempotencyKey }
@@ -155,6 +160,16 @@ export const authApi = {
   me: () => bffFetch<CurrentUserResponse>('/v1/auth/me'),
 };
 
+// ── Session ───────────────────────────────────────────────────────────────────
+
+export const sessionApi = {
+  refresh: () =>
+    bffFetch<SessionRefreshResponse>('/v1/bff/session/refresh', {
+      method: 'POST',
+      idempotencyKey: generateRequestId(),
+    }),
+};
+
 // ── Workspace ─────────────────────────────────────────────────────────────────
 
 export const workspaceApi = {
@@ -168,7 +183,7 @@ export const workspaceApi = {
   get: (id: string) => bffFetch<WorkspaceResponse>(`/v1/workspaces/${id}`),
 
   list: (cursor?: string) =>
-    bffFetch<PaginatedResponse<WorkspaceResponse>>(
+    bffFetch<WorkspaceListResponse>(
       `/v1/workspaces${cursor ? `?cursor=${cursor}` : ''}`,
     ),
 };
@@ -254,7 +269,10 @@ export const connectorsApi = {
 // ── Pixel ─────────────────────────────────────────────────────────────────────
 
 export const pixelApi = {
-  getInstallation: () => bffFetch<PixelInstallationResponse>('/v1/pixel/installation'),
+  getInstallation: (target_host: string) =>
+    bffFetch<PixelInstallationResponse>(
+      `/v1/pixel/installation?target_host=${encodeURIComponent(target_host)}`,
+    ),
 
   verify: () =>
     bffFetch<OkResponse>('/v1/pixel/verify', {

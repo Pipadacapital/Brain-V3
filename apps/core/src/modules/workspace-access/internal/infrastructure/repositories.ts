@@ -698,6 +698,31 @@ export class MembershipRepository {
     return this.mapRow(row);
   }
 
+  /**
+   * Resolve the user's "active" membership for session bootstrapping after login.
+   * Reads the user's OWN membership rows via the membership_self_read RLS policy
+   * (requires ctx.userId → app.current_user_id GUC; no workspace GUC needed).
+   * Prefers a brand-level membership (brand_id NOT NULL) over an org-level one,
+   * most recent first — so a fully-onboarded user resolves to {brand, role}.
+   */
+  async findActiveByUser(appUserId: string, ctx: QueryContext): Promise<Membership | null> {
+    const result = await this.db.query<{
+      id: string; organization_id: string; brand_id: string | null;
+      app_user_id: string; role_code: string; created_at: Date; updated_at: Date;
+    }>(
+      ctx,
+      `SELECT id, organization_id, brand_id, app_user_id, role_code, created_at, updated_at
+       FROM membership
+       WHERE app_user_id = $1
+       ORDER BY (brand_id IS NOT NULL) DESC, created_at DESC
+       LIMIT 1`,
+      [appUserId],
+    );
+    const row = result.rows[0];
+    if (!row) return null;
+    return this.mapRow(row);
+  }
+
   private mapRow(row: {
     id: string; organization_id: string; brand_id: string | null;
     app_user_id: string; role_code: string; created_at: Date; updated_at: Date;

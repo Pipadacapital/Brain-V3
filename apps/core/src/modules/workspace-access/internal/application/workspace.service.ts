@@ -101,7 +101,9 @@ export class WorkspaceService {
   }
 
   async listForUser(userId: string, correlationId: string): Promise<Organization[]> {
-    const ctx: QueryContext = { correlationId };
+    // Pass userId so app.current_user_id is set — required for the membership
+    // self-read RLS path under the production brain_app role (SEC-0008-M02).
+    const ctx: QueryContext = { correlationId, userId };
     const client = await this.pool.connect();
     try {
       const orgRepo = new OrganizationRepository(client);

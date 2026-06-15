@@ -11,6 +11,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { ErrorCard } from '@/components/ui/error-card';
 import { createBrandSchema, type CreateBrandFormValues } from '@/lib/api/schemas';
 import { useCreateBrand, useWorkspaceList } from '@/lib/hooks/use-workspace';
+import { sessionApi } from '@/lib/api/client';
 import { toast } from '@/components/ui/toaster';
 import { Skeleton } from '@/components/ui/skeleton';
 
@@ -28,22 +29,28 @@ export function CreateBrandForm() {
     defaultValues: { display_name: '', domain: '' },
   });
 
-  const organizationId = workspaces?.data[0]?.id;
+  const workspaceId = workspaces?.workspaces?.[0]?.id;
 
   function onSubmit(data: CreateBrandFormValues) {
-    if (!organizationId) return;
+    if (!workspaceId) return;
 
     createBrand(
       {
-        organization_id: organizationId,
+        workspace_id: workspaceId,
         display_name: data.display_name,
         domain: data.domain || undefined,
         region_code: 'IN',
       },
       {
-        onSuccess: (brand) => {
+        onSuccess: async (brand) => {
           toast({ title: 'Brand created', description: `"${brand.display_name}" is ready.` });
-          router.push('/invite');
+          // Refresh session so the cookie picks up the new brand/role without re-login
+          try {
+            await sessionApi.refresh();
+          } catch {
+            // Non-fatal: user can still proceed; stale session will re-mint on next request
+          }
+          router.push('/dashboard');
         },
       },
     );
@@ -111,7 +118,7 @@ export function CreateBrandForm() {
             <Button
               type="submit"
               className="w-full"
-              disabled={isPending || !organizationId}
+              disabled={isPending || !workspaceId}
               data-testid="btn-create-brand"
             >
               {isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />}

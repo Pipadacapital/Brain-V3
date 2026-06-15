@@ -5,10 +5,16 @@ import { pixelApi } from '@/lib/api/client';
 
 export const PIXEL_QUERY_KEY = ['pixel'] as const;
 
-export function usePixelInstallation() {
+export function usePixelInstallation(brandDomain?: string | null) {
   return useQuery({
-    queryKey: [...PIXEL_QUERY_KEY, 'installation'],
-    queryFn: () => pixelApi.getInstallation(),
+    queryKey: [...PIXEL_QUERY_KEY, 'installation', brandDomain ?? null],
+    queryFn: () => {
+      // Prefer the brand's configured domain; fall back to the current host (client-only)
+      const targetHost =
+        brandDomain ??
+        (typeof window !== 'undefined' ? window.location.host : 'localhost');
+      return pixelApi.getInstallation(targetHost);
+    },
   });
 }
 

@@ -40,7 +40,7 @@ export function InviteMemberDialog({ onSuccess }: InviteMemberDialogProps) {
   const [open, setOpen] = useState(false);
   const { mutate: inviteMember, isPending, error } = useInviteMember();
   const { data: workspaces } = useWorkspaceList();
-  const organizationId = workspaces?.data[0]?.id ?? '';
+  const organizationId = workspaces?.workspaces?.[0]?.id ?? '';
 
   const {
     register,

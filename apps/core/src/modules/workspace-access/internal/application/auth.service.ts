@@ -27,8 +27,19 @@ import {
   UserSessionRepository,
   PasswordResetRepository,
   EmailVerificationRepository,
+  MembershipRepository,
 } from '../infrastructure/repositories.js';
+import type { RoleCode } from '../domain/membership/entities.js';
 import { mintJwt, verifyJwt } from '../security/jwt.js';
+
+/** Active brand/role context carried in the session JWT (all-null until onboarded). */
+export interface ActiveContext {
+  brandId: string | null;
+  workspaceId: string | null;
+  role: RoleCode | null;
+}
+
+const EMPTY_CONTEXT: ActiveContext = { brandId: null, workspaceId: null, role: null };
 
 // ── Argon2id parameters (NN-5 / OWASP 2025 minimum) ──────────────────────────
 
@@ -207,12 +218,14 @@ export class AuthService {
     accessToken: string;
     expiresIn: number;
     user: Pick<AppUser, 'id' | 'email' | 'emailVerifiedAt'>;
+    context: ActiveContext;
   }> {
     const ctx: QueryContext = { correlationId };
     const client = await this.pool.connect();
     try {
       const userRepo = new AppUserRepository(client);
       const sessionRepo = new UserSessionRepository(client);
+      const memberRepo = new MembershipRepository(client);
 
       const user = await userRepo.findByEmail(email, ctx);
 
@@ -237,17 +250,25 @@ export class AuthService {
         { ...ctx, userId: user.id },
       );
 
+      // Resolve the user's active brand/role so the session is usable immediately.
+      // A bare login token otherwise carries null context and every role-gated route
+      // 403s (the session could never bootstrap brand/role — see
+      // 0008_membership_self_read.sql). Reads the user's OWN membership via the
+      // self-read policy (app.current_user_id GUC set from ctx.userId).
+      const activeMembership = await memberRepo.findActiveByUser(user.id, {
+        correlationId,
+        userId: user.id,
+      });
+      const context: ActiveContext = activeMembership
+        ? {
+            brandId: activeMembership.brandId,
+            workspaceId: activeMembership.organizationId,
+            role: activeMembership.roleCode,
+          }
+        : EMPTY_CONTEXT;
+
       // Mint JWT (ADR-006 compatible claims — D0.1).
-      const claims: JwtClaims = {
-        sub: user.id,
-        brand_id: null,
-        workspace_id: null,
-        role: null,
-        jti,
-        iat: Math.floor(Date.now() / 1000),
-        exp: Math.floor(Date.now() / 1000) + ACCESS_TOKEN_EXPIRY_SECS,
-      };
-      const accessToken = mintJwt(claims, this.config.jwtSigningSecret);
+      const accessToken = this.mintSessionToken(user.id, jti, context);
 
       await this.audit.append({
         brand_id: user.id,
@@ -267,10 +288,64 @@ export class AuthService {
           email: user.email,
           emailVerifiedAt: user.emailVerifiedAt,
         },
+        context,
       };
     } finally {
       client.release();
     }
+  }
+
+  // ── Session context (brand/role) bootstrapping ───────────────────────────────
+
+  /**
+   * Mint a session access token (15-min) for an existing session `jti` with the
+   * given active context. Reusing the same `jti` preserves the session row and
+   * its revocation state (NN-3) — this is a context refresh, not a new session.
+   */
+  mintSessionToken(userId: string, jti: string, context: ActiveContext): string {
+    const nowSecs = Math.floor(Date.now() / 1000);
+    const claims: JwtClaims = {
+      sub: userId,
+      brand_id: context.brandId,
+      workspace_id: context.workspaceId,
+      role: context.role,
+      jti,
+      iat: nowSecs,
+      exp: nowSecs + ACCESS_TOKEN_EXPIRY_SECS,
+    };
+    return mintJwt(claims, this.config.jwtSigningSecret);
+  }
+
+  /** Resolve the user's current active brand/role (self-read; null until onboarded). */
+  async resolveActiveContext(userId: string, correlationId: string): Promise<ActiveContext> {
+    const client = await this.pool.connect();
+    try {
+      const memberRepo = new MembershipRepository(client);
+      const m = await memberRepo.findActiveByUser(userId, { correlationId, userId });
+      return m
+        ? { brandId: m.brandId, workspaceId: m.organizationId, role: m.roleCode }
+        : EMPTY_CONTEXT;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Re-mint a session token for the current `jti` with the user's freshly-resolved
+   * active context. Called after onboarding (workspace+brand creation) so the
+   * SAME session picks up brand_id/role without forcing a re-login.
+   */
+  async refreshSession(
+    userId: string,
+    jti: string,
+    correlationId: string,
+  ): Promise<{ accessToken: string; expiresIn: number; context: ActiveContext }> {
+    const context = await this.resolveActiveContext(userId, correlationId);
+    return {
+      accessToken: this.mintSessionToken(userId, jti, context),
+      expiresIn: ACCESS_TOKEN_EXPIRY_SECS,
+      context,
+    };
   }
 
   // ── Logout ─────────────────────────────────────────────────────────────────

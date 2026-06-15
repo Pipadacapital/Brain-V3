@@ -153,6 +153,9 @@ export function registerBffRoutes(
           email_verified: result.user.emailVerifiedAt !== null,
         },
         expires_in: result.expiresIn,
+        // The web app routes to onboarding when the session carries no brand yet.
+        needs_onboarding: result.context.brandId === null,
+        auth: result.context,
       });
     } catch {
       return reply.code(401).send({
@@ -161,6 +164,37 @@ export function registerBffRoutes(
       });
     }
   });
+
+  // ── POST /api/v1/bff/session/refresh — re-mint cookie with current brand/role ──
+  // Called after onboarding (workspace + brand creation) so the SAME session picks
+  // up the newly-resolved brand_id/role without forcing a re-login. Authenticated
+  // via the session cookie (bridged to Bearer by the app-wide onRequest hook);
+  // reuses the existing jti, so revocation state is preserved (NN-3).
+  fastify.post(
+    '/api/v1/bff/session/refresh',
+    { preHandler: [sessionPreHandler] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const correlationId = (request.headers['x-correlation-id'] as string) ?? requestId;
+      const auth = (request as AuthenticatedRequest).auth;
+
+      const result = await authService.refreshSession(auth.userId, auth.jti, correlationId);
+
+      (reply as CookieReply).setCookie(COOKIE_NAME, result.accessToken, {
+        httpOnly: true,
+        secure: process.env['NODE_ENV'] === 'production',
+        sameSite: 'strict',
+        path: '/',
+        maxAge: result.expiresIn,
+      });
+
+      return reply.send({
+        request_id: requestId,
+        needs_onboarding: result.context.brandId === null,
+        auth: result.context,
+      });
+    },
+  );
 
   // ── DELETE /api/v1/bff/session — logout + clear cookie ────────────────────
   fastify.delete(

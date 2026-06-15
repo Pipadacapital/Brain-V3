@@ -1,7 +1,7 @@
 'use client';
 
-import { useState } from 'react';
-import { Loader2, CheckCircle, AlertTriangle, XCircle, Plug } from 'lucide-react';
+import { Loader2, CheckCircle, XCircle, Plug } from 'lucide-react';
+import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -9,6 +9,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
 import { EmptyState } from '@/components/ui/empty-state';
 import { useConnectorList, useShopifyInstallUrl, useDisconnectConnector } from '@/lib/hooks/use-connectors';
+import { BffApiError } from '@/lib/api/client';
 import { toast } from '@/components/ui/toaster';
 import type { ConnectorListItem, ConnectorStatus } from '@/lib/api/types';
 import { cn } from '@/lib/utils';
@@ -51,7 +52,7 @@ function ConnectorCard({ item }: { item: ConnectorListItem }) {
           // Redirect to Shopify OAuth — real install URL from BFF
           window.location.href = data.install_url;
         },
-        onError: (err) => {
+        onError: () => {
           toast({ title: 'Error', description: 'Could not start Shopify connection.', variant: 'destructive' });
         },
       });
@@ -161,6 +162,20 @@ export function ConnectorsList() {
   }
 
   if (error) {
+    if (error instanceof BffApiError && error.status === 403) {
+      return (
+        <EmptyState
+          title="Setup required"
+          description="Complete onboarding to access connectors."
+          icon={<Plug className="h-8 w-8" />}
+          action={
+            <Link href="/workspace/new" className="text-sm text-primary underline-offset-4 hover:underline">
+              Continue setup
+            </Link>
+          }
+        />
+      );
+    }
     return <ErrorCard error={error} retry={refetch} />;
   }
 

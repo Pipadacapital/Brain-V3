@@ -2,11 +2,15 @@
 
 import { useState } from 'react';
 import { Loader2, Copy, CheckCircle, XCircle, Clock, Zap } from 'lucide-react';
+import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
+import { EmptyState } from '@/components/ui/empty-state';
 import { usePixelInstallation, usePixelHealth, useVerifyPixel } from '@/lib/hooks/use-pixel';
+import { useBrandList } from '@/lib/hooks/use-workspace';
+import { BffApiError } from '@/lib/api/client';
 import { toast } from '@/components/ui/toaster';
 import type { PixelState } from '@/lib/api/types';
 import { cn } from '@/lib/utils';
@@ -60,8 +64,14 @@ const PIXEL_STATE_CONFIG: Record<
 
 export function PixelWizard() {
   const [copied, setCopied] = useState(false);
-  const { data: installation, isLoading: loadingInstall, error: installError, refetch: refetchInstall } = usePixelInstallation();
-  const { data: health, isLoading: loadingHealth, error: healthError, refetch: refetchHealth } = usePixelHealth();
+  const { data: brandList } = useBrandList();
+  // Extract hostname from brand domain URL (strip protocol/path), fall back to window.location.host
+  const rawDomain = brandList?.data?.[0]?.domain ?? null;
+  const brandHost = rawDomain
+    ? (() => { try { return new URL(rawDomain).host; } catch { return rawDomain; } })()
+    : null;
+  const { data: installation, isLoading: loadingInstall, error: installError, refetch: refetchInstall } = usePixelInstallation(brandHost);
+  const { data: health, isLoading: loadingHealth } = usePixelHealth();
   const { mutate: verifyPixel, isPending: isVerifying } = useVerifyPixel();
 
   function handleCopy() {
@@ -94,6 +104,20 @@ export function PixelWizard() {
   }
 
   if (installError) {
+    if (installError instanceof BffApiError && installError.status === 403) {
+      return (
+        <EmptyState
+          title="Setup required"
+          description="Complete onboarding to set up the Brain Pixel."
+          icon={<Zap className="h-8 w-8" />}
+          action={
+            <Link href="/workspace/new" className="text-sm text-primary underline-offset-4 hover:underline">
+              Continue setup
+            </Link>
+          }
+        />
+      );
+    }
     return <ErrorCard error={installError} retry={refetchInstall} />;
   }
 

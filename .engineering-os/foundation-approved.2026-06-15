@@ -15,7 +15,7 @@
 - Principal Architect = Staff/Lead Data Engineer (Data-1), per Engineering Advisor decision — NOT the Founder; Founder remains Stakeholder. CTO retains ADR approval (doc 12 §11). (Amended 2026-06-15.)
 
 ## Source of record
-Drafted from the frozen requirement docs `docs/requirement docs/01..12` + the Attribution Engine Spec.
+Drafted from the frozen requirement docs `docs/requirements/01..12` + the Attribution Engine Spec.
 
 ## Approved Canon files (sha256 at approval)
 dac4aaa9b92ec1a984253c57850287c00958290aa19153fc52c2c189279661fa  knowledge-base/COMPLIANCE.md

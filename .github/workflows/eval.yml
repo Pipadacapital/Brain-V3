@@ -6,4 +6,4 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       # NLQ resolution (false-bind→0) + injection golden-set + narration-faithfulness (doc 04 §N.5)
-      - run: echo "TODO: run AI eval gates"
+      - run: 'echo "TODO: run AI eval gates"'

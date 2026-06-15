@@ -45,11 +45,14 @@ services:
       MINIO_ROOT_USER: brain
       MINIO_ROOT_PASSWORD: brainbrain
     ports: ["9000:9000", "9001:9001"]
+    # NOTE: the minio image ships no curl/wget; it does include bash. Use bash's
+    # /dev/tcp to probe the API port (a port-open check is sufficient for local dev).
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9000"]
       interval: 10s
       timeout: 5s
       retries: 10
+      start_period: 10s
 
   # MinIO bucket + prefix bootstrap (runs once; idempotent)
   minio-init:

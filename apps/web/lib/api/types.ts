@@ -200,13 +200,15 @@ export interface ShopifyInstallUrlResponse {
 
 export type PixelState = 'connected' | 'syncing' | 'waiting_for_data' | 'error';
 
+/** Normalized pixel installation (GET reads, POST provisions). `installed: false`
+ *  means no installation exists yet — the wizard offers to generate one. */
 export interface PixelInstallationResponse {
-  id: string;
-  brand_id: string;
-  install_token: string;
-  target_host: string;
-  installed_at: string | null;
-  snippet: string; // The HTML snippet to embed
+  installed: boolean;
+  installation_id?: string;
+  install_token?: string;
+  target_host?: string;
+  snippet?: string; // The HTML snippet to embed (from snippet_html)
+  is_new?: boolean;
 }
 
 export interface PixelHealthResponse {

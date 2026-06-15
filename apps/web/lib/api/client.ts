@@ -85,12 +85,9 @@ async function bffFetch<T>(
 ): Promise<T> {
   const requestId = generateRequestId();
   const method = (options.method ?? 'GET').toUpperCase();
+  const isMutation = MUTATING.has(method);
 
-  // Double-submit CSRF token on state-changing requests (server enforces it for
-  // cookie-authenticated mutations). Exempt routes (login/register) ignore it.
-  const csrfToken = MUTATING.has(method) ? await ensureCsrfToken() : undefined;
-
-  const headers: Record<string, string> = {
+  const buildHeaders = (csrfToken: string | undefined): Record<string, string> => ({
     // Only declare a JSON content-type when there is actually a body. A POST with
     // `Content-Type: application/json` and an empty body is rejected by Fastify's
     // body parser with a 400 (e.g. logout, session/refresh — no-body mutations).
@@ -101,13 +98,36 @@ async function bffFetch<T>(
       ? { 'Idempotency-Key': options.idempotencyKey }
       : {}),
     ...(options.headers as Record<string, string> | undefined),
-  };
+  });
 
-  const response = await fetch(`${BFF_BASE}${path}`, {
+  // Double-submit CSRF token on state-changing requests (server enforces it for
+  // cookie-authenticated mutations). Exempt routes (login/register) ignore it.
+  const csrfToken = isMutation ? await ensureCsrfToken() : undefined;
+
+  let response = await fetch(`${BFF_BASE}${path}`, {
     ...options,
-    headers,
+    headers: buildHeaders(csrfToken),
     credentials: 'include', // send httpOnly cookie
   });
+
+  // The CSRF token is bound to the session (server-side). A token issued before
+  // login (or before a session rotation) won't match — force-refresh a fresh,
+  // session-bound token and retry the mutation ONCE.
+  if (response.status === 403 && isMutation) {
+    const peeked = await response
+      .clone()
+      .json()
+      .catch(() => ({}) as { error?: { code?: string } });
+    if (peeked?.error?.code === 'CSRF_MISMATCH') {
+      await fetch(`${BFF_BASE}/v1/bff/csrf`, { credentials: 'include' });
+      const fresh = readCookie(CSRF_COOKIE);
+      response = await fetch(`${BFF_BASE}${path}`, {
+        ...options,
+        headers: buildHeaders(fresh),
+        credentials: 'include',
+      });
+    }
+  }
 
   if (!response.ok) {
     let errorBody: { request_id?: string; error?: { code?: string; message?: string } } = {};
@@ -162,12 +182,20 @@ export const authApi = {
   // cookie (the raw /v1/auth/login route returns the token in the body and sets no
   // cookie — unusable from the browser). All subsequent requests authenticate via
   // that cookie (bridged to a Bearer header server-side).
-  login: (body: LoginRequest) =>
-    bffFetch<LoginResponse>('/v1/bff/session', {
+  login: async (body: LoginRequest): Promise<LoginResponse> => {
+    const res = await bffFetch<LoginResponse>('/v1/bff/session', {
       method: 'POST',
       body: JSON.stringify(body),
       idempotencyKey: generateRequestId(),
-    }),
+    });
+    // Refresh the CSRF token now that a session exists — the token is bound to the
+    // session, so a pre-login token would be rejected on the first authenticated
+    // mutation. Re-issuing here gives a session-bound token up front (no 403/retry).
+    if (typeof document !== 'undefined') {
+      await fetch(`${BFF_BASE}/v1/bff/csrf`, { credentials: 'include' });
+    }
+    return res;
+  },
 
   logout: () =>
     bffFetch<OkResponse>('/v1/auth/logout', {
@@ -300,11 +328,42 @@ export const connectorsApi = {
 
 // ── Pixel ─────────────────────────────────────────────────────────────────────
 
+interface RawPixelInstallation {
+  installed: boolean;
+  installation_id?: string;
+  install_token?: string;
+  target_host?: string;
+  snippet_html?: string;
+  is_new?: boolean;
+}
+
+function mapPixel(d: RawPixelInstallation): PixelInstallationResponse {
+  return {
+    installed: d.installed,
+    installation_id: d.installation_id,
+    install_token: d.install_token,
+    target_host: d.target_host,
+    snippet: d.snippet_html,
+    is_new: d.is_new,
+  };
+}
+
 export const pixelApi = {
-  getInstallation: (target_host: string) =>
-    bffFetch<PixelInstallationResponse>(
-      `/v1/pixel/installation?target_host=${encodeURIComponent(target_host)}`,
-    ),
+  // GET is read-only (SEC-0009-M01): returns the existing installation or installed:false.
+  getInstallation: async (): Promise<PixelInstallationResponse> => {
+    const { data } = await bffFetch<{ data: RawPixelInstallation }>('/v1/pixel/installation');
+    return mapPixel(data);
+  },
+
+  // POST provisions (get-or-create) — the write path, CSRF-protected.
+  provision: async (target_host: string): Promise<PixelInstallationResponse> => {
+    const { data } = await bffFetch<{ data: RawPixelInstallation }>('/v1/pixel/installation', {
+      method: 'POST',
+      body: JSON.stringify({ target_host }),
+      idempotencyKey: generateRequestId(),
+    });
+    return mapPixel(data);
+  },
 
   verify: () =>
     bffFetch<OkResponse>('/v1/pixel/verify', {

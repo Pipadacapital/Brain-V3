@@ -8,7 +8,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
 import { EmptyState } from '@/components/ui/empty-state';
-import { usePixelInstallation, usePixelHealth, useVerifyPixel } from '@/lib/hooks/use-pixel';
+import { usePixelInstallation, useProvisionPixel, usePixelHealth, useVerifyPixel } from '@/lib/hooks/use-pixel';
 import { useBrandList } from '@/lib/hooks/use-workspace';
 import { BffApiError } from '@/lib/api/client';
 import { toast } from '@/components/ui/toaster';
@@ -70,9 +70,19 @@ export function PixelWizard() {
   const brandHost = rawDomain
     ? (() => { try { return new URL(rawDomain).host; } catch { return rawDomain; } })()
     : null;
-  const { data: installation, isLoading: loadingInstall, error: installError, refetch: refetchInstall } = usePixelInstallation(brandHost);
+  const { data: installation, isLoading: loadingInstall, error: installError, refetch: refetchInstall } = usePixelInstallation();
   const { data: health, isLoading: loadingHealth } = usePixelHealth();
   const { mutate: verifyPixel, isPending: isVerifying } = useVerifyPixel();
+  const { mutate: provisionPixel, isPending: isProvisioning } = useProvisionPixel();
+
+  function handleGenerate() {
+    const targetHost = brandHost ?? (typeof window !== 'undefined' ? window.location.host : '');
+    provisionPixel(targetHost, {
+      onError: () => {
+        toast({ title: 'Could not generate pixel', description: 'Please try again.', variant: 'destructive' });
+      },
+    });
+  }
 
   function handleCopy() {
     if (!installation?.snippet) return;
@@ -88,7 +98,7 @@ export function PixelWizard() {
       onSuccess: () => {
         toast({ title: 'Verification started', description: 'Checking your site for the Brain Pixel…' });
       },
-      onError: (err) => {
+      onError: () => {
         toast({ title: 'Verification failed', description: 'Could not verify the pixel. Check installation.', variant: 'destructive' });
       },
     });
@@ -121,13 +131,26 @@ export function PixelWizard() {
     return <ErrorCard error={installError} retry={refetchInstall} />;
   }
 
-  if (!installation) {
+  if (!installation || !installation.installed) {
     return (
-      <Card>
-        <CardContent className="py-8">
-          <p className="text-center text-sm text-muted-foreground">
-            No Data Yet — pixel installation record not found. Contact support.
-          </p>
+      <Card data-testid="pixel-generate-card">
+        <CardHeader>
+          <CardTitle>Set up the Brain Pixel</CardTitle>
+          <CardDescription>
+            Generate your pixel snippet to start collecting first-party data
+            {brandHost ? (
+              <>
+                {' '}for <strong>{brandHost}</strong>
+              </>
+            ) : null}
+            .
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Button onClick={handleGenerate} disabled={isProvisioning} data-testid="btn-generate-pixel">
+            {isProvisioning && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />}
+            {isProvisioning ? 'Generating…' : 'Generate pixel snippet'}
+          </Button>
         </CardContent>
       </Card>
     );

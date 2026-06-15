@@ -29,6 +29,7 @@ import { registerWorkspaceRoutes } from './modules/workspace-access/internal/int
 import { registerBrandRoutes } from './modules/workspace-access/internal/interfaces/rest/brand.routes.js';
 import { registerMemberRoutes } from './modules/workspace-access/internal/interfaces/rest/member.routes.js';
 import { registerBffRoutes } from './modules/frontend-api/internal/bff.routes.js';
+import { jtiFromJwt, csrfTokenForSession, csrfTokenMatches } from './modules/frontend-api/internal/csrf.js';
 import { NotificationServiceImpl } from './modules/notification/internal/notification.service.impl.js';
 import { createEmailAdapter } from './modules/notification/internal/ses-adapter.js';
 
@@ -197,8 +198,21 @@ export async function main(): Promise<void> {
         path.startsWith('/api/v1/webhooks/'); // HMAC-validated
       if (!csrfExempt) {
         const csrfCookie = cookies?.['brain_csrf'];
-        const csrfHeader = request.headers['x-csrf-token'];
-        if (!csrfCookie || !csrfHeader || csrfCookie !== csrfHeader) {
+        const csrfHeader = Array.isArray(request.headers['x-csrf-token'])
+          ? request.headers['x-csrf-token'][0]
+          : request.headers['x-csrf-token'];
+        // Double-submit (cookie === header) AND session-binding (token must equal
+        // HMAC(cookieSecret, jti) for this session) — SEC-0009-M02. Binding makes a
+        // token issued for another session, or after this session revokes, invalid.
+        const jti = jtiFromJwt(sessionCookie);
+        const expected = jti ? csrfTokenForSession(jti, config.cookieSecret) : undefined;
+        const ok =
+          !!csrfCookie &&
+          !!csrfHeader &&
+          csrfTokenMatches(csrfCookie, csrfHeader) &&
+          !!expected &&
+          csrfTokenMatches(csrfHeader, expected);
+        if (!ok) {
           return reply.code(403).send({
             request_id: (request.id as string) ?? randomUUID(),
             error: { code: 'CSRF_MISMATCH', message: 'CSRF token missing or invalid.' },
@@ -268,7 +282,7 @@ export async function main(): Promise<void> {
   registerWorkspaceRoutes(app, authService, workspaceService);
   registerBrandRoutes(app, authService, brandService);
   registerMemberRoutes(app, authService, inviteService);
-  registerBffRoutes(app, authService, pool);
+  registerBffRoutes(app, authService, pool, config.cookieSecret);
 
   // ── HIGH-MOUNT-01: Mount connector + pixel routes with guards wired HERE ────
   //
@@ -470,19 +484,26 @@ export async function main(): Promise<void> {
     scope.addHook('preHandler', sessionPreHandler);
     scope.addHook('preHandler', requireRole('analyst'));
 
-    scope.get('/api/v1/pixel/installation', async (req: FastifyRequest<{ Querystring: { target_host?: string } }>, reply) => {
+    // SEC-0009-M01: GET is READ-ONLY (no write). Returns the existing installation
+    // or { installed: false }. Provisioning is the POST below (CSRF-protected).
+    scope.get('/api/v1/pixel/installation', async (req, reply) => {
       const brandId = getBrandId(req);
       const requestId = (req.id as string) ?? randomUUID();
-      const idempotencyKey = (req.headers['idempotency-key'] as string | undefined) ?? randomUUID();
-      const targetHost = req.query.target_host ?? '';
-      if (!targetHost) {
-        return reply.code(400).send({ request_id: requestId, error: { code: 'MISSING_TARGET_HOST', message: 'target_host query parameter is required' } });
+      const existing = await pixelInstallationRepo.findByBrandId(brandId);
+      if (!existing) {
+        return reply.code(200).send({ request_id: requestId, data: { installed: false } });
       }
-      const result = await getOrCreateInstallation.execute({ brandId, targetHost, idempotencyKey });
-      const snippet = buildDefaultSnippet(result.installToken, brandId, config.pixelIngestBaseUrl);
+      const snippet = buildDefaultSnippet(existing.installToken, brandId, config.pixelIngestBaseUrl);
       return reply.code(200).send({
         request_id: requestId,
-        data: { installation_id: result.installationId, install_token: result.installToken, target_host: result.targetHost, snippet_html: snippet, is_new: result.isNew },
+        data: {
+          installed: true,
+          installation_id: existing.id,
+          install_token: existing.installToken,
+          target_host: existing.targetHost,
+          snippet_html: snippet,
+          is_new: false,
+        },
       });
     });
 
@@ -494,10 +515,28 @@ export async function main(): Promise<void> {
     });
   });
 
-  // Pixel write routes (manager+): POST /pixel/verify
+  // Pixel write routes (manager+): POST /pixel/installation (provision), POST /pixel/verify
   await app.register(async (scope) => {
     scope.addHook('preHandler', sessionPreHandler);
     scope.addHook('preHandler', requireRole('manager'));
+
+    // SEC-0009-M01: provisioning (get-or-create) is a POST — the write path, behind
+    // the app-wide CSRF check. Idempotent: returns the existing installation if any.
+    scope.post('/api/v1/pixel/installation', async (req: FastifyRequest<{ Body: { target_host?: string } }>, reply) => {
+      const brandId = getBrandId(req);
+      const requestId = (req.id as string) ?? randomUUID();
+      const idempotencyKey = (req.headers['idempotency-key'] as string | undefined) ?? randomUUID();
+      const targetHost = (req.body?.target_host ?? '').trim();
+      if (!targetHost) {
+        return reply.code(400).send({ request_id: requestId, error: { code: 'MISSING_TARGET_HOST', message: 'target_host is required' } });
+      }
+      const result = await getOrCreateInstallation.execute({ brandId, targetHost, idempotencyKey });
+      const snippet = buildDefaultSnippet(result.installToken, brandId, config.pixelIngestBaseUrl);
+      return reply.code(result.isNew ? 201 : 200).send({
+        request_id: requestId,
+        data: { installed: true, installation_id: result.installationId, install_token: result.installToken, target_host: result.targetHost, snippet_html: snippet, is_new: result.isNew },
+      });
+    });
 
     scope.post('/api/v1/pixel/verify', async (req, reply) => {
       const brandId = getBrandId(req);

@@ -5,15 +5,20 @@ import { pixelApi } from '@/lib/api/client';
 
 export const PIXEL_QUERY_KEY = ['pixel'] as const;
 
-export function usePixelInstallation(brandDomain?: string | null) {
+export function usePixelInstallation() {
+  // Read-only (SEC-0009-M01). Returns { installed: false } until provisioned.
   return useQuery({
-    queryKey: [...PIXEL_QUERY_KEY, 'installation', brandDomain ?? null],
-    queryFn: () => {
-      // Prefer the brand's configured domain; fall back to the current host (client-only)
-      const targetHost =
-        brandDomain ??
-        (typeof window !== 'undefined' ? window.location.host : 'localhost');
-      return pixelApi.getInstallation(targetHost);
+    queryKey: [...PIXEL_QUERY_KEY, 'installation'],
+    queryFn: () => pixelApi.getInstallation(),
+  });
+}
+
+export function useProvisionPixel() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (targetHost: string) => pixelApi.provision(targetHost),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: PIXEL_QUERY_KEY });
     },
   });
 }

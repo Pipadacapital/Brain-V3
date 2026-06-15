@@ -1,0 +1,31 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: core-staging
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/manifest-generate-paths: infra/helm/core
+  labels:
+    project: brain
+    environment: staging
+    service: core
+spec:
+  project: brain-staging
+  source:
+    repoURL: https://github.com/brain-platform/brain
+    targetRevision: main
+    path: infra/helm/core
+    helm:
+      valueFiles:
+        - values-staging.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: core
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+  revisionHistoryLimit: 10

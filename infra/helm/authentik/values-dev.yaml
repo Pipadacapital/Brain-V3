@@ -1,0 +1,58 @@
+################################################################################
+# Authentik Helm values — DEV
+# SCOPE RULING: IaC declaration only — NOT APPLIED in Sprint-0.
+# Apply at M1 Day 1: helm install authentik authentik/authentik -n authentik -f this-file
+# See 03-architecture-plan.md §Authentik deferral ruling.
+################################################################################
+
+# Authentik self-hosted on EKS (ADR-006 — IdentityAdapter binding)
+# In-region deployment: ap-south-1 (COMPLIANCE.md data residency)
+
+global:
+  env:
+    - name: AUTHENTIK_SECRET_KEY
+      valueFrom:
+        secretKeyRef:
+          name: authentik-secret
+          key: secret-key
+    - name: AUTHENTIK_POSTGRESQL__PASSWORD
+      valueFrom:
+        secretKeyRef:
+          name: authentik-secret
+          key: pg-password
+
+authentik:
+  secret_key: ""  # Injected from Secrets Manager via External-Secrets
+  error_reporting:
+    enabled: false
+  postgresql:
+    host: ""  # RDS endpoint from TF output
+    port: 5432
+    name: authentik
+    user: authentik
+    password: ""  # Injected
+  redis:
+    host: ""  # ElastiCache endpoint from TF output
+    port: 6379
+
+server:
+  replicas: 2  # HA for dev; min 2 replicas
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+
+worker:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+
+# IRSA for Authentik if it needs to read Secrets Manager
+serviceAccount:
+  annotations:
+    eks.amazonaws.com/role-arn: ""  # Populated at M1 with IRSA role ARN

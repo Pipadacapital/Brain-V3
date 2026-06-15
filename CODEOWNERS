@@ -1,0 +1,37 @@
+# CODEOWNERS — Brain monorepo
+#
+# IMPORTANT: This file enforces the contract-first invariant (I-E01).
+# Changes to packages/contracts REQUIRE approval from the consuming-domain owner.
+#
+# Rules:
+#   1. packages/contracts: requires consuming-domain owner approval (I-E01).
+#   2. db/migrations: requires 2 approvals (Security Reviewer + Data Engineer).
+#   3. packages/db: requires 2 approvals (Security Reviewer).
+#   4. packages/metric-engine: requires 2 approvals (one must be Data CODEOWNER).
+#
+# Format: <pattern> <@owner1> <@owner2>
+# GitHub resolves teams via @org/team-name.
+
+# Contracts (Zod → codegen; any breaking change needs consuming-domain sign-off)
+/packages/contracts/   @rishabhporwal
+
+# Database migrations (RLS, app roles, schema) — 2 reviewers required
+/db/migrations/        @rishabhporwal
+
+# DB middleware (RLS GUC; critical path for NN-1)
+/packages/db/          @rishabhporwal
+
+# Metric engine (I-ST03 — one must be Data CODEOWNER)
+/packages/metric-engine/ @rishabhporwal
+
+# Security-critical packages
+/packages/observability/   @rishabhporwal
+/packages/tenant-context/  @rishabhporwal
+/packages/identity-core/   @rishabhporwal
+/packages/audit/           @rishabhporwal
+
+# ESLint rules (custom security rules — changes require review)
+/tools/eslint-rules/   @rishabhporwal
+
+# Isolation fuzz (NN-2 gate — must not be weakened)
+/tools/isolation-fuzz/ @rishabhporwal

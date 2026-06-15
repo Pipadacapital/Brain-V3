@@ -1,0 +1,57 @@
+################################################################################
+# Brain – ArgoCD Application: collector (prod)
+# MANUAL promote only — no automated sync.
+# VP Eng approves via GitHub Environment 'production' gate.
+# revisionHistoryLimit=10 for rollback.
+################################################################################
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: brain-collector-prod
+  namespace: argocd
+  labels:
+    project: brain
+    service: collector
+    environment: prod
+  annotations:
+    argocd.argoproj.io/manifest-generate-paths: /infra/k8s/collector/
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: brain
+
+  source:
+    repoURL: https://github.com/brain-platform/brain
+    targetRevision: HEAD
+    path: infra/k8s/collector/overlays/production
+    kustomize:
+      images: []  # Populated by CI prod-promote job (same digest as staging)
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: collector
+
+  revisionHistoryLimit: 10
+
+  syncPolicy:
+    # PROD: MANUAL sync only — no automated (PLAYBOOK-deploy §Strategy step 6-8)
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+      - RespectIgnoreDifferences=true
+    retry:
+      limit: 2
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 5m
+
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      jsonPointers:
+        - /spec/replicas
+
+  # Rollback: argocd app rollback brain-collector-prod --revision <N>
+  # Feature flag kill-switch: packages/feature-flags sets collector.enabled=false
+  # Both within 60s of trigger (PLAYBOOK-deploy §Rollback mechanism)

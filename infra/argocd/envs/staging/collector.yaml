@@ -1,0 +1,62 @@
+################################################################################
+# Brain – ArgoCD Application: collector (staging)
+# Auto-sync; revisionHistoryLimit=10 for rollback.
+# Auto-rollback on health probe failures (PLAYBOOK-deploy §Auto-Rollback).
+################################################################################
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: brain-collector-staging
+  namespace: argocd
+  labels:
+    project: brain
+    service: collector
+    environment: staging
+  annotations:
+    # Only reconcile when this service's manifests change (selective deploy)
+    argocd.argoproj.io/manifest-generate-paths: /infra/k8s/collector/
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: brain
+
+  source:
+    repoURL: https://github.com/brain-platform/brain
+    targetRevision: HEAD
+    path: infra/k8s/collector/overlays/staging
+    kustomize:
+      images: []  # Populated by CI manifest bump
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: collector
+
+  revisionHistoryLimit: 10  # Retain 10 revisions for rollback (PLAYBOOK-deploy)
+
+  syncPolicy:
+    # STAGING: AUTO-SYNC (PLAYBOOK-deploy §Strategy step 5)
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: false
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+      - RespectIgnoreDifferences=true
+    retry:
+      limit: 3
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+
+  # Health checks — auto-rollback triggers when health degrades
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      jsonPointers:
+        - /spec/replicas  # HPA manages replicas
+
+  # Health assessment:
+  # ArgoCD uses pod readiness probes (/health/live, /health/ready) to determine health.
+  # If health probes fail 2 consecutive probes → composite alarm fires → ArgoCD rollback.

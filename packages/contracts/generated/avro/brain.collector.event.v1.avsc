@@ -1,0 +1,75 @@
+{
+  "type": "record",
+  "name": "CollectorEventV1",
+  "namespace": "brain.collector",
+  "doc": "Canonical collector event envelope. Registered in Apicurio as brain.collector.event.v1.",
+  "fields": [
+    {
+      "name": "schema_version",
+      "type": "string",
+      "default": "1",
+      "doc": "Schema version — bump on additive changes only."
+    },
+    {
+      "name": "event_id",
+      "type": "string",
+      "doc": "UUIDv4 — combined with brand_id for idempotency (I-ST04)."
+    },
+    {
+      "name": "brand_id",
+      "type": "string",
+      "doc": "Tenant key — required on every event (I-S01)."
+    },
+    {
+      "name": "correlation_id",
+      "type": "string",
+      "doc": "Distributed trace correlation identifier (ADR-009)."
+    },
+    {
+      "name": "event_name",
+      "type": "string",
+      "doc": "Dot-separated event name e.g. \"page.viewed\"."
+    },
+    {
+      "name": "occurred_at",
+      "type": "string",
+      "doc": "ISO-8601 UTC timestamp of event occurrence."
+    },
+    {
+      "name": "ingest_at",
+      "type": [
+        "null",
+        "string"
+      ],
+      "default": null,
+      "doc": "ISO-8601 UTC timestamp set by the collector on receipt."
+    },
+    {
+      "name": "hashed_user_id",
+      "type": [
+        "null",
+        "string"
+      ],
+      "default": null,
+      "doc": "sha256(per-brand-salt || normalized_id). No raw PII (I-S02)."
+    },
+    {
+      "name": "hashed_session_id",
+      "type": [
+        "null",
+        "string"
+      ],
+      "default": null,
+      "doc": "sha256(per-brand-salt || session_id). No raw PII (I-S02)."
+    },
+    {
+      "name": "properties",
+      "type": {
+        "type": "map",
+        "values": "string"
+      },
+      "default": {},
+      "doc": "Arbitrary event properties serialised as string values. No raw PII."
+    }
+  ]
+}

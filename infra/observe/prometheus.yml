@@ -1,0 +1,16 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'otel-collector'
+    static_configs:
+      - targets: ['otel-collector:8889']
+
+  - job_name: 'brain-collector'
+    static_configs:
+      - targets: ['host.docker.internal:9091']  # collector metrics endpoint (local dev)
+
+  - job_name: 'brain-stream-worker'
+    static_configs:
+      - targets: ['host.docker.internal:9092']  # stream-worker metrics endpoint (local dev)

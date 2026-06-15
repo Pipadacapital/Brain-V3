@@ -1,0 +1,30 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: stream-worker-prod
+  namespace: argocd
+  annotations:
+    # Selective deploy: only syncs when stream-worker manifests change
+    argocd.argoproj.io/manifest-generate-paths: infra/helm/stream-worker
+  labels:
+    project: brain
+    environment: prod
+    service: stream-worker
+spec:
+  project: brain-prod
+  source:
+    repoURL: https://github.com/brain-platform/brain
+    targetRevision: main
+    path: infra/helm/stream-worker
+    helm:
+      valueFiles:
+        - values-prod.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: stream-worker
+  # NO automated sync for prod — manual promotion gate required
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+  revisionHistoryLimit: 10

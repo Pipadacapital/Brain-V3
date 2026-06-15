@@ -1,0 +1,90 @@
+# gitleaks configuration for Brain
+# Secret scan on every PR + pre-commit hook
+# Protects I-S09: KMS + Secrets Manager + IRSA; no secrets in repo
+
+title = "Brain Secret Scan Configuration"
+
+[extend]
+# Use the default gitleaks rule set as a base
+useDefault = true
+
+[[rules]]
+id = "brain-aws-access-key"
+description = "AWS Access Key ID — never commit static keys (use OIDC)"
+regex = '''(A3T[A-Z0-9]|AKIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16}'''
+tags = ["aws", "secret", "key"]
+
+[[rules]]
+id = "brain-aws-secret-access-key"
+description = "AWS Secret Access Key — use OIDC short-lived credentials"
+regex = '''(?i)aws[_\-\.]?secret[_\-\.]?(?:access[_\-\.]?)?key[\s]*[=:]+[\s]*['\"]?([A-Za-z0-9/+=]{40})['\"]?'''
+tags = ["aws", "secret", "key"]
+
+[[rules]]
+id = "brain-redpanda-api-key"
+description = "Redpanda Cloud API key — store in Secrets Manager"
+regex = '''(?i)redpanda[_\-\.]?(?:api[_\-\.]?)?(?:key|token|secret)[\s]*[=:]+[\s]*['\"]?([A-Za-z0-9_\-\.]{20,})['\"]?'''
+tags = ["redpanda", "secret"]
+
+[[rules]]
+id = "brain-grafana-api-key"
+description = "Grafana Cloud API key — store in Secrets Manager"
+regex = '''(?i)grafana[_\-\.]?(?:api[_\-\.]?)?(?:key|token|secret)[\s]*[=:]+[\s]*['\"]?([A-Za-z0-9_\-\.]{20,})['\"]?'''
+tags = ["grafana", "secret"]
+
+[[rules]]
+id = "brain-db-password"
+description = "Database password — store in Secrets Manager with rotation"
+regex = '''(?i)(?:db|database|postgres|pg)[_\-\.]?(?:pass|password|pwd)[\s]*[=:]+[\s]*['\"]?([^\s'\"]{8,})['\"]?'''
+tags = ["database", "secret"]
+[rules.allowlist]
+regexes = [
+  # Allow placeholder/template values
+  '''placeholder''',
+  '''<.*>''',
+  '''\$\{.*\}''',
+  '''changeme''',
+]
+
+[[rules]]
+id = "brain-private-key"
+description = "Private key material — never commit"
+regex = '''-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----'''
+tags = ["private-key", "secret"]
+
+[[rules]]
+id = "brain-jwt-secret"
+description = "JWT signing secret — store in Secrets Manager"
+regex = '''(?i)jwt[_\-\.]?(?:secret|key|signing)[\s]*[=:]+[\s]*['\"]?([A-Za-z0-9_\-\.+/=]{16,})['\"]?'''
+tags = ["jwt", "secret"]
+
+[[rules]]
+id = "brain-kms-key-arn"
+description = "Hardcoded KMS key ARN — use variable or Secrets Manager reference"
+# Note: this flags explicit ARNs with real account IDs in code (not in TF vars/outputs)
+regex = '''arn:aws:kms:[a-z0-9-]+:\d{12}:key/[a-f0-9-]{36}'''
+tags = ["kms", "arn"]
+[rules.allowlist]
+paths = [
+  # Allow in TF outputs and docs — these are references, not secrets
+  '''\.tf$''',
+  '''\.md$''',
+]
+
+[allowlist]
+description = "Global allowlist for Brain repo"
+paths = [
+  # Test fixtures may contain fake secrets for lint testing
+  '''.*\.test\.ts$''',
+  '''.*\.spec\.ts$''',
+  '''.*__tests__.*''',
+  # Lockfiles — not secret-bearing
+  '''pnpm-lock\.yaml$''',
+]
+regexes = [
+  # Allow placeholder values in templates
+  '''<[A-Z_]+>''',
+  '''\$\{[A-Z_]+\}''',
+  '''PLACEHOLDER''',
+  '''CHANGEME''',
+]

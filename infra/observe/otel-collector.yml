@@ -1,0 +1,122 @@
+# OTel Collector pipeline — local dev (docker-compose observe profile)
+# In production: deployed on EKS (Track C ArgoCD); credentials from Secrets Manager via IRSA.
+# Grafana Cloud: OTLP endpoint + credentials injected via environment variables.
+#
+# NN-6: PII redaction via transform/attributes processor MUST be applied before
+# any data leaves the collector. The redact_pii processor runs on ALL signals.
+
+extensions:
+  health_check:
+    endpoint: "0.0.0.0:13133"
+  pprof:
+    endpoint: "0.0.0.0:1777"
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: "0.0.0.0:4317"
+      http:
+        endpoint: "0.0.0.0:4318"
+
+processors:
+  # NN-6: PII redaction — MUST run before any export.
+  # Drops/hashes known PII attribute keys on spans, metrics, and logs.
+  # Keys that match the PII list are dropped (not hashed) at the collector level.
+  # The SDK wrapper (packages/observability/redact.ts) provides the first layer;
+  # this processor is the second, defense-in-depth layer.
+  transform/redact_pii:
+    error_mode: ignore
+    trace_statements:
+      - context: span
+        statements:
+          # Drop PII keys from span attributes
+          - delete_key(attributes, "email")
+          - delete_key(attributes, "phone")
+          - delete_key(attributes, "phone_number")
+          - delete_key(attributes, "name")
+          - delete_key(attributes, "full_name")
+          - delete_key(attributes, "address")
+          - delete_key(attributes, "pan_number")
+          - delete_key(attributes, "card_number")
+          - delete_key(attributes, "cvv")
+          - delete_key(attributes, "upi_id")
+          # Redact any attribute key containing PII patterns (defense in depth)
+          - delete_matching_keys(attributes, ".*email.*")
+          - delete_matching_keys(attributes, ".*phone.*")
+          - delete_matching_keys(attributes, ".*pan_.*")
+          - delete_matching_keys(attributes, ".*card_.*")
+    log_statements:
+      - context: log_record
+        statements:
+          - delete_key(attributes, "email")
+          - delete_key(attributes, "phone")
+          - delete_key(attributes, "name")
+          - delete_key(attributes, "address")
+          - delete_matching_keys(attributes, ".*email.*")
+          - delete_matching_keys(attributes, ".*phone.*")
+          - delete_matching_keys(attributes, ".*pan_.*")
+          - delete_matching_keys(attributes, ".*card_.*")
+
+  # Add resource attributes to all signals
+  resource:
+    attributes:
+      - key: deployment.environment
+        value: "local"
+        action: upsert
+      - key: service.namespace
+        value: "brain"
+        action: upsert
+
+  # Batch for efficient export
+  batch:
+    timeout: 5s
+    send_batch_size: 512
+
+  # Memory limiter (safety valve)
+  memory_limiter:
+    limit_mib: 256
+    spike_limit_mib: 64
+    check_interval: 5s
+
+exporters:
+  # Local Prometheus scrape endpoint (metrics)
+  prometheus:
+    endpoint: "0.0.0.0:8889"
+    namespace: "brain"
+
+  # Local Loki (logs)
+  loki:
+    endpoint: "http://loki:3100/loki/api/v1/push"
+
+  # Debug exporter (local dev only — remove in production)
+  debug:
+    verbosity: normal
+    sampling_initial: 5
+    sampling_thereafter: 200
+
+  # Grafana Cloud (production) — credentials from environment
+  # Uncomment and set GRAFANA_OTLP_ENDPOINT, GRAFANA_OTLP_HEADERS in production:
+  # otlphttp/grafana:
+  #   endpoint: "${env:GRAFANA_OTLP_ENDPOINT}"
+  #   headers:
+  #     authorization: "Bearer ${env:GRAFANA_OTLP_TOKEN}"
+  #   compression: gzip
+
+service:
+  extensions: [health_check, pprof]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, transform/redact_pii, resource, batch]
+      exporters: [debug]
+
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, transform/redact_pii, resource, batch]
+      exporters: [prometheus, debug]
+
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, transform/redact_pii, resource, batch]
+      exporters: [loki, debug]

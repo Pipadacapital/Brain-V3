@@ -1,0 +1,327 @@
+################################################################################
+# Brain – Network Module
+# VPC + public/private subnets across 3 AZs + NAT Gateway (single in dev,
+# one-per-AZ in staging/prod) + Security Groups for EKS, RDS, ElastiCache.
+################################################################################
+
+terraform {
+  required_version = ">= 1.9"
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 6.0"
+    }
+  }
+}
+
+###############################################################################
+# Variables
+###############################################################################
+variable "environment" {
+  type = string
+}
+
+variable "project" {
+  type    = string
+  default = "brain"
+}
+
+variable "vpc_cidr" {
+  type    = string
+  default = "10.0.0.0/16"
+}
+
+variable "availability_zones" {
+  type    = list(string)
+  default = ["ap-south-1a", "ap-south-1b", "ap-south-1c"]
+}
+
+variable "single_nat_gateway" {
+  description = "Use a single NAT gateway (cost-optimised for dev). Set false for HA in staging/prod."
+  type        = bool
+  default     = true
+}
+
+###############################################################################
+# VPC
+###############################################################################
+resource "aws_vpc" "main" {
+  cidr_block           = var.vpc_cidr
+  enable_dns_support   = true
+  enable_dns_hostnames = true
+
+  tags = {
+    Name        = "${var.project}-${var.environment}"
+    environment = var.environment
+    project     = var.project
+    # Required by EKS for auto-discovery of the VPC
+    "kubernetes.io/cluster/${var.project}-${var.environment}" = "shared"
+  }
+}
+
+###############################################################################
+# Internet Gateway
+###############################################################################
+resource "aws_internet_gateway" "main" {
+  vpc_id = aws_vpc.main.id
+  tags = {
+    Name        = "${var.project}-${var.environment}-igw"
+    environment = var.environment
+  }
+}
+
+###############################################################################
+# Public Subnets (one per AZ)
+###############################################################################
+resource "aws_subnet" "public" {
+  count             = length(var.availability_zones)
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = cidrsubnet(var.vpc_cidr, 8, count.index)
+  availability_zone = var.availability_zones[count.index]
+
+  map_public_ip_on_launch = true
+
+  tags = {
+    Name        = "${var.project}-${var.environment}-public-${count.index + 1}"
+    environment = var.environment
+    tier        = "public"
+    # Required for EKS external load balancer auto-discovery
+    "kubernetes.io/role/elb"                                  = "1"
+    "kubernetes.io/cluster/${var.project}-${var.environment}" = "shared"
+  }
+}
+
+###############################################################################
+# Private Subnets (one per AZ)
+###############################################################################
+resource "aws_subnet" "private" {
+  count             = length(var.availability_zones)
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = cidrsubnet(var.vpc_cidr, 8, count.index + 10)
+  availability_zone = var.availability_zones[count.index]
+
+  tags = {
+    Name        = "${var.project}-${var.environment}-private-${count.index + 1}"
+    environment = var.environment
+    tier        = "private"
+    # Required for EKS internal load balancer auto-discovery
+    "kubernetes.io/role/internal-elb"                         = "1"
+    "kubernetes.io/cluster/${var.project}-${var.environment}" = "shared"
+  }
+}
+
+###############################################################################
+# NAT Gateway + EIPs
+###############################################################################
+locals {
+  nat_count = var.single_nat_gateway ? 1 : length(var.availability_zones)
+}
+
+resource "aws_eip" "nat" {
+  count  = local.nat_count
+  domain = "vpc"
+  tags = {
+    Name        = "${var.project}-${var.environment}-nat-eip-${count.index + 1}"
+    environment = var.environment
+  }
+}
+
+resource "aws_nat_gateway" "main" {
+  count         = local.nat_count
+  allocation_id = aws_eip.nat[count.index].id
+  subnet_id     = aws_subnet.public[count.index].id
+
+  depends_on = [aws_internet_gateway.main]
+
+  tags = {
+    Name        = "${var.project}-${var.environment}-nat-${count.index + 1}"
+    environment = var.environment
+  }
+}
+
+###############################################################################
+# Route Tables
+###############################################################################
+resource "aws_route_table" "public" {
+  vpc_id = aws_vpc.main.id
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.main.id
+  }
+  tags = {
+    Name        = "${var.project}-${var.environment}-public-rt"
+    environment = var.environment
+  }
+}
+
+resource "aws_route_table_association" "public" {
+  count          = length(aws_subnet.public)
+  subnet_id      = aws_subnet.public[count.index].id
+  route_table_id = aws_route_table.public.id
+}
+
+resource "aws_route_table" "private" {
+  count  = local.nat_count
+  vpc_id = aws_vpc.main.id
+  route {
+    cidr_block     = "0.0.0.0/0"
+    nat_gateway_id = aws_nat_gateway.main[count.index].id
+  }
+  tags = {
+    Name        = "${var.project}-${var.environment}-private-rt-${count.index + 1}"
+    environment = var.environment
+  }
+}
+
+resource "aws_route_table_association" "private" {
+  count          = length(aws_subnet.private)
+  subnet_id      = aws_subnet.private[count.index].id
+  route_table_id = aws_route_table.private[var.single_nat_gateway ? 0 : count.index].id
+}
+
+###############################################################################
+# Security Groups
+###############################################################################
+
+# EKS cluster (control plane) SG
+resource "aws_security_group" "eks_cluster" {
+  name        = "${var.project}-${var.environment}-eks-cluster"
+  description = "EKS cluster control plane security group"
+  vpc_id      = aws_vpc.main.id
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "Allow all outbound"
+  }
+
+  tags = {
+    Name        = "${var.project}-${var.environment}-eks-cluster-sg"
+    environment = var.environment
+  }
+}
+
+# EKS node group SG
+resource "aws_security_group" "eks_nodes" {
+  name        = "${var.project}-${var.environment}-eks-nodes"
+  description = "EKS worker node security group"
+  vpc_id      = aws_vpc.main.id
+
+  ingress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    self        = true
+    description = "Allow node-to-node traffic"
+  }
+
+  ingress {
+    from_port       = 0
+    to_port         = 0
+    protocol        = "-1"
+    security_groups = [aws_security_group.eks_cluster.id]
+    description     = "Allow control plane to nodes"
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "Allow all outbound"
+  }
+
+  tags = {
+    Name        = "${var.project}-${var.environment}-eks-nodes-sg"
+    environment = var.environment
+  }
+}
+
+# RDS SG – only accepts connections from EKS nodes
+resource "aws_security_group" "rds" {
+  name        = "${var.project}-${var.environment}-rds"
+  description = "RDS PostgreSQL security group – EKS nodes only"
+  vpc_id      = aws_vpc.main.id
+
+  ingress {
+    from_port       = 5432
+    to_port         = 5432
+    protocol        = "tcp"
+    security_groups = [aws_security_group.eks_nodes.id]
+    description     = "Postgres from EKS nodes"
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "Allow all outbound"
+  }
+
+  tags = {
+    Name        = "${var.project}-${var.environment}-rds-sg"
+    environment = var.environment
+  }
+}
+
+# ElastiCache SG – only accepts connections from EKS nodes
+resource "aws_security_group" "elasticache" {
+  name        = "${var.project}-${var.environment}-elasticache"
+  description = "ElastiCache Redis security group – EKS nodes only"
+  vpc_id      = aws_vpc.main.id
+
+  ingress {
+    from_port       = 6379
+    to_port         = 6379
+    protocol        = "tcp"
+    security_groups = [aws_security_group.eks_nodes.id]
+    description     = "Redis from EKS nodes"
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "Allow all outbound"
+  }
+
+  tags = {
+    Name        = "${var.project}-${var.environment}-elasticache-sg"
+    environment = var.environment
+  }
+}
+
+###############################################################################
+# Outputs
+###############################################################################
+output "vpc_id" {
+  value = aws_vpc.main.id
+}
+
+output "public_subnet_ids" {
+  value = aws_subnet.public[*].id
+}
+
+output "private_subnet_ids" {
+  value = aws_subnet.private[*].id
+}
+
+output "eks_cluster_sg_id" {
+  value = aws_security_group.eks_cluster.id
+}
+
+output "eks_nodes_sg_id" {
+  value = aws_security_group.eks_nodes.id
+}
+
+output "rds_sg_id" {
+  value = aws_security_group.rds.id
+}
+
+output "elasticache_sg_id" {
+  value = aws_security_group.elasticache.id
+}

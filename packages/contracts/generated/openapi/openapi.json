@@ -1,0 +1,369 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Brain Collector API",
+    "version": "1.0.0",
+    "description": "Auto-generated from @brain/contracts Zod schemas (I-E01)."
+  },
+  "paths": {
+    "/v1/events": {
+      "post": {
+        "operationId": "ingestEvent",
+        "summary": "Ingest a collector event",
+        "description": "Accept-before-validate: the event is spooled and acknowledged before schema validation or Kafka produce.",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "Client-supplied idempotency UUID (I-ST04)."
+          },
+          {
+            "name": "traceparent",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "W3C traceparent header for distributed tracing."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "event_name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  "occurred_at": {
+                    "type": "string",
+                    "format": "date-time"
+                  },
+                  "hashed_user_id": {
+                    "type": "string",
+                    "maxLength": 64
+                  },
+                  "hashed_session_id": {
+                    "type": "string",
+                    "maxLength": 64
+                  },
+                  "properties": {
+                    "type": "object",
+                    "additionalProperties": {},
+                    "default": {}
+                  }
+                },
+                "required": [
+                  "event_name",
+                  "occurred_at"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Event accepted and spooled.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "request_id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "event_id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "status": {
+                      "const": "accepted"
+                    }
+                  },
+                  "required": [
+                    "request_id",
+                    "event_id",
+                    "status"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation error.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "request_id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "fields": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "field": {
+                                "type": "string"
+                              },
+                              "message": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "field",
+                              "message"
+                            ]
+                          }
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "request_id",
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "request_id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "fields": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "field": {
+                                "type": "string"
+                              },
+                              "message": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "field",
+                              "message"
+                            ]
+                          }
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "request_id",
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "CollectorEventV1": {
+        "type": "object",
+        "properties": {
+          "schema_version": {
+            "const": "1",
+            "default": "1"
+          },
+          "event_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "brand_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "correlation_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "event_name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "ingest_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "hashed_user_id": {
+            "type": "string",
+            "maxLength": 64
+          },
+          "hashed_session_id": {
+            "type": "string",
+            "maxLength": 64
+          },
+          "properties": {
+            "type": "object",
+            "additionalProperties": {},
+            "default": {}
+          }
+        },
+        "required": [
+          "event_id",
+          "brand_id",
+          "correlation_id",
+          "event_name",
+          "occurred_at"
+        ]
+      },
+      "IngestEventBody": {
+        "type": "object",
+        "properties": {
+          "event_name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "hashed_user_id": {
+            "type": "string",
+            "maxLength": 64
+          },
+          "hashed_session_id": {
+            "type": "string",
+            "maxLength": 64
+          },
+          "properties": {
+            "type": "object",
+            "additionalProperties": {},
+            "default": {}
+          }
+        },
+        "required": [
+          "event_name",
+          "occurred_at"
+        ]
+      },
+      "IngestEventAcceptedResponse": {
+        "type": "object",
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "event_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "status": {
+            "const": "accepted"
+          }
+        },
+        "required": [
+          "request_id",
+          "event_id",
+          "status"
+        ]
+      },
+      "ApiErrorResponse": {
+        "type": "object",
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              },
+              "fields": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "field": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "field",
+                    "message"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "code",
+              "message"
+            ]
+          }
+        },
+        "required": [
+          "request_id",
+          "error"
+        ]
+      }
+    }
+  }
+}

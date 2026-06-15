@@ -9,6 +9,15 @@
     "build": "tsc -b",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "test:unit": "vitest run --passWithNoTests"
+    "test:unit": "vitest run --passWithNoTests",
+    "gen:contracts": "tsx scripts/codegen.ts",
+    "test:contract": "vitest run --reporter=verbose"
+  },
+  "dependencies": {
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "tsx": "^4.22.4",
+    "vitest": "^2.1.0"
   }
 }

@@ -1,4 +1,11 @@
 {
   "schema_version": 1,
-  "requirements": []
+  "requirements": [
+    {
+      "req_id": "chore-platform-foundations-sprint0",
+      "title": "Brain Platform Foundations (Sprint 0)",
+      "first_seen": "2026-06-15T11:09:05Z",
+      "lane": "high_stakes"
+    }
+  ]
 }

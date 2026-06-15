@@ -1,0 +1,72 @@
+{
+  "verdict": "PASS",
+  "no_critical": true,
+  "no_high": true,
+  "findings": [
+    {
+      "id": "SEC-0008-M01",
+      "severity": "MED",
+      "title": "refreshSession endpoint uses bare sessionPreHandler, not bffProtectedPreHandler (no CSRF check on POST mutation)",
+      "detail": "POST /api/v1/bff/session/refresh at bff.routes.ts:174 attaches only the bare sessionPreHandler, which validates the JWT from the Authorization header. The bffProtectedPreHandler additionally reads the httpOnly session cookie AND enforces CSRF double-submit. Since this is a POST mutation (re-minting the session cookie), it should carry CSRF protection. The current code relies on the cookie-to-Bearer bridge being done upstream (the app-wide onRequest hook bridges cookie→Authorization header), but that hook is not visible in this file's scope. If the Authorization header can be set directly by untrusted JS (i.e., the cookie bridge is not the only path), CSRF protection is absent on this mutation. Low exploitability in an httpOnly-cookie-only BFF model where the bearer token is not directly readable by JS, but the route does emit a new session cookie on response.",
+      "file": "apps/core/src/modules/frontend-api/internal/bff.routes.ts",
+      "line": 174,
+      "status": "OPEN",
+      "remediation": "Either replace sessionPreHandler with bffProtectedPreHandler on this route, OR add an explicit CSRF check block (matching the one at lines 96-107) before calling the authService. Alternatively, document in a code comment exactly why CSRF is not required here (e.g., the app-wide onRequest hook enforces it for all POST /api/v1/bff/* routes)."
+    },
+    {
+      "id": "SEC-0008-M02",
+      "severity": "MED",
+      "title": "OrganizationRepository.findByUserId calls membership JOIN with no GUC set (ctx has no userId/workspaceId/brandId)",
+      "detail": "workspace.service.ts:listForUser calls OrganizationRepository.findByUserId with ctx = { correlationId } — no userId, no workspaceId. The query does SELECT ... FROM organization o INNER JOIN membership m ON ... WHERE m.app_user_id = $1. The membership table has RLS enabled (FORCE ROW LEVEL SECURITY); with no GUC set, membership_isolation evaluates to organization_id = NULL (false) and membership_self_read evaluates to app_user_id = NULL (false). Both PERMISSIVE policies return false → the JOIN returns 0 rows for everyone. This means listForUser is currently always returning empty for all users in production, which is a functional bug. Separately, the stub client also rejects this ctx (no GUC IDs). This is a pre-existing defect surfaced by 0008 adding the second policy, but 0008 itself does not create a security regression — if anything, the missing userId GUC means cross-user exposure is impossible (fail-closed). The bug is that the feature doesn't work, not that it leaks.",
+      "file": "apps/core/src/modules/workspace-access/internal/application/workspace.service.ts",
+      "line": 104,
+      "status": "OPEN",
+      "remediation": "Pass ctx = { correlationId, userId } in listForUser so that the membership_self_read policy can satisfy the JOIN on app_user_id. This is a functional fix, not a security regression."
+    },
+    {
+      "id": "SEC-0008-L01",
+      "severity": "LOW",
+      "title": "No unit-level negative-control test for MembershipRepository.findActiveByUser cross-user isolation",
+      "detail": "The existing test suite (auth.service.test.ts, rls.test.ts) covers NN-1, NN-3, NN-5 with negative controls. The new findActiveByUser path (membership_self_read policy) does not yet have a unit test that asserts: (a) a query with userId=A returns only A's rows, and (b) a query with userId=B returns 0 rows of A's data. The live isolation-fuzz (pg.test.ts) covers brand-level RLS but is not confirmed to cover the membership_self_read predicate. The risk is low because the predicate logic is identical to user_session_isolation (same GUC, same pattern), but the missing coverage is a gap.",
+      "file": "apps/core/src/modules/workspace-access/tests/auth.service.test.ts",
+      "line": null,
+      "status": "OPEN",
+      "remediation": "Add a test with two user IDs; assert that findActiveByUser(userB_id, ctx_with_userId=userA) returns null (0 rows). This closes the negative-control gap for the new policy path."
+    },
+    {
+      "id": "SEC-0008-I01",
+      "severity": "LOW",
+      "title": "refreshSession does not re-check session revocation before re-minting (reads membership but not revocation state)",
+      "detail": "refreshSession calls resolveActiveContext (membership lookup) then mintSessionToken. The revocation check (user_session.revoked_at IS NULL) is NOT re-run inside refreshSession. However, the route's preHandler (sessionPreHandler) calls authService.validateSession which checks revocation before the handler runs. So revocation IS checked before re-mint — it just happens in the preHandler, not in refreshSession itself. The concern is that if refreshSession is called from any code path that does not first call validateSession, a revoked session could be re-minted. Currently the only call path is the BFF route with sessionPreHandler, so the risk is theoretical.",
+      "file": "apps/core/src/modules/workspace-access/internal/application/auth.service.ts",
+      "line": 338,
+      "status": "OPEN",
+      "remediation": "Add an explicit validateSession call inside refreshSession before re-minting, or annotate the method with a clear contract comment that callers MUST pre-validate the session. This prevents a future caller from bypassing revocation."
+    }
+  ],
+  "isolation_preserved": true,
+  "fail_closed": true,
+  "rls_policy_analysis": {
+    "cross_user_leak": false,
+    "cross_tenant_leak": false,
+    "policy_predicate": "app_user_id = current_setting('app.current_user_id', TRUE)::uuid",
+    "fail_closed_guc_missing": "current_setting(..., TRUE) returns NULL -> predicate = (app_user_id = NULL) = false -> 0 rows",
+    "fail_closed_no_guc": true,
+    "scope_creep": false,
+    "writes_unchanged": true,
+    "membership_isolation_interaction": "PERMISSIVE policies OR'd: SELECT visible if workspace-match (membership_isolation) OR self-match (membership_self_read). Writes (INSERT/UPDATE/DELETE) are governed only by membership_isolation (FOR ALL policy). membership_self_read is FOR SELECT only — it adds no write path.",
+    "organization_table_untouched": true,
+    "brand_table_untouched": true,
+    "brain_app_bypassrls": false,
+    "bypassrls_assertion_in_migration": "0001_init.sql asserts rolbypassrls=false for brain_app at migration time"
+  },
+  "session_remint_analysis": {
+    "jti_reused_on_refresh": true,
+    "revocation_preserved": true,
+    "revocation_check_location": "sessionPreHandler (preHandler on the BFF route) calls validateSession before handler executes",
+    "role_escalation_possible": false,
+    "role_source": "Only from user's own membership row returned by findActiveByUser, filtered by membership_self_read policy (app_user_id = current_setting('app.current_user_id', TRUE)::uuid). A user cannot read another user's membership row to claim a higher role."
+  },
+  "scanners": "delta-skip (no new dependencies, no new secrets, no schema changes outside the targeted migration; the diff is contained to one migration file + three TypeScript files)",
+  "summary": "PASS. The membership_self_read policy is correctly scoped: SELECT-only, user-pinned via app_user_id = current_setting('app.current_user_id', TRUE)::uuid (two-arg fail-closed form), scoped to brain_app, and does not widen visibility of organization, brand, or any business table. The PERMISSIVE policy interaction is safe: writes remain governed only by membership_isolation. brain_app is confirmed NOBYPASSRLS by a migration-time assertion. jti reuse on refresh preserves revocation because the BFF route runs sessionPreHandler before the handler. Role in the JWT comes exclusively from the user's own membership row — no escalation vector. Two MED findings are raised: CSRF check absent on the refresh POST mutation endpoint, and a pre-existing functional bug in listForUser (no userId GUC = 0 rows always). Two LOW findings: missing negative-control test for the new policy path, and refreshSession's implicit revocation dependency on its preHandler. None of these are CRITICAL or HIGH and none weaken the P0 brand/tenant isolation invariant."
+}

@@ -21,3 +21,9 @@ coverage/
 .engineering-os/dashboard.html
 .engineering-os/spawn-heartbeat.jsonl
 .engineering-os/state/*.bak*
+
+# Playwright e2e artifacts
+apps/web/test-results/
+apps/web/playwright-report/
+apps/web/playwright/.cache/
+test-results/

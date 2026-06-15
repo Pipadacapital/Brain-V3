@@ -30,14 +30,16 @@ export function CreateWorkspaceForm() {
 
   const nameValue = watch('name');
 
-  // Auto-generate slug from name
+  // Auto-generate slug from name with a short uniqueness suffix to avoid SLUG_TAKEN
   function handleNameChange(e: React.ChangeEvent<HTMLInputElement>) {
     const name = e.target.value;
-    const slug = name
+    const suffix = crypto.randomUUID().replace(/-/g, '').slice(-5);
+    const base = name
       .toLowerCase()
-      .replace(/\s+/g, '-')
-      .replace(/[^a-z0-9-]/g, '')
-      .slice(0, 48);
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 42);
+    const slug = base ? `${base}-${suffix}` : suffix;
     setValue('slug', slug);
     register('name').onChange(e);
   }

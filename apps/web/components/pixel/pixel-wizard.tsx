@@ -2,11 +2,15 @@
 
 import { useState } from 'react';
 import { Loader2, Copy, CheckCircle, XCircle, Clock, Zap } from 'lucide-react';
+import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
-import { usePixelInstallation, usePixelHealth, useVerifyPixel } from '@/lib/hooks/use-pixel';
+import { EmptyState } from '@/components/ui/empty-state';
+import { usePixelInstallation, useProvisionPixel, usePixelHealth, useVerifyPixel } from '@/lib/hooks/use-pixel';
+import { useBrandList } from '@/lib/hooks/use-workspace';
+import { BffApiError } from '@/lib/api/client';
 import { toast } from '@/components/ui/toaster';
 import type { PixelState } from '@/lib/api/types';
 import { cn } from '@/lib/utils';
@@ -60,9 +64,25 @@ const PIXEL_STATE_CONFIG: Record<
 
 export function PixelWizard() {
   const [copied, setCopied] = useState(false);
+  const { data: brandList } = useBrandList();
+  // Extract hostname from brand domain URL (strip protocol/path), fall back to window.location.host
+  const rawDomain = brandList?.data?.[0]?.domain ?? null;
+  const brandHost = rawDomain
+    ? (() => { try { return new URL(rawDomain).host; } catch { return rawDomain; } })()
+    : null;
   const { data: installation, isLoading: loadingInstall, error: installError, refetch: refetchInstall } = usePixelInstallation();
-  const { data: health, isLoading: loadingHealth, error: healthError, refetch: refetchHealth } = usePixelHealth();
+  const { data: health, isLoading: loadingHealth } = usePixelHealth();
   const { mutate: verifyPixel, isPending: isVerifying } = useVerifyPixel();
+  const { mutate: provisionPixel, isPending: isProvisioning } = useProvisionPixel();
+
+  function handleGenerate() {
+    const targetHost = brandHost ?? (typeof window !== 'undefined' ? window.location.host : '');
+    provisionPixel(targetHost, {
+      onError: () => {
+        toast({ title: 'Could not generate pixel', description: 'Please try again.', variant: 'destructive' });
+      },
+    });
+  }
 
   function handleCopy() {
     if (!installation?.snippet) return;
@@ -78,7 +98,7 @@ export function PixelWizard() {
       onSuccess: () => {
         toast({ title: 'Verification started', description: 'Checking your site for the Brain Pixel…' });
       },
-      onError: (err) => {
+      onError: () => {
         toast({ title: 'Verification failed', description: 'Could not verify the pixel. Check installation.', variant: 'destructive' });
       },
     });
@@ -94,16 +114,43 @@ export function PixelWizard() {
   }
 
   if (installError) {
+    if (installError instanceof BffApiError && installError.status === 403) {
+      return (
+        <EmptyState
+          title="Setup required"
+          description="Complete onboarding to set up the Brain Pixel."
+          icon={<Zap className="h-8 w-8" />}
+          action={
+            <Link href="/workspace/new" className="text-sm text-primary underline-offset-4 hover:underline">
+              Continue setup
+            </Link>
+          }
+        />
+      );
+    }
     return <ErrorCard error={installError} retry={refetchInstall} />;
   }
 
-  if (!installation) {
+  if (!installation || !installation.installed) {
     return (
-      <Card>
-        <CardContent className="py-8">
-          <p className="text-center text-sm text-muted-foreground">
-            No Data Yet — pixel installation record not found. Contact support.
-          </p>
+      <Card data-testid="pixel-generate-card">
+        <CardHeader>
+          <CardTitle>Set up the Brain Pixel</CardTitle>
+          <CardDescription>
+            Generate your pixel snippet to start collecting first-party data
+            {brandHost ? (
+              <>
+                {' '}for <strong>{brandHost}</strong>
+              </>
+            ) : null}
+            .
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Button onClick={handleGenerate} disabled={isProvisioning} data-testid="btn-generate-pixel">
+            {isProvisioning && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />}
+            {isProvisioning ? 'Generating…' : 'Generate pixel snippet'}
+          </Button>
         </CardContent>
       </Card>
     );

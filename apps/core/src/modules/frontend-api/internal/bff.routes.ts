@@ -42,27 +42,36 @@ import type { AuthService } from '../../workspace-access/internal/application/au
 import type { AuthenticatedRequest } from '../../workspace-access/internal/interfaces/rest/auth.routes.js';
 import { validateSessionPreHandler } from '../../workspace-access/internal/interfaces/rest/auth.routes.js';
 import type { DbPool, QueryContext } from '@brain/db';
+import { jtiFromJwt, csrfTokenForSession } from './csrf.js';
 
 const COOKIE_NAME = 'brain_session';
 const CSRF_COOKIE_NAME = 'brain_csrf';
 const CSRF_HEADER_NAME = 'x-csrf-token';
+const ACCESS_TOKEN_EXPIRY_SECS = 15 * 60; // matches the session cookie maxAge
 
 export function registerBffRoutes(
   fastify: FastifyInstance,
   authService: AuthService,
   pool?: DbPool,
+  cookieSecret = '',
 ): void {
   const sessionPreHandler = validateSessionPreHandler(authService);
 
   // ── CSRF token endpoint ────────────────────────────────────────────────────
-  // GET /api/v1/bff/csrf — returns a CSRF token bound to the session.
+  // GET /api/v1/bff/csrf — issues a session-bound CSRF token (SEC-0009-M02). When
+  // the request carries a session, the token is HMAC(cookieSecret, jti) — bound to
+  // that session and invalidated when it rotates/revokes. Pre-session callers get a
+  // random token (only used on CSRF-exempt routes).
   fastify.get('/api/v1/bff/csrf', async (request: FastifyRequest, reply: FastifyReply) => {
-    const csrfToken = randomUUID();
+    const reqCookies = (request as unknown as { cookies: Record<string, string | undefined> }).cookies;
+    const jti = jtiFromJwt(reqCookies?.[COOKIE_NAME]);
+    const csrfToken = jti && cookieSecret ? csrfTokenForSession(jti, cookieSecret) : randomUUID();
     (reply as CookieReply).setCookie(CSRF_COOKIE_NAME, csrfToken, {
       httpOnly: false, // CSRF cookie must be readable by JS
       secure: process.env['NODE_ENV'] === 'production',
       sameSite: 'strict',
       path: '/',
+      maxAge: ACCESS_TOKEN_EXPIRY_SECS, // SEC-0009-L02: match session lifetime
     });
     return reply.send({ csrf_token: csrfToken });
   });
@@ -153,6 +162,9 @@ export function registerBffRoutes(
           email_verified: result.user.emailVerifiedAt !== null,
         },
         expires_in: result.expiresIn,
+        // The web app routes to onboarding when the session carries no brand yet.
+        needs_onboarding: result.context.brandId === null,
+        auth: result.context,
       });
     } catch {
       return reply.code(401).send({
@@ -161,6 +173,37 @@ export function registerBffRoutes(
       });
     }
   });
+
+  // ── POST /api/v1/bff/session/refresh — re-mint cookie with current brand/role ──
+  // Called after onboarding (workspace + brand creation) so the SAME session picks
+  // up the newly-resolved brand_id/role without forcing a re-login. Authenticated
+  // via the session cookie (bridged to Bearer by the app-wide onRequest hook);
+  // reuses the existing jti, so revocation state is preserved (NN-3).
+  fastify.post(
+    '/api/v1/bff/session/refresh',
+    { preHandler: [sessionPreHandler] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const correlationId = (request.headers['x-correlation-id'] as string) ?? requestId;
+      const auth = (request as AuthenticatedRequest).auth;
+
+      const result = await authService.refreshSession(auth.userId, auth.jti, correlationId);
+
+      (reply as CookieReply).setCookie(COOKIE_NAME, result.accessToken, {
+        httpOnly: true,
+        secure: process.env['NODE_ENV'] === 'production',
+        sameSite: 'strict',
+        path: '/',
+        maxAge: result.expiresIn,
+      });
+
+      return reply.send({
+        request_id: requestId,
+        needs_onboarding: result.context.brandId === null,
+        auth: result.context,
+      });
+    },
+  );
 
   // ── DELETE /api/v1/bff/session — logout + clear cookie ────────────────────
   fastify.delete(
@@ -220,7 +263,7 @@ export function registerBffRoutes(
   // They proxy to the internal service implementations.
   // Brand assertion: if X-Brand-Id is present, it must match auth.brandId (or null).
 
-  fastify.addHook('preHandler', async (request: FastifyRequest, reply: FastifyReply) => {
+  fastify.addHook('preHandler', async (request: FastifyRequest) => {
     if (!request.routeOptions?.url?.startsWith('/api/v1/bff/')) return;
     // Already handled by per-route preHandlers above.
   });

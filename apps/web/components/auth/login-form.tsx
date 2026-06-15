@@ -27,9 +27,9 @@ export function LoginForm() {
 
   function onSubmit(data: LoginFormValues) {
     login(data, {
-      onSuccess: () => {
-        // httpOnly cookie set by BFF; redirect to dashboard
-        router.push('/dashboard');
+      onSuccess: (result) => {
+        // httpOnly cookie set by BFF; route based on onboarding state
+        router.push(result.needs_onboarding ? '/workspace/new' : '/dashboard');
       },
     });
   }

@@ -1,12 +1,14 @@
 'use client';
 
 import { useState } from 'react';
-import { Loader2, MoreHorizontal, Trash2, Shield } from 'lucide-react';
+import { Loader2, Trash2, Shield, Users } from 'lucide-react';
+import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
 import { EmptyState } from '@/components/ui/empty-state';
+import { BffApiError } from '@/lib/api/client';
 import {
   Dialog,
   DialogContent,
@@ -53,6 +55,20 @@ export function MembersTable() {
   }
 
   if (error) {
+    if (error instanceof BffApiError && error.status === 403) {
+      return (
+        <EmptyState
+          title="Setup required"
+          description="Complete onboarding to manage team members."
+          icon={<Users className="h-8 w-8" />}
+          action={
+            <Link href="/workspace/new" className="text-sm text-primary underline-offset-4 hover:underline">
+              Continue setup
+            </Link>
+          }
+        />
+      );
+    }
     return <ErrorCard error={error} retry={refetch} />;
   }
 

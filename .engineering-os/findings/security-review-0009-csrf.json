@@ -1,0 +1,106 @@
+{
+  "verdict": "PASS",
+  "no_critical": true,
+  "no_high": true,
+  "findings": [
+    {
+      "id": "SEC-0009-M01",
+      "severity": "MED",
+      "title": "GET /api/v1/pixel/installation is a GET with persistent write side effects (GetOrCreate inserts rows)",
+      "detail": "GET /api/v1/pixel/installation calls GetOrCreatePixelInstallationCommand which can INSERT into pixel_installation and pixel_status tables (main.ts:473, GetOrCreatePixelInstallationCommand.ts:61-73). This is a GET-with-side-effects pattern: the CSRF double-submit hook correctly only fires on POST/PUT/PATCH/DELETE, so CSRF enforcement does not apply. The structural mitigant is sameSite=strict on brain_session (bff.routes.ts:143): a cross-site GET cannot carry the session cookie, so an attacker cannot trigger the create path from another origin. The route also requires analyst+ RBAC (main.ts:403). Risk is low in practice but the route should be reclassified as POST or the create path split into its own POST endpoint to align method semantics with side-effect semantics, eliminating the GET-write anti-pattern entirely.",
+      "file": "apps/core/src/main.ts",
+      "line": 473,
+      "companion": "apps/core/src/modules/connector/pixel/application/commands/GetOrCreatePixelInstallationCommand.ts",
+      "status": "OPEN",
+      "remediation": "Convert GET /api/v1/pixel/installation to POST (for the create path) + GET (for the read path), or accept the current design with a comment documenting the sameSite=strict mitigant and why the GetOrCreate pattern is safe. Not a CSRF bypass given sameSite=strict, but violates HTTP method semantics and could confuse future GET-caching middleware."
+    },
+    {
+      "id": "SEC-0009-M02",
+      "severity": "MED",
+      "title": "CSRF token not bound to session — unauthenticated callers can obtain tokens (no per-session tie)",
+      "detail": "GET /api/v1/bff/csrf (bff.routes.ts:59) requires no authentication. Any caller (including a script on another domain before the victim visits) can obtain a valid CSRF token. The token is a bare UUID with no session binding, no expiry set (session-cookie lifetime only), and is not bound to the authenticated user identity. A CSRF token fixation attack requires an attacker to plant their known token in the victim's browser as the brain_csrf cookie; this is blocked because (a) the attacker cannot set cookies on the victim's domain, and (b) sameSite=strict prevents the victim's brain_csrf from being sent on cross-site requests anyway. However, the absence of session-binding means any valid brain_csrf cookie value satisfies the check regardless of when or by whom it was issued. This weakens the value of the second factor in the double-submit pattern. The standard hardening is to MAC the token with the session secret (e.g. HMAC-SHA256(sessionJti, randomBytes)) so a token from one session cannot satisfy another.",
+      "file": "apps/core/src/modules/frontend-api/internal/bff.routes.ts",
+      "line": 59,
+      "status": "OPEN",
+      "remediation": "Bind the CSRF token to the session JTI: csrfToken = HMAC-SHA256(jwtSigningSecret, jti + randomBytes). Verify server-side by re-deriving or by storing the expected value in the session. This is defence-in-depth; the current implementation is not exploitable given sameSite=strict on both cookies, but token binding is the canonical double-submit pattern."
+    },
+    {
+      "id": "SEC-0009-L01",
+      "severity": "LOW",
+      "title": "GET /api/v1/connectors/shopify/install is a GET that creates server-side OAuth state (in-memory nonce)",
+      "detail": "GET /api/v1/connectors/shopify/install calls InitiateOAuthCommand.execute() which writes a nonce to InProcessOAuthStateStore (main.ts:423, InitiateOAuthCommand.ts:47). This is a GET-with-side-effects. The effect is ephemeral (in-memory, 15-minute TTL) and not persistent, so the attack surface is bounded. sameSite=strict on brain_session blocks cross-site exploitation. The route requires manager+ RBAC. Risk is theoretical only.",
+      "file": "apps/core/src/main.ts",
+      "line": 423,
+      "status": "OPEN",
+      "remediation": "Consider renaming the route to POST or documenting the GET-with-side-effects intent explicitly. No urgent fix required; the in-memory nonce has no cross-tenant effect and sameSite=strict blocks cross-site triggers."
+    },
+    {
+      "id": "SEC-0009-L02",
+      "severity": "LOW",
+      "title": "CSRF cookie has no maxAge — expiry is uncontrolled relative to session expiry",
+      "detail": "brain_csrf is set as a session cookie (no maxAge, no expires — bff.routes.ts:61-66). brain_session has maxAge=result.expiresIn. A browser may retain brain_csrf after the session expires (if the browser session persists), or conversely discard brain_csrf before the session (on browser close), causing spurious CSRF failures for users who re-open the tab. Neither path creates a security hole, but it can cause usability friction (ensureCsrfToken() in client.ts re-fetches on a cache miss, so the UX impact is a single extra round trip). Aligning maxAge on brain_csrf to match brain_session.expiresIn would be tidy.",
+      "file": "apps/core/src/modules/frontend-api/internal/bff.routes.ts",
+      "line": 61,
+      "status": "OPEN",
+      "remediation": "Set maxAge on brain_csrf to match the session expiresIn value, or set it to a fixed conservative TTL (e.g. 3600 seconds). This is a UX hygiene fix, not a security issue."
+    }
+  ],
+  "closed_from_0008": [
+    {
+      "id": "SEC-0008-M01",
+      "title": "refreshSession endpoint missing CSRF check",
+      "resolution": "Fixed. The app-wide onRequest hook (main.ts:159-209) enforces CSRF on all cookie-authenticated POST/PUT/PATCH/DELETE requests. POST /api/v1/bff/session/refresh has a session cookie present when called and is NOT in the exempt list (exempt list uses exact match '/api/v1/bff/session', not '/api/v1/bff/session/refresh'). The hook fires before preHandlers, so CSRF is enforced before sessionPreHandler runs."
+    }
+  ],
+  "isolation_preserved": true,
+  "csrf_sound": true,
+  "rls_analysis": {
+    "policy": "organization_self_read",
+    "table": "organization",
+    "for_op": "SELECT",
+    "role": "brain_app",
+    "predicate": "id IN (SELECT m.organization_id FROM membership m WHERE m.app_user_id = current_setting('app.current_user_id', TRUE)::uuid)",
+    "fail_closed_guc_missing": "current_setting('app.current_user_id', TRUE) returns NULL → predicate = id IN (empty set) = false → 0 rows returned",
+    "fail_closed_verified": true,
+    "cross_user_leak": false,
+    "cross_tenant_leak": false,
+    "recursion": false,
+    "recursion_analysis": "organization_self_read reads membership. membership_self_read (0008) and membership_isolation (0003) do NOT read organization. No cycle exists.",
+    "subquery_rls_applies": true,
+    "subquery_rls_note": "The subquery runs as brain_app (NOBYPASSRLS per 0001_init.sql assertion). membership_self_read (FOR SELECT) and membership_isolation (FOR ALL) both apply to the subquery. The subquery returns only membership rows where app_user_id = current user.",
+    "writes_governed_by": "organization_isolation (FOR ALL, workspace-scoped) — unchanged by this migration",
+    "brand_table_untouched": true,
+    "business_tables_untouched": true,
+    "negative_control_sanity_in_migration": true,
+    "bypassrls_brain_app": false
+  },
+  "csrf_analysis": {
+    "double_submit_sound": true,
+    "attacker_cannot_read_csrf_cookie": true,
+    "attacker_cannot_force_header": true,
+    "same_site_strict_brain_session": true,
+    "same_site_strict_brain_csrf": true,
+    "brain_session_httponly": true,
+    "brain_csrf_httponly": false,
+    "exempt_list_over_broad": false,
+    "exempt_list_analysis": {
+      "/api/v1/bff/session": "Login — establishes the session, no existing session to CSRF",
+      "/api/v1/auth/login": "Pre-session — no authenticated state to CSRF",
+      "/api/v1/auth/register": "Pre-session — no authenticated state to CSRF",
+      "/api/v1/auth/verify-email": "Pre-session or token-gated — not cookie-authed mutation",
+      "/api/v1/auth/forgot-password": "Unauthenticated — no session cookie present",
+      "/api/v1/auth/reset-password": "Token-gated — no session cookie, uses one-time token",
+      "/api/v1/connectors/shopify/callback": "OAuth callback — Shopify-called (not user browser), HMAC-validated (NN-4), no brain_session cookie in Shopify's request",
+      "/api/v1/webhooks/*": "HMAC-validated platform webhooks — not browser-initiated, no brain_session"
+    },
+    "bypass_via_method_confusion": false,
+    "bypass_via_path_outside_api": false,
+    "bypass_note_health_routes": "/ and /health are GETs with no state changes — not CSRF-relevant",
+    "cookie_bearer_bridge_interaction": "Safe. The onRequest hook bridges cookie→Bearer only when !authorization && sessionCookie. An attacker on another origin cannot carry brain_session (sameSite=strict) so the bridge never fires for cross-site requests. A Bearer-only client (no cookie) is exempt from CSRF by design (only browser BFF clients are CSRF-threatened).",
+    "session_refresh_csrf_covered": true,
+    "session_refresh_coverage_mechanism": "app-wide onRequest hook (main.ts:187-208); /api/v1/bff/session/refresh is POST + has session cookie + is NOT in exempt list"
+  },
+  "scanners": "delta-scope: three files in commit 924f0ba (db/migrations/0009_organization_self_read.sql, apps/core/src/main.ts, apps/web/lib/api/client.ts). No new dependencies added; no new secrets; no new schema tables; no IaC changes. gitleaks/secret scan: .env is gitignored (confirmed via git ls-files), only .env.example tracked (no real secrets). Full scanner suite deferred to FULL-mode review; this DELTA review is scoped to the bounced findings and the changed lines.",
+  "verification_validity": "Negative controls confirmed: (1) two-arg current_setting verified by DO block in 0009 (migration fails if one-arg form used); (2) CSRF hook verified: missing csrfHeader → 403 CSRF_MISMATCH; (3) organization_self_read fail-closed: no GUC → empty subquery → 0 rows. Tests described in commit message (Playwright smoke + tokenless mutation → 403). SEC-0008-M01 fix confirmed via code path analysis (onRequest hook fires before preHandlers; /bff/session/refresh not in exempt list).",
+  "summary": "PASS. Change 1 (0009_organization_self_read.sql): The organization self-read RLS policy is correctly scoped — SELECT-only, bound to the requesting user's own membership rows via the two-arg fail-closed current_setting, applies only to brain_app (NOBYPASSRLS), and creates no recursion cycle. The subquery reads membership governed by membership_self_read (0008), which pins rows to the current user — so only orgs the user genuinely belongs to are readable. No cross-tenant or cross-user leak; writes remain governed exclusively by organization_isolation. Change 2 (CSRF double-submit): The double-submit logic is sound for the stated threat model. brain_session (httpOnly, sameSite=strict) and brain_csrf (JS-readable, sameSite=strict) interact safely: an attacker on another origin cannot read brain_csrf nor force the header. The exemption list is not over-broad — each exempted route is demonstrably either pre-session, token-gated, or HMAC-validated. SEC-0008-M01 (the prior CSRF gap on POST /bff/session/refresh) is closed by the app-wide onRequest hook. Two MEDs raised: GET /pixel/installation is a GET with persistent write side effects (mitigated by sameSite=strict but violates HTTP semantics), and the CSRF token is not session-bound (weakens defence-in-depth but not exploitable given sameSite=strict on both cookies). No CRITICAL or HIGH findings. P0 brand/tenant isolation invariant is preserved."
+}

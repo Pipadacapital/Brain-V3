@@ -5,6 +5,9 @@
 ## 2026-06-15T07:19:27Z — system — bootstrap
 **Action:** Journal initialized by /eos-init on 2026-06-15T07:19:27Z.
 
+## 2026-06-15T19:19:40Z — system — Stakeholder approval received (feat-m1-app-foundation)
+**Action:** Stakeholder approved M1 Application Foundation at the Stage-7 gate. Status → approved, stage → 8, owner → platform-devops. Stage-6 PASS/GO; Security r3 + QA r3 PASS (independently re-run on live Postgres). 0 open CRITICAL/HIGH/MEDIUM. Canon-4 roles (Viewer→manager) + app-native auth confirmed. Deploy VETO gate next, then Stage 8 commit on a feature branch (never master) folding in dev-config fixes.
+
 ## 2026-06-15T16:06:00Z — Platform/SRE — chore-platform-foundations-sprint0
 **Stage:** 3 (Build) · **Affected:** collector, stream-worker, core, web · **Canary:** ArgoCD auto-sync staging / manual prod · **Monitor:** composite EKS-unhealthy alarm armed (CrashLoopBackOff OR node_not_ready)
 **Staging smoke:** N/A (scaffolding stage — no live apply) · **Next:** orchestrator stages files; Track A/D engineers consume IRSA outputs and cross-track requests in 05-developer-report-platform.md
@@ -29,3 +32,30 @@
 
 ## 2026-06-15T14:06:21Z — system — Stakeholder approval received
 **Action:** chore-platform-foundations-sprint0 approved at Stakeholder gate; advancing to Stage 8 (deploy).
+
+## 2026-06-15T19:30:00Z — Platform/SRE — feat-m1-app-foundation
+**Stage:** 8 · **Affected:** apps/core, apps/web, db/migrations, packages/{audit,contracts,db,pixel-sdk}, tools/isolation-fuzz · **Canary:** N/A (Phase-1 dev-only) · **Monitor:** N/A (Phase-1 dev-only)
+**Staging smoke:** N/A (no live infra in Phase 1) · **Next:** PR review + Stakeholder merge decision
+
+**Ship summary:**
+- Branch: `feat/m1-app-foundation` — created off `fix/web-bff-proxy-api-prefix` (carries BFF /api-prefix fix dc3fd47)
+- Commit: `55e4d68` — 181 files, 24000 insertions; full M1 vertical slice
+- Pushed to `origin` (https://github.com/Rishabhporwal/Brain-V4.git): YES
+- PR: NOT opened via CLI (gh unauthenticated); manual URL: https://github.com/Rishabhporwal/Brain-V4/pull/new/feat/m1-app-foundation
+- Phase-1 dev-only: no prod infra, no canary/bake/rollback, no staging smoke against live systems
+- Reversibility: `git revert 55e4d68` on feature branch, or simply do not merge PR
+
+**Dev-config folded in:** turbo globalPassThroughEnv, `next dev -p 3000`, docker-compose MinIO healthcheck, BFF /api-prefix rewrite
+
+**11 LOW residuals carried forward** (0 CRITICAL/HIGH/MEDIUM):
+1. Rate-limit on auth endpoints — backend-engineer — M2
+2. Email enumeration timing jitter — backend-engineer — M2
+3. Shopify webhook replay window — backend-engineer — M2
+4. OAuthStateNonce DB expiry — backend-engineer — M2
+5. InProcessOAuthStateStore not HA — platform-devops — M2 infra
+6. SES sandbox → production — backend-engineer — pre-launch
+7. Pixel SDK CSP nonce injection — frontend-engineer — M2
+8. Dashboard polling hardcoded — frontend-engineer — M2
+9. RBAC gap on BFF routes — backend-engineer — M2
+10. Missing invite-accept integration test — qa — M2
+11. MinIO BYOC trigger evaluation — platform-devops — M2 infra review

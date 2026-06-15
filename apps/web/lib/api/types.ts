@@ -47,10 +47,19 @@ export interface LoginRequest {
 }
 
 export interface LoginResponse {
-  user_id: string;
-  email: string;
-  full_name: string;
-  // Access JWT is set as httpOnly cookie by the BFF; not in body
+  request_id: string;
+  user: {
+    id: string;
+    email: string;
+    email_verified: boolean;
+  };
+  expires_in: number;
+  needs_onboarding: boolean;
+  auth: {
+    brandId: string | null;
+    workspaceId: string | null;
+    role: string | null;
+  };
 }
 
 export interface ForgotPasswordRequest {
@@ -99,7 +108,7 @@ export interface WorkspaceResponse {
 // ── Brand ────────────────────────────────────────────────────────────────────
 
 export interface CreateBrandRequest {
-  organization_id: string;
+  workspace_id: string;
   display_name: string;
   domain?: string;
   region_code?: string;
@@ -191,13 +200,15 @@ export interface ShopifyInstallUrlResponse {
 
 export type PixelState = 'connected' | 'syncing' | 'waiting_for_data' | 'error';
 
+/** Normalized pixel installation (GET reads, POST provisions). `installed: false`
+ *  means no installation exists yet — the wizard offers to generate one. */
 export interface PixelInstallationResponse {
-  id: string;
-  brand_id: string;
-  install_token: string;
-  target_host: string;
-  installed_at: string | null;
-  snippet: string; // The HTML snippet to embed
+  installed: boolean;
+  installation_id?: string;
+  install_token?: string;
+  target_host?: string;
+  snippet?: string; // The HTML snippet to embed (from snippet_html)
+  is_new?: boolean;
 }
 
 export interface PixelHealthResponse {
@@ -248,4 +259,25 @@ export interface PaginatedResponse<T> {
   data: T[];
   next_cursor: string | null;
   has_more: boolean;
+}
+
+// ── Workspace list (actual shape from GET /v1/workspaces) ─────────────────────
+
+export interface WorkspaceListResponse {
+  request_id: string;
+  workspaces: WorkspaceResponse[];
+  next_cursor: string | null;
+  has_more: boolean;
+}
+
+// ── Session refresh ───────────────────────────────────────────────────────────
+
+export interface SessionRefreshResponse {
+  request_id: string;
+  needs_onboarding: boolean;
+  auth: {
+    brandId: string | null;
+    workspaceId: string | null;
+    role: string | null;
+  };
 }

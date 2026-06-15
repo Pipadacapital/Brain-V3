@@ -21,6 +21,8 @@ import type {
   CurrentUserResponse,
   CreateWorkspaceRequest,
   WorkspaceResponse,
+  WorkspaceListResponse,
+  SessionRefreshResponse,
   CreateBrandRequest,
   BrandResponse,
   MemberResponse,
@@ -42,10 +44,35 @@ import type {
 /** All BFF routes proxied through Next.js API routes → frontend-api module */
 const BFF_BASE = '/api/bff';
 
+const CSRF_COOKIE = 'brain_csrf';
+const MUTATING = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+
 function generateRequestId(): string {
   return typeof crypto !== 'undefined' && crypto.randomUUID
     ? crypto.randomUUID()
     : Math.random().toString(36).slice(2);
+}
+
+/** Read a non-httpOnly cookie value by name (browser only). */
+function readCookie(name: string): string | undefined {
+  if (typeof document === 'undefined') return undefined;
+  const match = document.cookie.match(new RegExp(`(?:^|; )${name}=([^;]*)`));
+  return match ? decodeURIComponent(match[1]!) : undefined;
+}
+
+/**
+ * Double-submit CSRF token. The server (GET /api/v1/bff/csrf) sets a JS-readable
+ * `brain_csrf` cookie; we echo its value in the `x-csrf-token` header on every
+ * state-changing request. Bootstraps the cookie on first use.
+ */
+async function ensureCsrfToken(): Promise<string | undefined> {
+  if (typeof document === 'undefined') return undefined; // SSR — no cookie jar
+  let token = readCookie(CSRF_COOKIE);
+  if (!token) {
+    await fetch(`${BFF_BASE}/v1/bff/csrf`, { credentials: 'include' });
+    token = readCookie(CSRF_COOKIE);
+  }
+  return token;
 }
 
 /**
@@ -57,20 +84,50 @@ async function bffFetch<T>(
   options: RequestInit & { idempotencyKey?: string } = {},
 ): Promise<T> {
   const requestId = generateRequestId();
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
+  const method = (options.method ?? 'GET').toUpperCase();
+  const isMutation = MUTATING.has(method);
+
+  const buildHeaders = (csrfToken: string | undefined): Record<string, string> => ({
+    // Only declare a JSON content-type when there is actually a body. A POST with
+    // `Content-Type: application/json` and an empty body is rejected by Fastify's
+    // body parser with a 400 (e.g. logout, session/refresh — no-body mutations).
+    ...(options.body != null ? { 'Content-Type': 'application/json' } : {}),
     'X-Request-Id': requestId,
+    ...(csrfToken ? { 'x-csrf-token': csrfToken } : {}),
     ...(options.idempotencyKey
       ? { 'Idempotency-Key': options.idempotencyKey }
       : {}),
     ...(options.headers as Record<string, string> | undefined),
-  };
+  });
 
-  const response = await fetch(`${BFF_BASE}${path}`, {
+  // Double-submit CSRF token on state-changing requests (server enforces it for
+  // cookie-authenticated mutations). Exempt routes (login/register) ignore it.
+  const csrfToken = isMutation ? await ensureCsrfToken() : undefined;
+
+  let response = await fetch(`${BFF_BASE}${path}`, {
     ...options,
-    headers,
+    headers: buildHeaders(csrfToken),
     credentials: 'include', // send httpOnly cookie
   });
+
+  // The CSRF token is bound to the session (server-side). A token issued before
+  // login (or before a session rotation) won't match — force-refresh a fresh,
+  // session-bound token and retry the mutation ONCE.
+  if (response.status === 403 && isMutation) {
+    const peeked = await response
+      .clone()
+      .json()
+      .catch(() => ({}) as { error?: { code?: string } });
+    if (peeked?.error?.code === 'CSRF_MISMATCH') {
+      await fetch(`${BFF_BASE}/v1/bff/csrf`, { credentials: 'include' });
+      const fresh = readCookie(CSRF_COOKIE);
+      response = await fetch(`${BFF_BASE}${path}`, {
+        ...options,
+        headers: buildHeaders(fresh),
+        credentials: 'include',
+      });
+    }
+  }
 
   if (!response.ok) {
     let errorBody: { request_id?: string; error?: { code?: string; message?: string } } = {};
@@ -125,12 +182,20 @@ export const authApi = {
   // cookie (the raw /v1/auth/login route returns the token in the body and sets no
   // cookie — unusable from the browser). All subsequent requests authenticate via
   // that cookie (bridged to a Bearer header server-side).
-  login: (body: LoginRequest) =>
-    bffFetch<LoginResponse>('/v1/bff/session', {
+  login: async (body: LoginRequest): Promise<LoginResponse> => {
+    const res = await bffFetch<LoginResponse>('/v1/bff/session', {
       method: 'POST',
       body: JSON.stringify(body),
       idempotencyKey: generateRequestId(),
-    }),
+    });
+    // Refresh the CSRF token now that a session exists — the token is bound to the
+    // session, so a pre-login token would be rejected on the first authenticated
+    // mutation. Re-issuing here gives a session-bound token up front (no 403/retry).
+    if (typeof document !== 'undefined') {
+      await fetch(`${BFF_BASE}/v1/bff/csrf`, { credentials: 'include' });
+    }
+    return res;
+  },
 
   logout: () =>
     bffFetch<OkResponse>('/v1/auth/logout', {
@@ -155,6 +220,16 @@ export const authApi = {
   me: () => bffFetch<CurrentUserResponse>('/v1/auth/me'),
 };
 
+// ── Session ───────────────────────────────────────────────────────────────────
+
+export const sessionApi = {
+  refresh: () =>
+    bffFetch<SessionRefreshResponse>('/v1/bff/session/refresh', {
+      method: 'POST',
+      idempotencyKey: generateRequestId(),
+    }),
+};
+
 // ── Workspace ─────────────────────────────────────────────────────────────────
 
 export const workspaceApi = {
@@ -168,7 +243,7 @@ export const workspaceApi = {
   get: (id: string) => bffFetch<WorkspaceResponse>(`/v1/workspaces/${id}`),
 
   list: (cursor?: string) =>
-    bffFetch<PaginatedResponse<WorkspaceResponse>>(
+    bffFetch<WorkspaceListResponse>(
       `/v1/workspaces${cursor ? `?cursor=${cursor}` : ''}`,
     ),
 };
@@ -253,8 +328,42 @@ export const connectorsApi = {
 
 // ── Pixel ─────────────────────────────────────────────────────────────────────
 
+interface RawPixelInstallation {
+  installed: boolean;
+  installation_id?: string;
+  install_token?: string;
+  target_host?: string;
+  snippet_html?: string;
+  is_new?: boolean;
+}
+
+function mapPixel(d: RawPixelInstallation): PixelInstallationResponse {
+  return {
+    installed: d.installed,
+    installation_id: d.installation_id,
+    install_token: d.install_token,
+    target_host: d.target_host,
+    snippet: d.snippet_html,
+    is_new: d.is_new,
+  };
+}
+
 export const pixelApi = {
-  getInstallation: () => bffFetch<PixelInstallationResponse>('/v1/pixel/installation'),
+  // GET is read-only (SEC-0009-M01): returns the existing installation or installed:false.
+  getInstallation: async (): Promise<PixelInstallationResponse> => {
+    const { data } = await bffFetch<{ data: RawPixelInstallation }>('/v1/pixel/installation');
+    return mapPixel(data);
+  },
+
+  // POST provisions (get-or-create) — the write path, CSRF-protected.
+  provision: async (target_host: string): Promise<PixelInstallationResponse> => {
+    const { data } = await bffFetch<{ data: RawPixelInstallation }>('/v1/pixel/installation', {
+      method: 'POST',
+      body: JSON.stringify({ target_host }),
+      idempotencyKey: generateRequestId(),
+    });
+    return mapPixel(data);
+  },
 
   verify: () =>
     bffFetch<OkResponse>('/v1/pixel/verify', {
@@ -266,17 +375,101 @@ export const pixelApi = {
 };
 
 // ── Dashboard (Postgres-only reads — arch plan §6.4) ─────────────────────────
+//
+// The BFF wraps every dashboard payload in a { request_id, data } envelope and uses
+// its own field names (org_name, shopify.syncState, step.key, …). These adapters
+// unwrap the envelope and map the BFF shape onto the component-facing types declared
+// in ./types, so the card components and their types stay unchanged.
+
+interface BffEnvelope<T> {
+  request_id: string;
+  data: T;
+}
+
+interface RawBrandSummary {
+  org_name: string | null;
+  brand_count: number;
+  member_count: number;
+  brands: Array<{ id: string; display_name: string; domain: string | null; status: string }>;
+}
+
+interface RawConnectionStatus {
+  shopify: {
+    connected: boolean;
+    status: string | null;
+    syncState: string | null;
+    lastSyncAt: string | null;
+  };
+  meta: { coming_soon: boolean };
+  google: { coming_soon: boolean };
+}
+
+interface RawDataStatus {
+  pixel: { installed: boolean; state: string | null; verifiedAt: string | null };
+}
+
+interface RawOnboarding {
+  steps: Array<{ key: string; label: string; completed: boolean }>;
+  completed_count: number;
+  total_count: number;
+  all_complete: boolean;
+}
+
+/** Maps an onboarding step key to the route that completes it (none for already-done steps). */
+const ONBOARDING_STEP_ROUTE: Record<string, string | undefined> = {
+  email_verified: undefined,
+  workspace_created: '/workspace/new',
+  brand_created: '/brand/new',
+  shopify_connected: '/settings/connectors',
+  pixel_installed: '/settings/pixel',
+};
 
 export const dashboardApi = {
-  getBrandSummary: () =>
-    bffFetch<DashboardBrandSummaryResponse>('/v1/dashboard/brand-summary'),
+  // null → no brand yet → card renders its "No Data Yet" empty state.
+  getBrandSummary: async (): Promise<DashboardBrandSummaryResponse | null> => {
+    const { data } = await bffFetch<BffEnvelope<RawBrandSummary>>('/v1/dashboard/brand-summary');
+    if (!data || data.brand_count === 0) return null;
+    return {
+      workspace_name: data.org_name ?? '',
+      brand_name: data.brands[0]?.display_name ?? '',
+      member_count: data.member_count,
+    };
+  },
 
-  getConnectionStatus: () =>
-    bffFetch<DashboardConnectionStatusResponse>('/v1/dashboard/connection-status'),
+  getConnectionStatus: async (): Promise<DashboardConnectionStatusResponse> => {
+    const { data } = await bffFetch<BffEnvelope<RawConnectionStatus>>(
+      '/v1/dashboard/connection-status',
+    );
+    const s = data?.shopify;
+    return {
+      connector_status: (s?.status ?? null) as DashboardConnectionStatusResponse['connector_status'],
+      // null sync_state → card shows its empty state.
+      sync_state: (s?.connected ? s.syncState : null) as DashboardConnectionStatusResponse['sync_state'],
+      last_sync_at: s?.lastSyncAt ?? null,
+      provider: (s?.connected ? 'shopify' : null) as DashboardConnectionStatusResponse['provider'],
+    };
+  },
 
-  getDataStatus: () =>
-    bffFetch<DashboardDataStatusResponse>('/v1/dashboard/data-status'),
+  getDataStatus: async (): Promise<DashboardDataStatusResponse> => {
+    const { data } = await bffFetch<BffEnvelope<RawDataStatus>>('/v1/dashboard/data-status');
+    const p = data?.pixel;
+    return {
+      // null pixel_state → card shows its empty state.
+      pixel_state: (p?.installed ? p.state : null) as DashboardDataStatusResponse['pixel_state'],
+      pixel_installed_at: p?.verifiedAt ?? null,
+    };
+  },
 
-  getOnboardingProgress: () =>
-    bffFetch<DashboardOnboardingResponse>('/v1/dashboard/onboarding-progress'),
+  getOnboardingProgress: async (): Promise<DashboardOnboardingResponse> => {
+    const { data } = await bffFetch<BffEnvelope<RawOnboarding>>(
+      '/v1/dashboard/onboarding-progress',
+    );
+    const steps = (data?.steps ?? []).map((s) => ({
+      id: s.key,
+      label: s.label,
+      completed: s.completed,
+      route: ONBOARDING_STEP_ROUTE[s.key],
+    }));
+    return { steps, all_complete: data?.all_complete ?? false };
+  },
 };

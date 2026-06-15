@@ -29,6 +29,7 @@ import { registerWorkspaceRoutes } from './modules/workspace-access/internal/int
 import { registerBrandRoutes } from './modules/workspace-access/internal/interfaces/rest/brand.routes.js';
 import { registerMemberRoutes } from './modules/workspace-access/internal/interfaces/rest/member.routes.js';
 import { registerBffRoutes } from './modules/frontend-api/internal/bff.routes.js';
+import { jtiFromJwt, csrfTokenForSession, csrfTokenMatches } from './modules/frontend-api/internal/csrf.js';
 import { NotificationServiceImpl } from './modules/notification/internal/notification.service.impl.js';
 import { createEmailAdapter } from './modules/notification/internal/ses-adapter.js';
 
@@ -155,26 +156,68 @@ export async function main(): Promise<void> {
     parseOptions: {},
   });
 
-  // Add correlation ID to every request.
-  app.addHook('onRequest', async (request, _reply) => {
+  // Add correlation ID to every request + the browser BFF bridge + CSRF defense.
+  app.addHook('onRequest', async (request, reply) => {
     if (!request.headers['x-correlation-id']) {
       request.headers['x-correlation-id'] = randomUUID();
     }
+
+    const cookies = (request as unknown as { cookies?: Record<string, string | undefined> }).cookies;
+    const sessionCookie = cookies?.['brain_session'];
 
     // Browser BFF bridge: the web app authenticates via the httpOnly `brain_session`
     // cookie (set by POST /api/v1/bff/session). Most API routes are guarded by
     // validateSessionPreHandler, which reads `Authorization: Bearer`. The browser
     // cannot set that header (the token is httpOnly), so translate the session cookie
-    // into a Bearer header app-wide. Any route reaching a Bearer guard then authenticates
-    // from the cookie. Routes with their own cookie-aware preHandler (bffProtectedPreHandler)
-    // read request.cookies directly and are unaffected. The cookie is sameSite=strict,
-    // which is the CSRF mitigation for M1; explicit CSRF tokens on mutations are a
-    // hardening follow-up (tracked alongside LOW-E2E-01 / auth hardening).
-    if (!request.headers.authorization) {
-      const cookies = (request as unknown as { cookies?: Record<string, string | undefined> }).cookies;
-      const sessionCookie = cookies?.['brain_session'];
-      if (sessionCookie) {
-        request.headers.authorization = `Bearer ${sessionCookie}`;
+    // into a Bearer header app-wide. Routes with their own cookie-aware preHandler
+    // (bffProtectedPreHandler) read request.cookies directly and are unaffected.
+    if (!request.headers.authorization && sessionCookie) {
+      request.headers.authorization = `Bearer ${sessionCookie}`;
+    }
+
+    // CSRF defense (double-submit) for cookie-authenticated state-changing requests.
+    // The cookie→Bearer bridge means any browser request carrying `brain_session` is
+    // authenticated; sameSite=strict already blocks cross-site cookie sends, and this
+    // adds explicit double-submit defense (SEC-0008-M01). Enforced ONLY when the
+    // request authenticates via the session cookie — so:
+    //   - public/no-session mutations (register, login, the session-creating routes,
+    //     OAuth callback, HMAC webhooks) are exempt,
+    //   - non-browser Bearer clients (a real Authorization header, no cookie) are exempt.
+    const method = request.method.toUpperCase();
+    const isMutation = method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'DELETE';
+    if (isMutation && sessionCookie) {
+      const path = (request.url.split('?')[0] ?? '');
+      const csrfExempt =
+        path === '/api/v1/bff/session' || // login — establishes the session
+        path === '/api/v1/auth/login' ||
+        path === '/api/v1/auth/register' ||
+        path === '/api/v1/auth/verify-email' ||
+        path === '/api/v1/auth/forgot-password' ||
+        path === '/api/v1/auth/reset-password' ||
+        path === '/api/v1/connectors/shopify/callback' || // OAuth (state-validated)
+        path.startsWith('/api/v1/webhooks/'); // HMAC-validated
+      if (!csrfExempt) {
+        const csrfCookie = cookies?.['brain_csrf'];
+        const csrfHeader = Array.isArray(request.headers['x-csrf-token'])
+          ? request.headers['x-csrf-token'][0]
+          : request.headers['x-csrf-token'];
+        // Double-submit (cookie === header) AND session-binding (token must equal
+        // HMAC(cookieSecret, jti) for this session) — SEC-0009-M02. Binding makes a
+        // token issued for another session, or after this session revokes, invalid.
+        const jti = jtiFromJwt(sessionCookie);
+        const expected = jti ? csrfTokenForSession(jti, config.cookieSecret) : undefined;
+        const ok =
+          !!csrfCookie &&
+          !!csrfHeader &&
+          csrfTokenMatches(csrfCookie, csrfHeader) &&
+          !!expected &&
+          csrfTokenMatches(csrfHeader, expected);
+        if (!ok) {
+          return reply.code(403).send({
+            request_id: (request.id as string) ?? randomUUID(),
+            error: { code: 'CSRF_MISMATCH', message: 'CSRF token missing or invalid.' },
+          });
+        }
       }
     }
   });
@@ -239,7 +282,7 @@ export async function main(): Promise<void> {
   registerWorkspaceRoutes(app, authService, workspaceService);
   registerBrandRoutes(app, authService, brandService);
   registerMemberRoutes(app, authService, inviteService);
-  registerBffRoutes(app, authService, pool);
+  registerBffRoutes(app, authService, pool, config.cookieSecret);
 
   // ── HIGH-MOUNT-01: Mount connector + pixel routes with guards wired HERE ────
   //
@@ -441,19 +484,26 @@ export async function main(): Promise<void> {
     scope.addHook('preHandler', sessionPreHandler);
     scope.addHook('preHandler', requireRole('analyst'));
 
-    scope.get('/api/v1/pixel/installation', async (req: FastifyRequest<{ Querystring: { target_host?: string } }>, reply) => {
+    // SEC-0009-M01: GET is READ-ONLY (no write). Returns the existing installation
+    // or { installed: false }. Provisioning is the POST below (CSRF-protected).
+    scope.get('/api/v1/pixel/installation', async (req, reply) => {
       const brandId = getBrandId(req);
       const requestId = (req.id as string) ?? randomUUID();
-      const idempotencyKey = (req.headers['idempotency-key'] as string | undefined) ?? randomUUID();
-      const targetHost = req.query.target_host ?? '';
-      if (!targetHost) {
-        return reply.code(400).send({ request_id: requestId, error: { code: 'MISSING_TARGET_HOST', message: 'target_host query parameter is required' } });
+      const existing = await pixelInstallationRepo.findByBrandId(brandId);
+      if (!existing) {
+        return reply.code(200).send({ request_id: requestId, data: { installed: false } });
       }
-      const result = await getOrCreateInstallation.execute({ brandId, targetHost, idempotencyKey });
-      const snippet = buildDefaultSnippet(result.installToken, brandId, config.pixelIngestBaseUrl);
+      const snippet = buildDefaultSnippet(existing.installToken, brandId, config.pixelIngestBaseUrl);
       return reply.code(200).send({
         request_id: requestId,
-        data: { installation_id: result.installationId, install_token: result.installToken, target_host: result.targetHost, snippet_html: snippet, is_new: result.isNew },
+        data: {
+          installed: true,
+          installation_id: existing.id,
+          install_token: existing.installToken,
+          target_host: existing.targetHost,
+          snippet_html: snippet,
+          is_new: false,
+        },
       });
     });
 
@@ -465,10 +515,28 @@ export async function main(): Promise<void> {
     });
   });
 
-  // Pixel write routes (manager+): POST /pixel/verify
+  // Pixel write routes (manager+): POST /pixel/installation (provision), POST /pixel/verify
   await app.register(async (scope) => {
     scope.addHook('preHandler', sessionPreHandler);
     scope.addHook('preHandler', requireRole('manager'));
+
+    // SEC-0009-M01: provisioning (get-or-create) is a POST — the write path, behind
+    // the app-wide CSRF check. Idempotent: returns the existing installation if any.
+    scope.post('/api/v1/pixel/installation', async (req: FastifyRequest<{ Body: { target_host?: string } }>, reply) => {
+      const brandId = getBrandId(req);
+      const requestId = (req.id as string) ?? randomUUID();
+      const idempotencyKey = (req.headers['idempotency-key'] as string | undefined) ?? randomUUID();
+      const targetHost = (req.body?.target_host ?? '').trim();
+      if (!targetHost) {
+        return reply.code(400).send({ request_id: requestId, error: { code: 'MISSING_TARGET_HOST', message: 'target_host is required' } });
+      }
+      const result = await getOrCreateInstallation.execute({ brandId, targetHost, idempotencyKey });
+      const snippet = buildDefaultSnippet(result.installToken, brandId, config.pixelIngestBaseUrl);
+      return reply.code(result.isNew ? 201 : 200).send({
+        request_id: requestId,
+        data: { installed: true, installation_id: result.installationId, install_token: result.installToken, target_host: result.targetHost, snippet_html: snippet, is_new: result.isNew },
+      });
+    });
 
     scope.post('/api/v1/pixel/verify', async (req, reply) => {
       const brandId = getBrandId(req);

@@ -1,0 +1,15 @@
+{
+  "decision": "approved",
+  "ts": "2026-06-15T19:19:40Z",
+  "actor": "stakeholder",
+  "req_id": "feat-m1-app-foundation",
+  "note": "Approved at Stakeholder gate. Stage 6 PASS/GO; Security r3 PASS, QA r3 PASS — independently re-run on live Postgres. 0 open CRITICAL/HIGH/MEDIUM. Both sanctioned deviations confirmed: (1) Canon-4 roles with Viewer->manager mapping, (2) app-native M1 auth (Authentik fronts later via token-issuer swap). 11 LOW residuals accepted with named owners/close-by dates.",
+  "confirmations": {
+    "role_mapping_viewer_to_manager": "confirmed",
+    "app_native_auth_m1": "confirmed"
+  },
+  "advisor_recommendation": "APPROVE",
+  "cost_usd_est": 30.15,
+  "total_tokens": 2010019,
+  "bounces": 2
+}

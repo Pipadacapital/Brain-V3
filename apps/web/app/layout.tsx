@@ -13,7 +13,14 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-      <body>
+      {/*
+        suppressHydrationWarning: browser extensions (ColorZilla `cz-shortcut-listen`,
+        Grammarly `data-gr-*`, etc.) inject attributes onto <body> before React
+        hydrates, causing a benign attribute mismatch we cannot control. This flag
+        suppresses the warning for THIS element's attributes only — real mismatches
+        inside the tree still surface.
+      */}
+      <body suppressHydrationWarning>
         <QueryProvider>
           {children}
           <Toaster />

@@ -1,0 +1,38 @@
+# Engineering OS — Foundation Approved
+
+**Product:** Brain — AI-native commerce OS for DTC brands (India launch; UAE/GCC later).
+**Approved by:** Founder (Stakeholder).
+**Approved on:** 2026-06-15.
+**Canon scope:** Phase 1 as-built (24-week plan, M0–M5, recommend-only AI, deterministic decisioning, single-region India AWS ap-south-1, modular monolith + 4 deployables).
+
+## Ratified framing decisions
+- Canon scope = Phase 1 as-built (Phases 2–4 are future Foundation amendments).
+- Compliance = DPDP (India) + PDPL (UAE/KSA) as processor; PCI out-of-scope (SAQ-A, tokens only); SOC2 deferred to enterprise phase.
+- Stack = managed-first (Redpanda Cloud, managed StarRocks, Grafana Cloud, node-pg-migrate, KafkaJS).
+- Auth IdP = self-hosted Authentik on EKS.
+- Deploy = ArgoCD + manual gates; canary/progressive delivery deferred to Phase 4.
+- Principal Architect = the Founder (holds the architecture-change ADR review per doc 12 §11).
+
+## Source of record
+Drafted from the frozen requirement docs `docs/requirement docs/01..12` + the Attribution Engine Spec.
+
+## Approved Canon files (sha256 at approval)
+dac4aaa9b92ec1a984253c57850287c00958290aa19153fc52c2c189279661fa  knowledge-base/COMPLIANCE.md
+f24957453183526401fd9a18a6c83c22bdb3569c5166114a61faf901bb7222b6  knowledge-base/ESCALATION-RUBRIC.md
+fe17c7acb3d088f79e7acab538a4b7a1fa730ea6d4b83e735c7a0de1e432eb7b  knowledge-base/HLD.md
+1cfe63d6acb5ad51d987b1031ca504f56c79440136fae658bd9e27f7f8ec1d23  knowledge-base/INVARIANTS.md
+eae63e616025d871ebe6fbb2df25e528384bb9aaa23cdc9e3d220d71bd3b45ff  knowledge-base/METRICS.md
+7247a22164a7bb7caf11d78347e5d7ef25b5f3c730ecb37245349dbc21abcacf  knowledge-base/PLAYBOOK-deploy.md
+09cc348d7775d194f948c4622a6c3a1490777516769061ce23859feaf66b8a10  knowledge-base/PLAYBOOK-incident.md
+a8b6202e29fe885e45187e547d765e7259d133deeec462998e71767f6b52d322  knowledge-base/STACK.md
+f15e635f511d6cb78e61e2b7abf984159b5232ce6ee8f40590ca93ef7c6bb700  knowledge-base/THE-MOAT.md
+347db25d3fef6685f8dad34c7b8c032e706b4646a43aca2538aec6a28bd1e4e3  knowledge-base/TRIGGER-SURFACES.md
+880eeb8c1eaf7c72734867e8087467bd21828bc50dc371ae01724812a5dbf56c  knowledge-base/team-roster.md
+
+## Open TODO-with-owner (do not block Foundation; tracked)
+- Realized-revenue horizon defaults (~25d COD / 7d prepaid) + reconciliation tolerance (±2–3%) — freeze in Sprint 0. Owner: Data Engineer.
+- DPDP Rules 2025 / Consent-Manager finalization; UAE/KSA breach-notification windows; GST SAC code; S3 Object-Lock retention period; GCC AWS region — Owner: Security Reviewer + Engineering Advisor (confirm with legal).
+- SOC2 controls — Owner: Security Reviewer (enterprise phase).
+- ADR numbering reconciliation for ModelAdapter/RegionAdapter vs doc-04 Part F — Owner: Architect.
+
+> Amendments to an invariant or a foundational decision re-enter the Foundation flow (a Foundation amendment), not a passing edit.

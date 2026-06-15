@@ -7,11 +7,15 @@
  * Each entry carries a hash-chain: entry_hash = sha256(prev_hash || canonical(row)).
  * The hash-chain computation is performed here before the INSERT.
  *
- * Sprint-0: stub types + helper interface. The real INSERT against Postgres
- * ships in M1 when the DB pool is live. The interface is defined now so
- * consuming services can be written against it.
+ * L-02 CLOSURE: This file replaces the djb2 stub with real sha256 hashing
+ * (crypto.createHash('sha256')) and implements a DB-backed AuditWriter
+ * that INSERTs into audit_log with a real hash-chain.
+ *
+ * NN-6: Every SELECT in this package MUST carry WHERE brand_id = $1.
+ * The audit_log table has RLS disabled (cross-brand SoR); isolation is
+ * enforced at the application layer by the mandatory brand_id filter.
  */
-import type { CurrencyCode } from '@brain/money';
+import { createHash } from 'node:crypto';
 
 // ── Audit entry shape ─────────────────────────────────────────────────────────
 
@@ -43,63 +47,170 @@ export interface AuditEntry {
   idempotency_key?: string;
 }
 
-// ── Hash-chain helper ─────────────────────────────────────────────────────────
+// ── Hash-chain helper (L-02: real sha256) ─────────────────────────────────────
 
 /**
- * Compute the entry_hash for an audit log row.
+ * Compute the entry_hash for an audit log row using real SHA-256.
  *
  * entry_hash = sha256(prev_hash || canonical(row))
  *
  * where canonical(row) = JSON.stringify with keys sorted alphabetically.
  *
- * Sprint-0 stub: uses a deterministic string hash for unit-testability without
- * the Node.js crypto module. M1 replaces with crypto.createHash('sha256').
+ * L-02: Uses crypto.createHash('sha256') — NOT the djb2 stub.
  */
 export function computeEntryHash(
   prevHash: string | null,
   entry: Omit<AuditEntry, 'idempotency_key'>,
 ): string {
-  const canonical = JSON.stringify(entry, Object.keys(entry).sort());
+  // Sort keys for a stable canonical representation.
+  const canonical = JSON.stringify(entry, Object.keys(entry).sort() as (keyof typeof entry)[]);
   const input = `${prevHash ?? 'genesis'}||${canonical}`;
-  // Sprint-0 stub: simple deterministic hash (not cryptographic; M1 replaces with sha256).
-  // This stub produces a consistent hash for the same input, enabling chain-walk tests.
-  return stubHash(input);
-}
-
-/**
- * Stub hash function (Sprint-0 only).
- * Replace with crypto.createHash('sha256').update(input).digest('hex') in M1.
- */
-function stubHash(input: string): string {
-  // djb2-style hash → hex (deterministic, not cryptographic)
-  let h = 5381;
-  for (let i = 0; i < input.length; i++) {
-    h = ((h << 5) + h + input.charCodeAt(i)) | 0;
-  }
-  return (h >>> 0).toString(16).padStart(8, '0') + '-stub';
+  return createHash('sha256').update(input, 'utf8').digest('hex');
 }
 
 // ── Writer interface ─────────────────────────────────────────────────────────
 
 /**
  * Interface for writing audit log entries.
- * Implemented by the real DB-backed writer in M1 (packages/db integration).
  */
 export interface AuditWriter {
   /**
    * Append an entry to the audit log.
    * The implementation computes prev_hash from the last row before inserting.
    *
-   * @returns The ID of the newly inserted row.
+   * @returns The ID of the newly inserted row and its entry_hash.
    */
   append(entry: AuditEntry): Promise<{ id: bigint; entry_hash: string }>;
+
+  /**
+   * Query recent audit entries for a brand (NN-6: WHERE brand_id = $1 mandatory).
+   */
+  getRecentEntries(
+    brandId: string,
+    limit?: number,
+  ): Promise<Array<{ id: bigint; action: string; entity_type: string; entity_id: string; created_at: Date; entry_hash: string }>>;
 }
 
-// ── No-op writer (Sprint-0 stub) ─────────────────────────────────────────────
+// ── DB-backed writer (L-02: replaces NoopAuditWriter) ───────────────────────
 
 /**
- * No-op audit writer for Sprint-0.
- * In M1 this is replaced by a writer that INSERTs into audit_log via packages/db.
+ * Minimal DB client interface for audit writes.
+ * The real implementation uses @brain/db DbClient.
+ */
+export interface AuditDbClient {
+  query<T = unknown>(
+    sql: string,
+    params?: unknown[],
+  ): Promise<{ rows: T[]; rowCount: number | null }>;
+}
+
+/**
+ * DB-backed audit writer (L-02 closure).
+ *
+ * Writes to the audit_log table with real sha256 hash-chain.
+ * Every read is scoped to brand_id (NN-6).
+ *
+ * NOTE: The db client passed here must already have the appropriate GUC
+ * context set (workspace_id / brand_id) for the enclosing request.
+ * The audit_log itself has RLS disabled (cross-brand SoR) but the
+ * AuditDbClient.query() is expected to be a raw client (not GUC-wrapped)
+ * since audit_log needs no RLS; isolation is enforced by the mandatory
+ * WHERE brand_id filter in every SELECT.
+ */
+export class DbAuditWriter implements AuditWriter {
+  constructor(private readonly db: AuditDbClient) {}
+
+  async append(entry: AuditEntry): Promise<{ id: bigint; entry_hash: string }> {
+    // Step 1: Fetch the last row's entry_hash for this brand to continue the chain.
+    // NN-6: ALWAYS include WHERE brand_id = $1.
+    const prevResult = await this.db.query<{ entry_hash: string }>(
+      `SELECT entry_hash
+       FROM audit_log
+       WHERE brand_id = $1
+       ORDER BY id DESC
+       LIMIT 1`,
+      [entry.brand_id],
+    );
+
+    const prevHash = prevResult.rows[0]?.entry_hash ?? null;
+
+    // Step 2: Compute the entry hash (sha256, L-02).
+    const entryForHash: Omit<AuditEntry, 'idempotency_key'> = {
+      brand_id: entry.brand_id,
+      actor_id: entry.actor_id,
+      actor_role: entry.actor_role,
+      action: entry.action,
+      entity_type: entry.entity_type,
+      entity_id: entry.entity_id,
+      payload: entry.payload,
+    };
+    const entryHash = computeEntryHash(prevHash, entryForHash);
+
+    // Step 3: INSERT the audit row (append-only — no UPDATE/DELETE on audit_log).
+    const insertResult = await this.db.query<{ id: string }>(
+      `INSERT INTO audit_log
+         (brand_id, actor_id, actor_role, action, entity_type, entity_id, payload, prev_hash, entry_hash, idempotency_key)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       ON CONFLICT (idempotency_key) DO NOTHING
+       RETURNING id`,
+      [
+        entry.brand_id,
+        entry.actor_id,
+        entry.actor_role,
+        entry.action,
+        entry.entity_type,
+        entry.entity_id,
+        JSON.stringify(entry.payload),
+        prevHash,
+        entryHash,
+        entry.idempotency_key ?? null,
+      ],
+    );
+
+    const insertedId = insertResult.rows[0]?.id;
+    return {
+      id: insertedId ? BigInt(insertedId) : 0n,
+      entry_hash: entryHash,
+    };
+  }
+
+  async getRecentEntries(
+    brandId: string,
+    limit = 50,
+  ): Promise<Array<{ id: bigint; action: string; entity_type: string; entity_id: string; created_at: Date; entry_hash: string }>> {
+    // NN-6: WHERE brand_id = $1 is MANDATORY on every SELECT from audit_log.
+    const result = await this.db.query<{
+      id: string;
+      action: string;
+      entity_type: string;
+      entity_id: string;
+      created_at: Date;
+      entry_hash: string;
+    }>(
+      `SELECT id, action, entity_type, entity_id, created_at, entry_hash
+       FROM audit_log
+       WHERE brand_id = $1
+       ORDER BY id DESC
+       LIMIT $2`,
+      [brandId, limit],
+    );
+
+    return result.rows.map((r) => ({
+      id: BigInt(r.id),
+      action: r.action,
+      entity_type: r.entity_type,
+      entity_id: r.entity_id,
+      created_at: r.created_at,
+      entry_hash: r.entry_hash,
+    }));
+  }
+}
+
+// ── No-op writer (for tests / environments without a DB) ─────────────────────
+
+/**
+ * No-op audit writer for unit testing.
+ * Uses real sha256 for the hash (no stub — L-02 compliance in tests too).
  */
 export class NoopAuditWriter implements AuditWriter {
   async append(entry: AuditEntry): Promise<{ id: bigint; entry_hash: string }> {
@@ -113,5 +224,12 @@ export class NoopAuditWriter implements AuditWriter {
       payload: entry.payload,
     });
     return { id: 0n, entry_hash: hash };
+  }
+
+  async getRecentEntries(
+    _brandId: string,
+    _limit?: number,
+  ): Promise<Array<{ id: bigint; action: string; entity_type: string; entity_id: string; created_at: Date; entry_hash: string }>> {
+    return [];
   }
 }

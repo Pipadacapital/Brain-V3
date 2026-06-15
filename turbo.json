@@ -1,5 +1,11 @@
 {
   "$schema": "https://turbo.build/schema.json",
+  "globalPassThroughEnv": [
+    "NODE_ENV", "PORT", "DATABASE_URL", "REDIS_URL", "REDPANDA_BROKERS",
+    "APICURIO_URL", "S3_ENDPOINT", "LITELLM_BASE_URL", "AWS_REGION",
+    "JWT_SIGNING_SECRET", "COOKIE_SECRET", "SHOPIFY_CLIENT_ID", "SHOPIFY_CLIENT_SECRET",
+    "NEXT_PUBLIC_API_BASE_URL"
+  ],
   "tasks": {
     "build":          { "dependsOn": ["^build"], "outputs": ["dist/**"] },
     "typecheck":      { "dependsOn": ["^build"] },

@@ -1,3 +1,7 @@
+import { redirect } from 'next/navigation';
+
+// Root redirect: unauthenticated users go to login
+// Authenticated users would be redirected to dashboard (BFF handles session check)
 export default function Home() {
-  return <main>Brain — Command Center (scaffold). See docs/04 §15 / docs/05.</main>;
+  redirect('/login');
 }

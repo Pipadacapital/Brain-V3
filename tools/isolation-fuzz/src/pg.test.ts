@@ -27,7 +27,7 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { buildSetGucSql, buildResetGucSql } from '@brain/db';
+import { buildSetGucSql, buildResetGucSql, BRAND_ID_GUC } from '@brain/db';
 
 // ---------------------------------------------------------------------------
 // Constants — test fixture brands
@@ -147,7 +147,13 @@ afterAll(async () => {
   if (adminClient) {
     // Drop the test table and the app role created for this test.
     await adminClient.query(`DROP TABLE IF EXISTS isolation_test_rls`);
-    await adminClient.query(`DROP ROLE IF EXISTS ${APP_ROLE}`);
+    // Robust role teardown: Postgres refuses to DROP a role that still holds privileges
+    // on any object (incl. stale grants left by a prior failed run). DROP OWNED BY revokes
+    // all of the role's grants and drops objects it owns, so DROP ROLE then succeeds.
+    await adminClient.query(
+      `DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${APP_ROLE}') THEN ` +
+      `EXECUTE 'DROP OWNED BY ${APP_ROLE}'; EXECUTE 'DROP ROLE ${APP_ROLE}'; END IF; END $$;`
+    );
     await adminClient.end();
   }
 });
@@ -169,7 +175,7 @@ async function queryWithBrand(
   try {
     // F-1 fix: buildSetGucSql produces `SET LOCAL app.current_brand_id = '<uuid>'`
     // UUID-validated literal — no $1 binding (Postgres rejects parameterized SET LOCAL).
-    await c.query(buildSetGucSql(brandId));
+    await c.query(buildSetGucSql(BRAND_ID_GUC, brandId));
     const result = await c.query(sql, params);
     await c.query('COMMIT');
     return { rows: result.rows, rowCount: result.rowCount ?? 0 };

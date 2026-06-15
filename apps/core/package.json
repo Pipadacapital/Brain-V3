@@ -3,6 +3,39 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "scripts": { "build": "tsc -b", "typecheck": "tsc --noEmit", "lint": "eslint .", "dev": "tsx watch src/main.ts", "test:unit": "vitest run --passWithNoTests", "test:isolation": "vitest run isolation --passWithNoTests", "test:parity": "vitest run parity --passWithNoTests" },
-  "dependencies": { "fastify": "^4.28.0", "@brain/contracts": "workspace:*", "@brain/metric-engine": "workspace:*", "@brain/money": "workspace:*", "@brain/tenant-context": "workspace:*", "@brain/identity-core": "workspace:*", "@brain/audit": "workspace:*", "@brain/feature-flags": "workspace:*", "@brain/db": "workspace:*", "@brain/events": "workspace:*", "@brain/observability": "workspace:*", "@brain/ai-gateway-client": "workspace:*", "@brain/config": "workspace:*" }
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "dev": "tsx watch src/main.ts",
+    "test:unit": "vitest run --passWithNoTests",
+    "test:isolation": "vitest run isolation --passWithNoTests",
+    "test:parity": "vitest run parity --passWithNoTests"
+  },
+  "dependencies": {
+    "fastify": "^5.7.2",
+    "@fastify/cookie": "^11.0.2",
+    "@aws-sdk/client-secrets-manager": "^3.600.0",
+    "argon2": "^0.44.0",
+    "pg": "^8.21.0",
+    "@brain/contracts": "workspace:*",
+    "@brain/metric-engine": "workspace:*",
+    "@brain/money": "workspace:*",
+    "@brain/tenant-context": "workspace:*",
+    "@brain/identity-core": "workspace:*",
+    "@brain/audit": "workspace:*",
+    "@brain/feature-flags": "workspace:*",
+    "@brain/db": "workspace:*",
+    "@brain/events": "workspace:*",
+    "@brain/observability": "workspace:*",
+    "@brain/ai-gateway-client": "workspace:*",
+    "@brain/config": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.11.6",
+    "@types/argon2": "^0.15.3",
+    "tsx": "^4.22.4",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
 }

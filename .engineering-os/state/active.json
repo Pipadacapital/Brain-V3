@@ -29,6 +29,43 @@
           "I-S07 float money lint fires on fixture"
         ]
       }
+    },
+    {
+      "req_id": "feat-m1-app-foundation",
+      "status": "awaiting-stakeholder",
+      "stage": 7,
+      "current_owner": "stakeholder",
+      "title": "Brain M1 Application Foundation",
+      "lane": "high_stakes",
+      "run_dir": ".engineering-os/runs/2026-06-15T15-37-05Z__f72ae5__feat-m1-app-foundation__rishabhporwal",
+      "last_journal_entry_at": "2026-06-15T18:15:07Z",
+      "backend_tracks": [
+        "0",
+        "1"
+      ],
+      "backend_track_status": "COMPLETE",
+      "verification": {
+        "typecheck": "34/34 PASS",
+        "unit_tests": "53 core + 14 db + others = 36/36 tasks PASS",
+        "lint": "18/18 PASS",
+        "negative_controls": [
+          "NN-1 three-GUC stub rejects no-context queries",
+          "NN-3 revoked session \u2192 false (SQL has revoked_at IS NULL)",
+          "NN-5 argon2id params unit-tested (type=2, m=19456, t=2, p=1)",
+          "NN-5 forgotPassword resolves void for both existing/non-existing email",
+          "NN-5 different tokens produce different sha256 hashes",
+          "L-02 sha256 hash-chain in audit (not djb2)"
+        ]
+      },
+      "nn_status": {
+        "NN-1": "CLOSED \u2014 three-GUC two-arg in packages/db + all 6 migrations",
+        "NN-2": "CLOSED \u2014 secret_ref-only in contract + DDL",
+        "NN-3": "CLOSED \u2014 validateSession preHandler on every route + BFF",
+        "NN-5": "CLOSED \u2014 argon2id asserted + tested; timing-safe; sha256 tokens; single-use",
+        "NN-6": "CLOSED \u2014 audit WHERE brand_id mandatory",
+        "NN-7": "CLOSED \u2014 invite compound PERMISSIVE RLS",
+        "L-02": "CLOSED \u2014 sha256 hash-chain (replaces djb2 stub)"
+      }
     }
   ]
 }

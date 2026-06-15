@@ -16,12 +16,22 @@
     "dev:ingest": "docker compose --profile ingest up -d && turbo run dev --filter=@brain/collector --filter=@brain/stream-worker",
     "dev:full": "docker compose --profile core --profile ingest up -d",
     "seed": "node tools/seed/seed.mjs",
-    "down": "docker compose down"
+    "down": "docker compose down",
+    "migrate": "node-pg-migrate -m db/migrations up",
+    "migrate:up": "node-pg-migrate -m db/migrations up",
+    "migrate:down": "node-pg-migrate -m db/migrations down",
+    "migrate:create": "node-pg-migrate -m db/migrations create"
+  },
+  "pnpm": {
+    "overrides": {
+      "fast-uri": ">=3.1.1"
+    }
   },
   "devDependencies": {
     "@typescript-eslint/parser": "^8.61.0",
     "eslint": "^9.10.0",
     "eslint-plugin-boundaries": "^5.0.0",
+    "node-pg-migrate": "^8.0.4",
     "prettier": "^3.3.0",
     "tsx": "^4.22.4",
     "turbo": "^2.1.0",

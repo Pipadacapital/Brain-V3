@@ -3,3 +3,5 @@
 {"ts":"2026-06-15T13:21:46Z","actor":"system","type":"gate","req_id":"chore-platform-foundations-sprint0","event":"awaiting-stakeholder","lane":"high_stakes","final":"PASS/GO","open_critical_high":0}
 {"ts":"2026-06-15T14:06:21Z","actor":"stakeholder","type":"decision","req_id":"chore-platform-foundations-sprint0","decision":"approved"}
 {"ts":"2026-06-15T14:17:20Z","actor":"platform-devops","type":"deploy","req_id":"chore-platform-foundations-sprint0","status":"shipped","branch":"feat/sprint0-platform-foundations"}
+{"ts":"2026-06-15T15:38:27Z","actor":"system","type":"intake","req_id":"feat-m1-app-foundation","title":"Brain M1 Application Foundation","submitted_by":"rishabhporwal","lane":"high_stakes"}
+{"ts":"2026-06-15T18:15:07Z","actor":"system","type":"gate","req_id":"feat-m1-app-foundation","event":"awaiting-stakeholder","final":"PASS/GO","open_critical_high":0}

@@ -38,20 +38,20 @@ const CORR_ID = 'trace-test-123';
 
 describe('buildSetGucSql', () => {
   it('produces the correct SET LOCAL statement for a valid UUID', () => {
-    const sql = buildSetGucSql(BRAND_A);
+    const sql = buildSetGucSql(BRAND_ID_GUC, BRAND_A);
     expect(sql).toBe(`SET LOCAL ${BRAND_ID_GUC} = '${BRAND_A}'`);
   });
 
-  it('rejects a non-UUID brandId (injection guard)', () => {
-    expect(() => buildSetGucSql('not-a-uuid')).toThrow('not a valid UUID');
-    expect(() => buildSetGucSql("'; DROP TABLE brands; --")).toThrow('not a valid UUID');
-    expect(() => buildSetGucSql('')).toThrow('not a valid UUID');
+  it('rejects a non-UUID value (injection guard)', () => {
+    expect(() => buildSetGucSql(BRAND_ID_GUC, 'not-a-uuid')).toThrow('not a valid UUID');
+    expect(() => buildSetGucSql(BRAND_ID_GUC, "'; DROP TABLE brands; --")).toThrow('not a valid UUID');
+    expect(() => buildSetGucSql(BRAND_ID_GUC, '')).toThrow('not a valid UUID');
   });
 });
 
 describe('buildResetGucSql', () => {
   it('produces the correct RESET statement', () => {
-    expect(buildResetGucSql()).toBe(`RESET ${BRAND_ID_GUC}`);
+    expect(buildResetGucSql(BRAND_ID_GUC)).toBe(`RESET ${BRAND_ID_GUC}`);
   });
 });
 
@@ -64,7 +64,7 @@ describe('createStubClient — query context enforcement (NN-1)', () => {
 
     await expect(
       client.query({ brandId: '', correlationId: CORR_ID }, 'SELECT 1'),
-    ).rejects.toThrow('brandId is required');
+    ).rejects.toThrow('at least one of brandId, workspaceId, or userId is required');
 
     expect(executor).not.toHaveBeenCalled();
   });

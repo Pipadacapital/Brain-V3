@@ -1,0 +1,145 @@
+{
+  "agent": "security-reviewer",
+  "stage": 4,
+  "req_id": "feat-m1-app-foundation",
+  "reviewed_at": "2026-06-15T22:05:00Z",
+  "mode": "DELTA",
+  "review_pass": "post-bounce-2",
+  "verdict": "PASS",
+  "gates": {
+    "no_critical": true,
+    "no_high": true,
+    "compliance_clean": true,
+    "traceability_ok": true
+  },
+  "nn_status": {
+    "NN-1": "PASS",
+    "NN-2": "PASS",
+    "NN-3": "PASS",
+    "NN-4": "PASS",
+    "NN-5": "PASS_WITH_LOW",
+    "NN-6": "PASS",
+    "NN-7": "PASS",
+    "L-02": "PASS"
+  },
+  "findings": [
+    {
+      "id": "HIGH-SCA-01",
+      "severity": "HIGH",
+      "status": "RESOLVED",
+      "title": "Production dependency vulnerabilities: next@14.2.35 (SSRF, DoS, Middleware bypass) + fast-uri path-traversal",
+      "file": "apps/web/package.json",
+      "resolution": "next upgraded to 15.5.19; fast-uri bumped to 3.1.2 via pnpm override >=3.1.1; all original advisories cleared from audit output"
+    },
+    {
+      "id": "HIGH-SECRETS-01",
+      "severity": "HIGH",
+      "status": "RESOLVED",
+      "title": "No AwsSecretsManager implementation; JWT_SIGNING_SECRET and SHOPIFY_CLIENT_SECRET loaded from plain env vars violating I-S09",
+      "file": "apps/core/src/main.ts",
+      "resolution": "JWT_SIGNING_SECRET and COOKIE_SECRET now fetched via AwsSecretsProvider at startup; fail-closed; no randomUUID default. Connector client secret (HIGH-SECRETS-01-RESIDUAL) now resolved in r3 — see below."
+    },
+    {
+      "id": "HIGH-SECRETS-01-RESIDUAL",
+      "severity": "HIGH",
+      "status": "RESOLVED",
+      "title": "connector-side ISecretsManager not production-wired: LocalSecretsManager used unconditionally including in production",
+      "file": "apps/core/src/main.ts:257-260",
+      "resolution": "AwsSecretsManager (implements ISecretsManager) implemented using @aws-sdk/client-secrets-manager + IRSA (no static credentials). main.ts wires it conditionally: isProduction ? new AwsSecretsManager(region, shopifyClientSecretRef) : new LocalSecretsManager(). getEnvOrThrow('SHOPIFY_CLIENT_SECRET') holds ARN in prod, raw value in dev. Fail-closed: AwsSecretsManager throws on SDK error or empty response. Secret value never logged. I-S09 satisfied.",
+      "r3_verified_at": "2026-06-15T22:05:00Z"
+    },
+    {
+      "id": "HIGH-MOUNT-01",
+      "severity": "HIGH",
+      "status": "RESOLVED",
+      "title": "Connector/pixel routes built but not mounted; validateSession+rbacGuard deferred to mount time with no enforcement",
+      "file": "apps/core/src/main.ts",
+      "resolution": "Connector routes mounted in Fastify scopes with scope.addHook('preHandler', sessionPreHandler) + requireRole('analyst'|'manager'). Pixel routes identical pattern. Public callback correctly unguarded. getBrandId() throws 400 fail-closed."
+    },
+    {
+      "id": "HIGH-SCA-02",
+      "severity": "HIGH",
+      "status": "RESOLVED",
+      "title": "fastify@4.29.1 GHSA-jx2c-rxcm-jvmq (CVE-2026-25223) Content-Type body validation bypass in apps/core (production path)",
+      "file": "apps/core/package.json",
+      "resolution": "fastify upgraded to 5.8.5 (>=5.7.2 patched) in apps/core. GHSA-jx2c-rxcm-jvmq cleared from apps/core audit path. @fastify/cookie upgraded to 11.0.2; cookie/CSRF handling correct post-migration (httpOnly, secure, sameSite verified). Residual apps/collector > fastify@4.29.1 path: collector is a TODO stub (no running server, no schema routes) — zero exploitability, not a deployed M1 service.",
+      "r3_verified_at": "2026-06-15T22:05:00Z"
+    },
+    {
+      "id": "MED-JWT-01",
+      "severity": "MEDIUM",
+      "status": "RESOLVED",
+      "title": "Custom JWT verifyJwt does not validate alg header claim; uses received header in signingInput",
+      "file": "apps/core/src/modules/workspace-access/internal/security/jwt.ts",
+      "resolution": "verifyJwt now decodes header, asserts alg===HS256 and typ===JWT before signature check; uses canonical JWT_HEADER constant for signing input. Timing-safe comparison preserved."
+    },
+    {
+      "id": "MED-CALLBACK-01",
+      "severity": "MEDIUM",
+      "status": "RESOLVED",
+      "title": "OAuth callback reads brand_id from attacker-controlled query param",
+      "file": "apps/core/src/modules/connector/sources/storefront/shopify/interfaces/http/shopifyConnectorRoutes.ts",
+      "resolution": "consumeAndGetBrandId(state) returns brandId from server-stored record; HandleOAuthCallbackCommand derives brandId exclusively from stateRecord.brandId; OAuthCallbackInput interface omits brandId; test at HandleOAuthCallbackCommand.test.ts:223 proves ATTACKER_BRAND_ID cannot override REAL_BRAND_ID"
+    },
+    {
+      "id": "MED-BFF-DASH-01",
+      "severity": "MEDIUM",
+      "status": "RESOLVED",
+      "title": "Dashboard BFF endpoints not implemented",
+      "file": "apps/core/src/modules/frontend-api/internal/bff.routes.ts",
+      "resolution": "All 4 dashboard endpoints present: /v1/dashboard/brand-summary, /v1/dashboard/connection-status, /v1/dashboard/data-status, /v1/dashboard/onboarding-progress. All Postgres-only, parameterized queries, protected by bffProtectedPreHandler."
+    },
+    {
+      "id": "ISO-SEED-01",
+      "severity": "N/A",
+      "status": "ACCEPTABLE",
+      "title": "Isolation-fuzz connector tests: mirror-policy approach for isofuzz_connector_app role",
+      "ruling": "ACCEPTABLE — the mirror-policy uses the identical two-arg GUC predicate as the production policy. Negative controls (brand-A≠brand-B cross-tenant isolation, no-GUC→0 rows) are genuine and non-tautological. NOSUPERUSER NOBYPASSRLS structural constraint enforced at role creation. NN-1 migration-time assertion covers the production policy gap. Not a finding.",
+      "r3_ruled_at": "2026-06-15T22:05:00Z"
+    },
+    {
+      "id": "LOW-DEV-TOKEN-01",
+      "severity": "LOW",
+      "status": "OPEN",
+      "title": "DevEmailAdapter logs raw token in body_preview (dev mode only)",
+      "file": "apps/core/src/modules/notification/internal/ses-adapter.ts:32",
+      "fix": "Mask token in body_preview log — dev-only, deferred to M2"
+    },
+    {
+      "id": "LOW-TIMING-01",
+      "severity": "LOW",
+      "status": "OPEN",
+      "title": "forgotPassword has no dummy argon2 hash for missing users - measurable timing channel",
+      "file": "apps/core/src/modules/workspace-access/internal/application/auth.service.ts:330",
+      "fix": "Acceptable for M1 with content-identical response; add dummy hash in M2 if timing attack becomes a concern"
+    },
+    {
+      "id": "LOW-RATELIMIT-01",
+      "severity": "LOW",
+      "status": "OPEN",
+      "title": "No rate limiting on auth endpoints (login, register, forgot-password)",
+      "file": "apps/core/src/main.ts",
+      "fix": "Add @fastify/rate-limit before public launch; add to M2 backlog"
+    }
+  ],
+  "scanner_output": {
+    "secrets_grep": "PASS - 0 hardcoded credentials in production source; process.env['SHOPIFY_CLIENT_SECRET'] only in LocalSecretsManager.ts dev stub",
+    "current_setting_one_arg": "PASS - 0 violations in migrations 0001-0007; all use two-arg TRUE form",
+    "bypassrls": "PASS - only in 0001_init.sql assertion (checking it is NOT granted) and test files",
+    "forbidden_columns": "PASS - 0 *_token/*_ciphertext/*_secret/*_key columns in connector DDL; install_token in 0007 is a public UUID pixel tag (not a credential)",
+    "pnpm_audit_apps_core": "PASS - fastify 5.8.5 (>=5.7.2); GHSA-jx2c-rxcm-jvmq cleared from apps/core path",
+    "pnpm_audit_residual": "apps/collector > fastify@4.29.1 (GHSA-jx2c-rxcm-jvmq HIGH) — collector is a TODO stub, no deployed server, zero exploitability; vitest CRITICAL, handlebars CRITICAL/HIGH (dev toolchain), esbuild HIGH (vitest transitive), vite HIGH (vitest transitive) — all dev-only paths, not in production images",
+    "turbo_typecheck_test_lint": "75/75 PASS (55 unit tests: ShopifyHmac 9, OAuthStateNonce 10, SecretRef 7, HandleOAuthCallbackCommand 5, auth.service 24)",
+    "fastify_cookie_v11_regression": "PASS - brain_session: httpOnly=true, secure=isProduction, sameSite=strict, maxAge set; brain_csrf: httpOnly=false (double-submit), secure=isProduction, sameSite=strict; logout clearCookie both cookies; no regression"
+  },
+  "reverified": {
+    "HIGH-SECRETS-01-RESIDUAL": "RESOLVED",
+    "HIGH-SCA-02": "RESOLVED",
+    "ISO-SEED-01-validity": "acceptable"
+  },
+  "nn_regression": "none",
+  "bounce_findings": [],
+  "resolved_findings": ["HIGH-MOUNT-01", "HIGH-SCA-01", "HIGH-SECRETS-01", "HIGH-SECRETS-01-RESIDUAL", "HIGH-SCA-02", "MED-JWT-01", "MED-CALLBACK-01", "MED-BFF-DASH-01"],
+  "open_findings": ["LOW-DEV-TOKEN-01", "LOW-TIMING-01", "LOW-RATELIMIT-01"],
+  "summary": "r3 PASS: both open HIGHs resolved. HIGH-SECRETS-01-RESIDUAL: AwsSecretsManager implements ISecretsManager, wired conditionally in main.ts on isProduction, IRSA credentials, fail-closed, SHOPIFY_CLIENT_SECRET holds ARN in prod — I-S09 satisfied. HIGH-SCA-02: fastify upgraded to 5.8.5 (>=5.7.2 patched) in apps/core; GHSA-jx2c-rxcm-jvmq cleared; @fastify/cookie v11 cookie attributes correct; collector stub has zero exploitability. ISO-SEED-01 mirror-policy: acceptable — identical predicate, genuine negative controls, NOBYPASSRLS structural guarantee, NN-1 migration assertion covers prod-policy gap. NN-1..NN-7 + L-02 all PASS; 75/75 turbo. No regression."
+}

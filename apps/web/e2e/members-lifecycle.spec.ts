@@ -70,8 +70,10 @@ async function waitForPendingInvite(page: Page, email: string, timeout = 10_000)
   await expect(rows.first(), 'At least one pending invite row must exist after inviting').toBeVisible({ timeout });
 
   // The invite for our specific email should be present.
+  // Scope to the pending-invites table to avoid strict-mode violations from toast/aria-live
+  // elements that also contain the email string.
   await expect(
-    page.getByText(email),
+    page.getByTestId('pending-invites-section').getByText(email, { exact: false }).first(),
     `Pending invite row for ${email} must be visible`,
   ).toBeVisible({ timeout });
 
@@ -129,15 +131,24 @@ test.describe('Members lifecycle', () => {
     const invitePage = await page.context().newPage();
 
     // Register the invited user.
+    // When the backend detects a pending invite for this email it returns
+    // code: 'INVITE_PENDING' and the frontend redirects to /invite/accept directly,
+    // bypassing /verify-email. Handle both paths.
     await invitePage.goto('/register');
     await invitePage.getByTestId('input-full-name').fill('Invited Member');
     await invitePage.getByTestId('input-email').fill(memberEmail);
     await invitePage.getByTestId('input-password').fill(PASSWORD);
     await invitePage.getByTestId('btn-register').click();
-    await expect(invitePage).toHaveURL(/\/verify-email/);
 
-    // Verify email out-of-band.
-    await markEmailVerified(memberEmail);
+    // Wait for either the verify-email redirect OR the invite/accept redirect (INVITE_PENDING).
+    await invitePage.waitForURL(/\/(verify-email|invite\/accept)/, { timeout: 10_000 });
+    const postRegisterUrl = invitePage.url();
+    const directInviteAccept = postRegisterUrl.includes('/invite/accept');
+
+    if (!directInviteAccept) {
+      // Normal registration path: verify email out-of-band.
+      await markEmailVerified(memberEmail);
+    }
 
     // Fetch the invite link from the dev email helper.
     const inviteLink = await getLastInviteLink(invitePage, memberEmail);
@@ -149,7 +160,7 @@ test.describe('Members lifecycle', () => {
         description: 'GET /api/bff/v1/dev/last-email-link not yet available — accept flow skipped',
       });
     } else {
-      // Navigate to the invite acceptance URL.
+      // Navigate to the invite acceptance URL (token contains the link).
       await invitePage.goto(inviteLink);
       // The accept-invite-view auto-accepts on mount.
       await expect(

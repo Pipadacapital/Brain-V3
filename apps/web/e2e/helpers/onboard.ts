@@ -54,6 +54,9 @@ export async function onboardToDashboard(
   await expect(page).toHaveURL(/\/onboarding\/integrations/);
 
   // Step 3 — skip integrations
+  // Wait for any lingering toast notifications to clear so they don't intercept
+  // the click on btn-skip-integrations. Toasts auto-dismiss after a few seconds.
+  await page.locator('[role="region"][aria-label^="Notifications"] li').waitFor({ state: 'detached', timeout: 8_000 }).catch(() => undefined);
   await page.getByTestId('btn-skip-integrations').click();
   await expect(page).toHaveURL(/\/onboarding\/done/);
 

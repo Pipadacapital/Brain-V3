@@ -3,15 +3,22 @@
  *
  * POST   /api/v1/invites
  * POST   /api/v1/invites/accept
+ * GET    /api/v1/invites?status=pending
+ * POST   /api/v1/invites/:id/resend
+ * POST   /api/v1/invites/:id/revoke
  * GET    /api/v1/members
  * PATCH  /api/v1/members/:id/role
  * DELETE /api/v1/members/:id
+ * POST   /api/v1/members/:id/suspend
+ * POST   /api/v1/members/:id/reactivate
  *
  * INVARIANTS:
  *  - All mutations require Idempotency-Key (I-ST04).
  *  - Lists use keyset/cursor pagination — no OFFSET.
  *  - role_code values: owner | brand_admin | manager | analyst (D0.2).
  *  - Sole-Owner guard enforced at service layer (cannot remove/demote last owner).
+ *  - D-6/D-7: hierarchy bound — cannot grant role at/above your own authority (Owner exempt).
+ *  - D-8: suspendUser is atomic (rawPgPool BEGIN/COMMIT; session-revoke + status in one txn).
  */
 import { z } from 'zod';
 import { RoleCodeSchema } from './workspace.api.v1.js';
@@ -24,7 +31,14 @@ export const MemberSchema = z.object({
   brand_id: z.string().uuid().nullable(),
   app_user_id: z.string().uuid(),
   role_code: RoleCodeSchema,
-  email: z.string().email(),
+  /** email alias: canonical field exposed by GET /members JOIN */
+  email: z.string().email().optional(),
+  /** user_email: matches what the frontend members-table reads (alias of email) */
+  user_email: z.string().email().optional(),
+  /** user_full_name: placeholder from email when no separate name column exists */
+  user_full_name: z.string().optional(),
+  /** user_status: derived from app_user.status — used for suspend/reactivate badge */
+  user_status: z.enum(['active', 'suspended']).optional(),
   created_at: z.string().datetime({ offset: true }),
   updated_at: z.string().datetime({ offset: true }),
 });
@@ -111,3 +125,46 @@ export const UpdateMemberRoleResponseSchema = z.object({
   member: MemberSchema,
 });
 export type UpdateMemberRoleResponse = z.infer<typeof UpdateMemberRoleResponseSchema>;
+
+// ── List Pending Invites ──────────────────────────────────────────────────────
+
+export const ListPendingInvitesQuerySchema = z.object({
+  status: z.literal('pending'),
+  organization_id: z.string().uuid().optional(),
+  cursor: z.string().optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+});
+export type ListPendingInvitesQuery = z.infer<typeof ListPendingInvitesQuerySchema>;
+
+export const ListPendingInvitesResponseSchema = z.object({
+  request_id: z.string().uuid(),
+  invites: z.array(InviteSchema),
+  next_cursor: z.string().nullable(),
+  has_more: z.boolean(),
+});
+export type ListPendingInvitesResponse = z.infer<typeof ListPendingInvitesResponseSchema>;
+
+// ── Resend Invite ─────────────────────────────────────────────────────────────
+
+export const ResendInviteResponseSchema = z.object({
+  request_id: z.string().uuid(),
+  invite: InviteSchema,
+});
+export type ResendInviteResponse = z.infer<typeof ResendInviteResponseSchema>;
+
+// ── Revoke Invite ─────────────────────────────────────────────────────────────
+// 204 No Content — no response schema needed.
+
+// ── Suspend / Reactivate Member ───────────────────────────────────────────────
+
+export const SuspendMemberResponseSchema = z.object({
+  request_id: z.string().uuid(),
+  member: MemberSchema,
+});
+export type SuspendMemberResponse = z.infer<typeof SuspendMemberResponseSchema>;
+
+export const ReactivateMemberResponseSchema = z.object({
+  request_id: z.string().uuid(),
+  member: MemberSchema,
+});
+export type ReactivateMemberResponse = z.infer<typeof ReactivateMemberResponseSchema>;

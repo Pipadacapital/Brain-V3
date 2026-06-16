@@ -166,6 +166,11 @@ export {
   ListMembersResponseSchema,
   UpdateMemberRoleRequestSchema,
   UpdateMemberRoleResponseSchema,
+  ListPendingInvitesQuerySchema,
+  ListPendingInvitesResponseSchema,
+  ResendInviteResponseSchema,
+  SuspendMemberResponseSchema,
+  ReactivateMemberResponseSchema,
 } from './api/member.api.v1.js';
 export type {
   Member,
@@ -178,6 +183,11 @@ export type {
   ListMembersResponse,
   UpdateMemberRoleRequest,
   UpdateMemberRoleResponse,
+  ListPendingInvitesQuery,
+  ListPendingInvitesResponse,
+  ResendInviteResponse,
+  SuspendMemberResponse,
+  ReactivateMemberResponse,
 } from './api/member.api.v1.js';
 
 // ── M1 Connector API ──────────────────────────────────────────────────────────

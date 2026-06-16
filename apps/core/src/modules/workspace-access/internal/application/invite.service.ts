@@ -20,6 +20,7 @@ import type { Invite } from '../domain/invite/entities.js';
 import type { Membership } from '../domain/membership/entities.js';
 import type { RoleCode } from '../domain/membership/entities.js';
 import { INVITE_EXPIRY_DAYS } from '../domain/invite/entities.js';
+import { ROLE_HIERARCHY } from '../domain/membership/entities.js';
 import { InviteRepository, MembershipRepository, AppUserRepository, UserSessionRepository } from '../infrastructure/repositories.js';
 import { maskEmail } from './auth.service.js';
 
@@ -89,7 +90,16 @@ export class InviteService {
         throw new InviteError('FORBIDDEN', 'Requires owner or brand_admin role to invite.', 403);
       }
 
-      // Cannot invite as 'owner' (sole-owner protection).
+      // D-6: hierarchy bound — cannot grant a role at or above your own authority. Owner is exempt.
+      // ROLE_HIERARCHY = ['analyst','manager','brand_admin','owner'] (higher index = more capable).
+      // indexOf(granted) >= indexOf(actor) is the violation: a brand_admin (idx 2) granting
+      // brand_admin (idx 2) yields 2 >= 2 → true → 403.
+      if (inviterMembership.roleCode !== 'owner' &&
+          ROLE_HIERARCHY.indexOf(data.roleCode) >= ROLE_HIERARCHY.indexOf(inviterMembership.roleCode)) {
+        throw new InviteError('FORBIDDEN', 'Cannot grant a role at or above your own authority.', 403);
+      }
+
+      // Cannot invite as 'owner' (sole-owner protection — kept as defence in depth).
       if (data.roleCode === 'owner') {
         throw new InviteError('FORBIDDEN', 'Cannot invite as owner. Transfer ownership separately.', 403);
       }
@@ -232,16 +242,51 @@ export class InviteService {
 
       // All guards passed — now atomically: grant membership THEN mark invite accepted.
 
+      // D-10: duplicate-membership guard. Pre-check before INSERT to return 409 (not 500).
+      // Belt-and-braces: the membership table has unique constraints that would throw on dup INSERT;
+      // this pre-check maps that cleanly to a 409 with a user-facing message.
+      const dupMemberCheck = await rawClient.query<{ exists: boolean }>(
+        inviteRow.brand_id
+          ? `SELECT EXISTS(
+               SELECT 1 FROM membership
+               WHERE organization_id = $1 AND app_user_id = $2 AND brand_id = $3
+             ) AS exists`
+          : `SELECT EXISTS(
+               SELECT 1 FROM membership
+               WHERE organization_id = $1 AND app_user_id = $2 AND brand_id IS NULL
+             ) AS exists`,
+        inviteRow.brand_id
+          ? [inviteRow.organization_id, userId, inviteRow.brand_id]
+          : [inviteRow.organization_id, userId],
+      );
+      if (dupMemberCheck.rows[0]?.exists) {
+        await rawClient.query('ROLLBACK');
+        throw new InviteError('ALREADY_MEMBER', 'Already a member of this workspace.', 409);
+      }
+
       // Create membership.
-      const membershipResult = await rawClient.query<{
+      let membershipResult: { rows: Array<{
         id: string; organization_id: string; brand_id: string | null;
         app_user_id: string; role_code: string; created_at: Date; updated_at: Date;
-      }>(
-        `INSERT INTO membership (organization_id, brand_id, app_user_id, role_code)
-         VALUES ($1, $2, $3, $4)
-         RETURNING id, organization_id, brand_id, app_user_id, role_code, created_at, updated_at`,
-        [inviteRow.organization_id, inviteRow.brand_id, userId, inviteRow.role_code],
-      );
+      }> };
+      try {
+        membershipResult = await rawClient.query<{
+          id: string; organization_id: string; brand_id: string | null;
+          app_user_id: string; role_code: string; created_at: Date; updated_at: Date;
+        }>(
+          `INSERT INTO membership (organization_id, brand_id, app_user_id, role_code)
+           VALUES ($1, $2, $3, $4)
+           RETURNING id, organization_id, brand_id, app_user_id, role_code, created_at, updated_at`,
+          [inviteRow.organization_id, inviteRow.brand_id, userId, inviteRow.role_code],
+        );
+      } catch (insertErr: unknown) {
+        // Map PG unique-violation (23505) → 409 (belt-and-braces for race window).
+        if ((insertErr as { code?: string }).code === '23505') {
+          await rawClient.query('ROLLBACK');
+          throw new InviteError('ALREADY_MEMBER', 'Already a member of this workspace.', 409);
+        }
+        throw insertErr;
+      }
       const membershipRow = membershipResult.rows[0]!;
 
       // Mark invite accepted (AFTER membership granted — MA-07 atomicity).
@@ -368,6 +413,14 @@ export class InviteService {
           (requesterMembership.role_code !== 'owner' && requesterMembership.role_code !== 'brand_admin')) {
         await rawClient.query('ROLLBACK');
         throw new InviteError('FORBIDDEN', 'Requires owner or brand_admin role.', 403);
+      }
+
+      // D-7: hierarchy bound — cannot grant a role at or above your own authority. Owner is exempt.
+      // ROLLBACK before throw: txn is already open (SD-3 atomicity).
+      if (requesterMembership.role_code !== 'owner' &&
+          ROLE_HIERARCHY.indexOf(newRoleCode) >= ROLE_HIERARCHY.indexOf(requesterMembership.role_code as RoleCode)) {
+        await rawClient.query('ROLLBACK');
+        throw new InviteError('FORBIDDEN', 'Cannot grant a role at or above your own authority.', 403);
       }
 
       // Find target membership.
@@ -571,6 +624,184 @@ export class InviteService {
       throw err;
     } finally {
       rawClient.release();
+    }
+  }
+
+  // ── Slice 2: Pending-invite visibility / resend / revoke ─────────────────────
+
+  /**
+   * D-4 / D-11: List pending invites with actor-role predicate.
+   * QueryContext MUST carry workspaceId + brandId so compound RLS activates (H-3).
+   */
+  async listPendingInvites(
+    data: {
+      organizationId: string;
+      brandId: string | null;
+      requestingUserId: string;
+      cursor?: string;
+      limit: number;
+    },
+    correlationId: string,
+  ): Promise<{ items: import('../domain/invite/entities.js').Invite[]; nextCursor: string | null; hasMore: boolean }> {
+    // D-11: carry workspaceId + brandId in ctx so compound RLS activates (H-3).
+    const ctx: QueryContext = {
+      correlationId,
+      workspaceId: data.organizationId,
+      ...(data.brandId ? { brandId: data.brandId } : {}),
+    };
+    const client = await this.pool.connect();
+    try {
+      const memberRepo = new MembershipRepository(client);
+      const inviteRepo = new InviteRepository(client);
+
+      // Assert actor is a member and resolve their role for predicate (D-4).
+      const actorMembership = await memberRepo.findByUserAndOrg(
+        data.requestingUserId,
+        data.organizationId,
+        data.brandId,
+        ctx,
+      );
+      if (!actorMembership) {
+        throw new InviteError('FORBIDDEN', 'Not a member.', 403);
+      }
+
+      return inviteRepo.listPending(
+        data.organizationId,
+        data.brandId,
+        actorMembership.roleCode,
+        data.requestingUserId,
+        data.cursor,
+        data.limit,
+        ctx,
+      );
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * D-3: Resend invite — rotate token_hash + expires_at on the existing pending row.
+   * No second row. Re-sends email.
+   */
+  async resendInvite(
+    inviteId: string,
+    requestingUserId: string,
+    organizationId: string,
+    brandId: string | null,
+    correlationId: string,
+  ): Promise<import('../domain/invite/entities.js').Invite> {
+    const ctx: QueryContext = {
+      correlationId,
+      workspaceId: organizationId,
+      ...(brandId ? { brandId } : {}),
+    };
+    const client = await this.pool.connect();
+    try {
+      const memberRepo = new MembershipRepository(client);
+      const inviteRepo = new InviteRepository(client);
+
+      // Actor must be owner or brand_admin (resolved from DB — D-2).
+      const actorMembership = await memberRepo.findByUserAndOrg(
+        requestingUserId,
+        organizationId,
+        brandId,
+        ctx,
+      );
+      if (!actorMembership ||
+          (actorMembership.roleCode !== 'owner' && actorMembership.roleCode !== 'brand_admin')) {
+        throw new InviteError('FORBIDDEN', 'Requires owner or brand_admin role to resend.', 403);
+      }
+
+      // Rotate token on existing pending row (D-3 — no second row).
+      const { rawToken, tokenHash } = generateToken();
+      const expiresAt = new Date(Date.now() + INVITE_EXPIRY_DAYS * 24 * 60 * 60 * 1000);
+
+      const updatedInvite = await inviteRepo.rotateToken(inviteId, tokenHash, expiresAt, ctx);
+      if (!updatedInvite) {
+        throw new InviteError('NOT_FOUND', 'Pending invite not found.', 404);
+      }
+
+      // Re-send via same notification path (I-ST05).
+      await this.notification.sendInviteEmail(updatedInvite.email, rawToken, correlationId);
+
+      await this.audit.append({
+        brand_id: updatedInvite.brandId ?? organizationId,
+        actor_id: requestingUserId,
+        actor_role: actorMembership.roleCode,
+        action: 'invite.resent',
+        entity_type: 'invite',
+        entity_id: inviteId,
+        payload: { email_masked: maskEmail(updatedInvite.email) },
+      });
+
+      return updatedInvite;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Revoke a pending invite (sets status = 'revoked').
+   * Uses GUC pool (RLS-enforced). Audits invite.revoked post-update.
+   */
+  async revokeInvite(
+    inviteId: string,
+    requestingUserId: string,
+    organizationId: string,
+    brandId: string | null,
+    correlationId: string,
+  ): Promise<void> {
+    const ctx: QueryContext = {
+      correlationId,
+      workspaceId: organizationId,
+      ...(brandId ? { brandId } : {}),
+    };
+    const client = await this.pool.connect();
+    try {
+      const memberRepo = new MembershipRepository(client);
+      const inviteRepo = new InviteRepository(client);
+
+      // Actor must be owner or brand_admin.
+      const actorMembership = await memberRepo.findByUserAndOrg(
+        requestingUserId,
+        organizationId,
+        brandId,
+        ctx,
+      );
+      if (!actorMembership ||
+          (actorMembership.roleCode !== 'owner' && actorMembership.roleCode !== 'brand_admin')) {
+        throw new InviteError('FORBIDDEN', 'Requires owner or brand_admin role to revoke.', 403);
+      }
+
+      // Fetch pending invite (RLS-scoped) by id.
+      // Note: findValidByHash is by token, so we add a findById-style query directly.
+      const inviteResult = await client.query<{
+        id: string; organization_id: string; brand_id: string | null;
+        email: string; role_code: string; status: string;
+      }>(
+        ctx,
+        `SELECT id, organization_id, brand_id, email, role_code, status
+         FROM invite WHERE id = $1`,
+        [inviteId],
+      );
+      const inviteRow = inviteResult.rows[0];
+      if (!inviteRow || inviteRow.status !== 'pending') {
+        throw new InviteError('NOT_FOUND', 'Pending invite not found.', 404);
+      }
+
+      await inviteRepo.updateStatus(inviteId, 'revoked', ctx);
+
+      await this.audit.append({
+        brand_id: inviteRow.brand_id ?? organizationId,
+        actor_id: requestingUserId,
+        actor_role: actorMembership.roleCode,
+        action: 'invite.revoked',
+        entity_type: 'invite',
+        entity_id: inviteId,
+        payload: { email_masked: maskEmail(inviteRow.email) },
+      });
+    } finally {
+      client.release();
     }
   }
 }

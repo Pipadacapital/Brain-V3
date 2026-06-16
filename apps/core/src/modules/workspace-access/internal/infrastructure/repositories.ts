@@ -828,16 +828,17 @@ export class MembershipRepository {
     cursor: string | undefined,
     limit: number,
     ctx: QueryContext,
-  ): Promise<{ items: Array<Membership & { email: string }>; nextCursor: string | null; hasMore: boolean }> {
+  ): Promise<{ items: Array<Membership & { email: string; user_email: string; user_full_name: string; user_status: 'active' | 'suspended' }>; nextCursor: string | null; hasMore: boolean }> {
     const cursorId = cursor ? decodeCursor(cursor) : null;
 
     const result = await this.db.query<{
       id: string; organization_id: string; brand_id: string | null;
-      app_user_id: string; role_code: string; email: string;
+      app_user_id: string; role_code: string; email: string; status: string;
       created_at: Date; updated_at: Date;
     }>(
       ctx,
-      `SELECT m.id, m.organization_id, m.brand_id, m.app_user_id, m.role_code, u.email, m.created_at, m.updated_at
+      `SELECT m.id, m.organization_id, m.brand_id, m.app_user_id, m.role_code,
+              u.email, u.status, m.created_at, m.updated_at
        FROM membership m
        INNER JOIN app_user u ON u.id = m.app_user_id
        WHERE m.organization_id = $1
@@ -857,6 +858,12 @@ export class MembershipRepository {
     const items = result.rows.slice(0, limit).map((r) => ({
       ...this.mapRow(r),
       email: r.email,
+      // Slice 3 / field-mismatch fix: user_email + user_full_name + user_status
+      // for the members-table.tsx (reads user_email / user_full_name / user_status).
+      // app_user has no separate name column → use email as placeholder (plan §3).
+      user_email: r.email,
+      user_full_name: r.email,
+      user_status: (r.status as 'active' | 'suspended'),
     }));
     const lastItem = items[items.length - 1];
     const nextCursor = hasMore && lastItem ? encodeCursor(lastItem.id) : null;
@@ -1021,6 +1028,113 @@ export class InviteRepository {
       `UPDATE invite SET status = $1 WHERE id = $2`,
       [status, id],
     );
+  }
+
+  /**
+   * D-3: Rotate token on resend — update token_hash + expires_at on the existing pending row.
+   * No second row created. Uses GUC pool (RLS-enforced by caller's ctx).
+   */
+  async rotateToken(
+    id: string,
+    tokenHash: string,
+    expiresAt: Date,
+    ctx: QueryContext,
+  ): Promise<Invite | null> {
+    const result = await this.db.query<{
+      id: string; organization_id: string; brand_id: string | null;
+      email: string; role_code: string; token_hash: string;
+      invited_by_user_id: string; status: string;
+      expires_at: Date; accepted_at: Date | null; created_at: Date;
+    }>(
+      ctx,
+      `UPDATE invite SET token_hash = $1, expires_at = $2
+       WHERE id = $3 AND status = 'pending'
+       RETURNING id, organization_id, brand_id, email, role_code, token_hash, invited_by_user_id, status, expires_at, accepted_at, created_at`,
+      [tokenHash, expiresAt, id],
+    );
+    const row = result.rows[0];
+    if (!row) return null;
+    return this.mapRow(row);
+  }
+
+  /**
+   * D-4: List pending invites with actor-role-based predicate.
+   * - owner: all pending in org (RLS scopes to org; no extra predicate).
+   * - brand_admin: all pending in brand scope (RLS GUCs handle it).
+   * - manager/analyst: only invites they created (AND invited_by_user_id = $actor).
+   * RLS provides isolation underneath (workspaceId + brandId GUCs via ctx).
+   *
+   * Uses fully-parameterized queries; no string interpolation of user-supplied values.
+   */
+  async listPending(
+    organizationId: string,
+    brandId: string | null,
+    actorRole: string,
+    actorUserId: string,
+    cursor: string | undefined,
+    limit: number,
+    ctx: QueryContext,
+  ): Promise<{ items: Invite[]; nextCursor: string | null; hasMore: boolean }> {
+    const cursorId = cursor ? decodeCursor(cursor) : null;
+
+    // Build params array dynamically to keep all user-data fully parameterized.
+    // $1 = organizationId, $2 = limit + 1, then optional $3+ for brandId/actorUserId/cursorId.
+    const params: unknown[] = [organizationId, limit + 1];
+    let paramIdx = 3;
+
+    // D-4: Owner sees ALL pending invites in the org (both org-level brand_id=NULL and
+    // brand-level invites). brandId filter is applied for brand_admin (brand-scoped) and
+    // is removed entirely for owner so org-level invites (brand_id=NULL) are visible even
+    // when the owner's session carries a non-null brandId context.
+    let brandClause: string;
+    if (actorRole === 'owner') {
+      // Owner: no brand filter — returns all pending invites for the org.
+      brandClause = '';
+    } else if (brandId) {
+      brandClause = `AND i.brand_id = $${paramIdx++}`;
+      params.push(brandId);
+    } else {
+      brandClause = `AND i.brand_id IS NULL`;
+    }
+
+    let actorClause = '';
+    if (actorRole === 'manager' || actorRole === 'analyst') {
+      actorClause = `AND i.invited_by_user_id = $${paramIdx++}`;
+      params.push(actorUserId);
+    }
+
+    let cursorClause = '';
+    if (cursorId) {
+      cursorClause = `AND i.id > $${paramIdx++}`;
+      params.push(cursorId);
+    }
+
+    const result = await this.db.query<{
+      id: string; organization_id: string; brand_id: string | null;
+      email: string; role_code: string; token_hash: string;
+      invited_by_user_id: string; status: string;
+      expires_at: Date; accepted_at: Date | null; created_at: Date;
+    }>(
+      ctx,
+      `SELECT i.id, i.organization_id, i.brand_id, i.email, i.role_code, i.token_hash,
+              i.invited_by_user_id, i.status, i.expires_at, i.accepted_at, i.created_at
+       FROM invite i
+       WHERE i.organization_id = $1
+         AND i.status = 'pending'
+         AND i.expires_at > NOW()
+         ${brandClause}
+         ${actorClause}
+         ${cursorClause}
+       ORDER BY i.id ASC
+       LIMIT $2`,
+      params,
+    );
+
+    const hasMore = result.rows.length > limit;
+    const items = result.rows.slice(0, limit).map((r) => this.mapRow(r));
+    const lastItem = items[items.length - 1];
+    const nextCursor = hasMore && lastItem ? encodeCursor(lastItem.id) : null;
+    return { items, nextCursor, hasMore };
   }
 
   private mapRow(row: {

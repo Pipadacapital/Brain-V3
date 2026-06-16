@@ -1,0 +1,1 @@
+{ "decision": "approved", "ts": "2026-06-16T14:45:00Z", "actor": "stakeholder", "note": "APPROVE — all reviews PASS; live privilege-escalation closed+wire-tested; suspend atomic+authority-checked; isolation proven under brain_app. 4 tech-debt items (SEC-V1/V2, F-QA-4 audit correlation_id, F-QA-5 rate-limiter e2e) accepted as backlog. Deploy: migrate 0014 -> core -> web." }

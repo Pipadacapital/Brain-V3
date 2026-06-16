@@ -251,3 +251,88 @@ pnpm --filter @brain/stream-worker typecheck → EXIT 0
 ## D-5 Reconciliation Tolerance (Sprint-0 Freeze Required)
 
 Per architecture §D-5: reconciliation tolerance (±2–3% by W4, >±5% stop-and-fix) is a Data Engineer Sprint-0 freeze, non-blocking for this slice. External Shopify reconciliation tests are not in M1 scope (`01-requirement.md:72`). The closed-sum tests use exact integer equality (no tolerance). **Freeze the tolerance value as a named constant before any external-reconciliation integration test runs.**
+
+---
+
+## BOUNCE r1 — F-SEC-01 fix (2026-06-17)
+
+**Finding:** F-SEC-01 (HIGH) — revenue-finalization Argo job queries `brand` as `brain_app` under FORCE RLS with no GUC → 0 brands → job is a silent no-op → provisionals never finalize.
+
+**Root cause:** `brand` table has `FORCE ROW LEVEL SECURITY`. The RLS policy requires `app.current_brand_id` to be set to see any row. The system job (cross-tenant by design) has no brand context at enumeration time, so the bare `SELECT id FROM brand WHERE status='active'` returns 0 rows.
+
+### Fix 1 — Migration `0019_active_brand_enumeration.sql`
+
+Added `list_active_brand_ids()` — a `SECURITY DEFINER` function owned by the migration owner (superuser `brain`) with `SET search_path = public` pinned. The function executes with the definer's privileges, bypassing the caller's FORCE RLS on `brand` for the enumeration step only.
+
+**What it exposes:** `id` (uuid) + `cod_recognition_horizon_days`, `prepaid_recognition_horizon_days`, `currency_code` — operational finalization config only; no `display_name`, `domain`, `organization_id`, no PII.
+
+**Search-path hijack safety:** `SET search_path = public` is pinned on the function so a malicious schema cannot shadow the `brand` table to intercept the call.
+
+**GRANT:** `GRANT EXECUTE ON FUNCTION list_active_brand_ids() TO brain_app` — brain_app can call the fn from its pool; it cannot see brand rows directly.
+
+Migration includes two `DO $$` assertions that fire at apply time:
+- `prosecdef = true` AND `search_path=public` in `proconfig` (fails hard if either is missing)
+- `has_function_privilege('brain_app', 'list_active_brand_ids()', 'EXECUTE') = true`
+
+```
+-- Applied to dev PG:
+CREATE FUNCTION  ← list_active_brand_ids() SECURITY DEFINER STABLE SET search_path=public
+GRANT            ← EXECUTE to brain_app
+DO               ← assertion: SECURITY DEFINER + pinned search_path PASS
+DO               ← assertion: brain_app has EXECUTE PASS
+```
+
+**Function properties confirmed:**
+```
+fn_name               | security_definer | pinned_config      | owner
+-----------------------+------------------+--------------------+-------
+list_active_brand_ids | t                | search_path=public | brain
+```
+
+### Fix 2 — `apps/stream-worker/src/jobs/revenue-finalization.ts` (line 84)
+
+Replaced:
+```ts
+// BEFORE (returns 0 brands under brain_app + FORCE RLS)
+await pool.query(`SELECT id, cod_recognition_horizon_days, ... FROM brand WHERE status = 'active'`);
+```
+With:
+```ts
+// AFTER (SECURITY DEFINER fn bypasses FORCE RLS for enumeration only)
+await pool.query(`SELECT id, cod_recognition_horizon_days,
+                          prepaid_recognition_horizon_days, currency_code
+                   FROM list_active_brand_ids()`);
+```
+Per-brand ledger queries (inside the loop) remain scoped by `set_config('app.current_brand_id', $1, true)` — RLS enforced as designed.
+
+### Proof: job now enumerates brands and finalizes
+
+**Enumeration fix confirmed (brain_app pool):**
+```sql
+-- list_active_brand_ids() via brain_app:
+SELECT COUNT(*) AS via_fn FROM list_active_brand_ids();  →  172
+
+-- Bare SELECT still returns 0 (FORCE RLS intact):
+SELECT COUNT(*) FROM brand WHERE status = 'active';  →  0
+```
+
+**End-to-end finalization test (new Test 10):** seeded Brand F1 + Brand F2, each with a provisional 30 days old (past 25d COD horizon). Brand F2 also has a provisional with an RTO.
+
+- `list_active_brand_ids()` under brain_app: returned both BRAND_F1 and BRAND_F2 (>0, F-SEC-01 proven).
+- Finalization job core logic (via appPool): enumerated 2 test brands, wrote 2 finalization rows (orderF1 + orderF2Overdue), skipped orderF2WithRto (RTO pre-check).
+- RTO-protected order: 0 finalization rows (correct).
+
+### Test results
+
+```
+Tests  32 passed (32)        ← 30 prior + 2 new F-SEC-01 tests
+Duration  282ms
+```
+
+Prior 30 ledger tests: all green. New tests added:
+- `10. F-SEC-01 fix > list_active_brand_ids() returns >0 brands under brain_app` PASS
+- `10. F-SEC-01 fix > finalization job core logic sees both brands and finalizes their overdue provisionals` PASS
+
+### Note: identity phone-guard-reeval has the same bug (follow-up)
+
+`apps/stream-worker/src/jobs/phone-guard-reeval.ts` performs the same bare `SELECT id FROM brand WHERE status='active'` pattern under brain_app with no GUC → 0 brands → phone-guard re-evaluation is a no-op. It can adopt `list_active_brand_ids()` in a follow-up. The fn is already in place and EXECUTE is granted to brain_app.

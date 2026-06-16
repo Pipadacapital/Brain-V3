@@ -81,10 +81,26 @@ async function run(): Promise<void> {
   try {
     console.info('[revenue-finalization] starting horizon finalization job');
 
-    // Enumerate brands as superuser (system job — brand IDs are not PII)
+    // Enumerate active brands via list_active_brand_ids() — a SECURITY DEFINER
+    // function (migration 0019, owner: superuser 'brain', search_path pinned to
+    // public). SECURITY DEFINER bypasses the caller's FORCE RLS on the brand
+    // table for this system enumeration only.
+    //
+    // F-SEC-01 fix: a bare SELECT from brand WHERE status='active' returns 0 rows
+    // under brain_app + FORCE RLS with no GUC set → the job silently no-ops and
+    // provisionals never finalize. The SECURITY DEFINER fn exposes only:
+    //   id, cod_recognition_horizon_days, prepaid_recognition_horizon_days,
+    //   currency_code  — all operational config, no PII, no tenant-scoped data.
+    // brain_app holds EXECUTE (granted in 0019). Per-brand ledger queries below
+    // remain scoped by the app.current_brand_id GUC (RLS enforced as designed).
+    //
+    // NOTE (tracked): identity's phone-guard-reeval.ts has the same F-SEC-01 bug —
+    // it performs a bare SELECT from brand under FORCE RLS with no GUC and gets 0
+    // brands. It can adopt list_active_brand_ids() in a follow-up.
     const brandsRes = await pool.query<BrandRow>(
-      `SELECT id, cod_recognition_horizon_days, prepaid_recognition_horizon_days, currency_code
-       FROM brand WHERE status = 'active'`,
+      `SELECT id, cod_recognition_horizon_days,
+              prepaid_recognition_horizon_days, currency_code
+       FROM list_active_brand_ids()`,
     );
 
     let totalFinalized = 0;

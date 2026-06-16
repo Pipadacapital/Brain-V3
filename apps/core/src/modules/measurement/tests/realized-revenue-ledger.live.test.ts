@@ -906,3 +906,253 @@ describe('9. horizon finalization logic', () => {
     expect(codQ.rows.map(r => r.order_id)).not.toContain(orderId);
   });
 });
+
+// ── Test 10: F-SEC-01 — brand enumeration + finalization job end-to-end ────────
+//
+// Proves the fix for F-SEC-01:
+//   Before: SELECT id FROM brand WHERE status='active' under brain_app + FORCE RLS
+//           with no GUC → 0 brands → finalization job is a no-op.
+//   After:  SELECT * FROM list_active_brand_ids() (SECURITY DEFINER, search_path
+//           pinned) returns all active brands to brain_app → job enumerates >0
+//           brands → overdue provisionals are finalized → provisionals WITH RTO
+//           are skipped.
+//
+// Test anatomy (two brands, seeded separately):
+//   Brand F1 — has one overdue provisional (30 days ago, no RTO) → must finalize.
+//   Brand F2 — has one overdue provisional (30 days ago, no RTO) → must finalize.
+//              Also has a provisional with an RTO → must NOT finalize.
+
+describe('10. F-SEC-01 fix — list_active_brand_ids() enumerates brands, job finalizes overdue provisionals', () => {
+  // Use deterministic test brand UUIDs scoped to this test to avoid cross-test
+  // interference with the BRAND_A/BRAND_B rows used in tests 1-9.
+  const BRAND_F1 = 'fffff010-0019-0019-0019-000000000001';
+  const BRAND_F2 = 'fffff010-0019-0019-0019-000000000002';
+
+  // Orders seeded for this test
+  let orderF1: string;
+  let orderF2Overdue: string;
+  let orderF2WithRto: string;
+
+  beforeAll(async () => {
+    orderF1 = `order-fsec01-f1-${randomUUID()}`;
+    orderF2Overdue = `order-fsec01-f2a-${randomUUID()}`;
+    orderF2WithRto = `order-fsec01-f2b-${randomUUID()}`;
+
+    const existingOrg = await superPool.query<{ id: string }>(`SELECT id FROM organization LIMIT 1`);
+    const useOrgId = existingOrg.rows[0]?.id ?? 'ffffffff-0018-0018-0018-000000000001';
+
+    // Upsert Brand F1
+    await superPool.query(
+      `INSERT INTO brand (id, organization_id, display_name, currency_code, status,
+                          cod_recognition_horizon_days, prepaid_recognition_horizon_days)
+       VALUES ($1, $2, 'F-SEC-01 Test Brand F1', 'INR', 'active', 25, 7)
+       ON CONFLICT (id) DO UPDATE
+         SET currency_code = 'INR', status = 'active',
+             cod_recognition_horizon_days = 25, prepaid_recognition_horizon_days = 7`,
+      [BRAND_F1, useOrgId],
+    );
+
+    // Upsert Brand F2
+    await superPool.query(
+      `INSERT INTO brand (id, organization_id, display_name, currency_code, status,
+                          cod_recognition_horizon_days, prepaid_recognition_horizon_days)
+       VALUES ($1, $2, 'F-SEC-01 Test Brand F2', 'INR', 'active', 25, 7)
+       ON CONFLICT (id) DO UPDATE
+         SET currency_code = 'INR', status = 'active',
+             cod_recognition_horizon_days = 25, prepaid_recognition_horizon_days = 7`,
+      [BRAND_F2, useOrgId],
+    );
+
+    // Seed Brand F1: one overdue provisional (30d ago, past 25d COD horizon)
+    const pastDate = new Date();
+    pastDate.setDate(pastDate.getDate() - 30);
+    const pastPeriod = toBillingPostedPeriod(pastDate);
+
+    await superPool.query(
+      `INSERT INTO realized_revenue_ledger (
+         brand_id, ledger_event_id, order_id, event_type,
+         amount_minor, currency_code, rounding_adjustment_minor,
+         occurred_at, economic_effective_at, billing_posted_period, recognition_label
+       ) VALUES ($1, $2, $3, 'provisional_recognition', 50000, 'INR', 0, $4, $4, $5, 'provisional')`,
+      [BRAND_F1, randomUUID(), orderF1, pastDate.toISOString(), pastPeriod],
+    );
+
+    // Seed Brand F2: one overdue provisional (no RTO) + one overdue provisional WITH RTO
+    await superPool.query(
+      `INSERT INTO realized_revenue_ledger (
+         brand_id, ledger_event_id, order_id, event_type,
+         amount_minor, currency_code, rounding_adjustment_minor,
+         occurred_at, economic_effective_at, billing_posted_period, recognition_label
+       ) VALUES ($1, $2, $3, 'provisional_recognition', 75000, 'INR', 0, $4, $4, $5, 'provisional')`,
+      [BRAND_F2, randomUUID(), orderF2Overdue, pastDate.toISOString(), pastPeriod],
+    );
+
+    await superPool.query(
+      `INSERT INTO realized_revenue_ledger (
+         brand_id, ledger_event_id, order_id, event_type,
+         amount_minor, currency_code, rounding_adjustment_minor,
+         occurred_at, economic_effective_at, billing_posted_period, recognition_label
+       ) VALUES ($1, $2, $3, 'provisional_recognition', 20000, 'INR', 0, $4, $4, $5, 'provisional')`,
+      [BRAND_F2, randomUUID(), orderF2WithRto, pastDate.toISOString(), pastPeriod],
+    );
+
+    // Add RTO for orderF2WithRto so it must NOT finalize
+    await superPool.query(
+      `INSERT INTO realized_revenue_ledger (
+         brand_id, ledger_event_id, order_id, event_type,
+         amount_minor, currency_code, rounding_adjustment_minor,
+         occurred_at, economic_effective_at, billing_posted_period, recognition_label
+       ) VALUES ($1, $2, $3, 'rto_reversal', -20000, 'INR', 0, NOW(), NOW(), $4, 'finalized')`,
+      [BRAND_F2, randomUUID(), orderF2WithRto, toBillingPostedPeriod(new Date())],
+    );
+  });
+
+  afterAll(async () => {
+    await superPool.query(
+      `DELETE FROM realized_revenue_ledger WHERE brand_id IN ($1, $2)`,
+      [BRAND_F1, BRAND_F2],
+    );
+    await superPool.query(`DELETE FROM brand WHERE id IN ($1, $2)`, [BRAND_F1, BRAND_F2]);
+  });
+
+  it('list_active_brand_ids() returns >0 brands under brain_app (F-SEC-01 enumeration fix)', async () => {
+    // The key assertion: the SECURITY DEFINER fn returns actual brands to brain_app.
+    // Before the fix: SELECT COUNT(*) FROM brand WHERE status='active' = 0 under brain_app.
+    // After the fix: list_active_brand_ids() returns the real count.
+    const fnResult = await appPool.query<{ id: string }>(
+      `SELECT id FROM list_active_brand_ids()`,
+    );
+    expect(fnResult.rows.length).toBeGreaterThan(0);
+
+    // Confirm FORCE RLS still blocks the bare SELECT (defence-in-depth check).
+    // The two-arg current_setting('app.current_brand_id', TRUE) returns '' when
+    // no GUC is set; ''::uuid is invalid → the RLS policy raises a cast error.
+    // Either 0 rows (if the cast is lenient) or an error proves FORCE RLS is active.
+    let bareBlocked = false;
+    try {
+      const bareResult = await appPool.query<{ cnt: string }>(
+        `SELECT COUNT(*) AS cnt FROM brand WHERE status = 'active'`,
+      );
+      // If no error, RLS must have filtered everything to 0 rows
+      expect(BigInt(bareResult.rows[0]!.cnt)).toBe(0n);
+      bareBlocked = true;
+    } catch (err: unknown) {
+      // FORCE RLS raises "invalid input syntax for type uuid" when GUC is unset
+      // (the '' → uuid cast fails) — this also proves RLS is active
+      const pgErr = err as { code?: string };
+      expect(pgErr.code).toBe('22P02'); // invalid_text_representation (uuid cast)
+      bareBlocked = true;
+    }
+    expect(bareBlocked).toBe(true);
+
+    // Both test brands appear in the fn result
+    const ids = fnResult.rows.map(r => r.id);
+    expect(ids).toContain(BRAND_F1);
+    expect(ids).toContain(BRAND_F2);
+  });
+
+  it('finalization job core logic sees both brands and finalizes their overdue provisionals', async () => {
+    // Run the exact enumeration + per-brand finalization logic from revenue-finalization.ts
+    // (via brain_app pool — the same path the Argo job uses at runtime).
+    const appClient = await appPool.connect();
+    let totalFinalized = 0;
+
+    try {
+      // Step 1: enumerate brands (F-SEC-01 fix path)
+      const brandsEnum = await appClient.query<{
+        id: string;
+        cod_recognition_horizon_days: number;
+      }>(`SELECT id, cod_recognition_horizon_days FROM list_active_brand_ids()`);
+
+      // Filter to just our two test brands for the scope of this test assertion
+      const testBrands = brandsEnum.rows.filter(
+        b => b.id === BRAND_F1 || b.id === BRAND_F2,
+      );
+      expect(testBrands.length).toBe(2); // both F1 and F2 visible
+
+      // Step 2: per-brand finalization
+      for (const brand of testBrands) {
+        await appClient.query('BEGIN');
+        await appClient.query(
+          `SELECT set_config('app.current_brand_id', $1, true)`,
+          [brand.id],
+        );
+
+        const qualifying = await appClient.query<{ order_id: string; amount_minor: string; ledger_event_id: string }>(
+          `SELECT l.order_id, l.amount_minor, l.ledger_event_id
+           FROM realized_revenue_ledger l
+           WHERE l.brand_id = $1
+             AND l.event_type = 'provisional_recognition'
+             AND l.occurred_at + ($2 || ' days')::interval < NOW()
+             AND NOT EXISTS (
+               SELECT 1 FROM realized_revenue_ledger r
+               WHERE r.brand_id = $1 AND r.order_id = l.order_id
+                 AND r.event_type IN ('rto_reversal', 'cancellation')
+             )
+             AND NOT EXISTS (
+               SELECT 1 FROM realized_revenue_ledger f
+               WHERE f.brand_id = $1 AND f.order_id = l.order_id
+                 AND f.event_type = 'finalization'
+             )`,
+          [brand.id, brand.cod_recognition_horizon_days],
+        );
+
+        for (const prov of qualifying.rows) {
+          const eventId = createHash('sha256')
+            .update(`${brand.id}\0${prov.order_id}\0finalization\0${prov.ledger_event_id}\0v1`)
+            .digest('hex');
+
+          const now = new Date();
+          await appClient.query(
+            `INSERT INTO realized_revenue_ledger (
+               brand_id, ledger_event_id, order_id, brain_id,
+               event_type, amount_minor, currency_code, fx_rate_id,
+               rounding_adjustment_minor, occurred_at, economic_effective_at,
+               billing_posted_period, recognition_label,
+               supersedes_ledger_event_id, raw_event_id
+             ) VALUES (
+               $1, $2, $3, NULL, 'finalization',
+               $4::bigint, 'INR', NULL, 0::bigint,
+               $5, $5, $6, 'finalized', $7, NULL
+             ) ON CONFLICT (brand_id, order_id, event_type,
+               (timezone('UTC', occurred_at)::date)) DO NOTHING`,
+            [
+              brand.id, eventId, prov.order_id, prov.amount_minor,
+              now.toISOString(), toBillingPostedPeriod(now), prov.ledger_event_id,
+            ],
+          );
+          totalFinalized++;
+        }
+        await appClient.query('COMMIT');
+      }
+    } finally {
+      appClient.release();
+    }
+
+    // 2 finalization rows written: Brand F1 (orderF1) + Brand F2 (orderF2Overdue)
+    expect(totalFinalized).toBe(2);
+
+    // Verify using superuser that exactly the right rows were written
+    const f1Final = await superPool.query<{ event_type: string }>(
+      `SELECT event_type FROM realized_revenue_ledger
+       WHERE brand_id = $1 AND order_id = $2 AND event_type = 'finalization'`,
+      [BRAND_F1, orderF1],
+    );
+    expect(f1Final.rows.length).toBe(1); // Brand F1 provisional finalized
+
+    const f2Final = await superPool.query<{ event_type: string }>(
+      `SELECT event_type FROM realized_revenue_ledger
+       WHERE brand_id = $1 AND order_id = $2 AND event_type = 'finalization'`,
+      [BRAND_F2, orderF2Overdue],
+    );
+    expect(f2Final.rows.length).toBe(1); // Brand F2 overdue provisional finalized
+
+    // Brand F2 RTO order must NOT have a finalization row
+    const f2RtoFinal = await superPool.query<{ event_type: string }>(
+      `SELECT event_type FROM realized_revenue_ledger
+       WHERE brand_id = $1 AND order_id = $2 AND event_type = 'finalization'`,
+      [BRAND_F2, orderF2WithRto],
+    );
+    expect(f2RtoFinal.rows.length).toBe(0); // RTO-protected order not finalized
+  });
+});

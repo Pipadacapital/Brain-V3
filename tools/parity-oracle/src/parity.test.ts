@@ -516,6 +516,10 @@ describe('C. RED PROOF — 1-minor perturbation fails the parity gate (non-tauto
 
 describe('D. Isolation under brain_app (I-S01, F-SEC-02)', () => {
 
+  afterEach(async () => {
+    await clearLedgerRows(BRAND_PARITY_A, BRAND_PARITY_B);
+  });
+
   it('[ISO-1] current_user is brain_app (non-superuser, non-bypassrls)', async () => {
     const r = await appPool.query<{ current_user: string; is_superuser: boolean }>(
       `SELECT current_user,
@@ -525,31 +529,37 @@ describe('D. Isolation under brain_app (I-S01, F-SEC-02)', () => {
     expect(r.rows[0]?.is_superuser).toBe(false);
   });
 
-  it('[ISO-2] cross-brand engine read = 0 (RLS isolates brands)', async () => {
-    // Seed Brand B with a finalized row
-    await seedFinalized(BRAND_PARITY_B, `order-iso-${randomUUID()}`, 30000n, 'AED', '2026-06-17');
+  it('[ISO-2] cross-brand RLS actively blocks Brand B from seeing Brand A rows (not just absence-of-data)', async () => {
+    // Seed Brand A (INR) rows — these must NOT be visible to Brand B's engine call.
+    // This proves RLS actively blocks cross-brand reads, not just that there are no rows.
+    await seedFinalized(BRAND_PARITY_A, `order-iso2-a1-${randomUUID()}`, 75000n, 'INR', '2026-06-17');
+    await seedFinalized(BRAND_PARITY_A, `order-iso2-a2-${randomUUID()}`, 25000n, 'INR', '2026-06-17');
 
-    // Read Brand B as Brand A — RLS must return 0 (cross-brand read = 0)
-    // This is tested by reading the realized revenue for BRAND_B
-    // after seeding only BRAND_A's GUC — the engine always sets its own brandId GUC
-    // so this tests that querying BRAND_B's data returns only BRAND_B's data,
-    // not BRAND_A's.
-    // The real isolation test: run engine for BRAND_A — it must NOT see BRAND_B's rows.
-    const engineForA = await computeRealizedRevenue(
-      BRAND_PARITY_A, new Date('2026-06-17'), { pool: appPool },
-    );
+    // Also seed Brand B (AED) rows — proves Brand B can see its OWN rows (non-degenerate).
+    await seedFinalized(BRAND_PARITY_B, `order-iso2-b1-${randomUUID()}`, 30000n, 'AED', '2026-06-17');
 
-    // Brand A has no seeded rows in this test → map should have 0 value
-    const inrValue = engineForA.get('INR') ?? 0n;
-    expect(inrValue).toBe(0n); // Brand A sees only its own rows; Brand B's AED row not visible
-
-    // Brand B's data is readable only under Brand B's GUC
+    // Run the engine as Brand B: the GUC is set to BRAND_PARITY_B.
+    // Brand A has 100000n INR in the ledger. RLS must prevent Brand B from seeing it.
     const engineForB = await computeRealizedRevenue(
       BRAND_PARITY_B, new Date('2026-06-17'), { pool: appPool },
     );
+
+    // Brand B must see 0 INR — RLS blocked Brand A's rows entirely (not absence-of-data:
+    // Brand A has 100000n INR seeded above which would appear here if RLS were removed).
+    const inrUnderBrandB = engineForB.get('INR') ?? 0n;
+    expect(inrUnderBrandB).toBe(0n);
+
+    // Brand B does see its own AED rows (proves the assertion is non-degenerate).
     expect(engineForB.get('AED')).toBe(30000n);
 
-    await clearLedgerRows(BRAND_PARITY_B);
+    // Symmetry: run engine as Brand A — must NOT see Brand B's AED rows.
+    const engineForA = await computeRealizedRevenue(
+      BRAND_PARITY_A, new Date('2026-06-17'), { pool: appPool },
+    );
+    const aedUnderBrandA = engineForA.get('AED') ?? 0n;
+    expect(aedUnderBrandA).toBe(0n);
+    // Brand A sees its own INR rows.
+    expect(engineForA.get('INR')).toBe(100000n);
   });
 
   it('[ISO-3] no-GUC → function returns fail-closed (0 rows via RLS)', async () => {

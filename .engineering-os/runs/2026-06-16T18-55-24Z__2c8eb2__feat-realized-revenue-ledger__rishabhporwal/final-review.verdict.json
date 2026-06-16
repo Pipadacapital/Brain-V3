@@ -1,0 +1,35 @@
+{
+  "stage": 6,
+  "agent": "engineering-advisor-final-review",
+  "req_id": "feat-realized-revenue-ledger",
+  "verdict": "PASS",
+  "recommendation": "APPROVE",
+  "blocking": 0,
+  "ac_unmet": "none",
+  "residual_risk": "revenue-finalization Argo job no-ops under brain_app FORCE-RLS brand enumeration (F-SEC-01) — fail-closed (understate never overstate), recoverable by fix+replay, no M1 consumer; the ledger substrate (append-only, no-double-count, dual-date, no-float, isolation) is correct and re-verified live",
+  "gates_rerun": [
+    {"gate": "ledger live suite", "result": "30/30 PASS (replicated)"},
+    {"gate": "append-only-by-grant", "method": "live UPDATE/DELETE as brain_app non-superuser", "result": "permission denied (both); grants=SELECT,INSERT only"},
+    {"gate": "closed-sum non-tautology", "method": "live fn vs naive SUM on provisional+finalization", "result": "fn=100000 != naive=200000 (function load-bearing)"},
+    {"gate": "closed-sum nets", "method": "live +finalization,-refund", "result": "realized_gmv_as_of=0"},
+    {"gate": "single-currency trigger", "method": "live AED INSERT into INR brand", "result": "trigger RAISE currency mismatch"}
+  ],
+  "deferred": [
+    {"id": "F-SEC-01", "sev": "HIGH", "disposition": "ship-as-techdebt M1; P1 must-fix before prod scale", "note": "system-job FORCE-RLS brand-enumeration no-op; fail-closed + recoverable + no M1 consumer; fix = SECURITY DEFINER enumeration fn or superuser-scoped pool; 2nd occurrence of the pattern (1st = identity phone-guard-reeval)"},
+    {"id": "F-SEC-02", "sev": "MED", "disposition": "ship-as-techdebt", "note": "raw pg.Pool GUC-reset defense-in-depth gap; executing path safe (set_config before each query)"},
+    {"id": "F-SEC-03", "sev": "LOW", "disposition": "ship-as-techdebt", "note": "plaintext financial-amount logging in finalization job; scope to brand_id+count or redact (moot while job no-ops)"},
+    {"id": "F-SEC-04/F-QA-01", "sev": "LOW", "disposition": "ship-as-techdebt", "note": "dead toSatisfy(()=>true) at test:759; adjacent assertions load-bearing"},
+    {"id": "F-QA-02", "sev": "LOW", "disposition": "not-a-gap", "note": "no-float-money warn on fixtures by design; error on production paths"},
+    {"id": "F-QA-03", "sev": "LOW", "disposition": "ship-as-techdebt; add Stryker before next ledger slice", "note": "no mutation testing; strong golden fixtures mitigate for this slice"}
+  ],
+  "rule_proposal_recommended": "yes",
+  "rule_proposal_note": "cross-tenant system/Argo jobs MUST enumerate tenants via a SECURITY DEFINER fn or a dedicated superuser-scoped pool, never a bare brain_app SELECT on a FORCE-RLS tenant table. 2nd distinct occurrence (identity phone-guard-reeval c9a1a0 + ledger revenue-finalization); not yet codified; auto-write threshold is 3 distinct runs so RECOMMEND only — Stakeholder runs /adopt-rule",
+  "typecheck": "pass",
+  "paradigm_audit": "clean (tier-0 deterministic; zero model calls; correct for money substrate)",
+  "scope_audit": "clean (additive 0018; no new deployable/ADR/stack/queue; non-goals billing_run/fx_rate honored; doc-08 date->CHAR(7) tightening journaled, not a Canon amendment)",
+  "over_engineering": "none (one ledger, one money lib +1 helper, one RLS pattern, one named fn, one trigger; every column traces to doc-08 §7.1 + D-mandated adds)",
+  "hard_rule_deviation": "none",
+  "negative_control_validity": "confirmed (5 probes with captured RED output on append-only/isolation/fail-closed/currency; validity_check_exit=0; closed-sum non-tautological)",
+  "intended_state": {"stage": 6, "status": "awaiting-stakeholder", "owner": "stakeholder", "note": "PASS/APPROVE; Stakeholder weighs F-SEC-01 conscious-accept (finalization no-op, fail-closed, P1-before-prod) + the recommended rule-proposal for the recurring system-job-FORCE-RLS pattern; deploy is affected-only core+stream-worker + finalization manifest, NO canary"},
+  "ts": "2026-06-16T19:56:00Z"
+}

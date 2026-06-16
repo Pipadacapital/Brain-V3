@@ -88,3 +88,12 @@
 {"ts":"2026-06-16T18:35:58Z","req_id":"feat-identity-graph","agent":"qa-agent","stage":5,"model":"sonnet","review_scope":"full","total_tokens":100946}
 {"ts":"2026-06-16T18:41:45Z","req_id":"feat-identity-graph","agent":"final-reviewer","stage":6,"model":"opus","review_scope":"full","total_tokens":97085}
 {"ts":"2026-06-16T18:52:38Z","req_id":"feat-identity-graph","agent":"platform-devops","stage":8,"model":"sonnet","review_scope":"full","total_tokens":59937}
+{"ts":"2026-06-16T19:00:47Z","req_id":"feat-realized-revenue-ledger","agent":"cto-advisor","stage":1,"model":"sonnet","review_scope":"none","total_tokens":62362}
+{"ts":"2026-06-16T19:07:18Z","req_id":"feat-realized-revenue-ledger","agent":"architect","stage":2,"model":"opus","review_scope":"none","total_tokens":86514}
+{"ts":"2026-06-16T19:35:33Z","req_id":"feat-realized-revenue-ledger","agent":"data-engineer","stage":3,"model":"sonnet","review_scope":"none","total_tokens":136532}
+{"ts":"2026-06-16T19:54:04Z","req_id":"feat-realized-revenue-ledger","agent":"security-reviewer","stage":4,"model":"sonnet","review_scope":"full","total_tokens":123574}
+{"ts":"2026-06-16T19:54:04Z","req_id":"feat-realized-revenue-ledger","agent":"qa-agent","stage":5,"model":"sonnet","review_scope":"full","total_tokens":96729}
+{"ts":"2026-06-16T20:01:57Z","req_id":"feat-realized-revenue-ledger","agent":"final-reviewer","stage":6,"model":"opus","review_scope":"full","total_tokens":100264}
+{"ts":"2026-06-16T20:13:50Z","req_id":"feat-realized-revenue-ledger","agent":"data-engineer","stage":3,"model":"sonnet","review_scope":"delta","total_tokens":79515}
+{"ts":"2026-06-16T20:20:22Z","req_id":"feat-realized-revenue-ledger","agent":"security-reviewer","stage":4,"model":"sonnet","review_scope":"delta","total_tokens":46432}
+{"ts":"2026-06-16T20:37:58Z","req_id":"feat-realized-revenue-ledger","agent":"platform-devops","stage":8,"model":"sonnet","review_scope":"full","total_tokens":84520}

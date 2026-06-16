@@ -1,0 +1,47 @@
+{
+  "stage": 4,
+  "agent": "security-reviewer",
+  "req_id": "feat-realized-revenue-ledger",
+  "verdict": "PASS",
+  "scope": "delta",
+  "delta_commit": "353bfd6",
+  "delta_migration": "0019_active_brand_enumeration.sql",
+  "findings": [
+    {
+      "id": "F-SEC-01",
+      "severity": "HIGH",
+      "title": "Finalization job brand enumeration silently returns 0 brands under brain_app FORCE RLS (job is a no-op at runtime)",
+      "file": "apps/stream-worker/src/jobs/revenue-finalization.ts:85-88",
+      "status": "resolved",
+      "resolution": "Migration 0019 creates list_active_brand_ids() as SECURITY DEFINER (owner: brain, SET search_path=public). revenue-finalization.ts now calls SELECT FROM list_active_brand_ids() instead of bare SELECT id FROM brand. Verified: prosecdef=t, proconfig={search_path=public}, brain_app EXECUTE confirmed, fn returns 173 brands under brain_app (was 0), bare SELECT FROM brand still returns 0 under brain_app FORCE RLS (negative control holds). Column list: id, cod_recognition_horizon_days, prepaid_recognition_horizon_days, currency_code — no PII, no tenant data. Test 10 (2 sub-tests, brain_app pool) proves enumeration >0 and job finalizes 2 overdue provisionals, skips 1 RTO-protected order.",
+      "delta_verified_ts": "2026-06-17T00:30:00Z"
+    },
+    {
+      "id": "F-SEC-02",
+      "severity": "MED",
+      "title": "GetRealizedGmvAsOf uses raw pg.Pool without @brain/db GUC-reset middleware; set_config is_local=true outside transaction persists session-level on pool reuse",
+      "file": "apps/core/src/modules/measurement/internal/application/queries/GetRealizedGmvAsOf.ts:27",
+      "status": "OPEN",
+      "note": "Defense-in-depth gap: @brain/db createPool resets ALL GUCs at pool checkout (NN-1 requirement). GetRealizedGmvAsOf uses raw pg.Pool and calls set_config before every query, so the current execution is safe (GUC always overwritten before use). But a future copy that omits the set_config call would silently use a stale brand GUC. Fix: wrap in BEGIN/COMMIT or use @brain/db createPool with reset-at-checkout."
+    },
+    {
+      "id": "F-SEC-03",
+      "severity": "LOW",
+      "title": "Finalization job logs order_id and amount in plaintext console.info at line 195-198",
+      "file": "apps/stream-worker/src/jobs/revenue-finalization.ts:194-198",
+      "status": "OPEN",
+      "note": "order_id and amount_minor are logged per-finalization. order_id is an external merchant reference (not direct PII per this data model), but logging financial amounts in plaintext may be regulated under COMPLIANCE.md. The log ships to the observability spine. Add PII-redaction annotation or scope logging to brand_id + count only, not per-order amounts."
+    },
+    {
+      "id": "F-SEC-04",
+      "severity": "LOW",
+      "title": "Dead assertion `toSatisfy(() => true)` in banker's-rounding test (carried from QA review F-QA-01)",
+      "file": "apps/core/src/modules/measurement/tests/realized-revenue-ledger.live.test.ts:759",
+      "status": "OPEN",
+      "note": "Always-true probe; adjacent load-bearing assertions on minor and adjustment_minor are real. Non-blocking but should be cleaned up."
+    }
+  ],
+  "blocking": 0,
+  "ts": "2026-06-16T18:12:00Z",
+  "delta_ts": "2026-06-17T00:30:00Z"
+}

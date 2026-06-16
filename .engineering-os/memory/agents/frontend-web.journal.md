@@ -49,3 +49,22 @@
 - `apps/web/lib/api/types.ts` (camelCase shim removal)
 
 **Next:** READY-FOR-SECURITY
+
+## 2026-06-16T09:30:00Z — Frontend/Web Engineer — feat-multi-brand (Track B)
+**Stage:** 3 · **Surface:** dashboard/brand-switcher, dashboard/create-brand-dialog, lib/api/client · **Web-vitals:** not captured (no browser env in session; no render path regression — new components are lazy-rendered on user interaction only)
+**Req:** feat-multi-brand · **Track:** B-frontend
+
+**Delivered (B1–B5):**
+- B1: `brandApi.switchBrand` repointed to `POST /v1/bff/session/set-brand` with `{ brand_id }` body; `SetBrandResponse` type added (mirrors `SetOrgResponse`).
+- B2: `RawBrandSummary.active_brand_id` field added; `getBrandSummary` pivots on `active_brand_id` (MA-06 comment); `DashboardBrandSummaryResponse` extended with `active_brand_id + brands[]` (additive — no breaking change to existing callers).
+- B3: `DASHBOARD_QUERY_KEY` invalidated via `queryClient.invalidateQueries` BEFORE `window.location.href` navigation; no-op guard skips `switchBrand` when selected id === `activeBrandId`.
+- B4: `BrandSwitcher` component mounted in `app/(dashboard)/layout.tsx` sidebar; per-row select buttons with `selectingId` busy state; `aria-expanded`/`role="listbox"`/`role="option"` for a11y; always rendered (MA-15); `+ Create brand` CTA gated on `auth.role` (defaults to visible, backend enforces 403).
+- B5: `DashboardCreateBrandDialog` — standalone component with same field validation as `create-brand-form.tsx` (reuses `createBrandSchema`); explicit `onSuccess`: invalidate → switchBrand → invalidate → `window.location.href='/dashboard'`. NEVER calls `resolveOnboardingRoute`. NEVER imports `CreateBrandForm`. NEVER pushes to `/onboarding/*`.
+
+**MA-08 misroute trap avoided:** The existing `CreateBrandForm.onSuccess` calls `resolveOnboardingRoute → router.push('/onboarding/...')` which would orphan a 2nd brand creation into the wizard flow. `DashboardCreateBrandDialog` is a purpose-built component with a hard-coded `/dashboard` destination. The MA-08 negative was grep-verified (zero actual imports/calls).
+
+**Files:** 5 (2 new components, 1 layout update, 2 type/client updates)
+**Typecheck:** PASS (EXIT 0)
+**Lint:** PASS (EXIT 0)
+**Browser/e2e:** NOT RUN (orchestrator runs Playwright separately)
+**Next:** READY-FOR-SECURITY

@@ -1,11 +1,15 @@
 /**
  * Dashboard shell layout — sidebar navigation + main content area.
  * Routes: /dashboard, /settings/*
+ *
+ * feat-multi-brand (B4): BrandSwitcher is mounted in the sidebar below the logo,
+ * above the nav links. It is always rendered even for single-brand users (MA-15).
  */
 import Link from 'next/link';
 import { LayoutDashboard, Plug, Zap, Users, Settings } from 'lucide-react';
 import { UserMenu } from '@/components/dashboard/user-menu';
 import { RequireSession } from '@/components/dashboard/require-session';
+import { BrandSwitcher } from '@/components/dashboard/brand-switcher';
 
 const navItems = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -26,6 +30,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         <div className="px-6 py-5 border-b">
           <span className="text-lg font-bold text-foreground">Brain</span>
         </div>
+        {/* B4: Brand switcher — always rendered (MA-15), org-scoped via brand-summary (MA-14) */}
+        <BrandSwitcher />
         <nav className="flex-1 py-4 px-3" aria-label="Navigation links">
           <ul className="space-y-1" role="list">
             {navItems.map(({ href, label, icon: Icon }) => (

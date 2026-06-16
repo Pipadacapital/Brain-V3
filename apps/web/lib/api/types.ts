@@ -242,6 +242,10 @@ export interface DashboardBrandSummaryResponse {
   workspace_name: string;
   brand_name: string;
   member_count: number;
+  /** MA-06/B2: active brand id from auth.brandId — switcher pivots on this, not array index. */
+  active_brand_id: string | null;
+  /** Full brand list in the active org — drives the switcher (MA-14/15). */
+  brands: Array<{ id: string; display_name: string; domain: string | null; status: string }>;
 }
 
 export interface DashboardConnectionStatusResponse {
@@ -311,6 +315,17 @@ export interface SetOrgResponse {
     brand_id: string | null;
     workspace_id: string | null;
     role: string | null;
+  };
+}
+
+// ── BFF set-brand ─────────────────────────────────────────────────────────────
+
+export interface SetBrandResponse {
+  request_id: string;
+  auth: {
+    brand_id: string;
+    workspace_id: string;
+    role: string;
   };
 }
 

@@ -98,7 +98,7 @@ export function maskEmail(email: string): string {
 
 const PASSWORD_RESET_EXPIRY_MS = 60 * 60 * 1000;      // 1 hour (NN-5)
 const EMAIL_VERIFY_EXPIRY_MS = 24 * 60 * 60 * 1000;   // 24 hours
-const ACCESS_TOKEN_EXPIRY_SECS = 15 * 60;              // 15 minutes
+const ACCESS_TOKEN_EXPIRY_SECS = 60 * 60;              // 1 hour
 const REFRESH_TOKEN_EXPIRY_SECS = 7 * 24 * 60 * 60;   // 7 days
 
 // ── Auth service ──────────────────────────────────────────────────────────────

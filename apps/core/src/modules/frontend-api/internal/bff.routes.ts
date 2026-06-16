@@ -51,7 +51,7 @@ import { loginFailKeySync, loginIpKey } from '../../workspace-access/internal/in
 const COOKIE_NAME = 'brain_session';
 const CSRF_COOKIE_NAME = 'brain_csrf';
 const CSRF_HEADER_NAME = 'x-csrf-token';
-const ACCESS_TOKEN_EXPIRY_SECS = 15 * 60; // matches the session cookie maxAge
+const ACCESS_TOKEN_EXPIRY_SECS = 60 * 60; // 1 hour — matches the session cookie maxAge
 
 export function registerBffRoutes(
   fastify: FastifyInstance,

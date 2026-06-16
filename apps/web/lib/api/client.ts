@@ -140,6 +140,19 @@ async function bffFetch<T>(
     } catch {
       // non-JSON error body
     }
+    // Session expired or invalid → log out and redirect to /login. The browser holds
+    // only the (httpOnly) access cookie and no refresh token, so an expired access
+    // token cannot be refreshed — the only correct outcome is to send the user back to
+    // login. Excludes the login route's own bad-credentials 401 (INVALID_CREDENTIALS),
+    // which must surface its error instead of redirecting.
+    if (
+      response.status === 401 &&
+      errorBody?.error?.code !== 'INVALID_CREDENTIALS' &&
+      typeof window !== 'undefined' &&
+      window.location.pathname !== '/login'
+    ) {
+      window.location.href = '/login';
+    }
     const message = errorBody?.error?.message ?? `Request failed: ${response.status}`;
     const reqId = errorBody?.request_id ?? requestId;
     const err = new BffApiError(message, response.status, reqId, errorBody?.error?.code);

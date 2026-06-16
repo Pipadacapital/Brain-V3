@@ -32,6 +32,11 @@
       "req_id": "feat-identity-graph",
       "title": "Deterministic identity graph (brain_id + alias + phone-guard)",
       "first_seen": "2026-06-16T17:44:41Z"
+    },
+    {
+      "req_id": "feat-realized-revenue-ledger",
+      "title": "Realized-revenue ledger (append-only, dual-date, COD-aware)",
+      "first_seen": "2026-06-16T18:55:24Z"
     }
   ]
 }

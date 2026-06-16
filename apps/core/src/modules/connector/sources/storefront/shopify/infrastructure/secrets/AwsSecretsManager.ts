@@ -100,6 +100,20 @@ export class AwsSecretsManager implements ISecretsManager {
     return value;
   }
 
+  async getShopifyToken(secretRef: string): Promise<string | null> {
+    try {
+      const response = await this.client.send(
+        new GetSecretValueCommand({ SecretId: secretRef }),
+      );
+      // Value is NEVER logged (I-S09).
+      return response.SecretString ?? null;
+    } catch (err) {
+      throw new Error(
+        `[AwsSecretsManager] Failed to fetch Shopify token "${secretRef}": ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
   async deleteShopifyToken(secretArn: string): Promise<void> {
     try {
       await this.client.send(

@@ -47,4 +47,11 @@ export class LocalSecretsManager implements ISecretsManager {
       this.store.delete(parts[1]);
     }
   }
+
+  async getShopifyToken(secretRef: string): Promise<string | null> {
+    // secret_ref is the fake ARN from storeShopifyToken; the name follows `:secret:`.
+    // NOTE: dev-only in-memory store — a process restart loses the token (reconnect needed).
+    const name = secretRef.split(':secret:')[1] ?? secretRef;
+    return this.store.get(name) ?? null;
+  }
 }

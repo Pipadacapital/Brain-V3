@@ -39,6 +39,7 @@ import { createEmailAdapter } from './modules/notification/internal/ses-adapter.
 
 // ── Connector infrastructure imports (HIGH-MOUNT-01) ─────────────────────────
 import { registerShopifyConnectorRoutes } from './modules/connector/sources/storefront/shopify/interfaces/http/shopifyConnectorRoutes.js';
+import { registerDevShopifySyncRoutes } from './modules/connector/sources/storefront/shopify/interfaces/http/devShopifySyncRoutes.js';
 import { registerPixelRoutes, buildDefaultSnippet } from './modules/connector/pixel/interfaces/http/pixelRoutes.js';
 import { InitiateOAuthCommand } from './modules/connector/sources/storefront/shopify/application/commands/InitiateOAuthCommand.js';
 import {
@@ -355,6 +356,13 @@ export async function main(): Promise<void> {
     ? new AwsSecretsManager(getEnv('AWS_REGION', 'us-east-1'), shopifyClientSecretRef)
     : new LocalSecretsManager();
   const oauthStateStore = new InProcessOAuthStateStore();
+
+  // DEV-ONLY: validate-sync spike — pull live orders via the real connected token.
+  // Mounted only outside production (token crosses the boundary here, I-S09).
+  if (nodeEnv !== 'production') {
+    registerDevShopifySyncRoutes(app, pool, connectorSecretsManager);
+    app.log.warn('[dev] /api/v1/dev/shopify/validate-sync mounted (NODE_ENV != production)');
+  }
 
   const initiateOAuth = new InitiateOAuthCommand(connectorSecretsManager, oauthStateStore);
   const handleCallback = new HandleOAuthCallbackCommand(

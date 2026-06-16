@@ -42,4 +42,16 @@ export interface ISecretsManager {
    * @param secretArn  The ARN stored in connector_instance.secret_ref.
    */
   deleteShopifyToken(secretArn: string): Promise<void>;
+
+  /**
+   * Retrieve a stored Shopify OAuth access token by its secret_ref (the ARN held in
+   * connector_instance.secret_ref). Returns null if not found.
+   *
+   * Unlike storeShopifyToken (write-only — the token never returns), this DOES return
+   * the token: calling the Shopify Admin API requires it. Callers MUST NOT log or
+   * persist the value (I-S09) — use it for the request and discard.
+   *
+   * @param secretRef  The ARN stored in connector_instance.secret_ref.
+   */
+  getShopifyToken(secretRef: string): Promise<string | null>;
 }

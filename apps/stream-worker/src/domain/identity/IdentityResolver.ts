@@ -260,8 +260,14 @@ export class IdentityResolver {
   }
 
   /**
-   * Compute deterministic merge_id = sha256(brand_id ‖ canonical ‖ merged ‖ rule_version).
-   * ON CONFLICT (merge_id) DO NOTHING → replay-idempotent (D-4).
+   * Compute deterministic merge_id as a UUID derived from SHA-256 (D-4).
+   *
+   * merge_id = UUID-formatted prefix of sha256(brand_id ‖ canonical ‖ merged ‖ rule_version).
+   * The UUID format (8-4-4-4-12 hex groups) is derived from the first 32 hex chars of the hash.
+   * Version bits are set to 5 (name-based SHA, closest standard) for standards compliance.
+   *
+   * Deterministic: same inputs → same UUID → ON CONFLICT (merge_id) DO NOTHING = idempotent (D-4).
+   * Replay: reprocessing the same Bronze event produces the same merge_id → exactly 1 row.
    */
   computeMergeId(
     brandId: string,
@@ -269,7 +275,17 @@ export class IdentityResolver {
     mergedBrainId: string,
   ): string {
     const input = `${brandId}||${canonicalBrainId}||${mergedBrainId}||${RULE_VERSION}`;
-    return createHash('sha256').update(input, 'utf8').digest('hex');
+    const hex = createHash('sha256').update(input, 'utf8').digest('hex');
+    // Format as UUID: take first 32 hex chars (128 bits), format as 8-4-4-4-12
+    // Set version to 5 (name-based SHA-1 UUID — closest to deterministic SHA-256 UUID)
+    const h = hex.slice(0, 32);
+    return [
+      h.slice(0, 8),
+      h.slice(8, 12),
+      '5' + h.slice(13, 16),  // version 5
+      ((parseInt(h[16]!, 16) & 0x3 | 0x8).toString(16)) + h.slice(17, 20),  // variant bits
+      h.slice(20, 32),
+    ].join('-');
   }
 
   /** Compute suppressed_until = now + windowDays. */

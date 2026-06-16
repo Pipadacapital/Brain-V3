@@ -186,13 +186,28 @@ export class IdentityRepository {
       );
 
       // ── identity_link rows (new identifiers) ─────────────────────────────────
+      // ON CONFLICT uses the partial index predicate (CREATE UNIQUE INDEX, not CONSTRAINT).
+      // PG partial-index ON CONFLICT form: ON CONFLICT (cols) WHERE <predicate> DO NOTHING.
       for (const id of outcome.newLinks) {
-        await client.query(
-          `INSERT INTO identity_link (brand_id, brain_id, identifier_type, identifier_value, tier, is_active)
-           VALUES ($1, $2, $3, $4, $5, TRUE)
-           ON CONFLICT ON CONSTRAINT identity_link_active_strong_unique DO NOTHING`,
-          [brandId, outcome.brainId, id.type, id.hash, id.tier],
-        );
+        if (id.tier === 'strong' || id.tier === 'strong_on_link') {
+          // Strong identifiers: use the partial unique index conflict target
+          await client.query(
+            `INSERT INTO identity_link (brand_id, brain_id, identifier_type, identifier_value, tier, is_active)
+             VALUES ($1, $2, $3, $4, $5, TRUE)
+             ON CONFLICT (brand_id, identifier_type, identifier_value)
+               WHERE is_active = TRUE AND tier IN ('strong','strong_on_link')
+             DO NOTHING`,
+            [brandId, outcome.brainId, id.type, id.hash, id.tier],
+          );
+        } else {
+          // Medium/weak identifiers: no partial unique constraint — just insert
+          await client.query(
+            `INSERT INTO identity_link (brand_id, brain_id, identifier_type, identifier_value, tier, is_active)
+             VALUES ($1, $2, $3, $4, $5, TRUE)
+             ON CONFLICT DO NOTHING`,
+            [brandId, outcome.brainId, id.type, id.hash, id.tier],
+          );
+        }
       }
 
       // ── merge: identity_merge_event + brain_id_alias ──────────────────────
@@ -219,12 +234,15 @@ export class IdentityRepository {
           [mergeId, brandId, canonicalBrainId, mergedBrainId],
         );
 
-        // brain_id_alias — UNIQUE PARTIAL (brand_id, observed) WHERE valid_to IS NULL (D-4)
+        // brain_id_alias — UNIQUE PARTIAL (brand_id, observed_brain_id) WHERE valid_to IS NULL (D-4)
+        // Use partial-index ON CONFLICT form (CREATE UNIQUE INDEX, not named CONSTRAINT).
         await client.query(
           `INSERT INTO brain_id_alias
              (brand_id, observed_brain_id, canonical_brain_id, rule_version, merge_id)
            VALUES ($1, $2, $3, 'v1-deterministic', $4)
-           ON CONFLICT ON CONSTRAINT brain_id_alias_live_unique DO NOTHING`,
+           ON CONFLICT (brand_id, observed_brain_id)
+             WHERE valid_to IS NULL
+           DO NOTHING`,
           [brandId, mergedBrainId, canonicalBrainId, mergeId],
         );
       }

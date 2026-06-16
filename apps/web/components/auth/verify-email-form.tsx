@@ -1,8 +1,8 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Loader2, MailCheck } from 'lucide-react';
+import { Loader2, MailCheck, FlaskConical } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { ErrorCard } from '@/components/ui/error-card';
@@ -16,6 +16,27 @@ export function VerifyEmailForm() {
   const email = searchParams.get('email');
 
   const { mutate: verify, isPending, error, isSuccess } = useVerifyEmail();
+
+  // DEV-ONLY: there is no real inbox in dev, so fetch the verification token the
+  // backend captured at register time and offer a one-click "verify now". This block
+  // is dead-code-eliminated from production builds (process.env.NODE_ENV is inlined).
+  const isDev = process.env.NODE_ENV !== 'production';
+  const [devToken, setDevToken] = useState<string | null>(null);
+  useEffect(() => {
+    if (!isDev || token || !email) return;
+    let cancelled = false;
+    fetch(`/api/bff/v1/dev/last-email-link?email=${encodeURIComponent(email)}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data: { token?: string; type?: string } | null) => {
+        if (!cancelled && data?.token && data.type === 'email_verification') setDevToken(data.token);
+      })
+      .catch(() => {
+        /* dev convenience only — silently ignore */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isDev, token, email]);
 
   // Auto-verify if token is in the URL (email link click)
   useEffect(() => {
@@ -72,6 +93,22 @@ export function VerifyEmailForm() {
         <p className="text-center text-xs text-muted-foreground">
           Once verified, you will be redirected to sign in automatically.
         </p>
+        {isDev && devToken && (
+          <div className="mt-4 rounded-md border border-dashed border-amber-400 bg-amber-50 p-3 text-center dark:bg-amber-950/30">
+            <p className="mb-2 flex items-center justify-center gap-1.5 text-xs font-medium text-amber-700 dark:text-amber-400">
+              <FlaskConical className="h-3.5 w-3.5" aria-hidden="true" />
+              Dev mode — no real email is sent
+            </p>
+            <Button
+              size="sm"
+              variant="outline"
+              data-testid="btn-dev-verify-now"
+              onClick={() => router.push(`/verify-email?token=${encodeURIComponent(devToken)}`)}
+            >
+              Verify now (dev)
+            </Button>
+          </div>
+        )}
         <div className="mt-4 text-center">
           <Button variant="link" onClick={() => router.push('/login')}>
             Back to sign in

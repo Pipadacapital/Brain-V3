@@ -528,3 +528,103 @@ Installed 4 packages in 7ms
   Phase 1-dev-only: no cloud infra, no ArgoCD, no canary — pipeline wired when graduating to cloud deploy (Slice 5 spec in 03 §6)
 22:30:00Z [heartbeat] engineering-os:platform-devops S8 feat-data-plane-ingest-spine returned
 17:18:18Z [heartbeat] engineering-os:platform-devops S8 ? returned
+[monitor] watching 3 url(s) for 90s (interval=30s)…
+[monitor] http-error: 404 http://localhost:3000/_next/static/css/app/layout.css?v=1781631106159
+[monitor] console.error: Failed to load resource: the server responded with a status of 404 (Not Found)
+[monitor] request-failed: http://localhost:3000/_next/static/css/app/layout.css?v=1781631106159 (net::ERR_ABORTED)
+[monitor] http-error: 404 http://localhost:3000/_next/static/chunks/main-app.js?v=1781631106159
+[monitor] console.error: Failed to load resource: the server responded with a status of 404 (Not Found)
+[monitor] request-failed: http://localhost:3000/_next/static/chunks/main-app.js?v=1781631106159 (net::ERR_ABORTED)
+[monitor] http-error: 404 http://localhost:3000/_next/static/chunks/app-pages-internals.js
+[monitor] console.error: Failed to load resource: the server responded with a status of 404 (Not Found)
+[monitor] request-failed: http://localhost:3000/_next/static/chunks/app-pages-internals.js (net::ERR_ABORTED)
+[monitor] http-error: 404 http://localhost:3000/_next/static/css/app/layout.css?v=1781631106744
+[monitor] console.error: Failed to load resource: the server responded with a status of 404 (Not Found)
+[monitor] request-failed: http://localhost:3000/_next/static/css/app/layout.css?v=1781631106744 (net::ERR_ABORTED)
+[monitor] http-error: 404 http://localhost:3000/_next/static/chunks/main-app.js?v=1781631106744
+[monitor] console.error: Failed to load resource: the server responded with a status of 404 (Not Found)
+[monitor] request-failed: http://localhost:3000/_next/static/chunks/main-app.js?v=1781631106744 (net::ERR_ABORTED)
+[monitor] http-error: 404 http://localhost:3000/_next/static/chunks/app-pages-internals.js
+[monitor] console.error: Failed to load resource: the server responded with a status of 404 (Not Found)
+[monitor] request-failed: http://localhost:3000/_next/static/chunks/app-pages-internals.js (net::ERR_ABORTED)
+[monitor] http-error: 404 http://localhost:3000/_next/static/css/app/layout.css?v=1781631107344
+[monitor] console.error: Failed to load resource: the server responded with a status of 404 (Not Found)
+[monitor] request-failed: http://localhost:3000/_next/static/css/app/layout.css?v=1781631107344 (net::ERR_ABORTED)
+[monitor] http-error: 404 http://localhost:3000/_next/static/chunks/main-app.js?v=1781631107344
+[monitor] console.error: Failed to load resource: the server responded with a status of 404 (Not Found)
+[monitor] request-failed: http://localhost:3000/_next/static/chunks/main-app.js?v=1781631107344 (net::ERR_ABORTED)
+[monitor] http-error: 404 http://localhost:3000/_next/static/chunks/app-pages-internals.js
+[monitor] console.error: Failed to load resource: the server responded with a status of 404 (Not Found)
+[monitor] request-failed: http://localhost:3000/_next/static/chunks/app-pages-internals.js (net::ERR_ABORTED)
+[monitor] http-error: 404 http://localhost:3000/_next/static/css/app/layout.css?v=1781631137929
+[monitor] console.error: Failed to load resource: the server responded with a status of 404 (Not Found)
+[monitor] request-failed: http://localhost:3000/_next/static/css/app/layout.css?v=1781631137929 (net::ERR_ABORTED)
+[monitor] http-error: 404 http://localhost:3000/_next/static/chunks/main-app.js?v=1781631137929
+[monitor] console.error: Failed to load resource: the server responded with a status of 404 (Not Found)
+[monitor] request-failed: http://localhost:3000/_next/static/chunks/main-app.js?v=1781631137929 (net::ERR_ABORTED)
+[monitor] http-error: 404 http://localhost:3000/_next/static/chunks/app-pages-internals.js
+[monitor] console.error: Failed to load resource: the server responded with a status of 404 (Not Found)
+[monitor] request-failed: http://localhost:3000/_next/static/chunks/app-pages-internals.js (net::ERR_ABORTED)
+[monitor] http-error: 404 http://localhost:3000/_next/static/css/app/layout.css?v=1781631138500
+[monitor] console.error: Failed to load resource: the server responded with a status of 404 (Not Found)
+[monitor] request-failed: http://localhost:3000/_next/static/css/app/layout.css?v=1781631138500 (net::ERR_ABORTED)
+[monitor] http-error: 404 http://localhost:3000/_next/static/chunks/main-app.js?v=1781631138500
+[monitor] console.error: Failed to load resource: the server responded with a status of 404 (Not Found)
+[monitor] request-failed: http://localhost:3000/_next/static/chunks/main-app.js?v=1781631138500 (net::ERR_ABORTED)
+[monitor] http-error: 404 http://localhost:3000/_next/static/chunks/app-pages-internals.js
+[monitor] console.error: Failed to load resource: the server responded with a status of 404 (Not Found)
+[monitor] request-failed: http://localhost:3000/_next/static/chunks/app-pages-internals.js (net::ERR_ABORTED)
+[monitor] http-error: 404 http://localhost:3000/_next/static/css/app/layout.css?v=1781631139085
+[monitor] console.error: Failed to load resource: the server responded with a status of 404 (Not Found)
+[monitor] request-failed: http://localhost:3000/_next/static/css/app/layout.css?v=1781631139085 (net::ERR_ABORTED)
+[monitor] http-error: 404 http://localhost:3000/_next/static/chunks/main-app.js?v=1781631139085
+[monitor] console.error: Failed to load resource: the server responded with a status of 404 (Not Found)
+[monitor] request-failed: http://localhost:3000/_next/static/chunks/main-app.js?v=1781631139085 (net::ERR_ABORTED)
+[monitor] http-error: 404 http://localhost:3000/_next/static/chunks/app-pages-internals.js
+[monitor] console.error: Failed to load resource: the server responded with a status of 404 (Not Found)
+[monitor] request-failed: http://localhost:3000/_next/static/chunks/app-pages-internals.js (net::ERR_ABORTED)
+[monitor] http-error: 404 http://localhost:3000/_next/static/css/app/layout.css?v=1781631169669
+[monitor] console.error: Failed to load resource: the server responded with a status of 404 (Not Found)
+[monitor] request-failed: http://localhost:3000/_next/static/css/app/layout.css?v=1781631169669 (net::ERR_ABORTED)
+[monitor] http-error: 404 http://localhost:3000/_next/static/chunks/main-app.js?v=1781631169669
+[monitor] console.error: Failed to load resource: the server responded with a status of 404 (Not Found)
+[monitor] request-failed: http://localhost:3000/_next/static/chunks/main-app.js?v=1781631169669 (net::ERR_ABORTED)
+[monitor] http-error: 404 http://localhost:3000/_next/static/chunks/app-pages-internals.js
+[monitor] console.error: Failed to load resource: the server responded with a status of 404 (Not Found)
+[monitor] request-failed: http://localhost:3000/_next/static/chunks/app-pages-internals.js (net::ERR_ABORTED)
+[monitor] http-error: 404 http://localhost:3000/_next/static/css/app/layout.css?v=1781631170256
+[monitor] console.error: Failed to load resource: the server responded with a status of 404 (Not Found)
+[monitor] request-failed: http://localhost:3000/_next/static/css/app/layout.css?v=1781631170256 (net::ERR_ABORTED)
+[monitor] http-error: 404 http://localhost:3000/_next/static/chunks/main-app.js?v=1781631170256
+[monitor] console.error: Failed to load resource: the server responded with a status of 404 (Not Found)
+[monitor] request-failed: http://localhost:3000/_next/static/chunks/main-app.js?v=1781631170256 (net::ERR_ABORTED)
+[monitor] http-error: 404 http://localhost:3000/_next/static/chunks/app-pages-internals.js
+[monitor] console.error: Failed to load resource: the server responded with a status of 404 (Not Found)
+[monitor] request-failed: http://localhost:3000/_next/static/chunks/app-pages-internals.js (net::ERR_ABORTED)
+[monitor] http-error: 404 http://localhost:3000/_next/static/css/app/layout.css?v=1781631170849
+[monitor] console.error: Failed to load resource: the server responded with a status of 404 (Not Found)
+[monitor] request-failed: http://localhost:3000/_next/static/css/app/layout.css?v=1781631170849 (net::ERR_ABORTED)
+[monitor] http-error: 404 http://localhost:3000/_next/static/chunks/main-app.js?v=1781631170849
+[monitor] console.error: Failed to load resource: the server responded with a status of 404 (Not Found)
+[monitor] request-failed: http://localhost:3000/_next/static/chunks/main-app.js?v=1781631170849 (net::ERR_ABORTED)
+[monitor] http-error: 404 http://localhost:3000/_next/static/chunks/app-pages-internals.js
+[monitor] console.error: Failed to load resource: the server responded with a status of 404 (Not Found)
+[monitor] request-failed: http://localhost:3000/_next/static/chunks/app-pages-internals.js (net::ERR_ABORTED)
+[monitor] done — 4 sweep(s), 81 issue(s) captured.
+17:46:17 [orchestrator] Pipeline started for feat-identity-graph (high_stakes). Stage 1 intake (compressed).
+17:47:14Z [heartbeat] engineering-os:cto-advisor S1 ? issued
+2026-06-16T18:00:00Z [cto-advisor] Stage 1 ADVANCE | feat-identity-graph | high_stakes | surfaces: multi_tenancy, pii, schema_proto, audit_integrity | Personas: folded (compressed pass) | Decision: ADVANCE | 8 findings (2 CRITICAL, 3 HIGH, 2 MEDIUM, 1 LOW) | D-1..D-7 bindings declared | Primary builder: data-engineer | Next: Stage 2 architecture
+17:52:25Z [heartbeat] engineering-os:cto-advisor S1 ? returned
+17:53:31Z [heartbeat] engineering-os:architect S2 ? issued
+17:57:00Z [heartbeat] engineering-os:architect S2 ? returned
+17:58:11Z [heartbeat] engineering-os:architect S2 ? issued
+2026-06-16T22:05:00Z | architect | feat-identity-graph | stage-2 | START — binding D-1..D-7 + stub-crypto + migration 0017; reads complete (req, cto-review, identity-core stub, bronze 0016, doc-08 §5-7, brand 0004, stream-worker consumer/repo/usecase pattern, SecretsProvider+LocalSecretsProvider extend-not-create, STACK ADR-008/010). Single-track @data-engineer recommended.
+2026-06-16T22:18:00Z | architect | feat-identity-graph | stage-2 | DONE — 03-architecture-plan.md written. ADVANCE → @data-engineer (single track). Bindings: D-1..D-7 + C-1 stub→real-SHA256 + C-2 mig-0017 all bound. CRITICAL: D-2 salt HARD-CRASH-on-fetch-fail (never empty/default); D-1 phone_guard_threshold DEFAULT 10 windowed 30d configurable. Single-Primitive CLEAN (SaltProvider extends existing SecretsProvider; merge_rule deferred). merge_id deterministic + ON CONFLICT DO NOTHING (replay 3×→1). contact_pii RLS brand_id AND app.role=send_service. ALL isolation tests under SET ROLE brain_app. Slices smallest-first, COMMIT PER SLICE, deploy=existing stream-worker ArgoCD app (no canary, Phase-4 deferred ADR-010). No new ADR. intended_state: {stage:3, status:build, owner:data-engineer}.
+18:03:43Z [heartbeat] engineering-os:architect S2 ? returned
+18:04:37Z [heartbeat] engineering-os:data-engineer S3 ? issued
+2026-06-16T22:30:00Z | data-engineer | feat-identity-graph | stage-3 | START — reads complete (03-architecture-plan, 02-cto-advisor-review, identity-core stub, bronze 0016, 0004 brand, stream-worker consumer/repo/usecase/main, SecretsProvider+LocalSecretsProvider, doc-08 §5-7). Single-track build. Slices 1-4.
+2026-06-16T22:32:00Z | data-engineer | feat-identity-graph | stage-3 | SLICE-1 DONE — mig 0017 applied (8 tables FORCE RLS, two-arg fail-closed, contact_pii elevated policy, NN-1 DO-block); brand columns added (identity_salt_ciphertext, phone_guard_threshold DEFAULT 10, suppression_window_days DEFAULT 30); stubSha256 deleted; real SHA-256 via node:crypto; E.164 normalizePhone(regionCode); CONFORMANCE_EMAIL_VECTOR exported; SaltProvider 32-byte guard + hard-crash. Typecheck PASS. Commit: 8ac9771.
+2026-06-16T22:35:00Z | data-engineer | feat-identity-graph | stage-3 | SLICE-2 DONE — IdentityResolver (pure domain, 0/1/≥2 match decision + cycle-guard + computeMergeId UUID-from-SHA-256); SharedUtilityPolicy (windowed threshold eval); IdentityRepository (one-txn set_config+INSERTs ON CONFLICT DO NOTHING + contact_pii under send_service GUC); ResolveIdentityUseCase (@effort deterministic, extract→normalize→hash→resolve→write); IdentityBridgeConsumer (mirrors CollectorEventConsumer offset/DLQ); main.ts wired (D-7 no new deployable). Typecheck PASS. Commit: a8a52d1.
+2026-06-16T22:37:00Z | data-engineer | feat-identity-graph | stage-3 | SLICE-3 DONE — phone-guard-reeval.ts (Argo job entry point, windowed re-eval, un-suppresses if count drops below threshold, extends if still above, idempotent). Phone-guard + contact_pii gate already in Slice 2. Typecheck PASS. Commit: dd96233.
+2026-06-16T22:43:00Z | data-engineer | feat-identity-graph | stage-3 | SLICE-4 DONE — 26 tests pass against live PG (brain_app role, no mocks). Tests: identity-core conformance (CONFORMANCE_EMAIL_VECTOR pinned, real SHA-256, cross-brand-differs, E.164 equality, low-confidence no-crash); SaltProvider hard-crash (empty throw, wrong-length throw, valid 32-byte, no-default); deterministic-merge (same email×2→1 brain_id); phone-guard N=10 boundary (11th event suppresses, 10 distinct brain_ids not collapsed, 0 merge events); isolation negative control (cross-brand=0, no-GUC=0, current_user=brain_app≠brain); no-raw-PII (identifier_value always 64-hex, never @); replay-idempotency (3×→1 merge_event, 1 alias); contact_pii gate (no-role→0, with-role→1). Bug fixes: ON CONFLICT partial-index form (PG: CREATE UNIQUE INDEX ≠ named CONSTRAINT); computeMergeId → UUID-formatted (DB column uuid). Typecheck PASS. Commit: c9278a3.
+2026-06-16T22:45:00Z | data-engineer | feat-identity-graph | stage-3 | DONE — identity graph complete. All DoD: tenant-keyed end-to-end; exactly-once (idempotent AT-LEAST-ONCE); replayable from Bronze; no separate backfill path; RLS FORCE fail-closed; stream/batch parity (deterministic only); no raw PII anywhere except contact_pii vault; salt hard-crash (D-2 CRITICAL); phone-guard (D-1 CRITICAL); isolation verified under brain_app (not superuser). READY-FOR-SECURITY | READY-FOR-QA. intended_state: {stage:3, owner:"security+qa", note:"identity graph complete"}.

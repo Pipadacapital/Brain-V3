@@ -9,7 +9,7 @@
     "lint": "eslint .",
     "dev": "tsx watch src/main.ts",
     "start": "node dist/main.js",
-    "test:unit": "vitest run --passWithNoTests",
+    "test:unit": "vitest run",
     "test:durability": "vitest run tests/durability.test.ts"
   },
   "dependencies": {

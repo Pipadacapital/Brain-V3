@@ -77,7 +77,7 @@ describe('CollectorEventV1Schema — contract tests', () => {
   it('accepts optional fields when provided', () => {
     const result = CollectorEventV1Schema.safeParse({
       ...VALID_EVENT,
-      ingest_at: '2026-06-15T12:00:01Z',
+      ingested_at: '2026-06-15T12:00:01Z',
       hashed_user_id: 'abc123',
       hashed_session_id: 'def456',
       properties: { page: 'home', ref: 'direct' },

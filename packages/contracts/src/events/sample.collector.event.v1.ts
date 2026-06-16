@@ -8,7 +8,8 @@
  *  - brand_id is REQUIRED — no event may be written without a tenant key (I-S01).
  *  - event_id + brand_id form the idempotency key (I-ST04).
  *  - correlation_id is REQUIRED — propagated from inbound HTTP → Kafka → Bronze (ADR-009).
- *  - occurred_at is an ISO-8601 string (UTC); the stream-worker converts to epoch-ms for Bronze partition.
+ *  - occurred_at is an ISO-8601 string (UTC); stream-worker writes occurred_at as timestamptz at the Bronze
+ *    boundary; no epoch-ms representation.
  *  - No raw PII fields are allowed in this schema (I-S02). Use sha256(per-brand-salt || normalized) hashes.
  *
  * Schema evolution (FULL_TRANSITIVE / additive-optional only — I-E02):
@@ -57,8 +58,9 @@ export const CollectorEventV1Schema = z.object({
   /**
    * ISO-8601 timestamp (UTC) when the collector received the event.
    * Set by the collector; immutable once written to Bronze.
+   * stream-worker writes ingested_at as timestamptz at the Bronze boundary.
    */
-  ingest_at: z.string().datetime({ offset: false }).optional(),
+  ingested_at: z.string().datetime({ offset: false }).optional(),
 
   /**
    * Hashed identifier for the end-user (sha256(per-brand-salt || normalized_id)).

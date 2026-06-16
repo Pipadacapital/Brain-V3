@@ -23,8 +23,8 @@
 export interface CollectorEventEnvelope {
   event_id:         string;
   brand_id:         string;
-  occurred_at:      number;   // millis since epoch
-  ingested_at:      number;   // millis since epoch
+  occurred_at:      string;   // ISO-8601 UTC string; stream-worker converts to timestamptz at Bronze boundary
+  ingested_at:      string;   // ISO-8601 UTC string; stream-worker converts to timestamptz at Bronze boundary
   schema_name:      string;
   schema_version:   number;
   partition_key:    string;   // brand_id:event_id

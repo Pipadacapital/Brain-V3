@@ -419,3 +419,18 @@ Installed 4 packages in 7ms
 2026-06-16T22:04:00Z [S8 platform-devops] feat-members-team-management: PR — gh unauthenticated; manual URL: https://github.com/Rishabhporwal/Brain-V4/compare/feat/members-team-management; STACKING NOTE: base feat/shopify-sync-validation must be pushed+merged first
 2026-06-16T22:05:00Z [S8 platform-devops] feat-members-team-management: SHIPPED — 13-deploy-report.md written; active.json ship block updated; decision-log appended; commit pending on branch
 15:48:01Z [heartbeat] engineering-os:platform-devops S8 ? returned
+15:57:38 [orchestrator] Pipeline started for feat-data-plane-ingest-spine (high_stakes). Stage 1 intake.
+15:58:01Z [heartbeat] engineering-os:cto-advisor S1 ? issued
+15:59:15Z [heartbeat] engineering-os:cto-advisor S1 ? issued
+
+## 2026-06-16T16:10:00Z — Engineering Advisor (cto-advisor) — feat-data-plane-ingest-spine
+**Stage:** 1 (intake, compressed, personas folded) · **Action:** ADVANCE · **Personas:** none (folded into compressed adversarial pass) · **Decision:** ADVANCE
+**Rationale:** Requirement is sound and grounded. Scaffolds confirmed real (9-line stubs, empty dirs, package.json deps in place). Redpanda + Nessie + MinIO confirmed in docker-compose ingest profile. No new deployable. 10 findings surfaced and severity-ranked; all addressable within existing stack. 10 architect bindings declared. Highest risk: D-4 TypeScript→Iceberg write path (no official TS SDK; Nessie REST API + MinIO write path must be spike-validated by architect before commit). Type mismatch F-1 (occurred_at string vs number) and field name mismatch F-6 (ingest_at vs ingested_at) must be resolved in contracts before first Apicurio registration. RLS note: Bronze isolation is Iceberg partition + S3 prefix, not Postgres RLS — test must reflect this.
+**Next:** Stage 2 architecture (architect); D-4 Iceberg write path spike is the critical-path first slice.
+16:03:10Z [heartbeat] engineering-os:cto-advisor S1 ? returned
+16:03:56Z [heartbeat] engineering-os:architect S2 ? issued
+2026-06-16T20:10:00Z [architect] feat-data-plane-ingest-spine Stage-2 ADVANCE. D-4→Postgres bronze_events fallback (no TS Iceberg writer; Nessie catalog-only; PyIceberg/Spark=Phase-3; no new layer/ADR). Isolation re-bound to Postgres RLS (tests under SET ROLE brain_app). Contracts: ingest_at→ingested_at + occurred_at/ingested_at string ISO-8601, codegen first (I-E01). Migrations 0015_collector_spool + 0016_bronze_events (additive). 5 slices, COMMIT PER SLICE. Tracks: backend-developer (collector edge/spool/drainer) ∥ data-engineer (stream-worker/Bronze/dedup). Artifact 03-architecture-plan.md → Stage 3.
+16:09:14Z [heartbeat] engineering-os:architect S2 ? returned
+16:10:20Z [heartbeat] engineering-os:data-engineer S3 ? issued
+16:10:42Z [heartbeat] engineering-os:backend-developer S3 ? issued
+2026-06-16T20:25:00Z [backend-developer S3] feat-data-plane-ingest-spine Track B COMPLETE. Slice 1 (0b1a342): F-6 ingest_at→ingested_at + F-1 string ISO-8601 + 0015_collector_spool + 0016_bronze_events (RLS FORCE NN-1). Slice 2 (b25f51c): DDD collector edge — AcceptEventUseCase stamp+INSERT only; DrainEventsUseCase separate setInterval; Apicurio backoff degrade-dont-crash. Slice 3 (2da8f73): 5/5 tests PASS — ACK ordering proven (code structure + test); Redpanda-down durability proven (dead broker → spool holds → live broker → drained). typecheck: @brain/contracts/@brain/events/@brain/collector EXIT 0. READY-FOR-SECURITY.

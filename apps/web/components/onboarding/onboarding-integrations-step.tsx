@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Loader2, CheckCircle, XCircle, Plug, ArrowRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { ErrorCard } from '@/components/ui/error-card';
@@ -54,31 +55,37 @@ function ConnectorWizardCard({
 }) {
   const { mutate: getShopifyUrl, isPending: isConnecting } = useShopifyInstallUrl();
   const [connectError, setConnectError] = useState<string | null>(null);
+  const [shopDomain, setShopDomain] = useState('');
 
   const isConnected = !!item.instance;
   const status = item.instance?.status;
 
   function handleConnect() {
-    if (item.provider === 'shopify') {
-      setConnectError(null);
-      getShopifyUrl(undefined, {
-        onSuccess: (data) => {
-          // Redirect to Shopify OAuth — wizard resumes on return via onboarding_status routing.
-          window.location.href = data.install_url;
-        },
-        onError: (err) => {
-          const msg =
-            err instanceof BffApiError ? err.message : 'Could not start Shopify connection.';
-          setConnectError(msg);
-          // OAuth failure does NOT block wizard — user can skip.
-          toast({
-            title: 'Connection failed',
-            description: msg,
-            variant: 'destructive',
-          });
-        },
-      });
+    if (item.provider !== 'shopify') return;
+    // Shopify OAuth needs the store domain; the backend 400s without ?shop=.
+    const shop = shopDomain.trim().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+    if (!shop) {
+      setConnectError('Enter your Shopify store domain (e.g. my-store.myshopify.com).');
+      return;
     }
+    setConnectError(null);
+    getShopifyUrl(shop, {
+      onSuccess: (data) => {
+        // Redirect to Shopify OAuth — wizard resumes on return via onboarding_status routing.
+        window.location.href = data.install_url;
+      },
+      onError: (err) => {
+        const msg =
+          err instanceof BffApiError ? err.message : 'Could not start Shopify connection.';
+        setConnectError(msg);
+        // OAuth failure does NOT block wizard — user can skip.
+        toast({
+          title: 'Connection failed',
+          description: msg,
+          variant: 'destructive',
+        });
+      },
+    });
   }
 
   return (
@@ -146,16 +153,36 @@ function ConnectorWizardCard({
             </Button>
           </div>
         ) : (
-          <Button
-            onClick={handleConnect}
-            disabled={isConnecting}
-            data-testid={`btn-connect-${item.provider}`}
-          >
-            {isConnecting && (
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
+          <div className="space-y-2">
+            {item.provider === 'shopify' && (
+              <div className="space-y-1">
+                <label htmlFor={`shop-${item.provider}`} className="text-xs text-muted-foreground">
+                  Your Shopify store domain
+                </label>
+                <Input
+                  id={`shop-${item.provider}`}
+                  value={shopDomain}
+                  onChange={(e) => setShopDomain(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleConnect();
+                  }}
+                  placeholder="my-store.myshopify.com"
+                  autoComplete="off"
+                  data-testid={`input-shop-${item.provider}`}
+                />
+              </div>
             )}
-            {isConnecting ? 'Connecting…' : `Connect ${item.display_name}`}
-          </Button>
+            <Button
+              onClick={handleConnect}
+              disabled={isConnecting || (item.provider === 'shopify' && !shopDomain.trim())}
+              data-testid={`btn-connect-${item.provider}`}
+            >
+              {isConnecting && (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
+              )}
+              {isConnecting ? 'Connecting…' : `Connect ${item.display_name}`}
+            </Button>
+          </div>
         )}
       </CardContent>
     </Card>

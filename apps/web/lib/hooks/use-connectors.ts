@@ -23,7 +23,7 @@ export function useConnectorStatus(connectorId: string) {
 
 export function useShopifyInstallUrl() {
   return useMutation({
-    mutationFn: () => connectorsApi.getShopifyInstallUrl(),
+    mutationFn: (shop: string) => connectorsApi.getShopifyInstallUrl(shop),
   });
 }
 

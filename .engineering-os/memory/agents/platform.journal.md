@@ -119,3 +119,47 @@
 
 ## 2026-06-16T18:10:00Z — Stakeholder — feat-identity-graph
 **Action:** Approval received. status->approved, stage 8.
+
+## 2026-06-17T01:00:00Z — Stakeholder — feat-realized-revenue-ledger
+**Action:** Approval received. status->approved, stage 8.
+
+## 2026-06-17T00:32:00Z — Platform/SRE — feat-realized-revenue-ledger
+**Stage:** 8 · **Affected:** db/migrations/0018+0019, apps/core (measurement module), apps/stream-worker (revenue-finalization job), packages/money (roundToMinorBankers) · **Canary:** N/A (Phase-1 dev-only; ADR-010 Phase-4 deferral) · **Monitor:** N/A (Phase-1 dev-only)
+**Staging smoke:** 32/32 ledger live tests green under brain_app (non-superuser; 134/134 core suite) · **Next:** PR merge (manual — gh unauthenticated) after identity-graph merges; F-SEC-02/03 fix before Phase-2
+
+**Ship summary:**
+- Branch: `feat/realized-revenue-ledger` (stacked on `feat/identity-graph`)
+- HEAD commit: `353bfd6` — fix(F-SEC-01): SECURITY DEFINER list_active_brand_ids() + wire finalization job
+- Pushed to origin: NOT YET (branch local; gh CLI unauthenticated)
+- PR: NOT opened via CLI; manual compare URL: https://github.com/Rishabhporwal/Brain-V4/compare/feat/identity-graph...feat/realized-revenue-ledger
+- Merge order: data-plane-ingest-spine → identity-graph → realized-revenue-ledger (do not merge out of order)
+- Phase-1 dev-only: no prod infra, no canary/bake/rollback, no ArgoCD/EKS
+- 1 bounce: F-SEC-01 HIGH (finalization job no-ops; fixed via 0019 + 353bfd6)
+
+**Migration verify (0018 + 0019):**
+- realized_revenue_ledger: relrowsecurity=t, relforcerowsecurity=t
+- realized_gmv_as_of: prosecdef=f (SECURITY INVOKER — correct)
+- list_active_brand_ids: prosecdef=t, proconfig={search_path=public} — search-path hijack prevention confirmed
+- brain_app grants: SELECT + INSERT only (NO UPDATE/DELETE) — append-only by GRANT confirmed
+- All 3 migration assertions green (NN-1 two-arg, append-only-grant, no-float-SQL)
+
+**Build gate:**
+- @brain/money: typecheck PASS, build PASS
+- @brain/core: typecheck PASS, build PASS (fresh)
+- @brain/stream-worker: typecheck PASS, build PASS (fresh)
+- @brain/contracts: typecheck PASS, build PASS
+
+**Smoke (bake proxy):**
+- 32/32 ledger live tests PASS (81ms) under non-superuser brain_app
+- 134/134 full core suite PASS
+- Pre-existing stream-worker bronze.e2e.test.ts Redis failure (ioredis offline-queue / Kafka init path) — not a regression from this branch
+
+**Rollback:** `DROP TABLE IF EXISTS realized_revenue_ledger` + 3 functions + 3 brand columns. Rebuildable from Bronze (M1 synthetic/internal, no external consumer yet).
+
+**Tech-debt carry-forward:**
+- F-SEC-02 (GetRealizedGmvAsOf GUC-reset defense-in-depth) — before Phase-2
+- F-SEC-03 (finalization job financial logging scope) — before prod scale
+- F-QA-03 (Stryker mutation testing) — before next ledger slice
+- Adopt-rule: cross-tenant system jobs MUST use list_active_brand_ids() (2nd occurrence — Stakeholder /adopt-rule pending)
+- phone-guard-reeval: identity slice should adopt list_active_brand_ids() for enumeration
+- billing_run + fx_rate: explicit non-goals, Phase-2+

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-06-16T17:44:41Z",
+  "updated_at": "2026-06-16T18:55:24Z",
   "updated_by": "system",
   "active_requirements": [
     {
@@ -282,6 +282,55 @@
       },
       "migration_0017": "verified-applied",
       "rollback": "DROP identity_audit/merge_review_queue/contact_pii/shared_utility_identifier/identity_merge_event/brain_id_alias/identity_link/customer + ALTER TABLE brand DROP COLUMN identity_salt_ciphertext/phone_guard_threshold/suppression_window_days + redeploy prior stream-worker image"
+    },
+    {
+      "req_id": "feat-realized-revenue-ledger",
+      "status": "shipped",
+      "stage": 8,
+      "current_owner": "platform-devops",
+      "title": "Realized-revenue ledger \u2014 append-only, dual-date, COD-aware",
+      "run_dir": ".engineering-os/runs/2026-06-16T18-55-24Z__2c8eb2__feat-realized-revenue-ledger__rishabhporwal",
+      "lineage": [
+        "feat-identity-graph",
+        "feat-data-plane-ingest-spine"
+      ],
+      "last_journal_entry_at": "2026-06-17T00:32:00Z",
+      "pipeline": {
+        "bounces": 1,
+        "bounce_detail": "r1: F-SEC-01 HIGH (finalization job no-ops under brain_app FORCE-RLS) -> fix 353bfd6 (SECURITY DEFINER list_active_brand_ids + 0019 migration) -> DELTA PASS",
+        "security": "DELTA PASS (0 blocking; F-SEC-02 MED, F-SEC-03/04 LOW deferred)",
+        "qa": "PASS (0 blocking; 132/132 tests; 5 negative controls with RED output; closed-sum non-tautological)",
+        "final_review": "PASS / APPROVE (F-SEC-01 HIGH fixed; ledger substrate correct)",
+        "commits": [
+          "d4e046f",
+          "2fbdb55",
+          "62e3e6b",
+          "fa8afdd",
+          "e5ff6a9",
+          "353bfd6"
+        ],
+        "deferred": [
+          "F-SEC-02 MED: GetRealizedGmvAsOf GUC-reset defense-in-depth (before Phase-2)",
+          "F-SEC-03 LOW: finalization job financial logging scope (before prod scale)",
+          "F-QA-03 LOW: Stryker mutation testing before next ledger slice",
+          "adopt-rule: list_active_brand_ids pattern (Stakeholder /adopt-rule pending \u2014 2nd occurrence)",
+          "phone-guard-reeval adopt list_active_brand_ids (identity follow-up slice)",
+          "billing_run + fx_rate non-goals M1 (Phase-2+)",
+          "D-5 reconciliation tolerance (Data Engineer Sprint-0)",
+          "KMS for migrations (Phase-2 prod infra)"
+        ]
+      },
+      "ship": {
+        "branch": "feat/realized-revenue-ledger",
+        "commit": "353bfd6",
+        "pushed": false,
+        "pr": null,
+        "pr_note": "gh CLI unauthenticated; manual compare URL: https://github.com/Rishabhporwal/Brain-V4/compare/feat/identity-graph...feat/realized-revenue-ledger \u2014 STACKING: base must be feat/identity-graph (not master); merge order: data-plane-ingest-spine -> identity-graph -> realized-revenue-ledger",
+        "phase": "1-dev-only",
+        "ts": "2026-06-17T00:32:00Z"
+      },
+      "migrations_0018_0019": "verified-applied",
+      "rollback": "DROP TABLE IF EXISTS realized_revenue_ledger; DROP FUNCTION IF EXISTS realized_gmv_as_of(uuid,date), ledger_currency_matches_brand(), list_active_brand_ids(); ALTER TABLE brand DROP COLUMN IF EXISTS cod_recognition_horizon_days, prepaid_recognition_horizon_days, currency_code"
     }
   ]
 }

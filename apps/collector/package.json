@@ -3,6 +3,29 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "scripts": { "build": "tsc -b", "typecheck": "tsc --noEmit", "lint": "eslint .", "dev": "tsx watch src/main.ts", "test:unit": "vitest run --passWithNoTests" },
-  "dependencies": { "fastify": "^4.28.0", "@brain/contracts": "workspace:*", "@brain/events": "workspace:*", "@brain/observability": "workspace:*", "@brain/tenant-context": "workspace:*", "@brain/config": "workspace:*" }
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "dev": "tsx watch src/main.ts",
+    "start": "node dist/main.js",
+    "test:unit": "vitest run --passWithNoTests",
+    "test:durability": "vitest run tests/durability.test.ts"
+  },
+  "dependencies": {
+    "fastify": "^4.28.0",
+    "pg": "^8.13.0",
+    "kafkajs": "^2.2.4",
+    "@brain/contracts": "workspace:*",
+    "@brain/events": "workspace:*",
+    "@brain/observability": "workspace:*",
+    "@brain/tenant-context": "workspace:*",
+    "@brain/config": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.11.0",
+    "@types/node": "^22.0.0",
+    "vitest": "^2.1.0",
+    "tsx": "^4.22.4"
+  }
 }

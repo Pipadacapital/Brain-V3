@@ -59,6 +59,25 @@ importers:
       fastify:
         specifier: ^4.28.0
         version: 4.29.1
+      kafkajs:
+        specifier: ^2.2.4
+        version: 2.2.4
+      pg:
+        specifier: ^8.13.0
+        version: 8.21.0
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.19.21
+      '@types/pg':
+        specifier: ^8.11.0
+        version: 8.20.0
+      tsx:
+        specifier: ^4.22.4
+        version: 4.22.4
+      vitest:
+        specifier: ^2.1.0
+        version: 2.1.9(@types/node@22.19.21)
 
   apps/core:
     dependencies:
@@ -138,6 +157,9 @@ importers:
       '@brain/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@brain/db':
+        specifier: workspace:*
+        version: link:../../packages/db
       '@brain/events':
         specifier: workspace:*
         version: link:../../packages/events
@@ -150,9 +172,28 @@ importers:
       '@brain/tenant-context':
         specifier: workspace:*
         version: link:../../packages/tenant-context
+      ioredis:
+        specifier: ^5.11.1
+        version: 5.11.1
       kafkajs:
         specifier: ^2.2.4
         version: 2.2.4
+      pg:
+        specifier: ^8.21.0
+        version: 8.21.0
+    devDependencies:
+      '@types/pg':
+        specifier: ^8.11.6
+        version: 8.20.0
+      tsx:
+        specifier: ^4.22.4
+        version: 4.22.4
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.0
+        version: 2.1.9(@types/node@25.9.3)
 
   apps/web:
     dependencies:
@@ -4473,7 +4514,7 @@ snapshots:
 
   '@types/pg@8.20.0':
     dependencies:
-      '@types/node': 25.9.3
+      '@types/node': 22.19.21
       pg-protocol: 1.14.0
       pg-types: 2.2.0
 
@@ -5954,6 +5995,24 @@ snapshots:
 
   util-deprecate@1.0.2: {}
 
+  vite-node@2.1.9(@types/node@22.19.21):
+    dependencies:
+      cac: 6.7.14
+      debug: 4.4.3
+      es-module-lexer: 1.7.0
+      pathe: 1.1.2
+      vite: 5.4.21(@types/node@22.19.21)
+    transitivePeerDependencies:
+      - '@types/node'
+      - less
+      - lightningcss
+      - sass
+      - sass-embedded
+      - stylus
+      - sugarss
+      - supports-color
+      - terser
+
   vite-node@2.1.9(@types/node@25.9.3):
     dependencies:
       cac: 6.7.14
@@ -5972,6 +6031,15 @@ snapshots:
       - supports-color
       - terser
 
+  vite@5.4.21(@types/node@22.19.21):
+    dependencies:
+      esbuild: 0.21.5
+      postcss: 8.5.15
+      rollup: 4.62.0
+    optionalDependencies:
+      '@types/node': 22.19.21
+      fsevents: 2.3.3
+
   vite@5.4.21(@types/node@25.9.3):
     dependencies:
       esbuild: 0.21.5
@@ -5980,6 +6048,41 @@ snapshots:
     optionalDependencies:
       '@types/node': 25.9.3
       fsevents: 2.3.3
+
+  vitest@2.1.9(@types/node@22.19.21):
+    dependencies:
+      '@vitest/expect': 2.1.9
+      '@vitest/mocker': 2.1.9(vite@5.4.21(@types/node@25.9.3))
+      '@vitest/pretty-format': 2.1.9
+      '@vitest/runner': 2.1.9
+      '@vitest/snapshot': 2.1.9
+      '@vitest/spy': 2.1.9
+      '@vitest/utils': 2.1.9
+      chai: 5.3.3
+      debug: 4.4.3
+      expect-type: 1.3.0
+      magic-string: 0.30.21
+      pathe: 1.1.2
+      std-env: 3.10.0
+      tinybench: 2.9.0
+      tinyexec: 0.3.2
+      tinypool: 1.1.1
+      tinyrainbow: 1.2.0
+      vite: 5.4.21(@types/node@22.19.21)
+      vite-node: 2.1.9(@types/node@22.19.21)
+      why-is-node-running: 2.3.0
+    optionalDependencies:
+      '@types/node': 22.19.21
+    transitivePeerDependencies:
+      - less
+      - lightningcss
+      - msw
+      - sass
+      - sass-embedded
+      - stylus
+      - sugarss
+      - supports-color
+      - terser
 
   vitest@2.1.9(@types/node@25.9.3):
     dependencies:

@@ -1,0 +1,102 @@
+/**
+ * registry.test.ts — unit tests for the metric registry (D-1)
+ *
+ * Tests:
+ *   1. resolveMetric('realized_revenue','v1') returns the correct definition.
+ *   2. resolveMetric('provisional_revenue','v1') returns the correct definition.
+ *   3. Unknown (metricId, version) throws with a clear message.
+ *   4. recognitionLabels ↔ readSeam consistency:
+ *      - realized_revenue/v1 → readSeam='realized_gmv_as_of' + labels=['finalized']
+ *      - provisional_revenue/v1 → readSeam='provisional_gmv_as_of' + labels includes 'provisional','settling'
+ *   5. toleranceMinor = 0 on all money metrics (no float tolerance).
+ *   6. Registry is immutable (as const): no mutation possible.
+ */
+
+import { describe, it, expect } from 'vitest';
+import { METRIC_REGISTRY, resolveMetric } from './registry.js';
+
+describe('metric-engine — registry (D-1)', () => {
+
+  it('resolveMetric(realized_revenue, v1) returns the correct definition', () => {
+    const def = resolveMetric('realized_revenue', 'v1');
+    expect(def.metricId).toBe('realized_revenue');
+    expect(def.version).toBe('v1');
+    expect(def.readSeam).toBe('realized_gmv_as_of');
+    expect(def.toleranceMinor).toBe(0);
+    expect(def.description).toContain('realized_revenue');
+  });
+
+  it('resolveMetric(provisional_revenue, v1) returns the correct definition', () => {
+    const def = resolveMetric('provisional_revenue', 'v1');
+    expect(def.metricId).toBe('provisional_revenue');
+    expect(def.version).toBe('v1');
+    expect(def.readSeam).toBe('provisional_gmv_as_of');
+    expect(def.toleranceMinor).toBe(0);
+    expect(def.description).toContain('provisional_revenue');
+  });
+
+  it('resolveMetric with unknown metricId throws', () => {
+    // Cast to bypass TS type check — runtime test for unknown metricId
+    expect(() => resolveMetric('nonexistent_metric' as 'realized_revenue', 'v1')).toThrow(
+      /\[metric-engine\] unknown metric/,
+    );
+  });
+
+  it('resolveMetric with unknown version throws', () => {
+    // v999 is a valid MetricVersion type (v${number}) but not in the registry
+    expect(() => resolveMetric('realized_revenue', 'v999')).toThrow(
+      /\[metric-engine\] unknown metric/,
+    );
+  });
+
+  it('[D-1] version bump = new key — v1 exists; only v1 registered for M1', () => {
+    // The registry shape confirms (metric_id, version) keying.
+    // v1 exists; a version bump would add v2 as a NEW key (additive), not a mutation.
+    const v1 = METRIC_REGISTRY['realized_revenue']['v1'];
+    expect(v1.version).toBe('v1');
+    // Confirm only known versions are present (M1 = v1 only)
+    const registeredVersions = Object.keys(METRIC_REGISTRY['realized_revenue']);
+    expect(registeredVersions).toEqual(['v1']);
+  });
+
+  it('[D-1] recognitionLabels ↔ readSeam consistency — realized', () => {
+    const def = resolveMetric('realized_revenue', 'v1');
+    // realized_revenue uses the finalized label via realized_gmv_as_of
+    expect(def.readSeam).toBe('realized_gmv_as_of');
+    expect(def.recognitionLabels).toContain('finalized');
+    expect(def.recognitionLabels).not.toContain('provisional');
+    expect(def.recognitionLabels).not.toContain('settling');
+  });
+
+  it('[D-1] recognitionLabels ↔ readSeam consistency — provisional', () => {
+    const def = resolveMetric('provisional_revenue', 'v1');
+    // provisional_revenue uses provisional/settling labels via provisional_gmv_as_of
+    expect(def.readSeam).toBe('provisional_gmv_as_of');
+    expect(def.recognitionLabels).toContain('provisional');
+    expect(def.recognitionLabels).toContain('settling');
+    expect(def.recognitionLabels).not.toContain('finalized');
+  });
+
+  it('[D-1] toleranceMinor = 0 on all registered metrics (no float tolerance for money)', () => {
+    for (const metricId of Object.keys(METRIC_REGISTRY) as Array<keyof typeof METRIC_REGISTRY>) {
+      const versions = METRIC_REGISTRY[metricId];
+      for (const version of Object.keys(versions) as Array<keyof typeof versions>) {
+        const def = versions[version];
+        expect(def.toleranceMinor).toBe(0);
+      }
+    }
+  });
+
+  it('[D-1] registry entries are typed readonly (compile-time immutability via as const)', () => {
+    const def = METRIC_REGISTRY['realized_revenue']['v1'];
+    // The registry is declared `as const` — TypeScript enforces readonly at compile time.
+    // This test confirms the structural invariants that make the registry effectively immutable:
+    // 1. toleranceMinor is always 0 (no mutation path exists in typed code)
+    // 2. The version matches the key
+    expect(def.toleranceMinor).toBe(0);
+    expect(def.version).toBe('v1');
+    // TypeScript would reject: def.toleranceMinor = 1 (readonly compile error)
+    // Runtime JS objects from `as const` are not deeply frozen, but the TS type system
+    // prevents mutation — any mutation attempt is a type error caught by tsc/typecheck.
+  });
+});

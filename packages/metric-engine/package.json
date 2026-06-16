@@ -9,6 +9,15 @@
     "build": "tsc -b",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "test:unit": "vitest run --passWithNoTests"
+    "test:unit": "vitest run"
+  },
+  "dependencies": {
+    "@brain/money": "workspace:*"
+  },
+  "devDependencies": {
+    "vitest": "^2.1.0",
+    "typescript": "^5.6.0",
+    "pg": "^8.21.0",
+    "@types/pg": "^8.11.0"
   }
 }

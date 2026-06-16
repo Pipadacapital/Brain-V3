@@ -83,7 +83,7 @@
     },
     {
       "req_id": "feat-access-onboarding-flow",
-      "status": "approved",
+      "status": "shipped",
       "stage": 8,
       "current_owner": "platform-devops",
       "title": "Access & Onboarding flow (registration, sign-in, 4-step onboarding, dashboard redirect)",
@@ -91,7 +91,17 @@
       "lineage": [
         "feat-m1-app-foundation"
       ],
-      "last_journal_entry_at": "2026-06-16T04:06:44Z"
+      "last_journal_entry_at": "2026-06-16T05:00:00Z",
+      "ship": {
+        "branch": "feat/access-onboarding-flow",
+        "commit": "44fba58",
+        "pushed": true,
+        "pr": null,
+        "pr_note": "gh CLI unauthenticated; manual PR URL: https://github.com/Rishabhporwal/Brain-V4/pull/new/feat/access-onboarding-flow",
+        "phase": "1-dev-only",
+        "files_committed": 72,
+        "ts": "2026-06-16T05:00:00Z"
+      }
     }
   ]
 }

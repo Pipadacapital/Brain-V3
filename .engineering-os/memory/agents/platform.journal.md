@@ -62,3 +62,25 @@
 
 ## 2026-06-16T04:06:44Z — system — Stakeholder approval received (feat-access-onboarding-flow)
 **Action:** Approved at Stage-7 gate. Final PASS/GO; Security+QA PASS (2 bounce rounds). 11/11 ACs MET, 0 CRITICAL/HIGH. Status → approved, stage → 8, owner → platform-devops. Deploy VETO gate next, then Stage 8 commit on feature branch + PR.
+
+## 2026-06-16T05:00:00Z — Platform/SRE — feat-access-onboarding-flow
+**Stage:** 8 · **Affected:** apps/core, apps/web, db/migrations (0010-0012), packages/contracts · **Canary:** N/A (Phase-1 dev-only) · **Monitor:** N/A (Phase-1 dev-only)
+**Staging smoke:** N/A (no live infra in Phase 1) · **Next:** PR review + Stakeholder merge decision
+
+**Ship summary:**
+- Branch: `feat/access-onboarding-flow`
+- Commit: `44fba58` — 72 files, +7870 / -297; full Access & Onboarding vertical slice
+- Pushed to `origin` (https://github.com/Rishabhporwal/Brain-V4.git): YES
+- PR: NOT opened via CLI (gh unauthenticated); manual URL: https://github.com/Rishabhporwal/Brain-V4/pull/new/feat/access-onboarding-flow
+- Phase-1 dev-only: no prod infra, no canary/bake/rollback, no staging smoke against live systems
+- Reversibility: `git revert 44fba58` on feature branch, or close PR without merging
+
+**Gates:** Security PASS · QA PASS · Final Review PASS/GO · Stakeholder APPROVED · Deploy VETO EXIT 0 · 11/11 ACs MET · 0 open CRITICAL/HIGH · 2 bounce rounds
+
+**4 LOW residuals carried forward (0 CRITICAL/HIGH/MEDIUM):**
+1. COMMIT_WAIT CSRF hardening deferred — backend-engineer — M2
+2. OTel trace instrumentation not wired on auth routes — platform-devops — M2 infra
+3. Integration-selection downstream connectors not implemented — backend-engineer — next sprint
+4. E2E smoke happy-path only; invite-expiry + replay-attack flows unit-only — qa — M2
+
+**Migration deploy order (when infra exists):** migrate (0010→0011→0012) → core → web

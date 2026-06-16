@@ -430,8 +430,12 @@ export const connectorsApi = {
     return mapConnectorList(raw);
   },
 
-  getShopifyInstallUrl: () =>
-    bffFetch<ShopifyInstallUrlResponse>('/v1/connectors/shopify/install'),
+  // Shopify OAuth requires the store domain (e.g. my-store.myshopify.com) — the
+  // backend 400s (MISSING_SHOP_PARAM) without it.
+  getShopifyInstallUrl: (shop: string) =>
+    bffFetch<ShopifyInstallUrlResponse>(
+      `/v1/connectors/shopify/install?shop=${encodeURIComponent(shop)}`,
+    ),
 
   getStatus: (connectorId: string) =>
     bffFetch<ConnectorInstanceResponse>(`/v1/connectors/${connectorId}/status`),

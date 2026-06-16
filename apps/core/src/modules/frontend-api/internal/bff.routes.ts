@@ -519,7 +519,9 @@ export function registerBffRoutes(
           ),
           client.query<{ count: string }>(
             ctx,
-            `SELECT COUNT(*)::text AS count FROM membership WHERE organization_id = $1`,
+            // COUNT DISTINCT users — a single owner holds two membership rows
+            // (org-level brand_id IS NULL + brand-level), so COUNT(*) double-counts them.
+            `SELECT COUNT(DISTINCT app_user_id)::text AS count FROM membership WHERE organization_id = $1`,
             [auth.workspaceId],
           ),
         ]);

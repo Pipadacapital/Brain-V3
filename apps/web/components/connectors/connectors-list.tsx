@@ -1,8 +1,10 @@
 'use client';
 
+import { useState } from 'react';
 import { Loader2, CheckCircle, XCircle, Plug } from 'lucide-react';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -44,19 +46,25 @@ const STATUS_CONFIG: Record<
 function ConnectorCard({ item }: { item: ConnectorListItem }) {
   const { mutate: getShopifyUrl, isPending: isConnecting } = useShopifyInstallUrl();
   const { mutate: disconnect, isPending: isDisconnecting } = useDisconnectConnector();
+  const [shopDomain, setShopDomain] = useState('');
 
   function handleConnect() {
-    if (item.provider === 'shopify') {
-      getShopifyUrl(undefined, {
-        onSuccess: (data) => {
-          // Redirect to Shopify OAuth — real install URL from BFF
-          window.location.href = data.install_url;
-        },
-        onError: () => {
-          toast({ title: 'Error', description: 'Could not start Shopify connection.', variant: 'destructive' });
-        },
-      });
+    if (item.provider !== 'shopify') return;
+    // Shopify OAuth needs the store domain; the backend 400s without ?shop=.
+    const shop = shopDomain.trim().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+    if (!shop) {
+      toast({ title: 'Store domain required', description: 'Enter your Shopify store domain (e.g. my-store.myshopify.com).', variant: 'destructive' });
+      return;
     }
+    getShopifyUrl(shop, {
+      onSuccess: (data) => {
+        // Redirect to Shopify OAuth — real install URL from BFF
+        window.location.href = data.install_url;
+      },
+      onError: () => {
+        toast({ title: 'Error', description: 'Could not start Shopify connection.', variant: 'destructive' });
+      },
+    });
   }
 
   function handleDisconnect() {
@@ -134,14 +142,27 @@ function ConnectorCard({ item }: { item: ConnectorListItem }) {
             </Button>
           </div>
         ) : (
-          <Button
-            onClick={handleConnect}
-            disabled={isConnecting}
-            data-testid={`btn-connect-${item.provider}`}
-          >
-            {isConnecting && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />}
-            {isConnecting ? 'Connecting…' : `Connect ${item.display_name}`}
-          </Button>
+          <div className="space-y-2">
+            {item.provider === 'shopify' && (
+              <Input
+                value={shopDomain}
+                onChange={(e) => setShopDomain(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') handleConnect(); }}
+                placeholder="my-store.myshopify.com"
+                aria-label="Shopify store domain"
+                autoComplete="off"
+                data-testid={`input-shop-${item.provider}`}
+              />
+            )}
+            <Button
+              onClick={handleConnect}
+              disabled={isConnecting || (item.provider === 'shopify' && !shopDomain.trim())}
+              data-testid={`btn-connect-${item.provider}`}
+            >
+              {isConnecting && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />}
+              {isConnecting ? 'Connecting…' : `Connect ${item.display_name}`}
+            </Button>
+          </div>
         )}
       </CardContent>
     </Card>

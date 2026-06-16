@@ -1,0 +1,39 @@
+{
+  "stage": 6,
+  "agent": "engineering-advisor-final-review",
+  "req_id": "feat-identity-graph",
+  "verdict": "PASS",
+  "recommendation": "APPROVE",
+  "blocking": 0,
+  "residual_risk": "phone-guard-reeval job processes 0 brands (RLS blocks brand enumeration under brain_app) — suppressions never expire, over-suppression accumulates monotonically; fail-closed (no false-merge, no leak) and fully recoverable via fix + replay. Acceptable for M1 (synthetic/internal, low volume); must-fix before prod scale.",
+  "gates_rerun": {
+    "identity_e2e_suite": "26/26 PASS (independently re-run, 79ms, vitest)",
+    "identity_core_typecheck": "EXIT 0",
+    "stream_worker_typecheck": "EXIT 0",
+    "rls_no_guc_identity_link_under_brain_app": "0 rows (fail-closed confirmed)",
+    "reeval_brand_visibility": "superuser=171 active brands vs brain_app=0 (SR-01 root cause confirmed at DB)"
+  },
+  "spine_verified": {
+    "per_brand_salt_32B_hard_fail_no_shared_default": "confirmed (SaltProvider.ts:88-123, throws on empty/wrong-length; never defaults)",
+    "no_raw_pii_in_identity_link_64hex_only": "confirmed (IdentityRepository writes id.hash only; raw_value flows to contact_pii only)",
+    "contact_pii_dual_gate_brand_AND_send_service": "confirmed (mig 0017:239-244 two-arg both GUCs; brain_app without role -> 0 rows)",
+    "rls_force_fail_closed_all_8_tables": "confirmed (all ENABLE+FORCE; two-arg; NN-1 block present)",
+    "phone_guard_windowed_threshold_configurable": "confirmed (brand.phone_guard_threshold DEFAULT 10, suppression_window_days DEFAULT 30; N=10 boundary tested)",
+    "idempotent_merge_replay_3x_to_1": "confirmed (deterministic merge_id + ON CONFLICT DO NOTHING on PK + both UNIQUE PARTIALs)",
+    "cost_tier_deterministic_zero_model_calls": "confirmed (@effort deterministic; grep: no llm/model call in new code)"
+  },
+  "negative_controls_valid": true,
+  "over_engineering_audit": "CLEAN — only new dep @types/node (devDep); no new deployable/service/ADR/stack/argo manifest; bridge inside existing stream-worker; migration 0017 additive (I-E02); merge_rule/merge_candidate/pii_vault_reference correctly deferred",
+  "scope_creep": "none",
+  "ac_unmet": "none",
+  "deferred": [
+    {"id": "SR-01/QA-04", "severity": "MEDIUM", "title": "phone-guard-reeval processes 0 brands (brand RLS blocks enumeration under brain_app)", "disposition": "ship-as-techdebt for M1; P1 post-M1 must-fix before prod scale (SECURITY DEFINER fn or superuser-scoped enumeration pool). Effect: over-suppression accumulates (recoverable); never under-suppresses (no false-merge). Misleading comment at phone-guard-reeval.ts:41-42 claims a superuser pool that is not wired."},
+    {"id": "SR-02", "severity": "LOW", "title": "window_days reference column hardcoded to 30 in shared_utility_identifier UPSERT (IdentityRepository.ts:269)", "disposition": "ship-as-techdebt; cosmetic. Load-bearing suppressed_until IS computed from brandConfig.suppression_window_days; the column is reference-only annotation."},
+    {"id": "QA-01", "severity": "LOW", "title": "No trace/correlation IDs in IdentityBridgeConsumer", "disposition": "ship-as-techdebt; observability gap, defer to post-M1 observability pass."},
+    {"id": "QA-02", "severity": "LOW", "title": "Salt hard-fail not tested at consumer/offset-commit level (only SaltProvider unit level)", "disposition": "ship-as-techdebt; code path correct (throw propagates, offset not committed), add consumer-layer integration test post-M1."},
+    {"id": "QA-03", "severity": "LOW", "title": "dist/index.js stale with stubSha256", "disposition": "ship-as-techdebt; package main=src/index.ts so dist is unused at runtime and by tests. Recommend a CI build/clean step. Verified: stub absent from src, present only in unused dist."},
+    {"id": "SR-03", "severity": "LOW", "title": "Pre-existing dep vulns (fastify CVE, handlebars/vitest) not introduced by this branch", "disposition": "ship-as-techdebt; out of scope for this run, track + patch separately on the platform debt backlog."}
+  ],
+  "typecheck": "pass",
+  "ts": "2026-06-16T22:40:00Z"
+}

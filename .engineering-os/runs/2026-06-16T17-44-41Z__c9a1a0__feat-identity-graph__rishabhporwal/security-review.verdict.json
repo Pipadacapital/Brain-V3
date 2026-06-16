@@ -1,0 +1,50 @@
+{
+  "stage": 4,
+  "agent": "security-reviewer",
+  "req_id": "feat-identity-graph",
+  "verdict": "PASS",
+  "mode": "FULL",
+  "ts": "2026-06-16T22:27:00Z",
+  "findings": [
+    {
+      "id": "SR-01",
+      "severity": "MEDIUM",
+      "title": "phone-guard-reeval Argo job silently processes 0 brands (brand RLS blocks cross-brand SELECT without GUC)",
+      "file": "apps/stream-worker/src/jobs/phone-guard-reeval.ts:43",
+      "status": "open",
+      "note": "Fail-closed direction (safer than data leak). D-1 windowing non-functional. Fix: brand enumeration via a superuser-scoped pool or a system API."
+    },
+    {
+      "id": "SR-02",
+      "severity": "LOW",
+      "title": "window_days reference column hardcoded to 30 in shared_utility_identifier UPSERT",
+      "file": "apps/stream-worker/src/infrastructure/pg/IdentityRepository.ts:269",
+      "status": "open",
+      "note": "Cosmetic data integrity issue only. The load-bearing suppressed_until timestamp IS correctly computed from brandConfig.suppression_window_days. The column is a reference-only annotation."
+    },
+    {
+      "id": "SR-03",
+      "severity": "LOW",
+      "title": "Pre-existing HIGH (fastify@4.29.1 CVE GHSA-jx2c-rxcm-jvmq) and CRITICAL (handlebars/vitest) in devDeps — not introduced by this branch",
+      "file": "apps/collector/package.json (fastify); devDeps (vitest, handlebars via eslint-plugin-boundaries)",
+      "status": "pre-existing",
+      "note": "Confirmed not introduced by feat-identity-graph. Only new dep is @types/node devDep on identity-core. Pre-existing debt; must be tracked and patched separately."
+    }
+  ],
+  "blocking": 0,
+  "checks": {
+    "salt_hard_fail_no_shared": "confirmed",
+    "no_raw_pii": "confirmed",
+    "contact_pii_gate_brain_app_without_send_service": "0 rows confirmed",
+    "brand_isolation_under_brain_app": "pass",
+    "cross_brand_hash_differs": "confirmed",
+    "phone_guard_false_merge_prevented": "yes",
+    "idempotent_merge": "ok",
+    "real_crypto_stub_deleted": "confirmed",
+    "rls_force_all_8_tables": "confirmed",
+    "two_arg_current_setting_nn1": "PASS",
+    "no_pii_in_logs": "confirmed",
+    "tests_under_brain_app_not_superuser": "confirmed",
+    "26_tests_pass_live_pg": "26/26 PASS"
+  }
+}

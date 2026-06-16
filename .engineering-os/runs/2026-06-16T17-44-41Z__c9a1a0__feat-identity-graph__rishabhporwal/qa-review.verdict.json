@@ -1,0 +1,100 @@
+{
+  "stage": 5,
+  "agent": "qa-engineer",
+  "req_id": "feat-identity-graph",
+  "verdict": "PASS",
+  "mode": "FULL",
+  "ts": "2026-06-16T22:32:00Z",
+  "tests_run": [
+    {"name": "identity-core conformance: CONFORMANCE_EMAIL_VECTOR matches sha256", "result": "PASS", "evidence": "26/26 identity tests passed, exit 0, 277ms"},
+    {"name": "identity-core conformance: hashIdentifier uses real SHA-256 (stub deleted)", "result": "PASS", "evidence": "no stubSha256 in src/; dist/ stale but main=src/index.ts"},
+    {"name": "identity-core conformance: cross-brand-differs (D-2)", "result": "PASS", "evidence": "saltA != saltB -> hashA != hashB asserted"},
+    {"name": "identity-core conformance: E.164 09876543210 == +919876543210 (D-6)", "result": "PASS", "evidence": "normalizeIdentifier returns +919876543210 for both forms"},
+    {"name": "identity-core conformance: E.164 10-digit bare == E.164", "result": "PASS", "evidence": "9876543210 -> +919876543210"},
+    {"name": "identity-core conformance: E.164 hash equality across local formats", "result": "PASS", "evidence": "h1==h2==h3 for 3 formats of same number"},
+    {"name": "identity-core conformance: un-normalizable phone -> low confidence, no crash", "result": "PASS", "evidence": "invalid-phone returns confidence=low"},
+    {"name": "SaltProvider hard-crash: throws on empty salt", "result": "PASS", "evidence": "rejects.toThrow(/salt/i) confirmed"},
+    {"name": "SaltProvider hard-crash: throws on wrong byte length (30 bytes)", "result": "PASS", "evidence": "rejects.toThrow(/32 bytes/) confirmed"},
+    {"name": "SaltProvider hard-crash: valid 64-hex returns 32-byte Buffer", "result": "PASS", "evidence": "buf.length === 32 confirmed"},
+    {"name": "SaltProvider hard-crash: never falls through to empty/default", "result": "PASS", "evidence": "threw=true confirmed with err containing 'salt'"},
+    {"name": "Deterministic merge: same email 2 events -> 1 brain_id", "result": "PASS", "evidence": "r1.brainId === r2.brainId; identity_link row has 64-hex hash, not raw email"},
+    {"name": "Phone-guard setup: N=10 distinct customers with same phone", "result": "PASS", "evidence": "count=10 confirmed under brain_app"},
+    {"name": "Phone-guard N=10 boundary: 11th event -> phone suppressed", "result": "PASS", "evidence": "shared_utility_identifier row created with profile_count>=10"},
+    {"name": "Phone-guard: 10 customers remain distinct (no merge)", "result": "PASS", "evidence": "DISTINCT COUNT >= 10; merge_events = 0 for guardBrainIds"},
+    {"name": "Isolation negative control: mint brain_id under BRAND_A", "result": "PASS", "evidence": "outcome=minted"},
+    {"name": "Isolation negative control: BRAND_B cannot see BRAND_A identity_link (0 rows)", "result": "PASS", "evidence": "rowCount=0; currentUser=brain_app (NOT brain)"},
+    {"name": "Isolation negative control: cross-brand hash differs (D-2)", "result": "PASS", "evidence": "hashA != hashB for different salts"},
+    {"name": "Isolation negative control: no-GUC fail-closed -> 0 rows", "result": "PASS", "evidence": "rowCount=0 under brain_app without GUC"},
+    {"name": "No raw PII: identity_link.identifier_value is 64-hex", "result": "PASS", "evidence": "regex /^[0-9a-f]{64}$/ + no @ char + != raw email"},
+    {"name": "Replay idempotency: setup two distinct brain_ids", "result": "PASS", "evidence": "rA.brainId != rB.brainId"},
+    {"name": "Replay idempotency: 3x replay -> exactly 1 identity_merge_event", "result": "PASS", "evidence": "COUNT = 1 after 3 ON CONFLICT DO NOTHING inserts; aliasCount = 1"},
+    {"name": "contact_pii gate: resolve email -> contact_pii written", "result": "PASS", "evidence": "brainId defined"},
+    {"name": "contact_pii gate: brain_app WITHOUT send_service -> 0 rows (D-3)", "result": "PASS", "evidence": "count=0; currentUser=brain_app"},
+    {"name": "contact_pii gate: brain_app WITH send_service -> 1 row", "result": "PASS", "evidence": "count>0; currentUser=brain_app"},
+    {"name": "contact_pii gate: identifier_hash is 64-hex (no raw PII in hash field)", "result": "PASS", "evidence": "identifier_hash matches /^[0-9a-f]{64}$/; != pii_value"}
+  ],
+  "findings": [
+    {
+      "id": "QA-01",
+      "severity": "LOW",
+      "title": "No trace/correlation IDs through the IdentityBridgeConsumer",
+      "description": "IdentityBridgeConsumer logs brand/event/brain_id/partition/offset but no structured trace_id or correlation_id field. End-to-end tracing across Kafka -> bridge -> Postgres requires manual log correlation. Not a test coverage gap (no test exercises the bridge directly), but an observability gap.",
+      "blocking": false,
+      "defer": "post-M1 observability pass"
+    },
+    {
+      "id": "QA-02",
+      "severity": "LOW",
+      "title": "Salt hard-fail NOT tested at IdentityBridgeConsumer level (only at SaltProvider unit level)",
+      "description": "The 4 SaltProvider hard-crash guard tests verify that SaltProvider throws. No test verifies that when ResolveIdentityUseCase.execute throws due to salt failure, the IdentityBridgeConsumer does NOT commit the Kafka offset. The architecture intention is correct (let it propagate), and the code path is correct, but the offset-non-commit behavior on salt failure has no direct test.",
+      "blocking": false,
+      "defer": "post-M1 consumer-layer integration test"
+    },
+    {
+      "id": "QA-03",
+      "severity": "LOW",
+      "title": "dist/index.js in identity-core is stale (still contains stubSha256)",
+      "description": "packages/identity-core/dist/index.js still contains stubSha256. This is NOT used at runtime (package.json main=src/index.ts) and not used by tests. However the stale build artifact is misleading and a CI build step should clean it.",
+      "blocking": false,
+      "defer": "run pnpm --filter @brain/identity-core build to regenerate"
+    },
+    {
+      "id": "QA-04",
+      "severity": "MEDIUM",
+      "title": "phone-guard-reeval Argo job silently processes 0 brands (SR-01 from Security - confirmed carry-forward)",
+      "description": "Confirmed by Security (SR-01). The re-eval job cannot enumerate brands due to RLS without a GUC. D-1 windowing re-evaluation is non-functional. Safe direction (fail-closed), but un-suppress is broken.",
+      "blocking": false,
+      "defer": "P1 post-M1 (brand enumeration via superuser pool or system API)"
+    }
+  ],
+  "negative_control": [
+    {
+      "path": "apps/stream-worker/src/tests/identity.e2e.test.ts:565-586",
+      "protection_removed": "SET ROLE brain_app + BRAND_B GUC → query for BRAND_A identity_link rows",
+      "command": "docker exec brainv3-postgres-1 psql -U brain -d brain -c 'BEGIN; SET ROLE brain_app; SELECT set_config(brand_b_guc); SELECT COUNT(*) FROM identity_link WHERE brand_id=BRAND_A; ROLLBACK;'",
+      "captured_red_output": "cross_brand_isolation_must_be_zero = 0 (superuser sees 1 row; brain_app sees 0 rows — RLS fires)"
+    },
+    {
+      "path": "apps/stream-worker/src/tests/identity.e2e.test.ts:775-781",
+      "protection_removed": "SET ROLE brain_app + brand_id GUC without app.role=send_service → query contact_pii",
+      "command": "docker exec brainv3-postgres-1 psql -U brain -d brain -c 'BEGIN; SET ROLE brain_app; set_config(brand_a_guc); NO app.role; SELECT COUNT(*) FROM contact_pii; ROLLBACK;'",
+      "captured_red_output": "without_send_service_role = 0 (WITH send_service = 1; WITHOUT send_service = 0 — D-3 policy fires)"
+    }
+  ],
+  "migration_verified": {
+    "tables_created": 8,
+    "rls_enabled_forced_all": true,
+    "contact_pii_dual_guc_policy": "brand_id = current_setting('app.current_brand_id', TRUE)::uuid AND current_setting('app.role', TRUE) = 'send_service'",
+    "brand_columns": {
+      "phone_guard_threshold": "DEFAULT 10",
+      "suppression_window_days": "DEFAULT 30",
+      "identity_salt_ciphertext": "BYTEA nullable"
+    },
+    "nn1_assertion_block": "present"
+  },
+  "typecheck": {
+    "identity_core": "EXIT 0",
+    "stream_worker": "EXIT 0"
+  },
+  "blocking": 0
+}

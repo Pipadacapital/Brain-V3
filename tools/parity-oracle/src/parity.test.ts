@@ -48,9 +48,9 @@ const APP_URL =
   process.env['BRAIN_APP_DATABASE_URL'] ??
   'postgres://brain_app:brain_app@localhost:5432/brain';
 
-// Deterministic test brand UUIDs (scoped to parity oracle tests)
-const BRAND_PARITY_A = 'parity020-0020-0020-0020-000000000001'; // INR
-const BRAND_PARITY_B = 'parity020-0020-0020-0020-000000000002'; // AED
+// Deterministic test brand UUIDs (scoped to parity oracle tests, valid UUID v4 format)
+const BRAND_PARITY_A = 'a0200020-0020-4020-8020-000000000001'; // INR
+const BRAND_PARITY_B = 'b0200020-0020-4020-8020-000000000002'; // AED
 
 let superPool: pg.Pool;
 let appPool: pg.Pool;
@@ -263,8 +263,8 @@ describe('B. M1 live-DB parity — engine == independent SQL on all golden fixtu
     expect(engineMap.get('INR')).toBe(50000n);
     expect(refMap.get('INR')).toBe(50000n);
 
-    console.info('[parity-oracle] F1 clean_finalized: engine=%j ref=%j',
-      Object.fromEntries(engineMap), Object.fromEntries(refMap));
+    console.info('[parity-oracle] F1 clean_finalized: engine={INR:%s} ref={INR:%s}',
+      engineMap.get('INR'), refMap.get('INR'));
   });
 
   // ── Fixture 2: full_rto_to_zero ───────────────────────────────────────────
@@ -306,8 +306,8 @@ describe('B. M1 live-DB parity — engine == independent SQL on all golden fixtu
     expect(engineMap.get('INR')).toBe(0n);
     expect(refMap.get('INR')).toBe(0n);
 
-    console.info('[parity-oracle] F2 full_rto_to_zero: engine=%j ref=%j',
-      Object.fromEntries(engineMap), Object.fromEntries(refMap));
+    console.info('[parity-oracle] F2 full_rto_to_zero: engine={INR:%s} ref={INR:%s}',
+      engineMap.get('INR'), refMap.get('INR'));
   });
 
   // ── Fixture 3: partial_refund ─────────────────────────────────────────────
@@ -348,8 +348,8 @@ describe('B. M1 live-DB parity — engine == independent SQL on all golden fixtu
     expect(engineMap.get('INR')).toBe(35000n);
     expect(refMap.get('INR')).toBe(35000n);
 
-    console.info('[parity-oracle] F3 partial_refund: engine=%j ref=%j',
-      Object.fromEntries(engineMap), Object.fromEntries(refMap));
+    console.info('[parity-oracle] F3 partial_refund: engine={INR:%s} ref={INR:%s}',
+      engineMap.get('INR'), refMap.get('INR'));
   });
 
   // ── Fixture 4: provisional_plus_finalized (provisional NEVER blended into realized) ──
@@ -397,8 +397,8 @@ describe('B. M1 live-DB parity — engine == independent SQL on all golden fixtu
     // INVARIANT: adding provisional rows does NOT move the realized number
     expect(engineRealized.get('INR')).not.toBe(70000n); // 50000+20000 would be blend VIOLATION
 
-    console.info('[parity-oracle] F4 provisional_plus_finalized: realized=%j prov=%j',
-      Object.fromEntries(engineRealized), Object.fromEntries(engineProvisional));
+    console.info('[parity-oracle] F4 provisional_plus_finalized: realized={INR:%s} prov={INR:%s}',
+      engineRealized.get('INR'), engineProvisional.get('INR'));
   });
 
   // ── Fixture 5: two_brand_two_currency (per-currency, no blend) ───────────
@@ -458,8 +458,8 @@ describe('B. M1 live-DB parity — engine == independent SQL on all golden fixtu
     expect([...engineA.values()].reduce((a, b) => a + b, 0n)).toBe(50000n); // only INR
     expect([...engineB.values()].reduce((a, b) => a + b, 0n)).toBe(30000n); // only AED
 
-    console.info('[parity-oracle] F5 two_brand_two_currency: A=%j B=%j',
-      Object.fromEntries(engineA), Object.fromEntries(engineB));
+    console.info('[parity-oracle] F5 two_brand_two_currency: A={INR:%s} B={AED:%s}',
+      engineA.get('INR'), engineB.get('AED'));
   });
 
 });

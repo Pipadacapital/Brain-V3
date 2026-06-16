@@ -27,6 +27,11 @@
       "req_id": "feat-data-plane-ingest-spine",
       "title": "Thin data-plane ingest spine (collector \u2192 Redpanda \u2192 Bronze)",
       "first_seen": "2026-06-16T15:56:54Z"
+    },
+    {
+      "req_id": "feat-identity-graph",
+      "title": "Deterministic identity graph (brain_id + alias + phone-guard)",
+      "first_seen": "2026-06-16T17:44:41Z"
     }
   ]
 }

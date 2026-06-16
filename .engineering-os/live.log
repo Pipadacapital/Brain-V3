@@ -660,3 +660,4 @@ Installed 4 packages in 7ms
 2026-06-16T22:50:30Z [S8 platform-devops] feat-identity-graph: smoke PASS — 26/26 identity e2e tests PASS under brain_app (live PG, 206ms); all negative controls non-inert
 2026-06-16T22:50:40Z [S8 platform-devops] feat-identity-graph: PR — gh unauth; manual URL https://github.com/Rishabhporwal/Brain-V4/compare/master...feat/identity-graph
 2026-06-16T22:50:50Z [S8 platform-devops] feat-identity-graph: SHIPPED (1-dev-only) — commit 44d951c; P1 techdebt SR-01/QA-04 phone-guard-reeval no-ops under brain_app (SECURITY DEFINER enumeration fn must-fix before prod COD volume); 13-deploy-report.md written; state updated; decision-log appended
+18:52:27Z [heartbeat] engineering-os:platform-devops S8 ? returned

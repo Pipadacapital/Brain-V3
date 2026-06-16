@@ -76,3 +76,12 @@
 **Scope/Canon:** no new ADR/STACK/docs; only 2 existing deployables touched; no hardcoded secret; migrations additive (I-E02); no Single-Primitive violation; no hard-rule deviation; no AC unmet.
 **Auto-candidate rule:** none written — no root cause repeating ≥3 distinct prior runs (SR-01 lint-key + F-QA-01 wire-gap are run-local). Dev-superuser-masks-RLS durable rule honored end-to-end (every isolation probe under brain_app, superuser-trap explicitly proven).
 **Next:** Stakeholder gate (Stage 7). Intended state: stage 6, awaiting-stakeholder, owner=stakeholder. Did NOT advance to deploy / did NOT write state/active.json.
+
+## 2026-06-16T22:40:00Z — Engineering Advisor (final-reviewer) — feat-identity-graph
+**Stage:** 6 · **Verdict:** PASS · **Recommendation:** APPROVE → Stakeholder gate · **Paradigm audit:** clean (Tier-1 deterministic, zero model calls, @effort present)
+**Gates re-run (independently captured):** identity e2e 26/26 PASS (79ms); identity-core + stream-worker typecheck EXIT 0; RLS no-GUC identity_link=0 rows under SET ROLE brain_app; re-eval brand visibility superuser=171 vs brain_app=0 (SR-01 root cause confirmed at DB).
+**Spine verified (code-read):** per-brand 32B salt hard-fail no-default (SaltProvider:88-123); no raw PII in identity_link (hash-only, raw→contact_pii); contact_pii dual-GUC gate (0017:239-244); RLS FORCE all 8 tables + NN-1 block; idempotent merge (deterministic merge_id + ON CONFLICT DO NOTHING). Negative controls real/non-tautological (superuser-sees vs brain_app-doesn't reproduced).
+**Over-engineering/hard-rule:** CLEAN — only new dep @types/node; no new deployable/ADR/stack/argo; migration additive; merge_rule/merge_candidate/pii_vault_reference deferred. No hard-rule deviation; no Stakeholder-stop.
+**Re-eval-gap call (SR-01/QA-04 MED):** phone-guard-reeval runs as brain_app and enumerates 0 brands under FORCE RLS → suppressions never expire, over-suppression accumulates. Fail-closed (no false-merge/leak), recoverable via fix+replay. ACCEPT as M1 techdebt; P1 must-fix before prod scale. Misleading comment (reeval.ts:41-42) claims an unwired superuser pool.
+**Retro:** root cause = cross-tenant system job written against tenant-scoped brain_app under FORCE RLS (related to dev-db-superuser-masks-rls.md note, opposite direction). First occurrence in series — NOT ≥3-run recurrence → no rule-proposal; logged for watch.
+**Next:** Stakeholder gate (Stage 7) — weighs the reeval-suppressions-never-expire gap as the sole residual risk.

@@ -138,6 +138,14 @@ All 6 run live under SET ROLE brain_app (NOBYPASSRLS):
 
 ---
 
+---
+
+## BOUNCE r1 — 2026-06-16T19:10:00Z
+
+QA vetoed on three missing HTTP wire-smoke tests (F-QA-1/F-QA-2/F-QA-3). Security had already passed. Added `apps/core/src/modules/workspace-access/tests/member-wire-smoke.live.test.ts` — 3 new tests via Fastify `app.inject()` against live PG: WIRE-1 proves suspend→SESSION_REVOKED 401 on the wire (not just a DB row); WIRE-2 proves brand_admin→brand_admin invite returns HTTP 403 and an owner control returns HTTP 201 (non-tautological); WIRE-3 proves GET /api/v1/invites?status=pending with an org-A session returns only org-A invite IDs with zero org-B IDs in the JSON response. All three would fail if the respective guard/RLS were removed. Typecheck EXIT 0; 6 test files, 69 tests all pass.
+
+---
+
 ## Backend Journal Entry
 
 ```

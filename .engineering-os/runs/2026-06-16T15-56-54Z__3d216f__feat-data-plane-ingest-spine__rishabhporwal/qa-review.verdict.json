@@ -1,0 +1,128 @@
+{
+  "stage": 5,
+  "agent": "qa-engineer",
+  "req_id": "feat-data-plane-ingest-spine",
+  "verdict": "PASS",
+  "scope": "delta",
+  "blocking": false,
+  "ts": "2026-06-16T20:58:30Z",
+  "delta_since": "2026-06-16T16:35:00Z",
+  "prior_verdict": "FAIL",
+  "f_qa_01": "resolved",
+  "full_wire_noninert_realnetwork": true,
+  "negative_control": [
+    {
+      "path": "apps/stream-worker/src/tests/bronze.e2e.test.ts",
+      "protection": "Postgres RLS on bronze_events (FORCE ROW LEVEL SECURITY, two-arg current_setting NN-1)",
+      "control_type": "wrong-brand GUC",
+      "command": "docker exec brainv3-postgres-1 psql -U brain_app -d brain -c \"SELECT set_config('app.current_brand_id', 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', false); SELECT count(*) as wrong_brand_result FROM bronze_events WHERE event_id = 'dd000099-0000-4000-8000-000000000099';\"",
+      "captured_output": " wrong_brand_result \n--------------------\n                  0\n(1 row)",
+      "outcome": "RED — wrong brand GUC returns 0 rows confirming RLS is active"
+    },
+    {
+      "path": "apps/stream-worker/src/tests/bronze.e2e.test.ts",
+      "protection": "Postgres RLS fail-closed (NN-1: missing GUC → NULL → 0 rows)",
+      "control_type": "no GUC",
+      "command": "docker exec brainv3-postgres-1 psql -U brain_app -d brain -c \"SELECT count(*) as no_guc_result FROM bronze_events WHERE event_id = 'dd000099-0000-4000-8000-000000000099';\"",
+      "captured_output": " no_guc_result \n---------------\n             0\n(1 row)",
+      "outcome": "RED — no GUC returns 0 rows confirming fail-closed behavior"
+    },
+    {
+      "path": "apps/stream-worker/src/tests/bronze.e2e.test.ts",
+      "protection": "Superuser bypass — brain superuser sees rows regardless (proves test must run as brain_app)",
+      "control_type": "superuser-sees-all",
+      "command": "docker exec brainv3-postgres-1 psql -U brain -d brain -c \"SELECT current_user, count(*) FROM bronze_events WHERE event_id = 'dd000099-0000-4000-8000-000000000099' GROUP BY current_user;\"",
+      "captured_output": " current_user | count \n--------------+-------\n brain        |     1\n(1 row)",
+      "outcome": "PROOF that superuser bypasses RLS — if test ran as 'brain' it would see the row regardless of GUC (false-pass trap, F-4)"
+    },
+    {
+      "path": "apps/stream-worker/src/tests/bronze.e2e.test.ts",
+      "protection": "Positive control — correct brand GUC yields 1 row",
+      "control_type": "correct-brand-GUC",
+      "command": "docker exec brainv3-postgres-1 psql -U brain_app -d brain -c \"SELECT set_config('app.current_brand_id', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', false); SELECT count(*) as correct_brand_result FROM bronze_events WHERE event_id = 'dd000099-0000-4000-8000-000000000099';\"",
+      "captured_output": " correct_brand_result \n----------------------\n                    1\n(1 row)",
+      "outcome": "GREEN — correct brand GUC returns 1 row (RLS permits own-brand access)"
+    },
+    {
+      "path": "apps/stream-worker/src/tests/pipeline-wire.e2e.test.ts",
+      "protection": "Full-wire RLS negative control (F-QA-01): wrong-brand GUC → 0 rows, confirmed in this delta session",
+      "control_type": "wrong-brand GUC (full-wire path)",
+      "command": "pnpm --filter @brain/stream-worker exec vitest run --no-file-parallelism src/tests/pipeline-wire.e2e.test.ts",
+      "captured_output": "[pipeline-wire.e2e] RLS negative control: wrong-brand GUC → 0 rows (expected 0)\n✓ Full-wire pipeline E2E (F-QA-01) > event travels end-to-end... 326ms\nTest Files 1 passed (1), Tests 1 passed (1)",
+      "outcome": "RED when wrong-brand GUC applied — confirmed 0 rows in live run 2026-06-16T20:57:00Z"
+    }
+  ],
+  "findings": [
+    {
+      "id": "F-QA-01",
+      "severity": "MEDIUM",
+      "title": "E2E smoke does not exercise full wire path (HTTP→spool→drainer→Kafka→consumer→bronze)",
+      "status": "RESOLVED",
+      "resolution": "pipeline-wire.e2e.test.ts added. Live run 2026-06-16T20:57:00Z: 1/1 PASS in 38.55s. Spawns real collector subprocess on random OS port, real TCP POST /collect, real drainer → Redpanda → CollectorEventConsumer in-process → bronze_events written as brain_app. current_user='brain_app' asserted. Wrong-brand GUC → 0 rows (RLS negative control) asserted in test.",
+      "blocking": false
+    },
+    {
+      "id": "F-QA-02",
+      "severity": "LOW",
+      "title": "Apicurio schema path resolution broken when run from non-monorepo-root CWD",
+      "status": "RESOLVED",
+      "resolution": "apps/collector/src/main.ts now uses new URL('../../../packages/contracts/generated/avro/brain.collector.event.v1.avsc', import.meta.url) — file-relative, CWD-independent. Confirmed at line 49.",
+      "blocking": false
+    },
+    {
+      "id": "F-QA-03",
+      "severity": "LOW",
+      "title": "DLQ routing not covered by a test — max-retry path exercised by code inspection only",
+      "status": "RESOLVED",
+      "resolution": "dlq.unit.test.ts added. Live run 2026-06-16T20:56:46Z: 1/1 PASS in 106ms. Asserts useCase called 5 times, DLQ topic receives 1 message with x-dlq-reason='max_retry_exceeded', offset committed to next (42→43) after DLQ produce.",
+      "blocking": false
+    },
+    {
+      "id": "F-QA-04",
+      "severity": "LOW",
+      "title": "TimeoutNegativeWarning in vitest runs (non-blocking)",
+      "status": "OPEN",
+      "blocking": false
+    },
+    {
+      "id": "F-QA-05",
+      "severity": "LOW",
+      "title": "Rate limiting not enforced (M2 deferred but flagged)",
+      "status": "OPEN",
+      "blocking": false
+    }
+  ],
+  "tests_run": [
+    {
+      "name": "pipeline-wire.e2e.test.ts (F-QA-01 full-wire)",
+      "result": "PASS",
+      "evidence": "1/1 passed in 38.55s. Event df150b29-1ea0-4260-9c72-b78040bfe0d6 POST→spool_id=15→drained→Redpanda partition=0 offset=14→bronze_events current_user=brain_app. Wrong-brand GUC→0 rows."
+    },
+    {
+      "name": "dlq.unit.test.ts (F-QA-03)",
+      "result": "PASS",
+      "evidence": "1/1 passed in 106ms. MAX_RETRY=5 → DLQ topic 'dev.collector.event.v1.dlq', offset committed '43', x-dlq-reason='max_retry_exceeded'."
+    },
+    {
+      "name": "bronze.e2e.test.ts (regression: prior 4/4)",
+      "result": "PASS",
+      "evidence": "4/4 passed in 224ms. E2E written, dedup_hit, pk_conflict, isolation negative control all green."
+    },
+    {
+      "name": "collector test:durability (regression: prior 5/5)",
+      "result": "PASS",
+      "evidence": "5/5 passed in 288ms. ACK ordering, alias, Redpanda-down, healthz, readyz all green."
+    },
+    {
+      "name": "typecheck: @brain/stream-worker",
+      "result": "PASS",
+      "evidence": "pnpm --filter @brain/stream-worker typecheck → tsc --noEmit → EXIT 0"
+    },
+    {
+      "name": "validity_check --require-negative-control (3 test files)",
+      "result": "PASS",
+      "evidence": "EXIT 0. 3 files scanned. Clean — no BYPASSRLS, no superuser DSN, no tautological asserts."
+    }
+  ],
+  "verdict_rationale": "DELTA re-review. F-QA-01 resolved: pipeline-wire.e2e.test.ts provides genuine full-wire E2E (real subprocess collector on random TCP port, real Redpanda, real PG as brain_app). Ran live 2026-06-16T20:57:00Z, 1/1 PASS, 38.55s. current_user='brain_app' asserted (not superuser). Wrong-brand GUC → 0 rows (RLS negative control) asserted in test body. F-QA-02 resolved: schema path uses import.meta.url-relative URL. F-QA-03 resolved: DLQ unit test 1/1 PASS. All prior tests green (no regression). Typecheck EXIT 0. Validity check EXIT 0 (3 files). PASS."
+}

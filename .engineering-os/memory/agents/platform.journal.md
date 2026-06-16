@@ -116,3 +116,6 @@
 
 ## 2026-06-16T16:40:00Z — Stakeholder — feat-data-plane-ingest-spine
 **Action:** Approval received. status->approved, stage 8.
+
+## 2026-06-16T18:10:00Z — Stakeholder — feat-identity-graph
+**Action:** Approval received. status->approved, stage 8.

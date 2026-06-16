@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-06-16T15:56:54Z",
+  "updated_at": "2026-06-16T17:44:41Z",
   "updated_by": "system",
   "active_requirements": [
     {
@@ -239,6 +239,49 @@
       },
       "migrations_0015_0016": "verified-applied",
       "rollback": "DROP TABLE IF EXISTS bronze_events, collector_spool + redeploy prior collector + stream-worker image"
+    },
+    {
+      "req_id": "feat-identity-graph",
+      "status": "shipped",
+      "stage": 8,
+      "current_owner": "platform-devops",
+      "title": "Deterministic identity graph \u2014 brain_id + alias + India phone-guard",
+      "run_dir": ".engineering-os/runs/2026-06-16T17-44-41Z__c9a1a0__feat-identity-graph__rishabhporwal",
+      "lineage": [
+        "feat-data-plane-ingest-spine"
+      ],
+      "last_journal_entry_at": "2026-06-16T22:50:00Z",
+      "pipeline": {
+        "bounces": 0,
+        "security": "PASS (0 blocking; SR-01 MED open, SR-02/03 LOW)",
+        "qa": "PASS (0 blocking; 26/26 identity e2e)",
+        "final_review": "PASS / APPROVE",
+        "commits": [
+          "8ac9771",
+          "a8a52d1",
+          "dd96233",
+          "c9278a3",
+          "44d951c"
+        ],
+        "deferred": [
+          "SR-01/QA-04 P1 must-fix: phone-guard-reeval no-ops under brain_app (SECURITY DEFINER enumeration fn needed \u2014 before prod COD volume)",
+          "SR-02 window_days literal 30 (cosmetic LOW)",
+          "QA-01 no trace IDs in bridge (observability LOW)",
+          "QA-02 salt-fail not tested at offset-commit layer (LOW)",
+          "QA-03 stale dist with stubSha256 (LOW)"
+        ]
+      },
+      "ship": {
+        "branch": "feat/identity-graph",
+        "commit": "44d951c",
+        "pushed": false,
+        "pr": null,
+        "pr_note": "gh CLI unauthenticated; manual PR URL: https://github.com/Rishabhporwal/Brain-V4/compare/master...feat/identity-graph (branch off master directly \u2014 clean base)",
+        "phase": "1-dev-only",
+        "ts": "2026-06-16T22:50:00Z"
+      },
+      "migration_0017": "verified-applied",
+      "rollback": "DROP identity_audit/merge_review_queue/contact_pii/shared_utility_identifier/identity_merge_event/brain_id_alias/identity_link/customer + ALTER TABLE brand DROP COLUMN identity_salt_ciphertext/phone_guard_threshold/suppression_window_days + redeploy prior stream-worker image"
     }
   ]
 }

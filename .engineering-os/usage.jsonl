@@ -81,3 +81,10 @@
 {"ts":"2026-06-16T17:01:09Z","req_id":"feat-data-plane-ingest-spine","agent":"qa-agent","stage":5,"model":"sonnet","review_scope":"delta","total_tokens":49293}
 {"ts":"2026-06-16T17:07:45Z","req_id":"feat-data-plane-ingest-spine","agent":"final-reviewer","stage":6,"model":"opus","review_scope":"full","total_tokens":107753}
 {"ts":"2026-06-16T17:18:30Z","req_id":"feat-data-plane-ingest-spine","agent":"platform-devops","stage":8,"model":"sonnet","review_scope":"full","total_tokens":55523}
+{"ts":"2026-06-16T17:52:58Z","req_id":"feat-identity-graph","agent":"cto-advisor","stage":1,"model":"sonnet","review_scope":"none","total_tokens":57355}
+{"ts":"2026-06-16T18:04:00Z","req_id":"feat-identity-graph","agent":"architect","stage":2,"model":"opus","review_scope":"none","total_tokens":80836}
+{"ts":"2026-06-16T18:25:02Z","req_id":"feat-identity-graph","agent":"data-engineer","stage":3,"model":"sonnet","review_scope":"none","total_tokens":137837}
+{"ts":"2026-06-16T18:35:58Z","req_id":"feat-identity-graph","agent":"security-reviewer","stage":4,"model":"sonnet","review_scope":"full","total_tokens":105788}
+{"ts":"2026-06-16T18:35:58Z","req_id":"feat-identity-graph","agent":"qa-agent","stage":5,"model":"sonnet","review_scope":"full","total_tokens":100946}
+{"ts":"2026-06-16T18:41:45Z","req_id":"feat-identity-graph","agent":"final-reviewer","stage":6,"model":"opus","review_scope":"full","total_tokens":97085}
+{"ts":"2026-06-16T18:52:38Z","req_id":"feat-identity-graph","agent":"platform-devops","stage":8,"model":"sonnet","review_scope":"full","total_tokens":59937}

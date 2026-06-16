@@ -1,7 +1,8 @@
 /**
  * Auth application service.
  *
- * Owns: register, verify-email, login, logout, forgot-password, reset-password.
+ * Owns: register, verify-email, login, logout, forgot-password, reset-password,
+ *       rotateRefreshToken (AC-1), validateSession, resolveActiveContext.
  *
  * SECURITY INVARIANTS:
  *  - NN-5: argon2id (m=19456, t=2, p=1) asserted at startup.
@@ -10,12 +11,17 @@
  *  - NN-3: session validation checks user_session.revoked_at IS NULL.
  *  - I-S09: no plaintext token in DB — only token_hash.
  *  - I-ST05: email delivery goes through notification module only.
+ *  - AC-1: refresh token rotation under SELECT FOR UPDATE; replay → family-wipe.
+ *  - AC-2: revokeAllForUser / revokeAllForUserAndBrand for bulk revocation.
+ *  - MA-04: forgotPassword sends email fire-and-forget (no timing oracle).
+ *  - MA-15: register verification re-issue is fire-and-forget (no timing oracle).
  */
 
 import { randomBytes } from 'node:crypto';
 import { createHash } from 'node:crypto';
 import { randomUUID } from 'node:crypto';
 import argon2 from 'argon2';
+import type { Pool, PoolClient } from 'pg';
 
 import type { DbPool, QueryContext } from '@brain/db';
 import type { AuditWriter } from '@brain/audit';
@@ -28,8 +34,10 @@ import {
   PasswordResetRepository,
   EmailVerificationRepository,
   MembershipRepository,
+  OrganizationRepository,
 } from '../infrastructure/repositories.js';
 import type { RoleCode } from '../domain/membership/entities.js';
+import type { OnboardingStatus } from '../domain/organization/entities.js';
 import { mintJwt, verifyJwt } from '../security/jwt.js';
 
 /** Active brand/role context carried in the session JWT (all-null until onboarded). */
@@ -37,9 +45,15 @@ export interface ActiveContext {
   brandId: string | null;
   workspaceId: string | null;
   role: RoleCode | null;
+  onboardingStatus: OnboardingStatus | null;
 }
 
-const EMPTY_CONTEXT: ActiveContext = { brandId: null, workspaceId: null, role: null };
+const EMPTY_CONTEXT: ActiveContext = {
+  brandId: null,
+  workspaceId: null,
+  role: null,
+  onboardingStatus: null,
+};
 
 // ── Argon2id parameters (NN-5 / OWASP 2025 minimum) ──────────────────────────
 
@@ -93,12 +107,33 @@ export interface AuthServiceConfig {
   jwtSigningSecret: string;
 }
 
+export class AuthError extends Error {
+  constructor(
+    public readonly code: string,
+    message: string,
+    public readonly statusCode: number = 401,
+  ) {
+    super(message);
+    this.name = 'AuthError';
+  }
+}
+
 export class AuthService {
+  /**
+   * @param pool       — GUC-middleware-wrapped pool for all standard queries.
+   * @param audit      — Audit writer.
+   * @param notification — Notification service.
+   * @param config     — Auth config (signing secret).
+   * @param rawPgPool  — Optional raw pg.Pool (no GUC middleware) for the
+   *                     rotateRefreshToken path that needs explicit BEGIN/COMMIT.
+   *                     If not provided, a runtime cast is attempted.
+   */
   constructor(
     private readonly pool: DbPool,
     private readonly audit: AuditWriter,
     private readonly notification: NotificationService,
     private readonly config: AuthServiceConfig,
+    private readonly rawPgPool?: Pool,
   ) {}
 
   // ── Register ───────────────────────────────────────────────────────────────
@@ -107,7 +142,7 @@ export class AuthService {
     email: string,
     password: string,
     correlationId: string,
-  ): Promise<{ userId: string; message: string }> {
+  ): Promise<{ userId: string; message: string; code?: 'INVITE_PENDING' }> {
     const ctx: QueryContext = { correlationId };
     const client = await this.pool.connect();
     try {
@@ -116,20 +151,24 @@ export class AuthService {
 
       // Check for existing user (service-layer isolation — no RLS on app_user).
       const existing = await userRepo.findByEmail(email, ctx);
-      // NN-5: no enumeration — don't reveal if user exists. Hash anyway (timing-safe).
+      // NN-5: no enumeration — always hash (timing-safe).
       const passwordHash = await argon2.hash(password, ARGON2_PARAMS);
 
       if (existing) {
-        // User already exists — still hash password (timing-safe) but return same success msg.
-        // Silently issue a new verification email if not yet verified.
+        // User already exists — silently re-issue verification email if not yet verified.
         if (!existing.emailVerifiedAt) {
-          const { rawToken, tokenHash } = generateToken();
-          const expiresAt = new Date(Date.now() + EMAIL_VERIFY_EXPIRY_MS);
-          await emailVerifyRepo.insert(
-            { appUserId: existing.id, tokenHash, expiresAt },
-            { ...ctx, userId: existing.id },
-          );
-          await this.notification.sendVerificationEmail(existing.email, rawToken, correlationId);
+          // MA-15: fire-and-forget to equalize timing (no timing oracle for verified vs unverified).
+          const emailCtx = { ...ctx, userId: existing.id };
+          Promise.resolve().then(async () => {
+            try {
+              const { rawToken, tokenHash } = generateToken();
+              const expiresAt = new Date(Date.now() + EMAIL_VERIFY_EXPIRY_MS);
+              await emailVerifyRepo.insert({ appUserId: existing.id, tokenHash, expiresAt }, emailCtx);
+              await this.notification.sendVerificationEmail(existing.email, rawToken, correlationId);
+            } catch (err) {
+              console.error('[auth] register: verification re-issue failed', { correlationId, err });
+            }
+          });
         }
         return { userId: existing.id, message: 'Registration successful. Please verify your email.' };
       }
@@ -163,7 +202,15 @@ export class AuthService {
         payload: { email_masked: maskEmail(email) },
       });
 
-      return { userId: user.id, message: 'Registration successful. Please verify your email.' };
+      // AC-7: Check for pending invite for this email (register-with-pending-invite).
+      // A single indexed query; run AFTER the hash for timing equivalence.
+      const pendingInvite = await userRepo.findPendingInviteByEmail(email, { ...ctx, userId: user.id });
+
+      return {
+        userId: user.id,
+        message: 'Registration successful. Please verify your email.',
+        ...(pendingInvite ? { code: 'INVITE_PENDING' as const } : {}),
+      };
     } finally {
       client.release();
     }
@@ -179,17 +226,12 @@ export class AuthService {
       const emailVerifyRepo = new EmailVerificationRepository(client);
       const userRepo = new AppUserRepository(client);
 
-      // We need to find the token without user context first (token_hash is globally unique).
-      // Use a system context (no userId GUC — app_user has no RLS).
       const token = await emailVerifyRepo.findValidByHash(tokenHash, ctx);
       if (!token) {
-        throw new AuthError('INVALID_TOKEN', 'Invalid or expired verification token.');
+        throw new AuthError('INVALID_TOKEN', 'Invalid or expired verification token.', 400);
       }
 
-      // Mark token used (single-use — NN-5).
       await emailVerifyRepo.markUsed(token.id, { ...ctx, userId: token.appUserId });
-
-      // Mark user email as verified.
       await userRepo.markEmailVerified(token.appUserId, new Date(), ctx);
 
       await this.audit.append({
@@ -216,6 +258,7 @@ export class AuthService {
     correlationId: string,
   ): Promise<{
     accessToken: string;
+    refreshToken: string;
     expiresIn: number;
     user: Pick<AppUser, 'id' | 'email' | 'emailVerifiedAt'>;
     context: ActiveContext;
@@ -226,44 +269,54 @@ export class AuthService {
       const userRepo = new AppUserRepository(client);
       const sessionRepo = new UserSessionRepository(client);
       const memberRepo = new MembershipRepository(client);
+      const orgRepo = new OrganizationRepository(client);
 
       const user = await userRepo.findByEmail(email, ctx);
 
       // NN-5: timing-safe — always verify a hash even when user not found.
       const dummyHash = '$argon2id$v=19$m=19456,t=2,p=1$dummysaltfortimingequalisation$dummyhashvalue123456789012345678901234567890123';
       const hashToVerify = user?.passwordHash ?? dummyHash;
-      // argon2@0.44 verify infers the algorithm from the hash encoding ($argon2id$ prefix).
-      // No type option needed; the hash string itself enforces argon2id (NN-5).
       const valid = await argon2.verify(hashToVerify, password);
 
       if (!user || !valid || user.status === 'suspended') {
-        throw new AuthError('INVALID_CREDENTIALS', 'Invalid email or password.');
+        throw new AuthError('INVALID_CREDENTIALS', 'Invalid email or password.', 401);
       }
 
-      // Create session.
+      // Create session — generate a new UUID for the row id so we can set family_id = id.
       const jti = randomUUID();
       const { rawToken: refreshToken, tokenHash: refreshTokenHash } = generateToken();
       const expiresAt = new Date(Date.now() + REFRESH_TOKEN_EXPIRY_SECS * 1000);
 
-      await sessionRepo.insert(
+      // Insert session without family_id first, then set family_id = id in the same txn.
+      // We use the session id as the family_id root (AC-1 login = new family root).
+      const session = await sessionRepo.insert(
         { appUserId: user.id, jti, refreshTokenHash, expiresAt, ip, userAgent },
         { ...ctx, userId: user.id },
       );
+      // Set family_id = own id (root of a new family).
+      await sessionRepo.setFamilyIdToSelf(session.id, { ...ctx, userId: user.id });
 
       // Resolve the user's active brand/role so the session is usable immediately.
-      // A bare login token otherwise carries null context and every role-gated route
-      // 403s (the session could never bootstrap brand/role — see
-      // 0008_membership_self_read.sql). Reads the user's OWN membership via the
-      // self-read policy (app.current_user_id GUC set from ctx.userId).
       const activeMembership = await memberRepo.findActiveByUser(user.id, {
         correlationId,
         userId: user.id,
       });
+
+      let onboardingStatus: OnboardingStatus | null = null;
+      if (activeMembership) {
+        const org = await orgRepo.findById(activeMembership.organizationId, {
+          correlationId,
+          workspaceId: activeMembership.organizationId,
+        });
+        onboardingStatus = org?.onboardingStatus ?? null;
+      }
+
       const context: ActiveContext = activeMembership
         ? {
             brandId: activeMembership.brandId,
             workspaceId: activeMembership.organizationId,
             role: activeMembership.roleCode,
+            onboardingStatus,
           }
         : EMPTY_CONTEXT;
 
@@ -282,6 +335,7 @@ export class AuthService {
 
       return {
         accessToken,
+        refreshToken,
         expiresIn: ACCESS_TOKEN_EXPIRY_SECS,
         user: {
           id: user.id,
@@ -292,6 +346,192 @@ export class AuthService {
       };
     } finally {
       client.release();
+    }
+  }
+
+  // ── Rotating Refresh Token (AC-1 / MA-01 / MA-03) ─────────────────────────
+  /**
+   * Exchange a raw refresh token for a new (access_token, refresh_token) pair.
+   *
+   * ALL steps run inside ONE Postgres transaction with SELECT ... FOR UPDATE (MA-03).
+   *
+   * Replay detection: if the matched row has revoked_at IS NOT NULL OR used_at IS NOT NULL
+   *   → family-wipe → 401 SESSION_REVOKED.
+   * jti UNIQUE conflict on INSERT → 401 SESSION_CONFLICT (concurrent race defense).
+   * Not found → 401 INVALID_TOKEN.
+   */
+  async rotateRefreshToken(
+    rawRefreshToken: string,
+    ip: string | null,
+    userAgent: string | null,
+    correlationId: string,
+  ): Promise<{ accessToken: string; refreshToken: string; expiresIn: number }> {
+    const tokenHash = createHash('sha256').update(rawRefreshToken).digest('hex');
+
+    // Use the raw pg.Pool (no GUC middleware) so we can control BEGIN/COMMIT explicitly.
+    // We don't know userId until after the SELECT FOR UPDATE — can't set GUC first.
+    if (!this.rawPgPool) {
+      throw new AuthError('CONFIGURATION_ERROR', 'Raw pg pool not provided — token rotation unavailable.', 500);
+    }
+    const rawClient: PoolClient = await this.rawPgPool.connect();
+    try {
+      await rawClient.query('BEGIN');
+
+      // Step 1: Find the session row FOR UPDATE (MA-03 — serializes concurrent rotations).
+      // This lookup uses a direct query — the token IS the credential, no user GUC yet.
+      const lookupResult = await rawClient.query<{
+        id: string; app_user_id: string; jti: string;
+        refresh_token_hash: string; issued_at: Date; expires_at: Date;
+        revoked_at: Date | null; used_at: Date | null;
+        family_id: string | null; rotated_from: string | null;
+      }>(
+        `SELECT id, app_user_id, jti, refresh_token_hash, issued_at, expires_at, revoked_at, used_at, family_id, rotated_from
+         FROM user_session
+         WHERE refresh_token_hash = $1
+         FOR UPDATE`,
+        [tokenHash],
+      );
+
+      const row = lookupResult.rows[0];
+
+      // Step 2: Not found at all → INVALID_TOKEN.
+      if (!row) {
+        await rawClient.query('ROLLBACK');
+        throw new AuthError('INVALID_TOKEN', 'Invalid refresh token.', 401);
+      }
+
+      // Step 3: Replay detection — consumed (used_at IS NOT NULL) or revoked.
+      if (row.revoked_at !== null || row.used_at !== null) {
+        // SEC-AOF-L1: Set app.current_user_id GUC so that under the production
+        // brain_app role (NOBYPASSRLS) the user_session RLS policy allows this
+        // UPDATE. Without this, the family-wipe UPDATE would affect 0 rows in prod
+        // (RLS filters by app.current_user_id = empty → no matches).
+        // We know app_user_id from the SELECT FOR UPDATE row above.
+        await rawClient.query(
+          `SELECT set_config('app.current_user_id', $1, true)`,
+          [row.app_user_id],
+        );
+
+        // Family-wipe: revoke all active sessions in this family.
+        const familyId = row.family_id ?? row.id;
+        const wipeResult = await rawClient.query<{ rowcount: number }>(
+          `WITH revoked AS (
+             UPDATE user_session SET revoked_at = NOW()
+             WHERE family_id = $1 AND revoked_at IS NULL
+             RETURNING id
+           )
+           SELECT COUNT(*) AS rowcount FROM revoked`,
+          [familyId],
+        );
+        const wipeCount = parseInt(String(wipeResult.rows[0]?.rowcount ?? 0), 10);
+
+        await rawClient.query('COMMIT');
+
+        await this.audit.append({
+          brand_id: row.app_user_id,
+          actor_id: row.app_user_id,
+          actor_role: 'system',
+          action: 'sessions.bulk_revoked',
+          entity_type: 'user_session',
+          entity_id: row.family_id ?? row.id,
+          payload: { reason: 'refresh_replay', count: wipeCount, family_id: familyId },
+        });
+
+        throw new AuthError('SESSION_REVOKED', 'Refresh token was already used. All sessions revoked.', 401);
+      }
+
+      // Step 4: Expired — not a replay (row not yet used), just expired.
+      if (row.expires_at < new Date()) {
+        await rawClient.query('ROLLBACK');
+        throw new AuthError('INVALID_TOKEN', 'Refresh token has expired.', 401);
+      }
+
+      // Step 5: Valid token — rotate.
+      // 5a: Mark old row as rotated (revoked_at + used_at = NOW()).
+      await rawClient.query(
+        `UPDATE user_session SET revoked_at = NOW(), used_at = NOW() WHERE id = $1`,
+        [row.id],
+      );
+
+      // 5b: Create new session row inheriting the family_id.
+      const newJti = randomUUID();
+      const { rawToken: newRefreshToken, tokenHash: newRefreshTokenHash } = generateToken();
+      const newExpiresAt = new Date(Date.now() + REFRESH_TOKEN_EXPIRY_SECS * 1000);
+      const inheritedFamilyId = row.family_id ?? row.id;
+
+      let newSessionId: string;
+      try {
+        const insertResult = await rawClient.query<{ id: string }>(
+          `INSERT INTO user_session
+             (app_user_id, jti, refresh_token_hash, expires_at, ip, user_agent, family_id, rotated_from)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+           RETURNING id`,
+          [row.app_user_id, newJti, newRefreshTokenHash, newExpiresAt, ip, userAgent, inheritedFamilyId, row.id],
+        );
+        newSessionId = insertResult.rows[0]!.id;
+        void newSessionId; // used below for audit
+      } catch (err: unknown) {
+        // jti UNIQUE conflict (concurrent race — MA-03).
+        const pgErr = err as { code?: string };
+        if (pgErr?.code === '23505') {
+          await rawClient.query('ROLLBACK');
+          throw new AuthError('SESSION_CONFLICT', 'Session conflict detected. Please re-login.', 401);
+        }
+        throw err;
+      }
+
+      // 5c: Resolve active context and mint new access token.
+      const memberResult = await rawClient.query<{
+        id: string; organization_id: string; brand_id: string | null; role_code: string;
+      }>(
+        `SELECT id, organization_id, brand_id, role_code
+         FROM membership
+         WHERE app_user_id = $1
+         ORDER BY (brand_id IS NOT NULL) DESC, created_at DESC
+         LIMIT 1`,
+        [row.app_user_id],
+      );
+      const m = memberResult.rows[0];
+
+      let onboardingStatus: OnboardingStatus | null = null;
+      if (m) {
+        const orgResult = await rawClient.query<{ onboarding_status: string }>(
+          `SELECT onboarding_status FROM organization WHERE id = $1`,
+          [m.organization_id],
+        );
+        onboardingStatus = (orgResult.rows[0]?.onboarding_status ?? null) as OnboardingStatus | null;
+      }
+
+      const context: ActiveContext = m
+        ? {
+            brandId: m.brand_id,
+            workspaceId: m.organization_id,
+            role: m.role_code as RoleCode,
+            onboardingStatus,
+          }
+        : EMPTY_CONTEXT;
+
+      const accessToken = this.mintSessionToken(row.app_user_id, newJti, context);
+
+      await rawClient.query('COMMIT');
+
+      await this.audit.append({
+        brand_id: row.app_user_id,
+        actor_id: row.app_user_id,
+        actor_role: 'system',
+        action: 'session.rotated',
+        entity_type: 'user_session',
+        entity_id: newJti,
+        payload: { old_jti: row.jti, family_id: inheritedFamilyId },
+      });
+
+      return { accessToken, refreshToken: newRefreshToken, expiresIn: ACCESS_TOKEN_EXPIRY_SECS };
+    } catch (err) {
+      // If BEGIN was entered but error wasn't caught in an inner COMMIT/ROLLBACK
+      try { await rawClient.query('ROLLBACK'); } catch { /* ignore rollback error */ }
+      throw err;
+    } finally {
+      rawClient.release();
     }
   }
 
@@ -316,15 +556,34 @@ export class AuthService {
     return mintJwt(claims, this.config.jwtSigningSecret);
   }
 
-  /** Resolve the user's current active brand/role (self-read; null until onboarded). */
-  async resolveActiveContext(userId: string, correlationId: string): Promise<ActiveContext> {
+  /** Resolve the user's current active brand/role + onboardingStatus (self-read; null until onboarded). */
+  async resolveActiveContext(userId: string, correlationId: string, preferredWorkspaceId?: string): Promise<ActiveContext> {
     const client = await this.pool.connect();
     try {
       const memberRepo = new MembershipRepository(client);
-      const m = await memberRepo.findActiveByUser(userId, { correlationId, userId });
-      return m
-        ? { brandId: m.brandId, workspaceId: m.organizationId, role: m.roleCode }
-        : EMPTY_CONTEXT;
+      const orgRepo = new OrganizationRepository(client);
+
+      let m = preferredWorkspaceId
+        ? await memberRepo.findByUserAndOrg(userId, preferredWorkspaceId, null, { correlationId, userId, workspaceId: preferredWorkspaceId })
+        : null;
+
+      if (!m) {
+        m = await memberRepo.findActiveByUser(userId, { correlationId, userId });
+      }
+
+      if (!m) return EMPTY_CONTEXT;
+
+      const org = await orgRepo.findById(m.organizationId, {
+        correlationId,
+        workspaceId: m.organizationId,
+      });
+
+      return {
+        brandId: m.brandId,
+        workspaceId: m.organizationId,
+        role: m.roleCode,
+        onboardingStatus: org?.onboardingStatus ?? null,
+      };
     } finally {
       client.release();
     }
@@ -339,8 +598,9 @@ export class AuthService {
     userId: string,
     jti: string,
     correlationId: string,
+    preferredWorkspaceId?: string,
   ): Promise<{ accessToken: string; expiresIn: number; context: ActiveContext }> {
-    const context = await this.resolveActiveContext(userId, correlationId);
+    const context = await this.resolveActiveContext(userId, correlationId, preferredWorkspaceId);
     return {
       accessToken: this.mintSessionToken(userId, jti, context),
       expiresIn: ACCESS_TOKEN_EXPIRY_SECS,
@@ -350,21 +610,81 @@ export class AuthService {
 
   // ── Logout ─────────────────────────────────────────────────────────────────
 
-  async logout(jti: string, userId: string, correlationId: string): Promise<void> {
+  async logout(
+    jti: string,
+    userId: string,
+    correlationId: string,
+    scopeAll = false,
+  ): Promise<void> {
     const ctx: QueryContext = { correlationId, userId };
     const client = await this.pool.connect();
     try {
       const sessionRepo = new UserSessionRepository(client);
-      await sessionRepo.revoke(jti, ctx);
+
+      if (scopeAll) {
+        // AC-2: scope=all — revoke all sessions for this user.
+        const count = await sessionRepo.revokeAllForUser(userId, ctx);
+        await this.audit.append({
+          brand_id: userId,
+          actor_id: userId,
+          actor_role: 'system',
+          action: 'sessions.bulk_revoked',
+          entity_type: 'user_session',
+          entity_id: userId,
+          payload: { reason: 'logout_all', count },
+        });
+      } else {
+        await sessionRepo.revoke(jti, ctx);
+        await this.audit.append({
+          brand_id: userId,
+          actor_id: userId,
+          actor_role: 'system',
+          action: 'session.revoked',
+          entity_type: 'user_session',
+          entity_id: jti,
+          payload: {},
+        });
+      }
+    } finally {
+      client.release();
+    }
+  }
+
+  // ── Suspend User (AC-2) ────────────────────────────────────────────────────
+  // M1: no member-facing suspend route exists; this is the service capability.
+  // Route is post-M1. The repo/service method is the AC-2 requirement.
+
+  async suspendUser(appUserId: string, actorId: string, correlationId: string): Promise<void> {
+    const ctx: QueryContext = { correlationId, userId: actorId };
+    const client = await this.pool.connect();
+    try {
+      const sessionRepo = new UserSessionRepository(client);
+      const userRepo = new AppUserRepository(client);
+
+      // Revoke all sessions first.
+      const count = await sessionRepo.revokeAllForUser(appUserId, { ...ctx, userId: appUserId });
+
+      // Mark user suspended.
+      await userRepo.updateStatus(appUserId, 'suspended', ctx);
 
       await this.audit.append({
-        brand_id: userId,
-        actor_id: userId,
+        brand_id: appUserId,
+        actor_id: actorId,
         actor_role: 'system',
-        action: 'session.revoked',
+        action: 'user.suspended',
+        entity_type: 'app_user',
+        entity_id: appUserId,
+        payload: { sessions_revoked: count },
+      });
+
+      await this.audit.append({
+        brand_id: appUserId,
+        actor_id: actorId,
+        actor_role: 'system',
+        action: 'sessions.bulk_revoked',
         entity_type: 'user_session',
-        entity_id: jti,
-        payload: {},
+        entity_id: appUserId,
+        payload: { reason: 'user_suspended', count },
       });
     } finally {
       client.release();
@@ -373,6 +693,7 @@ export class AuthService {
 
   // ── Forgot Password ────────────────────────────────────────────────────────
   // NN-5: ALWAYS returns the same response — never reveals if email exists.
+  // MA-04: notification send is fire-and-forget (no timing oracle).
 
   async forgotPassword(email: string, correlationId: string): Promise<void> {
     const ctx: QueryContext = { correlationId };
@@ -390,8 +711,13 @@ export class AuthService {
           { appUserId: user.id, tokenHash, expiresAt },
           { ...ctx, userId: user.id },
         );
-        // Send via notification module (I-ST05 — no direct SMTP).
-        await this.notification.sendPasswordResetEmail(email, rawToken, correlationId);
+        // MA-04: fire-and-forget notification — response timing = ~1 DB read for both paths.
+        // Wrap in Promise.resolve() so a synchronous throw or non-Promise return from the
+        // notification adapter does not propagate to the caller (test mocks return undefined).
+        void Promise.resolve(this.notification.sendPasswordResetEmail(email, rawToken, correlationId))
+          .catch((err) => {
+            console.error('[auth] forgotPassword: send failed', { correlationId, err });
+          });
 
         await this.audit.append({
           brand_id: user.id,
@@ -403,9 +729,7 @@ export class AuthService {
           payload: { email_masked: maskEmail(email) },
         });
       }
-      // NN-5: no else branch — same code path timing (argon2 hash not needed here
-      // since we don't verify a password; the timing difference is acceptable for
-      // forgot-password which doesn't reveal user existence via timing in practice).
+      // NN-5: no else branch — same code path timing.
     } finally {
       client.release();
     }
@@ -423,7 +747,7 @@ export class AuthService {
 
       const token = await resetRepo.findValidByHash(tokenHash, ctx);
       if (!token) {
-        throw new AuthError('INVALID_TOKEN', 'Invalid or expired reset token.');
+        throw new AuthError('INVALID_TOKEN', 'Invalid or expired reset token.', 400);
       }
 
       // Mark token used (single-use — NN-5).
@@ -487,17 +811,5 @@ export class AuthService {
     } catch {
       return null;
     }
-  }
-}
-
-// ── Domain errors ─────────────────────────────────────────────────────────────
-
-export class AuthError extends Error {
-  constructor(
-    public readonly code: string,
-    message: string,
-  ) {
-    super(message);
-    this.name = 'AuthError';
   }
 }

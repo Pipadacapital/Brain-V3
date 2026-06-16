@@ -12,6 +12,26 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { ErrorCard } from '@/components/ui/error-card';
 import { loginSchema, type LoginFormValues } from '@/lib/api/schemas';
 import { useLogin } from '@/lib/hooks/use-auth';
+import type { OnboardingStatus, LoginResponse } from '@/lib/api/types';
+
+/**
+ * Deterministic lookup table: onboarding_status → resume URL.
+ * Covers every enum value + null (no org membership).
+ * Keyed off the authoritative enum — no boolean branch.
+ */
+export const ONBOARDING_RESUME: Record<OnboardingStatus | 'null', string> = {
+  pending: '/workspace/new',
+  org_created: '/brand/new',
+  brand_created: '/onboarding/integrations',
+  integration_selected: '/onboarding/done',
+  complete: '/dashboard',
+  null: '/workspace/new',
+};
+
+export function resolveOnboardingRoute(status: OnboardingStatus | null): string {
+  if (status === null) return ONBOARDING_RESUME['null'];
+  return ONBOARDING_RESUME[status] ?? '/dashboard';
+}
 
 export function LoginForm() {
   const router = useRouter();
@@ -27,9 +47,14 @@ export function LoginForm() {
 
   function onSubmit(data: LoginFormValues) {
     login(data, {
-      onSuccess: (result) => {
-        // httpOnly cookie set by BFF; route based on onboarding state
-        router.push(result.needs_onboarding ? '/workspace/new' : '/dashboard');
+      onSuccess: (result: LoginResponse) => {
+        // If user belongs to >1 org, send to org picker.
+        if (result.orgs && result.orgs.length > 1) {
+          router.push('/select-org');
+          return;
+        }
+        // httpOnly cookie set by BFF; route by onboarding_status enum (MA-05).
+        router.push(resolveOnboardingRoute(result.onboarding_status));
       },
     });
   }

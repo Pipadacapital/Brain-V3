@@ -77,6 +77,24 @@ export const createBrandSchema = z.object({
     .url('Enter a valid URL (e.g. https://yourstore.com)')
     .optional()
     .or(z.literal('')),
+  /** ISO 4217 bounded allowlist — MA-12: matches backend CHECK constraint. */
+  currency_code: z
+    .enum(['INR', 'AED', 'SAR'] as const, {
+      errorMap: () => ({ message: 'Select a supported currency' }),
+    })
+    .default('INR'),
+  /** IANA timezone bounded allowlist. */
+  timezone: z
+    .enum(['Asia/Kolkata', 'Asia/Dubai', 'Asia/Riyadh'] as const, {
+      errorMap: () => ({ message: 'Select a supported timezone' }),
+    })
+    .default('Asia/Kolkata'),
+  /** Revenue recognition definition — MA-12: 'placed' excluded. */
+  revenue_definition: z
+    .enum(['realized', 'delivered'] as const, {
+      errorMap: () => ({ message: 'Select a recognition method' }),
+    })
+    .default('realized'),
 });
 export type CreateBrandFormValues = z.infer<typeof createBrandSchema>;
 

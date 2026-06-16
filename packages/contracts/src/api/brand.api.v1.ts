@@ -16,6 +16,11 @@ import { z } from 'zod';
 
 // ── Brand ─────────────────────────────────────────────────────────────────────
 
+// AC-4: locale columns — currency, timezone, revenue definition.
+export const CurrencyCodeSchema = z.enum(['INR', 'AED', 'SAR']);
+export const BrandTimezoneSchema = z.enum(['Asia/Kolkata', 'Asia/Dubai', 'Asia/Riyadh']);
+export const RevenueDefinitionSchema = z.enum(['realized', 'delivered']); // MA-12: 'placed' excluded
+
 export const BrandSchema = z.object({
   id: z.string().uuid(),
   organization_id: z.string().uuid(),
@@ -23,6 +28,9 @@ export const BrandSchema = z.object({
   domain: z.string().max(253).nullable(),
   status: z.enum(['active', 'archived']),
   region_code: z.string().length(2).default('IN'),
+  currency_code: CurrencyCodeSchema.default('INR'),
+  timezone: BrandTimezoneSchema.default('Asia/Kolkata'),
+  revenue_definition: RevenueDefinitionSchema.default('realized'),
   created_at: z.string().datetime({ offset: true }),
   updated_at: z.string().datetime({ offset: true }),
 });
@@ -34,6 +42,9 @@ export const CreateBrandRequestSchema = z.object({
   workspace_id: z.string().uuid(),
   display_name: z.string().min(1).max(255),
   domain: z.string().max(253).nullable().optional(),
+  currency_code: CurrencyCodeSchema.optional(),
+  timezone: BrandTimezoneSchema.optional(),
+  revenue_definition: RevenueDefinitionSchema.optional(),
 });
 export type CreateBrandRequest = z.infer<typeof CreateBrandRequestSchema>;
 
@@ -57,6 +68,9 @@ export const UpdateBrandRequestSchema = z.object({
   display_name: z.string().min(1).max(255).optional(),
   domain: z.string().max(253).nullable().optional(),
   status: z.enum(['active', 'archived']).optional(),
+  currency_code: CurrencyCodeSchema.optional(),    // MA-11: immutability enforced in service
+  timezone: BrandTimezoneSchema.optional(),
+  revenue_definition: RevenueDefinitionSchema.optional(),
 });
 export type UpdateBrandRequest = z.infer<typeof UpdateBrandRequestSchema>;
 

@@ -4,15 +4,17 @@
  * POST /api/v1/auth/register
  * POST /api/v1/auth/verify-email
  * POST /api/v1/auth/login
- * POST /api/v1/auth/logout
+ * POST /api/v1/auth/logout          (scope=all query: revoke all sessions)
  * POST /api/v1/auth/forgot-password
  * POST /api/v1/auth/reset-password
  * GET  /api/v1/auth/me
+ * POST /api/v1/auth/token/refresh   (AC-1 — rotating refresh tokens; CSRF-exempt)
  *
  * INVARIANTS:
  *  - NN-3: validateSession preHandler on every protected route (logout, me).
  *  - NN-5: forgot-password always 200 content-identical.
  *  - Error envelope: { request_id, error: { code, message, fields? } }
+ *  - AC-3: rate limiting on login, forgot-password, register, token/refresh.
  */
 
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
@@ -26,6 +28,14 @@ import {
 } from '@brain/contracts';
 import type { AuthService } from '../../application/auth.service.js';
 import { AuthError } from '../../application/auth.service.js';
+import type { RateLimiter } from '../../infrastructure/rate-limiter.js';
+import {
+  loginFailKeySync,
+  loginIpKey,
+  forgotPasswordKey,
+  registerIpKey,
+  refreshIpKey,
+} from '../../infrastructure/rate-limiter.js';
 
 export type AuthenticatedRequest = FastifyRequest & {
   auth: {
@@ -40,6 +50,7 @@ export type AuthenticatedRequest = FastifyRequest & {
 export function registerAuthRoutes(
   fastify: FastifyInstance,
   authService: AuthService,
+  rateLimiter?: RateLimiter,
 ): void {
   const FORGOT_PASSWORD_RESPONSE = {
     message: 'If an account exists with this email, a password reset link has been sent.',
@@ -49,6 +60,21 @@ export function registerAuthRoutes(
   fastify.post('/api/v1/auth/register', async (request: FastifyRequest, reply: FastifyReply) => {
     const requestId = randomUUID();
     const correlationId = (request.headers['x-correlation-id'] as string) ?? requestId;
+
+    // AC-3: Rate limit by IP (10/hour).
+    if (rateLimiter) {
+      const ip = request.ip ?? '0.0.0.0';
+      const rl = await rateLimiter.check(registerIpKey(ip), 10, 3600);
+      if (!rl.allowed) {
+        return reply.code(429).send({
+          request_id: requestId,
+          error: {
+            code: 'RATE_LIMITED',
+            message: 'Too many registration attempts. Please try again later.',
+          },
+        }).header('Retry-After', String(rl.retryAfter));
+      }
+    }
 
     const parsed = RegisterRequestSchema.safeParse(request.body);
     if (!parsed.success) {
@@ -76,10 +102,11 @@ export function registerAuthRoutes(
         user_id: result.userId,
         email: parsed.data.email,
         message: result.message,
+        ...(result.code ? { code: result.code } : {}),
       });
     } catch (err) {
       if (err instanceof AuthError) {
-        return reply.code(400).send({
+        return reply.code(err.statusCode ?? 400).send({
           request_id: requestId,
           error: { code: err.code, message: err.message },
         });
@@ -106,7 +133,7 @@ export function registerAuthRoutes(
       return reply.send({ request_id: requestId, ok: true });
     } catch (err) {
       if (err instanceof AuthError) {
-        return reply.code(400).send({
+        return reply.code(err.statusCode ?? 400).send({
           request_id: requestId,
           error: { code: err.code, message: err.message },
         });
@@ -128,17 +155,39 @@ export function registerAuthRoutes(
       });
     }
 
+    const ip = request.ip ?? '0.0.0.0';
+
+    // AC-3: Pre-auth rate limit check (peek-only — only count failures, not successes).
+    if (rateLimiter) {
+      // Per-IP secondary cap (20/15min — bounds credential-stuffing across emails).
+      const ipRl = await rateLimiter.check(loginIpKey(ip), 20, 900);
+      if (!ipRl.allowed) {
+        return reply.code(429).send({
+          request_id: requestId,
+          error: { code: 'RATE_LIMITED', message: 'Too many login attempts. Please try again later.' },
+        }).header('Retry-After', String(ipRl.retryAfter));
+      }
+    }
+
     try {
       const result = await authService.login(
         parsed.data.email,
         parsed.data.password,
-        request.ip ?? null,
+        ip,
         request.headers['user-agent'] ?? null,
         correlationId,
       );
+
+      // Success — reset failure counters.
+      if (rateLimiter) {
+        rateLimiter.reset(loginFailKeySync(parsed.data.email, ip)).catch(() => {});
+        rateLimiter.reset(loginIpKey(ip)).catch(() => {});
+      }
+
       return reply.send({
         request_id: requestId,
         access_token: result.accessToken,
+        refresh_token: result.refreshToken,
         token_type: 'bearer' as const,
         expires_in: result.expiresIn,
         user: {
@@ -149,6 +198,16 @@ export function registerAuthRoutes(
       });
     } catch (err) {
       if (err instanceof AuthError) {
+        // Increment failure counter on auth failure.
+        if (rateLimiter) {
+          const emailIpRl = await rateLimiter.check(loginFailKeySync(parsed.data.email, ip), 5, 900);
+          if (!emailIpRl.allowed) {
+            return reply.code(429).send({
+              request_id: requestId,
+              error: { code: 'RATE_LIMITED', message: 'Too many failed login attempts. Please try again later.' },
+            }).header('Retry-After', String(emailIpRl.retryAfter));
+          }
+        }
         // NN-5: same response for "user not found" and "wrong password".
         return reply.code(401).send({
           request_id: requestId,
@@ -159,7 +218,59 @@ export function registerAuthRoutes(
     }
   });
 
+  // ── POST /api/v1/auth/token/refresh (AC-1 — CSRF-exempt) ─────────────────
+  // Token-authenticated endpoint. The refresh token IS the credential.
+  // CSRF-exempt because it is not cookie-authenticated (added to exempt list in main.ts).
+  fastify.post('/api/v1/auth/token/refresh', async (request: FastifyRequest, reply: FastifyReply) => {
+    const requestId = randomUUID();
+    const correlationId = (request.headers['x-correlation-id'] as string) ?? requestId;
+
+    const body = request.body as { refresh_token?: string };
+    if (!body?.refresh_token) {
+      return reply.code(400).send({
+        request_id: requestId,
+        error: { code: 'MISSING_REFRESH_TOKEN', message: 'refresh_token is required.' },
+      });
+    }
+
+    // AC-3: Per-IP rate limit (30/15min — bounds replay-probing).
+    if (rateLimiter) {
+      const ip = request.ip ?? '0.0.0.0';
+      const rl = await rateLimiter.check(refreshIpKey(ip), 30, 900);
+      if (!rl.allowed) {
+        return reply.code(429).send({
+          request_id: requestId,
+          error: { code: 'RATE_LIMITED', message: 'Too many refresh attempts. Please try again later.' },
+        }).header('Retry-After', String(rl.retryAfter));
+      }
+    }
+
+    try {
+      const result = await authService.rotateRefreshToken(
+        body.refresh_token,
+        request.ip ?? null,
+        request.headers['user-agent'] ?? null,
+        correlationId,
+      );
+      return reply.send({
+        request_id: requestId,
+        access_token: result.accessToken,
+        refresh_token: result.refreshToken,
+        expires_in: result.expiresIn,
+      });
+    } catch (err) {
+      if (err instanceof AuthError) {
+        return reply.code(err.statusCode ?? 401).send({
+          request_id: requestId,
+          error: { code: err.code, message: err.message },
+        });
+      }
+      throw err;
+    }
+  });
+
   // ── POST /api/v1/auth/logout (protected — requires session) ──────────────
+  // ?scope=all → revoke all sessions for the user (AC-2).
   fastify.post(
     '/api/v1/auth/logout',
     {
@@ -169,8 +280,10 @@ export function registerAuthRoutes(
       const requestId = randomUUID();
       const correlationId = (request.headers['x-correlation-id'] as string) ?? requestId;
       const auth = (request as AuthenticatedRequest).auth;
+      const query = request.query as { scope?: string };
+      const scopeAll = query.scope === 'all';
 
-      await authService.logout(auth.jti, auth.userId, correlationId);
+      await authService.logout(auth.jti, auth.userId, correlationId, scopeAll);
       // Clear the httpOnly session cookie (set by the BFF session route) so the browser
       // holds no stale, now-revoked token after logout.
       (reply as unknown as { clearCookie(name: string, opts?: { path?: string }): unknown }).clearCookie(
@@ -183,6 +296,8 @@ export function registerAuthRoutes(
 
   // ── POST /api/v1/auth/forgot-password ─────────────────────────────────────
   // NN-5: always 200 with content-identical body.
+  // AC-3: rate limited per email (5/hour).
+  // MA-04: fire-and-forget in service layer (no timing oracle).
   fastify.post('/api/v1/auth/forgot-password', async (request: FastifyRequest, reply: FastifyReply) => {
     const requestId = randomUUID();
     const correlationId = (request.headers['x-correlation-id'] as string) ?? requestId;
@@ -193,7 +308,16 @@ export function registerAuthRoutes(
       return reply.send({ request_id: requestId, ...FORGOT_PASSWORD_RESPONSE });
     }
 
-    // Fire-and-forget — result is always the same (NN-5).
+    // AC-3: Rate limit by email (5/hour). Fail-open on Redis error.
+    if (rateLimiter) {
+      const rl = await rateLimiter.check(forgotPasswordKey(parsed.data.email), 5, 3600);
+      if (!rl.allowed) {
+        // NN-5: still return 200 (don't leak whether the account exists by rate-limit response).
+        return reply.send({ request_id: requestId, ...FORGOT_PASSWORD_RESPONSE });
+      }
+    }
+
+    // Fire-and-forget — result is always the same (NN-5 / MA-04).
     authService.forgotPassword(parsed.data.email, correlationId).catch((err) => {
       console.error('[auth] forgotPassword error', { correlationId, err });
     });
@@ -219,7 +343,7 @@ export function registerAuthRoutes(
       return reply.send({ request_id: requestId, ok: true });
     } catch (err) {
       if (err instanceof AuthError) {
-        return reply.code(400).send({
+        return reply.code(err.statusCode ?? 400).send({
           request_id: requestId,
           error: { code: err.code, message: err.message },
         });
@@ -266,9 +390,6 @@ export function registerAuthRoutes(
 /**
  * Factory: Fastify preHandler that validates the JWT + checks session revocation.
  * NN-3: called on EVERY protected route — including BFF fan-out routes.
- *
- * The short token the BFF mints must carry the original jti so this handler
- * can check user_session.revoked_at IS NULL.
  */
 export function validateSessionPreHandler(authService: AuthService) {
   return async function validateSession(

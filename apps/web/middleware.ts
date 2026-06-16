@@ -10,10 +10,26 @@ import type { NextRequest } from 'next/server';
  * Cookie *presence* is a cheap gate (covers "not logged in"). A present-but-expired
  * cookie still reaches the page; the client-side RequireSession guard handles that
  * case by redirecting to /login when /me returns 401.
+ *
+ * Onboarding routing is status-driven (onboarding_status enum from BFF), not
+ * localStorage. Resume-after-crash lands on the correct step via server-side status.
+ *
+ * The ghost /invite step has been REMOVED (MA-10). Onboarding now has 4 steps:
+ *   Step 1: /workspace/new
+ *   Step 2: /brand/new
+ *   Step 3: /onboarding/integrations
+ *   Step 4: /onboarding/done
  */
 const SESSION_COOKIE = 'brain_session';
 
-const PROTECTED_PREFIXES = ['/dashboard', '/settings', '/workspace', '/brand'];
+const PROTECTED_PREFIXES = [
+  '/dashboard',
+  '/settings',
+  '/workspace',
+  '/brand',
+  '/onboarding',
+  '/select-org',
+];
 
 export function middleware(request: NextRequest): NextResponse {
   const { pathname } = request.nextUrl;

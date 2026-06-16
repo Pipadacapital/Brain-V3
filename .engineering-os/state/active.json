@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-06-15T19:30:00Z",
-  "updated_by": "platform-devops",
+  "updated_at": "2026-06-15T21:18:00Z",
+  "updated_by": "system",
   "active_requirements": [
     {
       "req_id": "chore-platform-foundations-sprint0",
@@ -59,7 +59,7 @@
         "lint": "18/18 PASS",
         "negative_controls": [
           "NN-1 three-GUC stub rejects no-context queries",
-          "NN-3 revoked session → false (SQL has revoked_at IS NULL)",
+          "NN-3 revoked session \u2192 false (SQL has revoked_at IS NULL)",
           "NN-5 argon2id params unit-tested (type=2, m=19456, t=2, p=1)",
           "NN-5 forgotPassword resolves void for both existing/non-existing email",
           "NN-5 different tokens produce different sha256 hashes",
@@ -67,19 +67,31 @@
         ]
       },
       "nn_status": {
-        "NN-1": "CLOSED — three-GUC two-arg in packages/db + all 6 migrations",
-        "NN-2": "CLOSED — secret_ref-only in contract + DDL",
-        "NN-3": "CLOSED — validateSession preHandler on every route + BFF",
-        "NN-5": "CLOSED — argon2id asserted + tested; timing-safe; sha256 tokens; single-use",
-        "NN-6": "CLOSED — audit WHERE brand_id mandatory",
-        "NN-7": "CLOSED — invite compound PERMISSIVE RLS",
-        "L-02": "CLOSED — sha256 hash-chain (replaces djb2 stub)"
+        "NN-1": "CLOSED \u2014 three-GUC two-arg in packages/db + all 6 migrations",
+        "NN-2": "CLOSED \u2014 secret_ref-only in contract + DDL",
+        "NN-3": "CLOSED \u2014 validateSession preHandler on every route + BFF",
+        "NN-5": "CLOSED \u2014 argon2id asserted + tested; timing-safe; sha256 tokens; single-use",
+        "NN-6": "CLOSED \u2014 audit WHERE brand_id mandatory",
+        "NN-7": "CLOSED \u2014 invite compound PERMISSIVE RLS",
+        "L-02": "CLOSED \u2014 sha256 hash-chain (replaces djb2 stub)"
       },
       "residuals": {
         "count": 11,
         "severity": "LOW only",
         "critical_high_medium": 0
       }
+    },
+    {
+      "req_id": "feat-access-onboarding-flow",
+      "status": "approved",
+      "stage": 8,
+      "current_owner": "platform-devops",
+      "title": "Access & Onboarding flow (registration, sign-in, 4-step onboarding, dashboard redirect)",
+      "run_dir": ".engineering-os/runs/2026-06-15T21-18-00Z__a7a965__feat-access-onboarding-flow__rishabhporwal",
+      "lineage": [
+        "feat-m1-app-foundation"
+      ],
+      "last_journal_entry_at": "2026-06-16T04:06:44Z"
     }
   ]
 }

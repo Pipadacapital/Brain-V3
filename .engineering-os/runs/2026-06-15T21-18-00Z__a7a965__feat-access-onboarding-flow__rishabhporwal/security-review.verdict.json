@@ -1,0 +1,93 @@
+{
+  "agent": "security-reviewer",
+  "stage": 4,
+  "req_id": "feat-access-onboarding-flow",
+  "verdict": "PASS",
+  "review_mode": "DELTA-R2",
+  "reviewed_at": "2026-06-16T04:15:00Z",
+  "gates": {
+    "no_critical": true,
+    "no_high": true,
+    "compliance_clean": true,
+    "traceability_ok": true,
+    "b1_b2_regressed": false,
+    "isolation_preserved": true
+  },
+  "findings": [
+    {
+      "id": "SEC-AOF-H1",
+      "severity": "HIGH",
+      "status": "RESOLVED",
+      "title": "POST /bff/session/set-org did not 403 on non-member org",
+      "file": "apps/core/src/modules/frontend-api/internal/bff.routes.ts:302-316",
+      "resolution": "MembershipRepository.findByUserAndOrg() called BEFORE refreshSession(); null → 403 FORBIDDEN. Live-proven in DELTA-R1 and regression-confirmed in DELTA-R2: non-member UUID → HTTP 403 FORBIDDEN."
+    },
+    {
+      "id": "SEC-AOF-L1",
+      "severity": "HIGH",
+      "status": "RESOLVED",
+      "was_severity": "LOW",
+      "escalation_reason": "Bounce-fix r2 introduced parameterized SET LOCAL $1 (invalid Postgres syntax, 42601). Bounced at DELTA-R1.",
+      "title": "rotateRefreshToken family-wipe: SET LOCAL $1 replaced with set_config()",
+      "file": "apps/core/src/modules/workspace-access/internal/application/auth.service.ts:410-413",
+      "resolution": "rawClient.query(\"SELECT set_config('app.current_user_id', $1, true)\", [row.app_user_id]) at line 411. LIVE-PROVEN: replay RT1 (after RT0→RT1→RT2 rotation) → HTTP 401 SESSION_REVOKED (not 500). DB: 3/3 sessions revoked (rowcount>1). LIVE-PG-1/2/3 tests all pass against real Postgres under SET ROLE brain_app. Unit test non-inert: asserts set_config string present before family-wipe SQL; fails if removed. Grep confirms zero remaining parameterized SET LOCAL in apps/core/src."
+    },
+    {
+      "id": "SEC-AOF-N1",
+      "severity": "MED",
+      "status": "RESOLVED",
+      "was_status": "OPEN",
+      "title": "/bff/session rate limiter double-counts loginFailKey — effective limit 2 not 5",
+      "file": "apps/core/src/modules/frontend-api/internal/bff.routes.ts:138-213",
+      "resolution": "loginFailKey moved to catch-only (line 201); loginIpKey at entry only (line 144); both reset on success (lines 165-166). LIVE-PROVEN: 4 failed attempts → correct password → HTTP 200. Trips at 5 failures (429 on 6th attempt). Mirrors auth.routes.ts pattern exactly."
+    },
+    {
+      "id": "SEC-AOF-M1",
+      "severity": "MED",
+      "status": "RESOLVED",
+      "title": "PATCH/DELETE /members used inverted org fallback",
+      "file": "apps/core/src/modules/workspace-access/internal/interfaces/rest/member.routes.ts:184-195,239-248",
+      "resolution": "RESOLVED in DELTA-R1. Code verified DELTA-R2: mismatch guard present on both routes."
+    },
+    {
+      "id": "SEC-AOF-M2",
+      "severity": "MED",
+      "status": "RESOLVED",
+      "title": "Misleading CSRF-exempt comment on set-org route",
+      "file": "apps/core/src/modules/frontend-api/internal/bff.routes.ts:278-279",
+      "resolution": "RESOLVED in DELTA-R1. Comment corrected: CSRF IS enforced. Verified DELTA-R2."
+    },
+    {
+      "id": "SEC-AOF-M3",
+      "severity": "MED",
+      "status": "RESOLVED",
+      "title": "DOWN migrations absent; rollback path undocumented",
+      "file": "db/migrations/0010_brand_locale.sql,0011_onboarding_state.sql,0012_session_rotation_lineage.sql",
+      "resolution": "RESOLVED in DELTA-R1. MANUAL ROLLBACK PROCEDURE blocks added to all three migration files."
+    },
+    {
+      "id": "SEC-AOF-CRIT-B1",
+      "severity": "CRITICAL",
+      "status": "RESOLVED",
+      "title": "MA-01: Refresh token rotation (was absent in FULL review)",
+      "resolution": "RESOLVED FULL review. Replay path confirmed DELTA-R2 LIVE: RT0→RT1→RT2→replay-RT1 → 401 SESSION_REVOKED, 3/3 sessions revoked."
+    },
+    {
+      "id": "SEC-AOF-CRIT-B2",
+      "severity": "CRITICAL",
+      "status": "RESOLVED",
+      "title": "MA-02: Session revocation not wired into removeMember/updateMemberRole",
+      "resolution": "RESOLVED FULL review. B-2 regression check DELTA-R2: happy-path rotation still PASS."
+    }
+  ],
+  "bounce_findings": [],
+  "b1_b2_regression": {
+    "b1_happy_path": "PASS — rotation RT0→RT1 returns 200 + new pair",
+    "b1_replay_family_wipe": "PASS — replay RT1 → 401 SESSION_REVOKED; DB: 3/3 sessions revoked (rowcount>1). LIVE-PG-2/3 green.",
+    "b2_revoke_all": "PASS — not regressed; prior proof intact"
+  },
+  "family_wipe_live": "replay RT1 → HTTP 401 SESSION_REVOKED; DB rowcount=3 (>1); LIVE-PG-2 wipeCount>1 under SET ROLE brain_app + set_config",
+  "isolation_preserved": true,
+  "critical_high_open": 0,
+  "summary": "PASS. Both bounced findings resolved and live-proven. SEC-AOF-L1/QA-08: set_config('app.current_user_id',$1,true) at auth.service.ts:411. Replay path returns 401 SESSION_REVOKED (not 500). DB: 3 sessions revoked (rowcount>1). LIVE-PG-1/2/3 all pass against real Postgres under brain_app NOBYPASSRLS role. Unit test is non-inert (asserts set_config string presence and ordering). Zero remaining parameterized SET LOCAL in apps/core/src. SEC-AOF-N1: loginFailKey single-counted (catch only); success resets both keys; 4 fails then correct pwd → 200; trips at 5 failures. All 9 previously-closed findings remain closed. Tenant isolation (P0) preserved. 74/74 tests pass."
+}

@@ -31,12 +31,6 @@ export interface RegisterRequest {
   full_name: string;
 }
 
-export interface RegisterResponse {
-  user_id: string;
-  email: string;
-  message: string; // "Check your email to verify your account"
-}
-
 export interface VerifyEmailRequest {
   token: string;
 }
@@ -46,6 +40,14 @@ export interface LoginRequest {
   password: string;
 }
 
+/** Onboarding status enum — authoritative for wizard routing (replaces needs_onboarding boolean). */
+export type OnboardingStatus =
+  | 'pending'
+  | 'org_created'
+  | 'brand_created'
+  | 'integration_selected'
+  | 'complete';
+
 export interface LoginResponse {
   request_id: string;
   user: {
@@ -54,12 +56,15 @@ export interface LoginResponse {
     email_verified: boolean;
   };
   expires_in: number;
-  needs_onboarding: boolean;
+  /** Replaces needs_onboarding: boolean. null = no org membership yet. */
+  onboarding_status: OnboardingStatus | null;
   auth: {
-    brandId: string | null;
-    workspaceId: string | null;
+    brand_id: string | null;
+    workspace_id: string | null;
     role: string | null;
   };
+  /** Populated on login when the user belongs to >1 org. */
+  orgs?: Array<{ id: string; name: string; slug: string }>;
 }
 
 export interface ForgotPasswordRequest {
@@ -111,7 +116,14 @@ export interface CreateBrandRequest {
   workspace_id: string;
   display_name: string;
   domain?: string;
+  /** Derived server-side from currency_code; send if known but server overrides. */
   region_code?: string;
+  /** ISO 4217 currency code — bounded allowlist: INR | AED | SAR. */
+  currency_code?: 'INR' | 'AED' | 'SAR';
+  /** IANA timezone — bounded allowlist. */
+  timezone?: 'Asia/Kolkata' | 'Asia/Dubai' | 'Asia/Riyadh';
+  /** Revenue recognition definition — MA-12: 'placed' excluded. */
+  revenue_definition?: 'realized' | 'delivered';
 }
 
 export interface BrandResponse {
@@ -121,6 +133,9 @@ export interface BrandResponse {
   domain: string | null;
   status: 'active' | 'archived';
   region_code: string;
+  currency_code: string;
+  timezone: string;
+  revenue_definition: string;
   created_at: string;
   updated_at: string;
 }
@@ -274,10 +289,47 @@ export interface WorkspaceListResponse {
 
 export interface SessionRefreshResponse {
   request_id: string;
-  needs_onboarding: boolean;
+  /** Replaces needs_onboarding: boolean. null = no org membership yet. */
+  onboarding_status: OnboardingStatus | null;
   auth: {
-    brandId: string | null;
-    workspaceId: string | null;
+    brand_id: string | null;
+    workspace_id: string | null;
     role: string | null;
   };
+}
+
+// ── BFF set-org ───────────────────────────────────────────────────────────────
+
+export interface SetOrgRequest {
+  organization_id: string;
+}
+
+export interface SetOrgResponse {
+  request_id: string;
+  onboarding_status: OnboardingStatus | null;
+  auth: {
+    brand_id: string | null;
+    workspace_id: string | null;
+    role: string | null;
+  };
+}
+
+// ── Onboarding advance ────────────────────────────────────────────────────────
+
+export interface OnboardingAdvanceRequest {
+  to: 'integration_selected' | 'complete';
+}
+
+export interface OnboardingAdvanceResponse {
+  onboarding_status: OnboardingStatus;
+}
+
+// ── Register (with INVITE_PENDING extension) ──────────────────────────────────
+
+export interface RegisterResponse {
+  user_id: string;
+  email: string;
+  message: string;
+  /** Backend returns this when the email has a pending invite. */
+  code?: 'INVITE_PENDING';
 }

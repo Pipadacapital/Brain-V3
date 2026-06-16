@@ -133,14 +133,11 @@ export function DashboardCreateBrandDialog({ open, onOpenChange }: DashboardCrea
     setSubmitError(null);
     try {
       // Step 1: create the brand.
+      // SEC MB-1/MB-3: workspace_id is derived server-side from the session JWT
+      // (auth.workspaceId on POST /v1/brands). Do NOT send it from the client —
+      // sending a client-controlled workspace_id allows cross-org brand creation
+      // by spoofing a different org's id while holding a different-org session.
       const newBrand = await brandApi.create({
-        // workspace_id is derived server-side from the active session (the BFF reads
-        // auth.workspaceId from the JWT) — not passed explicitly here.
-        // > ASSUMPTION: /v1/brands POST derives workspace_id from the session JWT.
-        // This matches the existing CreateBrandForm which reads it from the workspaces list
-        // but passes it in the body. If the endpoint requires it, the caller must supply it.
-        // We read the workspace id from the queryClient cache (workspace list) if available.
-        workspace_id: getActiveWorkspaceId(queryClient) ?? '',
         display_name: values.display_name,
         domain: values.domain || undefined,
         currency_code: values.currency_code,
@@ -403,20 +400,6 @@ export function DashboardCreateBrandDialog({ open, onOpenChange }: DashboardCrea
   );
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
-/**
- * Read the first workspace id from the TanStack Query cache (workspace list).
- * Used to populate workspace_id in the create-brand request body.
- * Returns null if the cache is empty (e.g. on first load).
- *
- * > ASSUMPTION: /v1/brands POST requires workspace_id in the body (consistent with
- *   CreateBrandForm which reads it from workspaceApi.list). The BFF could also derive
- *   it from the session JWT — if that changes, this helper becomes a no-op.
- */
-function getActiveWorkspaceId(queryClient: ReturnType<typeof useQueryClient>): string | null {
-  const data = queryClient.getQueryData<{
-    workspaces?: Array<{ id: string }>;
-  }>(['workspace', 'list']);
-  return data?.workspaces?.[0]?.id ?? null;
-}
+// SEC MB-3: getActiveWorkspaceId() removed. The backend derives workspace_id from the
+// session JWT (auth.workspaceId) on POST /v1/brands — no client-side workspace resolution
+// is needed or safe. Sending workspace_id from the client would allow cross-org spoofing.

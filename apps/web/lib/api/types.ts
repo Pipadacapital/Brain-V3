@@ -113,7 +113,11 @@ export interface WorkspaceResponse {
 // ── Brand ────────────────────────────────────────────────────────────────────
 
 export interface CreateBrandRequest {
-  workspace_id: string;
+  /** SEC MB-1/MB-3: workspace_id is now derived server-side from the session JWT
+   *  (auth.workspaceId). Do NOT send it from the client — the backend ignores any
+   *  body value and uses the JWT-scoped workspace instead. Field kept as optional
+   *  for backward compat with any existing callers, but MUST NOT be populated. */
+  workspace_id?: string;
   display_name: string;
   domain?: string;
   /** Derived server-side from currency_code; send if known but server overrides. */

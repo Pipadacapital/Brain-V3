@@ -28,6 +28,16 @@ export function registerBrandRoutes(
       const correlationId = (request.headers['x-correlation-id'] as string) ?? requestId;
       const auth = (request as AuthenticatedRequest).auth;
 
+      // SEC MB-1: workspaceId MUST come from the authenticated JWT (auth.workspaceId),
+      // never from the request body — prevents cross-org brand creation by spoofing
+      // workspace_id while holding a token scoped to a different org (MA-02 principle).
+      if (!auth.workspaceId) {
+        return reply.code(400).send({
+          request_id: requestId,
+          error: { code: 'MISSING_WORKSPACE', message: 'No active workspace in session. Set an org first.' },
+        });
+      }
+
       const parsed = CreateBrandRequestSchema.safeParse(request.body);
       if (!parsed.success) {
         return reply.code(422).send({
@@ -38,13 +48,21 @@ export function registerBrandRoutes(
       }
 
       try {
+        // SEC MB-1: organizationId sourced from auth.workspaceId (JWT), NOT parsed.data.workspace_id.
+        // The body workspace_id field is ignored — body.workspace_id must never govern which org
+        // a brand is created in. requestingRole is intentionally omitted: BrandService.create()
+        // re-derives role from the DB membership row (brand.service.ts:68), making any JWT-carried
+        // role claim irrelevant (and a potential confusion/injection vector).
         const brand = await brandService.create(
           {
-            organizationId: parsed.data.workspace_id,
+            organizationId: auth.workspaceId,
             displayName: parsed.data.display_name,
             domain: parsed.data.domain ?? null,
             requestingUserId: auth.userId,
-            requestingRole: (auth.role ?? 'analyst') as 'owner' | 'brand_admin' | 'manager' | 'analyst',
+            // SEC: requestingRole is authoritative from the DB membership row inside
+            // BrandService.create (brand.service.ts:68-70); pass a stub value —
+            // the service ignores it and re-checks against the actual membership.
+            requestingRole: 'analyst',
             currencyCode: parsed.data.currency_code,
             timezone: parsed.data.timezone,
             revenueDefinition: parsed.data.revenue_definition,

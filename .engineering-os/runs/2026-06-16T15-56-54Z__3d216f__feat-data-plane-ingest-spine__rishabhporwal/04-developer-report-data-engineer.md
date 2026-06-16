@@ -147,6 +147,107 @@ Tests assert `currentUser === 'brain_app'` and `currentUser !== 'brain'` before 
 
 ---
 
+---
+
+## BOUNCE r1 — 2026-06-16T21:00:00Z (Data Engineer delta fixes)
+
+### SR-01 fix — Raw Redis keys in test (lint gate)
+
+**Finding:** `no-raw-redis-key` (NN-7) ESLint rule flagged 3 template-literal Redis keys in `bronze.e2e.test.ts` at lines 114, 115, 217.
+
+**Fix:** Imported `buildDedupKey` from `../domain/bronze/DedupPolicy.js` and replaced all 3 call sites:
+- `redisClient.del(\`dedup:${BRAND_A}:${eventId}\`)` → `redisClient.del(buildDedupKey(BRAND_A, eventId))`
+- `redisClient.del(\`dedup:${BRAND_B}:${eventId}\`)` → `redisClient.del(buildDedupKey(BRAND_B, eventId))`
+- `redisClient.del(\`dedup:${BRAND_A}:${DEDUP_EVENT_ID}\`)` → `redisClient.del(buildDedupKey(BRAND_A, DEDUP_EVENT_ID))`
+
+**Proof:**
+```
+> @brain/stream-worker@0.0.0 lint
+> eslint .
+[exit 0, 0 errors]
+```
+
+**Commit:** `3567196`
+
+---
+
+### F-QA-02 fix — Avro schema path ENOENT
+
+**Finding:** `join(__dirname, '../../../../packages/contracts/...')` resolved outside the monorepo root when CWD was not the repo root. 4 levels up from `apps/collector/src/` overshoots to `Desktop/`.
+
+**Fix:** Replaced with `fileURLToPath(new URL('../../../packages/contracts/generated/avro/brain.collector.event.v1.avsc', import.meta.url))`. 3 levels up from the source file always resolves correctly regardless of CWD.
+
+**Proof:**
+```
+node -e "
+  const { URL, pathToFileURL, fileURLToPath } = require('url');
+  const url = pathToFileURL('/Users/rishabhporwal/Desktop/Brain V3/apps/collector/src/main.ts').href;
+  const path = fileURLToPath(new URL('../../../packages/contracts/generated/avro/brain.collector.event.v1.avsc', url));
+  console.log('exists:', require('fs').existsSync(path)); // true
+"
+# → exists: true
+
+> @brain/collector@0.0.0 typecheck
+> tsc --noEmit
+[exit 0]
+```
+
+**Commit:** `6e3fd83`
+
+---
+
+### F-QA-01 fix — Full-wire e2e test
+
+**Finding:** No single test exercised POST /collect → spool → drainer → Redpanda → stream-worker consumer → bronze_events as one chain.
+
+**Fix:** Added `apps/stream-worker/src/tests/pipeline-wire.e2e.test.ts`. The test:
+1. Spawns a real collector subprocess (`tsx`) on an OS-assigned port with `APICURIO_REGISTRY_URL=http://127.0.0.1:9` to fast-fail Apicurio (degrades gracefully per D-10) so the HTTP listener opens after ~32s backoff.
+2. POSTs to `POST /collect` via real TCP (`http.request`), verifies `HTTP 200 + {accepted: true}`.
+3. Polls `collector_spool` (superuser pool) until `status='drained'` — confirms drainer produced to Redpanda.
+4. Starts `CollectorEventConsumer` in-process, polls `bronze_events` under `brain_app + correct-brand GUC`.
+5. Asserts `event_id` arrived, `current_user='brain_app'` (not 'brain'), and wrong-brand GUC → 0 rows (RLS negative control).
+Skips gracefully if Redpanda/PG/Redis are unreachable. `vitest hookTimeout/testTimeout` raised to 120s.
+
+**Proof — test output (real run):**
+```
+[pipeline-wire.e2e] collector ready on port 64956
+[pipeline-wire.e2e] POST /collect event_id=7b7618ab-7a3d-428f-99b2-25e7be4d2d4b
+[pipeline-wire.e2e] spool_id=14
+[drainer] drained 1 event(s)
+[stream-worker] written brand=aaaa1111-aaaa-4aaa-8aaa-111111111111 event=7b7618ab-7a3d-428f-99b2-25e7be4d2d4b partition=0 offset=13
+[pipeline-wire.e2e] spool row drained — event produced to Redpanda
+[pipeline-wire.e2e] bronze_events row found: event_id=7b7618ab-7a3d-428f-99b2-25e7be4d2d4b current_user=brain_app
+[pipeline-wire.e2e] RLS negative control: wrong-brand GUC → 0 rows (expected 0)
+ ✓ event travels end-to-end: POST /collect → spool(drained) → Redpanda → stream-worker → bronze_events under brain_app 328ms
+ Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+**Commit:** `dcf2d55`
+
+---
+
+### F-QA-03 fix — DLQ unit test
+
+**Finding:** DLQ routing path (MAX_RETRY=5 → DLQ produce → offset commit) not covered by any test.
+
+**Fix:** Added `apps/stream-worker/src/tests/dlq.unit.test.ts`. Mocks `ProcessEventUseCase.execute` to throw on every call, delivers the same (partition=0, offset=42) message 5 times, and asserts:
+- Offset NOT committed on attempts 1-4 (D-7)
+- DLQ message produced to `dev.collector.event.v1.dlq` with `x-dlq-reason=max_retry_exceeded` header on attempt 5
+- Offset committed to '43' AFTER DLQ produce (D-7)
+No live infra required.
+
+**Proof:**
+```
+ ✓ CollectorEventConsumer — DLQ routing (F-QA-03) > routes message to DLQ after MAX_RETRY=5 BronzeRepository errors and commits offset
+[stream-worker] DLQ (max retry) partition=0 offset=42
+ Test Files  1 passed (1) / Tests  1 passed (1) / Duration  168ms
+```
+
+**Commit:** `0fb9119`
+
+---
+
 ## In-Lane DoD Checklist
 
 - [x] Pipeline tenant-keyed end to end: `brand_id` in Redis dedup key prefix, bronze_events RLS, Postgres PK.

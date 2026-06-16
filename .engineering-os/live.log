@@ -436,3 +436,47 @@ Installed 4 packages in 7ms
 2026-06-16T20:25:00Z [backend-developer S3] feat-data-plane-ingest-spine Track B COMPLETE. Slice 1 (0b1a342): F-6 ingest_at→ingested_at + F-1 string ISO-8601 + 0015_collector_spool + 0016_bronze_events (RLS FORCE NN-1). Slice 2 (b25f51c): DDD collector edge — AcceptEventUseCase stamp+INSERT only; DrainEventsUseCase separate setInterval; Apicurio backoff degrade-dont-crash. Slice 3 (2da8f73): 5/5 tests PASS — ACK ordering proven (code structure + test); Redpanda-down durability proven (dead broker → spool holds → live broker → drained). typecheck: @brain/contracts/@brain/events/@brain/collector EXIT 0. READY-FOR-SECURITY.
 
 2026-06-16T20:23:00Z [data-engineer] feat-data-plane-ingest-spine Stage-3 Track-A COMPLETE. Slice 1: migration 0016_bronze_events applied (FORCE RLS + two-arg NN-1 + INSERT/SELECT brain_app, verified under SET ROLE brain_app). Slice 2: stream-worker pipeline (consume→Zod-validate→Redis-NX-dedup→BronzeRepository INSERT under brain_app+set_config GUC→commit-offset-after-write; DLQ after MAX_RETRY=5; autoCommit=false D-7). Slice 3: 4/4 live tests PASS (e2e, Redis-NX dedup, PK-backstop, isolation neg-ctrl current_user=brain_app not brain). typecheck EXIT 0. Commits: 0b1a342 (slice1), 69f5892 (slice2), 258c258 (slice3). READY-FOR-SECURITY+QA.
+16:25:51Z [heartbeat] engineering-os:backend-developer S3 ? returned
+16:25:51Z [heartbeat] engineering-os:data-engineer S3 ? returned
+16:27:04Z [heartbeat] engineering-os:security-reviewer S4 ? issued
+16:27:19Z [heartbeat] engineering-os:qa-agent S5 ? issued
+
+## 2026-06-16T20:32:00Z — Security Reviewer — feat-data-plane-ingest-spine
+**Stage:** 4 · **Mode:** FULL · **Verdict:** BOUNCE (FAIL)
+**Findings:** CRIT=0 / HIGH=1 (SR-01) / MED=2 (SR-02, SR-03) / LOW=1 (SR-04) / INFO=1 (SR-05)
+**Scanners:** FULL — ESLint (NN-7 raw-redis-key: 3 errors in test file), live psql RLS proofs (3 controls), live test runs (stream-worker 4/4, collector 5/5)
+**Bronze isolation proof:** PASS — SET ROLE brain_app; no-GUC→0, wrong-brand-GUC→0, correct-brand-GUC→1 (all live)
+**Accept-before-validate:** CONFIRMED — import structure + ESLint clean on collector
+**Durability real:** YES — dead broker TCP refused; spool holds; live broker drains
+**Dedup/offset ordering:** OK — Redis NX + PK backstop + autoCommit=false manual commit after outcome
+**Blocking:** SR-01 HIGH — NN-7 ESLint violation in test cleanup (3 raw Redis key constructions; lint gate fails)
+**Next:** BOUNCE → backend-developer or data-engineer fixes SR-01 (3 lines in bronze.e2e.test.ts cleanup), notes SR-02/SR-03 as tech-debt; DELTA re-review to verify SR-01 fixed only
+16:36:20Z [heartbeat] engineering-os:security-reviewer S4 ? returned
+
+## 2026-06-16T16:35:00Z — QA Engineer — Stage 5 — feat-data-plane-ingest-spine
+**Mode:** FULL | **Verdict:** FAIL (1 blocking finding)
+**Tests Run:**
+- typecheck @brain/contracts → EXIT 0
+- typecheck @brain/events → EXIT 0
+- typecheck @brain/collector → EXIT 0
+- typecheck @brain/stream-worker → EXIT 0
+- contract tests 8/8 PASS
+- migration 0015 + 0016 verified (FORCE RLS, two-arg policy, correct grants)
+- durability tests 5/5 PASS (dead broker real: localhost:19999)
+- stream-worker e2e 4/4 PASS (under brain_app, not brain superuser)
+- real-network smoke PASS (collector port 3099, POST /collect → 200, spool row id=13 confirmed)
+- validity_check EXIT 0 (anti-pattern: clean; negative_control: 3 probes captured)
+**Isolation negative-control:** wrong-brand-GUC→0, no-GUC→0, superuser-proof captured. currentUser='brain_app' asserted in tests.
+**Blocking:** F-QA-01 — no full-wire E2E test (HTTP→spool→drainer→Kafka→consumer→bronze as one test)
+**Non-blocking:** F-QA-02 Apicurio path resolution bug, F-QA-03 DLQ untested, F-QA-04 timeout warning, F-QA-05 rate limit M2 deferred
+**Next:** bounce to data-engineer + backend-developer (add pipeline.e2e.test.ts + fix Apicurio path)
+16:39:14Z [heartbeat] engineering-os:qa-agent S5 ? returned
+16:40:08Z [heartbeat] engineering-os:data-engineer S3 ? issued
+2026-06-16T21:02:00Z [data-engineer] S3 BOUNCE-r1 complete — SR-01+F-QA-01+F-QA-02+F-QA-03 fixed
+  SR-01 (HIGH): buildDedupKey() replaces 3 raw template-literal Redis keys; lint EXIT 0 (commit 3567196)
+  F-QA-02 (LOW): Avro schema path fixed via import.meta.url (3→not 4 levels up); ENOENT resolved (commit 6e3fd83)
+  F-QA-01 (MED): pipeline-wire.e2e.test.ts — real subprocess collector + in-process consumer; full wire GREEN: POST /collect → spool=drained → Redpanda → stream-worker written → bronze_events current_user=brain_app → wrong-brand 0 rows (commit dcf2d55)
+  F-QA-03 (LOW): dlq.unit.test.ts — MAX_RETRY=5 → DLQ produce + offset commit verified (commit 0fb9119)
+  typecheck: @brain/stream-worker EXIT 0; @brain/collector EXIT 0
+  prior 4/4 bronze.e2e.test.ts still PASS
+  Intended state: stage 3 owner security+qa delta re-review; READY-FOR-SECURITY + READY-FOR-QA

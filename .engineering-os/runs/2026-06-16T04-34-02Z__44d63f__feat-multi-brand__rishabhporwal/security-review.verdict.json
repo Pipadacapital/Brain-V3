@@ -2,49 +2,68 @@
   "stage": 4,
   "agent": "security-reviewer",
   "req_id": "feat-multi-brand",
-  "verdict": "FAIL",
+  "scope": "delta",
+  "verdict": "PASS",
   "findings": [
     {
       "id": "SEC-MB-1",
       "severity": "HIGH",
       "title": "POST /v1/brands — workspace_id from request body, not JWT; session-workspace binding missing",
-      "file": "apps/core/src/modules/workspace-access/internal/interfaces/rest/brand.routes.ts:43",
-      "detail": "organizationId is set from parsed.data.workspace_id (request body), not from auth.workspaceId (JWT). A user who holds owner/brand_admin membership in both org-A and org-B can send a POST /v1/brands with workspace_id=org-B while their session JWT binds them to org-A. The membership check in BrandService.create (brand.service.ts:68) uses the body-derived organizationId as the lookup key, so it correctly gates membership — but it grants membership in the body-specified org regardless of which org the session is currently scoped to. This violates the MA-02 workspace-binding principle: the session workspace context (auth.workspaceId) must govern which workspace a mutation targets. Fix: replace parsed.data.workspace_id with auth.workspaceId at brand.routes.ts:43 and validate body.workspace_id === auth.workspaceId (or remove it from the body schema entirely). Additionally, auth.role (JWT claim, line 47) is passed to BrandService.create as requestingRole but the service ignores this value and re-derives role from the DB membership row (brand.service.ts:69) — so role enforcement is sound, but the unused parameter is a confusion hazard.",
-      "status": "open"
+      "file": "apps/core/src/modules/workspace-access/internal/interfaces/rest/brand.routes.ts:58",
+      "status": "resolved",
+      "detail": "FIXED in commit bcfee81. organizationId now sourced from auth.workspaceId (JWT) at line 58, not from parsed.data.workspace_id. A MISSING_WORKSPACE 400 guard was added at line 34 before schema parse, mirroring set-brand. The dead requestingRole JWT-claim pass-through was replaced with a stub 'analyst' constant and a SEC comment documenting that BrandService.create ignores it and re-derives role from the DB membership row. Grepped 'parsed.data.workspace_id' in brand.routes.ts: only comment references remain (lines 51-52), no live code reads. Exploit closed: a session scoped to org-X can no longer create a brand in org-Y by passing Y in the body — the body value is discarded and auth.workspaceId governs."
     },
     {
       "id": "SEC-MB-2",
       "severity": "MED",
-      "title": "brand_self_read PERMISSIVE OR — brand-A row readable in brand-B session via switcher list (intentional design, undocumented in policy header)",
-      "file": "db/migrations/0013_brand_self_read.sql:28",
-      "detail": "brand_self_read is PERMISSIVE and ORs with brand_isolation (0004, PERMISSIVE FOR ALL). A brand-B session (GUC=B) can read brand-A rows from the `brand` table because brand_self_read's membership subquery returns all member-brands in the active org. This is the correct intended behavior for the switcher list (documented in the migration header and architecture plan). However, the pg_policies `qual` for brand_self_read does not explicitly state that cross-brand reads on the `brand` table are intentional — a future developer auditing the policies might incorrectly conclude this is a leakage path. The isolation-fuzz AC-7 test at pg.test.ts:564 acknowledges this (expect(brandRowCount).toBeGreaterThanOrEqual(0)) but does not assert a specific value — a positive assertion that brand-A IS visible to a brand-B session on the `brand` table would make the intent explicit and prevent a false-positive finding in future reviews. This is a documentation/test-clarity finding; the isolation itself is correct for `connector_instance` and all other brand-scoped tables (proven by AC-7 fuzz run: 0 rows).",
-      "status": "open"
+      "title": "AC-7 brand-table assertion was a tautology (toBeGreaterThanOrEqual(0))",
+      "file": "tools/isolation-fuzz/src/pg.test.ts:600",
+      "status": "resolved",
+      "detail": "FIXED in commit bcfee81. Assertion changed from toBeGreaterThanOrEqual(0) to toBeGreaterThan(0) with a descriptive label: 'brand-A must be visible in brand-B session via brand_self_read (switcher design)'. The assertion is now protective: if brand_self_read (0013) were accidentally dropped, brandRowCount would be 0 and the test would fail. connector_instance cross-brand negative control (= 0 rows) is preserved. Isolation-fuzz 11/11 pass confirmed live."
     },
     {
       "id": "SEC-MB-3",
       "severity": "MED",
-      "title": "create-brand-dialog passes workspace_id from TanStack Query cache, not from the session JWT; cache-miss sends empty string",
-      "file": "apps/web/components/dashboard/create-brand-dialog.tsx:143",
-      "detail": "getActiveWorkspaceId(queryClient) reads the first workspace from the ['workspace', 'list'] cache and can return null on first load or in any fresh tab. When null, line 143 falls back to '' (empty string), which is sent as workspace_id to POST /v1/brands. The backend will then call findByUserAndOrg(userId, '', null, ctx) which will return null (no membership for empty-string workspace) → 403 FORBIDDEN with a confusing error. The correct fix is to source workspace_id from the session JWT (auth.workspaceId from useCurrentUser/bff-me) — the same source used by the set-brand route — rather than from the workspace list cache. This also aligns with the dependency the backend should have (SEC-MB-1 fix will enforce this). Low exploit risk (it just 403s) but creates a broken UX and confusing error path.",
-      "status": "open"
+      "title": "create-brand-dialog sends workspace_id from TanStack Query cache, not from session JWT",
+      "file": "apps/web/components/dashboard/create-brand-dialog.tsx:140",
+      "status": "resolved",
+      "detail": "FIXED in commit bcfee81. getActiveWorkspaceId() helper removed entirely. brandApi.create() call at line 140 no longer includes workspace_id in the request body. SEC comment added at line 136-139 and trailing comment at lines 403-406 documents the removal rationale. Grepped 'getActiveWorkspaceId' in create-brand-dialog.tsx: comment-only at line 403 (no live calls). workspace_id field made optional in CreateBrandRequest (apps/web/lib/api/types.ts) and CreateBrandRequestSchema (packages/contracts/src/api/brand.api.v1.ts) for backward compat — body value is ignored by the backend regardless."
     },
     {
       "id": "SEC-MB-4",
       "severity": "LOW",
-      "title": "audit.append order vs mintSessionToken: audit row written AFTER mint; inconsistency with comment claim",
+      "title": "Audit append order vs mintSessionToken: audit row written AFTER mint",
       "file": "apps/core/src/modules/workspace-access/internal/application/auth.service.ts:696",
-      "detail": "The code comment at line 693 states 'Audit (MA-09) — written after a successful membership+archived check', and it IS written after the mint (mintSessionToken is called at line 690, audit.append at line 696). The architecture plan §A2.7 states 'Audit written after successful membership+archived check' which is ambiguous about whether it comes before or after mintSessionToken. If mintSessionToken throws (e.g. JWTSignError) after audit.append, the audit entry records a brand.switch that the user's cookie will NOT reflect (the switch effectively did not happen from the user perspective). The plan acknowledges this as acceptable (matches existing pattern). Noted as LOW: it is a known trade-off, not a security defect, but the audit row will mislead forensics in the rare throw-after-audit case.",
-      "status": "open"
+      "status": "open",
+      "detail": "Not addressed in bounce fix — acknowledged as a known trade-off in the architecture plan. LOW severity; no remediation required in this release. The current ordering (mint then audit) is safe: if mint throws, the audit row is NOT written and the cookie is NOT updated, so no misleading audit entry is created. Forensic risk only arises if the order were reversed by a future refactor."
     },
     {
       "id": "SEC-MB-5",
       "severity": "INFO",
-      "title": "Pre-existing unit test failure: critical-paths.test.ts:143 expects expiresIn=900 but ACCESS_TOKEN_EXPIRY_SECS=3600",
-      "file": "apps/core/src/modules/workspace-access/internal/application/critical-paths.test.ts:143",
-      "detail": "Backend developer confirms this is pre-existing since fix/token-1h-expiry-logout on the base branch (git stash proof). Not introduced by feat-multi-brand. Does not affect isolation or brand-switch security. Noted for QA remediation.",
-      "status": "open"
+      "title": "Pre-existing test failure: critical-paths.test.ts expects expiresIn=900 but ACCESS_TOKEN_EXPIRY_SECS=3600",
+      "file": "apps/core/src/modules/workspace-access/tests/critical-paths.test.ts:143",
+      "status": "resolved",
+      "detail": "RESOLVED by the bounce fix: the 6 new switchBrandContext unit tests brought total to 22 tests, all passing. The developer report (BOUNCE r1 section, FIX 4) confirms the expiresIn=900 pre-existing failure was resolved in a prior commit (fix/token-1h-expiry-logout updated the assertion). All 22 tests pass per reported output: '✓ critical-paths.test.ts (22 tests) 7ms'."
     }
   ],
-  "blocking": true,
-  "ts": "2026-06-16T10:20:00Z"
+  "blocking": false,
+  "scope_creep_check": {
+    "new_endpoints": "none — bounce diff touches brand.routes.ts (fix only, no new route registered), bff.routes.ts not touched, no new route files",
+    "new_mcp_tools": "none",
+    "new_db_migrations": "none — db/ directory had no changes in git diff 9b87621..bcfee81",
+    "new_secrets": "test-only JWT signing secrets in test files (live-switch-brand-test-secret-32b!!, unit-switch-brand-secret-32bytes!!) — pre-existing test pattern, not production secrets",
+    "set_brand_path_unchanged": "bff.routes.ts not in bounce diff — MA-01 through MA-13 path unchanged, verified"
+  },
+  "evidence": {
+    "sec_mb_1_body_grep": "grep 'parsed.data.workspace_id' brand.routes.ts → 0 live code results (comment-only at lines 51-52)",
+    "sec_mb_1_auth_workspaceid": "brand.routes.ts:58 organizationId: auth.workspaceId confirmed by direct file read",
+    "sec_mb_1_missing_workspace_guard": "brand.routes.ts:34 'if (!auth.workspaceId)' → 400 MISSING_WORKSPACE confirmed",
+    "sec_mb_3_helper_removed": "grep 'getActiveWorkspaceId' create-brand-dialog.tsx → comment-only at line 403, no live calls",
+    "sec_mb_2_assertion_strengthened": "tools/isolation-fuzz/src/pg.test.ts:600 expect(brandRowCount, '...').toBeGreaterThan(0) confirmed",
+    "isolation_fuzz": "11/11 pg.test.ts tests PASS (live run, NOBYPASSRLS role, connector_instance cross-brand = 0 rows confirmed in stdout)",
+    "rls_policies": "pg_policies: brand_isolation (ALL) + brand_self_read (SELECT) confirmed live in running Postgres",
+    "bounce_diff_stat": "7 source files changed — brand.routes.ts, critical-paths.test.ts (new tests), switch-brand.live.test.ts (new file), create-brand-dialog.tsx, types.ts, brand.api.v1.ts, pg.test.ts — no new endpoints, migrations, or tools",
+    "test_validity": "switch-brand.live.test.ts negative controls are non-inert: doc confirms removing FORBIDDEN/BRAND_ARCHIVED guard causes LIVE-SB-4/LIVE-SB-3 to fail; live run under real Postgres session; NOBYPASSRLS role used in isolation-fuzz"
+  },
+  "ts": "2026-06-16T11:00:00Z"
 }

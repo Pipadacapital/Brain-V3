@@ -84,3 +84,29 @@
 4. E2E smoke happy-path only; invite-expiry + replay-attack flows unit-only — qa — M2
 
 **Migration deploy order (when infra exists):** migrate (0010→0011→0012) → core → web
+
+## 2026-06-16T11:00:00Z — Stakeholder — feat-multi-brand
+**Action:** Stakeholder approval received. status -> approved, stage 8. Deploy order: migrate(0013) -> core -> web. QA-3 + SEC-MB-4 accepted as tracked tech-debt.
+
+## 2026-06-16T11:30:00Z — Platform/SRE — feat-multi-brand
+**Stage:** 8 · **Affected:** db/migrations/0013, apps/core, apps/web · **Canary:** N/A (Phase-1 dev-only; Phase-4-deferred per ADR-010) · **Monitor:** N/A (Phase-1 dev-only)
+**Staging smoke:** Core liveness verified (localhost:3001/health ok); committed switch-brand.live 4/4 + isolation-fuzz 11/11 + critical-paths 22/22 are the bake-window proxy · **Next:** PR review + Stakeholder merge decision
+
+**Ship summary:**
+- Branch: `feat/multi-brand` (HEAD `58c425e`)
+- Commits: `9b87621` (Track B frontend) + `bcfee81` (BOUNCE r1 fixes) + `58c425e` (backend spine: 0013 + switchBrandContext + bff route + brand-summary)
+- Pushed to origin: NOT YET (branch is local; PR to be opened manually — gh CLI unauthenticated)
+- PR: NOT opened via CLI; manual URL: https://github.com/Rishabhporwal/Brain-V4/pull/new/feat/multi-brand
+- Phase-1 dev-only: no prod infra, no canary/bake monitor, no ArgoCD/EKS
+
+**Migrate-first ordering honored:** 0013 (`brand_self_read | SELECT` + `brand_isolation | ALL`) verified live in `brainv3-postgres-1` pg_policies before evaluating build gate. No re-apply needed (already applied). In real infra: Argo Workflow `migrate` job is prerequisite to ArgoCD `core` Application sync.
+
+**Build gate results:**
+- @brain/core typecheck: EXIT 0
+- @brain/web typecheck: EXIT 0
+- @brain/core build (tsc -b): EXIT 0
+- @brain/web build (next build, 21/21 pages): EXIT 0
+
+**Rollback handle:** `DROP POLICY brand_self_read ON brand` (additive, safe) + ArgoCD rollback `core` + `web` to prior revision. No data migration to reverse (I-E02 honored, 0013 is CREATE POLICY only).
+
+**Tech-debt carried:** QA-3 (audit_log.correlation_id, MED), SEC-MB-4 (audit-before-mint order comment, LOW), OTel trace instrumentation on auth routes (M2).

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-06-15T21:18:00Z",
-  "updated_by": "system",
+  "updated_at": "2026-06-16T11:00:00Z",
+  "updated_by": "stakeholder",
   "active_requirements": [
     {
       "req_id": "chore-platform-foundations-sprint0",
@@ -101,6 +101,44 @@
         "phase": "1-dev-only",
         "files_committed": 72,
         "ts": "2026-06-16T05:00:00Z"
+      }
+    },
+    {
+      "req_id": "feat-multi-brand",
+      "status": "shipped",
+      "stage": 8,
+      "current_owner": "platform-devops",
+      "title": "Multi-brand \u2014 create additional brands + brand switcher",
+      "run_dir": ".engineering-os/runs/2026-06-16T04-34-02Z__44d63f__feat-multi-brand__rishabhporwal",
+      "lineage": [
+        "feat-access-onboarding-flow"
+      ],
+      "last_journal_entry_at": "2026-06-16T11:30:00Z",
+      "lane": "high_stakes",
+      "pipeline": {
+        "bounces": 1,
+        "bounce_detail": "r1: security FAIL (SEC-MB-1 HIGH workspace-from-body) + qa FAIL (QA-1 no automated smoke, QA-2 0% unit) -> fixed bcfee81 -> both DELTA PASS",
+        "security": "DELTA PASS (0 blocking)",
+        "qa": "DELTA PASS (0 blocking)",
+        "final_review": "PASS / APPROVE",
+        "commits": [
+          "9b87621",
+          "bcfee81",
+          "58c425e"
+        ],
+        "deferred": [
+          "QA-3 audit_log.correlation_id (needs migration)",
+          "SEC-MB-4 audit-after-mint LOW"
+        ]
+      },
+      "ship": {
+        "branch": "feat/multi-brand",
+        "commit": "58c425e",
+        "pushed": false,
+        "pr": null,
+        "pr_note": "gh CLI unauthenticated; manual PR URL: https://github.com/Rishabhporwal/Brain-V4/pull/new/feat/multi-brand",
+        "phase": "1-dev-only",
+        "ts": "2026-06-16T11:30:00Z"
       }
     }
   ]

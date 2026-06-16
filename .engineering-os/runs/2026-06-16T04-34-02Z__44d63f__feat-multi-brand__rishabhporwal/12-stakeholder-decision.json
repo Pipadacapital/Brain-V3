@@ -1,0 +1,6 @@
+{
+  "decision": "approved",
+  "ts": "2026-06-16T11:00:00Z",
+  "actor": "stakeholder",
+  "note": "APPROVE — final review PASS, security+QA DELTA PASS (0 blocking), isolation independently re-proven (isolation-fuzz 11/11 NOBYPASSRLS, cross-brand read=0). Spine committed 58c425e. QA-3 (audit correlation_id) + SEC-MB-4 (audit-after-mint, LOW) accepted as tracked tech-debt. Deploy order: migrate 0013 -> core -> web."
+}

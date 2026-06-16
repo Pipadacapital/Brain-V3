@@ -1,0 +1,8 @@
+{
+  "ts": "2026-06-16T05:05:00Z",
+  "actor": "stakeholder",
+  "decisions": {
+    "SD-1_switch_route": "NEW ENDPOINT — POST /api/v1/bff/session/set-brand with {brand_id} body; membership-verified 3-arg check; distinct brand.switch audit event; re-mint session. Repoint the client's switchBrand to it.",
+    "SD-2_dashboard_focus": "ACTIVE-BRAND-FIRST — brand-summary reflects the currently-selected brand (name, currency, per-brand member count); switching updates it."
+  }
+}

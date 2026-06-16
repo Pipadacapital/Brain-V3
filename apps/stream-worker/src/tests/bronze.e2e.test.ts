@@ -28,6 +28,7 @@ import { Kafka, Producer } from 'kafkajs';
 import { ProcessEventUseCase } from '../application/ProcessEventUseCase.js';
 import { RedisDedupAdapter } from '../infrastructure/redis/RedisDedupAdapter.js';
 import { BronzeRepository } from '../infrastructure/pg/BronzeRepository.js';
+import { buildDedupKey } from '../domain/bronze/DedupPolicy.js';
 
 // ── Test configuration ────────────────────────────────────────────────────────
 
@@ -111,8 +112,8 @@ async function cleanup(eventIds: string[]): Promise<void> {
       [eventId],
     );
     // Clear Redis dedup keys for the test brands
-    await redisClient.del(`dedup:${BRAND_A}:${eventId}`);
-    await redisClient.del(`dedup:${BRAND_B}:${eventId}`);
+    await redisClient.del(buildDedupKey(BRAND_A, eventId));
+    await redisClient.del(buildDedupKey(BRAND_B, eventId));
   }
 }
 
@@ -214,7 +215,7 @@ describe('Dedup/replay: same event_id delivered twice → exactly one row', () =
     expect(first.outcome).toBe('written');
 
     // Manually delete Redis key (simulate key expiry / Redis restart)
-    await redisClient.del(`dedup:${BRAND_A}:${DEDUP_EVENT_ID}`);
+    await redisClient.del(buildDedupKey(BRAND_A, DEDUP_EVENT_ID));
 
     // Second write — Redis NX succeeds (key gone) but PK unique violation fires
     const second = await useCase.execute(rawValue, now);

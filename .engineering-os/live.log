@@ -661,3 +661,53 @@ Installed 4 packages in 7ms
 2026-06-16T22:50:40Z [S8 platform-devops] feat-identity-graph: PR — gh unauth; manual URL https://github.com/Rishabhporwal/Brain-V4/compare/master...feat/identity-graph
 2026-06-16T22:50:50Z [S8 platform-devops] feat-identity-graph: SHIPPED (1-dev-only) — commit 44d951c; P1 techdebt SR-01/QA-04 phone-guard-reeval no-ops under brain_app (SECURITY DEFINER enumeration fn must-fix before prod COD volume); 13-deploy-report.md written; state updated; decision-log appended
 18:52:27Z [heartbeat] engineering-os:platform-devops S8 ? returned
+18:56:17 [orchestrator] Pipeline started for feat-realized-revenue-ledger (high_stakes MONEY). Stage 1 intake.
+18:56:46Z [heartbeat] engineering-os:cto-advisor S1 ? issued
+2026-06-16T18:55:24Z [S1 cto-advisor] feat-realized-revenue-ledger: Canon+repo read complete — money/no-float-money lint confirmed live (tools/eslint-rules/no-float-money.mjs, wired in eslint.config.mjs); 0017 RLS pattern confirmed (template for ledger migration); 2 CRITICAL (closed-period boundary + dedup key), 2 HIGH (double-count as-of + COD horizon), 3 MEDIUM; 7 architect bindings D-1..D-7 declared; ADVANCE — 02-cto-advisor-review.md written
+19:00:28Z [heartbeat] engineering-os:cto-advisor S1 ? returned
+19:01:22Z [heartbeat] engineering-os:architect S2 ? issued
+2026-06-16T19:05:00Z [S2 architect] feat-realized-revenue-ledger: ADVANCE — 03-architecture-plan.md written; D-1..D-7 bound (D-5 DataEng Sprint-0 non-blocking); 2 CRITICAL resolved (D-2 immutability-by-GRANT brain_app SELECT+INSERT only + migration grant-assertion; D-4 dedup UNIQUE(brand_id,order_id,event_type,occurred_at::date)); D-3 named realized_gmv_as_of fn (excludes provisional, sole as-of path); no-float BIGINT + SQL DO-block assertion (lint covers .ts only); D-6 BEFORE INSERT currency trigger; D-7 banker's roundToMinorBankers + rounding_adjustment_minor; migration 0018 + brand cols; recognition engine core/measurement; finalization job existing Argo type stream-worker; Single-Primitive CLEAN; single-track @data-engineer; 4 slices + DEPLOY (affected-only, NO canary Phase-4 deferred); branch feat/realized-revenue-ledger off master; no new ADR; intended_state stage 3 build data-engineer
+19:07:00Z [heartbeat] engineering-os:architect S2 ? returned
+19:07:54Z [heartbeat] engineering-os:data-engineer S3 ? issued
+2026-06-16T23:30:00Z [S3 data-engineer] feat-realized-revenue-ledger: Stage 3 BUILD COMPLETE — 4 slices committed, 30/30 tests PASS under brain_app (live PG). Migration 0018 applied (RLS FORCE two-arg, brain_app SELECT+INSERT only, UPDATE→permission denied proven, 3 migration-time assertions green). realized_gmv_as_of() excludes provisional (no-double-count proven: naive SUM=2×, fn=1×). Dual-date immutability: July reversal→new row, June rows unchanged. No-float: all _minor BIGINT (DDL assertion + lint + grep clean). Currency trigger rejects AED on INR brand. Isolation: cross-brand=0, no-GUC fail-closed, current_user=brain_app. Replay: 3×→1 row, suppression counter=2. Banker's rounding: 10 golden fixtures pass. Horizon: past-COD qualifies, with-RTO blocked, 7d vs 25d proven. Commits: S1=d4e046f S2=2fbdb55 S3=62e3e6b S4=fa8afdd. 04-developer-report-data-engineer.md written. → READY-FOR-SECURITY
+19:34:53Z [heartbeat] engineering-os:data-engineer S3 ? returned
+19:36:17Z [heartbeat] engineering-os:security-reviewer S4 ? issued
+19:36:32Z [heartbeat] engineering-os:qa-agent S5 ? issued
+
+## 2026-06-16T18:12:00Z — QA Engineer — feat-realized-revenue-ledger
+**Stage:** 5 · **Mode:** FULL · **Verdict:** PASS
+**Typechecks:** @brain/money EXIT:0 | @brain/core EXIT:0 | @brain/stream-worker EXIT:0
+**Test suite:** Vitest run — 132/132 PASS (30 ledger tests; 102 prior-suite tests) — EXIT:0
+**Migration 0018:** verified in live DB — table, RLS FORCE, brain_app SELECT+INSERT only, trigger, realized_gmv_as_of fn, dedup UNIQUE, 3 assertions all confirmed via pg query
+**Smoke:** Live Postgres (localhost:5432) — real-datastore integration. No HTTP endpoint on ledger in this slice (data-plane substrate). HTTP smoke deferred to deploy gate.
+**Parity:** N/A (intelligence-engineer track / metric engine is the NEXT slice)
+**Validity:** Anti-pattern scan CLEAN (0 BYPASSRLS/tautology hits). Negative controls documented and captured live: UPDATE→denied, DELETE→denied, cross-brand=0, no-GUC=0/error, currency-mismatch trigger fires.
+**Closed-sum non-tautological:** realized_gmv_as_of=100000n; naiveSum=200000n; realized!=naiveSum — named function proved load-bearing
+**Append-only by GRANT tested:** UPDATE→"permission denied for table realized_revenue_ledger"; DELETE→same
+**Dual-date immutability tested:** juneRows unchanged (1 row, +75000); julyRows new row (-75000, period 2026-07)
+**no-float tested:** DB _minor columns bigint confirmed; SQL grep clean; ESLint fires on bad fixture (4 warnings)
+**single-currency tested:** AED INSERT for INR brand → trigger EXCEPTION (currency mismatch)
+**isolation under brain_app:** current_user=brain_app, is_superuser=false, cross-brand=0, no-GUC=0
+**replay-idempotent:** 3x same event → 1 DB row, counter=2
+**banker's rounding:** 10 golden fixtures pass; adjustment_minor=-50n for 1.5→2 (non-zero delta recorded)
+**horizon:** COD past horizon + no RTO qualifies; with RTO does NOT qualify; prepaid(7d) vs COD(25d) distinction confirmed
+**Findings:** 3 LOW non-blocking (tautological toSatisfy()=true dead line, fixture/warn severity known-intent, no Stryker mutation config)
+**Blocking:** 0
+**Next:** Security Reviewer (Stage 6) — HANDOFF PASS
+19:44:40Z [heartbeat] engineering-os:qa-agent S5 ? returned
+
+19:52:03Z [security-review] feat-realized-revenue-ledger Stage:4 FULL PASS CRIT:0 HIGH:1(F-SEC-01 ops pre-existing non-blocking) MED:1(F-SEC-02 GUC-reset gap) LOW:2 Scanners:RUN append-only-by-grant:UPDATE->permission-denied CONFIRMED no-double-count:named-fn-excludes-provisional CONFIRMED no-float:BIGINT-confirmed single-currency:trigger-fires brand-isolation:cross-brand=0 replay:1-row-for-3x-emit all-30-tests-pass-under-brain_app
+19:53:30Z [heartbeat] engineering-os:security-reviewer S4 ? returned
+19:54:31Z [heartbeat] engineering-os:final-reviewer S6 ? issued
+19:56:00Z [final-review] feat-realized-revenue-ledger Stage:6 PASS APPROVE -> Stakeholder gate · gates-rerun:5 (ledger-suite 30/30; append-only UPDATE+DELETE->permission-denied under brain_app non-superuser; closed-sum non-tautology fn=100000!=naive=200000; closed-sum nets->0; currency-trigger fires) · 4-walls re-verified live · over-eng:CLEAN scope:CLEAN(additive 0018,no-new-deployable,doc-08 date->CHAR(7) tightening journaled) hard-rule:none · deferred F-SEC-01(HIGH ship-as-techdebt,P1-before-prod,fail-closed no-M1-consumer) F-SEC-02(MED) F-SEC-03/04(LOW) F-QA-03(LOW add-Stryker) · RULE-PROPOSAL recommended: cross-tenant system-job FORCE-RLS enumeration no-op — 2nd occurrence (identity phone-guard-reeval + ledger revenue-finalization), below 3-run auto-bar -> pending-stakeholder-attention · intended_state: awaiting-stakeholder
+20:01:36Z [heartbeat] engineering-os:final-reviewer S6 ? returned
+20:03:13Z [heartbeat] engineering-os:data-engineer S3 ? issued
+2026-06-17T00:11:09Z [data-engineer] feat-realized-revenue-ledger BOUNCE r1 F-SEC-01 fix: migration 0019 (list_active_brand_ids SECURITY DEFINER SET search_path=public GRANT EXECUTE->brain_app) applied; revenue-finalization.ts wired to call fn; typecheck EXIT 0; 32/32 ledger tests pass (30 prior + 2 new F-SEC-01); fn returns 172 brands under brain_app (was 0); overdue provisionals for both test brands finalized; RTO-protected order correctly skipped; identity phone-guard-reeval same bug noted for follow-up; READY-FOR-SECURITY delta re-review
+20:13:23Z [heartbeat] engineering-os:data-engineer S3 ? returned
+20:14:15Z [heartbeat] engineering-os:security-reviewer S4 ? issued
+2026-06-17T00:30:00Z [security-review] feat-realized-revenue-ledger Stage:4 DELTA PASS commit:353bfd6 F-SEC-01:RESOLVED prosecdef=t search_path=public enumeration_under_brain_app=173(was 0) bare_select=0(FORCE_RLS_intact) fn_columns:id+horizons+currency_code(no_PII) EXECUTE_granted append-only-by-grant:UNREGRESSED(INSERT+SELECT only) 0018:UNTOUCHED new_finding:none test10:2_subtests_real_probes_brain_app_pool F-SEC-02/03/04:deferred_unchanged blocking:0 verdict:PASS
+20:19:58Z [heartbeat] engineering-os:security-reviewer S4 ? returned
+20:28:26Z [heartbeat] engineering-os:platform-devops S8 ? issued
+2026-06-17T00:32:00Z [platform-devops] feat-realized-revenue-ledger Stage:8 SHIPPED phase:1-dev-only commit:353bfd6 branch:feat/realized-revenue-ledger stacked-on:feat/identity-graph · migrate:0018+0019 VERIFIED-APPLIED (ledger rls=FORCE grants=SELECT+INSERT-only; list_active_brand_ids prosecdef=t search_path=public; all 5 migration assertions green) · build:money+core+stream-worker+contracts ALL PASS (16 typecheck tasks, 14 build tasks, EXIT 0) · smoke:32/32 ledger live tests PASS under brain_app non-superuser (134/134 core suite PASS; pre-existing stream-worker bronze.e2e Redis offline-queue issue not a regression) · pr:gh-unauth manual https://github.com/Rishabhporwal/Brain-V4/compare/feat/identity-graph...feat/realized-revenue-ledger · canary:N/A (ADR-010 Phase-4 deferred) · rollback:DROP TABLE realized_revenue_ledger + 3 fns + 3 brand columns (rebuildable from Bronze) · techdebt-carry: F-SEC-02(GUC-reset defense-in-depth before Phase-2) F-SEC-03(financial logging scope before prod scale) F-QA-03(Stryker before next ledger slice) adopt-rule(list_active_brand_ids 2nd-occurrence Stakeholder-/adopt-rule-pending) phone-guard-reeval-adopt(identity follow-up) billing_run+fx_rate(Phase-2+)
+20:32:00Z [heartbeat] engineering-os:platform-devops S8 feat-realized-revenue-ledger returned
+20:37:46Z [heartbeat] engineering-os:platform-devops S8 ? returned

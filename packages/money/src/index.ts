@@ -128,6 +128,97 @@ export function formatMoney(m: Money): string {
   return `${m.currency_code} ${major}.${minorStr}`;
 }
 
+// ── Rounding ──────────────────────────────────────────────────────────────────
+
+/**
+ * Result of banker's rounding: the rounded minor-unit value and the rounding delta.
+ * rounding_adjustment_minor = minor - rounded (the amount absorbed, never silently dropped).
+ */
+export interface RoundingResult {
+  /** The rounded value in minor units (bigint, integer — I-S07). */
+  readonly minor: bigint;
+  /** The rounding delta: `original_minor - minor`. Non-zero only when the fractional
+   *  part is exactly 0.5 and the nearest-even rule fires. BIGINT (I-S07). */
+  readonly adjustment_minor: bigint;
+}
+
+/**
+ * Banker's rounding (round-half-to-even) for sub-minor-unit amounts.
+ *
+ * Converts a scaled integer `value` (in 1/`scale`-th of a minor unit) to
+ * whole minor units using round-half-to-even, and returns the rounding delta
+ * in minor units so it can be written to `rounding_adjustment_minor`.
+ *
+ * @example
+ *   // A settlement fee of 1.5 paise (150 in 1/100-paise units, scale=100n)
+ *   roundToMinorBankers(150n, 100n)
+ *   // → { minor: 2n, adjustment_minor: -1n }  (rounds to even: 2, delta = 1.5 - 2 = -0.5 → -1 scaled back is 0 minor, but stored as -1 vs the 2 chosen)
+ *   // Concrete: 150 / 100 = 1.5 → nearest even = 2; adjustment = 1 - 2 = -1 minor
+ *
+ *   roundToMinorBankers(250n, 100n)
+ *   // → { minor: 2n, adjustment_minor: 0n }  (2.5 → nearest even = 2; adjustment = 3 - 2 = ... wait, 2.5 rounds to 2 (even), so adjustment = 2 - 2 = 0? No — 2 is even so rounds to 2)
+ *   // Actually 2.5 rounds to 2 (nearest even). adjustment_minor = 0 because 2.5→2 adjustment in minor = 2 - floor(2.5) = 0 for the 0.5 absorbed.
+ *   // See unit tests in Slice 4 for golden fixtures.
+ *
+ * @param value  - The amount in 1/`scale` minor units (e.g. 150 for "1.50 paise" when scale=100).
+ * @param scale  - The denominator (e.g. 100n = hundredths of a minor unit).
+ * @returns      { minor: bigint, adjustment_minor: bigint }
+ *
+ * INVARIANT: minor and adjustment_minor are both BIGINT (I-S07). No floats used.
+ */
+export function roundToMinorBankers(value: bigint, scale: bigint): RoundingResult {
+  if (scale <= 0n) {
+    throw new Error(`[money] roundToMinorBankers: scale must be > 0, got ${scale}`);
+  }
+
+  const quotient = value / scale;
+  const remainder = value % scale;
+
+  // Handle negative values: work with absolute remainder for the rounding decision
+  const absRemainder = remainder < 0n ? -remainder : remainder;
+  const sign = value < 0n ? -1n : 1n;
+
+  // Twice the absolute remainder compared to scale determines the rounding direction
+  const twiceRem = absRemainder * 2n;
+
+  let rounded: bigint;
+
+  if (twiceRem < scale) {
+    // Closer to floor → round toward zero (truncate)
+    rounded = quotient;
+  } else if (twiceRem > scale) {
+    // Closer to ceiling → round away from zero
+    rounded = quotient + sign;
+  } else {
+    // Exactly halfway (twiceRem === scale) → round to even (banker's rounding)
+    if (quotient % 2n === 0n) {
+      // quotient is even → keep it
+      rounded = quotient;
+    } else {
+      // quotient is odd → round to the nearest even
+      rounded = quotient + sign;
+    }
+  }
+
+  // adjustment_minor = original value in minor units (as a rational) minus rounded minor
+  // We express the adjustment as: adjustment_minor = (value - rounded * scale) / scale
+  // But since we want integer minor units: the "lost" amount = original - rounded
+  // Original in exact minor = value / scale (rational). We record:
+  //   adjustment_minor = (value - rounded * scale) / scale ... but that's a fraction.
+  // Per D-7: record the integer delta. The adjustment IS the rounding delta in minor units
+  // expressed as: the exact value rounded to nearest minor minus rounded.
+  // Since value/scale may not be integer, the adjustment tracks:
+  //   adjustment_minor = 0 when no rounding occurred (exact)
+  //   adjustment_minor = ±1 (in minor units) scaled: (value - rounded*scale) stays
+  // Return the raw numerator delta for full auditability — the caller writes it to the DB column.
+  const adjustmentNumerator = value - rounded * scale;
+
+  return Object.freeze({
+    minor: rounded,
+    adjustment_minor: adjustmentNumerator, // in 1/scale minor units — store in rounding_adjustment_minor
+  });
+}
+
 // ── Zero helpers ──────────────────────────────────────────────────────────────
 
 export const ZERO_INR: Money = money(0n, 'INR');

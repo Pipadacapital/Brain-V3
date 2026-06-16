@@ -41,6 +41,7 @@ import type {
   AcceptInviteRequest,
   SetOrgRequest,
   SetOrgResponse,
+  SetBrandResponse,
   OnboardingAdvanceRequest,
   OnboardingAdvanceResponse,
 } from './types';
@@ -284,12 +285,17 @@ export const workspaceApi = {
 // ── Brand ─────────────────────────────────────────────────────────────────────
 
 export const brandApi = {
-  create: (body: CreateBrandRequest) =>
-    bffFetch<BrandResponse>('/v1/brands', {
+  // Core returns { request_id, brand: {...} } — unwrap to the flat BrandResponse so
+  // consumers can read newBrand.id / .display_name directly. Without this, the
+  // create→switch flow called switchBrand(undefined) → empty body {} → 400.
+  create: async (body: CreateBrandRequest): Promise<BrandResponse> => {
+    const res = await bffFetch<{ request_id: string; brand: BrandResponse }>('/v1/brands', {
       method: 'POST',
       body: JSON.stringify(body),
       idempotencyKey: generateRequestId(),
-    }),
+    });
+    return res.brand;
+  },
 
   get: (id: string) => bffFetch<BrandResponse>(`/v1/brands/${id}`),
 
@@ -298,9 +304,12 @@ export const brandApi = {
       `/v1/brands${cursor ? `?cursor=${cursor}` : ''}`,
     ),
 
+  // B1: repoint to the new set-brand BFF route (AC-1/SD-1).
+  // The old /v1/brands/:id/switch had no backing route — this is the correct target.
   switchBrand: (id: string) =>
-    bffFetch<OkResponse>(`/v1/brands/${id}/switch`, {
+    bffFetch<SetBrandResponse>('/v1/bff/session/set-brand', {
       method: 'POST',
+      body: JSON.stringify({ brand_id: id }),
       idempotencyKey: generateRequestId(),
     }),
 };
@@ -522,6 +531,8 @@ interface BffEnvelope<T> {
 
 interface RawBrandSummary {
   org_name: string | null;
+  // B2/MA-06: active_brand_id is new in 0013 — = auth.brandId from JWT.
+  active_brand_id: string | null;
   brand_count: number;
   member_count: number;
   brands: Array<{ id: string; display_name: string; domain: string | null; status: string }>;
@@ -563,10 +574,16 @@ export const dashboardApi = {
   getBrandSummary: async (): Promise<DashboardBrandSummaryResponse | null> => {
     const { data } = await bffFetch<BffEnvelope<RawBrandSummary>>('/v1/dashboard/brand-summary');
     if (!data || data.brand_count === 0) return null;
+    // MA-06: active brand by id, not array index.
+    // Prefer the brand matching active_brand_id; fall back to brands[0] only as last resort
+    // (e.g. legacy sessions where active_brand_id may be null before 0013 deploys).
+    const active = data.brands.find((b) => b.id === data.active_brand_id);
     return {
       workspace_name: data.org_name ?? '',
-      brand_name: data.brands[0]?.display_name ?? '',
+      brand_name: active?.display_name ?? data.brands[0]?.display_name ?? '',
       member_count: data.member_count,
+      active_brand_id: data.active_brand_id ?? null,
+      brands: data.brands,
     };
   },
 

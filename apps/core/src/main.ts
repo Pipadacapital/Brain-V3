@@ -34,6 +34,7 @@ import { registerMemberRoutes } from './modules/workspace-access/internal/interf
 import { registerBffRoutes } from './modules/frontend-api/internal/bff.routes.js';
 import { jtiFromJwt, csrfTokenForSession, csrfTokenMatches } from './modules/frontend-api/internal/csrf.js';
 import { NotificationServiceImpl } from './modules/notification/internal/notification.service.impl.js';
+import { registerDevRoutes } from './modules/notification/internal/dev.routes.js';
 import { createEmailAdapter } from './modules/notification/internal/ses-adapter.js';
 
 // ── Connector infrastructure imports (HIGH-MOUNT-01) ─────────────────────────
@@ -310,6 +311,14 @@ export async function main(): Promise<void> {
   registerBrandRoutes(app, authService, brandService);
   registerMemberRoutes(app, authService, inviteService);
   registerBffRoutes(app, authService, pool, config.cookieSecret, rateLimiter);
+
+  // DEV-ONLY: surface email action links (verify/reset/invite) for browser testing
+  // without a real inbox. Registered ONLY outside production — the route does not
+  // exist in prod, and dev-link-capture never stores anything in prod either.
+  if (nodeEnv !== 'production') {
+    registerDevRoutes(app);
+    app.log.warn('[dev] /api/v1/dev/last-email-link mounted (NODE_ENV != production)');
+  }
 
   // ── HIGH-MOUNT-01: Mount connector + pixel routes with guards wired HERE ────
   //

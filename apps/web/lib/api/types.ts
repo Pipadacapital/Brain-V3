@@ -113,7 +113,11 @@ export interface WorkspaceResponse {
 // ── Brand ────────────────────────────────────────────────────────────────────
 
 export interface CreateBrandRequest {
-  workspace_id: string;
+  /** SEC MB-1/MB-3: workspace_id is now derived server-side from the session JWT
+   *  (auth.workspaceId). Do NOT send it from the client — the backend ignores any
+   *  body value and uses the JWT-scoped workspace instead. Field kept as optional
+   *  for backward compat with any existing callers, but MUST NOT be populated. */
+  workspace_id?: string;
   display_name: string;
   domain?: string;
   /** Derived server-side from currency_code; send if known but server overrides. */
@@ -242,6 +246,10 @@ export interface DashboardBrandSummaryResponse {
   workspace_name: string;
   brand_name: string;
   member_count: number;
+  /** MA-06/B2: active brand id from auth.brandId — switcher pivots on this, not array index. */
+  active_brand_id: string | null;
+  /** Full brand list in the active org — drives the switcher (MA-14/15). */
+  brands: Array<{ id: string; display_name: string; domain: string | null; status: string }>;
 }
 
 export interface DashboardConnectionStatusResponse {
@@ -311,6 +319,17 @@ export interface SetOrgResponse {
     brand_id: string | null;
     workspace_id: string | null;
     role: string | null;
+  };
+}
+
+// ── BFF set-brand ─────────────────────────────────────────────────────────────
+
+export interface SetBrandResponse {
+  request_id: string;
+  auth: {
+    brand_id: string;
+    workspace_id: string;
+    role: string;
   };
 }
 

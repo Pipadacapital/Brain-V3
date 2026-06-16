@@ -140,7 +140,8 @@ describe('AC-1: rotateRefreshToken — rotation and replay detection', () => {
 
     expect(result.accessToken).toBeTruthy();
     expect(result.refreshToken).toBeTruthy();
-    expect(result.expiresIn).toBe(900);
+    // Access-token lifetime is 1 hour (3600s) since the token-time change.
+    expect(result.expiresIn).toBe(3600);
 
     // Verify the old row was marked rotated (used_at + revoked_at).
     const sqlCalls = getSqlCalls(rawClient.query);
@@ -558,5 +559,220 @@ describe('AC-7: acceptInvite — email-match and email-verified guards', () => {
     // Suppress unused variable warnings from earlier unused computations.
     void insertIdx;
     void acceptIdx;
+  });
+});
+
+// ── QA-2: switchBrandContext — unit coverage (MA-01/02/03/09/10) ──────────────
+//
+// These tests mock the pool and repositories to cover the critical guard paths
+// without requiring a live Postgres instance (live coverage is in switch-brand.live.test.ts).
+//
+// NEGATIVE-CONTROL DESIGN:
+//   Each guard test documents exactly which line in auth.service.ts it covers and
+//   what would happen if the guard were removed. The live test covers on-wire behavior;
+//   these unit tests cover the conditional branches in isolation.
+
+describe('QA-2: switchBrandContext — unit coverage', () => {
+  const USER_ID   = 'unit-sw-01-0000-0000-000000000001';
+  const ORG_ID    = 'unit-sw-02-0000-0000-000000000002';
+  const BRAND_A   = 'unit-sw-03-0000-0000-000000000003';
+  const BRAND_B   = 'unit-sw-04-0000-0000-000000000004';
+  const CORR      = 'corr-switch-brand-unit';
+  const JTI       = 'jti-switch-brand-unit-01234567890';
+
+  // ── Factory: build AuthService with a configurable executor ──────────────
+
+  function makeServiceWithExecutor(
+    executor: (sql: string, params: unknown[]) => Promise<{ rows: unknown[]; rowCount: number | null }>,
+  ) {
+    const client = createStubClient(executor as ReturnType<typeof vi.fn>);
+    const mockPool = {
+      connect: vi.fn().mockResolvedValue(client),
+      end: vi.fn(),
+    };
+    const mockAudit = makeAudit();
+    const mockNotification = makeNotification();
+    const svc = new AuthService(
+      mockPool as never,
+      mockAudit,
+      mockNotification,
+      { jwtSigningSecret: 'unit-switch-brand-secret-32bytes!!' },
+    );
+    return { svc, mockAudit, mockPool };
+  }
+
+  // Membership row returned when user IS a member of the requested brand.
+  const MEMBER_ROW = {
+    id: 'mem-sw-01',
+    organization_id: ORG_ID,
+    brand_id: BRAND_B,
+    app_user_id: USER_ID,
+    role_code: 'analyst',
+    created_at: new Date(),
+    updated_at: new Date(),
+  };
+
+  // Active brand row (not archived).
+  const ACTIVE_BRAND_ROW = {
+    id: BRAND_B,
+    organization_id: ORG_ID,
+    display_name: 'Unit Brand B',
+    domain: null,
+    status: 'active',
+    region_code: 'IN',
+    currency_code: 'INR',
+    timezone: 'Asia/Kolkata',
+    revenue_definition: 'realized',
+    created_at: new Date(),
+    updated_at: new Date(),
+  };
+
+  // ── MA-01: mintSessionToken direct (not via refreshSession/resolveActiveContext) ──
+
+  it('MA-01: switchBrandContext returns an accessToken + expiresIn (mintSessionToken called directly)', async () => {
+    // Executor: membership row found + brand is active.
+    const executor = vi.fn().mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM membership')) return { rows: [MEMBER_ROW], rowCount: 1 };
+      if (sql.includes('FROM brand')) return { rows: [ACTIVE_BRAND_ROW], rowCount: 1 };
+      return { rows: [], rowCount: 0 };
+    });
+
+    const { svc } = makeServiceWithExecutor(executor);
+    const result = await svc.switchBrandContext(USER_ID, JTI, BRAND_A, ORG_ID, BRAND_B, CORR);
+
+    // MA-01: mintSessionToken produces a JWT string — accessToken is truthy.
+    expect(result.accessToken, 'accessToken must be present (direct mint)').toBeTruthy();
+    expect(typeof result.accessToken).toBe('string');
+    expect(result.expiresIn, 'expiresIn must be > 0').toBeGreaterThan(0);
+
+    // MA-01 also means refreshSession, resolveActiveContext, findActiveByUser are NOT called.
+    // We verify this by asserting that the executor was NOT called with those query patterns.
+    const sqlCalls = getSqlCalls(executor);
+    const calledRefresh = sqlCalls.some(sql =>
+      sql.includes('FROM user_session') && sql.includes('family_id')
+    );
+    expect(calledRefresh, 'refreshSession path (user_session family query) must NOT be called').toBe(false);
+  });
+
+  // ── MA-02: workspaceId from function arg (not re-read from body/DB) ──
+
+  it('MA-02: context.workspaceId equals the workspaceId arg (JWT-sourced by caller)', async () => {
+    const executor = vi.fn().mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM membership')) return { rows: [MEMBER_ROW], rowCount: 1 };
+      if (sql.includes('FROM brand')) return { rows: [ACTIVE_BRAND_ROW], rowCount: 1 };
+      return { rows: [], rowCount: 0 };
+    });
+
+    const { svc } = makeServiceWithExecutor(executor);
+    const result = await svc.switchBrandContext(USER_ID, JTI, BRAND_A, ORG_ID, BRAND_B, CORR);
+
+    // MA-02: the workspaceId in the returned context comes directly from the `workspaceId`
+    // arg (which the caller derives from auth.workspaceId / JWT). It is NEVER the body value.
+    expect(result.context.workspaceId, 'workspaceId must equal the arg ORG_ID').toBe(ORG_ID);
+  });
+
+  // ── MA-03: role from brand-level row ──
+
+  it('MA-03: context.role comes from the brand-level membership row (not org-level)', async () => {
+    // Org-level row has 'owner'; brand-B row has 'analyst' — the brand-B row must win.
+    const executor = vi.fn().mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM membership')) return { rows: [MEMBER_ROW], rowCount: 1 }; // analyst
+      if (sql.includes('FROM brand')) return { rows: [ACTIVE_BRAND_ROW], rowCount: 1 };
+      return { rows: [], rowCount: 0 };
+    });
+
+    const { svc } = makeServiceWithExecutor(executor);
+    const result = await svc.switchBrandContext(USER_ID, JTI, BRAND_A, ORG_ID, BRAND_B, CORR);
+
+    expect(result.context.brandId, 'brandId must equal BRAND_B').toBe(BRAND_B);
+    expect(result.context.role, 'role must be analyst (brand-level row)').toBe('analyst');
+  });
+
+  // ── MA-09: audit.append invoked with correct action + payload ──
+
+  it('MA-09: audit.append called with brand.switch action and from/to/workspace/role_granted payload', async () => {
+    const executor = vi.fn().mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM membership')) return { rows: [MEMBER_ROW], rowCount: 1 };
+      if (sql.includes('FROM brand')) return { rows: [ACTIVE_BRAND_ROW], rowCount: 1 };
+      return { rows: [], rowCount: 0 };
+    });
+
+    const { svc, mockAudit } = makeServiceWithExecutor(executor);
+    await svc.switchBrandContext(USER_ID, JTI, BRAND_A, ORG_ID, BRAND_B, CORR);
+
+    expect(mockAudit.append, 'audit.append must be called once').toHaveBeenCalledOnce();
+
+    const appendCall = mockAudit.append.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(appendCall, 'audit entry must be defined').toBeDefined();
+    expect(appendCall['action'], 'action must be brand.switch').toBe('brand.switch');
+    expect(appendCall['actor_id'], 'actor_id must be USER_ID').toBe(USER_ID);
+    expect(appendCall['brand_id'], 'brand_id must be BRAND_B (the new brand)').toBe(BRAND_B);
+
+    const payload = appendCall['payload'] as Record<string, unknown>;
+    expect(payload['from_brand_id'], 'from_brand_id must be BRAND_A').toBe(BRAND_A);
+    expect(payload['to_brand_id'], 'to_brand_id must be BRAND_B').toBe(BRAND_B);
+    expect(payload['workspace_id'], 'workspace_id must be ORG_ID').toBe(ORG_ID);
+    expect(payload['role_granted'], 'role_granted must be analyst').toBe('analyst');
+  });
+
+  // ── MA-10: archived brand → BRAND_ARCHIVED ──
+
+  it('[NEGATIVE] MA-10: archived brand throws AuthError BRAND_ARCHIVED', async () => {
+    // Executor: membership row found (user IS a member) + brand is archived.
+    const executor = vi.fn().mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM membership')) return { rows: [MEMBER_ROW], rowCount: 1 };
+      if (sql.includes('FROM brand')) {
+        return {
+          rows: [{ ...ACTIVE_BRAND_ROW, status: 'archived' }],
+          rowCount: 1,
+        };
+      }
+      return { rows: [], rowCount: 0 };
+    });
+
+    const { svc } = makeServiceWithExecutor(executor);
+
+    let caughtErr: unknown;
+    try {
+      await svc.switchBrandContext(USER_ID, JTI, BRAND_A, ORG_ID, BRAND_B, CORR);
+    } catch (err) {
+      caughtErr = err;
+    }
+
+    expect(caughtErr, 'archived brand must throw').toBeDefined();
+    expect(caughtErr).toBeInstanceOf(AuthError);
+    const authErr = caughtErr as AuthError;
+    expect(authErr.code, 'code must be BRAND_ARCHIVED').toBe('BRAND_ARCHIVED');
+    expect(authErr.statusCode, 'statusCode must be 400').toBe(400);
+  });
+
+  // ── Non-member → FORBIDDEN ──
+
+  it('[NEGATIVE] non-member brand throws AuthError FORBIDDEN (membership guard)', async () => {
+    // Executor: NO membership row found → 0 rows.
+    const executor = vi.fn().mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM membership')) return { rows: [], rowCount: 0 };
+      return { rows: [], rowCount: 0 };
+    });
+
+    const { svc, mockAudit } = makeServiceWithExecutor(executor);
+
+    let caughtErr: unknown;
+    try {
+      await svc.switchBrandContext(USER_ID, JTI, BRAND_A, ORG_ID, BRAND_B, CORR);
+    } catch (err) {
+      caughtErr = err;
+    }
+
+    expect(caughtErr, 'non-member brand must throw').toBeDefined();
+    expect(caughtErr).toBeInstanceOf(AuthError);
+    const authErr = caughtErr as AuthError;
+    expect(authErr.code, 'code must be FORBIDDEN').toBe('FORBIDDEN');
+    expect(authErr.statusCode, 'statusCode must be 403').toBe(403);
+
+    // NEGATIVE CONTROL: audit.append must NOT be called when the membership check fails.
+    // If the guard is removed, the non-existent membership would not be caught and the
+    // method would proceed to mint a token for a brand the user cannot access.
+    expect(mockAudit.append, 'audit must NOT be called on FORBIDDEN path').not.toHaveBeenCalled();
   });
 });

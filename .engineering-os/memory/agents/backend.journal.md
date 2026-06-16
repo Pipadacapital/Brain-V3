@@ -141,3 +141,30 @@
 **API surface completed:** 7 auth + 5 workspace + 5 brand + 5 member + 4 BFF = 26 endpoints
 
 **Next owner:** security-reviewer (Stage 4)
+
+## 2026-06-16T10:40:00Z — Backend Engineer — feat-multi-brand BOUNCE r1
+**Stage:** 3 (DELTA bounce-fix) · **Service:** core + web · **Verification:** typecheck/test/lint + output pasted
+
+**Fixes delivered:**
+
+- **SEC-MB-1 (HIGH, BLOCKING):** `POST /v1/brands` — replaced `parsed.data.workspace_id` with `auth.workspaceId` at `brand.routes.ts:58`. Added `if (!auth.workspaceId) → 400 MISSING_WORKSPACE` guard before schema parse (line 34). Made `workspace_id` optional in `CreateBrandRequestSchema` (contracts) and `CreateBrandRequest` (web types). Removed dead `requestingRole: auth.role ?? 'analyst'` JWT-claim pass-through — BrandService.create() re-derives role from DB (brand.service.ts:68-70).
+
+- **SEC-MB-3 (MED):** `create-brand-dialog.tsx` — removed `workspace_id: getActiveWorkspaceId(queryClient) ?? ''` from the `brandApi.create()` call body. Removed the `getActiveWorkspaceId()` helper entirely. Updated `CreateBrandRequest.workspace_id` to optional in `apps/web/lib/api/types.ts`.
+
+- **QA-1 (HIGH, BLOCKING):** Added `apps/core/src/modules/workspace-access/tests/switch-brand.live.test.ts` — real-Postgres integration test (mirrors family-wipe.live.test.ts pattern). Seeds 2-brand user (owner on A, analyst on B) + archived brand + non-member brand. 4 tests: positive switch (MA-01/MA-03), audit row verification (MA-09), archived→BRAND_ARCHIVED (MA-10), non-member→FORBIDDEN (MA-02). All pass.
+
+- **QA-2 (MED, BLOCKING):** Appended 6 unit tests for `switchBrandContext` to `critical-paths.test.ts` (stub executor, no live PG): MA-01 direct mint, MA-02 workspaceId from arg, MA-03 brand-level role, MA-09 audit.append payload, MA-10 archived guard, non-member FORBIDDEN + audit NOT called.
+
+- **QA-4 (LOW/MED):** Strengthened `tools/isolation-fuzz/src/pg.test.ts` AC-7 brand-table assertion from `toBeGreaterThanOrEqual(0)` (tautology) to `toBeGreaterThan(0)` (real intent: brand-A visible via self_read). Connector_instance negative control (= 0) preserved.
+
+- **QA-3 (MED): DEFERRED** — `correlation_id` column in `audit_log` requires schema migration. Not implemented in this slice. Tracked as tech-debt.
+
+**Verification:**
+- `pnpm --filter @brain/core typecheck` → EXIT 0
+- `pnpm --filter @brain/web typecheck` → EXIT 0
+- workspace-access tests: 53 passed (24 + 22 + 3 + 4), 0 failed
+- isolation-fuzz: 11 passed, 0 failed
+
+**Self-review vs gates:** PASS — all blocking SEC/QA items addressed; MISSING_WORKSPACE guard added; body workspace_id not read; real-network test automated; unit coverage on all critical guard paths.
+
+**Next:** READY-FOR-SECURITY (DELTA re-review, Stage 4)

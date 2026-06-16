@@ -169,6 +169,10 @@ export class BrandService {
       const memberRepo = new MembershipRepository(client);
 
       // Assert org membership.
+      // M1 INVARIANT: every brand-member holds a corresponding org-level membership row
+      // (brand_id IS NULL) created at org-creation or org-invite time. Brand-invite (post-M1)
+      // must also create an org-level row or this guard must be updated to accept brand-only
+      // members. Without this invariant, brand-only members 403 here before the RLS query runs.
       const membership = await memberRepo.findByUserAndOrg(requestingUserId, organizationId, null, ctx);
       if (!membership) {
         throw new BrandError('FORBIDDEN', 'Not a member of this workspace.', 403);

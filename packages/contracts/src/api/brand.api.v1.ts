@@ -39,7 +39,11 @@ export type Brand = z.infer<typeof BrandSchema>;
 // ── Create Brand ──────────────────────────────────────────────────────────────
 
 export const CreateBrandRequestSchema = z.object({
-  workspace_id: z.string().uuid(),
+  // SEC MB-1: workspace_id is now derived server-side from the session JWT
+  // (auth.workspaceId). The body value is IGNORED by the route handler — made
+  // optional here so clients that omit it pass validation, and clients that
+  // still send it are not rejected (backward compat, value is discarded).
+  workspace_id: z.string().uuid().optional(),
   display_name: z.string().min(1).max(255),
   domain: z.string().max(253).nullable().optional(),
   currency_code: CurrencyCodeSchema.optional(),

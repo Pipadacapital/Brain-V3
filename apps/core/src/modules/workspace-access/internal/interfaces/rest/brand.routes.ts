@@ -37,14 +37,35 @@ export function registerBrandRoutes(
         });
       }
 
+      // SEC MB-1 (reconciled): prefer the active session workspace (auth.workspaceId from the JWT) and
+      // IGNORE the body whenever a session workspace is present — a token scoped to org X can never
+      // create a brand in org Y by spoofing body.workspace_id. The body value is used ONLY as the
+      // onboarding bootstrap path: at Step 2 (/brand/new) the just-created workspace is not yet in the
+      // session JWT (workspace-create does not re-mint the cookie), so the first brand must name its
+      // org explicitly. Either way BrandService.create() is the authoritative guard — it verifies the
+      // caller holds an owner/brand_admin membership in `organizationId` (brand.service.ts:68), so the
+      // body fallback cannot create a brand in an org the user is not a member of.
+      const organizationId = auth.workspaceId ?? parsed.data.workspace_id;
+      if (!organizationId) {
+        return reply.code(400).send({
+          request_id: requestId,
+          error: { code: 'MISSING_WORKSPACE', message: 'No active workspace in session and no workspace_id provided.' },
+        });
+      }
+
       try {
+        // requestingRole is intentionally a stub: BrandService.create() re-derives role from the DB
+        // membership row (brand.service.ts:68), making any JWT-carried role claim irrelevant.
         const brand = await brandService.create(
           {
-            organizationId: parsed.data.workspace_id,
+            organizationId,
             displayName: parsed.data.display_name,
             domain: parsed.data.domain ?? null,
             requestingUserId: auth.userId,
-            requestingRole: (auth.role ?? 'analyst') as 'owner' | 'brand_admin' | 'manager' | 'analyst',
+            // SEC: requestingRole is authoritative from the DB membership row inside
+            // BrandService.create (brand.service.ts:68-70); pass a stub value —
+            // the service ignores it and re-checks against the actual membership.
+            requestingRole: 'analyst',
             currencyCode: parsed.data.currency_code,
             timezone: parsed.data.timezone,
             revenueDefinition: parsed.data.revenue_definition,

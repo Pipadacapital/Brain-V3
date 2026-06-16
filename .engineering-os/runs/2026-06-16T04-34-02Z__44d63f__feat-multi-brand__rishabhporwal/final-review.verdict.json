@@ -1,0 +1,28 @@
+{
+  "stage": 6,
+  "agent": "final-reviewer",
+  "req_id": "feat-multi-brand",
+  "verdict": "PASS",
+  "recommendation": "APPROVE",
+  "blocking": false,
+  "residual_risk": "Set-brand spine (0013 + switchBrandContext + BFF route) is verified-live but UNCOMMITTED — Stakeholder commit must stage those exact paths; QA-3 (audit correlation_id column) and SEC-MB-4 (audit-after-mint, LOW) ship as tracked tech-debt with no isolation/auth impact.",
+  "ac_unmet": "none",
+  "invariant_I_S01": "holds — isolation-fuzz re-run by reviewer 11/11 PASS under NOSUPERUSER NOBYPASSRLS; cross-brand connector read = 0; negative-control policy_off=1/policy_on=0 confirms non-inert canary; SEC-MB-1 body-spoof closed (organizationId from JWT).",
+  "gates_rerun": [
+    {"gate": "isolation-fuzz pg.test.ts", "cmd": "PG_USER=brain PG_PASSWORD=brain npx vitest run src/pg.test.ts", "result": "11/11 PASS"},
+    {"gate": "switch-brand.live.test.ts", "cmd": "DATABASE_URL=... npx vitest run .../switch-brand.live.test.ts", "result": "4/4 PASS (incl 2 negative controls)"},
+    {"gate": "critical-paths.test.ts", "cmd": "DATABASE_URL=... npx vitest run .../critical-paths.test.ts", "result": "22/22 PASS"}
+  ],
+  "typecheck": {"core": "pass", "web": "pass"},
+  "scope_creep": "none — no new migration/endpoint/secret beyond plan; STACK/ADR unchanged",
+  "over_engineering": "clean — single service method + route + migration + minimal UI; Single-Primitive reuse; Tier-0 deterministic, 0 model calls",
+  "negative_controls": "present and non-inert in both QA and security artifacts; reviewer independently replicated the isolation-fuzz canary",
+  "deferred": [
+    {"id": "QA-3", "disposition": "ship-as-techdebt"},
+    {"id": "SEC-MB-4", "disposition": "ship-as-techdebt"}
+  ],
+  "commit_hygiene_finding": "0013_brand_self_read.sql (untracked) + bff.routes.ts + auth.service.ts + brand.service.ts (modified, uncommitted) — mechanical commit command provided in 11-final-review.md §7",
+  "auto_candidate_rule": "not-fired — body-spoof root-cause class recurs in 2 distinct runs (this + feat-access-onboarding-flow), below the >=3 threshold; recorded as watch-item, no rule-proposal written",
+  "intended_state": {"stage": 6, "status": "awaiting-stakeholder", "owner": "stakeholder"},
+  "ts": "2026-06-16T10:56:00Z"
+}

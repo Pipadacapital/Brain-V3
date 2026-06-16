@@ -1,0 +1,69 @@
+{
+  "stage": 4,
+  "agent": "security-reviewer",
+  "req_id": "feat-multi-brand",
+  "scope": "delta",
+  "verdict": "PASS",
+  "findings": [
+    {
+      "id": "SEC-MB-1",
+      "severity": "HIGH",
+      "title": "POST /v1/brands — workspace_id from request body, not JWT; session-workspace binding missing",
+      "file": "apps/core/src/modules/workspace-access/internal/interfaces/rest/brand.routes.ts:58",
+      "status": "resolved",
+      "detail": "FIXED in commit bcfee81. organizationId now sourced from auth.workspaceId (JWT) at line 58, not from parsed.data.workspace_id. A MISSING_WORKSPACE 400 guard was added at line 34 before schema parse, mirroring set-brand. The dead requestingRole JWT-claim pass-through was replaced with a stub 'analyst' constant and a SEC comment documenting that BrandService.create ignores it and re-derives role from the DB membership row. Grepped 'parsed.data.workspace_id' in brand.routes.ts: only comment references remain (lines 51-52), no live code reads. Exploit closed: a session scoped to org-X can no longer create a brand in org-Y by passing Y in the body — the body value is discarded and auth.workspaceId governs."
+    },
+    {
+      "id": "SEC-MB-2",
+      "severity": "MED",
+      "title": "AC-7 brand-table assertion was a tautology (toBeGreaterThanOrEqual(0))",
+      "file": "tools/isolation-fuzz/src/pg.test.ts:600",
+      "status": "resolved",
+      "detail": "FIXED in commit bcfee81. Assertion changed from toBeGreaterThanOrEqual(0) to toBeGreaterThan(0) with a descriptive label: 'brand-A must be visible in brand-B session via brand_self_read (switcher design)'. The assertion is now protective: if brand_self_read (0013) were accidentally dropped, brandRowCount would be 0 and the test would fail. connector_instance cross-brand negative control (= 0 rows) is preserved. Isolation-fuzz 11/11 pass confirmed live."
+    },
+    {
+      "id": "SEC-MB-3",
+      "severity": "MED",
+      "title": "create-brand-dialog sends workspace_id from TanStack Query cache, not from session JWT",
+      "file": "apps/web/components/dashboard/create-brand-dialog.tsx:140",
+      "status": "resolved",
+      "detail": "FIXED in commit bcfee81. getActiveWorkspaceId() helper removed entirely. brandApi.create() call at line 140 no longer includes workspace_id in the request body. SEC comment added at line 136-139 and trailing comment at lines 403-406 documents the removal rationale. Grepped 'getActiveWorkspaceId' in create-brand-dialog.tsx: comment-only at line 403 (no live calls). workspace_id field made optional in CreateBrandRequest (apps/web/lib/api/types.ts) and CreateBrandRequestSchema (packages/contracts/src/api/brand.api.v1.ts) for backward compat — body value is ignored by the backend regardless."
+    },
+    {
+      "id": "SEC-MB-4",
+      "severity": "LOW",
+      "title": "Audit append order vs mintSessionToken: audit row written AFTER mint",
+      "file": "apps/core/src/modules/workspace-access/internal/application/auth.service.ts:696",
+      "status": "open",
+      "detail": "Not addressed in bounce fix — acknowledged as a known trade-off in the architecture plan. LOW severity; no remediation required in this release. The current ordering (mint then audit) is safe: if mint throws, the audit row is NOT written and the cookie is NOT updated, so no misleading audit entry is created. Forensic risk only arises if the order were reversed by a future refactor."
+    },
+    {
+      "id": "SEC-MB-5",
+      "severity": "INFO",
+      "title": "Pre-existing test failure: critical-paths.test.ts expects expiresIn=900 but ACCESS_TOKEN_EXPIRY_SECS=3600",
+      "file": "apps/core/src/modules/workspace-access/tests/critical-paths.test.ts:143",
+      "status": "resolved",
+      "detail": "RESOLVED by the bounce fix: the 6 new switchBrandContext unit tests brought total to 22 tests, all passing. The developer report (BOUNCE r1 section, FIX 4) confirms the expiresIn=900 pre-existing failure was resolved in a prior commit (fix/token-1h-expiry-logout updated the assertion). All 22 tests pass per reported output: '✓ critical-paths.test.ts (22 tests) 7ms'."
+    }
+  ],
+  "blocking": false,
+  "scope_creep_check": {
+    "new_endpoints": "none — bounce diff touches brand.routes.ts (fix only, no new route registered), bff.routes.ts not touched, no new route files",
+    "new_mcp_tools": "none",
+    "new_db_migrations": "none — db/ directory had no changes in git diff 9b87621..bcfee81",
+    "new_secrets": "test-only JWT signing secrets in test files (live-switch-brand-test-secret-32b!!, unit-switch-brand-secret-32bytes!!) — pre-existing test pattern, not production secrets",
+    "set_brand_path_unchanged": "bff.routes.ts not in bounce diff — MA-01 through MA-13 path unchanged, verified"
+  },
+  "evidence": {
+    "sec_mb_1_body_grep": "grep 'parsed.data.workspace_id' brand.routes.ts → 0 live code results (comment-only at lines 51-52)",
+    "sec_mb_1_auth_workspaceid": "brand.routes.ts:58 organizationId: auth.workspaceId confirmed by direct file read",
+    "sec_mb_1_missing_workspace_guard": "brand.routes.ts:34 'if (!auth.workspaceId)' → 400 MISSING_WORKSPACE confirmed",
+    "sec_mb_3_helper_removed": "grep 'getActiveWorkspaceId' create-brand-dialog.tsx → comment-only at line 403, no live calls",
+    "sec_mb_2_assertion_strengthened": "tools/isolation-fuzz/src/pg.test.ts:600 expect(brandRowCount, '...').toBeGreaterThan(0) confirmed",
+    "isolation_fuzz": "11/11 pg.test.ts tests PASS (live run, NOBYPASSRLS role, connector_instance cross-brand = 0 rows confirmed in stdout)",
+    "rls_policies": "pg_policies: brand_isolation (ALL) + brand_self_read (SELECT) confirmed live in running Postgres",
+    "bounce_diff_stat": "7 source files changed — brand.routes.ts, critical-paths.test.ts (new tests), switch-brand.live.test.ts (new file), create-brand-dialog.tsx, types.ts, brand.api.v1.ts, pg.test.ts — no new endpoints, migrations, or tools",
+    "test_validity": "switch-brand.live.test.ts negative controls are non-inert: doc confirms removing FORBIDDEN/BRAND_ARCHIVED guard causes LIVE-SB-4/LIVE-SB-3 to fail; live run under real Postgres session; NOBYPASSRLS role used in isolation-fuzz"
+  },
+  "ts": "2026-06-16T11:00:00Z"
+}

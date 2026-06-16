@@ -1,3 +1,12 @@
 {
-  "requirements": {}
+  "requirements": {
+    "feat-multi-brand": {
+      "spawns": 10,
+      "stage": 6,
+      "outstanding": [],
+      "last_route": "final-reviewer PASS/APPROVE; spine committed 58c425e; STOP at Stakeholder gate (awaiting /approve)",
+      "updated_at": "2026-06-16T10:55:00Z",
+      "bounces": 1
+    }
+  }
 }

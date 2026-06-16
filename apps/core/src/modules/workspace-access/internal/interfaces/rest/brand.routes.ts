@@ -28,16 +28,6 @@ export function registerBrandRoutes(
       const correlationId = (request.headers['x-correlation-id'] as string) ?? requestId;
       const auth = (request as AuthenticatedRequest).auth;
 
-      // SEC MB-1: workspaceId MUST come from the authenticated JWT (auth.workspaceId),
-      // never from the request body — prevents cross-org brand creation by spoofing
-      // workspace_id while holding a token scoped to a different org (MA-02 principle).
-      if (!auth.workspaceId) {
-        return reply.code(400).send({
-          request_id: requestId,
-          error: { code: 'MISSING_WORKSPACE', message: 'No active workspace in session. Set an org first.' },
-        });
-      }
-
       const parsed = CreateBrandRequestSchema.safeParse(request.body);
       if (!parsed.success) {
         return reply.code(422).send({
@@ -47,15 +37,28 @@ export function registerBrandRoutes(
         });
       }
 
+      // SEC MB-1 (reconciled): prefer the active session workspace (auth.workspaceId from the JWT) and
+      // IGNORE the body whenever a session workspace is present — a token scoped to org X can never
+      // create a brand in org Y by spoofing body.workspace_id. The body value is used ONLY as the
+      // onboarding bootstrap path: at Step 2 (/brand/new) the just-created workspace is not yet in the
+      // session JWT (workspace-create does not re-mint the cookie), so the first brand must name its
+      // org explicitly. Either way BrandService.create() is the authoritative guard — it verifies the
+      // caller holds an owner/brand_admin membership in `organizationId` (brand.service.ts:68), so the
+      // body fallback cannot create a brand in an org the user is not a member of.
+      const organizationId = auth.workspaceId ?? parsed.data.workspace_id;
+      if (!organizationId) {
+        return reply.code(400).send({
+          request_id: requestId,
+          error: { code: 'MISSING_WORKSPACE', message: 'No active workspace in session and no workspace_id provided.' },
+        });
+      }
+
       try {
-        // SEC MB-1: organizationId sourced from auth.workspaceId (JWT), NOT parsed.data.workspace_id.
-        // The body workspace_id field is ignored — body.workspace_id must never govern which org
-        // a brand is created in. requestingRole is intentionally omitted: BrandService.create()
-        // re-derives role from the DB membership row (brand.service.ts:68), making any JWT-carried
-        // role claim irrelevant (and a potential confusion/injection vector).
+        // requestingRole is intentionally a stub: BrandService.create() re-derives role from the DB
+        // membership row (brand.service.ts:68), making any JWT-carried role claim irrelevant.
         const brand = await brandService.create(
           {
-            organizationId: auth.workspaceId,
+            organizationId,
             displayName: parsed.data.display_name,
             domain: parsed.data.domain ?? null,
             requestingUserId: auth.userId,

@@ -1,0 +1,51 @@
+{
+  "agent": "final-reviewer",
+  "stage": 6,
+  "req_id": "feat-access-onboarding-flow",
+  "verdict": "PASS",
+  "go_no_go": "GO",
+  "reviewed_at": "2026-06-16T04:25:00Z",
+  "review_mode": "INDEPENDENT-RERUN (not a rubber-stamp of upstream PASS)",
+  "gates": {
+    "suite_green_rerun": true,
+    "typecheck": "PASS (0 errors)",
+    "unit": "PASS (core 74/74; turbo 75/75 tasks)",
+    "lint": "PASS (0 violations)",
+    "isolation_fuzz": "PASS (18/18)",
+    "validity_check_exit0": true,
+    "live_pg_family_wipe_test_non_inert": true,
+    "family_wipe_brain_app_rerun": "PASS (set_config=3 rows / no-set_config=0 rows — negative control real)",
+    "set_config_fix_present_no_residual_set_local_param": true,
+    "playwright_4step_ghost404_resume": "PASS (3/3 on live stack)",
+    "ratelimit_single_count_rerun": "PASS (1-5=401, 6=429, redis counter=6)",
+    "set_org_member_routes_fail_closed": true,
+    "brand_check_rejects_placed_and_nonallowlist_currency": true,
+    "tenant_isolation_rerun_under_brain_app": "PASS (no-GUC=0, wrong-WS=0, brain=16)",
+    "migrations_0010_0012_applied": true,
+    "no_critical": true,
+    "no_high": true,
+    "scope_deferred_items_out": true,
+    "over_engineering_clean": true,
+    "canon_clean": true,
+    "hard_rule_deviation": false
+  },
+  "acceptance": {
+    "MET": 11,
+    "MET_AS_SCAFFOLD": 0,
+    "GAP": 0
+  },
+  "stakeholder_complaint_met": "yes — 4-step (not 2-step) + currency/timezone present + resume to exact step + no step-skip, all reproduced on this machine",
+  "open_critical_high": 0,
+  "residual": [
+    "LOW RR-1: member-route org guard fires only when both query.organization_id and auth.workspaceId present; null-workspace falls back to query param — RLS still fail-closes (plan-sanctioned)",
+    "LOW RR-2: migrations use MANUAL ROLLBACK comment blocks (node-pg-migrate parser quirk), not executable -- DOWN; rollback documented + window-gated",
+    "LOW RR-3: AC-2 suspend ships service+repo+audit+test, no member-facing route in M1 (plan-sanctioned post-M1)",
+    "LOW RR-4: Playwright e2e needs live stack (no webServer auto-start) — note for CI/deploy runbook"
+  ],
+  "auto_rule_candidate": false,
+  "auto_rule_note": "Root cause (inert unit test masked a live-PG RLS/GUC syntax defect on the family-wipe path) is first-occurrence at this severity in run history; below the >=3-distinct-prior-run threshold. No rule-proposal written; recorded as watch-item in 11-final-review.md retro.",
+  "independent_reruns": "suite 75/75 + core 74/74 (family-wipe.live 3/3 non-skipped); Playwright 3/3 live; family-wipe brain_app set_config=3/no-GUC=0; rate-limit 1-5=401/6=429 counter=6; CHECK rejects placed+USD; RLS no-GUC=0/wrong-WS=0/brain=16; validity_check exit 0",
+  "bounce_target": "none",
+  "artifacts": ["11-final-review.md", "11-final-review.verdict.json"],
+  "summary": "PASS / GO. Independent re-run (not a rubber-stamp): full suite green on this machine, validity_check exit 0, and the previously-regressed family-wipe replay path proven fixed under brain_app (rowcount=3 with set_config, 0 without — a real negative control) with a genuine live-PG test (53ms, not skipped). Playwright 3/3 reproduced live (4-step flow, ghost /invite 404, resume-to-Step-3). Rate-limit single-count reproduced (trips at 6, Redis counter=6). Brand CHECK rejects placed + non-allowlist currency; tenant isolation holds under brain_app. 11/11 ACs MET, 0 open CRITICAL/HIGH. Scope clean (all 5 deferred items out, +1 sanctioned dep, no new table/service), Canon clean, no hard-rule deviation. Stakeholder tested complaints met. Advance to Stakeholder gate (Stage 7)."
+}

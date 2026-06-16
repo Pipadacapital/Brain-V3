@@ -39,6 +39,10 @@ import type {
   DashboardOnboardingResponse,
   PaginatedResponse,
   AcceptInviteRequest,
+  SetOrgRequest,
+  SetOrgResponse,
+  OnboardingAdvanceRequest,
+  OnboardingAdvanceResponse,
 } from './types';
 
 /** All BFF routes proxied through Next.js API routes → frontend-api module */
@@ -228,6 +232,22 @@ export const sessionApi = {
       method: 'POST',
       idempotencyKey: generateRequestId(),
     }),
+
+  /** Switch active org context. Re-mints the session cookie and returns onboarding_status. */
+  setOrg: (body: SetOrgRequest) =>
+    bffFetch<SetOrgResponse>('/v1/bff/session/set-org', {
+      method: 'POST',
+      body: JSON.stringify(body),
+      idempotencyKey: generateRequestId(),
+    }),
+
+  /** Advance the wizard onboarding_status (forward-only). */
+  advanceOnboarding: (body: OnboardingAdvanceRequest) =>
+    bffFetch<OnboardingAdvanceResponse>('/v1/bff/session/onboarding/advance', {
+      method: 'POST',
+      body: JSON.stringify(body),
+      idempotencyKey: generateRequestId(),
+    }),
 };
 
 // ── Workspace ─────────────────────────────────────────────────────────────────
@@ -309,9 +329,106 @@ export const membersApi = {
 };
 
 // ── Connectors ────────────────────────────────────────────────────────────────
+//
+// The /v1/connectors endpoint returns an envelope shape:
+//   { request_id, data: { shopify: { connected, status, shopDomain, ... },
+//                          meta: { coming_soon }, google: { coming_soon } } }
+//
+// The client maps this into the ConnectorListItem[] that components consume.
+
+interface RawConnectorShopify {
+  connected: boolean;
+  status: string | null;       // 'not_connected' | 'connected' | 'error'
+  shopDomain: string | null;
+  connectorInstanceId: string | null;
+  syncState: string | null;
+  lastSyncAt: string | null;
+  lastError: string | null;
+}
+
+interface RawConnectorMeta {
+  coming_soon: boolean;
+}
+
+interface RawConnectorGoogle {
+  coming_soon: boolean;
+}
+
+interface RawConnectorListData {
+  shopify: RawConnectorShopify;
+  meta: RawConnectorMeta;
+  google: RawConnectorGoogle;
+}
+
+interface RawConnectorListEnvelope {
+  request_id: string;
+  data: RawConnectorListData;
+}
+
+/** Map the BFF envelope shape to the canonical ConnectorListItem[] used by UI. */
+function mapConnectorList(raw: RawConnectorListEnvelope): ConnectorListItem[] {
+  const { shopify, meta, google } = raw.data;
+
+  const items: ConnectorListItem[] = [];
+
+  // Shopify — the only live integration in M1
+  const shopifyStatus =
+    shopify.status === 'connected'
+      ? 'connected'
+      : shopify.status === 'error'
+        ? 'error'
+        : 'disconnected';
+
+  items.push({
+    provider: 'shopify',
+    display_name: 'Shopify',
+    description: 'Connect your Shopify store to sync orders and revenue data.',
+    coming_soon: false,
+    instance: shopify.connected && shopify.connectorInstanceId
+      ? {
+          id: shopify.connectorInstanceId,
+          brand_id: '', // populated server-side; not needed for wizard display
+          provider: 'shopify',
+          shop_domain: shopify.shopDomain ?? '',
+          status: shopifyStatus as ConnectorInstanceResponse['status'],
+          connected_at: '',
+          disconnected_at: null,
+          sync_state: (shopify.syncState ?? 'waiting_for_data') as ConnectorInstanceResponse['sync_state'],
+          last_sync_at: shopify.lastSyncAt,
+          last_error: shopify.lastError,
+        }
+      : undefined,
+  });
+
+  // Meta Ads — coming soon
+  if (meta.coming_soon) {
+    items.push({
+      provider: 'meta',
+      display_name: 'Meta Ads',
+      description: 'Connect your Meta Ads account for campaign performance data.',
+      coming_soon: true,
+    });
+  }
+
+  // Google Ads — coming soon
+  if (google.coming_soon) {
+    items.push({
+      provider: 'google',
+      display_name: 'Google Ads',
+      description: 'Connect your Google Ads account for search campaign data.',
+      coming_soon: true,
+    });
+  }
+
+  return items;
+}
 
 export const connectorsApi = {
-  list: () => bffFetch<ConnectorListItem[]>('/v1/connectors'),
+  /** Returns ConnectorListItem[] — unwraps the BFF envelope { request_id, data: {...} }. */
+  list: async (): Promise<ConnectorListItem[]> => {
+    const raw = await bffFetch<RawConnectorListEnvelope>('/v1/connectors');
+    return mapConnectorList(raw);
+  },
 
   getShopifyInstallUrl: () =>
     bffFetch<ShopifyInstallUrlResponse>('/v1/connectors/shopify/install'),

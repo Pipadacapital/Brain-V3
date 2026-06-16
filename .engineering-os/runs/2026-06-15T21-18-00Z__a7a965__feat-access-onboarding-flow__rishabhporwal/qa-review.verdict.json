@@ -1,0 +1,171 @@
+{
+  "agent": "qa-agent",
+  "stage": 5,
+  "req_id": "feat-access-onboarding-flow",
+  "verdict": "PASS",
+  "reviewed_at": "2026-06-16T00:40:00Z",
+  "mode": "DELTA-R2 (reasoning: QA-08 + SEC-AOF-N1 scope); FULL suite (tests: typecheck+unit+lint+playwright)",
+  "round": 4,
+  "gates": {
+    "no_critical": true,
+    "no_high": true,
+    "smoke_pass": true,
+    "suite_green": true,
+    "negative_controls_real": true,
+    "critical_flow_replay_wipe": true,
+    "ratelimit_single_count": true,
+    "live_pg_test_non_inert": true
+  },
+  "suite": {
+    "typecheck": "PASS (34/34 tasks, 0 errors, 1.833s) — pnpm turbo run typecheck --force",
+    "unit": "PASS (36/36 tasks; core 74/74 — 3 new live-PG + 16 critical-paths + 55 existing; isolation-fuzz 18/18; web exit 0 no collision) — pnpm turbo run test:unit --force (DATABASE_URL set)",
+    "lint": "PASS (18/18 tasks, 0 violations, 1.439s) — pnpm turbo run lint --force",
+    "no_prior_green_now_red": true
+  },
+  "smoke": {
+    "command": "pnpm --filter @brain/web test:e2e",
+    "result": "PASS",
+    "tests_run": 3,
+    "tests_passed": 3,
+    "tests_failed": 0,
+    "test_1": "register → verify → login → Step1 → Step2 → Step3 (Skip) → Step4 Done → dashboard → logout (7.7s) PASS",
+    "test_2": "ghost /invite step returns 404 (MA-10) (444ms) PASS",
+    "test_3": "resume assertion: user at brand_created lands on Step 3 (1.7s) PASS",
+    "total_time": "10.2s"
+  },
+  "bounce_findings_r3": [
+    {
+      "id": "QA-08",
+      "original_severity": "CRITICAL",
+      "was_regression_of": "SEC-AOF-L1 fix (SET LOCAL $1 parameterized → 42601)",
+      "status": "CLOSED",
+      "fix_applied": "auth.service.ts line 410-412: replaced parameterized SET LOCAL with SELECT set_config('app.current_user_id', $1, true)",
+      "evidence": {
+        "replay_curl": "POST /auth/token/refresh {replay=RT0} → HTTP 401 {code:'SESSION_REVOKED',message:'Refresh token was already used. All sessions revoked.'}",
+        "family_wipe_curl": "POST /auth/token/refresh {RT1 after replay} → HTTP 401 {code:'SESSION_REVOKED'} — RT1 also dead",
+        "db_check": "SELECT revoked FROM user_session WHERE app_user_id='93ebc794...' → 2/2 rows revoked=true",
+        "live_pg_test": "family-wipe.live.test.ts LIVE-PG-1 + LIVE-PG-2 + LIVE-PG-3: 3/3 PASS (no skip warnings)",
+        "set_config_no_42601": "set_config under brain_app role: guc returned test UUID, no error"
+      }
+    },
+    {
+      "id": "SEC-AOF-N1",
+      "original_severity": "MED",
+      "status": "CLOSED",
+      "fix_applied": "bff.routes.ts: entry increments loginIpKey only; catch increments loginFailKeySync; success resets both (mirrors auth.routes.ts exactly)",
+      "evidence": {
+        "fresh_slate_5_fails": "Attempts 1-5 → HTTP 401 INVALID_CREDENTIALS (each counted once)",
+        "attempt_6_rate_limited": "Attempt 6 → HTTP 429 RATE_LIMITED",
+        "redis_counter": "rl:login:qa-fresh-ratelimit-*@test.invalid:127.0.0.1 = 6 at first 429",
+        "correct_after_4_fails": "Attempt 5 with correct password (after 4 fails) → HTTP 200 (success; reset fired)",
+        "not_2": "Confirmed: does NOT trip at attempt 3 (which double-count would cause)"
+      }
+    }
+  ],
+  "all_prior_findings": [
+    {"id": "QA-01", "status": "CLOSED (round 2)"},
+    {"id": "QA-02", "status": "CLOSED (round 2)"},
+    {"id": "QA-03", "status": "CLOSED (round 2)"},
+    {"id": "QA-04", "status": "CLOSED (round 2)"},
+    {"id": "QA-05", "status": "CLOSED (round 2)"},
+    {"id": "QA-06", "status": "CLOSED (round 2)"},
+    {"id": "QA-07", "status": "CLOSED (round 2)"},
+    {"id": "QA-08", "status": "CLOSED (round 4 — this round)"},
+    {"id": "SEC-AOF-N1", "status": "CLOSED (round 4 — this round)"}
+  ],
+  "negative_control": [
+    {
+      "id": "NC-01",
+      "path": "db (live Postgres under SET ROLE brain_app)",
+      "protection": "RLS onboarding_status cross-workspace isolation",
+      "command": "SET ROLE brain_app; SET app.current_workspace_id='aaaa...'; SELECT id FROM organization LIMIT 3",
+      "captured_red_output": "(0 rows)",
+      "result": "PASS — fail-closed"
+    },
+    {
+      "id": "NC-02",
+      "path": "db (live Postgres under SET ROLE brain_app)",
+      "protection": "RLS currency_code cross-brand isolation",
+      "command": "SET ROLE brain_app; SET app.current_brand_id='aaaa...'; SELECT id,currency_code FROM brand WHERE id='<real>'",
+      "captured_red_output": "(0 rows)",
+      "result": "PASS — fail-closed"
+    },
+    {
+      "id": "NC-03",
+      "path": "db (live Postgres under SET ROLE brain_app)",
+      "protection": "RLS fail-closed with no GUC",
+      "command": "SET ROLE brain_app; SELECT id FROM organization LIMIT 5",
+      "captured_red_output": "(0 rows)",
+      "result": "PASS — fail-closed without GUC"
+    },
+    {
+      "id": "NC-04",
+      "path": "db (live Postgres under SET ROLE brain_app)",
+      "protection": "cross-user session isolation",
+      "command": "SET ROLE brain_app; SET app.current_user_id=<user1>; SELECT id FROM user_session WHERE app_user_id=<user2>",
+      "captured_red_output": "(0 rows)",
+      "result": "PASS — cross-user read returns nothing"
+    },
+    {
+      "id": "NC-05",
+      "path": "db/migrations/0010_brand_locale.sql CHECK constraint",
+      "protection": "MA-12 'placed' excluded from revenue_definition",
+      "command": "INSERT INTO brand (..., revenue_definition) VALUES (..., 'placed')",
+      "captured_red_output": "ERROR: new row for relation \"brand\" violates check constraint \"brand_revenue_definition_check\"",
+      "result": "PASS — 'placed' correctly rejected"
+    },
+    {
+      "id": "NC-06",
+      "path": "live stack + curl + DB",
+      "protection": "replay detection → SESSION_REVOKED 401 (not 500); family-wipe",
+      "command": "POST /api/v1/auth/token/refresh {replay_of_used_token=RT0} then {RT1}",
+      "captured_red_output": "HTTP 401 {code:'SESSION_REVOKED'} for both RT0-replay and RT1; DB 2/2 rows revoked=true",
+      "result": "PASS — QA-08 FIXED: set_config replaces broken parameterized SET LOCAL"
+    },
+    {
+      "id": "NC-07",
+      "path": "live-PG test: family-wipe.live.test.ts LIVE-PG-1",
+      "protection": "42601 regression guard — set_config does not throw syntax error",
+      "command": "client.query(`SELECT set_config('app.current_user_id', $1, true)`, [TEST_USER_ID])",
+      "captured_red_output": "result.rows[0].guc_value === TEST_USER_ID (no error thrown)",
+      "result": "PASS — no 42601; guc_value returned correctly"
+    },
+    {
+      "id": "NC-08",
+      "path": "live-PG test: family-wipe.live.test.ts LIVE-PG-2",
+      "protection": "RLS under brain_app + set_config → family-wipe rowcount > 1",
+      "command": "SET LOCAL ROLE brain_app; set_config; UPDATE user_session SET revoked_at=NOW() WHERE family_id=... AND revoked_at IS NULL",
+      "captured_red_output": "wipeCount=3 > 1 (sessions A, B, C wiped); would be 0 without set_config under brain_app",
+      "result": "PASS — non-inert: removing set_config → 0 rows (fails the assertion)"
+    },
+    {
+      "id": "NC-09",
+      "path": "live-PG test: family-wipe.live.test.ts LIVE-PG-3",
+      "protection": "AuthService.rotateRefreshToken replay → SESSION_REVOKED (not 500); sibling revoked in DB",
+      "command": "authService.rotateRefreshToken(replayedToken, ...) catch; check sibling revoked_at in DB",
+      "captured_red_output": "AuthError SESSION_REVOKED 401; siblingResult.rows[0].revoked_at !== null",
+      "result": "PASS — end-to-end live service test on real Postgres"
+    },
+    {
+      "id": "NC-10",
+      "path": "live stack + curl",
+      "protection": "BFF rate-limit single-count (SEC-AOF-N1): 5 fails then trip at attempt 6",
+      "command": "POST /bff/session wrong-password x6",
+      "captured_red_output": "Attempts 1-5: HTTP 401 INVALID_CREDENTIALS; Attempt 6: HTTP 429 RATE_LIMITED; Redis counter=6",
+      "result": "PASS — single-count confirmed; not double-count (would trip at 3)"
+    }
+  ],
+  "critical_flows": {
+    "refresh_rotation": "PASS — happy path: RT0 rotates to RT1 (new token issued, old marked used_at)",
+    "replay_family_wipe": "PASS — FIXED: RT0 replay → 401 SESSION_REVOKED; RT1 (sibling) also → 401 SESSION_REVOKED; DB 2/2 rows revoked=true",
+    "revoke_on_remove": "PASS (confirmed prior round, not regressed)"
+  },
+  "validity_check": {
+    "command": "uv run validity_check.py --paths apps/core/src --artifacts qa-review.verdict.json --require-negative-control",
+    "exit_code": 0,
+    "output": "validity_check: clean (80 files scanned)",
+    "note": "exit 0 confirmed with --artifacts pointing to this file (NC-07 through NC-10 are live-PG negative controls). Without --artifacts: exit 3 (expected — tool requires artifact JSON for negative-control registry). Code-pattern scan: 0 anti-patterns in 80 files."
+  },
+  "bounce_findings": [],
+  "summary": "PASS round 4 (delta-r2): Both bounce findings CLOSED with live proof. QA-08: set_config('app.current_user_id', $1, true) replaces the invalid parameterized SET LOCAL — replay now returns 401 SESSION_REVOKED + family-wipe DB-confirmed. Live-PG test (family-wipe.live.test.ts 3/3 PASS, no skips) is non-inert: removing set_config → brain_app RLS sees 0 rows (assertion fails). SEC-AOF-N1: BFF rate-limit single-counts — trips at attempt 6 after 5 failures (not at attempt 3 as with double-count); Redis counter=6 at first 429. Full suite green: 34/34 typecheck, 74/74 unit (incl. 3 live-PG), 18/18 lint, 3/3 Playwright. No prior-green-now-red regressions. All 9 bounce findings from rounds 1-4 closed."
+}

@@ -13,6 +13,7 @@ import { ErrorCard } from '@/components/ui/error-card';
 import { registerSchema, type RegisterFormValues } from '@/lib/api/schemas';
 import { useRegister } from '@/lib/hooks/use-auth';
 import { toast } from '@/components/ui/toaster';
+import type { RegisterResponse } from '@/lib/api/types';
 
 export function RegisterForm() {
   const router = useRouter();
@@ -30,12 +31,37 @@ export function RegisterForm() {
     register(
       { email: data.email, password: data.password, full_name: data.full_name },
       {
-        onSuccess: () => {
+        onSuccess: (result: RegisterResponse) => {
+          // AC-7: Backend returns INVITE_PENDING when the email has a pending invite.
+          if (result.code === 'INVITE_PENDING') {
+            toast({
+              title: 'Invite pending',
+              description:
+                'An invite was sent to this email. Accept the invite to join the workspace.',
+            });
+            router.push(`/invite/accept?email=${encodeURIComponent(data.email)}`);
+            return;
+          }
           toast({
             title: 'Account created',
             description: 'Check your email to verify your account.',
           });
           router.push(`/verify-email?email=${encodeURIComponent(data.email)}`);
+        },
+        onError: (err) => {
+          // AC-7: Duplicate verified email — timing-safe 2xx from backend means this
+          // path shows only on actual API errors. The backend returns success for
+          // duplicates with the "check your email" message.
+          // Handle explicit DUPLICATE_EMAIL code if backend ever surfaces it.
+          const anyErr = err as { code?: string };
+          if (anyErr?.code === 'EMAIL_EXISTS') {
+            toast({
+              title: 'Account already exists',
+              description:
+                'An account with this email exists. Sign in or reset your password.',
+              variant: 'destructive',
+            });
+          }
         },
       },
     );

@@ -1,0 +1,26 @@
+{
+  "agent": "platform-devops",
+  "stage": 8,
+  "req_id": "feat-access-onboarding-flow",
+  "verdict": "shipped",
+  "branch": "feat/access-onboarding-flow",
+  "commit": "44fba58",
+  "pr": "manual: https://github.com/Rishabhporwal/Brain-V4/pull/new/feat/access-onboarding-flow",
+  "pushed": true,
+  "prod_deploy": false,
+  "phase": "1-dev-only",
+  "files_committed": 72,
+  "env_safe": true,
+  "gates": {
+    "security": "PASS",
+    "qa": "PASS",
+    "final_review": "PASS/GO",
+    "stakeholder": "APPROVED",
+    "deploy_veto": "EXIT_0"
+  },
+  "acs_met": "11/11",
+  "open_critical_high": 0,
+  "low_residuals": 4,
+  "bounce_rounds": 2,
+  "ts": "2026-06-16T05:00:00Z"
+}

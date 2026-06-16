@@ -1,0 +1,12 @@
+{
+  "decision": "approved",
+  "ts": "2026-06-16T04:05:57Z",
+  "actor": "stakeholder",
+  "req_id": "feat-access-onboarding-flow",
+  "note": "Approved at Stakeholder gate. Final-review PASS/GO; Security + QA PASS (after 2 bounce rounds, both delta-reviewed). 11/11 ACs MET, 0 gaps, 0 open CRITICAL/HIGH. Scope as confirmed at intake: app-native; Authentik/Google/MFA deferred; rotating refresh tokens added; revoke-on-all. 4 LOW residuals accepted.",
+  "advisor_recommendation": "APPROVE",
+  "cost_usd_est": 26,
+  "total_tokens": 1746236,
+  "bounces": 2,
+  "residual_low": ["member-route null-workspace fallback (RLS fail-closes)", "migration rollback documented as comments", "suspend service-only no M1 route", "e2e needs live stack"]
+}

@@ -16,8 +16,10 @@
 import Fastify, { type FastifyRequest, type FastifyError } from 'fastify';
 import fastifyCookie from '@fastify/cookie';
 import { randomUUID } from 'node:crypto';
+import { Redis } from 'ioredis';
 
 import { createPool } from '@brain/db';
+import pg from 'pg';
 import { DbAuditWriter } from '@brain/audit';
 
 import { assertArgon2Params, AuthService } from './modules/workspace-access/internal/application/auth.service.js';
@@ -25,6 +27,7 @@ import { WorkspaceService } from './modules/workspace-access/internal/applicatio
 import { BrandService } from './modules/workspace-access/internal/application/brand.service.js';
 import { InviteService } from './modules/workspace-access/internal/application/invite.service.js';
 import { registerAuthRoutes } from './modules/workspace-access/internal/interfaces/rest/auth.routes.js';
+import { RateLimiter } from './modules/workspace-access/internal/infrastructure/rate-limiter.js';
 import { registerWorkspaceRoutes } from './modules/workspace-access/internal/interfaces/rest/workspace.routes.js';
 import { registerBrandRoutes } from './modules/workspace-access/internal/interfaces/rest/brand.routes.js';
 import { registerMemberRoutes } from './modules/workspace-access/internal/interfaces/rest/member.routes.js';
@@ -112,6 +115,7 @@ export async function main(): Promise<void> {
   const config = {
     port: parseInt(getEnv('PORT', '3001'), 10),
     databaseUrl: getEnvOrThrow('DATABASE_URL'),
+    redisUrl: getEnv('REDIS_URL', 'redis://localhost:6379'),
     jwtSigningSecret,
     appBaseUrl: getEnv('APP_BASE_URL', 'http://localhost:3000'),
     emailFromAddress: getEnv('EMAIL_FROM_ADDRESS', 'noreply@brain.app'),
@@ -194,6 +198,7 @@ export async function main(): Promise<void> {
         path === '/api/v1/auth/verify-email' ||
         path === '/api/v1/auth/forgot-password' ||
         path === '/api/v1/auth/reset-password' ||
+        path === '/api/v1/auth/token/refresh' || // AC-1: refresh token is the credential
         path === '/api/v1/connectors/shopify/callback' || // OAuth (state-validated)
         path.startsWith('/api/v1/webhooks/'); // HMAC-validated
       if (!csrfExempt) {
@@ -250,6 +255,28 @@ export async function main(): Promise<void> {
     timestamp: new Date().toISOString(),
   }));
 
+  // Create Redis client for rate limiting (AC-3 / MA-04). FAIL-OPEN: the RateLimiter
+  // itself handles Redis errors by allowing the request (no Redis = no blocking).
+  const redis = new Redis(config.redisUrl, {
+    maxRetriesPerRequest: 1,
+    connectTimeout: 2000,
+    lazyConnect: true,
+    enableOfflineQueue: false,
+  });
+  // lazyConnect: suppress startup errors — RateLimiter is fail-open anyway.
+  redis.connect().catch((err: unknown) => {
+    console.warn('[core] Redis connect failed — rate limiting will fail-open', err);
+  });
+  const rateLimiter = new RateLimiter(redis);
+
+  // Raw pg.Pool for methods that need explicit BEGIN/COMMIT (rotateRefreshToken, acceptInvite,
+  // updateMemberRole, removeMember). These require transaction control before knowing the userId,
+  // so the GUC middleware cannot be applied at checkout. The raw pool bypasses GUC middleware.
+  const rawPgPool = new pg.Pool({
+    connectionString: config.databaseUrl,
+    max: 5, // smaller sub-pool for transactional paths
+  });
+
   // Create DB pool (3-GUC middleware — NN-1).
   const pool = await createPool({ connectionString: config.databaseUrl });
 
@@ -272,17 +299,17 @@ export async function main(): Promise<void> {
 
   // Create application services.
   const authServiceConfig = { jwtSigningSecret: config.jwtSigningSecret };
-  const authService = new AuthService(pool, auditWriter, notificationService, authServiceConfig);
+  const authService = new AuthService(pool, auditWriter, notificationService, authServiceConfig, rawPgPool);
   const workspaceService = new WorkspaceService(pool, auditWriter);
   const brandService = new BrandService(pool, auditWriter);
-  const inviteService = new InviteService(pool, auditWriter, notificationService);
+  const inviteService = new InviteService(pool, auditWriter, notificationService, rawPgPool);
 
   // Register workspace-access + BFF routes.
-  registerAuthRoutes(app, authService);
+  registerAuthRoutes(app, authService, rateLimiter);
   registerWorkspaceRoutes(app, authService, workspaceService);
   registerBrandRoutes(app, authService, brandService);
   registerMemberRoutes(app, authService, inviteService);
-  registerBffRoutes(app, authService, pool, config.cookieSecret);
+  registerBffRoutes(app, authService, pool, config.cookieSecret, rateLimiter);
 
   // ── HIGH-MOUNT-01: Mount connector + pixel routes with guards wired HERE ────
   //
@@ -559,6 +586,8 @@ export async function main(): Promise<void> {
     app.log.info('[core] Shutting down...');
     await app.close();
     await pool.end();
+    await rawPgPool.end().catch(() => { /* ignore */ });
+    await redis.quit().catch(() => { /* ignore */ });
     process.exit(0);
   };
   process.on('SIGTERM', shutdown);

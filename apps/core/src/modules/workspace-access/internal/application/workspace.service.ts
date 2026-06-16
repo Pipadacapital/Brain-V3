@@ -7,7 +7,7 @@ import type { DbPool, QueryContext } from '@brain/db';
 import type { AuditWriter } from '@brain/audit';
 import type { Organization } from '../domain/organization/entities.js';
 import type { Membership } from '../domain/membership/entities.js';
-import { OrganizationRepository, MembershipRepository, BrandRepository } from '../infrastructure/repositories.js';
+import { OrganizationRepository, MembershipRepository } from '../infrastructure/repositories.js';
 
 export class WorkspaceError extends Error {
   constructor(
@@ -59,6 +59,11 @@ export class WorkspaceService {
         },
         ctxWithWorkspace,
       );
+
+      // AC-5: Advance onboarding_status → 'org_created' (forward-only).
+      // M1: onboarding_status tracks first-brand onboarding only; multi-brand onboarding
+      // is post-M1 (routes via dashboard onboarding-progress widget).
+      await orgRepo.advanceOnboardingStatus(org.id, 'org_created', 1, ctxWithWorkspace);
 
       await this.audit.append({
         brand_id: org.id,

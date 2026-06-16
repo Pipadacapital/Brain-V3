@@ -2,13 +2,20 @@
 
 import { useEffect } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Loader2, CheckCircle } from 'lucide-react';
+import { Loader2, CheckCircle, AlertTriangle, MailCheck } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { ErrorCard } from '@/components/ui/error-card';
 import { useAcceptInvite } from '@/lib/hooks/use-members';
+import { BffApiError } from '@/lib/api/client';
 import { toast } from '@/components/ui/toaster';
 
+/**
+ * Invite accept view — handles AC-7 error states:
+ * - EMAIL_MISMATCH: invite was sent to a different email address.
+ * - USER_UNVERIFIED: accepting user has not verified their email yet.
+ * - Generic errors: shown via ErrorCard with request ID.
+ */
 export function AcceptInviteView() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -55,6 +62,57 @@ export function AcceptInviteView() {
   }
 
   if (error) {
+    // AC-7: Specific guided messages for invite hardening errors.
+    if (error instanceof BffApiError) {
+      if (error.code === 'EMAIL_MISMATCH') {
+        return (
+          <Card>
+            <CardHeader>
+              <div className="flex justify-center mb-2">
+                <AlertTriangle className="h-10 w-10 text-amber-500" aria-hidden="true" />
+              </div>
+              <CardTitle className="text-center">Wrong email address</CardTitle>
+              <CardDescription className="text-center">
+                This invite was sent to a different email address. Please sign in with the email
+                that received the invitation and try again.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="text-center space-y-3">
+              <Button onClick={() => router.push('/login')} data-testid="btn-invite-wrong-email-login">
+                Sign in with another account
+              </Button>
+            </CardContent>
+          </Card>
+        );
+      }
+
+      if (error.code === 'USER_UNVERIFIED') {
+        return (
+          <Card>
+            <CardHeader>
+              <div className="flex justify-center mb-2">
+                <MailCheck className="h-10 w-10 text-blue-500" aria-hidden="true" />
+              </div>
+              <CardTitle className="text-center">Verify your email first</CardTitle>
+              <CardDescription className="text-center">
+                You need to verify your email address before you can accept this invitation.
+                Check your inbox for a verification link.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="text-center">
+              <Button
+                variant="outline"
+                onClick={() => router.push('/verify-email')}
+                data-testid="btn-invite-verify-email"
+              >
+                Go to email verification
+              </Button>
+            </CardContent>
+          </Card>
+        );
+      }
+    }
+
     return (
       <Card>
         <CardContent className="py-6">
@@ -82,7 +140,9 @@ export function AcceptInviteView() {
           </CardDescription>
         </CardHeader>
         <CardContent className="text-center">
-          <Button onClick={() => router.push('/login')}>Sign in</Button>
+          <Button onClick={() => router.push('/login')} data-testid="btn-invite-accepted-login">
+            Sign in
+          </Button>
         </CardContent>
       </Card>
     );

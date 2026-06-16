@@ -45,6 +45,9 @@ export function registerBrandRoutes(
             domain: parsed.data.domain ?? null,
             requestingUserId: auth.userId,
             requestingRole: (auth.role ?? 'analyst') as 'owner' | 'brand_admin' | 'manager' | 'analyst',
+            currencyCode: parsed.data.currency_code,
+            timezone: parsed.data.timezone,
+            revenueDefinition: parsed.data.revenue_definition,
           },
           correlationId,
         );
@@ -57,6 +60,9 @@ export function registerBrandRoutes(
             domain: brand.domain,
             status: brand.status,
             region_code: brand.regionCode,
+            currency_code: brand.currencyCode,
+            timezone: brand.timezone,
+            revenue_definition: brand.revenueDefinition,
             created_at: brand.createdAt.toISOString(),
             updated_at: brand.updatedAt.toISOString(),
           },
@@ -104,6 +110,9 @@ export function registerBrandRoutes(
             domain: brand.domain,
             status: brand.status,
             region_code: brand.regionCode,
+            currency_code: brand.currencyCode,
+            timezone: brand.timezone,
+            revenue_definition: brand.revenueDefinition,
             created_at: brand.createdAt.toISOString(),
             updated_at: brand.updatedAt.toISOString(),
           },
@@ -151,6 +160,9 @@ export function registerBrandRoutes(
             domain: b.domain,
             status: b.status,
             region_code: b.regionCode,
+            currency_code: b.currencyCode,
+            timezone: b.timezone,
+            revenue_definition: b.revenueDefinition,
             created_at: b.createdAt.toISOString(),
             updated_at: b.updatedAt.toISOString(),
           })),
@@ -186,7 +198,20 @@ export function registerBrandRoutes(
       }
 
       try {
-        const brand = await brandService.update(id, parsed.data, auth.userId, workspaceId, correlationId);
+        const brand = await brandService.update(
+          id,
+          {
+            displayName: parsed.data.display_name,
+            domain: parsed.data.domain,
+            status: parsed.data.status,
+            currencyCode: parsed.data.currency_code,
+            timezone: parsed.data.timezone,
+            revenueDefinition: parsed.data.revenue_definition,
+          },
+          auth.userId,
+          workspaceId,
+          correlationId,
+        );
         return reply.send({
           request_id: requestId,
           brand: {
@@ -196,6 +221,9 @@ export function registerBrandRoutes(
             domain: brand.domain,
             status: brand.status,
             region_code: brand.regionCode,
+            currency_code: brand.currencyCode,
+            timezone: brand.timezone,
+            revenue_definition: brand.revenueDefinition,
             created_at: brand.createdAt.toISOString(),
             updated_at: brand.updatedAt.toISOString(),
           },

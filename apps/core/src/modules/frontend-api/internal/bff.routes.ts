@@ -41,8 +41,12 @@ type CookieReply = FastifyReply & {
 import type { AuthService } from '../../workspace-access/internal/application/auth.service.js';
 import type { AuthenticatedRequest } from '../../workspace-access/internal/interfaces/rest/auth.routes.js';
 import { validateSessionPreHandler } from '../../workspace-access/internal/interfaces/rest/auth.routes.js';
+import type { OnboardingStatus } from '../../workspace-access/internal/domain/organization/entities.js';
 import type { DbPool, QueryContext } from '@brain/db';
+import { MembershipRepository, OrganizationRepository } from '../../workspace-access/internal/infrastructure/repositories.js';
 import { jtiFromJwt, csrfTokenForSession } from './csrf.js';
+import type { RateLimiter } from '../../workspace-access/internal/infrastructure/rate-limiter.js';
+import { loginFailKeySync, loginIpKey } from '../../workspace-access/internal/infrastructure/rate-limiter.js';
 
 const COOKIE_NAME = 'brain_session';
 const CSRF_COOKIE_NAME = 'brain_csrf';
@@ -54,6 +58,7 @@ export function registerBffRoutes(
   authService: AuthService,
   pool?: DbPool,
   cookieSecret = '',
+  rateLimiter?: RateLimiter,
 ): void {
   const sessionPreHandler = validateSessionPreHandler(authService);
 
@@ -102,18 +107,10 @@ export function registerBffRoutes(
       });
     }
 
-    // Step 2: CSRF double-submit validation for mutations.
-    const method = request.method.toUpperCase();
-    if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {
-      const csrfCookie = reqCookies[CSRF_COOKIE_NAME];
-      const csrfHeader = request.headers[CSRF_HEADER_NAME];
-      if (!csrfCookie || csrfCookie !== csrfHeader) {
-        return reply.code(403).send({
-          request_id: requestId,
-          error: { code: 'CSRF_MISMATCH', message: 'CSRF token mismatch.' },
-        });
-      }
-    }
+    // MA-14 / B-8: The authoritative CSRF check (jti-bound double-submit, SEC-0009-M02)
+    // runs in the app-wide onRequest hook in main.ts. The weaker plain-equality check
+    // that was here has been REMOVED to eliminate the duplicate and the weaker variant.
+    // The app-wide hook enforces HMAC(cookieSecret, jti) binding, not just cookie===header.
 
     // Step 3: Set Authorization header for the downstream session preHandler.
     // The cookie contains the access token directly (in M1 BFF, cookie = access token).
@@ -124,6 +121,7 @@ export function registerBffRoutes(
   }
 
   // ── POST /api/v1/bff/session — exchange credentials for session cookie ────
+  // QA-03: Rate limited per-(email+IP) and per-IP (same limits as /auth/login — AC-3).
   fastify.post('/api/v1/bff/session', async (request: FastifyRequest, reply: FastifyReply) => {
     const requestId = randomUUID();
     const correlationId = (request.headers['x-correlation-id'] as string) ?? requestId;
@@ -136,6 +134,22 @@ export function registerBffRoutes(
       });
     }
 
+    // AC-3 / QA-03: Rate-limit pattern mirrors auth.routes.ts exactly (SEC-AOF-N1 fix):
+    //   Entry  — increment per-IP cap (loginIpKey) only; block if over limit.
+    //   Catch  — increment per-(email+IP) failure counter (loginFailKey) on failure.
+    //   Success— reset BOTH loginFailKey and loginIpKey (clear the window on good auth).
+    // loginFailKey is NOT touched at entry so each failed attempt counts exactly once.
+    if (rateLimiter) {
+      const ip = request.ip ?? '0.0.0.0';
+      const ipRl = await rateLimiter.check(loginIpKey(ip), 20, 900);
+      if (!ipRl.allowed) {
+        return reply.code(429).send({
+          request_id: requestId,
+          error: { code: 'RATE_LIMITED', message: 'Too many login attempts. Please try again later.' },
+        }).header('Retry-After', String(ipRl.retryAfter));
+      }
+    }
+
     try {
       const result = await authService.login(
         email,
@@ -144,6 +158,13 @@ export function registerBffRoutes(
         request.headers['user-agent'] ?? null,
         correlationId,
       );
+
+      // Reset BOTH failure counter and per-IP counter on successful login (mirrors auth.routes.ts:183-184).
+      if (rateLimiter) {
+        const ip = request.ip ?? '0.0.0.0';
+        void rateLimiter.reset(loginFailKeySync(email, ip));
+        void rateLimiter.reset(loginIpKey(ip));
+      }
 
       // Set the httpOnly cookie with the access token.
       (reply as CookieReply).setCookie(COOKIE_NAME, result.accessToken, {
@@ -154,6 +175,10 @@ export function registerBffRoutes(
         maxAge: result.expiresIn,
       });
 
+      // AC-5 / B-5: Surface onboarding_status enum instead of needs_onboarding boolean.
+      // null → user has no workspace yet (just registered, no org membership).
+      const onboardingStatus: OnboardingStatus | null = result.context.onboardingStatus;
+      // QA-07: auth sub-object uses snake_case (contract §6: brand_id, workspace_id).
       return reply.send({
         request_id: requestId,
         user: {
@@ -162,11 +187,25 @@ export function registerBffRoutes(
           email_verified: result.user.emailVerifiedAt !== null,
         },
         expires_in: result.expiresIn,
-        // The web app routes to onboarding when the session carries no brand yet.
-        needs_onboarding: result.context.brandId === null,
-        auth: result.context,
+        onboarding_status: onboardingStatus,
+        auth: {
+          brand_id: result.context.brandId,
+          workspace_id: result.context.workspaceId,
+          role: result.context.role,
+        },
       });
     } catch {
+      // Increment per-(email+IP) failure counter on failed login (mirrors auth.routes.ts catch).
+      if (rateLimiter) {
+        const ip = request.ip ?? '0.0.0.0';
+        const emailIpRl = await rateLimiter.check(loginFailKeySync(email, ip), 5, 900);
+        if (!emailIpRl.allowed) {
+          return reply.code(429).send({
+            request_id: requestId,
+            error: { code: 'RATE_LIMITED', message: 'Too many failed login attempts. Please try again later.' },
+          }).header('Retry-After', String(emailIpRl.retryAfter));
+        }
+      }
       return reply.code(401).send({
         request_id: requestId,
         error: { code: 'INVALID_CREDENTIALS', message: 'Invalid email or password.' },
@@ -197,10 +236,15 @@ export function registerBffRoutes(
         maxAge: result.expiresIn,
       });
 
+      // QA-07: auth sub-object uses snake_case (contract §6: brand_id, workspace_id).
       return reply.send({
         request_id: requestId,
-        needs_onboarding: result.context.brandId === null,
-        auth: result.context,
+        onboarding_status: result.context.onboardingStatus,
+        auth: {
+          brand_id: result.context.brandId,
+          workspace_id: result.context.workspaceId,
+          role: result.context.role,
+        },
       });
     },
   );
@@ -214,13 +258,168 @@ export function registerBffRoutes(
       const correlationId = (request.headers['x-correlation-id'] as string) ?? requestId;
       const auth = (request as AuthenticatedRequest).auth;
 
-      await authService.logout(auth.jti, auth.userId, correlationId);
+      // AC-2: ?scope=all revokes all sessions for this user (e.g. "logout everywhere").
+      const scopeAll = (request.query as { scope?: string }).scope === 'all';
+      await authService.logout(auth.jti, auth.userId, correlationId, scopeAll);
 
       // Clear the session cookie.
       (reply as CookieReply).clearCookie(COOKIE_NAME, { path: '/' });
       (reply as CookieReply).clearCookie(CSRF_COOKIE_NAME, { path: '/' });
 
       return reply.send({ request_id: requestId, ok: true });
+    },
+  );
+
+  // ── POST /api/v1/bff/session/set-org — switch active workspace in cookie ──────
+  // AC-8 / B-7: After onboarding creates the first org, the front-end calls this
+  // endpoint with the new organization_id (§6 contract field name). The service
+  // verifies the user is a member of that org (SEC-AOF-H1 → 403 if not), then
+  // re-resolves brand/role context and re-mints the cookie with onboarding_status.
+  // CSRF IS enforced by the app-wide onRequest hook in main.ts (SEC-0009-M02).
+  // Do NOT add this path to the CSRF-exempt list.
+  fastify.post(
+    '/api/v1/bff/session/set-org',
+    { preHandler: [sessionPreHandler] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const correlationId = (request.headers['x-correlation-id'] as string) ?? requestId;
+      const auth = (request as AuthenticatedRequest).auth;
+      // QA-02: contract §6 field name is organization_id (not workspace_id).
+      const body = request.body as { organization_id?: string };
+
+      if (!body?.organization_id) {
+        return reply.code(400).send({
+          request_id: requestId,
+          error: { code: 'MISSING_ORGANIZATION_ID', message: 'organization_id is required.' },
+        });
+      }
+
+      if (!pool) {
+        return reply.code(503).send({
+          request_id: requestId,
+          error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available.' },
+        });
+      }
+
+      // SEC-AOF-H1: Explicit membership check BEFORE refreshSession.
+      // resolveActiveContext falls back to findActiveByUser when membership is missing,
+      // which would silently return the user's own org instead of 403.
+      // We must fail-closed here: non-member → 403 (architecture plan AC-8 §B-7).
+      const memberClient = await pool.connect();
+      try {
+        const memberRepo = new MembershipRepository(memberClient);
+        const membership = await memberRepo.findByUserAndOrg(
+          auth.userId,
+          body.organization_id,
+          null,
+          { correlationId, userId: auth.userId, workspaceId: body.organization_id },
+        );
+        if (!membership) {
+          return reply.code(403).send({
+            request_id: requestId,
+            error: { code: 'FORBIDDEN', message: 'Not a member of the requested organization.' },
+          });
+        }
+      } finally {
+        memberClient.release();
+      }
+
+      // refreshSession re-resolves brand/role context for the verified org.
+      const result = await authService.refreshSession(
+        auth.userId,
+        auth.jti,
+        correlationId,
+        body.organization_id,
+      );
+
+      (reply as CookieReply).setCookie(COOKIE_NAME, result.accessToken, {
+        httpOnly: true,
+        secure: process.env['NODE_ENV'] === 'production',
+        sameSite: 'strict',
+        path: '/',
+        maxAge: result.expiresIn,
+      });
+
+      // QA-07: auth sub-object uses snake_case (contract §6: brand_id, workspace_id).
+      return reply.send({
+        request_id: requestId,
+        onboarding_status: result.context.onboardingStatus,
+        auth: {
+          brand_id: result.context.brandId,
+          workspace_id: result.context.workspaceId,
+          role: result.context.role,
+        },
+      });
+    },
+  );
+
+  // ── POST /api/v1/bff/session/onboarding/advance — advance wizard step ────────
+  // QA-01 / AC-5 §B-5: Steps 3 ("Skip For Now") and 4 ("Done") call this.
+  // Body: { to: 'integration_selected' | 'complete' }
+  // Forward-only guard: the SQL WHERE clause enforces onboarding_step < $newStep.
+  // Returns the new onboarding_status so the frontend can route immediately.
+  // CSRF enforced by the app-wide onRequest hook (session cookie present → mutation → checked).
+  fastify.post(
+    '/api/v1/bff/session/onboarding/advance',
+    { preHandler: [sessionPreHandler] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const correlationId = (request.headers['x-correlation-id'] as string) ?? requestId;
+      const auth = (request as AuthenticatedRequest).auth;
+      const body = request.body as { to?: string };
+
+      const ALLOWED_TARGETS: Record<string, { status: string; step: number }> = {
+        integration_selected: { status: 'integration_selected', step: 3 },
+        complete: { status: 'complete', step: 4 },
+      };
+
+      const target = body?.to ? ALLOWED_TARGETS[body.to] : undefined;
+      if (!target) {
+        return reply.code(400).send({
+          request_id: requestId,
+          error: {
+            code: 'INVALID_TARGET',
+            message: `'to' must be one of: ${Object.keys(ALLOWED_TARGETS).join(', ')}.`,
+          },
+        });
+      }
+
+      if (!auth.workspaceId) {
+        return reply.code(400).send({
+          request_id: requestId,
+          error: { code: 'MISSING_WORKSPACE', message: 'No workspace context in session. Call set-org first.' },
+        });
+      }
+
+      if (!pool) {
+        return reply.code(503).send({
+          request_id: requestId,
+          error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available.' },
+        });
+      }
+
+      const ctx: QueryContext = { correlationId, userId: auth.userId, workspaceId: auth.workspaceId };
+      const client = await pool.connect();
+      try {
+        const orgRepo = new OrganizationRepository(client);
+        // M1: onboarding_status tracks first-brand onboarding only; multi-brand onboarding is post-M1.
+        // Forward-only: advanceOnboardingStatus uses WHERE onboarding_step < $newStep — idempotent.
+        await orgRepo.advanceOnboardingStatus(
+          auth.workspaceId,
+          target.status as import('../../workspace-access/internal/domain/organization/entities.js').OnboardingStatus,
+          target.step,
+          ctx,
+        );
+
+        // Read back the current status so we return the authoritative value.
+        const org = await orgRepo.findById(auth.workspaceId, ctx);
+        return reply.send({
+          request_id: requestId,
+          onboarding_status: org?.onboardingStatus ?? target.status,
+        });
+      } finally {
+        client.release();
+      }
     },
   );
 

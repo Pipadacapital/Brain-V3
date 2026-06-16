@@ -1,0 +1,9 @@
+{
+  "ts": "2026-06-15T21:25:00Z",
+  "actor": "stakeholder",
+  "decisions": {
+    "SD-1_idp_mfa_scope": "DEFER — Authentik OIDC, Google one-tap, MFA are NOT in this requirement; build the app-native slice. Each becomes a separate child requirement.",
+    "SD-2_refresh_tokens": "ADD NOW — Postgres-backed rotating refresh tokens (15-min access + 7-day refresh) + /auth/token/refresh.",
+    "SD-3_revocation": "REVOKE ON ALL CHANGES — any role/permission change or remove/suspend instantly revokes affected sessions (immediate revocation, non-negotiable)."
+  }
+}

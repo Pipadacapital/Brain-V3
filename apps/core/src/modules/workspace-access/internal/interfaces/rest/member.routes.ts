@@ -125,6 +125,16 @@ export function registerMemberRoutes(
         return reply.code(400).send({ request_id: requestId, error: { code: 'MISSING_WORKSPACE', message: 'organization_id required.' } });
       }
 
+      // AC-8 / MA-06: If the caller explicitly provides organization_id, it MUST match the
+      // session's workspace_id. A mismatch means the client is trying to list another
+      // workspace's members — reject immediately (fail-closed, no info leak).
+      if (query.organization_id && auth.workspaceId && query.organization_id !== auth.workspaceId) {
+        return reply.code(403).send({
+          request_id: requestId,
+          error: { code: 'FORBIDDEN', message: 'organization_id does not match session workspace.' },
+        });
+      }
+
       try {
         const result = await inviteService.listMembers(
           {
@@ -169,7 +179,19 @@ export function registerMemberRoutes(
       const correlationId = (request.headers['x-correlation-id'] as string) ?? requestId;
       const auth = (request as AuthenticatedRequest).auth;
       const { id } = request.params as { id: string };
-      const organizationId = auth.workspaceId ?? (request.query as { organization_id?: string }).organization_id;
+      const query = request.query as { organization_id?: string };
+
+      // SEC-AOF-M1: Use auth.workspaceId as sole source of truth (AC-8 / MA-06).
+      // If organization_id is supplied in the query and differs from the session workspace, reject immediately.
+      // The org switch is done via set-org (which re-mints the JWT), not per-request params.
+      if (query.organization_id && auth.workspaceId && query.organization_id !== auth.workspaceId) {
+        return reply.code(403).send({
+          request_id: requestId,
+          error: { code: 'FORBIDDEN', message: 'organization_id does not match session workspace.' },
+        });
+      }
+
+      const organizationId = auth.workspaceId ?? query.organization_id;
 
       if (!organizationId) {
         return reply.code(400).send({ request_id: requestId, error: { code: 'MISSING_WORKSPACE', message: 'organization_id required.' } });
@@ -212,7 +234,18 @@ export function registerMemberRoutes(
       const correlationId = (request.headers['x-correlation-id'] as string) ?? requestId;
       const auth = (request as AuthenticatedRequest).auth;
       const { id } = request.params as { id: string };
-      const organizationId = auth.workspaceId ?? (request.query as { organization_id?: string }).organization_id;
+      const query = request.query as { organization_id?: string };
+
+      // SEC-AOF-M1: Use auth.workspaceId as sole source of truth (AC-8 / MA-06).
+      // If organization_id is supplied in the query and differs from the session workspace, reject immediately.
+      if (query.organization_id && auth.workspaceId && query.organization_id !== auth.workspaceId) {
+        return reply.code(403).send({
+          request_id: requestId,
+          error: { code: 'FORBIDDEN', message: 'organization_id does not match session workspace.' },
+        });
+      }
+
+      const organizationId = auth.workspaceId ?? query.organization_id;
 
       if (!organizationId) {
         return reply.code(400).send({ request_id: requestId, error: { code: 'MISSING_WORKSPACE', message: 'organization_id required.' } });

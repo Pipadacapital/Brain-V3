@@ -37,6 +37,12 @@ export interface UserSession {
   ip: string | null;
   userAgent: string | null;
   createdAt: Date;
+  /** Family lineage ID — ties the whole rotation chain together for family-wipe (AC-1). */
+  familyId: string | null;
+  /** Points to the previous session row in the rotation chain (null for root). */
+  rotatedFrom: string | null;
+  /** Set when refresh token is consumed; used_at IS NOT NULL = replay attempt (AC-1). */
+  usedAt: Date | null;
 }
 
 // ── PasswordResetToken entity ─────────────────────────────────────────────────

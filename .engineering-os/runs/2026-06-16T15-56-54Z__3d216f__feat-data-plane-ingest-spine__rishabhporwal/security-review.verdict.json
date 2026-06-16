@@ -1,0 +1,56 @@
+{
+  "stage": 4,
+  "agent": "security-reviewer",
+  "req_id": "feat-data-plane-ingest-spine",
+  "verdict": "PASS",
+  "scope": "delta",
+  "delta_scope": "SR-01 closure + SR-02/SR-03/SR-04 disposition; diff since BOUNCE commit 6fb8768 (commits 3567196, 6e3fd83, dcf2d55, 0fb9119, ef78505)",
+  "findings": [
+    {
+      "id": "SR-01",
+      "severity": "HIGH",
+      "title": "Raw Redis key construction in test file violates NN-7 lint invariant (ESLint error, blocking CI)",
+      "file": "apps/stream-worker/src/tests/bronze.e2e.test.ts:114,115,217",
+      "status": "RESOLVED",
+      "resolution": "All three raw template-literal Redis key constructions replaced with buildDedupKey(brandId, eventId) imported from domain/bronze/DedupPolicy.js (commit 3567196). pnpm --filter @brain/stream-worker lint exits 0 with 0 errors. Verified by delta re-review lint run."
+    },
+    {
+      "id": "SR-02",
+      "severity": "MEDIUM",
+      "title": "No-GUC isolation negative control (Case 2) does not cleanly prove null→fail-closed due to session-scoped GUC leakage via pool connection reuse",
+      "file": "apps/stream-worker/src/tests/bronze.e2e.test.ts:256-262",
+      "status": "SHIP-AS-TECHDEBT",
+      "disposition": "Partially improved. The bounce-fix added pipeline-wire.e2e.test.ts which asserts wrong-brand GUC→0 rows under brain_app on a dedicated pool connection (Step 5, line 373-395), strengthening the wrong-brand isolation probe as a full-wire test. The null-GUC fail-closed path (Case 2 of bronze.e2e.test.ts isolation test) remains imprecise — readBronzeAsApp still uses set_config(..., false) (session scope), so the null-GUC case passes because brand_B≠brand_A, not because GUC is null. The underlying RLS FORCE property is live-proven correct; this is a test-precision gap, not a production security regression. Deferred to M2 backlog: fix readBronzeAsApp to use transaction-scoped GUC (true as third arg + explicit BEGIN/COMMIT) or fresh connection per call."
+    },
+    {
+      "id": "SR-03",
+      "severity": "MEDIUM",
+      "title": "collector_spool.raw_body stores raw unvalidated body including potential PII",
+      "file": "apps/collector/src/infrastructure/pg-spool.repository.ts:38-46",
+      "status": "SHIP-AS-TECHDEBT",
+      "disposition": "M1 internal synthetic event scope only; Zod contract schema enforces hashed identifiers for compliant callers; no external traffic. Deferred to M2: add spool housekeeping job (delete drained rows >7d) and document that collector must sit behind API gateway/write-key auth before external exposure."
+    },
+    {
+      "id": "SR-04",
+      "severity": "LOW",
+      "title": "Rate limiting configured but not enforced (fastify-rate-limit not registered)",
+      "file": "apps/collector/src/main.ts",
+      "status": "SHIP-AS-TECHDEBT",
+      "disposition": "M1 internal scope only; no external traffic. Acceptable. Deferred to M2 backlog: register fastify-rate-limit using RATE_LIMIT_EVENTS_PER_MINUTE config before external exposure."
+    },
+    {
+      "id": "SR-05",
+      "severity": "LOW",
+      "title": "TimeoutNegativeWarning in test runner",
+      "file": "apps/stream-worker/vitest.config.ts",
+      "status": "INFO",
+      "disposition": "vitest.config.ts hookTimeout/testTimeout raised to 120s in bounce-fix commit dcf2d55 — warning should be resolved. No security impact."
+    }
+  ],
+  "blocking": false,
+  "open_critical": 0,
+  "open_high": 0,
+  "lint_clean": true,
+  "regression_check": "No production/isolation/RLS/migration files touched in bounce commits. Commits 3567196+6e3fd83+dcf2d55+0fb9119+ef78505 touch: bronze.e2e.test.ts (test only), collector/main.ts (path resolution fix), stream-worker/src/tests/pipeline-wire.e2e.test.ts (new full-wire test), stream-worker/src/tests/dlq.unit.test.ts (new unit test), vitest.config.ts (timeout config), live.log + developer report (docs). db/migrations/ untouched (git diff 6fb8768..HEAD -- db/migrations/ = empty).",
+  "ts": "2026-06-16T21:10:00Z"
+}

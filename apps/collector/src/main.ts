@@ -1,9 +1,163 @@
 /**
  * Collector (Deployable 1) — accept-before-validate ingest. ADR-003.
- * Flow: intake → envelope → spool (fsync → ACK) → drainer → Redpanda.
- * The 99.95% durability guarantee lives in ./spool/, NOT the Kafka client.
- * Spec: docs/04 §7 / §C; docs/05 §4.
+ *
+ * D-1 ORDERING (immutable invariant):
+ *   HTTP body → INSERT collector_spool → HTTP 200 ACK
+ *   ← async, separate loop → drainer → Redpanda.produce()
+ *
+ * The 99.95% durability guarantee lives in collector_spool, NOT in the Kafka client.
+ * Even with Redpanda completely down, every event is ACK'd and spooled.
+ *
+ * Startup sequence (D-10):
+ *   1. Parse + validate config (exit 1 on invalid env).
+ *   2. Connect spool DB (PgSpoolRepository).
+ *   3. Register Avro schema with Apicurio — exponential backoff, max 30s.
+ *      On timeout: log warning, degrade to spool-only mode (do NOT crash-loop).
+ *   4. Open HTTP listener.
+ *   5. Start drainer loop (separate async interval — NOT in request handler).
  */
-export async function main() {
-  // TODO: Fastify server; POST /collect, /webhook/{connector}; durable spool.
+
+import Fastify from 'fastify';
+import { parseEnv, CollectorEnvSchema } from '@brain/config';
+import { registerSchema, defaultApicurioConfig } from '@brain/events';
+import { PgSpoolRepository } from './infrastructure/pg-spool.repository.js';
+import { CollectorKafkaProducer } from './infrastructure/kafka-producer.js';
+import { AcceptEventUseCase } from './application/accept-event.usecase.js';
+import { DrainEventsUseCase } from './application/drain-events.usecase.js';
+import { Drainer } from './interfaces/jobs/drainer.js';
+import { registerCollectRoute } from './interfaces/rest/collect.route.js';
+import { registerHealthRoutes } from './interfaces/rest/health.route.js';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
+// ── Config ────────────────────────────────────────────────────────────────────
+
+const cfg = parseEnv(CollectorEnvSchema, {
+  ...process.env,
+  SERVICE_NAME: process.env['SERVICE_NAME'] ?? 'collector',
+});
+
+// ── Apicurio schema registration with exponential backoff (D-10) ──────────────
+
+async function registerSchemaWithBackoff(): Promise<void> {
+  const apicurioUrl = cfg.APICURIO_REGISTRY_URL ?? process.env['APICURIO_URL'] ?? 'http://localhost:8080';
+
+  // Load the Avro schema from the contracts package generated artifact.
+  // Path: packages/contracts/generated/avro/brain.collector.event.v1.avsc
+  let avscJson: string;
+  try {
+    const avscPath = fileURLToPath(new URL('../../../packages/contracts/generated/avro/brain.collector.event.v1.avsc', import.meta.url));
+    avscJson = readFileSync(avscPath, 'utf-8');
+  } catch (err) {
+    console.warn(`[collector] Could not load Avro schema file: ${String(err)} — skipping Apicurio registration`);
+    return;
+  }
+
+  const apicurioConfig = {
+    ...defaultApicurioConfig(),
+    baseUrl: apicurioUrl,
+  };
+
+  const MAX_BACKOFF_MS = 30_000;
+  let attemptMs = 500;
+  let totalMs = 0;
+
+  while (totalMs < MAX_BACKOFF_MS) {
+    try {
+      const result = await registerSchema(apicurioConfig, avscJson);
+      console.info(`[collector] Apicurio schema registered: artifactId=${result.artifactId} version=${result.version}`);
+      return;
+    } catch (err) {
+      console.warn(`[collector] Apicurio registration attempt failed (${totalMs}ms elapsed): ${String(err)}`);
+      await new Promise<void>((resolve) => setTimeout(resolve, attemptMs));
+      totalMs += attemptMs;
+      attemptMs = Math.min(attemptMs * 2, 5_000);
+    }
+  }
+
+  // D-10: after backoff budget exhausted, degrade to spool-only (do NOT crash).
+  console.warn(
+    '[collector] Apicurio registration failed after 30s — degrading to spool-only mode. ' +
+    'Schema will be registered on next restart. Events continue to spool and drain normally.',
+  );
+}
+
+// ── Bootstrap ─────────────────────────────────────────────────────────────────
+
+export async function main(): Promise<void> {
+  // ── 1. Infrastructure wiring ─────────────────────────────────────────────────
+  const spoolRepo = new PgSpoolRepository(cfg.DATABASE_URL);
+
+  const brokers = cfg.REDPANDA_BROKERS.split(',').map((b) => b.trim());
+  const topic = `${cfg.NODE_ENV === 'production' ? 'prod' : 'dev'}.collector.event.v1`;
+
+  const kafkaProducer = new CollectorKafkaProducer({
+    brokers,
+    clientId: 'collector-drainer',
+    topic,
+    ...(cfg.REDPANDA_SASL_USERNAME && cfg.REDPANDA_SASL_PASSWORD
+      ? {
+          sasl: {
+            mechanism: 'plain' as const,
+            username: cfg.REDPANDA_SASL_USERNAME,
+            password: cfg.REDPANDA_SASL_PASSWORD,
+          },
+        }
+      : {}),
+  });
+
+  // ── 2. Use-cases ─────────────────────────────────────────────────────────────
+  const acceptUseCase = new AcceptEventUseCase(spoolRepo);
+  const DRAIN_BATCH_SIZE = 100;
+  const drainUseCase = new DrainEventsUseCase(spoolRepo, kafkaProducer, DRAIN_BATCH_SIZE);
+  const DRAIN_POLL_MS = Number(process.env['DRAIN_POLL_INTERVAL_MS'] ?? 1_000);
+
+  const drainer = new Drainer(drainUseCase, kafkaProducer, {
+    pollIntervalMs: DRAIN_POLL_MS,
+    batchSize: DRAIN_BATCH_SIZE,
+  });
+
+  // ── 3. Apicurio schema registration (D-10) — with backoff, degrade-don't-crash ──
+  await registerSchemaWithBackoff();
+
+  // ── 4. Fastify HTTP server ───────────────────────────────────────────────────
+  const app = Fastify({
+    logger: false,
+    bodyLimit: 1024 * 1024, // 1 MiB
+    trustProxy: true,
+  });
+
+  // Register routes
+  registerHealthRoutes(app, spoolRepo);
+  registerCollectRoute(app, acceptUseCase);
+
+  // ── 5. Start HTTP listener ───────────────────────────────────────────────────
+  try {
+    await app.listen({ port: cfg.PORT, host: '0.0.0.0' });
+    console.info(`[collector] HTTP listener open on port ${cfg.PORT}`);
+  } catch (err) {
+    console.error(`[collector] FATAL: failed to bind port ${cfg.PORT}:`, err);
+    process.exit(1);
+  }
+
+  // ── 6. Start drainer loop (AFTER HTTP listener — separate async loop, D-1) ──
+  await drainer.start();
+
+  // ── 7. Graceful shutdown ─────────────────────────────────────────────────────
+  const shutdown = async (signal: string): Promise<void> => {
+    console.info(`[collector] ${signal} received — graceful shutdown`);
+    await drainer.stop();
+    await app.close();
+    await (spoolRepo as PgSpoolRepository & { end(): Promise<void> }).end();
+    console.info('[collector] shutdown complete');
+    process.exit(0);
+  };
+
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
+  process.on('SIGINT', () => void shutdown('SIGINT'));
+}
+
+// Entry point — only called when run directly, not when imported in tests.
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  void main();
 }

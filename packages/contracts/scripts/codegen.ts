@@ -260,10 +260,10 @@ function genAvro() {
         doc: 'ISO-8601 UTC timestamp of event occurrence.',
       },
       {
-        name: 'ingest_at',
+        name: 'ingested_at',
         type: ['null', 'string'],
         default: null,
-        doc: 'ISO-8601 UTC timestamp set by the collector on receipt.',
+        doc: 'ISO-8601 UTC timestamp set by the collector on receipt. stream-worker writes as timestamptz at Bronze boundary.',
       },
       {
         name: 'hashed_user_id',

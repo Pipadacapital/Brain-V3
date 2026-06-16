@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-06-16T11:00:00Z",
-  "updated_by": "stakeholder",
+  "updated_at": "2026-06-16T15:56:54Z",
+  "updated_by": "system",
   "active_requirements": [
     {
       "req_id": "chore-platform-foundations-sprint0",
@@ -146,31 +146,99 @@
       "status": "shipped",
       "stage": 8,
       "current_owner": "platform-devops",
-      "title": "Members & Team Management — lifecycle (invite/accept/suspend/reactivate/remove + hierarchy bounds)",
+      "title": "Members & Team Management \u2014 lifecycle (invite/accept/suspend/reactivate/remove + hierarchy bounds)",
       "lane": "high_stakes",
       "run_dir": ".engineering-os/runs/2026-06-16T12-23-10Z__323f49__feat-members-team-management__rishabhporwal",
       "last_journal_entry_at": "2026-06-16T22:00:00Z",
-      "lineage": ["feat-multi-brand"],
+      "lineage": [
+        "feat-multi-brand"
+      ],
       "pipeline": {
         "bounces": 1,
         "bounce_detail": "r1: QA FAIL (F-QA-1/2/3 missing HTTP wire-smoke) -> fix fcbc221 (test-only 2 files, 3 wire tests) -> DELTA PASS",
         "security": "PASS (0 blocking; C-1..C-5 + H-1..H-3 all closed)",
         "qa": "DELTA PASS (0 blocking; 69/69 vitest; 3 wire tests non-inert)",
         "final_review": "PASS / APPROVE",
-        "commits": ["a525035","f786c29","89095fb","cbd6743","85d0fa8","7be0e7e","65868b7","e16dc2d","8f89cfa","fcbc221"],
-        "deferred": ["SEC-V1 NC-4/5 assertion-query superuser (LOW)", "SEC-V2 resolveMembership null-fallback (LOW)", "F-QA-4 audit_log correlation_id column (MED backlog)", "F-QA-5 e2e rate-limiter exhaustion (LOW)"]
+        "commits": [
+          "a525035",
+          "f786c29",
+          "89095fb",
+          "cbd6743",
+          "85d0fa8",
+          "7be0e7e",
+          "65868b7",
+          "e16dc2d",
+          "8f89cfa",
+          "fcbc221"
+        ],
+        "deferred": [
+          "SEC-V1 NC-4/5 assertion-query superuser (LOW)",
+          "SEC-V2 resolveMembership null-fallback (LOW)",
+          "F-QA-4 audit_log correlation_id column (MED backlog)",
+          "F-QA-5 e2e rate-limiter exhaustion (LOW)"
+        ]
       },
       "ship": {
         "branch": "feat/members-team-management",
         "commit": "fcbc221",
         "pushed": false,
         "pr": null,
-        "pr_note": "gh CLI unauthenticated; manual PR URL: https://github.com/Rishabhporwal/Brain-V4/compare/feat/members-team-management — NOTE: branch is stacked on feat/shopify-sync-validation (43ea557); push + merge that base first for a clean PR diff",
+        "pr_note": "gh CLI unauthenticated; manual PR URL: https://github.com/Rishabhporwal/Brain-V4/compare/feat/members-team-management \u2014 NOTE: branch is stacked on feat/shopify-sync-validation (43ea557); push + merge that base first for a clean PR diff",
         "phase": "1-dev-only",
         "ts": "2026-06-16T22:00:00Z"
       },
       "migrate_0014": "verified-applied",
       "rollback": "DROP INDEX IF EXISTS invite_pending_org_email_uniq, invite_pending_brand_email_uniq, invite_status_org_idx + re-deploy prior core/web image"
+    },
+    {
+      "req_id": "feat-data-plane-ingest-spine",
+      "status": "shipped",
+      "stage": 8,
+      "current_owner": "platform-devops",
+      "title": "Thin data-plane ingest spine \u2014 collector \u2192 Redpanda \u2192 Bronze, behind RLS",
+      "run_dir": ".engineering-os/runs/2026-06-16T15-56-54Z__3d216f__feat-data-plane-ingest-spine__rishabhporwal",
+      "lineage": [
+        "chore-platform-foundations-sprint0"
+      ],
+      "last_journal_entry_at": "2026-06-16T22:30:00Z",
+      "pipeline": {
+        "bounces": 2,
+        "bounce_detail": "r1: security FAIL SR-01 (raw Redis template-literal keys in test) + QA FAIL F-QA-01/02/03 (no full-wire e2e crossing spool-drainer-Kafka-consumer seam) -> both fixed (test-only, no prod regression) -> DELTA PASS",
+        "security": "DELTA PASS (0 blocking; SR-01 closed)",
+        "qa": "DELTA PASS (0 blocking; 14/14 tests PASS across e2e+durability+dedup+isolation)",
+        "final_review": "PASS / APPROVE",
+        "commits": [
+          "0b1a342",
+          "b25f51c",
+          "69f5892",
+          "2da8f73",
+          "258c258",
+          "ac79c88",
+          "6fb8768",
+          "3567196",
+          "6e3fd83",
+          "dcf2d55",
+          "0fb9119",
+          "ef78505"
+        ],
+        "deferred": [
+          "SR-02 techdebt M2 (test-precision gap; null-GUC fail-closed proven live)",
+          "SR-03 techdebt-CONDITIONAL: spool unvalidated body \u2014 must-fix before external /collect traffic",
+          "SR-04 techdebt-CONDITIONAL: rate-limit unwired \u2014 must-fix before external /collect traffic",
+          "F-QA-04 cosmetic vitest TimeoutNegativeWarning"
+        ]
+      },
+      "ship": {
+        "branch": "feat/data-plane-ingest-spine",
+        "commit": "ef78505",
+        "pushed": false,
+        "pr": null,
+        "pr_note": "gh CLI unauthenticated; manual PR URL: https://github.com/Rishabhporwal/Brain-V4/compare/master...feat/data-plane-ingest-spine (branch off master directly \u2014 clean base, no stacked dependency)",
+        "phase": "1-dev-only",
+        "ts": "2026-06-16T22:30:00Z"
+      },
+      "migrations_0015_0016": "verified-applied",
+      "rollback": "DROP TABLE IF EXISTS bronze_events, collector_spool + redeploy prior collector + stream-worker image"
     }
   ]
 }

@@ -240,7 +240,7 @@
             "type": "string",
             "format": "date-time"
           },
-          "ingest_at": {
+          "ingested_at": {
             "type": "string",
             "format": "date-time"
           },

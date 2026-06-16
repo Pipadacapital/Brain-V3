@@ -1,0 +1,40 @@
+{
+  "stage": 6,
+  "agent": "engineering-advisor-final-review",
+  "req_id": "feat-data-plane-ingest-spine",
+  "verdict": "PASS",
+  "recommendation": "APPROVE",
+  "blocking": [],
+  "residual_risk": "M1-INTERNAL ONLY: SR-03 (spool holds unvalidated body) + no rate-limit are acceptable solely because there is no external ingest traffic; both become must-fix before external exposure.",
+  "deferred": [
+    { "id": "SR-02", "severity": "MEDIUM", "disposition": "ship-as-techdebt", "note": "null-GUC test precision; production fail-closed re-proven live by reviewer; M2" },
+    { "id": "SR-03", "severity": "MEDIUM", "disposition": "ship-as-techdebt-conditional", "note": "spool unvalidated-body PII; acceptable ONLY under M1-internal no-external-traffic; must-fix before external exposure (spool TTL + gateway/write-key auth)" },
+    { "id": "SR-04", "severity": "LOW", "disposition": "ship-as-techdebt-conditional", "note": "rate-limit unwired; M1-internal caveat; wire before external traffic" },
+    { "id": "F-QA-04", "severity": "LOW", "disposition": "ship-as-techdebt", "note": "vitest TimeoutNegativeWarning; cosmetic; M2" },
+    { "id": "F-QA-05", "severity": "LOW", "disposition": "ship-as-techdebt-conditional", "note": "duplicate of SR-04 rate-limit; M1-internal caveat; M2" }
+  ],
+  "d4_amendment_sound": true,
+  "gates_rerun": [
+    "stream-worker lint EXIT 0 (SR-01 closed)",
+    "stream-worker typecheck EXIT 0",
+    "live RLS shape: bronze_events rls=t force=t, two-arg policy, INSERT+SELECT grants",
+    "live RLS fail-closed under brain_app: no-GUC=0, wrong-brand=0, correct-brand=1, superuser=1 (trap proven)",
+    "iceberg target untouched + migrations 0015/0016 additive (status A)"
+  ],
+  "bounce_history": {
+    "security": "FULL BOUNCE SR-01(HIGH, real ESLint NN-7 CI failure) -> fix 3567196 test-only -> DELTA PASS; migrations untouched",
+    "qa": "FULL FAIL F-QA-01(real missing full-wire e2e) -> fix dcf2d55 additive -> DELTA PASS; no prod regression"
+  },
+  "canon": {
+    "new_adr": false,
+    "new_stack_layer": false,
+    "new_deployable": false,
+    "new_secret": false,
+    "migrations_additive": true,
+    "iceberg_target_untouched": true,
+    "cost_paradigm": "deterministic-only-0-spend"
+  },
+  "hard_rule_deviation": "none",
+  "ac_unmet": "none",
+  "ts": "2026-06-16T21:20:00Z"
+}

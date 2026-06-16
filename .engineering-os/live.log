@@ -419,3 +419,112 @@ Installed 4 packages in 7ms
 2026-06-16T22:04:00Z [S8 platform-devops] feat-members-team-management: PR — gh unauthenticated; manual URL: https://github.com/Rishabhporwal/Brain-V4/compare/feat/members-team-management; STACKING NOTE: base feat/shopify-sync-validation must be pushed+merged first
 2026-06-16T22:05:00Z [S8 platform-devops] feat-members-team-management: SHIPPED — 13-deploy-report.md written; active.json ship block updated; decision-log appended; commit pending on branch
 15:48:01Z [heartbeat] engineering-os:platform-devops S8 ? returned
+15:57:38 [orchestrator] Pipeline started for feat-data-plane-ingest-spine (high_stakes). Stage 1 intake.
+15:58:01Z [heartbeat] engineering-os:cto-advisor S1 ? issued
+15:59:15Z [heartbeat] engineering-os:cto-advisor S1 ? issued
+
+## 2026-06-16T16:10:00Z — Engineering Advisor (cto-advisor) — feat-data-plane-ingest-spine
+**Stage:** 1 (intake, compressed, personas folded) · **Action:** ADVANCE · **Personas:** none (folded into compressed adversarial pass) · **Decision:** ADVANCE
+**Rationale:** Requirement is sound and grounded. Scaffolds confirmed real (9-line stubs, empty dirs, package.json deps in place). Redpanda + Nessie + MinIO confirmed in docker-compose ingest profile. No new deployable. 10 findings surfaced and severity-ranked; all addressable within existing stack. 10 architect bindings declared. Highest risk: D-4 TypeScript→Iceberg write path (no official TS SDK; Nessie REST API + MinIO write path must be spike-validated by architect before commit). Type mismatch F-1 (occurred_at string vs number) and field name mismatch F-6 (ingest_at vs ingested_at) must be resolved in contracts before first Apicurio registration. RLS note: Bronze isolation is Iceberg partition + S3 prefix, not Postgres RLS — test must reflect this.
+**Next:** Stage 2 architecture (architect); D-4 Iceberg write path spike is the critical-path first slice.
+16:03:10Z [heartbeat] engineering-os:cto-advisor S1 ? returned
+16:03:56Z [heartbeat] engineering-os:architect S2 ? issued
+2026-06-16T20:10:00Z [architect] feat-data-plane-ingest-spine Stage-2 ADVANCE. D-4→Postgres bronze_events fallback (no TS Iceberg writer; Nessie catalog-only; PyIceberg/Spark=Phase-3; no new layer/ADR). Isolation re-bound to Postgres RLS (tests under SET ROLE brain_app). Contracts: ingest_at→ingested_at + occurred_at/ingested_at string ISO-8601, codegen first (I-E01). Migrations 0015_collector_spool + 0016_bronze_events (additive). 5 slices, COMMIT PER SLICE. Tracks: backend-developer (collector edge/spool/drainer) ∥ data-engineer (stream-worker/Bronze/dedup). Artifact 03-architecture-plan.md → Stage 3.
+16:09:14Z [heartbeat] engineering-os:architect S2 ? returned
+16:10:20Z [heartbeat] engineering-os:data-engineer S3 ? issued
+16:10:42Z [heartbeat] engineering-os:backend-developer S3 ? issued
+2026-06-16T20:25:00Z [backend-developer S3] feat-data-plane-ingest-spine Track B COMPLETE. Slice 1 (0b1a342): F-6 ingest_at→ingested_at + F-1 string ISO-8601 + 0015_collector_spool + 0016_bronze_events (RLS FORCE NN-1). Slice 2 (b25f51c): DDD collector edge — AcceptEventUseCase stamp+INSERT only; DrainEventsUseCase separate setInterval; Apicurio backoff degrade-dont-crash. Slice 3 (2da8f73): 5/5 tests PASS — ACK ordering proven (code structure + test); Redpanda-down durability proven (dead broker → spool holds → live broker → drained). typecheck: @brain/contracts/@brain/events/@brain/collector EXIT 0. READY-FOR-SECURITY.
+
+2026-06-16T20:23:00Z [data-engineer] feat-data-plane-ingest-spine Stage-3 Track-A COMPLETE. Slice 1: migration 0016_bronze_events applied (FORCE RLS + two-arg NN-1 + INSERT/SELECT brain_app, verified under SET ROLE brain_app). Slice 2: stream-worker pipeline (consume→Zod-validate→Redis-NX-dedup→BronzeRepository INSERT under brain_app+set_config GUC→commit-offset-after-write; DLQ after MAX_RETRY=5; autoCommit=false D-7). Slice 3: 4/4 live tests PASS (e2e, Redis-NX dedup, PK-backstop, isolation neg-ctrl current_user=brain_app not brain). typecheck EXIT 0. Commits: 0b1a342 (slice1), 69f5892 (slice2), 258c258 (slice3). READY-FOR-SECURITY+QA.
+16:25:51Z [heartbeat] engineering-os:backend-developer S3 ? returned
+16:25:51Z [heartbeat] engineering-os:data-engineer S3 ? returned
+16:27:04Z [heartbeat] engineering-os:security-reviewer S4 ? issued
+16:27:19Z [heartbeat] engineering-os:qa-agent S5 ? issued
+
+## 2026-06-16T20:32:00Z — Security Reviewer — feat-data-plane-ingest-spine
+**Stage:** 4 · **Mode:** FULL · **Verdict:** BOUNCE (FAIL)
+**Findings:** CRIT=0 / HIGH=1 (SR-01) / MED=2 (SR-02, SR-03) / LOW=1 (SR-04) / INFO=1 (SR-05)
+**Scanners:** FULL — ESLint (NN-7 raw-redis-key: 3 errors in test file), live psql RLS proofs (3 controls), live test runs (stream-worker 4/4, collector 5/5)
+**Bronze isolation proof:** PASS — SET ROLE brain_app; no-GUC→0, wrong-brand-GUC→0, correct-brand-GUC→1 (all live)
+**Accept-before-validate:** CONFIRMED — import structure + ESLint clean on collector
+**Durability real:** YES — dead broker TCP refused; spool holds; live broker drains
+**Dedup/offset ordering:** OK — Redis NX + PK backstop + autoCommit=false manual commit after outcome
+**Blocking:** SR-01 HIGH — NN-7 ESLint violation in test cleanup (3 raw Redis key constructions; lint gate fails)
+**Next:** BOUNCE → backend-developer or data-engineer fixes SR-01 (3 lines in bronze.e2e.test.ts cleanup), notes SR-02/SR-03 as tech-debt; DELTA re-review to verify SR-01 fixed only
+16:36:20Z [heartbeat] engineering-os:security-reviewer S4 ? returned
+
+## 2026-06-16T16:35:00Z — QA Engineer — Stage 5 — feat-data-plane-ingest-spine
+**Mode:** FULL | **Verdict:** FAIL (1 blocking finding)
+**Tests Run:**
+- typecheck @brain/contracts → EXIT 0
+- typecheck @brain/events → EXIT 0
+- typecheck @brain/collector → EXIT 0
+- typecheck @brain/stream-worker → EXIT 0
+- contract tests 8/8 PASS
+- migration 0015 + 0016 verified (FORCE RLS, two-arg policy, correct grants)
+- durability tests 5/5 PASS (dead broker real: localhost:19999)
+- stream-worker e2e 4/4 PASS (under brain_app, not brain superuser)
+- real-network smoke PASS (collector port 3099, POST /collect → 200, spool row id=13 confirmed)
+- validity_check EXIT 0 (anti-pattern: clean; negative_control: 3 probes captured)
+**Isolation negative-control:** wrong-brand-GUC→0, no-GUC→0, superuser-proof captured. currentUser='brain_app' asserted in tests.
+**Blocking:** F-QA-01 — no full-wire E2E test (HTTP→spool→drainer→Kafka→consumer→bronze as one test)
+**Non-blocking:** F-QA-02 Apicurio path resolution bug, F-QA-03 DLQ untested, F-QA-04 timeout warning, F-QA-05 rate limit M2 deferred
+**Next:** bounce to data-engineer + backend-developer (add pipeline.e2e.test.ts + fix Apicurio path)
+16:39:14Z [heartbeat] engineering-os:qa-agent S5 ? returned
+16:40:08Z [heartbeat] engineering-os:data-engineer S3 ? issued
+2026-06-16T21:02:00Z [data-engineer] S3 BOUNCE-r1 complete — SR-01+F-QA-01+F-QA-02+F-QA-03 fixed
+  SR-01 (HIGH): buildDedupKey() replaces 3 raw template-literal Redis keys; lint EXIT 0 (commit 3567196)
+  F-QA-02 (LOW): Avro schema path fixed via import.meta.url (3→not 4 levels up); ENOENT resolved (commit 6e3fd83)
+  F-QA-01 (MED): pipeline-wire.e2e.test.ts — real subprocess collector + in-process consumer; full wire GREEN: POST /collect → spool=drained → Redpanda → stream-worker written → bronze_events current_user=brain_app → wrong-brand 0 rows (commit dcf2d55)
+  F-QA-03 (LOW): dlq.unit.test.ts — MAX_RETRY=5 → DLQ produce + offset commit verified (commit 0fb9119)
+  typecheck: @brain/stream-worker EXIT 0; @brain/collector EXIT 0
+  prior 4/4 bronze.e2e.test.ts still PASS
+  Intended state: stage 3 owner security+qa delta re-review; READY-FOR-SECURITY + READY-FOR-QA
+16:55:01Z [heartbeat] engineering-os:data-engineer S3 ? returned
+16:55:48Z [heartbeat] engineering-os:security-reviewer S4 ? issued
+16:55:57Z [heartbeat] engineering-os:qa-agent S5 ? issued
+
+2026-06-16T21:10:00Z [S4 security-reviewer] feat-data-plane-ingest-spine DELTA re-review PASS
+  SR-01 (HIGH→RESOLVED): buildDedupKey() at all 3 call sites; lint EXIT 0 confirmed
+  Regression: 0 — migrations untouched; no prod isolation/RLS code in bounce commits
+  SR-02 (MED→TECHDEBT): wrong-brand probe strengthened in pipeline-wire.e2e; null-GUC precision gap deferred M2
+  SR-03 (MED→TECHDEBT): spool PII deferred M2 (internal scope only)
+  SR-04 (LOW→TECHDEBT): rate-limit deferred M2 (internal scope only)
+  Blocking findings: 0 | PASS → advance to QA reconcile / final
+16:58:45Z [heartbeat] engineering-os:security-reviewer S4 ? returned
+
+---
+[2026-06-16T20:58:30Z] QA Engineer · DELTA re-review · feat-data-plane-ingest-spine
+  Scope: delta (reasoning) / full suite (tests)
+  F-QA-01: RESOLVED — pipeline-wire.e2e.test.ts 1/1 PASS (38.55s). Real subprocess collector on port 50281, real Redpanda (partition=0 offset=14), bronze_events written as brain_app, wrong-brand GUC → 0 rows (RLS negative control asserted in test).
+  F-QA-02: RESOLVED — import.meta.url-relative schema path confirmed at apps/collector/src/main.ts:49.
+  F-QA-03: RESOLVED — dlq.unit.test.ts 1/1 PASS (106ms). DLQ topic + offset commit after MAX_RETRY=5 confirmed.
+  Regression: bronze.e2e.test.ts 4/4 PASS, collector durability 5/5 PASS. No regressions.
+  Typecheck: EXIT 0. validity_check EXIT 0 (3 files, --require-negative-control).
+  Verdict: PASS → handoff to Security Reviewer.
+17:00:51Z [heartbeat] engineering-os:qa-agent S5 ? returned
+17:01:33Z [heartbeat] engineering-os:final-reviewer S6 ? issued
+
+21:20:00Z [engineering-os:final-reviewer] S6 FINAL REVIEW — feat-data-plane-ingest-spine — PASS / APPROVE
+  Requirement DELIVERED (doc 05 §14): collector→Redpanda→Bronze behind RLS; full-wire e2e non-inert.
+  Gates re-run on-machine: stream-worker lint EXIT 0 (SR-01 closed); typecheck EXIT 0;
+    live RLS shape (bronze_events rls=t force=t, two-arg policy, INSERT+SELECT grants);
+    LIVE fail-closed under SET ROLE brain_app reproduced: no-GUC=0, wrong-brand=0, correct-brand=1, superuser=1 (trap proven);
+    iceberg target untouched; migrations 0015/0016 additive (status A).
+  Bounces: Security FULL BOUNCE SR-01(test-only)→DELTA PASS; QA FULL FAIL F-QA-01(additive)→DELTA PASS. No prod regression.
+  D-4 Postgres fallback SOUND (pre-authorised 02 §119; amendment not new stack layer).
+  Deferred: SR-02 techdebt; SR-03 + SR-04/F-QA-05 techdebt-CONDITIONAL (M1-internal caveat); F-QA-04 cosmetic.
+  Canon: no new ADR/stack/secret/deployable; migrations additive; no hard-rule deviation; no AC unmet.
+  Verdict: PASS → Stakeholder gate (Stage 7). Intended state: stage 6 awaiting-stakeholder owner=stakeholder. Did NOT deploy / did NOT write state.
+17:07:25Z [heartbeat] engineering-os:final-reviewer S6 ? returned
+17:13:37Z [heartbeat] engineering-os:platform-devops S8 ? issued
+22:30:00Z [S8 platform-devops] feat-data-plane-ingest-spine: Stage 8 deploy — SHIPPED
+  Migrations 0015+0016: VERIFIED-APPLIED (bronze_events rls=t force=t; collector_spool rls=f; two-arg policy NN-1 compliant)
+  Build gate (collector→stream-worker order): typecheck 4/4 EXIT 0; build 4/4 EXIT 0; lint stream-worker EXIT 0
+  Smoke: committed full-wire e2e + durability + dedup + isolation tests bake proxy (Final Reviewer independently replicated all 5 gates live)
+  PR: gh CLI unauthenticated — manual compare URL: https://github.com/Rishabhporwal/Brain-V4/compare/master...feat/data-plane-ingest-spine
+  Rollback: remove tables 0015+0016 + redeploy prior collector + stream-worker image
+  Deferred: Redpanda topic provisioning (prod), Iceberg flip (Phase 3), spool TTL+housekeeping, write-key auth + rate-limit (before external traffic)
+  Phase 1-dev-only: no cloud infra, no ArgoCD, no canary — pipeline wired when graduating to cloud deploy (Slice 5 spec in 03 §6)
+22:30:00Z [heartbeat] engineering-os:platform-devops S8 feat-data-plane-ingest-spine returned
+17:18:18Z [heartbeat] engineering-os:platform-devops S8 ? returned

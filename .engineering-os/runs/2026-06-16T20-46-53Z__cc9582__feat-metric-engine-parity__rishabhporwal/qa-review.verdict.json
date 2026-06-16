@@ -1,0 +1,53 @@
+{
+  "stage": 5,
+  "agent": "qa-engineer",
+  "req_id": "feat-metric-engine-parity",
+  "verdict": "PASS",
+  "ts": "2026-06-16T21:26:24Z",
+  "mode": "FULL",
+  "blocking": false,
+  "findings": [
+    {
+      "id": "QA-F1",
+      "severity": "LOW",
+      "title": "Tests fail on dirty DB — not idempotent without prior cleanup",
+      "detail": "First run produced 8 failures due to stale ledger rows from a prior interrupted developer test session. The beforeAll clears the two test brand IDs but cannot clean state seeded by other callers. Second and third runs were 16/16 green. The afterEach hook clears properly within a session. Not a VETO finding: the gate is structurally sound and CI starts with a clean DB; local dev can hit this if tests are interrupted. Recommend a dedicated test schema isolation or truncation guard.",
+      "blocker": false,
+      "must_fix_before": "M2"
+    },
+    {
+      "id": "QA-F2",
+      "severity": "LOW",
+      "title": "ISO-2 cross-brand isolation test is structurally weak — proves absence-of-data, not RLS block",
+      "detail": "The ISO-2 test seeds Brand B rows and checks that Brand A's engine returns 0. It passes because Brand A has no seeded rows, not because RLS blocked Brand A from seeing Brand B's rows. To truly prove RLS isolation, the test should seed Brand A rows, then run the engine with Brand B's GUC and expect 0. The current structure cannot distinguish 'RLS blocked' from 'no rows'. ISO-1 (current_user=brain_app, non-superuser) and ISO-3 (empty GUC → fail-closed) are sound. This is a test-coverage gap on the isolation proof, not an engine bug.",
+      "blocker": false,
+      "must_fix_before": "M2"
+    }
+  ],
+  "tests_run": [
+    { "name": "typecheck:@brain/metric-engine", "result": "PASS", "evidence": "tsc --noEmit EXIT 0, no errors" },
+    { "name": "typecheck:@brain/tool-parity-oracle", "result": "PASS", "evidence": "tsc --noEmit EXIT 0, no errors" },
+    { "name": "typecheck:@brain/core", "result": "PASS", "evidence": "tsc --noEmit EXIT 0, no errors" },
+    { "name": "migration:0020_provisional_gmv_as_of", "result": "PASS", "evidence": "psql: proname=provisional_gmv_as_of, prosecdef=f (SECURITY INVOKER)" },
+    { "name": "test:unit:@brain/metric-engine", "result": "PASS", "evidence": "9/9 tests passed, registry.test.ts" },
+    { "name": "test:parity:@brain/tool-parity-oracle (run 1)", "result": "FAIL", "evidence": "8/16 failed — stale ledger rows from prior dev session; afterEach/beforeAll cleared on 2nd run" },
+    { "name": "test:parity:@brain/tool-parity-oracle (run 2)", "result": "PASS", "evidence": "16/16 passed; F1-F5 all green; RED PROOF captured; ISO-1/2/3 passed" },
+    { "name": "test:parity:@brain/tool-parity-oracle (run 3)", "result": "PASS", "evidence": "16/16 passed; confirmed stable" },
+    { "name": "RED_PROOF_live_perturbation", "result": "PASS", "evidence": "Perturbed engine +1n: 8 tests RED (delta=1 for all INR fixtures). Reverted: 16/16 GREEN. Gate is non-tautological." },
+    { "name": "turbo:test:parity:--affected:--dry-run", "result": "PASS", "evidence": "@brain/metric-engine and @brain/tool-parity-oracle both in scope; tool depends on @brain/metric-engine#build" },
+    { "name": "ci_gate_no_continue_on_error", "result": "PASS", "evidence": "pr.yml:33 has no continue-on-error; parity step is blocking" },
+    { "name": "validity_check (no --require-negative-control)", "result": "PASS", "evidence": "Exit 0, 9 files scanned, no bypass-green or tautology patterns found" },
+    { "name": "validity_check (--require-negative-control)", "result": "VETO_THEN_REMEDIATED", "evidence": "Exit 3 — flagged missing negative control. Remediated by QA engineer: live perturbation RED proof executed (perturb +1n → 8 RED → revert → 16 GREEN)" },
+    { "name": "no_float_check", "result": "PASS", "evidence": "No parseFloat/Math.abs in metric-engine or oracle money paths; all money fields bigint" },
+    { "name": "oracle_non_tautological_import_check", "result": "PASS", "evidence": "reference.ts imports only 'pg'; zero @brain/metric-engine imports; zero calls to realized_gmv_as_of or provisional_gmv_as_of" }
+  ],
+  "negative_control": [
+    {
+      "path": "packages/metric-engine/src/realized-revenue.ts:73",
+      "protection_removed": "Engine value perturbed +1n (BigInt(raw) + 1n)",
+      "command": "pnpm --filter @brain/tool-parity-oracle test:parity",
+      "captured_red_output": "8/16 tests FAILED: F1 delta=1 (engine=50001n, ref=50000n); F2 delta=1 (engine=1n, ref=0n); F3 delta=1 (engine=35001n, ref=35000n); F4/F5 all delta=1 failures; ISO-2 delta=1; PER-CURRENCY delta=1; NO-BLEND delta=1",
+      "reverted": "pnpm --filter @brain/tool-parity-oracle test:parity → 16/16 GREEN"
+    }
+  ]
+}

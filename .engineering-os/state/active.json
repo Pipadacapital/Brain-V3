@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-06-16T18:55:24Z",
+  "updated_at": "2026-06-16T22:15:56Z",
   "updated_by": "system",
   "active_requirements": [
     {
@@ -331,6 +331,66 @@
       },
       "migrations_0018_0019": "verified-applied",
       "rollback": "DROP TABLE IF EXISTS realized_revenue_ledger; DROP FUNCTION IF EXISTS realized_gmv_as_of(uuid,date), ledger_currency_matches_brand(), list_active_brand_ids(); ALTER TABLE brand DROP COLUMN IF EXISTS cod_recognition_horizon_days, prepaid_recognition_horizon_days, currency_code"
+    },
+    {
+      "req_id": "feat-metric-engine-parity",
+      "status": "shipped",
+      "stage": 8,
+      "current_owner": "platform-devops",
+      "title": "Metric engine + parity oracle \u2014 realized_revenue, CI-blocking",
+      "run_dir": ".engineering-os/runs/2026-06-16T20-46-53Z__cc9582__feat-metric-engine-parity__rishabhporwal",
+      "lineage": [
+        "feat-realized-revenue-ledger"
+      ],
+      "last_journal_entry_at": "2026-06-17T02:20:00Z",
+      "pipeline": {
+        "bounces": 1,
+        "bounce_detail": "r1: SEC-001 HIGH (CI no-postgres, parity gate never ran live) -> fix 08dcc2f (postgres:16 service + brain_app NOBYPASSRLS + migrate:up before test:parity) -> DELTA PASS",
+        "security": "DELTA PASS (0 blocking; SEC-003 LOW deferred)",
+        "qa": "PASS (0 blocking; 16/16 parity GREEN + RED proof; 9/9 unit)",
+        "final_review": "PASS / APPROVE",
+        "commits": [
+          "d31fc84",
+          "a6d4870",
+          "5ec1c50",
+          "e9019b2",
+          "08dcc2f",
+          "7d92fb8",
+          "7a55c10",
+          "a8eb637",
+          "facacfe"
+        ],
+        "deferred": [
+          "F-SEC-02 P2 must-fix-before-Phase-2: GetRealizedGmvAsOf GUC-reset defense-in-depth",
+          "QA-F1 LOW M2: dirty-DB idempotency",
+          "QA-F2 LOW M2: ISO-2 absence-vs-block (strengthened but not fully exhaustive)",
+          "adopt-rule: list_active_brand_ids cross-tenant system jobs (2nd occurrence)"
+        ]
+      },
+      "ship": {
+        "branch": "feat/metric-engine-parity",
+        "commit": "facacfe",
+        "pushed": false,
+        "pr": null,
+        "pr_note": "gh CLI unauthenticated; manual compare URL: https://github.com/Rishabhporwal/Brain-V4/compare/master...feat/metric-engine-parity (branch clean off master, not stacked)",
+        "phase": "1-dev-only",
+        "ts": "2026-06-17T02:20:00Z"
+      },
+      "migration_0020": "verified-applied (provisional_gmv_as_of SECURITY INVOKER, prosecdef=f)",
+      "parity_gate": "GREEN 16/16, tolerance 0, RED proof confirmed (1-minor delta -> FAIL)",
+      "rollback": "DROP FUNCTION IF EXISTS provisional_gmv_as_of(uuid, date); revert core image to prior SHA"
+    },
+    {
+      "req_id": "feat-analytics-api-dashboard",
+      "status": "cto-review",
+      "stage": 1,
+      "current_owner": "cto-advisor",
+      "title": "Analytics API + dashboard \u2014 realized_revenue on screen (M1 finale)",
+      "run_dir": ".engineering-os/runs/2026-06-16T22-15-56Z__1e2785__feat-analytics-api-dashboard__rishabhporwal",
+      "lineage": [
+        "feat-metric-engine-parity"
+      ],
+      "last_journal_entry_at": "2026-06-16T22:15:56Z"
     }
   ]
 }

@@ -37,6 +37,16 @@
       "req_id": "feat-realized-revenue-ledger",
       "title": "Realized-revenue ledger (append-only, dual-date, COD-aware)",
       "first_seen": "2026-06-16T18:55:24Z"
+    },
+    {
+      "req_id": "feat-metric-engine-parity",
+      "title": "Metric engine + parity oracle (realized_revenue, CI-gated)",
+      "first_seen": "2026-06-16T20:46:53Z"
+    },
+    {
+      "req_id": "feat-analytics-api-dashboard",
+      "title": "Analytics API + dashboard (realized_revenue on screen)",
+      "first_seen": "2026-06-16T22:15:56Z"
     }
   ]
 }

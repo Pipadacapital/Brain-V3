@@ -13,6 +13,23 @@ jobs:
   lint-typecheck-unit:
     name: Lint / Typecheck / Unit (affected)
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: brain
+          POSTGRES_PASSWORD: brain
+          POSTGRES_DB: brain
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U brain -d brain"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://brain:brain@localhost:5432/brain
+      BRAIN_APP_DATABASE_URL: postgres://brain_app:brain_app@localhost:5432/brain
     steps:
       - uses: actions/checkout@v6
         with:
@@ -23,6 +40,25 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Provision brain_app login role and apply migrations
+        run: |
+          # Create brain_app as a LOGIN role with password before migrations run.
+          # Migration 0001 creates it NOLOGIN (IF NOT EXISTS), so we pre-create it
+          # as LOGIN here. The parity tests connect via BRAIN_APP_DATABASE_URL which
+          # requires rolcanlogin=t — the same state the dev DB has (see MEMORY.md).
+          PGPASSWORD=brain psql -U brain -h localhost -d brain -c "
+            DO \$\$
+            BEGIN
+              IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'brain_app') THEN
+                CREATE ROLE brain_app LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS PASSWORD 'brain_app';
+              ELSE
+                ALTER ROLE brain_app LOGIN PASSWORD 'brain_app';
+              END IF;
+            END
+            \$\$;
+          "
+          # Apply all migrations through 0020 (includes ledger schema + named functions)
+          pnpm migrate:up
       - name: Turbo lint + typecheck + unit (affected only)
         run: pnpm turbo run lint typecheck test:unit --affected
       - name: Contract tests (affected)

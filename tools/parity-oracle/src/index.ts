@@ -7,14 +7,17 @@
  * a defined tolerance. A delta is a build failure.
  *
  * In Sprint-0: the oracle scaffold runs green on a trivial golden fixture.
- * The real metric parity (TS engine vs StarRocks SQL on Bronze snapshot) is M1.
+ * M1: the real metric parity (TS engine vs independent raw SQL on Postgres ledger).
+ *
+ * MONEY INVARIANT (I-S07): all money fields are bigint (minor units). Never number/float.
  *
  * @see INVARIANTS.md I-E03, I-E04
  * @see STACK.md locked choice 13 (dual-store parity oracle)
+ * @see D-2 (03-architecture-plan.md) — non-tautological independent reference
  */
 
 // ---------------------------------------------------------------------------
-// Types
+// Types — all money fields are bigint (no floats, I-S07)
 // ---------------------------------------------------------------------------
 export interface GoldenFixture {
   /** Human-readable name for the fixture */
@@ -23,33 +26,49 @@ export interface GoldenFixture {
   brandId: string;
   /** Metric identifier (matches metric_registry) */
   metricId: string;
-  /** The expected value in integer minor units (I-S07: no floats) */
-  expectedValueMinor: number;
+  /**
+   * The expected value in integer minor units (I-S07: no floats).
+   * bigint — never number/float for money fields.
+   */
+  expectedValueMinor: bigint;
   /** ISO 8601 date/period this fixture represents */
   asOf: string;
-  /** The TypeScript computation result (from metric-engine) */
-  tsComputedValueMinor: number;
-  /** The reference value (from an INDEPENDENT source — SQL, fixture file, or prior snapshot) */
-  referenceValueMinor: number;
-  /** Tolerance for floating-point accumulation errors (in minor units; must be 0 for integer math) */
-  toleranceMinor: number;
+  /** The TypeScript computation result (from metric-engine). bigint (I-S07). */
+  tsComputedValueMinor: bigint;
+  /**
+   * The reference value (from an INDEPENDENT source — SQL, fixture file, or prior snapshot).
+   * bigint (I-S07). MUST NOT be derived by calling the same function as tsComputedValueMinor.
+   */
+  referenceValueMinor: bigint;
+  /**
+   * Tolerance for comparison (in minor units). Must be 0n for integer money metrics.
+   * bigint — the delta comparison is bigint-exact.
+   */
+  toleranceMinor: bigint;
 }
 
 export interface ParityResult {
   fixture: string;
   passed: boolean;
-  delta: number;
-  toleranceMinor: number;
-  tsValue: number;
-  referenceValue: number;
+  /** bigint absolute delta between TS value and reference. */
+  delta: bigint;
+  toleranceMinor: bigint;
+  /** bigint TS-computed value. */
+  tsValue: bigint;
+  /** bigint independent reference value. */
+  referenceValue: bigint;
   message: string;
 }
 
 // ---------------------------------------------------------------------------
 // Core parity check — compares TS computation vs independent reference
+// bigint-exact: delta = |ts - ref|, no Math.abs (doesn't accept bigint).
 // ---------------------------------------------------------------------------
 export function checkParity(fixture: GoldenFixture): ParityResult {
-  const delta = Math.abs(fixture.tsComputedValueMinor - fixture.referenceValueMinor);
+  const ts = fixture.tsComputedValueMinor;
+  const ref = fixture.referenceValueMinor;
+  // bigint absolute delta (no Math.abs — not defined for bigint)
+  const delta = ts >= ref ? ts - ref : ref - ts;
   const passed = delta <= fixture.toleranceMinor;
 
   return {
@@ -57,11 +76,11 @@ export function checkParity(fixture: GoldenFixture): ParityResult {
     passed,
     delta,
     toleranceMinor: fixture.toleranceMinor,
-    tsValue: fixture.tsComputedValueMinor,
-    referenceValue: fixture.referenceValueMinor,
+    tsValue: ts,
+    referenceValue: ref,
     message: passed
-      ? `PASS: TS=${fixture.tsComputedValueMinor} REF=${fixture.referenceValueMinor} delta=${delta} ≤ tolerance=${fixture.toleranceMinor}`
-      : `FAIL: TS=${fixture.tsComputedValueMinor} REF=${fixture.referenceValueMinor} delta=${delta} > tolerance=${fixture.toleranceMinor} — parity drift detected`,
+      ? `PASS: TS=${ts} REF=${ref} delta=${delta} <= tolerance=${fixture.toleranceMinor}`
+      : `FAIL: TS=${ts} REF=${ref} delta=${delta} > tolerance=${fixture.toleranceMinor} — parity drift detected`,
   };
 }
 
@@ -81,74 +100,49 @@ export function runGoldenFixtures(fixtures: GoldenFixture[]): {
 
 // ---------------------------------------------------------------------------
 // Sprint-0 trivial golden fixture (EC9)
-// The TS computation is a simple deterministic formula.
-// The reference is a HARDCODED fixture — independent of the TS code being tested.
-// This prevents the tautology anti-pattern (comparing a value to itself).
-//
-// Real metric fixtures (from Bronze SQL snapshots) are added in M1.
+// All money fields are bigint (I-S07 + no-float-money lint compliance).
 // ---------------------------------------------------------------------------
 export const SPRINT_0_FIXTURES: GoldenFixture[] = [
   {
     name: 'trivial_additive_total',
     brandId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
     metricId: 'event_count_total',
-    expectedValueMinor: 3,
+    expectedValueMinor: 3n,
     asOf: '2026-06-15',
-
-    // TS computation: count of events (3 seeded events)
-    // This would normally come from packages/metric-engine, but in Sprint-0
-    // it is a hardcoded stub that proves the oracle pipeline works.
-    tsComputedValueMinor: 3,
-
-    // Reference: INDEPENDENT fixture — the expected value from a pre-computed SQL result.
-    // In Sprint-0 this is a hardcoded constant (from the seed data: 3 events).
-    // In M1+: this comes from `SELECT COUNT(*) FROM bronze.collector_events WHERE brand_id = ?`
-    // executed on the SAME snapshot independently.
-    referenceValueMinor: 3,
-
-    // Tolerance: 0 for integer count metrics (no floating point accumulation)
-    toleranceMinor: 0,
+    tsComputedValueMinor: 3n,
+    referenceValueMinor: 3n,
+    toleranceMinor: 0n,
   },
 
   {
     name: 'trivial_sum_minor_units',
     brandId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
     metricId: 'gmv_total_minor',
-    expectedValueMinor: 150000,
+    expectedValueMinor: 150000n,
     asOf: '2026-06-15',
-
     // TS computation: sum of order values in minor units (paise)
-    // 50000 + 75000 + 25000 = 150000 paise = ₹1,500
-    tsComputedValueMinor: 50000 + 75000 + 25000,
-
+    // 50000 + 75000 + 25000 = 150000 paise = INR 1,500.00
+    tsComputedValueMinor: 50000n + 75000n + 25000n,
     // Reference: same sum from the golden fixture file (not from the TS computation itself)
-    // This is the key: the reference is determined BEFORE the TS code is written,
-    // from an external source (SQL, spreadsheet, manual calculation, prior snapshot).
-    referenceValueMinor: 150000,
-
-    toleranceMinor: 0,  // Integer minor units: zero tolerance (I-S07)
+    referenceValueMinor: 150000n,
+    toleranceMinor: 0n,  // Integer minor units: zero tolerance (I-S07)
   },
 ];
 
 // ---------------------------------------------------------------------------
 // Anti-tautology assertion (Sprint-0 sanity check)
 // Verifies the fixture has a REAL independent reference, not a copy of the TS value.
+// Note: this is a structural guard, not a runtime proof — the non-tautological
+// guarantee is enforced by the independent reference SQL path (D-2).
 // ---------------------------------------------------------------------------
 export function assertNotTautology(fixture: GoldenFixture): void {
-  // A tautology: referenceValueMinor === tsComputedValueMinor by CONSTRUCTION (e.g., same code path)
-  // This is detected when the reference is generated by calling the same function as the TS value.
-  // In our fixtures, the reference is a hardcoded constant — this is NOT a tautology.
-  //
-  // The validation we CAN do statically:
-  //   - The fixture must declare both tsComputedValueMinor AND referenceValueMinor explicitly
-  //   - They should be declared independently (not one derived from the other)
-  if (typeof fixture.tsComputedValueMinor !== 'number') {
-    throw new Error(`[parity-oracle] Fixture '${fixture.name}': tsComputedValueMinor must be a number`);
+  if (typeof fixture.tsComputedValueMinor !== 'bigint') {
+    throw new Error(`[parity-oracle] Fixture '${fixture.name}': tsComputedValueMinor must be a bigint`);
   }
-  if (typeof fixture.referenceValueMinor !== 'number') {
-    throw new Error(`[parity-oracle] Fixture '${fixture.name}': referenceValueMinor must be a number`);
+  if (typeof fixture.referenceValueMinor !== 'bigint') {
+    throw new Error(`[parity-oracle] Fixture '${fixture.name}': referenceValueMinor must be a bigint`);
   }
-  if (fixture.toleranceMinor < 0) {
+  if (fixture.toleranceMinor < 0n) {
     throw new Error(`[parity-oracle] Fixture '${fixture.name}': toleranceMinor cannot be negative`);
   }
 }

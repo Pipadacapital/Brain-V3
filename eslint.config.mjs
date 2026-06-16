@@ -80,11 +80,16 @@ export default [
               disallow: ['tool'],
               message: 'Tools must not be imported from application or package code.',
             },
-            // metric-engine may only be imported by analytics and measurement modules
+            // metric-engine may only be imported by analytics and measurement modules.
+            // Allow-list: measurement and analytics; deny all other core-modules.
+            // D-6 fix: the prior rule over-blocked by denying ALL core-modules (including
+            // measurement/analytics). Corrected to allow measurement+analytics only.
             {
-              from: ['core-module'],
+              from: [['core-module', { module: '!(measurement|analytics)' }]],
               disallow: ['metric-engine'],
-              message: 'packages/metric-engine is fenced to analytics + measurement modules only (I-ST03).',
+              message:
+                'packages/metric-engine is fenced to the measurement and analytics modules only (I-ST03, D-6). ' +
+                'Other core-modules must not import the metric engine directly.',
             },
           ],
         },

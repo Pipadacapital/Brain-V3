@@ -163,3 +163,25 @@
 - Adopt-rule: cross-tenant system jobs MUST use list_active_brand_ids() (2nd occurrence — Stakeholder /adopt-rule pending)
 - phone-guard-reeval: identity slice should adopt list_active_brand_ids() for enumeration
 - billing_run + fx_rate: explicit non-goals, Phase-2+
+
+## 2026-06-17T02:15:00Z — Stakeholder — feat-metric-engine-parity
+**Action:** Approval received. status->approved, stage 8.
+
+## 2026-06-17T02:20:00Z — Platform/SRE — feat-metric-engine-parity
+**Stage:** 8 · **Affected:** @brain/metric-engine, @brain/tool-parity-oracle (in-process library + CI runner — no new deployable) · **Canary:** N/A (library change; ships as part of core next image) · **Monitor:** parity gate is the observability surface (CI-blocking)
+
+**Migration 0020 verified:** `provisional_gmv_as_of` present, `prosecdef=f` (SECURITY INVOKER). Applied by builder in Slice 2. Idempotent `CREATE OR REPLACE`. Down = `DROP FUNCTION IF EXISTS provisional_gmv_as_of(uuid, date)`.
+
+**Build gate:** typecheck @brain/metric-engine PASS, @brain/tool-parity-oracle PASS, @brain/core PASS, @brain/money PASS. 16 tasks EXIT 0.
+
+**Parity gate: GREEN 16/16** (tolerance 0, `bigint`-exact, live Postgres). RED proof confirmed: 1-minor-unit perturbation → `FAIL: TS=50001 REF=50000 delta=1 > tolerance=0`. M1 'parity oracle green' exit criterion MET.
+
+**CI smoke:** pr.yml verified — `services: postgres:16` (SEC-001 fix real), `BRAIN_APP_DATABASE_URL` wired, `brain_app NOBYPASSRLS` provisioned, `pnpm migrate:up` before `test:parity --affected` (blocking, no continue-on-error). Turbo dep edge: `test:parity dependsOn @brain/metric-engine#build` — confirmed engine changes trigger oracle in affected set.
+
+**PR:** gh CLI unauthenticated. Manual compare URL: https://github.com/Rishabhporwal/Brain-V4/compare/master...feat/metric-engine-parity (clean off master, not stacked). Branch not pushed yet (phase-1 dev-only).
+
+**Rollback:** `DROP FUNCTION IF EXISTS provisional_gmv_as_of(uuid, date);` + revert core image to prior SHA.
+
+**Tech-debt carry-forward:** F-SEC-02 P2 must-fix-before-Phase-2 (old GetRealizedGmvAsOf GUC-reset; new engine path correct-by-construction); QA-F1/QA-F2 LOW deferred M2; /adopt-rule list_active_brand_ids cross-tenant system jobs (2nd occurrence).
+
+**Next:** monitor branch; when merging to master apply 0020 migration to prod DB first; Phase-2 requires F-SEC-02 fix on GetRealizedGmvAsOf.

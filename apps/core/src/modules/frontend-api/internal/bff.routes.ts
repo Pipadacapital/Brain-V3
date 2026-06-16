@@ -39,6 +39,7 @@ type CookieReply = FastifyReply & {
   clearCookie(name: string, options?: CookieOptions): CookieReply;
 };
 import type { AuthService } from '../../workspace-access/internal/application/auth.service.js';
+import { AuthError } from '../../workspace-access/internal/application/auth.service.js';
 import type { AuthenticatedRequest } from '../../workspace-access/internal/interfaces/rest/auth.routes.js';
 import { validateSessionPreHandler } from '../../workspace-access/internal/interfaces/rest/auth.routes.js';
 import type { OnboardingStatus } from '../../workspace-access/internal/domain/organization/entities.js';
@@ -353,6 +354,88 @@ export function registerBffRoutes(
     },
   );
 
+  // ── POST /api/v1/bff/session/set-brand — switch active brand in cookie ──────
+  // AC-1 / feat-multi-brand: re-mints the session JWT with verified brand-level context.
+  // SEC: session revocation DB check required — do NOT use JWT-only verification (MA-05).
+  // CSRF enforced by the app-wide onRequest hook (not exempt — same as set-org).
+  // workspace_id is sourced from auth.workspaceId (JWT) ONLY — never the body (MA-02).
+  // TOCTOU note: remove+set-brand executing within the same millisecond leaves a sub-ms
+  // window where a removed user re-mints before the revocation check catches up; acceptable
+  // for M1 — noted for future brand-scoped session audit.
+  fastify.post(
+    '/api/v1/bff/session/set-brand',
+    // SEC: session revocation DB check required — do NOT use JWT-only verification (MA-05)
+    { preHandler: [sessionPreHandler] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const correlationId = (request.headers['x-correlation-id'] as string) ?? requestId;
+      const auth = (request as AuthenticatedRequest).auth;
+      const body = request.body as { brand_id?: string };
+
+      // SEC: workspaceId must come from JWT, not body — prevents cross-org membership spoofing (MA-02).
+      if (!auth.workspaceId) {
+        return reply.code(400).send({
+          request_id: requestId,
+          error: { code: 'MISSING_WORKSPACE', message: 'No workspace context in session. Call set-org first.' },
+        });
+      }
+
+      if (!body?.brand_id) {
+        return reply.code(400).send({
+          request_id: requestId,
+          error: { code: 'MISSING_BRAND_ID', message: 'brand_id is required.' },
+        });
+      }
+
+      if (!pool) {
+        return reply.code(503).send({
+          request_id: requestId,
+          error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available.' },
+        });
+      }
+
+      try {
+        // MA-01 CRITICAL: calls mintSessionToken directly via switchBrandContext — NEVER
+        // refreshSession/resolveActiveContext (their findActiveByUser fallback substitutes
+        // the wrong brand, causing a context-substitution defect).
+        const result = await authService.switchBrandContext(
+          auth.userId,
+          auth.jti,
+          auth.brandId,         // fromBrandId (outgoing context, audit only)
+          auth.workspaceId,     // from JWT ONLY — never body (MA-02)
+          body.brand_id,
+          correlationId,
+        );
+
+        // Set the re-minted session cookie (copy of set-org cookie block, bff.routes.ts:335-341).
+        (reply as CookieReply).setCookie(COOKIE_NAME, result.accessToken, {
+          httpOnly: true,
+          secure: process.env['NODE_ENV'] === 'production',
+          sameSite: 'strict',
+          path: '/',
+          maxAge: result.expiresIn,
+        });
+
+        return reply.send({
+          request_id: requestId,
+          auth: {
+            brand_id: result.context.brandId,
+            workspace_id: result.context.workspaceId,
+            role: result.context.role,
+          },
+        });
+      } catch (err) {
+        if (err instanceof AuthError) {
+          return reply.code(err.statusCode).send({
+            request_id: requestId,
+            error: { code: err.code, message: err.message },
+          });
+        }
+        throw err;
+      }
+    },
+  );
+
   // ── POST /api/v1/bff/session/onboarding/advance — advance wizard step ────────
   // QA-01 / AC-5 §B-5: Steps 3 ("Skip For Now") and 4 ("Done") call this.
   // Body: { to: 'integration_selected' | 'complete' }
@@ -489,6 +572,7 @@ export function registerBffRoutes(
           request_id: requestId,
           data: {
             org_name: null,
+            active_brand_id: null,
             brand_count: 0,
             member_count: 0,
             brands: [],
@@ -506,24 +590,32 @@ export function registerBffRoutes(
       const ctx: QueryContext = { workspaceId: auth.workspaceId, correlationId: requestId };
       const client = await pool.connect();
       try {
+        // brand-summary queries: org + brand list (all member brands for the switcher) + brand-scoped member count.
         const [orgResult, brandResult, memberResult] = await Promise.all([
           client.query<{ id: string; name: string }>(
             ctx,
             `SELECT id, name FROM organization WHERE id = $1`,
             [auth.workspaceId],
           ),
+          // brand_self_read (0013) ensures brain_app sees only member brands in the active org.
+          // brand list drives the switcher — all member brands within the workspace, newest first.
           client.query<{ id: string; display_name: string; domain: string | null; status: string }>(
             ctx,
             `SELECT id, display_name, domain, status FROM brand WHERE organization_id = $1 ORDER BY created_at DESC LIMIT 20`,
             [auth.workspaceId],
           ),
-          client.query<{ count: string }>(
-            ctx,
-            // COUNT DISTINCT users — a single owner holds two membership rows
-            // (org-level brand_id IS NULL + brand-level), so COUNT(*) double-counts them.
-            `SELECT COUNT(DISTINCT app_user_id)::text AS count FROM membership WHERE organization_id = $1`,
-            [auth.workspaceId],
-          ),
+          // MA-06/SD-2: member count is per-active-brand, not org-level.
+          // Guard: if auth.brandId is null (no active brand), count returns 0 (honest empty).
+          auth.brandId
+            ? client.query<{ count: string }>(
+                ctx,
+                // COUNT DISTINCT users scoped to the ACTIVE brand.
+                // A single owner holds two membership rows (org-level + brand-level),
+                // so COUNT(*) double-counts them — DISTINCT eliminates duplicates.
+                `SELECT COUNT(DISTINCT app_user_id)::text AS count FROM membership WHERE organization_id = $1 AND brand_id = $2`,
+                [auth.workspaceId, auth.brandId],
+              )
+            : Promise.resolve({ rows: [{ count: '0' }] as { count: string }[] }),
         ]);
 
         const org = orgResult.rows[0];
@@ -531,6 +623,9 @@ export function registerBffRoutes(
           request_id: requestId,
           data: {
             org_name: org?.name ?? null,
+            // MA-06: active_brand_id = auth.brandId so the client can identify the active brand
+            // by ID (not array index). Frontend resolves: brands.find(b => b.id === active_brand_id).
+            active_brand_id: auth.brandId ?? null,
             brand_count: brandResult.rows.length,
             member_count: parseInt(memberResult.rows[0]?.count ?? '0', 10),
             brands: brandResult.rows.map((b) => ({

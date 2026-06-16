@@ -267,14 +267,20 @@ export const sessionApi = {
 // ── Workspace ─────────────────────────────────────────────────────────────────
 
 export const workspaceApi = {
-  create: (body: CreateWorkspaceRequest) =>
-    bffFetch<WorkspaceResponse>('/v1/workspaces', {
+  // BFF returns { request_id, workspace: {...} } — unwrap to flat WorkspaceResponse.
+  create: async (body: CreateWorkspaceRequest): Promise<WorkspaceResponse> => {
+    const res = await bffFetch<{ request_id: string; workspace: WorkspaceResponse }>('/v1/workspaces', {
       method: 'POST',
       body: JSON.stringify(body),
       idempotencyKey: generateRequestId(),
-    }),
+    });
+    return res.workspace;
+  },
 
-  get: (id: string) => bffFetch<WorkspaceResponse>(`/v1/workspaces/${id}`),
+  get: async (id: string): Promise<WorkspaceResponse> => {
+    const res = await bffFetch<{ request_id: string; workspace: WorkspaceResponse }>(`/v1/workspaces/${id}`);
+    return res.workspace;
+  },
 
   list: (cursor?: string) =>
     bffFetch<WorkspaceListResponse>(
@@ -297,12 +303,23 @@ export const brandApi = {
     return res.brand;
   },
 
-  get: (id: string) => bffFetch<BrandResponse>(`/v1/brands/${id}`),
+  // BFF returns { request_id, brand: {...} } — unwrap to flat BrandResponse.
+  get: async (id: string): Promise<BrandResponse> => {
+    const res = await bffFetch<{ request_id: string; brand: BrandResponse }>(`/v1/brands/${id}`);
+    return res.brand;
+  },
 
-  list: (cursor?: string) =>
-    bffFetch<PaginatedResponse<BrandResponse>>(
-      `/v1/brands${cursor ? `?cursor=${cursor}` : ''}`,
-    ),
+  // BFF returns { request_id, brands: [...], next_cursor, has_more } — remap `brands`
+  // to the PaginatedResponse `data` field the callers expect.
+  list: async (cursor?: string): Promise<PaginatedResponse<BrandResponse>> => {
+    const res = await bffFetch<{
+      request_id: string;
+      brands: BrandResponse[];
+      next_cursor: string | null;
+      has_more: boolean;
+    }>(`/v1/brands${cursor ? `?cursor=${cursor}` : ''}`);
+    return { data: res.brands, next_cursor: res.next_cursor, has_more: res.has_more };
+  },
 
   // B1: repoint to the new set-brand BFF route (AC-1/SD-1).
   // The old /v1/brands/:id/switch had no backing route — this is the correct target.
@@ -317,10 +334,18 @@ export const brandApi = {
 // ── Members ───────────────────────────────────────────────────────────────────
 
 export const membersApi = {
-  list: (cursor?: string) =>
-    bffFetch<PaginatedResponse<MemberResponse>>(
-      `/v1/members${cursor ? `?cursor=${cursor}` : ''}`,
-    ),
+  // BFF returns { request_id, members: [...], next_cursor, has_more } — remap `members`
+  // to the PaginatedResponse `data` field the table reads (data?.data). Without this the
+  // members table always renders empty.
+  list: async (cursor?: string): Promise<PaginatedResponse<MemberResponse>> => {
+    const res = await bffFetch<{
+      request_id: string;
+      members: MemberResponse[];
+      next_cursor: string | null;
+      has_more: boolean;
+    }>(`/v1/members${cursor ? `?cursor=${cursor}` : ''}`);
+    return { data: res.members, next_cursor: res.next_cursor ?? null, has_more: res.has_more ?? false };
+  },
 
   invite: (body: InviteMemberRequest) =>
     bffFetch<OkResponse>('/v1/invites', {
@@ -454,13 +479,22 @@ export const connectorsApi = {
 
   // Shopify OAuth requires the store domain (e.g. my-store.myshopify.com) — the
   // backend 400s (MISSING_SHOP_PARAM) without it.
-  getShopifyInstallUrl: (shop: string) =>
-    bffFetch<ShopifyInstallUrlResponse>(
+  // BFF returns { request_id, data: { install_url } } — unwrap .data so callers read
+  // install_url directly. Without this, window.location.href = undefined → /settings/undefined.
+  getShopifyInstallUrl: async (shop: string): Promise<ShopifyInstallUrlResponse> => {
+    const res = await bffFetch<{ request_id: string; data: ShopifyInstallUrlResponse }>(
       `/v1/connectors/shopify/install?shop=${encodeURIComponent(shop)}`,
-    ),
+    );
+    return res.data;
+  },
 
-  getStatus: (connectorId: string) =>
-    bffFetch<ConnectorInstanceResponse>(`/v1/connectors/${connectorId}/status`),
+  // BFF returns { request_id, data: {...} } — unwrap to flat ConnectorInstanceResponse.
+  getStatus: async (connectorId: string): Promise<ConnectorInstanceResponse> => {
+    const res = await bffFetch<{ request_id: string; data: ConnectorInstanceResponse }>(
+      `/v1/connectors/${connectorId}/status`,
+    );
+    return res.data;
+  },
 
   disconnect: (connectorId: string) =>
     bffFetch<OkResponse>(`/v1/connectors/${connectorId}`, {
@@ -514,7 +548,11 @@ export const pixelApi = {
       idempotencyKey: generateRequestId(),
     }),
 
-  getHealth: () => bffFetch<PixelHealthResponse>('/v1/pixel/health'),
+  // BFF returns { request_id, data: {...} } — unwrap to flat PixelHealthResponse.
+  getHealth: async (): Promise<PixelHealthResponse> => {
+    const res = await bffFetch<{ request_id: string; data: PixelHealthResponse }>('/v1/pixel/health');
+    return res.data;
+  },
 };
 
 // ── Dashboard (Postgres-only reads — arch plan §6.4) ─────────────────────────

@@ -197,3 +197,86 @@ Section F (no-blend test):
 | bigint-fixtures / M-2 | All money fields bigint; no-float lint green | PASS |
 | I-S01 | Isolation under brain_app pool (NOT superuser) | PASS |
 | Commit per slice | 4 slices, 4 commits | PASS |
+
+---
+
+## BOUNCE r1 — SEC-001 fix (2026-06-17, AI/ML Engineer delta)
+
+Security bounced on **SEC-001 HIGH**: CI `lint-typecheck-unit` had no postgres service — parity oracle tests threw ECONNREFUSED in GitHub Actions. Three fixes applied, three commits.
+
+### Fix 1 — SEC-001/SEC-004: CI postgres provisioning + turbo passthrough (commit `08dcc2f`)
+
+**`.github/workflows/pr.yml` — `lint-typecheck-unit` job changes:**
+
+```yaml
+services:
+  postgres:
+    image: postgres:16
+    env:
+      POSTGRES_USER: brain
+      POSTGRES_PASSWORD: brain
+      POSTGRES_DB: brain
+    ports:
+      - 5432:5432
+    options: >-
+      --health-cmd "pg_isready -U brain -d brain"
+      --health-interval 5s
+      --health-timeout 5s
+      --health-retries 10
+env:
+  DATABASE_URL: postgres://brain:brain@localhost:5432/brain
+  BRAIN_APP_DATABASE_URL: postgres://brain_app:brain_app@localhost:5432/brain
+```
+
+Migration-apply step added before `turbo run lint typecheck test:unit`:
+```bash
+# Pre-create brain_app as LOGIN (migration 0001 creates NOLOGIN IF NOT EXISTS;
+# dev DB has rolcanlogin=t via provisioning-time step per MEMORY.md)
+PGPASSWORD=brain psql -U brain -h localhost -d brain -c "
+  DO \$\$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'brain_app') THEN
+      CREATE ROLE brain_app LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS PASSWORD 'brain_app';
+    ELSE
+      ALTER ROLE brain_app LOGIN PASSWORD 'brain_app';
+    END IF;
+  END \$\$;
+"
+pnpm migrate:up   # applies all 20 migrations through 0020_provisional_gmv_as_of
+```
+
+`brain_app` provisioning rationale: migration 0001 uses `CREATE ROLE brain_app NOLOGIN` with `IF NOT EXISTS`. The dev DB has `rolcanlogin=t` (verified via `pg_roles` query against the docker container). We pre-create it with `LOGIN` in CI so the `IF NOT EXISTS` guard in 0001 skips creating it as `NOLOGIN`, preserving login capability. NOBYPASSRLS is enforced by both the pre-create and migration 0001's assertion (`INVARIANT VIOLATION: brain_app must NEVER have BYPASSRLS`).
+
+**`turbo.json` — SEC-004:** Added `BRAIN_APP_DATABASE_URL` to `globalPassThroughEnv` so turbo passes it into the `test:parity` task sandbox.
+
+YAML validated: `python3 -c "import yaml,sys; yaml.safe_load(open('.github/workflows/pr.yml'))"` → exits 0.
+
+### Fix 2 — QA-F2: ISO-2 strengthened to prove active RLS block (commit `7d92fb8`)
+
+Prior ISO-2: seed Brand B rows, run Brand A engine → 0 (trivially — Brand A has no rows). Could not distinguish "RLS blocked" from "no rows exist".
+
+**Strengthened ISO-2** (`tools/parity-oracle/src/parity.test.ts`):
+- Seeds Brand A rows (INR 75000n + 25000n = 100000n) AND Brand B rows (AED 30000n)
+- Runs engine as Brand B — asserts `INR = 0n` (RLS blocked Brand A's existing rows)
+- Runs engine as Brand A — asserts `AED = 0n` (RLS blocked Brand B's existing rows)
+- Both brands see their own rows (non-degenerate: Brand B sees 30000n AED)
+
+If RLS were removed, Brand B would see Brand A's 100000n INR and the test would fail — proving the assertion is sensitive to RLS removal.
+
+Also added describe-level `afterEach` to describe D (SEC-002 partial: ensures ISO-3 cleanup runs even on failure).
+
+### Fix 3 — QA-F1/SEC-002: dirty-DB determinism via afterEach in describes D/E/F (commit `7a55c10`)
+
+Describes D, E, F previously used inline `clearLedgerRows` at end of test body — not reached on test failure. Added `afterEach(async () => clearLedgerRows(BRAND_PARITY_A, BRAND_PARITY_B))` to each.
+
+Combined with the existing `beforeAll` truncation guard, the suite is now deterministic from any dirty local DB state.
+
+**Proof — back-to-back runs without manual cleanup:**
+```
+Run 1: pnpm --filter @brain/tool-parity-oracle test:parity
+  ✓ src/parity.test.ts (16 tests) 64ms — 16/16 PASS
+
+Run 2 (no cleanup): pnpm --filter @brain/tool-parity-oracle test:parity
+  ✓ src/parity.test.ts (16 tests) 60ms — 16/16 PASS
+```
+
+Parity tolerance still 0; no assertions weakened. The negative control (RED PROOF) remains structurally unchanged.

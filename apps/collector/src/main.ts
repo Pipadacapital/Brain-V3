@@ -29,7 +29,6 @@ import { registerCollectRoute } from './interfaces/rest/collect.route.js';
 import { registerHealthRoutes } from './interfaces/rest/health.route.js';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -47,9 +46,7 @@ async function registerSchemaWithBackoff(): Promise<void> {
   // Path: packages/contracts/generated/avro/brain.collector.event.v1.avsc
   let avscJson: string;
   try {
-    const __filename = fileURLToPath(import.meta.url);
-    const __dirname = dirname(__filename);
-    const avscPath = join(__dirname, '../../../../packages/contracts/generated/avro/brain.collector.event.v1.avsc');
+    const avscPath = fileURLToPath(new URL('../../../packages/contracts/generated/avro/brain.collector.event.v1.avsc', import.meta.url));
     avscJson = readFileSync(avscPath, 'utf-8');
   } catch (err) {
     console.warn(`[collector] Could not load Avro schema file: ${String(err)} — skipping Apicurio registration`);

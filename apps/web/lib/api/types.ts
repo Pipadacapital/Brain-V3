@@ -165,7 +165,22 @@ export interface MemberResponse {
   role_code: RoleCode;
   user_email: string;
   user_full_name: string;
+  /** user_status reflects app_user.status — added in Slice 3 (D-8). 'suspended' means sessions revoked. */
+  user_status: 'active' | 'suspended';
   created_at: string;
+}
+
+/** Pending invite returned by GET /api/v1/invites?status=pending (D-4/D-11). */
+export interface InviteResponse {
+  id: string;
+  organization_id: string;
+  brand_id: string | null;
+  email: string;
+  role_code: RoleCode;
+  status: 'pending' | 'accepted' | 'revoked' | 'expired';
+  expires_at: string;
+  created_at: string;
+  invited_by_user_id: string;
 }
 
 export interface InviteMemberRequest {

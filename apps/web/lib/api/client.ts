@@ -26,6 +26,7 @@ import type {
   CreateBrandRequest,
   BrandResponse,
   MemberResponse,
+  InviteResponse,
   InviteMemberRequest,
   UpdateMemberRoleRequest,
   ConnectorListItem,
@@ -373,6 +374,61 @@ export const membersApi = {
       method: 'DELETE',
       idempotencyKey: generateRequestId(),
     }),
+
+  // D-4/D-11: BFF returns { request_id, invites: [...], next_cursor, has_more }
+  // Unwrap `invites` → PaginatedResponse<InviteResponse>.
+  listPendingInvites: async (cursor?: string): Promise<PaginatedResponse<InviteResponse>> => {
+    const res = await bffFetch<{
+      request_id: string;
+      invites: InviteResponse[];
+      next_cursor: string | null;
+      has_more: boolean;
+    }>(`/v1/invites?status=pending${cursor ? `&cursor=${cursor}` : ''}`);
+    return { data: res.invites, next_cursor: res.next_cursor ?? null, has_more: res.has_more ?? false };
+  },
+
+  // D-3: BFF returns { request_id, invite: InviteResponse } — unwrap `invite`.
+  resendInvite: async (inviteId: string): Promise<InviteResponse> => {
+    const res = await bffFetch<{ request_id: string; invite: InviteResponse }>(
+      `/v1/invites/${inviteId}/resend`,
+      {
+        method: 'POST',
+        idempotencyKey: generateRequestId(),
+      },
+    );
+    return res.invite;
+  },
+
+  // Revoke returns 204 No Content — void.
+  revokeInvite: (inviteId: string): Promise<void> =>
+    bffFetch<void>(`/v1/invites/${inviteId}/revoke`, {
+      method: 'POST',
+      idempotencyKey: generateRequestId(),
+    }),
+
+  // D-8: BFF returns { request_id, member: { ..., user_status: 'suspended' } } — unwrap `member`.
+  suspendMember: async (memberId: string): Promise<MemberResponse> => {
+    const res = await bffFetch<{ request_id: string; member: MemberResponse }>(
+      `/v1/members/${memberId}/suspend`,
+      {
+        method: 'POST',
+        idempotencyKey: generateRequestId(),
+      },
+    );
+    return res.member;
+  },
+
+  // D-1: BFF returns { request_id, member: { ..., user_status: 'active' } } — unwrap `member`.
+  reactivateMember: async (memberId: string): Promise<MemberResponse> => {
+    const res = await bffFetch<{ request_id: string; member: MemberResponse }>(
+      `/v1/members/${memberId}/reactivate`,
+      {
+        method: 'POST',
+        idempotencyKey: generateRequestId(),
+      },
+    );
+    return res.member;
+  },
 };
 
 // ── Connectors ────────────────────────────────────────────────────────────────

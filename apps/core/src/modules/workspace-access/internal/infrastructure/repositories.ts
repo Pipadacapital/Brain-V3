@@ -1082,8 +1082,15 @@ export class InviteRepository {
     const params: unknown[] = [organizationId, limit + 1];
     let paramIdx = 3;
 
+    // D-4: Owner sees ALL pending invites in the org (both org-level brand_id=NULL and
+    // brand-level invites). brandId filter is applied for brand_admin (brand-scoped) and
+    // is removed entirely for owner so org-level invites (brand_id=NULL) are visible even
+    // when the owner's session carries a non-null brandId context.
     let brandClause: string;
-    if (brandId) {
+    if (actorRole === 'owner') {
+      // Owner: no brand filter — returns all pending invites for the org.
+      brandClause = '';
+    } else if (brandId) {
       brandClause = `AND i.brand_id = $${paramIdx++}`;
       params.push(brandId);
     } else {

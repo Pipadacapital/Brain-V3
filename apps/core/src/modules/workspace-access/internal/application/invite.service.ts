@@ -340,7 +340,7 @@ export class InviteService {
     },
     correlationId: string,
   ): Promise<{
-    items: Array<Membership & { email: string }>;
+    items: Array<Membership & { email: string; user_email: string; user_full_name: string; user_status: 'active' | 'suspended' }>;
     nextCursor: string | null;
     hasMore: boolean;
   }> {

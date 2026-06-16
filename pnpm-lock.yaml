@@ -345,7 +345,11 @@ importers:
 
   packages/feature-flags: {}
 
-  packages/identity-core: {}
+  packages/identity-core:
+    devDependencies:
+      '@types/node':
+        specifier: ^25.9.3
+        version: 25.9.3
 
   packages/metric-engine: {}
 

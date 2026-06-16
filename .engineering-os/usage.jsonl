@@ -97,3 +97,12 @@
 {"ts":"2026-06-16T20:13:50Z","req_id":"feat-realized-revenue-ledger","agent":"data-engineer","stage":3,"model":"sonnet","review_scope":"delta","total_tokens":79515}
 {"ts":"2026-06-16T20:20:22Z","req_id":"feat-realized-revenue-ledger","agent":"security-reviewer","stage":4,"model":"sonnet","review_scope":"delta","total_tokens":46432}
 {"ts":"2026-06-16T20:37:58Z","req_id":"feat-realized-revenue-ledger","agent":"platform-devops","stage":8,"model":"sonnet","review_scope":"full","total_tokens":84520}
+{"ts":"2026-06-16T20:52:25Z","req_id":"feat-metric-engine-parity","agent":"cto-advisor","stage":1,"model":"sonnet","review_scope":"none","total_tokens":73363}
+{"ts":"2026-06-16T21:00:23Z","req_id":"feat-metric-engine-parity","agent":"architect","stage":2,"model":"opus","review_scope":"none","total_tokens":100268}
+{"ts":"2026-06-16T21:18:21Z","req_id":"feat-metric-engine-parity","agent":"intelligence-engineer","stage":3,"model":"sonnet","review_scope":"none","total_tokens":120468}
+{"ts":"2026-06-16T21:33:07Z","req_id":"feat-metric-engine-parity","agent":"security-reviewer","stage":4,"model":"sonnet","review_scope":"full","total_tokens":136753}
+{"ts":"2026-06-16T21:33:07Z","req_id":"feat-metric-engine-parity","agent":"qa-agent","stage":5,"model":"sonnet","review_scope":"full","total_tokens":97213}
+{"ts":"2026-06-16T21:42:13Z","req_id":"feat-metric-engine-parity","agent":"intelligence-engineer","stage":3,"model":"sonnet","review_scope":"delta","total_tokens":86935}
+{"ts":"2026-06-16T21:46:07Z","req_id":"feat-metric-engine-parity","agent":"security-reviewer","stage":4,"model":"sonnet","review_scope":"delta","total_tokens":43054}
+{"ts":"2026-06-16T21:51:39Z","req_id":"feat-metric-engine-parity","agent":"final-reviewer","stage":6,"model":"opus","review_scope":"full","total_tokens":81928}
+{"ts":"2026-06-16T22:09:05Z","req_id":"feat-metric-engine-parity","agent":"platform-devops","stage":8,"model":"sonnet","review_scope":"full","total_tokens":68491}

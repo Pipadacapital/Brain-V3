@@ -754,3 +754,4 @@ Installed 4 packages in 7ms
 2026-06-17T02:21:10Z [S8 platform-devops] feat-metric-engine-parity: CI smoke — pr.yml postgres:16 service + brain_app NOBYPASSRLS + migrate:up before test:parity confirmed; Turbo dep edge verified
 2026-06-17T02:21:15Z [S8 platform-devops] feat-metric-engine-parity: PR — gh unauth; manual URL: https://github.com/Rishabhporwal/Brain-V4/compare/master...feat/metric-engine-parity
 2026-06-17T02:21:30Z [S8 platform-devops] feat-metric-engine-parity: SHIPPED — 13-deploy-report.md written; state updated shipped; decision-log + journal appended; committing artifacts
+22:08:52Z [heartbeat] engineering-os:platform-devops S8 ? returned

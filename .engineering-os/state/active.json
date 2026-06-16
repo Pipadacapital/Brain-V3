@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-06-16T20:46:53Z",
+  "updated_at": "2026-06-16T22:15:56Z",
   "updated_by": "system",
   "active_requirements": [
     {
@@ -379,6 +379,18 @@
       "migration_0020": "verified-applied (provisional_gmv_as_of SECURITY INVOKER, prosecdef=f)",
       "parity_gate": "GREEN 16/16, tolerance 0, RED proof confirmed (1-minor delta -> FAIL)",
       "rollback": "DROP FUNCTION IF EXISTS provisional_gmv_as_of(uuid, date); revert core image to prior SHA"
+    },
+    {
+      "req_id": "feat-analytics-api-dashboard",
+      "status": "cto-review",
+      "stage": 1,
+      "current_owner": "cto-advisor",
+      "title": "Analytics API + dashboard \u2014 realized_revenue on screen (M1 finale)",
+      "run_dir": ".engineering-os/runs/2026-06-16T22-15-56Z__1e2785__feat-analytics-api-dashboard__rishabhporwal",
+      "lineage": [
+        "feat-metric-engine-parity"
+      ],
+      "last_journal_entry_at": "2026-06-16T22:15:56Z"
     }
   ]
 }

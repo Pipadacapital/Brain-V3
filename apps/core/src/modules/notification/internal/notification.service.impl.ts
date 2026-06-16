@@ -9,6 +9,7 @@
 import type { NotificationService } from '../service.js';
 import type { EmailAdapter } from './ses-adapter.js';
 import { writeSendLog } from './send-log.js';
+import { captureDevLink } from './dev-link-capture.js';
 
 export class NotificationServiceImpl implements NotificationService {
   constructor(
@@ -17,7 +18,8 @@ export class NotificationServiceImpl implements NotificationService {
   ) {}
 
   async sendVerificationEmail(email: string, rawToken: string, correlationId: string): Promise<void> {
-    const verifyUrl = `${this.appBaseUrl}/auth/verify-email?token=${rawToken}`;
+    const verifyUrl = `${this.appBaseUrl}/verify-email?token=${rawToken}`;
+    captureDevLink(email, { type: 'email_verification', token: rawToken, url: verifyUrl, capturedAt: new Date().toISOString() });
 
     await writeSendLog(null, {
       correlationId,
@@ -66,7 +68,8 @@ export class NotificationServiceImpl implements NotificationService {
   }
 
   async sendPasswordResetEmail(email: string, rawToken: string, correlationId: string): Promise<void> {
-    const resetUrl = `${this.appBaseUrl}/auth/reset-password?token=${rawToken}`;
+    const resetUrl = `${this.appBaseUrl}/reset-password?token=${rawToken}`;
+    captureDevLink(email, { type: 'password_reset', token: rawToken, url: resetUrl, capturedAt: new Date().toISOString() });
 
     await writeSendLog(null, {
       correlationId,
@@ -114,7 +117,8 @@ export class NotificationServiceImpl implements NotificationService {
   }
 
   async sendInviteEmail(email: string, rawToken: string, correlationId: string): Promise<void> {
-    const inviteUrl = `${this.appBaseUrl}/invites/accept?token=${rawToken}`;
+    const inviteUrl = `${this.appBaseUrl}/invite/accept?token=${rawToken}`;
+    captureDevLink(email, { type: 'invite', token: rawToken, url: inviteUrl, capturedAt: new Date().toISOString() });
 
     await writeSendLog(null, {
       correlationId,

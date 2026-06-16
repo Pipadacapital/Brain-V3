@@ -38,6 +38,7 @@ import {
   BrandRepository,
 } from '../infrastructure/repositories.js';
 import type { RoleCode } from '../domain/membership/entities.js';
+import { ROLE_HIERARCHY } from '../domain/membership/entities.js';
 import type { OnboardingStatus } from '../domain/organization/entities.js';
 import { mintJwt, verifyJwt } from '../security/jwt.js';
 
@@ -757,44 +758,198 @@ export class AuthService {
     }
   }
 
-  // ── Suspend User (AC-2) ────────────────────────────────────────────────────
-  // M1: no member-facing suspend route exists; this is the service capability.
-  // Route is post-M1. The repo/service method is the AC-2 requirement.
+  // ── Suspend User (D-8 / C-3 / C-4 / H-1) ────────────────────────────────────
+  // Rewrite: rawPgPool BEGIN/COMMIT wrapping both writes (session-revoke + status)
+  // in ONE transaction (C-3 atomicity). Actor-authority checked from DB (C-4).
+  // Audit post-COMMIT with brand_id: brandId ?? organizationId (H-1 fix).
 
-  async suspendUser(appUserId: string, actorId: string, correlationId: string): Promise<void> {
-    const ctx: QueryContext = { correlationId, userId: actorId };
-    const client = await this.pool.connect();
+  async suspendUser(
+    appUserId: string,
+    actorId: string,
+    organizationId: string,
+    brandId: string | null,
+    correlationId: string,
+  ): Promise<{ sessionsRevoked: number }> {
+    if (!this.rawPgPool) {
+      throw new AuthError('CONFIGURATION_ERROR', 'Raw pg pool not configured — suspendUser unavailable.', 500);
+    }
+    const rawClient: PoolClient = await this.rawPgPool.connect();
     try {
-      const sessionRepo = new UserSessionRepository(client);
-      const userRepo = new AppUserRepository(client);
+      await rawClient.query('BEGIN');
 
-      // Revoke all sessions first.
-      const count = await sessionRepo.revokeAllForUser(appUserId, { ...ctx, userId: appUserId });
+      // Step 1 (C-4): resolve actor's membership row from DB (not JWT — D-2).
+      const actorResult = await rawClient.query<{
+        id: string; organization_id: string; role_code: string;
+      }>(
+        `SELECT id, organization_id, role_code FROM membership
+         WHERE app_user_id = $1 AND organization_id = $2 AND brand_id IS NULL`,
+        [actorId, organizationId],
+      );
+      const actor = actorResult.rows[0];
+      if (!actor ||
+          (actor.role_code !== 'owner' && actor.role_code !== 'brand_admin')) {
+        await rawClient.query('ROLLBACK');
+        throw new AuthError('FORBIDDEN', 'Requires owner or brand_admin role to suspend.', 403);
+      }
 
-      // Mark user suspended.
-      await userRepo.updateStatus(appUserId, 'suspended', ctx);
+      // Step 2 (D-9 + C-4): resolve target's membership row from DB.
+      const targetResult = await rawClient.query<{
+        id: string; organization_id: string; app_user_id: string; role_code: string;
+      }>(
+        `SELECT id, organization_id, app_user_id, role_code FROM membership
+         WHERE app_user_id = $1 AND organization_id = $2 AND brand_id IS NULL`,
+        [appUserId, organizationId],
+      );
+      const target = targetResult.rows[0];
+      // D-9: app-layer org assertion (rawPgPool carries no GUC — this IS the cross-org guard).
+      if (!target || target.organization_id !== organizationId) {
+        await rawClient.query('ROLLBACK');
+        throw new AuthError('NOT_FOUND', 'Member not found in this organization.', 404);
+      }
 
+      // Step 3 (C-4): hierarchy check — actor must OUTRANK target. Owner cannot be suspended by non-owner.
+      const actorIdx = ROLE_HIERARCHY.indexOf(actor.role_code as RoleCode);
+      const targetIdx = ROLE_HIERARCHY.indexOf(target.role_code as RoleCode);
+      if (target.role_code === 'owner' && actor.role_code !== 'owner') {
+        await rawClient.query('ROLLBACK');
+        throw new AuthError('FORBIDDEN', 'Cannot suspend an Owner.', 403);
+      }
+      if (actor.role_code !== 'owner' && actorIdx <= targetIdx) {
+        await rawClient.query('ROLLBACK');
+        throw new AuthError('FORBIDDEN', 'Cannot suspend a member with equal or higher authority.', 403);
+      }
+
+      // Step 4 (C-3): atomic writes — session revoke + status in ONE txn.
+      const revokeResult = await rawClient.query<{ rowcount: string }>(
+        `WITH revoked AS (
+           UPDATE user_session SET revoked_at = NOW()
+           WHERE app_user_id = $1 AND revoked_at IS NULL
+           RETURNING id
+         )
+         SELECT COUNT(*)::text AS rowcount FROM revoked`,
+        [appUserId],
+      );
+      const sessionsRevoked = parseInt(revokeResult.rows[0]?.rowcount ?? '0', 10);
+
+      await rawClient.query(
+        `UPDATE app_user SET status = 'suspended', updated_at = NOW() WHERE id = $1`,
+        [appUserId],
+      );
+
+      await rawClient.query('COMMIT');
+
+      // Step 5 (M-1 / H-1): audit POST-COMMIT; brand_id = brandId ?? organizationId (NOT appUserId).
       await this.audit.append({
-        brand_id: appUserId,
+        brand_id: brandId ?? organizationId,
         actor_id: actorId,
-        actor_role: 'system',
+        actor_role: actor.role_code,
         action: 'user.suspended',
         entity_type: 'app_user',
         entity_id: appUserId,
-        payload: { sessions_revoked: count },
+        payload: { sessions_revoked: sessionsRevoked },
       });
-
       await this.audit.append({
-        brand_id: appUserId,
+        brand_id: brandId ?? organizationId,
         actor_id: actorId,
-        actor_role: 'system',
+        actor_role: actor.role_code,
         action: 'sessions.bulk_revoked',
         entity_type: 'user_session',
         entity_id: appUserId,
-        payload: { reason: 'user_suspended', count },
+        payload: { reason: 'user_suspended', count: sessionsRevoked, target_user_id: appUserId },
       });
+
+      return { sessionsRevoked };
+    } catch (err) {
+      try { await rawClient.query('ROLLBACK'); } catch { /* ignore */ }
+      throw err;
     } finally {
-      client.release();
+      rawClient.release();
+    }
+  }
+
+  // ── Reactivate User (D-1) ──────────────────────────────────────────────────
+  // Structurally DISTINCT from suspend (D-1: not a shared helper with a flag).
+  // Writes status='active' only — NO session revocation (access restored on next
+  // protected action per the requirement).
+
+  async reactivateUser(
+    appUserId: string,
+    actorId: string,
+    organizationId: string,
+    brandId: string | null,
+    correlationId: string,
+  ): Promise<void> {
+    if (!this.rawPgPool) {
+      throw new AuthError('CONFIGURATION_ERROR', 'Raw pg pool not configured — reactivateUser unavailable.', 500);
+    }
+    const rawClient: PoolClient = await this.rawPgPool.connect();
+    try {
+      await rawClient.query('BEGIN');
+
+      // Step 1: resolve actor's membership row (same authority check as suspend — D-2 / C-4).
+      const actorResult = await rawClient.query<{
+        id: string; organization_id: string; role_code: string;
+      }>(
+        `SELECT id, organization_id, role_code FROM membership
+         WHERE app_user_id = $1 AND organization_id = $2 AND brand_id IS NULL`,
+        [actorId, organizationId],
+      );
+      const actor = actorResult.rows[0];
+      if (!actor ||
+          (actor.role_code !== 'owner' && actor.role_code !== 'brand_admin')) {
+        await rawClient.query('ROLLBACK');
+        throw new AuthError('FORBIDDEN', 'Requires owner or brand_admin role to reactivate.', 403);
+      }
+
+      // Step 2 (D-9): resolve target membership; org assertion IS the cross-org guard.
+      const targetResult = await rawClient.query<{
+        id: string; organization_id: string; app_user_id: string; role_code: string;
+      }>(
+        `SELECT id, organization_id, app_user_id, role_code FROM membership
+         WHERE app_user_id = $1 AND organization_id = $2 AND brand_id IS NULL`,
+        [appUserId, organizationId],
+      );
+      const target = targetResult.rows[0];
+      if (!target || target.organization_id !== organizationId) {
+        await rawClient.query('ROLLBACK');
+        throw new AuthError('NOT_FOUND', 'Member not found in this organization.', 404);
+      }
+
+      // Step 3: hierarchy check (same rules as suspend).
+      const actorIdx = ROLE_HIERARCHY.indexOf(actor.role_code as RoleCode);
+      const targetIdx = ROLE_HIERARCHY.indexOf(target.role_code as RoleCode);
+      if (target.role_code === 'owner' && actor.role_code !== 'owner') {
+        await rawClient.query('ROLLBACK');
+        throw new AuthError('FORBIDDEN', 'Cannot reactivate an Owner.', 403);
+      }
+      if (actor.role_code !== 'owner' && actorIdx <= targetIdx) {
+        await rawClient.query('ROLLBACK');
+        throw new AuthError('FORBIDDEN', 'Cannot reactivate a member with equal or higher authority.', 403);
+      }
+
+      // Step 4 (D-1): single write — status = active; NO session revocation.
+      await rawClient.query(
+        `UPDATE app_user SET status = 'active', updated_at = NOW() WHERE id = $1`,
+        [appUserId],
+      );
+
+      await rawClient.query('COMMIT');
+
+      // Step 5: audit POST-COMMIT; brand_id = brandId ?? organizationId (NOT appUserId).
+      await this.audit.append({
+        brand_id: brandId ?? organizationId,
+        actor_id: actorId,
+        actor_role: actor.role_code,
+        action: 'user.reactivated',
+        entity_type: 'app_user',
+        entity_id: appUserId,
+        payload: { target_user_id: appUserId },
+      });
+    } catch (err) {
+      try { await rawClient.query('ROLLBACK'); } catch { /* ignore */ }
+      throw err;
+    } finally {
+      rawClient.release();
     }
   }
 

@@ -140,6 +140,37 @@
         "phase": "1-dev-only",
         "ts": "2026-06-16T11:30:00Z"
       }
+    },
+    {
+      "req_id": "feat-members-team-management",
+      "status": "shipped",
+      "stage": 8,
+      "current_owner": "platform-devops",
+      "title": "Members & Team Management — lifecycle (invite/accept/suspend/reactivate/remove + hierarchy bounds)",
+      "lane": "high_stakes",
+      "run_dir": ".engineering-os/runs/2026-06-16T12-23-10Z__323f49__feat-members-team-management__rishabhporwal",
+      "last_journal_entry_at": "2026-06-16T22:00:00Z",
+      "lineage": ["feat-multi-brand"],
+      "pipeline": {
+        "bounces": 1,
+        "bounce_detail": "r1: QA FAIL (F-QA-1/2/3 missing HTTP wire-smoke) -> fix fcbc221 (test-only 2 files, 3 wire tests) -> DELTA PASS",
+        "security": "PASS (0 blocking; C-1..C-5 + H-1..H-3 all closed)",
+        "qa": "DELTA PASS (0 blocking; 69/69 vitest; 3 wire tests non-inert)",
+        "final_review": "PASS / APPROVE",
+        "commits": ["a525035","f786c29","89095fb","cbd6743","85d0fa8","7be0e7e","65868b7","e16dc2d","8f89cfa","fcbc221"],
+        "deferred": ["SEC-V1 NC-4/5 assertion-query superuser (LOW)", "SEC-V2 resolveMembership null-fallback (LOW)", "F-QA-4 audit_log correlation_id column (MED backlog)", "F-QA-5 e2e rate-limiter exhaustion (LOW)"]
+      },
+      "ship": {
+        "branch": "feat/members-team-management",
+        "commit": "fcbc221",
+        "pushed": false,
+        "pr": null,
+        "pr_note": "gh CLI unauthenticated; manual PR URL: https://github.com/Rishabhporwal/Brain-V4/compare/feat/members-team-management — NOTE: branch is stacked on feat/shopify-sync-validation (43ea557); push + merge that base first for a clean PR diff",
+        "phase": "1-dev-only",
+        "ts": "2026-06-16T22:00:00Z"
+      },
+      "migrate_0014": "verified-applied",
+      "rollback": "DROP INDEX IF EXISTS invite_pending_org_email_uniq, invite_pending_brand_email_uniq, invite_status_org_idx + re-deploy prior core/web image"
     }
   ]
 }

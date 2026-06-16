@@ -110,3 +110,6 @@
 **Rollback handle:** `DROP POLICY brand_self_read ON brand` (additive, safe) + ArgoCD rollback `core` + `web` to prior revision. No data migration to reverse (I-E02 honored, 0013 is CREATE POLICY only).
 
 **Tech-debt carried:** QA-3 (audit_log.correlation_id, MED), SEC-MB-4 (audit-before-mint order comment, LOW), OTel trace instrumentation on auth routes (M2).
+
+## 2026-06-16T14:45:00Z — Stakeholder — feat-members-team-management
+**Action:** Approval received. status->approved, stage 8. Deploy: migrate(0014)->core->web.

@@ -27,6 +27,9 @@ export default defineConfig({
     baseURL: BASE_URL,
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
+    // Set PW_SLOWMO=700 (ms) to slow actions down for a watchable headed run:
+    //   PW_SLOWMO=700 npx playwright test e2e/full-journey.spec.ts --headed
+    launchOptions: process.env.PW_SLOWMO ? { slowMo: Number(process.env.PW_SLOWMO) } : {},
   },
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
 });

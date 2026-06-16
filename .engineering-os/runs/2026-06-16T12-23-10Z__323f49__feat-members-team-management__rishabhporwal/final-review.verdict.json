@@ -1,0 +1,29 @@
+{
+  "stage": 6,
+  "agent": "final-reviewer",
+  "req_id": "feat-members-team-management",
+  "verdict": "PASS",
+  "recommendation": "APPROVE",
+  "blocking": false,
+  "residual_risk": "SEC-V1 (two NC assertion queries) and F-QA-4 (audit correlation_id column) remain backlog tech-debt; neither is a runtime data-leak or auth-bypass path — cross-org isolation and suspend-revocation are independently wire-proven under brain_app.",
+  "deferred": [
+    { "id": "SEC-V1", "disposition": "ship-as-techdebt — functional claim effectively resolved by WIRE-1; tighten two NC assertion queries to brain_app in backlog" },
+    { "id": "SEC-V2", "disposition": "ship-as-techdebt — dead defensive path, unreachable in prod" },
+    { "id": "F-QA-4", "disposition": "ship-as-techdebt — audit correlation_id column needs migration; pre-existing schema, out of contract scope" },
+    { "id": "F-QA-5", "disposition": "ship-as-techdebt — pre-existing rate-limiter test-infra limitation; target spec 4/4 standalone" }
+  ],
+  "gates_re_run": {
+    "vitest_workspace_access": "69/69 pass, 6 files — reproduced QA delta verdict",
+    "core_typecheck": "EXIT 0",
+    "web_typecheck": "EXIT 0",
+    "branch_base_43ea557_is_ancestor": true
+  },
+  "security_spine_verified_by_read": true,
+  "qa_bounce_legitimate": true,
+  "scope_creep": false,
+  "new_adr_stack_secret": false,
+  "migration_0014_additive": true,
+  "hard_rule_deviation": false,
+  "cost_paradigm": "tier-0-deterministic",
+  "ts": "2026-06-16T20:40:00Z"
+}

@@ -63,3 +63,10 @@
 {"ts":"2026-06-16T05:08:36Z","req_id":"feat-multi-brand","agent":"architect","stage":2,"model":"opus","review_scope":"none","total_tokens":87131}
 {"ts":"2026-06-16T06:02:55Z","req_id":"feat-multi-brand","agent":"backend-developer","stage":3,"model":"sonnet","review_scope":"none"}
 {"ts":"2026-06-16T07:08:29Z","req_id":"feat-multi-brand","agent":"platform-devops","stage":8,"model":"sonnet","review_scope":"full","total_tokens":53845}
+{"ts":"2026-06-16T14:45:18Z","req_id":"feat-members-team-management","agent":"frontend-web-developer","stage":3,"model":"sonnet","review_scope":"none","total_tokens":174811}
+{"ts":"2026-06-16T15:02:22Z","req_id":"feat-members-team-management","agent":"qa-agent","stage":5,"model":"sonnet","review_scope":"full","total_tokens":116025}
+{"ts":"2026-06-16T15:02:55Z","req_id":"feat-members-team-management","agent":"security-reviewer","stage":4,"model":"sonnet","review_scope":"full","total_tokens":144993}
+{"ts":"2026-06-16T15:09:48Z","req_id":"feat-members-team-management","agent":"backend-developer","stage":3,"model":"sonnet","review_scope":"delta","total_tokens":108858}
+{"ts":"2026-06-16T15:13:16Z","req_id":"feat-members-team-management","agent":"qa-agent","stage":5,"model":"sonnet","review_scope":"delta","total_tokens":36898}
+{"ts":"2026-06-16T15:19:27Z","req_id":"feat-members-team-management","agent":"final-reviewer","stage":6,"model":"opus","review_scope":"full","total_tokens":103146}
+{"ts":"2026-06-16T15:48:24Z","req_id":"feat-members-team-management","agent":"platform-devops","stage":8,"model":"sonnet","review_scope":"full","total_tokens":53062}

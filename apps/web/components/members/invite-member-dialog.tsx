@@ -30,17 +30,38 @@ import { toast } from '@/components/ui/toaster';
 import { ROLE_LABELS, type RoleCode } from '@/lib/api/types';
 import { useState } from 'react';
 
-const INVITABLE_ROLES: RoleCode[] = ['brand_admin', 'manager', 'analyst'];
+/**
+ * Role hierarchy — higher index = more authority.
+ * Used to compute which roles the current actor can invite (D-6 UI side).
+ */
+const ROLE_HIERARCHY: RoleCode[] = ['analyst', 'manager', 'brand_admin', 'owner'];
+
+/**
+ * Returns the roles the actor may invite — strictly below their own authority.
+ * Owner → brand_admin, manager, analyst.
+ * Brand Admin → manager, analyst.
+ * Manager / Analyst → [] (no invite permission; button hidden entirely).
+ */
+function invitableRoles(actorRole: RoleCode): RoleCode[] {
+  const actorIdx = ROLE_HIERARCHY.indexOf(actorRole);
+  return ROLE_HIERARCHY.filter((r) => ROLE_HIERARCHY.indexOf(r) < actorIdx);
+}
 
 interface InviteMemberDialogProps {
   onSuccess?: () => void;
+  /** Current session user's role — gates which roles are offered and whether the button renders. */
+  currentUserRole?: RoleCode;
 }
 
-export function InviteMemberDialog({ onSuccess }: InviteMemberDialogProps) {
+export function InviteMemberDialog({ onSuccess, currentUserRole = 'analyst' }: InviteMemberDialogProps) {
   const [open, setOpen] = useState(false);
   const { mutate: inviteMember, isPending, error } = useInviteMember();
   const { data: workspaces } = useWorkspaceList();
   const organizationId = workspaces?.workspaces?.[0]?.id ?? '';
+
+  const allowedRoles = invitableRoles(currentUserRole);
+  // Manager and Analyst cannot invite anyone — hide the button entirely (D-6).
+  const canInvite = allowedRoles.length > 0;
 
   const {
     register,
@@ -50,7 +71,7 @@ export function InviteMemberDialog({ onSuccess }: InviteMemberDialogProps) {
     formState: { errors },
   } = useForm<InviteMemberFormValues>({
     resolver: zodResolver(inviteMemberSchema),
-    defaultValues: { email: '', role_code: 'analyst' },
+    defaultValues: { email: '', role_code: (allowedRoles[0] ?? 'analyst') },
   });
 
   function onSubmit(data: InviteMemberFormValues) {
@@ -64,8 +85,18 @@ export function InviteMemberDialog({ onSuccess }: InviteMemberDialogProps) {
           setOpen(false);
           onSuccess?.();
         },
+        onError: (err) => {
+          // 403 from the server surfaces a toast (D-6/D-7 — server is authoritative).
+          const apiErr = err as { message?: string };
+          toast({ title: 'Invite failed', description: apiErr.message ?? 'Unable to send invite.' });
+        },
       },
     );
+  }
+
+  // Gate: Manager/Analyst cannot invite — render nothing (D-6).
+  if (!canInvite) {
+    return null;
   }
 
   return (
@@ -109,7 +140,7 @@ export function InviteMemberDialog({ onSuccess }: InviteMemberDialogProps) {
             <div className="space-y-1.5">
               <Label htmlFor="invite-role">Role</Label>
               <Select
-                defaultValue="analyst"
+                defaultValue={allowedRoles[0] ?? 'analyst'}
                 onValueChange={(v) => setValue('role_code', v as RoleCode)}
               >
                 <SelectTrigger
@@ -120,8 +151,8 @@ export function InviteMemberDialog({ onSuccess }: InviteMemberDialogProps) {
                   <SelectValue placeholder="Select a role" />
                 </SelectTrigger>
                 <SelectContent>
-                  {INVITABLE_ROLES.map((code) => (
-                    <SelectItem key={code} value={code}>
+                  {allowedRoles.map((code) => (
+                    <SelectItem key={code} value={code} data-testid={`invite-role-option-${code}`}>
                       {ROLE_LABELS[code]}
                     </SelectItem>
                   ))}

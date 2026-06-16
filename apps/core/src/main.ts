@@ -310,7 +310,7 @@ export async function main(): Promise<void> {
   registerAuthRoutes(app, authService, rateLimiter);
   registerWorkspaceRoutes(app, authService, workspaceService);
   registerBrandRoutes(app, authService, brandService);
-  registerMemberRoutes(app, authService, inviteService);
+  registerMemberRoutes(app, authService, inviteService, rawPgPool);
   registerBffRoutes(app, authService, pool, config.cookieSecret, rateLimiter);
 
   // DEV-ONLY: surface email action links (verify/reset/invite) for browser testing

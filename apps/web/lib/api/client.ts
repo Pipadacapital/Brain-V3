@@ -285,12 +285,17 @@ export const workspaceApi = {
 // ── Brand ─────────────────────────────────────────────────────────────────────
 
 export const brandApi = {
-  create: (body: CreateBrandRequest) =>
-    bffFetch<BrandResponse>('/v1/brands', {
+  // Core returns { request_id, brand: {...} } — unwrap to the flat BrandResponse so
+  // consumers can read newBrand.id / .display_name directly. Without this, the
+  // create→switch flow called switchBrand(undefined) → empty body {} → 400.
+  create: async (body: CreateBrandRequest): Promise<BrandResponse> => {
+    const res = await bffFetch<{ request_id: string; brand: BrandResponse }>('/v1/brands', {
       method: 'POST',
       body: JSON.stringify(body),
       idempotencyKey: generateRequestId(),
-    }),
+    });
+    return res.brand;
+  },
 
   get: (id: string) => bffFetch<BrandResponse>(`/v1/brands/${id}`),
 

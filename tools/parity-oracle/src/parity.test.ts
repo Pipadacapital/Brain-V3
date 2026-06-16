@@ -602,6 +602,10 @@ describe('D. Isolation under brain_app (I-S01, F-SEC-02)', () => {
 
 describe('E. Per-currency no-blend invariant', () => {
 
+  afterEach(async () => {
+    await clearLedgerRows(BRAND_PARITY_A, BRAND_PARITY_B);
+  });
+
   it('[PER-CURRENCY] engine map keys are currency codes; no cross-currency blend', async () => {
     await seedFinalized(BRAND_PARITY_A, `order-pc-${randomUUID()}`, 50000n, 'INR', '2026-06-17');
 
@@ -619,14 +623,16 @@ describe('E. Per-currency no-blend invariant', () => {
     const val = engineMap.get('INR')!;
     expect(typeof val).toBe('bigint');
     expect(val).toBe(50000n);
-
-    await clearLedgerRows(BRAND_PARITY_A);
   });
 });
 
 // ── F. Provisional never blended into realized ───────────────────────────────
 
 describe('F. Provisional NEVER blended into realized (D-4)', () => {
+
+  afterEach(async () => {
+    await clearLedgerRows(BRAND_PARITY_A, BRAND_PARITY_B);
+  });
 
   it('[NO-BLEND] adding provisional rows does NOT move realized_revenue map', async () => {
     const baseOrderId = `order-noblend-${randomUUID()}`;
@@ -657,7 +663,5 @@ describe('F. Provisional NEVER blended into realized (D-4)', () => {
     // Confirm: realized + provisional are disjoint (no double-count)
     expect(realizedAfter.get('INR')! + provisionalMap.get('INR')!).toBe(80000n); // sum OK
     expect(realizedAfter.get('INR')).not.toBe(80000n); // realized alone is NOT the sum
-
-    await clearLedgerRows(BRAND_PARITY_A);
   });
 });

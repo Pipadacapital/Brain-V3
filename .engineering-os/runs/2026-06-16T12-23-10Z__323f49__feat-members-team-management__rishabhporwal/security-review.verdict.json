@@ -1,0 +1,26 @@
+{
+  "stage": 4,
+  "agent": "security-reviewer",
+  "req_id": "feat-members-team-management",
+  "verdict": "PASS",
+  "findings": [
+    {
+      "id": "SEC-V1",
+      "severity": "MEDIUM",
+      "title": "NC-4/NC-5 assertion queries run under superuser pool (brain), not SET ROLE brain_app — diminished RLS verification signal for those two assertions",
+      "file": "apps/core/src/modules/workspace-access/tests/member-lifecycle.live.test.ts:585-606",
+      "status": "OPEN-DEFERRED",
+      "note": "The assertions confirm correct data (0 active sessions, status=suspended) which are functional facts on app_user/user_session; app_user has RLS disabled (0002_auth.sql:42 — DISABLE ROW LEVEL SECURITY confirmed by inspection); user_session RLS is scoped by app.current_user_id not org (0002_auth.sql:82-84). The RLS-isolation assertions (NC-1/NC-2/NC-3) correctly use SET LOCAL ROLE brain_app. NC-4/NC-5 functional correctness is sound; the test-quality gap is that SET ROLE brain_app is not asserted for those specific assertion queries. Not a runtime data-leak risk. Deferrable to MED backlog."
+    },
+    {
+      "id": "SEC-V2",
+      "severity": "LOW",
+      "title": "resolveMembership helper in member.routes.ts accepts rawPgPool as optional — null fallback is unreachable in prod but silently degrades the route-layer defence-in-depth lookup on misconfiguration",
+      "file": "apps/core/src/modules/workspace-access/internal/interfaces/rest/member.routes.ts:625-628",
+      "status": "OPEN-DEFERRED",
+      "note": "main.ts:313 passes rawPgPool unconditionally so the fallback path is unreachable in production. If rawPgPool is ever nil (misconfiguration), the null return causes a 404 rather than letting the service-level D-9 org assertion be the sole guard — which is itself still correct. Deferrable LOW."
+    }
+  ],
+  "blocking": false,
+  "ts": "2026-06-16T20:15:00Z"
+}

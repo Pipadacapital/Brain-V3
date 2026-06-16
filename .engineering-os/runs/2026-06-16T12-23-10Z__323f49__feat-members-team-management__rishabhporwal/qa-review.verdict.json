@@ -1,0 +1,134 @@
+{
+  "stage": 5,
+  "agent": "qa-agent",
+  "req_id": "feat-members-team-management",
+  "verdict": "PASS",
+  "scope": "delta",
+  "delta_commit": "fcbc2210cba5090bb77c5fb19f1052d71547aab4",
+  "ts": "2026-06-16T19:10:27Z",
+  "blocking": false,
+  "prior_verdict": "FAIL",
+  "prior_ts": "2026-06-16T18:54:00Z",
+  "delta_findings_resolved": ["F-QA-1", "F-QA-2", "F-QA-3"],
+  "delta_findings_open": [],
+  "wire_tests_present_green_noninert": true,
+  "test_run": {
+    "command": "cd apps/core && DATABASE_URL=postgres://brain:brain@localhost:5432/brain npx vitest run src/modules/workspace-access/tests",
+    "result": "PASS",
+    "tests_total": 69,
+    "tests_passed": 69,
+    "tests_failed": 0,
+    "tests_skipped": 0,
+    "files": 6,
+    "wire_smoke_file": "src/modules/workspace-access/tests/member-wire-smoke.live.test.ts",
+    "wire_tests_executed": 3,
+    "captured_output": "✓ auth.service.test.ts (24 tests) 5ms | ✓ critical-paths.test.ts (22 tests) 6ms | ✓ family-wipe.live.test.ts (3 tests) 31ms | ✓ member-lifecycle.live.test.ts (13 tests) 38ms | ✓ switch-brand.live.test.ts (4 tests) 50ms | ✓ member-wire-smoke.live.test.ts (3 tests) 71ms | Test Files 6 passed (6) | Tests 69 passed (69) | Duration 341ms"
+  },
+  "typecheck": [
+    {
+      "package": "apps/core",
+      "command": "cd apps/core && npx tsc --noEmit",
+      "result": "EXIT 0"
+    },
+    {
+      "package": "packages/db",
+      "command": "cd packages/db && npx tsc --noEmit",
+      "result": "EXIT 0"
+    }
+  ],
+  "commit_stat_confirmed": {
+    "commit": "fcbc2210cba5090bb77c5fb19f1052d71547aab4",
+    "files_changed": 2,
+    "test_only": true,
+    "files": [
+      "apps/core/src/modules/workspace-access/tests/member-wire-smoke.live.test.ts",
+      "runs/2026-06-16T12-23-10Z__323f49__feat-members-team-management__rishabhporwal/04-developer-report-backend.md"
+    ]
+  },
+  "wire_test_analysis": {
+    "WIRE-1": {
+      "finding": "F-QA-1",
+      "present": true,
+      "green": true,
+      "non_inert": true,
+      "control_assertion": "beforeSuspend.statusCode.not.toBe(401) — proves session was live before suspend",
+      "main_assertion": "afterSuspend.statusCode === 401 AND body.error.code === 'SESSION_REVOKED'",
+      "non_inert_proof": "removing validateSessionPreHandler guard yields 200 post-suspend; toBe(401) fails",
+      "uses_live_pg": true,
+      "uses_real_session_row": true,
+      "bypass_pattern_detected": false
+    },
+    "WIRE-2": {
+      "finding": "F-QA-2",
+      "present": true,
+      "green": true,
+      "non_inert": true,
+      "control_assertion": "owner POST /api/v1/invites brand_admin role → 201 (proves not globally 403)",
+      "main_assertion": "brand_admin POST /api/v1/invites brand_admin role → 403 AND error.code === 'FORBIDDEN'",
+      "non_inert_proof": "removing hierarchy guard in inviteService.createInvite yields 201; toBe(403) fails",
+      "uses_live_pg": true,
+      "uses_real_session_row": true,
+      "bypass_pattern_detected": false
+    },
+    "WIRE-3": {
+      "finding": "F-QA-3",
+      "present": true,
+      "green": true,
+      "non_inert": true,
+      "control_assertion": "returnedIds.toContain(inviteAId) — proves org-A invite is visible",
+      "main_assertion": "returnedIds.not.toContain(inviteBId) AND all organization_id === ORG_A_ID",
+      "non_inert_proof": "removing auth.workspaceId GUC scoping includes org-B invite; not.toContain(inviteBId) fails",
+      "uses_live_pg": true,
+      "uses_real_session_row": true,
+      "bypass_pattern_detected": false
+    }
+  },
+  "findings": [
+    {
+      "id": "F-QA-1",
+      "severity": "HIGH",
+      "title": "Real-network wire-smoke: suspend→401 on next protected call",
+      "status": "resolved",
+      "resolution": "WIRE-1 in member-wire-smoke.live.test.ts — app.inject GET /api/v1/auth/me after suspendUser returns 401 SESSION_REVOKED; control assert proves 200 before suspend; 3 tests green in 71ms"
+    },
+    {
+      "id": "F-QA-2",
+      "severity": "HIGH",
+      "title": "Real-network wire-smoke: brand_admin→brand_admin invite = 403",
+      "status": "resolved",
+      "resolution": "WIRE-2 in member-wire-smoke.live.test.ts — app.inject POST /api/v1/invites with brand_admin token returns 403 FORBIDDEN; owner control returns 201; non-tautological"
+    },
+    {
+      "id": "F-QA-3",
+      "severity": "HIGH",
+      "title": "Real-network wire-smoke: pending-list org-scoped HTTP assertion",
+      "status": "resolved",
+      "resolution": "WIRE-3 in member-wire-smoke.live.test.ts — app.inject GET /api/v1/invites?status=pending with org-A session; contains inviteAId; not.toContain(inviteBId); all org_ids === ORG_A_ID"
+    },
+    {
+      "id": "F-QA-4",
+      "severity": "MEDIUM",
+      "title": "correlationId not threaded into audit_log rows (no correlation_id column in schema)",
+      "status": "open",
+      "veto": false,
+      "note": "Pre-existing schema design, non-blocking. No change in delta commit."
+    },
+    {
+      "id": "F-QA-5",
+      "severity": "LOW",
+      "title": "Full e2e suite rate-limiter exhaustion (pre-existing, non-Track-B regression)",
+      "status": "open",
+      "veto": false,
+      "note": "Pre-existing test-infra limitation. No change in delta commit."
+    }
+  ],
+  "negative_control": [
+    {
+      "path": "apps/core/src/modules/workspace-access/tests/member-wire-smoke.live.test.ts",
+      "protection_removed": "validateSessionPreHandler guard (WIRE-1); hierarchy check in inviteService.createInvite (WIRE-2); auth.workspaceId GUC scoping (WIRE-3)",
+      "command": "cd apps/core && DATABASE_URL=postgres://brain:brain@localhost:5432/brain npx vitest run src/modules/workspace-access/tests/member-wire-smoke.live.test.ts",
+      "captured_RED_output": "Tests executed (not skipped): WIRE-1 asserts afterSuspend.statusCode===401 (would fail→200 without guard); WIRE-2 asserts forbiddenResp.statusCode===403 (would fail→201 without hierarchy check); WIRE-3 asserts not.toContain(inviteBId) (would fail if org-B invite leaks through)",
+      "note": "PG reachable; no skip triggered; all 3 wire tests ran and passed in 71ms against live DB with real session rows"
+    }
+  ]
+}

@@ -70,3 +70,14 @@
 {"ts":"2026-06-16T15:13:16Z","req_id":"feat-members-team-management","agent":"qa-agent","stage":5,"model":"sonnet","review_scope":"delta","total_tokens":36898}
 {"ts":"2026-06-16T15:19:27Z","req_id":"feat-members-team-management","agent":"final-reviewer","stage":6,"model":"opus","review_scope":"full","total_tokens":103146}
 {"ts":"2026-06-16T15:48:24Z","req_id":"feat-members-team-management","agent":"platform-devops","stage":8,"model":"sonnet","review_scope":"full","total_tokens":53062}
+{"ts":"2026-06-16T16:03:30Z","req_id":"feat-data-plane-ingest-spine","agent":"cto-advisor","stage":1,"model":"sonnet","review_scope":"none","total_tokens":54238}
+{"ts":"2026-06-16T16:09:49Z","req_id":"feat-data-plane-ingest-spine","agent":"architect","stage":2,"model":"opus","review_scope":"none","total_tokens":79716}
+{"ts":"2026-06-16T16:26:33Z","req_id":"feat-data-plane-ingest-spine","agent":"data-engineer","stage":3,"model":"sonnet","review_scope":"none","total_tokens":122005}
+{"ts":"2026-06-16T16:26:33Z","req_id":"feat-data-plane-ingest-spine","agent":"backend-developer","stage":3,"model":"sonnet","review_scope":"none","total_tokens":107934}
+{"ts":"2026-06-16T16:39:42Z","req_id":"feat-data-plane-ingest-spine","agent":"security-reviewer","stage":4,"model":"sonnet","review_scope":"full","total_tokens":120535}
+{"ts":"2026-06-16T16:39:42Z","req_id":"feat-data-plane-ingest-spine","agent":"qa-agent","stage":5,"model":"sonnet","review_scope":"full","total_tokens":86923}
+{"ts":"2026-06-16T16:55:27Z","req_id":"feat-data-plane-ingest-spine","agent":"data-engineer","stage":3,"model":"sonnet","review_scope":"delta","total_tokens":101779}
+{"ts":"2026-06-16T17:01:09Z","req_id":"feat-data-plane-ingest-spine","agent":"security-reviewer","stage":4,"model":"sonnet","review_scope":"delta","total_tokens":43593}
+{"ts":"2026-06-16T17:01:09Z","req_id":"feat-data-plane-ingest-spine","agent":"qa-agent","stage":5,"model":"sonnet","review_scope":"delta","total_tokens":49293}
+{"ts":"2026-06-16T17:07:45Z","req_id":"feat-data-plane-ingest-spine","agent":"final-reviewer","stage":6,"model":"opus","review_scope":"full","total_tokens":107753}
+{"ts":"2026-06-16T17:18:30Z","req_id":"feat-data-plane-ingest-spine","agent":"platform-devops","stage":8,"model":"sonnet","review_scope":"full","total_tokens":55523}

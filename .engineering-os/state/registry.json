@@ -22,6 +22,11 @@
       "req_id": "feat-multi-brand",
       "title": "Multi-brand \u2014 create additional brands + brand switcher",
       "first_seen": "2026-06-16T04:34:02Z"
+    },
+    {
+      "req_id": "feat-data-plane-ingest-spine",
+      "title": "Thin data-plane ingest spine (collector \u2192 Redpanda \u2192 Bronze)",
+      "first_seen": "2026-06-16T15:56:54Z"
     }
   ]
 }

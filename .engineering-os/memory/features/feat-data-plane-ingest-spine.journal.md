@@ -29,3 +29,12 @@
 **Self-review vs gates:** PASS — ordering proven, NN-1 two-arg confirmed, additive migrations, no offset pagination, trace ID on responses.
 **Must-fix noted:** Rate-limit plugin (M2); Avro wire encoding (M2 — JSON for M1).
 **Next:** READY-FOR-SECURITY
+
+## 2026-06-16T21:20:00Z — Stage 6 Final Review — PASS / APPROVE
+Engineering Advisor (final-reviewer, Opus). Verdict PASS → Stakeholder gate.
+- Exit (doc 05 §14) DELIVERED: collector→Redpanda→Bronze behind RLS, contracts regenerated; full-wire e2e non-inert.
+- 5 gates re-run on-machine (lint 0, typecheck 0, live RLS shape, LIVE fail-closed under brain_app reproduced, iceberg-untouched/additive).
+- Both bounces legitimate (SR-01 lint test-only; F-QA-01 wire-gap additive), no prod regression.
+- D-4 Postgres fallback SOUND (pre-authorised 02 §119; amendment, not new stack layer).
+- Residual risk (decision card): M1-INTERNAL ONLY — SR-03 (spool unvalidated body) + no rate-limit acceptable solely because no external ingest traffic; must-fix before external exposure.
+- Artifacts: 11-final-review.md, final-review.verdict.json.

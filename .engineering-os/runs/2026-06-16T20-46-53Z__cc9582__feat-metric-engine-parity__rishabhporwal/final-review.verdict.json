@@ -1,0 +1,29 @@
+{
+  "stage": 6,
+  "agent": "engineering-advisor-final-review",
+  "req_id": "feat-metric-engine-parity",
+  "verdict": "PASS",
+  "recommendation": "APPROVE",
+  "blocking": [],
+  "residual_risk": "Pre-existing F-SEC-02 (old GetRealizedGmvAsOf autocommit-GUC reset) carried, not regressed; new engine path correct-by-construction via withBrandTxn; must-fix-before-Phase-2.",
+  "ac_unmet": [],
+  "parity_oracle_real": "yes — non-tautological (reference.ts imports only pg type, recognition_label='finalized' GROUP BY currency_code predicate, zero calls to named seams/engine) + RED proof (1-minor delta -> FAIL at tolerance 0, asserted + live-perturbation negative control) + CI runs live-DB (postgres:16 provisioned, brain_app NOBYPASSRLS, migrate:up before test:parity, blocking + affected)",
+  "gates_rerun": [
+    {"gate": "typecheck @brain/metric-engine + @brain/tool-parity-oracle", "result": "EXIT 0 / EXIT 0"},
+    {"gate": "test:parity", "result": "16/16 GREEN; F1-F5 + live RED PROOF captured (TS=50001 REF=50000 delta=1 FAIL -> revert delta=0 PASS)"},
+    {"gate": "test:unit @brain/metric-engine", "result": "9/9 GREEN"},
+    {"gate": "turbo run test:parity --affected --dry-run", "result": "both @brain/metric-engine and @brain/tool-parity-oracle in scope"},
+    {"gate": "validity_check --paths", "result": "clean, 9 files, no bypass-green/tautology/inert-probe"}
+  ],
+  "typecheck": "pass",
+  "cost_paradigm": "tier-0 deterministic confirmed; zero model/LLM/gateway calls in either package",
+  "deferred": [
+    {"id": "F-SEC-02", "severity": "MEDIUM", "disposition": "SHIP as carried tech-debt; must-fix-before-Phase-2 on the old GetRealizedGmvAsOf path; new engine not regressed"},
+    {"id": "SEC-003", "severity": "LOW", "disposition": "SHIP; report-omission only, eliminated by SEC-002 fix; NOTED"},
+    {"id": "QA-F1", "severity": "LOW", "disposition": "SHIP; local-dev dirty-DB idempotency, deferred M2 (CI starts clean)"},
+    {"id": "QA-F2", "severity": "LOW", "disposition": "SHIP; ISO-2 already strengthened to active RLS block in bounce; deferred M2"}
+  ],
+  "hard_rule_deviation": "none",
+  "scope_creep": "none — only realized_revenue + provisional_revenue; no new deployable; migration 0020 additive; eslint fence is a bug-fix",
+  "ts": "2026-06-17T01:48:00Z"
+}

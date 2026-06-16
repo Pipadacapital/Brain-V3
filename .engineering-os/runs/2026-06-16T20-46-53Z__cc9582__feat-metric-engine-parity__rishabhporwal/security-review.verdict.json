@@ -1,0 +1,54 @@
+{
+  "stage": 4,
+  "agent": "security-reviewer",
+  "req_id": "feat-metric-engine-parity",
+  "scope": "delta",
+  "verdict": "PASS",
+  "blocking": false,
+  "findings": [
+    {
+      "id": "SEC-001",
+      "severity": "HIGH",
+      "title": "CI parity gate cannot run live-DB tests: postgres not provisioned in pr.yml lint-typecheck-unit job",
+      "file": ".github/workflows/pr.yml:16-61",
+      "status": "RESOLVED",
+      "resolution": "pr.yml lint-typecheck-unit job now has services: postgres:16 (health-checked, health-interval 5s, health-retries 10). DATABASE_URL and BRAIN_APP_DATABASE_URL both set in job env. Step 'Provision brain_app login role and apply migrations' (line 43-61) pre-creates brain_app as LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS — BYPASSRLS is explicitly NOT granted. pnpm migrate:up runs before test:parity step. YAML parses cleanly (python3 yaml.safe_load: OK). Live parity suite ran 16/16 GREEN in two back-to-back runs confirming ECONNREFUSED is eliminated."
+    },
+    {
+      "id": "SEC-002",
+      "severity": "MEDIUM",
+      "title": "Test isolation brittle: sections D/E/F lack describe-level afterEach; inline cleanup not reached on test failure",
+      "file": "tools/parity-oracle/src/parity.test.ts:519-521,604-606,632-634",
+      "status": "RESOLVED",
+      "resolution": "describe blocks D (Isolation, line 519), E (Per-currency, line 604), and F (Provisional, line 632) each now have a describe-level afterEach(() => clearLedgerRows(BRAND_PARITY_A, BRAND_PARITY_B)). Two back-to-back runs both returned 16/16 GREEN, confirming cleanup runs even across runs on a live DB. Suite is deterministic."
+    },
+    {
+      "id": "SEC-003",
+      "severity": "LOW",
+      "title": "Developer report claimed 16/16 GREEN without noting first-run failure (stale dev DB state)",
+      "file": ".engineering-os/runs/.../04-developer-report-intelligence-engineer.md",
+      "status": "NOTED",
+      "resolution": "Not blocking. SEC-002 fix (describe-level afterEach) eliminates the stale-data condition. Two-run repeatability confirmed."
+    },
+    {
+      "id": "SEC-004",
+      "severity": "LOW",
+      "title": "BRAIN_APP_DATABASE_URL not in turbo.json globalPassThroughEnv",
+      "file": "turbo.json:4",
+      "status": "RESOLVED",
+      "resolution": "turbo.json globalPassThroughEnv now contains both DATABASE_URL and BRAIN_APP_DATABASE_URL at line 4 (confirmed: python3 json parse check: both True). Turbo will pass the credential URL into the test:parity task environment."
+    }
+  ],
+  "delta_scope": "SEC-001 HIGH + SEC-002 MED + SEC-004 LOW + QA-F2/ISO-2 strengthening; diff: .github/workflows/pr.yml (services block + brain_app provision step), turbo.json (globalPassThroughEnv), tools/parity-oracle/src/parity.test.ts (ISO-2 seeding + describe-level afterEach on D/E/F)",
+  "ci_gate_runs_live_db": true,
+  "brain_app_nobypassrls_confirmed": true,
+  "yaml_valid": true,
+  "sec_004_turbo_passthrough": "resolved",
+  "qa_f2_iso2_active_rls_block": "resolved",
+  "parity_still_green_tolerance0": true,
+  "parity_run_1": "16/16 PASS",
+  "parity_run_2": "16/16 PASS",
+  "non_tautological_oracle": "CONFIRMED — reference.ts has single import (pg PoolClient type only); zero calls to realized_gmv_as_of/provisional_gmv_as_of/metric-engine; uses recognition_label=finalized predicate vs engine event_type<>provisional_recognition; RED PROOF: 1-minor delta fails tolerance-0 gate",
+  "isolation_under_brain_app": "CONFIRMED — ISO-1 asserts current_user=brain_app+is_superuser=false; ISO-2 seeds 100000n INR under Brand A, Brand B engine sees 0n INR (active RLS block, not absence-of-data), Brand B's own AED 30000n visible (non-degenerate); bidirectional symmetry confirmed",
+  "ts": "2026-06-17T01:45:00Z"
+}

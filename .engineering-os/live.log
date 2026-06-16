@@ -739,3 +739,18 @@ Installed 4 packages in 7ms
 2026-06-17T01:42:00Z [S3 ai-ml-engineer BOUNCE-r1] feat-metric-engine-parity: Fix 1 (08dcc2f) — pr.yml lint-typecheck-unit: postgres:16 service + job env (DATABASE_URL + BRAIN_APP_DATABASE_URL) + migration-apply step (pre-create brain_app LOGIN NOBYPASSRLS + pnpm migrate:up); turbo.json globalPassThroughEnv += BRAIN_APP_DATABASE_URL. YAML valid.
 2026-06-17T01:44:00Z [S3 ai-ml-engineer BOUNCE-r1] feat-metric-engine-parity: Fix 2 (7d92fb8) — ISO-2 strengthened: seeds Brand A INR 100000n + Brand B AED 30000n; asserts Brand B engine sees 0 INR (active RLS block, not absence); Brand A sees 0 AED; each brand sees its own rows. RLS-removal would surface 100000n INR to Brand B — test is now sensitive.
 2026-06-17T01:45:00Z [S3 ai-ml-engineer BOUNCE-r1] feat-metric-engine-parity: Fix 3 (7a55c10) — afterEach guards added to describes D/E/F for dirty-DB determinism. Back-to-back runs both 16/16 GREEN without manual cleanup. Tolerance unchanged (0n). Typecheck both packages EXIT 0. READY-FOR-SECURITY delta re-review.
+21:41:51Z [heartbeat] engineering-os:intelligence-engineer S3 ? returned
+21:42:39Z [heartbeat] engineering-os:security-reviewer S4 ? issued
+2026-06-17T01:45:00Z [S4 security-reviewer DELTA] feat-metric-engine-parity: Stage 4 DELTA re-review — SEC-001 HIGH resolved (pr.yml services:postgres:16 health-checked; brain_app LOGIN NOSUPERUSER NOBYPASSRLS pre-created; pnpm migrate:up before test:parity; YAML valid); SEC-004 LOW resolved (BRAIN_APP_DATABASE_URL in turbo.json globalPassThroughEnv); SEC-002 MED resolved (describe-level afterEach on blocks D/E/F); QA-F2/ISO-2 resolved (ISO-2 seeds 100000n INR under Brand A, Brand B engine returns 0n — active RLS block confirmed non-degenerate); parity 16/16 GREEN x2 runs, tolerance=0, RED PROOF intact; verdict: PASS, blocking:0 — HANDOFF to gate/reconcile
+21:45:51Z [heartbeat] engineering-os:security-reviewer S4 ? returned
+21:46:33Z [heartbeat] engineering-os:final-reviewer S6 ? issued
+21:50:39Z [final-review] engineering-os:final-reviewer S6 PASS — APPROVE -> stakeholder gate; parity oracle real (non-tautological + RED proof + CI live-DB); gates re-run (parity 16/16, unit 9/9, typecheck 0, validity clean); F-SEC-02 carried tech-debt
+21:51:20Z [heartbeat] engineering-os:final-reviewer S6 ? returned
+22:04:08Z [heartbeat] engineering-os:platform-devops S8 ? issued
+2026-06-17T02:20:00Z [S8 platform-devops] feat-metric-engine-parity: Stage 8 START — verifying migration 0020, running build gate + parity oracle
+2026-06-17T02:20:10Z [S8 platform-devops] feat-metric-engine-parity: migration 0020 verified — provisional_gmv_as_of present, prosecdef=f (SECURITY INVOKER)
+2026-06-17T02:20:30Z [S8 platform-devops] feat-metric-engine-parity: build gate — typecheck metric-engine/parity-oracle/core/money PASS (16 tasks EXIT 0)
+2026-06-17T02:21:00Z [S8 platform-devops] feat-metric-engine-parity: parity gate GREEN 16/16 tolerance=0; RED proof confirmed (1-minor delta -> FAIL)
+2026-06-17T02:21:10Z [S8 platform-devops] feat-metric-engine-parity: CI smoke — pr.yml postgres:16 service + brain_app NOBYPASSRLS + migrate:up before test:parity confirmed; Turbo dep edge verified
+2026-06-17T02:21:15Z [S8 platform-devops] feat-metric-engine-parity: PR — gh unauth; manual URL: https://github.com/Rishabhporwal/Brain-V4/compare/master...feat/metric-engine-parity
+2026-06-17T02:21:30Z [S8 platform-devops] feat-metric-engine-parity: SHIPPED — 13-deploy-report.md written; state updated shipped; decision-log + journal appended; committing artifacts

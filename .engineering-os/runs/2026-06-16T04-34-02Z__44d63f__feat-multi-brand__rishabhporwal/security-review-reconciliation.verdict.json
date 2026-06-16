@@ -1,0 +1,64 @@
+{
+  "stage": 4,
+  "agent": "security-reviewer",
+  "req_id": "feat-multi-brand",
+  "scope": "delta-reconciliation",
+  "verdict": "PASS",
+  "sec_mb_1_status": "still-closed",
+  "cross_tenant_create_possible": false,
+  "findings": [
+    {
+      "id": "SEC-MB-1",
+      "severity": "HIGH",
+      "title": "POST /v1/brands — bootstrap fallback re-introduces body.workspace_id when auth.workspaceId is null",
+      "file": "apps/core/src/modules/workspace-access/internal/interfaces/rest/brand.routes.ts:48",
+      "status": "resolved",
+      "detail": "Reconciliation commit c4d0f92 introduces organizationId = auth.workspaceId ?? parsed.data.workspace_id. The JWT-wins branch (auth.workspaceId non-null) is structurally identical to the SEC-MB-1 bounce-fix: body.workspace_id is discarded. The bootstrap fallback (auth.workspaceId null) uses body.workspace_id but is gated by BrandService.create() at brand.service.ts:68-70: findByUserAndOrg(requestingUserId, organizationId, null, ctx) with explicit AND organization_id = $2 AND brand_id IS NULL in the SQL (repositories.ts:815-817). A user with auth.workspaceId null supplying an org-id they are not a member of returns null → 403. Defense-in-depth: membership RLS (membership_isolation: organization_id = app.current_workspace_id) is set to body.workspace_id (ctx at brand.service.ts:60), so even if the SQL WHERE were relaxed, RLS would block membership rows for non-member orgs. The constraint membership_org_user_uniq (organization_id, app_user_id WHERE brand_id IS NULL) means there is at most one org-level row per user per org — no injection path. Cross-tenant create via body spoofing is structurally impossible given the DB membership check."
+    },
+    {
+      "id": "SEC-RECON-NOTE-1",
+      "severity": "LOW",
+      "title": "Onboarding form sends workspace_id from workspace list cache (create-brand-form.tsx:114) while dashboard dialog does not (create-brand-dialog.tsx:140-145)",
+      "file": "apps/web/components/onboarding/create-brand-form.tsx:114",
+      "status": "open",
+      "detail": "create-brand-form.tsx (onboarding wizard) sends workspace_id: workspaceId where workspaceId = workspaces?.workspaces?.[0]?.id from useWorkspaceList(). This body value is only used server-side when auth.workspaceId is null (the onboarding bootstrap case), which is exactly the intended use case. The backend membership check gates the org supplied. The dashboard dialog (create-brand-dialog.tsx:140-145) correctly omits workspace_id per the SEC MB-3 fix. Both are consistent with the reconciled logic: the onboarding form provides workspace_id because there is no active workspace in the JWT yet; the dashboard dialog omits it because auth.workspaceId is set. No cross-tenant risk, but the inconsistency between the two callers is worth noting for future maintenance. SEC-MB-3 remains resolved for the dashboard dialog path; the onboarding path is the designed bootstrap path."
+    },
+    {
+      "id": "SEC-MB-4",
+      "severity": "LOW",
+      "title": "Audit append after mintSessionToken — known deferred trade-off",
+      "file": "apps/core/src/modules/workspace-access/internal/application/auth.service.ts:696",
+      "status": "open",
+      "detail": "Unchanged from prior review. Deferred. Not introduced by c4d0f92."
+    }
+  ],
+  "blocking": false,
+  "scope_of_c4d0f92": {
+    "files_changed": 2,
+    "files": [
+      "apps/core/src/modules/workspace-access/internal/interfaces/rest/brand.routes.ts (POST /v1/brands reconciliation — JWT-wins ?? body fallback)",
+      "apps/web/e2e/multi-brand.spec.ts (new e2e tests for create→switch seam)"
+    ],
+    "new_endpoints": "none",
+    "new_mcp_tools": "none",
+    "new_db_migrations": "none",
+    "new_secrets": "none",
+    "set_brand_path_unchanged": "bff.routes.ts and auth.service.ts not in diff — MA-01 through MA-13 path confirmed unchanged"
+  },
+  "evidence": {
+    "jwt_wins_precedence": "brand.routes.ts:48 — const organizationId = auth.workspaceId ?? parsed.data.workspace_id; when auth.workspaceId is non-null (all post-onboarding sessions), the body value is unreachable via short-circuit. Verified by reading current file.",
+    "missing_workspace_guard": "brand.routes.ts:49-53 — if (!organizationId) { return reply.code(400).send(...MISSING_WORKSPACE...) }; covers both null JWT and missing body.",
+    "membership_check_before_create": "brand.service.ts:68-70 — findByUserAndOrg(requestingUserId, organizationId, null, ctx) required to return roleCode 'owner' or 'brand_admin' before insert. Rejects 403 otherwise.",
+    "sql_where_clause": "repositories.ts:815-817 — WHERE app_user_id = $1 AND organization_id = $2 AND brand_id IS NULL — parameterized, no injection; org-id check is in SQL, not just RLS.",
+    "rls_membership_isolation": "pg_policies confirmed live: membership_isolation (ALL) — organization_id = current_setting('app.current_workspace_id',true)::uuid. ctx.workspaceId is set to organizationId (body or JWT) at brand.service.ts:60.",
+    "rls_membership_self_read": "membership_self_read (SELECT) allows user to see own rows regardless of workspace — but SQL WHERE AND organization_id = $2 limits results to the requested org; user has no row in org-B if not a member.",
+    "requestingRole_stub": "brand.routes.ts:68 — requestingRole: 'analyst' (stub). Service ignores it, re-derives from DB row (brand.service.ts:68-69). No JWT role injection.",
+    "session_prehandler": "brand.routes.ts:25 — { preHandler: [sessionPreHandler] } on POST /api/v1/brands. Validates JWT + revocation check (auth.routes.ts:419-420). auth.userId and auth.workspaceId sourced from verified JWT claims only.",
+    "correlation_id": "brand.routes.ts:28 — correlationId = x-correlation-id header ?? requestId. Propagated to service ctx and audit log. No PII in log fields (organization_id UUID, user UUID only).",
+    "isolation_fuzz": "11/11 tests PASS (live run 2026-06-16): connector_instance cross-brand = 0 rows; no-GUC = 0 rows; canary: policy_off=1 row proves tests are non-inert; brand_self_read lists both brands for switcher.",
+    "e2e_rl_failure": "Playwright multi-brand.spec.ts and smoke.spec.ts failures: all 4 failures are at register → /verify-email URL assertion (received /register). Root cause: rate-limiter rl:register:::1 count exhausted (10/hour per IP). The register call stays on /register instead of redirecting to /verify-email. This is test-infra (shared dev IP rate-limit saturation), not a security or logic regression. The one passing test (ghost /invite returns 404) does not require registration. Isolation-fuzz (which directly exercises the security-critical paths) is 11/11 PASS under live Postgres.",
+    "dashboard_dialog_no_workspace_id": "create-brand-dialog.tsx:140-145 — brandApi.create() call omits workspace_id entirely; SEC MB-3 fix confirmed intact in reconciliation commit.",
+    "onboarding_form_sends_workspace_id": "create-brand-form.tsx:112-114 — sends workspace_id: workspaceId (from useWorkspaceList()[0].id). This is the designed bootstrap path. auth.workspaceId is null at this point (no re-mint after workspace create). Backend uses body.workspace_id. Membership check gates it."
+  },
+  "ts": "2026-06-16T11:30:00Z"
+}

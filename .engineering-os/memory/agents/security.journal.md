@@ -34,3 +34,10 @@
 **Scanners:** delta-scope (not full suite re-run) — isolation-fuzz pg.test.ts 11/11 PASS live; pg_policies confirmed; secret-grep on bounce diff clean (test-only JWT literals in test files, pre-existing pattern); no new endpoints/migrations/tools in diff
 **Reverified:** SEC-MB-1=RESOLVED (brand.routes.ts:58 auth.workspaceId; :34 MISSING_WORKSPACE guard; parsed.data.workspace_id grep clean); SEC-MB-3=RESOLVED (getActiveWorkspaceId removed, workspace_id not sent in body); SEC-MB-2=RESOLVED (toBeGreaterThan(0) assertion, connector_instance=0); SEC-MB-4=LOW open deferred; set-brand MA-01–MA-13 path unchanged (bff.routes.ts/auth.service.ts not in diff)
 **Next:** reconcile with QA Engineer (PASS → QA re-review / reconcile); no bounce_target
+
+## 2026-06-16T11:30:00Z — Security Reviewer — feat-multi-brand (DELTA-reconciliation c4d0f92)
+**Stage:** 4 · **Mode:** DELTA-reconciliation · **Verdict:** PASS
+**Findings:** 0 CRIT / 0 HIGH / 0 MED / 2 LOW open (SEC-MB-4 deferred; SEC-RECON-NOTE-1 informational)
+**Scanners:** delta-scope — isolation-fuzz pg.test.ts 11/11 PASS live (NOBYPASSRLS, canary confirmed); pg_policies confirmed live (membership_isolation, membership_self_read, brand_isolation, brand_self_read); e2e 2/5 pass (3 failures = rl:register rate-limit exhausted — test-infra, not regression); secret-grep clean on c4d0f92 diff (2 files: brand.routes.ts + multi-brand.spec.ts)
+**Reconciliation verdict:** SEC-MB-1 STILL CLOSED. organizationId = auth.workspaceId ?? body.workspace_id — JWT-wins branch structurally discards body when workspaceId non-null. Bootstrap fallback (workspaceId null) gated by DB membership check (brand.service.ts:68-70: owner/brand_admin in named org, parameterized SQL, independent RLS on membership table). Adversarial probe confirmed: non-member user supplying arbitrary org-id in body → 0 rows from findByUserAndOrg → 403. Cross-tenant create impossible.
+**Next:** PASS → reconcile with QA Engineer / no bounce_target

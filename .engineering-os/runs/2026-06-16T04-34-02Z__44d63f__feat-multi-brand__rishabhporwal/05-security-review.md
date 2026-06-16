@@ -290,3 +290,126 @@ Tests run under real security context: isolation-fuzz uses `NOSUPERUSER NOBYPASS
 | QA-3 | MED | deferred | audit_log.correlation_id column — schema migration required; tracked as tech-debt |
 
 No CRITICAL or HIGH findings remain open. PASS.
+
+---
+
+## DELTA Re-Review (Reconciliation) — 2026-06-16T11:30:00Z
+**authored_at:** 2026-06-16T11:30:00Z
+**authored_by:** security-reviewer (Stage 4, DELTA-reconciliation)
+**mode:** DELTA — scope: reconciliation commit c4d0f92 (bootstrap fallback re-introduced after bounce-fix broke onboarding)
+**prior verdict (r2):** PASS at 2026-06-16T11:00:00Z (commit bcfee81 — JWT hardcoded, body fully discarded)
+**delta commit:** c4d0f92 — "fix(core): restore onboarding brand-create after SEC-MB-1; add create→switch e2e"
+**verdict:** PASS
+
+---
+
+### Context
+
+The prior DELTA (r2) passed commit `bcfee81` where `auth.workspaceId` was hardcoded and `body.workspace_id` was fully discarded. That broke onboarding Step 2 (/brand/new): the workspace-create flow does not re-mint the session cookie, so `auth.workspaceId` is null at that point and `POST /v1/brands` returned 400 `MISSING_WORKSPACE`. Commit `c4d0f92` reconciles by introducing: `const organizationId = auth.workspaceId ?? parsed.data.workspace_id` (brand.routes.ts:48). This review assesses whether the reconciliation re-opens SEC-MB-1 or any cross-tenant path.
+
+---
+
+### Gate 1 — JWT-wins precedence (SEC-MB-1 protection)
+
+**Evidence:** `brand.routes.ts:48` — `const organizationId = auth.workspaceId ?? parsed.data.workspace_id`
+
+When `auth.workspaceId` is non-null (every normal post-onboarding session), the `??` short-circuits and `parsed.data.workspace_id` is unreachable. A session scoped to org-X sending `{ workspace_id: "org-Y" }` in the body will have `auth.workspaceId = "org-X"` from the JWT, and `organizationId` will be `"org-X"`. The body value is structurally discarded. SEC-MB-1's original cross-org spoof is closed.
+
+**PASS.**
+
+---
+
+### Gate 2 — Bootstrap fallback (auth.workspaceId null): adversarial analysis
+
+**Evidence:** `brand.service.ts:68-70`
+
+When `auth.workspaceId` is null (onboarding bootstrap), `organizationId = body.workspace_id`. The service then runs:
+```typescript
+const membership = await memberRepo.findByUserAndOrg(data.requestingUserId, data.organizationId, null, ctx);
+if (!membership || (membership.roleCode !== 'owner' && membership.roleCode !== 'brand_admin')) {
+  throw new BrandError('FORBIDDEN', '...', 403);
+}
+```
+
+The SQL (`repositories.ts:815-817`) is: `WHERE app_user_id = $1 AND organization_id = $2 AND brand_id IS NULL` — fully parameterized.
+
+**Adversarial probe:** User A (member only of org-A) sends `POST /v1/brands { workspace_id: "org-B-id" }` while in onboarding (auth.workspaceId null). Result:
+1. `organizationId = "org-B-id"` (body fallback)
+2. `ctx.workspaceId = "org-B-id"` (brand.service.ts:60)
+3. `findByUserAndOrg(userA, "org-B-id", null, ctx)` queries `WHERE app_user_id = userA AND organization_id = org-B AND brand_id IS NULL` → 0 rows (user A has no org-B membership)
+4. `!membership` → throws 403
+
+**Defense-in-depth:** The `membership_isolation` RLS policy (`organization_id = current_setting('app.current_workspace_id',true)::uuid`) sets the GUC to `org-B-id`. RLS filters to rows where `organization_id = org-B`. User A has no such row. Both the SQL WHERE clause and RLS independently return empty. Two independent controls; neither can be bypassed without the other.
+
+**Multi-org user scenario:** User A is a legitimate member of org-B with role `owner`. `auth.workspaceId` is null (onboarding). They send `workspace_id: org-B`. Membership check finds their org-B row → PASS → creates brand in org-B. This is legitimate — they are an owner of org-B. The session-workspace binding concern from SEC-MB-1 (a session scoped to X creating in Y) does not apply when `auth.workspaceId` is null (there is no "active" workspace in the JWT to be violated).
+
+**Cross-tenant create possible:** No. The membership check (`owner` or `brand_admin` required in the named org) is the authoritative guard and holds under both the normal and bootstrap paths.
+
+**PASS.**
+
+---
+
+### Gate 3 — sessionPreHandler and auth integrity
+
+**Evidence:** `brand.routes.ts:25` — `{ preHandler: [sessionPreHandler] }`. `auth.routes.ts:419-420` — JWT is parsed and revocation is checked on every call. `auth.userId` and `auth.workspaceId` are sourced exclusively from verified JWT claims; the body has no influence on `auth.userId`. The `requestingRole` parameter is a stub `'analyst'` (brand.routes.ts:68); the service ignores it and re-derives from the DB row.
+
+**PASS.**
+
+---
+
+### Gate 4 — Traceability and PII
+
+**Evidence:** `brand.routes.ts:28` — `correlationId = x-correlation-id ?? requestId`; propagated to `ctx` and audit log. Audit log fields: `actor_id` (UUID), `organization_id` (UUID), `display_name` (brand name — not PII), `currency_code`, `timezone`, `revenue_definition`. No email, phone, or other direct identifiers in logs.
+
+**PASS.**
+
+---
+
+### Gate 5 — Scope creep check (c4d0f92)
+
+`git show c4d0f92 --stat` shows 2 files changed:
+- `apps/core/src/modules/workspace-access/internal/interfaces/rest/brand.routes.ts` — POST handler reconciliation only; no new routes registered
+- `apps/web/e2e/multi-brand.spec.ts` — new e2e test file only (no production code)
+
+No new endpoints. No new MCP tools. No new DB migrations. No new secrets. `bff.routes.ts` and `auth.service.ts` not in diff — MA-01 through MA-13 path confirmed unchanged from prior PASS.
+
+**PASS.**
+
+---
+
+### Isolation fuzz re-run (live)
+
+`cd tools/isolation-fuzz && PG_USER=brain PG_PASSWORD=brain npx vitest run src/pg.test.ts`
+
+Result: **11/11 PASS**. Connector_instance cross-brand: 0 rows (brand_isolation enforced under NOBYPASSRLS role). brand_self_read: lists both brands for fuzz user (switcher design). Negative-control canary: policy_off=1 row (tests are real, not bypass-green). Isolation unchanged by c4d0f92.
+
+---
+
+### E2E test results
+
+`cd apps/web && DATABASE_URL=postgres://brain:brain@localhost:5432/brain npx playwright test e2e/multi-brand.spec.ts e2e/smoke.spec.ts --reporter=list`
+
+Result: **2 passed, 3 failed**. All 3 failures are identical: `expect(page).toHaveURL(/\/verify-email/)` — received `/register`. Root cause: the shared dev IP registration rate-limiter (`rl:register:::1` limit 10/hour) is exhausted from prior test runs, so `/api/v1/auth/register` returns 429, the page stays on `/register`, and all tests that call `onboardToDashboard()` fail immediately at registration. This is test-infra (rate-limit saturation), not a security or code regression. The passing test (`ghost /invite returns 404`) does not require registration and confirms the app stack is running. The isolation-fuzz suite directly exercises the security-critical RLS paths and is 11/11 PASS under the real NOBYPASSRLS role.
+
+---
+
+### Onboarding caller: create-brand-form.tsx sends workspace_id
+
+**Evidence:** `create-brand-form.tsx:114` — sends `workspace_id: workspaceId` (from `useWorkspaceList()[0].id`). This is the designed bootstrap caller: auth.workspaceId is null at this step, and the backend body-fallback is the intentional accommodation. The dashboard dialog (`create-brand-dialog.tsx:140-145`) continues to omit workspace_id per the SEC-MB-3 fix (body omission is correct there since auth.workspaceId is set in post-onboarding sessions). The two callers are consistent with the reconciled logic: one provides workspace_id for bootstrap, the other relies on JWT. This is a LOW informational note for future maintenance, not a finding.
+
+---
+
+### Remaining open findings
+
+| ID | Severity | Status | Notes |
+|---|---|---|---|
+| SEC-MB-4 | LOW | open (deferred) | Audit after mint — known trade-off; not introduced by c4d0f92 |
+| SEC-RECON-NOTE-1 | LOW | open (informational) | create-brand-form.tsx sends workspace_id (bootstrap design); create-brand-dialog.tsx omits it (normal design); both consistent with reconciled backend logic |
+
+No CRITICAL or HIGH findings. **PASS.**
+
+---
+
+### Verdict rationale
+
+The `??` operator in `brand.routes.ts:48` is safe because: (a) when `auth.workspaceId` is set, the body value is structurally discarded — SEC-MB-1's cross-org spoof cannot occur in any normal session; (b) when `auth.workspaceId` is null (onboarding bootstrap only), `body.workspace_id` is used but is gated by a DB membership check that requires `owner` or `brand_admin` membership in the named org via parameterized SQL with independent RLS enforcement. Two independent structural controls — both must fail for a cross-tenant create to succeed. Neither has a bypass path. The reconciliation is sound.

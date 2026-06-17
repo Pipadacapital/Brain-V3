@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-06-16T22:15:56Z",
-  "updated_by": "system",
+  "updated_at": "2026-06-17T18:54:57Z",
+  "updated_by": "rishabhporwal",
   "active_requirements": [
     {
       "req_id": "chore-platform-foundations-sprint0",
@@ -433,6 +433,32 @@
       "stage": 7,
       "current_owner": "stakeholder",
       "last_journal_entry_at": "2026-06-17T18:06:54Z"
+    },
+    {
+      "req_id": "feat-razorpay-settlement-connector",
+      "title": "Deep Razorpay connector \u2014 settlement ingestion + payment webhooks finalizing realized revenue net-of-fees",
+      "status": "ready-for-security",
+      "stage": 3,
+      "current_owner": "security",
+      "lane": "high_stakes",
+      "run_dir": ".engineering-os/runs/2026-06-17T18-54-57Z__309940__feat-razorpay-settlement-connector__rishabhporwal",
+      "created_at": "2026-06-17T18:54:57Z",
+      "updated_at": "2026-06-17T23:58:00Z",
+      "last_journal_entry_at": "2026-06-17T23:58:00Z",
+      "track_a_commits": {
+        "A0": "e852d06",
+        "A1": "2175c44",
+        "A2": "829f677",
+        "A3": "08be223",
+        "A4": "012bdb8",
+        "A5": "027ffa2",
+        "A5_fix": "f44fe5e"
+      },
+      "track_a_tests": {
+        "mapper_unit": "43/43 PASS",
+        "e2e_wiring": "6/6 PASS (live Redpanda + Postgres)",
+        "tsc": "0 new errors"
+      }
     }
   ]
 }

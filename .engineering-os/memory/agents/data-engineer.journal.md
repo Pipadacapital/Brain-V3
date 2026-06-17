@@ -87,6 +87,31 @@ Commits:
 - 2f244d2: fix(backfill): SEC-BF-H1+M1 — SECURITY DEFINER enumeration fn fixes worker inert-in-prod bug
 - d35cedb: test(backfill): QA-BF-B1+B2 — T11 findQueuedJob fix proof + T12 past-dated→realized end-to-end
 
+## 2026-06-17T23:58:00Z — Data Engineer — feat-razorpay-settlement-connector
+**Stage:** 3 · **Layer:** stream+batch+lakehouse · **Tier:** deterministic (Tier-0, $0 model spend)
+**Parity:** PASS vs registry (settlement_finalization/payment_fee/settlement_tax/rolling_reserve_deduction/rolling_reserve_release/settlement_reversal/settlement_adjustment event types all in realized_revenue_ledger CHECK; LedgerWriter shared write path; ON CONFLICT DO NOTHING idempotent) · **Replayable:** yes (same SettlementLedgerConsumer code path for live + re-pull; no separate backfill codebase; multi-cursor re-pull job emits settlement.live.v1 to same live lane) · **Verification:** `pnpm exec vitest run --no-file-parallelism src/tests/settlement-ledger-wiring.e2e.test.ts` → 6/6 PASS (live Redpanda + Postgres); `pnpm exec vitest run packages/razorpay-mapper` → 43/43 PASS; `tsc --noEmit` → 0 new errors (1 pre-existing worker-secrets.ts unrelated error) · **Next:** READY-FOR-SECURITY
+
+Branch: feat/razorpay-settlement-connector (NEVER master). Commits:
+- e852d06: A0 — freeze @brain/razorpay-mapper: hashRazorpayId (C1 DPDP sha256 boundary hash), uuidV5FromSettlementItem/Summary (MB-2 discriminator prevents entityType collision), applyFieldAllowlist (C4 drops card.*), mapSettlementItemToEvent, mapPaymentWebhookToMapRow (43/43 unit tests GREEN)
+- 2175c44: A1 — migration 0027_razorpay_settlement.sql: connector_instance provider CHECK extended (shopify+razorpay), connector_razorpay_order_map (FORCE RLS, NN-1, brand-first PK), realized_revenue_ledger event_type CHECK +7 settlement types + reconciliation_type+tax_code+fee_minor cols, SECURITY DEFINER list_razorpay_connectors_for_settlement_repull() + upsert_razorpay_order_map() (6 DO-block assertions: SEC-RZ-0027a..f)
+- 829f677: A2 — RazorpaySettlementsClient (Basic-auth, /v1/settlements/recon/combined, PAGE_SIZE=100, 429 retry), run.ts multi-cursor re-pull (3 CURSOR_CONFIGS per brand: payments/30d, reserves/180d, adjustments/90d), SECURITY DEFINER enumeration (no GUC at enumerate time per MB-5), FOR UPDATE SKIP LOCKED, dev trigger (MB-6)
+- 08be223: A3 — SettlementLedgerConsumer (filter settlement.live.v1, two-hop join via connector_razorpay_order_map, brand-level path __brand_level__:${settlementId}, PARK unresolved, MAX_RETRY=5 DLQ), LedgerWriter.writeSettlementFinalization() + writeFeeLines() (payment_fee SEPARATE from settlement_tax GST_18 per MB-3 ITC), main.ts MANDATORY WIRE (MB-4, occurrence #3 of wired-to-nothing), package.json dep
+- 012bdb8: A4 — no-pci-card-fields.mjs ESLint rule (C4: blocks card_last4/network/brand/issuer/international/type/country across VariableDeclarator/Property/TSPropertySignature/MemberExpression), log-grep-patterns.json extended with pay_XXXX/setl_XXXX/UTRXXXX Razorpay DPDP patterns (C5)
+- 027ffa2: A5 — settlement-ledger-wiring.e2e.test.ts 6 scenarios (SW1 per-order finalization+fee+GST, SW2 brand-level synthetic key, SW3 event-filter skip, SW4 ON CONFLICT idempotency, SW5 no-GUC 22P02 fail-closed, SW6 cross-brand isolation). Un-wire proof: comment consumer.start() → SW1/SW2 poll timeouts → RED in CI.
+- f44fe5e: fix — SW5: corrected assertion from 0-rows to 22P02-throw (''::uuid is PG type error, not NULL; fail-closed behavior confirmed)
+
+Key security properties:
+- C1 (DPDP): payment_id/utr hashed at mapper boundary; raw values never in Bronze/ledger/logs
+- C4 (PCI SAQ-A): card.* fields dropped at applyFieldAllowlist() + ESLint gate blocks bypass
+- C5 (log-leak): 3 Razorpay patterns in nightly log-grep gate (pay_/setl_/UTR)
+- C6 (multi-cursor): 3 cursor types per brand; FOR UPDATE SKIP LOCKED prevents double-pull
+- MB-5 (enumeration): SECURITY DEFINER fn returns connector rows; no GUC at enumerate time; GUC set AFTER enumerate per brand
+- MB-4 (wiring): consumer.start() called in main.ts; mandatory e2e test enforces non-inert behavior
+- Two-hop join: settlement.payment_id → connector_razorpay_order_map → shopify_order_id (never direct join)
+- FORCE RLS + two-arg fail-closed on all new tables; assertBrainApp() in every isolation test
+- INR paisa: BIGINT only; no float arithmetic; fee_minor BIGINT col (I-S07)
+- MB-7 dual-date: economic_effective_at = settlement date; billing_posted_period = current open if natural period closed
+
 ## 2026-06-15T12:00:00Z — Data Engineer — M1-database-and-migration-plan
 **Stage:** 3 · **Layer:** batch+lakehouse · **Tier:** deterministic
 **Parity:** N/A (plan artifact) · **Replayable:** yes (Bronze SoR; same dbt path for live+backfill; no separate backfill codebase) · **Verification:** plan grounded in doc 08 §3/§4/§5/§6/§7/§11/§13/§36/§37, doc 10 §6/§7/§8, doc 11 §1, STACK.md ADR-001/002, Sprint-0 baselines (0001_init.sql, bronze_table.sql, bootstrap.sql, silver_template.sql); written to docs/plans/M1-database-and-migration-plan.md · **Next:** READY-FOR-SECURITY

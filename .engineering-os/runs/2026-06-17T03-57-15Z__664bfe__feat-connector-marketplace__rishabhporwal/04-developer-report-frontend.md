@@ -139,3 +139,68 @@ Zero errors. All new types (`MarketplaceTile`, `HealthState`, `SafetyRating`, `C
 - [x] data-testids: all 10 testid patterns documented above for QA
 
 **Stage:** READY-FOR-SECURITY
+
+---
+
+## DELTA — Bounce r1 Fix (2026-06-17T — Frontend/Web Engineer)
+
+**Bounce:** QA review FAIL — 2 blocking findings (QA-CM-01, QA-CM-02).
+
+### QA-CM-01 root cause
+
+`connectorsApi.list()` in `apps/web/lib/api/client.ts:552-554` called `GET /v1/connectors` and piped the response through `mapConnectorList(raw)`, which destructured `raw.data.shopify`. The backend endpoint was replaced by the new marketplace GET that returns `{ request_id, data: { tiles: MarketplaceTile[] } }` — so `raw.data.shopify` was `undefined`. `onboarding-integrations-step.tsx` calls `useConnectorList()` → `list()`, received an empty/broken result, rendered nothing, and `btn-skip-integrations` never appeared. All 6 Playwright marketplace tests timed out at `onboard.ts:60`.
+
+### Fix applied
+
+`connectorsApi.list()` now derives from `connectorsApi.getMarketplace()` internally: calls the marketplace endpoint, maps `MarketplaceTile[]` → `ConnectorListItem[]`. The mapping derives shopify connected status from the tile whose `id === 'shopify'` and its `instance`. Coming-soon tiles map to `coming_soon: true`. Single source of truth — no dual-endpoint confusion. Added `ConnectorProvider`, `ConnectorStatus`, `SyncState` to client.ts imports.
+
+**Second fix (same bounce, discovered during e2e run):** `marketplace-view.tsx` had `data-testid="marketplace-page"` on the inner `MarketplaceView` div while `page.tsx` already sets it on the outer wrapper. Playwright strict mode rejected the duplicate (2 elements matched), failing tests 1, 3, 4, 5. Removed the testid from `marketplace-view.tsx`. Also updated `full-journey.spec.ts` step 9 to use `connector-tile-shopify-connect` (the new testid from B2 that replaced the removed `btn-connect-shopify`).
+
+### Files changed
+
+- `apps/web/lib/api/client.ts` — rewrote `connectorsApi.list()` to derive from `getMarketplace()`; added imports
+- `apps/web/components/connectors/marketplace-view.tsx` — removed duplicate `data-testid="marketplace-page"` from inner div
+- `apps/web/e2e/full-journey.spec.ts` — step 9: `btn-connect-shopify` → `connector-tile-shopify-connect`
+
+### Typecheck
+
+```
+pnpm --filter @brain/web typecheck
+> tsc --noEmit
+EXIT: 0
+```
+
+### E2E results (6/6 marketplace + full-journey no-regression)
+
+```
+Running 6 tests using 1 worker
+  PASS  1 marketplace renders all 7 categories with tiles (6.2s)
+  PASS  2 shopify tile renders in storefront category with connect input (5.9s)
+  PASS  3 coming-soon tile is present and is structurally un-connectable (7.9s)
+  PASS  4 marketplace renders fully for a freshly onboarded brand with zero connections (6.0s)
+  PASS  5 OAuth tile Connect button fires POST /api/bff/v1/connectors with type=shopify (5.9s)
+  PASS  6 GET /api/bff/v1/connectors returns correct envelope with tiles (5.9s)
+  6 passed (38.1s)
+
+full-journey.spec.ts: 1 passed (8.5s) — onboarding no-regression confirmed
+```
+
+### validity_check
+
+```
+python3 validity_check.py --paths apps/core/.../connector/tests apps/web/e2e \
+  --artifacts .engineering-os/runs/.../qa-review.verdict.json --require-negative-control
+validity_check: clean (13 files scanned)
+EXIT: 0
+```
+
+QA-CM-02 negative control: test 3 in `marketplace.spec.ts` force-clicks the disabled meta connect button and asserts zero POSTs fire to `/api/bff/v1/connectors`. The `waitForRequest` promise resolves to `null` — non-inert. Backend negative control (RLS `count===0` under `brain_app`) confirmed in `qa-review.verdict.json:negative_control[0]`.
+
+### Commits
+
+| Hash | Description |
+|------|-------------|
+| `b9639d7` | fix(connector-mp): QA-CM-01 — connectorsApi.list() derives from getMarketplace() (D-10 envelope fix) |
+| `890e804` | fix(connector-mp): remove duplicate marketplace-page testid + update full-journey testid |
+
+**Stage:** READY-FOR-SECURITY

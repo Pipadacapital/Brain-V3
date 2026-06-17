@@ -38,3 +38,12 @@ Both: SECURITY DEFINER, STABLE, `SET search_path = public`, migration-time asser
 ## Act
 
 `/adopt-rule system-job-force-rls-enumeration` to codify into `durable-rules/INDEX.md` + `lessons-learned.md`. (Supersedes the 2nd-occurrence watch line previously logged in `pending-stakeholder-attention.md`.)
+
+## Decision
+
+| field | value |
+|---|---|
+| decided_at | 2026-06-17T09:59:08Z |
+| decided_by | stakeholder |
+| decision | adopted |
+| durable_rule_path | .engineering-os/durable-rules/2026-06-17T09-59-08Z__system-job-force-rls-enumeration.md |

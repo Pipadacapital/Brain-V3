@@ -23,3 +23,6 @@ No lessons filed yet. First entry will come from the first requirement's retro.
 | **Stakeholder approval** | Approved 2026-06-15 (12-stakeholder-decision.json, ts: 2026-06-15T14:06:21Z); 8 M1 follow-ups acknowledged at decision gate |
 | **Risk if not closed** | The audit hash-chain would be non-cryptographic, undermining tamper-evidence of the system-of-record audit log (the moat). This is HIGH severity if production audit writes proceed without closing. |
 | **Cross-ref** | 11-final-review.md "Stakeholder Waiver Logged (pre-deploy)" section; residual R-2 in Stage 6 final review |
+
+## 2026-06-17T09:59:08Z — system-job-force-rls-enumeration (adopted durable rule)
+System/cron/worker jobs that enumerate tenants across a FORCE-RLS table MUST use a SECURITY DEFINER fn (search_path pinned, dispatch-only columns, brain_app EXECUTE) or a superuser pool — a bare brain_app SELECT returns 0 rows (inert in prod, masked by dev superuser). 3 occurrences (phone-guard-reeval, revenue-finalization, shopify-backfill). Carries a non-inert no-GUC negative control under brain_app. See durable-rules/2026-06-17T09-59-08Z__system-job-force-rls-enumeration.md.

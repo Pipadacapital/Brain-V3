@@ -199,6 +199,15 @@ export {
   ShopifyInstallResponseSchema,
   ShopifyCallbackQuerySchema,
   ConnectorStatusResponseSchema,
+  // Marketplace (feat-connector-marketplace A0 freeze)
+  ConnectableConnectorType,
+  ConnectorTypeSchema,
+  HealthStateSchema,
+  SafetyRatingSchema,
+  MarketplaceTileSchema,
+  MarketplaceListResponseSchema,
+  ConnectRequestSchema,
+  ConnectResponseSchema,
 } from './api/connector.api.v1.js';
 export type {
   ConnectorInstance,
@@ -208,6 +217,13 @@ export type {
   ShopifyInstallResponse,
   ShopifyCallbackQuery,
   ConnectorStatusResponse,
+  // Marketplace types (feat-connector-marketplace A0 freeze)
+  HealthState,
+  SafetyRating,
+  MarketplaceTile,
+  MarketplaceListResponse,
+  ConnectRequest,
+  ConnectResponse,
 } from './api/connector.api.v1.js';
 
 // ── M1 Pixel API ──────────────────────────────────────────────────────────────

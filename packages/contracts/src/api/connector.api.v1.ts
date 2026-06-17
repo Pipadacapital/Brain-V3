@@ -1,17 +1,24 @@
 /**
  * connector.api.v1 — Zod contracts for Connector API endpoints.
  *
- * GET    /api/v1/connectors
- * GET    /api/v1/connectors/shopify/install
- * GET    /api/v1/connectors/shopify/callback
- * GET    /api/v1/connectors/:id/status
- * DELETE /api/v1/connectors/:id
+ * Endpoints (frozen A0 — feat-connector-marketplace):
+ *   GET    /api/v1/connectors             ← marketplace list (catalog ⨝ instance)
+ *   POST   /api/v1/connectors             ← generic connect (oauth | credential)
+ *   GET    /api/v1/oauth/callback/:type   ← generic OAuth callback (brand_id from state ONLY — D-1)
+ *   DELETE /api/v1/connectors/:id         ← disconnect
+ *   POST   /api/v1/connectors/:id/backfill← backfill gate (brand_admin+, 501 stub — D-9)
+ *
+ * Legacy Shopify-specific endpoints (kept for back-compat during transition):
+ *   GET    /api/v1/connectors/shopify/install
+ *   GET    /api/v1/connectors/shopify/callback   ← DELETED; replaced by generic callback
+ *   GET    /api/v1/connectors/:id/status
  *
  * INVARIANTS:
  *  - NN-2: ConnectorInstance schema has secret_ref ONLY — NO token/ciphertext field.
  *    Semgrep scans this file for any field named *_token, *_secret, *_key.
  *  - HMAC validation is the first operation in the Shopify callback handler (NN-4).
- *  - Meta/Google = zero backend (coming_soon: true flag only).
+ *  - D-1: brand_id derived from signed state ONLY, never from body/query/header.
+ *  - D-10: all new responses carry { request_id, data } envelope.
  */
 import { z } from 'zod';
 
@@ -47,7 +54,7 @@ export const ConnectorListEntrySchema = z.object({
 });
 export type ConnectorListEntry = z.infer<typeof ConnectorListEntrySchema>;
 
-// ── List Connectors ───────────────────────────────────────────────────────────
+// ── List Connectors (legacy) ──────────────────────────────────────────────────
 
 export const ListConnectorsResponseSchema = z.object({
   request_id: z.string().uuid(),
@@ -99,3 +106,95 @@ export const ConnectorStatusResponseSchema = z.object({
   sync_status: ConnectorSyncStatusSchema.nullable(),
 });
 export type ConnectorStatusResponse = z.infer<typeof ConnectorStatusResponseSchema>;
+
+// ════════════════════════════════════════════════════════════════════════════════
+// MARKETPLACE CONTRACT — A0 FREEZE (feat-connector-marketplace)
+// Track B consumes .data from these shapes exactly.
+// ════════════════════════════════════════════════════════════════════════════════
+
+/**
+ * ConnectableConnectorType — only connectors that are both available AND have a
+ * non-coming_soon connectMethod in M1 may appear here (ADR-CM-2).
+ * Coming-soon types are structurally excluded from the connectable union (Hon-C3).
+ */
+export const ConnectableConnectorType = z.enum(['shopify']);
+export type ConnectableConnectorType = z.infer<typeof ConnectableConnectorType>;
+
+/** ConnectorTypeSchema — any catalog id (for catalog rendering, including coming-soon). */
+export const ConnectorTypeSchema = z.string();
+export type ConnectorTypeSchema = z.infer<typeof ConnectorTypeSchema>;
+
+// ── 7-state health + 3-state safety (ADR-CM-5) ───────────────────────────────
+
+export const HealthStateSchema = z.enum([
+  'Healthy',
+  'Delayed',
+  'Failed',
+  'Disconnected',
+  'RateLimited',
+  'TokenExpired',
+  'Disabled',
+]);
+export type HealthState = z.infer<typeof HealthStateSchema>;
+
+export const SafetyRatingSchema = z.enum(['safe', 'degraded', 'blocked']);
+export type SafetyRating = z.infer<typeof SafetyRatingSchema>;
+
+// ── Marketplace tile (catalog ⨝ connector_instance) ──────────────────────────
+// NN-2: NO secret_ref, NO token in this response (success criterion #4).
+// D-10: wrapped in { request_id, data } at the response level.
+
+export const MarketplaceTileSchema = z.object({
+  id: z.string(),
+  category: z.enum(['storefront', 'ads', 'payments', 'logistics', 'messaging', 'crm', 'analytics']),
+  display_name: z.string(),
+  description: z.string(),
+  connect_method: z.enum(['oauth', 'credential', 'coming_soon']),
+  /** false ⇒ tile disabled, coming-soon, un-connectable (ADR-CM-2). */
+  available: z.boolean(),
+  /**
+   * Present only when this brand has a connector_instance for this provider.
+   * NN-2: NO secret_ref, NO token here.
+   */
+  instance: z
+    .object({
+      id: z.string().uuid(),
+      status: z.enum(['connected', 'disconnected', 'error']),
+      health_state: HealthStateSchema,
+      safety_rating: SafetyRatingSchema,
+      shop_domain: z.string().nullable(),
+      connected_at: z.string().datetime({ offset: true }).nullable(),
+    })
+    .nullable(),
+});
+export type MarketplaceTile = z.infer<typeof MarketplaceTileSchema>;
+
+export const MarketplaceListResponseSchema = z.object({
+  request_id: z.string(),
+  data: z.object({ tiles: z.array(MarketplaceTileSchema) }),
+});
+export type MarketplaceListResponse = z.infer<typeof MarketplaceListResponseSchema>;
+
+// ── Generic connect request / response (ADR-CM-2) ────────────────────────────
+
+export const ConnectRequestSchema = z.object({
+  /** Validated against catalog server-side. Unknown type ⇒ 400. Coming-soon ⇒ 422. */
+  type: z.string(),
+  /** Required for oauth(shopify). */
+  shop_domain: z.string().optional(),
+  /** For credential connectors (Razorpay key+secret, etc.). */
+  credentials: z.record(z.string()).optional(),
+});
+export type ConnectRequest = z.infer<typeof ConnectRequestSchema>;
+
+export const ConnectResponseSchema = z.object({
+  request_id: z.string(),
+  data: z.discriminatedUnion('kind', [
+    z.object({ kind: z.literal('oauth'), oauth_url: z.string().url() }),
+    z.object({ kind: z.literal('credential'), connected: z.literal(true) }),
+  ]),
+});
+export type ConnectResponse = z.infer<typeof ConnectResponseSchema>;
+
+// coming_soon ⇒ 422 { request_id, error: { code: 'CONNECTOR_NOT_AVAILABLE' } }
+// Not modelled in a success schema (it's an error response, not in the data union).

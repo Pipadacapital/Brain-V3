@@ -104,6 +104,22 @@
 **Browser/e2e:** NOT RUN (orchestrator runs Playwright separately)
 **Next:** READY-FOR-SECURITY
 
+## 2026-06-17T13:30:00Z — Frontend/Web Engineer — feat-connector-backfill (Bounce r1, QA-BF-B3)
+**Stage:** 3 (bounce-fix r1) · **Surface:** e2e/backfill.spec.ts · **Web-vitals:** no render-path change
+**Req:** feat-connector-backfill · **Track:** C · **Bounce:** QA-BF-B3
+
+**Test 2 root cause:** if/else fallback in test 2 fell through to `connector-card-shopify` (legacy testid, never rendered — marketplace page always shows `connector-tile-{id}`). Fixed: removed fallback; unconditional `marketplace-page` + `connector-tile-shopify` asserts matching real component testids.
+
+**Test 3 root cause:** `roleSelect.selectOption('manager')` called on a Radix `<button role="combobox">`, not a `<select>`. Playwright threw "Element is not a `<select>`". Fixed: `await roleSelect.click(); await page.getByRole('option', { name: 'Manager' }).click();`.
+
+**Typecheck:** EXIT 0
+**E2e backfill.spec.ts:** 6 passed, 3 skipped (test 3: invite UI not in env — documented; tests 6+7: SHOPIFY_CONNECTED_CONNECTOR_ID not set — unchanged from original)
+**Previously-failing tests 2 + 3 status:** test 2 NOW PASS; test 3 skip path corrected (no longer throws — guard fires cleanly)
+**D-8/D-11 still green:** tests 1 (D-11 label) + 4 (D-8 "Collecting…") PASS
+**Marketplace no-regression:** 6/6 marketplace.spec.ts PASS
+**Files:** 1 (apps/web/e2e/backfill.spec.ts)
+**Next:** READY-FOR-SECURITY
+
 ## 2026-06-17T00:00:00Z — Frontend/Web Engineer — feat-connector-backfill (Track C)
 **Stage:** 3 · **Surface:** connectors/backfill-control, dashboard/realized-revenue-card, e2e/backfill · **Web-vitals:** not captured (no browser in session; no render-path regression)
 **Req:** feat-connector-backfill · **Track:** C

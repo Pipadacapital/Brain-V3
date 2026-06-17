@@ -95,16 +95,18 @@ test('connectors page loads for brand_admin without error', async ({ page }) => 
   await onboardToDashboard(page, 'bf-admin');
   await page.goto('/settings/connectors');
 
-  // Marketplace page must load (uses the new marketplace endpoint)
-  const marketplacePage = page.getByTestId('marketplace-page');
-  if (await marketplacePage.isVisible({ timeout: 10_000 }).catch(() => false)) {
-    // New marketplace view — Shopify tile
-    const shopifyTile = page.getByTestId('connector-tile-shopify');
-    await expect(shopifyTile).toBeVisible({ timeout: 10_000 });
-  } else {
-    // Legacy connectors list fallback
-    await expect(page.locator('[data-testid="connector-card-shopify"]')).toBeVisible({ timeout: 10_000 });
-  }
+  // Marketplace page must load (feat-connector-marketplace shipped — always renders marketplace-page)
+  await expect(
+    page.getByTestId('marketplace-page'),
+    'marketplace-page wrapper must be visible',
+  ).toBeVisible({ timeout: 10_000 });
+
+  // Shopify tile must be present in the storefront category
+  const shopifyTile = page.getByTestId('connector-tile-shopify');
+  await expect(
+    shopifyTile,
+    'connector-tile-shopify must be visible inside marketplace-page',
+  ).toBeVisible({ timeout: 10_000 });
 });
 
 // ── Test 3: manager does NOT see an enabled backfill trigger (D-15) ──────────
@@ -157,9 +159,12 @@ test('manager does not see an enabled backfill trigger — mirrors server 403 (D
   await inviteBtn.click();
   const emailInput = page.getByTestId('input-invite-email');
   await emailInput.fill(registeredManagerEmail);
+  // Role picker is a Radix combobox (<button role="combobox">), not a native <select>.
+  // Use click-then-option pattern instead of selectOption (which only works on <select>).
   const roleSelect = page.getByTestId('select-invite-role');
   if (await roleSelect.isVisible({ timeout: 3_000 }).catch(() => false)) {
-    await roleSelect.selectOption('manager');
+    await roleSelect.click();
+    await page.getByRole('option', { name: 'Manager' }).click();
   }
   const submitBtn = page.getByTestId('btn-submit-invite');
   if (await submitBtn.isVisible({ timeout: 3_000 }).catch(() => false)) {

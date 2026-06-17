@@ -10,6 +10,8 @@
 | **Verdict** | **PASS** (reconcile with QA) |
 | **Diff** | `git diff master...feat/collection-foundation` (56 files) |
 
+**Verdict: PASS — recommendation APPROVE.** 0 blocking; severity counts C0 / H0 / M0 / L2.
+
 THE invariant under review: per-brand isolation (RLS FORCE), verified under `brain_app` (the dev superuser `brain` bypasses RLS — any check not under `brain_app` is INERT). PII/salt off the wire (ADR-2). Consent quarantine-not-drop (R3 / COMPLIANCE.md).
 
 ---
@@ -55,7 +57,7 @@ THE invariant under review: per-brand isolation (RLS FORCE), verified under `bra
 
 ## Scanners (FULL)
 - Secret-grep on staged diff: clean (only journal/doc text references "secret"; no live credentials, keys, tokens).
-- No new outbound channel introduced (consent is capture-only; enforcement deferred to Phase 5 can_contact() — correctly NOT built here).
+- No new outbound channel introduced. Consent is capture-only this phase by design; enforcement (the Phase-5 can_contact() concern) is correctly NOT built here — a scope boundary, not a security gap.
 - No new model/LLM call (deterministic tier-1 — paradigm honored).
 - Note: container/SCA/Trivy/Grype scanner suite execution is the CI/Platform-DevOps gate (Stage 8); this review verifies code-level controls + secret-grep. No new third-party dependency of concern in the diff (pixel-sdk is first-party; pnpm-lock delta is the new workspace package).
 
@@ -71,7 +73,7 @@ THE invariant under review: per-brand isolation (RLS FORCE), verified under `bra
 | SEC-CF-01 | LOW | OPEN (non-blocking) | `ingest-hardening.e2e.test.ts` dedup-observability test (#6, `:418-431`) asserts the metric by calling `incrementCounter` directly rather than driving it through `CollectorEventConsumer.ts:108-114`. The consumer emission path itself is correct + present; the assertion does not exercise it end-to-end. Recommend tightening the test to spy through the consumer. Does not affect the shipped control. |
 | SEC-CF-02 | LOW | NOTE | `audit_log` is queried in tests via the superuser pool (`countAudit`, `:158-164`) because audit_log is RLS-disabled by design (system-of-record). The write path (`DbAuditWriter` under brain_app) is correct; the test-read posture is acceptable for a forensic table. No leak. |
 
-No CRITICAL / HIGH / MEDIUM findings. No compliance-regime violation. No traceability gap on any new path.
+Zero blocking findings (severity counts C0 / H0 / M0 / L2). No compliance-regime violation. No traceability gap on any new path.
 
 ---
 

@@ -85,5 +85,52 @@ Both upstream gates logged PASS (Security: 0 CRIT/HIGH/MED, 2 LOW; QA: 74 core +
 - **Auto-candidate rule check:** root cause does not yet recur in ≥3 distinct prior runs (it is the 1st of this specific "field-relocation read/write path drift" shape). No `rule-proposals/*` written. The **wired-to-nothing** WATCH remains at #2-of-3 (this run was a near-miss, not an occurrence).
 - **Process improvement for the re-spin:** every newly-relocated/promoted envelope field that a UI surface reads requires a writer→reader round-trip test asserting a non-zero/true read (a positive control), not just a write-side gate test.
 
+---
+
+# DELTA RE-REVIEW (post-fix) — 2026-06-18 · Engineering Advisor (final-reviewer) · Opus 4.8 (1M)
+
+| Field | Value |
+|-------|-------|
+| **Mode** | post-delta (1 finding bounced, fixed, re-confirmed) |
+| **Verdict** | **PASS** → Stakeholder gate (Stage 7) |
+| **Recommendation** | **APPROVE** |
+| **Blocking findings** | 0 |
+| **Fix commit** | `dae8469` · **Master merge** | `9eaf07d` |
+
+## D1 — FR-CF-01 genuinely RESOLVED (the only bounced finding)
+
+- **Diff is the exact surgical fix** (`dae8469`, +5/-4, 2 files, read-only seam): both readers now query `payload->'consent_flags'` (top-level), not `payload->'properties'->'consent_flags'`.
+  - `get-recent-events.ts:69` → `(payload->'consent_flags'->>'analytics') = 'true'`.
+  - `get-tracking-health.ts:103` → `WHERE payload ? 'consent_flags'`; `:106` → `(payload->'consent_flags'->>'analytics') = 'true'`. Comment updated to document the top-level location.
+- **Writer matches:** `ProcessEventUseCase.ts:177-185` spreads `...(consent_flags != null ? { consent_flags } : {})` at the Bronze payload **root** (sibling of `properties`) → reader path now aligned with writer path.
+- **No stale nested path remains:** grep for `properties.*consent_flags` across `apps/`+`packages/` → empty.
+- **Synthetic SQL-path verification** (DB-on-host is only the forbidden `brainv3-postgres-1`; `psql` absent — path/SQL inspection + synthetic query is the sanctioned evidence): built the exact writer payload for a consented event, evaluated PG `?`/`->`/`->>` semantics against the FIXED reader paths → `consent_total=1, consent_granted=1, has_consent=true`; the OLD bounced path → `0`. Regression reproduced **and** resolved.
+- **No read-path test yet** → tracked as **FR-CF-02 / LOW** (writer→reader positive-control e2e on next infra-bound spin; same class as SEC-CF-01). Not blocking — consistent with the no-block-on-LOW posture.
+
+## D2 — Master merge clean, keystone intact
+
+- **Keystone untouched:** `git diff cb22341..HEAD` on `ProcessEventUseCase.ts` + `BronzeRepository.ts` → empty. R2 server-side brand derivation / quarantine logic is byte-identical to the originally-confirmed non-inert keystone. No regression.
+- **Both consumers wired** in `main.ts`: Phase-1 `CollectorEventConsumer` (`:81`, `await consumer.start()` `:177`) AND Razorpay `SettlementLedgerConsumer` (`:141`, `await settlementLedgerConsumer.start()` `:204`); both pools present (`Pool` `:66`, `PgPool` `:139`). `package.json` unions `@brain/audit` + `@brain/razorpay-mapper`.
+- **Compiles:** `tsc` on `apps/core` (readers live here) → clean. `tsc` on `apps/stream-worker` → only the lone `AwsSecretsManager TS2307`, **confirmed present at `cb22341` (pre-fix)** → pre-existing/unrelated, non-blocking. (Razorpay code was reviewed + merged to master separately.)
+
+## D3 — Cheap suite re-run (no green-before/red-now)
+
+| Gate | This session | Prior | Delta |
+|---|---|---|---|
+| `packages/pixel-sdk` unit | **12/12 GREEN** | 12/12 | none |
+| `apps/web` tracking-status unit | **9/9 GREEN** | 9/9 | none |
+| `packages/contracts` (consent + no-pii gates) | **11/11 GREEN** | 3/3 sampled GREEN | none |
+
+No auto-block triggered. Infra-bound e2e (ingest-hardening) remains served only by the forbidden `brainv3-*` project with no published `brain-spec` host ports — same environment gap as the prior session; relied on QA's captured live run + `negative_control[]`, corroborated by the static + synthetic keystone audit. Not the basis for any verdict.
+
+## D4 — Hard-rule / over-engineering / negative-control
+
+- **Over-engineering:** fix is +5/-4 surgical, no new files/deps/abstractions, no WHAT-comments. Clean.
+- **Hard-rule check:** no dependency-direction / Single-Primitive / compliance / paradigm-escalation / gate-skip violation introduced by the fix or merge. Cost paradigm still tier-1 deterministic ($0 inference). No auto-approve blocker.
+- **Negative-control validity:** QA's `negative_control[]` (R2 derivation `if(false)` → cross-brand RED→GREEN) and the consent-gate mutation (envelope `consent_flags` removed → RED) remain valid; no bypass-green / inert probe.
+
+## DELTA VERDICT
+**PASS · APPROVE · 0 blocking.** FR-CF-01 resolved and proven; merge clean; keystone intact; no regression. Carry-forward tech-debt: FR-CF-02 (LOW, consent read-path test), SEC-CF-01 (LOW), SEC-CF-02 (NOTE), pre-existing AwsSecretsManager tsc error. Advance to Stakeholder gate (Stage 7).
+
 ## HANDOFF
 See the HANDOFF block returned to the orchestrator + `final-review.verdict.json`.

@@ -8,6 +8,7 @@
       "updated_at": "2026-06-16T10:55:00Z",
       "bounces": 1
     },
+<<<<<<< Updated upstream
     "fix-connector-lifecycle-cleanup": {
       "spawns": 0,
       "stage": 6,
@@ -24,6 +25,16 @@
       ],
       "last_route": "S4/5 review \u2014 Security \u2225 QA (Track C deferred to UI Phase 4)",
       "updated_at": "2026-06-17T20:47:02Z"
+=======
+    "feat-members-team-management": {
+      "spawns": 7,
+      "stage": 3,
+      "outstanding": [
+        "frontend-web-developer-recovery"
+      ],
+      "last_route": "backend COMPLETE (5 commits, 99 tests, escalation+suspend fixed); re-spawning frontend to complete commit-per-slice",
+      "updated_at": "2026-06-16T14:13:39Z"
+>>>>>>> Stashed changes
     }
   }
 }

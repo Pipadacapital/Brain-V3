@@ -121,11 +121,24 @@ export class PgConnectorInstanceRepository implements IConnectorInstanceReposito
     try {
       const result = await client.query<ConnectorInstanceRow>(
         ctx,
+        // UPSERT on (brand_id, provider): reconnecting after a disconnect must REACTIVATE the
+        // existing row, not INSERT a duplicate (which violated connector_instance_brand_provider_unique
+        // → 23505). On conflict, refresh the connection fields + clear disconnected_at; keep the
+        // original id + created_at (RETURNING yields the surviving row).
         `INSERT INTO connector_instance
            (id, brand_id, provider, shop_domain, secret_ref, status,
             health_state, safety_rating,
             connected_at, disconnected_at, created_at, updated_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+         ON CONFLICT (brand_id, provider) DO UPDATE SET
+            shop_domain    = EXCLUDED.shop_domain,
+            secret_ref     = EXCLUDED.secret_ref,
+            status         = EXCLUDED.status,
+            health_state   = EXCLUDED.health_state,
+            safety_rating  = EXCLUDED.safety_rating,
+            connected_at   = EXCLUDED.connected_at,
+            disconnected_at = EXCLUDED.disconnected_at,
+            updated_at     = EXCLUDED.updated_at
          RETURNING ${SELECT_COLS}`,
         [
           instance.id,

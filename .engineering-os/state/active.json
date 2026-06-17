@@ -412,6 +412,13 @@
       "stage": 8,
       "current_owner": "platform-devops",
       "last_journal_entry_at": "2026-06-17T12:32:38Z"
+    },
+    {
+      "req_id": "chore-connector-lifecycle-regression",
+      "status": "architecture",
+      "stage": 2,
+      "current_owner": "architect",
+      "last_journal_entry_at": "2026-06-17T12:42:34Z"
     }
   ]
 }

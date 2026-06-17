@@ -208,31 +208,45 @@ interface QueuedJobInfo {
 
 /**
  * Find a queued job for a specific connector, or any queued job (for poll mode).
- * Uses the superuser pool for enumeration (the job table brand GUC is set per-query).
+ *
+ * SEC-BF-H1 FIX (0023): Uses the brain_app pool + the SECURITY DEFINER fn
+ * list_queued_backfill_jobs() for enumeration. At poll time no brand GUC is
+ * known (we are discovering WHICH brand to work for), so a bare SELECT on
+ * backfill_job under FORCE RLS returns 0 rows always (two-arg fail-closed:
+ * missing GUC → NULL → FALSE for every row). The SECURITY DEFINER fn runs
+ * as the migration owner (superuser 'brain'), bypasses FORCE RLS for this
+ * enumeration step only, and returns ONLY dispatch metadata:
+ *   (id, brand_id, connector_instance_id) — no tenant data content.
+ * brain_app holds EXECUTE (granted in migration 0023).
+ *
+ * The brand_id from the fn result is the authority for all subsequent GUC
+ * calls — never from env or Shopify (MT-1). GUC is set BEFORE any
+ * brand-scoped read/write (claimQueued, loadConnectorInstance, LedgerWriter).
  */
 async function findQueuedJob(
   pool: Pool,
   connectorInstanceId?: string,
 ): Promise<QueuedJobInfo | null> {
+  // Call the SECURITY DEFINER enumeration fn (no GUC needed — fn bypasses RLS).
+  // Returns rows ordered by created_at ASC (see 0023); filter by connectorInstanceId
+  // if specified, otherwise take the first (oldest queued) job across all brands.
   let result;
   if (connectorInstanceId) {
     result = await pool.query<{ id: string; brand_id: string; connector_instance_id: string }>(
       `SELECT id, brand_id, connector_instance_id
-       FROM backfill_job
-       WHERE connector_instance_id = $1 AND status = 'queued'
-       ORDER BY created_at ASC
+       FROM list_queued_backfill_jobs()
+       WHERE connector_instance_id = $1
        LIMIT 1`,
       [connectorInstanceId],
     );
   } else {
     result = await pool.query<{ id: string; brand_id: string; connector_instance_id: string }>(
       `SELECT id, brand_id, connector_instance_id
-       FROM backfill_job
-       WHERE status = 'queued'
-       ORDER BY created_at ASC
+       FROM list_queued_backfill_jobs()
        LIMIT 1`,
     );
   }
+
   const row = result.rows[0];
   if (!row) return null;
   return { jobId: row.id, brandId: row.brand_id, ciId: row.connector_instance_id };
@@ -243,16 +257,24 @@ async function loadConnectorInstance(
   connectorInstanceId: string,
   brandId: string,
 ): Promise<ConnectorRow | null> {
-  // Need brand context from the brand table for currency_code
-  const result = await pool.query<ConnectorRow>(
-    `SELECT ci.brand_id, ci.shop_domain, ci.secret_ref,
-            COALESCE(b.currency_code, 'INR') AS currency_code
-     FROM connector_instance ci
-     JOIN brand b ON b.id = ci.brand_id
-     WHERE ci.id = $1 AND ci.brand_id = $2`,
-    [connectorInstanceId, brandId],
-  );
-  return result.rows[0] ?? null;
+  // SEC-BF-H1 FIX: connector_instance has FORCE RLS under brain_app.
+  // Must set the brand GUC before querying — brand_id comes from the
+  // list_queued_backfill_jobs() fn result (MT-1: never from env or Shopify).
+  const client = await pool.connect();
+  try {
+    await client.query("SELECT set_config('app.current_brand_id', $1, true)", [brandId]);
+    const result = await client.query<ConnectorRow>(
+      `SELECT ci.brand_id, ci.shop_domain, ci.secret_ref,
+              COALESCE(b.currency_code, 'INR') AS currency_code
+       FROM connector_instance ci
+       JOIN brand b ON b.id = ci.brand_id
+       WHERE ci.id = $1 AND ci.brand_id = $2`,
+      [connectorInstanceId, brandId],
+    );
+    return result.rows[0] ?? null;
+  } finally {
+    client.release();
+  }
 }
 
 interface BackfillLoopParams {

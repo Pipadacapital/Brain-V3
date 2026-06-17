@@ -62,6 +62,11 @@
       "req_id": "fix-dev-token-reach",
       "title": "Retroactive review \u2014 DEV-TOKEN-REACH + connector lifecycle + real-backfill fixes",
       "first_seen": "2026-06-17T11:52:13Z"
+    },
+    {
+      "req_id": "chore-connector-lifecycle-regression",
+      "title": "Connector lifecycle + real-data regression suite",
+      "first_seen": "2026-06-17T12:36:29Z"
     }
   ]
 }

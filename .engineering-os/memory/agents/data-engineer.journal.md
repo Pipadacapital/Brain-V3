@@ -25,6 +25,20 @@ Isolation: separate Redpanda topic {env}.collector.order.backfill.v1 (1 partitio
 ADR-BF-9 ledger wire: LedgerWriter in stream-worker/infrastructure/pg (no cross-package import from @brain/core).
 Security: no raw PII in events/Bronze/logs; no token in logs; brand_id always from caller; NN-1 two-arg GUC throughout; 0006 untouched; no DELETE on backfill_job; no new deployable.
 
+## 2026-06-17T13:20:00Z — Data Engineer — feat-connector-backfill (BOUNCE r1)
+**Stage:** 3 (re-entry) · **Layer:** stream+batch · **Tier:** deterministic
+**Parity:** PASS vs registry (unchanged) · **Replayable:** yes · **Verification:** `pnpm exec vitest run` → 67/67 PASS (5 files; +6 new tests T11+T12) · **Next:** READY-FOR-SECURITY
+
+SEC-BF-H1 fix: migration 0023_backfill_job_enumeration.sql — SECURITY DEFINER fn list_queued_backfill_jobs() (owner: brain, search_path=public pinned, GRANT EXECUTE to brain_app). run.ts findQueuedJob() now calls the fn (no GUC at enumeration time); loadConnectorInstance() sets GUC before connector_instance+brand query. brand_id authority: fn result only, never env/Shopify. Comment at ~:211 corrected (was "superuser pool" — false; now accurately describes brain_app + SECURITY DEFINER fn). DB proof: brain_app direct query without GUC → 0 rows; fn via brain_app → 1 row returned.
+
+QA-BF-B2 fix: T11 (findQueuedJob direct path under fixed fn — negative control + positive proof); T12 (past-dated LedgerWriter provisional → runRevenueFinalization() invoked → finalizedCount===1, event_type=finalization, amount_minor=250000 preserved, idempotent on second run). All under brain_app, not superuser.
+
+Deferred (no change): SEC-BF-M2 (LedgerWriter drift), SEC-BF-L1 (dual PgBackfillJobRepository).
+
+Commits:
+- 2f244d2: fix(backfill): SEC-BF-H1+M1 — SECURITY DEFINER enumeration fn fixes worker inert-in-prod bug
+- d35cedb: test(backfill): QA-BF-B1+B2 — T11 findQueuedJob fix proof + T12 past-dated→realized end-to-end
+
 ## 2026-06-15T12:00:00Z — Data Engineer — M1-database-and-migration-plan
 **Stage:** 3 · **Layer:** batch+lakehouse · **Tier:** deterministic
 **Parity:** N/A (plan artifact) · **Replayable:** yes (Bronze SoR; same dbt path for live+backfill; no separate backfill codebase) · **Verification:** plan grounded in doc 08 §3/§4/§5/§6/§7/§11/§13/§36/§37, doc 10 §6/§7/§8, doc 11 §1, STACK.md ADR-001/002, Sprint-0 baselines (0001_init.sql, bronze_table.sql, bootstrap.sql, silver_template.sql); written to docs/plans/M1-database-and-migration-plan.md · **Next:** READY-FOR-SECURITY

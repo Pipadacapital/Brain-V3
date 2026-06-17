@@ -160,3 +160,81 @@ Track C (Frontend) needs to:
 1. Poll `GET /api/v1/connectors/:id/backfill` for `BackfillJobProgress`
 2. Display `estimated_total=null` as "Collecting..." (not 0%)
 3. Display `achieved_depth_label` on completion
+
+---
+
+## DELTA — BOUNCE r1 Fix (2026-06-17 — Security + QA verdicts)
+
+### SEC-BF-H1 + SEC-BF-M1 Fix (HIGH / MEDIUM — RESOLVED)
+
+**Root cause:** `findQueuedJob()` and `loadConnectorInstance()` queried `backfill_job` and `connector_instance` on the brain_app pool WITHOUT setting `app.current_brand_id` GUC. Under FORCE RLS + two-arg fail-closed policy, missing GUC → NULL → 0 rows always → worker structurally inert in production.
+
+**Fix 1 — Migration 0023 (`db/migrations/0023_backfill_job_enumeration.sql`):**
+New SECURITY DEFINER function `list_queued_backfill_jobs()` (owner: superuser `brain`, `SET search_path = public` pinned — hijack prevention per 0019 pattern). Returns only dispatch metadata: `(id UUID, brand_id UUID, connector_instance_id UUID)` for jobs in status `queued` or `running`, ordered by `created_at ASC`. `GRANT EXECUTE TO brain_app`. Three migration-time assertions: SECURITY DEFINER confirmed, search_path pinned, brain_app has EXECUTE. Applied to dev DB; passed all assertions.
+
+**Fix 2 — `apps/stream-worker/src/jobs/shopify-backfill/run.ts`:**
+- `findQueuedJob()`: replaced bare `pool.query('SELECT ... FROM backfill_job WHERE status=...')` with `pool.query('SELECT ... FROM list_queued_backfill_jobs() ...')`. No GUC needed for enumeration — SECURITY DEFINER fn bypasses FORCE RLS for this dispatch step only.
+- `loadConnectorInstance()`: added `pool.connect()` + `set_config('app.current_brand_id', brandId, true)` before the `connector_instance JOIN brand` query. `brand_id` comes from the fn result (connector_instance.brand_id authority — MT-1: never from env or Shopify).
+- Comment at line ~211 corrected from "Uses the superuser pool for enumeration" (false — pool is brain_app) to accurate description: brain_app pool + SECURITY DEFINER fn.
+
+**DB proof:**
+```
+-- brain_app direct query WITHOUT GUC (the bug):
+SET ROLE brain_app;
+SELECT count(*) FROM backfill_job WHERE status='queued';  -- → 0 (FORCE RLS blocks)
+
+-- SECURITY DEFINER fn via brain_app (the fix):
+SELECT id, brand_id, connector_instance_id FROM list_queued_backfill_jobs();
+-- → 1 row returned (the seeded queued job)
+```
+
+**Commit:** `2f244d2` — fix(backfill): SEC-BF-H1+M1 — SECURITY DEFINER enumeration fn fixes worker inert-in-prod bug
+
+---
+
+### QA-BF-B2 Fix (VETO — RESOLVED)
+
+**Root cause:** T3 in backfill.e2e.test.ts asserted `finalizedCount===0` (not yet finalized) and never invoked `revenue-finalization.ts`. The past-dated→realized GMV payoff was unproven.
+
+**Fix — new test suites T11 and T12 (`apps/stream-worker/src/tests/backfill.e2e.test.ts`):**
+
+**T11 (SEC-BF-H1 / QA-BF-B1 direct test):**
+- Seeds a real `backfill_job` row (superuser, real brand+CI FK pair)
+- Negative control: `brain_app` direct `SELECT count(*) FROM backfill_job WHERE status='queued'` without GUC → 0 rows (confirms FORCE RLS fail-closed — the bug)
+- `findQueuedJob(appPool, ciId)` via `list_queued_backfill_jobs()` → returns the seeded job (id, brandId, ciId match)
+- Poll mode `findQueuedJob(appPool)` → also returns the job
+
+**T12 (QA-BF-B2 / SC#10 end-to-end):**
+- Seeds `provisional_recognition` via `LedgerWriter` with `occurred_at='2022-06-01'` (3 years ago — past any COD/prepaid horizon)
+- Invokes `runRevenueFinalization()` (exported fn from `revenue-finalization.ts`)
+- Asserts `finalizedCount===1` and `event_type='finalization'` under `brain_app` + correct GUC
+- Asserts `amount_minor='250000'` (no float drift — I-S07)
+- Second run: `finalizedCount` still 1 (idempotent — ON CONFLICT DO NOTHING)
+- All assertions under `brain_app` (not superuser — F-4 trap prevention)
+
+**Test output:**
+```
+[revenue-finalization] finalized brand=aa111111-aaaa-4aaa-8aaa-111111111111 order=T12-PAST-DATED-ORDER-001 amount=250000 INR
+[revenue-finalization] complete: finalized=1 skipped=0
+```
+
+**Commit:** `d35cedb` — test(backfill): QA-BF-B1+B2 — T11 findQueuedJob fix proof + T12 past-dated→realized end-to-end
+
+---
+
+### Full Suite Results (post-fix)
+
+```
+Test Files  5 passed (5)
+Tests       67 passed (67)      ← was 61; +6 new (T11: 3, T12: 3)
+Duration    39.62s
+```
+
+All tests under brain_app (BRAIN_APP_DATABASE_URL) — superuser false-pass trap avoided.
+
+### Deferred (unchanged)
+
+- **SEC-BF-M2** (LedgerWriter drift → post-M1 shared package): tracked, not fixed.
+- **SEC-BF-L1** (dual PgBackfillJobRepository): tracked, not fixed.
+- **QA-BF-B3** (Playwright e2e tests 2+3): Track C owns; not in Data Engineer lane.
+- **QA-BF-W1/W2** (env-guarded E2E + T9 skip): accepted, documented.

@@ -226,6 +226,59 @@ export interface ConnectorInstanceResponse {
   last_error: string | null;
 }
 
+// ── Marketplace (feat-connector-marketplace B0) ───────────────────────────────
+// Mirror of connector.api.v1.ts shapes — used in apps/web only (no Zod at runtime).
+
+export type ConnectorCategory =
+  | 'storefront'
+  | 'ads'
+  | 'payments'
+  | 'logistics'
+  | 'messaging'
+  | 'crm'
+  | 'analytics';
+
+/** 7-state health model (ADR-CM-5 / migration 0021). */
+export type HealthState =
+  | 'Healthy'
+  | 'Delayed'
+  | 'Failed'
+  | 'Disconnected'
+  | 'RateLimited'
+  | 'TokenExpired'
+  | 'Disabled';
+
+/** 3-state safety rating derived from health_state. */
+export type SafetyRating = 'safe' | 'degraded' | 'blocked';
+
+/** Per-instance data present only when the brand has a connector_instance. NN-2: NO secret_ref, NO token. */
+export interface MarketplaceTileInstance {
+  id: string;
+  status: ConnectorStatus;
+  health_state: HealthState;
+  safety_rating: SafetyRating;
+  shop_domain: string | null;
+  connected_at: string | null;
+}
+
+/** One tile in the marketplace (catalog ⨝ connector_instance). */
+export interface MarketplaceTile {
+  id: string;
+  category: ConnectorCategory;
+  display_name: string;
+  description: string;
+  connect_method: 'oauth' | 'credential' | 'coming_soon';
+  /** false = coming-soon, un-connectable (ADR-CM-2). */
+  available: boolean;
+  /** null = not connected yet for this brand. */
+  instance: MarketplaceTileInstance | null;
+}
+
+/** Connect response discriminated union — oauth gets oauth_url, credential gets connected:true. */
+export type ConnectResponseData =
+  | { kind: 'oauth'; oauth_url: string }
+  | { kind: 'credential'; connected: true };
+
 export interface ShopifyInstallUrlResponse {
   install_url: string;
 }

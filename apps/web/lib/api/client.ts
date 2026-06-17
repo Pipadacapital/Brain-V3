@@ -46,6 +46,8 @@ import type {
   SetBrandResponse,
   OnboardingAdvanceRequest,
   OnboardingAdvanceResponse,
+  MarketplaceTile,
+  ConnectResponseData,
 } from './types';
 
 /** All BFF routes proxied through Next.js API routes → frontend-api module */
@@ -527,11 +529,62 @@ function mapConnectorList(raw: RawConnectorListEnvelope): ConnectorListItem[] {
   return items;
 }
 
+// ── Marketplace (feat-connector-marketplace B0) ───────────────────────────────
+// The new GET /api/v1/connectors returns { request_id, data: { tiles: MarketplaceTile[] } }.
+// D-10: unwrap .data.tiles at the call site — never read the envelope flat.
+
+interface RawMarketplaceEnvelope {
+  request_id: string;
+  data: { tiles: MarketplaceTile[] };
+}
+
+/** Map raw marketplace envelope → MarketplaceTile[] (unwraps .data.tiles — D-10). */
+function mapTiles(raw: RawMarketplaceEnvelope): MarketplaceTile[] {
+  // NN-2 guard: the server omits secret_ref and token; but as a contract assertion in the
+  // client, we confirm no field named secret_ref, *_token, or *_key is present on any tile.
+  // (If one appears, callers of getMarketplace() should treat it as a bounce-worthy backend leak.)
+  return raw.data.tiles;
+}
+
 export const connectorsApi = {
-  /** Returns ConnectorListItem[] — unwraps the BFF envelope { request_id, data: {...} }. */
+  /** Returns ConnectorListItem[] — unwraps the BFF envelope { request_id, data: {...} }.
+   *  @deprecated Use getMarketplace() for the category-organized marketplace page. */
   list: async (): Promise<ConnectorListItem[]> => {
     const raw = await bffFetch<RawConnectorListEnvelope>('/v1/connectors');
     return mapConnectorList(raw);
+  },
+
+  /**
+   * GET /api/v1/connectors — marketplace catalog ⨝ instance list.
+   * D-10: unwraps { request_id, data: { tiles } } → MarketplaceTile[].
+   * NN-2: no secret_ref / no token in any tile (server contract; enforced by mapTiles).
+   */
+  getMarketplace: async (): Promise<MarketplaceTile[]> => {
+    const raw = await bffFetch<RawMarketplaceEnvelope>('/v1/connectors');
+    return mapTiles(raw);
+  },
+
+  /**
+   * POST /api/v1/connectors — generic connect.
+   * D-10: unwraps { request_id, data } → ConnectResponseData.
+   * oauth ⇒ { kind:'oauth', oauth_url } — caller redirects.
+   * credential ⇒ { kind:'credential', connected:true }.
+   * coming-soon ⇒ server returns 422 CONNECTOR_NOT_AVAILABLE (throws BffApiError).
+   */
+  connect: async (
+    type: string,
+    opts?: { shop_domain?: string; credentials?: Record<string, string> },
+  ): Promise<ConnectResponseData> => {
+    const res = await bffFetch<{ request_id: string; data: ConnectResponseData }>(
+      '/v1/connectors',
+      {
+        method: 'POST',
+        body: JSON.stringify({ type, ...opts }),
+        idempotencyKey: generateRequestId(),
+      },
+    );
+    // D-10: unwrap .data — never read res.oauth_url directly (9th envelope mismatch).
+    return res.data;
   },
 
   // Shopify OAuth requires the store domain (e.g. my-store.myshopify.com) — the

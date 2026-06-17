@@ -478,6 +478,30 @@ async function runBackfillLoop(params: BackfillLoopParams): Promise<void> {
       cursorValue: sinceId,
     });
 
+    // Reflect that data is now flowing: the dashboard Connection Status reads
+    // connector_sync_status, which sat at 'waiting_for_data' since connect. On a successful
+    // backfill with records, transition it to 'connected' + stamp last_sync_at. Updated under the
+    // brand GUC (txn-local); connector_sync_status RLS only needs app.current_brand_id.
+    if (recordsProcessed > 0n) {
+      const sc = await pool.connect();
+      try {
+        await sc.query('BEGIN');
+        await sc.query("SELECT set_config('app.current_brand_id', $1, true)", [brandId]);
+        await sc.query(
+          `UPDATE connector_sync_status
+             SET state = 'connected', last_sync_at = NOW(), last_error = NULL, updated_at = NOW()
+           WHERE brand_id = $1 AND connector_instance_id = $2`,
+          [brandId, params.connectorInstanceId],
+        );
+        await sc.query('COMMIT');
+      } catch (e) {
+        await sc.query('ROLLBACK').catch(() => undefined);
+        console.error(`[shopify-backfill] job=${jobId} connector_sync_status update failed`, e);
+      } finally {
+        sc.release();
+      }
+    }
+
     console.info(
       `[shopify-backfill] job=${jobId} COMPLETED records=${recordsProcessed} depth="${depthLabel}"`,
     );

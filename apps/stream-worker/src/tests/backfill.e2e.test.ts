@@ -237,6 +237,7 @@ beforeAll(async () => {
   await kafkaProducer.connect();
 
   dedup = new RedisDedupAdapter(REDIS_URL);
+  await dedup.connect();  // required: lazyConnect=true, enableOfflineQueue=false
   bronze = new BronzeRepository(BRAIN_APP_DB_URL);
   ledgerWriter = new LedgerWriter(BRAIN_APP_DB_URL);
   jobRepo = new PgBackfillJobRepository(BRAIN_APP_DB_URL);
@@ -244,9 +245,28 @@ beforeAll(async () => {
 
   // Set up IDENTITY_SALT env var for brand A (used by order-mapper tests)
   process.env[`IDENTITY_SALT_${BRAND_A.replace(/-/g, '').toUpperCase()}`] = TEST_SALT_HEX;
+
+  // Insert fixture brands (required by ledger_currency_matches_brand trigger on realized_revenue_ledger).
+  // Use an existing organization_id from the dev DB.
+  const orgResult = await superPool.query<{ id: string }>('SELECT id FROM organization LIMIT 1');
+  const orgId = orgResult.rows[0]?.id;
+  if (orgId) {
+    await superPool.query(
+      `INSERT INTO brand (id, organization_id, display_name, currency_code, region_code)
+       VALUES ($1, $2, 'Test Brand A (backfill e2e)', 'INR', 'IN'),
+              ($3, $2, 'Test Brand B (backfill e2e)', 'INR', 'IN')
+       ON CONFLICT (id) DO NOTHING`,
+      [BRAND_A, orgId, BRAND_B],
+    );
+  }
 }, 30_000);
 
 afterAll(async () => {
+  // Clean up test data rows, then fixture brands
+  await superPool.query(`DELETE FROM realized_revenue_ledger WHERE brand_id IN ($1, $2)`, [BRAND_A, BRAND_B]).catch(() => undefined);
+  await superPool.query(`DELETE FROM bronze_events WHERE brand_id IN ($1, $2)`, [BRAND_A, BRAND_B]).catch(() => undefined);
+  await superPool.query(`DELETE FROM backfill_job WHERE brand_id IN ($1, $2)`, [BRAND_A, BRAND_B]).catch(() => undefined);
+  await superPool.query(`DELETE FROM brand WHERE id IN ($1, $2)`, [BRAND_A, BRAND_B]).catch(() => undefined);
   await kafkaProducer.disconnect();
   await dedup.quit();
   await bronze.end();

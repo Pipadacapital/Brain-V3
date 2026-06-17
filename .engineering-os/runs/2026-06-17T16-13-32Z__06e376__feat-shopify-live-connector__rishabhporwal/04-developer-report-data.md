@@ -179,3 +179,56 @@ npx vitest run apps/stream-worker/src/tests/
 None material. One implementation note:
 
 The T3-b "same updated_at retry → ONE row" test uses `Date.now()`-based order IDs to ensure event_ids are fresh per run (Redis dedup TTL is 7 days; the `afterAll` cleanup deletes Bronze rows for test brands — without fresh IDs, a prior run's Redis entry causes `dedup_hit` with no Bronze row). This is an integration-test harness concern, not a production behavior difference.
+
+---
+
+## DELTA — ORCH-LV-H1 Fix (r1 bounce — 2026-06-17)
+
+**Finding:** LiveOrderConsumer was built and unit-tested (T4 in live-connector.e2e.test.ts called `routeLiveOrderToLedger()` directly) but was never subscribed to the Kafka topic in `main.ts`. A live re-pull of real Boddactive data confirmed it: 903 `order.live.v1` events landed in Bronze but the ledger stayed flat. This is the same class of bug as ADR-BF-9 (a recognition consumer wired to nothing).
+
+**Root cause:** The existing T4 test exercised the logic method in isolation. It proved `routeLiveOrderToLedger()` works; it did NOT prove the consumer is subscribed to the topic. No test in the original A4 suite produced a real Kafka message and polled the ledger.
+
+**Fix — Slice 1 (commit 3bbdf86):**
+
+Added `LiveLedgerBridgeConsumer` (`apps/stream-worker/src/interfaces/consumers/LiveLedgerBridgeConsumer.ts`) — a proper KafkaJS consumer class (mirrors `BackfillOrderConsumer` pattern) with:
+- Consumer group `live-ledger-bridge` (env-overridable via `LIVE_LEDGER_CONSUMER_GROUP_ID`)
+- Same live topic as `CollectorEventConsumer` and `IdentityBridgeConsumer` — separate offset, independent lag
+- Filter: skips any message with `event_name != 'order.live.v1'` (commits offset, no-op)
+- Routes to `routeLiveOrderToLedger()` → `provisional_recognition` (sale) or `rto_reversal` (cancelled)
+- Does NOT write Bronze (CollectorEventConsumer already does that — no double-write)
+- Brand GUC set inside `LedgerWriter` before every ledger write (E-4/NN-1)
+- MAX_RETRY=5 + DLQ on persistent failure (D-7); idempotent ON CONFLICT DO NOTHING (I-ST04)
+
+Wired into `main.ts`:
+- Import: `LiveLedgerBridgeConsumer` from `./interfaces/consumers/LiveLedgerBridgeConsumer.js`
+- Env var: `LIVE_LEDGER_CONSUMER_GROUP_ID` (default: `live-ledger-bridge`)
+- Instances: `liveLedgerWriter = new LedgerWriter(dbUrl)`, `liveLedgerConsumer = new LiveLedgerBridgeConsumer(kafka, liveLedgerWriter, topic, liveLedgerGroupId)`
+- Start: `await liveLedgerConsumer.start()` after backfill consumer (symmetric log messages)
+- Shutdown: `liveLedgerConsumer.stop()` added to `Promise.all()`, `liveLedgerWriter.end()` in cleanup
+
+**Fix — Slice 2 (commit c836011): End-to-end wiring test**
+
+Added `apps/stream-worker/src/tests/live-ledger-wiring.e2e.test.ts` (4 tests):
+
+| Test | What it proves |
+|------|---------------|
+| TW1 | Producer sends `order.live.v1` (sale) to Kafka topic → LiveLedgerBridgeConsumer writes `provisional_recognition` ledger row (polled under brain_app + GUC) |
+| TW2 | Producer sends `order.live.v1` (cancelled_at set) → `rto_reversal` ledger row (negative amount) |
+| TW3 | `page.viewed` on live lane → no ledger write (event_name filter passes through correctly) |
+| TW4 | Same event produced twice → exactly 1 ledger row (ON CONFLICT DO NOTHING idempotency) |
+
+**Would have caught ORCH-LV-H1:** TW1 and TW2 produce a real Kafka message and poll the ledger. The original A4 tests called `routeLiveOrderToLedger()` directly — bypassing the Kafka subscription. If `LiveLedgerBridgeConsumer` is not started (the ORCH-LV-H1 bug), TW1/TW2 polls time out → RED. Un-wire proof: comment out `await consumer.start()` in `beforeAll` → test fails with poll timeout after 30s — the exact failure mode from production.
+
+**Test results — post-fix:**
+
+```
+cd apps/stream-worker && BRAIN_APP_DATABASE_URL=postgres://brain_app:brain_app@localhost:5432/brain DATABASE_URL=postgres://brain:brain@localhost:5432/brain pnpm vitest run
+→ 119/119 PASS (11 test files, 4 new wiring tests + 115 existing, zero regressions)
+```
+
+**Commits (on feat/shopify-live-connector, NEVER master):**
+
+| Hash | Slice | Summary |
+|------|-------|---------|
+| 3bbdf86 | LV-H1-1 | fix(live-ledger): wire LiveLedgerBridgeConsumer into main.ts (ORCH-LV-H1) |
+| c836011 | LV-H1-2 | test(live-ledger): end-to-end wiring test — TW1-TW4, 119/119 green |

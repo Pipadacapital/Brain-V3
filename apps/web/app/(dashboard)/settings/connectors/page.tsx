@@ -15,6 +15,10 @@ import { MarketplaceView } from '@/components/connectors/marketplace-view';
 
 export const metadata = { title: 'Integration Marketplace — Brain' };
 
+// Auth-gated, data-driven, and reads the OAuth callback's ?connected/?connect_error query
+// param (useSearchParams) — render dynamically (no static prerender / Suspense requirement).
+export const dynamic = 'force-dynamic';
+
 export default function ConnectorsPage() {
   return (
     <div className="space-y-6" data-testid="marketplace-page">

@@ -492,31 +492,22 @@ export async function main(): Promise<void> {
           // NO secret_ref, NO token in payload (I-S02/I-S09)
         });
       } else {
-        return reply.code(400).send({
-          request_id: requestId,
-          error: { code: 'UNKNOWN_CONNECTOR_TYPE', message: `No callback handler for connector type: ${connectorType}` },
-        });
+        // Browser-facing callback → redirect back to the marketplace with an error, not JSON.
+        return reply.redirect(`${config.appBaseUrl}/settings/connectors?connect_error=unknown_connector`);
       }
 
-      return reply.code(200).send({
-        request_id: requestId,
-        data: {
-          connector_instance_id: result.connectorInstanceId,
-          shop_domain: result.shopDomain,
-          status: result.status,
-        },
-      });
+      // SUCCESS: redirect the browser back to the marketplace (good UX) instead of returning raw
+      // JSON. The connectors page refetches and the tile flips to Connected. requestId is logged.
+      req.log?.info({ requestId, connectorType, connectorInstanceId: result.connectorInstanceId }, 'oauth callback success');
+      return reply.redirect(`${config.appBaseUrl}/settings/connectors?connected=${encodeURIComponent(connectorType)}`);
     } catch (err) {
-      if (err instanceof HmacValidationError) {
-        return reply.code(401).send({ request_id: requestId, error: { code: 'HMAC_INVALID', message: 'Request authentication failed' } });
-      }
-      if (err instanceof StateNonceError) {
-        return reply.code(400).send({ request_id: requestId, error: { code: 'STATE_INVALID', message: 'State parameter is invalid or expired' } });
-      }
-      if (err instanceof ShopDomainError) {
-        return reply.code(400).send({ request_id: requestId, error: { code: 'SHOP_DOMAIN_INVALID', message: (err as Error).message } });
-      }
-      throw err;
+      // Browser-facing: always land back on the connectors page with an error code (no JSON page).
+      let code = 'unexpected';
+      if (err instanceof HmacValidationError) code = 'auth_failed';
+      else if (err instanceof StateNonceError) code = 'state_invalid';
+      else if (err instanceof ShopDomainError) code = 'shop_invalid';
+      else req.log?.error({ requestId, err }, 'oauth callback unexpected error'); // keep unexpected errors visible
+      return reply.redirect(`${config.appBaseUrl}/settings/connectors?connect_error=${code}`);
     }
   });
 

@@ -234,3 +234,6 @@
 
 ## 2026-06-17T11:20:00Z — Platform/SRE — feat-connector-marketplace
 **Action:** Stage 8 deploy bake SHIPPED. 6/6 marketplace e2e, typechecks clean, 0021 columns present, NN-2 clean, live Boddactive smoke connected/Healthy. Agent died on infra socket timeout mid-bake; completed inline by orchestrator (same gates). Branch→master merge done by Stakeholder (PR #29).
+
+## 2026-06-17T12:35:00Z — Platform/SRE — feat-connector-backfill
+**Action:** Stage 8 deploy bake SHIPPED (inline). 0022+0023 applied (RLS FORCE/no-DELETE, SECURITY DEFINER pinned), typechecks clean, stream-worker 67/67 + core trigger 11/11, payoff T12 proven. Branch→master merge is Stakeholder GitHub action.

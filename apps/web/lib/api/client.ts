@@ -38,6 +38,7 @@ import type {
   DashboardConnectionStatusResponse,
   DashboardDataStatusResponse,
   DashboardOnboardingResponse,
+  DashboardRealizedRevenueResponse,
   PaginatedResponse,
   AcceptInviteRequest,
   SetOrgRequest,
@@ -663,6 +664,23 @@ const ONBOARDING_STEP_ROUTE: Record<string, string | undefined> = {
   pixel_installed: '/settings/pixel',
 };
 
+// ── Realized Revenue raw + mapped types (D-5 — raw and mapped SEPARATELY) ────
+//
+// RawRealizedRevenue = the BFF data payload (inside BffEnvelope<T>).
+// DashboardRealizedRevenueResponse (in ./types) = the component-facing model.
+// These two types are DISTINCT — mapping happens in getRealizedRevenue(), not in the card.
+
+/**
+ * Raw BFF data payload for the realized-revenue route (§4 contract).
+ * Amounts are bigint-serialized minor-unit strings from the backend.
+ */
+interface RawRealizedRevenue {
+  state: 'no_data' | 'has_data';
+  as_of: string;
+  realized: Record<string, string> | null;
+  provisional: Record<string, string> | null;
+}
+
 export const dashboardApi = {
   // null → no brand yet → card renders its "No Data Yet" empty state.
   getBrandSummary: async (): Promise<DashboardBrandSummaryResponse | null> => {
@@ -716,5 +734,36 @@ export const dashboardApi = {
       route: ONBOARDING_STEP_ROUTE[s.key],
     }));
     return { steps, all_complete: data?.all_complete ?? false };
+  },
+
+  /**
+   * GET /api/v1/dashboard/realized-revenue — § 4 contract.
+   * Unwraps BffEnvelope<RawRealizedRevenue> → DashboardRealizedRevenueResponse.
+   *
+   * ENVELOPE: const { data } = await bffFetch<BffEnvelope<RawRealizedRevenue>>(...)
+   * This is the ONE canonical unwrap — no flat-shape read (prevents the 9th mismatch).
+   *
+   * Amounts: minor-unit strings from the BFF (bigint serialized). The card uses
+   * formatMoneyDisplay(minorString, currencyCode) — no /100, no parseFloat (D-7).
+   *
+   * state:'no_data' → realized/provisional are null → card shows "No data yet" (D-2).
+   * realized and provisional are NEVER blended or summed (D-4).
+   *
+   * @param asOf - Optional YYYY-MM-DD date. If omitted, server defaults to today.
+   */
+  getRealizedRevenue: async (asOf?: string): Promise<DashboardRealizedRevenueResponse> => {
+    const qs = asOf ? `?as_of=${encodeURIComponent(asOf)}` : '';
+    // Unwrap .data from the BffEnvelope — never read the raw envelope flat (no 9th mismatch).
+    const { data } = await bffFetch<BffEnvelope<RawRealizedRevenue>>(
+      `/v1/dashboard/realized-revenue${qs}`,
+    );
+    // Map raw → component model (raw and mapped types declared separately — D-5).
+    // Do NOT collapse null into {} — preserve explicit null for state=no_data guard.
+    return {
+      state: data.state,
+      as_of: data.as_of,
+      realized: data.realized,
+      provisional: data.provisional,
+    };
   },
 };

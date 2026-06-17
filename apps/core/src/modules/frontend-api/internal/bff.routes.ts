@@ -13,6 +13,7 @@
  *      GET /api/v1/dashboard/connection-status
  *      GET /api/v1/dashboard/data-status
  *      GET /api/v1/dashboard/onboarding-progress
+ *      GET /api/v1/dashboard/realized-revenue  (Track A, ADR-002 sole-read-path)
  *
  * Scope: apps/web calls ONLY the BFF — never calls workspace-access or connector directly.
  * Data sources: Postgres only — ZERO StarRocks/OLAP calls (ADR-002).
@@ -48,6 +49,8 @@ import { MembershipRepository, OrganizationRepository } from '../../workspace-ac
 import { jtiFromJwt, csrfTokenForSession } from './csrf.js';
 import type { RateLimiter } from '../../workspace-access/internal/infrastructure/rate-limiter.js';
 import { loginFailKeySync, loginIpKey } from '../../workspace-access/internal/infrastructure/rate-limiter.js';
+import type { Pool as PgPool } from 'pg';
+import { getRevenueMetrics } from '../../analytics/index.js';
 
 const COOKIE_NAME = 'brain_session';
 const CSRF_COOKIE_NAME = 'brain_csrf';
@@ -60,6 +63,7 @@ export function registerBffRoutes(
   pool?: DbPool,
   cookieSecret = '',
   rateLimiter?: RateLimiter,
+  rawPool?: PgPool,
 ): void {
   const sessionPreHandler = validateSessionPreHandler(authService);
 
@@ -912,6 +916,99 @@ export function registerBffRoutes(
       } finally {
         client.release();
       }
+    },
+  );
+
+  /**
+   * GET /api/v1/dashboard/realized-revenue?as_of=<YYYY-MM-DD>
+   *
+   * Returns realized + provisional revenue for the active brand via the metric engine.
+   *
+   * ADR-002 SOLE READ PATH: this route calls getRevenueMetrics (analytics module)
+   * which calls computeRealizedRevenue / computeProvisionalRevenue from @brain/metric-engine.
+   * NO ad-hoc SUM(amount_minor) here — the ONLY SQL in this path is the EXISTS check
+   * (inside the analytics use-case) and the named seam calls in the engine.
+   *
+   * Honest-empty-state (D-2): state='no_data' when no finalized rows exist.
+   * NEVER returns a bare 0 without the state discriminant.
+   *
+   * as_of validation (D-9): schema-validated via Fastify JSON schema; invalid/garbage
+   * returns 400 INVALID_DATE before the handler runs.
+   *
+   * Pool (D §3.1, F-SEC-02): uses rawPool (pg.Pool) — NOT the DbPool wrapper —
+   * so withBrandTxn can set the GUC transaction-locally without double-GUC.
+   *
+   * Brand from session (D-1): brand_id comes from auth.brandId, NEVER from request body.
+   */
+  fastify.get(
+    '/api/v1/dashboard/realized-revenue',
+    {
+      preHandler: [bffProtectedPreHandler],
+      schema: {
+        querystring: {
+          type: 'object',
+          properties: {
+            as_of: {
+              type: 'string',
+              pattern: '^\\d{4}-\\d{2}-\\d{2}$',
+            },
+          },
+          additionalProperties: false,
+        },
+      },
+      // Fastify schema validation errors return 400; we override the reply to match
+      // the INVALID_DATE contract (D-9).
+      attachValidation: true,
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+
+      // D-9: as_of schema validation — Fastify sets validationError on the request
+      // when attachValidation:true and the schema fails.
+      const validationError = (request as FastifyRequest & { validationError?: Error }).validationError;
+      if (validationError) {
+        return reply.code(400).send({
+          request_id: requestId,
+          error: { code: 'INVALID_DATE', message: 'as_of must be YYYY-MM-DD.' },
+        });
+      }
+
+      const auth = (request as AuthenticatedRequest).auth;
+
+      // Honest-empty: no active brand yet → no_data (matches BFF pattern at bff.routes.ts:569)
+      if (!auth.brandId) {
+        const today = new Date().toISOString().split('T')[0] as string;
+        return reply.send({
+          request_id: requestId,
+          data: {
+            state: 'no_data',
+            as_of: today,
+            realized: null,
+            provisional: null,
+          },
+        });
+      }
+
+      // Pool guard: rawPool is required for the engine (F-SEC-02, D §3.1)
+      if (!rawPool) {
+        return reply.code(503).send({
+          request_id: requestId,
+          error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' },
+        });
+      }
+
+      // as_of: use provided value or default to today (server-side, never client-trusted — Open-Q1)
+      const query = request.query as { as_of?: string };
+      const asOfStr = query.as_of ?? (new Date().toISOString().split('T')[0] as string);
+      const asOf = new Date(`${asOfStr}T00:00:00Z`);
+
+      // Call the analytics use-case — the SOLE read path (ADR-002, D-3)
+      const snapshot = await getRevenueMetrics(auth.brandId, asOf, { pool: rawPool });
+
+      return reply.send({
+        request_id: requestId,
+        data: snapshot,
+      });
     },
   );
 }

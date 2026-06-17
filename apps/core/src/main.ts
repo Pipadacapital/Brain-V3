@@ -357,8 +357,19 @@ export async function main(): Promise<void> {
   //
   // Mirror of the JWT/cookie SecretsProvider selection above.
   const shopifyClientSecretRef = getEnvOrThrow('SHOPIFY_CLIENT_SECRET');
+  // D-7/ADR-CM-4: CONNECTOR_SECRETS_KMS_KEY_ID must be set in production — the ARN or
+  // alias of the customer-managed KMS key used for per-brand EncryptionContext isolation.
+  // Hard-fail at startup if absent (mirrors LocalSecretsManager's prod-hard-fail pattern).
+  if (isProduction && !process.env['CONNECTOR_SECRETS_KMS_KEY_ID']) {
+    throw new Error(
+      '[core] FATAL: CONNECTOR_SECRETS_KMS_KEY_ID must be set in production. ' +
+        'AwsSecretsManager requires a customer-managed KMS key ARN/alias for per-brand ' +
+        'EncryptionContext isolation (D-7/ADR-CM-4). Set the env var and restart.',
+    );
+  }
+  const connectorKmsKeyId = getEnv('CONNECTOR_SECRETS_KMS_KEY_ID', 'alias/brain-connector-secrets-dev');
   const connectorSecretsManager = isProduction
-    ? new AwsSecretsManager(getEnv('AWS_REGION', 'us-east-1'), shopifyClientSecretRef)
+    ? new AwsSecretsManager(getEnv('AWS_REGION', 'us-east-1'), shopifyClientSecretRef, connectorKmsKeyId)
     : new LocalSecretsManager();
   const oauthStateStore = new InProcessOAuthStateStore();
 

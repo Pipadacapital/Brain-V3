@@ -17,3 +17,4 @@
 {"ts":"2026-06-17T10:30:00Z","actor":"final-reviewer","type":"final-review","req_id":"feat-connector-marketplace","stage":6,"verdict":"PASS"}
 {"ts":"2026-06-17T11:00:00Z","actor":"orchestrator","type":"verdict-status-normalize","req_id":"feat-connector-marketplace","note":"HIGH-01 status CLEARED-WITH-RESIDUAL→resolved to match reviewer PASS/blocking:0; residual SEC-CM-RES-01 (MED,M2) retained and surfaced"}
 {"ts":"2026-06-17T11:10:00Z","actor":"stakeholder","type":"decision","req_id":"feat-connector-marketplace","decision":"approved","stage":7}
+{"ts":"2026-06-17T11:20:00Z","actor":"platform-devops","type":"deploy","req_id":"feat-connector-marketplace","stage":8,"status":"shipped"}

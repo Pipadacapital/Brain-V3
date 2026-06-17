@@ -231,3 +231,6 @@
 **Tech-debt carry-forward:** LOW-SEC-001 (deferred), QA-F-002 (deferred), F-SEC-02 (before Phase-2), QA-3 (MED, M2)
 
 **M1 STATUS: COMPLETE.** Reconciling realized-revenue number on screen with honest-empty-state signal. The M1 vertical spine (Bronze → identity → ledger → metric engine → Analytics API → dashboard) is fully realized.
+
+## 2026-06-17T11:20:00Z — Platform/SRE — feat-connector-marketplace
+**Action:** Stage 8 deploy bake SHIPPED. 6/6 marketplace e2e, typechecks clean, 0021 columns present, NN-2 clean, live Boddactive smoke connected/Healthy. Agent died on infra socket timeout mid-bake; completed inline by orchestrator (same gates). Branch→master merge done by Stakeholder (PR #29).

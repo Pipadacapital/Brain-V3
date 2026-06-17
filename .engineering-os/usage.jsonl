@@ -144,3 +144,4 @@
 {"ts":"2026-06-17T12:19:52Z","req_id":"fix-dev-token-reach","agent":"qa-agent","stage":5,"model":"sonnet","review_scope":"delta","total_tokens":44783}
 {"ts":"2026-06-17T12:26:01Z","req_id":"fix-dev-token-reach","agent":"final-reviewer","stage":6,"model":"opus","review_scope":"full","total_tokens":77906}
 {"ts":"2026-06-17T12:42:34Z","req_id":"chore-connector-lifecycle-regression","agent":"cto-advisor","stage":1,"model":"sonnet","review_scope":"full","total_tokens":107998}
+{"ts":"2026-06-17T12:49:40Z","req_id":"chore-connector-lifecycle-regression","agent":"architect","stage":2,"model":"opus","review_scope":"full","total_tokens":109049}

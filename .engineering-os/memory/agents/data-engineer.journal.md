@@ -25,6 +25,22 @@ Isolation: separate Redpanda topic {env}.collector.order.backfill.v1 (1 partitio
 ADR-BF-9 ledger wire: LedgerWriter in stream-worker/infrastructure/pg (no cross-package import from @brain/core).
 Security: no raw PII in events/Bronze/logs; no token in logs; brand_id always from caller; NN-1 two-arg GUC throughout; 0006 untouched; no DELETE on backfill_job; no new deployable.
 
+## 2026-06-17T17:02:09Z — Data Engineer — chore-connector-lifecycle-regression
+**Stage:** 3 · **Layer:** stream (pipeline tests, no data plane change) · **Tier:** deterministic (tier-0, $0 model spend)
+**Parity:** PASS vs registry (no metric definition touched) · **Replayable:** yes (tests only) · **Verification:** `pnpm vitest run <4 test files>` → 33 PASS / 1 SKIP (ADR-R3 it.skip) / 0 FAIL · **Next:** READY-FOR-SECURITY
+
+Branch: chore/connector-lifecycle-regression. Commits:
+- 2772982: A0 freeze fixtures + assertBrainApp (shared UUID constants, buildFakeStore, seedTestBrand, etc.)
+- bba4716: A1 shopify-pagination — since_id=0 fix (9 assertions, revert-RED on ?? null)
+- 4203726: A2 worker-guc — NIL-uuid positive + empty-string 22P02 revert-RED + cross-brand isolation
+- 42864ce: A3 sync-status-currency — completion UPDATE pins state=connected + trg_ledger_currency trigger
+- 15b249a: A4 dev-secret round-trip + core prod-hard-fail + ADR-R3 it.skip discovered gap
+
+Fixtures path: apps/stream-worker/src/tests/helpers/connector-lifecycle-fixtures.ts
+Isolation: all DB assertions under BRAIN_APP_DATABASE_URL (brain_app, NOBYPASSRLS); assertBrainApp() at every isolation block; file-private brand UUIDs (a2/a3/a4 prefixes) avoid parallel conflicts; no touch of 60d543dc.
+ADR-R3 discovered gap: WorkerLocalSecretsManager has no NODE_ENV=production guard (worker-secrets.ts:69). it.skip surfaced — NOT fixed (D-9). Surface as separate requirement.
+No product code change (D-9). Tests pin 8 defect classes with non-inert revert-RED assertions.
+
 ## 2026-06-17T13:20:00Z — Data Engineer — feat-connector-backfill (BOUNCE r1)
 **Stage:** 3 (re-entry) · **Layer:** stream+batch · **Tier:** deterministic
 **Parity:** PASS vs registry (unchanged) · **Replayable:** yes · **Verification:** `pnpm exec vitest run` → 67/67 PASS (5 files; +6 new tests T11+T12) · **Next:** READY-FOR-SECURITY

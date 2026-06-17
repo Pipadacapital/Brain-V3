@@ -85,3 +85,9 @@
 **Scanners:** delta-scope (tests-only suite; no new deps/images/IaC; secret-grep clean on diff; D-5 60d543dc grep CLEAN; no product code in diff)
 **Key verifications:** assertBrainApp discipline CONFIRMED (every isolation assertion calls assertBrainApp first; appPool=BRAIN_APP_DATABASE_URL; cross-brand count===0 + empty-string 22P02 revert-RED GENUINELY NON-INERT); no real secrets in fixtures (TEST_CLIENT_SECRET='test-shopify-client-secret-b2' synthetic; TEST_ACCESS_TOKEN synthetic; HMAC from env only); no 60d543dc in SQL/seed calls; D-9 CONFIRMED (0 product src changes, 0 migrations); ADR-R3 it.skip honest with documented bug comment; afterAll cleanup present all files
 **Next:** PASS → reconcile with QA Engineer / no bounce_target
+
+## 2026-06-17T18:45:00Z — Security Reviewer — fix-connector-lifecycle-cleanup
+**Stage:** 4 · **Mode:** FULL (retroactive, small diff) · **Verdict:** PASS
+**Findings:** 0 CRIT / 0 HIGH / 0 MED / 0 LOW · **Blocking:** 0 · **Scanners:** secret-grep CLEAN (shpat_test_ synthetic); SAST manual CLEAN; delta-skip SCA/IaC/container (no dep/image/IaC changes)
+**Key verifications:** guard-mirrors-core=PASS (identical NODE_ENV===production condition, throw-before-work); prod-path-unaffected=PASS (factory exits to AwsSecretsManager at line 46, guard is belt-and-suspenders only); export-no-new-surface=PASS (class export adds testability only, no prod caller); coverage-preserved=PASS (core write+prod-hard-fail moved in-package to LocalSecretsManager.test.ts, both assertion pairs present+non-inert); A4-3-active=PASS (it.skip → it, dynamic import, revert-RED confirmed); no-real-secret=PASS (shpat_test_ synthetic; 60d543dc grep CLEAN); no-RLS-regression=PASS (0 migrations/grants/policies in diff); verification-valid=PASS (no bypass-green, negative controls present)
+**Next:** PASS → reconcile with QA Engineer / no bounce_target

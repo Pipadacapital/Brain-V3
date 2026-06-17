@@ -67,6 +67,11 @@
       "req_id": "chore-connector-lifecycle-regression",
       "title": "Connector lifecycle + real-data regression suite",
       "first_seen": "2026-06-17T12:36:29Z"
+    },
+    {
+      "req_id": "fix-connector-lifecycle-cleanup",
+      "title": "Review \u2014 worker prod-guard + regression tsc cleanup",
+      "first_seen": "2026-06-17T14:50:03Z"
     }
   ]
 }

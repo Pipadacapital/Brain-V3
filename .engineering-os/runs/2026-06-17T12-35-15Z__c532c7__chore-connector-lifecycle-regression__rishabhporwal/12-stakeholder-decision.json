@@ -1,0 +1,6 @@
+{
+  "decision": "approved",
+  "ts": "2026-06-17T13:05:00Z",
+  "actor": "stakeholder",
+  "note": "Approved + merged on GitHub. Tests-only regression suite pinning the 8 connector defect classes (8/8 non-inert). 2 tracked follow-ups accepted: SEC-CLR-MED-01 (worker prod-guard), QA-CLR-LOW-01 (test-file tsc cleanup)."
+}

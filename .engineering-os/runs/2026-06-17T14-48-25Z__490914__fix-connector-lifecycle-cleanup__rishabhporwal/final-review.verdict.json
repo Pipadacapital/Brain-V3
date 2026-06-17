@@ -1,0 +1,8 @@
+{
+  "stage": 6,
+  "agent": "final-reviewer",
+  "req_id": "fix-connector-lifecycle-cleanup",
+  "verdict": "PASS",
+  "blocking": 0,
+  "ts": "2026-06-17T19:05:00Z"
+}

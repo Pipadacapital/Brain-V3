@@ -1,0 +1,98 @@
+{
+  "stage": 5,
+  "agent": "qa-engineer",
+  "req_id": "fix-connector-lifecycle-cleanup",
+  "verdict": "PASS",
+  "mode": "FULL",
+  "timestamp": "2026-06-17T18:55:30Z",
+  "branch": "fix/connector-lifecycle-cleanup",
+  "tests_run": [
+    {
+      "suite": "stream-worker affected (dev-secret + worker-guc + shopify-pagination + sync-status-currency)",
+      "command": "cd apps/stream-worker && BRAIN_APP_DATABASE_URL=postgres://brain_app:brain_app@localhost:5432/brain DATABASE_URL=postgres://brain:brain@localhost:5432/brain pnpm vitest run src/tests/dev-secret.integration.test.ts src/tests/worker-guc.integration.test.ts src/tests/shopify-pagination.integration.test.ts src/tests/sync-status-currency.integration.test.ts",
+      "files": 4,
+      "tests": 32,
+      "passed": 32,
+      "failed": 0,
+      "skipped": 0,
+      "exit_code": 0
+    },
+    {
+      "suite": "core LocalSecretsManager + connector lifecycle/oauth",
+      "command": "cd apps/core && BRAIN_APP_DATABASE_URL=postgres://brain_app:brain_app@localhost:5432/brain DATABASE_URL=postgres://brain:brain@localhost:5432/brain pnpm vitest run src/modules/connector/sources/storefront/shopify/infrastructure/secrets/LocalSecretsManager.test.ts src/modules/connector/tests",
+      "files": 4,
+      "tests": 52,
+      "passed": 52,
+      "failed": 0,
+      "skipped": 0,
+      "exit_code": 0
+    },
+    {
+      "suite": "core typecheck",
+      "command": "pnpm --filter @brain/core typecheck",
+      "exit_code": 0,
+      "errors": 0
+    },
+    {
+      "suite": "stream-worker tsc",
+      "command": "cd apps/stream-worker && npx tsc --noEmit",
+      "exit_code": 1,
+      "errors": 3,
+      "errors_pre_existing": 3,
+      "errors_introduced": 0,
+      "note": "3 pre-existing errors confirmed identical on origin/master via git stash proof"
+    },
+    {
+      "suite": "A4-3 non-inert revert (guard removed)",
+      "command": "cd apps/stream-worker && pnpm vitest run src/tests/dev-secret.integration.test.ts [with guard removed]",
+      "exit_code": 1,
+      "tests": 4,
+      "passed": 3,
+      "failed": 1,
+      "failed_test": "A4-3: WorkerLocalSecretsManager prod-hard-fail (SEC-CLR-MED-01) > WorkerLocalSecretsManager hard-fails under NODE_ENV=production",
+      "failure_message": "expected [Function] to throw an error",
+      "non_inert": true
+    },
+    {
+      "suite": "A4-3 post-restore green",
+      "command": "cd apps/stream-worker && pnpm vitest run src/tests/dev-secret.integration.test.ts [guard restored]",
+      "exit_code": 0,
+      "tests": 4,
+      "passed": 4,
+      "failed": 0,
+      "skipped": 0
+    }
+  ],
+  "findings": [],
+  "blocking": 0,
+  "non_blocking": 0,
+  "gate_checks": {
+    "a4_3_active_not_skipped": true,
+    "a4_3_non_inert_revert_red": true,
+    "tsc_11_to_3": true,
+    "tsc_remaining_3_pre_existing": true,
+    "core_typecheck_clean": true,
+    "core_local_secrets_manager_3_3": true,
+    "coverage_preserved_moved_assertions": true,
+    "pagination_stub_type_fix_non_breaking": true,
+    "data_safety_60d543dc": {
+      "table": "realized_revenue_ledger",
+      "count": 19476,
+      "expected": "~19500",
+      "status": "UNTOUCHED"
+    },
+    "git_status_clean_product_files": true,
+    "no_new_tsc_errors_introduced": true
+  },
+  "negative_controls": [
+    {
+      "path": "apps/stream-worker/src/jobs/shopify-backfill/worker-secrets.ts",
+      "protection": "WorkerLocalSecretsManager prod guard (if NODE_ENV=production throw)",
+      "protection_removed": "constructor body replaced with comment-only no-op",
+      "command": "cd apps/stream-worker && pnpm vitest run src/tests/dev-secret.integration.test.ts",
+      "captured_red_output": "AssertionError: expected [Function] to throw an error | 1 failed | exit 1",
+      "restored": true,
+      "post_restore_git_diff": "empty (no diff)"
+    }
+  ]
+}

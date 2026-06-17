@@ -419,6 +419,13 @@
       "stage": 8,
       "current_owner": "platform-devops",
       "last_journal_entry_at": "2026-06-17T13:49:06Z"
+    },
+    {
+      "req_id": "fix-connector-lifecycle-cleanup",
+      "status": "shipped",
+      "stage": 8,
+      "current_owner": "platform-devops",
+      "last_journal_entry_at": "2026-06-17T15:02:56Z"
     }
   ]
 }

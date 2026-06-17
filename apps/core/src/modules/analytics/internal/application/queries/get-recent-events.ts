@@ -66,7 +66,7 @@ export async function getRecentEvents(
          payload->'properties'->>'brain_anon_id' AS anon_id,
          payload->>'hashed_session_id'           AS session_id,
          COALESCE(
-           (payload->'properties'->'consent_flags'->>'analytics') = 'true',
+           (payload->'consent_flags'->>'analytics') = 'true',
            false
          )                                        AS has_consent
        FROM bronze_events

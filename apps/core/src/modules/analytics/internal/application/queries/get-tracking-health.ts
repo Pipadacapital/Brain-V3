@@ -89,7 +89,8 @@ export async function getTrackingHealth(
     );
 
     // Bounded-window total + consent capture aggregates.
-    // Consent is read from the anonymized payload bag (payload->'properties'->'consent_flags').
+    // Consent is a TOP-LEVEL envelope field, persisted at payload->'consent_flags'
+    // (ProcessEventUseCase spreads it at the Bronze payload root, NOT under properties).
     // NO raw PII is touched — only boolean consent flags + counts.
     const aggResult = await client.query<{
       total: string;
@@ -99,10 +100,10 @@ export async function getTrackingHealth(
       `SELECT
          COUNT(*)::text AS total,
          COUNT(*) FILTER (
-           WHERE payload->'properties' ? 'consent_flags'
+           WHERE payload ? 'consent_flags'
          )::text AS consent_total,
          COUNT(*) FILTER (
-           WHERE (payload->'properties'->'consent_flags'->>'analytics') = 'true'
+           WHERE (payload->'consent_flags'->>'analytics') = 'true'
          )::text AS consent_granted
        FROM bronze_events
        WHERE brand_id = $1

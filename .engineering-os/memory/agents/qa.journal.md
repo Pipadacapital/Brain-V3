@@ -65,3 +65,21 @@ Warnings (2): QA-BF-W1 (E2E tests 6+7 env-skipped, SHOPIFY_CONNECTED_CONNECTOR_I
 **B3:** RESOLVED — test 2 PASS (marketplace testids); test 3 SKIP (env-conditional, D-15 server gate authoritative)
 **Next:** HANDOFF → Security Reviewer (reconcile); blocking:0
 {"ts":"2026-06-17T09:40:00Z","actor":"qa-agent","type":"review","req_id":"feat-connector-backfill","stage":5,"verdict":"PASS","mode":"DELTA"}
+
+## 2026-06-17T16:10:00Z — QA Engineer — fix-dev-token-reach
+**Stage:** 5 · **Mode:** FULL · **Verdict:** BOUNCE
+**Smoke:** PASS (302 callback captured; 19,476 live backfill rows; INR confirmed; connector=connected) · **Parity:** n/a · **Validity:** EXIT 3 (no negative control on analytics money path — QA-DTR-W1)
+**Suite:** core 200/204 FAIL (4 D-2/D-4 contract tests); stream-worker 67/67 PASS; e2e 10/10 PASS; core typecheck EXIT 0; web typecheck EXIT 0; stream-worker TSC 3 errors PRE-EXISTING (confirmed same count on master)
+**Pre-existing TSC:** master=3 errors, branch=3 errors — this branch adds ZERO new errors
+**Baseline confirmation:** 4 failing analytics tests confirmed pre-existing on master (git stash + run on master = same 4 failures). Branch did NOT introduce regression; however code and tests now disagree on the D-2 contract — BOUNCE required.
+**Blocking findings:** QA-DTR-B1 (HIGH: D-2/D-4 contract tests fail — 4 tests assert no_data for provisional-only brand but code returns has_data after commit 55a4d90); QA-DTR-W1 (HIGH: validity EXIT 3 — no negative control on analytics money path)
+**Next:** BOUNCE → backend-developer (fix contract test alignment + add negative control)
+
+## 2026-06-17T16:17:34Z — QA Engineer — fix-dev-token-reach
+**Stage:** 5 · **Mode:** DELTA (reasoning: QA-DTR-B1 + QA-DTR-W1; full analytics suite re-run) · **Verdict:** PASS
+**Smoke:** n/a (prior FULL smoke PASS unchanged) · **Parity:** n/a · **Validity:** negative-control CONFIRMED (validity_check EXIT 0; test revenue-metrics.live.test.ts:367-402 is real + non-inert; goes RED if RLS dropped; asserts is_superuser=false)
+**Suite:** analytics 21/21 PASS (was 17/21); typecheck EXIT 0
+**Fix commits:** 19d248d (analytics tests + negative-control), 67cab38 (report + negative-control.json)
+**Resolved:** QA-DTR-B1 (D-2/D-4 contract tests aligned to provisional-surfacing), QA-DTR-W1 (negative-control added, validity_check EXIT 0)
+**Blocking:** 0
+**Next:** PASS → reconcile with Security Reviewer (Stage 4 already cleared 2026-06-17T14:30:00Z)

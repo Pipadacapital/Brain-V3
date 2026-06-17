@@ -1,0 +1,31 @@
+{
+  "stage": 6,
+  "agent": "final-reviewer",
+  "req_id": "fix-dev-token-reach",
+  "verdict": "PASS",
+  "blocking": 0,
+  "recommendation": "APPROVE",
+  "one_line_risk": "Dev-only secret seam + NIL-uuid system-job GUC workaround + honest analytics empty-state change, proven on a real 19,476-row backfill — safe to merge with four tracked non-blocking debts, none on the prod isolation/money path.",
+  "gates_rerun": [
+    {"gate": "analytics vitest", "result": "PASS", "captured": "21/21 passed, exit 0"},
+    {"gate": "validity_check (negative-control)", "result": "PASS", "captured": "clean (1 file), exit 0"},
+    {"gate": "core typecheck", "result": "PASS", "captured": "tsc --noEmit exit 0"},
+    {"gate": "stream-worker tsc pre-existing-confirm", "result": "PASS", "captured": "3 errors, all pre-existing (backfill.e2e.test.ts not in diff; worker-secrets.ts:41 byte-identical on master)"}
+  ],
+  "over_engineering_audit": "clean",
+  "hard_rule_deviation": "none",
+  "negative_control_validity": "PASS — non-inert, RED-captured, non-tautological (asserts is_superuser=false)",
+  "cost_paradigm": "tier-0 deterministic, $0/mo model spend",
+  "risks_remaining": [
+    "SEC-DTR-L1 (LOW): NIL-uuid negative-control test missing (analytically safe; partially covered)",
+    "SEC-DTR-M1 (MED): dev_secret plaintext token in dev Postgres (accepted dev-vault; add shared-DB warning to 0024)",
+    "LOW: no connect->disconnect->reconnect lifecycle e2e + no real-pagination cursor regression test",
+    "trivial: stale revenue-snapshot.ts JSDoc",
+    "LOW: WorkerLocalSecretsManager prod-safety is single-guard (selector-only); recommend constructor hard-fail for symmetry"
+  ],
+  "lessons_learned_recommendation": "Recommend (not filed): lessons-learned entry + a follow-up requirement for a connector lifecycle + real-data regression suite (connect->disconnect->reconnect, real since_id pagination walk, NIL-uuid negative control). Auto-candidate rule NOT triggered (<3 distinct prior runs of this root cause).",
+  "rule_proposal_written": false,
+  "committed": false,
+  "stakeholder_gate_advanced": false,
+  "ts": "2026-06-17T16:30:00Z"
+}

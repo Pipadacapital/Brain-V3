@@ -260,9 +260,23 @@ async function loadConnectorInstance(
   // SEC-BF-H1 FIX: connector_instance has FORCE RLS under brain_app.
   // Must set the brand GUC before querying — brand_id comes from the
   // list_queued_backfill_jobs() fn result (MT-1: never from env or Shopify).
+  // Sentinel uuid (all-zero) for the user-context GUCs. The `brand` table's brand_self_read RLS
+  // policy casts app.current_user_id / app.current_workspace_id to uuid; this worker is a SYSTEM
+  // job with NO user context, and a pooled connection can carry a stale EMPTY STRING that ''::uuid
+  // rejects ("invalid input syntax for type uuid"). A valid zero-uuid satisfies the cast while the
+  // membership subquery matches nothing — so only brand_isolation (app.current_brand_id) governs
+  // access. NOTE: txn-local GUCs (true) only apply WITHIN a transaction, so we wrap in BEGIN/COMMIT
+  // (the original code set them outside a txn, so they never reached the SELECT).
+  const NIL_UUID = '00000000-0000-0000-0000-000000000000';
   const client = await pool.connect();
   try {
-    await client.query("SELECT set_config('app.current_brand_id', $1, true)", [brandId]);
+    await client.query('BEGIN');
+    await client.query(
+      `SELECT set_config('app.current_brand_id', $1, true),
+              set_config('app.current_user_id', $2, true),
+              set_config('app.current_workspace_id', $2, true)`,
+      [brandId, NIL_UUID],
+    );
     const result = await client.query<ConnectorRow>(
       `SELECT ci.brand_id, ci.shop_domain, ci.secret_ref,
               COALESCE(b.currency_code, 'INR') AS currency_code
@@ -271,7 +285,11 @@ async function loadConnectorInstance(
        WHERE ci.id = $1 AND ci.brand_id = $2`,
       [connectorInstanceId, brandId],
     );
+    await client.query('COMMIT');
     return result.rows[0] ?? null;
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw err;
   } finally {
     client.release();
   }
@@ -459,6 +477,30 @@ async function runBackfillLoop(params: BackfillLoopParams): Promise<void> {
       recordsProcessed,
       cursorValue: sinceId,
     });
+
+    // Reflect that data is now flowing: the dashboard Connection Status reads
+    // connector_sync_status, which sat at 'waiting_for_data' since connect. On a successful
+    // backfill with records, transition it to 'connected' + stamp last_sync_at. Updated under the
+    // brand GUC (txn-local); connector_sync_status RLS only needs app.current_brand_id.
+    if (recordsProcessed > 0n) {
+      const sc = await pool.connect();
+      try {
+        await sc.query('BEGIN');
+        await sc.query("SELECT set_config('app.current_brand_id', $1, true)", [brandId]);
+        await sc.query(
+          `UPDATE connector_sync_status
+             SET state = 'connected', last_sync_at = NOW(), last_error = NULL, updated_at = NOW()
+           WHERE brand_id = $1 AND connector_instance_id = $2`,
+          [brandId, params.connectorInstanceId],
+        );
+        await sc.query('COMMIT');
+      } catch (e) {
+        await sc.query('ROLLBACK').catch(() => undefined);
+        console.error(`[shopify-backfill] job=${jobId} connector_sync_status update failed`, e);
+      } finally {
+        sc.release();
+      }
+    }
 
     console.info(
       `[shopify-backfill] job=${jobId} COMPLETED records=${recordsProcessed} depth="${depthLabel}"`,

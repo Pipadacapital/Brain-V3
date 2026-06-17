@@ -64,28 +64,56 @@ export function buildWorkerSecretsManager(): WorkerSecretsManager {
  *
  * Note: this implementation is dev-only. In prod, AwsSecretsManager is used.
  */
+import pg from 'pg';
+
 class WorkerLocalSecretsManager implements WorkerSecretsManager {
+  // Lazily-created pool for reading the DEV-TOKEN-REACH dev_secret table (migration 0024).
+  // The worker connects as brain_app, which is GRANTed SELECT on dev_secret.
+  private devPool: pg.Pool | undefined;
+
+  private getDevPool(): pg.Pool {
+    if (!this.devPool) {
+      const connectionString =
+        process.env['BRAIN_APP_DATABASE_URL'] ?? process.env['DATABASE_URL'];
+      this.devPool = new pg.Pool({ connectionString, max: 2 });
+    }
+    return this.devPool;
+  }
+
   async getShopifyToken(secretRef: string): Promise<string | null> {
-    // First try: simple SHOPIFY_ACCESS_TOKEN override (works for single-brand dev)
+    // 1) Explicit dev override (handy for tests / single-brand): SHOPIFY_ACCESS_TOKEN.
     const directToken = process.env['SHOPIFY_ACCESS_TOKEN'];
     if (directToken) {
-      // Token NEVER logged (I-S09)
-      return directToken;
+      return directToken; // Token NEVER logged (I-S09)
     }
 
-    // Second try: extract brandId from ARN → SHOPIFY_DEV_TOKEN_{BRAND_NO_DASHES_UPPER}
-    // ARN format: ...secret:brain/connector/shopify/{brandId}/{shopDomain}
+    // 2) DEV-TOKEN-REACH (0024): the durable dev_secret store core writes on OAuth connect.
+    //    Survives a core restart and is readable cross-process. This is the primary dev path.
+    //    secret_ref ARN → the dev_secret name is the segment after ':secret:'.
+    const name = secretRef.split(':secret:')[1] ?? secretRef;
+    try {
+      const res = await this.getDevPool().query<{ secret_value: string }>(
+        `SELECT secret_value FROM dev_secret WHERE name = $1`,
+        [name],
+      );
+      if (res.rows[0]?.secret_value) {
+        return res.rows[0].secret_value; // NEVER logged (I-S09)
+      }
+    } catch {
+      // dev_secret unavailable (e.g. migration not applied) — fall through to the env fallback.
+    }
+
+    // 3) Per-brand env fallback: SHOPIFY_DEV_TOKEN_{BRAND_NO_DASHES_UPPER}.
     const match = secretRef.match(/brain\/connector\/shopify\/([0-9a-f-]{36})\//i);
     if (match?.[1]) {
-      const brandId = match[1];
-      const envKey = `SHOPIFY_DEV_TOKEN_${brandId.replace(/-/g, '').toUpperCase()}`;
+      const envKey = `SHOPIFY_DEV_TOKEN_${match[1].replace(/-/g, '').toUpperCase()}`;
       const brandToken = process.env[envKey];
       if (brandToken) {
         return brandToken;
       }
     }
 
-    // Not found → null → job will mark failed with RECONNECT_REQUIRED (D-7/SP-3)
+    // 4) Not found → null → job marks failed with RECONNECT_REQUIRED (D-7/SP-3).
     return null;
   }
 }

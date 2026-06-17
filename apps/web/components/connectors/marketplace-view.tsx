@@ -21,7 +21,8 @@
  *   marketplace-category-{cat}, btn-skip-for-now
  */
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { useSearchParams, useRouter } from 'next/navigation';
 import {
   CheckCircle,
   Clock,
@@ -393,8 +394,38 @@ const CATEGORY_ORDER: ConnectorCategory[] = [
   'analytics',
 ];
 
+/** Friendly messages for the OAuth callback's ?connect_error= codes. */
+const CONNECT_ERROR_MESSAGES: Record<string, string> = {
+  auth_failed: 'We could not verify the response from the provider. Please try connecting again.',
+  state_invalid: 'The connection session expired. Please start the connection again.',
+  shop_invalid: 'That store domain looks invalid. Check it and try again.',
+  unknown_connector: 'That connector is not available yet.',
+  unexpected: 'Something went wrong completing the connection. Please try again.',
+};
+
 export function MarketplaceView() {
   const { data: tiles, isLoading, error, refetch } = useMarketplace();
+  const searchParams = useSearchParams();
+  const router = useRouter();
+
+  // The OAuth callback redirects back here with ?connected=<type> or ?connect_error=<code>.
+  // Surface it as a toast, then strip the param so it doesn't re-fire on refetch/navigation.
+  useEffect(() => {
+    const connected = searchParams.get('connected');
+    const connectError = searchParams.get('connect_error');
+    if (!connected && !connectError) return;
+    if (connected) {
+      const name = connected.charAt(0).toUpperCase() + connected.slice(1);
+      toast({ title: `${name} connected`, description: 'Your store is connected. You can now run a backfill.' });
+    } else if (connectError) {
+      toast({
+        variant: 'destructive',
+        title: 'Connection failed',
+        description: CONNECT_ERROR_MESSAGES[connectError] ?? CONNECT_ERROR_MESSAGES['unexpected'],
+      });
+    }
+    router.replace('/settings/connectors');
+  }, [searchParams, router]);
 
   if (isLoading) return <MarketplaceSkeleton />;
 

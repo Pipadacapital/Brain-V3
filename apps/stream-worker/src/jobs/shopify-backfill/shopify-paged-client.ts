@@ -114,10 +114,14 @@ export class ShopifyBackfillClient {
       'gateway', 'payment_gateway_names', 'tags', 'customer',
     ].join(',');
 
-    let query = `status=any&limit=250&created_at_min=${encodeURIComponent(createdAtMin)}&fields=${fields}`;
-    if (sinceId !== null) {
-      query += `&since_id=${encodeURIComponent(sinceId)}`;
-    }
+    // since_id pagination orders by id ASC. Page 1 MUST start at since_id=0 (not omit it) — if
+    // omitted, Shopify returns the page in its default order (newest-first), and since_id=last-id
+    // then can't advance, so pagination stalls after ~2 pages (the 499-of-10009 bug). Starting at 0
+    // forces a stable id-ascending walk through the whole result set.
+    const effectiveSinceId = sinceId ?? '0';
+    const query =
+      `status=any&limit=250&created_at_min=${encodeURIComponent(createdAtMin)}` +
+      `&fields=${fields}&since_id=${encodeURIComponent(effectiveSinceId)}`;
 
     const url = `${this.base}/orders.json?${query}`;
 

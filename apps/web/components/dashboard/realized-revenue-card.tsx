@@ -7,8 +7,12 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
 import { EmptyState } from '@/components/ui/empty-state';
 import { useRealizedRevenue } from '@/lib/hooks/use-dashboard';
+import { useSettlements } from '@/lib/hooks/use-analytics';
 import { formatMoneyDisplay } from '@/lib/format/money-display';
 import type { CurrencyCode } from '@brain/money';
+import type { AnalyticsSettlementsResponse } from '@/lib/api/types';
+
+type SettlementHasData = Extract<AnalyticsSettlementsResponse, { state: 'has_data' }>;
 
 /**
  * Realized Revenue Card — §4 API contract, D-1..D-7, D-11, D-12.
@@ -69,9 +73,9 @@ function GrossRevenueTooltip() {
           className="absolute left-5 top-0 z-50 w-52 rounded-md border border-border bg-popover px-3 py-2 text-xs text-popover-foreground shadow-md"
           aria-live="polite"
         >
-          Settlement fees not yet applied. This figure represents gross revenue from
-          Shopify orders. Net revenue will be shown once the Razorpay settlement
-          data is connected.
+          This is gross revenue from Shopify orders, before Razorpay settlement fees.
+          When Razorpay settlement data is connected, the net-of-fees figure is shown
+          below.
         </span>
       )}
     </span>
@@ -80,6 +84,11 @@ function GrossRevenueTooltip() {
 
 export function RealizedRevenueCard() {
   const { data, isLoading, error, refetch } = useRealizedRevenue();
+  // Net-of-fees figure (Razorpay Track C). Surfaced ONLY when settlement data has shipped
+  // for this brand (state==='has_data' with at least one fee) — never fabricated otherwise.
+  const { data: settlement } = useSettlements();
+  const netSettlement: SettlementHasData | null =
+    settlement?.state === 'has_data' && settlement.fees.length > 0 ? settlement : null;
 
   if (isLoading) {
     return (
@@ -188,6 +197,45 @@ export function RealizedRevenueCard() {
             </time>
           </p>
         </div>
+
+        {/* ── Net-of-fees block — only when Razorpay settlement data has shipped ──
+            Honest: rendered solely when settlement state==='has_data' with fees, so we
+            never show a fabricated net. Money via formatMoneyDisplay (no float). */}
+        {netSettlement && (
+          <div
+            className="rounded-md border border-status-green-700/30 bg-status-green-50 p-3"
+            data-testid="realized-revenue-net-block"
+            aria-label="Net realized revenue after Razorpay settlement fees"
+          >
+            <p className="text-xs font-medium text-status-green-700 uppercase tracking-wide mb-1 flex items-center gap-1.5">
+              <TrendingUp className="h-3.5 w-3.5" aria-hidden="true" />
+              Net Realized — after settlement fees
+            </p>
+            <span
+              data-testid="realized-revenue-net-value"
+              data-currency={netSettlement.currency_code}
+              className="text-xl font-bold text-status-green-700 tabular-nums"
+              aria-label={`Net realized revenue: ${formatMoneyDisplay(netSettlement.net_minor, netSettlement.currency_code as CurrencyCode)} after Razorpay fees`}
+            >
+              {formatMoneyDisplay(
+                netSettlement.net_minor,
+                netSettlement.currency_code as CurrencyCode,
+              )}
+            </span>
+            <p className="mt-1 text-xs text-status-green-700/80">
+              {formatMoneyDisplay(
+                (
+                  BigInt(netSettlement.gross_minor) - BigInt(netSettlement.net_minor)
+                ).toString(),
+                netSettlement.currency_code as CurrencyCode,
+              )}{' '}
+              in fees deducted ·{' '}
+              <a href="/analytics/settlements" className="underline hover:no-underline">
+                View settlements
+              </a>
+            </p>
+          </div>
+        )}
 
         {/* ── Provisional block — sibling, never blended with realized (D-4) ── */}
         <div

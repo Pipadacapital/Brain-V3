@@ -63,6 +63,7 @@ import type {
   AnalyticsOrdersTimeseriesResponse,
   AnalyticsOrderStatsResponse,
   AnalyticsDataHealthResponse,
+  AnalyticsSettlementsResponse,
 } from './types';
 
 /** All BFF routes proxied through Next.js API routes → frontend-api module */
@@ -898,6 +899,19 @@ export const analyticsApi = {
   getDataHealth: async (): Promise<AnalyticsDataHealthResponse> => {
     const { data } = await bffFetch<BffEnvelope<AnalyticsDataHealthResponse>>(
       `/v1/analytics/data-health`,
+    );
+    return data;
+  },
+
+  /**
+   * GET /api/v1/analytics/settlements — Razorpay net-of-fees settlement summary.
+   * D-10: unwrap { request_id, data } → AnalyticsSettlementsResponse.
+   * state:'no_data' is preserved (never coerced to has_data with zeros).
+   */
+  getSettlements: async (asOf?: string): Promise<AnalyticsSettlementsResponse> => {
+    const qs = asOf ? `?as_of=${encodeURIComponent(asOf)}` : '';
+    const { data } = await bffFetch<BffEnvelope<AnalyticsSettlementsResponse>>(
+      `/v1/analytics/settlements${qs}`,
     );
     return data;
   },

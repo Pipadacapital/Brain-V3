@@ -172,16 +172,74 @@ function TileStatusIndicator({ tile }: { tile: MarketplaceTile }) {
 
 // ── ConnectorTile ─────────────────────────────────────────────────────────────
 
+// Razorpay credential fields (C2 / ADR-RZ-8). razorpay_account_id is NOT a secret
+// (merchant ID, visible in the Razorpay dashboard); the other three are secrets that
+// the backend stores in one secret bundle and NEVER echoes back to the client.
+const RAZORPAY_FIELDS: {
+  key: 'key_id' | 'key_secret' | 'webhook_secret' | 'razorpay_account_id';
+  label: string;
+  placeholder: string;
+  secret: boolean;
+}[] = [
+  { key: 'key_id', label: 'Key ID', placeholder: 'rzp_live_XXXXXXXX', secret: false },
+  { key: 'key_secret', label: 'Key Secret', placeholder: '••••••••••••', secret: true },
+  { key: 'webhook_secret', label: 'Webhook Secret', placeholder: '••••••••••••', secret: true },
+  { key: 'razorpay_account_id', label: 'Account ID', placeholder: 'acc_XXXXXXXX', secret: false },
+];
+
 function ConnectorTile({ tile }: { tile: MarketplaceTile }) {
   const { mutate: connect, isPending: isConnecting } = useConnectConnector();
   const { mutate: disconnect, isPending: isDisconnecting } = useDisconnectConnector();
   const [shopDomain, setShopDomain] = useState('');
+  // Razorpay credential form state (only used for credential tiles).
+  const [creds, setCreds] = useState<Record<string, string>>({});
 
   const isConnected = !!tile.instance;
   const isComingSoon = !tile.available;
+  const isCredential = tile.connect_method === 'credential';
+  const credsComplete = RAZORPAY_FIELDS.every((f) => (creds[f.key] ?? '').trim().length > 0);
 
   function handleConnect() {
     if (isComingSoon) return; // guard: UI should never reach here for coming-soon tiles
+
+    // ── Credential connect (Razorpay — C2 / ADR-RZ-8) ──────────────────────────
+    // Sends { key_id, key_secret, webhook_secret, razorpay_account_id }. The backend
+    // stores secrets server-side and returns { kind:'credential', connected:true } —
+    // it NEVER echoes the secrets. On success the marketplace query invalidates and
+    // the tile flips to Connected (handled by useConnectConnector.onSuccess).
+    if (isCredential) {
+      if (!credsComplete) {
+        toast({
+          title: 'All fields required',
+          description: 'Enter your Razorpay Key ID, Key Secret, Webhook Secret, and Account ID.',
+          variant: 'destructive',
+        });
+        return;
+      }
+      const credentials = Object.fromEntries(
+        RAZORPAY_FIELDS.map((f) => [f.key, (creds[f.key] ?? '').trim()]),
+      );
+      connect(
+        { type: tile.id, credentials },
+        {
+          onSuccess: (data) => {
+            if (data.kind === 'credential') {
+              // Clear the secret form fields from memory immediately after a successful connect.
+              setCreds({});
+              toast({
+                title: `${tile.display_name} connected`,
+                description: 'Settlement data will appear once Razorpay sends settlements.',
+              });
+            }
+          },
+          onError: (err) => {
+            const msg = err instanceof BffApiError ? err.message : 'Could not connect Razorpay.';
+            toast({ title: 'Connection failed', description: msg, variant: 'destructive' });
+          },
+        },
+      );
+      return;
+    }
 
     if (tile.connect_method === 'oauth' && tile.id === 'shopify') {
       const shop = shopDomain.trim().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
@@ -321,11 +379,44 @@ function ConnectorTile({ tile }: { tile: MarketplaceTile }) {
                 data-testid={`input-shop-${tile.id}`}
               />
             )}
+
+            {/* Credential connectors (Razorpay) collect their credentials inline.
+                Secret fields use type="password" + autoComplete="off"; the values are
+                sent once to the BFF and never read back (the server omits them). */}
+            {isCredential && (
+              <div className="space-y-2" data-testid={`credential-form-${tile.id}`}>
+                {RAZORPAY_FIELDS.map((f) => (
+                  <div key={f.key} className="space-y-1">
+                    <label
+                      htmlFor={`cred-${tile.id}-${f.key}`}
+                      className="text-xs font-medium text-muted-foreground"
+                    >
+                      {f.label}
+                    </label>
+                    <Input
+                      id={`cred-${tile.id}-${f.key}`}
+                      type={f.secret ? 'password' : 'text'}
+                      value={creds[f.key] ?? ''}
+                      onChange={(e) => setCreds((c) => ({ ...c, [f.key]: e.target.value }))}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && credsComplete) handleConnect();
+                      }}
+                      placeholder={f.placeholder}
+                      aria-label={`${tile.display_name} ${f.label}`}
+                      autoComplete="off"
+                      data-testid={`input-${tile.id}-${f.key}`}
+                    />
+                  </div>
+                ))}
+              </div>
+            )}
+
             <Button
               onClick={handleConnect}
               disabled={
                 isConnecting ||
-                (tile.id === 'shopify' && tile.connect_method === 'oauth' && !shopDomain.trim())
+                (tile.id === 'shopify' && tile.connect_method === 'oauth' && !shopDomain.trim()) ||
+                (isCredential && !credsComplete)
               }
               data-testid={`connector-tile-${tile.id}-connect`}
             >

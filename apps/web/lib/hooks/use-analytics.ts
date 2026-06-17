@@ -112,3 +112,16 @@ export function useDataHealth() {
     refetchInterval: 60_000,
   });
 }
+
+/**
+ * useSettlements — fetches the Razorpay net-of-fees settlement summary as of a date.
+ * Shares the 'analytics' query-key prefix → auto-invalidates on brand switch.
+ * @param asOf - YYYY-MM-DD date (optional; server defaults to today).
+ */
+export function useSettlements(asOf?: string) {
+  return useQuery({
+    queryKey: [...ANALYTICS_QUERY_KEY, 'settlements', asOf ?? 'today'],
+    queryFn: () => analyticsApi.getSettlements(asOf),
+    staleTime: 5 * 60_000,
+  });
+}

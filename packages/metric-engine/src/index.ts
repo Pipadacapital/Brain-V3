@@ -38,3 +38,7 @@ export { computeOrdersTimeseries } from './orders-timeseries.js';
 export type { OrdersTimeseriesBucket } from './orders-timeseries.js';
 export { computeOrderStats } from './order-stats.js';
 export type { OrderStatsResult } from './order-stats.js';
+
+// Razorpay settlement (net-of-fees) compute function (Track C)
+export { computeSettlementSummary } from './settlement-summary.js';
+export type { SettlementSummary, SettlementFee, SettlementFeeType } from './settlement-summary.js';

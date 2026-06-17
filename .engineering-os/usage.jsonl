@@ -151,3 +151,6 @@
 {"ts":"2026-06-17T13:40:01Z","req_id":"chore-connector-lifecycle-regression","agent":"security-reviewer","stage":4,"model":"sonnet","review_scope":"full","total_tokens":95362}
 {"ts":"2026-06-17T13:40:01Z","req_id":"chore-connector-lifecycle-regression","agent":"qa-agent","stage":5,"model":"sonnet","review_scope":"full","total_tokens":97218}
 {"ts":"2026-06-17T13:45:19Z","req_id":"chore-connector-lifecycle-regression","agent":"final-reviewer","stage":6,"model":"opus","review_scope":"full","total_tokens":121465}
+{"ts":"2026-06-17T14:58:02Z","req_id":"fix-connector-lifecycle-cleanup","agent":"security-reviewer","stage":4,"model":"sonnet","review_scope":"full","total_tokens":46565}
+{"ts":"2026-06-17T14:58:02Z","req_id":"fix-connector-lifecycle-cleanup","agent":"qa-agent","stage":5,"model":"sonnet","review_scope":"full","total_tokens":42327}
+{"ts":"2026-06-17T15:02:37Z","req_id":"fix-connector-lifecycle-cleanup","agent":"final-reviewer","stage":6,"model":"opus","review_scope":"full","total_tokens":48784}

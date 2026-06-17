@@ -415,10 +415,17 @@
     },
     {
       "req_id": "chore-connector-lifecycle-regression",
-      "status": "awaiting-stakeholder",
-      "stage": 7,
-      "current_owner": "stakeholder",
-      "last_journal_entry_at": "2026-06-17T13:45:19Z"
+      "status": "shipped",
+      "stage": 8,
+      "current_owner": "platform-devops",
+      "last_journal_entry_at": "2026-06-17T13:49:06Z"
+    },
+    {
+      "req_id": "fix-connector-lifecycle-cleanup",
+      "status": "shipped",
+      "stage": 8,
+      "current_owner": "platform-devops",
+      "last_journal_entry_at": "2026-06-17T15:02:56Z"
     }
   ]
 }

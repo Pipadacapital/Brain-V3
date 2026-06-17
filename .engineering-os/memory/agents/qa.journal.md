@@ -83,3 +83,12 @@ Warnings (2): QA-BF-W1 (E2E tests 6+7 env-skipped, SHOPIFY_CONNECTED_CONNECTOR_I
 **Resolved:** QA-DTR-B1 (D-2/D-4 contract tests aligned to provisional-surfacing), QA-DTR-W1 (negative-control added, validity_check EXIT 0)
 **Blocking:** 0
 **Next:** PASS → reconcile with Security Reviewer (Stage 4 already cleared 2026-06-17T14:30:00Z)
+
+## 2026-06-17T18:55:30Z — QA Engineer — fix-connector-lifecycle-cleanup
+**Stage:** 5 · **Mode:** FULL · **Verdict:** PASS
+**Smoke:** N/A (integration tests against real Postgres — correct smoke for this diff) · **Parity:** N/A · **Validity:** A4-3 non-inert revert confirmed (guard removed → EXIT 1, expected [Function] to throw; guard restored → 4/4 PASS)
+**Stream-worker suite:** 32/32 passed (4 files) — A4-3 ACTIVE (not skipped), 0 skipped · **Core suite:** 52/52 passed (4 files) — LocalSecretsManager.test.ts 3/3 PASS
+**tsc:** core EXIT 0 clean; stream-worker 3 errors (all pre-existing, identical on origin/master via git stash proof; branch adds 0 new errors; 11→3 = -8 removed)
+**Coverage:** core write+prod-hard-fail+non-prod assertions moved from stream-worker → apps/core LocalSecretsManager.test.ts 3/3 PASS; cross-process READ still in worker A4-1
+**Data-safety:** 60d543dc = 19476 rows (untouched, ~19.5k) · **git status:** product files clean after all operations
+**Next:** PASS → Reconcile with Security Reviewer (Security: PASS, 0 findings) → Stage 6 Final

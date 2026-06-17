@@ -175,3 +175,16 @@
 **Tracked debt / recommended follow-ups (recommend, not filed):** SEC-CLR-MED-01 (MED, latent — product PR: WorkerLocalSecretsManager NODE_ENV=production ctor guard; un-skip ADR-R3) · QA-CLR-LOW-01 (LOW — cleanup PR: stream-worker tsconfig cross-rootDir test imports + fetch-stub DOM types).
 **Lessons-learned:** this suite CLOSES the connector-path root gap (lifecycle/real-data/worker-RLS-secret coverage absent → produced 8 live fixes). No rule-proposal — system-job-force-rls-enumeration already adopted + honored; recurrence threshold for a NEW rule not met.
 **Next:** Stakeholder gate (Stage 7). I did NOT commit, did NOT advance the gate.
+
+## 2026-06-17T19:05:00Z — Engineering Advisor (final-reviewer) — fix-connector-lifecycle-cleanup
+**Stage:** 6 · **Verdict:** PASS / APPROVE · **Paradigm audit:** clean (tier-0, no model path, $0)
+**Scope/lineage:** Closes the two tracked follow-ups SEC-CLR-MED-01 (worker prod-guard) + QA-CLR-LOW-01 (test-file tsc cleanup) filed at the end of chore-connector-lifecycle-regression. Diff = 4 files +125/-84, tests-and-one-guard only; no migration, no RLS/grant, 60d543dc untouched. No scope creep.
+**Product spot-confirm:** WorkerLocalSecretsManager guard condition `NODE_ENV==='production'` is IDENTICAL to core LocalSecretsManager.ts:33, same `[ClassName] FATAL` throw-before-work. Prod path provably unaffected — factory returns AwsSecretsManager (line 46) before reaching `new WorkerLocalSecretsManager()` (line 50); guard defends a direct-instantiation bypass only. `export` adds no runtime surface (test-import only).
+**Gates re-run (≥3, replicated):** stream-worker tsc → 3 errors (1×TS2307 factory require + 2×TS2345 backfill.e2e, pre-existing); dev-secret.integration → 4 passed / 0 skipped (A4-3 active+green); core LocalSecretsManager.test → 3 passed (moved coverage present). All replicate QA PASS.
+**Negative-control (independently re-replicated, not trusted from QA):** removed worker guard → A4-3 RED (`expected [Function] to throw an error`) → restored → git diff empty. Test genuinely non-inert; QA negative_controls[] valid.
+**Pre-existing proof:** TS2307 require line exists verbatim on origin/master; backfill.e2e.test.ts has zero branch diff. The 3 residual errors cannot be branch-introduced. 11→3 confirmed.
+**3 residual tsc errors — my call:** ACCEPTABLE-AS-TRACKED (do not block). Recommend a tiny follow-up to bring the stream-worker prod secrets path back inside the tsc gate (TS2307 cross-package require = latent typing blind-spot on a secrets seam) + batch the 2 backfill.e2e fixture types. Recommend, not file — surface to Stakeholder.
+**Over-engineering / Single-Primitive:** CLEAN — mirrors an existing primitive (no new one), surgical diff, no new deps/abstractions, comments are WHY not WHAT.
+**Hard-rule check:** none (no dependency/Single-Primitive/compliance/paradigm/gate-skip deviation). Verification-validity PASS.
+**Retro / rule-proposal:** no new rule (recurrence threshold not met; system-job-force-rls-enumeration already adopted). Process note: prior dev-report's false "zero new tsc errors" claim is what QA caught → produced QA-CLR-LOW-01; gate worked.
+**Next:** Stakeholder gate (Stage 7). I did NOT commit, did NOT advance the gate.

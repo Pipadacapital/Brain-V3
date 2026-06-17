@@ -929,3 +929,20 @@ Razorpay binding plan in progress
 2026-06-17T20:30:01Z [B-backend Track B] feat-razorpay-settlement-connector | B1-B3 built: webhook handler (HMAC-first+C3+MB-1) + commands (ConnectRazorpay/DisconnectRazorpay/RotateWebhookSecret) + wired in main.ts | tsc EXIT 0 | committing B1-B3
 2026-06-18T00:43:00Z [B-backend Track B] feat-razorpay-settlement-connector | COMPLETE | B4 integration tests 10/10 PASS; root cause fix: SET LOCAL → set_config() for parameterized GUC; tsc --noEmit EXIT 0; commits 9cfeefc + b96e73c + 3366c5d; READY-FOR-SECURITY
 20:42:45Z [heartbeat] engineering-os:frontend-web-developer S? ? issued
+20:45:38Z [heartbeat] engineering-os:frontend-web-developer S? ? returned
+[2026-06-17T20:47:02Z] ✓ Track B DONE (webhook+replay+3-cred, 10/10). ▶ Stage 4/5 review workflow (Security ∥ QA); Track C deferred to UI Phase 4.
+2026-06-18T00:55:00Z  qa-engineer  feat-razorpay-settlement-connector  PASS  mode=FULL  mapper=43/43 wiring-e2e=6/6 webhook-int=10/10 tsc=0(+1 pre-existing) validity=clean neg-controls=3-RED  model=claude-opus-4-8[1m]
+2026-06-17T20:56:14Z | security-reviewer | feat-razorpay-settlement-connector | Stage 4 FULL | VERDICT=BOUNCE | findings: HIGH=1(SEC-RZ-H1) MED=1 LOW=1 CRIT=0 | C4 lint + C5 log-grep not wired into CI (mandatory gates); primary mapper/hash/RLS controls live+non-inert | bounce_target=data-engineer | model=opus-4.8-1m
+2026-06-18T00:58:00Z final-reviewer feat-razorpay-settlement-connector STAGE6 BOUNCE blocking=1 SEC-RZ-H1(HIGH,OPEN) bounce_target=data-engineer paradigm=tier0-$0 over-eng=clean MB-4=wired(occ#3 no-recur) gates-rerun=mapper43/43,eslint-print-config(pci-rule-absent),log-grep-zero-consumers model=opus-4-8-1m
+[2026-06-17T21:00:59Z] ✗ Razorpay review BOUNCE — SEC-RZ-H1 (HIGH): no-pci-card-fields lint + log-grep not registered (dead gate). QA PASS. Wired-#3 OK. → data-engineer surgical fix → DELTA re-review.
+21:01:29Z [heartbeat] engineering-os:data-engineer S4 ? issued
+21:01:29Z [heartbeat] engineering-os:data-engineer S4 ? returned
+21:02:06Z [heartbeat] engineering-os:architect S3 ? issued
+21:02:06Z [heartbeat] engineering-os:architect S3 ? returned
+[2026-06-18T00:00:00Z] data-engineer feat-razorpay-settlement-connector SEC-RZ-H1+L1 surgical fix COMMITTED sha=8e63deb | no-pci-card-fields wired eslint.config.mjs(brain-pci plugin, severity error) | log-grep-gate.mjs consumes log-grep-patterns.json; pnpm log-grep npm script; pr.yml log-grep-gate CI job | SEC-RZ-L1 RedisDedupAdapter comment corrected FAIL-OPEN + structured error log | print-config proof: brain-pci/no-pci-card-fields=[2] | non-inert: planted card_last4 identifier → rule fired | mapper lints clean 0 errors 0 warnings | READY-FOR-SECURITY delta re-review
+[2026-06-17T21:12:30Z] ✓ Razorpay bounce-fix landed (8e63deb,b5ce157 — gates wired non-inert). ▶ DELTA security re-review → final → gate. Corrected stale shopify state→shipped.
+2026-06-17T21:23:27Z [security-reviewer] DELTA re-review feat-razorpay-settlement-connector → PASS · SEC-RZ-H1 RESOLVED (lint+log-grep live, non-inert, CI-wired) · SEC-RZ-L1 RESOLVED · suite 43/10/6 green · new LOW SEC-RZ-L2 (non-blocking) · model Opus 4.8 1M
+2026-06-18T01:25:00Z | final-reviewer | feat-razorpay-settlement-connector | Stage6 DELTA | PASS/APPROVE | blocking=0 | SEC-RZ-H1+L1 RESOLVED (re-verified: card_last4 fires, pay_/UTR exit1, mapper 43/43); SEC-RZ-L2 LOW tracked | next=stakeholder-gate
+21:42:19Z [heartbeat] engineering-os:platform-devops S8 ? issued
+21:52:23Z [heartbeat] engineering-os:platform-devops S8 ? returned
+2026-06-18T02:30:00Z | platform-devops | feat-razorpay-settlement-connector | Stage8 DEPLOY | SHIPPED (dev-honest) | tsc mapper EXIT:0, stream-worker 1 pre-existing error | migration 0027 verified live | SettlementLedgerConsumer wired main.ts:30/121/183 | C4 ESLint EXIT:0 prod source | C5 log-grep PASS (all patterns no-match) + gate EXIT:0 | SEC-RZ-M1 MED carried | SEC-RZ-L2 LOW CLOSED b5ce157 | PR: https://github.com/Rishabhporwal/Brain-V4/compare/master...feat/razorpay-settlement-connector

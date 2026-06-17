@@ -237,3 +237,30 @@
 
 ## 2026-06-17T12:35:00Z — Platform/SRE — feat-connector-backfill
 **Action:** Stage 8 deploy bake SHIPPED (inline). 0022+0023 applied (RLS FORCE/no-DELETE, SECURITY DEFINER pinned), typechecks clean, stream-worker 67/67 + core trigger 11/11, payoff T12 proven. Branch→master merge is Stakeholder GitHub action.
+
+## 2026-06-18T01:30:00Z — Platform/SRE — feat-razorpay-settlement-connector
+Stakeholder approval received (SEC-RZ-M1/L2 waived as tracked tech-debt). Proceeding to Stage 8.
+
+## 2026-06-18T02:30:00Z — Platform/SRE — feat-razorpay-settlement-connector
+**Stage:** 8 · **Affected:** apps/stream-worker, packages/razorpay-mapper, db/migrations/0027 · **Canary:** N/A (Phase-1 dev-only; ADR-010 Phase-4 deferral) · **Monitor:** N/A (Phase-1 dev-only)
+**Staging smoke:** N/A (no live infra) · **Next:** PR merge (manual — gh unauthenticated) — Stakeholder action
+
+**Deploy-readiness checks (real output, 2026-06-18T02:30:00Z):**
+- tsc @brain/razorpay-mapper: EXIT:0 (clean)
+- tsc apps/stream-worker: EXIT:1 (1 pre-existing AwsSecretsManager error on worker-secrets.ts; 0 new errors from this feature)
+- Migration 0027 live in brainv3-postgres-1: connector_razorpay_order_map FORCE RLS; 2 SECURITY DEFINER fns (search_path pinned); 3 realized_revenue_ledger cols (fee_minor BIGINT); razorpay_account_id TEXT — all confirmed
+- SettlementLedgerConsumer wired in main.ts: import line 30, instantiation lines 121-127, start() line 183, stop() line 137, group=settlement-ledger-bridge — CONFIRMED
+- C4 brain-pci/no-pci-card-fields ESLint: rule wired eslint.config.mjs:39/127; production source EXIT:0; test fixture fires (non-inert proof)
+- C5 log-grep (pay_/UTR/setl_ DPDP_FINANCIAL/OPERATIONAL_REF scan): all 3 patterns EXIT:1 (no matches in production source) — PASS; SEC-RZ-L2 resolved in b5ce157 (gate scoped to text patterns, binary false-positive eliminated)
+
+**Ship summary:**
+- Branch: feat/razorpay-settlement-connector (HEAD: b5ce157)
+- Phase-1 dev-only: no prod infra, no canary/bake/rollback, no ArgoCD/EKS
+- PR: manual URL: https://github.com/Rishabhporwal/Brain-V4/compare/master...feat/razorpay-settlement-connector
+- Merge: NOT stacked — branches off master directly; apply 0027 before stream-worker redeploy
+
+**Tech-debt carried:**
+- SEC-RZ-M1 (MED) — platform WAF/rate-limit follow-up (Phase-2 WAF sprint); Stakeholder-waived
+- SEC-RZ-L2 (LOW) — CLOSED in b5ce157
+
+**Reversibility:** DROP connector_razorpay_order_map + 2 fns + 3 ledger cols + revert constraint + DROP razorpay_account_id; rpk group delete settlement-ledger-bridge; revert stream-worker image to prior SHA

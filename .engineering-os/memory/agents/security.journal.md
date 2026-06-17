@@ -106,3 +106,11 @@
 **Delta scope:** commits 3bbdf86 + c836011 only — LiveLedgerBridgeConsumer.ts (new), main.ts (wiring), live-ledger-wiring.e2e.test.ts (new). No migrations, no RLS, no new deps.
 **Decision log:** ORCH-LV-H1 fix CONFIRMED. GUC set before every ledger write in LedgerWriter (writeProvisionalRecognition:83-85, writeReversal:182-184). brand_id from event envelope (string type-guard), never from env/header. Append-only confirmed (INSERT+DO NOTHING, no UPDATE/DELETE, brain_app SELECT+INSERT-only GRANT). No Bronze double-write (no BronzeRepository import). Filter cross-tenant safe (brand_id set upstream via HMAC+DB). No PII/token in logs. All prior FULL PASS surfaces untouched by these 2 commits. Wiring tests TW1-TW4 non-inert — un-wire proof documented. 119/119 PASS post-fix.
 **Next:** PASS → reconcile with QA Engineer (Stage 5) / no bounce_target
+
+## 2026-06-17T21:23:27Z — Security Reviewer — feat-razorpay-settlement-connector
+**Stage:** 4 · **Mode:** DELTA · **Verdict:** PASS
+**Findings:** 0 CRIT / 0 HIGH / 0 MED / 2 LOW (SEC-RZ-L1 resolved, SEC-RZ-L2 new non-blocking) · **Scanners:** delta-skip (full suite is FULL-mode/CI job; ran targeted lint + log-grep + 3 prior suites)
+**SEC-RZ-H1:** RESOLVED — no-pci-card-fields lint wired (print-config sev 2, planted card_last4 fired, mapper clean) + C5 log-grep gate wired (pnpm log-grep + pr.yml job, planted pay_/UTR fired exit 1).
+**SEC-RZ-L1:** RESOLVED — FAIL-OPEN comment corrected + razorpay_dedup_redis_down error log.
+**Suite:** mapper 43/43, integration 10/10, e2e 6/6 — all green, no green-before/red-now.
+**Next:** PASS → reconcile with QA.

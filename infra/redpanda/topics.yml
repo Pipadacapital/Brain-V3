@@ -28,6 +28,27 @@ topics:
       min.insync.replicas: "1"
     description: "Backfill/replay lane — separate consumer group; same stream-worker code"
 
+  - name: "{env}.collector.order.backfill.v1"
+    lane: backfill-orders
+    partitions: 1
+    replication_factor: 1
+    config:
+      retention.ms: "2592000000"          # 30 days (backfill lane)
+      cleanup.policy: "delete"
+      compression.type: "snappy"
+      min.insync.replicas: "1"
+    description: "Order backfill lane — shopify-backfill worker → BackfillOrderConsumer. Single partition = natural throughput cap (ADR-BF-7 / D-3). Separate topic from live lane ensures zero lag on stream-worker-live consumer group."
+
+  - name: "{env}.collector.order.backfill.v1.dlq"
+    lane: dlq
+    partitions: 1
+    replication_factor: 1
+    config:
+      retention.ms: "2592000000"          # 30 days
+      cleanup.policy: "delete"
+      compression.type: "snappy"
+    description: "DLQ for backfill order lane — unrecoverable parse / write errors"
+
   - name: "{env}.collector.event.v1.dlq"
     lane: dlq
     partitions: 12
@@ -46,6 +67,10 @@ consumer_groups:
   - id: "brain.stream-worker.backfill"
     topic: "{env}.collector.event.v1.backfill"
     description: "Historical rebuild from Bronze → replay dedup"
+
+  - id: "stream-worker-backfill"
+    topic: "{env}.collector.order.backfill.v1"
+    description: "Backfill order consumer — isolated from live group; single-partition cap prevents storm lagging live path (ADR-BF-7 / D-3)"
 
   - id: "brain.stream-worker.dlq-monitor"
     topic: "{env}.collector.event.v1.dlq"

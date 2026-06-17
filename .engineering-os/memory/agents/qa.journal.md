@@ -46,3 +46,22 @@
 **Typecheck:** pnpm --filter @brain/web typecheck → exit 0
 
 {"ts":"2026-06-17T07:30:00Z","actor":"qa-agent","type":"review","req_id":"feat-connector-marketplace","stage":5,"verdict":"PASS","mode":"DELTA"}
+
+## 2026-06-17T13:15:00Z — QA Engineer — feat-connector-backfill
+**Stage:** 5 · **Mode:** FULL · **Verdict:** FAIL (BOUNCE)
+**Smoke:** core :3001 HTTP 200, web :3000 HTTP 307 (redirect — normal) · **Parity:** N/A (Tier-0 deterministic, no cross-runtime metric) · **Validity:** negative-controls confirmed (brain_app wrong-GUC → 0 rows bronze_events; SEC-BF-H1 direct DB probe 0 rows backfill_job without GUC) · **Next:** BOUNCE → data-engineer (SEC-BF-H1 fix + SC#10 finalization sub-test + E2E test 2/3 fix)
+
+Tests run: A-backfill 29/29 PASS · A-bronze 4/4 PASS · B-trigger 11/11 PASS · typecheck core EXIT 0 · typecheck web EXIT 0 · C-e2e 5/9 (2 FAIL: tests 2+3; 2 skipped: tests 6+7) · stream-worker full 61/61 PASS · core full 204/204 PASS · validity_check CLEAN
+
+Blocking (3): QA-BF-B1 (SEC-BF-H1 confirmed — worker inert under FORCE RLS without brand GUC) · QA-BF-B2 (SC#10 past-dated→realized end-to-end not demonstrated — revenue-finalization never invoked) · QA-BF-B3 (E2E test 2 FAIL connector-card not found; test 3 FAIL Radix selectOption on combobox)
+Warnings (2): QA-BF-W1 (E2E tests 6+7 env-skipped, SHOPIFY_CONNECTED_CONNECTOR_ID absent) · QA-BF-W2 (T9 insertQueued skipped at runtime — no FK fixture)
+
+## 2026-06-17T09:40:00Z — QA Engineer — feat-connector-backfill
+**Stage:** 5 · **Mode:** DELTA (reasoning: 3 blocking findings; tests: full suite re-run) · **Verdict:** PASS
+**Smoke:** n/a (servers up, confirmed by E2E run) · **Parity:** n/a (no cross-runtime metric paths in delta) · **Validity:** negative-controls confirmed (T11 assertion 1: brain_app without GUC → 0 rows on backfill_job — non-inert; T4 + bronze unchanged)
+**Tests:** stream-worker 67/67 PASS (was 61+6 new); backfill.spec.ts 6 passed / 3 skipped / 0 failed (was 5 passed / 2 failed / 2 skipped); marketplace.spec.ts 6/6 PASS; typechecks core+web EXIT 0
+**B1:** RESOLVED — 0023 SECURITY DEFINER fn (prosecdef=t, search_path=public); T11 proves negative-control non-inert + fix functional
+**B2:** RESOLVED — T12 runRevenueFinalization() invoked, finalized=1, event_type=finalization, idempotent; SC#10 payoff proven end-to-end
+**B3:** RESOLVED — test 2 PASS (marketplace testids); test 3 SKIP (env-conditional, D-15 server gate authoritative)
+**Next:** HANDOFF → Security Reviewer (reconcile); blocking:0
+{"ts":"2026-06-17T09:40:00Z","actor":"qa-agent","type":"review","req_id":"feat-connector-backfill","stage":5,"verdict":"PASS","mode":"DELTA"}

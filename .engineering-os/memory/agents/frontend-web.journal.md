@@ -103,3 +103,39 @@
 **Lint:** PASS (EXIT 0)
 **Browser/e2e:** NOT RUN (orchestrator runs Playwright separately)
 **Next:** READY-FOR-SECURITY
+
+## 2026-06-17T13:30:00Z — Frontend/Web Engineer — feat-connector-backfill (Bounce r1, QA-BF-B3)
+**Stage:** 3 (bounce-fix r1) · **Surface:** e2e/backfill.spec.ts · **Web-vitals:** no render-path change
+**Req:** feat-connector-backfill · **Track:** C · **Bounce:** QA-BF-B3
+
+**Test 2 root cause:** if/else fallback in test 2 fell through to `connector-card-shopify` (legacy testid, never rendered — marketplace page always shows `connector-tile-{id}`). Fixed: removed fallback; unconditional `marketplace-page` + `connector-tile-shopify` asserts matching real component testids.
+
+**Test 3 root cause:** `roleSelect.selectOption('manager')` called on a Radix `<button role="combobox">`, not a `<select>`. Playwright threw "Element is not a `<select>`". Fixed: `await roleSelect.click(); await page.getByRole('option', { name: 'Manager' }).click();`.
+
+**Typecheck:** EXIT 0
+**E2e backfill.spec.ts:** 6 passed, 3 skipped (test 3: invite UI not in env — documented; tests 6+7: SHOPIFY_CONNECTED_CONNECTOR_ID not set — unchanged from original)
+**Previously-failing tests 2 + 3 status:** test 2 NOW PASS; test 3 skip path corrected (no longer throws — guard fires cleanly)
+**D-8/D-11 still green:** tests 1 (D-11 label) + 4 (D-8 "Collecting…") PASS
+**Marketplace no-regression:** 6/6 marketplace.spec.ts PASS
+**Files:** 1 (apps/web/e2e/backfill.spec.ts)
+**Next:** READY-FOR-SECURITY
+
+## 2026-06-17T00:00:00Z — Frontend/Web Engineer — feat-connector-backfill (Track C)
+**Stage:** 3 · **Surface:** connectors/backfill-control, dashboard/realized-revenue-card, e2e/backfill · **Web-vitals:** not captured (no browser in session; no render-path regression)
+**Req:** feat-connector-backfill · **Track:** C
+
+**Delivered (C0–C3):**
+- C0 (`a436006`): `backfillApi.triggerBackfill()` + `backfillApi.getBackfillProgress()` in `client.ts`; types imported from `@brain/contracts` (A0 freeze); `.data` envelope unwrapped at call site; `/api/v1/:path*` rewrite added to `next.config.js`; `lib/hooks/use-backfill.ts` with `useBackfillProgress()` (polls 3s while active, stops on terminal) + `useTriggerBackfill()`.
+- C1 (`33e9301`): `BackfillControl` component — trigger button (brand_admin+ only; manager hidden, D-15); indeterminate "Collecting your data…" when estimated_total===null (D-8 — never 0%); determinate progress bar (percent, records/total); terminal states (completed/partial/failed + retry); RECONNECT_REQUIRED alert (data-testid: backfill-reconnect-required); BackfillStatusBadge with icon+label+role="status" (a11y, WCAG 1.4.1). Wired into ConnectorsList for connected Shopify tiles.
+- C2 (`6d21f74`): `realized-revenue-card.tsx` — CardTitle now "Gross Revenue (ex-fees)" (data-testid: realized-revenue-gross-label); GrossRevenueTooltip ("Settlement fees not yet applied") keyboard-accessible. Provisional unchanged, never blended. No number change.
+- C3 (`1f01940`): 9 Playwright e2e tests — D-11 label, brand_admin connectors page, manager trigger hidden, D-8 indeterminate via route interception, depth label, live 202 (guarded), live 403 (guarded), RECONNECT_REQUIRED alert, a11y badge attributes.
+
+**D-8 honesty:** `estimated_total=null` → `ProgressBar` renders indeterminate (animate-pulse, width 100%) with `aria-valuetext="Collecting your data…"` and no `aria-valuenow`. Records text = "Collecting your data…", never "0/0".
+**D-11:** `data-testid="realized-revenue-gross-label"` present in both `no_data` + `has_data` states.
+**D-15:** `useSessionRole()` gates trigger visibility; manager/analyst see no trigger button.
+**Single-Primitive:** reuses Button, Skeleton, ErrorCard, Badge, Card family. No new primitive.
+**Typecheck:** EXIT 0 (`pnpm --filter @brain/web typecheck` — clean, 0 errors)
+**Contracts:** BackfillTriggerResponse/BackfillJobProgress from `@brain/contracts` index (A0 freeze; confirmed in packages/contracts/src/index.ts:254-263).
+**Routes confirmed:** POST `/api/v1/connectors/:id/backfill` (main.ts:734) + GET `/api/v1/connectors/:id/jobs` (main.ts:801).
+**data-testids:** backfill-trigger, backfill-progress, backfill-records, backfill-estimated, backfill-depth-label, backfill-status, backfill-reconnect-required, realized-revenue-gross-label.
+**Next:** READY-FOR-SECURITY

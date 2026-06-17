@@ -126,3 +126,15 @@
 {"ts":"2026-06-17T06:23:34Z","req_id":"feat-connector-marketplace","agent":"security-reviewer","stage":4,"model":"sonnet","review_scope":"delta","total_tokens":49235}
 {"ts":"2026-06-17T06:23:34Z","req_id":"feat-connector-marketplace","agent":"qa-agent","stage":5,"model":"sonnet","review_scope":"delta","total_tokens":28565}
 {"ts":"2026-06-17T06:31:55Z","req_id":"feat-connector-marketplace","agent":"final-reviewer","stage":6,"model":"opus","review_scope":"full","total_tokens":109581}
+{"ts":"2026-06-17T07:44:24Z","req_id":"feat-connector-backfill","agent":"cto-advisor","stage":1,"model":"sonnet","review_scope":"full","total_tokens":93753}
+{"ts":"2026-06-17T07:52:56Z","req_id":"feat-connector-backfill","agent":"architect","stage":2,"model":"opus","review_scope":"full","total_tokens":115688}
+{"ts":"2026-06-17T08:20:39Z","req_id":"feat-connector-backfill","agent":"data-engineer","stage":3,"model":"sonnet","review_scope":"full","total_tokens":61704}
+{"ts":"2026-06-17T08:57:52Z","req_id":"feat-connector-backfill","agent":"backend-developer","stage":3,"model":"sonnet","review_scope":"full","total_tokens":39892}
+{"ts":"2026-06-17T08:57:52Z","req_id":"feat-connector-backfill","agent":"frontend-web-developer","stage":3,"model":"sonnet","review_scope":"full","total_tokens":124246}
+{"ts":"2026-06-17T09:14:23Z","req_id":"feat-connector-backfill","agent":"security-reviewer","stage":4,"model":"sonnet","review_scope":"full","total_tokens":129963}
+{"ts":"2026-06-17T09:14:23Z","req_id":"feat-connector-backfill","agent":"qa-agent","stage":5,"model":"sonnet","review_scope":"full","total_tokens":88523}
+{"ts":"2026-06-17T09:29:55Z","req_id":"feat-connector-backfill","agent":"data-engineer","stage":3,"model":"sonnet","review_scope":"delta","total_tokens":99292}
+{"ts":"2026-06-17T09:29:55Z","req_id":"feat-connector-backfill","agent":"frontend-web-developer","stage":3,"model":"sonnet","review_scope":"delta","total_tokens":65478}
+{"ts":"2026-06-17T09:39:32Z","req_id":"feat-connector-backfill","agent":"security-reviewer","stage":4,"model":"sonnet","review_scope":"delta","total_tokens":62908}
+{"ts":"2026-06-17T09:39:32Z","req_id":"feat-connector-backfill","agent":"qa-agent","stage":5,"model":"sonnet","review_scope":"delta","total_tokens":48253}
+{"ts":"2026-06-17T09:46:47Z","req_id":"feat-connector-backfill","agent":"final-reviewer","stage":6,"model":"opus","review_scope":"full","total_tokens":113220}

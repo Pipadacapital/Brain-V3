@@ -134,6 +134,7 @@ beforeAll(async () => {
 
   // Use-case under test (connects to redis + postgres as brain_app)
   dedup = new RedisDedupAdapter(REDIS_URL);
+  await dedup.connect();  // required: lazyConnect=true, enableOfflineQueue=false
   bronze = new BronzeRepository(BRAIN_APP_DB_URL);
   useCase = new ProcessEventUseCase(dedup, bronze);
 }, 30_000);

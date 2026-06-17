@@ -24,6 +24,8 @@ import { ProcessEventUseCase } from './application/ProcessEventUseCase.js';
 import { ResolveIdentityUseCase } from './application/ResolveIdentityUseCase.js';
 import { CollectorEventConsumer } from './interfaces/consumers/CollectorEventConsumer.js';
 import { IdentityBridgeConsumer } from './identity-bridge/IdentityBridgeConsumer.js';
+import { BackfillOrderConsumer } from './interfaces/consumers/BackfillOrderConsumer.js';
+import { LedgerWriter } from './infrastructure/pg/LedgerWriter.js';
 
 export async function main(): Promise<void> {
   const brokers = (process.env['KAFKA_BROKERS'] ?? 'localhost:9092').split(',');
@@ -35,6 +37,9 @@ export async function main(): Promise<void> {
   const topic = process.env['COLLECTOR_TOPIC'] ?? 'dev.collector.event.v1';
   const groupId = process.env['CONSUMER_GROUP_ID'] ?? 'stream-worker-live';
   const identityGroupId = process.env['IDENTITY_CONSUMER_GROUP_ID'] ?? 'identity-bridge-live';
+  // Backfill lane (ADR-BF-7 / D-3): separate topic + group → zero live-lane lag impact
+  const backfillTopic = process.env['BACKFILL_TOPIC'] ?? `${(process.env['APP_ENV'] ?? 'dev')}.collector.order.backfill.v1`;
+  const backfillGroupId = process.env['BACKFILL_CONSUMER_GROUP_ID'] ?? 'stream-worker-backfill';
 
   const kafka = new Kafka({
     clientId: 'stream-worker',
@@ -67,13 +72,29 @@ export async function main(): Promise<void> {
     kafka, resolveIdentityUseCase, topic, identityGroupId,
   );
 
+  // ── Backfill lane (ADR-BF-7 / ADR-BF-8 / ADR-BF-9) ────────────────────────
+  // Separate topic (backfillTopic) + separate consumer group (backfillGroupId)
+  // → structurally impossible to lag the live consumer group (SI-3 / D-3).
+  // Bronze write reuses the same ProcessEventUseCase (same code path, different lane).
+  // LedgerWriter wires Bronze order.backfill.v1 → provisional_recognition (ADR-BF-9).
+  const ledgerWriter = new LedgerWriter(dbUrl);
+  const backfillDedup = new RedisDedupAdapter(redisUrl);
+  const backfillBronze = new BronzeRepository(dbUrl);
+  const backfillProcessEvent = new ProcessEventUseCase(backfillDedup, backfillBronze);
+  const backfillConsumer = new BackfillOrderConsumer(
+    kafka, backfillProcessEvent, ledgerWriter, backfillTopic, backfillGroupId,
+  );
+
   // Graceful shutdown
   const shutdown = async (signal: string): Promise<void> => {
     console.info(`[stream-worker] ${signal} received — draining consumers...`);
-    await Promise.all([consumer.stop(), identityConsumer.stop()]);
+    await Promise.all([consumer.stop(), identityConsumer.stop(), backfillConsumer.stop()]);
     await dedup.quit();
+    await backfillDedup.quit();
     await bronze.end();
+    await backfillBronze.end();
     await identityRepo.end();
+    await ledgerWriter.end();
     console.info('[stream-worker] shutdown complete');
     process.exit(0);
   };
@@ -88,6 +109,13 @@ export async function main(): Promise<void> {
   console.info(`[stream-worker] starting identity bridge — topic=${topic} group=${identityGroupId}`);
   await identityConsumer.start();
   console.info('[stream-worker] identity bridge consumer running');
+
+  // ── Backfill lane consumer (ADR-BF-7 / ADR-BF-8 / ADR-BF-9) ───────────────
+  // Separate from live lane: backfillTopic != topic → Redpanda isolation guarantee.
+  // stream-worker-backfill consumer group offset lag is independent of stream-worker-live.
+  console.info(`[stream-worker] starting backfill consumer — topic=${backfillTopic} group=${backfillGroupId}`);
+  await backfillConsumer.start();
+  console.info('[stream-worker] backfill consumer running');
 }
 
 // Run when invoked directly (not imported in tests)

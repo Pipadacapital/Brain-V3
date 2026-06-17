@@ -1,0 +1,6 @@
+{
+  "decision": "approved",
+  "ts": "2026-06-17T12:30:00Z",
+  "actor": "stakeholder",
+  "note": "Approved. The payoff slice — first real third-party data path through the M1 spine; worker RLS-enumeration fixed (0023 SECURITY DEFINER), past-dated->realized proven (T12). Residuals SEC-BF-M2/L1 + dev-token-reachability accepted as tracked debt. /adopt-rule for system-job-force-rls-enumeration pending separately."
+}

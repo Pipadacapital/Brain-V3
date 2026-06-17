@@ -30,6 +30,16 @@ export class RedisDedupAdapter {
   }
 
   /**
+   * Explicitly connect to Redis (required when lazyConnect=true).
+   * Call once before the first checkAndClaim in tests or standalone jobs.
+   * The KafkaJS consumer wires this via CollectorEventConsumer.start() in the
+   * live path (consumer.start() → dedup is called only after Kafka subscribe).
+   */
+  async connect(): Promise<void> {
+    await this.redis.connect();
+  }
+
+  /**
    * Attempt to claim the dedup slot for (brand_id, event_id).
    * Uses SET NX EX — atomic; no separate GET+SET race.
    *

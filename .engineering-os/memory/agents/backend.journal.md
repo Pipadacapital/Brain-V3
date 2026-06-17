@@ -193,6 +193,25 @@
 2. CTX.BRAND_A empty despite hardcoded fallback — TEST_BRAND_A='' in shell env, so ?? null-coalescing didn't trigger; fixed with || falsy-coalescing
 3. AuditDbClient.query generic variance — resolved by returning explicit {rows, rowCount} shape instead of pg QueryResult<T>
 
+## 2026-06-17T12:45:00Z — Backend Engineer — feat-connector-backfill
+**Stage:** 3 · **Service:** core · **Verification:** typecheck EXIT 0 + 11/11 B3 live tests PASS (brain_app pool, NOBYPASSRLS)
+**Self-review vs gates:** PASS — brand_id from session (MT-1/ADR-BF-13), no secret in response (I-S09), overlap-lock DB-level (D-9/HP-2), percent=null honesty (D-8), brand_admin+ gate (D-15), isolation under brain_app (F-4 anti-trap)
+**Next:** READY-FOR-SECURITY
+
+**Delivered:**
+- B1: `POST /api/v1/connectors/:id/backfill` — brand_admin+ scope; load connector → getSecret null → 409 RECONNECT_REQUIRED (D-7) → checkActiveJob FOR UPDATE SKIP LOCKED → 409 BACKFILL_ALREADY_RUNNING (D-9) → insertQueued → audit → 202 {job_id, status:'queued'}
+- B2: `GET /api/v1/connectors/:id/jobs` — findLatestForConnector → BackfillJobProgress; percent=null when estimated_total=null (D-8); no secret_ref in response
+- B3: 11 live tests under brain_app (NOSUPERUSER NOBYPASSRLS) — T1/insertQueued, T2/manager→403 non-inert, T3/null-secret RECONNECT path, T4/overlap-lock count===1, T5/percent honesty, T6/no-secret-in-row, T7/audit-row, T8/cross-brand isolation count===0
+
+**Commits:**
+- `72ecb32` — B1+B2: trigger + progress API (ADR-BF-3/4)
+- `475c5ae` — B3: live tests, 11/11 pass
+
+**Root causes fixed during B3 iteration:**
+1. `makeAppDbPool` used `SET LOCAL` without `BEGIN/COMMIT` — GUC silently didn't persist, RLS returned 0 rows on INSERT; fixed by wrapping each query in explicit transaction block
+2. `connector_instance` has `UNIQUE(brand_id, provider)` — cannot seed two shopify connectors for same brand; fixed by seeding one connector per test with per-test randomUUID shop domains
+3. `storeShopifyToken` normalizes shop domain (dots→hyphens), returning ARN not manually computable; T3 positive control calls `result.arn` from the return value
+
 ## 2026-06-17T10:05:00Z — Backend Engineer — feat-connector-marketplace (bounce r1)
 **Stage:** 3 · **Service:** core · **Verification:** typecheck EXIT 0 + 70/70 connector tests PASS (35 original + 4 new KMS unit tests + 1 updated MED-01 test)
 **Self-review vs gates:** PASS — HIGH-01 structurally enforced (KmsKeyId on both CreateSecretCommand paths); prod hard-fail guard added to composition root; MED-01/02/03/LOW-01 all addressed; no regression on D-1/HMAC-first/RLS/envelope/deferred boundary

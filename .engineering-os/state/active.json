@@ -398,6 +398,13 @@
       "stage": 8,
       "current_owner": "platform-devops",
       "last_journal_entry_at": "2026-06-17T07:05:33Z"
+    },
+    {
+      "req_id": "feat-connector-backfill",
+      "status": "shipped",
+      "stage": 8,
+      "current_owner": "platform-devops",
+      "last_journal_entry_at": "2026-06-17T09:52:42Z"
     }
   ]
 }

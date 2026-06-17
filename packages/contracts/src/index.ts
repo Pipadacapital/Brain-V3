@@ -242,6 +242,26 @@ export type {
   PixelHealthResponse,
 } from './api/pixel.api.v1.js';
 
+// ── Backfill contracts (feat-connector-backfill A0 freeze) ───────────────────
+export {
+  OrderBackfillPropertiesSchema,
+  ORDER_BACKFILL_V1_TOPIC_SUFFIX,
+  ORDER_BACKFILL_V1_EVENT_NAME,
+  ORDER_BACKFILL_V1_AVRO_SUBJECT,
+} from './events/order.backfill.v1.js';
+export type { OrderBackfillProperties } from './events/order.backfill.v1.js';
+
+export {
+  isBackfillTerminal,
+  isBackfillInProgress,
+} from './api/connector.backfill.api.v1.js';
+export type {
+  BackfillTriggerResponse,
+  BackfillJobProgress,
+  BackfillErrorCode,
+  BackfillErrorResponse,
+} from './api/connector.backfill.api.v1.js';
+
 // ── Data quality declarations ─────────────────────────────────────────────────
 export {
   DqFreshnessCheckSchema,

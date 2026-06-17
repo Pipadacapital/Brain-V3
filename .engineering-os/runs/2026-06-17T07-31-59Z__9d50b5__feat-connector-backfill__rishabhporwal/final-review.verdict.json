@@ -1,0 +1,22 @@
+{
+  "stage": 6,
+  "agent": "final-reviewer",
+  "req_id": "feat-connector-backfill",
+  "verdict": "PASS",
+  "blocking": 0,
+  "recommendation": "APPROVE",
+  "gates_rerun": [
+    "worker-runs (T11 + live-DB fn introspection + brain_app no-GUC negative control = 0 rows)",
+    "payoff-proven (T12 runRevenueFinalization finalized=1 then idempotent=0, captured stdout)",
+    "isolation (T4 cross-brand under brain_app = 0 rows; FORCE RLS + no-DELETE confirmed live)",
+    "authz (backend B3 11/11 incl. manager meetsMinimumRole non-inert)"
+  ],
+  "negative_controls_valid": true,
+  "over_engineering": "clean",
+  "hard_rule_deviation": "none",
+  "paradigm": "tier-0 deterministic, $0/mo model spend (clean)",
+  "adopt_rule_recommended": true,
+  "adopt_rule_slug": "system-job-force-rls-enumeration",
+  "residual_debt": ["SEC-BF-M2 (MED, aligned today)", "SEC-BF-L1 (LOW)", "dev-token-reachability for live Boddactive backfill (tracked validation follow-up)"],
+  "ts": "2026-06-17T16:10:00Z"
+}

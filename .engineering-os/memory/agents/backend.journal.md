@@ -5,6 +5,14 @@
 ## 2026-06-15T07:19:27Z — system — bootstrap
 **Action:** Journal initialized by /eos-init on 2026-06-15T07:19:27Z.
 
+## 2026-06-17T17:16:00Z — Backend Engineer — chore-connector-lifecycle-regression
+**Stage:** 3 · **Service:** core · **Verification:** typecheck EXIT 0 · 14 tests green (B1: 6, B2: 8) · defect #5 referenced (revenue-metrics.live.test.ts 21/21 green)
+**Self-review vs gates:** PASS — D-1/D-2/D-3/D-5/D-7/D-9 all satisfied · assertBrainApp D-3 guard in B1 · no 60d543dc-* reference · revert-RED documented per defect
+**Slices committed:** B1 (1a08bf1) + B2 (30576d0) + B3/report (pending)
+**Defects covered:** #2 reconnect-UPSERT no-23505 · #3 single-sync-row count===1 · #4a/4b/4c OAuth 302 contract
+**References:** defect #5 → revenue-metrics.live.test.ts sections 2+4 (GREEN) · prod-hard-fail → A4 dev-secret.integration.test.ts line 223 · ADR-R3 it.skip in same file
+**Next:** READY-FOR-SECURITY
+
 ## 2026-06-15T13:30:00Z — Backend Engineer — chore-platform-foundations-sprint0
 **Stage:** 3 · **Tracks:** A + E-packages · **Verification:** typecheck 10/10 PASS; 75 unit tests PASS; lint fixtures fire correctly; gen:contracts emits all 4 artifact families; READY-FOR-SECURITY
 

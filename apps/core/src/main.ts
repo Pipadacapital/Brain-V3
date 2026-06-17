@@ -38,6 +38,8 @@ import { registerDevRoutes } from './modules/notification/internal/dev.routes.js
 import { createEmailAdapter } from './modules/notification/internal/ses-adapter.js';
 
 // ── Connector infrastructure imports (HIGH-MOUNT-01) ─────────────────────────
+import { PgBackfillJobRepository } from './modules/connector/backfill/infrastructure/PgBackfillJobRepository.js';
+import type { BackfillJobProgress } from '@brain/contracts';
 import { registerShopifyConnectorRoutes } from './modules/connector/sources/storefront/shopify/interfaces/http/shopifyConnectorRoutes.js';
 import { registerDevShopifySyncRoutes } from './modules/connector/sources/storefront/shopify/interfaces/http/devShopifySyncRoutes.js';
 import { registerPixelRoutes, buildDefaultSnippet } from './modules/connector/pixel/interfaces/http/pixelRoutes.js';
@@ -706,18 +708,144 @@ export async function main(): Promise<void> {
     });
   });
 
-  // ── Backfill gate (brand_admin+ — D-9 / ADR-CM-7 / 501 stub) ───────────────
-  // Gate is REAL and role-tested; execution is a later slice (ADR-CM-10 / D-12).
-  // Manager-can-connect-but-not-backfill negative control is now testable.
+  // ── Backfill routes (brand_admin+ — ADR-BF-2/3/4/7/9/15) ───────────────────
+  //
+  // POST /api/v1/connectors/:id/backfill  (B1 — trigger, ADR-BF-3)
+  //   1. Load connector_instance (brand-scoped, NN-1 RLS).
+  //   2. getSecret(secret_ref) — null => 409 RECONNECT_REQUIRED (D-7).
+  //   3. Overlap-lock SELECT FOR UPDATE SKIP LOCKED => 409 BACKFILL_ALREADY_RUNNING (D-9/HP-2).
+  //   4. INSERT backfill_job status=queued.
+  //   5. Audit connector.backfill.requested (NO secret/token in payload — I-S09).
+  //   6. 202 {request_id, data: {job_id, status:'queued'}}
+  //
+  // GET  /api/v1/connectors/:id/jobs      (B2 — progress, ADR-BF-4)
+  //   findLatestForConnector => BackfillJobProgress (percent=null when estimated_total null — D-8).
+  //
+  // Guard: brand_admin+ (D-15). Manager => 403 (non-inert negative control).
+  // brand_id from JWT session, NEVER from request body (ADR-BF-13 / MT-1).
+  // NO secret_ref / token in any response (I-S09).
+  const backfillJobRepo = new PgBackfillJobRepository(pool);
+
   await app.register(async (scope) => {
     scope.addHook('preHandler', sessionPreHandler);
     scope.addHook('preHandler', requireRole('brand_admin'));
 
-    scope.post('/api/v1/connectors/:id/backfill', async (req, reply) => {
+    // B1 — Backfill trigger (ADR-BF-3)
+    scope.post('/api/v1/connectors/:id/backfill', async (req: FastifyRequest<{ Params: { id: string } }>, reply) => {
       const requestId = (req.id as string) ?? randomUUID();
-      return reply.code(501).send({
+      const brandId = getBrandId(req);
+      const connectorInstanceId = req.params.id;
+      const auth = (req as typeof req & { auth?: { userId?: string; role?: string } }).auth;
+
+      // Step 1: Load connector_instance (brand-scoped via RLS — NN-1).
+      const connectorInstance = await connectorRepo.findById(connectorInstanceId, brandId);
+      if (!connectorInstance) {
+        return reply.code(404).send({
+          request_id: requestId,
+          error: { code: 'CONNECTOR_NOT_FOUND', message: 'Connector not found for this brand.' },
+        });
+      }
+
+      // Step 2: getSecret(secret_ref) — if null => 409 RECONNECT_REQUIRED (D-7).
+      // NO token value is ever logged or included in any response (I-S09).
+      const secret = await connectorSecretsManager.getSecret(connectorInstance.secretRef);
+      if (secret === null) {
+        return reply.code(409).send({
+          request_id: requestId,
+          error: {
+            code: 'RECONNECT_REQUIRED',
+            message: 'Your Shopify connection has expired. Please reconnect the store before backfilling.',
+          },
+        });
+      }
+
+      // Step 3: Overlap-lock — SELECT FOR UPDATE SKIP LOCKED (D-9 / HP-2 — DB-level, not in-process).
+      const activeJobId = await backfillJobRepo.checkActiveJob(connectorInstanceId, brandId, requestId);
+      if (activeJobId !== null) {
+        return reply.code(409).send({
+          request_id: requestId,
+          error: {
+            code: 'BACKFILL_ALREADY_RUNNING',
+            message: 'A backfill job is already queued or running for this connector.',
+          },
+        });
+      }
+
+      // Step 4: INSERT backfill_job status=queued.
+      const jobId = await backfillJobRepo.insertQueued(brandId, connectorInstanceId, requestId);
+
+      // Step 5: Audit connector.backfill.requested — actor, connector_instance_id, brand_id.
+      // NO secret_ref, NO token in payload (I-S09 / I-S02).
+      await auditWriter.append({
+        brand_id: brandId,
+        actor_id: auth?.userId ?? null,
+        actor_role: auth?.role ?? 'unknown',
+        action: 'connector.backfill.requested',
+        entity_type: 'backfill_job',
+        entity_id: jobId,
+        payload: {
+          job_id: jobId,
+          connector_instance_id: connectorInstanceId,
+          // NO secret_ref, NO token (I-S09)
+        },
+      });
+
+      // Step 6: 202 {request_id, data: {job_id, status:'queued'}} (BackfillTriggerResponse)
+      return reply.code(202).send({
         request_id: requestId,
-        error: { code: 'NOT_IMPLEMENTED', message: 'Backfill execution is not yet available in this release.' },
+        data: { job_id: jobId, status: 'queued' },
+      });
+    });
+
+    // B2 — Progress API (ADR-BF-4)
+    scope.get('/api/v1/connectors/:id/jobs', async (req: FastifyRequest<{ Params: { id: string } }>, reply) => {
+      const requestId = (req.id as string) ?? randomUUID();
+      const brandId = getBrandId(req);
+      const connectorInstanceId = req.params.id;
+
+      // Verify the connector exists for this brand (brand-scoped, NN-1 RLS).
+      const connectorInstance = await connectorRepo.findById(connectorInstanceId, brandId);
+      if (!connectorInstance) {
+        return reply.code(404).send({
+          request_id: requestId,
+          error: { code: 'CONNECTOR_NOT_FOUND', message: 'Connector not found for this brand.' },
+        });
+      }
+
+      const job = await backfillJobRepo.findLatestForConnector(connectorInstanceId, brandId, requestId);
+      if (!job) {
+        return reply.code(404).send({
+          request_id: requestId,
+          error: { code: 'NO_BACKFILL_JOB', message: 'No backfill job found for this connector.' },
+        });
+      }
+
+      // Map PG row → BackfillJobProgress.
+      // percent = null when estimated_total is null (D-8 honesty — never fabricate).
+      // NO secret_ref / token in response (I-S09).
+      const recordsProcessed = parseInt(job.records_processed, 10);
+      const estimatedTotal = job.estimated_total !== null ? parseInt(job.estimated_total, 10) : null;
+      const percent =
+        estimatedTotal !== null && estimatedTotal > 0
+          ? Math.min(100, Math.round((recordsProcessed / estimatedTotal) * 100))
+          : null;
+
+      const progress: BackfillJobProgress = {
+        job_id: job.id,
+        status: job.status,
+        records_processed: recordsProcessed,
+        estimated_total: estimatedTotal,
+        percent,
+        cursor_date: job.cursor_date ?? null,
+        achieved_depth_label: job.achieved_depth_label ?? null,
+        failure_reason: job.failure_reason ?? null,
+        started_at: job.started_at ?? null,
+        completed_at: job.completed_at ?? null,
+      };
+
+      return reply.code(200).send({
+        request_id: requestId,
+        data: progress,
       });
     });
   });

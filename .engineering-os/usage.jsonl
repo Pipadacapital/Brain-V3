@@ -155,3 +155,4 @@
 {"ts":"2026-06-17T14:58:02Z","req_id":"fix-connector-lifecycle-cleanup","agent":"qa-agent","stage":5,"model":"sonnet","review_scope":"full","total_tokens":42327}
 {"ts":"2026-06-17T15:02:37Z","req_id":"fix-connector-lifecycle-cleanup","agent":"final-reviewer","stage":6,"model":"opus","review_scope":"full","total_tokens":48784}
 {"ts":"2026-06-17T16:26:59Z","req_id":"feat-shopify-live-connector","agent":"cto-advisor","stage":1,"model":"sonnet","review_scope":"full","total_tokens":93167}
+{"ts":"2026-06-17T16:35:25Z","req_id":"feat-shopify-live-connector","agent":"architect","stage":2,"model":"opus","review_scope":"full","total_tokens":136080}

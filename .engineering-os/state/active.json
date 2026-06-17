@@ -382,15 +382,15 @@
     },
     {
       "req_id": "feat-analytics-api-dashboard",
-      "status": "awaiting-stakeholder",
-      "stage": 7,
-      "current_owner": "stakeholder",
+      "status": "shipped",
+      "stage": 8,
+      "current_owner": "platform-devops",
       "title": "Analytics API + dashboard \u2014 realized_revenue on screen (M1 finale)",
       "run_dir": ".engineering-os/runs/2026-06-16T22-15-56Z__1e2785__feat-analytics-api-dashboard__rishabhporwal",
       "lineage": [
         "feat-metric-engine-parity"
       ],
-      "last_journal_entry_at": "2026-06-17T03:13:16Z"
+      "last_journal_entry_at": "2026-06-17T03:24:33Z"
     }
   ]
 }

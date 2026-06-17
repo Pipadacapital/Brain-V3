@@ -185,3 +185,49 @@
 **Tech-debt carry-forward:** F-SEC-02 P2 must-fix-before-Phase-2 (old GetRealizedGmvAsOf GUC-reset; new engine path correct-by-construction); QA-F1/QA-F2 LOW deferred M2; /adopt-rule list_active_brand_ids cross-tenant system jobs (2nd occurrence).
 
 **Next:** monitor branch; when merging to master apply 0020 migration to prod DB first; Phase-2 requires F-SEC-02 fix on GetRealizedGmvAsOf.
+
+## 2026-06-17T07:40:00Z — Platform/SRE — feat-analytics-api-dashboard
+**Action:** Stakeholder approval received (approve + deploy now). Advancing to Stage 8 deploy.
+
+## 2026-06-17T03:30:00Z — Platform/SRE — feat-analytics-api-dashboard
+**Stage:** 8 · **Affected:** @brain/core (analytics module + BFF route), @brain/web (realized-revenue card + client + hook + formatter) · **Canary:** N/A (Phase-1 dev-only; ADR-010 Phase-4 deferral) · **Monitor:** e2e smoke proxy (4/4 PASS)
+**Staging smoke:** health 200; e2e 4/4 PASS (24.4s); unauthenticated probe 401; no 5xx observed · **Next:** PR merge (manual — gh unauthenticated); M1 complete
+
+**Ship summary:**
+- Branch: `feat/analytics-api-dashboard` (HEAD `c0e0ec9`)
+- Key analytics-api-dashboard commits: `a8f3361` (client+hook+formatter), `18c6d18` (card+mount), `4789680` (e2e), `9616d11` (live tests)
+- Pushed to origin: YES (per branch push history)
+- PR: NOT opened via CLI (gh unauthenticated); manual URL: https://github.com/Rishabhporwal/Brain-V4/compare/master...feat/analytics-api-dashboard
+- Phase-1 dev-only: no prod infra, no canary/bake/rollback, no ArgoCD/EKS
+
+**Migration status:** analytics-api-dashboard slice adds ZERO new migrations (read-only feature, D-11 confirmed). Migration 0020 (`provisional_gmv_as_of`) is present in branch from prior metric-engine slice — already applied to dev DB (`prosecdef=f`, SECURITY INVOKER confirmed via docker postgres).
+
+**Build gate:**
+- @brain/core typecheck: EXIT 0
+- @brain/web typecheck: EXIT 0
+- No restart/rebuild needed — dev servers hot-reload the branch code
+
+**Smoke (bake proxy):**
+- `GET /health` → 200 OK: `{"status":"ok","version":"0.1.0","timestamp":"2026-06-17T03:22:19.736Z"}`
+- `GET /api/v1/dashboard/realized-revenue` (unauthenticated) → 401 (not 5xx)
+- Playwright e2e `realized-revenue.spec.ts`: 4/4 PASS in 24.4s
+  - Test 1: no-data state — freshly-onboarded brand → "No data yet" card PASS (6.2s)
+  - Test 2: real-number — 123450 INR → ₹1,234.50 rendered PASS (5.9s)
+  - Test 3: provisional separate, never blended PASS (6.0s)
+  - Test 4: BFF envelope `{request_id,data}` unwrap correct PASS (5.9s)
+- No 5xx on dashboard surface during smoke window
+
+**Four M1 invariants confirmed live:**
+1. Honest-empty-state: no finalized rows → state='no_data', never bare 0 (Test 1)
+2. Sole-read-path: engine-only numbers, no ad-hoc SUM (Test 2 + grep clean per dev report)
+3. No 9th envelope mismatch: `{request_id,data}` unwrapped correctly (Test 4)
+4. Isolation under brain_app: 20/20 backend live tests in dev report; provisional never blended (Test 3)
+
+**Rollback:**
+- Code: `git revert a8f3361 18c6d18 4789680 9616d11` or close PR without merging
+- No DB rollback needed (read-only feature, no schema changes)
+- Feature flag: `beta.analytics_api_dashboard=false` per brand (≤60s) if infra live
+
+**Tech-debt carry-forward:** LOW-SEC-001 (deferred), QA-F-002 (deferred), F-SEC-02 (before Phase-2), QA-3 (MED, M2)
+
+**M1 STATUS: COMPLETE.** Reconciling realized-revenue number on screen with honest-empty-state signal. The M1 vertical spine (Bronze → identity → ledger → metric engine → Analytics API → dashboard) is fully realized.

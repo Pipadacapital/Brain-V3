@@ -23,7 +23,7 @@ type Grain = 'day' | 'week';
 
 function GrainToggle({ grain, onChange }: { grain: Grain; onChange: (g: Grain) => void }) {
   return (
-    <fieldset className="flex gap-1 rounded-md border p-0.5 w-fit" aria-label="Chart grain selection">
+    <fieldset className="flex gap-1 rounded-md border bg-card p-0.5 w-fit" aria-label="Chart grain selection">
       <legend className="sr-only">Select chart grain</legend>
       {(['day', 'week'] as Grain[]).map((g) => (
         <label
@@ -31,8 +31,8 @@ function GrainToggle({ grain, onChange }: { grain: Grain; onChange: (g: Grain) =
           className={cn(
             'cursor-pointer rounded px-3 py-1 text-xs font-medium transition-colors',
             grain === g
-              ? 'bg-primary text-primary-foreground'
-              : 'text-muted-foreground hover:text-foreground',
+              ? 'bg-secondary text-secondary-foreground'
+              : 'bg-card text-foreground hover:bg-accent hover:text-accent-foreground',
           )}
         >
           <input

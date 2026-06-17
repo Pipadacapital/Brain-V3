@@ -20,3 +20,11 @@ export { getRecognitionBreakdown } from './internal/application/queries/get-reco
 export type { RecognitionBreakdownResult, RecognitionBreakdownDto } from './internal/application/queries/get-recognition-breakdown.js';
 export { getRecentActivity } from './internal/application/queries/get-recent-activity.js';
 export type { RecentActivityResult, RecentActivityRow } from './internal/application/queries/get-recent-activity.js';
+
+// Phase 2 analytics queries
+export { getOrdersTimeseries } from './internal/application/queries/get-orders-timeseries.js';
+export type { OrdersTimeseriesResult, OrdersTimeseriesBucketDto } from './internal/application/queries/get-orders-timeseries.js';
+export { getOrderStats } from './internal/application/queries/get-order-stats.js';
+export type { OrderStatsResult, OrderStatsDto } from './internal/application/queries/get-order-stats.js';
+export { getDataHealth } from './internal/application/queries/get-data-health.js';
+export type { DataHealthResult, DataHealthVolumeBucket } from './internal/application/queries/get-data-health.js';

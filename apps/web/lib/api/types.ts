@@ -415,6 +415,47 @@ export interface AnalyticsRecentActivityResponse {
   rows: AnalyticsActivityRow[];
 }
 
+// ── Analytics (Phase 2) ────────────────────────────────────────────────────────
+// All amount/count fields are bigint-serialized strings (D-1). Never floats.
+
+export interface AnalyticsOrdersBucket {
+  bucket: string;          // 'YYYY-MM-DD'
+  currency_code: string;
+  order_count: string;     // bigint string
+  rto_count: string;       // bigint string
+  realized_minor: string;  // bigint string (minor units)
+}
+
+export type AnalyticsOrdersTimeseriesResponse =
+  | { state: 'no_data'; from: string | null; to: string | null; grain: string }
+  | { state: 'has_data'; from: string; to: string; grain: string; buckets: AnalyticsOrdersBucket[] };
+
+export interface AnalyticsOrderStatsDto {
+  currency_code: string;
+  order_count: string;   // bigint string
+  aov_minor: string;     // bigint string (minor units)
+  rto_rate_pct: string;  // numeric string e.g. '3.25'
+}
+
+export type AnalyticsOrderStatsResponse =
+  | { state: 'no_data'; as_of: string }
+  | { state: 'has_data'; as_of: string; stats: AnalyticsOrderStatsDto[] };
+
+export interface AnalyticsDataHealthVolumeBucket {
+  bucket: string; // 'YYYY-MM-DD'
+  count: string;  // bigint string
+}
+
+export type AnalyticsDataHealthResponse =
+  | { state: 'no_data' }
+  | {
+      state: 'has_data';
+      eventVolume: AnalyticsDataHealthVolumeBucket[];
+      lastIngestAt: string | null;
+      syncState: string | null;
+      lastSyncAt: string | null;
+    };
+
 // ── Keyset pagination ─────────────────────────────────────────────────────────
 
 export interface PaginatedResponse<T> {

@@ -60,6 +60,9 @@ import type {
   AnalyticsKpiSummaryResponse,
   AnalyticsRecognitionBreakdownResponse,
   AnalyticsRecentActivityResponse,
+  AnalyticsOrdersTimeseriesResponse,
+  AnalyticsOrderStatsResponse,
+  AnalyticsDataHealthResponse,
 } from './types';
 
 /** All BFF routes proxied through Next.js API routes → frontend-api module */
@@ -850,6 +853,51 @@ export const analyticsApi = {
     const qs = limit ? `?limit=${limit}` : '';
     const { data } = await bffFetch<BffEnvelope<AnalyticsRecentActivityResponse>>(
       `/v1/analytics/recent-activity${qs}`,
+    );
+    return data;
+  },
+
+  // ── Phase 2 ────────────────────────────────────────────────────────────────
+
+  /**
+   * GET /api/v1/analytics/orders-timeseries
+   * Returns per-bucket order count + RTO count + realized revenue.
+   */
+  getOrdersTimeseries: async (params?: {
+    from?: string;
+    to?: string;
+    grain?: 'day' | 'week';
+  }): Promise<AnalyticsOrdersTimeseriesResponse> => {
+    const qs = new URLSearchParams();
+    if (params?.from) qs.set('from', params.from);
+    if (params?.to) qs.set('to', params.to);
+    if (params?.grain) qs.set('grain', params.grain);
+    const qsStr = qs.toString();
+    const { data } = await bffFetch<BffEnvelope<AnalyticsOrdersTimeseriesResponse>>(
+      `/v1/analytics/orders-timeseries${qsStr ? `?${qsStr}` : ''}`,
+    );
+    return data;
+  },
+
+  /**
+   * GET /api/v1/analytics/order-stats
+   * Returns per-currency order stats: order count, AOV, RTO rate.
+   */
+  getOrderStats: async (asOf?: string): Promise<AnalyticsOrderStatsResponse> => {
+    const qs = asOf ? `?as_of=${encodeURIComponent(asOf)}` : '';
+    const { data } = await bffFetch<BffEnvelope<AnalyticsOrderStatsResponse>>(
+      `/v1/analytics/order-stats${qs}`,
+    );
+    return data;
+  },
+
+  /**
+   * GET /api/v1/analytics/data-health
+   * Returns ingestion + connector-sync health (bounded read).
+   */
+  getDataHealth: async (): Promise<AnalyticsDataHealthResponse> => {
+    const { data } = await bffFetch<BffEnvelope<AnalyticsDataHealthResponse>>(
+      `/v1/analytics/data-health`,
     );
     return data;
   },

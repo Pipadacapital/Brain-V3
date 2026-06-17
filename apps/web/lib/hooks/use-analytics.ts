@@ -67,3 +67,48 @@ export function useRecentActivity(limit = 20) {
     refetchInterval: 60_000,
   });
 }
+
+// ── Phase 2 ──────────────────────────────────────────────────────────────────
+// Query keys share the 'analytics' prefix → auto-invalidate on brand switch
+// (brand-switcher.tsx invalidates queryKey: ['analytics']).
+
+/**
+ * useOrdersTimeseries — fetches per-bucket order count + RTO count + realized revenue.
+ * @param params - Date range + grain. Defaults: last 90 days, day grain (server-side).
+ */
+export function useOrdersTimeseries(params?: {
+  from?: string;
+  to?: string;
+  grain?: 'day' | 'week';
+}) {
+  return useQuery({
+    queryKey: [...ANALYTICS_QUERY_KEY, 'orders-timeseries', params?.from, params?.to, params?.grain ?? 'day'],
+    queryFn: () => analyticsApi.getOrdersTimeseries(params),
+    staleTime: 5 * 60_000, // 5 minutes
+  });
+}
+
+/**
+ * useOrderStats — fetches per-currency order stats snapshot as of a date.
+ * @param asOf - YYYY-MM-DD date (optional; server defaults to today).
+ */
+export function useOrderStats(asOf?: string) {
+  return useQuery({
+    queryKey: [...ANALYTICS_QUERY_KEY, 'order-stats', asOf ?? 'today'],
+    queryFn: () => analyticsApi.getOrderStats(asOf),
+    staleTime: 5 * 60_000,
+  });
+}
+
+/**
+ * useDataHealth — fetches ingestion + connector-sync health.
+ * staleTime 1 min; refetches on the same cadence as the event feed.
+ */
+export function useDataHealth() {
+  return useQuery({
+    queryKey: [...ANALYTICS_QUERY_KEY, 'data-health'],
+    queryFn: () => analyticsApi.getDataHealth(),
+    staleTime: 60_000,
+    refetchInterval: 60_000,
+  });
+}

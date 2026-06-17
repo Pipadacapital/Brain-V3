@@ -25,6 +25,7 @@ import {
   ShoppingCart,
   Receipt,
   Plug,
+  Activity,
   Zap,
   Users,
   Settings,
@@ -59,7 +60,7 @@ const NAV_SECTIONS: NavSection[] = [
     title: 'ANALYTICS',
     items: [
       { href: '/analytics/revenue', label: 'Revenue', icon: TrendingUp },
-      { label: 'Orders', icon: ShoppingCart, comingSoon: true, disabled: true },
+      { href: '/analytics/orders', label: 'Orders', icon: ShoppingCart },
       { label: 'Settlements', icon: Receipt, comingSoon: true, disabled: true },
     ],
   },
@@ -67,6 +68,7 @@ const NAV_SECTIONS: NavSection[] = [
     title: 'DATA',
     items: [
       { href: '/settings/connectors', label: 'Connectors', icon: Plug },
+      { href: '/data/health', label: 'Data Health', icon: Activity },
     ],
   },
   {

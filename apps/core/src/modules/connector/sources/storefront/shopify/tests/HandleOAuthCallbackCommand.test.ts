@@ -61,6 +61,9 @@ function makeConnectorRepo(saveResult?: ConnectorInstance): IConnectorInstanceRe
     shopDomain: SHOP_DOMAIN,
     secretRef: 'arn:aws:secretsmanager:us-east-1:000000000000:secret:brain/connector/shopify/test',
     status: 'connected',
+    // ADR-CM-5: health fields required in ConnectorInstanceProps
+    healthState: 'Healthy',
+    safetyRating: 'safe',
     connectedAt: new Date(),
     disconnectedAt: null,
     createdAt: new Date(),
@@ -69,6 +72,7 @@ function makeConnectorRepo(saveResult?: ConnectorInstance): IConnectorInstanceRe
   return {
     findByBrandAndProvider: vi.fn().mockResolvedValue(null),
     findById: vi.fn().mockResolvedValue(null),
+    findAllByBrand: vi.fn().mockResolvedValue([]),
     save: vi.fn().mockResolvedValue(saveResult ?? base),
     update: vi.fn().mockResolvedValue(saveResult ?? base),
   };
@@ -207,9 +211,11 @@ describe('HandleOAuthCallbackCommand', () => {
 
     const result = await cmd.execute({ query, idempotencyKey: 'idem-4' });
 
-    // Result must have secretRef (ARN) but NOT the token value
-    expect(result.secretRef).toMatch(/^arn:aws:/);
-    expect(result.secretRef).not.toContain('shpat_secret_token_value');
+    // MED-01: secretRef is no longer in OAuthCallbackResult (ARN persisted internally).
+    // Result must NOT have a secretRef field; confirm the type does not expose it.
+    expect(result).not.toHaveProperty('secretRef');
+    // Token value must not appear anywhere in the result
+    expect(JSON.stringify(result)).not.toContain('shpat_secret_token_value');
 
     // Ensure repo was called (happy path)
     expect(connectorRepo.save).toHaveBeenCalledOnce();
@@ -236,6 +242,8 @@ describe('HandleOAuthCallbackCommand', () => {
         shopDomain: SHOP_DOMAIN,
         secretRef: 'arn:aws:secretsmanager:us-east-1:000000000000:secret:brain/connector/shopify/test',
         status: 'connected',
+        healthState: 'Healthy',
+        safetyRating: 'safe',
         connectedAt: new Date(),
         disconnectedAt: null,
         createdAt: new Date(),

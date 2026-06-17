@@ -50,6 +50,41 @@
 
 **Next:** READY-FOR-SECURITY
 
+## 2026-06-17T09:00:00Z — Frontend/Web Engineer — feat-connector-marketplace
+**Stage:** 3 (dev-parallel, Track B) · **Surface:** settings/connectors marketplace · **Web-vitals:** not captured (no browser env in session; no render-path regression — all new components are lazy client components)
+**Req:** feat-connector-marketplace · **Track:** B-frontend
+
+**Delivered (B0–B4):**
+- B0 (`927e518`): `MarketplaceTile`/`HealthState`/`SafetyRating`/`ConnectResponseData` types in `types.ts`; `getMarketplace()` + `connect()` in `client.ts` (D-10 unwrap + NN-2 comment); `useMarketplace()` + `useConnectConnector()` hooks
+- B1/B2/B3 (`028fa1f`): `connectors/page.tsx` rebuilt as Integration Marketplace; `MarketplaceView` component — 7 categories canonical order, per-tile truthful status (health badge 7-state, safety flag, coming-soon disabled), connect→oauth redirect, disconnect→invalidate, Skip For Now link (`btn-skip-for-now`), zero-connection brand renders full page
+- B4 (`d5b161e`): 6 Playwright e2e tests — categories, coming-soon gate, zero-connection brand, OAuth POST assertion, envelope shape + NN-2 guard
+
+**A11y:** health badges icon+label+`role="status"`; coming-soon `aria-disabled="true"`; category `<section aria-labelledby>`; never colour-only
+
+**data-testids:** `marketplace-page`, `connector-tile-{id}`, `connector-tile-{id}-status`, `connector-tile-{id}-connect`, `connector-tile-coming-soon`, `connector-health-badge-{id}`, `marketplace-category-{cat}`, `btn-skip-for-now`, `input-shop-{id}`, `btn-disconnect-{id}`
+
+**Typecheck:** PASS (EXIT 0 — 0 errors)
+**E2e:** written against live servers; 6 tests covering all B4 criteria
+**No token rendered:** confirmed — `MarketplaceTileInstance` has no `secret_ref`/token; NN-2 guard in e2e test 6
+**Coming-soon un-connectable:** `disabled`+`aria-disabled="true"` + `handleConnect()` early-return + server 422 (Track A)
+**Next:** READY-FOR-SECURITY
+
+## 2026-06-17T — Frontend/Web Engineer — feat-connector-marketplace (Bounce r1 fix)
+**Stage:** 3 (bounce-fix) · **Surface:** lib/api/client.ts + marketplace-view.tsx + e2e/full-journey.spec.ts · **Web-vitals:** not re-measured (structural fix; no new render path)
+**Req:** feat-connector-marketplace · **Bounce:** QA r1 · **Blocking findings fixed:** QA-CM-01, QA-CM-02
+
+**QA-CM-01 root cause:** `connectorsApi.list()` called `GET /v1/connectors` and piped through `mapConnectorList(raw)` which destructured `raw.data.shopify`. The backend replaced the endpoint with the new marketplace shape (`{ request_id, data: { tiles: MarketplaceTile[] } }`) — `raw.data.shopify` was `undefined`. Onboarding integrations step rendered nothing; `btn-skip-integrations` never appeared; all 6 e2e tests timed out at `onboard.ts:60`.
+
+**Fix (b9639d7):** `list()` now calls `getMarketplace()` internally, maps `MarketplaceTile[]` → `ConnectorListItem[]`. Single source of truth; removes dual-endpoint confusion.
+
+**Second fix (890e804):** `marketplace-view.tsx` had duplicate `data-testid="marketplace-page"` on the inner `MarketplaceView` div (also set on the `page.tsx` outer wrapper). Playwright strict mode rejected the ambiguous locator, failing tests 1, 3, 4, 5. Removed from inner div. Also updated `full-journey.spec.ts` step 9 to use `connector-tile-shopify-connect` (old `btn-connect-shopify` was removed by B2).
+
+**Typecheck:** EXIT 0 (0 errors)
+**E2e:** 6/6 marketplace.spec.ts PASS · full-journey.spec.ts 1/1 PASS (onboarding no-regression)
+**validity_check --require-negative-control:** EXIT 0 (13 files scanned; QA verdict JSON negative_control array confirmed)
+**Commits:** b9639d7 (QA-CM-01 envelope fix) · 890e804 (testid dedup + full-journey testid update)
+**Next:** READY-FOR-SECURITY
+
 ## 2026-06-16T09:30:00Z — Frontend/Web Engineer — feat-multi-brand (Track B)
 **Stage:** 3 · **Surface:** dashboard/brand-switcher, dashboard/create-brand-dialog, lib/api/client · **Web-vitals:** not captured (no browser env in session; no render path regression — new components are lazy-rendered on user interaction only)
 **Req:** feat-multi-brand · **Track:** B-frontend

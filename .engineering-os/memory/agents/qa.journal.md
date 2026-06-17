@@ -29,3 +29,20 @@
 **Stage:** 5 · **Mode:** DELTA (reasoning scoped to QA-F-001; full e2e suite re-run) · **Verdict:** PASS
 **Smoke:** 4/4 e2e passed (23.5s); test 2 confirmed ₹1,234 rendered — real-number M1 reconciling path verified · **Parity:** PASS (unchanged from FULL) · **Validity:** negative-controls confirmed (unchanged from FULL) · **Next:** Reconcile with Security Reviewer
 **Fix verified:** commit 709cb2c — `app_user_org_membership` → `membership` at realized-revenue.spec.ts:38; zero residual matches; migration confirms table + columns
+
+## 2026-06-17T06:05:00Z — QA Engineer — feat-connector-marketplace
+**Stage:** 5 · **Mode:** FULL · **Verdict:** BOUNCE
+**Smoke:** PASS (Boddactive Shopify OAuth real-network corroborated in DB: status=connected, health_state=Healthy, safety_rating=safe, secret_ref=arn:..., no token in DB) · **Parity:** n/a · **Validity:** backend negative controls CONFIRMED (count===0 under brain_app NOSUPERUSER); e2e validity_check EXIT 3 (tests broken — cannot confirm)
+**Suite:** backend vitest 189/189 PASS; core typecheck EXIT 0; web typecheck EXIT 0; Playwright e2e 0/6 FAIL
+**Critical flows proven:** forged-body rejected (OAuthCallbackInput no brandId; state-derived only); isolation non-inert (brain_app NOSUPERUSER count===0); authz (analyst 403, manager 200, backfill 501 brand_admin gate); audit (connector.connected rows in DB); health/safety (Healthy/safe on connect; 7→3 mapping tested); NN-2 (0 token/ciphertext columns); deferred-boundary clean (0 grep hits); envelope (MarketplaceListResponseSchema safeParse; negative request_id missing fails)
+**Critical flows broken:** e2e 0/6 — connectorsApi.list() regression: GET /v1/connectors now returns {tiles:MarketplaceTile[]} but mapConnectorList() reads raw.data.shopify (undefined); onboarding wizard step 3 crashes; btn-skip-integrations never renders
+**Bounce findings:** QA-CM-01 (BLOCKING: connectorsApi.list() regression — client.ts:552 + onboarding-integrations-step.tsx); QA-CM-02 (BLOCKING: validity_check exit 3 contingent on CM-01)
+**Next:** BOUNCE → frontend-web-developer (QA-CM-01, QA-CM-02); backend HOLD
+
+## 2026-06-17T07:30:00Z — QA Engineer — feat-connector-marketplace
+**Stage:** 5 · **Mode:** DELTA (reasoning scoped to QA-CM-01 + QA-CM-02; full e2e suite re-run) · **Verdict:** PASS
+**Smoke:** 6/6 marketplace e2e PASS (38.3s); 1/1 full-journey PASS (8.3s) · **Parity:** n/a · **Validity:** negative-control CONFIRMED (Test 3 firedRequest===null; validity_check EXIT 0, 12 files clean) · **Next:** Reconcile with Security Reviewer
+**Fix verified:** commit b9639d7 — connectorsApi.list() derives from getMarketplace(); maps MarketplaceTile[]→ConnectorListItem[]; raw.data.shopify no longer referenced; D-10 envelope unwrapped correctly
+**Typecheck:** pnpm --filter @brain/web typecheck → exit 0
+
+{"ts":"2026-06-17T07:30:00Z","actor":"qa-agent","type":"review","req_id":"feat-connector-marketplace","stage":5,"verdict":"PASS","mode":"DELTA"}

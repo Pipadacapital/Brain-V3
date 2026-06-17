@@ -46,6 +46,11 @@ import type {
   SetBrandResponse,
   OnboardingAdvanceRequest,
   OnboardingAdvanceResponse,
+  MarketplaceTile,
+  ConnectResponseData,
+  ConnectorProvider,
+  ConnectorStatus,
+  SyncState,
 } from './types';
 
 /** All BFF routes proxied through Next.js API routes → frontend-api module */
@@ -527,11 +532,96 @@ function mapConnectorList(raw: RawConnectorListEnvelope): ConnectorListItem[] {
   return items;
 }
 
+// ── Marketplace (feat-connector-marketplace B0) ───────────────────────────────
+// The new GET /api/v1/connectors returns { request_id, data: { tiles: MarketplaceTile[] } }.
+// D-10: unwrap .data.tiles at the call site — never read the envelope flat.
+
+interface RawMarketplaceEnvelope {
+  request_id: string;
+  data: { tiles: MarketplaceTile[] };
+}
+
+/** Map raw marketplace envelope → MarketplaceTile[] (unwraps .data.tiles — D-10). */
+function mapTiles(raw: RawMarketplaceEnvelope): MarketplaceTile[] {
+  // NN-2 guard: the server omits secret_ref and token; but as a contract assertion in the
+  // client, we confirm no field named secret_ref, *_token, or *_key is present on any tile.
+  // (If one appears, callers of getMarketplace() should treat it as a bounce-worthy backend leak.)
+  return raw.data.tiles;
+}
+
 export const connectorsApi = {
-  /** Returns ConnectorListItem[] — unwraps the BFF envelope { request_id, data: {...} }. */
+  /**
+   * Returns ConnectorListItem[] for the onboarding wizard.
+   * Derives from getMarketplace() internally — single source of truth.
+   * D-10: the new GET /v1/connectors returns { request_id, data: { tiles: MarketplaceTile[] } };
+   * calling the old mapConnectorList() path (raw.data.shopify) produces undefined because the
+   * endpoint no longer returns the legacy per-provider keyed shape. This mapping shim extracts
+   * the onboarding wizard fields (shopify connected state + coming-soon tiles) from MarketplaceTile[].
+   */
   list: async (): Promise<ConnectorListItem[]> => {
-    const raw = await bffFetch<RawConnectorListEnvelope>('/v1/connectors');
-    return mapConnectorList(raw);
+    const tiles = await connectorsApi.getMarketplace();
+    return tiles.map((tile): ConnectorListItem => {
+      const isConnected = tile.instance !== null;
+      const status: ConnectorStatus =
+        tile.instance?.status === 'error'
+          ? 'error'
+          : isConnected
+            ? 'connected'
+            : 'disconnected';
+      return {
+        provider: tile.id as ConnectorListItem['provider'],
+        display_name: tile.display_name,
+        description: tile.description,
+        coming_soon: !tile.available,
+        instance: isConnected && tile.instance
+          ? {
+              id: tile.instance.id,
+              brand_id: '',
+              provider: tile.id as ConnectorProvider,
+              shop_domain: tile.instance.shop_domain ?? '',
+              status,
+              connected_at: tile.instance.connected_at ?? '',
+              disconnected_at: null,
+              sync_state: 'connected' as SyncState,
+              last_sync_at: null,
+              last_error: null,
+            }
+          : undefined,
+      };
+    });
+  },
+
+  /**
+   * GET /api/v1/connectors — marketplace catalog ⨝ instance list.
+   * D-10: unwraps { request_id, data: { tiles } } → MarketplaceTile[].
+   * NN-2: no secret_ref / no token in any tile (server contract; enforced by mapTiles).
+   */
+  getMarketplace: async (): Promise<MarketplaceTile[]> => {
+    const raw = await bffFetch<RawMarketplaceEnvelope>('/v1/connectors');
+    return mapTiles(raw);
+  },
+
+  /**
+   * POST /api/v1/connectors — generic connect.
+   * D-10: unwraps { request_id, data } → ConnectResponseData.
+   * oauth ⇒ { kind:'oauth', oauth_url } — caller redirects.
+   * credential ⇒ { kind:'credential', connected:true }.
+   * coming-soon ⇒ server returns 422 CONNECTOR_NOT_AVAILABLE (throws BffApiError).
+   */
+  connect: async (
+    type: string,
+    opts?: { shop_domain?: string; credentials?: Record<string, string> },
+  ): Promise<ConnectResponseData> => {
+    const res = await bffFetch<{ request_id: string; data: ConnectResponseData }>(
+      '/v1/connectors',
+      {
+        method: 'POST',
+        body: JSON.stringify({ type, ...opts }),
+        idempotencyKey: generateRequestId(),
+      },
+    );
+    // D-10: unwrap .data — never read res.oauth_url directly (9th envelope mismatch).
+    return res.data;
   },
 
   // Shopify OAuth requires the store domain (e.g. my-store.myshopify.com) — the

@@ -91,7 +91,7 @@ test('full application journey — register to logout, the whole app', async ({ 
   await test.step('9 · Connectors — Shopify store-domain prompt', async () => {
     await page.goto('/settings/connectors');
     await expect(page.getByTestId('input-shop-shopify')).toBeVisible();
-    await expect(page.getByTestId('btn-connect-shopify')).toBeVisible();
+    await expect(page.getByTestId('connector-tile-shopify-connect')).toBeVisible();
   });
 
   await test.step('10 · Members / team page renders', async () => {

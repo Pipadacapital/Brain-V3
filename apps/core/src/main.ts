@@ -41,7 +41,11 @@ import { createEmailAdapter } from './modules/notification/internal/ses-adapter.
 import { registerShopifyConnectorRoutes } from './modules/connector/sources/storefront/shopify/interfaces/http/shopifyConnectorRoutes.js';
 import { registerDevShopifySyncRoutes } from './modules/connector/sources/storefront/shopify/interfaces/http/devShopifySyncRoutes.js';
 import { registerPixelRoutes, buildDefaultSnippet } from './modules/connector/pixel/interfaces/http/pixelRoutes.js';
+// Connector catalog + dispatch (A3 — feat-connector-marketplace)
+import { getDefinition, isConnectable, CONNECTOR_CATALOG } from './modules/connector/catalog/index.js';
+import { registerOAuthDispatch, getOAuthDispatch } from './modules/connector/catalog/dispatch.js';
 import { InitiateOAuthCommand } from './modules/connector/sources/storefront/shopify/application/commands/InitiateOAuthCommand.js';
+import { ConnectorInstance as ConnectorInstanceEntity } from './modules/connector/sources/storefront/shopify/domain/entities/ConnectorInstance.js';
 import {
   HandleOAuthCallbackCommand,
   HmacValidationError,
@@ -123,9 +127,10 @@ export async function main(): Promise<void> {
     emailFromAddress: getEnv('EMAIL_FROM_ADDRESS', 'noreply@brain.app'),
     nodeEnv,
     cookieSecret,
+    // ADR-CM-3: generic callback path — brand_id from signed state only (D-1)
     shopifyCallbackUrl: getEnv(
       'SHOPIFY_CALLBACK_URL',
-      'http://localhost:3001/api/v1/connectors/shopify/callback',
+      'http://localhost:3001/api/v1/oauth/callback/shopify',
     ),
     pixelIngestBaseUrl: getEnv('PIXEL_INGEST_BASE_URL', 'http://localhost:3001'),
   };
@@ -352,8 +357,19 @@ export async function main(): Promise<void> {
   //
   // Mirror of the JWT/cookie SecretsProvider selection above.
   const shopifyClientSecretRef = getEnvOrThrow('SHOPIFY_CLIENT_SECRET');
+  // D-7/ADR-CM-4: CONNECTOR_SECRETS_KMS_KEY_ID must be set in production — the ARN or
+  // alias of the customer-managed KMS key used for per-brand EncryptionContext isolation.
+  // Hard-fail at startup if absent (mirrors LocalSecretsManager's prod-hard-fail pattern).
+  if (isProduction && !process.env['CONNECTOR_SECRETS_KMS_KEY_ID']) {
+    throw new Error(
+      '[core] FATAL: CONNECTOR_SECRETS_KMS_KEY_ID must be set in production. ' +
+        'AwsSecretsManager requires a customer-managed KMS key ARN/alias for per-brand ' +
+        'EncryptionContext isolation (D-7/ADR-CM-4). Set the env var and restart.',
+    );
+  }
+  const connectorKmsKeyId = getEnv('CONNECTOR_SECRETS_KMS_KEY_ID', 'alias/brain-connector-secrets-dev');
   const connectorSecretsManager = isProduction
-    ? new AwsSecretsManager(getEnv('AWS_REGION', 'us-east-1'), shopifyClientSecretRef)
+    ? new AwsSecretsManager(getEnv('AWS_REGION', 'us-east-1'), shopifyClientSecretRef, connectorKmsKeyId)
     : new LocalSecretsManager();
   const oauthStateStore = new InProcessOAuthStateStore();
 
@@ -417,22 +433,67 @@ export async function main(): Promise<void> {
   //
   // For the callback (public), we register it directly on `app` outside the scope.
 
-  // Register the public callback route FIRST (no session guard — Shopify-called).
-  // Only this single route bypasses session validation; HMAC is the auth mechanism (NN-4).
-  app.get('/api/v1/connectors/shopify/callback', async (req, reply) => {
+  // ── OAUTH_DISPATCH_TABLE registration (A3 — ADR-CM-3) ─────────────────────
+  // Shopify InitiateOAuthCommand registered under 'shopify' key.
+  // meta/google_ads are NOT registered (coming_soon → 422 before dispatch reaches here).
+  registerOAuthDispatch('shopify', {
+    initiate: async ({ brandId, shopDomain, callbackUrl }) => {
+      if (!shopDomain) {
+        throw Object.assign(new Error('shop_domain is required for shopify OAuth'), {
+          code: 'MISSING_SHOP_DOMAIN',
+          statusCode: 400,
+        });
+      }
+      const result = await initiateOAuth.execute({ brandId, shopDomain, callbackUrl });
+      return { oauth_url: result.installUrl };
+    },
+  });
+
+  // ── Generic OAuth callback (ADR-CM-3 / D-1) ───────────────────────────────
+  // REPLACES the divergent main.ts:422 handler that read brand_id from query.
+  // brand_id is derived EXCLUSIVELY from consumeAndGetBrandId(state) — D-1.
+  // The :type param dispatches to the correct command (shopify only in M1).
+  //
+  // PUBLIC route (no session guard) — HMAC is the auth mechanism (NN-4).
+  // idempotencyKey does NOT include brand_id (unknown pre-state-consume — ADR-CM-3).
+  app.get('/api/v1/oauth/callback/:type', async (req: FastifyRequest<{ Params: { type: string } }>, reply) => {
     const query = req.query as Record<string, string | string[] | undefined>;
     const requestId = (req.id as string) ?? randomUUID();
-    const brandIdParam = typeof query['brand_id'] === 'string' ? query['brand_id'] : null;
-    if (!brandIdParam) {
-      return reply.code(400).send({
-        request_id: requestId,
-        error: { code: 'MISSING_BRAND_CONTEXT', message: 'Brand context is required' },
-      });
-    }
+    const connectorType = req.params.type;
     const state = typeof query['state'] === 'string' ? query['state'] : 'unknown';
-    const idempotencyKey = `shopify-oauth-${brandIdParam}-${state}`;
+    // ADR-CM-3: idempotency key does NOT include brand_id (not yet known)
+    const idempotencyKey = `${connectorType}-oauth-${state}`;
+
     try {
-      const result = await handleCallback.execute({ query, idempotencyKey });
+      // Dispatch to the type-specific callback command
+      // For Shopify: HandleOAuthCallbackCommand (HMAC-first, brand from state — NN-4 / D-1)
+      let result: { connectorInstanceId: string; shopDomain: string; status: string };
+      if (connectorType === 'shopify') {
+        const cbResult = await handleCallback.execute({ query, idempotencyKey });
+        result = {
+          connectorInstanceId: cbResult.connectorInstanceId,
+          shopDomain: cbResult.shopDomain,
+          status: cbResult.status,
+        };
+        // Audit: connector.connected (D-11 / Sec-C4)
+        // brandId from cbResult is state-derived (D-1 — never from query)
+        await auditWriter.append({
+          brand_id: cbResult.brandId,
+          actor_id: null,
+          actor_role: 'system',
+          action: 'connector.connected',
+          entity_type: 'connector_instance',
+          entity_id: result.connectorInstanceId,
+          payload: { connector_type: connectorType },
+          // NO secret_ref, NO token in payload (I-S02/I-S09)
+        });
+      } else {
+        return reply.code(400).send({
+          request_id: requestId,
+          error: { code: 'UNKNOWN_CONNECTOR_TYPE', message: `No callback handler for connector type: ${connectorType}` },
+        });
+      }
+
       return reply.code(200).send({
         request_id: requestId,
         data: {
@@ -455,15 +516,46 @@ export async function main(): Promise<void> {
     }
   });
 
-  // Protected read routes (analyst+): GET /connectors, GET /connectors/:id/status
+  // ── Connector read routes (analyst+) ────────────────────────────────────────
+  // GET /api/v1/connectors → marketplace list (catalog ⨝ instance, ADR-CM-1/ADR-CM-8)
+  // GET /api/v1/connectors/:id/status → legacy per-connector status
   await app.register(async (scope) => {
     scope.addHook('preHandler', sessionPreHandler);
     scope.addHook('preHandler', requireRole('analyst'));
 
+    // Marketplace catalog⨝instance list (A3 — ADR-CM-1/ADR-CM-8/D-10)
     scope.get('/api/v1/connectors', async (req, reply) => {
       const brandId = getBrandId(req);
-      const status = await getConnectorStatus.execute(brandId);
-      return reply.code(200).send({ request_id: (req.id as string) ?? randomUUID(), data: status });
+      const requestId = (req.id as string) ?? randomUUID();
+      // Fetch all connector instances for this brand (RLS enforced)
+      const instances = await connectorRepo.findAllByBrand(brandId);
+      const instanceByProvider = new Map(instances.map((i) => [i.provider, i]));
+
+      // Join catalog with instance data → MarketplaceTile[]
+      const tiles = CONNECTOR_CATALOG.map((def) => {
+        const instance = instanceByProvider.get(def.id) ?? null;
+        return {
+          id: def.id,
+          category: def.category,
+          display_name: def.displayName,
+          description: def.description,
+          connect_method: def.connectMethod as 'oauth' | 'credential' | 'coming_soon',
+          available: def.availability === 'available',
+          // NN-2: NO secret_ref, NO token in this response (success criterion #4)
+          instance: instance
+            ? {
+                id: instance.id,
+                status: instance.status,
+                health_state: instance.healthState,
+                safety_rating: instance.safetyRating,
+                shop_domain: instance.shopDomain || null,
+                connected_at: instance.connectedAt.toISOString(),
+              }
+            : null,
+        };
+      });
+
+      return reply.code(200).send({ request_id: requestId, data: { tiles } });
     });
 
     scope.get('/api/v1/connectors/:id/status', async (req: FastifyRequest<{ Params: { id: string } }>, reply) => {
@@ -473,11 +565,108 @@ export async function main(): Promise<void> {
     });
   });
 
-  // Protected write routes (manager+): GET /install, DELETE /:id
+  // ── Connector write routes (manager+) ────────────────────────────────────────
+  // POST /api/v1/connectors  → generic connect (ADR-CM-2)
+  // GET  /api/v1/connectors/shopify/install  → legacy Shopify install path
+  // DELETE /api/v1/connectors/:id → disconnect (ADR-CM-5 + Sec-C4 audit)
   await app.register(async (scope) => {
     scope.addHook('preHandler', sessionPreHandler);
     scope.addHook('preHandler', requireRole('manager'));
 
+    // Generic connect (ADR-CM-2 / D-5 / D-10)
+    scope.post('/api/v1/connectors', async (req: FastifyRequest<{ Body: { type?: string; shop_domain?: string; credentials?: Record<string, string> } }>, reply) => {
+      const brandId = getBrandId(req);
+      const auth = (req as typeof req & { auth?: { userId?: string; role?: string } }).auth;
+      const requestId = (req.id as string) ?? randomUUID();
+      const body = req.body ?? {};
+      const connectorType = body.type;
+
+      if (!connectorType) {
+        return reply.code(400).send({ request_id: requestId, error: { code: 'MISSING_CONNECTOR_TYPE', message: 'type is required' } });
+      }
+
+      // 1. Catalog lookup (unknown type ⇒ 400 — Int-C3)
+      const def = getDefinition(connectorType);
+      if (!def) {
+        return reply.code(400).send({ request_id: requestId, error: { code: 'UNKNOWN_CONNECTOR_TYPE', message: `Unknown connector type: ${connectorType}` } });
+      }
+
+      // 2. Coming-soon gate ⇒ 422 (Sec-C5 / D-5 / success criterion #2)
+      if (!isConnectable(def)) {
+        return reply.code(422).send({ request_id: requestId, error: { code: 'CONNECTOR_NOT_AVAILABLE', message: `${def.displayName} is not yet available for connection.` } });
+      }
+
+      // 3a. OAuth connector
+      if (def.connectMethod === 'oauth') {
+        const dispatch = getOAuthDispatch(connectorType);
+        if (!dispatch) {
+          return reply.code(422).send({ request_id: requestId, error: { code: 'CONNECTOR_NOT_AVAILABLE', message: `OAuth not configured for ${connectorType}` } });
+        }
+        try {
+          const { oauth_url } = await dispatch.initiate({
+            brandId,
+            shopDomain: body.shop_domain,
+            callbackUrl: config.shopifyCallbackUrl,
+          });
+          // Audit: connect initiated (actor from auth)
+          await auditWriter.append({
+            brand_id: brandId,
+            actor_id: auth?.userId ?? null,
+            actor_role: auth?.role ?? 'unknown',
+            action: 'connector.connected',
+            entity_type: 'connector_instance',
+            entity_id: `${connectorType}:${brandId}`,
+            payload: { connector_type: connectorType, phase: 'oauth_initiated' },
+          });
+          return reply.code(200).send({ request_id: requestId, data: { kind: 'oauth', oauth_url } });
+        } catch (err) {
+          if ((err as { code?: string }).code === 'MISSING_SHOP_DOMAIN') {
+            return reply.code(400).send({ request_id: requestId, error: { code: 'MISSING_SHOP_DOMAIN', message: (err as Error).message } });
+          }
+          throw err;
+        }
+      }
+
+      // 3b. Credential connector (no available credential connector in M1, but path is bound)
+      if (def.connectMethod === 'credential') {
+        const credentials = body.credentials;
+        if (!credentials || Object.keys(credentials).length === 0) {
+          return reply.code(400).send({ request_id: requestId, error: { code: 'MISSING_CREDENTIALS', message: 'credentials are required for credential connectors' } });
+        }
+        const { arn } = await connectorSecretsManager.storeSecret(brandId, { connectorType }, credentials);
+        // Write connector_instance
+        const now = new Date();
+        const instance = ConnectorInstanceEntity.create({
+          id: randomUUID(),
+          brandId,
+          provider: connectorType,
+          shopDomain: '',
+          secretRef: arn,
+          status: 'connected',
+          healthState: 'Healthy',
+          safetyRating: 'safe',
+          connectedAt: now,
+          disconnectedAt: null,
+          createdAt: now,
+          updatedAt: now,
+        });
+        await connectorRepo.save(instance);
+        await auditWriter.append({
+          brand_id: brandId,
+          actor_id: auth?.userId ?? null,
+          actor_role: auth?.role ?? 'unknown',
+          action: 'connector.connected',
+          entity_type: 'connector_instance',
+          entity_id: instance.id,
+          payload: { connector_type: connectorType },
+        });
+        return reply.code(200).send({ request_id: requestId, data: { kind: 'credential', connected: true } });
+      }
+
+      return reply.code(422).send({ request_id: requestId, error: { code: 'CONNECTOR_NOT_AVAILABLE', message: 'Connector type not available' } });
+    });
+
+    // Legacy Shopify install path (kept for back-compat; routes through same initiateOAuth)
     scope.get('/api/v1/connectors/shopify/install', async (req: FastifyRequest<{ Querystring: { shop: string } }>, reply) => {
       const brandId = getBrandId(req);
       const shopDomain = req.query.shop;
@@ -488,12 +677,25 @@ export async function main(): Promise<void> {
       return reply.code(200).send({ request_id: (req.id as string) ?? randomUUID(), data: { install_url: result.installUrl } });
     });
 
+    // Generic disconnect (ADR-CM-3 / Sec-C3 / Sec-C4 audit)
     scope.delete('/api/v1/connectors/:id', async (req: FastifyRequest<{ Params: { id: string } }>, reply) => {
       const brandId = getBrandId(req);
+      const auth = (req as typeof req & { auth?: { userId?: string; role?: string } }).auth;
       const idempotencyKey = (req.headers['idempotency-key'] as string | undefined) ?? randomUUID();
       const requestId = (req.id as string) ?? randomUUID();
       try {
         await disconnectCommand.execute({ connectorInstanceId: req.params.id, brandId, idempotencyKey });
+        // Audit: connector.disconnected (D-11 / Sec-C4)
+        await auditWriter.append({
+          brand_id: brandId,
+          actor_id: auth?.userId ?? null,
+          actor_role: auth?.role ?? 'unknown',
+          action: 'connector.disconnected',
+          entity_type: 'connector_instance',
+          entity_id: req.params.id,
+          payload: { connector_instance_id: req.params.id },
+          // NO secret_ref, NO token in payload (I-S02/I-S09)
+        });
         return reply.code(200).send({ request_id: requestId, data: { disconnected: true } });
       } catch (err) {
         if (err instanceof ConnectorNotFoundError) {
@@ -501,6 +703,22 @@ export async function main(): Promise<void> {
         }
         throw err;
       }
+    });
+  });
+
+  // ── Backfill gate (brand_admin+ — D-9 / ADR-CM-7 / 501 stub) ───────────────
+  // Gate is REAL and role-tested; execution is a later slice (ADR-CM-10 / D-12).
+  // Manager-can-connect-but-not-backfill negative control is now testable.
+  await app.register(async (scope) => {
+    scope.addHook('preHandler', sessionPreHandler);
+    scope.addHook('preHandler', requireRole('brand_admin'));
+
+    scope.post('/api/v1/connectors/:id/backfill', async (req, reply) => {
+      const requestId = (req.id as string) ?? randomUUID();
+      return reply.code(501).send({
+        request_id: requestId,
+        error: { code: 'NOT_IMPLEMENTED', message: 'Backfill execution is not yet available in this release.' },
+      });
     });
   });
 

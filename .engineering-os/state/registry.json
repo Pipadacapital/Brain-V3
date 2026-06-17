@@ -47,6 +47,11 @@
       "req_id": "feat-analytics-api-dashboard",
       "title": "Analytics API + dashboard (realized_revenue on screen)",
       "first_seen": "2026-06-16T22:15:56Z"
+    },
+    {
+      "req_id": "feat-connector-marketplace",
+      "title": "Connector module + Integration Marketplace UI (honest status, generic connect, 7-state health)",
+      "first_seen": "2026-06-17T03:59:54Z"
     }
   ]
 }

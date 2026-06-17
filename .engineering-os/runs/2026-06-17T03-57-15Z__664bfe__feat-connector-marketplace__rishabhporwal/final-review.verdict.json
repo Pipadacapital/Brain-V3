@@ -1,0 +1,36 @@
+{
+  "stage": 6,
+  "agent": "final-reviewer",
+  "req_id": "feat-connector-marketplace",
+  "verdict": "PASS",
+  "blocking": 0,
+  "recommendation": "APPROVE",
+  "ts": "2026-06-17T10:30:00Z",
+  "one_line_risk": "Single shared CMK (SEC-CM-RES-01) — per-brand secret isolation rests on IAM/key-policy, not a per-brand key; acceptable M1, tracked to M2.",
+  "gates_rerun": [
+    { "gate": "core-typecheck", "command": "pnpm --filter @brain/core typecheck", "result": "EXIT 0" },
+    { "gate": "web-typecheck", "command": "pnpm --filter @brain/web typecheck", "result": "EXIT 0" },
+    { "gate": "connector-unit-suite", "command": "vitest run src/modules/connector --exclude **/*.live.test.ts", "result": "35/35 PASS, EXIT 0 (incl. SecretRef KMS non-inert negative control)" }
+  ],
+  "verified_at_source": [
+    "D-1: query['brand_id'] inline callback DELETED; brand_id from consumeAndGetBrandId(state) only; no surviving request-body/query brand_id read in main.ts",
+    "Token secrecy: KmsKeyId CMK on both CreateSecret calls; prod-hard-fail in main.ts + LocalSecretsManager; no secret_ref/token in MarketplaceTile contract or marketplace GET response",
+    "Isolation: 0021 additive (0006 untouched, RLS two-arg FORCE untouched, NN-1 assertion carried); live test asserts current_user=brain_app + cross-brand count===0 (non-inert)",
+    "Authz: connect/disconnect manager+, backfill brand_admin+ 501 stub, analyst 403",
+    "Envelope D-10: connectorsApi.list() derives from getMarketplace(); no new mismatch",
+    "Deferred boundary D-12: grep CLEAN; only 501 backfill gate references backfill",
+    "Paradigm Tier-1: zero model calls in diff, $0/mo",
+    "Over-engineering: no IConnector/BaseConnector/plugin-registry/connector_definition table; delivered set == plan; no new deployable"
+  ],
+  "real_store_smoke": "PASS — live Shopify OAuth connect vs Boddactive: connector_instance Healthy, has_secret=true (token as ref, none in response), audit_log connector.connected written, sync_status=waiting_for_data (honest)",
+  "residual_debt": [
+    { "id": "SEC-CM-RES-01", "severity": "MED", "milestone": "M2", "title": "Single shared CMK; per-brand CMK / KMS Grant scoping deferred" },
+    { "id": "KNOWN-CM-01", "severity": "LOW", "title": "UNIQUE(brand_id,provider) one-instance-per-provider limit" },
+    { "id": "Scale-C4", "severity": "LOW", "title": "InProcessOAuthStateStore single-instance; Redis path reserved" }
+  ],
+  "hard_rule_deviation": "none",
+  "rule_proposal_written": false,
+  "sandbox_limitation": "live DB-backed suite (isolation/forged-body/authz/audit) not re-executed (no psql/brain_app role in sandbox); verified at source for non-inertness + captured green by QA DELTA and developer 189/189; real-store smoke covers connect path",
+  "prior_verdicts": { "security": "PASS (DELTA)", "qa": "PASS (DELTA)" },
+  "next": "stakeholder-gate"
+}

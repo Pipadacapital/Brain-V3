@@ -159,3 +159,19 @@
 **Routes confirmed:** POST `/api/v1/connectors/:id/backfill` (main.ts:734) + GET `/api/v1/connectors/:id/jobs` (main.ts:801).
 **data-testids:** backfill-trigger, backfill-progress, backfill-records, backfill-estimated, backfill-depth-label, backfill-status, backfill-reconnect-required, realized-revenue-gross-label.
 **Next:** READY-FOR-SECURITY
+
+## 2026-06-17T — Frontend/Web Engineer — feat-shopify-live-connector (Track C)
+**Stage:** 3 (Build) · **Surface:** dashboard/connection-status-card · **Web-vitals:** not captured (no render-path regression; new indicator is a lazy client component; INP unaffected by 30s tick)
+**Req:** feat-shopify-live-connector · **Track:** C
+
+**Delivered (C1–C3):**
+- C1 (`1b7556e`): `LiveSyncIndicator` component in `connection-status-card.tsx` — "Live" (Radio icon, green, pulse) when `sync_state='connected'` + `last_sync_at` ≤5 min; "Syncing…" (animated amber) for `syncing`; honest "Connected" + "Last synced X ago" for stale; "Waiting for data" + "No sync yet" for `waiting_for_data` + null. Client-side 30s ticker. `Intl.RelativeTimeFormat` (no new dep). A11y: `role="status"` + icon + label, never colour-only. data-testids: `connection-live-indicator`, `connection-freshness`.
+- C2 (`e175a67`): `useConnectionStatus()` refetchInterval 60s→30s, staleTime 30s→15s — poll matches Live ticker so webhook-triggered `last_sync_at` updates appear within one cycle.
+- C3 (`743e7fd`): `apps/web/e2e/live-sync.spec.ts` — 4 tests all GREEN: connected+recent→Live; connected+stale→Connected NOT Live; syncing→Syncing…; waiting_for_data→Waiting not Live. All REVERT-RED on the honesty guard.
+
+**Honesty:** "Live" reads real `connector_sync_status.state + last_sync_at`. Never faked. Stale/waiting shown honestly. `isLive()` is deterministic and the e2e drives it via DB seed.
+**No-regression:** marketplace 6/6, connector-lifecycle 3/3, realized-revenue 4/4 — all confirmed green (separate runs; combined run hit pre-existing IP rate-limit exhaustion — unrelated to my changes).
+**Single-Primitive:** reuses Card, Badge, Skeleton, Button, lucide-react. Added Radio icon (already in lucide-react). No new primitive.
+**Missing backend field:** none — BFF already returns syncState + lastSyncAt.
+**Typecheck:** EXIT 0 after each commit.
+**Next:** READY-FOR-SECURITY

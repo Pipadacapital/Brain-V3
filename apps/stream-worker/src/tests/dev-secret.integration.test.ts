@@ -33,7 +33,6 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { Pool } from 'pg';
-import { LocalSecretsManager } from '../../../core/src/modules/connector/sources/storefront/shopify/infrastructure/secrets/LocalSecretsManager.js';
 import {
   seedTestBrand,
   cleanupConnectorFixtures,
@@ -102,14 +101,16 @@ describe('A4-1: dev_secret cross-process round-trip (defect #8b / D-8)', () => {
      * REVERT-RED: remove devPersist() call → dev_secret row not written → next test reads null.
      */
 
-    // LocalSecretsManager needs NODE_ENV != 'production' — it's 'test' in vitest
-    const core = new LocalSecretsManager(superPool);
-    const result = await core.storeShopifyToken(
-      A4_BRAND_ID,
-      TEST_SHOP_DOMAIN,
-      TEST_ACCESS_TOKEN,
+    // Write the dev_secret row exactly as core's LocalSecretsManager.storeShopifyToken →
+    // devPersist would (same name-key). The CORE write path (storeShopifyToken → devPersist) is
+    // unit-tested in apps/core (LocalSecretsManager.test.ts) — in-package, no cross-rootDir import.
+    // Here we test the WORKER's cross-process READ of dev_secret.
+    storedArn = `arn:aws:secretsmanager:us-east-1:000000000000:secret:${SECRET_NAME}`;
+    await superPool.query(
+      `INSERT INTO dev_secret (name, secret_value) VALUES ($1, $2)
+       ON CONFLICT (name) DO UPDATE SET secret_value = EXCLUDED.secret_value`,
+      [SECRET_NAME, TEST_ACCESS_TOKEN],
     );
-    storedArn = result.arn;
 
     // Verify ARN shape
     expect(storedArn).toContain('arn:aws:secretsmanager');
@@ -176,8 +177,9 @@ describe('A4-1: dev_secret cross-process round-trip (defect #8b / D-8)', () => {
      * REVERT-RED: if devDelete() is removed from deleteShopifyToken, the dev_secret row
      * persists and the worker still reads the old token → expect(token).toBeNull() → RED.
      */
-    const core = new LocalSecretsManager(superPool);
-    await core.deleteShopifyToken(SECRET_ARN);
+    // Delete the dev_secret row (as core's deleteShopifyToken → devDelete would; that core path
+    // is covered in apps/core LocalSecretsManager.test.ts). Here we assert the WORKER reads null.
+    await superPool.query(`DELETE FROM dev_secret WHERE name = $1`, [SECRET_NAME]);
 
     // Verify dev_secret row is gone
     const row = await superPool.query<{ secret_value: string }>(
@@ -217,79 +219,20 @@ describe('A4-1: dev_secret cross-process round-trip (defect #8b / D-8)', () => {
   });
 });
 
-// ── A4-2: LocalSecretsManager prod-hard-fail ─────────────────────────────────
+// A4-2 (core LocalSecretsManager prod-hard-fail) lives in apps/core
+// (LocalSecretsManager.test.ts) — in-package, no cross-rootDir import (QA-CLR-LOW-01).
 
-describe('A4-2: LocalSecretsManager (core) hard-fails in production (defect #8b / D-8)', () => {
-  it('REVERT-RED: NODE_ENV=production → constructor throws [LocalSecretsManager] FATAL', () => {
-    /**
-     * LocalSecretsManager.ts:33-38:
-     *   if (process.env['NODE_ENV'] === 'production') {
-     *     throw new Error('[LocalSecretsManager] FATAL: ...');
-     *   }
-     *
-     * REVERT-RED: remove this guard → constructor no longer throws in production
-     * → toThrow('[LocalSecretsManager] FATAL') goes RED.
-     */
-    const prev = process.env['NODE_ENV'];
-    process.env['NODE_ENV'] = 'production';
-    try {
-      expect(() => new LocalSecretsManager()).toThrow('[LocalSecretsManager] FATAL');
-    } finally {
-      if (prev !== undefined) {
-        process.env['NODE_ENV'] = prev;
-      } else {
-        delete process.env['NODE_ENV'];
-      }
-    }
-  });
+// ── A4-3: WorkerLocalSecretsManager prod-hard-fail (SEC-CLR-MED-01 — now FIXED) ─
 
-  it('non-production: constructor does NOT throw (confirm guard is NODE_ENV-scoped)', () => {
-    const prev = process.env['NODE_ENV'];
-    // In test/dev, constructor must not throw
-    process.env['NODE_ENV'] = 'test';
-    try {
-      expect(() => new LocalSecretsManager()).not.toThrow();
-    } finally {
-      if (prev !== undefined) {
-        process.env['NODE_ENV'] = prev;
-      } else {
-        delete process.env['NODE_ENV'];
-      }
-    }
-  });
-});
-
-// ── A4-3: ADR-R3 — WorkerLocalSecretsManager prod-hard-fail (DISCOVERED GAP) ─
-
-describe('A4-3: WorkerLocalSecretsManager prod-hard-fail — ADR-R3 discovered gap', () => {
-  it.skip(
-    // DISCOVERED BUG: WorkerLocalSecretsManager has no NODE_ENV=production guard
-    // (worker-secrets.ts:69). buildWorkerSecretsManager() branches to AwsSecretsManager
-    // in prod (line 37), but the WorkerLocalSecretsManager CLASS ITSELF is instantiable
-    // in production — its constructor has no guard. Only the factory function avoids it.
-    //
-    // This means: if someone instantiates new WorkerLocalSecretsManager() directly
-    // (e.g. in a test, a future refactor, or a DI container), the prod guard is bypassed.
-    // LocalSecretsManager (core) has this guard; WorkerLocalSecretsManager does NOT.
-    //
-    // D-8 requires "both managers throw under NODE_ENV=production."
-    // This assertion would be RED on current master (WorkerLocalSecretsManager does not throw).
-    // NOT fixed in this PR (tests-only / D-9). Surface as a separate requirement.
-    //
-    // ADR-R3: This is a PRODUCT GAP — a separate PR should add:
-    //   if (process.env['NODE_ENV'] === 'production') {
-    //     throw new Error('[WorkerLocalSecretsManager] FATAL: must not be instantiated in production');
-    //   }
-    // to the WorkerLocalSecretsManager constructor at worker-secrets.ts:69.
-    'WorkerLocalSecretsManager should hard-fail under NODE_ENV=production — DISCOVERED GAP (ADR-R3)',
+describe('A4-3: WorkerLocalSecretsManager prod-hard-fail (SEC-CLR-MED-01)', () => {
+  it(
+    // SEC-CLR-MED-01 (was ADR-R3 discovered gap, now FIXED): WorkerLocalSecretsManager's
+    // constructor now hard-fails under NODE_ENV=production, mirroring core's LocalSecretsManager.
+    // buildWorkerSecretsManager() branches to AwsSecretsManager in prod; this guard defends a
+    // direct-instantiation bypass. REVERT-RED: remove the guard at worker-secrets.ts → no throw.
+    'WorkerLocalSecretsManager hard-fails under NODE_ENV=production',
     async () => {
-      // This test CANNOT pass on current master (WorkerLocalSecretsManager has no prod guard).
-      // Skipped until the guard is added in a separate product PR.
-      //
-      // When un-skipped, the assertion should be:
-      const { WorkerLocalSecretsManager } = await import('../jobs/shopify-backfill/worker-secrets.js') as {
-        WorkerLocalSecretsManager: new () => unknown;
-      };
+      const { WorkerLocalSecretsManager } = await import('../jobs/shopify-backfill/worker-secrets.js');
 
       const prev = process.env['NODE_ENV'];
       process.env['NODE_ENV'] = 'production';

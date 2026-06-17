@@ -92,10 +92,13 @@ export function buildShopifyFetchStub(store: FakeShopifyOrder[]): {
 } {
   const recordedRequests: string[] = [];
 
+  // Typed loosely + cast to `typeof fetch` at the return: Node/undici `Response` and the DOM-lib
+  // `Response` differ (`bytes()`), and `RequestInfo` isn't in scope without the DOM lib. The stub
+  // only needs to behave like fetch for the client under test.
   const fetchImpl = async (
-    input: RequestInfo | URL,
+    input: string | URL,
     _init?: RequestInit,
-  ): Promise<Response> => {
+  ) => {
     const urlStr = typeof input === 'string' ? input : input.toString();
     recordedRequests.push(urlStr);
 
@@ -128,7 +131,7 @@ export function buildShopifyFetchStub(store: FakeShopifyOrder[]): {
     });
   };
 
-  return { fetchImpl: fetchImpl as typeof fetch, recordedRequests };
+  return { fetchImpl: fetchImpl as unknown as typeof fetch, recordedRequests };
 }
 
 // ── DB seed helpers (superuser pool only) ─────────────────────────────────────

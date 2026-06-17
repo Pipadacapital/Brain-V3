@@ -66,7 +66,19 @@ export function buildWorkerSecretsManager(): WorkerSecretsManager {
  */
 import pg from 'pg';
 
-class WorkerLocalSecretsManager implements WorkerSecretsManager {
+export class WorkerLocalSecretsManager implements WorkerSecretsManager {
+  constructor() {
+    // SEC-CLR-MED-01: hard-fail if instantiated in production (belt-and-suspenders), mirroring
+    // core's LocalSecretsManager. buildWorkerSecretsManager() already branches to AwsSecretsManager
+    // in prod; this guard defends against a future direct-instantiation bypassing the factory.
+    if (process.env['NODE_ENV'] === 'production') {
+      throw new Error(
+        '[WorkerLocalSecretsManager] FATAL: must not be instantiated in production. ' +
+          'Use AwsSecretsManager via buildWorkerSecretsManager().',
+      );
+    }
+  }
+
   // Lazily-created pool for reading the DEV-TOKEN-REACH dev_secret table (migration 0024).
   // The worker connects as brain_app, which is GRANTed SELECT on dev_secret.
   private devPool: pg.Pool | undefined;

@@ -372,7 +372,9 @@ export async function main(): Promise<void> {
   const connectorKmsKeyId = getEnv('CONNECTOR_SECRETS_KMS_KEY_ID', 'alias/brain-connector-secrets-dev');
   const connectorSecretsManager = isProduction
     ? new AwsSecretsManager(getEnv('AWS_REGION', 'us-east-1'), shopifyClientSecretRef, connectorKmsKeyId)
-    : new LocalSecretsManager();
+    // DEV-TOKEN-REACH (0024): pass rawPgPool so dev tokens persist to dev_secret —
+    // durable across core restarts and readable by the separate stream-worker process.
+    : new LocalSecretsManager(rawPgPool);
   const oauthStateStore = new InProcessOAuthStateStore();
 
   // DEV-ONLY: validate-sync spike — pull live orders via the real connected token.

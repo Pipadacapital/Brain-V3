@@ -401,10 +401,10 @@
     },
     {
       "req_id": "feat-connector-backfill",
-      "status": "architecture",
-      "stage": 2,
-      "current_owner": "architect",
-      "last_journal_entry_at": "2026-06-17T07:44:24Z"
+      "status": "dev-parallel",
+      "stage": 3,
+      "current_owner": "data-engineer",
+      "last_journal_entry_at": "2026-06-17T07:52:56Z"
     }
   ]
 }

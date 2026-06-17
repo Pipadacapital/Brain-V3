@@ -10,11 +10,13 @@
     },
     "feat-connector-backfill": {
       "spawns": 0,
-      "stage": 2,
+      "stage": 3,
       "outstanding": [
-        "architect"
+        "data-engineer",
+        "backend-developer",
+        "frontend-web-developer"
       ],
-      "updated_at": "2026-06-17T07:44:24Z"
+      "updated_at": "2026-06-17T07:52:56Z"
     }
   }
 }

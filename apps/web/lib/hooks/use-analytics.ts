@@ -1,0 +1,69 @@
+'use client';
+
+/**
+ * Analytics hooks — react-query bindings for the Phase 1 analytics BFF endpoints.
+ *
+ * Query keys are prefixed with 'analytics' so they auto-invalidate on brand switch
+ * when brand-switcher.tsx calls queryClient.invalidateQueries({ queryKey: ['analytics'] }).
+ * The DASHBOARD_QUERY_KEY is also invalidated separately — these are siblings.
+ *
+ * staleTime: timeseries + kpi = 5 min (heavy reads); activity = 1 min (event feed).
+ */
+
+import { useQuery } from '@tanstack/react-query';
+import { analyticsApi } from '@/lib/api/client';
+
+export const ANALYTICS_QUERY_KEY = ['analytics'] as const;
+
+/**
+ * useRevenueTimeseries — fetches per-bucket realized + provisional revenue.
+ * @param params - Date range + grain. Defaults: last 90 days, day grain.
+ */
+export function useRevenueTimeseries(params?: {
+  from?: string;
+  to?: string;
+  grain?: 'day' | 'week';
+}) {
+  return useQuery({
+    queryKey: [...ANALYTICS_QUERY_KEY, 'revenue-timeseries', params?.from, params?.to, params?.grain ?? 'day'],
+    queryFn: () => analyticsApi.getRevenueTimeseries(params),
+    staleTime: 5 * 60_000, // 5 minutes
+  });
+}
+
+/**
+ * useKpiSummary — fetches brand KPI snapshot as of a date.
+ * @param asOf - YYYY-MM-DD date (optional; server defaults to today).
+ */
+export function useKpiSummary(asOf?: string) {
+  return useQuery({
+    queryKey: [...ANALYTICS_QUERY_KEY, 'kpi-summary', asOf ?? 'today'],
+    queryFn: () => analyticsApi.getKpiSummary(asOf),
+    staleTime: 5 * 60_000,
+  });
+}
+
+/**
+ * useRecognitionBreakdown — fetches recognition state distribution.
+ * @param asOf - YYYY-MM-DD date (optional; server defaults to today).
+ */
+export function useRecognitionBreakdown(asOf?: string) {
+  return useQuery({
+    queryKey: [...ANALYTICS_QUERY_KEY, 'recognition-breakdown', asOf ?? 'today'],
+    queryFn: () => analyticsApi.getRecognitionBreakdown(asOf),
+    staleTime: 5 * 60_000,
+  });
+}
+
+/**
+ * useRecentActivity — fetches the latest N ledger rows.
+ * @param limit - Max rows (default 20).
+ */
+export function useRecentActivity(limit = 20) {
+  return useQuery({
+    queryKey: [...ANALYTICS_QUERY_KEY, 'recent-activity', limit],
+    queryFn: () => analyticsApi.getRecentActivity(limit),
+    staleTime: 60_000, // 1 minute — event feed refreshes more often
+    refetchInterval: 60_000,
+  });
+}

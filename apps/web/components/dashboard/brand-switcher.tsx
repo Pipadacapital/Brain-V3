@@ -27,6 +27,7 @@ import { ErrorCard } from '@/components/ui/error-card';
 import { brandApi, BffApiError } from '@/lib/api/client';
 import { useBrandSummary } from '@/lib/hooks/use-dashboard';
 import { DASHBOARD_QUERY_KEY } from '@/lib/hooks/use-dashboard';
+import { ANALYTICS_QUERY_KEY } from '@/lib/hooks/use-analytics';
 import { DashboardCreateBrandDialog } from '@/components/dashboard/create-brand-dialog';
 
 /** Roles that may create a new brand (backend enforces; UI gates the CTA). */
@@ -96,7 +97,10 @@ export function BrandSwitcher() {
       await brandApi.switchBrand(id);
       // B3/MA-06: invalidate DASHBOARD_QUERY_KEY BEFORE navigation so the next render
       // receives fresh brand-scoped data (staleTime=60s would otherwise serve stale cache).
-      await queryClient.invalidateQueries({ queryKey: DASHBOARD_QUERY_KEY });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: DASHBOARD_QUERY_KEY }),
+        queryClient.invalidateQueries({ queryKey: ANALYTICS_QUERY_KEY }),
+      ]);
       // Hard-reload so the session cookie (set by set-brand) is picked up by the server
       // and all dashboard queries run with the new brand context.
       window.location.href = '/dashboard';

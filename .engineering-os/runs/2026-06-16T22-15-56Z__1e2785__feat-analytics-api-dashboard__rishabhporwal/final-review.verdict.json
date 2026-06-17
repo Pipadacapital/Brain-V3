@@ -1,0 +1,21 @@
+{
+  "stage": 6,
+  "agent": "final-reviewer",
+  "req_id": "feat-analytics-api-dashboard",
+  "verdict": "PASS",
+  "recommendation": "APPROVE",
+  "blocking": 0,
+  "gates_rerun": [
+    { "name": "pnpm --filter @brain/core typecheck", "result": "PASS", "evidence": "tsc --noEmit EXIT 0, no output" },
+    { "name": "pnpm --filter @brain/web typecheck", "result": "PASS", "evidence": "tsc --noEmit EXIT 0, no output" },
+    { "name": "vitest run revenue-metrics.live.test.ts (20) under brain_app NOBYPASSRLS", "result": "PASS", "evidence": "20/20 passed against real postgres:16; pg_roles brain_app NOSUPERUSER/NOBYPASSRLS; negative-control current_user=brain_app + cross-brand=no_data replicated" }
+  ],
+  "inherited_green": ["e2e realized-revenue.spec.ts 4/4 (QA DELTA full re-run; Playwright stack not stood up by final-reviewer)"],
+  "negative_control_present": true,
+  "over_engineering": "clean",
+  "hard_rule_deviation": "none",
+  "drift": "none",
+  "risks_remaining": ["LOW-SEC-001", "QA-F-002", "F-SEC-02 (carried)", "QA-3 (carried)"],
+  "next": "stakeholder-gate",
+  "ts": "2026-06-17T07:12:00Z"
+}

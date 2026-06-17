@@ -1,0 +1,18 @@
+{
+  "stage": 4,
+  "agent": "security-reviewer",
+  "req_id": "feat-analytics-api-dashboard",
+  "verdict": "PASS",
+  "findings": [
+    {
+      "id": "LOW-SEC-001",
+      "severity": "LOW",
+      "title": "Semantic date validation gap: month=13 returns 500 instead of 400 INVALID_DATE",
+      "file": "apps/core/src/modules/frontend-api/internal/bff.routes.ts:953 + apps/core/src/modules/analytics/internal/application/queries/get-revenue-metrics.ts:61",
+      "status": "open-deferred",
+      "detail": "The regex ^\\d{4}-\\d{2}-\\d{2}$ passes 2026-13-01 (month 13). new Date('2026-13-01T00:00:00Z') yields Invalid Date. asOf.toISOString() throws RangeError at get-revenue-metrics.ts:61, caught by the global error handler as 500 INTERNAL_ERROR instead of 400 INVALID_DATE. Not a security defect — no PII leaked, not exploitable, no data loss. Safe-to-defer: future hardening to add isNaN(asOf.getTime()) check before calling getRevenueMetrics."
+    }
+  ],
+  "blocking": 0,
+  "ts": "2026-06-17T07:00:00Z"
+}

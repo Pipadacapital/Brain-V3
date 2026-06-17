@@ -106,3 +106,11 @@
 {"ts":"2026-06-16T21:46:07Z","req_id":"feat-metric-engine-parity","agent":"security-reviewer","stage":4,"model":"sonnet","review_scope":"delta","total_tokens":43054}
 {"ts":"2026-06-16T21:51:39Z","req_id":"feat-metric-engine-parity","agent":"final-reviewer","stage":6,"model":"opus","review_scope":"full","total_tokens":81928}
 {"ts":"2026-06-16T22:09:05Z","req_id":"feat-metric-engine-parity","agent":"platform-devops","stage":8,"model":"sonnet","review_scope":"full","total_tokens":68491}
+{"ts":"2026-06-16T22:23:11Z","req_id":"feat-analytics-api-dashboard","agent":"cto-advisor","stage":1,"model":"sonnet","review_scope":"none","total_tokens":77036}
+{"ts":"2026-06-17T02:32:26Z","req_id":"feat-analytics-api-dashboard","agent":"architect","stage":2,"model":"opus","review_scope":"none","total_tokens":99598}
+{"ts":"2026-06-17T02:48:22Z","req_id":"feat-analytics-api-dashboard","agent":"backend-developer","stage":3,"model":"sonnet","review_scope":"none","total_tokens":115052}
+{"ts":"2026-06-17T02:49:18Z","req_id":"feat-analytics-api-dashboard","agent":"frontend-web-developer","stage":3,"model":"sonnet","review_scope":"none","total_tokens":121213}
+{"ts":"2026-06-17T03:03:16Z","req_id":"feat-analytics-api-dashboard","agent":"security-reviewer","stage":4,"model":"sonnet","review_scope":"full","total_tokens":114413}
+{"ts":"2026-06-17T03:03:16Z","req_id":"feat-analytics-api-dashboard","agent":"qa-agent","stage":5,"model":"sonnet","review_scope":"full","total_tokens":78504}
+{"ts":"2026-06-17T03:07:08Z","req_id":"feat-analytics-api-dashboard","agent":"qa-agent","stage":5,"model":"sonnet","review_scope":"delta","total_tokens":21560}
+{"ts":"2026-06-17T03:13:04Z","req_id":"feat-analytics-api-dashboard","agent":"final-reviewer","stage":6,"model":"opus","review_scope":"full","total_tokens":78514}

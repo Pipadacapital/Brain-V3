@@ -58,11 +58,11 @@ const APP_URL =
   'postgres://brain_app:brain_app@localhost:5432/brain';
 const REDIS_URL = process.env['REDIS_URL'] ?? 'redis://localhost:6379';
 
-/** Track B4 unique brand UUIDs. NEVER 60d543dc-*. */
-const B4_BRAND_A = 'brzb1001-0001-4001-8001-000000000001';
-const B4_BRAND_B = 'brzb1002-0002-4002-8002-000000000002';
-const B4_CI_A    = 'brzb1c01-0001-4001-8001-000000000011';
-const B4_CI_B    = 'brzb1c02-0002-4002-8002-000000000022';
+/** Track B4 unique brand UUIDs (valid UUID v4 format). NEVER 60d543dc-*. */
+const B4_BRAND_A = 'b4000001-0001-4001-8001-000000000001';
+const B4_BRAND_B = 'b4000002-0002-4002-8002-000000000002';
+const B4_CI_A    = 'b400c001-0001-4001-8001-000000000011';
+const B4_CI_B    = 'b400c002-0002-4002-8002-000000000022';
 
 const B4_ACCOUNT_A = 'acc_brztest001';
 const B4_ACCOUNT_B = 'acc_brztest002';
@@ -247,9 +247,9 @@ async function seedRazorpayConnector(
   // Create a connector_sync_status row so touchSyncStatus UPDATE finds it
   await superPool.query(
     `INSERT INTO connector_sync_status
-       (id, brand_id, connector_instance_id, state, created_at, updated_at)
-     VALUES ($1, $2, $3, 'connected', NOW(), NOW())
-     ON CONFLICT DO NOTHING`,
+       (id, brand_id, connector_instance_id, state, updated_at)
+     VALUES ($1, $2, $3, 'connected', NOW())
+     ON CONFLICT (brand_id, connector_instance_id) DO NOTHING`,
     [randomUUID(), brandId, connectorInstanceId],
   );
 }
@@ -532,17 +532,12 @@ describe('Razorpay webhook receiver — B4 integration tests', () => {
     // (current_setting('app.current_brand_id', TRUE) returns NULL → brand_id = NULL::uuid → no match)
     expect(parseInt(noGuc.rows[0]!.count, 10)).toBe(0);
 
-    // brain_app WITH Brand A GUC → sees Brand A rows only
-    const withGuc = await appPool.query<{ count: string }>(
-      `SET LOCAL app.current_brand_id = $1; SELECT count(*)::text as count FROM connector_razorpay_order_map`,
-      [B4_BRAND_A],
-    );
-    // Note: Multi-statement queries via pg module — the last result is returned
-    // Use a transaction to test this properly
+    // brain_app WITH Brand A GUC → sees Brand A rows only (use set_config in txn)
     const client = await appPool.connect();
     try {
       await client.query('BEGIN');
-      await client.query(`SET LOCAL app.current_brand_id = $1`, [B4_BRAND_A]);
+      // Use set_config() fn (parameterized) — SET LOCAL doesn't support $1 placeholders
+      await client.query(`SELECT set_config('app.current_brand_id', $1, true)`, [B4_BRAND_A]);
       const result = await client.query<{ count: string }>(
         `SELECT count(*)::text as count FROM connector_razorpay_order_map WHERE brand_id = $1`,
         [B4_BRAND_A],

@@ -45,8 +45,9 @@ export class PgRazorpayOrderMapRepository {
     const client = await this.rawPgPool.connect();
     try {
       await client.query('BEGIN');
-      // FORCE RLS requires GUC to be set txn-local (NN-1 / I-S01)
-      await client.query(`SET LOCAL app.current_brand_id = $1`, [row.brand_id]);
+      // FORCE RLS requires GUC to be set txn-local (NN-1 / I-S01).
+      // Use set_config() fn (parameterized) rather than SET LOCAL (which does not support $1).
+      await client.query(`SELECT set_config('app.current_brand_id', $1, true)`, [row.brand_id]);
 
       await client.query(
         `INSERT INTO connector_razorpay_order_map

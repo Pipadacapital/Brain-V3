@@ -756,7 +756,7 @@ export async function main(): Promise<void> {
           const rzClient = await rawPgPool.connect();
           try {
             await rzClient.query('BEGIN');
-            await rzClient.query(`SET LOCAL app.current_brand_id = $1`, [brandId]);
+            await rzClient.query(`SELECT set_config('app.current_brand_id', $1, true)`, [brandId]);
             await rzClient.query(
               `UPDATE connector_instance SET razorpay_account_id = $1 WHERE id = $2 AND brand_id = $3`,
               [razorpayAccountId, connectorInstanceId, brandId],

@@ -306,8 +306,8 @@ export function registerRazorpayWebhookRoutes(
               );
             } catch (mapErr) {
               req.log?.error(
-                { request_id: requestId, brand_id: brandId, err: mapErr },
-                '[razorpay-webhook] map-table upsert failed — not fatal, retried on next webhook',
+                { request_id: requestId, brand_id: brandId, err: mapErr, errMsg: (mapErr as Error).message },
+                '[razorpay-webhook] map-table upsert failed — returning 500 so Razorpay retries',
               );
               // Return 500 so Razorpay retries — do NOT fast-ack on a failed map populate.
               return reply.code(500).send({
@@ -456,7 +456,8 @@ async function touchSyncStatus(
   const client = await rawPgPool.connect();
   try {
     await client.query('BEGIN');
-    await client.query(`SET LOCAL app.current_brand_id = $1`, [brandId]);
+    // Use set_config() fn (parameterized) rather than SET LOCAL (which does not support $1).
+    await client.query(`SELECT set_config('app.current_brand_id', $1, true)`, [brandId]);
     await client.query(
       `UPDATE connector_sync_status
        SET state = 'connected', last_sync_at = NOW(), updated_at = NOW()

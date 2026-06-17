@@ -108,7 +108,7 @@ export class ConnectRazorpayCommand {
     const client = await this.rawPgPool.connect();
     try {
       await client.query('BEGIN');
-      await client.query(`SET LOCAL app.current_brand_id = $1`, [brandId]);
+      await client.query(`SELECT set_config('app.current_brand_id', $1, true)`, [brandId]);
       await client.query(
         `UPDATE connector_instance
          SET razorpay_account_id = $1

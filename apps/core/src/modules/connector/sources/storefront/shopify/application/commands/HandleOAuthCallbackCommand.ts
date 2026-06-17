@@ -117,6 +117,7 @@ export class HandleOAuthCallbackCommand {
     // accessToken is now discarded — only secretRef (ARN) proceeds.
 
     // ── Step 6: Write connector_instance (secret_ref only — NN-2) ────────────
+    // ADR-CM-5: connect ⇒ health_state='Healthy', safety_rating='safe'
     const instanceId = randomUUID();
     const now = new Date();
     const instance = ConnectorInstance.create({
@@ -126,6 +127,8 @@ export class HandleOAuthCallbackCommand {
       shopDomain,
       secretRef,
       status: 'connected',
+      healthState: 'Healthy',
+      safetyRating: 'safe',
       connectedAt: now,
       disconnectedAt: null,
       createdAt: now,

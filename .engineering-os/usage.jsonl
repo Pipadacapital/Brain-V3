@@ -168,3 +168,14 @@
 {"ts":"2026-06-17T22:30:00Z","req_id":"feat-shopify-live-connector","agent":"platform-devops","stage":8,"total_tokens":63431,"model":"sonnet"}
 {"ts":"2026-06-17T21:10:06Z","req_id":"feat-collection-foundation","agent":"architect","stage":2,"model":"opus","review_scope":"none","total_tokens":123863}
 {"ts":"2026-06-17T22:11:55Z","req_id":"feat-collection-foundation","agent":"phase1-build-workflow","stage":3,"model":"opus","review_scope":"none","total_tokens":345236}
+{"ts":"2026-06-17T19:13:13Z","req_id":"feat-razorpay-settlement-connector","agent":"cto-advisor","stage":1,"model":"sonnet","review_scope":"none","total_tokens":86600}
+{"ts":"2026-06-17T19:17:22Z","req_id":"feat-razorpay-settlement-connector","agent":"dynamic-persona-payments","stage":1,"model":"sonnet","review_scope":"none","total_tokens":46933}
+{"ts":"2026-06-17T19:17:22Z","req_id":"feat-razorpay-settlement-connector","agent":"dynamic-persona-compliance","stage":1,"model":"sonnet","review_scope":"none","total_tokens":54453}
+{"ts":"2026-06-17T19:21:45Z","req_id":"feat-razorpay-settlement-connector","agent":"cto-advisor","stage":1,"model":"sonnet","review_scope":"none","total_tokens":45299}
+{"ts":"2026-06-17T19:28:02Z","req_id":"feat-razorpay-settlement-connector","agent":"architect","stage":2,"model":"opus","review_scope":"none","total_tokens":113696}
+{"ts":"2026-06-17T19:59:43Z","req_id":"feat-razorpay-settlement-connector","agent":"data-engineer","stage":3,"model":"sonnet","review_scope":"none","total_tokens":79902}
+{"ts":"2026-06-17T20:47:02Z","req_id":"feat-razorpay-settlement-connector","agent":"backend-developer","stage":3,"model":"sonnet","review_scope":"none","total_tokens":44354}
+{"ts":"2026-06-17T21:00:59Z","req_id":"feat-razorpay-settlement-connector","agent":"review-workflow","stage":4,"model":"opus","review_scope":"full","total_tokens":303023}
+{"ts":"2026-06-17T21:12:29Z","req_id":"feat-razorpay-settlement-connector","agent":"data-engineer","stage":3,"model":"opus","review_scope":"delta","total_tokens":75813}
+{"ts":"2026-06-17T21:32:39Z","req_id":"feat-razorpay-settlement-connector","agent":"review-delta","stage":4,"model":"opus","review_scope":"delta","total_tokens":105672}
+{"ts":"2026-06-17T22:00:07Z","req_id":"feat-razorpay-settlement-connector","agent":"platform-devops","stage":8,"model":"sonnet","review_scope":"none","total_tokens":95049}

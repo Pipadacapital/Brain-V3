@@ -109,3 +109,6 @@ Warnings (2): QA-BF-W1 (E2E tests 6+7 env-skipped, SHOPIFY_CONNECTED_CONNECTOR_I
 ##  — QA Engineer — feat-collection-foundation
 **Stage:** 5 · **Mode:** FULL · **Verdict:** PASS
 **Smoke:** captured (Redpanda quarantine produced+consumed offset 10943; /pixel.js eval-parity) · **Parity:** N/A (deterministic, no cross-runtime metric) · **Validity:** negative-controls confirmed (R2 unwire → cross-brand RED; brain_app non-bypassrls RLS read) · **Tests:** 74 + 57 regression, 0 fail · **Next:** reconcile with Security
+## 2026-06-18T00:55:00Z — QA Engineer — feat-razorpay-settlement-connector
+**Stage:** 5 · **Mode:** FULL · **Verdict:** PASS
+**Smoke:** captured (6/6 wiring e2e real Redpanda→ledger + 10/10 webhook integration real brain_app+Redis) · **Parity/Money:** signed-sum net-of-fees verified (finalization +97640, fee -2000, tax -360 GST_18 separate; BigInt no-float) · **Validity:** 3 non-inert negative controls captured RED (un-wire consumer→SW1 timeout; HMAC bypass→200 not 401; no-GUC→FORCE RLS fail-closed); validity_check clean · **tsc:** mapper/core 0 err, stream-worker 1 pre-existing unrelated · **43/43 mapper unit** · **Next:** reconcile with Security

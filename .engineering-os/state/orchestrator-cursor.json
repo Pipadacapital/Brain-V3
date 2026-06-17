@@ -16,14 +16,14 @@
       ],
       "updated_at": "2026-06-17T14:58:02Z"
     },
-    "feat-collection-foundation": {
-      "spawns": 1,
-      "stage": 2,
+    "feat-razorpay-settlement-connector": {
+      "spawns": 7,
+      "stage": 4,
       "outstanding": [
-        "1"
+        "2"
       ],
-      "last_route": "S2 architect (ADR-1/ADR-2 + tracks incl Tracking Center UI)",
-      "updated_at": "2026-06-17T21:02:51Z"
+      "last_route": "S4/5 review \u2014 Security \u2225 QA (Track C deferred to UI Phase 4)",
+      "updated_at": "2026-06-17T20:47:02Z"
     }
   }
 }

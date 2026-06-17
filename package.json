@@ -9,6 +9,7 @@
     "build": "turbo run build",
     "typecheck": "turbo run typecheck",
     "lint": "turbo run lint",
+    "log-grep": "node tools/eslint-rules/log-grep-gate.mjs",
     "test": "turbo run test:unit",
     "test:isolation": "turbo run test:isolation",
     "test:parity": "turbo run test:parity",

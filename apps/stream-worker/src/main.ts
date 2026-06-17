@@ -16,7 +16,7 @@
  * DATABASE_URL=postgres://brain@... for this service. Use BRAIN_APP_DATABASE_URL.
  */
 import { Kafka } from 'kafkajs';
-import { Pool } from 'pg';
+import { Pool, Pool as PgPool } from 'pg';
 import { DbAuditWriter, type AuditDbClient } from '@brain/audit';
 import { RedisDedupAdapter } from './infrastructure/redis/RedisDedupAdapter.js';
 import { BronzeRepository } from './infrastructure/pg/BronzeRepository.js';
@@ -28,6 +28,7 @@ import { CollectorEventConsumer } from './interfaces/consumers/CollectorEventCon
 import { IdentityBridgeConsumer } from './identity-bridge/IdentityBridgeConsumer.js';
 import { BackfillOrderConsumer } from './interfaces/consumers/BackfillOrderConsumer.js';
 import { LiveLedgerBridgeConsumer } from './interfaces/consumers/LiveLedgerBridgeConsumer.js';
+import { SettlementLedgerConsumer } from './interfaces/consumers/SettlementLedgerConsumer.js';
 import { LedgerWriter } from './infrastructure/pg/LedgerWriter.js';
 
 export async function main(): Promise<void> {
@@ -44,6 +45,11 @@ export async function main(): Promise<void> {
   // IdentityBridgeConsumer pattern. Does NOT double-write Bronze (CollectorEventConsumer handles
   // Bronze). Filters to order.live.v1 events only; routes provisional_recognition / rto_reversal.
   const liveLedgerGroupId = process.env['LIVE_LEDGER_CONSUMER_GROUP_ID'] ?? 'live-ledger-bridge';
+  // Settlement ledger bridge (ADR-RZ-6 / MB-4): separate consumer group on the live topic.
+  // Filters settlement.live.v1 events; does TWO-HOP JOIN → net-of-fees finalization writes.
+  // WIRED HERE (MB-4 NON-NEGOTIABLE) — unwiring triggers durable-rule proposal (occurrence #3).
+  const settlementLedgerGroupId =
+    process.env['SETTLEMENT_LEDGER_CONSUMER_GROUP_ID'] ?? 'settlement-ledger-bridge';
   // Backfill lane (ADR-BF-7 / D-3): separate topic + group → zero live-lane lag impact
   const backfillTopic = process.env['BACKFILL_TOPIC'] ?? `${(process.env['APP_ENV'] ?? 'dev')}.collector.order.backfill.v1`;
   const backfillGroupId = process.env['BACKFILL_CONSUMER_GROUP_ID'] ?? 'stream-worker-backfill';
@@ -124,6 +130,22 @@ export async function main(): Promise<void> {
     kafka, liveLedgerWriter, topic, liveLedgerGroupId,
   );
 
+  // ── Settlement ledger bridge (ADR-RZ-6 / MB-4 WIRED) ───────────────────────
+  // Same live topic (topic) but separate consumer group (settlementLedgerGroupId).
+  // Filters settlement.live.v1; does TWO-HOP JOIN + net-of-fees finalization writes.
+  // The mapPool reads connector_razorpay_order_map under brain_app + GUC (RLS enforced).
+  // MB-4: NOT wiring this is occurrence #3 of the wired-to-nothing anti-pattern.
+  // The mandatory e2e wiring test (settlement-ledger-wiring.e2e.test.ts) catches unwiring.
+  const settlementMapPool = new PgPool({ connectionString: dbUrl, max: 3 });
+  const settlementLedgerWriter = new LedgerWriter(dbUrl);
+  const settlementLedgerConsumer = new SettlementLedgerConsumer(
+    kafka,
+    settlementLedgerWriter,
+    settlementMapPool,
+    topic,
+    settlementLedgerGroupId,
+  );
+
   // Graceful shutdown
   const shutdown = async (signal: string): Promise<void> => {
     console.info(`[stream-worker] ${signal} received — draining consumers...`);
@@ -132,6 +154,7 @@ export async function main(): Promise<void> {
       identityConsumer.stop(),
       backfillConsumer.stop(),
       liveLedgerConsumer.stop(),
+      settlementLedgerConsumer.stop(),
     ]);
     await dedup.quit();
     await backfillDedup.quit();
@@ -141,6 +164,8 @@ export async function main(): Promise<void> {
     await identityRepo.end();
     await ledgerWriter.end();
     await liveLedgerWriter.end();
+    await settlementLedgerWriter.end();
+    await settlementMapPool.end();
     console.info('[stream-worker] shutdown complete');
     process.exit(0);
   };
@@ -169,6 +194,15 @@ export async function main(): Promise<void> {
   console.info(`[stream-worker] starting live-ledger bridge — topic=${topic} group=${liveLedgerGroupId}`);
   await liveLedgerConsumer.start();
   console.info('[stream-worker] live-ledger bridge consumer running');
+
+  // ── Settlement ledger bridge consumer (ADR-RZ-6 / MB-4 MANDATORY WIRE) ──────
+  // Same live topic, independent consumer group. Filters settlement.live.v1.
+  // TWO-HOP JOIN (MB-1) + net-of-fees finalization (MB-3) + brand-level path (MB-1.4).
+  // WIRED HERE: do NOT remove this block without updating settlement-ledger-wiring.e2e.test.ts
+  // and filing a durable-rule proposal (wired-to-nothing occurrence #3 trigger).
+  console.info(`[stream-worker] starting settlement-ledger bridge — topic=${topic} group=${settlementLedgerGroupId}`);
+  await settlementLedgerConsumer.start();
+  console.info('[stream-worker] settlement-ledger bridge consumer running');
 }
 
 // Run when invoked directly (not imported in tests)

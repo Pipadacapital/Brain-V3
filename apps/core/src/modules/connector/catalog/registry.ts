@@ -76,8 +76,8 @@ export const CONNECTOR_CATALOG: readonly ConnectorDefinition[] = [
     category: 'payments',
     displayName: 'Razorpay',
     connectMethod: 'credential',
-    availability: 'coming_soon',
-    description: 'Settlement reconciliation.',
+    availability: 'available',
+    description: 'Settlement reconciliation — net-of-fees realized revenue.',
   },
   // ── logistics ────────────────────────────────────────────────────────────────
   {

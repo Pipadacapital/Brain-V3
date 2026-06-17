@@ -8,11 +8,13 @@
  *  3. metric-engine importable only by analytics + measurement modules.
  *  4. no-raw-redis-key: ban key construction outside brandKey() (NN-7).
  *  5. no-float-money: ban float money types and arithmetic (I-S07).
+ *  6. no-pci-card-fields: ban card-network field names outside the mapper boundary (C4 / PCI SAQ-A / ADR-RZ-10).
  */
 import boundaries from 'eslint-plugin-boundaries';
 import tsParser from '@typescript-eslint/parser';
 import noFloatMoney from './tools/eslint-rules/no-float-money.mjs';
 import noRawRedisKey from './tools/eslint-rules/no-raw-redis-key.mjs';
+import noPciCardFields from './tools/eslint-rules/no-pci-card-fields.mjs';
 
 export default [
   // Generated / build output — never lint.
@@ -34,6 +36,7 @@ export default [
       boundaries,
       'brain-money': { rules: { 'no-float-money': noFloatMoney } },
       'brain-redis': { rules: { 'no-raw-redis-key': noRawRedisKey } },
+      'brain-pci':   { rules: { 'no-pci-card-fields': noPciCardFields } },
     },
     languageOptions: {
       parser: tsParser,
@@ -115,6 +118,13 @@ export default [
 
       // ── Rule 5: I-S07 — ban float money types and arithmetic ─────────────
       'brain-money/no-float-money': 'error',
+
+      // ── Rule 6: C4 / PCI SAQ-A — ban card-network field names (ADR-RZ-10) ─
+      // The mapper (packages/razorpay-mapper/src/index.ts) is the primary control;
+      // this rule is the mandatory CI belt-and-suspenders gate (C4.4).
+      // The mapper's applyFieldAllowlist / CARD_FIELDS_BLOCKED carry eslint-disable
+      // comments because that file IS the authoritative drop boundary.
+      'brain-pci/no-pci-card-fields': 'error',
     },
   },
 

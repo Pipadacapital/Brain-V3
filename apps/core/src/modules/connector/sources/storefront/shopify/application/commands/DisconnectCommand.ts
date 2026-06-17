@@ -1,8 +1,13 @@
 /**
- * DisconnectCommand — disconnects a Shopify connector instance.
+ * DisconnectCommand — disconnects a connector instance (generic + Shopify).
  *
- * Marks the connector_instance as 'disconnected', deletes the secret from
- * Secrets Manager, and emits connector.disconnected event.
+ * Marks the connector_instance as 'disconnected', sets health_state→Disconnected,
+ * safety_rating→blocked (ADR-CM-5), deletes the secret from Secrets Manager,
+ * and emits connector.disconnected event.
+ *
+ * A3 (feat-connector-marketplace): uses generic deleteSecret (not deleteShopifyToken)
+ * so credential connectors also revoke. Shopify-specific delete path is unchanged
+ * at the Secrets Manager level (ARN-based deletion works for both).
  */
 import type { IConnectorInstanceRepository } from '../../domain/repositories/IConnectorInstanceRepository.js';
 import type { IConnectorSyncStatusRepository } from '../../domain/repositories/IConnectorSyncStatusRepository.js';
@@ -37,12 +42,13 @@ export class DisconnectCommand {
       throw new ConnectorNotFoundError(connectorInstanceId);
     }
 
-    // Mark disconnected
+    // ADR-CM-5: disconnect ⇒ health_state=Disconnected, safety_rating=blocked
     const disconnected = instance.disconnect();
     await this.connectorRepo.update(disconnected);
 
-    // Delete secret from Secrets Manager
-    await this.secretsManager.deleteShopifyToken(instance.secretRef);
+    // Delete secret from Secrets Manager (generic path — works for both oauth and credential)
+    // Sec-C3: provider-side OAuth revocation is out of scope for M1 (non-goal, documented).
+    await this.secretsManager.deleteSecret(instance.secretRef);
 
     // Update sync status to error/disconnected state
     const syncStatus = await this.syncStatusRepo.findByConnectorInstanceId(
@@ -58,8 +64,9 @@ export class DisconnectCommand {
     await this.emitEvent('connector.disconnected', {
       brand_id: brandId,
       connector_instance_id: connectorInstanceId,
-      provider: 'shopify',
+      provider: instance.provider,
       idempotency_key: idempotencyKey,
+      // NO secret_ref, NO token in event payload (I-S02/I-S09)
     });
   }
 }

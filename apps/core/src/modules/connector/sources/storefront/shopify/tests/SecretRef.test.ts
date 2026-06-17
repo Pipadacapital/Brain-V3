@@ -18,6 +18,9 @@ const VALID_PROPS = {
   shopDomain: 'teststore.myshopify.com',
   secretRef: 'arn:aws:secretsmanager:us-east-1:000000000000:secret:brain/connector/shopify/...',
   status: 'connected' as const,
+  // ADR-CM-5: health fields required in ConnectorInstanceProps
+  healthState: 'Healthy' as const,
+  safetyRating: 'safe' as const,
   connectedAt: new Date(),
   disconnectedAt: null,
   createdAt: new Date(),

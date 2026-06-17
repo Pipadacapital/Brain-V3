@@ -61,6 +61,9 @@ function makeConnectorRepo(saveResult?: ConnectorInstance): IConnectorInstanceRe
     shopDomain: SHOP_DOMAIN,
     secretRef: 'arn:aws:secretsmanager:us-east-1:000000000000:secret:brain/connector/shopify/test',
     status: 'connected',
+    // ADR-CM-5: health fields required in ConnectorInstanceProps
+    healthState: 'Healthy',
+    safetyRating: 'safe',
     connectedAt: new Date(),
     disconnectedAt: null,
     createdAt: new Date(),
@@ -69,6 +72,7 @@ function makeConnectorRepo(saveResult?: ConnectorInstance): IConnectorInstanceRe
   return {
     findByBrandAndProvider: vi.fn().mockResolvedValue(null),
     findById: vi.fn().mockResolvedValue(null),
+    findAllByBrand: vi.fn().mockResolvedValue([]),
     save: vi.fn().mockResolvedValue(saveResult ?? base),
     update: vi.fn().mockResolvedValue(saveResult ?? base),
   };
@@ -236,6 +240,8 @@ describe('HandleOAuthCallbackCommand', () => {
         shopDomain: SHOP_DOMAIN,
         secretRef: 'arn:aws:secretsmanager:us-east-1:000000000000:secret:brain/connector/shopify/test',
         status: 'connected',
+        healthState: 'Healthy',
+        safetyRating: 'safe',
         connectedAt: new Date(),
         disconnectedAt: null,
         createdAt: new Date(),

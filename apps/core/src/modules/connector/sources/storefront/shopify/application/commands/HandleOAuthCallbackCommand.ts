@@ -36,6 +36,8 @@ export interface OAuthCallbackInput {
 
 export interface OAuthCallbackResult {
   connectorInstanceId: string;
+  /** State-derived brand ID (D-1: NEVER from query param). */
+  brandId: string;
   shopDomain: string;
   /** Secret Manager ARN — stored as secret_ref (NN-2 confirmation). */
   secretRef: string;
@@ -160,6 +162,7 @@ export class HandleOAuthCallbackCommand {
 
     return {
       connectorInstanceId: savedInstance.id,
+      brandId,
       shopDomain: savedInstance.shopDomain,
       secretRef: savedInstance.secretRef,
       status: 'connected',

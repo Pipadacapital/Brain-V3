@@ -364,6 +364,98 @@ export interface DashboardRealizedRevenueResponse {
   provisional: Record<string, string> | null;
 }
 
+// ── Analytics (Phase 1) ───────────────────────────────────────────────────────
+// All amount fields are bigint-serialized strings (D-1). Never floats.
+
+export interface AnalyticsTimeseriesBucket {
+  bucket: string;           // 'YYYY-MM-DD'
+  currency_code: string;
+  realized_minor: string;   // bigint string
+  provisional_minor: string;// bigint string
+}
+
+export type AnalyticsTimeseriesResponse =
+  | { state: 'no_data'; from: string | null; to: string | null; grain: string }
+  | { state: 'has_data'; from: string; to: string; grain: string; buckets: AnalyticsTimeseriesBucket[] };
+
+export interface AnalyticsKpiDto {
+  currency_code: string;
+  realized_minor: string;
+  provisional_minor: string;
+  order_count: string;
+  aov_minor: string;
+  rto_rate_pct: string;
+}
+
+export type AnalyticsKpiSummaryResponse =
+  | { state: 'no_data'; as_of: string }
+  | { state: 'has_data'; as_of: string; kpis: AnalyticsKpiDto[] };
+
+export interface AnalyticsRecognitionItem {
+  label: 'provisional' | 'settling' | 'finalized';
+  amount_minor: string;
+  count: string;
+  currency_code: string;
+}
+
+export type AnalyticsRecognitionBreakdownResponse =
+  | { state: 'no_data'; as_of: string }
+  | { state: 'has_data'; as_of: string; breakdown: AnalyticsRecognitionItem[] };
+
+export interface AnalyticsActivityRow {
+  order_id: string;
+  event_type: 'provisional_recognition' | 'finalization' | 'rto_reversal';
+  amount_minor: string;
+  currency_code: string;
+  occurred_at: string;
+  recognition_label: string | null;
+}
+
+export interface AnalyticsRecentActivityResponse {
+  rows: AnalyticsActivityRow[];
+}
+
+// ── Analytics (Phase 2) ────────────────────────────────────────────────────────
+// All amount/count fields are bigint-serialized strings (D-1). Never floats.
+
+export interface AnalyticsOrdersBucket {
+  bucket: string;          // 'YYYY-MM-DD'
+  currency_code: string;
+  order_count: string;     // bigint string
+  rto_count: string;       // bigint string
+  realized_minor: string;  // bigint string (minor units)
+}
+
+export type AnalyticsOrdersTimeseriesResponse =
+  | { state: 'no_data'; from: string | null; to: string | null; grain: string }
+  | { state: 'has_data'; from: string; to: string; grain: string; buckets: AnalyticsOrdersBucket[] };
+
+export interface AnalyticsOrderStatsDto {
+  currency_code: string;
+  order_count: string;   // bigint string
+  aov_minor: string;     // bigint string (minor units)
+  rto_rate_pct: string;  // numeric string e.g. '3.25'
+}
+
+export type AnalyticsOrderStatsResponse =
+  | { state: 'no_data'; as_of: string }
+  | { state: 'has_data'; as_of: string; stats: AnalyticsOrderStatsDto[] };
+
+export interface AnalyticsDataHealthVolumeBucket {
+  bucket: string; // 'YYYY-MM-DD'
+  count: string;  // bigint string
+}
+
+export type AnalyticsDataHealthResponse =
+  | { state: 'no_data' }
+  | {
+      state: 'has_data';
+      eventVolume: AnalyticsDataHealthVolumeBucket[];
+      lastIngestAt: string | null;
+      syncState: string | null;
+      lastSyncAt: string | null;
+    };
+
 // ── Keyset pagination ─────────────────────────────────────────────────────────
 
 export interface PaginatedResponse<T> {

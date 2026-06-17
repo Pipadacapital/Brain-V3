@@ -56,6 +56,13 @@ import type {
   ConnectorProvider,
   ConnectorStatus,
   SyncState,
+  AnalyticsTimeseriesResponse,
+  AnalyticsKpiSummaryResponse,
+  AnalyticsRecognitionBreakdownResponse,
+  AnalyticsRecentActivityResponse,
+  AnalyticsOrdersTimeseriesResponse,
+  AnalyticsOrderStatsResponse,
+  AnalyticsDataHealthResponse,
 } from './types';
 
 /** All BFF routes proxied through Next.js API routes → frontend-api module */
@@ -787,6 +794,113 @@ async function getBackfillProgress(connectorId: string): Promise<BackfillJobProg
 export const backfillApi = {
   triggerBackfill,
   getBackfillProgress,
+};
+
+// ── Analytics (Phase 1) ────────────────────────────────────────────────────────
+// All routes: BFF-only, session-authed. Brand from session (D-1).
+// Unwrap { request_id, data } envelope same pattern as dashboardApi.
+
+export const analyticsApi = {
+  /**
+   * GET /api/v1/analytics/revenue-timeseries
+   * Returns per-bucket realized + provisional revenue.
+   */
+  getRevenueTimeseries: async (params?: {
+    from?: string;
+    to?: string;
+    grain?: 'day' | 'week';
+  }): Promise<AnalyticsTimeseriesResponse> => {
+    const qs = new URLSearchParams();
+    if (params?.from) qs.set('from', params.from);
+    if (params?.to) qs.set('to', params.to);
+    if (params?.grain) qs.set('grain', params.grain);
+    const qsStr = qs.toString();
+    const { data } = await bffFetch<BffEnvelope<AnalyticsTimeseriesResponse>>(
+      `/v1/analytics/revenue-timeseries${qsStr ? `?${qsStr}` : ''}`,
+    );
+    return data;
+  },
+
+  /**
+   * GET /api/v1/analytics/kpi-summary
+   * Returns brand KPI snapshot.
+   */
+  getKpiSummary: async (asOf?: string): Promise<AnalyticsKpiSummaryResponse> => {
+    const qs = asOf ? `?as_of=${encodeURIComponent(asOf)}` : '';
+    const { data } = await bffFetch<BffEnvelope<AnalyticsKpiSummaryResponse>>(
+      `/v1/analytics/kpi-summary${qs}`,
+    );
+    return data;
+  },
+
+  /**
+   * GET /api/v1/analytics/recognition-breakdown
+   * Returns recognition state distribution.
+   */
+  getRecognitionBreakdown: async (asOf?: string): Promise<AnalyticsRecognitionBreakdownResponse> => {
+    const qs = asOf ? `?as_of=${encodeURIComponent(asOf)}` : '';
+    const { data } = await bffFetch<BffEnvelope<AnalyticsRecognitionBreakdownResponse>>(
+      `/v1/analytics/recognition-breakdown${qs}`,
+    );
+    return data;
+  },
+
+  /**
+   * GET /api/v1/analytics/recent-activity
+   * Returns the latest N ledger rows.
+   */
+  getRecentActivity: async (limit?: number): Promise<AnalyticsRecentActivityResponse> => {
+    const qs = limit ? `?limit=${limit}` : '';
+    const { data } = await bffFetch<BffEnvelope<AnalyticsRecentActivityResponse>>(
+      `/v1/analytics/recent-activity${qs}`,
+    );
+    return data;
+  },
+
+  // ── Phase 2 ────────────────────────────────────────────────────────────────
+
+  /**
+   * GET /api/v1/analytics/orders-timeseries
+   * Returns per-bucket order count + RTO count + realized revenue.
+   */
+  getOrdersTimeseries: async (params?: {
+    from?: string;
+    to?: string;
+    grain?: 'day' | 'week';
+  }): Promise<AnalyticsOrdersTimeseriesResponse> => {
+    const qs = new URLSearchParams();
+    if (params?.from) qs.set('from', params.from);
+    if (params?.to) qs.set('to', params.to);
+    if (params?.grain) qs.set('grain', params.grain);
+    const qsStr = qs.toString();
+    const { data } = await bffFetch<BffEnvelope<AnalyticsOrdersTimeseriesResponse>>(
+      `/v1/analytics/orders-timeseries${qsStr ? `?${qsStr}` : ''}`,
+    );
+    return data;
+  },
+
+  /**
+   * GET /api/v1/analytics/order-stats
+   * Returns per-currency order stats: order count, AOV, RTO rate.
+   */
+  getOrderStats: async (asOf?: string): Promise<AnalyticsOrderStatsResponse> => {
+    const qs = asOf ? `?as_of=${encodeURIComponent(asOf)}` : '';
+    const { data } = await bffFetch<BffEnvelope<AnalyticsOrderStatsResponse>>(
+      `/v1/analytics/order-stats${qs}`,
+    );
+    return data;
+  },
+
+  /**
+   * GET /api/v1/analytics/data-health
+   * Returns ingestion + connector-sync health (bounded read).
+   */
+  getDataHealth: async (): Promise<AnalyticsDataHealthResponse> => {
+    const { data } = await bffFetch<BffEnvelope<AnalyticsDataHealthResponse>>(
+      `/v1/analytics/data-health`,
+    );
+    return data;
+  },
 };
 
 // ── Dashboard (Postgres-only reads — arch plan §6.4) ─────────────────────────

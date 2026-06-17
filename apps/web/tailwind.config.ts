@@ -51,6 +51,12 @@ const config: Config = {
           50: 'hsl(0 86% 97%)',
           700: 'hsl(0 74% 38%)',
         },
+        // Chart color tokens (shadcn chart pattern — CSS var driven)
+        'chart-1': 'hsl(var(--chart-1))',
+        'chart-2': 'hsl(var(--chart-2))',
+        'chart-3': 'hsl(var(--chart-3))',
+        'chart-4': 'hsl(var(--chart-4))',
+        'chart-5': 'hsl(var(--chart-5))',
       },
       borderRadius: {
         lg: 'var(--radius)',

@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Plug, CheckCircle, AlertTriangle, XCircle, Clock, Radio } from 'lucide-react';
+import { Plug, Unplug, CheckCircle, AlertTriangle, XCircle, Clock, Radio } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
@@ -225,6 +225,43 @@ export function ConnectionStatusCard() {
       <Card>
         <CardContent className="pt-6">
           <ErrorCard error={error} retry={refetch} />
+        </CardContent>
+      </Card>
+    );
+  }
+
+  // Disconnected: the connector existed and was disconnected. The client maps
+  // sync_state→null when not connected, so we MUST branch on connector_status here
+  // (BEFORE the no-data empty state) — otherwise a disconnected source wrongly reads
+  // "No Data Yet". Honest: the already-ingested data is retained; we say so.
+  if (data && data.connector_status === 'disconnected') {
+    const rel = formatRelativeTime(data.last_sync_at);
+    return (
+      <Card data-testid="connection-status-card">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
+            <Plug className="h-4 w-4" aria-hidden="true" />
+            Connection Status
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <span
+            role="status"
+            aria-label="Connector status: Disconnected"
+            data-testid="connection-disconnected-indicator"
+            className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-sm font-medium bg-muted/60 text-muted-foreground"
+          >
+            <Unplug className="h-4 w-4 shrink-0" aria-hidden="true" />
+            Disconnected
+          </span>
+          <p className="text-xs text-muted-foreground mt-1.5" data-testid="connection-freshness">
+            {rel ? `Showing last-synced data · synced ${rel}` : 'Showing last-synced data'}
+          </p>
+          <Link href="/settings/connectors" className="mt-3 inline-block">
+            <Button size="sm" variant="outline">
+              Reconnect
+            </Button>
+          </Link>
         </CardContent>
       </Card>
     );

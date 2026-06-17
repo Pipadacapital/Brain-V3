@@ -24,3 +24,17 @@ export { type EngineDeps, withBrandTxn } from './deps.js';
 // Re-export compute functions (D-5)
 export { computeRealizedRevenue } from './realized-revenue.js';
 export { computeProvisionalRevenue } from './provisional-revenue.js';
+
+// Re-export Phase 1 analytics compute functions
+export { computeRevenueTimeseries } from './revenue-timeseries.js';
+export type { TimeGrain, TimeseriesBucket } from './revenue-timeseries.js';
+export { computeKpiSummary } from './kpi-summary.js';
+export type { KpiSummaryResult } from './kpi-summary.js';
+export { computeRecognitionBreakdown } from './recognition-breakdown.js';
+export type { RecognitionLabel, RecognitionBreakdownItem } from './recognition-breakdown.js';
+
+// Phase 2 analytics compute functions
+export { computeOrdersTimeseries } from './orders-timeseries.js';
+export type { OrdersTimeseriesBucket } from './orders-timeseries.js';
+export { computeOrderStats } from './order-stats.js';
+export type { OrderStatsResult } from './order-stats.js';

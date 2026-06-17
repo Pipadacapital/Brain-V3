@@ -1,23 +1,136 @@
 /**
  * Dashboard shell layout — sidebar navigation + main content area.
- * Routes: /dashboard, /settings/*
+ * Routes: /dashboard, /analytics/*, /settings/*
+ *
+ * Sidebar sections (Phase 1):
+ *   OVERVIEW  → Dashboard
+ *   ANALYTICS → Revenue, Orders (soon), Settlements (soon)
+ *   DATA      → Connectors
+ *   SETTINGS  → Brain Pixel, Members, Settings
  *
  * feat-multi-brand (B4): BrandSwitcher is mounted in the sidebar below the logo,
  * above the nav links. It is always rendered even for single-brand users (MA-15).
+ *
+ * A11y: nav landmark with aria-label; section headers use aria-hidden (decorative
+ * labels — the nav has the accessible name). Links have visible focus rings.
+ * Disabled/coming-soon items use aria-disabled="true" + cursor-not-allowed.
  */
+'use client';
+
 import Link from 'next/link';
-import { LayoutDashboard, Plug, Zap, Users, Settings } from 'lucide-react';
+import { usePathname } from 'next/navigation';
+import {
+  LayoutDashboard,
+  TrendingUp,
+  ShoppingCart,
+  Receipt,
+  Plug,
+  Activity,
+  Zap,
+  Users,
+  Settings,
+} from 'lucide-react';
 import { UserMenu } from '@/components/dashboard/user-menu';
 import { RequireSession } from '@/components/dashboard/require-session';
 import { BrandSwitcher } from '@/components/dashboard/brand-switcher';
+import { Badge } from '@/components/ui/badge';
+import { cn } from '@/lib/utils';
 
-const navItems = [
-  { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { href: '/settings/connectors', label: 'Connectors', icon: Plug },
-  { href: '/settings/pixel', label: 'Brain Pixel', icon: Zap },
-  { href: '/settings/members', label: 'Members', icon: Users },
-  { href: '/settings', label: 'Settings', icon: Settings },
+interface NavItem {
+  href?: string;
+  label: string;
+  icon: React.ElementType;
+  comingSoon?: boolean;
+  disabled?: boolean;
+}
+
+interface NavSection {
+  title: string;
+  items: NavItem[];
+}
+
+const NAV_SECTIONS: NavSection[] = [
+  {
+    title: 'OVERVIEW',
+    items: [
+      { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
+    ],
+  },
+  {
+    title: 'ANALYTICS',
+    items: [
+      { href: '/analytics/revenue', label: 'Revenue', icon: TrendingUp },
+      { href: '/analytics/orders', label: 'Orders', icon: ShoppingCart },
+      { label: 'Settlements', icon: Receipt, comingSoon: true, disabled: true },
+    ],
+  },
+  {
+    title: 'DATA',
+    items: [
+      { href: '/settings/connectors', label: 'Connectors', icon: Plug },
+      { href: '/data/health', label: 'Data Health', icon: Activity },
+    ],
+  },
+  {
+    title: 'SETTINGS',
+    items: [
+      { href: '/settings/pixel', label: 'Brain Pixel', icon: Zap },
+      { href: '/settings/members', label: 'Members', icon: Users },
+      { href: '/settings', label: 'Settings', icon: Settings },
+    ],
+  },
 ];
+
+function NavLink({ item }: { item: NavItem }) {
+  const pathname = usePathname();
+
+  const isActive = item.href ? (
+    item.href === '/dashboard'
+      ? pathname === '/dashboard'
+      : pathname.startsWith(item.href)
+  ) : false;
+
+  if (item.disabled || !item.href) {
+    return (
+      <div
+        className="flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium text-muted-foreground/50 cursor-not-allowed select-none"
+        aria-disabled="true"
+        role="link"
+        tabIndex={-1}
+        aria-label={`${item.label} — coming soon`}
+      >
+        <item.icon className="h-4 w-4 shrink-0" aria-hidden="true" />
+        <span>{item.label}</span>
+        {item.comingSoon && (
+          <Badge
+            variant="secondary"
+            className="ml-auto text-[10px] px-1.5 py-0 h-4"
+            aria-label="Coming soon"
+          >
+            Soon
+          </Badge>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <Link
+      href={item.href}
+      className={cn(
+        'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1',
+        isActive
+          ? 'bg-accent text-accent-foreground'
+          : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+      )}
+      aria-current={isActive ? 'page' : undefined}
+    >
+      <item.icon className="h-4 w-4 shrink-0" aria-hidden="true" />
+      <span>{item.label}</span>
+    </Link>
+  );
+}
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -30,23 +143,33 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         <div className="px-6 py-5 border-b">
           <span className="text-lg font-bold text-foreground">Brain</span>
         </div>
+
         {/* B4: Brand switcher — always rendered (MA-15), org-scoped via brand-summary (MA-14) */}
         <BrandSwitcher />
-        <nav className="flex-1 py-4 px-3" aria-label="Navigation links">
-          <ul className="space-y-1" role="list">
-            {navItems.map(({ href, label, icon: Icon }) => (
-              <li key={href}>
-                <Link
-                  href={href}
-                  className="flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+
+        <nav className="flex-1 py-4 px-3 overflow-y-auto" aria-label="Navigation links">
+          <ul className="space-y-5" role="list">
+            {NAV_SECTIONS.map((section) => (
+              <li key={section.title}>
+                {/* Section header — decorative, aria-hidden */}
+                <p
+                  className="px-3 mb-1 text-[10px] font-semibold tracking-widest text-muted-foreground/60 uppercase select-none"
+                  aria-hidden="true"
                 >
-                  <Icon className="h-4 w-4 shrink-0" aria-hidden="true" />
-                  {label}
-                </Link>
+                  {section.title}
+                </p>
+                <ul className="space-y-0.5" role="list">
+                  {section.items.map((item) => (
+                    <li key={item.label}>
+                      <NavLink item={item} />
+                    </li>
+                  ))}
+                </ul>
               </li>
             ))}
           </ul>
         </nav>
+
         <UserMenu />
       </aside>
 

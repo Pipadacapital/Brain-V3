@@ -24,3 +24,8 @@
 **Blocking findings:** QA-1 (HIGH, missing automated smoke test) + QA-2 (MED, 0% unit coverage on switchBrandContext).
 **Non-blocking findings:** QA-3 (MED, correlationId not in audit_log), QA-4 (LOW, tautological >=0 assertion), QA-5 (INFO, Playwright E2E not run).
 **Next:** BOUNCE → backend-engineer (Track A). Required: switch-brand.live.test.ts integration test + switchBrandContext unit tests. Re-handoff to QA when tests are green.
+
+## 2026-06-17T03:05:29Z — QA Engineer — feat-analytics-api-dashboard
+**Stage:** 5 · **Mode:** DELTA (reasoning scoped to QA-F-001; full e2e suite re-run) · **Verdict:** PASS
+**Smoke:** 4/4 e2e passed (23.5s); test 2 confirmed ₹1,234 rendered — real-number M1 reconciling path verified · **Parity:** PASS (unchanged from FULL) · **Validity:** negative-controls confirmed (unchanged from FULL) · **Next:** Reconcile with Security Reviewer
+**Fix verified:** commit 709cb2c — `app_user_org_membership` → `membership` at realized-revenue.spec.ts:38; zero residual matches; migration confirms table + columns

@@ -291,6 +291,26 @@ export interface DashboardOnboardingResponse {
   all_complete: boolean;
 }
 
+// ── Realized Revenue (D-1..D-4, §4 contract) ─────────────────────────────────
+// Source: analytics service → metric engine → ledger (Postgres). Never ad-hoc SUM.
+
+/**
+ * Component-facing model for the realized-revenue card.
+ * Mapped from RawRealizedRevenue by dashboardApi.getRealizedRevenue().
+ *
+ * state:  'no_data'  — no finalized ledger rows; UI renders "No data yet" (D-2).
+ *         'has_data' — at least one finalized row; realized/provisional are populated.
+ *
+ * realized/provisional: Record<currency_code, string> (minor-unit string from BFF bigint).
+ * null only when state === 'no_data'. Never blended or summed (D-4).
+ */
+export interface DashboardRealizedRevenueResponse {
+  state: 'no_data' | 'has_data';
+  as_of: string;
+  realized: Record<string, string> | null;
+  provisional: Record<string, string> | null;
+}
+
 // ── Keyset pagination ─────────────────────────────────────────────────────────
 
 export interface PaginatedResponse<T> {

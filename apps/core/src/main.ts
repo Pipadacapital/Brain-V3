@@ -311,7 +311,7 @@ export async function main(): Promise<void> {
   registerWorkspaceRoutes(app, authService, workspaceService);
   registerBrandRoutes(app, authService, brandService);
   registerMemberRoutes(app, authService, inviteService, rawPgPool);
-  registerBffRoutes(app, authService, pool, config.cookieSecret, rateLimiter);
+  registerBffRoutes(app, authService, pool, config.cookieSecret, rateLimiter, rawPgPool);
 
   // DEV-ONLY: surface email action links (verify/reset/invite) for browser testing
   // without a real inbox. Registered ONLY outside production — the route does not

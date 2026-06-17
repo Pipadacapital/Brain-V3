@@ -7,15 +7,6 @@
       "last_route": "final-reviewer PASS/APPROVE; spine committed 58c425e; STOP at Stakeholder gate (awaiting /approve)",
       "updated_at": "2026-06-16T10:55:00Z",
       "bounces": 1
-    },
-    "feat-analytics-api-dashboard": {
-      "spawns": 1,
-      "stage": 1,
-      "outstanding": [
-        "cto-advisor"
-      ],
-      "last_route": "intake high_stakes(metric_engine,money,multi_tenancy); compressed; spawning cto-advisor",
-      "updated_at": "2026-06-16T22:16:54Z"
     }
   }
 }

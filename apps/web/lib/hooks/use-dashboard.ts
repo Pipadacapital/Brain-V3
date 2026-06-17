@@ -40,3 +40,21 @@ export function useOnboardingProgress() {
     staleTime: 30_000,
   });
 }
+
+/**
+ * Realized revenue hook — keyed under DASHBOARD_QUERY_KEY so it auto-invalidates
+ * when the brand switcher fires (brand-switcher.tsx:13 invalidates the full prefix).
+ *
+ * @param asOf - Optional YYYY-MM-DD date for the as_of snapshot (server defaults to today).
+ *
+ * D-6: cache invalidation on brand switch — the brand-switcher already calls
+ * queryClient.invalidateQueries({ queryKey: DASHBOARD_QUERY_KEY }) which invalidates
+ * all queries prefixed with ['dashboard'], including [...DASHBOARD_QUERY_KEY, 'realized-revenue'].
+ */
+export function useRealizedRevenue(asOf?: string) {
+  return useQuery({
+    queryKey: [...DASHBOARD_QUERY_KEY, 'realized-revenue', asOf ?? 'today'],
+    queryFn: () => dashboardApi.getRealizedRevenue(asOf),
+    staleTime: 60_000,
+  });
+}

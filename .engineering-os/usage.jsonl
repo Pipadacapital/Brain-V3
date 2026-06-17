@@ -166,3 +166,4 @@
 {"ts":"2026-06-17T17:58:04Z","req_id":"feat-shopify-live-connector","agent":"qa-agent","stage":5,"model":"sonnet","review_scope":"delta","total_tokens":82955}
 {"ts":"2026-06-17T18:06:54Z","req_id":"feat-shopify-live-connector","agent":"final-reviewer","stage":6,"model":"opus","review_scope":"full","total_tokens":129744}
 {"ts":"2026-06-17T22:30:00Z","req_id":"feat-shopify-live-connector","agent":"platform-devops","stage":8,"total_tokens":63431,"model":"sonnet"}
+{"ts":"2026-06-17T21:10:06Z","req_id":"feat-collection-foundation","agent":"architect","stage":2,"model":"opus","review_scope":"none","total_tokens":123863}

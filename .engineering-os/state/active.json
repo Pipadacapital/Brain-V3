@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-06-16T22:15:56Z",
-  "updated_by": "system",
+  "updated_at": "2026-06-17T20:56:56Z",
+  "updated_by": "rishabhporwal",
   "active_requirements": [
     {
       "req_id": "chore-platform-foundations-sprint0",
@@ -433,6 +433,18 @@
       "stage": 7,
       "current_owner": "stakeholder",
       "last_journal_entry_at": "2026-06-17T18:06:54Z"
+    },
+    {
+      "req_id": "feat-collection-foundation",
+      "title": "Collection Foundation \u2014 ingest hardening + first-party pixel + Tracking Center UI",
+      "status": "dev-parallel",
+      "stage": 3,
+      "current_owner": "builders",
+      "lane": "high_stakes",
+      "run_dir": ".engineering-os/runs/2026-06-17T20-56-56Z__57b8cb__feat-collection-foundation__rishabhporwal",
+      "created_at": "2026-06-17T20:56:56Z",
+      "updated_at": "2026-06-17T20:56:56Z",
+      "last_journal_entry_at": "2026-06-17T21:10:06Z"
     }
   ]
 }

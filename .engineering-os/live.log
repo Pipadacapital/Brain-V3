@@ -889,3 +889,24 @@ Installed 4 packages in 7ms
 17:58:33Z [heartbeat] engineering-os:final-reviewer S6 feat-shopify-live-connector returned
 18:17:12Z [heartbeat] engineering-os:platform-devops S8 ? issued
 18:22:08Z [heartbeat] engineering-os:platform-devops S8 ? returned
+[2026-06-17T21:02:51Z] ▶ feat-collection-foundation Stage 2 architect (UI track mandatory). Razorpay BOUNCE fix in parallel.
+[2026-06-17T21:07:08Z] ◀ feat-collection-foundation Stage 2 architect RETURNED. ADR-1(shape-a)+ADR-2(server-side-hash) resolved; R2 keystone bound at ProcessEventUseCase via 0028 SECURITY DEFINER token→brand; R3 quarantine+consent_flags; R4 dedup-observable. 3 tracks (A ingest-hardening, B brain.js, C Tracking Center). 1a/1b SPLIT recommended. → Stage 3.
+[2026-06-17T21:10:06Z] ✓ Phase 1 architect ADVANCE (ADR-1/ADR-2 resolved, 3 tracks, 1a/1b split). ▶ Stage 3 build workflow (Track A→B∥C→verify).
+2026-06-17T21:11:14Z data-engineer START Track A ingest hardening
+2026-06-17T21:13:16Z data-engineer STEP1 writing migration 0028 resolve_brand_by_install_token
+2026-06-17T21:14:55Z data-engineer? no -> frontend-web START Track C Tracking Center UI
+2026-06-17T21:16:29Z frontend-web STEP1 writing BFF get-tracking-health + get-recent-events queries
+2026-06-17T21:19:28Z frontend-web STEP2 building Tracking Center UI components
+2026-06-17T21:21:27Z frontend-web STEP3 verify: web tsc + core tsc
+2026-06-17T21:23:32Z frontend-web STEP4 run unit test + re-verify tsc (full contract)
+2026-06-17T21:23:51Z frontend-web STEP5 lint touched files + PII self-audit
+2026-06-17T21:24:21Z frontend-web DONE Track C Tracking Center. web tsc 0, core tsc 0, web+core lint 0, unit 9/9. READY-FOR-SECURITY
+QA verify start: 2026-06-17T21:24:45Z
+2026-06-17T21:28:11Z QA Engineer FAIL — Track A (ingest hardening) + Track B (pixel-sdk) NOT built; only Track C UI + migration 0028 present. validity_check exit 3 (missing negative control on RLS read). Bounce to builders.
+2026-06-17T21:38:24Z ingest-hardening STEP1 Track A code: contract consent_flags + avsc + 0028 wired in ProcessEventUseCase (R2 derive) + quarantine branch + dedup metric
+2026-06-17T21:58:05Z ingest-hardening STEP2 Track A tests 11/11 green (R2/R3/R4 + read-path neg control). Track B pixel-sdk + /pixel.js + edge-guard built; sdk 12/12, collector 13/13 green
+2026-06-17T21:59:17Z ingest-hardening DONE Track A + Track B. typecheck clean (only pre-existing worker-secrets). Tests: contracts gate 11/11, observability 13/13, pixel-sdk 12/12, collector edge+asset 13/13, stream-worker ingest-hardening+bronze+dlq 16/16. consent gate proven non-inert. Track C files untouched. READY-FOR-SECURITY / READY-FOR-QA
+2026-06-17T22:00:35Z — Backend Engineer — feat-collection-foundation — Track A+B resume: verifying pixel-sdk + collector edge/asset on disk (rate-limit recovery)
+2026-06-17T22:03:12Z — Backend Engineer — feat-collection-foundation — Track A+B VERIFIED on real infra (rate-limit recovery complete). typecheck clean (only pre-existing worker-secrets.ts module-resolution error remains, out of scope). Tests: contracts 11/11, observability 13/13, pixel-sdk 12/12, collector edge+asset+durability 18/18, stream-worker ingest-hardening e2e+dlq 12/12 under SET ROLE brain_app (RLS non-inert). Migration 0028 applied + wired. Lint clean. Track C untouched this session. READY-FOR-SECURITY / READY-FOR-QA
+2026-06-17T22:03:49Z qa-engineer verify start: tsc+E2E+negctl across A/B/C
+2026-06-17T22:09:47Z qa-engineer verify PASS: tsc clean (1 pre-existing AwsSecretsManager err only) | E2E 11/11 under brain_app | neg-control RED-confirmed (cross-brand+consent gates) | pixel-sdk 12/12 (not a stub) | tracking-status 9/9 | edge 13/13 | consent-gate 3/3 | validity_check clean

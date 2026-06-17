@@ -243,7 +243,9 @@ beforeAll(async () => {
   bronze = new BronzeRepository(BRAIN_APP_DB_URL);
   ledgerWriter = new LedgerWriter(BRAIN_APP_DB_URL);
   jobRepo = new PgBackfillJobRepository(BRAIN_APP_DB_URL);
-  useCase = new ProcessEventUseCase(dedup, bronze);
+  // enforceTenantDerivation=false: matches the backfill-order production lane (main.ts) —
+  // order.backfill.v1 events carry a server-trusted brand_id, no install_token.
+  useCase = new ProcessEventUseCase(dedup, bronze, undefined, false);
 
   // Set up IDENTITY_SALT env var for brand A (used by order-mapper tests)
   process.env[`IDENTITY_SALT_${BRAND_A.replace(/-/g, '').toUpperCase()}`] = TEST_SALT_HEX;

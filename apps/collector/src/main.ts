@@ -27,6 +27,8 @@ import { DrainEventsUseCase } from './application/drain-events.usecase.js';
 import { Drainer } from './interfaces/jobs/drainer.js';
 import { registerCollectRoute } from './interfaces/rest/collect.route.js';
 import { registerHealthRoutes } from './interfaces/rest/health.route.js';
+import { registerPixelAssetRoute } from './interfaces/rest/pixel-asset.route.js';
+import { EdgeRateLimiter, registerEdgeGuard } from './interfaces/rest/edge-guard.js';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
@@ -127,8 +129,22 @@ export async function main(): Promise<void> {
     trustProxy: true,
   });
 
+  // ── Edge abuse protection (REC-9): per-install_token rate-limit + origin allowlist ──
+  // reject-before-spool preHandler (NOT a D-1 violation — admission gate, not validation).
+  // VETO Set-Cookie on /collect (REC-4): the limiter is stateless, anon-id is client-side.
+  const edgeLimiter = new EdgeRateLimiter({
+    maxPerWindow: Number(process.env['EDGE_RATE_MAX_PER_WINDOW'] ?? 600),
+    windowMs: Number(process.env['EDGE_RATE_WINDOW_MS'] ?? 60_000),
+    originAllowlist: (process.env['EDGE_ORIGIN_ALLOWLIST'] ?? '')
+      .split(',')
+      .map((o) => o.trim())
+      .filter((o) => o.length > 0),
+  });
+  registerEdgeGuard(app, edgeLimiter);
+
   // Register routes
   registerHealthRoutes(app, spoolRepo);
+  registerPixelAssetRoute(app); // GET /pixel.js — the served brain.js asset (Track B)
   registerCollectRoute(app, acceptUseCase);
 
   // ── 5. Start HTTP listener ───────────────────────────────────────────────────

@@ -133,6 +133,67 @@ export function startGenAiSpan(name: string, ctx: GenAiSpanContext): BrainSpan {
   return span;
 }
 
+// ── Counter metrics (stub — real OTel meter wired in M1) ─────────────────────
+//
+// Sprint-0/M1 posture mirrors the span stub above: zero external OTel dep, a
+// structured-log emission that the real @opentelemetry/api Meter replaces with an
+// identical surface in M1. The emission is PII-safe by construction — labels are a
+// bounded, low-cardinality set (brand_id is a UUID tenant key, never PII; event_name
+// is a bounded dot.lowercase enum; layer ∈ {pg,redis}). NO raw value is ever a label.
+//
+// Used by the stream-worker to make dedup suppression OBSERVABLE (R4):
+//   collector_dedup_conflict_total{brand_id,layer,event_name} on pk_conflict / dedup_hit.
+// A forged/colliding event_id is now a counter increment, not a silent console.info.
+
+export interface CounterLabels {
+  [label: string]: string;
+}
+
+/**
+ * Test/integration seam: a sink that receives every counter increment.
+ * In M1 the default sink becomes the OTel meter; tests inject a recording sink to
+ * assert a metric was emitted (NON-INERT — the R4 dedup-observability test spies here).
+ */
+export interface CounterSink {
+  add(name: string, value: number, labels: CounterLabels): void;
+}
+
+/** Default sink — structured-log line (replaced by the OTel meter in M1). */
+const defaultCounterSink: CounterSink = {
+  add(name: string, value: number, labels: CounterLabels): void {
+    // Structured single-line emission; a log-based metric pipeline scrapes this in M1-.
+    console.info(
+      `[metric] ${name} +${value} ${JSON.stringify(labels)}`,
+    );
+  },
+};
+
+let activeCounterSink: CounterSink = defaultCounterSink;
+
+/**
+ * Override the counter sink (tests inject a recording sink; M1 injects the OTel meter).
+ * Returns a restore fn so a test can reset the global sink in afterEach.
+ */
+export function setCounterSink(sink: CounterSink): () => void {
+  const prev = activeCounterSink;
+  activeCounterSink = sink;
+  return () => {
+    activeCounterSink = prev;
+  };
+}
+
+/**
+ * Increment a counter metric by `value` (default 1) with the given labels.
+ * PII-safe: callers MUST pass only bounded low-cardinality labels (no raw values).
+ */
+export function incrementCounter(
+  name: string,
+  labels: CounterLabels = {},
+  value = 1,
+): void {
+  activeCounterSink.add(name, value, labels);
+}
+
 // ── Correlation ID propagation ────────────────────────────────────────────────
 
 /**

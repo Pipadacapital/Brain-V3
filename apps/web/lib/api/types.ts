@@ -456,6 +456,35 @@ export type AnalyticsDataHealthResponse =
       lastSyncAt: string | null;
     };
 
+// ── Tracking Center (Phase 1 Track C) ──────────────────────────────────────────
+// Pixel-collection health + the Event Explorer feed. NO raw PII — anonymized ids
+// + aggregate counts only. All count fields are bigint-serialized strings (D-1).
+
+export type AnalyticsTrackingHealthResponse =
+  | { state: 'no_data' }
+  | {
+      state: 'has_data';
+      firstEventReceived: true;
+      eventVolume: AnalyticsDataHealthVolumeBucket[]; // reuse the same bucket shape
+      lastEventAt: string | null;
+      totalEvents: string;          // bigint string
+      consentGrantedCount: string;  // bigint string
+      consentTotalCount: string;    // bigint string
+    };
+
+export interface AnalyticsRecentEventRow {
+  event_id: string;
+  event_type: string;        // 'page.viewed' | 'cart.item_added' | ...
+  occurred_at: string;       // ISO timestamp
+  anon_id: string | null;    // brain_anon_id (anonymized)
+  session_id: string | null; // hashed_session_id (anonymized)
+  has_consent: boolean;
+}
+
+export interface AnalyticsRecentEventsResponse {
+  rows: AnalyticsRecentEventRow[];
+}
+
 // ── Keyset pagination ─────────────────────────────────────────────────────────
 
 export interface PaginatedResponse<T> {

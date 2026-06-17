@@ -50,7 +50,7 @@ import { jtiFromJwt, csrfTokenForSession } from './csrf.js';
 import type { RateLimiter } from '../../workspace-access/internal/infrastructure/rate-limiter.js';
 import { loginFailKeySync, loginIpKey } from '../../workspace-access/internal/infrastructure/rate-limiter.js';
 import type { Pool as PgPool } from 'pg';
-import { getRevenueMetrics, getRevenueTimeseries, getKpiSummary, getRecognitionBreakdown, getRecentActivity, getOrdersTimeseries, getOrderStats, getDataHealth } from '../../analytics/index.js';
+import { getRevenueMetrics, getRevenueTimeseries, getKpiSummary, getRecognitionBreakdown, getRecentActivity, getOrdersTimeseries, getOrderStats, getDataHealth, getTrackingHealth, getRecentEvents } from '../../analytics/index.js';
 import type { TimeGrain } from '@brain/metric-engine';
 
 const COOKIE_NAME = 'brain_session';
@@ -1339,6 +1339,75 @@ export function registerBffRoutes(
       }
 
       const result = await getDataHealth(auth.brandId, { pool: rawPool });
+
+      return reply.send({ request_id: requestId, data: result });
+    },
+  );
+
+  // ── Tracking Center endpoints (Phase 1 Track C) ───────────────────────────
+  // Stakeholder-visible proof that the pixel works. Bounded reads (D-2 allowed),
+  // RLS-scoped via withBrandTxn, brand from session (D-1). NO raw PII in responses.
+
+  /**
+   * GET /api/v1/analytics/tracking-health
+   * Returns pixel-collection health: first-event-received, per-day volume,
+   * last-event freshness, total + consent-capture counts. Honest-empty 'no_data'.
+   */
+  fastify.get(
+    '/api/v1/analytics/tracking-health',
+    { preHandler: [bffProtectedPreHandler] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+
+      const auth = (request as AuthenticatedRequest).auth;
+      if (!auth.brandId) {
+        return reply.send({ request_id: requestId, data: { state: 'no_data' } });
+      }
+      if (!rawPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' } });
+      }
+
+      const result = await getTrackingHealth(auth.brandId, { pool: rawPool });
+
+      return reply.send({ request_id: requestId, data: result });
+    },
+  );
+
+  /**
+   * GET /api/v1/analytics/recent-events?limit=20
+   * Returns the latest N collected events (type/time/anonymized ids) for the
+   * Event Explorer. Bounded read; NO raw PII (anonymized ids only).
+   */
+  fastify.get(
+    '/api/v1/analytics/recent-events',
+    {
+      preHandler: [bffProtectedPreHandler],
+      schema: {
+        querystring: {
+          type: 'object',
+          properties: {
+            limit: { type: 'string', pattern: '^\\d+$' },
+          },
+          additionalProperties: false,
+        },
+      },
+      attachValidation: true,
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+
+      const auth = (request as AuthenticatedRequest).auth;
+      if (!auth.brandId) {
+        return reply.send({ request_id: requestId, data: { rows: [] } });
+      }
+      if (!rawPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' } });
+      }
+
+      const query = request.query as { limit?: string };
+      const limit = query.limit ? Math.min(parseInt(query.limit, 10), 50) : 20;
+
+      const result = await getRecentEvents(auth.brandId, limit, { pool: rawPool });
 
       return reply.send({ request_id: requestId, data: result });
     },

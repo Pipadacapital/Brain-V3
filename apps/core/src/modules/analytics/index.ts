@@ -28,3 +28,9 @@ export { getOrderStats } from './internal/application/queries/get-order-stats.js
 export type { OrderStatsResult, OrderStatsDto } from './internal/application/queries/get-order-stats.js';
 export { getDataHealth } from './internal/application/queries/get-data-health.js';
 export type { DataHealthResult, DataHealthVolumeBucket } from './internal/application/queries/get-data-health.js';
+
+// Tracking Center (pixel collection health — Phase 1 Track C)
+export { getTrackingHealth } from './internal/application/queries/get-tracking-health.js';
+export type { TrackingHealthResult, TrackingHealthVolumeBucket } from './internal/application/queries/get-tracking-health.js';
+export { getRecentEvents } from './internal/application/queries/get-recent-events.js';
+export type { RecentEventsResult, RecentEventRow } from './internal/application/queries/get-recent-events.js';

@@ -63,6 +63,8 @@ import type {
   AnalyticsOrdersTimeseriesResponse,
   AnalyticsOrderStatsResponse,
   AnalyticsDataHealthResponse,
+  AnalyticsTrackingHealthResponse,
+  AnalyticsRecentEventsResponse,
 } from './types';
 
 /** All BFF routes proxied through Next.js API routes → frontend-api module */
@@ -898,6 +900,31 @@ export const analyticsApi = {
   getDataHealth: async (): Promise<AnalyticsDataHealthResponse> => {
     const { data } = await bffFetch<BffEnvelope<AnalyticsDataHealthResponse>>(
       `/v1/analytics/data-health`,
+    );
+    return data;
+  },
+
+  // ── Tracking Center (Phase 1 Track C) ────────────────────────────────────────
+
+  /**
+   * GET /api/v1/analytics/tracking-health
+   * Returns pixel-collection health (first-event, volume, freshness, consent counts).
+   */
+  getTrackingHealth: async (): Promise<AnalyticsTrackingHealthResponse> => {
+    const { data } = await bffFetch<BffEnvelope<AnalyticsTrackingHealthResponse>>(
+      `/v1/analytics/tracking-health`,
+    );
+    return data;
+  },
+
+  /**
+   * GET /api/v1/analytics/recent-events
+   * Returns the latest N collected events (type/time/anonymized ids) for the Explorer.
+   */
+  getRecentEvents: async (limit?: number): Promise<AnalyticsRecentEventsResponse> => {
+    const qs = limit ? `?limit=${limit}` : '';
+    const { data } = await bffFetch<BffEnvelope<AnalyticsRecentEventsResponse>>(
+      `/v1/analytics/recent-events${qs}`,
     );
     return data;
   },

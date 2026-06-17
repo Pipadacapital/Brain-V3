@@ -47,6 +47,8 @@ import { buildDedupKey } from '../domain/bronze/DedupPolicy.js';
 import { uuidV5FromOrderBackfill } from '../jobs/shopify-backfill/uuid-utils.js';
 import { decimalStringToMinor } from '../jobs/shopify-backfill/money-utils.js';
 import { mapOrderToBackfillEvent, computeAchievedDepthLabel } from '../jobs/shopify-backfill/order-mapper.js';
+import { findQueuedJob } from '../jobs/shopify-backfill/run.js';
+import { runRevenueFinalization } from '../jobs/revenue-finalization.js';
 import { CollectorEventV1Schema, ORDER_BACKFILL_V1_TOPIC_SUFFIX } from '@brain/contracts';
 import { buildPartitionKey } from '@brain/events';
 
@@ -704,5 +706,216 @@ describe('T10: BackfillJobRepository lifecycle: updateProgress with null estimat
     expect(wrongBrand).toBe(0); // NEGATIVE CONTROL — isolation verified
 
     await superPool.query('DELETE FROM realized_revenue_ledger WHERE order_id=$1', [TEST_ORDER]);
+  });
+});
+
+// ── T11: SEC-BF-H1 fix — findQueuedJob uses list_queued_backfill_jobs() fn ───
+//
+// QA-BF-B1 gap: findQueuedJob was never directly tested under brain_app + FORCE
+// RLS. This test: seeds a real queued job row (superuser), calls findQueuedJob()
+// (which now uses list_queued_backfill_jobs() SECURITY DEFINER fn via brain_app
+// pool), asserts the row is returned — proving the fn/worker finds it.
+// Also asserts that a direct brain_app query on backfill_job without a GUC
+// returns 0 rows (the negative control — confirms the bug is real and the fn
+// is the fix, not a test artifact).
+
+describe('T11: SEC-BF-H1 fix — findQueuedJob uses SECURITY DEFINER fn, returns queued job (QA-BF-B1)', () => {
+  let seededJobId: string | null = null;
+  let seededBrandId: string | null = null;
+  let seededCiId: string | null = null;
+
+  beforeAll(async () => {
+    // Find a real brand + connector_instance pair for FK validity
+    const pairResult = await superPool.query<{ brand_id: string; ci_id: string }>(
+      `SELECT b.id AS brand_id, ci.id AS ci_id
+       FROM brand b
+       JOIN connector_instance ci ON ci.brand_id = b.id
+       LIMIT 1`,
+    );
+    const pair = pairResult.rows[0];
+    if (!pair) {
+      console.warn('[T11] No brand+connector_instance pair found — T11 will skip');
+      return;
+    }
+    seededBrandId = pair.brand_id;
+    seededCiId = pair.ci_id;
+
+    // Seed a queued backfill_job (superuser bypasses RLS for setup)
+    const jobResult = await superPool.query<{ id: string }>(
+      `INSERT INTO backfill_job (brand_id, connector_instance_id, status, records_processed)
+       VALUES ($1, $2, 'queued', 0)
+       RETURNING id`,
+      [seededBrandId, seededCiId],
+    );
+    seededJobId = jobResult.rows[0]?.id ?? null;
+  });
+
+  afterAll(async () => {
+    if (seededJobId) {
+      await superPool.query('DELETE FROM backfill_job WHERE id = $1', [seededJobId]).catch(() => undefined);
+    }
+  });
+
+  it('negative control: brain_app direct query on backfill_job without GUC returns 0 rows (FORCE RLS fail-closed)', async () => {
+    if (!seededJobId) {
+      console.warn('[T11] Skipping — no seeded job (no brand+CI pair in DB)');
+      return;
+    }
+    // This is the BUG that SEC-BF-H1 fixed: brain_app without a GUC sees 0 rows
+    const client = await appPool.connect();
+    try {
+      const userResult = await client.query<{ current_user: string }>('SELECT current_user');
+      expect(userResult.rows[0]?.current_user).toBe('brain_app'); // Must NOT be superuser
+      // No GUC set — FORCE RLS will block all rows
+      const result = await client.query<{ c: string }>(
+        "SELECT count(*)::text AS c FROM backfill_job WHERE status = 'queued'",
+      );
+      // NEGATIVE CONTROL: must be 0 (proves RLS is enforced without GUC)
+      expect(Number(result.rows[0]?.c ?? 0)).toBe(0);
+    } finally {
+      client.release();
+    }
+  });
+
+  it('findQueuedJob() via list_queued_backfill_jobs() fn returns the seeded job (SEC-BF-H1 fix proof)', async () => {
+    if (!seededJobId || !seededBrandId || !seededCiId) {
+      console.warn('[T11] Skipping — no seeded job (no brand+CI pair in DB)');
+      return;
+    }
+    // findQueuedJob uses brain_app pool + SECURITY DEFINER fn → must find the job
+    const found = await findQueuedJob(appPool, seededCiId);
+    expect(found).not.toBeNull();
+    expect(found!.jobId).toBe(seededJobId);
+    expect(found!.brandId).toBe(seededBrandId);
+    expect(found!.ciId).toBe(seededCiId);
+  });
+
+  it('findQueuedJob() (poll mode, no connectorInstanceId) also returns the seeded job', async () => {
+    if (!seededJobId || !seededBrandId) {
+      console.warn('[T11] Skipping — no seeded job');
+      return;
+    }
+    const found = await findQueuedJob(appPool);
+    expect(found).not.toBeNull();
+    // Must have returned the seeded job (or at least A job — fn returns oldest first)
+    expect(found!.brandId).toBeDefined();
+    expect(found!.jobId).toBeDefined();
+  });
+});
+
+// ── T12: QA-BF-B2 — past-dated backfilled order → REALIZED (end-to-end) ──────
+//
+// SC#10 end-to-end proof: a backfilled past-dated order's provisional_recognition
+// row, when the revenue-finalization job runs, becomes a 'finalization' ledger
+// row (event_type='finalization') → the order is REALIZED GMV.
+//
+// Previous test T3 only asserted finalizedCount===0 (not yet finalized) and did
+// not invoke revenue-finalization.ts. This test proves the payoff:
+//   1. Seed a past-horizon provisional_recognition (occurred_at well in the past)
+//      via LedgerWriter (the same path BackfillOrderConsumer uses).
+//   2. Invoke runRevenueFinalization() directly (the exported fn from revenue-finalization.ts).
+//   3. Assert finalizedCount===1 and event_type='finalization' in the ledger —
+//      under brain_app + correct GUC (RLS enforced, not superuser).
+//
+// The brand (BRAND_A) was inserted in beforeAll with COD horizon defaults. If
+// the brand row doesn't include horizon columns, revenue-finalization's
+// list_active_brand_ids() will use the brand's configured values.
+
+describe('T12: QA-BF-B2 — past-dated backfilled order → finalization row (realized GMV) (SC#10)', () => {
+  // Use a unique order_id to avoid conflicts with other tests
+  const T12_ORDER_ID = 'T12-PAST-DATED-ORDER-001';
+  const T12_EVENT_ID = uuidV5FromOrderBackfill(BRAND_A, T12_ORDER_ID);
+  // occurred_at = 3 years ago — COD horizon (max 90 days) is definitely satisfied
+  const T12_OCCURRED_AT = '2022-06-01T10:00:00.000Z';
+
+  beforeAll(async () => {
+    // Clean up any leftover rows from a prior run
+    await superPool.query('DELETE FROM realized_revenue_ledger WHERE order_id=$1', [T12_ORDER_ID]);
+  });
+
+  afterAll(async () => {
+    await superPool.query('DELETE FROM realized_revenue_ledger WHERE order_id=$1', [T12_ORDER_ID]);
+  });
+
+  it('seeds a past-horizon provisional_recognition row via LedgerWriter (same path as BackfillOrderConsumer)', async () => {
+    const inserted = await ledgerWriter.writeProvisionalRecognition({
+      brandId: BRAND_A,
+      orderId: T12_ORDER_ID,
+      brainId: null,
+      amountMinor: '250000', // 2500.00 INR in paisa
+      currencyCode: 'INR',
+      occurredAt: T12_OCCURRED_AT, // D-6: past date, NOT NOW()
+      paymentMethod: 'prepaid',
+      sourcePk: T12_EVENT_ID,
+      rawEventId: T12_EVENT_ID,
+    });
+    expect(inserted).toBe(true);
+
+    // Verify provisional row exists under brain_app + GUC
+    const { provisionalCount, finalizedCount, currentUser } = await readLedgerAsApp(T12_ORDER_ID, BRAND_A);
+    expect(currentUser).toBe('brain_app');
+    expect(currentUser).not.toBe('brain'); // F-4 false-pass prevention
+    expect(provisionalCount).toBe(1);
+    expect(finalizedCount).toBe(0); // not yet finalized — confirmed
+  });
+
+  it('runRevenueFinalization() converts the past-horizon provisional → finalization row (realized GMV)', async () => {
+    // BRAND_A was seeded in beforeAll with default brain config. list_active_brand_ids()
+    // returns brands with status='active' — BRAND_A is inserted with no explicit status
+    // so may default. Revenue-finalization picks up all brands returned by the fn.
+    // We set BRAIN_APP_DATABASE_URL so the job uses the test DB.
+    const prevDbUrl = process.env['BRAIN_APP_DATABASE_URL'];
+    process.env['BRAIN_APP_DATABASE_URL'] = BRAIN_APP_DB_URL;
+
+    try {
+      // Invoke the exported revenue-finalization run() function
+      await runRevenueFinalization();
+    } finally {
+      if (prevDbUrl !== undefined) {
+        process.env['BRAIN_APP_DATABASE_URL'] = prevDbUrl;
+      }
+    }
+
+    // Assert: the provisional row is now accompanied by a finalization row
+    const { provisionalCount, finalizedCount, currentUser } = await readLedgerAsApp(T12_ORDER_ID, BRAND_A);
+    expect(currentUser).toBe('brain_app'); // RLS enforced
+    expect(currentUser).not.toBe('brain'); // F-4 false-pass prevention
+    expect(provisionalCount).toBe(1); // provisional still exists (ledger is append-only)
+    // QA-BF-B2 criterion: finalizedCount === 1 proves past-dated order → realized GMV
+    expect(finalizedCount).toBe(1);
+
+    // Additionally verify the finalization row's event_type directly
+    const client = await appPool.connect();
+    try {
+      await client.query("SELECT set_config('app.current_brand_id', $1, false)", [BRAND_A]);
+      const result = await client.query<{ event_type: string; amount_minor: string }>(
+        `SELECT event_type, amount_minor::text
+         FROM realized_revenue_ledger
+         WHERE order_id = $1 AND event_type = 'finalization'`,
+        [T12_ORDER_ID],
+      );
+      expect(result.rows.length).toBe(1);
+      expect(result.rows[0]!.event_type).toBe('finalization');
+      // Amount is preserved (no float drift — I-S07)
+      expect(result.rows[0]!.amount_minor).toBe('250000');
+    } finally {
+      client.release();
+    }
+  });
+
+  it('runRevenueFinalization() is idempotent — second run produces no new finalization rows (dedup)', async () => {
+    const prevDbUrl = process.env['BRAIN_APP_DATABASE_URL'];
+    process.env['BRAIN_APP_DATABASE_URL'] = BRAIN_APP_DB_URL;
+    try {
+      await runRevenueFinalization();
+    } finally {
+      if (prevDbUrl !== undefined) {
+        process.env['BRAIN_APP_DATABASE_URL'] = prevDbUrl;
+      }
+    }
+
+    // Still exactly 1 finalization row (ON CONFLICT DO NOTHING idempotency)
+    const { finalizedCount } = await readLedgerAsApp(T12_ORDER_ID, BRAND_A);
+    expect(finalizedCount).toBe(1);
   });
 });

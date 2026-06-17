@@ -25,6 +25,26 @@ Isolation: separate Redpanda topic {env}.collector.order.backfill.v1 (1 partitio
 ADR-BF-9 ledger wire: LedgerWriter in stream-worker/infrastructure/pg (no cross-package import from @brain/core).
 Security: no raw PII in events/Bronze/logs; no token in logs; brand_id always from caller; NN-1 two-arg GUC throughout; 0006 untouched; no DELETE on backfill_job; no new deployable.
 
+## 2026-06-17T21:05:00Z — Data Engineer — feat-shopify-live-connector
+**Stage:** 3 · **Layer:** stream+batch+lakehouse · **Tier:** deterministic (Tier-0, $0 model spend)
+**Parity:** PASS vs registry (provisional_recognition + rto_reversal schema match revenue-finalization.ts; same ON CONFLICT key; LedgerWriter shared write path) · **Replayable:** yes (same code path for live + backfill; idempotent on event_id; no separate backfill codebase; LedgerWriter ON CONFLICT DO NOTHING) · **Verification:** `npx vitest run apps/stream-worker/src/tests/live-connector.e2e.test.ts` → 16/16 PASS; `npx vitest run apps/stream-worker/src/tests/` → 115/115 PASS (all stream-worker tests, zero regressions) · **Next:** READY-FOR-SECURITY
+
+Commits (branch feat/shopify-live-connector):
+- 7cdbc81 A0: freeze @brain/shopify-mapper — uuidV5FromOrderLive (D-6), uuidV5FromOrderBackfill, mapOrderToEvent; backfill shims re-point
+- 43ab45b A1: migration 0026 — list_connectors_for_repull() + resolve_connector_by_shop_domain() SECURITY DEFINER fns (D-4/7)
+- 25d0af6 A2: 35-day re-pull job (shopify-live-client.ts + run.ts) — SECURITY DEFINER enumeration, SKIP LOCKED overlap-lock, resource=orders.repull cursor, live lane emission (D-7/9/10/11)
+- db123af A3: LedgerWriter.writeReversal() + LiveOrderConsumer routing — provisional vs rto_reversal branch on cancelled_at (D-13, ADR-LV-11)
+- 90f409c A4: live connector e2e tests — 16/16 GREEN (T1 Bronze write, T2 D-6 dedup namespace, T3 per-state dedup, T4 RTO reversal, T5 cursor, T6 SKIP LOCKED, T7 no-GUC FORCE RLS, T8 cross-brand isolation)
+
+Key security properties held:
+- brand_id NEVER from env/Shopify/header — always from list_connectors_for_repull() SECURITY DEFINER result
+- GUC set (set_config) AFTER enumerate, before any brand-scoped read/write
+- NO raw PII in events/Bronze/logs (customer.phone/email never propagated)
+- NO token in logs (I-S09 — accessToken only used in Authorization header)
+- Append-only ledger: brain_app has SELECT+INSERT only; rto_reversal is a new negative row, sale rows untouched
+- Migration 0026: three assertion DO blocks per fn (SECURITY DEFINER=true, search_path=public, brain_app EXECUTE)
+- All Bronze/ledger reads in tests wrapped in BEGIN+set_config GUC+COMMIT (FORCE RLS)
+
 ## 2026-06-17T17:02:09Z — Data Engineer — chore-connector-lifecycle-regression
 **Stage:** 3 · **Layer:** stream (pipeline tests, no data plane change) · **Tier:** deterministic (tier-0, $0 model spend)
 **Parity:** PASS vs registry (no metric definition touched) · **Replayable:** yes (tests only) · **Verification:** `pnpm vitest run <4 test files>` → 33 PASS / 1 SKIP (ADR-R3 it.skip) / 0 FAIL · **Next:** READY-FOR-SECURITY

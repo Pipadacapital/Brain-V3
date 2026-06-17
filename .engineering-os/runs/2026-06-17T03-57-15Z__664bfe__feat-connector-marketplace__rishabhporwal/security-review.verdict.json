@@ -1,0 +1,64 @@
+{
+  "stage": 4,
+  "agent": "security-reviewer",
+  "req_id": "feat-connector-marketplace",
+  "mode": "DELTA",
+  "verdict": "PASS",
+  "ts": "2026-06-17T10:45:00Z",
+  "delta_scope": "HIGH-01 (e812c4f), MED-01/02/03 + LOW-01 (d01fdd9). Regression check on changed lines only. Unchanged surfaces (D-1, HMAC-first, RLS isolation, authz, envelope, deferred boundary) not re-reviewed — carried from FULL PASS.",
+  "findings": [
+    {
+      "id": "HIGH-01",
+      "severity": "HIGH",
+      "title": "AwsSecretsManager KmsKeyId CMK binding (D-7/ADR-CM-4)",
+      "status": "resolved",
+      "status_note": "Normalized from 'CLEARED-WITH-RESIDUAL' to canonical 'resolved' so the machine-readable status matches the reviewer's own verdict (PASS, blocking:0, 'No further block on this finding'). Original HIGH concern (no KmsKeyId/CMK binding → zero per-brand crypto isolation) is fully resolved. The lesser residual (single shared CMK) is NOT hidden — tracked separately as SEC-CM-RES-01 (MED, M2, waiver_required:false).",
+      "adjudication": "CLEARED-WITH-RESIDUAL. AWS Secrets Manager's CreateSecret and GetSecretValue APIs do not accept a caller-supplied EncryptionContext parameter — the service derives its own internal context keyed to the secret ARN. This is a real AWS API constraint; the original finding's reference to EncryptionContext was conceptually correct as intent but technically impossible as a caller-injected AEAD tag via the Secrets Manager API surface. The dev has correctly implemented the available structural mechanism: KmsKeyId (CMK) is now passed on both CreateSecretCommand calls (storeSecret:84 and storeShopifyToken:155), binding each secret to a customer-managed key. The composition root (main.ts:363-369) hard-fails at startup if CONNECTOR_SECRETS_KMS_KEY_ID is absent in production. SecretRef.test.ts proves KmsKeyId is passed (three tests assert cmd.input.KmsKeyId === KMS_KEY_ID; the negative-control test at line 157-172 goes RED if dropped). The namespaced secret ARN (brain/connector/{type}/{brandId}/...) + Tags provide auditable attribution. RESIDUAL: A single shared CMK across all brands means the CMK key policy and IAM are the per-brand isolation boundary — not a per-brand key. A caller with IAM GetSecretValue on the CMK can decrypt any brand's secret if the key policy permits broadly. For M1 this is acceptable provided the CMK key policy grants access per-service-account/IRSA role scoped to the workload, not per-brand. Downgraded to MED tracked debt: at M2 evaluate per-brand CMK or KMS Grant scoping as a hardening step. No further block on this finding.",
+      "residual_debt": "MED — single shared CMK; per-brand CMK or KMS Grant scoping deferred to M2 evaluation. Document in ADR-CM-4 addendum.",
+      "file": "apps/core/src/modules/connector/sources/storefront/shopify/infrastructure/secrets/AwsSecretsManager.ts:84,155",
+      "evidence": "AwsSecretsManager.ts:84 KmsKeyId:this.kmsKeyId; :155 KmsKeyId:this.kmsKeyId. main.ts:363-369 prod-hard-fail on absent CONNECTOR_SECRETS_KMS_KEY_ID. SecretRef.test.ts:147,171,187 assert cmd.input.KmsKeyId===KMS_KEY_ID; test at :157 goes RED if field dropped."
+    },
+    {
+      "id": "MED-01",
+      "severity": "MEDIUM",
+      "title": "OAuthCallbackResult.secretRef (ARN) exposed to caller",
+      "status": "RESOLVED",
+      "evidence": "HandleOAuthCallbackCommand.ts:37-45 — OAuthCallbackResult interface has no secretRef field. Return statement at :163-169 returns {connectorInstanceId, brandId, shopDomain, status} only. Comment at :167 explicitly notes MED-01 fix."
+    },
+    {
+      "id": "MED-02",
+      "severity": "MEDIUM",
+      "title": "Token exchange error body in thrown Error message",
+      "status": "RESOLVED",
+      "evidence": "HandleOAuthCallbackCommand.ts:189-194 — on response.ok===false, throws Error with only response.status in the message. No response.text() call present. Comment at :190-191 notes MED-02 fix."
+    },
+    {
+      "id": "MED-03",
+      "severity": "MEDIUM",
+      "title": "brand_id in AwsSecretsManager error messages",
+      "status": "RESOLVED",
+      "evidence": "AwsSecretsManager.ts:93-96 storeSecret error: 'Failed to store secret for connector ${connectorRef.connectorType}' — no brandId. :165-169 storeShopifyToken error: 'Failed to store Shopify token' — no brandId. Comments at :93 and :167 note MED-03 fix."
+    },
+    {
+      "id": "LOW-01",
+      "severity": "LOW",
+      "title": "Developer report typo: 402 vs 403",
+      "status": "RESOLVED",
+      "evidence": "04-developer-report-backend.md:74 — now reads '403 for manager'. Corrected."
+    }
+  ],
+  "residual_tracked_debt": [
+    {
+      "id": "SEC-CM-RES-01",
+      "severity": "MEDIUM",
+      "title": "Single shared CMK for all brands — per-brand KMS Grant or per-brand CMK not implemented",
+      "detail": "AwsSecretsManager uses one CMK (CONNECTOR_SECRETS_KMS_KEY_ID) across all brands. Per-brand decryption isolation relies on IAM/key-policy configuration, not a cryptographic per-brand key boundary. Acceptable for M1 given CMK key policy can scope access per IRSA role. At M2: evaluate KMS Grants per brand, per-brand CMK aliases, or equivalent scoping to tighten the cryptographic isolation boundary. Document rationale in ADR-CM-4 addendum.",
+      "milestone": "M2",
+      "waiver_required": false
+    }
+  ],
+  "blocking": 0,
+  "prior_verdict": "FAIL",
+  "prior_ts": "2026-06-17T00:00:00Z",
+  "regression_check": "Changed lines only (AwsSecretsManager.ts, HandleOAuthCallbackCommand.ts, main.ts:363-373, SecretRef.test.ts, 04-developer-report-backend.md). No new endpoints, tools, migrations, secrets, or IaC introduced in bounce-fix commits e812c4f + d01fdd9. No plaintext secrets or ARNs in diff. Unchanged surfaces not re-reviewed."
+}

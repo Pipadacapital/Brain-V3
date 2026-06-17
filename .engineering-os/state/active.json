@@ -391,6 +391,13 @@
         "feat-metric-engine-parity"
       ],
       "last_journal_entry_at": "2026-06-17T03:24:33Z"
+    },
+    {
+      "req_id": "feat-connector-marketplace",
+      "status": "awaiting-stakeholder",
+      "stage": 7,
+      "current_owner": "stakeholder",
+      "last_journal_entry_at": "2026-06-17T06:31:55Z"
     }
   ]
 }

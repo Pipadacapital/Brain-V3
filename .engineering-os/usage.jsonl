@@ -115,3 +115,14 @@
 {"ts":"2026-06-17T03:07:08Z","req_id":"feat-analytics-api-dashboard","agent":"qa-agent","stage":5,"model":"sonnet","review_scope":"delta","total_tokens":21560}
 {"ts":"2026-06-17T03:13:04Z","req_id":"feat-analytics-api-dashboard","agent":"final-reviewer","stage":6,"model":"opus","review_scope":"full","total_tokens":78514}
 {"ts":"2026-06-17T03:26:30Z","req_id":"feat-analytics-api-dashboard","agent":"platform-devops","stage":8,"model":"sonnet","review_scope":"full","total_tokens":61788}
+{"ts":"2026-06-17T04:06:09Z","req_id":"feat-connector-marketplace","agent":"cto-advisor","stage":1,"model":"sonnet","review_scope":"full","total_tokens":73138}
+{"ts":"2026-06-17T04:13:33Z","req_id":"feat-connector-marketplace","agent":"architect","stage":2,"model":"opus","review_scope":"full","total_tokens":116158}
+{"ts":"2026-06-17T04:53:30Z","req_id":"feat-connector-marketplace","agent":"backend-developer","stage":3,"model":"sonnet","review_scope":"full","total_tokens":71154}
+{"ts":"2026-06-17T05:10:25Z","req_id":"feat-connector-marketplace","agent":"frontend-web-developer","stage":3,"model":"sonnet","review_scope":"full","total_tokens":115735}
+{"ts":"2026-06-17T05:56:57Z","req_id":"feat-connector-marketplace","agent":"security-reviewer","stage":4,"model":"sonnet","review_scope":"full","total_tokens":96565}
+{"ts":"2026-06-17T05:56:57Z","req_id":"feat-connector-marketplace","agent":"qa-agent","stage":5,"model":"sonnet","review_scope":"full","total_tokens":77672}
+{"ts":"2026-06-17T06:16:38Z","req_id":"feat-connector-marketplace","agent":"backend-developer","stage":3,"model":"sonnet","review_scope":"delta","total_tokens":93325}
+{"ts":"2026-06-17T06:16:38Z","req_id":"feat-connector-marketplace","agent":"frontend-web-developer","stage":3,"model":"sonnet","review_scope":"delta","total_tokens":76800}
+{"ts":"2026-06-17T06:23:34Z","req_id":"feat-connector-marketplace","agent":"security-reviewer","stage":4,"model":"sonnet","review_scope":"delta","total_tokens":49235}
+{"ts":"2026-06-17T06:23:34Z","req_id":"feat-connector-marketplace","agent":"qa-agent","stage":5,"model":"sonnet","review_scope":"delta","total_tokens":28565}
+{"ts":"2026-06-17T06:31:55Z","req_id":"feat-connector-marketplace","agent":"final-reviewer","stage":6,"model":"opus","review_scope":"full","total_tokens":109581}

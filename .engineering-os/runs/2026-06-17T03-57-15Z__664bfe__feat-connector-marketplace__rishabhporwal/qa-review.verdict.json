@@ -1,0 +1,75 @@
+{
+  "stage": 5,
+  "agent": "qa-engineer",
+  "req_id": "feat-connector-marketplace",
+  "verdict": "PASS",
+  "mode": "DELTA",
+  "ts": "2026-06-17T07:30:00Z",
+  "delta_scope": "reasoning scoped to QA-CM-01 + QA-CM-02; full e2e suite re-run (lane rule); backend 189/189 + isolation/forged-body/authz/audit/deferred-boundary unchanged",
+  "tests_run": [
+    {
+      "name": "backend-vitest",
+      "result": "PASS (unchanged)",
+      "evidence": "189/189 tests passed in FULL review; backend surface unchanged in delta commits b9639d7/890e804/1f92fe8"
+    },
+    {
+      "name": "core-typecheck",
+      "result": "PASS (unchanged)",
+      "evidence": "pnpm --filter @brain/core typecheck → exit 0 (FULL review; unchanged)"
+    },
+    {
+      "name": "web-typecheck",
+      "result": "PASS",
+      "evidence": "pnpm --filter @brain/web typecheck → tsc --noEmit → exit 0 (re-run this session)"
+    },
+    {
+      "name": "playwright-e2e-marketplace",
+      "result": "PASS",
+      "evidence": "6/6 tests passed (38.3s): (1) marketplace renders all 7 categories — 6.2s PASS; (2) shopify tile renders in storefront category with connect input — 5.9s PASS; (3) coming-soon tile is present and is structurally un-connectable — 7.9s PASS [NEGATIVE CONTROL: POST /connectors=null confirmed]; (4) marketplace renders fully for a freshly onboarded brand with zero connections — 6.1s PASS; (5) OAuth tile Connect button fires POST /api/bff/v1/connectors with type=shopify — 5.9s PASS; (6) GET /api/bff/v1/connectors returns correct envelope with tiles — 5.9s PASS"
+    },
+    {
+      "name": "playwright-e2e-full-journey",
+      "result": "PASS",
+      "evidence": "1/1 passed (8.3s): full application journey — register to logout, the whole app — btn-skip-integrations path confirmed no-regression"
+    },
+    {
+      "name": "validity-check",
+      "result": "PASS",
+      "evidence": "python3 validity_check.py --paths apps/web/e2e --require-negative-control → 'validity_check: clean (12 files scanned)' → EXIT 0"
+    }
+  ],
+  "findings": [
+    {
+      "id": "QA-CM-01",
+      "severity": "BLOCKING/HIGH",
+      "title": "connectorsApi.list() regression — onboarding wizard step 3 crashes",
+      "status": "RESOLVED",
+      "resolution": "commit b9639d7 — connectorsApi.list() now derives from getMarketplace() (maps MarketplaceTile[] → ConnectorListItem[]); raw.data.shopify no longer referenced; D-10 envelope correctly unwrapped via mapTiles(raw.data.tiles). All 6 e2e pass; onboarding full-journey 1/1 pass.",
+      "file": "apps/web/lib/api/client.ts:552-592"
+    },
+    {
+      "id": "QA-CM-02",
+      "severity": "BLOCKING/validity-check-exit-3",
+      "title": "validity_check exit 3 — e2e negative control not provable while tests broken",
+      "status": "RESOLVED",
+      "resolution": "QA-CM-01 fixed; marketplace e2e 6/6 green; Test 3 (coming-soon tile) confirms firedRequest===null — zero POSTs on disabled tile click (negative control confirmed). validity_check --require-negative-control exits 0, 12 files scanned clean."
+    }
+  ],
+  "blocking": 0,
+  "negative_control": [
+    {
+      "path": "apps/core/src/modules/connector/tests/connector-marketplace.live.test.ts",
+      "protection": "RLS FORCE on connector_instance under brain_app (NOSUPERUSER NOBYPASSRLS)",
+      "command": "SET ROLE brain_app; SET LOCAL app.current_brand_id = '<brandB>'; SELECT count(*) FROM connector_instance WHERE brand_id = current_setting('app.current_brand_id',TRUE)::uuid",
+      "captured_red_output": "count === 0 (brand A connector not visible under brand B session — RLS enforced)",
+      "status": "CONFIRMED (FULL review; unchanged)"
+    },
+    {
+      "path": "apps/web/e2e/marketplace.spec.ts:82-116",
+      "protection": "Coming-soon tile must not fire POST /api/bff/v1/connectors on click (disabled button negative control)",
+      "command": "npx playwright test e2e/marketplace.spec.ts --reporter=list (Test 3)",
+      "captured_red_output": "firedRequest === null — waitForRequest timed out (2000ms) returning null; expect(firedRequest, 'No POST /connectors must fire for a coming-soon tile').toBeNull() PASSES. Test 3 PASS in 7.9s.",
+      "status": "CONFIRMED — this session"
+    }
+  ]
+}

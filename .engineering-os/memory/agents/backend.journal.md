@@ -168,3 +168,27 @@
 **Self-review vs gates:** PASS — all blocking SEC/QA items addressed; MISSING_WORKSPACE guard added; body workspace_id not read; real-network test automated; unit coverage on all critical guard paths.
 
 **Next:** READY-FOR-SECURITY (DELTA re-review, Stage 4)
+
+## 2026-06-17T08:45:00Z — Backend Engineer — feat-connector-marketplace
+**Stage:** 3 · **Service:** core (connector module) · **Verification:** typecheck PASS (0 errors); 189/189 unit tests PASS; lint PASS (0 warnings)
+**Self-review vs gates:** PASS — all D-1..D-12 must-fix items from CTO review addressed; NN-2/NN-4/MED-CALLBACK-01 proven by dedicated negative-control tests; non-inert isolation test count===0 under brain_app; no plaintext tokens anywhere; envelope discipline on all routes.
+**Next:** READY-FOR-SECURITY
+
+**Commits (branch feat/connector-marketplace):**
+- `dff9741` — A0: freeze connector.api.v1 contract + static catalog (9 tiles, 7 categories, ADR-CM-1)
+- `84d350b` — A1: migration 0021 health columns (7-state health_state + 3-state safety_rating); repo + entity extended (ADR-CM-5)
+- `8bbb61e` — A2: generic ISecretsManager seam (storeSecret/getSecret/deleteSecret); LocalSecretsManager prod hard-fail (D-7/ADR-CM-4)
+- `9f771d6` — A3: generic connect/callback/disconnect + authz (ADR-CM-7) + audit (ADR-CM-9); deleted divergent MED-CALLBACK-01 handler (D-1)
+- `d48bb79` — A4: live tests 35/35 pass — isolation (BEGIN/SET LOCAL/COMMIT, count===0), forged-body, authz, audit sha256, envelope
+
+**Non-negotiables:**
+- NN-2: no token/ciphertext/key columns in connector_instance; only secret_ref (ARN) — schema scan + entity scan + LocalSecretsManager ARN proof
+- NN-4: HMAC → state-nonce → shop-domain order enforced; unit negative-control proves HmacValidationError fires first with zero repo calls
+- MED-CALLBACK-01: brandId from consumeAndGetBrandId(state) only; OAuthCallbackInput has no brandId field; structural compile-time proof
+- ADR-CM-8: {request_id, data} envelope on all connector routes; Zod parse validation in live test describe 11
+- ADR-CM-9: auditWriter.append on connect + disconnect; sha256 hash-chain row confirmed in audit_log
+
+**Root causes fixed during A4:**
+1. SET LOCAL requires BEGIN/COMMIT transaction block to persist GUC for subsequent statements — isolation tests failed silently because RLS policy read current_setting()→"" (empty default) and got uuid parse error
+2. CTX.BRAND_A empty despite hardcoded fallback — TEST_BRAND_A='' in shell env, so ?? null-coalescing didn't trigger; fixed with || falsy-coalescing
+3. AuditDbClient.query generic variance — resolved by returning explicit {rows, rowCount} shape instead of pg QueryResult<T>

@@ -25,6 +25,7 @@ import { ResolveIdentityUseCase } from './application/ResolveIdentityUseCase.js'
 import { CollectorEventConsumer } from './interfaces/consumers/CollectorEventConsumer.js';
 import { IdentityBridgeConsumer } from './identity-bridge/IdentityBridgeConsumer.js';
 import { BackfillOrderConsumer } from './interfaces/consumers/BackfillOrderConsumer.js';
+import { LiveLedgerBridgeConsumer } from './interfaces/consumers/LiveLedgerBridgeConsumer.js';
 import { LedgerWriter } from './infrastructure/pg/LedgerWriter.js';
 
 export async function main(): Promise<void> {
@@ -37,6 +38,10 @@ export async function main(): Promise<void> {
   const topic = process.env['COLLECTOR_TOPIC'] ?? 'dev.collector.event.v1';
   const groupId = process.env['CONSUMER_GROUP_ID'] ?? 'stream-worker-live';
   const identityGroupId = process.env['IDENTITY_CONSUMER_GROUP_ID'] ?? 'identity-bridge-live';
+  // Live-ledger bridge (ORCH-LV-H1 fix): separate consumer group on the live topic — mirrors
+  // IdentityBridgeConsumer pattern. Does NOT double-write Bronze (CollectorEventConsumer handles
+  // Bronze). Filters to order.live.v1 events only; routes provisional_recognition / rto_reversal.
+  const liveLedgerGroupId = process.env['LIVE_LEDGER_CONSUMER_GROUP_ID'] ?? 'live-ledger-bridge';
   // Backfill lane (ADR-BF-7 / D-3): separate topic + group → zero live-lane lag impact
   const backfillTopic = process.env['BACKFILL_TOPIC'] ?? `${(process.env['APP_ENV'] ?? 'dev')}.collector.order.backfill.v1`;
   const backfillGroupId = process.env['BACKFILL_CONSUMER_GROUP_ID'] ?? 'stream-worker-backfill';
@@ -85,16 +90,35 @@ export async function main(): Promise<void> {
     kafka, backfillProcessEvent, ledgerWriter, backfillTopic, backfillGroupId,
   );
 
+  // ── Live-ledger bridge (ORCH-LV-H1 fix) ────────────────────────────────────
+  // Separate consumer group (liveLedgerGroupId) on the same live topic as
+  // CollectorEventConsumer (topic) and IdentityBridgeConsumer. This mirrors
+  // IdentityBridgeConsumer: same topic, independent offset, distinct group.
+  // Responsibility: filter order.live.v1 events → routeLiveOrderToLedger
+  //   → provisional_recognition (new sale) or rto_reversal (cancelled order).
+  // Does NOT touch Bronze (CollectorEventConsumer already writes Bronze).
+  // Brand GUC is set inside LiveLedgerBridgeConsumer before every ledger write (E-4).
+  const liveLedgerWriter = new LedgerWriter(dbUrl);
+  const liveLedgerConsumer = new LiveLedgerBridgeConsumer(
+    kafka, liveLedgerWriter, topic, liveLedgerGroupId,
+  );
+
   // Graceful shutdown
   const shutdown = async (signal: string): Promise<void> => {
     console.info(`[stream-worker] ${signal} received — draining consumers...`);
-    await Promise.all([consumer.stop(), identityConsumer.stop(), backfillConsumer.stop()]);
+    await Promise.all([
+      consumer.stop(),
+      identityConsumer.stop(),
+      backfillConsumer.stop(),
+      liveLedgerConsumer.stop(),
+    ]);
     await dedup.quit();
     await backfillDedup.quit();
     await bronze.end();
     await backfillBronze.end();
     await identityRepo.end();
     await ledgerWriter.end();
+    await liveLedgerWriter.end();
     console.info('[stream-worker] shutdown complete');
     process.exit(0);
   };
@@ -116,6 +140,13 @@ export async function main(): Promise<void> {
   console.info(`[stream-worker] starting backfill consumer — topic=${backfillTopic} group=${backfillGroupId}`);
   await backfillConsumer.start();
   console.info('[stream-worker] backfill consumer running');
+
+  // ── Live-ledger bridge consumer (ORCH-LV-H1 fix) ────────────────────────────
+  // Same live topic (topic) but separate consumer group (liveLedgerGroupId).
+  // Filters to order.live.v1; routes provisional_recognition / rto_reversal.
+  console.info(`[stream-worker] starting live-ledger bridge — topic=${topic} group=${liveLedgerGroupId}`);
+  await liveLedgerConsumer.start();
+  console.info('[stream-worker] live-ledger bridge consumer running');
 }
 
 // Run when invoked directly (not imported in tests)

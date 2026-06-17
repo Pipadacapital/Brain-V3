@@ -19,8 +19,11 @@ export function useConnectionStatus() {
   return useQuery({
     queryKey: [...DASHBOARD_QUERY_KEY, 'connection-status'],
     queryFn: () => dashboardApi.getConnectionStatus(),
-    staleTime: 30_000,
-    refetchInterval: 60_000, // refresh every minute for live connector status
+    staleTime: 15_000,
+    // C1 (feat-shopify-live-connector): poll every 30s so the "Live" vs stale freshness
+    // indicator reflects real connector_sync_status changes without a full page reload.
+    // Matches the client-side 30s ticker in LiveSyncIndicator.
+    refetchInterval: 30_000,
   });
 }
 

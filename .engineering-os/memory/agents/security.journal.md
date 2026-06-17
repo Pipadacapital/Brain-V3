@@ -91,3 +91,18 @@
 **Findings:** 0 CRIT / 0 HIGH / 0 MED / 0 LOW · **Blocking:** 0 · **Scanners:** secret-grep CLEAN (shpat_test_ synthetic); SAST manual CLEAN; delta-skip SCA/IaC/container (no dep/image/IaC changes)
 **Key verifications:** guard-mirrors-core=PASS (identical NODE_ENV===production condition, throw-before-work); prod-path-unaffected=PASS (factory exits to AwsSecretsManager at line 46, guard is belt-and-suspenders only); export-no-new-surface=PASS (class export adds testability only, no prod caller); coverage-preserved=PASS (core write+prod-hard-fail moved in-package to LocalSecretsManager.test.ts, both assertion pairs present+non-inert); A4-3-active=PASS (it.skip → it, dynamic import, revert-RED confirmed); no-real-secret=PASS (shpat_test_ synthetic; 60d543dc grep CLEAN); no-RLS-regression=PASS (0 migrations/grants/policies in diff); verification-valid=PASS (no bypass-green, negative controls present)
 **Next:** PASS → reconcile with QA Engineer / no bounce_target
+
+## 2026-06-17T00:00:00Z — Security Reviewer — feat-shopify-live-connector
+**Stage:** 4 · **Mode:** FULL · **Verdict:** PASS
+**Findings:** 0 CRIT / 0 HIGH / 1 MED (SEC-LV-M1 overlap-lock race window) / 1 LOW (SEC-LV-L1 NaN date) · **Blocking:** 0
+**Scanners:** secret-grep on diff CLEAN; dep audit new deps (kafkajs, fastify-raw-body, @brain/shopify-mapper) no CRITICAL/HIGH CVE; migration diff additive only; SAST manual scan clean
+**Surfaces verified at source:** HMAC-first (validateWebhook over rawBody, timing-safe, 401 on fail, zero side effects); brand-from-DB anti-spoof (resolve_connector_by_shop_domain SECURITY DEFINER, brand_id from row not header, 2 non-inert tests); both 0026 SECURITY DEFINER fns (prosecdef=true, search_path=public, GRANT EXECUTE, dispatch-only cols, 3 assertion blocks each); re-pull enumeration (list_connectors_for_repull, GUC-after-enumerate on all brand-scoped ops, non-inert no-GUC negative control T7-b); PII boundary (mapOrderToEvent hashes email/phone, drops raw customer object, storefront_customer_id is numeric non-PII); token secrecy (clientSecret/accessToken never logged); reversal correctness (writeReversal: negative BigInt-as-string, INSERT-only, GUC-before-write, ON CONFLICT DO NOTHING idempotent); isolation (T8 cross-brand 0 rows under brain_app); compliance (no violations)
+**Verification-validity:** all 24 tests non-inert (confirmed RED-able); assertBrainApp() guards all isolation-sensitive tests; no bypass-green
+**Next:** PASS → reconcile with QA Engineer (Stage 5)
+
+## 2026-06-17T22:00:00Z — Security Reviewer — feat-shopify-live-connector (DELTA r1)
+**Stage:** 4 · **Mode:** DELTA · **Verdict:** PASS
+**Findings:** 0 CRIT / 0 HIGH / 0 new · SEC-LV-M1 (MED) + SEC-LV-L1 (LOW) carried open/deferred
+**Delta scope:** commits 3bbdf86 + c836011 only — LiveLedgerBridgeConsumer.ts (new), main.ts (wiring), live-ledger-wiring.e2e.test.ts (new). No migrations, no RLS, no new deps.
+**Decision log:** ORCH-LV-H1 fix CONFIRMED. GUC set before every ledger write in LedgerWriter (writeProvisionalRecognition:83-85, writeReversal:182-184). brand_id from event envelope (string type-guard), never from env/header. Append-only confirmed (INSERT+DO NOTHING, no UPDATE/DELETE, brain_app SELECT+INSERT-only GRANT). No Bronze double-write (no BronzeRepository import). Filter cross-tenant safe (brand_id set upstream via HMAC+DB). No PII/token in logs. All prior FULL PASS surfaces untouched by these 2 commits. Wiring tests TW1-TW4 non-inert — un-wire proof documented. 119/119 PASS post-fix.
+**Next:** PASS → reconcile with QA Engineer (Stage 5) / no bounce_target

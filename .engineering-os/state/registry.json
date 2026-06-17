@@ -72,6 +72,11 @@
       "req_id": "fix-connector-lifecycle-cleanup",
       "title": "Review \u2014 worker prod-guard + regression tsc cleanup",
       "first_seen": "2026-06-17T14:50:03Z"
+    },
+    {
+      "req_id": "feat-shopify-live-connector",
+      "title": "Deep Shopify live connector \u2014 webhooks + 35-day re-pull",
+      "first_seen": "2026-06-17T16:15:14Z"
     }
   ]
 }

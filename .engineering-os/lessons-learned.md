@@ -26,3 +26,14 @@ No lessons filed yet. First entry will come from the first requirement's retro.
 
 ## 2026-06-17T09:59:08Z — system-job-force-rls-enumeration (adopted durable rule)
 System/cron/worker jobs that enumerate tenants across a FORCE-RLS table MUST use a SECURITY DEFINER fn (search_path pinned, dispatch-only columns, brain_app EXECUTE) or a superuser pool — a bare brain_app SELECT returns 0 rows (inert in prod, masked by dev superuser). 3 occurrences (phone-guard-reeval, revenue-finalization, shopify-backfill). Carries a non-inert no-GUC negative control under brain_app. See durable-rules/2026-06-17T09-59-08Z__system-job-force-rls-enumeration.md.
+
+## 2026-06-17T22:15:00Z — wired-to-nothing: consumer/recognition-writer built but not wired into the deployable (WATCH — #2 of 3)
+| Field | Value |
+|-------|-------|
+| **req_id** | feat-shopify-live-connector |
+| **Source** | 14-retro.md (Stage 6) |
+| **Pattern** | A new Kafka consumer / recognition-writer is unit-tested in isolation (the routing method works) but is NEVER subscribed + `.start()`-ed in `main.ts` — so the effect (Bronze→ledger) does not run in the deployable. Method-isolation tests are structurally blind to it; the automated QA/Security reviews inherit that blindness. Caught only by live/manual verification. |
+| **Occurrences** | #1 = ADR-BF-9 (feat-connector-backfill: OrderEventConsumer→provisional ledger scaffolded-not-wired). #2 = ORCH-LV-H1 (feat-shopify-live-connector: LiveLedgerBridgeConsumer never started; 903 order.live.v1 events → Bronze, ledger FLAT). Both caught by live verification, not unit-tested reviews. |
+| **Proposed rule (raise at #3)** | A new Kafka consumer / recognition-writer requires an END-TO-END wiring test (real produce → real subscribe → observed effect in the sink), not just a method-isolation test. Reviewers verify the consumer is wired into the deployable (`main.ts` import + instantiate + `.start()` + shutdown), not only that the class works. Architect adds a design-gate check; QA/Security bounce a consumer/writer lacking a real-subscribe wiring test. |
+| **Status** | WATCH at #2 (threshold for /adopt-rule is 3 occurrences, per the system-job-force-rls precedent). No rule-proposal file written yet. Propose + write rule-proposals/wired-to-nothing-end-to-end-wiring-test.md at occurrence #3. |
+| **Mitigation already in tree** | ORCH-LV-H1 fix added live-ledger-wiring.e2e (TW1-TW4): real Kafka produce → wired consumer → polled ledger row. This is the template the eventual rule mandates. |

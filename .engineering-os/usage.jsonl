@@ -154,3 +154,14 @@
 {"ts":"2026-06-17T14:58:02Z","req_id":"fix-connector-lifecycle-cleanup","agent":"security-reviewer","stage":4,"model":"sonnet","review_scope":"full","total_tokens":46565}
 {"ts":"2026-06-17T14:58:02Z","req_id":"fix-connector-lifecycle-cleanup","agent":"qa-agent","stage":5,"model":"sonnet","review_scope":"full","total_tokens":42327}
 {"ts":"2026-06-17T15:02:37Z","req_id":"fix-connector-lifecycle-cleanup","agent":"final-reviewer","stage":6,"model":"opus","review_scope":"full","total_tokens":48784}
+{"ts":"2026-06-17T16:26:59Z","req_id":"feat-shopify-live-connector","agent":"cto-advisor","stage":1,"model":"sonnet","review_scope":"full","total_tokens":93167}
+{"ts":"2026-06-17T16:35:25Z","req_id":"feat-shopify-live-connector","agent":"architect","stage":2,"model":"opus","review_scope":"full","total_tokens":136080}
+{"ts":"2026-06-17T17:07:33Z","req_id":"feat-shopify-live-connector","agent":"data-engineer","stage":3,"model":"sonnet","review_scope":"full","total_tokens":86923}
+{"ts":"2026-06-17T17:20:38Z","req_id":"feat-shopify-live-connector","agent":"frontend-web-developer","stage":3,"model":"sonnet","review_scope":"full","total_tokens":118532}
+{"ts":"2026-06-17T17:21:03Z","req_id":"feat-shopify-live-connector","agent":"backend-developer","stage":3,"model":"sonnet","review_scope":"full","total_tokens":158940}
+{"ts":"2026-06-17T17:28:48Z","req_id":"feat-shopify-live-connector","agent":"security-reviewer","stage":4,"model":"sonnet","review_scope":"full","total_tokens":138906}
+{"ts":"2026-06-17T17:35:18Z","req_id":"feat-shopify-live-connector","agent":"qa-agent","stage":5,"model":"sonnet","review_scope":"full","total_tokens":102042}
+{"ts":"2026-06-17T17:45:20Z","req_id":"feat-shopify-live-connector","agent":"data-engineer","stage":3,"model":"sonnet","review_scope":"delta","total_tokens":99995}
+{"ts":"2026-06-17T17:51:23Z","req_id":"feat-shopify-live-connector","agent":"security-reviewer","stage":4,"model":"sonnet","review_scope":"delta","total_tokens":65292}
+{"ts":"2026-06-17T17:58:04Z","req_id":"feat-shopify-live-connector","agent":"qa-agent","stage":5,"model":"sonnet","review_scope":"delta","total_tokens":82955}
+{"ts":"2026-06-17T18:06:54Z","req_id":"feat-shopify-live-connector","agent":"final-reviewer","stage":6,"model":"opus","review_scope":"full","total_tokens":129744}

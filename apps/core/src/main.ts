@@ -15,8 +15,10 @@
 
 import Fastify, { type FastifyRequest, type FastifyError } from 'fastify';
 import fastifyCookie from '@fastify/cookie';
+import fastifyRawBody from 'fastify-raw-body';
 import { randomUUID } from 'node:crypto';
 import { Redis } from 'ioredis';
+import { Kafka } from 'kafkajs';
 
 import { createPool } from '@brain/db';
 import pg from 'pg';
@@ -40,6 +42,7 @@ import { createEmailAdapter } from './modules/notification/internal/ses-adapter.
 // ── Connector infrastructure imports (HIGH-MOUNT-01) ─────────────────────────
 import { PgBackfillJobRepository } from './modules/connector/backfill/infrastructure/PgBackfillJobRepository.js';
 import type { BackfillJobProgress } from '@brain/contracts';
+import { registerShopifyWebhookRoutes } from './modules/connector/sources/storefront/shopify/interfaces/webhooks/shopifyWebhookHandler.js';
 import { registerShopifyConnectorRoutes } from './modules/connector/sources/storefront/shopify/interfaces/http/shopifyConnectorRoutes.js';
 import { registerDevShopifySyncRoutes } from './modules/connector/sources/storefront/shopify/interfaces/http/devShopifySyncRoutes.js';
 import { registerPixelRoutes, buildDefaultSnippet } from './modules/connector/pixel/interfaces/http/pixelRoutes.js';
@@ -135,6 +138,11 @@ export async function main(): Promise<void> {
       'http://localhost:3001/api/v1/oauth/callback/shopify',
     ),
     pixelIngestBaseUrl: getEnv('PIXEL_INGEST_BASE_URL', 'http://localhost:3001'),
+    // Webhook live-lane Kafka config (B1 / ADR-LV-3)
+    kafkaBrokers: (getEnv('KAFKA_BROKERS', 'localhost:9092')).split(','),
+    kafkaEnv: getEnv('APP_ENV', 'dev'),
+    // Webhook registration callback base URL (B2 / ADR-LV-5 — public URL in prod)
+    webhookCallbackBaseUrl: getEnv('WEBHOOK_CALLBACK_BASE_URL', 'http://localhost:3001'),
   };
 
   // Create Fastify instance.
@@ -167,6 +175,17 @@ export async function main(): Promise<void> {
   await app.register(fastifyCookie as unknown as Parameters<typeof app.register>[0], {
     secret: config.cookieSecret,
     parseOptions: {},
+  });
+
+  // Register raw-body plugin (D-2 / ADR-LV-2) — MUST be registered before webhook routes.
+  // Captures the raw Buffer on routes that declare `config: { rawBody: true }`.
+  // Required for Shopify webhook HMAC validation (HMAC over the raw body bytes — NN-4).
+  // global: false — only captures raw body on routes that opt-in (performance).
+  await app.register(fastifyRawBody as unknown as Parameters<typeof app.register>[0], {
+    field: 'rawBody',
+    global: false,
+    encoding: false, // return Buffer (not a string) — HMAC requires bytes
+    runFirst: true,  // run before JSON body parsing so rawBody is available
   });
 
   // Add correlation ID to every request + the browser BFF bridge + CSRF defense.
@@ -376,6 +395,43 @@ export async function main(): Promise<void> {
     // durable across core restarts and readable by the separate stream-worker process.
     : new LocalSecretsManager(rawPgPool);
   const oauthStateStore = new InProcessOAuthStateStore();
+
+  // ── B1: Shopify webhook receiver (ADR-LV-1..4) ───────────────────────────────
+  // Kafka producer for the live lane (direct produce to dev.collector.event.v1 — ADR-LV-3).
+  // The producer is connected ONCE at startup and reused across all webhook requests.
+  const webhookKafka = new Kafka({
+    clientId: 'core-webhook-receiver',
+    brokers: config.kafkaBrokers,
+    retry: { retries: 3 },
+  });
+  const webhookProducer = webhookKafka.producer();
+  await webhookProducer.connect();
+  const liveTopic = `${config.kafkaEnv}.collector.event.v1`;
+
+  // Per-brand salt for PII hashing in the webhook receiver.
+  // Mirrors the SaltProvider pattern from stream-worker: env var IDENTITY_SALT_<BRAND_UUID_NO_DASHES>.
+  async function getWebhookSaltHex(brandId: string): Promise<string> {
+    const envKey = `IDENTITY_SALT_${brandId.replace(/-/g, '').toUpperCase()}`;
+    const salt = process.env[envKey] ?? '';
+    if (!salt || salt.length !== 64) {
+      throw new Error(
+        `[webhook] salt for brand ${brandId} is missing or wrong length (expected 64 hex chars)`,
+      );
+    }
+    return salt;
+  }
+
+  // Register Shopify webhook routes (PUBLIC — HMAC-protected, exempt from session guard).
+  // The CSRF middleware at the onRequest hook already exempts /api/v1/webhooks/ paths.
+  registerShopifyWebhookRoutes(app, {
+    secretsManager: connectorSecretsManager,
+    rawPgPool,
+    producer: webhookProducer,
+    liveTopic,
+    getSaltHex: getWebhookSaltHex,
+  });
+
+  app.log.info({ topic: liveTopic }, '[core] Shopify webhook receiver registered (B1)');
 
   // DEV-ONLY: validate-sync spike — pull live orders via the real connected token.
   // Mounted only outside production (token crosses the boundary here, I-S09).
@@ -945,6 +1001,7 @@ export async function main(): Promise<void> {
   const shutdown = async () => {
     app.log.info('[core] Shutting down...');
     await app.close();
+    await webhookProducer.disconnect().catch(() => { /* ignore */ });
     await pool.end();
     await rawPgPool.end().catch(() => { /* ignore */ });
     await redis.quit().catch(() => { /* ignore */ });

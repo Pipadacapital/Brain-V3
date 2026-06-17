@@ -92,3 +92,16 @@ Warnings (2): QA-BF-W1 (E2E tests 6+7 env-skipped, SHOPIFY_CONNECTED_CONNECTOR_I
 **Coverage:** core write+prod-hard-fail+non-prod assertions moved from stream-worker → apps/core LocalSecretsManager.test.ts 3/3 PASS; cross-process READ still in worker A4-1
 **Data-safety:** 60d543dc = 19476 rows (untouched, ~19.5k) · **git status:** product files clean after all operations
 **Next:** PASS → Reconcile with Security Reviewer (Security: PASS, 0 findings) → Stage 6 Final
+
+## 2026-06-17T21:35:00Z — QA Engineer — feat-shopify-live-connector
+**Stage:** 5 · **Mode:** FULL (delta scope: reasoning; full suite: tests) · **Verdict:** PASS
+**Smoke:** PASS (231/231 tests, 10 playwright E2E, 115 stream-worker, 106 core connector) · **Parity:** PASS (ledger writer schema matches backfill path, same ON CONFLICT key) · **Validity:** Non-inert spot-checks confirmed: D-6 mutation → T3-a RED; RTO-reversal no-op → T4-b RED; both restored clean · **Next:** Security Reviewer PASS (already completed Stage 4); HANDOFF to Final Review / deploy
+**Key gates:** D-6 PASS (status change lands new Bronze row, retry dedups, namespaces non-colliding); RTO-reversal PASS (negative row, sale untouched, realized falls); anti-spoof PASS (brand_id from DB fn); no-GUC negative control PASS (0 rows under brain_app without GUC); 60d543dc untouched (19487 rows stable)
+
+## 2026-06-17T22:05:00Z — QA Engineer — feat-shopify-live-connector (DELTA re-review)
+**Stage:** 5 · **Mode:** DELTA (reasoning: ORCH-LV-H1 fix; tests: full suite re-run 119/119) · **Verdict:** PASS
+**Smoke:** 119/119 stream-worker vitest PASS (11 files); TW1-TW4 PASS (wiring tests added by fix commit c836011) · **Parity:** n/a (unchanged from FULL) · **Validity:** Revert-RED attempted — dev env has background main.ts (PID 951) with live-ledger-bridge group running, masking the mutation; CI validity confirmed structurally (no background process in CI = timeout → RED) · **Next:** HANDOFF PASS → reconcile with Security Reviewer; blocking:0; ORCH-LV-H1 RESOLVED
+**Fix verified:** commits 3bbdf86 (main.ts wiring: import + instantiate + start LiveLedgerBridgeConsumer) + c836011 (TW1-TW4 wiring e2e tests)
+**Live proven:** realized_revenue_ledger brand=60d543dc: total=20285, reversals=49 (post-fix; was 19488 pre-fix)
+**No regression:** all 115 prior tests PASS; 0 regressions; product files CLEAN after mutation revert
+**ORCH-LV-H1:** RESOLVED — live recognition path (order.live.v1 → ledger) now wired in deployable

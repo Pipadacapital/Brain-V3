@@ -25,6 +25,38 @@ Isolation: separate Redpanda topic {env}.collector.order.backfill.v1 (1 partitio
 ADR-BF-9 ledger wire: LedgerWriter in stream-worker/infrastructure/pg (no cross-package import from @brain/core).
 Security: no raw PII in events/Bronze/logs; no token in logs; brand_id always from caller; NN-1 two-arg GUC throughout; 0006 untouched; no DELETE on backfill_job; no new deployable.
 
+## 2026-06-17T21:05:00Z — Data Engineer — feat-shopify-live-connector
+**Stage:** 3 · **Layer:** stream+batch+lakehouse · **Tier:** deterministic (Tier-0, $0 model spend)
+**Parity:** PASS vs registry (provisional_recognition + rto_reversal schema match revenue-finalization.ts; same ON CONFLICT key; LedgerWriter shared write path) · **Replayable:** yes (same code path for live + backfill; idempotent on event_id; no separate backfill codebase; LedgerWriter ON CONFLICT DO NOTHING) · **Verification:** `npx vitest run apps/stream-worker/src/tests/live-connector.e2e.test.ts` → 16/16 PASS; `npx vitest run apps/stream-worker/src/tests/` → 115/115 PASS (all stream-worker tests, zero regressions) · **Next:** READY-FOR-SECURITY
+
+Commits (branch feat/shopify-live-connector):
+- 7cdbc81 A0: freeze @brain/shopify-mapper — uuidV5FromOrderLive (D-6), uuidV5FromOrderBackfill, mapOrderToEvent; backfill shims re-point
+- 43ab45b A1: migration 0026 — list_connectors_for_repull() + resolve_connector_by_shop_domain() SECURITY DEFINER fns (D-4/7)
+- 25d0af6 A2: 35-day re-pull job (shopify-live-client.ts + run.ts) — SECURITY DEFINER enumeration, SKIP LOCKED overlap-lock, resource=orders.repull cursor, live lane emission (D-7/9/10/11)
+- db123af A3: LedgerWriter.writeReversal() + LiveOrderConsumer routing — provisional vs rto_reversal branch on cancelled_at (D-13, ADR-LV-11)
+- 90f409c A4: live connector e2e tests — 16/16 GREEN (T1 Bronze write, T2 D-6 dedup namespace, T3 per-state dedup, T4 RTO reversal, T5 cursor, T6 SKIP LOCKED, T7 no-GUC FORCE RLS, T8 cross-brand isolation)
+
+Key security properties held:
+- brand_id NEVER from env/Shopify/header — always from list_connectors_for_repull() SECURITY DEFINER result
+- GUC set (set_config) AFTER enumerate, before any brand-scoped read/write
+- NO raw PII in events/Bronze/logs (customer.phone/email never propagated)
+- NO token in logs (I-S09 — accessToken only used in Authorization header)
+- Append-only ledger: brain_app has SELECT+INSERT only; rto_reversal is a new negative row, sale rows untouched
+- Migration 0026: three assertion DO blocks per fn (SECURITY DEFINER=true, search_path=public, brain_app EXECUTE)
+- All Bronze/ledger reads in tests wrapped in BEGIN+set_config GUC+COMMIT (FORCE RLS)
+
+## 2026-06-17T22:15:00Z — Data Engineer — feat-shopify-live-connector (ORCH-LV-H1 fix, r1 bounce)
+**Stage:** 3 · **Layer:** stream · **Tier:** deterministic (tier-0, $0 model spend)
+**Parity:** PASS vs registry (provisional_recognition + rto_reversal schema unchanged; same LedgerWriter write path) · **Replayable:** yes (idempotent ON CONFLICT DO NOTHING; same code path as backfill) · **Verification:** `cd apps/stream-worker && pnpm vitest run` → 119/119 PASS (11 files: 115 existing + 4 new wiring tests, zero regressions) · **Next:** READY-FOR-SECURITY
+
+ORCH-LV-H1 root cause: LiveOrderConsumer existed and was unit-tested (T4 called routeLiveOrderToLedger directly) but was never subscribed to the Kafka topic in main.ts. 903 order.live.v1 events hit Bronze; ledger stayed flat.
+
+Fix committed in two slices (branch feat/shopify-live-connector, NEVER master):
+- 3bbdf86: Added LiveLedgerBridgeConsumer (consumer group live-ledger-bridge, env LIVE_LEDGER_CONSUMER_GROUP_ID). Same live topic as CollectorEventConsumer + IdentityBridgeConsumer; independent offset; filters order.live.v1; routes provisional_recognition / rto_reversal. No Bronze double-write. Brand GUC set inside LedgerWriter (E-4). MAX_RETRY=5 DLQ (D-7). Wired in main.ts: start + shutdown hook + liveLedgerWriter.end().
+- c836011: live-ledger-wiring.e2e.test.ts — TW1 (sale → provisional_recognition polled via Kafka), TW2 (cancellation → rto_reversal negative), TW3 (page.viewed → no ledger write), TW4 (same event twice → 1 row). Un-wire proof: comment `await consumer.start()` → TW1/TW2 poll timeouts → RED. This test would have caught ORCH-LV-H1.
+
+Guardrails: no Bronze double-write; brand GUC before every ledger write; no raw PII/token in logs; idempotent; NEVER touched 60d543dc-*; git add ONLY apps/stream-worker paths; NEVER committed to master.
+
 ## 2026-06-17T17:02:09Z — Data Engineer — chore-connector-lifecycle-regression
 **Stage:** 3 · **Layer:** stream (pipeline tests, no data plane change) · **Tier:** deterministic (tier-0, $0 model spend)
 **Parity:** PASS vs registry (no metric definition touched) · **Replayable:** yes (tests only) · **Verification:** `pnpm vitest run <4 test files>` → 33 PASS / 1 SKIP (ADR-R3 it.skip) / 0 FAIL · **Next:** READY-FOR-SECURITY

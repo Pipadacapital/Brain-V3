@@ -176,6 +176,11 @@
 **Lessons-learned:** this suite CLOSES the connector-path root gap (lifecycle/real-data/worker-RLS-secret coverage absent → produced 8 live fixes). No rule-proposal — system-job-force-rls-enumeration already adopted + honored; recurrence threshold for a NEW rule not met.
 **Next:** Stakeholder gate (Stage 7). I did NOT commit, did NOT advance the gate.
 
+## 2026-06-17T20:00:00Z — Engineering Advisor (cto-advisor) — feat-shopify-live-connector
+**Stage:** 1 · **Action:** Intake + adversarial stress pass (6 personas inhabited inline) · **Personas:** none spawned (inhabited inline: Security/Webhook Skeptic, Dev-Reality Skeptic, Dedup/Correctness Skeptic, Money/COD Skeptic, Isolation/System-Job Skeptic, Scale/Lane Skeptic) · **Decision:** ADVANCE
+**Rationale:** All blockers shipped. 14 binding decisions declared (D-1..D-14). CRITICAL findings: (D-4) webhook handler resolves brand_id via DB lookup on connector_instance after HMAC validation — never from the X-Shopify-Shop-Domain header (attacker-controlled); (D-6) sha256(brand:order_id) as the SOLE event_id BREAKS live status-change sync — ON CONFLICT DO NOTHING silently drops delivered→RTO transitions; the Architect must choose a per-state composite key (recommended: uuidV5FromOrderLive(brand,order,updated_at_ms)) so each state change lands as a distinct Bronze row; (D-7) re-pull is a cross-tenant system job → SECURITY DEFINER enumeration fn required (adopted durable rule); (D-8) dev-honesty: Shopify cannot reach localhost — synthetic HMAC-signed POST is the only dev test path for webhooks; the 35-day re-pull is the dev freshness mechanism. HIGH findings: ShopifyHmac.validateWebhook() CONFIRMED correct (raw body bytes, base64 comparison, timing-safe — covers webhook case); overlap-lock per connector (D-9); mapper package extraction to unblock cross-app reuse (D-12); LedgerWriter RTO→reversal path confirmation (D-13). Lane: high_stakes + system_of_record_audit surface added. Paradigm: tier-0 deterministic, $0/month.
+**Next:** Architect (Stage 2) — D-4, D-6, D-7 are the three CRITICAL pre-implementation gates; D-12 (mapper package) is the prerequisite that unblocks parallel tracks.
+
 ## 2026-06-17T19:05:00Z — Engineering Advisor (final-reviewer) — fix-connector-lifecycle-cleanup
 **Stage:** 6 · **Verdict:** PASS / APPROVE · **Paradigm audit:** clean (tier-0, no model path, $0)
 **Scope/lineage:** Closes the two tracked follow-ups SEC-CLR-MED-01 (worker prod-guard) + QA-CLR-LOW-01 (test-file tsc cleanup) filed at the end of chore-connector-lifecycle-regression. Diff = 4 files +125/-84, tests-and-one-guard only; no migration, no RLS/grant, 60d543dc untouched. No scope creep.
@@ -187,4 +192,20 @@
 **Over-engineering / Single-Primitive:** CLEAN — mirrors an existing primitive (no new one), surgical diff, no new deps/abstractions, comments are WHY not WHAT.
 **Hard-rule check:** none (no dependency/Single-Primitive/compliance/paradigm/gate-skip deviation). Verification-validity PASS.
 **Retro / rule-proposal:** no new rule (recurrence threshold not met; system-job-force-rls-enumeration already adopted). Process note: prior dev-report's false "zero new tsc errors" claim is what QA caught → produced QA-CLR-LOW-01; gate worked.
+**Next:** Stakeholder gate (Stage 7). I did NOT commit, did NOT advance the gate.
+
+## 2026-06-17T22:15:00Z — Engineering Advisor (final-reviewer) — feat-shopify-live-connector
+**Stage:** 6 · **Verdict:** PASS / APPROVE · **Paradigm audit:** clean (Tier-0, $0/mo; over-engineering clean — all artifacts plan-sanctioned; no drive-by)
+**Gates re-run (≥3, independently replicated under real brain_app, is_superuser=off):**
+- live-ledger-wiring.e2e TW1-TW4 → 4/4 PASS (real produce → wired consumer → ledger row) — the ORCH-LV-H1 fix proof.
+- live-connector.e2e T1-T8 → 16/16 PASS (D-6 per-state, RTO-reversal, no-GUC NC, isolation).
+- shopifyWebhookHandler.integration B3 → 8/8 PASS (HMAC-first, anti-spoof).
+- Direct DB: no-GUC connector_instance bare SELECT = 0 rows; list_connectors_for_repull() = 2 rows; ledger GRANT = INSERT,SELECT only; both 0026 fns prosecdef=true/search_path=public; live ledger total=20285 reversals=49 (matches orchestrator proof).
+- stream-worker tsc: 1 error (worker-secrets AwsSecretsManager cross-rootDir) — confirmed pre-existing on master, 0 new, exit 0.
+**D-6 (make-or-break):** live event_id = sha256(brand:order:updatedAtMs:order.live.v1), backfill = sha256(brand:order:order.backfill.v1) — distinct namespaces, per-state new Bronze row, retry dedups. Re-replicated non-inert.
+**ORCH-LV-H1 fix:** LiveLedgerBridgeConsumer imported(28)/instantiated(102)/started(148)/stopped(113) in main.ts; real subscribe+run; filters order.live.v1; ledger-only (no double-Bronze). RESOLVED.
+**Anti-spoof:** HMAC validateWebhook first op (401 on fail); brandId from resolve_connector_by_shop_domain DB row (158), never header/body. **Reversal:** writeReversal GUC-first, negative BigInt-string, ON CONFLICT DO NOTHING, sale untouched; live 49 rto_reversal.
+**2 tracked findings — my call:** ACCEPT AS TRACKED. SEC-LV-M1 (MED lock-window → worst case double API calls, dedup-absorbed, M1+); SEC-LV-L1 (LOW NaN-date guard, Shopify always sends updated_at, one-line). Neither on a money/tenancy/auth correctness path.
+**Wired-to-nothing pattern — my call:** WATCH + lessons-learned now; PROPOSE durable rule at occurrence #3. This is #2 (ADR-BF-9 backfill + ORCH-LV-H1 live), both caught by live verification not unit-tested reviews. Threshold (3, per system-job-force-rls precedent) not met → no rule-proposal file written; lessons-learned + attention watch filed. Proposed rule: new consumer/recognition-writer needs an END-TO-END wiring test (real produce→subscribe→sink effect) + reviewer verifies it's wired into main.ts.
+**Hard-rule check:** clean (no dependency/Single-Primitive/compliance/paradigm/gate-skip deviation). Verification-validity PASS (non-inert negative controls on every tenancy/auth/money path).
 **Next:** Stakeholder gate (Stage 7). I did NOT commit, did NOT advance the gate.

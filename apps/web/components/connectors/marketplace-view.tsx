@@ -422,7 +422,6 @@ export function MarketplaceView() {
   return (
     <div
       className="space-y-8"
-      data-testid="marketplace-page"
     >
       {CATEGORY_ORDER.map((cat) => {
         const catTiles = byCategory.get(cat) ?? [];

@@ -1,0 +1,46 @@
+{
+  "stage": 4,
+  "agent": "security-reviewer",
+  "req_id": "feat-connector-backfill",
+  "mode": "DELTA",
+  "verdict": "PASS",
+  "findings": [
+    {
+      "id": "SEC-BF-H1",
+      "severity": "HIGH",
+      "title": "Worker job-enumeration queries bypass RLS GUC — worker non-functional in prod",
+      "file": "apps/stream-worker/src/jobs/shopify-backfill/run.ts:219,228,247",
+      "status": "resolved",
+      "delta_resolution": "Migration 0023_backfill_job_enumeration.sql creates list_queued_backfill_jobs() as SECURITY DEFINER, STABLE, SET search_path = public (hijack prevention confirmed, mirrors 0019 pattern). Returns ONLY dispatch metadata (id, brand_id, connector_instance_id) for status queued/running — no tenant data content. GRANT EXECUTE TO brain_app present. Three migration-time assertions verify: prosecdef=true, search_path=public pinned, brain_app has EXECUTE. run.ts findQueuedJob() calls list_queued_backfill_jobs() via pool.query (no GUC needed for enumeration step). loadConnectorInstance() acquires a client, calls set_config('app.current_brand_id', brandId, true) BEFORE the connector_instance JOIN brand query — GUC-before-tenant-read ordering confirmed. brand_id authority = fn result, never env/Shopify (MT-1 maintained). T11 provides non-inert proof: negative control asserts brain_app direct SELECT on backfill_job without GUC = 0 rows (RLS fail-closed confirmed); positive assertion findQueuedJob(appPool, ciId) returns seeded job id/brandId/ciId via SECURITY DEFINER fn. T11 runs under brain_app (current_user='brain_app' asserted). Minimal controlled bypass confirmed: fn exposes only 3 dispatch-identity columns, no order/customer/ledger data."
+    },
+    {
+      "id": "SEC-BF-M1",
+      "severity": "MEDIUM",
+      "title": "Inaccurate comment 'superuser pool' at run.ts:211 masks the GUC gap",
+      "file": "apps/stream-worker/src/jobs/shopify-backfill/run.ts:211",
+      "status": "resolved",
+      "delta_resolution": "Comment at run.ts:~212 now accurately reads: 'SEC-BF-H1 FIX (0023): Uses the brain_app pool + the SECURITY DEFINER fn list_queued_backfill_jobs() for enumeration.' Full explanation of why no GUC is needed for enumeration, and that GUC is set before any brand-scoped read. No trace of 'superuser pool' language remains."
+    },
+    {
+      "id": "SEC-BF-M2",
+      "severity": "MEDIUM",
+      "title": "Duplicate LedgerWriter in stream-worker may drift from core PgLedgerRepository",
+      "file": "apps/stream-worker/src/infrastructure/pg/LedgerWriter.ts",
+      "status": "open",
+      "detail": "Deferred. Currently aligned (same ON CONFLICT key, same GUC pattern, same money handling). Post-M1 tech-debt: extract shared @brain/ledger-writer package. Not required for this delta."
+    },
+    {
+      "id": "SEC-BF-L1",
+      "severity": "LOW",
+      "title": "Two PgBackfillJobRepository implementations with no shared import",
+      "file": "apps/stream-worker/src/infrastructure/pg/BackfillJobRepository.ts, apps/core/src/modules/connector/backfill/infrastructure/PgBackfillJobRepository.ts",
+      "status": "open",
+      "detail": "Deferred. Intentional split (I-E05). Currently aligned. Post-M1 shared package extraction."
+    }
+  ],
+  "blocking": 0,
+  "prior_verdict": "FAIL",
+  "prior_ts": "2026-06-17T14:00:00Z",
+  "delta_scope": "SEC-BF-H1 (HIGH resolved) + SEC-BF-M1 (MED resolved) — commits 2f244d2 + d35cedb. Deferred: SEC-BF-M2 (MED open), SEC-BF-L1 (LOW open). Full-review surfaces (PII hashing, token secrecy, CSRF, authz, isolation structure) not re-reviewed (unchanged, PASSed in prior FULL).",
+  "ts": "2026-06-17T15:30:00Z"
+}

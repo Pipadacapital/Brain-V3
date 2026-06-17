@@ -1,34 +1,63 @@
-# Pending Stakeholder Commit — feat-metric-engine-parity
+# Pending Stakeholder Commit — feat-connector-backfill
 
 **Final review:** PASS / APPROVE (Stage 6, 2026-06-17). Awaiting Stakeholder gate (Stage 7).
-**Branch:** `feat/metric-engine-parity` (base `master`). Commits already on branch: `d31fc84`, `a6d4870`, `5ec1c50`, `e9019b2` (build) + `08dcc2f`, `7d92fb8`, `7a55c10` (SEC-001 bounce fixes).
+**Branch:** `feat/connector-backfill` (base `master`). 0 blocking.
 
-The work is already committed per-slice on the feature branch. The Stakeholder action is the **conscious accept + merge**, not a fresh `git add`. If a squash/verification re-stage is wanted, the explicit product-code paths (no `git add -A`) are:
+The work is already committed slice-by-slice on the feature branch (commit-per-slice). The Stakeholder action at Stage-7 is the **conscious accept + commit/merge**, not a fresh build. The final-reviewer did NOT commit and did NOT advance the gate.
+
+## Product-code surface (explicit paths — NO `git add -A`)
+
+If a squash/verification re-stage is wanted, stage ONLY these product-code paths (do NOT sweep run-folder/state/journal artifacts):
 
 ```bash
 git add \
-  packages/metric-engine/src/registry.ts \
-  packages/metric-engine/src/registry.test.ts \
-  packages/metric-engine/src/deps.ts \
-  packages/metric-engine/src/realized-revenue.ts \
-  packages/metric-engine/src/provisional-revenue.ts \
-  packages/metric-engine/src/index.ts \
-  packages/metric-engine/package.json \
-  packages/metric-engine/tsconfig.json \
-  db/migrations/0020_provisional_gmv_as_of.sql \
-  tools/parity-oracle/src/index.ts \
-  tools/parity-oracle/src/reference.ts \
-  tools/parity-oracle/src/parity.test.ts \
-  tools/parity-oracle/package.json \
-  tools/parity-oracle/turbo.json \
-  eslint.config.mjs \
-  turbo.json \
-  .github/workflows/pr.yml
+  apps/core/src/main.ts \
+  apps/core/src/modules/connector/backfill/infrastructure/PgBackfillJobRepository.ts \
+  apps/core/src/modules/connector/backfill/tests/backfill-trigger.live.test.ts \
+  apps/stream-worker/src/infrastructure/pg/BackfillJobRepository.ts \
+  apps/stream-worker/src/infrastructure/pg/LedgerWriter.ts \
+  apps/stream-worker/src/infrastructure/redis/RedisDedupAdapter.ts \
+  apps/stream-worker/src/interfaces/consumers/BackfillOrderConsumer.ts \
+  apps/stream-worker/src/jobs/shopify-backfill/money-utils.ts \
+  apps/stream-worker/src/jobs/shopify-backfill/order-mapper.ts \
+  apps/stream-worker/src/jobs/shopify-backfill/run.ts \
+  apps/stream-worker/src/jobs/shopify-backfill/shopify-paged-client.ts \
+  apps/stream-worker/src/jobs/shopify-backfill/uuid-utils.ts \
+  apps/stream-worker/src/jobs/shopify-backfill/worker-secrets.ts \
+  apps/stream-worker/src/main.ts \
+  apps/stream-worker/src/tests/backfill.e2e.test.ts \
+  apps/stream-worker/src/tests/bronze.e2e.test.ts \
+  apps/web/components/connectors/backfill-control.tsx \
+  apps/web/components/connectors/connectors-list.tsx \
+  apps/web/components/dashboard/realized-revenue-card.tsx \
+  apps/web/e2e/backfill.spec.ts \
+  apps/web/lib/api/client.ts \
+  apps/web/lib/hooks/use-backfill.ts \
+  apps/web/next.config.js \
+  db/migrations/0022_backfill_job.sql \
+  db/migrations/0023_backfill_job_enumeration.sql \
+  infra/redpanda/topics.yml \
+  packages/contracts/src/api/connector.backfill.api.v1.ts \
+  packages/contracts/src/events/order.backfill.v1.ts \
+  packages/contracts/src/index.ts \
+  pnpm-lock.yaml
 ```
 
-**Residual the Stakeholder consciously accepts:**
-- **F-SEC-02 (MED, carried):** old `GetRealizedGmvAsOf` autocommit-GUC reset gap — NOT regressed by this slice (new engine uses `withBrandTxn`); must-fix-before-Phase-2 on the old query path.
-- **SEC-003 / QA-F1 / QA-F2 (LOW):** report-omission + local-dev idempotency + ISO-2 (already strengthened) — deferred M2.
+## Migrations applied on merge (additive only, I-E02)
 
-**Exit criterion delivered:** the M1 "parity oracle green" gate is non-tautological, RED-proven, CI-blocking, runs live-DB. Re-verified by the final reviewer.
-</content>
+- `db/migrations/0022_backfill_job.sql` (backfill_job table, FORCE RLS, no-DELETE grant)
+- `db/migrations/0023_backfill_job_enumeration.sql` (`list_queued_backfill_jobs()` SECURITY DEFINER enumeration fn)
+
+## Residual the Stakeholder consciously accepts (all non-blocking)
+
+- **SEC-BF-M2 (MED, open):** dual `LedgerWriter` may drift — aligned today (byte-identical ON-CONFLICT key), post-M1 shared `@brain/ledger-writer` package.
+- **SEC-BF-L1 (LOW, open):** dual `PgBackfillJobRepository` (intentional split, I-E05) — post-M1 shared package.
+- **Dev-token reachability (tracked validation follow-up):** a real live Boddactive dev backfill needs the OAuth token reachable by the stream-worker process (ADR-BF-11). The SLICE (fixtures + proven finalization path) is complete; this is the Stage-validation step, not a merge blocker.
+
+## /adopt-rule recommended
+
+3rd occurrence of the system-job-under-FORCE-RLS pattern — proposal at `.engineering-os/rule-proposals/system-job-force-rls-enumeration.md`. Act: `/adopt-rule system-job-force-rls-enumeration`.
+
+## Exit criterion delivered
+
+First real third-party data path through the M1 spine: worker-runs (non-inert), payoff-proven (past-dated → finalization → realized GMV, real code executed), PII-stripped, brand-isolated, two-lane. All five load-bearing gates independently replicated at source by the final reviewer.

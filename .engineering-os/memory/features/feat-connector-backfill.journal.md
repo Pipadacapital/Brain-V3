@@ -7,3 +7,9 @@
 **Tracks:** A@data-engineer(lead: 0022+worker+lane+ledger-wire+live tests) ∥ B@backend-developer(trigger 501→202, 409 RECONNECT_REQUIRED/BACKFILL_ALREADY_RUNNING, overlap-lock FOR UPDATE SKIP LOCKED, audit, GET jobs) ∥ C@frontend-web-developer(progress UX, "Gross Revenue (ex-fees)" label+tooltip, e2e).
 **Frozen first:** A0 commits order.backfill.v1 + connector.backfill.api.v1 contracts → unblocks B & C parallel. COMMIT-PER-SLICE (Stage-8 agent died on infra socket timeout this run). Branch feat/connector-backfill off master HEAD.
 **Next:** @data-engineer (A0) → @backend-developer + @frontend-web-developer — Stage 3.
+
+## 2026-06-17T14:00:00Z — Security Reviewer — Stage 4 BOUNCE
+{"ts":"2026-06-17T14:00:00Z","actor":"security-reviewer","type":"review","req_id":"feat-connector-backfill","stage":4,"verdict":"BOUNCE","blocking":1,"finding":"SEC-BF-H1: run.ts:219,228,247 findQueuedJob+loadConnectorInstance use brain_app pool without GUC — FORCE RLS fail-closed returns 0 rows always — worker non-functional in prod — fix: SECURITY DEFINER enumeration function"}
+
+## 2026-06-17T15:30:00Z — Security Reviewer — Stage 4 DELTA r1 PASS
+{"ts":"2026-06-17T15:30:00Z","actor":"security-reviewer","type":"review","req_id":"feat-connector-backfill","stage":4,"verdict":"PASS","mode":"DELTA","blocking":0,"resolved":["SEC-BF-H1","SEC-BF-M1"],"deferred":["SEC-BF-M2","SEC-BF-L1"]}

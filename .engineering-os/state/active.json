@@ -405,6 +405,13 @@
       "stage": 8,
       "current_owner": "platform-devops",
       "last_journal_entry_at": "2026-06-17T09:52:42Z"
+    },
+    {
+      "req_id": "fix-dev-token-reach",
+      "status": "awaiting-stakeholder",
+      "stage": 7,
+      "current_owner": "stakeholder",
+      "last_journal_entry_at": "2026-06-17T12:26:01Z"
     }
   ]
 }

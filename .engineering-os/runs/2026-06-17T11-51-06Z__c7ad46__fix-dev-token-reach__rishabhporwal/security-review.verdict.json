@@ -1,0 +1,26 @@
+{
+  "stage": 4,
+  "agent": "security-reviewer",
+  "req_id": "fix-dev-token-reach",
+  "verdict": "PASS",
+  "findings": [
+    {
+      "id": "SEC-DTR-L1",
+      "severity": "LOW",
+      "title": "No dedicated test for NIL-uuid + brand_self_read yields 0 extra rows under brain_app",
+      "file": "apps/stream-worker/src/jobs/shopify-backfill/run.ts:270-278",
+      "status": "open-deferred",
+      "detail": "Analytically safe (membership subquery empty for nil user_id). Missing belt-and-suspenders test asserting nil-uuid GUC + wrong brand_id = 0 rows under brain_app. Add to pg.test.ts isolation-fuzz next sprint."
+    },
+    {
+      "id": "SEC-DTR-M1",
+      "severity": "MED",
+      "title": "dev_secret.secret_value stores plaintext OAuth token in dev Postgres",
+      "file": "db/migrations/0024_dev_secret.sql",
+      "status": "open-deferred",
+      "detail": "Accepted dev-vault pattern (same class as contact_pii dev stand-in). Prod hard-fail confirmed. Risk limited to local dev DB exposure. Add shared-dev-DB warning to migration comment before pattern spreads."
+    }
+  ],
+  "blocking": 0,
+  "ts": "2026-06-17T14:30:00Z"
+}

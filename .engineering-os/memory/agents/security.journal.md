@@ -71,3 +71,10 @@
 **Scanners:** delta-scope only — no full suite re-run. Regression grep on 2f244d2 + d35cedb: no new endpoints/tools/migrations beyond 0023/secrets/IaC. Secret scan on diff clean.
 **Reverified:** SEC-BF-H1=RESOLVED (list_queued_backfill_jobs() SECURITY DEFINER + SET search_path=public pinned + GRANT EXECUTE brain_app in 0023; findQueuedJob uses fn, no bare table scan; loadConnectorInstance sets GUC before any tenant read; T11 negative control + positive assertion under brain_app NOBYPASSRLS, non-inert; minimal-bypass confirmed — 3 dispatch-UUID columns only, no tenant data); SEC-BF-M1=RESOLVED (comment at run.ts:~212 accurately describes brain_app pool + SECURITY DEFINER fn, no 'superuser pool' text); SEC-BF-M2=open deferred; SEC-BF-L1=open deferred
 **Next:** PASS → reconcile with QA Engineer / no bounce_target
+
+## 2026-06-17T14:30:00Z — Security Reviewer — fix-dev-token-reach
+**Stage:** 4 · **Mode:** FULL (retroactive — code live) · **Verdict:** PASS
+**Findings:** 0 CRIT / 0 HIGH / 1 MED open-deferred (SEC-DTR-M1: dev_secret plaintext in dev Postgres — accepted dev-vault pattern) / 1 LOW open-deferred (SEC-DTR-L1: missing NIL-uuid negative-control test)
+**Scanners:** secret-grep CLEAN on diff · DDL scan CLEAN (0024+0025 additive, RLS/grants unchanged) · SAST manual CLEAN (no plaintext token col, no injection) · no new deps/IaC
+**Key verifications:** NIL-uuid-isolation=SAFE (brand_self_read subquery empty for nil user_id; brand_isolation governs; connector tables unaffected); dev_secret-prod-safety=PASS (LocalSecretsManager + buildWorkerSecretsManager dual hard-fail, AwsSecretsManager selected in prod); UPSERT-isolation=PASS (brand_id in conflict key on both tables, FORCE RLS unchanged); callback-auth=PASS (HMAC-first NN-4, state-derived brandId, fixed appBaseUrl, no token/PII in redirect); analytics=PASS (withBrandTxn RLS-scoped, no float, metric engine unchanged, honest representation); isolation-regression=CLEAN
+**Next:** PASS → reconcile with QA Engineer (no bounce_target)

@@ -1,0 +1,78 @@
+{
+  "stage": 5,
+  "agent": "qa-engineer",
+  "req_id": "fix-dev-token-reach",
+  "verdict": "PASS",
+  "mode": "DELTA",
+  "delta_scope": "delta scope (reasoning: QA-DTR-B1 + QA-DTR-W1 + get-revenue-metrics provisional-not-reverted); full analytics suite (tests: not scoped)",
+  "reviewed_at": "2026-06-17T16:17:34Z",
+  "fix_commits": ["19d248d", "67cab38"],
+  "tests_run": [
+    {
+      "suite": "analytics vitest (delta re-run)",
+      "command": "cd apps/core && BRAIN_APP_DATABASE_URL=postgres://brain_app:brain_app@localhost:5432/brain DATABASE_URL=postgres://brain:brain@localhost:5432/brain pnpm vitest run src/modules/analytics",
+      "result": "PASS",
+      "passed": 21,
+      "failed": 0,
+      "total": 21,
+      "captured": "✓ src/modules/analytics/tests/revenue-metrics.live.test.ts (21 tests) 78ms — Test Files 1 passed (1) — Tests 21 passed (21) — Duration 265ms"
+    },
+    {
+      "suite": "core typecheck",
+      "command": "pnpm --filter @brain/core typecheck",
+      "result": "PASS",
+      "exit_code": 0,
+      "captured": "exit 0 (tsc --noEmit clean)"
+    },
+    {
+      "suite": "validity_check",
+      "command": "uv run .../tools/validity_check.py --paths apps/core/src/modules/analytics/tests --artifacts .engineering-os/runs/2026-06-17T11-51-06Z__c7ad46__fix-dev-token-reach__rishabhporwal/negative-control.json --require-negative-control",
+      "result": "PASS",
+      "exit_code": 0,
+      "captured": "validity_check: clean (1 files scanned)"
+    }
+  ],
+  "negative_control": [
+    {
+      "id": "NC-DTR-A1",
+      "path": "apps/core/src/modules/analytics/tests/revenue-metrics.live.test.ts",
+      "test": "[negative-control] guard-removed: BRAND_A rows count=0 when GUC set to BRAND_B (RLS enforces isolation)",
+      "protection_removed": "GUC set to BRAND_B (not BRAND_A) — simulates withBrandTxn guard removed on analytics read path",
+      "mechanism": "appPool (brain_app NOSUPERUSER NOBYPASSRLS) acquires client; sets app.current_brand_id=BRAND_B; queries realized_revenue_ledger WHERE brand_id=BRAND_A; asserts count=0",
+      "red_trigger": "count would be > 0 (returning BRAND_A rows) if RLS policy on realized_revenue_ledger were dropped",
+      "non_inert_confirmed": true,
+      "superuser_check": "asserts current_user='brain_app' AND is_superuser=false — isolation check is non-vacuous",
+      "spot_check": "test body at revenue-metrics.live.test.ts:367-402 — real pg.Pool.connect(), BEGIN, set_config GUC=BRAND_B, SELECT COUNT(*) WHERE brand_id=BRAND_A, COMMIT, parseInt, expect(count).toBe(0); NOT fabricated"
+    }
+  ],
+  "contract_checks": {
+    "section_2_D2": "4 tests now encode NEW D-2 contract: provisional-only → state=has_data, realized={INR:'0'}, provisional=non-null; zero rows → state=no_data",
+    "section_4_D4": "last test rewritten: provisional-only brand (no finalized) → state=has_data, realized=honest-zero, provisional=non-null",
+    "own_brand_seeds": "tests seed BRAND_A (aa100a1a-...-001) and BRAND_B (aa100a1a-...-002), NOT 60d543dc"
+  },
+  "provisional_not_reverted": {
+    "file": "apps/core/src/modules/analytics/internal/application/queries/get-revenue-metrics.ts",
+    "exists_check": "WHERE brand_id = $1 (ANY ledger row — no recognition_label filter)",
+    "confirmed": true
+  },
+  "findings": [
+    {
+      "id": "QA-DTR-B1",
+      "severity": "HIGH",
+      "status": "RESOLVED",
+      "resolution": "Sections 2+4 of revenue-metrics.live.test.ts rewritten in commit 19d248d to encode new D-2 contract. All 21 analytics tests pass."
+    },
+    {
+      "id": "QA-DTR-W1",
+      "severity": "HIGH",
+      "status": "RESOLVED",
+      "resolution": "Negative-control test added at test.ts:367-402. validity_check exit 0. Test is non-inert: goes RED if RLS policy dropped. Asserts is_superuser=false."
+    }
+  ],
+  "tracked_debt_non_blocking": [
+    "lifecycle/pagination/NIL-uuid tests (pre-existing, accepted)",
+    "revenue-snapshot.ts JSDoc stale comment (state=no_data description — no test depends on it)"
+  ],
+  "blocking": 0,
+  "ts": "2026-06-17T16:17:34Z"
+}

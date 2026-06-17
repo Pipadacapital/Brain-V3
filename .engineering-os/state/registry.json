@@ -57,6 +57,11 @@
       "req_id": "feat-connector-backfill",
       "title": "Connector backfill \u2014 Shopify order-history pull, two-lane, honest progress \u2192 real GMV",
       "first_seen": "2026-06-17T07:36:53Z"
+    },
+    {
+      "req_id": "fix-dev-token-reach",
+      "title": "Retroactive review \u2014 DEV-TOKEN-REACH + connector lifecycle + real-backfill fixes",
+      "first_seen": "2026-06-17T11:52:13Z"
     }
   ]
 }

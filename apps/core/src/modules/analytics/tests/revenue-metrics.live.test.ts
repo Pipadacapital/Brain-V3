@@ -218,47 +218,68 @@ describe('1. engine==BFF exact-bigint — sole-read-path proof (D-3)', () => {
   });
 });
 
-// ── Test 2: honest-empty-state (D-2) ──────────────────────────────────────────
+// ── Test 2: honest-empty-state (D-2, updated contract post-commit 55a4d90) ────
+//
+// NEW D-2 CONTRACT (commit 55a4d90 — provisional surfacing, intentional change):
+//   - state='has_data' whenever the brand has ANY ledger rows (finalized OR provisional).
+//     A provisional-only brand has real revenue pending recognition; showing 'no_data'
+//     would be dishonest — it has data, just not yet past the recognition horizon.
+//   - realized = { <ccy>: '0' } when no finalized rows exist (honest zero, not null).
+//     computeRealizedRevenue returns Map { INR → 0n } for no-finalized brands because
+//     realized_gmv_as_of() returns '0' → BigInt(0) → serializeMoneyMap → { INR: '0' }.
+//   - provisional = { <ccy>: '<amount>' } from computeProvisionalRevenue.
+//   - state='no_data' ONLY when the brand has ZERO ledger rows of ANY recognition_label.
 
-describe('2. honest-empty-state — no finalized rows → state=no_data, never bare 0 (D-2)', () => {
+describe('2. honest-empty-state — provisional-only → has_data; zero rows → no_data (D-2)', () => {
+  const PROVISIONAL_AMOUNT = 99999n; // INR 999.99 in paise
+
   beforeAll(async () => {
     await clearLedgerRows(BRAND_A);
-    // Seed ONLY a provisional row (no finalized rows)
-    await seedProvisionalRow(BRAND_A, 99999n);
+    // Seed ONLY a provisional row — no finalized rows
+    await seedProvisionalRow(BRAND_A, PROVISIONAL_AMOUNT);
   });
 
   afterAll(async () => {
     await clearLedgerRows(BRAND_A);
   });
 
-  it('brand with only provisional rows (no finalized) → state=no_data', async () => {
+  it('brand with only provisional rows (no finalized) → state=has_data (D-2 new contract)', async () => {
     const snapshot = await getRevenueMetrics(BRAND_A, new Date(), { pool: appPool });
 
-    // MUST be no_data — a brand with only provisional rows has no realized revenue yet.
-    expect(snapshot.state).toBe('no_data');
+    // NEW CONTRACT: provisional-only brand → has_data.
+    // The brand has real pending revenue; 'no_data' would be dishonest.
+    // state='no_data' is now reserved for brands with ZERO ledger rows of any kind.
+    expect(snapshot.state).toBe('has_data');
   });
 
-  it('state=no_data → realized is null (NOT a bare 0 or empty map)', async () => {
+  it('provisional-only → realized = { INR: "0" } (honest zero — nothing finalized yet)', async () => {
     const snapshot = await getRevenueMetrics(BRAND_A, new Date(), { pool: appPool });
 
-    expect(snapshot.state).toBe('no_data');
-    expect(snapshot.realized).toBeNull();
-    // Explicitly assert it is NOT { INR: '0' } (the honest-empty invariant)
-    expect(snapshot.realized).not.toEqual({ INR: '0' });
-    expect(snapshot.realized).not.toEqual({});
+    // state is has_data (provisional rows exist)
+    expect(snapshot.state).toBe('has_data');
+
+    // realized is an honest zero map: computeRealizedRevenue → realized_gmv_as_of() returns '0'
+    // → BigInt(0) → serializeMoneyMap → { INR: '0' }.
+    // It is NOT null (null is reserved for state=no_data per the RevenueSnapshot type).
+    expect(snapshot.realized).not.toBeNull();
+    expect(snapshot.realized).toEqual({ INR: '0' });
   });
 
-  it('state=no_data → provisional is null (D-2 — both null when no_data)', async () => {
+  it('provisional-only → provisional = non-null map with the seeded amount (D-2)', async () => {
     const snapshot = await getRevenueMetrics(BRAND_A, new Date(), { pool: appPool });
 
-    expect(snapshot.state).toBe('no_data');
-    expect(snapshot.provisional).toBeNull();
+    expect(snapshot.state).toBe('has_data');
+
+    // provisional carries the actual provisional amount (not null, not zero)
+    expect(snapshot.provisional).not.toBeNull();
+    expect(snapshot.provisional).toEqual({ INR: String(PROVISIONAL_AMOUNT) });
   });
 
-  it('completely empty brand (zero rows) → state=no_data', async () => {
+  it('completely empty brand (zero rows of ANY kind) → state=no_data (the new no_data threshold)', async () => {
     await clearLedgerRows(BRAND_A);
     const snapshot = await getRevenueMetrics(BRAND_A, new Date(), { pool: appPool });
 
+    // state=no_data ONLY when there are truly ZERO ledger rows of any recognition_label.
     expect(snapshot.state).toBe('no_data');
     expect(snapshot.realized).toBeNull();
     expect(snapshot.provisional).toBeNull();
@@ -330,6 +351,55 @@ describe('3. isolation negative-control under brain_app — cross-brand=no_data 
       expect(snapshotB.realized).not.toEqual(snapshotA.realized);
     }
   });
+
+  // ── NEGATIVE CONTROL: guard-removed probe — GUC isolation on analytics read path ─
+  //
+  // This test proves the withBrandTxn GUC protection is NON-INERT: removing the guard
+  // (querying realized_revenue_ledger without setting app.current_brand_id to BRAND_A)
+  // results in 0 rows visible for BRAND_A's data — RLS enforces brand isolation.
+  //
+  // "guard removed" scenario: we run the raw ledger query under brain_app with the GUC
+  // set to BRAND_B (not BRAND_A) and assert that BRAND_A's rows are NOT visible.
+  // This is the negative control — it would return rows if RLS were disabled or bypassed.
+  //
+  // This test MUST go RED if the RLS policy on realized_revenue_ledger is dropped.
+  // It proves cross-brand isolation on the analytics money read path.
+  it('[negative-control] guard-removed: BRAND_A rows count=0 when GUC set to BRAND_B (RLS enforces isolation)', async () => {
+    // negative-control: protection removed — set GUC to BRAND_B and query for BRAND_A rows
+    // Under the correct protection (withBrandTxn with BRAND_A), BRAND_A's rows are visible.
+    // With the guard "removed" (GUC=BRAND_B instead of BRAND_A), BRAND_A's rows must NOT appear.
+    // This proves the GUC/RLS boundary is the enforcement mechanism and is non-inert.
+    const client = await appPool.connect();
+    let brandARowsUnderBrandBGuc: number;
+    try {
+      // Simulate guard removed: set GUC to BRAND_B, then query for BRAND_A's ledger rows
+      // RLS policy: WHERE brand_id = current_setting('app.current_brand_id')::uuid
+      // With GUC=BRAND_B, BRAND_A's rows should be invisible → count = 0
+      await client.query('BEGIN');
+      await client.query(`SELECT set_config('app.current_brand_id', $1, true)`, [BRAND_B]);
+      const result = await client.query<{ count: string }>(
+        `SELECT COUNT(*)::text AS count FROM realized_revenue_ledger WHERE brand_id = $1`,
+        [BRAND_A],
+      );
+      await client.query('COMMIT');
+      brandARowsUnderBrandBGuc = parseInt(result.rows[0]?.count ?? '0', 10);
+    } finally {
+      client.release();
+    }
+
+    // NEGATIVE CONTROL ASSERTION: with GUC=BRAND_B, BRAND_A's rows are invisible.
+    // This count MUST be 0. If the RLS policy were removed or the role had rls-bypass,
+    // this would return > 0 (BRAND_A's seeded row) and the test would FAIL (goes RED).
+    expect(brandARowsUnderBrandBGuc).toBe(0);
+
+    // Confirm current_user is brain_app (non-superuser, no rls-skip privilege) —
+    // running under a superuser role would make this isolation assertion vacuous.
+    const roleCheck = await appPool.query<{ current_user: string; is_superuser: boolean }>(
+      `SELECT current_user, (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) AS is_superuser`,
+    );
+    expect(roleCheck.rows[0]!.current_user).toBe('brain_app');
+    expect(roleCheck.rows[0]!.is_superuser).toBe(false);
+  });
 });
 
 // ── Test 4: provisional-shown-separately (D-4) ───────────────────────────────
@@ -398,17 +468,31 @@ describe('4. provisional shown separately — never blended with realized (D-4)'
     }
   });
 
-  it('provisional-only brand (no finalized) → state=no_data, provisional=null (D-2+D-4)', async () => {
-    // A brand with ONLY provisional rows must NOT show provisional in has_data state
-    // (D-2: state is driven by EXISTS(finalized) — no finalized rows → no_data)
+  it('provisional-only brand (no finalized) → state=has_data, realized=honest-zero, provisional=non-null (D-2+D-4 new contract)', async () => {
+    // NEW D-2 CONTRACT (commit 55a4d90): a brand with ONLY provisional rows now returns
+    // state=has_data because it has real pending revenue in the ledger.
+    // realized = { INR: '0' } (honest zero — nothing finalized yet, not a fabricated value).
+    // provisional = { INR: '<amount>' } (the actual provisional amount).
+    // This is distinct from state=no_data which now requires ZERO rows of any kind.
+    const PROV_AMOUNT = 12345n;
     await clearLedgerRows(BRAND_B);
-    await seedProvisionalRow(BRAND_B, 12345n);
+    await seedProvisionalRow(BRAND_B, PROV_AMOUNT);
 
     const snapshot = await getRevenueMetrics(BRAND_B, new Date(), { pool: appPool });
 
-    expect(snapshot.state).toBe('no_data');
-    expect(snapshot.realized).toBeNull();
-    expect(snapshot.provisional).toBeNull();
+    // D-2 new contract: provisional-only → has_data (not no_data)
+    expect(snapshot.state).toBe('has_data');
+
+    // realized is an honest zero (not null, not the provisional amount)
+    expect(snapshot.realized).not.toBeNull();
+    expect(snapshot.realized).toEqual({ INR: '0' });
+
+    // provisional carries the actual amount (not null, not blended with realized)
+    expect(snapshot.provisional).not.toBeNull();
+    expect(snapshot.provisional).toEqual({ INR: String(PROV_AMOUNT) });
+
+    // D-4: realized and provisional are disjoint — provisional amount does NOT appear in realized
+    expect(snapshot.realized).not.toEqual(snapshot.provisional);
 
     await clearLedgerRows(BRAND_B);
   });

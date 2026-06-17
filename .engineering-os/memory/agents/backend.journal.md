@@ -169,6 +169,17 @@
 
 **Next:** READY-FOR-SECURITY (DELTA re-review, Stage 4)
 
+## 2026-06-17T16:14:00Z — Backend Engineer — fix-dev-token-reach (bounce r1)
+**Stage:** 3 · **Service:** core/analytics · **Verification:** typecheck EXIT 0; 21/21 analytics tests PASS (previously 4 failing); validity_check EXIT 0 (with --artifacts negative-control.json)
+**Self-review vs gates:** PASS — QA-DTR-B1 and QA-DTR-W1 resolved; get-revenue-metrics.ts NOT reverted; negative-control non-inert (goes RED if RLS policy dropped); brain_app role confirmed non-superuser
+**Next:** READY-FOR-SECURITY
+
+**Fixes delivered:**
+- **QA-DTR-B1 (HIGH)**: Updated sections 2 and 4 of revenue-metrics.live.test.ts to encode the new D-2 contract. provisional-only brand → state=has_data, realized={INR:'0'} (honest zero from computeRealizedRevenue), provisional={INR:'<amount>'}. state=no_data now reserved for brands with ZERO rows of any recognition_label.
+- **QA-DTR-W1 (HIGH)**: Added negative-control test in section 3. Probe: brain_app pool, GUC=BRAND_B, query WHERE brand_id=BRAND_A → count=0. Fails RED if RLS policy removed. Asserts current_user=brain_app, is_superuser=false.
+
+**Commits:** `19d248d` — test(analytics): align D-2 contract tests + add negative-control
+
 ## 2026-06-17T08:45:00Z — Backend Engineer — feat-connector-marketplace
 **Stage:** 3 · **Service:** core (connector module) · **Verification:** typecheck PASS (0 errors); 189/189 unit tests PASS; lint PASS (0 warnings)
 **Self-review vs gates:** PASS — all D-1..D-12 must-fix items from CTO review addressed; NN-2/NN-4/MED-CALLBACK-01 proven by dedicated negative-control tests; non-inert isolation test count===0 under brain_app; no plaintext tokens anywhere; envelope discipline on all routes.

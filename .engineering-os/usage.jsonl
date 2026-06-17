@@ -138,3 +138,8 @@
 {"ts":"2026-06-17T09:39:32Z","req_id":"feat-connector-backfill","agent":"security-reviewer","stage":4,"model":"sonnet","review_scope":"delta","total_tokens":62908}
 {"ts":"2026-06-17T09:39:32Z","req_id":"feat-connector-backfill","agent":"qa-agent","stage":5,"model":"sonnet","review_scope":"delta","total_tokens":48253}
 {"ts":"2026-06-17T09:46:47Z","req_id":"feat-connector-backfill","agent":"final-reviewer","stage":6,"model":"opus","review_scope":"full","total_tokens":113220}
+{"ts":"2026-06-17T12:10:19Z","req_id":"fix-dev-token-reach","agent":"security-reviewer","stage":4,"model":"sonnet","review_scope":"full","total_tokens":87352}
+{"ts":"2026-06-17T12:10:19Z","req_id":"fix-dev-token-reach","agent":"qa-agent","stage":5,"model":"sonnet","review_scope":"full","total_tokens":59529}
+{"ts":"2026-06-17T12:16:26Z","req_id":"fix-dev-token-reach","agent":"backend-developer","stage":3,"model":"sonnet","review_scope":"delta","total_tokens":63305}
+{"ts":"2026-06-17T12:19:52Z","req_id":"fix-dev-token-reach","agent":"qa-agent","stage":5,"model":"sonnet","review_scope":"delta","total_tokens":44783}
+{"ts":"2026-06-17T12:26:01Z","req_id":"fix-dev-token-reach","agent":"final-reviewer","stage":6,"model":"opus","review_scope":"full","total_tokens":77906}

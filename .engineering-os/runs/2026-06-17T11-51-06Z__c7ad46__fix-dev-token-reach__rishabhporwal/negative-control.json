@@ -1,0 +1,13 @@
+{
+  "negative_control": [
+    {
+      "id": "NC-DTR-A1",
+      "surface": "apps/core/src/modules/analytics/tests/revenue-metrics.live.test.ts",
+      "guard": "withBrandTxn GUC isolation (app.current_brand_id) on realized_revenue_ledger",
+      "probe": "Set GUC to BRAND_B under brain_app (NOSUPERUSER NOBYPASSRLS), query ledger WHERE brand_id=BRAND_A → count=0",
+      "red_output": "expect(received).toBe(expected): Expected 0, Received N (BRAND_A rows visible when GUC=BRAND_B — RLS policy missing)",
+      "test": "[negative-control] guard-removed: BRAND_A rows count=0 when GUC set to BRAND_B (RLS enforces isolation)",
+      "result": "GREEN — count=0 confirmed; brain_app is_superuser=false confirmed"
+    }
+  ]
+}

@@ -153,7 +153,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
               <li key={section.title}>
                 {/* Section header — decorative, aria-hidden */}
                 <p
-                  className="px-3 mb-1 text-[10px] font-semibold tracking-widest text-muted-foreground/60 uppercase select-none"
+                  className="px-3 mb-1 text-[10px] font-semibold tracking-widest text-muted-foreground uppercase select-none"
                   aria-hidden="true"
                 >
                   {section.title}

@@ -263,6 +263,243 @@ export class LedgerWriter {
     }
   }
 
+  // ── Settlement finalization writes (ADR-RZ-6 / MB-3) ─────────────────────────
+  //
+  // These methods write the net-of-fees settlement ledger rows. All writes are:
+  //   - Under brand GUC (NN-1 / RLS enforced)
+  //   - ON CONFLICT DO NOTHING (idempotent — I-ST04)
+  //   - Append-only by GRANT (brain_app: SELECT+INSERT only; no UPDATE/DELETE)
+  //   - BIGINT-as-string amounts (I-S07 — no parseFloat)
+  //   - Dual-date: occurred_at = settlement_at (event-time); economic_effective_at = occurred_at (MB-7)
+  //   - billing_posted_period = current open period if natural period is closed (MB-7)
+
+  /**
+   * Write a settlement finalization row (or any settlement-side event_type).
+   * Used for: settlement_finalization (+), rolling_reserve_deduction (−),
+   *           rolling_reserve_release (+), settlement_reversal (−), settlement_adjustment (±).
+   *
+   * For brand-level events, order_id = '__brand_level__:${settlementId}' (synthetic spine key).
+   * This satisfies the existing dedup unique index (brand_id, order_id, event_type, date)
+   * without colliding with real Shopify order IDs.
+   *
+   * Idempotent: ON CONFLICT (brand_id, order_id, event_type, date) DO NOTHING.
+   * Returns true if inserted, false if deduped (replay / re-pull).
+   */
+  async writeSettlementFinalization(params: {
+    brandId: string;
+    orderId: string;           // Shopify order_id or '__brand_level__:settlementId'
+    brainId: string | null;
+    settlementId: string;      // Razorpay settlement_id (opaque batch ref, not PII)
+    eventType: string;         // from MB-3 taxonomy
+    amountMinor: string;       // SIGNED BIGINT-as-string (positive=credit, negative=debit)
+    feeMinor: string;          // analytics provenance (positive paisa)
+    taxMinor: string;          // analytics provenance (positive paisa)
+    currencyCode: string;
+    occurredAt: string;        // ISO-8601 settlement date (economic_effective_at)
+    reconciliationType: 'per_order' | 'brand_level';
+    taxCode: string | null;
+    rawEventId: string;        // Bronze event_id (provenance)
+  }): Promise<boolean> {
+    const client: PoolClient = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      // GUC-first: brand context required for RLS (NN-1)
+      await client.query(
+        "SELECT set_config('app.current_brand_id', $1, true)",
+        [params.brandId],
+      );
+
+      const occurredAt = new Date(params.occurredAt);
+      const billingPostedPeriod = toBillingPostedPeriod(occurredAt);
+
+      const ledgerEventId = computeLedgerEventId({
+        brandId: params.brandId,
+        orderId: params.orderId,
+        eventType: params.eventType,
+        sourcePk: params.rawEventId,
+      });
+
+      const result = await client.query<{ ledger_event_id: string }>(
+        `INSERT INTO realized_revenue_ledger (
+          brand_id,
+          ledger_event_id,
+          order_id,
+          brain_id,
+          event_type,
+          amount_minor,
+          currency_code,
+          fx_rate_id,
+          rounding_adjustment_minor,
+          occurred_at,
+          economic_effective_at,
+          billing_posted_period,
+          recognition_label,
+          settlement_source,
+          reconciliation_type,
+          tax_code,
+          fee_minor,
+          raw_event_id
+        ) VALUES (
+          $1, $2, $3, $4, $5,
+          $6::bigint, $7, NULL,
+          0::bigint,
+          $8, $8, $9, 'finalized',
+          $10, $11, $12, $13::bigint,
+          $14
+        )
+        ON CONFLICT (brand_id, order_id, event_type, (timezone('UTC', occurred_at)::date))
+        DO NOTHING
+        RETURNING ledger_event_id`,
+        [
+          params.brandId,
+          ledgerEventId,
+          params.orderId,
+          params.brainId,
+          params.eventType,
+          params.amountMinor,   // SIGNED BIGINT-as-string
+          params.currencyCode,
+          params.occurredAt,
+          billingPostedPeriod,
+          params.settlementId,  // settlement_source — opaque batch ref
+          params.reconciliationType,
+          params.taxCode,
+          params.feeMinor,      // fee_minor: analytics only (I-S07: BIGINT)
+          params.rawEventId,
+        ],
+      );
+
+      await client.query('COMMIT');
+
+      const inserted = (result.rowCount ?? 0) > 0;
+      if (inserted) {
+        console.info(
+          `[ledger-writer] ${params.eventType} brand=${params.brandId} ` +
+          `order=${params.orderId} amount=${params.amountMinor} ${params.currencyCode} ` +
+          `reconciliation=${params.reconciliationType}`,
+        );
+      }
+      return inserted;
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Write the fee + GST rows for a settlement_finalization event (MB-3).
+   * payment_fee (−) and settlement_tax (−, GST_18) are SEPARATE rows per MB-3 binding.
+   *
+   * Collapsing GST into payment_fee makes ITC claims impossible — these must be distinct.
+   *
+   * Both rows are written in a single transaction for atomicity.
+   * Returns count of rows inserted (0, 1, or 2 depending on dedup).
+   */
+  async writeFeeLines(params: {
+    brandId: string;
+    orderId: string;
+    brainId: string | null;
+    settlementId: string;
+    feeMinor: string;    // NEGATIVE BIGINT-as-string (e.g. '-2000')
+    taxMinor: string;    // NEGATIVE BIGINT-as-string (e.g. '-360')
+    currencyCode: string;
+    occurredAt: string;  // ISO-8601
+    taxCode: string;     // 'GST_18'
+    rawEventId: string;
+  }): Promise<number> {
+    const client: PoolClient = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      // GUC-first (NN-1)
+      await client.query(
+        "SELECT set_config('app.current_brand_id', $1, true)",
+        [params.brandId],
+      );
+
+      const occurredAt = new Date(params.occurredAt);
+      const billingPostedPeriod = toBillingPostedPeriod(occurredAt);
+
+      const feeLedgerEventId = computeLedgerEventId({
+        brandId: params.brandId,
+        orderId: params.orderId,
+        eventType: 'payment_fee',
+        sourcePk: `${params.rawEventId}:fee`,
+      });
+
+      const taxLedgerEventId = computeLedgerEventId({
+        brandId: params.brandId,
+        orderId: params.orderId,
+        eventType: 'settlement_tax',
+        sourcePk: `${params.rawEventId}:tax`,
+      });
+
+      // payment_fee row (−)
+      const feeResult = await client.query<{ ledger_event_id: string }>(
+        `INSERT INTO realized_revenue_ledger (
+          brand_id, ledger_event_id, order_id, brain_id, event_type,
+          amount_minor, currency_code, fx_rate_id, rounding_adjustment_minor,
+          occurred_at, economic_effective_at, billing_posted_period,
+          recognition_label, settlement_source, reconciliation_type, fee_minor, raw_event_id
+        ) VALUES (
+          $1, $2, $3, $4, 'payment_fee',
+          $5::bigint, $6, NULL, 0::bigint,
+          $7, $7, $8, 'finalized',
+          $9, 'per_order', $10::bigint, $11
+        )
+        ON CONFLICT (brand_id, order_id, event_type, (timezone('UTC', occurred_at)::date))
+        DO NOTHING
+        RETURNING ledger_event_id`,
+        [
+          params.brandId, feeLedgerEventId, params.orderId, params.brainId,
+          params.feeMinor, params.currencyCode, params.occurredAt, billingPostedPeriod,
+          params.settlementId, params.feeMinor, `${params.rawEventId}:fee`,
+        ],
+      );
+
+      // settlement_tax row (−, GST_18) — SEPARATE from payment_fee (MB-3)
+      const taxResult = await client.query<{ ledger_event_id: string }>(
+        `INSERT INTO realized_revenue_ledger (
+          brand_id, ledger_event_id, order_id, brain_id, event_type,
+          amount_minor, currency_code, fx_rate_id, rounding_adjustment_minor,
+          occurred_at, economic_effective_at, billing_posted_period,
+          recognition_label, settlement_source, reconciliation_type, tax_code, raw_event_id
+        ) VALUES (
+          $1, $2, $3, $4, 'settlement_tax',
+          $5::bigint, $6, NULL, 0::bigint,
+          $7, $7, $8, 'finalized',
+          $9, 'per_order', $10, $11
+        )
+        ON CONFLICT (brand_id, order_id, event_type, (timezone('UTC', occurred_at)::date))
+        DO NOTHING
+        RETURNING ledger_event_id`,
+        [
+          params.brandId, taxLedgerEventId, params.orderId, params.brainId,
+          params.taxMinor, params.currencyCode, params.occurredAt, billingPostedPeriod,
+          params.settlementId, params.taxCode, `${params.rawEventId}:tax`,
+        ],
+      );
+
+      await client.query('COMMIT');
+
+      const inserted = (feeResult.rowCount ?? 0) + (taxResult.rowCount ?? 0);
+      if (inserted > 0) {
+        console.info(
+          `[ledger-writer] fee+tax rows brand=${params.brandId} order=${params.orderId} ` +
+          `fee=${params.feeMinor} tax=${params.taxMinor} ${params.currencyCode} taxCode=${params.taxCode}`,
+        );
+      }
+      return inserted;
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
   async end(): Promise<void> {
     await this.pool.end();
   }

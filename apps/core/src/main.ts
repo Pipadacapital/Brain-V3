@@ -537,7 +537,11 @@ export async function main(): Promise<void> {
 
       // Join catalog with instance data → MarketplaceTile[]
       const tiles = CONNECTOR_CATALOG.map((def) => {
-        const instance = instanceByProvider.get(def.id) ?? null;
+        // A 'disconnected' instance row persists for audit, but the marketplace must present it
+        // as NOT connected (clean Connect button) — never as a connected/failing tile. Only an
+        // ACTIVE instance attaches to the tile; a disconnected one renders as connectable again.
+        const found = instanceByProvider.get(def.id);
+        const instance = found && found.status !== 'disconnected' ? found : null;
         return {
           id: def.id,
           category: def.category,

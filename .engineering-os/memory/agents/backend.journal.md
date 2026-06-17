@@ -2,6 +2,12 @@
 
 > Append-only. See /Users/rishabhporwal/.claude/plugins/cache/engineering-os/engineering-os/2.3.1/docs/role-empowerment-model.md for entry shape.
 
+## 2026-06-17T21:17:00Z — Backend Engineer — feat-shopify-live-connector
+**Stage:** 3 · **Service:** core · **Verification:** typecheck EXIT 0; 8/8 B3 tests PASS; 6/6 lifecycle regression PASS
+**Self-review vs gates:** PASS — HMAC-first (NN-4) non-inert (Test 2 goes RED without HMAC check); brand_id from DB fn (D-4) non-inert (Test 3+8 assert UUID not header string); no raw PII (I-S02, Test 6); live namespace ≠ backfill namespace (D-6, Test 5); resolve_connector_by_shop_domain callable by brain_app (isolation proof, Test 7); seeds own brands b3b10001/b3b10002, NEVER 60d543dc-*
+**Slices committed:** B1 (d043a4b — webhook receiver) · B2 (53d8564 — webhook registration stub) · B3 (4619934 — 8/8 tests)
+**Next:** READY-FOR-SECURITY
+
 ## 2026-06-15T07:19:27Z — system — bootstrap
 **Action:** Journal initialized by /eos-init on 2026-06-15T07:19:27Z.
 

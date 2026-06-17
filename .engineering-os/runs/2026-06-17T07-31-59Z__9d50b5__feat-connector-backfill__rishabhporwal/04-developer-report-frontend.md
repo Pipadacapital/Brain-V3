@@ -204,4 +204,4 @@ cd apps/web && DATABASE_URL=postgres://brain:brain@localhost:5432/brain \
 
 | Hash | Description |
 |------|-------------|
-| _(pending commit)_ | fix(web/C3): align test 2 to marketplace testids; fix test 3 Radix combobox role select (QA-BF-B3) |
+| `26647ae` | fix(web/C3): align test 2 to marketplace testids; fix test 3 Radix combobox role select (QA-BF-B3) |

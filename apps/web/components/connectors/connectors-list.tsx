@@ -15,6 +15,7 @@ import { BffApiError } from '@/lib/api/client';
 import { toast } from '@/components/ui/toaster';
 import type { ConnectorListItem, ConnectorStatus } from '@/lib/api/types';
 import { cn } from '@/lib/utils';
+import { BackfillControl } from '@/components/connectors/backfill-control';
 
 /**
  * A11y: connector status is never colour-only — always icon + label.
@@ -126,20 +127,29 @@ function ConnectorCard({ item }: { item: ConnectorListItem }) {
             Coming Soon
           </Button>
         ) : isConnected ? (
-          <div className="flex items-center gap-3">
-            {item.instance?.shop_domain && (
-              <p className="text-sm text-muted-foreground">{item.instance.shop_domain}</p>
+          <div className="space-y-3">
+            <div className="flex items-center gap-3">
+              {item.instance?.shop_domain && (
+                <p className="text-sm text-muted-foreground">{item.instance.shop_domain}</p>
+              )}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleDisconnect}
+                disabled={isDisconnecting}
+                data-testid={`btn-disconnect-${item.provider}`}
+              >
+                {isDisconnecting && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />}
+                {isDisconnecting ? 'Disconnecting…' : 'Disconnect'}
+              </Button>
+            </div>
+            {/* Backfill control — visible to all roles, trigger gated to brand_admin+ (D-15) */}
+            {item.provider === 'shopify' && item.instance?.id && (
+              <BackfillControl
+                connectorId={item.instance.id}
+                className="pt-2 border-t border-border"
+              />
             )}
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleDisconnect}
-              disabled={isDisconnecting}
-              data-testid={`btn-disconnect-${item.provider}`}
-            >
-              {isDisconnecting && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />}
-              {isDisconnecting ? 'Disconnecting…' : 'Disconnect'}
-            </Button>
           </div>
         ) : (
           <div className="space-y-2">

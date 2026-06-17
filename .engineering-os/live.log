@@ -865,3 +865,5 @@ Installed 4 packages in 7ms
 14:57:47Z [heartbeat] engineering-os:qa-agent S5 fix-connector-lifecycle-cleanup returned
 14:58:20Z [heartbeat] engineering-os:final-reviewer S6 fix-connector-lifecycle-cleanup issued
 15:02:16Z [heartbeat] engineering-os:final-reviewer S6 fix-connector-lifecycle-cleanup returned
+16:15:54Z [heartbeat] engineering-os:cto-advisor S1 feat-shopify-live-connector issued
+16:20:16Z [heartbeat] engineering-os:cto-advisor S1 feat-shopify-live-connector returned

@@ -10,6 +10,11 @@
  */
 
 import type {
+  BackfillTriggerResponse,
+  BackfillJobProgress,
+} from '@brain/contracts';
+
+import type {
   RegisterRequest,
   RegisterResponse,
   LoginRequest,
@@ -700,6 +705,88 @@ export const pixelApi = {
     const res = await bffFetch<{ request_id: string; data: PixelHealthResponse }>('/v1/pixel/health');
     return res.data;
   },
+};
+
+// ── Backfill (feat-connector-backfill C0) ────────────────────────────────────
+//
+// POST /api/v1/connectors/:id/backfill → 202 { request_id, data: { job_id, status } }
+// GET  /api/v1/connectors/:id/jobs     → 200 { request_id, data: BackfillJobProgress }
+//
+// Error codes (409): RECONNECT_REQUIRED (D-7), BACKFILL_ALREADY_RUNNING (D-9).
+// Authz gate: brand_admin+ (D-15); manager receives 403.
+// The client calls the core API directly (not BFF) because backfill routes are on core :3001.
+// These calls go through /api/v1/* which is proxied to core in next.config.js.
+//
+// D-8 honesty: estimated_total=null is preserved as-is — never coerced to 0.
+
+export type { BackfillTriggerResponse, BackfillJobProgress };
+
+/**
+ * Triggers a backfill job for the given connector.
+ * Returns { job_id, status:'queued' } on 202.
+ * Throws BffApiError with code RECONNECT_REQUIRED (409) or BACKFILL_ALREADY_RUNNING (409).
+ * Throws BffApiError with status 403 for manager-role users (D-15).
+ */
+async function triggerBackfill(connectorId: string): Promise<BackfillTriggerResponse> {
+  const requestId = generateRequestId();
+  const method = 'POST';
+  const csrfToken = await ensureCsrfToken();
+
+  const response = await fetch(`/api/v1/connectors/${encodeURIComponent(connectorId)}/backfill`, {
+    method,
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Request-Id': requestId,
+      ...(csrfToken ? { 'x-csrf-token': csrfToken } : {}),
+    },
+    credentials: 'include',
+  });
+
+  if (!response.ok) {
+    let errorBody: { request_id?: string; error?: { code?: string; message?: string } } = {};
+    try { errorBody = await response.json(); } catch { /* non-JSON */ }
+    const message = errorBody?.error?.message ?? `Backfill trigger failed: ${response.status}`;
+    const reqId = errorBody?.request_id ?? requestId;
+    throw new BffApiError(message, response.status, reqId, errorBody?.error?.code);
+  }
+
+  const raw = await response.json() as { request_id: string; data: BackfillTriggerResponse };
+  // Unwrap .data — the canonical BackfillTriggerResponse { job_id, status }.
+  return raw.data;
+}
+
+/**
+ * Fetches the latest backfill job progress for the given connector.
+ * Returns BackfillJobProgress or throws BffApiError if no job found (404).
+ * D-8: estimated_total=null is preserved — never fabricated.
+ */
+async function getBackfillProgress(connectorId: string): Promise<BackfillJobProgress> {
+  const requestId = generateRequestId();
+
+  const response = await fetch(`/api/v1/connectors/${encodeURIComponent(connectorId)}/jobs`, {
+    method: 'GET',
+    headers: {
+      'X-Request-Id': requestId,
+    },
+    credentials: 'include',
+  });
+
+  if (!response.ok) {
+    let errorBody: { request_id?: string; error?: { code?: string; message?: string } } = {};
+    try { errorBody = await response.json(); } catch { /* non-JSON */ }
+    const message = errorBody?.error?.message ?? `Backfill progress fetch failed: ${response.status}`;
+    const reqId = errorBody?.request_id ?? requestId;
+    throw new BffApiError(message, response.status, reqId, errorBody?.error?.code);
+  }
+
+  const raw = await response.json() as { request_id: string; data: BackfillJobProgress };
+  // Unwrap .data — the canonical BackfillJobProgress.
+  return raw.data;
+}
+
+export const backfillApi = {
+  triggerBackfill,
+  getBackfillProgress,
 };
 
 // ── Dashboard (Postgres-only reads — arch plan §6.4) ─────────────────────────

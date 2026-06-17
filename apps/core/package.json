@@ -26,10 +26,13 @@
     "@brain/money": "workspace:*",
     "@brain/observability": "workspace:*",
     "@brain/tenant-context": "workspace:*",
+    "@brain/shopify-mapper": "workspace:*",
     "@fastify/cookie": "^11.0.2",
+    "fastify-raw-body": "^5.0.0",
     "argon2": "^0.44.0",
     "fastify": "^5.7.2",
     "ioredis": "^5.11.1",
+    "kafkajs": "^2.2.4",
     "pg": "^8.21.0"
   },
   "devDependencies": {

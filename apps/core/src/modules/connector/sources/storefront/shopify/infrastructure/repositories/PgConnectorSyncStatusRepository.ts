@@ -58,9 +58,17 @@ export class PgConnectorSyncStatusRepository implements IConnectorSyncStatusRepo
     try {
       const result = await client.query<SyncStatusRow>(
         ctx,
+        // UPSERT (0025): one sync-status row per (brand_id, connector_instance_id). A reconnect
+        // resets the SAME row to waiting_for_data + clears last_error, instead of inserting a
+        // duplicate that left the stale 'error' row from the prior disconnect (dashboard "Error").
         `INSERT INTO connector_sync_status
            (id, brand_id, connector_instance_id, state, last_sync_at, last_error, updated_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7)
+         ON CONFLICT (brand_id, connector_instance_id) DO UPDATE SET
+            state        = EXCLUDED.state,
+            last_sync_at = EXCLUDED.last_sync_at,
+            last_error   = EXCLUDED.last_error,
+            updated_at   = EXCLUDED.updated_at
          RETURNING id, brand_id, connector_instance_id, state, last_sync_at, last_error, updated_at`,
         [
           status.id,

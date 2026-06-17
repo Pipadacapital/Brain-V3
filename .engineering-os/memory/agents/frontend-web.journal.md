@@ -120,6 +120,26 @@
 **Files:** 1 (apps/web/e2e/backfill.spec.ts)
 **Next:** READY-FOR-SECURITY
 
+## 2026-06-17T15:00:00Z — Frontend/Web Engineer — chore-connector-lifecycle-regression (Track C)
+**Stage:** 3 · **Surface:** apps/web/e2e/connector-lifecycle.spec.ts · **Web-vitals:** N/A (tests-only, no render-path change)
+**Req:** chore-connector-lifecycle-regression · **Track:** C
+
+**Delivered (C1 + C2):**
+- C1 (`9e64c7f`): `apps/web/e2e/connector-lifecycle.spec.ts` — 3 Playwright tests:
+  - Defect #1 revert-RED: seeds `status='disconnected'` connector_instance via superuser → asserts `connector-tile-shopify-connect` enabled + `connector-health-badge-shopify` toHaveCount(0). Revert main.ts:535 → badge count goes RED + connect assertion goes RED.
+  - Fresh brand baseline: zero connector_instance → Connect tile visible, health badge absent.
+  - Coming-soon invariant: `connector-tile-meta-connect` disabled + `aria-disabled="true"`, no POST fires.
+- C2: `04-developer-report-frontend.md` written; journal updated.
+
+**Honesty boundary documented:** e2e proves UI tile state transitions only. Reconnect UPSERT/single-sync-row/OAuth callback = Track B. Pagination/worker-GUC = Track A. No real Shopify OAuth faked.
+
+**data-testids asserted:** `marketplace-page`, `connector-tile-shopify`, `input-shop-shopify`, `connector-tile-shopify-connect`, `connector-health-badge-shopify`, `btn-disconnect-shopify`, `connector-tile-coming-soon`, `connector-tile-meta`, `connector-tile-meta-connect`.
+
+**Typecheck:** `pnpm --filter @brain/web typecheck` → EXIT 0
+**E2e:** 9 passed — 3 connector-lifecycle + 6 marketplace no-regression (1.0m total)
+**No product code change (D-9):** diff confined to `apps/web/e2e/` only.
+**Next:** READY-FOR-SECURITY
+
 ## 2026-06-17T00:00:00Z — Frontend/Web Engineer — feat-connector-backfill (Track C)
 **Stage:** 3 · **Surface:** connectors/backfill-control, dashboard/realized-revenue-card, e2e/backfill · **Web-vitals:** not captured (no browser in session; no render-path regression)
 **Req:** feat-connector-backfill · **Track:** C

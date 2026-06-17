@@ -37,9 +37,6 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { Pool } from 'pg';
 import { randomUUID } from 'node:crypto';
 import {
-  CONNECTOR_TEST_BRAND_A,
-  CONNECTOR_TEST_BRAND_B,
-  CONNECTOR_TEST_CI_ID,
   NIL_UUID,
   seedTestBrand,
   seedConnectorInstance,
@@ -59,7 +56,13 @@ const BRAIN_APP_DB_URL =
 let superPool: Pool;
 let appPool: Pool;
 
-// Brand for currency trigger test (AED brand — distinct from A/B)
+// A3-private brand + CI UUIDs (do NOT collide with A2's c07ec701/c07ec702 to avoid
+// file-level parallelism conflicts when both suites run concurrently).
+const A3_BRAND_INR   = 'a3000001-0a00-4a00-8a00-000000000001'; // INR brand for sync_status test
+const A3_BRAND_B_INR = 'a3000002-0b00-4b00-8b00-000000000002'; // INR brand B for cross-brand test
+const A3_CI_ID       = 'a3000003-0c00-4c00-8c00-000000000003'; // connector_instance for A3
+
+// Currency trigger test brands (AED — isolated to A3, never touched by A2)
 const CURRENCY_TEST_BRAND_AED = 'c07ec703-0c00-4c00-8c00-000000000004';
 
 // ── Setup / teardown ──────────────────────────────────────────────────────────
@@ -68,37 +71,37 @@ beforeAll(async () => {
   superPool = new Pool({ connectionString: SUPERUSER_DB_URL, max: 3 });
   appPool = new Pool({ connectionString: BRAIN_APP_DB_URL, max: 5 });
 
-  // Seed brands
-  await seedTestBrand(superPool, CONNECTOR_TEST_BRAND_A, 'INR');
-  await seedTestBrand(superPool, CONNECTOR_TEST_BRAND_B, 'INR');
+  // Seed A3-private brands (INR for sync_status tests, AED for trigger tests)
+  await seedTestBrand(superPool, A3_BRAND_INR, 'INR');
+  await seedTestBrand(superPool, A3_BRAND_B_INR, 'INR');
   await seedTestBrand(superPool, CURRENCY_TEST_BRAND_AED, 'AED');
 
   // Seed connector instance and sync status for #8a
   await seedConnectorInstance(superPool, {
-    brandId: CONNECTOR_TEST_BRAND_A,
-    ciId: CONNECTOR_TEST_CI_ID,
+    brandId: A3_BRAND_INR,
+    ciId: A3_CI_ID,
     status: 'connected',
   });
   await seedSyncStatus(superPool, {
-    brandId: CONNECTOR_TEST_BRAND_A,
-    ciId: CONNECTOR_TEST_CI_ID,
+    brandId: A3_BRAND_INR,
+    ciId: A3_CI_ID,
     state: 'waiting_for_data',
   });
 }, 20_000);
 
 afterAll(async () => {
-  // Clean up currency trigger test ledger rows
+  // Clean up currency trigger test ledger rows for all A3 brands
   await superPool
     .query(`DELETE FROM realized_revenue_ledger WHERE brand_id IN ($1, $2, $3)`, [
-      CONNECTOR_TEST_BRAND_A,
-      CONNECTOR_TEST_BRAND_B,
+      A3_BRAND_INR,
+      A3_BRAND_B_INR,
       CURRENCY_TEST_BRAND_AED,
     ])
     .catch(() => undefined);
 
   await cleanupConnectorFixtures(superPool, [
-    CONNECTOR_TEST_BRAND_A,
-    CONNECTOR_TEST_BRAND_B,
+    A3_BRAND_INR,
+    A3_BRAND_B_INR,
     CURRENCY_TEST_BRAND_AED,
   ]);
 
@@ -118,7 +121,7 @@ describe('A3-1: sync-status→connected after backfill completes (defect #8a / D
     const result = await superPool.query<{ state: string }>(
       `SELECT state FROM connector_sync_status
        WHERE brand_id = $1 AND connector_instance_id = $2`,
-      [CONNECTOR_TEST_BRAND_A, CONNECTOR_TEST_CI_ID],
+      [A3_BRAND_INR, A3_CI_ID],
     );
     expect(result.rows[0]?.state).toBe('waiting_for_data');
   });
@@ -146,13 +149,13 @@ describe('A3-1: sync-status→connected after backfill completes (defect #8a / D
       await client.query('BEGIN');
       await client.query(
         `SELECT set_config('app.current_brand_id', $1, true)`,
-        [CONNECTOR_TEST_BRAND_A],
+        [A3_BRAND_INR],
       );
       await client.query(
         `UPDATE connector_sync_status
            SET state = 'connected', last_sync_at = NOW(), last_error = NULL, updated_at = NOW()
          WHERE brand_id = $1 AND connector_instance_id = $2`,
-        [CONNECTOR_TEST_BRAND_A, CONNECTOR_TEST_CI_ID],
+        [A3_BRAND_INR, A3_CI_ID],
       );
       await client.query('COMMIT');
     } catch (err) {
@@ -171,7 +174,7 @@ describe('A3-1: sync-status→connected after backfill completes (defect #8a / D
       `SELECT state, last_sync_at, last_error
        FROM connector_sync_status
        WHERE brand_id = $1 AND connector_instance_id = $2`,
-      [CONNECTOR_TEST_BRAND_A, CONNECTOR_TEST_CI_ID],
+      [A3_BRAND_INR, A3_CI_ID],
     );
 
     const row = result.rows[0];
@@ -194,12 +197,12 @@ describe('A3-1: sync-status→connected after backfill completes (defect #8a / D
       // Read back under brain_app + correct GUC
       await client.query(
         `SELECT set_config('app.current_brand_id', $1, false)`,
-        [CONNECTOR_TEST_BRAND_A],
+        [A3_BRAND_INR],
       );
       const result = await client.query<{ state: string }>(
         `SELECT state FROM connector_sync_status
          WHERE brand_id = $1 AND connector_instance_id = $2`,
-        [CONNECTOR_TEST_BRAND_A, CONNECTOR_TEST_CI_ID],
+        [A3_BRAND_INR, A3_CI_ID],
       );
       state = result.rows[0]?.state ?? null;
     } finally {
@@ -218,12 +221,12 @@ describe('A3-1: sync-status→connected after backfill completes (defect #8a / D
       await client.query('BEGIN');
       await client.query(
         `SELECT set_config('app.current_brand_id', $1, true)`,
-        [CONNECTOR_TEST_BRAND_B],
+        [A3_BRAND_B_INR],
       );
       const result = await client.query<{ c: string }>(
         `SELECT count(*)::text AS c FROM connector_sync_status
          WHERE connector_instance_id = $1`,
-        [CONNECTOR_TEST_CI_ID],
+        [A3_CI_ID],
       );
       await client.query('COMMIT');
       count = parseInt(result.rows[0]?.c ?? '0', 10);
@@ -325,13 +328,14 @@ describe('A3-2: trg_ledger_currency fires on currency mismatch (defect #8c / D-7
     ).catch(() => undefined);
   });
 
-  it('REVERT-RED (BRAND_A INR): inserting AED into INR brand also triggers mismatch', async () => {
+  it('REVERT-RED (AED brand, wrong INR): inserting wrong INR into same AED brand → same trigger', async () => {
     /**
-     * Additional revert-RED: proves the trigger is not AED-specific.
-     * Inserting AED currency into the INR-denominated BRAND_A → same trigger.
+     * Additional revert-RED: same AED brand, but attempt to insert a different wrong currency (GBP).
+     * Proves the trigger checks ANY mismatch, not just AED↔INR.
+     * Uses CURRENCY_TEST_BRAND_AED (AED brand) — only seeded by this test file (no parallelism risk).
      */
     const ledgerEventId = randomUUID();
-    const orderId = `trigger-test-inr-${randomUUID()}`;
+    const orderId = `trigger-test-gbp-${randomUUID()}`;
 
     const insertPromise = superPool.query(
       `INSERT INTO realized_revenue_ledger (
@@ -339,10 +343,11 @@ describe('A3-2: trg_ledger_currency fires on currency mismatch (defect #8c / D-7
          amount_minor, currency_code, rounding_adjustment_minor,
          occurred_at, economic_effective_at, billing_posted_period,
          recognition_label
-       ) VALUES ($1, $2, $3, 'finalization', 100000, 'AED', 0, NOW(), NOW(), '2024-01', 'finalized')`,
-      [CONNECTOR_TEST_BRAND_A, ledgerEventId, orderId],
+       ) VALUES ($1, $2, $3, 'finalization', 100000, 'GBP', 0, NOW(), NOW(), '2024-01', 'finalized')`,
+      [CURRENCY_TEST_BRAND_AED, ledgerEventId, orderId],
     );
 
+    // GBP ≠ AED → trigger fires (same mechanism as INR ≠ AED)
     await expect(insertPromise).rejects.toThrow(/currency mismatch/i);
   });
 });

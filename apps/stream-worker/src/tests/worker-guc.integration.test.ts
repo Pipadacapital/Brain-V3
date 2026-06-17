@@ -34,15 +34,17 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { Pool } from 'pg';
 import {
-  CONNECTOR_TEST_BRAND_A,
-  CONNECTOR_TEST_BRAND_B,
-  CONNECTOR_TEST_CI_ID,
   NIL_UUID,
   seedTestBrand,
   seedConnectorInstance,
   cleanupConnectorFixtures,
   assertBrainApp,
 } from './helpers/connector-lifecycle-fixtures.js';
+
+// A2-private brand + CI UUIDs (avoid collision with A3/A4 parallel runs)
+const A2_BRAND_A = 'a2000001-0a00-4a00-8a00-000000000001';
+const A2_BRAND_B = 'a2000002-0b00-4b00-8b00-000000000002';
+const A2_CI_ID   = 'a2000003-0c00-4c00-8c00-000000000003';
 
 // ── Pool configuration ─────────────────────────────────────────────────────
 
@@ -62,17 +64,17 @@ beforeAll(async () => {
   appPool = new Pool({ connectionString: BRAIN_APP_DB_URL, max: 5 });
 
   // Seed test brands and connector instance
-  await seedTestBrand(superPool, CONNECTOR_TEST_BRAND_A);
-  await seedTestBrand(superPool, CONNECTOR_TEST_BRAND_B);
+  await seedTestBrand(superPool, A2_BRAND_A);
+  await seedTestBrand(superPool, A2_BRAND_B);
   await seedConnectorInstance(superPool, {
-    brandId: CONNECTOR_TEST_BRAND_A,
-    ciId: CONNECTOR_TEST_CI_ID,
+    brandId: A2_BRAND_A,
+    ciId: A2_CI_ID,
     status: 'connected',
   });
 }, 20_000);
 
 afterAll(async () => {
-  await cleanupConnectorFixtures(superPool, [CONNECTOR_TEST_BRAND_A, CONNECTOR_TEST_BRAND_B]);
+  await cleanupConnectorFixtures(superPool, [A2_BRAND_A, A2_BRAND_B]);
   await appPool.end().catch(() => undefined);
   await superPool.end().catch(() => undefined);
 });
@@ -118,7 +120,7 @@ describe('A2-1: loadConnectorInstance NIL-uuid positive control (defect #7a)', (
         `SELECT set_config('app.current_brand_id', $1, true),
                 set_config('app.current_user_id', $2, true),
                 set_config('app.current_workspace_id', $2, true)`,
-        [CONNECTOR_TEST_BRAND_A, NIL_UUID],
+        [A2_BRAND_A, NIL_UUID],
       );
       const result = await client.query<{ brand_id: string; shop_domain: string }>(
         `SELECT ci.brand_id, ci.shop_domain, ci.secret_ref,
@@ -126,7 +128,7 @@ describe('A2-1: loadConnectorInstance NIL-uuid positive control (defect #7a)', (
          FROM connector_instance ci
          JOIN brand b ON b.id = ci.brand_id
          WHERE ci.id = $1 AND ci.brand_id = $2`,
-        [CONNECTOR_TEST_CI_ID, CONNECTOR_TEST_BRAND_A],
+        [A2_CI_ID, A2_BRAND_A],
       );
       await client.query('COMMIT');
       row = result.rows[0] ?? null;
@@ -139,7 +141,7 @@ describe('A2-1: loadConnectorInstance NIL-uuid positive control (defect #7a)', (
 
     // POSITIVE CONTROL: fix in place → row returned, no error
     expect(row).not.toBeNull();
-    expect(row!.brand_id).toBe(CONNECTOR_TEST_BRAND_A);
+    expect(row!.brand_id).toBe(A2_BRAND_A);
   });
 });
 
@@ -172,14 +174,14 @@ describe('A2-2: loadConnectorInstance empty-string GUC revert-RED (defect #7a)',
         `SELECT set_config('app.current_brand_id', $1, true),
                 set_config('app.current_user_id', $2, true),
                 set_config('app.current_workspace_id', $2, true)`,
-        [CONNECTOR_TEST_BRAND_A, ''],  // '' — the OLD (buggy) empty-string sentinel
+        [A2_BRAND_A, ''],  // '' — the OLD (buggy) empty-string sentinel
       );
       await client.query(
         `SELECT ci.brand_id
          FROM connector_instance ci
          JOIN brand b ON b.id = ci.brand_id
          WHERE ci.id = $1 AND ci.brand_id = $2`,
-        [CONNECTOR_TEST_CI_ID, CONNECTOR_TEST_BRAND_A],
+        [A2_CI_ID, A2_BRAND_A],
       );
       await client.query('COMMIT');
     } catch (err: unknown) {
@@ -211,11 +213,11 @@ describe('A2-3: cross-brand isolation — brand B GUC cannot see brand A connect
         `SELECT set_config('app.current_brand_id', $1, true),
                 set_config('app.current_user_id', $2, true),
                 set_config('app.current_workspace_id', $2, true)`,
-        [CONNECTOR_TEST_BRAND_A, NIL_UUID],
+        [A2_BRAND_A, NIL_UUID],
       );
       const result = await client.query<{ c: string }>(
         `SELECT count(*)::text AS c FROM connector_instance WHERE brand_id = $1`,
-        [CONNECTOR_TEST_BRAND_A],
+        [A2_BRAND_A],
       );
       await client.query('COMMIT');
       count = parseInt(result.rows[0]?.c ?? '0', 10);
@@ -246,12 +248,12 @@ describe('A2-3: cross-brand isolation — brand B GUC cannot see brand A connect
         `SELECT set_config('app.current_brand_id', $1, true),
                 set_config('app.current_user_id', $2, true),
                 set_config('app.current_workspace_id', $2, true)`,
-        [CONNECTOR_TEST_BRAND_B, NIL_UUID],
+        [A2_BRAND_B, NIL_UUID],
       );
       // Try to read BRAND_A's connector_instance row
       const result = await client.query<{ c: string }>(
         `SELECT count(*)::text AS c FROM connector_instance WHERE brand_id = $1`,
-        [CONNECTOR_TEST_BRAND_A],
+        [A2_BRAND_A],
       );
       await client.query('COMMIT');
       count = parseInt(result.rows[0]?.c ?? '0', 10);
@@ -282,7 +284,7 @@ describe('A2-3: cross-brand isolation — brand B GUC cannot see brand A connect
       // No GUC set at all — raw brain_app query
       const result = await client.query<{ c: string }>(
         `SELECT count(*)::text AS c FROM connector_instance WHERE brand_id = $1`,
-        [CONNECTOR_TEST_BRAND_A],
+        [A2_BRAND_A],
       );
       count = parseInt(result.rows[0]?.c ?? '0', 10);
     } catch (err: unknown) {

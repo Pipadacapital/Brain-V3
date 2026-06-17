@@ -1,0 +1,62 @@
+{
+  "_comment": "Nightly log-grep gate patterns (C5 — log-leak detection). Extend when adding new PSP connectors.",
+  "_compliance_ref": "COMPLIANCE.md:172 — nightly log-grep gate",
+  "_last_extended": "2026-06-17 — feat-razorpay-settlement-connector (Track A / C5)",
+  "patterns": [
+    {
+      "pattern": "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}",
+      "description": "Email address — personal identifier",
+      "severity": "CRITICAL",
+      "category": "PII"
+    },
+    {
+      "pattern": "\\+?[0-9]{10,15}",
+      "description": "Phone number — personal identifier",
+      "severity": "CRITICAL",
+      "category": "PII"
+    },
+    {
+      "pattern": "[2-9][0-9]{3}[\\s-]?[0-9]{4}[\\s-]?[0-9]{4}[\\s-]?[0-9]{1,4}",
+      "description": "PAN / card number pattern",
+      "severity": "CRITICAL",
+      "category": "PCI"
+    },
+    {
+      "pattern": "[Pp][Aa][Nn][A-Z]{5}[0-9]{4}[A-Z]",
+      "description": "India PAN (tax ID) — personal identifier",
+      "severity": "CRITICAL",
+      "category": "PII"
+    },
+    {
+      "pattern": "pay_[A-Za-z0-9]{14}",
+      "description": "Razorpay payment_id (pay_XXXX) — DPDP financial-pseudonymous identifier (C5)",
+      "severity": "CRITICAL",
+      "category": "DPDP_FINANCIAL",
+      "added": "feat-razorpay-settlement-connector"
+    },
+    {
+      "pattern": "setl_[A-Za-z0-9]{10}",
+      "description": "Razorpay settlement_id (setl_XXXX) — batch reference. Opaque operational ref, not person-linkable. Log only in structured fields, never raw in unstructured logs.",
+      "severity": "HIGH",
+      "category": "OPERATIONAL_REF",
+      "added": "feat-razorpay-settlement-connector"
+    },
+    {
+      "pattern": "UTR[0-9A-Za-z]{16,22}",
+      "description": "Razorpay UTR (Unique Transaction Reference) — DPDP financial-pseudonymous identifier (C5). Linkable to bank transaction via NPCI records.",
+      "severity": "CRITICAL",
+      "category": "DPDP_FINANCIAL",
+      "added": "feat-razorpay-settlement-connector"
+    }
+  ],
+  "allowed_in_structured_logs": [
+    "payment_id_hash",
+    "utr_hash",
+    "settlement_id",
+    "settlement_id_hash",
+    "order_id"
+  ],
+  "exempted_files": [
+    "tools/eslint-rules/log-grep-patterns.json"
+  ]
+}

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-06-16T22:15:56Z",
-  "updated_by": "system",
+  "updated_at": "2026-06-17T18:54:57Z",
+  "updated_by": "rishabhporwal",
   "active_requirements": [
     {
       "req_id": "chore-platform-foundations-sprint0",
@@ -429,10 +429,57 @@
     },
     {
       "req_id": "feat-shopify-live-connector",
-      "status": "awaiting-stakeholder",
-      "stage": 7,
-      "current_owner": "stakeholder",
-      "last_journal_entry_at": "2026-06-17T18:06:54Z"
+      "status": "shipped",
+      "stage": 8,
+      "current_owner": "platform-devops",
+      "last_journal_entry_at": "2026-06-17T21:12:29Z"
+    },
+    {
+      "req_id": "feat-razorpay-settlement-connector",
+      "title": "Deep Razorpay connector \u2014 settlement ingestion + payment webhooks finalizing realized revenue net-of-fees",
+      "status": "shipped",
+      "stage": 8,
+      "current_owner": "platform-devops",
+      "lane": "high_stakes",
+      "run_dir": ".engineering-os/runs/2026-06-17T18-54-57Z__309940__feat-razorpay-settlement-connector__rishabhporwal",
+      "created_at": "2026-06-17T18:54:57Z",
+      "updated_at": "2026-06-18T02:30:00Z",
+      "last_journal_entry_at": "2026-06-18T02:30:00Z",
+      "track_a_commits": {
+        "A0": "e852d06",
+        "A1": "2175c44",
+        "A2": "829f677",
+        "A3": "08be223",
+        "A4": "012bdb8",
+        "A5": "027ffa2",
+        "A5_fix": "f44fe5e"
+      },
+      "track_a_tests": {
+        "mapper_unit": "43/43 PASS",
+        "e2e_wiring": "6/6 PASS (live Redpanda + Postgres)",
+        "tsc": "0 new errors"
+      },
+      "ship": {
+        "branch": "feat/razorpay-settlement-connector",
+        "phase": "1-dev-only",
+        "pr_note": "gh CLI unauthenticated; manual compare URL: https://github.com/Rishabhporwal/Brain-V4/compare/master...feat/razorpay-settlement-connector (clean off master, not stacked)",
+        "migration_0027": "verified-applied (connector_razorpay_order_map FORCE RLS, 2 SECURITY DEFINER fns, 3 ledger cols, razorpay_account_id)",
+        "settlement_consumer_group": "settlement-ledger-bridge",
+        "ts": "2026-06-18T01:45:00Z"
+      },
+      "tech_debt": [
+        "SEC-RZ-M1 (MED) \u2014 pre-HMAC DoS/enumeration surface; platform WAF/rate-limit follow-up (Phase-2 WAF sprint)",
+        "SEC-RZ-L2 (LOW) \u2014 CLOSED in b5ce157: log-grep gate scoped to DPDP_FINANCIAL/OPERATIONAL_REF; no binary false-positives"
+      ],
+      "deploy_checks": {
+        "tsc_razorpay_mapper": "EXIT:0 (clean)",
+        "tsc_stream_worker": "EXIT:1 (1 pre-existing AwsSecretsManager error, unrelated to this feature)",
+        "migration_0027": "verified-applied live (brainv3-postgres-1): FORCE RLS, 2 SECURITY DEFINER fns, 3 ledger cols, razorpay_account_id",
+        "settlement_ledger_consumer_wired": "main.ts line 30 import + line 121 instantiation + line 183 start() + line 137 stop() \u2014 CONFIRMED",
+        "c4_brain_pci_eslint": "EXIT:0 on production source; rule wired at eslint.config.mjs:39/127; fires on test fixture (non-inert proof)",
+        "c5_log_grep_patterns": "pay_/UTR/setl_ scans all EXIT:1 (no matches in production source) \u2014 PASS",
+        "verified_at": "2026-06-18T02:30:00Z"
+      }
     }
   ]
 }

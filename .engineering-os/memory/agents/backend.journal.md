@@ -2,6 +2,27 @@
 
 > Append-only. See /Users/rishabhporwal/.claude/plugins/cache/engineering-os/engineering-os/2.3.1/docs/role-empowerment-model.md for entry shape.
 
+## 2026-06-18T00:43:00Z — Backend Engineer — feat-razorpay-settlement-connector
+**Stage:** 3 · **Service:** core · **Track:** B (webhook + C2 + C3 + MB-1)
+**Verification:** tsc --noEmit EXIT 0; 10/10 B4 integration tests PASS (brain_app role + real Redis)
+**Self-review vs gates:** PASS
+- NN-4 HMAC-first non-inert: Test 1 forged-sig → 401 and zero map rows (removing HMAC check yields 200, proving protection is real)
+- MT-1 brand from DB fn non-inert: Test 2 brand_id comes from resolve_razorpay_connector_by_account() SECURITY DEFINER result, never from webhook body
+- C3 replay age check: Test 3 stale created_at → 400 REPLAY_REJECTED
+- C3 Redis dedup: Test 4 duplicate event_id → 409 DUPLICATE_EVENT
+- MB-1 map upsert under GUC: Test 5 map row inserted under correct brand; uses set_config() not SET LOCAL (parameterized GUC fix)
+- FORCE RLS isolation non-inert: Test 6 assertBrainApp() confirms is_superuser=false; GUC-less query returns 0 rows proving policy active
+- C2 secret round-trip: Test 7 three-key composite bundle storeSecret+getSecret all intact
+- Disconnect + halt: Tests 8/9 deleteSecret → getSecret null → connector lookup returns 0 rows → processing halted
+- SECURITY DEFINER callable by brain_app: Test 9 direct fn call returns correct (connector_instance_id, brand_id, secret_ref)
+- C2 independent rotation: Test 10 RotateWebhookSecretCommand replaces only webhook_secret, key_id/key_secret preserved
+- I-S09/C5: no raw pay_XXXX in any log line; no credential values in event payloads; secret_ref never in responses
+- NN-2: only ARN stored in connector_instance; composite bundle never serialized to response body
+- Seeds use B4-unique brand UUIDs (b4000001-*/b4000002-*), NEVER 60d543dc-*
+**Root cause fixed:** Postgres extended query protocol rejects $1 in SET LOCAL → replaced ALL occurrences with SELECT set_config('app.current_brand_id', $1, true) across PgRazorpayOrderMapRepository, razorpayWebhookHandler (touchSyncStatus), ConnectRazorpayCommand, main.ts, Test 6 fixture
+**Commits:** 9cfeefc (B1-B3 slices) · b96e73c (B4 tests initial) · 3366c5d (set_config fix + debug cleanup)
+**Next:** READY-FOR-SECURITY
+
 ## 2026-06-17T21:17:00Z — Backend Engineer — feat-shopify-live-connector
 **Stage:** 3 · **Service:** core · **Verification:** typecheck EXIT 0; 8/8 B3 tests PASS; 6/6 lifecycle regression PASS
 **Self-review vs gates:** PASS — HMAC-first (NN-4) non-inert (Test 2 goes RED without HMAC check); brand_id from DB fn (D-4) non-inert (Test 3+8 assert UUID not header string); no raw PII (I-S02, Test 6); live namespace ≠ backfill namespace (D-6, Test 5); resolve_connector_by_shop_domain callable by brain_app (isolation proof, Test 7); seeds own brands b3b10001/b3b10002, NEVER 60d543dc-*

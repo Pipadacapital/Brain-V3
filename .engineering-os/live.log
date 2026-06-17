@@ -889,3 +889,60 @@ Installed 4 packages in 7ms
 17:58:33Z [heartbeat] engineering-os:final-reviewer S6 feat-shopify-live-connector returned
 18:17:12Z [heartbeat] engineering-os:platform-devops S8 ? issued
 18:22:08Z [heartbeat] engineering-os:platform-devops S8 ? returned
+[2026-06-17T19:07:39Z] ▶ feat-razorpay-settlement-connector — Stage 1 intake (cto-advisor), lane=high_stakes surfaces=connectors,money,multi_tenancy
+19:08:14Z [heartbeat] engineering-os:cto-advisor S1 feat-razorpay-settlement-connector issued
+[2026-06-17T19:10:00Z] cto-advisor S1 feat-razorpay-settlement-connector — reading context + prior runs done; writing intake artifact
+[2026-06-17T19:12:00Z] cto-advisor S1 feat-razorpay-settlement-connector — intake artifact written; journal appended; ADVANCE (conditional); 2 personas declared; returning HANDOFF
+19:12:51Z [heartbeat] engineering-os:cto-advisor S1 feat-razorpay-settlement-connector returned
+[2026-06-17T19:13:13Z] ✓ intake ADVANCE; ▶ Stage 1 personas (payments-settlement-realist ∥ compliance-secrets-officer)
+19:13:32Z [heartbeat] engineering-os:dynamic-persona-generator S1 feat-razorpay-settlement-connector issued
+19:13:44Z [heartbeat] engineering-os:dynamic-persona-generator S1 feat-razorpay-settlement-connector issued
+2026-06-17T19:30:00Z | persona:compliance-officer | feat-razorpay-settlement-connector | DONE | 5 concerns (CRITICAL: UTR/payment_id DPDP boundary-hash gap; HIGH: webhook_secret revocability, HMAC replay window, PCI card-field allowlist; MEDIUM: log-grep coverage gap) | decision: PASS with conditions | artifact: 03-persona-compliance-officer.md
+19:16:25Z [S1 persona:payments-realist] feat-razorpay-settlement-connector: 6 concerns surfaced (RISK-P1..P6); top risk = Razorpay order_id is NOT Shopify order_id (join chain is 2-hop, missing mapping table = zero correct reconciliations in prod); artifact written to 03-persona-payments-realist.md; PASS handoff
+19:16:49Z [heartbeat] engineering-os:dynamic-persona-generator S1 feat-razorpay-settlement-connector returned
+19:16:54Z [heartbeat] engineering-os:dynamic-persona-generator S1 feat-razorpay-settlement-connector returned
+[2026-06-17T19:17:22Z] ✓ 2 personas PASS w/ conditions (P1 order-id-gap, P2 reserve-float, P4 uuid-discriminator, COMPL-01 utr-hash); ▶ Stage 1 advisor synthesis
+19:17:52Z [heartbeat] engineering-os:cto-advisor S1 feat-razorpay-settlement-connector issued
+2026-06-17T19:50:00Z [S1 cto-advisor synthesis] feat-razorpay-settlement-connector: persona synthesis complete — RISK-P1 (two-hop Razorpay→Shopify join, rewrites MB-1), RISK-P2/P3/P4/P5 (reserve event types, multi-cursor, uuidv5 discriminator, GST), COMPL-01..05 (DPDP boundary-hash mapper, 3-cred revocation, replay window, PCI allowlist, log-grep extension); 13 bindings total (MB-1..MB-7 + C1..C6); one-slice with payment.captured prerequisite ordering; ADVANCE → architect Stage 2
+19:21:30Z [heartbeat] engineering-os:cto-advisor S1 feat-razorpay-settlement-connector returned
+[2026-06-17T19:21:45Z] ✓ synthesis ADVANCE (13 bindings); ▶ Stage 2 architect [opus]
+19:22:32Z [heartbeat] engineering-os:architect S2 feat-razorpay-settlement-connector issued
+Razorpay binding plan in progress
+[architect] 05-architecture.md written; 13 bindings resolved; tracks A/B/C defined; ADVANCE to Stage 3 builders
+19:27:26Z [heartbeat] engineering-os:architect S2 feat-razorpay-settlement-connector returned
+[2026-06-17T19:28:02Z] ✓ architect ADVANCE (13 bindings, mig 0027); ▶ Stage 3 Track A @data-engineer [sonnet] on feat/razorpay-settlement-connector
+19:28:43Z [heartbeat] engineering-os:data-engineer S3 feat-razorpay-settlement-connector issued
+[2026-06-17T19:29:45Z] data-engineer | feat-razorpay-settlement-connector | Track A START | A0 mapper build begins
+19:32:10Z [heartbeat] engineering-os:data-engineer S3 feat-razorpay-settlement-connector returned
+19:32:50Z [heartbeat] Explore S? ? issued
+2026-06-17T19:34:28Z [data-engineer Track A] feat-razorpay-settlement-connector | START A0 | reading mapper, building unit tests, then slices A1..A5
+2026-06-17T19:36:44Z [data-engineer Track A] A0 COMMITTED e852d06 — @brain/razorpay-mapper frozen (43/43 tests PASS) — unblocks Tracks B+C | now building A1 migration 0027
+19:36:47Z [heartbeat] Explore S? ? returned
+2026-06-17T19:40:56Z [data-engineer Track A] A1 COMMITTED 2175c44 — migration 0027 applied + verified | now building A2 settlements client + re-pull job
+19:46:38Z [heartbeat] engineering-os:frontend-web-developer S? ? issued
+19:47:50Z [heartbeat] engineering-os:frontend-web-developer S? ? returned
+
+2026-06-17T23:58:00Z [S3 data-engineer] feat-razorpay-settlement-connector: Track A COMPLETE — A0..A5 committed (7 commits, e852d06..f44fe5e). 43/43 mapper unit tests PASS; 6/6 settlement-ledger-wiring e2e PASS (live infra). 0 new tsc errors. All bindings satisfied: MB-1/MB-2/MB-3/MB-4/MB-5/MB-6/MB-7/C1/C4/C5/C6. READY-FOR-SECURITY.
+[2026-06-17T19:59:43Z] ✓ Track A @data-engineer DONE — @brain/razorpay-mapper + mig 0027 + settlement re-pull + SettlementLedgerConsumer WIRED (MB-4) + 6/6 e2e. HELD Tracks B+C (UI-first priority).
+20:21:51Z [heartbeat] engineering-os:backend-developer S3 ? issued
+20:21:51Z [heartbeat] engineering-os:backend-developer S3 ? returned
+2026-06-17T20:30:01Z [B-backend Track B] feat-razorpay-settlement-connector | B1-B3 built: webhook handler (HMAC-first+C3+MB-1) + commands (ConnectRazorpay/DisconnectRazorpay/RotateWebhookSecret) + wired in main.ts | tsc EXIT 0 | committing B1-B3
+2026-06-18T00:43:00Z [B-backend Track B] feat-razorpay-settlement-connector | COMPLETE | B4 integration tests 10/10 PASS; root cause fix: SET LOCAL → set_config() for parameterized GUC; tsc --noEmit EXIT 0; commits 9cfeefc + b96e73c + 3366c5d; READY-FOR-SECURITY
+20:42:45Z [heartbeat] engineering-os:frontend-web-developer S? ? issued
+20:45:38Z [heartbeat] engineering-os:frontend-web-developer S? ? returned
+[2026-06-17T20:47:02Z] ✓ Track B DONE (webhook+replay+3-cred, 10/10). ▶ Stage 4/5 review workflow (Security ∥ QA); Track C deferred to UI Phase 4.
+2026-06-18T00:55:00Z  qa-engineer  feat-razorpay-settlement-connector  PASS  mode=FULL  mapper=43/43 wiring-e2e=6/6 webhook-int=10/10 tsc=0(+1 pre-existing) validity=clean neg-controls=3-RED  model=claude-opus-4-8[1m]
+2026-06-17T20:56:14Z | security-reviewer | feat-razorpay-settlement-connector | Stage 4 FULL | VERDICT=BOUNCE | findings: HIGH=1(SEC-RZ-H1) MED=1 LOW=1 CRIT=0 | C4 lint + C5 log-grep not wired into CI (mandatory gates); primary mapper/hash/RLS controls live+non-inert | bounce_target=data-engineer | model=opus-4.8-1m
+2026-06-18T00:58:00Z final-reviewer feat-razorpay-settlement-connector STAGE6 BOUNCE blocking=1 SEC-RZ-H1(HIGH,OPEN) bounce_target=data-engineer paradigm=tier0-$0 over-eng=clean MB-4=wired(occ#3 no-recur) gates-rerun=mapper43/43,eslint-print-config(pci-rule-absent),log-grep-zero-consumers model=opus-4-8-1m
+[2026-06-17T21:00:59Z] ✗ Razorpay review BOUNCE — SEC-RZ-H1 (HIGH): no-pci-card-fields lint + log-grep not registered (dead gate). QA PASS. Wired-#3 OK. → data-engineer surgical fix → DELTA re-review.
+21:01:29Z [heartbeat] engineering-os:data-engineer S4 ? issued
+21:01:29Z [heartbeat] engineering-os:data-engineer S4 ? returned
+21:02:06Z [heartbeat] engineering-os:architect S3 ? issued
+21:02:06Z [heartbeat] engineering-os:architect S3 ? returned
+[2026-06-18T00:00:00Z] data-engineer feat-razorpay-settlement-connector SEC-RZ-H1+L1 surgical fix COMMITTED sha=8e63deb | no-pci-card-fields wired eslint.config.mjs(brain-pci plugin, severity error) | log-grep-gate.mjs consumes log-grep-patterns.json; pnpm log-grep npm script; pr.yml log-grep-gate CI job | SEC-RZ-L1 RedisDedupAdapter comment corrected FAIL-OPEN + structured error log | print-config proof: brain-pci/no-pci-card-fields=[2] | non-inert: planted card_last4 identifier → rule fired | mapper lints clean 0 errors 0 warnings | READY-FOR-SECURITY delta re-review
+[2026-06-17T21:12:30Z] ✓ Razorpay bounce-fix landed (8e63deb,b5ce157 — gates wired non-inert). ▶ DELTA security re-review → final → gate. Corrected stale shopify state→shipped.
+2026-06-17T21:23:27Z [security-reviewer] DELTA re-review feat-razorpay-settlement-connector → PASS · SEC-RZ-H1 RESOLVED (lint+log-grep live, non-inert, CI-wired) · SEC-RZ-L1 RESOLVED · suite 43/10/6 green · new LOW SEC-RZ-L2 (non-blocking) · model Opus 4.8 1M
+2026-06-18T01:25:00Z | final-reviewer | feat-razorpay-settlement-connector | Stage6 DELTA | PASS/APPROVE | blocking=0 | SEC-RZ-H1+L1 RESOLVED (re-verified: card_last4 fires, pay_/UTR exit1, mapper 43/43); SEC-RZ-L2 LOW tracked | next=stakeholder-gate
+21:42:19Z [heartbeat] engineering-os:platform-devops S8 ? issued
+21:52:23Z [heartbeat] engineering-os:platform-devops S8 ? returned
+2026-06-18T02:30:00Z | platform-devops | feat-razorpay-settlement-connector | Stage8 DEPLOY | SHIPPED (dev-honest) | tsc mapper EXIT:0, stream-worker 1 pre-existing error | migration 0027 verified live | SettlementLedgerConsumer wired main.ts:30/121/183 | C4 ESLint EXIT:0 prod source | C5 log-grep PASS (all patterns no-match) + gate EXIT:0 | SEC-RZ-M1 MED carried | SEC-RZ-L2 LOW CLOSED b5ce157 | PR: https://github.com/Rishabhporwal/Brain-V4/compare/master...feat/razorpay-settlement-connector

@@ -117,6 +117,9 @@ importers:
       '@brain/observability':
         specifier: workspace:*
         version: link:../../packages/observability
+      '@brain/razorpay-mapper':
+        specifier: workspace:*
+        version: link:../../packages/razorpay-mapper
       '@brain/shopify-mapper':
         specifier: workspace:*
         version: link:../../packages/shopify-mapper
@@ -178,6 +181,9 @@ importers:
       '@brain/observability':
         specifier: workspace:*
         version: link:../../packages/observability
+      '@brain/razorpay-mapper':
+        specifier: workspace:*
+        version: link:../../packages/razorpay-mapper
       '@brain/shopify-mapper':
         specifier: workspace:*
         version: link:../../packages/shopify-mapper
@@ -393,6 +399,18 @@ importers:
   packages/observability: {}
 
   packages/pixel-sdk: {}
+
+  packages/razorpay-mapper:
+    devDependencies:
+      '@types/node':
+        specifier: ^20.0.0
+        version: 20.19.43
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.0
+        version: 2.1.9(@types/node@20.19.43)
 
   packages/shopify-mapper:
     dependencies:

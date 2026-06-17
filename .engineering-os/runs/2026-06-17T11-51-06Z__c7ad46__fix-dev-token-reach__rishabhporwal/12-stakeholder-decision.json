@@ -1,0 +1,6 @@
+{
+  "decision": "approved",
+  "ts": "2026-06-17T12:10:00Z",
+  "actor": "stakeholder",
+  "note": "Approved + merging on GitHub. Retroactive review of the live connector/backfill fixes; 1 bounce fixed the analytics contract tests + negative-control. 5 tracked non-blocking debts accepted (dev_secret warning, NIL-uuid neg-control, lifecycle/pagination regression e2e, stale JSDoc, worker prod-throw symmetry). Lifecycle-regression follow-up requirement recommended."
+}

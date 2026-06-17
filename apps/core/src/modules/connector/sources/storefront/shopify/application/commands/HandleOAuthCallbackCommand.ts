@@ -39,8 +39,8 @@ export interface OAuthCallbackResult {
   /** State-derived brand ID (D-1: NEVER from query param). */
   brandId: string;
   shopDomain: string;
-  /** Secret Manager ARN — stored as secret_ref (NN-2 confirmation). */
-  secretRef: string;
+  // MED-01: secretRef (ARN) removed — caller does not need it; ARN is persisted
+  // to connector_instance.secret_ref by connectorRepo.save(instance) internally.
   status: 'connected';
 }
 
@@ -164,7 +164,7 @@ export class HandleOAuthCallbackCommand {
       connectorInstanceId: savedInstance.id,
       brandId,
       shopDomain: savedInstance.shopDomain,
-      secretRef: savedInstance.secretRef,
+      // MED-01: secretRef not returned — ARN persisted internally via connectorRepo.save.
       status: 'connected',
     };
   }
@@ -187,9 +187,10 @@ export class HandleOAuthCallbackCommand {
     });
 
     if (!response.ok) {
-      const body = await response.text();
+      // MED-02: do NOT include the Shopify response body in the error — it may contain
+      // shop context. Log status code only; body discarded.
       throw new Error(
-        `[HandleOAuthCallbackCommand] Token exchange failed (${response.status}): ${body}`,
+        `[HandleOAuthCallbackCommand] Token exchange failed (${response.status})`,
       );
     }
 

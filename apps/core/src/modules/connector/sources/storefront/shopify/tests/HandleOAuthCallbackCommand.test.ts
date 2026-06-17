@@ -211,9 +211,11 @@ describe('HandleOAuthCallbackCommand', () => {
 
     const result = await cmd.execute({ query, idempotencyKey: 'idem-4' });
 
-    // Result must have secretRef (ARN) but NOT the token value
-    expect(result.secretRef).toMatch(/^arn:aws:/);
-    expect(result.secretRef).not.toContain('shpat_secret_token_value');
+    // MED-01: secretRef is no longer in OAuthCallbackResult (ARN persisted internally).
+    // Result must NOT have a secretRef field; confirm the type does not expose it.
+    expect(result).not.toHaveProperty('secretRef');
+    // Token value must not appear anywhere in the result
+    expect(JSON.stringify(result)).not.toContain('shpat_secret_token_value');
 
     // Ensure repo was called (happy path)
     expect(connectorRepo.save).toHaveBeenCalledOnce();

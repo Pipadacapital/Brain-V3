@@ -71,7 +71,7 @@ Test Files  14 passed (14)
 ### Authz proof (describe 7)
 - `isConnectable(getDefinition('meta'))` → `false` — catalog gate blocks connect regardless of role
 - Shopify IS connectable (manager would get `oauth_url`)
-- `POST /api/v1/connectors/:id/backfill` returns 501; requires `brand_admin+` (402 for manager)
+- `POST /api/v1/connectors/:id/backfill` returns 501; requires `brand_admin+` (403 for manager)
 
 ### Audit proof (describe 9)
 - `DbAuditWriter.append({ action: 'connector.connected', ... })` → row in `audit_log` with `entry_hash` matching `/^[0-9a-f]{64}$/` — sha256 hash-chain — PASS

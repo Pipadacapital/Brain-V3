@@ -126,3 +126,4 @@
 {"ts":"2026-06-17T06:23:34Z","req_id":"feat-connector-marketplace","agent":"security-reviewer","stage":4,"model":"sonnet","review_scope":"delta","total_tokens":49235}
 {"ts":"2026-06-17T06:23:34Z","req_id":"feat-connector-marketplace","agent":"qa-agent","stage":5,"model":"sonnet","review_scope":"delta","total_tokens":28565}
 {"ts":"2026-06-17T06:31:55Z","req_id":"feat-connector-marketplace","agent":"final-reviewer","stage":6,"model":"opus","review_scope":"full","total_tokens":109581}
+{"ts":"2026-06-17T07:44:24Z","req_id":"feat-connector-backfill","agent":"cto-advisor","stage":1,"model":"sonnet","review_scope":"full","total_tokens":93753}

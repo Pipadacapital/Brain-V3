@@ -52,6 +52,11 @@
       "req_id": "feat-connector-marketplace",
       "title": "Connector module + Integration Marketplace UI (honest status, generic connect, 7-state health)",
       "first_seen": "2026-06-17T03:59:54Z"
+    },
+    {
+      "req_id": "feat-connector-backfill",
+      "title": "Connector backfill \u2014 Shopify order-history pull, two-lane, honest progress \u2192 real GMV",
+      "first_seen": "2026-06-17T07:36:53Z"
     }
   ]
 }

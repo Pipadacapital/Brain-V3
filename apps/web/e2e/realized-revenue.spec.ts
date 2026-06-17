@@ -35,7 +35,7 @@ async function getBrandId(email: string): Promise<string> {
       `SELECT b.id
        FROM brand b
        JOIN organization o ON o.id = b.organization_id
-       JOIN app_user_org_membership m ON m.organization_id = o.id
+       JOIN membership m ON m.organization_id = o.id
        JOIN app_user u ON u.id = m.app_user_id
        WHERE u.email = $1
        ORDER BY b.created_at DESC

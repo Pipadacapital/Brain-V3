@@ -1,9 +1,9 @@
-# Pending Stakeholder Commit — feat-connector-backfill
+# Pending Stakeholder Commit — feat-shopify-live-connector
 
 **Final review:** PASS / APPROVE (Stage 6, 2026-06-17). Awaiting Stakeholder gate (Stage 7).
-**Branch:** `feat/connector-backfill` (base `master`). 0 blocking.
+**Branch:** `feat/shopify-live-connector` (base `master`). 0 blocking.
 
-The work is already committed slice-by-slice on the feature branch (commit-per-slice). The Stakeholder action at Stage-7 is the **conscious accept + commit/merge**, not a fresh build. The final-reviewer did NOT commit and did NOT advance the gate.
+The work is already committed slice-by-slice on the feature branch (commit-per-slice, incl. the ORCH-LV-H1 DELTA fix commits 3bbdf86 + c836011). The Stakeholder action at Stage 7 is the **conscious accept + commit/merge**, not a fresh build. The final reviewer did NOT commit and did NOT advance the gate.
 
 ## Product-code surface (explicit paths — NO `git add -A`)
 
@@ -11,53 +11,50 @@ If a squash/verification re-stage is wanted, stage ONLY these product-code paths
 
 ```bash
 git add \
+  apps/core/package.json \
   apps/core/src/main.ts \
-  apps/core/src/modules/connector/backfill/infrastructure/PgBackfillJobRepository.ts \
-  apps/core/src/modules/connector/backfill/tests/backfill-trigger.live.test.ts \
-  apps/stream-worker/src/infrastructure/pg/BackfillJobRepository.ts \
+  apps/core/src/modules/connector/sources/storefront/shopify/application/commands/RegisterWebhooksCommand.ts \
+  apps/core/src/modules/connector/sources/storefront/shopify/interfaces/webhooks/shopifyWebhookHandler.ts \
+  apps/core/src/modules/connector/sources/storefront/shopify/tests/shopifyWebhookHandler.integration.test.ts \
+  apps/stream-worker/package.json \
   apps/stream-worker/src/infrastructure/pg/LedgerWriter.ts \
-  apps/stream-worker/src/infrastructure/redis/RedisDedupAdapter.ts \
-  apps/stream-worker/src/interfaces/consumers/BackfillOrderConsumer.ts \
+  apps/stream-worker/src/interfaces/consumers/LiveLedgerBridgeConsumer.ts \
+  apps/stream-worker/src/interfaces/consumers/LiveOrderConsumer.ts \
   apps/stream-worker/src/jobs/shopify-backfill/money-utils.ts \
   apps/stream-worker/src/jobs/shopify-backfill/order-mapper.ts \
   apps/stream-worker/src/jobs/shopify-backfill/run.ts \
-  apps/stream-worker/src/jobs/shopify-backfill/shopify-paged-client.ts \
   apps/stream-worker/src/jobs/shopify-backfill/uuid-utils.ts \
-  apps/stream-worker/src/jobs/shopify-backfill/worker-secrets.ts \
+  apps/stream-worker/src/jobs/shopify-repull/run.ts \
+  apps/stream-worker/src/jobs/shopify-repull/shopify-live-client.ts \
   apps/stream-worker/src/main.ts \
-  apps/stream-worker/src/tests/backfill.e2e.test.ts \
-  apps/stream-worker/src/tests/bronze.e2e.test.ts \
-  apps/web/components/connectors/backfill-control.tsx \
-  apps/web/components/connectors/connectors-list.tsx \
-  apps/web/components/dashboard/realized-revenue-card.tsx \
-  apps/web/e2e/backfill.spec.ts \
-  apps/web/lib/api/client.ts \
-  apps/web/lib/hooks/use-backfill.ts \
-  apps/web/next.config.js \
-  db/migrations/0022_backfill_job.sql \
-  db/migrations/0023_backfill_job_enumeration.sql \
-  infra/redpanda/topics.yml \
-  packages/contracts/src/api/connector.backfill.api.v1.ts \
-  packages/contracts/src/events/order.backfill.v1.ts \
-  packages/contracts/src/index.ts \
+  apps/stream-worker/src/tests/live-connector.e2e.test.ts \
+  apps/stream-worker/src/tests/live-ledger-wiring.e2e.test.ts \
+  apps/web/components/dashboard/connection-status-card.tsx \
+  apps/web/e2e/live-sync.spec.ts \
+  apps/web/lib/hooks/use-dashboard.ts \
+  db/migrations/0026_live_connector_security_definer_fns.sql \
+  packages/shopify-mapper/package.json \
+  packages/shopify-mapper/src/index.ts \
+  packages/shopify-mapper/tsconfig.json \
   pnpm-lock.yaml
 ```
 
 ## Migrations applied on merge (additive only, I-E02)
 
-- `db/migrations/0022_backfill_job.sql` (backfill_job table, FORCE RLS, no-DELETE grant)
-- `db/migrations/0023_backfill_job_enumeration.sql` (`list_queued_backfill_jobs()` SECURITY DEFINER enumeration fn)
+- `db/migrations/0026_live_connector_security_definer_fns.sql` — `list_connectors_for_repull()` + `resolve_connector_by_shop_domain(text)`, both SECURITY DEFINER, search_path=public, dispatch-only, GRANT EXECUTE TO brain_app, migration-time assertion blocks. ROLLBACK = `DROP FUNCTION`. No table/policy changes; 0025 untouched.
 
-## Residual the Stakeholder consciously accepts (all non-blocking)
+## Residuals the Stakeholder consciously accepts (all non-blocking)
 
-- **SEC-BF-M2 (MED, open):** dual `LedgerWriter` may drift — aligned today (byte-identical ON-CONFLICT key), post-M1 shared `@brain/ledger-writer` package.
-- **SEC-BF-L1 (LOW, open):** dual `PgBackfillJobRepository` (intentional split, I-E05) — post-M1 shared package.
-- **Dev-token reachability (tracked validation follow-up):** a real live Boddactive dev backfill needs the OAuth token reachable by the stream-worker process (ADR-BF-11). The SLICE (fixtures + proven finalization path) is complete; this is the Stage-validation step, not a merge blocker.
+- **SEC-LV-M1 (MED, open):** re-pull `acquireRepullLock` commits the SKIP-LOCKED lock before the page loop → narrow window for a concurrent double-run. Worst case = duplicate Shopify API calls; Bronze event_id dedup + ledger ON CONFLICT DO NOTHING absorb it (no correctness/isolation/money breach). M1+ remediation (hold lock for full run, or status='syncing' pre-check).
+- **SEC-LV-L1 (LOW, open):** non-null assertion on webhook `updatedAt` could pass NaN to the live event_id. Shopify always sends `updated_at` on order webhooks. One-line guard follow-up (discard with 200).
+- **Dev-honesty (stated):** real Shopify webhook delivery needs public ingress (platform follow-up). Dev proves the receive path via synthetic HMAC inject() + the 35-day re-pull against live Boddactive (the dev freshness mechanism).
+- **Pre-existing tsc error:** `apps/stream-worker/src/jobs/shopify-backfill/worker-secrets.ts` AwsSecretsManager cross-rootDir import — confirmed pre-existing on master, not introduced here, out of scope.
 
-## /adopt-rule recommended
+## /adopt-rule — NOT recommended this run
 
-3rd occurrence of the system-job-under-FORCE-RLS pattern — proposal at `.engineering-os/rule-proposals/system-job-force-rls-enumeration.md`. Act: `/adopt-rule system-job-force-rls-enumeration`.
+The wired-to-nothing pattern (consumer/recognition-writer built but not wired into the deployable) is at **occurrence #2** (ADR-BF-9 + ORCH-LV-H1). The 3-occurrence threshold (per the system-job-force-rls precedent) is not yet met → WATCH + lessons-learned filed; propose the durable rule at occurrence #3. See `pending-stakeholder-attention.md` and `lessons-learned.md`.
 
 ## Exit criterion delivered
 
-First real third-party data path through the M1 spine: worker-runs (non-inert), payoff-proven (past-dated → finalization → realized GMV, real code executed), PII-stripped, brand-isolated, two-lane. All five load-bearing gates independently replicated at source by the final reviewer.
+The M1 connector path is end-to-end complete (connect → backfill → live sync). Live recognition is wired in the deployable and live-proven (ledger 19,488 → 20,285, 49 rto_reversal from real cancelled Boddactive orders). All load-bearing gates (D-6 dedup, anti-spoof, RTO-reversal, no-GUC negative control, append-only GRANT, isolation, SECURITY DEFINER fns) independently re-replicated at source by the final reviewer under the real brain_app role.
+</content>

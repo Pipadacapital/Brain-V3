@@ -1,0 +1,43 @@
+{
+  "stage": 6,
+  "agent": "final-reviewer",
+  "req_id": "feat-shopify-live-connector",
+  "verdict": "PASS",
+  "recommendation": "APPROVE",
+  "blocking": 0,
+  "mode": "post-delta",
+  "ts": "2026-06-17T22:15:00Z",
+  "one_line_risk": "Only residual is deferred MEDIUM lock-window race (SEC-LV-M1) — worst case duplicate Shopify API calls, never a correctness/isolation/money breach (Bronze + ledger dedup absorb it).",
+  "gates_rerun": [
+    {"gate": "live-ledger-wiring.e2e (TW1-TW4) — ORCH-LV-H1 fix proof", "result": "4/4 PASS", "captured": "Test Files 1 passed (1) | Tests 4 passed (4)"},
+    {"gate": "live-connector.e2e (T1-T8) — D-6 + RTO-reversal + no-GUC NC + isolation", "result": "16/16 PASS", "captured": "Test Files 1 passed (1) | Tests 16 passed (16)"},
+    {"gate": "shopifyWebhookHandler.integration (B3 T1-T8) — HMAC + anti-spoof", "result": "8/8 PASS", "captured": "Test Files 1 passed (1) | Tests 8 passed (8)"},
+    {"gate": "no-GUC negative control (direct DB, brain_app, is_superuser=off)", "result": "connector_instance bare SELECT = 0 rows (FORCE RLS fail-closed)", "captured": "NO_GUC connector_instance count = 0"},
+    {"gate": "SECURITY DEFINER bypass (direct DB)", "result": "list_connectors_for_repull() = 2 rows without GUC", "captured": "list_connectors_for_repull() count = 2"},
+    {"gate": "append-only ledger GRANT (direct DB)", "result": "brain_app = INSERT,SELECT only (no UPDATE/DELETE)", "captured": "LEDGER grants to brain_app = INSERT,SELECT"},
+    {"gate": "0026 fns prosecdef (pg_proc)", "result": "both prosecdef=true, search_path=public", "captured": "prosecdef:true / search_path=public for both fns"},
+    {"gate": "live ledger move (brand 60d543dc)", "result": "total=20285, reversals=49 (matches orchestrator live proof)", "captured": "LEDGER {\"total\":\"20285\",\"reversals\":\"49\"}"},
+    {"gate": "stream-worker tsc", "result": "1 pre-existing error (worker-secrets AwsSecretsManager cross-rootDir, confirmed on master); 0 new; exit 0", "captured": "worker-secrets.ts(41,184): TS2307"}
+  ],
+  "paradigm_audit": "clean",
+  "cost_paradigm": "Tier-0 deterministic ($0/mo, 0 tokens/day) — diff LLM/gateway scan CLEAN",
+  "over_engineering_audit": "clean — all artifacts plan-sanctioned (1 package ADR-LV-0, 1 webhook wire, 1 re-pull job, 1 reversal writer, 1 bridge consumer, 2 SECURITY DEFINER fns); no files/deps/abstractions beyond plan; no drive-by",
+  "negative_control_check": "PASS — QA + Security carry non-inert negative controls on every tenancy/auth/money path; final reviewer independently replicated no-GUC NC + append-only GRANT under real brain_app",
+  "hard_rule_check": "clean — no dependency/Single-Primitive/compliance/paradigm-escalation/gate-skip deviation requiring Stakeholder escalation",
+  "tracked_findings": [
+    {"id": "SEC-LV-M1", "severity": "MEDIUM", "disposition": "ACCEPT AS TRACKED — worst case double API calls, dedup-absorbed; M1+ remediation"},
+    {"id": "SEC-LV-L1", "severity": "LOW", "disposition": "ACCEPT AS TRACKED — Shopify always sends updated_at; one-line guard follow-up"}
+  ],
+  "orch_lv_h1": "RESOLVED — LiveLedgerBridgeConsumer wired in main.ts (import 28 / instantiate 102 / start 148 / stop 113); real subscribe; TW1-TW4 re-replicated 4/4; live ledger 19488->20285",
+  "wired_to_nothing_pattern": {
+    "occurrence": 2,
+    "prior": ["ADR-BF-9 (feat-connector-backfill OrderEventConsumer scaffolded-not-wired)", "ORCH-LV-H1 (this run LiveLedgerBridgeConsumer not started)"],
+    "call": "WATCH + lessons-learned now; PROPOSE durable rule at occurrence #3 (matches the 3-occurrence threshold precedent of system-job-force-rls-enumeration)",
+    "rule_proposal_written": false
+  },
+  "drift_check": "clean — all 7 requirement deliverables + §7 success criteria met; non-goals respected; no new deployable/lane/topic",
+  "committed": false,
+  "gate_advanced": false,
+  "next": "stakeholder gate (Stage 7)"
+}
+</content>

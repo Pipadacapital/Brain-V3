@@ -1,0 +1,39 @@
+{
+  "stage": 4,
+  "agent": "security-reviewer",
+  "req_id": "feat-shopify-live-connector",
+  "verdict": "PASS",
+  "mode": "DELTA",
+  "delta_scope": "commits 3bbdf86 (LiveLedgerBridgeConsumer + main.ts wiring) + c836011 (live-ledger-wiring.e2e.test.ts TW1-TW4). ORCH-LV-H1 fix reviewed. Prior FULL PASS surfaces not re-run.",
+  "findings": [
+    {
+      "id": "SEC-LV-M1",
+      "severity": "MEDIUM",
+      "title": "acquireRepullLock commits before work begins — row lock released before re-pull executes",
+      "file": "apps/stream-worker/src/jobs/shopify-repull/run.ts:365-378",
+      "status": "OPEN",
+      "detail": "FOR UPDATE SKIP LOCKED lock acquired then committed before the re-pull page loop starts. Narrow window between COMMIT and setSyncState('syncing') where two concurrent workers could both proceed. Data correctness protected by Bronze event_id dedup (ON CONFLICT DO NOTHING) and ledger idempotency. No security breach or data-integrity violation — worst-case is double Shopify API calls. Remediate by holding lock open for full re-pull duration or adding status='syncing' pre-check."
+    },
+    {
+      "id": "SEC-LV-L1",
+      "severity": "LOW",
+      "title": "Non-null assertion on updatedAt — NaN date if order has no timestamp fields",
+      "file": "apps/core/src/modules/connector/sources/storefront/shopify/interfaces/webhooks/shopifyWebhookHandler.ts:192-193",
+      "status": "OPEN",
+      "detail": "If order.updated_at ?? order.processed_at ?? order.created_at is undefined, non-null assertion causes NaN to be passed to new Date().getTime(). Shopify always provides updated_at on order webhooks so this is a theoretical edge case. Remediate: add explicit null guard (if !updatedAt -> discard with 200, same as order.id type check at line 186)."
+    }
+  ],
+  "blocking": 0,
+  "ts": "2026-06-17T22:00:00Z",
+  "delta_gates": {
+    "guc_before_ledger_write": "PASS — LedgerWriter.writeProvisionalRecognition:83-85 and writeReversal:182-184 both call set_config('app.current_brand_id', $1, true) as the first statement inside BEGIN, before any INSERT. brandId sourced from parsed envelope brand_id field (string type-check at LiveLedgerBridgeConsumer.ts:82), never from env/header.",
+    "brand_id_derivation_safe": "PASS — brand_id extracted from Kafka message body via typeof check (string guard at line 82). The message is already on the live topic which was routed there by CollectorEventConsumer after HMAC-first webhook validation + brand-from-DB anti-spoof (D-4, verified in FULL review). Cross-tenant spoofing on the topic requires compromising the broker, which is outside threat model.",
+    "append_only_no_update_delete": "PASS — Both LedgerWriter methods use INSERT ... ON CONFLICT (brand_id, order_id, event_type, date) DO NOTHING RETURNING. No UPDATE, no DELETE. brain_app grant is SELECT+INSERT only (confirmed migration 0018 in FULL review). writeReversal writes a new negative row; prior rows untouched.",
+    "no_double_bronze_write": "PASS — LiveLedgerBridgeConsumer calls routeLiveOrderToLedger() (LiveOrderConsumer.ts:89-120) which calls LedgerWriter only. It does not call ProcessEventUseCase, BronzeRepository, or CollectorEventConsumer. Bronze writes remain solely in CollectorEventConsumer (group: stream-worker-live). Confirmed by code inspection: no BronzeRepository import in LiveLedgerBridgeConsumer.ts or LiveOrderConsumer.ts.",
+    "filter_cross_tenant_safe": "PASS — event_name filter at line 97 checks for exact string 'order.live.v1'. brand_id is taken from the event's own brand_id field which was set by the webhook handler from DB lookup (not from any user-controlled field at emission time). A message with event_name='order.live.v1' and brand_id belonging to Brand A cannot be processed as Brand B because the GUC is set from the same event's brand_id field — cross-tenant confusion requires a message with a forged brand_id, which is precluded by the upstream HMAC + DB lookup chain.",
+    "no_new_migration_rls_grant": "PASS — commits 3bbdf86 and c836011 contain no .sql files, no migration files, no RLS policy changes, no GRANT statements. Confirmed by file listing: only LiveLedgerBridgeConsumer.ts, main.ts, live-ledger-wiring.e2e.test.ts touched.",
+    "no_pii_in_logs": "PASS — LiveLedgerBridgeConsumer logs at lines 119-121 (info) and 127-130 (error) log only: brand (UUID), event (UUID), partition (int), offset (int), attempt count, error message string. No email, phone, name, or raw order payload. Error path (line 128-130) logs err which is a DB/Kafka error object — no user PII in those paths.",
+    "prior_pass_surfaces_not_regressed": "PASS — diff scope (3bbdf86+c836011) touches only: LiveLedgerBridgeConsumer.ts (new file), main.ts (import + 3 wiring lines + shutdown extension), live-ledger-wiring.e2e.test.ts (new test file). HMAC handler, ShopifyHmac.ts, migration 0026, shopify-repull/run.ts, LedgerWriter.ts, LiveOrderConsumer.ts, shopify-mapper, BackfillOrderConsumer — all untouched.",
+    "verification_validity": "PASS — TW1 and TW2 produce real Kafka messages and poll the ledger under brain_app+GUC. Un-wire proof documented at test line 223: commenting out await consumer.start() causes TW1/TW2 poll to timeout (RED). TW3 negative control: non-order event produces no ledger row (5s wait). TW4 idempotency: exact row count=1 after double-produce + 3s extra wait. All probes non-inert; no bypass-green."
+  }
+}

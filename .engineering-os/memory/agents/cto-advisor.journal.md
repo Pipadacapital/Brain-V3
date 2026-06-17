@@ -193,3 +193,19 @@
 **Hard-rule check:** none (no dependency/Single-Primitive/compliance/paradigm/gate-skip deviation). Verification-validity PASS.
 **Retro / rule-proposal:** no new rule (recurrence threshold not met; system-job-force-rls-enumeration already adopted). Process note: prior dev-report's false "zero new tsc errors" claim is what QA caught → produced QA-CLR-LOW-01; gate worked.
 **Next:** Stakeholder gate (Stage 7). I did NOT commit, did NOT advance the gate.
+
+## 2026-06-17T22:15:00Z — Engineering Advisor (final-reviewer) — feat-shopify-live-connector
+**Stage:** 6 · **Verdict:** PASS / APPROVE · **Paradigm audit:** clean (Tier-0, $0/mo; over-engineering clean — all artifacts plan-sanctioned; no drive-by)
+**Gates re-run (≥3, independently replicated under real brain_app, is_superuser=off):**
+- live-ledger-wiring.e2e TW1-TW4 → 4/4 PASS (real produce → wired consumer → ledger row) — the ORCH-LV-H1 fix proof.
+- live-connector.e2e T1-T8 → 16/16 PASS (D-6 per-state, RTO-reversal, no-GUC NC, isolation).
+- shopifyWebhookHandler.integration B3 → 8/8 PASS (HMAC-first, anti-spoof).
+- Direct DB: no-GUC connector_instance bare SELECT = 0 rows; list_connectors_for_repull() = 2 rows; ledger GRANT = INSERT,SELECT only; both 0026 fns prosecdef=true/search_path=public; live ledger total=20285 reversals=49 (matches orchestrator proof).
+- stream-worker tsc: 1 error (worker-secrets AwsSecretsManager cross-rootDir) — confirmed pre-existing on master, 0 new, exit 0.
+**D-6 (make-or-break):** live event_id = sha256(brand:order:updatedAtMs:order.live.v1), backfill = sha256(brand:order:order.backfill.v1) — distinct namespaces, per-state new Bronze row, retry dedups. Re-replicated non-inert.
+**ORCH-LV-H1 fix:** LiveLedgerBridgeConsumer imported(28)/instantiated(102)/started(148)/stopped(113) in main.ts; real subscribe+run; filters order.live.v1; ledger-only (no double-Bronze). RESOLVED.
+**Anti-spoof:** HMAC validateWebhook first op (401 on fail); brandId from resolve_connector_by_shop_domain DB row (158), never header/body. **Reversal:** writeReversal GUC-first, negative BigInt-string, ON CONFLICT DO NOTHING, sale untouched; live 49 rto_reversal.
+**2 tracked findings — my call:** ACCEPT AS TRACKED. SEC-LV-M1 (MED lock-window → worst case double API calls, dedup-absorbed, M1+); SEC-LV-L1 (LOW NaN-date guard, Shopify always sends updated_at, one-line). Neither on a money/tenancy/auth correctness path.
+**Wired-to-nothing pattern — my call:** WATCH + lessons-learned now; PROPOSE durable rule at occurrence #3. This is #2 (ADR-BF-9 backfill + ORCH-LV-H1 live), both caught by live verification not unit-tested reviews. Threshold (3, per system-job-force-rls precedent) not met → no rule-proposal file written; lessons-learned + attention watch filed. Proposed rule: new consumer/recognition-writer needs an END-TO-END wiring test (real produce→subscribe→sink effect) + reviewer verifies it's wired into main.ts.
+**Hard-rule check:** clean (no dependency/Single-Primitive/compliance/paradigm/gate-skip deviation). Verification-validity PASS (non-inert negative controls on every tenancy/auth/money path).
+**Next:** Stakeholder gate (Stage 7). I did NOT commit, did NOT advance the gate.

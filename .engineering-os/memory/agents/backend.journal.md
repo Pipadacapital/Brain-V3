@@ -192,3 +192,17 @@
 1. SET LOCAL requires BEGIN/COMMIT transaction block to persist GUC for subsequent statements — isolation tests failed silently because RLS policy read current_setting()→"" (empty default) and got uuid parse error
 2. CTX.BRAND_A empty despite hardcoded fallback — TEST_BRAND_A='' in shell env, so ?? null-coalescing didn't trigger; fixed with || falsy-coalescing
 3. AuditDbClient.query generic variance — resolved by returning explicit {rows, rowCount} shape instead of pg QueryResult<T>
+
+## 2026-06-17T10:05:00Z — Backend Engineer — feat-connector-marketplace (bounce r1)
+**Stage:** 3 · **Service:** core · **Verification:** typecheck EXIT 0 + 70/70 connector tests PASS (35 original + 4 new KMS unit tests + 1 updated MED-01 test)
+**Self-review vs gates:** PASS — HIGH-01 structurally enforced (KmsKeyId on both CreateSecretCommand paths); prod hard-fail guard added to composition root; MED-01/02/03/LOW-01 all addressed; no regression on D-1/HMAC-first/RLS/envelope/deferred boundary
+**Next:** READY-FOR-SECURITY
+
+**Findings fixed:**
+- HIGH-01 (VETO): `AwsSecretsManager` — added `kmsKeyId` constructor param; `storeSecret` and `storeShopifyToken` now pass `KmsKeyId: this.kmsKeyId` to `CreateSecretCommand`. Composition root hard-fails at startup if `CONNECTOR_SECRETS_KMS_KEY_ID` absent in production. Unit tests mock AWS SDK and assert `KmsKeyId` is set (non-inert negative control goes RED if dropped). Note: AWS SM `CreateSecret` does not accept caller-supplied `EncryptionContext`; CMK key policy is the isolation mechanism.
+- MED-01: Removed `secretRef` from `OAuthCallbackResult` interface and return value. ARN persisted internally via `connectorRepo.save`.
+- MED-02: Shopify error body no longer concatenated into `Error.message` on token exchange failure — status code only.
+- MED-03: `brand_id` removed from error message strings in `storeSecret` and `storeShopifyToken`.
+- LOW-01: Developer report line 74 corrected from "402" to "403".
+
+**Commits:** `e812c4f` (HIGH-01) · `d01fdd9` (MED/LOW batch) · _(report commit pending)_

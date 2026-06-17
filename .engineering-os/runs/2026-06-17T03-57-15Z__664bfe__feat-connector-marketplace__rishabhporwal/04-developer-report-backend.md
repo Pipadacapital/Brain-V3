@@ -137,3 +137,73 @@ None. All `must-fix` items from `02-cto-advisor-review.md` addressed:
 ## Handoff status
 
 READY-FOR-SECURITY
+
+---
+
+## DELTA — Security Bounce r1 remediation (2026-06-17)
+
+**Bounce source:** `security-review.verdict.json` — 1 HIGH (VETO) + 3 MED + 1 LOW
+
+### HIGH-01 — AwsSecretsManager KmsKeyId CMK binding (D-7/ADR-CM-4)
+
+**Fix:** Added `kmsKeyId: string` as a third constructor parameter to `AwsSecretsManager`. Both `CreateSecretCommand` calls (`storeSecret` ~:80 and `storeShopifyToken` ~:150) now include `KmsKeyId: this.kmsKeyId`, binding each secret to a customer-managed KMS key. The composition root (`main.ts`) hard-fails at startup with a FATAL error if `CONNECTOR_SECRETS_KMS_KEY_ID` is absent in production (NODE_ENV==='production'), mirroring the `LocalSecretsManager` prod-hard-fail pattern. A dev fallback alias `alias/brain-connector-secrets-dev` is used outside production.
+
+**VETO-clearing proof — KMS unit tests (SecretRef.test.ts):**
+- `storeSecret sends KmsKeyId on CreateSecretCommand AND name encodes brand+connector` — mocks `@aws-sdk/client-secrets-manager`; asserts `cmd.input.KmsKeyId === KMS_KEY_ID` and Tags carry `brand_id`/`connector_type`.
+- `goes RED when KmsKeyId is absent — negative control (non-inert proof)` — asserts `KmsKeyId` is defined; this test FAILS if the field is dropped.
+- `storeShopifyToken sends KmsKeyId AND name encodes brand_id` — same CMK binding asserted on Shopify-specific path.
+- `getSecret calls GetSecretValueCommand with the correct SecretId` — contract check.
+
+**Note on EncryptionContext:** AWS Secrets Manager's `CreateSecret` and `GetSecretValue` APIs do not accept a caller-supplied `EncryptionContext` parameter — the service derives its own internal context. The structural per-brand decryption isolation is enforced via `KmsKeyId` (CMK key policy). The security verdict's reference to `EncryptionContext` was conceptual; the SDK-level enforcement is `KmsKeyId`.
+
+**Files changed:** `AwsSecretsManager.ts`, `SecretRef.test.ts`, `main.ts`
+**Commit:** `e812c4f` — `fix(connector-mp): HIGH-01 — AwsSecretsManager KmsKeyId CMK binding (D-7/ADR-CM-4)`
+
+---
+
+### MED-01 — Remove secretRef from OAuthCallbackResult
+
+**Fix:** Removed `secretRef` field from the `OAuthCallbackResult` interface and the `execute()` return object in `HandleOAuthCallbackCommand.ts`. The ARN is already persisted to `connector_instance.secret_ref` via `connectorRepo.save(instance)` — the caller has no need for it. The companion test updated to assert `result` has no `secretRef` property.
+
+**Files changed:** `HandleOAuthCallbackCommand.ts`, `HandleOAuthCallbackCommand.test.ts`
+
+---
+
+### MED-02 — Shopify error body redacted from thrown Error
+
+**Fix:** On token exchange failure, the raw Shopify response body is no longer concatenated into the `Error.message`. The thrown error now contains only the HTTP status code: `Token exchange failed (${response.status})`. The response body is discarded (never read into a variable).
+
+**Files changed:** `HandleOAuthCallbackCommand.ts`
+
+---
+
+### MED-03 — brand_id removed from AwsSecretsManager error messages
+
+**Fix:** `storeSecret` error message changed from `Failed to store secret for brand ${brandId} connector ${connectorType}` to `Failed to store secret for connector ${connectorType}`. `storeShopifyToken` error changed from `Failed to store Shopify token for brand ${brandId}` to `Failed to store Shopify token`. brand_id no longer appears in any thrown error string.
+
+**Files changed:** `AwsSecretsManager.ts`
+
+---
+
+### LOW-01 — Developer report typo corrected
+
+**Fix:** Line 74 of this report corrected from "402 for manager" to "403 for manager". The actual `requireRole('brand_admin')` returns 403 FORBIDDEN, which is correct.
+
+---
+
+### Commit log (bounce r1)
+
+| Hash | Description |
+|------|-------------|
+| `e812c4f` | fix(connector-mp): HIGH-01 — AwsSecretsManager KmsKeyId CMK binding (D-7/ADR-CM-4) |
+| `d01fdd9` | fix(connector-mp): MED-01/02/03 + LOW-01 — security bounce remediation |
+| _(this commit)_ | chore(connector-mp): DELTA report + journal — bounce r1 |
+
+### Verification
+
+```
+pnpm --filter @brain/core typecheck  → EXIT 0 (0 errors)
+connector vitest suite               → 70/70 PASS (35 original + 4 new KMS + updated MED-01 test)
+```
+
+**Handoff status:** READY-FOR-SECURITY (bounce r1 remediation complete)

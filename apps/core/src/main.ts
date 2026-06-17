@@ -43,6 +43,7 @@ import { createEmailAdapter } from './modules/notification/internal/ses-adapter.
 import { PgBackfillJobRepository } from './modules/connector/backfill/infrastructure/PgBackfillJobRepository.js';
 import type { BackfillJobProgress } from '@brain/contracts';
 import { registerShopifyWebhookRoutes } from './modules/connector/sources/storefront/shopify/interfaces/webhooks/shopifyWebhookHandler.js';
+import { registerRazorpayWebhookRoutes } from './modules/connector/sources/payment/razorpay/interfaces/webhooks/razorpayWebhookHandler.js';
 import { registerShopifyConnectorRoutes } from './modules/connector/sources/storefront/shopify/interfaces/http/shopifyConnectorRoutes.js';
 import { registerDevShopifySyncRoutes } from './modules/connector/sources/storefront/shopify/interfaces/http/devShopifySyncRoutes.js';
 import { registerPixelRoutes, buildDefaultSnippet } from './modules/connector/pixel/interfaces/http/pixelRoutes.js';
@@ -433,6 +434,20 @@ export async function main(): Promise<void> {
 
   app.log.info({ topic: liveTopic }, '[core] Shopify webhook receiver registered (B1)');
 
+  // ── B1: Razorpay webhook receiver (ADR-RZ-7 / C2 / C3 / MB-1) ───────────────
+  // PUBLIC route — HMAC-protected (NN-4); exempt from session guard + CSRF middleware.
+  // CSRF middleware already exempts /api/v1/webhooks/ paths (see onRequest hook above).
+  registerRazorpayWebhookRoutes(app, {
+    secretsManager: connectorSecretsManager,
+    rawPgPool,
+    producer: webhookProducer,
+    liveTopic,
+    getSaltHex: getWebhookSaltHex,
+    redis,
+  });
+
+  app.log.info({ topic: liveTopic }, '[core] Razorpay webhook receiver registered (ADR-RZ-7)');
+
   // DEV-ONLY: validate-sync spike — pull live orders via the real connected token.
   // Mounted only outside production (token crosses the boundary here, I-S09).
   if (nodeEnv !== 'production') {
@@ -682,14 +697,96 @@ export async function main(): Promise<void> {
         }
       }
 
-      // 3b. Credential connector (no available credential connector in M1, but path is bound)
+      // 3b. Credential connector
       if (def.connectMethod === 'credential') {
         const credentials = body.credentials;
         if (!credentials || Object.keys(credentials).length === 0) {
           return reply.code(400).send({ request_id: requestId, error: { code: 'MISSING_CREDENTIALS', message: 'credentials are required for credential connectors' } });
         }
+
+        // ── Razorpay credential connector (C2 / ADR-RZ-8) ─────────────────
+        // Requires: key_id, key_secret, webhook_secret, razorpay_account_id.
+        // razorpay_account_id is stored on connector_instance (NOT in the secret bundle —
+        // it is a merchant identifier, not a secret) and used by
+        // resolve_razorpay_connector_by_account() for webhook brand resolution (ADR-RZ-7).
+        if (connectorType === 'razorpay') {
+          const keyId = credentials['key_id'];
+          const keySecret = credentials['key_secret'];
+          const webhookSecret = credentials['webhook_secret'];
+          const razorpayAccountId = credentials['razorpay_account_id'];
+
+          if (!keyId || !keySecret || !webhookSecret || !razorpayAccountId) {
+            return reply.code(400).send({
+              request_id: requestId,
+              error: {
+                code: 'MISSING_RAZORPAY_CREDENTIALS',
+                message: 'razorpay connector requires: key_id, key_secret, webhook_secret, razorpay_account_id',
+              },
+            });
+          }
+
+          // Store composite bundle (C2 — ONE secret_ref, webhook_secret independently rotatable)
+          // I-S09: subKey = razorpayAccountId (merchant ID, not secret)
+          const { arn } = await connectorSecretsManager.storeSecret(
+            brandId,
+            { connectorType: 'razorpay', subKey: razorpayAccountId },
+            { key_id: keyId, key_secret: keySecret, webhook_secret: webhookSecret },
+          );
+
+          const now = new Date();
+          const connectorInstanceId = randomUUID();
+          const instance = ConnectorInstanceEntity.create({
+            id: connectorInstanceId,
+            brandId,
+            provider: 'razorpay',
+            shopDomain: '',
+            secretRef: arn,
+            status: 'connected',
+            healthState: 'Healthy',
+            safetyRating: 'safe',
+            connectedAt: now,
+            disconnectedAt: null,
+            createdAt: now,
+            updatedAt: now,
+          });
+          await connectorRepo.save(instance);
+
+          // Set razorpay_account_id on connector_instance (migration 0027 column)
+          // Required by resolve_razorpay_connector_by_account() for webhook brand resolution.
+          const rzClient = await rawPgPool.connect();
+          try {
+            await rzClient.query('BEGIN');
+            await rzClient.query(`SET LOCAL app.current_brand_id = $1`, [brandId]);
+            await rzClient.query(
+              `UPDATE connector_instance SET razorpay_account_id = $1 WHERE id = $2 AND brand_id = $3`,
+              [razorpayAccountId, connectorInstanceId, brandId],
+            );
+            await rzClient.query('COMMIT');
+          } catch (rzErr) {
+            await rzClient.query('ROLLBACK').catch(() => undefined);
+            throw rzErr;
+          } finally {
+            rzClient.release();
+          }
+
+          await auditWriter.append({
+            brand_id: brandId,
+            actor_id: auth?.userId ?? null,
+            actor_role: auth?.role ?? 'unknown',
+            action: 'connector.connected',
+            entity_type: 'connector_instance',
+            entity_id: connectorInstanceId,
+            payload: { connector_type: 'razorpay' },
+            // NO key_id, NO key_secret, NO webhook_secret in payload (I-S09)
+          });
+          return reply.code(200).send({
+            request_id: requestId,
+            data: { kind: 'credential', connected: true, connector_instance_id: connectorInstanceId },
+          });
+        }
+
+        // Generic credential connector path (non-Razorpay — kept for future connectors)
         const { arn } = await connectorSecretsManager.storeSecret(brandId, { connectorType }, credentials);
-        // Write connector_instance
         const now = new Date();
         const instance = ConnectorInstanceEntity.create({
           id: randomUUID(),

@@ -64,6 +64,9 @@ export const RAZORPAY_FIELD_ALLOWLIST = new Set([
 ] as const);
 
 /** Card fields that MUST be dropped at the boundary (C4 / PCI SAQ-A) */
+// This Set lists the blocked names as string literals; the brain-pci/no-pci-card-fields
+// ESLint rule targets identifier and property-key usages, not string values in a Set.
+// This file IS the authoritative drop boundary (ADR-RZ-10) — the rule guards all OTHER files.
 export const CARD_FIELDS_BLOCKED = new Set([
   'card_last4',
   'card_network',

@@ -401,7 +401,7 @@ async function runBackfillLoop(params: BackfillLoopParams): Promise<void> {
           event_name: mapped.event_name,
           occurred_at: mapped.occurred_at,  // D-6: processed_at ?? created_at, NOT NOW()
           ingested_at: new Date().toISOString(),
-          properties: mapped.properties as Record<string, unknown>,
+          properties: mapped.properties as unknown as Record<string, unknown>,
         });
 
         messages.push({

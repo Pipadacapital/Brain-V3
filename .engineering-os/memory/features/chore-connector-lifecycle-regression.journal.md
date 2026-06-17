@@ -12,3 +12,17 @@ Regression net pinning the 8 defect classes from fix/dev-token-reach. Tests + mi
 - **No new migration, no new deployable.** COMMIT PER SLICE (A0 commit unblocks B/C).
 - **Provisional (defect #5):** REFERENCE revenue-metrics.live.test.ts — do NOT duplicate.
 - **Next:** Stage 3 builders (A0 first), GO.
+
+## 2026-06-17T17:35:00Z — QA Engineer — chore-connector-lifecycle-regression
+**Stage:** 5 · **Mode:** FULL · **Verdict:** PASS
+**Smoke:** All 3 tracks green (A:33/33+1skip, B:116/116, C:9/9) · **Parity:** n/a (tier-0, no cross-runtime metric) · **Validity:** negative-controls confirmed (assertBrainApp on all isolation asserts; 22P02 proven; currency trigger P0001 proven) · **Next:** HANDOFF to Security reconciliation (Security PASSED at stage 4) → Final Approval
+
+**Non-inert spot-checks:**
+- #6 pagination: reverted `?? '0'` → `?? null` → 2 RED (since_id=0 assertions) → restored → GREEN
+- #2 reconnect-UPSERT: removed ON CONFLICT clause → 1 RED (23505 duplicate key) → restored → GREEN
+- #1 disconnected-tile: reverted main.ts:535 to `found` → 1 RED (Playwright input-shop-shopify not visible) → restored → GREEN
+
+**it.skip legitimacy:** CONFIRMED (ADR-R3 — WorkerLocalSecretsManager genuinely lacks prod guard; correctly deferred per D-9)
+**60d543dc brand:** ledger=19476 (~19.5k), unchanged, zero SQL references in new tests
+**Git status:** CLEAN (product code; only .engineering-os/ pipeline state dirty)
+**Findings:** 0 blocking · 1 LOW/deferred (QA-CLR-LOW-01: 8 new stream-worker tsc errors in test-only files; developer report falsely claimed zero new errors)

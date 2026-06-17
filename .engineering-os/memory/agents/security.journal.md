@@ -78,3 +78,10 @@
 **Scanners:** secret-grep CLEAN on diff · DDL scan CLEAN (0024+0025 additive, RLS/grants unchanged) · SAST manual CLEAN (no plaintext token col, no injection) · no new deps/IaC
 **Key verifications:** NIL-uuid-isolation=SAFE (brand_self_read subquery empty for nil user_id; brand_isolation governs; connector tables unaffected); dev_secret-prod-safety=PASS (LocalSecretsManager + buildWorkerSecretsManager dual hard-fail, AwsSecretsManager selected in prod); UPSERT-isolation=PASS (brand_id in conflict key on both tables, FORCE RLS unchanged); callback-auth=PASS (HMAC-first NN-4, state-derived brandId, fixed appBaseUrl, no token/PII in redirect); analytics=PASS (withBrandTxn RLS-scoped, no float, metric engine unchanged, honest representation); isolation-regression=CLEAN
 **Next:** PASS → reconcile with QA Engineer (no bounce_target)
+
+## 2026-06-17T18:00:00Z — Security Reviewer — chore-connector-lifecycle-regression
+**Stage:** 4 · **Mode:** FULL · **Verdict:** PASS
+**Findings:** 0 CRIT / 0 HIGH / 1 MED (SEC-CLR-MED-01: WorkerLocalSecretsManager no prod guard, latent, ADR-R3 it.skip, non-blocking) / 0 LOW
+**Scanners:** delta-scope (tests-only suite; no new deps/images/IaC; secret-grep clean on diff; D-5 60d543dc grep CLEAN; no product code in diff)
+**Key verifications:** assertBrainApp discipline CONFIRMED (every isolation assertion calls assertBrainApp first; appPool=BRAIN_APP_DATABASE_URL; cross-brand count===0 + empty-string 22P02 revert-RED GENUINELY NON-INERT); no real secrets in fixtures (TEST_CLIENT_SECRET='test-shopify-client-secret-b2' synthetic; TEST_ACCESS_TOKEN synthetic; HMAC from env only); no 60d543dc in SQL/seed calls; D-9 CONFIRMED (0 product src changes, 0 migrations); ADR-R3 it.skip honest with documented bug comment; afterAll cleanup present all files
+**Next:** PASS → reconcile with QA Engineer / no bounce_target

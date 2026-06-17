@@ -145,3 +145,9 @@
 {"ts":"2026-06-17T12:26:01Z","req_id":"fix-dev-token-reach","agent":"final-reviewer","stage":6,"model":"opus","review_scope":"full","total_tokens":77906}
 {"ts":"2026-06-17T12:42:34Z","req_id":"chore-connector-lifecycle-regression","agent":"cto-advisor","stage":1,"model":"sonnet","review_scope":"full","total_tokens":107998}
 {"ts":"2026-06-17T12:49:40Z","req_id":"chore-connector-lifecycle-regression","agent":"architect","stage":2,"model":"opus","review_scope":"full","total_tokens":109049}
+{"ts":"2026-06-17T13:05:32Z","req_id":"chore-connector-lifecycle-regression","agent":"data-engineer","stage":3,"model":"sonnet","review_scope":"full","total_tokens":136083}
+{"ts":"2026-06-17T13:24:11Z","req_id":"chore-connector-lifecycle-regression","agent":"backend-developer","stage":3,"model":"sonnet","review_scope":"full","total_tokens":119517}
+{"ts":"2026-06-17T13:24:11Z","req_id":"chore-connector-lifecycle-regression","agent":"frontend-web-developer","stage":3,"model":"sonnet","review_scope":"full","total_tokens":63789}
+{"ts":"2026-06-17T13:40:01Z","req_id":"chore-connector-lifecycle-regression","agent":"security-reviewer","stage":4,"model":"sonnet","review_scope":"full","total_tokens":95362}
+{"ts":"2026-06-17T13:40:01Z","req_id":"chore-connector-lifecycle-regression","agent":"qa-agent","stage":5,"model":"sonnet","review_scope":"full","total_tokens":97218}
+{"ts":"2026-06-17T13:45:19Z","req_id":"chore-connector-lifecycle-regression","agent":"final-reviewer","stage":6,"model":"opus","review_scope":"full","total_tokens":121465}

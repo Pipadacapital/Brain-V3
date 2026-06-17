@@ -415,10 +415,10 @@
     },
     {
       "req_id": "chore-connector-lifecycle-regression",
-      "status": "dev-parallel",
-      "stage": 3,
-      "current_owner": "data-engineer",
-      "last_journal_entry_at": "2026-06-17T12:49:40Z"
+      "status": "awaiting-stakeholder",
+      "stage": 7,
+      "current_owner": "stakeholder",
+      "last_journal_entry_at": "2026-06-17T13:45:19Z"
     }
   ]
 }

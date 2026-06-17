@@ -1,0 +1,112 @@
+{
+  "stage": 5,
+  "agent": "qa-engineer",
+  "req_id": "chore-connector-lifecycle-regression",
+  "verdict": "PASS",
+  "mode": "FULL",
+  "ts": "2026-06-17T17:35:00Z",
+  "blocking": 0,
+  "tests_run": [
+    {
+      "suite": "Track A — stream-worker (A1+A2+A3+A4)",
+      "command": "cd apps/stream-worker && pnpm vitest run src/tests/shopify-pagination.integration.test.ts src/tests/worker-guc.integration.test.ts src/tests/sync-status-currency.integration.test.ts src/tests/dev-secret.integration.test.ts",
+      "result": "33 passed | 1 skipped (ADR-R3) | 0 failed",
+      "exit_code": 0
+    },
+    {
+      "suite": "Track B — core connector + analytics (B1+B2+existing)",
+      "command": "cd apps/core && pnpm vitest run src/modules/connector src/modules/analytics",
+      "result": "116 passed | 0 failed (9 test files)",
+      "exit_code": 0
+    },
+    {
+      "suite": "Track C — Playwright lifecycle e2e + marketplace no-regression (C1)",
+      "command": "cd apps/web && npx playwright test e2e/connector-lifecycle.spec.ts e2e/marketplace.spec.ts --reporter=list",
+      "result": "9 passed | 0 failed",
+      "exit_code": 0
+    }
+  ],
+  "typecheck": {
+    "core": "EXIT 0 — clean",
+    "web": "EXIT 0 — clean",
+    "stream_worker": {
+      "master_errors": 3,
+      "chore_branch_errors": 11,
+      "new_errors_added": 8,
+      "note": "8 new errors in TEST-ONLY files (dev-secret.integration.test.ts cross-rootDir LocalSecretsManager import + WorkerLocalSecretsManager cast; connector-lifecycle-fixtures.ts RequestInfo+Response.bytes type mismatch). Not in product code. Vitest passes via esbuild transpilation. Developer report falsely claimed zero new errors beyond the 3 pre-existing. Classified LOW/deferred per rubric (no correctness/safety/data-loss impact; test files only)."
+    }
+  },
+  "non_inert_spot_checks": [
+    {
+      "defect": "#6 — pagination since_id=0",
+      "revert": "shopify-paged-client.ts:121 sinceId ?? '0' → sinceId ?? null",
+      "red_on_revert": true,
+      "red_evidence": "2 tests FAILED: 'first request URL contains since_id=0' (received since_id=null) + 'first fetch carries since_id parameter' (expected '0', received 'null')",
+      "green_on_restore": true
+    },
+    {
+      "defect": "#2 — reconnect UPSERT no-23505",
+      "revert": "PgConnectorInstanceRepository.save() ON CONFLICT clause removed (plain INSERT)",
+      "red_on_revert": true,
+      "red_evidence": "1 test FAILED: 'second save() for same (brand_id, provider) returns the SAME row id — no 23505 throw' → error: duplicate key value violates unique constraint 'connector_instance_brand_provider_unique'",
+      "green_on_restore": true
+    },
+    {
+      "defect": "#1 — disconnected tile → Connect",
+      "revert": "main.ts:535 'found && found.status !== disconnected ? found : null' → 'found'",
+      "red_on_revert": true,
+      "red_evidence": "1 Playwright test FAILED: 'disconnected connector_instance renders as Connect tile (not health badge)' → Error: expect(locator).toBeVisible() failed — getByTestId('input-shop-shopify') element not found (tile rendered Connected state instead of Connect)",
+      "green_on_restore": true
+    }
+  ],
+  "it_skip_legitimacy": {
+    "file": "apps/stream-worker/src/tests/dev-secret.integration.test.ts:265",
+    "describe": "A4-3: WorkerLocalSecretsManager prod-hard-fail — ADR-R3 discovered gap",
+    "verdict": "LEGITIMATE",
+    "reason": "WorkerLocalSecretsManager (worker-secrets.ts:69) genuinely lacks a NODE_ENV=production constructor guard. The assertion WOULD be RED on current master. Per D-9 (tests-only, no product changes), the fix is deferred to a separate PR. The it.skip includes the complete ready-to-use assertion, the exact fix code, and a reference to ADR-R3. This is correctly documented as a DISCOVERED PRODUCT GAP, not a hidden failing test."
+  },
+  "data_safety": {
+    "brand_60d543dc_ledger_count": 19476,
+    "brand_60d543dc_touched": false,
+    "check": "SELECT count(*) FROM realized_revenue_ledger WHERE brand_id::text LIKE '60d543dc%' → 19476 (within expected ~19.5k range; unchanged)",
+    "grep_check": "All 7 occurrences of '60d543dc' in new test files are 'NEVER 60d543dc-*' comment guards — 0 SQL/seed references to the live brand"
+  },
+  "git_status_clean": true,
+  "git_status_note": "Product code clean. Only .engineering-os/ (pipeline state) files are modified — expected pipeline state, not test reverts. All 3 spot-check reverts fully restored before this verdict.",
+  "negative_control": [
+    {
+      "path": "apps/stream-worker/src/tests/worker-guc.integration.test.ts",
+      "protection": "RLS (FORCE RLS on connector_instance) + brain_app NOBYPASSRLS",
+      "command": "A2-3: brand B GUC reads brand A connector_instance under brain_app",
+      "captured_red_output": "brand_B GUC → count=0 (RLS blocks; REVERT-RED: if DROP FORCE RLS → count>0 → assertion fails)",
+      "also": "A2-2: empty-string GUC → pgErrorCode '22P02' (proves NIL-uuid fix is load-bearing)"
+    },
+    {
+      "path": "apps/stream-worker/src/tests/sync-status-currency.integration.test.ts",
+      "protection": "trg_ledger_currency trigger (currency mismatch guard)",
+      "command": "A3-2: INSERT realized_revenue_ledger with INR into AED brand",
+      "captured_red_output": "Error P0001: RAISE EXCEPTION 'currency mismatch' (trigger fires)"
+    }
+  ],
+  "findings": [
+    {
+      "id": "QA-CLR-LOW-01",
+      "severity": "LOW",
+      "blocking": false,
+      "title": "stream-worker adds 8 new tsc errors in test-only files (false developer report claim)",
+      "detail": "Developer report stated 'stream-worker has 3 PRE-EXISTING tsc errors (confirm this branch adds none beyond those).' The branch adds 8 new tsc errors in test files: dev-secret.integration.test.ts (cross-rootDir LocalSecretsManager import: TS6059+TS6307 x2; WorkerLocalSecretsManager cast: TS2352) and connector-lifecycle-fixtures.ts (RequestInfo: TS2552; Response.bytes: TS2741 x2). All in test/fixture files only. No product code affected. Vitest runs pass (esbuild bypasses tsc). Classified LOW/deferred per rubric.",
+      "defer_condition": "Fix tsconfig.json to allow cross-rootDir test imports OR use dynamic import with explicit type annotations in next cleanup PR"
+    }
+  ],
+  "success_criteria_map": {
+    "D1_lifecycle_e2e_integration": "PASS — C1 (disconnected tile) + B1 (UPSERT no-23505 + single sync row)",
+    "D2_callback_302": "PASS — B2 (8/8 Fastify inject tests: 302/Location/no-PII/HMAC-first/forged-error/unknown-error)",
+    "D3_brain_app_isolation": "PASS — assertBrainApp() called in every isolation block; A2+A3+B1 all use appPool=BRAIN_APP_DATABASE_URL",
+    "D4_pagination_600_since_id_0": "PASS — A1 9/9 green; first URL contains since_id=0; cursor [250,500,null]; total=600",
+    "D5_never_60d543dc": "PASS — 60d543dc appears 7x as NEVER comments only; 0 SQL/seed references; ledger=19476 unchanged",
+    "D6_NIL_uuid_GUC": "PASS — A2: positive NIL_UUID→row returned; revert ''→22P02 explicit",
+    "D7_sync_reset_backfill_connected_currency": "PASS — A3: state=connected after UPDATE + trigger P0001 on mismatch; B1: stale error reset",
+    "D8_dev_secret_round_trip_prod_fail": "PASS (core side) — A4: storeShopifyToken→worker reads same token; deleteShopifyToken→null; LocalSecretsManager throws FATAL in prod. PARTIAL — worker prod guard deferred ADR-R3 it.skip",
+    "D9_tests_only": "PASS — diff confined to apps/core/tests/, apps/stream-worker/tests/, apps/web/e2e/. Zero product code changes."
+  }
+}

@@ -7,16 +7,6 @@
       "last_route": "final-reviewer PASS/APPROVE; spine committed 58c425e; STOP at Stakeholder gate (awaiting /approve)",
       "updated_at": "2026-06-16T10:55:00Z",
       "bounces": 1
-    },
-    "chore-connector-lifecycle-regression": {
-      "spawns": 0,
-      "stage": 3,
-      "outstanding": [
-        "data-engineer",
-        "backend-developer",
-        "frontend-web-developer"
-      ],
-      "updated_at": "2026-06-17T12:49:40Z"
     }
   }
 }

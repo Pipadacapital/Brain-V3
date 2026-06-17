@@ -1,0 +1,32 @@
+{
+  "stage": 4,
+  "agent": "security-reviewer",
+  "req_id": "chore-connector-lifecycle-regression",
+  "verdict": "PASS",
+  "findings": [
+    {
+      "id": "SEC-CLR-MED-01",
+      "severity": "MED",
+      "title": "WorkerLocalSecretsManager lacks NODE_ENV=production constructor guard",
+      "file": "apps/stream-worker/src/jobs/shopify-backfill/worker-secrets.ts",
+      "line": 69,
+      "detail": "WorkerLocalSecretsManager class can be directly instantiated in production without throwing. buildWorkerSecretsManager() correctly branches to AwsSecretsManager in prod (the real safety gate), but the class itself has no guard. Latent risk for future refactor. it.skip at dev-secret.integration.test.ts:265 surfaces this honestly per D-9 and ADR-R3.",
+      "remediation": "Separate product PR: add if (process.env['NODE_ENV'] === 'production') { throw new Error('[WorkerLocalSecretsManager] FATAL: ...') } to constructor. The it.skip test assertion is already written and will pass once the guard is added.",
+      "blocking": false,
+      "status": "open-follow-up-required"
+    }
+  ],
+  "blocking": 0,
+  "checks": {
+    "non_inert_isolation_controls": "PASS — assertBrainApp called before every isolation assertion; appPool=BRAIN_APP_DATABASE_URL; cross-brand count===0 runs under brain_app NOBYPASSRLS; empty-string 22P02 revert-RED is an explicit revert simulation, not tautological",
+    "no_secrets_in_fixtures": "PASS — TEST_CLIENT_SECRET='test-shopify-client-secret-b2' (synthetic); TEST_ACCESS_TOKEN='shpat_test_dev_secret_round_trip_token_abc123' (synthetic); all ARNs use account 000000000000; HMAC uses synthetic secret set via env in beforeAll",
+    "no_pii_in_fixtures": "PASS — customer:null in all 600 fake orders; no email/phone/address fields populated",
+    "no_60d543dc_reference": "PASS — grep: 0 hits in SQL/seed calls; all 7 occurrences are NEVER-marker comments",
+    "no_product_code_change": "PASS — all 8 changed apps/ files are tests/e2e/helpers paths; 0 migrations; 0 product src files changed",
+    "adr_r3_honest_handling": "PASS — it.skip with full documented bug comment at dev-secret.integration.test.ts:265; no fix attempted; surfaces as follow-up requirement",
+    "adr_r3_severity": "MED — latent risk, not blocking; buildWorkerSecretsManager() is the real prod-safety gate today",
+    "afterAll_cleanup": "PASS — every test file has afterAll deleting seeded rows in FK dependency order via superPool",
+    "verification_validity": "PASS — no bypass-green, no inert probe; revert-RED assertions are structurally non-tautological"
+  },
+  "ts": "2026-06-17T18:00:00Z"
+}

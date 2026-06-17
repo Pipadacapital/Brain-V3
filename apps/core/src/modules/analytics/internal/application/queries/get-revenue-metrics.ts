@@ -60,24 +60,26 @@ export async function getRevenueMetrics(
 ): Promise<RevenueSnapshot> {
   const asOfStr = asOf.toISOString().split('T')[0] as string; // 'YYYY-MM-DD'
 
-  // Step 1: EXISTS(finalized) — the authoritative honest-empty-state check (D-2).
+  // Step 1: EXISTS(any recognized revenue) — the authoritative honest-empty-state check (D-2).
+  // "Data" = the brand has ANY ledger row (finalized OR provisional/settling), not finalized-only:
+  // a brand whose recent orders are still inside the COD/prepaid recognition horizon has REAL
+  // provisional revenue and must NOT be shown "No data yet". Realized may still be a true 0 (nothing
+  // past the horizon yet) — that is honest, not a fabricated zero, and provisional carries the value.
   // Runs inside withBrandTxn so the GUC is set and RLS scopes brand_id automatically.
-  // The WHERE brand_id=$1 is belt-and-suspenders; RLS alone is the isolation guarantee.
-  const hasFinalized = await withBrandTxn(deps.pool, brandId, async (client) => {
+  const hasData = await withBrandTxn(deps.pool, brandId, async (client) => {
     const r = await client.query<{ exists: boolean }>(
       `SELECT EXISTS(
          SELECT 1 FROM realized_revenue_ledger
          WHERE brand_id = $1
-           AND recognition_label = 'finalized'
        ) AS exists`,
       [brandId],
     );
     return r.rows[0]?.exists === true;
   });
 
-  // Step 2: Honest-empty-state — if no finalized rows, return no_data.
+  // Step 2: Honest-empty-state — only if the brand has NO ledger rows at all.
   // NEVER infer no_data from a zero value (D-2, the ?? '0' landmine).
-  if (!hasFinalized) {
+  if (!hasData) {
     return {
       state: 'no_data',
       as_of: asOfStr,

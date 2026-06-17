@@ -209,3 +209,10 @@
 **Wired-to-nothing pattern — my call:** WATCH + lessons-learned now; PROPOSE durable rule at occurrence #3. This is #2 (ADR-BF-9 backfill + ORCH-LV-H1 live), both caught by live verification not unit-tested reviews. Threshold (3, per system-job-force-rls precedent) not met → no rule-proposal file written; lessons-learned + attention watch filed. Proposed rule: new consumer/recognition-writer needs an END-TO-END wiring test (real produce→subscribe→sink effect) + reviewer verifies it's wired into main.ts.
 **Hard-rule check:** clean (no dependency/Single-Primitive/compliance/paradigm/gate-skip deviation). Verification-validity PASS (non-inert negative controls on every tenancy/auth/money path).
 **Next:** Stakeholder gate (Stage 7). I did NOT commit, did NOT advance the gate.
+
+## 2026-06-17T22:32:08Z — Engineering Advisor (final-reviewer) — feat-collection-foundation
+**Stage:** 6 · **Verdict:** BOUNCE · **Paradigm audit:** clean (deterministic tier-1, no model call)
+**Gates re-run:** pixel-sdk 12/12 GREEN, tracking-status 9/9 GREEN, consent-propagation+no-pii 3/3 GREEN; consent-gate mutation → RED (non-inert), restored byte-identical. Infra-bound e2e not replicable here (brainv3 containers publish no host ports; brain-spec stack down — relied on QA captured run + negative_control[]).
+**Keystone:** R2 isolation REAL + NON-INERT + WIRED (0028 fn → ProcessEventUseCase:123 → main.ts:74 default-on); wired-to-nothing near-miss noted, WATCH stays #2-of-3.
+**Blocking:** FR-CF-01 MEDIUM — consent_flags write(payload.consent_flags)/read(payload.properties.consent_flags) path mismatch → Tracking Center consent KPIs always 0/false. Escaped: no writer→reader consent round-trip test.
+**Next:** bounce → Stage 3 (Track C read seam) → re-verify Stage 5.

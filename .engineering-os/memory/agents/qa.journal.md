@@ -105,3 +105,7 @@ Warnings (2): QA-BF-W1 (E2E tests 6+7 env-skipped, SHOPIFY_CONNECTED_CONNECTOR_I
 **Live proven:** realized_revenue_ledger brand=60d543dc: total=20285, reversals=49 (post-fix; was 19488 pre-fix)
 **No regression:** all 115 prior tests PASS; 0 regressions; product files CLEAN after mutation revert
 **ORCH-LV-H1:** RESOLVED — live recognition path (order.live.v1 → ledger) now wired in deployable
+
+##  — QA Engineer — feat-collection-foundation
+**Stage:** 5 · **Mode:** FULL · **Verdict:** PASS
+**Smoke:** captured (Redpanda quarantine produced+consumed offset 10943; /pixel.js eval-parity) · **Parity:** N/A (deterministic, no cross-runtime metric) · **Validity:** negative-controls confirmed (R2 unwire → cross-brand RED; brain_app non-bypassrls RLS read) · **Tests:** 74 + 57 regression, 0 fail · **Next:** reconcile with Security

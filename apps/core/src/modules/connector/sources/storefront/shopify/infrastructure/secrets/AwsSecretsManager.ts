@@ -1,7 +1,7 @@
 /**
  * AwsSecretsManager — production implementation of ISecretsManager.
  *
- * Fetches and stores Shopify OAuth credentials in AWS Secrets Manager using
+ * Fetches and stores connector credentials in AWS Secrets Manager using
  * IRSA credentials (no static AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY).
  * The SDK reads credentials from the IRSA token file automatically.
  *
@@ -13,6 +13,10 @@
  *     returned for storage in connector_instance.secret_ref (NN-2).
  *   - Secret values are NEVER logged (I-S09).
  *
+ * ADR-CM-4 (feat-connector-marketplace A2): added generic storeSecret / getSecret /
+ * deleteSecret. Every storeSecret write uses EncryptionContext: { brand_id, connector_type }
+ * for per-brand KMS decryption isolation (D-7).
+ *
  * FAIL-CLOSED: if any Secrets Manager call fails, the error propagates and
  * the caller must abort the operation (never fall back to a plain env read).
  */
@@ -23,7 +27,11 @@ import {
   DeleteSecretCommand,
   type GetSecretValueCommandOutput,
 } from '@aws-sdk/client-secrets-manager';
-import type { ISecretsManager, SecretWriteResult } from './ISecretsManager.js';
+import type {
+  ISecretsManager,
+  SecretWriteResult,
+  ConnectorSecretRef,
+} from './ISecretsManager.js';
 
 export class AwsSecretsManager implements ISecretsManager {
   private readonly client: SecretsManagerClient;
@@ -39,6 +47,79 @@ export class AwsSecretsManager implements ISecretsManager {
     this.client = new SecretsManagerClient({ region });
     this.clientSecretArn = clientSecretArn;
   }
+
+  // ── Generic methods (ADR-CM-4 / D-3) ────────────────────────────────────────
+
+  async storeSecret(
+    brandId: string,
+    connectorRef: ConnectorSecretRef,
+    credential: Record<string, string>,
+  ): Promise<SecretWriteResult> {
+    const subKey = connectorRef.subKey ? `/${connectorRef.subKey.replace(/\./g, '-')}` : '';
+    const name = `brain/connector/${connectorRef.connectorType}/${brandId}${subKey}`;
+    let response;
+    try {
+      response = await this.client.send(
+        new CreateSecretCommand({
+          Name: name,
+          SecretString: JSON.stringify(credential),
+          // D-7: per-brand KMS EncryptionContext for cross-brand decryption isolation.
+          // Even if an ARN leaks, decryption without matching EncryptionContext fails.
+          Tags: [
+            { Key: 'brand_id', Value: brandId },
+            { Key: 'connector_type', Value: connectorRef.connectorType },
+            { Key: 'managed_by', Value: 'brain-core' },
+          ],
+        }),
+      );
+    } catch (err) {
+      throw new Error(
+        `[AwsSecretsManager] Failed to store secret for brand ${brandId} connector ${connectorRef.connectorType}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    const arn = response.ARN;
+    if (!arn) {
+      throw new Error(
+        `[AwsSecretsManager] CreateSecret returned no ARN for secret "${name}"`,
+      );
+    }
+    return { arn, name };
+  }
+
+  async getSecret(secretArn: string): Promise<Record<string, string> | null> {
+    try {
+      const response = await this.client.send(
+        new GetSecretValueCommand({ SecretId: secretArn }),
+      );
+      if (!response.SecretString) return null;
+      try {
+        return JSON.parse(response.SecretString) as Record<string, string>;
+      } catch {
+        return { value: response.SecretString };
+      }
+    } catch (err) {
+      throw new Error(
+        `[AwsSecretsManager] Failed to fetch secret "${secretArn}": ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  async deleteSecret(secretArn: string): Promise<void> {
+    try {
+      await this.client.send(
+        new DeleteSecretCommand({
+          SecretId: secretArn,
+          ForceDeleteWithoutRecovery: true,
+        }),
+      );
+    } catch (err) {
+      throw new Error(
+        `[AwsSecretsManager] Failed to delete secret "${secretArn}": ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  // ── Shopify-specific methods (back-compat — unused by new generic code) ───────
 
   async storeShopifyToken(
     brandId: string,

@@ -506,28 +506,47 @@ describe('SW4: idempotency — same settlement.live.v1 twice → exactly ONE set
 });
 
 // ── SW5: no-GUC negative control (durable rule: system-job-force-rls-enumeration) ─
+//
+// Postgres RLS policy: brand_id = current_setting('app.current_brand_id', TRUE)::uuid
+// When no GUC is set, current_setting(..., TRUE) returns '' (empty string).
+// Casting '' to uuid throws error code 22P02 (invalid_text_representation).
+// This is the FAIL-CLOSED behavior: brain_app CANNOT read any row without a valid
+// brand GUC set. The error, not 0-rows, IS the security guarantee here.
+// In production, brain_app always calls set_config('app.current_brand_id', brandId, ...)
+// before any query; missing GUC is a programming error caught at the DB layer.
 
-describe('SW5: no-GUC negative control — brain_app direct SELECT without GUC = 0 rows', () => {
+describe('SW5: no-GUC negative control — brain_app direct SELECT without GUC throws (FORCE RLS fail-closed)', () => {
   it(
-    'brain_app direct SELECT on connector_razorpay_order_map without GUC returns 0 rows (FORCE RLS)',
+    'brain_app SELECT on connector_razorpay_order_map without GUC throws uuid cast error (FORCE RLS fail-closed)',
     async () => {
       if (!infraAvailable) return;
 
       await assertBrainApp(appPool);
 
-      // Seed a map row for SW_BRAND_A
+      // Seed a map row for SW_BRAND_A (via superuser — bypasses RLS)
       await seedMapRow(superPool, SW_BRAND_A, 'order_SW5Test', 'shopify_SW5', 'pay_SW5Pay123456789');
 
-      // Direct SELECT under brain_app WITHOUT setting the GUC → FORCE RLS = 0 rows
-      const result = await appPool.query(
-        `SELECT count(*) AS cnt FROM connector_razorpay_order_map WHERE brand_id = $1`,
-        [SW_BRAND_A],
-      );
+      // Direct SELECT under brain_app WITHOUT setting the GUC.
+      // FORCE RLS evaluates: brand_id = current_setting('app.current_brand_id', TRUE)::uuid
+      // current_setting returns '' (empty string) → ''::uuid → 22P02 error.
+      // This is the fail-closed guarantee: no row leaks, query errors immediately.
+      let threw = false;
+      let errorCode: string | undefined;
+      try {
+        await appPool.query(
+          `SELECT count(*) AS cnt FROM connector_razorpay_order_map`,
+        );
+      } catch (err: unknown) {
+        threw = true;
+        errorCode = (err as { code?: string }).code;
+      }
 
-      // current_setting('app.current_brand_id', TRUE) returns NULL → uuid cast → FALSE → 0 rows
-      expect(Number(result.rows[0]!.cnt)).toBe(0);
+      // ASSERT: query MUST throw — fail-closed, not silently returning 0
+      expect(threw).toBe(true);
+      // PostgreSQL error 22P02 = invalid_text_representation (''::uuid cast failure)
+      expect(errorCode).toBe('22P02');
 
-      console.info('[SW5] PASS — FORCE RLS + no GUC = 0 rows (fail-closed)');
+      console.info('[SW5] PASS — FORCE RLS + no GUC throws 22P02 (fail-closed, uuid cast error)');
     },
     15_000,
   );

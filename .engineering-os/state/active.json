@@ -394,10 +394,10 @@
     },
     {
       "req_id": "feat-connector-marketplace",
-      "status": "awaiting-stakeholder",
-      "stage": 7,
-      "current_owner": "stakeholder",
-      "last_journal_entry_at": "2026-06-17T06:31:55Z"
+      "status": "shipped",
+      "stage": 8,
+      "current_owner": "platform-devops",
+      "last_journal_entry_at": "2026-06-17T07:05:33Z"
     }
   ]
 }

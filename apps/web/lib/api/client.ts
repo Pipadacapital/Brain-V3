@@ -48,6 +48,9 @@ import type {
   OnboardingAdvanceResponse,
   MarketplaceTile,
   ConnectResponseData,
+  ConnectorProvider,
+  ConnectorStatus,
+  SyncState,
 } from './types';
 
 /** All BFF routes proxied through Next.js API routes → frontend-api module */
@@ -547,11 +550,45 @@ function mapTiles(raw: RawMarketplaceEnvelope): MarketplaceTile[] {
 }
 
 export const connectorsApi = {
-  /** Returns ConnectorListItem[] — unwraps the BFF envelope { request_id, data: {...} }.
-   *  @deprecated Use getMarketplace() for the category-organized marketplace page. */
+  /**
+   * Returns ConnectorListItem[] for the onboarding wizard.
+   * Derives from getMarketplace() internally — single source of truth.
+   * D-10: the new GET /v1/connectors returns { request_id, data: { tiles: MarketplaceTile[] } };
+   * calling the old mapConnectorList() path (raw.data.shopify) produces undefined because the
+   * endpoint no longer returns the legacy per-provider keyed shape. This mapping shim extracts
+   * the onboarding wizard fields (shopify connected state + coming-soon tiles) from MarketplaceTile[].
+   */
   list: async (): Promise<ConnectorListItem[]> => {
-    const raw = await bffFetch<RawConnectorListEnvelope>('/v1/connectors');
-    return mapConnectorList(raw);
+    const tiles = await connectorsApi.getMarketplace();
+    return tiles.map((tile): ConnectorListItem => {
+      const isConnected = tile.instance !== null;
+      const status: ConnectorStatus =
+        tile.instance?.status === 'error'
+          ? 'error'
+          : isConnected
+            ? 'connected'
+            : 'disconnected';
+      return {
+        provider: tile.id as ConnectorListItem['provider'],
+        display_name: tile.display_name,
+        description: tile.description,
+        coming_soon: !tile.available,
+        instance: isConnected && tile.instance
+          ? {
+              id: tile.instance.id,
+              brand_id: '',
+              provider: tile.id as ConnectorProvider,
+              shop_domain: tile.instance.shop_domain ?? '',
+              status,
+              connected_at: tile.instance.connected_at ?? '',
+              disconnected_at: null,
+              sync_state: 'connected' as SyncState,
+              last_sync_at: null,
+              last_error: null,
+            }
+          : undefined,
+      };
+    });
   },
 
   /**

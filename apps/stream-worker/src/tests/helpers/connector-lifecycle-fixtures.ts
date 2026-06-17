@@ -19,14 +19,14 @@ import { expect } from 'vitest';
 
 // ── UUID constants ─────────────────────────────────────────────────────────────
 
-/** Test brand A — recognisable c0nec701 prefix, valid UUIDv4, NEVER a live brand. */
-export const CONNECTOR_TEST_BRAND_A = 'c0nec701-0a00-4a00-8a00-000000000001';
+/** Test brand A — recognisable c07ec701 prefix (hex-only), valid UUIDv4, NEVER a live brand. */
+export const CONNECTOR_TEST_BRAND_A = 'c07ec701-0a00-4a00-8a00-000000000001';
 
 /** Test brand B — for cross-brand isolation negative control. */
-export const CONNECTOR_TEST_BRAND_B = 'c0nec702-0b00-4b00-8b00-000000000002';
+export const CONNECTOR_TEST_BRAND_B = 'c07ec702-0b00-4b00-8b00-000000000002';
 
 /** Test connector_instance_id — CI prefix. */
-export const CONNECTOR_TEST_CI_ID = 'c0nec7c1-0c00-4c00-8c00-000000000003';
+export const CONNECTOR_TEST_CI_ID = 'c07ec7c1-0c00-4c00-8c00-000000000003';
 
 /** NIL UUID — the sentinel used by run.ts:270 for the worker GUC fix (D-6). */
 export const NIL_UUID = '00000000-0000-0000-0000-000000000000';

@@ -923,3 +923,9 @@ Razorpay binding plan in progress
 19:47:50Z [heartbeat] engineering-os:frontend-web-developer S? ? returned
 
 2026-06-17T23:58:00Z [S3 data-engineer] feat-razorpay-settlement-connector: Track A COMPLETE — A0..A5 committed (7 commits, e852d06..f44fe5e). 43/43 mapper unit tests PASS; 6/6 settlement-ledger-wiring e2e PASS (live infra). 0 new tsc errors. All bindings satisfied: MB-1/MB-2/MB-3/MB-4/MB-5/MB-6/MB-7/C1/C4/C5/C6. READY-FOR-SECURITY.
+[2026-06-17T19:59:43Z] ✓ Track A @data-engineer DONE — @brain/razorpay-mapper + mig 0027 + settlement re-pull + SettlementLedgerConsumer WIRED (MB-4) + 6/6 e2e. HELD Tracks B+C (UI-first priority).
+20:21:51Z [heartbeat] engineering-os:backend-developer S3 ? issued
+20:21:51Z [heartbeat] engineering-os:backend-developer S3 ? returned
+2026-06-17T20:30:01Z [B-backend Track B] feat-razorpay-settlement-connector | B1-B3 built: webhook handler (HMAC-first+C3+MB-1) + commands (ConnectRazorpay/DisconnectRazorpay/RotateWebhookSecret) + wired in main.ts | tsc EXIT 0 | committing B1-B3
+2026-06-18T00:43:00Z [B-backend Track B] feat-razorpay-settlement-connector | COMPLETE | B4 integration tests 10/10 PASS; root cause fix: SET LOCAL → set_config() for parameterized GUC; tsc --noEmit EXIT 0; commits 9cfeefc + b96e73c + 3366c5d; READY-FOR-SECURITY
+20:42:45Z [heartbeat] engineering-os:frontend-web-developer S? ? issued

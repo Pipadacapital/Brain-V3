@@ -72,9 +72,22 @@ export const createBrandSchema = z.object({
     .string()
     .min(1, 'Brand name is required')
     .max(80, 'Brand name must be under 80 characters'),
+  /**
+   * Brand website — recommended (powers the tracking pixel), NOT required (Skip-for-now
+   * stays first-class, ADR-5). The server is authoritative for normalization
+   * (`normalizeBrandHost` in @brain/pixel-sdk): it canonicalizes whatever the user types
+   * (bare host, full URL, www-prefixed) to one host and provisions the pixel from it.
+   *
+   * Client-side we accept either a bare host (`mystore.com`) or a full URL — we only
+   * reject obvious garbage (a value with no dot) so the field stays forgiving; the server
+   * does the strict parse + 422 on a non-empty-but-invalid value.
+   */
   domain: z
     .string()
-    .url('Enter a valid URL (e.g. https://yourstore.com)')
+    .trim()
+    .refine((v) => v === '' || v.includes('.'), {
+      message: 'Enter a valid website (e.g. mystore.com or https://mystore.com)',
+    })
     .optional()
     .or(z.literal('')),
   /** ISO 4217 bounded allowlist — MA-12: matches backend CHECK constraint. */

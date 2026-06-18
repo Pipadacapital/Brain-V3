@@ -82,6 +82,9 @@
       "req_id": "feat-razorpay-settlement-connector",
       "title": "Deep Razorpay-with-settlement connector",
       "first_seen": "2026-06-17T18:54:57Z"
+      "req_id": "feat-members-team-management",
+      "title": "Complete and harden the Members & Team Management surface",
+      "first_seen": "2026-06-16T12:23:10Z"
     }
   ]
 }

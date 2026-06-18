@@ -441,6 +441,38 @@ export type AnalyticsOrderStatsResponse =
   | { state: 'no_data'; as_of: string }
   | { state: 'has_data'; as_of: string; stats: AnalyticsOrderStatsDto[] };
 
+// ── Ad-connectors (Slice 1 Track 3) — spend + blended ROAS ──────────────────────
+// All amount fields are bigint-serialized strings (D-1). Never floats.
+
+export interface AnalyticsAdSpendBucket {
+  bucket: string;          // 'YYYY-MM-DD'
+  platform: string;        // 'meta' | 'google_ads'
+  currency_code: string;
+  spend_minor: string;     // bigint string (minor units)
+}
+
+export type AnalyticsAdSpendTimeseriesResponse =
+  | { state: 'no_data'; from: string | null; to: string | null; grain: string; platform: string | null }
+  | {
+      state: 'has_data';
+      from: string;
+      to: string;
+      grain: string;
+      platform: string | null;
+      buckets: AnalyticsAdSpendBucket[];
+    };
+
+export interface AnalyticsBlendedRoasRow {
+  currency_code: string;
+  realized_minor: string;     // bigint string (minor units)
+  spend_minor: string;        // bigint string (minor units)
+  roas_ratio: string | null;  // exact decimal string; null when spend=0 (honest)
+}
+
+export type AnalyticsBlendedRoasResponse =
+  | { state: 'no_data'; from: string; to: string }
+  | { state: 'has_data'; from: string; to: string; rows: AnalyticsBlendedRoasRow[] };
+
 export interface AnalyticsDataHealthVolumeBucket {
   bucket: string; // 'YYYY-MM-DD'
   count: string;  // bigint string
@@ -485,6 +517,35 @@ export type AnalyticsSettlementsResponse =
       net_minor: string;   // bigint string (net-of-fees)
       fees: SettlementFee[];
     };
+
+// ── Tracking Center (Phase 1 Track C) ──────────────────────────────────────────
+// Pixel-collection health + the Event Explorer feed. NO raw PII — anonymized ids
+// + aggregate counts only. All count fields are bigint-serialized strings (D-1).
+
+export type AnalyticsTrackingHealthResponse =
+  | { state: 'no_data' }
+  | {
+      state: 'has_data';
+      firstEventReceived: true;
+      eventVolume: AnalyticsDataHealthVolumeBucket[]; // reuse the same bucket shape
+      lastEventAt: string | null;
+      totalEvents: string;          // bigint string
+      consentGrantedCount: string;  // bigint string
+      consentTotalCount: string;    // bigint string
+    };
+
+export interface AnalyticsRecentEventRow {
+  event_id: string;
+  event_type: string;        // 'page.viewed' | 'cart.item_added' | ...
+  occurred_at: string;       // ISO timestamp
+  anon_id: string | null;    // brain_anon_id (anonymized)
+  session_id: string | null; // hashed_session_id (anonymized)
+  has_consent: boolean;
+}
+
+export interface AnalyticsRecentEventsResponse {
+  rows: AnalyticsRecentEventRow[];
+}
 
 // ── Keyset pagination ─────────────────────────────────────────────────────────
 

@@ -22,7 +22,7 @@ import { useCreateBrand, useWorkspaceList } from '@/lib/hooks/use-workspace';
 import { sessionApi } from '@/lib/api/client';
 import { toast } from '@/components/ui/toaster';
 import { Skeleton } from '@/components/ui/skeleton';
-import { resolveOnboardingRoute } from '@/components/auth/login-form';
+import { normalizeBrandHost } from '@brain/pixel-sdk';
 
 /** Currency → region map (mirrors backend CURRENCY_TO_REGION). */
 const CURRENCY_REGION: Record<string, string> = {
@@ -78,6 +78,11 @@ export function CreateBrandForm() {
   const workspaceId = workspaces?.workspaces?.[0]?.id;
   const selectedCurrency = watch('currency_code');
   const selectedTimezone = watch('timezone');
+  const domainValue = watch('domain');
+
+  // Cosmetic preview of the canonical host the SERVER will derive + track.
+  // Server value is authoritative; this only sets expectations as the user types.
+  const hostPreview = normalizeBrandHost(domainValue);
 
   /** Auto-suggest timezone when currency changes. */
   function handleCurrencyChange(val: 'INR' | 'AED' | 'SAR') {
@@ -94,7 +99,7 @@ export function CreateBrandForm() {
     return !!expectedTz && expectedTz !== timezone;
   }
 
-  function doSubmit(data: CreateBrandFormValues) {
+  function doSubmit(data: CreateBrandFormValues, opts?: { skipWebsite?: boolean }) {
     if (!workspaceId) return;
 
     const mismatch = isMismatch(data.currency_code ?? 'INR', data.timezone ?? 'Asia/Kolkata');
@@ -109,28 +114,35 @@ export function CreateBrandForm() {
     setCurrencyMismatch(false);
     setPendingSubmit(null);
 
+    // Skip-for-now stays first-class: submit with no website → no pixel provision.
+    const submittedDomain = opts?.skipWebsite ? undefined : data.domain?.trim() || undefined;
+    const websiteProvided = !!submittedDomain;
+
     createBrand(
       {
         workspace_id: workspaceId,
         display_name: data.display_name,
-        domain: data.domain || undefined,
+        domain: submittedDomain,
         // region_code is derived server-side from currency_code; omit to let server derive.
         currency_code: data.currency_code,
         timezone: data.timezone,
         revenue_definition: data.revenue_definition,
       },
       {
-        onSuccess: async (brand) => {
+        onSuccess: (brand) => {
           toast({ title: 'Brand created', description: `"${brand.display_name}" is ready.` });
-          // Refresh session so the cookie picks up the new brand/role.
-          // The returned onboarding_status drives routing (brand_created → Step 3).
-          try {
-            const session = await sessionApi.refresh();
-            router.push(resolveOnboardingRoute(session.onboarding_status));
-          } catch {
-            // Non-fatal: fall back to Step 3 directly if session refresh fails.
-            router.push('/onboarding/integrations');
-          }
+          // Refresh the session so the cookie picks up the new brand/role, then route to the
+          // onboarding "tracking ready / add website" interstitial. `w` tells that surface
+          // whether a website was captured (snippet state) or skipped (add-website state).
+          // The server's onboarding_status still advances to brand_created; this interstitial
+          // sits in front of Step 3 and continues to whatever resolveOnboardingRoute returns.
+          const w = websiteProvided ? '1' : '0';
+          void sessionApi
+            .refresh()
+            .catch(() => undefined)
+            .finally(() => {
+              router.push(`/onboarding/tracking?w=${w}`);
+            });
         },
       },
     );
@@ -138,6 +150,11 @@ export function CreateBrandForm() {
 
   function onSubmit(data: CreateBrandFormValues) {
     doSubmit(data);
+  }
+
+  function handleSkipWebsite() {
+    // Validate the rest of the form, then submit with website cleared.
+    void handleSubmit((data) => doSubmit(data, { skipWebsite: true }))();
   }
 
   function confirmMismatch() {
@@ -213,22 +230,41 @@ export function CreateBrandForm() {
               )}
             </div>
 
-            <div className="space-y-1.5">
-              <Label htmlFor="domain">
-                Website URL{' '}
-                <span className="text-muted-foreground font-normal">(optional)</span>
+            <div className="space-y-1.5 rounded-md border border-primary/30 bg-primary/5 p-4">
+              <Label htmlFor="domain" className="flex items-center gap-2">
+                Website
+                <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[11px] font-medium uppercase tracking-wide text-primary">
+                  Recommended
+                </span>
               </Label>
               <Input
                 id="domain"
-                type="url"
-                placeholder="https://mystore.com"
+                type="text"
+                inputMode="url"
+                placeholder="mystore.com"
                 aria-invalid={!!errors.domain}
-                aria-describedby={errors.domain ? 'brand-domain-error' : 'brand-domain-hint'}
+                aria-describedby={
+                  errors.domain
+                    ? 'brand-domain-error'
+                    : hostPreview
+                      ? 'brand-domain-preview brand-domain-hint'
+                      : 'brand-domain-hint'
+                }
                 data-testid="input-brand-domain"
                 {...register('domain')}
               />
+              {hostPreview && !errors.domain && (
+                <p
+                  id="brand-domain-preview"
+                  className="text-xs text-primary"
+                  data-testid="brand-domain-preview"
+                >
+                  We&apos;ll set up tracking for <strong>{hostPreview}</strong>.
+                </p>
+              )}
               <p id="brand-domain-hint" className="text-xs text-muted-foreground">
-                Used to verify your Brain Pixel installation.
+                Powers your tracking pixel — we&apos;ll generate an install snippet for this
+                site right after. You can still add it later.
               </p>
               {errors.domain && (
                 <p id="brand-domain-error" className="text-xs text-destructive" role="alert">
@@ -350,15 +386,27 @@ export function CreateBrandForm() {
               )}
             </div>
 
-            <Button
-              type="submit"
-              className="w-full"
-              disabled={isPending || !workspaceId || currencyMismatch}
-              data-testid="btn-create-brand"
-            >
-              {isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />}
-              {isPending ? 'Creating…' : 'Create brand'}
-            </Button>
+            <div className="space-y-2">
+              <Button
+                type="submit"
+                className="w-full"
+                disabled={isPending || !workspaceId || currencyMismatch}
+                data-testid="btn-create-brand"
+              >
+                {isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />}
+                {isPending ? 'Creating…' : 'Create brand'}
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                className="w-full text-muted-foreground"
+                onClick={handleSkipWebsite}
+                disabled={isPending || !workspaceId || currencyMismatch}
+                data-testid="btn-skip-website"
+              >
+                Create without a website — add it later
+              </Button>
+            </div>
           </div>
         </form>
       </CardContent>

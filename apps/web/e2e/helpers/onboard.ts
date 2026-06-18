@@ -48,9 +48,16 @@ export async function onboardToDashboard(
   await page.getByTestId('btn-create-workspace').click();
   await expect(page).toHaveURL(/\/brand\/new/);
 
-  // Step 2 — brand (currency/timezone/revenue default to INR/Asia-Kolkata/realized)
+  // Step 2 — brand (currency/timezone/revenue default to INR/Asia-Kolkata/realized).
+  // The helper skips the website so it doesn't depend on a live, reachable storefront;
+  // brand-create then routes to the tracking interstitial in its "add website" state.
   await page.getByTestId('input-brand-name').fill('E2E Brand');
-  await page.getByTestId('btn-create-brand').click();
+  await page.getByTestId('btn-skip-website').click();
+  await expect(page).toHaveURL(/\/onboarding\/tracking/);
+
+  // Step 2b — tracking interstitial → continue to integrations.
+  await page.locator('[role="region"][aria-label^="Notifications"] li').waitFor({ state: 'detached', timeout: 8_000 }).catch(() => undefined);
+  await page.getByTestId('btn-tracking-continue').click();
   await expect(page).toHaveURL(/\/onboarding\/integrations/);
 
   // Step 3 — skip integrations

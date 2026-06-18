@@ -100,6 +100,45 @@ export function useOrderStats(asOf?: string) {
   });
 }
 
+// ── Ad-connectors (Slice 1 Track 3) — spend + blended ROAS ──────────────────────
+// Query keys share the 'analytics' prefix → auto-invalidate on brand switch.
+
+/**
+ * useAdSpendTimeseries — fetches per-bucket ad spend (platform, currency).
+ * @param params - Date range + grain + optional platform filter. Defaults: last 35 days, day grain (server-side).
+ */
+export function useAdSpendTimeseries(params?: {
+  from?: string;
+  to?: string;
+  grain?: 'day' | 'week';
+  platform?: 'meta' | 'google_ads';
+}) {
+  return useQuery({
+    queryKey: [
+      ...ANALYTICS_QUERY_KEY,
+      'ad-spend-timeseries',
+      params?.from,
+      params?.to,
+      params?.grain ?? 'day',
+      params?.platform ?? 'all',
+    ],
+    queryFn: () => analyticsApi.getAdSpendTimeseries(params),
+    staleTime: 5 * 60_000, // 5 minutes
+  });
+}
+
+/**
+ * useBlendedRoas — fetches per-currency blended ROAS (realized ÷ spend) over a window.
+ * @param params - Date range. Defaults: last 35 days (server-side).
+ */
+export function useBlendedRoas(params?: { from?: string; to?: string }) {
+  return useQuery({
+    queryKey: [...ANALYTICS_QUERY_KEY, 'blended-roas', params?.from, params?.to],
+    queryFn: () => analyticsApi.getBlendedRoas(params),
+    staleTime: 5 * 60_000,
+  });
+}
+
 /**
  * useDataHealth — fetches ingestion + connector-sync health.
  * staleTime 1 min; refetches on the same cadence as the event feed.

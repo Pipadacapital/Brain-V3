@@ -136,7 +136,10 @@ beforeAll(async () => {
   dedup = new RedisDedupAdapter(REDIS_URL);
   await dedup.connect();  // required: lazyConnect=true, enableOfflineQueue=false
   bronze = new BronzeRepository(BRAIN_APP_DB_URL);
-  useCase = new ProcessEventUseCase(dedup, bronze);
+  // enforceTenantDerivation=false: this suite tests the trusted-brand Bronze-write/dedup/RLS
+  // MECHANICS (events carry a server-trusted brand_id, no install_token). The R2 token→brand
+  // derivation gate is owned by ingest-hardening.e2e.test.ts.
+  useCase = new ProcessEventUseCase(dedup, bronze, undefined, false);
 }, 30_000);
 
 afterAll(async () => {

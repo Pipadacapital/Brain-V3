@@ -16,7 +16,8 @@
  * DATABASE_URL=postgres://brain@... for this service. Use BRAIN_APP_DATABASE_URL.
  */
 import { Kafka } from 'kafkajs';
-import { Pool as PgPool } from 'pg';
+import { Pool, Pool as PgPool } from 'pg';
+import { DbAuditWriter, type AuditDbClient } from '@brain/audit';
 import { RedisDedupAdapter } from './infrastructure/redis/RedisDedupAdapter.js';
 import { BronzeRepository } from './infrastructure/pg/BronzeRepository.js';
 import { IdentityRepository } from './infrastructure/pg/IdentityRepository.js';
@@ -28,6 +29,7 @@ import { IdentityBridgeConsumer } from './identity-bridge/IdentityBridgeConsumer
 import { BackfillOrderConsumer } from './interfaces/consumers/BackfillOrderConsumer.js';
 import { LiveLedgerBridgeConsumer } from './interfaces/consumers/LiveLedgerBridgeConsumer.js';
 import { SettlementLedgerConsumer } from './interfaces/consumers/SettlementLedgerConsumer.js';
+import { SpendLedgerConsumer } from './interfaces/consumers/SpendLedgerConsumer.js';
 import { LedgerWriter } from './infrastructure/pg/LedgerWriter.js';
 
 export async function main(): Promise<void> {
@@ -49,6 +51,11 @@ export async function main(): Promise<void> {
   // WIRED HERE (MB-4 NON-NEGOTIABLE) — unwiring triggers durable-rule proposal (occurrence #3).
   const settlementLedgerGroupId =
     process.env['SETTLEMENT_LEDGER_CONSUMER_GROUP_ID'] ?? 'settlement-ledger-bridge';
+  // Spend ledger bridge (feat-ad-connectors / ADR-AD-6): separate consumer group on the live
+  // topic. Filters spend.live.v1 events; writes ad_spend_ledger (ON CONFLICT DO NOTHING).
+  // WIRED HERE (NON-NEGOTIABLE) — unwiring triggers the wired-to-nothing bounce.
+  const spendLedgerGroupId =
+    process.env['SPEND_LEDGER_CONSUMER_GROUP_ID'] ?? 'spend-ledger-bridge';
   // Backfill lane (ADR-BF-7 / D-3): separate topic + group → zero live-lane lag impact
   const backfillTopic = process.env['BACKFILL_TOPIC'] ?? `${(process.env['APP_ENV'] ?? 'dev')}.collector.order.backfill.v1`;
   const backfillGroupId = process.env['BACKFILL_CONSUMER_GROUP_ID'] ?? 'stream-worker-backfill';
@@ -59,10 +66,24 @@ export async function main(): Promise<void> {
     retry: { retries: 5 },
   });
 
-  // ── Bronze pipeline (existing) ──────────────────────────────────────────────
+  // ── Audit writer (R3/REC-1: pixel.brand_mismatch) ───────────────────────────
+  // audit_log has RLS DISABLED (cross-brand SoR); isolation is the mandatory
+  // WHERE brand_id filter inside DbAuditWriter. brain_app holds INSERT+SELECT on it.
+  const auditPool = new Pool({ connectionString: dbUrl, max: 3, idleTimeoutMillis: 30_000 });
+  const auditDbClient: AuditDbClient = {
+    query: async (sql, params) => {
+      const r = await auditPool.query(sql, params);
+      return { rows: r.rows as never[], rowCount: r.rowCount };
+    },
+  };
+  const auditWriter = new DbAuditWriter(auditDbClient);
+
+  // ── Bronze pipeline (LIVE collector lane — R2/R3 gate ON) ───────────────────
   const dedup = new RedisDedupAdapter(redisUrl);
   const bronze = new BronzeRepository(dbUrl);
-  const useCase = new ProcessEventUseCase(dedup, bronze);
+  // enforceTenantDerivation defaults TRUE: derive brand_id from install_token, quarantine
+  // on unresolved/mismatch/absent-consent; audit writes pixel.brand_mismatch (R2/R3).
+  const useCase = new ProcessEventUseCase(dedup, bronze, auditWriter);
   const consumer = new CollectorEventConsumer(kafka, useCase, topic, groupId);
 
   // ── Identity bridge (D-7: same process, no new deployable) ──────────────────
@@ -92,7 +113,12 @@ export async function main(): Promise<void> {
   const ledgerWriter = new LedgerWriter(dbUrl);
   const backfillDedup = new RedisDedupAdapter(redisUrl);
   const backfillBronze = new BronzeRepository(dbUrl);
-  const backfillProcessEvent = new ProcessEventUseCase(backfillDedup, backfillBronze);
+  // Backfill-order lane: enforceTenantDerivation=FALSE — these events carry NO install_token
+  // (event_name='order.backfill.v1'); their brand_id is already server-trusted (derived from
+  // the authenticated connector). The R2 browser-spoofing gate does not apply (architecture §5).
+  const backfillProcessEvent = new ProcessEventUseCase(
+    backfillDedup, backfillBronze, undefined, /* enforceTenantDerivation */ false,
+  );
   const backfillConsumer = new BackfillOrderConsumer(
     kafka, backfillProcessEvent, ledgerWriter, backfillTopic, backfillGroupId,
   );
@@ -126,6 +152,19 @@ export async function main(): Promise<void> {
     settlementLedgerGroupId,
   );
 
+  // ── Spend ledger bridge (feat-ad-connectors / ADR-AD-6 WIRED) ──────────────
+  // Same live topic, separate consumer group (spendLedgerGroupId). Filters spend.live.v1;
+  // writes the append-only ad_spend_ledger fact (ON CONFLICT DO NOTHING — idempotent re-read).
+  // Brand GUC is set inside LedgerWriter.writeAdSpend before every INSERT (NN-1 / RLS).
+  // WIRED HERE: do NOT remove this block without updating spend-ledger-wiring.e2e.test.ts.
+  const spendLedgerWriter = new LedgerWriter(dbUrl);
+  const spendLedgerConsumer = new SpendLedgerConsumer(
+    kafka,
+    spendLedgerWriter,
+    topic,
+    spendLedgerGroupId,
+  );
+
   // Graceful shutdown
   const shutdown = async (signal: string): Promise<void> => {
     console.info(`[stream-worker] ${signal} received — draining consumers...`);
@@ -135,16 +174,19 @@ export async function main(): Promise<void> {
       backfillConsumer.stop(),
       liveLedgerConsumer.stop(),
       settlementLedgerConsumer.stop(),
+      spendLedgerConsumer.stop(),
     ]);
     await dedup.quit();
     await backfillDedup.quit();
     await bronze.end();
     await backfillBronze.end();
+    await auditPool.end();
     await identityRepo.end();
     await ledgerWriter.end();
     await liveLedgerWriter.end();
     await settlementLedgerWriter.end();
     await settlementMapPool.end();
+    await spendLedgerWriter.end();
     console.info('[stream-worker] shutdown complete');
     process.exit(0);
   };
@@ -182,6 +224,14 @@ export async function main(): Promise<void> {
   console.info(`[stream-worker] starting settlement-ledger bridge — topic=${topic} group=${settlementLedgerGroupId}`);
   await settlementLedgerConsumer.start();
   console.info('[stream-worker] settlement-ledger bridge consumer running');
+
+  // ── Spend ledger bridge consumer (feat-ad-connectors / ADR-AD-6 MANDATORY WIRE) ──
+  // Same live topic, independent consumer group. Filters spend.live.v1.
+  // Writes ad_spend_ledger (ON CONFLICT DO NOTHING). WIRED HERE: do NOT remove without
+  // updating spend-ledger-wiring.e2e.test.ts (wired-to-nothing bounce trigger).
+  console.info(`[stream-worker] starting spend-ledger bridge — topic=${topic} group=${spendLedgerGroupId}`);
+  await spendLedgerConsumer.start();
+  console.info('[stream-worker] spend-ledger bridge consumer running');
 }
 
 // Run when invoked directly (not imported in tests)

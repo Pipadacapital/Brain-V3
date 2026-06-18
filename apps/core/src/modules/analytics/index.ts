@@ -32,3 +32,15 @@ export type { DataHealthResult, DataHealthVolumeBucket } from './internal/applic
 // Razorpay settlement summary (net-of-fees) — Track C
 export { getSettlementSummary } from './internal/application/queries/get-settlement-summary.js';
 export type { SettlementSummaryResult, SettlementFeeDto } from './internal/application/queries/get-settlement-summary.js';
+
+// Ad-connectors (Slice 1 Track 3) — spend timeseries + blended ROAS
+export { getAdSpendTimeseries } from './internal/application/queries/get-ad-spend-timeseries.js';
+export type { AdSpendTimeseriesResult, AdSpendTimeseriesBucketDto } from './internal/application/queries/get-ad-spend-timeseries.js';
+export { getBlendedRoas } from './internal/application/queries/get-blended-roas.js';
+export type { BlendedRoasResult, BlendedRoasDto } from './internal/application/queries/get-blended-roas.js';
+
+// Tracking Center (pixel collection health — Phase 1 Track C)
+export { getTrackingHealth } from './internal/application/queries/get-tracking-health.js';
+export type { TrackingHealthResult, TrackingHealthVolumeBucket } from './internal/application/queries/get-tracking-health.js';
+export { getRecentEvents } from './internal/application/queries/get-recent-events.js';
+export type { RecentEventsResult, RecentEventRow } from './internal/application/queries/get-recent-events.js';

@@ -34,9 +34,31 @@ export class GetOrCreatePixelInstallationCommand {
   async execute(input: GetOrCreateInstallationInput): Promise<GetOrCreateInstallationResult> {
     const { brandId, targetHost, idempotencyKey } = input;
 
-    // Check for existing installation (idempotent)
+    // Check for existing installation (idempotent on brand_id — UNIQUE(brand_id), 0007:26).
     const existing = await this.installationRepo.findByBrandId(brandId);
     if (existing) {
+      // Edit-host-in-place (ADR-3): if the brand re-submits a DIFFERENT canonical
+      // host (website edit), update target_host on the SAME row, keeping the SAME
+      // install_token (the token is the stable per-brand tenant key; the host is a
+      // mutable display/verify hint). Re-submitting the SAME host is a pure no-op.
+      if (existing.targetHost !== targetHost) {
+        const updatedEntity = PixelInstallation.create({
+          id: existing.id,
+          brandId: existing.brandId,
+          installToken: existing.installToken,
+          targetHost,
+          installedAt: existing.installedAt,
+          createdAt: existing.createdAt,
+          updatedAt: new Date(),
+        });
+        const saved = await this.installationRepo.update(updatedEntity);
+        return {
+          installationId: saved.id,
+          installToken: saved.installToken,
+          targetHost: saved.targetHost,
+          isNew: false,
+        };
+      }
       return {
         installationId: existing.id,
         installToken: existing.installToken,

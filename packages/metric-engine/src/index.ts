@@ -42,3 +42,9 @@ export type { OrderStatsResult } from './order-stats.js';
 // Razorpay settlement (net-of-fees) compute function (Track C)
 export { computeSettlementSummary } from './settlement-summary.js';
 export type { SettlementSummary, SettlementFee, SettlementFeeType } from './settlement-summary.js';
+
+// Ad-connectors (Slice 1 Track 3) — spend + blended ROAS
+export { computeAdSpendTimeseries } from './ad-spend-timeseries.js';
+export type { AdSpendTimeseriesBucket, AdPlatform } from './ad-spend-timeseries.js';
+export { computeBlendedRoas } from './blended-roas.js';
+export type { BlendedRoasRow } from './blended-roas.js';

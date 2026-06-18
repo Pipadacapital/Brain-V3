@@ -17,6 +17,7 @@
  * Branch: feat/data-plane-ingest-spine — Track A (data-engineer) Slice 3.
  */
 import { Consumer, Kafka, EachMessagePayload } from 'kafkajs';
+import { incrementCounter } from '@brain/observability';
 import { ProcessEventUseCase, ProcessResult } from '../../application/ProcessEventUseCase.js';
 import { DlqProducer } from '../../infrastructure/kafka/DlqProducer.js';
 
@@ -64,7 +65,7 @@ export class CollectorEventConsumer {
           );
 
           if (result.outcome === 'invalid') {
-            // Invalid messages go directly to DLQ (no point retrying a parse error).
+            // Invalid (unparseable / Zod-fail) messages go directly to DLQ (no retry).
             await this.dlqProducer.send(
               `${topic}.dlq`,
               message.key?.toString() ?? null,
@@ -78,6 +79,38 @@ export class CollectorEventConsumer {
             this.retryCount.delete(retryKey);
             console.info(`[stream-worker] DLQ (invalid) partition=${partition} offset=${offset} reason=${result.reason}`);
             return;
+          }
+
+          if (result.outcome === 'quarantined') {
+            // R3: PARSED-but-failed-a-gate (tenant_unresolved / brand_mismatch /
+            // consent_absent). Route to the .quarantine sink — NOT dropped, NOT Bronze.
+            // Reuses the shipped DlqProducer with a .quarantine topic suffix (no new
+            // producer, no new topic family). Then commit offset (mirrors .dlq, D-7).
+            await this.dlqProducer.send(
+              `${topic}.quarantine`,
+              message.key?.toString() ?? null,
+              message.value,
+              result.reason ?? 'quarantined',
+            );
+            await this.consumer.commitOffsets([
+              { topic, partition, offset: String(Number(offset) + 1) },
+            ]);
+            this.retryCount.delete(retryKey);
+            console.info(
+              `[stream-worker] QUARANTINE partition=${partition} offset=${offset} reason=${result.reason} brand=${result.brandId ?? 'unresolved'}`,
+            );
+            return;
+          }
+
+          // R4: make dedup suppression OBSERVABLE — a forged/colliding event_id is a
+          // counter increment, not a silent console.info. layer=pg (PK ON CONFLICT) or
+          // layer=redis (NX). Labels are bounded/low-cardinality + PII-safe.
+          if (result.outcome === 'pk_conflict' || result.outcome === 'dedup_hit') {
+            incrementCounter('collector_dedup_conflict_total', {
+              brand_id: result.brandId ?? 'unknown',
+              layer: result.outcome === 'pk_conflict' ? 'pg' : 'redis',
+              event_name: result.eventName ?? 'unknown',
+            });
           }
 
           // written | dedup_hit | pk_conflict → commit offset (D-7).

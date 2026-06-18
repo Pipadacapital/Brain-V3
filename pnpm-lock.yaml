@@ -117,6 +117,9 @@ importers:
       '@brain/observability':
         specifier: workspace:*
         version: link:../../packages/observability
+      '@brain/pixel-sdk':
+        specifier: workspace:*
+        version: link:../../packages/pixel-sdk
       '@brain/razorpay-mapper':
         specifier: workspace:*
         version: link:../../packages/razorpay-mapper
@@ -166,6 +169,12 @@ importers:
 
   apps/stream-worker:
     dependencies:
+      '@brain/ad-spend-mapper':
+        specifier: workspace:*
+        version: link:../../packages/ad-spend-mapper
+      '@brain/audit':
+        specifier: workspace:*
+        version: link:../../packages/audit
       '@brain/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
@@ -218,6 +227,9 @@ importers:
       '@brain/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@brain/pixel-sdk':
+        specifier: workspace:*
+        version: link:../../packages/pixel-sdk
       '@brain/ui':
         specifier: workspace:*
         version: link:../../packages/ui
@@ -316,6 +328,18 @@ importers:
         specifier: ^2.1.0
         version: 2.1.9(@types/node@25.9.3)
 
+  packages/ad-spend-mapper:
+    devDependencies:
+      '@types/node':
+        specifier: ^20.0.0
+        version: 20.19.43
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.0
+        version: 2.1.9(@types/node@20.19.43)
+
   packages/ai-gateway-client: {}
 
   packages/audit:
@@ -398,7 +422,17 @@ importers:
 
   packages/observability: {}
 
-  packages/pixel-sdk: {}
+  packages/pixel-sdk:
+    devDependencies:
+      '@brain/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.0
+        version: 2.1.9(@types/node@25.9.3)
 
   packages/razorpay-mapper:
     devDependencies:

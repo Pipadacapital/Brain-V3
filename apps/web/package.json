@@ -8,10 +8,12 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test:unit": "vitest run --passWithNoTests",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:e2e:demo": "playwright test --config=playwright.demo.config.ts --headed"
   },
   "dependencies": {
     "@brain/contracts": "workspace:*",
+    "@brain/pixel-sdk": "workspace:*",
     "@brain/ui": "workspace:*",
     "@hookform/resolvers": "^3.9.0",
     "@radix-ui/react-dialog": "^1.1.1",

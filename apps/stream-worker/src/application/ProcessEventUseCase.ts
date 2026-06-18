@@ -18,6 +18,7 @@
  */
 import { CollectorEventV1Schema } from '@brain/contracts';
 import { buildPartitionKey } from '@brain/events';
+import type { AuditWriter } from '@brain/audit';
 import { RedisDedupAdapter } from '../infrastructure/redis/RedisDedupAdapter.js';
 import { BronzeRepository } from '../infrastructure/pg/BronzeRepository.js';
 import { BronzeRow } from '../domain/bronze/BronzeRow.js';
@@ -26,12 +27,15 @@ export type ProcessOutcome =
   | 'written'       // first sight, successfully inserted to bronze_events
   | 'dedup_hit'     // Redis NX failed — already seen
   | 'pk_conflict'   // PK unique violation — durable second-line dedup
+  | 'quarantined'   // R3: PARSED but failed a security/compliance gate → .quarantine sink
   | 'invalid';      // Zod parse failed — goes to DLQ without retry
 
 export interface ProcessResult {
   outcome: ProcessOutcome;
   brandId?: string;
   eventId?: string;
+  /** Bounded dot.lowercase event name — a low-cardinality metric label (R4). */
+  eventName?: string;
   reason?: string;
 }
 
@@ -39,6 +43,25 @@ export class ProcessEventUseCase {
   constructor(
     private readonly dedup: RedisDedupAdapter,
     private readonly bronze: BronzeRepository,
+    /**
+     * Optional audit writer — when present, a brand_mismatch quarantine writes a
+     * `pixel.brand_mismatch` audit_log row (REC-1). Absent in the backfill lane (orders
+     * carry no install_token; the R2 gate does not apply there — see enforceTenantDerivation).
+     */
+    private readonly audit?: AuditWriter,
+    /**
+     * R2/R3 gate switch. TRUE (default) for the LIVE collector lane: the authoritative
+     * brand_id is DERIVED server-side from properties.install_token (never trusted from
+     * input), and absent consent_flags / unresolved-or-mismatched token → quarantined.
+     *
+     * FALSE for the BACKFILL-ORDER + LIVE-LEDGER lanes: those events carry NO install_token
+     * (event_name='order.backfill.v1' / 'order.live.v1'); their brand_id is already
+     * server-trusted (derived from the authenticated connector, not from a browser). The
+     * R2 browser-spoofing threat model does not apply, so the gate is off for them — they
+     * keep their existing trusted-brand Bronze write path unchanged. (Connector webhooks
+     * left alone — architecture-plan §5.)
+     */
+    private readonly enforceTenantDerivation = true,
   ) {}
 
   /**
@@ -72,13 +95,72 @@ export class ProcessEventUseCase {
     }
 
     const event = zodResult.data;
-    const { brand_id, event_id, occurred_at, ingested_at, correlation_id, event_name, properties } = event;
+    const {
+      brand_id: claimedBrandId,
+      event_id,
+      occurred_at,
+      ingested_at,
+      correlation_id,
+      event_name,
+      properties,
+      consent_flags,
+    } = event;
+
+    // ── Step 1b: R2 tenant-key derivation + R3 consent gate (LIVE lane only) ───
+    // The tenant key is NEVER trusted from input. For the live collector lane we DERIVE
+    // the authoritative brand_id from properties.install_token via the SECURITY DEFINER
+    // fn (migration 0028). The claimed top-level brand_id is for PARTITIONING ONLY.
+    //   - token absent/malformed/unresolved → quarantine (reason 'tenant_unresolved').
+    //   - token resolves but claimed brand_id !== derived → quarantine + audit
+    //     'pixel.brand_mismatch' (REC-1). NEVER written under a claimed brand.
+    //   - consent_flags ABSENT → quarantine (reason 'consent_absent') — not dropped,
+    //     not Bronze-as-trusted (R3 / COMPLIANCE.md:105).
+    // The backfill-order / live-ledger lanes set enforceTenantDerivation=false (their
+    // brand_id is already server-trusted; they carry no install_token).
+    let brand_id = claimedBrandId;
+    if (this.enforceTenantDerivation) {
+      const installToken = (properties as Record<string, unknown> | undefined)?.['install_token'];
+      const derivedBrandId = await this.bronze.resolveBrandByInstallToken(installToken);
+
+      if (derivedBrandId == null) {
+        // Token absent / malformed / unresolved → never written under a claimed brand.
+        return {
+          outcome: 'quarantined',
+          eventId: event_id,
+          reason: 'tenant_unresolved',
+        };
+      }
+
+      if (claimedBrandId !== derivedBrandId) {
+        // Cross-brand claim — the browser stamped a brand_id it does not own.
+        await this.writeBrandMismatchAudit(derivedBrandId, event_id, claimedBrandId, correlation_id);
+        return {
+          outcome: 'quarantined',
+          brandId: derivedBrandId,
+          eventId: event_id,
+          reason: 'brand_mismatch',
+        };
+      }
+
+      // R3 consent gate — capture-only field must be PRESENT (enforcement is downstream).
+      if (consent_flags == null) {
+        return {
+          outcome: 'quarantined',
+          brandId: derivedBrandId,
+          eventId: event_id,
+          reason: 'consent_absent',
+        };
+      }
+
+      // Authoritative tenant key — used for dedup keyspace + the Bronze GUC below.
+      brand_id = derivedBrandId;
+    }
 
     // ── Step 2: Redis dedup (D-3) ─────────────────────────────────────────────
     const dedupResult = await this.dedup.checkAndClaim(brand_id, event_id);
     if (!dedupResult.isFirstSight) {
       // Redis NX failed → duplicate event → commit offset, skip write
-      return { outcome: 'dedup_hit', brandId: brand_id, eventId: event_id };
+      return { outcome: 'dedup_hit', brandId: brand_id, eventId: event_id, eventName: event_name };
     }
 
     // ── Step 3: Build BronzeRow ───────────────────────────────────────────────
@@ -95,6 +177,8 @@ export class ProcessEventUseCase {
       payload: {
         event_name,
         properties: properties ?? {},
+        // consent_flags captured into the Bronze payload (R3) — capture-only, no PII.
+        ...(consent_flags != null ? { consent_flags } : {}),
         // hashed_user_id and hashed_session_id included if present (no raw PII, I-S02)
         ...(event.hashed_user_id != null ? { hashed_user_id: event.hashed_user_id } : {}),
         ...(event.hashed_session_id != null ? { hashed_session_id: event.hashed_session_id } : {}),
@@ -110,9 +194,50 @@ export class ProcessEventUseCase {
 
     if (!writeResult.inserted) {
       // PK conflict — treat as dedup-hit (durable backstop, §5)
-      return { outcome: 'pk_conflict', brandId: brand_id, eventId: event_id };
+      return { outcome: 'pk_conflict', brandId: brand_id, eventId: event_id, eventName: event_name };
     }
 
     return { outcome: 'written', brandId: brand_id, eventId: event_id };
+  }
+
+  /**
+   * Write a `pixel.brand_mismatch` audit_log row (REC-1) when a browser stamps a
+   * brand_id it does not own. Recorded under the DERIVED (true) brand — the owner of the
+   * install_token — so the forensic trail is attributed to the real tenant, not the
+   * claimed one. NO raw PII (only the event_id, the claimed brand_id, correlation_id).
+   *
+   * Audit failure must NOT block quarantine routing — a missing forensic row is strictly
+   * less harmful than letting a cross-brand event through. Logged + swallowed.
+   */
+  private async writeBrandMismatchAudit(
+    derivedBrandId: string,
+    eventId: string,
+    claimedBrandId: string,
+    correlationId: string,
+  ): Promise<void> {
+    if (this.audit == null) return;
+    try {
+      await this.audit.append({
+        brand_id: derivedBrandId,
+        actor_id: null,
+        actor_role: 'system',
+        action: 'pixel.brand_mismatch',
+        entity_type: 'collector_event',
+        entity_id: eventId,
+        payload: {
+          claimed_brand_id: claimedBrandId,
+          derived_brand_id: derivedBrandId,
+          correlation_id: correlationId,
+          outcome: 'quarantined',
+        },
+        // Idempotent on the event_id — a replayed mismatch writes exactly one audit row.
+        idempotency_key: `pixel.brand_mismatch:${eventId}`,
+      });
+    } catch (err) {
+      console.error(
+        `[stream-worker] audit write failed for pixel.brand_mismatch event=${eventId}`,
+        err,
+      );
+    }
   }
 }

@@ -1,63 +1,66 @@
 #!/usr/bin/env node
 /**
- * pixel-fixture/send-event.mjs — Sprint-0 synthetic event fixture (ruling 8, EC2)
+ * pixel-fixture/send-event.mjs — shape-(a) browser-origin event fixture (Track B).
  *
- * This is NOT the production brain.js pixel SDK (deferred to M1).
- * This fixture POSTs one synthetic event to the collector's /collect endpoint
- * to prove the EC2 path: pixel → collector → Redpanda → Bronze.
+ * Emits the LIVE shape-(a) CollectorEventV1 (ADR-1) — the SAME envelope the brain.js SDK
+ * (packages/pixel-sdk) and the served /pixel.js produce: event_name dot.lowercase, ISO
+ * occurred_at, a properties bag carrying install_token / brain_anon_id / session_id /
+ * click-ids / utm, and a top-level consent_flags. ONE event per POST (REC-5).
+ *
+ * The install_token is the server's tenant-key derivation input (R2): the stream-worker
+ * DERIVES the authoritative brand_id from it. Set INSTALL_TOKEN to a real pixel_installation
+ * token to land a Bronze row under that brand; otherwise the event quarantines (correct).
+ *
+ * FAILS-CLOSED (architecture Track A/B): unlike the old Sprint-0 stub, this exits NON-ZERO
+ * when the collector is unreachable (the inert exit-0-offline probe is REJECTED). Pass
+ * ALLOW_OFFLINE=1 to opt back into the soft-exit for a no-Docker local smoke.
  *
  * Usage:
- *   node tools/pixel-fixture/send-event.mjs
- *   COLLECTOR_URL=http://localhost:3001 node tools/pixel-fixture/send-event.mjs
+ *   INSTALL_TOKEN=<uuid> node tools/pixel-fixture/send-event.mjs
+ *   COLLECTOR_URL=http://localhost:3001 INSTALL_TOKEN=<uuid> node tools/pixel-fixture/send-event.mjs
  *
- * Exit codes:
- *   0 — event accepted (200/202 response)
- *   1 — error (connection refused, non-2xx response, etc.)
+ * Exit codes: 0 — accepted (2xx) · 1 — error / unreachable (fails closed)
  */
 
 import { randomUUID } from 'crypto';
 
 const COLLECTOR_URL = process.env['COLLECTOR_URL'] ?? 'http://localhost:3001';
-const BRAND_A_ID = process.env['BRAND_ID'] ?? 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+const BRAND_ID = process.env['BRAND_ID'] ?? 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+const INSTALL_TOKEN = process.env['INSTALL_TOKEN'] ?? randomUUID(); // unresolved → quarantines (correct)
+const ALLOW_OFFLINE = process.env['ALLOW_OFFLINE'] === '1';
+const EVENT_NAME = process.env['EVENT_NAME'] ?? 'page.viewed';
 
-// ---------------------------------------------------------------------------
-// Synthetic event payload (envelope per CollectorEvent Avro schema)
-// No raw PII (I-S02) — hashed identifiers only.
-// ---------------------------------------------------------------------------
 const eventId = randomUUID();
 const correlationId = randomUUID();
 const occurredAt = new Date().toISOString();
 
+// ── Shape (a) envelope (ADR-1) — NO raw PII, NO salt (ADR-2) ──────────────────
 const syntheticEvent = {
-  event_id:        eventId,
-  brand_id:        BRAND_A_ID,
-  occurred_at:     occurredAt,
-  ingested_at:     occurredAt,
-  schema_name:     'collector.event.v1',
-  schema_version:  1,
-  partition_key:   `${BRAND_A_ID}:${eventId}`,
-  correlation_id:  correlationId,
-  event_type:      'page_view',
-  payload: JSON.stringify({
-    // Hashed identifiers only — no raw PII (I-S02)
-    visitor_hash: 'sha256:a1b2c3d4e5f6789012345678901234567890123456789012345678901234',
-    page:         '/dashboard',
-    referrer:     'direct',
-    session_id:   randomUUID(),
-    source:       'pixel-fixture-sprint0',
-  }),
+  schema_version: '1',
+  event_id: eventId,
+  brand_id: BRAND_ID, // PARTITIONING ONLY — server derives the authoritative brand from install_token
+  correlation_id: correlationId,
+  event_name: EVENT_NAME,
+  occurred_at: occurredAt,
+  consent_flags: { analytics: true, marketing: false, personalization: false, ai_processing: false },
+  properties: {
+    install_token: INSTALL_TOKEN, // R2 tenant-key derivation input
+    brain_anon_id: randomUUID(),
+    session_id: randomUUID(),
+    landing_path: '/',
+    referrer: 'direct',
+    utm: { source: 'pixel-fixture', medium: 'smoke' },
+    device: { ua_class: 'desktop', viewport: '1920x1080' },
+    collector_version: 'pixel-fixture@1',
+  },
 };
 
-console.log(`[pixel-fixture] Sending synthetic event:`);
-console.log(`  brand_id:     ${BRAND_A_ID}`);
-console.log(`  event_id:     ${eventId}`);
-console.log(`  event_type:   page_view`);
-console.log(`  correlation:  ${correlationId}`);
-console.log(`  target:       ${COLLECTOR_URL}/collect`);
+console.log('[pixel-fixture] Sending shape-(a) event:');
+console.log(`  event_name:    ${EVENT_NAME}`);
+console.log(`  event_id:      ${eventId}`);
+console.log(`  install_token: ${INSTALL_TOKEN}`);
+console.log(`  target:        ${COLLECTOR_URL}/collect`);
 
-// ---------------------------------------------------------------------------
-// POST to collector
-// ---------------------------------------------------------------------------
 async function sendEvent() {
   try {
     const response = await fetch(`${COLLECTOR_URL}/collect`, {
@@ -65,10 +68,8 @@ async function sendEvent() {
       headers: {
         'Content-Type': 'application/json',
         'X-Correlation-ID': correlationId,
-        'X-Brand-ID': BRAND_A_ID,
-        'Idempotency-Key': eventId,
       },
-      body: JSON.stringify(syntheticEvent),
+      body: JSON.stringify(syntheticEvent), // ONE object — never a batched array (REC-5)
     });
 
     const status = response.status;
@@ -76,22 +77,23 @@ async function sendEvent() {
 
     if (status >= 200 && status < 300) {
       console.log(`[pixel-fixture] SUCCESS — HTTP ${status}: ${body}`);
-      console.log(`[pixel-fixture] EC2 path: pixel-fixture → collector → Redpanda → Bronze`);
+      console.log('[pixel-fixture] path: pixel → collector → Redpanda → stream-worker → Bronze');
       process.exit(0);
-    } else {
-      console.error(`[pixel-fixture] FAIL — HTTP ${status}: ${body}`);
-      process.exit(1);
     }
+    console.error(`[pixel-fixture] FAIL — HTTP ${status}: ${body}`);
+    process.exit(1);
   } catch (err) {
     if (err.code === 'ECONNREFUSED') {
-      console.warn(
-        `[pixel-fixture] Collector not running at ${COLLECTOR_URL}. ` +
-        `Start with: docker compose --profile ingest up -d && pnpm dev:ingest`
+      console.error(
+        `[pixel-fixture] Collector unreachable at ${COLLECTOR_URL}. ` +
+        'Start with: docker compose --profile ingest up -d && pnpm dev:ingest',
       );
-      // Exit 0 in stub mode (collector not running = expected in local-only CI without Docker)
-      // Change to exit(1) when the full E2E integration test is wired (M1).
-      console.warn('[pixel-fixture] Stub mode: exiting 0 (collector offline expected in CI without Docker)');
-      process.exit(0);
+      if (ALLOW_OFFLINE) {
+        console.warn('[pixel-fixture] ALLOW_OFFLINE=1 → soft-exit 0 (local no-Docker smoke).');
+        process.exit(0);
+      }
+      // FAILS CLOSED — the inert exit-0-offline probe is rejected (architecture Track A/B).
+      process.exit(1);
     }
     console.error(`[pixel-fixture] UNEXPECTED ERROR: ${err.message}`);
     process.exit(1);

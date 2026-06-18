@@ -65,6 +65,8 @@ import type {
   AnalyticsDataHealthResponse,
   AnalyticsTrackingHealthResponse,
   AnalyticsRecentEventsResponse,
+  AnalyticsAdSpendTimeseriesResponse,
+  AnalyticsBlendedRoasResponse,
 } from './types';
 
 /** All BFF routes proxied through Next.js API routes → frontend-api module */
@@ -900,6 +902,50 @@ export const analyticsApi = {
   getDataHealth: async (): Promise<AnalyticsDataHealthResponse> => {
     const { data } = await bffFetch<BffEnvelope<AnalyticsDataHealthResponse>>(
       `/v1/analytics/data-health`,
+    );
+    return data;
+  },
+
+  // ── Ad-connectors (Slice 1 Track 3) — spend + blended ROAS ────────────────────
+
+  /**
+   * GET /api/v1/analytics/ad-spend-timeseries
+   * Returns per-bucket ad spend grouped by (platform, currency_code).
+   * Amounts are bigint-serialized minor-unit strings (never floats).
+   */
+  getAdSpendTimeseries: async (params?: {
+    from?: string;
+    to?: string;
+    grain?: 'day' | 'week';
+    platform?: 'meta' | 'google_ads';
+  }): Promise<AnalyticsAdSpendTimeseriesResponse> => {
+    const qs = new URLSearchParams();
+    if (params?.from) qs.set('from', params.from);
+    if (params?.to) qs.set('to', params.to);
+    if (params?.grain) qs.set('grain', params.grain);
+    if (params?.platform) qs.set('platform', params.platform);
+    const qsStr = qs.toString();
+    const { data } = await bffFetch<BffEnvelope<AnalyticsAdSpendTimeseriesResponse>>(
+      `/v1/analytics/ad-spend-timeseries${qsStr ? `?${qsStr}` : ''}`,
+    );
+    return data;
+  },
+
+  /**
+   * GET /api/v1/analytics/blended-roas
+   * Returns per-currency blended ROAS (realized ÷ spend), same-currency only.
+   * roas_ratio is an exact decimal string or null (spend=0 → honest null).
+   */
+  getBlendedRoas: async (params?: {
+    from?: string;
+    to?: string;
+  }): Promise<AnalyticsBlendedRoasResponse> => {
+    const qs = new URLSearchParams();
+    if (params?.from) qs.set('from', params.from);
+    if (params?.to) qs.set('to', params.to);
+    const qsStr = qs.toString();
+    const { data } = await bffFetch<BffEnvelope<AnalyticsBlendedRoasResponse>>(
+      `/v1/analytics/blended-roas${qsStr ? `?${qsStr}` : ''}`,
     );
     return data;
   },

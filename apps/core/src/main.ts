@@ -63,6 +63,19 @@ import {
   ConnectorNotFoundError,
 } from './modules/connector/sources/storefront/shopify/application/commands/DisconnectCommand.js';
 import { GetConnectorStatusQuery } from './modules/connector/sources/storefront/shopify/application/queries/GetConnectorStatusQuery.js';
+// ── Advertising OAuth connectors (feat-ad-connectors Track 1) ─────────────────
+import { InitiateMetaOAuthCommand } from './modules/connector/sources/advertising/meta/application/commands/InitiateMetaOAuthCommand.js';
+import { HandleMetaOAuthCallbackCommand } from './modules/connector/sources/advertising/meta/application/commands/HandleMetaOAuthCallbackCommand.js';
+import {
+  registerMetaInstallRoute,
+  registerMetaCallbackRoute,
+} from './modules/connector/sources/advertising/meta/interfaces/http/metaConnectorRoutes.js';
+import { InitiateGoogleAdsOAuthCommand } from './modules/connector/sources/advertising/google/application/commands/InitiateGoogleAdsOAuthCommand.js';
+import { HandleGoogleAdsOAuthCallbackCommand } from './modules/connector/sources/advertising/google/application/commands/HandleGoogleAdsOAuthCallbackCommand.js';
+import {
+  registerGoogleAdsInstallRoute,
+  registerGoogleAdsCallbackRoute,
+} from './modules/connector/sources/advertising/google/interfaces/http/googleAdsConnectorRoutes.js';
 import { PgConnectorInstanceRepository } from './modules/connector/sources/storefront/shopify/infrastructure/repositories/PgConnectorInstanceRepository.js';
 import { PgConnectorSyncStatusRepository } from './modules/connector/sources/storefront/shopify/infrastructure/repositories/PgConnectorSyncStatusRepository.js';
 import { LocalSecretsManager } from './modules/connector/sources/storefront/shopify/infrastructure/secrets/LocalSecretsManager.js';
@@ -137,6 +150,16 @@ export async function main(): Promise<void> {
     shopifyCallbackUrl: getEnv(
       'SHOPIFY_CALLBACK_URL',
       'http://localhost:3001/api/v1/oauth/callback/shopify',
+    ),
+    // feat-ad-connectors Track 1 — ads OAuth callbacks (public HTTPS URL in prod; dev = localhost).
+    // The repull/exchange reads these from the same env vars (META_CALLBACK_URL / GOOGLE_ADS_CALLBACK_URL).
+    metaCallbackUrl: getEnv(
+      'META_CALLBACK_URL',
+      'http://localhost:3001/api/v1/connectors/meta/callback',
+    ),
+    googleAdsCallbackUrl: getEnv(
+      'GOOGLE_ADS_CALLBACK_URL',
+      'http://localhost:3001/api/v1/connectors/google_ads/callback',
     ),
     pixelIngestBaseUrl: getEnv('PIXEL_INGEST_BASE_URL', 'http://localhost:3001'),
     // Webhook live-lane Kafka config (B1 / ADR-LV-3)
@@ -496,6 +519,70 @@ export async function main(): Promise<void> {
   );
   const getConnectorStatus = new GetConnectorStatusQuery(connectorRepo, syncStatusRepo);
 
+  // ── Advertising OAuth connectors (feat-ad-connectors Track 1) ──────────────
+  // setAdAccountId: persists ad_account_id onto connector_instance via a brand-scoped
+  // direct UPDATE (mirrors how razorpay_account_id is set — kept out of the generic repo).
+  const setAdAccountId = async (
+    brandId: string,
+    connectorInstanceId: string,
+    adAccountId: string,
+  ): Promise<void> => {
+    const client = await rawPgPool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(`SELECT set_config('app.current_brand_id', $1, true)`, [brandId]);
+      await client.query(
+        `UPDATE connector_instance SET ad_account_id = $1 WHERE id = $2 AND brand_id = $3`,
+        [adAccountId, connectorInstanceId, brandId],
+      );
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
+  };
+
+  const emitConnectorEvent = async (eventName: string, payload: Record<string, unknown>): Promise<void> => {
+    app.log.info({ event: eventName, payload }, '[core] domain event emitted');
+  };
+
+  const initiateMetaOAuth = new InitiateMetaOAuthCommand(oauthStateStore);
+  const handleMetaCallback = new HandleMetaOAuthCallbackCommand(
+    connectorSecretsManager,
+    oauthStateStore,
+    connectorRepo,
+    syncStatusRepo,
+    emitConnectorEvent,
+    setAdAccountId,
+  );
+  const initiateGoogleAdsOAuth = new InitiateGoogleAdsOAuthCommand(oauthStateStore);
+  const handleGoogleAdsCallback = new HandleGoogleAdsOAuthCallbackCommand(
+    connectorSecretsManager,
+    oauthStateStore,
+    connectorRepo,
+    syncStatusRepo,
+    emitConnectorEvent,
+    setAdAccountId,
+  );
+
+  // Audit hook for a successful ads OAuth connect (brandId is state-derived — D-1).
+  const auditAdConnected =
+    (connectorType: 'meta' | 'google_ads') =>
+    async (brandId: string, connectorInstanceId: string): Promise<void> => {
+      await auditWriter.append({
+        brand_id: brandId,
+        actor_id: null,
+        actor_role: 'system',
+        action: 'connector.connected',
+        entity_type: 'connector_instance',
+        entity_id: connectorInstanceId,
+        payload: { connector_type: connectorType },
+        // NO secret_ref, NO token in payload (I-S02 / I-S09)
+      });
+    };
+
   // Shared session preHandler for connector/pixel routes (NN-3).
   const sessionPreHandler = validateSessionPreHandler(authService);
 
@@ -542,6 +629,52 @@ export async function main(): Promise<void> {
       const result = await initiateOAuth.execute({ brandId, shopDomain, callbackUrl });
       return { oauth_url: result.installUrl };
     },
+  });
+
+  // ── Ads OAuth dispatch (feat-ad-connectors Track 1 / ADR-AD-2) ─────────────
+  // No shopDomain. The provider-specific callbackUrl is bound from config (the generic
+  // POST /api/v1/connectors route passes the shopify callbackUrl, which ads ignore).
+  registerOAuthDispatch('meta', {
+    initiate: async ({ brandId }) => {
+      const result = await initiateMetaOAuth.execute({
+        brandId,
+        callbackUrl: config.metaCallbackUrl,
+      });
+      return { oauth_url: result.installUrl };
+    },
+  });
+  registerOAuthDispatch('google_ads', {
+    initiate: async ({ brandId }) => {
+      const result = await initiateGoogleAdsOAuth.execute({
+        brandId,
+        callbackUrl: config.googleAdsCallbackUrl,
+      });
+      return { oauth_url: result.installUrl };
+    },
+  });
+
+  // ── Ads OAuth callback routes (PUBLIC — state nonce is the auth, ADR-AD-2) ──
+  // Mounted directly on the app, outside the authenticated scope. These live in the
+  // connector module (mirror shopifyConnectorRoutes) and do NOT touch bff.routes.ts.
+  registerMetaCallbackRoute(app, {
+    initiateOAuth: initiateMetaOAuth,
+    handleCallback: handleMetaCallback,
+    getBrandId: () => {
+      throw new Error('getBrandId is not used on the public callback route');
+    },
+    callbackUrl: config.metaCallbackUrl,
+    appBaseUrl: config.appBaseUrl,
+    onConnected: auditAdConnected('meta'),
+  });
+  registerGoogleAdsCallbackRoute(app, {
+    initiateOAuth: initiateGoogleAdsOAuth,
+    handleCallback: handleGoogleAdsCallback,
+    getBrandId: () => {
+      throw new Error('getBrandId is not used on the public callback route');
+    },
+    callbackUrl: config.googleAdsCallbackUrl,
+    appBaseUrl: config.appBaseUrl,
+    onConnected: auditAdConnected('google_ads'),
   });
 
   // ── Generic OAuth callback (ADR-CM-3 / D-1) ───────────────────────────────
@@ -847,6 +980,24 @@ export async function main(): Promise<void> {
       }
       const result = await initiateOAuth.execute({ brandId, shopDomain, callbackUrl: config.shopifyCallbackUrl });
       return reply.code(200).send({ request_id: (req.id as string) ?? randomUUID(), data: { install_url: result.installUrl } });
+    });
+
+    // ── Ads install routes (manager+ — feat-ad-connectors Track 1) ──────────
+    // Return oauth_url + set the brand-bound state nonce. The connector module owns
+    // these route files (mirror shopifyConnectorRoutes); no bff.routes.ts edit.
+    registerMetaInstallRoute(scope, {
+      initiateOAuth: initiateMetaOAuth,
+      handleCallback: handleMetaCallback,
+      getBrandId: (req) => getBrandId(req as Parameters<typeof getBrandId>[0]),
+      callbackUrl: config.metaCallbackUrl,
+      appBaseUrl: config.appBaseUrl,
+    });
+    registerGoogleAdsInstallRoute(scope, {
+      initiateOAuth: initiateGoogleAdsOAuth,
+      handleCallback: handleGoogleAdsCallback,
+      getBrandId: (req) => getBrandId(req as Parameters<typeof getBrandId>[0]),
+      callbackUrl: config.googleAdsCallbackUrl,
+      appBaseUrl: config.appBaseUrl,
     });
 
     // Generic disconnect (ADR-CM-3 / Sec-C3 / Sec-C4 audit)

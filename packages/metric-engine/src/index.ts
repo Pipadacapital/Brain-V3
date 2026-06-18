@@ -38,3 +38,9 @@ export { computeOrdersTimeseries } from './orders-timeseries.js';
 export type { OrdersTimeseriesBucket } from './orders-timeseries.js';
 export { computeOrderStats } from './order-stats.js';
 export type { OrderStatsResult } from './order-stats.js';
+
+// Ad-connectors (Slice 1 Track 3) — spend + blended ROAS
+export { computeAdSpendTimeseries } from './ad-spend-timeseries.js';
+export type { AdSpendTimeseriesBucket, AdPlatform } from './ad-spend-timeseries.js';
+export { computeBlendedRoas } from './blended-roas.js';
+export type { BlendedRoasRow } from './blended-roas.js';

@@ -77,6 +77,33 @@ describe('metric-engine — registry (D-1)', () => {
     expect(def.recognitionLabels).not.toContain('finalized');
   });
 
+  it('resolveMetric(ad_spend, v1) returns the correct definition (spend seam)', () => {
+    const def = resolveMetric('ad_spend', 'v1');
+    expect(def.metricId).toBe('ad_spend');
+    expect(def.version).toBe('v1');
+    expect(def.readSeam).toBe('ad_spend_as_of');
+    expect(def.toleranceMinor).toBe(0);
+    // spend is not recognition-staged → no recognition labels
+    expect(def.recognitionLabels).toEqual([]);
+    expect(def.description).toContain('ad_spend_as_of');
+  });
+
+  it('resolveMetric(blended_roas, v1) returns the correct definition (ratio of two exact seams)', () => {
+    const def = resolveMetric('blended_roas', 'v1');
+    expect(def.metricId).toBe('blended_roas');
+    expect(def.version).toBe('v1');
+    expect(def.readSeam).toBe('ad_spend_as_of'); // denominator seam (numerator = realized_gmv_as_of, re-used)
+    expect(def.toleranceMinor).toBe(0); // exact-rational from two BIGINT SUMs, no float tolerance
+    expect(def.description).toContain('SAME-CURRENCY ONLY');
+    expect(def.description).toContain('realized_gmv_as_of');
+  });
+
+  it('[ad] blended_roas documents same-currency-only + honest spend=0→null', () => {
+    const def = resolveMetric('blended_roas', 'v1');
+    expect(def.description).toContain('never blended across');
+    expect(def.description.toLowerCase()).toContain('spend>0');
+  });
+
   it('[D-1] toleranceMinor = 0 on all registered metrics (no float tolerance for money)', () => {
     for (const metricId of Object.keys(METRIC_REGISTRY) as Array<keyof typeof METRIC_REGISTRY>) {
       const versions = METRIC_REGISTRY[metricId];

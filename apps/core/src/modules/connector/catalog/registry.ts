@@ -4,10 +4,10 @@
  * ADR-CM-1: This static TypeScript const is the SoR for marketplace rendering — NOT a DB table.
  * Catalog changes = code deploys. No connector_definition table, no CRUD API.
  *
- * Phase-1a binding:
- *   - shopify = oauth, available (the only connectable connector in M1)
- *   - meta, google_ads = their real connectMethod but coming_soon this slice
- *   - razorpay = credential, coming_soon this slice
+ * Phase-1a binding (+ feat-ad-connectors Slice 1):
+ *   - shopify = oauth, available
+ *   - meta, google_ads = oauth, available (feat-ad-connectors Track 1 — deep ad connectors)
+ *   - razorpay = credential, available
  *   - long-tail = coming_soon
  *
  * All 7 categories have ≥1 tile (success criterion #1).
@@ -59,7 +59,7 @@ export const CONNECTOR_CATALOG: readonly ConnectorDefinition[] = [
     category: 'ads',
     displayName: 'Meta Ads',
     connectMethod: 'oauth',
-    availability: 'coming_soon',
+    availability: 'available',
     description: 'Campaign spend & performance.',
   },
   {
@@ -67,7 +67,7 @@ export const CONNECTOR_CATALOG: readonly ConnectorDefinition[] = [
     category: 'ads',
     displayName: 'Google Ads',
     connectMethod: 'oauth',
-    availability: 'coming_soon',
+    availability: 'available',
     description: 'Search & shopping campaigns.',
   },
   // ── payments ──────────────────────────────────────────────────────────────────

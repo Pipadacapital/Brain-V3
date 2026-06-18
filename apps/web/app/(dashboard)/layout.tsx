@@ -23,6 +23,7 @@ import {
   LayoutDashboard,
   TrendingUp,
   ShoppingCart,
+  Megaphone,
   Receipt,
   Plug,
   Activity,
@@ -61,6 +62,7 @@ const NAV_SECTIONS: NavSection[] = [
     items: [
       { href: '/analytics/revenue', label: 'Revenue', icon: TrendingUp },
       { href: '/analytics/orders', label: 'Orders', icon: ShoppingCart },
+      { href: '/analytics/spend', label: 'Ad Spend', icon: Megaphone },
       { label: 'Settlements', icon: Receipt, comingSoon: true, disabled: true },
     ],
   },

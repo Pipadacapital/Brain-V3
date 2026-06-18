@@ -63,7 +63,6 @@
 {"ts":"2026-06-16T05:08:36Z","req_id":"feat-multi-brand","agent":"architect","stage":2,"model":"opus","review_scope":"none","total_tokens":87131}
 {"ts":"2026-06-16T06:02:55Z","req_id":"feat-multi-brand","agent":"backend-developer","stage":3,"model":"sonnet","review_scope":"none"}
 {"ts":"2026-06-16T07:08:29Z","req_id":"feat-multi-brand","agent":"platform-devops","stage":8,"model":"sonnet","review_scope":"full","total_tokens":53845}
-<<<<<<< Updated upstream
 {"ts":"2026-06-16T14:45:18Z","req_id":"feat-members-team-management","agent":"frontend-web-developer","stage":3,"model":"sonnet","review_scope":"none","total_tokens":174811}
 {"ts":"2026-06-16T15:02:22Z","req_id":"feat-members-team-management","agent":"qa-agent","stage":5,"model":"sonnet","review_scope":"full","total_tokens":116025}
 {"ts":"2026-06-16T15:02:55Z","req_id":"feat-members-team-management","agent":"security-reviewer","stage":4,"model":"sonnet","review_scope":"full","total_tokens":144993}
@@ -180,7 +179,6 @@
 {"ts":"2026-06-17T21:12:29Z","req_id":"feat-razorpay-settlement-connector","agent":"data-engineer","stage":3,"model":"opus","review_scope":"delta","total_tokens":75813}
 {"ts":"2026-06-17T21:32:39Z","req_id":"feat-razorpay-settlement-connector","agent":"review-delta","stage":4,"model":"opus","review_scope":"delta","total_tokens":105672}
 {"ts":"2026-06-17T22:00:07Z","req_id":"feat-razorpay-settlement-connector","agent":"platform-devops","stage":8,"model":"sonnet","review_scope":"none","total_tokens":95049}
-=======
 {"ts":"2026-06-16T12:30:31Z","req_id":"feat-members-team-management","agent":"cto-advisor","stage":1,"model":"sonnet","review_scope":"none","total_tokens":45187}
 {"ts":"2026-06-16T12:36:05Z","req_id":"feat-members-team-management","agent":"dynamic-persona-generator","stage":1,"model":"sonnet","review_scope":"none","total_tokens":69163}
 {"ts":"2026-06-16T12:36:05Z","req_id":"feat-members-team-management","agent":"dynamic-persona-generator","stage":1,"model":"sonnet","review_scope":"none","total_tokens":81016}
@@ -189,5 +187,8 @@
 {"ts":"2026-06-16T13:53:46Z","req_id":"feat-members-team-management","agent":"backend-developer","stage":3,"model":"sonnet","review_scope":"none","total_tokens":32615}
 {"ts":"2026-06-16T13:53:46Z","req_id":"feat-members-team-management","agent":"frontend-web-developer","stage":3,"model":"sonnet","review_scope":"none","total_tokens":58858}
 {"ts":"2026-06-16T14:13:39Z","req_id":"feat-members-team-management","agent":"backend-developer","stage":3,"model":"sonnet","review_scope":"none","total_tokens":140291}
->>>>>>> Stashed changes
 {"ts":"2026-06-17T22:44:51Z","req_id":"feat-collection-foundation","agent":"final-reviewer","stage":6,"model":"opus","review_scope":"delta","total_tokens":38559}
+{"ts":"2026-06-18T06:28:00Z","req_id":"feat-ad-connectors","agent":"backend-developer","stage":3,"model":"opus","review_scope":"none","total_tokens":null,"note":"track1 oauth-connect; build ran as dynamic Workflow wsofg2myl, per-agent token split not retained after task cleanup"}
+{"ts":"2026-06-18T06:28:00Z","req_id":"feat-ad-connectors","agent":"data-engineer","stage":3,"model":"opus","review_scope":"none","total_tokens":null,"note":"track2 spend-ingestion (migration 0029 + ad-spend-mapper + repull jobs + SpendLedgerConsumer)"}
+{"ts":"2026-06-18T06:28:00Z","req_id":"feat-ad-connectors","agent":"intelligence-engineer","stage":3,"model":"opus","review_scope":"none","total_tokens":null,"note":"track3 spend/roas metrics (ad-spend-timeseries + blended-roas, metric-engine sole-read-path)"}
+{"ts":"2026-06-18T06:28:00Z","req_id":"feat-ad-connectors","agent":"frontend-web-developer","stage":3,"model":"opus","review_scope":"none","total_tokens":null,"note":"track4 spend/roas UI (analytics/spend + ad-spend-trend-chart)"}

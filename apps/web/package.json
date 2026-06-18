@@ -8,7 +8,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test:unit": "vitest run --passWithNoTests",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:e2e:demo": "playwright test --config=playwright.demo.config.ts --headed"
   },
   "dependencies": {
     "@brain/contracts": "workspace:*",

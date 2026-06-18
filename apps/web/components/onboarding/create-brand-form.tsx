@@ -22,7 +22,7 @@ import { useCreateBrand, useWorkspaceList } from '@/lib/hooks/use-workspace';
 import { sessionApi } from '@/lib/api/client';
 import { toast } from '@/components/ui/toaster';
 import { Skeleton } from '@/components/ui/skeleton';
-import { normalizeHostPreview } from '@/lib/pixel/normalize-host-preview';
+import { normalizeBrandHost } from '@brain/pixel-sdk';
 
 /** Currency → region map (mirrors backend CURRENCY_TO_REGION). */
 const CURRENCY_REGION: Record<string, string> = {
@@ -82,7 +82,7 @@ export function CreateBrandForm() {
 
   // Cosmetic preview of the canonical host the SERVER will derive + track.
   // Server value is authoritative; this only sets expectations as the user types.
-  const hostPreview = normalizeHostPreview(domainValue);
+  const hostPreview = normalizeBrandHost(domainValue);
 
   /** Auto-suggest timezone when currency changes. */
   function handleCurrencyChange(val: 'INR' | 'AED' | 'SAR') {

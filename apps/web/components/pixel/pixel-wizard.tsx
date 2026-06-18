@@ -14,7 +14,7 @@ import { BffApiError } from '@/lib/api/client';
 import { toast } from '@/components/ui/toaster';
 import type { PixelState } from '@/lib/api/types';
 import { cn } from '@/lib/utils';
-import { normalizeHostPreview } from '@/lib/pixel/normalize-host-preview';
+import { normalizeBrandHost } from '@brain/pixel-sdk';
 
 /**
  * Brain Pixel Installation Wizard
@@ -70,7 +70,7 @@ export function PixelWizard() {
   // (mirrors the server-authoritative normalizeBrandHost — Single-Primitive, no ad-hoc parse).
   // Used to seed the default target_host for the inline "add website → provision" action.
   const rawDomain = brandList?.data?.[0]?.domain ?? null;
-  const brandHost = normalizeHostPreview(rawDomain);
+  const brandHost = normalizeBrandHost(rawDomain);
   const { data: installation, isLoading: loadingInstall, error: installError, refetch: refetchInstall } = usePixelInstallation();
   const { data: health, isLoading: loadingHealth } = usePixelHealth();
   const { mutate: verifyPixel, isPending: isVerifying } = useVerifyPixel();

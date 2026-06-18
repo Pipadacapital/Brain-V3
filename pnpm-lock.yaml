@@ -224,6 +224,9 @@ importers:
       '@brain/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@brain/pixel-sdk':
+        specifier: workspace:*
+        version: link:../../packages/pixel-sdk
       '@brain/ui':
         specifier: workspace:*
         version: link:../../packages/ui

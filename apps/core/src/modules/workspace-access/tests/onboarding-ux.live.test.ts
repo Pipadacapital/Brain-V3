@@ -150,6 +150,45 @@ describe('onboarding-ux LIVE — provision + isolation (brain_app)', () => {
     await dbPool.end();
   });
 
+  // ── REG (fix/session-brand-context): resolveActiveContext must prefer the
+  //    brand-level membership within the preferred workspace, NOT the brand-less
+  //    org membership. The brand-less row would mint brand_id=null → every
+  //    brand-scoped surface 400s "No brand context in JWT" (pixel, connector
+  //    connect, etc.). NON-INERT: without findActiveByUserAndOrg this FAILS (the
+  //    old findByUserAndOrg(...,null) path returns the null-brand membership).
+  it('REG: resolveActiveContext prefers brand membership in the preferred workspace (no null brand_id)', async () => {
+    if (!rawPool) { console.warn('[SKIP] REG: Postgres not reachable'); return; }
+    const dbPool = await createPool({ connectionString: DATABASE_URL, maxConnections: 3 });
+    try {
+      const svc = new OnboardingService(dbPool, rawPool, noopAudit() as never, async () => {});
+      // Idempotent — returns USER_A's existing org+brand graph from D3-1.
+      const prov = await svc.provisionWorkspaceAndBrand(
+        { workspaceName: 'Onb Live A REG', brandDisplayName: 'Brand A REG', ownerUserId: USER_A_ID },
+        'corr-reg',
+      );
+      expect(prov.brandId).toBeTruthy();
+
+      const authService = new AuthService(
+        dbPool,
+        noopAudit() as never,
+        noopNotify() as never,
+        { jwtSigningSecret: 'live-pg-test-secret-32-bytes-long!!' },
+        rawPool,
+      );
+
+      // The failing case: a live session carries a preferred workspace id.
+      const ctxPreferred = await authService.resolveActiveContext(USER_A_ID, 'corr-reg', prov.organizationId);
+      expect(ctxPreferred.workspaceId).toBe(prov.organizationId);
+      expect(ctxPreferred.brandId, 'preferred-workspace resolve must carry the brand, not null').toBe(prov.brandId);
+
+      // The no-preferred path must also resolve a brand (findActiveByUser).
+      const ctxDefault = await authService.resolveActiveContext(USER_A_ID, 'corr-reg');
+      expect(ctxDefault.brandId, 'default resolve must carry the brand, not null').toBe(prov.brandId);
+    } finally {
+      await dbPool.end();
+    }
+  });
+
   // ── D5-1: idempotent — second provision returns existing, no duplicate ───────
   it('D5-1: re-provision by the same user returns existing org/brand (no duplicate)', async () => {
     if (!rawPool) { console.warn('[SKIP] D5-1: Postgres not reachable'); return; }

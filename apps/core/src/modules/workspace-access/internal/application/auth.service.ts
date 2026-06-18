@@ -681,8 +681,11 @@ export class AuthService {
       const memberRepo = new MembershipRepository(client);
       const orgRepo = new OrganizationRepository(client);
 
+      // Prefer a brand-level membership within the preferred workspace (so a
+      // fully-onboarded user resolves to {brand, role}, not the brand-less org
+      // membership which would mint brand_id=null and break brand-scoped surfaces).
       let m = preferredWorkspaceId
-        ? await memberRepo.findByUserAndOrg(userId, preferredWorkspaceId, null, { correlationId, userId, workspaceId: preferredWorkspaceId })
+        ? await memberRepo.findActiveByUserAndOrg(userId, preferredWorkspaceId, { correlationId, userId, workspaceId: preferredWorkspaceId })
         : null;
 
       if (!m) {

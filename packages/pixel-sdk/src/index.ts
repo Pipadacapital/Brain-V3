@@ -1,25 +1,30 @@
-// @brain/pixel-sdk — the Brain Pixel (brain.js) first-party capture SDK.
-// See docs/05_Brain_Implementation_Build_Plan.md §3.3, docs/12_Brain_Delivery_Artifacts.md (Sprint 0 / Workstream A),
-// and Brain_Attribution_Engine_Spec.md (component #1).
+// @brain/pixel-sdk — the Brain Pixel (brain.js) first-party capture SDK (Phase 1b / Track B).
 //
-// ── REQUIREMENT SPLIT (IMPORTANT) ────────────────────────────────────────────
-// This package (brain.js full SDK) is the M1-DATA-SPINE deliverable, NOT M1-app-foundation.
+// Emits the LIVE shape-(a) CollectorEventV1 (ADR-1): event_name dot.lowercase, ISO occurred_at,
+// a raw-only properties bag carrying install_token / brain_anon_id / session_id / click-ids /
+// utm / referrer / landing / device, and a top-level capture-only consent_flags. ONE event per
+// POST (REC-5); event_id minted once + reused on retry (R4); client-side anon-id, NO Set-Cookie
+// (REC-4); NO raw PII + NO salt on the wire (ADR-2).
 //
-// M1-app-foundation pixel scope (Track 2, apps/core/src/modules/connector/pixel/):
-//   - migration 006 (pixel_installation + pixel_status tables with RLS)
-//   - GET /api/v1/pixel/installation → snippet + install_token
-//   - POST /api/v1/pixel/verify → real HTTP HEAD/GET presence check → writes pixel_status
-//   - GET /api/v1/pixel/health → returns actual pixel_status for dashboard widget
-//   - Events: pixel.installed + pixel.verified
-//
-// M1-data-spine pixel scope (THIS package — separate pipeline run):
-//   - anon-id + 30-min session management
-//   - click-ID/UTM capture, _fbc/_fbp handling
-//   - event queue + offline retry
-//   - consent-at-capture
-//   - cart-attribute stitch writer (brain_anon_id + first-touch click IDs + UTMs → cart.attributes)
-//   - Distributed as a versioned static asset loaded on the merchant storefront (over the per-tenant CNAME)
-//
-// DO NOT build the SDK features above in M1-app-foundation. See 03-architecture-plan.md §2.
-// ──────────────────────────────────────────────────────────────────────────────
-export {};
+// The browser asset (/pixel.js) is built from ./browser-entry.ts (served by the collector).
+// The CORE (createPixel) is written against an injectable BrowserEnv so it is unit-testable
+// under a Node/ES2022 lib without jsdom.
+
+export { createPixel, originOf } from './capture.js';
+export type { Pixel, PixelOptions, EventName } from './capture.js';
+export { getOrCreateAnonId, getOrRollSession } from './identity.js';
+export { captureClickIds, captureUtm, parseQuery } from './attribution.js';
+export { resolveConsent, defaultConsentReader } from './consent.js';
+export type { ConsentReader } from './consent.js';
+export { Transport } from './transport.js';
+export { COLLECTOR_VERSION } from './browser-entry.js';
+export type {
+  CollectorEventV1,
+  ConsentFlags,
+  ClickIds,
+  Utm,
+  EventProperties,
+  BrowserEnv,
+  BrainBootstrap,
+  MinimalStorage,
+} from './types.js';

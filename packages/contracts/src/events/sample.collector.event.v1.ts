@@ -75,8 +75,38 @@ export const CollectorEventV1Schema = z.object({
   hashed_session_id: z.string().max(64).optional(),
 
   /**
+   * Consent flags captured at the source (ADR-1 / R3 / COMPLIANCE.md:105).
+   *
+   * FIRST-CLASS optional envelope field — promoted out of `properties` because the
+   * `consent-propagation` CI gate + the downstream can_contact() chokepoint inspect a
+   * KNOWN field name, not an arbitrary properties key. Capture-only at this layer:
+   * enforcement lives at the can_contact() chokepoint (I-ST05, Phase 5), NOT here.
+   *
+   * Additive-optional (FULL_TRANSITIVE, I-E02): absence is permitted at the schema
+   * level; the INGEST routing rule (R3) quarantines an event with ABSENT consent_flags
+   * — it is never written to Bronze as trusted, never silently dropped.
+   */
+  consent_flags: z
+    .object({
+      analytics: z.boolean(),
+      marketing: z.boolean(),
+      personalization: z.boolean(),
+      ai_processing: z.boolean(),
+    })
+    .optional(),
+
+  /**
    * Arbitrary event properties. Values MUST NOT contain raw PII (I-S02).
    * Complex nested values should be flattened into string-serialised JSON.
+   *
+   * RAW-ONLY attribution + identity signals ride here (ADR-1 / RO1), opaque at the
+   * edge and modeled downstream:
+   *   - install_token (uuid): REQUIRED — the server's tenant-key derivation input (R2).
+   *     The authoritative brand_id is DERIVED from this via resolve_brand_by_install_token;
+   *     the top-level brand_id is for PARTITIONING ONLY and is never trusted.
+   *   - brain_anon_id, session_id, click_ids {fbclid,gclid,ttclid}, utm{...},
+   *     referrer, landing_path, device{...}: raw-only signals.
+   * NO raw PII (I-S02); NO per-brand salt (ADR-2) ever rides this bag.
    */
   properties: z.record(z.string(), z.unknown()).optional().default({}),
 });

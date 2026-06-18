@@ -50,6 +50,45 @@ export class BronzeRepository {
    *
    * @throws on any error except PK conflict (conflict → returns { inserted: false }).
    */
+  /**
+   * R2 keystone — derive the AUTHORITATIVE brand_id from a pixel install_token.
+   *
+   * Calls the SECURITY DEFINER fn resolve_brand_by_install_token(uuid) (migration 0028)
+   * under brain_app. The fn bypasses FORCE RLS on pixel_installation for the dispatch-only
+   * token→brand lookup (no brand GUC is known yet — that is precisely what we resolve), and
+   * returns ONLY (brand_id) — no tenant data content.
+   *
+   * The install_token is a PUBLIC tracking id by design (0007:9), NOT a secret. Authority is
+   * this SERVER-SIDE derivation + the caller's mismatch-quarantine, NEVER token secrecy and
+   * NEVER a client-stamped brand_id (R2: the tenant key is never trusted from input).
+   *
+   * @returns the derived brand_id, or null when the token is malformed / absent / unresolved.
+   *          A null return MUST cause the caller to quarantine (never write under a claimed brand).
+   */
+  async resolveBrandByInstallToken(installToken: unknown): Promise<string | null> {
+    // Guard: the fn signature is (uuid). A non-string / non-uuid token would error at the
+    // ::uuid cast — treat as unresolved (quarantine), never let it throw the pipeline.
+    if (typeof installToken !== 'string' || installToken.length === 0) {
+      return null;
+    }
+    const UUID_RE =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!UUID_RE.test(installToken)) {
+      return null;
+    }
+
+    const client: PoolClient = await this.pool.connect();
+    try {
+      const result = await client.query<{ brand_id: string }>(
+        'SELECT brand_id FROM resolve_brand_by_install_token($1::uuid)',
+        [installToken],
+      );
+      return result.rows[0]?.brand_id ?? null;
+    } finally {
+      client.release();
+    }
+  }
+
   async write(row: BronzeRow): Promise<WriteResult> {
     const client: PoolClient = await this.pool.connect();
     try {

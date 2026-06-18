@@ -16,7 +16,8 @@
  * DATABASE_URL=postgres://brain@... for this service. Use BRAIN_APP_DATABASE_URL.
  */
 import { Kafka } from 'kafkajs';
-import { Pool as PgPool } from 'pg';
+import { Pool, Pool as PgPool } from 'pg';
+import { DbAuditWriter, type AuditDbClient } from '@brain/audit';
 import { RedisDedupAdapter } from './infrastructure/redis/RedisDedupAdapter.js';
 import { BronzeRepository } from './infrastructure/pg/BronzeRepository.js';
 import { IdentityRepository } from './infrastructure/pg/IdentityRepository.js';
@@ -59,10 +60,24 @@ export async function main(): Promise<void> {
     retry: { retries: 5 },
   });
 
-  // ── Bronze pipeline (existing) ──────────────────────────────────────────────
+  // ── Audit writer (R3/REC-1: pixel.brand_mismatch) ───────────────────────────
+  // audit_log has RLS DISABLED (cross-brand SoR); isolation is the mandatory
+  // WHERE brand_id filter inside DbAuditWriter. brain_app holds INSERT+SELECT on it.
+  const auditPool = new Pool({ connectionString: dbUrl, max: 3, idleTimeoutMillis: 30_000 });
+  const auditDbClient: AuditDbClient = {
+    query: async (sql, params) => {
+      const r = await auditPool.query(sql, params);
+      return { rows: r.rows as never[], rowCount: r.rowCount };
+    },
+  };
+  const auditWriter = new DbAuditWriter(auditDbClient);
+
+  // ── Bronze pipeline (LIVE collector lane — R2/R3 gate ON) ───────────────────
   const dedup = new RedisDedupAdapter(redisUrl);
   const bronze = new BronzeRepository(dbUrl);
-  const useCase = new ProcessEventUseCase(dedup, bronze);
+  // enforceTenantDerivation defaults TRUE: derive brand_id from install_token, quarantine
+  // on unresolved/mismatch/absent-consent; audit writes pixel.brand_mismatch (R2/R3).
+  const useCase = new ProcessEventUseCase(dedup, bronze, auditWriter);
   const consumer = new CollectorEventConsumer(kafka, useCase, topic, groupId);
 
   // ── Identity bridge (D-7: same process, no new deployable) ──────────────────
@@ -92,7 +107,12 @@ export async function main(): Promise<void> {
   const ledgerWriter = new LedgerWriter(dbUrl);
   const backfillDedup = new RedisDedupAdapter(redisUrl);
   const backfillBronze = new BronzeRepository(dbUrl);
-  const backfillProcessEvent = new ProcessEventUseCase(backfillDedup, backfillBronze);
+  // Backfill-order lane: enforceTenantDerivation=FALSE — these events carry NO install_token
+  // (event_name='order.backfill.v1'); their brand_id is already server-trusted (derived from
+  // the authenticated connector). The R2 browser-spoofing gate does not apply (architecture §5).
+  const backfillProcessEvent = new ProcessEventUseCase(
+    backfillDedup, backfillBronze, undefined, /* enforceTenantDerivation */ false,
+  );
   const backfillConsumer = new BackfillOrderConsumer(
     kafka, backfillProcessEvent, ledgerWriter, backfillTopic, backfillGroupId,
   );
@@ -140,6 +160,7 @@ export async function main(): Promise<void> {
     await backfillDedup.quit();
     await bronze.end();
     await backfillBronze.end();
+    await auditPool.end();
     await identityRepo.end();
     await ledgerWriter.end();
     await liveLedgerWriter.end();

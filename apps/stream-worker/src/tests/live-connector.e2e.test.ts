@@ -131,7 +131,7 @@ async function writeToBronze(
   eventBuf: Buffer,
   _brandId: string,
   _eventId: string,
-): Promise<'written' | 'dedup_hit' | 'pk_conflict' | 'invalid'> {
+): Promise<'written' | 'dedup_hit' | 'pk_conflict' | 'quarantined' | 'invalid'> {
   const result = await useCase.execute(eventBuf, new Date().toISOString());
   return result.outcome;
 }
@@ -206,7 +206,9 @@ beforeAll(async () => {
   await dedup.connect();
   bronze = new BronzeRepository(BRAIN_APP_DB_URL);
   ledgerWriter = new LedgerWriter(BRAIN_APP_DB_URL);
-  useCase = new ProcessEventUseCase(dedup, bronze);
+  // enforceTenantDerivation=false: order.live.v1 / connector events carry a server-trusted
+  // brand_id, no install_token — the R2 browser-spoofing gate does not apply here.
+  useCase = new ProcessEventUseCase(dedup, bronze, undefined, false);
 
   // Seed test brands + connector (via superPool — NEVER touches 60d543dc)
   await seedTestBrand(superPool, BRAND_A);

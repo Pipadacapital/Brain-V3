@@ -1,0 +1,24 @@
+{
+  "req_id": "feat-collection-foundation",
+  "stage": 5,
+  "role": "qa-engineer",
+  "mode": "FULL",
+  "verdict": "PASS",
+  "model": "claude-opus-4-8[1m]",
+  "negative_control": [
+    {
+      "path": "apps/stream-worker/src/application/ProcessEventUseCase.ts",
+      "protection_removed": "R2 tenant-key derivation: disabled the claimedBrandId!==derivedBrandId quarantine branch (if(false)) AND set brand_id=claimedBrandId instead of derivedBrandId, so a cross-brand browser claim writes to Bronze under the spoofed brand.",
+      "command": "vitest run --no-file-parallelism -t 'quarantines, writes 0 Bronze rows' src/tests/ingest-hardening.e2e.test.ts (against the live Redpanda/Redis/Postgres)",
+      "captured_red_output": "FAIL src/tests/ingest-hardening.e2e.test.ts > R2 cross-brand ... AssertionError: expected 'written' to be 'quarantined' // Object.is equality  Expected: 'quarantined'  Received: 'written'  at ingest-hardening.e2e.test.ts:258. Restored original (git diff byte-identical) and test returns to GREEN.",
+      "restored_green": true
+    },
+    {
+      "path": "apps/core/src/modules/analytics/internal/application/queries/get-recent-events.ts (read-path RLS, brain_app non-bypass)",
+      "protection_removed": "RLS scoping verified non-inert via the in-suite Track C negative control: a BRAND_A Bronze row read under brain_app + BRAND_B GUC returns 0 rows; under no GUC returns 0 rows; positive control under BRAND_A GUC returns 1. brain_app confirmed rolsuper=f rolbypassrls=f (does NOT bypass RLS) — so the isolation read is non-inert.",
+      "command": "vitest run ... 'a BRAND_A Bronze row is INVISIBLE under brain_app + BRAND_B GUC' + pg_roles check (rolbypassrls=f for brain_app)",
+      "captured_red_output": "GREEN with positive+negative controls present (cross-brand=0, no-GUC=0, own-brand=1); brain_app non-superuser non-bypassrls confirmed via pg_roles.",
+      "restored_green": true
+    }
+  ]
+}

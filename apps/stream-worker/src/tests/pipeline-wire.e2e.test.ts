@@ -245,7 +245,10 @@ describe('Full-wire pipeline E2E (F-QA-01): POST /collect → spool → Redpanda
 
     dedup = new RedisDedupAdapter(REDIS_URL);
     bronze = new BronzeRepository(BRAIN_APP_DATABASE_URL);
-    const useCase = new ProcessEventUseCase(dedup, bronze);
+    // enforceTenantDerivation=false: this suite proves the pipeline WIRING (collector →
+    // Redpanda → stream-worker → Bronze plumbing) with a trusted-brand fixture, NOT the R2
+    // token→brand gate (owned by ingest-hardening.e2e.test.ts, which drives a token-bearing event).
+    const useCase = new ProcessEventUseCase(dedup, bronze, undefined, false);
     consumer = new CollectorEventConsumer(kafka, useCase, TOPIC, CONSUMER_GROUP);
 
     await consumer.start();

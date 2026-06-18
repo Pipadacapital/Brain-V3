@@ -226,8 +226,11 @@ function JourneyMixData({
   stitch: StitchHasData | null;
 }) {
   const total = BigInt(mix.total);
-  const realN = Number(BigInt(mix.real_touch_count));
-  const synthN = Number(BigInt(mix.synthetic_touch_count));
+  // Core flags the whole window as synthetic or live via data_source (it does not return a
+  // per-touch real/synthetic split). Derive the honest coverage line from total + data_source.
+  const totalN = Number(total);
+  const synthN = mix.data_source === 'synthetic' ? totalN : 0;
+  const realN = mix.data_source === 'synthetic' ? 0 : totalN;
 
   const coverageSub =
     synthN > 0

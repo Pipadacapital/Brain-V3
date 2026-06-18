@@ -677,8 +677,8 @@ export type AnalyticsJourneyFirstTouchMixResponse =
       to: string;               // YYYY-MM-DD
       total: string;            // bigint string (total distinct journeys in range)
       by_channel: FirstTouchMixRow[];
-      synthetic_touch_count: string; // bigint string (coverage honesty — synthetic touches in window)
-      real_touch_count: string;      // bigint string (coverage honesty — real touches in window)
+      // Coverage honesty: core does not split touch counts; data_source flags the whole
+      // window as 'synthetic' or 'live' (the UI derives the real-vs-synthetic line from it).
       data_source: DataSource;
     };
 

@@ -947,6 +947,74 @@ export interface ConsentWindowConfigResponse {
   enforced: 'server';
 }
 
+// ── Conversion-Feedback / CAPI (Phase 6 — feat-capi-conversion-feedback Track C) ──────
+//
+// Read-only types for the stakeholder-visible Conversion-Feedback surface
+// (/analytics/conversion-feedback). These MIRROR core's BFF DTO field-for-field
+// (apps/core/.../get-capi-feedback.ts): bigint counts are strings; money is
+// value_minor (bigint string) + currency_code (formatted minor→major at render). The
+// blocked_by_consent count is the SLO=0 (non_consented_sends) made VISIBLE; the
+// would_send_dev count + dev_boundary flag drive the honest "would-send in dev" banner.
+// NO raw PII / no subject_hash — only counts + a truncated event_id (sha256, never PII).
+
+/** Passback log status (mirrors the 0034 CHECK constraint). */
+export type CapiPassbackStatus =
+  | 'sent'
+  | 'blocked_no_consent'
+  | 'would_send_dev'
+  | 'deleted'
+  | 'failed';
+
+/** Deletion log status (mirrors the 0034 CHECK constraint). */
+export type CapiDeletionStatus = 'requested' | 'deleted' | 'would_delete_dev' | 'failed';
+
+/** Summary band — passed-back vs blocked-by-consent + match-quality + dev boundary. */
+export type CapiFeedbackSummaryResponse =
+  | { state: 'no_data' }
+  | {
+      state: 'has_data';
+      platform: 'meta';
+      passed_back: string;        // bigint string — sent + would_send_dev
+      sent: string;               // bigint string — REAL live sends (0 in dev; never faked)
+      would_send_dev: string;     // bigint string — matched & gated but not sent (no creds)
+      blocked_by_consent: string; // bigint string — the SLO=0 made visible
+      deleted: string;            // bigint string — rows superseded by retroactive deletion
+      failed: string;             // bigint string — real send error (prod only)
+      deletion_requests: string;  // bigint string — capi_deletion_log row count
+      match_quality_pct: number | null; // 0..100 two-dp; null when nothing passed back
+      avg_match_keys: number | null;    // 0..4 one-dp; null when nothing passed back
+      dev_boundary: boolean;      // TRUE when any row is 'would_send_dev'
+    };
+
+/** One passback event row (truncated event_id — NEVER PII, no subject_hash). */
+export interface CapiFeedbackEventRow {
+  event_id_short: string;       // first 12 hex of the deterministic sha256 event_id
+  status: CapiPassbackStatus;
+  block_reason: string | null;  // can_contact() reason when blocked (e.g. 'consent_absent')
+  match_key_count: number;      // 0..4 — Meta match keys present (em/ph/fbc/fbp)
+  value_minor: string;          // bigint string (I-S07) — formatted minor→major at render
+  currency_code: string;        // 'INR' | 'AED' | 'SAR'
+  occurred_at: string;          // ISO timestamp (order occurred_at / event_time)
+  recorded_at: string;          // ISO timestamp (when the passback decision was logged)
+}
+
+export type CapiFeedbackEventsResponse =
+  | { state: 'no_data' }
+  | { state: 'has_data'; events: CapiFeedbackEventRow[] };
+
+/** One retroactive-deletion request row (no subject_hash — the consent key never leaves). */
+export interface CapiFeedbackDeletionRow {
+  status: CapiDeletionStatus;
+  event_count: number;          // prior passback events targeted by this deletion
+  requested_at: string;         // ISO timestamp
+  completed_at: string | null;  // ISO timestamp; null until completed
+  latency_seconds: number | null; // requested→completed seconds; null if pending
+}
+
+export type CapiFeedbackDeletionsResponse =
+  | { state: 'no_data' }
+  | { state: 'has_data'; deletions: CapiFeedbackDeletionRow[] };
+
 // ── Keyset pagination ─────────────────────────────────────────────────────────
 
 export interface PaginatedResponse<T> {

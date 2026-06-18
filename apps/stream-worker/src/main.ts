@@ -29,6 +29,9 @@ import { IdentityBridgeConsumer } from './identity-bridge/IdentityBridgeConsumer
 import { ConsentSuppressorConsumer } from './interfaces/consumers/ConsentSuppressorConsumer.js';
 import { ProjectConsentUseCase } from './application/ProjectConsentUseCase.js';
 import { ConsentRepository } from './infrastructure/pg/ConsentRepository.js';
+import { CapiDeletionConsumer } from './interfaces/consumers/CapiDeletionConsumer.js';
+import { RequestCapiDeletionUseCase } from './application/RequestCapiDeletionUseCase.js';
+import { CapiDeletionRepository } from './infrastructure/pg/CapiDeletionRepository.js';
 import { BackfillOrderConsumer } from './interfaces/consumers/BackfillOrderConsumer.js';
 import { LiveLedgerBridgeConsumer } from './interfaces/consumers/LiveLedgerBridgeConsumer.js';
 import { SettlementLedgerConsumer } from './interfaces/consumers/SettlementLedgerConsumer.js';
@@ -54,6 +57,13 @@ export async function main(): Promise<void> {
   // updating consent-suppressor.e2e.test.ts.
   const consentSuppressorGroupId =
     process.env['CONSENT_SUPPRESSOR_CONSUMER_GROUP_ID'] ?? 'stream-worker-consent-suppressor';
+  // CAPI retroactive-deletion (feat-capi-conversion-feedback / Phase 6): a SEPARATE
+  // consumer group on the SAME live topic (no new topic, no new deployable — I-E05).
+  // On an 'advertising' consent withdrawal/erasure → records a capi_deletion_log request
+  // within the DPDP ≤15min withdrawal-propagation SLA. WIRED HERE: do NOT remove without
+  // updating capi-deletion.e2e.test.ts.
+  const capiDeletionGroupId =
+    process.env['CAPI_DELETION_CONSUMER_GROUP_ID'] ?? 'stream-worker-capi-deletion';
   // Live-ledger bridge (ORCH-LV-H1 fix): separate consumer group on the live topic — mirrors
   // IdentityBridgeConsumer pattern. Does NOT double-write Bronze (CollectorEventConsumer handles
   // Bronze). Filters to order.live.v1 events only; routes provisional_recognition / rto_reversal.
@@ -132,6 +142,22 @@ export async function main(): Promise<void> {
   const projectConsentUseCase = new ProjectConsentUseCase(saltProvider, consentRepo);
   const consentSuppressorConsumer = new ConsentSuppressorConsumer(
     kafka, projectConsentUseCase, topic, consentSuppressorGroupId,
+  );
+
+  // ── CAPI retroactive-deletion consumer (feat-capi-conversion-feedback) ───────
+  // Same live topic, separate consumer group. Reuses the SAME SaltProvider (the one
+  // sanctioned per-brand hasher — D-2 hard-crash on salt failure) so the deletion's
+  // subject_hash equals the consent_record / capi_passback_log subject_hash and targets
+  // the right prior passbacks. Default-closed: in dev (no Meta creds) the request is
+  // recorded as 'would_delete_dev' — NOTHING is sent to Meta. hasMetaCreds is derived
+  // from env (false in dev); prod wires the Secrets Manager fetch (platform follow-up).
+  const capiHasMetaCreds = process.env['META_CAPI_CREDS_WIRED'] === 'true';
+  const capiDeletionRepo = new CapiDeletionRepository(dbUrl);
+  const requestCapiDeletionUseCase = new RequestCapiDeletionUseCase(
+    saltProvider, capiDeletionRepo, capiHasMetaCreds,
+  );
+  const capiDeletionConsumer = new CapiDeletionConsumer(
+    kafka, requestCapiDeletionUseCase, topic, capiDeletionGroupId,
   );
 
   // ── Backfill lane (ADR-BF-7 / ADR-BF-8 / ADR-BF-9) ────────────────────────
@@ -232,6 +258,7 @@ export async function main(): Promise<void> {
       consumer.stop(),
       identityConsumer.stop(),
       consentSuppressorConsumer.stop(),
+      capiDeletionConsumer.stop(),
       backfillConsumer.stop(),
       liveLedgerConsumer.stop(),
       settlementLedgerConsumer.stop(),
@@ -241,6 +268,7 @@ export async function main(): Promise<void> {
     ]);
     await syncClaimerPool.end();
     await consentRepo.end();
+    await capiDeletionRepo.end();
     await dedup.quit();
     await backfillDedup.quit();
     await bronze.end();
@@ -275,6 +303,15 @@ export async function main(): Promise<void> {
   console.info(`[stream-worker] starting consent suppressor — topic=${topic} group=${consentSuppressorGroupId}`);
   await consentSuppressorConsumer.start();
   console.info('[stream-worker] consent suppressor consumer running');
+
+  // ── CAPI retroactive-deletion consumer (feat-capi-conversion-feedback MANDATORY WIRE) ──
+  // Same live topic, independent consumer group. On an 'advertising' consent withdrawal/
+  // erasure → records a capi_deletion_log request within the DPDP ≤15min SLA. Default-closed
+  // (dev: 'would_delete_dev', NOTHING sent). WIRED HERE: do NOT remove without updating
+  // capi-deletion.e2e.test.ts.
+  console.info(`[stream-worker] starting capi-deletion consumer — topic=${topic} group=${capiDeletionGroupId}`);
+  await capiDeletionConsumer.start();
+  console.info('[stream-worker] capi-deletion consumer running');
 
   // ── Backfill lane consumer (ADR-BF-7 / ADR-BF-8 / ADR-BF-9) ───────────────
   // Separate from live lane: backfillTopic != topic → Redpanda isolation guarantee.

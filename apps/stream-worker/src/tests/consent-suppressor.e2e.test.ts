@@ -166,8 +166,10 @@ describe('projection: consent_flags event → consent_record rows', () => {
     });
     const r = await useCase.execute(event, new Date().toISOString());
     expect(r.outcome).toBe('projected');
-    expect(r.recordCount).toBe(4);
-    expect(r.tombstoneCount).toBe(0);
+    // 5 categories (Phase 6 added 'advertising'); the fixture omits advertising →
+    // default-closed → projected as a withdrawn record + 1 tombstone.
+    expect(r.recordCount).toBe(5);
+    expect(r.tombstoneCount).toBe(1);
     expect(r.subjectHash).toMatch(/^[0-9a-f]{64}$/);
     if (r.subjectHash) subjectHashesA.push(r.subjectHash);
 
@@ -190,9 +192,10 @@ describe('tombstone-on-withdrawal: marketing=false → tombstone + suppressed', 
     });
     const r = await useCase.execute(event, new Date().toISOString());
     expect(r.outcome).toBe('projected');
-    expect(r.recordCount).toBe(4);
-    // marketing is the only withdrawn category → exactly one tombstone
-    expect(r.tombstoneCount).toBe(1);
+    // 5 categories (Phase 6 'advertising'); the fixture omits advertising (default-closed).
+    expect(r.recordCount).toBe(5);
+    // marketing=false + advertising-omitted-default-false → two withdrawn → two tombstones.
+    expect(r.tombstoneCount).toBe(2);
     if (r.subjectHash) subjectHashesA.push(r.subjectHash);
 
     const s = await isSuppressed(BRAND_A, r.subjectHash!, 'marketing');
@@ -215,7 +218,7 @@ describe('suppression-derivation fail-closed (DPDP §13.4)', () => {
 
 // ── Test 4: replay idempotency ───────────────────────────────────────────────
 describe('replay idempotency (D-4): 3× same event → same rows', () => {
-  it('3× the same consent event → exactly 4 records + 1 tombstone (ON CONFLICT DO NOTHING)', async () => {
+  it('3× the same consent event → exactly 5 records + 3 tombstones (ON CONFLICT DO NOTHING)', async () => {
     const email = `consent-replay-${Date.now()}@example.com`;
     const eventId = randomUUID();
     const flags = { analytics: true, marketing: false, personalization: false, ai_processing: true };
@@ -238,10 +241,10 @@ describe('replay idempotency (D-4): 3× same event → same rows', () => {
       `SELECT COUNT(*)::text n FROM consent_tombstone WHERE brand_id=$1 AND subject_hash=$2`,
       [BRAND_A, subjectHash],
     );
-    // 4 categories → 4 records; marketing+personalization withdrawn → 2 tombstones.
-    // Idempotent: replay does NOT multiply them.
-    expect(parseInt(recCount.rows[0]!.n, 10)).toBe(4);
-    expect(parseInt(tombCount.rows[0]!.n, 10)).toBe(2);
+    // 5 categories → 5 records; marketing+personalization withdrawn AND advertising
+    // omitted (default-closed) → 3 tombstones. Idempotent: replay does NOT multiply them.
+    expect(parseInt(recCount.rows[0]!.n, 10)).toBe(5);
+    expect(parseInt(tombCount.rows[0]!.n, 10)).toBe(3);
   }, 30_000);
 });
 

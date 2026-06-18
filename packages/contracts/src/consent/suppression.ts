@@ -18,20 +18,27 @@
  */
 
 /**
- * The 4 DPDP lawful-basis consent categories (mirrors the `consent_flags` envelope
+ * The 5 DPDP lawful-basis consent categories (mirrors the `consent_flags` envelope
  * field on CollectorEventV1 and the consent_record.category CHECK constraint).
+ *
+ * `advertising` (Phase 6) is the lawful basis for passing realized conversions back
+ * to ad platforms (Meta CAPI). It is DISTINCT from `marketing`: a subject may consent
+ * to receive marketing email yet NOT to having their conversion hashed-and-sent to an
+ * ad platform (DPDP purpose-limitation). Additive — existing rows are unaffected.
  */
 export type ConsentCategory =
   | 'analytics'
   | 'marketing'
   | 'personalization'
-  | 'ai_processing';
+  | 'ai_processing'
+  | 'advertising';
 
 export const CONSENT_CATEGORIES: readonly ConsentCategory[] = [
   'analytics',
   'marketing',
   'personalization',
   'ai_processing',
+  'advertising',
 ] as const;
 
 /** Why a subject is suppressed for a category (null when NOT suppressed). */

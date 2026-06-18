@@ -183,6 +183,39 @@ export function hashAllIdentifiers(
   return result;
 }
 
+// ── Meta CAPI match hash (UNSALTED — the Meta-mandated match format) ──────────
+
+/**
+ * Compute the Meta CAPI advanced-matching hash for an identifier (Phase 6).
+ *
+ * Meta's Conversions API matches `em`/`ph` user-data by `sha256(normalized_value)`
+ * with NO secret salt — Meta hashes their own copy of the value identically, so a
+ * salted hash would never match (0% match quality). This is the ONE place in the
+ * system an UNSALTED hash leaves the boundary, and it is the format Meta requires.
+ *
+ * This is NOT a second hasher: it reuses `normalizeIdentifier()` (the SAME
+ * normalization used everywhere) and the SAME `sha256Hex`. Only the per-brand salt
+ * is omitted, exactly as the Meta match spec mandates.
+ *
+ * INVARIANT: the raw `value` is read transiently at the wire boundary (from the
+ * contact_pii vault, send_service role) and discarded immediately. Only the returned
+ * 64-hex digest ever travels — the raw PII is NEVER stored or logged (I-S02).
+ *
+ * @param value       Raw identifier (email / phone). Normalized then hashed.
+ * @param type        'email' | 'phone' (drives normalization; E.164 for phone).
+ * @param regionCode  For phone normalization (default 'IN').
+ * @returns           64-char lowercase hex SHA-256 of the normalized value. NEVER raw PII.
+ */
+export function metaMatchHash(
+  value: string,
+  type: Extract<IdentifierType, 'email' | 'phone'>,
+  regionCode = 'IN',
+): string {
+  const normalized = normalizeIdentifier(value, type, regionCode);
+  // NO salt — Meta's match spec is sha256 of the normalized value alone.
+  return sha256Hex(normalized);
+}
+
 // ── PII vault reference helper ────────────────────────────────────────────────
 
 /**

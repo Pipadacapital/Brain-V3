@@ -85,6 +85,27 @@ export type {
   ConsentWindowConfigResult,
 } from './internal/application/queries/get-consent-compliance.js';
 
+// Phase 6 Conversion-Feedback / CAPI surface (feat-capi-conversion-feedback Track C) — the
+// three brand-scoped reads behind /analytics/conversion-feedback over capi_passback_log +
+// capi_deletion_log (migration 0034). Counts + truncated event_id only (NO raw PII / no
+// subject_hash); fail-closed 'no_data' when the 0034 tables are not yet migrated. The
+// blocked_by_consent count is the SLO=0 (non_consented_sends) made VISIBLE; would_send_dev +
+// dev_boundary surface the honest dev posture (matched & gated, but not sent — no live creds).
+export {
+  getCapiFeedbackSummary,
+  getCapiFeedbackEvents,
+  getCapiFeedbackDeletions,
+} from './internal/application/queries/get-capi-feedback.js';
+export type {
+  CapiFeedbackSummaryResult,
+  CapiFeedbackEventsResult,
+  CapiFeedbackEventRow,
+  CapiFeedbackDeletionsResult,
+  CapiFeedbackDeletionRow,
+  CapiPassbackStatus,
+  CapiDeletionStatus,
+} from './internal/application/queries/get-capi-feedback.js';
+
 // Phase 5 Attribution (feat-attribution-ledger) — attributed-by-channel + reconciliation + channel ROAS
 // over attribution_credit_ledger (Postgres Gold, 0032) via the metric-engine named seams (ADR-002).
 export { getAttributionByChannel } from './internal/application/queries/get-attribution-by-channel.js';

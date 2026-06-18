@@ -49,12 +49,13 @@ export interface ProjectConsentResult {
   reason?: string;
 }
 
-/** The 4 DPDP lawful-basis categories carried on the consent_flags envelope field. */
+/** The 5 DPDP lawful-basis categories carried on the consent_flags envelope field. */
 const CONSENT_CATEGORIES = [
   'analytics',
   'marketing',
   'personalization',
   'ai_processing',
+  'advertising',
 ] as const;
 type ConsentCategory = (typeof CONSENT_CATEGORIES)[number];
 
@@ -63,6 +64,7 @@ interface ConsentFlags {
   marketing: boolean;
   personalization: boolean;
   ai_processing: boolean;
+  advertising: boolean;
 }
 
 export class ProjectConsentUseCase {
@@ -179,7 +181,10 @@ export class ProjectConsentUseCase {
     if (!raw || typeof raw !== 'object') return null;
 
     const get = (k: ConsentCategory): boolean => raw[k] === true;
-    // Require all 4 keys to be present as booleans — a partial object is malformed.
+    // Require the original 4 keys to be present as booleans — a partial object is
+    // malformed. `advertising` (Phase 6) is additive-optional: a MISSING key defaults
+    // to false (default-closed) so already-emitted events stay valid AND fail-closed
+    // (FULL_TRANSITIVE-safe — no break on the existing wire).
     if (
       typeof raw['analytics'] !== 'boolean' ||
       typeof raw['marketing'] !== 'boolean' ||
@@ -193,6 +198,7 @@ export class ProjectConsentUseCase {
       marketing: get('marketing'),
       personalization: get('personalization'),
       ai_processing: get('ai_processing'),
+      advertising: get('advertising'), // missing → false (default-closed).
     };
   }
 

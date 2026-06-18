@@ -117,6 +117,9 @@ importers:
       '@brain/observability':
         specifier: workspace:*
         version: link:../../packages/observability
+      '@brain/pixel-sdk':
+        specifier: workspace:*
+        version: link:../../packages/pixel-sdk
       '@brain/razorpay-mapper':
         specifier: workspace:*
         version: link:../../packages/razorpay-mapper
@@ -224,6 +227,9 @@ importers:
       '@brain/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@brain/pixel-sdk':
+        specifier: workspace:*
+        version: link:../../packages/pixel-sdk
       '@brain/ui':
         specifier: workspace:*
         version: link:../../packages/ui

@@ -101,12 +101,13 @@ export class PgPixelInstallationRepository implements IPixelInstallationReposito
       const result = await client.query<PixelInstallationRow>(
         ctx,
         `UPDATE pixel_installation
-         SET installed_at = $1, updated_at = $2
-         WHERE id = $3 AND brand_id = $4
+         SET installed_at = $1, updated_at = $2, target_host = $3
+         WHERE id = $4 AND brand_id = $5
          RETURNING id, brand_id, install_token, target_host, installed_at, created_at, updated_at`,
         [
           installation.installedAt?.toISOString() ?? null,
           installation.updatedAt.toISOString(),
+          installation.targetHost,
           installation.id,
           installation.brandId,
         ],

@@ -353,7 +353,27 @@ export async function main(): Promise<void> {
   const authServiceConfig = { jwtSigningSecret: config.jwtSigningSecret };
   const authService = new AuthService(pool, auditWriter, notificationService, authServiceConfig, rawPgPool);
   const workspaceService = new WorkspaceService(pool, auditWriter);
-  const brandService = new BrandService(pool, auditWriter);
+
+  // Pixel provision wiring (ADR-4): construct the idempotent installation command
+  // BEFORE BrandService so brand-create-with-website can auto-provision the per-brand
+  // pixel_installation server-side. brandId flows ONLY from the just-written brand.id.
+  const pixelInstallationRepo = new PgPixelInstallationRepository(pool);
+  const pixelStatusRepo = new PgPixelStatusRepository(pool);
+  const getOrCreateInstallation = new GetOrCreatePixelInstallationCommand(
+    pixelInstallationRepo,
+    pixelStatusRepo,
+    async (eventName: string, payload: Record<string, unknown>) => {
+      app.log.info({ event: eventName, payload }, '[core] domain event emitted');
+    },
+  );
+
+  const brandService = new BrandService(
+    pool,
+    auditWriter,
+    async (brandId, targetHost, idempotencyKey) => {
+      await getOrCreateInstallation.execute({ brandId, targetHost, idempotencyKey });
+    },
+  );
   const inviteService = new InviteService(pool, auditWriter, notificationService, rawPgPool);
 
   // Register workspace-access + BFF routes.
@@ -1152,15 +1172,8 @@ export async function main(): Promise<void> {
   });
 
   // ── Pixel routes (HIGH-MOUNT-01) ───────────────────────────────────────────
-  const pixelInstallationRepo = new PgPixelInstallationRepository(pool);
-  const pixelStatusRepo = new PgPixelStatusRepository(pool);
-  const getOrCreateInstallation = new GetOrCreatePixelInstallationCommand(
-    pixelInstallationRepo,
-    pixelStatusRepo,
-    async (_eventName: string, _payload: Record<string, unknown>) => {
-      app.log.info({ event: _eventName, payload: _payload }, '[core] domain event emitted');
-    },
-  );
+  // pixelInstallationRepo / pixelStatusRepo / getOrCreateInstallation are constructed
+  // earlier (above BrandService) so brand-create can auto-provision (ADR-4).
   const verifyPixel = new VerifyPixelCommand(
     pixelInstallationRepo,
     pixelStatusRepo,

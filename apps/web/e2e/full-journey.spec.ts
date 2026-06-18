@@ -48,7 +48,10 @@ test('full application journey — register to logout, the whole app', async ({ 
   await test.step('4 · Onboarding Step 2 — create brand (INR / Asia-Kolkata defaults)', async () => {
     await page.getByTestId('input-brand-name').fill('Journey Brand');
     await expect(page.getByTestId('select-currency-code')).toBeVisible();
-    await page.getByTestId('btn-create-brand').click();
+    // Skip the website → tracking interstitial (add-website state) → continue to Step 3.
+    await page.getByTestId('btn-skip-website').click();
+    await expect(page).toHaveURL(/\/onboarding\/tracking/);
+    await page.getByTestId('btn-tracking-continue').click();
     await expect(page).toHaveURL(/\/onboarding\/integrations/);
   });
 

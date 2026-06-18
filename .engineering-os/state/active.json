@@ -447,15 +447,22 @@
       "last_journal_entry_at": "2026-06-17T22:46:30Z"
     },
     {
-      "req_id": "feat-ad-connectors",
-      "title": "Ad connectors (Meta+Google) slice 1",
+      "req_id": "feat-onboarding-website",
+      "title": "Onboarding website capture → auto-provision per-brand pixel → surface install snippet",
       "status": "awaiting-stakeholder",
       "stage": 7,
       "current_owner": "stakeholder",
       "lane": "high_stakes",
-      "run_dir": ".engineering-os/runs/2026-06-18T02-21-09Z__39d867__feat-ad-connectors__rishabhporwal",
-      "created_at": "2026-06-18T02:21:09Z",
-      "updated_at": "2026-06-18T05:10:00Z"
+      "run_dir": ".engineering-os/runs/2026-06-18T04-13-08Z__a1fbb8__feat-onboarding-website__rishabhporwal",
+      "updated_at": "2026-06-18T05:03:47Z",
+      "last_journal_entry_at": "2026-06-18T05:03:47Z",
+      "pipeline": {
+        "bounces": 1,
+        "bounce_detail": "r1: F-ADV-01 final-review BOUNCE (Single-Primitive violation — FE duplicated normalizeBrandHost, diverged on shop.com:8443) -> fix 22ca3b8 (FE-import-only: delete duplicate, import @brain/pixel-sdk at both call sites, add workspace dep) -> DELTA PASS",
+        "security": "PASS (0 CRIT/HIGH/MED; 1 LOW pre-existing public install_token at info-log)",
+        "final_review": "PASS / APPROVE (F-ADV-01 RESOLVED at HEAD 22ca3b8; web tsc EXIT 0; web vitest 9/9; pixel-sdk vitest 34/34; isolation spine untouched)",
+        "head": "22ca3b8"
+      }
     }
   ]
 }

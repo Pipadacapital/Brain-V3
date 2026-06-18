@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@brain/contracts": "workspace:*",
+    "@brain/pixel-sdk": "workspace:*",
     "@brain/ui": "workspace:*",
     "@hookform/resolvers": "^3.9.0",
     "@radix-ui/react-dialog": "^1.1.1",

@@ -1,16 +1,62 @@
 /**
- * M1 API types — sourced from packages/contracts (Track 0).
+ * M1 API types.
  *
- * NOTE: Track 0 (packages/contracts) will publish these as Zod schemas.
- * Until those are committed, we declare the TypeScript types here so the
- * frontend can typecheck without a running backend.
+ * The drift-prone analytics/dashboard/data-quality/ask READ DTOs are now DERIVED from the
+ * Zod single-source-of-truth in `@brain/contracts` (feat-shared-bff-read-contracts). Those
+ * covered surfaces are RE-EXPORTED below under their existing web alias names (so consuming
+ * components compile unchanged) — they are NOT hand-redeclared here anymore. The runtime
+ * `schema.parse()` boundary lives in `client.ts` (parseData), so a core<->web field mismatch
+ * throws a CLEAR field-named error at the seam instead of a deep `BigInt(undefined)`.
  *
- * BFF contract gap list (cross-track request to Track 0/1):
- *   - All types below need Zod schema counterparts in packages/contracts/src/api/m1.api.v1.ts
- *   - The BFF (frontend-api module) must expose all endpoints listed in §5.1 of the arch plan
- *
- * @see docs/.engineering-os/runs/.../03-architecture-plan.md §5.1
+ * Un-migrated DTOs below are still hand-declared (incremental).
  */
+
+// -- Covered BFF read DTOs -- DERIVED from @brain/contracts (single source of truth) --
+// Re-exported under existing web alias names so components compile unchanged.
+export type {
+  RevenueSnapshot as DashboardRealizedRevenueResponse,
+  KpiSummaryDto as AnalyticsKpiDto,
+  KpiSummary as AnalyticsKpiSummaryResponse,
+  AttributionReconciliation as AnalyticsAttributionReconciliationResponse,
+  ChannelRoasDto as ChannelRoasRow,
+  ChannelRoas as AnalyticsChannelRoasResponse,
+  FirstTouchMixRowDto as FirstTouchMixRow,
+  JourneyFirstTouchMix as AnalyticsJourneyFirstTouchMixResponse,
+  TimelineTouchDto as JourneyTouchpointRow,
+  JourneyTimeline as AnalyticsJourneyTimelineResponse,
+  JourneyStitchRate as AnalyticsJourneyStitchRateResponse,
+  OrderStatusMixRowDto as OrderStatusMixRow,
+  OrderStatusMix as AnalyticsOrderStatusMixResponse,
+  DqGradeRow as DqGradeCell,
+  DataQualitySummary as DataQualitySummaryResponse,
+  AskBrainBinding as AskBinding,
+  ComputedNumber as AskComputedNumber,
+  AskBrainResult as AskBrainResponse,
+  JourneyChannel,
+  LifecycleState as OrderLifecycleState,
+} from '@brain/contracts';
+
+// Local import for the names referenced WITHIN this file (re-exports above are not in local scope).
+import type {
+  ChannelContributionDto,
+  AttributionModelId as AttributionModel,
+} from '@brain/contracts';
+export type { ChannelContributionDto, AttributionModel };
+
+// Re-export the contract Schemas the client boundary parses against.
+export {
+  RevenueSnapshotSchema,
+  KpiSummarySchema,
+  AttributionByChannelSchema,
+  AttributionReconciliationSchema,
+  ChannelRoasSchema,
+  JourneyFirstTouchMixSchema,
+  JourneyTimelineSchema,
+  JourneyStitchRateSchema,
+  OrderStatusMixSchema,
+  DataQualitySummarySchema,
+  AskBrainResultSchema,
+} from '@brain/contracts';
 
 // ── Error envelope (matches sample.api.v1.ts pattern) ───────────────────────
 
@@ -377,13 +423,6 @@ export interface DashboardOnboardingResponse {
  * realized/provisional: Record<currency_code, string> (minor-unit string from BFF bigint).
  * null only when state === 'no_data'. Never blended or summed (D-4).
  */
-export interface DashboardRealizedRevenueResponse {
-  state: 'no_data' | 'has_data';
-  as_of: string;
-  realized: Record<string, string> | null;
-  provisional: Record<string, string> | null;
-}
-
 // ── Analytics (Phase 1) ───────────────────────────────────────────────────────
 // All amount fields are bigint-serialized strings (D-1). Never floats.
 
@@ -397,19 +436,6 @@ export interface AnalyticsTimeseriesBucket {
 export type AnalyticsTimeseriesResponse =
   | { state: 'no_data'; from: string | null; to: string | null; grain: string }
   | { state: 'has_data'; from: string; to: string; grain: string; buckets: AnalyticsTimeseriesBucket[] };
-
-export interface AnalyticsKpiDto {
-  currency_code: string;
-  realized_minor: string;
-  provisional_minor: string;
-  order_count: string;
-  aov_minor: string;
-  rto_rate_pct: string;
-}
-
-export type AnalyticsKpiSummaryResponse =
-  | { state: 'no_data'; as_of: string }
-  | { state: 'has_data'; as_of: string; kpis: AnalyticsKpiDto[] };
 
 export interface AnalyticsRecognitionItem {
   label: 'provisional' | 'settling' | 'finalized';
@@ -539,17 +565,7 @@ export type DqTrustTier = 'trusted' | 'estimated' | 'untrusted';
  */
 export type DqFreshnessSlaStatus = 'green' | 'at_risk' | 'breached';
 
-/** One latest graded check per (category, target). */
-export interface DqGradeCell {
-  category: DqCheckCategory;
-  target: string; // table/topic/subject, e.g. 'bronze_events', 'silver.order_state'
-  grade: DqLetterGrade;
-  passing: boolean;
-  observed: string; // raw measured signal as text (e.g. '42' minutes, '0.0123' null-rate)
-  threshold: string; // the SLA measured against (e.g. '60', '0.0')
-  checkedAt: string | null; // ISO timestamp of the check run
-}
-
+/** DqGradeCell is DERIVED from @brain/contracts DqGradeRow (re-exported at top of file). */
 /** The gate decision the metric-engine computes from effective_confidence. */
 export interface DqGateDecision {
   tier: DqTrustTier;
@@ -564,21 +580,9 @@ export interface DqCoverage {
   expected: number; // distinct (category,target) expected to be graded
 }
 
-export type DataQualitySummaryResponse =
-  | { state: 'no_data' }
-  | {
-      state: 'has_data';
-      /** Per-category × per-target latest grade matrix (core DTO field name: `grades`). */
-      grades: DqGradeCell[];
-      /** Freshness-SLA roll-up across the freshness checks. */
-      freshnessSla: DqFreshnessSlaStatus;
-      /** dq_grade coverage — the success metric. */
-      coverage: DqCoverage;
-      /** effective_confidence = min(cost_confidence, attribution_confidence). */
-      effectiveConfidence: DqLetterGrade;
-      /** The trust gate decision (drives the Estimated/Untrusted banner). */
-      gate: DqGateDecision;
-    };
+// DataQualitySummaryResponse is DERIVED from @brain/contracts DataQualitySummary
+// (re-exported at top of file). The contract superset adds costConfidence /
+// attributionConfidence / tier — additive, components compile unchanged.
 
 // ── Settlements (Razorpay Track C — net-of-fees) ──────────────────────────────
 //
@@ -676,36 +680,6 @@ export type AnalyticsCheckoutFunnelResponse =
 // "Synthetic (dev)" badge: in dev the underlying ledger cod_* rows are synthetic
 // (real shape, synthetic source) — never presented as live.
 
-/** Canonical order lifecycle states (derived from realized_revenue_ledger.event_type). */
-export type OrderLifecycleState =
-  | 'placed'
-  | 'confirmed'
-  | 'delivered'
-  | 'cancelled'
-  | 'rto'
-  | 'refunded';
-
-/** One row of the status mix — counts + share + realized value for a lifecycle state. */
-export interface OrderStatusMixRow {
-  lifecycle_state: OrderLifecycleState;
-  count: string;          // bigint string (orders in this state)
-  share_pct: string | null; // 2dp string e.g. '42.50'; null when total = 0
-  value_minor: string;    // bigint string (minor units — realized order value in this state)
-}
-
-export type AnalyticsOrderStatusMixResponse =
-  | { state: 'no_data' }
-  | {
-      state: 'has_data';
-      from: string;            // YYYY-MM-DD (echoed range)
-      to: string;              // YYYY-MM-DD
-      currency_code: string;   // ISO 4217 — single brand currency (Slice 1)
-      total: string;           // bigint string (total orders in range)
-      terminal_count: string;  // bigint string (orders in a terminal state)
-      by_state: OrderStatusMixRow[];
-      data_source: DataSource;
-    };
-
 // ── Journey / first-touch (Silver tier — feat-journey-touchpoint Track 3) ──────
 //
 // The SECOND surface read from the Silver analytics tier (dbt → StarRocks
@@ -722,79 +696,6 @@ export type AnalyticsOrderStatusMixResponse =
 //
 // Channel is a deterministic CASE-ladder value (click_id → paid; else utm.medium;
 // else referrer → referral; else direct) — never a classifier (D-5: no ML/fuzzy).
-
-/** Canonical first-touch channels (deterministic CASE ladder in the dbt mart). */
-export type JourneyChannel =
-  | 'paid'
-  | 'paid_meta'
-  | 'paid_google'
-  | 'paid_tiktok'
-  | 'email'
-  | 'organic_social'
-  | 'referral'
-  | 'direct';
-
-/** One row of the first-touch channel mix — count + integer-basis-point share. */
-export interface FirstTouchMixRow {
-  channel: JourneyChannel;
-  count: string;            // bigint string (distinct journeys whose first touch is this channel)
-  share_pct: string | null; // 2dp string e.g. '42.50'; null when total = 0
-}
-
-export type AnalyticsJourneyFirstTouchMixResponse =
-  | { state: 'no_data' }
-  | {
-      state: 'has_data';
-      from: string;             // YYYY-MM-DD (echoed range)
-      to: string;               // YYYY-MM-DD
-      total: string;            // bigint string (total distinct journeys in range)
-      by_channel: FirstTouchMixRow[];
-      // Coverage honesty: core does not split touch counts; data_source flags the whole
-      // window as 'synthetic' or 'live' (the UI derives the coverage line from total + it).
-      data_source: DataSource;
-    };
-
-export type AnalyticsJourneyStitchRateResponse =
-  | { state: 'no_data' }
-  | {
-      state: 'has_data';
-      from: string;             // YYYY-MM-DD (echoed range)
-      to: string;               // YYYY-MM-DD
-      stitched: string;         // bigint string (distinct anon journeys stitched to a known brain_id)
-      total: string;            // bigint string (distinct anon journeys — the denominator)
-      hit_pct: string | null;   // 2dp string e.g. '37.50'; null when total = 0
-      data_source: DataSource;
-    };
-
-/** One ordered touch in a journey timeline (per-touch grain, touch_seq asc). */
-export interface JourneyTouchpointRow {
-  touch_seq: number;             // 1-based ordering within the journey
-  channel: JourneyChannel;
-  occurred_at: string;           // ISO timestamp (server-derived)
-  is_first_touch: boolean;
-  is_last_touch: boolean;
-  event_type: string;            // 'page.viewed' | 'cart.viewed' | 'cart.item_added'
-  utm_source: string | null;
-  utm_medium: string | null;
-  utm_campaign: string | null;
-  utm_term: string | null;
-  utm_content: string | null;
-  fbclid: string | null;
-  gclid: string | null;
-  ttclid: string | null;
-  referrer_host: string | null;
-  landing_path: string | null;
-}
-
-export type AnalyticsJourneyTimelineResponse =
-  | { state: 'no_data' }
-  | {
-      state: 'has_data';
-      brain_anon_id: string;     // the anon session id (core returns brain_anon_id, not order_id)
-      stitched: boolean;         // whether this journey resolved from a deterministic stitch map
-      touches: JourneyTouchpointRow[];
-      data_source: DataSource;
-    };
 
 // ── Attribution (Phase 5 — feat-attribution-ledger Track C) ────────────────────
 //
@@ -821,31 +722,21 @@ export type AnalyticsJourneyTimelineResponse =
 // journey data is thin (23 real touchpoints) so dev attribution is mostly synthetic —
 // NEVER presented as live.
 
-/** The 4 deterministic attribution models (position_based is the default). */
-export type AttributionModel =
-  | 'first_touch'
-  | 'last_touch'
-  | 'linear'
-  | 'position_based';
-
 /** Deterministic attribution-confidence grade (a floor over journey signal — NOT a model). */
 export type AttributionConfidenceGrade = 'strong' | 'partial' | 'weak';
 
 /** One channel's attributed contribution for the selected model + window.
- *  Mirrors core ChannelContributionDto ({channel, currency_code, contribution_minor}).
- *  share_pct / confidence_grade are OPTIONAL — core's by-channel response does not emit
- *  them today; the UI guards for their absence (they light up if core adds per-channel
- *  share/grade later). */
-export interface AttributedChannelRow {
-  channel: JourneyChannel;
-  currency_code: string;
-  /** SIGNED bigint string (minor units) — net of clawbacks. May be < gross, never floats. */
-  contribution_minor: string;
+ *  The base shape is DERIVED from @brain/contracts ChannelContributionDto (the validated,
+ *  single-source-of-truth core shape: {channel, currency_code, contribution_minor}).
+ *  share_pct / confidence_grade are UI-ONLY OPTIONAL additions — core's by-channel response
+ *  does not emit them today; the UI guards for their absence (they light up if core adds
+ *  per-channel share/grade later). The contract schema validates the core fields at the seam. */
+export type AttributedChannelRow = ChannelContributionDto & {
   /** 2dp share string of the attributed total; absent until core emits it. */
   share_pct?: string | null;
   /** Deterministic confidence grade for this channel's credited touches; absent until core emits it. */
   confidence_grade?: AttributionConfidenceGrade;
-}
+};
 
 // Field names mirror the core BFF response (get-attribution-by-channel): attributed_gmv_minor /
 // realized_gmv_minor / unattributed_minor / reconciliation_rate_pct / by_channel.
@@ -869,53 +760,6 @@ export type AnalyticsAttributionByChannelResponse =
       data_source: DataSource;
     };
 
-/**
- * The reconciliation residual — the CLOSED-SUM PARITY ORACLE made visible.
- * realized_gmv_minor = attributed_gmv_minor + unattributed_minor (exact, tolerance 0).
- */
-export type AnalyticsAttributionReconciliationResponse =
-  | { state: 'no_data'; from: string; to: string; model: AttributionModel }
-  | {
-      state: 'has_data';
-      from: string;
-      to: string;
-      model: AttributionModel;
-      currency_code: string | null; // ISO 4217 — null when brand has no ledger rows (metric engine)
-      /** SIGNED bigint string — realized GMV basis (the closed-sum total). */
-      realized_gmv_minor: string;
-      /** SIGNED bigint string — Σ channel_contribution_minor (attributed, net of clawbacks). */
-      attributed_gmv_minor: string;
-      /** SIGNED bigint string — realized − attributed (the unattributed residual; always rendered). */
-      unattributed_minor: string;
-      /** 2dp string — attributed ÷ realized × 100; null when realized = 0 (honest). */
-      reconciliation_rate_pct: string | null;
-      data_source: DataSource;
-    };
-
-/** One channel's unit economics — attributed revenue ÷ ad spend. */
-export interface ChannelRoasRow {
-  channel: JourneyChannel;
-  currency_code: string;
-  /** SIGNED bigint string (minor units) — attributed revenue, net of clawbacks. */
-  attributed_minor: string;
-  /** bigint string (minor units) — ad spend for the channel (from ad_spend_ledger). */
-  spend_minor: string;
-  /** Exact decimal string (attributed ÷ spend); null when spend = 0 (honest — no infinity). */
-  roas_ratio: string | null;
-}
-
-export type AnalyticsChannelRoasResponse =
-  | { state: 'no_data'; from: string; to: string; model: AttributionModel }
-  | {
-      state: 'has_data';
-      from: string;
-      to: string;
-      model: AttributionModel;
-      // NOTE: No top-level currency_code — core's ChannelRoasResult has_data does NOT include one.
-      // Per-channel currency_code lives in each ChannelRoasRow (ChannelRoasDto.currency_code).
-      rows: ChannelRoasRow[];
-      data_source: DataSource;
-    };
 
 // ── Tracking Center (Phase 1 Track C) ──────────────────────────────────────────
 // Pixel-collection health + the Event Explorer feed. NO raw PII — anonymized ids
@@ -1133,38 +977,6 @@ export type AskMetricId =
   | 'cost_confidence'
   | 'effective_confidence';
 
-/**
- * The resolved, validated binding the model selected (NEVER SQL, NEVER a number).
- * Mirrors core AskBrainBinding — snapshot_id lives HERE (not at the top level).
- */
-export interface AskBinding {
-  metric_id: AskMetricId;
-  metric_version: string; // e.g. 'v1'
-  /** The resolved, allow-listed params (date range / filters). Echoed for transparency. */
-  params: {
-    date_from?: string;
-    date_to?: string;
-    channel?: string;
-    [key: string]: string | undefined;
-  };
-  /** Reproducibility handle — re-running the binding at this snapshot yields the same number. */
-  snapshot_id: string;
-}
-
-/**
- * ComputedNumber — the certified figure the metric-engine computed (mirrors core ComputedNumber).
- *   - figure_kind:'money' → `money` is Record<currency_code, minor-unit string> (or null if no_data).
- *   - figure_kind:'none'  → a valid binding whose Ask-Brain figure path is not wired yet — NO
- *                           number is surfaced (honest; never fabricated).
- *   - no_data:true        → honest-empty: the brand has no data for this binding (no number shown).
- * Money is NEVER a scalar number — always the per-currency Record (I-S07).
- */
-export interface AskComputedNumber {
-  figure_kind: 'money' | 'none';
-  money: Record<string, string> | null;
-  no_data: boolean;
-}
-
 /** Trust tier — mirrors core TrustTier (CAPITALIZED, driving the banner; never colour-only). */
 export type AskTrustTier = 'Trusted' | 'Estimated' | 'Untrusted';
 
@@ -1179,24 +991,6 @@ export type AskConfidenceGrade = 'A+' | 'A' | 'B' | 'C' | 'D';
  *                 Honest-empty is number.no_data===true; not-wired is number.figure_kind==='none'.
  *   - 'refusal' → off-domain / unresolvable; NO binding, NO number ("no certified metric…").
  */
-export type AskBrainResponse =
-  | {
-      kind: 'answer';
-      binding: AskBinding;
-      number: AskComputedNumber;
-      /** Frozen confidence grade from getMetricTrust (Phase 7) — never recomputed in the UI. */
-      confidence_grade: AskConfidenceGrade;
-      /** Trust tier driving the Trusted/Estimated banner (never colour-only). */
-      trust_tier: AskTrustTier;
-      /** The appended ai_provenance row id (append-only audit handle). */
-      provenance_id: string;
-    }
-  | {
-      kind: 'refusal';
-      /** Honest "no certified metric answers this" — surfaced verbatim. NO number, NO binding. */
-      reason: string;
-    };
-
 export interface AskBrainRequest {
   /** The natural-language question. Sent in-memory only; the server persists REDACTED only. */
   question: string;

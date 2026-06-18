@@ -49,8 +49,8 @@ const METRIC_LABELS: Record<AskMetricId, string> = {
   effective_confidence: 'Effective confidence',
 };
 
-function metricLabel(id: AskMetricId): string {
-  return METRIC_LABELS[id] ?? id;
+function metricLabel(id: string): string {
+  return METRIC_LABELS[id as AskMetricId] ?? id;
 }
 
 // ── Binding badge — the resolved metric made visible ─────────────────────────

@@ -20,6 +20,11 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import {
+  MCP_TOOLS,
+  writeToolCount,
+  FORBIDDEN_TOOL_NAME_SUBSTRINGS,
+} from '@brain/ai-gateway-client';
 
 const BRAND_A = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const BRAND_B = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
@@ -139,6 +144,31 @@ describe('MCP scope authorization — Layer (d) isolation-fuzz (NN-2)', () => {
     // All tools must be in the read_ namespace
     for (const tool of tools) {
       expect(tool.startsWith('read_')).toBe(true);
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // I-S08 CI-BLOCKING — the REAL MCP tool registry (apps/core/.../ai/mcp/tools.ts).
+  // These assert against the ACTUAL exported registry, not the stub above. If a
+  // write/sql/mutate tool is ever added, writeToolCount becomes > 0 and CI FAILS.
+  // This is the structural ban on a write/text-to-SQL MCP tool (Phase 8, D5).
+  // ─────────────────────────────────────────────────────────────────────────
+  it('[I-S08 / CI-BLOCKING] real MCP registry write-tool count === 0', () => {
+    expect(writeToolCount).toBe(0);
+    // Derived independently from the registry as a second check (no drift).
+    const derived = MCP_TOOLS.filter((t) => t.access !== 'read').length;
+    expect(derived).toBe(0);
+    // The registry is non-empty (read tools DO exist — proves the assertion is live).
+    expect(MCP_TOOLS.length).toBeGreaterThan(0);
+    for (const t of MCP_TOOLS) expect(t.access).toBe('read');
+  });
+
+  it('[I-S08 / CI-BLOCKING] no MCP tool name contains sql/write/mutate/insert/update/delete', () => {
+    for (const t of MCP_TOOLS) {
+      const lower = t.name.toLowerCase();
+      for (const forbidden of FORBIDDEN_TOOL_NAME_SUBSTRINGS) {
+        expect(lower.includes(forbidden), `tool "${t.name}" contains forbidden "${forbidden}"`).toBe(false);
+      }
     }
   });
 

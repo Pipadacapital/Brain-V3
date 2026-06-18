@@ -533,6 +533,9 @@ importers:
 
   tools/isolation-fuzz:
     dependencies:
+      '@brain/ai-gateway-client':
+        specifier: workspace:*
+        version: link:../../packages/ai-gateway-client
       '@brain/db':
         specifier: workspace:*
         version: link:../../packages/db

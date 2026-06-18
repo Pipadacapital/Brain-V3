@@ -719,6 +719,114 @@ export type AnalyticsJourneyTimelineResponse =
       data_source: DataSource;
     };
 
+// ── Attribution (Phase 5 — feat-attribution-ledger Track C) ────────────────────
+//
+// The attributed-revenue / channel-ROAS surface. Reads the Gold attribution credit
+// ledger (logical gold.attribution_credit_ledger → physical Postgres 0032) via the
+// metric-engine sole read path (I-ST01 — the UI NEVER queries the ledger/StarRocks).
+//
+// THE INVARIANTS rendered here:
+//   - Money = BIGINT minor-unit SIGNED strings + currency_code (I-S07) — never floats,
+//     never /100. A clawback nets the credit, so a channel's contribution may be < the
+//     gross; the net is what we render (honest).
+//   - weight_fraction sums to 1.0 per order in the engine — the UI never re-apportions.
+//   - The CLOSED-SUM PARITY ORACLE is visibly rendered: Σ channel_contribution_minor +
+//     unattributed_minor = realized_gmv_minor. The residual (unattributed) is ALWAYS
+//     shown alongside — never hidden, never silently spread (METRICS.md §Rules).
+//   - attribution_reconciliation_rate = attributed ÷ realized × 100 (2dp string from the
+//     engine — never re-divided with floats in the client).
+//   - Channel ROAS = attributed_revenue ÷ ad_spend (joins ad_spend_ledger); honest null
+//     when spend = 0 (no fabricated infinity). Same-currency only (like blended_roas).
+//   - attribution_confidence grade (strong/partial/weak) stamped at credit time, carried
+//     verbatim — a deterministic floor over journey signal (NOT a model number).
+//
+// data_source ('synthetic' | 'live') drives the honest "Synthetic (dev)" badge: real
+// journey data is thin (23 real touchpoints) so dev attribution is mostly synthetic —
+// NEVER presented as live.
+
+/** The 4 deterministic attribution models (position_based is the default). */
+export type AttributionModel =
+  | 'first_touch'
+  | 'last_touch'
+  | 'linear'
+  | 'position_based';
+
+/** Deterministic attribution-confidence grade (a floor over journey signal — NOT a model). */
+export type AttributionConfidenceGrade = 'strong' | 'partial' | 'weak';
+
+/** One channel's attributed contribution for the selected model + window. */
+export interface AttributedChannelRow {
+  channel: JourneyChannel;
+  currency_code: string;
+  /** SIGNED bigint string (minor units) — net of clawbacks. May be < gross, never floats. */
+  contribution_minor: string;
+  /** 2dp share string of the attributed total (engine-computed); null when attributed ≤ 0. */
+  share_pct: string | null;
+  /** Deterministic confidence grade for this channel's credited touches (floor). */
+  confidence_grade: AttributionConfidenceGrade;
+}
+
+export type AnalyticsAttributionByChannelResponse =
+  | { state: 'no_data'; from: string; to: string; model: AttributionModel }
+  | {
+      state: 'has_data';
+      from: string; // YYYY-MM-DD (echoed range)
+      to: string;
+      model: AttributionModel;
+      currency_code: string; // ISO 4217 — single brand currency (Slice 1)
+      /** SIGNED bigint string — Σ channel_contribution_minor (attributed total, net). */
+      attributed_minor: string;
+      channels: AttributedChannelRow[];
+      data_source: DataSource;
+    };
+
+/**
+ * The reconciliation residual — the CLOSED-SUM PARITY ORACLE made visible.
+ * realized_minor = attributed_minor + unattributed_minor (exact, tolerance 0).
+ */
+export type AnalyticsAttributionReconciliationResponse =
+  | { state: 'no_data'; from: string; to: string; model: AttributionModel }
+  | {
+      state: 'has_data';
+      from: string;
+      to: string;
+      model: AttributionModel;
+      currency_code: string;
+      /** SIGNED bigint string — realized GMV basis (the closed-sum total). */
+      realized_minor: string;
+      /** SIGNED bigint string — Σ channel_contribution_minor (attributed, net of clawbacks). */
+      attributed_minor: string;
+      /** SIGNED bigint string — realized − attributed (the unattributed residual; always rendered). */
+      unattributed_minor: string;
+      /** 2dp string — attributed ÷ realized × 100; null when realized = 0 (honest). */
+      reconciliation_rate_pct: string | null;
+      data_source: DataSource;
+    };
+
+/** One channel's unit economics — attributed revenue ÷ ad spend. */
+export interface ChannelRoasRow {
+  channel: JourneyChannel;
+  currency_code: string;
+  /** SIGNED bigint string (minor units) — attributed revenue, net of clawbacks. */
+  attributed_minor: string;
+  /** bigint string (minor units) — ad spend for the channel (from ad_spend_ledger). */
+  spend_minor: string;
+  /** Exact decimal string (attributed ÷ spend); null when spend = 0 (honest — no infinity). */
+  roas_ratio: string | null;
+}
+
+export type AnalyticsChannelRoasResponse =
+  | { state: 'no_data'; from: string; to: string; model: AttributionModel }
+  | {
+      state: 'has_data';
+      from: string;
+      to: string;
+      model: AttributionModel;
+      currency_code: string;
+      rows: ChannelRoasRow[];
+      data_source: DataSource;
+    };
+
 // ── Tracking Center (Phase 1 Track C) ──────────────────────────────────────────
 // Pixel-collection health + the Event Explorer feed. NO raw PII — anonymized ids
 // + aggregate counts only. All count fields are bigint-serialized strings (D-1).

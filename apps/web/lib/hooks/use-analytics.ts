@@ -12,6 +12,7 @@
 
 import { useQuery } from '@tanstack/react-query';
 import { analyticsApi } from '@/lib/api/client';
+import type { AttributionModel } from '@/lib/api/types';
 
 export const ANALYTICS_QUERY_KEY = ['analytics'] as const;
 
@@ -251,6 +252,78 @@ export function useJourneyTimeline(orderId?: string | null) {
     queryKey: [...ANALYTICS_QUERY_KEY, 'journey-timeline', orderId ?? null],
     queryFn: () => analyticsApi.getJourneyTimeline({ orderId: orderId as string }),
     enabled: Boolean(orderId && orderId.trim().length > 0),
+    staleTime: 5 * 60_000,
+  });
+}
+
+// ── Attribution (Phase 5 — feat-attribution-ledger) ──────────────────────────────
+// Reads the Gold attribution credit ledger via the metric-engine sole read path
+// (I-ST01 — UI never queries the ledger/StarRocks). The `model` is part of the query
+// key so the model selector re-fetches without a manual invalidate. Shares the
+// 'analytics' prefix → auto-invalidates on brand switch.
+
+/**
+ * useAttributionByChannel — attributed revenue by channel for the selected model + window.
+ * @param params - Attribution model + date range (YYYY-MM-DD). model is required.
+ */
+export function useAttributionByChannel(params: {
+  model: AttributionModel;
+  from?: string;
+  to?: string;
+}) {
+  return useQuery({
+    queryKey: [
+      ...ANALYTICS_QUERY_KEY,
+      'attribution-by-channel',
+      params.model,
+      params.from,
+      params.to,
+    ],
+    queryFn: () => analyticsApi.getAttributionByChannel(params),
+    staleTime: 5 * 60_000,
+  });
+}
+
+/**
+ * useAttributionReconciliation — the closed-sum residual (parity oracle made visible).
+ * @param params - Attribution model + date range. model is required.
+ */
+export function useAttributionReconciliation(params: {
+  model: AttributionModel;
+  from?: string;
+  to?: string;
+}) {
+  return useQuery({
+    queryKey: [
+      ...ANALYTICS_QUERY_KEY,
+      'attribution-reconciliation',
+      params.model,
+      params.from,
+      params.to,
+    ],
+    queryFn: () => analyticsApi.getAttributionReconciliation(params),
+    staleTime: 5 * 60_000,
+  });
+}
+
+/**
+ * useChannelRoas — per-channel attributed ÷ ad spend (blending ad_spend_ledger).
+ * @param params - Attribution model + date range. model is required.
+ */
+export function useChannelRoas(params: {
+  model: AttributionModel;
+  from?: string;
+  to?: string;
+}) {
+  return useQuery({
+    queryKey: [
+      ...ANALYTICS_QUERY_KEY,
+      'channel-roas',
+      params.model,
+      params.from,
+      params.to,
+    ],
+    queryFn: () => analyticsApi.getChannelRoas(params),
     staleTime: 5 * 60_000,
   });
 }

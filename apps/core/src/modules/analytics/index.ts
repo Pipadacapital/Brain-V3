@@ -65,3 +65,23 @@ export { getJourneyStitchRate } from './internal/application/queries/get-journey
 export type { JourneyStitchRateResult, JourneyStitchRateParams } from './internal/application/queries/get-journey-stitch-rate.js';
 export { getJourneyTimeline } from './internal/application/queries/get-journey-timeline.js';
 export type { JourneyTimelineResult, TimelineTouchDto, JourneyTimelineParams } from './internal/application/queries/get-journey-timeline.js';
+
+// Phase 5 Attribution (feat-attribution-ledger) — attributed-by-channel + reconciliation + channel ROAS
+// over attribution_credit_ledger (Postgres Gold, 0032) via the metric-engine named seams (ADR-002).
+export { getAttributionByChannel } from './internal/application/queries/get-attribution-by-channel.js';
+export type {
+  AttributionByChannelResult,
+  ChannelContributionDto,
+  AttributionByChannelParams,
+} from './internal/application/queries/get-attribution-by-channel.js';
+export { getAttributionReconciliation } from './internal/application/queries/get-attribution-reconciliation.js';
+export type {
+  AttributionReconciliationResultDto,
+  AttributionReconciliationParams,
+} from './internal/application/queries/get-attribution-reconciliation.js';
+export { getChannelRoas } from './internal/application/queries/get-channel-roas.js';
+export type {
+  ChannelRoasResult,
+  ChannelRoasDto,
+  ChannelRoasParams,
+} from './internal/application/queries/get-channel-roas.js';

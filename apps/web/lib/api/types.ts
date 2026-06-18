@@ -678,7 +678,7 @@ export type AnalyticsJourneyFirstTouchMixResponse =
       total: string;            // bigint string (total distinct journeys in range)
       by_channel: FirstTouchMixRow[];
       // Coverage honesty: core does not split touch counts; data_source flags the whole
-      // window as 'synthetic' or 'live' (the UI derives the real-vs-synthetic line from it).
+      // window as 'synthetic' or 'live' (the UI derives the coverage line from total + it).
       data_source: DataSource;
     };
 
@@ -705,6 +705,11 @@ export interface JourneyTouchpointRow {
   utm_source: string | null;
   utm_medium: string | null;
   utm_campaign: string | null;
+  utm_term: string | null;
+  utm_content: string | null;
+  fbclid: string | null;
+  gclid: string | null;
+  ttclid: string | null;
   referrer_host: string | null;
   landing_path: string | null;
 }
@@ -713,8 +718,8 @@ export type AnalyticsJourneyTimelineResponse =
   | { state: 'no_data' }
   | {
       state: 'has_data';
-      order_id: string;          // echoed selector
-      stitched: boolean;         // whether this order resolved to a known journey (deterministic stitch)
+      brain_anon_id: string;     // the anon session id (core returns brain_anon_id, not order_id)
+      stitched: boolean;         // whether this journey resolved from a deterministic stitch map
       touches: JourneyTouchpointRow[];
       data_source: DataSource;
     };
@@ -779,7 +784,7 @@ export type AnalyticsAttributionByChannelResponse =
       from: string; // YYYY-MM-DD (echoed range)
       to: string;
       model: AttributionModel;
-      currency_code: string; // ISO 4217 — single brand currency, always present in has_data
+      currency_code: string | null; // ISO 4217 — null when brand has no ledger rows (metric engine)
       /** SIGNED bigint string — Σ channel_contribution_minor (attributed total, net). */
       attributed_gmv_minor: string;
       /** SIGNED bigint string — realized GMV basis (the closed-sum total). */
@@ -803,7 +808,7 @@ export type AnalyticsAttributionReconciliationResponse =
       from: string;
       to: string;
       model: AttributionModel;
-      currency_code: string; // ISO 4217 — always present in has_data
+      currency_code: string | null; // ISO 4217 — null when brand has no ledger rows (metric engine)
       /** SIGNED bigint string — realized GMV basis (the closed-sum total). */
       realized_gmv_minor: string;
       /** SIGNED bigint string — Σ channel_contribution_minor (attributed, net of clawbacks). */
@@ -834,7 +839,8 @@ export type AnalyticsChannelRoasResponse =
       from: string;
       to: string;
       model: AttributionModel;
-      currency_code: string;
+      // NOTE: No top-level currency_code — core's ChannelRoasResult has_data does NOT include one.
+      // Per-channel currency_code lives in each ChannelRoasRow (ChannelRoasDto.currency_code).
       rows: ChannelRoasRow[];
       data_source: DataSource;
     };

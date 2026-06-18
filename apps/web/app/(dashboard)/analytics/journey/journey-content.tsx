@@ -226,16 +226,14 @@ function JourneyMixData({
   stitch: StitchHasData | null;
 }) {
   const total = BigInt(mix.total);
-  // Core flags the whole window as synthetic or live via data_source (it does not return a
-  // per-touch real/synthetic split). Derive the honest coverage line from total + data_source.
+  // real_touch_count / synthetic_touch_count are not in the core DTO — coverage is
+  // derived from total distinct journeys. data_source='synthetic' signals the window
+  // is synthetic-enriched.
   const totalN = Number(total);
-  const synthN = mix.data_source === 'synthetic' ? totalN : 0;
-  const realN = mix.data_source === 'synthetic' ? 0 : totalN;
-
   const coverageSub =
-    synthN > 0
-      ? `${realN.toLocaleString('en-IN')} real · ${synthN.toLocaleString('en-IN')} synthetic touches`
-      : `${realN.toLocaleString('en-IN')} real touches`;
+    mix.data_source === 'synthetic'
+      ? `${totalN.toLocaleString('en-IN')} journeys (synthetic-enriched)`
+      : `${totalN.toLocaleString('en-IN')} distinct journeys`;
 
   return (
     <div className="space-y-4">
@@ -265,7 +263,7 @@ function JourneyMixData({
 
         <KpiTile
           label="Touchpoint coverage"
-          value={(realN + synthN).toLocaleString('en-IN')}
+          value={totalN.toLocaleString('en-IN')}
           sublabel={coverageSub}
           data-testid="journey-kpi-coverage"
         />

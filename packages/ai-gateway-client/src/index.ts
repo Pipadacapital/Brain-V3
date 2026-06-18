@@ -37,3 +37,14 @@ export {
   type ParamKey,
   type Channel,
 } from './resolver-schema.js';
+
+// The READ-ONLY MCP tool registry (I-S08: writeToolCount===0, CI-blocking). Lives here so
+// apps/core (mount) and tools/isolation-fuzz (assertion) import the SAME registry (no drift).
+export {
+  MCP_TOOLS,
+  writeToolCount,
+  listMetricIds,
+  FORBIDDEN_TOOL_NAME_SUBSTRINGS,
+  type McpToolSpec,
+  type McpToolAccess,
+} from './mcp-tools.js';

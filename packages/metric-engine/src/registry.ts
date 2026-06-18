@@ -92,8 +92,7 @@ export function resolveMetric(
   metricId: MetricId,
   version: MetricVersion,
 ): MetricDefinition {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const def = (METRIC_REGISTRY as any)[metricId]?.[version] as MetricDefinition | undefined;
+  const def = (METRIC_REGISTRY as Record<string, Record<string, MetricDefinition>>)[metricId]?.[version] as MetricDefinition | undefined;
   if (!def) {
     throw new Error(
       `[metric-engine] unknown metric (${metricId}, ${version}) — ` +

@@ -39,6 +39,7 @@ import { SpendLedgerConsumer } from './interfaces/consumers/SpendLedgerConsumer.
 import { GokwikAwbLedgerConsumer } from './interfaces/consumers/GokwikAwbLedgerConsumer.js';
 import { LedgerWriter } from './infrastructure/pg/LedgerWriter.js';
 import { startSyncRequestClaimer } from './jobs/sync-request-claimer/run.js';
+import { startDqChecks } from './jobs/dq/run.js';
 
 export async function main(): Promise<void> {
   const brokers = (process.env['KAFKA_BROKERS'] ?? 'localhost:9092').split(',');
@@ -251,6 +252,35 @@ export async function main(): Promise<void> {
     `[stream-worker] sync-request claimer running — interval=${syncRequestClaimerIntervalMs}ms`,
   );
 
+  // ── Data-Quality checks (feat-data-quality-engine / Phase 7 — Track A) ──────
+  // NOT a new deployable / topic / envelope: interval loops in THIS process (mirrors
+  // the sync-request claimer). Per-tick: enumerate active brands → run the 4 deterministic
+  // DQ executors (freshness / completeness / schema_validity / reconciliation) under
+  // brain_app + per-brand GUC → append one dq_check_result row per (brand, category, target)
+  // with a FROZEN letter grade. The freshness executor is the LIVE freshness-SLA monitor
+  // (Phase-7 acceptance). schema_validity REUSES the existing DLQ/quarantine signal;
+  // reconciliation reads Bronze↔StarRocks(silver_order_state) deltas. MUST use brain_app
+  // (RLS enforced) — never superuser 'brain'. WIRED HERE: do not remove without updating
+  // dq-checks.e2e.test.ts. Tier-0 deterministic (no model; $0/mo).
+  const dqPool = new PgPool({ connectionString: dbUrl, max: 3 });
+  const dqIntervalMs = parseInt(process.env['DQ_CHECK_INTERVAL_MS'] ?? '300000', 10);
+  // Silver (StarRocks) config — when absent, the Silver-tier checks emit an honest D row
+  // (never a false A+). Reuses the same brain_analytics SELECT-only credentials as core.
+  const dqSilverHost = process.env['STARROCKS_HOST'];
+  const dqSilver =
+    dqSilverHost !== undefined
+      ? {
+          host: dqSilverHost,
+          port: parseInt(process.env['STARROCKS_PORT'] ?? '9030', 10),
+          user: process.env['STARROCKS_ANALYTICS_USER'] ?? 'brain_analytics',
+          password: process.env['STARROCKS_ANALYTICS_PASSWORD'] ?? 'brain_analytics_dev',
+        }
+      : undefined;
+  const dqChecker = startDqChecks(dqPool, { intervalMs: dqIntervalMs, silver: dqSilver });
+  console.info(
+    `[stream-worker] dq checks running — interval=${dqIntervalMs}ms silver=${dqSilver ? 'on' : 'off'}`,
+  );
+
   // Graceful shutdown
   const shutdown = async (signal: string): Promise<void> => {
     console.info(`[stream-worker] ${signal} received — draining consumers...`);
@@ -265,8 +295,10 @@ export async function main(): Promise<void> {
       spendLedgerConsumer.stop(),
       gokwikAwbLedgerConsumer.stop(),
       syncRequestClaimer.stop(),
+      dqChecker.stop(),
     ]);
     await syncClaimerPool.end();
+    await dqPool.end();
     await consentRepo.end();
     await capiDeletionRepo.end();
     await dedup.quit();

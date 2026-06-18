@@ -64,7 +64,7 @@ const NAV_SECTIONS: NavSection[] = [
       { href: '/analytics/revenue', label: 'Revenue', icon: TrendingUp },
       { href: '/analytics/orders', label: 'Orders', icon: ShoppingCart },
       { href: '/analytics/spend', label: 'Ad Spend', icon: Megaphone },
-      { label: 'Settlements', icon: Receipt, comingSoon: true, disabled: true },
+      { href: '/analytics/settlements', label: 'Settlements', icon: Receipt },
     ],
   },
   {

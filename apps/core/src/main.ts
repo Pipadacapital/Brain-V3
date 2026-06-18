@@ -43,6 +43,8 @@ import { createEmailAdapter } from './modules/notification/internal/ses-adapter.
 // ── Connector infrastructure imports (HIGH-MOUNT-01) ─────────────────────────
 import { PgBackfillJobRepository } from './modules/connector/backfill/infrastructure/PgBackfillJobRepository.js';
 import type { BackfillJobProgress } from '@brain/contracts';
+import { PgSyncRequestRepository } from './modules/connector/sync/infrastructure/PgSyncRequestRepository.js';
+import { RequestConnectorSyncCommand } from './modules/connector/sync/application/commands/RequestConnectorSyncCommand.js';
 import { registerShopifyWebhookRoutes } from './modules/connector/sources/storefront/shopify/interfaces/webhooks/shopifyWebhookHandler.js';
 import { registerRazorpayWebhookRoutes } from './modules/connector/sources/payment/razorpay/interfaces/webhooks/razorpayWebhookHandler.js';
 import { registerShopifyConnectorRoutes } from './modules/connector/sources/storefront/shopify/interfaces/http/shopifyConnectorRoutes.js';
@@ -797,9 +799,39 @@ export async function main(): Promise<void> {
     });
 
     scope.get('/api/v1/connectors/:id/status', async (req: FastifyRequest<{ Params: { id: string } }>, reply) => {
+      const requestId = (req.id as string) ?? randomUUID();
       const brandId = getBrandId(req);
-      const status = await getConnectorStatus.execute(brandId);
-      return reply.code(200).send({ request_id: (req.id as string) ?? randomUUID(), data: status.shopify });
+      const id = req.params.id;
+
+      // Back-compat: the legacy Shopify dashboard calls this with id='shopify'
+      // (or any non-UUID). Return the provider-resolved Shopify view (unchanged).
+      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+      if (!isUuid) {
+        const status = await getConnectorStatus.execute(brandId);
+        return reply.code(200).send({ request_id: requestId, data: status.shopify });
+      }
+
+      // feat-connector-sync-now §4: per-connector status by connector_instance_id
+      // (any provider). Real connector_sync_status row — never simulated.
+      const view = await getConnectorStatus.executeForConnector(id, brandId);
+      if (!view) {
+        return reply.code(404).send({
+          request_id: requestId,
+          error: { code: 'CONNECTOR_NOT_FOUND', message: 'Connector not found for this brand.' },
+        });
+      }
+
+      return reply.code(200).send({
+        request_id: requestId,
+        data: {
+          id: view.connectorInstanceId,
+          provider: view.provider,
+          status: view.status,
+          sync_state: view.syncState,
+          last_sync_at: view.lastSyncAt,
+          last_error: view.lastError,
+        },
+      });
     });
   });
 
@@ -1068,12 +1100,66 @@ export async function main(): Promise<void> {
   // NO secret_ref / token in any response (I-S09).
   const backfillJobRepo = new PgBackfillJobRepository(pool);
 
+  // ── On-demand "Sync now" trigger (feat-connector-sync-now) ──────────────────
+  // Enqueues an INCREMENTAL trailing-window re-pull request for one connector;
+  // the in-worker claimer dispatches the SAME run() the scheduler invokes (same
+  // code path). Overlap-locked (run()'s own FOR UPDATE SKIP LOCKED) + spam-safe
+  // (sentinel-row dedup). brand_admin+ only; brand_id from session, never the body.
+  const syncRequestRepo = new PgSyncRequestRepository(pool);
+  const requestConnectorSync = new RequestConnectorSyncCommand(
+    connectorRepo,
+    connectorSecretsManager,
+    syncRequestRepo,
+    auditWriter,
+  );
+
   await app.register(async (scope) => {
     scope.addHook('preHandler', sessionPreHandler);
-    scope.addHook('preHandler', requireRole('brand_admin'));
+    // Scope minimum is MANAGER (sync = Owner/Brand-Admin/Manager per the data-ingestion
+    // spec — sync is lower-risk than backfill). Backfill routes below re-tighten to
+    // brand_admin+ via a per-route preHandler, so only "Sync now" gains Manager.
+    scope.addHook('preHandler', requireRole('manager'));
 
-    // B1 — Backfill trigger (ADR-BF-3)
-    scope.post('/api/v1/connectors/:id/backfill', async (req: FastifyRequest<{ Params: { id: string } }>, reply) => {
+    // ── POST /api/v1/connectors/:id/sync — "Sync now" (feat-connector-sync-now) ─
+    // Owner/Brand-Admin/Manager (Analyst → 403 + UI-hidden);
+    // brand_id from session (MT-1); token check → 409 RECONNECT_REQUIRED;
+    // overlap pre-checks → 409 SYNC_ALREADY_RUNNING / SYNC_ALREADY_REQUESTED;
+    // enqueue sentinel request; audit connector.sync.requested; 202 {status:'syncing'}.
+    scope.post('/api/v1/connectors/:id/sync', async (req: FastifyRequest<{ Params: { id: string } }>, reply) => {
+      const requestId = (req.id as string) ?? randomUUID();
+      const brandId = getBrandId(req);
+      const connectorInstanceId = req.params.id;
+      const auth = (req as typeof req & { auth?: { userId?: string; role?: string } }).auth;
+
+      const result = await requestConnectorSync.execute({
+        connectorInstanceId,
+        brandId,
+        correlationId: requestId,
+        actorId: auth?.userId ?? null,
+        actorRole: auth?.role ?? 'unknown',
+      });
+
+      if (!result.ok) {
+        const httpCode = result.code === 'CONNECTOR_NOT_FOUND' ? 404 : 409;
+        return reply.code(httpCode).send({
+          request_id: requestId,
+          error: { code: result.code, message: result.message },
+        });
+      }
+
+      return reply.code(202).send({
+        request_id: requestId,
+        data: {
+          connector_instance_id: result.connectorInstanceId,
+          status: result.status,
+          requested_at: result.requestedAt,
+        },
+      });
+    });
+
+    // B1 — Backfill trigger (ADR-BF-3). Re-tighten to brand_admin+ (Manager → 403):
+    // backfill stays Owner/Brand-Admin only, unlike the Manager-allowed sync above.
+    scope.post<{ Params: { id: string } }>('/api/v1/connectors/:id/backfill', { preHandler: requireRole('brand_admin') }, async (req, reply) => {
       const requestId = (req.id as string) ?? randomUUID();
       const brandId = getBrandId(req);
       const connectorInstanceId = req.params.id;
@@ -1140,7 +1226,7 @@ export async function main(): Promise<void> {
     });
 
     // B2 — Progress API (ADR-BF-4)
-    scope.get('/api/v1/connectors/:id/jobs', async (req: FastifyRequest<{ Params: { id: string } }>, reply) => {
+    scope.get<{ Params: { id: string } }>('/api/v1/connectors/:id/jobs', { preHandler: requireRole('brand_admin') }, async (req, reply) => {
       const requestId = (req.id as string) ?? randomUUID();
       const brandId = getBrandId(req);
       const connectorInstanceId = req.params.id;

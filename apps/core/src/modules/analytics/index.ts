@@ -29,6 +29,10 @@ export type { OrderStatsResult, OrderStatsDto } from './internal/application/que
 export { getDataHealth } from './internal/application/queries/get-data-health.js';
 export type { DataHealthResult, DataHealthVolumeBucket } from './internal/application/queries/get-data-health.js';
 
+// Razorpay settlement summary (net-of-fees) — Track C
+export { getSettlementSummary } from './internal/application/queries/get-settlement-summary.js';
+export type { SettlementSummaryResult, SettlementFeeDto } from './internal/application/queries/get-settlement-summary.js';
+
 // Ad-connectors (Slice 1 Track 3) — spend timeseries + blended ROAS
 export { getAdSpendTimeseries } from './internal/application/queries/get-ad-spend-timeseries.js';
 export type { AdSpendTimeseriesResult, AdSpendTimeseriesBucketDto } from './internal/application/queries/get-ad-spend-timeseries.js';

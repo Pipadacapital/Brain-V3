@@ -65,6 +65,7 @@ import type {
   AnalyticsOrdersTimeseriesResponse,
   AnalyticsOrderStatsResponse,
   AnalyticsDataHealthResponse,
+  AnalyticsSettlementsResponse,
   AnalyticsTrackingHealthResponse,
   AnalyticsRecentEventsResponse,
   AnalyticsAdSpendTimeseriesResponse,
@@ -840,6 +841,64 @@ export const backfillApi = {
   getBackfillProgress,
 };
 
+// ── Sync now (feat-connector-sync-now Track B) ───────────────────────────────
+//
+// POST /api/v1/connectors/:id/sync   → 202 { request_id, data: { connector_instance_id, status:'syncing' } }
+// GET  /api/v1/connectors/:id/status → 200 { request_id, data: ConnectorInstanceResponse }  (reused)
+//
+// The trigger enqueues the SAME incremental trailing-window re-pull the scheduler runs
+// (no new topic/envelope) — overlap-locked server-side so a manual click can't double-run.
+//
+// Error codes (409): RECONNECT_REQUIRED (token expired → reconnect),
+//                    SYNC_ALREADY_RUNNING / SYNC_ALREADY_REQUESTED (overlap lock held).
+// Authz gate: brand_admin+ (mirrors backfill D-15); manager/analyst receive 403 (button hidden).
+// Calls core :3001 directly via /api/v1/* proxy (same path as triggerBackfill).
+
+/** 202 trigger response — the connector is now (or already) syncing. */
+export interface SyncTriggerResponse {
+  connector_instance_id: string;
+  status: 'syncing';
+}
+
+/**
+ * Triggers an on-demand incremental sync for the given connector.
+ * Returns { connector_instance_id, status:'syncing' } on 202.
+ * Throws BffApiError with code RECONNECT_REQUIRED / SYNC_ALREADY_RUNNING /
+ *   SYNC_ALREADY_REQUESTED (409), or status 403 for manager/analyst.
+ */
+async function triggerSync(connectorId: string): Promise<SyncTriggerResponse> {
+  const requestId = generateRequestId();
+  const csrfToken = await ensureCsrfToken();
+
+  const response = await fetch(`/api/v1/connectors/${encodeURIComponent(connectorId)}/sync`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Request-Id': requestId,
+      ...(csrfToken ? { 'x-csrf-token': csrfToken } : {}),
+    },
+    credentials: 'include',
+  });
+
+  if (!response.ok) {
+    let errorBody: { request_id?: string; error?: { code?: string; message?: string } } = {};
+    try { errorBody = await response.json(); } catch { /* non-JSON */ }
+    const message = errorBody?.error?.message ?? `Sync trigger failed: ${response.status}`;
+    const reqId = errorBody?.request_id ?? requestId;
+    throw new BffApiError(message, response.status, reqId, errorBody?.error?.code);
+  }
+
+  const raw = await response.json() as { request_id: string; data: SyncTriggerResponse };
+  // Unwrap .data — the canonical SyncTriggerResponse.
+  return raw.data;
+}
+
+export const syncApi = {
+  triggerSync,
+  // Status is read via the EXISTING per-connector status route (reused, not duplicated).
+  getSyncStatus: (connectorId: string) => connectorsApi.getStatus(connectorId),
+};
+
 // ── Analytics (Phase 1) ────────────────────────────────────────────────────────
 // All routes: BFF-only, session-authed. Brand from session (D-1).
 // Unwrap { request_id, data } envelope same pattern as dashboardApi.
@@ -942,6 +1001,19 @@ export const analyticsApi = {
   getDataHealth: async (): Promise<AnalyticsDataHealthResponse> => {
     const { data } = await bffFetch<BffEnvelope<AnalyticsDataHealthResponse>>(
       `/v1/analytics/data-health`,
+    );
+    return data;
+  },
+
+  /**
+   * GET /api/v1/analytics/settlements — Razorpay net-of-fees settlement summary.
+   * D-10: unwrap { request_id, data } → AnalyticsSettlementsResponse.
+   * state:'no_data' is preserved (never coerced to has_data with zeros).
+   */
+  getSettlements: async (asOf?: string): Promise<AnalyticsSettlementsResponse> => {
+    const qs = asOf ? `?as_of=${encodeURIComponent(asOf)}` : '';
+    const { data } = await bffFetch<BffEnvelope<AnalyticsSettlementsResponse>>(
+      `/v1/analytics/settlements${qs}`,
     );
     return data;
   },

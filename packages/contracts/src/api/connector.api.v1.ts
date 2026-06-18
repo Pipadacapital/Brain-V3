@@ -107,6 +107,28 @@ export const ConnectorStatusResponseSchema = z.object({
 });
 export type ConnectorStatusResponse = z.infer<typeof ConnectorStatusResponseSchema>;
 
+// ── On-demand "Sync now" trigger (feat-connector-sync-now) ────────────────────
+// POST /api/v1/connectors/:id/sync → 202 { request_id, data: SyncTriggerData }.
+// Enqueues an INCREMENTAL trailing-window re-pull (NOT a full backfill); the
+// in-worker claimer dispatches the SAME run() the scheduler invokes (same code path).
+// brand_admin+ only; brand_id from session, never the body (MT-1). Overlap-locked +
+// spam-safe via the sentinel-row dedup + run()'s own FOR UPDATE SKIP LOCKED.
+// Error codes: CONNECTOR_NOT_FOUND (404), RECONNECT_REQUIRED / SYNC_ALREADY_RUNNING /
+// SYNC_ALREADY_REQUESTED / CONNECTOR_NOT_SYNCABLE (409). NO secret_ref / token (I-S09).
+
+export const SyncTriggerDataSchema = z.object({
+  connector_instance_id: z.string().uuid(),
+  status: z.literal('syncing'),
+  requested_at: z.string().datetime({ offset: true }),
+});
+export type SyncTriggerData = z.infer<typeof SyncTriggerDataSchema>;
+
+export const SyncTriggerResponseSchema = z.object({
+  request_id: z.string(),
+  data: SyncTriggerDataSchema,
+});
+export type SyncTriggerResponse = z.infer<typeof SyncTriggerResponseSchema>;
+
 // ════════════════════════════════════════════════════════════════════════════════
 // MARKETPLACE CONTRACT — A0 FREEZE (feat-connector-marketplace)
 // Track B consumes .data from these shapes exactly.

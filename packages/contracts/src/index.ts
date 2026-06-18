@@ -212,6 +212,9 @@ export {
   MarketplaceListResponseSchema,
   ConnectRequestSchema,
   ConnectResponseSchema,
+  // On-demand "Sync now" trigger (feat-connector-sync-now)
+  SyncTriggerDataSchema,
+  SyncTriggerResponseSchema,
 } from './api/connector.api.v1.js';
 export type {
   ConnectorInstance,
@@ -228,6 +231,9 @@ export type {
   MarketplaceListResponse,
   ConnectRequest,
   ConnectResponse,
+  // On-demand "Sync now" trigger (feat-connector-sync-now)
+  SyncTriggerData,
+  SyncTriggerResponse,
 } from './api/connector.api.v1.js';
 
 // ── M1 Pixel API ──────────────────────────────────────────────────────────────

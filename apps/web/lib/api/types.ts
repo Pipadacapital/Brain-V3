@@ -498,6 +498,36 @@ export type AnalyticsDataHealthResponse =
       lastSyncAt: string | null;
     };
 
+// ── Settlements (Razorpay Track C — net-of-fees) ──────────────────────────────
+//
+// Settlement = realized revenue NET of Razorpay processing fees/tax/reserve/reversals.
+// gross_minor / net_minor / amount_minor are bigint-serialized minor-unit strings —
+// render with formatMoneyDisplay(minorString, currency_code). NEVER /100 or parseFloat.
+// fees[].amount_minor is a POSITIVE magnitude (UI renders it as a "− ₹X" deduction).
+
+export type SettlementFeeType =
+  | 'payment_fee'
+  | 'settlement_tax'
+  | 'rolling_reserve_deduction'
+  | 'settlement_reversal';
+
+export interface SettlementFee {
+  type: SettlementFeeType;
+  amount_minor: string; // POSITIVE magnitude, minor units
+}
+
+/** state:'no_data' → no settlement rows yet; UI renders honest "No settlement data yet". */
+export type AnalyticsSettlementsResponse =
+  | { state: 'no_data'; as_of: string }
+  | {
+      state: 'has_data';
+      as_of: string;
+      currency_code: string;
+      gross_minor: string; // bigint string
+      net_minor: string;   // bigint string (net-of-fees)
+      fees: SettlementFee[];
+    };
+
 // ── Tracking Center (Phase 1 Track C) ──────────────────────────────────────────
 // Pixel-collection health + the Event Explorer feed. NO raw PII — anonymized ids
 // + aggregate counts only. All count fields are bigint-serialized strings (D-1).

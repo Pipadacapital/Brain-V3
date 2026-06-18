@@ -105,7 +105,7 @@ export function DataQualityContent() {
   }
 
   // ── Has data ────────────────────────────────────────────────────────────────
-  const { cells, freshnessSla, coverage, effectiveConfidence, gate } = data;
+  const { grades: cells, freshnessSla, coverage, effectiveConfidence, gate } = data;
   const coveragePct =
     coverage.expected > 0
       ? Math.round((coverage.graded / coverage.expected) * 100)

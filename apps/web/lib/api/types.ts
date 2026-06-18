@@ -568,8 +568,8 @@ export type DataQualitySummaryResponse =
   | { state: 'no_data' }
   | {
       state: 'has_data';
-      /** Per-category × per-target latest grade matrix. */
-      cells: DqGradeCell[];
+      /** Per-category × per-target latest grade matrix (core DTO field name: `grades`). */
+      grades: DqGradeCell[];
       /** Freshness-SLA roll-up across the freshness checks. */
       freshnessSla: DqFreshnessSlaStatus;
       /** dq_grade coverage — the success metric. */

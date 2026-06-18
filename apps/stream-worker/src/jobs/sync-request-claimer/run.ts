@@ -36,7 +36,7 @@ const NIL_UUID = '00000000-0000-0000-0000-000000000000';
 /** Provider → the existing repull run() entrypoint (lazy-imported to avoid eager Kafka init). */
 type RepullRun = (connectorInstanceId: string) => Promise<void>;
 
-async function loadRun(provider: string): Promise<RepullRun | null> {
+export async function loadRun(provider: string): Promise<RepullRun | null> {
   switch (provider) {
     case 'shopify':
       return (await import('../shopify-repull/run.js')).run;
@@ -55,7 +55,7 @@ async function loadRun(provider: string): Promise<RepullRun | null> {
   }
 }
 
-interface ConnectorRow {
+export interface ConnectorRow {
   connector_instance_id: string;
   brand_id: string;
   provider: string;
@@ -66,7 +66,7 @@ interface ConnectorRow {
  * Runs as brain_app (which calls the SECURITY DEFINER fns running as 'brain') — no GUC,
  * fail-closed: under brain_app without a GUC the fns are the ONLY way to see the rows.
  */
-async function enumerateConnectedConnectors(pool: Pool): Promise<ConnectorRow[]> {
+export async function enumerateConnectedConnectors(pool: Pool): Promise<ConnectorRow[]> {
   const rows: ConnectorRow[] = [];
 
   const shopify = await pool.query<{ connector_instance_id: string; brand_id: string }>(

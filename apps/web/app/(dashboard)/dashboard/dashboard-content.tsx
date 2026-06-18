@@ -18,6 +18,7 @@
 
 import { BrandSummaryCard } from '@/components/dashboard/brand-summary-card';
 import { ConnectionStatusCard } from '@/components/dashboard/connection-status-card';
+import { LiveIndicator } from '@/components/dashboard/live-indicator';
 import { OnboardingProgressCard } from '@/components/dashboard/onboarding-progress-card';
 import { KpiTile } from '@/components/analytics/kpi-tile';
 import { TrendChart } from '@/components/analytics/trend-chart';
@@ -203,11 +204,16 @@ function ActivitySection() {
 export function DashboardContent() {
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-foreground">Dashboard</h1>
-        <p className="text-muted-foreground mt-1">
-          Your brand intelligence command center.
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-bold text-foreground">Dashboard</h1>
+          <p className="text-muted-foreground mt-1">
+            Your brand intelligence command center.
+          </p>
+        </div>
+        {/* feat-realtime-ingestion-pipeline (Track C): honest near-real-time liveness.
+            Reflects the primary dashboard query's real last-fetch — never a faked "Live". */}
+        <LiveIndicator />
       </div>
 
       <DisconnectedBanner />

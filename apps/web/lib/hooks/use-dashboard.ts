@@ -12,6 +12,9 @@ export function useBrandSummary() {
     queryKey: [...DASHBOARD_QUERY_KEY, 'brand-summary'],
     queryFn: () => dashboardApi.getBrandSummary(),
     staleTime: 60_000,
+    // feat-realtime-ingestion-pipeline (Track C): poll so member/brand changes from
+    // continuous ingestion surface without a manual reload. Reuses the BFF read.
+    refetchInterval: 30_000,
   });
 }
 
@@ -59,5 +62,9 @@ export function useRealizedRevenue(asOf?: string) {
     queryKey: [...DASHBOARD_QUERY_KEY, 'realized-revenue', asOf ?? 'today'],
     queryFn: () => dashboardApi.getRealizedRevenue(asOf),
     staleTime: 60_000,
+    // feat-realtime-ingestion-pipeline (Track C): near-real-time refresh so newly-ingested
+    // realized/provisional revenue appears within one scheduler interval (worker polls ~45s)
+    // without a manual reload. Same BFF read — no new endpoint.
+    refetchInterval: 30_000,
   });
 }

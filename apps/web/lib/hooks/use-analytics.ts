@@ -29,6 +29,9 @@ export function useRevenueTimeseries(params?: {
     queryKey: [...ANALYTICS_QUERY_KEY, 'revenue-timeseries', params?.from, params?.to, params?.grain ?? 'day'],
     queryFn: () => analyticsApi.getRevenueTimeseries(params),
     staleTime: 5 * 60_000, // 5 minutes
+    // feat-realtime-ingestion-pipeline (Track C): live-refresh so newly-ingested revenue
+    // buckets appear within one scheduler interval without a manual reload (same BFF read).
+    refetchInterval: 30_000,
   });
 }
 
@@ -41,6 +44,9 @@ export function useKpiSummary(asOf?: string) {
     queryKey: [...ANALYTICS_QUERY_KEY, 'kpi-summary', asOf ?? 'today'],
     queryFn: () => analyticsApi.getKpiSummary(asOf),
     staleTime: 5 * 60_000,
+    // feat-realtime-ingestion-pipeline (Track C): live-refresh the headline KPI tiles
+    // (realized / provisional / orders / AOV / RTO) without a manual reload.
+    refetchInterval: 30_000,
   });
 }
 
@@ -65,7 +71,9 @@ export function useRecentActivity(limit = 20) {
     queryKey: [...ANALYTICS_QUERY_KEY, 'recent-activity', limit],
     queryFn: () => analyticsApi.getRecentActivity(limit),
     staleTime: 60_000, // 1 minute — event feed refreshes more often
-    refetchInterval: 60_000,
+    // feat-realtime-ingestion-pipeline (Track C): the activity feed is the most live
+    // surface — tightened to 20s so new ledger rows appear quickly after ingestion.
+    refetchInterval: 20_000,
   });
 }
 
@@ -86,6 +94,8 @@ export function useOrdersTimeseries(params?: {
     queryKey: [...ANALYTICS_QUERY_KEY, 'orders-timeseries', params?.from, params?.to, params?.grain ?? 'day'],
     queryFn: () => analyticsApi.getOrdersTimeseries(params),
     staleTime: 5 * 60_000, // 5 minutes
+    // feat-realtime-ingestion-pipeline (Track C): live-refresh order/RTO buckets.
+    refetchInterval: 30_000,
   });
 }
 
@@ -98,6 +108,8 @@ export function useOrderStats(asOf?: string) {
     queryKey: [...ANALYTICS_QUERY_KEY, 'order-stats', asOf ?? 'today'],
     queryFn: () => analyticsApi.getOrderStats(asOf),
     staleTime: 5 * 60_000,
+    // feat-realtime-ingestion-pipeline (Track C): live-refresh the per-currency order stats.
+    refetchInterval: 30_000,
   });
 }
 

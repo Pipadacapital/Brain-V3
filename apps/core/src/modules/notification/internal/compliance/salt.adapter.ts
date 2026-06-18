@@ -8,12 +8,17 @@
  * the same SaltPort with zero engine change.
  */
 
+import { resolveSaltHex } from '@brain/identity-core';
 import type { SaltPort } from './ports.js';
 
 export class EnvSaltPort implements SaltPort {
   async saltHexForBrand(brandId: string): Promise<string> {
-    const envKey = `IDENTITY_SALT_${brandId.replace(/-/g, '').toUpperCase()}`;
-    const salt = process.env[envKey] ?? '';
+    // Shared resolution order via @brain/identity-core (same as the worker
+    // SaltProvider + core main.ts salt sites): explicit IDENTITY_SALT_<brand>
+    // env → else dev-only deterministic per-brand salt → else prod env value.
+    // The D-2 hard-crash guard below is UNCHANGED and stays the single crash
+    // point: prod still refuses a missing/wrong-length salt; dev never trips it.
+    const salt = resolveSaltHex(brandId);
     if (!salt || salt.length !== 64) {
       throw new Error(
         `[can_contact] salt for brand ${brandId} is missing or wrong length ` +

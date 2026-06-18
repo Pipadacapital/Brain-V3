@@ -39,10 +39,10 @@ services:
 
   minio:
     image: minio/minio:RELEASE.2024-04-06T05-26-02Z
-    # Needed by BOTH profiles: core (bronze/audit S3) and ingest (nessie/Iceberg
-    # warehouse depends_on minio). Without "ingest" here, `--profile ingest` fails
-    # with: service "nessie" depends on undefined service "minio".
-    profiles: ["core", "ingest"]
+    # core: bronze/audit S3. lakehouse: nessie/Iceberg warehouse depends_on minio
+    # (so nessie's dependency resolves under --profile lakehouse). NOT in ingest —
+    # the ingest apps (collector/stream-worker) write Bronze to Postgres, not S3.
+    profiles: ["core", "lakehouse"]
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: brain
@@ -60,7 +60,7 @@ services:
   # MinIO bucket + prefix bootstrap (runs once; idempotent)
   minio-init:
     image: minio/mc:latest
-    profiles: ["core", "ingest"]
+    profiles: ["core", "lakehouse"]
     depends_on:
       minio:
         condition: service_healthy
@@ -203,9 +203,14 @@ services:
 
   # Iceberg REST catalog (Nessie) — local equivalent of AWS Glue
   # MinIO must be available for Nessie to write catalog state to S3
+  # Iceberg REST catalog — OPTIONAL lakehouse infra, NOT part of the default dev
+  # loop. Kept out of "ingest" because (a) the ingest apps don't use it (Bronze is
+  # in Postgres for now) and (b) the 0.90.2 tag is unpullable from Docker Hub, which
+  # broke `pnpm dev`/`dev:ingest`. Start explicitly via `pnpm dev:lakehouse` once a
+  # working image tag is pinned.
   nessie:
     image: projectnessie/nessie:0.90.2
-    profiles: ["ingest"]
+    profiles: ["lakehouse"]
     depends_on:
       minio:
         condition: service_healthy

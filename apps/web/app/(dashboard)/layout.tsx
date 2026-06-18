@@ -36,6 +36,7 @@ import {
   Users,
   Settings,
   ShieldCheck,
+  Gauge,
 } from 'lucide-react';
 import { UserMenu } from '@/components/dashboard/user-menu';
 import { RequireSession } from '@/components/dashboard/require-session';
@@ -83,6 +84,7 @@ const NAV_SECTIONS: NavSection[] = [
     items: [
       { href: '/settings/connectors', label: 'Connectors', icon: Plug },
       { href: '/data/health', label: 'Data Health', icon: Activity },
+      { href: '/data/quality', label: 'Data Quality', icon: Gauge },
     ],
   },
   {

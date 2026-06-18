@@ -508,6 +508,78 @@ export type AnalyticsDataHealthResponse =
       lastSyncAt: string | null;
     };
 
+// ── Data Quality (Phase 7 — dq grades + effective_confidence gate) ────────────
+//
+// CONTRACT SOURCE OF TRUTH (do NOT hand-guess — see arch §2c / §3):
+//   apps/core/src/modules/data-quality/internal/application/queries/get-data-quality-summary.ts
+//   → getDataQualitySummary(brandId, deps): Promise<DataQualitySummaryResult>
+//   BFF: GET /api/v1/data-quality/summary → { request_id, data: DataQualitySummaryResult }
+//
+// Field names MUST match the core DTO EXACTLY (camelCase, mirroring DataHealthResult).
+// This summary carries GRADES, not money — there are intentionally NO *_minor fields.
+// If a *_minor field ever appears here, the core DTO has drifted: STOP and reconcile,
+// never add a `/100` or parseFloat (the recurring BigInt(undefined) crash class).
+
+/** Frozen letter grade — mirrors metric-engine DqLetterGrade (A+ > A > B > C > D). */
+export type DqLetterGrade = 'A+' | 'A' | 'B' | 'C' | 'D';
+
+/** The DQ check categories (the 4 executors). */
+export type DqCheckCategory =
+  | 'freshness'
+  | 'completeness'
+  | 'schema_validity'
+  | 'reconciliation';
+
+/** Trust tier the quality gate emits from effective_confidence. */
+export type DqTrustTier = 'trusted' | 'estimated' | 'untrusted';
+
+/**
+ * Freshness-SLA status — derived server-side from the latest freshness check's
+ * `passing` + how close `observed` is to `threshold`. Never colour-only in the UI.
+ */
+export type DqFreshnessSlaStatus = 'green' | 'at_risk' | 'breached';
+
+/** One latest graded check per (category, target). */
+export interface DqGradeCell {
+  category: DqCheckCategory;
+  target: string; // table/topic/subject, e.g. 'bronze_events', 'silver.order_state'
+  grade: DqLetterGrade;
+  passing: boolean;
+  observed: string; // raw measured signal as text (e.g. '42' minutes, '0.0123' null-rate)
+  threshold: string; // the SLA measured against (e.g. '60', '0.0')
+  checkedAt: string | null; // ISO timestamp of the check run
+}
+
+/** The gate decision the metric-engine computes from effective_confidence. */
+export interface DqGateDecision {
+  tier: DqTrustTier;
+  billingCapApplies: boolean;
+  includedInMmm: boolean;
+  blocksHighRiskRecommendation: boolean;
+}
+
+/** dq_grade coverage — the Phase-7 success metric. */
+export interface DqCoverage {
+  graded: number; // distinct (category,target) with a grade
+  expected: number; // distinct (category,target) expected to be graded
+}
+
+export type DataQualitySummaryResponse =
+  | { state: 'no_data' }
+  | {
+      state: 'has_data';
+      /** Per-category × per-target latest grade matrix (core DTO field name: `grades`). */
+      grades: DqGradeCell[];
+      /** Freshness-SLA roll-up across the freshness checks. */
+      freshnessSla: DqFreshnessSlaStatus;
+      /** dq_grade coverage — the success metric. */
+      coverage: DqCoverage;
+      /** effective_confidence = min(cost_confidence, attribution_confidence). */
+      effectiveConfidence: DqLetterGrade;
+      /** The trust gate decision (drives the Estimated/Untrusted banner). */
+      gate: DqGateDecision;
+    };
+
 // ── Settlements (Razorpay Track C — net-of-fees) ──────────────────────────────
 //
 // Settlement = realized revenue NET of Razorpay processing fees/tax/reserve/reversals.

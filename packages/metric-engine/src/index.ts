@@ -137,3 +137,21 @@ export type {
 
 export { computeChannelRoas } from './attribution-channel-roas.js';
 export type { ChannelRoasRow } from './attribution-channel-roas.js';
+
+// Phase 7 Data Quality (feat-data-quality-engine) — cost_confidence + effective_confidence.
+// effective_confidence = min(cost_confidence, attribution_confidence). FROZEN grade lookups
+// (no runtime float, no model — I-E03/E04); a computed metric OUTPUT read at metric-engine
+// time, never a persisted float. cost_confidence = floor over the cost-relevant DQ grades.
+export {
+  GRADE_ORDINAL,
+  minGrade,
+  computeCostConfidence,
+  computeEffectiveConfidence,
+} from './cost-confidence.js';
+export type { DqLetterGrade } from './cost-confidence.js';
+
+// Phase 7 Data Quality — the quality gate (trust tier + recommendation/billing/MMM decision).
+// Trusted (A+|A|B) → full recs + billing cap + MMM; Estimated (C)/Untrusted (D) → blocked,
+// no cap, excluded from MMM. CI-blocking: blocks high-risk recommendations below trusted.
+export { gateMetric, evaluateGate } from './quality-gate.js';
+export type { TrustTier, GateDecision } from './quality-gate.js';

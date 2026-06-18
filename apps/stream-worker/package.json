@@ -4,6 +4,6 @@
   "private": true,
   "type": "module",
   "scripts": { "build": "tsc -b", "typecheck": "tsc --noEmit", "lint": "eslint .", "dev": "tsx watch src/main.ts", "test:unit": "vitest run --passWithNoTests", "test:e2e": "vitest run --no-file-parallelism src/tests/bronze.e2e.test.ts" },
-  "dependencies": { "kafkajs": "^2.2.4", "ioredis": "^5.11.1", "pg": "^8.21.0", "@brain/ad-spend-mapper": "workspace:*", "@brain/audit": "workspace:*", "@brain/contracts": "workspace:*", "@brain/db": "workspace:*", "@brain/events": "workspace:*", "@brain/gokwik-mapper": "workspace:*", "@brain/identity-core": "workspace:*", "@brain/observability": "workspace:*", "@brain/razorpay-mapper": "workspace:*", "@brain/shopflo-mapper": "workspace:*", "@brain/shopify-mapper": "workspace:*", "@brain/tenant-context": "workspace:*" },
+  "dependencies": { "kafkajs": "^2.2.4", "ioredis": "^5.11.1", "pg": "^8.21.0", "mysql2": "^3.22.5", "@brain/ad-spend-mapper": "workspace:*", "@brain/audit": "workspace:*", "@brain/contracts": "workspace:*", "@brain/db": "workspace:*", "@brain/events": "workspace:*", "@brain/gokwik-mapper": "workspace:*", "@brain/identity-core": "workspace:*", "@brain/observability": "workspace:*", "@brain/razorpay-mapper": "workspace:*", "@brain/shopflo-mapper": "workspace:*", "@brain/shopify-mapper": "workspace:*", "@brain/tenant-context": "workspace:*" },
   "devDependencies": { "@types/pg": "^8.11.6", "tsx": "^4.22.4", "typescript": "^5.6.0", "vitest": "^2.1.0" }
 }

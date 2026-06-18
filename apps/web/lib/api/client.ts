@@ -65,6 +65,7 @@ import type {
   AnalyticsOrdersTimeseriesResponse,
   AnalyticsOrderStatsResponse,
   AnalyticsDataHealthResponse,
+  DataQualitySummaryResponse,
   AnalyticsSettlementsResponse,
   AnalyticsTrackingHealthResponse,
   AnalyticsRecentEventsResponse,
@@ -1021,6 +1022,20 @@ export const analyticsApi = {
   getDataHealth: async (): Promise<AnalyticsDataHealthResponse> => {
     const { data } = await bffFetch<BffEnvelope<AnalyticsDataHealthResponse>>(
       `/v1/analytics/data-health`,
+    );
+    return data;
+  },
+
+  /**
+   * GET /api/v1/data-quality/summary
+   * Returns per-category × per-target dq grades, freshness-SLA status, dq_grade
+   * coverage, effective_confidence, and the trust-gate decision (metric-engine read).
+   * The UI NEVER queries dq_check_result — this BFF route is the sole read path (I-ST01).
+   * D-10: unwrap { request_id, data } → DataQualitySummaryResponse; preserve no_data.
+   */
+  getDataQualitySummary: async (): Promise<DataQualitySummaryResponse> => {
+    const { data } = await bffFetch<BffEnvelope<DataQualitySummaryResponse>>(
+      `/v1/data-quality/summary`,
     );
     return data;
   },

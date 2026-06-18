@@ -634,6 +634,91 @@ export type AnalyticsOrderStatusMixResponse =
       data_source: DataSource;
     };
 
+// ── Journey / first-touch (Silver tier — feat-journey-touchpoint Track 3) ──────
+//
+// The SECOND surface read from the Silver analytics tier (dbt → StarRocks
+// silver.touchpoint), via the metric-engine journey seam (withSilverBrand, I-ST01
+// sole read path — the UI NEVER queries StarRocks). All three reads are NON-additive
+// aggregations / projections computed in the metric-engine (ADR-004), not dbt.
+//
+// All count fields are bigint-serialized strings (D-1) — never floats. share/rate
+// fields are 2dp strings (integer basis-point share math in the engine) or null when
+// the denominator is 0 — never a fabricated 0%. data_source ('synthetic' | 'live')
+// drives the "Synthetic (dev)" badge: the 94 real page.viewed events are thin, so a
+// window may be enriched with CLEARLY-LABELLED synthetic journey fixtures — never
+// presented as live. There is NO money column (touchpoints are not monetary).
+//
+// Channel is a deterministic CASE-ladder value (click_id → paid; else utm.medium;
+// else referrer → referral; else direct) — never a classifier (D-5: no ML/fuzzy).
+
+/** Canonical first-touch channels (deterministic CASE ladder in the dbt mart). */
+export type JourneyChannel =
+  | 'paid'
+  | 'paid_meta'
+  | 'paid_google'
+  | 'paid_tiktok'
+  | 'email'
+  | 'organic_social'
+  | 'referral'
+  | 'direct';
+
+/** One row of the first-touch channel mix — count + integer-basis-point share. */
+export interface FirstTouchMixRow {
+  channel: JourneyChannel;
+  count: string;            // bigint string (distinct journeys whose first touch is this channel)
+  share_pct: string | null; // 2dp string e.g. '42.50'; null when total = 0
+}
+
+export type AnalyticsJourneyFirstTouchMixResponse =
+  | { state: 'no_data' }
+  | {
+      state: 'has_data';
+      from: string;             // YYYY-MM-DD (echoed range)
+      to: string;               // YYYY-MM-DD
+      total: string;            // bigint string (total distinct journeys in range)
+      by_channel: FirstTouchMixRow[];
+      synthetic_touch_count: string; // bigint string (coverage honesty — synthetic touches in window)
+      real_touch_count: string;      // bigint string (coverage honesty — real touches in window)
+      data_source: DataSource;
+    };
+
+export type AnalyticsJourneyStitchRateResponse =
+  | { state: 'no_data' }
+  | {
+      state: 'has_data';
+      from: string;             // YYYY-MM-DD (echoed range)
+      to: string;               // YYYY-MM-DD
+      stitched: string;         // bigint string (distinct anon journeys stitched to a known brain_id)
+      total: string;            // bigint string (distinct anon journeys — the denominator)
+      hit_pct: string | null;   // 2dp string e.g. '37.50'; null when total = 0
+      data_source: DataSource;
+    };
+
+/** One ordered touch in a journey timeline (per-touch grain, touch_seq asc). */
+export interface JourneyTouchpointRow {
+  touch_seq: number;             // 1-based ordering within the journey
+  channel: JourneyChannel;
+  occurred_at: string;           // ISO timestamp (server-derived)
+  is_first_touch: boolean;
+  is_last_touch: boolean;
+  event_type: string;            // 'page.viewed' | 'cart.viewed' | 'cart.item_added'
+  utm_source: string | null;
+  utm_medium: string | null;
+  utm_campaign: string | null;
+  referrer_host: string | null;
+  landing_path: string | null;
+}
+
+export type AnalyticsJourneyTimelineResponse =
+  | { state: 'no_data' }
+  | {
+      state: 'has_data';
+      order_id: string;          // echoed selector
+      stitched: boolean;         // whether this order resolved to a known journey (deterministic stitch)
+      touches: JourneyTouchpointRow[];
+      data_source: DataSource;
+    };
+
 // ── Tracking Center (Phase 1 Track C) ──────────────────────────────────────────
 // Pixel-collection health + the Event Explorer feed. NO raw PII — anonymized ids
 // + aggregate counts only. All count fields are bigint-serialized strings (D-1).

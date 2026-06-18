@@ -1,0 +1,56 @@
+version: 2
+
+models:
+  - name: silver_touchpoint
+    description: >
+      Canonical Silver journey-touchpoint mart. One row per (brand_id, brain_anon_id,
+      touch_seq) — every SDK touch in journey order, with is_first_touch / is_last_touch
+      flags, server-re-derived 30-min session linkage, deterministic channel, UTM, click-ids,
+      and a deterministically cart-stitched order/brain_id (D-5: read-back, never inferred).
+      Additive (sessionize + key-equality join) only; non-additive first-touch-mix /
+      stitch-hit-rate / timeline live in packages/metric-engine (ADR-004). NO money/float
+      column (touchpoints are not monetary). brand_id is the tenant key; per-brand isolation
+      is enforced at the Silver READ seam (I-ST01), not in dbt.
+    columns:
+      - name: brand_id
+        description: "Tenant key (UUID→text). First key/distribution/order column."
+        tests:
+          - not_null
+      - name: brain_anon_id
+        description: "Anon journey key (read back from the SDK). Identity spine for sessionization."
+        tests:
+          - not_null
+      - name: touch_seq
+        description: "1-based touch ordinal within the anon journey (occurred_at asc)."
+        tests:
+          - not_null
+      - name: session_key
+        description: "Deterministic server-derived session key (murmur_hash3_32). Replay-stable."
+        tests:
+          - not_null
+      - name: is_first_touch
+        description: "True iff touch_seq = 1 (the journey's first touch)."
+        tests:
+          - not_null
+      - name: is_last_touch
+        description: "True iff this is the journey's last touch by occurred_at."
+        tests:
+          - not_null
+      - name: channel
+        description: "Deterministic CASE-ladder channel (paid_*/paid/email/organic_social/referral/direct)."
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['paid_meta', 'paid_google', 'paid_tiktok', 'paid', 'email', 'organic_social', 'referral', 'direct']
+      - name: occurred_at
+        description: "Touch event-time (timestamptz)."
+        tests:
+          - not_null
+      - name: is_synthetic
+        description: "Dev-honesty flag: true for clearly-labelled synthetic fixture journeys."
+        tests:
+          - not_null
+    # Grain guarantee (exactly one row per (brand_id, brain_anon_id, touch_seq)) is
+    # asserted by the singular test tests/assert_touchpoint_grain.sql (dependency-free).
+    # No-money invariant by tests/assert_touchpoint_no_money.sql; replay-fold consistency
+    # by tests/assert_touchpoint_replay.sql.

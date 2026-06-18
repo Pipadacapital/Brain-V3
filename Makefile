@@ -40,6 +40,7 @@ SR_MYSQL ?= docker exec -i $(STARROCKS_CONTAINER) mysql -h127.0.0.1 -P$(STARROCK
 PG_PSQL  ?= docker exec -i $(PG_CONTAINER) psql -U $(PG_USER) -d $(PG_DB)
 
 .PHONY: silver-catalog silver-run silver-build silver-verify
+.PHONY: journey-catalog journey-run journey-build journey-verify journey-seed
 
 silver-catalog:
 	@echo ">> Applying Postgres read-shim view silver_order_ledger_src (uuid->text for JDBC)..."
@@ -75,4 +76,58 @@ silver-verify: silver-run
 		echo ">> REPLAY PASS: silver_order_state content is identical across re-runs (idempotent)."; \
 	else \
 		echo ">> REPLAY FAIL: silver_order_state content changed between runs."; exit 1; \
+	fi
+
+# ============================================================================
+# feat-journey-touchpoint — silver.touchpoint dbt run wiring (mirror of silver-*).
+# Replay-safe, idempotent. The journey mart is the SECOND Silver mart; same pattern,
+# same cron, no new deployable (I-E05).
+#
+# Targets:
+#   journey-catalog  — apply the Postgres read-shim views (bronze_touchpoint_src +
+#                      connector_journey_stitch_map_src) for the JDBC catalog (idempotent)
+#   journey-seed     — load the CLEARLY-LABELLED synthetic journey fixtures into bronze_events
+#                      + connector_journey_stitch_map (loaded ONLY after the real build is
+#                      proven; every row carries payload.properties._synthetic=true)
+#   journey-run      — dbt run (staging→intermediate→mart) + dbt test for the journey mart
+#   journey-build    — journey-catalog then journey-run (full from-scratch reproduce)
+#   journey-verify   — run dbt TWICE and diff a content checksum → replay-idempotency proof
+# ============================================================================
+
+journey-catalog:
+	@echo ">> Applying Postgres read-shim views bronze_touchpoint_src + connector_journey_stitch_map_src (uuid->text for JDBC)..."
+	$(PG_PSQL) < db/starrocks/bronze_touchpoint_src.sql
+	@echo ">> Ensuring StarRocks JDBC external catalog brain_oltp_pg exists (idempotent)..."
+	$(SR_MYSQL) < db/starrocks/oltp_jdbc_catalog.sql
+
+journey-seed:
+	@echo ">> Loading CLEARLY-LABELLED synthetic journey fixtures (_synthetic=true) into Postgres bronze..."
+	$(PG_PSQL) < db/dbt/seeds/journey_synthetic_fixtures.sql
+
+journey-run:
+	@echo ">> dbt run (stg_touchpoint_events -> int_touchpoint_sessionized -> silver_touchpoint) ..."
+	cd $(DBT_DIR) && DBT_PROFILES_DIR=$(DBT_PROFILES) "$(DBT)" run --select stg_touchpoint_events+
+	@echo ">> dbt test (grain, no-money, replay-fold, schema tests) ..."
+	cd $(DBT_DIR) && DBT_PROFILES_DIR=$(DBT_PROFILES) "$(DBT)" test --select silver_touchpoint stg_touchpoint_events int_touchpoint_sessionized
+
+journey-build: journey-catalog journey-run
+
+# Replay/idempotency proof: order-independent content fingerprint (sum of per-row hashes
+# over ALL stable columns EXCEPT the build-time updated_at), rebuild, snapshot again,
+# assert identical → proves the mart is reproducible-from-source.
+JOURNEY_FP_SQL = SELECT SUM(CAST(murmur_hash3_32(CONCAT_WS('|', brand_id, brain_anon_id, CAST(touch_seq AS STRING), session_key, CAST(session_seq AS STRING), CAST(is_first_touch AS STRING), CAST(is_last_touch AS STRING), CAST(occurred_at AS STRING), event_type, channel, COALESCE(utm_source,''), COALESCE(utm_medium,''), COALESCE(utm_campaign,''), COALESCE(fbclid,''), COALESCE(gclid,''), COALESCE(ttclid,''), COALESCE(referrer_host,''), COALESCE(landing_path,''), COALESCE(stitched_order_id,''), COALESCE(stitched_brain_id,''), CAST(is_synthetic AS STRING))) AS BIGINT)) AS fp, COUNT(*) AS n FROM $(STARROCKS_DB).silver_touchpoint;
+
+journey-verify: journey-run
+	@echo ">> [replay] content fingerprint after run #1 ..."
+	@$(SR_MYSQL) -N -e "$(JOURNEY_FP_SQL)" > /tmp/journey_fp_1.txt
+	@cat /tmp/journey_fp_1.txt
+	@echo ">> [replay] re-running dbt ..."
+	cd $(DBT_DIR) && DBT_PROFILES_DIR=$(DBT_PROFILES) "$(DBT)" run --select stg_touchpoint_events+
+	@echo ">> [replay] content fingerprint after run #2 ..."
+	@$(SR_MYSQL) -N -e "$(JOURNEY_FP_SQL)" > /tmp/journey_fp_2.txt
+	@cat /tmp/journey_fp_2.txt
+	@if diff -q /tmp/journey_fp_1.txt /tmp/journey_fp_2.txt >/dev/null; then \
+		echo ">> REPLAY PASS: silver_touchpoint content is identical across re-runs (idempotent)."; \
+	else \
+		echo ">> REPLAY FAIL: silver_touchpoint content changed between runs."; exit 1; \
 	fi

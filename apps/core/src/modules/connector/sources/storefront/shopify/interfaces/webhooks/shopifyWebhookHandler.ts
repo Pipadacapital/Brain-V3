@@ -34,6 +34,7 @@ import { ShopifyHmac } from '../../domain/value-objects/ShopifyHmac.js';
 import type { ISecretsManager } from '../../infrastructure/secrets/ISecretsManager.js';
 import {
   mapOrderToEvent,
+  projectOrderStitch,
   uuidV5FromOrderLive,
   ORDER_LIVE_V1_EVENT_NAME,
   type ShopifyOrderShape,
@@ -277,6 +278,21 @@ export function registerShopifyWebhookRoutes(
         },
       );
 
+      // ── Step 6b: Deterministic cart-stitch upsert (feat-journey-touchpoint §3) ─
+      // Read brain_anon_id (+ utm / click_ids) BACK from the order note_attributes
+      // (D-5 — never inferred) and upsert connector_journey_stitch_map by
+      // (brand_id, order_id). Idempotent on webhook re-delivery (PK upsert). Fire-and-forget
+      // (never block the 200 ack). Only writes when the anon key was actually present.
+      const stitch = projectOrderStitch(order);
+      if (stitch.stitchedAnonId) {
+        upsertStitchMap(rawPgPool, brandId, orderId, stitch, requestId).catch((stitchErr) => {
+          req.log?.warn(
+            { request_id: requestId, err: stitchErr },
+            '[webhook] cart-stitch upsert failed (non-fatal)',
+          );
+        });
+      }
+
       // ── Step 7: 200 fast-ack ───────────────────────────────────────────────
       // Shopify retries on non-2xx. We ack quickly after successful Kafka produce.
       return reply.code(200).send({ request_id: requestId, received: true });
@@ -310,6 +326,52 @@ async function touchSyncStatus(
        SET state = 'connected', last_sync_at = NOW(), updated_at = NOW()
        WHERE brand_id = $1 AND connector_instance_id = $2`,
       [brandId, connectorInstanceId],
+    );
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+// ── connector_journey_stitch_map upsert (feat-journey-touchpoint §3) ────────────
+
+/**
+ * Deterministic cart-stitch upsert (D-5): persist brain_anon_id (+ utm / click_ids)
+ * read BACK from the order under the brand GUC. Idempotent on (brand_id, order_id) —
+ * webhook re-delivery re-writes the same row (no new rows). brain_id is left NULL here
+ * (honest — the identity-graph resolution is a follow-on; NULL = anon not yet linked).
+ */
+async function upsertStitchMap(
+  rawPgPool: pg.Pool,
+  brandId: string,
+  orderId: string,
+  stitch: { stitchedAnonId: string | null; clickIds: unknown; utms: unknown },
+  _requestId: string,
+): Promise<void> {
+  if (!stitch.stitchedAnonId) return;
+  const client = await rawPgPool.connect();
+  try {
+    await client.query('BEGIN');
+    // GUC txn-local: required for connector_journey_stitch_map FORCE RLS (NN-1 / 0031).
+    await client.query(`SET LOCAL app.current_brand_id = $1`, [brandId]);
+    await client.query(
+      `INSERT INTO connector_journey_stitch_map
+         (brand_id, order_id, stitched_anon_id, click_ids, utms)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (brand_id, order_id) DO UPDATE
+         SET stitched_anon_id = EXCLUDED.stitched_anon_id,
+             click_ids        = EXCLUDED.click_ids,
+             utms             = EXCLUDED.utms`,
+      [
+        brandId,
+        orderId,
+        stitch.stitchedAnonId,
+        stitch.clickIds ? JSON.stringify(stitch.clickIds) : null,
+        stitch.utms ? JSON.stringify(stitch.utms) : null,
+      ],
     );
     await client.query('COMMIT');
   } catch (err) {

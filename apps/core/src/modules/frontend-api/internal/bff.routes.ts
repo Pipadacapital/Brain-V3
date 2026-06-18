@@ -56,7 +56,7 @@ import { jtiFromJwt, csrfTokenForSession } from './csrf.js';
 import type { RateLimiter } from '../../workspace-access/internal/infrastructure/rate-limiter.js';
 import { loginFailKeySync, loginIpKey, registerIpKey } from '../../workspace-access/internal/infrastructure/rate-limiter.js';
 import type { Pool as PgPool } from 'pg';
-import { getRevenueMetrics, getRevenueTimeseries, getKpiSummary, getRecognitionBreakdown, getRecentActivity, getOrdersTimeseries, getOrderStats, getDataHealth, getSettlementSummary, getTrackingHealth, getRecentEvents, getAdSpendTimeseries, getBlendedRoas, getCodRtoRates, getCodMix, getCheckoutFunnel, getOrderStatusMix } from '../../analytics/index.js';
+import { getRevenueMetrics, getRevenueTimeseries, getKpiSummary, getRecognitionBreakdown, getRecentActivity, getOrdersTimeseries, getOrderStats, getDataHealth, getSettlementSummary, getTrackingHealth, getRecentEvents, getAdSpendTimeseries, getBlendedRoas, getCodRtoRates, getCodMix, getCheckoutFunnel, getOrderStatusMix, getJourneyFirstTouchMix, getJourneyStitchRate, getJourneyTimeline } from '../../analytics/index.js';
 import type { AdPlatform } from '@brain/metric-engine';
 import type { TimeGrain } from '@brain/metric-engine';
 import type { SilverPool } from '@brain/metric-engine';
@@ -1836,6 +1836,196 @@ export function registerBffRoutes(
           // Dev: the order ledger's cod_* rows folded into Silver are synthetic (real shape).
           dataSource: 'synthetic',
         },
+      );
+
+      return reply.send({ request_id: requestId, data: result });
+    },
+  );
+
+  // ── Journey endpoints (Phase 4 — feat-journey-touchpoint) ─────────────────
+  // Silver reads over silver.touchpoint through the metric-engine seam (withSilverBrand,
+  // I-ST01 sole reader). The route issues NO OLAP SQL itself (ADR-002). Brand from session
+  // (D-1, NEVER body). Honest no_data (D-2). data_source='synthetic' in dev (journey demo
+  // is enriched with clearly-labelled synthetic fixtures; real page.viewed events are thin).
+
+  /**
+   * GET /api/v1/analytics/journey/first-touch-mix?from=YYYY-MM-DD&to=YYYY-MM-DD
+   * First-touch channel mix (distinct journeys + integer-basis-point share by channel)
+   * over a window, from silver.touchpoint.
+   */
+  fastify.get(
+    '/api/v1/analytics/journey/first-touch-mix',
+    {
+      preHandler: [bffProtectedPreHandler],
+      schema: {
+        querystring: {
+          type: 'object',
+          properties: {
+            from: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
+            to:   { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
+          },
+          additionalProperties: false,
+        },
+      },
+      attachValidation: true,
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const validationError = (request as FastifyRequest & { validationError?: Error }).validationError;
+      if (validationError) {
+        return reply.code(400).send({
+          request_id: requestId,
+          error: { code: 'INVALID_PARAMS', message: 'from/to must be YYYY-MM-DD.' },
+        });
+      }
+
+      const auth = (request as AuthenticatedRequest).auth;
+      if (!auth.brandId) {
+        return reply.send({ request_id: requestId, data: { state: 'no_data' } });
+      }
+      if (!srPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (StarRocks) not available' } });
+      }
+
+      const query = request.query as { from?: string; to?: string };
+      const today = new Date().toISOString().split('T')[0] as string;
+      const toStr = query.to ?? today;
+      const defaultFrom = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0] as string;
+      const fromStr = query.from ?? defaultFrom;
+
+      const result = await getJourneyFirstTouchMix(
+        auth.brandId,
+        { srPool },
+        {
+          from: new Date(`${fromStr}T00:00:00Z`),
+          to: new Date(`${toStr}T23:59:59Z`),
+          fromStr,
+          toStr,
+          // Dev: journey demo is enriched with clearly-labelled synthetic fixtures.
+          dataSource: 'synthetic',
+        },
+      );
+
+      return reply.send({ request_id: requestId, data: result });
+    },
+  );
+
+  /**
+   * GET /api/v1/analytics/journey/stitch-rate?from=YYYY-MM-DD&to=YYYY-MM-DD
+   * Deterministic cart-stitch hit-rate (stitched ÷ total distinct anon journeys) over a
+   * window. Stitch is read BACK from the order (D-5), never inferred.
+   */
+  fastify.get(
+    '/api/v1/analytics/journey/stitch-rate',
+    {
+      preHandler: [bffProtectedPreHandler],
+      schema: {
+        querystring: {
+          type: 'object',
+          properties: {
+            from: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
+            to:   { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
+          },
+          additionalProperties: false,
+        },
+      },
+      attachValidation: true,
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const validationError = (request as FastifyRequest & { validationError?: Error }).validationError;
+      if (validationError) {
+        return reply.code(400).send({
+          request_id: requestId,
+          error: { code: 'INVALID_PARAMS', message: 'from/to must be YYYY-MM-DD.' },
+        });
+      }
+
+      const auth = (request as AuthenticatedRequest).auth;
+      if (!auth.brandId) {
+        return reply.send({ request_id: requestId, data: { state: 'no_data' } });
+      }
+      if (!srPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (StarRocks) not available' } });
+      }
+
+      const query = request.query as { from?: string; to?: string };
+      const today = new Date().toISOString().split('T')[0] as string;
+      const toStr = query.to ?? today;
+      const defaultFrom = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0] as string;
+      const fromStr = query.from ?? defaultFrom;
+
+      const result = await getJourneyStitchRate(
+        auth.brandId,
+        { srPool },
+        {
+          from: new Date(`${fromStr}T00:00:00Z`),
+          to: new Date(`${toStr}T23:59:59Z`),
+          fromStr,
+          toStr,
+          dataSource: 'synthetic',
+        },
+      );
+
+      return reply.send({ request_id: requestId, data: result });
+    },
+  );
+
+  /**
+   * GET /api/v1/analytics/journey/timeline?orderId=...  (or ?anonId=...)
+   * The ordered touchpoint timeline for ONE journey — resolved by order_id (via the
+   * deterministic stitch map, D-5) or directly by brain_anon_id. A read projection.
+   */
+  fastify.get(
+    '/api/v1/analytics/journey/timeline',
+    {
+      preHandler: [bffProtectedPreHandler],
+      schema: {
+        querystring: {
+          type: 'object',
+          properties: {
+            orderId: { type: 'string', minLength: 1, maxLength: 256 },
+            anonId:  { type: 'string', minLength: 1, maxLength: 256 },
+          },
+          additionalProperties: false,
+        },
+      },
+      attachValidation: true,
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const validationError = (request as FastifyRequest & { validationError?: Error }).validationError;
+      if (validationError) {
+        return reply.code(400).send({
+          request_id: requestId,
+          error: { code: 'INVALID_PARAMS', message: 'orderId or anonId required.' },
+        });
+      }
+
+      const auth = (request as AuthenticatedRequest).auth;
+      if (!auth.brandId) {
+        return reply.send({ request_id: requestId, data: { state: 'no_data' } });
+      }
+      if (!srPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (StarRocks) not available' } });
+      }
+
+      const query = request.query as { orderId?: string; anonId?: string };
+      if (!query.orderId && !query.anonId) {
+        return reply.code(400).send({
+          request_id: requestId,
+          error: { code: 'INVALID_PARAMS', message: 'orderId or anonId required.' },
+        });
+      }
+
+      const selector = query.orderId
+        ? { orderId: query.orderId }
+        : { brainAnonId: query.anonId as string };
+
+      const result = await getJourneyTimeline(
+        auth.brandId,
+        { srPool },
+        { selector, dataSource: 'synthetic' },
       );
 
       return reply.send({ request_id: requestId, data: result });

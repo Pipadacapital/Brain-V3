@@ -46,6 +46,22 @@ export interface ShopifyOrderShape {
     email?: string | null;
     phone?: string | null;
   } | null;
+  // ADDITIVE (feat-journey-touchpoint): the storefront pixel forwards the journey keys
+  // into checkout note_attributes so the order webhook can read brain_anon_id BACK
+  // (deterministic cart-stitch, D-5 — never inferred). Optional; absent on legacy orders.
+  note_attributes?: Array<{ name?: string | null; value?: string | null }> | null;
+}
+
+/**
+ * The deterministic journey-stitch projection read BACK from a Shopify order's
+ * note_attributes (feat-journey-touchpoint §3). NOT inferred (D-5) — these are the exact
+ * keys the storefront pixel wrote at checkout. All fields optional/honest-NULL.
+ */
+export interface OrderStitchProjection {
+  /** brain_anon_id read back from note_attributes — the anon journey key. */
+  stitchedAnonId: string | null;
+  clickIds: { fbclid?: string; gclid?: string; ttclid?: string } | null;
+  utms: { source?: string; medium?: string; campaign?: string; term?: string; content?: string } | null;
 }
 
 export interface MappedOrderEvent {
@@ -262,6 +278,53 @@ export function mapOrderToEvent(
   };
 
   return { event_name: eventName, occurred_at: occurredAt, properties };
+}
+
+/**
+ * Project the deterministic journey-stitch keys read BACK from a Shopify order's
+ * note_attributes (feat-journey-touchpoint §3 / D-5 — read-back, NEVER inferred).
+ *
+ * The storefront pixel writes these note_attributes at checkout:
+ *   brain_anon_id, utm_source/medium/campaign/term/content, fbclid/gclid/ttclid.
+ * We read them back verbatim. Missing keys → honest NULL (anon not captured → no stitch).
+ *
+ * @param order Raw Shopify order (must carry note_attributes if a stitch is possible)
+ */
+export function projectOrderStitch(order: ShopifyOrderShape): OrderStitchProjection {
+  const attrs = order.note_attributes ?? [];
+  const get = (name: string): string | undefined => {
+    const hit = attrs.find((a) => a?.name === name);
+    const v = hit?.value;
+    return v != null && v !== '' ? v : undefined;
+  };
+
+  const stitchedAnonId = get('brain_anon_id') ?? null;
+
+  const fbclid = get('fbclid');
+  const gclid = get('gclid');
+  const ttclid = get('ttclid');
+  const clickIds =
+    fbclid || gclid || ttclid
+      ? { ...(fbclid ? { fbclid } : {}), ...(gclid ? { gclid } : {}), ...(ttclid ? { ttclid } : {}) }
+      : null;
+
+  const source = get('utm_source');
+  const medium = get('utm_medium');
+  const campaign = get('utm_campaign');
+  const term = get('utm_term');
+  const content = get('utm_content');
+  const utms =
+    source || medium || campaign || term || content
+      ? {
+          ...(source ? { source } : {}),
+          ...(medium ? { medium } : {}),
+          ...(campaign ? { campaign } : {}),
+          ...(term ? { term } : {}),
+          ...(content ? { content } : {}),
+        }
+      : null;
+
+  return { stitchedAnonId, clickIds, utms };
 }
 
 /**

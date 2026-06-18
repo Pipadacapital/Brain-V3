@@ -67,7 +67,12 @@ test('register → verify → login → Step1 Workspace → Step2 Brand → Step
   await expect(page.getByTestId('select-timezone')).toBeVisible();
   // Revenue: realized (default — verify select exists)
   await expect(page.getByTestId('select-revenue-definition')).toBeVisible();
-  await page.getByTestId('btn-create-brand').click();
+  // Skip the website (no live storefront in the smoke env) → tracking interstitial in
+  // its honest "add website" state, then continue to Step 3.
+  await page.getByTestId('btn-skip-website').click();
+  await expect(page).toHaveURL(/\/onboarding\/tracking/);
+  await expect(page.getByTestId('tracking-ready-skipped')).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId('btn-tracking-continue').click();
 
   // After brand creation: session refresh → onboarding_status=brand_created → Step 3.
   await expect(page).toHaveURL(/\/onboarding\/integrations/);
@@ -151,11 +156,12 @@ test('resume assertion: user at brand_created lands on Step 3 (/onboarding/integ
   await page.getByTestId('btn-create-workspace').click();
   await expect(page).toHaveURL(/\/brand\/new/);
 
-  // Step 2 — create brand (leaves status at brand_created)
+  // Step 2 — create brand, skipping the website (leaves status at brand_created)
   await page.getByTestId('input-brand-name').fill('Resume Brand');
-  await page.getByTestId('btn-create-brand').click();
-  // After brand creation, we should be at Step 3. Immediately navigate away (simulate crash).
-  await expect(page).toHaveURL(/\/onboarding\/integrations/);
+  await page.getByTestId('btn-skip-website').click();
+  // After brand creation we hit the tracking interstitial. Immediately navigate away
+  // (simulate crash) — the server status is still brand_created.
+  await expect(page).toHaveURL(/\/onboarding\/tracking/);
 
   // Simulate logout (crash recovery — user navigates away without completing Step 3).
   await page.goto('/logout');

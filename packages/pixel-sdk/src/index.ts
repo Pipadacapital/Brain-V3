@@ -12,6 +12,7 @@
 
 export { createPixel, originOf } from './capture.js';
 export type { Pixel, PixelOptions, EventName } from './capture.js';
+export { normalizeBrandHost } from './normalize-host.js';
 export { getOrCreateAnonId, getOrRollSession } from './identity.js';
 export { captureClickIds, captureUtm, parseQuery } from './attribution.js';
 export { resolveConsent, defaultConsentReader } from './consent.js';

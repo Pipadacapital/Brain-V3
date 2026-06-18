@@ -8,8 +8,20 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { normalizeBrandHost } from '@brain/pixel-sdk';
 import type { DbPool, QueryContext } from '@brain/db';
 import type { AuditWriter } from '@brain/audit';
+
+/**
+ * Server-side, post-persist pixel provisioner (ADR-4). brandId comes ONLY from the
+ * freshly-written brand row — never from client input (R2 invariant). Injected as a
+ * closure so BrandService stays free of the pixel module's wiring.
+ */
+export type ProvisionPixel = (
+  brandId: string,
+  targetHost: string,
+  idempotencyKey: string,
+) => Promise<void>;
 import type { Brand, CurrencyCode, BrandTimezone, RevenueDefinition } from '../domain/brand/entities.js';
 import type { RoleCode } from '../domain/membership/entities.js';
 import { BrandRepository, MembershipRepository, OrganizationRepository } from '../infrastructure/repositories.js';
@@ -40,7 +52,22 @@ export class BrandService {
   constructor(
     private readonly pool: DbPool,
     private readonly audit: AuditWriter,
+    private readonly provisionPixel?: ProvisionPixel,
   ) {}
+
+  /**
+   * Canonicalize a user-typed brand website to its registrable host.
+   * Returns null for blank/absent input (skip-for-now). Throws INVALID_WEBSITE (422)
+   * for a non-empty input that does not resolve to a valid host.
+   */
+  private normalizeDomain(domain: string | null | undefined): string | null {
+    if (domain == null || domain.trim() === '') return null;
+    const host = normalizeBrandHost(domain);
+    if (host === null) {
+      throw new BrandError('INVALID_WEBSITE', 'Enter a valid website (e.g. mystore.com).', 422);
+    }
+    return host;
+  }
 
   async create(
     data: {
@@ -57,6 +84,8 @@ export class BrandService {
   ): Promise<Brand> {
     const currencyCode: CurrencyCode = data.currencyCode ?? 'INR';
     const regionCode = deriveRegionCode(currencyCode);
+    // Server-authoritative canonical host (ADR-1). null = skip-for-now (no provision).
+    const normalizedHost = this.normalizeDomain(data.domain);
     const ctx: QueryContext = { correlationId, workspaceId: data.organizationId };
     const client = await this.pool.connect();
     try {
@@ -75,7 +104,7 @@ export class BrandService {
         {
           organizationId: data.organizationId,
           displayName: data.displayName,
-          domain: data.domain,
+          domain: normalizedHost,
           regionCode,
           currencyCode,
           timezone: data.timezone ?? 'Asia/Kolkata',
@@ -121,6 +150,13 @@ export class BrandService {
         },
         idempotency_key: randomUUID(),
       });
+
+      // Auto-provision the per-brand pixel_installation (ADR-4). brandId is taken
+      // ONLY from the just-written brand.id — never a client-sent brand_id (R2).
+      // Guarded by host != null (skip-for-now creates no row). Idempotent + RLS-scoped.
+      if (normalizedHost !== null && this.provisionPixel) {
+        await this.provisionPixel(brand.id, normalizedHost, correlationId);
+      }
 
       return brand;
     } finally {
@@ -242,7 +278,14 @@ export class BrandService {
         }
       }
 
-      const updated = await brandRepo.update(id, data, ctx);
+      // Canonicalize the website if this PATCH touches it (ADR-1). `domain` absent
+      // from the PATCH → untouched; present + blank → null (clears); present +
+      // non-empty → canonical host or 422.
+      const domainProvided = Object.prototype.hasOwnProperty.call(data, 'domain');
+      const normalizedHost = domainProvided ? this.normalizeDomain(data.domain) : undefined;
+      const writeData = domainProvided ? { ...data, domain: normalizedHost } : data;
+
+      const updated = await brandRepo.update(id, writeData, ctx);
       if (!updated) throw new BrandError('NOT_FOUND', 'Brand not found.', 404);
 
       await this.audit.append({
@@ -254,13 +297,19 @@ export class BrandService {
         entity_id: id,
         payload: {
           display_name: data.displayName,
-          domain: data.domain,
+          domain: domainProvided ? normalizedHost : undefined,
           status: data.status,
           currency_code: data.currencyCode,
           timezone: data.timezone,
           revenue_definition: data.revenueDefinition,
         },
       });
+
+      // Auto-provision / edit-host-in-place (ADR-3/ADR-4). Fires only when the PATCH
+      // set a non-null canonical host. brandId is the path-resolved id, not client body.
+      if (domainProvided && normalizedHost && this.provisionPixel) {
+        await this.provisionPixel(id, normalizedHost, correlationId);
+      }
 
       return updated;
     } finally {

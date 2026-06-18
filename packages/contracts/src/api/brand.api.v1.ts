@@ -45,6 +45,13 @@ export const CreateBrandRequestSchema = z.object({
   // still send it are not rejected (backward compat, value is discarded).
   workspace_id: z.string().uuid().optional(),
   display_name: z.string().min(1).max(255),
+  // Brand website. The SERVER canonicalizes this to a registrable host via
+  // normalizeBrandHost (@brain/pixel-sdk): lowercase, scheme/path/port/www stripped,
+  // punycode for IDN. The persisted brand.domain is the canonical value, not the raw
+  // input. null/absent = skip-for-now (no pixel provisioned). A non-empty value that
+  // does not resolve to a valid host → 422 INVALID_WEBSITE. A non-empty value triggers
+  // server-side auto-provision of the per-brand pixel_installation (server-minted
+  // install_token; client never supplies a brand_id or token).
   domain: z.string().max(253).nullable().optional(),
   currency_code: CurrencyCodeSchema.optional(),
   timezone: BrandTimezoneSchema.optional(),

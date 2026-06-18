@@ -73,7 +73,7 @@ describe('getDataQualitySummary — derivation (trusted)', () => {
     const rows: ScriptedRow[] = [
       { category: 'freshness', target: 'ad_spend_ledger', grade: 'A', passing: true, observed: '5', threshold: '60', checked_at: ts },
       { category: 'completeness', target: 'ad_spend_ledger', grade: 'A+', passing: true, observed: '0.0', threshold: '0.0', checked_at: ts },
-      { category: 'reconciliation', target: 'silver.order_state', grade: 'A', passing: true, observed: '0', threshold: '10', checked_at: ts },
+      { category: 'reconciliation', target: 'bronze_vs_silver.order_state', grade: 'A', passing: true, observed: '0', threshold: '10', checked_at: ts },
     ];
     const r = await getDataQualitySummary('brand-a', fakePool({ dqRows: rows, attributionGrades: ['strong'] }));
     expect(r.state).toBe('has_data');
@@ -108,7 +108,8 @@ describe('getDataQualitySummary — derivation (estimated/untrusted gating)', ()
 
   it('a breached freshness check → freshnessSla=breached + cost floors to C → estimated', async () => {
     const rows: ScriptedRow[] = [
-      { category: 'freshness', target: 'ad_spend_ledger', grade: 'C', passing: false, observed: '180', threshold: '60', checked_at: ts },
+      // silver.order_state freshness is BOTH a freshness signal AND cost-relevant.
+      { category: 'freshness', target: 'silver.order_state', grade: 'C', passing: false, observed: '300', threshold: '120', checked_at: ts },
       { category: 'completeness', target: 'ad_spend_ledger', grade: 'A', passing: true, observed: '0.0', threshold: '0.0', checked_at: ts },
     ];
     const r = await getDataQualitySummary('brand-a', fakePool({ dqRows: rows, attributionGrades: ['strong'] }));

@@ -62,33 +62,41 @@ export type FreshnessSlaStatus = 'green' | 'at_risk' | 'breached';
 
 /**
  * The COST-RELEVANT (category, target) set whose latest grades floor cost_confidence.
- * Spend/settlement freshness + completeness + reconciliation (the cost half of the
- * effective_confidence formula). Targets match the stream-worker executors' `target` values.
+ * Spend/settlement completeness + Bronze↔Silver reconciliation + the Silver freshness that
+ * underpins reconciliation (the cost half of effective_confidence). cost_confidence reads
+ * these FRESHNESS/COMPLETENESS/RECONCILIATION grades, never re-floats money (money stays
+ * BIGINT minor + currency_code).
+ *
+ * CONTRACT: targets MUST match the stream-worker executors' `target` strings EXACTLY
+ * (verified against apps/stream-worker/src/jobs/dq/*: completeness writes 'ad_spend_ledger'
+ * + 'realized_revenue_ledger'; reconciliation writes 'bronze_vs_silver.order_state';
+ * freshness writes 'silver.order_state'). A mismatch silently drops a cost grade.
  */
 const COST_RELEVANT: ReadonlyArray<{ category: DqCategory; target: string }> = [
-  { category: 'freshness', target: 'ad_spend_ledger' },
-  { category: 'freshness', target: 'realized_revenue_ledger' },
   { category: 'completeness', target: 'ad_spend_ledger' },
   { category: 'completeness', target: 'realized_revenue_ledger' },
-  { category: 'reconciliation', target: 'silver.order_state' },
+  { category: 'reconciliation', target: 'bronze_vs_silver.order_state' },
+  { category: 'freshness', target: 'silver.order_state' },
 ] as const;
 
 /**
  * Expected (category, target) coverage — the denominator for the dq_grade COVERAGE success
  * metric. The numerator is the count of distinct (category, target) that actually have a
- * latest graded row. Frozen list (the checks the executors are wired to run).
+ * latest graded row.
+ *
+ * CONTRACT: this list MUST mirror the EXACT (category, target) rows the stream-worker DQ
+ * executors emit (verified against apps/stream-worker/src/jobs/dq/*). Drift here silently
+ * mis-reports the success metric.
  */
 const EXPECTED_COVERAGE: ReadonlyArray<{ category: DqCategory; target: string }> = [
   { category: 'freshness', target: 'bronze_events' },
   { category: 'freshness', target: 'connector_sync_status' },
   { category: 'freshness', target: 'silver.order_state' },
-  { category: 'freshness', target: 'ad_spend_ledger' },
-  { category: 'freshness', target: 'realized_revenue_ledger' },
   { category: 'completeness', target: 'bronze_events' },
   { category: 'completeness', target: 'ad_spend_ledger' },
   { category: 'completeness', target: 'realized_revenue_ledger' },
-  { category: 'schema_validity', target: 'collector_events' },
-  { category: 'reconciliation', target: 'silver.order_state' },
+  { category: 'schema_validity', target: 'collector.event' },
+  { category: 'reconciliation', target: 'bronze_vs_silver.order_state' },
 ] as const;
 
 /** One latest grade row per (category, target) the UI renders in the grade matrix. */

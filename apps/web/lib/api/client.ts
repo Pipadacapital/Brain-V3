@@ -786,8 +786,9 @@ async function triggerBackfill(connectorId: string): Promise<BackfillTriggerResp
 
   const response = await fetch(`/api/v1/connectors/${encodeURIComponent(connectorId)}/backfill`, {
     method,
+    // No request body — do NOT declare a JSON content-type, or Fastify rejects the empty
+    // body with 400 "Body cannot be empty when content-type is set to 'application/json'".
     headers: {
-      'Content-Type': 'application/json',
       'X-Request-Id': requestId,
       ...(csrfToken ? { 'x-csrf-token': csrfToken } : {}),
     },
@@ -872,8 +873,9 @@ async function triggerSync(connectorId: string): Promise<SyncTriggerResponse> {
 
   const response = await fetch(`/api/v1/connectors/${encodeURIComponent(connectorId)}/sync`, {
     method: 'POST',
+    // No request body — do NOT declare a JSON content-type, or Fastify rejects the empty
+    // body with 400 "Body cannot be empty when content-type is set to 'application/json'".
     headers: {
-      'Content-Type': 'application/json',
       'X-Request-Id': requestId,
       ...(csrfToken ? { 'x-csrf-token': csrfToken } : {}),
     },

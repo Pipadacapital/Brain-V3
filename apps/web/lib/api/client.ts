@@ -70,6 +70,9 @@ import type {
   AnalyticsRecentEventsResponse,
   AnalyticsAdSpendTimeseriesResponse,
   AnalyticsBlendedRoasResponse,
+  AnalyticsCodRtoRatesResponse,
+  AnalyticsCodMixResponse,
+  AnalyticsCheckoutFunnelResponse,
 } from './types';
 
 /** All BFF routes proxied through Next.js API routes → frontend-api module */
@@ -1085,6 +1088,34 @@ export const analyticsApi = {
     const qs = limit ? `?limit=${limit}` : '';
     const { data } = await bffFetch<BffEnvelope<AnalyticsRecentEventsResponse>>(
       `/v1/analytics/recent-events${qs}`,
+    );
+    return data;
+  },
+
+  // ── CoD / RTO surface (GoKwik + Shopflo Track C) ──────────────────────────────
+  // D-10: unwrap { request_id, data }. state:'no_data' preserved (honest, never zeros).
+  // data_source passes through for the Synthetic (dev) badge.
+
+  /** GET /api/v1/analytics/cod-rto-rates — RTO% by pincode cohort (GoKwik AWB terminal states). */
+  getCodRtoRates: async (): Promise<AnalyticsCodRtoRatesResponse> => {
+    const { data } = await bffFetch<BffEnvelope<AnalyticsCodRtoRatesResponse>>(
+      `/v1/analytics/cod-rto-rates`,
+    );
+    return data;
+  },
+
+  /** GET /api/v1/analytics/cod-mix — CoD CM2 + CoD-vs-prepaid mix (ledger cod_* events). */
+  getCodMix: async (): Promise<AnalyticsCodMixResponse> => {
+    const { data } = await bffFetch<BffEnvelope<AnalyticsCodMixResponse>>(
+      `/v1/analytics/cod-mix`,
+    );
+    return data;
+  },
+
+  /** GET /api/v1/analytics/checkout-funnel — abandoned-checkout funnel (Shopflo, REAL). */
+  getCheckoutFunnel: async (): Promise<AnalyticsCheckoutFunnelResponse> => {
+    const { data } = await bffFetch<BffEnvelope<AnalyticsCheckoutFunnelResponse>>(
+      `/v1/analytics/checkout-funnel`,
     );
     return data;
   },

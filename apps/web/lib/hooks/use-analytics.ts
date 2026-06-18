@@ -164,3 +164,33 @@ export function useSettlements(asOf?: string) {
     staleTime: 5 * 60_000,
   });
 }
+
+// ── CoD / RTO surface (GoKwik + Shopflo Track C) ─────────────────────────────────
+// All share the 'analytics' query-key prefix → auto-invalidate on brand switch.
+
+/** useCodRtoRates — RTO% by pincode cohort (GoKwik AWB terminal states; synthetic in dev). */
+export function useCodRtoRates() {
+  return useQuery({
+    queryKey: [...ANALYTICS_QUERY_KEY, 'cod-rto-rates'],
+    queryFn: () => analyticsApi.getCodRtoRates(),
+    staleTime: 5 * 60_000,
+  });
+}
+
+/** useCodMix — CoD CM2 + CoD-vs-prepaid mix (ledger cod_* events). */
+export function useCodMix() {
+  return useQuery({
+    queryKey: [...ANALYTICS_QUERY_KEY, 'cod-mix'],
+    queryFn: () => analyticsApi.getCodMix(),
+    staleTime: 5 * 60_000,
+  });
+}
+
+/** useCheckoutFunnel — Shopflo abandoned-checkout funnel (REAL self-serve webhook). */
+export function useCheckoutFunnel() {
+  return useQuery({
+    queryKey: [...ANALYTICS_QUERY_KEY, 'checkout-funnel'],
+    queryFn: () => analyticsApi.getCheckoutFunnel(),
+    staleTime: 5 * 60_000,
+  });
+}

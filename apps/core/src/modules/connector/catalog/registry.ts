@@ -46,6 +46,14 @@ export const CONNECTOR_CATALOG: readonly ConnectorDefinition[] = [
     description: 'Sync orders, products, customers.',
   },
   {
+    id: 'shopflo',
+    category: 'storefront',
+    displayName: 'Shopflo',
+    connectMethod: 'credential',
+    availability: 'available',
+    description: 'One-click checkout conversion & abandoned-checkout recovery signal.',
+  },
+  {
     id: 'woocommerce',
     category: 'storefront',
     displayName: 'WooCommerce',
@@ -80,6 +88,14 @@ export const CONNECTOR_CATALOG: readonly ConnectorDefinition[] = [
     description: 'Settlement reconciliation — net-of-fees realized revenue.',
   },
   // ── logistics ────────────────────────────────────────────────────────────────
+  {
+    id: 'gokwik',
+    category: 'logistics',
+    displayName: 'GoKwik',
+    connectMethod: 'credential',
+    availability: 'available',
+    description: 'CoD verification + RTO (return-to-origin) outcome & checkout risk signal.',
+  },
   {
     id: 'shiprocket',
     category: 'logistics',

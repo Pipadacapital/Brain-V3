@@ -104,6 +104,30 @@ describe('metric-engine — registry (D-1)', () => {
     expect(def.description.toLowerCase()).toContain('spend>0');
   });
 
+  it('resolveMetric(cod_rto_rate, v1) — AWB terminal-states seam', () => {
+    const def = resolveMetric('cod_rto_rate', 'v1');
+    expect(def.metricId).toBe('cod_rto_rate');
+    expect(def.version).toBe('v1');
+    expect(def.readSeam).toBe('awb_terminal_states');
+    expect(def.toleranceMinor).toBe(0);
+  });
+
+  it('resolveMetric(cod_mix, v1) — CoD ledger seam (net realized CoD / prepaid)', () => {
+    const def = resolveMetric('cod_mix', 'v1');
+    expect(def.metricId).toBe('cod_mix');
+    expect(def.version).toBe('v1');
+    expect(def.readSeam).toBe('cod_ledger');
+    expect(def.toleranceMinor).toBe(0);
+  });
+
+  it('resolveMetric(checkout_funnel, v1) — Shopflo checkout_abandoned seam', () => {
+    const def = resolveMetric('checkout_funnel', 'v1');
+    expect(def.metricId).toBe('checkout_funnel');
+    expect(def.version).toBe('v1');
+    expect(def.readSeam).toBe('checkout_abandoned');
+    expect(def.toleranceMinor).toBe(0);
+  });
+
   it('[D-1] toleranceMinor = 0 on all registered metrics (no float tolerance for money)', () => {
     for (const metricId of Object.keys(METRIC_REGISTRY) as Array<keyof typeof METRIC_REGISTRY>) {
       const versions = METRIC_REGISTRY[metricId];

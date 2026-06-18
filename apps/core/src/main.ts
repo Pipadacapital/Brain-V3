@@ -47,6 +47,7 @@ import { PgSyncRequestRepository } from './modules/connector/sync/infrastructure
 import { RequestConnectorSyncCommand } from './modules/connector/sync/application/commands/RequestConnectorSyncCommand.js';
 import { registerShopifyWebhookRoutes } from './modules/connector/sources/storefront/shopify/interfaces/webhooks/shopifyWebhookHandler.js';
 import { registerRazorpayWebhookRoutes } from './modules/connector/sources/payment/razorpay/interfaces/webhooks/razorpayWebhookHandler.js';
+import { registerShopfloWebhookRoutes } from './modules/connector/sources/checkout/shopflo/interfaces/webhooks/shopfloWebhookHandler.js';
 import { registerShopifyConnectorRoutes } from './modules/connector/sources/storefront/shopify/interfaces/http/shopifyConnectorRoutes.js';
 import { registerDevShopifySyncRoutes } from './modules/connector/sources/storefront/shopify/interfaces/http/devShopifySyncRoutes.js';
 import { registerPixelRoutes, buildDefaultSnippet } from './modules/connector/pixel/interfaces/http/pixelRoutes.js';
@@ -507,6 +508,21 @@ export async function main(): Promise<void> {
   });
 
   app.log.info({ topic: liveTopic }, '[core] Razorpay webhook receiver registered (ADR-RZ-7)');
+
+  // ── B1: Shopflo webhook receiver (Track B — checkout_abandoned) ─────────────
+  // PUBLIC route — HMAC-protected (NN-4); exempt from session guard + CSRF middleware.
+  // Same deps as Razorpay: secretsManager, rawPgPool, producer, liveTopic, salt, redis.
+  // Brand is resolved server-side from the connector row (MT-1), never the body.
+  registerShopfloWebhookRoutes(app, {
+    secretsManager: connectorSecretsManager,
+    rawPgPool,
+    producer: webhookProducer,
+    liveTopic,
+    getSaltHex: getWebhookSaltHex,
+    redis,
+  });
+
+  app.log.info({ topic: liveTopic }, '[core] Shopflo webhook receiver registered (Track B)');
 
   // DEV-ONLY: validate-sync spike — pull live orders via the real connected token.
   // Mounted only outside production (token crosses the boundary here, I-S09).
@@ -989,6 +1005,159 @@ export async function main(): Promise<void> {
             entity_id: connectorInstanceId,
             payload: { connector_type: 'razorpay' },
             // NO key_id, NO key_secret, NO webhook_secret in payload (I-S09)
+          });
+          return reply.code(200).send({
+            request_id: requestId,
+            data: { kind: 'credential', connected: true, connector_instance_id: connectorInstanceId },
+          });
+        }
+
+        // ── Shopflo credential connector (Track B) ────────────────────────
+        // Requires: api_token, merchant_id, webhook_secret.
+        // merchant_id is stored on connector_instance.shopflo_merchant_id (NOT in the
+        // secret bundle as a secret — it is the non-secret lookup key) and used by
+        // resolve_shopflo_connector_by_merchant() for webhook brand resolution (MT-1).
+        if (connectorType === 'shopflo') {
+          const apiToken = credentials['api_token'];
+          const merchantId = credentials['merchant_id'];
+          const webhookSecret = credentials['webhook_secret'];
+
+          if (!apiToken || !merchantId || !webhookSecret) {
+            return reply.code(400).send({
+              request_id: requestId,
+              error: {
+                code: 'MISSING_SHOPFLO_CREDENTIALS',
+                message: 'shopflo connector requires: api_token, merchant_id, webhook_secret',
+              },
+            });
+          }
+
+          // ONE secret_ref bundle. subKey = merchantId (non-secret). I-S09: values never logged.
+          const { arn } = await connectorSecretsManager.storeSecret(
+            brandId,
+            { connectorType: 'shopflo', subKey: merchantId },
+            { api_token: apiToken, merchant_id: merchantId, webhook_secret: webhookSecret },
+          );
+
+          const now = new Date();
+          const connectorInstanceId = randomUUID();
+          const instance = ConnectorInstanceEntity.create({
+            id: connectorInstanceId,
+            brandId,
+            provider: 'shopflo',
+            shopDomain: '',
+            secretRef: arn,
+            status: 'connected',
+            healthState: 'Healthy',
+            safetyRating: 'safe',
+            connectedAt: now,
+            disconnectedAt: null,
+            createdAt: now,
+            updatedAt: now,
+          });
+          await connectorRepo.save(instance);
+
+          // Set shopflo_merchant_id (migration 0030 column) under brand GUC — webhook resolution key.
+          const sfClient = await rawPgPool.connect();
+          try {
+            await sfClient.query('BEGIN');
+            await sfClient.query(`SELECT set_config('app.current_brand_id', $1, true)`, [brandId]);
+            await sfClient.query(
+              `UPDATE connector_instance SET shopflo_merchant_id = $1 WHERE id = $2 AND brand_id = $3`,
+              [merchantId, connectorInstanceId, brandId],
+            );
+            await sfClient.query('COMMIT');
+          } catch (sfErr) {
+            await sfClient.query('ROLLBACK').catch(() => undefined);
+            throw sfErr;
+          } finally {
+            sfClient.release();
+          }
+
+          await auditWriter.append({
+            brand_id: brandId,
+            actor_id: auth?.userId ?? null,
+            actor_role: auth?.role ?? 'unknown',
+            action: 'connector.connected',
+            entity_type: 'connector_instance',
+            entity_id: connectorInstanceId,
+            payload: { connector_type: 'shopflo' },
+            // NO api_token, NO webhook_secret in payload (I-S09)
+          });
+          return reply.code(200).send({
+            request_id: requestId,
+            data: { kind: 'credential', connected: true, connector_instance_id: connectorInstanceId },
+          });
+        }
+
+        // ── GoKwik credential connector (Track B) ─────────────────────────
+        // Requires: appid, appsecret. No webhook_secret (no self-serve inbound webhook).
+        // appid is stored on connector_instance.gokwik_appid (non-secret) for AWB
+        // re-pull enumeration via list_gokwik_connectors_for_awb_repull().
+        if (connectorType === 'gokwik') {
+          const appid = credentials['appid'];
+          const appsecret = credentials['appsecret'];
+
+          if (!appid || !appsecret) {
+            return reply.code(400).send({
+              request_id: requestId,
+              error: {
+                code: 'MISSING_GOKWIK_CREDENTIALS',
+                message: 'gokwik connector requires: appid, appsecret',
+              },
+            });
+          }
+
+          const { arn } = await connectorSecretsManager.storeSecret(
+            brandId,
+            { connectorType: 'gokwik', subKey: appid },
+            { appid, appsecret },
+          );
+
+          const now = new Date();
+          const connectorInstanceId = randomUUID();
+          const instance = ConnectorInstanceEntity.create({
+            id: connectorInstanceId,
+            brandId,
+            provider: 'gokwik',
+            shopDomain: '',
+            secretRef: arn,
+            status: 'connected',
+            healthState: 'Healthy',
+            safetyRating: 'safe',
+            connectedAt: now,
+            disconnectedAt: null,
+            createdAt: now,
+            updatedAt: now,
+          });
+          await connectorRepo.save(instance);
+
+          // Set gokwik_appid (migration 0030 column) under brand GUC — enumeration key.
+          const gkClient = await rawPgPool.connect();
+          try {
+            await gkClient.query('BEGIN');
+            await gkClient.query(`SELECT set_config('app.current_brand_id', $1, true)`, [brandId]);
+            await gkClient.query(
+              `UPDATE connector_instance SET gokwik_appid = $1 WHERE id = $2 AND brand_id = $3`,
+              [appid, connectorInstanceId, brandId],
+            );
+            await gkClient.query('COMMIT');
+          } catch (gkErr) {
+            await gkClient.query('ROLLBACK').catch(() => undefined);
+            throw gkErr;
+          } finally {
+            gkClient.release();
+          }
+
+          await auditWriter.append({
+            brand_id: brandId,
+            actor_id: auth?.userId ?? null,
+            actor_role: auth?.role ?? 'unknown',
+            action: 'connector.connected',
+            entity_type: 'connector_instance',
+            entity_id: connectorInstanceId,
+            payload: { connector_type: 'gokwik' },
+            // NO appsecret in payload (I-S09)
           });
           return reply.code(200).send({
             request_id: requestId,

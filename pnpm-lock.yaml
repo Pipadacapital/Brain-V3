@@ -123,6 +123,9 @@ importers:
       '@brain/razorpay-mapper':
         specifier: workspace:*
         version: link:../../packages/razorpay-mapper
+      '@brain/shopflo-mapper':
+        specifier: workspace:*
+        version: link:../../packages/shopflo-mapper
       '@brain/shopify-mapper':
         specifier: workspace:*
         version: link:../../packages/shopify-mapper
@@ -184,6 +187,9 @@ importers:
       '@brain/events':
         specifier: workspace:*
         version: link:../../packages/events
+      '@brain/gokwik-mapper':
+        specifier: workspace:*
+        version: link:../../packages/gokwik-mapper
       '@brain/identity-core':
         specifier: workspace:*
         version: link:../../packages/identity-core
@@ -193,6 +199,9 @@ importers:
       '@brain/razorpay-mapper':
         specifier: workspace:*
         version: link:../../packages/razorpay-mapper
+      '@brain/shopflo-mapper':
+        specifier: workspace:*
+        version: link:../../packages/shopflo-mapper
       '@brain/shopify-mapper':
         specifier: workspace:*
         version: link:../../packages/shopify-mapper
@@ -393,6 +402,18 @@ importers:
 
   packages/feature-flags: {}
 
+  packages/gokwik-mapper:
+    devDependencies:
+      '@types/node':
+        specifier: ^20.0.0
+        version: 20.19.43
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.0
+        version: 2.1.9(@types/node@20.19.43)
+
   packages/identity-core:
     devDependencies:
       '@types/node':
@@ -435,6 +456,22 @@ importers:
         version: 2.1.9(@types/node@25.9.3)
 
   packages/razorpay-mapper:
+    devDependencies:
+      '@types/node':
+        specifier: ^20.0.0
+        version: 20.19.43
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.0
+        version: 2.1.9(@types/node@20.19.43)
+
+  packages/shopflo-mapper:
+    dependencies:
+      '@brain/identity-core':
+        specifier: workspace:*
+        version: link:../identity-core
     devDependencies:
       '@types/node':
         specifier: ^20.0.0

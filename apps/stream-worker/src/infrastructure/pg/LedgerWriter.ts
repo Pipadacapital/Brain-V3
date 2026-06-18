@@ -500,6 +500,130 @@ export class LedgerWriter {
     }
   }
 
+  // ── CoD/RTO ledger writes (feat-gokwik-shopflo-connectors / 0030) ────────────
+  //
+  // GoKwik AWB terminal states drive two ledger event_types:
+  //   cod_rto_clawback       — terminal RTO on a CoD order → reverse recognized revenue (−)
+  //   cod_delivery_confirmed — terminal Delivered on a CoD order → confirm recognition (provenance, 0)
+  //
+  // The clawback REVERSES the recognized CoD revenue. We look up the net recognized amount for
+  // the order from the ledger (SUM over non-provisional rows, falling back to provisional) and
+  // write a signed-NEGATIVE clawback so realized_gmv_as_of() falls. Append-only by GRANT;
+  // ON CONFLICT DO NOTHING (idempotent restatement — a re-pull re-emitting the same terminal
+  // transition writes the clawback once).
+
+  /**
+   * Net recognized amount (minor units) for a CoD order, used to size the clawback.
+   * Prefers non-provisional rows (finalization/settlement); falls back to provisional_recognition.
+   * Returns '0' if no recognized rows exist for the order.
+   * Read under brand GUC (NN-1 / RLS).
+   */
+  async lookupRecognizedAmountMinor(brandId: string, orderId: string): Promise<string> {
+    const client: PoolClient = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query("SELECT set_config('app.current_brand_id', $1, true)", [brandId]);
+      // Non-provisional net first (mirrors realized_gmv_as_of exclusion of provisional rows).
+      const realized = await client.query<{ net: string | null }>(
+        `SELECT COALESCE(SUM(amount_minor), 0)::text AS net
+         FROM realized_revenue_ledger
+         WHERE brand_id = $1 AND order_id = $2 AND event_type <> 'provisional_recognition'`,
+        [brandId, orderId],
+      );
+      let net = realized.rows[0]?.net ?? '0';
+      if (BigInt(net) === 0n) {
+        // Fall back to provisional recognition (order recognized but not yet finalized).
+        const prov = await client.query<{ net: string | null }>(
+          `SELECT COALESCE(SUM(amount_minor), 0)::text AS net
+           FROM realized_revenue_ledger
+           WHERE brand_id = $1 AND order_id = $2 AND event_type = 'provisional_recognition'`,
+          [brandId, orderId],
+        );
+        net = prov.rows[0]?.net ?? '0';
+      }
+      await client.query('COMMIT');
+      return net;
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Write a CoD/RTO terminal ledger row. Idempotent (ON CONFLICT DO NOTHING).
+   *   - cod_rto_clawback: amountMinor MUST be signed-negative (the reversal).
+   *   - cod_delivery_confirmed: amountMinor is '0' (provenance marker; does not move realized GMV).
+   * Returns true if inserted, false if deduped (replay / re-pull restatement).
+   */
+  async writeCodLedgerEvent(params: {
+    brandId: string;
+    orderId: string;
+    eventType: 'cod_rto_clawback' | 'cod_delivery_confirmed';
+    amountMinor: string;       // SIGNED BIGINT-as-string ('-12345' for clawback, '0' for confirm)
+    currencyCode: string;
+    occurredAt: string;        // ISO-8601 — status_changed_at (event-time)
+    rawEventId: string;        // Bronze event_id provenance
+  }): Promise<boolean> {
+    const client: PoolClient = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query("SELECT set_config('app.current_brand_id', $1, true)", [params.brandId]);
+
+      const occurredAt = new Date(params.occurredAt);
+      const billingPostedPeriod = toBillingPostedPeriod(occurredAt);
+      const ledgerEventId = computeLedgerEventId({
+        brandId: params.brandId,
+        orderId: params.orderId,
+        eventType: params.eventType,
+        sourcePk: params.rawEventId,
+      });
+
+      const result = await client.query<{ ledger_event_id: string }>(
+        `INSERT INTO realized_revenue_ledger (
+          brand_id, ledger_event_id, order_id, brain_id, event_type,
+          amount_minor, currency_code, fx_rate_id, rounding_adjustment_minor,
+          occurred_at, economic_effective_at, billing_posted_period,
+          recognition_label, reconciliation_type, raw_event_id
+        ) VALUES (
+          $1, $2, $3, NULL, $4,
+          $5::bigint, $6, NULL, 0::bigint,
+          $7, $7, $8, 'finalized', 'per_order', $9
+        )
+        ON CONFLICT (brand_id, order_id, event_type, (timezone('UTC', occurred_at)::date))
+        DO NOTHING
+        RETURNING ledger_event_id`,
+        [
+          params.brandId,
+          ledgerEventId,
+          params.orderId,
+          params.eventType,
+          params.amountMinor,
+          params.currencyCode,
+          params.occurredAt,
+          billingPostedPeriod,
+          params.rawEventId,
+        ],
+      );
+
+      await client.query('COMMIT');
+      const inserted = (result.rowCount ?? 0) > 0;
+      if (inserted) {
+        console.info(
+          `[ledger-writer] ${params.eventType} brand=${params.brandId} ` +
+          `order=${params.orderId} amount=${params.amountMinor} ${params.currencyCode}`,
+        );
+      }
+      return inserted;
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
   // ── Ad-spend fact writes (feat-ad-connectors Slice 1 / ADR-AD-6) ─────────────
   //
   // Writes the append-only ad_spend_ledger fact. Distinct from realized_revenue_ledger

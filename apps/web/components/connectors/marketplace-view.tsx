@@ -177,20 +177,52 @@ function TileStatusIndicator({ tile }: { tile: MarketplaceTile }) {
 /** Soft-gate reason copy for connecting a real store before email is verified. */
 const VERIFY_TO_CONNECT = 'Verify your email to connect a store';
 
-// Razorpay credential fields (C2 / ADR-RZ-8). razorpay_account_id is NOT a secret
-// (merchant ID, visible in the Razorpay dashboard); the other three are secrets that
-// the backend stores in one secret bundle and NEVER echoes back to the client.
-const RAZORPAY_FIELDS: {
-  key: 'key_id' | 'key_secret' | 'webhook_secret' | 'razorpay_account_id';
+// ── Per-provider credential field sets (C2 / ADR-RZ-8 + GoKwik/Shopflo Track C) ──
+// A field marked secret=true is stored in the backend secret bundle and NEVER echoed
+// back to the client (type="password", autoComplete="off"). Non-secret fields are
+// merchant identifiers visible in the provider dashboard. The backend bundles all
+// fields under ONE secret_ref per connector.
+interface CredentialField {
+  key: string;
   label: string;
   placeholder: string;
   secret: boolean;
-}[] = [
+}
+
+const RAZORPAY_FIELDS: CredentialField[] = [
   { key: 'key_id', label: 'Key ID', placeholder: 'rzp_live_XXXXXXXX', secret: false },
   { key: 'key_secret', label: 'Key Secret', placeholder: '••••••••••••', secret: true },
   { key: 'webhook_secret', label: 'Webhook Secret', placeholder: '••••••••••••', secret: true },
   { key: 'razorpay_account_id', label: 'Account ID', placeholder: 'acc_XXXXXXXX', secret: false },
 ];
+
+// Shopflo self-serve: static API Access Token + Merchant-ID + the webhook shared
+// secret the merchant pastes from Dashboard → Settings → Integrations. api_token +
+// webhook_secret are secrets; merchant_id is the (non-secret) merchant identifier.
+const SHOPFLO_FIELDS: CredentialField[] = [
+  { key: 'api_token', label: 'API Access Token', placeholder: '••••••••••••', secret: true },
+  { key: 'merchant_id', label: 'Merchant ID', placeholder: 'merchant_XXXXXXXX', secret: false },
+  { key: 'webhook_secret', label: 'Webhook Secret', placeholder: '••••••••••••', secret: true },
+];
+
+// GoKwik: static appid/appsecret (both partner-issued). appsecret is the secret; appid
+// is the (non-secret) app identifier used for AWB re-pull enumeration.
+const GOKWIK_FIELDS: CredentialField[] = [
+  { key: 'appid', label: 'App ID', placeholder: 'app_XXXXXXXX', secret: false },
+  { key: 'appsecret', label: 'App Secret', placeholder: '••••••••••••', secret: true },
+];
+
+/** Resolve a provider's credential fields; defaults to Razorpay's set for any other credential tile. */
+function credentialFieldsFor(tileId: string): CredentialField[] {
+  switch (tileId) {
+    case 'shopflo':
+      return SHOPFLO_FIELDS;
+    case 'gokwik':
+      return GOKWIK_FIELDS;
+    default:
+      return RAZORPAY_FIELDS;
+  }
+}
 
 function ConnectorTile({ tile }: { tile: MarketplaceTile }) {
   const { mutate: connect, isPending: isConnecting } = useConnectConnector();
@@ -203,7 +235,9 @@ function ConnectorTile({ tile }: { tile: MarketplaceTile }) {
   const isConnected = !!tile.instance;
   const isComingSoon = !tile.available;
   const isCredential = tile.connect_method === 'credential';
-  const credsComplete = RAZORPAY_FIELDS.every((f) => (creds[f.key] ?? '').trim().length > 0);
+  // Per-provider credential fields (Razorpay / Shopflo / GoKwik) — not a single hardcoded set.
+  const credentialFields = credentialFieldsFor(tile.id);
+  const credsComplete = credentialFields.every((f) => (creds[f.key] ?? '').trim().length > 0);
 
   /**
    * Connect-error toast. The server is the authoritative soft-gate (feat-onboarding-ux):
@@ -235,13 +269,13 @@ function ConnectorTile({ tile }: { tile: MarketplaceTile }) {
       if (!credsComplete) {
         toast({
           title: 'All fields required',
-          description: 'Enter your Razorpay Key ID, Key Secret, Webhook Secret, and Account ID.',
+          description: `Enter all ${tile.display_name} credentials to connect.`,
           variant: 'destructive',
         });
         return;
       }
       const credentials = Object.fromEntries(
-        RAZORPAY_FIELDS.map((f) => [f.key, (creds[f.key] ?? '').trim()]),
+        credentialFields.map((f) => [f.key, (creds[f.key] ?? '').trim()]),
       );
       connect(
         { type: tile.id, credentials },
@@ -252,7 +286,10 @@ function ConnectorTile({ tile }: { tile: MarketplaceTile }) {
               setCreds({});
               toast({
                 title: `${tile.display_name} connected`,
-                description: 'Settlement data will appear once Razorpay sends settlements.',
+                description:
+                  tile.id === 'gokwik' || tile.id === 'shopflo'
+                    ? 'Data will appear here as it syncs. CoD/RTO uses synthetic dev data until a partner sandbox is available.'
+                    : 'Settlement data will appear once Razorpay sends settlements.',
               });
             }
           },
@@ -411,7 +448,7 @@ function ConnectorTile({ tile }: { tile: MarketplaceTile }) {
                 sent once to the BFF and never read back (the server omits them). */}
             {isCredential && (
               <div className="space-y-2" data-testid={`credential-form-${tile.id}`}>
-                {RAZORPAY_FIELDS.map((f) => (
+                {credentialFields.map((f) => (
                   <div key={f.key} className="space-y-1">
                     <label
                       htmlFor={`cred-${tile.id}-${f.key}`}

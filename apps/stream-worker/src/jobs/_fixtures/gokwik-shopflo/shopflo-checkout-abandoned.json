@@ -1,0 +1,40 @@
+{
+  "_note": "Dev-seed / test sample of a REAL-shape Shopflo checkout_abandoned payload (documented fields — research finding 8). In PRODUCTION the source is the live HMAC-verified webhook; this file is for dev seeding + tests only. Contains synthetic PII (hashed at the mapper boundary — never stored raw).",
+  "sample": {
+    "event_name": "checkout_abandoned",
+    "checkout_id": "chk_synth_0001",
+    "cart_token": "cart_synth_0001",
+    "customer": {
+      "uid": "cust_synth_0001",
+      "email": "buyer@example.com",
+      "phone": "+917777777777",
+      "marketing_consent": true
+    },
+    "shipping_address": { "city": "Bengaluru", "pincode": "560001" },
+    "line_items": [
+      { "id": "li_1", "title": "Synth Tee", "quantity": 1, "price": 55 },
+      { "id": "li_2", "title": "Synth Cap", "quantity": 2, "price": 5 }
+    ],
+    "subtotal_price": 65,
+    "total_discount": 0,
+    "total_shipping": 0,
+    "total_tax": 9.92,
+    "total_price": 65,
+    "currency": "INR",
+    "created_at": "2026-06-10T12:00:00Z"
+  },
+  "sample_addressless": {
+    "event_name": "checkout_abandoned",
+    "checkout_id": "chk_synth_0002",
+    "cart_token": "cart_synth_0002",
+    "customer": { "uid": "cust_synth_0002", "email": null, "phone": "+918888888888", "marketing_consent": false },
+    "line_items": [{ "id": "li_3", "title": "Synth Bottle", "quantity": 1, "price": 30 }],
+    "subtotal_price": 30,
+    "total_discount": 5,
+    "total_shipping": 0,
+    "total_tax": 4.5,
+    "total_price": 29.5,
+    "currency": "INR",
+    "created_at": "2026-06-11T09:30:00Z"
+  }
+}

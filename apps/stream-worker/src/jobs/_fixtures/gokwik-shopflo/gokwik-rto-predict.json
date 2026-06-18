@@ -1,0 +1,27 @@
+{
+  "_synthetic": true,
+  "_note": "SYNTHETIC dev fixture — risk_flag is CATEGORICAL (GoKwik exposes no numeric score). NEVER fabricate a number. real at-checkout source is a partner follow-up.",
+  "records": [
+    {
+      "order_id": "ord_synth_rto_2",
+      "request_id": "req_synth_aaaa1111",
+      "risk_flag": "High Risk",
+      "risk_reason": "Address in high-RTO pincode cohort; prior COD non-acceptance signal.",
+      "occurred_at": "2026-05-01T08:58:00Z"
+    },
+    {
+      "order_id": "ord_synth_deliv_1",
+      "request_id": "req_synth_bbbb2222",
+      "risk_flag": "Low Risk",
+      "risk_reason": "Repeat prepaid buyer; serviceable pincode.",
+      "occurred_at": "2026-05-01T07:59:00Z"
+    },
+    {
+      "order_id": "ord_synth_med_3",
+      "request_id": "req_synth_cccc3333",
+      "risk_flag": "Medium Risk",
+      "risk_reason": "New shopper; partial address match.",
+      "occurred_at": "2026-05-02T13:10:00Z"
+    }
+  ]
+}

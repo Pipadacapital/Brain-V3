@@ -53,7 +53,7 @@ import { jtiFromJwt, csrfTokenForSession } from './csrf.js';
 import type { RateLimiter } from '../../workspace-access/internal/infrastructure/rate-limiter.js';
 import { loginFailKeySync, loginIpKey, registerIpKey } from '../../workspace-access/internal/infrastructure/rate-limiter.js';
 import type { Pool as PgPool } from 'pg';
-import { getRevenueMetrics, getRevenueTimeseries, getKpiSummary, getRecognitionBreakdown, getRecentActivity, getOrdersTimeseries, getOrderStats, getDataHealth, getSettlementSummary, getTrackingHealth, getRecentEvents, getAdSpendTimeseries, getBlendedRoas } from '../../analytics/index.js';
+import { getRevenueMetrics, getRevenueTimeseries, getKpiSummary, getRecognitionBreakdown, getRecentActivity, getOrdersTimeseries, getOrderStats, getDataHealth, getSettlementSummary, getTrackingHealth, getRecentEvents, getAdSpendTimeseries, getBlendedRoas, getCodRtoRates, getCodMix, getCheckoutFunnel } from '../../analytics/index.js';
 import type { AdPlatform } from '@brain/metric-engine';
 import type { TimeGrain } from '@brain/metric-engine';
 
@@ -1693,6 +1693,78 @@ export function registerBffRoutes(
 
       const result = await getSettlementSummary(auth.brandId, asOf, { pool: rawPool });
 
+      return reply.send({ request_id: requestId, data: result });
+    },
+  );
+
+  // ── CoD / RTO endpoints (GoKwik + Shopflo Track C) ────────────────────────
+  // Three reads for the CoD/RTO analytics surface, all via the metric-engine sole
+  // read-path (ADR-002 — NO ad-hoc SUM/COUNT here). Brand from session (D-1, never
+  // body). Honest no_data (D-2). RLS/F-SEC-02: engine reads inside withBrandTxn.
+  // data_source ('synthetic'|'live') is passed through for the Synthetic (dev) badge.
+
+  /**
+   * GET /api/v1/analytics/cod-rto-rates
+   * RTO% by pincode cohort from gokwik.awb_status.v1 terminal Bronze rows.
+   * Synthetic source in dev → data_source='synthetic' (UI badge). No numeric RTO score.
+   */
+  fastify.get(
+    '/api/v1/analytics/cod-rto-rates',
+    { preHandler: [bffProtectedPreHandler] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const auth = (request as AuthenticatedRequest).auth;
+      if (!auth.brandId) {
+        return reply.send({ request_id: requestId, data: { state: 'no_data' } });
+      }
+      if (!rawPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' } });
+      }
+      const result = await getCodRtoRates(auth.brandId, { pool: rawPool });
+      return reply.send({ request_id: requestId, data: result });
+    },
+  );
+
+  /**
+   * GET /api/v1/analytics/cod-mix
+   * CoD CM2 + CoD-vs-prepaid mix from realized_revenue_ledger cod_* event_types.
+   * Money = bigint minor-unit strings (signed; net may be negative — honest).
+   */
+  fastify.get(
+    '/api/v1/analytics/cod-mix',
+    { preHandler: [bffProtectedPreHandler] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const auth = (request as AuthenticatedRequest).auth;
+      if (!auth.brandId) {
+        return reply.send({ request_id: requestId, data: { state: 'no_data' } });
+      }
+      if (!rawPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' } });
+      }
+      const result = await getCodMix(auth.brandId, { pool: rawPool });
+      return reply.send({ request_id: requestId, data: result });
+    },
+  );
+
+  /**
+   * GET /api/v1/analytics/checkout-funnel
+   * Abandoned-checkout funnel from shopflo.checkout_abandoned.v1 Bronze rows.
+   * REAL Shopflo self-serve webhook (NOT synthetic). PII hashed at boundary.
+   */
+  fastify.get(
+    '/api/v1/analytics/checkout-funnel',
+    { preHandler: [bffProtectedPreHandler] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const auth = (request as AuthenticatedRequest).auth;
+      if (!auth.brandId) {
+        return reply.send({ request_id: requestId, data: { state: 'no_data' } });
+      }
+      if (!rawPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' } });
+      }
+      const result = await getCheckoutFunnel(auth.brandId, { pool: rawPool });
       return reply.send({ request_id: requestId, data: result });
     },
   );

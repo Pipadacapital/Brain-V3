@@ -1,23 +1,19 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  // Transpile workspace TS packages that ship raw source (main: src/index.ts).
-  // @brain/pixel-sdk is an ESM package whose barrel re-exports use .js extensions
-  // (export … from './capture.js') while the files on disk are .ts — without this,
-  // `next build` (webpack) fails: "Module not found: Can't resolve './capture.js'".
-  // `next dev` tolerated it; the production build did not.
-  transpilePackages: ['@brain/pixel-sdk'],
-
-  // Resolve TS ESM .js-extension imports to their .ts sources (the companion to
-  // transpilePackages — transpilePackages alone does NOT fix the .js→.ts resolution).
+  // Workspace TS packages ship raw source (main: src/index.ts) and re-export with explicit
+  // `.js` ESM specifiers (NodeNext) while the files on disk are `.ts`. Without this,
+  // `next build` (webpack) fails to resolve those `.js` specifiers (notably @brain/pixel-sdk's
+  // barrel). `next dev` tolerated it; the production build did not. transpilePackages
+  // transpiles the source; extensionAlias maps `.js` → the `.ts` source.
+  transpilePackages: ['@brain/pixel-sdk', '@brain/money', '@brain/ui', '@brain/contracts'],
   webpack: (config) => {
     config.resolve.extensionAlias = {
       ...(config.resolve.extensionAlias ?? {}),
-      '.js': ['.ts', '.tsx', '.js'],
+      '.js': ['.ts', '.tsx', '.js', '.jsx'],
       '.mjs': ['.mts', '.mjs'],
     };
     return config;
   },
-
   // Web app talks ONLY to the frontend-api BFF (ADR-011).
   // BFF base URL is environment-specific; in dev, it proxies to apps/core.
   async rewrites() {

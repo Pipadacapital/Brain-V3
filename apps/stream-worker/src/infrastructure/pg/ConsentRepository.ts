@@ -25,7 +25,9 @@ export type ConsentCategory =
   | 'analytics'
   | 'marketing'
   | 'personalization'
-  | 'ai_processing';
+  | 'ai_processing'
+  | 'advertising'; // Phase 6 (feat-capi-conversion-feedback): 5th DPDP lawful-basis category
+
 
 export interface ConsentRecordRow {
   brandId: string;

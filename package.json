@@ -17,6 +17,7 @@
     "dev:core": "docker compose --profile core up -d && turbo run dev --filter=@brain/core --filter=@brain/web",
     "dev:ingest": "docker compose --profile ingest up -d && turbo run dev --filter=@brain/collector --filter=@brain/stream-worker",
     "dev:full": "docker compose --profile core --profile ingest up -d",
+    "dev:lakehouse": "docker compose --profile lakehouse up -d",
     "seed": "node tools/seed/seed.mjs",
     "down": "docker compose down",
     "migrate": "node-pg-migrate -m db/migrations up",

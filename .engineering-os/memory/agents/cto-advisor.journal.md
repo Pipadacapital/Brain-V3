@@ -282,3 +282,12 @@ SEC-NEW-M1 (spec) RESOLVED; SEC-AD-H1/SEC-AD-M1/Q-CURSOR all intact at HEAD (re-
 **Residuals (tracked, non-blocking):** PROD-GAP-1 StarRocks engine row-policy graduation (M1=non-inert app-seam predicate); DATA-NOTE-1 thin real data 23/94, synthetic supplement labelled, _synthetic→UI SyntheticBadge.
 **No auto-candidate rule:** clean 0-bounce PASS, no recurring root-cause (below ≥3-prior-run threshold).
 **Next:** stakeholder gate (Stage 7).
+
+## 2026-06-18T18:40:00Z — Engineering Advisor (final-reviewer) — feat-d13-consent-cancontact
+**Stage:** 6 · **Verdict:** PASS → Stakeholder gate · **Paradigm audit:** clean (deterministic, 0 tokens/$0-mo — correct for a fail-closed compliance gate)
+**Security:** PASS (DPDP/TRAI compliance-regime surface; CRIT 0/HIGH 0/MED 0/LOW 2; isolation NON-INERT confirmed)
+**Gates re-run (captured):** can-contact.engine 18/18 (boundary mutants 09:00/20:59/21:00 IST killed; salt-crash throws not allow); consent-suppressor e2e 10/10 LIVE under brain_app (cross-brand→0, no-GUC→0, no raw PII); notification module 20/20
+**Invariants (file:line):** sole-gate (emailAdapter.send only in notification.service.impl.ts) · default-closed engine + all policies · salt-miss HARD-CRASH · 9-9 IST server-enforced + flush re-runs full gate · subject_hash-only (no raw PII) · RLS ENABLE+FORCE+NN-1+append-only-GRANT+3 assertions · DLT/NCPR dev-honest stubs (block, never fake)
+**Over-engineering:** CLEAN (1:1 with plan tracks A/B/C; no new deployable/topic/hasher/RLS variant) · **Hard-rule:** NONE (0032→0033 renumber cosmetic; node-pg-migrate keys on full filename)
+**Top residual:** phone-channel marketing BLOCKED by construction (DLT/NCPR stubs) until real TRAI-DLT + NCPR land — email marketing live · pending_window flush needs prod recipient resolver + 09:00-IST trigger in runbook
+**Next:** Stakeholder gate (Stage 7)

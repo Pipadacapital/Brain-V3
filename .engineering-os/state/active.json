@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-06-18T16:49:00Z",
+  "updated_at": "2026-06-18T18:40:00Z",
   "updated_by": "engineering-advisor-final-review",
   "active_requirements": [
     {
@@ -512,6 +512,31 @@
         "residuals": [
           "PROD-GAP-1: StarRocks engine row-policy graduation on silver_touchpoint (managed cluster; M1 enforcement is the non-inert app-seam predicate)",
           "DATA-NOTE-1: thin real journey data (23/94 page.viewed carry brain_anon_id); synthetic supplement clearly labelled, _synthetic flag rides to UI SyntheticBadge — never fakes coverage"
+        ]
+      }
+    },
+    {
+      "req_id": "feat-d13-consent-cancontact",
+      "title": "D13 privacy — consent SoR + real can_contact() compliance gate (consent/DLT/NCPR/9-9-IST window) + consent-suppressor + compliance UI",
+      "status": "awaiting-stakeholder",
+      "stage": 7,
+      "current_owner": "stakeholder",
+      "lane": "high_stakes",
+      "run_dir": ".engineering-os/runs/2026-06-18T13-58-47Z__db0d1b__feat-d13-consent-cancontact__rishabhporwal",
+      "updated_at": "2026-06-18T18:40:00Z",
+      "last_journal_entry_at": "2026-06-18T18:40:00Z",
+      "pipeline": {
+        "bounces": 0,
+        "security": "PASS / APPROVE (COMPLIANCE-REGIME surface DPDP/TRAI; CRIT 0 / HIGH 0 / MED 0 / LOW 2; secret-grep clean; isolation genuinely NON-INERT under brain_app)",
+        "qa": "BUILD-OK (core 334/334; stream-worker consent e2e 10/10; web build clean; validity_check clean)",
+        "final_review": "PASS / APPROVE",
+        "branch": "feat/d13-consent-cancontact",
+        "verdict_evidence": "3 gates re-run live + replicated: can-contact.engine 18/18 (salt-crash throws not allow; 09:00/20:59/21:00 IST boundary mutants killed; every unknown->block/queue; subjectHash ^[0-9a-f]{64}$); consent-suppressor e2e 10/10 against REAL Postgres NON-INERT under brain_app (beforeAll hard-fails on current_user='brain'; cross-brand BRAND_B->0 of BRAND_A; no-GUC->0; replay 3x->same rows; no raw PII); full notification module 20/20. THE-invariants confirmed file:line: sole-gate (emailAdapter.send only at notification.service.impl.ts:56,106,155, no provider call outside the module); default-closed engine (can-contact.engine.ts:75-148, ncpr/dlt/consent/send-window policies all fail-closed); salt-miss HARD-CRASH (salt.adapter.ts:17-24 propagated at engine:92); 9-9 IST server-enforced + queue-not-drop + flush re-runs full gate (pending-window.handler.ts:108-134, resolveRecipient null->leave queued); subject_hash only in 0033 migration + send_log (no raw PII); RLS ENABLE+FORCE+NN-1 two-arg + append-only GRANT + 3 migration assertions; DLT/NCPR dev-honest stubs (stubs.ts:18-31 block never fake). Over-engineering CLEAN (file set 1:1 with plan tracks A/B/C; 0 tokens/$0-mo deterministic). Hard-rule NONE (migration renumber 0032->0033 cosmetic, node-pg-migrate keys on full filename; independent ordering safe).",
+        "residuals": [
+          "RISK-1: phone-channel (whatsapp/sms) marketing BLOCKED by construction today — DLT + NCPR/DND are dev-honest default-closed stubs; real TRAI-DLT + NCPR registry are platform follow-ups that MUST land before any phone-channel marketing send. Email marketing (consent+window) is fully live. Intended fail-closed posture.",
+          "RISK-2: pending_window flush needs a prod send_service-role recipient resolver (dev = fixture map) + the 09:00-IST scheduler trigger — confirm both in the deploy runbook; until wired a queued row stays queued (fail-closed, never late).",
+          "S-LOW-1/2: two non-blocking Security LOW findings carried.",
+          "INFO: source='consent_manager' enum forward-compatible with DPDP Rules 2025 Consent Manager (~Nov 2026); no action now."
         ]
       }
     }

@@ -35,10 +35,14 @@ export interface WorkerSecretsManager {
  */
 export function buildWorkerSecretsManager(): WorkerSecretsManager {
   if (process.env['NODE_ENV'] === 'production') {
-    // Prod: delegate to the full AwsSecretsManager
-    // Import dynamically to avoid loading AWS SDK in dev
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { AwsSecretsManager } = require('../../../../../../apps/core/src/modules/connector/sources/storefront/shopify/infrastructure/secrets/AwsSecretsManager.js') as typeof import('../../../../../core/src/modules/connector/sources/storefront/shopify/infrastructure/secrets/AwsSecretsManager.js');
+    // Prod: delegate to the full AwsSecretsManager (loaded from the deployed core bundle).
+    // Required dynamically so the AWS SDK is never pulled into the dev path, and typed
+    // against the LOCAL WorkerSecretsManager interface (core's AwsSecretsManager implements
+    // getShopifyToken) rather than a cross-package `typeof import(...)` — the worker tsconfig
+    // has rootDir 'src', so a real type-import of apps/core/src would error (TS6059/TS2307).
+    const { AwsSecretsManager } = require('../../../../core/src/modules/connector/sources/storefront/shopify/infrastructure/secrets/AwsSecretsManager.js') as {
+      AwsSecretsManager: new (region: string, clientSecretArn: string, kmsKeyId: string) => WorkerSecretsManager;
+    };
     const region = process.env['BRAIN_AWS_REGION'] ?? 'us-east-1';
     const clientSecretArn = process.env['SHOPIFY_CLIENT_SECRET_ARN'] ?? '';
     const kmsKeyId = process.env['KMS_KEY_ID'] ?? '';

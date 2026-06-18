@@ -54,6 +54,12 @@ export const createWorkspaceSchema = z.object({
     .string()
     .min(1, 'Workspace name is required')
     .max(80, 'Workspace name must be under 80 characters'),
+  /**
+   * feat-onboarding-ux: slug is now an implementation detail — derived server-side from the
+   * name (the standalone /v1/workspaces contract makes `slug` optional). The slug input is no
+   * longer shown to the user, so this field is optional here too (the merged onboarding step
+   * uses createBrandWorkspaceSchema below and sends no slug at all).
+   */
   slug: z
     .string()
     .min(2, 'Slug must be at least 2 characters')
@@ -61,7 +67,8 @@ export const createWorkspaceSchema = z.object({
     .regex(
       /^[a-z0-9-]+$/,
       'Slug must be lowercase letters, numbers, and hyphens only',
-    ),
+    )
+    .optional(),
 });
 export type CreateWorkspaceFormValues = z.infer<typeof createWorkspaceSchema>;
 
@@ -110,6 +117,47 @@ export const createBrandSchema = z.object({
     .default('realized'),
 });
 export type CreateBrandFormValues = z.infer<typeof createBrandSchema>;
+
+// ── Merged workspace + brand (feat-onboarding-ux Deliverable 3/4) ──────────────
+//
+// One step that provisions both the organization (workspace) and its first brand. There is
+// NO slug field — the server derives the slug from the workspace name. All brand-config
+// fields (website/currency/timezone/revenue) carry over from createBrandSchema so the
+// website→pixel UX (preview + skip) from feat-onboarding-website is preserved unchanged.
+export const createBrandWorkspaceSchema = z.object({
+  workspace_name: z
+    .string()
+    .min(1, 'Workspace name is required')
+    .max(80, 'Workspace name must be under 80 characters'),
+  display_name: z
+    .string()
+    .min(1, 'Brand name is required')
+    .max(80, 'Brand name must be under 80 characters'),
+  domain: z
+    .string()
+    .trim()
+    .refine((v) => v === '' || v.includes('.'), {
+      message: 'Enter a valid website (e.g. mystore.com or https://mystore.com)',
+    })
+    .optional()
+    .or(z.literal('')),
+  currency_code: z
+    .enum(['INR', 'AED', 'SAR'] as const, {
+      errorMap: () => ({ message: 'Select a supported currency' }),
+    })
+    .default('INR'),
+  timezone: z
+    .enum(['Asia/Kolkata', 'Asia/Dubai', 'Asia/Riyadh'] as const, {
+      errorMap: () => ({ message: 'Select a supported timezone' }),
+    })
+    .default('Asia/Kolkata'),
+  revenue_definition: z
+    .enum(['realized', 'delivered'] as const, {
+      errorMap: () => ({ message: 'Select a recognition method' }),
+    })
+    .default('realized'),
+});
+export type CreateBrandWorkspaceFormValues = z.infer<typeof createBrandWorkspaceSchema>;
 
 // ── Members ───────────────────────────────────────────────────────────────────
 

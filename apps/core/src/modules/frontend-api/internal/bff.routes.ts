@@ -41,14 +41,17 @@ type CookieReply = FastifyReply & {
 };
 import type { AuthService } from '../../workspace-access/internal/application/auth.service.js';
 import { AuthError } from '../../workspace-access/internal/application/auth.service.js';
+import type { OnboardingService } from '../../workspace-access/internal/application/onboarding.service.js';
+import { OnboardingError } from '../../workspace-access/internal/application/onboarding.service.js';
 import type { AuthenticatedRequest } from '../../workspace-access/internal/interfaces/rest/auth.routes.js';
 import { validateSessionPreHandler } from '../../workspace-access/internal/interfaces/rest/auth.routes.js';
 import type { OnboardingStatus } from '../../workspace-access/internal/domain/organization/entities.js';
 import type { DbPool, QueryContext } from '@brain/db';
 import { MembershipRepository, OrganizationRepository } from '../../workspace-access/internal/infrastructure/repositories.js';
+import { ProvisionOnboardingRequestSchema } from '@brain/contracts';
 import { jtiFromJwt, csrfTokenForSession } from './csrf.js';
 import type { RateLimiter } from '../../workspace-access/internal/infrastructure/rate-limiter.js';
-import { loginFailKeySync, loginIpKey } from '../../workspace-access/internal/infrastructure/rate-limiter.js';
+import { loginFailKeySync, loginIpKey, registerIpKey } from '../../workspace-access/internal/infrastructure/rate-limiter.js';
 import type { Pool as PgPool } from 'pg';
 import { getRevenueMetrics, getRevenueTimeseries, getKpiSummary, getRecognitionBreakdown, getRecentActivity, getOrdersTimeseries, getOrderStats, getDataHealth, getSettlementSummary, getTrackingHealth, getRecentEvents, getAdSpendTimeseries, getBlendedRoas, getCodRtoRates, getCodMix, getCheckoutFunnel } from '../../analytics/index.js';
 import type { AdPlatform } from '@brain/metric-engine';
@@ -66,6 +69,7 @@ export function registerBffRoutes(
   cookieSecret = '',
   rateLimiter?: RateLimiter,
   rawPool?: PgPool,
+  onboardingService?: OnboardingService,
 ): void {
   const sessionPreHandler = validateSessionPreHandler(authService);
 
@@ -219,6 +223,156 @@ export function registerBffRoutes(
       });
     }
   });
+
+  // ── POST /api/v1/bff/register — register + auto-login (feat-onboarding-ux D1) ──
+  // Registers a user via AuthService.registerAndStartSession and, for a genuinely-new
+  // user, sets the brain_session httpOnly cookie EXACTLY as /api/v1/bff/session does —
+  // so the user lands authenticated (EMPTY_CONTEXT) and goes straight to the wizard.
+  //
+  // SECURITY:
+  //  - No bypass: the session is minted via the SAME issueSession() primitive as login.
+  //  - The session cookie is set ONLY for created=true. An email collision returns the
+  //    same JSON body minus the Set-Cookie (httpOnly Set-Cookie is cross-origin-unreadable
+  //    → no enumeration oracle in the visible body, NN-5).
+  //  - CSRF-exempt (added to the exempt list in main.ts — establishes the session, no
+  //    prior CSRF token can exist). IP rate-limited (registerIpKey, same as /auth/register).
+  fastify.post('/api/v1/bff/register', async (request: FastifyRequest, reply: FastifyReply) => {
+    const requestId = randomUUID();
+    const correlationId = (request.headers['x-correlation-id'] as string) ?? requestId;
+    const { email, password } = request.body as { email?: string; password?: string };
+
+    if (!email || !password) {
+      return reply.code(400).send({
+        request_id: requestId,
+        error: { code: 'MISSING_CREDENTIALS', message: 'email and password required.' },
+      });
+    }
+
+    // AC-3: rate limit by IP (10/hour — same as /api/v1/auth/register).
+    if (rateLimiter) {
+      const ip = request.ip ?? '0.0.0.0';
+      const rl = await rateLimiter.check(registerIpKey(ip), 10, 3600);
+      if (!rl.allowed) {
+        return reply.code(429).send({
+          request_id: requestId,
+          error: { code: 'RATE_LIMITED', message: 'Too many registration attempts. Please try again later.' },
+        }).header('Retry-After', String(rl.retryAfter));
+      }
+    }
+
+    try {
+      const result = await authService.registerAndStartSession(
+        email,
+        password,
+        request.ip ?? null,
+        request.headers['user-agent'] ?? null,
+        correlationId,
+      );
+
+      // Set the httpOnly session cookie ONLY for a freshly-created user (auto-login).
+      if (result.created && result.accessToken && result.expiresIn) {
+        (reply as CookieReply).setCookie(COOKIE_NAME, result.accessToken, {
+          httpOnly: true,
+          secure: process.env['NODE_ENV'] === 'production',
+          sameSite: 'strict',
+          path: '/',
+          maxAge: result.expiresIn,
+        });
+      }
+
+      // Body is byte-identical between created/existing (NN-5) — the only difference is
+      // the presence of Set-Cookie (unreadable cross-origin). onboarding_status is null
+      // for a just-registered user (no membership yet) → the wizard.
+      return reply.code(201).send({
+        request_id: requestId,
+        user: {
+          id: result.user.id,
+          email: result.user.email,
+          email_verified: result.user.emailVerifiedAt !== null,
+        },
+        onboarding_status: result.context.onboardingStatus,
+        auth: {
+          brand_id: result.context.brandId,
+          workspace_id: result.context.workspaceId,
+          role: result.context.role,
+        },
+        ...(result.invitePending ? { code: 'INVITE_PENDING' as const } : {}),
+      });
+    } catch (err) {
+      if (err instanceof AuthError) {
+        return reply.code(err.statusCode).send({
+          request_id: requestId,
+          error: { code: err.code, message: err.message },
+        });
+      }
+      throw err;
+    }
+  });
+
+  // ── POST /api/v1/bff/onboarding/provision — merged workspace+brand (D3) ────────
+  // Provisions workspace + first brand transactionally (server-side slug, website→pixel
+  // preserved). Idempotent: a Back→resubmit returns the existing org/brand (200), never
+  // a duplicate. After this, the web calls set-org to re-mint the cookie with context.
+  // CSRF enforced by the app-wide onRequest hook (session cookie present → mutation).
+  fastify.post(
+    '/api/v1/bff/onboarding/provision',
+    { preHandler: [sessionPreHandler] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const correlationId = (request.headers['x-correlation-id'] as string) ?? requestId;
+      const auth = (request as AuthenticatedRequest).auth;
+
+      if (!onboardingService) {
+        return reply.code(503).send({
+          request_id: requestId,
+          error: { code: 'SERVICE_UNAVAILABLE', message: 'Onboarding service not available.' },
+        });
+      }
+
+      const parsed = ProvisionOnboardingRequestSchema.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.code(422).send({
+          request_id: requestId,
+          error: {
+            code: 'VALIDATION_ERROR',
+            message: 'Validation failed',
+            fields: parsed.error.errors.map((e) => ({ field: e.path.join('.'), message: e.message })),
+          },
+        });
+      }
+
+      try {
+        const result = await onboardingService.provisionWorkspaceAndBrand(
+          {
+            workspaceName: parsed.data.workspace_name,
+            brandDisplayName: parsed.data.brand_display_name,
+            domain: parsed.data.domain ?? null,
+            currencyCode: parsed.data.currency_code,
+            timezone: parsed.data.timezone,
+            revenueDefinition: parsed.data.revenue_definition,
+            ownerUserId: auth.userId,
+          },
+          correlationId,
+        );
+        // 201 for a fresh provision, 200 for the idempotent existing-member return.
+        return reply.code(result.created ? 201 : 200).send({
+          request_id: requestId,
+          organization_id: result.organizationId,
+          brand_id: result.brandId,
+          onboarding_status: result.onboardingStatus,
+          created: result.created,
+        });
+      } catch (err) {
+        if (err instanceof OnboardingError) {
+          return reply.code(err.statusCode).send({
+            request_id: requestId,
+            error: { code: err.code, message: err.message },
+          });
+        }
+        throw err;
+      }
+    },
+  );
 
   // ── POST /api/v1/bff/session/refresh — re-mint cookie with current brand/role ──
   // Called after onboarding (workspace + brand creation) so the SAME session picks
@@ -529,6 +683,15 @@ export function registerBffRoutes(
         });
       }
 
+      // feat-onboarding-ux (Deliverable 5): surface onboarding_status so the web's
+      // forward-only OnboardingGate can route on the authoritative server status.
+      // resolveActiveContext does the membership→org read already used by login/set-org.
+      const context = await authService.resolveActiveContext(
+        auth.userId,
+        correlationId,
+        auth.workspaceId ?? undefined,
+      );
+
       return reply.send({
         request_id: requestId,
         user: {
@@ -537,6 +700,7 @@ export function registerBffRoutes(
           email_verified: user.emailVerifiedAt !== null,
           status: user.status,
         },
+        onboarding_status: context.onboardingStatus,
         auth: {
           brand_id: auth.brandId,
           workspace_id: auth.workspaceId,

@@ -142,8 +142,8 @@ test.describe('Members lifecycle', () => {
 
     // AC-7: Backend returns INVITE_PENDING when the registered email has a pending invite.
     // In that case the register form redirects to /invite/accept?email=... immediately.
-    // Otherwise it redirects to /verify-email and waits for the user to click the link.
-    await expect(invitePage).toHaveURL(/\/(verify-email|invite\/accept)/, { timeout: 10_000 });
+    // Otherwise (feat-onboarding-ux) register auto-logs-in and lands on /onboarding/start.
+    await expect(invitePage).toHaveURL(/\/(onboarding\/start|invite\/accept)/, { timeout: 10_000 });
     const currentUrl = invitePage.url();
     const redirectedToAccept = currentUrl.includes('/invite/accept');
 

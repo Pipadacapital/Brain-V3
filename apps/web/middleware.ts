@@ -14,11 +14,14 @@ import type { NextRequest } from 'next/server';
  * Onboarding routing is status-driven (onboarding_status enum from BFF), not
  * localStorage. Resume-after-crash lands on the correct step via server-side status.
  *
- * The ghost /invite step has been REMOVED (MA-10). Onboarding now has 4 steps:
- *   Step 1: /workspace/new
- *   Step 2: /brand/new
- *   Step 3: /onboarding/integrations
- *   Step 4: /onboarding/done
+ * feat-onboarding-ux: the wizard collapsed to 3 user-facing steps. Steps 1+2 (workspace +
+ * brand) merged into ONE create step that provisions both atomically:
+ *   Step 1: /onboarding/start         — merged create workspace + brand (+ tracking interstitial)
+ *   Step 2: /onboarding/integrations
+ *   Step 3: /onboarding/done
+ * The legacy /workspace/new + /brand/new redirect forward to /onboarding/start (forward-only).
+ * Auto-login (register → real session) means a fresh user reaches Step 1 already authenticated;
+ * the OnboardingGate forward-redirects past completed steps so browser Back never re-shows a form.
  */
 const SESSION_COOKIE = 'brain_session';
 

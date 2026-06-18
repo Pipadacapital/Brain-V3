@@ -32,6 +32,7 @@ import { SettlementLedgerConsumer } from './interfaces/consumers/SettlementLedge
 import { SpendLedgerConsumer } from './interfaces/consumers/SpendLedgerConsumer.js';
 import { GokwikAwbLedgerConsumer } from './interfaces/consumers/GokwikAwbLedgerConsumer.js';
 import { LedgerWriter } from './infrastructure/pg/LedgerWriter.js';
+import { startSyncRequestClaimer } from './jobs/sync-request-claimer/run.js';
 
 export async function main(): Promise<void> {
   const brokers = (process.env['KAFKA_BROKERS'] ?? 'localhost:9092').split(',');
@@ -186,6 +187,23 @@ export async function main(): Promise<void> {
     gokwikAwbLedgerGroupId,
   );
 
+  // ── On-demand "Sync now" claimer (feat-connector-sync-now) ──────────────────
+  // NOT a new deployable: an interval loop in THIS process. Claims sentinel
+  // connector_cursor sync-request rows (written by core POST .../sync) and dispatches
+  // the SAME repull run() the scheduler invokes (same code path). run()'s own
+  // FOR UPDATE SKIP LOCKED overlap-lock guarantees no double-run. MUST use brain_app
+  // (RLS enforced) — never superuser 'brain'. WIRED HERE: do not remove without
+  // updating sync-request-claimer.live.test.ts.
+  const syncClaimerPool = new PgPool({ connectionString: dbUrl, max: 3 });
+  const syncRequestClaimerIntervalMs = parseInt(
+    process.env['SYNC_REQUEST_CLAIMER_INTERVAL_MS'] ?? '5000',
+    10,
+  );
+  const syncRequestClaimer = startSyncRequestClaimer(syncClaimerPool, syncRequestClaimerIntervalMs);
+  console.info(
+    `[stream-worker] sync-request claimer running — interval=${syncRequestClaimerIntervalMs}ms`,
+  );
+
   // Graceful shutdown
   const shutdown = async (signal: string): Promise<void> => {
     console.info(`[stream-worker] ${signal} received — draining consumers...`);
@@ -197,7 +215,9 @@ export async function main(): Promise<void> {
       settlementLedgerConsumer.stop(),
       spendLedgerConsumer.stop(),
       gokwikAwbLedgerConsumer.stop(),
+      syncRequestClaimer.stop(),
     ]);
+    await syncClaimerPool.end();
     await dedup.quit();
     await backfillDedup.quit();
     await bronze.end();

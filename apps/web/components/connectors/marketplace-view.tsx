@@ -38,9 +38,11 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { SyncNowControl } from '@/components/connectors/sync-now-control';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
 import { useMarketplace, useConnectConnector, useDisconnectConnector } from '@/lib/hooks/use-connectors';
+import { useEmailVerified } from '@/lib/hooks/use-auth';
 import { BffApiError } from '@/lib/api/client';
 import { toast } from '@/components/ui/toaster';
 import type { MarketplaceTile, ConnectorCategory, HealthState, SafetyRating } from '@/lib/api/types';
@@ -172,6 +174,9 @@ function TileStatusIndicator({ tile }: { tile: MarketplaceTile }) {
 
 // ── ConnectorTile ─────────────────────────────────────────────────────────────
 
+/** Soft-gate reason copy for connecting a real store before email is verified. */
+const VERIFY_TO_CONNECT = 'Verify your email to connect a store';
+
 // ── Per-provider credential field sets (C2 / ADR-RZ-8 + GoKwik/Shopflo Track C) ──
 // A field marked secret=true is stored in the backend secret bundle and NEVER echoed
 // back to the client (type="password", autoComplete="off"). Non-secret fields are
@@ -222,6 +227,7 @@ function credentialFieldsFor(tileId: string): CredentialField[] {
 function ConnectorTile({ tile }: { tile: MarketplaceTile }) {
   const { mutate: connect, isPending: isConnecting } = useConnectConnector();
   const { mutate: disconnect, isPending: isDisconnecting } = useDisconnectConnector();
+  const { emailVerified } = useEmailVerified();
   const [shopDomain, setShopDomain] = useState('');
   // Razorpay credential form state (only used for credential tiles).
   const [creds, setCreds] = useState<Record<string, string>>({});
@@ -232,6 +238,24 @@ function ConnectorTile({ tile }: { tile: MarketplaceTile }) {
   // Per-provider credential fields (Razorpay / Shopflo / GoKwik) — not a single hardcoded set.
   const credentialFields = credentialFieldsFor(tile.id);
   const credsComplete = credentialFields.every((f) => (creds[f.key] ?? '').trim().length > 0);
+
+  /**
+   * Connect-error toast. The server is the authoritative soft-gate (feat-onboarding-ux):
+   * an unverified user hitting connect gets 403 EMAIL_NOT_VERIFIED even if the UI hint was
+   * bypassed — surface that as a clear, actionable message rather than a generic failure.
+   */
+  function handleConnectError(err: unknown) {
+    if (err instanceof BffApiError && err.code === 'EMAIL_NOT_VERIFIED') {
+      toast({
+        title: 'Verify your email first',
+        description: `${VERIFY_TO_CONNECT}. Check your inbox for the verification link.`,
+        variant: 'destructive',
+      });
+      return;
+    }
+    const msg = err instanceof BffApiError ? err.message : 'Could not start connection.';
+    toast({ title: 'Connection failed', description: msg, variant: 'destructive' });
+  }
 
   function handleConnect() {
     if (isComingSoon) return; // guard: UI should never reach here for coming-soon tiles
@@ -297,11 +321,7 @@ function ConnectorTile({ tile }: { tile: MarketplaceTile }) {
               window.location.href = data.oauth_url;
             }
           },
-          onError: (err) => {
-            const msg =
-              err instanceof BffApiError ? err.message : 'Could not start connection.';
-            toast({ title: 'Connection failed', description: msg, variant: 'destructive' });
-          },
+          onError: handleConnectError,
         },
       );
     } else if (tile.connect_method === 'oauth') {
@@ -314,11 +334,7 @@ function ConnectorTile({ tile }: { tile: MarketplaceTile }) {
               window.location.href = data.oauth_url;
             }
           },
-          onError: (err) => {
-            const msg =
-              err instanceof BffApiError ? err.message : 'Could not start connection.';
-            toast({ title: 'Connection failed', description: msg, variant: 'destructive' });
-          },
+          onError: handleConnectError,
         },
       );
     }
@@ -383,22 +399,32 @@ function ConnectorTile({ tile }: { tile: MarketplaceTile }) {
             Coming Soon
           </Button>
         ) : isConnected ? (
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-            {tile.instance?.shop_domain && (
-              <p className="text-sm text-muted-foreground truncate">{tile.instance.shop_domain}</p>
-            )}
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleDisconnect}
-              disabled={isDisconnecting}
-              data-testid={`btn-disconnect-${tile.id}`}
-            >
-              {isDisconnecting && (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
+          <div className="space-y-3">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+              {tile.instance?.shop_domain && (
+                <p className="text-sm text-muted-foreground truncate">{tile.instance.shop_domain}</p>
               )}
-              {isDisconnecting ? 'Disconnecting…' : 'Disconnect'}
-            </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleDisconnect}
+                disabled={isDisconnecting}
+                data-testid={`btn-disconnect-${tile.id}`}
+              >
+                {isDisconnecting && (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
+                )}
+                {isDisconnecting ? 'Disconnecting…' : 'Disconnect'}
+              </Button>
+            </div>
+            {/* Sync now — on-demand incremental re-pull. Status visible to all roles;
+                trigger gated to brand_admin+ (hidden for manager/analyst). */}
+            {tile.instance?.id && (
+              <SyncNowControl
+                connectorId={tile.instance.id}
+                className="pt-3 border-t border-border"
+              />
+            )}
           </div>
         ) : (
           <div className="space-y-2">
@@ -452,9 +478,12 @@ function ConnectorTile({ tile }: { tile: MarketplaceTile }) {
               onClick={handleConnect}
               disabled={
                 isConnecting ||
+                !emailVerified ||
                 (tile.id === 'shopify' && tile.connect_method === 'oauth' && !shopDomain.trim()) ||
                 (isCredential && !credsComplete)
               }
+              aria-describedby={!emailVerified ? `connect-verify-hint-${tile.id}` : undefined}
+              title={!emailVerified ? VERIFY_TO_CONNECT : undefined}
               data-testid={`connector-tile-${tile.id}-connect`}
             >
               {isConnecting && (
@@ -462,6 +491,17 @@ function ConnectorTile({ tile }: { tile: MarketplaceTile }) {
               )}
               {isConnecting ? 'Connecting…' : `Connect ${tile.display_name}`}
             </Button>
+            {/* Soft-gate reason hint — UX guidance only; the server gate is authoritative. */}
+            {!emailVerified && (
+              <p
+                id={`connect-verify-hint-${tile.id}`}
+                className="text-xs text-status-amber-700"
+                data-testid={`connect-verify-hint-${tile.id}`}
+                role="note"
+              >
+                {VERIFY_TO_CONNECT}.
+              </p>
+            )}
           </div>
         )}
       </CardContent>

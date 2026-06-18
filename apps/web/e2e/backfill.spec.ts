@@ -149,7 +149,7 @@ test('manager does not see an enabled backfill trigger — mirrors server 403 (D
     await mgrPage.getByTestId('input-email').fill(mgrEmail);
     await mgrPage.getByTestId('input-password').fill(PASSWORD);
     await mgrPage.getByTestId('btn-register').click();
-    await mgrPage.waitForURL(/\/verify-email/, { timeout: 10_000 });
+    await mgrPage.waitForURL(/\/onboarding\/start/, { timeout: 10_000 }); // feat-onboarding-ux: register auto-logs-in
     await markEmailVerified(mgrEmail);
     await ctx.close();
     return { email: mgrEmail };
@@ -400,7 +400,7 @@ test('manager POST /api/v1/connectors/:id/backfill returns 403 (D-15 non-inert)'
   await mgrPage.getByTestId('input-email').fill(mgrEmail);
   await mgrPage.getByTestId('input-password').fill(PASSWORD);
   await mgrPage.getByTestId('btn-register').click();
-  await mgrPage.waitForURL(/\/verify-email/, { timeout: 10_000 });
+  await mgrPage.waitForURL(/\/onboarding\/start/, { timeout: 10_000 }); // feat-onboarding-ux: register auto-logs-in
   await markEmailVerified(mgrEmail);
   await mgrCtx.close();
 

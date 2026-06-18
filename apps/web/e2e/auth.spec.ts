@@ -34,8 +34,10 @@ test('forgot-password shows a neutral "if an account exists" message (no enumera
 });
 
 test('a verified user can log in and lands in onboarding (pending → Step 1)', async ({ page }) => {
+  // feat-onboarding-ux: register auto-logs-in and lands on the merged create step; logging in
+  // again with the same (pending-onboarding) user routes to the same /onboarding/start.
   const { email, password } = await registerAndVerify(page, 'login-ok');
   await login(page, email, password);
-  await expect(page).toHaveURL(/\/workspace\/new/);
-  await expect(page.getByTestId('step-indicator')).toHaveText(/Step 1 of 4/i);
+  await expect(page).toHaveURL(/\/onboarding\/start/);
+  await expect(page.getByTestId('step-indicator')).toHaveText(/Step 1 of 3/i);
 });

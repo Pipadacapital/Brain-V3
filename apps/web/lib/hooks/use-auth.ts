@@ -21,6 +21,22 @@ export function useCurrentUser() {
   });
 }
 
+/**
+ * feat-onboarding-ux: reads the current user's email_verified flag via the BFF /me.
+ * Used to show the soft-gate reason hint on sensitive-action buttons (connect store, invite).
+ * UI guidance ONLY — the server-side requireVerifiedEmail guard is authoritative (returns
+ * 403 EMAIL_NOT_VERIFIED). Defaults to `true` until known so we never block optimistically.
+ */
+export function useEmailVerified(): { emailVerified: boolean; isLoading: boolean } {
+  const { data, isLoading } = useQuery({
+    queryKey: ['bff', 'me', 'email-verified'],
+    queryFn: () => authApi.bffMe(),
+    staleTime: 60_000,
+    retry: false,
+  });
+  return { emailVerified: data?.user?.email_verified ?? true, isLoading };
+}
+
 export function useRegister() {
   return useMutation({
     mutationFn: (data: RegisterRequest) => authApi.register(data),

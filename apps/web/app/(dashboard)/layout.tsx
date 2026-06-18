@@ -35,6 +35,7 @@ import {
 import { UserMenu } from '@/components/dashboard/user-menu';
 import { RequireSession } from '@/components/dashboard/require-session';
 import { BrandSwitcher } from '@/components/dashboard/brand-switcher';
+import { VerifyEmailBanner } from '@/components/dashboard/verify-email-banner';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 
@@ -179,6 +180,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
       {/* Main content */}
       <div className="flex-1 flex flex-col min-w-0">
+        {/* Soft-gate UX (feat-onboarding-ux): dismissible verify-email banner. The actual
+            block on sensitive actions is enforced server-side — this is guidance only. */}
+        <VerifyEmailBanner />
         <main className="flex-1 p-8 overflow-auto">
           <RequireSession>{children}</RequireSession>
         </main>

@@ -16,6 +16,7 @@ import { toast } from '@/components/ui/toaster';
 import type { ConnectorListItem, ConnectorStatus } from '@/lib/api/types';
 import { cn } from '@/lib/utils';
 import { BackfillControl } from '@/components/connectors/backfill-control';
+import { SyncNowControl } from '@/components/connectors/sync-now-control';
 
 /**
  * A11y: connector status is never colour-only — always icon + label.
@@ -146,6 +147,14 @@ function ConnectorCard({ item }: { item: ConnectorListItem }) {
             {/* Backfill control — visible to all roles, trigger gated to brand_admin+ (D-15) */}
             {item.provider === 'shopify' && item.instance?.id && (
               <BackfillControl
+                connectorId={item.instance.id}
+                className="pt-2 border-t border-border"
+              />
+            )}
+            {/* Sync now — on-demand incremental re-pull. Status visible to all roles;
+                trigger gated to brand_admin+ (hidden for manager/analyst). */}
+            {item.instance?.id && (
+              <SyncNowControl
                 connectorId={item.instance.id}
                 className="pt-2 border-t border-border"
               />

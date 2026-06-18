@@ -1,15 +1,16 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  // Workspace TS packages are published as raw source (main: src/index.ts) and some
-  // (notably @brain/pixel-sdk) re-export with explicit `.js` ESM specifiers (NodeNext
-  // style). Next/webpack must resolve those `.js` specifiers against the `.ts` source.
-  // extensionAlias maps `.js` → the TS source so the workspace barrels resolve in build.
-  // (Pre-existing: create-brand-form.tsx → @brain/pixel-sdk failed to build without this.)
+  // Workspace TS packages ship raw source (main: src/index.ts) and re-export with explicit
+  // `.js` ESM specifiers (NodeNext) while the files on disk are `.ts`. Without this,
+  // `next build` (webpack) fails to resolve those `.js` specifiers (notably @brain/pixel-sdk's
+  // barrel). `next dev` tolerated it; the production build did not. transpilePackages
+  // transpiles the source; extensionAlias maps `.js` → the `.ts` source.
   transpilePackages: ['@brain/pixel-sdk', '@brain/money', '@brain/ui', '@brain/contracts'],
   webpack: (config) => {
     config.resolve.extensionAlias = {
       ...(config.resolve.extensionAlias ?? {}),
       '.js': ['.ts', '.tsx', '.js', '.jsx'],
+      '.mjs': ['.mts', '.mjs'],
     };
     return config;
   },

@@ -21,6 +21,21 @@ export interface ConnectorStatusView {
   google: { coming_soon: true };
 }
 
+/**
+ * Per-connector sync-status view (feat-connector-sync-now §4). Additive: resolves any
+ * provider's connector by connector_instance_id (not just Shopify-by-provider), so the
+ * "Sync now" UI can poll idle/syncing/synced/failed for Razorpay/Meta/Google too.
+ * The row is the REAL connector_sync_status — never simulated (dev-honesty).
+ */
+export interface ConnectorSyncStatusView {
+  connectorInstanceId: string;
+  provider: string;
+  status: 'connected' | 'disconnected' | 'error';
+  syncState: 'connected' | 'syncing' | 'waiting_for_data' | 'error' | null;
+  lastSyncAt: string | null;
+  lastError: string | null;
+}
+
 export class GetConnectorStatusQuery {
   constructor(
     private readonly connectorRepo: IConnectorInstanceRepository,
@@ -63,6 +78,33 @@ export class GetConnectorStatusQuery {
       },
       meta: { coming_soon: true },
       google: { coming_soon: true },
+    };
+  }
+
+  /**
+   * Per-connector status by connector_instance_id (any provider). Returns null when the
+   * connector does not exist for this brand (RLS FORCE — brand-scoped). The sync state is
+   * read straight from connector_sync_status (real row; null until the first sync writes it).
+   */
+  async executeForConnector(
+    connectorInstanceId: string,
+    brandId: string,
+  ): Promise<ConnectorSyncStatusView | null> {
+    const instance = await this.connectorRepo.findById(connectorInstanceId, brandId);
+    if (!instance) return null;
+
+    const syncStatus = await this.syncStatusRepo.findByConnectorInstanceId(
+      instance.id,
+      brandId,
+    );
+
+    return {
+      connectorInstanceId: instance.id,
+      provider: instance.provider,
+      status: instance.status,
+      syncState: syncStatus?.state ?? null,
+      lastSyncAt: syncStatus?.lastSyncAt?.toISOString() ?? null,
+      lastError: syncStatus?.lastError ?? null,
     };
   }
 }

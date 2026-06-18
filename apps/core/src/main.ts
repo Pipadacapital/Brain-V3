@@ -21,6 +21,7 @@ import { Redis } from 'ioredis';
 import { Kafka } from 'kafkajs';
 
 import { createPool } from '@brain/db';
+import { resolveSaltHex } from '@brain/identity-core';
 import pg from 'pg';
 import mysql from 'mysql2/promise';
 import type { SilverPool } from '@brain/metric-engine';
@@ -387,8 +388,13 @@ export async function main(): Promise<void> {
   // IDENTITY_SALT_<BRAND_UUID_NO_DASHES>, 64-hex; HARD-CRASH on miss — D-2).
   // ONE salt source (Single-Primitive) reused for both consent hashing + webhooks.
   async function getCoreSaltHex(brandId: string): Promise<string> {
-    const envKey = `IDENTITY_SALT_${brandId.replace(/-/g, '').toUpperCase()}`;
-    const salt = process.env[envKey] ?? '';
+    // Resolution order (shared with stream-worker via @brain/identity-core so the
+    // SAME email hashes identically core↔worker): explicit IDENTITY_SALT_<brand>
+    // env → else dev-only deterministic salt → else prod env value (untouched).
+    const salt = resolveSaltHex(brandId);
+    // D-2 guard stays intact and is the single crash point: in prod a missing/
+    // wrong-length salt still hard-refuses; in dev resolveSaltHex always returns a
+    // valid 64-hex so this never fires.
     if (!salt || salt.length !== 64) {
       throw new Error(
         `[can_contact] salt for brand ${brandId} is missing or wrong length ` +
@@ -552,8 +558,10 @@ export async function main(): Promise<void> {
   // Per-brand salt for PII hashing in the webhook receiver.
   // Mirrors the SaltProvider pattern from stream-worker: env var IDENTITY_SALT_<BRAND_UUID_NO_DASHES>.
   async function getWebhookSaltHex(brandId: string): Promise<string> {
-    const envKey = `IDENTITY_SALT_${brandId.replace(/-/g, '').toUpperCase()}`;
-    const salt = process.env[envKey] ?? '';
+    // Same shared resolution order as getCoreSaltHex / the worker SaltProvider —
+    // a live webhook ingest and a repull of the same order hash the same email
+    // identically (deterministic dev salt). D-2 guard below is unchanged.
+    const salt = resolveSaltHex(brandId);
     if (!salt || salt.length !== 64) {
       throw new Error(
         `[webhook] salt for brand ${brandId} is missing or wrong length (expected 64 hex chars)`,

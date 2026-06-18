@@ -35,6 +35,69 @@ function sha256Hex(input: string): string {
   return createHash('sha256').update(input, 'utf8').digest('hex');
 }
 
+// ── Deterministic per-brand DEV salt (feat-realtime-ingestion-pipeline §3.1) ──
+//
+// Dev-only: when no IDENTITY_SALT_<brand> env var is seeded, derive a STABLE
+// 32-byte (64-hex) salt deterministically from the brand_id, so every brand
+// works with zero manual seeding AND the same brand always yields the same salt
+// (so re-hashing the same email is stable across runs, replays, and processes).
+//
+// PARITY: this function lives in @brain/identity-core (imported by BOTH apps/core
+// and apps/stream-worker) so the SAME brandId yields the SAME 64-hex value in
+// every process — the same email therefore hashes identically core↔worker.
+//
+// PROD IS NEVER AFFECTED: callers gate this behind NODE_ENV !== 'production'.
+// In prod the real KMS/AwsSecretsProvider per-brand salt path + the D-2
+// empty/wrong-length hard-crash guards stay EXACTLY as-is; resolveDevSaltHex is
+// never reached. This only removes the dev manual-seeding failure mode.
+//
+// sha256 → 32 bytes → 64 lowercase hex chars, so the output satisfies the
+// existing D-2 length guards (64-hex / 32-byte) unchanged.
+
+/** Fixed dev master constant. NOT a prod secret — dev-only salt derivation. */
+const DEV_SALT_MASTER = 'brain-dev-identity-salt-v1';
+
+/**
+ * Dev-only stable per-brand salt. Same brandId → same 64-hex (32 bytes) forever,
+ * in every process. Returns lowercase 64-hex (== 32 bytes), satisfying the D-2
+ * length guard. MUST NOT be called when NODE_ENV === 'production' (the caller gates).
+ */
+export function resolveDevSaltHex(brandId: string): string {
+  const normalized = brandId.trim().toLowerCase();
+  return sha256Hex(`${DEV_SALT_MASTER}||${normalized}`);
+}
+
+/**
+ * The ONE salt-resolution order, shared by every salt site in apps/core AND
+ * apps/stream-worker (Single-Primitive — collapses the duplicated env-read
+ * closures into one branch so core and worker resolve IDENTICALLY).
+ *
+ * Resolution order (feat-realtime-ingestion-pipeline §3.1):
+ *   1. Explicit IDENTITY_SALT_<brand> (exactly 64-hex) → use it. Back-compat /
+ *      override path; unchanged from before.
+ *   2. Else, DEV ONLY (NODE_ENV !== 'production') → resolveDevSaltHex(brandId):
+ *      deterministic, stable, zero-seeding, scales to every brand.
+ *   3. PROD (NODE_ENV === 'production') → resolveDevSaltHex is NEVER reached;
+ *      returns the (possibly empty) env value so the CALLER'S existing D-2
+ *      hard-crash guard fires exactly as before. This function itself does NOT
+ *      crash — the D-2 length guard at each call site stays the single, intact
+ *      crash point. PROD path is provably untouched.
+ *
+ * NODE_ENV is read from process.env directly (not a per-app config object) so the
+ * resolved value is byte-identical in core and worker with no config threading.
+ */
+export function resolveSaltHex(brandId: string): string {
+  const envKey = `IDENTITY_SALT_${brandId.replace(/-/g, '').toUpperCase()}`;
+  const fromEnv = process.env[envKey];
+  if (fromEnv && fromEnv.length === 64) {
+    return fromEnv; // (1) explicit env override — back-compat
+  }
+  if (process.env['NODE_ENV'] !== 'production') {
+    return resolveDevSaltHex(brandId); // (2) dev-only deterministic salt
+  }
+  return fromEnv ?? ''; // (3) prod: untouched — caller's D-2 guard decides
+}
+
 // ── E.164 phone normalization helpers (D-6) ──────────────────────────────────
 
 /**
@@ -237,3 +300,14 @@ export function piiVaultRef(brandId: string, hashedId: string): string {
  * Pinned at: sha256('test-salt||user@example.com')
  */
 export const CONFORMANCE_EMAIL_VECTOR = sha256Hex('test-salt||user@example.com');
+
+/**
+ * Conformance vector for the deterministic dev salt (feat-realtime-ingestion-pipeline).
+ * resolveDevSaltHex('00000000-0000-0000-0000-000000000001') must equal this in EVERY
+ * process — both apps/core and apps/stream-worker pin it to assert cross-process parity
+ * (same brandId → same 64-hex everywhere → same email hashes identically core↔worker).
+ * Pinned at: sha256('brain-dev-identity-salt-v1||00000000-0000-0000-0000-000000000001')
+ */
+export const CONFORMANCE_DEV_SALT_VECTOR = resolveDevSaltHex(
+  '00000000-0000-0000-0000-000000000001',
+);

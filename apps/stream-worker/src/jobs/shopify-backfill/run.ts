@@ -37,6 +37,7 @@ import { Pool } from 'pg';
 import { Kafka, Producer } from 'kafkajs';
 import { buildPartitionKey } from '@brain/events';
 import { SaltProvider, LocalSecretsProvider } from '../../infrastructure/secrets/SaltProvider.js';
+import { resolveSaltHex } from '@brain/identity-core';
 import { PgBackfillJobRepository } from '../../infrastructure/pg/BackfillJobRepository.js';
 import { ORDER_BACKFILL_V1_TOPIC_SUFFIX, CollectorEventV1Schema } from '@brain/contracts';
 import { ShopifyBackfillClient } from './shopify-paged-client.js';
@@ -88,13 +89,7 @@ export async function run(connectorInstanceId?: string): Promise<void> {
 
   // SaltProvider for PII hashing (same convention as identity bridge)
   const saltSecrets = new LocalSecretsProvider();
-  const saltProvider = new SaltProvider(
-    saltSecrets,
-    (brandId: string) => {
-      const envKey = `IDENTITY_SALT_${brandId.replace(/-/g, '').toUpperCase()}`;
-      return process.env[envKey] ?? '';
-    },
-  );
+  const saltProvider = new SaltProvider(saltSecrets, resolveSaltHex);
 
   try {
     await producer.connect();

@@ -22,6 +22,7 @@ import { RedisDedupAdapter } from './infrastructure/redis/RedisDedupAdapter.js';
 import { BronzeRepository } from './infrastructure/pg/BronzeRepository.js';
 import { IdentityRepository } from './infrastructure/pg/IdentityRepository.js';
 import { SaltProvider, LocalSecretsProvider } from './infrastructure/secrets/SaltProvider.js';
+import { resolveSaltHex } from '@brain/identity-core';
 import { ProcessEventUseCase } from './application/ProcessEventUseCase.js';
 import { ResolveIdentityUseCase } from './application/ResolveIdentityUseCase.js';
 import { CollectorEventConsumer } from './interfaces/consumers/CollectorEventConsumer.js';
@@ -40,6 +41,7 @@ import { GokwikAwbLedgerConsumer } from './interfaces/consumers/GokwikAwbLedgerC
 import { LedgerWriter } from './infrastructure/pg/LedgerWriter.js';
 import { startSyncRequestClaimer } from './jobs/sync-request-claimer/run.js';
 import { startDqChecks } from './jobs/dq/run.js';
+import { startIngestScheduler } from './jobs/ingest-scheduler/run.js';
 
 export async function main(): Promise<void> {
   const brokers = (process.env['KAFKA_BROKERS'] ?? 'localhost:9092').split(',');
@@ -120,14 +122,10 @@ export async function main(): Promise<void> {
   // Prod: swap LocalSecretsProvider for AwsSecretsProvider (ARN in env var).
   // saltArnFn maps brand UUID → env var name or AWS Secrets Manager ARN.
   const saltSecrets = new LocalSecretsProvider();
-  const saltProvider = new SaltProvider(
-    saltSecrets,
-    (brandId: string) => {
-      // Dev convention: env var IDENTITY_SALT_<BRAND_ID_NO_DASHES_UPPER> = 64-hex
-      const envKey = `IDENTITY_SALT_${brandId.replace(/-/g, '').toUpperCase()}`;
-      return process.env[envKey] ?? '';
-    },
-  );
+  // Salt resolution: explicit IDENTITY_SALT_<brand> override → else deterministic dev salt
+  // (resolveSaltHex, shared with apps/core so the same email hashes identically) → prod path
+  // untouched (D-2 guard fires on empty). One resolver, every salt site (§3.1).
+  const saltProvider = new SaltProvider(saltSecrets, resolveSaltHex);
   const identityRepo = new IdentityRepository(dbUrl);
   const resolveIdentityUseCase = new ResolveIdentityUseCase(saltProvider, identityRepo);
   const identityConsumer = new IdentityBridgeConsumer(
@@ -281,6 +279,28 @@ export async function main(): Promise<void> {
     `[stream-worker] dq checks running — interval=${dqIntervalMs}ms silver=${dqSilver ? 'on' : 'off'}`,
   );
 
+  // ── Continuous ingestion scheduler (feat-realtime-ingestion-pipeline / §3.3) ──
+  // NOT a new deployable / topic / envelope: an interval loop in THIS process,
+  // structurally identical to the sync-request claimer above. Every
+  // SYNC_SCHEDULER_INTERVAL_MS (default 45s, env-tunable, >=15s floor) it enumerates
+  // EVERY connected connector across EVERY brand via the existing SECURITY-DEFINER
+  // enumerate fns and dispatches each one's existing repull run() — sequential
+  // (rate-limit-safe), per-connector fail-isolated, overlap-safe (run()'s own
+  // FOR UPDATE SKIP LOCKED). This is the near-real-time POLLING pipeline (honest:
+  // true webhook push needs a public tunnel — see docs/dev/ingestion-in-dev.md).
+  // MUST use brain_app (RLS enforced) — never superuser 'brain'. The scheduler holds
+  // NO brand GUC; every brand-scoped op happens inside run() under its own GUC (MT-1).
+  // WIRED HERE: do not remove without updating ingest-scheduler.e2e.test.ts.
+  const ingestSchedulerPool = new PgPool({ connectionString: dbUrl, max: 3 });
+  const ingestSchedulerIntervalMs = parseInt(
+    process.env['SYNC_SCHEDULER_INTERVAL_MS'] ?? '45000',
+    10,
+  );
+  const ingestScheduler = startIngestScheduler(ingestSchedulerPool, ingestSchedulerIntervalMs);
+  console.info(
+    `[stream-worker] ingest scheduler running — interval=${ingestSchedulerIntervalMs}ms`,
+  );
+
   // Graceful shutdown
   const shutdown = async (signal: string): Promise<void> => {
     console.info(`[stream-worker] ${signal} received — draining consumers...`);
@@ -296,9 +316,11 @@ export async function main(): Promise<void> {
       gokwikAwbLedgerConsumer.stop(),
       syncRequestClaimer.stop(),
       dqChecker.stop(),
+      ingestScheduler.stop(),
     ]);
     await syncClaimerPool.end();
     await dqPool.end();
+    await ingestSchedulerPool.end();
     await consentRepo.end();
     await capiDeletionRepo.end();
     await dedup.quit();

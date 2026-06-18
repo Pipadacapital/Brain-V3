@@ -22,6 +22,10 @@
  * Manager, encrypted under the brand's KMS DEK.
  */
 
+// resolveSaltHex (the ONE salt-resolution order shared by core + worker — §3.1) lives in
+// @brain/identity-core so the SAME brand resolves the SAME salt in every process. Every
+// worker salt-closure (main.ts + each repull) calls it directly; no worker-local copy.
+
 /** Minimal SecretsProvider interface (mirrors apps/core/src/infrastructure/secrets/SecretsProvider.ts). */
 export interface SecretsProvider {
   getSecret(nameOrArn: string): Promise<string>;

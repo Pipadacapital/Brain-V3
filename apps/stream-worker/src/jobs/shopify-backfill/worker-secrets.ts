@@ -85,8 +85,13 @@ export class WorkerLocalSecretsManager implements WorkerSecretsManager {
 
   private getDevPool(): pg.Pool {
     if (!this.devPool) {
+      // Safe localhost brain_app default (mirrors apps/stream-worker/src/main.ts:50): a
+      // missing env must NEVER yield undefined → the dev_secret token read always reaches
+      // Postgres. MUST be brain_app (RLS enforced) — never superuser 'brain'.
       const connectionString =
-        process.env['BRAIN_APP_DATABASE_URL'] ?? process.env['DATABASE_URL'];
+        process.env['BRAIN_APP_DATABASE_URL'] ??
+        process.env['DATABASE_URL'] ??
+        'postgres://brain_app:brain_app@localhost:5432/brain';
       this.devPool = new pg.Pool({ connectionString, max: 2 });
     }
     return this.devPool;

@@ -42,6 +42,7 @@ import {
 } from '@brain/gokwik-mapper';
 import { GokwikAwbClient, type GokwikApiCredentials, GOKWIK_AWB_PAGE_SIZE } from './gokwik-awb-client.js';
 import { SaltProvider, LocalSecretsProvider } from '../../infrastructure/secrets/SaltProvider.js';
+import { resolveSaltHex } from '@brain/identity-core';
 
 // ── Configuration ─────────────────────────────────────────────────────────────
 
@@ -84,13 +85,7 @@ export async function run(targetConnectorInstanceId?: string): Promise<void> {
   const producer = kafka.producer();
 
   const saltSecrets = new LocalSecretsProvider();
-  const saltProvider = new SaltProvider(
-    saltSecrets,
-    (brandId: string) => {
-      const envKey = `IDENTITY_SALT_${brandId.replace(/-/g, '').toUpperCase()}`;
-      return process.env[envKey] ?? '';
-    },
-  );
+  const saltProvider = new SaltProvider(saltSecrets, resolveSaltHex);
 
   try {
     await producer.connect();

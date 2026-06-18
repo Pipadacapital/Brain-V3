@@ -252,6 +252,29 @@
             "type": "string",
             "maxLength": 64
           },
+          "consent_flags": {
+            "type": "object",
+            "properties": {
+              "analytics": {
+                "type": "boolean"
+              },
+              "marketing": {
+                "type": "boolean"
+              },
+              "personalization": {
+                "type": "boolean"
+              },
+              "ai_processing": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "analytics",
+              "marketing",
+              "personalization",
+              "ai_processing"
+            ]
+          },
           "properties": {
             "type": "object",
             "additionalProperties": {},

@@ -52,6 +52,22 @@ import type { OnboardingStatus } from '../../workspace-access/internal/domain/or
 import type { DbPool, QueryContext } from '@brain/db';
 import { MembershipRepository, OrganizationRepository } from '../../workspace-access/internal/infrastructure/repositories.js';
 import { ProvisionOnboardingRequestSchema } from '@brain/contracts';
+// BFF read-contract enforcement (feat-shared-bff-read-contracts): annotate each covered
+// use-case result with its `@brain/contracts` z.infer type so core FAILS tsc if its DTO drifts
+// from the shared schema — compile-time guard, ZERO payload change (02-architecture.md §5).
+import type {
+  RevenueSnapshot as ContractRevenueSnapshot,
+  KpiSummary as ContractKpiSummary,
+  AttributionByChannel as ContractAttributionByChannel,
+  AttributionReconciliation as ContractAttributionReconciliation,
+  ChannelRoas as ContractChannelRoas,
+  JourneyFirstTouchMix as ContractJourneyFirstTouchMix,
+  JourneyTimeline as ContractJourneyTimeline,
+  JourneyStitchRate as ContractJourneyStitchRate,
+  OrderStatusMix as ContractOrderStatusMix,
+  DataQualitySummary as ContractDataQualitySummary,
+  AskBrainResult as ContractAskBrainResult,
+} from '@brain/contracts';
 import { jtiFromJwt, csrfTokenForSession } from './csrf.js';
 import type { RateLimiter } from '../../workspace-access/internal/infrastructure/rate-limiter.js';
 import { loginFailKeySync, loginIpKey, registerIpKey } from '../../workspace-access/internal/infrastructure/rate-limiter.js';
@@ -1190,7 +1206,7 @@ export function registerBffRoutes(
       const asOf = new Date(`${asOfStr}T00:00:00Z`);
 
       // Call the analytics use-case — the SOLE read path (ADR-002, D-3)
-      const snapshot = await getRevenueMetrics(auth.brandId, asOf, { pool: rawPool });
+      const snapshot: ContractRevenueSnapshot = await getRevenueMetrics(auth.brandId, asOf, { pool: rawPool });
 
       return reply.send({
         request_id: requestId,
@@ -1264,7 +1280,7 @@ export function registerBffRoutes(
       const asOf = body.as_of ?? (new Date().toISOString().split('T')[0] as string);
 
       // The raw question is passed IN-MEMORY only; askBrain persists/logs only the redacted form.
-      const result = await askBrain(auth.brandId, body.question, asOf, {
+      const result: ContractAskBrainResult = await askBrain(auth.brandId, body.question, asOf, {
         engine: { pool: rawPool },
         resolver: askResolverClient,
       });
@@ -1377,7 +1393,7 @@ export function registerBffRoutes(
       const asOfStr = query.as_of ?? (new Date().toISOString().split('T')[0] as string);
       const asOf = new Date(`${asOfStr}T00:00:00Z`);
 
-      const result = await getKpiSummary(auth.brandId, asOf, { pool: rawPool });
+      const result: ContractKpiSummary = await getKpiSummary(auth.brandId, asOf, { pool: rawPool });
 
       return reply.send({ request_id: requestId, data: result });
     },
@@ -1753,7 +1769,7 @@ export function registerBffRoutes(
         return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' } });
       }
 
-      const result = await getDataQualitySummary(auth.brandId, { pool: rawPool });
+      const result: ContractDataQualitySummary = await getDataQualitySummary(auth.brandId, { pool: rawPool });
 
       return reply.send({ request_id: requestId, data: result });
     },
@@ -1941,7 +1957,7 @@ export function registerBffRoutes(
       const defaultFrom = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0] as string;
       const fromStr = query.from ?? defaultFrom;
 
-      const result = await getOrderStatusMix(
+      const result: ContractOrderStatusMix = await getOrderStatusMix(
         auth.brandId,
         { srPool },
         {
@@ -2009,7 +2025,7 @@ export function registerBffRoutes(
       const defaultFrom = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0] as string;
       const fromStr = query.from ?? defaultFrom;
 
-      const result = await getJourneyFirstTouchMix(
+      const result: ContractJourneyFirstTouchMix = await getJourneyFirstTouchMix(
         auth.brandId,
         { srPool },
         {
@@ -2071,7 +2087,7 @@ export function registerBffRoutes(
       const defaultFrom = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0] as string;
       const fromStr = query.from ?? defaultFrom;
 
-      const result = await getJourneyStitchRate(
+      const result: ContractJourneyStitchRate = await getJourneyStitchRate(
         auth.brandId,
         { srPool },
         {
@@ -2138,7 +2154,7 @@ export function registerBffRoutes(
         ? { orderId: query.orderId }
         : { brainAnonId: query.anonId as string };
 
-      const result = await getJourneyTimeline(
+      const result: ContractJourneyTimeline = await getJourneyTimeline(
         auth.brandId,
         { srPool },
         { selector, dataSource: 'synthetic' },
@@ -2196,7 +2212,7 @@ export function registerBffRoutes(
       const toStr = query.to ?? today;
       const fromStr = query.from ?? (new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0] as string);
 
-      const result = await getAttributionByChannel(
+      const result: ContractAttributionByChannel = await getAttributionByChannel(
         auth.brandId,
         {
           model,
@@ -2239,7 +2255,7 @@ export function registerBffRoutes(
       const toStr = query.to ?? today;
       const fromStr = query.from ?? (new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0] as string);
 
-      const result = await getAttributionReconciliation(
+      const result: ContractAttributionReconciliation = await getAttributionReconciliation(
         auth.brandId,
         {
           model,
@@ -2282,7 +2298,7 @@ export function registerBffRoutes(
       const toStr = query.to ?? today;
       const fromStr = query.from ?? (new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0] as string);
 
-      const result = await getChannelRoas(
+      const result: ContractChannelRoas = await getChannelRoas(
         auth.brandId,
         {
           model,

@@ -6,12 +6,24 @@ const nextConfig = {
   // barrel). `next dev` tolerated it; the production build did not. transpilePackages
   // transpiles the source; extensionAlias maps `.js` → the `.ts` source.
   transpilePackages: ['@brain/pixel-sdk', '@brain/money', '@brain/ui', '@brain/contracts'],
-  webpack: (config) => {
+  webpack: (config, { dev }) => {
     config.resolve.extensionAlias = {
       ...(config.resolve.extensionAlias ?? {}),
       '.js': ['.ts', '.tsx', '.js', '.jsx'],
       '.mjs': ['.mts', '.mjs'],
     };
+    // Dev only: git worktrees live under <repo>/worktrees/ (per the repo layout — all
+    // Brain code under one folder). Each worktree has its own node_modules, so the file
+    // watcher would try to watch them all → "EMFILE: too many open files" → the dev
+    // server 404s every route. Exclude worktrees/ (and node_modules/.git) from the watcher.
+    if (dev) {
+      const ignored = ['**/node_modules/**', '**/.git/**', '**/worktrees/**'];
+      const existing = config.watchOptions?.ignored;
+      config.watchOptions = {
+        ...config.watchOptions,
+        ignored: Array.isArray(existing) ? [...existing, ...ignored] : ignored,
+      };
+    }
     return config;
   },
   // Web app talks ONLY to the frontend-api BFF (ADR-011).

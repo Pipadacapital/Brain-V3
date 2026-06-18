@@ -254,3 +254,8 @@ SEC-RZ-H1 RESOLVED (C4 lint + C5 log-grep both LIVE/non-inert/CI-wired; b5ce157 
 **Gates re-run:** pixel-sdk 12/12, web tracking-status 9/9, contracts 11/11 — all GREEN, no green-before/red-now.
 **Blocking:** 0 · **Tracked tech-debt:** FR-CF-02 (LOW, no consent read-path round-trip test), SEC-CF-01 (LOW), SEC-CF-02 (NOTE), pre-existing AwsSecretsManager tsc.
 **Next:** stakeholder gate (Stage 7)
+
+## 2026-06-18T06:45:00Z — Engineering Advisor (final-reviewer) — feat-ad-connectors
+**Stage:** 6 · **Verdict:** BOUNCE · **Paradigm audit:** clean (delta cleanup only) · HEAD f910bb0
+SEC-NEW-M1 (spec) RESOLVED; SEC-AD-H1/SEC-AD-M1/Q-CURSOR all intact at HEAD (re-verified file:line). Checks 1-4 PASS (0 markers in spec; playwright lists 4 tests; tsc clean; prior fixes present). Check 5 FAIL: committed merge-conflict markers in 4 .engineering-os files (b019405) — state/active.json + orchestrator-cursor.json are UNPARSEABLE JSON, active.json corrupts the live feat-ad-connectors record. Gates re-run: tsc 0-err, playwright --list 4 tests.
+**Next:** BOUNCE to dev/orchestrator fix-loop — re-resolve the 4 .engineering-os files (0 markers, both state JSONs parse), re-run check 5, re-request Stage-6 gate. Product code is clean.

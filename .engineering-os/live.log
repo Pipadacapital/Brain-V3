@@ -370,7 +370,6 @@ Installed 4 packages in 7ms
 13:54:26Z [heartbeat] engineering-os:backend-developer S3 ? issued
 [2026-06-16T14:00:00Z] backend-engineer — Track A RESUME — assessing prior run state; Slices 1-3 partially done; proceeding with: (1) migration 0014, (2) auth.service.ts suspendUser rewrite + reactivateUser, (3) member.routes.ts 5 new routes, (4) GET /members field fix verification, (5) tests
 [2026-06-16T18:10:00Z] backend-engineer — Track A COMPLETE — 4 slices committed (d381627 → a525035 → f786c29 → 89095fb); typecheck EXIT 0; 99 tests pass (13 new NC+unit); migration 0014 applied (3 indexes); READY-FOR-SECURITY
-<<<<<<< Updated upstream
 14:29:21Z [heartbeat] engineering-os:frontend-web-developer S3 ? returned
 [2026-06-16T19:00:00Z] frontend-web-engineer — Track B feat-members-team-management RESUME — prior run committed 3 chunks (85d0fa8 → 7be0e7e → 65868b7); assessing e2e failures; fixing 2 Playwright locator/toast-intercept bugs; typecheck EXIT 0; re-running e2e
 [2026-06-16T19:30:00Z] frontend-web-engineer — Track B COMPLETE — typecheck EXIT 0; members-lifecycle 4/4 pass; full-suite pre-existing 6 failures (rate-limiter, smoke+multi-brand) confirmed pre-existing before Track B changes; READY-FOR-SECURITY
@@ -990,8 +989,6 @@ Razorpay binding plan in progress
 2026-06-18T03:27:54Z — Backend Engineer — feat-ad-connectors Track 3 — metric-engine ad_spend+blended_roas (registry+ad-spend-timeseries+blended-roas), analytics use-cases (get-ad-spend-timeseries/get-blended-roas), 2 BFF routes (ad-spend-timeseries/blended-roas), web client+types+hooks. Verify: metric-engine tsc+lint+12 unit PASS; core tsc clean; web tsc clean; ad-spend-metrics.live 9 PASS under brain_app (RLS non-inert, RED-proof confirmed); revenue-metrics.live 21 PASS (no regression); log-grep PASS.
 2026-06-18T07:34Z — Frontend/Web — feat-ad-connectors Track 4 (Spend/ROAS UI) — COMPLETE. New /analytics/spend route (page+spend-content) + AdSpendTrendChart (stacked area by platform, SR-table fallback, pattern+colour, reduced-motion). Blended-ROAS KpiTile (exact decimal string, honest null) + per-platform spend tiles + per-currency ROAS detail table. Honest empty→Connect CTA→/settings/connectors (meta/google now available oauth via marketplace tiles). Sidebar ANALYTICS: +Ad Spend (Megaphone). Corrected stale marketplace e2e (meta no longer coming-soon→woocommerce; +meta/google connectable test). New analytics-spend.spec.ts (axe gate + keyboard + nav). Verify: web typecheck PASS, lint PASS, vitest 9 PASS. money via formatMoneyDisplay (minor-unit bigint strings, no float). READY-FOR-SECURITY.
 2026-06-18T03:41:44Z [qa] feat-ad-connectors slice1 VERIFY: tsc green (only pre-existing AwsSecretsManager err); wiring e2e 7/7 + neg-control proven RED on un-wire; spend-repull-smoke 2/2 (throttle abort incl); ad-spend-metrics.live 9/9 (parity+RLS under brain_app); connector/ads-oauth 53/53 (forged-body + token-never-logged); mapper 13/13; metric-engine 12/12; e2e specs parse (meta/google connectable + honest-empty spend CTA). PASS.
-=======
 14:12:46Z [heartbeat] engineering-os:backend-developer S3 ? returned
 14:13:39 [orchestrator] backend complete+verified; re-spawning frontend to complete, commit-per-slice
 14:14:12Z [heartbeat] engineering-os:frontend-web-developer S3 ? issued
->>>>>>> Stashed changes

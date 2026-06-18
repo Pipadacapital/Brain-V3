@@ -899,6 +899,11 @@ export async function main(): Promise<void> {
           if ((err as { code?: string }).code === 'MISSING_SHOP_DOMAIN') {
             return reply.code(400).send({ request_id: requestId, error: { code: 'MISSING_SHOP_DOMAIN', message: (err as Error).message } });
           }
+          // Dev boundary: the OAuth app for this provider (e.g. Meta/Google Ads) isn't
+          // configured. Fail gracefully (503 + friendly message the UI toasts), not a 500.
+          if ((err as { code?: string }).code === 'OAUTH_NOT_CONFIGURED') {
+            return reply.code(503).send({ request_id: requestId, error: { code: 'OAUTH_NOT_CONFIGURED', message: (err as Error).message } });
+          }
           throw err;
         }
       }

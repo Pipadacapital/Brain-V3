@@ -380,6 +380,15 @@ export function registerAuthRoutes(
           status: user.status,
           created_at: user.createdAt.toISOString(),
         },
+        // Active-brand session context — the web client caches this under AUTH_QUERY_KEY
+        // and useSessionRole() reads auth.role to gate role-based UI (e.g. the Sync now
+        // trigger, backfill trigger). Without it the client fell back to 'analyst' and
+        // hid those controls for everyone (incl. owners) after a refresh.
+        auth: {
+          role: auth.role,
+          brand_id: auth.brandId,
+          workspace_id: auth.workspaceId,
+        },
       });
     },
   );

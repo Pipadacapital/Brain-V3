@@ -91,6 +91,16 @@ export interface CurrentUserResponse {
    * null = no org membership yet (fresh auto-logged-in user → /onboarding/start).
    */
   onboarding_status?: OnboardingStatus | null;
+  /**
+   * Active-brand session context. Returned by /v1/auth/me so useSessionRole() can gate
+   * role-based UI (Sync now / backfill triggers). Without it the client fell back to the
+   * most-restrictive 'analyst' and hid those controls for everyone after a refresh.
+   */
+  auth?: {
+    role?: string | null;
+    brand_id?: string | null;
+    workspace_id?: string | null;
+  } | null;
 }
 
 export interface OkResponse {

@@ -41,7 +41,15 @@ export class InitiateMetaOAuthCommand {
 
     const clientId = process.env['META_APP_ID'];
     if (!clientId) {
-      throw new Error('[InitiateMetaOAuthCommand] META_APP_ID not configured');
+      // Dev boundary: real Meta OAuth needs a configured app (META_APP_ID + secret + a
+      // public callback). Surface a graceful, typed error the route maps to a friendly
+      // 503 instead of a raw 500.
+      const err = new Error(
+        'Meta Ads connection isn’t configured in this environment yet. ' +
+          'Add the Meta app credentials (META_APP_ID) to enable it.',
+      );
+      (err as Error & { code: string }).code = 'OAUTH_NOT_CONFIGURED';
+      throw err;
     }
 
     // NN-4: 128-bit nonce, brand-bound, single-use, ≤15-min TTL.

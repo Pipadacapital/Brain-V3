@@ -35,7 +35,15 @@ export class InitiateGoogleAdsOAuthCommand {
 
     const clientId = process.env['GOOGLE_ADS_CLIENT_ID'];
     if (!clientId) {
-      throw new Error('[InitiateGoogleAdsOAuthCommand] GOOGLE_ADS_CLIENT_ID not configured');
+      // Dev boundary: real Google Ads OAuth needs a configured app (GOOGLE_ADS_CLIENT_ID +
+      // secret + a public callback). Surface a graceful, typed error the route maps to a
+      // friendly 503 instead of a raw 500.
+      const err = new Error(
+        'Google Ads connection isn’t configured in this environment yet. ' +
+          'Add the Google Ads app credentials (GOOGLE_ADS_CLIENT_ID) to enable it.',
+      );
+      (err as Error & { code: string }).code = 'OAUTH_NOT_CONFIGURED';
+      throw err;
     }
 
     // NN-4: 128-bit nonce, brand-bound, single-use, ≤15-min TTL.

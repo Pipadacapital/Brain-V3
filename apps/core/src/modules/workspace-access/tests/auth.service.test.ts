@@ -183,7 +183,7 @@ describe('AuthService.validateSession — NN-3 session revocation', () => {
       sendVerificationEmail: vi.fn(),
       sendPasswordResetEmail: vi.fn(),
       sendInviteEmail: vi.fn(),
-      canContact: vi.fn().mockResolvedValue(true),
+      canContact: vi.fn().mockResolvedValue({ decision: 'allow' as const, reason: 'transactional_exempt' as const }),
     };
 
     return {
@@ -319,7 +319,7 @@ describe('AuthService.forgotPassword — NN-5b no enumeration', () => {
       sendVerificationEmail: vi.fn(),
       sendPasswordResetEmail: vi.fn(),
       sendInviteEmail: vi.fn(),
-      canContact: vi.fn().mockResolvedValue(true),
+      canContact: vi.fn().mockResolvedValue({ decision: 'allow' as const, reason: 'transactional_exempt' as const }),
     };
 
     return {

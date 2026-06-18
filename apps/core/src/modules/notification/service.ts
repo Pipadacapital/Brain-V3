@@ -2,11 +2,20 @@
  * Notification service interface.
  * All outbound email MUST go through this chokepoint (I-ST05 / ADR-012).
  *
- * M1 scope: send_log + SES transactional adapter + can_contact() pass-through stub.
- * Consent/DND/tombstone/WhatsApp: Phase 3 defer.
+ * D13: can_contact() is now the REAL compliance gate (consent + DLT + NCPR + 9–9 IST
+ * window), default-closed. It is the SOLE send gate — no module may call a channel
+ * provider (SES/WhatsApp) directly.
  *
  * No module other than this one may call SES directly.
  */
+
+import type {
+  ContactChannel,
+  ContactPurpose,
+  CanContactResult,
+} from './internal/compliance/contact-types.js';
+
+export type { ContactChannel, ContactPurpose, CanContactResult };
 
 export interface NotificationService {
   /** Send email verification link. */
@@ -19,9 +28,21 @@ export interface NotificationService {
   sendInviteEmail(email: string, rawToken: string, correlationId: string): Promise<void>;
 
   /**
-   * Check if user can be contacted.
-   * M1 stub: transactional emails are consent-exempt (TCCCPR).
-   * Returns true always for M1 transactional email.
+   * The SOLE outbound send gate (I-ST05). Default-closed: any check that cannot
+   * affirmatively resolve granted/approved/cleared/in-window returns `block` (or
+   * `queue_pending_window` for the 9–9 IST window). There is NO path where an
+   * unknown yields `allow`.
+   *
+   * Ordered checks: transactional-exempt → hash recipient → consent → DLT (phone) →
+   * NCPR/DND (phone) → send-window (9–9 IST).
+   *
+   * @param recipient raw email/phone — hashed immediately, never stored/logged raw.
+   * @param channel   the outbound channel (transactional_email is consent-exempt).
+   * @param purpose   'transactional' (TCCCPR carve-out) or 'marketing'.
    */
-  canContact(email: string, channel: 'transactional_email'): Promise<boolean>;
+  canContact(
+    recipient: string,
+    channel: ContactChannel,
+    purpose: ContactPurpose,
+  ): Promise<CanContactResult>;
 }

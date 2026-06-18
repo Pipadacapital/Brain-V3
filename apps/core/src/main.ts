@@ -41,6 +41,7 @@ import { jtiFromJwt, csrfTokenForSession, csrfTokenMatches } from './modules/fro
 import { NotificationServiceImpl } from './modules/notification/internal/notification.service.impl.js';
 import { registerDevRoutes } from './modules/notification/internal/dev.routes.js';
 import { createEmailAdapter } from './modules/notification/internal/ses-adapter.js';
+import { registerConsentRoutes } from './modules/notification/internal/compliance/consent.routes.js';
 
 // ── Connector infrastructure imports (HIGH-MOUNT-01) ─────────────────────────
 import { PgBackfillJobRepository } from './modules/connector/backfill/infrastructure/PgBackfillJobRepository.js';
@@ -375,6 +376,30 @@ export async function main(): Promise<void> {
   };
   const auditWriter = new DbAuditWriter(auditDb);
 
+  // ── D13: can_contact() compliance engine (the SOLE outbound gate, I-ST05) ────
+  // Per-brand salt for PII hashing in the consent gate (env var
+  // IDENTITY_SALT_<BRAND_UUID_NO_DASHES>, 64-hex; HARD-CRASH on miss — D-2).
+  // ONE salt source (Single-Primitive) reused for both consent hashing + webhooks.
+  async function getCoreSaltHex(brandId: string): Promise<string> {
+    const envKey = `IDENTITY_SALT_${brandId.replace(/-/g, '').toUpperCase()}`;
+    const salt = process.env[envKey] ?? '';
+    if (!salt || salt.length !== 64) {
+      throw new Error(
+        `[can_contact] salt for brand ${brandId} is missing or wrong length ` +
+          `(expected 64 hex chars) — refusing to hash with empty/default salt (D-2)`,
+      );
+    }
+    return salt;
+  }
+  // The engine + write path are built PER REQUEST inside the consent routes (a fresh
+  // GUC-scoped DbClient is acquired per call → no GUC bleed across concurrent brands);
+  // brandId flows per call from the session JWT. DLT/NCPR are the shipped default-
+  // closed stubs (real registries are a documented platform follow-up). One salt
+  // source (Single-Primitive) via getCoreSaltHex.
+  app.log.info(
+    '[core] can_contact() compliance engine wired (consent + DLT-stub + NCPR-stub + 9–9 IST window, default-closed)',
+  );
+
   // Create notification service (SES in prod, console in dev — I-ST05).
   const emailAdapter = createEmailAdapter(config.nodeEnv, config.emailFromAddress);
   const notificationService = new NotificationServiceImpl(emailAdapter, config.appBaseUrl);
@@ -424,6 +449,16 @@ export async function main(): Promise<void> {
   registerBrandRoutes(app, authService, brandService);
   registerMemberRoutes(app, authService, inviteService, rawPgPool);
   registerBffRoutes(app, authService, pool, config.cookieSecret, rateLimiter, rawPgPool, onboardingService, srPool);
+
+  // D13: consent write + can_contact() gate-probe routes (brand-scoped, session-guarded).
+  // grant/withdraw record the append-only consent SoR; check runs the default-closed
+  // gate and audits the decision (surfaced by the Track-C gate-activity feed).
+  registerConsentRoutes(app, {
+    pool,
+    audit: auditWriter,
+    saltFn: getCoreSaltHex,
+    sessionPreHandler: validateSessionPreHandler(authService),
+  });
 
   // DEV-ONLY: surface email action links (verify/reset/invite) for browser testing
   // without a real inbox. Registered ONLY outside production — the route does not

@@ -192,7 +192,7 @@ describe('QA-1 / §7 — AuthService.switchBrandContext LIVE Postgres integratio
       sendVerificationEmail: async () => {},
       sendPasswordResetEmail: async () => {},
       sendInviteEmail: async () => {},
-      canContact: async () => true,
+      canContact: async () => ({ decision: 'allow' as const, reason: 'transactional_exempt' as const }),
     };
 
     authService = new AuthService(

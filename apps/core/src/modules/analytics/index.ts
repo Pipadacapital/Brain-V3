@@ -66,6 +66,25 @@ export type { JourneyStitchRateResult, JourneyStitchRateParams } from './interna
 export { getJourneyTimeline } from './internal/application/queries/get-journey-timeline.js';
 export type { JourneyTimelineResult, TimelineTouchDto, JourneyTimelineParams } from './internal/application/queries/get-journey-timeline.js';
 
+// D13 Consent / Compliance surface (feat-d13-consent-cancontact Track C) — the four
+// brand-scoped reads behind /settings/consent. Counts + hashes only (NO raw PII);
+// fail-closed when the consent SoR tables are not yet migrated (no consent == blocked).
+export {
+  getConsentCoverage,
+  getConsentSuppressionSummary,
+  getConsentGateActivity,
+  getConsentWindowConfig,
+} from './internal/application/queries/get-consent-compliance.js';
+export type {
+  ConsentCoverageResult,
+  ConsentCoverageRow,
+  ConsentSuppressionSummaryResult,
+  ConsentGateActivityResult,
+  GateActivityRow,
+  GateDecision,
+  ConsentWindowConfigResult,
+} from './internal/application/queries/get-consent-compliance.js';
+
 // Phase 5 Attribution (feat-attribution-ledger) — attributed-by-channel + reconciliation + channel ROAS
 // over attribution_credit_ledger (Postgres Gold, 0032) via the metric-engine named seams (ADR-002).
 export { getAttributionByChannel } from './internal/application/queries/get-attribution-by-channel.js';

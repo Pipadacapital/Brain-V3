@@ -868,6 +868,79 @@ export interface AnalyticsRecentEventsResponse {
   rows: AnalyticsRecentEventRow[];
 }
 
+// ── Consent / Compliance (D13 — feat-d13-consent-cancontact Track C) ────────────
+//
+// The per-brand consent/compliance surface (/settings/consent). The web app reads
+// ONLY via the BFF (/api/v1/consent/*). NO raw PII — these are aggregate COUNTS +
+// decision metadata + a fixed regulatory window. All count fields are bigint-serialized
+// strings (D-1) — never floats, never re-divided in the client.
+//
+// FAIL-CLOSED: an empty consent system-of-record is state:'no_data' — for consent that
+// means "blocked by default" (nothing is sendable until consent is recorded), NOT a
+// fabricated allow. The UI renders the default-closed posture explicitly.
+
+/** The 4 DPDP lawful-basis consent categories (mirrors the contract + DB CHECK). */
+export type ConsentCategory =
+  | 'analytics'
+  | 'marketing'
+  | 'personalization'
+  | 'ai_processing';
+
+/** One category row of the coverage panel — granted vs withdrawn subject counts. */
+export interface ConsentCoverageRow {
+  category: ConsentCategory;
+  granted: string;   // bigint string (subjects whose latest state is granted)
+  withdrawn: string; // bigint string (subjects withdrawn or tombstoned)
+}
+
+export type ConsentCoverageResponse =
+  | { state: 'no_data' }
+  | {
+      state: 'has_data';
+      by_category: ConsentCoverageRow[];
+      total_subjects: string; // bigint string
+    };
+
+export type ConsentSuppressionSummaryResponse =
+  | { state: 'no_data' }
+  | {
+      state: 'has_data';
+      suppressed_subjects: string; // bigint string — suppressed for marketing
+      tombstoned_subjects: string; // bigint string
+      granted_subjects: string;    // bigint string — marketing-granted & not tombstoned
+    };
+
+/** A single can_contact() gate decision (from audit_log) — never carries raw recipient. */
+export type ConsentGateDecision = 'allow' | 'block' | 'queue_pending_window';
+
+export interface ConsentGateActivityRow {
+  decision: ConsentGateDecision;
+  reason: string;          // 'consent_absent' | 'dlt_unregistered' | 'out_of_window' | …
+  channel: string | null;  // 'marketing_email' | 'whatsapp' | …
+  purpose: string | null;  // 'marketing' | 'transactional'
+  occurred_at: string;     // ISO timestamp
+}
+
+export type ConsentGateActivityResponse =
+  | { state: 'no_data' }
+  | {
+      state: 'has_data';
+      decisions: ConsentGateActivityRow[];
+      allow_count: string; // bigint string
+      block_count: string;
+      queue_count: string;
+    };
+
+/** The read-only, SERVER-enforced 9–9 IST permitted-hours send window. */
+export interface ConsentWindowConfigResponse {
+  timezone: string;        // 'Asia/Kolkata'
+  window_start: string;    // '09:00'
+  window_end: string;      // '21:00'
+  in_window_now: boolean;  // server-computed (UI never derives from a client clock)
+  next_window_open: string; // ISO ts of the next 09:00 IST boundary
+  enforced: 'server';
+}
+
 // ── Keyset pagination ─────────────────────────────────────────────────────────
 
 export interface PaginatedResponse<T> {

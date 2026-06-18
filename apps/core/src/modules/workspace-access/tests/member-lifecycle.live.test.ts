@@ -57,7 +57,7 @@ function makeNotification() {
     sendVerificationEmail: vi.fn(),
     sendPasswordResetEmail: vi.fn(),
     sendInviteEmail: vi.fn(),
-    canContact: vi.fn().mockResolvedValue(true),
+    canContact: vi.fn().mockResolvedValue({ decision: 'allow' as const, reason: 'transactional_exempt' as const }),
   };
 }
 

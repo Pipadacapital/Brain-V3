@@ -26,6 +26,9 @@ import { ProcessEventUseCase } from './application/ProcessEventUseCase.js';
 import { ResolveIdentityUseCase } from './application/ResolveIdentityUseCase.js';
 import { CollectorEventConsumer } from './interfaces/consumers/CollectorEventConsumer.js';
 import { IdentityBridgeConsumer } from './identity-bridge/IdentityBridgeConsumer.js';
+import { ConsentSuppressorConsumer } from './interfaces/consumers/ConsentSuppressorConsumer.js';
+import { ProjectConsentUseCase } from './application/ProjectConsentUseCase.js';
+import { ConsentRepository } from './infrastructure/pg/ConsentRepository.js';
 import { BackfillOrderConsumer } from './interfaces/consumers/BackfillOrderConsumer.js';
 import { LiveLedgerBridgeConsumer } from './interfaces/consumers/LiveLedgerBridgeConsumer.js';
 import { SettlementLedgerConsumer } from './interfaces/consumers/SettlementLedgerConsumer.js';
@@ -44,6 +47,13 @@ export async function main(): Promise<void> {
   const topic = process.env['COLLECTOR_TOPIC'] ?? 'dev.collector.event.v1';
   const groupId = process.env['CONSUMER_GROUP_ID'] ?? 'stream-worker-live';
   const identityGroupId = process.env['IDENTITY_CONSUMER_GROUP_ID'] ?? 'identity-bridge-live';
+  // Consent-suppressor (feat-d13-consent-cancontact): separate consumer group on the
+  // SAME live topic (no new topic, no new deployable — I-E05). Projects the first-class
+  // consent_flags envelope field into consent_record + consent_tombstone (the SoR the
+  // can_contact() chokepoint queries fail-closed). WIRED HERE: do NOT remove without
+  // updating consent-suppressor.e2e.test.ts.
+  const consentSuppressorGroupId =
+    process.env['CONSENT_SUPPRESSOR_CONSUMER_GROUP_ID'] ?? 'stream-worker-consent-suppressor';
   // Live-ledger bridge (ORCH-LV-H1 fix): separate consumer group on the live topic — mirrors
   // IdentityBridgeConsumer pattern. Does NOT double-write Bronze (CollectorEventConsumer handles
   // Bronze). Filters to order.live.v1 events only; routes provisional_recognition / rto_reversal.
@@ -111,6 +121,17 @@ export async function main(): Promise<void> {
   const resolveIdentityUseCase = new ResolveIdentityUseCase(saltProvider, identityRepo);
   const identityConsumer = new IdentityBridgeConsumer(
     kafka, resolveIdentityUseCase, topic, identityGroupId,
+  );
+
+  // ── Consent suppressor (feat-d13-consent-cancontact) ────────────────────────
+  // Same live topic, separate consumer group. Reuses the SAME SaltProvider as the
+  // identity bridge (one sanctioned per-brand hasher — D-2 hard-crash on salt failure)
+  // so a subject's consent_record.subject_hash equals its identity_link.identifier_value.
+  // Writes consent_record + consent_tombstone under brain_app + brand GUC (RLS FORCE).
+  const consentRepo = new ConsentRepository(dbUrl);
+  const projectConsentUseCase = new ProjectConsentUseCase(saltProvider, consentRepo);
+  const consentSuppressorConsumer = new ConsentSuppressorConsumer(
+    kafka, projectConsentUseCase, topic, consentSuppressorGroupId,
   );
 
   // ── Backfill lane (ADR-BF-7 / ADR-BF-8 / ADR-BF-9) ────────────────────────
@@ -210,6 +231,7 @@ export async function main(): Promise<void> {
     await Promise.all([
       consumer.stop(),
       identityConsumer.stop(),
+      consentSuppressorConsumer.stop(),
       backfillConsumer.stop(),
       liveLedgerConsumer.stop(),
       settlementLedgerConsumer.stop(),
@@ -218,6 +240,7 @@ export async function main(): Promise<void> {
       syncRequestClaimer.stop(),
     ]);
     await syncClaimerPool.end();
+    await consentRepo.end();
     await dedup.quit();
     await backfillDedup.quit();
     await bronze.end();
@@ -244,6 +267,14 @@ export async function main(): Promise<void> {
   console.info(`[stream-worker] starting identity bridge — topic=${topic} group=${identityGroupId}`);
   await identityConsumer.start();
   console.info('[stream-worker] identity bridge consumer running');
+
+  // ── Consent suppressor consumer (feat-d13-consent-cancontact MANDATORY WIRE) ──
+  // Same live topic, independent consumer group. Projects consent_flags →
+  // consent_record + consent_tombstone (the SoR can_contact() reads fail-closed).
+  // WIRED HERE: do NOT remove without updating consent-suppressor.e2e.test.ts.
+  console.info(`[stream-worker] starting consent suppressor — topic=${topic} group=${consentSuppressorGroupId}`);
+  await consentSuppressorConsumer.start();
+  console.info('[stream-worker] consent suppressor consumer running');
 
   // ── Backfill lane consumer (ADR-BF-7 / ADR-BF-8 / ADR-BF-9) ───────────────
   // Separate from live lane: backfillTopic != topic → Redpanda isolation guarantee.

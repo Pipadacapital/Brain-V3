@@ -272,6 +272,15 @@ export type {
   BackfillErrorResponse,
 } from './api/connector.backfill.api.v1.js';
 
+// ── Consent suppression read seam (D13 — feat-d13-consent-cancontact) ─────────
+export { CONSENT_CATEGORIES } from './consent/suppression.js';
+export type {
+  ConsentCategory,
+  SuppressionReason,
+  SuppressionResult,
+  SuppressionQuery,
+} from './consent/suppression.js';
+
 // ── Data quality declarations ─────────────────────────────────────────────────
 export {
   DqFreshnessCheckSchema,

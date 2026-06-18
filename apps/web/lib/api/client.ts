@@ -77,6 +77,10 @@ import type {
   AnalyticsJourneyFirstTouchMixResponse,
   AnalyticsJourneyStitchRateResponse,
   AnalyticsJourneyTimelineResponse,
+  ConsentCoverageResponse,
+  ConsentSuppressionSummaryResponse,
+  ConsentGateActivityResponse,
+  ConsentWindowConfigResponse,
   AttributionModel,
   AnalyticsAttributionByChannelResponse,
   AnalyticsAttributionReconciliationResponse,
@@ -1247,6 +1251,45 @@ export const analyticsApi = {
     if (params.to) qs.set('to', params.to);
     const { data } = await bffFetch<BffEnvelope<AnalyticsChannelRoasResponse>>(
       `/v1/analytics/attribution/channel-roas?${qs.toString()}`,
+    );
+    return data;
+  },
+};
+
+// ── Consent / Compliance (D13 — feat-d13-consent-cancontact Track C) ──────────
+// BFF-only, session-authed. Brand from session (D-1). Unwrap { request_id, data }.
+// NO raw PII — aggregate counts + decision metadata + a fixed regulatory window.
+// state:'no_data' is preserved (fail-closed: empty SoR == "blocked by default").
+
+export const consentApi = {
+  /** GET /api/v1/consent/coverage — per-category granted/withdrawn subject counts. */
+  getCoverage: async (): Promise<ConsentCoverageResponse> => {
+    const { data } = await bffFetch<BffEnvelope<ConsentCoverageResponse>>(
+      '/v1/consent/coverage',
+    );
+    return data;
+  },
+
+  /** GET /api/v1/consent/suppression-summary — marketing suppression counts. */
+  getSuppressionSummary: async (): Promise<ConsentSuppressionSummaryResponse> => {
+    const { data } = await bffFetch<BffEnvelope<ConsentSuppressionSummaryResponse>>(
+      '/v1/consent/suppression-summary',
+    );
+    return data;
+  },
+
+  /** GET /api/v1/consent/gate-activity — last-N can_contact() decisions by reason. */
+  getGateActivity: async (): Promise<ConsentGateActivityResponse> => {
+    const { data } = await bffFetch<BffEnvelope<ConsentGateActivityResponse>>(
+      '/v1/consent/gate-activity',
+    );
+    return data;
+  },
+
+  /** GET /api/v1/consent/window-config — the read-only 9–9 IST send window. */
+  getWindowConfig: async (): Promise<ConsentWindowConfigResponse> => {
+    const { data } = await bffFetch<BffEnvelope<ConsentWindowConfigResponse>>(
+      '/v1/consent/window-config',
     );
     return data;
   },

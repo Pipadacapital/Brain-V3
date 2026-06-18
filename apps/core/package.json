@@ -29,6 +29,7 @@
     "@brain/tenant-context": "workspace:*",
     "@brain/shopify-mapper": "workspace:*",
     "@brain/razorpay-mapper": "workspace:*",
+    "@brain/shopflo-mapper": "workspace:*",
     "@fastify/cookie": "^11.0.2",
     "fastify-raw-body": "^5.0.0",
     "argon2": "^0.44.0",

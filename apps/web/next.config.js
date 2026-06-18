@@ -1,5 +1,18 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  // Workspace TS packages are published as raw source (main: src/index.ts) and some
+  // (notably @brain/pixel-sdk) re-export with explicit `.js` ESM specifiers (NodeNext
+  // style). Next/webpack must resolve those `.js` specifiers against the `.ts` source.
+  // extensionAlias maps `.js` → the TS source so the workspace barrels resolve in build.
+  // (Pre-existing: create-brand-form.tsx → @brain/pixel-sdk failed to build without this.)
+  transpilePackages: ['@brain/pixel-sdk', '@brain/money', '@brain/ui', '@brain/contracts'],
+  webpack: (config) => {
+    config.resolve.extensionAlias = {
+      ...(config.resolve.extensionAlias ?? {}),
+      '.js': ['.ts', '.tsx', '.js', '.jsx'],
+    };
+    return config;
+  },
   // Web app talks ONLY to the frontend-api BFF (ADR-011).
   // BFF base URL is environment-specific; in dev, it proxies to apps/core.
   async rewrites() {

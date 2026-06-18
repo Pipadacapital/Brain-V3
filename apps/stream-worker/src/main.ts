@@ -30,6 +30,7 @@ import { BackfillOrderConsumer } from './interfaces/consumers/BackfillOrderConsu
 import { LiveLedgerBridgeConsumer } from './interfaces/consumers/LiveLedgerBridgeConsumer.js';
 import { SettlementLedgerConsumer } from './interfaces/consumers/SettlementLedgerConsumer.js';
 import { SpendLedgerConsumer } from './interfaces/consumers/SpendLedgerConsumer.js';
+import { GokwikAwbLedgerConsumer } from './interfaces/consumers/GokwikAwbLedgerConsumer.js';
 import { LedgerWriter } from './infrastructure/pg/LedgerWriter.js';
 
 export async function main(): Promise<void> {
@@ -56,6 +57,12 @@ export async function main(): Promise<void> {
   // WIRED HERE (NON-NEGOTIABLE) — unwiring triggers the wired-to-nothing bounce.
   const spendLedgerGroupId =
     process.env['SPEND_LEDGER_CONSUMER_GROUP_ID'] ?? 'spend-ledger-bridge';
+  // GoKwik AWB ledger bridge (feat-gokwik-shopflo-connectors / 0030): separate consumer group on
+  // the live topic. Filters gokwik.awb_status.v1; terminal RTO → cod_rto_clawback (signed-negative),
+  // terminal Delivered → cod_delivery_confirmed. WIRED HERE (NON-NEGOTIABLE) — unwiring is the
+  // wired-to-nothing anti-pattern (gokwik-awb-ledger-wiring.e2e.test.ts catches it).
+  const gokwikAwbLedgerGroupId =
+    process.env['GOKWIK_AWB_LEDGER_CONSUMER_GROUP_ID'] ?? 'gokwik-awb-ledger-bridge';
   // Backfill lane (ADR-BF-7 / D-3): separate topic + group → zero live-lane lag impact
   const backfillTopic = process.env['BACKFILL_TOPIC'] ?? `${(process.env['APP_ENV'] ?? 'dev')}.collector.order.backfill.v1`;
   const backfillGroupId = process.env['BACKFILL_CONSUMER_GROUP_ID'] ?? 'stream-worker-backfill';
@@ -165,6 +172,20 @@ export async function main(): Promise<void> {
     spendLedgerGroupId,
   );
 
+  // ── GoKwik AWB ledger bridge (feat-gokwik-shopflo-connectors / 0030 WIRED) ──
+  // Same live topic, separate consumer group (gokwikAwbLedgerGroupId). Filters gokwik.awb_status.v1;
+  // terminal RTO → cod_rto_clawback (looks up the recognized CoD amount, writes signed-negative),
+  // terminal Delivered → cod_delivery_confirmed. Idempotent restatement via the ledger dedup key.
+  // Brand GUC is set inside LedgerWriter before every INSERT (NN-1 / RLS). WIRED HERE: do NOT remove
+  // without updating gokwik-awb-ledger-wiring.e2e.test.ts (wired-to-nothing bounce trigger).
+  const gokwikAwbLedgerWriter = new LedgerWriter(dbUrl);
+  const gokwikAwbLedgerConsumer = new GokwikAwbLedgerConsumer(
+    kafka,
+    gokwikAwbLedgerWriter,
+    topic,
+    gokwikAwbLedgerGroupId,
+  );
+
   // Graceful shutdown
   const shutdown = async (signal: string): Promise<void> => {
     console.info(`[stream-worker] ${signal} received — draining consumers...`);
@@ -175,6 +196,7 @@ export async function main(): Promise<void> {
       liveLedgerConsumer.stop(),
       settlementLedgerConsumer.stop(),
       spendLedgerConsumer.stop(),
+      gokwikAwbLedgerConsumer.stop(),
     ]);
     await dedup.quit();
     await backfillDedup.quit();
@@ -187,6 +209,7 @@ export async function main(): Promise<void> {
     await settlementLedgerWriter.end();
     await settlementMapPool.end();
     await spendLedgerWriter.end();
+    await gokwikAwbLedgerWriter.end();
     console.info('[stream-worker] shutdown complete');
     process.exit(0);
   };
@@ -232,6 +255,14 @@ export async function main(): Promise<void> {
   console.info(`[stream-worker] starting spend-ledger bridge — topic=${topic} group=${spendLedgerGroupId}`);
   await spendLedgerConsumer.start();
   console.info('[stream-worker] spend-ledger bridge consumer running');
+
+  // ── GoKwik AWB ledger bridge consumer (feat-gokwik-shopflo-connectors / 0030 MANDATORY WIRE) ──
+  // Same live topic, independent consumer group. Filters gokwik.awb_status.v1.
+  // terminal RTO → cod_rto_clawback; terminal Delivered → cod_delivery_confirmed.
+  // WIRED HERE: do NOT remove without updating gokwik-awb-ledger-wiring.e2e.test.ts.
+  console.info(`[stream-worker] starting gokwik-awb-ledger bridge — topic=${topic} group=${gokwikAwbLedgerGroupId}`);
+  await gokwikAwbLedgerConsumer.start();
+  console.info('[stream-worker] gokwik-awb-ledger bridge consumer running');
 }
 
 // Run when invoked directly (not imported in tests)

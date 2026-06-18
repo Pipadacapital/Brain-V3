@@ -518,6 +518,59 @@ export type AnalyticsSettlementsResponse =
       fees: SettlementFee[];
     };
 
+// ── CoD / RTO surface (GoKwik + Shopflo Track C) ───────────────────────────────
+//
+// All amount/count fields are bigint-serialized strings (D-1). Never floats.
+// data_source ('synthetic' | 'live') drives the honest "Synthetic (dev)" badge —
+// GoKwik AWB/RTO data is synthetic-sourced in dev (real shape, partner sandbox is a
+// platform follow-up); Shopflo checkout_abandoned is REAL. Numeric RTO score is NEVER
+// fabricated — GoKwik exposes a categorical risk_flag we record verbatim.
+
+export type DataSource = 'synthetic' | 'live';
+
+export interface CodRtoCohort {
+  pincode: string;            // destination pincode, or 'unknown'
+  terminal_count: string;     // bigint string (denominator)
+  rto_count: string;          // bigint string (numerator)
+  rto_rate_pct: string | null;// 2dp string e.g. '12.50'; null when terminal_count=0
+}
+
+export type AnalyticsCodRtoRatesResponse =
+  | { state: 'no_data' }
+  | {
+      state: 'has_data';
+      overall_rto_rate_pct: string | null;
+      total_terminal: string; // bigint string
+      total_rto: string;      // bigint string
+      cohorts: CodRtoCohort[];
+      data_source: DataSource;
+      pincode_pending: boolean;
+    };
+
+export type AnalyticsCodMixResponse =
+  | { state: 'no_data' }
+  | {
+      state: 'has_data';
+      currency_code: string;
+      cod_delivered_minor: string;    // bigint string
+      cod_rto_clawback_minor: string; // bigint string (POSITIVE magnitude)
+      cod_net_minor: string;          // bigint string (may be negative — honest)
+      prepaid_minor: string;          // bigint string
+      cod_share_pct: string | null;   // 2dp string; null when denom ≤ 0
+    };
+
+export type AnalyticsCheckoutFunnelResponse =
+  | { state: 'no_data' }
+  | {
+      state: 'has_data';
+      currency_code: string;
+      abandoned_count: string;        // bigint string
+      discount_applied_count: string; // bigint string
+      with_address_count: string;     // bigint string
+      abandoned_value_minor: string;  // bigint string (minor units)
+      data_source: DataSource;
+    };
+
 // ── Tracking Center (Phase 1 Track C) ──────────────────────────────────────────
 // Pixel-collection health + the Event Explorer feed. NO raw PII — anonymized ids
 // + aggregate counts only. All count fields are bigint-serialized strings (D-1).

@@ -17,7 +17,10 @@ export type MetricId =
   | 'realized_revenue'
   | 'provisional_revenue'
   | 'ad_spend'
-  | 'blended_roas';
+  | 'blended_roas'
+  | 'cod_rto_rate'
+  | 'cod_mix'
+  | 'checkout_funnel';
 export type MetricVersion = `v${number}`;
 
 export interface MetricDefinition {
@@ -26,7 +29,16 @@ export interface MetricDefinition {
   /** Human-readable definition — mirrors the METRICS.md registry row. */
   readonly description: string;
   /** The named DB read seam this metric resolves through (sole-as-of-path). */
-  readonly readSeam: 'realized_gmv_as_of' | 'provisional_gmv_as_of' | 'ad_spend_as_of';
+  readonly readSeam:
+    | 'realized_gmv_as_of'
+    | 'provisional_gmv_as_of'
+    | 'ad_spend_as_of'
+    // GoKwik AWB-lifecycle terminal rows in bronze_events (gokwik.awb_status.v1).
+    | 'awb_terminal_states'
+    // realized_revenue_ledger cod_* event_types (0030).
+    | 'cod_ledger'
+    // Shopflo checkout_abandoned rows in bronze_events (shopflo.checkout_abandoned.v1).
+    | 'checkout_abandoned';
   /**
    * recognition_label semantics this metric covers.
    * Cross-checked in registry unit test: realized→finalized; provisional→provisional/settling.
@@ -113,6 +125,55 @@ export const METRIC_REGISTRY = {
         'currency_code). ROAS is reported ONLY where spend>0; spend=0 → null (honest, ' +
         'never divide-by-zero or fabricate). Ratio carries the two integer operands so the ' +
         'consumer can re-derive it exactly. Sole emitter: metric-engine only.',
+    },
+  },
+  cod_rto_rate: {
+    v1: {
+      metricId: 'cod_rto_rate' as const,
+      version: 'v1' as const,
+      readSeam: 'awb_terminal_states' as const,
+      // RTO rate is a count ratio over AWB terminal states, not a recognition-staged fact → [].
+      recognitionLabels: [] as const,
+      toleranceMinor: 0 as const,
+      description:
+        'RTO rate = terminal-RTO shipments ÷ all-terminal shipments, by pincode cohort, ' +
+        'from gokwik.awb_status.v1 Bronze rows (is_terminal=true) via the awb_terminal_states ' +
+        'seam. In-flight AWBs excluded from the denominator. Categorical only — NO numeric RTO ' +
+        'score is fabricated (GoKwik exposes High/Med/Low, recorded verbatim). Synthetic source ' +
+        'in dev (real shape) → data_source surfaced for the honest Synthetic (dev) badge. ' +
+        'Sole emitter: metric-engine only.',
+    },
+  },
+  cod_mix: {
+    v1: {
+      metricId: 'cod_mix' as const,
+      version: 'v1' as const,
+      readSeam: 'cod_ledger' as const,
+      recognitionLabels: ['finalized'] as const,
+      toleranceMinor: 0 as const,
+      description:
+        'CoD CM2 + CoD-vs-prepaid mix from realized_revenue_ledger cod_* event_types (0030): ' +
+        'net CoD = cod_delivery_confirmed (+) + cod_rto_clawback (−), per currency_code. RTO ' +
+        'clawback is the realized cost of a return — net CoD is the contribution AFTER RTO ' +
+        'leakage (the honest number the placed-CoD figure hides). Mix = net CoD ÷ (net CoD + ' +
+        'prepaid finalization). BIGINT minor units, signed amount_minor (engine never re-signs), ' +
+        'same-currency only. Sole emitter: metric-engine only.',
+    },
+  },
+  checkout_funnel: {
+    v1: {
+      metricId: 'checkout_funnel' as const,
+      version: 'v1' as const,
+      readSeam: 'checkout_abandoned' as const,
+      recognitionLabels: [] as const,
+      toleranceMinor: 0 as const,
+      description:
+        'Checkout-conversion funnel from shopflo.checkout_abandoned.v1 Bronze rows over a bounded ' +
+        'window via the checkout_abandoned seam: abandoned count, discount-applied count ' +
+        '(total_discount_minor>0), with-address count (has_address=true), and abandoned cart value ' +
+        '(SUM total_price_minor, BIGINT minor units). REAL Shopflo self-serve webhook (NOT synthetic). ' +
+        'PII hashed at the mapper boundary — this read touches only counts + money. Sole emitter: ' +
+        'metric-engine only.',
     },
   },
 } as const;

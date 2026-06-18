@@ -1,0 +1,27 @@
+{
+  "_synthetic": true,
+  "_note": "SYNTHETIC ONLY — settlement/payments-fees/MDR are UNDOCUMENTED for both GoKwik and Shopflo (research finding 9). NEVER presented as live. Requires a partner agreement; platform follow-up.",
+  "_money_units": "BIGINT minor units (paisa). currency_code carried alongside.",
+  "records": [
+    {
+      "order_id": "ord_synth_deliv_1",
+      "settlement_id": "setl_synth_0001",
+      "gross_minor": "129900",
+      "fee_minor": "2598",
+      "tax_minor": "468",
+      "net_minor": "126834",
+      "currency_code": "INR",
+      "settled_at": "2026-05-05T00:00:00Z"
+    },
+    {
+      "order_id": "ord_synth_med_3",
+      "settlement_id": "setl_synth_0002",
+      "gross_minor": "89900",
+      "fee_minor": "1798",
+      "tax_minor": "324",
+      "net_minor": "87778",
+      "currency_code": "INR",
+      "settled_at": "2026-05-06T00:00:00Z"
+    }
+  ]
+}

@@ -44,3 +44,11 @@ export { getTrackingHealth } from './internal/application/queries/get-tracking-h
 export type { TrackingHealthResult, TrackingHealthVolumeBucket } from './internal/application/queries/get-tracking-health.js';
 export { getRecentEvents } from './internal/application/queries/get-recent-events.js';
 export type { RecentEventsResult, RecentEventRow } from './internal/application/queries/get-recent-events.js';
+
+// GoKwik + Shopflo CoD/RTO surface (Track C) — RTO rates, CoD mix/CM2, checkout funnel
+export { getCodRtoRates } from './internal/application/queries/get-cod-rto-rates.js';
+export type { CodRtoRatesResult, CodRtoCohortDto } from './internal/application/queries/get-cod-rto-rates.js';
+export { getCodMix } from './internal/application/queries/get-cod-mix.js';
+export type { CodMixResult } from './internal/application/queries/get-cod-mix.js';
+export { getCheckoutFunnel } from './internal/application/queries/get-checkout-funnel.js';
+export type { CheckoutFunnelResult } from './internal/application/queries/get-checkout-funnel.js';

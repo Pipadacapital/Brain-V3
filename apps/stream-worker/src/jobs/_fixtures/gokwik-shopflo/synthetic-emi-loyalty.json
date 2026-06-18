@@ -1,0 +1,24 @@
+{
+  "_synthetic": true,
+  "_note": "SYNTHETIC ONLY — EMI / loyalty (beyond coupons) are UNDOCUMENTED publicly for both vendors. NEVER presented as live. Platform follow-up requires a partner agreement.",
+  "_money_units": "BIGINT minor units (paisa). currency_code carried alongside.",
+  "records": [
+    {
+      "order_id": "ord_synth_deliv_1",
+      "instrument": "emi",
+      "tenure_months": 6,
+      "principal_minor": "129900",
+      "interest_subvention_minor": "5196",
+      "currency_code": "INR",
+      "occurred_at": "2026-05-01T08:00:00Z"
+    },
+    {
+      "order_id": "ord_synth_med_3",
+      "instrument": "loyalty_points",
+      "points_redeemed": 250,
+      "points_value_minor": "2500",
+      "currency_code": "INR",
+      "occurred_at": "2026-05-02T13:10:00Z"
+    }
+  ]
+}

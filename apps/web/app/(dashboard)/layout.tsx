@@ -25,6 +25,7 @@ import {
   ShoppingCart,
   Megaphone,
   Receipt,
+  Truck,
   Plug,
   Activity,
   Zap,
@@ -64,6 +65,7 @@ const NAV_SECTIONS: NavSection[] = [
       { href: '/analytics/orders', label: 'Orders', icon: ShoppingCart },
       { href: '/analytics/spend', label: 'Ad Spend', icon: Megaphone },
       { href: '/analytics/settlements', label: 'Settlements', icon: Receipt },
+      { href: '/analytics/cod-rto', label: 'CoD / RTO', icon: Truck },
     ],
   },
   {

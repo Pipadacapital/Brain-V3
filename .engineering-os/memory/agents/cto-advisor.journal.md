@@ -273,3 +273,12 @@ SEC-NEW-M1 (spec) RESOLVED; SEC-AD-H1/SEC-AD-M1/Q-CURSOR all intact at HEAD (re-
 **Residuals (tracked):** PROD-GAP-1 engine row-policy graduation; DEV-NOTE-1 Makefile abs dbt path (cosmetic); DEV-NOTE-2 no real-port BFF smoke. SEC-LOW-1 sanitized session-var interpolation (defense-in-depth).
 **No auto-candidate rule:** clean PASS, no recurring root-cause; app-seam model is a correct one-off engine-boundary response (below ≥3-prior-run threshold).
 **Next:** stakeholder gate (Stage 7).
+
+## 2026-06-18T16:49:00Z — Engineering Advisor (final-reviewer) — feat-journey-touchpoint
+**Stage:** 6 · **Verdict:** PASS · **Paradigm audit:** clean (Tier-0 deterministic, $0/mo, 0 tokens/day — sessionization=SQL fold, channel=CASE ladder, share=integer ratePct; no model call anywhere)
+**Gates re-run (3, captured):** journey-mix+registry vitest 41/41 GREEN · isolation-fuzz silver-touchpoint 4/4 with port 9030 OPEN + mart present → [positive]+[mutation NON-INERT] GENUINELY EXECUTED (disabling ${BRAND_PREDICATE} leaks brand-B, silver-touchpoint.test.ts:148-167) · full metric-engine suite 81/81 no regression.
+**5 high-risk claims (file:line):** seam isolation non-inert (journey-mix.ts:232-368 all withSilverBrand/${BRAND_PREDICATE}); deterministic cart-stitch read-back only (shopify-mapper:293-328 — every probabilistic/ml/fuzzy mention a negation); no raw PII (mart referrer_host only, raw referrer dropped int:153-157, email/phone hashed+dropped mapper:243-261); replay-idempotent deterministic fold; no new credential (STARROCKS_PASSWORD env-sourced only). 0031 ENABLE+FORCE RLS + NN-1 two-arg + G-1/G-2 assertions verified under brain_app.
+**Over-engineering:** CLEAN (41 files = plan 1:1, all clones of shipped patterns; touchpoint-layer.ts is in-scope attribution-module first capability, pure descriptor; Single-Primitive clean). **Hard-rule:** NONE. **Security:** PASS (0 CRIT/HIGH/MED/LOW). **Blocking:** 0.
+**Residuals (tracked, non-blocking):** PROD-GAP-1 StarRocks engine row-policy graduation (M1=non-inert app-seam predicate); DATA-NOTE-1 thin real data 23/94, synthetic supplement labelled, _synthetic→UI SyntheticBadge.
+**No auto-candidate rule:** clean 0-bounce PASS, no recurring root-cause (below ≥3-prior-run threshold).
+**Next:** stakeholder gate (Stage 7).

@@ -77,7 +77,7 @@ export function AttributedChannelChart({
     // SIGNED minor units → locale money string (never /100). Number() ONLY for bar width.
     const minor = BigInt(r.contribution_minor);
     const money = formatMoneyDisplay(r.contribution_minor, ccy);
-    const sharePart = r.share_pct === null ? '' : ` · ${r.share_pct}%`;
+    const sharePart = r.share_pct == null ? '' : ` · ${r.share_pct}%`;
     return {
       channel: r.channel,
       label: meta.label,

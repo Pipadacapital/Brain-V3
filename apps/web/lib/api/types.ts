@@ -754,18 +754,24 @@ export type AttributionModel =
 /** Deterministic attribution-confidence grade (a floor over journey signal — NOT a model). */
 export type AttributionConfidenceGrade = 'strong' | 'partial' | 'weak';
 
-/** One channel's attributed contribution for the selected model + window. */
+/** One channel's attributed contribution for the selected model + window.
+ *  Mirrors core ChannelContributionDto ({channel, currency_code, contribution_minor}).
+ *  share_pct / confidence_grade are OPTIONAL — core's by-channel response does not emit
+ *  them today; the UI guards for their absence (they light up if core adds per-channel
+ *  share/grade later). */
 export interface AttributedChannelRow {
   channel: JourneyChannel;
   currency_code: string;
   /** SIGNED bigint string (minor units) — net of clawbacks. May be < gross, never floats. */
   contribution_minor: string;
-  /** 2dp share string of the attributed total (engine-computed); null when attributed ≤ 0. */
-  share_pct: string | null;
-  /** Deterministic confidence grade for this channel's credited touches (floor). */
-  confidence_grade: AttributionConfidenceGrade;
+  /** 2dp share string of the attributed total; absent until core emits it. */
+  share_pct?: string | null;
+  /** Deterministic confidence grade for this channel's credited touches; absent until core emits it. */
+  confidence_grade?: AttributionConfidenceGrade;
 }
 
+// Field names mirror the core BFF response (get-attribution-by-channel): attributed_gmv_minor /
+// realized_gmv_minor / unattributed_minor / reconciliation_rate_pct / by_channel.
 export type AnalyticsAttributionByChannelResponse =
   | { state: 'no_data'; from: string; to: string; model: AttributionModel }
   | {
@@ -773,16 +779,22 @@ export type AnalyticsAttributionByChannelResponse =
       from: string; // YYYY-MM-DD (echoed range)
       to: string;
       model: AttributionModel;
-      currency_code: string; // ISO 4217 — single brand currency (Slice 1)
+      currency_code: string; // ISO 4217 — single brand currency, always present in has_data
       /** SIGNED bigint string — Σ channel_contribution_minor (attributed total, net). */
-      attributed_minor: string;
-      channels: AttributedChannelRow[];
+      attributed_gmv_minor: string;
+      /** SIGNED bigint string — realized GMV basis (the closed-sum total). */
+      realized_gmv_minor: string;
+      /** SIGNED bigint string — realized − attributed (the unattributed residual). */
+      unattributed_minor: string;
+      /** 2dp string — attributed ÷ realized × 100; null when realized = 0 (honest). */
+      reconciliation_rate_pct: string | null;
+      by_channel: AttributedChannelRow[];
       data_source: DataSource;
     };
 
 /**
  * The reconciliation residual — the CLOSED-SUM PARITY ORACLE made visible.
- * realized_minor = attributed_minor + unattributed_minor (exact, tolerance 0).
+ * realized_gmv_minor = attributed_gmv_minor + unattributed_minor (exact, tolerance 0).
  */
 export type AnalyticsAttributionReconciliationResponse =
   | { state: 'no_data'; from: string; to: string; model: AttributionModel }
@@ -791,11 +803,11 @@ export type AnalyticsAttributionReconciliationResponse =
       from: string;
       to: string;
       model: AttributionModel;
-      currency_code: string;
+      currency_code: string; // ISO 4217 — always present in has_data
       /** SIGNED bigint string — realized GMV basis (the closed-sum total). */
-      realized_minor: string;
+      realized_gmv_minor: string;
       /** SIGNED bigint string — Σ channel_contribution_minor (attributed, net of clawbacks). */
-      attributed_minor: string;
+      attributed_gmv_minor: string;
       /** SIGNED bigint string — realized − attributed (the unattributed residual; always rendered). */
       unattributed_minor: string;
       /** 2dp string — attributed ÷ realized × 100; null when realized = 0 (honest). */

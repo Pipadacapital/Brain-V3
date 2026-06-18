@@ -61,6 +61,7 @@ import type {
   AttributionModel,
   AnalyticsAttributionByChannelResponse,
   AnalyticsAttributionReconciliationResponse,
+  AttributionConfidenceGrade,
 } from '@/lib/api/types';
 
 type ByChannelHasData = Extract<AnalyticsAttributionByChannelResponse, { state: 'has_data' }>;
@@ -263,16 +264,21 @@ function AttributionData({
   recon: ReconHasData | null;
 }) {
   const ccy = byChannel.currency_code as CurrencyCode;
-  const attributedValue = formatMoneyDisplay(byChannel.attributed_minor, ccy);
-  const channelCount = byChannel.channels.length;
+  const attributedValue = formatMoneyDisplay(byChannel.attributed_gmv_minor, ccy);
+  const channelCount = byChannel.by_channel.length;
 
   // Distinct confidence grades present across credited channels, in strength order — shown
-  // as visible icon+label badges (the deterministic floor; never colour-only, never a model
-  // number). The grade is stamped at credit time and carried verbatim to clawback.
+  // as visible icon+label badges. confidence_grade is optional in the by-channel response
+  // (core does not emit a per-channel grade today) — filter out absent grades so the legend
+  // is empty rather than broken.
   const GRADE_ORDER = { strong: 0, partial: 1, weak: 2 } as const;
-  const grades = [...new Set(byChannel.channels.map((c) => c.confidence_grade))].sort(
-    (a, b) => GRADE_ORDER[a] - GRADE_ORDER[b],
-  );
+  const grades = [
+    ...new Set(
+      byChannel.by_channel
+        .map((c) => c.confidence_grade)
+        .filter((g): g is AttributionConfidenceGrade => g != null),
+    ),
+  ].sort((a, b) => GRADE_ORDER[a] - GRADE_ORDER[b]);
 
   return (
     <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
@@ -324,7 +330,7 @@ function AttributionData({
           </CardHeader>
           <CardContent>
             <AttributedChannelChart
-              rows={byChannel.channels}
+              rows={byChannel.by_channel}
               currencyCode={byChannel.currency_code}
             />
           </CardContent>
@@ -336,8 +342,8 @@ function AttributionData({
         {recon ? (
           <ReconciliationResidualCard
             currencyCode={recon.currency_code}
-            realizedMinor={recon.realized_minor}
-            attributedMinor={recon.attributed_minor}
+            realizedMinor={recon.realized_gmv_minor}
+            attributedMinor={recon.attributed_gmv_minor}
             unattributedMinor={recon.unattributed_minor}
             reconciliationRatePct={recon.reconciliation_rate_pct}
           />

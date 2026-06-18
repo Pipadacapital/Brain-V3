@@ -27,7 +27,10 @@ export type MetricId =
   | 'journey_timeline'
   | 'attribution_credit'
   | 'attribution_reconciliation_rate'
-  | 'attribution_confidence';
+  | 'attribution_confidence'
+  // Phase 7 Data Quality — computed grade OUTPUTS (frozen letter, no persisted float).
+  | 'cost_confidence'
+  | 'effective_confidence';
 export type MetricVersion = `v${number}`;
 
 export interface MetricDefinition {
@@ -55,7 +58,12 @@ export interface MetricDefinition {
     // Read seams: attributed_gmv_as_of / channel_contribution_as_of / attribution_confidence_mart
     // (all SECURITY INVOKER). The WRITER (the metric engine) appends credit + clawback rows;
     // these named seams are the SOLE attributed-sum read path (no ad-hoc SUM).
-    | 'attribution_credit_ledger';
+    | 'attribution_credit_ledger'
+    // dq_check_result (Postgres, 0035) — the append-only DQ grade store the stream-worker
+    // executors write (RLS FORCE per brand). cost_confidence/effective_confidence read the
+    // LATEST grade per (category,target) here at metric-engine time — a computed grade OUTPUT,
+    // never a persisted confidence float (I-ST01).
+    | 'dq_check_result';
   /**
    * recognition_label semantics this metric covers.
    * Cross-checked in registry unit test: realized→finalized; provisional→provisional/settling.
@@ -331,6 +339,40 @@ export const METRIC_REGISTRY = {
         'onto clawback. Feeds effective_confidence = min(cost_confidence, attribution_confidence) ' +
         '(Phase-6 CM2/CAC). Read seam: attribution_confidence_mart (SECURITY INVOKER over the ledger). ' +
         'Sole emitter: metric-engine only.',
+    },
+  },
+  cost_confidence: {
+    v1: {
+      metricId: 'cost_confidence' as const,
+      version: 'v1' as const,
+      readSeam: 'dq_check_result' as const,
+      recognitionLabels: [] as const,
+      toleranceMinor: 0 as const,
+      description:
+        'Cost confidence: a DETERMINISTIC letter grade (A+|A|B|C|D) = the FLOOR (ordinal min) over ' +
+        'the COST-RELEVANT DQ grades — spend/settlement freshness + completeness + reconciliation — ' +
+        'stamped into dq_check_result (0035) by the stream-worker DQ executors. FROZEN lookup (no ' +
+        'runtime float, no model — I-E03/E04). Empty cost grades → D (honest, no data). A computed ' +
+        'grade OUTPUT read at metric-engine time over dq_check_result (latest per (category,target)), ' +
+        'never a persisted confidence float (I-ST01). Reads spend/settlement freshness, never re-floats ' +
+        'money (money stays BIGINT minor + currency_code). Sole emitter: metric-engine only.',
+    },
+  },
+  effective_confidence: {
+    v1: {
+      metricId: 'effective_confidence' as const,
+      version: 'v1' as const,
+      readSeam: 'dq_check_result' as const,
+      recognitionLabels: [] as const,
+      toleranceMinor: 0 as const,
+      description:
+        'Effective confidence = min(cost_confidence, attribution_confidence) by grade ordinal ' +
+        '(A+ > A > B > C > D). The SINGLE grade the quality gate + the Data Quality UI read. ' +
+        'DETERMINISTIC frozen ordinal min (no runtime float, no model — I-E03/E04); a computed grade ' +
+        'OUTPUT at metric-engine time, never a persisted float (I-ST01). Drives the trust gate: ' +
+        'Trusted (A+|A|B) → full recommendations + billing-cap applies + included in MMM; ' +
+        'Estimated (C)/Untrusted (D) → degraded/blocked, no billing cap, excluded from MMM, ' +
+        'blocks high-risk recommendations. Sole emitter: metric-engine only.',
     },
   },
 } as const;

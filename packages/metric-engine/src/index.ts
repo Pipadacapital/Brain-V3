@@ -56,3 +56,14 @@ export { computeCodMix } from './cod-mix.js';
 export type { CodMixResult } from './cod-mix.js';
 export { computeCheckoutFunnel } from './checkout-funnel.js';
 export type { CheckoutFunnelResult } from './checkout-funnel.js';
+
+// Silver tier — order-status-mix (the FIRST Silver read; non-additive, ADR-004)
+export { computeOrderStatusMix } from './order-status-mix.js';
+export type {
+  OrderStatusMixResult,
+  OrderStatusMixBucket,
+  OrderStatusMixRange,
+  LifecycleState,
+} from './order-status-mix.js';
+export { withSilverBrand, BRAND_PREDICATE } from './silver-deps.js';
+export type { SilverDeps, SilverPool, SilverConnection, SilverScope } from './silver-deps.js';

@@ -194,3 +194,20 @@ export function useCheckoutFunnel() {
     staleTime: 5 * 60_000,
   });
 }
+
+// ── Order-status mix (Silver tier — feat-silver-tier-order-state) ───────────────
+// The FIRST surface read from the Silver analytics tier (silver.order_state) via the
+// metric-engine Silver seam (I-ST01 — UI never queries StarRocks). Shares the
+// 'analytics' query-key prefix → auto-invalidates on brand switch.
+
+/**
+ * useOrderStatusMix — counts + share by order lifecycle state over a date range.
+ * @param params - Date range (YYYY-MM-DD). Defaults applied by the caller.
+ */
+export function useOrderStatusMix(params?: { from?: string; to?: string }) {
+  return useQuery({
+    queryKey: [...ANALYTICS_QUERY_KEY, 'order-status-mix', params?.from, params?.to],
+    queryFn: () => analyticsApi.getOrderStatusMix(params),
+    staleTime: 5 * 60_000,
+  });
+}

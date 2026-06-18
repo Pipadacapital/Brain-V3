@@ -1,0 +1,52 @@
+# ============================================================================
+# Silver-tier source declaration — the Bronze/source → dbt read boundary.
+# feat-silver-tier-order-state (Stage 3, @data-engineer).
+#
+# THE PROD-SWAP BOUNDARY: this file (and only this file + the one staging model)
+# is what changes when the read path graduates from the dev JDBC catalog to the
+# Iceberg Bronze catalog in prod (architecture §1, §2). The intermediate + mart
+# models never reference a catalog name — they only `ref()` upstream models.
+#
+# DEV: `database` is the StarRocks external JDBC catalog `brain_oltp_pg`
+# (db/starrocks/oltp_jdbc_catalog.sql), `schema` is the Postgres schema `public`.
+# dbt renders `brain_oltp_pg.public.realized_revenue_ledger` for cross-catalog reads.
+#
+# DEV BOUNDARY (honest): the JDBC catalog connects to Postgres as superuser `brain`,
+# which BYPASSES RLS — so this source is CROSS-BRAND by construction. That is correct:
+# dbt is the ETL writer (it builds Silver for all brands). Per-brand isolation is
+# enforced downstream at the Silver READ path (metric-engine seam, I-ST01), NOT here.
+# ============================================================================
+version: 2
+
+sources:
+  - name: oltp
+    description: "Canonical order/commerce truth in Postgres OLTP, read via the brain_oltp_pg JDBC external catalog. PROD: swaps to the Iceberg Bronze catalog with no downstream change."
+    database: brain_oltp_pg   # StarRocks external catalog name (DEV: JDBC→Postgres; PROD: Iceberg Bronze)
+    schema: public            # Postgres schema
+    tables:
+      - name: realized_revenue_ledger
+        # Read THROUGH the Postgres read-shim view (db/starrocks/oltp_pg_read_shim.sql):
+        # StarRocks' JDBC catalog cannot read Postgres uuid columns (UNKNOWN_TYPE), so the
+        # view casts brand_id/brain_id uuid→text. Prod (Iceberg) reads native strings → no shim.
+        identifier: silver_order_ledger_src
+        description: >
+          Append-only realized-revenue ledger (migrations 0018 + 0027 + 0030). One row per
+          (brand_id, order_id, event_type, occurred_at::date). The order lifecycle is NOT a
+          column — it is derived deterministically from the event_type discriminator downstream.
+        columns:
+          - name: brand_id
+            description: "Tenant key (UUID). First key column of every Silver table."
+          - name: order_id
+            description: "Order natural key (TEXT)."
+          - name: event_type
+            description: "Lifecycle/economic event discriminator (CHECK-constrained set)."
+          - name: amount_minor
+            description: "SIGNED money in BIGINT minor units (I-S07). Never float/NUMERIC."
+          - name: currency_code
+            description: "CHAR(3), always paired with amount_minor."
+          - name: occurred_at
+            description: "Event-time (timestamptz)."
+          - name: economic_effective_at
+            description: "Economic-time; drives latest-state ordering."
+          - name: brain_id
+            description: "Identity reference (UUID, nullable). Never PII."

@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@brain/db": "workspace:*",
+    "@brain/metric-engine": "workspace:*",
     "@brain/tenant-context": "workspace:*"
   },
   "devDependencies": {

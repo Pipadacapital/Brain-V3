@@ -22,6 +22,8 @@ import { Kafka } from 'kafkajs';
 
 import { createPool } from '@brain/db';
 import pg from 'pg';
+import mysql from 'mysql2/promise';
+import type { SilverPool } from '@brain/metric-engine';
 import { DbAuditWriter } from '@brain/audit';
 
 import { assertArgon2Params, AuthService } from './modules/workspace-access/internal/application/auth.service.js';
@@ -172,6 +174,13 @@ export async function main(): Promise<void> {
     kafkaEnv: getEnv('APP_ENV', 'dev'),
     // Webhook registration callback base URL (B2 / ADR-LV-5 — public URL in prod)
     webhookCallbackBaseUrl: getEnv('WEBHOOK_CALLBACK_BASE_URL', 'http://localhost:3001'),
+    // Silver tier (StarRocks) read pool — feat-silver-tier-order-state. The metric-engine
+    // Silver seam reads silver.order_state as the SELECT-only brain_analytics user (NOT root).
+    // Optional: when absent the order-status-mix route returns an honest 503.
+    starrocksHost: getEnv('STARROCKS_HOST', 'localhost'),
+    starrocksPort: parseInt(getEnv('STARROCKS_PORT', '9030'), 10),
+    starrocksUser: getEnv('STARROCKS_ANALYTICS_USER', 'brain_analytics'),
+    starrocksPassword: getEnv('STARROCKS_ANALYTICS_PASSWORD', ''),
   };
 
   // Create Fastify instance.
@@ -335,6 +344,21 @@ export async function main(): Promise<void> {
     max: 5, // smaller sub-pool for transactional paths
   });
 
+  // Silver tier (StarRocks) read pool — feat-silver-tier-order-state. mysql2 speaks the
+  // StarRocks MySQL wire protocol (:9030). Connects as brain_analytics (SELECT-only — NOT
+  // root): reading Silver as a non-DDL user is part of the isolation posture even though
+  // engine-level row policy is unavailable on the dev allin1 image (the brand predicate is
+  // injected at the withSilverBrand seam; see packages/metric-engine/src/silver-deps.ts).
+  // The pool's structural shape satisfies @brain/metric-engine SilverPool.
+  const srPool: SilverPool = mysql.createPool({
+    host: config.starrocksHost,
+    port: config.starrocksPort,
+    user: config.starrocksUser,
+    password: config.starrocksPassword,
+    connectionLimit: 5,
+    connectTimeout: 5000,
+  }) as unknown as SilverPool;
+
   // Create DB pool (3-GUC middleware — NN-1).
   const pool = await createPool({ connectionString: config.databaseUrl });
 
@@ -399,7 +423,7 @@ export async function main(): Promise<void> {
   registerWorkspaceRoutes(app, authService, workspaceService);
   registerBrandRoutes(app, authService, brandService);
   registerMemberRoutes(app, authService, inviteService, rawPgPool);
-  registerBffRoutes(app, authService, pool, config.cookieSecret, rateLimiter, rawPgPool, onboardingService);
+  registerBffRoutes(app, authService, pool, config.cookieSecret, rateLimiter, rawPgPool, onboardingService, srPool);
 
   // DEV-ONLY: surface email action links (verify/reset/invite) for browser testing
   // without a real inbox. Registered ONLY outside production — the route does not
@@ -1546,6 +1570,7 @@ export async function main(): Promise<void> {
     await webhookProducer.disconnect().catch(() => { /* ignore */ });
     await pool.end();
     await rawPgPool.end().catch(() => { /* ignore */ });
+    await (srPool as unknown as { end: () => Promise<void> }).end().catch(() => { /* ignore */ });
     await redis.quit().catch(() => { /* ignore */ });
     process.exit(0);
   };

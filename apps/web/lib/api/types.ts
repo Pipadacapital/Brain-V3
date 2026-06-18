@@ -591,6 +591,49 @@ export type AnalyticsCheckoutFunnelResponse =
       data_source: DataSource;
     };
 
+// ── Order-status mix (Silver tier — feat-silver-tier-order-state Track 3) ──────
+//
+// The FIRST surface read from the new Silver analytics tier (dbt → StarRocks
+// silver.order_state), via the metric-engine Silver seam (I-ST01 sole read path —
+// the UI NEVER queries StarRocks). order-status-mix is a NON-additive aggregation
+// (COUNT + share by lifecycle_state) computed in the metric-engine (ADR-004), not dbt.
+//
+// All count/value fields are bigint-serialized strings (I-S07 / D-1) — never floats,
+// never /100. share_pct is a 2dp string (integer-only share math in the engine) or
+// null when the denominator is 0. data_source ('synthetic' | 'live') drives the
+// "Synthetic (dev)" badge: in dev the underlying ledger cod_* rows are synthetic
+// (real shape, synthetic source) — never presented as live.
+
+/** Canonical order lifecycle states (derived from realized_revenue_ledger.event_type). */
+export type OrderLifecycleState =
+  | 'placed'
+  | 'confirmed'
+  | 'delivered'
+  | 'cancelled'
+  | 'rto'
+  | 'refunded';
+
+/** One row of the status mix — counts + share + realized value for a lifecycle state. */
+export interface OrderStatusMixRow {
+  lifecycle_state: OrderLifecycleState;
+  count: string;          // bigint string (orders in this state)
+  share_pct: string | null; // 2dp string e.g. '42.50'; null when total = 0
+  value_minor: string;    // bigint string (minor units — realized order value in this state)
+}
+
+export type AnalyticsOrderStatusMixResponse =
+  | { state: 'no_data' }
+  | {
+      state: 'has_data';
+      from: string;            // YYYY-MM-DD (echoed range)
+      to: string;              // YYYY-MM-DD
+      currency_code: string;   // ISO 4217 — single brand currency (Slice 1)
+      total: string;           // bigint string (total orders in range)
+      terminal_count: string;  // bigint string (orders in a terminal state)
+      by_state: OrderStatusMixRow[];
+      data_source: DataSource;
+    };
+
 // ── Tracking Center (Phase 1 Track C) ──────────────────────────────────────────
 // Pixel-collection health + the Event Explorer feed. NO raw PII — anonymized ids
 // + aggregate counts only. All count fields are bigint-serialized strings (D-1).

@@ -12,7 +12,8 @@
     "test:unit": "vitest run"
   },
   "dependencies": {
-    "@brain/money": "workspace:*"
+    "@brain/money": "workspace:*",
+    "mysql2": "^3.22.5"
   },
   "devDependencies": {
     "vitest": "^2.1.0",

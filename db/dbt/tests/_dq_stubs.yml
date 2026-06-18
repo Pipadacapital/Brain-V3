@@ -12,27 +12,14 @@
 
 version: 2
 
-models:
-  - name: _empty_model
-    description: "Sprint-0 stub model — dbt compile CI only"
-    tests:
-      # These tests are declared but NOT run in Sprint-0 (no real data).
-      # They serve as structural stubs for the DQ framework.
-      # Remove the `# ` prefix and add real logic in M1.
-
-      # Freshness stub — will assert max(compiled_at) within threshold
-      # - dbt_expectations.expect_column_max_to_be_between:
-      #     column_name: compiled_at
-      #     min_value: "{{ modules.datetime.datetime.now() - modules.datetime.timedelta(hours=25) }}"
-      #     max_value: "{{ modules.datetime.datetime.now() }}"
-
-      # Completeness stub — will assert no nulls on critical columns
-      # - not_null:
-      #     column_name: model_name
-
-      # Uniqueness stub — will assert no duplicates on PK
-      # - unique:
-      #     column_name: model_name
+# M1 NOTE: the Sprint-0 `_empty_model` placeholder was removed when the first real
+# Silver mart (silver_order_state) landed (feat-silver-tier-order-state). The live
+# DQ assertions for the order_state mart now live in:
+#   - db/dbt/models/marts/_silver_order_state.yml  (not_null, accepted_values)
+#   - db/dbt/tests/assert_order_state_grain.sql     (grain uniqueness)
+#   - db/dbt/tests/assert_order_state_money_bigint.sql (I-S07 money type)
+#   - db/dbt/tests/assert_order_state_replay.sql    (fold-consistency invariants)
+# This file retains the DQ-category reference for future marts.
 
 # ============================================================
 # DQ categories reference (Sprint-0: declarations only)

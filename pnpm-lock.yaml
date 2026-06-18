@@ -150,6 +150,9 @@ importers:
       kafkajs:
         specifier: ^2.2.4
         version: 2.2.4
+      mysql2:
+        specifier: ^3.22.5
+        version: 3.22.5(@types/node@25.9.3)
       pg:
         specifier: ^8.21.0
         version: 8.21.0
@@ -425,6 +428,9 @@ importers:
       '@brain/money':
         specifier: workspace:*
         version: link:../money
+      mysql2:
+        specifier: ^3.22.5
+        version: 3.22.5(@types/node@25.9.3)
     devDependencies:
       '@types/pg':
         specifier: ^8.11.0
@@ -523,6 +529,9 @@ importers:
       '@brain/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@brain/metric-engine':
+        specifier: workspace:*
+        version: link:../../packages/metric-engine
       '@brain/tenant-context':
         specifier: workspace:*
         version: link:../../packages/tenant-context

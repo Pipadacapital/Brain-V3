@@ -73,6 +73,7 @@ import type {
   AnalyticsCodRtoRatesResponse,
   AnalyticsCodMixResponse,
   AnalyticsCheckoutFunnelResponse,
+  AnalyticsOrderStatusMixResponse,
 } from './types';
 
 /** All BFF routes proxied through Next.js API routes → frontend-api module */
@@ -1116,6 +1117,26 @@ export const analyticsApi = {
   getCheckoutFunnel: async (): Promise<AnalyticsCheckoutFunnelResponse> => {
     const { data } = await bffFetch<BffEnvelope<AnalyticsCheckoutFunnelResponse>>(
       `/v1/analytics/checkout-funnel`,
+    );
+    return data;
+  },
+
+  // ── Order-status mix (Silver tier — feat-silver-tier-order-state) ─────────────
+  // The FIRST read from the Silver analytics tier (silver.order_state), via the
+  // metric-engine Silver seam (I-ST01 — UI never queries StarRocks). D-10: unwrap
+  // { request_id, data }; state:'no_data' preserved (honest, never zeros).
+
+  /** GET /api/v1/analytics/order-status-mix — counts + share by order lifecycle state. */
+  getOrderStatusMix: async (params?: {
+    from?: string;
+    to?: string;
+  }): Promise<AnalyticsOrderStatusMixResponse> => {
+    const qs = new URLSearchParams();
+    if (params?.from) qs.set('from', params.from);
+    if (params?.to) qs.set('to', params.to);
+    const qsStr = qs.toString();
+    const { data } = await bffFetch<BffEnvelope<AnalyticsOrderStatusMixResponse>>(
+      `/v1/analytics/order-status-mix${qsStr ? `?${qsStr}` : ''}`,
     );
     return data;
   },

@@ -1,60 +1,76 @@
-# Pending Stakeholder Commit — feat-shopify-live-connector
+# Pending Stakeholder Commit — feat-silver-tier-order-state
 
-**Final review:** PASS / APPROVE (Stage 6, 2026-06-17). Awaiting Stakeholder gate (Stage 7).
-**Branch:** `feat/shopify-live-connector` (base `master`). 0 blocking.
+**Status:** awaiting-stakeholder (Stage 7). Final review PASS / APPROVE. Security PASS. QA BUILD-OK.
+**Branch:** `feat/silver-tier-order-state`
+**Run:** `.engineering-os/runs/2026-06-18T09-26-39Z__e67beb__feat-silver-tier-order-state__rishabhporwal`
 
-The work is already committed slice-by-slice on the feature branch (commit-per-slice, incl. the ORCH-LV-H1 DELTA fix commits 3bbdf86 + c836011). The Stakeholder action at Stage 7 is the **conscious accept + commit/merge**, not a fresh build. The final reviewer did NOT commit and did NOT advance the gate.
+`db/dbt/profiles/.user.yml` (dbt anonymous-usage id) is included because it is already tracked in the diff; harmless. `db/dbt/models/staging/_empty_model.sql` is a DELETE (placeholder removal).
 
-## Product-code surface (explicit paths — NO `git add -A`)
-
-If a squash/verification re-stage is wanted, stage ONLY these product-code paths (do NOT sweep run-folder/state/journal artifacts):
+## Mechanical commit command (explicit paths — NO `git add -A`)
 
 ```bash
+cd "/Users/rishabhporwal/Desktop/Brain V3/worktrees/silver-tier"
+
 git add \
+  .gitignore \
+  Makefile \
   apps/core/package.json \
   apps/core/src/main.ts \
-  apps/core/src/modules/connector/sources/storefront/shopify/application/commands/RegisterWebhooksCommand.ts \
-  apps/core/src/modules/connector/sources/storefront/shopify/interfaces/webhooks/shopifyWebhookHandler.ts \
-  apps/core/src/modules/connector/sources/storefront/shopify/tests/shopifyWebhookHandler.integration.test.ts \
-  apps/stream-worker/package.json \
-  apps/stream-worker/src/infrastructure/pg/LedgerWriter.ts \
-  apps/stream-worker/src/interfaces/consumers/LiveLedgerBridgeConsumer.ts \
-  apps/stream-worker/src/interfaces/consumers/LiveOrderConsumer.ts \
-  apps/stream-worker/src/jobs/shopify-backfill/money-utils.ts \
-  apps/stream-worker/src/jobs/shopify-backfill/order-mapper.ts \
-  apps/stream-worker/src/jobs/shopify-backfill/run.ts \
-  apps/stream-worker/src/jobs/shopify-backfill/uuid-utils.ts \
-  apps/stream-worker/src/jobs/shopify-repull/run.ts \
-  apps/stream-worker/src/jobs/shopify-repull/shopify-live-client.ts \
-  apps/stream-worker/src/main.ts \
-  apps/stream-worker/src/tests/live-connector.e2e.test.ts \
-  apps/stream-worker/src/tests/live-ledger-wiring.e2e.test.ts \
-  apps/web/components/dashboard/connection-status-card.tsx \
-  apps/web/e2e/live-sync.spec.ts \
-  apps/web/lib/hooks/use-dashboard.ts \
-  db/migrations/0026_live_connector_security_definer_fns.sql \
-  packages/shopify-mapper/package.json \
-  packages/shopify-mapper/src/index.ts \
-  packages/shopify-mapper/tsconfig.json \
-  pnpm-lock.yaml
+  apps/core/src/modules/analytics/index.ts \
+  apps/core/src/modules/analytics/internal/application/queries/get-order-status-mix.ts \
+  apps/core/src/modules/frontend-api/internal/bff.routes.ts \
+  "apps/web/app/(dashboard)/analytics/order-status/order-status-content.tsx" \
+  "apps/web/app/(dashboard)/analytics/order-status/page.tsx" \
+  "apps/web/app/(dashboard)/layout.tsx" \
+  apps/web/components/analytics/order-status-mix-chart.tsx \
+  apps/web/e2e/analytics-order-status.spec.ts \
+  apps/web/lib/api/client.ts \
+  apps/web/lib/api/types.ts \
+  apps/web/lib/hooks/use-analytics.ts \
+  db/dbt/models/intermediate/int_order_lifecycle.sql \
+  db/dbt/models/marts/_silver_order_state.yml \
+  db/dbt/models/marts/silver_order_state.sql \
+  db/dbt/models/staging/_empty_model.sql \
+  db/dbt/models/staging/_sources.yml \
+  db/dbt/models/staging/stg_order_ledger_events.sql \
+  db/dbt/profiles/.user.yml \
+  db/dbt/tests/_dq_stubs.yml \
+  db/dbt/tests/assert_order_state_grain.sql \
+  db/dbt/tests/assert_order_state_money_bigint.sql \
+  db/dbt/tests/assert_order_state_replay.sql \
+  db/starrocks/oltp_jdbc_catalog.sql \
+  db/starrocks/oltp_pg_read_shim.sql \
+  packages/metric-engine/package.json \
+  packages/metric-engine/src/index.ts \
+  packages/metric-engine/src/order-status-mix.test.ts \
+  packages/metric-engine/src/order-status-mix.ts \
+  packages/metric-engine/src/registry.test.ts \
+  packages/metric-engine/src/registry.ts \
+  packages/metric-engine/src/silver-deps.ts \
+  pnpm-lock.yaml \
+  tools/isolation-fuzz/package.json \
+  tools/isolation-fuzz/src/silver-order-state.test.ts \
+  .engineering-os/runs/2026-06-18T09-26-39Z__e67beb__feat-silver-tier-order-state__rishabhporwal/
+
+git commit -m "feat(silver): stand up Silver tier — silver.order_state mart + order-status-mix read seam/UI
+
+First Bronze/source->Silver pipeline: StarRocks JDBC external catalog over Postgres ->
+dbt staging->intermediate->mart silver.order_state (latest-state fold, brand-scoped, money
+BIGINT minor + currency, replay-idempotent). Per-brand isolation on the Silver read path
+enforced by the metric-engine app-seam (withSilverBrand single chokepoint, brand predicate
+injected) — engine row policy is enterprise-only and is the prod graduation step; proven
+non-inert by a mutation negative-control. order-status-mix (non-additive COUNT/share) in the
+metric-engine (ADR-004), surfaced via BFF (I-ST01 sole read path) + an order-status UI.
+No new deployable/topic/envelope (I-E05); no Postgres migration (additive read-shim view).
+
+Security PASS (LOW 1, defense-in-depth). QA BUILD-OK. Final review PASS."
 ```
 
-## Migrations applied on merge (additive only, I-E02)
+## Do NOT commit
+- `.engineering-os/state/active.json.bak.*` (local backup)
+- `.dbt-venv/`, `db/dbt/target/`, `db/dbt/logs/`, `db/dbt/dbt_packages/` (gitignored build/dev artifacts)
 
-- `db/migrations/0026_live_connector_security_definer_fns.sql` — `list_connectors_for_repull()` + `resolve_connector_by_shop_domain(text)`, both SECURITY DEFINER, search_path=public, dispatch-only, GRANT EXECUTE TO brain_app, migration-time assertion blocks. ROLLBACK = `DROP FUNCTION`. No table/policy changes; 0025 untouched.
-
-## Residuals the Stakeholder consciously accepts (all non-blocking)
-
-- **SEC-LV-M1 (MED, open):** re-pull `acquireRepullLock` commits the SKIP-LOCKED lock before the page loop → narrow window for a concurrent double-run. Worst case = duplicate Shopify API calls; Bronze event_id dedup + ledger ON CONFLICT DO NOTHING absorb it (no correctness/isolation/money breach). M1+ remediation (hold lock for full run, or status='syncing' pre-check).
-- **SEC-LV-L1 (LOW, open):** non-null assertion on webhook `updatedAt` could pass NaN to the live event_id. Shopify always sends `updated_at` on order webhooks. One-line guard follow-up (discard with 200).
-- **Dev-honesty (stated):** real Shopify webhook delivery needs public ingress (platform follow-up). Dev proves the receive path via synthetic HMAC inject() + the 35-day re-pull against live Boddactive (the dev freshness mechanism).
-- **Pre-existing tsc error:** `apps/stream-worker/src/jobs/shopify-backfill/worker-secrets.ts` AwsSecretsManager cross-rootDir import — confirmed pre-existing on master, not introduced here, out of scope.
-
-## /adopt-rule — NOT recommended this run
-
-The wired-to-nothing pattern (consumer/recognition-writer built but not wired into the deployable) is at **occurrence #2** (ADR-BF-9 + ORCH-LV-H1). The 3-occurrence threshold (per the system-job-force-rls precedent) is not yet met → WATCH + lessons-learned filed; propose the durable rule at occurrence #3. See `pending-stakeholder-attention.md` and `lessons-learned.md`.
-
-## Exit criterion delivered
-
-The M1 connector path is end-to-end complete (connect → backfill → live sync). Live recognition is wired in the deployable and live-proven (ledger 19,488 → 20,285, 49 rto_reversal from real cancelled Boddactive orders). All load-bearing gates (D-6 dedup, anti-spoof, RTO-reversal, no-GUC negative control, append-only GRANT, isolation, SECURITY DEFINER fns) independently re-replicated at source by the final reviewer under the real brain_app role.
-</content>
+## Residual risk (tracked, not blocking)
+1. Prod engine row-policy graduation (`db/starrocks/row_policy_template.sql` on managed StarRocks) — M1 enforcement is the app-seam predicate.
+2. Makefile absolute dbt path (cosmetic; `DBT=` override handled).
+3. No real-port BFF wire-smoke this session (unit + isolation + tsc cover correctness).

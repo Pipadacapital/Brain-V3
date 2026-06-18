@@ -20,7 +20,8 @@ export type MetricId =
   | 'blended_roas'
   | 'cod_rto_rate'
   | 'cod_mix'
-  | 'checkout_funnel';
+  | 'checkout_funnel'
+  | 'order_status_mix';
 export type MetricVersion = `v${number}`;
 
 export interface MetricDefinition {
@@ -38,7 +39,9 @@ export interface MetricDefinition {
     // realized_revenue_ledger cod_* event_types (0030).
     | 'cod_ledger'
     // Shopflo checkout_abandoned rows in bronze_events (shopflo.checkout_abandoned.v1).
-    | 'checkout_abandoned';
+    | 'checkout_abandoned'
+    // Silver mart silver.order_state (StarRocks brain_silver), read via withSilverBrand.
+    | 'silver_order_state';
   /**
    * recognition_label semantics this metric covers.
    * Cross-checked in registry unit test: realized→finalized; provisional→provisional/settling.
@@ -174,6 +177,29 @@ export const METRIC_REGISTRY = {
         '(SUM total_price_minor, BIGINT minor units). REAL Shopflo self-serve webhook (NOT synthetic). ' +
         'PII hashed at the mapper boundary — this read touches only counts + money. Sole emitter: ' +
         'metric-engine only.',
+    },
+  },
+  order_status_mix: {
+    v1: {
+      metricId: 'order_status_mix' as const,
+      version: 'v1' as const,
+      // The FIRST Silver-tier read: silver.order_state mart (StarRocks brain_silver),
+      // read via the withSilverBrand seam (ADR-002 / I-ST01 sole reader). This is a
+      // NON-additive aggregation (COUNT + share) over the additive dbt mart — it lives
+      // in the engine, NOT dbt (ADR-004).
+      readSeam: 'silver_order_state' as const,
+      // Order lifecycle is a deterministic latest-state fold, not a recognition-staged
+      // fact (the recognition label lives on the ledger, not the lifecycle) → [].
+      recognitionLabels: [] as const,
+      toleranceMinor: 0 as const,
+      description:
+        'Order-status-mix: COUNT + share-of-total + SUM(order_value_minor) by lifecycle_state ' +
+        '(placed|confirmed|delivered|cancelled|rto|refunded) over a state_effective_at window, ' +
+        'from the Silver mart silver.order_state (1 row per (brand_id,order_id), latest state). ' +
+        'Non-additive aggregation → metric-engine, NOT dbt (ADR-004). Share is integer basis-point ' +
+        'math (no float); money is BIGINT minor units + currency_code (I-S07). Honest no_data when ' +
+        'the window has zero Silver rows. Read through withSilverBrand (brand predicate injected at ' +
+        'the seam; I-ST01 sole reader). Sole emitter: metric-engine only.',
     },
   },
 } as const;

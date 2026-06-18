@@ -128,6 +128,19 @@ describe('metric-engine — registry (D-1)', () => {
     expect(def.toleranceMinor).toBe(0);
   });
 
+  it('resolveMetric(order_status_mix, v1) — Silver order_state seam (non-additive mix)', () => {
+    const def = resolveMetric('order_status_mix', 'v1');
+    expect(def.metricId).toBe('order_status_mix');
+    expect(def.version).toBe('v1');
+    expect(def.readSeam).toBe('silver_order_state');
+    expect(def.toleranceMinor).toBe(0);
+    // Lifecycle is a latest-state fold, not a recognition-staged fact.
+    expect(def.recognitionLabels).toEqual([]);
+    // Documents the ADR-004 split (non-additive aggregation lives in the engine, not dbt).
+    expect(def.description).toContain('NOT dbt');
+    expect(def.description).toContain('silver.order_state');
+  });
+
   it('[D-1] toleranceMinor = 0 on all registered metrics (no float tolerance for money)', () => {
     for (const metricId of Object.keys(METRIC_REGISTRY) as Array<keyof typeof METRIC_REGISTRY>) {
       const versions = METRIC_REGISTRY[metricId];

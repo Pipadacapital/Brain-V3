@@ -22,6 +22,12 @@ coverage/
 .engineering-os/spawn-heartbeat.jsonl
 .engineering-os/state/*.bak*
 
+# dbt — derived/build artifacts + local dev venv (never commit; run `make silver-run`)
+.dbt-venv/
+db/dbt/target/
+db/dbt/dbt_packages/
+db/dbt/logs/
+
 # Playwright e2e artifacts
 apps/web/test-results/
 apps/web/playwright-report/

@@ -26,6 +26,7 @@ import {
   Megaphone,
   Receipt,
   Truck,
+  Layers,
   Plug,
   Activity,
   Zap,
@@ -67,6 +68,7 @@ const NAV_SECTIONS: NavSection[] = [
       { href: '/analytics/spend', label: 'Ad Spend', icon: Megaphone },
       { href: '/analytics/settlements', label: 'Settlements', icon: Receipt },
       { href: '/analytics/cod-rto', label: 'CoD / RTO', icon: Truck },
+      { href: '/analytics/order-status', label: 'Order Status', icon: Layers },
     ],
   },
   {

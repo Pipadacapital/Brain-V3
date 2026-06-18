@@ -52,3 +52,7 @@ export { getCodMix } from './internal/application/queries/get-cod-mix.js';
 export type { CodMixResult } from './internal/application/queries/get-cod-mix.js';
 export { getCheckoutFunnel } from './internal/application/queries/get-checkout-funnel.js';
 export type { CheckoutFunnelResult } from './internal/application/queries/get-checkout-funnel.js';
+
+// Silver tier (feat-silver-tier-order-state) — order-status-mix via the Silver seam
+export { getOrderStatusMix } from './internal/application/queries/get-order-status-mix.js';
+export type { OrderStatusMixResult, OrderStatusMixRowDto, OrderStatusMixParams } from './internal/application/queries/get-order-status-mix.js';

@@ -272,6 +272,102 @@ export type {
   BackfillErrorResponse,
 } from './api/connector.backfill.api.v1.js';
 
+// ── BFF Read DTOs (analytics/dataquality/ask) — shared web↔core read contracts ──
+// Single source of truth for the drift-prone money/bigint READ surfaces. Core's use-case
+// return types and web's consumer types BOTH derive from these (z.infer). See
+// packages/contracts/src/api/analytics.api.v1.ts header for the full invariant list.
+export {
+  MinorUnitsSchema,
+  MoneyRecordSchema,
+  AttributionModelIdSchema,
+  JourneyChannelSchema,
+  LifecycleStateSchema,
+  DqLetterGradeSchema,
+  EngineTrustTierSchema,
+  DataSourceSchema,
+} from './api/_money.js';
+export type {
+  MinorUnits,
+  MoneyRecord,
+  AttributionModelId,
+  JourneyChannel,
+  LifecycleState,
+  DqLetterGrade,
+  EngineTrustTier,
+  DataSource,
+} from './api/_money.js';
+
+export {
+  RevenueSnapshotSchema,
+  KpiSummaryDtoSchema,
+  KpiSummarySchema,
+  ChannelContributionDtoSchema,
+  AttributionByChannelSchema,
+  AttributionReconciliationSchema,
+  ChannelRoasDtoSchema,
+  ChannelRoasSchema,
+  FirstTouchMixRowDtoSchema,
+  JourneyFirstTouchMixSchema,
+  TimelineTouchDtoSchema,
+  JourneyTimelineSchema,
+  JourneyStitchRateSchema,
+  OrderStatusMixRowDtoSchema,
+  OrderStatusMixSchema,
+} from './api/analytics.api.v1.js';
+export type {
+  RevenueSnapshot,
+  KpiSummaryDto,
+  KpiSummary,
+  ChannelContributionDto,
+  AttributionByChannel,
+  AttributionReconciliation,
+  ChannelRoasDto,
+  ChannelRoas,
+  FirstTouchMixRowDto,
+  JourneyFirstTouchMix,
+  TimelineTouchDto,
+  JourneyTimeline,
+  JourneyStitchRate,
+  OrderStatusMixRowDto,
+  OrderStatusMix,
+} from './api/analytics.api.v1.js';
+
+export {
+  DqCategorySchema,
+  FreshnessSlaStatusSchema,
+  DqGradeRowSchema,
+  DqCoverageSchema,
+  GateDecisionSchema,
+  DataQualitySummarySchema,
+} from './api/dataquality.api.v1.js';
+export type {
+  DqCategory,
+  FreshnessSlaStatus,
+  DqGradeRow,
+  DqCoverage,
+  GateDecision,
+  DataQualitySummary,
+} from './api/dataquality.api.v1.js';
+
+export {
+  ConfidenceGradeSchema,
+  TrustTierSchema,
+  MetricVersionSchema,
+  ResolvedParamsSchema,
+  ComputedNumberSchema,
+  AskBrainBindingSchema,
+  AskBrainResultSchema,
+} from './api/ask.api.v1.js';
+export type {
+  ConfidenceGrade,
+  TrustTier,
+  MetricVersion,
+  ResolvedParams,
+  ComputedNumber,
+  AskBrainBinding,
+  AskBrainResult,
+} from './api/ask.api.v1.js';
+
 // ── Consent suppression read seam (D13 — feat-d13-consent-cancontact) ─────────
 export { CONSENT_CATEGORIES } from './consent/suppression.js';
 export type {

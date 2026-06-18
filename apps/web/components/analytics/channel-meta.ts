@@ -42,10 +42,12 @@ const CHANNEL_META: Record<JourneyChannel, ChannelMeta> = {
   direct: { label: 'Direct', icon: Globe, order: 7, chartVar: 'hsl(var(--chart-3))' },
 };
 
-/** Resolve presentation for a channel, falling back to a safe Globe/raw-label default. */
-export function channelMeta(channel: JourneyChannel): ChannelMeta {
+/** Resolve presentation for a channel, falling back to a safe Globe/raw-label default.
+ *  Accepts `string` because core's ChannelRoasDto / ChannelContributionDto channel is a free
+ *  string (not the JourneyChannel enum) — the fallback covers any unknown channel honestly. */
+export function channelMeta(channel: string): ChannelMeta {
   return (
-    CHANNEL_META[channel] ?? {
+    CHANNEL_META[channel as JourneyChannel] ?? {
       label: channel,
       icon: Globe,
       order: 99,

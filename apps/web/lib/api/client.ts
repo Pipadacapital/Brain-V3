@@ -14,6 +14,24 @@ import type {
   BackfillJobProgress,
 } from '@brain/contracts';
 
+// Runtime Zod schemas for the covered BFF read DTOs — the single source of truth.
+// parseData() validates the unwrapped envelope body against these at the client boundary,
+// so a core<->web field drift throws a CLEAR field-named error here (not a deep BigInt(undefined)).
+import { z } from 'zod';
+import {
+  RevenueSnapshotSchema,
+  KpiSummarySchema,
+  AttributionByChannelSchema,
+  AttributionReconciliationSchema,
+  ChannelRoasSchema,
+  JourneyFirstTouchMixSchema,
+  JourneyTimelineSchema,
+  JourneyStitchRateSchema,
+  OrderStatusMixSchema,
+  DataQualitySummarySchema,
+  AskBrainResultSchema,
+} from '@brain/contracts';
+
 import type {
   RegisterRequest,
   RegisterResponse,
@@ -224,6 +242,33 @@ export class BffApiError extends Error {
     super(message);
     this.name = 'BffApiError';
   }
+}
+
+/**
+ * parseData — validate an unwrapped BFF envelope body against its Zod contract at the seam.
+ *
+ * On success returns the SAME data (no transform) → identical rendering + money formatting.
+ * On drift (a renamed/removed/wrong-typed money or discriminant field) throws a CLEAR,
+ * field-named BffApiError(code:'CONTRACT_DRIFT') HERE — never a deep `BigInt(undefined)`
+ * white-screen inside a component. This is the runtime half of the single-source-of-truth
+ * contract (the compile-time half is core's `satisfies z.infer<Schema>` in bff.routes.ts).
+ */
+export function parseData<S extends z.ZodTypeAny>(
+  schema: S,
+  env: { request_id: string; data: unknown },
+): z.infer<S> {
+  const r = schema.safeParse(env.data);
+  if (!r.success) {
+    const issue = r.error.issues[0];
+    const path = issue?.path.join('.') || '<root>';
+    throw new BffApiError(
+      `BFF contract drift at ${path}: ${issue?.message ?? 'invalid response shape'}`,
+      200,
+      env.request_id,
+      'CONTRACT_DRIFT',
+    );
+  }
+  return r.data as z.infer<S>;
 }
 
 // ── Auth ─────────────────────────────────────────────────────────────────────
@@ -1036,10 +1081,10 @@ export const analyticsApi = {
    * D-10: unwrap { request_id, data } → DataQualitySummaryResponse; preserve no_data.
    */
   getDataQualitySummary: async (): Promise<DataQualitySummaryResponse> => {
-    const { data } = await bffFetch<BffEnvelope<DataQualitySummaryResponse>>(
+    const env = await bffFetch<BffEnvelope<unknown>>(
       `/v1/data-quality/summary`,
     );
-    return data;
+    return parseData(DataQualitySummarySchema, env);
   },
 
   /**
@@ -1166,10 +1211,10 @@ export const analyticsApi = {
     if (params?.from) qs.set('from', params.from);
     if (params?.to) qs.set('to', params.to);
     const qsStr = qs.toString();
-    const { data } = await bffFetch<BffEnvelope<AnalyticsOrderStatusMixResponse>>(
+    const env = await bffFetch<BffEnvelope<unknown>>(
       `/v1/analytics/order-status-mix${qsStr ? `?${qsStr}` : ''}`,
     );
-    return data;
+    return parseData(OrderStatusMixSchema, env);
   },
 
   // ── Journey / first-touch (Silver tier — feat-journey-touchpoint) ─────────────
@@ -1187,10 +1232,10 @@ export const analyticsApi = {
     if (params?.from) qs.set('from', params.from);
     if (params?.to) qs.set('to', params.to);
     const qsStr = qs.toString();
-    const { data } = await bffFetch<BffEnvelope<AnalyticsJourneyFirstTouchMixResponse>>(
+    const env = await bffFetch<BffEnvelope<unknown>>(
       `/v1/analytics/journey/first-touch-mix${qsStr ? `?${qsStr}` : ''}`,
     );
-    return data;
+    return parseData(JourneyFirstTouchMixSchema, env);
   },
 
   /** GET /api/v1/analytics/journey/stitch-rate — deterministic cart-stitch hit-rate. */
@@ -1202,10 +1247,10 @@ export const analyticsApi = {
     if (params?.from) qs.set('from', params.from);
     if (params?.to) qs.set('to', params.to);
     const qsStr = qs.toString();
-    const { data } = await bffFetch<BffEnvelope<AnalyticsJourneyStitchRateResponse>>(
+    const env = await bffFetch<BffEnvelope<unknown>>(
       `/v1/analytics/journey/stitch-rate${qsStr ? `?${qsStr}` : ''}`,
     );
-    return data;
+    return parseData(JourneyStitchRateSchema, env);
   },
 
   /** GET /api/v1/analytics/journey/timeline?orderId= — ordered touchpoints for one order. */
@@ -1214,10 +1259,10 @@ export const analyticsApi = {
   }): Promise<AnalyticsJourneyTimelineResponse> => {
     const qs = new URLSearchParams();
     qs.set('orderId', params.orderId);
-    const { data } = await bffFetch<BffEnvelope<AnalyticsJourneyTimelineResponse>>(
+    const env = await bffFetch<BffEnvelope<unknown>>(
       `/v1/analytics/journey/timeline?${qs.toString()}`,
     );
-    return data;
+    return parseData(JourneyTimelineSchema, env);
   },
 
   // ── Attribution (Phase 5 — feat-attribution-ledger Track C) ───────────────────
@@ -1237,10 +1282,10 @@ export const analyticsApi = {
     qs.set('model', params.model);
     if (params.from) qs.set('from', params.from);
     if (params.to) qs.set('to', params.to);
-    const { data } = await bffFetch<BffEnvelope<AnalyticsAttributionByChannelResponse>>(
+    const env = await bffFetch<BffEnvelope<unknown>>(
       `/v1/analytics/attribution/by-channel?${qs.toString()}`,
     );
-    return data;
+    return parseData(AttributionByChannelSchema, env);
   },
 
   /** GET /api/v1/analytics/attribution/reconciliation — the closed-sum residual (oracle made visible). */
@@ -1253,10 +1298,10 @@ export const analyticsApi = {
     qs.set('model', params.model);
     if (params.from) qs.set('from', params.from);
     if (params.to) qs.set('to', params.to);
-    const { data } = await bffFetch<BffEnvelope<AnalyticsAttributionReconciliationResponse>>(
+    const env = await bffFetch<BffEnvelope<unknown>>(
       `/v1/analytics/attribution/reconciliation?${qs.toString()}`,
     );
-    return data;
+    return parseData(AttributionReconciliationSchema, env);
   },
 
   /** GET /api/v1/analytics/attribution/channel-roas — per-channel attributed ÷ ad spend. */
@@ -1269,10 +1314,10 @@ export const analyticsApi = {
     qs.set('model', params.model);
     if (params.from) qs.set('from', params.from);
     if (params.to) qs.set('to', params.to);
-    const { data } = await bffFetch<BffEnvelope<AnalyticsChannelRoasResponse>>(
+    const env = await bffFetch<BffEnvelope<unknown>>(
       `/v1/analytics/attribution/channel-roas?${qs.toString()}`,
     );
-    return data;
+    return parseData(ChannelRoasSchema, env);
   },
 };
 
@@ -1360,12 +1405,12 @@ export const capiFeedbackApi = {
 export const askApi = {
   /** POST /api/v1/ask — resolve a NL question to a certified metric answer (or honest refusal). */
   ask: async (body: AskBrainRequest): Promise<AskBrainResponse> => {
-    const { data } = await bffFetch<BffEnvelope<AskBrainResponse>>('/v1/ask', {
+    const env = await bffFetch<BffEnvelope<unknown>>('/v1/ask', {
       method: 'POST',
       body: JSON.stringify(body),
       idempotencyKey: generateRequestId(),
     });
-    return data;
+    return parseData(AskBrainResultSchema, env);
   },
 };
 
@@ -1426,17 +1471,6 @@ const ONBOARDING_STEP_ROUTE: Record<string, string | undefined> = {
 // RawRealizedRevenue = the BFF data payload (inside BffEnvelope<T>).
 // DashboardRealizedRevenueResponse (in ./types) = the component-facing model.
 // These two types are DISTINCT — mapping happens in getRealizedRevenue(), not in the card.
-
-/**
- * Raw BFF data payload for the realized-revenue route (§4 contract).
- * Amounts are bigint-serialized minor-unit strings from the backend.
- */
-interface RawRealizedRevenue {
-  state: 'no_data' | 'has_data';
-  as_of: string;
-  realized: Record<string, string> | null;
-  provisional: Record<string, string> | null;
-}
 
 export const dashboardApi = {
   // null → no brand yet → card renders its "No Data Yet" empty state.
@@ -1510,17 +1544,12 @@ export const dashboardApi = {
    */
   getRealizedRevenue: async (asOf?: string): Promise<DashboardRealizedRevenueResponse> => {
     const qs = asOf ? `?as_of=${encodeURIComponent(asOf)}` : '';
-    // Unwrap .data from the BffEnvelope — never read the raw envelope flat (no 9th mismatch).
-    const { data } = await bffFetch<BffEnvelope<RawRealizedRevenue>>(
+    // Validate at the seam against the single-source-of-truth contract (RevenueSnapshotSchema).
+    // The discriminated union preserves the no_data/has_data arms EXACTLY — realized/provisional
+    // are null only in no_data; money stays bigint-minor strings (never /100, never BigInt(undefined)).
+    const env = await bffFetch<BffEnvelope<unknown>>(
       `/v1/dashboard/realized-revenue${qs}`,
     );
-    // Map raw → component model (raw and mapped types declared separately — D-5).
-    // Do NOT collapse null into {} — preserve explicit null for state=no_data guard.
-    return {
-      state: data.state,
-      as_of: data.as_of,
-      realized: data.realized,
-      provisional: data.provisional,
-    };
+    return parseData(RevenueSnapshotSchema, env);
   },
 };

@@ -54,3 +54,26 @@ export type DndStatus = 'on_dnd' | 'not_on_dnd' | 'unknown';
 export interface NcprRegistryPort {
   dndStatus(args: { brandId: string; subjectHash: string }): Promise<DndStatus>;
 }
+
+/**
+ * Resolved Meta CAPI credentials for a brand. Read from the Meta connector's
+ * `connector_instance.secret_ref` (AWS Secrets Manager ARN). The credential VALUE
+ * is NEVER logged — only the ARN ref is dereferenced at send time in prod.
+ */
+export interface CapiCreds {
+  pixelId: string;
+  /** Secrets Manager ARN of the CAPI access token (dereferenced at send time, prod). */
+  accessTokenRef: string;
+}
+
+/**
+ * Meta CAPI credentials seam (Phase 6). Mirrors SaltPort.
+ *
+ * `getCreds` returns the resolved pixel id + access-token ref for the brand's Meta
+ * connector, or `null` when no Meta connector / secret_ref exists. In dev the creds
+ * are ABSENT → `null` → the CAPI adapter resolves to the default-closed Dev adapter
+ * (`would_send_dev`, never sends). Unknown creds are DEFAULT-CLOSED by construction.
+ */
+export interface CapiCredsPort {
+  getCreds(brandId: string): Promise<CapiCreds | null>;
+}

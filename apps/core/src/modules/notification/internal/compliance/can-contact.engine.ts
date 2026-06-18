@@ -32,7 +32,7 @@ import {
   type ContactChannel,
   type ContactPurpose,
   type CanContactResult,
-  GATING_CATEGORY,
+  gatingCategoryForPurpose,
   identifierTypeForChannel,
   isPhoneChannel,
 } from './contact-types.js';
@@ -58,6 +58,14 @@ export interface CanContactInput {
   purpose: ContactPurpose;
   /** Optional DLT template id for phone channels. */
   templateId?: string;
+  /**
+   * An ALREADY-RESOLVED 64-hex identity-core subject_hash (Phase 6 / capi_meta).
+   * When present, Step 2 (hash recipient) is skipped and the consent decision is
+   * keyed on this hash directly — for paths where the subject is identified by an
+   * order/identity reference, not a raw recipient string. `recipient` is then a
+   * non-PII placeholder. The hash MUST be a 64-hex identity-core hash.
+   */
+  precomputedSubjectHash?: string;
 }
 
 /**
@@ -86,18 +94,34 @@ export class CanContactEngine {
       };
     }
 
-    // ── Step 2: Hash the recipient (identity-core per-brand salt) ─────────────
-    // Salt fetch / decode failure HARD CRASHES (D-2) — propagated, never caught
-    // into a silent allow. A missing salt must stop the world, not open the gate.
-    const saltHex = await this.deps.salt.saltHexForBrand(brandId);
-    const idType = identifierTypeForChannel(channel);
-    const subjectHash = hashIdentifier(recipient, idType, saltHex);
+    // ── Step 2: Resolve the subject hash ──────────────────────────────────────
+    // Either an already-resolved identity-core subject_hash (capi_meta / Phase 6,
+    // keyed on an order's identity ref — no raw PII enters the gate), OR hash the
+    // raw recipient here. Salt fetch / decode failure HARD CRASHES (D-2) —
+    // propagated, never caught into a silent allow.
+    let subjectHash: string;
+    if (input.precomputedSubjectHash) {
+      // Must be a 64-hex identity-core hash; never a raw recipient.
+      if (!/^[0-9a-f]{64}$/.test(input.precomputedSubjectHash)) {
+        throw new Error(
+          '[can_contact] precomputedSubjectHash must be a 64-hex identity-core hash',
+        );
+      }
+      subjectHash = input.precomputedSubjectHash;
+    } else {
+      const saltHex = await this.deps.salt.saltHexForBrand(brandId);
+      const idType = identifierTypeForChannel(channel);
+      subjectHash = hashIdentifier(recipient, idType, saltHex);
+    }
 
-    // ── Step 3: Consent (marketing category, fail-closed) ─────────────────────
+    // ── Step 3: Consent (purpose-keyed category, fail-closed) ─────────────────
+    // marketing purpose → marketing category; advertising purpose → advertising
+    // category (Phase 6). Transactional never reaches here (Step 1 exempted it).
+    const gatingCategory = gatingCategoryForPurpose(purpose);
     const supp = await this.deps.suppression.isSuppressed({
       brandId,
       subjectHash,
-      category: GATING_CATEGORY,
+      category: gatingCategory,
     });
     const consent = evaluateConsent(supp);
     if (consent.blocked) {
@@ -127,6 +151,18 @@ export class CanContactEngine {
       // not_on_dnd → fall through to the window check.
     }
     // Email channels skip DLT/NCPR (not telecom-registry channels) — documented.
+
+    // ── Advertising short-circuit (Phase 6) ───────────────────────────────────
+    // A CAPI conversion passback is a server-to-server MEASUREMENT signal to a
+    // platform — NOT a "commercial communication to a person" at a time of day.
+    // No human is contacted, so the 9–9 IST send-window does NOT apply. Once
+    // consent clears, advertising is allowed regardless of the wall clock.
+    // ASSUMPTION (unit-asserted, documented): if legal later requires windowing,
+    // the window policy below slots back in by deleting this guard. Out-of-window
+    // CAPI is NOT queued — it is allowed immediately (consent already cleared).
+    if (purpose === 'advertising') {
+      return { decision: 'allow', reason: 'allowed', subjectHash };
+    }
 
     // ── Step 6: Send-window (9am–9pm IST), server-side ────────────────────────
     const now = this.deps.now ? this.deps.now() : new Date();

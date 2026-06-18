@@ -41,6 +41,8 @@ import { jtiFromJwt, csrfTokenForSession, csrfTokenMatches } from './modules/fro
 import { NotificationServiceImpl } from './modules/notification/internal/notification.service.impl.js';
 import { registerDevRoutes } from './modules/notification/internal/dev.routes.js';
 import { createEmailAdapter } from './modules/notification/internal/ses-adapter.js';
+import { createCapiAdapter } from './modules/notification/internal/capi-adapter.js';
+import { createCapiCredsPort } from './modules/notification/internal/compliance/capi-creds.adapter.js';
 import { registerConsentRoutes } from './modules/notification/internal/compliance/consent.routes.js';
 
 // ── Connector infrastructure imports (HIGH-MOUNT-01) ─────────────────────────
@@ -407,6 +409,20 @@ export async function main(): Promise<void> {
   // Create notification service (SES in prod, console in dev — I-ST05).
   const emailAdapter = createEmailAdapter(config.nodeEnv, config.emailFromAddress);
   const notificationService = new NotificationServiceImpl(emailAdapter, config.appBaseUrl);
+
+  // ── Phase 6: Meta CAPI conversion-passback adapter (DEFAULT-CLOSED, I-ST05) ───
+  // Mirrors the email adapter wiring. The creds port resolves null in dev → the
+  // factory returns the DevCapiAdapter (would_send_dev, NEVER sends). The real Meta
+  // send (graph.facebook.com Conversions API) is reachable ONLY in prod with resolved
+  // creds AND ONLY behind can_contact(purpose='advertising') in CapiPassbackService.
+  // Constructed here so the adapter is available; no send fires without the gate.
+  const capiCredsPort = createCapiCredsPort(); // dev/default-closed (prod resolver = follow-up)
+  const capiAdapter = createCapiAdapter(config.nodeEnv, null);
+  void capiCredsPort;
+  void capiAdapter;
+  app.log.info(
+    '[core] Meta CAPI passback adapter wired (DEFAULT-CLOSED: dev → would_send_dev, never sends; behind can_contact(advertising))',
+  );
 
   // Create application services.
   const authServiceConfig = { jwtSigningSecret: config.jwtSigningSecret };

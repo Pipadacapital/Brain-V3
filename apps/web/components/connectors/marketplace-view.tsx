@@ -42,6 +42,7 @@ import { SyncNowControl } from '@/components/connectors/sync-now-control';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
 import { useMarketplace, useConnectConnector, useDisconnectConnector } from '@/lib/hooks/use-connectors';
+import { useEmailVerified } from '@/lib/hooks/use-auth';
 import { BffApiError } from '@/lib/api/client';
 import { toast } from '@/components/ui/toaster';
 import type { MarketplaceTile, ConnectorCategory, HealthState, SafetyRating } from '@/lib/api/types';
@@ -173,6 +174,9 @@ function TileStatusIndicator({ tile }: { tile: MarketplaceTile }) {
 
 // ── ConnectorTile ─────────────────────────────────────────────────────────────
 
+/** Soft-gate reason copy for connecting a real store before email is verified. */
+const VERIFY_TO_CONNECT = 'Verify your email to connect a store';
+
 // Razorpay credential fields (C2 / ADR-RZ-8). razorpay_account_id is NOT a secret
 // (merchant ID, visible in the Razorpay dashboard); the other three are secrets that
 // the backend stores in one secret bundle and NEVER echoes back to the client.
@@ -191,6 +195,7 @@ const RAZORPAY_FIELDS: {
 function ConnectorTile({ tile }: { tile: MarketplaceTile }) {
   const { mutate: connect, isPending: isConnecting } = useConnectConnector();
   const { mutate: disconnect, isPending: isDisconnecting } = useDisconnectConnector();
+  const { emailVerified } = useEmailVerified();
   const [shopDomain, setShopDomain] = useState('');
   // Razorpay credential form state (only used for credential tiles).
   const [creds, setCreds] = useState<Record<string, string>>({});
@@ -199,6 +204,24 @@ function ConnectorTile({ tile }: { tile: MarketplaceTile }) {
   const isComingSoon = !tile.available;
   const isCredential = tile.connect_method === 'credential';
   const credsComplete = RAZORPAY_FIELDS.every((f) => (creds[f.key] ?? '').trim().length > 0);
+
+  /**
+   * Connect-error toast. The server is the authoritative soft-gate (feat-onboarding-ux):
+   * an unverified user hitting connect gets 403 EMAIL_NOT_VERIFIED even if the UI hint was
+   * bypassed — surface that as a clear, actionable message rather than a generic failure.
+   */
+  function handleConnectError(err: unknown) {
+    if (err instanceof BffApiError && err.code === 'EMAIL_NOT_VERIFIED') {
+      toast({
+        title: 'Verify your email first',
+        description: `${VERIFY_TO_CONNECT}. Check your inbox for the verification link.`,
+        variant: 'destructive',
+      });
+      return;
+    }
+    const msg = err instanceof BffApiError ? err.message : 'Could not start connection.';
+    toast({ title: 'Connection failed', description: msg, variant: 'destructive' });
+  }
 
   function handleConnect() {
     if (isComingSoon) return; // guard: UI should never reach here for coming-soon tiles
@@ -261,11 +284,7 @@ function ConnectorTile({ tile }: { tile: MarketplaceTile }) {
               window.location.href = data.oauth_url;
             }
           },
-          onError: (err) => {
-            const msg =
-              err instanceof BffApiError ? err.message : 'Could not start connection.';
-            toast({ title: 'Connection failed', description: msg, variant: 'destructive' });
-          },
+          onError: handleConnectError,
         },
       );
     } else if (tile.connect_method === 'oauth') {
@@ -278,11 +297,7 @@ function ConnectorTile({ tile }: { tile: MarketplaceTile }) {
               window.location.href = data.oauth_url;
             }
           },
-          onError: (err) => {
-            const msg =
-              err instanceof BffApiError ? err.message : 'Could not start connection.';
-            toast({ title: 'Connection failed', description: msg, variant: 'destructive' });
-          },
+          onError: handleConnectError,
         },
       );
     }
@@ -426,9 +441,12 @@ function ConnectorTile({ tile }: { tile: MarketplaceTile }) {
               onClick={handleConnect}
               disabled={
                 isConnecting ||
+                !emailVerified ||
                 (tile.id === 'shopify' && tile.connect_method === 'oauth' && !shopDomain.trim()) ||
                 (isCredential && !credsComplete)
               }
+              aria-describedby={!emailVerified ? `connect-verify-hint-${tile.id}` : undefined}
+              title={!emailVerified ? VERIFY_TO_CONNECT : undefined}
               data-testid={`connector-tile-${tile.id}-connect`}
             >
               {isConnecting && (
@@ -436,6 +454,17 @@ function ConnectorTile({ tile }: { tile: MarketplaceTile }) {
               )}
               {isConnecting ? 'Connecting…' : `Connect ${tile.display_name}`}
             </Button>
+            {/* Soft-gate reason hint — UX guidance only; the server gate is authoritative. */}
+            {!emailVerified && (
+              <p
+                id={`connect-verify-hint-${tile.id}`}
+                className="text-xs text-status-amber-700"
+                data-testid={`connect-verify-hint-${tile.id}`}
+                role="note"
+              >
+                {VERIFY_TO_CONNECT}.
+              </p>
+            )}
           </div>
         )}
       </CardContent>

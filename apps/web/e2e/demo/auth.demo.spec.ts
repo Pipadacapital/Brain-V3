@@ -49,8 +49,8 @@ import {
 // REGISTRATION — positive
 // ───────────────────────────────────────────────────────────────────────────────
 
-test('register: a valid signup creates the account and lands on verify-email', async ({ page }) => {
-  await announce(page, 'Register — valid signup');
+test('register: a valid signup creates the account and AUTO-LOGS-IN into the wizard', async ({ page }) => {
+  await announce(page, 'Register — valid signup → auto-login');
 
   const email = `demo_reg_${Date.now()}@example.com`;
 
@@ -75,15 +75,13 @@ test('register: a valid signup creates the account and lands on verify-email', a
     await page.getByTestId('input-password').fill('SuperSecret123!');
   });
 
-  await step(page, 'Submit — the account is created', async () => {
+  await step(page, 'Submit — the account is created AND a real session is minted', async () => {
     await page.getByTestId('btn-register').click();
   });
 
-  await step(page, 'We land on “Check your email” (verify-email) for THIS address', async () => {
-    await expect(page).toHaveURL(/\/verify-email/);
-    await expect(page.getByText(/check your email/i)).toBeVisible();
-    // The page echoes the exact address the link was sent to.
-    await expect(page.getByText(new RegExp(email.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'))).toBeVisible();
+  await step(page, 'feat-onboarding-ux: we land authenticated on Step 1 — no manual /login', async () => {
+    await expect(page).toHaveURL(/\/onboarding\/start/);
+    await expect(page.getByTestId('step-indicator')).toHaveText(/Step 1 of 3/i);
   });
 
   await pauseFor(page, 1200);
@@ -177,10 +175,12 @@ test('register: a duplicate email does NOT leak that the account exists', async 
     await page.getByTestId('btn-register').click();
   });
 
-  await step(page, 'We route to verify-email exactly like a fresh signup — no enumeration', async () => {
-    // Privacy guarantee: an attacker cannot tell a taken email from a free one.
-    await expect(page).toHaveURL(/\/verify-email/);
-    await expect(page.getByText(/check your email/i)).toBeVisible();
+  await step(page, 'The visible client redirect is identical to a fresh signup — no enumeration', async () => {
+    // Privacy guarantee: the JSON body + the client redirect are byte-identical whether the
+    // email is taken or free (feat-onboarding-ux: only the Set-Cookie differs for a genuinely
+    // new user, and httpOnly Set-Cookie is not observable cross-origin). Both route to the
+    // wizard entry — an attacker cannot tell a taken email from a free one.
+    await expect(page).toHaveURL(/\/onboarding\/start/);
   });
 
   await pauseFor(page, 1200);
@@ -195,13 +195,17 @@ test('verify-email: the dev one-click token flow verifies and routes to /login',
 
   const email = `demo_verify_${Date.now()}@example.com`;
 
-  await step(page, 'Register a brand-new account', async () => {
+  await step(page, 'Register a brand-new account → auto-login into the wizard', async () => {
     await page.goto('/register');
     await page.getByTestId('input-full-name').fill('Verify Demo');
     await page.getByTestId('input-email').fill(email);
     await page.getByTestId('input-password').fill('SuperSecret123!');
     await page.getByTestId('btn-register').click();
-    await expect(page).toHaveURL(/\/verify-email/);
+    await expect(page).toHaveURL(/\/onboarding\/start/);
+  });
+
+  await step(page, 'Open the verification surface (the soft-gate banner links here)', async () => {
+    await page.goto(`/verify-email?email=${encodeURIComponent(email)}`);
   });
 
   await step(page, 'In dev there is no inbox — the page offers a one-click “Verify now (dev)”', async () => {
@@ -253,8 +257,8 @@ test('login: a verified user signs in and resumes onboarding at step 1', async (
   });
 
   await step(page, 'A new account has no workspace yet → routed to onboarding step 1', async () => {
-    await expect(page).toHaveURL(/\/workspace\/new/);
-    await expect(page.getByTestId('step-indicator')).toHaveText(/Step 1 of 4/i);
+    await expect(page).toHaveURL(/\/onboarding\/start/);
+    await expect(page.getByTestId('step-indicator')).toHaveText(/Step 1 of 3/i);
   });
 
   await pauseFor(page, 1200);

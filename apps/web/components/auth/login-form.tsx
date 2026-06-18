@@ -12,26 +12,13 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { ErrorCard } from '@/components/ui/error-card';
 import { loginSchema, type LoginFormValues } from '@/lib/api/schemas';
 import { useLogin } from '@/lib/hooks/use-auth';
-import type { OnboardingStatus, LoginResponse } from '@/lib/api/types';
+import type { LoginResponse } from '@/lib/api/types';
+import { resolveOnboardingRoute } from '@/lib/onboarding-route';
 
-/**
- * Deterministic lookup table: onboarding_status → resume URL.
- * Covers every enum value + null (no org membership).
- * Keyed off the authoritative enum — no boolean branch.
- */
-export const ONBOARDING_RESUME: Record<OnboardingStatus | 'null', string> = {
-  pending: '/workspace/new',
-  org_created: '/brand/new',
-  brand_created: '/onboarding/integrations',
-  integration_selected: '/onboarding/done',
-  complete: '/dashboard',
-  null: '/workspace/new',
-};
-
-export function resolveOnboardingRoute(status: OnboardingStatus | null): string {
-  if (status === null) return ONBOARDING_RESUME['null'];
-  return ONBOARDING_RESUME[status] ?? '/dashboard';
-}
+// feat-onboarding-ux: the resolver moved to the canonical lib/onboarding-route.ts (the merged
+// create step replaced /workspace/new + /brand/new with /onboarding/start). Re-exported here so
+// existing imports (`@/components/auth/login-form`) keep resolving — single source of truth.
+export { resolveOnboardingRoute } from '@/lib/onboarding-route';
 
 export function LoginForm() {
   const router = useRouter();

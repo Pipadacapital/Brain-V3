@@ -211,10 +211,14 @@ describe('Wire-smoke: F-QA-1 / F-QA-2 / F-QA-3 (feat-members-team-management BOU
       [ADMIN_ID,  `wswire-admin-${ADMIN_ID}@test.invalid`],
       [TARGET_ID, `wswire-target-${TARGET_ID}@test.invalid`],
     ]) {
+      // feat-onboarding-ux: these are established org members — seed them EMAIL-VERIFIED
+      // so the requireVerifiedEmail soft-gate (which now runs before the role/hierarchy
+      // check on POST /api/v1/invites) passes and the test exercises the FORBIDDEN path
+      // it targets, not EMAIL_NOT_VERIFIED.
       await rawPool.query(
-        `INSERT INTO app_user (id, email, email_normalized, password_hash, status)
-         VALUES ($1, $2, $3, 'test-hash', 'active')
-         ON CONFLICT (id) DO NOTHING`,
+        `INSERT INTO app_user (id, email, email_normalized, password_hash, status, email_verified_at)
+         VALUES ($1, $2, $3, 'test-hash', 'active', NOW())
+         ON CONFLICT (id) DO UPDATE SET email_verified_at = NOW()`,
         [id, email, email],
       );
     }

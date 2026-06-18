@@ -23,7 +23,7 @@ import { randomUUID } from 'node:crypto';
 import argon2 from 'argon2';
 import type { Pool, PoolClient } from 'pg';
 
-import type { DbPool, QueryContext } from '@brain/db';
+import type { DbPool, DbClient, QueryContext } from '@brain/db';
 import type { AuditWriter } from '@brain/audit';
 import type { NotificationService } from '../../../notification/service.js';
 
@@ -145,77 +145,160 @@ export class AuthService {
     password: string,
     correlationId: string,
   ): Promise<{ userId: string; message: string; code?: 'INVITE_PENDING' }> {
-    const ctx: QueryContext = { correlationId };
     const client = await this.pool.connect();
     try {
-      const userRepo = new AppUserRepository(client);
-      const emailVerifyRepo = new EmailVerificationRepository(client);
-
-      // Check for existing user (service-layer isolation — no RLS on app_user).
-      const existing = await userRepo.findByEmail(email, ctx);
-      // NN-5: no enumeration — always hash (timing-safe).
-      const passwordHash = await argon2.hash(password, ARGON2_PARAMS);
-
-      if (existing) {
-        // User already exists — silently re-issue verification email if not yet verified.
-        if (!existing.emailVerifiedAt) {
-          // MA-15: fire-and-forget to equalize timing (no timing oracle for verified vs unverified).
-          const emailCtx = { ...ctx, userId: existing.id };
-          Promise.resolve().then(async () => {
-            try {
-              const { rawToken, tokenHash } = generateToken();
-              const expiresAt = new Date(Date.now() + EMAIL_VERIFY_EXPIRY_MS);
-              await emailVerifyRepo.insert({ appUserId: existing.id, tokenHash, expiresAt }, emailCtx);
-              await this.notification.sendVerificationEmail(existing.email, rawToken, correlationId);
-            } catch (err) {
-              console.error('[auth] register: verification re-issue failed', { correlationId, err });
-            }
-          });
-        }
-        return { userId: existing.id, message: 'Registration successful. Please verify your email.' };
-      }
-
-      // Create the user.
-      const emailNormalized = email.toLowerCase().trim();
-      const user = await userRepo.insert(
-        { email, emailNormalized, passwordHash },
-        ctx,
-      );
-
-      // Issue a verification token.
-      const { rawToken, tokenHash } = generateToken();
-      const expiresAt = new Date(Date.now() + EMAIL_VERIFY_EXPIRY_MS);
-      await emailVerifyRepo.insert(
-        { appUserId: user.id, tokenHash, expiresAt },
-        { ...ctx, userId: user.id },
-      );
-
-      // Send the verification email via notification module (I-ST05 — no direct SMTP).
-      await this.notification.sendVerificationEmail(email, rawToken, correlationId);
-
-      // Audit log.
-      await this.audit.append({
-        brand_id: user.id, // use user.id as brand_id for pre-brand events
-        actor_id: user.id,
-        actor_role: 'system',
-        action: 'user.registered',
-        entity_type: 'app_user',
-        entity_id: user.id,
-        payload: { email_masked: maskEmail(email) },
-      });
-
-      // AC-7: Check for pending invite for this email (register-with-pending-invite).
-      // A single indexed query; run AFTER the hash for timing equivalence.
-      const pendingInvite = await userRepo.findPendingInviteByEmail(email, { ...ctx, userId: user.id });
-
+      const result = await this.registerInternal(client, email, password, correlationId);
       return {
-        userId: user.id,
+        userId: result.user.id,
         message: 'Registration successful. Please verify your email.',
-        ...(pendingInvite ? { code: 'INVITE_PENDING' as const } : {}),
+        ...(result.invitePending ? { code: 'INVITE_PENDING' as const } : {}),
       };
     } finally {
       client.release();
     }
+  }
+
+  /**
+   * Register a user, then auto-login by minting a real authenticated session
+   * (feat-onboarding-ux, Deliverable 1). The session is issued via the SAME
+   * issueSession() primitive used by login() — no bypass, no client-set token.
+   *
+   * Security contract:
+   *  - A session is minted ONLY for a genuinely-new user (created=true). For an
+   *    email collision (created=false) NO session is issued — the BFF returns the
+   *    same JSON body minus the Set-Cookie. The httpOnly Set-Cookie is unreadable
+   *    cross-origin, so the visible body stays enumeration-safe (NN-5).
+   *  - The new user lands with EMPTY_CONTEXT (no membership yet) → the wizard.
+   *  - `user.logged_in` audit is written by issueSession on the created path only.
+   */
+  async registerAndStartSession(
+    email: string,
+    password: string,
+    ip: string | null,
+    userAgent: string | null,
+    correlationId: string,
+  ): Promise<{
+    created: boolean;
+    accessToken?: string;
+    refreshToken?: string;
+    expiresIn?: number;
+    invitePending: boolean;
+    user: { id: string; email: string; emailVerifiedAt: Date | null };
+    context: ActiveContext;
+  }> {
+    const client = await this.pool.connect();
+    try {
+      const result = await this.registerInternal(client, email, password, correlationId);
+
+      if (!result.created) {
+        // Email collision — do NOT mint a session (no auto-login for an existing
+        // account). The user entity belongs to someone else; never leak it.
+        return {
+          created: false,
+          invitePending: result.invitePending,
+          user: { id: result.user.id, email: result.user.email, emailVerifiedAt: result.user.emailVerifiedAt },
+          context: EMPTY_CONTEXT,
+        };
+      }
+
+      // Genuinely-new user — mint a real session via the shared primitive.
+      const { accessToken, refreshToken, context } = await this.issueSession(
+        client,
+        result.user,
+        ip,
+        userAgent,
+        correlationId,
+      );
+
+      return {
+        created: true,
+        accessToken,
+        refreshToken,
+        expiresIn: ACCESS_TOKEN_EXPIRY_SECS,
+        invitePending: result.invitePending,
+        user: { id: result.user.id, email: result.user.email, emailVerifiedAt: result.user.emailVerifiedAt },
+        context,
+      };
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Core register logic shared by register() and registerAndStartSession().
+   * Runs on the caller's `client`. Distinguishes created-new vs already-existed
+   * (the public register() collapses this to a single generic message — NN-5).
+   * Timing is equalized: the argon2 hash always runs; the existing-user path
+   * re-issues verification fire-and-forget (MA-15).
+   */
+  private async registerInternal(
+    client: DbClient,
+    email: string,
+    password: string,
+    correlationId: string,
+  ): Promise<{ created: boolean; user: AppUser; invitePending: boolean }> {
+    const ctx: QueryContext = { correlationId };
+    const userRepo = new AppUserRepository(client);
+    const emailVerifyRepo = new EmailVerificationRepository(client);
+
+    // Check for existing user (service-layer isolation — no RLS on app_user).
+    const existing = await userRepo.findByEmail(email, ctx);
+    // NN-5: no enumeration — always hash (timing-safe).
+    const passwordHash = await argon2.hash(password, ARGON2_PARAMS);
+
+    if (existing) {
+      // User already exists — silently re-issue verification email if not yet verified.
+      if (!existing.emailVerifiedAt) {
+        // MA-15: fire-and-forget to equalize timing (no timing oracle for verified vs unverified).
+        const emailCtx = { ...ctx, userId: existing.id };
+        Promise.resolve().then(async () => {
+          try {
+            const { rawToken, tokenHash } = generateToken();
+            const expiresAt = new Date(Date.now() + EMAIL_VERIFY_EXPIRY_MS);
+            await emailVerifyRepo.insert({ appUserId: existing.id, tokenHash, expiresAt }, emailCtx);
+            await this.notification.sendVerificationEmail(existing.email, rawToken, correlationId);
+          } catch (err) {
+            console.error('[auth] register: verification re-issue failed', { correlationId, err });
+          }
+        });
+      }
+      return { created: false, user: existing, invitePending: false };
+    }
+
+    // Create the user.
+    const emailNormalized = email.toLowerCase().trim();
+    const user = await userRepo.insert(
+      { email, emailNormalized, passwordHash },
+      ctx,
+    );
+
+    // Issue a verification token.
+    const { rawToken, tokenHash } = generateToken();
+    const expiresAt = new Date(Date.now() + EMAIL_VERIFY_EXPIRY_MS);
+    await emailVerifyRepo.insert(
+      { appUserId: user.id, tokenHash, expiresAt },
+      { ...ctx, userId: user.id },
+    );
+
+    // Send the verification email via notification module (I-ST05 — no direct SMTP).
+    await this.notification.sendVerificationEmail(email, rawToken, correlationId);
+
+    // Audit log.
+    await this.audit.append({
+      brand_id: user.id, // use user.id as brand_id for pre-brand events
+      actor_id: user.id,
+      actor_role: 'system',
+      action: 'user.registered',
+      entity_type: 'app_user',
+      entity_id: user.id,
+      payload: { email_masked: maskEmail(email) },
+    });
+
+    // AC-7: Check for pending invite for this email (register-with-pending-invite).
+    // A single indexed query; run AFTER the hash for timing equivalence.
+    const pendingInvite = await userRepo.findPendingInviteByEmail(email, { ...ctx, userId: user.id });
+
+    return { created: true, user, invitePending: pendingInvite !== null };
   }
 
   // ── Verify Email ───────────────────────────────────────────────────────────
@@ -284,56 +367,14 @@ export class AuthService {
         throw new AuthError('INVALID_CREDENTIALS', 'Invalid email or password.', 401);
       }
 
-      // Create session — generate a new UUID for the row id so we can set family_id = id.
-      const jti = randomUUID();
-      const { rawToken: refreshToken, tokenHash: refreshTokenHash } = generateToken();
-      const expiresAt = new Date(Date.now() + REFRESH_TOKEN_EXPIRY_SECS * 1000);
-
-      // Insert session without family_id first, then set family_id = id in the same txn.
-      // We use the session id as the family_id root (AC-1 login = new family root).
-      const session = await sessionRepo.insert(
-        { appUserId: user.id, jti, refreshTokenHash, expiresAt, ip, userAgent },
-        { ...ctx, userId: user.id },
-      );
-      // Set family_id = own id (root of a new family).
-      await sessionRepo.setFamilyIdToSelf(session.id, { ...ctx, userId: user.id });
-
-      // Resolve the user's active brand/role so the session is usable immediately.
-      const activeMembership = await memberRepo.findActiveByUser(user.id, {
+      // Single session-minting primitive — shared with registerAndStartSession (auto-login).
+      const { accessToken, refreshToken, context } = await this.issueSession(
+        client,
+        user,
+        ip,
+        userAgent,
         correlationId,
-        userId: user.id,
-      });
-
-      let onboardingStatus: OnboardingStatus | null = null;
-      if (activeMembership) {
-        const org = await orgRepo.findById(activeMembership.organizationId, {
-          correlationId,
-          workspaceId: activeMembership.organizationId,
-        });
-        onboardingStatus = org?.onboardingStatus ?? null;
-      }
-
-      const context: ActiveContext = activeMembership
-        ? {
-            brandId: activeMembership.brandId,
-            workspaceId: activeMembership.organizationId,
-            role: activeMembership.roleCode,
-            onboardingStatus,
-          }
-        : EMPTY_CONTEXT;
-
-      // Mint JWT (ADR-006 compatible claims — D0.1).
-      const accessToken = this.mintSessionToken(user.id, jti, context);
-
-      await this.audit.append({
-        brand_id: user.id,
-        actor_id: user.id,
-        actor_role: 'system',
-        action: 'user.logged_in',
-        entity_type: 'user_session',
-        entity_id: jti,
-        payload: { ip_prefix: ip ? ip.split('.').slice(0, 3).join('.') + '.0' : null },
-      });
+      );
 
       return {
         accessToken,
@@ -349,6 +390,81 @@ export class AuthService {
     } finally {
       client.release();
     }
+  }
+
+  /**
+   * Mint a brand-new session for `user` (login = new family root, AC-1) and write the
+   * `user.logged_in` audit. The SINGLE session-minting primitive — called by both
+   * login() and registerAndStartSession() (auto-login). Extracted verbatim from the
+   * former inline login body so there is exactly one session-creation path.
+   *
+   * Resolves the user's active brand/role context (EMPTY_CONTEXT for a just-registered
+   * user with no membership yet). Runs on the caller's `client` so it shares the pooled
+   * connection's GUC scope.
+   */
+  private async issueSession(
+    client: DbClient,
+    user: Pick<AppUser, 'id'>,
+    ip: string | null,
+    userAgent: string | null,
+    correlationId: string,
+  ): Promise<{ accessToken: string; refreshToken: string; context: ActiveContext }> {
+    const sessionRepo = new UserSessionRepository(client);
+    const memberRepo = new MembershipRepository(client);
+    const orgRepo = new OrganizationRepository(client);
+
+    // Create session — generate a new UUID for the row id so we can set family_id = id.
+    const jti = randomUUID();
+    const { rawToken: refreshToken, tokenHash: refreshTokenHash } = generateToken();
+    const expiresAt = new Date(Date.now() + REFRESH_TOKEN_EXPIRY_SECS * 1000);
+
+    // Insert session without family_id first, then set family_id = id in the same txn.
+    // We use the session id as the family_id root (AC-1 login = new family root).
+    const session = await sessionRepo.insert(
+      { appUserId: user.id, jti, refreshTokenHash, expiresAt, ip, userAgent },
+      { correlationId, userId: user.id },
+    );
+    // Set family_id = own id (root of a new family).
+    await sessionRepo.setFamilyIdToSelf(session.id, { correlationId, userId: user.id });
+
+    // Resolve the user's active brand/role so the session is usable immediately.
+    const activeMembership = await memberRepo.findActiveByUser(user.id, {
+      correlationId,
+      userId: user.id,
+    });
+
+    let onboardingStatus: OnboardingStatus | null = null;
+    if (activeMembership) {
+      const org = await orgRepo.findById(activeMembership.organizationId, {
+        correlationId,
+        workspaceId: activeMembership.organizationId,
+      });
+      onboardingStatus = org?.onboardingStatus ?? null;
+    }
+
+    const context: ActiveContext = activeMembership
+      ? {
+          brandId: activeMembership.brandId,
+          workspaceId: activeMembership.organizationId,
+          role: activeMembership.roleCode,
+          onboardingStatus,
+        }
+      : EMPTY_CONTEXT;
+
+    // Mint JWT (ADR-006 compatible claims — D0.1).
+    const accessToken = this.mintSessionToken(user.id, jti, context);
+
+    await this.audit.append({
+      brand_id: user.id,
+      actor_id: user.id,
+      actor_role: 'system',
+      action: 'user.logged_in',
+      entity_type: 'user_session',
+      entity_id: jti,
+      payload: { ip_prefix: ip ? ip.split('.').slice(0, 3).join('.') + '.0' : null },
+    });
+
+    return { accessToken, refreshToken, context };
   }
 
   // ── Rotating Refresh Token (AC-1 / MA-01 / MA-03) ─────────────────────────
@@ -1063,6 +1179,17 @@ export class AuthService {
     } finally {
       client.release();
     }
+  }
+
+  /**
+   * Authoritative email-verification check for the soft-gate (feat-onboarding-ux,
+   * Deliverable 2). Does a DB self-read (the JWT carries no email_verified claim, and
+   * a mid-session verify must take effect immediately — no stale-claim bug).
+   * FAIL-CLOSED: returns false when the user is not found.
+   */
+  async isEmailVerified(userId: string, correlationId: string): Promise<boolean> {
+    const user = await this.getCurrentUser(userId, correlationId);
+    return user?.emailVerifiedAt != null;
   }
 
   // ── Parse and verify JWT ───────────────────────────────────────────────────

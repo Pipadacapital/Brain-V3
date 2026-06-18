@@ -28,6 +28,7 @@ import type { InviteService } from '../../application/invite.service.js';
 import { InviteError } from '../../application/invite.service.js';
 import { validateSessionPreHandler, type AuthenticatedRequest } from './auth.routes.js';
 import { requireRole } from '../../security/rbac.js';
+import { requireVerifiedEmail } from '../../security/email-verified.guard.js';
 
 export function registerMemberRoutes(
   fastify: FastifyInstance,
@@ -38,9 +39,12 @@ export function registerMemberRoutes(
   const sessionPreHandler = validateSessionPreHandler(authService);
 
   // ── POST /api/v1/invites ──────────────────────────────────────────────────
+  // feat-onboarding-ux (Deliverable 2): inviting a member is a sensitive action —
+  // requireVerifiedEmail (DB self-read → 403 EMAIL_NOT_VERIFIED if unverified). Runs
+  // AFTER sessionPreHandler. The public token-authed /invites/accept stays ungated.
   fastify.post(
     '/api/v1/invites',
-    { preHandler: [sessionPreHandler] },
+    { preHandler: [sessionPreHandler, requireVerifiedEmail(authService)] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       const requestId = randomUUID();
       const correlationId = (request.headers['x-correlation-id'] as string) ?? requestId;

@@ -8,7 +8,7 @@ import { test, expect } from '@playwright/test';
  *   PW_SLOWMO=700 DATABASE_URL=postgres://brain:brain@localhost:5432/brain \
  *     npx playwright test e2e/full-journey.spec.ts --headed --project=chromium
  *
- * Covers: register → dev-verify → login → 4-step onboarding → dashboard →
+ * feat-onboarding-ux: register → auto-login → 3-step onboarding → dashboard →
  * multi-brand create + switch → connectors → members → pixel → logout.
  * (Members step is a light page-load so it stays stable while that feature is in flight.)
  */
@@ -18,49 +18,40 @@ test('full application journey — register to logout, the whole app', async ({ 
   const email = `journey_${stamp}@example.com`;
   const password = 'SuperSecret123!';
 
-  await test.step('1 · Register a new account', async () => {
+  await test.step('1 · Register a new account → auto-login into the wizard', async () => {
     await page.goto('/register');
     await page.getByTestId('input-full-name').fill('Journey Tester');
     await page.getByTestId('input-email').fill(email);
     await page.getByTestId('input-password').fill(password);
     await page.getByTestId('btn-register').click();
-    await expect(page).toHaveURL(/\/verify-email/);
+    // Auto-login: lands authenticated in the merged create step — no /verify-email detour.
+    await expect(page).toHaveURL(/\/onboarding\/start/);
+    await expect(page.getByTestId('step-indicator')).toHaveText(/Step 1 of 3/i);
   });
 
-  await test.step('2 · Verify email (dev one-click) → sign in', async () => {
-    // Dev-only shortcut — no real inbox needed; the backend captured the token.
-    await page.getByTestId('btn-dev-verify-now').click();
-    await expect(page).toHaveURL(/\/login/);
-    await page.getByTestId('input-email').fill(email);
-    await page.getByTestId('input-password').fill(password);
-    await page.getByTestId('btn-login').click();
-    await expect(page).toHaveURL(/\/workspace\/new/);
-    await expect(page.getByTestId('step-indicator')).toHaveText(/Step 1 of 4/i);
+  await test.step('2 · Verify email out-of-band (dev) so sensitive actions later unlock', async () => {
+    const { markEmailVerified } = await import('./helpers/db');
+    await markEmailVerified(email);
   });
 
-  await test.step('3 · Onboarding Step 1 — create workspace', async () => {
+  await test.step('3 · Onboarding Step 1 — merged create workspace + brand (no slug input)', async () => {
+    await expect(page.getByTestId('input-workspace-slug')).toHaveCount(0);
     await page.getByTestId('input-workspace-name').fill('Journey Workspace');
-    await page.getByTestId('input-workspace-slug').fill(`journey-ws-${stamp}`);
-    await page.getByTestId('btn-create-workspace').click();
-    await expect(page).toHaveURL(/\/brand\/new/);
-  });
-
-  await test.step('4 · Onboarding Step 2 — create brand (INR / Asia-Kolkata defaults)', async () => {
     await page.getByTestId('input-brand-name').fill('Journey Brand');
     await expect(page.getByTestId('select-currency-code')).toBeVisible();
-    // Skip the website → tracking interstitial (add-website state) → continue to Step 3.
+    // Skip the website → tracking interstitial (add-website state) → continue to Step 2.
     await page.getByTestId('btn-skip-website').click();
     await expect(page).toHaveURL(/\/onboarding\/tracking/);
     await page.getByTestId('btn-tracking-continue').click();
     await expect(page).toHaveURL(/\/onboarding\/integrations/);
   });
 
-  await test.step('5 · Onboarding Step 3 — skip integrations', async () => {
+  await test.step('4 · Onboarding Step 2 — skip integrations', async () => {
     await page.getByTestId('btn-skip-integrations').click();
     await expect(page).toHaveURL(/\/onboarding\/done/);
   });
 
-  await test.step('6 · Onboarding Step 4 — enter the dashboard', async () => {
+  await test.step('5 · Onboarding Step 3 — enter the dashboard', async () => {
     await page.getByTestId('btn-go-to-dashboard').click();
     await expect(page).toHaveURL(/\/dashboard/);
     await expect(page.getByTestId('brand-summary-card')).toBeVisible();

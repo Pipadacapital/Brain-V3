@@ -51,6 +51,8 @@ import type {
   SetBrandResponse,
   OnboardingAdvanceRequest,
   OnboardingAdvanceResponse,
+  ProvisionOnboardingRequest,
+  ProvisionOnboardingResponse,
   MarketplaceTile,
   ConnectResponseData,
   ConnectorProvider,
@@ -206,12 +208,24 @@ export class BffApiError extends Error {
 // ── Auth ─────────────────────────────────────────────────────────────────────
 
 export const authApi = {
-  register: (body: RegisterRequest) =>
-    bffFetch<RegisterResponse>('/v1/auth/register', {
+  // feat-onboarding-ux: register goes through the BFF (not the cookie-less public
+  // /v1/auth/register). For a genuinely-new user the BFF mints a real authenticated
+  // session and sets the httpOnly `brain_session` cookie — the user lands in the wizard
+  // already authenticated (no manual /login). On success we bootstrap a session-bound
+  // CSRF token up front (mirrors authApi.login) so the first wizard mutation doesn't 403.
+  // The session cookie is the only auth surface — no token is ever returned to JS (XSS-safe).
+  register: async (body: RegisterRequest): Promise<RegisterResponse> => {
+    const res = await bffFetch<RegisterResponse>('/v1/bff/register', {
       method: 'POST',
       body: JSON.stringify(body),
       idempotencyKey: generateRequestId(),
-    }),
+    });
+    // Only a freshly-created user gets a session cookie; bind a CSRF token to it.
+    if (res.created && typeof document !== 'undefined') {
+      await fetch(`${BFF_BASE}/v1/bff/csrf`, { credentials: 'include' });
+    }
+    return res;
+  },
 
   verifyEmail: (body: VerifyEmailRequest) =>
     bffFetch<OkResponse>('/v1/auth/verify-email', {
@@ -260,6 +274,11 @@ export const authApi = {
     }),
 
   me: () => bffFetch<CurrentUserResponse>('/v1/auth/me'),
+
+  // feat-onboarding-ux: the BFF /me also returns onboarding_status (authoritative wizard
+  // position) and email_verified — used by the OnboardingGate (forward-only routing) and
+  // the verify-email banner. Distinct from authApi.me() which hits the raw /v1/auth/me.
+  bffMe: () => bffFetch<CurrentUserResponse>('/v1/bff/me'),
 };
 
 // ── Session ───────────────────────────────────────────────────────────────────
@@ -282,6 +301,27 @@ export const sessionApi = {
   /** Advance the wizard onboarding_status (forward-only). */
   advanceOnboarding: (body: OnboardingAdvanceRequest) =>
     bffFetch<OnboardingAdvanceResponse>('/v1/bff/session/onboarding/advance', {
+      method: 'POST',
+      body: JSON.stringify(body),
+      idempotencyKey: generateRequestId(),
+    }),
+};
+
+// ── Onboarding (merged workspace+brand provisioning — feat-onboarding-ux) ───────
+
+export const onboardingApi = {
+  /**
+   * POST /v1/bff/onboarding/provision — provisions organization + first brand
+   * (with website→pixel) in ONE server transaction. Replaces the non-atomic
+   * client-side chain (workspace create → brand create) that caused the orphan-org
+   * Back-button bug. The slug is derived server-side (never sent/shown by the client).
+   *
+   * Idempotent per user: if the caller already has an org membership the server returns
+   * the existing { organization_id, brand_id } with 200 — so a double-submit or a
+   * Back→resubmit never creates a duplicate.
+   */
+  provision: (body: ProvisionOnboardingRequest) =>
+    bffFetch<ProvisionOnboardingResponse>('/v1/bff/onboarding/provision', {
       method: 'POST',
       body: JSON.stringify(body),
       idempotencyKey: generateRequestId(),

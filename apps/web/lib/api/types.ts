@@ -85,6 +85,12 @@ export interface CurrentUserResponse {
     status: string;
     created_at: string;
   };
+  /**
+   * Authoritative wizard status (feat-onboarding-ux). Returned by /v1/bff/me so the
+   * OnboardingGate can forward-redirect when the user is past the current step.
+   * null = no org membership yet (fresh auto-logged-in user → /onboarding/start).
+   */
+  onboarding_status?: OnboardingStatus | null;
 }
 
 export interface OkResponse {
@@ -96,7 +102,11 @@ export interface OkResponse {
 
 export interface CreateWorkspaceRequest {
   name: string;
-  slug: string;
+  /**
+   * feat-onboarding-ux: slug is now optional — the server derives it from the name when
+   * absent (additive/relaxing change, non-breaking). The slug input is no longer shown.
+   */
+  slug?: string;
   region_code?: string;
 }
 
@@ -622,4 +632,33 @@ export interface RegisterResponse {
   message: string;
   /** Backend returns this when the email has a pending invite. */
   code?: 'INVITE_PENDING';
+  /**
+   * feat-onboarding-ux: the BFF /v1/bff/register auto-login path sets the httpOnly
+   * `brain_session` cookie for a genuinely-new user and reports `created: true`. The
+   * JSON body stays byte-identical for the existing-user collision case (created:false,
+   * no cookie) to avoid an enumeration oracle. When true, the user is already
+   * authenticated and the client routes straight into the wizard (no /login detour).
+   */
+  created?: boolean;
+}
+
+// ── Onboarding provision (merged workspace+brand — feat-onboarding-ux) ─────────
+
+export interface ProvisionOnboardingRequest {
+  workspace_name: string;
+  brand_display_name: string;
+  /** Optional brand website — powers the per-brand tracking pixel (server normalizes). */
+  domain?: string;
+  currency_code?: 'INR' | 'AED' | 'SAR';
+  timezone?: 'Asia/Kolkata' | 'Asia/Dubai' | 'Asia/Riyadh';
+  revenue_definition?: 'realized' | 'delivered';
+}
+
+export interface ProvisionOnboardingResponse {
+  request_id: string;
+  organization_id: string;
+  brand_id: string;
+  /** True when the website was captured and a pixel was provisioned (drives ?w=1). */
+  website_provided: boolean;
+  onboarding_status: OnboardingStatus | null;
 }

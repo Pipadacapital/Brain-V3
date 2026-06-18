@@ -117,6 +117,8 @@ export {
   UpdateWorkspaceResponseSchema,
   ListWorkspacesQuerySchema,
   ListWorkspacesResponseSchema,
+  ProvisionOnboardingRequestSchema,
+  ProvisionOnboardingResponseSchema,
 } from './api/workspace.api.v1.js';
 export type {
   RoleCode,
@@ -128,6 +130,8 @@ export type {
   UpdateWorkspaceResponse,
   ListWorkspacesQuery,
   ListWorkspacesResponse,
+  ProvisionOnboardingRequest,
+  ProvisionOnboardingResponse,
 } from './api/workspace.api.v1.js';
 
 // ── M1 Brand API ──────────────────────────────────────────────────────────────

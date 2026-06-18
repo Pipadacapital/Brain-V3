@@ -14,6 +14,7 @@ import { registerSchema, type RegisterFormValues } from '@/lib/api/schemas';
 import { useRegister } from '@/lib/hooks/use-auth';
 import { toast } from '@/components/ui/toaster';
 import type { RegisterResponse } from '@/lib/api/types';
+import { resolveOnboardingRoute } from '@/lib/onboarding-route';
 
 export function RegisterForm() {
   const router = useRouter();
@@ -42,11 +43,16 @@ export function RegisterForm() {
             router.push(`/invite/accept?email=${encodeURIComponent(data.email)}`);
             return;
           }
+          // feat-onboarding-ux: auto-login. The BFF /register minted a real session
+          // (httpOnly cookie) for a genuinely-new user — land them in the wizard already
+          // authenticated, no manual /login or hard verify-email gate. Email verification
+          // is now a soft-gate (dismissible banner + server-side block on sensitive actions).
           toast({
             title: 'Account created',
-            description: 'Check your email to verify your account.',
+            description: "You're all set — let's set up your brand.",
           });
-          router.push(`/verify-email?email=${encodeURIComponent(data.email)}`);
+          // null status → /onboarding/start (the merged create step).
+          router.push(resolveOnboardingRoute(null));
         },
         onError: (err) => {
           // AC-7: Duplicate verified email — timing-safe 2xx from backend means this

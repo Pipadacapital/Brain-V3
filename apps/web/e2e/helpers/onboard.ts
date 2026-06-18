@@ -8,7 +8,12 @@ function stamp(): number {
   return Date.now() + Math.floor(Math.random() * 100000);
 }
 
-/** Register a fresh user and mark the email verified (dev sends no real email). */
+/**
+ * feat-onboarding-ux: register now AUTO-LOGS-IN. A genuinely-new user gets a real session
+ * (httpOnly cookie) and lands straight in the wizard (/onboarding/start) — no manual /login,
+ * no hard verify-email gate. This helper registers, then marks the email verified in the DB
+ * (dev sends no real email) so downstream sensitive-action tests pass the server soft-gate.
+ */
 export async function registerAndVerify(
   page: Page,
   prefix = 'e2e',
@@ -20,8 +25,28 @@ export async function registerAndVerify(
   await page.getByTestId('input-email').fill(email);
   await page.getByTestId('input-password').fill(PASSWORD);
   await page.getByTestId('btn-register').click();
-  await expect(page).toHaveURL(/\/verify-email/);
+  // Auto-login: lands in the merged create step already authenticated.
+  await expect(page).toHaveURL(/\/onboarding\/start/);
   await markEmailVerified(email);
+  return { email, password: PASSWORD, s };
+}
+
+/**
+ * Register a fresh user WITHOUT marking the email verified — for soft-gate tests that need an
+ * unverified-but-authenticated session (banner + sensitive-action 403). Lands on the wizard.
+ */
+export async function registerUnverified(
+  page: Page,
+  prefix = 'e2e',
+): Promise<{ email: string; password: string; s: number }> {
+  const s = stamp();
+  const email = `${prefix}_${s}@example.com`;
+  await page.goto('/register');
+  await page.getByTestId('input-full-name').fill('E2E Tester');
+  await page.getByTestId('input-email').fill(email);
+  await page.getByTestId('input-password').fill(PASSWORD);
+  await page.getByTestId('btn-register').click();
+  await expect(page).toHaveURL(/\/onboarding\/start/);
   return { email, password: PASSWORD, s };
 }
 
@@ -33,41 +58,43 @@ export async function login(page: Page, email: string, password: string): Promis
   await page.getByTestId('btn-login').click();
 }
 
-/** Full register → verify → login → 4-step onboarding → dashboard. Returns the creds. */
+/**
+ * Complete the merged Step 1 (workspace + brand) from /onboarding/start, skipping the website
+ * so the test doesn't depend on a live storefront. Lands on the tracking interstitial (?w=0).
+ */
+export async function completeMergedStep(page: Page, opts?: { workspace?: string; brand?: string }): Promise<void> {
+  await expect(page).toHaveURL(/\/onboarding\/start/);
+  await page.getByTestId('input-workspace-name').fill(opts?.workspace ?? 'E2E Workspace');
+  await page.getByTestId('input-brand-name').fill(opts?.brand ?? 'E2E Brand');
+  await page.getByTestId('btn-skip-website').click();
+  await expect(page).toHaveURL(/\/onboarding\/tracking/);
+}
+
+/**
+ * Full register → auto-login → 3-step onboarding → dashboard. Returns the creds.
+ * (feat-onboarding-ux: no separate login step; the merged create step provisions both
+ * workspace + brand server-side; slug is auto-derived — no slug input.)
+ */
 export async function onboardToDashboard(
   page: Page,
   prefix = 'e2e',
 ): Promise<{ email: string; password: string }> {
-  const { email, password, s } = await registerAndVerify(page, prefix);
-  await login(page, email, password);
-  await expect(page).toHaveURL(/\/workspace\/new/);
+  const { email, password } = await registerAndVerify(page, prefix);
 
-  // Step 1 — workspace
-  await page.getByTestId('input-workspace-name').fill('E2E Workspace');
-  await page.getByTestId('input-workspace-slug').fill(`e2e-ws-${s}`);
-  await page.getByTestId('btn-create-workspace').click();
-  await expect(page).toHaveURL(/\/brand\/new/);
+  // Step 1 — merged create (workspace + brand), website skipped → tracking interstitial.
+  await completeMergedStep(page);
 
-  // Step 2 — brand (currency/timezone/revenue default to INR/Asia-Kolkata/realized).
-  // The helper skips the website so it doesn't depend on a live, reachable storefront;
-  // brand-create then routes to the tracking interstitial in its "add website" state.
-  await page.getByTestId('input-brand-name').fill('E2E Brand');
-  await page.getByTestId('btn-skip-website').click();
-  await expect(page).toHaveURL(/\/onboarding\/tracking/);
-
-  // Step 2b — tracking interstitial → continue to integrations.
+  // Tracking interstitial → continue to integrations.
   await page.locator('[role="region"][aria-label^="Notifications"] li').waitFor({ state: 'detached', timeout: 8_000 }).catch(() => undefined);
   await page.getByTestId('btn-tracking-continue').click();
   await expect(page).toHaveURL(/\/onboarding\/integrations/);
 
-  // Step 3 — skip integrations
-  // Wait for any lingering toast notifications to clear so they don't intercept
-  // the click on btn-skip-integrations. Toasts auto-dismiss after a few seconds.
+  // Step 2 — skip integrations.
   await page.locator('[role="region"][aria-label^="Notifications"] li').waitFor({ state: 'detached', timeout: 8_000 }).catch(() => undefined);
   await page.getByTestId('btn-skip-integrations').click();
   await expect(page).toHaveURL(/\/onboarding\/done/);
 
-  // Step 4 — done → dashboard
+  // Step 3 — done → dashboard.
   await page.getByTestId('btn-go-to-dashboard').click();
   await expect(page).toHaveURL(/\/dashboard/);
 

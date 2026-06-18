@@ -50,7 +50,7 @@ import { jtiFromJwt, csrfTokenForSession } from './csrf.js';
 import type { RateLimiter } from '../../workspace-access/internal/infrastructure/rate-limiter.js';
 import { loginFailKeySync, loginIpKey } from '../../workspace-access/internal/infrastructure/rate-limiter.js';
 import type { Pool as PgPool } from 'pg';
-import { getRevenueMetrics, getRevenueTimeseries, getKpiSummary, getRecognitionBreakdown, getRecentActivity, getOrdersTimeseries, getOrderStats, getDataHealth, getTrackingHealth, getRecentEvents, getAdSpendTimeseries, getBlendedRoas } from '../../analytics/index.js';
+import { getRevenueMetrics, getRevenueTimeseries, getKpiSummary, getRecognitionBreakdown, getRecentActivity, getOrdersTimeseries, getOrderStats, getDataHealth, getSettlementSummary, getTrackingHealth, getRecentEvents, getAdSpendTimeseries, getBlendedRoas } from '../../analytics/index.js';
 import type { AdPlatform } from '@brain/metric-engine';
 import type { TimeGrain } from '@brain/metric-engine';
 
@@ -664,6 +664,7 @@ export function registerBffRoutes(
           request_id: requestId,
           data: {
             shopify: { connected: false, status: 'not_connected', syncState: null, lastSyncAt: null },
+            razorpay: { connected: false, status: 'not_connected', syncState: null, lastSyncAt: null },
             meta: { coming_soon: true },
             google: { coming_soon: true },
           },
@@ -680,40 +681,47 @@ export function registerBffRoutes(
       const ctx: QueryContext = { brandId: auth.brandId, correlationId: requestId };
       const client = await pool.connect();
       try {
-        const result = await client.query<{
+        // Latest instance per provider (shopify + razorpay), each LEFT JOINed to its sync status.
+        // Parallel reads — no sequential scan. RLS scopes brand_id via the QueryContext.
+        const connRow = `SELECT ci.status, ci.shop_domain, ci.id AS connector_instance_id,
+                  cs.state AS sync_state, cs.last_sync_at, cs.last_error
+           FROM connector_instance ci
+           LEFT JOIN connector_sync_status cs ON cs.connector_instance_id = ci.id AND cs.brand_id = ci.brand_id
+           WHERE ci.brand_id = $1 AND ci.provider = $2
+           ORDER BY ci.created_at DESC
+           LIMIT 1`;
+        type ConnRow = {
           status: string;
           shop_domain: string;
           connector_instance_id: string;
           sync_state: string | null;
           last_sync_at: Date | null;
           last_error: string | null;
-        }>(
-          ctx,
-          `SELECT ci.status, ci.shop_domain, ci.id AS connector_instance_id,
-                  cs.state AS sync_state, cs.last_sync_at, cs.last_error
-           FROM connector_instance ci
-           LEFT JOIN connector_sync_status cs ON cs.connector_instance_id = ci.id AND cs.brand_id = ci.brand_id
-           WHERE ci.brand_id = $1 AND ci.provider = 'shopify'
-           ORDER BY ci.created_at DESC
-           LIMIT 1`,
-          [auth.brandId],
-        );
+        };
+        const [shopifyResult, razorpayResult] = await Promise.all([
+          client.query<ConnRow>(ctx, connRow, [auth.brandId, 'shopify']),
+          client.query<ConnRow>(ctx, connRow, [auth.brandId, 'razorpay']),
+        ]);
 
-        const row = result.rows[0];
+        // 'disconnected' instance rows persist for audit but present as not-connected.
+        const mapConn = (row: ConnRow | undefined) =>
+          row && row.status !== 'disconnected'
+            ? {
+                connected: row.status === 'connected',
+                status: row.status,
+                shop_domain: row.shop_domain || null,
+                connector_instance_id: row.connector_instance_id,
+                syncState: row.sync_state,
+                lastSyncAt: row.last_sync_at?.toISOString() ?? null,
+                lastError: row.last_error,
+              }
+            : { connected: false, status: 'not_connected', syncState: null, lastSyncAt: null };
+
         return reply.send({
           request_id: requestId,
           data: {
-            shopify: row
-              ? {
-                  connected: row.status === 'connected',
-                  status: row.status,
-                  shop_domain: row.shop_domain,
-                  connector_instance_id: row.connector_instance_id,
-                  syncState: row.sync_state,
-                  lastSyncAt: row.last_sync_at?.toISOString() ?? null,
-                  lastError: row.last_error,
-                }
-              : { connected: false, status: 'not_connected', syncState: null, lastSyncAt: null },
+            shopify: mapConn(shopifyResult.rows[0]),
+            razorpay: mapConn(razorpayResult.rows[0]),
             meta: { coming_soon: true },
             google: { coming_soon: true },
           },
@@ -1461,6 +1469,65 @@ export function registerBffRoutes(
       }
 
       const result = await getDataHealth(auth.brandId, { pool: rawPool });
+
+      return reply.send({ request_id: requestId, data: result });
+    },
+  );
+
+  /**
+   * GET /api/v1/analytics/settlements?as_of=YYYY-MM-DD  (Razorpay Track C)
+   *
+   * Returns the brand's settlement (net-of-fees) summary computed from the
+   * realized_revenue_ledger settlement event_types (migration 0027):
+   *   { state, gross_minor, net_minor, fees: [{ type, amount_minor }], currency_code }
+   *
+   * ADR-002 SOLE READ PATH: calls getSettlementSummary → computeSettlementSummary
+   * (metric engine). NO ad-hoc SUM(amount_minor) in this route or the analytics module.
+   *
+   * Brand from session (D-1): auth.brandId, NEVER request body.
+   * Honest no_data (D-2): state='no_data' when the brand has no settlement rows.
+   * RLS / F-SEC-02: the engine reads inside withBrandTxn (GUC set per-transaction).
+   * Pool: rawPool (pg.Pool), not the DbPool wrapper (no double-GUC).
+   */
+  fastify.get(
+    '/api/v1/analytics/settlements',
+    {
+      preHandler: [bffProtectedPreHandler],
+      schema: {
+        querystring: {
+          type: 'object',
+          properties: {
+            as_of: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
+          },
+          additionalProperties: false,
+        },
+      },
+      attachValidation: true,
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const validationError = (request as FastifyRequest & { validationError?: Error }).validationError;
+      if (validationError) {
+        return reply.code(400).send({
+          request_id: requestId,
+          error: { code: 'INVALID_DATE', message: 'as_of must be YYYY-MM-DD.' },
+        });
+      }
+
+      const auth = (request as AuthenticatedRequest).auth;
+      if (!auth.brandId) {
+        const today = new Date().toISOString().split('T')[0] as string;
+        return reply.send({ request_id: requestId, data: { state: 'no_data', as_of: today } });
+      }
+      if (!rawPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' } });
+      }
+
+      const query = request.query as { as_of?: string };
+      const asOfStr = query.as_of ?? (new Date().toISOString().split('T')[0] as string);
+      const asOf = new Date(`${asOfStr}T00:00:00Z`);
+
+      const result = await getSettlementSummary(auth.brandId, asOf, { pool: rawPool });
 
       return reply.send({ request_id: requestId, data: result });
     },

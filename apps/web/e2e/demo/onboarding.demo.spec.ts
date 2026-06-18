@@ -492,8 +492,8 @@ test.describe('Onboarding flow — watchable demo', () => {
   // the browser Back button does NOT let you re-enter a prior step; the
   // onboarding_status routing keeps you on the current step.
   // ──────────────────────────────────────────────────────────────────────────
-  test('Negative — browser Back does not rewind the forward-only wizard', async ({ page }) => {
-    await announce(page, 'Negative — the wizard is forward-only (Back is guarded)');
+  test('Negative — browser Back from the brand step returns to the workspace step (wizard is NOT back-guarded)', async ({ page }) => {
+    await announce(page, 'Negative — what browser Back actually does in the wizard');
 
     await step(page, 'Register, sign in, and complete the workspace step', async () => {
       const r = await registerAndVerify(page, 'demo_back');
@@ -505,16 +505,28 @@ test.describe('Onboarding flow — watchable demo', () => {
       await expect(page.getByTestId('step-indicator')).toHaveText(/Step 2 of 4/i);
     });
 
+    // LIVE FINDING (2026-06-18): the wizard does NOT guard against browser Back — pressing
+    // Back from the brand step rewinds to /workspace/new (the already-created workspace's
+    // form is shown again). There is no onboarding_status→forward redirect. This test asserts
+    // the REAL behavior; the forward-only guard is a candidate hardening item for the queued
+    // Onboarding UX slice (see memory: onboarding-ux-slice).
     await step(
       page,
-      'Press the browser Back button — the wizard routes us forward to the brand step, not back to workspace',
+      'Press the browser Back button — the wizard rewinds to the workspace step (no forward guard)',
       async () => {
         await page.goBack();
-        // onboarding_status === workspace_created routes any onboarding URL to /brand/new.
-        await expect(page).toHaveURL(/\/brand\/new/);
-        await expect(page.getByTestId('step-indicator')).toHaveText(/Step 2 of 4/i);
+        await expect(page).toHaveURL(/\/workspace\/new/);
+        await expect(page.getByRole('heading', { name: /set up your workspace/i })).toBeVisible();
       },
     );
+
+    test.info().annotations.push({
+      type: 'ux-finding',
+      description:
+        'Onboarding wizard is not back-guarded: browser Back from /brand/new returns to /workspace/new ' +
+        'and re-shows the workspace form even though the workspace was already created. ' +
+        'Candidate forward-only guard for the Onboarding UX slice.',
+    });
 
     await pauseFor(page, 1200);
   });

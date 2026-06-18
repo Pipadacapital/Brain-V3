@@ -181,7 +181,11 @@ export async function main(): Promise<void> {
     starrocksHost: getEnv('STARROCKS_HOST', 'localhost'),
     starrocksPort: parseInt(getEnv('STARROCKS_PORT', '9030'), 10),
     starrocksUser: getEnv('STARROCKS_ANALYTICS_USER', 'brain_analytics'),
-    starrocksPassword: getEnv('STARROCKS_ANALYTICS_PASSWORD', ''),
+    // Dev default MUST match db/starrocks/bootstrap.sql, which creates brain_analytics
+    // IDENTIFIED BY 'brain_analytics_dev'. An empty default caused every Silver-read route
+    // (order-status-mix, journey, attribution-via-Silver) to 500 with ER_ACCESS_DENIED on a
+    // fresh `pnpm dev`. Prod overrides via the env var (a real secret).
+    starrocksPassword: getEnv('STARROCKS_ANALYTICS_PASSWORD', 'brain_analytics_dev'),
   };
 
   // Create Fastify instance.

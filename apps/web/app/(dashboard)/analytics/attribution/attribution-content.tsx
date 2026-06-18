@@ -263,7 +263,7 @@ function AttributionData({
   byChannel: ByChannelHasData;
   recon: ReconHasData | null;
 }) {
-  const ccy = byChannel.currency_code as CurrencyCode;
+  const ccy = (byChannel.currency_code ?? 'INR') as CurrencyCode;
   const attributedValue = formatMoneyDisplay(byChannel.attributed_gmv_minor, ccy);
   const channelCount = byChannel.by_channel.length;
 
@@ -331,7 +331,7 @@ function AttributionData({
           <CardContent>
             <AttributedChannelChart
               rows={byChannel.by_channel}
-              currencyCode={byChannel.currency_code}
+              currencyCode={byChannel.currency_code ?? 'INR'}
             />
           </CardContent>
         </Card>
@@ -341,7 +341,7 @@ function AttributionData({
       <div className="lg:col-span-1">
         {recon ? (
           <ReconciliationResidualCard
-            currencyCode={recon.currency_code}
+            currencyCode={recon.currency_code ?? 'INR'}
             realizedMinor={recon.realized_gmv_minor}
             attributedMinor={recon.attributed_gmv_minor}
             unattributedMinor={recon.unattributed_minor}

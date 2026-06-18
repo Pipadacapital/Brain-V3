@@ -203,7 +203,12 @@ export function TouchpointTimeline() {
           <CardContent className="py-5">
             <div className="mb-3 flex flex-wrap items-center gap-2">
               <span className="text-sm font-medium text-foreground">
-                Journey for order <span className="font-mono">{data.order_id}</span>
+                Journey for order <span className="font-mono">{orderId}</span>
+                {data.brain_anon_id && (
+                  <span className="text-xs text-muted-foreground ml-1">
+                    (anon: <span className="font-mono">{data.brain_anon_id}</span>)
+                  </span>
+                )}
               </span>
               <span className="text-xs text-muted-foreground">
                 · {data.touches.length} touchpoint{data.touches.length === 1 ? '' : 's'}

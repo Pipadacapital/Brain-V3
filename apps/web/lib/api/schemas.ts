@@ -173,3 +173,18 @@ export const updateRoleSchema = z.object({
   role_code: z.enum(['owner', 'brand_admin', 'manager', 'analyst'] as const),
 });
 export type UpdateRoleFormValues = z.infer<typeof updateRoleSchema>;
+
+// ── Ask Brain (Phase 8 — feat-decision-intelligence-inputs) ────────────────────
+//
+// The natural-language question form. The question is sent in-memory only; the server
+// persists a deterministically REDACTED form (PII/free-text stripped) — the raw question
+// is NEVER written to disk or logs (requirement §"NLQ stored REDACTED only"). We bound the
+// length to keep the single resolver call within the cost cap (≤~1.5k input tokens).
+export const askBrainSchema = z.object({
+  question: z
+    .string()
+    .trim()
+    .min(3, 'Ask a question (at least 3 characters)')
+    .max(500, 'Keep the question under 500 characters'),
+});
+export type AskBrainFormValues = z.infer<typeof askBrainSchema>;

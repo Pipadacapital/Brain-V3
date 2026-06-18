@@ -1087,6 +1087,121 @@ export type CapiFeedbackDeletionsResponse =
   | { state: 'no_data' }
   | { state: 'has_data'; deletions: CapiFeedbackDeletionRow[] };
 
+// ── Ask Brain / Decision-Intelligence (Phase 8 — feat-decision-intelligence-inputs Track C) ──────
+//
+// CONTRACT SOURCE OF TRUTH (READ, do NOT hand-guess — this MIRRORS the ACTUAL core DTO):
+//   apps/core/src/modules/ai/internal/ask-brain.ts → AskBrainResult (Track B)
+//   BFF: POST /api/v1/ask → reply.send({ request_id, data: AskBrainResult }) (bff.routes.ts:1272)
+//
+// Field names are aligned EXACTLY to AskBrainResult to avoid the recurring BigInt(undefined) /
+// undefined contract-drift crash (tsc + next-build do NOT catch web↔core field drift). Notably:
+//   - kind is ONLY 'answer' | 'refusal' (NO top-level 'no_data' kind). Honest-empty is carried
+//     INSIDE the answer via number.no_data === true (the binding resolved, but no data exists).
+//   - the certified figure is `number: ComputedNumber` (NOT `value`); it is
+//     { figure_kind: 'money' | 'none', money: Record<ccy,string> | null, no_data: boolean }.
+//   - snapshot_id lives INSIDE `binding` (AskBrainBinding), not at the top level.
+//   - trust_tier is CAPITALIZED 'Trusted' | 'Estimated' | 'Untrusted' (core's toTrustTier()).
+//   - an answer also carries `provenance_id` (the appended ai_provenance row id).
+//
+// THE HONESTY GUARANTEE rendered here (requirement §6): the model NEVER produces a number and
+// NEVER emits SQL — it resolves the question to a registry binding (metric_id + version); the
+// metric-engine computes the number deterministically (I-ST01); the UI NEVER queries metric
+// tables. A refusal shows NO number. number.figure_kind==='none' = a valid binding whose figure
+// path is not wired yet (honest — no fabricated number).
+//
+// MONEY (I-S07 / D-1): `number.money` is Record<currency_code, string> — bigint minor-unit
+// STRINGS, never floats, never /100. Render with formatMoneyDisplay(minorString, currency_code).
+// If a `value`/`*_minor` scalar or a float ever appears here the core DTO has DRIFTED: STOP and
+// reconcile — never add a `/100` or BigInt(undefined).
+
+/** Registry metric ids — mirrors metric-engine MetricId (the 16 ids, the binding enum). */
+export type AskMetricId =
+  | 'realized_revenue'
+  | 'provisional_revenue'
+  | 'ad_spend'
+  | 'blended_roas'
+  | 'cod_rto_rate'
+  | 'cod_mix'
+  | 'checkout_funnel'
+  | 'order_status_mix'
+  | 'journey_first_touch_mix'
+  | 'journey_stitch_rate'
+  | 'journey_timeline'
+  | 'attribution_credit'
+  | 'attribution_reconciliation_rate'
+  | 'attribution_confidence'
+  | 'cost_confidence'
+  | 'effective_confidence';
+
+/**
+ * The resolved, validated binding the model selected (NEVER SQL, NEVER a number).
+ * Mirrors core AskBrainBinding — snapshot_id lives HERE (not at the top level).
+ */
+export interface AskBinding {
+  metric_id: AskMetricId;
+  metric_version: string; // e.g. 'v1'
+  /** The resolved, allow-listed params (date range / filters). Echoed for transparency. */
+  params: {
+    date_from?: string;
+    date_to?: string;
+    channel?: string;
+    [key: string]: string | undefined;
+  };
+  /** Reproducibility handle — re-running the binding at this snapshot yields the same number. */
+  snapshot_id: string;
+}
+
+/**
+ * ComputedNumber — the certified figure the metric-engine computed (mirrors core ComputedNumber).
+ *   - figure_kind:'money' → `money` is Record<currency_code, minor-unit string> (or null if no_data).
+ *   - figure_kind:'none'  → a valid binding whose Ask-Brain figure path is not wired yet — NO
+ *                           number is surfaced (honest; never fabricated).
+ *   - no_data:true        → honest-empty: the brand has no data for this binding (no number shown).
+ * Money is NEVER a scalar number — always the per-currency Record (I-S07).
+ */
+export interface AskComputedNumber {
+  figure_kind: 'money' | 'none';
+  money: Record<string, string> | null;
+  no_data: boolean;
+}
+
+/** Trust tier — mirrors core TrustTier (CAPITALIZED, driving the banner; never colour-only). */
+export type AskTrustTier = 'Trusted' | 'Estimated' | 'Untrusted';
+
+/** Confidence grade — mirrors core ConfidenceGrade / DqLetterGrade (frozen letter, never a float). */
+export type AskConfidenceGrade = 'A+' | 'A' | 'B' | 'C' | 'D';
+
+/**
+ * AskBrainResponse — the BFF `data` payload (mirrors core AskBrainResult EXACTLY).
+ *
+ * DISCRIMINATED by `kind`:
+ *   - 'answer'  → binding (+ snapshot_id) + number (ComputedNumber) + confidence/tier + provenance_id.
+ *                 Honest-empty is number.no_data===true; not-wired is number.figure_kind==='none'.
+ *   - 'refusal' → off-domain / unresolvable; NO binding, NO number ("no certified metric…").
+ */
+export type AskBrainResponse =
+  | {
+      kind: 'answer';
+      binding: AskBinding;
+      number: AskComputedNumber;
+      /** Frozen confidence grade from getMetricTrust (Phase 7) — never recomputed in the UI. */
+      confidence_grade: AskConfidenceGrade;
+      /** Trust tier driving the Trusted/Estimated banner (never colour-only). */
+      trust_tier: AskTrustTier;
+      /** The appended ai_provenance row id (append-only audit handle). */
+      provenance_id: string;
+    }
+  | {
+      kind: 'refusal';
+      /** Honest "no certified metric answers this" — surfaced verbatim. NO number, NO binding. */
+      reason: string;
+    };
+
+export interface AskBrainRequest {
+  /** The natural-language question. Sent in-memory only; the server persists REDACTED only. */
+  question: string;
+}
+
 // ── Keyset pagination ─────────────────────────────────────────────────────────
 
 export interface PaginatedResponse<T> {

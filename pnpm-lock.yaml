@@ -355,7 +355,11 @@ importers:
         specifier: ^2.1.0
         version: 2.1.9(@types/node@20.19.43)
 
-  packages/ai-gateway-client: {}
+  packages/ai-gateway-client:
+    dependencies:
+      '@brain/metric-engine':
+        specifier: workspace:*
+        version: link:../metric-engine
 
   packages/audit:
     dependencies:
@@ -529,6 +533,9 @@ importers:
 
   tools/isolation-fuzz:
     dependencies:
+      '@brain/ai-gateway-client':
+        specifier: workspace:*
+        version: link:../../packages/ai-gateway-client
       '@brain/db':
         specifier: workspace:*
         version: link:../../packages/db

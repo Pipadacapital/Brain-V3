@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@brain/ai-gateway-client": "workspace:*",
     "@brain/db": "workspace:*",
     "@brain/metric-engine": "workspace:*",
     "@brain/tenant-context": "workspace:*"

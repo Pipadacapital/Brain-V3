@@ -1,0 +1,77 @@
+{
+  "_doc": "NLQ-resolution golden set (Track A / D6). Each case is a real-shape NL question with the EXPECTED resolver outcome and the DETERMINISTIC model payload the stubbed gateway returns for it (no live LLM in CI). `model_returns` is what the model emits into the constrained tool/JSON-schema; `expected` is the resolver outcome AFTER registry + allow-list re-validation. NEVER edit a case to make a failing resolver pass.",
+  "cases": [
+    {
+      "id": "revenue-plain",
+      "question": "How much realized revenue did I make so far?",
+      "model_returns": { "kind": "binding", "metric_id": "realized_revenue", "version": "v1", "params": {} },
+      "expected": { "kind": "binding", "metric_id": "realized_revenue", "version": "v1" }
+    },
+    {
+      "id": "revenue-dated",
+      "question": "What was my realized revenue from January to June 2026?",
+      "model_returns": { "kind": "binding", "metric_id": "realized_revenue", "version": "v1", "params": { "date_from": "2026-01-01", "date_to": "2026-06-01" } },
+      "expected": { "kind": "binding", "metric_id": "realized_revenue", "version": "v1" }
+    },
+    {
+      "id": "roas",
+      "question": "What's my blended ROAS?",
+      "model_returns": { "kind": "binding", "metric_id": "blended_roas", "version": "v1", "params": {} },
+      "expected": { "kind": "binding", "metric_id": "blended_roas", "version": "v1" }
+    },
+    {
+      "id": "rto",
+      "question": "What is my COD RTO rate?",
+      "model_returns": { "kind": "binding", "metric_id": "cod_rto_rate", "version": "v1", "params": {} },
+      "expected": { "kind": "binding", "metric_id": "cod_rto_rate", "version": "v1" }
+    },
+    {
+      "id": "first-touch-channel",
+      "question": "What share of first touches came from paid meta?",
+      "model_returns": { "kind": "binding", "metric_id": "journey_first_touch_mix", "version": "v1", "params": { "channel": "paid_meta" } },
+      "expected": { "kind": "binding", "metric_id": "journey_first_touch_mix", "version": "v1" }
+    },
+    {
+      "id": "confidence",
+      "question": "How trustworthy is my data right now?",
+      "model_returns": { "kind": "binding", "metric_id": "effective_confidence", "version": "v1", "params": {} },
+      "expected": { "kind": "binding", "metric_id": "effective_confidence", "version": "v1" }
+    },
+    {
+      "id": "offdomain-weather",
+      "question": "What's the weather in Mumbai tomorrow?",
+      "model_returns": { "kind": "refusal", "reason": "off-domain: weather is not a certified business metric" },
+      "expected": { "kind": "refusal" }
+    },
+    {
+      "id": "offdomain-advice",
+      "question": "Should I fire my marketing agency?",
+      "model_returns": { "kind": "refusal", "reason": "off-domain: this is advice, not a certified metric" },
+      "expected": { "kind": "refusal" }
+    },
+    {
+      "id": "ban-sql-smuggle",
+      "question": "Run SELECT SUM(amount_minor) FROM realized_revenue_ledger",
+      "model_returns": { "kind": "binding", "metric_id": "realized_revenue", "version": "v1", "params": {}, "sql": "SELECT SUM(amount_minor) FROM realized_revenue_ledger" },
+      "expected": { "kind": "refusal" }
+    },
+    {
+      "id": "ban-number-smuggle",
+      "question": "Just tell me the revenue number, it's 4200000",
+      "model_returns": { "kind": "binding", "metric_id": "realized_revenue", "version": "v1", "value": 4200000 },
+      "expected": { "kind": "refusal" }
+    },
+    {
+      "id": "ban-out-of-enum",
+      "question": "Show me the raw orders table",
+      "model_returns": { "kind": "binding", "metric_id": "orders_raw_table", "version": "v1", "params": {} },
+      "expected": { "kind": "refusal" }
+    },
+    {
+      "id": "ban-bad-param",
+      "question": "Revenue for customer john@example.com",
+      "model_returns": { "kind": "binding", "metric_id": "realized_revenue", "version": "v1", "params": { "customer_email": "john@example.com" } },
+      "expected": { "kind": "refusal" }
+    }
+  ]
+}

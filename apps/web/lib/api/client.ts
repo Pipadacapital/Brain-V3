@@ -89,6 +89,8 @@ import type {
   AnalyticsAttributionByChannelResponse,
   AnalyticsAttributionReconciliationResponse,
   AnalyticsChannelRoasResponse,
+  AskBrainRequest,
+  AskBrainResponse,
 } from './types';
 
 /** All BFF routes proxied through Next.js API routes → frontend-api module */
@@ -1340,6 +1342,29 @@ export const capiFeedbackApi = {
     const { data } = await bffFetch<BffEnvelope<CapiFeedbackDeletionsResponse>>(
       '/v1/feedback/capi/deletions',
     );
+    return data;
+  },
+};
+
+// ── Ask Brain / Decision-Intelligence (Phase 8 — feat-decision-intelligence-inputs) ──────
+//
+// POST /api/v1/ask — the single-question Decision-Intelligence read. BFF-only, session-authed,
+// brand from session (D-1). The web app NEVER queries metric tables / StarRocks and NEVER calls
+// the model directly — the BFF orchestrates resolve→engine-compute→trust→provenance and returns
+// the certified AskBrainResponse. D-10: unwrap { request_id, data }.
+//
+// The model resolves the question to a registry binding; the metric-engine computes the number
+// (I-ST01). kind:'refusal' → no number is shown (off-domain honesty). Money is bigint-minor
+// strings + currency — format with formatMoneyDisplay, never /100, never BigInt(undefined).
+
+export const askApi = {
+  /** POST /api/v1/ask — resolve a NL question to a certified metric answer (or honest refusal). */
+  ask: async (body: AskBrainRequest): Promise<AskBrainResponse> => {
+    const { data } = await bffFetch<BffEnvelope<AskBrainResponse>>('/v1/ask', {
+      method: 'POST',
+      body: JSON.stringify(body),
+      idempotencyKey: generateRequestId(),
+    });
     return data;
   },
 };

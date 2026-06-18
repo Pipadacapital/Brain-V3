@@ -13,6 +13,7 @@
  *  - Product term "Workspace" maps to database table "organization" (D0.3).
  */
 import { z } from 'zod';
+import { CurrencyCodeSchema, BrandTimezoneSchema, RevenueDefinitionSchema } from './brand.api.v1.js';
 
 // ── Role codes (canon ADR-006) ────────────────────────────────────────────────
 
@@ -36,11 +37,15 @@ export type Workspace = z.infer<typeof WorkspaceSchema>;
 
 export const CreateWorkspaceRequestSchema = z.object({
   name: z.string().min(1).max(255),
+  // feat-onboarding-ux (Deliverable 4): slug is now OPTIONAL. Derived server-side
+  // (slugify(name)+suffix) when absent. RELAXING an existing constraint is additive /
+  // non-breaking per api-discipline — callers that still send a slug keep working.
   slug: z
     .string()
     .min(2)
     .max(63)
-    .regex(/^[a-z0-9-]+$/, 'Slug must be lowercase alphanumeric with hyphens'),
+    .regex(/^[a-z0-9-]+$/, 'Slug must be lowercase alphanumeric with hyphens')
+    .optional(),
 });
 export type CreateWorkspaceRequest = z.infer<typeof CreateWorkspaceRequestSchema>;
 
@@ -87,3 +92,31 @@ export const ListWorkspacesResponseSchema = z.object({
   has_more: z.boolean(),
 });
 export type ListWorkspacesResponse = z.infer<typeof ListWorkspacesResponseSchema>;
+
+// ── Merged onboarding provision (feat-onboarding-ux, Deliverable 3) ─────────────
+// POST /api/v1/bff/onboarding/provision — provisions workspace + first brand in ONE
+// transaction. NO slug field (derived server-side, Deliverable 4). The website→pixel
+// path from feat-onboarding-website is preserved (domain → canonical host → pixel).
+
+export const ProvisionOnboardingRequestSchema = z.object({
+  workspace_name: z.string().min(1).max(255),
+  brand_display_name: z.string().min(1).max(255),
+  // Brand website (optional / skip-for-now). Server canonicalizes via normalizeBrandHost;
+  // a non-empty value triggers per-brand pixel_installation auto-provision.
+  domain: z.string().max(253).nullable().optional(),
+  currency_code: CurrencyCodeSchema.optional(),
+  timezone: BrandTimezoneSchema.optional(),
+  revenue_definition: RevenueDefinitionSchema.optional(),
+});
+export type ProvisionOnboardingRequest = z.infer<typeof ProvisionOnboardingRequestSchema>;
+
+export const ProvisionOnboardingResponseSchema = z.object({
+  request_id: z.string().uuid(),
+  organization_id: z.string().uuid(),
+  brand_id: z.string().uuid(),
+  onboarding_status: z.enum(['pending', 'org_created', 'brand_created', 'integration_selected', 'complete']),
+  // true when this call provisioned new rows; false when it returned the caller's
+  // existing org/brand (idempotent Back-safety, Deliverable 5).
+  created: z.boolean(),
+});
+export type ProvisionOnboardingResponse = z.infer<typeof ProvisionOnboardingResponseSchema>;

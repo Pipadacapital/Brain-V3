@@ -27,6 +27,7 @@ import { DbAuditWriter } from '@brain/audit';
 import { assertArgon2Params, AuthService } from './modules/workspace-access/internal/application/auth.service.js';
 import { WorkspaceService } from './modules/workspace-access/internal/application/workspace.service.js';
 import { BrandService } from './modules/workspace-access/internal/application/brand.service.js';
+import { OnboardingService } from './modules/workspace-access/internal/application/onboarding.service.js';
 import { InviteService } from './modules/workspace-access/internal/application/invite.service.js';
 import { registerAuthRoutes } from './modules/workspace-access/internal/interfaces/rest/auth.routes.js';
 import { RateLimiter } from './modules/workspace-access/internal/infrastructure/rate-limiter.js';
@@ -93,6 +94,7 @@ import { PgPixelStatusRepository } from './modules/connector/pixel/infrastructur
 // ── RBAC guards (HIGH-MOUNT-01) ───────────────────────────────────────────────
 import { validateSessionPreHandler } from './modules/workspace-access/internal/interfaces/rest/auth.routes.js';
 import { requireRole } from './modules/workspace-access/internal/security/rbac.js';
+import { requireVerifiedEmail } from './modules/workspace-access/internal/security/email-verified.guard.js';
 import type { AuthenticatedRequest } from './modules/workspace-access/internal/interfaces/rest/auth.routes.js';
 
 // ── Secrets provider (HIGH-SECRETS-01) ───────────────────────────────────────
@@ -245,6 +247,7 @@ export async function main(): Promise<void> {
       const path = (request.url.split('?')[0] ?? '');
       const csrfExempt =
         path === '/api/v1/bff/session' || // login — establishes the session
+        path === '/api/v1/bff/register' || // register + auto-login — establishes the session
         path === '/api/v1/auth/login' ||
         path === '/api/v1/auth/register' ||
         path === '/api/v1/auth/verify-email' ||
@@ -376,12 +379,24 @@ export async function main(): Promise<void> {
   );
   const inviteService = new InviteService(pool, auditWriter, notificationService, rawPgPool);
 
+  // feat-onboarding-ux (D3): merged workspace+brand provisioning. Reuses the SAME
+  // pixel provisioner injected into BrandService so the website→pixel path is not
+  // regressed; runs the org+brand inserts in one rawPgPool BEGIN/COMMIT transaction.
+  const onboardingService = new OnboardingService(
+    pool,
+    rawPgPool,
+    auditWriter,
+    async (brandId, targetHost, idempotencyKey) => {
+      await getOrCreateInstallation.execute({ brandId, targetHost, idempotencyKey });
+    },
+  );
+
   // Register workspace-access + BFF routes.
   registerAuthRoutes(app, authService, rateLimiter);
   registerWorkspaceRoutes(app, authService, workspaceService);
   registerBrandRoutes(app, authService, brandService);
   registerMemberRoutes(app, authService, inviteService, rawPgPool);
-  registerBffRoutes(app, authService, pool, config.cookieSecret, rateLimiter, rawPgPool);
+  registerBffRoutes(app, authService, pool, config.cookieSecret, rateLimiter, rawPgPool, onboardingService);
 
   // DEV-ONLY: surface email action links (verify/reset/invite) for browser testing
   // without a real inbox. Registered ONLY outside production — the route does not
@@ -795,6 +810,12 @@ export async function main(): Promise<void> {
   await app.register(async (scope) => {
     scope.addHook('preHandler', sessionPreHandler);
     scope.addHook('preHandler', requireRole('manager'));
+    // feat-onboarding-ux (Deliverable 2): connecting a real store is a sensitive
+    // action — block unverified users server-side (403 EMAIL_NOT_VERIFIED). Runs AFTER
+    // session + role. Covers POST /api/v1/connectors (generic connect → OAuth initiate),
+    // GET /api/v1/connectors/shopify/install, and the ads install routes in this scope.
+    // The public OAuth callbacks live in a different (state/HMAC-authed) scope → ungated.
+    scope.addHook('preHandler', requireVerifiedEmail(authService));
 
     // Generic connect (ADR-CM-2 / D-5 / D-10)
     scope.post('/api/v1/connectors', async (req: FastifyRequest<{ Body: { type?: string; shop_domain?: string; credentials?: Record<string, string> } }>, reply) => {

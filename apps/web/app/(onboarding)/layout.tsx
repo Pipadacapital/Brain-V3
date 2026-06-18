@@ -1,13 +1,14 @@
 /**
- * Onboarding layout — 4-step wizard, progress-oriented, minimal chrome.
+ * Onboarding layout — 3-step wizard (feat-onboarding-ux), progress-oriented, minimal chrome.
  *
  * Steps:
- *   Step 1: /workspace/new  — Create Workspace
- *   Step 2: /brand/new      — Create Brand (currency/timezone/revenue)
- *   Step 3: /onboarding/integrations — Connect Integrations
- *   Step 4: /onboarding/done         — Done
+ *   Step 1: /onboarding/start        — merged Create Workspace + Brand (slug auto-derived)
+ *           /onboarding/tracking     — pixel-ready / add-website interstitial (post-create)
+ *   Step 2: /onboarding/integrations — Connect Integrations
+ *   Step 3: /onboarding/done         — Done
  *
- * Ghost /invite step REMOVED (MA-10). Pixel is NOT a wizard step (stays in settings).
+ * Legacy /workspace/new + /brand/new redirect forward to /onboarding/start. The OnboardingGate
+ * forward-redirects past completed steps (forward-only). Pixel is NOT a wizard step (settings).
  * Progress indicator is rendered by each step page (data-testid="step-indicator").
  */
 export default function OnboardingLayout({ children }: { children: React.ReactNode }) {

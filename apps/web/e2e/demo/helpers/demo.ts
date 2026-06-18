@@ -29,7 +29,13 @@
 import type { Page } from '@playwright/test';
 
 // Re-export upstream helpers so spec authors only need ONE import path.
-export { registerAndVerify, login, onboardToDashboard } from '../../helpers/onboard';
+export {
+  registerAndVerify,
+  registerUnverified,
+  completeMergedStep,
+  login,
+  onboardToDashboard,
+} from '../../helpers/onboard';
 export { markEmailVerified } from '../../helpers/db';
 export { expectNoA11yViolations, type A11yOptions } from '../../helpers/a11y';
 

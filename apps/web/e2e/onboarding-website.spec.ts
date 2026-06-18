@@ -19,20 +19,19 @@
  */
 
 import { test, expect, type Page } from '@playwright/test';
-import { registerAndVerify, login } from './helpers/onboard';
+import { registerAndVerify } from './helpers/onboard';
 import { expectNoA11yViolations } from './helpers/a11y';
 
-/** Register → login → Step 1 workspace → land on /brand/new. Returns the stamp for unique slugs. */
+/**
+ * feat-onboarding-ux: register auto-logs-in and lands on the merged create step
+ * (/onboarding/start), which carries BOTH the workspace name and the brand fields (incl. the
+ * website + live host preview). This helper fills the workspace name and leaves the brand
+ * name / website to the individual tests (the website→pixel UX is the thing under test).
+ */
 async function toBrandStep(page: Page, prefix: string): Promise<void> {
-  const { email, password } = await registerAndVerify(page, prefix);
-  await login(page, email, password);
-  await expect(page).toHaveURL(/\/workspace\/new/);
-
-  const s = Date.now() + Math.floor(Math.random() * 100000);
+  await registerAndVerify(page, prefix);
+  await expect(page).toHaveURL(/\/onboarding\/start/);
   await page.getByTestId('input-workspace-name').fill('OW Workspace');
-  await page.getByTestId('input-workspace-slug').fill(`ow-ws-${s}`);
-  await page.getByTestId('btn-create-workspace').click();
-  await expect(page).toHaveURL(/\/brand\/new/);
 }
 
 test.describe('onboarding website → tracking', () => {

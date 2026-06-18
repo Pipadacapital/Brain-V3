@@ -8,6 +8,7 @@ import type { AuditWriter } from '@brain/audit';
 import type { Organization } from '../domain/organization/entities.js';
 import type { Membership } from '../domain/membership/entities.js';
 import { OrganizationRepository, MembershipRepository } from '../infrastructure/repositories.js';
+import { deriveSlug } from './slugify.js';
 
 export class WorkspaceError extends Error {
   constructor(
@@ -27,7 +28,9 @@ export class WorkspaceService {
   ) {}
 
   async create(
-    data: { name: string; slug: string; ownerUserId: string },
+    // feat-onboarding-ux (Deliverable 4): slug is OPTIONAL — derived server-side
+    // (deriveSlug) when absent. The frontend no longer sends or shows a slug.
+    data: { name: string; slug?: string; ownerUserId: string },
     correlationId: string,
   ): Promise<{ organization: Organization; membership: Membership }> {
     const ctx: QueryContext = { correlationId };
@@ -36,15 +39,28 @@ export class WorkspaceService {
       const orgRepo = new OrganizationRepository(client);
       const memberRepo = new MembershipRepository(client);
 
-      // Check slug uniqueness.
-      const existing = await orgRepo.findBySlug(data.slug, ctx);
-      if (existing) {
-        throw new WorkspaceError('SLUG_TAKEN', 'This workspace slug is already taken.', 409);
+      // Resolve the slug: a caller-supplied slug must be unique (explicit 409);
+      // a derived slug carries a random suffix and self-heals on the residual
+      // unique-violation race (retry once with a fresh suffix). Shared rule with
+      // OnboardingService — slugify.ts is the single source.
+      let slug: string;
+      if (data.slug) {
+        const existing = await orgRepo.findBySlug(data.slug, ctx);
+        if (existing) {
+          throw new WorkspaceError('SLUG_TAKEN', 'This workspace slug is already taken.', 409);
+        }
+        slug = data.slug;
+      } else {
+        slug = deriveSlug(data.name);
+        // The suffix makes a collision near-zero; a single pre-check covers it.
+        if (await orgRepo.findBySlug(slug, ctx)) {
+          slug = deriveSlug(data.name);
+        }
       }
 
       // Create the organization.
       const org = await orgRepo.insert(
-        { name: data.name, slug: data.slug, ownerUserId: data.ownerUserId },
+        { name: data.name, slug, ownerUserId: data.ownerUserId },
         ctx,
       );
 

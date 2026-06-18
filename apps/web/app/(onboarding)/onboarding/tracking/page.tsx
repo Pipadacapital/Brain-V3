@@ -16,10 +16,10 @@ export default function OnboardingTrackingPage() {
       <div className="mb-8">
         <p
           className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground"
-          aria-label="Step 2 of 4"
+          aria-label="Step 1 of 3"
           data-testid="step-indicator"
         >
-          Step 2 of 4
+          Step 1 of 3
         </p>
         <h2 className="text-2xl font-bold text-foreground">Set up tracking</h2>
         <p className="mt-1 text-muted-foreground">

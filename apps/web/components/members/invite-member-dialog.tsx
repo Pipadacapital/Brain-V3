@@ -26,6 +26,8 @@ import { ErrorCard } from '@/components/ui/error-card';
 import { inviteMemberSchema, type InviteMemberFormValues } from '@/lib/api/schemas';
 import { useInviteMember } from '@/lib/hooks/use-members';
 import { useWorkspaceList } from '@/lib/hooks/use-workspace';
+import { useEmailVerified } from '@/lib/hooks/use-auth';
+import { BffApiError } from '@/lib/api/client';
 import { toast } from '@/components/ui/toaster';
 import { ROLE_LABELS, type RoleCode } from '@/lib/api/types';
 import { useState } from 'react';
@@ -53,10 +55,14 @@ interface InviteMemberDialogProps {
   currentUserRole?: RoleCode;
 }
 
+/** Soft-gate reason copy for inviting members before email is verified. */
+const VERIFY_TO_INVITE = 'Verify your email to invite members';
+
 export function InviteMemberDialog({ onSuccess, currentUserRole = 'analyst' }: InviteMemberDialogProps) {
   const [open, setOpen] = useState(false);
   const { mutate: inviteMember, isPending, error } = useInviteMember();
   const { data: workspaces } = useWorkspaceList();
+  const { emailVerified } = useEmailVerified();
   const organizationId = workspaces?.workspaces?.[0]?.id ?? '';
 
   const allowedRoles = invitableRoles(currentUserRole);
@@ -86,7 +92,17 @@ export function InviteMemberDialog({ onSuccess, currentUserRole = 'analyst' }: I
           onSuccess?.();
         },
         onError: (err) => {
-          // 403 from the server surfaces a toast (D-6/D-7 — server is authoritative).
+          // The server is the authoritative soft-gate (feat-onboarding-ux): an unverified
+          // user gets 403 EMAIL_NOT_VERIFIED even if the UI hint was bypassed — surface a
+          // clear, actionable message. Other 403s (role hierarchy) keep the generic copy.
+          if (err instanceof BffApiError && err.code === 'EMAIL_NOT_VERIFIED') {
+            toast({
+              title: 'Verify your email first',
+              description: `${VERIFY_TO_INVITE}. Check your inbox for the verification link.`,
+              variant: 'destructive',
+            });
+            return;
+          }
           const apiErr = err as { message?: string };
           toast({ title: 'Invite failed', description: apiErr.message ?? 'Unable to send invite.' });
         },
@@ -117,6 +133,18 @@ export function InviteMemberDialog({ onSuccess, currentUserRole = 'analyst' }: I
         <form onSubmit={handleSubmit(onSubmit)} noValidate>
           <div className="space-y-4 py-2">
             {error && <ErrorCard error={error} />}
+
+            {/* Soft-gate reason hint — UX guidance only; the server gate is authoritative. */}
+            {!emailVerified && (
+              <p
+                id="invite-verify-hint"
+                role="note"
+                data-testid="invite-verify-hint"
+                className="rounded-md border border-status-amber-200 bg-status-amber-50 px-3 py-2 text-xs text-status-amber-700"
+              >
+                {VERIFY_TO_INVITE}. We&apos;ll send the invite once your email is verified.
+              </p>
+            )}
 
             <div className="space-y-1.5">
               <Label htmlFor="invite-email">Email address</Label>
@@ -173,7 +201,13 @@ export function InviteMemberDialog({ onSuccess, currentUserRole = 'analyst' }: I
             >
               Cancel
             </Button>
-            <Button type="submit" disabled={isPending} data-testid="btn-send-invite">
+            <Button
+              type="submit"
+              disabled={isPending || !emailVerified}
+              aria-describedby={!emailVerified ? 'invite-verify-hint' : undefined}
+              title={!emailVerified ? VERIFY_TO_INVITE : undefined}
+              data-testid="btn-send-invite"
+            >
               {isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />}
               {isPending ? 'Sending…' : 'Send invite'}
             </Button>

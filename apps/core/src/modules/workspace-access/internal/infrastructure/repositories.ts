@@ -940,6 +940,37 @@ export class MembershipRepository {
     return this.mapRow(row);
   }
 
+  /**
+   * Resolve the user's "active" membership WITHIN a specific organization, for
+   * session bootstrapping when a preferred workspace is known. Like
+   * findActiveByUser, but org-scoped: prefers a brand-level membership
+   * (brand_id NOT NULL) over the org-level one, most recent first — so a
+   * fully-onboarded user staying in their workspace resolves to {brand, role}
+   * instead of the brand-less org membership (which would mint brand_id=null and
+   * break every brand-scoped surface).
+   */
+  async findActiveByUserAndOrg(
+    appUserId: string,
+    organizationId: string,
+    ctx: QueryContext,
+  ): Promise<Membership | null> {
+    const result = await this.db.query<{
+      id: string; organization_id: string; brand_id: string | null;
+      app_user_id: string; role_code: string; created_at: Date; updated_at: Date;
+    }>(
+      ctx,
+      `SELECT id, organization_id, brand_id, app_user_id, role_code, created_at, updated_at
+       FROM membership
+       WHERE app_user_id = $1 AND organization_id = $2
+       ORDER BY (brand_id IS NOT NULL) DESC, created_at DESC
+       LIMIT 1`,
+      [appUserId, organizationId],
+    );
+    const row = result.rows[0];
+    if (!row) return null;
+    return this.mapRow(row);
+  }
+
   private mapRow(row: {
     id: string; organization_id: string; brand_id: string | null;
     app_user_id: string; role_code: string; created_at: Date; updated_at: Date;

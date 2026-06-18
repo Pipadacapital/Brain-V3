@@ -24,7 +24,10 @@ export type MetricId =
   | 'order_status_mix'
   | 'journey_first_touch_mix'
   | 'journey_stitch_rate'
-  | 'journey_timeline';
+  | 'journey_timeline'
+  | 'attribution_credit'
+  | 'attribution_reconciliation_rate'
+  | 'attribution_confidence';
 export type MetricVersion = `v${number}`;
 
 export interface MetricDefinition {
@@ -47,7 +50,12 @@ export interface MetricDefinition {
     | 'silver_order_state'
     // Silver mart silver.touchpoint (StarRocks brain_silver), read via withSilverBrand
     // (Phase 4 — journey: first-touch mix, stitch hit-rate, touchpoint timeline).
-    | 'silver_touchpoint';
+    | 'silver_touchpoint'
+    // attribution_credit_ledger (Postgres Gold, 0032) — the credit/clawback SoR.
+    // Read seams: attributed_gmv_as_of / channel_contribution_as_of / attribution_confidence_mart
+    // (all SECURITY INVOKER). The WRITER (the metric engine) appends credit + clawback rows;
+    // these named seams are the SOLE attributed-sum read path (no ad-hoc SUM).
+    | 'attribution_credit_ledger';
   /**
    * recognition_label semantics this metric covers.
    * Cross-checked in registry unit test: realized→finalized; provisional→provisional/settling.
@@ -264,6 +272,65 @@ export const METRIC_REGISTRY = {
         'occurred_at, is_first/last_touch) over silver.touchpoint — no aggregation, but still through ' +
         'the brand-scoped withSilverBrand seam (I-ST01 sole reader). NO money column. Honest no_data ' +
         'when the journey resolves to zero touches. Sole emitter: metric-engine only.',
+    },
+  },
+  attribution_credit: {
+    v1: {
+      metricId: 'attribution_credit' as const,
+      version: 'v1' as const,
+      // The WRITER metric: per-touch weight_fraction (DECIMAL(9,8)) + credited_revenue_minor
+      // appended to attribution_credit_ledger (Postgres Gold, 0032). Clawback mirrors negative
+      // rows with the SAVED weight. The attributed-read path is attributed_gmv_as_of /
+      // channel_contribution_as_of (named seams over this ledger).
+      readSeam: 'attribution_credit_ledger' as const,
+      // Credit is realized-revenue-derived (the order's finalized realized revenue is the basis).
+      recognitionLabels: ['finalized'] as const,
+      toleranceMinor: 0 as const,
+      description:
+        'Attribution credit (position-based, brand-configurable model set first/last/linear/' +
+        'position_based default 40-40-20): per-touch weight_fraction DECIMAL(9,8) (Σ=1.0 exactly, ' +
+        'scaled-integer math, NO float) over silver.touchpoint + the order realized_revenue_minor; ' +
+        'credited_revenue_minor = largest-remainder apportionment so Σ credited = realized exactly. ' +
+        'Clawback on RTO/refund/chargeback appends mirrored SIGNED-NEGATIVE rows with ' +
+        'reversed_of_credit_id using the SAVED weight_fraction (never re-apportioned) — fully-RTO ' +
+        'closed-sum=0. Append-only, deterministic credit_id (idempotent replay). Writer = ' +
+        'metric-engine only (Tier-0 deterministic; I-E03/E04). SoR = attribution_credit_ledger (0032).',
+    },
+  },
+  attribution_reconciliation_rate: {
+    v1: {
+      metricId: 'attribution_reconciliation_rate' as const,
+      version: 'v1' as const,
+      // attributed_gmv_as_of (numerator) + realized_gmv_as_of (existing 0018 seam) — same
+      // pattern as blended_roas (records one seam; the other is re-used). channel_contribution_as_of
+      // feeds the per-channel residual + the closed-sum oracle.
+      readSeam: 'attribution_credit_ledger' as const,
+      recognitionLabels: ['finalized'] as const,
+      toleranceMinor: 0 as const,
+      description:
+        'Attribution reconciliation rate = (attributed_gmv_minor / realized_gmv_minor) × 100, ' +
+        'NUMERIC(5,2), integer-basis-point math (no float). attributed_gmv_minor = ' +
+        'attributed_gmv_as_of (Σ credited net of clawback); realized_gmv_minor = realized_gmv_as_of ' +
+        '(0018). The unattributed residual = realized − attributed is ALWAYS rendered (never hidden). ' +
+        'The closed-sum parity oracle: Σ channel_contribution_minor + unattributed_minor = ' +
+        'realized_gmv_minor (CI-blocking, exact-integer tolerance 0). Sole emitter: metric-engine only.',
+    },
+  },
+  attribution_confidence: {
+    v1: {
+      metricId: 'attribution_confidence' as const,
+      version: 'v1' as const,
+      readSeam: 'attribution_credit_ledger' as const,
+      recognitionLabels: [] as const,
+      toleranceMinor: 0 as const,
+      description:
+        'Attribution confidence: a DETERMINISTIC grade floor over a journey\'s touches — ' +
+        'strong/1.000 (stitched + all deterministic channels), partial/0.700 (stitched but ≥1 ' +
+        'cookieless/direct touch), weak/0.400 (unstitched/synthetic). FROZEN constants (no runtime ' +
+        'float, no model — I-E03/E04). Stamped onto each credit row at credit time, carried verbatim ' +
+        'onto clawback. Feeds effective_confidence = min(cost_confidence, attribution_confidence) ' +
+        '(Phase-6 CM2/CAC). Read seam: attribution_confidence_mart (SECURITY INVOKER over the ledger). ' +
+        'Sole emitter: metric-engine only.',
     },
   },
 } as const;

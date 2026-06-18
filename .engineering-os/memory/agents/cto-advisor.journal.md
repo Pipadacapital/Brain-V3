@@ -282,3 +282,7 @@ SEC-NEW-M1 (spec) RESOLVED; SEC-AD-H1/SEC-AD-M1/Q-CURSOR all intact at HEAD (re-
 **Residuals (tracked, non-blocking):** PROD-GAP-1 StarRocks engine row-policy graduation (M1=non-inert app-seam predicate); DATA-NOTE-1 thin real data 23/94, synthetic supplement labelled, _synthetic→UI SyntheticBadge.
 **No auto-candidate rule:** clean 0-bounce PASS, no recurring root-cause (below ≥3-prior-run threshold).
 **Next:** stakeholder gate (Stage 7).
+
+## 2026-06-18T18:30:00Z — Engineering Advisor (final-reviewer) — feat-attribution-ledger
+**Stage:** 6 · **Verdict:** PASS · **Paradigm audit:** clean (Tier-0 deterministic, $0/mo, no model number on money ledger)
+**Gates re-run:** parity-oracle+models 60/60 · full metric-engine 141/141 · isolation-fuzz 9/9 · independent non-engine re-derivation of largest-remainder apportionment (Σcredited=realized, full-RTO closed-sum=0, partial proportional to saved weights) all replicated · **Next:** stakeholder gate (stage 7)

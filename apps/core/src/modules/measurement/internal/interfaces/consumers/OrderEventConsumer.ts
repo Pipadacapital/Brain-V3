@@ -42,11 +42,51 @@ function toBigInt(v: bigint | string | number): bigint {
   return BigInt(Math.trunc(v));
 }
 
+/**
+ * Optional attribution clawback hook (Phase 5). When a reversal event is processed,
+ * the consumer invokes this AFTER the revenue reversal is appended so the attribution
+ * ledger appends mirrored signed-negative clawback rows (SAVED weights, idempotent).
+ * Injected by the composition root; absent in pre-Phase-5 wiring (additive, I-E05).
+ */
+export interface AttributionReversalHook {
+  onRevenueReversal(reversal: {
+    brandId: string;
+    orderId: string;
+    reversalReason: 'rto_reversal' | 'refund' | 'chargeback' | 'cancellation' | 'concession';
+    reversalLedgerEventId: string;
+    /** The (negative) reversal basis in signed minor units. */
+    reversalBasisMinor: bigint;
+    occurredAt: Date;
+  }): Promise<void>;
+}
+
 export class OrderEventConsumer {
   private readonly recognizeOrder: RecognizeOrderCommand;
 
-  constructor(pool: Pool) {
+  constructor(
+    pool: Pool,
+    private readonly attributionHook?: AttributionReversalHook,
+  ) {
     this.recognizeOrder = new RecognizeOrderCommand(pool);
+  }
+
+  /**
+   * Process a reversal event. The revenue reversal is the measurement module's job (the
+   * caller appends it via PostReversalCommand); this entrypoint fans the SAME reversal out
+   * to the attribution clawback (Phase 5) when the hook is wired. Idempotent end-to-end
+   * (deterministic reversal id → ON CONFLICT DO NOTHING). No-op when no hook is injected.
+   */
+  async handleReversal(reversal: {
+    brandId: string;
+    orderId: string;
+    reversalReason: 'rto_reversal' | 'refund' | 'chargeback' | 'cancellation' | 'concession';
+    reversalLedgerEventId: string;
+    reversalBasisMinor: bigint;
+    occurredAt: Date;
+  }): Promise<void> {
+    if (this.attributionHook) {
+      await this.attributionHook.onRevenueReversal(reversal);
+    }
   }
 
   /**

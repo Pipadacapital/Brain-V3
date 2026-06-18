@@ -41,6 +41,7 @@ PG_PSQL  ?= docker exec -i $(PG_CONTAINER) psql -U $(PG_USER) -d $(PG_DB)
 
 .PHONY: silver-catalog silver-run silver-build silver-verify
 .PHONY: journey-catalog journey-run journey-build journey-verify journey-seed
+.PHONY: attribution-migrate attribution-seed attribution-build attribution-verify
 
 silver-catalog:
 	@echo ">> Applying Postgres read-shim view silver_order_ledger_src (uuid->text for JDBC)..."
@@ -130,4 +131,38 @@ journey-verify: journey-run
 		echo ">> REPLAY PASS: silver_touchpoint content is identical across re-runs (idempotent)."; \
 	else \
 		echo ">> REPLAY FAIL: silver_touchpoint content changed between runs."; exit 1; \
+	fi
+
+# ============================================================================
+# Phase 5 — Attribution credit ledger (migration 0032 + synthetic fixtures).
+# The credit ledger is a Postgres Gold SoR (RLS FORCE, append-only). It is
+# rebuildable from silver.touchpoint + realized_revenue_ledger — the synthetic
+# fixtures are CLEARLY-LABELLED dev enrichment (real journey data is thin).
+# ============================================================================
+
+attribution-migrate:
+	@echo ">> Applying additive migration 0032_attribution_credit_ledger.sql (RLS FORCE, append-only, seams)..."
+	$(PG_PSQL) -v ON_ERROR_STOP=1 < db/migrations/0032_attribution_credit_ledger.sql
+
+attribution-seed: attribution-migrate
+	@echo ">> Loading CLEARLY-LABELLED synthetic attribution fixtures (model_version=v1-synthetic-fixture) into the credit ledger..."
+	$(PG_PSQL) -v ON_ERROR_STOP=1 < db/dbt/seeds/attribution_synthetic_fixtures.sql
+
+attribution-build: attribution-seed
+
+# Replay/idempotency proof: re-running the seed must add NO rows (append-only +
+# ON CONFLICT DO NOTHING on the dedup key). Row count is stable across re-seeds.
+attribution-verify: attribution-seed
+	@echo ">> [replay] credit-ledger row count after seed #1 ..."
+	@$(PG_PSQL) -tAc "SELECT COUNT(*) FROM attribution_credit_ledger WHERE model_version='v1-synthetic-fixture';" > /tmp/acl_count_1.txt
+	@cat /tmp/acl_count_1.txt
+	@echo ">> [replay] re-loading the synthetic seed (must be a no-op) ..."
+	$(PG_PSQL) -v ON_ERROR_STOP=1 < db/dbt/seeds/attribution_synthetic_fixtures.sql > /dev/null
+	@echo ">> [replay] credit-ledger row count after seed #2 ..."
+	@$(PG_PSQL) -tAc "SELECT COUNT(*) FROM attribution_credit_ledger WHERE model_version='v1-synthetic-fixture';" > /tmp/acl_count_2.txt
+	@cat /tmp/acl_count_2.txt
+	@if diff -q /tmp/acl_count_1.txt /tmp/acl_count_2.txt >/dev/null; then \
+		echo ">> REPLAY PASS: attribution_credit_ledger row count is identical across re-seeds (append-only / idempotent)."; \
+	else \
+		echo ">> REPLAY FAIL: attribution_credit_ledger row count changed between re-seeds."; exit 1; \
 	fi

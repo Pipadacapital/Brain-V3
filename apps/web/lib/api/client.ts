@@ -77,6 +77,10 @@ import type {
   AnalyticsJourneyFirstTouchMixResponse,
   AnalyticsJourneyStitchRateResponse,
   AnalyticsJourneyTimelineResponse,
+  AttributionModel,
+  AnalyticsAttributionByChannelResponse,
+  AnalyticsAttributionReconciliationResponse,
+  AnalyticsChannelRoasResponse,
 } from './types';
 
 /** All BFF routes proxied through Next.js API routes → frontend-api module */
@@ -1188,6 +1192,61 @@ export const analyticsApi = {
     qs.set('orderId', params.orderId);
     const { data } = await bffFetch<BffEnvelope<AnalyticsJourneyTimelineResponse>>(
       `/v1/analytics/journey/timeline?${qs.toString()}`,
+    );
+    return data;
+  },
+
+  // ── Attribution (Phase 5 — feat-attribution-ledger Track C) ───────────────────
+  // The attributed-revenue / channel-ROAS surface. Reads the Gold attribution credit
+  // ledger via the metric-engine sole read path (I-ST01 — the UI NEVER queries the
+  // ledger/StarRocks). D-10: unwrap { request_id, data }; state:'no_data' preserved
+  // (honest, never zeros). data_source passes through for the Synthetic (dev) badge.
+  // Money fields are SIGNED bigint-serialized minor-unit strings (I-S07) — never floats.
+
+  /** GET /api/v1/analytics/attribution/by-channel — attributed revenue by channel for a model. */
+  getAttributionByChannel: async (params: {
+    model: AttributionModel;
+    from?: string;
+    to?: string;
+  }): Promise<AnalyticsAttributionByChannelResponse> => {
+    const qs = new URLSearchParams();
+    qs.set('model', params.model);
+    if (params.from) qs.set('from', params.from);
+    if (params.to) qs.set('to', params.to);
+    const { data } = await bffFetch<BffEnvelope<AnalyticsAttributionByChannelResponse>>(
+      `/v1/analytics/attribution/by-channel?${qs.toString()}`,
+    );
+    return data;
+  },
+
+  /** GET /api/v1/analytics/attribution/reconciliation — the closed-sum residual (oracle made visible). */
+  getAttributionReconciliation: async (params: {
+    model: AttributionModel;
+    from?: string;
+    to?: string;
+  }): Promise<AnalyticsAttributionReconciliationResponse> => {
+    const qs = new URLSearchParams();
+    qs.set('model', params.model);
+    if (params.from) qs.set('from', params.from);
+    if (params.to) qs.set('to', params.to);
+    const { data } = await bffFetch<BffEnvelope<AnalyticsAttributionReconciliationResponse>>(
+      `/v1/analytics/attribution/reconciliation?${qs.toString()}`,
+    );
+    return data;
+  },
+
+  /** GET /api/v1/analytics/attribution/channel-roas — per-channel attributed ÷ ad spend. */
+  getChannelRoas: async (params: {
+    model: AttributionModel;
+    from?: string;
+    to?: string;
+  }): Promise<AnalyticsChannelRoasResponse> => {
+    const qs = new URLSearchParams();
+    qs.set('model', params.model);
+    if (params.from) qs.set('from', params.from);
+    if (params.to) qs.set('to', params.to);
+    const { data } = await bffFetch<BffEnvelope<AnalyticsChannelRoasResponse>>(
+      `/v1/analytics/attribution/channel-roas?${qs.toString()}`,
     );
     return data;
   },

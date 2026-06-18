@@ -57,6 +57,7 @@ import type { RateLimiter } from '../../workspace-access/internal/infrastructure
 import { loginFailKeySync, loginIpKey, registerIpKey } from '../../workspace-access/internal/infrastructure/rate-limiter.js';
 import type { Pool as PgPool } from 'pg';
 import { getRevenueMetrics, getRevenueTimeseries, getKpiSummary, getRecognitionBreakdown, getRecentActivity, getOrdersTimeseries, getOrderStats, getDataHealth, getSettlementSummary, getTrackingHealth, getRecentEvents, getAdSpendTimeseries, getBlendedRoas, getCodRtoRates, getCodMix, getCheckoutFunnel, getOrderStatusMix, getJourneyFirstTouchMix, getJourneyStitchRate, getJourneyTimeline, getConsentCoverage, getConsentSuppressionSummary, getConsentGateActivity, getConsentWindowConfig, getAttributionByChannel, getAttributionReconciliation, getChannelRoas, getCapiFeedbackSummary, getCapiFeedbackEvents, getCapiFeedbackDeletions } from '../../analytics/index.js';
+import { getDataQualitySummary } from '../../data-quality/index.js';
 import type { AttributionModelId } from '@brain/metric-engine';
 import type { AdPlatform } from '@brain/metric-engine';
 import type { TimeGrain } from '@brain/metric-engine';
@@ -1639,6 +1640,40 @@ export function registerBffRoutes(
       }
 
       const result = await getDataHealth(auth.brandId, { pool: rawPool });
+
+      return reply.send({ request_id: requestId, data: result });
+    },
+  );
+
+  /**
+   * GET /api/v1/data-quality/summary  (Phase 7 — Data Quality surface)
+   *
+   * Returns the brand's Data Quality summary: per-category × per-target latest grade,
+   * freshness-SLA status, dq_grade coverage, cost/effective confidence, and the gate
+   * decision (trust tier / billing-cap / MMM inclusion / block-high-risk). All grades are
+   * computed metric OUTPUTS on the sole metric-engine path (I-ST01) — the UI reads ONLY
+   * this route, never dq_check_result.
+   *
+   * Brand from session (D-1): auth.brandId, NEVER request body.
+   * Honest no_data (D-2): state='no_data' when the brand has no graded rows (or 0035 not
+   *   yet migrated — fail-closed in the query).
+   * RLS / F-SEC-02: the query reads inside withBrandTxn (GUC set per-transaction).
+   */
+  fastify.get(
+    '/api/v1/data-quality/summary',
+    { preHandler: [bffProtectedPreHandler] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+
+      const auth = (request as AuthenticatedRequest).auth;
+      if (!auth.brandId) {
+        return reply.send({ request_id: requestId, data: { state: 'no_data' } });
+      }
+      if (!rawPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' } });
+      }
+
+      const result = await getDataQualitySummary(auth.brandId, { pool: rawPool });
 
       return reply.send({ request_id: requestId, data: result });
     },

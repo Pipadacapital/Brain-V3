@@ -81,6 +81,9 @@ import type {
   ConsentSuppressionSummaryResponse,
   ConsentGateActivityResponse,
   ConsentWindowConfigResponse,
+  CapiFeedbackSummaryResponse,
+  CapiFeedbackEventsResponse,
+  CapiFeedbackDeletionsResponse,
   AttributionModel,
   AnalyticsAttributionByChannelResponse,
   AnalyticsAttributionReconciliationResponse,
@@ -1290,6 +1293,37 @@ export const consentApi = {
   getWindowConfig: async (): Promise<ConsentWindowConfigResponse> => {
     const { data } = await bffFetch<BffEnvelope<ConsentWindowConfigResponse>>(
       '/v1/consent/window-config',
+    );
+    return data;
+  },
+};
+
+// ── Conversion-Feedback / CAPI (Phase 6 — feat-capi-conversion-feedback Track C) ──────
+//
+// Read-only reads for the stakeholder-visible Conversion-Feedback surface. The BFF wraps
+// each payload in { request_id, data }; we unwrap to the component-facing response type
+// (declared in ./types, field-for-field with core's get-capi-feedback.ts DTO). No PII.
+export const capiFeedbackApi = {
+  /** GET /api/v1/feedback/capi/summary — passed-back vs blocked-by-consent + match quality. */
+  getSummary: async (): Promise<CapiFeedbackSummaryResponse> => {
+    const { data } = await bffFetch<BffEnvelope<CapiFeedbackSummaryResponse>>(
+      '/v1/feedback/capi/summary',
+    );
+    return data;
+  },
+
+  /** GET /api/v1/feedback/capi/events — the last-N passback log rows (truncated event_id). */
+  getEvents: async (): Promise<CapiFeedbackEventsResponse> => {
+    const { data } = await bffFetch<BffEnvelope<CapiFeedbackEventsResponse>>(
+      '/v1/feedback/capi/events',
+    );
+    return data;
+  },
+
+  /** GET /api/v1/feedback/capi/deletions — the last-N retroactive-deletion requests. */
+  getDeletions: async (): Promise<CapiFeedbackDeletionsResponse> => {
+    const { data } = await bffFetch<BffEnvelope<CapiFeedbackDeletionsResponse>>(
+      '/v1/feedback/capi/deletions',
     );
     return data;
   },

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-06-18T15:08:55Z",
+  "updated_at": "2026-06-18T16:49:00Z",
   "updated_by": "engineering-advisor-final-review",
   "active_requirements": [
     {
@@ -485,6 +485,33 @@
           "PROD-GAP-1: engine row-policy graduation (db/starrocks/row_policy_template.sql on managed StarRocks) — M1 enforcement is the app-seam predicate",
           "DEV-NOTE-1: Makefile absolute dbt path (cosmetic; DBT= override handled)",
           "DEV-NOTE-2: no real-port BFF wire-smoke this session (unit+isolation+tsc cover correctness)"
+        ]
+      }
+    },
+    {
+      "req_id": "feat-journey-touchpoint",
+      "title": "The journey Silver layer — silver.touchpoint (sessionize → first/last-touch + deterministic cart-stitch) + journey/first-touch UI",
+      "status": "awaiting-stakeholder",
+      "stage": 7,
+      "current_owner": "stakeholder",
+      "lane": "high_stakes",
+      "run_dir": ".engineering-os/runs/2026-06-18T12-11-32Z__05a5de__feat-journey-touchpoint__rishabhporwal",
+      "lineage": [
+        "feat-silver-tier-order-state",
+        "feat-identity-graph"
+      ],
+      "updated_at": "2026-06-18T16:49:00Z",
+      "last_journal_entry_at": "2026-06-18T16:49:00Z",
+      "pipeline": {
+        "bounces": 0,
+        "security": "PASS / APPROVE (CRIT 0 / HIGH 0 / MED 0 / LOW 0; secret-grep clean; isolation non-inert; cart-stitch deterministic read-back; no raw PII in journey path)",
+        "qa": "BUILD-OK (journey-build 3 models; dbt 12/12, 23/23 suite no order_state regression; replay byte-identical; isolation-fuzz 4/4 live StarRocks incl. non-inert mutation leak; RLS under brain_app; metric-engine 81; core 316; web clean; validity_check --require-negative-control clean)",
+        "final_review": "PASS / APPROVE",
+        "branch": "feat/journey-touchpoint",
+        "verdict_evidence": "3 gates re-run + replicated: journey-mix+registry 41/41; isolation-fuzz 4/4 with port 9030 OPEN + mart present so [positive]+[mutation NON-INERT] GENUINELY EXECUTED (not skipped) — disabling ${BRAND_PREDICATE} leaks brand-B (silver-touchpoint.test.ts:148-167); full metric-engine 81/81 no regression. 5 high-risk claims confirmed file:line: seam isolation (journey-mix.ts:232-368 all via withSilverBrand/${BRAND_PREDICATE}); deterministic cart-stitch read-back only (shopify-mapper:293-328, every probabilistic/ml/fuzzy mention is a negation); no raw PII (mart carries referrer_host only, raw referrer dropped int:153-157, email/phone hashed+dropped mapper:243-261); replay-idempotent (silver_touchpoint.sql deterministic fold); no new credential (STARROCKS_PASSWORD env-sourced only). Migration 0031 ENABLE+FORCE RLS + NN-1 two-arg + G-1/G-2 assertions, verified under brain_app. Over-engineering CLEAN (41 files = plan 1:1, Tier-0 $0/mo). Hard-rule NONE.",
+        "residuals": [
+          "PROD-GAP-1: StarRocks engine row-policy graduation on silver_touchpoint (managed cluster; M1 enforcement is the non-inert app-seam predicate)",
+          "DATA-NOTE-1: thin real journey data (23/94 page.viewed carry brain_anon_id); synthetic supplement clearly labelled, _synthetic flag rides to UI SyntheticBadge — never fakes coverage"
         ]
       }
     }

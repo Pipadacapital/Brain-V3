@@ -74,6 +74,9 @@ import type {
   AnalyticsCodMixResponse,
   AnalyticsCheckoutFunnelResponse,
   AnalyticsOrderStatusMixResponse,
+  AnalyticsJourneyFirstTouchMixResponse,
+  AnalyticsJourneyStitchRateResponse,
+  AnalyticsJourneyTimelineResponse,
 } from './types';
 
 /** All BFF routes proxied through Next.js API routes → frontend-api module */
@@ -1137,6 +1140,54 @@ export const analyticsApi = {
     const qsStr = qs.toString();
     const { data } = await bffFetch<BffEnvelope<AnalyticsOrderStatusMixResponse>>(
       `/v1/analytics/order-status-mix${qsStr ? `?${qsStr}` : ''}`,
+    );
+    return data;
+  },
+
+  // ── Journey / first-touch (Silver tier — feat-journey-touchpoint) ─────────────
+  // The SECOND read from the Silver analytics tier (silver.touchpoint), via the
+  // metric-engine journey seam (withSilverBrand, I-ST01 — UI never queries StarRocks).
+  // D-10: unwrap { request_id, data }; state:'no_data' preserved (honest, never zeros).
+  // data_source passes through for the Synthetic (dev) badge.
+
+  /** GET /api/v1/analytics/journey/first-touch-mix — first-touch channel mix over a range. */
+  getJourneyFirstTouchMix: async (params?: {
+    from?: string;
+    to?: string;
+  }): Promise<AnalyticsJourneyFirstTouchMixResponse> => {
+    const qs = new URLSearchParams();
+    if (params?.from) qs.set('from', params.from);
+    if (params?.to) qs.set('to', params.to);
+    const qsStr = qs.toString();
+    const { data } = await bffFetch<BffEnvelope<AnalyticsJourneyFirstTouchMixResponse>>(
+      `/v1/analytics/journey/first-touch-mix${qsStr ? `?${qsStr}` : ''}`,
+    );
+    return data;
+  },
+
+  /** GET /api/v1/analytics/journey/stitch-rate — deterministic cart-stitch hit-rate. */
+  getJourneyStitchRate: async (params?: {
+    from?: string;
+    to?: string;
+  }): Promise<AnalyticsJourneyStitchRateResponse> => {
+    const qs = new URLSearchParams();
+    if (params?.from) qs.set('from', params.from);
+    if (params?.to) qs.set('to', params.to);
+    const qsStr = qs.toString();
+    const { data } = await bffFetch<BffEnvelope<AnalyticsJourneyStitchRateResponse>>(
+      `/v1/analytics/journey/stitch-rate${qsStr ? `?${qsStr}` : ''}`,
+    );
+    return data;
+  },
+
+  /** GET /api/v1/analytics/journey/timeline?orderId= — ordered touchpoints for one order. */
+  getJourneyTimeline: async (params: {
+    orderId: string;
+  }): Promise<AnalyticsJourneyTimelineResponse> => {
+    const qs = new URLSearchParams();
+    qs.set('orderId', params.orderId);
+    const { data } = await bffFetch<BffEnvelope<AnalyticsJourneyTimelineResponse>>(
+      `/v1/analytics/journey/timeline?${qs.toString()}`,
     );
     return data;
   },

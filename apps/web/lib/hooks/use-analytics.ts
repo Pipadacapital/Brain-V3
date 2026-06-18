@@ -211,3 +211,46 @@ export function useOrderStatusMix(params?: { from?: string; to?: string }) {
     staleTime: 5 * 60_000,
   });
 }
+
+// ── Journey / first-touch (Silver tier — feat-journey-touchpoint) ───────────────
+// The SECOND surface read from the Silver analytics tier (silver.touchpoint) via the
+// metric-engine journey seam (withSilverBrand, I-ST01 — UI never queries StarRocks).
+// Shares the 'analytics' query-key prefix → auto-invalidates on brand switch.
+
+/**
+ * useJourneyFirstTouchMix — first-touch channel mix (count + share) over a date range.
+ * @param params - Date range (YYYY-MM-DD). Defaults applied by the caller.
+ */
+export function useJourneyFirstTouchMix(params?: { from?: string; to?: string }) {
+  return useQuery({
+    queryKey: [...ANALYTICS_QUERY_KEY, 'journey-first-touch-mix', params?.from, params?.to],
+    queryFn: () => analyticsApi.getJourneyFirstTouchMix(params),
+    staleTime: 5 * 60_000,
+  });
+}
+
+/**
+ * useJourneyStitchRate — deterministic cart-stitch hit-rate over a date range.
+ * @param params - Date range (YYYY-MM-DD). Defaults applied by the caller.
+ */
+export function useJourneyStitchRate(params?: { from?: string; to?: string }) {
+  return useQuery({
+    queryKey: [...ANALYTICS_QUERY_KEY, 'journey-stitch-rate', params?.from, params?.to],
+    queryFn: () => analyticsApi.getJourneyStitchRate(params),
+    staleTime: 5 * 60_000,
+  });
+}
+
+/**
+ * useJourneyTimeline — ordered touchpoints for one selected order.
+ * Disabled until an orderId is provided (no fabricated empty query).
+ * @param orderId - The order to resolve a journey timeline for (or null/undefined to skip).
+ */
+export function useJourneyTimeline(orderId?: string | null) {
+  return useQuery({
+    queryKey: [...ANALYTICS_QUERY_KEY, 'journey-timeline', orderId ?? null],
+    queryFn: () => analyticsApi.getJourneyTimeline({ orderId: orderId as string }),
+    enabled: Boolean(orderId && orderId.trim().length > 0),
+    staleTime: 5 * 60_000,
+  });
+}

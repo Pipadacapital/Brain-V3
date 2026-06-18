@@ -141,6 +141,48 @@ describe('metric-engine — registry (D-1)', () => {
     expect(def.description).toContain('silver.order_state');
   });
 
+  it('resolveMetric(journey_first_touch_mix, v1) — Silver touchpoint seam (non-additive mix)', () => {
+    const def = resolveMetric('journey_first_touch_mix', 'v1');
+    expect(def.metricId).toBe('journey_first_touch_mix');
+    expect(def.version).toBe('v1');
+    expect(def.readSeam).toBe('silver_touchpoint');
+    expect(def.toleranceMinor).toBe(0);
+    // First-touch mix is a count fold, not a recognition-staged fact.
+    expect(def.recognitionLabels).toEqual([]);
+    // Documents the ADR-004 split + deterministic (non-ML) channel ladder + no money.
+    expect(def.description).toContain('NOT dbt');
+    expect(def.description).toContain('silver.touchpoint');
+    expect(def.description).toContain('NO money column');
+  });
+
+  it('resolveMetric(journey_stitch_rate, v1) — deterministic read-back, no probabilistic merge (D-5)', () => {
+    const def = resolveMetric('journey_stitch_rate', 'v1');
+    expect(def.metricId).toBe('journey_stitch_rate');
+    expect(def.version).toBe('v1');
+    expect(def.readSeam).toBe('silver_touchpoint');
+    expect(def.toleranceMinor).toBe(0);
+    expect(def.recognitionLabels).toEqual([]);
+    // The stitch is DETERMINISTIC — read BACK, never inferred (D-5).
+    expect(def.description).toContain('DETERMINISTIC');
+    expect(def.description).toContain('read BACK');
+  });
+
+  it('resolveMetric(journey_timeline, v1) — touchpoint timeline projection seam', () => {
+    const def = resolveMetric('journey_timeline', 'v1');
+    expect(def.metricId).toBe('journey_timeline');
+    expect(def.version).toBe('v1');
+    expect(def.readSeam).toBe('silver_touchpoint');
+    expect(def.toleranceMinor).toBe(0);
+    expect(def.recognitionLabels).toEqual([]);
+    expect(def.description).toContain('touchpoint timeline');
+  });
+
+  it('[journey] all three journey metrics resolve through the silver_touchpoint seam', () => {
+    for (const id of ['journey_first_touch_mix', 'journey_stitch_rate', 'journey_timeline'] as const) {
+      expect(resolveMetric(id, 'v1').readSeam).toBe('silver_touchpoint');
+    }
+  });
+
   it('[D-1] toleranceMinor = 0 on all registered metrics (no float tolerance for money)', () => {
     for (const metricId of Object.keys(METRIC_REGISTRY) as Array<keyof typeof METRIC_REGISTRY>) {
       const versions = METRIC_REGISTRY[metricId];

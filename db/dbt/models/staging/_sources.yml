@@ -50,3 +50,45 @@ sources:
             description: "Economic-time; drives latest-state ordering."
           - name: brain_id
             description: "Identity reference (UUID, nullable). Never PII."
+
+      # ── feat-journey-touchpoint (Phase 4) sources ──────────────────────────────
+      - name: bronze_touchpoint_src
+        # Read THROUGH the Postgres read-shim view (db/starrocks/bronze_touchpoint_src.sql):
+        # casts bronze_events.brand_id/event_id uuid→text and pre-filters to journey
+        # event_types. JSONB payload rides through; staging extracts via get_json_string.
+        identifier: bronze_touchpoint_src
+        description: >
+          SDK journey events from Bronze (bronze_events, migration 0016) filtered to
+          page.viewed / cart.viewed / cart.item_added. The journey signal lives inside
+          payload.properties.{brain_anon_id,session_id,utm.*,click_ids.*,referrer,landing_path}.
+          Cross-brand by construction (superuser JDBC read — ETL-writer posture);
+          per-brand isolation is enforced at the Silver READ seam (I-ST01), not here.
+        columns:
+          - name: brand_id
+            description: "Tenant key (UUID→text). First key column of every Silver table."
+          - name: event_id
+            description: "Bronze idempotency key (UUID→text). Dedup grain with brand_id."
+          - name: event_type
+            description: "page.viewed | cart.viewed | cart.item_added."
+          - name: occurred_at
+            description: "Event-time (timestamptz)."
+          - name: payload
+            description: "JSONB — the SDK event payload. Journey signal under .properties."
+
+      - name: connector_journey_stitch_map_src
+        # Read-shim over connector_journey_stitch_map (migration 0031); uuid→text for JDBC.
+        # The deterministic anon↔order stitch (D-5: read-back, never inferred). LEFT-joined
+        # into the mart to set stitched_brain_id (NULL = un-stitched = the §4 hit-rate denom).
+        identifier: connector_journey_stitch_map_src
+        description: >
+          Deterministic cart-stitch lookup: brain_anon_id read BACK from the order's
+          note_attributes onto a known order_id / brain_id (D-5, never probabilistic).
+        columns:
+          - name: brand_id
+            description: "Tenant key (UUID→text)."
+          - name: order_id
+            description: "Brain ledger spine key (= ledger.order_id)."
+          - name: stitched_anon_id
+            description: "brain_anon_id read back from the order (the join key onto touchpoints)."
+          - name: brain_id
+            description: "Resolved known identity (UUID→text, nullable; NULL = unlinked)."

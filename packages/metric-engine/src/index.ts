@@ -67,3 +67,20 @@ export type {
 } from './order-status-mix.js';
 export { withSilverBrand, BRAND_PREDICATE } from './silver-deps.js';
 export type { SilverDeps, SilverPool, SilverConnection, SilverScope } from './silver-deps.js';
+
+// Silver tier — journey seam (Phase 4: first-touch mix, stitch hit-rate, timeline; ADR-004)
+export {
+  computeFirstTouchMix,
+  computeStitchHitRate,
+  computeTouchpointTimeline,
+} from './journey-mix.js';
+export type {
+  JourneyChannel,
+  JourneyRange,
+  FirstTouchMixResult,
+  FirstTouchMixBucket,
+  StitchHitRateResult,
+  TouchpointTimelineResult,
+  TouchpointTimelineRow,
+  TimelineSelector,
+} from './journey-mix.js';

@@ -21,7 +21,10 @@ export type MetricId =
   | 'cod_rto_rate'
   | 'cod_mix'
   | 'checkout_funnel'
-  | 'order_status_mix';
+  | 'order_status_mix'
+  | 'journey_first_touch_mix'
+  | 'journey_stitch_rate'
+  | 'journey_timeline';
 export type MetricVersion = `v${number}`;
 
 export interface MetricDefinition {
@@ -41,7 +44,10 @@ export interface MetricDefinition {
     // Shopflo checkout_abandoned rows in bronze_events (shopflo.checkout_abandoned.v1).
     | 'checkout_abandoned'
     // Silver mart silver.order_state (StarRocks brain_silver), read via withSilverBrand.
-    | 'silver_order_state';
+    | 'silver_order_state'
+    // Silver mart silver.touchpoint (StarRocks brain_silver), read via withSilverBrand
+    // (Phase 4 — journey: first-touch mix, stitch hit-rate, touchpoint timeline).
+    | 'silver_touchpoint';
   /**
    * recognition_label semantics this metric covers.
    * Cross-checked in registry unit test: realized→finalized; provisional→provisional/settling.
@@ -200,6 +206,64 @@ export const METRIC_REGISTRY = {
         'math (no float); money is BIGINT minor units + currency_code (I-S07). Honest no_data when ' +
         'the window has zero Silver rows. Read through withSilverBrand (brand predicate injected at ' +
         'the seam; I-ST01 sole reader). Sole emitter: metric-engine only.',
+    },
+  },
+  journey_first_touch_mix: {
+    v1: {
+      metricId: 'journey_first_touch_mix' as const,
+      version: 'v1' as const,
+      // Phase 4 Silver read: silver.touchpoint mart (StarRocks brain_silver), read via
+      // the withSilverBrand seam (I-ST01 sole reader). NON-additive aggregation (COUNT +
+      // share) over the additive dbt mart — lives in the engine, NOT dbt (ADR-004).
+      readSeam: 'silver_touchpoint' as const,
+      // A first-touch channel mix is a deterministic count fold, not a recognition fact → [].
+      recognitionLabels: [] as const,
+      toleranceMinor: 0 as const,
+      description:
+        'Journey first-touch mix: COUNT(DISTINCT brain_anon_id) + share-of-total by ' +
+        'deterministic channel (paid_meta|paid_google|paid_tiktok|paid|email|organic_social|' +
+        'referral|direct) over an occurred_at window, WHERE is_first_touch, from the Silver mart ' +
+        'silver.touchpoint (1 row per (brand_id,brain_anon_id,touch_seq)). Channel is a fixed ' +
+        'deterministic CASE ladder in dbt (click_id→paid, else utm.medium, else referrer, else ' +
+        'direct) — NEVER a classifier/ML (D-5). Non-additive aggregation → metric-engine, NOT dbt ' +
+        '(ADR-004). Share is integer basis-point math (no float). NO money column (touchpoints are ' +
+        'not monetary). Honest no_data when the window has zero Silver touchpoints. Read through ' +
+        'withSilverBrand (brand predicate injected at the seam; I-ST01 sole reader). Sole emitter: ' +
+        'metric-engine only.',
+    },
+  },
+  journey_stitch_rate: {
+    v1: {
+      metricId: 'journey_stitch_rate' as const,
+      version: 'v1' as const,
+      readSeam: 'silver_touchpoint' as const,
+      recognitionLabels: [] as const,
+      toleranceMinor: 0 as const,
+      description:
+        'Journey cart-stitch hit-rate: stitched ÷ total distinct anon journeys over an occurred_at ' +
+        'window, from silver.touchpoint. stitched = COUNT(DISTINCT brain_anon_id) WHERE ' +
+        'stitched_brain_id IS NOT NULL; total = COUNT(DISTINCT brain_anon_id). The stitch is ' +
+        'DETERMINISTIC — stitched_brain_id is read BACK from the order via the ' +
+        'connector_journey_stitch_map (read-back, NEVER inferred/probabilistic — D-5). Integer ' +
+        'basis-point math (no float); hitPct null when total=0 (honest, never divide-by-zero). ' +
+        'Honest no_data on zero rows. Non-additive → metric-engine, NOT dbt (ADR-004). Read through ' +
+        'withSilverBrand (I-ST01 sole reader). Sole emitter: metric-engine only.',
+    },
+  },
+  journey_timeline: {
+    v1: {
+      metricId: 'journey_timeline' as const,
+      version: 'v1' as const,
+      readSeam: 'silver_touchpoint' as const,
+      recognitionLabels: [] as const,
+      toleranceMinor: 0 as const,
+      description:
+        'Journey touchpoint timeline: the ordered touch rows (touch_seq asc) for ONE journey — ' +
+        'resolved by brain_anon_id directly OR by order_id via the deterministic ' +
+        'connector_journey_stitch_map (read-back, D-5). A read projection (channel, utm_*, click_ids, ' +
+        'occurred_at, is_first/last_touch) over silver.touchpoint — no aggregation, but still through ' +
+        'the brand-scoped withSilverBrand seam (I-ST01 sole reader). NO money column. Honest no_data ' +
+        'when the journey resolves to zero touches. Sole emitter: metric-engine only.',
     },
   },
 } as const;

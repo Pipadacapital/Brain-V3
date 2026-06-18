@@ -56,3 +56,12 @@ export type { CheckoutFunnelResult } from './internal/application/queries/get-ch
 // Silver tier (feat-silver-tier-order-state) — order-status-mix via the Silver seam
 export { getOrderStatusMix } from './internal/application/queries/get-order-status-mix.js';
 export type { OrderStatusMixResult, OrderStatusMixRowDto, OrderStatusMixParams } from './internal/application/queries/get-order-status-mix.js';
+
+// Phase 4 Journey (feat-journey-touchpoint) — first-touch mix / stitch-rate / timeline
+// via the Silver seam over silver.touchpoint (ADR-004 non-additive in the engine).
+export { getJourneyFirstTouchMix } from './internal/application/queries/get-journey-first-touch-mix.js';
+export type { JourneyFirstTouchMixResult, FirstTouchMixRowDto, JourneyFirstTouchMixParams } from './internal/application/queries/get-journey-first-touch-mix.js';
+export { getJourneyStitchRate } from './internal/application/queries/get-journey-stitch-rate.js';
+export type { JourneyStitchRateResult, JourneyStitchRateParams } from './internal/application/queries/get-journey-stitch-rate.js';
+export { getJourneyTimeline } from './internal/application/queries/get-journey-timeline.js';
+export type { JourneyTimelineResult, TimelineTouchDto, JourneyTimelineParams } from './internal/application/queries/get-journey-timeline.js';

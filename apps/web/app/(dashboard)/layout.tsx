@@ -33,6 +33,7 @@ import {
   Zap,
   Users,
   Settings,
+  ShieldCheck,
 } from 'lucide-react';
 import { UserMenu } from '@/components/dashboard/user-menu';
 import { RequireSession } from '@/components/dashboard/require-session';
@@ -85,6 +86,7 @@ const NAV_SECTIONS: NavSection[] = [
     items: [
       { href: '/settings/pixel', label: 'Brain Pixel', icon: Zap },
       { href: '/settings/members', label: 'Members', icon: Users },
+      { href: '/settings/consent', label: 'Consent & Compliance', icon: ShieldCheck },
       { href: '/settings', label: 'Settings', icon: Settings },
     ],
   },

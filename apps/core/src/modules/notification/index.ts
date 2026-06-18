@@ -9,6 +9,25 @@
  * No other module may call SES or any email provider directly.
  */
 
-export type { NotificationService } from './service.js';
+export type {
+  NotificationService,
+  ContactChannel,
+  ContactPurpose,
+  CanContactResult,
+} from './service.js';
 export { NotificationServiceImpl } from './internal/notification.service.impl.js';
 export { createEmailAdapter, DevEmailAdapter, SesEmailAdapter } from './internal/ses-adapter.js';
+
+// D13 compliance gate — the can_contact() engine + write path (brand-scoped callers).
+export {
+  buildCanContactEngine,
+  CanContactEngine,
+  ConsentWriter,
+  PgSuppressionQuery,
+  StubDltRegistry,
+  StubNcprRegistry,
+  EnvSaltPort,
+  FunctionSaltPort,
+  evaluateSendWindow,
+} from './internal/compliance/index.js';
+export { PendingWindowFlushHandler } from './internal/pending-window.handler.js';

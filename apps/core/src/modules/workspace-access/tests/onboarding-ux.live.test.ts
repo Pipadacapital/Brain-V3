@@ -61,7 +61,7 @@ function noopNotify() {
     sendVerificationEmail: vi.fn().mockResolvedValue(undefined),
     sendPasswordResetEmail: vi.fn().mockResolvedValue(undefined),
     sendInviteEmail: vi.fn().mockResolvedValue(undefined),
-    canContact: vi.fn().mockResolvedValue(true),
+    canContact: vi.fn().mockResolvedValue({ decision: 'allow' as const, reason: 'transactional_exempt' as const }),
   };
 }
 
@@ -314,7 +314,7 @@ describe('onboarding-ux LIVE — provision + isolation (brain_app)', () => {
 
     const dbPool = await createPool({ connectionString: DATABASE_URL, maxConnections: 3 });
     const noAudit = { append: async () => ({ id: 0n, entry_hash: 'noop' }) };
-    const noNotify = { sendVerificationEmail: async () => {}, sendPasswordResetEmail: async () => {}, sendInviteEmail: async () => {}, canContact: async () => true };
+    const noNotify = { sendVerificationEmail: async () => {}, sendPasswordResetEmail: async () => {}, sendInviteEmail: async () => {}, canContact: async () => ({ decision: 'allow' as const, reason: 'transactional_exempt' as const }) };
     const authService = new AuthService(dbPool, noAudit as never, noNotify as never, { jwtSigningSecret: JWT_SECRET }, rawPool);
     const inviteService = new InviteService(dbPool, noAudit as never, noNotify as never, rawPool);
 

@@ -65,3 +65,22 @@ export { getJourneyStitchRate } from './internal/application/queries/get-journey
 export type { JourneyStitchRateResult, JourneyStitchRateParams } from './internal/application/queries/get-journey-stitch-rate.js';
 export { getJourneyTimeline } from './internal/application/queries/get-journey-timeline.js';
 export type { JourneyTimelineResult, TimelineTouchDto, JourneyTimelineParams } from './internal/application/queries/get-journey-timeline.js';
+
+// D13 Consent / Compliance surface (feat-d13-consent-cancontact Track C) — the four
+// brand-scoped reads behind /settings/consent. Counts + hashes only (NO raw PII);
+// fail-closed when the consent SoR tables are not yet migrated (no consent == blocked).
+export {
+  getConsentCoverage,
+  getConsentSuppressionSummary,
+  getConsentGateActivity,
+  getConsentWindowConfig,
+} from './internal/application/queries/get-consent-compliance.js';
+export type {
+  ConsentCoverageResult,
+  ConsentCoverageRow,
+  ConsentSuppressionSummaryResult,
+  ConsentGateActivityResult,
+  GateActivityRow,
+  GateDecision,
+  ConsentWindowConfigResult,
+} from './internal/application/queries/get-consent-compliance.js';

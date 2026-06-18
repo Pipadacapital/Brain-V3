@@ -199,7 +199,7 @@ describe('SEC-AOF-L1 family-wipe replay — LIVE Postgres integration', () => {
       sendVerificationEmail: async () => {},
       sendPasswordResetEmail: async () => {},
       sendInviteEmail: async () => {},
-      canContact: async () => true,
+      canContact: async () => ({ decision: 'allow' as const, reason: 'transactional_exempt' as const }),
     };
 
     const authService = new AuthService(

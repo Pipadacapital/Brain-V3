@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { Plug, Zap, Users } from 'lucide-react';
+import { Plug, Zap, Users, ShieldCheck } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 
 export const metadata = { title: 'Settings — Brain' };
@@ -22,6 +22,12 @@ const settingsItems = [
     title: 'Team Members',
     description: 'Invite and manage your team.',
     icon: Users,
+  },
+  {
+    href: '/settings/consent',
+    title: 'Consent & Compliance',
+    description: 'Consent coverage, the marketing suppression count, the 9–9 IST send window, and the can_contact() gate.',
+    icon: ShieldCheck,
   },
 ];
 

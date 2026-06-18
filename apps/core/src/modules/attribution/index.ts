@@ -36,6 +36,23 @@ export {
 export type { TouchpointLayerDescriptor } from './internal/touchpoint-layer.js';
 
 /**
+ * Phase 5 Attribution (feat-attribution-ledger) — the credit-ledger WRITER.
+ * Appends credit + clawback rows to attribution_credit_ledger (Postgres Gold, 0032).
+ * The metric engine is the SOLE math layer (Tier-0 deterministic); this is the I/O adapter.
+ * createAttributionReversalHook adapts the writer to the measurement OrderEventConsumer
+ * reversal fan-out (clawback trigger) — additive, no new deployable (I-E05).
+ */
+export {
+  AttributionCreditWriter,
+  createAttributionReversalHook,
+} from './internal/credit-writer.js';
+export type {
+  WriteCreditParams,
+  WriteClawbackParams,
+  WriteResult,
+} from './internal/credit-writer.js';
+
+/**
  * The journey read contract this bounded context owns over `silver.touchpoint`.
  * Phase 5 Attribution consumes these reads; the implementations are the analytics
  * sole-read-path use-cases over the metric-engine Silver seam (I-ST01).

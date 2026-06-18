@@ -84,3 +84,56 @@ export type {
   TouchpointTimelineRow,
   TimelineSelector,
 } from './journey-mix.js';
+
+// Phase 5 Attribution (feat-attribution-ledger) — the credit-ledger WRITER + readers.
+// All Tier-0 deterministic (no model/prompt/dbt macro — I-E03/E04). Money signed BIGINT.
+export {
+  computeWeightUnits,
+  apportionMinor,
+  computeTouchCredits,
+  weightFractionString,
+  WEIGHT_SCALE,
+  ATTRIBUTION_MODEL_IDS,
+  DEFAULT_ATTRIBUTION_MODEL,
+} from './attribution-models.js';
+export type { AttributionModelId, TouchCredit, AttributionTouch } from './attribution-models.js';
+
+export {
+  gradeJourneyConfidence,
+  isDeterministicChannel,
+  ATTRIBUTION_CONFIDENCE_BY_GRADE,
+  LETTER_GRADE_BY_CONFIDENCE,
+} from './attribution-confidence.js';
+export type {
+  AttributionConfidenceGrade,
+  AttributionConfidenceResult,
+  ConfidenceTouchSignal,
+} from './attribution-confidence.js';
+
+export {
+  computeAttributionCredit,
+  computeCreditId,
+  ATTRIBUTION_MODEL_VERSION,
+} from './attribution-credit.js';
+export type {
+  AttributionCreditRow,
+  AttributionRowKind,
+  CreditInput,
+  CreditTouch,
+} from './attribution-credit.js';
+
+export {
+  computeAttributionClawback,
+  computeClawbackCreditId,
+  parseWeightFraction,
+} from './attribution-clawback.js';
+export type { ClawbackInput, SavedCreditRow, ReversalReason } from './attribution-clawback.js';
+
+export { computeAttributionReconciliationRate } from './attribution-reconciliation.js';
+export type {
+  AttributionReconciliationResult,
+  ChannelContribution,
+} from './attribution-reconciliation.js';
+
+export { computeChannelRoas } from './attribution-channel-roas.js';
+export type { ChannelRoasRow } from './attribution-channel-roas.js';

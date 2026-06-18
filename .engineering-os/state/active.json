@@ -59,7 +59,7 @@
         "lint": "18/18 PASS",
         "negative_controls": [
           "NN-1 three-GUC stub rejects no-context queries",
-          "NN-3 revoked session → false (SQL has revoked_at IS NULL)",
+          "NN-3 revoked session \u2192 false (SQL has revoked_at IS NULL)",
           "NN-5 argon2id params unit-tested (type=2, m=19456, t=2, p=1)",
           "NN-5 forgotPassword resolves void for both existing/non-existing email",
           "NN-5 different tokens produce different sha256 hashes",
@@ -67,13 +67,13 @@
         ]
       },
       "nn_status": {
-        "NN-1": "CLOSED — three-GUC two-arg in packages/db + all 6 migrations",
-        "NN-2": "CLOSED — secret_ref-only in contract + DDL",
-        "NN-3": "CLOSED — validateSession preHandler on every route + BFF",
-        "NN-5": "CLOSED — argon2id asserted + tested; timing-safe; sha256 tokens; single-use",
-        "NN-6": "CLOSED — audit WHERE brand_id mandatory",
-        "NN-7": "CLOSED — invite compound PERMISSIVE RLS",
-        "L-02": "CLOSED — sha256 hash-chain (replaces djb2 stub)"
+        "NN-1": "CLOSED \u2014 three-GUC two-arg in packages/db + all 6 migrations",
+        "NN-2": "CLOSED \u2014 secret_ref-only in contract + DDL",
+        "NN-3": "CLOSED \u2014 validateSession preHandler on every route + BFF",
+        "NN-5": "CLOSED \u2014 argon2id asserted + tested; timing-safe; sha256 tokens; single-use",
+        "NN-6": "CLOSED \u2014 audit WHERE brand_id mandatory",
+        "NN-7": "CLOSED \u2014 invite compound PERMISSIVE RLS",
+        "L-02": "CLOSED \u2014 sha256 hash-chain (replaces djb2 stub)"
       },
       "residuals": {
         "count": 11,
@@ -108,7 +108,7 @@
       "status": "shipped",
       "stage": 8,
       "current_owner": "platform-devops",
-      "title": "Multi-brand — create additional brands + brand switcher",
+      "title": "Multi-brand \u2014 create additional brands + brand switcher",
       "run_dir": ".engineering-os/runs/2026-06-16T04-34-02Z__44d63f__feat-multi-brand__rishabhporwal",
       "lineage": [
         "feat-access-onboarding-flow"
@@ -146,7 +146,7 @@
       "status": "shipped",
       "stage": 8,
       "current_owner": "platform-devops",
-      "title": "Members & Team Management — lifecycle (invite/accept/suspend/reactivate/remove + hierarchy bounds)",
+      "title": "Members & Team Management \u2014 lifecycle (invite/accept/suspend/reactivate/remove + hierarchy bounds)",
       "lane": "high_stakes",
       "run_dir": ".engineering-os/runs/2026-06-16T12-23-10Z__323f49__feat-members-team-management__rishabhporwal",
       "last_journal_entry_at": "2026-06-16T22:00:00Z",
@@ -183,7 +183,7 @@
         "commit": "fcbc221",
         "pushed": false,
         "pr": null,
-        "pr_note": "gh CLI unauthenticated; manual PR URL: https://github.com/Rishabhporwal/Brain-V4/compare/feat/members-team-management — NOTE: branch is stacked on feat/shopify-sync-validation (43ea557); push + merge that base first for a clean PR diff",
+        "pr_note": "gh CLI unauthenticated; manual PR URL: https://github.com/Rishabhporwal/Brain-V4/compare/feat/members-team-management \u2014 NOTE: branch is stacked on feat/shopify-sync-validation (43ea557); push + merge that base first for a clean PR diff",
         "phase": "1-dev-only",
         "ts": "2026-06-16T22:00:00Z"
       },
@@ -195,7 +195,7 @@
       "status": "shipped",
       "stage": 8,
       "current_owner": "platform-devops",
-      "title": "Thin data-plane ingest spine — collector → Redpanda → Bronze, behind RLS",
+      "title": "Thin data-plane ingest spine \u2014 collector \u2192 Redpanda \u2192 Bronze, behind RLS",
       "run_dir": ".engineering-os/runs/2026-06-16T15-56-54Z__3d216f__feat-data-plane-ingest-spine__rishabhporwal",
       "lineage": [
         "chore-platform-foundations-sprint0"
@@ -223,8 +223,8 @@
         ],
         "deferred": [
           "SR-02 techdebt M2 (test-precision gap; null-GUC fail-closed proven live)",
-          "SR-03 techdebt-CONDITIONAL: spool unvalidated body — must-fix before external /collect traffic",
-          "SR-04 techdebt-CONDITIONAL: rate-limit unwired — must-fix before external /collect traffic",
+          "SR-03 techdebt-CONDITIONAL: spool unvalidated body \u2014 must-fix before external /collect traffic",
+          "SR-04 techdebt-CONDITIONAL: rate-limit unwired \u2014 must-fix before external /collect traffic",
           "F-QA-04 cosmetic vitest TimeoutNegativeWarning"
         ]
       },
@@ -233,7 +233,7 @@
         "commit": "ef78505",
         "pushed": false,
         "pr": null,
-        "pr_note": "gh CLI unauthenticated; manual PR URL: https://github.com/Rishabhporwal/Brain-V4/compare/master...feat/data-plane-ingest-spine (branch off master directly — clean base, no stacked dependency)",
+        "pr_note": "gh CLI unauthenticated; manual PR URL: https://github.com/Rishabhporwal/Brain-V4/compare/master...feat/data-plane-ingest-spine (branch off master directly \u2014 clean base, no stacked dependency)",
         "phase": "1-dev-only",
         "ts": "2026-06-16T22:30:00Z"
       },
@@ -245,7 +245,7 @@
       "status": "shipped",
       "stage": 8,
       "current_owner": "platform-devops",
-      "title": "Deterministic identity graph — brain_id + alias + India phone-guard",
+      "title": "Deterministic identity graph \u2014 brain_id + alias + India phone-guard",
       "run_dir": ".engineering-os/runs/2026-06-16T17-44-41Z__c9a1a0__feat-identity-graph__rishabhporwal",
       "lineage": [
         "feat-data-plane-ingest-spine"
@@ -264,7 +264,7 @@
           "44d951c"
         ],
         "deferred": [
-          "SR-01/QA-04 P1 must-fix: phone-guard-reeval no-ops under brain_app (SECURITY DEFINER enumeration fn needed — before prod COD volume)",
+          "SR-01/QA-04 P1 must-fix: phone-guard-reeval no-ops under brain_app (SECURITY DEFINER enumeration fn needed \u2014 before prod COD volume)",
           "SR-02 window_days literal 30 (cosmetic LOW)",
           "QA-01 no trace IDs in bridge (observability LOW)",
           "QA-02 salt-fail not tested at offset-commit layer (LOW)",
@@ -276,7 +276,7 @@
         "commit": "44d951c",
         "pushed": false,
         "pr": null,
-        "pr_note": "gh CLI unauthenticated; manual PR URL: https://github.com/Rishabhporwal/Brain-V4/compare/master...feat/identity-graph (branch off master directly — clean base)",
+        "pr_note": "gh CLI unauthenticated; manual PR URL: https://github.com/Rishabhporwal/Brain-V4/compare/master...feat/identity-graph (branch off master directly \u2014 clean base)",
         "phase": "1-dev-only",
         "ts": "2026-06-16T22:50:00Z"
       },
@@ -288,7 +288,7 @@
       "status": "shipped",
       "stage": 8,
       "current_owner": "platform-devops",
-      "title": "Realized-revenue ledger — append-only, dual-date, COD-aware",
+      "title": "Realized-revenue ledger \u2014 append-only, dual-date, COD-aware",
       "run_dir": ".engineering-os/runs/2026-06-16T18-55-24Z__2c8eb2__feat-realized-revenue-ledger__rishabhporwal",
       "lineage": [
         "feat-identity-graph",
@@ -313,7 +313,7 @@
           "F-SEC-02 MED: GetRealizedGmvAsOf GUC-reset defense-in-depth (before Phase-2)",
           "F-SEC-03 LOW: finalization job financial logging scope (before prod scale)",
           "F-QA-03 LOW: Stryker mutation testing before next ledger slice",
-          "adopt-rule: list_active_brand_ids pattern (Stakeholder /adopt-rule pending — 2nd occurrence)",
+          "adopt-rule: list_active_brand_ids pattern (Stakeholder /adopt-rule pending \u2014 2nd occurrence)",
           "phone-guard-reeval adopt list_active_brand_ids (identity follow-up slice)",
           "billing_run + fx_rate non-goals M1 (Phase-2+)",
           "D-5 reconciliation tolerance (Data Engineer Sprint-0)",
@@ -325,7 +325,7 @@
         "commit": "353bfd6",
         "pushed": false,
         "pr": null,
-        "pr_note": "gh CLI unauthenticated; manual compare URL: https://github.com/Rishabhporwal/Brain-V4/compare/feat/identity-graph...feat/realized-revenue-ledger — STACKING: base must be feat/identity-graph (not master); merge order: data-plane-ingest-spine -> identity-graph -> realized-revenue-ledger",
+        "pr_note": "gh CLI unauthenticated; manual compare URL: https://github.com/Rishabhporwal/Brain-V4/compare/feat/identity-graph...feat/realized-revenue-ledger \u2014 STACKING: base must be feat/identity-graph (not master); merge order: data-plane-ingest-spine -> identity-graph -> realized-revenue-ledger",
         "phase": "1-dev-only",
         "ts": "2026-06-17T00:32:00Z"
       },
@@ -337,7 +337,7 @@
       "status": "shipped",
       "stage": 8,
       "current_owner": "platform-devops",
-      "title": "Metric engine + parity oracle — realized_revenue, CI-blocking",
+      "title": "Metric engine + parity oracle \u2014 realized_revenue, CI-blocking",
       "run_dir": ".engineering-os/runs/2026-06-16T20-46-53Z__cc9582__feat-metric-engine-parity__rishabhporwal",
       "lineage": [
         "feat-realized-revenue-ledger"
@@ -385,7 +385,7 @@
       "status": "shipped",
       "stage": 8,
       "current_owner": "platform-devops",
-      "title": "Analytics API + dashboard — realized_revenue on screen (M1 finale)",
+      "title": "Analytics API + dashboard \u2014 realized_revenue on screen (M1 finale)",
       "run_dir": ".engineering-os/runs/2026-06-16T22-15-56Z__1e2785__feat-analytics-api-dashboard__rishabhporwal",
       "lineage": [
         "feat-metric-engine-parity"
@@ -436,7 +436,7 @@
     },
     {
       "req_id": "feat-collection-foundation",
-      "title": "Collection Foundation — ingest hardening + first-party pixel + Tracking Center UI",
+      "title": "Collection Foundation \u2014 ingest hardening + first-party pixel + Tracking Center UI",
       "status": "awaiting-stakeholder",
       "stage": 7,
       "current_owner": "stakeholder",
@@ -448,7 +448,7 @@
     },
     {
       "req_id": "feat-onboarding-website",
-      "title": "Onboarding website capture → auto-provision per-brand pixel → surface install snippet",
+      "title": "Onboarding website capture \u2192 auto-provision per-brand pixel \u2192 surface install snippet",
       "status": "awaiting-stakeholder",
       "stage": 7,
       "current_owner": "stakeholder",
@@ -458,7 +458,7 @@
       "last_journal_entry_at": "2026-06-18T05:03:47Z",
       "pipeline": {
         "bounces": 1,
-        "bounce_detail": "r1: F-ADV-01 final-review BOUNCE (Single-Primitive violation — FE duplicated normalizeBrandHost, diverged on shop.com:8443) -> fix 22ca3b8 (FE-import-only: delete duplicate, import @brain/pixel-sdk at both call sites, add workspace dep) -> DELTA PASS",
+        "bounce_detail": "r1: F-ADV-01 final-review BOUNCE (Single-Primitive violation \u2014 FE duplicated normalizeBrandHost, diverged on shop.com:8443) -> fix 22ca3b8 (FE-import-only: delete duplicate, import @brain/pixel-sdk at both call sites, add workspace dep) -> DELTA PASS",
         "security": "PASS (0 CRIT/HIGH/MED; 1 LOW pre-existing public install_token at info-log)",
         "final_review": "PASS / APPROVE (F-ADV-01 RESOLVED at HEAD 22ca3b8; web tsc EXIT 0; web vitest 9/9; pixel-sdk vitest 34/34; isolation spine untouched)",
         "head": "22ca3b8"
@@ -466,7 +466,7 @@
     },
     {
       "req_id": "feat-silver-tier-order-state",
-      "title": "Silver tier foundation — first Bronze→Silver mart (silver.order_state) + order-status-mix UI",
+      "title": "Silver tier foundation \u2014 first Bronze\u2192Silver mart (silver.order_state) + order-status-mix UI",
       "status": "awaiting-stakeholder",
       "stage": 7,
       "current_owner": "stakeholder",
@@ -476,13 +476,13 @@
       "last_journal_entry_at": "2026-06-18T15:08:55Z",
       "pipeline": {
         "bounces": 0,
-        "security": "PASS / APPROVE (CRIT 0 / HIGH 0 / MED 0 / LOW 1 — sanitized session-var interpolation, defense-in-depth only)",
+        "security": "PASS / APPROVE (CRIT 0 / HIGH 0 / MED 0 / LOW 1 \u2014 sanitized session-var interpolation, defense-in-depth only)",
         "qa": "BUILD-OK (silver-verify exit 0; dbt 9/9; grain 10933=distinct; replay idempotent; isolation 52 incl. non-inert mutation control)",
         "final_review": "PASS / APPROVE",
         "branch": "feat/silver-tier-order-state",
-        "verdict_evidence": "app-seam isolation non-inert mutation control verified (silver-deps.ts:95-136 + silver-order-state.test.ts:147-166); metric-engine sole read path (BFF→getOrderStatusMix→computeOrderStatusMix→withSilverBrand, route issues no OLAP SQL); replay idempotent by deterministic fold (silver_order_state.sql:63-70, fingerprint excludes updated_at); no NEW credential (only pre-committed dev brain/brain superuser by design); metric-engine vitest 24/24 re-run GREEN",
+        "verdict_evidence": "app-seam isolation non-inert mutation control verified (silver-deps.ts:95-136 + silver-order-state.test.ts:147-166); metric-engine sole read path (BFF\u2192getOrderStatusMix\u2192computeOrderStatusMix\u2192withSilverBrand, route issues no OLAP SQL); replay idempotent by deterministic fold (silver_order_state.sql:63-70, fingerprint excludes updated_at); no NEW credential (only pre-committed dev brain/brain superuser by design); metric-engine vitest 24/24 re-run GREEN",
         "residuals": [
-          "PROD-GAP-1: engine row-policy graduation (db/starrocks/row_policy_template.sql on managed StarRocks) — M1 enforcement is the app-seam predicate",
+          "PROD-GAP-1: engine row-policy graduation (db/starrocks/row_policy_template.sql on managed StarRocks) \u2014 M1 enforcement is the app-seam predicate",
           "DEV-NOTE-1: Makefile absolute dbt path (cosmetic; DBT= override handled)",
           "DEV-NOTE-2: no real-port BFF wire-smoke this session (unit+isolation+tsc cover correctness)"
         ]
@@ -490,7 +490,7 @@
     },
     {
       "req_id": "feat-journey-touchpoint",
-      "title": "The journey Silver layer — silver.touchpoint (sessionize → first/last-touch + deterministic cart-stitch) + journey/first-touch UI",
+      "title": "The journey Silver layer \u2014 silver.touchpoint (sessionize \u2192 first/last-touch + deterministic cart-stitch) + journey/first-touch UI",
       "status": "awaiting-stakeholder",
       "stage": 7,
       "current_owner": "stakeholder",
@@ -508,10 +508,39 @@
         "qa": "BUILD-OK (journey-build 3 models; dbt 12/12, 23/23 suite no order_state regression; replay byte-identical; isolation-fuzz 4/4 live StarRocks incl. non-inert mutation leak; RLS under brain_app; metric-engine 81; core 316; web clean; validity_check --require-negative-control clean)",
         "final_review": "PASS / APPROVE",
         "branch": "feat/journey-touchpoint",
-        "verdict_evidence": "3 gates re-run + replicated: journey-mix+registry 41/41; isolation-fuzz 4/4 with port 9030 OPEN + mart present so [positive]+[mutation NON-INERT] GENUINELY EXECUTED (not skipped) — disabling ${BRAND_PREDICATE} leaks brand-B (silver-touchpoint.test.ts:148-167); full metric-engine 81/81 no regression. 5 high-risk claims confirmed file:line: seam isolation (journey-mix.ts:232-368 all via withSilverBrand/${BRAND_PREDICATE}); deterministic cart-stitch read-back only (shopify-mapper:293-328, every probabilistic/ml/fuzzy mention is a negation); no raw PII (mart carries referrer_host only, raw referrer dropped int:153-157, email/phone hashed+dropped mapper:243-261); replay-idempotent (silver_touchpoint.sql deterministic fold); no new credential (STARROCKS_PASSWORD env-sourced only). Migration 0031 ENABLE+FORCE RLS + NN-1 two-arg + G-1/G-2 assertions, verified under brain_app. Over-engineering CLEAN (41 files = plan 1:1, Tier-0 $0/mo). Hard-rule NONE.",
+        "verdict_evidence": "3 gates re-run + replicated: journey-mix+registry 41/41; isolation-fuzz 4/4 with port 9030 OPEN + mart present so [positive]+[mutation NON-INERT] GENUINELY EXECUTED (not skipped) \u2014 disabling ${BRAND_PREDICATE} leaks brand-B (silver-touchpoint.test.ts:148-167); full metric-engine 81/81 no regression. 5 high-risk claims confirmed file:line: seam isolation (journey-mix.ts:232-368 all via withSilverBrand/${BRAND_PREDICATE}); deterministic cart-stitch read-back only (shopify-mapper:293-328, every probabilistic/ml/fuzzy mention is a negation); no raw PII (mart carries referrer_host only, raw referrer dropped int:153-157, email/phone hashed+dropped mapper:243-261); replay-idempotent (silver_touchpoint.sql deterministic fold); no new credential (STARROCKS_PASSWORD env-sourced only). Migration 0031 ENABLE+FORCE RLS + NN-1 two-arg + G-1/G-2 assertions, verified under brain_app. Over-engineering CLEAN (41 files = plan 1:1, Tier-0 $0/mo). Hard-rule NONE.",
         "residuals": [
           "PROD-GAP-1: StarRocks engine row-policy graduation on silver_touchpoint (managed cluster; M1 enforcement is the non-inert app-seam predicate)",
-          "DATA-NOTE-1: thin real journey data (23/94 page.viewed carry brain_anon_id); synthetic supplement clearly labelled, _synthetic flag rides to UI SyntheticBadge — never fakes coverage"
+          "DATA-NOTE-1: thin real journey data (23/94 page.viewed carry brain_anon_id); synthetic supplement clearly labelled, _synthetic flag rides to UI SyntheticBadge \u2014 never fakes coverage"
+        ]
+      }
+    },
+    {
+      "req_id": "feat-attribution-ledger",
+      "title": "Attribution credit ledger (0032 append-only Gold) + position-based clawback + closed-sum parity oracle + channel ROAS UI",
+      "status": "awaiting-stakeholder",
+      "stage": 7,
+      "current_owner": "stakeholder",
+      "lane": "high_stakes",
+      "run_dir": ".engineering-os/runs/2026-06-18T13-03-15Z__fc52d1__feat-attribution-ledger__rishabhporwal",
+      "lineage": [
+        "feat-journey-touchpoint",
+        "feat-realized-revenue-ledger",
+        "feat-metric-engine-parity"
+      ],
+      "updated_at": "2026-06-18T18:30:00Z",
+      "last_journal_entry_at": "2026-06-18T18:30:00Z",
+      "pipeline": {
+        "bounces": 0,
+        "security": "PASS / APPROVE (CRIT 0 / HIGH 0 / MED 0 / LOW 2 / INFO 1; append-only by GRANT; RLS ENABLE+FORCE non-inert under brain_app NOSUPERUSER; signed BIGINT money + DECIMAL(9,8) weights \u03a3=1.0 no float; deterministic credit_id idempotency; saved-weight clawback; closed-sum parity oracle CI gate non-tautological LEG2; metric-engine sole read path; additive 0032)",
+        "qa": "BUILD-OK (parity oracle CI-blocking PASS LEG1 \u03a3credited=realized exact, LEG2 engine==independent raw SQL; append-only grants SELECT+INSERT only UPDATE/DELETE denied; replay ON CONFLICT DO NOTHING; isolation NON-INERT DISABLE-RLS leaks brand-B under brain_app is_superuser=f; no float; metric-engine 141/141, core 332/332, isolation-fuzz 9/9, web build clean)",
+        "final_review": "PASS / APPROVE",
+        "branch": "feat/attribution-ledger",
+        "verdict_evidence": "4 gates re-run + replicated: parity-oracle+models 60/60; full metric-engine 141/141; isolation-fuzz 9/9; INDEPENDENT non-engine re-derivation of largest-remainder apportionment confirmed \u03a3credited=realized (99999->40000/20000/39999), full-RTO per-touch closed-sum=0, partial-50% over saved 40/20/40 -> -20000/-10000/-20000. Drift CLEAN (6/6 deliverables file:line). Paradigm CLEAN Tier-0 $0/mo no model number on money ledger. Over-engineering CLEAN 37 files map to plan tracks, no new deps, no speculative abstraction. Negative controls genuine: isolation mutation probe asserts leaked>0 + current_user=brain_app is_superuser=f; append-only at DB-GRANT (assertion-2 + live deny); LEG2 independent raw SQL; no-float assertion-3 all %_minor bigint; dedup ON CONFLICT key matches UNIQUE index exactly. Hard-rule NONE.",
+        "residuals": [
+          "ADV-RESIDUAL-1: live Postgres unreachable in final-review env -> isolation/append-only/replay PEND here (structurally green); EXECUTED green in QA FULL run + Security under live brain_app. CI MUST run migration 0032 + live suite under brain_app (NOSUPERUSER), not dev superuser brain (bypasses RLS -> would render isolation inert) as launch precondition.",
+          "SEC-LOW-1/LOW-2/INFO-1: per Stage-4 security review (non-blocking)",
+          "PROD-GAP: brain_gold.attribution_credit_ledger StarRocks mirror is a documented future graduation; M1 SoR is Postgres 0032 (mirrors realized_revenue_ledger 0018 logical-gold precedent)"
         ]
       }
     },

@@ -28,6 +28,7 @@ import {
   Truck,
   Layers,
   Footprints,
+  Target,
   Plug,
   Activity,
   Zap,
@@ -72,6 +73,7 @@ const NAV_SECTIONS: NavSection[] = [
       { href: '/analytics/cod-rto', label: 'CoD / RTO', icon: Truck },
       { href: '/analytics/order-status', label: 'Order Status', icon: Layers },
       { href: '/analytics/journey', label: 'Journey', icon: Footprints },
+      { href: '/analytics/attribution', label: 'Attribution', icon: Target },
     ],
   },
   {

@@ -38,6 +38,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { SyncNowControl } from '@/components/connectors/sync-now-control';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
 import { useMarketplace, useConnectConnector, useDisconnectConnector } from '@/lib/hooks/use-connectors';
@@ -346,22 +347,32 @@ function ConnectorTile({ tile }: { tile: MarketplaceTile }) {
             Coming Soon
           </Button>
         ) : isConnected ? (
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-            {tile.instance?.shop_domain && (
-              <p className="text-sm text-muted-foreground truncate">{tile.instance.shop_domain}</p>
-            )}
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleDisconnect}
-              disabled={isDisconnecting}
-              data-testid={`btn-disconnect-${tile.id}`}
-            >
-              {isDisconnecting && (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
+          <div className="space-y-3">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+              {tile.instance?.shop_domain && (
+                <p className="text-sm text-muted-foreground truncate">{tile.instance.shop_domain}</p>
               )}
-              {isDisconnecting ? 'Disconnecting…' : 'Disconnect'}
-            </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleDisconnect}
+                disabled={isDisconnecting}
+                data-testid={`btn-disconnect-${tile.id}`}
+              >
+                {isDisconnecting && (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
+                )}
+                {isDisconnecting ? 'Disconnecting…' : 'Disconnect'}
+              </Button>
+            </div>
+            {/* Sync now — on-demand incremental re-pull. Status visible to all roles;
+                trigger gated to brand_admin+ (hidden for manager/analyst). */}
+            {tile.instance?.id && (
+              <SyncNowControl
+                connectorId={tile.instance.id}
+                className="pt-3 border-t border-border"
+              />
+            )}
           </div>
         ) : (
           <div className="space-y-2">

@@ -141,40 +141,47 @@ describe('1. Catalog — all 7 categories, truthful availability', () => {
     expect(isConnectable(shopify!)).toBe(true);
   });
 
-  it('meta is coming_soon (not connectable)', () => {
+  // feat-ad-connectors Track 1: meta + google_ads flipped to available (deep ad connectors).
+  it('meta is available and oauth (feat-ad-connectors)', () => {
     const meta = getDefinition('meta');
     expect(meta).not.toBeNull();
-    expect(meta!.availability).toBe('coming_soon');
-    expect(isConnectable(meta!)).toBe(false);
+    expect(meta!.availability).toBe('available');
+    expect(meta!.connectMethod).toBe('oauth');
+    expect(isConnectable(meta!)).toBe(true);
   });
 
-  it('google_ads is coming_soon (not connectable)', () => {
+  it('google_ads is available and oauth (feat-ad-connectors)', () => {
     const ga = getDefinition('google_ads');
     expect(ga).not.toBeNull();
-    expect(isConnectable(ga!)).toBe(false);
+    expect(ga!.availability).toBe('available');
+    expect(ga!.connectMethod).toBe('oauth');
+    expect(isConnectable(ga!)).toBe(true);
   });
 
-  it('razorpay is coming_soon (not connectable)', () => {
+  it('razorpay is available (credential connector — merged on master)', () => {
     const rp = getDefinition('razorpay');
     expect(rp).not.toBeNull();
-    expect(isConnectable(rp!)).toBe(false);
+    expect(rp!.availability).toBe('available');
+    expect(rp!.connectMethod).toBe('credential');
+    expect(isConnectable(rp!)).toBe(true);
   });
 });
 
 // ── Test 2: coming_soon ⇒ 422 at catalog gate (#2) ───────────────────────────
 
 describe('2. Coming-soon connector type is rejected at catalog gate', () => {
-  it('meta connector is not connectable (server-side gate)', () => {
+  it('meta connector IS connectable post feat-ad-connectors (oauth dispatch path)', () => {
     const def = getDefinition('meta');
+    expect(def).not.toBeNull();
+    // meta is now available → POST /api/v1/connectors reaches the oauth dispatch (not a 422 gate).
+    expect(isConnectable(def!)).toBe(true);
+  });
+
+  it('a still-coming_soon connector (woocommerce) is not connectable (server-side gate)', () => {
+    const def = getDefinition('woocommerce');
     expect(def).not.toBeNull();
     expect(isConnectable(def!)).toBe(false);
     // This is what POST /api/v1/connectors checks: isConnectable → false ⇒ 422
-  });
-
-  it('razorpay connector is not connectable (server-side gate)', () => {
-    const def = getDefinition('razorpay');
-    expect(def).not.toBeNull();
-    expect(isConnectable(def!)).toBe(false);
   });
 
   it('unknown type returns null from getDefinition (→ 400 not 500)', () => {
@@ -326,8 +333,8 @@ describe('5+6. Health state model + safety mapping', () => {
 describe('7. Authz: coming-soon ⇒ not connectable; catalog gate is the source of truth', () => {
   it('coming_soon availability makes isConnectable return false (manager connect ⇒ 422)', () => {
     // The authz check uses isConnectable; this is the server-side gate.
-    // manager has connect permission but gets 422 because meta is not connectable.
-    const def = getDefinition('meta');
+    // manager has connect permission but gets 422 because woocommerce is not connectable.
+    const def = getDefinition('woocommerce');
     expect(def).not.toBeNull();
     expect(isConnectable(def!)).toBe(false);
   });

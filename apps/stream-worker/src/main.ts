@@ -29,6 +29,7 @@ import { IdentityBridgeConsumer } from './identity-bridge/IdentityBridgeConsumer
 import { BackfillOrderConsumer } from './interfaces/consumers/BackfillOrderConsumer.js';
 import { LiveLedgerBridgeConsumer } from './interfaces/consumers/LiveLedgerBridgeConsumer.js';
 import { SettlementLedgerConsumer } from './interfaces/consumers/SettlementLedgerConsumer.js';
+import { SpendLedgerConsumer } from './interfaces/consumers/SpendLedgerConsumer.js';
 import { LedgerWriter } from './infrastructure/pg/LedgerWriter.js';
 
 export async function main(): Promise<void> {
@@ -50,6 +51,11 @@ export async function main(): Promise<void> {
   // WIRED HERE (MB-4 NON-NEGOTIABLE) — unwiring triggers durable-rule proposal (occurrence #3).
   const settlementLedgerGroupId =
     process.env['SETTLEMENT_LEDGER_CONSUMER_GROUP_ID'] ?? 'settlement-ledger-bridge';
+  // Spend ledger bridge (feat-ad-connectors / ADR-AD-6): separate consumer group on the live
+  // topic. Filters spend.live.v1 events; writes ad_spend_ledger (ON CONFLICT DO NOTHING).
+  // WIRED HERE (NON-NEGOTIABLE) — unwiring triggers the wired-to-nothing bounce.
+  const spendLedgerGroupId =
+    process.env['SPEND_LEDGER_CONSUMER_GROUP_ID'] ?? 'spend-ledger-bridge';
   // Backfill lane (ADR-BF-7 / D-3): separate topic + group → zero live-lane lag impact
   const backfillTopic = process.env['BACKFILL_TOPIC'] ?? `${(process.env['APP_ENV'] ?? 'dev')}.collector.order.backfill.v1`;
   const backfillGroupId = process.env['BACKFILL_CONSUMER_GROUP_ID'] ?? 'stream-worker-backfill';
@@ -146,6 +152,19 @@ export async function main(): Promise<void> {
     settlementLedgerGroupId,
   );
 
+  // ── Spend ledger bridge (feat-ad-connectors / ADR-AD-6 WIRED) ──────────────
+  // Same live topic, separate consumer group (spendLedgerGroupId). Filters spend.live.v1;
+  // writes the append-only ad_spend_ledger fact (ON CONFLICT DO NOTHING — idempotent re-read).
+  // Brand GUC is set inside LedgerWriter.writeAdSpend before every INSERT (NN-1 / RLS).
+  // WIRED HERE: do NOT remove this block without updating spend-ledger-wiring.e2e.test.ts.
+  const spendLedgerWriter = new LedgerWriter(dbUrl);
+  const spendLedgerConsumer = new SpendLedgerConsumer(
+    kafka,
+    spendLedgerWriter,
+    topic,
+    spendLedgerGroupId,
+  );
+
   // Graceful shutdown
   const shutdown = async (signal: string): Promise<void> => {
     console.info(`[stream-worker] ${signal} received — draining consumers...`);
@@ -155,6 +174,7 @@ export async function main(): Promise<void> {
       backfillConsumer.stop(),
       liveLedgerConsumer.stop(),
       settlementLedgerConsumer.stop(),
+      spendLedgerConsumer.stop(),
     ]);
     await dedup.quit();
     await backfillDedup.quit();
@@ -166,6 +186,7 @@ export async function main(): Promise<void> {
     await liveLedgerWriter.end();
     await settlementLedgerWriter.end();
     await settlementMapPool.end();
+    await spendLedgerWriter.end();
     console.info('[stream-worker] shutdown complete');
     process.exit(0);
   };
@@ -203,6 +224,14 @@ export async function main(): Promise<void> {
   console.info(`[stream-worker] starting settlement-ledger bridge — topic=${topic} group=${settlementLedgerGroupId}`);
   await settlementLedgerConsumer.start();
   console.info('[stream-worker] settlement-ledger bridge consumer running');
+
+  // ── Spend ledger bridge consumer (feat-ad-connectors / ADR-AD-6 MANDATORY WIRE) ──
+  // Same live topic, independent consumer group. Filters spend.live.v1.
+  // Writes ad_spend_ledger (ON CONFLICT DO NOTHING). WIRED HERE: do NOT remove without
+  // updating spend-ledger-wiring.e2e.test.ts (wired-to-nothing bounce trigger).
+  console.info(`[stream-worker] starting spend-ledger bridge — topic=${topic} group=${spendLedgerGroupId}`);
+  await spendLedgerConsumer.start();
+  console.info('[stream-worker] spend-ledger bridge consumer running');
 }
 
 // Run when invoked directly (not imported in tests)

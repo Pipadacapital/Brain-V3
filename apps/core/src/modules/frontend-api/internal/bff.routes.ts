@@ -50,7 +50,8 @@ import { jtiFromJwt, csrfTokenForSession } from './csrf.js';
 import type { RateLimiter } from '../../workspace-access/internal/infrastructure/rate-limiter.js';
 import { loginFailKeySync, loginIpKey } from '../../workspace-access/internal/infrastructure/rate-limiter.js';
 import type { Pool as PgPool } from 'pg';
-import { getRevenueMetrics, getRevenueTimeseries, getKpiSummary, getRecognitionBreakdown, getRecentActivity, getOrdersTimeseries, getOrderStats, getDataHealth, getTrackingHealth, getRecentEvents } from '../../analytics/index.js';
+import { getRevenueMetrics, getRevenueTimeseries, getKpiSummary, getRecognitionBreakdown, getRecentActivity, getOrdersTimeseries, getOrderStats, getDataHealth, getTrackingHealth, getRecentEvents, getAdSpendTimeseries, getBlendedRoas } from '../../analytics/index.js';
+import type { AdPlatform } from '@brain/metric-engine';
 import type { TimeGrain } from '@brain/metric-engine';
 
 const COOKIE_NAME = 'brain_session';
@@ -1315,6 +1316,127 @@ export function registerBffRoutes(
       const asOf = new Date(`${asOfStr}T00:00:00Z`);
 
       const result = await getOrderStats(auth.brandId, asOf, { pool: rawPool });
+
+      return reply.send({ request_id: requestId, data: result });
+    },
+  );
+
+  // ── Ad-connectors (Slice 1 Track 3) — spend + blended ROAS ────────────────────
+  // ADR-002 sole-read-path: routes call analytics wrappers → metric engine (ad_spend_as_of
+  // / realized_gmv_as_of seams). Brand from session (D-1), NEVER the body. Honest no_data.
+
+  /**
+   * GET /api/v1/analytics/ad-spend-timeseries?from=YYYY-MM-DD&to=YYYY-MM-DD&grain=day|week&platform=meta|google_ads
+   * Returns per-bucket ad spend grouped by (platform, currency_code).
+   */
+  fastify.get(
+    '/api/v1/analytics/ad-spend-timeseries',
+    {
+      preHandler: [bffProtectedPreHandler],
+      schema: {
+        querystring: {
+          type: 'object',
+          properties: {
+            from: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
+            to:   { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
+            grain: { type: 'string', enum: ['day', 'week'] },
+            platform: { type: 'string', enum: ['meta', 'google_ads'] },
+          },
+          additionalProperties: false,
+        },
+      },
+      attachValidation: true,
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const validationError = (request as FastifyRequest & { validationError?: Error }).validationError;
+      if (validationError) {
+        return reply.code(400).send({
+          request_id: requestId,
+          error: { code: 'INVALID_PARAMS', message: 'from/to must be YYYY-MM-DD; grain day|week; platform meta|google_ads.' },
+        });
+      }
+
+      const auth = (request as AuthenticatedRequest).auth;
+      if (!auth.brandId) {
+        return reply.send({ request_id: requestId, data: { state: 'no_data', from: null, to: null, grain: 'day', platform: null } });
+      }
+      if (!rawPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' } });
+      }
+
+      const query = request.query as { from?: string; to?: string; grain?: string; platform?: string };
+      const today = new Date().toISOString().split('T')[0] as string;
+      const toStr = query.to ?? today;
+      // Default window: last 35 days (covers the Google trailing-restatement window; ADR-AD-3).
+      const defaultFrom = new Date(Date.now() - 35 * 24 * 60 * 60 * 1000).toISOString().split('T')[0] as string;
+      const fromStr = query.from ?? defaultFrom;
+      const grain: TimeGrain = (query.grain === 'week' ? 'week' : 'day') as TimeGrain;
+      const platform = (query.platform === 'meta' || query.platform === 'google_ads')
+        ? (query.platform as AdPlatform)
+        : undefined;
+
+      const result = await getAdSpendTimeseries(
+        auth.brandId,
+        { fromDate: new Date(`${fromStr}T00:00:00Z`), toDate: new Date(`${toStr}T00:00:00Z`), grain, platform },
+        { pool: rawPool },
+      );
+
+      return reply.send({ request_id: requestId, data: result });
+    },
+  );
+
+  /**
+   * GET /api/v1/analytics/blended-roas?from=YYYY-MM-DD&to=YYYY-MM-DD
+   * Returns per-currency blended ROAS (realized ÷ spend), same-currency only,
+   * honest (roas_ratio=null where spend=0).
+   */
+  fastify.get(
+    '/api/v1/analytics/blended-roas',
+    {
+      preHandler: [bffProtectedPreHandler],
+      schema: {
+        querystring: {
+          type: 'object',
+          properties: {
+            from: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
+            to:   { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
+          },
+          additionalProperties: false,
+        },
+      },
+      attachValidation: true,
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const validationError = (request as FastifyRequest & { validationError?: Error }).validationError;
+      if (validationError) {
+        return reply.code(400).send({
+          request_id: requestId,
+          error: { code: 'INVALID_PARAMS', message: 'from and to must be YYYY-MM-DD.' },
+        });
+      }
+
+      const auth = (request as AuthenticatedRequest).auth;
+      if (!auth.brandId) {
+        const today = new Date().toISOString().split('T')[0] as string;
+        return reply.send({ request_id: requestId, data: { state: 'no_data', from: today, to: today } });
+      }
+      if (!rawPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' } });
+      }
+
+      const query = request.query as { from?: string; to?: string };
+      const today = new Date().toISOString().split('T')[0] as string;
+      const toStr = query.to ?? today;
+      const defaultFrom = new Date(Date.now() - 35 * 24 * 60 * 60 * 1000).toISOString().split('T')[0] as string;
+      const fromStr = query.from ?? defaultFrom;
+
+      const result = await getBlendedRoas(
+        auth.brandId,
+        { fromDate: new Date(`${fromStr}T00:00:00Z`), toDate: new Date(`${toStr}T00:00:00Z`) },
+        { pool: rawPool },
+      );
 
       return reply.send({ request_id: requestId, data: result });
     },

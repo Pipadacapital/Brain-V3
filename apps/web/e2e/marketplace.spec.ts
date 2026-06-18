@@ -91,16 +91,19 @@ test('coming-soon tile is present and is structurally un-connectable', async ({ 
   const count = await comingSoonBadges.count();
   expect(count, 'At least one coming-soon tile must exist').toBeGreaterThan(0);
 
-  // The meta tile is known coming-soon — its connect button must be disabled
-  const metaTile = page.getByTestId('connector-tile-meta');
-  await expect(metaTile).toBeVisible({ timeout: 10_000 });
+  // WooCommerce is a known coming-soon connector — its connect button must be disabled.
+  // (Meta/Google are NO LONGER coming-soon: feat-ad-connectors Track 1 flipped them to
+  //  available oauth, so the stale meta-as-coming-soon assertion was corrected — see the
+  //  separate test below that asserts meta is now connectable.)
+  const wooTile = page.getByTestId('connector-tile-woocommerce');
+  await expect(wooTile).toBeVisible({ timeout: 10_000 });
 
-  const metaConnectBtn = page.getByTestId('connector-tile-meta-connect');
-  await expect(metaConnectBtn).toBeVisible();
+  const wooConnectBtn = page.getByTestId('connector-tile-woocommerce-connect');
+  await expect(wooConnectBtn).toBeVisible();
 
   // Must be disabled (aria-disabled="true" and disabled attribute)
-  await expect(metaConnectBtn).toBeDisabled();
-  const ariaDisabled = await metaConnectBtn.getAttribute('aria-disabled');
+  await expect(wooConnectBtn).toBeDisabled();
+  const ariaDisabled = await wooConnectBtn.getAttribute('aria-disabled');
   expect(ariaDisabled, 'Coming-soon tile must have aria-disabled="true"').toBe('true');
 
   // Clicking a disabled button must not fire any network request
@@ -110,9 +113,34 @@ test('coming-soon tile is present and is structurally un-connectable', async ({ 
   ).catch(() => null);
 
   // Attempt to click — Playwright should either fail the click (disabled) or it is a no-op
-  await metaConnectBtn.click({ force: true }); // force: ignore disabled for the click attempt
+  await wooConnectBtn.click({ force: true }); // force: ignore disabled for the click attempt
   const firedRequest = await postPromise;
   expect(firedRequest, 'No POST /connectors must fire for a coming-soon tile').toBeNull();
+});
+
+// ── Test 3b: Meta / Google ad tiles are now connectable (Track 1 registry flip) ──
+
+test('meta and google ad tiles are connectable oauth tiles (no coming-soon badge)', async ({ page }) => {
+  await onboardToDashboard(page, 'mkt-ads');
+  await page.goto('/settings/connectors');
+
+  await expect(page.getByTestId('marketplace-page')).toBeVisible({ timeout: 10_000 });
+
+  for (const id of ['meta', 'google_ads'] as const) {
+    const tile = page.getByTestId(`connector-tile-${id}`);
+    await expect(tile, `${id} tile must render`).toBeVisible({ timeout: 10_000 });
+
+    // The Connect button must be ENABLED (available oauth — no shop-domain gate for ads).
+    const connectBtn = page.getByTestId(`connector-tile-${id}-connect`);
+    await expect(connectBtn).toBeVisible();
+    await expect(connectBtn, `${id} connect must be enabled`).toBeEnabled();
+
+    // No coming-soon badge inside this tile.
+    await expect(
+      tile.getByTestId('connector-tile-coming-soon'),
+      `${id} must not show a coming-soon badge`,
+    ).toHaveCount(0);
+  }
 });
 
 // ── Test 4: Zero-connection brand renders complete marketplace (Skip-For-Now path) ─

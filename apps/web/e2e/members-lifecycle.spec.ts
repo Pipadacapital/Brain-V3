@@ -70,10 +70,10 @@ async function waitForPendingInvite(page: Page, email: string, timeout = 10_000)
   await expect(rows.first(), 'At least one pending invite row must exist after inviting').toBeVisible({ timeout });
 
   // The invite for our specific email should be present.
-  // Scope to the pending-invites table to avoid strict-mode violations from toast/aria-live
-  // elements that also contain the email string.
+  // Use a scoped locator to avoid strict-mode violations from toast/ARIA live regions
+  // that also contain the email string (the toast appears after a successful invite send).
   await expect(
-    page.getByTestId('pending-invites-section').getByText(email, { exact: false }).first(),
+    page.locator('[data-testid^="pending-invite-row-"] p', { hasText: email }).first(),
     `Pending invite row for ${email} must be visible`,
   ).toBeVisible({ timeout });
 
@@ -140,34 +140,36 @@ test.describe('Members lifecycle', () => {
     await invitePage.getByTestId('input-password').fill(PASSWORD);
     await invitePage.getByTestId('btn-register').click();
 
-    // Wait for either the verify-email redirect OR the invite/accept redirect (INVITE_PENDING).
-    await invitePage.waitForURL(/\/(verify-email|invite\/accept)/, { timeout: 10_000 });
-    const postRegisterUrl = invitePage.url();
-    const directInviteAccept = postRegisterUrl.includes('/invite/accept');
+    // AC-7: Backend returns INVITE_PENDING when the registered email has a pending invite.
+    // In that case the register form redirects to /invite/accept?email=... immediately.
+    // Otherwise it redirects to /verify-email and waits for the user to click the link.
+    await expect(invitePage).toHaveURL(/\/(verify-email|invite\/accept)/, { timeout: 10_000 });
+    const currentUrl = invitePage.url();
+    const redirectedToAccept = currentUrl.includes('/invite/accept');
 
-    if (!directInviteAccept) {
-      // Normal registration path: verify email out-of-band.
-      await markEmailVerified(memberEmail);
-    }
+    let inviteLink: string | null = null;
 
-    // Fetch the invite link from the dev email helper.
-    const inviteLink = await getLastInviteLink(invitePage, memberEmail);
+    // In both cases (INVITE_PENDING redirect or normal verify-email flow), we need to:
+    // 1. Verify the email (required before acceptInvite succeeds — USER_UNVERIFIED error otherwise).
+    // 2. Navigate to the invite link with the token to accept.
+    await markEmailVerified(memberEmail);
+    inviteLink = await getLastInviteLink(invitePage, memberEmail);
+
     if (!inviteLink) {
-      // If the dev helper route isn't yet deployed, mark this assertion as contract-pending
-      // and skip the accept flow (typecheck + page-render assertions still run).
       test.info().annotations.push({
         type: 'contract-pending',
         description: 'GET /api/bff/v1/dev/last-email-link not yet available — accept flow skipped',
       });
     } else {
-      // Navigate to the invite acceptance URL (token contains the link).
+      // Navigate to the invite link (contains the token). AcceptInviteView auto-accepts.
       await invitePage.goto(inviteLink);
-      // The accept-invite-view auto-accepts on mount.
       await expect(
         invitePage.getByTestId('btn-invite-accepted-login'),
         'Accept invite success button must appear',
       ).toBeVisible({ timeout: 15_000 });
     }
+
+    void redirectedToAccept; // consumed; both paths converge above
 
     await invitePage.close();
 
@@ -176,8 +178,9 @@ test.describe('Members lifecycle', () => {
 
     if (inviteLink) {
       // Only assert member listed if we completed the accept flow.
+      // Use scoped locator to avoid strict-mode violations from toasts or other elements.
       await expect(
-        page.getByText(memberEmail),
+        page.locator('[data-testid^="member-row-"] p', { hasText: memberEmail }).first(),
         'Accepted member email must appear in members table',
       ).toBeVisible({ timeout: 10_000 });
     }

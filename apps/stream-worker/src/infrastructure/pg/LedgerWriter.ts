@@ -500,6 +500,102 @@ export class LedgerWriter {
     }
   }
 
+  // ── Ad-spend fact writes (feat-ad-connectors Slice 1 / ADR-AD-6) ─────────────
+  //
+  // Writes the append-only ad_spend_ledger fact. Distinct from realized_revenue_ledger
+  // (spend is a distinct economic concept + grain — would corrupt realized_gmv_as_of()).
+  //   - Under brand GUC (NN-1 / RLS enforced).
+  //   - ON CONFLICT (brand_id, platform, level, level_id, stat_date) DO NOTHING (I-ST04 —
+  //     idempotent trailing re-read; spend is fixed at click-date so the key is stable).
+  //   - spend_minor is BIGINT-as-string (I-S07 — no parseFloat anywhere upstream).
+  //   - Append-only by GRANT (brain_app: SELECT+INSERT only on ad_spend_ledger).
+
+  /**
+   * Write an ad_spend_ledger row. Idempotent on the dedup key.
+   * Returns true if inserted, false if deduped (replay / re-pull).
+   */
+  async writeAdSpend(params: {
+    brandId: string;
+    spendEventId: string;       // ADR-AD-5 deterministic id (= raw_event_id / Bronze event_id)
+    platform: 'meta' | 'google_ads';
+    level: 'campaign' | 'adset' | 'ad' | 'creative';
+    levelId: string;
+    parentId: string | null;
+    campaignId: string | null;
+    campaignName: string | null;
+    statDate: string;           // YYYY-MM-DD (click-date anchored, canonical)
+    spendMinor: string;         // BIGINT-as-string (I-S07)
+    currencyCode: string;
+    impressions: string | null; // BIGINT-as-string
+    clicks: string | null;      // BIGINT-as-string
+    conversionsRaw: Record<string, unknown> | null;  // RAW (ADR-AD-8)
+    accountTimezone: string | null;
+    rawEventId: string;         // Bronze provenance (= spendEventId)
+    occurredAt: string;         // ISO-8601
+  }): Promise<boolean> {
+    const client: PoolClient = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      // GUC-first: brand context required for RLS (NN-1)
+      await client.query(
+        "SELECT set_config('app.current_brand_id', $1, true)",
+        [params.brandId],
+      );
+
+      const result = await client.query<{ spend_event_id: string }>(
+        `INSERT INTO ad_spend_ledger (
+          brand_id, spend_event_id, platform, level, level_id, parent_id,
+          campaign_id, campaign_name, stat_date, spend_minor, currency_code,
+          impressions, clicks, conversions_raw, account_timezone, raw_event_id, occurred_at
+        ) VALUES (
+          $1, $2, $3, $4, $5, $6,
+          $7, $8, $9::date, $10::bigint, $11,
+          $12::bigint, $13::bigint, $14::jsonb, $15, $16, $17
+        )
+        ON CONFLICT (brand_id, platform, level, level_id, stat_date)
+        DO NOTHING
+        RETURNING spend_event_id`,
+        [
+          params.brandId,
+          params.spendEventId,
+          params.platform,
+          params.level,
+          params.levelId,
+          params.parentId,
+          params.campaignId,
+          params.campaignName,
+          params.statDate,
+          params.spendMinor,
+          params.currencyCode,
+          params.impressions,
+          params.clicks,
+          params.conversionsRaw ? JSON.stringify(params.conversionsRaw) : null,
+          params.accountTimezone,
+          params.rawEventId,
+          params.occurredAt,
+        ],
+      );
+
+      await client.query('COMMIT');
+
+      const inserted = (result.rowCount ?? 0) > 0;
+      if (inserted) {
+        console.info(
+          `[ledger-writer] ad_spend brand=${params.brandId} platform=${params.platform} ` +
+          `level=${params.level} level_id=${params.levelId} stat_date=${params.statDate} ` +
+          `spend=${params.spendMinor} ${params.currencyCode}`,
+        );
+      }
+      return inserted;
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
   async end(): Promise<void> {
     await this.pool.end();
   }

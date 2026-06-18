@@ -13,7 +13,11 @@
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-export type MetricId = 'realized_revenue' | 'provisional_revenue';
+export type MetricId =
+  | 'realized_revenue'
+  | 'provisional_revenue'
+  | 'ad_spend'
+  | 'blended_roas';
 export type MetricVersion = `v${number}`;
 
 export interface MetricDefinition {
@@ -22,16 +26,19 @@ export interface MetricDefinition {
   /** Human-readable definition — mirrors the METRICS.md registry row. */
   readonly description: string;
   /** The named DB read seam this metric resolves through (sole-as-of-path). */
-  readonly readSeam: 'realized_gmv_as_of' | 'provisional_gmv_as_of';
+  readonly readSeam: 'realized_gmv_as_of' | 'provisional_gmv_as_of' | 'ad_spend_as_of';
   /**
    * recognition_label semantics this metric covers.
    * Cross-checked in registry unit test: realized→finalized; provisional→provisional/settling.
    * Structural documentation that the oracle uses to verify non-tautological coverage.
+   * Ad metrics carry NO recognition labels (spend is not a recognition-staged fact) → [].
    */
   readonly recognitionLabels: readonly ('provisional' | 'settling' | 'finalized')[];
   /**
    * Money metrics are exact-integer (METRICS.md §Rules).
    * toleranceMinor = 0 for all money metrics. The parity oracle asserts this.
+   * ad_spend (BIGINT minor units) is exact-integer = 0. blended_roas is a ratio of two
+   * exact integer SUMs (no float rounding silently introduced) → also 0 (exact-rational).
    */
   readonly toleranceMinor: 0;
 }
@@ -73,6 +80,39 @@ export const METRIC_REGISTRY = {
         "(provisional,settling) AND economic_effective_at::date <= as_of, per currency_code. " +
         'NEVER blended into realized_revenue. ' +
         'Sole emitter: metric-engine only (METRICS.md §provisional_revenue).',
+    },
+  },
+  ad_spend: {
+    v1: {
+      metricId: 'ad_spend' as const,
+      version: 'v1' as const,
+      readSeam: 'ad_spend_as_of' as const,
+      recognitionLabels: [] as const,
+      toleranceMinor: 0 as const,
+      description:
+        'Ad spend over [from,to]: SUM(spend_minor) from ad_spend_ledger via ad_spend_as_of(), ' +
+        'grouped by (platform, currency_code). BIGINT minor units (I-S07, Google micros→minor ' +
+        'normalized at ingest). stat_date click-anchored (canonical). NEVER blended across ' +
+        'currency_code. Sole emitter: metric-engine only via the ad_spend_as_of seam.',
+    },
+  },
+  blended_roas: {
+    v1: {
+      metricId: 'blended_roas' as const,
+      version: 'v1' as const,
+      // blended_roas reads BOTH realized_gmv_as_of (numerator) and ad_spend_as_of
+      // (denominator). The registry records the spend seam — the realized seam is the
+      // existing realized_revenue registry entry, re-used (not duplicated here).
+      readSeam: 'ad_spend_as_of' as const,
+      recognitionLabels: ['finalized'] as const,
+      toleranceMinor: 0 as const,
+      description:
+        'Blended ROAS = realized_revenue ÷ ad_spend, per currency_code. Numerator = ' +
+        'realized_gmv_as_of (finalized GMV); denominator = ad_spend_as_of SUM(spend_minor). ' +
+        'Both are exact BIGINT minor units — SAME-CURRENCY ONLY (never blended across ' +
+        'currency_code). ROAS is reported ONLY where spend>0; spend=0 → null (honest, ' +
+        'never divide-by-zero or fabricate). Ratio carries the two integer operands so the ' +
+        'consumer can re-derive it exactly. Sole emitter: metric-engine only.',
     },
   },
 } as const;

@@ -154,6 +154,20 @@ export function useDataHealth() {
 }
 
 /**
+ * useDataQualitySummary — fetches the Phase-7 DQ summary (grades, freshness-SLA,
+ * coverage, effective_confidence, trust gate). Shares the 'analytics' query-key
+ * prefix → auto-invalidates on brand switch. BFF/metric-engine read only.
+ */
+export function useDataQualitySummary() {
+  return useQuery({
+    queryKey: [...ANALYTICS_QUERY_KEY, 'data-quality-summary'],
+    queryFn: () => analyticsApi.getDataQualitySummary(),
+    staleTime: 60_000,
+    refetchInterval: 5 * 60_000,
+  });
+}
+
+/**
  * useSettlements — fetches the Razorpay net-of-fees settlement summary as of a date.
  * Shares the 'analytics' query-key prefix → auto-invalidates on brand switch.
  * @param asOf - YYYY-MM-DD date (optional; server defaults to today).

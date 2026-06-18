@@ -25,14 +25,19 @@ describe('classifyGoogleError (ADR-AD-7 two-error branch)', () => {
   });
 
   it('classifies RESOURCE_TEMPORARILY_EXHAUSTED (QPS) as QPS → bounded backoff', () => {
-    const body = {
+    // Q-CURSOR regression: the QPS throttle arrives inside a gRPC RESOURCE_EXHAUSTED
+    // envelope; the explicit TEMPORARILY quotaError discriminates it as QPS. The
+    // classifier MUST NOT abort the day's repull here. This is the exact mixed-field
+    // case that previously dodged assertion via `void body`.
+    const mixedField = {
       error: {
         status: 'RESOURCE_EXHAUSTED', // gRPC status is the same; the quotaError discriminates
         details: [{ errors: [{ errorCode: { quotaError: 'RESOURCE_TEMPORARILY_EXHAUSTED' } }] }],
       },
     };
-    // RESOURCE_EXHAUSTED status takes precedence ONLY when no TEMPORARILY quotaError —
-    // here the explicit TEMPORARILY quotaError means QPS. Assert via the quota-only path:
+    expect(classifyGoogleError(mixedField, 429)).toBe('QPS');
+    expect(classifyGoogleError(mixedField, 200)).toBe('QPS');
+    // quota-only (no gRPC status) path also resolves to QPS.
     const qpsOnly = {
       error: {
         details: [{ errors: [{ errorCode: { quotaError: 'RESOURCE_TEMPORARILY_EXHAUSTED' } }] }],
@@ -41,7 +46,6 @@ describe('classifyGoogleError (ADR-AD-7 two-error branch)', () => {
     expect(classifyGoogleError(qpsOnly, 200)).toBe('QPS');
     // and a plain 429 with no quota detail is treated as QPS (transient).
     expect(classifyGoogleError({}, 429)).toBe('QPS');
-    void body;
   });
 
   it('classifies anything else as OTHER', () => {

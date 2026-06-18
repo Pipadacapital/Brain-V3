@@ -254,4 +254,51 @@ describe('HandleMetaOAuthCallbackCommand', () => {
     // setAdAccountId must NOT be called when there's nothing to persist.
     expect(setAdAccountId).not.toHaveBeenCalled();
   });
+
+  it('never puts the app secret or access token in a request URL (SEC-AD-H1 / SEC-AD-M1)', async () => {
+    const stateStore = new InProcessOAuthStateStore();
+    const secretsMgr = new LocalSecretsManager();
+    const connectorRepo = makeConnectorRepo(REAL_BRAND_ID);
+    const syncStatusRepo = makeSyncStatusRepo();
+    const emitEvent = vi.fn().mockResolvedValue(undefined);
+
+    // Capture every (url, init) the command issues.
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    vi.stubGlobal('fetch', async (url: string | URL, init?: RequestInit) => {
+      const u = typeof url === 'string' ? url : url.toString();
+      calls.push({ url: u, init });
+      if (u.includes('/oauth/access_token')) {
+        return new Response(JSON.stringify({ access_token: TOKEN_VALUE }), { status: 200 });
+      }
+      if (u.includes('/me/adaccounts')) {
+        return new Response(JSON.stringify({ data: [{ id: 'act_123' }] }), { status: 200 });
+      }
+      throw new Error(`[meta test] unexpected fetch: ${u}`);
+    });
+
+    const cmd = new HandleMetaOAuthCallbackCommand(
+      secretsMgr,
+      stateStore,
+      connectorRepo,
+      syncStatusRepo,
+      emitEvent,
+    );
+    const stateNonce = 'meta-state-url-hygiene';
+    await stateStore.set(REAL_BRAND_ID, stateNonce, 900);
+    await cmd.execute({ query: { code: 'auth_code_meta', state: stateNonce }, idempotencyKey: 'idem-url' });
+
+    const tokenExchange = calls.find((c) => c.url.includes('/oauth/access_token'))!;
+    // SEC-AD-H1: POST with the secret in the BODY, NEVER in the URL.
+    expect(tokenExchange.init?.method).toBe('POST');
+    expect(tokenExchange.url).not.toContain('test-meta-app-secret');
+    expect(tokenExchange.url).not.toContain('client_secret');
+    expect(String(tokenExchange.init?.body)).toContain('test-meta-app-secret');
+
+    const adAccounts = calls.find((c) => c.url.includes('/me/adaccounts'))!;
+    // SEC-AD-M1: token rides the Authorization header, never the query string.
+    expect(adAccounts.url).not.toContain(TOKEN_VALUE);
+    expect(adAccounts.url).not.toContain('access_token=');
+    const authHeader = (adAccounts.init?.headers as Record<string, string> | undefined)?.['Authorization'];
+    expect(authHeader).toBe(`Bearer ${TOKEN_VALUE}`);
+  });
 });

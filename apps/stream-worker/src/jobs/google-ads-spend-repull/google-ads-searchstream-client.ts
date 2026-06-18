@@ -268,13 +268,24 @@ export function classifyGoogleError(
     .map((e) => e.errorCode?.quotaError)
     .filter((q): q is string => !!q);
 
+  // Q-CURSOR (ADR-AD-7): the quotaError field is the authoritative discriminator,
+  // and precedence matters. A QPS throttle arrives inside a gRPC RESOURCE_EXHAUSTED
+  // envelope (status===RESOURCE_EXHAUSTED) AND HTTP 429 — but carries the explicit
+  // RESOURCE_TEMPORARILY_EXHAUSTED quotaError, which means bounded-backoff, NOT a
+  // daily abort. So:
+  //   1. explicit TEMPORARILY quotaError → QPS  (wins over the RESOURCE_EXHAUSTED status)
+  //   2. explicit RESOURCE_EXHAUSTED (status or quotaError) → DAILY (abort run)
+  //   3. bare 429 with no quota detail → QPS (transient; backoff, never abort)
+  // If step 3 ran before step 2 a daily-quota error (which is ALSO 429) would be
+  // mis-read as QPS; if step 1 ran after step 2 a QPS burst would abort the whole
+  // day's spend repull → silent missed spend / corrupted ROAS. Do not reorder.
+  if (quotaErrors.includes('RESOURCE_TEMPORARILY_EXHAUSTED')) {
+    return 'QPS';
+  }
   if (status === 'RESOURCE_EXHAUSTED' || quotaErrors.includes('RESOURCE_EXHAUSTED')) {
     return 'DAILY';
   }
-  if (
-    quotaErrors.includes('RESOURCE_TEMPORARILY_EXHAUSTED') ||
-    httpStatus === 429
-  ) {
+  if (httpStatus === 429) {
     return 'QPS';
   }
   return 'OTHER';

@@ -187,9 +187,17 @@ export class HandleMetaOAuthCallbackCommand {
       ...(callbackUrl ? { redirect_uri: callbackUrl } : {}),
     });
 
+    // SEC-AD-H1: the client_secret MUST ride the request BODY, never the URL query
+    // string — a secret in the URL is captured by every reverse-proxy/ALB/CDN/WAF
+    // access log. Meta's /oauth/access_token supports POST + form-urlencoded body
+    // (mirrors the Google token exchange). Never switch this back to GET.
     const response = await fetch(
-      `https://graph.facebook.com/${META_GRAPH_API_VERSION}/oauth/access_token?${params.toString()}`,
-      { method: 'GET' },
+      `https://graph.facebook.com/${META_GRAPH_API_VERSION}/oauth/access_token`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: params.toString(),
+      },
     );
 
     if (!response.ok) {
@@ -211,9 +219,11 @@ export class HandleMetaOAuthCallbackCommand {
    */
   private async resolveAdAccountId(accessToken: string): Promise<string | null> {
     try {
+      // SEC-AD-M1: the access_token rides the Authorization header, never the URL
+      // query string (proxy/CDN log exposure), consistent with MetaInsightsClient.
       const response = await fetch(
-        `https://graph.facebook.com/${META_GRAPH_API_VERSION}/me/adaccounts?fields=account_id&access_token=${encodeURIComponent(accessToken)}`,
-        { method: 'GET' },
+        `https://graph.facebook.com/${META_GRAPH_API_VERSION}/me/adaccounts?fields=account_id`,
+        { method: 'GET', headers: { Authorization: `Bearer ${accessToken}` } },
       );
       if (!response.ok) return null;
       const data = (await response.json()) as { data?: Array<{ account_id?: string; id?: string }> };

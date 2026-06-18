@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-06-18T06:30:00Z",
+  "updated_at": "2026-06-18T05:10:00Z",
   "updated_by": "orchestrator",
   "active_requirements": [
     {
@@ -449,13 +449,13 @@
     {
       "req_id": "feat-ad-connectors",
       "title": "Ad connectors (Meta+Google) slice 1",
-      "status": "review-parallel",
-      "stage": 4,
-      "current_owner": "security-reviewer,qa-agent",
+      "status": "awaiting-stakeholder",
+      "stage": 7,
+      "current_owner": "stakeholder",
       "lane": "high_stakes",
       "run_dir": ".engineering-os/runs/2026-06-18T02-21-09Z__39d867__feat-ad-connectors__rishabhporwal",
       "created_at": "2026-06-18T02:21:09Z",
-      "updated_at": "2026-06-18T06:30:00Z"
+      "updated_at": "2026-06-18T05:10:00Z"
     }
   ]
 }

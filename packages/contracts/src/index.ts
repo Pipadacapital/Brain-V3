@@ -452,3 +452,5 @@ export type {
   Recommendations,
   GenerateRecommendationsResult,
 } from './api/recommendation.api.v1.js';
+export { AttributionReconcileResultSchema } from './api/attribution.api.v1.js';
+export type { AttributionReconcileResult } from './api/attribution.api.v1.js';

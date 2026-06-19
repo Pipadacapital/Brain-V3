@@ -53,6 +53,15 @@ export type {
 } from './internal/credit-writer.js';
 
 /**
+ * The attribution WRITE pipeline driver — idempotently populates attribution_credit_ledger from
+ * the realized ledger + Silver touches (credit on finalized orders, clawback on reversals). This is
+ * what makes the dead writer live; the analytics attribution reads flip not_computed→has_data once
+ * a brand has been reconciled.
+ */
+export { reconcileAttribution } from './internal/reconcile-attribution.js';
+export type { ReconcileResult, ReconcileDeps } from './internal/reconcile-attribution.js';
+
+/**
  * The journey read contract this bounded context owns over `silver.touchpoint`.
  * Phase 5 Attribution consumes these reads; the implementations are the analytics
  * sole-read-path use-cases over the metric-engine Silver seam (I-ST01).

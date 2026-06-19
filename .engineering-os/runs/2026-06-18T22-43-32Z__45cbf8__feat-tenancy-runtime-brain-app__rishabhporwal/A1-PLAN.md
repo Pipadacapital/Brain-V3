@@ -1,5 +1,28 @@
 # A1 (runtime brain_app cutover) — validated plan + the primitive
 
+## PROGRESS (executing the solid, no-patch build, milestone by milestone)
+- ✅ **M1 — provisioning (the decisive blocker)**: `provision_workspace_and_brand()` SECURITY DEFINER
+  function (0047) replaces the rawPgPool provisioning txn; works as the real brain_app non-superuser;
+  removed the dead rawPgPool dep + txnClientAdapter. 96/96 workspace-access tests green. (commit cd712dc)
+- ✅ **M2 — suspend/reactivate**: wired via `beginRlsTxn` with the correct GUCs (workspace for membership
+  reads; user GUC = the SUSPENDED user for the user_session revoke — the harness caught this). Mock
+  fixtures → real UUIDs. 96/96 green. (commit b7c54c9)
+- 🔜 **M3 — auth-session primitive (NARROW)**: only `rotateRefreshToken` breaks under brain_app — it
+  looks up `user_session` BY TOKEN before the user is known, and user_session is RLS-scoped by
+  `app.current_user_id`. Needs a SECURITY DEFINER `find_session_by_refresh_token()` lookup (the token is
+  the credential). `validateSession`/`getCurrentUser`/`isEmailVerified` are FINE (userId comes from the
+  verified JWT; app_user is non-RLS). This gates the DSN flip.
+- 🔜 **M4** invite.service txns (workspace/brand GUC via beginRlsTxn) · **M5** connector writes
+  (connector_instance → brand GUC) · **M6** vault/secrets (check RLS) · **M7** DSN flip (core →
+  BRAIN_APP_DATABASE_URL, migrations keep DATABASE_URL) · **M8** full live re-verification under brain_app.
+
+Pattern established: **SECURITY DEFINER for auth/provisioning primitives** (no tenant context yet) +
+**beginRlsTxn for tenant-scoped control-plane** (context known). No patches; each milestone verified
+against the live-suite harness before the next.
+
+---
+
+
 A1 = run the app process as the non-superuser `brain_app` so even the non-`@brain/db` paths enforce
 RLS. This doc is the **validated** plan (analysis confirmed against the live DB + a proof run), plus
 the reusable primitive this branch adds.

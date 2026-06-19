@@ -30,8 +30,8 @@ import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
 import { EmptyState } from '@/components/ui/empty-state';
-import { Trash2, AlertTriangle } from 'lucide-react';
-import { useCustomer360, useEraseCustomer } from '@/lib/hooks/use-identity';
+import { Trash2, AlertTriangle, Split } from 'lucide-react';
+import { useCustomer360, useEraseCustomer, useUnmergeCustomer } from '@/lib/hooks/use-identity';
 import type { Customer360Identifier, Customer360Merge } from '@/lib/api/types';
 
 function ConsentBadge({ on, label }: { on: boolean; label: string }) {
@@ -55,6 +55,7 @@ export function Customer360Content() {
   const [confirming, setConfirming] = React.useState(false);
   const { data, isLoading, isFetching, error, refetch } = useCustomer360(submittedId);
   const erase = useEraseCustomer();
+  const unmerge = useUnmergeCustomer();
 
   function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -140,6 +141,20 @@ export function Customer360Content() {
                     <div>
                       <dt className="text-muted-foreground">Merged into</dt>
                       <dd className="font-mono">{data.customer.merged_into}</dd>
+                      <dd className="mt-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={unmerge.isPending}
+                          onClick={() => unmerge.mutate(data.customer.brain_id)}
+                        >
+                          <Split className="mr-2 h-4 w-4" aria-hidden="true" />
+                          {unmerge.isPending ? 'Splitting…' : 'Split (unmerge)'}
+                        </Button>
+                        {unmerge.data?.unmerged ? (
+                          <span className="ml-2 text-sm text-emerald-700">Split — re-look-up to refresh.</span>
+                        ) : null}
+                      </dd>
                     </div>
                   ) : null}
                 </dl>

@@ -10,6 +10,18 @@
 export { getCustomer360 } from './internal/application/queries/get-customer-360.js';
 export { eraseCustomer } from './internal/application/erase-customer.js';
 export type { ErasureResult } from './internal/application/erase-customer.js';
+export {
+  listMergeReviews,
+  resolveMergeReview,
+  unmergeCustomer,
+} from './internal/application/merge-admin.js';
+export type {
+  MergeReview,
+  MergeReviewList,
+  MergeDecision,
+  MergeResolveResult,
+  UnmergeResult,
+} from './internal/application/merge-admin.js';
 export type {
   Customer360,
   Customer360Profile,

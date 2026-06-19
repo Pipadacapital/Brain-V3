@@ -8,7 +8,11 @@
  */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { identityApi } from '@/lib/api/client';
-import type { ErasureResultResponse } from '@/lib/api/types';
+import type {
+  ErasureResultResponse,
+  MergeResolveResultResponse,
+  UnmergeResultResponse,
+} from '@/lib/api/types';
 
 export const IDENTITY_QUERY_KEY = ['identity'] as const;
 
@@ -44,6 +48,39 @@ export function useEraseCustomer() {
   return useMutation<ErasureResultResponse, unknown, string>({
     mutationKey: [...IDENTITY_QUERY_KEY, 'erase-customer'],
     mutationFn: (brainId: string) => identityApi.eraseCustomer(brainId),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: IDENTITY_QUERY_KEY });
+    },
+  });
+}
+
+/** useMergeReviews — pending merge candidates for the active brand. */
+export function useMergeReviews() {
+  return useQuery({
+    queryKey: [...IDENTITY_QUERY_KEY, 'merge-reviews'],
+    queryFn: () => identityApi.listMergeReviews(),
+    staleTime: 30_000,
+  });
+}
+
+/** useResolveMergeReview — approve (merge) or reject a candidate; refreshes the queue. */
+export function useResolveMergeReview() {
+  const qc = useQueryClient();
+  return useMutation<MergeResolveResultResponse, unknown, { reviewId: string; decision: 'merge' | 'reject' }>({
+    mutationKey: [...IDENTITY_QUERY_KEY, 'resolve-merge-review'],
+    mutationFn: ({ reviewId, decision }) => identityApi.resolveMergeReview(reviewId, decision),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: IDENTITY_QUERY_KEY });
+    },
+  });
+}
+
+/** useUnmergeCustomer — split a merged customer back out; refreshes identity views. */
+export function useUnmergeCustomer() {
+  const qc = useQueryClient();
+  return useMutation<UnmergeResultResponse, unknown, string>({
+    mutationKey: [...IDENTITY_QUERY_KEY, 'unmerge-customer'],
+    mutationFn: (brainId: string) => identityApi.unmergeCustomer(brainId),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: IDENTITY_QUERY_KEY });
     },

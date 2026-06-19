@@ -42,6 +42,14 @@ export const Customer360MergeSchema = z.object({
 });
 export type Customer360Merge = z.infer<typeof Customer360MergeSchema>;
 
+/** Result of a DPDP customer erasure — counts only, never raw PII (P0-C). */
+export const ErasureResultSchema = z.object({
+  erased: z.boolean(),
+  contact_pii_deleted: z.number().int().nonnegative(),
+  links_tombstoned: z.number().int().nonnegative(),
+});
+export type ErasureResult = z.infer<typeof ErasureResultSchema>;
+
 /** PII vault coverage — counts only, never raw PII (P0-C slice 2). */
 export const VaultCoverageSchema = z.object({
   resolved_customers: z.number().int().nonnegative(),

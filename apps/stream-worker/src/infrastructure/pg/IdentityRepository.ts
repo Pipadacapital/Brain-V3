@@ -18,7 +18,8 @@
  *   Replay-safe: 3× replay → exactly 1 row for each entity.
  */
 import { Pool, PoolClient } from 'pg';
-import { encryptPii, deriveDevVaultDek } from '@brain/identity-core';
+import { encryptPii } from '@brain/identity-core';
+import type { VaultKeyProvider } from '@brain/pii-vault';
 import type {
   ExtractedIdentifier,
   ExistingLink,
@@ -38,32 +39,22 @@ export interface IdentityReadState {
 export class IdentityRepository {
   private readonly pool: Pool;
 
-  constructor(connectionString: string) {
-    // brain_app credentials — RLS enforced on all identity tables.
+  /**
+   * @param connectionString  brain_app DSN — RLS enforced on all identity tables.
+   * @param keyProvider        per-brand DEK provider for contact_pii encryption (@brain/pii-vault).
+   *                           Dev derives the DEK; prod unwraps brand_keyring via KMS. When omitted,
+   *                           the vault write is skipped (identity still written) — best-effort.
+   */
+  constructor(
+    connectionString: string,
+    private readonly keyProvider?: VaultKeyProvider,
+  ) {
     this.pool = new Pool({
       connectionString,
       max: 5,
       idleTimeoutMillis: 30_000,
       statement_timeout: 15_000,
     });
-  }
-
-  /**
-   * Build an AES-256-GCM envelope for a raw PII value (P0-C write-population), or null when
-   * encryption is unavailable. Prod is DEFAULT-CLOSED: the worker's KMS DEK provider is not
-   * wired yet, so we SKIP the vault write rather than crash ingest or use a weak key — the
-   * identity_link is still written; the vault fills once the prod provider lands. Dev derives
-   * a deterministic per-brand DEK (the SAME key apps/core's vault read path uses).
-   */
-  private vaultEnvelope(
-    brandId: string,
-    rawValue: string,
-  ): { ciphertext: Buffer; iv: Buffer; authTag: Buffer; keyVersion: number } | null {
-    if (process.env['NODE_ENV'] === 'production') {
-      return null;
-    }
-    const env = encryptPii(deriveDevVaultDek(brandId), rawValue);
-    return { ciphertext: env.ciphertext, iv: env.iv, authTag: env.authTag, keyVersion: 1 };
   }
 
   /**
@@ -328,26 +319,30 @@ export class IdentityRepository {
       );
 
       // ── contact_pii writes (ENCRYPTED at rest — gated by app.role='send_service') ──
-      // P0-C: the raw value is AES-256-GCM-encrypted with the per-brand DEK and written to
-      // the ciphertext columns; pii_value (legacy plaintext) is NULL. Prod is default-closed
-      // (no KMS DEK provider in the worker yet) → skip the write, leaving identity_link intact
-      // and the vault to fill once the prod provider lands.
-      if (outcome.contactPiiWrites.length > 0) {
-        // Additional GUC: app.role='send_service' — both required for contact_pii RLS (D-3)
-        await client.query(
-          "SELECT set_config('app.role', 'send_service', true)",
-        );
-        for (const pii of outcome.contactPiiWrites) {
-          const env = this.vaultEnvelope(brandId, pii.raw_value);
-          if (!env) continue; // prod default-closed → skip until KMS provider is wired
-          await client.query(
-            `INSERT INTO contact_pii
-               (brand_id, brain_id, pii_type, identifier_hash,
-                pii_ciphertext, pii_iv, pii_auth_tag, key_version, pii_value)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL)
-             ON CONFLICT (brand_id, brain_id, pii_type) DO NOTHING`,
-            [brandId, pii.brain_id, pii.pii_type, pii.identifier_hash, env.ciphertext, env.iv, env.authTag, env.keyVersion],
-          );
+      // P0-C: the raw value is AES-256-GCM-encrypted with the per-brand DEK (@brain/pii-vault:
+      // dev derives it, prod unwraps brand_keyring via KMS) and written to the ciphertext
+      // columns; pii_value (legacy plaintext) is NULL. The DEK is fetched ONCE per brand (cached
+      // in the provider). If no provider is wired, or the brand has no/inactive keyring (prod),
+      // the vault write is SKIPPED best-effort — identity_link is still written and the vault
+      // fills once the key is available; ingest never breaks on a vault-key failure.
+      if (outcome.contactPiiWrites.length > 0 && this.keyProvider) {
+        const key = await this.keyProvider
+          .getDek(brandId)
+          .catch(() => null);
+        if (key) {
+          // Additional GUC: app.role='send_service' — both required for contact_pii RLS (D-3)
+          await client.query("SELECT set_config('app.role', 'send_service', true)");
+          for (const pii of outcome.contactPiiWrites) {
+            const env = encryptPii(key.dek, pii.raw_value);
+            await client.query(
+              `INSERT INTO contact_pii
+                 (brand_id, brain_id, pii_type, identifier_hash,
+                  pii_ciphertext, pii_iv, pii_auth_tag, key_version, pii_value)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL)
+               ON CONFLICT (brand_id, brain_id, pii_type) DO NOTHING`,
+              [brandId, pii.brain_id, pii.pii_type, pii.identifier_hash, env.ciphertext, env.iv, env.authTag, key.keyVersion],
+            );
+          }
         }
       }
 

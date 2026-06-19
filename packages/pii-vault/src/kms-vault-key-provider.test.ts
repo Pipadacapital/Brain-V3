@@ -3,11 +3,11 @@
  *
  * Uses a mock pg pool (brand_keyring rows) + a mock KmsDecryptPort. Proves: unwrap via KMS,
  * per-brand DEK cache (KMS called once), invalidate(), fail-closed on missing row / inactive
- * keyring (crypto-shred) / wrong DEK length.
+ * keyring (crypto-shred) / wrong DEK length. Also a dev/derived round-trip sanity check.
  */
 import { describe, it, expect, vi } from 'vitest';
 import { randomBytes } from 'node:crypto';
-import { KmsVaultKeyProvider, type KmsDecryptPort } from '../index.js';
+import { KmsVaultKeyProvider, DevVaultKeyProvider, type KmsDecryptPort } from './index.js';
 
 const BRAND = '11111111-1111-4111-8111-111111111111';
 const DEK = randomBytes(32);
@@ -70,5 +70,16 @@ describe('KmsVaultKeyProvider', () => {
   it('rejects a non-32-byte unwrapped DEK', async () => {
     const p = new KmsVaultKeyProvider(mockPool(activeRow), mockKms(randomBytes(16)).port);
     await expect(p.getDek(BRAND)).rejects.toThrow('expected 32');
+  });
+});
+
+describe('DevVaultKeyProvider', () => {
+  it('returns a deterministic 32-byte DEK per brand', async () => {
+    const p = new DevVaultKeyProvider();
+    const a = await p.getDek(BRAND);
+    const b = await p.getDek(BRAND);
+    expect(a.dek.length).toBe(32);
+    expect(a.dek.equals(b.dek)).toBe(true);
+    expect(a.keyVersion).toBe(1);
   });
 });

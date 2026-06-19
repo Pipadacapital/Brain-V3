@@ -19,18 +19,17 @@ export type {
 // PII vault (P0-C slice 2) — encrypted contact_pii read/write + MatchPiiPort + coverage.
 export { ContactPiiVaultRepository } from './internal/infrastructure/contact-pii-vault.repository.js';
 export type { VaultPiiType } from './internal/infrastructure/contact-pii-vault.repository.js';
-export {
-  ContactPiiVaultService,
-  DevVaultKeyProvider,
-  UnwiredProdVaultKeyProvider,
-} from './internal/application/contact-pii-vault.service.js';
+export { ContactPiiVaultService } from './internal/application/contact-pii-vault.service.js';
 export type {
   VaultMatchPii,
   VaultCoverage,
-  VaultKeyProvider,
 } from './internal/application/contact-pii-vault.service.js';
+// Per-brand DEK providers live in @brain/pii-vault (shared with the stream-worker write path);
+// re-exported here so the core wiring keeps importing them via the identity barrel.
 export {
+  DevVaultKeyProvider,
+  UnwiredProdVaultKeyProvider,
   KmsVaultKeyProvider,
   AwsKmsDecryptAdapter,
-} from './internal/infrastructure/kms-vault-key-provider.js';
-export type { KmsDecryptPort } from './internal/infrastructure/kms-vault-key-provider.js';
+} from '@brain/pii-vault';
+export type { VaultKeyProvider, KmsDecryptPort } from '@brain/pii-vault';

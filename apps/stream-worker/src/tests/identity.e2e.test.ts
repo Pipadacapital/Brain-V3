@@ -787,18 +787,24 @@ describe('contact_pii send_service gate (D-3)', () => {
     expect(count).toBeGreaterThan(0);  // POSITIVE CONTROL: role set → sees data
   }, 20_000);
 
-  it('contact_pii identifier_hash is 64-hex (no raw PII in hash field)', async () => {
+  it('contact_pii is ENCRYPTED at rest (ciphertext, not plaintext) + 64-hex hash (P0-C)', async () => {
     if (!brainId) return;
-    // Read via superuser to bypass RLS for verification
-    const rows = await superPool.query<{ identifier_hash: string; pii_value: string }>(
-      `SELECT identifier_hash, pii_value FROM contact_pii WHERE brand_id=$1 AND brain_id=$2`,
+    // Read via superuser to bypass RLS for verification.
+    const rows = await superPool.query<{
+      identifier_hash: string;
+      pii_value: string | null;
+      pii_ciphertext: Buffer | null;
+    }>(
+      `SELECT identifier_hash, pii_value, pii_ciphertext FROM contact_pii WHERE brand_id=$1 AND brain_id=$2`,
       [BRAND_A, brainId],
     );
+    expect(rows.rows.length).toBeGreaterThan(0);
     for (const row of rows.rows) {
       expect(row.identifier_hash).toMatch(/^[0-9a-f]{64}$/);
-      // pii_value contains raw PII (this is the vault — it's supposed to)
-      // but identifier_hash must be SHA-256 hex, not the raw value
-      expect(row.identifier_hash).not.toBe(row.pii_value);
+      // P0-C write-population: the raw value is AES-256-GCM ciphertext, NEVER plaintext.
+      expect(row.pii_value).toBeNull();
+      expect(row.pii_ciphertext).not.toBeNull();
+      expect(row.pii_ciphertext!.toString('utf8')).not.toContain(email);
     }
   }, 20_000);
 });

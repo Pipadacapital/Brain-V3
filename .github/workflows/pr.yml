@@ -61,6 +61,11 @@ jobs:
           pnpm migrate:up
       - name: Turbo lint + typecheck + unit (affected only)
         run: pnpm turbo run lint typecheck test:unit --affected
+      # Module-boundary fences (eslint-plugin-boundaries) only classify cross-package imports
+      # correctly when eslint runs from the REPO ROOT — the per-package turbo lint above runs
+      # from each package dir and cannot (audit RS-1). This dedicated root pass enforces them.
+      - name: Module-boundary lint (root)
+        run: pnpm run lint:boundaries
       - name: Contract tests (affected)
         run: pnpm turbo run test:contract --affected
       - name: Isolation fuzz (affected)

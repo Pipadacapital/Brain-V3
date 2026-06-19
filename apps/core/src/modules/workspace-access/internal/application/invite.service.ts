@@ -14,6 +14,7 @@
 import { randomBytes, createHash } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
 import type { DbPool, QueryContext } from '@brain/db';
+import { beginRlsTxn } from '@brain/db';
 import type { AuditWriter } from '@brain/audit';
 import type { NotificationService } from '../../../notification/service.js';
 import type { Invite } from '../domain/invite/entities.js';
@@ -169,9 +170,13 @@ export class InviteService {
     }
     const rawClient: PoolClient = await this.rawPgPool.connect();
     try {
-      await rawClient.query('BEGIN');
+      // brain_app + fail-closed NIL GUCs; the invite is resolved by TOKEN via the SECURITY DEFINER
+      // find_invite_for_acceptance() auth primitive (invite is RLS-scoped by workspace/brand, unknown
+      // until the lookup). The workspace/brand GUCs are then set from the resolved invite (below) so the
+      // membership INSERT + invite UPDATE run under the correct tenant context.
+      await beginRlsTxn(rawClient, { correlationId });
 
-      // Find the invite using a direct query (token IS the authorization; no GUC needed).
+      // Find the invite by token (the token IS the authorization) — DEFINER lookup, no GUC yet.
       const inviteResult = await rawClient.query<{
         id: string; organization_id: string; brand_id: string | null;
         email: string; role_code: string; token_hash: string;
@@ -179,8 +184,7 @@ export class InviteService {
         expires_at: Date; accepted_at: Date | null; created_at: Date;
       }>(
         `SELECT id, organization_id, brand_id, email, role_code, token_hash, invited_by_user_id, status, expires_at, accepted_at, created_at
-         FROM invite
-         WHERE token_hash = $1 AND status = 'pending' AND expires_at > NOW()`,
+         FROM find_invite_for_acceptance($1)`,
         [tokenHash],
       );
 
@@ -189,6 +193,14 @@ export class InviteService {
         await rawClient.query('ROLLBACK');
         throw new InviteError('INVALID_TOKEN', 'Invalid or expired invitation.', 400);
       }
+
+      // Now the tenant context is known — set the workspace (+ brand) GUC so the membership write and
+      // the invite status UPDATE below are RLS-scoped to this invite's org/brand under brain_app.
+      await rawClient.query(
+        `SELECT set_config('app.current_workspace_id', $1, true),
+                set_config('app.current_brand_id', $2, true)`,
+        [inviteRow.organization_id, inviteRow.brand_id ?? '00000000-0000-0000-0000-000000000000'],
+      );
 
       // ── AC-7 Guard 1: email-match (MA-07) ──────────────────────────────────
       let userId = acceptingUserId;
@@ -398,7 +410,8 @@ export class InviteService {
     const rawClient: PoolClient = await this.rawPgPool.connect();
     const ctx: QueryContext = { correlationId, workspaceId: organizationId };
     try {
-      await rawClient.query('BEGIN');
+      // brain_app + workspace GUC (membership_isolation) for the role reads/writes below.
+      await beginRlsTxn(rawClient, ctx);
 
       // Assert requester has owner or brand_admin role.
       const requesterResult = await rawClient.query<{
@@ -537,7 +550,8 @@ export class InviteService {
     }
     const rawClient: PoolClient = await this.rawPgPool.connect();
     try {
-      await rawClient.query('BEGIN');
+      // brain_app + workspace GUC (membership_isolation) for the role reads/writes below.
+      await beginRlsTxn(rawClient, { correlationId, workspaceId: organizationId });
 
       // Assert requester has owner or brand_admin role.
       const requesterResult = await rawClient.query<{

@@ -87,7 +87,7 @@ describe('AC-1: rotateRefreshToken — rotation and replay detection', () => {
   function makeRawPgPool(selectRow: SessionRow | null, insertId = 'new-sess-id') {
     const rawClient = {
       query: vi.fn().mockImplementation(async (sql: string, _params?: unknown[]) => {
-        if (sql.includes('SELECT') && sql.includes('FOR UPDATE')) {
+        if (sql.includes('find_session_for_rotation')) {
           return { rows: selectRow ? [selectRow] : [], rowCount: selectRow ? 1 : 0 };
         }
         if (sql.includes('BEGIN') || sql.includes('ROLLBACK') || sql.includes('COMMIT')) {
@@ -106,7 +106,7 @@ describe('AC-1: rotateRefreshToken — rotation and replay detection', () => {
           return { rows: [], rowCount: 1 };
         }
         if (sql.includes('FROM membership')) {
-          return { rows: [{ id: 'mem-1', organization_id: 'org-1', brand_id: null, role_code: 'owner' }], rowCount: 1 };
+          return { rows: [{ id: 'mem-1', organization_id: '00000001-0000-4000-8000-000000000001', brand_id: null, role_code: 'owner' }], rowCount: 1 };
         }
         if (sql.includes('FROM organization')) {
           return { rows: [{ onboarding_status: 'complete' }], rowCount: 1 };
@@ -303,7 +303,7 @@ describe('AC-2: revokeAllForUser and removeMember session-revocation atomicity',
             return { rows: [{ id: 'req-mem', role_code: 'owner' }], rowCount: 1 };
           }
           // Second membership query = target lookup
-          return { rows: [{ id: 'target-mem-id', organization_id: 'org-1', brand_id: null, app_user_id: 'target-user', role_code: 'analyst' }], rowCount: 1 };
+          return { rows: [{ id: 'target-mem-id', organization_id: '00000001-0000-4000-8000-000000000001', brand_id: null, app_user_id: 'target-user', role_code: 'analyst' }], rowCount: 1 };
         }
         if (sql.includes('DELETE FROM membership')) {
           return { rows: [], rowCount: 1 };
@@ -324,10 +324,11 @@ describe('AC-2: revokeAllForUser and removeMember session-revocation atomicity',
       rawPgPool as never,
     );
 
-    await inviteService.removeMember('target-mem-id', 'requester-user', 'org-1', 'corr');
+    await inviteService.removeMember('target-mem-id', 'requester-user', '00000001-0000-4000-8000-000000000001', 'corr');
 
-    // BEGIN must be the first query in the transaction sequence.
-    expect(queries[0]).toBe('BEGIN');
+    // The transaction must open first — beginRlsTxn batches BEGIN + the brain_app role switch + GUCs
+    // into the first statement, so it must START with BEGIN (txn opened before any DELETE/revoke).
+    expect(queries[0]?.startsWith('BEGIN')).toBe(true);
 
     // DELETE must come before session revocation (membership first, then revoke).
     const deleteIdx = queries.findIndex(sql => sql.includes('DELETE FROM membership'));
@@ -394,7 +395,7 @@ describe('AC-7: acceptInvite — email-match and email-verified guards', () => {
 
   const BASE_INVITE_ROW = {
     id: 'inv-0001',
-    organization_id: 'org-0001',
+    organization_id: '00000a01-0000-4000-8000-000000000a01',
     brand_id: null as string | null,
     email: 'member@example.com',
     role_code: 'analyst',
@@ -417,7 +418,7 @@ describe('AC-7: acceptInvite — email-match and email-verified guards', () => {
         if (sql.includes('BEGIN') || sql.includes('COMMIT') || sql.includes('ROLLBACK')) {
           return { rows: [], rowCount: 0 };
         }
-        if (sql.includes('FROM invite')) {
+        if (sql.includes('find_invite_for_acceptance')) {
           return { rows: inviteRow ? [inviteRow] : [], rowCount: inviteRow ? 1 : 0 };
         }
         if (sql.includes('FROM app_user')) {
@@ -427,7 +428,7 @@ describe('AC-7: acceptInvite — email-match and email-verified guards', () => {
           return {
             rows: [{
               id: 'mem-new',
-              organization_id: 'org-0001',
+              organization_id: '00000a01-0000-4000-8000-000000000a01',
               brand_id: null,
               app_user_id: String(params?.[2] ?? 'user-0001'),
               role_code: 'analyst',
@@ -464,7 +465,7 @@ describe('AC-7: acceptInvite — email-match and email-verified guards', () => {
     const { inviteService } = makeInviteService(invite, user);
     const result = await inviteService.acceptInvite(rawToken, CORR, 'user-0001');
     expect(result.membership).toBeDefined();
-    expect(result.membership.organizationId).toBe('org-0001');
+    expect(result.membership.organizationId).toBe('00000a01-0000-4000-8000-000000000a01');
   });
 
   it('AC-7 NEGATIVE CONTROL: email mismatch → EMAIL_MISMATCH 403 (invite cannot be stolen)', async () => {
@@ -530,9 +531,9 @@ describe('AC-7: acceptInvite — email-match and email-verified guards', () => {
       query: vi.fn().mockImplementation(async (sql: string, params?: unknown[]) => {
         queries2.push(sql);
         if (sql.includes('BEGIN') || sql.includes('COMMIT') || sql.includes('ROLLBACK')) return { rows: [], rowCount: 0 };
-        if (sql.includes('FROM invite')) return { rows: [invite], rowCount: 1 };
+        if (sql.includes('find_invite_for_acceptance')) return { rows: [invite], rowCount: 1 };
         if (sql.includes('FROM app_user')) return { rows: [user], rowCount: 1 };
-        if (sql.includes('INSERT INTO membership')) return { rows: [{ id: 'mem-new', organization_id: 'org-0001', brand_id: null, app_user_id: String(params?.[2] ?? ''), role_code: 'analyst', created_at: new Date(), updated_at: new Date() }], rowCount: 1 };
+        if (sql.includes('INSERT INTO membership')) return { rows: [{ id: 'mem-new', organization_id: '00000a01-0000-4000-8000-000000000a01', brand_id: null, app_user_id: String(params?.[2] ?? ''), role_code: 'analyst', created_at: new Date(), updated_at: new Date() }], rowCount: 1 };
         if (sql.includes("UPDATE invite SET status = 'accepted'")) return { rows: [], rowCount: 1 };
         return { rows: [], rowCount: 0 };
       }),

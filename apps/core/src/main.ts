@@ -45,7 +45,10 @@ import {
   KmsVaultKeyProvider,
   AwsKmsDecryptAdapter,
 } from './modules/identity/index.js';
-import { initObservability } from '@brain/observability';
+import { initObservability, createLogger } from '@brain/observability';
+
+/** Structured logger for core's lifecycle/error logs (request logs go through Fastify's pino). */
+const log = createLogger({ serviceName: 'core' });
 import { jtiFromJwt, csrfTokenForSession, csrfTokenMatches } from './modules/frontend-api/internal/csrf.js';
 import { NotificationServiceImpl } from './modules/notification/internal/notification.service.impl.js';
 import { registerDevRoutes } from './modules/notification/internal/dev.routes.js';
@@ -354,7 +357,7 @@ export async function main(): Promise<void> {
   });
   // lazyConnect: suppress startup errors — RateLimiter is fail-open anyway.
   redis.connect().catch((err: unknown) => {
-    console.warn('[core] Redis connect failed — rate limiting will fail-open', err);
+    log.warn('Redis connect failed — rate limiting will fail-open', { err });
   });
   const rateLimiter = new RateLimiter(redis);
 
@@ -1682,6 +1685,6 @@ export async function main(): Promise<void> {
 
 // Entry point.
 main().catch((err) => {
-  console.error('[core] Fatal startup error:', err);
+  log.error('Fatal startup error', { err });
   process.exit(1);
 });

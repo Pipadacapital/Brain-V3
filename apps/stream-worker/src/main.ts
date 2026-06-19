@@ -23,7 +23,10 @@ import { BronzeRepository } from './infrastructure/pg/BronzeRepository.js';
 import { IdentityRepository } from './infrastructure/pg/IdentityRepository.js';
 import { SaltProvider, LocalSecretsProvider } from './infrastructure/secrets/SaltProvider.js';
 import { resolveSaltHex } from '@brain/identity-core';
-import { initObservability } from '@brain/observability';
+import { initObservability, createLogger } from '@brain/observability';
+
+/** Structured logger for stream-worker lifecycle/error logs. */
+const log = createLogger({ serviceName: 'stream-worker' });
 import {
   DevVaultKeyProvider,
   KmsVaultKeyProvider,
@@ -263,8 +266,7 @@ export async function main(): Promise<void> {
     10,
   );
   const syncRequestClaimer = startSyncRequestClaimer(syncClaimerPool, syncRequestClaimerIntervalMs);
-  console.info(
-    `[stream-worker] sync-request claimer running — interval=${syncRequestClaimerIntervalMs}ms`,
+  log.info(`sync-request claimer running — interval=${syncRequestClaimerIntervalMs}ms`,
   );
 
   // ── Data-Quality checks (feat-data-quality-engine / Phase 7 — Track A) ──────
@@ -292,8 +294,7 @@ export async function main(): Promise<void> {
         }
       : undefined;
   const dqChecker = startDqChecks(dqPool, { intervalMs: dqIntervalMs, silver: dqSilver });
-  console.info(
-    `[stream-worker] dq checks running — interval=${dqIntervalMs}ms silver=${dqSilver ? 'on' : 'off'}`,
+  log.info(`dq checks running — interval=${dqIntervalMs}ms silver=${dqSilver ? 'on' : 'off'}`,
   );
 
   // ── Continuous ingestion scheduler (feat-realtime-ingestion-pipeline / §3.3) ──
@@ -314,13 +315,12 @@ export async function main(): Promise<void> {
     10,
   );
   const ingestScheduler = startIngestScheduler(ingestSchedulerPool, ingestSchedulerIntervalMs);
-  console.info(
-    `[stream-worker] ingest scheduler running — interval=${ingestSchedulerIntervalMs}ms`,
+  log.info(`ingest scheduler running — interval=${ingestSchedulerIntervalMs}ms`,
   );
 
   // Graceful shutdown
   const shutdown = async (signal: string): Promise<void> => {
-    console.info(`[stream-worker] ${signal} received — draining consumers...`);
+    log.info(`${signal} received — draining consumers...`);
     await Promise.all([
       consumer.stop(),
       identityConsumer.stop(),
@@ -352,82 +352,82 @@ export async function main(): Promise<void> {
     await settlementMapPool.end();
     await spendLedgerWriter.end();
     await gokwikAwbLedgerWriter.end();
-    console.info('[stream-worker] shutdown complete');
+    log.info('shutdown complete');
     process.exit(0);
   };
 
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
   process.on('SIGINT', () => void shutdown('SIGINT'));
 
-  console.info(`[stream-worker] starting — topic=${topic} group=${groupId} brokers=${brokers.join(',')}`);
+  log.info(`starting — topic=${topic} group=${groupId} brokers=${brokers.join(',')}`);
   await consumer.start();
-  console.info('[stream-worker] bronze consumer running');
+  log.info('bronze consumer running');
 
-  console.info(`[stream-worker] starting identity bridge — topic=${topic} group=${identityGroupId}`);
+  log.info(`starting identity bridge — topic=${topic} group=${identityGroupId}`);
   await identityConsumer.start();
-  console.info('[stream-worker] identity bridge consumer running');
+  log.info('identity bridge consumer running');
 
   // ── Consent suppressor consumer (feat-d13-consent-cancontact MANDATORY WIRE) ──
   // Same live topic, independent consumer group. Projects consent_flags →
   // consent_record + consent_tombstone (the SoR can_contact() reads fail-closed).
   // WIRED HERE: do NOT remove without updating consent-suppressor.e2e.test.ts.
-  console.info(`[stream-worker] starting consent suppressor — topic=${topic} group=${consentSuppressorGroupId}`);
+  log.info(`starting consent suppressor — topic=${topic} group=${consentSuppressorGroupId}`);
   await consentSuppressorConsumer.start();
-  console.info('[stream-worker] consent suppressor consumer running');
+  log.info('consent suppressor consumer running');
 
   // ── CAPI retroactive-deletion consumer (feat-capi-conversion-feedback MANDATORY WIRE) ──
   // Same live topic, independent consumer group. On an 'advertising' consent withdrawal/
   // erasure → records a capi_deletion_log request within the DPDP ≤15min SLA. Default-closed
   // (dev: 'would_delete_dev', NOTHING sent). WIRED HERE: do NOT remove without updating
   // capi-deletion.e2e.test.ts.
-  console.info(`[stream-worker] starting capi-deletion consumer — topic=${topic} group=${capiDeletionGroupId}`);
+  log.info(`starting capi-deletion consumer — topic=${topic} group=${capiDeletionGroupId}`);
   await capiDeletionConsumer.start();
-  console.info('[stream-worker] capi-deletion consumer running');
+  log.info('capi-deletion consumer running');
 
   // ── Backfill lane consumer (ADR-BF-7 / ADR-BF-8 / ADR-BF-9) ───────────────
   // Separate from live lane: backfillTopic != topic → Redpanda isolation guarantee.
   // stream-worker-backfill consumer group offset lag is independent of stream-worker-live.
-  console.info(`[stream-worker] starting backfill consumer — topic=${backfillTopic} group=${backfillGroupId}`);
+  log.info(`starting backfill consumer — topic=${backfillTopic} group=${backfillGroupId}`);
   await backfillConsumer.start();
-  console.info('[stream-worker] backfill consumer running');
+  log.info('backfill consumer running');
 
   // ── Live-ledger bridge consumer (ORCH-LV-H1 fix) ────────────────────────────
   // Same live topic (topic) but separate consumer group (liveLedgerGroupId).
   // Filters to order.live.v1; routes provisional_recognition / rto_reversal.
-  console.info(`[stream-worker] starting live-ledger bridge — topic=${topic} group=${liveLedgerGroupId}`);
+  log.info(`starting live-ledger bridge — topic=${topic} group=${liveLedgerGroupId}`);
   await liveLedgerConsumer.start();
-  console.info('[stream-worker] live-ledger bridge consumer running');
+  log.info('live-ledger bridge consumer running');
 
   // ── Settlement ledger bridge consumer (ADR-RZ-6 / MB-4 MANDATORY WIRE) ──────
   // Same live topic, independent consumer group. Filters settlement.live.v1.
   // TWO-HOP JOIN (MB-1) + net-of-fees finalization (MB-3) + brand-level path (MB-1.4).
   // WIRED HERE: do NOT remove this block without updating settlement-ledger-wiring.e2e.test.ts
   // and filing a durable-rule proposal (wired-to-nothing occurrence #3 trigger).
-  console.info(`[stream-worker] starting settlement-ledger bridge — topic=${topic} group=${settlementLedgerGroupId}`);
+  log.info(`starting settlement-ledger bridge — topic=${topic} group=${settlementLedgerGroupId}`);
   await settlementLedgerConsumer.start();
-  console.info('[stream-worker] settlement-ledger bridge consumer running');
+  log.info('settlement-ledger bridge consumer running');
 
   // ── Spend ledger bridge consumer (feat-ad-connectors / ADR-AD-6 MANDATORY WIRE) ──
   // Same live topic, independent consumer group. Filters spend.live.v1.
   // Writes ad_spend_ledger (ON CONFLICT DO NOTHING). WIRED HERE: do NOT remove without
   // updating spend-ledger-wiring.e2e.test.ts (wired-to-nothing bounce trigger).
-  console.info(`[stream-worker] starting spend-ledger bridge — topic=${topic} group=${spendLedgerGroupId}`);
+  log.info(`starting spend-ledger bridge — topic=${topic} group=${spendLedgerGroupId}`);
   await spendLedgerConsumer.start();
-  console.info('[stream-worker] spend-ledger bridge consumer running');
+  log.info('spend-ledger bridge consumer running');
 
   // ── GoKwik AWB ledger bridge consumer (feat-gokwik-shopflo-connectors / 0030 MANDATORY WIRE) ──
   // Same live topic, independent consumer group. Filters gokwik.awb_status.v1.
   // terminal RTO → cod_rto_clawback; terminal Delivered → cod_delivery_confirmed.
   // WIRED HERE: do NOT remove without updating gokwik-awb-ledger-wiring.e2e.test.ts.
-  console.info(`[stream-worker] starting gokwik-awb-ledger bridge — topic=${topic} group=${gokwikAwbLedgerGroupId}`);
+  log.info(`starting gokwik-awb-ledger bridge — topic=${topic} group=${gokwikAwbLedgerGroupId}`);
   await gokwikAwbLedgerConsumer.start();
-  console.info('[stream-worker] gokwik-awb-ledger bridge consumer running');
+  log.info('gokwik-awb-ledger bridge consumer running');
 }
 
 // Run when invoked directly (not imported in tests)
 if (process.argv[1]?.endsWith('main.ts') || process.argv[1]?.endsWith('main.js')) {
   main().catch((err) => {
-    console.error('[stream-worker] fatal', err);
+    log.error('fatal', { err });
     process.exit(1);
   });
 }

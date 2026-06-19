@@ -13,6 +13,7 @@
  */
 import pino from 'pino';
 import { redactLogRecord } from './redact.js';
+import { captureError } from './sentry.js';
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
@@ -65,7 +66,18 @@ function wrap(p: pino.Logger): BrainLogger {
     debug: (m, f) => emit('debug', m, f),
     info: (m, f) => emit('info', m, f),
     warn: (m, f) => emit('warn', m, f),
-    error: (m, f) => emit('error', m, f),
+    error: (m, f) => {
+      // Error-level logs are also error-tracking events: send the REAL Error (with stack) to Sentry
+      // before the log redacts it to {error_name,error_message}. No-op when Sentry isn't initialized.
+      const errVal = f?.['err'] ?? f?.['error'];
+      if (errVal instanceof Error) {
+        const extra = f ? { ...f, msg: m } : { msg: m };
+        delete (extra as Record<string, unknown>)['err'];
+        delete (extra as Record<string, unknown>)['error'];
+        captureError(errVal, extra);
+      }
+      emit('error', m, f);
+    },
     child: (bindings) => wrap(p.child(redactLogRecord(normalizeErrors(bindings)))),
   };
 }

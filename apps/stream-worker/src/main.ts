@@ -23,7 +23,7 @@ import { BronzeRepository } from './infrastructure/pg/BronzeRepository.js';
 import { IdentityRepository } from './infrastructure/pg/IdentityRepository.js';
 import { SaltProvider, LocalSecretsProvider } from './infrastructure/secrets/SaltProvider.js';
 import { resolveSaltHex } from '@brain/identity-core';
-import { initObservability, createLogger } from '@brain/observability';
+import { initObservability, initSentry, createLogger } from '@brain/observability';
 
 /** Structured logger for stream-worker lifecycle/error logs. */
 const log = createLogger({ serviceName: 'stream-worker' });
@@ -56,6 +56,7 @@ import { startIngestScheduler } from './jobs/ingest-scheduler/run.js';
 export async function main(): Promise<void> {
   // Real OpenTelemetry export (ADR-009) — gated by OTEL_EXPORTER_OTLP_ENDPOINT (no-op in dev).
   await initObservability({ serviceName: 'stream-worker', otlpEndpoint: process.env['OTEL_EXPORTER_OTLP_ENDPOINT'] });
+  await initSentry({ serviceName: 'stream-worker' }); // gated by SENTRY_DSN (no-op in dev)
 
   const brokers = (process.env['KAFKA_BROKERS'] ?? 'localhost:9092').split(',');
   const redisUrl = process.env['REDIS_URL'] ?? 'redis://localhost:6379';

@@ -52,17 +52,33 @@ export default [
        * We declare coarse element types so the boundary rules can fire.
        */
       'boundaries/elements': [
-        // Each deployable app — captured by the top-level directory name
-        { type: 'app', pattern: 'apps/*', capture: ['app'] },
-        // Core bounded-context modules (internal to core)
+        // ORDER MATTERS: eslint-plugin-boundaries matches the FIRST descriptor whose pattern
+        // matches, so the MOST SPECIFIC patterns must come first. Previously `app` (apps/*)
+        // preceded `core-module` (apps/core/src/modules/*), so every core file classified as
+        // `app` and the core-module fences never fired (audit RS-1). Specific → general:
+        // Core bounded-context modules (internal to core) — most specific apps/* path.
         { type: 'core-module', pattern: 'apps/core/src/modules/*', capture: ['module'] },
-        // Shared packages
+        // The metric engine — more specific than the generic package pattern.
         { type: 'metric-engine', pattern: 'packages/metric-engine', capture: [] },
+        // Each deployable app — captured by the top-level directory name.
+        { type: 'app', pattern: 'apps/*', capture: ['app'] },
+        // Shared packages.
         { type: 'package', pattern: 'packages/*', capture: ['pkg'] },
-        // Tools are internal-only; not importable from apps or packages
+        // Tools are internal-only; not importable from apps or packages.
         { type: 'tool', pattern: 'tools/*', capture: ['tool'] },
       ],
       'boundaries/ignore': ['**/*.test.ts', '**/*.spec.ts', '**/fixtures/**'],
+      // Resolve workspace `@brain/*` package imports to their real packages/* path so the
+      // boundary rules can classify them (e.g. `@brain/metric-engine` → the metric-engine
+      // element). Without this the metric-engine fence is inert for package-specifier imports
+      // (audit RS-1). The TS resolver follows the workspace package.json "main".
+      'import/resolver': {
+        typescript: {
+          alwaysTryTypes: true,
+          project: ['tsconfig.base.json', 'apps/*/tsconfig.json', 'packages/*/tsconfig.json'],
+        },
+        node: true,
+      },
     },
     rules: {
       // ── Rule 1: apps may not import other apps (I-E05) ──────────────────
@@ -83,16 +99,22 @@ export default [
               disallow: ['tool'],
               message: 'Tools must not be imported from application or package code.',
             },
-            // metric-engine may only be imported by analytics and measurement modules.
-            // Allow-list: measurement and analytics; deny all other core-modules.
-            // D-6 fix: the prior rule over-blocked by denying ALL core-modules (including
-            // measurement/analytics). Corrected to allow measurement+analytics only.
+            // metric-engine is fenced to the MEASUREMENT TIER — the modules that legitimately
+            // consume the metric registry/engine: measurement, analytics, attribution (credit
+            // via the engine seams), data-quality (metric trust), ai (NLQ → certified registry
+            // bindings), and frontend-api (the BFF that orchestrates the analytics read path).
+            // Every OTHER core-module (identity, workspace-access, connector, notification,
+            // pixel, billing, recommendation, …) must NOT import the metric engine directly.
+            // (audit RS-1: this fence was inert — descriptor order + missing resolver, both fixed.)
             {
-              from: [['core-module', { module: '!(measurement|analytics)' }]],
+              from: [
+                ['core-module', { module: '!(measurement|analytics|attribution|data-quality|ai|frontend-api)' }],
+              ],
               disallow: ['metric-engine'],
               message:
-                'packages/metric-engine is fenced to the measurement and analytics modules only (I-ST03, D-6). ' +
-                'Other core-modules must not import the metric engine directly.',
+                'packages/metric-engine is fenced to the measurement tier (measurement, analytics, ' +
+                'attribution, data-quality, ai, frontend-api) — I-ST03, D-6. This module must not ' +
+                'import the metric engine directly; go through the analytics module instead.',
             },
           ],
         },

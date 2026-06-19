@@ -30,6 +30,7 @@ import {
   buildSetRoleSql,
   buildContextGucSql,
   executeInRlsTxn,
+  beginRlsTxn,
   BRAND_ID_GUC,
   WORKSPACE_ID_GUC,
   USER_ID_GUC,
@@ -86,6 +87,32 @@ function recordingClient(rows: unknown[] = [], rowCount = 0) {
   };
   return { client, calls };
 }
+
+describe('beginRlsTxn — opens a multi-statement txn under the app role + GUCs (rawPgPool paths)', () => {
+  it('emits BEGIN → SET LOCAL ROLE → SET LOCAL GUC in one round-trip, leaving the txn open', async () => {
+    const { client, calls } = recordingClient();
+    await beginRlsTxn(client, { brandId: BRAND_A, workspaceId: BRAND_B, userId: BRAND_A, correlationId: CORR_ID });
+    expect(calls).toHaveLength(1); // caller then issues its own queries + COMMIT/ROLLBACK
+    expect(calls[0]).toBe(
+      `BEGIN; SET LOCAL ROLE brain_app; ` +
+        `SET LOCAL ${BRAND_ID_GUC} = '${BRAND_A}'; ` +
+        `SET LOCAL ${WORKSPACE_ID_GUC} = '${BRAND_B}'; ` +
+        `SET LOCAL ${USER_ID_GUC} = '${BRAND_A}'`,
+    );
+  });
+
+  it('defaults unset GUCs to NIL_UUID (fail-closed) and honours a custom app role', async () => {
+    const { client, calls } = recordingClient();
+    await beginRlsTxn(client, { correlationId: CORR_ID }, 'brain_app');
+    expect(calls[0]).toContain(`SET LOCAL ${BRAND_ID_GUC} = '${NIL_UUID}'`);
+    expect(calls[0]).toContain('SET LOCAL ROLE brain_app');
+  });
+
+  it('rejects a non-UUID GUC value before opening the transaction (injection/format guard)', async () => {
+    const { client } = recordingClient();
+    await expect(beginRlsTxn(client, { workspaceId: 'org-001', correlationId: CORR_ID })).rejects.toThrow(/valid UUID/);
+  });
+});
 
 describe('executeInRlsTxn — GUC + query run in ONE transaction under the app role', () => {
   it('emits BEGIN → SET LOCAL ROLE → SET LOCAL GUC, then the query, then COMMIT', async () => {

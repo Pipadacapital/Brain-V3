@@ -21,9 +21,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import type { Pool, PoolClient } from 'pg';
-import type { DbPool, DbClient, QueryContext } from '@brain/db';
-import { buildContextGucSql } from '@brain/db';
+import type { DbPool, QueryContext } from '@brain/db';
 import type { AuditWriter } from '@brain/audit';
 import { normalizeBrandHost } from '@brain/pixel-sdk';
 
@@ -31,7 +29,6 @@ import type { CurrencyCode, BrandTimezone, RevenueDefinition } from '../domain/b
 import {
   OrganizationRepository,
   MembershipRepository,
-  BrandRepository,
 } from '../infrastructure/repositories.js';
 import type { ProvisionPixel } from './brand.service.js';
 import { deriveSlug } from './slugify.js';
@@ -71,42 +68,16 @@ export interface ProvisionResult {
   created: boolean;
 }
 
-/**
- * Adapt a raw pg PoolClient (running inside BEGIN/COMMIT) into a DbClient so the
- * existing repositories can be reused. Sets the ctx GUCs transaction-locally via
- * set_config(..., true) before each query — the same RLS scoping the GUC pool applies,
- * but bound to THIS transaction so RLS holds under brain_app.
- */
-function txnClientAdapter(raw: PoolClient): DbClient {
-  return {
-    async query<T = unknown>(ctx: QueryContext, sql: string, params: unknown[] = []) {
-      const gucSql = buildContextGucSql(ctx);
-      if (gucSql) {
-        // SET LOCAL inside an open transaction scopes the GUC to the txn (validated by
-        // buildContextGucSql — UUID format asserted, injection-safe).
-        await raw.query(gucSql);
-      }
-      const result = await raw.query(sql, params as unknown[]);
-      return { rows: result.rows as T[], rowCount: result.rowCount };
-    },
-    release(): void {
-      /* no-op: the txn client lifecycle is owned by provisionWorkspaceAndBrand */
-    },
-  };
-}
-
 export class OnboardingService {
   /**
-   * @param pool          GUC-wrapped pool — used only for the pre-flight idempotency
-   *                      membership read (no transaction needed there).
-   * @param rawPgPool     Raw pg.Pool for the explicit BEGIN/COMMIT provisioning txn.
+   * @param pool          GUC-wrapped RLS pool — the pre-flight idempotency read AND the
+   *                      provision_workspace_and_brand() call both run through it under brain_app.
    * @param audit         Audit writer (organization.created + brand.created post-commit).
    * @param provisionPixel The SAME closure injected into BrandService — preserves the
    *                      feat-onboarding-website website→pixel path. Runs AFTER commit.
    */
   constructor(
     private readonly pool: DbPool,
-    private readonly rawPgPool: Pool,
     private readonly audit: AuditWriter,
     private readonly provisionPixel?: ProvisionPixel,
   ) {}
@@ -165,80 +136,44 @@ export class OnboardingService {
       }
     }
 
-    // ── Atomic provision (org + memberships + brand + status) in ONE txn ─────────
-    const raw: PoolClient = await this.rawPgPool.connect();
+    // ── Atomic provision via the SECURITY DEFINER function (0047) ────────────────
+    // org + 2 owner memberships + brand, created atomically by provision_workspace_and_brand().
+    // The app is authorized (it passes the AUTHENTICATED user as the owner); brain_app only holds
+    // EXECUTE, so the provisioning runs as the privileged owner and works under FORCE RLS without the
+    // create-the-first-tenant chicken-and-egg. One retry on the residual slug unique-violation race.
+    const provisionCtx: QueryContext = { correlationId, userId: input.ownerUserId };
+    const provision = async (slug: string): Promise<{ organization_id: string; brand_id: string }> => {
+      const client = await this.pool.connect();
+      try {
+        const res = await client.query<{ organization_id: string; brand_id: string }>(
+          provisionCtx,
+          `SELECT organization_id, brand_id
+             FROM provision_workspace_and_brand($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+          [
+            input.ownerUserId, input.workspaceName, slug, input.brandDisplayName, normalizedHost,
+            regionCode, currencyCode, input.timezone ?? 'Asia/Kolkata', input.revenueDefinition ?? 'realized',
+          ],
+        );
+        return res.rows[0]!;
+      } finally {
+        client.release();
+      }
+    };
+
     let organizationId = '';
     let brandId = '';
     try {
-      await raw.query('BEGIN');
-      // Under the prod brain_app role, RLS needs the user GUC for the membership /
-      // org self-reads+writes; set it transaction-locally up front.
-      const db = txnClientAdapter(raw);
-      const orgRepo = new OrganizationRepository(db);
-      const memberRepo = new MembershipRepository(db);
-      const brandRepo = new BrandRepository(db);
-
-      // 1. Organization — slug derived server-side (Deliverable 4) + one retry on the
-      //    residual unique-violation race (the random suffix makes this near-zero).
-      const orgCtx: QueryContext = { correlationId, userId: input.ownerUserId };
-      let org;
-      try {
-        org = await orgRepo.insert(
-          { name: input.workspaceName, slug: deriveSlug(input.workspaceName), ownerUserId: input.ownerUserId },
-          orgCtx,
-        );
-      } catch (err) {
-        if ((err as { code?: string })?.code === '23505') {
-          org = await orgRepo.insert(
-            { name: input.workspaceName, slug: deriveSlug(input.workspaceName), ownerUserId: input.ownerUserId },
-            orgCtx,
-          );
-        } else {
-          throw err;
-        }
-      }
-      organizationId = org.id;
-      const wsCtx: QueryContext = { correlationId, userId: input.ownerUserId, workspaceId: org.id };
-
-      // Org-level owner membership.
-      await memberRepo.insert(
-        { organizationId: org.id, brandId: null, appUserId: input.ownerUserId, roleCode: 'owner' },
-        wsCtx,
-      );
-
-      // Advance onboarding_status → org_created (forward-only).
-      await orgRepo.advanceOnboardingStatus(org.id, 'org_created', 1, wsCtx);
-
-      // 2. Brand (brandId GUC blank — brand row does not exist yet; mirrors brand.service.ts:113).
-      const brand = await brandRepo.insert(
-        {
-          organizationId: org.id,
-          displayName: input.brandDisplayName,
-          domain: normalizedHost,
-          regionCode,
-          currencyCode,
-          timezone: input.timezone ?? 'Asia/Kolkata',
-          revenueDefinition: input.revenueDefinition ?? 'realized',
-        },
-        { ...wsCtx, brandId: '' },
-      );
-      brandId = brand.id;
-
-      // Brand-level owner membership.
-      await memberRepo.insert(
-        { organizationId: org.id, brandId: brand.id, appUserId: input.ownerUserId, roleCode: 'owner' },
-        wsCtx,
-      );
-
-      // Advance onboarding_status → brand_created (forward-only).
-      await orgRepo.advanceOnboardingStatus(org.id, 'brand_created', 2, wsCtx);
-
-      await raw.query('COMMIT');
+      const row = await provision(deriveSlug(input.workspaceName));
+      organizationId = row.organization_id;
+      brandId = row.brand_id;
     } catch (err) {
-      try { await raw.query('ROLLBACK'); } catch { /* ignore rollback error */ }
-      throw err;
-    } finally {
-      raw.release();
+      if ((err as { code?: string })?.code === '23505') {
+        const row = await provision(deriveSlug(input.workspaceName)); // fresh random-suffixed slug
+        organizationId = row.organization_id;
+        brandId = row.brand_id;
+      } else {
+        throw err;
+      }
     }
 
     // ── Post-commit side effects (NOT inside the org/brand txn) ──────────────────

@@ -110,7 +110,6 @@ describe('onboarding-ux LIVE — provision + isolation (brain_app)', () => {
     let pixelProvisioned = false;
     const svc = new OnboardingService(
       dbPool,
-      rawPool,
       noopAudit() as never,
       async () => { pixelProvisioned = true; },
     );
@@ -160,7 +159,7 @@ describe('onboarding-ux LIVE — provision + isolation (brain_app)', () => {
     if (!rawPool) { console.warn('[SKIP] REG: Postgres not reachable'); return; }
     const dbPool = await createPool({ connectionString: DATABASE_URL, maxConnections: 3 });
     try {
-      const svc = new OnboardingService(dbPool, rawPool, noopAudit() as never, async () => {});
+      const svc = new OnboardingService(dbPool, noopAudit() as never, async () => {});
       // Idempotent — returns USER_A's existing org+brand graph from D3-1.
       const prov = await svc.provisionWorkspaceAndBrand(
         { workspaceName: 'Onb Live A REG', brandDisplayName: 'Brand A REG', ownerUserId: USER_A_ID },
@@ -193,7 +192,7 @@ describe('onboarding-ux LIVE — provision + isolation (brain_app)', () => {
   it('D5-1: re-provision by the same user returns existing org/brand (no duplicate)', async () => {
     if (!rawPool) { console.warn('[SKIP] D5-1: Postgres not reachable'); return; }
     const dbPool = await createPool({ connectionString: DATABASE_URL, maxConnections: 3 });
-    const svc = new OnboardingService(dbPool, rawPool, noopAudit() as never, async () => {});
+    const svc = new OnboardingService(dbPool, noopAudit() as never, async () => {});
 
     const result = await svc.provisionWorkspaceAndBrand(
       { workspaceName: 'Onb Live A SECOND', brandDisplayName: 'Brand A2', ownerUserId: USER_A_ID },
@@ -218,7 +217,7 @@ describe('onboarding-ux LIVE — provision + isolation (brain_app)', () => {
   it('D3-2: a brand-insert failure rolls back the org (no orphan)', async () => {
     if (!rawPool) { console.warn('[SKIP] D3-2: Postgres not reachable'); return; }
     const dbPool = await createPool({ connectionString: DATABASE_URL, maxConnections: 3 });
-    const svc = new OnboardingService(dbPool, rawPool, noopAudit() as never, async () => {});
+    const svc = new OnboardingService(dbPool, noopAudit() as never, async () => {});
 
     // Force a deterministic failure INSIDE the txn: an ownerUserId with no app_user
     // row passes the idempotency pre-check (findActiveByUser → null) but the org-owner
@@ -418,7 +417,7 @@ describe('onboarding-ux LIVE — provision + isolation (brain_app)', () => {
   it('D3: a malformed website → INVALID_WEBSITE (422), no org created', async () => {
     if (!rawPool) { console.warn('[SKIP] INVALID_WEBSITE: Postgres not reachable'); return; }
     const dbPool = await createPool({ connectionString: DATABASE_URL, maxConnections: 3 });
-    const svc = new OnboardingService(dbPool, rawPool, noopAudit() as never, async () => {});
+    const svc = new OnboardingService(dbPool, noopAudit() as never, async () => {});
 
     const before = await rawPool.query<{ count: string }>(
       `SELECT COUNT(*)::text AS count FROM organization WHERE owner_user_id = $1`,

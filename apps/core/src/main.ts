@@ -492,12 +492,12 @@ export async function main(): Promise<void> {
   );
   const inviteService = new InviteService(pool, auditWriter, notificationService, rawPgPool);
 
-  // feat-onboarding-ux (D3): merged workspace+brand provisioning. Reuses the SAME
-  // pixel provisioner injected into BrandService so the website→pixel path is not
-  // regressed; runs the org+brand inserts in one rawPgPool BEGIN/COMMIT transaction.
+  // feat-onboarding-ux (D3): merged workspace+brand provisioning. Reuses the SAME pixel
+  // provisioner injected into BrandService so the website→pixel path is not regressed; the
+  // org+brand+memberships are created atomically by provision_workspace_and_brand() (0047),
+  // run through the RLS pool under brain_app (feat-tenancy-runtime-brain-app A1).
   const onboardingService = new OnboardingService(
     pool,
-    rawPgPool,
     auditWriter,
     async (brandId, targetHost, idempotencyKey) => {
       await getOrCreateInstallation.execute({ brandId, targetHost, idempotencyKey });

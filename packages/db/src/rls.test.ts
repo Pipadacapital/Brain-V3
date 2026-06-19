@@ -27,6 +27,9 @@ import {
   checkoutStubClient,
   buildSetGucSql,
   buildResetGucSql,
+  buildSetRoleSql,
+  buildContextGucSql,
+  executeInRlsTxn,
   BRAND_ID_GUC,
 } from './index.js';
 
@@ -52,6 +55,80 @@ describe('buildSetGucSql', () => {
 describe('buildResetGucSql', () => {
   it('produces the correct RESET statement', () => {
     expect(buildResetGucSql(BRAND_ID_GUC)).toBe(`RESET ${BRAND_ID_GUC}`);
+  });
+});
+
+describe('buildSetRoleSql (audit R-01 — role identifier guard)', () => {
+  it('produces a SET LOCAL ROLE for a valid role', () => {
+    expect(buildSetRoleSql('brain_app')).toBe('SET LOCAL ROLE brain_app');
+  });
+
+  it('rejects an injection attempt in the role name', () => {
+    expect(() => buildSetRoleSql('brain_app; DROP TABLE brand; --')).toThrow(
+      'not a valid SQL identifier',
+    );
+    expect(() => buildSetRoleSql('')).toThrow('not a valid SQL identifier');
+  });
+});
+
+// ── RLS transaction wrapping (audit R-01/R-02 fix) ────────────────────────────
+
+function recordingClient(rows: unknown[] = [], rowCount = 0) {
+  const calls: string[] = [];
+  const client = {
+    query: vi.fn(async (sql: string) => {
+      calls.push(sql);
+      return { rows, rowCount };
+    }),
+  };
+  return { client, calls };
+}
+
+describe('executeInRlsTxn — GUC + query run in ONE transaction under the app role', () => {
+  it('emits BEGIN → SET LOCAL ROLE → SET LOCAL GUC, then the query, then COMMIT', async () => {
+    const { client, calls } = recordingClient([{ id: 1 }], 1);
+    const gucSql = buildContextGucSql({ brandId: BRAND_A, correlationId: CORR_ID });
+
+    const res = await executeInRlsTxn(client, 'brain_app', gucSql, 'SELECT id FROM brand', []);
+
+    // Setup is batched into one round-trip in strict order.
+    expect(calls[0]).toBe(
+      `BEGIN; SET LOCAL ROLE brain_app; SET LOCAL ${BRAND_ID_GUC} = '${BRAND_A}'`,
+    );
+    expect(calls[1]).toBe('SELECT id FROM brand'); // business query is its own call (binds params)
+    expect(calls[2]).toBe('COMMIT');
+    expect(res.rows).toEqual([{ id: 1 }]);
+  });
+
+  it('drops to the NOBYPASSRLS role BEFORE the business query (closes the superuser bypass)', async () => {
+    const { client, calls } = recordingClient();
+    await executeInRlsTxn(client, 'brain_app', '', 'SELECT 1', []);
+    const setupIdx = calls.findIndex((c) => c.includes('SET LOCAL ROLE brain_app'));
+    const queryIdx = calls.findIndex((c) => c === 'SELECT 1');
+    expect(setupIdx).toBe(0);
+    expect(setupIdx).toBeLessThan(queryIdx);
+  });
+
+  it('ROLLBACKs and rethrows when the business query fails', async () => {
+    const calls: string[] = [];
+    const client = {
+      query: vi.fn(async (sql: string) => {
+        calls.push(sql);
+        if (sql === 'SELECT bad') throw new Error('boom');
+        return { rows: [], rowCount: 0 };
+      }),
+    };
+    await expect(executeInRlsTxn(client, 'brain_app', '', 'SELECT bad', [])).rejects.toThrow('boom');
+    expect(calls).toContain('ROLLBACK');
+    expect(calls).not.toContain('COMMIT');
+  });
+
+  it('rejects a bad app role without opening a transaction', async () => {
+    const { client, calls } = recordingClient();
+    await expect(executeInRlsTxn(client, 'evil; DROP', '', 'SELECT 1', [])).rejects.toThrow(
+      'not a valid SQL identifier',
+    );
+    expect(calls).toEqual([]); // nothing sent — no BEGIN, no ROLLBACK to clean up
   });
 });
 

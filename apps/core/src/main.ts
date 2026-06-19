@@ -42,7 +42,8 @@ import {
   ContactPiiVaultRepository,
   ContactPiiVaultService,
   DevVaultKeyProvider,
-  UnwiredProdVaultKeyProvider,
+  KmsVaultKeyProvider,
+  AwsKmsDecryptAdapter,
 } from './modules/identity/index.js';
 import { jtiFromJwt, csrfTokenForSession, csrfTokenMatches } from './modules/frontend-api/internal/csrf.js';
 import { NotificationServiceImpl } from './modules/notification/internal/notification.service.impl.js';
@@ -437,18 +438,19 @@ export async function main(): Promise<void> {
   );
 
   // ── PII vault (P0-C): encrypted contact_pii read/write + MatchPiiPort + coverage ──
-  // Dev derives a deterministic per-brand DEK; prod is DEFAULT-CLOSED until the KMS key
-  // provider (brand_keyring unwrap) is wired — it refuses to use a non-KMS key. The vault
-  // service is the contact_pii read seam (the only place app.role='send_service' is set)
-  // and structurally satisfies notification's MatchPiiPort for the CAPI passback.
+  // Prod unwraps the per-brand DEK from brand_keyring via AWS KMS (IRSA creds); dev derives a
+  // deterministic per-brand DEK. The vault service is the contact_pii read seam (the only place
+  // app.role='send_service' is set) and structurally satisfies notification's MatchPiiPort.
   const vaultKeyProvider =
-    config.nodeEnv === 'production' ? new UnwiredProdVaultKeyProvider() : new DevVaultKeyProvider();
+    config.nodeEnv === 'production'
+      ? new KmsVaultKeyProvider(rawPgPool, new AwsKmsDecryptAdapter())
+      : new DevVaultKeyProvider();
   const piiVaultService = new ContactPiiVaultService(
     new ContactPiiVaultRepository(rawPgPool),
     vaultKeyProvider,
   );
   app.log.info(
-    `[core] PII vault wired (${config.nodeEnv === 'production' ? 'PROD: default-closed until KMS provider' : 'dev: per-brand derived DEK'}); MatchPiiPort ready for CAPI passback`,
+    `[core] PII vault wired (${config.nodeEnv === 'production' ? 'PROD: AWS KMS per-brand DEK (brand_keyring)' : 'dev: per-brand derived DEK'}); MatchPiiPort ready for CAPI passback`,
   );
 
   // Create application services.

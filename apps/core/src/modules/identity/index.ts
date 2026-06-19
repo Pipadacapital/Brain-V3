@@ -29,3 +29,8 @@ export type {
   VaultCoverage,
   VaultKeyProvider,
 } from './internal/application/contact-pii-vault.service.js';
+export {
+  KmsVaultKeyProvider,
+  AwsKmsDecryptAdapter,
+} from './internal/infrastructure/kms-vault-key-provider.js';
+export type { KmsDecryptPort } from './internal/infrastructure/kms-vault-key-provider.js';

@@ -19,7 +19,7 @@
 
 import Fastify from 'fastify';
 import { parseEnv, CollectorEnvSchema } from '@brain/config';
-import { initObservability } from '@brain/observability';
+import { initObservability, createLogger } from '@brain/observability';
 import { registerSchema, defaultApicurioConfig } from '@brain/events';
 import { PgSpoolRepository } from './infrastructure/pg-spool.repository.js';
 import { CollectorKafkaProducer } from './infrastructure/kafka-producer.js';
@@ -40,6 +40,9 @@ const cfg = parseEnv(CollectorEnvSchema, {
   SERVICE_NAME: process.env['SERVICE_NAME'] ?? 'collector',
 });
 
+/** Structured logger for collector lifecycle/error logs. */
+const log = createLogger({ serviceName: 'collector' });
+
 // ── Apicurio schema registration with exponential backoff (D-10) ──────────────
 
 async function registerSchemaWithBackoff(): Promise<void> {
@@ -52,7 +55,7 @@ async function registerSchemaWithBackoff(): Promise<void> {
     const avscPath = fileURLToPath(new URL('../../../packages/contracts/generated/avro/brain.collector.event.v1.avsc', import.meta.url));
     avscJson = readFileSync(avscPath, 'utf-8');
   } catch (err) {
-    console.warn(`[collector] Could not load Avro schema file: ${String(err)} — skipping Apicurio registration`);
+    log.warn('Could not load Avro schema file — skipping Apicurio registration', { err });
     return;
   }
 
@@ -68,10 +71,10 @@ async function registerSchemaWithBackoff(): Promise<void> {
   while (totalMs < MAX_BACKOFF_MS) {
     try {
       const result = await registerSchema(apicurioConfig, avscJson);
-      console.info(`[collector] Apicurio schema registered: artifactId=${result.artifactId} version=${result.version}`);
+      log.info('Apicurio schema registered', { artifact_id: result.artifactId, version: result.version });
       return;
     } catch (err) {
-      console.warn(`[collector] Apicurio registration attempt failed (${totalMs}ms elapsed): ${String(err)}`);
+      log.warn('Apicurio registration attempt failed', { elapsed_ms: totalMs, err });
       await new Promise<void>((resolve) => setTimeout(resolve, attemptMs));
       totalMs += attemptMs;
       attemptMs = Math.min(attemptMs * 2, 5_000);
@@ -79,9 +82,9 @@ async function registerSchemaWithBackoff(): Promise<void> {
   }
 
   // D-10: after backoff budget exhausted, degrade to spool-only (do NOT crash).
-  console.warn(
-    '[collector] Apicurio registration failed after 30s — degrading to spool-only mode. ' +
-    'Schema will be registered on next restart. Events continue to spool and drain normally.',
+  log.warn(
+    'Apicurio registration failed after 30s — degrading to spool-only mode. ' +
+      'Schema will be registered on next restart. Events continue to spool and drain normally.',
   );
 }
 
@@ -154,9 +157,9 @@ export async function main(): Promise<void> {
   // ── 5. Start HTTP listener ───────────────────────────────────────────────────
   try {
     await app.listen({ port: cfg.PORT, host: '0.0.0.0' });
-    console.info(`[collector] HTTP listener open on port ${cfg.PORT}`);
+    log.info('HTTP listener open', { port: cfg.PORT });
   } catch (err) {
-    console.error(`[collector] FATAL: failed to bind port ${cfg.PORT}:`, err);
+    log.error('FATAL: failed to bind port', { port: cfg.PORT, err });
     process.exit(1);
   }
 
@@ -165,11 +168,11 @@ export async function main(): Promise<void> {
 
   // ── 7. Graceful shutdown ─────────────────────────────────────────────────────
   const shutdown = async (signal: string): Promise<void> => {
-    console.info(`[collector] ${signal} received — graceful shutdown`);
+    log.info('signal received — graceful shutdown', { signal });
     await drainer.stop();
     await app.close();
     await (spoolRepo as PgSpoolRepository & { end(): Promise<void> }).end();
-    console.info('[collector] shutdown complete');
+    log.info('shutdown complete');
     process.exit(0);
   };
 

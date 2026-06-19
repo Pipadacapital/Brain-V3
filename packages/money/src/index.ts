@@ -110,11 +110,32 @@ function assertSameCurrency(a: Money, b: Money): void {
 
 // ── Display ───────────────────────────────────────────────────────────────────
 
+/**
+ * Minor-units-per-major for each currency (10^exponent). This is the SINGLE source of the currency
+ * exponent — `Record<CurrencyCode, number>` is exhaustiveness-checked, so adding a 0-decimal (JPY)
+ * or 3-decimal (KWD/BHD) currency to CurrencyCode that does NOT add its divisor here is a COMPILE
+ * error. That is the guardrail against the latent "hardcoded /100" bug class (a JPY value would
+ * otherwise be sent to Meta CAPI 100× too small).
+ */
 const MINOR_UNITS: Record<CurrencyCode, number> = {
   INR: 100,
   AED: 100,
   SAR: 100,
 };
+
+/** Decimal places for a currency (e.g. INR → 2), derived from its minor-units divisor. */
+export function currencyExponent(currency_code: CurrencyCode): number {
+  return String(MINOR_UNITS[currency_code]).length - 1;
+}
+
+/**
+ * Minor → major as a float, for WIRE BOUNDARIES ONLY — e.g. Meta CAPI `custom_data.value`, which
+ * requires a major-unit number. NEVER use for money math: money stays integer minor units (I-S07).
+ * The exponent is per-currency via MINOR_UNITS, so this is correct for 0-/2-/3-decimal currencies.
+ */
+export function minorToMajorNumber(amount_minor: bigint, currency_code: CurrencyCode): number {
+  return Number(amount_minor) / MINOR_UNITS[currency_code];
+}
 
 /**
  * Format Money for display (e.g. logging, test output).
@@ -124,7 +145,7 @@ export function formatMoney(m: Money): string {
   const divisor = MINOR_UNITS[m.currency_code];
   const major = m.amount_minor / BigInt(divisor);
   const minor = m.amount_minor % BigInt(divisor);
-  const minorStr = String(minor < 0n ? -minor : minor).padStart(2, '0');
+  const minorStr = String(minor < 0n ? -minor : minor).padStart(currencyExponent(m.currency_code), '0');
   return `${m.currency_code} ${major}.${minorStr}`;
 }
 

@@ -129,15 +129,16 @@ export async function getInspectableBill(
       10_000n,
     );
 
-    // 4. The inspectable composition as-of the seal's as_of_date (named seam — D-3). Filtered to
-    //    the basis currency (M1 single-currency per brand; other currencies bill separately).
+    // 4. The inspectable composition for THIS period (named seam — D-3) — the per-event_type
+    //    breakdown of the period delta, reconciling to the sealed basis. Filtered to the basis
+    //    currency (M1 single-currency per brand; other currencies bill separately).
     const compRes = await client.query<{ event_type: string; amount_minor: string }>(
       ctx,
       `SELECT event_type, amount_minor::text AS amount_minor
-         FROM realized_gmv_composition_as_of($1::uuid, $2::date)
+         FROM realized_gmv_composition_for_period($1::uuid, $2::char(7))
         WHERE currency_code = $3
         ORDER BY amount_minor DESC`,
-      [brandId, snap.as_of_date, currency],
+      [brandId, period, currency],
     );
     const lines: BillLine[] = compRes.rows.map((r) => ({
       event_type: r.event_type,

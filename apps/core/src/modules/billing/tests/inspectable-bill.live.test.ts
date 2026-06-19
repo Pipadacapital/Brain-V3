@@ -6,7 +6,7 @@
  *      fee = round(basis × default_bps / 10000), banker's rounding (D-7).
  *   2. plan rate — a billing_plan row overrides the rate; rate.source = 'plan'; fee recomputed.
  *   3. composition reconciles — the per-event_type lines (finalization +, refund −) sum to the
- *      sealed basis via realized_gmv_composition_as_of (the D-3 named seam).
+ *      sealed basis via realized_gmv_composition_for_period (the D-3 named seam).
  *   4. honest drift — a backdated row landing AFTER the seal makes the live composition diverge
  *      from the sealed basis; reconciles:false + a non-zero drift, but the fee stays on the seal.
  *   5. not_sealed — an unsealed period returns state:'not_sealed' (no throw).

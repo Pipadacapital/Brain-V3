@@ -45,7 +45,7 @@ import {
   KmsVaultKeyProvider,
   AwsKmsDecryptAdapter,
 } from './modules/identity/index.js';
-import { initObservability, createLogger } from '@brain/observability';
+import { initObservability, initSentry, createLogger } from '@brain/observability';
 
 /** Structured logger for core's lifecycle/error logs (request logs go through Fastify's pino). */
 const log = createLogger({ serviceName: 'core' });
@@ -144,6 +144,7 @@ export async function main(): Promise<void> {
     serviceName: 'core',
     otlpEndpoint: getEnv('OTEL_EXPORTER_OTLP_ENDPOINT', '') || undefined,
   });
+  await initSentry({ serviceName: 'core' }); // error tracking — gated by SENTRY_DSN (no-op in dev)
 
   const nodeEnv = getEnv('NODE_ENV', 'development');
   const isProduction = nodeEnv === 'production';

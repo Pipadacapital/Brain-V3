@@ -19,6 +19,8 @@ export { isPiiKey, redactAttributes, redactLogRecord } from './redact.js';
 export type { Attributes, AttributeValue } from './redact.js';
 export { createLogger } from './logger.js';
 export type { BrainLogger, LogFields, LogLevel, LoggerOptions } from './logger.js';
+export { initSentry, captureError } from './sentry.js';
+export type { SentryOptions } from './sentry.js';
 
 // ── Span interface (minimal — avoids OTel dep; real impl wires to @opentelemetry/api) ──
 

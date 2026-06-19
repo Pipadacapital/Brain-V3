@@ -83,6 +83,7 @@ import type {
   UnmergeResult as ContractUnmergeResult,
   BillingPeriods as ContractBillingPeriods,
   SealPeriodResult as ContractSealPeriodResult,
+  InspectableBill as ContractInspectableBill,
 } from '@brain/contracts';
 import { jtiFromJwt, csrfTokenForSession } from './csrf.js';
 import type { Pool as PgPool } from 'pg';
@@ -95,7 +96,7 @@ import {
   resolveMergeReview,
   unmergeCustomer,
 } from '../../identity/index.js';
-import { getBillingPeriods, sealBillingPeriod } from '../../billing/index.js';
+import { getBillingPeriods, sealBillingPeriod, getInspectableBill } from '../../billing/index.js';
 import type { ContactPiiVaultService } from '../../identity/index.js';
 import { askBrain } from '../../ai/index.js';
 import { ResolverClient } from '@brain/ai-gateway-client';
@@ -1658,6 +1659,65 @@ export function registerBffRoutes(
 
       const { period } = request.body as { period: string };
       const result: ContractSealPeriodResult = await sealBillingPeriod(
+        auth.brandId,
+        period,
+        requestId,
+        { pool },
+      );
+      return reply.send({ request_id: requestId, data: result });
+    },
+  );
+
+  /**
+   * GET /api/v1/billing/bill?period=YYYY-MM
+   *
+   * The inspectable bill for a sealed period: fee = sealed realized-GMV basis × rate, itemized
+   * down to the per-event_type composition that reconciles to the basis (drift surfaced honestly).
+   * state:'not_sealed' when the period has no seal yet. Brand from session (D-1).
+   */
+  fastify.get(
+    '/api/v1/billing/bill',
+    {
+      preHandler: [bffProtectedPreHandler],
+      schema: {
+        querystring: {
+          type: 'object',
+          required: ['period'],
+          additionalProperties: false,
+          properties: { period: { type: 'string', pattern: '^\\d{4}-\\d{2}$' } },
+        },
+        attachValidation: true,
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+
+      const validationError = (request as FastifyRequest & { validationError?: Error }).validationError;
+      if (validationError) {
+        return reply.code(400).send({
+          request_id: requestId,
+          error: { code: 'INVALID_PERIOD', message: "period must be 'YYYY-MM'." },
+        });
+      }
+
+      const auth = (request as AuthenticatedRequest).auth;
+      const { period } = request.query as { period: string };
+
+      // Honest: no active brand → nothing sealed to bill.
+      if (!auth.brandId) {
+        return reply.send({
+          request_id: requestId,
+          data: { state: 'not_sealed', billing_period: period },
+        });
+      }
+      if (!pool) {
+        return reply.code(503).send({
+          request_id: requestId,
+          error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' },
+        });
+      }
+
+      const result: ContractInspectableBill = await getInspectableBill(
         auth.brandId,
         period,
         requestId,

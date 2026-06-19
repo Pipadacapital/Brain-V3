@@ -422,9 +422,13 @@ export {
   BillingPeriodSchema,
   BillingPeriodsSchema,
   SealPeriodResultSchema,
+  BillLineSchema,
+  InspectableBillSchema,
 } from './api/billing.api.v1.js';
 export type {
   BillingPeriod,
   BillingPeriods,
   SealPeriodResult,
+  BillLine,
+  InspectableBill,
 } from './api/billing.api.v1.js';

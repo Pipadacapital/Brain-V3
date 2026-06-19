@@ -32,3 +32,13 @@ export function useSealPeriod() {
     },
   });
 }
+
+/** useBill — the inspectable bill for a sealed period (fetched only when a period is selected). */
+export function useBill(period: string | null) {
+  return useQuery({
+    queryKey: [...BILLING_QUERY_KEY, 'bill', period],
+    queryFn: () => billingApi.getBill(period as string),
+    enabled: !!period,
+    staleTime: 5 * 60_000,
+  });
+}

@@ -39,6 +39,47 @@ export const BillingPeriodsSchema = z.discriminatedUnion('state', [
 ]);
 export type BillingPeriods = z.infer<typeof BillingPeriodsSchema>;
 
+// ── Inspectable bill (slice 2) ────────────────────────────────────────────────
+// "How was this fee derived?" — fee = sealed realized-GMV basis × rate, itemized down to the
+// per-event_type composition that reconciles to the basis. All money via MinorUnitsSchema
+// (signed: refunds/reversals are honest negatives in the composition).
+
+export const BillLineSchema = z.object({
+  event_type: z.string(),
+  amount_minor: MinorUnitsSchema,
+});
+export type BillLine = z.infer<typeof BillLineSchema>;
+
+export const InspectableBillSchema = z.discriminatedUnion('state', [
+  // Period not sealed yet → nothing to bill (honest).
+  z.object({ state: z.literal('not_sealed'), billing_period: BillingPeriodCodeSchema }),
+  z.object({
+    state: z.literal('billed'),
+    billing_period: BillingPeriodCodeSchema,
+    currency_code: CurrencyCodeSchema,
+    basis: z.object({
+      metered_gmv_minor: MinorUnitsSchema,
+      as_of_date: z.string(),
+      ledger_row_count: z.number().int().nonnegative(),
+      sealed_at: z.string(),
+    }),
+    rate: z.object({
+      rate_bps: z.number().int().min(0).max(10_000),
+      source: z.enum(['plan', 'default']),
+    }),
+    fee_minor: MinorUnitsSchema,
+    rounding_adjustment_minor: MinorUnitsSchema,
+    lines: z.array(BillLineSchema),
+    reconciliation: z.object({
+      sealed_basis_minor: MinorUnitsSchema,
+      live_composition_minor: MinorUnitsSchema,
+      reconciles: z.boolean(),
+      drift_minor: MinorUnitsSchema,
+    }),
+  }),
+]);
+export type InspectableBill = z.infer<typeof InspectableBillSchema>;
+
 /** Result of sealing (metering) a period — `sealed: false` means it was already sealed (idempotent). */
 export const SealPeriodResultSchema = z.object({
   sealed: z.boolean(),

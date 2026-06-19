@@ -38,6 +38,7 @@ import {
   UnmergeResultSchema,
   BillingPeriodsSchema,
   SealPeriodResultSchema,
+  InspectableBillSchema,
 } from '@brain/contracts';
 
 import type {
@@ -125,6 +126,7 @@ import type {
   UnmergeResultResponse,
   BillingPeriodsResponse,
   SealPeriodResultResponse,
+  InspectableBillResponse,
 } from './types';
 
 /** All BFF routes proxied through Next.js API routes → frontend-api module */
@@ -1643,5 +1645,13 @@ export const billingApi = {
       body: JSON.stringify({ period }),
     });
     return parseData(SealPeriodResultSchema, env);
+  },
+
+  /** GET /api/v1/billing/bill?period=YYYY-MM — the inspectable bill for a sealed period. */
+  getBill: async (period: string): Promise<InspectableBillResponse> => {
+    const env = await bffFetch<BffEnvelope<unknown>>(
+      `/v1/billing/bill?period=${encodeURIComponent(period)}`,
+    );
+    return parseData(InspectableBillSchema, env);
   },
 };

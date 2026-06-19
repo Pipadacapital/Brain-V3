@@ -35,6 +35,7 @@ import { Consumer, Kafka, EachMessagePayload } from 'kafkajs';
 import { DlqProducer } from '../../infrastructure/kafka/DlqProducer.js';
 import { LedgerWriter } from '../../infrastructure/pg/LedgerWriter.js';
 import { routeLiveOrderToLedger } from './LiveOrderConsumer.js';
+import { log } from "../../log.js";
 
 const MAX_RETRY = 5;
 type RetryKey = string;
@@ -86,9 +87,7 @@ export class LiveLedgerBridgeConsumer {
               await this.consumer.commitOffsets([
                 { topic, partition, offset: String(Number(offset) + 1) },
               ]);
-              console.warn(
-                `[live-ledger-bridge] JSON parse error partition=${partition} offset=${offset} — skipping`,
-              );
+              log.warn(`JSON parse error partition=${partition} offset=${offset} — skipping`);
               return;
             }
           }
@@ -115,20 +114,15 @@ export class LiveLedgerBridgeConsumer {
             { topic, partition, offset: String(Number(offset) + 1) },
           ]);
           this.retryCount.delete(retryKey);
-          console.info(
-            `[live-ledger-bridge] ${result} brand=${brandId} event=${eventId} ` +
-            `partition=${partition} offset=${offset}`,
-          );
+          log.info(`[live-ledger-bridge] ${result} brand=${brandId} event=${eventId} ` +
+                        `partition=${partition} offset=${offset}`);
         } catch (err) {
           // Ledger write error — do NOT commit offset. Increment retry counter.
           const current = (this.retryCount.get(retryKey) ?? 0) + 1;
           this.retryCount.set(retryKey, current);
 
-          console.error(
-            `[live-ledger-bridge] write error (attempt ${current}/${MAX_RETRY}) ` +
-            `partition=${partition} offset=${offset}`,
-            err,
-          );
+          log.error(`[live-ledger-bridge] write error (attempt ${current}/${MAX_RETRY}) ` +
+                        `partition=${partition} offset=${offset}`, { err: err });
 
           if (current >= MAX_RETRY) {
             try {
@@ -142,11 +136,9 @@ export class LiveLedgerBridgeConsumer {
                 { topic, partition, offset: String(Number(offset) + 1) },
               ]);
               this.retryCount.delete(retryKey);
-              console.warn(
-                `[live-ledger-bridge] DLQ (max retry) partition=${partition} offset=${offset}`,
-              );
+              log.warn(`DLQ (max retry) partition=${partition} offset=${offset}`);
             } catch (dlqErr) {
-              console.error('[live-ledger-bridge] DLQ produce failed — not committing offset', dlqErr);
+              log.error('DLQ produce failed — not committing offset', { err: dlqErr });
             }
           }
 

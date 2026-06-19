@@ -17,6 +17,7 @@ import type {
   CanContactResult,
 } from './compliance/contact-types.js';
 import type { AuditWriter } from '@brain/audit';
+import { log } from "../../../log.js";
 
 export interface CanContactGateDeps {
   /** The real compliance engine. When absent, canContact HARD-FAILS closed. */
@@ -86,7 +87,7 @@ export class NotificationServiceImpl implements NotificationService {
         errorMessage: err instanceof Error ? err.message : String(err),
       }, { correlationId });
       // Don't throw — email failure should not block registration.
-      console.error('[notification] Failed to send verification email', { correlationId, error: err });
+      log.error('Failed to send verification email', { err: { correlationId, error: err } });
     }
   }
 
@@ -135,7 +136,7 @@ export class NotificationServiceImpl implements NotificationService {
         status: 'failed',
         errorMessage: err instanceof Error ? err.message : String(err),
       }, { correlationId });
-      console.error('[notification] Failed to send password reset email', { correlationId, error: err });
+      log.error('Failed to send password reset email', { err: { correlationId, error: err } });
     }
   }
 
@@ -184,7 +185,7 @@ export class NotificationServiceImpl implements NotificationService {
         status: 'failed',
         errorMessage: err instanceof Error ? err.message : String(err),
       }, { correlationId });
-      console.error('[notification] Failed to send invite email', { correlationId, error: err });
+      log.error('Failed to send invite email', { err: { correlationId, error: err } });
     }
   }
 
@@ -238,9 +239,9 @@ export class NotificationServiceImpl implements NotificationService {
       });
     } catch (err) {
       // Auditing must not open the gate, but a block must remain a block.
-      console.error('[notification] can_contact audit append failed', {
-        error: err instanceof Error ? err.message : String(err),
-      });
+      log.error('can_contact audit append failed', { err: {
+                error: err instanceof Error ? err.message : String(err),
+              } });
     }
 
     const result: CanContactResult = {

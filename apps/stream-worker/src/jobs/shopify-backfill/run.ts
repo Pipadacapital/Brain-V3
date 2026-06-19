@@ -44,6 +44,7 @@ import { ShopifyBackfillClient } from './shopify-paged-client.js';
 import { mapOrderToBackfillEvent, computeAchievedDepthLabel } from './order-mapper.js';
 import { uuidV5FromOrderBackfill } from './uuid-utils.js';
 import { buildWorkerSecretsManager } from './worker-secrets.js';
+import { log } from "../../log.js";
 
 // ── Configuration ─────────────────────────────────────────────────────────────
 
@@ -93,7 +94,7 @@ export async function run(connectorInstanceId?: string): Promise<void> {
 
   try {
     await producer.connect();
-    console.info(`[shopify-backfill] starting — topic=${BACKFILL_TOPIC} brokers=${BROKERS.join(',')}`);
+    log.info(`starting — topic=${BACKFILL_TOPIC} brokers=${BROKERS.join(',')}`);
 
     // Poll for queued job
     let found = false;
@@ -101,19 +102,19 @@ export async function run(connectorInstanceId?: string): Promise<void> {
       // Find a queued job (either for a specific connector or the oldest queued one)
       const queuedJob = await findQueuedJob(pool, connectorInstanceId);
       if (!queuedJob) {
-        console.info('[shopify-backfill] no queued jobs found — exiting');
+        log.info('no queued jobs found — exiting');
         break;
       }
 
       found = true;
       const { jobId, brandId, ciId } = queuedJob;
 
-      console.info(`[shopify-backfill] found queued job=${jobId} brand=${brandId} connector=${ciId}`);
+      log.info(`found queued job=${jobId} brand=${brandId} connector=${ciId}`);
 
       // Claim the job: queued → running (FOR UPDATE SKIP LOCKED, D-9)
       const claimedJob = await jobRepo.claimQueued(ciId, brandId);
       if (!claimedJob) {
-        console.info(`[shopify-backfill] job=${jobId} was claimed by another worker — skipping`);
+        log.info(`job=${jobId} was claimed by another worker — skipping`);
         continue;
       }
 
@@ -129,7 +130,7 @@ export async function run(connectorInstanceId?: string): Promise<void> {
           recordsProcessed: 0n,
           cursorValue: null,
         });
-        console.error(`[shopify-backfill] connector_instance ${ciId} not found for brand ${brandId}`);
+        log.error(`connector_instance ${ciId} not found for brand ${brandId}`);
         continue;
       }
 
@@ -146,7 +147,7 @@ export async function run(connectorInstanceId?: string): Promise<void> {
           recordsProcessed: 0n,
           cursorValue: claimedJob.cursor_value,  // preserve cursor for resume
         });
-        console.error(`[shopify-backfill] job=${jobId} — token not found (RECONNECT_REQUIRED)`);
+        log.error(`job=${jobId} — token not found (RECONNECT_REQUIRED)`);
         continue;
       }
 
@@ -164,7 +165,7 @@ export async function run(connectorInstanceId?: string): Promise<void> {
           recordsProcessed: 0n,
           cursorValue: claimedJob.cursor_value,
         });
-        console.error(`[shopify-backfill] salt fetch failed for brand=${brandId}`, saltErr);
+        log.error(`salt fetch failed for brand=${brandId}`, { err: saltErr });
         continue;
       }
 
@@ -184,7 +185,7 @@ export async function run(connectorInstanceId?: string): Promise<void> {
     }
 
     if (!found) {
-      console.info('[shopify-backfill] no work to do — exiting cleanly');
+      log.info('no work to do — exiting cleanly');
     }
   } finally {
     await producer.disconnect();
@@ -320,9 +321,7 @@ async function runBackfillLoop(params: BackfillLoopParams): Promise<void> {
   if (countResult !== null) {
     estimatedTotal = BigInt(countResult);
   }
-  console.info(
-    `[shopify-backfill] job=${jobId} estimated_total=${estimatedTotal ?? 'null (count failed)'}`,
-  );
+  log.info(`job=${jobId} estimated_total=${estimatedTotal ?? 'null (count failed)'}`);
 
   // Brand region for phone normalization (default IN for M1)
   const regionCode = 'IN';
@@ -337,9 +336,7 @@ async function runBackfillLoop(params: BackfillLoopParams): Promise<void> {
   try {
     while (true) {
       pageCount++;
-      console.info(
-        `[shopify-backfill] job=${jobId} page=${pageCount} sinceId=${sinceId ?? 'null'}`,
-      );
+      log.info(`job=${jobId} page=${pageCount} sinceId=${sinceId ?? 'null'}`);
 
       let page;
       try {
@@ -357,7 +354,7 @@ async function runBackfillLoop(params: BackfillLoopParams): Promise<void> {
             recordsProcessed,
             cursorValue: sinceId,
           });
-          console.error(`[shopify-backfill] job=${jobId} 401 auth error — marked failed`);
+          log.error(`job=${jobId} 401 auth error — marked failed`);
           return;
         }
         // Other page error — mark partial (cursor preserved) and exit
@@ -370,7 +367,7 @@ async function runBackfillLoop(params: BackfillLoopParams): Promise<void> {
           recordsProcessed,
           cursorValue: sinceId,
         });
-        console.error(`[shopify-backfill] job=${jobId} page error — marked partial`, err);
+        log.error(`job=${jobId} page error — marked partial`, { err: err });
         return;
       }
 
@@ -419,9 +416,7 @@ async function runBackfillLoop(params: BackfillLoopParams): Promise<void> {
         messages,
       });
 
-      console.info(
-        `[shopify-backfill] job=${jobId} page=${pageCount} emitted=${messages.length} total=${recordsProcessed}`,
-      );
+      log.info(`job=${jobId} page=${pageCount} emitted=${messages.length} total=${recordsProcessed}`);
 
       // ── D-14: Update cursor + progress after EACH page ────────────────────
       // sinceId for resume = last order's ID on this page
@@ -491,15 +486,13 @@ async function runBackfillLoop(params: BackfillLoopParams): Promise<void> {
         await sc.query('COMMIT');
       } catch (e) {
         await sc.query('ROLLBACK').catch(() => undefined);
-        console.error(`[shopify-backfill] job=${jobId} connector_sync_status update failed`, e);
+        log.error(`job=${jobId} connector_sync_status update failed`, { detail: e });
       } finally {
         sc.release();
       }
     }
 
-    console.info(
-      `[shopify-backfill] job=${jobId} COMPLETED records=${recordsProcessed} depth="${depthLabel}"`,
-    );
+    log.info(`job=${jobId} COMPLETED records=${recordsProcessed} depth="${depthLabel}"`);
   } catch (err) {
     // Unexpected error — mark partial (cursor preserved in jobRepo state)
     await jobRepo.finalize({
@@ -511,7 +504,7 @@ async function runBackfillLoop(params: BackfillLoopParams): Promise<void> {
       recordsProcessed,
       cursorValue: sinceId,
     }).catch(() => undefined);
-    console.error(`[shopify-backfill] job=${jobId} unexpected error`, err);
+    log.error(`job=${jobId} unexpected error`, { err: err });
     throw err;
   }
 }
@@ -540,7 +533,7 @@ async function upsertConnectorCursor(pool: Pool, params: ConnectorCursorParams):
   } catch (err) {
     await client.query('ROLLBACK').catch(() => undefined);
     // Non-fatal: log but don't abort the backfill — progress is still tracked in backfill_job
-    console.error(`[shopify-backfill] connector_cursor upsert failed (non-fatal)`, err);
+    log.error(`connector_cursor upsert failed (non-fatal)`, { err: err });
   } finally {
     client.release();
   }
@@ -554,7 +547,7 @@ if (
 ) {
   const ciArg = process.argv[2]; // optional: connector_instance_id
   run(ciArg).catch((err) => {
-    console.error('[shopify-backfill] fatal', err);
+    log.error('fatal', { err: err });
     process.exit(1);
   });
 }

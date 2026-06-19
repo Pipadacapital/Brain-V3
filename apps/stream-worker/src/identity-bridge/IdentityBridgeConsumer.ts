@@ -17,6 +17,7 @@
 import { Consumer, Kafka, EachMessagePayload } from 'kafkajs';
 import { ResolveIdentityUseCase } from '../application/ResolveIdentityUseCase.js';
 import { DlqProducer } from '../infrastructure/kafka/DlqProducer.js';
+import { log } from "../log.js";
 
 const MAX_RETRY = 5;
 type RetryKey = string;
@@ -65,9 +66,7 @@ export class IdentityBridgeConsumer {
               { topic, partition, offset: String(Number(offset) + 1) },
             ]);
             this.retryCount.delete(retryKey);
-            console.info(
-              `[identity-bridge] DLQ (invalid) partition=${partition} offset=${offset} reason=${result.reason}`,
-            );
+            log.info(`DLQ (invalid) partition=${partition} offset=${offset} reason=${result.reason}`);
             return;
           }
 
@@ -77,21 +76,16 @@ export class IdentityBridgeConsumer {
             { topic, partition, offset: String(Number(offset) + 1) },
           ]);
           this.retryCount.delete(retryKey);
-          console.info(
-            `[identity-bridge] ${result.outcome} brand=${result.brandId ?? 'unknown'} ` +
-            `event=${result.eventId ?? 'unknown'} brain_id=${result.brainId ?? 'none'} ` +
-            `partition=${partition} offset=${offset}`,
-          );
+          log.info(`[identity-bridge] ${result.outcome} brand=${result.brandId ?? 'unknown'} ` +
+                        `event=${result.eventId ?? 'unknown'} brain_id=${result.brainId ?? 'none'} ` +
+                        `partition=${partition} offset=${offset}`);
         } catch (err) {
           // Write error — do NOT commit offset. Increment retry counter.
           const current = (this.retryCount.get(retryKey) ?? 0) + 1;
           this.retryCount.set(retryKey, current);
 
-          console.error(
-            `[identity-bridge] write error (attempt ${current}/${MAX_RETRY}) ` +
-            `partition=${partition} offset=${offset}`,
-            err,
-          );
+          log.error(`[identity-bridge] write error (attempt ${current}/${MAX_RETRY}) ` +
+                        `partition=${partition} offset=${offset}`, { err: err });
 
           if (current >= MAX_RETRY) {
             try {
@@ -105,11 +99,9 @@ export class IdentityBridgeConsumer {
                 { topic, partition, offset: String(Number(offset) + 1) },
               ]);
               this.retryCount.delete(retryKey);
-              console.warn(
-                `[identity-bridge] DLQ (max retry) partition=${partition} offset=${offset}`,
-              );
+              log.warn(`DLQ (max retry) partition=${partition} offset=${offset}`);
             } catch (dlqErr) {
-              console.error('[identity-bridge] DLQ produce failed — not committing offset', dlqErr);
+              log.error('DLQ produce failed — not committing offset', { err: dlqErr });
             }
           }
 

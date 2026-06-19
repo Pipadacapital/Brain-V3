@@ -36,6 +36,7 @@ import {
   registerIpKey,
   refreshIpKey,
 } from '../../infrastructure/rate-limiter.js';
+import { log } from "../../../../../log.js";
 
 export type AuthenticatedRequest = FastifyRequest & {
   auth: {
@@ -319,7 +320,7 @@ export function registerAuthRoutes(
 
     // Fire-and-forget — result is always the same (NN-5 / MA-04).
     authService.forgotPassword(parsed.data.email, correlationId).catch((err) => {
-      console.error('[auth] forgotPassword error', { correlationId, err });
+      log.error('forgotPassword error', { err: { correlationId, err } });
     });
 
     return reply.send({ request_id: requestId, ...FORGOT_PASSWORD_RESPONSE });

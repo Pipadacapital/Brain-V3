@@ -23,6 +23,7 @@
  */
 
 import type { CapiCreds } from './compliance/ports.js';
+import { log } from "../../../log.js";
 
 /** Meta CAPI userData — all PII fields are ALREADY hashed (em/ph). Click-ids are not PII. */
 export interface CapiUserData {
@@ -90,29 +91,29 @@ function maskHashes(hashes?: string[]): string[] | undefined {
  */
 export class DevCapiAdapter implements CapiAdapter {
   async send(payload: CapiEventPayload): Promise<CapiSendResult> {
-    console.info('[notification:capi-dev]', {
-      event_name: payload.eventName,
-      event_id: payload.eventId,
-      pixel_id: payload.pixelId || '(none)',
-      em: maskHashes(payload.userData.em),
-      ph: maskHashes(payload.userData.ph),
-      has_fbc: Boolean(payload.userData.fbc),
-      has_fbp: Boolean(payload.userData.fbp),
-      currency: payload.customData.currency,
-      correlation_id: payload.correlationId,
-      note: 'DEV MODE: CAPI not sent — no Meta creds (platform follow-up).',
-    });
+    log.info('', { detail: {
+            event_name: payload.eventName,
+            event_id: payload.eventId,
+            pixel_id: payload.pixelId || '(none)',
+            em: maskHashes(payload.userData.em),
+            ph: maskHashes(payload.userData.ph),
+            has_fbc: Boolean(payload.userData.fbc),
+            has_fbp: Boolean(payload.userData.fbp),
+            currency: payload.customData.currency,
+            correlation_id: payload.correlationId,
+            note: 'DEV MODE: CAPI not sent — no Meta creds (platform follow-up).',
+          } });
     return { status: 'would_send_dev' };
   }
 
   async delete(payload: CapiDeletionPayload): Promise<CapiDeletionResult> {
-    console.info('[notification:capi-dev:delete]', {
-      pixel_id: payload.pixelId || '(none)',
-      em: maskHashes(payload.userData.em),
-      ph: maskHashes(payload.userData.ph),
-      correlation_id: payload.correlationId,
-      note: 'DEV MODE: CAPI deletion not sent — no Meta creds (platform follow-up).',
-    });
+    log.info('', { detail: {
+            pixel_id: payload.pixelId || '(none)',
+            em: maskHashes(payload.userData.em),
+            ph: maskHashes(payload.userData.ph),
+            correlation_id: payload.correlationId,
+            note: 'DEV MODE: CAPI deletion not sent — no Meta creds (platform follow-up).',
+          } });
     return { status: 'would_delete_dev' };
   }
 }

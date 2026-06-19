@@ -30,6 +30,7 @@ import {
   GOKWIK_RTO_PREDICT_V1_EVENT_NAME,
   type GokwikRtoPredictRecord,
 } from '@brain/gokwik-mapper';
+import { log } from "../../log.js";
 
 const DB_URL =
   process.env['BRAIN_APP_DATABASE_URL'] ??
@@ -57,7 +58,7 @@ function loadFixture(): GokwikRtoPredictRecord[] {
     const parsed = JSON.parse(raw) as RtoFixtureFile;
     return Array.isArray(parsed.records) ? parsed.records : [];
   } catch (err) {
-    console.warn(`[gokwik-rto-predict-emit] could not read fixture — empty source: ${String(err)}`);
+    log.warn(`could not read fixture — empty source: ${String(err)}`);
     return [];
   }
 }
@@ -69,11 +70,11 @@ export async function run(targetConnectorInstanceId?: string): Promise<void> {
 
   try {
     await producer.connect();
-    console.info(`[gokwik-rto-predict-emit] starting — topic=${LIVE_TOPIC}`);
+    log.info(`starting — topic=${LIVE_TOPIC}`);
 
     const connectors = await enumerateConnectors(pool, targetConnectorInstanceId);
     if (connectors.length === 0) {
-      console.info('[gokwik-rto-predict-emit] no connected GoKwik connectors — exiting');
+      log.info('no connected GoKwik connectors — exiting');
       return;
     }
 
@@ -145,13 +146,13 @@ async function emitForConnector(
   if (messages.length > 0) {
     await producer.send({ topic: LIVE_TOPIC, messages });
   }
-  console.info(`[gokwik-rto-predict-emit] connector=${ciId} brand=${brandId} emitted=${messages.length} (synthetic)`);
+  log.info(`connector=${ciId} brand=${brandId} emitted=${messages.length} (synthetic)`);
 }
 
 if (process.argv[1]?.endsWith('run.ts') || process.argv[1]?.endsWith('run.js')) {
   const ciArg = process.argv[2];
   run(ciArg).catch((err) => {
-    console.error('[gokwik-rto-predict-emit] fatal', err);
+    log.error('fatal', { err: err });
     process.exit(1);
   });
 }

@@ -28,6 +28,7 @@
  */
 
 import { Pool } from 'pg';
+import { log } from "../../log.js";
 
 /** Sentinel cursor resource for the sync request signal (matches PgSyncRequestRepository). */
 const SYNC_REQUEST_RESOURCE = 'sync.request' as const;
@@ -167,25 +168,18 @@ export async function tick(pool: Pool): Promise<number> {
     try {
       claimed = await claimSyncRequest(pool, connector.brand_id, connector.connector_instance_id);
     } catch (err) {
-      console.error(
-        `[sync-claimer] claim failed connector=${connector.connector_instance_id}`,
-        err,
-      );
+      log.error(`claim failed connector=${connector.connector_instance_id}`, { err: err });
       continue;
     }
     if (!claimed) continue;
 
     const run = await loadRun(connector.provider);
     if (!run) {
-      console.warn(
-        `[sync-claimer] no repull run() for provider=${connector.provider} connector=${connector.connector_instance_id}`,
-      );
+      log.warn(`no repull run() for provider=${connector.provider} connector=${connector.connector_instance_id}`);
       continue;
     }
 
-    console.info(
-      `[sync-claimer] dispatching ${connector.provider} repull connector=${connector.connector_instance_id} brand=${connector.brand_id}`,
-    );
+    log.info(`dispatching ${connector.provider} repull connector=${connector.connector_instance_id} brand=${connector.brand_id}`);
     try {
       // Same-code-path: the identical run() the scheduler invokes. Its OWN
       // FOR UPDATE SKIP LOCKED overlap-lock guarantees no double-run.
@@ -193,10 +187,7 @@ export async function tick(pool: Pool): Promise<number> {
       dispatched++;
     } catch (err) {
       // run() writes connector_sync_status.state='error' + last_error itself (dev-honesty).
-      console.error(
-        `[sync-claimer] repull run failed connector=${connector.connector_instance_id}`,
-        err,
-      );
+      log.error(`repull run failed connector=${connector.connector_instance_id}`, { err: err });
     }
   }
   return dispatched;
@@ -221,7 +212,7 @@ export function startSyncRequestClaimer(pool: Pool, intervalMs = 5_000): SyncReq
         try {
           await tick(pool);
         } catch (err) {
-          console.error('[sync-claimer] tick error', err);
+          log.error('tick error', { err: err });
         } finally {
           inFlight = false;
         }

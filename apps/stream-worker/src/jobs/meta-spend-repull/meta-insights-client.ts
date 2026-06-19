@@ -1,3 +1,5 @@
+import { log } from "../../log.js";
+
 /**
  * meta-insights-client.ts — Meta (Facebook) Ads Insights API client (ADR-AD-3 / ADR-AD-7).
  *
@@ -166,9 +168,7 @@ export class MetaInsightsClient {
             throw new Error(`${META_RATE_LIMITED}: persistent throttle (code=${code})`);
           }
           const backoffMs = Math.min(30_000, 1000 * 2 ** attempt);
-          console.info(
-            `[meta-insights-client] throttled (code=${code}) — backoff ${backoffMs}ms (attempt ${attempt + 1}/${this.maxBackoffRetries})`,
-          );
+          log.info(`throttled (code=${code}) — backoff ${backoffMs}ms (attempt ${attempt + 1}/${this.maxBackoffRetries})`);
           await sleep(backoffMs);
           continue;
         }

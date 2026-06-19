@@ -21,6 +21,7 @@ import { schemaValidityCheck } from './schema-validity-check.js';
 import { reconciliationCheck } from './reconciliation-check.js';
 import { writeDqResult, type DqCheckRow } from './writer.js';
 import { createSilverReader, type SilverReader, type SilverReaderConfig } from './silver-reader.js';
+import { log } from "../../log.js";
 
 interface BrandRow {
   id: string;
@@ -61,7 +62,7 @@ export async function runDqChecksForBrand(
     try {
       rows = await exec();
     } catch (err) {
-      console.error(`[dq] executor failed brand=${brandId}`, err);
+      log.error(`executor failed brand=${brandId}`, { err: err });
       continue;
     }
     for (const row of rows) {
@@ -69,10 +70,7 @@ export async function runDqChecksForBrand(
         await writeDqResult(pool, row);
         written.push(row);
       } catch (err) {
-        console.error(
-          `[dq] write failed brand=${brandId} category=${row.category} target=${row.target}`,
-          err,
-        );
+        log.error(`write failed brand=${brandId} category=${row.category} target=${row.target}`, { err: err });
       }
     }
   }
@@ -89,7 +87,7 @@ export async function tick(pool: Pool, silver: SilverReader | null): Promise<num
       const rows = await runDqChecksForBrand(pool, silver, brandId);
       total += rows.length;
     } catch (err) {
-      console.error(`[dq] brand tick failed brand=${brandId}`, err);
+      log.error(`brand tick failed brand=${brandId}`, { err: err });
     }
   }
   return total;
@@ -122,9 +120,9 @@ export function startDqChecks(pool: Pool, opts: StartDqChecksOptions = {}): DqCh
         inFlight = true;
         try {
           const n = await tick(pool, silver);
-          console.info(`[dq] tick complete — ${n} check rows written`);
+          log.info(`tick complete — ${n} check rows written`);
         } catch (err) {
-          console.error('[dq] tick error', err);
+          log.error('tick error', { err: err });
         } finally {
           inFlight = false;
         }

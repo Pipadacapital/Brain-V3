@@ -22,6 +22,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import type { GokwikAwbRecord, DataSource } from '@brain/gokwik-mapper';
+import { log } from "../../log.js";
 
 export interface GokwikApiCredentials {
   appid: string;       // NEVER logged (I-S09)
@@ -77,7 +78,7 @@ export class GokwikAwbClient {
       const parsed = JSON.parse(raw) as AwbFixtureFile;
       records = Array.isArray(parsed.records) ? parsed.records : [];
     } catch (err) {
-      console.warn(`[gokwik-awb-client] could not read synthetic AWB fixture — empty source: ${String(err)}`);
+      log.warn(`could not read synthetic AWB fixture — empty source: ${String(err)}`);
     }
     this.fixtureRecords = records;
   }

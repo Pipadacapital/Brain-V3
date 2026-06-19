@@ -15,6 +15,7 @@
  */
 
 import type { ISecretsManager } from '../../infrastructure/secrets/ISecretsManager.js';
+import { log } from "../../../../../../../log.js";
 
 /** Shopify Admin API version used for webhook registration. */
 const SHOPIFY_API_VERSION = '2025-07' as const;
@@ -61,12 +62,10 @@ export class RegisterWebhooksCommand {
     // The dev callback URL is non-public — Shopify cannot reach localhost.
     // Real webhook delivery requires public ingress (platform follow-up slice).
     if (this.appEnv !== 'production') {
-      console.info(
-        `[RegisterWebhooksCommand] dev: webhook registration stubbed ` +
-          `(shop=${input.shopDomain} — callback URL is non-public in dev). ` +
-          `Real delivery requires public-ingress follow-up. ` +
-          `In dev, use synthetic HMAC-signed POST tests to validate the receiver path.`,
-      );
+      log.info(`[RegisterWebhooksCommand] dev: webhook registration stubbed ` +
+                  `(shop=${input.shopDomain} — callback URL is non-public in dev). ` +
+                  `Real delivery requires public-ingress follow-up. ` +
+                  `In dev, use synthetic HMAC-signed POST tests to validate the receiver path.`);
       return { registered: false, topicCount: 0 };
     }
 
@@ -110,9 +109,7 @@ export class RegisterWebhooksCommand {
       }
 
       registered += 1;
-      console.info(
-        `[RegisterWebhooksCommand] registered webhook topic=${topic} for shop=${input.shopDomain}`,
-      );
+      log.info(`registered webhook topic=${topic} for shop=${input.shopDomain}`);
     }
 
     return { registered: true, topicCount: registered };

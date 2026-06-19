@@ -41,6 +41,7 @@ import {
   ORDER_LIVE_V1_EVENT_NAME,
 } from '@brain/shopify-mapper';
 import { buildWorkerSecretsManager } from '../shopify-backfill/worker-secrets.js';
+import { log } from "../../log.js";
 
 // ── Configuration ─────────────────────────────────────────────────────────────
 
@@ -92,18 +93,18 @@ export async function run(targetConnectorInstanceId?: string): Promise<void> {
 
   try {
     await producer.connect();
-    console.info(`[shopify-repull] starting — topic=${LIVE_TOPIC} brokers=${BROKERS.join(',')}`);
+    log.info(`starting — topic=${LIVE_TOPIC} brokers=${BROKERS.join(',')}`);
 
     // ── D-7: enumerate via SECURITY DEFINER fn (no GUC at this point) ────────
     // list_connectors_for_repull() runs as 'brain' (SECURITY DEFINER), bypasses
     // FORCE RLS, returns dispatch-only cols. GUC is set AFTER enumerate (below).
     const connectors = await enumerateConnectors(pool, targetConnectorInstanceId);
     if (connectors.length === 0) {
-      console.info('[shopify-repull] no connected Shopify connectors found — exiting');
+      log.info('no connected Shopify connectors found — exiting');
       return;
     }
 
-    console.info(`[shopify-repull] found ${connectors.length} connector(s) to re-pull`);
+    log.info(`found ${connectors.length} connector(s) to re-pull`);
 
     for (const connector of connectors) {
       await repullConnector({
@@ -159,7 +160,7 @@ async function repullConnector(params: RepullParams): Promise<void> {
   const { connector, pool, producer, workerSecrets, saltProvider } = params;
   const { connector_instance_id: ciId, brand_id: brandId, shop_domain: shopDomain, secret_ref: secretRef } = connector;
 
-  console.info(`[shopify-repull] connector=${ciId} brand=${brandId} shop=${shopDomain}`);
+  log.info(`connector=${ciId} brand=${brandId} shop=${shopDomain}`);
 
   // ── D-9: overlap-lock via FOR UPDATE SKIP LOCKED on connector_cursor ─────────
   // Acquire a row-level lock on the cursor row BEFORE any work. A second concurrent
@@ -167,7 +168,7 @@ async function repullConnector(params: RepullParams): Promise<void> {
   // Lock held for the duration of the repull via the transaction.
   const lockAcquired = await acquireRepullLock(pool, brandId, ciId);
   if (!lockAcquired) {
-    console.info(`[shopify-repull] connector=${ciId} — already locked by another worker, skipping`);
+    log.info(`connector=${ciId} — already locked by another worker, skipping`);
     return;
   }
 
@@ -178,7 +179,7 @@ async function repullConnector(params: RepullParams): Promise<void> {
   // Resolve access token (I-S09: NEVER logged)
   const accessToken = await workerSecrets.getShopifyToken(secretRef);
   if (!accessToken) {
-    console.error(`[shopify-repull] connector=${ciId} — token not found (RECONNECT_REQUIRED)`);
+    log.error(`connector=${ciId} — token not found (RECONNECT_REQUIRED)`);
     return;
   }
 
@@ -187,7 +188,7 @@ async function repullConnector(params: RepullParams): Promise<void> {
   try {
     saltHex = await saltProvider.saltHexForBrand(brandId);
   } catch (e) {
-    console.error(`[shopify-repull] connector=${ciId} — salt fetch failed`, e);
+    log.error(`connector=${ciId} — salt fetch failed`, { detail: e });
     return;
   }
 
@@ -200,7 +201,7 @@ async function repullConnector(params: RepullParams): Promise<void> {
 
   // ── Read existing high-water cursor (updated_at of last seen order) ───────────
   const priorCursor = await getRepullCursor(pool, brandId, ciId);
-  console.info(`[shopify-repull] connector=${ciId} updatedAtMin=${updatedAtMin} priorCursor=${priorCursor ?? 'none'}`);
+  log.info(`connector=${ciId} updatedAtMin=${updatedAtMin} priorCursor=${priorCursor ?? 'none'}`);
 
   let recordsProcessed = 0;
   let maxUpdatedAtMs: number | null = null;
@@ -216,7 +217,7 @@ async function repullConnector(params: RepullParams): Promise<void> {
 
     while (true) {
       pageCount++;
-      console.info(`[shopify-repull] connector=${ciId} page=${pageCount} sinceId=${sinceId ?? 'null'}`);
+      log.info(`connector=${ciId} page=${pageCount} sinceId=${sinceId ?? 'null'}`);
 
       let page;
       try {
@@ -224,11 +225,11 @@ async function repullConnector(params: RepullParams): Promise<void> {
       } catch (err) {
         const msg = String(err);
         if (msg.startsWith('SHOPIFY_AUTH_ERROR')) {
-          console.error(`[shopify-repull] connector=${ciId} 401 auth error — aborting re-pull`);
+          log.error(`connector=${ciId} 401 auth error — aborting re-pull`);
           await setSyncState(pool, brandId, ciId, 'error', '401 auth error — RECONNECT_REQUIRED');
           return;
         }
-        console.error(`[shopify-repull] connector=${ciId} page error — aborting`, err);
+        log.error(`connector=${ciId} page error — aborting`, { err: err });
         await setSyncState(pool, brandId, ciId, 'error', `page_error: ${msg.slice(0, 200)}`);
         return;
       }
@@ -274,9 +275,7 @@ async function repullConnector(params: RepullParams): Promise<void> {
       // Emit to LIVE lane (ADR-LV-3 / ADR-LV-12 / D-14)
       await producer.send({ topic: LIVE_TOPIC, messages });
 
-      console.info(
-        `[shopify-repull] connector=${ciId} page=${pageCount} emitted=${messages.length} total=${recordsProcessed}`,
-      );
+      log.info(`connector=${ciId} page=${pageCount} emitted=${messages.length} total=${recordsProcessed}`);
 
       // ── Advance cursor after each page (checkpoint) ───────────────────────────
       if (maxUpdatedAtMs !== null) {
@@ -294,11 +293,9 @@ async function repullConnector(params: RepullParams): Promise<void> {
     // ── D-11: set connected + last_sync_at on completion ─────────────────────
     await setSyncState(pool, brandId, ciId, 'connected', null);
 
-    console.info(
-      `[shopify-repull] connector=${ciId} COMPLETED records=${recordsProcessed} maxUpdatedAt=${maxUpdatedAtMs}`,
-    );
+    log.info(`connector=${ciId} COMPLETED records=${recordsProcessed} maxUpdatedAt=${maxUpdatedAtMs}`);
   } catch (err) {
-    console.error(`[shopify-repull] connector=${ciId} unexpected error`, err);
+    log.error(`connector=${ciId} unexpected error`, { err: err });
     await setSyncState(pool, brandId, ciId, 'error', `unexpected: ${String(err).slice(0, 200)}`);
     throw err;
   }
@@ -429,7 +426,7 @@ async function upsertRepullCursor(
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK').catch(() => undefined);
-    console.error(`[shopify-repull] cursor upsert failed (non-fatal)`, err);
+    log.error(`cursor upsert failed (non-fatal)`, { err: err });
   } finally {
     client.release();
   }
@@ -475,7 +472,7 @@ async function setSyncState(
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK').catch(() => undefined);
-    console.error(`[shopify-repull] sync_status update failed (non-fatal)`, err);
+    log.error(`sync_status update failed (non-fatal)`, { err: err });
   } finally {
     client.release();
   }
@@ -489,7 +486,7 @@ if (
 ) {
   const ciArg = process.argv[2]; // optional: connector_instance_id
   run(ciArg).catch((err) => {
-    console.error('[shopify-repull] fatal', err);
+    log.error('fatal', { err: err });
     process.exit(1);
   });
 }

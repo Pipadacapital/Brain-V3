@@ -1,3 +1,5 @@
+import { log } from "../../../../log.js";
+
 /**
  * RateLimiter — Redis INCR + EXPIRE sliding-window counter (AC-3 / MA-04).
  *
@@ -42,7 +44,7 @@ export class RateLimiter {
       return { allowed, retryAfter, remaining: Math.max(0, limit - count) };
     } catch (err) {
       // FAIL-OPEN: Redis error → allow the request.
-      console.error('[rate-limiter] Redis error — failing open', { key, err });
+      log.error('Redis error — failing open', { err: { key, err } });
       return { allowed: true, retryAfter: 0, remaining: limit };
     }
   }
@@ -52,7 +54,7 @@ export class RateLimiter {
     try {
       await this.redis.del(key);
     } catch (err) {
-      console.error('[rate-limiter] Redis reset error', { key, err });
+      log.error('Redis reset error', { err: { key, err } });
     }
   }
 }

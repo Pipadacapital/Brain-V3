@@ -22,6 +22,7 @@ import type { Pool } from 'pg';
 import { gradeReconciliation } from './grade.js';
 import type { DqCheckRow } from './writer.js';
 import { BRAND_PREDICATE, type SilverReader } from './silver-reader.js';
+import { log } from "../../log.js";
 
 const NIL_UUID = '00000000-0000-0000-0000-000000000000';
 
@@ -89,7 +90,7 @@ export async function reconciliationCheck(
     );
     silverOrders = Number(sr[0]?.n ?? 0);
   } catch (err) {
-    console.error(`[dq:reconciliation] silver read failed brand=${brandId}`, err);
+    log.error(`silver read failed brand=${brandId}`, { err: err });
     return [
       {
         brandId,

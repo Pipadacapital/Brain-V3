@@ -38,6 +38,7 @@ import {
   META_RATE_LIMITED,
   type MetaApiCredentials,
 } from './meta-insights-client.js';
+import { log } from "../../log.js";
 
 const DB_URL =
   process.env['BRAIN_APP_DATABASE_URL'] ??
@@ -75,14 +76,14 @@ export async function run(targetConnectorInstanceId?: string): Promise<void> {
 
   try {
     await producer.connect();
-    console.info(`[meta-spend-repull] starting — topic=${LIVE_TOPIC} brokers=${BROKERS.join(',')}`);
+    log.info(`starting — topic=${LIVE_TOPIC} brokers=${BROKERS.join(',')}`);
 
     const connectors = await enumerateConnectors(pool, targetConnectorInstanceId);
     if (connectors.length === 0) {
-      console.info('[meta-spend-repull] no connected meta connectors found — exiting');
+      log.info('no connected meta connectors found — exiting');
       return;
     }
-    console.info(`[meta-spend-repull] found ${connectors.length} connector(s) to re-pull`);
+    log.info(`found ${connectors.length} connector(s) to re-pull`);
 
     for (const connector of connectors) {
       await repullConnector({ connector, pool, producer });
@@ -128,11 +129,11 @@ async function repullConnector(params: RepullParams): Promise<void> {
   const { connector, pool, producer } = params;
   const { connector_instance_id: ciId, brand_id: brandId, secret_ref: secretRef } = connector;
 
-  console.info(`[meta-spend-repull] connector=${ciId} brand=${brandId}`);
+  log.info(`connector=${ciId} brand=${brandId}`);
 
   const creds = await resolveMetaCredentials(secretRef, connector.ad_account_id);
   if (!creds) {
-    console.error(`[meta-spend-repull] connector=${ciId} — credentials not found (RECONNECT_REQUIRED)`);
+    log.error(`connector=${ciId} — credentials not found (RECONNECT_REQUIRED)`);
     return;
   }
 
@@ -142,7 +143,7 @@ async function repullConnector(params: RepullParams): Promise<void> {
   // Overlap-lock on the single cursor resource (FOR UPDATE SKIP LOCKED).
   const lockAcquired = await acquireCursorLock(pool, brandId, ciId, CURSOR_RESOURCE);
   if (!lockAcquired) {
-    console.info(`[meta-spend-repull] connector=${ciId} — cursor locked by another worker, skipping`);
+    log.info(`connector=${ciId} — cursor locked by another worker, skipping`);
     return;
   }
 
@@ -160,7 +161,7 @@ async function repullConnector(params: RepullParams): Promise<void> {
       await setSyncState(pool, brandId, ciId, 'error', 'RateLimited — retry next run');
       return;
     }
-    console.error(`[meta-spend-repull] connector=${ciId} account meta fetch failed`, err);
+    log.error(`connector=${ciId} account meta fetch failed`, { err: err });
     await setSyncState(pool, brandId, ciId, 'error', 'account meta fetch failed');
     return;
   }
@@ -197,7 +198,7 @@ async function repullConnector(params: RepullParams): Promise<void> {
       }
     } catch (err) {
       if (String(err).includes(META_RATE_LIMITED)) {
-        console.error(`[meta-spend-repull] connector=${ciId} RateLimited — aborting run (retry next)`);
+        log.error(`connector=${ciId} RateLimited — aborting run (retry next)`);
         await setSyncState(pool, brandId, ciId, 'error', 'RateLimited — retry next run');
         return;
       }
@@ -205,13 +206,13 @@ async function repullConnector(params: RepullParams): Promise<void> {
         await setSyncState(pool, brandId, ciId, 'error', 'meta auth error — RECONNECT_REQUIRED');
         return;
       }
-      console.error(`[meta-spend-repull] connector=${ciId} level=${level} page error`, err);
+      log.error(`connector=${ciId} level=${level} page error`, { err: err });
       // Non-fatal per level — continue to next level.
     }
   }
 
   await setSyncState(pool, brandId, ciId, 'connected', null);
-  console.info(`[meta-spend-repull] connector=${ciId} COMPLETED totalEmitted=${totalEmitted}`);
+  log.info(`connector=${ciId} COMPLETED totalEmitted=${totalEmitted}`);
 }
 
 // ── Page emit ─────────────────────────────────────────────────────────────────
@@ -258,7 +259,7 @@ async function emitPage(p: EmitPageParams): Promise<{ emitted: number; maxDate: 
 
   if (messages.length > 0) {
     await p.producer.send({ topic: LIVE_TOPIC, messages });
-    console.info(`[meta-spend-repull] connector=${p.ciId} level=${p.canonicalLevel} emitted=${messages.length}`);
+    log.info(`connector=${p.ciId} level=${p.canonicalLevel} emitted=${messages.length}`);
   }
   return { emitted: messages.length, maxDate };
 }
@@ -326,7 +327,7 @@ export async function upsertCursorValue(
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK').catch(() => undefined);
-    console.error(`[meta-spend-repull] cursor upsert failed (non-fatal) resource=${resource}`, err);
+    log.error(`cursor upsert failed (non-fatal) resource=${resource}`, { err: err });
   } finally {
     client.release();
   }
@@ -358,7 +359,7 @@ export async function setSyncState(
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK').catch(() => undefined);
-    console.error(`[meta-spend-repull] sync_status update failed (non-fatal)`, err);
+    log.error(`sync_status update failed (non-fatal)`, { err: err });
   } finally {
     client.release();
   }
@@ -414,7 +415,7 @@ function addDays(d: Date, days: number): Date {
 if (process.argv[1]?.endsWith('run.ts') || process.argv[1]?.endsWith('run.js')) {
   const ciArg = process.argv[2];
   run(ciArg).catch((err) => {
-    console.error('[meta-spend-repull] fatal', err);
+    log.error('fatal', { err: err });
     process.exit(1);
   });
 }

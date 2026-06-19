@@ -134,9 +134,9 @@ export async function computeOrderStatusMix(
               COALESCE(SUM(order_value_minor), 0) AS value_minor,
               MIN(currency_code)             AS currency_code
          FROM brain_silver.silver_order_state
-        WHERE ${BRAND_PREDICATE}
-          AND state_effective_at >= ?
+        WHERE state_effective_at >= ?
           AND state_effective_at <= ?
+          AND ${BRAND_PREDICATE}
         GROUP BY lifecycle_state`,
       [fromTs, toTs],
     );

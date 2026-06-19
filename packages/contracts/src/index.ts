@@ -401,6 +401,10 @@ export {
   Customer360Schema,
   VaultCoverageSchema,
   ErasureResultSchema,
+  MergeReviewSchema,
+  MergeReviewListSchema,
+  MergeResolveResultSchema,
+  UnmergeResultSchema,
 } from './api/identity.api.v1.js';
 export type {
   Customer360Profile,
@@ -409,4 +413,8 @@ export type {
   Customer360,
   VaultCoverage,
   ErasureResult,
+  MergeReview,
+  MergeReviewList,
+  MergeResolveResult,
+  UnmergeResult,
 } from './api/identity.api.v1.js';

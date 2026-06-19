@@ -42,6 +42,38 @@ export const Customer360MergeSchema = z.object({
 });
 export type Customer360Merge = z.infer<typeof Customer360MergeSchema>;
 
+// ── Merge/unmerge admin + review queue (P0-C) ────────────────────────────────
+
+export const MergeReviewSchema = z.object({
+  review_id: z.string(),
+  brain_id_a: z.string(),
+  brain_id_b: z.string(),
+  trigger_reason: z.string(),
+  created_at: z.string(),
+});
+export type MergeReview = z.infer<typeof MergeReviewSchema>;
+
+export const MergeReviewListSchema = z.object({
+  reviews: z.array(MergeReviewSchema),
+});
+export type MergeReviewList = z.infer<typeof MergeReviewListSchema>;
+
+export const MergeResolveResultSchema = z.object({
+  resolved: z.boolean(),
+  decision: z.enum(['merged', 'rejected']).optional(),
+  reason: z.string().optional(),
+  canonical_brain_id: z.string().optional(),
+  merged_brain_id: z.string().optional(),
+});
+export type MergeResolveResult = z.infer<typeof MergeResolveResultSchema>;
+
+export const UnmergeResultSchema = z.object({
+  unmerged: z.boolean(),
+  reason: z.string().optional(),
+  brain_id: z.string().optional(),
+});
+export type UnmergeResult = z.infer<typeof UnmergeResultSchema>;
+
 /** Result of a DPDP customer erasure — counts only, never raw PII (P0-C). */
 export const ErasureResultSchema = z.object({
   erased: z.boolean(),

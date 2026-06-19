@@ -70,6 +70,9 @@ import type {
   Customer360 as ContractCustomer360,
   VaultCoverage as ContractVaultCoverage,
   ErasureResult as ContractErasureResult,
+  MergeReviewList as ContractMergeReviewList,
+  MergeResolveResult as ContractMergeResolveResult,
+  UnmergeResult as ContractUnmergeResult,
 } from '@brain/contracts';
 import { jtiFromJwt, csrfTokenForSession } from './csrf.js';
 import type { RateLimiter } from '../../workspace-access/internal/infrastructure/rate-limiter.js';
@@ -77,7 +80,13 @@ import { loginFailKeySync, loginIpKey, registerIpKey } from '../../workspace-acc
 import type { Pool as PgPool } from 'pg';
 import { getRevenueMetrics, getRevenueTimeseries, getKpiSummary, getRecognitionBreakdown, getRecentActivity, getOrdersTimeseries, getOrderStats, getDataHealth, getSettlementSummary, getTrackingHealth, getRecentEvents, getAdSpendTimeseries, getBlendedRoas, getCodRtoRates, getCodMix, getCheckoutFunnel, getOrderStatusMix, getJourneyFirstTouchMix, getJourneyStitchRate, getJourneyTimeline, getConsentCoverage, getConsentSuppressionSummary, getConsentGateActivity, getConsentWindowConfig, getAttributionByChannel, getAttributionReconciliation, getChannelRoas, getCapiFeedbackSummary, getCapiFeedbackEvents, getCapiFeedbackDeletions } from '../../analytics/index.js';
 import { getDataQualitySummary } from '../../data-quality/index.js';
-import { getCustomer360, eraseCustomer } from '../../identity/index.js';
+import {
+  getCustomer360,
+  eraseCustomer,
+  listMergeReviews,
+  resolveMergeReview,
+  unmergeCustomer,
+} from '../../identity/index.js';
 import type { ContactPiiVaultService } from '../../identity/index.js';
 import { askBrain } from '../../ai/index.js';
 import { ResolverClient } from '@brain/ai-gateway-client';
@@ -1375,6 +1384,107 @@ export function registerBffRoutes(
       }
 
       const result: ContractErasureResult = await eraseCustomer(auth.brandId, brain_id, rawPool);
+      return reply.send({ request_id: requestId, data: result });
+    },
+  );
+
+  // ── GET /api/v1/identity/merge-reviews — pending merge candidates (P0-C) ──────
+  fastify.get(
+    '/api/v1/identity/merge-reviews',
+    { preHandler: [bffProtectedPreHandler] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const auth = (request as AuthenticatedRequest).auth;
+      const empty: ContractMergeReviewList = { reviews: [] };
+      if (!auth.brandId || !pool) {
+        return reply.send({ request_id: requestId, data: empty });
+      }
+      const data: ContractMergeReviewList = await listMergeReviews(auth.brandId, requestId, { pool });
+      return reply.send({ request_id: requestId, data });
+    },
+  );
+
+  // ── POST /api/v1/identity/merge-reviews/resolve — approve/reject a merge (P0-C) ─
+  fastify.post(
+    '/api/v1/identity/merge-reviews/resolve',
+    {
+      preHandler: [bffProtectedPreHandler],
+      schema: {
+        body: {
+          type: 'object',
+          properties: {
+            review_id: {
+              type: 'string',
+              pattern: '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$',
+            },
+            decision: { type: 'string', enum: ['merge', 'reject'] },
+          },
+          required: ['review_id', 'decision'],
+          additionalProperties: false,
+        },
+        attachValidation: true,
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const validationError = (request as FastifyRequest & { validationError?: Error }).validationError;
+      if (validationError) {
+        return reply.code(400).send({
+          request_id: requestId,
+          error: { code: 'INVALID_INPUT', message: 'review_id (uuid) + decision (merge|reject) required.' },
+        });
+      }
+      const auth = (request as AuthenticatedRequest).auth;
+      const { review_id, decision } = request.body as { review_id: string; decision: 'merge' | 'reject' };
+      if (!auth.brandId || !rawPool) {
+        return reply.code(409).send({
+          request_id: requestId,
+          error: { code: 'NO_ACTIVE_BRAND', message: 'Select a brand first.' },
+        });
+      }
+      const result: ContractMergeResolveResult = await resolveMergeReview(auth.brandId, review_id, decision, rawPool);
+      return reply.send({ request_id: requestId, data: result });
+    },
+  );
+
+  // ── POST /api/v1/identity/customer/unmerge — split a merged customer (P0-C) ───
+  fastify.post(
+    '/api/v1/identity/customer/unmerge',
+    {
+      preHandler: [bffProtectedPreHandler],
+      schema: {
+        body: {
+          type: 'object',
+          properties: {
+            brain_id: {
+              type: 'string',
+              pattern: '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$',
+            },
+          },
+          required: ['brain_id'],
+          additionalProperties: false,
+        },
+        attachValidation: true,
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const validationError = (request as FastifyRequest & { validationError?: Error }).validationError;
+      if (validationError) {
+        return reply.code(400).send({
+          request_id: requestId,
+          error: { code: 'INVALID_BRAIN_ID', message: 'brain_id must be a UUID.' },
+        });
+      }
+      const auth = (request as AuthenticatedRequest).auth;
+      const { brain_id } = request.body as { brain_id: string };
+      if (!auth.brandId || !rawPool) {
+        return reply.code(409).send({
+          request_id: requestId,
+          error: { code: 'NO_ACTIVE_BRAND', message: 'Select a brand first.' },
+        });
+      }
+      const result: ContractUnmergeResult = await unmergeCustomer(auth.brandId, brain_id, rawPool);
       return reply.send({ request_id: requestId, data: result });
     },
   );

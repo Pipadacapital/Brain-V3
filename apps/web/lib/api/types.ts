@@ -40,6 +40,10 @@ export type {
   Customer360Merge,
   VaultCoverage as VaultCoverageResponse,
   ErasureResult as ErasureResultResponse,
+  MergeReview,
+  MergeReviewList as MergeReviewListResponse,
+  MergeResolveResult as MergeResolveResultResponse,
+  UnmergeResult as UnmergeResultResponse,
 } from '@brain/contracts';
 
 // Local import for the names referenced WITHIN this file (re-exports above are not in local scope).

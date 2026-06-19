@@ -33,6 +33,9 @@ import {
   Customer360Schema,
   VaultCoverageSchema,
   ErasureResultSchema,
+  MergeReviewListSchema,
+  MergeResolveResultSchema,
+  UnmergeResultSchema,
 } from '@brain/contracts';
 
 import type {
@@ -115,6 +118,9 @@ import type {
   Customer360Response,
   VaultCoverageResponse,
   ErasureResultResponse,
+  MergeReviewListResponse,
+  MergeResolveResultResponse,
+  UnmergeResultResponse,
 } from './types';
 
 /** All BFF routes proxied through Next.js API routes → frontend-api module */
@@ -1585,5 +1591,32 @@ export const identityApi = {
       body: JSON.stringify({ brain_id: brainId }),
     });
     return parseData(ErasureResultSchema, env);
+  },
+
+  /** GET /api/v1/identity/merge-reviews — pending merge candidates for the active brand. */
+  listMergeReviews: async (): Promise<MergeReviewListResponse> => {
+    const env = await bffFetch<BffEnvelope<unknown>>('/v1/identity/merge-reviews');
+    return parseData(MergeReviewListSchema, env);
+  },
+
+  /** POST /api/v1/identity/merge-reviews/resolve — approve (merge) or reject a candidate. */
+  resolveMergeReview: async (
+    reviewId: string,
+    decision: 'merge' | 'reject',
+  ): Promise<MergeResolveResultResponse> => {
+    const env = await bffFetch<BffEnvelope<unknown>>('/v1/identity/merge-reviews/resolve', {
+      method: 'POST',
+      body: JSON.stringify({ review_id: reviewId, decision }),
+    });
+    return parseData(MergeResolveResultSchema, env);
+  },
+
+  /** POST /api/v1/identity/customer/unmerge — split a merged customer back out. */
+  unmergeCustomer: async (brainId: string): Promise<UnmergeResultResponse> => {
+    const env = await bffFetch<BffEnvelope<unknown>>('/v1/identity/customer/unmerge', {
+      method: 'POST',
+      body: JSON.stringify({ brain_id: brainId }),
+    });
+    return parseData(UnmergeResultSchema, env);
   },
 };

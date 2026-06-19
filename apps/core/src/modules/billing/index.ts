@@ -24,3 +24,7 @@ export type {
   InspectableBill,
   BillLine,
 } from './internal/application/queries/get-inspectable-bill.js';
+export { issueInvoice } from './internal/application/issue-invoice.js';
+export type { IssueInvoiceResult } from './internal/application/issue-invoice.js';
+export { getInvoice } from './internal/application/queries/get-invoice.js';
+export type { InvoiceResult, Invoice, InvoiceLine } from './internal/application/queries/get-invoice.js';

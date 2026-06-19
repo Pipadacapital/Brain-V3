@@ -84,6 +84,8 @@ import type {
   BillingPeriods as ContractBillingPeriods,
   SealPeriodResult as ContractSealPeriodResult,
   InspectableBill as ContractInspectableBill,
+  Invoice as ContractInvoice,
+  IssueInvoiceResult as ContractIssueInvoiceResult,
 } from '@brain/contracts';
 import { jtiFromJwt, csrfTokenForSession } from './csrf.js';
 import type { Pool as PgPool } from 'pg';
@@ -96,7 +98,13 @@ import {
   resolveMergeReview,
   unmergeCustomer,
 } from '../../identity/index.js';
-import { getBillingPeriods, sealBillingPeriod, getInspectableBill } from '../../billing/index.js';
+import {
+  getBillingPeriods,
+  sealBillingPeriod,
+  getInspectableBill,
+  issueInvoice,
+  getInvoice,
+} from '../../billing/index.js';
 import type { ContactPiiVaultService } from '../../identity/index.js';
 import { askBrain } from '../../ai/index.js';
 import { ResolverClient } from '@brain/ai-gateway-client';
@@ -1718,6 +1726,115 @@ export function registerBffRoutes(
       }
 
       const result: ContractInspectableBill = await getInspectableBill(
+        auth.brandId,
+        period,
+        requestId,
+        { pool },
+      );
+      return reply.send({ request_id: requestId, data: result });
+    },
+  );
+
+  /**
+   * GET /api/v1/billing/invoice?period=YYYY-MM
+   *
+   * The issued GST invoice for a period (immutable): number, GST breakdown, line items.
+   * state:'not_issued' when the period has no invoice yet. Brand from session (D-1).
+   */
+  fastify.get(
+    '/api/v1/billing/invoice',
+    {
+      preHandler: [bffProtectedPreHandler],
+      schema: {
+        querystring: {
+          type: 'object',
+          required: ['period'],
+          additionalProperties: false,
+          properties: { period: { type: 'string', pattern: '^\\d{4}-\\d{2}$' } },
+        },
+        attachValidation: true,
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+
+      const validationError = (request as FastifyRequest & { validationError?: Error }).validationError;
+      if (validationError) {
+        return reply.code(400).send({
+          request_id: requestId,
+          error: { code: 'INVALID_PERIOD', message: "period must be 'YYYY-MM'." },
+        });
+      }
+
+      const auth = (request as AuthenticatedRequest).auth;
+      const { period } = request.query as { period: string };
+
+      if (!auth.brandId) {
+        return reply.send({
+          request_id: requestId,
+          data: { state: 'not_issued', billing_period: period },
+        });
+      }
+      if (!pool) {
+        return reply.code(503).send({
+          request_id: requestId,
+          error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' },
+        });
+      }
+
+      const result: ContractInvoice = await getInvoice(auth.brandId, period, requestId, { pool });
+      return reply.send({ request_id: requestId, data: result });
+    },
+  );
+
+  /**
+   * POST /api/v1/billing/invoice/issue  body: { period: 'YYYY-MM' }
+   *
+   * Issues the GST invoice for a sealed period — allocates a gapless invoice_number and writes
+   * the immutable invoice + line + tax_ledger atomically. Idempotent: issued:false when an
+   * invoice already exists (no number consumed). Brand from session (D-1).
+   */
+  fastify.post(
+    '/api/v1/billing/invoice/issue',
+    {
+      preHandler: [bffProtectedPreHandler],
+      schema: {
+        body: {
+          type: 'object',
+          required: ['period'],
+          additionalProperties: false,
+          properties: { period: { type: 'string', pattern: '^\\d{4}-\\d{2}$' } },
+        },
+        attachValidation: true,
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+
+      const validationError = (request as FastifyRequest & { validationError?: Error }).validationError;
+      if (validationError) {
+        return reply.code(400).send({
+          request_id: requestId,
+          error: { code: 'INVALID_PERIOD', message: "period must be 'YYYY-MM'." },
+        });
+      }
+
+      const auth = (request as AuthenticatedRequest).auth;
+      if (!auth.brandId) {
+        return reply.code(409).send({
+          request_id: requestId,
+          error: { code: 'NO_ACTIVE_BRAND', message: 'Select a brand before issuing an invoice.' },
+        });
+      }
+      if (!pool) {
+        return reply.code(503).send({
+          request_id: requestId,
+          error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' },
+        });
+      }
+
+      const { period } = request.body as { period: string };
+      const result: ContractIssueInvoiceResult = await issueInvoice(
         auth.brandId,
         period,
         requestId,

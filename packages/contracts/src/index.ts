@@ -424,6 +424,9 @@ export {
   SealPeriodResultSchema,
   BillLineSchema,
   InspectableBillSchema,
+  InvoiceLineSchema,
+  InvoiceSchema,
+  IssueInvoiceResultSchema,
 } from './api/billing.api.v1.js';
 export type {
   BillingPeriod,
@@ -431,4 +434,7 @@ export type {
   SealPeriodResult,
   BillLine,
   InspectableBill,
+  InvoiceLine,
+  Invoice,
+  IssueInvoiceResult,
 } from './api/billing.api.v1.js';

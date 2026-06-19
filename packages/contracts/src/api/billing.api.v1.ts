@@ -80,6 +80,70 @@ export const InspectableBillSchema = z.discriminatedUnion('state', [
 ]);
 export type InspectableBill = z.infer<typeof InspectableBillSchema>;
 
+// ── Issued GST invoice (slice 3) ──────────────────────────────────────────────
+// The issued invoice is immutable, has a gapless number per legal-entity/FY, and carries GST.
+// All money via MinorUnitsSchema (I-S07). Line items are self-explaining (basis/rate/source/SAC).
+
+export const InvoiceLineSchema = z.object({
+  line_no: z.number().int().positive(),
+  line_type: z.string(),
+  description: z.string(),
+  basis_gmv_minor: MinorUnitsSchema,
+  rate_bps: z.number().int().min(0).max(10_000),
+  metric_definition_version: z.string(),
+  source_billing_period: BillingPeriodCodeSchema,
+  sac_hsn_code: z.string(),
+  taxable_minor: MinorUnitsSchema,
+  tax_rate_bps: z.number().int().min(0).max(10_000),
+  tax_minor: MinorUnitsSchema,
+  amount_minor: MinorUnitsSchema,
+});
+export type InvoiceLine = z.infer<typeof InvoiceLineSchema>;
+
+export const InvoiceSchema = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('not_issued'), billing_period: BillingPeriodCodeSchema }),
+  z.object({
+    state: z.literal('issued'),
+    invoice_id: z.string(),
+    invoice_number: z.string(),
+    billing_period: BillingPeriodCodeSchema,
+    legal_entity: z.string(),
+    fy: z.string(),
+    currency_code: CurrencyCodeSchema,
+    basis_gmv_minor: MinorUnitsSchema,
+    rate_bps: z.number().int().min(0).max(10_000),
+    fee_minor: MinorUnitsSchema,
+    tax_minor: MinorUnitsSchema,
+    total_minor: MinorUnitsSchema,
+    regime: z.string(),
+    sac_hsn_code: z.string(),
+    tax_rate_bps: z.number().int().min(0).max(10_000),
+    seller_gstin: z.string(),
+    place_of_supply: z.string(),
+    status: z.string(),
+    issued_at: z.string(),
+    lines: z.array(InvoiceLineSchema),
+  }),
+]);
+export type Invoice = z.infer<typeof InvoiceSchema>;
+
+/** Result of issuing — `issued: false` means an invoice already existed (idempotent). */
+export const IssueInvoiceResultSchema = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('not_sealed'), billing_period: BillingPeriodCodeSchema }),
+  z.object({
+    state: z.literal('issued'),
+    issued: z.boolean(),
+    billing_period: BillingPeriodCodeSchema,
+    invoice_id: z.string(),
+    invoice_number: z.string(),
+    currency_code: CurrencyCodeSchema,
+    fee_minor: MinorUnitsSchema,
+    tax_minor: MinorUnitsSchema,
+    total_minor: MinorUnitsSchema,
+  }),
+]);
+export type IssueInvoiceResult = z.infer<typeof IssueInvoiceResultSchema>;
+
 /** Result of sealing (metering) a period — `sealed: false` means it was already sealed (idempotent). */
 export const SealPeriodResultSchema = z.object({
   sealed: z.boolean(),

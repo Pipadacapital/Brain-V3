@@ -42,3 +42,24 @@ export function useBill(period: string | null) {
     staleTime: 5 * 60_000,
   });
 }
+
+/** useInvoice — the issued GST invoice for a period (fetched only when a period is selected). */
+export function useInvoice(period: string | null) {
+  return useQuery({
+    queryKey: [...BILLING_QUERY_KEY, 'invoice', period],
+    queryFn: () => billingApi.getInvoice(period as string),
+    enabled: !!period,
+    staleTime: 5 * 60_000,
+  });
+}
+
+/** useIssueInvoice — issue the GST invoice for a sealed period, then refresh the invoice read. */
+export function useIssueInvoice() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (period: string) => billingApi.issueInvoice(period),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: BILLING_QUERY_KEY });
+    },
+  });
+}

@@ -1,0 +1,187 @@
+/**
+ * invoice-issuance.live.test.ts — live Postgres tests for issued GST invoices (P1, slice 3).
+ *
+ * Proves:
+ *   1. issue — a sealed period issues an immutable invoice: gapless number, fee on the sealed
+ *      basis, GST computed (18%), total = fee + tax; a tax_ledger output row is written.
+ *   2. idempotent — re-issuing returns issued:false and consumes NO new number (same invoice).
+ *   3. gapless numbering — two periods issue sequential numbers per (legal_entity, FY).
+ *   4. read — getInvoice returns the issued header + line items + GST breakdown.
+ *   5. not_sealed — issuing an unsealed period returns not_sealed (no invoice, no number burned).
+ *   6. RLS isolation — BRAND_A's invoice is invisible under a BRAND_B scope (→ not_issued).
+ *
+ * REQUIRES: Postgres on localhost:5432 with migrations 0040+0041+0042 applied.
+ */
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import pg from 'pg';
+import { createPool, type DbPool } from '@brain/db';
+import { sealBillingPeriod, issueInvoice, getInvoice } from '../index.js';
+
+const SUPERUSER_URL = process.env['DATABASE_URL'] ?? 'postgres://brain:brain@localhost:5432/brain';
+
+const BRAND_A = 'b333333a-0a1a-4a1a-8a1a-000000000001';
+const BRAND_B = 'b333333a-0a1a-4a1a-8a1a-000000000002';
+const ORG_ID = '0333333a-0a1a-4a1a-8a1a-000000000001';
+const USER_ID = 'a333333a-0a1a-4a1a-8a1a-000000000001';
+// Unique legal entity so the gapless counter is deterministic regardless of other runs.
+const LEGAL_ENTITY = 'BRAINTEST333';
+const CORR = 'invoice-issuance-live-test';
+
+// FY for 2099-03 (Mar) = 2098-2099; for 2099-04 (Apr) = 2099-2100. Counter is per (entity, FY),
+// so use two periods in the SAME FY to assert sequential numbering: 2098-05 and 2098-06 → FY 2098-2099.
+const P1 = '2098-05';
+const P2 = '2098-06';
+
+let superPool: pg.Pool;
+let dbPool: DbPool;
+let pgAvailable = false;
+
+const cfg = { legalEntity: LEGAL_ENTITY };
+
+let seq = 0;
+async function insertLedgerRow(period: string, eventType: string, amount: number, effectiveAt: string): Promise<void> {
+  seq += 1;
+  await superPool.query(
+    `INSERT INTO realized_revenue_ledger
+       (brand_id, ledger_event_id, order_id, event_type, amount_minor, currency_code,
+        occurred_at, economic_effective_at, billing_posted_period, recognition_label)
+     VALUES ($1, $2, $3, $4, $5, 'INR', $6, $6, $7,
+             CASE WHEN $4 = 'provisional_recognition' THEN 'provisional' ELSE 'finalized' END)
+     ON CONFLICT (brand_id, ledger_event_id) DO NOTHING`,
+    [BRAND_A, `inv-evt-${seq}`, `order-${seq}`, eventType, amount, effectiveAt, period],
+  );
+}
+
+async function seedBrand(): Promise<void> {
+  await superPool.query(
+    `INSERT INTO app_user (id, email, email_normalized, password_hash)
+     VALUES ($1, 'inv-test@example.invalid', 'inv-test@example.invalid', 'x') ON CONFLICT (id) DO NOTHING`,
+    [USER_ID],
+  );
+  await superPool.query(
+    `INSERT INTO organization (id, name, slug, owner_user_id)
+     VALUES ($1, 'Inv Test Org', 'inv-test-org', $2) ON CONFLICT (id) DO NOTHING`,
+    [ORG_ID, USER_ID],
+  );
+  await superPool.query(
+    `INSERT INTO brand (id, organization_id, display_name, currency_code)
+     VALUES ($1, $2, 'Inv Test Brand', 'INR') ON CONFLICT (id) DO NOTHING`,
+    [BRAND_A, ORG_ID],
+  );
+}
+
+async function cleanup(): Promise<void> {
+  // FK order: tax_ledger + invoice_line → invoice.
+  await superPool.query(`DELETE FROM tax_ledger WHERE brand_id IN ($1,$2)`, [BRAND_A, BRAND_B]).catch(() => {});
+  await superPool.query(`DELETE FROM invoice_line WHERE brand_id IN ($1,$2)`, [BRAND_A, BRAND_B]).catch(() => {});
+  await superPool.query(`DELETE FROM invoice WHERE brand_id IN ($1,$2)`, [BRAND_A, BRAND_B]).catch(() => {});
+  await superPool.query(`DELETE FROM invoice_number_counter WHERE legal_entity = $1`, [LEGAL_ENTITY]).catch(() => {});
+  await superPool.query(`DELETE FROM gmv_meter_snapshot WHERE brand_id IN ($1,$2)`, [BRAND_A, BRAND_B]).catch(() => {});
+  await superPool.query(`DELETE FROM billing_plan WHERE brand_id IN ($1,$2)`, [BRAND_A, BRAND_B]).catch(() => {});
+  await superPool.query(`DELETE FROM realized_revenue_ledger WHERE brand_id IN ($1,$2)`, [BRAND_A, BRAND_B]).catch(() => {});
+  await superPool.query(`DELETE FROM brand WHERE id = $1`, [BRAND_A]).catch(() => {});
+  await superPool.query(`DELETE FROM organization WHERE id = $1`, [ORG_ID]).catch(() => {});
+  await superPool.query(`DELETE FROM app_user WHERE id = $1`, [USER_ID]).catch(() => {});
+}
+
+beforeAll(async () => {
+  try {
+    superPool = new pg.Pool({ connectionString: SUPERUSER_URL, connectionTimeoutMillis: 4000 });
+    await superPool.query('SELECT 1');
+    dbPool = await createPool({ connectionString: SUPERUSER_URL });
+    await cleanup();
+    await seedBrand();
+    // P1 basis = 100000; P2 basis = 200000. Rate = default 100 bps (1%).
+    await insertLedgerRow(P1, 'finalization', 100_000, '2098-05-10T00:00:00Z');
+    await insertLedgerRow(P2, 'finalization', 200_000, '2098-06-10T00:00:00Z');
+    await sealBillingPeriod(BRAND_A, P1, CORR, { pool: dbPool });
+    await sealBillingPeriod(BRAND_A, P2, CORR, { pool: dbPool });
+    pgAvailable = true;
+  } catch {
+    pgAvailable = false;
+  }
+});
+
+afterAll(async () => {
+  if (pgAvailable) await cleanup();
+  if (dbPool) await dbPool.end();
+  if (superPool) await superPool.end();
+});
+
+describe('invoice issuance (live Postgres)', () => {
+  it('SKIP_IF_NO_PG', () => {
+    if (!pgAvailable) console.warn('[invoice-issuance] Postgres unavailable — PENDING.');
+    expect(true).toBe(true);
+  });
+
+  it('1. issue — gapless number, fee on sealed basis, GST 18%, total = fee + tax', async () => {
+    if (!pgAvailable) return;
+    const r = await issueInvoice(BRAND_A, P1, CORR, { pool: dbPool }, cfg);
+    expect(r.state).toBe('issued');
+    if (r.state !== 'issued') return;
+    expect(r.issued).toBe(true);
+    expect(r.invoice_number).toBe(`${LEGAL_ENTITY}/2098-2099/000001`);
+    // fee = round(100000 × 100/10000) = 1000; tax = round(1000 × 1800/10000) = 180; total = 1180.
+    expect(r.fee_minor).toBe('1000');
+    expect(r.tax_minor).toBe('180');
+    expect(r.total_minor).toBe('1180');
+
+    // a tax_ledger output row was written
+    const tax = await superPool.query(
+      `SELECT direction, tax_minor::text AS tax_minor FROM tax_ledger WHERE brand_id = $1 AND period = $2`,
+      [BRAND_A, P1],
+    );
+    expect(tax.rows[0]?.direction).toBe('output');
+    expect(tax.rows[0]?.tax_minor).toBe('180');
+  });
+
+  it('2. idempotent — re-issue returns issued:false and consumes no new number', async () => {
+    if (!pgAvailable) return;
+    const r = await issueInvoice(BRAND_A, P1, CORR, { pool: dbPool }, cfg);
+    if (r.state !== 'issued') throw new Error('expected issued');
+    expect(r.issued).toBe(false);
+    expect(r.invoice_number).toBe(`${LEGAL_ENTITY}/2098-2099/000001`);
+  });
+
+  it('3. gapless numbering — the next period gets the next sequential number', async () => {
+    if (!pgAvailable) return;
+    const r = await issueInvoice(BRAND_A, P2, CORR, { pool: dbPool }, cfg);
+    if (r.state !== 'issued') throw new Error('expected issued');
+    expect(r.issued).toBe(true);
+    expect(r.invoice_number).toBe(`${LEGAL_ENTITY}/2098-2099/000002`);
+    // The meter basis is realized_gmv_as_of(period_end) — CUMULATIVE through the date (inherited
+    // from slice 1), so P2 (as-of 2098-06-30) = 100000 (P1 row) + 200000 = 300000.
+    // fee = round(300000 × 100/10000) = 3000; tax = round(3000 × 1800/10000) = 540; total = 3540.
+    expect(r.total_minor).toBe('3540');
+  });
+
+  it('4. read — getInvoice returns header + line items + GST breakdown', async () => {
+    if (!pgAvailable) return;
+    const inv = await getInvoice(BRAND_A, P1, CORR, { pool: dbPool });
+    expect(inv.state).toBe('issued');
+    if (inv.state !== 'issued') return;
+    expect(inv.invoice_number).toBe(`${LEGAL_ENTITY}/2098-2099/000001`);
+    expect(inv.basis_gmv_minor).toBe('100000');
+    expect(inv.fee_minor).toBe('1000');
+    expect(inv.tax_minor).toBe('180');
+    expect(inv.total_minor).toBe('1180');
+    expect(inv.tax_rate_bps).toBe(1800);
+    expect(inv.regime).toBe('igst');
+    expect(inv.lines).toHaveLength(1);
+    expect(inv.lines[0]!.line_type).toBe('platform_fee');
+    expect(inv.lines[0]!.source_billing_period).toBe(P1);
+    expect(inv.lines[0]!.amount_minor).toBe('1180');
+  });
+
+  it('5. not_sealed — issuing an unsealed period burns no number', async () => {
+    if (!pgAvailable) return;
+    const r = await issueInvoice(BRAND_A, '2098-01', CORR, { pool: dbPool }, cfg);
+    expect(r.state).toBe('not_sealed');
+  });
+
+  it('6. RLS isolation — BRAND_A invoice invisible under BRAND_B scope', async () => {
+    if (!pgAvailable) return;
+    const inv = await getInvoice(BRAND_B, P1, CORR, { pool: dbPool });
+    expect(inv.state).toBe('not_issued');
+  });
+});

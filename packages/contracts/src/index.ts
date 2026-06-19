@@ -392,3 +392,17 @@ export type {
   DqReconciliationCheck,
   DqCheck,
 } from './dq/index.js';
+
+// ── Identity control-plane read seam (P0-C — Customer 360) ────────────────────
+export {
+  Customer360ProfileSchema,
+  Customer360IdentifierSchema,
+  Customer360MergeSchema,
+  Customer360Schema,
+} from './api/identity.api.v1.js';
+export type {
+  Customer360Profile,
+  Customer360Identifier,
+  Customer360Merge,
+  Customer360,
+} from './api/identity.api.v1.js';

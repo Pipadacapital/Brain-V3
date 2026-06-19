@@ -30,6 +30,7 @@ import {
   OrderStatusMixSchema,
   DataQualitySummarySchema,
   AskBrainResultSchema,
+  Customer360Schema,
 } from '@brain/contracts';
 
 import type {
@@ -109,6 +110,7 @@ import type {
   AnalyticsChannelRoasResponse,
   AskBrainRequest,
   AskBrainResponse,
+  Customer360Response,
 } from './types';
 
 /** All BFF routes proxied through Next.js API routes → frontend-api module */
@@ -1551,5 +1553,18 @@ export const dashboardApi = {
       `/v1/dashboard/realized-revenue${qs}`,
     );
     return parseData(RevenueSnapshotSchema, env);
+  },
+};
+
+/**
+ * identityApi — identity control-plane reads (P0-C). Customer 360 is the first slice.
+ */
+export const identityApi = {
+  /** GET /api/v1/identity/customer?brain_id=<uuid> — resolved customer profile + links + merges. */
+  getCustomer360: async (brainId: string): Promise<Customer360Response> => {
+    const env = await bffFetch<BffEnvelope<unknown>>(
+      `/v1/identity/customer?brain_id=${encodeURIComponent(brainId)}`,
+    );
+    return parseData(Customer360Schema, env);
   },
 };

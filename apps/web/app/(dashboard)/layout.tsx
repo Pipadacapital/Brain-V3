@@ -38,6 +38,7 @@ import {
   ShieldCheck,
   Gauge,
   BrainCircuit,
+  Fingerprint,
 } from 'lucide-react';
 import { UserMenu } from '@/components/dashboard/user-menu';
 import { RequireSession } from '@/components/dashboard/require-session';
@@ -79,6 +80,12 @@ const NAV_SECTIONS: NavSection[] = [
       { href: '/analytics/journey', label: 'Journey', icon: Footprints },
       { href: '/analytics/attribution', label: 'Attribution', icon: Target },
       { href: '/analytics/conversion-feedback', label: 'Conversion Feedback', icon: Send },
+    ],
+  },
+  {
+    title: 'IDENTITY',
+    items: [
+      { href: '/identity/customer-360', label: 'Customer 360', icon: Fingerprint },
     ],
   },
   {

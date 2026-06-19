@@ -24,6 +24,7 @@ import argon2 from 'argon2';
 import type { Pool, PoolClient } from 'pg';
 
 import type { DbPool, DbClient, QueryContext } from '@brain/db';
+import { beginRlsTxn } from '@brain/db';
 import type { AuditWriter } from '@brain/audit';
 import type { NotificationService } from '../../../notification/service.js';
 
@@ -531,7 +532,11 @@ export class AuthService {
     const tokenHash = createHash('sha256').update(rawRefreshToken).digest('hex');
 
     // Use the raw pg.Pool (no GUC middleware) so we can control BEGIN/COMMIT explicitly.
-    // We don't know userId until after the SELECT FOR UPDATE — can't set GUC first.
+    // NOTE (feat-tenancy-runtime-brain-app): this path is NOT yet brain_app-ready. The session is
+    // found by TOKEN first (the credential), but user_session is RLS-scoped by app.current_user_id —
+    // which is unknown until the lookup resolves. Making it run under brain_app requires a SECURITY
+    // DEFINER session-by-token lookup (an auth primitive). Tracked as the auth-session milestone; the
+    // DSN flip is gated on it. Until then this runs as the connection role (superuser today).
     if (!this.rawPgPool) {
       throw new AuthError('CONFIGURATION_ERROR', 'Raw pg pool not provided — token rotation unavailable.', 500);
     }
@@ -932,7 +937,11 @@ export class AuthService {
     }
     const rawClient: PoolClient = await this.rawPgPool.connect();
     try {
-      await rawClient.query('BEGIN');
+      // brain_app + GUCs: workspace (membership_isolation) for the actor/target membership reads,
+      // and the user GUC = the SUSPENDED user (appUserId) because the session revoke below is
+      // user_session_isolation-scoped (app_user_id = app.current_user_id). RLS now guards these on
+      // top of the app-layer org WHERE clauses, so the app can run as a non-superuser.
+      await beginRlsTxn(rawClient, { correlationId, userId: appUserId, workspaceId: organizationId, brandId: brandId ?? undefined });
 
       // Step 1 (C-4): resolve actor's membership row from DB (not JWT — D-2).
       const actorResult = await rawClient.query<{
@@ -1041,7 +1050,9 @@ export class AuthService {
     }
     const rawClient: PoolClient = await this.rawPgPool.connect();
     try {
-      await rawClient.query('BEGIN');
+      // brain_app + workspace GUC (membership_isolation); user GUC = the reactivated user for
+      // symmetry with suspendUser (reactivate writes only app_user.status — no session revoke).
+      await beginRlsTxn(rawClient, { correlationId, userId: appUserId, workspaceId: organizationId, brandId: brandId ?? undefined });
 
       // Step 1: resolve actor's membership row (same authority check as suspend — D-2 / C-4).
       const actorResult = await rawClient.query<{

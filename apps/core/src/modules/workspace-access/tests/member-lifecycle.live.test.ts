@@ -72,8 +72,8 @@ describe('D-6: createInvite hierarchy bound (unit)', () => {
           membershipCallCount++;
           return {
             rows: [{
-              id: 'mem-001', organization_id: 'org-001', brand_id: null,
-              app_user_id: 'actor-001', role_code: 'brand_admin',
+              id: 'mem-001', organization_id: '0a000001-0000-4000-8000-000000000001', brand_id: null,
+              app_user_id: 'ac000001-0000-4000-8000-000000000001', role_code: 'brand_admin',
               created_at: new Date(), updated_at: new Date(),
             }],
           };
@@ -90,8 +90,8 @@ describe('D-6: createInvite hierarchy bound (unit)', () => {
       if (sql.includes('FROM membership')) {
         return {
           rows: [{
-            id: 'mem-001', organization_id: 'org-001', brand_id: null,
-            app_user_id: 'actor-001', role_code: 'brand_admin',
+            id: 'mem-001', organization_id: '0a000001-0000-4000-8000-000000000001', brand_id: null,
+            app_user_id: 'ac000001-0000-4000-8000-000000000001', role_code: 'brand_admin',
             created_at: new Date(), updated_at: new Date(),
           }],
         };
@@ -109,11 +109,11 @@ describe('D-6: createInvite hierarchy bound (unit)', () => {
 
     await expect(
       svc.createInvite({
-        organizationId: 'org-001',
+        organizationId: '0a000001-0000-4000-8000-000000000001',
         brandId: null,
         email: 'target@example.com',
         roleCode: 'brand_admin',
-        invitedByUserId: 'actor-001',
+        invitedByUserId: 'ac000001-0000-4000-8000-000000000001',
       }, 'corr-d6-unit'),
     ).rejects.toMatchObject({ code: 'FORBIDDEN', statusCode: 403 });
 
@@ -125,8 +125,8 @@ describe('D-6: createInvite hierarchy bound (unit)', () => {
       if (sql.includes('FROM membership')) {
         return {
           rows: [{
-            id: 'mem-001', organization_id: 'org-001', brand_id: null,
-            app_user_id: 'actor-001', role_code: 'brand_admin',
+            id: 'mem-001', organization_id: '0a000001-0000-4000-8000-000000000001', brand_id: null,
+            app_user_id: 'ac000001-0000-4000-8000-000000000001', role_code: 'brand_admin',
             created_at: new Date(), updated_at: new Date(),
           }],
         };
@@ -134,9 +134,9 @@ describe('D-6: createInvite hierarchy bound (unit)', () => {
       if (sql.includes('INSERT INTO invite')) {
         return {
           rows: [{
-            id: 'inv-001', organization_id: 'org-001', brand_id: null,
+            id: 'inv-001', organization_id: '0a000001-0000-4000-8000-000000000001', brand_id: null,
             email: 'mgr@example.com', role_code: 'manager',
-            token_hash: 'hash', invited_by_user_id: 'actor-001',
+            token_hash: 'hash', invited_by_user_id: 'ac000001-0000-4000-8000-000000000001',
             status: 'pending', expires_at: new Date(), accepted_at: null, created_at: new Date(),
           }],
         };
@@ -151,11 +151,11 @@ describe('D-6: createInvite hierarchy bound (unit)', () => {
 
     // brand_admin (idx 2) granting manager (idx 1) → 1 >= 2 is false → no FORBIDDEN
     await svc.createInvite({
-      organizationId: 'org-001',
+      organizationId: '0a000001-0000-4000-8000-000000000001',
       brandId: null,
       email: 'mgr@example.com',
       roleCode: 'manager',
-      invitedByUserId: 'actor-001',
+      invitedByUserId: 'ac000001-0000-4000-8000-000000000001',
     }, 'corr-d6-mgr').catch((err) => {
       if (err instanceof InviteError && err.code === 'FORBIDDEN') {
         throw new Error(`Unexpected FORBIDDEN for brand_admin granting manager: ${err.message}`);
@@ -181,7 +181,7 @@ describe('D-7: updateMemberRole hierarchy bound (unit)', () => {
           membershipCallCount++;
           if (membershipCallCount === 1) {
             // Requester is brand_admin
-            return { rows: [{ id: 'req-mem', organization_id: 'org-001', brand_id: null, role_code: 'brand_admin' }] };
+            return { rows: [{ id: 'req-mem', organization_id: '0a000001-0000-4000-8000-000000000001', brand_id: null, role_code: 'brand_admin' }] };
           }
         }
         return { rows: [] };
@@ -197,7 +197,7 @@ describe('D-7: updateMemberRole hierarchy bound (unit)', () => {
     );
 
     await expect(
-      svc.updateMemberRole('target-mem-id', 'brand_admin', 'actor-001', 'org-001', 'corr-d7'),
+      svc.updateMemberRole('target-mem-id', 'brand_admin', 'ac000001-0000-4000-8000-000000000001', '0a000001-0000-4000-8000-000000000001', 'corr-d7'),
     ).rejects.toMatchObject({ code: 'FORBIDDEN', statusCode: 403 });
 
     // ROLLBACK must be present before the throw (txn was open).
@@ -243,57 +243,57 @@ describe('D-8: suspendUser authority checks (unit)', () => {
 
   it('non-owner suspending owner → AuthError FORBIDDEN 403', async () => {
     const pool = makeRawPool(
-      { id: 'm1', organization_id: 'org-001', role_code: 'brand_admin' },
-      { id: 'm2', organization_id: 'org-001', app_user_id: 'target-001', role_code: 'owner' },
+      { id: 'm1', organization_id: '0a000001-0000-4000-8000-000000000001', role_code: 'brand_admin' },
+      { id: 'm2', organization_id: '0a000001-0000-4000-8000-000000000001', app_user_id: '7a000001-0000-4000-8000-000000000001', role_code: 'owner' },
     );
     const svc = new AuthService(
       {} as never, makeAudit() as never, makeNotification() as never,
       { jwtSigningSecret: 'test-secret' }, pool,
     );
     await expect(
-      svc.suspendUser('target-001', 'actor-001', 'org-001', null, 'corr-d8-owner'),
+      svc.suspendUser('7a000001-0000-4000-8000-000000000001', 'ac000001-0000-4000-8000-000000000001', '0a000001-0000-4000-8000-000000000001', null, 'corr-d8-owner'),
     ).rejects.toMatchObject({ code: 'FORBIDDEN', statusCode: 403 });
   });
 
   it('brand_admin suspending brand_admin (equal rank) → AuthError FORBIDDEN 403', async () => {
     const pool = makeRawPool(
-      { id: 'm1', organization_id: 'org-001', role_code: 'brand_admin' },
-      { id: 'm2', organization_id: 'org-001', app_user_id: 'target-001', role_code: 'brand_admin' },
+      { id: 'm1', organization_id: '0a000001-0000-4000-8000-000000000001', role_code: 'brand_admin' },
+      { id: 'm2', organization_id: '0a000001-0000-4000-8000-000000000001', app_user_id: '7a000001-0000-4000-8000-000000000001', role_code: 'brand_admin' },
     );
     const svc = new AuthService(
       {} as never, makeAudit() as never, makeNotification() as never,
       { jwtSigningSecret: 'test-secret' }, pool,
     );
     await expect(
-      svc.suspendUser('target-001', 'actor-001', 'org-001', null, 'corr-d8-equal'),
+      svc.suspendUser('7a000001-0000-4000-8000-000000000001', 'ac000001-0000-4000-8000-000000000001', '0a000001-0000-4000-8000-000000000001', null, 'corr-d8-equal'),
     ).rejects.toMatchObject({ code: 'FORBIDDEN', statusCode: 403 });
   });
 
   it('D-9: cross-org suspend → NOT_FOUND 404', async () => {
-    // Target returns organization_id = 'org-002' but we pass organizationId='org-001'
+    // Target returns organization_id = '0a000002-0000-4000-8000-000000000002' but we pass organizationId='0a000001-0000-4000-8000-000000000001'
     const pool = makeRawPool(
-      { id: 'm1', organization_id: 'org-001', role_code: 'owner' },
-      { id: 'm2', organization_id: 'org-002', app_user_id: 'target-001', role_code: 'manager' },
+      { id: 'm1', organization_id: '0a000001-0000-4000-8000-000000000001', role_code: 'owner' },
+      { id: 'm2', organization_id: '0a000002-0000-4000-8000-000000000002', app_user_id: '7a000001-0000-4000-8000-000000000001', role_code: 'manager' },
     );
     const svc = new AuthService(
       {} as never, makeAudit() as never, makeNotification() as never,
       { jwtSigningSecret: 'test-secret' }, pool,
     );
     await expect(
-      svc.suspendUser('target-001', 'actor-001', 'org-001', null, 'corr-d9-xorg'),
+      svc.suspendUser('7a000001-0000-4000-8000-000000000001', 'ac000001-0000-4000-8000-000000000001', '0a000001-0000-4000-8000-000000000001', null, 'corr-d9-xorg'),
     ).rejects.toMatchObject({ statusCode: 404 });
   });
 
   it('owner suspending manager → resolves with sessionsRevoked count', async () => {
     const pool = makeRawPool(
-      { id: 'm1', organization_id: 'org-001', role_code: 'owner' },
-      { id: 'm2', organization_id: 'org-001', app_user_id: 'target-001', role_code: 'manager' },
+      { id: 'm1', organization_id: '0a000001-0000-4000-8000-000000000001', role_code: 'owner' },
+      { id: 'm2', organization_id: '0a000001-0000-4000-8000-000000000001', app_user_id: '7a000001-0000-4000-8000-000000000001', role_code: 'manager' },
     );
     const svc = new AuthService(
       {} as never, makeAudit() as never, makeNotification() as never,
       { jwtSigningSecret: 'test-secret' }, pool,
     );
-    const result = await svc.suspendUser('target-001', 'actor-001', 'org-001', null, 'corr-d8-ok');
+    const result = await svc.suspendUser('7a000001-0000-4000-8000-000000000001', 'ac000001-0000-4000-8000-000000000001', '0a000001-0000-4000-8000-000000000001', null, 'corr-d8-ok');
     expect(result.sessionsRevoked).toBeGreaterThanOrEqual(0);
   });
 
@@ -306,9 +306,9 @@ describe('D-8: suspendUser authority checks (unit)', () => {
         if (sql.includes('FROM membership')) {
           membershipCallCount++;
           if (membershipCallCount === 1) {
-            return { rows: [{ id: 'm1', organization_id: 'org-H1', role_code: 'owner' }] };
+            return { rows: [{ id: 'm1', organization_id: '0a0000f1-0000-4000-8000-0000000000f1', role_code: 'owner' }] };
           }
-          return { rows: [{ id: 'm2', organization_id: 'org-H1', app_user_id: 'target-H1', role_code: 'manager' }] };
+          return { rows: [{ id: 'm2', organization_id: '0a0000f1-0000-4000-8000-0000000000f1', app_user_id: '7a0000f1-0000-4000-8000-0000000000f1', role_code: 'manager' }] };
         }
         if (sql.includes('UPDATE user_session') || sql.includes('SELECT COUNT')) {
           return { rows: [{ rowcount: '1' }] };
@@ -324,14 +324,14 @@ describe('D-8: suspendUser authority checks (unit)', () => {
       { jwtSigningSecret: 'test-secret' }, pool,
     );
 
-    await svc.suspendUser('target-H1', 'actor-H1', 'org-H1', null, 'corr-h1');
+    await svc.suspendUser('7a0000f1-0000-4000-8000-0000000000f1', 'ac0000f1-0000-4000-8000-0000000000f1', '0a0000f1-0000-4000-8000-0000000000f1', null, 'corr-h1');
 
     const auditCalls = (audit.append.mock.calls as unknown[][]).map(
       (args) => (args[0] as { brand_id: string; action: string }),
     );
     for (const call of auditCalls) {
-      expect(call.brand_id).toBe('org-H1');
-      expect(call.brand_id).not.toBe('target-H1');
+      expect(call.brand_id).toBe('0a0000f1-0000-4000-8000-0000000000f1');
+      expect(call.brand_id).not.toBe('7a0000f1-0000-4000-8000-0000000000f1');
     }
   });
 });
@@ -350,9 +350,9 @@ describe('D-1: reactivateUser is distinct from suspend (unit)', () => {
         if (sql.includes('FROM membership')) {
           membershipCallCount++;
           if (membershipCallCount === 1) {
-            return { rows: [{ id: 'm1', organization_id: 'org-001', role_code: 'owner' }] };
+            return { rows: [{ id: 'm1', organization_id: '0a000001-0000-4000-8000-000000000001', role_code: 'owner' }] };
           }
-          return { rows: [{ id: 'm2', organization_id: 'org-001', app_user_id: 'target-001', role_code: 'manager' }] };
+          return { rows: [{ id: 'm2', organization_id: '0a000001-0000-4000-8000-000000000001', app_user_id: '7a000001-0000-4000-8000-000000000001', role_code: 'manager' }] };
         }
         if (sql.includes('UPDATE app_user')) return { rows: [], rowCount: 1 };
         return { rows: [] };
@@ -365,7 +365,7 @@ describe('D-1: reactivateUser is distinct from suspend (unit)', () => {
       { jwtSigningSecret: 'test-secret' }, pool,
     );
 
-    await svc.reactivateUser('target-001', 'actor-001', 'org-001', null, 'corr-d1');
+    await svc.reactivateUser('7a000001-0000-4000-8000-000000000001', 'ac000001-0000-4000-8000-000000000001', '0a000001-0000-4000-8000-000000000001', null, 'corr-d1');
 
     // No user_session SQL must appear.
     const sessionSqls = queries.filter((s) => s.includes('user_session'));

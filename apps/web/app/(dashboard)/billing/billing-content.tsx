@@ -24,6 +24,7 @@ import {
   AlertTriangle,
   FileText,
   FileCheck2,
+  FileMinus,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -37,6 +38,7 @@ import {
   useBill,
   useInvoice,
   useIssueInvoice,
+  useIssueCreditNote,
 } from '@/lib/hooks/use-billing';
 import { formatMoneyDisplay } from '@/lib/format/money-display';
 import type { CurrencyCode } from '@brain/money';
@@ -100,6 +102,9 @@ function InvoiceSection({ period, currency }: { period: string; currency: string
     );
   }
 
+  const intraState = data.regime === 'cgst_sgst';
+  const hasCredits = data.credit_notes.length > 0;
+
   return (
     <div className="rounded-lg border p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -118,10 +123,23 @@ function InvoiceSection({ period, currency }: { period: string; currency: string
           <dt className="text-xs uppercase text-muted-foreground">Taxable (fee)</dt>
           <dd className="tabular-nums">{money(data.fee_minor, currency)}</dd>
         </div>
-        <div>
-          <dt className="text-xs uppercase text-muted-foreground">GST ({ratePct(data.tax_rate_bps)})</dt>
-          <dd className="tabular-nums">{money(data.tax_minor, currency)}</dd>
-        </div>
+        {intraState ? (
+          <>
+            <div>
+              <dt className="text-xs uppercase text-muted-foreground">CGST ({ratePct(data.tax_rate_bps / 2)})</dt>
+              <dd className="tabular-nums">{money(data.cgst_minor, currency)}</dd>
+            </div>
+            <div>
+              <dt className="text-xs uppercase text-muted-foreground">SGST ({ratePct(data.tax_rate_bps / 2)})</dt>
+              <dd className="tabular-nums">{money(data.sgst_minor, currency)}</dd>
+            </div>
+          </>
+        ) : (
+          <div>
+            <dt className="text-xs uppercase text-muted-foreground">IGST ({ratePct(data.tax_rate_bps)})</dt>
+            <dd className="tabular-nums">{money(data.igst_minor, currency)}</dd>
+          </div>
+        )}
         <div>
           <dt className="text-xs uppercase text-muted-foreground">Total</dt>
           <dd className="font-semibold tabular-nums">{money(data.total_minor, currency)}</dd>
@@ -129,11 +147,100 @@ function InvoiceSection({ period, currency }: { period: string; currency: string
         <div>
           <dt className="text-xs uppercase text-muted-foreground">SAC / regime</dt>
           <dd>
-            {data.sac_hsn_code} · {data.regime.toUpperCase()}
+            {data.sac_hsn_code} · {data.regime.toUpperCase().replace('_', '+')}
           </dd>
         </div>
+        <div>
+          <dt className="text-xs uppercase text-muted-foreground">Place of supply</dt>
+          <dd>{data.place_of_supply}</dd>
+        </div>
       </dl>
+
+      {hasCredits && (
+        <div className="mt-3 border-t pt-3">
+          <div className="text-xs font-medium uppercase text-muted-foreground">Credit notes</div>
+          <ul className="mt-1.5 space-y-1">
+            {data.credit_notes.map((cn) => (
+              <li key={cn.credit_note_id} className="flex flex-wrap items-baseline justify-between gap-2 text-sm">
+                <span className="inline-flex items-center gap-1.5">
+                  <FileMinus className="h-3.5 w-3.5 text-amber-600" aria-hidden="true" />
+                  <span className="font-medium">{cn.credit_note_number}</span>
+                  <span className="text-muted-foreground">— {cn.reason}</span>
+                </span>
+                <span className="tabular-nums text-amber-700">−{money(cn.total_minor, currency)}</span>
+              </li>
+            ))}
+          </ul>
+          <div className="mt-2 flex items-baseline justify-between border-t pt-2 text-sm">
+            <span className="font-medium">Net payable</span>
+            <span className="font-semibold tabular-nums">{money(data.net_total_minor, currency)}</span>
+          </div>
+        </div>
+      )}
+
+      <CreditNoteAction period={period} />
     </div>
+  );
+}
+
+/** Issue an immutable credit note against the period's invoice — full reversal with a stated reason. */
+function CreditNoteAction({ period }: { period: string }) {
+  const credit = useIssueCreditNote();
+  const [open, setOpen] = React.useState(false);
+  const [reason, setReason] = React.useState('');
+
+  if (!open) {
+    return (
+      <div className="mt-3 border-t pt-3">
+        <Button variant="outline" size="sm" onClick={() => setOpen(true)}>
+          <FileMinus className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
+          Issue credit note
+        </Button>
+      </div>
+    );
+  }
+
+  return (
+    <form
+      className="mt-3 space-y-2 border-t pt-3"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (!reason.trim()) return;
+        credit.mutate(
+          { period, reason: reason.trim() },
+          { onSuccess: () => { setOpen(false); setReason(''); } },
+        );
+      }}
+    >
+      <label htmlFor="cn-reason" className="block text-xs font-medium uppercase text-muted-foreground">
+        Reason for credit (full reversal)
+      </label>
+      <div className="flex flex-wrap gap-2">
+        <Input
+          id="cn-reason"
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          placeholder="e.g. billing correction — duplicate charge"
+          className="max-w-md"
+        />
+        <Button type="submit" size="sm" disabled={credit.isPending || !reason.trim()}>
+          {credit.isPending ? 'Issuing…' : 'Confirm'}
+        </Button>
+        <Button type="button" variant="ghost" size="sm" onClick={() => setOpen(false)}>
+          Cancel
+        </Button>
+      </div>
+      {credit.isError && (
+        <p className="text-sm text-destructive" role="alert">
+          Could not issue the credit note. It may exceed the invoice total.
+        </p>
+      )}
+      {credit.data?.state === 'rejected' && (
+        <p className="text-sm text-destructive" role="alert">
+          Rejected: {credit.data.reason.replace(/_/g, ' ')}.
+        </p>
+      )}
+    </form>
   );
 }
 

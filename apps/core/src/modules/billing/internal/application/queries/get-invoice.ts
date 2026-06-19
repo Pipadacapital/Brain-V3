@@ -43,6 +43,10 @@ export interface Invoice {
   tax_minor: string;
   total_minor: string;
   regime: string;
+  /** GST split (bigint-minor strings) — cgst+sgst for intra-state, igst for inter-state. */
+  cgst_minor: string;
+  sgst_minor: string;
+  igst_minor: string;
   sac_hsn_code: string;
   tax_rate_bps: number;
   seller_gstin: string;
@@ -50,6 +54,24 @@ export interface Invoice {
   status: string;
   issued_at: string;
   lines: InvoiceLine[];
+  credit_notes: CreditNote[];
+  /** Invoice total minus the sum of credit notes (bigint-minor string). */
+  net_total_minor: string;
+}
+
+/** An issued credit note that corrects this invoice (immutable). Magnitudes are positive. */
+export interface CreditNote {
+  credit_note_id: string;
+  credit_note_number: string;
+  reason: string;
+  regime: string;
+  taxable_minor: string;
+  tax_minor: string;
+  total_minor: string;
+  cgst_minor: string;
+  sgst_minor: string;
+  igst_minor: string;
+  issued_at: string;
 }
 
 export type InvoiceResult =
@@ -85,7 +107,14 @@ export async function getInvoice(
       fee_minor: string;
       tax_minor: string;
       total_minor: string;
-      tax: { regime?: string; sac_hsn_code?: string; rate_bps?: number };
+      tax: {
+        regime?: string;
+        sac_hsn_code?: string;
+        rate_bps?: number;
+        cgst_minor?: number | string;
+        sgst_minor?: number | string;
+        igst_minor?: number | string;
+      };
       seller_gstin: string;
       place_of_supply: string;
       status: string;
@@ -131,6 +160,31 @@ export async function getInvoice(
       [inv.invoice_id, brandId],
     );
 
+    // Credit notes correcting this invoice (immutable; positive magnitudes).
+    const cnRes = await client.query<{
+      credit_note_id: string;
+      credit_note_number: string;
+      reason: string;
+      regime: string;
+      taxable_minor: string;
+      tax_minor: string;
+      total_minor: string;
+      tax: { cgst_minor?: number | string; sgst_minor?: number | string; igst_minor?: number | string };
+      issued_at: Date;
+    }>(
+      ctx,
+      `SELECT credit_note_id, credit_note_number, reason, regime,
+              taxable_minor::text AS taxable_minor, tax_minor::text AS tax_minor,
+              total_minor::text AS total_minor, tax, issued_at
+         FROM credit_note
+        WHERE invoice_id = $1 AND brand_id = $2
+        ORDER BY issued_at ASC`,
+      [inv.invoice_id, brandId],
+    );
+
+    const creditedMinor = cnRes.rows.reduce((acc, c) => acc + BigInt(c.total_minor), 0n);
+    const netTotalMinor = BigInt(inv.total_minor) - creditedMinor;
+
     return {
       state: 'issued',
       invoice_id: inv.invoice_id,
@@ -145,12 +199,29 @@ export async function getInvoice(
       tax_minor: inv.tax_minor,
       total_minor: inv.total_minor,
       regime: inv.tax?.regime ?? 'igst',
+      cgst_minor: String(inv.tax?.cgst_minor ?? '0'),
+      sgst_minor: String(inv.tax?.sgst_minor ?? '0'),
+      igst_minor: String(inv.tax?.igst_minor ?? inv.tax_minor),
       sac_hsn_code: inv.tax?.sac_hsn_code ?? '',
       tax_rate_bps: inv.tax?.rate_bps ?? 0,
       seller_gstin: inv.seller_gstin,
       place_of_supply: inv.place_of_supply,
       status: inv.status,
       issued_at: toIso(inv.issued_at),
+      net_total_minor: netTotalMinor.toString(),
+      credit_notes: cnRes.rows.map((c) => ({
+        credit_note_id: c.credit_note_id,
+        credit_note_number: c.credit_note_number,
+        reason: c.reason,
+        regime: c.regime,
+        taxable_minor: c.taxable_minor,
+        tax_minor: c.tax_minor,
+        total_minor: c.total_minor,
+        cgst_minor: String(c.tax?.cgst_minor ?? '0'),
+        sgst_minor: String(c.tax?.sgst_minor ?? '0'),
+        igst_minor: String(c.tax?.igst_minor ?? '0'),
+        issued_at: toIso(c.issued_at),
+      })),
       lines: lineRes.rows.map((l) => ({
         line_no: l.line_no,
         line_type: l.line_type,

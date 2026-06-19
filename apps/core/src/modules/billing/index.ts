@@ -26,5 +26,7 @@ export type {
 } from './internal/application/queries/get-inspectable-bill.js';
 export { issueInvoice } from './internal/application/issue-invoice.js';
 export type { IssueInvoiceResult } from './internal/application/issue-invoice.js';
+export { issueCreditNote } from './internal/application/issue-credit-note.js';
+export type { IssueCreditNoteResult } from './internal/application/issue-credit-note.js';
 export { getInvoice } from './internal/application/queries/get-invoice.js';
-export type { InvoiceResult, Invoice, InvoiceLine } from './internal/application/queries/get-invoice.js';
+export type { InvoiceResult, Invoice, InvoiceLine, CreditNote } from './internal/application/queries/get-invoice.js';

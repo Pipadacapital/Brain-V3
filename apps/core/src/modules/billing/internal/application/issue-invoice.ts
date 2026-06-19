@@ -14,6 +14,7 @@ import type { DbPool, QueryContext } from '@brain/db';
 import { roundToMinorBankers } from '@brain/money';
 import { getInspectableBill } from './queries/get-inspectable-bill.js';
 import { getInvoiceConfig, financialYear, type InvoiceConfig } from './invoice-config.js';
+import { computeGstBreakdown, stateCode } from './gst.js';
 
 export type IssueInvoiceResult =
   | { state: 'not_sealed'; billing_period: string }
@@ -52,6 +53,8 @@ export async function issueInvoice(
   const feeMinor = BigInt(bill.fee_minor);
   // GST on the fee — banker's rounding (D-7). value in 1/10000 minor units.
   const { minor: taxMinor } = roundToMinorBankers(feeMinor * BigInt(cfg.gstRateBps), 10_000n);
+  // Regime + CGST/SGST/IGST split from seller state (GSTIN) vs buyer place of supply.
+  const gst = computeGstBreakdown(taxMinor, stateCode(cfg.sellerGstin), stateCode(cfg.placeOfSupply));
 
   const ctx: QueryContext = { brandId, correlationId };
   const client = await deps.pool.connect();
@@ -60,7 +63,8 @@ export async function issueInvoice(
       ctx,
       `SELECT issue_invoice(
          $1::uuid, $2::char(7), $3::text, $4::text, $5::text, $6::text,
-         $7::int, $8::bigint, $9::text, $10::int, $11::bigint, $12::text, $13::text
+         $7::int, $8::bigint, $9::text, $10::int, $11::bigint, $12::text, $13::text,
+         $14::bigint, $15::bigint, $16::bigint
        ) AS issue_invoice`,
       [
         brandId,
@@ -74,8 +78,11 @@ export async function issueInvoice(
         cfg.sac,
         cfg.gstRateBps,
         taxMinor.toString(),
-        cfg.regime,
+        gst.regime,
         cfg.metricVersion,
+        gst.cgst_minor.toString(),
+        gst.sgst_minor.toString(),
+        gst.igst_minor.toString(),
       ],
     );
 

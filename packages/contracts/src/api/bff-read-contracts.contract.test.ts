@@ -490,7 +490,10 @@ describe('Invoice (#17 — issued GST invoice)', () => {
     fee_minor: '1000',
     tax_minor: '180',
     total_minor: '1180',
-    regime: 'igst',
+    regime: 'cgst_sgst',
+    cgst_minor: '90',
+    sgst_minor: '90',
+    igst_minor: '0',
     sac_hsn_code: '998314',
     tax_rate_bps: 1800,
     seller_gstin: '29AAAAA0000A1Z5',
@@ -513,6 +516,22 @@ describe('Invoice (#17 — issued GST invoice)', () => {
         amount_minor: '1180',
       },
     ],
+    credit_notes: [
+      {
+        credit_note_id: '22222222-2222-4222-8222-222222222222',
+        credit_note_number: 'BRAIN/2098-2099/CN/000001',
+        reason: 'billing correction',
+        regime: 'cgst_sgst',
+        taxable_minor: '1000',
+        tax_minor: '180',
+        total_minor: '1180',
+        cgst_minor: '90',
+        sgst_minor: '90',
+        igst_minor: '0',
+        issued_at: '2098-06-02T00:00:00.000Z',
+      },
+    ],
+    net_total_minor: '0',
   };
   it('round-trips issued + not_issued', () => {
     expect(InvoiceSchema.parse(issued)).toEqual(issued);

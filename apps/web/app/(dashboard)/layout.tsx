@@ -42,6 +42,7 @@ import {
   Lock,
   GitMerge,
   CreditCard,
+  Lightbulb,
 } from 'lucide-react';
 import { UserMenu } from '@/components/dashboard/user-menu';
 import { RequireSession } from '@/components/dashboard/require-session';
@@ -68,6 +69,7 @@ const NAV_SECTIONS: NavSection[] = [
     title: 'OVERVIEW',
     items: [
       { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
+      { href: '/recommendations', label: 'Recommendations', icon: Lightbulb },
       { href: '/ask', label: 'Ask Brain', icon: BrainCircuit },
     ],
   },

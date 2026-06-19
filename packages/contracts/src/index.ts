@@ -438,3 +438,17 @@ export type {
   Invoice,
   IssueInvoiceResult,
 } from './api/billing.api.v1.js';
+export {
+  ConfidenceSchema,
+  RecommendationEvidenceSchema,
+  RecommendationSchema,
+  RecommendationsSchema,
+  GenerateRecommendationsResultSchema,
+} from './api/recommendation.api.v1.js';
+export type {
+  Confidence,
+  RecommendationEvidence,
+  Recommendation,
+  Recommendations,
+  GenerateRecommendationsResult,
+} from './api/recommendation.api.v1.js';

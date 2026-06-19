@@ -52,6 +52,9 @@ export type {
   Invoice as InvoiceResponse,
   InvoiceLine,
   IssueInvoiceResult as IssueInvoiceResultResponse,
+  Recommendations as RecommendationsResponse,
+  Recommendation,
+  GenerateRecommendationsResult as GenerateRecommendationsResultResponse,
 } from '@brain/contracts';
 
 // Local import for the names referenced WITHIN this file (re-exports above are not in local scope).

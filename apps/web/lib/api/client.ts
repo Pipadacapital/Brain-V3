@@ -39,6 +39,8 @@ import {
   BillingPeriodsSchema,
   SealPeriodResultSchema,
   InspectableBillSchema,
+  InvoiceSchema,
+  IssueInvoiceResultSchema,
 } from '@brain/contracts';
 
 import type {
@@ -127,6 +129,8 @@ import type {
   BillingPeriodsResponse,
   SealPeriodResultResponse,
   InspectableBillResponse,
+  InvoiceResponse,
+  IssueInvoiceResultResponse,
 } from './types';
 
 /** All BFF routes proxied through Next.js API routes → frontend-api module */
@@ -1653,5 +1657,22 @@ export const billingApi = {
       `/v1/billing/bill?period=${encodeURIComponent(period)}`,
     );
     return parseData(InspectableBillSchema, env);
+  },
+
+  /** GET /api/v1/billing/invoice?period=YYYY-MM — the issued GST invoice for a period. */
+  getInvoice: async (period: string): Promise<InvoiceResponse> => {
+    const env = await bffFetch<BffEnvelope<unknown>>(
+      `/v1/billing/invoice?period=${encodeURIComponent(period)}`,
+    );
+    return parseData(InvoiceSchema, env);
+  },
+
+  /** POST /api/v1/billing/invoice/issue — issue the GST invoice for a sealed period (idempotent). */
+  issueInvoice: async (period: string): Promise<IssueInvoiceResultResponse> => {
+    const env = await bffFetch<BffEnvelope<unknown>>('/v1/billing/invoice/issue', {
+      method: 'POST',
+      body: JSON.stringify({ period }),
+    });
+    return parseData(IssueInvoiceResultSchema, env);
   },
 };

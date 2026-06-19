@@ -23,6 +23,7 @@ import {
   FileClock,
   AlertTriangle,
   FileText,
+  FileCheck2,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -30,7 +31,13 @@ import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
 import { EmptyState } from '@/components/ui/empty-state';
-import { useBillingPeriods, useSealPeriod, useBill } from '@/lib/hooks/use-billing';
+import {
+  useBillingPeriods,
+  useSealPeriod,
+  useBill,
+  useInvoice,
+  useIssueInvoice,
+} from '@/lib/hooks/use-billing';
 import { formatMoneyDisplay } from '@/lib/format/money-display';
 import type { CurrencyCode } from '@brain/money';
 
@@ -56,6 +63,78 @@ function ratePct(bps: number): string {
 /** Human label for a ledger event_type (the composition line). */
 function eventLabel(t: string): string {
   return t.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+/** The issued GST invoice for a period — issue button when not issued, else the immutable doc. */
+function InvoiceSection({ period, currency }: { period: string; currency: string }) {
+  const { data, isLoading, error, refetch } = useInvoice(period);
+  const issue = useIssueInvoice();
+
+  if (isLoading) return <Skeleton className="h-10 w-full" />;
+  if (error) return <ErrorCard error={error} retry={() => void refetch()} />;
+  if (!data) return null;
+
+  if (data.state === 'not_issued') {
+    return (
+      <div className="rounded-lg border border-dashed p-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="text-sm text-muted-foreground">
+            No invoice issued for {period} yet. Issuing assigns a gapless number and locks the
+            figures (immutable).
+          </div>
+          <Button
+            size="sm"
+            disabled={issue.isPending}
+            onClick={() => issue.mutate(period)}
+          >
+            <FileCheck2 className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
+            {issue.isPending ? 'Issuing…' : 'Issue invoice'}
+          </Button>
+        </div>
+        {issue.isError && (
+          <div aria-live="polite" className="mt-2 text-sm text-destructive">
+            Could not issue the invoice. The period must be sealed first.
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-lg border p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="inline-flex items-center gap-2">
+          <FileCheck2 className="h-4 w-4 text-emerald-600" aria-hidden="true" />
+          <span className="font-medium">Invoice {data.invoice_number}</span>
+          <span className="text-xs text-muted-foreground">
+            issued {new Date(data.issued_at).toLocaleDateString()}
+          </span>
+        </div>
+        <span className="text-xs text-muted-foreground">GSTIN {data.seller_gstin}</span>
+      </div>
+
+      <dl className="mt-3 grid grid-cols-2 gap-x-6 gap-y-1.5 text-sm sm:grid-cols-4">
+        <div>
+          <dt className="text-xs uppercase text-muted-foreground">Taxable (fee)</dt>
+          <dd className="tabular-nums">{money(data.fee_minor, currency)}</dd>
+        </div>
+        <div>
+          <dt className="text-xs uppercase text-muted-foreground">GST ({ratePct(data.tax_rate_bps)})</dt>
+          <dd className="tabular-nums">{money(data.tax_minor, currency)}</dd>
+        </div>
+        <div>
+          <dt className="text-xs uppercase text-muted-foreground">Total</dt>
+          <dd className="font-semibold tabular-nums">{money(data.total_minor, currency)}</dd>
+        </div>
+        <div>
+          <dt className="text-xs uppercase text-muted-foreground">SAC / regime</dt>
+          <dd>
+            {data.sac_hsn_code} · {data.regime.toUpperCase()}
+          </dd>
+        </div>
+      </dl>
+    </div>
+  );
 }
 
 /** The inspectable bill for one sealed period — basis → rate → fee, with composition + reconcile. */
@@ -164,6 +243,9 @@ function BillDetail({ period }: { period: string }) {
           </span>
         </div>
       )}
+
+      {/* Issued invoice (slice 3) */}
+      <InvoiceSection period={period} currency={c} />
     </div>
   );
 }

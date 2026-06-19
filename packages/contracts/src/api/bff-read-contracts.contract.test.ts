@@ -30,6 +30,8 @@ import {
   KpiSummarySchema,
   BillingPeriodsSchema,
   InspectableBillSchema,
+  InvoiceSchema,
+  IssueInvoiceResultSchema,
   AttributionByChannelSchema,
   AttributionReconciliationSchema,
   ChannelRoasSchema,
@@ -470,5 +472,87 @@ describe('InspectableBill (#16 — fee derivation)', () => {
     const r = InspectableBillSchema.safeParse(drifted);
     expect(r.success).toBe(false);
     expect(firstIssuePath(r)).toBe('reconciliation.reconciles');
+  });
+});
+
+describe('Invoice (#17 — issued GST invoice)', () => {
+  const issued = {
+    state: 'issued',
+    invoice_id: '11111111-1111-4111-8111-111111111111',
+    invoice_number: 'BRAIN/2098-2099/000001',
+    billing_period: '2098-05',
+    legal_entity: 'BRAIN',
+    fy: '2098-2099',
+    currency_code: 'INR',
+    basis_gmv_minor: '100000',
+    rate_bps: 100,
+    fee_minor: '1000',
+    tax_minor: '180',
+    total_minor: '1180',
+    regime: 'igst',
+    sac_hsn_code: '998314',
+    tax_rate_bps: 1800,
+    seller_gstin: '29AAAAA0000A1Z5',
+    place_of_supply: '29-Karnataka',
+    status: 'issued',
+    issued_at: '2098-06-01T00:00:00.000Z',
+    lines: [
+      {
+        line_no: 1,
+        line_type: 'platform_fee',
+        description: 'Brain platform fee on realized GMV',
+        basis_gmv_minor: '100000',
+        rate_bps: 100,
+        metric_definition_version: 'realized_gmv_as_of/v1',
+        source_billing_period: '2098-05',
+        sac_hsn_code: '998314',
+        taxable_minor: '1000',
+        tax_rate_bps: 1800,
+        tax_minor: '180',
+        amount_minor: '1180',
+      },
+    ],
+  };
+  it('round-trips issued + not_issued', () => {
+    expect(InvoiceSchema.parse(issued)).toEqual(issued);
+    const notIssued = { state: 'not_issued', billing_period: '2098-05' };
+    expect(InvoiceSchema.parse(notIssued)).toEqual(notIssued);
+  });
+  it('REJECTS a float total_minor — error path names total_minor', () => {
+    const drifted = { ...issued, total_minor: '11.80' };
+    const r = InvoiceSchema.safeParse(drifted);
+    expect(r.success).toBe(false);
+    expect(firstIssuePath(r)).toBe('total_minor');
+  });
+  it('REJECTS a number-typed line amount (float drift class)', () => {
+    const drifted = { ...issued, lines: [{ ...issued.lines[0], amount_minor: 1180 }] };
+    const r = InvoiceSchema.safeParse(drifted);
+    expect(r.success).toBe(false);
+    expect(firstIssuePath(r)).toBe('lines.0.amount_minor');
+  });
+});
+
+describe('IssueInvoiceResult (#18)', () => {
+  const issued = {
+    state: 'issued',
+    issued: true,
+    billing_period: '2098-05',
+    invoice_id: '11111111-1111-4111-8111-111111111111',
+    invoice_number: 'BRAIN/2098-2099/000001',
+    currency_code: 'INR',
+    fee_minor: '1000',
+    tax_minor: '180',
+    total_minor: '1180',
+  };
+  it('round-trips issued + not_sealed', () => {
+    expect(IssueInvoiceResultSchema.parse(issued)).toEqual(issued);
+    const notSealed = { state: 'not_sealed', billing_period: '2098-01' };
+    expect(IssueInvoiceResultSchema.parse(notSealed)).toEqual(notSealed);
+  });
+  it('REJECTS a float fee_minor — error path names fee_minor', () => {
+    const drifted = { ...issued, fee_minor: '10.00' };
+    const r = IssueInvoiceResultSchema.safeParse(drifted);
+    expect(r.success).toBe(false);
+    expect(firstIssuePath(r)).toBe('fee_minor');
   });
 });

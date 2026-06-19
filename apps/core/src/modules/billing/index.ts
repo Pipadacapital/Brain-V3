@@ -15,3 +15,12 @@ export type {
   BillingPeriods,
   BillingPeriod,
 } from './internal/application/queries/get-billing-periods.js';
+export {
+  getInspectableBill,
+  DEFAULT_RATE_BPS,
+} from './internal/application/queries/get-inspectable-bill.js';
+export type {
+  InspectableBillResult,
+  InspectableBill,
+  BillLine,
+} from './internal/application/queries/get-inspectable-bill.js';

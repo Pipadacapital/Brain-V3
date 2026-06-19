@@ -47,6 +47,8 @@ export type {
   BillingPeriods as BillingPeriodsResponse,
   BillingPeriod,
   SealPeriodResult as SealPeriodResultResponse,
+  InspectableBill as InspectableBillResponse,
+  BillLine,
 } from '@brain/contracts';
 
 // Local import for the names referenced WITHIN this file (re-exports above are not in local scope).

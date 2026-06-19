@@ -29,6 +29,7 @@ import {
   RevenueSnapshotSchema,
   KpiSummarySchema,
   BillingPeriodsSchema,
+  InspectableBillSchema,
   AttributionByChannelSchema,
   AttributionReconciliationSchema,
   ChannelRoasSchema,
@@ -417,5 +418,57 @@ describe('BillingPeriods (#15 — realized-GMV meter)', () => {
     const drifted = { ...hasData, periods: [{ ...hasData.periods[0], ...renamed }] };
     const r = BillingPeriodsSchema.safeParse(drifted);
     expect(r.success).toBe(false);
+  });
+});
+
+describe('InspectableBill (#16 — fee derivation)', () => {
+  const billed = {
+    state: 'billed',
+    billing_period: '2099-03',
+    currency_code: 'INR',
+    basis: {
+      metered_gmv_minor: '80000',
+      as_of_date: '2099-03-31',
+      ledger_row_count: 3,
+      sealed_at: '2099-04-01T00:00:00.000Z',
+    },
+    rate: { rate_bps: 150, source: 'plan' },
+    fee_minor: '1200',
+    rounding_adjustment_minor: '0',
+    lines: [
+      { event_type: 'finalization', amount_minor: '100000' },
+      { event_type: 'refund', amount_minor: '-20000' }, // honest negative
+    ],
+    reconciliation: {
+      sealed_basis_minor: '80000',
+      live_composition_minor: '80000',
+      reconciles: true,
+      drift_minor: '0',
+    },
+  };
+  it('round-trips billed + not_sealed', () => {
+    expect(InspectableBillSchema.parse(billed)).toEqual(billed);
+    const notSealed = { state: 'not_sealed', billing_period: '2099-01' };
+    expect(InspectableBillSchema.parse(notSealed)).toEqual(notSealed);
+  });
+  it('REJECTS a float fee_minor — error path names fee_minor', () => {
+    const drifted = { ...billed, fee_minor: '12.00' };
+    const r = InspectableBillSchema.safeParse(drifted);
+    expect(r.success).toBe(false);
+    expect(firstIssuePath(r)).toBe('fee_minor');
+  });
+  it('REJECTS a number-typed line amount (float drift class)', () => {
+    const drifted = { ...billed, lines: [{ event_type: 'finalization', amount_minor: 100000 }] };
+    const r = InspectableBillSchema.safeParse(drifted);
+    expect(r.success).toBe(false);
+    expect(firstIssuePath(r)).toBe('lines.0.amount_minor');
+  });
+  it('REJECTS a removed reconciliation field — error path names reconciliation.reconciles', () => {
+    const recon = { ...billed.reconciliation } as Record<string, unknown>;
+    delete recon['reconciles'];
+    const drifted = { ...billed, reconciliation: recon };
+    const r = InspectableBillSchema.safeParse(drifted);
+    expect(r.success).toBe(false);
+    expect(firstIssuePath(r)).toBe('reconciliation.reconciles');
   });
 });

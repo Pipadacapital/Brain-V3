@@ -20,6 +20,16 @@ export const RecommendationEvidenceSchema = z.record(
 );
 export type RecommendationEvidence = z.infer<typeof RecommendationEvidenceSchema>;
 
+/** The learning loop's measured effectiveness: the detector's headline metric then-at-raise vs now. */
+export const RecommendationOutcomeSchema = z.object({
+  metric: z.string(),
+  then: z.number(),
+  now: z.number(),
+  delta: z.number(),
+  improved: z.boolean(),
+});
+export type RecommendationOutcome = z.infer<typeof RecommendationOutcomeSchema>;
+
 export const RecommendationSchema = z.object({
   recommendation_id: z.string(),
   detector: z.string(),
@@ -31,6 +41,7 @@ export const RecommendationSchema = z.object({
   summary: z.string(),
   recommended_action: z.string(),
   evidence: RecommendationEvidenceSchema,
+  outcome: RecommendationOutcomeSchema.nullable(),
   created_at: z.string(),
 });
 export type Recommendation = z.infer<typeof RecommendationSchema>;

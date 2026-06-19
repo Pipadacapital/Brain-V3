@@ -15,6 +15,15 @@ function toIso(v: unknown): string {
 /** Detector evidence — loosely typed (varies by detector); matches the @brain/contracts shape. */
 export type RecommendationEvidence = Record<string, string | number | boolean>;
 
+/** Measured effectiveness (the learning loop): the detector's headline metric then vs now. */
+export interface RecommendationOutcome {
+  metric: string;
+  then: number;
+  now: number;
+  delta: number;
+  improved: boolean;
+}
+
 export interface Recommendation {
   recommendation_id: string;
   detector: string;
@@ -26,6 +35,8 @@ export interface Recommendation {
   summary: string;
   recommended_action: string;
   evidence: RecommendationEvidence;
+  /** Latest measured outcome, or null if not yet measured. */
+  outcome: RecommendationOutcome | null;
   created_at: string;
 }
 
@@ -58,13 +69,17 @@ export async function getRecommendations(
         recommended_action?: string;
         evidence?: RecommendationEvidence;
       };
+      outcome: RecommendationOutcome | null;
       created_at: Date;
     }>(
       ctx,
-      `SELECT recommendation_id, detector, kind, confidence, priority, status, payload, created_at
-         FROM recommendation
-        WHERE brand_id = $1 AND status = 'open'
-        ORDER BY priority DESC, created_at DESC`,
+      `SELECT r.recommendation_id, r.detector, r.kind, r.confidence, r.priority, r.status,
+              r.payload, r.created_at, o.measured AS outcome
+         FROM recommendation r
+         LEFT JOIN recommendation_outcome o
+           ON o.recommendation_id = r.recommendation_id AND o.measurement_window = 'latest'
+        WHERE r.brand_id = $1 AND r.status = 'open'
+        ORDER BY r.priority DESC, r.created_at DESC`,
       [brandId],
     );
 
@@ -85,6 +100,7 @@ export async function getRecommendations(
         summary: r.payload?.summary ?? '',
         recommended_action: r.payload?.recommended_action ?? '',
         evidence: r.payload?.evidence ?? {},
+        outcome: r.outcome ?? null,
         created_at: toIso(r.created_at),
       })),
     };

@@ -441,6 +441,7 @@ export type {
 export {
   ConfidenceSchema,
   RecommendationEvidenceSchema,
+  RecommendationOutcomeSchema,
   RecommendationSchema,
   RecommendationsSchema,
   GenerateRecommendationsResultSchema,
@@ -448,6 +449,7 @@ export {
 export type {
   Confidence,
   RecommendationEvidence,
+  RecommendationOutcome,
   Recommendation,
   Recommendations,
   GenerateRecommendationsResult,

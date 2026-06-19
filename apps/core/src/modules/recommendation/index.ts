@@ -10,9 +10,12 @@
  */
 export { generateRecommendations } from './internal/application/generate-recommendations.js';
 export type { GenerateResult } from './internal/application/generate-recommendations.js';
+export { measureRecommendationOutcomes } from './internal/application/measure-recommendation-outcomes.js';
+export type { MeasureResult } from './internal/application/measure-recommendation-outcomes.js';
 export { getRecommendations } from './internal/application/queries/get-recommendations.js';
 export type {
   Recommendations,
   Recommendation,
   RecommendationEvidence,
+  RecommendationOutcome,
 } from './internal/application/queries/get-recommendations.js';

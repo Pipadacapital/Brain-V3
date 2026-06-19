@@ -272,6 +272,20 @@ export class AuthService {
       ctx,
     );
 
+    // DEV CONVENIENCE: local dev has no mail delivery, so a fresh account would be stuck behind
+    // the email-verification gate (connectors and other actions require a verified email). Outside
+    // production, mark the email verified on registration so dev/test accounts are usable
+    // immediately. NEVER in production — real users must verify via the emailed token.
+    let emailVerifiedAt = user.emailVerifiedAt;
+    if (process.env['NODE_ENV'] !== 'production') {
+      emailVerifiedAt = new Date();
+      await userRepo.markEmailVerified(user.id, emailVerifiedAt, { ...ctx, userId: user.id });
+      console.info(
+        '[auth] DEV auto-verify: email marked verified on registration (NODE_ENV != production)',
+        { correlationId },
+      );
+    }
+
     // Issue a verification token.
     const { rawToken, tokenHash } = generateToken();
     const expiresAt = new Date(Date.now() + EMAIL_VERIFY_EXPIRY_MS);
@@ -298,7 +312,9 @@ export class AuthService {
     // A single indexed query; run AFTER the hash for timing equivalence.
     const pendingInvite = await userRepo.findPendingInviteByEmail(email, { ...ctx, userId: user.id });
 
-    return { created: true, user, invitePending: pendingInvite !== null };
+    // Reflect the (possibly dev-auto-verified) timestamp so the registration response + auto-login
+    // session see the verified state without a DB re-read.
+    return { created: true, user: { ...user, emailVerifiedAt }, invitePending: pendingInvite !== null };
   }
 
   // ── Verify Email ───────────────────────────────────────────────────────────

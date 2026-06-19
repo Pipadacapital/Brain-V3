@@ -28,6 +28,7 @@
 
 import { createHash } from 'node:crypto';
 import type { DbClient, QueryContext } from '@brain/db';
+import { isValidCurrency, minorToMajorNumber } from '@brain/money';
 import { metaMatchHash } from '@brain/identity-core';
 import type { CanContactEngine } from './compliance/can-contact.engine.js';
 import type { CapiAdapter, CapiUserData } from './capi-adapter.js';
@@ -167,10 +168,14 @@ export class CapiPassbackService {
         eventTime: Math.floor(conv.occurredAt.getTime() / 1000),
         actionSource: 'website',
         userData,
-        // minor→major float ONLY at the wire boundary (inside the adapter the
-        // value is already major; here we hand the major value, computed once).
+        // minor→major float ONLY at the wire boundary (Meta CAPI wants a major-unit number).
+        // The exponent is currency-aware (@brain/money) — never a hardcoded /100, so a future
+        // 0-decimal (JPY) or 3-decimal (KWD) value is not silently sent 100×/10× off. Unknown
+        // currencies fall back to the legacy 2-decimal divisor (all in-scope currencies are 2dp).
         customData: {
-          value: Number(conv.valueMinor) / 100,
+          value: isValidCurrency(conv.currencyCode)
+            ? minorToMajorNumber(conv.valueMinor, conv.currencyCode)
+            : Number(conv.valueMinor) / 100,
           currency: conv.currencyCode,
         },
         correlationId: conv.correlationId,

@@ -1,5 +1,5 @@
 import { type Page, expect } from '@playwright/test';
-import { markEmailVerified } from './db';
+import { markEmailVerified, markEmailUnverified, clearAuthRateLimits } from './db';
 
 const PASSWORD = 'SuperSecret123!';
 
@@ -18,6 +18,7 @@ export async function registerAndVerify(
   page: Page,
   prefix = 'e2e',
 ): Promise<{ email: string; password: string; s: number }> {
+  await clearAuthRateLimits(); // register is 10/hour/IP — clear so a long suite never 429s
   const s = stamp();
   const email = `${prefix}_${s}@example.com`;
   await page.goto('/register');
@@ -39,6 +40,7 @@ export async function registerUnverified(
   page: Page,
   prefix = 'e2e',
 ): Promise<{ email: string; password: string; s: number }> {
+  await clearAuthRateLimits(); // register is 10/hour/IP — clear so a long suite never 429s
   const s = stamp();
   const email = `${prefix}_${s}@example.com`;
   await page.goto('/register');
@@ -47,11 +49,14 @@ export async function registerUnverified(
   await page.getByTestId('input-password').fill(PASSWORD);
   await page.getByTestId('btn-register').click();
   await expect(page).toHaveURL(/\/onboarding\/start/);
+  // Dev auto-verifies on registration — undo it so this helper truly returns an unverified session.
+  await markEmailUnverified(email);
   return { email, password: PASSWORD, s };
 }
 
 /** Submit the login form (does not assert the destination). */
 export async function login(page: Page, email: string, password: string): Promise<void> {
+  await clearAuthRateLimits(); // login is IP/email rate-limited — keep negative-path tests stable
   await page.goto('/login');
   await page.getByTestId('input-email').fill(email);
   await page.getByTestId('input-password').fill(password);

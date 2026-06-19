@@ -100,6 +100,22 @@ export const InvoiceLineSchema = z.object({
 });
 export type InvoiceLine = z.infer<typeof InvoiceLineSchema>;
 
+/** A credit note correcting an issued invoice (immutable; positive magnitudes). */
+export const CreditNoteSchema = z.object({
+  credit_note_id: z.string(),
+  credit_note_number: z.string(),
+  reason: z.string(),
+  regime: z.string(),
+  taxable_minor: MinorUnitsSchema,
+  tax_minor: MinorUnitsSchema,
+  total_minor: MinorUnitsSchema,
+  cgst_minor: MinorUnitsSchema,
+  sgst_minor: MinorUnitsSchema,
+  igst_minor: MinorUnitsSchema,
+  issued_at: z.string(),
+});
+export type CreditNote = z.infer<typeof CreditNoteSchema>;
+
 export const InvoiceSchema = z.discriminatedUnion('state', [
   z.object({ state: z.literal('not_issued'), billing_period: BillingPeriodCodeSchema }),
   z.object({
@@ -116,6 +132,9 @@ export const InvoiceSchema = z.discriminatedUnion('state', [
     tax_minor: MinorUnitsSchema,
     total_minor: MinorUnitsSchema,
     regime: z.string(),
+    cgst_minor: MinorUnitsSchema,
+    sgst_minor: MinorUnitsSchema,
+    igst_minor: MinorUnitsSchema,
     sac_hsn_code: z.string(),
     tax_rate_bps: z.number().int().min(0).max(10_000),
     seller_gstin: z.string(),
@@ -123,6 +142,8 @@ export const InvoiceSchema = z.discriminatedUnion('state', [
     status: z.string(),
     issued_at: z.string(),
     lines: z.array(InvoiceLineSchema),
+    credit_notes: z.array(CreditNoteSchema),
+    net_total_minor: MinorUnitsSchema,
   }),
 ]);
 export type Invoice = z.infer<typeof InvoiceSchema>;
@@ -143,6 +164,26 @@ export const IssueInvoiceResultSchema = z.discriminatedUnion('state', [
   }),
 ]);
 export type IssueInvoiceResult = z.infer<typeof IssueInvoiceResultSchema>;
+
+/** Result of issuing a credit note against an issued invoice. */
+export const IssueCreditNoteResultSchema = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('invoice_not_found'), period: BillingPeriodCodeSchema }),
+  z.object({
+    state: z.literal('rejected'),
+    reason: z.string(),
+    already_credited_minor: MinorUnitsSchema.optional(),
+    invoice_total_minor: MinorUnitsSchema.optional(),
+  }),
+  z.object({
+    state: z.literal('issued'),
+    credit_note_id: z.string(),
+    credit_note_number: z.string(),
+    taxable_minor: MinorUnitsSchema,
+    tax_minor: MinorUnitsSchema,
+    total_minor: MinorUnitsSchema,
+  }),
+]);
+export type IssueCreditNoteResult = z.infer<typeof IssueCreditNoteResultSchema>;
 
 /** Result of sealing (metering) a period — `sealed: false` means it was already sealed (idempotent). */
 export const SealPeriodResultSchema = z.object({

@@ -63,3 +63,15 @@ export function useIssueInvoice() {
     },
   });
 }
+
+/** useIssueCreditNote — issue a credit note against a period's invoice, then refresh the invoice read. */
+export function useIssueCreditNote() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { period: string; reason: string; taxableMinor?: string }) =>
+      billingApi.issueCreditNote(vars.period, vars.reason, vars.taxableMinor),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: BILLING_QUERY_KEY });
+    },
+  });
+}

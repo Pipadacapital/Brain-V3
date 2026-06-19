@@ -41,6 +41,7 @@ import {
   InspectableBillSchema,
   InvoiceSchema,
   IssueInvoiceResultSchema,
+  IssueCreditNoteResultSchema,
   RecommendationsSchema,
   GenerateRecommendationsResultSchema,
 } from '@brain/contracts';
@@ -133,6 +134,7 @@ import type {
   InspectableBillResponse,
   InvoiceResponse,
   IssueInvoiceResultResponse,
+  IssueCreditNoteResultResponse,
   RecommendationsResponse,
   GenerateRecommendationsResultResponse,
 } from './types';
@@ -1678,6 +1680,21 @@ export const billingApi = {
       body: JSON.stringify({ period }),
     });
     return parseData(IssueInvoiceResultSchema, env);
+  },
+
+  /** POST /api/v1/billing/invoice/credit-note — issue an immutable credit note (full or partial). */
+  issueCreditNote: async (
+    period: string,
+    reason: string,
+    taxableMinor?: string,
+  ): Promise<IssueCreditNoteResultResponse> => {
+    const env = await bffFetch<BffEnvelope<unknown>>('/v1/billing/invoice/credit-note', {
+      method: 'POST',
+      body: JSON.stringify(
+        taxableMinor != null ? { period, reason, taxable_minor: taxableMinor } : { period, reason },
+      ),
+    });
+    return parseData(IssueCreditNoteResultSchema, env);
   },
 };
 

@@ -425,8 +425,10 @@ export {
   BillLineSchema,
   InspectableBillSchema,
   InvoiceLineSchema,
+  CreditNoteSchema,
   InvoiceSchema,
   IssueInvoiceResultSchema,
+  IssueCreditNoteResultSchema,
 } from './api/billing.api.v1.js';
 export type {
   BillingPeriod,
@@ -435,8 +437,10 @@ export type {
   BillLine,
   InspectableBill,
   InvoiceLine,
+  CreditNote,
   Invoice,
   IssueInvoiceResult,
+  IssueCreditNoteResult,
 } from './api/billing.api.v1.js';
 export {
   ConfidenceSchema,

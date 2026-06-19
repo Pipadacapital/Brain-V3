@@ -1,0 +1,33 @@
+# Build context is the repo root (docker build -f apps/<app>/Dockerfile .).
+# Keep the context lean and never ship host artifacts or secrets into the image.
+
+# Installed deps + build output — rebuilt fresh inside the image
+**/node_modules
+**/dist
+**/.next
+**/.turbo
+**/*.tsbuildinfo
+
+# VCS + local tooling
+.git
+.github
+worktrees
+
+# Secrets / local env — MUST NOT enter the build context
+.env
+.env.*
+!.env.example
+
+# Docs, audit, and the engineering-OS trail — not needed at build/runtime
+docs
+.engineering-os
+**/*.md
+README.md
+
+# Test/coverage/editor noise
+**/coverage
+**/.vitest
+**/playwright-report
+**/test-results
+**/.DS_Store
+**/*.log

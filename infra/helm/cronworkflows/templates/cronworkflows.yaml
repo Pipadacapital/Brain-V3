@@ -1,0 +1,50 @@
+{{- /*
+One Argo CronWorkflow per entry in .Values.jobs. Each runs the job-entrypoint CLI in the core
+(or stream-worker) image. Idempotent jobs + concurrencyPolicy: Forbid + startingDeadlineSeconds
+mean a missed or retried run never double-applies and never piles up.
+*/ -}}
+{{- $root := . -}}
+{{- range .Values.jobs }}
+{{- $image := ternary $root.Values.streamWorkerImage $root.Values.image (default false .useStreamWorkerImage) -}}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: CronWorkflow
+metadata:
+  name: {{ .name }}
+  labels:
+    {{- include "brain.labels" $root | nindent 4 }}
+    brain.io/job: {{ .name }}
+spec:
+  schedule: {{ .schedule | quote }}
+  timezone: {{ $root.Values.timezone | quote }}
+  concurrencyPolicy: {{ $root.Values.defaults.concurrencyPolicy }}
+  startingDeadlineSeconds: {{ $root.Values.defaults.startingDeadlineSeconds }}
+  successfulJobsHistoryLimit: {{ $root.Values.defaults.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ $root.Values.defaults.failedJobsHistoryLimit }}
+  workflowSpec:
+    serviceAccountName: {{ $root.Values.serviceAccount.name }}
+    entrypoint: run
+    activeDeadlineSeconds: {{ $root.Values.defaults.activeDeadlineSeconds }}
+    podGC:
+      strategy: OnWorkflowSuccess
+    templates:
+      - name: run
+        retryStrategy:
+          limit: {{ $root.Values.defaults.backoffLimit | quote }}
+          retryPolicy: OnError
+        container:
+          image: "{{ $image.repository }}{{ if $image.digest }}@{{ $image.digest }}{{ else }}:{{ $image.tag }}{{ end }}"
+          imagePullPolicy: {{ $image.pullPolicy }}
+          command: {{ .command | toJson }}
+          {{- if $root.Values.envSecretName }}
+          envFrom:
+            - secretRef:
+                name: {{ $root.Values.envSecretName }}
+          {{- end }}
+          {{- with $root.Values.env }}
+          env:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml $root.Values.defaults.resources | nindent 12 }}
+{{- end }}

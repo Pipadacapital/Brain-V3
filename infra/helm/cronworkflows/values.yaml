@@ -1,0 +1,61 @@
+# Default values for the cronworkflows chart. Overridden by values-staging.yaml / values-prod.yaml.
+#
+# Each job is an Argo CronWorkflow that runs ONE container (the core or stream-worker image) with a
+# job-entrypoint CLI command (doc 06 §"Argo jobs → Core"). The job enumerates active brands and runs
+# the per-brand pipeline; it is idempotent, so a missed/retried run is safe.
+
+# Default image (the core image — most jobs are core entrypoints). Per-job `image:` overrides this.
+image:
+  repository: REPLACE_WITH_ECR_REGISTRY/brain-core
+  tag: latest
+  digest: ""
+  pullPolicy: IfNotPresent
+
+# Stream-worker image (for jobs whose entrypoint ships in that deployable, e.g. revenue-finalization).
+streamWorkerImage:
+  repository: REPLACE_WITH_ECR_REGISTRY/brain-stream-worker
+  tag: latest
+  digest: ""
+  pullPolicy: IfNotPresent
+
+# Secret (External Secrets ← AWS Secrets Manager): DATABASE_URL, BRAIN_APP_DATABASE_URL,
+# STARROCKS_HOST/PORT/credentials, etc. Empty in defaults (set per env).
+envSecretName: ""
+
+# IST — schedules below are written in Asia/Kolkata (the brands' operating timezone).
+timezone: "Asia/Kolkata"
+
+serviceAccount:
+  name: brain-jobs   # IRSA role for AWS Secrets Manager access (annotated per env)
+
+env:
+  - name: SERVICE_NAME
+    value: cronworkflows
+
+defaults:
+  concurrencyPolicy: Forbid        # never overlap a brand-enumeration run with itself
+  startingDeadlineSeconds: 300     # skip (don't pile up) if the controller was down
+  activeDeadlineSeconds: 1800      # 30 min hard cap per run
+  backoffLimit: 2                  # retry a failed run twice
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+# The scheduled jobs. `image` omitted → the default (core) image.
+jobs:
+  - name: recommendation-detectors
+    schedule: "0 6 * * *"          # daily 06:00 IST — the Morning Brief
+    command: ["node", "dist/jobs/recommendation-detectors.js"]
+  - name: attribution-reconcile
+    schedule: "30 * * * *"         # hourly at :30 — attribute newly-finalized orders + clawbacks
+    command: ["node", "dist/jobs/attribution-reconcile.js"]
+  - name: revenue-finalization
+    schedule: "0 * * * *"          # hourly — horizon-based realization (stream-worker image)
+    command: ["node", "dist/jobs/revenue-finalization.js"]
+    useStreamWorkerImage: true

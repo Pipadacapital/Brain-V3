@@ -1,0 +1,16 @@
+image:
+  repository: REPLACE_WITH_ECR_REGISTRY/brain-core-prod
+  tag: latest
+  digest: ""
+
+streamWorkerImage:
+  repository: REPLACE_WITH_ECR_REGISTRY/brain-stream-worker-prod
+  tag: latest
+  digest: ""
+
+envSecretName: core-env
+
+serviceAccount:
+  name: brain-jobs
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/brain-jobs-prod

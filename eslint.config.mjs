@@ -126,10 +126,21 @@ export default [
         {
           patterns: [
             {
-              // Block imports that reach past the module's index.ts into internals
-              group: ['apps/core/src/modules/*/internal/*', 'apps/core/src/modules/*/*/**'],
+              // Block reaching past ANOTHER module's index.ts into its internals. The reach-around
+              // always goes UP out of the current module (../) and into a sibling module's
+              // `internal/` — at varying depths. (audit ARC-1: the old absolute-style globs
+              // `apps/core/src/modules/*/internal/*` never matched the relative `../../` specifiers
+              // actually used, so this guard was dead.) These relative patterns match the real
+              // reach-around form while allowing `./internal/...` (a module's own index → its own
+              // internal) and `../<x>` (within-module navigation, no sibling `internal/`).
+              group: [
+                '../*/internal/**',
+                '../../*/internal/**',
+                '../../../*/internal/**',
+                '../../../../*/internal/**',
+              ],
               message:
-                "Cross-module reach-around past index.ts is banned (I-E05). Import only from the module's public index.ts.",
+                "Cross-module reach-around past index.ts is banned (I-E05). Import only from the target module's public index.ts.",
             },
           ],
         },
@@ -155,6 +166,10 @@ export default [
     files: ['**/*.test.ts', '**/*.spec.ts', '**/fixtures/**/*.ts'],
     rules: {
       'brain-money/no-float-money': 'warn',
+      // White-box tests legitimately reach into a module's internals to build fixtures /
+      // assert on domain entities. The reach-around guard protects PRODUCTION boundaries
+      // (consistent with boundaries/ignore, which already excludes tests).
+      'no-restricted-imports': 'off',
     },
   },
 ];

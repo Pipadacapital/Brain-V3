@@ -24,7 +24,7 @@ import { randomUUID } from 'node:crypto';
 import type { DbPool } from '@brain/db';
 import type { AuditWriter } from '@brain/audit';
 import type { ConsentCategory } from '@brain/contracts';
-import type { AuthenticatedRequest } from '../../../workspace-access/internal/interfaces/rest/auth.routes.js';
+import type { AuthenticatedRequest } from '../../../workspace-access/index.js';
 import { CanContactEngine } from './can-contact.engine.js';
 import { PgSuppressionQuery } from './suppression.query.js';
 import { StubDltRegistry, StubNcprRegistry } from './stubs.js';

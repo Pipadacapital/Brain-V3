@@ -12,9 +12,11 @@
 
 import type { EngineDeps, AttributionModelId } from '@brain/metric-engine';
 import { computeAttributionReconciliationRate } from '@brain/metric-engine';
+import { hasAttributionCredit } from './_attribution-credit.js';
 
 export type AttributionReconciliationResultDto =
   | { state: 'no_data'; from: string; to: string; model: AttributionModelId }
+  | { state: 'not_computed'; from: string; to: string; model: AttributionModelId }
   | {
       state: 'has_data';
       from: string;
@@ -50,6 +52,11 @@ export async function getAttributionReconciliation(
 
   if (!result.hasData) {
     return { state: 'no_data', from: params.fromStr, to: params.toStr, model: params.model };
+  }
+
+  // Honest-not-computed (R-10): realized revenue exists but no attribution credit rows yet.
+  if (!(await hasAttributionCredit(brandId, deps))) {
+    return { state: 'not_computed', from: params.fromStr, to: params.toStr, model: params.model };
   }
 
   return {

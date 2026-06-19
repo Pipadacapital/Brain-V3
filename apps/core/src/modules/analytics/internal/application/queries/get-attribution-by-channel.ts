@@ -15,6 +15,7 @@
 
 import type { EngineDeps, AttributionModelId } from '@brain/metric-engine';
 import { computeAttributionReconciliationRate } from '@brain/metric-engine';
+import { hasAttributionCredit } from './_attribution-credit.js';
 
 export interface ChannelContributionDto {
   channel: string;
@@ -24,6 +25,7 @@ export interface ChannelContributionDto {
 
 export type AttributionByChannelResult =
   | { state: 'no_data'; from: string; to: string; model: AttributionModelId }
+  | { state: 'not_computed'; from: string; to: string; model: AttributionModelId }
   | {
       state: 'has_data';
       from: string;
@@ -60,6 +62,12 @@ export async function getAttributionByChannel(
 
   if (!result.hasData) {
     return { state: 'no_data', from: params.fromStr, to: params.toStr, model: params.model };
+  }
+
+  // Honest-not-computed (R-10): realized revenue exists but the credit ledger is empty, so the
+  // attribution numbers would be 0%/100%-unattributed — a lie dressed as data. Say so instead.
+  if (!(await hasAttributionCredit(brandId, deps))) {
+    return { state: 'not_computed', from: params.fromStr, to: params.toStr, model: params.model };
   }
 
   return {

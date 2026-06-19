@@ -819,7 +819,15 @@ export function registerBffRoutes(
         });
       }
 
-      const ctx: QueryContext = { workspaceId: auth.workspaceId, correlationId: requestId };
+      // userId is REQUIRED: the brand list is gated by the brand_self_read RLS policy, whose
+      // membership subquery filters `app_user_id = app.current_user_id`. Without the user GUC the
+      // subquery matches nothing and the switcher shows ZERO brands (the org membership_self_read
+      // path needs it too). Set all of workspace + user (+ brand for the member count) here.
+      const ctx: QueryContext = {
+        workspaceId: auth.workspaceId,
+        userId: auth.userId,
+        correlationId: requestId,
+      };
       const client = await pool.connect();
       try {
         // brand-summary queries: org + brand list (all member brands for the switcher) + brand-scoped member count.

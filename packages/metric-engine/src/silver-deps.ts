@@ -72,6 +72,20 @@ export interface SilverScope {
 /** The sentinel the seam substitutes with the brand predicate. */
 export const BRAND_PREDICATE = '${BRAND_PREDICATE}';
 
+function silverErrMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * True when an error means the Silver tier itself is not available — the brain_silver schema or a
+ * silver table doesn't exist (fresh/dev env not yet provisioned), or the database is unknown.
+ * runScoped only ever issues Silver queries, so an "unknown table/database" here is always Silver.
+ */
+function isSilverUnavailable(err: unknown): boolean {
+  const msg = silverErrMessage(err).toLowerCase();
+  return msg.includes('unknown table') || msg.includes('unknown database');
+}
+
 export interface WithSilverBrandOptions {
   /**
    * TEST-ONLY: when true, the seam does NOT inject `brand_id = ?` and does NOT
@@ -124,8 +138,23 @@ export async function withSilverBrand<T>(
           finalSql = sql.replace(BRAND_PREDICATE, 'brand_id = ?');
           finalParams = [...params, brandId];
         }
-        const [rows] = await conn.query(finalSql, finalParams);
-        return (rows as R[]) ?? [];
+        try {
+          const [rows] = await conn.query(finalSql, finalParams);
+          return (rows as R[]) ?? [];
+        } catch (err) {
+          // Silver tier unavailable (brain_silver schema/tables not provisioned in a fresh/dev
+          // env, or a transient StarRocks outage) → degrade to an honest empty result so the read
+          // returns its no_data state instead of crashing the dashboard with a 500. ONLY the
+          // "unknown table/database" class is swallowed; real query errors still propagate. A WARN
+          // is emitted so the missing tier is observable/alertable — never silently hidden.
+          if (isSilverUnavailable(err)) {
+            console.warn(
+              `[metric-engine] Silver read degraded to empty — silver tier unavailable: ${silverErrMessage(err)}`,
+            );
+            return [] as R[];
+          }
+          throw err;
+        }
       },
     };
 

@@ -418,3 +418,13 @@ export type {
   MergeResolveResult,
   UnmergeResult,
 } from './api/identity.api.v1.js';
+export {
+  BillingPeriodSchema,
+  BillingPeriodsSchema,
+  SealPeriodResultSchema,
+} from './api/billing.api.v1.js';
+export type {
+  BillingPeriod,
+  BillingPeriods,
+  SealPeriodResult,
+} from './api/billing.api.v1.js';

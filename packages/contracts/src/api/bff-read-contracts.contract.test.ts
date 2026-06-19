@@ -28,6 +28,7 @@ import { z } from 'zod';
 import {
   RevenueSnapshotSchema,
   KpiSummarySchema,
+  BillingPeriodsSchema,
   AttributionByChannelSchema,
   AttributionReconciliationSchema,
   ChannelRoasSchema,
@@ -376,6 +377,45 @@ describe('AskBrainResult (#11)', () => {
   it('REJECTS a wrong discriminant value (state instead of kind)', () => {
     const drifted = { state: 'answer', reason: 'x' } as unknown;
     const r = AskBrainResultSchema.safeParse(drifted);
+    expect(r.success).toBe(false);
+  });
+});
+
+describe('BillingPeriods (#15 — realized-GMV meter)', () => {
+  const hasData = {
+    state: 'has_data',
+    periods: [
+      {
+        billing_period: '2099-03',
+        currency_code: 'INR',
+        metered_gmv_minor: '80000',
+        as_of_date: '2099-03-31',
+        ledger_row_count: 3,
+        sealed_at: '2099-04-01T00:00:00.000Z',
+      },
+    ],
+  };
+  it('round-trips has_data + no_data', () => {
+    expect(BillingPeriodsSchema.parse(hasData)).toEqual(hasData);
+    const noData = { state: 'no_data' };
+    expect(BillingPeriodsSchema.parse(noData)).toEqual(noData);
+  });
+  it('REJECTS a float metered_gmv_minor — error path names periods.0.metered_gmv_minor', () => {
+    const drifted = { ...hasData, periods: [{ ...hasData.periods[0], metered_gmv_minor: '800.00' }] };
+    const r = BillingPeriodsSchema.safeParse(drifted);
+    expect(r.success).toBe(false);
+    expect(firstIssuePath(r)).toBe('periods.0.metered_gmv_minor');
+  });
+  it('REJECTS a wrong-typed money field (number not string)', () => {
+    const drifted = { ...hasData, periods: [{ ...hasData.periods[0], metered_gmv_minor: 80000 }] };
+    const r = BillingPeriodsSchema.safeParse(drifted);
+    expect(r.success).toBe(false);
+    expect(firstIssuePath(r)).toBe('periods.0.metered_gmv_minor');
+  });
+  it('REJECTS a renamed period discriminant field (billing_period → period)', () => {
+    const renamed = { billing_period: undefined, period: '2099-03' };
+    const drifted = { ...hasData, periods: [{ ...hasData.periods[0], ...renamed }] };
+    const r = BillingPeriodsSchema.safeParse(drifted);
     expect(r.success).toBe(false);
   });
 });

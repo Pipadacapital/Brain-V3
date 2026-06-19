@@ -12,7 +12,7 @@
  */
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { randomUUID } from 'node:crypto';
-import type { DbPool, QueryContext } from '@brain/db';
+import pg from 'pg';
 import type { ISecretsManager } from '../../infrastructure/secrets/ISecretsManager.js';
 import { ShopifyAdminClient, type ShopifyOrder } from '../../infrastructure/api/ShopifyAdminClient.js';
 
@@ -38,30 +38,37 @@ function num(v: unknown): number {
 
 export function registerDevShopifySyncRoutes(
   app: FastifyInstance,
-  pool: DbPool,
   secretsManager: ISecretsManager,
 ): void {
-  app.get('/api/v1/dev/shopify/validate-sync', async (request: FastifyRequest, reply: FastifyReply) => {
+  app.get('/api/v1/dev/shopify/validate-sync', async (_request: FastifyRequest, reply: FastifyReply) => {
     const requestId = randomUUID();
 
-    // 1. Most-recently connected Shopify store. In dev the DB connects as superuser
-    //    (RLS bypassed), so this cross-brand SELECT returns the latest connection.
-    const ctx: QueryContext = { correlationId: 'dev-validate-sync' };
-    const client = await pool.connect();
+    // 1. Most-recently connected Shopify store — a CROSS-BRAND enumeration (we don't yet know the
+    //    brand). The @brain/db pool forces `SET LOCAL ROLE brain_app` + a brand GUC on every query,
+    //    so a context-less read there is RLS-filtered to zero rows. This dev-only spike instead uses
+    //    a RAW superuser connection (DATABASE_URL is the dev superuser `brain`, which bypasses RLS) —
+    //    the same "enumerate as a privileged system actor" shape as list_active_brand_ids(). Never
+    //    registered in production (NODE_ENV guard in main.ts).
+    const rawUrl = process.env['DATABASE_URL'];
+    if (!rawUrl) {
+      return reply.code(503).send({
+        request_id: requestId,
+        error: { code: 'NO_DB_URL', message: 'DATABASE_URL not set for the dev enumeration read.' },
+      });
+    }
+    const raw = new pg.Pool({ connectionString: rawUrl, max: 1 });
     let conn: ConnInstanceRow | undefined;
     try {
-      const result = await client.query<ConnInstanceRow>(
-        ctx,
+      const result = await raw.query<ConnInstanceRow>(
         `SELECT brand_id, shop_domain, secret_ref, connected_at
          FROM connector_instance
          WHERE provider = 'shopify' AND status = 'connected'
          ORDER BY connected_at DESC
          LIMIT 1`,
-        [],
       );
       conn = result.rows[0];
     } finally {
-      client.release();
+      await raw.end();
     }
 
     if (!conn) {

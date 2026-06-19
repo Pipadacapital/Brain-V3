@@ -648,7 +648,7 @@ export async function main(): Promise<void> {
   // DEV-ONLY: validate-sync spike — pull live orders via the real connected token.
   // Mounted only outside production (token crosses the boundary here, I-S09).
   if (nodeEnv !== 'production') {
-    registerDevShopifySyncRoutes(app, pool, connectorSecretsManager);
+    registerDevShopifySyncRoutes(app, connectorSecretsManager);
     app.log.warn('[dev] /api/v1/dev/shopify/validate-sync mounted (NODE_ENV != production)');
   }
 

@@ -212,6 +212,28 @@ export interface RawQueryable {
  * RLS). SET LOCAL is transaction-scoped, so here the GUC is still in effect for the
  * business query and resets automatically — it can never leak across pool connections.
  */
+/**
+ * beginRlsTxn — open a MULTI-statement transaction with RLS enforcement, for the control-plane
+ * paths that need explicit BEGIN/COMMIT (multiple writes/reads atomically) and therefore cannot use
+ * the per-query createPool path. Runs `BEGIN; SET LOCAL ROLE <appRole>; SET LOCAL <gucs>` so every
+ * subsequent statement on this client runs under the NOBYPASSRLS app role with the request's brand/
+ * workspace/user GUCs in effect. The caller issues its business queries and then COMMIT/ROLLBACKs.
+ *
+ * This is the rawPgPool analogue of executeInRlsTxn — same enforcement (audit R-01/R-02), applied to
+ * the hand-rolled transactions in the auth / onboarding / invite / connector services, so a single
+ * missing app-layer WHERE clause can no longer leak across tenants and the app can run as brain_app.
+ */
+export async function beginRlsTxn(
+  rawClient: RawQueryable,
+  ctx: QueryContext,
+  appRole: string = DEFAULT_APP_ROLE,
+): Promise<void> {
+  const setup = ['BEGIN', buildSetRoleSql(appRole)];
+  const gucSql = buildContextGucSql(ctx);
+  if (gucSql) setup.push(gucSql);
+  await rawClient.query(setup.join('; '));
+}
+
 export async function executeInRlsTxn<T = unknown>(
   rawClient: RawQueryable,
   appRole: string,

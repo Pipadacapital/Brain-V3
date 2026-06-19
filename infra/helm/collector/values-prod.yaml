@@ -3,6 +3,7 @@ replicaCount: 3
 image:
   repository: REPLACE_WITH_ECR_REGISTRY/brain-collector-prod
   tag: latest
+  digest: ""
 
 envSecretName: collector-env
 

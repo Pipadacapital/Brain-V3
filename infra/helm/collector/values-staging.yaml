@@ -3,6 +3,7 @@ replicaCount: 1
 image:
   repository: REPLACE_WITH_ECR_REGISTRY/brain-collector-staging
   tag: latest
+  digest: ""
 
 envSecretName: collector-env
 

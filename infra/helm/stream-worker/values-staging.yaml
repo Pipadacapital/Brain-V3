@@ -3,6 +3,7 @@ replicaCount: 1
 image:
   repository: REPLACE_WITH_ECR_REGISTRY/brain-stream-worker-staging
   tag: latest
+  digest: ""
 
 envSecretName: stream-worker-env
 

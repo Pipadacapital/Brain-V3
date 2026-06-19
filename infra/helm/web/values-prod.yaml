@@ -3,6 +3,7 @@ replicaCount: 3
 image:
   repository: REPLACE_WITH_ECR_REGISTRY/brain-web-prod
   tag: latest
+  digest: ""
 
 envSecretName: web-env
 

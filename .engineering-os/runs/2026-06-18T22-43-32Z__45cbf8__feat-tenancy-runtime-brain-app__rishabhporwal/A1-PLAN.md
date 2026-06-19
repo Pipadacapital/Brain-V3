@@ -57,6 +57,33 @@ Non-RLS (safe under brain_app with existing grants): `app_user`, `app_session`, 
 - `membership` SELECT passes under EITHER the workspace OR the user GUC (two permissive policies); writes
   need the workspace GUC. Set both where available.
 
+## BLOCKER (decisive): provisioning under RLS — the create-the-first-tenant chicken-and-egg
+`organization_isolation` / `brand_isolation` are `cmd=ALL` with NO explicit `WITH CHECK`, so Postgres uses
+the USING expr as the INSERT check: `id = current_setting('app.current_<workspace|brand>_id')`.
+- **brand**: id is APP-supplied (`INSERT INTO brand (id, …)`) → solvable (set brand GUC = new id first).
+- **organization**: id is **DB-generated** (`INSERT INTO organization (name, slug, …) RETURNING id`) → the
+  app cannot set `app.current_workspace_id` to an id it doesn't know yet → the insert FAILS under brain_app.
+
+This works TODAY only because the superuser connection bypasses the check — onboarding's provisioning has
+NEVER actually run under brain_app (the `txnClientAdapter` comments are aspirational). Two clean fixes,
+both real work — choose in the PR:
+1. **SECURITY DEFINER `provision_workspace_and_brand(...)`** *(recommended)* — one function creates org +
+   2 memberships + brand + status atomically AS the owner (controlled, authorized, bypasses RLS for just
+   this provisioning), returns the ids; replaces the onboarding rawPgPool txn. Audit-blessed pattern
+   (`list_active_brand_ids`, `issue_invoice`, `resolve_merge_review`). Cost: 1 migration + onboarding
+   refactor + onboarding test updates.
+2. **App-generated ids + GUC-before-insert** — `OrganizationRepository.insert` takes an explicit id;
+   onboarding generates org/brand uuids and sets the GUC to each before its insert. No migration; threads
+   GUC sequencing through the provisioning txn + repo signatures.
+
+## Final honest status
+A1 is NOT a wiring tweak. Verified end-to-end, it requires: (1) a provisioning solution above, (2) mid-txn
+GUCs for the token flows, (3) ~8 site wirings via `beginRlsTxn`, (4) mock-fixture UUID updates across the
+suites, (5) the atomic runtime DSN flip + migration-DSN split, (6) full live re-verification of register/
+login/onboard/invite/accept/suspend/connector under brain_app. Each is real; together they are a focused,
+self-contained PR — NOT safely doable piecemeal. This branch ships the `beginRlsTxn` primitive + this fully
+de-risked spec as the PR's foundation. A2 + A3 (keystone proof) + A4 are already done/merged.
+
 ## Status
 A2 (txn-wrapped GUC in @brain/db) + A3 (the keystone brain_app proof) + A4 (StarRocks fail-closed) are
 DONE/merged. A1 is this scoped, atomic follow-on; the `beginRlsTxn` primitive lands here as its foundation.

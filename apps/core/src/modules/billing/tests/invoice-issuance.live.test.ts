@@ -149,10 +149,10 @@ describe('invoice issuance (live Postgres)', () => {
     if (r.state !== 'issued') throw new Error('expected issued');
     expect(r.issued).toBe(true);
     expect(r.invoice_number).toBe(`${LEGAL_ENTITY}/2098-2099/000002`);
-    // The meter basis is realized_gmv_as_of(period_end) — CUMULATIVE through the date (inherited
-    // from slice 1), so P2 (as-of 2098-06-30) = 100000 (P1 row) + 200000 = 300000.
-    // fee = round(300000 × 100/10000) = 3000; tax = round(3000 × 1800/10000) = 540; total = 3540.
-    expect(r.total_minor).toBe('3540');
+    // Per-period DELTA: P2's basis is only the GMV posted to 2098-06 (200000) — NOT cumulative
+    // (P1's 100000 stays in 2098-05). fee = round(200000 × 100/10000) = 2000;
+    // tax = round(2000 × 1800/10000) = 360; total = 2360.
+    expect(r.total_minor).toBe('2360');
   });
 
   it('4. read — getInvoice returns header + line items + GST breakdown', async () => {

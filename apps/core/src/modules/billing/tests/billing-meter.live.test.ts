@@ -38,16 +38,17 @@ async function insertLedgerRow(
   eventType: string,
   amountMinor: number,
   effectiveAt: string,
+  period = '2099-03',
 ): Promise<void> {
   seq += 1;
   await superPool.query(
     `INSERT INTO realized_revenue_ledger
        (brand_id, ledger_event_id, order_id, event_type, amount_minor, currency_code,
         occurred_at, economic_effective_at, billing_posted_period, recognition_label)
-     VALUES ($1, $2, $3, $4, $5, 'INR', $6, $6, '2099-03',
+     VALUES ($1, $2, $3, $4, $5, 'INR', $6, $6, $7,
              CASE WHEN $4 = 'provisional_recognition' THEN 'provisional' ELSE 'finalized' END)
      ON CONFLICT (brand_id, ledger_event_id) DO NOTHING`,
-    [brandId, `evt-${brandId}-${seq}`, `order-${seq}`, eventType, amountMinor, effectiveAt],
+    [brandId, `evt-${brandId}-${seq}`, `order-${seq}`, eventType, amountMinor, effectiveAt, period],
   );
 }
 
@@ -95,7 +96,8 @@ beforeAll(async () => {
     await insertLedgerRow(BRAND_A, 'finalization', 100_000, '2099-03-10T00:00:00Z');
     await insertLedgerRow(BRAND_A, 'refund', -20_000, '2099-03-20T00:00:00Z');
     await insertLedgerRow(BRAND_A, 'provisional_recognition', 50_000, '2099-03-15T00:00:00Z');
-    await insertLedgerRow(BRAND_A, 'finalization', 999, '2099-04-01T00:00:00Z');
+    // Posted to a DIFFERENT period (2099-04) — must NOT count toward the 2099-03 delta.
+    await insertLedgerRow(BRAND_A, 'finalization', 999, '2099-04-01T00:00:00Z', '2099-04');
     pgAvailable = true;
   } catch {
     pgAvailable = false;
@@ -114,7 +116,7 @@ describe('billing meter (live Postgres)', () => {
     expect(true).toBe(true);
   });
 
-  it('1. meter — seals realized GMV as-of period end (provisional excluded, refund netted)', async () => {
+  it('1. meter — seals the per-period realized GMV (provisional excluded, refund netted, other periods out)', async () => {
     if (!pgAvailable) return;
     const r = await sealBillingPeriod(BRAND_A, PERIOD, CORR, { pool: dbPool });
     expect(r.sealed).toBe(true);

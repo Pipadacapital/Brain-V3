@@ -61,35 +61,35 @@ export async function sealBillingPeriod(
     // from the ledger itself (billing's own bounded context) rather than the brand table — the
     // brand row carries a workspace/membership-coupled RLS policy that needs GUCs billing doesn't
     // set, and the figure's currency should match the rows summed, not a separately-configured one.
-    // M1 is single-currency per brand (realized_gmv_as_of is a scalar sum); default INR if empty.
+    // M1 is single-currency per brand; default INR if empty.
     const curRes = await client.query<{ currency_code: string }>(
       ctx,
       `SELECT currency_code
          FROM realized_revenue_ledger
-        WHERE brand_id = $1 AND economic_effective_at::date <= $2::date
+        WHERE brand_id = $1 AND billing_posted_period = $2
         ORDER BY economic_effective_at DESC
         LIMIT 1`,
-      [brandId, asOf],
+      [brandId, period],
     );
     const currency = (curRes.rows[0]?.currency_code ?? 'INR').trim();
 
-    // Realized GMV via the SOLE named seam (D-3). ::text → bigint-as-string (no JS precision loss).
+    // Per-period realized GMV via the named seam (D-3) — the DELTA billed to THIS period
+    // (billing_posted_period), not the cumulative as-of total. ::text → bigint-as-string.
     const gmvRes = await client.query<{ gmv: string }>(
       ctx,
-      `SELECT realized_gmv_as_of($1::uuid, $2::date)::text AS gmv`,
-      [brandId, asOf],
+      `SELECT realized_gmv_for_period($1::uuid, $2::char(7))::text AS gmv`,
+      [brandId, period],
     );
     const gmv = gmvRes.rows[0]?.gmv ?? '0';
 
-    // Provenance-only row count (NOT the as-of money math, which goes exclusively through the
-    // function above — so this is not the D-3-banned ad-hoc SUM). It records how many realized
-    // rows stand behind the figure, so a sealed bill is inspectable.
+    // Provenance-only row count (NOT the money math, which goes through the function above — so not
+    // the D-3-banned ad-hoc SUM): how many rows posted to this period stand behind the figure.
     const cntRes = await client.query<{ n: string }>(
       ctx,
       `SELECT count(*)::bigint::text AS n
          FROM realized_revenue_ledger
-        WHERE brand_id = $1 AND economic_effective_at::date <= $2::date`,
-      [brandId, asOf],
+        WHERE brand_id = $1 AND billing_posted_period = $2`,
+      [brandId, period],
     );
     const rowCount = Number(cntRes.rows[0]?.n ?? '0');
 

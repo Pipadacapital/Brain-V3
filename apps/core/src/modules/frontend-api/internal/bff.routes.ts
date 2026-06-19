@@ -88,6 +88,7 @@ import type {
   IssueInvoiceResult as ContractIssueInvoiceResult,
   Recommendations as ContractRecommendations,
   GenerateRecommendationsResult as ContractGenerateRecommendationsResult,
+  AttributionReconcileResult as ContractAttributionReconcileResult,
 } from '@brain/contracts';
 import { jtiFromJwt, csrfTokenForSession } from './csrf.js';
 import type { Pool as PgPool } from 'pg';
@@ -108,6 +109,7 @@ import {
   getInvoice,
 } from '../../billing/index.js';
 import { getRecommendations, generateRecommendations } from '../../recommendation/index.js';
+import { reconcileAttribution } from '../../attribution/index.js';
 import type { ContactPiiVaultService } from '../../identity/index.js';
 import { askBrain } from '../../ai/index.js';
 import { ResolverClient } from '@brain/ai-gateway-client';
@@ -1915,6 +1917,42 @@ export function registerBffRoutes(
         auth.brandId,
         requestId,
         { pool },
+      );
+      return reply.send({ request_id: requestId, data: result });
+    },
+  );
+
+  /**
+   * POST /api/v1/attribution/reconcile — drive the attribution write pipeline (Phase 5).
+   *
+   * Idempotently populates attribution_credit_ledger from the realized ledger + Silver touches
+   * (credit on finalized orders, clawback on reversals). A system/batch trigger; the attribution
+   * analytics reads flip not_computed→has_data once a brand is reconciled. Brand from session (D-1).
+   */
+  fastify.post(
+    '/api/v1/attribution/reconcile',
+    { preHandler: [bffProtectedPreHandler] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const auth = (request as AuthenticatedRequest).auth;
+
+      if (!auth.brandId) {
+        return reply.code(409).send({
+          request_id: requestId,
+          error: { code: 'NO_ACTIVE_BRAND', message: 'Select a brand before reconciling attribution.' },
+        });
+      }
+      if (!rawPool || !srPool) {
+        return reply.code(503).send({
+          request_id: requestId,
+          error: { code: 'SERVICE_UNAVAILABLE', message: 'Ledger or Silver tier not available' },
+        });
+      }
+
+      const result: ContractAttributionReconcileResult = await reconcileAttribution(
+        auth.brandId,
+        requestId,
+        { pool: rawPool, srPool },
       );
       return reply.send({ request_id: requestId, data: result });
     },

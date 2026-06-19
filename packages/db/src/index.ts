@@ -18,6 +18,15 @@
  * Both steps are required — omitting either creates the stale-GUC vector
  * where a cross-tenant query could succeed using a previous slot's value.
  *
+ * NN-1b (CRITICAL — audit R-01/R-02): the GUC set and the business query MUST run
+ * inside the SAME transaction. `SET LOCAL` is transaction-scoped, so when it was issued
+ * as a separate autocommit statement it was discarded before the business query ran and
+ * the RLS predicate saw NULL. AND each transaction MUST `SET LOCAL ROLE <appRole>` first:
+ * a superuser or table-owner connection (e.g. the dev `brain` role) BYPASSES row-level
+ * security entirely, so dropping to the NOBYPASSRLS app role is what makes ENABLE/FORCE
+ * ROW LEVEL SECURITY actually apply. Both are handled by executeInRlsTxn below, which
+ * mirrors metric-engine's withBrandTxn.
+ *
  * Stack: node-postgres (pg) per STACK.md ADR-001. node-pg-migrate for migrations.
  */
 
@@ -34,6 +43,13 @@ export interface DbPoolConfig {
   idleTimeoutMs?: number;
   /** Statement timeout in ms. Applied per-query to prevent runaway queries. */
   statementTimeoutMs?: number;
+  /**
+   * NOBYPASSRLS Postgres role that RLS policies are written `TO`. Every query runs
+   * `SET LOCAL ROLE <appRole>` inside its transaction so row-level security applies
+   * even when the pool itself connects as a superuser/owner (audit R-01). Default
+   * 'brain_app' — matches the role created in migration 0001_init.
+   */
+  appRole?: string;
 }
 
 // ── Query context — REQUIRED for every query ──────────────────────────────────
@@ -132,6 +148,80 @@ export function buildContextGucSql(ctx: QueryContext): string {
   return statements.join('; ');
 }
 
+// ── Role-switch + RLS transaction (audit R-01/R-02) ───────────────────────────
+
+/**
+ * Default NOBYPASSRLS application role that the RLS policies are written `TO`
+ * (created in migration 0001_init). The pool may connect as a superuser/owner; every
+ * query drops to this role inside its transaction so RLS is actually enforced.
+ */
+export const DEFAULT_APP_ROLE = 'brain_app' as const;
+
+/** Bare SQL identifier — role names are interpolated, so they must match this. */
+const IDENT_RE = /^[a-z_][a-z0-9_]*$/i;
+
+/**
+ * Build a `SET LOCAL ROLE` statement.
+ *
+ * SECURITY: superusers and table owners BYPASS row-level security, so a connection as
+ * such a role must drop to a NOBYPASSRLS role for FORCE ROW LEVEL SECURITY to apply
+ * (audit R-01/R-14). The role name comes from config (never user input) and is validated
+ * as a bare identifier before interpolation — `SET LOCAL ROLE` cannot be parameterised.
+ */
+export function buildSetRoleSql(role: string): string {
+  if (!IDENT_RE.test(role)) {
+    throw new Error(`[db] app role "${role}" is not a valid SQL identifier`);
+  }
+  return `SET LOCAL ROLE ${role}`;
+}
+
+/** Minimal raw-client shape needed to run a query — satisfied by pg.PoolClient. */
+export interface RawQueryable {
+  query(
+    sql: string,
+    params?: unknown[],
+  ): Promise<{ rows: unknown[]; rowCount: number | null }>;
+}
+
+/**
+ * Execute a single business query under RLS enforcement, in one transaction:
+ *
+ *   BEGIN; SET LOCAL ROLE <appRole>; SET LOCAL <gucs>   (one round-trip)
+ *   <business query>                                    (carries bind params)
+ *   COMMIT                                              (auto-clears role + GUCs)
+ *
+ * ROLLBACK on any error. This fixes audit R-01/R-02: previously the GUC was issued in a
+ * SEPARATE autocommit statement and discarded before the query ran (so the RLS predicate
+ * saw NULL), and no role switch was performed (so a superuser/owner connection bypassed
+ * RLS). SET LOCAL is transaction-scoped, so here the GUC is still in effect for the
+ * business query and resets automatically — it can never leak across pool connections.
+ */
+export async function executeInRlsTxn<T = unknown>(
+  rawClient: RawQueryable,
+  appRole: string,
+  gucSql: string,
+  sql: string,
+  params: unknown[] = [],
+): Promise<{ rows: T[]; rowCount: number | null }> {
+  // Build (and validate the role) BEFORE opening the transaction so a bad role
+  // throws without leaving an open transaction to roll back.
+  const setup = ['BEGIN', buildSetRoleSql(appRole)];
+  if (gucSql) {
+    setup.push(gucSql);
+  }
+  try {
+    await rawClient.query(setup.join('; '));
+    const result = await rawClient.query(sql, params);
+    await rawClient.query('COMMIT');
+    return { rows: result.rows as T[], rowCount: result.rowCount };
+  } catch (err) {
+    await rawClient.query('ROLLBACK').catch(() => {
+      /* preserve the original error */
+    });
+    throw err;
+  }
+}
+
 // ── Pool interface (adapter, testable without a real Postgres connection) ─────
 
 export interface DbClient {
@@ -183,6 +273,11 @@ export async function createPool(config: DbPoolConfig): Promise<DbPool> {
     statement_timeout: config.statementTimeoutMs,
   });
 
+  // RLS-enforcement role. Validate the identifier once, eagerly, so a misconfigured
+  // role fails at startup rather than on the first query (audit R-01).
+  const appRole = config.appRole ?? DEFAULT_APP_ROLE;
+  buildSetRoleSql(appRole);
+
   return {
     async connect(): Promise<DbClient> {
       const rawClient = await pool.connect();
@@ -197,17 +292,11 @@ export async function createPool(config: DbPoolConfig): Promise<DbPool> {
           sql: string,
           params: unknown[] = [],
         ): Promise<{ rows: T[]; rowCount: number | null }> {
-          // Step 2: Set applicable GUCs before every query (NN-1 requirement b).
+          // Step 2: Set applicable GUCs before every query (NN-1 requirement b),
+          // and run the GUC + business query in ONE transaction under the NOBYPASSRLS
+          // app role so RLS is actually enforced (NN-1b / audit R-01/R-02).
           const gucSql = buildContextGucSql(ctx);
-          if (gucSql) {
-            await rawClient.query(gucSql);
-          }
-
-          // Cast through unknown: pg requires T extends QueryResultRow but our
-          // DbClient interface intentionally uses T = unknown for flexibility.
-          // The rows are structurally correct — pg always returns Record<string, unknown>[].
-          const result = await rawClient.query(sql, params as unknown[]);
-          return { rows: result.rows as T[], rowCount: result.rowCount };
+          return executeInRlsTxn<T>(rawClient as RawQueryable, appRole, gucSql, sql, params);
         },
 
         release(): void {

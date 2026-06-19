@@ -67,6 +67,7 @@ import type {
   OrderStatusMix as ContractOrderStatusMix,
   DataQualitySummary as ContractDataQualitySummary,
   AskBrainResult as ContractAskBrainResult,
+  Customer360 as ContractCustomer360,
 } from '@brain/contracts';
 import { jtiFromJwt, csrfTokenForSession } from './csrf.js';
 import type { RateLimiter } from '../../workspace-access/internal/infrastructure/rate-limiter.js';
@@ -74,6 +75,7 @@ import { loginFailKeySync, loginIpKey, registerIpKey } from '../../workspace-acc
 import type { Pool as PgPool } from 'pg';
 import { getRevenueMetrics, getRevenueTimeseries, getKpiSummary, getRecognitionBreakdown, getRecentActivity, getOrdersTimeseries, getOrderStats, getDataHealth, getSettlementSummary, getTrackingHealth, getRecentEvents, getAdSpendTimeseries, getBlendedRoas, getCodRtoRates, getCodMix, getCheckoutFunnel, getOrderStatusMix, getJourneyFirstTouchMix, getJourneyStitchRate, getJourneyTimeline, getConsentCoverage, getConsentSuppressionSummary, getConsentGateActivity, getConsentWindowConfig, getAttributionByChannel, getAttributionReconciliation, getChannelRoas, getCapiFeedbackSummary, getCapiFeedbackEvents, getCapiFeedbackDeletions } from '../../analytics/index.js';
 import { getDataQualitySummary } from '../../data-quality/index.js';
+import { getCustomer360 } from '../../identity/index.js';
 import { askBrain } from '../../ai/index.js';
 import { ResolverClient } from '@brain/ai-gateway-client';
 import type { AttributionModelId } from '@brain/metric-engine';
@@ -1212,6 +1214,72 @@ export function registerBffRoutes(
         request_id: requestId,
         data: snapshot,
       });
+    },
+  );
+
+  // ── GET /api/v1/identity/customer — Customer 360 read (P0-C, slice 1) ─────────
+  /**
+   * GET /api/v1/identity/customer?brain_id=<uuid>
+   *
+   * Returns the resolved customer profile (lifecycle + consent), its linked identifiers
+   * (HASHED prefix only — never raw PII, I-S02), and merge history, for the active brand.
+   *
+   * Brand from session (D-1): brand_id comes from auth.brandId, NEVER from the request.
+   * Reads via the identity module → @brain/db DbPool (RLS-enforced under brain_app).
+   */
+  fastify.get(
+    '/api/v1/identity/customer',
+    {
+      preHandler: [bffProtectedPreHandler],
+      schema: {
+        querystring: {
+          type: 'object',
+          properties: {
+            brain_id: {
+              type: 'string',
+              pattern: '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$',
+            },
+          },
+          required: ['brain_id'],
+          additionalProperties: false,
+        },
+        attachValidation: true,
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+
+      const validationError = (request as FastifyRequest & { validationError?: Error }).validationError;
+      if (validationError) {
+        return reply.code(400).send({
+          request_id: requestId,
+          error: { code: 'INVALID_BRAIN_ID', message: 'brain_id must be a UUID.' },
+        });
+      }
+
+      const auth = (request as AuthenticatedRequest).auth;
+      const { brain_id } = request.query as { brain_id: string };
+
+      // Honest empty: no active brand → not_found (no brand to scope the lookup to).
+      if (!auth.brandId) {
+        return reply.send({
+          request_id: requestId,
+          data: { state: 'not_found', brain_id },
+        });
+      }
+
+      if (!pool) {
+        return reply.code(503).send({
+          request_id: requestId,
+          error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' },
+        });
+      }
+
+      const result: ContractCustomer360 = await getCustomer360(auth.brandId, brain_id, requestId, {
+        pool,
+      });
+
+      return reply.send({ request_id: requestId, data: result });
     },
   );
 

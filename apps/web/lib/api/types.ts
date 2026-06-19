@@ -34,6 +34,10 @@ export type {
   AskBrainResult as AskBrainResponse,
   JourneyChannel,
   LifecycleState as OrderLifecycleState,
+  Customer360 as Customer360Response,
+  Customer360Profile,
+  Customer360Identifier,
+  Customer360Merge,
 } from '@brain/contracts';
 
 // Local import for the names referenced WITHIN this file (re-exports above are not in local scope).

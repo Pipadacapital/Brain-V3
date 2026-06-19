@@ -6,8 +6,9 @@
  * Query keys are prefixed with 'identity' so they auto-invalidate on brand switch when
  * brand-switcher.tsx invalidates by prefix. Customer 360 is the first slice.
  */
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { identityApi } from '@/lib/api/client';
+import type { ErasureResultResponse } from '@/lib/api/types';
 
 export const IDENTITY_QUERY_KEY = ['identity'] as const;
 
@@ -31,5 +32,20 @@ export function useVaultCoverage() {
     queryKey: [...IDENTITY_QUERY_KEY, 'vault-coverage'],
     queryFn: () => identityApi.getVaultCoverage(),
     staleTime: 60_000,
+  });
+}
+
+/**
+ * useEraseCustomer — DPDP right-to-deletion mutation. On success, invalidates identity
+ * queries so the Customer 360 view + vault coverage reflect the erasure.
+ */
+export function useEraseCustomer() {
+  const qc = useQueryClient();
+  return useMutation<ErasureResultResponse, unknown, string>({
+    mutationKey: [...IDENTITY_QUERY_KEY, 'erase-customer'],
+    mutationFn: (brainId: string) => identityApi.eraseCustomer(brainId),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: IDENTITY_QUERY_KEY });
+    },
   });
 }

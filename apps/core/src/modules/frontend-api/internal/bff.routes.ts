@@ -69,6 +69,7 @@ import type {
   AskBrainResult as ContractAskBrainResult,
   Customer360 as ContractCustomer360,
   VaultCoverage as ContractVaultCoverage,
+  ErasureResult as ContractErasureResult,
 } from '@brain/contracts';
 import { jtiFromJwt, csrfTokenForSession } from './csrf.js';
 import type { RateLimiter } from '../../workspace-access/internal/infrastructure/rate-limiter.js';
@@ -76,7 +77,7 @@ import { loginFailKeySync, loginIpKey, registerIpKey } from '../../workspace-acc
 import type { Pool as PgPool } from 'pg';
 import { getRevenueMetrics, getRevenueTimeseries, getKpiSummary, getRecognitionBreakdown, getRecentActivity, getOrdersTimeseries, getOrderStats, getDataHealth, getSettlementSummary, getTrackingHealth, getRecentEvents, getAdSpendTimeseries, getBlendedRoas, getCodRtoRates, getCodMix, getCheckoutFunnel, getOrderStatusMix, getJourneyFirstTouchMix, getJourneyStitchRate, getJourneyTimeline, getConsentCoverage, getConsentSuppressionSummary, getConsentGateActivity, getConsentWindowConfig, getAttributionByChannel, getAttributionReconciliation, getChannelRoas, getCapiFeedbackSummary, getCapiFeedbackEvents, getCapiFeedbackDeletions } from '../../analytics/index.js';
 import { getDataQualitySummary } from '../../data-quality/index.js';
-import { getCustomer360 } from '../../identity/index.js';
+import { getCustomer360, eraseCustomer } from '../../identity/index.js';
 import type { ContactPiiVaultService } from '../../identity/index.js';
 import { askBrain } from '../../ai/index.js';
 import { ResolverClient } from '@brain/ai-gateway-client';
@@ -1315,6 +1316,66 @@ export function registerBffRoutes(
 
       const coverage: ContractVaultCoverage = await vaultService.getCoverage(auth.brandId);
       return reply.send({ request_id: requestId, data: coverage });
+    },
+  );
+
+  // ── POST /api/v1/identity/customer/erase — DPDP right-to-deletion (P0-C) ──────
+  /**
+   * POST /api/v1/identity/customer/erase  body: { brain_id: <uuid> }
+   *
+   * Erases ONE customer for the active brand: hard-deletes the contact_pii vault rows,
+   * tombstones identity_link, marks the customer 'erased', audits the action. State-changing
+   * → CSRF-enforced via bffProtectedPreHandler. Brand from session (D-1) — a brain_id from
+   * another brand erases nothing (the SECURITY DEFINER fn is scoped to brand_id + brain_id).
+   */
+  fastify.post(
+    '/api/v1/identity/customer/erase',
+    {
+      preHandler: [bffProtectedPreHandler],
+      schema: {
+        body: {
+          type: 'object',
+          properties: {
+            brain_id: {
+              type: 'string',
+              pattern: '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$',
+            },
+          },
+          required: ['brain_id'],
+          additionalProperties: false,
+        },
+        attachValidation: true,
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+
+      const validationError = (request as FastifyRequest & { validationError?: Error }).validationError;
+      if (validationError) {
+        return reply.code(400).send({
+          request_id: requestId,
+          error: { code: 'INVALID_BRAIN_ID', message: 'brain_id must be a UUID.' },
+        });
+      }
+
+      const auth = (request as AuthenticatedRequest).auth;
+      const { brain_id } = request.body as { brain_id: string };
+
+      if (!auth.brandId) {
+        return reply.code(409).send({
+          request_id: requestId,
+          error: { code: 'NO_ACTIVE_BRAND', message: 'Select a brand first.' },
+        });
+      }
+      if (!rawPool) {
+        return reply.code(503).send({
+          request_id: requestId,
+          error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' },
+        });
+      }
+
+      const result: ContractErasureResult = await eraseCustomer(auth.brandId, brain_id, rawPool);
+      return reply.send({ request_id: requestId, data: result });
     },
   );
 

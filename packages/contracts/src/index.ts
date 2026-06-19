@@ -400,6 +400,7 @@ export {
   Customer360MergeSchema,
   Customer360Schema,
   VaultCoverageSchema,
+  ErasureResultSchema,
 } from './api/identity.api.v1.js';
 export type {
   Customer360Profile,
@@ -407,4 +408,5 @@ export type {
   Customer360Merge,
   Customer360,
   VaultCoverage,
+  ErasureResult,
 } from './api/identity.api.v1.js';

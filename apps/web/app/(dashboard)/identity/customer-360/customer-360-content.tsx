@@ -30,7 +30,8 @@ import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
 import { EmptyState } from '@/components/ui/empty-state';
-import { useCustomer360 } from '@/lib/hooks/use-identity';
+import { Trash2, AlertTriangle } from 'lucide-react';
+import { useCustomer360, useEraseCustomer } from '@/lib/hooks/use-identity';
 import type { Customer360Identifier, Customer360Merge } from '@/lib/api/types';
 
 function ConsentBadge({ on, label }: { on: boolean; label: string }) {
@@ -51,7 +52,9 @@ function ConsentBadge({ on, label }: { on: boolean; label: string }) {
 export function Customer360Content() {
   const [input, setInput] = React.useState('');
   const [submittedId, setSubmittedId] = React.useState('');
+  const [confirming, setConfirming] = React.useState(false);
   const { data, isLoading, isFetching, error, refetch } = useCustomer360(submittedId);
+  const erase = useEraseCustomer();
 
   function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -216,6 +219,52 @@ export function Customer360Content() {
                 )}
               </CardContent>
             </Card>
+
+            {/* Danger zone — DPDP right-to-deletion */}
+            {data.customer.lifecycle_state !== 'erased' && (
+              <Card className="border-destructive/40">
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2 text-destructive">
+                    <AlertTriangle className="h-5 w-5" aria-hidden="true" />
+                    DPDP erasure
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <p className="text-sm text-muted-foreground">
+                    Permanently delete this customer&apos;s stored email/phone, deactivate their
+                    identifiers, and mark them erased. This cannot be undone.
+                  </p>
+                  {erase.data?.erased ? (
+                    <p className="text-sm font-medium text-emerald-700">
+                      Erased — {erase.data.contact_pii_deleted} PII record(s) deleted,{' '}
+                      {erase.data.links_tombstoned} identifier(s) deactivated. Re-look-up to refresh.
+                    </p>
+                  ) : confirming ? (
+                    <div className="flex flex-wrap items-center gap-3">
+                      <span className="text-sm font-medium">Erase this customer permanently?</span>
+                      <Button
+                        variant="destructive"
+                        disabled={erase.isPending}
+                        onClick={() => erase.mutate(data.customer.brain_id)}
+                      >
+                        {erase.isPending ? 'Erasing…' : 'Confirm erase'}
+                      </Button>
+                      <Button variant="outline" disabled={erase.isPending} onClick={() => setConfirming(false)}>
+                        Cancel
+                      </Button>
+                    </div>
+                  ) : (
+                    <Button variant="destructive" onClick={() => setConfirming(true)}>
+                      <Trash2 className="mr-2 h-4 w-4" aria-hidden="true" />
+                      Erase customer (DPDP)
+                    </Button>
+                  )}
+                  {erase.isError ? (
+                    <p className="text-sm text-destructive">Erase failed — please try again.</p>
+                  ) : null}
+                </CardContent>
+              </Card>
+            )}
           </div>
         )}
       </div>

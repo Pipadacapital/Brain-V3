@@ -32,6 +32,7 @@ import {
   AskBrainResultSchema,
   Customer360Schema,
   VaultCoverageSchema,
+  ErasureResultSchema,
 } from '@brain/contracts';
 
 import type {
@@ -113,6 +114,7 @@ import type {
   AskBrainResponse,
   Customer360Response,
   VaultCoverageResponse,
+  ErasureResultResponse,
 } from './types';
 
 /** All BFF routes proxied through Next.js API routes → frontend-api module */
@@ -1574,5 +1576,14 @@ export const identityApi = {
   getVaultCoverage: async (): Promise<VaultCoverageResponse> => {
     const env = await bffFetch<BffEnvelope<unknown>>('/v1/identity/vault-coverage');
     return parseData(VaultCoverageSchema, env);
+  },
+
+  /** POST /api/v1/identity/customer/erase — DPDP right-to-deletion for one customer. */
+  eraseCustomer: async (brainId: string): Promise<ErasureResultResponse> => {
+    const env = await bffFetch<BffEnvelope<unknown>>('/v1/identity/customer/erase', {
+      method: 'POST',
+      body: JSON.stringify({ brain_id: brainId }),
+    });
+    return parseData(ErasureResultSchema, env);
   },
 };

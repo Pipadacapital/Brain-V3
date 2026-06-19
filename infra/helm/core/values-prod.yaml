@@ -1,0 +1,19 @@
+replicaCount: 3
+
+image:
+  repository: REPLACE_WITH_ECR_REGISTRY/brain-core-prod
+  tag: latest
+
+envSecretName: core-env
+
+serviceAccount:
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/brain-core-prod
+
+resources:
+  requests:
+    cpu: 500m
+    memory: 1Gi
+  limits:
+    cpu: "2"
+    memory: 2Gi

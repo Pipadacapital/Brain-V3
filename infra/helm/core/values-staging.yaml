@@ -1,0 +1,19 @@
+replicaCount: 1
+
+image:
+  repository: REPLACE_WITH_ECR_REGISTRY/brain-core-staging
+  tag: latest
+
+envSecretName: core-env
+
+serviceAccount:
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/brain-core-staging
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: "1"
+    memory: 1Gi

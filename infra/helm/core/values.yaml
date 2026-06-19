@@ -1,0 +1,40 @@
+# Default values for the core chart. Overridden by values-staging.yaml / values-prod.yaml.
+replicaCount: 2
+
+image:
+  repository: REPLACE_WITH_ECR_REGISTRY/brain-core
+  tag: latest
+  digest: ""
+  pullPolicy: IfNotPresent
+
+service:
+  enabled: true
+  type: ClusterIP
+  port: 80
+  targetPort: 3001
+
+probes:
+  enabled: true
+  path: /health           # core exposes a single /health endpoint
+  readinessPath: /health
+
+# Secret (External Secrets ← AWS Secrets Manager) with DATABASE_URL, REDIS_URL,
+# STARROCKS_*, KAFKA/REDPANDA brokers, AI gateway + connector secrets, etc.
+envSecretName: ""
+
+env:
+  - name: SERVICE_NAME
+    value: core
+  - name: PORT
+    value: "3001"
+
+serviceAccount:
+  annotations: {}   # IRSA role for AWS Secrets Manager access (set per env)
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: "2"
+    memory: 1Gi

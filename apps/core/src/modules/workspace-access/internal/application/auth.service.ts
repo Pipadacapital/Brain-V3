@@ -58,6 +58,36 @@ const EMPTY_CONTEXT: ActiveContext = {
   onboardingStatus: null,
 };
 
+/** The membership fields brand-resolution needs (a structural subset of Membership). */
+export interface ResolvableMembership {
+  brandId: string | null;
+  organizationId: string;
+  roleCode: RoleCode;
+}
+
+/**
+ * selectActiveContext — the PURE brand-resolution decision (no DB; unit-testable).
+ *
+ * Picks the FIRST non-null membership in priority order. The caller passes the preferred-workspace
+ * membership ahead of the any-workspace fallback, so a fully-onboarded user resolves to a brand-level
+ * membership (minting a real brand_id into the session JWT) rather than the brand-less org membership
+ * (brand_id=null, which would break every brand-scoped surface — the safety property this guards).
+ * No membership → EMPTY_CONTEXT (all-null). onboardingStatus comes from the resolved org.
+ */
+export function selectActiveContext(
+  candidatesInPriorityOrder: ReadonlyArray<ResolvableMembership | null>,
+  onboardingStatus: OnboardingStatus | null,
+): ActiveContext {
+  const m = candidatesInPriorityOrder.find((c): c is ResolvableMembership => c != null);
+  if (!m) return EMPTY_CONTEXT;
+  return {
+    brandId: m.brandId,
+    workspaceId: m.organizationId,
+    role: m.roleCode,
+    onboardingStatus,
+  };
+}
+
 // ── Argon2id parameters (NN-5 / OWASP 2025 minimum) ──────────────────────────
 
 export const ARGON2_PARAMS = {
@@ -695,30 +725,24 @@ export class AuthService {
       const memberRepo = new MembershipRepository(client);
       const orgRepo = new OrganizationRepository(client);
 
-      // Prefer a brand-level membership within the preferred workspace (so a
-      // fully-onboarded user resolves to {brand, role}, not the brand-less org
-      // membership which would mint brand_id=null and break brand-scoped surfaces).
-      let m = preferredWorkspaceId
+      // Prefer a brand-level membership within the preferred workspace (so a fully-onboarded user
+      // resolves to {brand, role}, not the brand-less org membership which would mint brand_id=null
+      // and break brand-scoped surfaces). Lazy: only fetch the fallback when there's no preferred.
+      const preferred = preferredWorkspaceId
         ? await memberRepo.findActiveByUserAndOrg(userId, preferredWorkspaceId, { correlationId, userId, workspaceId: preferredWorkspaceId })
         : null;
+      const fallback = preferred ? null : await memberRepo.findActiveByUser(userId, { correlationId, userId });
 
-      if (!m) {
-        m = await memberRepo.findActiveByUser(userId, { correlationId, userId });
-      }
+      const chosen = preferred ?? fallback;
+      if (!chosen) return EMPTY_CONTEXT;
 
-      if (!m) return EMPTY_CONTEXT;
-
-      const org = await orgRepo.findById(m.organizationId, {
+      const org = await orgRepo.findById(chosen.organizationId, {
         correlationId,
-        workspaceId: m.organizationId,
+        workspaceId: chosen.organizationId,
       });
 
-      return {
-        brandId: m.brandId,
-        workspaceId: m.organizationId,
-        role: m.roleCode,
-        onboardingStatus: org?.onboardingStatus ?? null,
-      };
+      // The resolution decision itself is pure + unit-tested (selectActiveContext).
+      return selectActiveContext([preferred, fallback], org?.onboardingStatus ?? null);
     } finally {
       client.release();
     }

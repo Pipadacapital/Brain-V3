@@ -1,0 +1,36 @@
+# Default values for the stream-worker chart. Overridden by values-staging.yaml / values-prod.yaml.
+# Headless Kafka/Redpanda consumer: NO Service, NO HTTP probes (it exposes no port).
+# k8s liveness should use a consumer-lag / process probe once the worker grows a health
+# endpoint (tracked follow-up — see the audit's observability findings).
+replicaCount: 2
+
+image:
+  repository: REPLACE_WITH_ECR_REGISTRY/brain-stream-worker
+  tag: latest
+  digest: ""
+  pullPolicy: IfNotPresent
+
+service:
+  enabled: false
+
+probes:
+  enabled: false
+
+# Secret (External Secrets ← AWS Secrets Manager). MUST contain a brain_app (NOT superuser)
+# DATABASE_URL so RLS is enforced (see apps/stream-worker/src/main.ts).
+envSecretName: ""
+
+env:
+  - name: SERVICE_NAME
+    value: stream-worker
+
+serviceAccount:
+  annotations: {}
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: "2"
+    memory: 1Gi

@@ -1,0 +1,6 @@
+apiVersion: v2
+name: stream-worker
+description: Brain stream-worker — Kafka/Redpanda consumer pipeline (headless, no HTTP port)
+type: application
+version: 0.1.0
+appVersion: "0.0.0"

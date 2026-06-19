@@ -1,0 +1,20 @@
+replicaCount: 1
+
+image:
+  repository: REPLACE_WITH_ECR_REGISTRY/brain-stream-worker-staging
+  tag: latest
+  digest: ""
+
+envSecretName: stream-worker-env
+
+serviceAccount:
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/brain-stream-worker-staging
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: "1"
+    memory: 1Gi

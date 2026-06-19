@@ -1,0 +1,6 @@
+apiVersion: v2
+name: core
+description: Brain core — API gateway / BFF + domain services (Fastify HTTP, :3001)
+type: application
+version: 0.1.0
+appVersion: "0.0.0"

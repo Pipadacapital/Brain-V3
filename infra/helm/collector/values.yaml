@@ -1,0 +1,42 @@
+# Default values for the collector chart. Overridden by values-staging.yaml / values-prod.yaml.
+replicaCount: 2
+
+image:
+  # CI bumps image.digest to the immutable ECR digest at deploy time.
+  repository: REPLACE_WITH_ECR_REGISTRY/brain-collector
+  tag: latest
+  digest: ""
+  pullPolicy: IfNotPresent
+
+service:
+  enabled: true
+  type: ClusterIP
+  port: 80
+  targetPort: 3001
+
+probes:
+  enabled: true
+  path: /healthz          # liveness + startup
+  readinessPath: /readyz  # readiness (gated on dependencies)
+
+# Name of a pre-provisioned Secret (External Secrets ← AWS Secrets Manager) holding
+# DATABASE_URL, REDIS_URL, REDPANDA_BROKERS, etc. Empty in defaults; set per env.
+envSecretName: ""
+
+# Literal, non-secret env. Secrets come via envSecretName.
+env:
+  - name: SERVICE_NAME
+    value: collector
+  - name: PORT
+    value: "3001"
+
+serviceAccount:
+  annotations: {}   # set eks.amazonaws.com/role-arn per env (IRSA)
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi

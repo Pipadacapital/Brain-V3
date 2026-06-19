@@ -1,0 +1,20 @@
+replicaCount: 1
+
+image:
+  repository: REPLACE_WITH_ECR_REGISTRY/brain-collector-staging
+  tag: latest
+  digest: ""
+
+envSecretName: collector-env
+
+serviceAccount:
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/brain-collector-staging
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi

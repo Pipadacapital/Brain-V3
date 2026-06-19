@@ -1,0 +1,39 @@
+# Default values for the web chart. Overridden by values-staging.yaml / values-prod.yaml.
+replicaCount: 2
+
+image:
+  repository: REPLACE_WITH_ECR_REGISTRY/brain-web
+  tag: latest
+  digest: ""
+  pullPolicy: IfNotPresent
+
+service:
+  enabled: true
+  type: ClusterIP
+  port: 80
+  targetPort: 3000
+
+probes:
+  enabled: true
+  path: /                 # SSR root; any non-5xx is healthy
+  readinessPath: /
+
+# Next.js needs the BFF base URL at runtime (BFF_BASE_URL / CORE_API_URL).
+envSecretName: ""
+
+env:
+  - name: NODE_ENV
+    value: production
+  - name: PORT
+    value: "3000"
+
+serviceAccount:
+  annotations: {}
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi

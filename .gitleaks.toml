@@ -59,6 +59,14 @@ regex = '''(?i)jwt[_\-\.]?(?:secret|key|signing)[\s]*[=:]+[\s]*['\"]?([A-Za-z0-9
 tags = ["jwt", "secret"]
 
 [[rules]]
+id = "brain-shopify-secret"
+description = "Shopify app shared secret / access token — rotate + use a non-prod dev app locally (SEC-10-2)"
+# Shopify token family: shpss_ (app shared secret), shpat_ (admin access token),
+# shpca_ (custom app), shppa_ (private app) — each followed by 32 hex chars.
+regex = '''shp(?:ss|at|ca|pa)_[a-fA-F0-9]{32}'''
+tags = ["shopify", "secret"]
+
+[[rules]]
 id = "brain-kms-key-arn"
 description = "Hardcoded KMS key ARN — use variable or Secrets Manager reference"
 # Note: this flags explicit ARNs with real account IDs in code (not in TF vars/outputs)

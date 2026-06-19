@@ -18,6 +18,7 @@ import type { Pool } from 'pg';
 import { gradeFreshness } from './grade.js';
 import type { DqCheckRow } from './writer.js';
 import { BRAND_PREDICATE, type SilverReader } from './silver-reader.js';
+import { log } from "../../log.js";
 
 const NIL_UUID = '00000000-0000-0000-0000-000000000000';
 
@@ -120,7 +121,7 @@ export async function freshnessCheck(
       rows.push(toRow(brandId, 'silver.order_state', raw ? new Date(raw) : null, now));
     } catch (err) {
       // Silver unreachable → honest D row, never a silent skip (the surface must show it).
-      console.error(`[dq:freshness] silver read failed brand=${brandId}`, err);
+      log.error(`silver read failed brand=${brandId}`, { err: err });
       rows.push({
         brandId,
         category: 'freshness',

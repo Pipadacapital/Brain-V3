@@ -18,6 +18,7 @@
  */
 
 import type { Redis } from 'ioredis';
+import { log } from "../../../../../../log.js";
 
 export const REPLAY_WINDOW_SECONDS = 5 * 60;       // 5-minute age check
 export const DEDUP_TTL_SECONDS     = 10 * 60;      // 10-minute Redis TTL (window + margin)
@@ -55,12 +56,12 @@ export class RedisDedupAdapter {
       // Redis unavailable → FAIL-OPEN (see comment on isDuplicate above).
       // Emit a structured error log so the standard error-rate monitor fires.
       // No PII: eventId is an opaque Razorpay-generated string.
-      console.error(JSON.stringify({
-        msg: 'razorpay_dedup_redis_down',
-        event: 'redis_unavailable_fail_open',
-        level: 'error',
-        err: err instanceof Error ? err.message : String(err),
-      }));
+      log.error(JSON.stringify({
+                msg: 'razorpay_dedup_redis_down',
+                event: 'redis_unavailable_fail_open',
+                level: 'error',
+                err: err instanceof Error ? err.message : String(err),
+              }));
       return false;
     }
   }

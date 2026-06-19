@@ -14,6 +14,7 @@
  */
 import type { SpoolRepository } from '../domain/ingest/repositories/spool.repository.js';
 import type { CollectorKafkaProducer } from '../infrastructure/kafka-producer.js';
+import { log } from "../log.js";
 
 export class DrainEventsUseCase {
   constructor(
@@ -41,7 +42,7 @@ export class DrainEventsUseCase {
       } catch (err) {
         // F-3 back-pressure: leave this row 'pending'. Redpanda may be down.
         // Log the error but do NOT throw — the drainer loop must continue to next tick.
-        console.error(`[drainer] produce failed for spool id=${entry.id.toString()}: ${String(err)}`);
+        log.error(`produce failed for spool id=${entry.id.toString()}: ${String(err)}`);
         // Stop processing this batch on first failure — producer reconnect may be needed.
         // Next tick the drainer will retry from the oldest pending row.
         break;

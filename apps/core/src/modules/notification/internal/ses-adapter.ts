@@ -1,3 +1,5 @@
+import { log } from "../../../log.js";
+
 /**
  * SES email adapter — M1 transactional email delivery.
  *
@@ -23,14 +25,14 @@ export interface EmailAdapter {
 /** Development adapter: logs to console only (no network call). */
 export class DevEmailAdapter implements EmailAdapter {
   async send(payload: EmailPayload): Promise<{ messageId: string }> {
-    console.info('[notification:dev-email]', {
-      to: payload.to.replace(/(.{1}).+@/, '$1***@'),
-      subject: payload.subject,
-      correlation_id: payload.correlationId,
-      note: 'DEV MODE: Email not sent. Check logs for token.',
-      // In dev we log the full text so developers can test the flow.
-      body_preview: payload.textBody.substring(0, 200),
-    });
+    log.info('', { detail: {
+            to: payload.to.replace(/(.{1}).+@/, '$1***@'),
+            subject: payload.subject,
+            correlation_id: payload.correlationId,
+            note: 'DEV MODE: Email not sent. Check logs for token.',
+            // In dev we log the full text so developers can test the flow.
+            body_preview: payload.textBody.substring(0, 200),
+          } });
     return { messageId: `dev-${Date.now()}` };
   }
 }

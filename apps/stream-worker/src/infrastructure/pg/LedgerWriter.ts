@@ -25,6 +25,7 @@
 
 import { Pool, PoolClient } from 'pg';
 import { createHash } from 'node:crypto';
+import { log } from "../../log.js";
 
 const VERSION = 'v1';
 
@@ -138,10 +139,8 @@ export class LedgerWriter {
 
       const inserted = (result.rowCount ?? 0) > 0;
       if (inserted) {
-        console.info(
-          `[ledger-writer] provisional_recognition brand=${order.brandId} ` +
-          `order=${order.orderId} amount=${order.amountMinor} ${order.currencyCode}`,
-        );
+        log.info(`[ledger-writer] provisional_recognition brand=${order.brandId} ` +
+                    `order=${order.orderId} amount=${order.amountMinor} ${order.currencyCode}`);
       }
       return inserted;
     } catch (err) {
@@ -249,10 +248,8 @@ export class LedgerWriter {
 
       const inserted = (result.rowCount ?? 0) > 0;
       if (inserted) {
-        console.info(
-          `[ledger-writer] ${reversalEventType} brand=${order.brandId} ` +
-          `order=${order.orderId} amount=${negativeAmountMinor} ${order.currencyCode}`,
-        );
+        log.info(`[ledger-writer] ${reversalEventType} brand=${order.brandId} ` +
+                    `order=${order.orderId} amount=${negativeAmountMinor} ${order.currencyCode}`);
       }
       return inserted;
     } catch (err) {
@@ -373,11 +370,9 @@ export class LedgerWriter {
 
       const inserted = (result.rowCount ?? 0) > 0;
       if (inserted) {
-        console.info(
-          `[ledger-writer] ${params.eventType} brand=${params.brandId} ` +
-          `order=${params.orderId} amount=${params.amountMinor} ${params.currencyCode} ` +
-          `reconciliation=${params.reconciliationType}`,
-        );
+        log.info(`[ledger-writer] ${params.eventType} brand=${params.brandId} ` +
+                    `order=${params.orderId} amount=${params.amountMinor} ${params.currencyCode} ` +
+                    `reconciliation=${params.reconciliationType}`);
       }
       return inserted;
     } catch (err) {
@@ -486,10 +481,8 @@ export class LedgerWriter {
 
       const inserted = (feeResult.rowCount ?? 0) + (taxResult.rowCount ?? 0);
       if (inserted > 0) {
-        console.info(
-          `[ledger-writer] fee+tax rows brand=${params.brandId} order=${params.orderId} ` +
-          `fee=${params.feeMinor} tax=${params.taxMinor} ${params.currencyCode} taxCode=${params.taxCode}`,
-        );
+        log.info(`[ledger-writer] fee+tax rows brand=${params.brandId} order=${params.orderId} ` +
+                    `fee=${params.feeMinor} tax=${params.taxMinor} ${params.currencyCode} taxCode=${params.taxCode}`);
       }
       return inserted;
     } catch (err) {
@@ -610,10 +603,8 @@ export class LedgerWriter {
       await client.query('COMMIT');
       const inserted = (result.rowCount ?? 0) > 0;
       if (inserted) {
-        console.info(
-          `[ledger-writer] ${params.eventType} brand=${params.brandId} ` +
-          `order=${params.orderId} amount=${params.amountMinor} ${params.currencyCode}`,
-        );
+        log.info(`[ledger-writer] ${params.eventType} brand=${params.brandId} ` +
+                    `order=${params.orderId} amount=${params.amountMinor} ${params.currencyCode}`);
       }
       return inserted;
     } catch (err) {
@@ -705,11 +696,9 @@ export class LedgerWriter {
 
       const inserted = (result.rowCount ?? 0) > 0;
       if (inserted) {
-        console.info(
-          `[ledger-writer] ad_spend brand=${params.brandId} platform=${params.platform} ` +
-          `level=${params.level} level_id=${params.levelId} stat_date=${params.statDate} ` +
-          `spend=${params.spendMinor} ${params.currencyCode}`,
-        );
+        log.info(`[ledger-writer] ad_spend brand=${params.brandId} platform=${params.platform} ` +
+                    `level=${params.level} level_id=${params.levelId} stat_date=${params.statDate} ` +
+                    `spend=${params.spendMinor} ${params.currencyCode}`);
       }
       return inserted;
     } catch (err) {

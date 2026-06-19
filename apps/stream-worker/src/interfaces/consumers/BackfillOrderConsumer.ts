@@ -31,6 +31,7 @@ import { Consumer, Kafka, EachMessagePayload } from 'kafkajs';
 import { ProcessEventUseCase, ProcessResult } from '../../application/ProcessEventUseCase.js';
 import { DlqProducer } from '../../infrastructure/kafka/DlqProducer.js';
 import { LedgerWriter, BackfillOrderForLedger } from '../../infrastructure/pg/LedgerWriter.js';
+import { log } from "../../log.js";
 
 const MAX_RETRY = 5;
 type RetryKey = string;
@@ -83,9 +84,7 @@ export class BackfillOrderConsumer {
               { topic, partition, offset: String(Number(offset) + 1) },
             ]);
             this.retryCount.delete(retryKey);
-            console.info(
-              `[backfill-consumer] DLQ (invalid) partition=${partition} offset=${offset} reason=${result.reason}`,
-            );
+            log.info(`DLQ (invalid) partition=${partition} offset=${offset} reason=${result.reason}`);
             return;
           }
 
@@ -104,9 +103,7 @@ export class BackfillOrderConsumer {
                 // New Bronze write but ledger write failed → must retry (throw)
                 throw ledgerErr;
               }
-              console.warn(
-                `[backfill-consumer] ledger write suppressed brand=${result.brandId} event=${result.eventId}: ${String(ledgerErr)}`,
-              );
+              log.warn(`ledger write suppressed brand=${result.brandId} event=${result.eventId}: ${String(ledgerErr)}`);
             }
           }
 
@@ -115,20 +112,15 @@ export class BackfillOrderConsumer {
             { topic, partition, offset: String(Number(offset) + 1) },
           ]);
           this.retryCount.delete(retryKey);
-          console.info(
-            `[backfill-consumer] ${result.outcome} brand=${result.brandId} ` +
-            `event=${result.eventId} partition=${partition} offset=${offset}`,
-          );
+          log.info(`[backfill-consumer] ${result.outcome} brand=${result.brandId} ` +
+                        `event=${result.eventId} partition=${partition} offset=${offset}`);
         } catch (err) {
           // Write error — do NOT commit offset (D-7). Increment retry counter.
           const current = (this.retryCount.get(retryKey) ?? 0) + 1;
           this.retryCount.set(retryKey, current);
 
-          console.error(
-            `[backfill-consumer] write error (attempt ${current}/${MAX_RETRY}) ` +
-            `partition=${partition} offset=${offset}`,
-            err,
-          );
+          log.error(`[backfill-consumer] write error (attempt ${current}/${MAX_RETRY}) ` +
+                        `partition=${partition} offset=${offset}`, { err: err });
 
           if (current >= MAX_RETRY) {
             try {
@@ -142,11 +134,9 @@ export class BackfillOrderConsumer {
                 { topic, partition, offset: String(Number(offset) + 1) },
               ]);
               this.retryCount.delete(retryKey);
-              console.warn(
-                `[backfill-consumer] DLQ (max retry) partition=${partition} offset=${offset}`,
-              );
+              log.warn(`DLQ (max retry) partition=${partition} offset=${offset}`);
             } catch (dlqErr) {
-              console.error('[backfill-consumer] DLQ produce failed — not committing offset', dlqErr);
+              log.error('DLQ produce failed — not committing offset', { err: dlqErr });
             }
           }
 
@@ -211,7 +201,7 @@ function extractLedgerOrder(
 
   // Validate amount_minor is a non-negative integer string (I-S07)
   if (!/^\d+$/.test(amountMinor)) {
-    console.warn(`[backfill-consumer] invalid amount_minor "${amountMinor}" — skipping ledger write`);
+    log.warn(`invalid amount_minor "${amountMinor}" — skipping ledger write`);
     return null;
   }
 

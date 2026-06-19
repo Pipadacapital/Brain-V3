@@ -40,6 +40,7 @@ import {
   enumerateConnectedConnectors,
   loadRun,
 } from '../sync-request-claimer/run.js';
+import { log } from "../../log.js";
 
 /** Hard floor on the interval — prevents a misconfigured env from stampeding providers. */
 export const MIN_INTERVAL_MS = 15_000;
@@ -56,26 +57,20 @@ export const DEFAULT_INTERVAL_MS = 45_000;
 export async function tick(pool: Pool): Promise<number> {
   const connectors = await enumerateConnectedConnectors(pool);
   const brandCount = new Set(connectors.map((c) => c.brand_id)).size;
-  console.info(
-    `[ingest-scheduler] tick start brands=${brandCount} connectors=${connectors.length}`,
-  );
+  log.info(`tick start brands=${brandCount} connectors=${connectors.length}`);
 
   let dispatched = 0;
   // SEQUENTIAL dispatch (never Promise.all) — rate-limit-safe; one provider at a time.
   for (const connector of connectors) {
     const run = await loadRun(connector.provider);
     if (!run) {
-      console.warn(
-        `[ingest-scheduler] no repull run() for provider=${connector.provider} ` +
-          `connector=${connector.connector_instance_id}`,
-      );
+      log.warn(`[ingest-scheduler] no repull run() for provider=${connector.provider} ` +
+                  `connector=${connector.connector_instance_id}`);
       continue;
     }
 
-    console.info(
-      `[ingest-scheduler] dispatched provider=${connector.provider} ` +
-        `brand=${connector.brand_id} connector=${connector.connector_instance_id}`,
-    );
+    log.info(`[ingest-scheduler] dispatched provider=${connector.provider} ` +
+              `brand=${connector.brand_id} connector=${connector.connector_instance_id}`);
     try {
       // Same-code-path as the on-demand claimer. run()'s OWN FOR UPDATE SKIP LOCKED
       // overlap-lock guarantees no double-run with a manual click or a previous tick.
@@ -84,17 +79,12 @@ export async function tick(pool: Pool): Promise<number> {
     } catch (err) {
       // FAIL-ISOLATION: one bad/slow connector is logged and skipped — the loop
       // continues. run() persists connector_sync_status.state='error' itself.
-      console.error(
-        `[ingest-scheduler] repull run failed provider=${connector.provider} ` +
-          `connector=${connector.connector_instance_id}`,
-        err,
-      );
+      log.error(`[ingest-scheduler] repull run failed provider=${connector.provider} ` +
+                  `connector=${connector.connector_instance_id}`, { err: err });
     }
   }
 
-  console.info(
-    `[ingest-scheduler] tick done dispatched=${dispatched}/${connectors.length}`,
-  );
+  log.info(`tick done dispatched=${dispatched}/${connectors.length}`);
   return dispatched;
 }
 
@@ -115,9 +105,7 @@ export function startIngestScheduler(
 ): IngestScheduler {
   const effectiveInterval = Math.max(intervalMs, MIN_INTERVAL_MS);
   if (effectiveInterval !== intervalMs) {
-    console.warn(
-      `[ingest-scheduler] interval ${intervalMs}ms below floor — clamped to ${effectiveInterval}ms`,
-    );
+    log.warn(`interval ${intervalMs}ms below floor — clamped to ${effectiveInterval}ms`);
   }
 
   let running = true;
@@ -131,7 +119,7 @@ export function startIngestScheduler(
           await tick(pool);
         } catch (err) {
           // Tick-level guard (enumerate failure etc.) — never lets the loop die.
-          console.error('[ingest-scheduler] tick error', err);
+          log.error('tick error', { err: err });
         } finally {
           inFlight = false;
         }

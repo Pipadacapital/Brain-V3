@@ -1,3 +1,5 @@
+import { log } from "../../log.js";
+
 /**
  * google-ads-searchstream-client.ts — Google Ads API SearchStream client (ADR-AD-3 / ADR-AD-7).
  *
@@ -228,9 +230,7 @@ export class GoogleAdsSearchStreamClient {
           );
         }
         const backoffMs = Math.min(30_000, 1000 * 2 ** attempt);
-        console.info(
-          `[google-ads-client] QPS throttled — backoff ${backoffMs}ms (attempt ${attempt + 1}/${this.maxBackoffRetries})`,
-        );
+        log.info(`QPS throttled — backoff ${backoffMs}ms (attempt ${attempt + 1}/${this.maxBackoffRetries})`);
         await sleep(backoffMs);
         continue;
       }

@@ -43,6 +43,7 @@ import {
   upsertCursorValue,
   setSyncState,
 } from '../meta-spend-repull/run.js';
+import { log } from "../../log.js";
 
 const DB_URL =
   process.env['BRAIN_APP_DATABASE_URL'] ??
@@ -81,14 +82,14 @@ export async function run(targetConnectorInstanceId?: string): Promise<void> {
 
   try {
     await producer.connect();
-    console.info(`[google-ads-spend-repull] starting — topic=${LIVE_TOPIC} brokers=${BROKERS.join(',')}`);
+    log.info(`starting — topic=${LIVE_TOPIC} brokers=${BROKERS.join(',')}`);
 
     const connectors = await enumerateGoogleConnectors(pool, targetConnectorInstanceId);
     if (connectors.length === 0) {
-      console.info('[google-ads-spend-repull] no connected google_ads connectors found — exiting');
+      log.info('no connected google_ads connectors found — exiting');
       return;
     }
-    console.info(`[google-ads-spend-repull] found ${connectors.length} connector(s) to re-pull`);
+    log.info(`found ${connectors.length} connector(s) to re-pull`);
 
     for (const connector of connectors) {
       await repullConnector({ connector, pool, producer });
@@ -131,11 +132,11 @@ async function repullConnector(params: RepullParams): Promise<void> {
   const { connector, pool, producer } = params;
   const { connector_instance_id: ciId, brand_id: brandId, secret_ref: secretRef } = connector;
 
-  console.info(`[google-ads-spend-repull] connector=${ciId} brand=${brandId}`);
+  log.info(`connector=${ciId} brand=${brandId}`);
 
   const creds = await resolveGoogleCredentials(secretRef, connector.ad_account_id);
   if (!creds) {
-    console.error(`[google-ads-spend-repull] connector=${ciId} — credentials not found (RECONNECT_REQUIRED)`);
+    log.error(`connector=${ciId} — credentials not found (RECONNECT_REQUIRED)`);
     return;
   }
 
@@ -143,7 +144,7 @@ async function repullConnector(params: RepullParams): Promise<void> {
 
   const lockAcquired = await acquireCursorLock(pool, brandId, ciId, CURSOR_RESOURCE);
   if (!lockAcquired) {
-    console.info(`[google-ads-spend-repull] connector=${ciId} — cursor locked, skipping`);
+    log.info(`connector=${ciId} — cursor locked, skipping`);
     return;
   }
 
@@ -155,7 +156,7 @@ async function repullConnector(params: RepullParams): Promise<void> {
       await setSyncState(pool, brandId, ciId, 'error', 'google auth error — RECONNECT_REQUIRED');
       return;
     }
-    console.error(`[google-ads-spend-repull] connector=${ciId} auth failed`, err);
+    log.error(`connector=${ciId} auth failed`, { err: err });
     await setSyncState(pool, brandId, ciId, 'error', 'auth failed');
     return;
   }
@@ -174,7 +175,7 @@ async function repullConnector(params: RepullParams): Promise<void> {
       const s = String(err);
       if (s.includes(GOOGLE_RESOURCE_EXHAUSTED) || s.includes(GOOGLE_RESOURCE_TEMPORARILY_EXHAUSTED)) {
         // ADR-AD-7: daily quota (or exhausted QPS backoff) → mark RateLimited + ABORT run.
-        console.error(`[google-ads-spend-repull] connector=${ciId} RateLimited — aborting run (retry next)`);
+        log.error(`connector=${ciId} RateLimited — aborting run (retry next)`);
         await setSyncState(pool, brandId, ciId, 'error', 'RateLimited — retry next run');
         return;
       }
@@ -182,7 +183,7 @@ async function repullConnector(params: RepullParams): Promise<void> {
         await setSyncState(pool, brandId, ciId, 'error', 'google auth error — RECONNECT_REQUIRED');
         return;
       }
-      console.error(`[google-ads-spend-repull] connector=${ciId} level=${level} stream error`, err);
+      log.error(`connector=${ciId} level=${level} stream error`, { err: err });
       continue; // non-fatal per level
     }
 
@@ -195,7 +196,7 @@ async function repullConnector(params: RepullParams): Promise<void> {
   }
 
   await setSyncState(pool, brandId, ciId, 'connected', null);
-  console.info(`[google-ads-spend-repull] connector=${ciId} COMPLETED totalEmitted=${totalEmitted}`);
+  log.info(`connector=${ciId} COMPLETED totalEmitted=${totalEmitted}`);
 }
 
 interface EmitParams {
@@ -239,7 +240,7 @@ async function emitRows(p: EmitParams): Promise<{ emitted: number; maxDate: stri
 
   if (messages.length > 0) {
     await p.producer.send({ topic: LIVE_TOPIC, messages });
-    console.info(`[google-ads-spend-repull] connector=${p.ciId} emitted=${messages.length}`);
+    log.info(`connector=${p.ciId} emitted=${messages.length}`);
   }
   return { emitted: messages.length, maxDate };
 }
@@ -294,7 +295,7 @@ function addDays(d: Date, days: number): Date {
 if (process.argv[1]?.endsWith('run.ts') || process.argv[1]?.endsWith('run.js')) {
   const ciArg = process.argv[2];
   run(ciArg).catch((err) => {
-    console.error('[google-ads-spend-repull] fatal', err);
+    log.error('fatal', { err: err });
     process.exit(1);
   });
 }

@@ -42,6 +42,7 @@ import {
 import { RazorpaySettlementsClient, type RazorpayApiCredentials } from './razorpay-settlements-client.js';
 import { SaltProvider, LocalSecretsProvider } from '../../infrastructure/secrets/SaltProvider.js';
 import { resolveSaltHex } from '@brain/identity-core';
+import { log } from "../../log.js";
 
 // ── Configuration ─────────────────────────────────────────────────────────────
 
@@ -109,7 +110,7 @@ export async function run(targetConnectorInstanceId?: string): Promise<void> {
 
   try {
     await producer.connect();
-    console.info(`[razorpay-repull] starting — topic=${LIVE_TOPIC} brokers=${BROKERS.join(',')}`);
+    log.info(`starting — topic=${LIVE_TOPIC} brokers=${BROKERS.join(',')}`);
 
     // ── MB-5: enumerate via SECURITY DEFINER fn (no GUC at this point) ──────
     // list_razorpay_connectors_for_settlement_repull() runs as 'brain' (SECURITY DEFINER),
@@ -117,11 +118,11 @@ export async function run(targetConnectorInstanceId?: string): Promise<void> {
     const connectors = await enumerateConnectors(pool, targetConnectorInstanceId);
 
     if (connectors.length === 0) {
-      console.info('[razorpay-repull] no connected Razorpay connectors found — exiting');
+      log.info('no connected Razorpay connectors found — exiting');
       return;
     }
 
-    console.info(`[razorpay-repull] found ${connectors.length} connector(s) to re-pull`);
+    log.info(`found ${connectors.length} connector(s) to re-pull`);
 
     for (const connector of connectors) {
       await repullConnector({ connector, pool, producer, saltProvider });
@@ -169,12 +170,12 @@ async function repullConnector(params: RepullParams): Promise<void> {
   const { connector, pool, producer, saltProvider } = params;
   const { connector_instance_id: ciId, brand_id: brandId, secret_ref: secretRef } = connector;
 
-  console.info(`[razorpay-repull] connector=${ciId} brand=${brandId}`);
+  log.info(`connector=${ciId} brand=${brandId}`);
 
   // ── Resolve Razorpay credentials from secret bundle (C2 — 3 creds in one JSON blob) ─
   const creds = await resolveRazorpayCredentials(secretRef);
   if (!creds) {
-    console.error(`[razorpay-repull] connector=${ciId} — credentials not found (RECONNECT_REQUIRED)`);
+    log.error(`connector=${ciId} — credentials not found (RECONNECT_REQUIRED)`);
     return;
   }
 
@@ -183,7 +184,7 @@ async function repullConnector(params: RepullParams): Promise<void> {
   try {
     saltHex = await saltProvider.saltHexForBrand(brandId);
   } catch (e) {
-    console.error(`[razorpay-repull] connector=${ciId} — salt fetch failed`, e);
+    log.error(`connector=${ciId} — salt fetch failed`, { detail: e });
     return;
   }
 
@@ -208,16 +209,13 @@ async function repullConnector(params: RepullParams): Promise<void> {
       });
       totalEmitted += emitted;
     } catch (err) {
-      console.error(
-        `[razorpay-repull] connector=${ciId} cursor=${cursorConfig.resource} error`,
-        err,
-      );
+      log.error(`connector=${ciId} cursor=${cursorConfig.resource} error`, { err: err });
       // Non-fatal: one cursor failure doesn't abort the other cursors
     }
   }
 
   await setSyncState(pool, brandId, ciId, 'connected', null);
-  console.info(`[razorpay-repull] connector=${ciId} COMPLETED totalEmitted=${totalEmitted}`);
+  log.info(`connector=${ciId} COMPLETED totalEmitted=${totalEmitted}`);
 }
 
 // ── Per-cursor resource re-pull ───────────────────────────────────────────────
@@ -241,9 +239,7 @@ async function repullCursorResource(params: CursorRepullParams): Promise<number>
   // One lock per resource (C6 — 3 independent locks per brand).
   const lockAcquired = await acquireCursorLock(pool, brandId, ciId, resource);
   if (!lockAcquired) {
-    console.info(
-      `[razorpay-repull] connector=${ciId} cursor=${resource} — locked by another worker, skipping`,
-    );
+    log.info(`connector=${ciId} cursor=${resource} — locked by another worker, skipping`);
     return 0;
   }
 
@@ -258,9 +254,7 @@ async function repullCursorResource(params: CursorRepullParams): Promise<number>
   const fromTs = priorCursorValue ? Math.max(parseInt(priorCursorValue, 10), windowStartTs) : windowStartTs;
   const toTs = nowTs;
 
-  console.info(
-    `[razorpay-repull] connector=${ciId} cursor=${resource} from=${fromTs} to=${toTs} (${label})`,
-  );
+  log.info(`connector=${ciId} cursor=${resource} from=${fromTs} to=${toTs} (${label})`);
 
   // ── Page loop ─────────────────────────────────────────────────────────────
   let skip = 0;
@@ -274,11 +268,11 @@ async function repullCursorResource(params: CursorRepullParams): Promise<number>
     } catch (err) {
       const msg = String(err);
       if (msg.startsWith('RAZORPAY_AUTH_ERROR')) {
-        console.error(`[razorpay-repull] connector=${ciId} 401 auth error — aborting cursor=${resource}`);
+        log.error(`connector=${ciId} 401 auth error — aborting cursor=${resource}`);
         await setSyncState(pool, brandId, ciId, 'error', '401 auth error — RECONNECT_REQUIRED');
         return recordsProcessed;
       }
-      console.error(`[razorpay-repull] connector=${ciId} cursor=${resource} page error`, err);
+      log.error(`connector=${ciId} cursor=${resource} page error`, { err: err });
       throw err;
     }
 
@@ -335,9 +329,7 @@ async function repullCursorResource(params: CursorRepullParams): Promise<number>
     }
 
     await producer.send({ topic: LIVE_TOPIC, messages });
-    console.info(
-      `[razorpay-repull] connector=${ciId} cursor=${resource} skip=${skip} emitted=${messages.length} total=${recordsProcessed}`,
-    );
+    log.info(`connector=${ciId} cursor=${resource} skip=${skip} emitted=${messages.length} total=${recordsProcessed}`);
 
     // ── Advance cursor after each page (checkpoint) ──────────────────────────
     if (maxSettledAt !== null) {
@@ -348,9 +340,7 @@ async function repullCursorResource(params: CursorRepullParams): Promise<number>
     skip += 100;   // PAGE_SIZE from razorpay-settlements-client
   }
 
-  console.info(
-    `[razorpay-repull] connector=${ciId} cursor=${resource} DONE records=${recordsProcessed}`,
-  );
+  log.info(`connector=${ciId} cursor=${resource} DONE records=${recordsProcessed}`);
 
   return recordsProcessed;
 }
@@ -468,7 +458,7 @@ async function upsertCursorValue(
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK').catch(() => undefined);
-    console.error(`[razorpay-repull] cursor upsert failed (non-fatal) resource=${resource}`, err);
+    log.error(`cursor upsert failed (non-fatal) resource=${resource}`, { err: err });
   } finally {
     client.release();
   }
@@ -513,7 +503,7 @@ async function setSyncState(
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK').catch(() => undefined);
-    console.error(`[razorpay-repull] sync_status update failed (non-fatal)`, err);
+    log.error(`sync_status update failed (non-fatal)`, { err: err });
   } finally {
     client.release();
   }
@@ -573,7 +563,7 @@ if (
 ) {
   const ciArg = process.argv[2]; // optional: connector_instance_id (dev trigger, MB-6)
   run(ciArg).catch((err) => {
-    console.error('[razorpay-repull] fatal', err);
+    log.error('fatal', { err: err });
     process.exit(1);
   });
 }

@@ -14,6 +14,7 @@
  */
 import type { DrainEventsUseCase } from '../../application/drain-events.usecase.js';
 import type { CollectorKafkaProducer } from '../../infrastructure/kafka-producer.js';
+import { log } from "../../log.js";
 
 export interface DrainerConfig {
   /** How often to poll the spool for pending rows (ms). Default: 1000. */
@@ -43,16 +44,16 @@ export class Drainer {
     this.timer = setInterval(() => {
       void this.tick();
     }, this.config.pollIntervalMs);
-    console.info(`[drainer] started — poll every ${this.config.pollIntervalMs}ms, batch=${this.config.batchSize}`);
+    log.info(`started — poll every ${this.config.pollIntervalMs}ms, batch=${this.config.batchSize}`);
   }
 
   private async connectProducer(): Promise<void> {
     try {
       await this.producer.connect();
-      console.info('[drainer] Kafka producer connected');
+      log.info('Kafka producer connected');
     } catch (err) {
       // Redpanda may be down — drainer starts anyway (back-pressure hold).
-      console.warn(`[drainer] Kafka producer connect failed (back-pressure mode): ${String(err)}`);
+      log.warn(`Kafka producer connect failed (back-pressure mode): ${String(err)}`);
     }
   }
 
@@ -61,11 +62,11 @@ export class Drainer {
     try {
       const count = await this.drainUseCase.execute();
       if (count > 0) {
-        console.info(`[drainer] drained ${count} event(s)`);
+        log.info(`drained ${count} event(s)`);
       }
     } catch (err) {
       // Unexpected drainer error — log but do not crash the loop.
-      console.error(`[drainer] tick error: ${String(err)}`);
+      log.error(`tick error: ${String(err)}`);
     }
   }
 
@@ -77,9 +78,9 @@ export class Drainer {
     }
     try {
       await this.producer.disconnect();
-      console.info('[drainer] stopped and Kafka producer disconnected');
+      log.info('stopped and Kafka producer disconnected');
     } catch (err) {
-      console.warn(`[drainer] disconnect error: ${String(err)}`);
+      log.warn(`disconnect error: ${String(err)}`);
     }
   }
 }

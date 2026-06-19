@@ -32,6 +32,7 @@
 
 import { Pool } from 'pg';
 import { createHash } from 'node:crypto';
+import { log } from "../log.js";
 
 const DB_URL =
   process.env['BRAIN_APP_DATABASE_URL'] ??
@@ -79,7 +80,7 @@ async function run(): Promise<void> {
   const pool = new Pool({ connectionString: DB_URL, max: 3 });
 
   try {
-    console.info('[revenue-finalization] starting horizon finalization job');
+    log.info('starting horizon finalization job');
 
     // Enumerate active brands via list_active_brand_ids() — a SECURITY DEFINER
     // function (migration 0019, owner: superuser 'brain', search_path pinned to
@@ -207,30 +208,24 @@ async function run(): Promise<void> {
 
           if ((result.rowCount ?? 0) > 0) {
             totalFinalized++;
-            console.info(
-              `[revenue-finalization] finalized brand=${brand.id} ` +
-              `order=${prov.order_id} amount=${prov.amount_minor} ${prov.currency_code}`,
-            );
+            log.info(`[revenue-finalization] finalized brand=${brand.id} ` +
+                            `order=${prov.order_id} amount=${prov.amount_minor} ${prov.currency_code}`);
           } else {
             totalSkipped++;
-            console.info(
-              `[revenue-finalization] skipped (dedup) brand=${brand.id} order=${prov.order_id}`,
-            );
+            log.info(`skipped (dedup) brand=${brand.id} order=${prov.order_id}`);
           }
         }
 
         await client.query('COMMIT');
       } catch (err) {
         await client.query('ROLLBACK').catch(() => undefined);
-        console.error(`[revenue-finalization] error for brand ${brand.id}`, err);
+        log.error(`error for brand ${brand.id}`, { err: err });
       } finally {
         client.release();
       }
     }
 
-    console.info(
-      `[revenue-finalization] complete: finalized=${totalFinalized} skipped=${totalSkipped}`,
-    );
+    log.info(`complete: finalized=${totalFinalized} skipped=${totalSkipped}`);
   } finally {
     await pool.end();
   }
@@ -242,7 +237,7 @@ if (
   process.argv[1]?.endsWith('revenue-finalization.js')
 ) {
   run().catch((err) => {
-    console.error('[revenue-finalization] fatal', err);
+    log.error('fatal', { err: err });
     process.exit(1);
   });
 }

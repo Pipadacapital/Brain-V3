@@ -1,3 +1,5 @@
+import { log } from "../../log.js";
+
 /**
  * shopify-live-client.ts — Shopify Admin REST client for the live re-pull job.
  *
@@ -89,9 +91,7 @@ export class ShopifyLiveClient {
         const retryAfterHeader = res.headers.get('Retry-After');
         const sleepSec = retryAfterHeader ? parseInt(retryAfterHeader, 10) : 2;
         const sleepMs = Math.max(1000, sleepSec * 1000);
-        console.info(
-          `[shopify-repull] 429 rate limited — sleeping ${sleepSec}s (attempt ${attempt + 1}/10)`,
-        );
+        log.info(`429 rate limited — sleeping ${sleepSec}s (attempt ${attempt + 1}/10)`);
         await sleep(sleepMs);
         continue;
       }

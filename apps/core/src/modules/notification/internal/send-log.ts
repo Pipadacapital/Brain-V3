@@ -16,6 +16,7 @@
  */
 
 import type { DbClient, QueryContext } from '@brain/db';
+import { log } from "../../../log.js";
 
 export type SendLogStatus =
   | 'attempted'
@@ -63,17 +64,17 @@ export async function writeSendLog(
   ctx: QueryContext,
 ): Promise<void> {
   // Always emit a masked structured log line (no raw PII).
-  console.info('[notification:send_log]', {
-    correlation_id: entry.correlationId,
-    subject_hash: entry.subjectHash ?? null,
-    recipient_masked: entry.recipient ? maskRecipient(entry.recipient) : null,
-    channel: entry.channel,
-    type: entry.notificationType,
-    status: entry.status,
-    blocked_reason: entry.blockedReason ?? null,
-    release_after: entry.releaseAfter ?? null,
-    error: entry.errorMessage,
-  });
+  log.info('', { err: {
+        correlation_id: entry.correlationId,
+        subject_hash: entry.subjectHash ?? null,
+        recipient_masked: entry.recipient ? maskRecipient(entry.recipient) : null,
+        channel: entry.channel,
+        type: entry.notificationType,
+        status: entry.status,
+        blocked_reason: entry.blockedReason ?? null,
+        release_after: entry.releaseAfter ?? null,
+        error: entry.errorMessage,
+      } });
 
   // Real INSERT only when we have a DB client AND a brand scope AND a hashed
   // subject (we refuse to persist a raw recipient — I-S02).
@@ -104,9 +105,9 @@ export async function writeSendLog(
     );
   } catch (err) {
     // Never block the send path on a send_log write failure.
-    console.error('[notification:send_log] insert failed', {
-      correlation_id: entry.correlationId,
-      error: err instanceof Error ? err.message : String(err),
-    });
+    log.error('insert failed', { err: {
+            correlation_id: entry.correlationId,
+            error: err instanceof Error ? err.message : String(err),
+          } });
   }
 }

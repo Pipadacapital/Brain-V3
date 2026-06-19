@@ -16,6 +16,7 @@
 
 import { Pool, type PoolClient } from 'pg';
 import { type LedgerEntry } from '../../domain/recognition/entities/LedgerEntry.js';
+import { log } from "../../../../../log.js";
 
 // Simple in-process counter for replay suppression (Tier-0 metric).
 // In production this would emit to the observability spine; for M1 it logs.
@@ -24,10 +25,8 @@ const replaySuppressedTotal: Record<string, number> = {};
 function incrementReplaySuppressed(brandId: string, eventType: string): void {
   const key = `${brandId}:${eventType}`;
   replaySuppressedTotal[key] = (replaySuppressedTotal[key] ?? 0) + 1;
-  console.info(
-    `[ledger] replay suppressed brand=${brandId} event_type=${eventType} ` +
-    `total=${replaySuppressedTotal[key]} (ledger_replay_suppressed_total)`,
-  );
+  log.info(`[ledger] replay suppressed brand=${brandId} event_type=${eventType} ` +
+        `total=${replaySuppressedTotal[key]} (ledger_replay_suppressed_total)`);
 }
 
 /** Expose for tests to read the suppression counter. */

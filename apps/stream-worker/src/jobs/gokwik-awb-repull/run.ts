@@ -43,6 +43,7 @@ import {
 import { GokwikAwbClient, type GokwikApiCredentials, GOKWIK_AWB_PAGE_SIZE } from './gokwik-awb-client.js';
 import { SaltProvider, LocalSecretsProvider } from '../../infrastructure/secrets/SaltProvider.js';
 import { resolveSaltHex } from '@brain/identity-core';
+import { log } from "../../log.js";
 
 // ── Configuration ─────────────────────────────────────────────────────────────
 
@@ -89,14 +90,14 @@ export async function run(targetConnectorInstanceId?: string): Promise<void> {
 
   try {
     await producer.connect();
-    console.info(`[gokwik-awb-repull] starting — topic=${LIVE_TOPIC} brokers=${BROKERS.join(',')}`);
+    log.info(`starting — topic=${LIVE_TOPIC} brokers=${BROKERS.join(',')}`);
 
     const connectors = await enumerateConnectors(pool, targetConnectorInstanceId);
     if (connectors.length === 0) {
-      console.info('[gokwik-awb-repull] no connected GoKwik connectors found — exiting');
+      log.info('no connected GoKwik connectors found — exiting');
       return;
     }
-    console.info(`[gokwik-awb-repull] found ${connectors.length} connector(s) to re-pull`);
+    log.info(`found ${connectors.length} connector(s) to re-pull`);
 
     for (const connector of connectors) {
       await repullConnector({ connector, pool, producer, saltProvider });
@@ -142,11 +143,11 @@ async function repullConnector(params: RepullParams): Promise<void> {
   const { connector, pool, producer, saltProvider } = params;
   const { connector_instance_id: ciId, brand_id: brandId, secret_ref: secretRef } = connector;
 
-  console.info(`[gokwik-awb-repull] connector=${ciId} brand=${brandId}`);
+  log.info(`connector=${ciId} brand=${brandId}`);
 
   const creds = await resolveGokwikCredentials(secretRef);
   if (!creds) {
-    console.error(`[gokwik-awb-repull] connector=${ciId} — credentials not found (RECONNECT_REQUIRED)`);
+    log.error(`connector=${ciId} — credentials not found (RECONNECT_REQUIRED)`);
     return;
   }
 
@@ -154,7 +155,7 @@ async function repullConnector(params: RepullParams): Promise<void> {
   try {
     saltHex = await saltProvider.saltHexForBrand(brandId);
   } catch (e) {
-    console.error(`[gokwik-awb-repull] connector=${ciId} — salt fetch failed`, e);
+    log.error(`connector=${ciId} — salt fetch failed`, { detail: e });
     return;
   }
 
@@ -167,13 +168,13 @@ async function repullConnector(params: RepullParams): Promise<void> {
   try {
     emitted = await repullAwbCursor({ ciId, brandId, pool, producer, apiClient, saltHex });
   } catch (err) {
-    console.error(`[gokwik-awb-repull] connector=${ciId} cursor=${AWB_CURSOR_RESOURCE} error`, err);
+    log.error(`connector=${ciId} cursor=${AWB_CURSOR_RESOURCE} error`, { err: err });
     await setSyncState(pool, brandId, ciId, 'error', 'awb re-pull failed');
     return;
   }
 
   await setSyncState(pool, brandId, ciId, 'connected', null);
-  console.info(`[gokwik-awb-repull] connector=${ciId} COMPLETED emitted=${emitted}`);
+  log.info(`connector=${ciId} COMPLETED emitted=${emitted}`);
 }
 
 // ── Cursor re-pull (45-day trailing window, restates terminal states) ─────────
@@ -193,9 +194,7 @@ async function repullAwbCursor(params: CursorRepullParams): Promise<number> {
   // FOR UPDATE SKIP LOCKED — overlap-lock on the single AWB cursor resource.
   const lockAcquired = await acquireCursorLock(pool, brandId, ciId, AWB_CURSOR_RESOURCE);
   if (!lockAcquired) {
-    console.info(
-      `[gokwik-awb-repull] connector=${ciId} cursor=${AWB_CURSOR_RESOURCE} — locked by another worker, skipping`,
-    );
+    log.info(`connector=${ciId} cursor=${AWB_CURSOR_RESOURCE} — locked by another worker, skipping`);
     return 0;
   }
 
@@ -215,10 +214,8 @@ async function repullAwbCursor(params: CursorRepullParams): Promise<number> {
   const effectiveFromTs = windowStartTs;   // ALWAYS re-scan the full window for restatement
   const toTs = nowTs;
 
-  console.info(
-    `[gokwik-awb-repull] connector=${ciId} cursor=${AWB_CURSOR_RESOURCE} ` +
-    `from=${effectiveFromTs} to=${toTs} (priorHighWater=${fromTs})`,
-  );
+  log.info(`[gokwik-awb-repull] connector=${ciId} cursor=${AWB_CURSOR_RESOURCE} ` +
+        `from=${effectiveFromTs} to=${toTs} (priorHighWater=${fromTs})`);
 
   let skip = 0;
   let recordsProcessed = 0;
@@ -272,10 +269,8 @@ async function repullAwbCursor(params: CursorRepullParams): Promise<number> {
     if (messages.length > 0) {
       await producer.send({ topic: LIVE_TOPIC, messages });
     }
-    console.info(
-      `[gokwik-awb-repull] connector=${ciId} cursor=${AWB_CURSOR_RESOURCE} ` +
-      `skip=${skip} emitted=${messages.length} total=${recordsProcessed}`,
-    );
+    log.info(`[gokwik-awb-repull] connector=${ciId} cursor=${AWB_CURSOR_RESOURCE} ` +
+            `skip=${skip} emitted=${messages.length} total=${recordsProcessed}`);
 
     if (maxChangedAt !== null) {
       await upsertCursorValue(pool, brandId, ciId, AWB_CURSOR_RESOURCE, String(maxChangedAt));
@@ -285,9 +280,7 @@ async function repullAwbCursor(params: CursorRepullParams): Promise<number> {
     skip += GOKWIK_AWB_PAGE_SIZE;
   }
 
-  console.info(
-    `[gokwik-awb-repull] connector=${ciId} cursor=${AWB_CURSOR_RESOURCE} DONE records=${recordsProcessed}`,
-  );
+  log.info(`connector=${ciId} cursor=${AWB_CURSOR_RESOURCE} DONE records=${recordsProcessed}`);
   return recordsProcessed;
 }
 
@@ -394,7 +387,7 @@ async function upsertCursorValue(
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK').catch(() => undefined);
-    console.error(`[gokwik-awb-repull] cursor upsert failed (non-fatal) resource=${resource}`, err);
+    log.error(`cursor upsert failed (non-fatal) resource=${resource}`, { err: err });
   } finally {
     client.release();
   }
@@ -431,7 +424,7 @@ async function setSyncState(
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK').catch(() => undefined);
-    console.error(`[gokwik-awb-repull] sync_status update failed (non-fatal)`, err);
+    log.error(`sync_status update failed (non-fatal)`, { err: err });
   } finally {
     client.release();
   }
@@ -478,7 +471,7 @@ async function resolveGokwikCredentials(secretRef: string): Promise<GokwikApiCre
 if (process.argv[1]?.endsWith('run.ts') || process.argv[1]?.endsWith('run.js')) {
   const ciArg = process.argv[2];
   run(ciArg).catch((err) => {
-    console.error('[gokwik-awb-repull] fatal', err);
+    log.error('fatal', { err: err });
     process.exit(1);
   });
 }

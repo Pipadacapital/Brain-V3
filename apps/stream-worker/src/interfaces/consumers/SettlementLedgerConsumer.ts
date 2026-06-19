@@ -55,6 +55,7 @@ import { Consumer, Kafka, EachMessagePayload } from 'kafkajs';
 import { DlqProducer } from '../../infrastructure/kafka/DlqProducer.js';
 import { LedgerWriter } from '../../infrastructure/pg/LedgerWriter.js';
 import { Pool } from 'pg';
+import { log } from "../../log.js";
 
 const MAX_RETRY = 5;
 type RetryKey = string;
@@ -131,9 +132,7 @@ export class SettlementLedgerConsumer {
               await this.consumer.commitOffsets([
                 { topic, partition, offset: String(Number(offset) + 1) },
               ]);
-              console.warn(
-                `[settlement-ledger] JSON parse error partition=${partition} offset=${offset} — skipping`,
-              );
+              log.warn(`JSON parse error partition=${partition} offset=${offset} — skipping`);
               return;
             }
           }
@@ -147,9 +146,7 @@ export class SettlementLedgerConsumer {
           }
 
           if (!brandId || !eventId || !parsed) {
-            console.warn(
-              `[settlement-ledger] settlement.live.v1 missing brand_id or event_id partition=${partition} offset=${offset} — skipping`,
-            );
+            log.warn(`settlement.live.v1 missing brand_id or event_id partition=${partition} offset=${offset} — skipping`);
             await this.consumer.commitOffsets([
               { topic, partition, offset: String(Number(offset) + 1) },
             ]);
@@ -164,19 +161,14 @@ export class SettlementLedgerConsumer {
           ]);
           this.retryCount.delete(retryKey);
 
-          console.info(
-            `[settlement-ledger] ${result} brand=${brandId} event=${eventId} ` +
-            `partition=${partition} offset=${offset}`,
-          );
+          log.info(`[settlement-ledger] ${result} brand=${brandId} event=${eventId} ` +
+                        `partition=${partition} offset=${offset}`);
         } catch (err) {
           const current = (this.retryCount.get(retryKey) ?? 0) + 1;
           this.retryCount.set(retryKey, current);
 
-          console.error(
-            `[settlement-ledger] write error (attempt ${current}/${MAX_RETRY}) ` +
-            `partition=${partition} offset=${offset}`,
-            err,
-          );
+          log.error(`[settlement-ledger] write error (attempt ${current}/${MAX_RETRY}) ` +
+                        `partition=${partition} offset=${offset}`, { err: err });
 
           if (current >= MAX_RETRY) {
             try {
@@ -190,11 +182,9 @@ export class SettlementLedgerConsumer {
                 { topic, partition, offset: String(Number(offset) + 1) },
               ]);
               this.retryCount.delete(retryKey);
-              console.warn(
-                `[settlement-ledger] DLQ (max retry) partition=${partition} offset=${offset}`,
-              );
+              log.warn(`DLQ (max retry) partition=${partition} offset=${offset}`);
             } catch (dlqErr) {
-              console.error('[settlement-ledger] DLQ produce failed — not committing offset', dlqErr);
+              log.error('DLQ produce failed — not committing offset', { err: dlqErr });
             }
           }
 
@@ -261,10 +251,8 @@ export class SettlementLedgerConsumer {
     if (!mapRow) {
       // MB-1.3: PARK — do NOT drop, do NOT crash
       // Log a structured metric (no raw IDs — C5)
-      console.warn(
-        `[settlement-ledger] UNMATCHED settlement brand=${brandId} event=${eventId} ` +
-        `reason=${razorpayOrderId ? 'map_row_not_found' : 'no_order_id'} — parking`,
-      );
+      log.warn(`[settlement-ledger] UNMATCHED settlement brand=${brandId} event=${eventId} ` +
+                `reason=${razorpayOrderId ? 'map_row_not_found' : 'no_order_id'} — parking`);
       // In production: emit metric settlement_unmatched_count + retry logic.
       // For M1: log + park (the event is committed from the live lane perspective;
       // the manual reconciliation path is the UNMATCHED Bronze write).

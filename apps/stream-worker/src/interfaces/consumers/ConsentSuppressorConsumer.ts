@@ -23,6 +23,7 @@
 import { Consumer, Kafka, EachMessagePayload } from 'kafkajs';
 import { ProjectConsentUseCase } from '../../application/ProjectConsentUseCase.js';
 import { DlqProducer } from '../../infrastructure/kafka/DlqProducer.js';
+import { log } from "../../log.js";
 
 const MAX_RETRY = 5;
 type RetryKey = string;
@@ -71,9 +72,7 @@ export class ConsentSuppressorConsumer {
               { topic, partition, offset: String(Number(offset) + 1) },
             ]);
             this.retryCount.delete(retryKey);
-            console.info(
-              `[consent-suppressor] DLQ (invalid) partition=${partition} offset=${offset} reason=${result.reason}`,
-            );
+            log.info(`DLQ (invalid) partition=${partition} offset=${offset} reason=${result.reason}`);
             return;
           }
 
@@ -85,22 +84,17 @@ export class ConsentSuppressorConsumer {
             { topic, partition, offset: String(Number(offset) + 1) },
           ]);
           this.retryCount.delete(retryKey);
-          console.info(
-            `[consent-suppressor] ${result.outcome} brand=${result.brandId ?? 'unknown'} ` +
-              `event=${result.eventId ?? 'unknown'} subject=${result.subjectHash ? result.subjectHash.slice(0, 12) + '…' : 'none'} ` +
-              `records=${result.recordCount ?? 0} tombstones=${result.tombstoneCount ?? 0} ` +
-              `partition=${partition} offset=${offset}`,
-          );
+          log.info(`[consent-suppressor] ${result.outcome} brand=${result.brandId ?? 'unknown'} ` +
+                          `event=${result.eventId ?? 'unknown'} subject=${result.subjectHash ? result.subjectHash.slice(0, 12) + '…' : 'none'} ` +
+                          `records=${result.recordCount ?? 0} tombstones=${result.tombstoneCount ?? 0} ` +
+                          `partition=${partition} offset=${offset}`);
         } catch (err) {
           // Write error (incl. salt failure D-2) — do NOT commit. Retry → DLQ@MAX_RETRY.
           const current = (this.retryCount.get(retryKey) ?? 0) + 1;
           this.retryCount.set(retryKey, current);
 
-          console.error(
-            `[consent-suppressor] write error (attempt ${current}/${MAX_RETRY}) ` +
-              `partition=${partition} offset=${offset}`,
-            err,
-          );
+          log.error(`[consent-suppressor] write error (attempt ${current}/${MAX_RETRY}) ` +
+                          `partition=${partition} offset=${offset}`, { err: err });
 
           if (current >= MAX_RETRY) {
             try {
@@ -114,11 +108,9 @@ export class ConsentSuppressorConsumer {
                 { topic, partition, offset: String(Number(offset) + 1) },
               ]);
               this.retryCount.delete(retryKey);
-              console.warn(
-                `[consent-suppressor] DLQ (max retry) partition=${partition} offset=${offset}`,
-              );
+              log.warn(`DLQ (max retry) partition=${partition} offset=${offset}`);
             } catch (dlqErr) {
-              console.error('[consent-suppressor] DLQ produce failed — not committing offset', dlqErr);
+              log.error('DLQ produce failed — not committing offset', { err: dlqErr });
             }
           }
 

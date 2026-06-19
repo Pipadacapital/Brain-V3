@@ -23,6 +23,7 @@
  */
 
 import type { LedgerWriter, BackfillOrderForLedger } from '../../infrastructure/pg/LedgerWriter.js';
+import { log } from "../../log.js";
 
 /**
  * Extract a BackfillOrderForLedger from a parsed live order event envelope.
@@ -61,7 +62,7 @@ export function extractLiveOrderForLedger(
 
   // Validate amount_minor is a non-negative integer string (I-S07)
   if (!/^\d+$/.test(amountMinor)) {
-    console.warn(`[live-consumer] invalid amount_minor "${amountMinor}" — skipping ledger write`);
+    log.warn(`invalid amount_minor "${amountMinor}" — skipping ledger write`);
     return null;
   }
 

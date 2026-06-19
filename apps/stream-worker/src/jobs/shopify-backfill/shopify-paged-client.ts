@@ -1,3 +1,5 @@
+import { log } from "../../log.js";
+
 /**
  * shopify-paged-client.ts — Shopify Admin REST client for backfill (ADR-BF-6 / D-14 / IR-2).
  *
@@ -139,9 +141,7 @@ export class ShopifyBackfillClient {
         const retryAfterHeader = res.headers.get('Retry-After');
         const sleepSec = retryAfterHeader ? parseInt(retryAfterHeader, 10) : 2;
         const sleepMs = Math.max(1000, sleepSec * 1000);
-        console.info(
-          `[shopify-backfill] 429 rate limited — sleeping ${sleepSec}s (attempt ${attempt + 1}/10)`,
-        );
+        log.info(`429 rate limited — sleeping ${sleepSec}s (attempt ${attempt + 1}/10)`);
         await sleep(sleepMs);
         continue; // retry same page
       }

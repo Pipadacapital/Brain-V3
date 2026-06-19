@@ -20,6 +20,7 @@ import { Consumer, Kafka, EachMessagePayload } from 'kafkajs';
 import { incrementCounter } from '@brain/observability';
 import { ProcessEventUseCase, ProcessResult } from '../../application/ProcessEventUseCase.js';
 import { DlqProducer } from '../../infrastructure/kafka/DlqProducer.js';
+import { log } from "../../log.js";
 
 /** Maximum per-(partition, offset) retry count before DLQ routing. */
 const MAX_RETRY = 5;
@@ -77,7 +78,7 @@ export class CollectorEventConsumer {
               { topic, partition, offset: String(Number(offset) + 1) },
             ]);
             this.retryCount.delete(retryKey);
-            console.info(`[stream-worker] DLQ (invalid) partition=${partition} offset=${offset} reason=${result.reason}`);
+            log.info(`DLQ (invalid) partition=${partition} offset=${offset} reason=${result.reason}`);
             return;
           }
 
@@ -96,9 +97,7 @@ export class CollectorEventConsumer {
               { topic, partition, offset: String(Number(offset) + 1) },
             ]);
             this.retryCount.delete(retryKey);
-            console.info(
-              `[stream-worker] QUARANTINE partition=${partition} offset=${offset} reason=${result.reason} brand=${result.brandId ?? 'unresolved'}`,
-            );
+            log.info(`QUARANTINE partition=${partition} offset=${offset} reason=${result.reason} brand=${result.brandId ?? 'unresolved'}`);
             return;
           }
 
@@ -118,18 +117,13 @@ export class CollectorEventConsumer {
             { topic, partition, offset: String(Number(offset) + 1) },
           ]);
           this.retryCount.delete(retryKey);
-          console.info(
-            `[stream-worker] ${result.outcome} brand=${result.brandId} event=${result.eventId} partition=${partition} offset=${offset}`,
-          );
+          log.info(`${result.outcome} brand=${result.brandId} event=${result.eventId} partition=${partition} offset=${offset}`);
         } catch (err) {
           // Write error — do NOT commit offset (D-7). Increment retry counter.
           const current = (this.retryCount.get(retryKey) ?? 0) + 1;
           this.retryCount.set(retryKey, current);
 
-          console.error(
-            `[stream-worker] write error (attempt ${current}/${MAX_RETRY}) partition=${partition} offset=${offset}`,
-            err,
-          );
+          log.error(`write error (attempt ${current}/${MAX_RETRY}) partition=${partition} offset=${offset}`, { err: err });
 
           if (current >= MAX_RETRY) {
             // After MAX_RETRY failures → DLQ → commit (D-7).
@@ -144,11 +138,9 @@ export class CollectorEventConsumer {
                 { topic, partition, offset: String(Number(offset) + 1) },
               ]);
               this.retryCount.delete(retryKey);
-              console.warn(
-                `[stream-worker] DLQ (max retry) partition=${partition} offset=${offset}`,
-              );
+              log.warn(`DLQ (max retry) partition=${partition} offset=${offset}`);
             } catch (dlqErr) {
-              console.error('[stream-worker] DLQ produce failed — not committing offset', dlqErr);
+              log.error('DLQ produce failed — not committing offset', { err: dlqErr });
               // Do NOT commit — will retry the whole message next poll.
             }
           }

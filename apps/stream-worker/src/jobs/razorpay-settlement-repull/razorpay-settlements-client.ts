@@ -1,3 +1,5 @@
+import { log } from "../../log.js";
+
 /**
  * razorpay-settlements-client.ts — Razorpay Settlements API client (ADR-RZ-4).
  *
@@ -97,9 +99,7 @@ export class RazorpaySettlementsClient {
         const sleepSec = retryAfterHeader ? parseInt(retryAfterHeader, 10) : 2;
         const sleepMs = Math.max(1000, sleepSec * 1000);
         // Log the rate-limit event — but NOT the URL (contains no PII; safe to log path only)
-        console.info(
-          `[razorpay-settlements-client] 429 rate limited recon — sleeping ${sleepSec}s (attempt ${attempt + 1}/10)`,
-        );
+        log.info(`429 rate limited recon — sleeping ${sleepSec}s (attempt ${attempt + 1}/10)`);
         await sleep(sleepMs);
         continue;
       }

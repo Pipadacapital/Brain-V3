@@ -22,6 +22,7 @@ import type { AuditWriter } from '@brain/audit';
 import { RedisDedupAdapter } from '../infrastructure/redis/RedisDedupAdapter.js';
 import { BronzeRepository } from '../infrastructure/pg/BronzeRepository.js';
 import { BronzeRow } from '../domain/bronze/BronzeRow.js';
+import { log } from "../log.js";
 
 export type ProcessOutcome =
   | 'written'       // first sight, successfully inserted to bronze_events
@@ -234,10 +235,7 @@ export class ProcessEventUseCase {
         idempotency_key: `pixel.brand_mismatch:${eventId}`,
       });
     } catch (err) {
-      console.error(
-        `[stream-worker] audit write failed for pixel.brand_mismatch event=${eventId}`,
-        err,
-      );
+      log.error(`audit write failed for pixel.brand_mismatch event=${eventId}`, { err: err });
     }
   }
 }

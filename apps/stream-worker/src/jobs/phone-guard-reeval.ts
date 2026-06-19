@@ -26,6 +26,7 @@
  */
 
 import { Pool } from 'pg';
+import { log } from "../log.js";
 
 const DB_URL =
   process.env['BRAIN_APP_DATABASE_URL'] ??
@@ -35,7 +36,7 @@ async function run(): Promise<void> {
   const pool = new Pool({ connectionString: DB_URL, max: 3 });
 
   try {
-    console.info('[phone-guard-reeval] starting re-evaluation job');
+    log.info('starting re-evaluation job');
 
     // Fetch all brands (as superuser-level metadata read — brand ids are not PII)
     // Note: this reads brand.id without RLS brand filter (system job, all brands)
@@ -100,10 +101,8 @@ async function run(): Promise<void> {
               [brand.id, sui.identifier_type, sui.identifier_value, count],
             );
             totalUnsuppressed++;
-            console.info(
-              `[phone-guard-reeval] un-suppressed brand=${brand.id} ` +
-              `type=${sui.identifier_type} count=${count} threshold=${brand.phone_guard_threshold}`,
-            );
+            log.info(`[phone-guard-reeval] un-suppressed brand=${brand.id} ` +
+                            `type=${sui.identifier_type} count=${count} threshold=${brand.phone_guard_threshold}`);
           } else {
             // Still above threshold → extend suppression window
             const newSuppressedUntil = new Date();
@@ -119,26 +118,22 @@ async function run(): Promise<void> {
               [brand.id, sui.identifier_type, sui.identifier_value, count, newSuppressedUntil],
             );
             totalExtended++;
-            console.info(
-              `[phone-guard-reeval] extended suppression brand=${brand.id} ` +
-              `type=${sui.identifier_type} count=${count} threshold=${brand.phone_guard_threshold} ` +
-              `new_until=${newSuppressedUntil.toISOString()}`,
-            );
+            log.info(`[phone-guard-reeval] extended suppression brand=${brand.id} ` +
+                            `type=${sui.identifier_type} count=${count} threshold=${brand.phone_guard_threshold} ` +
+                            `new_until=${newSuppressedUntil.toISOString()}`);
           }
         }
 
         await client.query('COMMIT');
       } catch (err) {
         await client.query('ROLLBACK').catch(() => undefined);
-        console.error(`[phone-guard-reeval] error for brand ${brand.id}`, err);
+        log.error(`error for brand ${brand.id}`, { err: err });
       } finally {
         client.release();
       }
     }
 
-    console.info(
-      `[phone-guard-reeval] complete: un-suppressed=${totalUnsuppressed} extended=${totalExtended}`,
-    );
+    log.info(`complete: un-suppressed=${totalUnsuppressed} extended=${totalExtended}`);
   } finally {
     await pool.end();
   }
@@ -147,7 +142,7 @@ async function run(): Promise<void> {
 // Run when invoked directly
 if (process.argv[1]?.endsWith('phone-guard-reeval.ts') || process.argv[1]?.endsWith('phone-guard-reeval.js')) {
   run().catch((err) => {
-    console.error('[phone-guard-reeval] fatal', err);
+    log.error('fatal', { err: err });
     process.exit(1);
   });
 }

@@ -41,6 +41,7 @@ import type { RoleCode } from '../domain/membership/entities.js';
 import { ROLE_HIERARCHY } from '../domain/membership/entities.js';
 import type { OnboardingStatus } from '../domain/organization/entities.js';
 import { mintJwt, verifyJwt } from '../security/jwt.js';
+import { log } from "../../../../log.js";
 
 /** Active brand/role context carried in the session JWT (all-null until onboarded). */
 export interface ActiveContext {
@@ -258,7 +259,7 @@ export class AuthService {
             await emailVerifyRepo.insert({ appUserId: existing.id, tokenHash, expiresAt }, emailCtx);
             await this.notification.sendVerificationEmail(existing.email, rawToken, correlationId);
           } catch (err) {
-            console.error('[auth] register: verification re-issue failed', { correlationId, err });
+            log.error('register: verification re-issue failed', { err: { correlationId, err } });
           }
         });
       }
@@ -280,10 +281,7 @@ export class AuthService {
     if (process.env['NODE_ENV'] !== 'production') {
       emailVerifiedAt = new Date();
       await userRepo.markEmailVerified(user.id, emailVerifiedAt, { ...ctx, userId: user.id });
-      console.info(
-        '[auth] DEV auto-verify: email marked verified on registration (NODE_ENV != production)',
-        { correlationId },
-      );
+      log.info('DEV auto-verify: email marked verified on registration (NODE_ENV != production)', { detail: { correlationId } });
     }
 
     // Issue a verification token.
@@ -1113,7 +1111,7 @@ export class AuthService {
         // notification adapter does not propagate to the caller (test mocks return undefined).
         void Promise.resolve(this.notification.sendPasswordResetEmail(email, rawToken, correlationId))
           .catch((err) => {
-            console.error('[auth] forgotPassword: send failed', { correlationId, err });
+            log.error('forgotPassword: send failed', { err: { correlationId, err } });
           });
 
         await this.audit.append({

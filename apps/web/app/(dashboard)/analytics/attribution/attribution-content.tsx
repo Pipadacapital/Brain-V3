@@ -212,6 +212,19 @@ export function AttributionContent() {
 
         {!isLoading && !error && byChannel?.state === 'no_data' && <EmptyAttributionCard />}
 
+        {!isLoading && !error && byChannel?.state === 'not_computed' && (
+          <Card>
+            <CardContent className="pt-6">
+              <p className="text-sm" role="status">
+                <strong>Attribution not computed yet.</strong> This brand has realized revenue, but the
+                attribution credit ledger is empty — the credit pipeline hasn&apos;t populated it.
+                Per-channel attribution appears here once it runs. We don&apos;t show a 0%/100% figure,
+                because that would be a guess, not a measurement.
+              </p>
+            </CardContent>
+          </Card>
+        )}
+
         {!isLoading && !error && byChannel?.state === 'has_data' && (
           <AttributionData
             byChannel={byChannel}
@@ -244,6 +257,11 @@ export function AttributionContent() {
               <ErrorCard error={roasQ.error} retry={roasQ.refetch} />
             ) : roas?.state === 'has_data' ? (
               <ChannelRoasTable rows={roas.rows} className="w-full text-sm" />
+            ) : roas?.state === 'not_computed' ? (
+              <p className="text-sm text-muted-foreground italic" role="status">
+                Channel ROAS not computed yet — ad spend exists, but attribution credit has not been
+                populated, so a per-channel return would be a guess, not a measurement.
+              </p>
             ) : (
               <p className="text-sm text-muted-foreground italic" role="status">
                 No channel ROAS yet — attribution or ad spend has no rows in this window.

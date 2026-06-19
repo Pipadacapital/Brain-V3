@@ -752,6 +752,9 @@ export type AttributedChannelRow = ChannelContributionDto & {
 // realized_gmv_minor / unattributed_minor / reconciliation_rate_pct / by_channel.
 export type AnalyticsAttributionByChannelResponse =
   | { state: 'no_data'; from: string; to: string; model: AttributionModel }
+  // Realized revenue exists but the attribution_credit_ledger is empty — the credit pipeline
+  // hasn't populated. Rendered as "not computed", never as a real 0%/100% result (audit R-10).
+  | { state: 'not_computed'; from: string; to: string; model: AttributionModel }
   | {
       state: 'has_data';
       from: string; // YYYY-MM-DD (echoed range)

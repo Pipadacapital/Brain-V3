@@ -88,6 +88,15 @@ export const AttributionByChannelSchema = z.discriminatedUnion('state', [
     to: z.string(),
     model: AttributionModelIdSchema,
   }),
+  // The brand HAS realized revenue but the attribution_credit_ledger is empty — the credit
+  // pipeline has not populated yet. Surfaced distinctly so the UI shows "not computed" instead
+  // of rendering 0%/100%-unattributed as if it were a real result (audit R-10 honesty fix).
+  z.object({
+    state: z.literal('not_computed'),
+    from: z.string(),
+    to: z.string(),
+    model: AttributionModelIdSchema,
+  }),
   z.object({
     state: z.literal('has_data'),
     from: z.string(),
@@ -110,6 +119,12 @@ export type AttributionByChannel = z.infer<typeof AttributionByChannelSchema>;
 export const AttributionReconciliationSchema = z.discriminatedUnion('state', [
   z.object({
     state: z.literal('no_data'),
+    from: z.string(),
+    to: z.string(),
+    model: AttributionModelIdSchema,
+  }),
+  z.object({
+    state: z.literal('not_computed'),
     from: z.string(),
     to: z.string(),
     model: AttributionModelIdSchema,
@@ -144,6 +159,12 @@ export type ChannelRoasDto = z.infer<typeof ChannelRoasDtoSchema>;
 export const ChannelRoasSchema = z.discriminatedUnion('state', [
   z.object({
     state: z.literal('no_data'),
+    from: z.string(),
+    to: z.string(),
+    model: AttributionModelIdSchema,
+  }),
+  z.object({
+    state: z.literal('not_computed'),
     from: z.string(),
     to: z.string(),
     model: AttributionModelIdSchema,

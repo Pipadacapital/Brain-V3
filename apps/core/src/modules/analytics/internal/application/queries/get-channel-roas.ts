@@ -12,6 +12,7 @@
 
 import type { EngineDeps, AttributionModelId } from '@brain/metric-engine';
 import { computeChannelRoas, withBrandTxn } from '@brain/metric-engine';
+import { hasAttributionCredit } from './_attribution-credit.js';
 
 export interface ChannelRoasDto {
   channel: string;
@@ -23,6 +24,7 @@ export interface ChannelRoasDto {
 
 export type ChannelRoasResult =
   | { state: 'no_data'; from: string; to: string; model: AttributionModelId }
+  | { state: 'not_computed'; from: string; to: string; model: AttributionModelId }
   | {
       state: 'has_data';
       from: string;
@@ -57,6 +59,13 @@ export async function getChannelRoas(
 
   if (!hasSpend) {
     return { state: 'no_data', from: params.fromStr, to: params.toStr, model: params.model };
+  }
+
+  // Honest-not-computed (R-10): spend exists but the credit ledger is empty, so every channel's
+  // attributed_minor would be 0 (ROAS = 0) — that reads as "ads drove nothing" when really
+  // attribution just hasn't run. Surface it distinctly.
+  if (!(await hasAttributionCredit(brandId, deps))) {
+    return { state: 'not_computed', from: params.fromStr, to: params.toStr, model: params.model };
   }
 
   const rows = await computeChannelRoas(

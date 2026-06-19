@@ -6,6 +6,7 @@
  * All other tables use RLS via the appropriate GUC.
  */
 
+import { randomUUID } from 'node:crypto';
 import type { DbClient, QueryContext } from '@brain/db';
 import type { AppUser, UserSession, PasswordResetToken, EmailVerificationToken } from '../domain/auth/entities.js';
 import type { Organization, OnboardingStatus } from '../domain/organization/entities.js';
@@ -631,17 +632,23 @@ export class BrandRepository {
     },
     ctx: QueryContext,
   ): Promise<Brand> {
+    // Generate the brand id app-side and set it as the brand GUC for THIS insert: the brand_isolation
+    // RLS policy gates INSERT with `id = current_setting('app.current_brand_id')::uuid`, so the row
+    // can only be written when the brand GUC equals the new id. (Letting the DB default the id —
+    // with no brand GUC set — makes the WITH CHECK unsatisfiable under brain_app, a 42501.)
+    const id = randomUUID();
     const result = await this.db.query<{
       id: string; organization_id: string; display_name: string;
       domain: string | null; status: string; region_code: string;
       currency_code: string | null; timezone: string | null; revenue_definition: string | null;
       created_at: Date; updated_at: Date;
     }>(
-      ctx,
-      `INSERT INTO brand (organization_id, display_name, domain, region_code, currency_code, timezone, revenue_definition)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+      { ...ctx, brandId: id },
+      `INSERT INTO brand (id, organization_id, display_name, domain, region_code, currency_code, timezone, revenue_definition)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        RETURNING id, organization_id, display_name, domain, status, region_code, currency_code, timezone, revenue_definition, created_at, updated_at`,
       [
+        id,
         data.organizationId, data.displayName, data.domain ?? null,
         data.regionCode ?? 'IN',
         data.currencyCode ?? 'INR',

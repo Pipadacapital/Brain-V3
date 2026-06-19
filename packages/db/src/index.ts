@@ -128,24 +128,40 @@ export function buildResetAllGucsSql(): string {
 }
 
 /**
+ * The all-zero UUID — the fail-closed sentinel for a GUC the current query does not provide.
+ * It is a VALID uuid that no real row matches, so an RLS policy that casts a GUC this query
+ * didn't set does a valid `'<nil>'::uuid` cast (→ 0 rows) instead of erroring.
+ */
+export const NIL_UUID = '00000000-0000-0000-0000-000000000000' as const;
+
+/**
  * Build the SET LOCAL statements for a QueryContext.
- * Returns one statement per non-null GUC in the context.
+ *
+ * ALWAYS sets all three GUCs — any not provided in `ctx` default to NIL_UUID. This is required
+ * because RESET on a custom (placeholder) GUC leaves it as the empty string `''`, not NULL, so a
+ * policy casting an unset GUC (`current_setting('app.current_x', true)::uuid`) would hit
+ * `''::uuid` and raise `invalid input syntax for type uuid`. This bites any table whose RLS
+ * references a GUC the query doesn't set — e.g. resolving a user's membership (the user GUC is
+ * set, but the table's workspace-isolation policy still casts the workspace GUC). Defaulting to
+ * NIL_UUID keeps every cast valid AND fail-closed (no real row equals the nil uuid). (NN-1.)
  */
 export function buildContextGucSql(ctx: QueryContext): string {
-  const statements: string[] = [];
-  if (ctx.brandId) {
-    assertUuid('brandId', ctx.brandId);
-    statements.push(`SET LOCAL ${BRAND_ID_GUC} = '${ctx.brandId}'`);
-  }
-  if (ctx.workspaceId) {
-    assertUuid('workspaceId', ctx.workspaceId);
-    statements.push(`SET LOCAL ${WORKSPACE_ID_GUC} = '${ctx.workspaceId}'`);
-  }
-  if (ctx.userId) {
-    assertUuid('userId', ctx.userId);
-    statements.push(`SET LOCAL ${USER_ID_GUC} = '${ctx.userId}'`);
-  }
-  return statements.join('; ');
+  return [
+    `SET LOCAL ${BRAND_ID_GUC} = '${gucValue('brandId', ctx.brandId)}'`,
+    `SET LOCAL ${WORKSPACE_ID_GUC} = '${gucValue('workspaceId', ctx.workspaceId)}'`,
+    `SET LOCAL ${USER_ID_GUC} = '${gucValue('userId', ctx.userId)}'`,
+  ].join('; ');
+}
+
+/**
+ * Resolve one GUC value: a missing OR empty-string id → NIL_UUID (fail-closed). A non-empty value
+ * must be a valid UUID (injection guard). Empty string is treated as unset — `'' ?? x` would keep
+ * `''` and reintroduce the `''::uuid` cast error, so callers passing `brandId: ''` are handled.
+ */
+function gucValue(name: string, value: string | undefined): string {
+  if (value === undefined || value === '') return NIL_UUID;
+  assertUuid(name, value);
+  return value;
 }
 
 // ── Role-switch + RLS transaction (audit R-01/R-02) ───────────────────────────

@@ -31,6 +31,9 @@ import {
   buildContextGucSql,
   executeInRlsTxn,
   BRAND_ID_GUC,
+  WORKSPACE_ID_GUC,
+  USER_ID_GUC,
+  NIL_UUID,
 } from './index.js';
 
 const BRAND_A = '11111111-1111-4111-8111-111111111111';
@@ -91,9 +94,13 @@ describe('executeInRlsTxn — GUC + query run in ONE transaction under the app r
 
     const res = await executeInRlsTxn(client, 'brain_app', gucSql, 'SELECT id FROM brand', []);
 
-    // Setup is batched into one round-trip in strict order.
+    // Setup is batched into one round-trip in strict order. All three GUCs are always set —
+    // the brand GUC to its real value, the unset workspace/user GUCs to NIL_UUID (fail-closed).
     expect(calls[0]).toBe(
-      `BEGIN; SET LOCAL ROLE brain_app; SET LOCAL ${BRAND_ID_GUC} = '${BRAND_A}'`,
+      `BEGIN; SET LOCAL ROLE brain_app; ` +
+        `SET LOCAL ${BRAND_ID_GUC} = '${BRAND_A}'; ` +
+        `SET LOCAL ${WORKSPACE_ID_GUC} = '${NIL_UUID}'; ` +
+        `SET LOCAL ${USER_ID_GUC} = '${NIL_UUID}'`,
     );
     expect(calls[1]).toBe('SELECT id FROM brand'); // business query is its own call (binds params)
     expect(calls[2]).toBe('COMMIT');

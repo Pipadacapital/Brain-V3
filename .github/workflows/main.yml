@@ -40,12 +40,20 @@ jobs:
       - name: Check if ${{ matrix.app }} is affected
         id: affected
         run: |
-          AFFECTED=$(pnpm turbo run build --affected --dry-run=json 2>/dev/null \
-            | jq -r '[.tasks[].packageName] | map(select(. != null)) | unique | .[]' || echo "")
-          if echo "$AFFECTED" | grep -q "^${{ matrix.app }}$"; then
-            echo "skip=false" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          # FAIL-CLOSED: a broken affected-set computation must fail the job, not
+          # silently skip build/push/sign. (Previously `|| echo ""` swallowed any
+          # error → empty set → skip=true → the image was never built or pushed while
+          # the pipeline reported success, and gitops would promote a nonexistent tag.)
+          if ! AFFECTED=$(pnpm turbo run build --affected --dry-run=json \
+                | jq -r '[.tasks[].packageName] | map(select(. != null)) | unique | .[]'); then
+            echo "::error::Could not compute the affected set — failing closed (refusing to skip image build/push/sign)."
+            exit 1
+          fi
+          if echo "$AFFECTED" | grep -qx "${{ matrix.app }}"; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
           else
-            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "Skipping ${{ matrix.app }} — not in affected set"
           fi
 

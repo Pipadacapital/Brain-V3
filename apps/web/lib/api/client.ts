@@ -36,6 +36,8 @@ import {
   MergeReviewListSchema,
   MergeResolveResultSchema,
   UnmergeResultSchema,
+  BillingPeriodsSchema,
+  SealPeriodResultSchema,
 } from '@brain/contracts';
 
 import type {
@@ -121,6 +123,8 @@ import type {
   MergeReviewListResponse,
   MergeResolveResultResponse,
   UnmergeResultResponse,
+  BillingPeriodsResponse,
+  SealPeriodResultResponse,
 } from './types';
 
 /** All BFF routes proxied through Next.js API routes → frontend-api module */
@@ -1618,5 +1622,26 @@ export const identityApi = {
       body: JSON.stringify({ brain_id: brainId }),
     });
     return parseData(UnmergeResultSchema, env);
+  },
+};
+
+/**
+ * Billing API — the realized-GMV meter (P1). Maps to /api/v1/billing/* in the frontend-api module.
+ * Money is bigint-minor string + currency_code; the UI never does float math (I-S07).
+ */
+export const billingApi = {
+  /** GET /api/v1/billing/periods — the active brand's sealed billing periods (bill basis). */
+  getPeriods: async (): Promise<BillingPeriodsResponse> => {
+    const env = await bffFetch<BffEnvelope<unknown>>('/v1/billing/periods');
+    return parseData(BillingPeriodsSchema, env);
+  },
+
+  /** POST /api/v1/billing/periods/seal — meter + seal one 'YYYY-MM' period (idempotent). */
+  sealPeriod: async (period: string): Promise<SealPeriodResultResponse> => {
+    const env = await bffFetch<BffEnvelope<unknown>>('/v1/billing/periods/seal', {
+      method: 'POST',
+      body: JSON.stringify({ period }),
+    });
+    return parseData(SealPeriodResultSchema, env);
   },
 };

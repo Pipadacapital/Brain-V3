@@ -44,6 +44,9 @@ export type {
   MergeReviewList as MergeReviewListResponse,
   MergeResolveResult as MergeResolveResultResponse,
   UnmergeResult as UnmergeResultResponse,
+  BillingPeriods as BillingPeriodsResponse,
+  BillingPeriod,
+  SealPeriodResult as SealPeriodResultResponse,
 } from '@brain/contracts';
 
 // Local import for the names referenced WITHIN this file (re-exports above are not in local scope).

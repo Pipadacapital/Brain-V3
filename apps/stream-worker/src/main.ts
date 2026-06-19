@@ -24,6 +24,7 @@ import { IdentityRepository } from './infrastructure/pg/IdentityRepository.js';
 import { SaltProvider, LocalSecretsProvider } from './infrastructure/secrets/SaltProvider.js';
 import { resolveSaltHex } from '@brain/identity-core';
 import { initObservability, initSentry, createLogger } from '@brain/observability';
+import { requireEnvInProd } from '@brain/config';
 
 /** Structured logger for stream-worker lifecycle/error logs. */
 const log = createLogger({ serviceName: 'stream-worker' });
@@ -291,7 +292,7 @@ export async function main(): Promise<void> {
           host: dqSilverHost,
           port: parseInt(process.env['STARROCKS_PORT'] ?? '9030', 10),
           user: process.env['STARROCKS_ANALYTICS_USER'] ?? 'brain_analytics',
-          password: process.env['STARROCKS_ANALYTICS_PASSWORD'] ?? 'brain_analytics_dev',
+          password: requireEnvInProd('STARROCKS_ANALYTICS_PASSWORD', 'brain_analytics_dev'),
         }
       : undefined;
   const dqChecker = startDqChecks(dqPool, { intervalMs: dqIntervalMs, silver: dqSilver });

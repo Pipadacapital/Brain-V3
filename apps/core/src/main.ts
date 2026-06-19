@@ -18,6 +18,7 @@ import fastifyCookie from '@fastify/cookie';
 import fastifyRawBody from 'fastify-raw-body';
 import { randomUUID } from 'node:crypto';
 import { Redis } from 'ioredis';
+import { requireEnvInProd } from '@brain/config';
 import { Kafka } from 'kafkajs';
 
 import { createPool } from '@brain/db';
@@ -205,8 +206,8 @@ export async function main(): Promise<void> {
     // Dev default MUST match db/starrocks/bootstrap.sql, which creates brain_analytics
     // IDENTIFIED BY 'brain_analytics_dev'. An empty default caused every Silver-read route
     // (order-status-mix, journey, attribution-via-Silver) to 500 with ER_ACCESS_DENIED on a
-    // fresh `pnpm dev`. Prod overrides via the env var (a real secret).
-    starrocksPassword: getEnv('STARROCKS_ANALYTICS_PASSWORD', 'brain_analytics_dev'),
+    // fresh `pnpm dev`. Prod FAILS CLOSED if unset (never reuse the known weak dev password).
+    starrocksPassword: requireEnvInProd('STARROCKS_ANALYTICS_PASSWORD', 'brain_analytics_dev'),
   };
 
   // Create Fastify instance.

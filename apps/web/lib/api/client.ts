@@ -41,6 +41,8 @@ import {
   InspectableBillSchema,
   InvoiceSchema,
   IssueInvoiceResultSchema,
+  RecommendationsSchema,
+  GenerateRecommendationsResultSchema,
 } from '@brain/contracts';
 
 import type {
@@ -131,6 +133,8 @@ import type {
   InspectableBillResponse,
   InvoiceResponse,
   IssueInvoiceResultResponse,
+  RecommendationsResponse,
+  GenerateRecommendationsResultResponse,
 } from './types';
 
 /** All BFF routes proxied through Next.js API routes → frontend-api module */
@@ -1674,5 +1678,25 @@ export const billingApi = {
       body: JSON.stringify({ period }),
     });
     return parseData(IssueInvoiceResultSchema, env);
+  },
+};
+
+/**
+ * Recommendation API — the deterministic decision engine (doc 09). Maps to /api/v1/recommendations.
+ * Recommend-only; money fields in evidence are bigint-minor strings (the UI never floats them).
+ */
+export const recommendationApi = {
+  /** GET /api/v1/recommendations — the active brand's open recommendations (Morning Brief). */
+  list: async (): Promise<RecommendationsResponse> => {
+    const env = await bffFetch<BffEnvelope<unknown>>('/v1/recommendations');
+    return parseData(RecommendationsSchema, env);
+  },
+
+  /** POST /api/v1/recommendations/refresh — run the detectors; returns raise/expire counts. */
+  refresh: async (): Promise<GenerateRecommendationsResultResponse> => {
+    const env = await bffFetch<BffEnvelope<unknown>>('/v1/recommendations/refresh', {
+      method: 'POST',
+    });
+    return parseData(GenerateRecommendationsResultSchema, env);
   },
 };

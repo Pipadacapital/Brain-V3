@@ -2,6 +2,17 @@
  * Public interface for the `recommendation` module (core monolith bounded context).
  * RULE: only this file may be imported by other modules — enforced by the ESLint
  * boundary rule. All implementation lives under ./internal/ and is private.
- * Spec: docs/05_Brain_Implementation_Build_Plan.md §3.
+ *
+ * Scope (P1, slice 1 — the deterministic decision engine, doc 09): run registered detectors over
+ * certified signals → emit ranked risk/opportunity recommendations with confidence + evidence,
+ * recorded in the append-only Decision Log; read the open recommendations (the Morning Brief).
+ * Recommend-only — nothing is auto-executed.
  */
-export {}; // TODO: expose the public operations of this bounded context.
+export { generateRecommendations } from './internal/application/generate-recommendations.js';
+export type { GenerateResult } from './internal/application/generate-recommendations.js';
+export { getRecommendations } from './internal/application/queries/get-recommendations.js';
+export type {
+  Recommendations,
+  Recommendation,
+  RecommendationEvidence,
+} from './internal/application/queries/get-recommendations.js';

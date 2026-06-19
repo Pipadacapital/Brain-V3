@@ -86,6 +86,8 @@ import type {
   InspectableBill as ContractInspectableBill,
   Invoice as ContractInvoice,
   IssueInvoiceResult as ContractIssueInvoiceResult,
+  Recommendations as ContractRecommendations,
+  GenerateRecommendationsResult as ContractGenerateRecommendationsResult,
 } from '@brain/contracts';
 import { jtiFromJwt, csrfTokenForSession } from './csrf.js';
 import type { Pool as PgPool } from 'pg';
@@ -105,6 +107,7 @@ import {
   issueInvoice,
   getInvoice,
 } from '../../billing/index.js';
+import { getRecommendations, generateRecommendations } from '../../recommendation/index.js';
 import type { ContactPiiVaultService } from '../../identity/index.js';
 import { askBrain } from '../../ai/index.js';
 import { ResolverClient } from '@brain/ai-gateway-client';
@@ -1845,6 +1848,71 @@ export function registerBffRoutes(
       const result: ContractIssueInvoiceResult = await issueInvoice(
         auth.brandId,
         period,
+        requestId,
+        { pool },
+      );
+      return reply.send({ request_id: requestId, data: result });
+    },
+  );
+
+  // ── Recommendation endpoints (P1 — deterministic decision engine, doc 09) ──
+  // Recommend-only: detectors emit ranked risk/opportunity actions with confidence + evidence,
+  // recorded in the append-only decision_log. Brand from session (D-1), never the request.
+
+  /**
+   * GET /api/v1/recommendations — the active brand's OPEN recommendations (the Morning Brief).
+   * Honest union: state:'no_data' when none, else state:'has_data' ranked by priority.
+   */
+  fastify.get(
+    '/api/v1/recommendations',
+    { preHandler: [bffProtectedPreHandler] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const auth = (request as AuthenticatedRequest).auth;
+
+      if (!auth.brandId) {
+        return reply.send({ request_id: requestId, data: { state: 'no_data' } });
+      }
+      if (!pool) {
+        return reply.code(503).send({
+          request_id: requestId,
+          error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' },
+        });
+      }
+
+      const result: ContractRecommendations = await getRecommendations(auth.brandId, requestId, {
+        pool,
+      });
+      return reply.send({ request_id: requestId, data: result });
+    },
+  );
+
+  /**
+   * POST /api/v1/recommendations/refresh — run the detectors for the active brand, reconciling
+   * the open set (raise/refresh/expire) and appending to the decision_log. Returns the counts.
+   */
+  fastify.post(
+    '/api/v1/recommendations/refresh',
+    { preHandler: [bffProtectedPreHandler] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const auth = (request as AuthenticatedRequest).auth;
+
+      if (!auth.brandId) {
+        return reply.code(409).send({
+          request_id: requestId,
+          error: { code: 'NO_ACTIVE_BRAND', message: 'Select a brand before running detectors.' },
+        });
+      }
+      if (!pool) {
+        return reply.code(503).send({
+          request_id: requestId,
+          error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' },
+        });
+      }
+
+      const result: ContractGenerateRecommendationsResult = await generateRecommendations(
+        auth.brandId,
         requestId,
         { pool },
       );

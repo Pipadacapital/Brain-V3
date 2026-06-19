@@ -32,6 +32,7 @@ import {
   InspectableBillSchema,
   InvoiceSchema,
   IssueInvoiceResultSchema,
+  RecommendationsSchema,
   AttributionByChannelSchema,
   AttributionReconciliationSchema,
   ChannelRoasSchema,
@@ -554,5 +555,48 @@ describe('IssueInvoiceResult (#18)', () => {
     const r = IssueInvoiceResultSchema.safeParse(drifted);
     expect(r.success).toBe(false);
     expect(firstIssuePath(r)).toBe('fee_minor');
+  });
+});
+
+describe('Recommendations (#19 — decision engine)', () => {
+  const hasData = {
+    state: 'has_data',
+    recommendations: [
+      {
+        recommendation_id: '11111111-1111-4111-8111-111111111111',
+        detector: 'rto_risk',
+        kind: 'risk',
+        confidence: 'Trusted',
+        priority: 100,
+        status: 'open',
+        title: 'Elevated return-to-origin (RTO) rate',
+        summary: '5.02% of orders were returned-to-origin (43 of 856).',
+        recommended_action: 'Add address verification; cap COD for new customers.',
+        evidence: { rto_count: 43, order_count: 856, rto_rate_pct: '5.02', gmv_at_risk_minor: '14900' },
+        created_at: '2026-06-19T00:00:00.000Z',
+      },
+    ],
+  };
+  it('round-trips has_data + no_data', () => {
+    expect(RecommendationsSchema.parse(hasData)).toEqual(hasData);
+    expect(RecommendationsSchema.parse({ state: 'no_data' })).toEqual({ state: 'no_data' });
+  });
+  it('REJECTS an out-of-enum confidence', () => {
+    const drifted = {
+      ...hasData,
+      recommendations: [{ ...hasData.recommendations[0], confidence: 'High' }],
+    };
+    const r = RecommendationsSchema.safeParse(drifted);
+    expect(r.success).toBe(false);
+    expect(firstIssuePath(r)).toBe('recommendations.0.confidence');
+  });
+  it('REJECTS an out-of-enum kind', () => {
+    const drifted = {
+      ...hasData,
+      recommendations: [{ ...hasData.recommendations[0], kind: 'insight' }],
+    };
+    const r = RecommendationsSchema.safeParse(drifted);
+    expect(r.success).toBe(false);
+    expect(firstIssuePath(r)).toBe('recommendations.0.kind');
   });
 });

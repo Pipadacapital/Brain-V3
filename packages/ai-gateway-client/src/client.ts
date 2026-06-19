@@ -6,11 +6,17 @@
  * resolve an NL question into a `ResolverResult` (binding | refusal).
  *
  * Cost doctrine (cost-routing-paradigms, Tier-3 — the ONLY model call in Phase 8):
+ *   @effort("large_model", token_budget=256)
+ *   - The machine-readable declaration above is what the cost-mix dashboard + cost-routing CI gate
+ *     scan: this is a LARGE-model call (DEFAULT_RESOLVER_MODEL) with a hard 256-output-token budget.
+ *     Without it, the sole model call in the product was invisible to cost accounting.
  *   - temperature 0 (deterministic selection), max_tokens capped (≤256 output).
  *   - 1 transport retry MAX, then a fail-closed refusal (no retry storms).
  *   - The stable system prompt (enum + allow-list + select-only instruction) is the
  *     cacheable prefix — passed as the `system` field so the gateway can prompt-cache
  *     it across calls. A cache miss on this stable prefix is a cost bug.
+ *   - Per-tenant model spend-cap is enforced at the litellm gateway (budget keyed on the gateway
+ *     API key / virtual-key), NOT in this client — the client carries no tenant secret.
  *
  * The model can ONLY return the constrained schema (resolver-schema.ts); its payload
  * is run through `coerceResolverResult` (fail-closed) so a malformed/out-of-enum
@@ -76,6 +82,8 @@ export class ResolverClient {
   /**
    * resolve — ONE model call, fail-closed to a refusal on any error/malformed output.
    * The raw question is passed IN-MEMORY only; this client never persists or logs it.
+   *
+   * @effort("large_model", token_budget=256)  — the single model call; counts in the cost-mix.
    */
   async resolve(call: ResolveCall): Promise<ResolverResult> {
     const req: GatewayRequest = {

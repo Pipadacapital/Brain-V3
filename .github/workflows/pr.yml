@@ -131,11 +131,29 @@ jobs:
       - name: Check if ${{ matrix.app }} is in affected set
         id: affected
         run: |
-          AFFECTED=$(pnpm turbo run build --affected --dry-run=json 2>/dev/null | jq -r '[.tasks[].packageName] | map(select(. != null)) | unique | .[]' || echo "")
-          if echo "$AFFECTED" | grep -q "^${{ matrix.app }}$"; then
-            echo "skip=false" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          # FAIL-CLOSED: if the affected-set computation breaks (turbo/jq error,
+          # output-format change, missing merge base), we must NOT silently skip the
+          # security scan. A broken detector fails the job; it never green-lights an
+          # unscanned image. (Previously `|| echo ""` swallowed errors → empty set →
+          # skip=true → the whole scan job passed having scanned nothing.)
+          if ! AFFECTED=$(pnpm turbo run build --affected --dry-run=json \
+                | jq -r '[.tasks[].packageName] | map(select(. != null)) | unique | .[]'); then
+            echo "::error::Could not compute the affected set — failing closed (refusing to skip the container/dependency scan)."
+            exit 1
+          fi
+          if echo "$AFFECTED" | grep -qx "${{ matrix.app }}"; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
           else
-            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Verify Dockerfile exists for affected app (fail-closed)
+        if: steps.affected.outputs.skip == 'false'
+        run: |
+          if [ ! -f "apps/${{ matrix.app }}/Dockerfile" ]; then
+            echo "::error::apps/${{ matrix.app }}/Dockerfile is missing — a shippable service MUST have a Dockerfile so its image can be built and scanned (audit P0-A). Failing closed instead of skipping the scan."
+            exit 1
           fi
 
       - name: Build Docker image (affected only)

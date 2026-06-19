@@ -198,7 +198,10 @@ export class BrandService {
     limit: number,
     correlationId: string,
   ): Promise<{ items: Brand[]; nextCursor: string | null; hasMore: boolean }> {
-    const ctx: QueryContext = { correlationId, workspaceId: organizationId };
+    // userId is REQUIRED here: the brand list is gated by the brand_self_read RLS policy, whose
+    // membership subquery filters `app_user_id = app.current_user_id`. Without the user GUC the
+    // subquery matches nothing and the list comes back empty even though brands + memberships exist.
+    const ctx: QueryContext = { correlationId, workspaceId: organizationId, userId: requestingUserId };
     const client = await this.pool.connect();
     try {
       const brandRepo = new BrandRepository(client);

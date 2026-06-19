@@ -23,6 +23,12 @@ import { BronzeRepository } from './infrastructure/pg/BronzeRepository.js';
 import { IdentityRepository } from './infrastructure/pg/IdentityRepository.js';
 import { SaltProvider, LocalSecretsProvider } from './infrastructure/secrets/SaltProvider.js';
 import { resolveSaltHex } from '@brain/identity-core';
+import {
+  DevVaultKeyProvider,
+  KmsVaultKeyProvider,
+  AwsKmsDecryptAdapter,
+  type VaultKeyProvider,
+} from '@brain/pii-vault';
 import { ProcessEventUseCase } from './application/ProcessEventUseCase.js';
 import { ResolveIdentityUseCase } from './application/ResolveIdentityUseCase.js';
 import { CollectorEventConsumer } from './interfaces/consumers/CollectorEventConsumer.js';
@@ -126,7 +132,14 @@ export async function main(): Promise<void> {
   // (resolveSaltHex, shared with apps/core so the same email hashes identically) → prod path
   // untouched (D-2 guard fires on empty). One resolver, every salt site (§3.1).
   const saltProvider = new SaltProvider(saltSecrets, resolveSaltHex);
-  const identityRepo = new IdentityRepository(dbUrl);
+  // PII vault DEK provider (P0-C): dev derives a deterministic per-brand DEK; prod unwraps
+  // the brand_keyring DEK via AWS KMS. The contact_pii write-population encrypts with this key
+  // (the SAME provider apps/core's vault read path uses, via @brain/pii-vault).
+  const vaultKeyProvider: VaultKeyProvider =
+    process.env['NODE_ENV'] === 'production'
+      ? new KmsVaultKeyProvider(new PgPool({ connectionString: dbUrl, max: 2 }), new AwsKmsDecryptAdapter())
+      : new DevVaultKeyProvider();
+  const identityRepo = new IdentityRepository(dbUrl, vaultKeyProvider);
   const resolveIdentityUseCase = new ResolveIdentityUseCase(saltProvider, identityRepo);
   const identityConsumer = new IdentityBridgeConsumer(
     kafka, resolveIdentityUseCase, topic, identityGroupId,

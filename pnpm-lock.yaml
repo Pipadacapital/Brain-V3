@@ -120,6 +120,9 @@ importers:
       '@brain/observability':
         specifier: workspace:*
         version: link:../../packages/observability
+      '@brain/pii-vault':
+        specifier: workspace:*
+        version: link:../../packages/pii-vault
       '@brain/pixel-sdk':
         specifier: workspace:*
         version: link:../../packages/pixel-sdk
@@ -202,6 +205,9 @@ importers:
       '@brain/observability':
         specifier: workspace:*
         version: link:../../packages/observability
+      '@brain/pii-vault':
+        specifier: workspace:*
+        version: link:../../packages/pii-vault
       '@brain/razorpay-mapper':
         specifier: workspace:*
         version: link:../../packages/razorpay-mapper
@@ -458,6 +464,25 @@ importers:
   packages/money: {}
 
   packages/observability: {}
+
+  packages/pii-vault:
+    dependencies:
+      '@aws-sdk/client-kms':
+        specifier: ^3.600.0
+        version: 3.1072.0
+      '@brain/identity-core':
+        specifier: workspace:*
+        version: link:../identity-core
+    devDependencies:
+      '@types/node':
+        specifier: ^25.9.3
+        version: 25.9.3
+      '@types/pg':
+        specifier: ^8.11.6
+        version: 8.20.0
+      vitest:
+        specifier: ^2.1.0
+        version: 2.1.9(@types/node@25.9.3)
 
   packages/pixel-sdk:
     devDependencies:

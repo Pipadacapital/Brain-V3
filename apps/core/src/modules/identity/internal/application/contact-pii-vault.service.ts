@@ -10,7 +10,8 @@
  * prod unwraps the brand_keyring DEK via KMS. The service is DEFAULT-CLOSED in prod — if no
  * real provider is wired it refuses to operate rather than fall back to a dev key.
  */
-import { encryptPii, decryptPii, deriveDevVaultDek } from '@brain/identity-core';
+import { encryptPii, decryptPii } from '@brain/identity-core';
+import type { VaultKeyProvider } from '@brain/pii-vault';
 import {
   ContactPiiVaultRepository,
   type VaultPiiType,
@@ -33,30 +34,8 @@ export interface VaultCoverage {
   phone_count: number;
 }
 
-/** Supplies the 32-byte per-brand DEK. Dev derives it; prod unwraps brand_keyring via KMS. */
-export interface VaultKeyProvider {
-  getDek(brandId: string, keyVersion?: number | null): Promise<{ dek: Buffer; keyVersion: number }>;
-}
-
-/** Dev-only deterministic per-brand DEK provider. NEVER used in production. */
-export class DevVaultKeyProvider implements VaultKeyProvider {
-  async getDek(brandId: string): Promise<{ dek: Buffer; keyVersion: number }> {
-    return { dek: deriveDevVaultDek(brandId), keyVersion: 1 };
-  }
-}
-
-/**
- * Default-closed production provider. The real implementation unwraps
- * brand_keyring.wrapped_dek_b64 via AWS KMS (follow-up). Until wired, it throws so the
- * vault NEVER silently uses a weak key in production.
- */
-export class UnwiredProdVaultKeyProvider implements VaultKeyProvider {
-  async getDek(): Promise<{ dek: Buffer; keyVersion: number }> {
-    throw new Error(
-      '[pii-vault] production KMS key provider is not wired — refusing to encrypt/decrypt with a non-KMS key (default-closed).',
-    );
-  }
-}
+// VaultKeyProvider (+ Dev/Unwired/Kms implementations) now lives in @brain/pii-vault so the
+// stream-worker ingestion write path shares the SAME per-brand DEK providers as this read path.
 
 export class ContactPiiVaultService {
   constructor(

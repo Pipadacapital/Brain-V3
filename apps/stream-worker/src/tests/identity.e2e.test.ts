@@ -31,6 +31,7 @@ import {
 } from '@brain/identity-core';
 import { SaltProvider, LocalSecretsProvider } from '../infrastructure/secrets/SaltProvider.js';
 import { IdentityRepository } from '../infrastructure/pg/IdentityRepository.js';
+import { DevVaultKeyProvider } from '@brain/pii-vault';
 import {
   IdentityResolver,
   ExtractedIdentifier,
@@ -241,7 +242,7 @@ beforeAll(async () => {
   superPool = new Pool({ connectionString: SUPERUSER_DB_URL, max: 3 });
   brainAppPool = new Pool({ connectionString: BRAIN_APP_DB_URL, max: 5 });
 
-  identityRepo = new IdentityRepository(BRAIN_APP_DB_URL);
+  identityRepo = new IdentityRepository(BRAIN_APP_DB_URL, new DevVaultKeyProvider());
 
   // SaltProvider with test salts (different per brand — D-2 salt-cross-brand test)
   const secrets = new LocalSecretsProvider();

@@ -31,6 +31,7 @@ import {
   DataQualitySummarySchema,
   AskBrainResultSchema,
   Customer360Schema,
+  VaultCoverageSchema,
 } from '@brain/contracts';
 
 import type {
@@ -111,6 +112,7 @@ import type {
   AskBrainRequest,
   AskBrainResponse,
   Customer360Response,
+  VaultCoverageResponse,
 } from './types';
 
 /** All BFF routes proxied through Next.js API routes → frontend-api module */
@@ -1566,5 +1568,11 @@ export const identityApi = {
       `/v1/identity/customer?brain_id=${encodeURIComponent(brainId)}`,
     );
     return parseData(Customer360Schema, env);
+  },
+
+  /** GET /api/v1/identity/vault-coverage — counts-only PII vault coverage (never raw PII). */
+  getVaultCoverage: async (): Promise<VaultCoverageResponse> => {
+    const env = await bffFetch<BffEnvelope<unknown>>('/v1/identity/vault-coverage');
+    return parseData(VaultCoverageSchema, env);
   },
 };

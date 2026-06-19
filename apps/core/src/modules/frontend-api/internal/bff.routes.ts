@@ -68,6 +68,7 @@ import type {
   DataQualitySummary as ContractDataQualitySummary,
   AskBrainResult as ContractAskBrainResult,
   Customer360 as ContractCustomer360,
+  VaultCoverage as ContractVaultCoverage,
 } from '@brain/contracts';
 import { jtiFromJwt, csrfTokenForSession } from './csrf.js';
 import type { RateLimiter } from '../../workspace-access/internal/infrastructure/rate-limiter.js';
@@ -76,6 +77,7 @@ import type { Pool as PgPool } from 'pg';
 import { getRevenueMetrics, getRevenueTimeseries, getKpiSummary, getRecognitionBreakdown, getRecentActivity, getOrdersTimeseries, getOrderStats, getDataHealth, getSettlementSummary, getTrackingHealth, getRecentEvents, getAdSpendTimeseries, getBlendedRoas, getCodRtoRates, getCodMix, getCheckoutFunnel, getOrderStatusMix, getJourneyFirstTouchMix, getJourneyStitchRate, getJourneyTimeline, getConsentCoverage, getConsentSuppressionSummary, getConsentGateActivity, getConsentWindowConfig, getAttributionByChannel, getAttributionReconciliation, getChannelRoas, getCapiFeedbackSummary, getCapiFeedbackEvents, getCapiFeedbackDeletions } from '../../analytics/index.js';
 import { getDataQualitySummary } from '../../data-quality/index.js';
 import { getCustomer360 } from '../../identity/index.js';
+import type { ContactPiiVaultService } from '../../identity/index.js';
 import { askBrain } from '../../ai/index.js';
 import { ResolverClient } from '@brain/ai-gateway-client';
 import type { AttributionModelId } from '@brain/metric-engine';
@@ -101,6 +103,7 @@ export function registerBffRoutes(
   rawPool?: PgPool,
   onboardingService?: OnboardingService,
   srPool?: SilverPool,
+  vaultService?: ContactPiiVaultService,
 ): void {
   const sessionPreHandler = validateSessionPreHandler(authService);
 
@@ -1280,6 +1283,38 @@ export function registerBffRoutes(
       });
 
       return reply.send({ request_id: requestId, data: result });
+    },
+  );
+
+  // ── GET /api/v1/identity/vault-coverage — PII vault coverage (P0-C, slice 2) ──
+  /**
+   * GET /api/v1/identity/vault-coverage
+   *
+   * Returns counts-only coverage of the encrypted contact_pii vault for the active brand
+   * (resolved vs vaulted customers, email/phone counts). NEVER returns raw PII. The vault
+   * read uses the elevated send_service path inside the identity vault service.
+   */
+  fastify.get(
+    '/api/v1/identity/vault-coverage',
+    { preHandler: [bffProtectedPreHandler] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const auth = (request as AuthenticatedRequest).auth;
+
+      const empty: ContractVaultCoverage = {
+        resolved_customers: 0,
+        vaulted_customers: 0,
+        coverage_pct: 0,
+        email_count: 0,
+        phone_count: 0,
+      };
+
+      if (!auth.brandId || !vaultService) {
+        return reply.send({ request_id: requestId, data: empty });
+      }
+
+      const coverage: ContractVaultCoverage = await vaultService.getCoverage(auth.brandId);
+      return reply.send({ request_id: requestId, data: coverage });
     },
   );
 

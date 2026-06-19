@@ -17,7 +17,7 @@
  * D-6: E.164 phone normalization with regionCode param.
  */
 
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes, createCipheriv, createDecipheriv } from 'node:crypto';
 
 // ── Identifier types ──────────────────────────────────────────────────────────
 
@@ -311,3 +311,56 @@ export const CONFORMANCE_EMAIL_VECTOR = sha256Hex('test-salt||user@example.com')
 export const CONFORMANCE_DEV_SALT_VECTOR = resolveDevSaltHex(
   '00000000-0000-0000-0000-000000000001',
 );
+
+// ── PII vault envelope encryption (P0-C — AES-256-GCM, I-S05/I-S09) ───────────
+//
+// The contact_pii vault stores CIPHERTEXT, never plaintext. Each value is encrypted
+// with the per-brand DEK (prod: KMS-unwrapped brand_keyring DEK; dev: deriveDevVaultDek)
+// using AES-256-GCM with a fresh 96-bit IV. The 128-bit auth tag makes tampering /
+// wrong-key decryption FAIL loudly (no silent garbage). Crypto-shredding the brand DEK
+// (brand_keyring.is_active=FALSE) renders every row unrecoverable → DPDP erasure (I-S05).
+
+/** AES-256-GCM envelope: ciphertext + 12-byte IV + 16-byte auth tag. */
+export interface PiiEnvelope {
+  ciphertext: Buffer;
+  iv: Buffer;
+  authTag: Buffer;
+}
+
+/** Encrypt a PII string with a 32-byte DEK. Fresh random IV per call. */
+export function encryptPii(dek: Buffer, plaintext: string): PiiEnvelope {
+  if (dek.length !== 32) {
+    throw new Error('[pii-vault] DEK must be exactly 32 bytes (AES-256)');
+  }
+  const iv = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', dek, iv);
+  const ciphertext = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
+  const authTag = cipher.getAuthTag();
+  return { ciphertext, iv, authTag };
+}
+
+/**
+ * Decrypt a PII envelope with the 32-byte DEK that encrypted it.
+ * Throws if the auth tag fails (tampered ciphertext / IV / tag, or wrong DEK) — fail-closed.
+ */
+export function decryptPii(dek: Buffer, env: PiiEnvelope): string {
+  if (dek.length !== 32) {
+    throw new Error('[pii-vault] DEK must be exactly 32 bytes (AES-256)');
+  }
+  const decipher = createDecipheriv('aes-256-gcm', dek, env.iv);
+  decipher.setAuthTag(env.authTag);
+  const plaintext = Buffer.concat([decipher.update(env.ciphertext), decipher.final()]);
+  return plaintext.toString('utf8');
+}
+
+/** Fixed dev master constant for vault DEK derivation. NOT a prod secret. */
+const DEV_VAULT_DEK_MASTER = 'brain-dev-pii-vault-dek-v1';
+
+/**
+ * Dev-only deterministic per-brand 32-byte DEK. Same brandId → same key, so a value
+ * encrypted in one process decrypts in another. MUST NOT be used when NODE_ENV ===
+ * 'production' — prod unwraps the real brand_keyring DEK via KMS (the caller gates this).
+ */
+export function deriveDevVaultDek(brandId: string): Buffer {
+  return createHash('sha256').update(`${DEV_VAULT_DEK_MASTER}||${brandId.trim().toLowerCase()}`).digest();
+}

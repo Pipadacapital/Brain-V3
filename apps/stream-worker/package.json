@@ -14,6 +14,7 @@
   "dependencies": {
     "@brain/ad-spend-mapper": "workspace:*",
     "@brain/audit": "workspace:*",
+    "@brain/config": "workspace:*",
     "@brain/contracts": "workspace:*",
     "@brain/db": "workspace:*",
     "@brain/events": "workspace:*",

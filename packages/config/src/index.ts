@@ -54,6 +54,34 @@ export const CoreEnvSchema = CommonEnvSchema.extend({
 
 export type CoreEnv = z.infer<typeof CoreEnvSchema>;
 
+// ── Prod-required credentials ───────────────────────────────────────────────────
+
+/**
+ * A secret/credential env var that MUST be set in production but keeps a frictionless dev default.
+ *
+ * In production, a missing/empty value is a FAIL-CLOSED startup error — we never silently fall back
+ * to a known weak dev credential (e.g. a default analytics/DB password committed to the repo), which
+ * would be a real footgun if an env var is forgotten in a prod deploy. Outside production, returns
+ * the dev default so `pnpm dev` works without wiring secrets.
+ *
+ * @throws {Error} in production when the variable is unset/empty.
+ */
+export function requireEnvInProd(
+  name: string,
+  devDefault: string,
+  env: Record<string, string | undefined> = process.env,
+): string {
+  const val = env[name];
+  if (val) return val;
+  if (env['NODE_ENV'] === 'production') {
+    throw new Error(
+      `[config] ${name} must be set in production — refusing to fall back to the dev default ` +
+        '(a known weak credential). Inject it from your secret store.',
+    );
+  }
+  return devDefault;
+}
+
 // ── Generic config parser ─────────────────────────────────────────────────────
 
 /**

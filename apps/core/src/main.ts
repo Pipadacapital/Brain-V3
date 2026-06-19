@@ -21,7 +21,7 @@ import { Redis } from 'ioredis';
 import { requireEnvInProd } from '@brain/config';
 import { Kafka } from 'kafkajs';
 
-import { createPool } from '@brain/db';
+import { createPool, beginRlsTxn } from '@brain/db';
 import { resolveSaltHex } from '@brain/identity-core';
 import pg from 'pg';
 import mysql from 'mysql2/promise';
@@ -169,7 +169,11 @@ export async function main(): Promise<void> {
   // Load remaining configuration.
   const config = {
     port: parseInt(getEnv('PORT', '3001'), 10),
-    databaseUrl: getEnvOrThrow('DATABASE_URL'),
+    // feat-tenancy-runtime-brain-app (A1): the app RUNTIME connects as the non-superuser brain_app so
+    // RLS is actually enforced (FORCE RLS is a no-op against a superuser/owner). Migrations keep the
+    // owner DATABASE_URL (run via the CLI, not here). Prod MUST set BRAIN_APP_DATABASE_URL (fail-closed
+    // — running as superuser in prod is the R-01 hole); dev defaults to the local brain_app DSN.
+    databaseUrl: requireEnvInProd('BRAIN_APP_DATABASE_URL', 'postgres://brain_app:brain_app@localhost:5432/brain'),
     redisUrl: getEnv('REDIS_URL', 'redis://localhost:6379'),
     jwtSigningSecret,
     appBaseUrl: getEnv('APP_BASE_URL', 'http://localhost:3000'),
@@ -684,8 +688,8 @@ export async function main(): Promise<void> {
   ): Promise<void> => {
     const client = await rawPgPool.connect();
     try {
-      await client.query('BEGIN');
-      await client.query(`SELECT set_config('app.current_brand_id', $1, true)`, [brandId]);
+      // brain_app + brand GUC (connector_instance_isolation) — see feat-tenancy-runtime-brain-app A1.
+      await beginRlsTxn(client, { correlationId: 'connector:set-ad-account', brandId });
       await client.query(
         `UPDATE connector_instance SET ad_account_id = $1 WHERE id = $2 AND brand_id = $3`,
         [adAccountId, connectorInstanceId, brandId],
@@ -1104,8 +1108,7 @@ export async function main(): Promise<void> {
           // Required by resolve_razorpay_connector_by_account() for webhook brand resolution.
           const rzClient = await rawPgPool.connect();
           try {
-            await rzClient.query('BEGIN');
-            await rzClient.query(`SELECT set_config('app.current_brand_id', $1, true)`, [brandId]);
+            await beginRlsTxn(rzClient, { correlationId: requestId, brandId });
             await rzClient.query(
               `UPDATE connector_instance SET razorpay_account_id = $1 WHERE id = $2 AND brand_id = $3`,
               [razorpayAccountId, connectorInstanceId, brandId],
@@ -1182,8 +1185,7 @@ export async function main(): Promise<void> {
           // Set shopflo_merchant_id (migration 0030 column) under brand GUC — webhook resolution key.
           const sfClient = await rawPgPool.connect();
           try {
-            await sfClient.query('BEGIN');
-            await sfClient.query(`SELECT set_config('app.current_brand_id', $1, true)`, [brandId]);
+            await beginRlsTxn(sfClient, { correlationId: requestId, brandId });
             await sfClient.query(
               `UPDATE connector_instance SET shopflo_merchant_id = $1 WHERE id = $2 AND brand_id = $3`,
               [merchantId, connectorInstanceId, brandId],
@@ -1257,8 +1259,7 @@ export async function main(): Promise<void> {
           // Set gokwik_appid (migration 0030 column) under brand GUC — enumeration key.
           const gkClient = await rawPgPool.connect();
           try {
-            await gkClient.query('BEGIN');
-            await gkClient.query(`SELECT set_config('app.current_brand_id', $1, true)`, [brandId]);
+            await beginRlsTxn(gkClient, { correlationId: requestId, brandId });
             await gkClient.query(
               `UPDATE connector_instance SET gokwik_appid = $1 WHERE id = $2 AND brand_id = $3`,
               [appid, connectorInstanceId, brandId],

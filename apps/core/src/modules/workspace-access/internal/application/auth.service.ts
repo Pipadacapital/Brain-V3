@@ -531,21 +531,19 @@ export class AuthService {
   ): Promise<{ accessToken: string; refreshToken: string; expiresIn: number }> {
     const tokenHash = createHash('sha256').update(rawRefreshToken).digest('hex');
 
-    // Use the raw pg.Pool (no GUC middleware) so we can control BEGIN/COMMIT explicitly.
-    // NOTE (feat-tenancy-runtime-brain-app): this path is NOT yet brain_app-ready. The session is
-    // found by TOKEN first (the credential), but user_session is RLS-scoped by app.current_user_id —
-    // which is unknown until the lookup resolves. Making it run under brain_app requires a SECURITY
-    // DEFINER session-by-token lookup (an auth primitive). Tracked as the auth-session milestone; the
-    // DSN flip is gated on it. Until then this runs as the connection role (superuser today).
+    // Raw pg.Pool for explicit BEGIN/COMMIT. beginRlsTxn drops to brain_app with fail-closed NIL GUCs;
+    // the session is found by TOKEN (the credential) via the SECURITY DEFINER find_session_for_rotation()
+    // auth primitive (user_session is RLS-scoped by app.current_user_id, unknown until the lookup), then
+    // the user GUC is set from the resolved app_user_id so the revoke/insert below run under the user.
     if (!this.rawPgPool) {
       throw new AuthError('CONFIGURATION_ERROR', 'Raw pg pool not provided — token rotation unavailable.', 500);
     }
     const rawClient: PoolClient = await this.rawPgPool.connect();
     try {
-      await rawClient.query('BEGIN');
+      await beginRlsTxn(rawClient, { correlationId });
 
-      // Step 1: Find the session row FOR UPDATE (MA-03 — serializes concurrent rotations).
-      // This lookup uses a direct query — the token IS the credential, no user GUC yet.
+      // Step 1: Find the session row FOR UPDATE (MA-03 — serializes concurrent rotations) via the
+      // SECURITY DEFINER lookup — the token IS the credential, no user GUC yet (set below from the row).
       const lookupResult = await rawClient.query<{
         id: string; app_user_id: string; jti: string;
         refresh_token_hash: string; issued_at: Date; expires_at: Date;
@@ -553,9 +551,7 @@ export class AuthService {
         family_id: string | null; rotated_from: string | null;
       }>(
         `SELECT id, app_user_id, jti, refresh_token_hash, issued_at, expires_at, revoked_at, used_at, family_id, rotated_from
-         FROM user_session
-         WHERE refresh_token_hash = $1
-         FOR UPDATE`,
+         FROM find_session_for_rotation($1)`,
         [tokenHash],
       );
 

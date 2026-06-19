@@ -1,6 +1,15 @@
 # A1 (runtime brain_app cutover) — validated plan + the primitive
 
+## ✅ A1 COMPLETE (2026-06-20) — the app runtime runs as the non-superuser brain_app; RLS enforced.
+All milestones done + verified end-to-end (a fresh core booted as brain_app: register/me work; 96/96
+workspace-access live tests + the 6/6 isolation non-inert proof under brain_app; no regressions).
+Audit R-01/R-02/R-14/R-16 closed (A1–A4). Migrations 0047 (provision) / 0048 (find_session_for_rotation) /
+0049 (find_invite_for_acceptance). Commits: cd712dc, b7c54c9, 6341c12, 2443acb, 7ff7690.
+
 ## PROGRESS (executing the solid, no-patch build, milestone by milestone)
+- ✅ M3 rotate (0048 SECURITY DEFINER session-by-token) · ✅ M4 invite/accept (0049) + member role/remove ·
+  ✅ M5 connector writes (beginRlsTxn) · ✅ M6 vault/secrets (already RLS-correct / non-RLS) ·
+  ✅ M7 DSN flip (core → BRAIN_APP_DATABASE_URL, migrations keep DATABASE_URL) · ✅ M8 end-to-end verified.
 - ✅ **M1 — provisioning (the decisive blocker)**: `provision_workspace_and_brand()` SECURITY DEFINER
   function (0047) replaces the rawPgPool provisioning txn; works as the real brain_app non-superuser;
   removed the dead rawPgPool dep + txnClientAdapter. 96/96 workspace-access tests green. (commit cd712dc)

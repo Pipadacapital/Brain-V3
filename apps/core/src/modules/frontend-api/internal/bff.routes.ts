@@ -42,15 +42,23 @@ type CookieReply = FastifyReply & {
   setCookie(name: string, value: string, options?: CookieOptions): CookieReply;
   clearCookie(name: string, options?: CookieOptions): CookieReply;
 };
-import type { AuthService } from '../../workspace-access/internal/application/auth.service.js';
-import { AuthError } from '../../workspace-access/internal/application/auth.service.js';
-import type { OnboardingService } from '../../workspace-access/internal/application/onboarding.service.js';
-import { OnboardingError } from '../../workspace-access/internal/application/onboarding.service.js';
-import type { AuthenticatedRequest } from '../../workspace-access/internal/interfaces/rest/auth.routes.js';
-import { validateSessionPreHandler } from '../../workspace-access/internal/interfaces/rest/auth.routes.js';
-import type { OnboardingStatus } from '../../workspace-access/internal/domain/organization/entities.js';
+// Public surface of workspace-access — imported via its barrel, NEVER its internals (I-E05).
+import {
+  AuthError,
+  OnboardingError,
+  validateSessionPreHandler,
+  MembershipRepository,
+  OrganizationRepository,
+  loginFailKeySync,
+  loginIpKey,
+  registerIpKey,
+  type AuthService,
+  type OnboardingService,
+  type AuthenticatedRequest,
+  type OnboardingStatus,
+  type RateLimiter,
+} from '../../workspace-access/index.js';
 import type { DbPool, QueryContext } from '@brain/db';
-import { MembershipRepository, OrganizationRepository } from '../../workspace-access/internal/infrastructure/repositories.js';
 import { ProvisionOnboardingRequestSchema } from '@brain/contracts';
 // BFF read-contract enforcement (feat-shared-bff-read-contracts): annotate each covered
 // use-case result with its `@brain/contracts` z.infer type so core FAILS tsc if its DTO drifts
@@ -75,8 +83,6 @@ import type {
   UnmergeResult as ContractUnmergeResult,
 } from '@brain/contracts';
 import { jtiFromJwt, csrfTokenForSession } from './csrf.js';
-import type { RateLimiter } from '../../workspace-access/internal/infrastructure/rate-limiter.js';
-import { loginFailKeySync, loginIpKey, registerIpKey } from '../../workspace-access/internal/infrastructure/rate-limiter.js';
 import type { Pool as PgPool } from 'pg';
 import { getRevenueMetrics, getRevenueTimeseries, getKpiSummary, getRecognitionBreakdown, getRecentActivity, getOrdersTimeseries, getOrderStats, getDataHealth, getSettlementSummary, getTrackingHealth, getRecentEvents, getAdSpendTimeseries, getBlendedRoas, getCodRtoRates, getCodMix, getCheckoutFunnel, getOrderStatusMix, getJourneyFirstTouchMix, getJourneyStitchRate, getJourneyTimeline, getConsentCoverage, getConsentSuppressionSummary, getConsentGateActivity, getConsentWindowConfig, getAttributionByChannel, getAttributionReconciliation, getChannelRoas, getCapiFeedbackSummary, getCapiFeedbackEvents, getCapiFeedbackDeletions } from '../../analytics/index.js';
 import { getDataQualitySummary } from '../../data-quality/index.js';

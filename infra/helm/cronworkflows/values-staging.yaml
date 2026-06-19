@@ -1,0 +1,18 @@
+image:
+  repository: REPLACE_WITH_ECR_REGISTRY/brain-core-staging
+  tag: latest
+  digest: ""
+
+streamWorkerImage:
+  repository: REPLACE_WITH_ECR_REGISTRY/brain-stream-worker-staging
+  tag: latest
+  digest: ""
+
+# The job pods read the same secret as the core/stream-worker deployments (DATABASE_URL,
+# BRAIN_APP_DATABASE_URL, STARROCKS_*). External Secrets ← AWS Secrets Manager.
+envSecretName: core-env
+
+serviceAccount:
+  name: brain-jobs
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/brain-jobs-staging

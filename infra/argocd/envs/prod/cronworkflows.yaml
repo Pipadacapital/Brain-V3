@@ -1,0 +1,31 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cronworkflows-prod
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/manifest-generate-paths: infra/helm/cronworkflows
+  labels:
+    project: brain
+    environment: prod
+    service: cronworkflows
+spec:
+  project: brain-prod
+  source:
+    repoURL: https://github.com/brain-platform/brain
+    targetRevision: main
+    path: infra/helm/cronworkflows
+    helm:
+      valueFiles:
+        - values-prod.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argo
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+  revisionHistoryLimit: 10

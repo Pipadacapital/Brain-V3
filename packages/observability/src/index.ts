@@ -44,52 +44,63 @@ export interface SpanContext {
 
 // ── Stub tracer (Sprint 0 — real OTel wired in M1) ───────────────────────────
 
+import { trace, metrics, SpanStatusCode, type Span as OtelSpan } from '@opentelemetry/api';
 import { redactAttributes, isPiiKey } from './redact.js';
 import type { Attributes } from './redact.js';
 
-/**
- * Stub span implementation.
- * In M1 this wraps @opentelemetry/api Span; the interface is identical.
- * The PII guard (redactAttributes) fires here regardless of SDK wiring.
- */
-class StubSpan implements BrainSpan {
-  private readonly _attrs: Attributes = {};
+const TRACER_NAME = '@brain/observability';
 
-  constructor(
-    private readonly name: string,
-    private readonly ctx: SpanContext,
-  ) {
-    // Brand ID and correlation ID are always set on span creation (ADR-009).
-    // They are NOT PII (brand_id is a UUID tenant key; correlation_id is a trace identifier).
-    this._attrs['brand_id'] = ctx.brandId;
-    this._attrs['correlation_id'] = ctx.correlationId;
-    this._attrs['service.name'] = ctx.serviceName;
-    this._attrs['span.name'] = name;
+/**
+ * BrainSpan over a REAL @opentelemetry/api Span. The PII guard (NN-6) fires HERE, before any
+ * attribute reaches the OTel span, so redaction holds regardless of SDK/exporter wiring. When
+ * no tracer provider is registered (dev/test without initObservability), trace.getTracer returns
+ * the API's no-op tracer — spans cost nothing; once initObservability registers the OTLP SDK,
+ * the same calls produce real exported spans. `_attrs` mirrors the redacted attributes for tests.
+ */
+class BrainSpanImpl implements BrainSpan {
+  private readonly _attrs: Attributes = {};
+  private readonly otel: OtelSpan;
+
+  constructor(name: string, ctx: SpanContext) {
+    this.otel = trace.getTracer(TRACER_NAME).startSpan(name);
+    // brand_id + correlation_id are ALWAYS set (ADR-009). NOT PII (UUID tenant key + trace id).
+    this.put('brand_id', ctx.brandId);
+    this.put('correlation_id', ctx.correlationId);
+    this.put('service.name', ctx.serviceName);
+    this.put('span.name', name);
+  }
+
+  private put(key: string, value: string | number | boolean): void {
+    this._attrs[key] = value;
+    this.otel.setAttribute(key, value);
   }
 
   setAttribute(key: string, value: string | number | boolean): this {
     if (isPiiKey(key)) {
-      // Silently drop — do not log the key or value.
-      return this;
+      return this; // silently drop — never the key or value (NN-6)
     }
-    this._attrs[key] = value;
+    this.put(key, value);
     return this;
   }
 
   setAttributes(attrs: Record<string, string | number | boolean | undefined>): this {
     const safe = redactAttributes(attrs as Attributes);
-    Object.assign(this._attrs, safe);
+    for (const [k, v] of Object.entries(safe)) {
+      this.put(k, v as string | number | boolean);
+    }
     return this;
   }
 
   recordException(error: Error): void {
     this._attrs['error'] = true;
     this._attrs['error.message'] = error.message;
-    // Do NOT log error.stack as it may contain PII in stack frames.
+    // Record name+message only — NEVER error.stack (stack frames may carry PII).
+    this.otel.recordException({ name: error.name, message: error.message });
+    this.otel.setStatus({ code: SpanStatusCode.ERROR, message: error.message });
   }
 
   end(): void {
-    // No-op in stub; real OTel SDK will flush to the OTLP exporter.
+    this.otel.end();
   }
 
   /** For testing — expose collected (redacted) attributes. */
@@ -99,17 +110,13 @@ class StubSpan implements BrainSpan {
 }
 
 /**
- * Start a new span with the required Brain context.
+ * Start a new span with the required Brain context, over the real OTel tracer.
  *
  * Every span MUST carry brand_id + correlation_id (ADR-009).
  * PII-keyed attributes set via setAttribute/setAttributes are silently dropped (NN-6).
- *
- * @param name - Span name (dot-separated, lowercase: 'collector.event.ingest').
- * @param ctx - Required span context (brandId, correlationId, serviceName).
- * @returns A BrainSpan wrapping the OTel span.
  */
 export function startSpan(name: string, ctx: SpanContext): BrainSpan {
-  return new StubSpan(name, ctx);
+  return new BrainSpanImpl(name, ctx);
 }
 
 // ── gen_ai.* span helpers (Phase 3+ reserved; no-op in Sprint 0) ─────────────
@@ -192,6 +199,60 @@ export function incrementCounter(
   value = 1,
 ): void {
   activeCounterSink.add(name, value, labels);
+}
+
+/** A CounterSink backed by the real OTel meter (installed by initObservability in prod). */
+function otelMeterSink(): CounterSink {
+  const meter = metrics.getMeter(TRACER_NAME);
+  const counters = new Map<string, ReturnType<typeof meter.createCounter>>();
+  return {
+    add(name: string, value: number, labels: CounterLabels): void {
+      let counter = counters.get(name);
+      if (!counter) {
+        counter = meter.createCounter(name);
+        counters.set(name, counter);
+      }
+      counter.add(value, labels);
+    },
+  };
+}
+
+// ── SDK lifecycle ─────────────────────────────────────────────────────────────
+
+let _sdkInitialized = false;
+
+/**
+ * Initialize real OpenTelemetry export (ADR-009) — call ONCE per process from main.ts.
+ *
+ * When `otlpEndpoint` is set, lazily loads @opentelemetry/sdk-node and starts the NodeSDK, which
+ * auto-configures OTLP trace + metric exporters from OTEL_* env. startSpan() then produces real
+ * exported spans and incrementCounter() emits real OTel metrics (the sink swaps to the meter).
+ * When the endpoint is absent (dev/test), this is a no-op: spans/counters stay on the API's
+ * no-op providers / the console sink, so nothing is loaded and nothing breaks.
+ *
+ * @returns an async shutdown fn (flushes + stops the SDK) for graceful termination.
+ */
+export async function initObservability(opts: {
+  serviceName: string;
+  otlpEndpoint?: string;
+}): Promise<() => Promise<void>> {
+  if (_sdkInitialized || !opts.otlpEndpoint) {
+    return async () => {};
+  }
+  _sdkInitialized = true;
+  process.env['OTEL_EXPORTER_OTLP_ENDPOINT'] ??= opts.otlpEndpoint;
+  process.env['OTEL_SERVICE_NAME'] ??= opts.serviceName;
+
+  const { NodeSDK } = await import('@opentelemetry/sdk-node');
+  const sdk = new NodeSDK();
+  sdk.start();
+
+  // Route counters to the real meter now that a global MeterProvider is registered.
+  activeCounterSink = otelMeterSink();
+
+  return async () => {
+    await sdk.shutdown();
+  };
 }
 
 // ── Correlation ID propagation ────────────────────────────────────────────────

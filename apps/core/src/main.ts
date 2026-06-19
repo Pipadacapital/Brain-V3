@@ -45,6 +45,7 @@ import {
   KmsVaultKeyProvider,
   AwsKmsDecryptAdapter,
 } from './modules/identity/index.js';
+import { initObservability } from '@brain/observability';
 import { jtiFromJwt, csrfTokenForSession, csrfTokenMatches } from './modules/frontend-api/internal/csrf.js';
 import { NotificationServiceImpl } from './modules/notification/internal/notification.service.impl.js';
 import { registerDevRoutes } from './modules/notification/internal/dev.routes.js';
@@ -134,6 +135,12 @@ function getEnv(name: string, defaultValue: string): string {
 export async function main(): Promise<void> {
   // NN-5: Assert argon2id parameters at startup.
   assertArgon2Params();
+
+  // Real OpenTelemetry export (ADR-009) — gated by OTEL_EXPORTER_OTLP_ENDPOINT (no-op in dev).
+  await initObservability({
+    serviceName: 'core',
+    otlpEndpoint: getEnv('OTEL_EXPORTER_OTLP_ENDPOINT', '') || undefined,
+  });
 
   const nodeEnv = getEnv('NODE_ENV', 'development');
   const isProduction = nodeEnv === 'production';

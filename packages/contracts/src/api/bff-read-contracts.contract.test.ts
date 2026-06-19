@@ -573,6 +573,7 @@ describe('Recommendations (#19 — decision engine)', () => {
         summary: '5.02% of orders were returned-to-origin (43 of 856).',
         recommended_action: 'Add address verification; cap COD for new customers.',
         evidence: { rto_count: 43, order_count: 856, rto_rate_pct: '5.02', gmv_at_risk_minor: '14900' },
+        outcome: { metric: 'rto_rate_pct', then: 5.02, now: 4.1, delta: -0.92, improved: true },
         created_at: '2026-06-19T00:00:00.000Z',
       },
     ],

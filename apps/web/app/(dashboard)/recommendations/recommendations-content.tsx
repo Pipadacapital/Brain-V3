@@ -13,7 +13,7 @@
  */
 
 import * as React from 'react';
-import { Lightbulb, AlertTriangle, TrendingUp, ShieldCheck, RefreshCw } from 'lucide-react';
+import { Lightbulb, AlertTriangle, TrendingUp, TrendingDown, ShieldCheck, RefreshCw } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -47,6 +47,23 @@ function inr(minor: string): string {
   }
 }
 
+/** The learning-loop outcome strip: the detector's headline metric then-at-raise vs now. */
+function OutcomeStrip({ outcome }: { outcome: NonNullable<Recommendation['outcome']> }) {
+  const label = outcome.metric.replace(/_/g, ' ').replace(/ pct$/, ' %');
+  const tone = outcome.improved ? 'text-emerald-700 bg-emerald-50' : 'text-amber-800 bg-amber-50';
+  const Icon = outcome.improved ? TrendingDown : TrendingUp;
+  return (
+    <div className={`flex items-center gap-2 rounded-md px-3 py-1.5 text-xs ${tone}`}>
+      <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+      <span className="font-medium">Since raised:</span>
+      <span className="tabular-nums">
+        {label} {outcome.then} → {outcome.now}
+      </span>
+      <span className="font-medium">{outcome.improved ? 'improving' : 'not improving yet'}</span>
+    </div>
+  );
+}
+
 function RecommendationCard({ rec }: { rec: Recommendation }) {
   const isRisk = rec.kind === 'risk';
   const gmvAtRisk = rec.evidence['gmv_at_risk_minor'];
@@ -75,6 +92,8 @@ function RecommendationCard({ rec }: { rec: Recommendation }) {
           <span className="font-medium">Recommended action: </span>
           {rec.recommended_action}
         </div>
+
+        {rec.outcome && <OutcomeStrip outcome={rec.outcome} />}
 
         {/* Evidence — the certified signal behind the recommendation */}
         <dl className="flex flex-wrap gap-x-6 gap-y-1 text-xs text-muted-foreground">

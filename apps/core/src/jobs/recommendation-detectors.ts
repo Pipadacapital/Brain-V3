@@ -14,7 +14,7 @@
 import { randomUUID } from 'node:crypto';
 import { createPool, type DbPool, type QueryContext } from '@brain/db';
 import { createLogger } from '@brain/observability';
-import { generateRecommendations } from '../modules/recommendation/index.js';
+import { generateRecommendations, measureRecommendationOutcomes } from '../modules/recommendation/index.js';
 
 const log = createLogger({ serviceName: 'job:recommendation-detectors' });
 
@@ -27,6 +27,7 @@ export interface RecommendationJobResult {
   brands: number;
   raised: number;
   expired: number;
+  measured: number;
   errors: number;
 }
 
@@ -36,6 +37,7 @@ export async function runRecommendationDetectors(deps?: { pool?: DbPool }): Prom
   let brands = 0;
   let raised = 0;
   let expired = 0;
+  let measured = 0;
   let errors = 0;
 
   try {
@@ -56,13 +58,16 @@ export async function runRecommendationDetectors(deps?: { pool?: DbPool }): Prom
         const r = await generateRecommendations(brandId, `reco-job-${randomUUID()}`, { pool });
         raised += r.raised;
         expired += r.expired;
+        // Learning loop: re-measure each open rec's headline metric (then-at-raise vs now).
+        const m = await measureRecommendationOutcomes(brandId, `reco-measure-${randomUUID()}`, { pool });
+        measured += m.measured;
       } catch (err) {
         errors += 1;
         log.error('detector run failed for brand', { brand_id: brandId, err });
       }
     }
-    log.info('recommendation detectors complete', { brands, raised, expired, errors });
-    return { brands, raised, expired, errors };
+    log.info('recommendation detectors complete', { brands, raised, expired, measured, errors });
+    return { brands, raised, expired, measured, errors };
   } finally {
     if (ownsPool) await pool.end();
   }

@@ -19,6 +19,7 @@
 
 import Fastify from 'fastify';
 import { parseEnv, CollectorEnvSchema } from '@brain/config';
+import { initObservability } from '@brain/observability';
 import { registerSchema, defaultApicurioConfig } from '@brain/events';
 import { PgSpoolRepository } from './infrastructure/pg-spool.repository.js';
 import { CollectorKafkaProducer } from './infrastructure/kafka-producer.js';
@@ -87,6 +88,9 @@ async function registerSchemaWithBackoff(): Promise<void> {
 // ── Bootstrap ─────────────────────────────────────────────────────────────────
 
 export async function main(): Promise<void> {
+  // Real OpenTelemetry export (ADR-009) — gated by OTEL_EXPORTER_OTLP_ENDPOINT (no-op in dev).
+  await initObservability({ serviceName: 'collector', otlpEndpoint: cfg.OTEL_EXPORTER_OTLP_ENDPOINT });
+
   // ── 1. Infrastructure wiring ─────────────────────────────────────────────────
   const spoolRepo = new PgSpoolRepository(cfg.DATABASE_URL);
 

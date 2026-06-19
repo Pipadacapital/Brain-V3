@@ -23,6 +23,7 @@ import { BronzeRepository } from './infrastructure/pg/BronzeRepository.js';
 import { IdentityRepository } from './infrastructure/pg/IdentityRepository.js';
 import { SaltProvider, LocalSecretsProvider } from './infrastructure/secrets/SaltProvider.js';
 import { resolveSaltHex } from '@brain/identity-core';
+import { initObservability } from '@brain/observability';
 import {
   DevVaultKeyProvider,
   KmsVaultKeyProvider,
@@ -50,6 +51,9 @@ import { startDqChecks } from './jobs/dq/run.js';
 import { startIngestScheduler } from './jobs/ingest-scheduler/run.js';
 
 export async function main(): Promise<void> {
+  // Real OpenTelemetry export (ADR-009) — gated by OTEL_EXPORTER_OTLP_ENDPOINT (no-op in dev).
+  await initObservability({ serviceName: 'stream-worker', otlpEndpoint: process.env['OTEL_EXPORTER_OTLP_ENDPOINT'] });
+
   const brokers = (process.env['KAFKA_BROKERS'] ?? 'localhost:9092').split(',');
   const redisUrl = process.env['REDIS_URL'] ?? 'redis://localhost:6379';
   // IMPORTANT: must connect as brain_app to enforce RLS (not superuser 'brain')

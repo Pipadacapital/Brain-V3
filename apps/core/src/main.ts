@@ -169,7 +169,11 @@ export async function main(): Promise<void> {
   // Load remaining configuration.
   const config = {
     port: parseInt(getEnv('PORT', '3001'), 10),
-    databaseUrl: getEnvOrThrow('DATABASE_URL'),
+    // feat-tenancy-runtime-brain-app (A1): the app RUNTIME connects as the non-superuser brain_app so
+    // RLS is actually enforced (FORCE RLS is a no-op against a superuser/owner). Migrations keep the
+    // owner DATABASE_URL (run via the CLI, not here). Prod MUST set BRAIN_APP_DATABASE_URL (fail-closed
+    // — running as superuser in prod is the R-01 hole); dev defaults to the local brain_app DSN.
+    databaseUrl: requireEnvInProd('BRAIN_APP_DATABASE_URL', 'postgres://brain_app:brain_app@localhost:5432/brain'),
     redisUrl: getEnv('REDIS_URL', 'redis://localhost:6379'),
     jwtSigningSecret,
     appBaseUrl: getEnv('APP_BASE_URL', 'http://localhost:3000'),

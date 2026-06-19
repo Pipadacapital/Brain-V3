@@ -39,6 +39,7 @@ import {
   Gauge,
   BrainCircuit,
   Fingerprint,
+  Lock,
 } from 'lucide-react';
 import { UserMenu } from '@/components/dashboard/user-menu';
 import { RequireSession } from '@/components/dashboard/require-session';
@@ -86,6 +87,7 @@ const NAV_SECTIONS: NavSection[] = [
     title: 'IDENTITY',
     items: [
       { href: '/identity/customer-360', label: 'Customer 360', icon: Fingerprint },
+      { href: '/identity/pii-vault', label: 'PII Vault', icon: Lock },
     ],
   },
   {

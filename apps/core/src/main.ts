@@ -38,6 +38,12 @@ import { registerWorkspaceRoutes } from './modules/workspace-access/internal/int
 import { registerBrandRoutes } from './modules/workspace-access/internal/interfaces/rest/brand.routes.js';
 import { registerMemberRoutes } from './modules/workspace-access/internal/interfaces/rest/member.routes.js';
 import { registerBffRoutes } from './modules/frontend-api/internal/bff.routes.js';
+import {
+  ContactPiiVaultRepository,
+  ContactPiiVaultService,
+  DevVaultKeyProvider,
+  UnwiredProdVaultKeyProvider,
+} from './modules/identity/index.js';
 import { jtiFromJwt, csrfTokenForSession, csrfTokenMatches } from './modules/frontend-api/internal/csrf.js';
 import { NotificationServiceImpl } from './modules/notification/internal/notification.service.impl.js';
 import { registerDevRoutes } from './modules/notification/internal/dev.routes.js';
@@ -430,6 +436,21 @@ export async function main(): Promise<void> {
     '[core] Meta CAPI passback adapter wired (DEFAULT-CLOSED: dev → would_send_dev, never sends; behind can_contact(advertising))',
   );
 
+  // ── PII vault (P0-C): encrypted contact_pii read/write + MatchPiiPort + coverage ──
+  // Dev derives a deterministic per-brand DEK; prod is DEFAULT-CLOSED until the KMS key
+  // provider (brand_keyring unwrap) is wired — it refuses to use a non-KMS key. The vault
+  // service is the contact_pii read seam (the only place app.role='send_service' is set)
+  // and structurally satisfies notification's MatchPiiPort for the CAPI passback.
+  const vaultKeyProvider =
+    config.nodeEnv === 'production' ? new UnwiredProdVaultKeyProvider() : new DevVaultKeyProvider();
+  const piiVaultService = new ContactPiiVaultService(
+    new ContactPiiVaultRepository(rawPgPool),
+    vaultKeyProvider,
+  );
+  app.log.info(
+    `[core] PII vault wired (${config.nodeEnv === 'production' ? 'PROD: default-closed until KMS provider' : 'dev: per-brand derived DEK'}); MatchPiiPort ready for CAPI passback`,
+  );
+
   // Create application services.
   const authServiceConfig = { jwtSigningSecret: config.jwtSigningSecret };
   const authService = new AuthService(pool, auditWriter, notificationService, authServiceConfig, rawPgPool);
@@ -474,7 +495,7 @@ export async function main(): Promise<void> {
   registerWorkspaceRoutes(app, authService, workspaceService);
   registerBrandRoutes(app, authService, brandService);
   registerMemberRoutes(app, authService, inviteService, rawPgPool);
-  registerBffRoutes(app, authService, pool, config.cookieSecret, rateLimiter, rawPgPool, onboardingService, srPool);
+  registerBffRoutes(app, authService, pool, config.cookieSecret, rateLimiter, rawPgPool, onboardingService, srPool, piiVaultService);
 
   // D13: consent write + can_contact() gate-probe routes (brand-scoped, session-guarded).
   // grant/withdraw record the append-only consent SoR; check runs the default-closed

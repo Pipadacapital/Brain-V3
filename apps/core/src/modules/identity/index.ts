@@ -15,3 +15,17 @@ export type {
   Customer360Merge,
   Customer360Deps,
 } from './internal/application/queries/get-customer-360.js';
+
+// PII vault (P0-C slice 2) — encrypted contact_pii read/write + MatchPiiPort + coverage.
+export { ContactPiiVaultRepository } from './internal/infrastructure/contact-pii-vault.repository.js';
+export type { VaultPiiType } from './internal/infrastructure/contact-pii-vault.repository.js';
+export {
+  ContactPiiVaultService,
+  DevVaultKeyProvider,
+  UnwiredProdVaultKeyProvider,
+} from './internal/application/contact-pii-vault.service.js';
+export type {
+  VaultMatchPii,
+  VaultCoverage,
+  VaultKeyProvider,
+} from './internal/application/contact-pii-vault.service.js';

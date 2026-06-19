@@ -38,6 +38,7 @@ export type {
   Customer360Profile,
   Customer360Identifier,
   Customer360Merge,
+  VaultCoverage as VaultCoverageResponse,
 } from '@brain/contracts';
 
 // Local import for the names referenced WITHIN this file (re-exports above are not in local scope).

@@ -24,3 +24,12 @@ export function useCustomer360(brainId: string) {
     staleTime: 60_000,
   });
 }
+
+/** useVaultCoverage — counts-only PII vault coverage for the active brand. */
+export function useVaultCoverage() {
+  return useQuery({
+    queryKey: [...IDENTITY_QUERY_KEY, 'vault-coverage'],
+    queryFn: () => identityApi.getVaultCoverage(),
+    staleTime: 60_000,
+  });
+}

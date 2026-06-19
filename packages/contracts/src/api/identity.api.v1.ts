@@ -42,6 +42,16 @@ export const Customer360MergeSchema = z.object({
 });
 export type Customer360Merge = z.infer<typeof Customer360MergeSchema>;
 
+/** PII vault coverage — counts only, never raw PII (P0-C slice 2). */
+export const VaultCoverageSchema = z.object({
+  resolved_customers: z.number().int().nonnegative(),
+  vaulted_customers: z.number().int().nonnegative(),
+  coverage_pct: z.number().int().min(0).max(100),
+  email_count: z.number().int().nonnegative(),
+  phone_count: z.number().int().nonnegative(),
+});
+export type VaultCoverage = z.infer<typeof VaultCoverageSchema>;
+
 export const Customer360Schema = z.discriminatedUnion('state', [
   z.object({
     state: z.literal('not_found'),

@@ -399,10 +399,12 @@ export {
   Customer360IdentifierSchema,
   Customer360MergeSchema,
   Customer360Schema,
+  VaultCoverageSchema,
 } from './api/identity.api.v1.js';
 export type {
   Customer360Profile,
   Customer360Identifier,
   Customer360Merge,
   Customer360,
+  VaultCoverage,
 } from './api/identity.api.v1.js';

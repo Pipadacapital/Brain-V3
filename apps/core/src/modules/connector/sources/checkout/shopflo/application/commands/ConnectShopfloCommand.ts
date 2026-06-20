@@ -16,7 +16,7 @@
  *     NEVER trusted from the webhook body (MT-1).
  */
 
-import type { ISecretsManager } from '../../../../storefront/shopify/infrastructure/secrets/ISecretsManager.js';
+import type { ISecretsManager } from '@brain/connector-secrets';
 import type { IConnectorInstanceRepository } from '../../../../storefront/shopify/domain/repositories/IConnectorInstanceRepository.js';
 import type { IConnectorSyncStatusRepository } from '../../../../storefront/shopify/domain/repositories/IConnectorSyncStatusRepository.js';
 import { ConnectorInstance } from '../../../../storefront/shopify/domain/entities/ConnectorInstance.js';

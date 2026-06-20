@@ -13,7 +13,7 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { randomUUID } from 'node:crypto';
 import pg from 'pg';
-import type { ISecretsManager } from '../../infrastructure/secrets/ISecretsManager.js';
+import type { ISecretsManager } from '@brain/connector-secrets';
 import { ShopifyAdminClient, type ShopifyOrder } from '../../infrastructure/api/ShopifyAdminClient.js';
 
 interface ConnInstanceRow {

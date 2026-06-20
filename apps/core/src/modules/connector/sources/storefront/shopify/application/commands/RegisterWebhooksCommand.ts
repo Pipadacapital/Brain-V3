@@ -14,7 +14,7 @@
  * registration API call and is never logged (I-S09).
  */
 
-import type { ISecretsManager } from '../../infrastructure/secrets/ISecretsManager.js';
+import type { ISecretsManager } from '@brain/connector-secrets';
 import { log } from "../../../../../../../log.js";
 
 /** Shopify Admin API version used for webhook registration. */

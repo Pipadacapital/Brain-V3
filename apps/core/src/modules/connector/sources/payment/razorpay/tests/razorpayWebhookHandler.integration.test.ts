@@ -47,7 +47,7 @@ import type { Producer } from 'kafkajs';
 import { Redis } from 'ioredis';
 
 import { registerRazorpayWebhookRoutes } from '../interfaces/webhooks/razorpayWebhookHandler.js';
-import type { ISecretsManager } from '../../../storefront/shopify/infrastructure/secrets/ISecretsManager.js';
+import type { ISecretsManager } from '@brain/connector-secrets';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 

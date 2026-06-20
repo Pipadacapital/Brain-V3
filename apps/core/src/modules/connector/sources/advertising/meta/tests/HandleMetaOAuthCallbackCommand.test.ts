@@ -16,7 +16,7 @@ import {
   MetaStateNonceError,
 } from '../application/commands/HandleMetaOAuthCallbackCommand.js';
 import { InProcessOAuthStateStore } from '../../../storefront/shopify/infrastructure/state/InProcessOAuthStateStore.js';
-import { LocalSecretsManager } from '../../../storefront/shopify/infrastructure/secrets/LocalSecretsManager.js';
+import { LocalSecretsManager } from '@brain/connector-secrets';
 import type { IConnectorInstanceRepository } from '../../../storefront/shopify/domain/repositories/IConnectorInstanceRepository.js';
 import type { IConnectorSyncStatusRepository } from '../../../storefront/shopify/domain/repositories/IConnectorSyncStatusRepository.js';
 import { ConnectorInstance } from '../../../storefront/shopify/domain/entities/ConnectorInstance.js';

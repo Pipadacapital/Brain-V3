@@ -20,7 +20,7 @@ import { ConnectorInstance } from '../../domain/entities/ConnectorInstance.js';
 import { ConnectorSyncStatus } from '../../domain/entities/ConnectorSyncStatus.js';
 import type { IConnectorInstanceRepository } from '../../domain/repositories/IConnectorInstanceRepository.js';
 import type { IConnectorSyncStatusRepository } from '../../domain/repositories/IConnectorSyncStatusRepository.js';
-import type { ISecretsManager } from '../../infrastructure/secrets/ISecretsManager.js';
+import type { ISecretsManager } from '@brain/connector-secrets';
 import type { IOAuthStateStore } from '../../infrastructure/state/IOAuthStateStore.js';
 
 export interface OAuthCallbackInput {

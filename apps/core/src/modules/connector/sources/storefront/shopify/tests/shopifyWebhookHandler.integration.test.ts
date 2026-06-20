@@ -43,7 +43,7 @@ import type { Producer } from 'kafkajs';
 import { registerShopifyWebhookRoutes } from '../interfaces/webhooks/shopifyWebhookHandler.js';
 import { uuidV5FromOrderLive } from '@brain/shopify-mapper';
 import { uuidV5FromOrderBackfill } from '@brain/shopify-mapper';
-import type { ISecretsManager } from '../infrastructure/secrets/ISecretsManager.js';
+import type { ISecretsManager } from '@brain/connector-secrets';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 

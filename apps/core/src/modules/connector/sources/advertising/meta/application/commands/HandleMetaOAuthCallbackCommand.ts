@@ -26,7 +26,7 @@ import { ConnectorInstance } from '../../../../storefront/shopify/domain/entitie
 import { ConnectorSyncStatus } from '../../../../storefront/shopify/domain/entities/ConnectorSyncStatus.js';
 import type { IConnectorInstanceRepository } from '../../../../storefront/shopify/domain/repositories/IConnectorInstanceRepository.js';
 import type { IConnectorSyncStatusRepository } from '../../../../storefront/shopify/domain/repositories/IConnectorSyncStatusRepository.js';
-import type { ISecretsManager } from '../../../../storefront/shopify/infrastructure/secrets/ISecretsManager.js';
+import type { ISecretsManager } from '@brain/connector-secrets';
 import type { IOAuthStateStore } from '../../../../storefront/shopify/infrastructure/state/IOAuthStateStore.js';
 import { META_GRAPH_API_VERSION } from './InitiateMetaOAuthCommand.js';
 

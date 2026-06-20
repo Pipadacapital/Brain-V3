@@ -460,3 +460,15 @@ export type {
 } from './api/recommendation.api.v1.js';
 export { AttributionReconcileResultSchema } from './api/attribution.api.v1.js';
 export type { AttributionReconcileResult } from './api/attribution.api.v1.js';
+export {
+  FoundationTierSchema,
+  FoundationStepSchema,
+  FoundationNextActionSchema,
+  FoundationHealthSchema,
+} from './api/foundation.api.v1.js';
+export type {
+  FoundationTier,
+  FoundationStep,
+  FoundationNextAction,
+  FoundationHealth,
+} from './api/foundation.api.v1.js';

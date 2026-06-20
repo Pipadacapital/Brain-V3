@@ -426,13 +426,23 @@ export class LedgerWriter {
         ],
       );
 
+      // F2: a settlement reversal (refund/chargeback settlement) can push cumulative reversals past
+      // the recognized sale just like an RTO can — detect it within the txn and signal (don't silently
+      // go negative). Only for per-order reversal rows; brand-level rows have no provisional sale.
+      const inserted = (result.rowCount ?? 0) > 0;
+      const isReversal = (REVENUE_REVERSAL_EVENT_TYPES as readonly string[]).includes(params.eventType);
+      const overReversed =
+        inserted && isReversal && params.reconciliationType === 'per_order'
+          ? await this.isOrderOverReversed(client, params.brandId, params.orderId)
+          : false;
+
       await client.query('COMMIT');
 
-      const inserted = (result.rowCount ?? 0) > 0;
       if (inserted) {
         log.info(`[ledger-writer] ${params.eventType} brand=${params.brandId} ` +
                     `order=${params.orderId} amount=${params.amountMinor} ${params.currencyCode} ` +
                     `reconciliation=${params.reconciliationType}`);
+        if (overReversed) this.signalOverReversal(params.brandId, params.orderId, params.eventType);
       }
       return inserted;
     } catch (err) {

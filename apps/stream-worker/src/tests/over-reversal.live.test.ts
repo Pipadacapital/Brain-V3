@@ -111,6 +111,24 @@ describe('revenue over-reversal signal (F2, live Postgres)', () => {
     expect(overReversals().length).toBe(before + 1); // SIGNALLED
   });
 
+  it('a SETTLEMENT reversal that pushes cumulative reversals past the sale also signals (F2 follow-up)', async () => {
+    if (!pgAvailable) return;
+    // sale 100000 with a 60000 refund already posted; a 60000 settlement_reversal → reversed 120000 > 100000.
+    await seedLedger('ovr-3', [
+      ['provisional_recognition', 100_000, 'provisional'],
+      ['refund', -60_000, 'finalized'],
+    ]);
+    const before = overReversals().length;
+    const inserted = await writer.writeSettlementFinalization({
+      brandId: BRAND, orderId: 'ovr-3', brainId: null, settlementId: 'setl-ovr-3',
+      eventType: 'settlement_reversal', amountMinor: '-60000', feeMinor: '0', taxMinor: '0',
+      currencyCode: 'INR', occurredAt: '2026-06-09T00:00:00.000Z', reconciliationType: 'per_order',
+      taxCode: null, rawEventId: 'ovr-3-src',
+    });
+    expect(inserted).toBe(true);
+    expect(overReversals().length).toBe(before + 1); // SIGNALLED on the settlement path too
+  });
+
   it('a clean single full reversal (reversed == sale) stays SILENT', async () => {
     if (!pgAvailable) return;
     await seedLedger('ovr-2', [['provisional_recognition', 100_000, 'provisional']]);

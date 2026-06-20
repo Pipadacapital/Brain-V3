@@ -67,6 +67,13 @@ export type {
   OrderStatusMixRange,
   LifecycleState,
 } from './order-status-mix.js';
+// Silver tier — top-products (per-SKU rollup over silver.order_line; non-additive, ADR-004)
+export { computeTopProducts } from './top-products.js';
+export type {
+  TopProductsResult,
+  TopProductRow,
+  TopProductsRange,
+} from './top-products.js';
 export { withSilverBrand, BRAND_PREDICATE } from './silver-deps.js';
 export type { SilverDeps, SilverPool, SilverConnection, SilverScope } from './silver-deps.js';
 

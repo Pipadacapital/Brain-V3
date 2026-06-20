@@ -282,6 +282,32 @@ export const OrderStatusMixSchema = z.discriminatedUnion('state', [
 ]);
 export type OrderStatusMix = z.infer<typeof OrderStatusMixSchema>;
 
+// ── #N GET /v1/analytics/top-products ─────────────────────────────────────────
+// Per-SKU rollup (units / line GMV / order count) over the Silver order-line mart.
+// @see apps/core/.../analytics/.../get-top-products.ts (TopProductsResult / TopProductDto)
+
+export const TopProductDtoSchema = z.object({
+  sku: z.string(),
+  title: z.string().nullable(),
+  units: MinorUnitsSchema,          // bigint → string
+  line_gmv_minor: MinorUnitsSchema, // bigint → string (minor units, I-S07)
+  order_count: MinorUnitsSchema,    // bigint → string
+});
+export type TopProductDto = z.infer<typeof TopProductDtoSchema>;
+
+export const TopProductsSchema = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('no_data') }),
+  z.object({
+    state: z.literal('has_data'),
+    from: z.string(),
+    to: z.string(),
+    currency_code: z.string(),
+    data_source: DataSourceSchema,
+    products: z.array(TopProductDtoSchema),
+  }),
+]);
+export type TopProducts = z.infer<typeof TopProductsSchema>;
+
 // ── #N GET /v1/analytics/order-detail ─────────────────────────────────────────
 // A single order's economic breakdown, read from Bronze (feat-shopify-order-depth).
 // @see apps/core/.../analytics/.../get-order-detail.ts (OrderDetailResult / OrderDetailDto)

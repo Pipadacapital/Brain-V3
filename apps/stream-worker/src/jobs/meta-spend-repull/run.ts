@@ -40,6 +40,7 @@ import {
   type MetaApiCredentials,
 } from './meta-insights-client.js';
 import { log } from "../../log.js";
+import { acquireCursorLock, upsertCursorValue } from '../../infrastructure/pg/CursorRepository.js';
 
 const DB_URL =
   process.env['BRAIN_APP_DATABASE_URL'] ??
@@ -47,7 +48,6 @@ const DB_URL =
 const BROKERS = (process.env['KAFKA_BROKERS'] ?? 'localhost:9092').split(',');
 const ENV = process.env['APP_ENV'] ?? 'dev';
 const LIVE_TOPIC = `${ENV}.${COLLECTOR_EVENT_V1_TOPIC_SUFFIX}`;
-const NIL_UUID = '00000000-0000-0000-0000-000000000000';
 
 /** Single cursor resource (ADR-AD-3): meta.insights, 28d trailing window. */
 const CURSOR_RESOURCE = 'meta.insights' as const;
@@ -268,73 +268,6 @@ async function emitPage(p: EmitPageParams): Promise<{ emitted: number; maxDate: 
 }
 
 // ── Cursor + sync helpers (mirror razorpay-settlement-repull exactly) ────────
-
-export async function acquireCursorLock(
-  pool: Pool, brandId: string, connectorInstanceId: string, resource: string,
-): Promise<boolean> {
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    await client.query(
-      `SELECT set_config('app.current_brand_id', $1, true),
-              set_config('app.current_user_id', $2, true),
-              set_config('app.current_workspace_id', $2, true)`,
-      [brandId, NIL_UUID],
-    );
-    await client.query(
-      `INSERT INTO connector_cursor (brand_id, connector_instance_id, resource, cursor_value, updated_at)
-       VALUES ($1, $2, $3, '', NOW())
-       ON CONFLICT ON CONSTRAINT connector_cursor_upsert_key DO NOTHING`,
-      [brandId, connectorInstanceId, resource],
-    );
-    const lockResult = await client.query(
-      `SELECT id FROM connector_cursor
-       WHERE brand_id = $1 AND connector_instance_id = $2 AND resource = $3
-       FOR UPDATE SKIP LOCKED`,
-      [brandId, connectorInstanceId, resource],
-    );
-    if ((lockResult.rowCount ?? 0) === 0) {
-      await client.query('ROLLBACK');
-      client.release();
-      return false;
-    }
-    await client.query('COMMIT');
-    client.release();
-    return true;
-  } catch (err) {
-    await client.query('ROLLBACK').catch(() => undefined);
-    client.release();
-    throw err;
-  }
-}
-
-export async function upsertCursorValue(
-  pool: Pool, brandId: string, connectorInstanceId: string, resource: string, cursorValue: string,
-): Promise<void> {
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    await client.query(
-      `SELECT set_config('app.current_brand_id', $1, true),
-              set_config('app.current_user_id', $2, true),
-              set_config('app.current_workspace_id', $2, true)`,
-      [brandId, NIL_UUID],
-    );
-    await client.query(
-      `INSERT INTO connector_cursor (brand_id, connector_instance_id, resource, cursor_value, updated_at)
-       VALUES ($1, $2, $3, $4, NOW())
-       ON CONFLICT ON CONSTRAINT connector_cursor_upsert_key
-       DO UPDATE SET cursor_value = EXCLUDED.cursor_value, updated_at = NOW()`,
-      [brandId, connectorInstanceId, resource, cursorValue],
-    );
-    await client.query('COMMIT');
-  } catch (err) {
-    await client.query('ROLLBACK').catch(() => undefined);
-    log.error(`cursor upsert failed (non-fatal) resource=${resource}`, { err: err });
-  } finally {
-    client.release();
-  }
-}
 
 export async function setSyncState(
   pool: Pool, brandId: string, connectorInstanceId: string,

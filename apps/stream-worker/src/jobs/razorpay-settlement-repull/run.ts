@@ -44,6 +44,7 @@ import { RazorpaySettlementsClient, type RazorpayApiCredentials } from './razorp
 import { SaltProvider, LocalSecretsProvider } from '../../infrastructure/secrets/SaltProvider.js';
 import { resolveSaltHex } from '@brain/identity-core';
 import { log } from "../../log.js";
+import { acquireCursorLock, getCursorValue, upsertCursorValue } from '../../infrastructure/pg/CursorRepository.js';
 
 // ── Configuration ─────────────────────────────────────────────────────────────
 
@@ -54,8 +55,6 @@ const DB_URL =
 const BROKERS = (process.env['KAFKA_BROKERS'] ?? 'localhost:9092').split(',');
 const ENV = process.env['APP_ENV'] ?? 'dev';
 const LIVE_TOPIC = `${ENV}.${COLLECTOR_EVENT_V1_TOPIC_SUFFIX}`;
-
-const NIL_UUID = '00000000-0000-0000-0000-000000000000';
 
 /** C6 multi-cursor resources and their window sizes (in milliseconds) */
 const CURSOR_CONFIGS = [
@@ -347,125 +346,6 @@ async function repullCursorResource(params: CursorRepullParams): Promise<number>
   return recordsProcessed;
 }
 
-// ── Overlap-lock (FOR UPDATE SKIP LOCKED per cursor resource) ─────────────────
-
-async function acquireCursorLock(
-  pool: Pool,
-  brandId: string,
-  connectorInstanceId: string,
-  resource: CursorResource,
-): Promise<boolean> {
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-
-    // GUC BEFORE any brand-scoped operation (NN-1 / ADR-RZ-5)
-    await client.query(
-      `SELECT set_config('app.current_brand_id', $1, true),
-              set_config('app.current_user_id', $2, true),
-              set_config('app.current_workspace_id', $2, true)`,
-      [brandId, NIL_UUID],
-    );
-
-    // Ensure cursor row exists before locking (upsert no-op on conflict)
-    await client.query(
-      `INSERT INTO connector_cursor (brand_id, connector_instance_id, resource, cursor_value, updated_at)
-       VALUES ($1, $2, $3, '', NOW())
-       ON CONFLICT ON CONSTRAINT connector_cursor_upsert_key DO NOTHING`,
-      [brandId, connectorInstanceId, resource],
-    );
-
-    // FOR UPDATE SKIP LOCKED: if locked, returns 0 rows → skip this cursor
-    const lockResult = await client.query(
-      `SELECT id FROM connector_cursor
-       WHERE brand_id = $1
-         AND connector_instance_id = $2
-         AND resource = $3
-       FOR UPDATE SKIP LOCKED`,
-      [brandId, connectorInstanceId, resource],
-    );
-
-    if ((lockResult.rowCount ?? 0) === 0) {
-      await client.query('ROLLBACK');
-      client.release();
-      return false;
-    }
-
-    await client.query('COMMIT');
-    client.release();
-    return true;
-  } catch (err) {
-    await client.query('ROLLBACK').catch(() => undefined);
-    client.release();
-    throw err;
-  }
-}
-
-// ── Cursor value management ───────────────────────────────────────────────────
-
-async function getCursorValue(
-  pool: Pool,
-  brandId: string,
-  connectorInstanceId: string,
-  resource: CursorResource,
-): Promise<string | null> {
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    await client.query(
-      `SELECT set_config('app.current_brand_id', $1, true),
-              set_config('app.current_user_id', $2, true),
-              set_config('app.current_workspace_id', $2, true)`,
-      [brandId, NIL_UUID],
-    );
-    const result = await client.query<{ cursor_value: string }>(
-      `SELECT cursor_value FROM connector_cursor
-       WHERE brand_id = $1 AND connector_instance_id = $2 AND resource = $3`,
-      [brandId, connectorInstanceId, resource],
-    );
-    await client.query('COMMIT');
-    const value = result.rows[0]?.cursor_value;
-    return (value && value.length > 0) ? value : null;
-  } catch (err) {
-    await client.query('ROLLBACK').catch(() => undefined);
-    throw err;
-  } finally {
-    client.release();
-  }
-}
-
-async function upsertCursorValue(
-  pool: Pool,
-  brandId: string,
-  connectorInstanceId: string,
-  resource: CursorResource,
-  cursorValue: string,
-): Promise<void> {
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    await client.query(
-      `SELECT set_config('app.current_brand_id', $1, true),
-              set_config('app.current_user_id', $2, true),
-              set_config('app.current_workspace_id', $2, true)`,
-      [brandId, NIL_UUID],
-    );
-    await client.query(
-      `INSERT INTO connector_cursor (brand_id, connector_instance_id, resource, cursor_value, updated_at)
-       VALUES ($1, $2, $3, $4, NOW())
-       ON CONFLICT ON CONSTRAINT connector_cursor_upsert_key
-       DO UPDATE SET cursor_value = EXCLUDED.cursor_value, updated_at = NOW()`,
-      [brandId, connectorInstanceId, resource, cursorValue],
-    );
-    await client.query('COMMIT');
-  } catch (err) {
-    await client.query('ROLLBACK').catch(() => undefined);
-    log.error(`cursor upsert failed (non-fatal) resource=${resource}`, { err: err });
-  } finally {
-    client.release();
-  }
-}
-
 // ── Sync status (mirrors shopify-repull/run.ts setSyncState exactly) ──────────
 
 async function setSyncState(
@@ -588,9 +468,6 @@ if (
 
 export {
   enumerateConnectors,
-  acquireCursorLock,
-  upsertCursorValue,
-  getCursorValue,
   setSyncState,
   CURSOR_CONFIGS,
 };

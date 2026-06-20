@@ -7,6 +7,7 @@
  */
 
 import { type Pool } from 'pg';
+import { withBrandTxn } from '@brain/metric-engine';
 
 export class GetRealizedGmvAsOfQuery {
   constructor(private readonly pool: Pool) {}
@@ -14,29 +15,28 @@ export class GetRealizedGmvAsOfQuery {
   /**
    * Returns the realized GMV (in minor units, bigint) for a brand as of a date.
    * Excludes provisional_recognition rows (no-double-count heart — D-3).
-   * Executes under brain_app with GUC set → RLS filters to the requesting brand.
+   *
+   * F-SEC-02 (GUC-reset defense-in-depth): the brand GUC + RLS are set via the shared
+   * withBrandTxn — it opens a transaction, SET LOCAL ROLE brain_app (NOBYPASSRLS), and a
+   * transaction-LOCAL `app.current_brand_id`, then COMMITs. Both the role and the GUC reset on
+   * COMMIT/ROLLBACK, so the brand context can NEVER leak to the next user of this pooled
+   * connection. (The previous bare `set_config(..., true)` outside any transaction was not
+   * transaction-scoped on a pooled client — a leak vector and the same canonical seam every other
+   * Silver/ledger read already uses.)
    *
    * @param brandId - The brand UUID.
    * @param asOf    - The as-of date (inclusive). Economic_effective_at::date <= asOf.
    * @returns       Realized GMV in minor units as bigint (I-S07).
    */
   async execute(brandId: string, asOf: Date): Promise<bigint> {
-    const client = await this.pool.connect();
-    try {
-      // GUC-first: set brand context so RLS filters correctly
-      await client.query("SELECT set_config('app.current_brand_id', $1, true)", [brandId]);
-
-      const asOfStr = asOf.toISOString().split('T')[0]; // 'YYYY-MM-DD'
+    const asOfStr = asOf.toISOString().split('T')[0]; // 'YYYY-MM-DD'
+    return withBrandTxn(this.pool, brandId, async (client) => {
       const result = await client.query<{ realized_gmv_as_of: string }>(
         'SELECT realized_gmv_as_of($1::uuid, $2::date) AS realized_gmv_as_of',
         [brandId, asOfStr],
       );
-
-      const raw = result.rows[0]?.realized_gmv_as_of ?? '0';
-      // pg returns bigint as string to avoid JS precision loss
-      return BigInt(raw);
-    } finally {
-      client.release();
-    }
+      // pg returns bigint as string to avoid JS precision loss.
+      return BigInt(result.rows[0]?.realized_gmv_as_of ?? '0');
+    });
   }
 }

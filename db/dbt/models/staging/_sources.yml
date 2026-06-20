@@ -75,6 +75,40 @@ sources:
           - name: payload
             description: "JSONB — the SDK event payload. Journey signal under .properties."
 
+      # ── feat-shopify-order-depth (Silver line-grain) source ────────────────────
+      - name: bronze_order_line_src
+        # Read THROUGH the Postgres read-shim view (db/starrocks/bronze_order_line_src.sql):
+        # picks the LATEST order.* event per (brand_id, order_id) and UNNESTS its
+        # payload.properties.line_items into one row per (order, line_index); casts uuid/jsonb
+        # → text. The staging model types + dedups; no StarRocks JSON-array unnest needed.
+        identifier: bronze_order_line_src
+        description: >
+          Per-line composition of each order's latest state, unnested from bronze_events
+          payload.properties.line_items (the mapper's order-depth output). Money is minor-units
+          BIGINT-as-string. Cross-brand by construction (superuser JDBC read — ETL-writer
+          posture); per-brand isolation is enforced at the Silver READ seam (I-ST01), not here.
+        columns:
+          - name: brand_id
+            description: "Tenant key (UUID→text). First key/distribution/order column."
+          - name: order_id
+            description: "Order natural key (TEXT). Grain key with line_index."
+          - name: line_index
+            description: "1-based ordinal within the order's line_items (INT). Grain key."
+          - name: sku
+            description: "Line SKU (TEXT, nullable)."
+          - name: quantity
+            description: "Line quantity (TEXT→BIGINT in staging)."
+          - name: unit_price_minor
+            description: "Per-unit price, minor units (TEXT→BIGINT; I-S07)."
+          - name: line_total_minor
+            description: "Line total, minor units (TEXT→BIGINT; I-S07)."
+          - name: line_discount_minor
+            description: "Line discount, minor units (TEXT→BIGINT; I-S07)."
+          - name: currency_code
+            description: "CHAR(3), paired with the money columns."
+          - name: occurred_at
+            description: "Event-time of the order's latest state (timestamptz)."
+
       - name: connector_journey_stitch_map_src
         # Read-shim over connector_journey_stitch_map (migration 0031); uuid→text for JDBC.
         # The deterministic anon↔order stitch (D-5: read-back, never inferred). LEFT-joined

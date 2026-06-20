@@ -1,0 +1,42 @@
+version: 2
+
+models:
+  - name: silver_order_line
+    description: >
+      Canonical Silver order line-item mart. One row per (brand_id, order_id, line_index) —
+      the line items of each order's LATEST state, unnested from the order-depth the Shopify
+      mapper captures into Bronze (feat-shopify-order-depth). Money is BIGINT minor units
+      (I-S07). Additive projection only; product-level rollups live in packages/metric-engine
+      (ADR-004). brand_id is the tenant key; per-brand isolation is enforced at the Silver READ
+      seam (I-ST01), not in dbt.
+    columns:
+      - name: brand_id
+        description: "Tenant key (UUID→text). First key/distribution/order column."
+        tests:
+          - not_null
+      - name: order_id
+        description: "Order natural key (TEXT). Grain key with line_index."
+        tests:
+          - not_null
+      - name: line_index
+        description: "1-based ordinal within the order's line_items. Grain key."
+        tests:
+          - not_null
+      - name: quantity
+        description: "Line quantity (BIGINT)."
+        tests:
+          - not_null
+      - name: unit_price_minor
+        description: "Per-unit price, minor units (BIGINT, I-S07)."
+        tests:
+          - not_null
+      - name: line_total_minor
+        description: "Line total, minor units (BIGINT, I-S07)."
+        tests:
+          - not_null
+      - name: line_discount_minor
+        description: "Line discount, minor units (BIGINT, I-S07)."
+        tests:
+          - not_null
+      - name: currency_code
+        description: "CHAR(3), paired with the money columns."

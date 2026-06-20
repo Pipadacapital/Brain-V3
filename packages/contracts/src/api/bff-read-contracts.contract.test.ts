@@ -594,6 +594,8 @@ describe('Recommendations (#19 — decision engine)', () => {
         evidence: { rto_count: 43, order_count: 856, rto_rate_pct: '5.02', gmv_at_risk_minor: '14900' },
         outcome: { metric: 'rto_rate_pct', then: 5.02, now: 4.1, delta: -0.92, improved: true },
         created_at: '2026-06-19T00:00:00.000Z',
+        held: false,
+        held_reason: null,
       },
     ],
   };

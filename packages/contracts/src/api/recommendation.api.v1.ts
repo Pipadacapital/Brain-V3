@@ -34,6 +34,7 @@ export const RecommendationSchema = z.object({
   recommendation_id: z.string(),
   detector: z.string(),
   kind: z.enum(['risk', 'opportunity']),
+  /** The SURFACED confidence — gated to never exceed the brand's effective data trust (doc 09 Part 7). */
   confidence: ConfidenceSchema,
   priority: z.number().int(),
   status: z.string(),
@@ -43,6 +44,13 @@ export const RecommendationSchema = z.object({
   evidence: RecommendationEvidenceSchema,
   outcome: RecommendationOutcomeSchema.nullable(),
   created_at: z.string(),
+  /**
+   * Confidence gate (P0): true → NOT actionable, the brand's data foundation isn't trusted enough
+   * to act on this yet. The UI surfaces held items as a guided "improve your foundation" next step,
+   * never as a decision. `held_reason` is the honest, user-facing explanation (null when actionable).
+   */
+  held: z.boolean(),
+  held_reason: z.string().nullable(),
 });
 export type Recommendation = z.infer<typeof RecommendationSchema>;
 

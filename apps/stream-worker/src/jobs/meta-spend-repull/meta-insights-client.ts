@@ -24,6 +24,9 @@ import { log } from "../../log.js";
 const GRAPH_API_VERSION = 'v25.0';
 const GRAPH_API_BASE = `https://graph.facebook.com/${GRAPH_API_VERSION}`;
 
+/** T2-9: per-request timeout — a hung Meta Graph socket aborts instead of stalling the spend re-pull. */
+const REQUEST_TIMEOUT_MS = 30_000;
+
 /** Thrown when Meta signals a non-retryable auth failure (token expired/revoked). */
 export const META_AUTH_ERROR = 'META_AUTH_ERROR';
 /** Thrown when Meta throttles persistently — caller marks RateLimited + aborts run (ADR-AD-7). */
@@ -151,6 +154,7 @@ export class MetaInsightsClient {
           Authorization: `Bearer ${this.accessToken}`,
           'Content-Type': 'application/json',
         },
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
 
       // 401/190 → token expired/revoked → non-retryable auth error.

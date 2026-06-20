@@ -105,6 +105,9 @@ importers:
       '@brain/config':
         specifier: workspace:*
         version: link:../../packages/config
+      '@brain/connector-secrets':
+        specifier: workspace:*
+        version: link:../../packages/connector-secrets
       '@brain/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
@@ -202,6 +205,9 @@ importers:
       '@brain/config':
         specifier: workspace:*
         version: link:../../packages/config
+      '@brain/connector-secrets':
+        specifier: workspace:*
+        version: link:../../packages/connector-secrets
       '@brain/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
@@ -423,6 +429,22 @@ importers:
       '@types/node':
         specifier: 25.9.3
         version: 25.9.3
+
+  packages/connector-secrets:
+    dependencies:
+      '@aws-sdk/client-secrets-manager':
+        specifier: ^3.600.0
+        version: 3.1068.0
+      pg:
+        specifier: ^8.21.0
+        version: 8.21.0
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.19.21
+      '@types/pg':
+        specifier: ^8.11.6
+        version: 8.20.0
 
   packages/contracts:
     dependencies:

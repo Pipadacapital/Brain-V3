@@ -6,7 +6,7 @@
  *
  * Shopify client secret is fetched from Secrets Manager (never from env in prod).
  */
-import type { ISecretsManager } from '../../infrastructure/secrets/ISecretsManager.js';
+import type { ISecretsManager } from '@brain/connector-secrets';
 import type { IOAuthStateStore } from '../../infrastructure/state/IOAuthStateStore.js';
 import { OAuthStateNonce } from '../../domain/value-objects/OAuthStateNonce.js';
 

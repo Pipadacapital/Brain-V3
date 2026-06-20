@@ -28,7 +28,7 @@ import {
 } from '../infrastructure/PgSyncRequestRepository.js';
 import { RequestConnectorSyncCommand } from '../application/commands/RequestConnectorSyncCommand.js';
 import type { IConnectorInstanceRepository } from '../../sources/storefront/shopify/domain/repositories/IConnectorInstanceRepository.js';
-import type { ISecretsManager } from '../../sources/storefront/shopify/infrastructure/secrets/ISecretsManager.js';
+import type { ISecretsManager } from '@brain/connector-secrets';
 import { PgConnectorInstanceRepository } from '../../sources/storefront/shopify/infrastructure/repositories/PgConnectorInstanceRepository.js';
 import { meetsMinimumRole } from '../../../workspace-access/internal/security/rbac.js';
 

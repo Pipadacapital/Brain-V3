@@ -100,8 +100,8 @@ import {
 } from './modules/connector/sources/advertising/google/interfaces/http/googleAdsConnectorRoutes.js';
 import { PgConnectorInstanceRepository } from './modules/connector/sources/storefront/shopify/infrastructure/repositories/PgConnectorInstanceRepository.js';
 import { PgConnectorSyncStatusRepository } from './modules/connector/sources/storefront/shopify/infrastructure/repositories/PgConnectorSyncStatusRepository.js';
-import { LocalSecretsManager } from './modules/connector/sources/storefront/shopify/infrastructure/secrets/LocalSecretsManager.js';
-import { AwsSecretsManager } from './modules/connector/sources/storefront/shopify/infrastructure/secrets/AwsSecretsManager.js';
+import { LocalSecretsManager } from '@brain/connector-secrets';
+import { AwsSecretsManager } from '@brain/connector-secrets';
 import { InProcessOAuthStateStore } from './modules/connector/sources/storefront/shopify/infrastructure/state/InProcessOAuthStateStore.js';
 import { GetOrCreatePixelInstallationCommand } from './modules/connector/pixel/application/commands/GetOrCreatePixelInstallationCommand.js';
 import {

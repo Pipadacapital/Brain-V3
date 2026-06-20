@@ -32,7 +32,7 @@ import { randomUUID, createHash } from 'node:crypto';
 
 import { ShopifyHmac } from '../../domain/value-objects/ShopifyHmac.js';
 import { redactShopifyPii } from '../../domain/redactPii.js';
-import type { ISecretsManager } from '../../infrastructure/secrets/ISecretsManager.js';
+import type { ISecretsManager } from '@brain/connector-secrets';
 import {
   mapOrderToEvent,
   projectOrderStitch,

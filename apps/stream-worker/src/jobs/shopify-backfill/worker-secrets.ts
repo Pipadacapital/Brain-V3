@@ -21,7 +21,14 @@
  *   The cursor is preserved for resume after reconnect.
  *
  * Token is NEVER logged (I-S09). Log only secret_ref / ARN (safe to log).
+ *
+ * #75: the prod AwsSecretsManager is imported from the shared @brain/connector-secrets workspace
+ * package — NOT via a relative require() reaching into apps/core's source tree (which resolved
+ * outside the deployed bundle → MODULE_NOT_FOUND in prod, and hid an undeclared @aws-sdk
+ * dependency). Both deployables now share ONE implementation, so the worker's READ path uses the
+ * exact same per-brand KMS EncryptionContext core's WRITE path binds — no decryption drift.
  */
+import { AwsSecretsManager } from '@brain/connector-secrets';
 
 /** Minimal secrets interface for the worker (subset of ISecretsManager) */
 export interface WorkerSecretsManager {
@@ -35,14 +42,8 @@ export interface WorkerSecretsManager {
  */
 export function buildWorkerSecretsManager(): WorkerSecretsManager {
   if (process.env['NODE_ENV'] === 'production') {
-    // Prod: delegate to the full AwsSecretsManager (loaded from the deployed core bundle).
-    // Required dynamically so the AWS SDK is never pulled into the dev path, and typed
-    // against the LOCAL WorkerSecretsManager interface (core's AwsSecretsManager implements
-    // getShopifyToken) rather than a cross-package `typeof import(...)` — the worker tsconfig
-    // has rootDir 'src', so a real type-import of apps/core/src would error (TS6059/TS2307).
-    const { AwsSecretsManager } = require('../../../../core/src/modules/connector/sources/storefront/shopify/infrastructure/secrets/AwsSecretsManager.js') as {
-      AwsSecretsManager: new (region: string, clientSecretArn: string, kmsKeyId: string) => WorkerSecretsManager;
-    };
+    // Prod: delegate to the shared AwsSecretsManager (@brain/connector-secrets). It implements the
+    // full ISecretsManager — including getShopifyToken — so it satisfies WorkerSecretsManager.
     const region = process.env['BRAIN_AWS_REGION'] ?? 'us-east-1';
     const clientSecretArn = process.env['SHOPIFY_CLIENT_SECRET_ARN'] ?? '';
     const kmsKeyId = process.env['KMS_KEY_ID'] ?? '';

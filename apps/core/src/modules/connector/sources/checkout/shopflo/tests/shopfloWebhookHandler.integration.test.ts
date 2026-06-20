@@ -41,7 +41,7 @@ import { Redis } from 'ioredis';
 
 import { registerShopfloWebhookRoutes } from '../interfaces/webhooks/shopfloWebhookHandler.js';
 import { DEFAULT_SHOPFLO_SIG_HEADER } from '../domain/value-objects/ShopfloHmac.js';
-import type { ISecretsManager } from '../../../storefront/shopify/infrastructure/secrets/ISecretsManager.js';
+import type { ISecretsManager } from '@brain/connector-secrets';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 

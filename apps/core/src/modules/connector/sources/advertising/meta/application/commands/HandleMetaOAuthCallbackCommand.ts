@@ -26,7 +26,7 @@ import { ConnectorInstance } from '../../../../storefront/shopify/domain/entitie
 import { ConnectorSyncStatus } from '../../../../storefront/shopify/domain/entities/ConnectorSyncStatus.js';
 import type { IConnectorInstanceRepository } from '../../../../storefront/shopify/domain/repositories/IConnectorInstanceRepository.js';
 import type { IConnectorSyncStatusRepository } from '../../../../storefront/shopify/domain/repositories/IConnectorSyncStatusRepository.js';
-import type { ISecretsManager } from '../../../../storefront/shopify/infrastructure/secrets/ISecretsManager.js';
+import type { ISecretsManager } from '@brain/connector-secrets';
 import type { IOAuthStateStore } from '../../../../storefront/shopify/infrastructure/state/IOAuthStateStore.js';
 import { META_GRAPH_API_VERSION } from './InitiateMetaOAuthCommand.js';
 
@@ -197,6 +197,7 @@ export class HandleMetaOAuthCallbackCommand {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: params.toString(),
+        signal: AbortSignal.timeout(15_000), // T2-9: bound the token exchange so the OAuth callback can't hang.
       },
     );
 
@@ -223,7 +224,11 @@ export class HandleMetaOAuthCallbackCommand {
       // query string (proxy/CDN log exposure), consistent with MetaInsightsClient.
       const response = await fetch(
         `https://graph.facebook.com/${META_GRAPH_API_VERSION}/me/adaccounts?fields=account_id`,
-        { method: 'GET', headers: { Authorization: `Bearer ${accessToken}` } },
+        {
+          method: 'GET',
+          headers: { Authorization: `Bearer ${accessToken}` },
+          signal: AbortSignal.timeout(15_000), // T2-9: bound the best-effort account resolution.
+        },
       );
       if (!response.ok) return null;
       const data = (await response.json()) as { data?: Array<{ account_id?: string; id?: string }> };

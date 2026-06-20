@@ -93,6 +93,30 @@ export function registerConsentRoutes(
     return auth.brandId;
   }
 
+  /**
+   * T2-7 / I-ST04: consent writes are state-changing, so they require an Idempotency-Key header —
+   * a client that retries a grant/withdraw (network blip, double-submit) sends the SAME key and the
+   * action is recorded once. The underlying writes are already idempotent (consent_record /
+   * consent_tombstone INSERT ... ON CONFLICT DO NOTHING); the key makes the SAFE-RETRY contract
+   * explicit and ties retries to one audit entry. Mirrors the member-mutation enforcement.
+   * Returns the key, or null after sending a 400 (caller must `return` on null).
+   */
+  function requireIdempotencyKey(
+    request: FastifyRequest,
+    reply: FastifyReply,
+    requestId: string,
+  ): string | null {
+    const key = request.headers['idempotency-key'];
+    if (typeof key !== 'string' || key.length === 0) {
+      reply.code(400).send({
+        request_id: requestId,
+        error: { code: 'MISSING_IDEMPOTENCY_KEY', message: 'Idempotency-Key header required.' },
+      });
+      return null;
+    }
+    return key;
+  }
+
   // ── POST /api/v1/consent/grant ──────────────────────────────────────────────
   fastify.post(
     '/api/v1/consent/grant',
@@ -103,6 +127,8 @@ export function registerConsentRoutes(
         (request.headers['x-correlation-id'] as string) ?? requestId;
       const brandId = requireBrand(request, reply, requestId);
       if (!brandId) return;
+      const idempotencyKey = requireIdempotencyKey(request, reply, requestId);
+      if (!idempotencyKey) return;
       const auth = (request as AuthenticatedRequest).auth;
 
       const body = isRecord(request.body) ? request.body : {};
@@ -133,6 +159,7 @@ export function registerConsentRoutes(
           actorId: auth.userId,
           actorRole: auth.role ?? 'operator',
           correlationId,
+          idempotencyKey,
         });
         return reply.code(201).send({
           request_id: requestId,
@@ -162,6 +189,8 @@ export function registerConsentRoutes(
         (request.headers['x-correlation-id'] as string) ?? requestId;
       const brandId = requireBrand(request, reply, requestId);
       if (!brandId) return;
+      const idempotencyKey = requireIdempotencyKey(request, reply, requestId);
+      if (!idempotencyKey) return;
       const auth = (request as AuthenticatedRequest).auth;
 
       const body = isRecord(request.body) ? request.body : {};
@@ -201,6 +230,7 @@ export function registerConsentRoutes(
           actorId: auth.userId,
           actorRole: auth.role ?? 'operator',
           correlationId,
+          idempotencyKey,
         });
         return reply.code(201).send({
           request_id: requestId,

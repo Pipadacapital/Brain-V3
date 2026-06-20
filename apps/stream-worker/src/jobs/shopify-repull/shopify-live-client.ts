@@ -42,6 +42,9 @@ export interface LiveOrdersPage {
 
 const DEFAULT_API_VERSION = '2025-07';
 
+/** T2-9: per-request timeout — a hung Shopify socket aborts instead of stalling the live re-pull. */
+const REQUEST_TIMEOUT_MS = 20_000;
+
 export class ShopifyLiveClient {
   private readonly base: string;
 
@@ -85,6 +88,7 @@ export class ShopifyLiveClient {
           'X-Shopify-Access-Token': this.accessToken,
           'Content-Type': 'application/json',
         },
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
 
       if (res.status === 429) {

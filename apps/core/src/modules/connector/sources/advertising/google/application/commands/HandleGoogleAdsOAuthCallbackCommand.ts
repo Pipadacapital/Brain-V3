@@ -21,7 +21,7 @@ import { ConnectorInstance } from '../../../../storefront/shopify/domain/entitie
 import { ConnectorSyncStatus } from '../../../../storefront/shopify/domain/entities/ConnectorSyncStatus.js';
 import type { IConnectorInstanceRepository } from '../../../../storefront/shopify/domain/repositories/IConnectorInstanceRepository.js';
 import type { IConnectorSyncStatusRepository } from '../../../../storefront/shopify/domain/repositories/IConnectorSyncStatusRepository.js';
-import type { ISecretsManager } from '../../../../storefront/shopify/infrastructure/secrets/ISecretsManager.js';
+import type { ISecretsManager } from '@brain/connector-secrets';
 import type { IOAuthStateStore } from '../../../../storefront/shopify/infrastructure/state/IOAuthStateStore.js';
 import type { SetAdAccountIdFn } from '../../../meta/application/commands/HandleMetaOAuthCallbackCommand.js';
 
@@ -174,6 +174,7 @@ export class HandleGoogleAdsOAuthCallbackCommand {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: body.toString(),
+      signal: AbortSignal.timeout(15_000), // T2-9: bound the token exchange so the OAuth callback can't hang.
     });
 
     if (!response.ok) {
@@ -209,6 +210,7 @@ export class HandleGoogleAdsOAuthCallbackCommand {
             Authorization: `Bearer ${accessToken}`,
             'developer-token': devToken,
           },
+          signal: AbortSignal.timeout(15_000), // T2-9: bound the best-effort customer resolution.
         },
       );
       if (!response.ok) return null;

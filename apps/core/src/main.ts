@@ -141,11 +141,13 @@ export async function main(): Promise<void> {
   assertArgon2Params();
 
   // Real OpenTelemetry export (ADR-009) — gated by OTEL_EXPORTER_OTLP_ENDPOINT (no-op in dev).
-  await initObservability({
+  // Keep the returned shutdown/flush fns so the graceful-shutdown handler can flush buffered
+  // spans/metrics/errors before exit (C1 — otherwise the final batch is lost on SIGTERM in k8s).
+  const shutdownObservability = await initObservability({
     serviceName: 'core',
     otlpEndpoint: getEnv('OTEL_EXPORTER_OTLP_ENDPOINT', '') || undefined,
   });
-  await initSentry({ serviceName: 'core' }); // error tracking — gated by SENTRY_DSN (no-op in dev)
+  const closeSentry = await initSentry({ serviceName: 'core' }); // gated by SENTRY_DSN (no-op in dev)
 
   const nodeEnv = getEnv('NODE_ENV', 'development');
   const isProduction = nodeEnv === 'production';
@@ -1671,6 +1673,9 @@ export async function main(): Promise<void> {
     await rawPgPool.end().catch(() => { /* ignore */ });
     await (srPool as unknown as { end: () => Promise<void> }).end().catch(() => { /* ignore */ });
     await redis.quit().catch(() => { /* ignore */ });
+    // Flush buffered telemetry LAST so shutdown logs/spans are exported (C1).
+    await shutdownObservability().catch(() => { /* ignore */ });
+    await closeSentry().catch(() => { /* ignore */ });
     process.exit(0);
   };
   process.on('SIGTERM', shutdown);

@@ -4,15 +4,16 @@
  * Provides:
  *  - Trace/metrics/logs instrumentation with brand_id + correlation_id on every signal.
  *  - NN-6 PII-safe span attribute setter (refuses to set PII-keyed attributes).
- *  - gen_ai.* span convention helpers (reserved for Phase 3+; no-op in Sprint 0).
+ *  - gen_ai.* span convention helpers (used by the AI tier; OTel semantic conventions).
  *  - Correlation ID propagation helpers.
  *
  * Stack: OpenTelemetry SDK (ADR-009) — Grafana Cloud via OTLP exporter.
  *
- * IMPORTANT: This package avoids importing @opentelemetry/* directly in Sprint 0
- * to keep zero external deps. It exports the interface types and a stub implementation
- * that will be wired to the real OTel SDK in M1 when the EKS+collector stack is live.
- * The redact.ts PII guard and its tests ARE production code and ship now.
+ * REAL implementation (C1): spans wrap @opentelemetry/api Spans and counters route to the
+ * @opentelemetry/sdk-node MeterProvider once initObservability runs. Export is gated on an
+ * OTLP endpoint — absent (dev/test) it stays on the API's no-op providers / a console sink, so
+ * nothing loads and nothing breaks. The redact.ts PII guard fires before any attribute reaches
+ * the SDK, so redaction holds regardless of exporter wiring.
  */
 
 export { isPiiKey, redactAttributes, redactLogRecord } from './redact.js';
@@ -22,7 +23,7 @@ export type { BrainLogger, LogFields, LogLevel, LoggerOptions } from './logger.j
 export { initSentry, captureError } from './sentry.js';
 export type { SentryOptions } from './sentry.js';
 
-// ── Span interface (minimal — avoids OTel dep; real impl wires to @opentelemetry/api) ──
+// ── Span interface (a PII-guarded facade over the real @opentelemetry/api Span) ──
 
 export interface BrainSpan {
   /** Set a span attribute. PII-keyed values are silently dropped (NN-6). */
@@ -46,7 +47,7 @@ export interface SpanContext {
   serviceName: string;
 }
 
-// ── Stub tracer (Sprint 0 — real OTel wired in M1) ───────────────────────────
+// ── Tracer (real @opentelemetry/api; no-op providers in dev until initObservability) ──
 
 import { trace, metrics, SpanStatusCode, type Span as OtelSpan } from '@opentelemetry/api';
 import { redactAttributes, isPiiKey } from './redact.js';
@@ -123,7 +124,7 @@ export function startSpan(name: string, ctx: SpanContext): BrainSpan {
   return new BrainSpanImpl(name, ctx);
 }
 
-// ── gen_ai.* span helpers (Phase 3+ reserved; no-op in Sprint 0) ─────────────
+// ── gen_ai.* span helpers (OTel GenAI semantic conventions) ──────────────────
 
 export interface GenAiSpanContext extends SpanContext {
   /** LLM model name (e.g. 'claude-3-5-sonnet', 'gpt-4o'). */
@@ -133,8 +134,8 @@ export interface GenAiSpanContext extends SpanContext {
 }
 
 /**
- * Start a gen_ai.* span following OTel semantic conventions.
- * Reserved for Phase 3+; returns a no-op span in Sprint 0.
+ * Start a gen_ai.* span following OTel semantic conventions. Real span (exported when an
+ * OTLP endpoint is configured; otherwise a no-op-provider span like any other startSpan).
  */
 export function startGenAiSpan(name: string, ctx: GenAiSpanContext): BrainSpan {
   const span = startSpan(`gen_ai.${name}`, ctx);
@@ -144,13 +145,13 @@ export function startGenAiSpan(name: string, ctx: GenAiSpanContext): BrainSpan {
   return span;
 }
 
-// ── Counter metrics (stub — real OTel meter wired in M1) ─────────────────────
+// ── Counter metrics (real OTel meter once initObservability runs) ────────────
 //
-// Sprint-0/M1 posture mirrors the span stub above: zero external OTel dep, a
-// structured-log emission that the real @opentelemetry/api Meter replaces with an
-// identical surface in M1. The emission is PII-safe by construction — labels are a
-// bounded, low-cardinality set (brand_id is a UUID tenant key, never PII; event_name
-// is a bounded dot.lowercase enum; layer ∈ {pg,redis}). NO raw value is ever a label.
+// Before initObservability (dev/test, no OTLP endpoint) the default sink is a structured-log
+// emission; after it, the sink swaps to the real @opentelemetry/api Meter with an identical
+// surface. The emission is PII-safe by construction — labels are a bounded, low-cardinality
+// set (brand_id is a UUID tenant key, never PII; event_name is a bounded dot.lowercase enum;
+// layer ∈ {pg,redis}). NO raw value is ever a label.
 //
 // Used by the stream-worker to make dedup suppression OBSERVABLE (R4):
 //   collector_dedup_conflict_total{brand_id,layer,event_name} on pk_conflict / dedup_hit.
@@ -162,14 +163,14 @@ export interface CounterLabels {
 
 /**
  * Test/integration seam: a sink that receives every counter increment.
- * In M1 the default sink becomes the OTel meter; tests inject a recording sink to
+ * initObservability swaps the default sink to the OTel meter; tests inject a recording sink to
  * assert a metric was emitted (NON-INERT — the R4 dedup-observability test spies here).
  */
 export interface CounterSink {
   add(name: string, value: number, labels: CounterLabels): void;
 }
 
-/** Default sink — structured-log line (replaced by the OTel meter in M1). */
+/** Default sink — structured-log line (replaced by the OTel meter once initObservability runs). */
 const defaultCounterSink: CounterSink = {
   add(name: string, value: number, labels: CounterLabels): void {
     // Structured single-line emission; a log-based metric pipeline scrapes this in M1-.
@@ -182,7 +183,7 @@ const defaultCounterSink: CounterSink = {
 let activeCounterSink: CounterSink = defaultCounterSink;
 
 /**
- * Override the counter sink (tests inject a recording sink; M1 injects the OTel meter).
+ * Override the counter sink (tests inject a recording sink; initObservability injects the OTel meter).
  * Returns a restore fn so a test can reset the global sink in afterEach.
  */
 export function setCounterSink(sink: CounterSink): () => void {

@@ -108,14 +108,69 @@ export async function routeLiveOrderToLedger(
   const cancelledAt = props['cancelled_at'];
   const isCancelled = typeof cancelledAt === 'string' && cancelledAt.length > 0;
 
+  let outcome: 'reversal' | 'provisional';
   if (isCancelled) {
     // RTO / cancellation — write negative reversal row (D-13 / ADR-LV-11)
     // Sale/provisional/finalized rows are UNTOUCHED (append-only by GRANT)
     await ledgerWriter.writeReversal(ledgerOrder, 'rto_reversal');
-    return 'reversal';
+    outcome = 'reversal';
   } else {
     // New or updated order without cancellation → provisional recognition
     await ledgerWriter.writeProvisionalRecognition(ledgerOrder);
-    return 'provisional';
+    outcome = 'provisional';
   }
+
+  // Refunds (feat-shopify-refund-ledger-reversal): the order carries its FULL refunds array on
+  // every restatement; each is written as a negative 'refund' row, idempotent per refund_id (PK
+  // dedup). A refund reduces realized revenue regardless of cancellation state.
+  await writeOrderRefundsToLedger(props, ledgerOrder, ledgerWriter);
+
+  return outcome;
+}
+
+/** Raw refund shape carried in payload.properties.refunds[] (the shopify-mapper's OrderRefund). */
+interface RawRefund {
+  refund_id?: unknown;
+  processed_at?: unknown;
+  amount_minor?: unknown;
+}
+
+/**
+ * Write one negative 'refund' ledger row per refund on the order. Skips refunds without a stable
+ * refund_id (can't dedup safely) or with a non-positive amount (nothing to reverse). Per-refund
+ * idempotency is the ledger PK (ledger_event_id hashes refund_id), so re-delivery across order
+ * restatements collapses to one row and distinct same-day refunds coexist.
+ */
+export async function writeOrderRefundsToLedger(
+  props: Record<string, unknown>,
+  ledgerOrder: BackfillOrderForLedger,
+  ledgerWriter: LedgerWriter,
+): Promise<number> {
+  const refunds = props['refunds'];
+  if (!Array.isArray(refunds) || refunds.length === 0) return 0;
+
+  let written = 0;
+  for (const raw of refunds as RawRefund[]) {
+    const refundId = typeof raw.refund_id === 'string' && raw.refund_id.length > 0 ? raw.refund_id : null;
+    const amountMinor = typeof raw.amount_minor === 'string' ? raw.amount_minor : null;
+    if (!refundId) {
+      log.warn(`refund without a stable refund_id on order=${ledgerOrder.orderId} — skipping (cannot dedup)`);
+      continue;
+    }
+    if (!amountMinor || !/^\d+$/.test(amountMinor) || amountMinor === '0') continue; // nothing to reverse
+
+    const processedAt =
+      typeof raw.processed_at === 'string' && raw.processed_at.length > 0
+        ? raw.processed_at
+        : ledgerOrder.occurredAt;
+
+    const ok = await ledgerWriter.writeRefund({
+      ...ledgerOrder,
+      sourcePk: refundId,       // refund_id → per-refund dedup key
+      amountMinor,              // positive; writeRefund negates it
+      occurredAt: processedAt,  // the refund's economic time
+    });
+    if (ok) written += 1;
+  }
+  return written;
 }

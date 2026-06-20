@@ -130,7 +130,7 @@ export class LedgerWriter {
           $7, $7, $8, 'provisional',
           $9
         )
-        ON CONFLICT (brand_id, order_id, event_type, (timezone('UTC', occurred_at)::date))
+        ON CONFLICT (brand_id, order_id, event_type, (timezone('UTC', occurred_at)::date)) WHERE event_type <> 'refund'
         DO NOTHING
         RETURNING ledger_event_id`,
         [
@@ -238,7 +238,7 @@ export class LedgerWriter {
           $8, $8, $9, 'finalized',
           $10
         )
-        ON CONFLICT (brand_id, order_id, event_type, (timezone('UTC', occurred_at)::date))
+        ON CONFLICT (brand_id, order_id, event_type, (timezone('UTC', occurred_at)::date)) WHERE event_type <> 'refund'
         DO NOTHING
         RETURNING ledger_event_id`,
         [
@@ -268,6 +268,78 @@ export class LedgerWriter {
         log.info(`[ledger-writer] ${reversalEventType} brand=${order.brandId} ` +
                     `order=${order.orderId} amount=${negativeAmountMinor} ${order.currencyCode}`);
         if (overReversed) this.signalOverReversal(order.brandId, order.orderId, reversalEventType);
+      }
+      return inserted;
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * writeRefund — append a negative 'refund' row for ONE refund (feat-shopify-refund-ledger-reversal).
+   *
+   * The order's refunds ride on every order.live.v1 restatement (payload.properties.refunds[]); this
+   * writes one ledger row PER REFUND so a refund actually reduces realized revenue. Idempotency is the
+   * PRIMARY KEY (brand_id, ledger_event_id) — ledger_event_id hashes the refund_id (passed as
+   * `refund.sourcePk`) — NOT the date-grain dedup (made partial-excluding-refund in migration 0054), so
+   * two distinct same-day refunds coexist while a re-delivered refund collapses to one row.
+   *
+   * `refund.amountMinor` is the POSITIVE refund amount (minor units); it is negated here. `occurredAt`
+   * is the refund's processed_at (its economic time). Returns true iff a new row was inserted.
+   */
+  async writeRefund(refund: BackfillOrderForLedger): Promise<boolean> {
+    const client: PoolClient = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query("SELECT set_config('app.current_brand_id', $1, true)", [refund.brandId]);
+
+      const occurredAt = new Date(refund.occurredAt);
+      const billingPostedPeriod = toBillingPostedPeriod(occurredAt);
+      const ledgerEventId = computeLedgerEventId({
+        brandId: refund.brandId,
+        orderId: refund.orderId,
+        eventType: 'refund',
+        sourcePk: refund.sourcePk, // the refund_id → per-refund dedup
+      });
+      const negativeAmountMinor = `-${refund.amountMinor}`; // signed negative (I-S07)
+
+      const result = await client.query<{ ledger_event_id: string }>(
+        `INSERT INTO realized_revenue_ledger (
+          brand_id, ledger_event_id, order_id, brain_id, event_type,
+          amount_minor, currency_code, fx_rate_id, rounding_adjustment_minor,
+          occurred_at, economic_effective_at, billing_posted_period, recognition_label, raw_event_id
+        ) VALUES (
+          $1, $2, $3, $4, 'refund',
+          $5::bigint, $6, NULL, 0::bigint,
+          $7, $7, $8, 'finalized', $9
+        )
+        ON CONFLICT (brand_id, ledger_event_id) DO NOTHING
+        RETURNING ledger_event_id`,
+        [
+          refund.brandId,
+          ledgerEventId,
+          refund.orderId,
+          refund.brainId,
+          negativeAmountMinor,
+          refund.currencyCode,
+          refund.occurredAt,
+          billingPostedPeriod,
+          refund.rawEventId,
+        ],
+      );
+
+      // F2: refunds count toward the over-reversal guard (cumulative reversals > recognized sale).
+      const inserted = (result.rowCount ?? 0) > 0;
+      const overReversed = inserted ? await this.isOrderOverReversed(client, refund.brandId, refund.orderId) : false;
+      await client.query('COMMIT');
+
+      if (inserted) {
+        log.info(`[ledger-writer] refund brand=${refund.brandId} order=${refund.orderId} ` +
+          `refund=${refund.sourcePk} amount=${negativeAmountMinor} ${refund.currencyCode}`);
+        if (overReversed) this.signalOverReversal(refund.brandId, refund.orderId, 'refund');
       }
       return inserted;
     } catch (err) {
@@ -405,7 +477,7 @@ export class LedgerWriter {
           $10, $11, $12, $13::bigint,
           $14
         )
-        ON CONFLICT (brand_id, order_id, event_type, (timezone('UTC', occurred_at)::date))
+        ON CONFLICT (brand_id, order_id, event_type, (timezone('UTC', occurred_at)::date)) WHERE event_type <> 'refund'
         DO NOTHING
         RETURNING ledger_event_id`,
         [
@@ -514,7 +586,7 @@ export class LedgerWriter {
           $7, $7, $8, 'finalized',
           $9, 'per_order', $10::bigint, $11
         )
-        ON CONFLICT (brand_id, order_id, event_type, (timezone('UTC', occurred_at)::date))
+        ON CONFLICT (brand_id, order_id, event_type, (timezone('UTC', occurred_at)::date)) WHERE event_type <> 'refund'
         DO NOTHING
         RETURNING ledger_event_id`,
         [
@@ -537,7 +609,7 @@ export class LedgerWriter {
           $7, $7, $8, 'finalized',
           $9, 'per_order', $10, $11
         )
-        ON CONFLICT (brand_id, order_id, event_type, (timezone('UTC', occurred_at)::date))
+        ON CONFLICT (brand_id, order_id, event_type, (timezone('UTC', occurred_at)::date)) WHERE event_type <> 'refund'
         DO NOTHING
         RETURNING ledger_event_id`,
         [
@@ -654,7 +726,7 @@ export class LedgerWriter {
           $5::bigint, $6, NULL, 0::bigint,
           $7, $7, $8, 'finalized', 'per_order', $9
         )
-        ON CONFLICT (brand_id, order_id, event_type, (timezone('UTC', occurred_at)::date))
+        ON CONFLICT (brand_id, order_id, event_type, (timezone('UTC', occurred_at)::date)) WHERE event_type <> 'refund'
         DO NOTHING
         RETURNING ledger_event_id`,
         [

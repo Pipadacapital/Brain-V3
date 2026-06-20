@@ -28,6 +28,7 @@
  * deterministically; the sampler loop only wires countPendingBounded → applySample on an interval.
  */
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import { incrementCounter } from '@brain/observability';
 import type { SpoolRepository } from '../../domain/ingest/repositories/spool.repository.js';
 
 export interface SpoolBackpressureConfig {
@@ -130,6 +131,8 @@ export function registerSpoolBackpressure(app: FastifyInstance, gate: SpoolBackp
     if (req.url !== '/collect' && req.url !== '/v1/events') return;
     if (gate.admit()) return;
 
+    // Shed counter backs the collector SLO burn-rate + back-pressure alerts (C2 / R-05).
+    incrementCounter('collector_spool_full_total');
     await reply
       .code(503)
       .header('Retry-After', String(gate.retryAfterSeconds))

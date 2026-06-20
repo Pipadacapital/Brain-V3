@@ -11,7 +11,7 @@
  */
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import type { AcceptEventUseCase } from '../../application/accept-event.usecase.js';
-import { extractCorrelationId } from '@brain/observability';
+import { extractCorrelationId, incrementCounter } from '@brain/observability';
 
 export function registerCollectRoute(
   app: FastifyInstance,
@@ -28,6 +28,8 @@ export function registerCollectRoute(
     // ACK boundary: spool INSERT must commit before we reply.
     const result = await acceptUseCase.execute(rawBody);
 
+    // ACK counter — the denominator of the collector accept+ack SLO (C2 / R-05).
+    incrementCounter('collector_accept_total');
     reply
       .header('X-Correlation-Id', correlationId)
       .header('X-Spool-Id', result.spoolId.toString())
@@ -44,6 +46,7 @@ export function registerCollectRoute(
     const rawBody = (req.body ?? {}) as Record<string, unknown>;
     const result = await acceptUseCase.execute(rawBody);
 
+    incrementCounter('collector_accept_total');
     reply
       .header('X-Correlation-Id', correlationId)
       .header('X-Spool-Id', result.spoolId.toString())

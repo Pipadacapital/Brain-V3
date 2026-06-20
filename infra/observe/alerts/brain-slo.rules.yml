@@ -1,0 +1,124 @@
+# brain-slo.rules.yml — production alert rules for the Brain data spine (C2 / R-05).
+#
+# Covers the GA-gating signal classes the audit requires: SLO/burn-rate, ingest freshness,
+# DLQ depth, consumer lag — plus target-down liveness. Every rule is grounded in a metric that
+# is ACTUALLY emitted today (no fantasy alerts that silently never fire — the exact false-safety
+# anti-pattern C2 closes). Each rule names its metric SOURCE.
+#
+# Metric sources (all live):
+#   • up                              — Prometheus scrape liveness.
+#   • collector_accept_total          — @brain/observability counter; +1 per ACK'd /collect (200/202).
+#   • collector_spool_full_total      — counter; +1 per 503 SPOOL_FULL shed (back-pressure, C4).
+#   • collector_dedup_conflict_total  — counter; +1 per pk_conflict/dedup_hit (R4).
+#   • bronze_write_total              — counter; +1 per durable Bronze write (stream-worker).
+#   • redpanda_kafka_*                — Redpanda native /public_metrics (scrape job 'redpanda').
+#
+# Collector ingest SLO = 99.95% accept+ack (matches the bake-window rule in main.yml).
+#
+# Validate: promtool check rules infra/observe/alerts/brain-slo.rules.yml
+
+groups:
+  # ── Liveness ────────────────────────────────────────────────────────────────
+  - name: brain-liveness
+    rules:
+      - alert: BrainTargetDown
+        expr: up{job=~"brain-.*|redpanda"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.job }} target down"
+          description: "Prometheus has not scraped {{ $labels.job }} ({{ $labels.instance }}) for 2m."
+
+  # ── Collector ingest SLO / burn-rate (the 99.95% accept+ack durability guarantee) ──
+  # Multi-window burn-rate (Google SRE): availability = accept / (accept + shed).
+  # Error budget = 0.05%. Fast burn = 14.4× over 5m+1h; slow burn = 6× over 30m+6h.
+  # Two windows per alert suppress single-spike flapping.
+  - name: brain-collector-slo
+    rules:
+      - alert: BrainCollectorErrorBudgetFastBurn
+        expr: |
+          (
+            sum(rate(collector_spool_full_total[5m]))
+              / (sum(rate(collector_accept_total[5m])) + sum(rate(collector_spool_full_total[5m]))) > (14.4 * 0.0005)
+          )
+          and
+          (
+            sum(rate(collector_spool_full_total[1h]))
+              / (sum(rate(collector_accept_total[1h])) + sum(rate(collector_spool_full_total[1h]))) > (14.4 * 0.0005)
+          )
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Collector accept+ack error budget burning fast (>14.4×)"
+          description: "Shed ratio exceeds 14.4× the 0.05% budget over 5m AND 1h — the durability SLO is being consumed in hours, not weeks."
+
+      - alert: BrainCollectorErrorBudgetSlowBurn
+        expr: |
+          (
+            sum(rate(collector_spool_full_total[30m]))
+              / (sum(rate(collector_accept_total[30m])) + sum(rate(collector_spool_full_total[30m]))) > (6 * 0.0005)
+          )
+          and
+          (
+            sum(rate(collector_spool_full_total[6h]))
+              / (sum(rate(collector_accept_total[6h])) + sum(rate(collector_spool_full_total[6h]))) > (6 * 0.0005)
+          )
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Collector accept+ack error budget burning slowly (>6×)"
+          description: "Shed ratio exceeds 6× the 0.05% budget over 30m AND 6h."
+
+      - alert: BrainCollectorSheddingNow
+        # Any sustained back-pressure shedding — the drainer (→ Redpanda) is behind RIGHT NOW.
+        expr: sum(rate(collector_spool_full_total[5m])) > 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Collector is shedding ingest (503 SPOOL_FULL)"
+          description: "/collect has returned SPOOL_FULL for 2m — the spool backlog crossed the high-water mark and the drainer is behind."
+
+  # ── Stream-worker: DLQ depth + consumer lag + ingest freshness ──────────────
+  - name: brain-stream-worker
+    rules:
+      - alert: BrainDlqGrowing
+        # DLQ is a topic; a still-advancing high-watermark on a .dlq topic = terminal failures.
+        expr: |
+          sum by (redpanda_topic) (
+            rate(redpanda_kafka_max_offset{redpanda_topic=~".*\\.dlq"}[15m])
+          ) > 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "DLQ topic {{ $labels.redpanda_topic }} is growing"
+          description: "Events are landing in the DLQ (offset advancing for 10m) — terminal processing failures after MAX_RETRY."
+
+      - alert: BrainConsumerLagHigh
+        expr: |
+          sum by (redpanda_group) (
+            redpanda_kafka_consumer_group_lag_sum{redpanda_group=~"stream-worker-.*|.*-bridge"}
+          ) > 50000
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Consumer group {{ $labels.redpanda_group }} lag > 50k"
+          description: "The consumer group is >50,000 messages behind for 10m — projection is falling behind production rate."
+
+      - alert: BrainIngestStale
+        # Freshness: collector topic advancing but ZERO Bronze writes for 10m → the spine stalled.
+        expr: |
+          (sum(rate(redpanda_kafka_max_offset{redpanda_topic=~".*\\.collector\\.event\\.v1"}[10m])) > 0)
+          and
+          (sum(increase(bronze_write_total[10m])) == 0)
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Ingest stalled — events produced but no Bronze writes in 10m"
+          description: "The collector topic is advancing but the stream-worker wrote zero Bronze rows for 10m. The data spine is stalled."

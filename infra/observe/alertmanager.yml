@@ -1,0 +1,54 @@
+# alertmanager.yml — notification routing for the Brain SLO alerts (C2 / R-05).
+#
+# Notification targets are injected at deploy time from secrets (NEVER commit a real webhook):
+#   • SLACK_WEBHOOK_URL    — Slack incoming-webhook for #brain-alerts.
+#   • PAGERDUTY_ROUTING_KEY — PagerDuty Events v2 routing key for critical pages.
+# In Helm these map to env/secret refs; locally Alertmanager reads them via env-substitution
+# (amtool/`envsubst`) or you can paste a dev webhook. Absent a target, Alertmanager still loads
+# and groups alerts — they just aren't delivered (visible in the Alertmanager UI).
+
+global:
+  resolve_timeout: 5m
+  slack_api_url: '${SLACK_WEBHOOK_URL}'
+
+route:
+  receiver: 'brain-slack'
+  group_by: ['alertname', 'severity']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    # Critical → page via PagerDuty AND post to Slack.
+    - matchers:
+        - severity = "critical"
+      receiver: 'brain-pagerduty'
+      continue: true
+    - matchers:
+        - severity = "critical"
+      receiver: 'brain-slack'
+
+receivers:
+  - name: 'brain-slack'
+    slack_configs:
+      - channel: '#brain-alerts'
+        send_resolved: true
+        title: '[{{ .Status | toUpper }}] {{ .CommonLabels.alertname }}'
+        text: >-
+          {{ range .Alerts }}*{{ .Annotations.summary }}*
+          {{ .Annotations.description }}
+          {{ end }}
+
+  - name: 'brain-pagerduty'
+    pagerduty_configs:
+      - routing_key: '${PAGERDUTY_ROUTING_KEY}'
+        send_resolved: true
+        description: '{{ .CommonLabels.alertname }}: {{ .CommonAnnotations.summary }}'
+
+# Suppress noisy downstream alerts when a target is already down (a dead scrape
+# target shouldn't also fire every metric-absence rule for that target).
+inhibit_rules:
+  - source_matchers:
+      - alertname = "BrainTargetDown"
+    target_matchers:
+      - severity =~ "warning|critical"
+    equal: ['job']

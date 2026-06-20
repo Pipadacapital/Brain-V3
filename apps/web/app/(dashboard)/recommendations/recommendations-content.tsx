@@ -32,9 +32,12 @@ function ConfidenceBadge({ confidence }: { confidence: string }) {
       : confidence === 'Estimated'
         ? 'bg-amber-50 text-amber-800'
         : 'bg-muted text-muted-foreground';
+  // The icon must match the tier — a verified check only for Trusted. Showing a green ShieldCheck on
+  // an Estimated/Insufficient rec would overstate certainty (the exact thing the engine prevents).
+  const Icon = confidence === 'Trusted' ? ShieldCheck : ShieldAlert;
   return (
     <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${tone}`}>
-      <ShieldCheck className="h-3 w-3" aria-hidden="true" />
+      <Icon className="h-3 w-3" aria-hidden="true" />
       {confidence}
     </span>
   );

@@ -296,7 +296,7 @@ function ConnectorTile({ tile, readinessLock }: { tile: MarketplaceTile; readine
             }
           },
           onError: (err) => {
-            const msg = err instanceof BffApiError ? err.message : 'Could not connect Razorpay.';
+            const msg = err instanceof BffApiError ? err.message : `Could not connect ${tile.display_name}. Check your credentials and try again.`;
             toast({ title: 'Connection failed', description: msg, variant: 'destructive' });
           },
         },

@@ -109,7 +109,7 @@ export function AdSpendTrendChart({ data, isLoading, grain = 'day', className }:
       <div className={className}>
         <EmptyState
           title="No spend in this period"
-          description="Try a wider date range."
+          description="Spend will appear here once your ad connectors sync."
           icon={<BarChart3 className="h-8 w-8" />}
         />
       </div>

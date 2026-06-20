@@ -7,8 +7,9 @@
  *     review status='merged'); ('reject') sets status='rejected'.
  *   - unmergeCustomer splits B back out (merged_into NULL, lifecycle 'split', alias closed).
  *   - cross-brand safety: resolving under another brand is a no-op.
+ *   - F1: a second review for the SAME pair does not duplicate the merge event (deterministic merge_id).
  *
- * REQUIRES: Postgres with migrations through 0039 applied.
+ * REQUIRES: Postgres with migrations through 0051 applied (0051 = deterministic admin merge_id).
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'node:crypto';
@@ -25,6 +26,8 @@ const CANON = 'd0390a1a-0a1a-4a1a-8a1a-0000000000c1';
 const MERGED = 'd0390a1a-0a1a-4a1a-8a1a-0000000000c2';
 const REVIEW_MERGE = 'a0390a1a-0a1a-4a1a-8a1a-0000000000a1';
 const REVIEW_REJECT = 'a0390a1a-0a1a-4a1a-8a1a-0000000000b1';
+// A SECOND pending review for the SAME (CANON, MERGED) pair — drives the F1 idempotency test.
+const REVIEW_MERGE_2 = 'a0390a1a-0a1a-4a1a-8a1a-0000000000a2';
 const CORR = 'merge-admin-test';
 
 let superPool: pg.Pool;
@@ -49,9 +52,10 @@ async function seed() {
   await superPool.query(
     `INSERT INTO merge_review_queue (brand_id, review_id, brain_id_a, brain_id_b, trigger_reason, status)
      VALUES ($1,$2,$3,$4,'probabilistic_email_match','pending'),
-            ($1,$5,$3,$4,'shared_device','pending')
+            ($1,$5,$3,$4,'shared_device','pending'),
+            ($1,$6,$3,$4,'probabilistic_phone_match','pending')
      ON CONFLICT DO NOTHING`,
-    [BRAND_A, REVIEW_MERGE, CANON, MERGED, REVIEW_REJECT],
+    [BRAND_A, REVIEW_MERGE, CANON, MERGED, REVIEW_REJECT, REVIEW_MERGE_2],
   );
 }
 
@@ -85,7 +89,7 @@ describe('merge-admin (live Postgres, under brain_app)', () => {
   it('lists pending merge reviews (RLS-scoped)', async () => {
     if (!pgAvailable) return;
     const list = await listMergeReviews(BRAND_A, CORR, { pool: dbPool });
-    expect(list.reviews.length).toBe(2);
+    expect(list.reviews.length).toBe(3); // REVIEW_MERGE + REVIEW_REJECT + REVIEW_MERGE_2 (F1)
     expect(list.reviews.map((r) => r.review_id)).toContain(REVIEW_MERGE);
   });
 
@@ -119,10 +123,26 @@ describe('merge-admin (live Postgres, under brain_app)', () => {
     expect(alias.rowCount).toBe(1);
 
     const ev = await superPool.query(`SELECT 1 FROM identity_merge_event WHERE brand_id=$1 AND canonical_brain_id=$2 AND merged_brain_id=$3`, [BRAND_A, CANON, MERGED]);
-    expect(ev.rowCount).toBeGreaterThanOrEqual(1);
+    expect(ev.rowCount).toBe(1); // exactly one event after one merge
 
     const audit = await superPool.query(`SELECT 1 FROM identity_audit WHERE brand_id=$1 AND brain_id=$2 AND action='merge'`, [BRAND_A, MERGED]);
     expect(audit.rowCount).toBeGreaterThanOrEqual(1);
+  });
+
+  it('F1: a SECOND review for the SAME pair does NOT duplicate the merge event (deterministic merge_id)', async () => {
+    if (!pgAvailable) return;
+    // The same (canonical, merged) pair surfaced a second pending review. Resolving it must NOT
+    // write a second identity_merge_event — the deterministic merge_id collides → ON CONFLICT
+    // DO NOTHING. With the old gen_random_uuid() this produced TWO events for one logical merge.
+    const r = await resolveMergeReview(BRAND_A, REVIEW_MERGE_2, 'merge', appPool);
+    expect(r.resolved).toBe(true);
+    expect(r.decision).toBe('merged');
+
+    const ev = await superPool.query(
+      `SELECT count(*)::int AS n FROM identity_merge_event WHERE brand_id=$1 AND canonical_brain_id=$2 AND merged_brain_id=$3`,
+      [BRAND_A, CANON, MERGED],
+    );
+    expect(ev.rows[0]?.n).toBe(1); // STILL exactly one — idempotent on the pair (F1)
   });
 
   it('unmerge → B split back out (merged_into NULL, lifecycle split, alias closed)', async () => {

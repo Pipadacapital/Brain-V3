@@ -28,9 +28,10 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import type { Producer } from 'kafkajs';
 import type pg from 'pg';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 
 import { ShopifyHmac } from '../../domain/value-objects/ShopifyHmac.js';
+import { redactShopifyPii } from '../../domain/redactPii.js';
 import type { ISecretsManager } from '../../infrastructure/secrets/ISecretsManager.js';
 import {
   mapOrderToEvent,
@@ -159,6 +160,20 @@ export function registerShopifyWebhookRoutes(
       const brandId = connectorRow.brand_id;
       const connectorInstanceId = connectorRow.connector_instance_id;
       const topic = req.params.topic;
+
+      // ── Raw-webhook archive (structure-visible, PII-safe) ─────────────────
+      // Persist the RAW BODY SHAPE (PII leaves masked — I-S02) so operators can
+      // inspect "what did Shopify actually send". Runs for EVERY topic (incl.
+      // non-order), only AFTER HMAC + brand resolution so it is authenticated and
+      // tenant-scoped. Fire-and-forget — must never block or fail the 200 ack.
+      archiveRawWebhook(rawPgPool, brandId, topic, rawBody, req.body, correlationId, requestId).catch(
+        (archiveErr) => {
+          req.log?.warn(
+            { request_id: requestId, err: archiveErr },
+            '[webhook] raw-archive write failed (non-fatal)',
+          );
+        },
+      );
 
       // ── Step 3: Parse + map order (hashed PII only — I-S02) ───────────────
       // Only process order events. Non-order topics → 200 fast-ack (no-op).
@@ -298,6 +313,50 @@ export function registerShopifyWebhookRoutes(
       return reply.code(200).send({ request_id: requestId, received: true });
     },
   );
+}
+
+// ── connector_webhook_raw_archive write ─────────────────────────────────────────
+
+/**
+ * Archive the raw webhook body in structure-visible, PII-safe form (0050 / I-S02).
+ *
+ * - body_sha256 = sha256 of the ORIGINAL raw bytes (integrity + dedup key). Identical
+ *   re-delivery → ON CONFLICT DO NOTHING (idempotent); a state change ships a different
+ *   body → a new row, preserving the shape history.
+ * - redacted_body = redactShopifyPii(parsed) — every key/shape kept, PII leaves masked.
+ *   Raw email/phone/address NEVER reach the DB.
+ * - Writes under the brand GUC in a txn (FORCE RLS), same pattern as touchSyncStatus.
+ */
+async function archiveRawWebhook(
+  rawPgPool: pg.Pool,
+  brandId: string,
+  topic: string,
+  rawBody: Buffer,
+  parsedBody: unknown,
+  correlationId: string,
+  _requestId: string,
+): Promise<void> {
+  const bodySha256 = createHash('sha256').update(rawBody).digest('hex');
+  const redacted = redactShopifyPii(parsedBody);
+  const client = await rawPgPool.connect();
+  try {
+    await client.query('BEGIN');
+    // GUC txn-local: required for connector_webhook_raw_archive FORCE RLS (NN-1 / 0050).
+    await client.query(`SET LOCAL app.current_brand_id = $1`, [brandId]);
+    await client.query(
+      `INSERT INTO connector_webhook_raw_archive
+         (brand_id, source, topic, body_sha256, received_at, correlation_id, redacted_body)
+       VALUES ($1, 'shopify', $2, $3, NOW(), $4, $5)
+       ON CONFLICT (brand_id, topic, body_sha256) DO NOTHING`,
+      [brandId, topic, bodySha256, correlationId, JSON.stringify(redacted)],
+    );
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
 // ── connector_sync_status touch ───────────────────────────────────────────────

@@ -40,6 +40,7 @@ import type { Producer } from 'kafkajs';
 import { Redis } from 'ioredis';
 
 import { registerShopfloWebhookRoutes } from '../interfaces/webhooks/shopfloWebhookHandler.js';
+import { setCounterSink, type CounterLabels } from '@brain/observability';
 import { DEFAULT_SHOPFLO_SIG_HEADER } from '../domain/value-objects/ShopfloHmac.js';
 import type { ISecretsManager } from '@brain/connector-secrets';
 
@@ -284,6 +285,35 @@ describe('Shopflo webhook receiver — Track B integration', () => {
     const json = JSON.parse(response.body) as Record<string, unknown>;
     expect((json['error'] as Record<string, unknown>)['code']).toBe('HMAC_INVALID');
     expect(getMessages()).toHaveLength(0);
+
+    await app.close();
+  });
+
+  it('HMAC-invalid for a RESOLVED connector emits connector_auth_rejected_total{provider:shopflo} (auth-observability parity)', async () => {
+    const { producer } = makeMockProducer();
+    const app = await buildTestApp(superPool, producer, redis);
+
+    // A real merchant (resolves to a connector) signed with the WRONG secret ⇒ rotated/stale secret.
+    const body = makeCheckoutAbandonedBody({ merchantId: SF_MERCHANT_A });
+    const badSig = signBody(body, 'rotated-away-old-secret');
+
+    const recorded: Array<{ name: string; labels: CounterLabels }> = [];
+    const restore = setCounterSink({ add: (name, _v, labels) => recorded.push({ name, labels }) });
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/webhooks/shopflo',
+        headers: { 'content-type': 'application/json', [DEFAULT_SHOPFLO_SIG_HEADER]: badSig },
+        body,
+      });
+      expect(response.statusCode).toBe(401);
+    } finally {
+      restore();
+    }
+
+    const authRejects = recorded.filter((r) => r.name === 'connector_auth_rejected_total');
+    expect(authRejects).toHaveLength(1);
+    expect(authRejects[0]!.labels['provider']).toBe('shopflo');
 
     await app.close();
   });

@@ -94,7 +94,7 @@ export function OrdersTrendChart({ data, isLoading, grain = 'day', className }: 
       <div className={className}>
         <EmptyState
           title="No orders in this period"
-          description="Try a wider date range."
+          description="Orders will appear here as they come in."
           icon={<ShoppingCart className="h-8 w-8" />}
         />
       </div>

@@ -97,7 +97,7 @@ export function TrendChart({ data, isLoading, grain = 'day', className }: TrendC
       <div className={className}>
         <EmptyState
           title="No data in this period"
-          description="Try a wider date range."
+          description="Revenue will appear here as new orders are recognized."
           icon={<TrendingUp className="h-8 w-8" />}
         />
       </div>

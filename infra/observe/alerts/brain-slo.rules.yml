@@ -186,6 +186,21 @@ groups:
           summary: "DLQ redrive republish failing for {{ $labels.target_topic }}"
           description: "Redrive could not republish to {{ $labels.target_topic }} — the operator drain is stalling. Check broker health."
 
+      # P2.6 — connector auth rejection. A repull whose credential is rejected (Meta/Google token
+      # expired, Shopify/Razorpay 401) writes sync_status='error' and RETURNS — it does NOT throw,
+      # so the scheduler sees success and that connector's data (spend/settlement/orders) silently
+      # goes stale until an operator reconnects. This makes that path loud.
+      - alert: BrainConnectorAuthRejected
+        # connector_auth_rejected_total: stream-worker counter (P2.6). Non-zero ⇒ a connector needs
+        # reconnecting RIGHT NOW and its data is going stale.
+        expr: sum by (provider) (increase(connector_auth_rejected_total[15m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Connector {{ $labels.provider }} credential rejected — reconnect required"
+          description: "A {{ $labels.provider }} repull was rejected on auth (expired token / 401). That connector is no longer ingesting — its spend/settlement/order data is going stale until it is reconnected."
+
   # ── Revenue truth integrity ─────────────────────────────────────────────────
   - name: brain-revenue-integrity
     rules:

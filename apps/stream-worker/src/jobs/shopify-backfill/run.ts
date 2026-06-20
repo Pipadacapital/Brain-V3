@@ -34,6 +34,7 @@
  */
 
 import { Pool } from 'pg';
+import { recordConnectorAuthRejected } from '../../infrastructure/observability/connector-auth-health.js';
 import { Kafka, Producer } from 'kafkajs';
 import { buildPartitionKey } from '@brain/events';
 import { SaltProvider, LocalSecretsProvider } from '../../infrastructure/secrets/SaltProvider.js';
@@ -147,6 +148,7 @@ export async function run(connectorInstanceId?: string): Promise<void> {
           recordsProcessed: 0n,
           cursorValue: claimedJob.cursor_value,  // preserve cursor for resume
         });
+        recordConnectorAuthRejected('shopify'); // P2.6: make the silent token-loss death loud
         log.error(`job=${jobId} — token not found (RECONNECT_REQUIRED)`);
         continue;
       }
@@ -354,6 +356,7 @@ async function runBackfillLoop(params: BackfillLoopParams): Promise<void> {
             recordsProcessed,
             cursorValue: sinceId,
           });
+          recordConnectorAuthRejected('shopify'); // P2.6: make the silent token-expiry death loud
           log.error(`job=${jobId} 401 auth error — marked failed`);
           return;
         }

@@ -40,7 +40,8 @@ import {
   GOKWIK_AWB_STATUS_V1_EVENT_NAME,
   type GokwikAwbRecord,
 } from '@brain/gokwik-mapper';
-import { GokwikAwbClient, type GokwikApiCredentials, GOKWIK_AWB_PAGE_SIZE } from './gokwik-awb-client.js';
+import { GokwikAwbClient, type GokwikApiCredentials, GOKWIK_AWB_PAGE_SIZE, GOKWIK_AUTH_ERROR } from './gokwik-awb-client.js';
+import { recordConnectorAuthRejected } from '../../infrastructure/observability/connector-auth-health.js';
 import { SaltProvider, LocalSecretsProvider } from '../../infrastructure/secrets/SaltProvider.js';
 import { resolveSaltHex } from '@brain/identity-core';
 import { log } from "../../log.js";
@@ -168,6 +169,13 @@ async function repullConnector(params: RepullParams): Promise<void> {
   try {
     emitted = await repullAwbCursor({ ciId, brandId, pool, producer, apiClient, saltHex });
   } catch (err) {
+    // Auth rejection (401/403 from the real client) → reconnect signal + observability parity.
+    if (String(err).includes(GOKWIK_AUTH_ERROR)) {
+      recordConnectorAuthRejected('gokwik');
+      log.error(`connector=${ciId} — gokwik auth error (RECONNECT_REQUIRED)`, { err: err });
+      await setSyncState(pool, brandId, ciId, 'error', 'gokwik auth error — RECONNECT_REQUIRED');
+      return;
+    }
     log.error(`connector=${ciId} cursor=${AWB_CURSOR_RESOURCE} error`, { err: err });
     await setSyncState(pool, brandId, ciId, 'error', 'awb re-pull failed');
     return;

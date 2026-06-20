@@ -1,0 +1,149 @@
+'use client';
+
+/**
+ * MarginContent — Contribution Margin (CM1/CM2) + the cost-input form (feat-cm2-cost-inputs).
+ *
+ * Entering costs lifts cost_confidence off 'Insufficient' and makes CM2 trustworthy (it's what the
+ * billing cap reads). DISCIPLINE: all money is bigint minor-unit strings → formatMoneyDisplay; never
+ * /100. Honest loading/error/no_data; cost_confidence shown as an explicit badge.
+ */
+import { useState } from 'react';
+import { Coins, TrendingUp, ShieldCheck, ShieldAlert } from 'lucide-react';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
+import { ErrorCard } from '@/components/ui/error-card';
+import { EmptyState } from '@/components/ui/empty-state';
+import { Skeleton } from '@/components/ui/skeleton';
+import { useContributionMargin, useCostInputs, useUpsertCostInput } from '@/lib/hooks/use-analytics';
+import { formatMoneyDisplay } from '@/lib/format/money-display';
+import type { CurrencyCode } from '@brain/money';
+
+const COST_TYPES = [
+  { value: 'cogs', label: 'COGS' },
+  { value: 'shipping', label: 'Shipping' },
+  { value: 'packaging', label: 'Packaging' },
+  { value: 'payment_fee', label: 'Payment fee' },
+  { value: 'marketplace_fee', label: 'Marketplace fee' },
+] as const;
+
+function ConfidenceBadge({ c }: { c: 'Trusted' | 'Estimated' | 'Insufficient' }) {
+  if (c === 'Trusted') return <Badge className="gap-1 bg-emerald-600"><ShieldCheck className="h-3 w-3" /> Trusted</Badge>;
+  if (c === 'Estimated') return <Badge variant="secondary" className="gap-1"><ShieldAlert className="h-3 w-3" /> Estimated</Badge>;
+  return <Badge variant="outline" className="gap-1 text-amber-600"><ShieldAlert className="h-3 w-3" /> Insufficient</Badge>;
+}
+
+export function MarginContent() {
+  const margin = useContributionMargin();
+  const costs = useCostInputs();
+  const upsert = useUpsertCostInput();
+
+  const [costType, setCostType] = useState<(typeof COST_TYPES)[number]['value']>('cogs');
+  const [pct, setPct] = useState('');
+
+  const m = margin.data?.state === 'has_data' ? margin.data.margin : null;
+  const ccy = (m?.currency_code ?? 'INR') as CurrencyCode;
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-2xl font-bold">Margin &amp; Costs</h1>
+        <p className="mt-1 text-muted-foreground">
+          Contribution margin after costs. Enter your cost structure to unlock trusted CM2.
+        </p>
+      </div>
+
+      {margin.error && <ErrorCard error={margin.error} />}
+
+      {margin.isLoading && <Skeleton className="h-40 w-full" />}
+
+      {!margin.isLoading && margin.data?.state === 'no_data' && (
+        <EmptyState icon={<TrendingUp className="h-6 w-6" />} title="No revenue yet" description="Contribution margin appears once orders flow through and you enter your costs." />
+      )}
+
+      {m && (
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between">
+            <CardTitle className="flex items-center gap-2"><TrendingUp className="h-4 w-4" /> Contribution margin</CardTitle>
+            <ConfidenceBadge c={m.cost_confidence} />
+          </CardHeader>
+          <CardContent>
+            <dl className="grid grid-cols-2 gap-x-8 gap-y-2 text-sm sm:max-w-md">
+              <dt className="text-muted-foreground">Net revenue</dt>
+              <dd className="text-right">{formatMoneyDisplay(m.net_revenue_minor, ccy)}</dd>
+              <dt className="text-muted-foreground">− COGS</dt>
+              <dd className="text-right text-amber-600">{formatMoneyDisplay(m.cogs_minor, ccy)}</dd>
+              <dt className="text-muted-foreground">− Variable costs</dt>
+              <dd className="text-right text-amber-600">{formatMoneyDisplay(m.variable_cost_minor, ccy)}</dd>
+              <dt className="border-t pt-2 font-medium">CM1</dt>
+              <dd className="border-t pt-2 text-right font-semibold">{formatMoneyDisplay(m.cm1_minor, ccy)}</dd>
+              <dt className="text-muted-foreground">− Marketing</dt>
+              <dd className="text-right text-amber-600">{formatMoneyDisplay(m.marketing_minor, ccy)}</dd>
+              <dt className="border-t pt-2 font-medium">CM2</dt>
+              <dd className="border-t pt-2 text-right text-lg font-bold text-emerald-700">{formatMoneyDisplay(m.cm2_minor, ccy)}</dd>
+            </dl>
+            {m.cost_confidence === 'Insufficient' && (
+              <p className="mt-3 text-xs text-amber-600">Enter at least a COGS rate below to make CM2 trustworthy (and eligible for the billing cap).</p>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Cost inputs */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2"><Coins className="h-4 w-4" /> Cost structure</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <form
+            className="flex flex-wrap items-end gap-3"
+            onSubmit={(e) => {
+              e.preventDefault();
+              const bps = Math.round(parseFloat(pct) * 100); // percent → basis points
+              if (!Number.isFinite(bps) || bps < 0) return;
+              upsert.mutate(
+                { scope: 'global', cost_type: costType, pct_bps: bps, currency_code: ccy, cost_confidence: 'Trusted' },
+                { onSuccess: () => setPct('') },
+              );
+            }}
+          >
+            <label className="flex flex-col gap-1 text-xs">
+              <span className="text-muted-foreground">Cost</span>
+              <select value={costType} onChange={(e) => setCostType(e.target.value as typeof costType)} className="h-9 rounded-md border bg-card px-2 text-sm">
+                {COST_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+              </select>
+            </label>
+            <label className="flex flex-col gap-1 text-xs">
+              <span className="text-muted-foreground">% of revenue</span>
+              <input type="number" step="0.1" min="0" max="100" value={pct} onChange={(e) => setPct(e.target.value)} placeholder="e.g. 40" className="h-9 w-28 rounded-md border bg-card px-2 text-sm" />
+            </label>
+            <button type="submit" disabled={!pct || upsert.isPending} className="h-9 rounded-md border bg-secondary px-3 text-sm font-medium text-secondary-foreground hover:bg-secondary/80 disabled:opacity-50">
+              {upsert.isPending ? 'Saving…' : 'Save'}
+            </button>
+          </form>
+
+          {costs.isLoading && <Skeleton className="h-16 w-full" />}
+          {costs.data && costs.data.cost_inputs.length > 0 && (
+            <table className="w-full text-sm">
+              <thead className="border-b text-left text-xs uppercase text-muted-foreground">
+                <tr><th className="py-2 font-medium">Cost</th><th className="py-2 font-medium">Scope</th><th className="py-2 text-right font-medium">Rate</th><th className="py-2 text-right font-medium">Confidence</th></tr>
+              </thead>
+              <tbody>
+                {costs.data.cost_inputs.map((c) => (
+                  <tr key={`${c.cost_type}-${c.scope}-${c.scope_ref}`} className="border-b last:border-0">
+                    <td className="py-2">{COST_TYPES.find((t) => t.value === c.cost_type)?.label ?? c.cost_type}</td>
+                    <td className="py-2 text-muted-foreground">{c.scope}{c.scope_ref ? `:${c.scope_ref}` : ''}</td>
+                    <td className="py-2 text-right">{c.pct_bps !== null ? `${(c.pct_bps / 100).toFixed(2)}%` : formatMoneyDisplay(c.amount_minor ?? '0', c.currency_code as CurrencyCode)}</td>
+                    <td className="py-2 text-right"><ConfidenceBadge c={c.cost_confidence} /></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          {costs.data && costs.data.cost_inputs.length === 0 && (
+            <p className="text-sm text-muted-foreground">No costs entered yet. Add your COGS % above to compute true margin.</p>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}

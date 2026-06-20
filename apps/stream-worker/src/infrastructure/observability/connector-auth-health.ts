@@ -18,7 +18,7 @@
 import { incrementCounter } from '@brain/observability';
 
 /** Canonical provider labels (match the connector_instance.provider values). */
-export type ConnectorProvider = 'meta' | 'google_ads' | 'shopify' | 'razorpay' | 'gokwik';
+export type ConnectorProvider = 'meta' | 'google_ads' | 'shopify' | 'razorpay' | 'gokwik' | 'shopflo';
 
 /**
  * Record that a connector's credential was rejected (token expired / 401) and it now needs a

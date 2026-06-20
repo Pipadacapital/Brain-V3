@@ -60,6 +60,11 @@ export type { RecentEventsResult, RecentEventRow } from './internal/application/
 // Orders list — paginated latest-state orders from Bronze (feat-shopify-order-depth).
 export { getOrdersList } from './internal/application/queries/get-orders-list.js';
 export type { OrdersListResult, OrderListItemDto } from './internal/application/queries/get-orders-list.js';
+// Contribution margin (CM1/CM2) + cost inputs (feat-cm2-cost-inputs).
+export { getContributionMargin } from './internal/application/queries/get-contribution-margin.js';
+export type { ContributionMarginResult, ContributionMarginDto } from './internal/application/queries/get-contribution-margin.js';
+export { listCostInputs, upsertCostInput } from './internal/application/queries/cost-inputs.js';
+export type { CostInputDto, UpsertCostInputInput, CostScope, CostType } from './internal/application/queries/cost-inputs.js';
 // Top products — per-SKU rollup over Silver order-line (feat-shopify-order-depth).
 export { getTopProducts } from './internal/application/queries/get-top-products.js';
 export type { TopProductsResult, TopProductDto } from './internal/application/queries/get-top-products.js';

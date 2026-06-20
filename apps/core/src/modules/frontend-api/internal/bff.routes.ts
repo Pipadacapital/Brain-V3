@@ -75,6 +75,8 @@ import type {
   OrderStatusMix as ContractOrderStatusMix,
   TopProducts as ContractTopProducts,
   OrdersList as ContractOrdersList,
+  ContributionMargin as ContractContributionMargin,
+  CostInputsList as ContractCostInputsList,
   OrderDetail as ContractOrderDetail,
   DataQualitySummary as ContractDataQualitySummary,
   AskBrainResult as ContractAskBrainResult,
@@ -98,7 +100,7 @@ import type {
 } from '@brain/contracts';
 import { jtiFromJwt, csrfTokenForSession } from './csrf.js';
 import type { Pool as PgPool } from 'pg';
-import { getRevenueMetrics, getRevenueTimeseries, getKpiSummary, getRecognitionBreakdown, getRecentActivity, getOrdersTimeseries, getOrderStats, getDataHealth, getSettlementSummary, getTrackingHealth, getRecentEvents, getAdSpendTimeseries, getBlendedRoas, getCodRtoRates, getCodMix, getCheckoutFunnel, getRtoRiskDistribution, getOrderStatusMix, getTopProducts, getOrdersList, getOrderDetail, getJourneyFirstTouchMix, getJourneyStitchRate, getJourneyTimeline, getConsentCoverage, getConsentSuppressionSummary, getConsentGateActivity, getConsentWindowConfig, getAttributionByChannel, getAttributionReconciliation, getChannelRoas, getCapiFeedbackSummary, getCapiFeedbackEvents, getCapiFeedbackDeletions } from '../../analytics/index.js';
+import { getRevenueMetrics, getRevenueTimeseries, getKpiSummary, getRecognitionBreakdown, getRecentActivity, getOrdersTimeseries, getOrderStats, getDataHealth, getSettlementSummary, getTrackingHealth, getRecentEvents, getAdSpendTimeseries, getBlendedRoas, getCodRtoRates, getCodMix, getCheckoutFunnel, getRtoRiskDistribution, getOrderStatusMix, getTopProducts, getOrdersList, getOrderDetail, getContributionMargin, listCostInputs, upsertCostInput, getJourneyFirstTouchMix, getJourneyStitchRate, getJourneyTimeline, getConsentCoverage, getConsentSuppressionSummary, getConsentGateActivity, getConsentWindowConfig, getAttributionByChannel, getAttributionReconciliation, getChannelRoas, getCapiFeedbackSummary, getCapiFeedbackEvents, getCapiFeedbackDeletions } from '../../analytics/index.js';
 import { getDataQualitySummary, getMetricTrust } from '../../data-quality/index.js';
 import { computeFoundationHealth, freshnessFromIngest, computeEntitlements, type FoundationSignals } from '../../analytics/index.js';
 import { CONNECTOR_CATALOG } from '../../connector/catalog/registry.js';
@@ -2972,6 +2974,94 @@ export function registerBffRoutes(
       );
 
       return reply.send({ request_id: requestId, data: result });
+    },
+  );
+
+  /**
+   * GET /api/v1/analytics/contribution-margin?as_of=YYYY-MM-DD
+   * CM1/CM2 + cost_confidence over the brand's revenue/cost/spend (feat-cm2-cost-inputs). Brand from
+   * session (D-1). Honest no_data (D-2). Money = bigint minor-unit strings (I-S07). Reads via rawPool
+   * (metric-engine seam) — no manual SUM (F-SEC-02 / ADR-002).
+   */
+  fastify.get(
+    '/api/v1/analytics/contribution-margin',
+    {
+      preHandler: [bffProtectedPreHandler],
+      schema: { querystring: { type: 'object', properties: { as_of: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' } }, additionalProperties: false } },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const auth = (request as AuthenticatedRequest).auth;
+      const today = new Date().toISOString().split('T')[0] as string;
+      const asOfStr = (request.query as { as_of?: string }).as_of ?? today;
+      if (!auth.brandId) {
+        return reply.send({ request_id: requestId, data: { state: 'no_data', as_of: asOfStr } });
+      }
+      if (!rawPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'read pool not available' } });
+      }
+      const result: ContractContributionMargin = await getContributionMargin(auth.brandId, new Date(`${asOfStr}T23:59:59Z`), { pool: rawPool });
+      return reply.send({ request_id: requestId, data: result });
+    },
+  );
+
+  /**
+   * GET /api/v1/costs — the brand's currently-active cost inputs (feat-cm2-cost-inputs).
+   * POST /api/v1/costs — upsert one cost input (COGS/shipping/fee rate or fixed amount).
+   * Brand from session (D-1). cost_input is RLS-scoped config.
+   */
+  fastify.get(
+    '/api/v1/costs',
+    { preHandler: [bffProtectedPreHandler] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const auth = (request as AuthenticatedRequest).auth;
+      if (!auth.brandId) return reply.send({ request_id: requestId, data: { cost_inputs: [] } });
+      if (!rawPool) return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'read pool not available' } });
+      const cost_inputs = await listCostInputs(auth.brandId, { pool: rawPool });
+      const result: ContractCostInputsList = { cost_inputs };
+      return reply.send({ request_id: requestId, data: result });
+    },
+  );
+
+  fastify.post(
+    '/api/v1/costs',
+    {
+      preHandler: [bffProtectedPreHandler],
+      schema: {
+        body: {
+          type: 'object',
+          required: ['scope', 'cost_type', 'currency_code'],
+          properties: {
+            scope: { type: 'string', enum: ['global', 'sku', 'category'] },
+            scope_ref: { type: 'string', maxLength: 256 },
+            cost_type: { type: 'string', enum: ['cogs', 'shipping', 'packaging', 'payment_fee', 'marketplace_fee'] },
+            amount_minor: { type: 'string', pattern: '^\\d+$' },
+            pct_bps: { type: 'integer', minimum: 0, maximum: 100000 },
+            currency_code: { type: 'string', minLength: 3, maxLength: 3 },
+            cost_confidence: { type: 'string', enum: ['Trusted', 'Estimated', 'Insufficient'] },
+          },
+          additionalProperties: false,
+        },
+        attachValidation: true,
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const validationError = (request as FastifyRequest & { validationError?: Error }).validationError;
+      if (validationError) {
+        return reply.code(400).send({ request_id: requestId, error: { code: 'INVALID_PARAMS', message: 'Invalid cost input.' } });
+      }
+      const auth = (request as AuthenticatedRequest).auth;
+      if (!auth.brandId) return reply.code(403).send({ request_id: requestId, error: { code: 'NO_BRAND', message: 'No active brand' } });
+      if (!rawPool) return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'read pool not available' } });
+      const b = request.body as Parameters<typeof upsertCostInput>[1];
+      try {
+        const out = await upsertCostInput(auth.brandId, b, { pool: rawPool });
+        return reply.send({ request_id: requestId, data: out });
+      } catch (err) {
+        return reply.code(400).send({ request_id: requestId, error: { code: 'INVALID_PARAMS', message: String((err as Error).message) } });
+      }
     },
   );
 

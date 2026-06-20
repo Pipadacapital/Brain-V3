@@ -201,6 +201,20 @@ groups:
           summary: "Connector {{ $labels.provider }} credential rejected — reconnect required"
           description: "A {{ $labels.provider }} repull was rejected on auth (expired token / 401). That connector is no longer ingesting — its spend/settlement/order data is going stale until it is reconnected."
 
+      # feat-meta-token-refresh — the proactive Meta token re-exchange job. A sustained error rate
+      # means tokens are NOT being refreshed (app creds missing, or tokens already dead) → spend
+      # ingestion will silently stale as those tokens hit their ~60-day expiry.
+      - alert: BrainMetaTokenRefreshFailing
+        # meta_token_refresh_error_total: stream-worker counter (the daily cron job). Non-zero ⇒
+        # tokens are not being kept fresh — investigate app creds / reconnect the flagged connectors.
+        expr: sum by (reason) (increase(meta_token_refresh_error_total[2h])) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Meta token refresh failing ({{ $labels.reason }})"
+          description: "The proactive Meta token re-exchange job is erroring ({{ $labels.reason }}). If app_creds_missing — set META_APP_ID/META_APP_SECRET; if exchange_failed — those connectors need a reconnect before their tokens expire and spend ingestion stalls."
+
       # Silver freshness. Silver is built by dbt (CI/nightly; an intraday prod rebuild cron is a
       # follow-up that needs a dbt-runner image), so it can lag Bronze between builds. The DQ
       # reconciliation executor runs CONTINUOUSLY in the deployed worker and compares Bronze↔Silver

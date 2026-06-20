@@ -34,6 +34,7 @@ import type { Producer } from 'kafkajs';
 import type pg from 'pg';
 import { randomUUID } from 'node:crypto';
 
+import { incrementCounter } from '@brain/observability';
 import { ShopfloHmac } from '../../domain/value-objects/ShopfloHmac.js';
 import { RedisDedupAdapter } from '../../../../payment/razorpay/infrastructure/RedisDedupAdapter.js';
 import type { ISecretsManager } from '@brain/connector-secrets';
@@ -175,6 +176,9 @@ export function registerShopfloWebhookRoutes(
       try {
         const creds = await secretsManager.getSecret(connectorRow.secret_ref);
         if (!creds || !creds['webhook_secret']) {
+          // A RESOLVED connector with no usable secret = broken stored credential → reconnect signal
+          // (connector-auth observability parity — same metric the repull connectors emit).
+          incrementCounter('connector_auth_rejected_total', { provider: 'shopflo' });
           req.log?.warn(
             { request_id: requestId },
             '[shopflo-webhook] webhook_secret missing from credentials — rejecting',
@@ -199,6 +203,10 @@ export function registerShopfloWebhookRoutes(
       // Validate HMAC against the raw body bytes with the resolved per-connector secret.
       const hmacValid = ShopfloHmac.validateWebhook(rawBody, signatureHeader, webhookSecret);
       if (!hmacValid) {
+        // HMAC fails for a RESOLVED connector ⇒ the merchant rotated/regenerated their webhook
+        // secret (the stored secret is stale) → reconnect required. (A forged webhook for an
+        // UNKNOWN merchant fails the no-connector branch above and is NOT counted here.)
+        incrementCounter('connector_auth_rejected_total', { provider: 'shopflo' });
         req.log?.warn(
           { request_id: requestId },
           '[shopflo-webhook] HMAC invalid — rejecting (NN-4)',

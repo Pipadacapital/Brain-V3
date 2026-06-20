@@ -51,10 +51,31 @@ export const ResolvedParamsSchema = z.object({
 });
 export type ResolvedParams = z.infer<typeof ResolvedParamsSchema>;
 
-/** The certified, reproducible number — ask-brain.ts:43-50 (ComputedNumber). */
+/**
+ * A non-money certified scalar (ratio / percent). `value` is the canonical machine string the
+ * engine produced (exact decimal, never a float re-derive); `display` is the formatted surface
+ * ("3.42×", "12.50%"). `currency_code` is the currency the scalar pertains to (ROAS/RTO are read
+ * per currency) — surfaced only for single-currency brands; multi-currency falls to figure_kind
+ * 'none' (a blended ratio across currencies is not one number).
+ */
+export const AskScalarSchema = z.object({
+  value: z.string(),
+  display: z.string(),
+  unit: z.enum(['ratio', 'percent']),
+  currency_code: z.string().nullable(),
+});
+export type AskScalar = z.infer<typeof AskScalarSchema>;
+
+/**
+ * The certified, reproducible number — ask-brain.ts (ComputedNumber). Money lives in `money`
+ * (per-currency bigint-minor strings) iff figure_kind='money'; a ratio/percent lives in `scalar`
+ * iff figure_kind='ratio'|'percent'. figure_kind='none' = a valid binding whose figure isn't a
+ * single surfaced scalar (a distribution/timeline — see its dashboard). `no_data` = honest empty.
+ */
 export const ComputedNumberSchema = z.object({
-  figure_kind: z.enum(['money', 'none']),
+  figure_kind: z.enum(['money', 'ratio', 'percent', 'none']),
   money: MoneyRecordSchema.nullable(), // present iff figure_kind='money' and has data
+  scalar: AskScalarSchema.nullable(), // present iff figure_kind='ratio'|'percent' and has data
   no_data: z.boolean(),
 });
 export type ComputedNumber = z.infer<typeof ComputedNumberSchema>;

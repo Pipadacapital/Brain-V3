@@ -115,7 +115,9 @@ export class HandleMetaOAuthCallbackCommand {
     const { arn: secretRef } = await this.secretsManager.storeSecret(
       brandId,
       { connectorType: 'meta', subKey: adAccountId ?? undefined },
-      { access_token: accessToken },
+      // access_token_issued_at stamps the token's age so the proactive meta-token-refresh job
+      // (fb_exchange_token) knows when to re-exchange before the ~60-day expiry (feat-meta-token-refresh).
+      { access_token: accessToken, access_token_issued_at: new Date().toISOString() },
     );
     // accessToken is now discarded — only secretRef (ARN) proceeds.
 

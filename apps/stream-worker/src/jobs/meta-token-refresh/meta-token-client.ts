@@ -1,0 +1,96 @@
+/**
+ * meta-token-client.ts — Meta long-lived-token RE-EXCHANGE (proactive refresh).
+ *
+ * Meta has NO refresh token (unlike Google). A long-lived user/page access token expires in ~60
+ * days; the only way to extend it is to exchange a STILL-VALID long-lived token for a fresh one via
+ * the `fb_exchange_token` grant (which resets the ~60-day clock). An EXPIRED token cannot be
+ * exchanged — so this must run PROACTIVELY, well before expiry. The reactive 401 path correctly
+ * stays RECONNECT_REQUIRED (a dead token can only be fixed by re-consent).
+ *
+ * Mirrors the Google authenticate() idiom (google-ads-searchstream-client.ts): a single POST/GET to
+ * the OAuth endpoint, app creds from ENV (META_APP_ID / META_APP_SECRET — the same the OAuth
+ * callback uses), the new token kept in memory / handed back to the caller, never logged (I-S09).
+ */
+const GRAPH_API_VERSION = 'v25.0';
+const OAUTH_URL = `https://graph.facebook.com/${GRAPH_API_VERSION}/oauth/access_token`;
+const REQUEST_TIMEOUT_MS = 15_000;
+
+/** Thrown when the app-level creds (META_APP_ID / META_APP_SECRET) are not configured. */
+export const META_APP_CREDS_MISSING = 'META_APP_CREDS_MISSING';
+/** Thrown when the exchange fails (expired/invalid token, or Graph error). */
+export const META_TOKEN_EXCHANGE_FAILED = 'META_TOKEN_EXCHANGE_FAILED';
+
+export interface MetaTokenExchangeResult {
+  /** The fresh long-lived access token (in memory only; NEVER logged — I-S09). */
+  accessToken: string;
+  /** Seconds until the new token expires, when Graph returns it (else null). */
+  expiresInSeconds: number | null;
+}
+
+/**
+ * Re-exchange a still-valid long-lived token for a fresh one (fb_exchange_token).
+ * App creds come from ENV (the same META_APP_ID / META_APP_SECRET the connect flow uses).
+ *
+ * @throws Error(META_APP_CREDS_MISSING) when app creds are absent.
+ * @throws Error(META_TOKEN_EXCHANGE_FAILED: ...) on any non-2xx / missing-token response (the
+ *         caller treats this as RECONNECT_REQUIRED — a token Meta will not extend is effectively dead).
+ */
+export async function exchangeLongLivedToken(
+  currentToken: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<MetaTokenExchangeResult> {
+  const appId = process.env['META_APP_ID'];
+  const appSecret = process.env['META_APP_SECRET'];
+  if (!appId || !appSecret) {
+    throw new Error(`${META_APP_CREDS_MISSING}: META_APP_ID / META_APP_SECRET not configured`);
+  }
+
+  // fb_exchange_token: a GET with the token in the query — but the token never lands in a LOG
+  // because we never log the URL (I-S09); only provider + connector id are logged by the caller.
+  const params = new URLSearchParams({
+    grant_type: 'fb_exchange_token',
+    client_id: appId,
+    client_secret: appSecret,
+    fb_exchange_token: currentToken,
+  });
+
+  const res = await fetchImpl(`${OAUTH_URL}?${params.toString()}`, {
+    method: 'GET',
+    headers: { 'Content-Type': 'application/json' },
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  });
+
+  if (!res.ok) {
+    // 400/401/190 = the token is expired/invalid and cannot be extended → RECONNECT_REQUIRED.
+    throw new Error(`${META_TOKEN_EXCHANGE_FAILED}: HTTP ${res.status}`);
+  }
+  const body = (await res.json()) as { access_token?: string; expires_in?: number };
+  if (!body.access_token) {
+    throw new Error(`${META_TOKEN_EXCHANGE_FAILED}: no access_token in exchange response`);
+  }
+  return {
+    accessToken: body.access_token,
+    expiresInSeconds: typeof body.expires_in === 'number' ? body.expires_in : null,
+  };
+}
+
+/** Default age (days) at which a token is re-exchanged — comfortably inside Meta's ~60-day window. */
+export const DEFAULT_REFRESH_AGE_DAYS = 30;
+
+/**
+ * PURE due-decision: should this token be re-exchanged now?
+ * Due when the issued-at is ABSENT (unknown age → refresh to establish a known clock) or when the
+ * token is older than `thresholdDays`. Malformed/ future timestamps → due (fail toward freshness).
+ */
+export function isTokenRefreshDue(
+  issuedAtIso: string | null | undefined,
+  nowMs: number,
+  thresholdDays: number = DEFAULT_REFRESH_AGE_DAYS,
+): boolean {
+  if (!issuedAtIso) return true; // unknown age → refresh to stamp a known issued_at
+  const issuedMs = Date.parse(issuedAtIso);
+  if (!Number.isFinite(issuedMs)) return true; // malformed → refresh
+  const ageMs = nowMs - issuedMs;
+  if (ageMs < 0) return true; // future timestamp (clock skew / bad data) → refresh
+  return ageMs >= thresholdDays * 24 * 60 * 60 * 1000;
+}

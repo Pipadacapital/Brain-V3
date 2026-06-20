@@ -27,7 +27,7 @@ import { RedisDedupAdapter } from '../infrastructure/redis/RedisDedupAdapter.js'
 import { RetryCounterAdapter } from '../infrastructure/redis/RetryCounterAdapter.js';
 import { BronzeRepository } from '../infrastructure/pg/BronzeRepository.js';
 import { ProcessEventUseCase } from '../application/ProcessEventUseCase.js';
-import { ShopfloBronzeBridgeConsumer } from '../interfaces/consumers/ShopfloBronzeBridgeConsumer.js';
+import { EventBronzeBridgeConsumer } from '../interfaces/consumers/EventBronzeBridgeConsumer.js';
 
 const SUPER = process.env['DATABASE_URL'] ?? 'postgres://brain:brain@localhost:5432/brain';
 const APP = process.env['BRAIN_APP_DATABASE_URL'] ?? 'postgres://brain_app:brain_app@localhost:5432/brain';
@@ -46,7 +46,7 @@ let appPool: pg.Pool;
 let producer: Producer;
 let dedup: RedisDedupAdapter;
 let retryCounter: RetryCounterAdapter;
-let consumer: ShopfloBronzeBridgeConsumer;
+let consumer: EventBronzeBridgeConsumer;
 let bronze: BronzeRepository;
 let infraUp = false;
 
@@ -110,7 +110,7 @@ beforeAll(async () => {
     await retryCounter.connect();
     bronze = new BronzeRepository(APP);
     const processEvent = new ProcessEventUseCase(dedup, bronze, undefined, /* enforceTenantDerivation */ false);
-    consumer = new ShopfloBronzeBridgeConsumer(kafka, processEvent, TOPIC, GROUP, retryCounter);
+    consumer = new EventBronzeBridgeConsumer(kafka, processEvent, TOPIC, GROUP, retryCounter, 'shopflo.checkout_abandoned.v1', 'shopflo_bronze_write_total');
     // UN-WIRE PROOF: comment the next line → SF1 poll times out → RED.
     await consumer.start();
     await new Promise((r) => setTimeout(r, 2500)); // let the group join + assign before producing

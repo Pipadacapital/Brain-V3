@@ -50,7 +50,7 @@ import { LiveLedgerBridgeConsumer } from './interfaces/consumers/LiveLedgerBridg
 import { SettlementLedgerConsumer } from './interfaces/consumers/SettlementLedgerConsumer.js';
 import { SpendLedgerConsumer } from './interfaces/consumers/SpendLedgerConsumer.js';
 import { GokwikAwbLedgerConsumer } from './interfaces/consumers/GokwikAwbLedgerConsumer.js';
-import { ShopfloBronzeBridgeConsumer } from './interfaces/consumers/ShopfloBronzeBridgeConsumer.js';
+import { EventBronzeBridgeConsumer } from './interfaces/consumers/EventBronzeBridgeConsumer.js';
 import { LedgerWriter } from './infrastructure/pg/LedgerWriter.js';
 import mysql from 'mysql2/promise';
 import { createAttributionReversalHook } from '@brain/attribution-writer';
@@ -163,20 +163,27 @@ export async function main(): Promise<void> {
   const useCase = new ProcessEventUseCase(dedup, bronze, auditWriter);
   const consumer = new CollectorEventConsumer(kafka, useCase, topic, groupId, retryCounter);
 
-  // ── Shopflo Bronze bridge (P0 — restore the severed checkout-funnel landing) ──
-  // Shopflo webhook events (shopflo.checkout_abandoned.v1) carry NO install_token; the pixel lane
-  // above quarantines them, so they never reached Bronze and computeCheckoutFunnel was permanent
-  // no_data. This separate consumer group lands them in Bronze with enforceTenantDerivation=FALSE
-  // (brand_id is already server-trusted — the webhook handler derived it from the connector row,
-  // MT-1). Reuses dedup+bronze (stateless adapters). WIRED: do NOT remove without updating
-  // shopflo-bronze-wiring.e2e.test.ts.
-  const shopfloBronzeGroupId =
-    process.env['SHOPFLO_BRONZE_CONSUMER_GROUP_ID'] ?? 'shopflo-bronze-bridge';
-  const shopfloProcessEvent = new ProcessEventUseCase(
+  // ── Bronze bridges (P0 — restore severed server-trusted-event landings) ──────
+  // Shopflo checkout-abandoned + GoKwik RTO-Predict events carry NO install_token; the pixel lane
+  // above quarantines them, so they never reached Bronze and their read seams were permanent
+  // no_data. These separate consumer groups land them in Bronze with enforceTenantDerivation=FALSE
+  // (brand_id is already server-trusted — the webhook/emit derived it from the connector row, MT-1).
+  // One shared ProcessEventUseCase + dedup + bronze (stateless). WIRED: do NOT remove without
+  // updating the corresponding *-bronze-wiring.e2e.test.ts.
+  const bridgeProcessEvent = new ProcessEventUseCase(
     dedup, bronze, undefined, /* enforceTenantDerivation */ false,
   );
-  const shopfloBronzeConsumer = new ShopfloBronzeBridgeConsumer(
-    kafka, shopfloProcessEvent, topic, shopfloBronzeGroupId, retryCounter,
+  const shopfloBronzeGroupId =
+    process.env['SHOPFLO_BRONZE_CONSUMER_GROUP_ID'] ?? 'shopflo-bronze-bridge';
+  const shopfloBronzeConsumer = new EventBronzeBridgeConsumer(
+    kafka, bridgeProcessEvent, topic, shopfloBronzeGroupId, retryCounter,
+    'shopflo.checkout_abandoned.v1', 'shopflo_bronze_write_total',
+  );
+  const rtoPredictBronzeGroupId =
+    process.env['GOKWIK_RTO_PREDICT_BRONZE_CONSUMER_GROUP_ID'] ?? 'gokwik-rto-predict-bronze-bridge';
+  const rtoPredictBronzeConsumer = new EventBronzeBridgeConsumer(
+    kafka, bridgeProcessEvent, topic, rtoPredictBronzeGroupId, retryCounter,
+    'gokwik.rto_predict.v1', 'gokwik_rto_predict_bronze_write_total',
   );
 
   // ── Identity bridge (D-7: same process, no new deployable) ──────────────────
@@ -411,6 +418,7 @@ export async function main(): Promise<void> {
       spendLedgerConsumer.stop(),
       gokwikAwbLedgerConsumer.stop(),
       shopfloBronzeConsumer.stop(),
+      rtoPredictBronzeConsumer.stop(),
       syncRequestClaimer.stop(),
       dqChecker.stop(),
       ingestScheduler.stop(),
@@ -516,6 +524,13 @@ export async function main(): Promise<void> {
   log.info(`starting shopflo-bronze bridge — topic=${topic} group=${shopfloBronzeGroupId}`);
   await shopfloBronzeConsumer.start();
   log.info('shopflo-bronze bridge consumer running');
+
+  // ── GoKwik RTO-Predict Bronze bridge consumer (P0 — un-sever the risk signal) ──
+  // Same live topic, independent consumer group. Filters gokwik.rto_predict.v1 → Bronze
+  // (enforceTenantDerivation=false). WIRED: do NOT remove without updating gokwik-rto-predict-bronze-wiring.e2e.test.ts.
+  log.info(`starting gokwik-rto-predict-bronze bridge — topic=${topic} group=${rtoPredictBronzeGroupId}`);
+  await rtoPredictBronzeConsumer.start();
+  log.info('gokwik-rto-predict-bronze bridge consumer running');
 
   // All consumers are up — flip readiness so the orchestrator routes work to this instance.
   consumersReady = true;

@@ -5,7 +5,7 @@
  * needed for the unit assertions) with an injected clock.
  */
 import { describe, it, expect } from 'vitest';
-import { EdgeRateLimiter } from '../src/interfaces/rest/edge-guard.js';
+import { EdgeRateLimiter, isAdmissibleBodyShape } from '../src/interfaces/rest/edge-guard.js';
 
 const TOKEN_A = 'a11a0011-0a11-4a11-8a11-000000000011';
 const TOKEN_B = 'b22b0022-0b22-4b22-8b22-000000000022';
@@ -66,5 +66,24 @@ describe('EdgeRateLimiter — origin allowlist', () => {
     expect(limiter.originAllowed('https://shop.example.com')).toBe(true);
     expect(limiter.originAllowed('https://evil.example.com')).toBe(false);
     expect(limiter.originAllowed(undefined)).toBe(false); // allowlist set but no Origin → reject
+  });
+});
+
+describe('isAdmissibleBodyShape — structural body admission (SR-03, reject-before-spool)', () => {
+  it('admits a JSON object (incl. empty — semantics are downstream Zod, not the edge)', () => {
+    expect(isAdmissibleBodyShape({ event_name: 'page.viewed', properties: {} })).toBe(true);
+    expect(isAdmissibleBodyShape({})).toBe(true);
+  });
+
+  it('admits a missing/unparsed body (existing accept-before-validate empty path)', () => {
+    expect(isAdmissibleBodyShape(undefined)).toBe(true);
+  });
+
+  it('REJECTS a non-object body so it never reaches the spool', () => {
+    expect(isAdmissibleBodyShape([1, 2, 3])).toBe(false); // array
+    expect(isAdmissibleBodyShape('a string')).toBe(false); // scalar
+    expect(isAdmissibleBodyShape(42)).toBe(false);
+    expect(isAdmissibleBodyShape(true)).toBe(false);
+    expect(isAdmissibleBodyShape(null)).toBe(false);
   });
 });

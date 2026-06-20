@@ -37,6 +37,21 @@ interface Bucket {
 
 const TOKENLESS_KEY = '__tokenless__';
 
+/**
+ * Structural body-shape admission (SR-03). A PRESENT body must be a JSON object — an array, a
+ * scalar (`42`, `"x"`, `true`), or `null` is rejected BEFORE it reaches the spool. This is D-1-safe:
+ * it is a structural admission gate (like the rate-limit / origin / back-pressure gates), NOT schema
+ * validation — the downstream Zod step still owns semantic validation (and quarantines a
+ * well-formed-but-empty `{}`). A missing/unparsed body (`undefined`) is left to the existing
+ * accept-before-validate empty-envelope path.
+ *
+ * @returns true when the body is admissible (object or absent), false when it is malformed.
+ */
+export function isAdmissibleBodyShape(body: unknown): boolean {
+  if (body === undefined) return true;
+  return typeof body === 'object' && body !== null && !Array.isArray(body);
+}
+
 export class EdgeRateLimiter {
   private readonly buckets = new Map<string, Bucket>();
   private readonly now: () => number;
@@ -90,15 +105,23 @@ export function registerEdgeGuard(
       return;
     }
 
-    // Per-install_token rate-limit (reject-before-spool).
+    // Per-install_token rate-limit (reject-before-spool). Runs BEFORE the shape check so a flood of
+    // malformed bodies (no install_token → tokenless bucket) is still rate-bounded, not just 400'd.
     const body = (req.body ?? {}) as Record<string, unknown>;
-    const props = (body['properties'] ?? {}) as Record<string, unknown>;
+    const props = (typeof body['properties'] === 'object' && body['properties'] !== null ? body['properties'] : {}) as Record<string, unknown>;
     const installToken = typeof props['install_token'] === 'string' ? props['install_token'] : undefined;
     if (!limiter.admit(installToken)) {
       await reply
         .code(429)
         .header('Retry-After', '1')
         .send({ accepted: false, error: { code: 'RATE_LIMITED' } });
+      return;
+    }
+
+    // Structural body-shape admission (SR-03, reject-before-spool). A present body must be a JSON
+    // object — arrays/scalars/null never reach the spool. D-1-safe (structural, not schema).
+    if (!isAdmissibleBodyShape(req.body)) {
+      await reply.code(400).send({ accepted: false, error: { code: 'MALFORMED_BODY', message: 'Body must be a JSON object.' } });
       return;
     }
   });

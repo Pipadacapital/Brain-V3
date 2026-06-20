@@ -1,7 +1,7 @@
 # Default values for the stream-worker chart. Overridden by values-staging.yaml / values-prod.yaml.
-# Headless Kafka/Redpanda consumer: NO Service, NO HTTP probes (it exposes no port).
-# k8s liveness should use a consumer-lag / process probe once the worker grows a health
-# endpoint (tracked follow-up — see the audit's observability findings).
+# Headless Kafka/Redpanda consumer: NO Service (it serves no traffic), but it DOES expose a
+# health port for liveness/readiness probes (T2-10 — apps/stream-worker/src/.../HealthServer.ts).
+# /healthz = liveness (process up), /readyz = readiness (consumers started + Postgres reachable).
 replicaCount: 2
 
 image:
@@ -11,10 +11,14 @@ image:
   pullPolicy: IfNotPresent
 
 service:
-  enabled: false
+  enabled: false        # headless consumer — no Service fronts it
+  targetPort: ""        # unset: probes fall back to probes.port below
 
 probes:
-  enabled: false
+  enabled: true
+  port: 8090            # must match HEALTH_PORT in env below + HealthServer default
+  path: /healthz        # liveness: process is up
+  readinessPath: /readyz # readiness: consumers started AND Postgres reachable
 
 # Secret (External Secrets ← AWS Secrets Manager). MUST contain a brain_app (NOT superuser)
 # DATABASE_URL so RLS is enforced (see apps/stream-worker/src/main.ts).
@@ -23,6 +27,9 @@ envSecretName: ""
 env:
   - name: SERVICE_NAME
     value: stream-worker
+  # T2-10: the health server binds this port; the helm probes (probes.port) target it.
+  - name: HEALTH_PORT
+    value: "8090"
 
 serviceAccount:
   annotations: {}

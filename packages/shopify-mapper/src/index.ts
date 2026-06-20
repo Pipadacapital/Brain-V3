@@ -50,6 +50,32 @@ export interface ShopifyOrderShape {
   // into checkout note_attributes so the order webhook can read brain_anon_id BACK
   // (deterministic cart-stitch, D-5 — never inferred). Optional; absent on legacy orders.
   note_attributes?: Array<{ name?: string | null; value?: string | null }> | null;
+  // ADDITIVE (feat-shopify-order-depth): the economic breakdown of the order. All optional —
+  // absent on legacy/synthetic payloads and on the backfill path until the fetch fields are
+  // widened. Shopify decimal strings throughout; the mapper converts to minor units (I-S07).
+  line_items?: Array<{
+    id?: number | null;
+    sku?: string | null;
+    title?: string | null;
+    name?: string | null;
+    quantity?: number | null;
+    price?: string | null;           // per-UNIT price (decimal string)
+    product_id?: number | null;
+    variant_id?: number | null;
+    total_discount?: string | null;  // line-level discount (decimal string)
+  }> | null;
+  tax_lines?: Array<{ title?: string | null; rate?: number | null; price?: string | null }> | null;
+  total_tax?: string | null;         // order tax total (decimal string)
+  shipping_lines?: Array<{ title?: string | null; price?: string | null }> | null;
+  total_discounts?: string | null;   // order discount total (decimal string)
+  discount_codes?: Array<{ code?: string | null; amount?: string | null; type?: string | null }> | null;
+  refunds?: Array<{
+    id?: number | null;
+    created_at?: string | null;
+    processed_at?: string | null;
+    note?: string | null;
+    transactions?: Array<{ amount?: string | null; kind?: string | null; status?: string | null }> | null;
+  }> | null;
 }
 
 /**
@@ -87,6 +113,52 @@ export interface OrderProperties {
   hashed_customer_email?: string;
   hashed_customer_phone?: string;
   storefront_customer_id?: string;
+  // ── ADDITIVE (feat-shopify-order-depth): order economic breakdown ──────────────
+  // All optional + minor-units (BIGINT-as-string, I-S07). Present only when the source order
+  // carried the detail (live webhook always does; backfill once the fetch fields are widened).
+  // These nest as plain JSONB under payload.properties — no Bronze migration.
+  line_items?: OrderLineItem[];
+  tax_total_minor?: string;
+  tax_lines?: OrderTaxLine[];
+  shipping_total_minor?: string;
+  discount_total_minor?: string;
+  discount_codes?: OrderDiscountCode[];
+  refunds?: OrderRefund[];
+  refund_total_minor?: string;
+}
+
+/** One product line on an order (feat-shopify-order-depth). PII-free. */
+export interface OrderLineItem {
+  sku: string | null;
+  title: string | null;
+  quantity: number;
+  unit_price_minor: string;   // per-unit (I-S07)
+  line_total_minor: string;   // unit_price_minor * quantity − line discount
+  line_discount_minor: string;
+  product_id: string | null;
+  variant_id: string | null;
+}
+
+/** One tax line on an order. */
+export interface OrderTaxLine {
+  title: string | null;
+  rate: number | null;        // fractional rate, e.g. 0.18
+  amount_minor: string;
+}
+
+/** One discount code applied to an order. */
+export interface OrderDiscountCode {
+  code: string | null;
+  amount_minor: string;
+  type: string | null;
+}
+
+/** One refund against an order (sum of its refund transactions). */
+export interface OrderRefund {
+  refund_id: string | null;
+  processed_at: string | null;  // ISO-8601
+  amount_minor: string;
+  reason: string | null;
 }
 
 // ── Event name constants ──────────────────────────────────────────────────────
@@ -127,6 +199,20 @@ export function decimalStringToMinor(str: string): bigint {
   const fracPadded = fracPart.padEnd(2, '0');
 
   return BigInt(wholePart) * 100n + BigInt(fracPadded);
+}
+
+/**
+ * Resilient variant of decimalStringToMinor for the OPTIONAL depth fields (feat-shopify-order-depth):
+ * returns null instead of throwing on a missing/malformed value, so one bad line-item price never
+ * fails the whole order map. The core amount_minor still uses the strict throwing variant.
+ */
+export function tryDecimalToMinor(str: string | null | undefined): bigint | null {
+  if (str == null) return null;
+  try {
+    return decimalStringToMinor(str);
+  } catch {
+    return null;
+  }
 }
 
 // ── UUID utils (moved from shopify-backfill/uuid-utils.ts) ───────────────────
@@ -210,6 +296,107 @@ function classifyPaymentMethod(order: ShopifyOrderShape): 'cod' | 'prepaid' {
   return 'prepaid';
 }
 
+// ── Order depth projection (feat-shopify-order-depth) ─────────────────────────
+
+/**
+ * Project the economic breakdown of a Shopify order — line items, tax, shipping, discounts,
+ * refunds — into PII-free, minor-units output. Every piece is independently resilient: a malformed
+ * sub-field is skipped (tryDecimalToMinor → null), never throwing, so depth never breaks the core
+ * order map. Returns only the keys that have data (so legacy/synthetic orders stay flat).
+ */
+export function projectOrderDepth(order: ShopifyOrderShape): Partial<OrderProperties> {
+  const out: Partial<OrderProperties> = {};
+
+  // ── Line items ──────────────────────────────────────────────────────────────
+  if (Array.isArray(order.line_items) && order.line_items.length > 0) {
+    const items: OrderLineItem[] = [];
+    for (const li of order.line_items) {
+      const unit = tryDecimalToMinor(li.price);
+      const qty = typeof li.quantity === 'number' && li.quantity >= 0 ? li.quantity : 0;
+      if (unit === null) continue; // can't price the line → skip it (don't fabricate)
+      const lineDiscount = tryDecimalToMinor(li.total_discount) ?? 0n;
+      const lineTotal = unit * BigInt(qty) - lineDiscount;
+      items.push({
+        sku: li.sku ?? null,
+        title: li.title ?? li.name ?? null,
+        quantity: qty,
+        unit_price_minor: unit.toString(),
+        line_total_minor: lineTotal.toString(),
+        line_discount_minor: lineDiscount.toString(),
+        product_id: li.product_id != null ? String(li.product_id) : null,
+        variant_id: li.variant_id != null ? String(li.variant_id) : null,
+      });
+    }
+    if (items.length > 0) out.line_items = items;
+  }
+
+  // ── Tax ───────────────────────────────────────────────────────────────────────
+  if (Array.isArray(order.tax_lines) && order.tax_lines.length > 0) {
+    const taxes: OrderTaxLine[] = [];
+    for (const t of order.tax_lines) {
+      const amt = tryDecimalToMinor(t.price);
+      if (amt === null) continue;
+      taxes.push({ title: t.title ?? null, rate: typeof t.rate === 'number' ? t.rate : null, amount_minor: amt.toString() });
+    }
+    if (taxes.length > 0) out.tax_lines = taxes;
+  }
+  const taxTotal = tryDecimalToMinor(order.total_tax);
+  if (taxTotal !== null) out.tax_total_minor = taxTotal.toString();
+
+  // ── Shipping (sum of shipping_lines) ──────────────────────────────────────────
+  if (Array.isArray(order.shipping_lines) && order.shipping_lines.length > 0) {
+    let ship = 0n;
+    let any = false;
+    for (const s of order.shipping_lines) {
+      const p = tryDecimalToMinor(s.price);
+      if (p !== null) { ship += p; any = true; }
+    }
+    if (any) out.shipping_total_minor = ship.toString();
+  }
+
+  // ── Discounts ───────────────────────────────────────────────────────────────
+  const discTotal = tryDecimalToMinor(order.total_discounts);
+  if (discTotal !== null) out.discount_total_minor = discTotal.toString();
+  if (Array.isArray(order.discount_codes) && order.discount_codes.length > 0) {
+    const codes: OrderDiscountCode[] = [];
+    for (const d of order.discount_codes) {
+      const amt = tryDecimalToMinor(d.amount) ?? 0n;
+      codes.push({ code: d.code ?? null, amount_minor: amt.toString(), type: d.type ?? null });
+    }
+    if (codes.length > 0) out.discount_codes = codes;
+  }
+
+  // ── Refunds (each = sum of its refund transactions) ───────────────────────────
+  if (Array.isArray(order.refunds) && order.refunds.length > 0) {
+    const refunds: OrderRefund[] = [];
+    let refundTotal = 0n;
+    for (const r of order.refunds) {
+      let amt = 0n;
+      for (const tx of r.transactions ?? []) {
+        // Count settled refund/sale transactions; ignore voided/failed.
+        const kind = (tx.kind ?? '').toLowerCase();
+        const status = (tx.status ?? 'success').toLowerCase();
+        if (kind !== 'refund' && kind !== 'sale') continue;
+        if (status !== 'success' && status !== 'pending') continue;
+        amt += tryDecimalToMinor(tx.amount) ?? 0n;
+      }
+      refundTotal += amt;
+      refunds.push({
+        refund_id: r.id != null ? String(r.id) : null,
+        processed_at: (r.processed_at ?? r.created_at) ? new Date((r.processed_at ?? r.created_at) as string).toISOString() : null,
+        amount_minor: amt.toString(),
+        reason: r.note ?? null,
+      });
+    }
+    if (refunds.length > 0) {
+      out.refunds = refunds;
+      out.refund_total_minor = refundTotal.toString();
+    }
+  }
+
+  return out;
+}
+
 // ── mapOrderToEvent (unified mapper for both backfill and live) ───────────────
 
 /**
@@ -275,6 +462,8 @@ export function mapOrderToEvent(
     ...(hashedCustomerEmail !== undefined ? { hashed_customer_email: hashedCustomerEmail } : {}),
     ...(hashedCustomerPhone !== undefined ? { hashed_customer_phone: hashedCustomerPhone } : {}),
     ...(storefrontCustomerId !== undefined ? { storefront_customer_id: storefrontCustomerId } : {}),
+    // ADDITIVE (feat-shopify-order-depth): merge the economic breakdown when the order carries it.
+    ...projectOrderDepth(order),
   };
 
   return { event_name: eventName, occurred_at: occurredAt, properties };

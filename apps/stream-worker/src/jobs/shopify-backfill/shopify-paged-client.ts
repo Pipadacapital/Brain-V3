@@ -115,9 +115,12 @@ export class ShopifyBackfillClient {
     createdAtMin: string,
   ): Promise<OrdersPage> {
     const fields = [
-      'id', 'name', 'created_at', 'processed_at', 'cancelled_at',
+      'id', 'name', 'created_at', 'processed_at', 'updated_at', 'cancelled_at',
       'currency', 'current_total_price', 'financial_status', 'fulfillment_status',
       'gateway', 'payment_gateway_names', 'tags', 'customer',
+      // feat-shopify-order-depth: the economic breakdown (parsed by @brain/shopify-mapper).
+      'line_items', 'tax_lines', 'total_tax', 'shipping_lines',
+      'total_discounts', 'discount_codes', 'refunds',
     ].join(',');
 
     // since_id pagination orders by id ASC. Page 1 MUST start at since_id=0 (not omit it) — if

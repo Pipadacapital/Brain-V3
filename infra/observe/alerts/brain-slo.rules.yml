@@ -201,6 +201,22 @@ groups:
           summary: "Connector {{ $labels.provider }} credential rejected — reconnect required"
           description: "A {{ $labels.provider }} repull was rejected on auth (expired token / 401). That connector is no longer ingesting — its spend/settlement/order data is going stale until it is reconnected."
 
+      # Silver freshness. Silver is built by dbt (CI/nightly; an intraday prod rebuild cron is a
+      # follow-up that needs a dbt-runner image), so it can lag Bronze between builds. The DQ
+      # reconciliation executor runs CONTINUOUSLY in the deployed worker and compares Bronze↔Silver
+      # order counts; a sustained breach = Silver is stale or unreachable. The continuous
+      # Silver-freshness signal.
+      - alert: BrainSilverLag
+        # dq_silver_lag_breach_total: stream-worker DQ counter. Sustained increase ⇒ Silver is
+        # lagging Bronze (or StarRocks is down) — analytics reads are stale.
+        expr: sum by (reason) (increase(dq_silver_lag_breach_total[1h])) > 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Silver tier lagging Bronze ({{ $labels.reason }})"
+          description: "The Bronze↔Silver reconciliation has breached for 30m ({{ $labels.reason }}). Silver (silver_order_state) is stale vs Bronze — rebuild Silver via dbt or check StarRocks. Analytics reads over Silver are behind."
+
   # ── Revenue truth integrity ─────────────────────────────────────────────────
   - name: brain-revenue-integrity
     rules:

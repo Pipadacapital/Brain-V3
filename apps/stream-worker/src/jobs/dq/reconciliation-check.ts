@@ -19,6 +19,7 @@
  */
 
 import type { Pool } from 'pg';
+import { incrementCounter } from '@brain/observability';
 import { gradeReconciliation } from './grade.js';
 import type { DqCheckRow } from './writer.js';
 import { BRAND_PREDICATE, type SilverReader } from './silver-reader.js';
@@ -91,6 +92,9 @@ export async function reconciliationCheck(
     silverOrders = Number(sr[0]?.n ?? 0);
   } catch (err) {
     log.error(`silver read failed brand=${brandId}`, { err: err });
+    // Silver unreachable = maximal lag. Continuous Silver-lag signal (the DQ loop runs in the
+    // deployed worker every interval, so this fires even though dbt itself is batch/nightly).
+    incrementCounter('dq_silver_lag_breach_total', { reason: 'unreachable' });
     return [
       {
         brandId,
@@ -107,6 +111,11 @@ export async function reconciliationCheck(
 
   const delta = Math.abs(bronzeOrders - silverOrders);
   const outcome = gradeReconciliation(delta, MAX_ROW_DELTA);
+  // Silver lagging Bronze beyond tolerance (the common cause: dbt hasn't rebuilt Silver recently).
+  // Emit only on genuine lag (silver < bronze); a transient silver>bronze is not a staleness signal.
+  if (!outcome.passing && silverOrders < bronzeOrders) {
+    incrementCounter('dq_silver_lag_breach_total', { reason: 'delta' });
+  }
   return [
     {
       brandId,

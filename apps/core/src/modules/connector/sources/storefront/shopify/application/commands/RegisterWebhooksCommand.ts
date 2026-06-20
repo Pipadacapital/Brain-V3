@@ -99,6 +99,7 @@ export class RegisterWebhooksCommand {
             format: 'json',
           },
         }),
+        signal: AbortSignal.timeout(15_000), // T2-9: bound the Shopify call so registration can't hang.
       });
 
       if (!response.ok) {

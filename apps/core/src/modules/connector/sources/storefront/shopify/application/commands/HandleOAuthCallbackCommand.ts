@@ -184,6 +184,7 @@ export class HandleOAuthCallbackCommand {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ client_id: clientId, client_secret: clientSecret, code }),
+      signal: AbortSignal.timeout(15_000), // T2-9: bound the token exchange so the OAuth callback can't hang.
     });
 
     if (!response.ok) {

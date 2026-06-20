@@ -24,6 +24,9 @@ export type ShopifyOrder = Record<string, unknown>;
 
 const DEFAULT_API_VERSION = '2025-07';
 
+/** T2-9: per-request timeout — a hung Shopify socket aborts instead of stalling the caller forever. */
+const REQUEST_TIMEOUT_MS = 20_000;
+
 export class ShopifyAdminClient {
   private readonly base: string;
 
@@ -39,6 +42,8 @@ export class ShopifyAdminClient {
   private async get<T>(path: string): Promise<T> {
     const res = await fetch(`${this.base}${path}`, {
       headers: { 'X-Shopify-Access-Token': this.accessToken, 'Content-Type': 'application/json' },
+      // T2-9: bound the request so a hung Shopify socket can't stall the caller indefinitely.
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
     const text = await res.text();
     if (!res.ok) {

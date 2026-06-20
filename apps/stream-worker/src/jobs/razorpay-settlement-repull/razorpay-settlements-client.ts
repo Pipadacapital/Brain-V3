@@ -54,6 +54,9 @@ export interface SettlementsPage {
 const PAGE_SIZE = 100;   // Razorpay max for recon/combined
 const RAZORPAY_API_BASE = 'https://api.razorpay.com/v1';
 
+/** T2-9: per-request timeout — a hung Razorpay socket aborts instead of stalling the settlement re-pull. */
+const REQUEST_TIMEOUT_MS = 30_000;
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -92,6 +95,7 @@ export class RazorpaySettlementsClient {
           Authorization: this.authHeader,
           'Content-Type': 'application/json',
         },
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
 
       if (res.status === 429) {

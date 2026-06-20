@@ -11,7 +11,7 @@
  */
 import type { IConnectorInstanceRepository } from '../../domain/repositories/IConnectorInstanceRepository.js';
 import type { IConnectorSyncStatusRepository } from '../../domain/repositories/IConnectorSyncStatusRepository.js';
-import type { ISecretsManager } from '../../infrastructure/secrets/ISecretsManager.js';
+import type { ISecretsManager } from '@brain/connector-secrets';
 
 export interface DisconnectInput {
   connectorInstanceId: string;

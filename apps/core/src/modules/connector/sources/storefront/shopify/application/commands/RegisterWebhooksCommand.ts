@@ -14,7 +14,7 @@
  * registration API call and is never logged (I-S09).
  */
 
-import type { ISecretsManager } from '../../infrastructure/secrets/ISecretsManager.js';
+import type { ISecretsManager } from '@brain/connector-secrets';
 import { log } from "../../../../../../../log.js";
 
 /** Shopify Admin API version used for webhook registration. */
@@ -99,6 +99,7 @@ export class RegisterWebhooksCommand {
             format: 'json',
           },
         }),
+        signal: AbortSignal.timeout(15_000), // T2-9: bound the Shopify call so registration can't hang.
       });
 
       if (!response.ok) {

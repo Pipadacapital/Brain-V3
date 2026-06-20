@@ -26,6 +26,11 @@ const GOOGLE_ADS_API_VERSION = 'v24';
 const GOOGLE_ADS_API_BASE = `https://googleads.googleapis.com/${GOOGLE_ADS_API_VERSION}`;
 const OAUTH_TOKEN_URL = 'https://oauth2.googleapis.com/token';
 
+/** T2-9: per-request timeouts — a hung Google socket aborts instead of stalling the spend re-pull.
+ *  SearchStream streams batches and runs longer than a token exchange, so it gets a wider bound. */
+const OAUTH_TIMEOUT_MS = 15_000;
+const SEARCHSTREAM_TIMEOUT_MS = 60_000;
+
 /** Daily ops-quota exhausted (ADR-AD-7) — caller marks RateLimited + aborts run. */
 export const GOOGLE_RESOURCE_EXHAUSTED = 'GOOGLE_RESOURCE_EXHAUSTED';
 /** Per-CID/token QPS bucket exhausted (ADR-AD-7) — bounded backoff then continue. */
@@ -138,6 +143,7 @@ export class GoogleAdsSearchStreamClient {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: params.toString(),
+      signal: AbortSignal.timeout(OAUTH_TIMEOUT_MS),
     });
     if (res.status === 400 || res.status === 401) {
       throw new Error(`${GOOGLE_AUTH_ERROR}: token exchange failed (HTTP ${res.status})`);
@@ -199,7 +205,12 @@ export class GoogleAdsSearchStreamClient {
         headers['login-customer-id'] = this.creds.loginCustomerId;
       }
 
-      const res = await fetch(url, { method: 'POST', headers, body });
+      const res = await fetch(url, {
+        method: 'POST',
+        headers,
+        body,
+        signal: AbortSignal.timeout(SEARCHSTREAM_TIMEOUT_MS),
+      });
 
       if (res.status === 200) {
         // SearchStream may return an array of batches.

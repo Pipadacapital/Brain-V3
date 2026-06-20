@@ -20,7 +20,7 @@
  * overwrite in LocalSecretsManager. The returned ARN is the same.
  */
 
-import type { ISecretsManager } from '../../../../storefront/shopify/infrastructure/secrets/ISecretsManager.js';
+import type { ISecretsManager } from '@brain/connector-secrets';
 import type { IConnectorInstanceRepository } from '../../../../storefront/shopify/domain/repositories/IConnectorInstanceRepository.js';
 
 export interface RotateWebhookSecretInput {

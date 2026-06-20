@@ -27,7 +27,7 @@ import { randomUUID } from 'node:crypto';
 import pg, { type QueryResultRow } from 'pg';
 import type { DbPool, QueryContext } from '@brain/db';
 import { PgBackfillJobRepository } from '../infrastructure/PgBackfillJobRepository.js';
-import { LocalSecretsManager } from '../../sources/storefront/shopify/infrastructure/secrets/LocalSecretsManager.js';
+import { LocalSecretsManager } from '@brain/connector-secrets';
 import { DbAuditWriter } from '@brain/audit';
 
 // ── Configuration ─────────────────────────────────────────────────────────────

@@ -45,6 +45,17 @@ import {
   DataQualitySummarySchema,
   AskBrainResultSchema,
   MinorUnitsSchema,
+  // #67/#63 — widen the gate to the remaining drift-prone read DTOs (identity / billing-result /
+  // recommendation-generate) the BFF returns and web parses at the seam.
+  Customer360Schema,
+  VaultCoverageSchema,
+  ErasureResultSchema,
+  MergeReviewListSchema,
+  MergeResolveResultSchema,
+  UnmergeResultSchema,
+  SealPeriodResultSchema,
+  IssueCreditNoteResultSchema,
+  GenerateRecommendationsResultSchema,
 } from '../index.js';
 
 /** First-issue field path of a failed safeParse, dotted (e.g. 'kpis.0.realized_minor'). */
@@ -670,5 +681,198 @@ describe('FoundationHealth (#P1 — data foundation readiness)', () => {
     const r = FoundationHealthSchema.safeParse({ ...verdict, tier: 'unknown' });
     expect(r.success).toBe(false);
     expect(firstIssuePath(r)).toBe('tier');
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════
+// #67/#63 — gate widening: the remaining BFF read DTOs (identity / billing-result /
+// recommendation-generate). Same two guarantees per DTO: positive round-trip + a
+// negative drift rejection whose error path NAMES the offending field.
+// ════════════════════════════════════════════════════════════════════════════════
+
+describe('Customer360 (#I1 — identity resolution)', () => {
+  const found = {
+    state: 'found',
+    customer: {
+      brain_id: '11111111-1111-4111-8111-111111111111',
+      anonymous_id: 'anon_abc',
+      merged_into: null,
+      lifecycle_state: 'active',
+      ai_processing_consent: true,
+      resolution_consent: true,
+      created_at: '2026-06-19T00:00:00.000Z',
+    },
+    identifiers: [
+      {
+        identifier_type: 'email',
+        tier: 'deterministic',
+        is_active: true,
+        created_at: '2026-06-19T00:00:00.000Z',
+        identifier_hash_prefix: 'a1b2c3d4e5f6',
+      },
+    ],
+    merges: [
+      {
+        role: 'canonical',
+        canonical_brain_id: '11111111-1111-4111-8111-111111111111',
+        merged_brain_id: '22222222-2222-4222-8222-222222222222',
+        confidence: 'high',
+        rule_version: 'v3',
+        identifier_combo: ['email', 'phone'],
+        committed_at: '2026-06-19T00:00:00.000Z',
+      },
+    ],
+  };
+  it('round-trips found + not_found', () => {
+    expect(Customer360Schema.parse(found)).toEqual(found);
+    const notFound = { state: 'not_found', brain_id: '33333333-3333-4333-8333-333333333333' };
+    expect(Customer360Schema.parse(notFound)).toEqual(notFound);
+  });
+  it('REJECTS a wrong-typed nested is_active — error path names identifiers.0.is_active', () => {
+    const drifted = { ...found, identifiers: [{ ...found.identifiers[0], is_active: 'yes' }] };
+    const r = Customer360Schema.safeParse(drifted);
+    expect(r.success).toBe(false);
+    expect(firstIssuePath(r)).toBe('identifiers.0.is_active');
+  });
+});
+
+describe('VaultCoverage (#I2 — PII vault coverage)', () => {
+  const cov = {
+    resolved_customers: 1200,
+    vaulted_customers: 1080,
+    coverage_pct: 90,
+    email_count: 1000,
+    phone_count: 800,
+  };
+  it('round-trips a coverage verdict', () => {
+    expect(VaultCoverageSchema.parse(cov)).toEqual(cov);
+  });
+  it('REJECTS coverage_pct above 100 — error path names coverage_pct', () => {
+    const r = VaultCoverageSchema.safeParse({ ...cov, coverage_pct: 150 });
+    expect(r.success).toBe(false);
+    expect(firstIssuePath(r)).toBe('coverage_pct');
+  });
+});
+
+describe('ErasureResult (#I3 — DPDP erasure)', () => {
+  const erased = { erased: true, contact_pii_deleted: 3, links_tombstoned: 5 };
+  it('round-trips an erasure result', () => {
+    expect(ErasureResultSchema.parse(erased)).toEqual(erased);
+  });
+  it('REJECTS a string-typed erased flag — error path names erased', () => {
+    const r = ErasureResultSchema.safeParse({ ...erased, erased: 'true' });
+    expect(r.success).toBe(false);
+    expect(firstIssuePath(r)).toBe('erased');
+  });
+});
+
+describe('MergeReviewList (#I4 — merge review queue)', () => {
+  const list = {
+    reviews: [
+      {
+        review_id: '11111111-1111-4111-8111-111111111111',
+        brain_id_a: '22222222-2222-4222-8222-222222222222',
+        brain_id_b: '33333333-3333-4333-8333-333333333333',
+        trigger_reason: 'shared_phone_hash',
+        created_at: '2026-06-19T00:00:00.000Z',
+      },
+    ],
+  };
+  it('round-trips an empty and a populated queue', () => {
+    expect(MergeReviewListSchema.parse({ reviews: [] })).toEqual({ reviews: [] });
+    expect(MergeReviewListSchema.parse(list)).toEqual(list);
+  });
+  it('REJECTS a review missing trigger_reason — error path names reviews.0.trigger_reason', () => {
+    const noReason = {
+      review_id: '11111111-1111-4111-8111-111111111111',
+      brain_id_a: '22222222-2222-4222-8222-222222222222',
+      brain_id_b: '33333333-3333-4333-8333-333333333333',
+      created_at: '2026-06-19T00:00:00.000Z',
+    };
+    const r = MergeReviewListSchema.safeParse({ reviews: [noReason] });
+    expect(r.success).toBe(false);
+    expect(firstIssuePath(r)).toBe('reviews.0.trigger_reason');
+  });
+});
+
+describe('MergeResolveResult (#I5 — review resolution)', () => {
+  const resolved = {
+    resolved: true,
+    decision: 'merged',
+    canonical_brain_id: '11111111-1111-4111-8111-111111111111',
+    merged_brain_id: '22222222-2222-4222-8222-222222222222',
+  };
+  it('round-trips a resolved decision (and the bare resolved flag)', () => {
+    expect(MergeResolveResultSchema.parse(resolved)).toEqual(resolved);
+    expect(MergeResolveResultSchema.parse({ resolved: false })).toEqual({ resolved: false });
+  });
+  it('REJECTS an out-of-enum decision — error path names decision', () => {
+    const r = MergeResolveResultSchema.safeParse({ ...resolved, decision: 'approved' });
+    expect(r.success).toBe(false);
+    expect(firstIssuePath(r)).toBe('decision');
+  });
+});
+
+describe('UnmergeResult (#I6 — unmerge)', () => {
+  const unmerged = { unmerged: true, brain_id: '11111111-1111-4111-8111-111111111111' };
+  it('round-trips an unmerge result', () => {
+    expect(UnmergeResultSchema.parse(unmerged)).toEqual(unmerged);
+  });
+  it('REJECTS a string-typed unmerged flag — error path names unmerged', () => {
+    const r = UnmergeResultSchema.safeParse({ ...unmerged, unmerged: 'yes' });
+    expect(r.success).toBe(false);
+    expect(firstIssuePath(r)).toBe('unmerged');
+  });
+});
+
+describe('SealPeriodResult (#B1 — period seal/meter)', () => {
+  const sealed = {
+    sealed: true,
+    billing_period: '2098-05',
+    currency_code: 'INR',
+    metered_gmv_minor: '1450000',
+    as_of_date: '2098-05-31',
+    ledger_row_count: 312,
+  };
+  it('round-trips a seal result', () => {
+    expect(SealPeriodResultSchema.parse(sealed)).toEqual(sealed);
+  });
+  it('REJECTS a float metered_gmv_minor — error path names metered_gmv_minor', () => {
+    const r = SealPeriodResultSchema.safeParse({ ...sealed, metered_gmv_minor: '14500.00' });
+    expect(r.success).toBe(false);
+    expect(firstIssuePath(r)).toBe('metered_gmv_minor');
+  });
+});
+
+describe('IssueCreditNoteResult (#B2 — credit note)', () => {
+  const issued = {
+    state: 'issued',
+    credit_note_id: '11111111-1111-4111-8111-111111111111',
+    credit_note_number: 'BRAIN-CN/2098-2099/000001',
+    taxable_minor: '1000',
+    tax_minor: '180',
+    total_minor: '1180',
+  };
+  it('round-trips issued + rejected', () => {
+    expect(IssueCreditNoteResultSchema.parse(issued)).toEqual(issued);
+    const rejected = { state: 'rejected', reason: 'exceeds invoice total', invoice_total_minor: '1000' };
+    expect(IssueCreditNoteResultSchema.parse(rejected)).toEqual(rejected);
+  });
+  it('REJECTS a float taxable_minor — error path names taxable_minor', () => {
+    const r = IssueCreditNoteResultSchema.safeParse({ ...issued, taxable_minor: '10.00' });
+    expect(r.success).toBe(false);
+    expect(firstIssuePath(r)).toBe('taxable_minor');
+  });
+});
+
+describe('GenerateRecommendationsResult (#R1 — detector run)', () => {
+  const result = { raised: 4, expired: 1 };
+  it('round-trips a generate result', () => {
+    expect(GenerateRecommendationsResultSchema.parse(result)).toEqual(result);
+  });
+  it('REJECTS a negative raised count — error path names raised', () => {
+    const r = GenerateRecommendationsResultSchema.safeParse({ ...result, raised: -1 });
+    expect(r.success).toBe(false);
+    expect(firstIssuePath(r)).toBe('raised');
   });
 });

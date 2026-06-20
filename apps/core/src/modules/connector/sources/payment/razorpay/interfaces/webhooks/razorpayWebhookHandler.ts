@@ -34,7 +34,7 @@ import { randomUUID } from 'node:crypto';
 import { RazorpayHmac } from '../../domain/value-objects/RazorpayHmac.js';
 import { RedisDedupAdapter } from '../../infrastructure/RedisDedupAdapter.js';
 import { PgRazorpayOrderMapRepository } from '../../infrastructure/repositories/PgRazorpayOrderMapRepository.js';
-import type { ISecretsManager } from '../../../../storefront/shopify/infrastructure/secrets/ISecretsManager.js';
+import type { ISecretsManager } from '@brain/connector-secrets';
 import {
   mapPaymentWebhookToMapRow,
   mapSettlementItemToEvent,

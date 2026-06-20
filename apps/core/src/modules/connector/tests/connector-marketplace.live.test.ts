@@ -26,7 +26,7 @@ import pg from 'pg';
 import { CONNECTOR_CATALOG } from '../catalog/registry.js';
 import { getDefinition, isConnectable } from '../catalog/index.js';
 import { mapHealthToSafety, HEALTH_TO_SAFETY } from '../catalog/healthSafety.js';
-import { LocalSecretsManager } from '../sources/storefront/shopify/infrastructure/secrets/LocalSecretsManager.js';
+import { LocalSecretsManager } from '@brain/connector-secrets';
 import { PgConnectorInstanceRepository } from '../sources/storefront/shopify/infrastructure/repositories/PgConnectorInstanceRepository.js';
 import { ConnectorInstance } from '../sources/storefront/shopify/domain/entities/ConnectorInstance.js';
 import type { HealthState } from '../sources/storefront/shopify/domain/entities/ConnectorInstance.js';

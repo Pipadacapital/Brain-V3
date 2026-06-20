@@ -44,6 +44,8 @@ export interface GrantConsentInput {
   actorId: string | null;
   actorRole: string;
   correlationId: string;
+  /** I-ST04 / T2-7: client-supplied idempotency key — recorded on the audit entry for safe retries. */
+  idempotencyKey: string;
 }
 
 export interface WithdrawConsentInput {
@@ -57,6 +59,8 @@ export interface WithdrawConsentInput {
   actorId: string | null;
   actorRole: string;
   correlationId: string;
+  /** I-ST04 / T2-7: client-supplied idempotency key — recorded on the audit entry for safe retries. */
+  idempotencyKey: string;
 }
 
 export class ConsentWriter {
@@ -106,6 +110,7 @@ export class ConsentWriter {
       action: 'consent.granted',
       entity_type: 'consent_record',
       entity_id: subjectHash,
+      idempotency_key: input.idempotencyKey,
       payload: {
         category: input.category,
         source: input.source,
@@ -167,6 +172,7 @@ export class ConsentWriter {
       action: 'consent.withdrawn',
       entity_type: 'consent_record',
       entity_id: subjectHash,
+      idempotency_key: input.idempotencyKey,
       payload: {
         category: input.category,
         reason: input.reason,

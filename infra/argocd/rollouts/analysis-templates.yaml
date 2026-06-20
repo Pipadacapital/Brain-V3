@@ -1,0 +1,93 @@
+# analysis-templates.yaml — Argo Rollouts auto-rollback criteria as code (B6 / R-06).
+#
+# Encodes the bake-window rollback signals documented in .github/workflows/main.yml + PLAYBOOK-deploy.md
+# as Argo Rollouts AnalysisTemplates. During a canary/bake step a Rollout runs these against Prometheus;
+# a failed metric automatically aborts the rollout → Argo rolls back to the last stable ReplicaSet. This
+# turns the currently-MANUAL bake watch ("echo the criteria, watch a dashboard") into automation.
+#
+# Grounded ONLY in metrics that exist today (C2): collector_accept_total / collector_spool_full_total
+# (the 99.95% accept+ack SLO) and bronze_write_total (ingest freshness). The Analytics-API RED metrics
+# (error rate, p95) referenced in the bake window need OTel HTTP instrumentation first — tracked as a
+# C1 follow-up; their template is included DISABLED below so it can't fire a fantasy (never-true) check.
+#
+# ⚠️ Requires the Argo Rollouts controller in-cluster. Attach via a Rollout's `strategy.canary.steps`
+# (see collector-rollout.yaml). PROMETHEUS_ADDRESS is injected per-env (in-cluster Prometheus or the
+# Grafana Cloud Mimir query endpoint).
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: collector-accept-ack-slo
+  labels: { app.kubernetes.io/part-of: brain }
+spec:
+  args:
+    - name: prometheus-address
+      value: REPLACE_WITH_PROMETHEUS_ADDRESS
+  metrics:
+    - name: accept-ack-success-rate
+      # availability = accepted / (accepted + shed). SLO ≥ 99.95% (matches the bake-window rule).
+      interval: 1m
+      count: 5                 # 5 probes over 5m (the documented window)
+      successCondition: result >= 0.9995
+      failureLimit: 1          # one breach within the window aborts → auto-rollback
+      provider:
+        prometheus:
+          address: "{{ args.prometheus-address }}"
+          query: |
+            sum(rate(collector_accept_total[5m]))
+              /
+            (sum(rate(collector_accept_total[5m])) + sum(rate(collector_spool_full_total[5m])))
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: ingest-freshness
+  labels: { app.kubernetes.io/part-of: brain }
+spec:
+  args:
+    - name: prometheus-address
+      value: REPLACE_WITH_PROMETHEUS_ADDRESS
+  metrics:
+    - name: bronze-writes-flowing
+      # During a bake the spine must keep writing Bronze. Zero writes over the window = stalled spine.
+      interval: 1m
+      count: 5
+      successCondition: result > 0
+      failureLimit: 1
+      provider:
+        prometheus:
+          address: "{{ args.prometheus-address }}"
+          query: sum(increase(bronze_write_total[5m]))
+---
+# DISABLED until OTel HTTP server instrumentation lands (no http_server_* metrics emitted yet — see C1
+# follow-up). Kept here as the wired-up template so enabling it is a one-line uncomment + instrument.
+# apiVersion: argoproj.io/v1alpha1
+# kind: AnalysisTemplate
+# metadata:
+#   name: analytics-api-red
+# spec:
+#   args:
+#     - name: prometheus-address
+#       value: REPLACE_WITH_PROMETHEUS_ADDRESS
+#   metrics:
+#     - name: error-rate
+#       interval: 1m
+#       count: 5
+#       successCondition: result < 0.01            # < 1% 5xx (bake-window rule)
+#       failureLimit: 1
+#       provider:
+#         prometheus:
+#           address: "{{ args.prometheus-address }}"
+#           query: |
+#             sum(rate(http_server_request_duration_seconds_count{http_response_status_code=~"5.."}[5m]))
+#               / sum(rate(http_server_request_duration_seconds_count[5m]))
+#     - name: p95-latency
+#       interval: 1m
+#       count: 5
+#       successCondition: result < 2               # p95 < 2s (bake-window rule)
+#       failureLimit: 1
+#       provider:
+#         prometheus:
+#           address: "{{ args.prometheus-address }}"
+#           query: |
+#             histogram_quantile(0.95, sum by (le) (rate(http_server_request_duration_seconds_bucket[5m])))

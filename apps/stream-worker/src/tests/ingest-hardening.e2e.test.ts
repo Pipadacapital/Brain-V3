@@ -38,6 +38,7 @@ import { ProcessEventUseCase } from '../application/ProcessEventUseCase.js';
 import { RedisDedupAdapter } from '../infrastructure/redis/RedisDedupAdapter.js';
 import { BronzeRepository } from '../infrastructure/pg/BronzeRepository.js';
 import { CollectorEventConsumer } from '../interfaces/consumers/CollectorEventConsumer.js';
+import { InMemoryRetryCounter } from './support/InMemoryRetryCounter.js';
 import { buildDedupKey } from '../domain/bronze/DedupPolicy.js';
 import { assertBrainApp } from './helpers/connector-lifecycle-fixtures.js';
 
@@ -291,6 +292,7 @@ describe('R2 cross-brand — claimed brand ≠ token-derived → quarantined + a
       useCase,
       TOPIC,
       `qtest-live-${eventId}`,
+      new InMemoryRetryCounter(),
     );
     await liveConsumer.start();
     // Give the consumer time to join, then produce the mismatch event.

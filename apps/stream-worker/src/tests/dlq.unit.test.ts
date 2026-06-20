@@ -13,6 +13,7 @@
 
 import { describe, it, expect, vi } from 'vitest';
 import { CollectorEventConsumer } from '../interfaces/consumers/CollectorEventConsumer.js';
+import { InMemoryRetryCounter } from './support/InMemoryRetryCounter.js';
 
 // ── Minimal Kafka mock ────────────────────────────────────────────────────────
 
@@ -131,6 +132,7 @@ describe('CollectorEventConsumer — DLQ routing (F-QA-03)', () => {
         mockUseCase as unknown as import('../application/ProcessEventUseCase.js').ProcessEventUseCase,
         TOPIC,
         GROUP,
+        new InMemoryRetryCounter(),
       );
 
       await consumer.start();

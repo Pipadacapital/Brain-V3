@@ -29,11 +29,11 @@
 
 import { Consumer, Kafka, EachMessagePayload } from 'kafkajs';
 import { DlqProducer } from '../../infrastructure/kafka/DlqProducer.js';
+import type { IRetryCounter } from '../../infrastructure/redis/RetryCounterAdapter.js';
 import { LedgerWriter } from '../../infrastructure/pg/LedgerWriter.js';
 import { log } from "../../log.js";
 
 const MAX_RETRY = 5;
-type RetryKey = string;
 
 const SPEND_LIVE_V1 = 'spend.live.v1';
 
@@ -59,16 +59,20 @@ interface SpendEventProperties {
 export class SpendLedgerConsumer {
   private readonly consumer: Consumer;
   private readonly dlqProducer: DlqProducer;
-  private readonly retryCount = new Map<RetryKey, number>();
+  /** Durable retry-counter scope (T2-8): `{groupId}:{topic}` — isolates same-topic groups. */
+  private readonly retryScope: string;
 
   constructor(
     private readonly kafka: Kafka,
     private readonly ledgerWriter: LedgerWriter,
     private readonly topic: string,
     private readonly groupId: string,
+    /** Durable (Redis) retry counter — survives restarts so a poison message reaches the DLQ (T2-8). */
+    private readonly retryCounter: IRetryCounter,
   ) {
     this.consumer = kafka.consumer({ groupId });
     this.dlqProducer = new DlqProducer(kafka);
+    this.retryScope = `${groupId}:${topic}`;
   }
 
   async start(): Promise<void> {
@@ -82,7 +86,6 @@ export class SpendLedgerConsumer {
       eachMessage: async (payload: EachMessagePayload) => {
         const { topic, partition, message } = payload;
         const offset = message.offset;
-        const retryKey: RetryKey = `${partition}:${offset}`;
 
         try {
           let parsed: Record<string, unknown> | null = null;
@@ -127,13 +130,12 @@ export class SpendLedgerConsumer {
           await this.consumer.commitOffsets([
             { topic, partition, offset: String(Number(offset) + 1) },
           ]);
-          this.retryCount.delete(retryKey);
+          await this.retryCounter.reset(this.retryScope, partition, offset);
 
           log.info(`[spend-ledger] ${result} brand=${brandId} event=${eventId} ` +
                         `partition=${partition} offset=${offset}`);
         } catch (err) {
-          const current = (this.retryCount.get(retryKey) ?? 0) + 1;
-          this.retryCount.set(retryKey, current);
+          const current = await this.retryCounter.increment(this.retryScope, partition, offset);
 
           log.error(`[spend-ledger] write error (attempt ${current}/${MAX_RETRY}) ` +
                         `partition=${partition} offset=${offset}`, { err: err });
@@ -149,7 +151,7 @@ export class SpendLedgerConsumer {
               await this.consumer.commitOffsets([
                 { topic, partition, offset: String(Number(offset) + 1) },
               ]);
-              this.retryCount.delete(retryKey);
+              await this.retryCounter.reset(this.retryScope, partition, offset);
               log.warn(`DLQ (max retry) partition=${partition} offset=${offset}`);
             } catch (dlqErr) {
               log.error('DLQ produce failed — not committing offset', { err: dlqErr });

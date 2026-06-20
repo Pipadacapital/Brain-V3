@@ -19,6 +19,7 @@ import { Kafka } from 'kafkajs';
 import { Pool, Pool as PgPool } from 'pg';
 import { DbAuditWriter, type AuditDbClient } from '@brain/audit';
 import { RedisDedupAdapter } from './infrastructure/redis/RedisDedupAdapter.js';
+import { RetryCounterAdapter } from './infrastructure/redis/RetryCounterAdapter.js';
 import { BronzeRepository } from './infrastructure/pg/BronzeRepository.js';
 import { IdentityRepository } from './infrastructure/pg/IdentityRepository.js';
 import { SaltProvider, LocalSecretsProvider } from './infrastructure/secrets/SaltProvider.js';
@@ -129,6 +130,14 @@ export async function main(): Promise<void> {
   };
   const auditWriter = new DbAuditWriter(auditDbClient);
 
+  // ── Durable retry counter (T2-8) ────────────────────────────────────────────
+  // ONE shared Redis-backed counter for every consumer. Replaces the per-instance in-memory
+  // Maps that reset on restart (a poison message would otherwise retry forever, never reaching
+  // the DLQ). Keyed by {groupId}:{topic}:{partition}:{offset} so the consumers sharing the live
+  // topic under different groups never collide. Connected once here, quit on shutdown.
+  const retryCounter = new RetryCounterAdapter(redisUrl);
+  await retryCounter.connect();
+
   // ── Liveness/readiness probes (T2-10) ───────────────────────────────────────
   // Start the health port BEFORE the consumers so liveness answers during the (slow) boot
   // window — K8s must not restart a pod that is merely still wiring consumers. Readiness
@@ -151,7 +160,7 @@ export async function main(): Promise<void> {
   // enforceTenantDerivation defaults TRUE: derive brand_id from install_token, quarantine
   // on unresolved/mismatch/absent-consent; audit writes pixel.brand_mismatch (R2/R3).
   const useCase = new ProcessEventUseCase(dedup, bronze, auditWriter);
-  const consumer = new CollectorEventConsumer(kafka, useCase, topic, groupId);
+  const consumer = new CollectorEventConsumer(kafka, useCase, topic, groupId, retryCounter);
 
   // ── Identity bridge (D-7: same process, no new deployable) ──────────────────
   // SaltProvider: dev uses LocalSecretsProvider (env var holds 64-hex salt directly).
@@ -183,7 +192,7 @@ export async function main(): Promise<void> {
   const consentRepo = new ConsentRepository(dbUrl);
   const projectConsentUseCase = new ProjectConsentUseCase(saltProvider, consentRepo);
   const consentSuppressorConsumer = new ConsentSuppressorConsumer(
-    kafka, projectConsentUseCase, topic, consentSuppressorGroupId,
+    kafka, projectConsentUseCase, topic, consentSuppressorGroupId, retryCounter,
   );
 
   // ── CAPI retroactive-deletion consumer (feat-capi-conversion-feedback) ───────
@@ -199,7 +208,7 @@ export async function main(): Promise<void> {
     saltProvider, capiDeletionRepo, capiHasMetaCreds,
   );
   const capiDeletionConsumer = new CapiDeletionConsumer(
-    kafka, requestCapiDeletionUseCase, topic, capiDeletionGroupId,
+    kafka, requestCapiDeletionUseCase, topic, capiDeletionGroupId, retryCounter,
   );
 
   // ── Backfill lane (ADR-BF-7 / ADR-BF-8 / ADR-BF-9) ────────────────────────
@@ -217,7 +226,7 @@ export async function main(): Promise<void> {
     backfillDedup, backfillBronze, undefined, /* enforceTenantDerivation */ false,
   );
   const backfillConsumer = new BackfillOrderConsumer(
-    kafka, backfillProcessEvent, ledgerWriter, backfillTopic, backfillGroupId,
+    kafka, backfillProcessEvent, ledgerWriter, backfillTopic, backfillGroupId, retryCounter,
   );
 
   // ── Live-ledger bridge (ORCH-LV-H1 fix) ────────────────────────────────────
@@ -254,7 +263,7 @@ export async function main(): Promise<void> {
   log.info(`live attribution clawback hook ${liveAttributionHook ? 'ON' : 'off (no StarRocks; hourly job backstops)'}`);
 
   const liveLedgerConsumer = new LiveLedgerBridgeConsumer(
-    kafka, liveLedgerWriter, topic, liveLedgerGroupId, liveAttributionHook,
+    kafka, liveLedgerWriter, topic, liveLedgerGroupId, retryCounter, liveAttributionHook,
   );
 
   // ── Settlement ledger bridge (ADR-RZ-6 / MB-4 WIRED) ───────────────────────
@@ -271,6 +280,7 @@ export async function main(): Promise<void> {
     settlementMapPool,
     topic,
     settlementLedgerGroupId,
+    retryCounter,
   );
 
   // ── Spend ledger bridge (feat-ad-connectors / ADR-AD-6 WIRED) ──────────────
@@ -284,6 +294,7 @@ export async function main(): Promise<void> {
     spendLedgerWriter,
     topic,
     spendLedgerGroupId,
+    retryCounter,
   );
 
   // ── GoKwik AWB ledger bridge (feat-gokwik-shopflo-connectors / 0030 WIRED) ──
@@ -298,6 +309,7 @@ export async function main(): Promise<void> {
     gokwikAwbLedgerWriter,
     topic,
     gokwikAwbLedgerGroupId,
+    retryCounter,
   );
 
   // ── On-demand "Sync now" claimer (feat-connector-sync-now) ──────────────────
@@ -390,6 +402,7 @@ export async function main(): Promise<void> {
     await ingestSchedulerPool.end();
     await consentRepo.end();
     await capiDeletionRepo.end();
+    await retryCounter.quit();
     await dedup.quit();
     await backfillDedup.quit();
     await bronze.end();

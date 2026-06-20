@@ -15,6 +15,7 @@ import {
   type LiveAttributionReversalHook,
 } from '../interfaces/consumers/LiveLedgerBridgeConsumer.js';
 import type { LedgerWriter } from '../infrastructure/pg/LedgerWriter.js';
+import { InMemoryRetryCounter } from './support/InMemoryRetryCounter.js';
 
 const BRAND = '11111111-1111-4111-8111-111111111111';
 const EVENT = 'evt-live-1';
@@ -51,7 +52,7 @@ describe('LiveLedgerBridgeConsumer — best-effort live attribution clawback (D1
         calls.push(r as unknown as Record<string, unknown>);
       },
     };
-    const c = new LiveLedgerBridgeConsumer(fakeKafka(), {} as LedgerWriter, 't', 'g', hook);
+    const c = new LiveLedgerBridgeConsumer(fakeKafka(), {} as LedgerWriter, 't', 'g', new InMemoryRetryCounter(), hook);
     await (c as unknown as { fireClawbackBestEffort: FireFn }).fireClawbackBestEffort(
       liveOrderEvent('150000'),
       BRAND,
@@ -70,7 +71,7 @@ describe('LiveLedgerBridgeConsumer — best-effort live attribution clawback (D1
         throw new Error('StarRocks down');
       },
     };
-    const c = new LiveLedgerBridgeConsumer(fakeKafka(), {} as LedgerWriter, 't', 'g', hook);
+    const c = new LiveLedgerBridgeConsumer(fakeKafka(), {} as LedgerWriter, 't', 'g', new InMemoryRetryCounter(), hook);
     await expect(
       (c as unknown as { fireClawbackBestEffort: FireFn }).fireClawbackBestEffort(
         liveOrderEvent('100000'),
@@ -81,7 +82,7 @@ describe('LiveLedgerBridgeConsumer — best-effort live attribution clawback (D1
   });
 
   it('no-ops when no hook is injected (hourly reconcile job is the sole path)', async () => {
-    const c = new LiveLedgerBridgeConsumer(fakeKafka(), {} as LedgerWriter, 't', 'g');
+    const c = new LiveLedgerBridgeConsumer(fakeKafka(), {} as LedgerWriter, 't', 'g', new InMemoryRetryCounter());
     await expect(
       (c as unknown as { fireClawbackBestEffort: FireFn }).fireClawbackBestEffort(
         liveOrderEvent('100000'),

@@ -54,7 +54,7 @@ import {
   ShopDomainError,
 } from '../sources/storefront/shopify/application/commands/HandleOAuthCallbackCommand.js';
 import { InProcessOAuthStateStore } from '../sources/storefront/shopify/infrastructure/state/InProcessOAuthStateStore.js';
-import { LocalSecretsManager } from '../sources/storefront/shopify/infrastructure/secrets/LocalSecretsManager.js';
+import { LocalSecretsManager } from '@brain/connector-secrets';
 import type { IConnectorInstanceRepository } from '../sources/storefront/shopify/domain/repositories/IConnectorInstanceRepository.js';
 import type { IConnectorSyncStatusRepository } from '../sources/storefront/shopify/domain/repositories/IConnectorSyncStatusRepository.js';
 import { ConnectorInstance } from '../sources/storefront/shopify/domain/entities/ConnectorInstance.js';

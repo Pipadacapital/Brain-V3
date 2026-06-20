@@ -36,7 +36,7 @@ import { randomUUID } from 'node:crypto';
 
 import { ShopfloHmac } from '../../domain/value-objects/ShopfloHmac.js';
 import { RedisDedupAdapter } from '../../../../payment/razorpay/infrastructure/RedisDedupAdapter.js';
-import type { ISecretsManager } from '../../../../storefront/shopify/infrastructure/secrets/ISecretsManager.js';
+import type { ISecretsManager } from '@brain/connector-secrets';
 import {
   mapShopfloCheckoutAbandoned,
   uuidV5FromShopfloCheckout,

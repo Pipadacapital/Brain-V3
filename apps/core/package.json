@@ -20,6 +20,7 @@
     "@brain/attribution-writer": "workspace:*",
     "@brain/audit": "workspace:*",
     "@brain/config": "workspace:*",
+    "@brain/connector-secrets": "workspace:*",
     "@brain/contracts": "workspace:*",
     "@brain/db": "workspace:*",
     "@brain/events": "workspace:*",

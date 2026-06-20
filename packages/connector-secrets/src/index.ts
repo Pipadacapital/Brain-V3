@@ -1,9 +1,16 @@
 /**
- * Barrel export for the connector secrets infrastructure.
+ * @brain/connector-secrets — shared connector secrets abstraction.
+ *
+ * Lives in a workspace package (NOT inside apps/core) because BOTH deployables need it: apps/core
+ * writes/reads connector credentials, and apps/stream-worker's backfill job reads the Shopify token.
+ * The prod AwsSecretsManager binds each secret to a per-brand KMS EncryptionContext — the read path
+ * MUST pass the identical context the write path used, so the two deployables share ONE
+ * implementation rather than risk drift between duplicates (#75: this replaces the fragile
+ * cross-package require() that reached into apps/core's source tree).
  *
  * The control-plane builder (main.ts) selects the implementation based on environment:
  *
- *   import { AwsSecretsManager, LocalSecretsManager } from './infrastructure/secrets/index.js';
+ *   import { AwsSecretsManager, LocalSecretsManager } from '@brain/connector-secrets';
  *
  *   const secretsManager: ISecretsManager = isProduction
  *     ? new AwsSecretsManager(getEnv('AWS_REGION', 'us-east-1'), getEnvOrThrow('SHOPIFY_CLIENT_SECRET'))

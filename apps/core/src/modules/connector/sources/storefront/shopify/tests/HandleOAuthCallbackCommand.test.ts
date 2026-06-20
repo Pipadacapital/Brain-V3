@@ -20,7 +20,7 @@ import {
   ShopDomainError,
 } from '../application/commands/HandleOAuthCallbackCommand.js';
 import { InProcessOAuthStateStore } from '../infrastructure/state/InProcessOAuthStateStore.js';
-import { LocalSecretsManager } from '../infrastructure/secrets/LocalSecretsManager.js';
+import { LocalSecretsManager } from '@brain/connector-secrets';
 import type { IConnectorInstanceRepository } from '../domain/repositories/IConnectorInstanceRepository.js';
 import type { IConnectorSyncStatusRepository } from '../domain/repositories/IConnectorSyncStatusRepository.js';
 import { ConnectorInstance } from '../domain/entities/ConnectorInstance.js';

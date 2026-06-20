@@ -21,7 +21,7 @@
 
 import type { AuditWriter } from '@brain/audit';
 import type { IConnectorInstanceRepository } from '../../../sources/storefront/shopify/domain/repositories/IConnectorInstanceRepository.js';
-import type { ISecretsManager } from '../../../sources/storefront/shopify/infrastructure/secrets/ISecretsManager.js';
+import type { ISecretsManager } from '@brain/connector-secrets';
 import { PgSyncRequestRepository } from '../../infrastructure/PgSyncRequestRepository.js';
 
 /** Provider → the repull cursor resource the scheduler locks (informational / dispatch). */

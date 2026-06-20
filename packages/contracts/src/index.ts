@@ -313,6 +313,12 @@ export {
   JourneyStitchRateSchema,
   OrderStatusMixRowDtoSchema,
   OrderStatusMixSchema,
+  OrderLineItemDtoSchema,
+  OrderTaxLineDtoSchema,
+  OrderDiscountCodeDtoSchema,
+  OrderRefundDtoSchema,
+  OrderDetailDtoSchema,
+  OrderDetailSchema,
 } from './api/analytics.api.v1.js';
 export type {
   RevenueSnapshot,
@@ -330,6 +336,12 @@ export type {
   JourneyStitchRate,
   OrderStatusMixRowDto,
   OrderStatusMix,
+  OrderLineItemDto,
+  OrderTaxLineDto,
+  OrderDiscountCodeDto,
+  OrderRefundDto,
+  OrderDetailDto,
+  OrderDetail,
 } from './api/analytics.api.v1.js';
 
 export {

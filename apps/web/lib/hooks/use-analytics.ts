@@ -113,6 +113,19 @@ export function useOrderStats(asOf?: string) {
   });
 }
 
+/**
+ * useOrderDetail — a single order's economic breakdown from Bronze (feat-shopify-order-depth).
+ * @param orderId - the order natural key; the query is disabled when falsy.
+ */
+export function useOrderDetail(orderId: string | null | undefined) {
+  return useQuery({
+    queryKey: [...ANALYTICS_QUERY_KEY, 'order-detail', orderId ?? ''],
+    queryFn: () => analyticsApi.getOrderDetail(orderId as string),
+    enabled: !!orderId,
+    staleTime: 60_000,
+  });
+}
+
 // ── Ad-connectors (Slice 1 Track 3) — spend + blended ROAS ──────────────────────
 // Query keys share the 'analytics' prefix → auto-invalidate on brand switch.
 

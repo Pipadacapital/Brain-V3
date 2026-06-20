@@ -57,6 +57,16 @@ export { getTrackingHealth } from './internal/application/queries/get-tracking-h
 export type { TrackingHealthResult, TrackingHealthVolumeBucket } from './internal/application/queries/get-tracking-health.js';
 export { getRecentEvents } from './internal/application/queries/get-recent-events.js';
 export type { RecentEventsResult, RecentEventRow } from './internal/application/queries/get-recent-events.js';
+// Order detail — single order's economic breakdown from Bronze (feat-shopify-order-depth).
+export { getOrderDetail } from './internal/application/queries/get-order-detail.js';
+export type {
+  OrderDetailResult,
+  OrderDetailDto,
+  OrderLineItemDto,
+  OrderTaxLineDto,
+  OrderDiscountCodeDto,
+  OrderRefundDto,
+} from './internal/application/queries/get-order-detail.js';
 
 // GoKwik + Shopflo CoD/RTO surface (Track C) — RTO rates, CoD mix/CM2, checkout funnel
 export { getCodRtoRates } from './internal/application/queries/get-cod-rto-rates.js';

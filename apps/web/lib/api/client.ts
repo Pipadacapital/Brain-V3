@@ -28,6 +28,7 @@ import {
   JourneyTimelineSchema,
   JourneyStitchRateSchema,
   OrderStatusMixSchema,
+  OrderDetailSchema,
   DataQualitySummarySchema,
   AskBrainResultSchema,
   Customer360Schema,
@@ -112,6 +113,7 @@ import type {
   AnalyticsCheckoutFunnelResponse,
   AnalyticsRtoRiskResponse,
   AnalyticsOrderStatusMixResponse,
+  AnalyticsOrderDetailResponse,
   AnalyticsJourneyFirstTouchMixResponse,
   AnalyticsJourneyStitchRateResponse,
   AnalyticsJourneyTimelineResponse,
@@ -1280,6 +1282,18 @@ export const analyticsApi = {
       `/v1/analytics/order-status-mix${qsStr ? `?${qsStr}` : ''}`,
     );
     return parseData(OrderStatusMixSchema, env);
+  },
+
+  /**
+   * GET /api/v1/analytics/order-detail?order_id=<id>
+   * A single order's economic breakdown (line items / tax / shipping / discounts / refunds) read
+   * from Bronze (feat-shopify-order-depth). Parsed at the seam; state:'not_found' preserved.
+   */
+  getOrderDetail: async (orderId: string): Promise<AnalyticsOrderDetailResponse> => {
+    const env = await bffFetch<BffEnvelope<unknown>>(
+      `/v1/analytics/order-detail?order_id=${encodeURIComponent(orderId)}`,
+    );
+    return parseData(OrderDetailSchema, env);
   },
 
   // ── Journey / first-touch (Silver tier — feat-journey-touchpoint) ─────────────

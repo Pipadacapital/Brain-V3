@@ -57,6 +57,9 @@ export type {
   Recommendations as RecommendationsResponse,
   Recommendation,
   GenerateRecommendationsResult as GenerateRecommendationsResultResponse,
+  FoundationHealth as FoundationHealthResponse,
+  FoundationStep,
+  FoundationTier,
 } from '@brain/contracts';
 
 // Local import for the names referenced WITHIN this file (re-exports above are not in local scope).

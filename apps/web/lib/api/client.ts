@@ -44,6 +44,7 @@ import {
   IssueCreditNoteResultSchema,
   RecommendationsSchema,
   GenerateRecommendationsResultSchema,
+  FoundationHealthSchema,
 } from '@brain/contracts';
 
 import type {
@@ -97,6 +98,7 @@ import type {
   AnalyticsOrdersTimeseriesResponse,
   AnalyticsOrderStatsResponse,
   AnalyticsDataHealthResponse,
+  FoundationHealthResponse,
   DataQualitySummaryResponse,
   AnalyticsSettlementsResponse,
   AnalyticsTrackingHealthResponse,
@@ -1099,6 +1101,16 @@ export const analyticsApi = {
       `/v1/analytics/data-health`,
     );
     return data;
+  },
+
+  /**
+   * GET /api/v1/dashboard/data-foundation-health — the readiness verdict (P1).
+   * One tier (blocked|building|ready|healthy) + the progression checklist + the next step.
+   * Parsed at the seam so a drift in the foundation shape fails loudly.
+   */
+  getFoundationHealth: async (): Promise<FoundationHealthResponse> => {
+    const env = await bffFetch<BffEnvelope<unknown>>('/v1/dashboard/data-foundation-health');
+    return parseData(FoundationHealthSchema, env);
   },
 
   /**

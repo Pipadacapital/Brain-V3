@@ -28,6 +28,16 @@ export { getOrderStats } from './internal/application/queries/get-order-stats.js
 export type { OrderStatsResult, OrderStatsDto } from './internal/application/queries/get-order-stats.js';
 export { getDataHealth } from './internal/application/queries/get-data-health.js';
 export type { DataHealthResult, DataHealthVolumeBucket } from './internal/application/queries/get-data-health.js';
+// Data Foundation Health readiness verdict (P1) — pure aggregation of the health signals.
+export { computeFoundationHealth, freshnessFromIngest } from './internal/application/foundation-health.js';
+export type {
+  FoundationHealth,
+  FoundationSignals,
+  FoundationTier,
+  FoundationStep,
+  FoundationDqTier,
+  Freshness as FoundationFreshness,
+} from './internal/application/foundation-health.js';
 
 // Razorpay settlement summary (net-of-fees) — Track C
 export { getSettlementSummary } from './internal/application/queries/get-settlement-summary.js';

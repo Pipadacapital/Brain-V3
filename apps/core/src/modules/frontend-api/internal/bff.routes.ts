@@ -90,11 +90,13 @@ import type {
   Recommendations as ContractRecommendations,
   GenerateRecommendationsResult as ContractGenerateRecommendationsResult,
   AttributionReconcileResult as ContractAttributionReconcileResult,
+  FoundationHealth as ContractFoundationHealth,
 } from '@brain/contracts';
 import { jtiFromJwt, csrfTokenForSession } from './csrf.js';
 import type { Pool as PgPool } from 'pg';
 import { getRevenueMetrics, getRevenueTimeseries, getKpiSummary, getRecognitionBreakdown, getRecentActivity, getOrdersTimeseries, getOrderStats, getDataHealth, getSettlementSummary, getTrackingHealth, getRecentEvents, getAdSpendTimeseries, getBlendedRoas, getCodRtoRates, getCodMix, getCheckoutFunnel, getOrderStatusMix, getJourneyFirstTouchMix, getJourneyStitchRate, getJourneyTimeline, getConsentCoverage, getConsentSuppressionSummary, getConsentGateActivity, getConsentWindowConfig, getAttributionByChannel, getAttributionReconciliation, getChannelRoas, getCapiFeedbackSummary, getCapiFeedbackEvents, getCapiFeedbackDeletions } from '../../analytics/index.js';
 import { getDataQualitySummary, getMetricTrust } from '../../data-quality/index.js';
+import { computeFoundationHealth, freshnessFromIngest, type FoundationSignals } from '../../analytics/index.js';
 import {
   getCustomer360,
   eraseCustomer,
@@ -970,6 +972,107 @@ export function registerBffRoutes(
       } finally {
         client.release();
       }
+    },
+  );
+
+  /**
+   * GET /v1/dashboard/data-foundation-health — the readiness verdict (P1).
+   * Aggregates the existing health signals (pixel installed, commerce connected + healthy, sync
+   * started, events flowing & fresh, DQ trust tier) into ONE deterministic, fail-closed verdict +
+   * a guided next step. This is the spine's gate: "everything depends on the data foundation."
+   */
+  fastify.get(
+    '/api/v1/dashboard/data-foundation-health',
+    { preHandler: [bffProtectedPreHandler] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const auth = (request as AuthenticatedRequest).auth;
+      if (!pool || !rawPool) {
+        return reply.code(503).send({
+          request_id: requestId,
+          error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' },
+        });
+      }
+      // No active brand → the foundation hasn't started; return the honest 'blocked' verdict.
+      if (!auth.brandId) {
+        const blocked = computeFoundationHealth({
+          pixelInstalled: false,
+          commerceConnected: false,
+          commerceHealthy: false,
+          initialSyncStarted: false,
+          firstEventReceived: false,
+          freshness: 'unknown',
+          dqTier: 'untrusted',
+        });
+        const data: ContractFoundationHealth = {
+          tier: blocked.tier,
+          ready: blocked.ready,
+          steps: blocked.steps,
+          gaps: blocked.gaps,
+          next_action: blocked.nextAction,
+          headline: blocked.headline,
+        };
+        return reply.send({ request_id: requestId, data });
+      }
+
+      const ctx: QueryContext = { brandId: auth.brandId, correlationId: requestId };
+      const client = await pool.connect();
+      let pixelInstalled = false;
+      let commerceConnected = false;
+      let commerceHealthy = false;
+      try {
+        // Pixel installed + the commerce (Shopify) connector's connect + health state (RLS-scoped).
+        const [pixelRes, commerceRes] = await Promise.all([
+          client.query<{ installed: boolean }>(
+            ctx,
+            `SELECT EXISTS(SELECT 1 FROM pixel_installation WHERE brand_id = $1 AND installed_at IS NOT NULL) AS installed`,
+            [auth.brandId],
+          ),
+          client.query<{ status: string; health_state: string | null }>(
+            ctx,
+            `SELECT status, health_state FROM connector_instance
+              WHERE brand_id = $1 AND provider = 'shopify'
+              ORDER BY created_at DESC LIMIT 1`,
+            [auth.brandId],
+          ),
+        ]);
+        pixelInstalled = pixelRes.rows[0]?.installed === true;
+        const commerce = commerceRes.rows[0];
+        commerceConnected = commerce?.status === 'connected';
+        // Unhealthy = a terminal/degraded link; absence of a health_state defaults to healthy-ish.
+        const UNHEALTHY = new Set(['Failed', 'Disconnected', 'TokenExpired', 'Disabled']);
+        commerceHealthy = commerceConnected && !UNHEALTHY.has(commerce?.health_state ?? 'Healthy');
+      } finally {
+        client.release();
+      }
+
+      // Ingest + DQ signals via the metric-engine read path (raw pool).
+      const dataHealth = await getDataHealth(auth.brandId, { pool: rawPool });
+      const trust = await getMetricTrust(auth.brandId, { pool: rawPool });
+      const hasData = dataHealth.state === 'has_data';
+      const lastIngestAt = hasData ? dataHealth.lastIngestAt : null;
+      const syncState = hasData ? dataHealth.syncState : null;
+
+      const signals: FoundationSignals = {
+        pixelInstalled,
+        commerceConnected,
+        commerceHealthy,
+        initialSyncStarted: syncState !== null,
+        firstEventReceived: hasData,
+        freshness: freshnessFromIngest(lastIngestAt, Date.now()),
+        dqTier: trust.tier,
+      };
+      const health = computeFoundationHealth(signals);
+
+      const result: ContractFoundationHealth = {
+        tier: health.tier,
+        ready: health.ready,
+        steps: health.steps,
+        gaps: health.gaps,
+        next_action: health.nextAction,
+        headline: health.headline,
+      };
+      return reply.send({ request_id: requestId, data: result });
     },
   );
 

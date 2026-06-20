@@ -33,6 +33,7 @@ import {
   InvoiceSchema,
   IssueInvoiceResultSchema,
   RecommendationsSchema,
+  FoundationHealthSchema,
   AttributionByChannelSchema,
   AttributionReconciliationSchema,
   ChannelRoasSchema,
@@ -620,5 +621,29 @@ describe('Recommendations (#19 — decision engine)', () => {
     const r = RecommendationsSchema.safeParse(drifted);
     expect(r.success).toBe(false);
     expect(firstIssuePath(r)).toBe('recommendations.0.kind');
+  });
+});
+
+describe('FoundationHealth (#P1 — data foundation readiness)', () => {
+  const verdict = {
+    tier: 'ready',
+    ready: true,
+    steps: [
+      { key: 'commerce', label: 'Connect your store', done: true },
+      { key: 'pixel', label: 'Install the Brain Pixel', done: true },
+      { key: 'trusted', label: 'Data quality trusted', done: false },
+    ],
+    gaps: ['Data quality trusted'],
+    next_action: { label: 'Review data quality', href: '/data/quality' },
+    headline: 'Your data foundation is ready. Some metrics are still estimated.',
+  };
+  it('round-trips a verdict (incl. null next_action)', () => {
+    expect(FoundationHealthSchema.parse(verdict)).toEqual(verdict);
+    expect(FoundationHealthSchema.parse({ ...verdict, next_action: null }).next_action).toBeNull();
+  });
+  it('REJECTS an out-of-enum tier', () => {
+    const r = FoundationHealthSchema.safeParse({ ...verdict, tier: 'unknown' });
+    expect(r.success).toBe(false);
+    expect(firstIssuePath(r)).toBe('tier');
   });
 });

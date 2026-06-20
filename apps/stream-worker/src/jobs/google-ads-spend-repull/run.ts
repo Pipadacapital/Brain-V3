@@ -39,11 +39,11 @@ import {
   GOOGLE_RESOURCE_TEMPORARILY_EXHAUSTED,
   type GoogleAdsCredentials,
 } from './google-ads-searchstream-client.js';
+import { setSyncState } from '../meta-spend-repull/run.js';
 import {
   acquireCursorLock,
   upsertCursorValue,
-  setSyncState,
-} from '../meta-spend-repull/run.js';
+} from '../../infrastructure/pg/CursorRepository.js';
 import { log } from "../../log.js";
 
 const DB_URL =

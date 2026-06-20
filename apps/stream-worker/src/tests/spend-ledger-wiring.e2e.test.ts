@@ -33,7 +33,7 @@ import { SpendLedgerConsumer } from '../interfaces/consumers/SpendLedgerConsumer
 import { InMemoryRetryCounter } from './support/InMemoryRetryCounter.js';
 import { CollectorEventV1Schema } from '@brain/contracts';
 import { uuidV5FromSpendRow, SPEND_LIVE_V1_EVENT_NAME } from '@brain/ad-spend-mapper';
-import { acquireCursorLock } from '../jobs/meta-spend-repull/run.js';
+import { acquireCursorLock } from '../infrastructure/pg/CursorRepository.js';
 import { assertBrainApp, seedTestBrand, cleanupConnectorFixtures } from './helpers/connector-lifecycle-fixtures.js';
 
 // ── Config ─────────────────────────────────────────────────────────────────────

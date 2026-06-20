@@ -43,6 +43,11 @@ import {
 } from '@brain/shopify-mapper';
 import { buildWorkerSecretsManager } from '../shopify-backfill/worker-secrets.js';
 import { log } from "../../log.js";
+import {
+  acquireCursorLock,
+  getCursorValue,
+  upsertCursorValue,
+} from '../../infrastructure/pg/CursorRepository.js';
 
 // ── Configuration ─────────────────────────────────────────────────────────────
 
@@ -59,8 +64,6 @@ const REPULL_WINDOW_MS = 35 * 24 * 60 * 60 * 1000;
 
 /** The cursor resource key — DISTINCT from backfill 'orders' (D-10 / ADR-LV-9) */
 const REPULL_CURSOR_RESOURCE = 'orders.repull' as const;
-
-const NIL_UUID = '00000000-0000-0000-0000-000000000000';
 
 interface ConnectorRow {
   connector_instance_id: string;
@@ -303,135 +306,40 @@ async function repullConnector(params: RepullParams): Promise<void> {
   }
 }
 
-// ── Overlap-lock (D-9 / ADR-LV-8) ───────────────────────────────────────────
+// ── Overlap-lock + cursor management (D-9..D-11 / ADR-LV-8/9) ────────────────
+// These delegate to the shared CursorRepository — the standard connector_cursor
+// read/upsert/overlap-lock for trailing-window re-pulls, bound here to the fixed
+// resource='orders.repull'. Names kept for the live-connector e2e test imports.
 
 /**
- * Acquire a lock on the connector_cursor row for resource='orders.repull'.
- * Uses SELECT FOR UPDATE SKIP LOCKED: if already locked (another re-pull in progress),
- * returns false immediately (non-blocking). Lock released when the pool connection
- * is returned (connection-level lock lifetime).
- *
- * We use a short-lived dedicated client and BEGIN/COMMIT to ensure the GUC
- * is set before any brand-scoped write, and the lock is released at end.
+ * Acquire the FOR UPDATE SKIP LOCKED overlap-lock on the orders.repull cursor row.
+ * Returns false immediately if another re-pull holds it (non-blocking).
  */
-async function acquireRepullLock(
+function acquireRepullLock(
   pool: Pool,
   brandId: string,
   connectorInstanceId: string,
 ): Promise<boolean> {
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-
-    // GUC BEFORE any brand-scoped operation (NN-1 / ADR-LV-7)
-    await client.query(
-      `SELECT set_config('app.current_brand_id', $1, true),
-              set_config('app.current_user_id', $2, true),
-              set_config('app.current_workspace_id', $2, true)`,
-      [brandId, NIL_UUID],
-    );
-
-    // Ensure cursor row exists (upsert with no-op on conflict) before locking
-    await client.query(
-      `INSERT INTO connector_cursor (brand_id, connector_instance_id, resource, cursor_value, updated_at)
-       VALUES ($1, $2, $3, '', NOW())
-       ON CONFLICT ON CONSTRAINT connector_cursor_upsert_key DO NOTHING`,
-      [brandId, connectorInstanceId, REPULL_CURSOR_RESOURCE],
-    );
-
-    // FOR UPDATE SKIP LOCKED: if locked, returns 0 rows → another worker is running
-    const lockResult = await client.query(
-      `SELECT id FROM connector_cursor
-       WHERE brand_id = $1
-         AND connector_instance_id = $2
-         AND resource = $3
-       FOR UPDATE SKIP LOCKED`,
-      [brandId, connectorInstanceId, REPULL_CURSOR_RESOURCE],
-    );
-
-    if ((lockResult.rowCount ?? 0) === 0) {
-      // Lock not acquired — another worker holds it
-      await client.query('ROLLBACK');
-      client.release();
-      return false;
-    }
-
-    // Lock acquired — COMMIT to release the transaction lock so we can do the work
-    // Note: we use a txn here only to set the GUC (txn-local); the SKIP LOCKED
-    // lock is released on COMMIT. The re-pull job then proceeds without holding
-    // a DB lock for the full duration (which would be 35d of Shopify fetches).
-    // The cursor row itself acts as the coordination primitive: we set it to 'syncing'
-    // in connector_sync_status (a separate write) to signal in-progress state.
-    await client.query('COMMIT');
-    client.release();
-    return true;
-  } catch (err) {
-    await client.query('ROLLBACK').catch(() => undefined);
-    client.release();
-    throw err;
-  }
+  return acquireCursorLock(pool, brandId, connectorInstanceId, REPULL_CURSOR_RESOURCE);
 }
 
-// ── Cursor management (D-10 / ADR-LV-9) ─────────────────────────────────────
-
-async function getRepullCursor(
+/** Read the orders.repull high-water cursor (null when absent or the empty sentinel). */
+function getRepullCursor(
   pool: Pool,
   brandId: string,
   connectorInstanceId: string,
 ): Promise<string | null> {
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    await client.query(
-      `SELECT set_config('app.current_brand_id', $1, true),
-              set_config('app.current_user_id', $2, true),
-              set_config('app.current_workspace_id', $2, true)`,
-      [brandId, NIL_UUID],
-    );
-    const result = await client.query<{ cursor_value: string }>(
-      `SELECT cursor_value FROM connector_cursor
-       WHERE brand_id = $1 AND connector_instance_id = $2 AND resource = $3`,
-      [brandId, connectorInstanceId, REPULL_CURSOR_RESOURCE],
-    );
-    await client.query('COMMIT');
-    return result.rows[0]?.cursor_value ?? null;
-  } catch (err) {
-    await client.query('ROLLBACK').catch(() => undefined);
-    throw err;
-  } finally {
-    client.release();
-  }
+  return getCursorValue(pool, brandId, connectorInstanceId, REPULL_CURSOR_RESOURCE);
 }
 
-async function upsertRepullCursor(
+/** Advance the orders.repull high-water cursor (non-fatal on error). */
+function upsertRepullCursor(
   pool: Pool,
   brandId: string,
   connectorInstanceId: string,
   cursorValue: string,
 ): Promise<void> {
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    await client.query(
-      `SELECT set_config('app.current_brand_id', $1, true),
-              set_config('app.current_user_id', $2, true),
-              set_config('app.current_workspace_id', $2, true)`,
-      [brandId, NIL_UUID],
-    );
-    await client.query(
-      `INSERT INTO connector_cursor (brand_id, connector_instance_id, resource, cursor_value, updated_at)
-       VALUES ($1, $2, $3, $4, NOW())
-       ON CONFLICT ON CONSTRAINT connector_cursor_upsert_key
-       DO UPDATE SET cursor_value = EXCLUDED.cursor_value, updated_at = NOW()`,
-      [brandId, connectorInstanceId, REPULL_CURSOR_RESOURCE, cursorValue],
-    );
-    await client.query('COMMIT');
-  } catch (err) {
-    await client.query('ROLLBACK').catch(() => undefined);
-    log.error(`cursor upsert failed (non-fatal)`, { err: err });
-  } finally {
-    client.release();
-  }
+  return upsertCursorValue(pool, brandId, connectorInstanceId, REPULL_CURSOR_RESOURCE, cursorValue);
 }
 
 // ── Sync status (D-11 / ADR-LV-10) ──────────────────────────────────────────

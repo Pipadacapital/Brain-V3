@@ -141,8 +141,8 @@ export function MembersTable({ currentUserRole = 'analyst', currentMemberId }: M
           setRoleDialogMember(null);
         },
         onError: (err) => {
-          const msg = err instanceof BffApiError ? err.message : 'Failed to update role.';
-          toast({ title: 'Error', description: msg });
+          const msg = err instanceof BffApiError ? err.message : "Couldn't update the role. Please try again.";
+          toast({ title: "Couldn't update the role", description: msg, variant: 'destructive' });
         },
       },
     );
@@ -156,8 +156,8 @@ export function MembersTable({ currentUserRole = 'analyst', currentMemberId }: M
         setRemoveDialogMember(null);
       },
       onError: (err) => {
-        const msg = err instanceof BffApiError ? err.message : 'Failed to remove member.';
-        toast({ title: 'Error', description: msg });
+        const msg = err instanceof BffApiError ? err.message : "Couldn't remove the member. Please try again.";
+        toast({ title: "Couldn't remove the member", description: msg, variant: 'destructive' });
       },
     });
   }
@@ -173,8 +173,8 @@ export function MembersTable({ currentUserRole = 'analyst', currentMemberId }: M
         setSuspendDialogMember(null);
       },
       onError: (err) => {
-        const msg = err instanceof BffApiError ? err.message : 'Failed to suspend member.';
-        toast({ title: 'Error', description: msg });
+        const msg = err instanceof BffApiError ? err.message : "Couldn't suspend the member. Please try again.";
+        toast({ title: "Couldn't suspend the member", description: msg, variant: 'destructive' });
         setSuspendDialogMember(null);
       },
     });
@@ -186,8 +186,8 @@ export function MembersTable({ currentUserRole = 'analyst', currentMemberId }: M
         toast({ title: 'Member reactivated', description: `${member.user_full_name} can now access the workspace.` });
       },
       onError: (err) => {
-        const msg = err instanceof BffApiError ? err.message : 'Failed to reactivate member.';
-        toast({ title: 'Error', description: msg });
+        const msg = err instanceof BffApiError ? err.message : "Couldn't reactivate the member. Please try again.";
+        toast({ title: "Couldn't reactivate the member", description: msg, variant: 'destructive' });
       },
     });
   }

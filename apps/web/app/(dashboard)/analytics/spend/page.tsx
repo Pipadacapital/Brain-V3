@@ -3,7 +3,7 @@
  */
 import { SpendContent } from './spend-content';
 
-export const metadata = { title: 'Ad Spend & ROAS — Brain Analytics' };
+export const metadata = { title: 'Ad Spend & ROAS — Brain' };
 
 export default function SpendPage() {
   return <SpendContent />;

@@ -442,7 +442,7 @@ function ConnectorTile({ tile, readinessLock }: { tile: MarketplaceTile; readine
               data-testid={`connector-tile-${tile.id}-connect`}
             >
               <Lock className="mr-2 h-4 w-4" aria-hidden="true" />
-              Locked
+              Unlocks soon
             </Button>
             <p className="text-xs text-muted-foreground" role="note">
               {readinessLock}
@@ -559,7 +559,7 @@ function CategorySection({
             title={readinessLock}
           >
             <Lock className="h-3 w-3" aria-hidden="true" />
-            Locked
+            Locks until ready
           </span>
         )}
       </div>
@@ -618,7 +618,7 @@ export function MarketplaceView() {
   // absent → unlocked (default-allow). storefront is always unlocked (the foundation root).
   const categoryLock = (cat: ConnectorCategory): string | null => {
     const e = entitlements?.connector_categories.find((c) => c.key === cat);
-    return e && !e.eligible ? (e.unlock_hint ?? 'Locked until your data foundation supports it.') : null;
+    return e && !e.eligible ? (e.unlock_hint ?? 'Unlocks automatically once your data is ready.') : null;
   };
 
   // The OAuth callback redirects back here with ?connected=<type> or ?connect_error=<code>.

@@ -4,7 +4,7 @@
  */
 import { SettlementsContent } from './settlements-content';
 
-export const metadata = { title: 'Settlements — Brain Analytics' };
+export const metadata = { title: 'Settlements — Brain' };
 
 export default function SettlementsPage() {
   return <SettlementsContent />;

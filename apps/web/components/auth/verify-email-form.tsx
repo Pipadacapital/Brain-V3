@@ -45,7 +45,7 @@ export function VerifyEmailForm() {
         { token },
         {
           onSuccess: () => {
-            toast({ title: 'Email verified', description: 'You can now sign in.' });
+            toast({ title: 'Email verified', description: 'Connecting a store, inviting your team, and billing are now unlocked.' });
             router.push('/login');
           },
         },
@@ -86,7 +86,7 @@ export function VerifyEmailForm() {
             ? `We sent a verification link to ${email}.`
             : 'We sent a verification link to your email address.'}
           <br />
-          Click the link to verify and activate your account.
+          Click the link to verify your email and unlock connecting a store, inviting your team, and billing.
         </CardDescription>
       </CardHeader>
       <CardContent>

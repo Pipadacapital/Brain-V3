@@ -11,7 +11,7 @@
  */
 import { CodRtoContent } from './cod-rto-content';
 
-export const metadata = { title: 'CoD / RTO — Brain Analytics' };
+export const metadata = { title: 'CoD / RTO — Brain' };
 
 export default function CodRtoPage() {
   return <CodRtoContent />;

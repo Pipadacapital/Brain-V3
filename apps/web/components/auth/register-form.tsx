@@ -49,7 +49,7 @@ export function RegisterForm() {
           // is now a soft-gate (dismissible banner + server-side block on sensitive actions).
           toast({
             title: 'Account created',
-            description: "You're all set — let's set up your brand.",
+            description: "Next, let's set up your brand — it takes a couple of minutes.",
           });
           // null status → /onboarding/start (the merged create step).
           router.push(resolveOnboardingRoute(null));

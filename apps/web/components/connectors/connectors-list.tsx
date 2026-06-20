@@ -64,7 +64,7 @@ function ConnectorCard({ item }: { item: ConnectorListItem }) {
         window.location.href = data.install_url;
       },
       onError: () => {
-        toast({ title: 'Error', description: 'Could not start Shopify connection.', variant: 'destructive' });
+        toast({ title: "Couldn't connect Shopify", description: "We couldn't start the connection. Please try again.", variant: 'destructive' });
       },
     });
   }

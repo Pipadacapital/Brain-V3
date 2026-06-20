@@ -72,13 +72,13 @@ const CENTER_REQUIREMENTS: readonly Requirement[] = [
     key: 'attribution',
     met: foundationReady,
     reason: 'Attribution needs journeys + revenue truth from a ready data foundation.',
-    unlockHint: 'Get your data foundation to "ready" — store connected, pixel firing, data fresh.',
+    unlockHint: 'Unlocks once your store is connected, the pixel is firing, and data is flowing.',
   },
   {
     key: 'decision',
     met: foundationReady,
     reason: 'Decisions require a ready data foundation so recommendations are trustworthy.',
-    unlockHint: 'Get your data foundation to "ready" — store connected, pixel firing, data fresh.',
+    unlockHint: 'Unlocks once your store is connected, the pixel is firing, and data is flowing.',
   },
 ];
 
@@ -108,7 +108,7 @@ const CATEGORY_REQUIREMENTS: readonly Requirement[] = [
     key: 'messaging',
     met: foundationReady,
     reason: 'Outreach requires a ready, trusted data foundation (and consent).',
-    unlockHint: 'Get your data foundation to "ready" first.',
+    unlockHint: 'Unlocks once your store is connected and data is flowing.',
   },
 ];
 

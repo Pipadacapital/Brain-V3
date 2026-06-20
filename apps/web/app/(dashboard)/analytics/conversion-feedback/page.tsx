@@ -17,7 +17,7 @@
  */
 import { ConversionFeedbackContent } from './conversion-feedback-content';
 
-export const metadata = { title: 'Conversion Feedback — Brain Analytics' };
+export const metadata = { title: 'Conversion Feedback — Brain' };
 
 export default function ConversionFeedbackPage() {
   return <ConversionFeedbackContent />;

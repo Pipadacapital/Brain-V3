@@ -6,7 +6,7 @@
  */
 import { AskBrainContent } from './ask-content';
 
-export const metadata = { title: 'Ask Brain — Brain Analytics' };
+export const metadata = { title: 'Ask Brain — Brain' };
 
 export default function AskBrainPage() {
   return <AskBrainContent />;

@@ -10,7 +10,7 @@
  */
 import { AttributionContent } from './attribution-content';
 
-export const metadata = { title: 'Attribution — Brain Analytics' };
+export const metadata = { title: 'Attribution — Brain' };
 
 export default function AttributionPage() {
   return <AttributionContent />;

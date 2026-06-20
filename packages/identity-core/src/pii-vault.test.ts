@@ -28,14 +28,16 @@ describe('encryptPii / decryptPii (AES-256-GCM)', () => {
   it('FAILS CLOSED on a tampered ciphertext', () => {
     const env = encryptPii(DEK, 'secret@example.com');
     const tampered = { ...env, ciphertext: Buffer.from(env.ciphertext) };
-    tampered.ciphertext[0] ^= 0xff;
+    // Flip a byte to corrupt the ciphertext. Non-null assert: index 0 exists (non-empty buffer);
+    // the bare `^=` trips noUncheckedIndexedAccess (read is number|undefined).
+    tampered.ciphertext[0] = tampered.ciphertext[0]! ^ 0xff;
     expect(() => decryptPii(DEK, tampered)).toThrow();
   });
 
   it('FAILS CLOSED on a tampered auth tag', () => {
     const env = encryptPii(DEK, 'secret@example.com');
     const tampered = { ...env, authTag: Buffer.from(env.authTag) };
-    tampered.authTag[0] ^= 0xff;
+    tampered.authTag[0] = tampered.authTag[0]! ^ 0xff;
     expect(() => decryptPii(DEK, tampered)).toThrow();
   });
 

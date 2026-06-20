@@ -37,10 +37,9 @@
 
 import { Pool } from 'pg';
 import {
-  enumerateConnectedConnectors,
+  claimDueRepullConnectors,
   loadRun,
 } from '../sync-request-claimer/run.js';
-import { withTickLeaderLock, LEADER_LOCK_INGEST_SCHEDULER } from '../../infrastructure/pg/LeaderLock.js';
 import { incrementCounter } from '@brain/observability';
 import { log } from "../../log.js";
 
@@ -50,19 +49,27 @@ export const MIN_INTERVAL_MS = 15_000;
 /** Default interval — within the requirement's 30–60s near-real-time band (§3.3). */
 export const DEFAULT_INTERVAL_MS = 45_000;
 
+/** Max connectors a single replica claims per tick (bounds per-tick work; the rest drain next tick). */
+export const DEFAULT_CLAIM_BATCH = 100;
+
 /**
- * One scheduler tick: enumerate every connected connector across every brand and
- * dispatch each one's existing repull run() — sequential, fail-isolated, overlap-safe.
- * Returns the number of connectors successfully dispatched (a run() that threw or was
- * overlap-skipped is NOT counted as a clean dispatch but never stops the tick).
+ * One scheduler tick (P1 work-queue): CLAIM a disjoint batch of DUE connectors (FOR UPDATE SKIP
+ * LOCKED via claim_due_repull_connectors, 0053) — NOT enumerate-everything — and dispatch each
+ * one's existing repull run(). Because the claim is atomic + stamps next_repull_at ahead, every
+ * replica claims a DIFFERENT batch: the scheduler is now PARALLEL across replicas (no ordinals),
+ * naturally load-balanced, each connector dispatched at most once per interval. Fail-isolated.
+ * Returns the number of connectors successfully dispatched.
  */
-export async function tick(pool: Pool): Promise<number> {
-  const connectors = await enumerateConnectedConnectors(pool);
+export async function tick(pool: Pool, batch: number, intervalSeconds: number): Promise<number> {
+  const connectors = await claimDueRepullConnectors(pool, batch, intervalSeconds);
+  if (connectors.length === 0) {
+    return 0; // nothing due — another replica took the batch, or all connectors are up to date
+  }
   const brandCount = new Set(connectors.map((c) => c.brand_id)).size;
-  log.info(`tick start brands=${brandCount} connectors=${connectors.length}`);
+  log.info(`tick start claimed=${connectors.length} brands=${brandCount}`);
 
   let dispatched = 0;
-  // SEQUENTIAL dispatch (never Promise.all) — rate-limit-safe; one provider at a time.
+  // SEQUENTIAL within a replica's claimed batch (never Promise.all) — rate-limit-safe per provider.
   for (const connector of connectors) {
     const run = await loadRun(connector.provider);
     if (!run) {
@@ -74,8 +81,8 @@ export async function tick(pool: Pool): Promise<number> {
     log.info(`[ingest-scheduler] dispatched provider=${connector.provider} ` +
               `brand=${connector.brand_id} connector=${connector.connector_instance_id}`);
     try {
-      // Same-code-path as the on-demand claimer. run()'s OWN FOR UPDATE SKIP LOCKED
-      // overlap-lock guarantees no double-run with a manual click or a previous tick.
+      // run()'s OWN FOR UPDATE SKIP LOCKED overlap-lock guards against a manual "sync now" click
+      // racing the claimed repull.
       await run(connector.connector_instance_id);
       dispatched++;
       // P1: per-provider dispatch metric — the scale-limiting tier's throughput signal.
@@ -98,20 +105,25 @@ export interface IngestScheduler {
 }
 
 /**
- * Start the continuous ingestion scheduler. Returns a handle with stop() for graceful
- * shutdown (mirrors startSyncRequestClaimer / startDqChecks).
+ * Start the continuous ingestion scheduler (P1 work-queue). Every `intervalMs` each replica claims
+ * up to `batch` DUE connectors and dispatches them — replicas process DISJOINT batches in parallel,
+ * so total throughput scales with replica count (no single-leader bottleneck, no ordinals). The
+ * next_repull_at spacing equals the loop interval, so each connector is re-pulled ~every interval.
  *
  * @param pool        MUST be a brain_app pool (RLS FORCE) — never superuser 'brain'.
- * @param intervalMs  Poll interval; clamped to >= MIN_INTERVAL_MS (stampede floor).
+ * @param intervalMs  Poll/repull interval; clamped to >= MIN_INTERVAL_MS (stampede floor).
+ * @param batch       Max connectors claimed per tick per replica.
  */
 export function startIngestScheduler(
   pool: Pool,
   intervalMs: number = DEFAULT_INTERVAL_MS,
+  batch: number = DEFAULT_CLAIM_BATCH,
 ): IngestScheduler {
   const effectiveInterval = Math.max(intervalMs, MIN_INTERVAL_MS);
   if (effectiveInterval !== intervalMs) {
     log.warn(`interval ${intervalMs}ms below floor — clamped to ${effectiveInterval}ms`);
   }
+  const intervalSeconds = Math.round(effectiveInterval / 1000);
 
   let running = true;
   let inFlight = false;
@@ -121,23 +133,19 @@ export function startIngestScheduler(
       if (!inFlight) {
         inFlight = true;
         try {
-          // P1: single-leader across replicas — only the lock winner runs the dispatch tick, so the
-          // connector API load is 1× (not N×). Non-leaders skip cheaply and retry next interval.
           const started = Date.now();
-          const out = await withTickLeaderLock(pool, LEADER_LOCK_INGEST_SCHEDULER, () => tick(pool));
-          // P1 instrumentation — the scale-limiting tier's first-to-fail signals. tick-overrun is the
-          // canary the audit flagged (BrainIngestStale only fires at TOTAL zero, never on degradation):
-          // once a sequential tick can't finish within its interval, ingest freshness silently slips.
-          incrementCounter('ingest_scheduler_tick_total', { role: out.ranAsLeader ? 'leader' : 'follower' });
-          if (out.ranAsLeader) {
-            const durationMs = Date.now() - started;
-            if (durationMs >= effectiveInterval) {
-              incrementCounter('ingest_scheduler_tick_overrun_total', {});
-              log.warn(`[ingest-scheduler] TICK OVERRUN ${durationMs}ms >= interval ${effectiveInterval}ms — ingest freshness degrading; shard/scale the worker tier`);
-            }
+          const dispatched = await tick(pool, batch, intervalSeconds);
+          incrementCounter('ingest_scheduler_tick_total', { role: 'worker' });
+          // P1 instrumentation — tick-overrun is the canary (BrainIngestStale only fires at TOTAL
+          // zero, never on degradation): a replica's claimed batch can't finish within the interval
+          // → freshness slipping. Only meaningful when it actually had work.
+          const durationMs = Date.now() - started;
+          if (dispatched > 0 && durationMs >= effectiveInterval) {
+            incrementCounter('ingest_scheduler_tick_overrun_total', {});
+            log.warn(`[ingest-scheduler] TICK OVERRUN ${durationMs}ms >= interval ${effectiveInterval}ms — freshness degrading; add replicas or lower the claim batch`);
           }
         } catch (err) {
-          // Tick-level guard (enumerate failure etc.) — never lets the loop die.
+          // Tick-level guard (claim failure etc.) — never lets the loop die.
           log.error('tick error', { err: err });
         } finally {
           inFlight = false;

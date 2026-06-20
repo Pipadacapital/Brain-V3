@@ -695,6 +695,23 @@ export type AnalyticsCheckoutFunnelResponse =
       data_source: DataSource;
     };
 
+// ── RTO-risk distribution (GoKwik RTO-Predict — gokwik.rto_predict.v1 Bronze) ──
+// Per-order RTO risk, counted by each order's LATEST prediction over 30d. Categorical
+// risk_flag buckets (VERBATIM — never a fabricated score). Honest no_data; synthetic badge
+// when data_source='synthetic' (GoKwik read API is a documented follow-up).
+export type AnalyticsRtoRiskResponse =
+  | { state: 'no_data' }
+  | {
+      state: 'has_data';
+      order_count: string; // bigint string (distinct orders)
+      high: string;
+      medium: string;
+      low: string;
+      control: string;
+      unknown: string;
+      data_source: DataSource;
+    };
+
 // ── Order-status mix (Silver tier — feat-silver-tier-order-state Track 3) ──────
 //
 // The FIRST surface read from the new Silver analytics tier (dbt → StarRocks

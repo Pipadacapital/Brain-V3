@@ -36,16 +36,19 @@ import { SyntheticBadge } from '@/components/analytics/synthetic-badge';
 import { RtoPincodeChart } from '@/components/analytics/rto-pincode-chart';
 import { CodMixChart } from '@/components/analytics/cod-mix-chart';
 import { CheckoutFunnelChart } from '@/components/analytics/checkout-funnel-chart';
-import { useCodRtoRates, useCodMix, useCheckoutFunnel } from '@/lib/hooks/use-analytics';
+import { RtoRiskChart } from '@/components/analytics/rto-risk-chart';
+import { useCodRtoRates, useCodMix, useCheckoutFunnel, useRtoRiskDistribution } from '@/lib/hooks/use-analytics';
 import { formatMoneyDisplay } from '@/lib/format/money-display';
 import type { CurrencyCode } from '@brain/money';
 import type {
   AnalyticsCodMixResponse,
   AnalyticsCheckoutFunnelResponse,
+  AnalyticsRtoRiskResponse,
 } from '@/lib/api/types';
 
 type CodMixHasData = Extract<AnalyticsCodMixResponse, { state: 'has_data' }>;
 type CheckoutFunnelHasData = Extract<AnalyticsCheckoutFunnelResponse, { state: 'has_data' }>;
+type RtoRiskHasData = Extract<AnalyticsRtoRiskResponse, { state: 'has_data' }>;
 
 function SectionSkeleton({ label }: { label: string }) {
   return (
@@ -103,6 +106,7 @@ export function CodRtoContent() {
       </div>
 
       <RtoSection />
+      <RtoRiskSection />
       <CodMixSection />
       <CheckoutFunnelSection />
     </div>
@@ -337,6 +341,85 @@ function CheckoutFunnelData({ data }: { data: CheckoutFunnelHasData }) {
             abandonedCount={data.abandoned_count}
             discountAppliedCount={data.discount_applied_count}
             withAddressCount={data.with_address_count}
+          />
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+// ── 2. RTO-risk distribution (GoKwik RTO-Predict — synthetic in dev) ────────────
+
+function RtoRiskSection() {
+  const { data, isLoading, error, refetch } = useRtoRiskDistribution();
+
+  return (
+    <section aria-label="RTO risk distribution" data-testid="rto-risk-section">
+      <div className="mb-3 flex items-center gap-2">
+        <h2 className="text-lg font-semibold text-foreground">RTO risk at checkout</h2>
+        {data?.state === 'has_data' && data.data_source === 'synthetic' && (
+          <SyntheticBadge data-testid="rto-risk-synthetic-badge" />
+        )}
+      </div>
+
+      {isLoading && <SectionSkeleton label="RTO risk" />}
+      {!isLoading && error && <ErrorCard error={error} retry={refetch} />}
+
+      {!isLoading && !error && data?.state === 'no_data' && (
+        <EmptyConnectCard
+          testId="rto-risk-empty"
+          icon={<Truck className="h-8 w-8" />}
+          title="No RTO-risk predictions yet"
+          description="Connect GoKwik so Brain can capture the RTO-Predict risk returned at checkout — then high-risk orders surface here before you ship them COD."
+          cta="Connect GoKwik"
+        />
+      )}
+
+      {!isLoading && !error && data?.state === 'has_data' && <RtoRiskData data={data} />}
+    </section>
+  );
+}
+
+function RtoRiskData({ data }: { data: RtoRiskHasData }) {
+  const orders = Number(BigInt(data.order_count));
+  const high = Number(BigInt(data.high));
+  const highPct = orders > 0 ? Math.round((high / orders) * 100) : 0;
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <KpiTile
+          label="Orders Scored"
+          value={orders.toLocaleString('en-IN')}
+          sublabel="last 30 days"
+          data-testid="rto-risk-kpi-orders"
+        />
+        <KpiTile
+          label="High Risk"
+          value={high.toLocaleString('en-IN')}
+          sublabel="latest prediction per order"
+          data-testid="rto-risk-kpi-high"
+        />
+        <KpiTile
+          label="High-Risk Share"
+          value={`${highPct}%`}
+          sublabel="of scored orders"
+          data-testid="rto-risk-kpi-high-share"
+        />
+      </div>
+
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm font-medium text-muted-foreground">
+            Orders by RTO risk category
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <RtoRiskChart
+            high={data.high}
+            medium={data.medium}
+            low={data.low}
+            control={data.control}
+            unknown={data.unknown}
           />
         </CardContent>
       </Card>

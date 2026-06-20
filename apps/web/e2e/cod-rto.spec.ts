@@ -92,13 +92,15 @@ test.describe('CoD / RTO surface + GoKwik/Shopflo connectors', () => {
     // ── Page heading ──
     await expect(page.getByRole('heading', { name: 'CoD / RTO', exact: true })).toBeVisible({ timeout: 10_000 });
 
-    // ── Three sections present ──
+    // ── Four sections present ──
     await expect(page.getByTestId('cod-rto-section')).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByTestId('rto-risk-section')).toBeVisible();
     await expect(page.getByTestId('cod-mix-section')).toBeVisible();
     await expect(page.getByTestId('checkout-funnel-section')).toBeVisible();
 
     // ── Honest empty states for a fresh brand (no fabricated zeros) ──
     await expect(page.getByTestId('cod-rto-empty')).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByTestId('rto-risk-empty')).toBeVisible();
     await expect(page.getByTestId('cod-mix-empty')).toBeVisible();
     await expect(page.getByTestId('checkout-funnel-empty')).toBeVisible();
 

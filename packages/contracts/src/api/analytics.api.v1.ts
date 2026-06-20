@@ -282,6 +282,47 @@ export const OrderStatusMixSchema = z.discriminatedUnion('state', [
 ]);
 export type OrderStatusMix = z.infer<typeof OrderStatusMixSchema>;
 
+// ── #N CM2 / cost inputs (feat-cm2-cost-inputs) ───────────────────────────────
+// @see apps/core/.../analytics/.../get-contribution-margin.ts + cost-inputs.ts
+
+export const CostConfidenceSchema = z.enum(['Trusted', 'Estimated', 'Insufficient']);
+export type CostConfidence = z.infer<typeof CostConfidenceSchema>;
+export const CostScopeSchema = z.enum(['global', 'sku', 'category']);
+export const CostTypeSchema = z.enum(['cogs', 'shipping', 'packaging', 'payment_fee', 'marketplace_fee']);
+
+export const ContributionMarginDtoSchema = z.object({
+  currency_code: z.string(),
+  net_revenue_minor: MinorUnitsSchema,
+  cogs_minor: MinorUnitsSchema,
+  variable_cost_minor: MinorUnitsSchema,
+  cm1_minor: MinorUnitsSchema,
+  marketing_minor: MinorUnitsSchema,
+  cm2_minor: MinorUnitsSchema,
+  cost_confidence: CostConfidenceSchema,
+});
+export type ContributionMarginDto = z.infer<typeof ContributionMarginDtoSchema>;
+
+export const ContributionMarginSchema = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('no_data'), as_of: z.string() }),
+  z.object({ state: z.literal('has_data'), as_of: z.string(), margin: ContributionMarginDtoSchema }),
+]);
+export type ContributionMargin = z.infer<typeof ContributionMarginSchema>;
+
+export const CostInputDtoSchema = z.object({
+  scope: CostScopeSchema,
+  scope_ref: z.string(),
+  cost_type: CostTypeSchema,
+  amount_minor: MinorUnitsSchema.nullable(),
+  pct_bps: z.number().nullable(),
+  currency_code: z.string(),
+  cost_confidence: CostConfidenceSchema,
+  effective_from: z.string(),
+});
+export type CostInputDto = z.infer<typeof CostInputDtoSchema>;
+
+export const CostInputsListSchema = z.object({ cost_inputs: z.array(CostInputDtoSchema) });
+export type CostInputsList = z.infer<typeof CostInputsListSchema>;
+
 // ── #N GET /v1/analytics/orders-list ──────────────────────────────────────────
 // Paginated latest-state orders from Bronze (feat-shopify-order-depth).
 // @see apps/core/.../analytics/.../get-orders-list.ts (OrdersListResult / OrderListItemDto)

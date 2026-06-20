@@ -30,6 +30,8 @@ import {
   OrderStatusMixSchema,
   TopProductsSchema,
   OrdersListSchema,
+  ContributionMarginSchema,
+  CostInputsListSchema,
   OrderDetailSchema,
   DataQualitySummarySchema,
   AskBrainResultSchema,
@@ -115,6 +117,9 @@ import type {
   AnalyticsCheckoutFunnelResponse,
   AnalyticsRtoRiskResponse,
   AnalyticsOrderStatusMixResponse,
+  AnalyticsContributionMarginResponse,
+  AnalyticsCostInputsResponse,
+  CostInputDto,
   AnalyticsTopProductsResponse,
   AnalyticsOrdersListResponse,
   AnalyticsOrderDetailResponse,
@@ -1318,6 +1323,37 @@ export const analyticsApi = {
       `/v1/analytics/orders-list${qsStr ? `?${qsStr}` : ''}`,
     );
     return parseData(OrdersListSchema, env);
+  },
+
+  /** GET /v1/analytics/contribution-margin — CM1/CM2 + cost_confidence (feat-cm2-cost-inputs). */
+  getContributionMargin: async (asOf?: string): Promise<AnalyticsContributionMarginResponse> => {
+    const qs = asOf ? `?as_of=${encodeURIComponent(asOf)}` : '';
+    const env = await bffFetch<BffEnvelope<unknown>>(`/v1/analytics/contribution-margin${qs}`);
+    return parseData(ContributionMarginSchema, env);
+  },
+
+  /** GET /v1/costs — the brand's active cost inputs. */
+  getCostInputs: async (): Promise<AnalyticsCostInputsResponse> => {
+    const env = await bffFetch<BffEnvelope<unknown>>('/v1/costs');
+    return parseData(CostInputsListSchema, env);
+  },
+
+  /** POST /v1/costs — upsert one cost input (COGS/shipping/fee rate or fixed amount). */
+  upsertCostInput: async (body: {
+    scope: CostInputDto['scope'];
+    scope_ref?: string;
+    cost_type: CostInputDto['cost_type'];
+    amount_minor?: string;
+    pct_bps?: number;
+    currency_code: string;
+    cost_confidence?: CostInputDto['cost_confidence'];
+  }): Promise<{ cost_input_id: string }> => {
+    const { data } = await bffFetch<BffEnvelope<{ cost_input_id: string }>>('/v1/costs', {
+      method: 'POST',
+      body: JSON.stringify(body),
+      idempotencyKey: generateRequestId(),
+    });
+    return data;
   },
 
   /**

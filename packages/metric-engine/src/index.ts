@@ -23,6 +23,9 @@ export { type EngineDeps, withBrandTxn } from './deps.js';
 
 // Re-export compute functions (D-5)
 export { computeRealizedRevenue } from './realized-revenue.js';
+// Contribution margin (CM1/CM2 — the True-CM2 moat). feat-cm2-cost-inputs.
+export { computeContributionMargin } from './contribution-margin.js';
+export type { ContributionMarginResult, CostConfidence } from './contribution-margin.js';
 export { computeProvisionalRevenue } from './provisional-revenue.js';
 
 // Re-export Phase 1 analytics compute functions

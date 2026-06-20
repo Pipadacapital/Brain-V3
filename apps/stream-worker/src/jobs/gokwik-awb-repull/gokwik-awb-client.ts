@@ -24,6 +24,14 @@ import { dirname, join } from 'node:path';
 import type { GokwikAwbRecord, DataSource } from '@brain/gokwik-mapper';
 import { log } from "../../log.js";
 
+/**
+ * Auth-rejection marker (connector-auth observability parity). The synthetic fixture client never
+ * throws this; when the real GoKwik HTTP client lands (swapping the fixture per the note above), it
+ * MUST throw `${GOKWIK_AUTH_ERROR}: ...` on a 401/403 so the repull records a reconnect signal —
+ * exactly as meta/google/shopify/razorpay do.
+ */
+export const GOKWIK_AUTH_ERROR = 'GOKWIK_AUTH_ERROR';
+
 export interface GokwikApiCredentials {
   appid: string;       // NEVER logged (I-S09)
   appsecret: string;   // NEVER logged (I-S09)

@@ -27,14 +27,68 @@ import type { EngineDeps } from './deps.js';
 import { withBrandTxn } from './deps.js';
 import type { AttributionModelId } from './attribution-models.js';
 
-/** Exact 2-decimal percentage from two bigint magnitudes (integer math; null on ≤0 denom). */
-function ratePct(numerator: bigint, denominator: bigint): string | null {
+/**
+ * Exact 2-decimal percentage from two bigint magnitudes (integer math; null on ≤0 denom).
+ * Truncates toward zero (NOT rounds) — the basis-point pattern; never float. Exported so the
+ * rate is unit-testable in isolation (D3 / R-46).
+ */
+export function attributionRatePct(numerator: bigint, denominator: bigint): string | null {
   if (denominator <= 0n) return null;
   const bps = (numerator * 10000n) / denominator;
   const whole = bps / 100n;
   const frac = bps % 100n;
   const absFrac = frac < 0n ? -frac : frac;
   return `${whole}.${String(absFrac).padStart(2, '0')}`;
+}
+
+/** UTC ISO date (YYYY-MM-DD) — the seam's `as_of`/window date form. */
+export function isoDate(d: Date): string {
+  return d.toISOString().split('T')[0] as string;
+}
+
+/**
+ * The EXCLUSIVE lower-boundary date: one UTC day before `from`. The window is computed as
+ * `as_of(to) − as_of(from−1)`, so an event posted ON `from` is counted and one on `from−1`
+ * is not. UTC-millisecond subtraction → correct across month/year rollovers and DST (D3 / R-47).
+ */
+export function previousDayIso(from: Date): string {
+  return isoDate(new Date(from.getTime() - 24 * 60 * 60 * 1000));
+}
+
+/** The already-windowed inputs fed to the pure reconciliation core (no I/O). */
+export interface ReconciliationWindowInputs {
+  currencyCode: string | null;
+  /** realized_gmv_as_of(to) − realized_gmv_as_of(from−1) — exact BIGINT window. */
+  realizedGmvMinor: bigint;
+  /** attributed_gmv_as_of(to) − attributed_gmv_as_of(from−1) — net of clawback, exact. */
+  attributedGmvMinor: bigint;
+  /** Per-channel contributions for the window (from the channel_contribution_as_of seam). */
+  byChannel: ChannelContribution[];
+}
+
+/**
+ * reconcileAttributionWindow — the PURE reconciliation core (D3 / R-46): rate + residual +
+ * sorted channels + hasData, from already-windowed magnitudes. No DB, no clock — so the
+ * closed-sum oracle (Σ channel + unattributed = realized) and the rate math are unit-testable
+ * without a live ledger. computeAttributionReconciliationRate is the thin I/O adapter over this.
+ */
+export function reconcileAttributionWindow(
+  inputs: ReconciliationWindowInputs,
+): AttributionReconciliationResult {
+  const { currencyCode, realizedGmvMinor, attributedGmvMinor } = inputs;
+  const byChannel = [...inputs.byChannel].sort((a, b) =>
+    a.channel < b.channel ? -1 : a.channel > b.channel ? 1 : 0,
+  );
+  const unattributedMinor = realizedGmvMinor - attributedGmvMinor;
+  return {
+    hasData: realizedGmvMinor !== 0n || attributedGmvMinor !== 0n,
+    currencyCode,
+    attributedGmvMinor,
+    realizedGmvMinor,
+    unattributedMinor,
+    reconciliationRatePct: attributionRatePct(attributedGmvMinor, realizedGmvMinor),
+    byChannel,
+  };
 }
 
 export interface ChannelContribution {
@@ -80,10 +134,9 @@ export async function computeAttributionReconciliationRate(
   params: { model: AttributionModelId; fromDate: Date; toDate: Date },
   deps: EngineDeps,
 ): Promise<AttributionReconciliationResult> {
-  const toStr = params.toDate.toISOString().split('T')[0] as string;
-  const fromStr = params.fromDate.toISOString().split('T')[0] as string;
-  const fromMinus1 = new Date(params.fromDate.getTime() - 24 * 60 * 60 * 1000);
-  const fromMinus1Str = fromMinus1.toISOString().split('T')[0] as string;
+  const toStr = isoDate(params.toDate);
+  const fromStr = isoDate(params.fromDate);
+  const fromMinus1Str = previousDayIso(params.fromDate);
 
   return withBrandTxn(deps.pool, brandId, async (client) => {
     const brandRow = await client.query<{ currency_code: string }>(
@@ -122,24 +175,18 @@ export async function computeAttributionReconciliationRate(
          FROM channel_contribution_as_of($1::uuid, $2::text, $3::date, $4::date)`,
       [brandId, params.model, fromStr, toStr],
     );
-    const byChannel: ChannelContribution[] = channelRows.rows
-      .map((r) => ({
-        channel: r.channel,
-        currencyCode: r.currency_code,
-        contributionMinor: BigInt(r.contribution_minor),
-      }))
-      .sort((a, b) => (a.channel < b.channel ? -1 : a.channel > b.channel ? 1 : 0));
+    const byChannel: ChannelContribution[] = channelRows.rows.map((r) => ({
+      channel: r.channel,
+      currencyCode: r.currency_code,
+      contributionMinor: BigInt(r.contribution_minor),
+    }));
 
-    const unattributedMinor = realizedGmvMinor - attributedGmvMinor;
-
-    return {
-      hasData: realizedGmvMinor !== 0n || attributedGmvMinor !== 0n,
+    // Pure core does the rate/residual/closed-sum math (sort included) — unit-tested in isolation.
+    return reconcileAttributionWindow({
       currencyCode,
-      attributedGmvMinor,
       realizedGmvMinor,
-      unattributedMinor,
-      reconciliationRatePct: ratePct(attributedGmvMinor, realizedGmvMinor),
+      attributedGmvMinor,
       byChannel,
-    };
+    });
   });
 }

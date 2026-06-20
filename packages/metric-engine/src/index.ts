@@ -130,10 +130,17 @@ export {
 } from './attribution-clawback.js';
 export type { ClawbackInput, SavedCreditRow, ReversalReason } from './attribution-clawback.js';
 
-export { computeAttributionReconciliationRate } from './attribution-reconciliation.js';
+export {
+  computeAttributionReconciliationRate,
+  reconcileAttributionWindow,
+  attributionRatePct,
+  isoDate,
+  previousDayIso,
+} from './attribution-reconciliation.js';
 export type {
   AttributionReconciliationResult,
   ChannelContribution,
+  ReconciliationWindowInputs,
 } from './attribution-reconciliation.js';
 
 export { computeChannelRoas } from './attribution-channel-roas.js';

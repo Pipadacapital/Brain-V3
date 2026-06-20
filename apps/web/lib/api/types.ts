@@ -52,6 +52,8 @@ export type {
   Customer360Profile,
   Customer360Identifier,
   Customer360Merge,
+  CustomerList as CustomerListResponse,
+  CustomerListItem,
   VaultCoverage as VaultCoverageResponse,
   ErasureResult as ErasureResultResponse,
   MergeReview,

@@ -8,6 +8,13 @@
  * merge/unmerge admin + the PII vault follow in later slices).
  */
 export { getCustomer360 } from './internal/application/queries/get-customer-360.js';
+export { listCustomers } from './internal/application/queries/list-customers.js';
+export type {
+  CustomerList,
+  CustomerListItem,
+  ListCustomersParams,
+  ListCustomersDeps,
+} from './internal/application/queries/list-customers.js';
 export { eraseCustomer } from './internal/application/erase-customer.js';
 export type { ErasureResult } from './internal/application/erase-customer.js';
 export {

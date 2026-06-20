@@ -50,9 +50,9 @@ function ConsentBadge({ on, label }: { on: boolean; label: string }) {
   );
 }
 
-export function Customer360Content() {
-  const [input, setInput] = React.useState('');
-  const [submittedId, setSubmittedId] = React.useState('');
+export function Customer360Content({ initialBrainId = '' }: { initialBrainId?: string }) {
+  const [input, setInput] = React.useState(initialBrainId);
+  const [submittedId, setSubmittedId] = React.useState(initialBrainId.trim());
   const [confirming, setConfirming] = React.useState(false);
   const { data, isLoading, isFetching, error, refetch } = useCustomer360(submittedId);
   const erase = useEraseCustomer();

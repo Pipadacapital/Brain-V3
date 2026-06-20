@@ -34,6 +34,7 @@ import {
   IssueInvoiceResultSchema,
   RecommendationsSchema,
   FoundationHealthSchema,
+  EntitlementsSchema,
   AttributionByChannelSchema,
   AttributionReconciliationSchema,
   ChannelRoasSchema,
@@ -621,6 +622,30 @@ describe('Recommendations (#19 — decision engine)', () => {
     const r = RecommendationsSchema.safeParse(drifted);
     expect(r.success).toBe(false);
     expect(firstIssuePath(r)).toBe('recommendations.0.kind');
+  });
+});
+
+describe('Entitlements (#P2 — progressive unlock)', () => {
+  const ent = {
+    centers: [
+      { key: 'attribution', eligible: false, reason: 'Needs a ready foundation.', unlock_hint: 'Get to ready.' },
+      { key: 'journey', eligible: true, reason: null, unlock_hint: null },
+    ],
+    connector_categories: [
+      { key: 'storefront', eligible: true, reason: null, unlock_hint: null },
+      { key: 'ads', eligible: false, reason: 'Needs established foundation.', unlock_hint: 'Connect a store.' },
+    ],
+  };
+  it('round-trips a mixed eligible/locked verdict', () => {
+    expect(EntitlementsSchema.parse(ent)).toEqual(ent);
+  });
+  it('REJECTS a non-boolean eligible', () => {
+    const r = EntitlementsSchema.safeParse({
+      ...ent,
+      centers: [{ ...ent.centers[0], eligible: 'yes' }],
+    });
+    expect(r.success).toBe(false);
+    expect(firstIssuePath(r)).toBe('centers.0.eligible');
   });
 });
 

@@ -33,6 +33,7 @@ import {
   Ban,
   Loader2,
   AlertTriangle,
+  Lock,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -42,6 +43,7 @@ import { SyncNowControl } from '@/components/connectors/sync-now-control';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
 import { useMarketplace, useConnectConnector, useDisconnectConnector } from '@/lib/hooks/use-connectors';
+import { useEntitlements } from '@/lib/hooks/use-entitlements';
 import { useEmailVerified } from '@/lib/hooks/use-auth';
 import { BffApiError } from '@/lib/api/client';
 import { toast } from '@/components/ui/toaster';
@@ -224,7 +226,7 @@ function credentialFieldsFor(tileId: string): CredentialField[] {
   }
 }
 
-function ConnectorTile({ tile }: { tile: MarketplaceTile }) {
+function ConnectorTile({ tile, readinessLock }: { tile: MarketplaceTile; readinessLock?: string | null }) {
   const { mutate: connect, isPending: isConnecting } = useConnectConnector();
   const { mutate: disconnect, isPending: isDisconnecting } = useDisconnectConnector();
   const { emailVerified } = useEmailVerified();
@@ -426,6 +428,26 @@ function ConnectorTile({ tile }: { tile: MarketplaceTile }) {
               />
             )}
           </div>
+        ) : readinessLock ? (
+          /* Progressive unlock (P2): this category isn't ready in the data foundation yet.
+             We don't offer Connect — we explain what unlocks it, so the order is guided. */
+          <div className="space-y-2" data-testid={`connector-tile-${tile.id}-locked`}>
+            <Button
+              variant="outline"
+              disabled
+              aria-disabled="true"
+              className="cursor-not-allowed"
+              title={readinessLock}
+              aria-label={`${tile.display_name} — locked. ${readinessLock}`}
+              data-testid={`connector-tile-${tile.id}-connect`}
+            >
+              <Lock className="mr-2 h-4 w-4" aria-hidden="true" />
+              Locked
+            </Button>
+            <p className="text-xs text-muted-foreground" role="note">
+              {readinessLock}
+            </p>
+          </div>
         ) : (
           <div className="space-y-2">
             {/* Shopify needs the store domain before OAuth redirect */}
@@ -514,21 +536,36 @@ function ConnectorTile({ tile }: { tile: MarketplaceTile }) {
 function CategorySection({
   category,
   tiles,
+  readinessLock,
 }: {
   category: ConnectorCategory;
   tiles: MarketplaceTile[];
+  /** Set when this category isn't unlocked by the data foundation yet (the unlock hint). */
+  readinessLock?: string | null;
 }) {
   return (
     <section aria-labelledby={`category-heading-${category}`} data-testid={`marketplace-category-${category}`}>
-      <h2
-        id={`category-heading-${category}`}
-        className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3"
-      >
-        {CATEGORY_LABELS[category]}
-      </h2>
+      <div className="mb-3 flex items-center gap-2">
+        <h2
+          id={`category-heading-${category}`}
+          className="text-sm font-semibold text-muted-foreground uppercase tracking-wide"
+        >
+          {CATEGORY_LABELS[category]}
+        </h2>
+        {readinessLock && (
+          <span
+            className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground"
+            role="status"
+            title={readinessLock}
+          >
+            <Lock className="h-3 w-3" aria-hidden="true" />
+            Locked
+          </span>
+        )}
+      </div>
       <div className="grid gap-4 sm:grid-cols-1 lg:grid-cols-2">
         {tiles.map((tile) => (
-          <ConnectorTile key={tile.id} tile={tile} />
+          <ConnectorTile key={tile.id} tile={tile} readinessLock={readinessLock} />
         ))}
       </div>
     </section>
@@ -573,8 +610,16 @@ const CONNECT_ERROR_MESSAGES: Record<string, string> = {
 
 export function MarketplaceView() {
   const { data: tiles, isLoading, error, refetch } = useMarketplace();
+  const { data: entitlements } = useEntitlements();
   const searchParams = useSearchParams();
   const router = useRouter();
+
+  // Progressive unlock (P2): a category locks until the data foundation supports it. Lookup by key;
+  // absent → unlocked (default-allow). storefront is always unlocked (the foundation root).
+  const categoryLock = (cat: ConnectorCategory): string | null => {
+    const e = entitlements?.connector_categories.find((c) => c.key === cat);
+    return e && !e.eligible ? (e.unlock_hint ?? 'Locked until your data foundation supports it.') : null;
+  };
 
   // The OAuth callback redirects back here with ?connected=<type> or ?connect_error=<code>.
   // Surface it as a toast, then strip the param so it doesn't re-fire on refetch/navigation.
@@ -625,7 +670,7 @@ export function MarketplaceView() {
       {CATEGORY_ORDER.map((cat) => {
         const catTiles = byCategory.get(cat) ?? [];
         if (catTiles.length === 0) return null;
-        return <CategorySection key={cat} category={cat} tiles={catTiles} />;
+        return <CategorySection key={cat} category={cat} tiles={catTiles} readinessLock={categoryLock(cat)} />;
       })}
     </div>
   );

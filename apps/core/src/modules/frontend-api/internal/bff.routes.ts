@@ -91,12 +91,14 @@ import type {
   GenerateRecommendationsResult as ContractGenerateRecommendationsResult,
   AttributionReconcileResult as ContractAttributionReconcileResult,
   FoundationHealth as ContractFoundationHealth,
+  Entitlements as ContractEntitlements,
 } from '@brain/contracts';
 import { jtiFromJwt, csrfTokenForSession } from './csrf.js';
 import type { Pool as PgPool } from 'pg';
 import { getRevenueMetrics, getRevenueTimeseries, getKpiSummary, getRecognitionBreakdown, getRecentActivity, getOrdersTimeseries, getOrderStats, getDataHealth, getSettlementSummary, getTrackingHealth, getRecentEvents, getAdSpendTimeseries, getBlendedRoas, getCodRtoRates, getCodMix, getCheckoutFunnel, getOrderStatusMix, getJourneyFirstTouchMix, getJourneyStitchRate, getJourneyTimeline, getConsentCoverage, getConsentSuppressionSummary, getConsentGateActivity, getConsentWindowConfig, getAttributionByChannel, getAttributionReconciliation, getChannelRoas, getCapiFeedbackSummary, getCapiFeedbackEvents, getCapiFeedbackDeletions } from '../../analytics/index.js';
 import { getDataQualitySummary, getMetricTrust } from '../../data-quality/index.js';
-import { computeFoundationHealth, freshnessFromIngest, type FoundationSignals } from '../../analytics/index.js';
+import { computeFoundationHealth, freshnessFromIngest, computeEntitlements, type FoundationSignals } from '../../analytics/index.js';
+import { CONNECTOR_CATALOG } from '../../connector/catalog/registry.js';
 import {
   getCustomer360,
   eraseCustomer,
@@ -143,6 +145,59 @@ export function registerBffRoutes(
   vaultService?: ContactPiiVaultService,
 ): void {
   const sessionPreHandler = validateSessionPreHandler(authService);
+
+  // ── Foundation-signal gatherer (P1/P2) ──────────────────────────────────────
+  // Shared by the data-foundation-health + entitlements routes: composes the existing health
+  // reads (pixel, ANY connected storefront connector, ingest freshness, DQ trust) into the
+  // FoundationSignals both verdicts derive from. Storefront detection is catalog-driven
+  // (connector-GENERAL — Shopify is one storefront app of many). Callers guard pool/rawPool first.
+  const STOREFRONT_PROVIDERS = CONNECTOR_CATALOG.filter((c) => c.category === 'storefront').map((c) => c.id);
+  const UNHEALTHY_CONNECTOR_STATES = new Set(['Failed', 'Disconnected', 'TokenExpired', 'Disabled']);
+  const gatherFoundationSignals = async (
+    brandId: string,
+    requestId: string,
+  ): Promise<FoundationSignals> => {
+    const ctx: QueryContext = { brandId, correlationId: requestId };
+    let pixelInstalled = false;
+    let commerceConnected = false;
+    let commerceHealthy = false;
+    const client = await pool!.connect();
+    try {
+      const [pixelRes, commerceRes] = await Promise.all([
+        client.query<{ installed: boolean }>(
+          ctx,
+          `SELECT EXISTS(SELECT 1 FROM pixel_installation WHERE brand_id = $1 AND installed_at IS NOT NULL) AS installed`,
+          [brandId],
+        ),
+        // ANY connected storefront connector (prefer a connected one) — connector-general.
+        client.query<{ status: string; health_state: string | null }>(
+          ctx,
+          `SELECT status, health_state FROM connector_instance
+            WHERE brand_id = $1 AND provider = ANY($2::text[])
+            ORDER BY (status = 'connected') DESC, created_at DESC LIMIT 1`,
+          [brandId, STOREFRONT_PROVIDERS],
+        ),
+      ]);
+      pixelInstalled = pixelRes.rows[0]?.installed === true;
+      const commerce = commerceRes.rows[0];
+      commerceConnected = commerce?.status === 'connected';
+      commerceHealthy = commerceConnected && !UNHEALTHY_CONNECTOR_STATES.has(commerce?.health_state ?? 'Healthy');
+    } finally {
+      client.release();
+    }
+    const dataHealth = await getDataHealth(brandId, { pool: rawPool! });
+    const trust = await getMetricTrust(brandId, { pool: rawPool! });
+    const hasData = dataHealth.state === 'has_data';
+    return {
+      pixelInstalled,
+      commerceConnected,
+      commerceHealthy,
+      initialSyncStarted: hasData ? dataHealth.syncState !== null : false,
+      firstEventReceived: hasData,
+      freshness: freshnessFromIngest(hasData ? dataHealth.lastIngestAt : null, Date.now()),
+      dqTier: trust.tier,
+    };
+  };
 
   // ── CSRF token endpoint ────────────────────────────────────────────────────
   // GET /api/v1/bff/csrf — issues a session-bound CSRF token (SEC-0009-M02). When
@@ -1015,53 +1070,7 @@ export function registerBffRoutes(
         return reply.send({ request_id: requestId, data });
       }
 
-      const ctx: QueryContext = { brandId: auth.brandId, correlationId: requestId };
-      const client = await pool.connect();
-      let pixelInstalled = false;
-      let commerceConnected = false;
-      let commerceHealthy = false;
-      try {
-        // Pixel installed + the commerce (Shopify) connector's connect + health state (RLS-scoped).
-        const [pixelRes, commerceRes] = await Promise.all([
-          client.query<{ installed: boolean }>(
-            ctx,
-            `SELECT EXISTS(SELECT 1 FROM pixel_installation WHERE brand_id = $1 AND installed_at IS NOT NULL) AS installed`,
-            [auth.brandId],
-          ),
-          client.query<{ status: string; health_state: string | null }>(
-            ctx,
-            `SELECT status, health_state FROM connector_instance
-              WHERE brand_id = $1 AND provider = 'shopify'
-              ORDER BY created_at DESC LIMIT 1`,
-            [auth.brandId],
-          ),
-        ]);
-        pixelInstalled = pixelRes.rows[0]?.installed === true;
-        const commerce = commerceRes.rows[0];
-        commerceConnected = commerce?.status === 'connected';
-        // Unhealthy = a terminal/degraded link; absence of a health_state defaults to healthy-ish.
-        const UNHEALTHY = new Set(['Failed', 'Disconnected', 'TokenExpired', 'Disabled']);
-        commerceHealthy = commerceConnected && !UNHEALTHY.has(commerce?.health_state ?? 'Healthy');
-      } finally {
-        client.release();
-      }
-
-      // Ingest + DQ signals via the metric-engine read path (raw pool).
-      const dataHealth = await getDataHealth(auth.brandId, { pool: rawPool });
-      const trust = await getMetricTrust(auth.brandId, { pool: rawPool });
-      const hasData = dataHealth.state === 'has_data';
-      const lastIngestAt = hasData ? dataHealth.lastIngestAt : null;
-      const syncState = hasData ? dataHealth.syncState : null;
-
-      const signals: FoundationSignals = {
-        pixelInstalled,
-        commerceConnected,
-        commerceHealthy,
-        initialSyncStarted: syncState !== null,
-        firstEventReceived: hasData,
-        freshness: freshnessFromIngest(lastIngestAt, Date.now()),
-        dqTier: trust.tier,
-      };
+      const signals = await gatherFoundationSignals(auth.brandId, requestId);
       const health = computeFoundationHealth(signals);
 
       const result: ContractFoundationHealth = {
@@ -1071,6 +1080,55 @@ export function registerBffRoutes(
         gaps: health.gaps,
         next_action: health.nextAction,
         headline: health.headline,
+      };
+      return reply.send({ request_id: requestId, data: result });
+    },
+  );
+
+  /**
+   * GET /v1/entitlements — readiness-driven progressive unlock (P2).
+   * What the active brand can access given its data foundation: gated centers + connector-category
+   * eligibility. Connector-GENERAL (keyed on category, not per-app). The nav + marketplace consume
+   * this so gating is server-driven, never hardcoded in the client. No brand → everything locked.
+   */
+  fastify.get(
+    '/api/v1/entitlements',
+    { preHandler: [bffProtectedPreHandler] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const auth = (request as AuthenticatedRequest).auth;
+      if (!pool || !rawPool) {
+        return reply.code(503).send({
+          request_id: requestId,
+          error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' },
+        });
+      }
+      const signals: FoundationSignals = auth.brandId
+        ? await gatherFoundationSignals(auth.brandId, requestId)
+        : {
+            pixelInstalled: false,
+            commerceConnected: false,
+            commerceHealthy: false,
+            initialSyncStarted: false,
+            firstEventReceived: false,
+            freshness: 'unknown',
+            dqTier: 'untrusted',
+          };
+      const tier = computeFoundationHealth(signals).tier;
+      const ent = computeEntitlements({ tier, signals });
+      const result: ContractEntitlements = {
+        centers: ent.centers.map((e) => ({
+          key: e.key,
+          eligible: e.eligible,
+          reason: e.reason,
+          unlock_hint: e.unlockHint,
+        })),
+        connector_categories: ent.connectorCategories.map((e) => ({
+          key: e.key,
+          eligible: e.eligible,
+          reason: e.reason,
+          unlock_hint: e.unlockHint,
+        })),
       };
       return reply.send({ request_id: requestId, data: result });
     },

@@ -160,6 +160,32 @@ groups:
           summary: "Connector {{ $labels.provider }} sustainedly rate-limited"
           description: "Brain is throttling {{ $labels.provider }} repulls to protect its shared app quota — those connectors are re-pulling slower than their interval. Quota is the scaling bottleneck for this provider."
 
+      # P2.2 — DLQ redrive. The redrive tool replays transient-failure messages back to their
+      # source topic; messages that exhaust the loop guard (x-redrive-count ≥ max) are GENUINE
+      # poison left parked. A non-zero exhausted rate means human investigation is needed — the
+      # DLQ is no longer self-healing for those messages.
+      - alert: BrainDlqRedriveExhausted
+        # dlq_redrive_exhausted_total: stream-worker counter (P2.2). A redrive pass left messages
+        # parked because they hit the max-redrive ceiling — they keep failing on replay.
+        expr: sum by (target_topic) (increase(dlq_redrive_exhausted_total[1h])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "DLQ redrive left poison parked for {{ $labels.target_topic }}"
+          description: "A redrive pass exhausted the loop guard for messages targeting {{ $labels.target_topic }} — they fail every replay. Investigate the payload/schema; they will not self-heal."
+
+      - alert: BrainDlqRedriveErrors
+        # dlq_redrive_error_total: republish to the source topic failed during a redrive (broker
+        # issue) — the operator's drain is not making progress.
+        expr: sum by (target_topic) (increase(dlq_redrive_error_total[15m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "DLQ redrive republish failing for {{ $labels.target_topic }}"
+          description: "Redrive could not republish to {{ $labels.target_topic }} — the operator drain is stalling. Check broker health."
+
   # ── Revenue truth integrity ─────────────────────────────────────────────────
   - name: brain-revenue-integrity
     rules:

@@ -29,6 +29,8 @@ export type {
   OrderStatusMix as AnalyticsOrderStatusMixResponse,
   TopProducts as AnalyticsTopProductsResponse,
   TopProductDto,
+  OrdersList as AnalyticsOrdersListResponse,
+  OrderListItemDto,
   OrderDetail as AnalyticsOrderDetailResponse,
   OrderDetailDto,
   OrderLineItemDto,

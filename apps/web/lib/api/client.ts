@@ -29,6 +29,7 @@ import {
   JourneyStitchRateSchema,
   OrderStatusMixSchema,
   TopProductsSchema,
+  OrdersListSchema,
   OrderDetailSchema,
   DataQualitySummarySchema,
   AskBrainResultSchema,
@@ -115,6 +116,7 @@ import type {
   AnalyticsRtoRiskResponse,
   AnalyticsOrderStatusMixResponse,
   AnalyticsTopProductsResponse,
+  AnalyticsOrdersListResponse,
   AnalyticsOrderDetailResponse,
   AnalyticsJourneyFirstTouchMixResponse,
   AnalyticsJourneyStitchRateResponse,
@@ -1301,6 +1303,21 @@ export const analyticsApi = {
       `/v1/analytics/top-products${qsStr ? `?${qsStr}` : ''}`,
     );
     return parseData(TopProductsSchema, env);
+  },
+
+  /**
+   * GET /api/v1/analytics/orders-list
+   * Paginated latest-state orders from Bronze (feat-shopify-order-depth). Parsed at the seam.
+   */
+  getOrdersList: async (params?: { page?: number; pageSize?: number }): Promise<AnalyticsOrdersListResponse> => {
+    const qs = new URLSearchParams();
+    if (params?.page) qs.set('page', String(params.page));
+    if (params?.pageSize) qs.set('page_size', String(params.pageSize));
+    const qsStr = qs.toString();
+    const env = await bffFetch<BffEnvelope<unknown>>(
+      `/v1/analytics/orders-list${qsStr ? `?${qsStr}` : ''}`,
+    );
+    return parseData(OrdersListSchema, env);
   },
 
   /**

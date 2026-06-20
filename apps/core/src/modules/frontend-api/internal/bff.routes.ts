@@ -74,6 +74,7 @@ import type {
   JourneyStitchRate as ContractJourneyStitchRate,
   OrderStatusMix as ContractOrderStatusMix,
   TopProducts as ContractTopProducts,
+  OrdersList as ContractOrdersList,
   OrderDetail as ContractOrderDetail,
   DataQualitySummary as ContractDataQualitySummary,
   AskBrainResult as ContractAskBrainResult,
@@ -97,7 +98,7 @@ import type {
 } from '@brain/contracts';
 import { jtiFromJwt, csrfTokenForSession } from './csrf.js';
 import type { Pool as PgPool } from 'pg';
-import { getRevenueMetrics, getRevenueTimeseries, getKpiSummary, getRecognitionBreakdown, getRecentActivity, getOrdersTimeseries, getOrderStats, getDataHealth, getSettlementSummary, getTrackingHealth, getRecentEvents, getAdSpendTimeseries, getBlendedRoas, getCodRtoRates, getCodMix, getCheckoutFunnel, getRtoRiskDistribution, getOrderStatusMix, getTopProducts, getOrderDetail, getJourneyFirstTouchMix, getJourneyStitchRate, getJourneyTimeline, getConsentCoverage, getConsentSuppressionSummary, getConsentGateActivity, getConsentWindowConfig, getAttributionByChannel, getAttributionReconciliation, getChannelRoas, getCapiFeedbackSummary, getCapiFeedbackEvents, getCapiFeedbackDeletions } from '../../analytics/index.js';
+import { getRevenueMetrics, getRevenueTimeseries, getKpiSummary, getRecognitionBreakdown, getRecentActivity, getOrdersTimeseries, getOrderStats, getDataHealth, getSettlementSummary, getTrackingHealth, getRecentEvents, getAdSpendTimeseries, getBlendedRoas, getCodRtoRates, getCodMix, getCheckoutFunnel, getRtoRiskDistribution, getOrderStatusMix, getTopProducts, getOrdersList, getOrderDetail, getJourneyFirstTouchMix, getJourneyStitchRate, getJourneyTimeline, getConsentCoverage, getConsentSuppressionSummary, getConsentGateActivity, getConsentWindowConfig, getAttributionByChannel, getAttributionReconciliation, getChannelRoas, getCapiFeedbackSummary, getCapiFeedbackEvents, getCapiFeedbackDeletions } from '../../analytics/index.js';
 import { getDataQualitySummary, getMetricTrust } from '../../data-quality/index.js';
 import { computeFoundationHealth, freshnessFromIngest, computeEntitlements, type FoundationSignals } from '../../analytics/index.js';
 import { CONNECTOR_CATALOG } from '../../connector/catalog/registry.js';
@@ -2970,6 +2971,54 @@ export function registerBffRoutes(
         },
       );
 
+      return reply.send({ request_id: requestId, data: result });
+    },
+  );
+
+  /**
+   * GET /api/v1/analytics/orders-list?page=N&page_size=M
+   * A paginated list of orders (latest state per order) from Bronze (feat-shopify-order-depth);
+   * each row links to order-detail. Brand from session (D-1, NEVER body). Honest no_data (D-2).
+   * Money = bigint minor-unit strings (I-S07). Reads Bronze via rawPool (no manual WHERE — F-SEC-02).
+   */
+  fastify.get(
+    '/api/v1/analytics/orders-list',
+    {
+      preHandler: [bffProtectedPreHandler],
+      schema: {
+        querystring: {
+          type: 'object',
+          properties: {
+            page:      { type: 'integer', minimum: 1 },
+            page_size: { type: 'integer', minimum: 1, maximum: 100 },
+          },
+          additionalProperties: false,
+        },
+      },
+      attachValidation: true,
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const validationError = (request as FastifyRequest & { validationError?: Error }).validationError;
+      if (validationError) {
+        return reply.code(400).send({
+          request_id: requestId,
+          error: { code: 'INVALID_PARAMS', message: 'page ≥ 1, page_size 1–100.' },
+        });
+      }
+
+      const query = request.query as { page?: number; page_size?: number };
+      const page = query.page ?? 1;
+      const pageSize = query.page_size ?? 20;
+      const auth = (request as AuthenticatedRequest).auth;
+      if (!auth.brandId) {
+        return reply.send({ request_id: requestId, data: { state: 'no_data', page, page_size: pageSize, total: '0' } });
+      }
+      if (!rawPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Bronze read pool not available' } });
+      }
+
+      const result: ContractOrdersList = await getOrdersList(auth.brandId, { page, pageSize }, { pool: rawPool });
       return reply.send({ request_id: requestId, data: result });
     },
   );

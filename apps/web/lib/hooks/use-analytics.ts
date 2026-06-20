@@ -114,6 +114,19 @@ export function useOrderStats(asOf?: string) {
 }
 
 /**
+ * useOrdersList — paginated latest-state orders from Bronze (feat-shopify-order-depth).
+ * Keeps the previous page's data while the next loads, for flicker-free pagination.
+ */
+export function useOrdersList(page: number, pageSize = 20) {
+  return useQuery({
+    queryKey: [...ANALYTICS_QUERY_KEY, 'orders-list', page, pageSize],
+    queryFn: () => analyticsApi.getOrdersList({ page, pageSize }),
+    staleTime: 60_000,
+    placeholderData: (prev) => prev,
+  });
+}
+
+/**
  * useTopProducts — per-SKU rollup (units / line GMV / order count) over the Silver order-line
  * mart (feat-shopify-order-depth). Window defaults to last 90 days server-side.
  */

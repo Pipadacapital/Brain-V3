@@ -10,7 +10,7 @@
  * staleTime: timeseries + kpi = 5 min (heavy reads); activity = 1 min (event feed).
  */
 
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { analyticsApi } from '@/lib/api/client';
 import type { AttributionModel } from '@/lib/api/types';
 
@@ -123,6 +123,38 @@ export function useOrdersList(page: number, pageSize = 20) {
     queryFn: () => analyticsApi.getOrdersList({ page, pageSize }),
     staleTime: 60_000,
     placeholderData: (prev) => prev,
+  });
+}
+
+/**
+ * useContributionMargin — CM1/CM2 + cost_confidence (feat-cm2-cost-inputs).
+ */
+export function useContributionMargin(asOf?: string) {
+  return useQuery({
+    queryKey: [...ANALYTICS_QUERY_KEY, 'contribution-margin', asOf ?? 'today'],
+    queryFn: () => analyticsApi.getContributionMargin(asOf),
+    staleTime: 5 * 60_000,
+  });
+}
+
+/** useCostInputs — the brand's active cost structure. */
+export function useCostInputs() {
+  return useQuery({
+    queryKey: [...ANALYTICS_QUERY_KEY, 'cost-inputs'],
+    queryFn: () => analyticsApi.getCostInputs(),
+    staleTime: 5 * 60_000,
+  });
+}
+
+/** useUpsertCostInput — save a cost input; invalidates margin + cost reads on success. */
+export function useUpsertCostInput() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: analyticsApi.upsertCostInput,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: [...ANALYTICS_QUERY_KEY, 'cost-inputs'] });
+      void qc.invalidateQueries({ queryKey: [...ANALYTICS_QUERY_KEY, 'contribution-margin'] });
+    },
   });
 }
 

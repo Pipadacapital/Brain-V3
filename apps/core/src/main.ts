@@ -110,6 +110,8 @@ import { PgConnectorSyncStatusRepository } from './modules/connector/sources/sto
 import { LocalSecretsManager } from '@brain/connector-secrets';
 import { AwsSecretsManager } from '@brain/connector-secrets';
 import { InProcessOAuthStateStore } from './modules/connector/sources/storefront/shopify/infrastructure/state/InProcessOAuthStateStore.js';
+import { RedisOAuthStateStore } from './modules/connector/sources/storefront/shopify/infrastructure/state/RedisOAuthStateStore.js';
+import type { IOAuthStateStore } from './modules/connector/sources/storefront/shopify/infrastructure/state/IOAuthStateStore.js';
 import { GetOrCreatePixelInstallationCommand } from './modules/connector/pixel/application/commands/GetOrCreatePixelInstallationCommand.js';
 import {
   VerifyPixelCommand,
@@ -658,7 +660,12 @@ export async function main(): Promise<void> {
     // DEV-TOKEN-REACH (0024): pass rawPgPool so dev tokens persist to dev_secret —
     // durable across core restarts and readable by the separate stream-worker process.
     : new LocalSecretsManager(rawPgPool);
-  const oauthStateStore = new InProcessOAuthStateStore();
+  // Scale-C4: prod uses the Redis-backed store so OAuth state survives across replicas (the
+  // callback may land on a different pod than initiated). Dev stays in-process (no Redis
+  // dependency for the local connect flow). Shared by Shopify/Meta/Google via IOAuthStateStore.
+  const oauthStateStore: IOAuthStateStore = isProduction
+    ? new RedisOAuthStateStore(redis)
+    : new InProcessOAuthStateStore();
 
   // ── B1: Shopify webhook receiver (ADR-LV-1..4) ───────────────────────────────
   // Kafka producer for the live lane (direct produce to dev.collector.event.v1 — ADR-LV-3).

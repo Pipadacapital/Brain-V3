@@ -9,9 +9,9 @@
  *   - coming_soon availability ⇒ 422, regardless of connectMethod
  *   - This is the authoritative check; client-side disabled button is UX only.
  *
- * Scale note (Scale-C4): InProcessOAuthStateStore stores nonces in memory.
- * Single-pod only — a Redis impl is needed before horizontal scale.
- * Reserved: IOAuthStateStore seam exists; wire Redis as the production impl when needed.
+ * Scale note (Scale-C4): RESOLVED. Production now uses RedisOAuthStateStore (shared across
+ * replicas, native TTL, atomic single-use consume) via the IOAuthStateStore seam; dev keeps the
+ * in-process Map. So the OAuth state nonce survives a callback landing on a different pod.
  */
 export { CONNECTOR_CATALOG } from './registry.js';
 export type { ConnectorDefinition, ConnectorCategory, ConnectMethod } from './registry.js';

@@ -1,0 +1,6 @@
+apiVersion: v2
+name: pgbouncer
+description: Brain PgBouncer — TRANSACTION-pooling connection multiplexer in front of Postgres for the CORE request path (P1 pre-scale). The stream-worker connects to Postgres DIRECTLY (it holds session-level advisory locks, which transaction pooling breaks).
+type: application
+version: 0.1.0
+appVersion: "1.23.1"

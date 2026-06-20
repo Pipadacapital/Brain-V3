@@ -59,6 +59,7 @@ import { startHealthServer } from './infrastructure/health/HealthServer.js';
 import { startSyncRequestClaimer } from './jobs/sync-request-claimer/run.js';
 import { startDqChecks } from './jobs/dq/run.js';
 import { startIngestScheduler } from './jobs/ingest-scheduler/run.js';
+import { ConnectorRateLimiter } from './infrastructure/redis/ConnectorRateLimiter.js';
 
 export async function main(): Promise<void> {
   // Real OpenTelemetry export (ADR-009) — gated by OTEL_EXPORTER_OTLP_ENDPOINT (no-op in dev).
@@ -397,8 +398,15 @@ export async function main(): Promise<void> {
     process.env['SYNC_SCHEDULER_INTERVAL_MS'] ?? '45000',
     10,
   );
-  const ingestScheduler = startIngestScheduler(ingestSchedulerPool, ingestSchedulerIntervalMs);
-  log.info(`ingest scheduler running — interval=${ingestSchedulerIntervalMs}ms`,
+  const ingestSchedulerBatch = parseInt(process.env['REPULL_CLAIM_BATCH'] ?? '100', 10);
+  // P1: global cross-replica per-provider rate limiter (Redis) — caps shared app-quota providers
+  // (Meta/Google) so the parallel work-queue can't storm them across replicas. Fail-open.
+  const connectorRateLimiter = new ConnectorRateLimiter(redisUrl);
+  await connectorRateLimiter.connect();
+  const ingestScheduler = startIngestScheduler(
+    ingestSchedulerPool, ingestSchedulerIntervalMs, ingestSchedulerBatch, connectorRateLimiter,
+  );
+  log.info(`ingest scheduler running — interval=${ingestSchedulerIntervalMs}ms batch=${ingestSchedulerBatch} (work-queue + per-provider rate limit)`,
   );
 
   // Graceful shutdown
@@ -426,6 +434,7 @@ export async function main(): Promise<void> {
     await syncClaimerPool.end();
     await dqPool.end();
     await ingestSchedulerPool.end();
+    await connectorRateLimiter.quit().catch(() => undefined);
     await consentRepo.end();
     await capiDeletionRepo.end();
     await retryCounter.quit();

@@ -1,0 +1,6 @@
+# Staging overrides — set the real upstream Postgres host + the admin-creds secret.
+upstream:
+  host: REPLACE_WITH_STAGING_POSTGRES_HOST   # e.g. brain-staging.xxxx.rds.amazonaws.com
+envSecretName: pgbouncer-env
+pool:
+  defaultPoolSize: 15

@@ -27,6 +27,40 @@ services:
       timeout: 5s
       retries: 10
 
+  # PgBouncer (P1 pre-scale) — TRANSACTION-pooling connection multiplexer in FRONT OF the CORE app's
+  # request path. Core opens a connection per concurrent request; at 1000 brands that exhausts
+  # Postgres's max_connections. PgBouncer multiplexes thousands of client connections onto a small
+  # server pool. Core's DB access is all short, SET-LOCAL-scoped transactions (withBrandTxn /
+  # beginRlsTxn) → transaction pooling is safe. The STREAM-WORKER must NOT use this: its periodic
+  # loops hold SESSION-level advisory locks (the leader lock) which transaction pooling breaks — it
+  # connects to Postgres directly. Auth via auth_query against pg_shadow ($$1 escapes compose subst).
+  pgbouncer:
+    image: edoburu/pgbouncer:v1.23.1-p3
+    profiles: ["core"]
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: brain
+      DB_PASSWORD: brain
+      DB_NAME: brain
+      AUTH_TYPE: scram-sha-256
+      AUTH_QUERY: "SELECT usename, passwd FROM pg_shadow WHERE usename=$$1"
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: "2000"
+      DEFAULT_POOL_SIZE: "20"
+      MIN_POOL_SIZE: "2"
+      ADMIN_USERS: brain
+      IGNORE_STARTUP_PARAMETERS: extra_float_digits,options
+    ports: ["6432:5432"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 5432 -U brain -d pgbouncer || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   redis:
     image: redis:7
     profiles: ["core"]

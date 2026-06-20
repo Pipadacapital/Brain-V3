@@ -31,18 +31,18 @@ import { Pool } from 'pg';
 import { assertBrainApp } from './helpers/connector-lifecycle-fixtures.js';
 import type { ConnectorRow } from '../jobs/sync-request-claimer/run.js';
 
-// ── Mock the scheduler's dispatch dependency (enumerate + loadRun) ─────────────
-// The scheduler imports enumerateConnectedConnectors + loadRun from sync-request-claimer.
-// We control both so the tick contract (sequential dispatch, fail-isolation, overlap-skip)
-// is deterministic. claimSyncRequest etc. are passed through unchanged.
-const enumerateMock = vi.fn(async (): Promise<ConnectorRow[]> => []);
+// ── Mock the scheduler's dispatch dependency (claim + loadRun) ─────────────────
+// P1 work-queue: the scheduler now CLAIMS a due batch via claimDueRepullConnectors + loadRun. We
+// control both so the tick contract (sequential dispatch, fail-isolation, overlap-skip) is
+// deterministic. The real claim_due_repull_connectors fn is exercised by the work-queue live test.
+const claimMock = vi.fn(async (): Promise<ConnectorRow[]> => []);
 const loadRunMock = vi.fn();
 
 vi.mock('../jobs/sync-request-claimer/run.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../jobs/sync-request-claimer/run.js')>();
   return {
     ...actual,
-    enumerateConnectedConnectors: () => enumerateMock(),
+    claimDueRepullConnectors: () => claimMock(),
     loadRun: (provider: string) => loadRunMock(provider),
   };
 });
@@ -67,7 +67,7 @@ const ROWS: ConnectorRow[] = [
 const fakePool = {} as Pool;
 
 beforeEach(() => {
-  enumerateMock.mockReset();
+  claimMock.mockReset();
   loadRunMock.mockReset();
 });
 
@@ -78,14 +78,14 @@ afterAll(() => {
 // ── T1: dispatch ALL connectors across ALL brands, sequentially, in order ──────
 describe('T1: tick dispatches every connected connector across every brand', () => {
   it('runs each provider repull once, in enumerate order (sequential)', async () => {
-    enumerateMock.mockResolvedValue(ROWS);
+    claimMock.mockResolvedValue(ROWS);
     const callOrder: string[] = [];
     const runStub = vi.fn(async (ciId: string) => {
       callOrder.push(ciId);
     });
     loadRunMock.mockResolvedValue(runStub);
 
-    const dispatched = await tick(fakePool);
+    const dispatched = await tick(fakePool, 100, 45);
 
     expect(dispatched).toBe(2);
     expect(runStub).toHaveBeenCalledTimes(2);
@@ -97,7 +97,7 @@ describe('T1: tick dispatches every connected connector across every brand', () 
 // ── T2: one failing connector does NOT stop the tick (fail-isolation) ──────────
 describe('T2: fail-isolation — a throwing connector does not block others', () => {
   it('continues the tick when one run() throws', async () => {
-    enumerateMock.mockResolvedValue(ROWS);
+    claimMock.mockResolvedValue(ROWS);
     const seen: string[] = [];
     const runStub = vi.fn(async (ciId: string) => {
       seen.push(ciId);
@@ -105,7 +105,7 @@ describe('T2: fail-isolation — a throwing connector does not block others', ()
     });
     loadRunMock.mockResolvedValue(runStub);
 
-    const dispatched = await tick(fakePool);
+    const dispatched = await tick(fakePool, 100, 45);
 
     // Both connectors were ATTEMPTED (fail-isolation); only the healthy one counts as dispatched.
     expect(seen).toEqual(['ci-a-shopify', 'ci-b-shopify']);
@@ -116,7 +116,7 @@ describe('T2: fail-isolation — a throwing connector does not block others', ()
 // ── T3: overlap-safe — an overlap-skipped run() is dispatched exactly once ─────
 describe('T3: overlap-safe — no double-run within a tick', () => {
   it('dispatches each connector exactly once per tick (run() own lock is the guard)', async () => {
-    enumerateMock.mockResolvedValue(ROWS);
+    claimMock.mockResolvedValue(ROWS);
     const counts = new Map<string, number>();
     // run() that simulates an overlap-skip (its FOR UPDATE SKIP LOCKED found the row locked
     // → no-op). The scheduler must NOT re-dispatch it within the tick.
@@ -126,19 +126,19 @@ describe('T3: overlap-safe — no double-run within a tick', () => {
     });
     loadRunMock.mockResolvedValue(runStub);
 
-    await tick(fakePool);
+    await tick(fakePool, 100, 45);
 
     expect(counts.get('ci-a-shopify')).toBe(1);
     expect(counts.get('ci-b-shopify')).toBe(1);
   });
 
   it('skips a provider with no repull run() (loadRun null) without throwing', async () => {
-    enumerateMock.mockResolvedValue([
+    claimMock.mockResolvedValue([
       { connector_instance_id: 'ci-unknown', brand_id: BRAND_A, provider: 'tiktok' },
     ]);
     loadRunMock.mockResolvedValue(null);
 
-    const dispatched = await tick(fakePool);
+    const dispatched = await tick(fakePool, 100, 45);
     expect(dispatched).toBe(0); // nothing dispatched, no throw
   });
 });
@@ -148,7 +148,7 @@ describe('T4: interval floor + graceful stop', () => {
   it('clamps a sub-floor interval to MIN_INTERVAL_MS and stops cleanly', async () => {
     expect(DEFAULT_INTERVAL_MS).toBeGreaterThanOrEqual(MIN_INTERVAL_MS);
 
-    enumerateMock.mockResolvedValue([]);
+    claimMock.mockResolvedValue([]);
     loadRunMock.mockResolvedValue(vi.fn());
 
     // Request a 1ms interval — must be clamped to the floor (no stampede).
@@ -159,7 +159,7 @@ describe('T4: interval floor + graceful stop', () => {
 
     // After clamp the loop sleeps MIN_INTERVAL_MS between ticks, so at most one tick fired
     // in the 50ms window — proves the floor is in effect (no tight-loop stampede).
-    expect(enumerateMock.mock.calls.length).toBeLessThanOrEqual(1);
+    expect(claimMock.mock.calls.length).toBeLessThanOrEqual(1);
   });
 });
 

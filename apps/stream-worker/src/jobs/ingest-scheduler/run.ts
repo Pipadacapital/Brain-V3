@@ -37,9 +37,11 @@
 
 import { Pool } from 'pg';
 import {
-  enumerateConnectedConnectors,
+  claimDueRepullConnectors,
   loadRun,
 } from '../sync-request-claimer/run.js';
+import { incrementCounter } from '@brain/observability';
+import type { IConnectorRateLimiter } from '../../infrastructure/redis/ConnectorRateLimiter.js';
 import { log } from "../../log.js";
 
 /** Hard floor on the interval — prevents a misconfigured env from stampeding providers. */
@@ -48,19 +50,32 @@ export const MIN_INTERVAL_MS = 15_000;
 /** Default interval — within the requirement's 30–60s near-real-time band (§3.3). */
 export const DEFAULT_INTERVAL_MS = 45_000;
 
+/** Max connectors a single replica claims per tick (bounds per-tick work; the rest drain next tick). */
+export const DEFAULT_CLAIM_BATCH = 100;
+
 /**
- * One scheduler tick: enumerate every connected connector across every brand and
- * dispatch each one's existing repull run() — sequential, fail-isolated, overlap-safe.
- * Returns the number of connectors successfully dispatched (a run() that threw or was
- * overlap-skipped is NOT counted as a clean dispatch but never stops the tick).
+ * One scheduler tick (P1 work-queue): CLAIM a disjoint batch of DUE connectors (FOR UPDATE SKIP
+ * LOCKED via claim_due_repull_connectors, 0053) — NOT enumerate-everything — and dispatch each
+ * one's existing repull run(). Because the claim is atomic + stamps next_repull_at ahead, every
+ * replica claims a DIFFERENT batch: the scheduler is now PARALLEL across replicas (no ordinals),
+ * naturally load-balanced, each connector dispatched at most once per interval. Fail-isolated.
+ * Returns the number of connectors successfully dispatched.
  */
-export async function tick(pool: Pool): Promise<number> {
-  const connectors = await enumerateConnectedConnectors(pool);
+export async function tick(
+  pool: Pool,
+  batch: number,
+  intervalSeconds: number,
+  rateLimiter?: IConnectorRateLimiter,
+): Promise<number> {
+  const connectors = await claimDueRepullConnectors(pool, batch, intervalSeconds);
+  if (connectors.length === 0) {
+    return 0; // nothing due — another replica took the batch, or all connectors are up to date
+  }
   const brandCount = new Set(connectors.map((c) => c.brand_id)).size;
-  log.info(`tick start brands=${brandCount} connectors=${connectors.length}`);
+  log.info(`tick start claimed=${connectors.length} brands=${brandCount}`);
 
   let dispatched = 0;
-  // SEQUENTIAL dispatch (never Promise.all) — rate-limit-safe; one provider at a time.
+  // SEQUENTIAL within a replica's claimed batch (never Promise.all) — rate-limit-safe per provider.
   for (const connector of connectors) {
     const run = await loadRun(connector.provider);
     if (!run) {
@@ -69,16 +84,28 @@ export async function tick(pool: Pool): Promise<number> {
       continue;
     }
 
+    // P1: global cross-replica per-provider cap. Over the provider's quota → skip this dispatch
+    // (the connector stays stamped + re-pulls next interval), protecting shared app quotas from a
+    // parallel-replica storm. Fail-open inside the limiter.
+    if (rateLimiter && !(await rateLimiter.tryAcquire(connector.provider))) {
+      incrementCounter('ingest_scheduler_rate_limited_total', { provider: connector.provider });
+      log.warn(`[ingest-scheduler] rate-limited provider=${connector.provider} connector=${connector.connector_instance_id} — skipped this tick`);
+      continue;
+    }
+
     log.info(`[ingest-scheduler] dispatched provider=${connector.provider} ` +
               `brand=${connector.brand_id} connector=${connector.connector_instance_id}`);
     try {
-      // Same-code-path as the on-demand claimer. run()'s OWN FOR UPDATE SKIP LOCKED
-      // overlap-lock guarantees no double-run with a manual click or a previous tick.
+      // run()'s OWN FOR UPDATE SKIP LOCKED overlap-lock guards against a manual "sync now" click
+      // racing the claimed repull.
       await run(connector.connector_instance_id);
       dispatched++;
+      // P1: per-provider dispatch metric — the scale-limiting tier's throughput signal.
+      incrementCounter('ingest_scheduler_dispatch_total', { provider: connector.provider });
     } catch (err) {
       // FAIL-ISOLATION: one bad/slow connector is logged and skipped — the loop
       // continues. run() persists connector_sync_status.state='error' itself.
+      incrementCounter('ingest_scheduler_dispatch_error_total', { provider: connector.provider });
       log.error(`[ingest-scheduler] repull run failed provider=${connector.provider} ` +
                   `connector=${connector.connector_instance_id}`, { err: err });
     }
@@ -93,20 +120,26 @@ export interface IngestScheduler {
 }
 
 /**
- * Start the continuous ingestion scheduler. Returns a handle with stop() for graceful
- * shutdown (mirrors startSyncRequestClaimer / startDqChecks).
+ * Start the continuous ingestion scheduler (P1 work-queue). Every `intervalMs` each replica claims
+ * up to `batch` DUE connectors and dispatches them — replicas process DISJOINT batches in parallel,
+ * so total throughput scales with replica count (no single-leader bottleneck, no ordinals). The
+ * next_repull_at spacing equals the loop interval, so each connector is re-pulled ~every interval.
  *
  * @param pool        MUST be a brain_app pool (RLS FORCE) — never superuser 'brain'.
- * @param intervalMs  Poll interval; clamped to >= MIN_INTERVAL_MS (stampede floor).
+ * @param intervalMs  Poll/repull interval; clamped to >= MIN_INTERVAL_MS (stampede floor).
+ * @param batch       Max connectors claimed per tick per replica.
  */
 export function startIngestScheduler(
   pool: Pool,
   intervalMs: number = DEFAULT_INTERVAL_MS,
+  batch: number = DEFAULT_CLAIM_BATCH,
+  rateLimiter?: IConnectorRateLimiter,
 ): IngestScheduler {
   const effectiveInterval = Math.max(intervalMs, MIN_INTERVAL_MS);
   if (effectiveInterval !== intervalMs) {
     log.warn(`interval ${intervalMs}ms below floor — clamped to ${effectiveInterval}ms`);
   }
+  const intervalSeconds = Math.round(effectiveInterval / 1000);
 
   let running = true;
   let inFlight = false;
@@ -116,9 +149,19 @@ export function startIngestScheduler(
       if (!inFlight) {
         inFlight = true;
         try {
-          await tick(pool);
+          const started = Date.now();
+          const dispatched = await tick(pool, batch, intervalSeconds, rateLimiter);
+          incrementCounter('ingest_scheduler_tick_total', { role: 'worker' });
+          // P1 instrumentation — tick-overrun is the canary (BrainIngestStale only fires at TOTAL
+          // zero, never on degradation): a replica's claimed batch can't finish within the interval
+          // → freshness slipping. Only meaningful when it actually had work.
+          const durationMs = Date.now() - started;
+          if (dispatched > 0 && durationMs >= effectiveInterval) {
+            incrementCounter('ingest_scheduler_tick_overrun_total', {});
+            log.warn(`[ingest-scheduler] TICK OVERRUN ${durationMs}ms >= interval ${effectiveInterval}ms — freshness degrading; add replicas or lower the claim batch`);
+          }
         } catch (err) {
-          // Tick-level guard (enumerate failure etc.) — never lets the loop die.
+          // Tick-level guard (claim failure etc.) — never lets the loop die.
           log.error('tick error', { err: err });
         } finally {
           inFlight = false;

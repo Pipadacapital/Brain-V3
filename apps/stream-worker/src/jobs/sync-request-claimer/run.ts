@@ -28,6 +28,7 @@
  */
 
 import { Pool } from 'pg';
+import { withTickLeaderLock, LEADER_LOCK_SYNC_CLAIMER } from '../../infrastructure/pg/LeaderLock.js';
 import { log } from "../../log.js";
 
 /** Sentinel cursor resource for the sync request signal (matches PgSyncRequestRepository). */
@@ -64,6 +65,25 @@ export interface ConnectorRow {
   connector_instance_id: string;
   brand_id: string;
   provider: string;
+}
+
+/**
+ * P1 work-queue claim: atomically claim up to `batch` connectors whose next_repull_at is DUE and
+ * stamp them +intervalSeconds (via the SECURITY DEFINER claim_due_repull_connectors, 0053). Two
+ * replicas calling this concurrently get DISJOINT batches (FOR UPDATE SKIP LOCKED) — so the ingest
+ * scheduler runs PARALLEL across replicas with no ordinals and each connector dispatched at most
+ * once per interval. brand_id/provider are server-trusted (from the DB row, MT-1).
+ */
+export async function claimDueRepullConnectors(
+  pool: Pool,
+  batch: number,
+  intervalSeconds: number,
+): Promise<ConnectorRow[]> {
+  const res = await pool.query<ConnectorRow>(
+    `SELECT connector_instance_id, brand_id, provider FROM claim_due_repull_connectors($1, $2)`,
+    [batch, intervalSeconds],
+  );
+  return res.rows;
 }
 
 /**
@@ -223,7 +243,9 @@ export function startSyncRequestClaimer(pool: Pool, intervalMs = 5_000): SyncReq
       if (!inFlight) {
         inFlight = true;
         try {
-          await tick(pool);
+          // P1: single-leader across replicas (the per-row claim is already atomic; this also stops
+          // every replica re-enumerating + re-claiming each tick).
+          await withTickLeaderLock(pool, LEADER_LOCK_SYNC_CLAIMER, () => tick(pool));
         } catch (err) {
           log.error('tick error', { err: err });
         } finally {

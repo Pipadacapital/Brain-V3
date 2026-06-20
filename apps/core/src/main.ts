@@ -422,8 +422,10 @@ export async function main(): Promise<void> {
     connectTimeout: 5000,
   }) as unknown as SilverPool;
 
-  // Create DB pool (3-GUC middleware — NN-1).
-  const pool = await createPool({ connectionString: config.databaseUrl });
+  // Create DB pool (3-GUC middleware — NN-1). assertRlsEnforcingRole (P2.3): refuse to start if
+  // DATABASE_URL points at an RLS-bypassing role (the superuser footgun) — raw queries would
+  // silently defeat tenant isolation.
+  const pool = await createPool({ connectionString: config.databaseUrl, assertRlsEnforcingRole: true });
 
   // Create audit writer (real sha256 hash-chain — L-02).
   const auditDb = {

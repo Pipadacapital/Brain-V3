@@ -35,11 +35,38 @@ import {
   WORKSPACE_ID_GUC,
   USER_ID_GUC,
   NIL_UUID,
+  assertRoleEnforcesRls,
 } from './index.js';
 
 const BRAND_A = '11111111-1111-4111-8111-111111111111';
 const BRAND_B = '22222222-2222-4222-8222-222222222222';
 const CORR_ID = 'trace-test-123';
+
+// ── P2.3: RLS-enforcing-role guard (fake queryable — runs without Postgres) ───
+describe('assertRoleEnforcesRls', () => {
+  const fake = (row: unknown) => ({ query: async () => ({ rows: row === undefined ? [] : [row] }) });
+
+  it('resolves with the role when it is neither superuser nor BYPASSRLS', async () => {
+    const { role } = await assertRoleEnforcesRls(fake({ role: 'brain_app', is_super: false, bypass_rls: false }));
+    expect(role).toBe('brain_app');
+  });
+
+  it('throws when the role is a superuser', async () => {
+    await expect(
+      assertRoleEnforcesRls(fake({ role: 'brain', is_super: true, bypass_rls: false }), { label: 'core' }),
+    ).rejects.toThrow(/SUPERUSER/);
+  });
+
+  it('throws when the role has BYPASSRLS', async () => {
+    await expect(
+      assertRoleEnforcesRls(fake({ role: 'sneaky', is_super: false, bypass_rls: true })),
+    ).rejects.toThrow(/BYPASSRLS/);
+  });
+
+  it('throws fail-closed when the role cannot be read', async () => {
+    await expect(assertRoleEnforcesRls(fake(undefined))).rejects.toThrow(/refusing to start/);
+  });
+});
 
 // ── Unit tests for GUC helpers ────────────────────────────────────────────────
 

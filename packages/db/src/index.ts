@@ -50,6 +50,17 @@ export interface DbPoolConfig {
    * 'brain_app' — matches the role created in migration 0001_init.
    */
   appRole?: string;
+  /**
+   * When true, eagerly assert at pool creation that the CONNECTION role is NOT a superuser and does
+   * NOT have BYPASSRLS — failing closed if it does (P2.3). The per-query `SET LOCAL ROLE brain_app`
+   * only protects queries that go THROUGH this pool's query() wrapper; any raw `pool.query()` (or a
+   * `beginRlsTxn` whose SET ROLE is somehow skipped) runs as the connection role. If that role is
+   * the superuser `brain`, those queries SILENTLY bypass RLS — the exact dev footgun where the app
+   * sees rows it should not and isolation tests go false-green. Runtime entrypoints (core/worker)
+   * pass `true`; test harnesses that intentionally connect as superuser + rely on SET LOCAL ROLE
+   * leave it off. See assertRoleEnforcesRls.
+   */
+  assertRlsEnforcingRole?: boolean;
 }
 
 // ── Query context — REQUIRED for every query ──────────────────────────────────
@@ -191,6 +202,42 @@ export function buildSetRoleSql(role: string): string {
   return `SET LOCAL ROLE ${role}`;
 }
 
+/**
+ * P2.3 — fail-closed assertion that a Postgres connection role actually ENFORCES row-level security.
+ *
+ * A SECURITY DEFINER/`SET LOCAL ROLE` design protects queries routed through the RLS wrapper, but a
+ * raw query on a pool connected as the superuser `brain` bypasses FORCE RLS entirely. In dev this is
+ * the classic footgun: the app (or a test, or a migration-time check) connects as the superuser,
+ * sees rows across tenants, and isolation tests pass that should fail. This guard refuses to let a
+ * runtime pool come up on a role that can bypass RLS.
+ *
+ * Throws if the role `current_user` is a superuser OR has rolbypassrls. Returns the role on success.
+ * `q` is anything with a pg-style query() — a raw pg.Pool/Client satisfies it.
+ */
+export async function assertRoleEnforcesRls(
+  q: { query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }> },
+  opts: { label?: string } = {},
+): Promise<{ role: string }> {
+  const res = await q.query(
+    `SELECT current_user AS role,
+            current_setting('is_superuser') = 'on' AS is_super,
+            COALESCE((SELECT rolbypassrls FROM pg_roles WHERE rolname = current_user), false) AS bypass_rls`,
+  );
+  const row = res.rows[0] as { role: string; is_super: boolean; bypass_rls: boolean } | undefined;
+  if (!row) {
+    throw new Error('[db] assertRoleEnforcesRls: could not read current role — refusing to start fail-closed');
+  }
+  if (row.is_super || row.bypass_rls) {
+    const why = row.is_super ? 'is a SUPERUSER' : 'has BYPASSRLS';
+    throw new Error(
+      `[db] ${opts.label ?? 'runtime pool'} connected as role "${row.role}" which ${why} — raw queries ` +
+        `would BYPASS tenant isolation (RLS). Point the connection at the NOBYPASSRLS '${DEFAULT_APP_ROLE}' ` +
+        `role (e.g. BRAIN_APP_DATABASE_URL), not the superuser. RLS-bypassing roles are for migrations only.`,
+    );
+  }
+  return { role: row.role };
+}
+
 /** Minimal raw-client shape needed to run a query — satisfied by pg.PoolClient. */
 export interface RawQueryable {
   query(
@@ -315,6 +362,16 @@ export async function createPool(config: DbPoolConfig): Promise<DbPool> {
   // role fails at startup rather than on the first query (audit R-01).
   const appRole = config.appRole ?? DEFAULT_APP_ROLE;
   buildSetRoleSql(appRole);
+
+  // P2.3: fail closed at startup if a runtime pool is on an RLS-bypassing role (the dev footgun).
+  if (config.assertRlsEnforcingRole) {
+    try {
+      await assertRoleEnforcesRls(pool, { label: 'createPool runtime pool' });
+    } catch (err) {
+      await pool.end().catch(() => {});
+      throw err;
+    }
+  }
 
   return {
     async connect(): Promise<DbClient> {

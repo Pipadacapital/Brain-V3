@@ -7,14 +7,14 @@
 # Default image (the core image — most jobs are core entrypoints). Per-job `image:` overrides this.
 image:
   repository: REPLACE_WITH_ECR_REGISTRY/brain-core
-  tag: latest
+  tag: ""              # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
   digest: ""
   pullPolicy: IfNotPresent
 
 # Stream-worker image (for jobs whose entrypoint ships in that deployable, e.g. revenue-finalization).
 streamWorkerImage:
   repository: REPLACE_WITH_ECR_REGISTRY/brain-stream-worker
-  tag: latest
+  tag: ""              # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
   digest: ""
   pullPolicy: IfNotPresent
 
@@ -59,3 +59,9 @@ jobs:
     schedule: "0 * * * *"          # hourly — horizon-based realization (stream-worker image)
     command: ["node", "dist/jobs/revenue-finalization.js"]
     useStreamWorkerImage: true
+  - name: audit-checkpoint
+    schedule: "15 * * * *"         # hourly at :15 — WORM-anchor the audit hash-chain head to S3 (R-19)
+    command: ["node", "dist/jobs/audit-checkpoint.js"]
+    # Activation needs AUDIT_CHECKPOINT_BUCKET (= terraform output s3-audit.audit_bucket_name) +
+    # AWS_REGION in the pod env (via core-env secret). The brain-jobs IRSA role already grants
+    # Put/Get/List on checkpoints/* (s3-audit). Unset → the job safely no-ops (dev).

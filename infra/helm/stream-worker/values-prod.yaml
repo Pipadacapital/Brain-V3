@@ -2,7 +2,7 @@ replicaCount: 3
 
 image:
   repository: REPLACE_WITH_ECR_REGISTRY/brain-stream-worker-prod
-  tag: latest
+  tag: ""              # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
   digest: ""
 
 envSecretName: stream-worker-env

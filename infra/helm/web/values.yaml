@@ -3,7 +3,7 @@ replicaCount: 2
 
 image:
   repository: REPLACE_WITH_ECR_REGISTRY/brain-web
-  tag: latest
+  tag: ""              # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
   digest: ""
   pullPolicy: IfNotPresent
 

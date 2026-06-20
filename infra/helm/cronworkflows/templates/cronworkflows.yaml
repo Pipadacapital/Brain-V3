@@ -33,7 +33,7 @@ spec:
           limit: {{ $root.Values.defaults.backoffLimit | quote }}
           retryPolicy: OnError
         container:
-          image: "{{ $image.repository }}{{ if $image.digest }}@{{ $image.digest }}{{ else }}:{{ $image.tag }}{{ end }}"
+          image: "{{ $image.repository }}{{ if $image.digest }}@{{ $image.digest }}{{ else if and $image.tag (ne $image.tag "latest") }}:{{ $image.tag }}{{ else }}{{ fail "image.digest (preferred) or an immutable, non-':latest' image.tag is required (B3) — refusing to deploy an unpinned/mutable image" }}{{ end }}"
           imagePullPolicy: {{ $image.pullPolicy }}
           command: {{ .command | toJson }}
           {{- if $root.Values.envSecretName }}

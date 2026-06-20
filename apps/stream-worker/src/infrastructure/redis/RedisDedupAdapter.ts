@@ -53,6 +53,27 @@ export class RedisDedupAdapter {
     return { isFirstSight: result === 'OK' };
   }
 
+  /**
+   * Read-only fast-path check (R-08): has this (brand, event) already been claimed? Returns true if the
+   * dedup slot is present. This is ONLY an optimization to skip a known-duplicate's DB round-trip — the
+   * DURABLE dedup is the bronze_events PK (ON CONFLICT DO NOTHING). A miss claims NOTHING, so a write
+   * that fails afterwards can be safely reprocessed (no false "seen" slot to silently drop the event).
+   */
+  async check(brandId: string, eventId: string): Promise<boolean> {
+    const key = buildDedupKey(brandId, eventId);
+    return (await this.redis.exists(key)) === 1;
+  }
+
+  /**
+   * Claim the dedup slot AFTER a durable Bronze write succeeds (R-08 — NEVER before). Plain SET EX (not
+   * NX): the write already committed, so this only primes the fast-path for future sightings. Best-effort
+   * by contract — a Redis hiccup here must not fail an already-durable event (the PK still dedups).
+   */
+  async claim(brandId: string, eventId: string): Promise<void> {
+    const key = buildDedupKey(brandId, eventId);
+    await this.redis.set(key, '1', 'EX', DEDUP_TTL_SECONDS);
+  }
+
   async quit(): Promise<void> {
     await this.redis.quit();
   }

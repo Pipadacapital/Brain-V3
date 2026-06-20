@@ -157,10 +157,11 @@ export class ProcessEventUseCase {
       brand_id = derivedBrandId;
     }
 
-    // ── Step 2: Redis dedup (D-3) ─────────────────────────────────────────────
-    const dedupResult = await this.dedup.checkAndClaim(brand_id, event_id);
-    if (!dedupResult.isFirstSight) {
-      // Redis NX failed → duplicate event → commit offset, skip write
+    // ── Step 2: Redis dedup — fast-path CHECK only (R-08) ─────────────────────
+    // The slot is CLAIMED only AFTER the durable Bronze write (Step 5), never before: claiming first
+    // means a transient write failure leaves a "seen" slot, and the reprocessed message would be
+    // skipped + committed → the event is silently lost. The DURABLE dedup is the bronze_events PK.
+    if (await this.dedup.check(brand_id, event_id)) {
       return { outcome: 'dedup_hit', brandId: brand_id, eventId: event_id, eventName: event_name };
     }
 
@@ -194,11 +195,28 @@ export class ProcessEventUseCase {
     const writeResult = await this.bronze.write(row);
 
     if (!writeResult.inserted) {
-      // PK conflict — treat as dedup-hit (durable backstop, §5)
+      // PK conflict — a durable duplicate. Prime the fast-path slot so future sightings short-circuit.
+      await this.claimDedupBestEffort(brand_id, event_id);
       return { outcome: 'pk_conflict', brandId: brand_id, eventId: event_id, eventName: event_name };
     }
 
+    // R-08: the write is DURABLE — only NOW claim the Redis fast-path slot. Best-effort: a Redis failure
+    // must not fail an already-committed event (reprocessing re-writes → PK conflict → still deduped).
+    await this.claimDedupBestEffort(brand_id, event_id);
     return { outcome: 'written', brandId: brand_id, eventId: event_id };
+  }
+
+  /**
+   * Claim the Redis fast-path dedup slot AFTER a durable write (R-08). Best-effort: the durable dedup is
+   * the bronze_events PK, so a Redis failure here is non-fatal — swallow it (a future duplicate just pays
+   * one extra DB round-trip that the PK rejects). NEVER let it fail an already-committed event.
+   */
+  private async claimDedupBestEffort(brandId: string, eventId: string): Promise<void> {
+    try {
+      await this.dedup.claim(brandId, eventId);
+    } catch {
+      // Non-fatal: the PK is the durable dedup; the fast-path slot is just an optimization.
+    }
   }
 
   /**

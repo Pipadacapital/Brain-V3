@@ -1,23 +1,18 @@
 /**
- * ShopfloBronzeBridgeConsumer — lands `shopflo.checkout_abandoned.v1` events in Bronze (P0).
+ * EventBronzeBridgeConsumer — lands a specific server-trusted event_name in Bronze (P0 pattern).
  *
- * The Shopflo webhook handler resolves brand_id server-side (MT-1, from the connector DB row),
- * builds a CollectorEventV1, and produces it to the live topic. But the live topic's primary
- * consumer (CollectorEventConsumer) runs with enforceTenantDerivation=true and QUARANTINES any
- * event without an install_token — so every Shopflo event was silently quarantined out of Bronze,
- * and computeCheckoutFunnel (reads bronze_events WHERE event_type='shopflo.checkout_abandoned.v1')
- * rendered permanent `no_data` while the connector showed Healthy. This bridge fixes that.
+ * Several connectors (Shopflo checkout-abandoned, GoKwik RTO-Predict) resolve brand_id server-side
+ * (MT-1, from the connector DB row) and produce a well-formed CollectorEventV1 to the live topic —
+ * but those events carry NO install_token, so the pixel-lane CollectorEventConsumer
+ * (enforceTenantDerivation=true) QUARANTINES them out of Bronze. Their read seams then render
+ * permanent no_data. This bridge is the generic fix: a separate consumer group that filters ONE
+ * event_name and lands it in Bronze with enforceTenantDerivation=FALSE (the brand_id is already
+ * server-trusted, like the backfill lane).
  *
- * Pattern (mirrors LiveLedgerBridgeConsumer + the backfill lane):
- *   - Same live topic, SEPARATE consumer group → independent offset, no impact on the pixel lane.
- *   - Filter: skip any event whose event_name != 'shopflo.checkout_abandoned.v1' (commit + continue).
- *   - Bronze write via a ProcessEventUseCase with enforceTenantDerivation=FALSE: the brand_id is
- *     ALREADY server-trusted (the webhook handler derived it from the connector row, not the body),
- *     exactly like the backfill-order lane. No install_token is required or expected.
- *   - Manual at-least-once commit ONLY after the Bronze write / dedup-hit confirms (D-7); durable
- *     Redis retry counter (T2-8) → DLQ after MAX_RETRY.
+ * One instance per (event_name, consumer group). Manual at-least-once commit ONLY after the Bronze
+ * write / dedup-hit confirms (D-7); durable Redis retry counter (T2-8) → DLQ after MAX_RETRY.
  *
- * WIRED in main.ts — do NOT remove without updating shopflo-bronze-wiring.e2e.test.ts.
+ * WIRED in main.ts — do NOT remove without updating the corresponding *-bronze-wiring.e2e.test.ts.
  */
 import { Consumer, Kafka, EachMessagePayload } from 'kafkajs';
 import { incrementCounter } from '@brain/observability';
@@ -26,25 +21,26 @@ import { DlqProducer } from '../../infrastructure/kafka/DlqProducer.js';
 import type { IRetryCounter } from '../../infrastructure/redis/RetryCounterAdapter.js';
 import { log } from '../../log.js';
 
-/** The sole event this bridge lands in Bronze (the checkout-funnel read seam consumes it). */
-const SHOPFLO_EVENT_NAME = 'shopflo.checkout_abandoned.v1';
-
 /** Maximum per-(partition, offset) retry count before DLQ routing. */
 const MAX_RETRY = 5;
 
-export class ShopfloBronzeBridgeConsumer {
+export class EventBronzeBridgeConsumer {
   private readonly consumer: Consumer;
   private readonly dlqProducer: DlqProducer;
   /** Durable retry-counter scope (T2-8): `{groupId}:{topic}` — isolates same-topic groups. */
   private readonly retryScope: string;
 
   constructor(
-    private readonly kafka: Kafka,
+    kafka: Kafka,
     /** A ProcessEventUseCase built with enforceTenantDerivation=FALSE (brand_id server-trusted). */
     private readonly processEvent: ProcessEventUseCase,
     private readonly topic: string,
     private readonly groupId: string,
     private readonly retryCounter: IRetryCounter,
+    /** The ONLY event_name this bridge lands in Bronze (others are committed + skipped). */
+    private readonly eventName: string,
+    /** Observability counter incremented per Bronze write (e.g. 'shopflo_bronze_write_total'). */
+    private readonly writeCounter: string,
   ) {
     this.consumer = kafka.consumer({ groupId });
     this.dlqProducer = new DlqProducer(kafka);
@@ -64,7 +60,7 @@ export class ShopfloBronzeBridgeConsumer {
         const commitNext = () =>
           this.consumer.commitOffsets([{ topic, partition, offset: String(Number(offset) + 1) }]);
 
-        // ── Filter: only shopflo.checkout_abandoned.v1 (cheap header peek, fallback to body) ──
+        // ── Filter: only our event_name (cheap header peek, fallback to body) ──
         let eventName: string | null = null;
         const headerName = message.headers?.['event_name'];
         if (headerName) eventName = headerName.toString('utf8');
@@ -73,12 +69,11 @@ export class ShopfloBronzeBridgeConsumer {
             const parsed = JSON.parse(message.value.toString('utf8')) as Record<string, unknown>;
             eventName = typeof parsed['event_name'] === 'string' ? parsed['event_name'] : null;
           } catch {
-            // Unparseable JSON — not our event; commit + continue (the pixel lane DLQs it).
-            await commitNext();
+            await commitNext(); // unparseable — not ours (the pixel lane DLQs it)
             return;
           }
         }
-        if (eventName !== SHOPFLO_EVENT_NAME) {
+        if (eventName !== this.eventName) {
           await commitNext();
           return;
         }
@@ -96,20 +91,20 @@ export class ShopfloBronzeBridgeConsumer {
             );
             await commitNext();
             await this.retryCounter.reset(this.retryScope, partition, offset);
-            log.info(`[shopflo-bronze] DLQ (invalid) partition=${partition} offset=${offset} reason=${result.reason}`);
+            log.info(`[bronze-bridge:${this.eventName}] DLQ (invalid) partition=${partition} offset=${offset} reason=${result.reason}`);
             return;
           }
 
-          // written | dedup_hit | pk_conflict | quarantined → the event is accounted for; commit (D-7).
+          // written | dedup_hit | pk_conflict → accounted for; commit (D-7).
           if (result.outcome === 'written') {
-            incrementCounter('shopflo_bronze_write_total', { brand_id: result.brandId ?? 'unknown' });
+            incrementCounter(this.writeCounter, { brand_id: result.brandId ?? 'unknown' });
           }
           await commitNext();
           await this.retryCounter.reset(this.retryScope, partition, offset);
-          log.info(`[shopflo-bronze] ${result.outcome} brand=${result.brandId} event=${result.eventId} partition=${partition} offset=${offset}`);
+          log.info(`[bronze-bridge:${this.eventName}] ${result.outcome} brand=${result.brandId} event=${result.eventId} partition=${partition} offset=${offset}`);
         } catch (err) {
           const current = await this.retryCounter.increment(this.retryScope, partition, offset);
-          log.error(`[shopflo-bronze] write error (attempt ${current}/${MAX_RETRY}) partition=${partition} offset=${offset}`, { err });
+          log.error(`[bronze-bridge:${this.eventName}] write error (attempt ${current}/${MAX_RETRY}) partition=${partition} offset=${offset}`, { err });
 
           if (current >= MAX_RETRY) {
             try {
@@ -121,9 +116,9 @@ export class ShopfloBronzeBridgeConsumer {
               );
               await commitNext();
               await this.retryCounter.reset(this.retryScope, partition, offset);
-              log.warn(`[shopflo-bronze] DLQ (max retry) partition=${partition} offset=${offset}`);
+              log.warn(`[bronze-bridge:${this.eventName}] DLQ (max retry) partition=${partition} offset=${offset}`);
             } catch (dlqErr) {
-              log.error('[shopflo-bronze] DLQ produce failed — not committing offset', { err: dlqErr });
+              log.error(`[bronze-bridge:${this.eventName}] DLQ produce failed — not committing offset`, { err: dlqErr });
             }
           }
           if (current < MAX_RETRY) throw err; // KafkaJS redelivers without committing

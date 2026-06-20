@@ -56,6 +56,8 @@ export { computeCodMix } from './cod-mix.js';
 export type { CodMixResult } from './cod-mix.js';
 export { computeCheckoutFunnel } from './checkout-funnel.js';
 export type { CheckoutFunnelResult } from './checkout-funnel.js';
+export { computeRtoRiskDistribution } from './cod-rto-prediction.js';
+export type { RtoRiskDistributionResult } from './cod-rto-prediction.js';
 
 // Silver tier — order-status-mix (the FIRST Silver read; non-additive, ADR-004)
 export { computeOrderStatusMix } from './order-status-mix.js';

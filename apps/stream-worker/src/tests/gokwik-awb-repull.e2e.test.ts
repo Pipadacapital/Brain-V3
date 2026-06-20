@@ -28,6 +28,7 @@ import { Pool } from 'pg';
 import { Kafka } from 'kafkajs';
 import { LedgerWriter } from '../infrastructure/pg/LedgerWriter.js';
 import { GokwikAwbLedgerConsumer } from '../interfaces/consumers/GokwikAwbLedgerConsumer.js';
+import { InMemoryRetryCounter } from './support/InMemoryRetryCounter.js';
 import { run as runAwbRepull } from '../jobs/gokwik-awb-repull/run.js';
 import { assertBrainApp, seedTestBrand, cleanupConnectorFixtures } from './helpers/connector-lifecycle-fixtures.js';
 
@@ -176,7 +177,7 @@ beforeAll(async () => {
 
   kafka = new Kafka({ clientId: 'gokwik-awb-e2e', brokers: KAFKA_BROKERS, logLevel: 0 });
   ledgerWriter = new LedgerWriter(BRAIN_APP_DB_URL);
-  consumer = new GokwikAwbLedgerConsumer(kafka, ledgerWriter, TOPIC, GK_GROUP);
+  consumer = new GokwikAwbLedgerConsumer(kafka, ledgerWriter, TOPIC, GK_GROUP, new InMemoryRetryCounter());
   await consumer.start();
 }, 60_000);
 

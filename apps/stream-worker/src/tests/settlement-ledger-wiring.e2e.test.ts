@@ -30,6 +30,7 @@ import { Pool } from 'pg';
 import { Kafka, Producer } from 'kafkajs';
 import { LedgerWriter } from '../infrastructure/pg/LedgerWriter.js';
 import { SettlementLedgerConsumer } from '../interfaces/consumers/SettlementLedgerConsumer.js';
+import { InMemoryRetryCounter } from './support/InMemoryRetryCounter.js';
 import { CollectorEventV1Schema } from '@brain/contracts';
 import {
   uuidV5FromSettlementItem,
@@ -263,7 +264,7 @@ beforeAll(async () => {
   // SettlementLedgerConsumer — the SAME class wired in main.ts (MB-4).
   // Test-specific consumer group so offsets are independent of production groups.
   ledgerWriter = new LedgerWriter(BRAIN_APP_DB_URL);
-  consumer = new SettlementLedgerConsumer(kafka, ledgerWriter, mapPool, TOPIC, SETTLEMENT_WIRING_GROUP);
+  consumer = new SettlementLedgerConsumer(kafka, ledgerWriter, mapPool, TOPIC, SETTLEMENT_WIRING_GROUP, new InMemoryRetryCounter());
 
   // UN-WIRE TEST: comment out `await consumer.start()` → SW1/SW2 poll will time out → RED.
   await consumer.start();

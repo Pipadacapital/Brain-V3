@@ -38,6 +38,7 @@ import { RedisDedupAdapter } from '../infrastructure/redis/RedisDedupAdapter.js'
 import { BronzeRepository } from '../infrastructure/pg/BronzeRepository.js';
 import { ProcessEventUseCase } from '../application/ProcessEventUseCase.js';
 import { CollectorEventConsumer } from '../interfaces/consumers/CollectorEventConsumer.js';
+import { InMemoryRetryCounter } from './support/InMemoryRetryCounter.js';
 import { buildDedupKey } from '../domain/bronze/DedupPolicy.js';
 
 // ── Test config ────────────────────────────────────────────────────────────────
@@ -249,7 +250,7 @@ describe('Full-wire pipeline E2E (F-QA-01): POST /collect → spool → Redpanda
     // Redpanda → stream-worker → Bronze plumbing) with a trusted-brand fixture, NOT the R2
     // token→brand gate (owned by ingest-hardening.e2e.test.ts, which drives a token-bearing event).
     const useCase = new ProcessEventUseCase(dedup, bronze, undefined, false);
-    consumer = new CollectorEventConsumer(kafka, useCase, TOPIC, CONSUMER_GROUP);
+    consumer = new CollectorEventConsumer(kafka, useCase, TOPIC, CONSUMER_GROUP, new InMemoryRetryCounter());
 
     await consumer.start();
     console.info('[pipeline-wire.e2e] stream-worker consumer started');

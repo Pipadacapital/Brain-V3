@@ -45,6 +45,7 @@ import { Pool } from 'pg';
 import { Kafka, Producer } from 'kafkajs';
 import { LedgerWriter } from '../infrastructure/pg/LedgerWriter.js';
 import { LiveLedgerBridgeConsumer } from '../interfaces/consumers/LiveLedgerBridgeConsumer.js';
+import { InMemoryRetryCounter } from './support/InMemoryRetryCounter.js';
 import { CollectorEventV1Schema } from '@brain/contracts';
 import { uuidV5FromOrderLive } from '../jobs/shopify-backfill/uuid-utils.js';
 import {
@@ -217,7 +218,7 @@ beforeAll(async () => {
   // Using a test-specific consumer group so offsets are independent of the
   // stream-worker-live / live-ledger-bridge production groups.
   ledgerWriter = new LedgerWriter(BRAIN_APP_DB_URL);
-  consumer = new LiveLedgerBridgeConsumer(kafka, ledgerWriter, TOPIC, WIRING_TEST_GROUP);
+  consumer = new LiveLedgerBridgeConsumer(kafka, ledgerWriter, TOPIC, WIRING_TEST_GROUP, new InMemoryRetryCounter());
 
   // Start the consumer — this is the WIRING UNDER TEST.
   // UN-WIRE TEST: comment out `await consumer.start()` and TW1/TW2 will timeout → RED.

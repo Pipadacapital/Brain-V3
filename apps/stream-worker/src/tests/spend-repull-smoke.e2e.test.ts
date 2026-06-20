@@ -24,6 +24,7 @@ import { Pool } from 'pg';
 import { Kafka } from 'kafkajs';
 import { LedgerWriter } from '../infrastructure/pg/LedgerWriter.js';
 import { SpendLedgerConsumer } from '../interfaces/consumers/SpendLedgerConsumer.js';
+import { InMemoryRetryCounter } from './support/InMemoryRetryCounter.js';
 import { run as runMetaRepull } from '../jobs/meta-spend-repull/run.js';
 import { run as runGoogleRepull } from '../jobs/google-ads-spend-repull/run.js';
 import { assertBrainApp, seedTestBrand, cleanupConnectorFixtures } from './helpers/connector-lifecycle-fixtures.js';
@@ -128,7 +129,7 @@ beforeAll(async () => {
 
   kafka = new Kafka({ clientId: 'spend-smoke-consumer', brokers: KAFKA_BROKERS, logLevel: 0 });
   ledgerWriter = new LedgerWriter(BRAIN_APP_DB_URL);
-  consumer = new SpendLedgerConsumer(kafka, ledgerWriter, TOPIC, SMOKE_GROUP);
+  consumer = new SpendLedgerConsumer(kafka, ledgerWriter, TOPIC, SMOKE_GROUP, new InMemoryRetryCounter());
   await consumer.start();
 }, 60_000);
 

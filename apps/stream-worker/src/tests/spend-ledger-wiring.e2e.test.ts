@@ -30,6 +30,7 @@ import { Pool } from 'pg';
 import { Kafka, Producer } from 'kafkajs';
 import { LedgerWriter } from '../infrastructure/pg/LedgerWriter.js';
 import { SpendLedgerConsumer } from '../interfaces/consumers/SpendLedgerConsumer.js';
+import { InMemoryRetryCounter } from './support/InMemoryRetryCounter.js';
 import { CollectorEventV1Schema } from '@brain/contracts';
 import { uuidV5FromSpendRow, SPEND_LIVE_V1_EVENT_NAME } from '@brain/ad-spend-mapper';
 import { acquireCursorLock } from '../jobs/meta-spend-repull/run.js';
@@ -199,7 +200,7 @@ beforeAll(async () => {
 
   // SpendLedgerConsumer — the SAME class wired in main.ts. Test-specific consumer group.
   ledgerWriter = new LedgerWriter(BRAIN_APP_DB_URL);
-  consumer = new SpendLedgerConsumer(kafka, ledgerWriter, TOPIC, SPEND_WIRING_GROUP);
+  consumer = new SpendLedgerConsumer(kafka, ledgerWriter, TOPIC, SPEND_WIRING_GROUP, new InMemoryRetryCounter());
 
   // UN-WIRE TEST: comment out `await consumer.start()` → AD1 poll will time out → RED.
   await consumer.start();

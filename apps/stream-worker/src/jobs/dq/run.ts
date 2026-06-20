@@ -21,6 +21,7 @@ import { schemaValidityCheck } from './schema-validity-check.js';
 import { reconciliationCheck } from './reconciliation-check.js';
 import { writeDqResult, type DqCheckRow } from './writer.js';
 import { createSilverReader, type SilverReader, type SilverReaderConfig } from './silver-reader.js';
+import { withTickLeaderLock, LEADER_LOCK_DQ_CHECKS } from '../../infrastructure/pg/LeaderLock.js';
 import { log } from "../../log.js";
 
 interface BrandRow {
@@ -119,8 +120,9 @@ export function startDqChecks(pool: Pool, opts: StartDqChecksOptions = {}): DqCh
       if (!inFlight) {
         inFlight = true;
         try {
-          const n = await tick(pool, silver);
-          log.info(`tick complete — ${n} check rows written`);
+          // P1: single-leader across replicas — one DQ pass per interval, not N× duplicate compute.
+          const out = await withTickLeaderLock(pool, LEADER_LOCK_DQ_CHECKS, () => tick(pool, silver));
+          if (out.ranAsLeader) log.info(`tick complete — ${out.result} check rows written`);
         } catch (err) {
           log.error('tick error', { err: err });
         } finally {

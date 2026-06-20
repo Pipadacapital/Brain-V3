@@ -40,6 +40,7 @@ import {
   enumerateConnectedConnectors,
   loadRun,
 } from '../sync-request-claimer/run.js';
+import { withTickLeaderLock, LEADER_LOCK_INGEST_SCHEDULER } from '../../infrastructure/pg/LeaderLock.js';
 import { log } from "../../log.js";
 
 /** Hard floor on the interval — prevents a misconfigured env from stampeding providers. */
@@ -116,7 +117,9 @@ export function startIngestScheduler(
       if (!inFlight) {
         inFlight = true;
         try {
-          await tick(pool);
+          // P1: single-leader across replicas — only the lock winner runs the dispatch tick, so the
+          // connector API load is 1× (not N×). Non-leaders skip cheaply and retry next interval.
+          await withTickLeaderLock(pool, LEADER_LOCK_INGEST_SCHEDULER, () => tick(pool));
         } catch (err) {
           // Tick-level guard (enumerate failure etc.) — never lets the loop die.
           log.error('tick error', { err: err });

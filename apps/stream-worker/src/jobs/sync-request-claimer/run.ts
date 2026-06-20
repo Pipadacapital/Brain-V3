@@ -28,6 +28,7 @@
  */
 
 import { Pool } from 'pg';
+import { withTickLeaderLock, LEADER_LOCK_SYNC_CLAIMER } from '../../infrastructure/pg/LeaderLock.js';
 import { log } from "../../log.js";
 
 /** Sentinel cursor resource for the sync request signal (matches PgSyncRequestRepository). */
@@ -223,7 +224,9 @@ export function startSyncRequestClaimer(pool: Pool, intervalMs = 5_000): SyncReq
       if (!inFlight) {
         inFlight = true;
         try {
-          await tick(pool);
+          // P1: single-leader across replicas (the per-row claim is already atomic; this also stops
+          // every replica re-enumerating + re-claiming each tick).
+          await withTickLeaderLock(pool, LEADER_LOCK_SYNC_CLAIMER, () => tick(pool));
         } catch (err) {
           log.error('tick error', { err: err });
         } finally {

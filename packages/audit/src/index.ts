@@ -108,6 +108,74 @@ export function computeEntryHash(
   return createHash('sha256').update(input, 'utf8').digest('hex');
 }
 
+// ── WORM checkpoint (R-19 anchor): periodic chain tip → S3 Object-Lock ────────
+//
+// The in-DB hash-chain proves NO row was altered WITHOUT also rewriting every later row.
+// But an attacker with Postgres superuser can rewrite the WHOLE chain consistently. The
+// external anchor closes that: periodically write the chain HEAD (its id + entry_hash + row
+// count) to a WORM (S3 Object-Lock COMPLIANCE) bucket nobody — not even root — can overwrite.
+// A later chain-walk that disagrees with any immutable checkpoint is proof of tampering.
+//
+// Each checkpoint also references the PRIOR checkpoint's hash, so the checkpoints form their
+// own append-only chain independent of Postgres. PURE builder here; the S3 read/write is the
+// job's (apps/core) I/O concern.
+
+/** The audit chain HEAD read from Postgres at checkpoint time. */
+export interface AuditChainHead {
+  /** max(id) of audit_log as a string (BIGINT-safe). '0' when the table is empty. */
+  headId: string;
+  /** entry_hash of that head row; null when the table is empty (genesis checkpoint). */
+  headEntryHash: string | null;
+  /** Total audit_log row count as a string (BIGINT-safe). */
+  rowCount: string;
+}
+
+/** A WORM checkpoint record — written verbatim (as canonical JSON) to S3 Object-Lock. */
+export interface AuditCheckpoint {
+  /** ISO-8601 instant the checkpoint was taken (supplied by the caller — no hidden clock). */
+  checkpointAt: string;
+  headId: string;
+  headEntryHash: string | null;
+  rowCount: string;
+  /** The previous checkpoint's checkpointHash — chains the checkpoints themselves. */
+  prevCheckpointHash: string | null;
+  /** sha256 over the canonical form of every field above (the tamper-evident seal). */
+  checkpointHash: string;
+}
+
+/**
+ * buildAuditCheckpoint — PURE. Seals the chain head + the prior checkpoint hash into a new
+ * checkpoint record. Deterministic: same inputs → same checkpointHash (verifiable offline).
+ */
+export function buildAuditCheckpoint(
+  head: AuditChainHead,
+  prevCheckpointHash: string | null,
+  checkpointAt: string,
+): AuditCheckpoint {
+  const sealed = {
+    checkpointAt,
+    headId: head.headId,
+    headEntryHash: head.headEntryHash,
+    rowCount: head.rowCount,
+    prevCheckpointHash,
+  };
+  const checkpointHash = createHash('sha256').update(canonicalize(sealed), 'utf8').digest('hex');
+  return { ...sealed, checkpointHash };
+}
+
+/**
+ * verifyAuditCheckpoint — recompute the seal and compare (offline tamper check). Returns true
+ * iff the record's checkpointHash matches a fresh hash of its sealed fields.
+ */
+export function verifyAuditCheckpoint(cp: AuditCheckpoint): boolean {
+  const recomputed = buildAuditCheckpoint(
+    { headId: cp.headId, headEntryHash: cp.headEntryHash, rowCount: cp.rowCount },
+    cp.prevCheckpointHash,
+    cp.checkpointAt,
+  );
+  return recomputed.checkpointHash === cp.checkpointHash;
+}
+
 // ── Writer interface ─────────────────────────────────────────────────────────
 
 /**

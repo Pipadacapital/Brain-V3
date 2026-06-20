@@ -141,6 +141,27 @@ data "aws_iam_policy_document" "audit_writer" {
     resources = ["${aws_s3_bucket.audit.arn}/checkpoints/*"]
   }
 
+  # Read the prior checkpoint to chain the new one (least-privilege: checkpoints/ prefix only).
+  # GetObject reads the newest record's hash; ListBucket (prefix-scoped) finds it.
+  statement {
+    sid       = "AllowAuditCheckpointRead"
+    effect    = "Allow"
+    actions   = ["s3:GetObject"]
+    resources = ["${aws_s3_bucket.audit.arn}/checkpoints/*"]
+  }
+
+  statement {
+    sid       = "AllowAuditCheckpointList"
+    effect    = "Allow"
+    actions   = ["s3:ListBucket"]
+    resources = [aws_s3_bucket.audit.arn]
+    condition {
+      test     = "StringLike"
+      variable = "s3:prefix"
+      values   = ["checkpoints/*"]
+    }
+  }
+
   statement {
     sid       = "AllowKMSForAudit"
     effect    = "Allow"
@@ -151,7 +172,7 @@ data "aws_iam_policy_document" "audit_writer" {
 
 resource "aws_iam_policy" "audit_writer" {
   name        = "${var.project}-${var.environment}-audit-writer"
-  description = "Audit checkpoint writer: PutObject on checkpoints prefix only"
+  description = "Audit checkpoint writer: Put/Get/List on the checkpoints prefix (for hash-chaining)"
   policy      = data.aws_iam_policy_document.audit_writer.json
 }
 

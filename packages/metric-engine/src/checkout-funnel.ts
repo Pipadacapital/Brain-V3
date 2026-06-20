@@ -85,18 +85,21 @@ export async function computeCheckoutFunnel(
       abandoned_value: string;
       synthetic_cnt: string;
     }>(
+      // The canonical Bronze envelope nests the mapper output under payload.properties.* (every
+      // event_type — ProcessEventUseCase builds payload = { event_name, properties, ... }). Read
+      // through ->'properties' (NOT top-level payload->>) or every FILTER silently matches 0.
       `SELECT
-          COUNT(*)::text                                                      AS abandoned,
+          COUNT(*)::text                                                                       AS abandoned,
           COUNT(*) FILTER (
-            WHERE COALESCE((payload->>'total_discount_minor')::numeric, 0) > 0
-          )::text                                                             AS discount_applied,
+            WHERE COALESCE((payload->'properties'->>'total_discount_minor')::numeric, 0) > 0
+          )::text                                                                              AS discount_applied,
           COUNT(*) FILTER (
-            WHERE (payload->>'has_address') = 'true'
-          )::text                                                             AS with_address,
-          COALESCE(SUM((payload->>'total_price_minor')::numeric), 0)::text    AS abandoned_value,
+            WHERE (payload->'properties'->>'has_address') = 'true'
+          )::text                                                                              AS with_address,
+          COALESCE(SUM((payload->'properties'->>'total_price_minor')::numeric), 0)::text       AS abandoned_value,
           COUNT(*) FILTER (
-            WHERE (payload->>'data_source') = 'synthetic'
-          )::text                                                             AS synthetic_cnt
+            WHERE (payload->'properties'->>'data_source') = 'synthetic'
+          )::text                                                                              AS synthetic_cnt
         FROM bronze_events
         WHERE brand_id = $1
           AND event_type = $2

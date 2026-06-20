@@ -50,6 +50,7 @@ import { LiveLedgerBridgeConsumer } from './interfaces/consumers/LiveLedgerBridg
 import { SettlementLedgerConsumer } from './interfaces/consumers/SettlementLedgerConsumer.js';
 import { SpendLedgerConsumer } from './interfaces/consumers/SpendLedgerConsumer.js';
 import { GokwikAwbLedgerConsumer } from './interfaces/consumers/GokwikAwbLedgerConsumer.js';
+import { ShopfloBronzeBridgeConsumer } from './interfaces/consumers/ShopfloBronzeBridgeConsumer.js';
 import { LedgerWriter } from './infrastructure/pg/LedgerWriter.js';
 import mysql from 'mysql2/promise';
 import { createAttributionReversalHook } from '@brain/attribution-writer';
@@ -161,6 +162,22 @@ export async function main(): Promise<void> {
   // on unresolved/mismatch/absent-consent; audit writes pixel.brand_mismatch (R2/R3).
   const useCase = new ProcessEventUseCase(dedup, bronze, auditWriter);
   const consumer = new CollectorEventConsumer(kafka, useCase, topic, groupId, retryCounter);
+
+  // ── Shopflo Bronze bridge (P0 — restore the severed checkout-funnel landing) ──
+  // Shopflo webhook events (shopflo.checkout_abandoned.v1) carry NO install_token; the pixel lane
+  // above quarantines them, so they never reached Bronze and computeCheckoutFunnel was permanent
+  // no_data. This separate consumer group lands them in Bronze with enforceTenantDerivation=FALSE
+  // (brand_id is already server-trusted — the webhook handler derived it from the connector row,
+  // MT-1). Reuses dedup+bronze (stateless adapters). WIRED: do NOT remove without updating
+  // shopflo-bronze-wiring.e2e.test.ts.
+  const shopfloBronzeGroupId =
+    process.env['SHOPFLO_BRONZE_CONSUMER_GROUP_ID'] ?? 'shopflo-bronze-bridge';
+  const shopfloProcessEvent = new ProcessEventUseCase(
+    dedup, bronze, undefined, /* enforceTenantDerivation */ false,
+  );
+  const shopfloBronzeConsumer = new ShopfloBronzeBridgeConsumer(
+    kafka, shopfloProcessEvent, topic, shopfloBronzeGroupId, retryCounter,
+  );
 
   // ── Identity bridge (D-7: same process, no new deployable) ──────────────────
   // SaltProvider: dev uses LocalSecretsProvider (env var holds 64-hex salt directly).
@@ -393,6 +410,7 @@ export async function main(): Promise<void> {
       settlementLedgerConsumer.stop(),
       spendLedgerConsumer.stop(),
       gokwikAwbLedgerConsumer.stop(),
+      shopfloBronzeConsumer.stop(),
       syncRequestClaimer.stop(),
       dqChecker.stop(),
       ingestScheduler.stop(),
@@ -491,6 +509,13 @@ export async function main(): Promise<void> {
   log.info(`starting gokwik-awb-ledger bridge — topic=${topic} group=${gokwikAwbLedgerGroupId}`);
   await gokwikAwbLedgerConsumer.start();
   log.info('gokwik-awb-ledger bridge consumer running');
+
+  // ── Shopflo Bronze bridge consumer (P0 — checkout-funnel landing) ───────────
+  // Same live topic, independent consumer group. Filters shopflo.checkout_abandoned.v1 → Bronze
+  // (enforceTenantDerivation=false). WIRED: do NOT remove without updating shopflo-bronze-wiring.e2e.test.ts.
+  log.info(`starting shopflo-bronze bridge — topic=${topic} group=${shopfloBronzeGroupId}`);
+  await shopfloBronzeConsumer.start();
+  log.info('shopflo-bronze bridge consumer running');
 
   // All consumers are up — flip readiness so the orchestrator routes work to this instance.
   consumersReady = true;

@@ -50,6 +50,9 @@ import { SettlementLedgerConsumer } from './interfaces/consumers/SettlementLedge
 import { SpendLedgerConsumer } from './interfaces/consumers/SpendLedgerConsumer.js';
 import { GokwikAwbLedgerConsumer } from './interfaces/consumers/GokwikAwbLedgerConsumer.js';
 import { LedgerWriter } from './infrastructure/pg/LedgerWriter.js';
+import mysql from 'mysql2/promise';
+import { createAttributionReversalHook } from '@brain/attribution-writer';
+import type { SilverPool } from '@brain/metric-engine';
 import { startSyncRequestClaimer } from './jobs/sync-request-claimer/run.js';
 import { startDqChecks } from './jobs/dq/run.js';
 import { startIngestScheduler } from './jobs/ingest-scheduler/run.js';
@@ -208,8 +211,32 @@ export async function main(): Promise<void> {
   // Does NOT touch Bronze (CollectorEventConsumer already writes Bronze).
   // Brand GUC is set inside LiveLedgerBridgeConsumer before every ledger write (E-4).
   const liveLedgerWriter = new LedgerWriter(dbUrl);
+
+  // ── D1: live attribution clawback hook (shared @brain/attribution-writer) ───
+  // On a confirmed live rto_reversal, fan out the SAME clawback the hourly reconcile job writes
+  // — real-time instead of ≤1h-lagged, no dual-writer. Gated on StarRocks (the writer's Silver
+  // seam; same gate as the reconcile job + dq). Absent → the hourly job remains the sole path.
+  // The hook is invoked BEST-EFFORT inside the consumer (cannot block the offset commit).
+  const attrSrHost = process.env['STARROCKS_HOST'];
+  const attributionPool = attrSrHost !== undefined ? new Pool({ connectionString: dbUrl, max: 3 }) : undefined;
+  const attributionSrPool =
+    attrSrHost !== undefined
+      ? mysql.createPool({
+          host: attrSrHost,
+          port: parseInt(process.env['STARROCKS_PORT'] ?? '9030', 10),
+          user: process.env['STARROCKS_ANALYTICS_USER'] ?? 'brain_analytics',
+          password: requireEnvInProd('STARROCKS_ANALYTICS_PASSWORD', 'brain_analytics_dev'),
+          connectionLimit: 3,
+        })
+      : undefined;
+  const liveAttributionHook =
+    attributionPool && attributionSrPool
+      ? createAttributionReversalHook(attributionPool, attributionSrPool as unknown as SilverPool)
+      : undefined;
+  log.info(`live attribution clawback hook ${liveAttributionHook ? 'ON' : 'off (no StarRocks; hourly job backstops)'}`);
+
   const liveLedgerConsumer = new LiveLedgerBridgeConsumer(
-    kafka, liveLedgerWriter, topic, liveLedgerGroupId,
+    kafka, liveLedgerWriter, topic, liveLedgerGroupId, liveAttributionHook,
   );
 
   // ── Settlement ledger bridge (ADR-RZ-6 / MB-4 WIRED) ───────────────────────
@@ -350,6 +377,8 @@ export async function main(): Promise<void> {
     await identityRepo.end();
     await ledgerWriter.end();
     await liveLedgerWriter.end();
+    if (attributionPool) await attributionPool.end();
+    if (attributionSrPool) await attributionSrPool.end();
     await settlementLedgerWriter.end();
     await settlementMapPool.end();
     await spendLedgerWriter.end();

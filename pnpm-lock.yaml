@@ -93,6 +93,9 @@ importers:
       '@brain/ai-gateway-client':
         specifier: workspace:*
         version: link:../../packages/ai-gateway-client
+      '@brain/attribution-writer':
+        specifier: workspace:*
+        version: link:../../packages/attribution-writer
       '@brain/audit':
         specifier: workspace:*
         version: link:../../packages/audit
@@ -187,6 +190,9 @@ importers:
       '@brain/ad-spend-mapper':
         specifier: workspace:*
         version: link:../../packages/ad-spend-mapper
+      '@brain/attribution-writer':
+        specifier: workspace:*
+        version: link:../../packages/attribution-writer
       '@brain/audit':
         specifier: workspace:*
         version: link:../../packages/audit
@@ -208,6 +214,9 @@ importers:
       '@brain/identity-core':
         specifier: workspace:*
         version: link:../../packages/identity-core
+      '@brain/metric-engine':
+        specifier: workspace:*
+        version: link:../../packages/metric-engine
       '@brain/observability':
         specifier: workspace:*
         version: link:../../packages/observability
@@ -375,6 +384,22 @@ importers:
       '@brain/metric-engine':
         specifier: workspace:*
         version: link:../metric-engine
+
+  packages/attribution-writer:
+    dependencies:
+      '@brain/metric-engine':
+        specifier: workspace:*
+        version: link:../metric-engine
+      pg:
+        specifier: ^8.21.0
+        version: 8.21.0
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.19.21
+      '@types/pg':
+        specifier: ^8.11.0
+        version: 8.20.0
 
   packages/audit:
     dependencies:

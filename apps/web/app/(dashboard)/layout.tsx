@@ -151,7 +151,7 @@ function NavLink({ item }: { item: NavItem }) {
         role="link"
         tabIndex={-1}
         title={ent?.unlock_hint ?? undefined}
-        aria-label={`${item.label} — locked. ${ent?.unlock_hint ?? 'Build your data foundation to unlock.'}`}
+        aria-label={`${item.label} — locked. ${ent?.unlock_hint ?? 'Connect your data sources — this unlocks automatically once Brain has enough data.'}`}
       >
         <item.icon className="h-4 w-4 shrink-0" aria-hidden="true" />
         <span>{item.label}</span>

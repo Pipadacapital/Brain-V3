@@ -8,7 +8,7 @@ export default function AuthLayout({ children }: { children: React.ReactNode }) 
       <div className="w-full max-w-md">
         <div className="mb-8 text-center">
           <h1 className="text-2xl font-bold tracking-tight text-foreground">Brain</h1>
-          <p className="text-sm text-muted-foreground mt-1">Brand Intelligence Platform</p>
+          <p className="text-sm text-muted-foreground mt-1">The commerce OS that earns your trust before it shows you answers</p>
         </div>
         {children}
       </div>

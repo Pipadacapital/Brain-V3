@@ -157,7 +157,8 @@ export function DqTrustBanner({ tier, effectiveConfidence, className }: DqTrustB
         <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
         <span>
           <strong className="font-semibold">Trusted (grade {effectiveConfidence}).</strong>{' '}
-          Metrics flow into MMM and the billing cap applies. Recommendations are unrestricted.
+          These figures are reliable enough to bill against, feed your marketing-mix model, and
+          power your recommendations.
         </span>
       </div>
     );
@@ -179,12 +180,13 @@ export function DqTrustBanner({ tier, effectiveConfidence, className }: DqTrustB
       <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
       <span>
         <strong className="font-semibold">
-          {isUntrusted ? 'Untrusted' : 'Estimated'} — excluded from billing/MMM
+          {isUntrusted ? 'Not yet reliable' : 'Estimated'} (grade {effectiveConfidence})
         </strong>{' '}
-        (grade {effectiveConfidence}). These figures are{' '}
-        {isUntrusted ? 'not trustworthy' : 'estimated'}: the billing cap does NOT apply, they
-        are excluded from the marketing-mix model, and high-risk recommendations are blocked
-        until data quality recovers.
+        {isUntrusted
+          ? "— there isn't enough verified data to rely on these figures yet."
+          : '— treat these as an estimate, not verified totals.'}{' '}
+        They won&apos;t be billed against or fed into your marketing-mix model, and higher-risk
+        recommendations stay paused until your data quality improves.
       </span>
     </div>
   );

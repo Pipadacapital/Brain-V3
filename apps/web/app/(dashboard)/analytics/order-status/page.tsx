@@ -9,7 +9,7 @@
  */
 import { OrderStatusContent } from './order-status-content';
 
-export const metadata = { title: 'Order Status — Brain Analytics' };
+export const metadata = { title: 'Order Status — Brain' };
 
 export default function OrderStatusPage() {
   return <OrderStatusContent />;

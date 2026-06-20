@@ -209,7 +209,7 @@ export function DashboardContent() {
         <div>
           <h1 className="text-2xl font-bold text-foreground">Dashboard</h1>
           <p className="text-muted-foreground mt-1">
-            Your brand intelligence command center.
+            See what's true about your commerce — as your data comes in.
           </p>
         </div>
         {/* feat-realtime-ingestion-pipeline (Track C): honest near-real-time liveness.

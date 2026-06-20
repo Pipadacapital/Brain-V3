@@ -15,9 +15,9 @@ export default function OnboardingDonePage() {
           >
             Step 3 of 3
           </p>
-          <h2 className="text-2xl font-bold text-foreground">You&apos;re all set!</h2>
+          <h2 className="text-2xl font-bold text-foreground">Your workspace is ready</h2>
           <p className="text-muted-foreground mt-1">
-            Your Brain workspace is ready. Here&apos;s a summary of what was set up.
+            Brain will build your revenue truth as your store data and tracking come in. Here&apos;s what&apos;s set up so far.
           </p>
         </div>
         <OnboardingDoneStep />

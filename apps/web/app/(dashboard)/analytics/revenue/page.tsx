@@ -3,7 +3,7 @@
  */
 import { RevenueContent } from './revenue-content';
 
-export const metadata = { title: 'Revenue — Brain Analytics' };
+export const metadata = { title: 'Revenue — Brain' };
 
 export default function RevenuePage() {
   return <RevenueContent />;

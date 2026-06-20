@@ -251,7 +251,12 @@ async function bffFetch<T>(
     ) {
       window.location.href = '/login';
     }
-    const message = errorBody?.error?.message ?? `Request failed: ${response.status}`;
+    // Friendly fallback when the server sent no message — never surface a raw HTTP code.
+    const message =
+      errorBody?.error?.message ??
+      (response.status >= 500
+        ? 'Brain had a brief problem on our side. Your data is safe — please try again in a moment.'
+        : 'Something went wrong. Please try again.');
     const reqId = errorBody?.request_id ?? requestId;
     const err = new BffApiError(message, response.status, reqId, errorBody?.error?.code);
     throw err;

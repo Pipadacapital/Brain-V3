@@ -3,7 +3,7 @@
  */
 import { DataQualityContent } from './data-quality-content';
 
-export const metadata = { title: 'Data Quality — Brain Analytics' };
+export const metadata = { title: 'Data Quality — Brain' };
 
 export default function DataQualityPage() {
   return <DataQualityContent />;

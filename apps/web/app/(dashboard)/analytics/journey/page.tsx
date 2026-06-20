@@ -10,7 +10,7 @@
  */
 import { JourneyContent } from './journey-content';
 
-export const metadata = { title: 'Journey — Brain Analytics' };
+export const metadata = { title: 'Journey — Brain' };
 
 export default function JourneyPage() {
   return <JourneyContent />;

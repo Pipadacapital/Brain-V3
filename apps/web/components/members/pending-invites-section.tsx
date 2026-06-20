@@ -94,8 +94,8 @@ export function PendingInvitesSection({ currentUserRole = 'analyst' }: PendingIn
         setResendingId(null);
       },
       onError: (err) => {
-        const msg = err instanceof BffApiError ? err.message : 'Failed to resend invite.';
-        toast({ title: 'Error', description: msg });
+        const msg = err instanceof BffApiError ? err.message : "Couldn't resend the invite. Please try again.";
+        toast({ title: "Couldn't resend the invite", description: msg, variant: 'destructive' });
         setResendingId(null);
       },
     });
@@ -110,8 +110,8 @@ export function PendingInvitesSection({ currentUserRole = 'analyst' }: PendingIn
         setRevokeDialogInvite(null);
       },
       onError: (err) => {
-        const msg = err instanceof BffApiError ? err.message : 'Failed to revoke invite.';
-        toast({ title: 'Error', description: msg });
+        const msg = err instanceof BffApiError ? err.message : "Couldn't revoke the invite. Please try again.";
+        toast({ title: "Couldn't revoke the invite", description: msg, variant: 'destructive' });
         setRevokeDialogInvite(null);
       },
     });

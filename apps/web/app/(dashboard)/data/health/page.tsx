@@ -3,7 +3,7 @@
  */
 import { DataHealthContent } from './data-health-content';
 
-export const metadata = { title: 'Data Health — Brain Analytics' };
+export const metadata = { title: 'Data Health — Brain' };
 
 export default function DataHealthPage() {
   return <DataHealthContent />;

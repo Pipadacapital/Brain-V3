@@ -77,9 +77,9 @@ function FailClosedEmpty({ testId }: { testId: string }) {
         <div>
           <p className="font-medium text-foreground">No consent records yet</p>
           <p className="mt-1 max-w-md text-sm text-muted-foreground">
-            Sends are <span className="font-medium text-foreground">blocked by default</span>{' '}
-            (fail-closed). A subject becomes contactable only once a consent grant is
-            recorded — until then, can_contact() denies every marketing send.
+            Sends are <span className="font-medium text-foreground">blocked by default</span>.
+            A customer becomes contactable only once you&apos;ve recorded their consent — until
+            then, every marketing message is blocked.
           </p>
         </div>
       </CardContent>
@@ -106,19 +106,19 @@ export function ConsentComplianceContent() {
       <div>
         <h1 className="text-2xl font-bold text-foreground">Consent &amp; Compliance</h1>
         <p className="mt-1 max-w-2xl text-muted-foreground">
-          Per-brand consent posture and the outbound gate. Every send passes the single
-          can_contact() gate, which is{' '}
-          <span className="font-medium text-foreground">default-closed</span>: unknown or
-          absent consent, an unregistered DLT template, or an out-of-window time all block
-          the send. Nothing here is editable — the window and registries are enforced
-          server-side (DPDP / TCCCPR).
+          Every marketing message is checked before it sends, and by default the answer is{' '}
+          <span className="font-medium text-foreground">no</span>: it&apos;s blocked if consent is
+          missing or withdrawn, the template isn&apos;t registered with the carrier (DLT), or
+          it&apos;s outside the allowed send window. These rules are enforced for you and
+          can&apos;t be turned off — they keep you compliant with India&apos;s DPDP and DLT
+          messaging requirements.
         </p>
       </div>
 
       {/* 2 — Suppression summary (the headline fail-closed count) */}
       <Panel
         title="Marketing suppression"
-        description="How many subjects are blocked vs sendable for marketing right now."
+        description="How many customers are blocked vs sendable for marketing right now."
         testId="consent-suppression-panel"
       >
         {suppression.isLoading && <PanelSkeleton />}
@@ -136,7 +136,7 @@ export function ConsentComplianceContent() {
       {/* 1 — Consent coverage by category */}
       <Panel
         title="Consent coverage"
-        description="Granted vs withdrawn subjects across the four DPDP consent categories."
+        description="Granted vs withdrawn customers across the four DPDP consent categories."
         testId="consent-coverage-panel"
       >
         {coverage.isLoading && <PanelSkeleton />}
@@ -169,7 +169,7 @@ export function ConsentComplianceContent() {
       {/* 4 — Gate activity (the default-closed proof) */}
       <Panel
         title="Gate activity"
-        description="Recent can_contact() decisions — the default-closed gate, made visible."
+        description="Recent send decisions — the default-blocked checks, made visible."
         testId="consent-gate-panel"
       >
         {gate.isLoading && <PanelSkeleton />}
@@ -179,7 +179,7 @@ export function ConsentComplianceContent() {
         {!gate.isLoading && !gate.error && gate.data?.state === 'no_data' && (
           <Card data-testid="consent-gate-empty">
             <CardContent className="py-8 text-center text-sm text-muted-foreground">
-              No gate decisions recorded yet. Once a send is attempted, every can_contact()
+              No gate decisions recorded yet. Once a send is attempted, every send check
               evaluation appears here — including the blocks that prove the gate is closed
               by default.
             </CardContent>

@@ -80,6 +80,7 @@ export type CapiPassbackStatus =
   | 'sent'
   | 'blocked_no_consent'
   | 'would_send_dev'
+  | 'blocked_unsupported_currency'
   | 'failed';
 
 export interface CapiPassbackOutcome {
@@ -151,6 +152,26 @@ export class CapiPassbackService {
       };
     }
 
+    // ── Fail-closed currency guard (#68). A conversion whose currency Brain does not model in
+    // minor units cannot be converted to Meta's major-unit value without risking a 100x/10x error
+    // (0-/3-decimal currencies). Revenue-truth-over-platform-truth + fail-safe: BLOCK it (terminal)
+    // rather than send Meta a fabricated number. Unreachable for in-scope currencies (all 2dp today).
+    if (!isValidCurrency(conv.currencyCode)) {
+      await this.writeLog(conv, {
+        eventId,
+        status: 'blocked_unsupported_currency',
+        matchKeyCount: 0,
+        blockReason: `unsupported_currency:${conv.currencyCode}`,
+      });
+      return {
+        status: 'blocked_unsupported_currency',
+        eventId,
+        subjectHash: conv.subjectHash,
+        matchKeyCount: 0,
+        blockReason: `unsupported_currency:${conv.currencyCode}`,
+      };
+    }
+
     // ── ALLOW — build the Meta match payload from transiently-read raw PII ────
     const userData = await this.buildUserData(conv);
     const matchKeyCount =
@@ -169,13 +190,11 @@ export class CapiPassbackService {
         actionSource: 'website',
         userData,
         // minor→major float ONLY at the wire boundary (Meta CAPI wants a major-unit number).
-        // The exponent is currency-aware (@brain/money) — never a hardcoded /100, so a future
-        // 0-decimal (JPY) or 3-decimal (KWD) value is not silently sent 100×/10× off. Unknown
-        // currencies fall back to the legacy 2-decimal divisor (all in-scope currencies are 2dp).
+        // The exponent is currency-aware (@brain/money MINOR_UNITS) — never a hardcoded /100, so a
+        // 0-decimal (JPY) or 3-decimal (KWD) value is never sent 100×/10× off. The currency is
+        // guaranteed valid here (the fail-closed guard above blocked anything @brain/money can't model).
         customData: {
-          value: isValidCurrency(conv.currencyCode)
-            ? minorToMajorNumber(conv.valueMinor, conv.currencyCode)
-            : Number(conv.valueMinor) / 100,
+          value: minorToMajorNumber(conv.valueMinor, conv.currencyCode),
           currency: conv.currencyCode,
         },
         correlationId: conv.correlationId,

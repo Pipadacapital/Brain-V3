@@ -56,8 +56,9 @@ import { startIngestScheduler } from './jobs/ingest-scheduler/run.js';
 
 export async function main(): Promise<void> {
   // Real OpenTelemetry export (ADR-009) — gated by OTEL_EXPORTER_OTLP_ENDPOINT (no-op in dev).
-  await initObservability({ serviceName: 'stream-worker', otlpEndpoint: process.env['OTEL_EXPORTER_OTLP_ENDPOINT'] });
-  await initSentry({ serviceName: 'stream-worker' }); // gated by SENTRY_DSN (no-op in dev)
+  // Keep the flush fns so graceful shutdown can export the final batch before exit (C1).
+  const shutdownObservability = await initObservability({ serviceName: 'stream-worker', otlpEndpoint: process.env['OTEL_EXPORTER_OTLP_ENDPOINT'] });
+  const closeSentry = await initSentry({ serviceName: 'stream-worker' }); // gated by SENTRY_DSN (no-op in dev)
 
   const brokers = (process.env['KAFKA_BROKERS'] ?? 'localhost:9092').split(',');
   const redisUrl = process.env['REDIS_URL'] ?? 'redis://localhost:6379';
@@ -354,6 +355,9 @@ export async function main(): Promise<void> {
     await settlementMapPool.end();
     await spendLedgerWriter.end();
     await gokwikAwbLedgerWriter.end();
+    // Flush buffered telemetry LAST so shutdown spans/metrics are exported (C1).
+    await shutdownObservability().catch(() => { /* ignore */ });
+    await closeSentry().catch(() => { /* ignore */ });
     log.info('shutdown complete');
     process.exit(0);
   };

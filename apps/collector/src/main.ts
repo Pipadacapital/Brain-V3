@@ -93,8 +93,9 @@ async function registerSchemaWithBackoff(): Promise<void> {
 
 export async function main(): Promise<void> {
   // Real OpenTelemetry export (ADR-009) — gated by OTEL_EXPORTER_OTLP_ENDPOINT (no-op in dev).
-  await initObservability({ serviceName: 'collector', otlpEndpoint: cfg.OTEL_EXPORTER_OTLP_ENDPOINT });
-  await initSentry({ serviceName: 'collector' }); // gated by SENTRY_DSN (no-op in dev)
+  // Keep the flush fns so graceful shutdown can export the final telemetry batch before exit (C1).
+  const shutdownObservability = await initObservability({ serviceName: 'collector', otlpEndpoint: cfg.OTEL_EXPORTER_OTLP_ENDPOINT });
+  const closeSentry = await initSentry({ serviceName: 'collector' }); // gated by SENTRY_DSN (no-op in dev)
 
   // ── 1. Infrastructure wiring ─────────────────────────────────────────────────
   const spoolRepo = new PgSpoolRepository(cfg.DATABASE_URL);
@@ -194,6 +195,9 @@ export async function main(): Promise<void> {
     await drainer.stop();
     await app.close();
     await (spoolRepo as PgSpoolRepository & { end(): Promise<void> }).end();
+    // Flush buffered telemetry LAST so shutdown spans/metrics are exported (C1).
+    await shutdownObservability().catch(() => { /* ignore */ });
+    await closeSentry().catch(() => { /* ignore */ });
     log.info('shutdown complete');
     process.exit(0);
   };

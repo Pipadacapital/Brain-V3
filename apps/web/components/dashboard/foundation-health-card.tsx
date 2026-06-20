@@ -98,7 +98,7 @@ export function FoundationHealthCard() {
               {data.next_action.label}
             </span>
             <Button asChild size="sm">
-              <Link href={data.next_action.href}>{data.next_action.label}</Link>
+              <Link href={data.next_action.href}>Start →</Link>
             </Button>
           </div>
         )}

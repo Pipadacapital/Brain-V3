@@ -12,6 +12,7 @@
  */
 
 import { GitMerge, Check, X } from 'lucide-react';
+import { humanize } from '@/lib/format/humanize';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -57,7 +58,7 @@ export function MergeReviewContent() {
               <li key={r.review_id}>
                 <Card>
                   <CardHeader>
-                    <CardTitle className="text-base">{r.trigger_reason}</CardTitle>
+                    <CardTitle className="text-base">{humanize(r.trigger_reason)}</CardTitle>
                   </CardHeader>
                   <CardContent className="flex flex-wrap items-center justify-between gap-4">
                     <div className="text-sm">

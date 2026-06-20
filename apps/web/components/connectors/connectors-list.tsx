@@ -222,7 +222,7 @@ export function ConnectorsList() {
   if (!data || data.length === 0) {
     return (
       <EmptyState
-        title="No Data Yet"
+        title="No connectors to show yet"
         description="No integrations are available."
         icon={<Plug className="h-8 w-8" />}
       />

@@ -259,7 +259,7 @@ export function OnboardingIntegrationsStep() {
           data-testid="btn-skip-integrations"
         >
           {isAdvancing && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />}
-          {isAdvancing ? 'Saving…' : 'Skip For Now'}
+          {isAdvancing ? 'Saving…' : 'Skip for now'}
           {!isAdvancing && <ArrowRight className="ml-2 h-4 w-4" aria-hidden="true" />}
         </Button>
       </div>

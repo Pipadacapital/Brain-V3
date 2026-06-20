@@ -15,6 +15,7 @@
  */
 
 import * as React from 'react';
+import { humanize } from '@/lib/format/humanize';
 import {
   UserSearch,
   User,
@@ -131,7 +132,7 @@ export function Customer360Content() {
                   </div>
                   <div>
                     <dt className="text-muted-foreground">Lifecycle</dt>
-                    <dd className="font-medium">{data.customer.lifecycle_state}</dd>
+                    <dd className="font-medium">{humanize(data.customer.lifecycle_state)}</dd>
                   </div>
                   <div>
                     <dt className="text-muted-foreground">First seen</dt>
@@ -190,7 +191,7 @@ export function Customer360Content() {
                     <tbody>
                       {data.identifiers.map((id: Customer360Identifier, i: number) => (
                         <tr key={`${id.identifier_type}-${id.identifier_hash_prefix}-${i}`} className="border-b last:border-0">
-                          <td className="py-2 pr-4">{id.identifier_type}</td>
+                          <td className="py-2 pr-4">{humanize(id.identifier_type)}</td>
                           <td className="py-2 pr-4">{id.tier}</td>
                           <td className="py-2 pr-4">{id.is_active ? 'active' : 'inactive'}</td>
                           <td className="py-2 pr-4 font-mono text-xs text-muted-foreground">{id.identifier_hash_prefix}…</td>

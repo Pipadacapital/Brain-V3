@@ -247,9 +247,53 @@ async function emitRows(p: EmitParams): Promise<{ emitted: number; maxDate: stri
 
 // ── Credentials resolver (dev: dev_secret JSON bundle; never logged — I-S09) ──
 
-async function resolveGoogleCredentials(
+export async function resolveGoogleCredentials(
   secretRef: string, adAccountIdCol: string | null,
 ): Promise<GoogleAdsCredentials | null> {
+  // P0 CREDENTIAL-BUNDLE FIX: the OAuth callback stores ONLY {refresh_token, ad_account_id} in the
+  // per-brand secret. The app-level Google Cloud creds (client_id, client_secret, developer_token)
+  // are the SAME for every brand and come from ENV — NOT the per-brand bundle. The previous resolver
+  // demanded all five from the bundle → b.client_id/etc were undefined → returned null → ZERO spend
+  // on every real connect. App creds from env + the bundle's refresh_token/ad_account_id is correct.
+  const clientId = process.env['GOOGLE_ADS_CLIENT_ID'];
+  const clientSecret = process.env['GOOGLE_ADS_CLIENT_SECRET'];
+  const developerToken = process.env['GOOGLE_ADS_DEVELOPER_TOKEN'];
+  if (!clientId || !clientSecret || !developerToken) {
+    log.warn(
+      '[google-ads] app-level creds missing (GOOGLE_ADS_CLIENT_ID / GOOGLE_ADS_CLIENT_SECRET / ' +
+        'GOOGLE_ADS_DEVELOPER_TOKEN) — cannot resolve credentials',
+    );
+    return null;
+  }
+
+  const bundle = await readGoogleSecretBundle(secretRef);
+  if (!bundle?.refresh_token) return null;
+  // customer_id (CID) is the OAuth-stored ad_account_id (or the connector_instance column); digits only.
+  const customerId = (bundle.customer_id ?? bundle.ad_account_id ?? adAccountIdCol ?? '').replace(/-/g, '');
+  if (!customerId) return null;
+
+  return {
+    refreshToken: bundle.refresh_token,
+    clientId,
+    clientSecret,
+    developerToken,
+    customerId,
+    loginCustomerId: bundle.login_customer_id ?? process.env['GOOGLE_ADS_LOGIN_CUSTOMER_ID'],
+  };
+}
+
+/** Read the per-brand {refresh_token, ad_account_id} bundle — prod: AWS Secrets Manager; dev: dev_secret. */
+async function readGoogleSecretBundle(secretRef: string): Promise<GoogleSecretBundle | null> {
+  // PROD: AWS Secrets Manager via the shared @brain/connector-secrets AwsSecretsManager — the SAME
+  // impl the connect path wrote it with (#75). Replaces the dev_secret-only resolver in prod.
+  if (process.env['NODE_ENV'] === 'production') {
+    const { AwsSecretsManager } = await import('@brain/connector-secrets');
+    const region = process.env['BRAIN_AWS_REGION'] ?? 'us-east-1';
+    const mgr = new AwsSecretsManager(region, '', process.env['CONNECTOR_SECRETS_KMS_KEY_ID'] ?? '');
+    const b = await mgr.getSecret(secretRef);
+    return b ? (b as unknown as GoogleSecretBundle) : null;
+  }
+  // DEV: dev_secret table (never logged — I-S09).
   const { Pool: PgPool } = await import('pg');
   const devPool = new PgPool({
     connectionString: process.env['BRAIN_APP_DATABASE_URL'] ?? process.env['DATABASE_URL'],
@@ -261,23 +305,12 @@ async function resolveGoogleCredentials(
       `SELECT secret_value FROM dev_secret WHERE name = $1`, [name],
     );
     const raw = res.rows[0]?.secret_value;
-    if (raw) {
-      try {
-        const b = JSON.parse(raw) as GoogleSecretBundle;
-        const customerId = b.customer_id ?? adAccountIdCol ?? '';
-        if (b.refresh_token && b.client_id && b.client_secret && b.developer_token && customerId) {
-          return {
-            refreshToken: b.refresh_token,
-            clientId: b.client_id,
-            clientSecret: b.client_secret,
-            developerToken: b.developer_token,
-            customerId,
-            loginCustomerId: b.login_customer_id,
-          };
-        }
-      } catch { /* malformed — fall through */ }
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw) as GoogleSecretBundle;
+    } catch {
+      return null;
     }
-    return null;
   } finally {
     await devPool.end();
   }

@@ -94,7 +94,7 @@ import type {
 import { jtiFromJwt, csrfTokenForSession } from './csrf.js';
 import type { Pool as PgPool } from 'pg';
 import { getRevenueMetrics, getRevenueTimeseries, getKpiSummary, getRecognitionBreakdown, getRecentActivity, getOrdersTimeseries, getOrderStats, getDataHealth, getSettlementSummary, getTrackingHealth, getRecentEvents, getAdSpendTimeseries, getBlendedRoas, getCodRtoRates, getCodMix, getCheckoutFunnel, getOrderStatusMix, getJourneyFirstTouchMix, getJourneyStitchRate, getJourneyTimeline, getConsentCoverage, getConsentSuppressionSummary, getConsentGateActivity, getConsentWindowConfig, getAttributionByChannel, getAttributionReconciliation, getChannelRoas, getCapiFeedbackSummary, getCapiFeedbackEvents, getCapiFeedbackDeletions } from '../../analytics/index.js';
-import { getDataQualitySummary } from '../../data-quality/index.js';
+import { getDataQualitySummary, getMetricTrust } from '../../data-quality/index.js';
 import {
   getCustomer360,
   eraseCustomer,
@@ -1951,8 +1951,18 @@ export function registerBffRoutes(
         });
       }
 
+      // "Confidence before decisions" (P0): resolve the brand's CURRENT trust gate and pass it so
+      // getRecommendations caps each rec's surfaced confidence + holds high-risk recs below Trusted.
+      // Fail-closed to 'untrusted' when the engine pool is unavailable (no trust proof → hold).
+      const trust = rawPool
+        ? await getMetricTrust(auth.brandId, { pool: rawPool })
+        : { tier: 'untrusted' as const, gate: { blocksHighRiskRecommendation: true } };
       const result: ContractRecommendations = await getRecommendations(auth.brandId, requestId, {
         pool,
+        gate: {
+          tier: trust.tier,
+          blocksHighRiskRecommendation: trust.gate.blocksHighRiskRecommendation,
+        },
       });
       return reply.send({ request_id: requestId, data: result });
     },

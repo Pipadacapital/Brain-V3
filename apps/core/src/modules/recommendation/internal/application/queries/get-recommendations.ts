@@ -7,6 +7,7 @@
  */
 
 import type { DbPool, QueryContext } from '@brain/db';
+import { applyConfidenceGate, type ConfidenceGateInputs } from '../../domain/confidence-gate.js';
 
 function toIso(v: unknown): string {
   return v instanceof Date ? v.toISOString() : String(v);
@@ -38,6 +39,10 @@ export interface Recommendation {
   /** Latest measured outcome, or null if not yet measured. */
   outcome: RecommendationOutcome | null;
   created_at: string;
+  /** Confidence gate (P0): true → not actionable; surface as "waiting on data confidence". */
+  held: boolean;
+  /** Honest reason it's held (null when actionable). */
+  held_reason: string | null;
 }
 
 export type Recommendations =
@@ -46,6 +51,12 @@ export type Recommendations =
 
 export interface RecommendationReadDeps {
   pool: DbPool;
+  /**
+   * The brand's current trust gate (from getMetricTrust). Recommendations are gated at READ time
+   * against CURRENT confidence so the surfaced confidence can never drift above the live foundation
+   * (e.g. a rec raised when Trusted is held once the foundation degrades). The BFF supplies it.
+   */
+  gate: ConfidenceGateInputs;
 }
 
 export async function getRecommendations(
@@ -87,13 +98,16 @@ export async function getRecommendations(
       return { state: 'no_data' };
     }
 
-    return {
-      state: 'has_data',
-      recommendations: res.rows.map((r) => ({
+    const recommendations = res.rows.map((r) => {
+      // "Confidence before decisions": cap the surfaced confidence at the brand's effective trust
+      // and HOLD high-risk recs below Trusted. The detector's raw finding stays in the row (honest
+      // detection record); the gate is applied here, at the surface, with CURRENT trust.
+      const g = applyConfidenceGate(r.kind, r.confidence, deps.gate);
+      return {
         recommendation_id: r.recommendation_id,
         detector: r.detector,
         kind: r.kind,
-        confidence: r.confidence,
+        confidence: g.confidence,
         priority: r.priority,
         status: r.status,
         title: r.payload?.title ?? '',
@@ -102,8 +116,15 @@ export async function getRecommendations(
         evidence: r.payload?.evidence ?? {},
         outcome: r.outcome ?? null,
         created_at: toIso(r.created_at),
-      })),
-    };
+        held: g.held,
+        held_reason: g.heldReason,
+      };
+    });
+    // Actionable first (held items sink below), preserving the money-weighted priority order within
+    // each group — the Morning Brief leads with what the brand can act on now.
+    recommendations.sort((a, b) => Number(a.held) - Number(b.held));
+
+    return { state: 'has_data', recommendations };
   } finally {
     client.release();
   }

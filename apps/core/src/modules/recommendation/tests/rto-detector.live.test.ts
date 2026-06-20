@@ -25,6 +25,11 @@ const ORG_ID = '0444444a-0a1a-4a1a-8a1a-000000000001';
 const USER_ID = 'a444444a-0a1a-4a1a-8a1a-000000000001';
 const CORR = 'rto-detector-live-test';
 
+// The read-time confidence gate (P0). A trusted gate surfaces a risk rec as-is; an untrusted gate
+// HOLDS it. These isolate the read wiring from the trust computation (the gate fn is unit-tested).
+const TRUSTED_GATE = { tier: 'trusted' as const, blocksHighRiskRecommendation: false };
+const UNTRUSTED_GATE = { tier: 'untrusted' as const, blocksHighRiskRecommendation: true };
+
 let superPool: pg.Pool;
 let dbPool: DbPool;
 let pgAvailable = false;
@@ -137,16 +142,28 @@ describe('RTO-risk detector (live Postgres)', () => {
 
   it('3. read returns the open rec, ranked, evidence flattened', async () => {
     if (!pgAvailable) return;
-    const recs = await getRecommendations(BRAND_A, CORR, { pool: dbPool });
+    const recs = await getRecommendations(BRAND_A, CORR, { pool: dbPool, gate: TRUSTED_GATE });
     expect(recs.state).toBe('has_data');
     if (recs.state !== 'has_data') return;
     const rec = recs.recommendations[0]!;
     expect(rec.detector).toBe('rto_risk');
     expect(rec.kind).toBe('risk');
-    expect(rec.confidence).toBe('Trusted'); // 200 orders ≥ 100
+    expect(rec.confidence).toBe('Trusted'); // 200 orders ≥ 100, trusted gate → surfaced as-is
+    expect(rec.held).toBe(false);
     expect(rec.evidence['rto_rate_pct']).toBe('10.00');
     expect(rec.evidence['order_count']).toBe(200);
     expect(rec.title).toContain('RTO');
+  });
+
+  it('3b. confidence gate — an UNTRUSTED foundation HOLDS the risk rec (read-time enforcement)', async () => {
+    if (!pgAvailable) return;
+    const recs = await getRecommendations(BRAND_A, CORR, { pool: dbPool, gate: UNTRUSTED_GATE });
+    expect(recs.state).toBe('has_data');
+    if (recs.state !== 'has_data') return;
+    const rec = recs.recommendations[0]!;
+    expect(rec.held).toBe(true); // high-risk on untrusted data → not actionable
+    expect(rec.confidence).toBe('Insufficient');
+    expect(rec.held_reason).toBeTruthy();
   });
 
   it('4. expiry — RTO drops below threshold → open rec expired + logged', async () => {
@@ -160,13 +177,13 @@ describe('RTO-risk detector (live Postgres)', () => {
     expect(r.raised).toBe(0);
     expect(r.expired).toBe(1);
 
-    const recs = await getRecommendations(BRAND_A, CORR, { pool: dbPool });
+    const recs = await getRecommendations(BRAND_A, CORR, { pool: dbPool, gate: TRUSTED_GATE });
     expect(recs.state).toBe('no_data'); // no OPEN recs
   });
 
   it('5. RLS isolation — BRAND_A recs invisible under BRAND_B scope', async () => {
     if (!pgAvailable) return;
-    const recs = await getRecommendations(BRAND_B, CORR, { pool: dbPool });
+    const recs = await getRecommendations(BRAND_B, CORR, { pool: dbPool, gate: TRUSTED_GATE });
     expect(recs.state).toBe('no_data');
   });
 });

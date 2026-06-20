@@ -13,7 +13,8 @@
  */
 
 import * as React from 'react';
-import { Lightbulb, AlertTriangle, TrendingUp, TrendingDown, ShieldCheck, RefreshCw } from 'lucide-react';
+import Link from 'next/link';
+import { Lightbulb, AlertTriangle, TrendingUp, TrendingDown, ShieldCheck, ShieldAlert, RefreshCw } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -117,9 +118,46 @@ function RecommendationCard({ rec }: { rec: Recommendation }) {
   );
 }
 
+/**
+ * HeldRecommendationCard — a recommendation the confidence gate is holding back (P0). Brain found a
+ * signal but the brand's data foundation isn't trusted enough to ACT on it yet. We don't hide it and
+ * we don't dress it as a decision — we surface it as a guided next step: improve the foundation.
+ */
+function HeldRecommendationCard({ rec }: { rec: Recommendation }) {
+  return (
+    <Card className="border-dashed bg-muted/30">
+      <CardHeader className="pb-2">
+        <div className="flex items-start justify-between gap-3">
+          <CardTitle className="flex items-center gap-2 text-base text-muted-foreground">
+            <ShieldAlert className="h-4 w-4 text-amber-600" aria-hidden="true" />
+            {rec.title}
+          </CardTitle>
+          <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800">
+            <ShieldAlert className="h-3 w-3" aria-hidden="true" />
+            Held
+          </span>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        <p className="text-sm text-muted-foreground">{rec.summary}</p>
+        <p className="text-sm" role="status">
+          {rec.held_reason ?? 'Held until your data foundation is trusted enough to act on this.'}
+        </p>
+        <Link href="/data/quality" className="inline-flex items-center text-sm font-medium text-primary hover:underline">
+          Improve data confidence →
+        </Link>
+      </CardContent>
+    </Card>
+  );
+}
+
 export function RecommendationsContent() {
   const { data, isLoading, error, refetch } = useRecommendations();
   const refresh = useRefreshRecommendations();
+
+  const recommendations = data?.state === 'has_data' ? data.recommendations : [];
+  const actionable = recommendations.filter((r) => !r.held);
+  const held = recommendations.filter((r) => r.held);
 
   return (
     <div className="space-y-6">
@@ -168,10 +206,37 @@ export function RecommendationsContent() {
           }
         />
       ) : (
-        <div className="space-y-4">
-          {data.recommendations.map((rec) => (
-            <RecommendationCard key={rec.recommendation_id} rec={rec} />
-          ))}
+        <div className="space-y-8">
+          {actionable.length > 0 ? (
+            <div className="space-y-4">
+              {actionable.map((rec) => (
+                <RecommendationCard key={rec.recommendation_id} rec={rec} />
+              ))}
+            </div>
+          ) : (
+            <EmptyState
+              icon={<Lightbulb className="h-6 w-6" aria-hidden="true" />}
+              title="Nothing to act on yet"
+              description="No recommendation currently meets your data-confidence bar. Anything Brain found is listed below, waiting on a stronger data foundation."
+            />
+          )}
+
+          {held.length > 0 && (
+            <section className="space-y-3" aria-label="Recommendations waiting on data confidence">
+              <div>
+                <h2 className="text-sm font-semibold text-muted-foreground">Waiting on data confidence</h2>
+                <p className="text-xs text-muted-foreground">
+                  Brain found these signals but won&apos;t recommend acting until your data foundation is
+                  trusted — confidence before decisions.
+                </p>
+              </div>
+              <div className="space-y-3">
+                {held.map((rec) => (
+                  <HeldRecommendationCard key={rec.recommendation_id} rec={rec} />
+                ))}
+              </div>
+            </section>
+          )}
         </div>
       )}
     </div>

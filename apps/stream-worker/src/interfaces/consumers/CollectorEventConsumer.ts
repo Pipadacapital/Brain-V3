@@ -112,6 +112,12 @@ export class CollectorEventConsumer {
             });
           }
 
+          // Durable-write throughput — the numerator of ingest freshness (C2 / R-05).
+          // A stalled spine = collector topic advancing while this stays flat (BrainIngestStale).
+          if (result.outcome === 'written') {
+            incrementCounter('bronze_write_total', { brand_id: result.brandId ?? 'unknown' });
+          }
+
           // written | dedup_hit | pk_conflict → commit offset (D-7).
           await this.consumer.commitOffsets([
             { topic, partition, offset: String(Number(offset) + 1) },

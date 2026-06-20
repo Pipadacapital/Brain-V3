@@ -34,11 +34,30 @@
 import { Consumer, Kafka, EachMessagePayload } from 'kafkajs';
 import { DlqProducer } from '../../infrastructure/kafka/DlqProducer.js';
 import { LedgerWriter } from '../../infrastructure/pg/LedgerWriter.js';
-import { routeLiveOrderToLedger } from './LiveOrderConsumer.js';
+import { routeLiveOrderToLedger, extractLiveOrderForLedger } from './LiveOrderConsumer.js';
 import { log } from "../../log.js";
 
 const MAX_RETRY = 5;
 type RetryKey = string;
+
+/**
+ * Live attribution clawback hook (D1). On a confirmed live rto_reversal, fan the SAME reversal out
+ * to the attribution ledger (mirrored signed-negative clawback, SAVED weights, idempotent). This is
+ * the shared @brain/attribution-writer hook — the SAME writer the hourly reconcile job uses (no
+ * dual-writer). Injected by the composition root; absent (e.g. no StarRocks) → the hourly job is the
+ * sole path. Invoked BEST-EFFORT: a failure here NEVER blocks the offset commit (the ledger write is
+ * already durable and the hourly reconcile job backstops any miss — idempotent ON CONFLICT).
+ */
+export interface LiveAttributionReversalHook {
+  onRevenueReversal(reversal: {
+    brandId: string;
+    orderId: string;
+    reversalReason: 'rto_reversal';
+    reversalLedgerEventId: string;
+    reversalBasisMinor: bigint;
+    occurredAt: Date;
+  }): Promise<void>;
+}
 
 export class LiveLedgerBridgeConsumer {
   private readonly consumer: Consumer;
@@ -50,6 +69,8 @@ export class LiveLedgerBridgeConsumer {
     private readonly ledgerWriter: LedgerWriter,
     private readonly topic: string,
     private readonly groupId: string,
+    /** Optional live attribution clawback hook (D1) — best-effort, never blocks offset commit. */
+    private readonly attributionHook?: LiveAttributionReversalHook,
   ) {
     this.consumer = kafka.consumer({ groupId });
     this.dlqProducer = new DlqProducer(kafka);
@@ -109,6 +130,13 @@ export class LiveLedgerBridgeConsumer {
             this.ledgerWriter,
           );
 
+          // D1: on a confirmed live reversal, fan out the attribution clawback (best-effort).
+          // The ledger write above is already durable; this MUST NOT affect the offset commit,
+          // so any failure is swallowed (the hourly reconcile job backstops it, idempotently).
+          if (result === 'reversal' && this.attributionHook) {
+            await this.fireClawbackBestEffort(message.value, brandId, eventId);
+          }
+
           // Commit offset after confirmed ledger write (or 'skipped' for missing fields)
           await this.consumer.commitOffsets([
             { topic, partition, offset: String(Number(offset) + 1) },
@@ -148,6 +176,33 @@ export class LiveLedgerBridgeConsumer {
         }
       },
     });
+  }
+
+  /**
+   * Fire the attribution clawback for a confirmed live reversal (D1). BEST-EFFORT: every failure
+   * is logged and swallowed so it can never block the offset commit or trigger a retry — the ledger
+   * row is already durable and the hourly reconcile job re-claws idempotently. Full RTO ⇒ the
+   * reversal basis is −(order amount); reuses the pure extractor for the order fields.
+   */
+  private async fireClawbackBestEffort(
+    value: Buffer | null,
+    brandId: string | undefined,
+    eventId: string | undefined,
+  ): Promise<void> {
+    try {
+      const order = extractLiveOrderForLedger(value, brandId, eventId);
+      if (!order || !this.attributionHook) return;
+      await this.attributionHook.onRevenueReversal({
+        brandId: order.brandId,
+        orderId: order.orderId,
+        reversalReason: 'rto_reversal',
+        reversalLedgerEventId: order.rawEventId ?? order.sourcePk,
+        reversalBasisMinor: -BigInt(order.amountMinor), // full RTO → negate the order amount
+        occurredAt: new Date(order.occurredAt),
+      });
+    } catch (err) {
+      log.warn('[live-ledger-bridge] attribution clawback failed (best-effort; reconcile job backstops)', { err });
+    }
   }
 
   async stop(): Promise<void> {

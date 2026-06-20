@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@brain/ad-spend-mapper": "workspace:*",
+    "@brain/attribution-writer": "workspace:*",
     "@brain/audit": "workspace:*",
     "@brain/config": "workspace:*",
     "@brain/contracts": "workspace:*",
@@ -20,6 +21,7 @@
     "@brain/events": "workspace:*",
     "@brain/gokwik-mapper": "workspace:*",
     "@brain/identity-core": "workspace:*",
+    "@brain/metric-engine": "workspace:*",
     "@brain/observability": "workspace:*",
     "@brain/pii-vault": "workspace:*",
     "@brain/razorpay-mapper": "workspace:*",

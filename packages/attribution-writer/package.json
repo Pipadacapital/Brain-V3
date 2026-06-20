@@ -1,0 +1,22 @@
+{
+  "name": "@brain/attribution-writer",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test:unit": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@brain/metric-engine": "workspace:*",
+    "pg": "^8.21.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/pg": "^8.11.0"
+  }
+}

@@ -114,6 +114,18 @@ export function useOrderStats(asOf?: string) {
 }
 
 /**
+ * useTopProducts — per-SKU rollup (units / line GMV / order count) over the Silver order-line
+ * mart (feat-shopify-order-depth). Window defaults to last 90 days server-side.
+ */
+export function useTopProducts(params?: { from?: string; to?: string; limit?: number }) {
+  return useQuery({
+    queryKey: [...ANALYTICS_QUERY_KEY, 'top-products', params?.from, params?.to, params?.limit ?? 10],
+    queryFn: () => analyticsApi.getTopProducts(params),
+    staleTime: 5 * 60_000,
+  });
+}
+
+/**
  * useOrderDetail — a single order's economic breakdown from Bronze (feat-shopify-order-depth).
  * @param orderId - the order natural key; the query is disabled when falsy.
  */

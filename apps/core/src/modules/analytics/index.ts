@@ -57,6 +57,9 @@ export { getTrackingHealth } from './internal/application/queries/get-tracking-h
 export type { TrackingHealthResult, TrackingHealthVolumeBucket } from './internal/application/queries/get-tracking-health.js';
 export { getRecentEvents } from './internal/application/queries/get-recent-events.js';
 export type { RecentEventsResult, RecentEventRow } from './internal/application/queries/get-recent-events.js';
+// Top products — per-SKU rollup over Silver order-line (feat-shopify-order-depth).
+export { getTopProducts } from './internal/application/queries/get-top-products.js';
+export type { TopProductsResult, TopProductDto } from './internal/application/queries/get-top-products.js';
 // Order detail — single order's economic breakdown from Bronze (feat-shopify-order-depth).
 export { getOrderDetail } from './internal/application/queries/get-order-detail.js';
 export type {

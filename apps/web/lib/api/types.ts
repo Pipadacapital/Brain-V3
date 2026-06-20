@@ -27,6 +27,8 @@ export type {
   JourneyStitchRate as AnalyticsJourneyStitchRateResponse,
   OrderStatusMixRowDto as OrderStatusMixRow,
   OrderStatusMix as AnalyticsOrderStatusMixResponse,
+  TopProducts as AnalyticsTopProductsResponse,
+  TopProductDto,
   OrderDetail as AnalyticsOrderDetailResponse,
   OrderDetailDto,
   OrderLineItemDto,

@@ -28,6 +28,7 @@ import {
   JourneyTimelineSchema,
   JourneyStitchRateSchema,
   OrderStatusMixSchema,
+  TopProductsSchema,
   OrderDetailSchema,
   DataQualitySummarySchema,
   AskBrainResultSchema,
@@ -113,6 +114,7 @@ import type {
   AnalyticsCheckoutFunnelResponse,
   AnalyticsRtoRiskResponse,
   AnalyticsOrderStatusMixResponse,
+  AnalyticsTopProductsResponse,
   AnalyticsOrderDetailResponse,
   AnalyticsJourneyFirstTouchMixResponse,
   AnalyticsJourneyStitchRateResponse,
@@ -1282,6 +1284,23 @@ export const analyticsApi = {
       `/v1/analytics/order-status-mix${qsStr ? `?${qsStr}` : ''}`,
     );
     return parseData(OrderStatusMixSchema, env);
+  },
+
+  /**
+   * GET /api/v1/analytics/top-products
+   * Per-SKU rollup (units / line GMV / order count) over the Silver order-line mart
+   * (feat-shopify-order-depth). Parsed at the seam; state:'no_data' preserved.
+   */
+  getTopProducts: async (params?: { from?: string; to?: string; limit?: number }): Promise<AnalyticsTopProductsResponse> => {
+    const qs = new URLSearchParams();
+    if (params?.from) qs.set('from', params.from);
+    if (params?.to) qs.set('to', params.to);
+    if (params?.limit) qs.set('limit', String(params.limit));
+    const qsStr = qs.toString();
+    const env = await bffFetch<BffEnvelope<unknown>>(
+      `/v1/analytics/top-products${qsStr ? `?${qsStr}` : ''}`,
+    );
+    return parseData(TopProductsSchema, env);
   },
 
   /**

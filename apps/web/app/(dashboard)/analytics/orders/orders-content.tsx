@@ -23,6 +23,7 @@ import { ErrorCard } from '@/components/ui/error-card';
 import { EmptyState } from '@/components/ui/empty-state';
 import { KpiTile } from '@/components/analytics/kpi-tile';
 import { OrdersTrendChart } from '@/components/analytics/orders-trend-chart';
+import { TopProductsCard } from '@/components/analytics/top-products-card';
 import { useOrderStats, useOrdersTimeseries } from '@/lib/hooks/use-analytics';
 import { formatMoneyDisplay } from '@/lib/format/money-display';
 import type { CurrencyCode } from '@brain/money';
@@ -270,6 +271,9 @@ export function OrdersContent() {
           </Card>
         </section>
       )}
+
+      {/* Top products — Silver order-line rollup (feat-shopify-order-depth). */}
+      <TopProductsCard />
     </div>
   );
 }

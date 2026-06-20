@@ -39,7 +39,12 @@ const TOPIC = process.env['COLLECTOR_TOPIC'] ?? 'dev.collector.event.v1';
 const SMK_BRAND = 'ad5e0003-c700-4c70-8c70-000000000004';
 const SMK_CI_META = 'ad5e00c2-d700-4d70-8d70-000000000005';
 const SMK_CI_GOOGLE = 'ad5e00c3-e700-4e70-8e70-000000000006';
-const SMOKE_GROUP = 'spend-ledger-smoke-test';
+// Unique per run so the consumer starts at the topic TAIL (fromBeginning:false). A fixed group
+// carries a stale committed offset from when dev.collector.event.v1 was small and then replays
+// millions of historical messages forward every run (27s+ churn → races the poll → flaky). The
+// consumer is started in beforeAll BEFORE the repull emits, so a tail-positioned fresh group still
+// catches the new spend.live.v1 message.
+const SMOKE_GROUP = `spend-ledger-smoke-test-${Date.now()}`;
 
 function tcpReachable(host: string, port: number, timeoutMs = 2000): Promise<boolean> {
   return new Promise((resolve) => {
@@ -122,9 +127,18 @@ beforeAll(async () => {
   process.env['KAFKA_BROKERS'] = KAFKA_BROKERS.join(',');
   process.env['COLLECTOR_TOPIC'] = TOPIC;
   process.env['APP_ENV'] = 'dev';
+  // App-level Google Cloud creds come from ENV (P0 CREDENTIAL-BUNDLE FIX in
+  // google-ads-spend-repull/run.ts), NOT the per-brand secret. Synthetic values so
+  // resolveGoogleCredentials proceeds to the stubbed searchStream call in SM2.
+  process.env['GOOGLE_ADS_CLIENT_ID'] = 'smoke-client-id';
+  process.env['GOOGLE_ADS_CLIENT_SECRET'] = 'smoke-client-secret';
+  process.env['GOOGLE_ADS_DEVELOPER_TOKEN'] = 'smoke-dev-token';
   superPool = new Pool({ connectionString: SUPERUSER_DB_URL, max: 3 });
   appPool = new Pool({ connectionString: BRAIN_APP_DB_URL, max: 3 });
-  await seedTestBrand(superPool, SMK_BRAND, 'USD');
+  // Brand currency must be a supported code (INR/AED/SAR per brand_currency_code_check, 0010).
+  // The Meta/Google ad account is mocked in USD below — the cross-currency case (USD spend on an
+  // INR brand) is exactly what the repull must handle; the brand row itself is INR.
+  await seedTestBrand(superPool, SMK_BRAND, 'INR');
   await superPool.query(`DELETE FROM ad_spend_ledger WHERE brand_id=$1`, [SMK_BRAND]).catch(() => undefined);
 
   kafka = new Kafka({ clientId: 'spend-smoke-consumer', brokers: KAFKA_BROKERS, logLevel: 0 });

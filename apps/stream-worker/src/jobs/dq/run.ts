@@ -6,8 +6,9 @@
  *   1. Enumerate active brands via list_active_brand_ids() (the SECURITY DEFINER fn —
  *      the SAME cross-tenant enumeration the revenue-finalization job uses; no GUC at
  *      this step, then scope per-brand).
- *   2. For each brand, run all 4 deterministic DQ executors (freshness, completeness,
- *      schema_validity, reconciliation), each connecting as brain_app under the brand GUC.
+ *   2. For each brand, run all 5 deterministic DQ executors (freshness, completeness,
+ *      schema_validity, reconciliation ×2: Bronze↔Silver + Bronze→Gold-ledger provenance),
+ *      each connecting as brain_app under the brand GUC.
  *   3. Append one dq_check_result row per (brand, category, target) — frozen grade.
  *
  * The freshness check is the LIVE freshness-SLA monitor (acceptance). Per-brand errors
@@ -19,6 +20,7 @@ import { freshnessCheck } from './freshness-check.js';
 import { completenessCheck } from './completeness-check.js';
 import { schemaValidityCheck } from './schema-validity-check.js';
 import { reconciliationCheck } from './reconciliation-check.js';
+import { bronzeLedgerProvenanceCheck } from './bronze-ledger-provenance-check.js';
 import { writeDqResult, type DqCheckRow } from './writer.js';
 import { createSilverReader, type SilverReader, type SilverReaderConfig } from './silver-reader.js';
 import { withTickLeaderLock, LEADER_LOCK_DQ_CHECKS } from '../../infrastructure/pg/LeaderLock.js';
@@ -39,7 +41,7 @@ async function enumerateActiveBrands(pool: Pool): Promise<string[]> {
 }
 
 /**
- * Run all 4 DQ checks for one brand and append the result rows. Returns the rows
+ * Run all 5 DQ checks for one brand and append the result rows. Returns the rows
  * written (for tests / observability). Each executor is independently try/caught so a
  * single failing check still records the others.
  */
@@ -56,6 +58,8 @@ export async function runDqChecksForBrand(
     () => completenessCheck(pool, brandId),
     () => schemaValidityCheck(pool, brandId),
     () => reconciliationCheck(pool, silver, brandId),
+    // P2.4: Bronze→Gold rebuildability proof — ledger order_ids must trace to a Bronze order event.
+    () => bronzeLedgerProvenanceCheck(pool, brandId),
   ];
 
   for (const exec of executors) {

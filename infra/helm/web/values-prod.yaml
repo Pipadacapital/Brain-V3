@@ -18,3 +18,9 @@ resources:
   limits:
     cpu: "1"
     memory: 1Gi
+
+# P2.5: HPA on in prod.
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 6

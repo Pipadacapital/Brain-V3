@@ -18,3 +18,9 @@ resources:
   limits:
     cpu: "2"
     memory: 1Gi
+
+# P2.5: HPA on in prod — collector is the spike-prone ingest front (widest band).
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 24

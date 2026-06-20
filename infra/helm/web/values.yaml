@@ -37,3 +37,14 @@ resources:
   limits:
     cpu: "1"
     memory: 512Mi
+
+# Horizontal Pod Autoscaler (P2.5). Stateless Next.js server → CPU-target HPA; modest band.
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300

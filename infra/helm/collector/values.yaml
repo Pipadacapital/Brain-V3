@@ -40,3 +40,17 @@ resources:
   limits:
     cpu: "1"
     memory: 512Mi
+
+# Horizontal Pod Autoscaler (P2.5). The collector is the accept-before-validate ingest front — the
+# most spike-prone tier (Pixel/webhook storms), so it gets the widest band and a tighter CPU target.
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 20
+  targetCPUUtilizationPercentage: 65
+  targetMemoryUtilizationPercentage: 80
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0     # react immediately to ingest spikes (no false-shed)
+    scaleDown:
+      stabilizationWindowSeconds: 300

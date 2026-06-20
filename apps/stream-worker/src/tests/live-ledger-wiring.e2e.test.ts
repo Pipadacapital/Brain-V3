@@ -68,7 +68,9 @@ const TOPIC = process.env['COLLECTOR_TOPIC'] ?? 'dev.collector.event.v1';
 // Own test brand — never touches 60d543dc-*. UUIDv4: all hex digits, version=4, variant=8.
 const WIRING_TEST_BRAND = 'e17eb001-e100-4e10-8e10-000000000001';
 // Distinct consumer group so this test's offsets don't interfere with other tests
-const WIRING_TEST_GROUP = 'live-ledger-bridge-wiring-test';
+// Unique per run → the consumer starts at the topic TAIL (fromBeginning:false). A fixed group
+// carries a stale committed offset and replays the whole (now-huge) dev topic, timing out the poll.
+const WIRING_TEST_GROUP = `live-ledger-bridge-wiring-test-${Date.now()}`;
 
 // ── Infra reachability ────────────────────────────────────────────────────────
 

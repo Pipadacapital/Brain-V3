@@ -63,7 +63,9 @@ const SW_BRAND_A = 'a7e40001-a700-4a70-8a70-000000000001';
 const SW_BRAND_B = 'a7e40002-b700-4b70-8b70-000000000002';
 const SW_CI_ID   = 'a7e400c1-c700-4c70-8c70-000000000003';
 
-const SETTLEMENT_WIRING_GROUP = 'settlement-ledger-wiring-test';
+// Unique per run → consumer starts at the topic TAIL (fromBeginning:false), avoiding a stale-offset
+// replay of the whole (now-huge) dev topic that times out the poll.
+const SETTLEMENT_WIRING_GROUP = `settlement-ledger-wiring-test-${Date.now()}`;
 
 // ── Infra reachability ────────────────────────────────────────────────────────
 

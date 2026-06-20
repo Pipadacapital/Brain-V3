@@ -377,6 +377,29 @@ export async function main(): Promise<void> {
     max: 5, // smaller sub-pool for transactional paths
   });
 
+  // Readiness probe (T2-10). `/health` above is LIVENESS — the process is up, so K8s must
+  // NOT restart it. `/readyz` is READINESS — it answers "can this instance serve traffic
+  // right now?", which is false while Postgres is unreachable (a fresh pod still booting,
+  // or a transient DB blip). K8s pulls a not-ready pod from the Service endpoints WITHOUT
+  // killing it, so it rejoins automatically once the dependency recovers. The DB ping is
+  // bounded so a hung socket can't make the probe itself hang (mirrors T2-9's posture).
+  app.get('/readyz', async (_req, reply) => {
+    try {
+      await Promise.race([
+        rawPgPool.query('SELECT 1'),
+        new Promise((_resolve, rejectTimeout) =>
+          setTimeout(() => rejectTimeout(new Error('readiness db ping timed out')), 2000),
+        ),
+      ]);
+      return reply.code(200).send({ status: 'ready', timestamp: new Date().toISOString() });
+    } catch {
+      // Do not leak the DB error string; the dependency name is enough for the operator.
+      return reply
+        .code(503)
+        .send({ status: 'not_ready', reason: 'database_unreachable', timestamp: new Date().toISOString() });
+    }
+  });
+
   // Silver tier (StarRocks) read pool — feat-silver-tier-order-state. mysql2 speaks the
   // StarRocks MySQL wire protocol (:9030). Connects as brain_analytics (SELECT-only — NOT
   // root): reading Silver as a non-DDL user is part of the isolation posture even though

@@ -27,10 +27,13 @@ spec:
             allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
-          {{- if .Values.service.enabled }}
+          {{- if or .Values.service.enabled .Values.probes.enabled }}
+          # The worker is headless (no Service), but the kubelet still needs a named
+          # containerPort to target the liveness/readiness probes (T2-10). Declare it whenever
+          # probes are on, independent of whether a Service fronts it.
           ports:
             - name: http
-              containerPort: {{ .Values.service.targetPort }}
+              containerPort: {{ .Values.service.targetPort | default .Values.probes.port }}
               protocol: TCP
           {{- end }}
           {{- if .Values.envSecretName }}

@@ -53,6 +53,7 @@ import { LedgerWriter } from './infrastructure/pg/LedgerWriter.js';
 import mysql from 'mysql2/promise';
 import { createAttributionReversalHook } from '@brain/attribution-writer';
 import type { SilverPool } from '@brain/metric-engine';
+import { startHealthServer } from './infrastructure/health/HealthServer.js';
 import { startSyncRequestClaimer } from './jobs/sync-request-claimer/run.js';
 import { startDqChecks } from './jobs/dq/run.js';
 import { startIngestScheduler } from './jobs/ingest-scheduler/run.js';
@@ -127,6 +128,22 @@ export async function main(): Promise<void> {
     },
   };
   const auditWriter = new DbAuditWriter(auditDbClient);
+
+  // ── Liveness/readiness probes (T2-10) ───────────────────────────────────────
+  // Start the health port BEFORE the consumers so liveness answers during the (slow) boot
+  // window — K8s must not restart a pod that is merely still wiring consumers. Readiness
+  // stays false (503) until every consumer has started AND Postgres is reachable, so the
+  // worker only joins rotation once it can actually do work. pingDb reuses auditPool
+  // (brain_app) — a SELECT 1 needs no RLS GUC.
+  let consumersReady = false;
+  const healthServer = startHealthServer({
+    port: parseInt(process.env['HEALTH_PORT'] ?? '8090', 10),
+    isReady: () => consumersReady,
+    pingDb: async () => {
+      await auditPool.query('SELECT 1');
+    },
+    log,
+  });
 
   // ── Bronze pipeline (LIVE collector lane — R2/R3 gate ON) ───────────────────
   const dedup = new RedisDedupAdapter(redisUrl);
@@ -351,6 +368,9 @@ export async function main(): Promise<void> {
   // Graceful shutdown
   const shutdown = async (signal: string): Promise<void> => {
     log.info(`${signal} received — draining consumers...`);
+    // Go not-ready FIRST so the orchestrator stops routing to this instance before we tear
+    // consumers down (liveness keeps answering — the process is still alive and draining).
+    consumersReady = false;
     await Promise.all([
       consumer.stop(),
       identityConsumer.stop(),
@@ -384,6 +404,7 @@ export async function main(): Promise<void> {
     await settlementMapPool.end();
     await spendLedgerWriter.end();
     await gokwikAwbLedgerWriter.end();
+    await healthServer.close();
     // Flush buffered telemetry LAST so shutdown spans/metrics are exported (C1).
     await shutdownObservability().catch(() => { /* ignore */ });
     await closeSentry().catch(() => { /* ignore */ });
@@ -457,6 +478,10 @@ export async function main(): Promise<void> {
   log.info(`starting gokwik-awb-ledger bridge — topic=${topic} group=${gokwikAwbLedgerGroupId}`);
   await gokwikAwbLedgerConsumer.start();
   log.info('gokwik-awb-ledger bridge consumer running');
+
+  // All consumers are up — flip readiness so the orchestrator routes work to this instance.
+  consumersReady = true;
+  log.info('readiness: ready (all consumers started)');
 }
 
 // Run when invoked directly (not imported in tests)

@@ -1,6 +1,10 @@
 # Pending Stakeholder Commit — feat-silver-tier-order-state
 
-**Status:** awaiting-stakeholder (Stage 7). Final review PASS / APPROVE. Security PASS. QA BUILD-OK.
+> **✅ RESOLVED 2026-06-20 — SHIPPED.** Accepted at the Stage-7 gate; branch `feat/silver-tier-order-state`
+> committed + merged to master (verified ancestor of `origin/master`). EOS `active.json` advanced 7→8.
+> The mechanical commit recipe below is retained for the pipeline trail only — no action remaining.
+
+**Status:** ~~awaiting-stakeholder (Stage 7)~~ **shipped (Stage 8)**. Final review PASS / APPROVE. Security PASS. QA BUILD-OK.
 **Branch:** `feat/silver-tier-order-state`
 **Run:** `.engineering-os/runs/2026-06-18T09-26-39Z__e67beb__feat-silver-tier-order-state__rishabhporwal`
 

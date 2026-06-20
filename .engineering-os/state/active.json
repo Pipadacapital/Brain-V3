@@ -429,29 +429,39 @@
     },
     {
       "req_id": "feat-shopify-live-connector",
-      "status": "awaiting-stakeholder",
-      "stage": 7,
-      "current_owner": "stakeholder",
-      "last_journal_entry_at": "2026-06-17T18:06:54Z"
+      "status": "shipped",
+      "stage": 8,
+      "current_owner": "platform-devops",
+      "last_journal_entry_at": "2026-06-17T18:06:54Z",
+      "stakeholder_gate": {
+        "decision": "accepted",
+        "accepted_at": "2026-06-20T00:00:00Z",
+        "note": "Stakeholder-accepted at the Stage-7 gate; feature branch merged to master. EOS state reconciled post-merge (branch verified ancestor of origin/master)."
+      }
     },
     {
       "req_id": "feat-collection-foundation",
       "title": "Collection Foundation \u2014 ingest hardening + first-party pixel + Tracking Center UI",
-      "status": "awaiting-stakeholder",
-      "stage": 7,
-      "current_owner": "stakeholder",
+      "status": "shipped",
+      "stage": 8,
+      "current_owner": "platform-devops",
       "lane": "high_stakes",
       "run_dir": ".engineering-os/runs/2026-06-17T20-56-56Z__57b8cb__feat-collection-foundation__rishabhporwal",
       "created_at": "2026-06-17T20:56:56Z",
       "updated_at": "2026-06-17T20:56:56Z",
-      "last_journal_entry_at": "2026-06-17T22:46:30Z"
+      "last_journal_entry_at": "2026-06-17T22:46:30Z",
+      "stakeholder_gate": {
+        "decision": "accepted",
+        "accepted_at": "2026-06-20T00:00:00Z",
+        "note": "Stakeholder-accepted at the Stage-7 gate; feature branch merged to master. EOS state reconciled post-merge (branch verified ancestor of origin/master)."
+      }
     },
     {
       "req_id": "feat-onboarding-website",
       "title": "Onboarding website capture \u2192 auto-provision per-brand pixel \u2192 surface install snippet",
-      "status": "awaiting-stakeholder",
-      "stage": 7,
-      "current_owner": "stakeholder",
+      "status": "shipped",
+      "stage": 8,
+      "current_owner": "platform-devops",
       "lane": "high_stakes",
       "run_dir": ".engineering-os/runs/2026-06-18T04-13-08Z__a1fbb8__feat-onboarding-website__rishabhporwal",
       "updated_at": "2026-06-18T05:03:47Z",
@@ -462,14 +472,19 @@
         "security": "PASS (0 CRIT/HIGH/MED; 1 LOW pre-existing public install_token at info-log)",
         "final_review": "PASS / APPROVE (F-ADV-01 RESOLVED at HEAD 22ca3b8; web tsc EXIT 0; web vitest 9/9; pixel-sdk vitest 34/34; isolation spine untouched)",
         "head": "22ca3b8"
+      },
+      "stakeholder_gate": {
+        "decision": "accepted",
+        "accepted_at": "2026-06-20T00:00:00Z",
+        "note": "Stakeholder-accepted at the Stage-7 gate; feature branch merged to master. EOS state reconciled post-merge (branch verified ancestor of origin/master)."
       }
     },
     {
       "req_id": "feat-silver-tier-order-state",
       "title": "Silver tier foundation \u2014 first Bronze\u2192Silver mart (silver.order_state) + order-status-mix UI",
-      "status": "awaiting-stakeholder",
-      "stage": 7,
-      "current_owner": "stakeholder",
+      "status": "shipped",
+      "stage": 8,
+      "current_owner": "platform-devops",
       "lane": "high_stakes",
       "run_dir": ".engineering-os/runs/2026-06-18T09-26-39Z__e67beb__feat-silver-tier-order-state__rishabhporwal",
       "updated_at": "2026-06-18T15:08:55Z",
@@ -486,14 +501,19 @@
           "DEV-NOTE-1: Makefile absolute dbt path (cosmetic; DBT= override handled)",
           "DEV-NOTE-2: no real-port BFF wire-smoke this session (unit+isolation+tsc cover correctness)"
         ]
+      },
+      "stakeholder_gate": {
+        "decision": "accepted",
+        "accepted_at": "2026-06-20T00:00:00Z",
+        "note": "Stakeholder-accepted at the Stage-7 gate; feature branch merged to master. EOS state reconciled post-merge (branch verified ancestor of origin/master)."
       }
     },
     {
       "req_id": "feat-journey-touchpoint",
       "title": "The journey Silver layer \u2014 silver.touchpoint (sessionize \u2192 first/last-touch + deterministic cart-stitch) + journey/first-touch UI",
-      "status": "awaiting-stakeholder",
-      "stage": 7,
-      "current_owner": "stakeholder",
+      "status": "shipped",
+      "stage": 8,
+      "current_owner": "platform-devops",
       "lane": "high_stakes",
       "run_dir": ".engineering-os/runs/2026-06-18T12-11-32Z__05a5de__feat-journey-touchpoint__rishabhporwal",
       "lineage": [
@@ -513,14 +533,19 @@
           "PROD-GAP-1: StarRocks engine row-policy graduation on silver_touchpoint (managed cluster; M1 enforcement is the non-inert app-seam predicate)",
           "DATA-NOTE-1: thin real journey data (23/94 page.viewed carry brain_anon_id); synthetic supplement clearly labelled, _synthetic flag rides to UI SyntheticBadge \u2014 never fakes coverage"
         ]
+      },
+      "stakeholder_gate": {
+        "decision": "accepted",
+        "accepted_at": "2026-06-20T00:00:00Z",
+        "note": "Stakeholder-accepted at the Stage-7 gate; feature branch merged to master. EOS state reconciled post-merge (branch verified ancestor of origin/master)."
       }
     },
     {
       "req_id": "feat-attribution-ledger",
       "title": "Attribution credit ledger (0032 append-only Gold) + position-based clawback + closed-sum parity oracle + channel ROAS UI",
-      "status": "awaiting-stakeholder",
-      "stage": 7,
-      "current_owner": "stakeholder",
+      "status": "shipped",
+      "stage": 8,
+      "current_owner": "platform-devops",
       "lane": "high_stakes",
       "run_dir": ".engineering-os/runs/2026-06-18T13-03-15Z__fc52d1__feat-attribution-ledger__rishabhporwal",
       "lineage": [
@@ -542,14 +567,19 @@
           "SEC-LOW-1/LOW-2/INFO-1: per Stage-4 security review (non-blocking)",
           "PROD-GAP: brain_gold.attribution_credit_ledger StarRocks mirror is a documented future graduation; M1 SoR is Postgres 0032 (mirrors realized_revenue_ledger 0018 logical-gold precedent)"
         ]
+      },
+      "stakeholder_gate": {
+        "decision": "accepted",
+        "accepted_at": "2026-06-20T00:00:00Z",
+        "note": "Stakeholder-accepted at the Stage-7 gate; feature branch merged to master. EOS state reconciled post-merge (branch verified ancestor of origin/master)."
       }
     },
     {
       "req_id": "feat-d13-consent-cancontact",
-      "title": "D13 privacy — consent SoR + real can_contact() compliance gate (consent/DLT/NCPR/9-9-IST window) + consent-suppressor + compliance UI",
-      "status": "awaiting-stakeholder",
-      "stage": 7,
-      "current_owner": "stakeholder",
+      "title": "D13 privacy \u2014 consent SoR + real can_contact() compliance gate (consent/DLT/NCPR/9-9-IST window) + consent-suppressor + compliance UI",
+      "status": "shipped",
+      "stage": 8,
+      "current_owner": "platform-devops",
       "lane": "high_stakes",
       "run_dir": ".engineering-os/runs/2026-06-18T13-58-47Z__db0d1b__feat-d13-consent-cancontact__rishabhporwal",
       "updated_at": "2026-06-18T18:40:00Z",
@@ -562,11 +592,16 @@
         "branch": "feat/d13-consent-cancontact",
         "verdict_evidence": "3 gates re-run live + replicated: can-contact.engine 18/18 (salt-crash throws not allow; 09:00/20:59/21:00 IST boundary mutants killed; every unknown->block/queue; subjectHash ^[0-9a-f]{64}$); consent-suppressor e2e 10/10 against REAL Postgres NON-INERT under brain_app (beforeAll hard-fails on current_user='brain'; cross-brand BRAND_B->0 of BRAND_A; no-GUC->0; replay 3x->same rows; no raw PII); full notification module 20/20. THE-invariants confirmed file:line: sole-gate (emailAdapter.send only at notification.service.impl.ts:56,106,155, no provider call outside the module); default-closed engine (can-contact.engine.ts:75-148, ncpr/dlt/consent/send-window policies all fail-closed); salt-miss HARD-CRASH (salt.adapter.ts:17-24 propagated at engine:92); 9-9 IST server-enforced + queue-not-drop + flush re-runs full gate (pending-window.handler.ts:108-134, resolveRecipient null->leave queued); subject_hash only in 0033 migration + send_log (no raw PII); RLS ENABLE+FORCE+NN-1 two-arg + append-only GRANT + 3 migration assertions; DLT/NCPR dev-honest stubs (stubs.ts:18-31 block never fake). Over-engineering CLEAN (file set 1:1 with plan tracks A/B/C; 0 tokens/$0-mo deterministic). Hard-rule NONE (migration renumber 0032->0033 cosmetic, node-pg-migrate keys on full filename; independent ordering safe).",
         "residuals": [
-          "RISK-1: phone-channel (whatsapp/sms) marketing BLOCKED by construction today — DLT + NCPR/DND are dev-honest default-closed stubs; real TRAI-DLT + NCPR registry are platform follow-ups that MUST land before any phone-channel marketing send. Email marketing (consent+window) is fully live. Intended fail-closed posture.",
-          "RISK-2: pending_window flush needs a prod send_service-role recipient resolver (dev = fixture map) + the 09:00-IST scheduler trigger — confirm both in the deploy runbook; until wired a queued row stays queued (fail-closed, never late).",
+          "RISK-1: phone-channel (whatsapp/sms) marketing BLOCKED by construction today \u2014 DLT + NCPR/DND are dev-honest default-closed stubs; real TRAI-DLT + NCPR registry are platform follow-ups that MUST land before any phone-channel marketing send. Email marketing (consent+window) is fully live. Intended fail-closed posture.",
+          "RISK-2: pending_window flush needs a prod send_service-role recipient resolver (dev = fixture map) + the 09:00-IST scheduler trigger \u2014 confirm both in the deploy runbook; until wired a queued row stays queued (fail-closed, never late).",
           "S-LOW-1/2: two non-blocking Security LOW findings carried.",
           "INFO: source='consent_manager' enum forward-compatible with DPDP Rules 2025 Consent Manager (~Nov 2026); no action now."
         ]
+      },
+      "stakeholder_gate": {
+        "decision": "accepted",
+        "accepted_at": "2026-06-20T00:00:00Z",
+        "note": "Stakeholder-accepted at the Stage-7 gate; feature branch merged to master. EOS state reconciled post-merge (branch verified ancestor of origin/master)."
       }
     }
   ]

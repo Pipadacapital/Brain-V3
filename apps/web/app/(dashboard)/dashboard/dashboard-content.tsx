@@ -18,6 +18,7 @@
 
 import { BrandSummaryCard } from '@/components/dashboard/brand-summary-card';
 import { FoundationHealthCard } from '@/components/dashboard/foundation-health-card';
+import { TopActionsCard } from '@/components/dashboard/top-actions-card';
 import { ConnectionStatusCard } from '@/components/dashboard/connection-status-card';
 import { LiveIndicator } from '@/components/dashboard/live-indicator';
 import { OnboardingProgressCard } from '@/components/dashboard/onboarding-progress-card';
@@ -220,6 +221,8 @@ export function DashboardContent() {
       <DisconnectedBanner />
       {/* Foundation-first (P1): readiness verdict leads the dashboard — health before charts. */}
       <FoundationHealthCard />
+      {/* "Decide" pillar (doc 09): the top actions lead the metrics — a decision, not a chart. */}
+      <TopActionsCard />
       <KpiRow />
       <TrendSection />
       <ActivitySection />

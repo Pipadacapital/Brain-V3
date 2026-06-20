@@ -90,6 +90,19 @@ beforeAll(async () => {
     // 200 orders, 20 RTO reversals → 10% RTO (> 3% threshold), 200 ≥ 100 → Trusted.
     await seedRows('provisional_recognition', 200, 50_000);
     await seedRows('rto_reversal', 20, -50_000);
+    // Settle the 200 provisional orders so the realization_gap detector (added after this test) does
+    // NOT also fire — this test is scoped to rto_risk. Finalizing the SAME order_ids adds no distinct
+    // orders, so the RTO rate is unchanged; it just moves provisional→realized below the 60% gap.
+    for (let i = 1; i <= 200; i++) {
+      await superPool.query(
+        `INSERT INTO realized_revenue_ledger
+           (brand_id, ledger_event_id, order_id, event_type, amount_minor, currency_code,
+            occurred_at, economic_effective_at, billing_posted_period, recognition_label)
+         VALUES ($1, $2, $3, 'finalization', 50000, 'INR', '2026-06-01Z', '2026-06-01Z', '2026-06', 'finalized')
+         ON CONFLICT (brand_id, ledger_event_id) DO NOTHING`,
+        [BRAND_A, `rto-fin-${i}`, `rto-order-${i}`],
+      );
+    }
     pgAvailable = true;
   } catch {
     pgAvailable = false;

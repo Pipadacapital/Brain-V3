@@ -25,6 +25,14 @@ export interface SpoolRepository {
   markDrained(id: bigint): Promise<void>;
 
   /**
+   * Count pending rows, but stop scanning once `cap` is reached (a BOUNDED count).
+   * Returns min(actual_pending, cap). Backs the spool back-pressure gauge (C4 / R-09):
+   * we only need to know whether the backlog has crossed the high/low-water marks, never
+   * the true depth — so the query is O(cap) on the partial pending index, not O(table).
+   */
+  countPendingBounded(cap: number): Promise<number>;
+
+  /**
    * Health check — can the spool DB be reached?
    * Returns true if a simple query succeeds.
    */

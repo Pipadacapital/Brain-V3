@@ -45,6 +45,7 @@ import {
   RecommendationsSchema,
   GenerateRecommendationsResultSchema,
   FoundationHealthSchema,
+  EntitlementsSchema,
 } from '@brain/contracts';
 
 import type {
@@ -99,6 +100,7 @@ import type {
   AnalyticsOrderStatsResponse,
   AnalyticsDataHealthResponse,
   FoundationHealthResponse,
+  EntitlementsResponse,
   DataQualitySummaryResponse,
   AnalyticsSettlementsResponse,
   AnalyticsTrackingHealthResponse,
@@ -1111,6 +1113,15 @@ export const analyticsApi = {
   getFoundationHealth: async (): Promise<FoundationHealthResponse> => {
     const env = await bffFetch<BffEnvelope<unknown>>('/v1/dashboard/data-foundation-health');
     return parseData(FoundationHealthSchema, env);
+  },
+
+  /**
+   * GET /api/v1/entitlements — readiness-driven progressive unlock (P2).
+   * Server-driven eligibility for gated centers + connector categories. Parsed at the seam.
+   */
+  getEntitlements: async (): Promise<EntitlementsResponse> => {
+    const env = await bffFetch<BffEnvelope<unknown>>('/v1/entitlements');
+    return parseData(EntitlementsSchema, env);
   },
 
   /**

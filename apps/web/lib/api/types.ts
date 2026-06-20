@@ -60,6 +60,8 @@ export type {
   FoundationHealth as FoundationHealthResponse,
   FoundationStep,
   FoundationTier,
+  Entitlements as EntitlementsResponse,
+  EntitlementEntry,
 } from '@brain/contracts';
 
 // Local import for the names referenced WITHIN this file (re-exports above are not in local scope).

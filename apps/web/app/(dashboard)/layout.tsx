@@ -50,6 +50,7 @@ import { BrandSwitcher } from '@/components/dashboard/brand-switcher';
 import { VerifyEmailBanner } from '@/components/dashboard/verify-email-banner';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
+import { useEntitlements, centerEntitlement } from '@/lib/hooks/use-entitlements';
 
 interface NavItem {
   href?: string;
@@ -57,6 +58,12 @@ interface NavItem {
   icon: React.ElementType;
   comingSoon?: boolean;
   disabled?: boolean;
+  /**
+   * Progressive unlock (P2): the entitlement center key this item gates on. When the brand's data
+   * foundation can't support it yet, the item locks (disabled + the unlock hint) so the user never
+   * navigates into an empty/not-ready center. Absent → always available.
+   */
+  centerKey?: string;
 }
 
 interface NavSection {
@@ -69,7 +76,7 @@ const NAV_SECTIONS: NavSection[] = [
     title: 'OVERVIEW',
     items: [
       { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
-      { href: '/recommendations', label: 'Recommendations', icon: Lightbulb },
+      { href: '/recommendations', label: 'Recommendations', icon: Lightbulb, centerKey: 'decision' },
       { href: '/ask', label: 'Ask Brain', icon: BrainCircuit },
     ],
   },
@@ -82,17 +89,17 @@ const NAV_SECTIONS: NavSection[] = [
       { href: '/analytics/settlements', label: 'Settlements', icon: Receipt },
       { href: '/analytics/cod-rto', label: 'CoD / RTO', icon: Truck },
       { href: '/analytics/order-status', label: 'Order Status', icon: Layers },
-      { href: '/analytics/journey', label: 'Journey', icon: Footprints },
-      { href: '/analytics/attribution', label: 'Attribution', icon: Target },
+      { href: '/analytics/journey', label: 'Journey', icon: Footprints, centerKey: 'journey' },
+      { href: '/analytics/attribution', label: 'Attribution', icon: Target, centerKey: 'attribution' },
       { href: '/analytics/conversion-feedback', label: 'Conversion Feedback', icon: Send },
     ],
   },
   {
     title: 'IDENTITY',
     items: [
-      { href: '/identity/customer-360', label: 'Customer 360', icon: Fingerprint },
-      { href: '/identity/merge-review', label: 'Merge Review', icon: GitMerge },
-      { href: '/identity/pii-vault', label: 'PII Vault', icon: Lock },
+      { href: '/identity/customer-360', label: 'Customer 360', icon: Fingerprint, centerKey: 'identity' },
+      { href: '/identity/merge-review', label: 'Merge Review', icon: GitMerge, centerKey: 'identity' },
+      { href: '/identity/pii-vault', label: 'PII Vault', icon: Lock, centerKey: 'identity' },
     ],
   },
   {
@@ -122,12 +129,36 @@ const NAV_SECTIONS: NavSection[] = [
 
 function NavLink({ item }: { item: NavItem }) {
   const pathname = usePathname();
+  const { data: entitlements } = useEntitlements();
+
+  // Progressive unlock (P2): a gated center locks until its data foundation supports it.
+  const ent = item.centerKey ? centerEntitlement(entitlements?.centers, item.centerKey) : null;
+  const locked = ent !== null && !ent.eligible;
 
   const isActive = item.href ? (
     item.href === '/dashboard'
       ? pathname === '/dashboard'
       : pathname.startsWith(item.href)
   ) : false;
+
+  // Locked-by-readiness: render disabled with a lock + the unlock hint (never navigate into an
+  // empty/not-ready center — "the user should never reach empty or misleading experiences").
+  if (locked) {
+    return (
+      <div
+        className="flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium text-muted-foreground/50 cursor-not-allowed select-none"
+        aria-disabled="true"
+        role="link"
+        tabIndex={-1}
+        title={ent?.unlock_hint ?? undefined}
+        aria-label={`${item.label} — locked. ${ent?.unlock_hint ?? 'Build your data foundation to unlock.'}`}
+      >
+        <item.icon className="h-4 w-4 shrink-0" aria-hidden="true" />
+        <span>{item.label}</span>
+        <Lock className="ml-auto h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+      </div>
+    );
+  }
 
   if (item.disabled || !item.href) {
     return (

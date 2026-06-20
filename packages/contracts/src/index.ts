@@ -472,3 +472,5 @@ export type {
   FoundationNextAction,
   FoundationHealth,
 } from './api/foundation.api.v1.js';
+export { EntitlementEntrySchema, EntitlementsSchema } from './api/entitlements.api.v1.js';
+export type { EntitlementEntry, Entitlements } from './api/entitlements.api.v1.js';

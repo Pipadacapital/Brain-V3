@@ -38,6 +38,9 @@ export type {
   FoundationDqTier,
   Freshness as FoundationFreshness,
 } from './internal/application/foundation-health.js';
+// Readiness-driven progressive unlock (P2) — eligibility for centers + connector categories.
+export { computeEntitlements } from './internal/application/entitlements.js';
+export type { Entitlements, EntitlementEntry, EntitlementInput } from './internal/application/entitlements.js';
 
 // Razorpay settlement summary (net-of-fees) — Track C
 export { getSettlementSummary } from './internal/application/queries/get-settlement-summary.js';

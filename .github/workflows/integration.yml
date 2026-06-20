@@ -18,6 +18,17 @@ on:
     - cron: '0 2 * * *' # nightly 02:00 UTC
   push:
     branches: [master]
+  # PR gate (promoted now the dbt Silver step is proven green — verified locally + on master push).
+  # Path-filtered to the data/connector/medallion/infra surfaces so doc-only PRs don't pay the
+  # real-engine cost. To make it BLOCKING, mark "integration" a required status check in branch
+  # protection (a repo-admin setting, not expressible in this file).
+  pull_request:
+    paths:
+      - 'apps/**'
+      - 'packages/**'
+      - 'db/**'
+      - 'infra/**'
+      - '.github/workflows/integration.yml'
 
 permissions:
   contents: read

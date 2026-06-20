@@ -97,6 +97,7 @@ const NAV_SECTIONS: NavSection[] = [
   {
     title: 'IDENTITY',
     items: [
+      { href: '/identity/customers', label: 'Customers', icon: Users, centerKey: 'identity' },
       { href: '/identity/customer-360', label: 'Customer 360', icon: Fingerprint, centerKey: 'identity' },
       { href: '/identity/merge-review', label: 'Merge Review', icon: GitMerge, centerKey: 'identity' },
       { href: '/identity/pii-vault', label: 'PII Vault', icon: Lock, centerKey: 'identity' },

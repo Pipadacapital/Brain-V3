@@ -92,6 +92,37 @@ export const VaultCoverageSchema = z.object({
 });
 export type VaultCoverage = z.infer<typeof VaultCoverageSchema>;
 
+// ── Customer browse/search (discover front-door) ─────────────────────────────
+
+/**
+ * One row in the customer browse list. Counts + lifecycle/consent only — NO raw PII and not even
+ * the hashed identifier values (only how many active identifiers the customer has). Drill into
+ * Customer360 (by brain_id) for the per-identifier hash prefixes.
+ */
+export const CustomerListItemSchema = z.object({
+  brain_id: z.string(),
+  anonymous_id: z.string().nullable(),
+  lifecycle_state: z.string(),
+  merged_into: z.string().nullable(),
+  ai_processing_consent: z.boolean(),
+  resolution_consent: z.boolean(),
+  identifier_count: z.number().int().nonnegative(),
+  last_identifier_at: z.string().nullable(), // ISO-8601 of most recent active link, or null
+  created_at: z.string(), // ISO-8601 (first seen)
+});
+export type CustomerListItem = z.infer<typeof CustomerListItemSchema>;
+
+/** A paginated page of the customer browse list for the active brand. */
+export const CustomerListSchema = z.object({
+  items: z.array(CustomerListItemSchema),
+  total: z.number().int().nonnegative(), // pre-pagination total for the current filter
+  limit: z.number().int().positive(),
+  offset: z.number().int().nonnegative(),
+  /** Echoes whether a search term was applied (so the UI can show "results for …" honestly). */
+  searched: z.boolean(),
+});
+export type CustomerList = z.infer<typeof CustomerListSchema>;
+
 export const Customer360Schema = z.discriminatedUnion('state', [
   z.object({
     state: z.literal('not_found'),

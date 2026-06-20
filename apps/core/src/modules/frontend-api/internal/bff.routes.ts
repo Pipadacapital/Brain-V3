@@ -81,6 +81,7 @@ import type {
   DataQualitySummary as ContractDataQualitySummary,
   AskBrainResult as ContractAskBrainResult,
   Customer360 as ContractCustomer360,
+  CustomerList as ContractCustomerList,
   VaultCoverage as ContractVaultCoverage,
   ErasureResult as ContractErasureResult,
   MergeReviewList as ContractMergeReviewList,
@@ -106,6 +107,7 @@ import { computeFoundationHealth, freshnessFromIngest, computeEntitlements, type
 import { CONNECTOR_CATALOG } from '../../connector/catalog/registry.js';
 import {
   getCustomer360,
+  listCustomers,
   eraseCustomer,
   listMergeReviews,
   resolveMergeReview,
@@ -1426,6 +1428,65 @@ export function registerBffRoutes(
         request_id: requestId,
         data: snapshot,
       });
+    },
+  );
+
+  // ── GET /api/v1/identity/customers — customer BROWSE (discover front-door) ────
+  /**
+   * GET /api/v1/identity/customers?lifecycle=&search=&limit=&offset=
+   *
+   * Paginated, filterable list of the active brand's customers (the front-door into Customer 360 /
+   * merge / unmerge / erase, all of which require a brain_id you otherwise have no way to discover).
+   *
+   * PII discipline (I-S02): returns counts + lifecycle/consent only — NO raw PII, not even hashed
+   * identifier values. `search` is hashed server-side with the per-brand salt (raw term never stored,
+   * never logged, never reaches Postgres). Brand from session (D-1): scope is auth.brandId, never the
+   * request. Reads via the identity module → @brain/db DbPool (RLS-enforced under brain_app).
+   */
+  fastify.get(
+    '/api/v1/identity/customers',
+    {
+      preHandler: [bffProtectedPreHandler],
+      schema: {
+        querystring: {
+          type: 'object',
+          properties: {
+            lifecycle: { type: 'string', enum: ['anonymous', 'active', 'merged', 'split', 'erased'] },
+            search: { type: 'string', maxLength: 320 },
+            limit: { type: 'integer', minimum: 1, maximum: 100 },
+            offset: { type: 'integer', minimum: 0 },
+          },
+          additionalProperties: false,
+        },
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const auth = (request as AuthenticatedRequest).auth;
+      const q = request.query as { lifecycle?: string; search?: string; limit?: number; offset?: number };
+
+      const limit = q.limit ?? 25;
+      const offset = q.offset ?? 0;
+      const empty: ContractCustomerList = {
+        items: [],
+        total: 0,
+        limit,
+        offset,
+        searched: Boolean(q.search && q.search.trim().length > 0),
+      };
+
+      // Honest empty: no active brand → no scope to browse.
+      if (!auth.brandId || !pool) {
+        return reply.send({ request_id: requestId, data: empty });
+      }
+
+      const result: ContractCustomerList = await listCustomers(
+        auth.brandId,
+        { lifecycle: q.lifecycle ?? null, search: q.search ?? null, limit, offset },
+        requestId,
+        { pool },
+      );
+      return reply.send({ request_id: requestId, data: result });
     },
   );
 

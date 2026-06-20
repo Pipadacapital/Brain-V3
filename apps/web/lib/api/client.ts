@@ -36,6 +36,7 @@ import {
   DataQualitySummarySchema,
   AskBrainResultSchema,
   Customer360Schema,
+  CustomerListSchema,
   VaultCoverageSchema,
   ErasureResultSchema,
   MergeReviewListSchema,
@@ -140,6 +141,7 @@ import type {
   AskBrainRequest,
   AskBrainResponse,
   Customer360Response,
+  CustomerListResponse,
   VaultCoverageResponse,
   ErasureResultResponse,
   MergeReviewListResponse,
@@ -1709,6 +1711,23 @@ export const dashboardApi = {
  * identityApi — identity control-plane reads (P0-C). Customer 360 is the first slice.
  */
 export const identityApi = {
+  /** GET /api/v1/identity/customers — paginated customer browse (counts only, never raw PII). */
+  listCustomers: async (params: {
+    lifecycle?: string;
+    search?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<CustomerListResponse> => {
+    const qs = new URLSearchParams();
+    if (params.lifecycle) qs.set('lifecycle', params.lifecycle);
+    if (params.search && params.search.trim().length > 0) qs.set('search', params.search.trim());
+    if (params.limit != null) qs.set('limit', String(params.limit));
+    if (params.offset != null) qs.set('offset', String(params.offset));
+    const q = qs.toString();
+    const env = await bffFetch<BffEnvelope<unknown>>(`/v1/identity/customers${q ? `?${q}` : ''}`);
+    return parseData(CustomerListSchema, env);
+  },
+
   /** GET /api/v1/identity/customer?brain_id=<uuid> — resolved customer profile + links + merges. */
   getCustomer360: async (brainId: string): Promise<Customer360Response> => {
     const env = await bffFetch<BffEnvelope<unknown>>(

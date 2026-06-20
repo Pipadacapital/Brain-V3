@@ -17,6 +17,33 @@ import type {
 export const IDENTITY_QUERY_KEY = ['identity'] as const;
 
 /**
+ * useCustomers — paginated customer BROWSE for the active brand (the discover front-door).
+ * Always enabled (an empty filter lists the most-recent customers); search/lifecycle/page are part
+ * of the query key so changing any re-fetches. placeholderData keeps the table stable while paging.
+ * Counts only — never raw PII.
+ */
+export function useCustomers(params: {
+  lifecycle?: string;
+  search?: string;
+  limit?: number;
+  offset?: number;
+}) {
+  return useQuery({
+    queryKey: [
+      ...IDENTITY_QUERY_KEY,
+      'customers',
+      params.lifecycle ?? '',
+      params.search?.trim() ?? '',
+      params.limit ?? 25,
+      params.offset ?? 0,
+    ],
+    queryFn: () => identityApi.listCustomers(params),
+    placeholderData: (prev) => prev,
+    staleTime: 30_000,
+  });
+}
+
+/**
  * useCustomer360 — fetch the resolved customer profile for a brain_id.
  * Disabled until a non-empty brain_id is entered (no fetch on an empty search box).
  */

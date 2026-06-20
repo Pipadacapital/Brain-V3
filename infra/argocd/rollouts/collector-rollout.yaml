@@ -1,0 +1,59 @@
+# collector-rollout.yaml — REFERENCE Argo Rollout with automated bake-window analysis (B6).
+#
+# The collector is the highest-stakes service (the 99.95% accept+ack durability SLO), so it is the
+# reference for converting a Deployment → Rollout with auto-rollback. A canary holds new traffic at a
+# small weight while `collector-accept-ack-slo` + `ingest-freshness` run; if either analysis fails the
+# Rollout aborts and Argo restores the last stable ReplicaSet — no human in the loop.
+#
+# ⚠️ This is the PATTERN, not yet wired into the live chart. Converting infra/helm/collector's
+# Deployment to this Rollout is a deploy-mechanics change (Deployment → Rollout CRD) that needs the
+# Argo Rollouts controller installed and a cluster to validate progressive traffic shifting — done as
+# a focused, cluster-in-the-loop step. The same pattern then extends to core/stream-worker/web.
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: brain-collector
+  labels: { app.kubernetes.io/name: collector, app.kubernetes.io/part-of: brain }
+spec:
+  replicas: 3
+  selector:
+    matchLabels: { app: brain-collector }
+  template:
+    metadata:
+      labels: { app: brain-collector }
+    spec:
+      containers:
+        - name: collector
+          # Immutable digest only (B3) — populated by the gitops promotion bump.
+          image: REPLACE_WITH_ECR_REGISTRY/brain-collector@REPLACE_WITH_DIGEST
+          ports:
+            - containerPort: 3001
+          readinessProbe:
+            httpGet: { path: /readyz, port: 3001 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 2     # 2 consecutive probe failures (bake-window K8s rule)
+  strategy:
+    canary:
+      # Bake the new version at low weight; the analysis runs in the background and aborts on breach.
+      steps:
+        - setWeight: 10
+        - pause: { duration: 5m }   # the documented 5-min bake window
+        - analysis:
+            templates:
+              - templateName: collector-accept-ack-slo
+              - templateName: ingest-freshness
+            args:
+              - name: prometheus-address
+                value: REPLACE_WITH_PROMETHEUS_ADDRESS
+        - setWeight: 50
+        - pause: { duration: 5m }
+        - setWeight: 100
+      # Background analysis runs for the whole rollout; a failure aborts → automatic rollback.
+      analysis:
+        templates:
+          - templateName: collector-accept-ack-slo
+        startingStep: 2
+        args:
+          - name: prometheus-address
+            value: REPLACE_WITH_PROMETHEUS_ADDRESS

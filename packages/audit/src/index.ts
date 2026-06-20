@@ -47,14 +47,56 @@ export interface AuditEntry {
   idempotency_key?: string;
 }
 
-// ── Hash-chain helper (L-02: real sha256) ─────────────────────────────────────
+// ── Canonical JSON (R-19: deterministic, FULL-coverage serialization) ─────────
+
+/**
+ * canonicalize — a deterministic, order-independent JSON string for hashing.
+ *
+ * Recursively sorts object keys at EVERY depth and includes every value, so two
+ * logically-equal rows built with different key-insertion order hash identically,
+ * and EVERY field (including the entire nested `payload`) is covered by the hash.
+ *
+ * Why this is hand-rolled and not `JSON.stringify(row, keysArray)`: the array form
+ * of the second argument is a property ALLOWLIST, not a key-sorter. It applies
+ * recursively, so any nested key not in the top-level allowlist (i.e. every
+ * `payload.*` key) is SILENTLY DROPPED from the output — the payload would not be
+ * hashed at all, and the audit log would not be tamper-evident on its content.
+ * (See the regression tests.)
+ *
+ * Rules: objects → '{' + sorted "key":canonical(value) pairs + '}'; arrays preserve
+ * order; `undefined`/function members are omitted (JSON semantics); everything else
+ * defers to JSON.stringify for the leaf. Determinism does NOT depend on the JS engine's
+ * key-insertion order.
+ */
+export function canonicalize(value: unknown): string {
+  if (value === null || typeof value !== 'object') {
+    // Leaf (string/number/boolean/null/bigint-throws-upstream). undefined → 'null' only
+    // when it reaches here directly; object/array members handle undefined via omission.
+    return JSON.stringify(value) ?? 'null';
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((v) => (v === undefined ? 'null' : canonicalize(v))).join(',')}]`;
+  }
+  const obj = value as Record<string, unknown>;
+  const parts: string[] = [];
+  for (const key of Object.keys(obj).sort()) {
+    const v = obj[key];
+    if (v === undefined) continue; // JSON drops undefined object members
+    parts.push(`${JSON.stringify(key)}:${canonicalize(v)}`);
+  }
+  return `{${parts.join(',')}}`;
+}
+
+// ── Hash-chain helper (L-02: real sha256; R-19: full-coverage canonicalization) ─
 
 /**
  * Compute the entry_hash for an audit log row using real SHA-256.
  *
  * entry_hash = sha256(prev_hash || canonical(row))
  *
- * where canonical(row) = JSON.stringify with keys sorted alphabetically.
+ * where canonical(row) sorts keys at every depth and covers EVERY field, including
+ * the full nested payload — so any tamper (including inside the payload) breaks the
+ * chain, and the hash is independent of key-insertion order.
  *
  * L-02: Uses crypto.createHash('sha256') — NOT the djb2 stub.
  */
@@ -62,9 +104,7 @@ export function computeEntryHash(
   prevHash: string | null,
   entry: Omit<AuditEntry, 'idempotency_key'>,
 ): string {
-  // Sort keys for a stable canonical representation.
-  const canonical = JSON.stringify(entry, Object.keys(entry).sort() as (keyof typeof entry)[]);
-  const input = `${prevHash ?? 'genesis'}||${canonical}`;
+  const input = `${prevHash ?? 'genesis'}||${canonicalize(entry)}`;
   return createHash('sha256').update(input, 'utf8').digest('hex');
 }
 

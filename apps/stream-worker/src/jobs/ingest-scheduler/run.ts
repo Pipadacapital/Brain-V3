@@ -41,6 +41,7 @@ import {
   loadRun,
 } from '../sync-request-claimer/run.js';
 import { withTickLeaderLock, LEADER_LOCK_INGEST_SCHEDULER } from '../../infrastructure/pg/LeaderLock.js';
+import { incrementCounter } from '@brain/observability';
 import { log } from "../../log.js";
 
 /** Hard floor on the interval — prevents a misconfigured env from stampeding providers. */
@@ -77,9 +78,12 @@ export async function tick(pool: Pool): Promise<number> {
       // overlap-lock guarantees no double-run with a manual click or a previous tick.
       await run(connector.connector_instance_id);
       dispatched++;
+      // P1: per-provider dispatch metric — the scale-limiting tier's throughput signal.
+      incrementCounter('ingest_scheduler_dispatch_total', { provider: connector.provider });
     } catch (err) {
       // FAIL-ISOLATION: one bad/slow connector is logged and skipped — the loop
       // continues. run() persists connector_sync_status.state='error' itself.
+      incrementCounter('ingest_scheduler_dispatch_error_total', { provider: connector.provider });
       log.error(`[ingest-scheduler] repull run failed provider=${connector.provider} ` +
                   `connector=${connector.connector_instance_id}`, { err: err });
     }
@@ -119,7 +123,19 @@ export function startIngestScheduler(
         try {
           // P1: single-leader across replicas — only the lock winner runs the dispatch tick, so the
           // connector API load is 1× (not N×). Non-leaders skip cheaply and retry next interval.
-          await withTickLeaderLock(pool, LEADER_LOCK_INGEST_SCHEDULER, () => tick(pool));
+          const started = Date.now();
+          const out = await withTickLeaderLock(pool, LEADER_LOCK_INGEST_SCHEDULER, () => tick(pool));
+          // P1 instrumentation — the scale-limiting tier's first-to-fail signals. tick-overrun is the
+          // canary the audit flagged (BrainIngestStale only fires at TOTAL zero, never on degradation):
+          // once a sequential tick can't finish within its interval, ingest freshness silently slips.
+          incrementCounter('ingest_scheduler_tick_total', { role: out.ranAsLeader ? 'leader' : 'follower' });
+          if (out.ranAsLeader) {
+            const durationMs = Date.now() - started;
+            if (durationMs >= effectiveInterval) {
+              incrementCounter('ingest_scheduler_tick_overrun_total', {});
+              log.warn(`[ingest-scheduler] TICK OVERRUN ${durationMs}ms >= interval ${effectiveInterval}ms — ingest freshness degrading; shard/scale the worker tier`);
+            }
+          }
         } catch (err) {
           // Tick-level guard (enumerate failure etc.) — never lets the loop die.
           log.error('tick error', { err: err });

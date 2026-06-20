@@ -123,6 +123,32 @@ groups:
           summary: "Ingest stalled — events produced but no Bronze writes in 10m"
           description: "The collector topic is advancing but the stream-worker wrote zero Bronze rows for 10m. The data spine is stalled."
 
+      # P1 — the scale-limiting tier. BrainIngestStale only fires at TOTAL zero; these catch the
+      # DEGRADATION before it reaches zero (the signals the audit flagged as having no metric).
+      - alert: BrainIngestSchedulerOverrun
+        # The sequential scheduler tick can no longer finish within its interval → connector freshness
+        # silently slips into minutes. The first symptom of "too many brands per replica" (shard/scale).
+        expr: sum(increase(ingest_scheduler_tick_overrun_total[15m])) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Ingest scheduler tick overrunning its interval"
+          description: "A scheduler tick took longer than its poll interval — ingest freshness is degrading. Shard brands across replicas or shorten the per-connector work."
+
+      - alert: BrainConnectorDispatchErrors
+        # A provider's repulls are failing on dispatch (rate limit / credential / API) — stale data for
+        # that connector with NO other signal today (per-connector observability was missing).
+        expr: |
+          sum by (provider) (rate(ingest_scheduler_dispatch_error_total[10m]))
+            / clamp_min(sum by (provider) (rate(ingest_scheduler_dispatch_total[10m]) + rate(ingest_scheduler_dispatch_error_total[10m])), 1) > 0.25
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Connector {{ $labels.provider }} repulls failing > 25%"
+          description: "More than a quarter of {{ $labels.provider }} repull dispatches are failing — likely a rate limit, expired credential, or provider outage. That connector's data is going stale."
+
   # ── Revenue truth integrity ─────────────────────────────────────────────────
   - name: brain-revenue-integrity
     rules:

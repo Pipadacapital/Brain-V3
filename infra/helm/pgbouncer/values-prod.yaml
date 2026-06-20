@@ -1,0 +1,11 @@
+# Prod overrides — set the real upstream Postgres host + the admin-creds secret.
+# CORE routes here: its DATABASE_URL / BRAIN_APP_DATABASE_URL host:port must be
+# <release>-pgbouncer:6432 (set in the core-env secret). The STREAM-WORKER stays DIRECT
+# on the Postgres primary (session advisory locks — transaction pooling would break the leader lock).
+replicaCount: 2
+upstream:
+  host: REPLACE_WITH_PROD_POSTGRES_HOST      # e.g. brain-prod.xxxx.rds.amazonaws.com
+envSecretName: pgbouncer-env
+pool:
+  defaultPoolSize: 25
+  maxClientConn: 5000

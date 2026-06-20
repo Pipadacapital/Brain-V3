@@ -1,0 +1,73 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "brain.fullname" . }}
+  labels:
+    {{- include "brain.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "brain.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "brain.selectorLabels" . | nindent 8 }}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: postgres
+              containerPort: 5432
+              protocol: TCP
+          env:
+            - name: DB_HOST
+              value: {{ required "upstream.host is required (set per env, e.g. the RDS endpoint)" .Values.upstream.host | quote }}
+            - name: DB_PORT
+              value: {{ .Values.upstream.port | quote }}
+            - name: DB_NAME
+              value: {{ .Values.upstream.dbname | quote }}
+            - name: POOL_MODE
+              value: {{ .Values.pool.mode | quote }}
+            - name: MAX_CLIENT_CONN
+              value: {{ .Values.pool.maxClientConn | quote }}
+            - name: DEFAULT_POOL_SIZE
+              value: {{ .Values.pool.defaultPoolSize | quote }}
+            - name: MIN_POOL_SIZE
+              value: {{ .Values.pool.minPoolSize | quote }}
+            - name: RESERVE_POOL_SIZE
+              value: {{ .Values.pool.reservePoolSize | quote }}
+            - name: IGNORE_STARTUP_PARAMETERS
+              value: {{ .Values.pool.ignoreStartupParameters | quote }}
+            - name: AUTH_TYPE
+              value: {{ .Values.auth.type | quote }}
+            - name: AUTH_QUERY
+              value: {{ .Values.auth.query | quote }}
+          {{- if .Values.envSecretName }}
+          # DB_USER + DB_PASSWORD (the admin / auth_query upstream user) come from the secret.
+          envFrom:
+            - secretRef:
+                name: {{ .Values.envSecretName }}
+          {{- end }}
+          readinessProbe:
+            tcpSocket:
+              port: postgres
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            tcpSocket:
+              port: postgres
+            periodSeconds: 15
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}

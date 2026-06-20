@@ -20,6 +20,12 @@ probes:
 
 # Secret (External Secrets ← AWS Secrets Manager) with DATABASE_URL, REDIS_URL,
 # STARROCKS_*, KAFKA/REDPANDA brokers, AI gateway + connector secrets, etc.
+# P1 pre-scale: DATABASE_URL / BRAIN_APP_DATABASE_URL host:port should point at the PgBouncer
+# Service (<release>-pgbouncer:6432, see infra/helm/pgbouncer) — NOT the Postgres primary directly.
+# Core's request path is all short SET-LOCAL-scoped transactions, so transaction pooling multiplexes
+# thousands of request connections onto a small server pool (the connection-exhaustion fix at 1000
+# brands). NOTE: the stream-worker stays DIRECT on the primary (its leader lock is a session
+# advisory lock that transaction pooling would break).
 envSecretName: ""
 
 env:

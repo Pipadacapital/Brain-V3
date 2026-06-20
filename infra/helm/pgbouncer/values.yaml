@@ -1,0 +1,43 @@
+# Brain PgBouncer (P1 pre-scale). Verified against the dev docker-compose Postgres: core's
+# SET-LOCAL GUC + RLS + parameterized queries work through transaction pooling, and 40 client
+# connections multiplexed onto ~8 server backends. CORE points its DATABASE_URL at this Service;
+# the STREAM-WORKER must NOT (its leader-lock uses session advisory locks — keep it direct).
+replicaCount: 2
+
+image:
+  repository: edoburu/pgbouncer
+  tag: "v1.23.1-p3"      # the exact image verified in dev compose
+  pullPolicy: IfNotPresent
+
+# Upstream Postgres (managed primary, e.g. RDS). Host REQUIRED per env (values-prod overrides).
+upstream:
+  host: ""
+  port: 5432
+  dbname: brain
+
+pool:
+  mode: transaction      # SAFE for core (short SET-LOCAL-scoped txns). NEVER 'session' here is fine; NEVER use this chart for the worker.
+  maxClientConn: 5000    # multiplex this many client conns...
+  defaultPoolSize: 25    # ...onto this many server conns per (user, db) — the real cap on Postgres
+  minPoolSize: 5
+  reservePoolSize: 5
+  ignoreStartupParameters: "extra_float_digits,options"
+
+auth:
+  type: scram-sha-256
+  # auth_query validates each client by reading its hash from pg_shadow as the admin user (secret).
+  query: "SELECT usename, passwd FROM pg_shadow WHERE usename=$1"
+
+# Secret (External Secrets ← AWS Secrets Manager) providing DB_USER + DB_PASSWORD — the admin/
+# auth_query upstream user (must be able to read pg_shadow).
+envSecretName: ""
+
+service:
+  port: 6432             # core's DATABASE_URL host:port → <release>-pgbouncer:6432
+
+resources:
+  requests: { cpu: 100m, memory: 128Mi }
+  limits: { cpu: "1", memory: 256Mi }
+
+serviceAccount:
+  annotations: {}

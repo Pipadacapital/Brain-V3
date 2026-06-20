@@ -25,6 +25,7 @@ import { Pool, type PoolClient } from 'pg';
 import {
   computeAttributionCredit,
   computeAttributionClawback,
+  clampReversalBasis,
   type AttributionCreditRow,
   type CreditTouch,
   type SavedCreditRow,
@@ -140,13 +141,21 @@ export class AttributionCreditWriter {
     const saved = await this.readSavedCredits(params.brandId, params.orderId, params.model);
     if (saved.length === 0) return { inserted: 0, suppressed: 0 };
 
+    // R-11 cumulative clamp: |Σ clawback| for an order can NEVER exceed Σ credit (a duplicate or
+    // over-sized reversal must not drive net attributed revenue negative). Clamp the reversal basis to
+    // the credit still un-reversed; re-using the SAVED weights keeps every per-touch clawback ≤ its credit.
+    const creditTotal = saved.reduce((acc, s) => acc + s.creditedRevenueMinor, 0n);
+    const alreadyClawed = await this.readClawedBackTotal(params.brandId, params.orderId, params.model);
+    const clampedBasisMinor = clampReversalBasis(params.reversalBasisMinor, creditTotal, alreadyClawed);
+    if (clampedBasisMinor === 0n) return { inserted: 0, suppressed: saved.length }; // nothing left to reverse
+
     const occurredAt = params.occurredAt;
     const economicEffectiveAt = params.economicEffectiveAt ?? occurredAt;
     const rows = computeAttributionClawback({
       savedCredits: saved,
       reversalLedgerEventId: params.reversalLedgerEventId,
       reversalReason: params.reversalReason,
-      reversalBasisMinor: params.reversalBasisMinor,
+      reversalBasisMinor: clampedBasisMinor,
       occurredAt,
       economicEffectiveAt,
       billingPostedPeriod: toBillingPostedPeriod(occurredAt),
@@ -224,6 +233,39 @@ export class AttributionCreditWriter {
         confidenceGrade: r.confidence_grade,
         attributionConfidence: r.attribution_confidence,
       }));
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * The magnitude of clawback ALREADY applied to an order+model (|Σ credited_revenue_minor| over the
+   * clawback rows). Feeds the R-11 cumulative clamp so distinct reversals can't over-claw an order.
+   * A replay of the same reversal re-reads its own (already-written) clawback here, but the recomputed
+   * rows carry the same deterministic id → ON CONFLICT DO NOTHING, so the replay stays a safe no-op.
+   * Brand-scoped via the GUC (RLS) under brain_app.
+   */
+  private async readClawedBackTotal(
+    brandId: string,
+    orderId: string,
+    model: AttributionModelId,
+  ): Promise<bigint> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query("SELECT set_config('app.current_brand_id', $1, true)", [brandId]);
+      const res = await client.query<{ total: string }>(
+        `SELECT COALESCE(SUM(credited_revenue_minor), 0)::text AS total
+           FROM attribution_credit_ledger
+          WHERE brand_id = $1 AND order_id = $2 AND model_id = $3 AND row_kind = 'clawback'`,
+        [brandId, orderId, model],
+      );
+      await client.query('COMMIT');
+      const sum = BigInt(res.rows[0]?.total ?? '0'); // signed-negative (clawbacks are negative)
+      return sum < 0n ? -sum : sum; // return the positive magnitude
     } catch (err) {
       await client.query('ROLLBACK').catch(() => undefined);
       throw err;

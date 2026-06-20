@@ -126,6 +126,7 @@ export {
   computeAttributionClawback,
   computeClawbackCreditId,
   parseWeightFraction,
+  clampReversalBasis,
 } from './attribution-clawback.js';
 export type { ClawbackInput, SavedCreditRow, ReversalReason } from './attribution-clawback.js';
 

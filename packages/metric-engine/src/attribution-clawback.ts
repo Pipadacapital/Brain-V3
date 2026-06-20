@@ -129,6 +129,28 @@ export function computeClawbackCreditId(params: {
  *
  * Returns [] when there are no saved credits (an unattributed order has nothing to claw back).
  */
+/**
+ * clampReversalBasis — cap a reversal so the CUMULATIVE clawback for an order can NEVER exceed what was
+ * credited (Σ|clawback| ≤ Σcredit), guarding against duplicate / over-sized reversals driving net
+ * attributed revenue negative (audit R-11). Because the clawback re-uses the SAVED weights, clamping the
+ * BASIS to the remaining magnitude also keeps every per-touch clawback ≤ its credit (per-touch
+ * non-negativity). `reversalBasisMinor` is signed-NEGATIVE; `creditTotalMinor` (Σ credit) and
+ * `alreadyClawedMinor` (|Σ| of clawbacks already applied) are POSITIVE magnitudes. Returns the
+ * (negative) clamped basis, or 0n when nothing remains to claw back.
+ */
+export function clampReversalBasis(
+  reversalBasisMinor: bigint,
+  creditTotalMinor: bigint,
+  alreadyClawedMinor: bigint,
+): bigint {
+  if (reversalBasisMinor >= 0n) return 0n; // not a reversal → nothing to claw back (defensive)
+  const remaining = creditTotalMinor - alreadyClawedMinor;
+  if (remaining <= 0n) return 0n; // the order is already fully reversed
+  const requested = -reversalBasisMinor; // magnitude of this reversal
+  const effective = requested < remaining ? requested : remaining; // min(requested, remaining)
+  return -effective; // sign-preserving (negative)
+}
+
 export function computeAttributionClawback(input: ClawbackInput): AttributionCreditRow[] {
   const saved = [...input.savedCredits].sort((a, b) => a.touchSeq - b.touchSeq);
   if (saved.length === 0) return [];

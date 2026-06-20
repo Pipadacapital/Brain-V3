@@ -511,12 +511,28 @@ async function setSyncState(
 
 // ── Credentials resolver (dev: env vars; prod: AWS Secrets Manager via JSON bundle) ──
 
-async function resolveRazorpayCredentials(secretRef: string): Promise<RazorpayApiCredentials | null> {
-  // Dev path: read from dev_secret table (same convention as WorkerLocalSecretsManager).
-  // The secret is stored as a JSON bundle: {"key_id":"...","key_secret":"...","webhook_secret":"..."}
-  // (C2: three creds in one secret_ref, independently rotatable).
-  // NEVER log the returned credentials (I-S09).
+export async function resolveRazorpayCredentials(secretRef: string): Promise<RazorpayApiCredentials | null> {
+  // The secret is a JSON bundle {key_id, key_secret, webhook_secret} (C2 — three creds in one
+  // secret_ref, independently rotatable). NEVER log the returned credentials (I-S09).
 
+  // ── PROD: read the bundle from AWS Secrets Manager via the shared @brain/connector-secrets
+  //    AwsSecretsManager — the SAME implementation the connect path wrote it with (#75). This is
+  //    the previously-missing prod path that blocked real settlement re-pull. getSecret resolves the
+  //    ARN; decryption is IAM/CMK-gated (no kmsKeyId needed for a read). Dynamic import keeps the
+  //    AWS SDK out of the dev path. Fail-closed: a missing/partial bundle returns null (RECONNECT),
+  //    NEVER fabricated creds.
+  if (process.env['NODE_ENV'] === 'production') {
+    const { AwsSecretsManager } = await import('@brain/connector-secrets');
+    const region = process.env['BRAIN_AWS_REGION'] ?? 'us-east-1';
+    const mgr = new AwsSecretsManager(region, '', process.env['CONNECTOR_SECRETS_KMS_KEY_ID'] ?? '');
+    const bundle = await mgr.getSecret(secretRef);
+    if (bundle?.['key_id'] && bundle?.['key_secret']) {
+      return { keyId: bundle['key_id'], keySecret: bundle['key_secret'] };
+    }
+    return null;
+  }
+
+  // ── DEV: read from dev_secret table (same convention as WorkerLocalSecretsManager), env fallback.
   const { Pool: PgPool } = await import('pg');
   const devPool = new PgPool({
     connectionString: process.env['BRAIN_APP_DATABASE_URL'] ?? process.env['DATABASE_URL'],

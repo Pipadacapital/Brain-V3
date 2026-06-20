@@ -25,9 +25,20 @@
 
 import { Pool, PoolClient } from 'pg';
 import { createHash } from 'node:crypto';
+import { incrementCounter } from '@brain/observability';
 import { log } from "../../log.js";
 
 const VERSION = 'v1';
+
+/** Event types that REVERSE an order's recognized revenue (reduce realized). */
+const REVENUE_REVERSAL_EVENT_TYPES = [
+  'rto_reversal',
+  'refund',
+  'chargeback',
+  'cancellation',
+  'concession',
+  'settlement_reversal',
+] as const;
 
 export interface BackfillOrderForLedger {
   brandId: string;
@@ -244,12 +255,19 @@ export class LedgerWriter {
         ],
       );
 
+      // F2: cumulative reversals must never silently exceed the recognized sale. Detect it WITHIN
+      // the txn (read-your-writes sees this reversal) so an over-reversal — a duplicate refund, or a
+      // refund + chargeback on one order — is SURFACED (counter + warn) instead of silently driving
+      // realized revenue negative. Truth stays in the ledger (signed rows); we just make it loud.
+      const inserted = (result.rowCount ?? 0) > 0;
+      const overReversed = inserted ? await this.isOrderOverReversed(client, order.brandId, order.orderId) : false;
+
       await client.query('COMMIT');
 
-      const inserted = (result.rowCount ?? 0) > 0;
       if (inserted) {
         log.info(`[ledger-writer] ${reversalEventType} brand=${order.brandId} ` +
                     `order=${order.orderId} amount=${negativeAmountMinor} ${order.currencyCode}`);
+        if (overReversed) this.signalOverReversal(order.brandId, order.orderId, reversalEventType);
       }
       return inserted;
     } catch (err) {
@@ -257,6 +275,48 @@ export class LedgerWriter {
       throw err;
     } finally {
       client.release();
+    }
+  }
+
+  /**
+   * isOrderOverReversed (F2) — true when cumulative reversals for an order EXCEED its recognized
+   * sale (the provisional_recognition amount). A single full RTO (reversed == sale) is NOT over —
+   * only a genuine over-subtraction (duplicate refund, refund+chargeback, partials summing past the
+   * sale) trips it. Runs inside the caller's txn under the brand GUC (RLS-scoped).
+   */
+  private async isOrderOverReversed(
+    client: PoolClient,
+    brandId: string,
+    orderId: string,
+  ): Promise<boolean> {
+    const res = await client.query<{ over: boolean }>(
+      `SELECT
+         COALESCE(SUM(-amount_minor) FILTER (WHERE event_type = ANY($3::text[])), 0)
+           > COALESCE(SUM(amount_minor) FILTER (WHERE event_type = 'provisional_recognition'), 0)
+         AND COALESCE(SUM(amount_minor) FILTER (WHERE event_type = 'provisional_recognition'), 0) > 0
+         AS over
+       FROM realized_revenue_ledger
+       WHERE brand_id = $1 AND order_id = $2`,
+      [brandId, orderId, REVENUE_REVERSAL_EVENT_TYPES as unknown as string[]],
+    );
+    return res.rows[0]?.over === true;
+  }
+
+  /**
+   * signalOverReversal (F2) — make an over-reversal OBSERVABLE: a counter (alertable — see the C2
+   * brain-slo rules) + a structured warning naming the order. Never throws (observability is
+   * best-effort; it must not affect the already-committed ledger write).
+   */
+  private signalOverReversal(brandId: string, orderId: string, eventType: string): void {
+    try {
+      incrementCounter('revenue_over_reversal_total', { brand_id: brandId });
+      log.warn(
+        `[ledger-writer] OVER-REVERSAL brand=${brandId} order=${orderId} via=${eventType} — ` +
+          'cumulative reversals exceed the recognized sale; realized revenue for this order is ' +
+          'negative. Reconcile (likely a duplicate refund or refund+chargeback).',
+      );
+    } catch {
+      /* non-fatal */
     }
   }
 

@@ -122,3 +122,18 @@ groups:
         annotations:
           summary: "Ingest stalled — events produced but no Bronze writes in 10m"
           description: "The collector topic is advancing but the stream-worker wrote zero Bronze rows for 10m. The data spine is stalled."
+
+  # ── Revenue truth integrity ─────────────────────────────────────────────────
+  - name: brain-revenue-integrity
+    rules:
+      - alert: BrainRevenueOverReversal
+        # revenue_over_reversal_total: stream-worker counter (F2). Cumulative reversals exceeded the
+        # recognized sale for an order → realized revenue for that order went negative. Usually a
+        # duplicate refund or a refund+chargeback on one order — needs reconciliation, not silence.
+        expr: sum(increase(revenue_over_reversal_total[15m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Over-reversal detected in the revenue ledger"
+          description: "An order's cumulative reversals exceeded its recognized sale (realized went negative). Reconcile — likely a duplicate refund or refund+chargeback."

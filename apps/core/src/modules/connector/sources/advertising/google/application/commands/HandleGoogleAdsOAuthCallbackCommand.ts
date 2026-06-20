@@ -174,6 +174,7 @@ export class HandleGoogleAdsOAuthCallbackCommand {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: body.toString(),
+      signal: AbortSignal.timeout(15_000), // T2-9: bound the token exchange so the OAuth callback can't hang.
     });
 
     if (!response.ok) {
@@ -209,6 +210,7 @@ export class HandleGoogleAdsOAuthCallbackCommand {
             Authorization: `Bearer ${accessToken}`,
             'developer-token': devToken,
           },
+          signal: AbortSignal.timeout(15_000), // T2-9: bound the best-effort customer resolution.
         },
       );
       if (!response.ok) return null;

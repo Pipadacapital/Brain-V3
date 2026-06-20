@@ -47,6 +47,9 @@ export interface OrdersPage {
 
 const DEFAULT_API_VERSION = '2025-07';
 
+/** T2-9: per-request timeout — a hung Shopify socket aborts instead of stalling the backfill job. */
+const REQUEST_TIMEOUT_MS = 20_000;
+
 export class ShopifyBackfillClient {
   private readonly base: string;
 
@@ -77,6 +80,7 @@ export class ShopifyBackfillClient {
           'X-Shopify-Access-Token': this.accessToken,
           'Content-Type': 'application/json',
         },
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
       if (res.status === 429) {
         // Rate limited on count — return null (HP-1: never fabricate)
@@ -134,6 +138,7 @@ export class ShopifyBackfillClient {
           'X-Shopify-Access-Token': this.accessToken,
           'Content-Type': 'application/json',
         },
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
 
       if (res.status === 429) {

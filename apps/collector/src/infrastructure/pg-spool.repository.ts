@@ -63,6 +63,19 @@ export class PgSpoolRepository implements SpoolRepository {
     }));
   }
 
+  async countPendingBounded(cap: number): Promise<number> {
+    // Bounded count: the inner LIMIT lets Postgres stop after `cap` index entries, so this
+    // stays O(cap) on idx_collector_spool_pending (the partial index) regardless of how many
+    // drained rows the table holds. We never need the exact depth — only its position
+    // relative to the high/low-water marks (C4 / R-09).
+    const result = await this.pool.query<{ n: string }>(
+      `SELECT count(*)::text AS n
+         FROM (SELECT 1 FROM collector_spool WHERE status = 'pending' LIMIT $1) AS bounded`,
+      [cap],
+    );
+    return Number(result.rows[0]?.n ?? '0');
+  }
+
   async markDrained(id: bigint): Promise<void> {
     await this.pool.query(
       `UPDATE collector_spool

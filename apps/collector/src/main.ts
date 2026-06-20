@@ -30,6 +30,7 @@ import { registerCollectRoute } from './interfaces/rest/collect.route.js';
 import { registerHealthRoutes } from './interfaces/rest/health.route.js';
 import { registerPixelAssetRoute } from './interfaces/rest/pixel-asset.route.js';
 import { EdgeRateLimiter, registerEdgeGuard } from './interfaces/rest/edge-guard.js';
+import { SpoolBackpressure, registerSpoolBackpressure } from './interfaces/rest/spool-backpressure.js';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
@@ -150,8 +151,24 @@ export async function main(): Promise<void> {
   });
   registerEdgeGuard(app, edgeLimiter);
 
+  // ── Spool back-pressure (C4 / R-09): bound the pending backlog ───────────────
+  // Sheds load with 503 SPOOL_FULL + Retry-After when the drainer falls behind, so the
+  // durable spool cannot grow unbounded and fill the Postgres volume (which would fail the
+  // ACK path for ALL tenants). Reject-before-spool admission gate (not validation → D-1 holds).
+  const backpressure = new SpoolBackpressure(
+    spoolRepo,
+    {
+      maxPending: cfg.SPOOL_MAX_PENDING,
+      resumePending: cfg.SPOOL_RESUME_PENDING,
+      sampleIntervalMs: cfg.SPOOL_SAMPLE_INTERVAL_MS,
+      retryAfterSeconds: cfg.SPOOL_RETRY_AFTER_SECONDS,
+    },
+    (err) => log.warn('spool back-pressure sample failed — holding last known state', { err }),
+  );
+  registerSpoolBackpressure(app, backpressure);
+
   // Register routes
-  registerHealthRoutes(app, spoolRepo);
+  registerHealthRoutes(app, spoolRepo, backpressure);
   registerPixelAssetRoute(app); // GET /pixel.js — the served brain.js asset (Track B)
   registerCollectRoute(app, acceptUseCase);
 
@@ -167,9 +184,13 @@ export async function main(): Promise<void> {
   // ── 6. Start drainer loop (AFTER HTTP listener — separate async loop, D-1) ──
   await drainer.start();
 
+  // Prime + start the back-pressure gauge sampler (background interval; gate already wired).
+  await backpressure.start();
+
   // ── 7. Graceful shutdown ─────────────────────────────────────────────────────
   const shutdown = async (signal: string): Promise<void> => {
     log.info('signal received — graceful shutdown', { signal });
+    backpressure.stop();
     await drainer.stop();
     await app.close();
     await (spoolRepo as PgSpoolRepository & { end(): Promise<void> }).end();

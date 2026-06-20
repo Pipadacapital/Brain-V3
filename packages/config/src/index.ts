@@ -39,6 +39,21 @@ export const CollectorEnvSchema = CommonEnvSchema.extend({
   APICURIO_REGISTRY_URL: z.string().url().optional(),
   /** Rate limit: max events per brand per minute. */
   RATE_LIMIT_EVENTS_PER_MINUTE: z.coerce.number().int().min(1).default(10_000),
+  /**
+   * Spool back-pressure (C4 / R-09). High-water mark on the pending spool backlog: at or above
+   * this depth, /collect sheds load with 503 SPOOL_FULL + Retry-After so the spool cannot grow
+   * unbounded and fill the Postgres volume (which would fail the durability anchor for everyone).
+   */
+  SPOOL_MAX_PENDING: z.coerce.number().int().min(1).default(100_000),
+  /** Low-water mark: back-pressure clears once the backlog recedes below this (hysteresis; must be < SPOOL_MAX_PENDING). */
+  SPOOL_RESUME_PENDING: z.coerce.number().int().min(0).default(80_000),
+  /** Background gauge refresh cadence (ms) for the back-pressure sampler. */
+  SPOOL_SAMPLE_INTERVAL_MS: z.coerce.number().int().min(100).default(1_000),
+  /** Retry-After (seconds) returned on a 503 SPOOL_FULL. */
+  SPOOL_RETRY_AFTER_SECONDS: z.coerce.number().int().min(1).default(5),
+}).refine((c) => c.SPOOL_RESUME_PENDING < c.SPOOL_MAX_PENDING, {
+  message: 'SPOOL_RESUME_PENDING must be < SPOOL_MAX_PENDING (hysteresis deadband)',
+  path: ['SPOOL_RESUME_PENDING'],
 });
 
 export type CollectorEnv = z.infer<typeof CollectorEnvSchema>;

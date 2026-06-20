@@ -4,7 +4,7 @@ replicaCount: 2
 image:
   # CI bumps image.digest to the immutable ECR digest at deploy time.
   repository: REPLACE_WITH_ECR_REGISTRY/brain-collector
-  tag: latest
+  tag: ""              # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
   digest: ""
   pullPolicy: IfNotPresent
 

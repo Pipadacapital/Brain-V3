@@ -1,11 +1,11 @@
 image:
   repository: REPLACE_WITH_ECR_REGISTRY/brain-core-staging
-  tag: latest
+  tag: ""              # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
   digest: ""
 
 streamWorkerImage:
   repository: REPLACE_WITH_ECR_REGISTRY/brain-stream-worker-staging
-  tag: latest
+  tag: ""              # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
   digest: ""
 
 # The job pods read the same secret as the core/stream-worker deployments (DATABASE_URL,

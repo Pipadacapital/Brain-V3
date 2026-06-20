@@ -7,14 +7,14 @@
 # Default image (the core image — most jobs are core entrypoints). Per-job `image:` overrides this.
 image:
   repository: REPLACE_WITH_ECR_REGISTRY/brain-core
-  tag: latest
+  tag: ""              # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
   digest: ""
   pullPolicy: IfNotPresent
 
 # Stream-worker image (for jobs whose entrypoint ships in that deployable, e.g. revenue-finalization).
 streamWorkerImage:
   repository: REPLACE_WITH_ECR_REGISTRY/brain-stream-worker
-  tag: latest
+  tag: ""              # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
   digest: ""
   pullPolicy: IfNotPresent
 

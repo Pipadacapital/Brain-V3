@@ -83,6 +83,30 @@ const RENDER_CURRENCIES = new Set<string>(['INR', 'AED', 'SAR']);
  * (honest, no number). Empty/null money is rendered as an em dash — never a fabricated 0.
  */
 export function AskCertifiedNumber({ number }: { number: AskComputedNumber }) {
+  // Honest empty — the brand has no data for this metric yet. Never a fabricated 0.
+  if (number.no_data) {
+    return (
+      <p className="text-sm text-muted-foreground" data-testid="ask-number-no-data">
+        No data for this metric yet — as your orders, spend, and connectors fill in, the certified
+        number appears here.
+      </p>
+    );
+  }
+
+  // Non-money scalar (ratio / percent) — the engine's exact decimal, formatted for display.
+  if ((number.figure_kind === 'ratio' || number.figure_kind === 'percent') && number.scalar) {
+    return (
+      <p className="text-3xl font-bold text-foreground leading-tight tabular-nums" data-testid="ask-number">
+        {number.scalar.display}
+        {number.scalar.currency_code ? (
+          <span className="ml-2 align-middle text-sm font-normal text-muted-foreground">
+            {number.scalar.currency_code}
+          </span>
+        ) : null}
+      </p>
+    );
+  }
+
   if (number.figure_kind === 'money' && number.money) {
     const entries = Object.entries(number.money);
     if (entries.length === 0) {

@@ -27,7 +27,7 @@ import type { ResolverClient } from '@brain/ai-gateway-client';
 import { resolveQuestion } from '../nlq/resolve-question.js';
 import type { ValidatedBinding } from '../nlq/resolve-question.js';
 import { getMetricTrust } from '../../data-quality/index.js';
-import { getRevenueMetrics } from '../../analytics/index.js';
+import { getRevenueMetrics, getBlendedRoas, getKpiSummary } from '../../analytics/index.js';
 import { encodeSnapshot, decodeSnapshot } from './snapshot.js';
 import { redactQuestion } from '../provenance/redact-question.js';
 import { PgAiProvenanceRepository } from '../provenance/ai-provenance.repository.js';
@@ -37,17 +37,40 @@ import type { ConfidenceGrade, TrustTier, ResolvedParams } from '../provenance/a
 export type MoneyRecord = Record<string, string>;
 
 /**
+ * A non-money certified scalar (ratio / percent). `value` is the engine's exact decimal STRING
+ * (never a float re-derive); `display` is the formatted surface. `currency_code` records which
+ * currency row the scalar came from (ROAS/RTO are read per currency) — surfaced only for a
+ * single-currency brand; multi-currency falls to figure_kind='none' (no single blended ratio).
+ */
+export interface ComputedScalar {
+  readonly value: string;
+  readonly display: string;
+  readonly unit: 'ratio' | 'percent';
+  readonly currency_code: string | null;
+}
+
+/**
  * The certified, reproducible number for a binding. Money metrics carry a per-currency
- * `money` map (bigint-minor string + currency_code). state='no_data' = honest empty.
+ * `money` map (bigint-minor string + currency_code); ratio/percent metrics carry `scalar`.
+ * figure_kind='none' = a valid binding whose figure is a distribution/timeline (see its
+ * dashboard), not one surfaced scalar. no_data=true = honest empty.
  */
 export interface ComputedNumber {
-  /** The kind of figure surfaced — drives UI rendering. M1: 'money' | 'none'. */
-  readonly figure_kind: 'money' | 'none';
+  /** The kind of figure surfaced — drives UI rendering. */
+  readonly figure_kind: 'money' | 'ratio' | 'percent' | 'none';
   /** Money per currency (bigint-minor string). Present iff figure_kind='money'. */
   readonly money: MoneyRecord | null;
+  /** A non-money scalar. Present iff figure_kind='ratio'|'percent'. */
+  readonly scalar: ComputedScalar | null;
   /** Honest-empty discriminant: true when the brand has no data for this binding. */
   readonly no_data: boolean;
 }
+
+/** Epoch floor for windowed (non-as-of) reads — mirrors the SQL DATE '2000-01-01' lower bound. */
+const WINDOW_EPOCH = new Date('2000-01-01T00:00:00Z');
+
+/** figure_kind='none' helper — a valid binding with no single surfaced scalar (NEVER fabricated). */
+const FIGURE_NONE: ComputedNumber = { figure_kind: 'none', money: null, scalar: null, no_data: false };
 
 export interface AskBrainBinding {
   readonly metric_id: MetricId;
@@ -185,19 +208,60 @@ async function computeBinding(
     case 'realized_revenue': {
       // Reuse the canonical analytics sole-read-path (identical to the dashboard number).
       const snap = await getRevenueMetrics(brandId, asOfDate, deps);
-      if (snap.state === 'no_data') return { figure_kind: 'money', money: null, no_data: true };
-      return { figure_kind: 'money', money: snap.realized, no_data: false };
+      if (snap.state === 'no_data') return { figure_kind: 'money', money: null, scalar: null, no_data: true };
+      return { figure_kind: 'money', money: snap.realized, scalar: null, no_data: false };
     }
     case 'provisional_revenue': {
       const snap = await getRevenueMetrics(brandId, asOfDate, deps);
-      if (snap.state === 'no_data') return { figure_kind: 'money', money: null, no_data: true };
-      return { figure_kind: 'money', money: snap.provisional, no_data: false };
+      if (snap.state === 'no_data') return { figure_kind: 'money', money: null, scalar: null, no_data: true };
+      return { figure_kind: 'money', money: snap.provisional, scalar: null, no_data: false };
+    }
+    case 'ad_spend': {
+      // Ad spend to date — the spend_minor side of the blended-ROAS read (same named seam,
+      // ad_spend_as_of). Windowed [epoch, as_of] → deterministic given as_of (reproducible).
+      const roas = await getBlendedRoas(brandId, { fromDate: WINDOW_EPOCH, toDate: asOfDate }, deps);
+      if (roas.state === 'no_data') return { figure_kind: 'money', money: null, scalar: null, no_data: true };
+      const money: MoneyRecord = {};
+      for (const r of roas.rows) money[r.currency_code] = r.spend_minor;
+      return { figure_kind: 'money', money, scalar: null, no_data: false };
+    }
+    case 'blended_roas': {
+      // ROAS = realized ÷ spend (engine-computed exact decimal, never re-derived here). Per
+      // currency; surface a single scalar only for a single-currency brand (a blended ratio
+      // across currencies is not one number → honest 'none').
+      const roas = await getBlendedRoas(brandId, { fromDate: WINDOW_EPOCH, toDate: asOfDate }, deps);
+      if (roas.state === 'no_data') return { figure_kind: 'ratio', money: null, scalar: null, no_data: true };
+      if (roas.rows.length !== 1) return FIGURE_NONE;
+      const row = roas.rows[0]!;
+      if (row.roas_ratio == null) return { figure_kind: 'ratio', money: null, scalar: null, no_data: true };
+      return {
+        figure_kind: 'ratio',
+        money: null,
+        scalar: { value: row.roas_ratio, display: `${row.roas_ratio}×`, unit: 'ratio', currency_code: row.currency_code },
+        no_data: false,
+      };
+    }
+    case 'cod_rto_rate': {
+      // RTO rate % — the engine's KPI sole-read-path (rto_rate_pct, exact decimal string).
+      const kpi = await getKpiSummary(brandId, asOfDate, deps);
+      if (kpi.state === 'no_data') return { figure_kind: 'percent', money: null, scalar: null, no_data: true };
+      if (kpi.kpis.length !== 1) return FIGURE_NONE;
+      const k = kpi.kpis[0]!;
+      return {
+        figure_kind: 'percent',
+        money: null,
+        scalar: { value: k.rto_rate_pct, display: `${k.rto_rate_pct}%`, unit: 'percent', currency_code: k.currency_code },
+        no_data: false,
+      };
     }
     default:
-      // The binding is valid + reproducible, but its Ask-Brain figure path is not wired
-      // in this slice. Honest: no number is surfaced (NEVER fabricated). The provenance
-      // still records the binding so the audit trail is complete.
-      return { figure_kind: 'none', money: null, no_data: false };
+      // The binding is valid + reproducible, but its figure is a distribution/timeline/grade —
+      // not a single surfaced scalar (it lives on its dashboard). Honest: no number is surfaced
+      // (NEVER fabricated). The provenance still records the binding so the audit trail is complete.
+      // NB: confidence grades (cost/effective/attribution_confidence) are deliberately NOT surfaced
+      // here — they are time-varying (latest DQ), so they'd break the snapshot-reproducibility
+      // guarantee (D3); they are persisted separately as the frozen confidence_grade instead.
+      return FIGURE_NONE;
   }
 }
 

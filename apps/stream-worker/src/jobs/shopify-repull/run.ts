@@ -29,6 +29,7 @@
  */
 
 import { Pool } from 'pg';
+import { recordConnectorAuthRejected } from '../../infrastructure/observability/connector-auth-health.js';
 import { Kafka, type Producer } from 'kafkajs';
 import { buildPartitionKey } from '@brain/events';
 import { SaltProvider, LocalSecretsProvider } from '../../infrastructure/secrets/SaltProvider.js';
@@ -226,6 +227,7 @@ async function repullConnector(params: RepullParams): Promise<void> {
         const msg = String(err);
         if (msg.startsWith('SHOPIFY_AUTH_ERROR')) {
           log.error(`connector=${ciId} 401 auth error — aborting re-pull`);
+          recordConnectorAuthRejected('shopify'); // P2.6: make the silent token-expiry death loud
           await setSyncState(pool, brandId, ciId, 'error', '401 auth error — RECONNECT_REQUIRED');
           return;
         }

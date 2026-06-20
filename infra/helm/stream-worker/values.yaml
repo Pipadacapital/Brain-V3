@@ -41,3 +41,18 @@ resources:
   limits:
     cpu: "2"
     memory: 1Gi
+
+# Horizontal Pod Autoscaler (P2.5). IMPORTANT CEILING: the worker's live consumers are Kafka
+# consumer-group members bound to the collector topic's 12 partitions — scaling BEYOND 12 yields
+# IDLE consumers (no partition to own), so maxReplicas is capped at the partition count. The P1.2
+# due-time work-queue (claim_due_repull_connectors, SKIP LOCKED) lets the ingest scheduler portion
+# parallelise across these replicas without ordinals. If the live topic's partition count changes,
+# change maxReplicas to match. CPU target is conservative (consumers are I/O-bound on PG/StarRocks).
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 12        # == dev.collector.event.v1 partition count (infra/redpanda/topics.yml)
+  targetCPUUtilizationPercentage: 70
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 600   # 10m — consumer-group rebalances are disruptive; scale down slowly

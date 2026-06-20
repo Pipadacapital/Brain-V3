@@ -24,6 +24,7 @@
 
 import { Pool } from 'pg';
 import { Kafka, type Producer } from 'kafkajs';
+import { recordConnectorAuthRejected } from '../../infrastructure/observability/connector-auth-health.js';
 import { buildPartitionKey } from '@brain/events';
 import { CollectorEventV1Schema, COLLECTOR_EVENT_V1_TOPIC_SUFFIX } from '@brain/contracts';
 import {
@@ -154,6 +155,7 @@ async function repullConnector(params: RepullParams): Promise<void> {
     accountMeta = await client.fetchAccountMeta();
   } catch (err) {
     if (String(err).includes(META_AUTH_ERROR)) {
+      recordConnectorAuthRejected('meta'); // P2.6: make the silent token-expiry death loud
       await setSyncState(pool, brandId, ciId, 'error', 'meta auth error — RECONNECT_REQUIRED');
       return;
     }
@@ -203,6 +205,7 @@ async function repullConnector(params: RepullParams): Promise<void> {
         return;
       }
       if (String(err).includes(META_AUTH_ERROR)) {
+        recordConnectorAuthRejected('meta'); // P2.6: make the silent token-expiry death loud
         await setSyncState(pool, brandId, ciId, 'error', 'meta auth error — RECONNECT_REQUIRED');
         return;
       }

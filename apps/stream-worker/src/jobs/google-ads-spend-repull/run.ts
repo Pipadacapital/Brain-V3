@@ -23,6 +23,7 @@
  */
 
 import { Pool } from 'pg';
+import { recordConnectorAuthRejected } from '../../infrastructure/observability/connector-auth-health.js';
 import { Kafka, type Producer } from 'kafkajs';
 import { buildPartitionKey } from '@brain/events';
 import { CollectorEventV1Schema, COLLECTOR_EVENT_V1_TOPIC_SUFFIX } from '@brain/contracts';
@@ -153,6 +154,7 @@ async function repullConnector(params: RepullParams): Promise<void> {
     await client.authenticate();
   } catch (err) {
     if (String(err).includes(GOOGLE_AUTH_ERROR)) {
+      recordConnectorAuthRejected('google_ads'); // P2.6: make the silent token-expiry death loud
       await setSyncState(pool, brandId, ciId, 'error', 'google auth error — RECONNECT_REQUIRED');
       return;
     }
@@ -180,6 +182,7 @@ async function repullConnector(params: RepullParams): Promise<void> {
         return;
       }
       if (s.includes(GOOGLE_AUTH_ERROR)) {
+        recordConnectorAuthRejected('google_ads'); // P2.6: make the silent token-expiry death loud
         await setSyncState(pool, brandId, ciId, 'error', 'google auth error — RECONNECT_REQUIRED');
         return;
       }

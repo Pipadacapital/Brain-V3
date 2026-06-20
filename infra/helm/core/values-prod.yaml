@@ -18,3 +18,9 @@ resources:
   limits:
     cpu: "2"
     memory: 2Gi
+
+# P2.5: HPA on in prod. minReplicas matches replicaCount (3) so enabling never scales below baseline.
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 12

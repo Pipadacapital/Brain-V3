@@ -44,3 +44,17 @@ resources:
   limits:
     cpu: "2"
     memory: 1Gi
+
+# Horizontal Pod Autoscaler (P2.5). Off by default; enabled per-env in values-staging/prod.
+# Core is a stateless BFF → CPU-target HPA is the right signal. When enabled, the Deployment drops
+# its static replicas (replicaCount is then only the pre-HPA seed). minReplicas matches replicaCount
+# so there is no scale-down surprise on first enable.
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300   # 5m cooldown — avoid thrashing on bursty BFF traffic

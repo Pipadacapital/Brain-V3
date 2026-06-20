@@ -17,6 +17,7 @@
  */
 import { Kafka } from 'kafkajs';
 import { Pool, Pool as PgPool } from 'pg';
+import { assertRoleEnforcesRls } from '@brain/db';
 import { DbAuditWriter, type AuditDbClient } from '@brain/audit';
 import { RedisDedupAdapter } from './infrastructure/redis/RedisDedupAdapter.js';
 import { RetryCounterAdapter } from './infrastructure/redis/RetryCounterAdapter.js';
@@ -124,6 +125,10 @@ export async function main(): Promise<void> {
   // audit_log has RLS DISABLED (cross-brand SoR); isolation is the mandatory
   // WHERE brand_id filter inside DbAuditWriter. brain_app holds INSERT+SELECT on it.
   const auditPool = new Pool({ connectionString: dbUrl, max: 3, idleTimeoutMillis: 30_000 });
+  // P2.3: every worker pool uses dbUrl (must be brain_app, NOBYPASSRLS). Fail closed at startup if
+  // it points at the superuser 'brain' — the worker writes Bronze/ledgers/consent under per-brand
+  // GUCs and a bypassing role would silently defeat FORCE RLS on those tables (the dev footgun).
+  await assertRoleEnforcesRls(auditPool, { label: 'stream-worker pool (dbUrl)' });
   const auditDbClient: AuditDbClient = {
     query: async (sql, params) => {
       const r = await auditPool.query(sql, params);

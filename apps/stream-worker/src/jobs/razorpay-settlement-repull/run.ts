@@ -28,6 +28,7 @@
  */
 
 import { Pool } from 'pg';
+import { recordConnectorAuthRejected } from '../../infrastructure/observability/connector-auth-health.js';
 import { Kafka, type Producer } from 'kafkajs';
 import { buildPartitionKey } from '@brain/events';
 import { CollectorEventV1Schema, COLLECTOR_EVENT_V1_TOPIC_SUFFIX } from '@brain/contracts';
@@ -269,6 +270,7 @@ async function repullCursorResource(params: CursorRepullParams): Promise<number>
       const msg = String(err);
       if (msg.startsWith('RAZORPAY_AUTH_ERROR')) {
         log.error(`connector=${ciId} 401 auth error — aborting cursor=${resource}`);
+        recordConnectorAuthRejected('razorpay'); // P2.6: make the silent token-expiry death loud
         await setSyncState(pool, brandId, ciId, 'error', '401 auth error — RECONNECT_REQUIRED');
         return recordsProcessed;
       }

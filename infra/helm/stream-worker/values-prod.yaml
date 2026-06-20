@@ -18,3 +18,10 @@ resources:
   limits:
     cpu: "2"
     memory: 2Gi
+
+# P2.5: HPA on in prod. maxReplicas capped at the live-topic partition count (12) — beyond that,
+# consumers sit idle. Raise BOTH this and the topic partition count together to scale further.
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 12

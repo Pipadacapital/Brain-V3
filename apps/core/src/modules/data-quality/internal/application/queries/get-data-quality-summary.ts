@@ -97,6 +97,9 @@ const EXPECTED_COVERAGE: ReadonlyArray<{ category: DqCategory; target: string }>
   { category: 'completeness', target: 'realized_revenue_ledger' },
   { category: 'schema_validity', target: 'collector.event' },
   { category: 'reconciliation', target: 'bronze_vs_silver.order_state' },
+  // P2.4: Bronze→Gold rebuildability — ledger order_ids must trace to a Bronze order event
+  // (mirrors bronzeLedgerProvenanceCheck in apps/stream-worker/src/jobs/dq).
+  { category: 'reconciliation', target: 'bronze_vs_gold.realized_revenue' },
 ] as const;
 
 /** One latest grade row per (category, target) the UI renders in the grade matrix. */

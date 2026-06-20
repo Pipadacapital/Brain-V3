@@ -82,7 +82,7 @@ export function TrendChart({ data, isLoading, grain = 'day', className }: TrendC
     return (
       <div className={className}>
         <EmptyState
-          title="No trend data yet"
+          title="No revenue yet"
           description="Revenue trend will appear once ledger data is available."
           icon={<TrendingUp className="h-8 w-8" />}
         />

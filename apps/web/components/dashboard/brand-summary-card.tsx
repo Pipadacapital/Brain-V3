@@ -44,7 +44,7 @@ export function BrandSummaryCard() {
       <Card>
         <CardContent className="pt-6">
           <EmptyState
-            title="No Data Yet"
+            title="No brand yet"
             description="Create a workspace and brand to get started."
             icon={<Building2 className="h-8 w-8" />}
           />

@@ -278,7 +278,7 @@ export function ConnectionStatusCard() {
         </CardHeader>
         <CardContent>
           <EmptyState
-            title="No Data Yet"
+            title="Not connected yet"
             description="Connect a data source to see connection status."
             action={
               <Link href="/settings/connectors">

@@ -200,7 +200,7 @@ test('Revenue analytics renders its honest empty state for a fresh brand — tre
   await step(page, 'The revenue trend chart shows its empty state: "No trend data yet"', async () => {
     const trendSection = page.getByRole('region', { name: 'Revenue trend chart' });
     await expect(trendSection).toBeVisible({ timeout: 10_000 });
-    await expect(trendSection.getByText('No trend data yet')).toBeVisible({ timeout: 15_000 });
+    await expect(trendSection.getByText('No revenue yet')).toBeVisible({ timeout: 15_000 });
   });
 
   // The recognition Breakdown Detail card renders <p role="status">No data yet</p>

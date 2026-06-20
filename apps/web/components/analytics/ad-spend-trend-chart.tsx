@@ -95,7 +95,7 @@ export function AdSpendTrendChart({ data, isLoading, grain = 'day', className }:
     return (
       <div className={className}>
         <EmptyState
-          title="No spend data yet"
+          title="No ad spend yet"
           description="Spend will appear once a Meta or Google Ads connector has ingested data."
           icon={<BarChart3 className="h-8 w-8" />}
         />

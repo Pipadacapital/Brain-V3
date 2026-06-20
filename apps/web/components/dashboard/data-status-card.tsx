@@ -91,7 +91,7 @@ export function DataStatusCard() {
         </CardHeader>
         <CardContent>
           <EmptyState
-            title="No Data Yet"
+            title="No tracking data yet"
             description="Install the Brain Pixel to start collecting data."
             action={
               <Link href="/settings/pixel">

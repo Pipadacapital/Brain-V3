@@ -65,6 +65,8 @@ export { getCodMix } from './internal/application/queries/get-cod-mix.js';
 export type { CodMixResult } from './internal/application/queries/get-cod-mix.js';
 export { getCheckoutFunnel } from './internal/application/queries/get-checkout-funnel.js';
 export type { CheckoutFunnelResult } from './internal/application/queries/get-checkout-funnel.js';
+export { getRtoRiskDistribution } from './internal/application/queries/get-rto-risk-distribution.js';
+export type { RtoRiskDistributionResult } from './internal/application/queries/get-rto-risk-distribution.js';
 
 // Silver tier (feat-silver-tier-order-state) — order-status-mix via the Silver seam
 export { getOrderStatusMix } from './internal/application/queries/get-order-status-mix.js';

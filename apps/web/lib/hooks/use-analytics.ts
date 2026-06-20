@@ -222,6 +222,15 @@ export function useCheckoutFunnel() {
   });
 }
 
+/** useRtoRiskDistribution — per-order RTO risk (GoKwik RTO-Predict, latest prediction per order). */
+export function useRtoRiskDistribution() {
+  return useQuery({
+    queryKey: [...ANALYTICS_QUERY_KEY, 'rto-risk-distribution'],
+    queryFn: () => analyticsApi.getRtoRiskDistribution(),
+    staleTime: 5 * 60_000,
+  });
+}
+
 // ── Order-status mix (Silver tier — feat-silver-tier-order-state) ───────────────
 // The FIRST surface read from the Silver analytics tier (silver.order_state) via the
 // metric-engine Silver seam (I-ST01 — UI never queries StarRocks). Shares the

@@ -110,6 +110,7 @@ import type {
   AnalyticsCodRtoRatesResponse,
   AnalyticsCodMixResponse,
   AnalyticsCheckoutFunnelResponse,
+  AnalyticsRtoRiskResponse,
   AnalyticsOrderStatusMixResponse,
   AnalyticsJourneyFirstTouchMixResponse,
   AnalyticsJourneyStitchRateResponse,
@@ -1249,6 +1250,14 @@ export const analyticsApi = {
   getCheckoutFunnel: async (): Promise<AnalyticsCheckoutFunnelResponse> => {
     const { data } = await bffFetch<BffEnvelope<AnalyticsCheckoutFunnelResponse>>(
       `/v1/analytics/checkout-funnel`,
+    );
+    return data;
+  },
+
+  /** GET /api/v1/analytics/rto-risk-distribution — per-order RTO risk (GoKwik RTO-Predict). */
+  getRtoRiskDistribution: async (): Promise<AnalyticsRtoRiskResponse> => {
+    const { data } = await bffFetch<BffEnvelope<AnalyticsRtoRiskResponse>>(
+      `/v1/analytics/rto-risk-distribution`,
     );
     return data;
   },

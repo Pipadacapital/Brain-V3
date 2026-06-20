@@ -73,6 +73,7 @@ import type {
   JourneyTimeline as ContractJourneyTimeline,
   JourneyStitchRate as ContractJourneyStitchRate,
   OrderStatusMix as ContractOrderStatusMix,
+  OrderDetail as ContractOrderDetail,
   DataQualitySummary as ContractDataQualitySummary,
   AskBrainResult as ContractAskBrainResult,
   Customer360 as ContractCustomer360,
@@ -95,7 +96,7 @@ import type {
 } from '@brain/contracts';
 import { jtiFromJwt, csrfTokenForSession } from './csrf.js';
 import type { Pool as PgPool } from 'pg';
-import { getRevenueMetrics, getRevenueTimeseries, getKpiSummary, getRecognitionBreakdown, getRecentActivity, getOrdersTimeseries, getOrderStats, getDataHealth, getSettlementSummary, getTrackingHealth, getRecentEvents, getAdSpendTimeseries, getBlendedRoas, getCodRtoRates, getCodMix, getCheckoutFunnel, getRtoRiskDistribution, getOrderStatusMix, getJourneyFirstTouchMix, getJourneyStitchRate, getJourneyTimeline, getConsentCoverage, getConsentSuppressionSummary, getConsentGateActivity, getConsentWindowConfig, getAttributionByChannel, getAttributionReconciliation, getChannelRoas, getCapiFeedbackSummary, getCapiFeedbackEvents, getCapiFeedbackDeletions } from '../../analytics/index.js';
+import { getRevenueMetrics, getRevenueTimeseries, getKpiSummary, getRecognitionBreakdown, getRecentActivity, getOrdersTimeseries, getOrderStats, getDataHealth, getSettlementSummary, getTrackingHealth, getRecentEvents, getAdSpendTimeseries, getBlendedRoas, getCodRtoRates, getCodMix, getCheckoutFunnel, getRtoRiskDistribution, getOrderStatusMix, getOrderDetail, getJourneyFirstTouchMix, getJourneyStitchRate, getJourneyTimeline, getConsentCoverage, getConsentSuppressionSummary, getConsentGateActivity, getConsentWindowConfig, getAttributionByChannel, getAttributionReconciliation, getChannelRoas, getCapiFeedbackSummary, getCapiFeedbackEvents, getCapiFeedbackDeletions } from '../../analytics/index.js';
 import { getDataQualitySummary, getMetricTrust } from '../../data-quality/index.js';
 import { computeFoundationHealth, freshnessFromIngest, computeEntitlements, type FoundationSignals } from '../../analytics/index.js';
 import { CONNECTOR_CATALOG } from '../../connector/catalog/registry.js';
@@ -2903,6 +2904,51 @@ export function registerBffRoutes(
         },
       );
 
+      return reply.send({ request_id: requestId, data: result });
+    },
+  );
+
+  /**
+   * GET /api/v1/analytics/order-detail?order_id=<id>
+   * A single order's economic breakdown (line items / tax / shipping / discounts / refunds), read
+   * from Bronze — the captured composition of the order (feat-shopify-order-depth). Brand from
+   * session (D-1, NEVER body). Honest not_found (D-2). Money = bigint minor-unit strings (I-S07).
+   * Reads Bronze via rawPool under withBrandTxn (RLS-scoped; no manual WHERE — F-SEC-02).
+   */
+  fastify.get(
+    '/api/v1/analytics/order-detail',
+    {
+      preHandler: [bffProtectedPreHandler],
+      schema: {
+        querystring: {
+          type: 'object',
+          properties: { order_id: { type: 'string', minLength: 1, maxLength: 256 } },
+          required: ['order_id'],
+          additionalProperties: false,
+        },
+      },
+      attachValidation: true,
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const validationError = (request as FastifyRequest & { validationError?: Error }).validationError;
+      if (validationError) {
+        return reply.code(400).send({
+          request_id: requestId,
+          error: { code: 'INVALID_PARAMS', message: 'order_id is required.' },
+        });
+      }
+
+      const orderId = (request.query as { order_id: string }).order_id;
+      const auth = (request as AuthenticatedRequest).auth;
+      if (!auth.brandId) {
+        return reply.send({ request_id: requestId, data: { state: 'not_found', order_id: orderId } });
+      }
+      if (!rawPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Bronze read pool not available' } });
+      }
+
+      const result: ContractOrderDetail = await getOrderDetail(auth.brandId, orderId, { pool: rawPool });
       return reply.send({ request_id: requestId, data: result });
     },
   );

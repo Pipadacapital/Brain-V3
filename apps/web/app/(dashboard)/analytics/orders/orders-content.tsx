@@ -16,7 +16,8 @@
  */
 
 import { useState } from 'react';
-import { ShoppingCart, TrendingDown } from 'lucide-react';
+import { useRouter } from 'next/navigation';
+import { ShoppingCart, TrendingDown, Search } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ErrorCard } from '@/components/ui/error-card';
 import { EmptyState } from '@/components/ui/empty-state';
@@ -62,6 +63,41 @@ function formatCount(countStr: string): string {
   return Number(BigInt(countStr)).toLocaleString('en-IN');
 }
 
+/** Look up one order's captured economic breakdown by id (feat-shopify-order-depth). */
+function OrderLookup() {
+  const router = useRouter();
+  const [orderId, setOrderId] = useState('');
+  return (
+    <form
+      className="flex items-center gap-2"
+      onSubmit={(e) => {
+        e.preventDefault();
+        const id = orderId.trim();
+        if (id) router.push(`/analytics/orders/${encodeURIComponent(id)}`);
+      }}
+    >
+      <div className="relative">
+        <Search className="pointer-events-none absolute left-2 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+        <input
+          type="text"
+          value={orderId}
+          onChange={(e) => setOrderId(e.target.value)}
+          placeholder="Look up order id…"
+          aria-label="Order id"
+          className="h-9 rounded-md border bg-card pl-8 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+        />
+      </div>
+      <button
+        type="submit"
+        className="h-9 rounded-md border bg-secondary px-3 text-sm font-medium text-secondary-foreground hover:bg-secondary/80 disabled:opacity-50"
+        disabled={!orderId.trim()}
+      >
+        View
+      </button>
+    </form>
+  );
+}
+
 export function OrdersContent() {
   const [grain, setGrain] = useState<Grain>('day');
 
@@ -96,11 +132,14 @@ export function OrdersContent() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-foreground">Orders</h1>
-        <p className="text-muted-foreground mt-1">
-          Order volume, average order value, and RTO rate — last 90 days.
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-foreground">Orders</h1>
+          <p className="text-muted-foreground mt-1">
+            Order volume, average order value, and RTO rate — last 90 days.
+          </p>
+        </div>
+        <OrderLookup />
       </div>
 
       {/* Honest error path — surfaces the request_id for support (trace context propagated). */}

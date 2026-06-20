@@ -41,6 +41,7 @@ PG_PSQL  ?= docker exec -i $(PG_CONTAINER) psql -U $(PG_USER) -d $(PG_DB)
 
 .PHONY: silver-catalog silver-run silver-build silver-verify
 .PHONY: journey-catalog journey-run journey-build journey-verify journey-seed
+.PHONY: orderline-catalog orderline-ddl orderline-run orderline-build orderline-verify
 .PHONY: attribution-migrate attribution-seed attribution-build attribution-verify
 
 silver-catalog:
@@ -131,6 +132,56 @@ journey-verify: journey-run
 		echo ">> REPLAY PASS: silver_touchpoint content is identical across re-runs (idempotent)."; \
 	else \
 		echo ">> REPLAY FAIL: silver_touchpoint content changed between runs."; exit 1; \
+	fi
+
+# ============================================================================
+# feat-shopify-order-depth — silver.order_line dbt run wiring (mirror of silver-*/journey-*).
+# The order line-item mart is the THIRD Silver mart; same pattern, same cron, no new
+# deployable. Reads the order depth the mapper captures into Bronze.
+#
+# Targets:
+#   orderline-catalog  — apply the Postgres read-shim view bronze_order_line_src (latest-order
+#                        pick + line_items unnest, uuid/jsonb→text) for the JDBC catalog
+#   orderline-ddl      — create the StarRocks brain_silver.silver_order_line table (idempotent)
+#   orderline-run      — dbt run (stg_order_line_events → silver_order_line) + dbt test
+#   orderline-build    — orderline-catalog then orderline-ddl then orderline-run
+#   orderline-verify   — run dbt TWICE and diff a content checksum → replay-idempotency proof
+# ============================================================================
+orderline-catalog:
+	@echo ">> Applying Postgres read-shim view bronze_order_line_src (latest-order + line_items unnest, uuid/jsonb->text)..."
+	$(PG_PSQL) < db/starrocks/bronze_order_line_src.sql
+	@echo ">> Ensuring StarRocks JDBC external catalog brain_oltp_pg exists (idempotent)..."
+	$(SR_MYSQL) < db/starrocks/oltp_jdbc_catalog.sql
+
+orderline-ddl:
+	@echo ">> Creating StarRocks brain_silver.silver_order_line (idempotent)..."
+	$(SR_MYSQL) < db/starrocks/ddl/silver_order_line.sql
+
+orderline-run:
+	@echo ">> dbt run (stg_order_line_events -> silver_order_line) ..."
+	cd $(DBT_DIR) && DBT_PROFILES_DIR=$(DBT_PROFILES) "$(DBT)" run --select stg_order_line_events+
+	@echo ">> dbt test (grain, money-bigint, replay-identity, schema tests) ..."
+	cd $(DBT_DIR) && DBT_PROFILES_DIR=$(DBT_PROFILES) "$(DBT)" test --select silver_order_line stg_order_line_events
+
+orderline-build: orderline-catalog orderline-ddl orderline-run
+
+# Replay/idempotency proof: order-independent content fingerprint over ALL stable columns,
+# rebuild, snapshot again, assert identical → proves the mart is reproducible-from-source.
+ORDERLINE_FP_SQL = SELECT SUM(CAST(murmur_hash3_32(CONCAT_WS('|', brand_id, order_id, CAST(line_index AS STRING), COALESCE(sku,''), COALESCE(title,''), CAST(quantity AS STRING), CAST(unit_price_minor AS STRING), CAST(line_total_minor AS STRING), CAST(line_discount_minor AS STRING), COALESCE(product_id,''), COALESCE(variant_id,''), COALESCE(currency_code,''), CAST(occurred_at AS STRING))) AS BIGINT)) AS fp, COUNT(*) AS n FROM $(STARROCKS_DB).silver_order_line;
+
+orderline-verify: orderline-run
+	@echo ">> [replay] content fingerprint after run #1 ..."
+	@$(SR_MYSQL) -N -e "$(ORDERLINE_FP_SQL)" > /tmp/orderline_fp_1.txt
+	@cat /tmp/orderline_fp_1.txt
+	@echo ">> [replay] re-running dbt ..."
+	cd $(DBT_DIR) && DBT_PROFILES_DIR=$(DBT_PROFILES) "$(DBT)" run --select stg_order_line_events+
+	@echo ">> [replay] content fingerprint after run #2 ..."
+	@$(SR_MYSQL) -N -e "$(ORDERLINE_FP_SQL)" > /tmp/orderline_fp_2.txt
+	@cat /tmp/orderline_fp_2.txt
+	@if diff -q /tmp/orderline_fp_1.txt /tmp/orderline_fp_2.txt >/dev/null; then \
+		echo ">> REPLAY PASS: silver_order_line content is identical across re-runs (idempotent)."; \
+	else \
+		echo ">> REPLAY FAIL: silver_order_line content changed between runs."; exit 1; \
 	fi
 
 # ============================================================================

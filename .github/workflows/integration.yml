@@ -73,6 +73,32 @@ jobs:
           "
           pnpm migrate:up
 
+      # ── Silver marts (dbt-starrocks) ─────────────────────────────────────────
+      # The ONLY place dbt runs in CI. Builds + tests the Silver marts (order_state, touchpoint,
+      # order_line) against the REAL StarRocks: verifies the dbt models compile + run and that
+      # their grain / money-bigint / replay singular tests pass, AND materializes Silver so the
+      # live suites below read a real tier. order_line is feat-shopify-order-depth's line-item mart.
+      - name: Install dbt (dbt-starrocks) into .dbt-venv + mysql client
+        run: |
+          python3 -m venv .dbt-venv
+          .dbt-venv/bin/pip install --quiet --upgrade pip
+          .dbt-venv/bin/pip install --quiet dbt-starrocks
+          sudo apt-get update -qq && sudo apt-get install -y -qq default-mysql-client
+
+      - name: Build + test Silver marts via dbt (order_state, touchpoint, order_line)
+        env:
+          STARROCKS_USER: root
+          STARROCKS_PASSWORD: ''
+        run: |
+          # The Makefile auto-detects .dbt-venv/bin/dbt (absolute path, survives the cd into db/dbt).
+          # Override its DB clients to the CI localhost service ports (the targets default to
+          # `docker exec <container>`); the StarRocks JDBC catalog still reaches Postgres over the
+          # compose network at host `postgres:5432`. *-catalog applies the read-shim views + JDBC
+          # catalog; *-run does `dbt run` + `dbt test` (the singular grain/money/replay assertions).
+          make silver-catalog silver-run journey-catalog journey-run orderline-catalog orderline-run \
+            PG_PSQL="psql postgresql://brain:brain@localhost:5432/brain" \
+            SR_MYSQL="mysql -h127.0.0.1 -P9030 -uroot --protocol=TCP"
+
       # Isolation fuzz + parity oracle — now against REAL StarRocks (the PR run has no Silver tier,
       # so the StarRocks cross-tenant negative-control only truly fires here).
       - name: Isolation fuzz (real engines)

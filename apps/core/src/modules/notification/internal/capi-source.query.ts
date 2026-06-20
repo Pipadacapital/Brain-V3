@@ -125,6 +125,16 @@ export async function fetchFinalizedPurchaseCandidates(
         AND l.amount_minor > 0
         AND l.occurred_at >= $2
         AND l.occurred_at <= $3
+        -- Idempotency for the passback orchestrator: skip conversions already attempted (any
+        -- terminal status row in capi_passback_log). Keeps an every-tick loop from re-sending to
+        -- Meta. Keyed on (order_id, ledger_event_id) — the columns the log stores — under the same
+        -- brand GUC (RLS-scoped). A conversion is attempted at most once.
+        AND NOT EXISTS (
+          SELECT 1 FROM capi_passback_log pb
+           WHERE pb.brand_id = l.brand_id
+             AND pb.order_id = l.order_id
+             AND pb.ledger_event_id = l.ledger_event_id
+        )
       ORDER BY l.occurred_at ASC`,
     [brandId, from, to],
   );

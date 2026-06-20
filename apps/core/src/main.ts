@@ -56,6 +56,13 @@ import { registerDevRoutes } from './modules/notification/internal/dev.routes.js
 import { createEmailAdapter } from './modules/notification/internal/ses-adapter.js';
 import { createCapiAdapter } from './modules/notification/internal/capi-adapter.js';
 import { createCapiCredsPort } from './modules/notification/internal/compliance/capi-creds.adapter.js';
+import { CapiPassbackService } from './modules/notification/internal/capi-passback.service.js';
+import { startCapiPassback } from './modules/notification/internal/capi-passback.orchestrator.js';
+import { fetchFinalizedPurchaseCandidatesScoped } from './modules/notification/internal/capi-source.query.js';
+import { CanContactEngine } from './modules/notification/internal/compliance/can-contact.engine.js';
+import { FunctionSaltPort } from './modules/notification/internal/compliance/salt.adapter.js';
+import { PgSuppressionQuery } from './modules/notification/internal/compliance/suppression.query.js';
+import { StubDltRegistry, StubNcprRegistry } from './modules/notification/internal/compliance/stubs.js';
 import { registerConsentRoutes } from './modules/notification/internal/compliance/consent.routes.js';
 
 // ── Connector infrastructure imports (HIGH-MOUNT-01) ─────────────────────────
@@ -473,7 +480,6 @@ export async function main(): Promise<void> {
   const capiCredsPort = createCapiCredsPort(); // dev/default-closed (prod resolver = follow-up)
   const capiAdapter = createCapiAdapter(config.nodeEnv, null);
   void capiCredsPort;
-  void capiAdapter;
   app.log.info(
     '[core] Meta CAPI passback adapter wired (DEFAULT-CLOSED: dev → would_send_dev, never sends; behind can_contact(advertising))',
   );
@@ -490,6 +496,51 @@ export async function main(): Promise<void> {
     new ContactPiiVaultRepository(rawPgPool),
     vaultKeyProvider,
   );
+  // ── Meta CAPI passback ORCHESTRATOR (P0 — the missing driver) ────────────────
+  // Nothing previously called passback(); the service was constructed then void-ed. This wires the
+  // periodic driver: enumerate brands → fetch finalized-purchase candidates (anti-joined vs
+  // capi_passback_log → idempotent) → passback() each. DOUBLE-GATED for prod safety: (1) passback
+  // is consent-gated + the adapter is the DevCapiAdapter (never sends) unless real Meta creds are
+  // resolved in prod; (2) this loop only RUNS when CAPI_PASSBACK_ENABLED=true. Off by default → no
+  // behavior change; flip on once prod Meta creds are wired.
+  // passback acquires a fresh GUC-scoped DbClient per conversion (mirrors the consent-route pattern:
+  // the CanContactEngine's PgSuppressionQuery + the service's writeLog both need a brand-scoped
+  // client). Passbacks are infrequent (finalized purchases), so per-call construction is fine.
+  const capiPassback = async (conv: Parameters<CapiPassbackService['passback']>[0]) => {
+    const client = await pool.connect();
+    try {
+      const engine = new CanContactEngine({
+        salt: new FunctionSaltPort(getCoreSaltHex),
+        suppression: new PgSuppressionQuery(client),
+        dlt: new StubDltRegistry(),
+        ncpr: new StubNcprRegistry(),
+      });
+      const svc = new CapiPassbackService({ engine, adapter: capiAdapter, pii: piiVaultService, db: client });
+      return await svc.passback(conv);
+    } finally {
+      client.release();
+    }
+  };
+  let stopCapiPassback: (() => void) | null = null;
+  if (process.env['CAPI_PASSBACK_ENABLED'] === 'true') {
+    const handle = startCapiPassback({
+      enumerateBrandIds: async () => {
+        const r = await rawPgPool.query<{ id: string }>('SELECT id FROM list_active_brand_ids()');
+        return r.rows.map((x) => x.id);
+      },
+      fetchCandidates: (brandId, from, to) => fetchFinalizedPurchaseCandidatesScoped(rawPgPool, brandId, from, to),
+      passback: capiPassback,
+      windowHours: Number(process.env['CAPI_PASSBACK_WINDOW_HOURS'] ?? 24),
+      intervalMs: Number(process.env['CAPI_PASSBACK_INTERVAL_MS'] ?? 300_000),
+      log: { info: (m) => app.log.info(m), warn: (m, meta) => app.log.warn(meta ?? {}, m), error: (m, meta) => app.log.error(meta ?? {}, m) },
+    });
+    stopCapiPassback = handle.stop;
+    app.log.info('[core] Meta CAPI passback orchestrator RUNNING (CAPI_PASSBACK_ENABLED=true)');
+  } else {
+    void capiPassback;
+    app.log.info('[core] Meta CAPI passback orchestrator wired but IDLE (set CAPI_PASSBACK_ENABLED=true to drive sends)');
+  }
+
   app.log.info(
     `[core] PII vault wired (${config.nodeEnv === 'production' ? 'PROD: AWS KMS per-brand DEK (brand_keyring)' : 'dev: per-brand derived DEK'}); MatchPiiPort ready for CAPI passback`,
   );
@@ -1690,6 +1741,7 @@ export async function main(): Promise<void> {
   // Graceful shutdown.
   const shutdown = async () => {
     app.log.info('[core] Shutting down...');
+    if (stopCapiPassback) stopCapiPassback(); // stop the CAPI passback loop before tearing down pools
     await app.close();
     await webhookProducer.disconnect().catch(() => { /* ignore */ });
     await pool.end();

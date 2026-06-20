@@ -51,6 +51,10 @@ export async function loadRun(provider: string): Promise<RepullRun | null> {
           ? (await import('../meta-spend-repull/run.js')).run
           : (await import('../google-ads-spend-repull/run.js')).run
       );
+    case 'gokwik':
+      // P0: GoKwik AWB trailing-window re-pull. Previously had no dispatch case, so it ran only
+      // via CLI/e2e — the connector showed connected but ingested nothing on a schedule.
+      return (await import('../gokwik-awb-repull/run.js')).run;
     default:
       return null;
   }
@@ -89,6 +93,15 @@ export async function enumerateConnectedConnectors(pool: Pool): Promise<Connecto
   );
   for (const r of ads.rows) {
     rows.push({ connector_instance_id: r.connector_instance_id, brand_id: r.brand_id, provider: r.provider });
+  }
+
+  // P0: GoKwik AWB connectors — the SECURITY DEFINER fn existed (0030) but was never enumerated, so
+  // the scheduler/claimer never dispatched gokwik re-pulls. Same pattern as the others.
+  const gokwik = await pool.query<{ connector_instance_id: string; brand_id: string }>(
+    `SELECT connector_instance_id, brand_id FROM list_gokwik_connectors_for_awb_repull()`,
+  );
+  for (const r of gokwik.rows) {
+    rows.push({ ...r, provider: 'gokwik' });
   }
 
   return rows;

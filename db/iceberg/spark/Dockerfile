@@ -17,7 +17,7 @@ ARG PG_JDBC_VERSION=42.7.4
 ARG SCALA=2.12
 
 WORKDIR /opt/brain
-COPY bronze_materialize.py bronze_parity_check.py validate_bronze.py /opt/brain/
+COPY bronze_materialize.py bronze_parity_check.py bronze_maintenance.py validate_bronze.py /opt/brain/
 
 # Resolve + cache the runtime jars at build time, then place them on the default Spark classpath.
 RUN set -eux; \

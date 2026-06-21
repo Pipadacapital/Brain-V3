@@ -102,4 +102,47 @@ spec:
           {{- end }}
           resources:
             {{- toYaml .Values.sparkBronze.resources | nindent 12 }}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: CronWorkflow
+metadata:
+  name: bronze-maintenance
+  labels:
+    {{- include "brain.labels" . | nindent 4 }}
+    brain.io/job: bronze-maintenance
+spec:
+  # Slice 7: compaction (small-file rewrite) + 24-month snapshot-expiry TTL. The ERASURE mode
+  # (MODE=erase ERASE_BRAND_ID=…) is NOT a cron — it is invoked on-demand by the right-to-erasure
+  # orchestrator after a brand's DEK is crypto-shredded (D13 / I-S05).
+  schedule: {{ .Values.sparkBronze.maintenanceSchedule | quote }}
+  timezone: {{ $tz | quote }}
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: {{ .Values.defaults.startingDeadlineSeconds }}
+  successfulJobsHistoryLimit: {{ .Values.defaults.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.defaults.failedJobsHistoryLimit }}
+  workflowSpec:
+    serviceAccountName: {{ $sa }}
+    entrypoint: run
+    activeDeadlineSeconds: {{ .Values.sparkBronze.activeDeadlineSeconds }}
+    podGC:
+      strategy: OnWorkflowSuccess
+    templates:
+      - name: run
+        retryStrategy:
+          limit: {{ .Values.defaults.backoffLimit | quote }}
+          retryPolicy: OnError
+        container:
+          image: {{ $ref | quote }}
+          imagePullPolicy: {{ $img.pullPolicy }}
+          command: ["/opt/spark/bin/spark-submit", "--master", "local[*]", "/opt/brain/bronze_maintenance.py"]
+          env:
+            - { name: MODE, value: "maintain" }
+            {{- toYaml .Values.sparkBronze.env | nindent 12 }}
+          {{- if $envFrom }}
+          envFrom:
+            - secretRef:
+                name: {{ $envFrom }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.sparkBronze.resources | nindent 12 }}
 {{- end }}

@@ -60,6 +60,7 @@ sparkBronze:
     pullPolicy: IfNotPresent
   materializeSchedule: "*/15 * * * *"   # drain the topic → Iceberg every 15 min (availableNow)
   paritySchedule: "*/30 * * * *"        # PG⇄Iceberg reconciliation every 30 min
+  maintenanceSchedule: "0 3 * * *"      # daily 03:00 IST — compaction + 24-mo snapshot-expiry (Slice 7)
   activeDeadlineSeconds: 1800
   # Non-secret config; secrets (KAFKA_BROKERS, ICEBERG/Glue, CHECKPOINT_LOCATION s3a://, AWS_*) come
   # from envSecretName. STARTING_OFFSETS=latest in steady state (earliest only for a one-off backfill).

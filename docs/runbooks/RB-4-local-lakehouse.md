@@ -183,6 +183,25 @@ line_items`, which dev Iceberg data lacks (re-pull `order.live.v1` carries no li
 unnest-in-staging transform can't be data-verified yet. The ledger + stitch-map sources stay on JDBC by
 design (derived, not raw Bronze).
 
+## Slice 7 — Iceberg maintenance: compaction, 24-mo TTL, erasure-aware compaction
+
+`db/iceberg/spark/bronze_maintenance.py` (image-baked; CronWorkflow `bronze-maintenance`, daily 03:00):
+
+```bash
+db/iceberg/spark/run-bronze-maintenance.sh                                  # MODE=maintain (default)
+MODE=erase ERASE_BRAND_ID=<uuid> db/iceberg/spark/run-bronze-maintenance.sh # D13 right-to-erasure
+```
+
+- **maintain**: `rewrite_data_files` (compact the many small streaming files) + `expire_snapshots`
+  (drop snapshots older than 24 months + delete the files only they referenced — the I-E02 TTL).
+- **erase** (the D13 / I-S05 right-to-erasure companion, invoked on-demand after a brand's DEK is
+  crypto-shredded): `DELETE FROM … WHERE brand_id=<x>` → `rewrite_data_files` (rows gone from live
+  files) → `expire_snapshots` (purge pre-deletion snapshots so time-travel can't read the erased
+  rows). VERIFIED: erasing test brand `b9f10030` → Spark `rows_after=0`; after `REFRESH EXTERNAL
+  TABLE` StarRocks confirms 0 (physically removed from the open Bronze Parquet).
+
+This closes the I-S05 erasure-aware-compaction gap that was deferred while Bronze was Postgres.
+
 ## Related
 
 - ADR-0002 — `docs/adr/0002-iceberg-bronze-spark-streaming.md` (the Bronze→Iceberg flip plan)

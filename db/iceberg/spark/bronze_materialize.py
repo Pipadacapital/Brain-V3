@@ -33,7 +33,14 @@ TOPIC = os.environ.get("COLLECTOR_TOPIC", "dev.collector.event.v1")
 STARTING_OFFSETS = os.environ.get("STARTING_OFFSETS", "earliest")
 # Local checkpoint by default — keeps the spike free of the Hadoop S3A connector (Iceberg data
 # still lands in MinIO via S3FileIO). Clear it to re-process the backlog for an idempotency re-run.
+# PROD: set CHECKPOINT_LOCATION to a durable s3a:// path (needs hadoop-aws on the classpath) so the
+# streaming job resumes exactly-once across restarts.
 CHECKPOINT = os.environ.get("CHECKPOINT_LOCATION", "file:///tmp/bronze-spike-checkpoint")
+# TRIGGER_MODE: "availableNow" (default) drains the current backlog once and exits — the dev spike
+# and the periodic Argo CronWorkflow shape. "continuous" runs a long-lived micro-batch stream every
+# PROCESSING_TIME — the real-time Spark-on-K8s shape. Both use the same idempotent MERGE.
+TRIGGER_MODE = os.environ.get("TRIGGER_MODE", "availableNow")
+PROCESSING_TIME = os.environ.get("PROCESSING_TIME", "30 seconds")
 
 # The CollectorEventV1 envelope — ONLY the scalar fields we map to Bronze columns. The nested
 # objects (properties / consent_flags) are deliberately NOT in this schema: typing an object as
@@ -116,7 +123,11 @@ def to_bronze(parsed):
             e["correlation_id"].alias("correlation_id"),
             concat(e["brand_id"], lit(":"), e["event_id"]).alias("partition_key"),
             # payload: the full envelope JSON verbatim (lossless, no raw PII — the collector already
-            # hashed identifiers). Slice 3 aligns this to the stream-worker BronzeRow.payload shape.
+            # hashed identifiers). This is downstream-EQUIVALENT to the stream-worker BronzeRow.payload:
+            # both expose payload.event_name and payload.properties.* (the paths dbt staging reads), the
+            # raw envelope simply also carries the top-level envelope fields (harmless supersets). Byte
+            # parity across two serializers (Node JSON.stringify vs Spark to_json) is neither achievable
+            # nor required — the parity gate compares (brand_id, event_id) identity (bronze_parity_check.py).
             col("raw").alias("payload"),
             lit(None).cast("string").alias("processing_flags"),
             lit(None).cast("string").alias("collector_version"),
@@ -176,17 +187,21 @@ def main() -> None:
     )
     bronze = to_bronze(parsed)
 
-    query = (
+    writer = (
         bronze.writeStream
         .foreachBatch(upsert_factory(spark))
         .option("checkpointLocation", CHECKPOINT)
-        .trigger(availableNow=True)
-        .start()
     )
+    if TRIGGER_MODE == "continuous":
+        query = writer.trigger(processingTime=PROCESSING_TIME).start()
+    else:
+        query = writer.trigger(availableNow=True).start()
     query.awaitTermination()
 
-    total = spark.table(TABLE).count()
-    print(f"[bronze-spike] DONE — {TABLE} now has {total} rows", flush=True)
+    # availableNow terminates after draining; report the final count. continuous never returns here.
+    if TRIGGER_MODE != "continuous":
+        total = spark.table(TABLE).count()
+        print(f"[bronze-spike] DONE — {TABLE} now has {total} rows", flush=True)
 
 
 if __name__ == "__main__":

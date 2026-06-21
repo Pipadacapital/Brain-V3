@@ -47,6 +47,29 @@ defaults:
       cpu: "1"
       memory: 1Gi
 
+# Spark Bronze dual-sink + parity oracle (ADR-0002 Slice 3). GATED OFF by default — enabling it runs
+# the Iceberg Bronze sink IN PARALLEL with the live Postgres write (additive, reversible) plus the
+# PG⇄Iceberg parity oracle. Flip `enabled: true` per env only when ready to start the migration;
+# turn off to instantly stop the dual-sink. See db/iceberg/spark/ + docs/adr/0002-*.
+sparkBronze:
+  enabled: false
+  image:
+    repository: REPLACE_WITH_ECR_REGISTRY/brain-spark-bronze   # built from db/iceberg/spark/Dockerfile
+    tag: ""            # B3: digest preferred; CI populates at deploy (fail-closed in the template)
+    digest: ""
+    pullPolicy: IfNotPresent
+  materializeSchedule: "*/15 * * * *"   # drain the topic → Iceberg every 15 min (availableNow)
+  paritySchedule: "*/30 * * * *"        # PG⇄Iceberg reconciliation every 30 min
+  activeDeadlineSeconds: 1800
+  # Non-secret config; secrets (KAFKA_BROKERS, ICEBERG/Glue, CHECKPOINT_LOCATION s3a://, AWS_*) come
+  # from envSecretName. STARTING_OFFSETS=latest in steady state (earliest only for a one-off backfill).
+  env:
+    - { name: STARTING_OFFSETS, value: "latest" }
+    - { name: PARITY_TOLERANCE, value: "0" }
+  resources:
+    requests: { cpu: "1", memory: 2Gi }
+    limits: { cpu: "2", memory: 4Gi }
+
 # The scheduled jobs. `image` omitted → the default (core) image.
 jobs:
   - name: recommendation-detectors

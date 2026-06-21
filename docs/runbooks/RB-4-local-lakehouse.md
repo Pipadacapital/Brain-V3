@@ -80,6 +80,32 @@ Re-running drains the same backlog (fresh container checkpoint) and the row coun
 the MERGE is append-only/idempotent (I-E02 replay invariant). Verified: 888 `order.live.v1` rows,
 partitions `{brand_id_bucket, occurred_at_day}`, parquet/zstd/format-v2 under `s3://brain-bronze/`.
 
+## Slice 3 — dual-sink + the PG ⇄ Iceberg parity gate
+
+The cautious migration model: both Bronze sinks run in parallel — the live `stream-worker → Postgres
+bronze_events` write (untouched) and the Spark `→ Iceberg` materializer — both consuming the same
+`collector.event.v1` topic. The **parity oracle** proves they hold the same `(brand_id, event_id)`
+identity set per brand and **gates** every reader cut-over (Slices 4-6): no reader moves to Iceberg
+until parity is green and stable.
+
+```bash
+db/iceberg/spark/run-bronze-parity.sh    # PG⇄Iceberg reconciliation; exits non-zero on drift
+```
+
+Parity is IDENTITY-based, not payload-byte-based (the two writers serialize JSON differently; the
+idempotency key is what must match). Verified locally: real brand `124e6af5` showed **887 PG = 887
+Iceberg, delta 0**; the oracle also correctly CLOSED the gate on a 1-event divergence (a test
+fixture), proving drift detection.
+
+**Job modes** (`db/iceberg/spark/bronze_materialize.py`): `TRIGGER_MODE=availableNow` (default —
+drain+exit, the periodic CronWorkflow shape) vs `continuous` (long-lived stream, the post-cutover
+real-time shape). Prod sets a durable `CHECKPOINT_LOCATION=s3a://…`.
+
+**Deploy** (`docs/audit`/B3): image `db/iceberg/spark/Dockerfile` (jars baked in) → ECR; CronWorkflows
+in `infra/helm/cronworkflows/templates/spark-bronze.yaml`, **gated off** by `sparkBronze.enabled`
+(flip per env to start the dual-sink; flip back to stop). Needs the `brain-jobs` IRSA role (S3
+per-brand prefix + Glue) and the env secret (KAFKA/ICEBERG/CHECKPOINT/AWS). Not yet cluster-applied.
+
 ## Related
 
 - ADR-0002 — `docs/adr/0002-iceberg-bronze-spark-streaming.md` (the Bronze→Iceberg flip plan)

@@ -1463,6 +1463,82 @@ export async function main(): Promise<void> {
           });
         }
 
+        // ── WooCommerce credential connector (storefront) ─────────────────
+        // Requires: consumer_key, consumer_secret, site_url (the store base URL). The REST API
+        // uses Basic auth (key/secret) over HTTPS; site_url is stored on
+        // connector_instance.woocommerce_site_url (non-secret) for re-pull enumeration + webhook
+        // resolution. Emits the SHARED order.live.v1 canonical event → reuses the order→ledger path.
+        if (connectorType === 'woocommerce') {
+          const consumerKey = credentials['consumer_key'];
+          const consumerSecret = credentials['consumer_secret'];
+          const siteUrl = credentials['site_url'];
+
+          if (!consumerKey || !consumerSecret || !siteUrl) {
+            return reply.code(400).send({
+              request_id: requestId,
+              error: {
+                code: 'MISSING_WOOCOMMERCE_CREDENTIALS',
+                message: 'woocommerce connector requires: consumer_key, consumer_secret, site_url',
+              },
+            });
+          }
+
+          const { arn } = await connectorSecretsManager.storeSecret(
+            brandId,
+            { connectorType: 'woocommerce', subKey: siteUrl },
+            { consumer_key: consumerKey, consumer_secret: consumerSecret },
+          );
+
+          const now = new Date();
+          const connectorInstanceId = randomUUID();
+          const instance = ConnectorInstanceEntity.create({
+            id: connectorInstanceId,
+            brandId,
+            provider: 'woocommerce',
+            shopDomain: siteUrl, // storefront site URL (non-secret)
+            secretRef: arn,
+            status: 'connected',
+            healthState: 'Healthy',
+            safetyRating: 'safe',
+            connectedAt: now,
+            disconnectedAt: null,
+            createdAt: now,
+            updatedAt: now,
+          });
+          await connectorRepo.save(instance);
+
+          // Set woocommerce_site_url (migration 0060 column) under brand GUC — enumeration key.
+          const wcClient = await rawPgPool.connect();
+          try {
+            await beginRlsTxn(wcClient, { correlationId: requestId, brandId });
+            await wcClient.query(
+              `UPDATE connector_instance SET woocommerce_site_url = $1 WHERE id = $2 AND brand_id = $3`,
+              [siteUrl, connectorInstanceId, brandId],
+            );
+            await wcClient.query('COMMIT');
+          } catch (wcErr) {
+            await wcClient.query('ROLLBACK').catch(() => undefined);
+            throw wcErr;
+          } finally {
+            wcClient.release();
+          }
+
+          await auditWriter.append({
+            brand_id: brandId,
+            actor_id: auth?.userId ?? null,
+            actor_role: auth?.role ?? 'unknown',
+            action: 'connector.connected',
+            entity_type: 'connector_instance',
+            entity_id: connectorInstanceId,
+            payload: { connector_type: 'woocommerce' },
+            // NO consumer_secret in payload (I-S09)
+          });
+          return reply.code(200).send({
+            request_id: requestId,
+            data: { kind: 'credential', connected: true, connector_instance_id: connectorInstanceId },
+          });
+        }
+
         // Generic credential connector path (non-Razorpay — kept for future connectors)
         const { arn } = await connectorSecretsManager.storeSecret(brandId, { connectorType }, credentials);
         const now = new Date();

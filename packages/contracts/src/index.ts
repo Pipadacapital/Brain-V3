@@ -330,6 +330,9 @@ export {
   OrderRefundDtoSchema,
   OrderDetailDtoSchema,
   OrderDetailSchema,
+  CourierOutcomeDtoSchema,
+  PincodeOutcomeDtoSchema,
+  ShipmentOutcomesSchema,
 } from './api/analytics.api.v1.js';
 export type {
   RevenueSnapshot,
@@ -362,6 +365,9 @@ export type {
   OrderRefundDto,
   OrderDetailDto,
   OrderDetail,
+  CourierOutcomeDto,
+  PincodeOutcomeDto,
+  ShipmentOutcomes,
 } from './api/analytics.api.v1.js';
 
 export {

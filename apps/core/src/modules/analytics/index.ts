@@ -82,6 +82,9 @@ export type {
 // GoKwik + Shopflo CoD/RTO surface (Track C) — RTO rates, CoD mix/CM2, checkout funnel
 export { getCodRtoRates } from './internal/application/queries/get-cod-rto-rates.js';
 export type { CodRtoRatesResult, CodRtoCohortDto } from './internal/application/queries/get-cod-rto-rates.js';
+// Logistics shipment outcomes (Slice 2) — delivered/RTO + RTO% by courier/pincode from silver_shipment.
+export { getShipmentOutcomes } from './internal/application/queries/get-shipment-outcomes.js';
+export type { ShipmentOutcomesResult, CourierOutcomeDto, PincodeOutcomeDto } from './internal/application/queries/get-shipment-outcomes.js';
 export { getCodMix } from './internal/application/queries/get-cod-mix.js';
 export type { CodMixResult } from './internal/application/queries/get-cod-mix.js';
 export { getCheckoutFunnel } from './internal/application/queries/get-checkout-funnel.js';

@@ -59,6 +59,9 @@ export async function loadRun(provider: string): Promise<RepullRun | null> {
     case 'shiprocket':
       // Shiprocket shipment-lifecycle trailing-window re-pull (logistics — SPEC 3 Slice 1).
       return (await import('../shiprocket-shipment-repull/run.js')).run;
+    case 'woocommerce':
+      // WooCommerce REST order backfill/incremental re-pull (storefront — SPEC 2 Slice 1).
+      return (await import('../woocommerce-orders-repull/run.js')).run;
     default:
       return null;
   }

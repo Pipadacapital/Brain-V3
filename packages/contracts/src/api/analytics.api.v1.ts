@@ -446,3 +446,42 @@ export const OrderDetailSchema = z.discriminatedUnion('state', [
   z.object({ state: z.literal('has_data'), order_id: z.string(), detail: OrderDetailDtoSchema }),
 ]);
 export type OrderDetail = z.infer<typeof OrderDetailSchema>;
+
+// ── Logistics shipment outcomes (Slice 2) — delivered/RTO + RTO% by courier/pincode ──────────
+// @see apps/core/.../analytics/.../get-shipment-outcomes.ts (multi-source silver_shipment mart).
+// Counts use MinorUnitsSchema (bigint-as-string, identical serialization); rto_pct is a 2dp string.
+
+export const CourierOutcomeDtoSchema = z.object({
+  courier: z.string(),
+  delivered: MinorUnitsSchema,
+  rto: MinorUnitsSchema,
+  rto_pct: z.string().nullable(),
+});
+export type CourierOutcomeDto = z.infer<typeof CourierOutcomeDtoSchema>;
+
+export const PincodeOutcomeDtoSchema = z.object({
+  pincode: z.string(),
+  delivered: MinorUnitsSchema,
+  rto: MinorUnitsSchema,
+  rto_pct: z.string().nullable(),
+});
+export type PincodeOutcomeDto = z.infer<typeof PincodeOutcomeDtoSchema>;
+
+export const ShipmentOutcomesSchema = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('no_data') }),
+  z.object({
+    state: z.literal('has_data'),
+    from: z.string(),
+    to: z.string(),
+    total: MinorUnitsSchema,
+    delivered: MinorUnitsSchema,
+    rto: MinorUnitsSchema,
+    other: MinorUnitsSchema,
+    in_transit: MinorUnitsSchema,
+    rto_pct: z.string().nullable(),
+    by_courier: z.array(CourierOutcomeDtoSchema),
+    by_pincode: z.array(PincodeOutcomeDtoSchema),
+    data_source: DataSourceSchema,
+  }),
+]);
+export type ShipmentOutcomes = z.infer<typeof ShipmentOutcomesSchema>;

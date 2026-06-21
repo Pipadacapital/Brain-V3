@@ -200,6 +200,25 @@ export async function main(): Promise<void> {
     kafka, bridgeProcessEvent, topic, rtoPredictBronzeGroupId, retryCounter,
     'gokwik.rto_predict.v1', 'gokwik_rto_predict_bronze_write_total',
   );
+  // gokwik.awb_status.v1 (+ shiprocket.shipment_status.v1 once that PR merges) are server-trusted
+  // shipment-lifecycle events. They are ledger-fed (ShipmentLedgerConsumer → cod_rto_clawback/
+  // cod_delivery_confirmed) AND must land in Bronze so silver_shipment can preserve the rich
+  // detail (status, terminal_class, pincode, courier) — the order.live.v1 precedent (Slice 2).
+  const awbStatusBronzeGroupId =
+    process.env['GOKWIK_AWB_STATUS_BRONZE_CONSUMER_GROUP_ID'] ?? 'gokwik-awb-status-bronze-bridge';
+  const awbStatusBronzeConsumer = new EventBronzeBridgeConsumer(
+    kafka, bridgeProcessEvent, topic, awbStatusBronzeGroupId, retryCounter,
+    'gokwik.awb_status.v1', 'gokwik_awb_status_bronze_write_total',
+  );
+  // Shiprocket shipment-status Bronze bridge — the second logistics source feeding the SAME
+  // silver_shipment mart (Slice 2 multi-source). Ledger-fed via ShipmentLedgerConsumer AND
+  // Bronze-landed (SERVER_TRUSTED) so status/terminal_class/pincode/courier reach silver_shipment.
+  const shipmentStatusBronzeGroupId =
+    process.env['SHIPROCKET_SHIPMENT_BRONZE_CONSUMER_GROUP_ID'] ?? 'shiprocket-shipment-bronze-bridge';
+  const shipmentStatusBronzeConsumer = new EventBronzeBridgeConsumer(
+    kafka, bridgeProcessEvent, topic, shipmentStatusBronzeGroupId, retryCounter,
+    'shiprocket.shipment_status.v1', 'shiprocket_shipment_bronze_write_total',
+  );
   // order.live.v1 (Shopify live + re-pull orders) is the SAME severed-landing class: the events
   // carry NO install_token, so the pixel CollectorEventConsumer (R2 gate ON) quarantines them as
   // tenant_unresolved — they never reach Bronze. The LiveLedgerBridgeConsumer writes the LEDGER
@@ -454,6 +473,8 @@ export async function main(): Promise<void> {
       gokwikAwbLedgerConsumer.stop(),
       shopfloBronzeConsumer.stop(),
       rtoPredictBronzeConsumer.stop(),
+      awbStatusBronzeConsumer.stop(),
+      shipmentStatusBronzeConsumer.stop(),
       syncRequestClaimer.stop(),
       dqChecker.stop(),
       ingestScheduler.stop(),
@@ -567,6 +588,18 @@ export async function main(): Promise<void> {
   log.info(`starting gokwik-rto-predict-bronze bridge — topic=${topic} group=${rtoPredictBronzeGroupId}`);
   await rtoPredictBronzeConsumer.start();
   log.info('gokwik-rto-predict-bronze bridge consumer running');
+
+  // ── Shipment-status Bronze bridge consumer (Slice 2 — preserve shipment detail in Bronze) ──
+  // Same live topic, independent consumer group. Filters gokwik.awb_status.v1 → Bronze
+  // (enforceTenantDerivation=false) so silver_shipment can read status/terminal_class/pincode/courier.
+  log.info(`starting gokwik-awb-status-bronze bridge — topic=${topic} group=${awbStatusBronzeGroupId}`);
+  await awbStatusBronzeConsumer.start();
+  log.info('gokwik-awb-status-bronze bridge consumer running');
+
+  // ── Shiprocket shipment-status Bronze bridge consumer (Slice 2 — second logistics source) ──
+  log.info(`starting shiprocket-shipment-bronze bridge — topic=${topic} group=${shipmentStatusBronzeGroupId}`);
+  await shipmentStatusBronzeConsumer.start();
+  log.info('shiprocket-shipment-bronze bridge consumer running');
 
   // ── Live-order Bronze bridge consumer (P0 — un-sever the order SoR landing) ──
   // Same live topic, independent consumer group. Filters order.live.v1 → Bronze

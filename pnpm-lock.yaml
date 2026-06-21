@@ -247,6 +247,9 @@ importers:
       '@brain/tenant-context':
         specifier: workspace:*
         version: link:../../packages/tenant-context
+      '@brain/woocommerce-mapper':
+        specifier: workspace:*
+        version: link:../../packages/woocommerce-mapper
       ioredis:
         specifier: ^5.11.1
         version: 5.11.1
@@ -651,6 +654,22 @@ importers:
   packages/tenant-context: {}
 
   packages/ui: {}
+
+  packages/woocommerce-mapper:
+    dependencies:
+      '@brain/identity-core':
+        specifier: workspace:*
+        version: link:../identity-core
+    devDependencies:
+      '@types/node':
+        specifier: ^20.0.0
+        version: 20.19.43
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.0
+        version: 2.1.9(@types/node@20.19.43)
 
   tools/data-quality:
     dependencies:

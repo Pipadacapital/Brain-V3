@@ -131,12 +131,65 @@ export const PIXEL_JS = `(function(){
     flush: flush
   };
 
+  // ── Comprehensive auto-instrumentation (online store) ──────────────────────
+  // Captures all key storefront activity with zero merchant code. Checkout/thank-you pages are
+  // OUT of ScriptTag scope (a separate origin) — those need the Web Pixels extension.
+  function pageType(){
+    var p = location.pathname;
+    if (p.indexOf("/products/") >= 0) return "product";
+    if (p.indexOf("/collections/") >= 0) return "collection";
+    if (p === "/cart" || p.indexOf("/cart") === 0) return "cart";
+    if (p.indexOf("/search") >= 0) return "search";
+    if (p === "/" || p === "") return "home";
+    if (p.indexOf("/pages/") >= 0) return "page";
+    if (p.indexOf("/blogs/") >= 0) return "blog";
+    return "other";
+  }
+  function handleAfter(prefix){ var p = location.pathname, i = p.indexOf(prefix); if (i < 0) return undefined; var rest = p.slice(i + prefix.length); return rest.split("/")[0].split("?")[0].split("#")[0] || undefined; }
+  function trackPageView(){
+    var t = pageType();
+    emit("page.viewed", { page_type: t });
+    if (t === "product") emit("product.viewed", { product_handle: handleAfter("/products/") });
+    else if (t === "collection") emit("collection.viewed", { collection_handle: handleAfter("/collections/") });
+    else if (t === "cart") emit("cart.viewed", {});
+    else if (t === "search") { var q = parseQuery(); emit("search.submitted", { query: q.q || q.query }); }
+  }
+
+  // SPA navigation (themes using the History API) → re-fire on path change.
+  var lastPath = location.pathname + location.search;
+  function onNav(){ var cur = location.pathname + location.search; if (cur !== lastPath){ lastPath = cur; trackPageView(); } }
+  try {
+    var _ps = history.pushState; history.pushState = function(){ var r = _ps.apply(this, arguments); setTimeout(onNav, 0); return r; };
+    var _rs = history.replaceState; history.replaceState = function(){ var r = _rs.apply(this, arguments); setTimeout(onNav, 0); return r; };
+    W.addEventListener("popstate", function(){ setTimeout(onNav, 0); });
+  } catch(e){}
+
+  // Add-to-cart interception — Shopify AJAX cart (fetch + XHR to /cart/add) + classic form submit.
+  function cartAddProps(b){ var props = {}; try { if (b && typeof b === "object"){ var it = b.items && b.items[0]; props.variant_id = b.id || (it && it.id); props.quantity = b.quantity || (it && it.quantity); } } catch(e){} return props; }
+  try {
+    var _fetch = W.fetch;
+    if (_fetch) W.fetch = function(input, init){ try { var u = (typeof input === "string") ? input : (input && input.url) || ""; if (u.indexOf("/cart/add") >= 0){ var b = null; try { b = init && init.body ? JSON.parse(init.body) : null; } catch(e2){} emit("cart.item_added", cartAddProps(b)); } } catch(e){} return _fetch.apply(this, arguments); };
+  } catch(e){}
+  try {
+    var _open = XMLHttpRequest.prototype.open, _send = XMLHttpRequest.prototype.send;
+    XMLHttpRequest.prototype.open = function(m, u){ try { this.__bu = u; } catch(e){} return _open.apply(this, arguments); };
+    XMLHttpRequest.prototype.send = function(body){ try { if (("" + (this.__bu || "")).indexOf("/cart/add") >= 0){ var b = null; try { b = body ? JSON.parse(body) : null; } catch(e2){} emit("cart.item_added", cartAddProps(b)); } } catch(e){} return _send.apply(this, arguments); };
+  } catch(e){}
+  D.addEventListener("submit", function(ev){ try { var f = ev.target; if (f && f.action && f.action.indexOf("/cart/add") >= 0) emit("cart.item_added", {}); } catch(e){} }, true);
+
+  // Click tracking (delegated) — links + buttons + opted-in elements, with context (no PII).
+  D.addEventListener("click", function(ev){ try { var el = ev.target; if (!el || !el.closest) return; var a = el.closest("a,button,[role=button],[data-brain-track]"); if (!a) return; var txt = (a.textContent || "").replace(/\\s+/g, " ").trim().slice(0, 80); emit("element.clicked", { element: (a.tagName || "").toLowerCase(), text: txt || undefined, href: (a.getAttribute && a.getAttribute("href")) || undefined, el_id: a.id || undefined }); } catch(e){} }, true);
+
+  // Scroll-depth milestones (25/50/75/100%), once each.
+  var sm = {};
+  W.addEventListener("scroll", function(){ try { var h = D.documentElement; var pct = Math.round((((W.scrollY || h.scrollTop) + W.innerHeight) / (h.scrollHeight || 1)) * 100); var ms = [25,50,75,100]; for (var k = 0; k < ms.length; k++){ if (pct >= ms[k] && !sm[ms[k]]){ sm[ms[k]] = 1; emit("scroll.depth", { percent: ms[k] }); } } } catch(e){} }, { passive: true });
+
   // Durable retry triggers (NO Set-Cookie — stateless edge, REC-4).
   W.addEventListener("pagehide", flush);
   D.addEventListener("visibilitychange", function(){ if (D.visibilityState === "hidden") flush(); });
 
-  // Auto-fire the initial page view.
-  W.brain.page();
+  // Auto-fire the initial page + typed view.
+  trackPageView();
 })();`;
 
 /** UUID guard — only inject query-derived values that are real UUIDs (no JS-injection via the asset). */

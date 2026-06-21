@@ -83,4 +83,13 @@ PROPERTIES (
   "client.factory"                   = "com.starrocks.connector.iceberg.IcebergAwsClientFactory"
 );
 
+-- 6. Grant brain_analytics SELECT on the Iceberg Bronze catalog (Slice 5 / ADR-0002): the core
+-- operational reads (data/tracking health, recent events, orders) read collector_events from this
+-- catalog as the SELECT-only brain_analytics user. SET CATALOG first — the "GRANT … IN ALL DATABASES"
+-- form applies to the ACTIVE catalog (StarRocks 3.3 has no "OF CATALOG" clause).
+GRANT USAGE ON CATALOG brain_bronze_local TO 'brain_analytics'@'%';
+SET CATALOG brain_bronze_local;
+GRANT SELECT ON ALL TABLES IN ALL DATABASES TO 'brain_analytics'@'%';
+SET CATALOG default_catalog;
+
 SELECT 'StarRocks bootstrap complete' AS status;

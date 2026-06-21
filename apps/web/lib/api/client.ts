@@ -26,6 +26,7 @@ import {
   ChannelRoasSchema,
   JourneyFirstTouchMixSchema,
   ShipmentOutcomesSchema,
+  BehaviorOverviewSchema,
   JourneyTimelineSchema,
   JourneyStitchRateSchema,
   OrderStatusMixSchema,
@@ -127,6 +128,7 @@ import type {
   AnalyticsOrderDetailResponse,
   AnalyticsJourneyFirstTouchMixResponse,
   AnalyticsShipmentOutcomesResponse,
+  AnalyticsBehaviorOverviewResponse,
   AnalyticsJourneyStitchRateResponse,
   AnalyticsJourneyTimelineResponse,
   ConsentCoverageResponse,
@@ -1416,6 +1418,21 @@ export const analyticsApi = {
       `/v1/analytics/logistics/shipment-outcomes${qsStr ? `?${qsStr}` : ''}`,
     );
     return parseData(ShipmentOutcomesSchema, env);
+  },
+
+  /** GET /api/v1/analytics/behavior/overview — storefront browse/search/view over a range. */
+  getBehaviorOverview: async (params?: {
+    from?: string;
+    to?: string;
+  }): Promise<AnalyticsBehaviorOverviewResponse> => {
+    const qs = new URLSearchParams();
+    if (params?.from) qs.set('from', params.from);
+    if (params?.to) qs.set('to', params.to);
+    const qsStr = qs.toString();
+    const env = await bffFetch<BffEnvelope<unknown>>(
+      `/v1/analytics/behavior/overview${qsStr ? `?${qsStr}` : ''}`,
+    );
+    return parseData(BehaviorOverviewSchema, env);
   },
 
   /** GET /api/v1/analytics/journey/stitch-rate — deterministic cart-stitch hit-rate. */

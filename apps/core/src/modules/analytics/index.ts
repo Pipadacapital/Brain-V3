@@ -85,6 +85,9 @@ export type { CodRtoRatesResult, CodRtoCohortDto } from './internal/application/
 // Logistics shipment outcomes (Slice 2) — delivered/RTO + RTO% by courier/pincode from silver_shipment.
 export { getShipmentOutcomes } from './internal/application/queries/get-shipment-outcomes.js';
 export type { ShipmentOutcomesResult, CourierOutcomeDto, PincodeOutcomeDto } from './internal/application/queries/get-shipment-outcomes.js';
+// Storefront behavior — browse/search/view from silver_touchpoint (pixel auto-instrumentation).
+export { getBehaviorOverview } from './internal/application/queries/get-behavior-overview.js';
+export type { BehaviorOverviewResult, PageTypeBucketDto, BrowsedItemDto } from './internal/application/queries/get-behavior-overview.js';
 export { getCodMix } from './internal/application/queries/get-cod-mix.js';
 export type { CodMixResult } from './internal/application/queries/get-cod-mix.js';
 export { getCheckoutFunnel } from './internal/application/queries/get-checkout-funnel.js';

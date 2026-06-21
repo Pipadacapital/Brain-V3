@@ -59,6 +59,9 @@ export type { CodRtoRatesResult, CodRtoCohort } from './cod-rto-rates.js';
 // from the multi-source silver_shipment mart (GoKwik AWB + Shiprocket).
 export { computeShipmentOutcomes } from './shipment-outcomes.js';
 export type { ShipmentOutcomesResult, CourierOutcome, PincodeOutcome } from './shipment-outcomes.js';
+// Storefront behavior — what shoppers browse/search/view, from silver_touchpoint (pixel auto-instr).
+export { computeStorefrontBehavior } from './storefront-behavior.js';
+export type { StorefrontBehaviorResult, PageTypeBucket, BrowsedItem } from './storefront-behavior.js';
 export { computeCodMix } from './cod-mix.js';
 export type { CodMixResult } from './cod-mix.js';
 export { computeCheckoutFunnel } from './checkout-funnel.js';

@@ -333,6 +333,9 @@ export {
   CourierOutcomeDtoSchema,
   PincodeOutcomeDtoSchema,
   ShipmentOutcomesSchema,
+  PageTypeBucketDtoSchema,
+  BrowsedItemDtoSchema,
+  BehaviorOverviewSchema,
 } from './api/analytics.api.v1.js';
 export type {
   RevenueSnapshot,
@@ -368,6 +371,9 @@ export type {
   CourierOutcomeDto,
   PincodeOutcomeDto,
   ShipmentOutcomes,
+  PageTypeBucketDto,
+  BrowsedItemDto,
+  BehaviorOverview,
 } from './api/analytics.api.v1.js';
 
 export {

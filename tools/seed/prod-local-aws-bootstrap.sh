@@ -69,4 +69,24 @@ psql "SELECT name || E'\t' || secret_value FROM dev_secret" | grep -v '^$' | whi
   echo "[prod-local]   secret $name"
 done
 
+echo "[prod-local] seed per-brand identity salts → .env.prod (prod has no dev-salt fallback)"
+# resolveSaltHex returns the deterministic dev salt ONLY when NODE_ENV!='production'. In prod it
+# needs IDENTITY_SALT_<BRAND_NODASHES_UPPER>, else the D-2 guard hard-crashes PII hashing in the
+# identity bridge AND the ingest repull mapper (so "Sync now" produces nothing). Seed each brand's
+# salt = its SAME deterministic dev value, preserving hash continuity with the existing data.
+ENV_PROD="$(pwd)/.env.prod"
+for B in $(psql "SELECT id FROM brand"); do
+  [ -z "$B" ] && continue
+  KEY="IDENTITY_SALT_$(echo "$B" | tr -d '-' | tr '[:lower:]' '[:upper:]')"
+  SALT=$(cd apps/core && NODE_ENV='' node_modules/.bin/tsx -e \
+    "import('@brain/identity-core').then(m=>process.stdout.write(m.resolveSaltHex(process.argv[1])))" "$B" 2>/dev/null)
+  [ ${#SALT} -ne 64 ] && { echo "[prod-local]   WARN: salt for $B not 64-hex, skipping"; continue; }
+  if grep -q "^${KEY}=" "$ENV_PROD" 2>/dev/null; then
+    sed -i '' "s|^${KEY}=.*|${KEY}=${SALT}|" "$ENV_PROD"
+  else
+    printf '%s=%s\n' "$KEY" "$SALT" >> "$ENV_PROD"
+  fi
+  echo "[prod-local]   salt $KEY"
+done
+
 echo "[prod-local] DONE — boot with:  APP_ENV=prod pnpm dev   (or pnpm dev:prodlocal)"

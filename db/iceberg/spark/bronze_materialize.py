@@ -49,7 +49,7 @@ PROCESSING_TIME = os.environ.get("PROCESSING_TIME", "30 seconds")
 #   - LEDGER_ONLY: consumed by the ledger bridges, NEVER written to PG bronze → EXCLUDE from Iceberg.
 #   - everything else = the PIXEL lane → R2 (install_token→brand) + R3 (consent_flags present).
 SERVER_TRUSTED_BRONZE = {"order.live.v1", "shopflo.checkout_abandoned.v1", "gokwik.rto_predict.v1"}
-LEDGER_ONLY = {"settlement.live.v1", "spend.live.v1", "gokwik.awb_status.v1"}
+LEDGER_ONLY = {"settlement.live.v1", "spend.live.v1", "gokwik.awb_status.v1", "shiprocket.shipment_status.v1"}
 
 # Postgres (for R2 install_token→brand resolution via pixel_installation). Read as the superuser
 # (cross-brand, RLS-bypass — the same ETL-writer posture as the JDBC catalog) so all brands' tokens

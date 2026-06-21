@@ -22,7 +22,6 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { Kafka, type Producer } from 'kafkajs';
-import { computeCheckoutFunnel } from '@brain/metric-engine';
 import { RedisDedupAdapter } from '../infrastructure/redis/RedisDedupAdapter.js';
 import { RetryCounterAdapter } from '../infrastructure/redis/RetryCounterAdapter.js';
 import { BronzeRepository } from '../infrastructure/pg/BronzeRepository.js';
@@ -165,12 +164,8 @@ describe('Shopflo → Bronze wiring (P0, live infra)', () => {
     expect(count).toBeGreaterThan(0); // the bridge wrote it to Bronze
   }, 30_000);
 
-  it('SF2: computeCheckoutFunnel now returns hasData (no longer permanent no_data)', async () => {
-    if (!infraUp) return;
-    const funnel = await computeCheckoutFunnel(BRAND, { pool: appPool });
-    expect(funnel.hasData).toBe(true);
-    expect(funnel.abandonedCount).toBeGreaterThanOrEqual(1n);
-    expect(funnel.discountAppliedCount).toBeGreaterThanOrEqual(1n); // realistic payload has a discount
-    expect(funnel.dataSource).toBe('live'); // data_source='real' → not the synthetic badge
-  }, 30_000);
+  // NOTE: the former SF2 case asserted computeCheckoutFunnel returns hasData after the event landed
+  // in PG Bronze. Since the payments-Silver re-point (PR #211) that metric reads StarRocks
+  // silver_checkout_signal, not PG Bronze — its read-path is covered by the metric-engine unit tests
+  // (checkout-funnel.test.ts). This e2e now asserts only the bridge's job: the Bronze landing.
 });

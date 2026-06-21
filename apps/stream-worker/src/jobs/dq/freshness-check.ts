@@ -118,6 +118,8 @@ export async function freshnessCheck(
         `SELECT MAX(updated_at) AS latest FROM brain_silver.silver_order_state WHERE ${BRAND_PREDICATE}`,
       );
       const raw = sr[0]?.latest ?? null;
+      // raw is a JS Date (mysql2 parses DATETIME) built using the pool's UTC timezone (see
+      // silver-reader createPool timezone:'Z') so the absolute instant is correct on any worker tz.
       rows.push(toRow(brandId, 'silver.order_state', raw ? new Date(raw) : null, now));
     } catch (err) {
       // Silver unreachable → honest D row, never a silent skip (the surface must show it).

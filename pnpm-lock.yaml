@@ -220,6 +220,9 @@ importers:
       '@brain/events':
         specifier: workspace:*
         version: link:../../packages/events
+      '@brain/feature-store':
+        specifier: workspace:*
+        version: link:../../packages/feature-store
       '@brain/gokwik-mapper':
         specifier: workspace:*
         version: link:../../packages/gokwik-mapper

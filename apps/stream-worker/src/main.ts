@@ -54,7 +54,7 @@ import { SpendLedgerConsumer } from './interfaces/consumers/SpendLedgerConsumer.
 // (shared logistics ledger). Imported under the back-compat GokwikAwbLedgerConsumer alias so the
 // existing wiring + gokwik-awb-ledger-wiring.e2e.test.ts guard are unchanged.
 import { GokwikAwbLedgerConsumer } from './interfaces/consumers/ShipmentLedgerConsumer.js';
-import { EventBronzeBridgeConsumer } from './interfaces/consumers/EventBronzeBridgeConsumer.js';
+import { BRONZE_BRIDGES, buildBronzeBridges } from './interfaces/consumers/bronzeBridges.js';
 import { LedgerWriter } from './infrastructure/pg/LedgerWriter.js';
 import mysql from 'mysql2/promise';
 import { createAttributionReversalHook } from '@brain/attribution-writer';
@@ -188,50 +188,18 @@ export async function main(): Promise<void> {
   const bridgeProcessEvent = new ProcessEventUseCase(
     dedup, bronze, undefined, /* enforceTenantDerivation */ false, pgWriteEnabled,
   );
-  const shopfloBronzeGroupId =
-    process.env['SHOPFLO_BRONZE_CONSUMER_GROUP_ID'] ?? 'shopflo-bronze-bridge';
-  const shopfloBronzeConsumer = new EventBronzeBridgeConsumer(
-    kafka, bridgeProcessEvent, topic, shopfloBronzeGroupId, retryCounter,
-    'shopflo.checkout_abandoned.v1', 'shopflo_bronze_write_total',
-  );
-  const rtoPredictBronzeGroupId =
-    process.env['GOKWIK_RTO_PREDICT_BRONZE_CONSUMER_GROUP_ID'] ?? 'gokwik-rto-predict-bronze-bridge';
-  const rtoPredictBronzeConsumer = new EventBronzeBridgeConsumer(
-    kafka, bridgeProcessEvent, topic, rtoPredictBronzeGroupId, retryCounter,
-    'gokwik.rto_predict.v1', 'gokwik_rto_predict_bronze_write_total',
-  );
-  // gokwik.awb_status.v1 (+ shiprocket.shipment_status.v1 once that PR merges) are server-trusted
-  // shipment-lifecycle events. They are ledger-fed (ShipmentLedgerConsumer → cod_rto_clawback/
-  // cod_delivery_confirmed) AND must land in Bronze so silver_shipment can preserve the rich
-  // detail (status, terminal_class, pincode, courier) — the order.live.v1 precedent (Slice 2).
-  const awbStatusBronzeGroupId =
-    process.env['GOKWIK_AWB_STATUS_BRONZE_CONSUMER_GROUP_ID'] ?? 'gokwik-awb-status-bronze-bridge';
-  const awbStatusBronzeConsumer = new EventBronzeBridgeConsumer(
-    kafka, bridgeProcessEvent, topic, awbStatusBronzeGroupId, retryCounter,
-    'gokwik.awb_status.v1', 'gokwik_awb_status_bronze_write_total',
-  );
-  // Shiprocket shipment-status Bronze bridge — the second logistics source feeding the SAME
-  // silver_shipment mart (Slice 2 multi-source). Ledger-fed via ShipmentLedgerConsumer AND
-  // Bronze-landed (SERVER_TRUSTED) so status/terminal_class/pincode/courier reach silver_shipment.
-  const shipmentStatusBronzeGroupId =
-    process.env['SHIPROCKET_SHIPMENT_BRONZE_CONSUMER_GROUP_ID'] ?? 'shiprocket-shipment-bronze-bridge';
-  const shipmentStatusBronzeConsumer = new EventBronzeBridgeConsumer(
-    kafka, bridgeProcessEvent, topic, shipmentStatusBronzeGroupId, retryCounter,
-    'shiprocket.shipment_status.v1', 'shiprocket_shipment_bronze_write_total',
-  );
-  // order.live.v1 (Shopify live + re-pull orders) is the SAME severed-landing class: the events
-  // carry NO install_token, so the pixel CollectorEventConsumer (R2 gate ON) quarantines them as
-  // tenant_unresolved — they never reach Bronze. The LiveLedgerBridgeConsumer writes the LEDGER
-  // (its "CollectorEventConsumer already writes Bronze" comment is stale — it does not, post-R2).
-  // This bridge restores the Bronze landing with brand_id server-trusted from the connector (MT-1),
-  // making Bronze the system-of-record for live orders again (DQ bronze-ledger-provenance holds).
-  // WIRED: do NOT remove without updating live-order-bronze-wiring.e2e.test.ts.
-  const liveOrderBronzeGroupId =
-    process.env['LIVE_ORDER_BRONZE_CONSUMER_GROUP_ID'] ?? 'live-order-bronze-bridge';
-  const liveOrderBronzeConsumer = new EventBronzeBridgeConsumer(
-    kafka, bridgeProcessEvent, topic, liveOrderBronzeGroupId, retryCounter,
-    'order.live.v1', 'live_order_bronze_write_total',
-  );
+  // Registry-driven Bronze bridges (re-platform Phase B). One EventBronzeBridgeConsumer per entry in
+  // BRONZE_BRIDGES (shopflo checkout, gokwik rto-predict, gokwik awb-status, shiprocket shipment,
+  // order.live) — each lands a server-trusted event_name into Bronze on its own consumer group
+  // (enforceTenantDerivation=false). Built, started, and stopped as ONE array below, so a new
+  // connector's Bronze landing is a single registry entry, never three hand-edits (kills the
+  // "wired-to-nothing" anti-pattern). See bronzeBridges.ts + bronzeBridges.test.ts.
+  const bronzeBridgeConsumers = buildBronzeBridges({
+    kafka,
+    processEvent: bridgeProcessEvent,
+    topic,
+    retryCounter,
+  });
 
   // ── Identity bridge (D-7: same process, no new deployable) ──────────────────
   // SaltProvider: dev uses LocalSecretsProvider (env var holds 64-hex salt directly).
@@ -471,10 +439,8 @@ export async function main(): Promise<void> {
       settlementLedgerConsumer.stop(),
       spendLedgerConsumer.stop(),
       gokwikAwbLedgerConsumer.stop(),
-      shopfloBronzeConsumer.stop(),
-      rtoPredictBronzeConsumer.stop(),
-      awbStatusBronzeConsumer.stop(),
-      shipmentStatusBronzeConsumer.stop(),
+      // All registry-driven Bronze bridges (incl. live-order, which was previously missing a stop).
+      ...bronzeBridgeConsumers.map((c) => c.stop()),
       syncRequestClaimer.stop(),
       dqChecker.stop(),
       ingestScheduler.stop(),
@@ -575,38 +541,16 @@ export async function main(): Promise<void> {
   await gokwikAwbLedgerConsumer.start();
   log.info('gokwik-awb-ledger bridge consumer running');
 
-  // ── Shopflo Bronze bridge consumer (P0 — checkout-funnel landing) ───────────
-  // Same live topic, independent consumer group. Filters shopflo.checkout_abandoned.v1 → Bronze
-  // (enforceTenantDerivation=false). WIRED: do NOT remove without updating shopflo-bronze-wiring.e2e.test.ts.
-  log.info(`starting shopflo-bronze bridge — topic=${topic} group=${shopfloBronzeGroupId}`);
-  await shopfloBronzeConsumer.start();
-  log.info('shopflo-bronze bridge consumer running');
-
-  // ── GoKwik RTO-Predict Bronze bridge consumer (P0 — un-sever the risk signal) ──
-  // Same live topic, independent consumer group. Filters gokwik.rto_predict.v1 → Bronze
-  // (enforceTenantDerivation=false). WIRED: do NOT remove without updating gokwik-rto-predict-bronze-wiring.e2e.test.ts.
-  log.info(`starting gokwik-rto-predict-bronze bridge — topic=${topic} group=${rtoPredictBronzeGroupId}`);
-  await rtoPredictBronzeConsumer.start();
-  log.info('gokwik-rto-predict-bronze bridge consumer running');
-
-  // ── Shipment-status Bronze bridge consumer (Slice 2 — preserve shipment detail in Bronze) ──
-  // Same live topic, independent consumer group. Filters gokwik.awb_status.v1 → Bronze
-  // (enforceTenantDerivation=false) so silver_shipment can read status/terminal_class/pincode/courier.
-  log.info(`starting gokwik-awb-status-bronze bridge — topic=${topic} group=${awbStatusBronzeGroupId}`);
-  await awbStatusBronzeConsumer.start();
-  log.info('gokwik-awb-status-bronze bridge consumer running');
-
-  // ── Shiprocket shipment-status Bronze bridge consumer (Slice 2 — second logistics source) ──
-  log.info(`starting shiprocket-shipment-bronze bridge — topic=${topic} group=${shipmentStatusBronzeGroupId}`);
-  await shipmentStatusBronzeConsumer.start();
-  log.info('shiprocket-shipment-bronze bridge consumer running');
-
-  // ── Live-order Bronze bridge consumer (P0 — un-sever the order SoR landing) ──
-  // Same live topic, independent consumer group. Filters order.live.v1 → Bronze
-  // (enforceTenantDerivation=false). WIRED: do NOT remove without updating live-order-bronze-wiring.e2e.test.ts.
-  log.info(`starting live-order-bronze bridge — topic=${topic} group=${liveOrderBronzeGroupId}`);
-  await liveOrderBronzeConsumer.start();
-  log.info('live-order-bronze bridge consumer running');
+  // ── Bronze bridge consumers (registry-driven — re-platform Phase B) ─────────
+  // Start every bridge in BRONZE_BRIDGES on its own consumer group. The loop guarantees every
+  // registry entry is started (no per-bridge hand-wiring to forget). WIRED: the set is asserted by
+  // bronzeBridges.test.ts; the per-source landings are covered by *-bronze-wiring.e2e.test.ts.
+  for (let i = 0; i < bronzeBridgeConsumers.length; i++) {
+    const def = BRONZE_BRIDGES[i]!;
+    log.info(`starting bronze bridge ${def.eventName} — topic=${topic} group=${process.env[def.groupIdEnv] ?? def.defaultGroupId}`);
+    await bronzeBridgeConsumers[i]!.start();
+    log.info(`bronze bridge ${def.eventName} consumer running`);
+  }
 
   // All consumers are up — flip readiness so the orchestrator routes work to this instance.
   consumersReady = true;

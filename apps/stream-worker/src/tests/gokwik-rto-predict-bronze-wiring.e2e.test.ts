@@ -16,7 +16,6 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { Kafka, type Producer } from 'kafkajs';
-import { computeRtoRiskDistribution } from '@brain/metric-engine';
 import { RedisDedupAdapter } from '../infrastructure/redis/RedisDedupAdapter.js';
 import { RetryCounterAdapter } from '../infrastructure/redis/RetryCounterAdapter.js';
 import { BronzeRepository } from '../infrastructure/pg/BronzeRepository.js';
@@ -156,13 +155,8 @@ describe('GoKwik RTO-Predict → Bronze wiring (P0 follow-up, live infra)', () =
     expect(await pollBronzeCount()).toBeGreaterThanOrEqual(3);
   }, 30_000);
 
-  it('RP2: computeRtoRiskDistribution returns the latest-per-order risk buckets', async () => {
-    if (!infraUp) return;
-    const dist = await computeRtoRiskDistribution(BRAND, { pool: appPool });
-    expect(dist.hasData).toBe(true);
-    expect(dist.orderCount).toBe(2n); // two distinct orders
-    expect(dist.high).toBe(1n); // ORDER_A's LATEST prediction is high
-    expect(dist.low).toBe(1n); // ORDER_B is low
-    expect(dist.dataSource).toBe('live'); // data_source='real'
-  }, 30_000);
+  // NOTE: the former RP2 case asserted computeRtoRiskDistribution returns buckets after the event
+  // landed in PG Bronze. Since the payments-Silver re-point (PR #211) that metric reads StarRocks
+  // silver_checkout_signal, not PG Bronze — its read-path is covered by the metric-engine unit tests
+  // (cod-rto-prediction.test.ts). This e2e now asserts only the bridge's job: the Bronze landing.
 });

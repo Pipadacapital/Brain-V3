@@ -1,19 +1,18 @@
 /**
- * woocommerce-client.ts — WooCommerce REST order read client (DEV-HONEST).
+ * woocommerce-client.ts — WooCommerce REST order read client.
  *
- * Mirrors shiprocket-client.ts / shopify live client (paged, auth, never-log-body).
+ * Two source modes (the established dev=fixture / prod=HTTP posture, like gokwik/shiprocket):
+ *   - LIVE (NODE_ENV=production OR WOOCOMMERCE_LIVE=1): real HTTP against the store's wc/v3 REST
+ *     API — GET {site_url}/wp-json/wc/v3/orders, Basic base64(consumer_key:consumer_secret) over
+ *     HTTPS, paged by page/per_page with the X-WP-TotalPages header, incremental via modified_after
+ *     (dates_are_gmt). Emits data_source='real'. On 401/403 throws WOOCOMMERCE_AUTH_ERROR so the
+ *     repull records a reconnect signal (parity with shopify/shiprocket).
+ *   - DEV (default): reads the labelled SYNTHETIC fixture (_fixtures/woocommerce/woocommerce-orders.json),
+ *     data_source='synthetic'. The cursor / order.live.v1 mapping / ledger semantics are identical;
+ *     only the SOURCE differs. WOOCOMMERCE_FIXTURE_PATH overrides the fixture (e2e now-relative dates).
  *
- * DEV BOUNDARY: there is no live WooCommerce store wired in dev, so this client reads a LABELLED
- * SYNTHETIC FIXTURE (_fixtures/woocommerce/woocommerce-orders.json) and stamps data_source=
- * 'synthetic' downstream. The cursor / order.live.v1 canonical mapping / ledger semantics are REAL
- * and production-shaped — only the data SOURCE is synthetic until a real store credential exists.
- *
- * PROD SWAP (documented, verified contract — SPEC 2): replace the fixture read with
- *   GET {site_url}/wp-json/wc/v3/orders?after={modifiedAfterIso}&page={n}&per_page=100&orderby=modified&order=asc
- *   Authorization: Basic base64(consumer_key:consumer_secret)   (HTTPS)
- * Read X-WP-TotalPages for pagination. On 401/403 throw `${WOOCOMMERCE_AUTH_ERROR}: ...` so the
- * repull records a reconnect signal — exactly as shopify/shiprocket do. The paged fetchOrdersPage
- * interface + data_source flip is the only change.
+ * The wc/v3 order JSON IS the WooOrderShape the mapper consumes (date_created_gmt/date_modified_gmt/
+ * total/line_items/billing/refunds/coupon_lines …) — no transform at the client edge.
  *
  * NEVER logs consumer_key/consumer_secret (I-S09) or raw customer PII (hashed in the mapper).
  */
@@ -40,14 +39,13 @@ export interface WooOrderPage {
 
 const PAGE_SIZE = 100; // WooCommerce REST per_page max
 
+/** Live HTTP mode when explicitly in production or opted in via WOOCOMMERCE_LIVE=1. */
+function isLiveMode(): boolean {
+  return process.env['NODE_ENV'] === 'production' || process.env['WOOCOMMERCE_LIVE'] === '1';
+}
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const DEFAULT_FIXTURE_PATH = join(
-  __dirname,
-  '..',
-  '_fixtures',
-  'woocommerce',
-  'woocommerce-orders.json',
-);
+const DEFAULT_FIXTURE_PATH = join(__dirname, '..', '_fixtures', 'woocommerce', 'woocommerce-orders.json');
 
 function fixturePath(): string {
   return process.env['WOOCOMMERCE_FIXTURE_PATH'] ?? DEFAULT_FIXTURE_PATH;
@@ -59,13 +57,76 @@ interface OrdersFixtureFile {
 }
 
 export class WooCommerceClient {
-  private readonly fixtureOrders: WooOrderShape[];
+  private readonly live: boolean;
+  private readonly creds: WooCommerceApiCredentials;
+  private readonly authHeader: string;
+  private readonly baseUrl: string;
+  private fixtureOrders: WooOrderShape[] | null = null;
+
+  constructor(credentials: WooCommerceApiCredentials) {
+    this.creds = credentials;
+    this.live = isLiveMode();
+    // Basic auth: base64(consumer_key:consumer_secret). Held in memory only (I-S09).
+    this.authHeader =
+      'Basic ' + Buffer.from(`${credentials.consumer_key}:${credentials.consumer_secret}`).toString('base64');
+    this.baseUrl = (credentials.site_url ?? '').replace(/\/+$/, '');
+  }
 
   /**
-   * @param _credentials  consumer_key/secret + site_url — held in memory only, NEVER logged (I-S09).
-   *                       In dev they are accepted but not used (source is the synthetic fixture).
+   * Fetch one page of orders modified at/after `modifiedAfterIso` (ascending by modified date).
+   *
+   * @param modifiedAfterIso  ISO lower bound on date_modified (GMT)
+   * @param page              1-based page number
    */
-  constructor(_credentials: WooCommerceApiCredentials) {
+  async fetchOrdersPage(modifiedAfterIso: string, page = 1): Promise<WooOrderPage> {
+    return this.live
+      ? this.fetchOrdersPageLive(modifiedAfterIso, page)
+      : this.fetchOrdersPageFixture(modifiedAfterIso, page);
+  }
+
+  // ── LIVE: real wc/v3 REST read ────────────────────────────────────────────
+  private async fetchOrdersPageLive(modifiedAfterIso: string, page: number): Promise<WooOrderPage> {
+    if (!this.baseUrl) {
+      throw new Error(`${WOOCOMMERCE_AUTH_ERROR}: site_url missing for WooCommerce live read`);
+    }
+    const url =
+      `${this.baseUrl}/wp-json/wc/v3/orders` +
+      `?per_page=${PAGE_SIZE}&page=${page}` +
+      `&orderby=modified&order=asc&dates_are_gmt=true` +
+      `&modified_after=${encodeURIComponent(modifiedAfterIso)}`;
+
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: 'GET',
+        headers: { Authorization: this.authHeader, Accept: 'application/json' },
+      });
+    } catch (err) {
+      // Never include credentials in the message (I-S09).
+      throw new Error(`${WOOCOMMERCE_AUTH_ERROR}: orders request failed: ${String(err)}`);
+    }
+    if (res.status === 401 || res.status === 403) {
+      throw new Error(`${WOOCOMMERCE_AUTH_ERROR}: orders rejected (${res.status})`);
+    }
+    if (!res.ok) {
+      throw new Error(`woocommerce orders fetch failed (${res.status})`);
+    }
+
+    const orders = (await res.json()) as WooOrderShape[];
+    // X-WP-TotalPages drives pagination; fall back to "full page ⇒ maybe more".
+    const totalPagesHeader = res.headers.get('x-wp-totalpages');
+    const totalPages = totalPagesHeader ? parseInt(totalPagesHeader, 10) : NaN;
+    const hasMore = Number.isFinite(totalPages)
+      ? page < totalPages
+      : Array.isArray(orders) && orders.length === PAGE_SIZE;
+
+    log.info(`[woocommerce-client] live page=${page} orders=${Array.isArray(orders) ? orders.length : 0} totalPages=${totalPagesHeader ?? '?'}`);
+    return { orders: Array.isArray(orders) ? orders : [], hasMore, dataSource: 'real' };
+  }
+
+  // ── DEV: synthetic fixture ────────────────────────────────────────────────
+  private loadFixture(): WooOrderShape[] {
+    if (this.fixtureOrders !== null) return this.fixtureOrders;
     let orders: WooOrderShape[] = [];
     try {
       const raw = readFileSync(fixturePath(), 'utf8');
@@ -75,20 +136,12 @@ export class WooCommerceClient {
       log.warn(`could not read synthetic WooCommerce fixture — empty source: ${String(err)}`);
     }
     this.fixtureOrders = orders;
+    return orders;
   }
 
-  /**
-   * Fetch one page of orders modified at/after `modifiedAfterIso`.
-   *
-   * DEV: reads from the synthetic fixture (data_source='synthetic'). NEVER hits the network.
-   * Shaped exactly like the real paged REST read for a one-line swap.
-   *
-   * @param modifiedAfterIso  ISO lower bound on date_modified_gmt (inclusive)
-   * @param page              1-based page number
-   */
-  async fetchOrdersPage(modifiedAfterIso: string, page = 1): Promise<WooOrderPage> {
+  private fetchOrdersPageFixture(modifiedAfterIso: string, page: number): Promise<WooOrderPage> {
     const afterMs = Date.parse(modifiedAfterIso);
-    const eligible = this.fixtureOrders
+    const eligible = this.loadFixture()
       .filter((o) => {
         const m = o.date_modified_gmt ?? o.date_created_gmt ?? null;
         if (!m) return false;

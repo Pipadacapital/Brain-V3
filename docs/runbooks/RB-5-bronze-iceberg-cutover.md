@@ -127,10 +127,11 @@ CONTENT is byte-identical). See RB-4 Slice 4b (order-line).
 
 The cut-over flags live in per-env files, auto-selected by `APP_ENV` and layered over the shared base:
 `tsx --env-file=../../.env --env-file-if-exists=../../.env.${APP_ENV:-dev}` (core, stream-worker,
-collector). Local/dev → `.env.dev` (APP_ENV unset → `dev`); prod → `.env.production` (deploy sets
-`APP_ENV=production`). So "going live" is literally setting `BRONZE_OPERATIONAL_READ_SOURCE` (then
-`BRONZE_PG_WRITE_ENABLED`) in the environment's override file (or the injected secret) and redeploying —
-the same flip rehearsed locally below. See `.env.production.example`.
+collector). Local/dev → `.env.dev` (APP_ENV unset → `dev`); prod → `.env.prod` (deploy sets
+`APP_ENV=prod` + `NODE_ENV=production`). So "going live" is literally setting `BRONZE_OPERATIONAL_READ_SOURCE`
+(then `BRONZE_PG_WRITE_ENABLED`) in the environment's override file (or the injected secret) and redeploying —
+the same flip rehearsed locally below. See `.env.prod.example`, and the **prod-on-local** section for running
+the full production code paths (AWS Secrets Manager + KMS via LocalStack) locally.
 
 ## Local cut-over rehearsal (executed against Docker)
 
@@ -151,6 +152,39 @@ iceberg-rest) as a production simulation — every gate verified:
 
 Operational note for restarts: `tsx watch` parents ignore SIGTERM under turbo — `kill -9` the
 `--env-file-if-exists` watch processes to fully stop the tier before relaunching `pnpm dev`.
+
+## Running production-faithful locally (prod-on-local)
+
+Beyond the dev-mode rollout above, the FULL production code paths run locally against Docker —
+exercising the real prod branches, not just the Bronze flags. What `NODE_ENV=production` flips:
+`AwsSecretsProvider` (JWT/cookie from Secrets Manager), `AwsSecretsManager` + KMS (connector
+secrets), `KmsVaultKeyProvider` (per-brand PII-vault DEK unwrapped via KMS from `brand_keyring`),
+`RedisOAuthStateStore`, secure cookies, dev routes OFF, and the collector topic → `prod.collector.event.v1`.
+
+LocalStack (compose `core` profile) stands in for AWS Secrets Manager + KMS. One-time seed:
+
+```bash
+pnpm bootstrap:prodlocal     # tools/seed/prod-local-aws-bootstrap.sh — idempotent:
+                             #  • KMS CMK + alias/brain-connector-secrets
+                             #  • SM secrets brain/{jwt-signing,cookie,shopify-client}-secret (from dev .env)
+                             #  • brand_keyring: dev DEK KMS-wrapped (prod unwraps the SAME 32-byte DEK)
+pnpm dev:prodlocal           # APP_ENV=prod turbo run dev … → loads .env.prod (NODE_ENV=production)
+```
+
+`.env.prod` (gitignored; template `.env.prod.example`) points the AWS SDK at LocalStack via
+`AWS_ENDPOINT_URL=http://localhost:4566` and carries the secret *references* (names, not values),
+the KMS key id, `COLLECTOR_TOPIC=prod.collector.event.v1`, and the go-live Bronze flags.
+
+**Naming (important):** `NODE_ENV=production` (the `@brain/config` enum) flips the code paths;
+`APP_ENV=prod` (short) is the topic prefix — both required, and `APP_ENV` MUST be `prod` so the
+core live lane + stream-worker + collector all agree on `prod.collector.event.v1`. `turbo.json`
+`globalPassThroughEnv` must include `APP_ENV` (and the AWS/Bronze/StarRocks vars) or turbo strips
+them and the `.env.${APP_ENV}` selection silently falls back to `dev`.
+
+VERIFIED (prod-on-local rehearsal): all three services boot in `NODE_ENV=production` with secrets
+resolved from LocalStack (no fail-closed abort), dev routes absent, PII vault wired to the KMS DEK
+provider (DEK KMS-decrypt round-trips to 32 bytes), and a `prod.collector.event.v1` event flows to
+Iceberg (sole SoR) with PG bronze NOT written — the same go-live end-state, on the real prod code paths.
 
 ## Related
 

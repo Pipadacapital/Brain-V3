@@ -46,6 +46,10 @@ export function createSilverReader(config: SilverReaderConfig): SilverReader {
     password: config.password,
     connectionLimit: 3,
     connectTimeout: 5000,
+    // StarRocks DATETIMEs are UTC; tell mysql2 so it builds JS Dates as UTC (not the worker's local
+    // tz). Without this, a non-UTC worker mis-reads silver MAX(updated_at) as hours-stale → false
+    // freshness/silver.order_state D (the DQ "silver freshness" gate).
+    timezone: 'Z',
   });
 
   return {

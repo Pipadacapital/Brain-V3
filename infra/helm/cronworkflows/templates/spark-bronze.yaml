@@ -1,0 +1,105 @@
+{{- /*
+Spark Bronze materializer + parity oracle (ADR-0002 Slice 3) — the dual-sink for the Iceberg flip.
+
+GATED OFF by default (.Values.sparkBronze.enabled=false): the live Postgres bronze_events write is
+untouched; enabling this runs the Iceberg sink IN PARALLEL (a second consumer of collector.event.v1)
+and the parity oracle. Only after parity is green + stable do the reader cut-overs (Slices 4-6) begin.
+
+Two CronWorkflows (Spark image, spark-submit), distinct from the generic node-image .Values.jobs loop:
+  - bronze-materialize: TRIGGER_MODE=availableNow drains the topic → Iceberg MERGE (periodic).
+    (The post-cutover real-time shape is a long-lived TRIGGER_MODE=continuous Deployment, not a cron.)
+  - bronze-parity: PG ⇄ Iceberg identity reconciliation; non-zero exit on drift → alert/gate.
+
+Image MUST be pinned by digest (B3) — same fail-closed rule as the generic template.
+*/ -}}
+{{- if .Values.sparkBronze.enabled }}
+{{- $img := .Values.sparkBronze.image -}}
+{{- $ref := "" -}}
+{{- if $img.digest -}}
+  {{- $ref = printf "%s@%s" $img.repository $img.digest -}}
+{{- else if and $img.tag (ne $img.tag "latest") -}}
+  {{- $ref = printf "%s:%s" $img.repository $img.tag -}}
+{{- else -}}
+  {{- fail "sparkBronze.image.digest (preferred) or an immutable non-':latest' tag is required (B3) — refusing to deploy an unpinned image" -}}
+{{- end -}}
+{{- $envFrom := .Values.envSecretName -}}
+{{- $sa := .Values.serviceAccount.name -}}
+{{- $tz := .Values.timezone -}}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: CronWorkflow
+metadata:
+  name: bronze-materialize
+  labels:
+    {{- include "brain.labels" . | nindent 4 }}
+    brain.io/job: bronze-materialize
+spec:
+  schedule: {{ .Values.sparkBronze.materializeSchedule | quote }}
+  timezone: {{ $tz | quote }}
+  concurrencyPolicy: Forbid            # never overlap a materialize run with itself (offset safety)
+  startingDeadlineSeconds: {{ .Values.defaults.startingDeadlineSeconds }}
+  successfulJobsHistoryLimit: {{ .Values.defaults.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.defaults.failedJobsHistoryLimit }}
+  workflowSpec:
+    serviceAccountName: {{ $sa }}      # IRSA: S3 (per-brand bronze prefix) + Glue catalog access (NN-5)
+    entrypoint: run
+    activeDeadlineSeconds: {{ .Values.sparkBronze.activeDeadlineSeconds }}
+    podGC:
+      strategy: OnWorkflowSuccess
+    templates:
+      - name: run
+        retryStrategy:
+          limit: {{ .Values.defaults.backoffLimit | quote }}
+          retryPolicy: OnError
+        container:
+          image: {{ $ref | quote }}
+          imagePullPolicy: {{ $img.pullPolicy }}
+          command: ["/opt/spark/bin/spark-submit", "--master", "local[*]", "/opt/brain/bronze_materialize.py"]
+          env:
+            - { name: TRIGGER_MODE, value: "availableNow" }
+            {{- toYaml .Values.sparkBronze.env | nindent 12 }}
+          {{- if $envFrom }}
+          envFrom:
+            - secretRef:
+                name: {{ $envFrom }}    # KAFKA_BROKERS, ICEBERG_REST_URI/Glue, CHECKPOINT_LOCATION (s3a), AWS_*
+          {{- end }}
+          resources:
+            {{- toYaml .Values.sparkBronze.resources | nindent 12 }}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: CronWorkflow
+metadata:
+  name: bronze-parity
+  labels:
+    {{- include "brain.labels" . | nindent 4 }}
+    brain.io/job: bronze-parity
+spec:
+  schedule: {{ .Values.sparkBronze.paritySchedule | quote }}
+  timezone: {{ $tz | quote }}
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: {{ .Values.defaults.startingDeadlineSeconds }}
+  successfulJobsHistoryLimit: {{ .Values.defaults.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.defaults.failedJobsHistoryLimit }}
+  workflowSpec:
+    serviceAccountName: {{ $sa }}
+    entrypoint: run
+    activeDeadlineSeconds: {{ .Values.sparkBronze.activeDeadlineSeconds }}
+    podGC:
+      strategy: OnWorkflowSuccess
+    templates:
+      - name: run
+        # No retry: a non-zero exit is a REAL parity-drift signal that should surface (alert), not be retried away.
+        container:
+          image: {{ $ref | quote }}
+          imagePullPolicy: {{ $img.pullPolicy }}
+          command: ["/opt/spark/bin/spark-submit", "--master", "local[*]", "/opt/brain/bronze_parity_check.py"]
+          env:
+            {{- toYaml .Values.sparkBronze.env | nindent 12 }}
+          {{- if $envFrom }}
+          envFrom:
+            - secretRef:
+                name: {{ $envFrom }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.sparkBronze.resources | nindent 12 }}
+{{- end }}

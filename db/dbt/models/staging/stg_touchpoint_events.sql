@@ -32,8 +32,24 @@
   )
 }}
 
+-- SOURCE FLIP (ADR-0002 Slice 4b), var-gated + reversible:
+--   bronze_source='pg'      → the JDBC read-shim view (PG bronze_events; pre-filtered + cast)
+--   bronze_source='iceberg' → the raw Iceberg collector_events catalog; we apply the journey
+--                             event-type filter HERE (the shim's WHERE moves into staging).
+-- Both expose payload as a JSON string with the SAME .properties.* shape → identical extraction.
+{% set bronze_source = var('bronze_source', 'pg') %}
 with raw as (
 
+    {% if bronze_source == 'iceberg' %}
+    select
+        brand_id,
+        event_id,
+        event_type,
+        occurred_at,
+        parse_json(payload) as pj
+    from {{ source('bronze_iceberg', 'collector_events') }}
+    where event_type in ('page.viewed', 'cart.viewed', 'cart.item_added')
+    {% else %}
     select
         brand_id,
         event_id,
@@ -41,6 +57,7 @@ with raw as (
         occurred_at,
         parse_json(payload) as pj   -- text → JSON (jsonb cannot ride JDBC; shim sent text)
     from {{ source('oltp', 'bronze_touchpoint_src') }}
+    {% endif %}
 
 ),
 

@@ -33,3 +33,6 @@ apps/web/test-results/
 apps/web/playwright-report/
 apps/web/playwright/.cache/
 test-results/
+
+# Python bytecode (Spark/Iceberg helper scripts)
+__pycache__/

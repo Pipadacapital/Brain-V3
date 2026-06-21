@@ -2,10 +2,21 @@
 # Silver-tier source declaration — the Bronze/source → dbt read boundary.
 # feat-silver-tier-order-state (Stage 3, @data-engineer).
 #
-# THE PROD-SWAP BOUNDARY: this file (and only this file + the one staging model)
-# is what changes when the read path graduates from the dev JDBC catalog to the
-# Iceberg Bronze catalog in prod (architecture §1, §2). The intermediate + mart
-# models never reference a catalog name — they only `ref()` upstream models.
+# THE PROD-SWAP BOUNDARY: this file is what changes when the read path graduates from
+# the dev JDBC catalog to the Iceberg Bronze catalog. The intermediate + mart models
+# never reference a catalog name — they only `ref()` upstream models.
+#
+# NUANCE (ADR-0002 Slice 4, verified against StarRocks): the flip is NOT a single
+# database-name swap. Only the BRONZE-DERIVED sources read raw events and move to the
+# Iceberg catalog (brain_bronze_local → brain_bronze.collector_events):
+#   - bronze_touchpoint_src, bronze_order_line_src
+# The other two are DERIVED Postgres tables (NOT raw Bronze) and STAY on the JDBC catalog:
+#   - realized_revenue_ledger (worker-written ledger), connector_journey_stitch_map_src
+# And the Iceberg table is RAW collector_events — so the per-event-type filter + line_items
+# UNNEST that today live in the PG read-shim views must move INTO the staging models when
+# the Bronze sources flip (the shims are PG-only). That staging refactor + mart parity is
+# gated on a dbt-capable env + richer Iceberg event data (today Iceberg holds order.live.v1
+# only). The runtime gate is the PG⇄Iceberg parity oracle (db/iceberg/spark/bronze_parity_check.py).
 #
 # DEV: `database` is the StarRocks external JDBC catalog `brain_oltp_pg`
 # (db/starrocks/oltp_jdbc_catalog.sql), `schema` is the Postgres schema `public`.
@@ -126,3 +137,30 @@ sources:
             description: "brain_anon_id read back from the order (the join key onto touchpoints)."
           - name: brain_id
             description: "Resolved known identity (UUID→text, nullable; NULL = unlinked)."
+
+  # ── ADR-0002 Slice 4b: the Iceberg Bronze source (the flip target) ──────────────
+  # The StarRocks external Iceberg catalog over Bronze (db/starrocks/external_iceberg_catalog.sql,
+  # written by the Spark materializer). RAW collector_events — native string brand_id/event_id and a
+  # STRING payload (no uuid/jsonb cast → no read-shim). Staging models gated by var('bronze_source',
+  # 'pg'): when 'iceberg' they read this source + apply the event-type filter the PG shim used to do.
+  - name: bronze_iceberg
+    description: "Raw Bronze events on Iceberg (StarRocks REST catalog → S3). The Phase-3 Bronze read path."
+    database: brain_bronze_local   # StarRocks external Iceberg catalog
+    schema: brain_bronze           # Iceberg namespace
+    tables:
+      - name: collector_events
+        description: >
+          The raw append-only Bronze event log (one row per (brand_id, event_id)). payload is the
+          verbatim envelope JSON STRING — payload.event_name + payload.properties.* resolve exactly
+          as the PG BronzeRow payload, so staging extraction is identical.
+        columns:
+          - name: brand_id
+            description: "Tenant key (native STRING — no uuid cast needed)."
+          - name: event_id
+            description: "Bronze idempotency key (native STRING)."
+          - name: event_type
+            description: "Semantic event type — filter to journey types in staging."
+          - name: occurred_at
+            description: "Event-time (timestamp)."
+          - name: payload
+            description: "Verbatim envelope JSON (STRING). Journey signal under .properties."

@@ -8,17 +8,22 @@
 -- LOCAL DEV: Iceberg REST catalog (apache/iceberg-rest-fixture) + MinIO S3
 -- Catalog host = the compose `iceberg-rest` service (ADR-0002); REST base on :8181.
 -- ────────────────────────────────────────────────────────────
+-- Property names use UNDERSCORES (access_key, not access-key) — the hyphen form is silently
+-- ignored by StarRocks, which then falls back to the default AWS chain and fails with "Region must
+-- be specified". aws.s3.region + client.factory (IcebergAwsClientFactory) are BOTH required for the
+-- REST-catalog → MinIO read to resolve creds/region. VERIFIED: reads collector_events (Slice 4).
 CREATE EXTERNAL CATALOG IF NOT EXISTS brain_bronze_local
 COMMENT "Local dev Bronze catalog — Iceberg REST + MinIO (mirrors production Glue structure)"
 PROPERTIES (
   "type"                    = "iceberg",
   "iceberg.catalog.type"    = "rest",
   "iceberg.catalog.uri"     = "http://iceberg-rest:8181",
+  "aws.s3.region"           = "us-east-1",
   "aws.s3.endpoint"         = "http://minio:9000",
-  "aws.s3.access-key"       = "brain",
-  "aws.s3.secret-key"       = "brainbrain",
-  "aws.s3.enable-ssl"       = "false",
-  "aws.s3.enable-path-style-access" = "true",
+  "aws.s3.access_key"       = "brain",
+  "aws.s3.secret_key"       = "brainbrain",
+  "aws.s3.enable_ssl"       = "false",
+  "aws.s3.enable_path_style_access" = "true",
   "client.factory"          = "com.starrocks.connector.iceberg.IcebergAwsClientFactory"
 );
 

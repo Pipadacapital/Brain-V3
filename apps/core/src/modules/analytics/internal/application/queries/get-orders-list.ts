@@ -10,8 +10,8 @@
  * Money is bigint-as-string minor units (I-S07). Honest no_data (D-2) when the brand has 0 orders.
  * PII posture: OrderProperties carries only hashed identifiers — no raw email/phone here.
  */
-import type { EngineDeps } from '@brain/metric-engine';
-import { withBrandTxn } from '@brain/metric-engine';
+import { withBrandTxn, withSilverBrand, BRAND_PREDICATE } from '@brain/metric-engine';
+import { type BronzeReadDeps, ICEBERG_BRONZE, useIceberg } from './_bronze-source.js';
 
 export interface OrderListItemDto {
   order_id: string;
@@ -67,12 +67,59 @@ interface ListRow {
 export async function getOrdersList(
   brandId: string,
   params: { page?: number; pageSize?: number },
-  deps: EngineDeps,
+  deps: BronzeReadDeps,
 ): Promise<OrdersListResult> {
   const pageSize = Math.min(Math.max(1, Math.trunc(params.pageSize || DEFAULT_PAGE_SIZE)), MAX_PAGE_SIZE);
   const page = Math.max(1, Math.trunc(params.page || 1));
   const offset = (page - 1) * pageSize;
 
+  // ── Iceberg Bronze source (Slice 5) — brand-isolated via the withSilverBrand seam ──────────
+  if (useIceberg(deps)) {
+    // order_id = COALESCE(nested, legacy top-level) — matches the PG read + reconciliation.
+    const ORDER_ID = "COALESCE(get_json_object(payload, '$.properties.order_id'), get_json_object(payload, '$.order_id'))";
+    const result = await withSilverBrand(deps.srPool, brandId, async (scope) => {
+      const totalRows = await scope.runScoped<{ n: number | string }>(
+        `SELECT COUNT(DISTINCT ${ORDER_ID}) AS n FROM ${ICEBERG_BRONZE}
+          WHERE event_type LIKE 'order.%' AND ${ORDER_ID} IS NOT NULL AND ${BRAND_PREDICATE}`,
+      );
+      const total = String(totalRows[0]?.n ?? '0');
+      if (total === '0') return { total: '0', rows: [] as ListRow[] };
+      // DISTINCT ON → row_number() window (StarRocks has no DISTINCT ON). pageSize/offset are clamped ints.
+      const rows = await scope.runScoped<ListRow>(
+        `SELECT order_id, occurred_at, amount_minor, currency_code, payment_method, financial_status, fulfillment_status, has_depth FROM (
+           SELECT ${ORDER_ID} AS order_id, occurred_at,
+                  get_json_object(payload, '$.properties.amount_minor')       AS amount_minor,
+                  get_json_object(payload, '$.properties.currency_code')      AS currency_code,
+                  get_json_object(payload, '$.properties.payment_method')     AS payment_method,
+                  get_json_object(payload, '$.properties.financial_status')   AS financial_status,
+                  get_json_object(payload, '$.properties.fulfillment_status') AS fulfillment_status,
+                  CASE WHEN get_json_object(payload, '$.properties.line_items') IS NOT NULL THEN true ELSE false END AS has_depth,
+                  row_number() OVER (PARTITION BY ${ORDER_ID} ORDER BY occurred_at DESC) AS rn
+             FROM ${ICEBERG_BRONZE}
+            WHERE event_type LIKE 'order.%' AND ${ORDER_ID} IS NOT NULL AND ${BRAND_PREDICATE}
+         ) t WHERE rn = 1
+          ORDER BY occurred_at DESC, order_id ASC
+          LIMIT ${pageSize} OFFSET ${offset}`,
+      );
+      return { total, rows };
+    });
+    if (result.total === '0') return { state: 'no_data', page, page_size: pageSize, total: '0' };
+    return {
+      state: 'has_data', page, page_size: pageSize, total: result.total,
+      orders: result.rows.map((r) => ({
+        order_id: r.order_id,
+        occurred_at: (r.occurred_at instanceof Date ? r.occurred_at : new Date(r.occurred_at)).toISOString(),
+        amount_minor: minorOrNull(r.amount_minor) ?? '0',
+        currency_code: strOrNull(r.currency_code) ?? 'INR',
+        payment_method: strOrNull(r.payment_method),
+        financial_status: strOrNull(r.financial_status),
+        fulfillment_status: strOrNull(r.fulfillment_status),
+        has_depth: r.has_depth === true || Number(r.has_depth) === 1,
+      })),
+    };
+  }
+
+  // ── Postgres Bronze source (default) ────────────────────────────────────────
   const { total, rows } = await withBrandTxn(deps.pool, brandId, async (client) => {
     // Total distinct orders (the pagination denominator). The ORDER_ID extraction matches the
     // reconciliation + detail reads (COALESCE the nested + legacy top-level forms).

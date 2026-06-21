@@ -21,8 +21,17 @@ export interface InitiateOAuthResult {
   state: string; // echoed so the caller can redirect
 }
 
-/** Required Shopify OAuth scopes for Brain M1. */
-const SHOPIFY_SCOPES = 'read_orders,read_products,read_customers';
+/**
+ * Required Shopify OAuth scopes.
+ *  - read_orders/products/customers — the M1 read-sync ground truth.
+ *  - write_script_tags — auto-inject the Brain pixel on the online store (production install path).
+ *  - write_pixels + read_customer_events — the Web Pixels API path (checkout + storefront event
+ *    coverage) once the web-pixel extension is deployed (feat-pixel-production-install, "laid").
+ * NOTE: connections made before these scopes were added must RECONNECT to grant them — the auto
+ * install surfaces a clear "reconnect to grant pixel-install permission" error on a 403.
+ */
+const SHOPIFY_SCOPES =
+  'read_orders,read_products,read_customers,write_script_tags,write_pixels,read_customer_events';
 
 export class InitiateOAuthCommand {
   constructor(

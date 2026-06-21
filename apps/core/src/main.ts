@@ -120,6 +120,7 @@ import {
 import { GetPixelHealthQuery } from './modules/connector/pixel/application/queries/GetPixelHealthQuery.js';
 import { PgPixelInstallationRepository } from './modules/connector/pixel/infrastructure/repositories/PgPixelInstallationRepository.js';
 import { PgPixelStatusRepository } from './modules/connector/pixel/infrastructure/repositories/PgPixelStatusRepository.js';
+import { InstallPixelCommand, InstallPixelError } from './modules/connector/sources/storefront/shopify/application/commands/InstallPixelCommand.js';
 
 // ── RBAC guards (HIGH-MOUNT-01) ───────────────────────────────────────────────
 import { validateSessionPreHandler } from './modules/workspace-access/internal/interfaces/rest/auth.routes.js';
@@ -206,7 +207,9 @@ export async function main(): Promise<void> {
       'GOOGLE_ADS_CALLBACK_URL',
       'http://localhost:3001/api/v1/connectors/google_ads/callback',
     ),
-    pixelIngestBaseUrl: getEnv('PIXEL_INGEST_BASE_URL', 'http://localhost:3001'),
+    // The collector (not core) serves /pixel.js + /collect — default to its local port. In prod set
+    // PIXEL_INGEST_BASE_URL to the public HTTPS host (CNAME / tunnel) so the Shopify ScriptTag is valid.
+    pixelIngestBaseUrl: getEnv('PIXEL_INGEST_BASE_URL', 'http://localhost:8787'),
     // Webhook live-lane Kafka config (B1 / ADR-LV-3)
     kafkaBrokers: (getEnv('KAFKA_BROKERS', 'localhost:9092')).split(','),
     kafkaEnv: getEnv('APP_ENV', 'dev'),
@@ -1680,6 +1683,17 @@ export async function main(): Promise<void> {
   );
   const getPixelHealth = new GetPixelHealthQuery(pixelInstallationRepo, pixelStatusRepo);
 
+  // Production install path (feat-pixel-production-install): auto-inject the pixel onto the
+  // connected Shopify storefront via the Admin API (ScriptTag) and flip installed_at.
+  const installPixel = new InstallPixelCommand(
+    connectorRepo,
+    connectorSecretsManager,
+    getOrCreateInstallation,
+    pixelInstallationRepo,
+    pixelStatusRepo,
+    config.pixelIngestBaseUrl,
+  );
+
   // Pixel read routes (analyst+): GET /pixel/installation, GET /pixel/health
   await app.register(async (scope) => {
     scope.addHook('preHandler', sessionPreHandler);
@@ -1749,6 +1763,33 @@ export async function main(): Promise<void> {
       } catch (err) {
         if (err instanceof PixelInstallationNotFoundError) {
           return reply.code(404).send({ request_id: requestId, error: { code: 'PIXEL_NOT_INSTALLED', message: (err as Error).message } });
+        }
+        throw err;
+      }
+    });
+
+    // POST /pixel/install/shopify — production install path: auto-inject onto the connected
+    // Shopify storefront (Admin API ScriptTag) + flip installed_at. Idempotent. No manual paste.
+    scope.post('/api/v1/pixel/install/shopify', async (req, reply) => {
+      const brandId = getBrandId(req);
+      const requestId = (req.id as string) ?? randomUUID();
+      const idempotencyKey = (req.headers['idempotency-key'] as string | undefined) ?? randomUUID();
+      try {
+        const result = await installPixel.execute({ brandId, idempotencyKey });
+        return reply.code(200).send({
+          request_id: requestId,
+          data: {
+            installed: result.installed,
+            provider: result.provider,
+            ref: result.ref,
+            install_token: result.installToken,
+            src: result.src,
+            already_present: result.alreadyPresent,
+          },
+        });
+      } catch (err) {
+        if (err instanceof InstallPixelError) {
+          return reply.code(409).send({ request_id: requestId, error: { code: err.code, message: err.message } });
         }
         throw err;
       }

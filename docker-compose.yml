@@ -258,6 +258,16 @@ services:
       AWS_ACCESS_KEY_ID: brain
       AWS_SECRET_ACCESS_KEY: brainbrain
       AWS_REGION: us-east-1
+      # The fixture defaults the JDBC catalog to `jdbc:sqlite::memory:` — a SEPARATE in-memory DB
+      # per connection, so concurrent catalog clients (StarRocks + Spark) see inconsistent state
+      # ("iceberg_tables doesn't exist" → ServiceFailureException, crashing the Spark sink). Use a
+      # SHARED-CACHE in-memory DB: ONE in-memory database shared across all connections (consistent),
+      # with no file/volume/permission needed. (Resets on container restart — the catalog rebuilds
+      # from the topic; the data files live in MinIO. A bind-mounted file DB would add durability.)
+      CATALOG_CATALOG__IMPL: org.apache.iceberg.jdbc.JdbcCatalog
+      CATALOG_URI: "jdbc:sqlite:file::memory:?cache=shared"
+      CATALOG_JDBC_USER: user
+      CATALOG_JDBC_PASSWORD: password
     ports: ["8181:8181"]
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8181/v1/config"]

@@ -119,4 +119,23 @@ export class PgPixelInstallationRepository implements IPixelInstallationReposito
       client.release();
     }
   }
+
+  async markAutoInstalled(brandId: string, provider: string, ref: string): Promise<void> {
+    const ctx: QueryContext = { brandId, correlationId: 'n/a' };
+    const client = await this.pool.connect();
+    try {
+      // COALESCE keeps the original installed_at on a re-install (idempotent); records the
+      // provider + handle so the install is uninstallable and re-runs detect "already done".
+      await client.query(
+        ctx,
+        `UPDATE pixel_installation
+         SET installed_at = COALESCE(installed_at, now()), updated_at = now(),
+             auto_install_provider = $2, auto_install_ref = $3
+         WHERE brand_id = $1`,
+        [brandId, provider, ref],
+      );
+    } finally {
+      client.release();
+    }
+  }
 }

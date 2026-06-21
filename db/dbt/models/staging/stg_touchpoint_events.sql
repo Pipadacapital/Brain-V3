@@ -48,7 +48,7 @@ with raw as (
         occurred_at,
         parse_json(payload) as pj
     from {{ source('bronze_iceberg', 'collector_events') }}
-    where event_type in ('page.viewed', 'cart.viewed', 'cart.item_added')
+    where event_type in ('page.viewed', 'product.viewed', 'collection.viewed', 'cart.viewed', 'cart.item_added', 'search.submitted')
     {% else %}
     select
         brand_id,
@@ -81,6 +81,12 @@ source as (
         get_json_string(pj, '$.properties.click_ids.ttclid') as ttclid,
         get_json_string(pj, '$.properties.referrer')        as referrer,
         get_json_string(pj, '$.properties.landing_path')    as landing_path,
+        -- Richer activity signal (comprehensive auto-instrumentation): page classification + the
+        -- commerce-intent payloads on product/collection/search touches. NULL when not applicable.
+        get_json_string(pj, '$.properties.page_type')          as page_type,
+        get_json_string(pj, '$.properties.product_handle')     as product_handle,
+        get_json_string(pj, '$.properties.collection_handle')  as collection_handle,
+        get_json_string(pj, '$.properties.query')              as search_query,
         -- dev-honesty: synthetic fixtures flag themselves; real events have no flag → NULL.
         case when get_json_string(pj, '$.properties._synthetic') = 'true'
              then true else false end                       as is_synthetic
@@ -127,6 +133,10 @@ select
     ttclid,
     referrer,
     landing_path,
+    page_type,
+    product_handle,
+    collection_handle,
+    search_query,
     is_synthetic
 from deduped
 where _dedup_rn = 1

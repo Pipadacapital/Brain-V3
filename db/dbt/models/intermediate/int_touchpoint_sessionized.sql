@@ -123,6 +123,10 @@ ordered as (
         ttclid,
         referrer,
         landing_path,
+        page_type,
+        product_handle,
+        collection_handle,
+        search_query,
         is_synthetic
     from sessionized
 
@@ -156,5 +160,9 @@ select
         else regexp_replace(referrer, '^[a-zA-Z]+://([^/]+).*$', '$1')
     end as referrer_host,
     landing_path,
+    page_type,
+    product_handle,
+    collection_handle,
+    search_query,
     is_synthetic
 from ordered

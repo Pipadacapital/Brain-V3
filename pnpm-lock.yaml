@@ -150,6 +150,9 @@ importers:
       '@brain/tenant-context':
         specifier: workspace:*
         version: link:../../packages/tenant-context
+      '@brain/woocommerce-mapper':
+        specifier: workspace:*
+        version: link:../../packages/woocommerce-mapper
       '@fastify/cookie':
         specifier: ^11.0.2
         version: 11.0.2

@@ -34,6 +34,7 @@
     "@brain/razorpay-mapper": "workspace:*",
     "@brain/shopflo-mapper": "workspace:*",
     "@brain/shopify-mapper": "workspace:*",
+    "@brain/woocommerce-mapper": "workspace:*",
     "@brain/tenant-context": "workspace:*",
     "@fastify/cookie": "^11.0.2",
     "argon2": "^0.44.0",

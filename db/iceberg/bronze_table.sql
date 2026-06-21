@@ -1,7 +1,8 @@
 -- ============================================================
--- Bronze table DDL — Apache Iceberg (local: Nessie REST catalog; prod: AWS Glue)
+-- Bronze table DDL — Apache Iceberg (local: Iceberg REST catalog; prod: AWS Glue)
 -- INVARIANT I-E02: append-only, 24-month retention, partition spec fixed at creation.
--- Run via: spark-sql / iceberg REST / Glue API. For local dev use the Nessie REST catalog.
+-- Run via: spark-sql / iceberg REST / Glue API. For local dev use the Iceberg REST catalog
+-- (compose `iceberg-rest` service, apache/iceberg-rest-fixture; ADR-0002).
 -- ============================================================
 
 -- Create the Bronze namespace (equivalent to a Glue database)

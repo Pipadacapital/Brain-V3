@@ -235,26 +235,32 @@ services:
       retries: 20
       start_period: 10s
 
-  # Iceberg REST catalog (Nessie) — local equivalent of AWS Glue
-  # MinIO must be available for Nessie to write catalog state to S3
-  # Iceberg REST catalog — OPTIONAL lakehouse infra, NOT part of the default dev
-  # loop. Kept out of "ingest" because (a) the ingest apps don't use it (Bronze is
-  # in Postgres for now) and (b) the 0.90.2 tag is unpullable from Docker Hub, which
-  # broke `pnpm dev`/`dev:ingest`. Start explicitly via `pnpm dev:lakehouse` once a
-  # working image tag is pinned.
-  nessie:
-    image: projectnessie/nessie:0.90.2
+  # Iceberg REST catalog — local equivalent of AWS Glue Data Catalog (ADR-0002).
+  # Apache's reference iceberg-rest-fixture, backing the Iceberg warehouse onto MinIO (S3).
+  # Replaces the previously-broken projectnessie/nessie:0.90.2 (unpullable tag, PR #72) with
+  # a pinned, pullable image. Spark Structured Streaming (the Bronze writer, ADR-0002) and
+  # StarRocks read Bronze through this catalog.
+  #
+  # OPTIONAL lakehouse infra, NOT part of the default dev loop — start via `pnpm dev:lakehouse`.
+  # Kept out of "ingest" because the live ingest path still writes Bronze to Postgres until the
+  # Iceberg flip completes (ADR-0002 dual-sink); this catalog is the target SoR substrate.
+  iceberg-rest:
+    image: apache/iceberg-rest-fixture:1.9.2
     profiles: ["lakehouse"]
     depends_on:
       minio:
         condition: service_healthy
     environment:
-      NESSIE_VERSION_STORE_TYPE: IN_MEMORY
-      QUARKUS_HTTP_PORT: "19120"
-      QUARKUS_LOG_LEVEL: INFO
-    ports: ["19120:19120"]
+      CATALOG_WAREHOUSE: s3://brain-bronze/
+      CATALOG_IO__IMPL: org.apache.iceberg.aws.s3.S3FileIO
+      CATALOG_S3_ENDPOINT: http://minio:9000
+      CATALOG_S3_PATH__STYLE__ACCESS: "true"
+      AWS_ACCESS_KEY_ID: brain
+      AWS_SECRET_ACCESS_KEY: brainbrain
+      AWS_REGION: us-east-1
+    ports: ["8181:8181"]
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:19120/api/v2/config"]
+      test: ["CMD", "curl", "-f", "http://localhost:8181/v1/config"]
       interval: 10s
       timeout: 5s
       retries: 20

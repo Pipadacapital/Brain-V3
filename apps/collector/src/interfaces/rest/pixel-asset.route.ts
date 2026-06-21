@@ -137,7 +137,17 @@ export function registerPixelAssetRoute(app: FastifyInstance): void {
     const t = req.query?.t;
     const b = req.query?.b;
     if (t && b && UUID_RE.test(t) && UUID_RE.test(b)) {
-      body = `window.__brain={install_token:"${t}",brand_id:"${b}"};\n${PIXEL_JS}`;
+      // CRITICAL: also pin ingest_base_url, else pixel.js falls back to location.host (the STOREFRONT)
+      // and POSTs events to the store's own domain instead of the collector. Use the origin this asset
+      // was loaded from (the public CNAME/tunnel) — proto+host from the forwarding headers — so events
+      // post back to us. PIXEL_INGEST_BASE_URL is the fallback.
+      const rawHost = String(req.headers['host'] ?? '');
+      const proto = String(req.headers['x-forwarded-proto'] ?? '').split(',')[0] || 'https';
+      const reqOrigin =
+        /^[a-z0-9.-]+(:[0-9]+)?$/i.test(rawHost) && /^https?$/.test(proto) ? `${proto}://${rawHost}` : '';
+      const ingest = reqOrigin || process.env['PIXEL_INGEST_BASE_URL'] || '';
+      const ingestField = /^https?:\/\/[a-z0-9.:/-]+$/i.test(ingest) ? `,ingest_base_url:"${ingest}"` : '';
+      body = `window.__brain={install_token:"${t}",brand_id:"${b}"${ingestField}};\n${PIXEL_JS}`;
     }
     reply
       .header('Content-Type', 'application/javascript; charset=utf-8')

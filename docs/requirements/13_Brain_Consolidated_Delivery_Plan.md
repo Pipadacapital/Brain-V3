@@ -139,7 +139,8 @@ reconciled. Sign-off: CTO.
 - **T2-4 (R-29)** Per-tenant LLM budget (gateway virtual-key) + cheaper default resolver tier + checked-in gateway config.
 - **T2-19/T2-33 (R-33/R-38)** Rate-limiter + StarRocks fail-open emit metric/alert; `runScoped` throws if `BRAND_PREDICATE` absent (no silent no-op).
 - **T2-25 (R-45)** RBAC: revoke sessions on role downgrade.
-- **Residual connector/backfill debt:** SEC-BF-M2 (dual LedgerWriter), SEC-BF-L1 (dual repo), DEV-TOKEN-REACH; SEC-LV-M1 (re-pull lock-window double API calls), SEC-LV-L1 (NaN-date guard).
+- ~~**Residual connector/backfill debt:** SEC-BF-M2 (dual LedgerWriter), SEC-BF-L1 (dual repo), DEV-TOKEN-REACH; SEC-LV-M1 (re-pull lock-window double API calls), SEC-LV-L1 (NaN-date guard).~~ **[RESOLVED 2026-06-21 — branch `fix/m2-residual-debt`, PR pending. All 5 fixed + verified against the live dev DB. SEC-BF-M2 was NOT mere tech-debt: migration 0054's PARTIAL dedup index (`WHERE event_type <> 'refund'`) was not restated in THREE `ON CONFLICT` clauses (core `PgLedgerRepository`, worker `revenue-finalization`, + test copies) → arbiter inference fails on every insert. Added a whole-repo drift-guard unit test; the regression had slipped CI because the exercising tests are `.live.test.ts`, not in the always-on gate. SEC-LV-M1 closed via an atomic CAS claim on `connector_sync_status` (0025 unique key). DEV-TOKEN-REACH guard made non-inert via `scripts/migrate.mjs` stamping `app.env` through PGOPTIONS.]**
+  - **Follow-up (open):** promote the key `.live.test.ts` ledger tests into the always-on CI gate so partial-index-style regressions can't slip through again.
 - **Silver prod row-policy graduation** — apply `db/starrocks/row_policy_template.sql` on managed StarRocks (M1 enforcement is currently the app-seam predicate).
 
 **Also complete the parked/stalled commits:** `feat-silver-tier-order-state` + `feat-shopify-live-connector`

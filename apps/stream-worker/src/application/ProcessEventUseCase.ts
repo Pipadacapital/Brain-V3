@@ -63,6 +63,21 @@ export class ProcessEventUseCase {
      * left alone — architecture-plan §5.)
      */
     private readonly enforceTenantDerivation = true,
+    /**
+     * Slice 6 (ADR-0002): the PG Bronze write switch. TRUE (default) = persist bronze_events as today.
+     * FALSE = the dual-sink RETIREMENT — stop writing PG Bronze and rely solely on the Spark→Iceberg
+     * materializer as the Bronze system-of-record.
+     *
+     * DO NOT flip FALSE until ALL of these hold (leaving it TRUE is the correct state until then):
+     *   1. every reader is on Iceberg (Slice 5 — only get-data-health is flipped so far);
+     *   2. the Spark writer enforces the SAME R2 install_token tenant-derivation + R3 consent gate +
+     *      quarantine that THIS use-case does — today Spark materializes raw topic events UNGATED, so
+     *      Iceberg would include events PG quarantines (consent_absent / tenant_unresolved / brand_mismatch),
+     *      a compliance + correctness regression the parity oracle surfaces as drift;
+     *   3. a green parity soak.
+     * The flag is the reversible mechanism; prerequisite (2) is real work, not a soak.
+     */
+    private readonly pgWriteEnabled = true,
   ) {}
 
   /**
@@ -155,6 +170,14 @@ export class ProcessEventUseCase {
 
       // Authoritative tenant key — used for dedup keyspace + the Bronze GUC below.
       brand_id = derivedBrandId;
+    }
+
+    // ── Step 1c: PG Bronze write retired (Slice 6) ─────────────────────────────
+    // When the PG write is disabled, the R2/R3 gating above has ALREADY run (quarantine/invalid
+    // outcomes returned), so the security gates still hold for routing; we just don't persist to PG
+    // (Spark→Iceberg is the SoR) and we commit the offset. Skips dedup + write.
+    if (!this.pgWriteEnabled) {
+      return { outcome: 'written', brandId: brand_id, eventId: event_id, eventName: event_name };
     }
 
     // ── Step 2: Redis dedup — fast-path CHECK only (R-08) ─────────────────────

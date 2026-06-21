@@ -129,7 +129,9 @@ This is the platform's most reliability-critical surface (`BRD §7`, the 99.95% 
 | Schema registry | **Apicurio** | Governs event schemas (backward-compatible evolution; old events stay readable forever) and **powers the tracking-plan surface** (`BRD §8.4.10`). |
 | Event format | **Avro** | Compact, schema-evolvable binary — the right wire format for high-volume versioned events. |
 | Client library | **KafkaJS** | The common Node/TS Kafka client (consistent with one-language). |
-| Bronze writer | **Redpanda → Iceberg topic-materialization** | Redpanda writes topics directly to Iceberg, so raw events land in the lakehouse without hand-rolled TS Iceberg writers. |
+| Bronze writer | **Spark Structured Streaming → Iceberg** (Phase-3; see note) | A Spark streaming job consumes `collector.event.v1` and writes Bronze to Iceberg with idempotent `MERGE`. Supersedes the originally-planned Redpanda topic-materialization (ADR-0002). |
+
+> **Status note (ADR-0002, audit C1):** Bronze-on-Iceberg is a **Phase-3** capability, not yet shipped. In M1 the **disclosed interim Bronze sink is Postgres `bronze_events`** (`db/migrations/0016_bronze_events.sql`), written by the stream-worker. The Phase-3 flip writes Bronze to Iceberg via **Spark Structured Streaming** (a new independent consumer of the same topic — not the Redpanda-native topic-materialization originally planned in this row) and flips StarRocks to the external Iceberg catalog. See `docs/adr/0002-iceberg-bronze-spark-streaming.md` for the cautious dual-sink + parity rollout.
 
 **Why selected:** Redpanda gives Kafka semantics with a fraction of the operational weight (no ZooKeeper, single binary) — the right durable buffer for a small team. Apicurio makes every event validated and evolvable, and doubles as the governance substrate for the customer-facing tracking plan. Topic-materialization avoids immature Node Iceberg-write tooling.
 **Alternatives evaluated & rejected:** **Apache Kafka (self-managed) / MSK** — rejected: ZooKeeper/operational weight (Kafka) or cost-and-less-control (MSK) versus Redpanda's single-binary simplicity. **AWS Kinesis** — rejected: proprietary, weaker ecosystem fit, lock-in against the open-formats principle. **Confluent Schema Registry** — viable but Apicurio is open and self-hostable in-region. **Hand-rolled TypeScript Iceberg writers** — rejected: the Node Iceberg-write ecosystem is immature; topic-materialization is more robust.
@@ -192,7 +194,9 @@ The customer Identity Platform (`BRD §9`) is a **dedicated TypeScript service**
 
 **Why selected:** an open ACID table format is what makes "the brand owns its data" literally true (portable, exportable, time-travellable) and what lets the append-only realized-revenue ledger + clawback (`BRD §10`) be modeled honestly.
 **Alternatives evaluated & rejected:** **A proprietary warehouse (Snowflake/BigQuery/Redshift)** — rejected: lock-in conflicts with the no-hostage-data promise and the per-brand-isolation/residency model; cost scales poorly against %-GMV. **Delta Lake / Hudi** — viable open formats, but Iceberg's AWS/Glue maturity and engine-agnosticism won. **ClickHouse/DuckDB-on-S3 as the system of record** (an earlier design) — rejected: replaced by Iceberg-as-SoR + StarRocks-as-serving so the SoR is open and the serving engine is swappable.
-**Interactions:** Bronze is written by Redpanda materialization (§8); dbt transforms Bronze → Silver/Gold (§14); StarRocks serves it. The `Iceberg → dbt → StarRocks` direction is one-way by rule.
+**Interactions:** Bronze is written by **Spark Structured Streaming → Iceberg** (Phase-3, ADR-0002; superseding the Redpanda-native materialization originally noted in §8); dbt transforms Bronze → Silver/Gold (§14); StarRocks serves it. The `Iceberg → dbt → StarRocks` direction is one-way by rule.
+
+> **Status note (ADR-0002, audit C1):** the Iceberg lakehouse described here is **Phase-3, not yet shipped**. M1's Bronze is the disclosed interim sink **Postgres `bronze_events`** (`db/migrations/0016`). The flip to Iceberg-as-SoR (Spark writer + StarRocks external catalog + 24-mo TTL / compaction) is rolled out cautiously per `docs/adr/0002-iceberg-bronze-spark-streaming.md` (dual-sink → parity oracle → staged reader cut-over → retire Postgres last).
 
 ## 14. Analytics & serving
 

@@ -5,7 +5,7 @@
 --   1. Analytics read-only user
 --   2. Silver/Gold databases
 --   3. Isolation test table + seed data (for isolation-fuzz CI)
---   4. External Iceberg catalog (local dev — Nessie + MinIO)
+--   4. External Iceberg catalog (local dev — Iceberg REST + MinIO)
 -- ============================================================
 
 -- 1. Analytics service user (read-only)
@@ -64,13 +64,13 @@ GRANT SELECT ON ALL TABLES IN DATABASE brain_gold   TO 'brain_analytics'@'%';
 -- on the plain-SELECT negative-control tests (correct behavior — not silently green).
 -- ============================================================
 
--- 5. External Iceberg catalog (local dev — Nessie REST + MinIO)
+-- 5. External Iceberg catalog (local dev — Iceberg REST + MinIO; ADR-0002)
 CREATE EXTERNAL CATALOG IF NOT EXISTS brain_bronze_local
-COMMENT "Local dev Bronze catalog — Nessie REST + MinIO"
+COMMENT "Local dev Bronze catalog — Iceberg REST + MinIO"
 PROPERTIES (
   "type"                              = "iceberg",
   "iceberg.catalog.type"             = "rest",
-  "iceberg.catalog.uri"              = "http://nessie:19120/iceberg",
+  "iceberg.catalog.uri"              = "http://iceberg-rest:8181",
   "aws.s3.endpoint"                  = "http://minio:9000",
   "aws.s3.access-key"               = "brain",
   "aws.s3.secret-key"               = "brainbrain",

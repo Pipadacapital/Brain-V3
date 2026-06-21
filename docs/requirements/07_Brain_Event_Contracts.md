@@ -338,7 +338,9 @@ OTel everywhere; every span/log carries `brand_id` + `correlation_id` (PII-redac
 
 ## 12. Bronze materialization rules
 
-- **Event → Iceberg mapping:** each materialized topic → one Bronze Iceberg table (`bronze.{schema_name}`), the raw envelope + payload exactly as received. Written by **Redpanda → Iceberg topic-materialization** (no hand-rolled writers; the Phase-1a spike gates per-brand prefix + KMS + idempotency, doc 04 §6.5/ADR-010).
+> **Status note (ADR-0002, audit C1):** Bronze-on-Iceberg is **Phase-3, not yet shipped**. M1 writes Bronze to the disclosed interim sink **Postgres `bronze_events`** (`db/migrations/0016`) via the stream-worker. The rules below describe the **target** Iceberg behaviour. Per ADR-0002 the writer is **Spark Structured Streaming** (a new independent consumer of the same topic), **not** the Redpanda-native topic-materialization originally specified here; the `MERGE`-on-`(brand_id, event_id)` idempotency, partition spec, and 24-mo TTL/compaction rules carry over unchanged.
+
+- **Event → Iceberg mapping:** each materialized topic → one Bronze Iceberg table (`bronze.{schema_name}`), the raw envelope + payload exactly as received. Written by **Spark Structured Streaming → Iceberg** (idempotent `MERGE`; per-brand prefix + KMS + idempotency; ADR-0002 — supersedes the Redpanda topic-materialization originally planned here).
 - **Materialization ownership:** the **Collector/stream path** owns the write to Bronze; one writer per topic.
 - **Deduplication:** Bronze is **append-only (insert-if-absent MERGE on `(brand_id, event_id)`)** — raw truth, duplicates collapse on the dedup key; all normalization/server-wins precedence is Silver-ward.
 - **Partitioning:** `PARTITIONED BY (bucket(N, brand_id), days(occurred_at))` — brand-first (tenant pruning + per-brand retention/erasure), date for replay windows + 24-mo TTL.

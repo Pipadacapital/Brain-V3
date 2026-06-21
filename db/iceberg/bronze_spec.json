@@ -1,5 +1,5 @@
 {
-  "_comment": "Iceberg Bronze table specification — Brain Platform (I-E02). This spec is non-retrofittable; partition spec and schema evolution policy are fixed at table creation. Source of truth for both local (Nessie REST catalog) and production (AWS Glue) table registration.",
+  "_comment": "Iceberg Bronze table specification — Brain Platform (I-E02). This spec is non-retrofittable; partition spec and schema evolution policy are fixed at table creation. Source of truth for both local (Iceberg REST catalog — apache/iceberg-rest-fixture) and production (AWS Glue) table registration.",
 
   "table_name": "brain_bronze.collector_events",
   "catalog_type": "rest",

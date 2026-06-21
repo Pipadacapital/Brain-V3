@@ -5,14 +5,15 @@
 -- ============================================================
 
 -- ────────────────────────────────────────────────────────────
--- LOCAL DEV: Nessie REST catalog + MinIO S3
+-- LOCAL DEV: Iceberg REST catalog (apache/iceberg-rest-fixture) + MinIO S3
+-- Catalog host = the compose `iceberg-rest` service (ADR-0002); REST base on :8181.
 -- ────────────────────────────────────────────────────────────
 CREATE EXTERNAL CATALOG IF NOT EXISTS brain_bronze_local
-COMMENT "Local dev Bronze catalog — Nessie REST + MinIO (mirrors production Glue structure)"
+COMMENT "Local dev Bronze catalog — Iceberg REST + MinIO (mirrors production Glue structure)"
 PROPERTIES (
   "type"                    = "iceberg",
   "iceberg.catalog.type"    = "rest",
-  "iceberg.catalog.uri"     = "http://nessie:19120/iceberg",
+  "iceberg.catalog.uri"     = "http://iceberg-rest:8181",
   "aws.s3.endpoint"         = "http://minio:9000",
   "aws.s3.access-key"       = "brain",
   "aws.s3.secret-key"       = "brainbrain",

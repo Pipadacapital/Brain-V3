@@ -235,6 +235,9 @@ importers:
       '@brain/razorpay-mapper':
         specifier: workspace:*
         version: link:../../packages/razorpay-mapper
+      '@brain/shiprocket-mapper':
+        specifier: workspace:*
+        version: link:../../packages/shiprocket-mapper
       '@brain/shopflo-mapper':
         specifier: workspace:*
         version: link:../../packages/shopflo-mapper
@@ -478,6 +481,10 @@ importers:
   packages/feature-flags: {}
 
   packages/gokwik-mapper:
+    dependencies:
+      '@brain/logistics-status':
+        specifier: workspace:*
+        version: link:../logistics-status
     devDependencies:
       '@types/node':
         specifier: ^20.0.0
@@ -494,6 +501,18 @@ importers:
       '@types/node':
         specifier: ^25.9.3
         version: 25.9.3
+
+  packages/logistics-status:
+    devDependencies:
+      '@types/node':
+        specifier: ^20.0.0
+        version: 20.19.43
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.0
+        version: 2.1.9(@types/node@20.19.43)
 
   packages/metric-engine:
     dependencies:
@@ -570,6 +589,22 @@ importers:
         version: 2.1.9(@types/node@25.9.3)
 
   packages/razorpay-mapper:
+    devDependencies:
+      '@types/node':
+        specifier: ^20.0.0
+        version: 20.19.43
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.0
+        version: 2.1.9(@types/node@20.19.43)
+
+  packages/shiprocket-mapper:
+    dependencies:
+      '@brain/logistics-status':
+        specifier: workspace:*
+        version: link:../logistics-status
     devDependencies:
       '@types/node':
         specifier: ^20.0.0

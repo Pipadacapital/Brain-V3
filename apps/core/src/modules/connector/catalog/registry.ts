@@ -103,9 +103,9 @@ export const CONNECTOR_CATALOG: readonly ConnectorDefinition[] = [
     id: 'shiprocket',
     category: 'logistics',
     displayName: 'Shiprocket',
-    connectMethod: 'coming_soon',
-    availability: 'coming_soon',
-    description: 'Shipping & delivery status.',
+    connectMethod: 'credential',
+    availability: 'available',
+    description: 'Shipment lifecycle, delivery & RTO outcome, courier performance.',
   },
   // ── messaging ────────────────────────────────────────────────────────────────
   {

@@ -1384,6 +1384,85 @@ export async function main(): Promise<void> {
           });
         }
 
+        // ── Shiprocket credential connector (logistics) ──────────────────
+        // Requires: email, password (the dedicated Shiprocket API user). Optional channel_id.
+        // No webhook_secret in Slice 1 (pull-based shipment re-pull). The 10-day Bearer JWT is
+        // minted + cached by the repull job, never here. channel_id stored on
+        // connector_instance.shiprocket_channel_id (non-secret) for re-pull enumeration via
+        // list_shiprocket_connectors_for_repull().
+        if (connectorType === 'shiprocket') {
+          const email = credentials['email'];
+          const password = credentials['password'];
+          const channelId = credentials['channel_id'] ?? null;
+
+          if (!email || !password) {
+            return reply.code(400).send({
+              request_id: requestId,
+              error: {
+                code: 'MISSING_SHIPROCKET_CREDENTIALS',
+                message: 'shiprocket connector requires: email, password',
+              },
+            });
+          }
+
+          const { arn } = await connectorSecretsManager.storeSecret(
+            brandId,
+            { connectorType: 'shiprocket', subKey: channelId ?? email },
+            { email, password },
+          );
+
+          const now = new Date();
+          const connectorInstanceId = randomUUID();
+          const instance = ConnectorInstanceEntity.create({
+            id: connectorInstanceId,
+            brandId,
+            provider: 'shiprocket',
+            shopDomain: '',
+            secretRef: arn,
+            status: 'connected',
+            healthState: 'Healthy',
+            safetyRating: 'safe',
+            connectedAt: now,
+            disconnectedAt: null,
+            createdAt: now,
+            updatedAt: now,
+          });
+          await connectorRepo.save(instance);
+
+          // Set shiprocket_channel_id (migration 0059 column) under brand GUC — enumeration key. Optional.
+          if (channelId) {
+            const srClient = await rawPgPool.connect();
+            try {
+              await beginRlsTxn(srClient, { correlationId: requestId, brandId });
+              await srClient.query(
+                `UPDATE connector_instance SET shiprocket_channel_id = $1 WHERE id = $2 AND brand_id = $3`,
+                [channelId, connectorInstanceId, brandId],
+              );
+              await srClient.query('COMMIT');
+            } catch (srErr) {
+              await srClient.query('ROLLBACK').catch(() => undefined);
+              throw srErr;
+            } finally {
+              srClient.release();
+            }
+          }
+
+          await auditWriter.append({
+            brand_id: brandId,
+            actor_id: auth?.userId ?? null,
+            actor_role: auth?.role ?? 'unknown',
+            action: 'connector.connected',
+            entity_type: 'connector_instance',
+            entity_id: connectorInstanceId,
+            payload: { connector_type: 'shiprocket' },
+            // NO password in payload (I-S09)
+          });
+          return reply.code(200).send({
+            request_id: requestId,
+            data: { kind: 'credential', connected: true, connector_instance_id: connectorInstanceId },
+          });
+        }
+
         // Generic credential connector path (non-Razorpay — kept for future connectors)
         const { arn } = await connectorSecretsManager.storeSecret(brandId, { connectorType }, credentials);
         const now = new Date();

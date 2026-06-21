@@ -1,36 +1,44 @@
 /**
- * GokwikAwbLedgerConsumer — KafkaJS consumer for gokwik.awb_status.v1 → CoD/RTO ledger.
+ * ShipmentLedgerConsumer — KafkaJS consumer for logistics shipment events → CoD/RTO ledger.
+ *
+ * GENERALIZED from GokwikAwbLedgerConsumer (SPEC 3): it now handles EVERY logistics source on the
+ * shared logistics canonical surface — GoKwik AWB (`gokwik.awb_status.v1`) AND Shiprocket shipment
+ * tracking (`shiprocket.shipment_status.v1`). Both mappers emit the SAME property shape
+ * (terminal_class / is_terminal / payment_method / order_id), classified by the SINGLE shared
+ * authority @brain/logistics-status — so one consumer, one deterministic ledger mapping, no drift.
+ * (A back-compat alias `GokwikAwbLedgerConsumer` is exported below.)
+ *
+ * CROSS-SOURCE DOUBLE-BOOKING GUARD: if BOTH GoKwik and Shiprocket report a terminal RTO for the
+ * same order, the LedgerWriter dedup key (brand_id, order_id, event_type, date) + ON CONFLICT DO
+ * NOTHING ensures the cod_rto_clawback is written EXACTLY ONCE. The two sources cannot double-claw.
  *
  * WIRING CRITICAL (mirrors SettlementLedgerConsumer):
- *   This consumer MUST be imported + instantiated + started in main.ts. An unwired consumer
- *   is the wired-to-nothing anti-pattern — the gokwik-awb-ledger wiring e2e catches it (un-wire
- *   → poll for ledger row → timeout → RED in CI).
+ *   This consumer MUST be imported + instantiated + started in main.ts. An unwired consumer is the
+ *   wired-to-nothing anti-pattern — the gokwik-awb-ledger wiring e2e catches it (un-wire → poll for
+ *   ledger row → timeout → RED in CI).
  *
- * Lane design (mirrors SettlementLedgerConsumer exactly):
+ * Lane design:
  *   - Topic:          {env}.collector.event.v1 (same live topic)
  *   - Consumer group: gokwik-awb-ledger-bridge (env: GOKWIK_AWB_LEDGER_CONSUMER_GROUP_ID)
  *   - Separate group = independent offset from the other live consumers.
  *
- * Responsibility (NARROW — gokwik.awb_status.v1 only):
- *   1. Filter: skip any message whose event_name != 'gokwik.awb_status.v1' (commit + continue).
- *   2. Only act on TERMINAL transitions (is_terminal=true). Non-terminal transitions are
- *      lifecycle provenance in Bronze — they do not move the ledger.
- *   3. terminal_class='rto'      → cod_rto_clawback: look up the recognized CoD amount for the
- *                                  order, write a signed-NEGATIVE clawback (reverses recognition).
+ * Responsibility (NARROW — logistics shipment terminal states only):
+ *   1. Filter: skip any message whose event_name is not a logistics shipment event (commit + continue).
+ *   2. Only act on TERMINAL transitions (is_terminal=true). Non-terminal transitions are lifecycle
+ *      provenance in Bronze — they do not move the ledger.
+ *   3. terminal_class='rto'       → cod_rto_clawback: look up recognized CoD amount, write signed-NEGATIVE.
  *      terminal_class='delivered' → cod_delivery_confirmed: write a 0-amount provenance row.
  *      terminal_class='other'     → no ledger effect in Slice 1 (commit + continue).
- *   4. payment_method gate: only CoD orders get a clawback (a prepaid RTO is a fulfilment event,
- *      not a CoD-revenue reversal). If payment_method is unknown, we still clawback on RTO
- *      (conservative — recognized CoD revenue must not survive a confirmed RTO) but ONLY if the
- *      recognized amount is > 0; a 0 recognized amount writes nothing.
+ *   4. payment_method gate: only CoD orders get a clawback (a prepaid RTO is a fulfilment event, not
+ *      a CoD-revenue reversal). Unknown payment_method still claws back on RTO (conservative) but only
+ *      if the recognized amount is > 0.
  *   5. autoCommit=false — commit only after the confirmed ledger write (or skip).
  *   6. MAX_RETRY=5 → DLQ after retries exhausted.
  *
- * Idempotent restatement (I-ST04): the re-pull re-emits the same terminal transition with the
- * same event_id; the LedgerWriter dedup key (brand_id, order_id, event_type, date) +
- * ON CONFLICT DO NOTHING ensures the clawback is written exactly once.
+ * Idempotent restatement (I-ST04): the re-pull re-emits the same terminal transition with the same
+ * event_id; the LedgerWriter dedup key ensures the clawback is written exactly once.
  *
- * brand_id is from the event envelope (MT-1 — set by the re-pull job from the fn result).
+ * brand_id is from the event envelope (MT-1 — set by the re-pull job from the enumeration fn).
  */
 
 import { Consumer, Kafka, EachMessagePayload } from 'kafkajs';
@@ -41,7 +49,13 @@ import { log } from "../../log.js";
 
 const MAX_RETRY = 5;
 
-interface AwbEventProperties {
+/** Logistics shipment events this consumer acts on (shared canonical surface). */
+const SHIPMENT_EVENT_NAMES = new Set<string>([
+  'gokwik.awb_status.v1',
+  'shiprocket.shipment_status.v1',
+]);
+
+interface ShipmentEventProperties {
   source?: string;
   data_source?: string;
   awb_number_hash?: string | null;
@@ -51,11 +65,12 @@ interface AwbEventProperties {
   is_terminal?: boolean;
   payment_method?: 'cod' | 'prepaid' | null;
   pincode?: string | null;
+  courier?: string | null;
   status_changed_at?: string;
   occurred_at?: string;
 }
 
-export class GokwikAwbLedgerConsumer {
+export class ShipmentLedgerConsumer {
   private readonly consumer: Consumer;
   private readonly dlqProducer: DlqProducer;
   /** Durable retry-counter scope (T2-8): `{groupId}:{topic}` — isolates same-topic groups. */
@@ -104,7 +119,7 @@ export class GokwikAwbLedgerConsumer {
             }
           }
 
-          if (eventName !== 'gokwik.awb_status.v1') {
+          if (!eventName || !SHIPMENT_EVENT_NAMES.has(eventName)) {
             await this.commit(topic, partition, offset);
             return;
           }
@@ -115,12 +130,12 @@ export class GokwikAwbLedgerConsumer {
             return;
           }
 
-          const props = (parsed['properties'] as AwbEventProperties) ?? {};
-          const result = await this.processAwbEvent(brandId, eventId, props);
+          const props = (parsed['properties'] as ShipmentEventProperties) ?? {};
+          const result = await this.processShipmentEvent(brandId, eventId, props);
 
           await this.commit(topic, partition, offset);
           await this.retryCounter.reset(this.retryScope, partition, offset);
-          log.info(`${result} brand=${brandId} event=${eventId} partition=${partition} offset=${offset}`);
+          log.info(`${result} source=${props.source ?? '?'} brand=${brandId} event=${eventId} partition=${partition} offset=${offset}`);
         } catch (err) {
           const current = await this.retryCounter.increment(this.retryScope, partition, offset);
           log.error(`write error (attempt ${current}/${MAX_RETRY}) partition=${partition} offset=${offset}`, { err: err });
@@ -156,20 +171,20 @@ export class GokwikAwbLedgerConsumer {
     await this.consumer.commitOffsets([{ topic, partition, offset: String(Number(offset) + 1) }]);
   }
 
-  // ── AWB terminal-state → ledger ────────────────────────────────────────────
+  // ── Shipment terminal-state → ledger (shared GoKwik + Shiprocket) ───────────
 
-  private async processAwbEvent(
+  private async processShipmentEvent(
     brandId: string,
     eventId: string,
-    props: AwbEventProperties,
+    props: ShipmentEventProperties,
   ): Promise<string> {
     if (!props.is_terminal) {
-      return 'awb_non_terminal_skipped';
+      return 'shipment_non_terminal_skipped';
     }
 
     const orderId = props.order_id ?? '';
     if (!orderId) {
-      return 'awb_no_order_id_skipped';
+      return 'shipment_no_order_id_skipped';
     }
 
     const occurredAt = props.status_changed_at ?? props.occurred_at ?? new Date().toISOString();
@@ -178,14 +193,16 @@ export class GokwikAwbLedgerConsumer {
     if (terminalClass === 'rto') {
       // Only CoD revenue is clawed back. A prepaid RTO is a fulfilment event, not a CoD reversal.
       if (props.payment_method === 'prepaid') {
-        return 'awb_rto_prepaid_no_clawback';
+        return 'shipment_rto_prepaid_no_clawback';
       }
       const recognizedMinor = await this.ledgerWriter.lookupRecognizedAmountMinor(brandId, orderId);
       if (BigInt(recognizedMinor) <= 0n) {
         // Nothing recognized for this order → nothing to claw back.
-        return 'awb_rto_no_recognized_amount';
+        return 'shipment_rto_no_recognized_amount';
       }
       const clawbackMinor = `-${recognizedMinor}`;   // signed-negative reversal
+      // Dedup key (brand,order,event_type,date) guards against GoKwik + Shiprocket double-booking
+      // the same order's RTO → written exactly once.
       const inserted = await this.ledgerWriter.writeCodLedgerEvent({
         brandId,
         orderId,
@@ -211,7 +228,15 @@ export class GokwikAwbLedgerConsumer {
       return inserted ? 'cod_delivery_confirmed_written' : 'cod_delivery_confirmed_deduped';
     }
 
-    // terminal_class === 'other' (Cancelled/Lost/Damaged/Returned) — no ledger effect in Slice 1.
-    return 'awb_terminal_other_skipped';
+    // terminal_class === 'other' (Cancelled/Lost/Damaged/Destroyed/Disposed) — no ledger effect in Slice 1.
+    return 'shipment_terminal_other_skipped';
   }
 }
+
+/**
+ * Back-compat alias. The consumer was introduced as GokwikAwbLedgerConsumer and is wired under that
+ * name in main.ts + guarded by gokwik-awb-ledger-wiring.e2e.test.ts. It now handles all logistics
+ * sources (see ShipmentLedgerConsumer above); the alias keeps existing imports working.
+ */
+export const GokwikAwbLedgerConsumer = ShipmentLedgerConsumer;
+export type GokwikAwbLedgerConsumer = ShipmentLedgerConsumer;

@@ -27,7 +27,7 @@ import { join } from 'node:path';
 import { Pool } from 'pg';
 import { Kafka } from 'kafkajs';
 import { LedgerWriter } from '../infrastructure/pg/LedgerWriter.js';
-import { GokwikAwbLedgerConsumer } from '../interfaces/consumers/GokwikAwbLedgerConsumer.js';
+import { GokwikAwbLedgerConsumer } from '../interfaces/consumers/ShipmentLedgerConsumer.js';
 import { InMemoryRetryCounter } from './support/InMemoryRetryCounter.js';
 import { run as runAwbRepull } from '../jobs/gokwik-awb-repull/run.js';
 import { assertBrainApp, seedTestBrand, cleanupConnectorFixtures } from './helpers/connector-lifecycle-fixtures.js';

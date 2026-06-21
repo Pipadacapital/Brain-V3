@@ -1,0 +1,398 @@
+/**
+ * shiprocket-shipment-repull/run.ts — Shiprocket shipment-lifecycle trailing-window re-pull.
+ *
+ * A near-verbatim clone of gokwik-awb-repull/run.ts. Shiprocket is the SECOND logistics source
+ * feeding Brain's shared logistics canonical surface. Shipment outcomes (RTO/Delivered) are a
+ * LATE-CHANGING lifecycle (terminal states arrive days/weeks after dispatch), so this job re-reads
+ * a 45-day trailing window every run and RESTATES terminal states idempotently.
+ *
+ * Architecture (mirrors gokwik-awb-repull exactly):
+ *   1. Enumerate via list_shiprocket_connectors_for_repull() — SECURITY DEFINER, NO GUC at
+ *      enumerate time (durable rule: system-job-force-rls-enumeration).
+ *   2. GUC set AFTER enumerate, before any brand-scoped read/write (MT-1).
+ *   3. Single cursor resource 'shipment.lifecycle', FOR UPDATE SKIP LOCKED (overlap-safe).
+ *   4. WINDOW = 45 days — terminal states arrive late.
+ *   5. Per shipment record → map via @brain/shiprocket-mapper (awb hashed at boundary, order_id
+ *      passthrough). event_id = uuidV5FromShipment(brand, awb, status, status_changed_at) →
+ *      DISTINCT per transition → a new Bronze row per state change → terminal RTO/Delivered RESTATED.
+ *   6. Emit shiprocket.shipment_status.v1 to the live lane → cursor high-water advance → sync_status.
+ *
+ * The re-pull does NOT do the ledger join — it lands events on the live lane. ShipmentLedgerConsumer
+ * turns terminal RTO/Delivered into cod_rto_clawback / cod_delivery_confirmed (shared with GoKwik;
+ * the ledger UNIQUE(brand,order,type,date) key prevents the two sources double-booking the same RTO).
+ *
+ * DEV-HONESTY: the read source is a labelled SYNTHETIC fixture (ShiprocketShipmentClient) — every
+ * event carries data_source='synthetic' + processing_flags._synthetic=true. NEVER presented as live.
+ *
+ * NEVER log email/password/token (I-S09) or raw AWB numbers (hashed at the mapper boundary).
+ * brand_id ALWAYS from the enumeration fn (MT-1) — NEVER from env or payload.
+ *
+ * Dev trigger (MB-6): pass connector_instance_id as argv[2] to re-pull a single connector.
+ */
+
+import { Pool } from 'pg';
+import { Kafka, type Producer } from 'kafkajs';
+import { buildPartitionKey } from '@brain/events';
+import { CollectorEventV1Schema, COLLECTOR_EVENT_V1_TOPIC_SUFFIX } from '@brain/contracts';
+import {
+  mapShiprocketShipment,
+  uuidV5FromShipment,
+  SHIPROCKET_SHIPMENT_STATUS_V1_EVENT_NAME,
+  type ShiprocketShipmentRecord,
+} from '@brain/shiprocket-mapper';
+import {
+  ShiprocketShipmentClient,
+  SHIPROCKET_SHIPMENT_PAGE_SIZE,
+} from './shiprocket-client.js';
+import { SHIPROCKET_AUTH_ERROR, type ShiprocketApiCredentials } from './shiprocket-token-provider.js';
+import { recordConnectorAuthRejected } from '../../infrastructure/observability/connector-auth-health.js';
+import { SaltProvider, LocalSecretsProvider } from '../../infrastructure/secrets/SaltProvider.js';
+import { resolveSaltHex } from '@brain/identity-core';
+import { log } from '../../log.js';
+import { acquireCursorLock, getCursorValue, upsertCursorValue } from '../../infrastructure/pg/CursorRepository.js';
+
+// ── Configuration ─────────────────────────────────────────────────────────────
+
+const DB_URL =
+  process.env['BRAIN_APP_DATABASE_URL'] ??
+  'postgres://brain_app:brain_app@localhost:5432/brain';
+
+const BROKERS = (process.env['KAFKA_BROKERS'] ?? 'localhost:9092').split(',');
+const ENV = process.env['APP_ENV'] ?? 'dev';
+const LIVE_TOPIC = process.env['COLLECTOR_TOPIC'] ?? `${ENV}.${COLLECTOR_EVENT_V1_TOPIC_SUFFIX}`;
+
+/** Single cursor resource. WINDOW = 45 days — terminal shipment states arrive late. */
+const SHIPMENT_CURSOR_RESOURCE = 'shipment.lifecycle' as const;
+const SHIPMENT_WINDOW_MS = 45 * 24 * 60 * 60 * 1000;
+
+interface ShiprocketConnectorRow {
+  connector_instance_id: string;
+  brand_id: string;
+  secret_ref: string;
+  shiprocket_channel_id: string | null;
+}
+
+/** Dev credentials bundle parsed from the secret. NEVER logged (I-S09). */
+interface ShiprocketSecretBundle {
+  email: string;
+  password: string;
+}
+
+// ── Main entry point ──────────────────────────────────────────────────────────
+
+export async function run(targetConnectorInstanceId?: string): Promise<void> {
+  const pool = new Pool({ connectionString: DB_URL, max: 5 });
+  const kafka = new Kafka({
+    clientId: 'shiprocket-shipment-repull',
+    brokers: BROKERS,
+    retry: { retries: 5 },
+  });
+  const producer = kafka.producer();
+
+  const saltSecrets = new LocalSecretsProvider();
+  const saltProvider = new SaltProvider(saltSecrets, resolveSaltHex);
+
+  try {
+    await producer.connect();
+    log.info(`starting — topic=${LIVE_TOPIC} brokers=${BROKERS.join(',')}`);
+
+    const connectors = await enumerateConnectors(pool, targetConnectorInstanceId);
+    if (connectors.length === 0) {
+      log.info('no connected Shiprocket connectors found — exiting');
+      return;
+    }
+    log.info(`found ${connectors.length} connector(s) to re-pull`);
+
+    for (const connector of connectors) {
+      await repullConnector({ connector, pool, producer, saltProvider });
+    }
+  } finally {
+    await producer.disconnect();
+    await pool.end();
+  }
+}
+
+// ── Enumerate (durable rule system-job-force-rls-enumeration — no GUC here) ───
+
+async function enumerateConnectors(
+  pool: Pool,
+  targetConnectorInstanceId?: string,
+): Promise<ShiprocketConnectorRow[]> {
+  if (targetConnectorInstanceId) {
+    const result = await pool.query<ShiprocketConnectorRow>(
+      `SELECT connector_instance_id, brand_id, secret_ref, shiprocket_channel_id
+       FROM list_shiprocket_connectors_for_repull()
+       WHERE connector_instance_id = $1`,
+      [targetConnectorInstanceId],
+    );
+    return result.rows;
+  }
+  const result = await pool.query<ShiprocketConnectorRow>(
+    `SELECT connector_instance_id, brand_id, secret_ref, shiprocket_channel_id
+     FROM list_shiprocket_connectors_for_repull()`,
+  );
+  return result.rows;
+}
+
+// ── Per-connector re-pull ─────────────────────────────────────────────────────
+
+interface RepullParams {
+  connector: ShiprocketConnectorRow;
+  pool: Pool;
+  producer: Producer;
+  saltProvider: SaltProvider;
+}
+
+async function repullConnector(params: RepullParams): Promise<void> {
+  const { connector, pool, producer, saltProvider } = params;
+  const { connector_instance_id: ciId, brand_id: brandId, secret_ref: secretRef } = connector;
+
+  log.info(`connector=${ciId} brand=${brandId}`);
+
+  const creds = await resolveShiprocketCredentials(secretRef);
+  if (!creds) {
+    log.error(`connector=${ciId} — credentials not found (RECONNECT_REQUIRED)`);
+    return;
+  }
+
+  let saltHex: string;
+  try {
+    saltHex = await saltProvider.saltHexForBrand(brandId);
+  } catch (e) {
+    log.error(`connector=${ciId} — salt fetch failed`, { detail: e });
+    return;
+  }
+
+  // GUC-after-enumerate (MT-1): brand context set BEFORE any brand-scoped read/write.
+  await setSyncState(pool, brandId, ciId, 'syncing', null);
+
+  const apiClient = new ShiprocketShipmentClient(creds);
+
+  let emitted = 0;
+  try {
+    emitted = await repullShipmentCursor({ ciId, brandId, pool, producer, apiClient, saltHex });
+  } catch (err) {
+    // Auth rejection (401/403 from the real client) → reconnect signal + observability parity.
+    if (String(err).includes(SHIPROCKET_AUTH_ERROR)) {
+      recordConnectorAuthRejected('shiprocket');
+      log.error(`connector=${ciId} — shiprocket auth error (RECONNECT_REQUIRED)`, { err });
+      await setSyncState(pool, brandId, ciId, 'error', 'shiprocket auth error — RECONNECT_REQUIRED');
+      return;
+    }
+    log.error(`connector=${ciId} cursor=${SHIPMENT_CURSOR_RESOURCE} error`, { err });
+    await setSyncState(pool, brandId, ciId, 'error', 'shipment re-pull failed');
+    return;
+  }
+
+  await setSyncState(pool, brandId, ciId, 'connected', null);
+  log.info(`connector=${ciId} COMPLETED emitted=${emitted}`);
+}
+
+// ── Cursor re-pull (45-day trailing window, restates terminal states) ─────────
+
+interface CursorRepullParams {
+  ciId: string;
+  brandId: string;
+  pool: Pool;
+  producer: Producer;
+  apiClient: ShiprocketShipmentClient;
+  saltHex: string;
+}
+
+async function repullShipmentCursor(params: CursorRepullParams): Promise<number> {
+  const { ciId, brandId, pool, producer, apiClient, saltHex } = params;
+
+  // FOR UPDATE SKIP LOCKED — overlap-lock on the single shipment cursor resource.
+  const lockAcquired = await acquireCursorLock(pool, brandId, ciId, SHIPMENT_CURSOR_RESOURCE);
+  if (!lockAcquired) {
+    log.info(`connector=${ciId} cursor=${SHIPMENT_CURSOR_RESOURCE} — locked by another worker, skipping`);
+    return 0;
+  }
+
+  const priorCursorValue = await getCursorValue(pool, brandId, ciId, SHIPMENT_CURSOR_RESOURCE);
+
+  const nowTs = Math.floor(Date.now() / 1000);
+  const windowStartTs = nowTs - Math.floor(SHIPMENT_WINDOW_MS / 1000);
+
+  // Re-read the WHOLE trailing window so terminal-state transitions are restated.
+  const fromTs = priorCursorValue
+    ? Math.max(parseInt(priorCursorValue, 10), windowStartTs)
+    : windowStartTs;
+  const effectiveFromTs = windowStartTs;   // ALWAYS re-scan the full window for restatement
+  const toTs = nowTs;
+
+  log.info(`[shiprocket-shipment-repull] connector=${ciId} cursor=${SHIPMENT_CURSOR_RESOURCE} ` +
+        `from=${effectiveFromTs} to=${toTs} (priorHighWater=${fromTs})`);
+
+  let skip = 0;
+  let recordsProcessed = 0;
+  let maxChangedAt: number | null = priorCursorValue ? parseInt(priorCursorValue, 10) : null;
+
+  while (true) {
+    const page = await apiClient.fetchShipmentPage(effectiveFromTs, toTs, skip);
+    if (page.items.length === 0) break;
+
+    const messages = [];
+    for (const rawRecord of page.items) {
+      const record = rawRecord as ShiprocketShipmentRecord;
+      const orderId = record.order_id ? String(record.order_id) : '';
+      const rawAwb = record.awb ? String(record.awb) : '';
+      const rawStatus = record.status ? String(record.status) : '';
+      if (!orderId || !rawStatus) continue;
+
+      const mapped = mapShiprocketShipment(record, brandId, saltHex, page.dataSource);
+      const statusChangedAt = mapped.properties.status_changed_at;
+
+      // DISTINCT per (awb, status, status_changed_at) → restatement-safe Bronze key.
+      const eventId = uuidV5FromShipment(brandId, rawAwb, rawStatus, statusChangedAt);
+
+      const envelope = CollectorEventV1Schema.parse({
+        schema_version: '1',
+        event_id: eventId,
+        brand_id: brandId,                  // from fn result (MT-1) — never from payload
+        correlation_id: `shiprocket-shipment-repull:${ciId}:${eventId}`,
+        event_name: SHIPROCKET_SHIPMENT_STATUS_V1_EVENT_NAME,
+        occurred_at: mapped.occurred_at,
+        ingested_at: new Date().toISOString(),
+        properties: {
+          ...(mapped.properties as unknown as Record<string, unknown>),
+          // DEV-HONESTY: stamp the synthetic flag onto processing_flags so Bronze carries it.
+          processing_flags: { _synthetic: page.dataSource === 'synthetic' },
+        },
+      });
+
+      messages.push({
+        key: buildPartitionKey(brandId, eventId),
+        value: Buffer.from(JSON.stringify(envelope)),
+      });
+
+      const changedSec = Math.floor(Date.parse(statusChangedAt) / 1000);
+      if (!Number.isNaN(changedSec) && (maxChangedAt === null || changedSec > maxChangedAt)) {
+        maxChangedAt = changedSec;
+      }
+      recordsProcessed++;
+    }
+
+    if (messages.length > 0) {
+      await producer.send({ topic: LIVE_TOPIC, messages });
+    }
+    log.info(`[shiprocket-shipment-repull] connector=${ciId} cursor=${SHIPMENT_CURSOR_RESOURCE} ` +
+            `skip=${skip} emitted=${messages.length} total=${recordsProcessed}`);
+
+    if (maxChangedAt !== null) {
+      await upsertCursorValue(pool, brandId, ciId, SHIPMENT_CURSOR_RESOURCE, String(maxChangedAt));
+    }
+
+    if (!page.hasMore) break;
+    skip += SHIPROCKET_SHIPMENT_PAGE_SIZE;
+  }
+
+  log.info(`connector=${ciId} cursor=${SHIPMENT_CURSOR_RESOURCE} DONE records=${recordsProcessed}`);
+  return recordsProcessed;
+}
+
+// ── Sync status (mirrors gokwik-awb-repull setSyncState exactly) ──────────────
+
+async function setSyncState(
+  pool: Pool,
+  brandId: string,
+  connectorInstanceId: string,
+  state: 'syncing' | 'connected' | 'error',
+  lastError: string | null,
+): Promise<void> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(`SELECT set_config('app.current_brand_id', $1, true)`, [brandId]);
+    if (state === 'connected') {
+      await client.query(
+        `UPDATE connector_sync_status
+           SET state = $3, last_sync_at = NOW(), last_error = $4, updated_at = NOW()
+         WHERE brand_id = $1 AND connector_instance_id = $2`,
+        [brandId, connectorInstanceId, state, lastError],
+      );
+    } else {
+      await client.query(
+        `UPDATE connector_sync_status
+           SET state = $3, last_error = $4, updated_at = NOW()
+         WHERE brand_id = $1 AND connector_instance_id = $2`,
+        [brandId, connectorInstanceId, state, lastError],
+      );
+    }
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    log.error(`sync_status update failed (non-fatal)`, { err });
+  } finally {
+    client.release();
+  }
+}
+
+// ── Credentials resolver (prod: AWS Secrets Manager; dev: dev_secret bundle; NEVER log — I-S09) ──
+
+async function resolveShiprocketCredentials(secretRef: string): Promise<ShiprocketApiCredentials | null> {
+  if (process.env['NODE_ENV'] === 'production') {
+    try {
+      const { AwsSecretsManager } = await import('@brain/connector-secrets');
+      const region = process.env['BRAIN_AWS_REGION'] ?? process.env['AWS_REGION'] ?? 'us-east-1';
+      const mgr = new AwsSecretsManager(region, '', process.env['KMS_KEY_ID'] ?? '');
+      const bundle = await mgr.getSecret(secretRef);
+      if (bundle && typeof bundle['email'] === 'string' && typeof bundle['password'] === 'string') {
+        return { email: bundle['email'], password: bundle['password'] };
+      }
+      log.error(`[shiprocket] secret ${secretRef.slice(-24)} resolved but missing email/password`);
+    } catch (err) {
+      log.error('[shiprocket] AwsSecretsManager getSecret failed', { err });
+    }
+    // fall through to the env fallback below; dev_secret won't exist in prod.
+  }
+
+  const { Pool: PgPool } = await import('pg');
+  const devPool = new PgPool({
+    connectionString: process.env['BRAIN_APP_DATABASE_URL'] ?? process.env['DATABASE_URL'],
+    max: 1,
+  });
+  try {
+    const name = secretRef.split(':secret:')[1] ?? secretRef;
+    const res = await devPool.query<{ secret_value: string }>(
+      `SELECT secret_value FROM dev_secret WHERE name = $1`,
+      [name],
+    );
+    const raw = res.rows[0]?.secret_value;
+    if (raw) {
+      try {
+        const bundle = JSON.parse(raw) as ShiprocketSecretBundle;
+        if (bundle.email && bundle.password) {
+          return { email: bundle.email, password: bundle.password };
+        }
+      } catch {
+        // Malformed bundle — fall through
+      }
+    }
+    const envEmail = process.env['SHIPROCKET_EMAIL'];
+    const envPassword = process.env['SHIPROCKET_PASSWORD'];
+    if (envEmail && envPassword) {
+      return { email: envEmail, password: envPassword };
+    }
+    return null;
+  } finally {
+    await devPool.end();
+  }
+}
+
+// ── Entrypoint (dev trigger MB-6) ─────────────────────────────────────────────
+
+if (process.argv[1]?.endsWith('run.ts') || process.argv[1]?.endsWith('run.js')) {
+  const ciArg = process.argv[2];
+  run(ciArg).catch((err) => {
+    log.error('fatal', { err });
+    process.exit(1);
+  });
+}
+
+export {
+  enumerateConnectors,
+  setSyncState,
+  SHIPMENT_CURSOR_RESOURCE,
+  SHIPMENT_WINDOW_MS,
+};

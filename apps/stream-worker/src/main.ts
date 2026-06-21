@@ -50,7 +50,10 @@ import { BackfillOrderConsumer } from './interfaces/consumers/BackfillOrderConsu
 import { LiveLedgerBridgeConsumer } from './interfaces/consumers/LiveLedgerBridgeConsumer.js';
 import { SettlementLedgerConsumer } from './interfaces/consumers/SettlementLedgerConsumer.js';
 import { SpendLedgerConsumer } from './interfaces/consumers/SpendLedgerConsumer.js';
-import { GokwikAwbLedgerConsumer } from './interfaces/consumers/GokwikAwbLedgerConsumer.js';
+// ShipmentLedgerConsumer handles BOTH gokwik.awb_status.v1 + shiprocket.shipment_status.v1
+// (shared logistics ledger). Imported under the back-compat GokwikAwbLedgerConsumer alias so the
+// existing wiring + gokwik-awb-ledger-wiring.e2e.test.ts guard are unchanged.
+import { GokwikAwbLedgerConsumer } from './interfaces/consumers/ShipmentLedgerConsumer.js';
 import { EventBronzeBridgeConsumer } from './interfaces/consumers/EventBronzeBridgeConsumer.js';
 import { LedgerWriter } from './infrastructure/pg/LedgerWriter.js';
 import mysql from 'mysql2/promise';

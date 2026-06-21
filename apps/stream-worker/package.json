@@ -27,6 +27,7 @@
     "@brain/observability": "workspace:*",
     "@brain/pii-vault": "workspace:*",
     "@brain/razorpay-mapper": "workspace:*",
+    "@brain/shiprocket-mapper": "workspace:*",
     "@brain/shopflo-mapper": "workspace:*",
     "@brain/shopify-mapper": "workspace:*",
     "@brain/tenant-context": "workspace:*",

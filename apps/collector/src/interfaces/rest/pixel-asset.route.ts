@@ -56,9 +56,24 @@ export const PIXEL_JS = `(function(){
   function clickIds(q){ var ids={}; ["fbclid","gclid","ttclid"].forEach(function(k){ if(q[k]) ids[k]=q[k]; }); return Object.keys(ids).length?ids:null; }
   function utm(q){ var u={}; ["source","medium","campaign","term","content"].forEach(function(k){ if(q["utm_"+k]) u[k]=q["utm_"+k]; }); return Object.keys(u).length?u:null; }
   function consent(){
+    // 1. Explicit override: window.__brainConsent (host page sets it).
     var c = W.__brainConsent;
-    if (c == null || typeof c !== "object") return null;
-    return { analytics: c.analytics===true, marketing: c.marketing===true, personalization: c.personalization===true, ai_processing: c.ai_processing===true };
+    if (c != null && typeof c === "object") return { analytics: c.analytics===true, marketing: c.marketing===true, personalization: c.personalization===true, ai_processing: c.ai_processing===true };
+    // 2. Shopify Customer Privacy API — the storefront's REAL consent state. Returning a PRESENT
+    //    consent_flags object (whatever the values) is what lets the event pass the R3 gate into
+    //    Bronze; the values then gate downstream marketing/CAPI use. Absent API → null (R3 drops).
+    try {
+      var sp = W.Shopify && W.Shopify.customerPrivacy;
+      if (sp && typeof sp.analyticsProcessingAllowed === "function") {
+        return {
+          analytics: sp.analyticsProcessingAllowed() === true,
+          marketing: typeof sp.marketingAllowed === "function" ? sp.marketingAllowed() === true : false,
+          personalization: typeof sp.preferencesProcessingAllowed === "function" ? sp.preferencesProcessingAllowed() === true : false,
+          ai_processing: false
+        };
+      }
+    } catch(e){}
+    return null;
   }
   function uaClass(){ return /Mobi|Android|iPhone|iPad/i.test(NS.userAgent) ? "mobile" : "desktop"; }
 

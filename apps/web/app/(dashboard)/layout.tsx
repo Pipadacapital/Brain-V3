@@ -89,6 +89,7 @@ const NAV_SECTIONS: NavSection[] = [
       { href: '/analytics/settlements', label: 'Settlements', icon: Receipt },
       { href: '/analytics/cod-rto', label: 'CoD / RTO', icon: Truck },
       { href: '/analytics/order-status', label: 'Order Status', icon: Layers },
+      { href: '/analytics/logistics', label: 'Logistics', icon: Truck },
       { href: '/analytics/journey', label: 'Journey', icon: Footprints, centerKey: 'journey' },
       { href: '/analytics/attribution', label: 'Attribution', icon: Target, centerKey: 'attribution' },
       { href: '/analytics/conversion-feedback', label: 'Conversion Feedback', icon: Send },

@@ -207,7 +207,9 @@ export async function main(): Promise<void> {
       'GOOGLE_ADS_CALLBACK_URL',
       'http://localhost:3001/api/v1/connectors/google_ads/callback',
     ),
-    pixelIngestBaseUrl: getEnv('PIXEL_INGEST_BASE_URL', 'http://localhost:3001'),
+    // The collector (not core) serves /pixel.js + /collect — default to its local port. In prod set
+    // PIXEL_INGEST_BASE_URL to the public HTTPS host (CNAME / tunnel) so the Shopify ScriptTag is valid.
+    pixelIngestBaseUrl: getEnv('PIXEL_INGEST_BASE_URL', 'http://localhost:8787'),
     // Webhook live-lane Kafka config (B1 / ADR-LV-3)
     kafkaBrokers: (getEnv('KAFKA_BROKERS', 'localhost:9092')).split(','),
     kafkaEnv: getEnv('APP_ENV', 'dev'),

@@ -23,7 +23,8 @@ import type { IPixelStatusRepository } from '../../../../../pixel/domain/reposit
 export type InstallPixelErrorCode =
   | 'STOREFRONT_NOT_CONNECTED'
   | 'RECONNECT_REQUIRED'
-  | 'RECONNECT_REQUIRED_SCOPE';
+  | 'RECONNECT_REQUIRED_SCOPE'
+  | 'INGEST_NOT_HTTPS';
 
 export class InstallPixelError extends Error {
   constructor(public readonly code: InstallPixelErrorCode, message: string) {
@@ -92,6 +93,15 @@ export class InstallPixelCommand {
 
     // 4. Per-brand tokenized src — the ScriptTag-injected asset self-configures from the query
     //    string (no window.__brain available when injected by a ScriptTag).
+    // Shopify REQUIRES the ScriptTag src to be HTTPS (and it must be publicly reachable by the
+    // storefront browser to actually fire). Fail fast with guidance rather than a Shopify 422.
+    if (!this.ingestBaseUrl.startsWith('https://')) {
+      throw new InstallPixelError(
+        'INGEST_NOT_HTTPS',
+        'Shopify needs a public HTTPS pixel URL. Set PIXEL_INGEST_BASE_URL to an HTTPS host — a tunnel ' +
+          'locally (e.g. `pnpm dev:tunnel`) or your first-party CNAME in prod — then retry.',
+      );
+    }
     const src = `${this.ingestBaseUrl}/pixel.js?t=${inst.installToken}&b=${brandId}`;
 
     // 5/6. Idempotency: reuse an existing Brain ScriptTag if present; else create one.
@@ -112,6 +122,14 @@ export class InstallPixelCommand {
         throw new InstallPixelError(
           'RECONNECT_REQUIRED_SCOPE',
           'Reconnect Shopify to grant pixel-install permission (write_script_tags), then retry.',
+        );
+      }
+      // Shopify rejects a non-HTTPS / unreachable src with 422 — surface the actionable guidance.
+      if (err instanceof ShopifyApiError && err.status === 422) {
+        throw new InstallPixelError(
+          'INGEST_NOT_HTTPS',
+          'Shopify rejected the pixel URL (must be public HTTPS). Set PIXEL_INGEST_BASE_URL to an HTTPS ' +
+            'host — a tunnel locally (`pnpm dev:tunnel`) or your CNAME in prod — then retry.',
         );
       }
       throw err;

@@ -361,6 +361,18 @@ export function useJourneyTimeline(orderId?: string | null) {
   });
 }
 
+/**
+ * useShipmentOutcomes — delivered/RTO/other + RTO% (overall, by courier, by pincode) over a range,
+ * from the multi-source silver_shipment mart (GoKwik AWB + Shiprocket). Slice 2 (logistics).
+ */
+export function useShipmentOutcomes(params?: { from?: string; to?: string }) {
+  return useQuery({
+    queryKey: [...ANALYTICS_QUERY_KEY, 'shipment-outcomes', params?.from, params?.to],
+    queryFn: () => analyticsApi.getShipmentOutcomes(params),
+    staleTime: 5 * 60_000,
+  });
+}
+
 // ── Attribution (Phase 5 — feat-attribution-ledger) ──────────────────────────────
 // Reads the Gold attribution credit ledger via the metric-engine sole read path
 // (I-ST01 — UI never queries the ledger/StarRocks). The `model` is part of the query

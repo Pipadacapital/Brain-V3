@@ -55,6 +55,10 @@ export type { BlendedRoasRow } from './blended-roas.js';
 // GoKwik + Shopflo CoD/RTO surface (Track C) — RTO rates, CoD mix/CM2, checkout funnel
 export { computeCodRtoRates } from './cod-rto-rates.js';
 export type { CodRtoRatesResult, CodRtoCohort } from './cod-rto-rates.js';
+// Logistics shipment outcomes (Slice 2) — delivered/RTO/other + RTO% by courier/pincode,
+// from the multi-source silver_shipment mart (GoKwik AWB + Shiprocket).
+export { computeShipmentOutcomes } from './shipment-outcomes.js';
+export type { ShipmentOutcomesResult, CourierOutcome, PincodeOutcome } from './shipment-outcomes.js';
 export { computeCodMix } from './cod-mix.js';
 export type { CodMixResult } from './cod-mix.js';
 export { computeCheckoutFunnel } from './checkout-funnel.js';

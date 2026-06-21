@@ -25,6 +25,7 @@ import {
   AttributionReconciliationSchema,
   ChannelRoasSchema,
   JourneyFirstTouchMixSchema,
+  ShipmentOutcomesSchema,
   JourneyTimelineSchema,
   JourneyStitchRateSchema,
   OrderStatusMixSchema,
@@ -125,6 +126,7 @@ import type {
   AnalyticsOrdersListResponse,
   AnalyticsOrderDetailResponse,
   AnalyticsJourneyFirstTouchMixResponse,
+  AnalyticsShipmentOutcomesResponse,
   AnalyticsJourneyStitchRateResponse,
   AnalyticsJourneyTimelineResponse,
   ConsentCoverageResponse,
@@ -1399,6 +1401,21 @@ export const analyticsApi = {
       `/v1/analytics/journey/first-touch-mix${qsStr ? `?${qsStr}` : ''}`,
     );
     return parseData(JourneyFirstTouchMixSchema, env);
+  },
+
+  /** GET /api/v1/analytics/logistics/shipment-outcomes — delivered/RTO + RTO% by courier/pincode. */
+  getShipmentOutcomes: async (params?: {
+    from?: string;
+    to?: string;
+  }): Promise<AnalyticsShipmentOutcomesResponse> => {
+    const qs = new URLSearchParams();
+    if (params?.from) qs.set('from', params.from);
+    if (params?.to) qs.set('to', params.to);
+    const qsStr = qs.toString();
+    const env = await bffFetch<BffEnvelope<unknown>>(
+      `/v1/analytics/logistics/shipment-outcomes${qsStr ? `?${qsStr}` : ''}`,
+    );
+    return parseData(ShipmentOutcomesSchema, env);
   },
 
   /** GET /api/v1/analytics/journey/stitch-rate — deterministic cart-stitch hit-rate. */

@@ -70,6 +70,7 @@ import type {
   AttributionReconciliation as ContractAttributionReconciliation,
   ChannelRoas as ContractChannelRoas,
   JourneyFirstTouchMix as ContractJourneyFirstTouchMix,
+  ShipmentOutcomes as ContractShipmentOutcomes,
   JourneyTimeline as ContractJourneyTimeline,
   JourneyStitchRate as ContractJourneyStitchRate,
   OrderStatusMix as ContractOrderStatusMix,
@@ -101,7 +102,7 @@ import type {
 } from '@brain/contracts';
 import { jtiFromJwt, csrfTokenForSession } from './csrf.js';
 import type { Pool as PgPool } from 'pg';
-import { getRevenueMetrics, getRevenueTimeseries, getKpiSummary, getRecognitionBreakdown, getRecentActivity, getOrdersTimeseries, getOrderStats, getDataHealth, getSettlementSummary, getTrackingHealth, getRecentEvents, getAdSpendTimeseries, getBlendedRoas, getCodRtoRates, getCodMix, getCheckoutFunnel, getRtoRiskDistribution, getOrderStatusMix, getTopProducts, getOrdersList, getOrderDetail, getContributionMargin, listCostInputs, upsertCostInput, getJourneyFirstTouchMix, getJourneyStitchRate, getJourneyTimeline, getConsentCoverage, getConsentSuppressionSummary, getConsentGateActivity, getConsentWindowConfig, getAttributionByChannel, getAttributionReconciliation, getChannelRoas, getCapiFeedbackSummary, getCapiFeedbackEvents, getCapiFeedbackDeletions } from '../../analytics/index.js';
+import { getRevenueMetrics, getRevenueTimeseries, getKpiSummary, getRecognitionBreakdown, getRecentActivity, getOrdersTimeseries, getOrderStats, getDataHealth, getSettlementSummary, getTrackingHealth, getRecentEvents, getAdSpendTimeseries, getBlendedRoas, getCodRtoRates, getCodMix, getCheckoutFunnel, getRtoRiskDistribution, getOrderStatusMix, getTopProducts, getOrdersList, getOrderDetail, getContributionMargin, listCostInputs, upsertCostInput, getJourneyFirstTouchMix, getJourneyStitchRate, getJourneyTimeline, getShipmentOutcomes, getConsentCoverage, getConsentSuppressionSummary, getConsentGateActivity, getConsentWindowConfig, getAttributionByChannel, getAttributionReconciliation, getChannelRoas, getCapiFeedbackSummary, getCapiFeedbackEvents, getCapiFeedbackDeletions } from '../../analytics/index.js';
 import { getDataQualitySummary, getMetricTrust } from '../../data-quality/index.js';
 import { computeFoundationHealth, freshnessFromIngest, computeEntitlements, type FoundationSignals } from '../../analytics/index.js';
 import { CONNECTOR_CATALOG } from '../../connector/catalog/registry.js';
@@ -3281,6 +3282,69 @@ export function registerBffRoutes(
           fromStr,
           toStr,
           // Dev: journey demo is enriched with clearly-labelled synthetic fixtures.
+          dataSource: 'synthetic',
+        },
+      );
+
+      return reply.send({ request_id: requestId, data: result });
+    },
+  );
+
+  /**
+   * GET /api/v1/analytics/logistics/shipment-outcomes?from=YYYY-MM-DD&to=YYYY-MM-DD
+   * Shipment outcome breakdown (delivered/RTO/other/in-transit + RTO% overall, by courier,
+   * by pincode) over a window, from the multi-source silver_shipment mart (GoKwik AWB +
+   * Shiprocket). Slice 2.
+   */
+  fastify.get(
+    '/api/v1/analytics/logistics/shipment-outcomes',
+    {
+      preHandler: [bffProtectedPreHandler],
+      schema: {
+        querystring: {
+          type: 'object',
+          properties: {
+            from: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
+            to:   { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
+          },
+          additionalProperties: false,
+        },
+      },
+      attachValidation: true,
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const validationError = (request as FastifyRequest & { validationError?: Error }).validationError;
+      if (validationError) {
+        return reply.code(400).send({
+          request_id: requestId,
+          error: { code: 'INVALID_PARAMS', message: 'from/to must be YYYY-MM-DD.' },
+        });
+      }
+
+      const auth = (request as AuthenticatedRequest).auth;
+      if (!auth.brandId) {
+        return reply.send({ request_id: requestId, data: { state: 'no_data' } });
+      }
+      if (!srPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (StarRocks) not available' } });
+      }
+
+      const query = request.query as { from?: string; to?: string };
+      const today = new Date().toISOString().split('T')[0] as string;
+      const toStr = query.to ?? today;
+      const defaultFrom = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString().split('T')[0] as string;
+      const fromStr = query.from ?? defaultFrom;
+
+      const result: ContractShipmentOutcomes = await getShipmentOutcomes(
+        auth.brandId,
+        { srPool },
+        {
+          from: new Date(`${fromStr}T00:00:00Z`),
+          to: new Date(`${toStr}T23:59:59Z`),
+          fromStr,
+          toStr,
+          // Dev: shipment lifecycle is fixture-sourced (real shape, synthetic source).
           dataSource: 'synthetic',
         },
       );

@@ -489,6 +489,19 @@ importers:
 
   packages/feature-flags: {}
 
+  packages/feature-store:
+    dependencies:
+      ioredis:
+        specifier: ^5.4.1
+        version: 5.11.1
+    devDependencies:
+      '@types/node':
+        specifier: ^25.9.3
+        version: 25.9.3
+      mysql2:
+        specifier: ^3.11.0
+        version: 3.22.5(@types/node@25.9.3)
+
   packages/gokwik-mapper:
     dependencies:
       '@brain/logistics-status':

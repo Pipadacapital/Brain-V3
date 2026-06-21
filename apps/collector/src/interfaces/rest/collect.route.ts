@@ -13,6 +13,28 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import type { AcceptEventUseCase } from '../../application/accept-event.usecase.js';
 import { extractCorrelationId, incrementCounter } from '@brain/observability';
 
+/**
+ * ITP defense (M1 pixel scope): set the brain_anon_id as a SERVER-set first-party cookie. Safari/ITP
+ * caps SCRIPT-set (document.cookie) first-party cookies to 7 days, but NOT HTTP-`Set-Cookie` ones —
+ * so the server stamping it here makes the anon-id durable when served from a first-party CNAME.
+ * Flag-gated (PIXEL_FIRST_PARTY_COOKIE=true) + only effective on a first-party ingest host; the
+ * stateless-edge default (REC-4) stays unless enabled. UUID-guarded (no header injection).
+ */
+const FIRST_PARTY_COOKIE = process.env['PIXEL_FIRST_PARTY_COOKIE'] === 'true';
+const ANON_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const TWO_YEARS_SECONDS = 63_072_000;
+
+function maybeSetFirstPartyCookie(rawBody: Record<string, unknown>, reply: FastifyReply): void {
+  if (!FIRST_PARTY_COOKIE) return;
+  const props = rawBody['properties'] as Record<string, unknown> | undefined;
+  const anon = typeof props?.['brain_anon_id'] === 'string' ? (props['brain_anon_id'] as string) : '';
+  if (!ANON_UUID_RE.test(anon)) return;
+  reply.header(
+    'Set-Cookie',
+    `__brain_anon_id=${anon}; Max-Age=${TWO_YEARS_SECONDS}; Path=/; SameSite=Lax; Secure; HttpOnly`,
+  );
+}
+
 export function registerCollectRoute(
   app: FastifyInstance,
   acceptUseCase: AcceptEventUseCase,
@@ -30,6 +52,7 @@ export function registerCollectRoute(
 
     // ACK counter — the denominator of the collector accept+ack SLO (C2 / R-05).
     incrementCounter('collector_accept_total');
+    maybeSetFirstPartyCookie(rawBody, reply); // ITP defense (flag-gated)
     reply
       .header('X-Correlation-Id', correlationId)
       .header('X-Spool-Id', result.spoolId.toString())
@@ -47,6 +70,7 @@ export function registerCollectRoute(
     const result = await acceptUseCase.execute(rawBody);
 
     incrementCounter('collector_accept_total');
+    maybeSetFirstPartyCookie(rawBody, reply); // ITP defense (flag-gated)
     reply
       .header('X-Correlation-Id', correlationId)
       .header('X-Spool-Id', result.spoolId.toString())

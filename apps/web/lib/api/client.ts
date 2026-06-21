@@ -869,6 +869,16 @@ export const pixelApi = {
       idempotencyKey: generateRequestId(),
     }),
 
+  // Production install path: auto-inject the pixel onto the connected Shopify storefront
+  // (Admin API ScriptTag) + flip installed_at — no manual paste. Idempotent.
+  installShopify: async (): Promise<{ installed: boolean; provider: string; already_present: boolean }> => {
+    const { data } = await bffFetch<{ data: { installed: boolean; provider: string; already_present: boolean } }>(
+      '/v1/pixel/install/shopify',
+      { method: 'POST', idempotencyKey: generateRequestId() },
+    );
+    return data;
+  },
+
   // BFF returns { request_id, data: {...} } — unwrap to flat PixelHealthResponse.
   getHealth: async (): Promise<PixelHealthResponse> => {
     const res = await bffFetch<{ request_id: string; data: PixelHealthResponse }>('/v1/pixel/health');

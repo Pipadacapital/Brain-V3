@@ -8,7 +8,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
 import { EmptyState } from '@/components/ui/empty-state';
-import { usePixelInstallation, useProvisionPixel, usePixelHealth, useVerifyPixel } from '@/lib/hooks/use-pixel';
+import { usePixelInstallation, useProvisionPixel, usePixelHealth, useVerifyPixel, useInstallPixelShopify } from '@/lib/hooks/use-pixel';
 import { useBrandList } from '@/lib/hooks/use-workspace';
 import { BffApiError } from '@/lib/api/client';
 import { toast } from '@/components/ui/toaster';
@@ -75,6 +75,26 @@ export function PixelWizard() {
   const { data: health, isLoading: loadingHealth } = usePixelHealth();
   const { mutate: verifyPixel, isPending: isVerifying } = useVerifyPixel();
   const { mutate: provisionPixel, isPending: isProvisioning } = useProvisionPixel();
+  const { mutate: installShopify, isPending: isAutoInstalling } = useInstallPixelShopify();
+
+  function handleAutoInstall() {
+    installShopify(undefined, {
+      onSuccess: (res) => {
+        toast({
+          title: res.already_present ? 'Pixel already installed' : 'Pixel installed on Shopify',
+          description: 'The Brain Pixel is now live on your storefront — no manual paste needed.',
+        });
+      },
+      onError: (err) => {
+        // The server returns actionable codes (STOREFRONT_NOT_CONNECTED / RECONNECT_REQUIRED_SCOPE).
+        const description =
+          err instanceof BffApiError && err.message
+            ? err.message
+            : 'Could not auto-install the pixel. Try the manual snippet below.';
+        toast({ title: 'Auto-install failed', description, variant: 'destructive' });
+      },
+    });
+  }
 
   function handleGenerate() {
     const targetHost = brandHost ?? (typeof window !== 'undefined' ? window.location.host : '');
@@ -204,12 +224,32 @@ export function PixelWizard() {
         </Card>
       )}
 
-      {/* Step 2: Installation instructions + snippet */}
+      {/* Step 2a: One-click auto-install onto a connected Shopify storefront (recommended). */}
+      <Card data-testid="pixel-auto-install-card">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Zap className="h-4 w-4 text-primary" aria-hidden="true" />
+            Install automatically on Shopify
+          </CardTitle>
+          <CardDescription>
+            Inject the Brain Pixel onto your connected Shopify storefront in one click — no theme
+            edit, no copy-paste. Requires a connected Shopify store.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Button onClick={handleAutoInstall} disabled={isAutoInstalling} data-testid="btn-auto-install-shopify">
+            {isAutoInstalling && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />}
+            {isAutoInstalling ? 'Installing…' : 'Install on Shopify'}
+          </Button>
+        </CardContent>
+      </Card>
+
+      {/* Step 2b: Manual snippet (fallback when not on Shopify, or for any storefront). */}
       <Card data-testid="pixel-snippet-card">
         <CardHeader>
-          <CardTitle>Install the Brain Pixel</CardTitle>
+          <CardTitle>Or install manually</CardTitle>
           <CardDescription>
-            Copy and paste this code snippet into the{' '}
+            Not on Shopify? Copy and paste this snippet into the{' '}
             <code className="text-xs bg-muted px-1 py-0.5 rounded">&lt;head&gt;</code> section of
             your website.
           </CardDescription>

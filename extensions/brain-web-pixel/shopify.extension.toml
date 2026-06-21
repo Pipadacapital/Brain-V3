@@ -1,0 +1,39 @@
+# Brain Web Pixel extension (feat-pixel-production-install — "laid").
+#
+# The modern, sandboxed pixel path: covers storefront AND checkout/thank-you events (which
+# ScriptTags do not). Activated PER-MERCHANT at connect time via the Admin GraphQL
+# `webPixelCreate(webPixel: { settings })` mutation (ShopifyAdminClient.webPixelCreate) with the
+# brand's install_token + ingest URL injected as settings.
+#
+# DEPLOY (the ops step that "lays" this live — cannot run from this repo's CI without the Partner
+# app + credentials):
+#   1. shopify app deploy        # registers/updates this extension on the Brain Shopify app
+#   2. ensure the app's OAuth scopes include write_pixels + read_customer_events (InitiateOAuthCommand)
+#   3. switch InstallPixelCommand to call webPixelCreate (instead of createScriptTag) — see RB note.
+api_version = "2025-07"
+
+[[extensions]]
+name = "Brain Web Pixel"
+handle = "brain-web-pixel"
+type = "web_pixel_extension"
+runtime_context = "strict"
+
+  # Per-merchant settings injected by webPixelCreate at connect time.
+  [extensions.settings]
+  type = "object"
+
+    [extensions.settings.fields.install_token]
+    name = "install_token"
+    description = "Per-brand Brain pixel install token (public identifier)."
+    type = "single_line_text_field"
+    validations = [ { name = "min", value = "1" } ]
+
+    [extensions.settings.fields.brand_id]
+    name = "brand_id"
+    description = "Brand UUID (partition key; server derives authoritative brand from install_token)."
+    type = "single_line_text_field"
+
+    [extensions.settings.fields.ingest_base_url]
+    name = "ingest_base_url"
+    description = "Brain collector ingest base URL (e.g. https://pixel.merchant.com)."
+    type = "single_line_text_field"

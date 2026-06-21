@@ -15,6 +15,10 @@ import type { VerifyPixelCommand } from '../../application/commands/VerifyPixelC
 import type { GetPixelHealthQuery } from '../../application/queries/GetPixelHealthQuery.js';
 import { PixelInstallationNotFoundError } from '../../application/commands/VerifyPixelCommand.js';
 import type { PixelInstallation } from '../../domain/entities/PixelInstallation.js';
+import {
+  InstallPixelError,
+  type InstallPixelCommand,
+} from '../../../sources/storefront/shopify/application/commands/InstallPixelCommand.js';
 
 export interface PixelRouteDeps {
   getOrCreateInstallation: GetOrCreatePixelInstallationCommand;
@@ -25,6 +29,8 @@ export interface PixelRouteDeps {
   ingestBaseUrl: string;
   /** Helper to build a PixelInstallation domain entity (for snippet generation). */
   buildSnippet: (installToken: string, brandId: string, ingestBaseUrl: string) => string;
+  /** Production install path: auto-inject onto the connected Shopify storefront (optional). */
+  installPixel?: InstallPixelCommand;
 }
 
 export function registerPixelRoutes(fastify: FastifyInstance, deps: PixelRouteDeps): void {
@@ -105,6 +111,46 @@ export function registerPixelRoutes(fastify: FastifyInstance, deps: PixelRouteDe
       }
     },
   );
+
+  // ── POST /api/v1/pixel/install/shopify ────────────────────────────────────
+  // Production install path: auto-inject the pixel onto the connected Shopify storefront via the
+  // Admin API (ScriptTag) and flip installed_at — no manual paste. Idempotent.
+  if (deps.installPixel) {
+    const installPixel = deps.installPixel;
+    fastify.post(
+      '/api/v1/pixel/install/shopify',
+      async (req: FastifyRequest, reply: FastifyReply) => {
+        const brandId = getBrandId(req);
+        const requestId = (req.id as string) ?? crypto.randomUUID();
+        const idempotencyKey =
+          (req.headers['idempotency-key'] as string | undefined) ?? crypto.randomUUID();
+
+        try {
+          const result = await installPixel.execute({ brandId, idempotencyKey });
+          return reply.code(200).send({
+            request_id: requestId,
+            data: {
+              installed: result.installed,
+              provider: result.provider,
+              ref: result.ref,
+              install_token: result.installToken,
+              src: result.src,
+              already_present: result.alreadyPresent,
+            },
+          });
+        } catch (err) {
+          if (err instanceof InstallPixelError) {
+            // STOREFRONT_NOT_CONNECTED → 409 (precondition); reconnect cases → 409 with actionable code.
+            return reply.code(409).send({
+              request_id: requestId,
+              error: { code: err.code, message: err.message },
+            });
+          }
+          throw err;
+        }
+      },
+    );
+  }
 
   // ── GET /api/v1/pixel/health ──────────────────────────────────────────────
   // Returns pixel_status for the dashboard "Data Status" widget (§6.4).

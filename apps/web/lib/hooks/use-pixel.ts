@@ -40,3 +40,18 @@ export function useVerifyPixel() {
     },
   });
 }
+
+/**
+ * Production install path: auto-inject the pixel onto the connected Shopify storefront
+ * (no manual snippet paste). On success the installation + health queries refresh, flipping
+ * the status to installed/connected.
+ */
+export function useInstallPixelShopify() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => pixelApi.installShopify(),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: PIXEL_QUERY_KEY });
+    },
+  });
+}

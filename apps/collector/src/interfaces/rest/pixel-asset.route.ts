@@ -121,15 +121,31 @@ export const PIXEL_JS = `(function(){
   W.brain.page();
 })();`;
 
+/** UUID guard — only inject query-derived values that are real UUIDs (no JS-injection via the asset). */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export function registerPixelAssetRoute(app: FastifyInstance): void {
-  const handler = (_req: FastifyRequest, reply: FastifyReply): void => {
+  const handler = (
+    req: FastifyRequest<{ Querystring: { t?: string; b?: string } }>,
+    reply: FastifyReply,
+  ): void => {
+    // Production install path (ScriptTag-injected): the src carries ?t=<install_token>&b=<brand_id>.
+    // A ScriptTag cannot set window.__brain first (and document.currentScript is null for async
+    // injected scripts), so the collector PREPENDS the bootstrap when valid UUIDs are present.
+    // The manual-snippet path sets window.__brain itself → serve the plain asset.
+    let body = PIXEL_JS;
+    const t = req.query?.t;
+    const b = req.query?.b;
+    if (t && b && UUID_RE.test(t) && UUID_RE.test(b)) {
+      body = `window.__brain={install_token:"${t}",brand_id:"${b}"};\n${PIXEL_JS}`;
+    }
     reply
       .header('Content-Type', 'application/javascript; charset=utf-8')
       .header('Cache-Control', 'public, max-age=300') // 5 min (dev); CDN-overridable in prod
       .header('X-Pixel-Version', PIXEL_VERSION)
-      // NEVER Set-Cookie on the asset (REC-4) — edge stays stateless.
+      // NEVER Set-Cookie on the ASSET (REC-4) — first-party cookie is set on /collect (the event POST).
       .code(200)
-      .send(PIXEL_JS);
+      .send(body);
   };
   app.get('/pixel.js', handler);
   // Versioned alias for cache-busting (/pixel.v0.1.0.js).

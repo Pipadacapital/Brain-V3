@@ -191,6 +191,19 @@ export async function main(): Promise<void> {
     kafka, bridgeProcessEvent, topic, rtoPredictBronzeGroupId, retryCounter,
     'gokwik.rto_predict.v1', 'gokwik_rto_predict_bronze_write_total',
   );
+  // order.live.v1 (Shopify live + re-pull orders) is the SAME severed-landing class: the events
+  // carry NO install_token, so the pixel CollectorEventConsumer (R2 gate ON) quarantines them as
+  // tenant_unresolved — they never reach Bronze. The LiveLedgerBridgeConsumer writes the LEDGER
+  // (its "CollectorEventConsumer already writes Bronze" comment is stale — it does not, post-R2).
+  // This bridge restores the Bronze landing with brand_id server-trusted from the connector (MT-1),
+  // making Bronze the system-of-record for live orders again (DQ bronze-ledger-provenance holds).
+  // WIRED: do NOT remove without updating live-order-bronze-wiring.e2e.test.ts.
+  const liveOrderBronzeGroupId =
+    process.env['LIVE_ORDER_BRONZE_CONSUMER_GROUP_ID'] ?? 'live-order-bronze-bridge';
+  const liveOrderBronzeConsumer = new EventBronzeBridgeConsumer(
+    kafka, bridgeProcessEvent, topic, liveOrderBronzeGroupId, retryCounter,
+    'order.live.v1', 'live_order_bronze_write_total',
+  );
 
   // ── Identity bridge (D-7: same process, no new deployable) ──────────────────
   // SaltProvider: dev uses LocalSecretsProvider (env var holds 64-hex salt directly).
@@ -545,6 +558,13 @@ export async function main(): Promise<void> {
   log.info(`starting gokwik-rto-predict-bronze bridge — topic=${topic} group=${rtoPredictBronzeGroupId}`);
   await rtoPredictBronzeConsumer.start();
   log.info('gokwik-rto-predict-bronze bridge consumer running');
+
+  // ── Live-order Bronze bridge consumer (P0 — un-sever the order SoR landing) ──
+  // Same live topic, independent consumer group. Filters order.live.v1 → Bronze
+  // (enforceTenantDerivation=false). WIRED: do NOT remove without updating live-order-bronze-wiring.e2e.test.ts.
+  log.info(`starting live-order-bronze bridge — topic=${topic} group=${liveOrderBronzeGroupId}`);
+  await liveOrderBronzeConsumer.start();
+  log.info('live-order-bronze bridge consumer running');
 
   // All consumers are up — flip readiness so the orchestrator routes work to this instance.
   consumersReady = true;

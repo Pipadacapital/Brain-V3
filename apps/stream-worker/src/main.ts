@@ -40,6 +40,7 @@ import { ProcessEventUseCase } from './application/ProcessEventUseCase.js';
 import { ResolveIdentityUseCase } from './application/ResolveIdentityUseCase.js';
 import { CollectorEventConsumer } from './interfaces/consumers/CollectorEventConsumer.js';
 import { IdentityBridgeConsumer } from './identity-bridge/IdentityBridgeConsumer.js';
+import { IdentityGraph } from '@brain/identity-graph';
 import { ConsentSuppressorConsumer } from './interfaces/consumers/ConsentSuppressorConsumer.js';
 import { ProjectConsentUseCase } from './application/ProjectConsentUseCase.js';
 import { ConsentRepository } from './infrastructure/pg/ConsentRepository.js';
@@ -218,7 +219,25 @@ export async function main(): Promise<void> {
       ? new KmsVaultKeyProvider(new PgPool({ connectionString: dbUrl, max: 2 }), new AwsKmsDecryptAdapter())
       : new DevVaultKeyProvider();
   const identityRepo = new IdentityRepository(dbUrl, vaultKeyProvider);
-  const resolveIdentityUseCase = new ResolveIdentityUseCase(saltProvider, identityRepo);
+  // Neo4j identity graph (re-platform Phase D) — dual-write target during transition. Only wired when
+  // NEO4J_URI is set; PG identity stays authoritative until parity is proven (then PG is decommissioned).
+  let identityGraph: IdentityGraph | undefined;
+  const neo4jUri = process.env['NEO4J_URI'];
+  if (neo4jUri) {
+    identityGraph = new IdentityGraph(
+      neo4jUri,
+      process.env['NEO4J_USER'] ?? 'neo4j',
+      process.env['NEO4J_PASSWORD'] ?? 'neo4j',
+    );
+    try {
+      await identityGraph.bootstrap();
+      log.info(`[identity] Neo4j identity graph wired (dual-write) — ${neo4jUri}`);
+    } catch (err) {
+      log.warn(`[identity] Neo4j bootstrap failed — dual-write disabled this run: ${err instanceof Error ? err.message : String(err)}`);
+      identityGraph = undefined;
+    }
+  }
+  const resolveIdentityUseCase = new ResolveIdentityUseCase(saltProvider, identityRepo, identityGraph);
   const identityConsumer = new IdentityBridgeConsumer(
     kafka, resolveIdentityUseCase, topic, identityGroupId,
   );
@@ -445,6 +464,7 @@ export async function main(): Promise<void> {
       dqChecker.stop(),
       ingestScheduler.stop(),
     ]);
+    if (identityGraph) await identityGraph.close().catch(() => undefined);
     await syncClaimerPool.end();
     await dqPool.end();
     await ingestSchedulerPool.end();

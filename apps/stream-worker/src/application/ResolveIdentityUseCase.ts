@@ -16,6 +16,8 @@
  */
 
 import { normalizeIdentifier, hashIdentifier, normalizePhone } from '@brain/identity-core';
+import type { IdentityGraph, HashedIdentifier } from '@brain/identity-graph';
+import { log } from '../log.js';
 import { SaltProvider } from '../infrastructure/secrets/SaltProvider.js';
 import { IdentityRepository } from '../infrastructure/pg/IdentityRepository.js';
 import {
@@ -39,6 +41,12 @@ export class ResolveIdentityUseCase {
   constructor(
     private readonly saltProvider: SaltProvider,
     private readonly identityRepo: IdentityRepository,
+    /**
+     * Optional Neo4j identity graph (re-platform Phase D transition). When present, the resolved
+     * identity is DUAL-WRITTEN to the graph best-effort — PG stays authoritative during transition,
+     * and a Neo4j hiccup never breaks identity resolution. Reuses the already-computed hashes.
+     */
+    private readonly identityGraph?: IdentityGraph,
   ) {}
 
   /**
@@ -145,6 +153,21 @@ export class ResolveIdentityUseCase {
 
     // ── 6. Write ──────────────────────────────────────────────────────────────
     await this.identityRepo.writeOutcome(brandId, outcome, identifiers);
+
+    // ── 6b. Dual-write to the Neo4j identity graph (Phase D transition) ─────────
+    // Best-effort: PG is authoritative during transition; a Neo4j error must NOT break identity.
+    // Reuses the already-computed hashes (no re-extraction). PG 'storefront_customer_id' → 'external_id'.
+    if (this.identityGraph && idHashes.length > 0) {
+      try {
+        const graphIds: HashedIdentifier[] = idHashes.map((i) => ({
+          type: i.type === 'storefront_customer_id' ? 'external_id' : (i.type as HashedIdentifier['type']),
+          hash: i.hash,
+        }));
+        await this.identityGraph.resolve(brandId, graphIds);
+      } catch (err) {
+        log.warn(`[identity] Neo4j dual-write skipped (best-effort) brand=${brandId}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
 
     return {
       outcome: outcome.action,

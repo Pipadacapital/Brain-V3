@@ -2,10 +2,21 @@
 # Silver-tier source declaration — the Bronze/source → dbt read boundary.
 # feat-silver-tier-order-state (Stage 3, @data-engineer).
 #
-# THE PROD-SWAP BOUNDARY: this file (and only this file + the one staging model)
-# is what changes when the read path graduates from the dev JDBC catalog to the
-# Iceberg Bronze catalog in prod (architecture §1, §2). The intermediate + mart
-# models never reference a catalog name — they only `ref()` upstream models.
+# THE PROD-SWAP BOUNDARY: this file is what changes when the read path graduates from
+# the dev JDBC catalog to the Iceberg Bronze catalog. The intermediate + mart models
+# never reference a catalog name — they only `ref()` upstream models.
+#
+# NUANCE (ADR-0002 Slice 4, verified against StarRocks): the flip is NOT a single
+# database-name swap. Only the BRONZE-DERIVED sources read raw events and move to the
+# Iceberg catalog (brain_bronze_local → brain_bronze.collector_events):
+#   - bronze_touchpoint_src, bronze_order_line_src
+# The other two are DERIVED Postgres tables (NOT raw Bronze) and STAY on the JDBC catalog:
+#   - realized_revenue_ledger (worker-written ledger), connector_journey_stitch_map_src
+# And the Iceberg table is RAW collector_events — so the per-event-type filter + line_items
+# UNNEST that today live in the PG read-shim views must move INTO the staging models when
+# the Bronze sources flip (the shims are PG-only). That staging refactor + mart parity is
+# gated on a dbt-capable env + richer Iceberg event data (today Iceberg holds order.live.v1
+# only). The runtime gate is the PG⇄Iceberg parity oracle (db/iceberg/spark/bronze_parity_check.py).
 #
 # DEV: `database` is the StarRocks external JDBC catalog `brain_oltp_pg`
 # (db/starrocks/oltp_jdbc_catalog.sql), `schema` is the Postgres schema `public`.

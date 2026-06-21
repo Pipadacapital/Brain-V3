@@ -65,17 +65,22 @@ GRANT SELECT ON ALL TABLES IN DATABASE brain_gold   TO 'brain_analytics'@'%';
 -- ============================================================
 
 -- 5. External Iceberg catalog (local dev — Iceberg REST + MinIO; ADR-0002)
+-- Underscore property names + aws.s3.region + client.factory are ALL required (Slice 4): the hyphen
+-- form is ignored → StarRocks falls back to the default AWS chain → "Region must be specified".
+-- VERIFIED reading collector_events through this catalog.
 CREATE EXTERNAL CATALOG IF NOT EXISTS brain_bronze_local
 COMMENT "Local dev Bronze catalog — Iceberg REST + MinIO"
 PROPERTIES (
   "type"                              = "iceberg",
   "iceberg.catalog.type"             = "rest",
   "iceberg.catalog.uri"              = "http://iceberg-rest:8181",
+  "aws.s3.region"                    = "us-east-1",
   "aws.s3.endpoint"                  = "http://minio:9000",
-  "aws.s3.access-key"               = "brain",
-  "aws.s3.secret-key"               = "brainbrain",
-  "aws.s3.enable-ssl"               = "false",
-  "aws.s3.enable-path-style-access" = "true"
+  "aws.s3.access_key"                = "brain",
+  "aws.s3.secret_key"                = "brainbrain",
+  "aws.s3.enable_ssl"                = "false",
+  "aws.s3.enable_path_style_access"  = "true",
+  "client.factory"                   = "com.starrocks.connector.iceberg.IcebergAwsClientFactory"
 );
 
 SELECT 'StarRocks bootstrap complete' AS status;

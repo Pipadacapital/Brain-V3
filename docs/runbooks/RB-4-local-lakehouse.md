@@ -106,6 +106,33 @@ in `infra/helm/cronworkflows/templates/spark-bronze.yaml`, **gated off** by `spa
 (flip per env to start the dual-sink; flip back to stop). Needs the `brain-jobs` IRSA role (S3
 per-brand prefix + Glue) and the env secret (KAFKA/ICEBERG/CHECKPOINT/AWS). Not yet cluster-applied.
 
+## Slice 4 — StarRocks reads Bronze from Iceberg (read-path cut-over)
+
+The analytics read path graduates from the Postgres JDBC catalog to the Iceberg external catalog.
+The `brain_bronze_local` catalog (`db/starrocks/{bootstrap,external_iceberg_catalog}.sql`) was fixed
+to actually work — three things the scaffolding lacked, all required:
+1. **underscore** property names (`aws.s3.access_key`, not `access-key` — the hyphen form is silently
+   ignored, so StarRocks falls back to the default AWS chain),
+2. `aws.s3.region`,
+3. `client.factory=com.starrocks.connector.iceberg.IcebergAwsClientFactory`.
+
+Without these the read fails with `Region must be specified`. Smoke (verified — 888 rows):
+
+```bash
+docker exec brainv3-starrocks-1 mysql -h127.0.0.1 -P9030 -uroot \
+  -e "SELECT count(*) FROM brain_bronze_local.brain_bronze.collector_events;"
+```
+
+If the running StarRocks bootstrapped an older catalog (comment says "Nessie"), `DROP CATALOG
+brain_bronze_local;` and re-run the corrected `CREATE EXTERNAL CATALOG` from `external_iceberg_catalog.sql`.
+
+**Remaining Slice 4 work (gated):** flip the dbt Bronze-derived sources (`bronze_touchpoint_src`,
+`bronze_order_line_src`) in `_sources.yml` to the Iceberg catalog and move the PG read-shim transforms
+(event-type filter, `line_items` unnest, JSON extraction) into the staging models — the ledger + stitch
+map stay on JDBC (they're derived, not raw Bronze). This needs a dbt-capable env and richer Iceberg
+event data (today Iceberg holds `order.live.v1` only — no touchpoint/line-item events), and is gated on
+the parity oracle being green.
+
 ## Related
 
 - ADR-0002 — `docs/adr/0002-iceberg-bronze-spark-streaming.md` (the Bronze→Iceberg flip plan)

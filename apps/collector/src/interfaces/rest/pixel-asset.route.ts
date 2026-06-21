@@ -73,6 +73,9 @@ export const PIXEL_JS = `(function(){
         };
       }
     } catch(e){}
+    // 3. Default-granted fallback (PIXEL_CONSENT_DEFAULT=granted) — ONLY when no real signal exists
+    //    (no CMP on the store). Explicit, merchant-accepted, flag-gated. A real signal above wins.
+    if (boot.consent_default === "granted") return { analytics: true, marketing: true, personalization: true, ai_processing: false };
     return null;
   }
   function uaClass(){ return /Mobi|Android|iPhone|iPad/i.test(NS.userAgent) ? "mobile" : "desktop"; }
@@ -162,7 +165,10 @@ export function registerPixelAssetRoute(app: FastifyInstance): void {
         /^[a-z0-9.-]+(:[0-9]+)?$/i.test(rawHost) && /^https?$/.test(proto) ? `${proto}://${rawHost}` : '';
       const ingest = reqOrigin || process.env['PIXEL_INGEST_BASE_URL'] || '';
       const ingestField = /^https?:\/\/[a-z0-9.:/-]+$/i.test(ingest) ? `,ingest_base_url:"${ingest}"` : '';
-      body = `window.__brain={install_token:"${t}",brand_id:"${b}"${ingestField}};\n${PIXEL_JS}`;
+      // Default-granted consent (merchant-accepted, flag-gated): only applied by consent() when no
+      // real consent signal (window.__brainConsent / Shopify Customer Privacy) exists. See README/RB-4.
+      const consentField = process.env['PIXEL_CONSENT_DEFAULT'] === 'granted' ? ',consent_default:"granted"' : '';
+      body = `window.__brain={install_token:"${t}",brand_id:"${b}"${ingestField}${consentField}};\n${PIXEL_JS}`;
     }
     reply
       .header('Content-Type', 'application/javascript; charset=utf-8')

@@ -30,12 +30,29 @@ export function normalizeStatus(raw: string | null | undefined): string {
 }
 
 /**
+ * Build a TRULY immutable lookup set. `Object.freeze(new Set(...))` does NOT stop `.add`/`.delete`
+ * (Set mutators don't go through property assignment), so the mutate methods are overridden to throw.
+ * Returned as `ReadonlySet<string>` so consumers can't even reach the mutators at compile time —
+ * this is what enforces the "frozen authority, no per-source drift" invariant the whole package exists for.
+ */
+function frozenSet(values: readonly string[]): ReadonlySet<string> {
+  const set = new Set(values);
+  const blocked = (op: string) => () => {
+    throw new TypeError(`@brain/logistics-status: terminal-state sets are immutable — ${op}() is forbidden`);
+  };
+  set.add = blocked('add') as Set<string>['add'];
+  set.delete = blocked('delete') as Set<string>['delete'];
+  set.clear = blocked('clear') as Set<string>['clear'];
+  return Object.freeze(set);
+}
+
+/**
  * Terminal RTO end-states (union of GoKwik + Shiprocket vocabularies). A CoD order reaching
  * any of these → cod_rto_clawback. GoKwik subset: rto, rto initiated, rto in transit,
  * rto undelivered, rto out for delivery, rto delivered. Shiprocket adds: rto ofd,
  * rto acknowledged, rto rejected, rto ndr, rto disposed.
  */
-export const RTO_TERMINAL_STATES = new Set([
+export const RTO_TERMINAL_STATES: ReadonlySet<string> = frozenSet([
   // GoKwik (frozen — must remain for byte-identical GoKwik behavior)
   'rto',
   'rto initiated',
@@ -52,13 +69,13 @@ export const RTO_TERMINAL_STATES = new Set([
 ]);
 
 /** Terminal Delivered end-states → confirms recognition (cod_delivery_confirmed). */
-export const DELIVERED_TERMINAL_STATES = new Set([
+export const DELIVERED_TERMINAL_STATES: ReadonlySet<string> = frozenSet([
   'delivered',
   'completed',
 ]);
 
 /** Other hard terminal end-states (no ledger effect in Slice 1 — recorded for provenance). */
-export const OTHER_TERMINAL_STATES = new Set([
+export const OTHER_TERMINAL_STATES: ReadonlySet<string> = frozenSet([
   // GoKwik (frozen)
   'cancelled',
   'lost',

@@ -11,6 +11,9 @@ import {
   classifyShipmentStatus,
   isTerminalStatus,
   normalizeStatus,
+  RTO_TERMINAL_STATES,
+  DELIVERED_TERMINAL_STATES,
+  OTHER_TERMINAL_STATES,
 } from '../index.js';
 
 describe('classifyShipmentStatus — GoKwik vocabulary (must be byte-identical to pre-extraction)', () => {
@@ -64,6 +67,28 @@ describe('classifyShipmentStatus — Shiprocket vocabulary', () => {
   it('Delivered is delivered (shared)', () => {
     expect(classifyShipmentStatus('Delivered')).toBe('delivered');
   });
+});
+
+describe('terminal-state sets are immutable (frozen authority — no per-source drift)', () => {
+  // Cast away ReadonlySet so we can attempt the runtime mutation TS would otherwise block.
+  const sets: Array<[string, ReadonlySet<string>]> = [
+    ['RTO_TERMINAL_STATES', RTO_TERMINAL_STATES],
+    ['DELIVERED_TERMINAL_STATES', DELIVERED_TERMINAL_STATES],
+    ['OTHER_TERMINAL_STATES', OTHER_TERMINAL_STATES],
+  ];
+
+  for (const [name, set] of sets) {
+    it(`${name} rejects add/delete/clear at runtime`, () => {
+      const mutable = set as Set<string>;
+      const sizeBefore = set.size;
+      const existing = [...set][0] ?? '';
+      expect(() => mutable.add('hacked')).toThrow(/immutable/);
+      expect(() => mutable.delete(existing)).toThrow(/immutable/);
+      expect(() => mutable.clear()).toThrow(/immutable/);
+      expect(set.size).toBe(sizeBefore);
+      expect(set.has('hacked')).toBe(false);
+    });
+  }
 });
 
 describe('normalizeStatus', () => {

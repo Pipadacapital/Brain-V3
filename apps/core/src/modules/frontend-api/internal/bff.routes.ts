@@ -103,7 +103,7 @@ import type {
 } from '@brain/contracts';
 import { jtiFromJwt, csrfTokenForSession } from './csrf.js';
 import type { Pool as PgPool } from 'pg';
-import { getRevenueMetrics, getRevenueTimeseries, getKpiSummary, getRecognitionBreakdown, getRecentActivity, getOrdersTimeseries, getOrderStats, getDataHealth, getSettlementSummary, getTrackingHealth, getRecentEvents, getAdSpendTimeseries, getBlendedRoas, getCodRtoRates, getCodMix, getCheckoutFunnel, getRtoRiskDistribution, getOrderStatusMix, getTopProducts, getOrdersList, getOrderDetail, getContributionMargin, listCostInputs, upsertCostInput, getJourneyFirstTouchMix, getJourneyStitchRate, getJourneyTimeline, getShipmentOutcomes, getBehaviorOverview, getConsentCoverage, getConsentSuppressionSummary, getConsentGateActivity, getConsentWindowConfig, getAttributionByChannel, getAttributionReconciliation, getChannelRoas, getCapiFeedbackSummary, getCapiFeedbackEvents, getCapiFeedbackDeletions } from '../../analytics/index.js';
+import { getRevenueMetrics, getRevenueTimeseries, getKpiSummary, getRecognitionBreakdown, getRecentActivity, getOrdersTimeseries, getOrderStats, getDataHealth, getSettlementSummary, getTrackingHealth, getRecentEvents, getAdSpendTimeseries, getBlendedRoas, getCodRtoRates, getCustomerBaseSummary, getCodMix, getCheckoutFunnel, getRtoRiskDistribution, getOrderStatusMix, getTopProducts, getOrdersList, getOrderDetail, getContributionMargin, listCostInputs, upsertCostInput, getJourneyFirstTouchMix, getJourneyStitchRate, getJourneyTimeline, getShipmentOutcomes, getBehaviorOverview, getConsentCoverage, getConsentSuppressionSummary, getConsentGateActivity, getConsentWindowConfig, getAttributionByChannel, getAttributionReconciliation, getChannelRoas, getCapiFeedbackSummary, getCapiFeedbackEvents, getCapiFeedbackDeletions } from '../../analytics/index.js';
 import { getDataQualitySummary, getMetricTrust } from '../../data-quality/index.js';
 import { computeFoundationHealth, freshnessFromIngest, computeEntitlements, type FoundationSignals } from '../../analytics/index.js';
 import { CONNECTOR_CATALOG } from '../../connector/catalog/registry.js';
@@ -2837,6 +2837,29 @@ export function registerBffRoutes(
         return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (StarRocks) not available' } });
       }
       const result = await getCodRtoRates(auth.brandId, { srPool });
+      return reply.send({ request_id: requestId, data: result });
+    },
+  );
+
+  /**
+   * GET /api/v1/dashboard/customer-360
+   * Customer-360 summary (customer count + lifetime value/orders + top customers) from the
+   * gold_customer_360 Gold mart via the metric-engine Silver/Gold seam (ADR-002 / I-ST01). Honest
+   * no_data when the brand has no customers. Brand from session (D-1).
+   */
+  fastify.get(
+    '/api/v1/dashboard/customer-360',
+    { preHandler: [bffProtectedPreHandler] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const auth = (request as AuthenticatedRequest).auth;
+      if (!auth.brandId) {
+        return reply.send({ request_id: requestId, data: { state: 'no_data' } });
+      }
+      if (!srPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (StarRocks) not available' } });
+      }
+      const result = await getCustomerBaseSummary(auth.brandId, { srPool });
       return reply.send({ request_id: requestId, data: result });
     },
   );

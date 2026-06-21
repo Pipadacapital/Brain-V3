@@ -205,8 +205,19 @@ export function registerShopifyWebhookRoutes(
       }
 
       const order = orderRaw as unknown as ShopifyOrderShape;
+      // SEC-LV-L1: guard the state-change timestamp. Shopify always sends updated_at in practice,
+      // but if all three date fields are missing/unparseable, new Date(undefined).getTime() is NaN —
+      // which would poison the event_id (uuidV5FromOrderLive) and break per-state-change dedup.
+      // A dateless order is a malformed webhook: fast-ack 200 and discard (same as the id check above).
       const updatedAt = order.updated_at ?? order.processed_at ?? order.created_at;
-      const updatedAtUtcMs = new Date(updatedAt!).getTime();
+      const updatedAtUtcMs = updatedAt ? new Date(updatedAt).getTime() : NaN;
+      if (Number.isNaN(updatedAtUtcMs)) {
+        req.log?.warn(
+          { request_id: requestId, topic },
+          '[webhook] order missing/unparseable date — discarding',
+        );
+        return reply.code(200).send({ request_id: requestId, received: true });
+      }
 
       // ── Step 4: Build CollectorEventV1 envelope ────────────────────────────
       // event_id = uuidV5FromOrderLive(brandId, orderId, updatedAtUtcMs) (D-6 / ADR-LV-6)

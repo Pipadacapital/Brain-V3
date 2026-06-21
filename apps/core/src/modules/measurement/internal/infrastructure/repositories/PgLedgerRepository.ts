@@ -3,8 +3,10 @@
  *
  * Pattern mirrors BronzeRepository (0016 append-only-by-grant):
  *   1. set_config('app.current_brand_id', brandId, true) in same txn (GUC-first)
- *   2. INSERT ... ON CONFLICT (brand_id, order_id, event_type, (timezone('UTC',occurred_at)::date))
- *      DO NOTHING  → idempotent at dedup key (D-4)
+ *   2. INSERT ... ON CONFLICT (dedup key) WHERE event_type <> 'refund' DO NOTHING → idempotent (D-4).
+ *      The predicate is mandatory: the arbiter index is PARTIAL (migration 0054) and Postgres can
+ *      only infer it when the predicate is restated (SEC-BF-M2). Dedup key = (brand_id, order_id,
+ *      event_type, timezone('UTC',occurred_at)::date).
  *   3. Increment replay-suppression counter if row was suppressed
  *
  * Connection is brain_app — RLS enforced; no UPDATE/DELETE grants.
@@ -80,7 +82,13 @@ export class PgLedgerRepository {
           $8::bigint,
           $9, $10, $11, $12, $13
         )
-        ON CONFLICT (brand_id, order_id, event_type, (timezone('UTC', occurred_at)::date))
+        -- SEC-BF-M2: the dedup arbiter index (realized_revenue_ledger_dedup) was made PARTIAL in
+        -- migration 0054 (WHERE event_type <> 'refund'). Postgres can only infer a partial index as
+        -- the ON CONFLICT arbiter when the predicate is restated here — without it the plan-time
+        -- inference FAILS ("no unique or exclusion constraint matching the ON CONFLICT specification")
+        -- on EVERY insert. Must stay byte-identical to apps/stream-worker LedgerWriter's clause (the
+        -- drift-guard test ledger-conflict-parity.test.ts enforces this).
+        ON CONFLICT (brand_id, order_id, event_type, (timezone('UTC', occurred_at)::date)) WHERE event_type <> 'refund'
         DO NOTHING
         RETURNING ledger_event_id`,
         [

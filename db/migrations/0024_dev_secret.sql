@@ -17,6 +17,18 @@
 -- NOT RLS-scoped: keyed by secret name (the ARN-name), not by brand rows for analytics — it is
 -- the vault stand-in, not an analytical table. No PII; values are opaque connector credentials.
 
+-- DEV-TOKEN-REACH guard: this table is a DEV-ONLY vault stand-in and must NEVER be created in
+-- production (prod uses AWS Secrets Manager under a per-brand CMK). The migrate entrypoint
+-- (scripts/migrate.mjs) sets `app.env` from APP_ENV/NODE_ENV via PGOPTIONS, so a production run
+-- trips this guard and aborts BEFORE the table is created. Belt-and-suspenders to the existing
+-- app-level hard-fail in Local/WorkerLocalSecretsManager (D-7).
+DO $$
+BEGIN
+  IF current_setting('app.env', true) = 'production' THEN
+    RAISE EXCEPTION 'DEV-TOKEN-REACH GUARD: dev_secret is a dev-only vault stand-in and must not be migrated in production (use AWS Secrets Manager).';
+  END IF;
+END $$;
+
 CREATE TABLE IF NOT EXISTS dev_secret (
   name          TEXT        NOT NULL,
   secret_value  TEXT        NOT NULL,

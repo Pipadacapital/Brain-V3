@@ -25,6 +25,9 @@ const DB_URL =
   process.env['BRAIN_APP_DATABASE_URL'] ??
   'postgres://brain_app:brain_app@localhost:5432/brain';
 
+// SEC-BF-L1 (no-drift): this row shape is duplicated in apps/core
+// (modules/connector/backfill/infrastructure/PgBackfillJobRepository.ts) — intentional (I-E05: no
+// cross-app imports), but the two MUST stay identical. backfill-job-row-parity.test.ts enforces it.
 export interface BackfillJobRow {
   id: string;
   brand_id: string;

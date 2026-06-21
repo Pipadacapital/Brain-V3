@@ -310,6 +310,40 @@ describe('Shopify webhook receiver — B3 integration tests', () => {
     await app.close();
   });
 
+  // ── SEC-LV-L1: order with no usable date → 200 fast-ack, NO emit ──────────
+
+  it('HMAC-valid order with all date fields missing → 200, zero events emitted (SEC-LV-L1)', async () => {
+    const { producer, getMessages } = makeMockProducer();
+    const app = await buildTestApp(superPool, producer);
+
+    // Malformed (in practice impossible) webhook: no updated_at / processed_at / created_at.
+    // Without the guard this would compute updatedAtUtcMs = NaN and emit a poisoned event_id.
+    const order = makeOrder({ id: 9001099 });
+    delete order['updated_at'];
+    delete order['processed_at'];
+    delete order['created_at'];
+    const bodyStr = JSON.stringify(order);
+    const hmac = signBody(bodyStr, TEST_CLIENT_SECRET);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/webhooks/shopify/orders%2Fupdated',
+      headers: {
+        'content-type': 'application/json',
+        'x-shopify-hmac-sha256': hmac,
+        'x-shopify-shop-domain': SHOP_A,
+        'x-correlation-id': 'test-correlation-b3-lv-l1',
+      },
+      body: bodyStr,
+    });
+
+    // Accepted (so Shopify stops retrying) but discarded — nothing reaches the live lane.
+    expect(response.statusCode).toBe(200);
+    expect(getMessages()).toHaveLength(0);
+
+    await app.close();
+  });
+
   // ── Test 2: HMAC-invalid → 401, NO emit ──────────────────────────────────
 
   it('HMAC-invalid webhook → 401, zero events emitted (non-inert)', async () => {

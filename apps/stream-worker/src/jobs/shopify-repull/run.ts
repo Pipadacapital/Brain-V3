@@ -196,8 +196,14 @@ async function repullConnector(params: RepullParams): Promise<void> {
     return;
   }
 
-  // ── D-11: set state=syncing BEFORE any Shopify fetch ─────────────────────────
-  await setSyncState(pool, brandId, ciId, 'syncing', null);
+  // ── D-11 + SEC-LV-M1: atomically CLAIM state=syncing BEFORE any Shopify fetch ──
+  // Closes the lock-release window: if a second trigger also slipped past acquireRepullLock, only
+  // the worker that wins this compare-and-swap proceeds; the loser skips (no double API calls).
+  const claimedSyncing = await claimSyncingState(pool, brandId, ciId);
+  if (!claimedSyncing) {
+    log.info(`connector=${ciId} — already syncing (claimed by another worker), skipping`);
+    return;
+  }
 
   const shopClient = new ShopifyLiveClient(shopDomain, accessToken);
   const updatedAtMin = new Date(Date.now() - REPULL_WINDOW_MS).toISOString();
@@ -388,6 +394,51 @@ async function setSyncState(
   }
 }
 
+/**
+ * SEC-LV-M1 — atomically CLAIM the 'syncing' state (compare-and-swap).
+ *
+ * acquireRepullLock commits (and so releases) the cursor row-lock before the re-pull runs — by
+ * design, to avoid holding a DB lock for the whole job. That leaves a narrow window where a second
+ * concurrent trigger can also acquire the (now-free) lock. The 'syncing' state is the real
+ * in-progress guard, so we claim it atomically: UPSERT ... ON CONFLICT DO UPDATE ... WHERE
+ * state <> 'syncing'. Exactly one contender's WHERE passes (Postgres serializes the conflicting
+ * upserts and re-evaluates the predicate against the just-committed row); the loser gets 0 rows and
+ * skips — closing the double-API-call window. The connector_sync_status row carries a UNIQUE
+ * (brand_id, connector_instance_id) (migration 0025) which is the conflict arbiter.
+ *
+ * Returns true iff THIS worker won the claim.
+ */
+async function claimSyncingState(
+  pool: Pool,
+  brandId: string,
+  connectorInstanceId: string,
+): Promise<boolean> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    // GUC BEFORE brand-scoped write (NN-1 / ADR-LV-7) — RLS FORCE on connector_sync_status.
+    await client.query(`SELECT set_config('app.current_brand_id', $1, true)`, [brandId]);
+    const res = await client.query(
+      `INSERT INTO connector_sync_status (brand_id, connector_instance_id, state, last_error, updated_at)
+       VALUES ($1, $2, 'syncing', NULL, NOW())
+       ON CONFLICT (brand_id, connector_instance_id)
+       DO UPDATE SET state = 'syncing', last_error = NULL, updated_at = NOW()
+       WHERE connector_sync_status.state <> 'syncing'
+       RETURNING id`,
+      [brandId, connectorInstanceId],
+    );
+    await client.query('COMMIT');
+    return (res.rowCount ?? 0) > 0;
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    // Fail CLOSED: if we can't prove we won the claim, do not proceed (avoids double re-pull).
+    log.error(`claim syncing-state failed`, { err: err });
+    return false;
+  } finally {
+    client.release();
+  }
+}
+
 // ── Entrypoint ────────────────────────────────────────────────────────────────
 
 if (
@@ -401,4 +452,4 @@ if (
   });
 }
 
-export { enumerateConnectors, acquireRepullLock, upsertRepullCursor, setSyncState };
+export { enumerateConnectors, acquireRepullLock, upsertRepullCursor, setSyncState, claimSyncingState };

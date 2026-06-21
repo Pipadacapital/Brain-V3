@@ -16,6 +16,9 @@
 
 import type { DbPool, QueryContext } from '@brain/db';
 
+// SEC-BF-L1 (no-drift): this row shape is duplicated in apps/stream-worker
+// (infrastructure/pg/BackfillJobRepository.ts) — intentional (I-E05: no cross-app imports), but the
+// two MUST stay identical. apps/stream-worker backfill-job-row-parity.test.ts enforces it.
 export interface BackfillJobRow {
   id: string;
   brand_id: string;

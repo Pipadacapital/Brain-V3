@@ -34,7 +34,7 @@
 --   bronze_source='pg'      → the JDBC read-shim view (PG bronze_events; latest-pick + unnest done in SQL view)
 --   bronze_source='iceberg' → the raw Iceberg collector_events catalog; the latest-order pick + the
 --                             line_items unnest move HERE (the shim's transform inlined into staging).
-{% set bronze_source = var('bronze_source', 'pg') %}
+{% set bronze_source = var('bronze_source', env_var('BRONZE_OPERATIONAL_READ_SOURCE', 'pg')) %}
 with raw as (
 
     {% if bronze_source == 'iceberg' %}

@@ -17,8 +17,11 @@ per environment. Run it **staging first**, bake, then prod.
 | `BRONZE_OPERATIONAL_READ_SOURCE` | core/stream-worker env | `pg` | `iceberg` → operational reads (data-health, orders, recent-events) serve from Iceberg via StarRocks |
 | `BRONZE_PG_WRITE_ENABLED` | stream-worker env | `true` | `false` → `ProcessEventUseCase` stops writing PG `bronze_events` (Spark→Iceberg becomes sole SoR) |
 
-The dbt Bronze sources flip via the `bronze_source` dbt var (`pg`|`iceberg`) — set it in the dbt
-job invocation for the analytics build, in lockstep with the read flag.
+The dbt silver build reads the **same flag**: `stg_touchpoint_events` / `stg_order_line_events` resolve
+`bronze_source` as `var('bronze_source', env_var('BRONZE_OPERATIONAL_READ_SOURCE', 'pg'))`. So setting
+`BRONZE_OPERATIONAL_READ_SOURCE` in the env drives BOTH the core operational reads AND the analytics
+ETL source — one flag for the whole Bronze read plane. (A `--vars '{bronze_source: iceberg}'` on the
+dbt invocation still overrides it for ad-hoc parity testing during the soak.)
 
 The switches are **ordered and each reversible**: write-in-parallel → read-flip → write-retire. Never
 retire the PG write (Phase 4) before the read flip (Phase 3) has baked, and never flip the read before
@@ -65,18 +68,29 @@ differently by design — see RB-4 Slice 3).
 
 ## Phase 3 — Flip the reads to Iceberg (bake)
 
-With parity green, set `BRONZE_OPERATIONAL_READ_SOURCE=iceberg` in core (+ stream-worker) env and
-set the analytics dbt build to `--vars '{bronze_source: iceberg}'`. Deploy. Operational reads now
-serve from Iceberg via StarRocks; the analytics marts build from the Iceberg sources.
+With parity green, set `BRONZE_OPERATIONAL_READ_SOURCE=iceberg` in the env (this one flag drives both
+core reads and the dbt silver source — see above). Redeploy core/stream-worker and re-run the dbt
+silver build. Operational reads now serve from Iceberg via StarRocks; the analytics marts build from
+the Iceberg sources.
 
-Verify (dev-proven in Slices 4b/5 — same checks apply per env):
+Verify (dev-proven in Slices 4b/5 + the local rehearsal below — same checks apply per env):
 - data-health / orders-list / order-detail / recent-events render with the SAME counts as before
   the flip (compare to a pre-flip snapshot);
 - per-brand isolation holds at the metric-engine Silver read seam (I-ST01) — spot-check two brands;
 - DQ freshness/confidence unchanged.
 
+> **Freshness caveat — StarRocks Iceberg metadata cache.** Reads served from the Iceberg external
+> catalog do NOT see a newly-written snapshot until StarRocks refreshes its Iceberg metadata cache.
+> A fresh write is therefore visible in the live Spark sink immediately but lags in the dashboards by
+> the cache interval. For acceptable freshness either lower the catalog's metadata-cache TTL or run a
+> periodic `REFRESH EXTERNAL TABLE <catalog>.<db>.collector_events` (the dbt silver CronWorkflow can
+> issue it pre-build). Confirmed during the local rehearsal: a just-produced event was invisible to a
+> StarRocks `count(*)` until `REFRESH EXTERNAL TABLE`, then appeared. Budget the read path's freshness
+> SLO around this interval.
+
 **Bake** for a full business cycle. PG `bronze_events` is still being written — so this is fully
-reversible: **rollback** = set `BRONZE_OPERATIONAL_READ_SOURCE=pg` (+ drop the dbt var) and redeploy.
+reversible: **rollback** = set `BRONZE_OPERATIONAL_READ_SOURCE=pg` and redeploy (one flag; the dbt
+silver build follows it on the next run).
 
 ## Phase 4 — Retire the PG Bronze write (Spark→Iceberg becomes sole SoR)
 
@@ -108,6 +122,35 @@ The order-line read (`stg_order_line_events`) flips with the same `bronze_source
 path assigns `line_index` as a deterministic content-ordered `row_number` (StarRocks has no
 `WITH ORDINALITY`) rather than the PG array position — a benign, documented difference (the line
 CONTENT is byte-identical). See RB-4 Slice 4b (order-line).
+
+## Per-environment config (how the flag is set)
+
+The cut-over flags live in per-env files, auto-selected by `APP_ENV` and layered over the shared base:
+`tsx --env-file=../../.env --env-file-if-exists=../../.env.${APP_ENV:-dev}` (core, stream-worker,
+collector). Local/dev → `.env.dev` (APP_ENV unset → `dev`); prod → `.env.production` (deploy sets
+`APP_ENV=production`). So "going live" is literally setting `BRONZE_OPERATIONAL_READ_SOURCE` (then
+`BRONZE_PG_WRITE_ENABLED`) in the environment's override file (or the injected secret) and redeploying —
+the same flip rehearsed locally below. See `.env.production.example`.
+
+## Local cut-over rehearsal (executed against Docker)
+
+The full sequence was run end-to-end against the local stack (Postgres + StarRocks + Redpanda + MinIO +
+iceberg-rest) as a production simulation — every gate verified:
+
+- **Phase 1 (dual-sink):** `TRIGGER_MODE=continuous` Spark materializer started as the live Iceberg
+  writer alongside the PG write. A freshly-produced `order.live.v1` auto-appeared in BOTH PG bronze
+  (via the live-order-bronze-bridge) and Iceberg (via Spark) — dual-sink confirmed.
+- **Phase 2 (parity):** identity reconciliation — real tenant brand `124e6af5` exact (940 = 940);
+  the only delta was the `b9f10030` D13-erasure *test* brand (Iceberg-only). Gate green.
+- **Phase 3 (read flip):** `BRONZE_OPERATIONAL_READ_SOURCE=iceberg` in `.env.dev`; silver rebuilt from
+  Iceberg (env-driven, no `--vars`); core restarted healthy on the Iceberg read path.
+- **Phase 4 (write retire):** `BRONZE_PG_WRITE_ENABLED=false`; stream-worker restarted. A post-retire
+  `order.live.v1` landed in Iceberg (1) but NOT in PG bronze (0); PG bronze total held flat (940) —
+  Spark→Iceberg is the sole Bronze writer. The same event, sourced env-driven, flowed through dbt into
+  `silver_order_line` from Iceberg only (the differential proof).
+
+Operational note for restarts: `tsx watch` parents ignore SIGTERM under turbo — `kill -9` the
+`--env-file-if-exists` watch processes to fully stop the tier before relaunching `pnpm dev`.
 
 ## Related
 

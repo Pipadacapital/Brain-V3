@@ -14,6 +14,11 @@
  * Idempotent: ON CONFLICT (brand_id, order_id, event_type, date) DO NOTHING (I-ST04).
  * All writes under brain_app + set_config GUC per brand (NN-1 / RLS).
  *
+ * SEC-BF-M2 (no-drift): this is a second, independent implementation of the same ledger dedup as
+ * apps/core PgLedgerRepository. The realized_revenue_ledger ON CONFLICT clause here MUST stay
+ * byte-identical to core's — including the `WHERE event_type <> 'refund'` partial-index predicate
+ * (migration 0054). The drift-guard test ledger-conflict-parity.test.ts fails if the two diverge.
+ *
  * Ledger event_id derivation: SHA-256(brand_id\0order_id\0'provisional_recognition'\0source_pk\0v1)
  *   — mirrors revenue-finalization.ts computeLedgerEventId (stable dedup key).
  *

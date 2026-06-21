@@ -126,7 +126,7 @@ async function seedRecognition(superPool: Pool, brandId: string, orderId: string
        occurred_at, economic_effective_at, billing_posted_period, recognition_label, raw_event_id
      ) VALUES ($1,$2,$3,'provisional_recognition',$4::bigint,'INR',
        '2026-05-01T08:00:00Z','2026-05-01T08:00:00Z','2026-05','provisional',$2)
-     ON CONFLICT (brand_id, order_id, event_type, (timezone('UTC', occurred_at)::date)) DO NOTHING`,
+     ON CONFLICT (brand_id, order_id, event_type, (timezone('UTC', occurred_at)::date)) WHERE event_type <> 'refund' DO NOTHING`,
     [brandId, ledgerEventId, orderId, amountMinor],
   );
 }

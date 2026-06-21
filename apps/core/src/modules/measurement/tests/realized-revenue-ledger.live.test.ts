@@ -1115,7 +1115,7 @@ describe('10. F-SEC-01 fix — list_active_brand_ids() enumerates brands, job fi
                $4::bigint, 'INR', NULL, 0::bigint,
                $5, $5, $6, 'finalized', $7, NULL
              ) ON CONFLICT (brand_id, order_id, event_type,
-               (timezone('UTC', occurred_at)::date)) DO NOTHING`,
+               (timezone('UTC', occurred_at)::date)) WHERE event_type <> 'refund' DO NOTHING`,
             [
               brand.id, eventId, prov.order_id, prov.amount_minor,
               now.toISOString(), toBillingPostedPeriod(now), prov.ledger_event_id,

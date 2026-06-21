@@ -24,9 +24,9 @@
     "dev:tunnel": "cloudflared tunnel --url http://localhost:3001",
     "seed": "node tools/seed/seed.mjs",
     "down": "docker compose down",
-    "migrate": "node-pg-migrate -m db/migrations up",
-    "migrate:up": "node-pg-migrate -m db/migrations up",
-    "migrate:down": "node-pg-migrate -m db/migrations down",
+    "migrate": "node scripts/migrate.mjs up",
+    "migrate:up": "node scripts/migrate.mjs up",
+    "migrate:down": "node scripts/migrate.mjs down",
     "migrate:create": "node-pg-migrate -m db/migrations create"
   },
   "pnpm": {

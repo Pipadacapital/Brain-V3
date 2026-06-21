@@ -190,7 +190,11 @@ async function run(): Promise<void> {
               $7, $7, $8, 'finalized',
               $9, NULL
             )
-            ON CONFLICT (brand_id, order_id, event_type, (timezone('UTC', occurred_at)::date))
+            -- SEC-BF-M2: arbiter index realized_revenue_ledger_dedup is PARTIAL (migration 0054,
+            -- WHERE event_type <> 'refund'); the predicate MUST be restated or inference fails on
+            -- every insert. This job only writes 'finalization' rows (never 'refund'), so the
+            -- predicate is always satisfied. Kept identical to LedgerWriter / PgLedgerRepository.
+            ON CONFLICT (brand_id, order_id, event_type, (timezone('UTC', occurred_at)::date)) WHERE event_type <> 'refund'
             DO NOTHING
             RETURNING ledger_event_id`,
             [

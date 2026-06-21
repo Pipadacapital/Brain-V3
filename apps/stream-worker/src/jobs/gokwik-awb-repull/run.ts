@@ -328,9 +328,29 @@ async function setSyncState(
   }
 }
 
-// ── Credentials resolver (dev: dev_secret bundle; NEVER log creds — I-S09) ────
+// ── Credentials resolver (prod: AWS Secrets Manager; dev: dev_secret bundle; NEVER log — I-S09) ──
 
 async function resolveGokwikCredentials(secretRef: string): Promise<GokwikApiCredentials | null> {
+  // PROD: the credential bundle is stored in AWS Secrets Manager at connect time (core's
+  // AwsSecretsManager.storeSecret). Resolve it from there — dev_secret only exists in dev, so the
+  // legacy dev-only path below returned null in prod → "credentials not found (RECONNECT_REQUIRED)"
+  // even though the secret was present. Mirrors the shopify worker-secrets prod/dev split.
+  if (process.env['NODE_ENV'] === 'production') {
+    try {
+      const { AwsSecretsManager } = await import('@brain/connector-secrets');
+      const region = process.env['BRAIN_AWS_REGION'] ?? process.env['AWS_REGION'] ?? 'us-east-1';
+      const mgr = new AwsSecretsManager(region, '', process.env['KMS_KEY_ID'] ?? '');
+      const bundle = await mgr.getSecret(secretRef); // GetSecretValue → parsed JSON (honors AWS_ENDPOINT_URL)
+      if (bundle && typeof bundle['appid'] === 'string' && typeof bundle['appsecret'] === 'string') {
+        return { appid: bundle['appid'], appsecret: bundle['appsecret'] };
+      }
+      log.error(`[gokwik] secret ${secretRef.slice(-24)} resolved but missing appid/appsecret`);
+    } catch (err) {
+      log.error('[gokwik] AwsSecretsManager getSecret failed', { err });
+    }
+    // fall through to the env fallback (GOKWIK_APPID/APPSECRET) below; dev_secret won't exist in prod.
+  }
+
   const { Pool: PgPool } = await import('pg');
   const devPool = new PgPool({
     connectionString: process.env['BRAIN_APP_DATABASE_URL'] ?? process.env['DATABASE_URL'],

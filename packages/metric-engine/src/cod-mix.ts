@@ -20,19 +20,19 @@
  * engine never re-derives a sign. NO ad-hoc SUM in the analytics module (ADR-002).
  *
  * DEV-HONESTY: the CoD ledger rows derive from the GoKwik AWB terminal-state consumer,
- * whose source is SYNTHETIC in dev (real shape, synthetic source). The ledger does not
- * carry a per-row data_source; this surface is labelled synthetic at the BFF/UI layer
- * whenever the AWB connector data is synthetic (consistent with cod-rto-rates).
+ * whose source is SYNTHETIC in dev (real shape, synthetic source). Labelled synthetic at the BFF/UI.
  *
- * F-SEC-02: reads inside withBrandTxn (GUC transaction-scoped, RLS-enforced).
+ * ── PHASE G re-point: reads the lakehouse ledger brain_gold.gold_revenue_ledger via the withSilverBrand
+ *    seam (I-ST01), NOT PG realized_revenue_ledger — PostgreSQL is no longer a revenue READ source.
+ *    PG remains the write SoR during transition; gold_revenue_ledger is the derived lakehouse copy.
  *
- * @see db/migrations/0030_gokwik_shopflo_connectors.sql §B (cod_* event_types)
+ * @see db/dbt/models/marts/gold_revenue_ledger.sql (the lakehouse ledger)
  * @see settlement-summary.ts — the sibling compute fn this mirrors
  */
 
 import type { CurrencyCode } from '@brain/money';
-import type { EngineDeps } from './deps.js';
-import { withBrandTxn } from './deps.js';
+import type { SilverPool } from './silver-deps.js';
+import { withSilverBrand, BRAND_PREDICATE } from './silver-deps.js';
 
 /** Ledger event_types this read consumes (0030 CoD + the prepaid spine). */
 const COD_DELIVERED = 'cod_delivery_confirmed';
@@ -69,32 +69,32 @@ function ratePct(numerator: bigint, denominator: bigint): string | null {
  * computeCodMix — CoD-vs-prepaid mix + CoD CM2 as of now, per currency.
  *
  * @param brandId - Brand UUID (from session — D-1; NEVER request body).
- * @param deps    - EngineDeps with raw pg.Pool.
+ * @param deps    - The StarRocks Silver/Gold pool (mysql2) — gold_revenue_ledger via withSilverBrand.
  * @returns CodMixResult — hasData=false when no cod_* rows exist (honest no_data).
  */
 export async function computeCodMix(
   brandId: string,
-  deps: EngineDeps,
+  deps: { srPool: SilverPool },
 ): Promise<CodMixResult> {
-  return withBrandTxn(deps.pool, brandId, async (client) => {
-    const brandRow = await client.query<{ currency_code: string }>(
-      `SELECT currency_code FROM brand WHERE id = $1`,
-      [brandId],
-    );
-    const currencyCode = (brandRow.rows[0]?.currency_code ?? null) as CurrencyCode | null;
-
-    // Per-event_type signed sum. The signed amount_minor carries the sign (engine never re-signs).
-    const rows = await client.query<{ event_type: string; sum_minor: string }>(
-      `SELECT event_type, COALESCE(SUM(amount_minor), 0)::text AS sum_minor
-         FROM realized_revenue_ledger
-        WHERE brand_id = $1
-          AND event_type = ANY($2::text[])
+  return withSilverBrand(deps.srPool, brandId, async (scope) => {
+    // Per-event_type signed sum + the per-row currency. The signed amount_minor carries the sign.
+    const rows = await scope.runScoped<{ event_type: string; sum_minor: string | number; currency_code: string | null }>(
+      `SELECT event_type,
+              COALESCE(SUM(amount_minor), 0) AS sum_minor,
+              MAX(currency_code)             AS currency_code
+         FROM brain_gold.gold_revenue_ledger
+        WHERE event_type IN ('${COD_DELIVERED}', '${COD_CLAWBACK}', '${PREPAID_FINALIZATION}')
+          AND ${BRAND_PREDICATE}
         GROUP BY event_type`,
-      [brandId, [COD_DELIVERED, COD_CLAWBACK, PREPAID_FINALIZATION]],
+      [],
     );
 
     const sumByType = new Map<string, bigint>();
-    for (const r of rows.rows) sumByType.set(r.event_type, BigInt(r.sum_minor));
+    let currencyCode: CurrencyCode | null = null;
+    for (const r of rows) {
+      sumByType.set(r.event_type, BigInt(String(r.sum_minor).split('.')[0] ?? '0'));
+      if (r.currency_code) currencyCode = r.currency_code as CurrencyCode;
+    }
 
     const codDeliveredSigned = sumByType.get(COD_DELIVERED) ?? 0n; // (+)
     const codClawbackSigned = sumByType.get(COD_CLAWBACK) ?? 0n;   // (−)

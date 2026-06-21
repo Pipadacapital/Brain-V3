@@ -2878,10 +2878,10 @@ export function registerBffRoutes(
       if (!auth.brandId) {
         return reply.send({ request_id: requestId, data: { state: 'no_data' } });
       }
-      if (!rawPool) {
-        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' } });
+      if (!srPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (StarRocks) not available' } });
       }
-      const result = await getCodMix(auth.brandId, { pool: rawPool });
+      const result = await getCodMix(auth.brandId, { srPool });
       return reply.send({ request_id: requestId, data: result });
     },
   );

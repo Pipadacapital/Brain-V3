@@ -485,3 +485,38 @@ export const ShipmentOutcomesSchema = z.discriminatedUnion('state', [
   }),
 ]);
 export type ShipmentOutcomes = z.infer<typeof ShipmentOutcomesSchema>;
+
+// ── Storefront behavior (pixel browse/search/view) — from silver_touchpoint ──────────────────
+// @see apps/core/.../analytics/.../get-behavior-overview.ts. Counts use MinorUnitsSchema
+// (bigint-as-string, identical serialization); share_pct is a 2dp string.
+
+export const PageTypeBucketDtoSchema = z.object({
+  page_type: z.string(),
+  count: MinorUnitsSchema,
+  share_pct: z.string().nullable(),
+});
+export type PageTypeBucketDto = z.infer<typeof PageTypeBucketDtoSchema>;
+
+export const BrowsedItemDtoSchema = z.object({
+  key: z.string(),
+  count: MinorUnitsSchema,
+  reach: MinorUnitsSchema,
+});
+export type BrowsedItemDto = z.infer<typeof BrowsedItemDtoSchema>;
+
+export const BehaviorOverviewSchema = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('no_data') }),
+  z.object({
+    state: z.literal('has_data'),
+    from: z.string(),
+    to: z.string(),
+    sessions: MinorUnitsSchema,
+    journeys: MinorUnitsSchema,
+    touches: MinorUnitsSchema,
+    page_type_mix: z.array(PageTypeBucketDtoSchema),
+    top_products: z.array(BrowsedItemDtoSchema),
+    top_searches: z.array(BrowsedItemDtoSchema),
+    data_source: DataSourceSchema,
+  }),
+]);
+export type BehaviorOverview = z.infer<typeof BehaviorOverviewSchema>;

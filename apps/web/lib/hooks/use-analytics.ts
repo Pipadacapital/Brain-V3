@@ -373,6 +373,18 @@ export function useShipmentOutcomes(params?: { from?: string; to?: string }) {
   });
 }
 
+/**
+ * useBehaviorOverview — storefront browse/search/view (sessions/journeys/touches + page-type mix +
+ * top viewed products + top searches) over a range, from silver_touchpoint (pixel auto-instr).
+ */
+export function useBehaviorOverview(params?: { from?: string; to?: string }) {
+  return useQuery({
+    queryKey: [...ANALYTICS_QUERY_KEY, 'behavior-overview', params?.from, params?.to],
+    queryFn: () => analyticsApi.getBehaviorOverview(params),
+    staleTime: 5 * 60_000,
+  });
+}
+
 // ── Attribution (Phase 5 — feat-attribution-ledger) ──────────────────────────────
 // Reads the Gold attribution credit ledger via the metric-engine sole read path
 // (I-ST01 — UI never queries the ledger/StarRocks). The `model` is part of the query

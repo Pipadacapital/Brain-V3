@@ -42,6 +42,7 @@ PG_PSQL  ?= docker exec -i $(PG_CONTAINER) psql -U $(PG_USER) -d $(PG_DB)
 .PHONY: silver-catalog silver-run silver-build silver-verify
 .PHONY: journey-catalog journey-run journey-build journey-verify journey-seed
 .PHONY: orderline-catalog orderline-ddl orderline-run orderline-build orderline-verify
+.PHONY: checkout-catalog checkout-run checkout-build checkout-verify
 .PHONY: attribution-migrate attribution-seed attribution-build attribution-verify
 
 silver-catalog:
@@ -182,6 +183,50 @@ orderline-verify: orderline-run
 		echo ">> REPLAY PASS: silver_order_line content is identical across re-runs (idempotent)."; \
 	else \
 		echo ">> REPLAY FAIL: silver_order_line content changed between runs."; exit 1; \
+	fi
+
+# ============================================================================
+# feat-payments-checkout-silver — silver_checkout_signal dbt run wiring (mirror of the *-run targets).
+# The payments/checkout-SIGNAL mart is the canonical Silver home for GoKwik RTO-Predict +
+# Shopflo abandoned-checkout (and partner-gated GoKwik checkout/OTP later). It reads the RAW Iceberg
+# Bronze (bronze_iceberg.collector_events), like silver_shipment — so the catalog target ensures the
+# external Iceberg catalog exists (no Postgres read-shim). Same cron, no new deployable.
+#
+# Targets:
+#   checkout-catalog  — ensure the StarRocks external Iceberg Bronze catalog exists (idempotent)
+#   checkout-run      — dbt run (stg_checkout_signal_events -> silver_checkout_signal) + dbt test
+#   checkout-build    — checkout-catalog then checkout-run
+#   checkout-verify   — run dbt TWICE and diff a content checksum -> replay-idempotency proof
+# ============================================================================
+checkout-catalog:
+	@echo ">> Ensuring StarRocks external Iceberg Bronze catalog exists (idempotent)..."
+	$(SR_MYSQL) < db/starrocks/external_iceberg_catalog.sql
+
+checkout-run:
+	@echo ">> dbt run (stg_checkout_signal_events -> silver_checkout_signal) ..."
+	cd $(DBT_DIR) && DBT_PROFILES_DIR=$(DBT_PROFILES) "$(DBT)" run --select stg_checkout_signal_events+
+	@echo ">> dbt test (grain, accepted-values, schema tests) ..."
+	cd $(DBT_DIR) && DBT_PROFILES_DIR=$(DBT_PROFILES) "$(DBT)" test --select silver_checkout_signal stg_checkout_signal_events
+
+checkout-build: checkout-catalog checkout-run
+
+# Replay/idempotency proof: order-independent content fingerprint over ALL stable columns EXCEPT
+# the build-time updated_at, rebuild, snapshot again, assert identical -> reproducible-from-source.
+CHECKOUT_FP_SQL = SELECT SUM(CAST(murmur_hash3_32(CONCAT_WS('|', brand_id, event_id, signal_type, source, COALESCE(order_id,''), COALESCE(risk_flag,''), CAST(COALESCE(total_price_minor,0) AS STRING), CAST(COALESCE(total_discount_minor,0) AS STRING), CAST(has_address AS STRING), COALESCE(currency_code,''), CAST(occurred_at AS STRING), CAST(is_synthetic AS STRING))) AS BIGINT)) AS fp, COUNT(*) AS n FROM $(STARROCKS_DB).silver_checkout_signal;
+
+checkout-verify: checkout-run
+	@echo ">> [replay] content fingerprint after run #1 ..."
+	@$(SR_MYSQL) -N -e "$(CHECKOUT_FP_SQL)" > /tmp/checkout_fp_1.txt
+	@cat /tmp/checkout_fp_1.txt
+	@echo ">> [replay] re-running dbt ..."
+	cd $(DBT_DIR) && DBT_PROFILES_DIR=$(DBT_PROFILES) "$(DBT)" run --select stg_checkout_signal_events+
+	@echo ">> [replay] content fingerprint after run #2 ..."
+	@$(SR_MYSQL) -N -e "$(CHECKOUT_FP_SQL)" > /tmp/checkout_fp_2.txt
+	@cat /tmp/checkout_fp_2.txt
+	@if diff -q /tmp/checkout_fp_1.txt /tmp/checkout_fp_2.txt >/dev/null; then \
+		echo ">> REPLAY PASS: silver_checkout_signal content is identical across re-runs (idempotent)."; \
+	else \
+		echo ">> REPLAY FAIL: silver_checkout_signal content changed between runs."; exit 1; \
 	fi
 
 # ============================================================================

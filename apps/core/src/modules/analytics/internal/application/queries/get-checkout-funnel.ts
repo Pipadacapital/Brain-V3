@@ -9,12 +9,13 @@
  * Shopflo checkout_abandoned is REAL (documented self-serve webhook) → data_source
  * reflects the actual payload stamp ('live' for the real webhook).
  *
- * RLS / F-SEC-02: engine reads inside withBrandTxn. Brand from session (D-1).
+ * I-ST01 / isolation: the engine reads silver_checkout_signal via withSilverBrand (brand predicate
+ * injected at the seam). Brand from session (D-1).
  *
  * @see packages/metric-engine/src/checkout-funnel.ts
  */
 
-import type { EngineDeps } from '@brain/metric-engine';
+import type { SilverPool } from '@brain/metric-engine';
 import { computeCheckoutFunnel } from '@brain/metric-engine';
 
 export type CheckoutFunnelResult =
@@ -33,11 +34,11 @@ export type CheckoutFunnelResult =
  * getCheckoutFunnel — returns a brand's abandoned-checkout funnel.
  *
  * @param brandId - Brand UUID (from session — D-1; NEVER request body).
- * @param deps    - EngineDeps with raw pg.Pool.
+ * @param deps    - The StarRocks Silver pool (mysql2) — silver_checkout_signal via withSilverBrand.
  */
 export async function getCheckoutFunnel(
   brandId: string,
-  deps: EngineDeps,
+  deps: { srPool: SilverPool },
 ): Promise<CheckoutFunnelResult> {
   const result = await computeCheckoutFunnel(brandId, deps);
 

@@ -1,45 +1,40 @@
 /**
  * checkout-funnel.test.ts — unit tests for computeCheckoutFunnel (Shopflo abandoned checkout)
  *
- * Tests the funnel ratio, no-data guard (abandonedCount===0n), and BigInt
- * minor-unit enforcement via a fully-mocked PoolClient.  No DB required.
+ * Re-pointed to the silver_checkout_signal Silver seam: tests inject a fully-mocked SilverScope
+ * (withSilverBrand → runScoped) returning ONE aggregate row. currency_code now rides on the row
+ * (the mapper stamps it into the Silver mart) — no separate brand read. No DB required.
  *
  * All assertions are SPEC-DERIVED LITERALS.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-vi.mock('./deps.js', async () => {
-  const actual = await vi.importActual<typeof import('./deps.js')>('./deps.js');
+vi.mock('./silver-deps.js', async () => {
+  const actual = await vi.importActual<typeof import('./silver-deps.js')>('./silver-deps.js');
   return {
     ...actual,
-    withBrandTxn: vi.fn(),
+    withSilverBrand: vi.fn(),
   };
 });
 
 import { computeCheckoutFunnel } from './checkout-funnel.js';
-import { withBrandTxn } from './deps.js';
+import { withSilverBrand } from './silver-deps.js';
 
-const withBrandTxnMock = vi.mocked(withBrandTxn);
-const fakeDeps = { pool: {} as never };
+const withSilverBrandMock = vi.mocked(withSilverBrand);
+const fakeDeps = { srPool: {} as never };
 const BRAND_ID = '00000000-0000-0000-0000-000000000003';
 
-function makeClient(queryResults: Array<{ rows: unknown[] }>) {
-  let call = 0;
-  return { query: vi.fn(async () => queryResults[call++] ?? { rows: [] }) };
-}
-
-function setupClient(queryResults: Array<{ rows: unknown[] }>) {
-  const client = makeClient(queryResults);
-  withBrandTxnMock.mockImplementation(async (_pool, _brandId, fn) =>
-    fn(client as never),
+/** Mock the seam so runScoped returns the given aggregate row array. */
+function setupScope(rows: unknown[]) {
+  withSilverBrandMock.mockImplementation(async (_srPool, _brandId, fn) =>
+    fn({ runScoped: async () => rows as never[] } as never),
   );
-  return client;
 }
 
 beforeEach(() => vi.clearAllMocks());
 
-// ── Helper: builds a funnel aggregate row ────────────────────────────────────
+// ── Helper: builds a funnel aggregate row (as silver_checkout_signal SUM/COUNT shape) ──
 
 interface FunnelRow {
   abandoned: string;
@@ -47,6 +42,7 @@ interface FunnelRow {
   with_address: string;
   abandoned_value: string;
   synthetic_cnt: string;
+  currency_code: string | null;
 }
 
 function funnelRow(overrides: Partial<FunnelRow> = {}): FunnelRow {
@@ -56,21 +52,15 @@ function funnelRow(overrides: Partial<FunnelRow> = {}): FunnelRow {
     with_address: '0',
     abandoned_value: '0',
     synthetic_cnt: '0',
+    currency_code: 'INR',
     ...overrides,
   };
 }
 
-// ── Tests ────────────────────────────────────────────────────────────────────
-
-describe('computeCheckoutFunnel — Shopflo abandoned-checkout funnel', () => {
-
-  // ── no-data: abandonedCount === 0n ───────────────────────────────────────
+describe('computeCheckoutFunnel — Shopflo abandoned-checkout funnel (silver_checkout_signal)', () => {
 
   it('hasData=false when abandonedCount is 0 (no checkout_abandoned rows in window)', async () => {
-    setupClient([
-      { rows: [{ currency_code: 'INR' }] },
-      { rows: [funnelRow({ abandoned: '0' })] },
-    ]);
+    setupScope([funnelRow({ abandoned: '0', currency_code: null })]);
 
     const result = await computeCheckoutFunnel(BRAND_ID, fakeDeps);
 
@@ -82,11 +72,8 @@ describe('computeCheckoutFunnel — Shopflo abandoned-checkout funnel', () => {
     expect(result.dataSource).toBe('live');
   });
 
-  it('hasData=false when currencyCode is null (brand row missing)', async () => {
-    setupClient([
-      { rows: [] }, // no brand row → currencyCode = null
-      { rows: [funnelRow({ abandoned: '5' })] },
-    ]);
+  it('hasData=false when currencyCode is null (no currency on the rows)', async () => {
+    setupScope([funnelRow({ abandoned: '5', currency_code: null })]);
 
     const result = await computeCheckoutFunnel(BRAND_ID, fakeDeps);
 
@@ -94,22 +81,15 @@ describe('computeCheckoutFunnel — Shopflo abandoned-checkout funnel', () => {
     expect(result.currencyCode).toBe(null);
   });
 
-  // ── normal case → exact values ────────────────────────────────────────────
-
   it('returns exact funnel counts and abandonedValueMinor for a normal case', async () => {
-    setupClient([
-      { rows: [{ currency_code: 'INR' }] },
-      {
-        rows: [
-          funnelRow({
-            abandoned:        '10',
-            discount_applied: '4',
-            with_address:     '7',
-            abandoned_value:  '250000', // INR 2500.00 in minor units (paise)
-            synthetic_cnt:    '0',
-          }),
-        ],
-      },
+    setupScope([
+      funnelRow({
+        abandoned:        '10',
+        discount_applied: '4',
+        with_address:     '7',
+        abandoned_value:  '250000', // INR 2500.00 in minor units (paise)
+        synthetic_cnt:    '0',
+      }),
     ]);
 
     const result = await computeCheckoutFunnel(BRAND_ID, fakeDeps);
@@ -123,22 +103,15 @@ describe('computeCheckoutFunnel — Shopflo abandoned-checkout funnel', () => {
     expect(result.dataSource).toBe('live');
   });
 
-  // ── money is BIGINT minor units (I-S07) ──────────────────────────────────
-
   it('all money and count fields are bigint (I-S07 — no floats)', async () => {
-    setupClient([
-      { rows: [{ currency_code: 'INR' }] },
-      {
-        rows: [
-          funnelRow({
-            abandoned:        '3',
-            discount_applied: '1',
-            with_address:     '2',
-            abandoned_value:  '99900',
-            synthetic_cnt:    '0',
-          }),
-        ],
-      },
+    setupScope([
+      funnelRow({
+        abandoned:        '3',
+        discount_applied: '1',
+        with_address:     '2',
+        abandoned_value:  '99900',
+        synthetic_cnt:    '0',
+      }),
     ]);
 
     const result = await computeCheckoutFunnel(BRAND_ID, fakeDeps);
@@ -151,37 +124,15 @@ describe('computeCheckoutFunnel — Shopflo abandoned-checkout funnel', () => {
     expect(result.abandonedValueMinor).toBe(99900n);
   });
 
-  // ── fractional-cent input → BigInt() throws (I-S07 enforcement) ──────────
-
   it('throws on fractional-minor-unit abandonedCount (I-S07 boundary)', async () => {
-    // BigInt('10.5') throws SyntaxError — the engine enforces integer-only
-    setupClient([
-      { rows: [{ currency_code: 'INR' }] },
-      {
-        rows: [
-          funnelRow({ abandoned: '10.5' }), // not a valid integer string
-        ],
-      },
-    ]);
+    // BigInt('10.5') throws SyntaxError — the engine enforces integer-only.
+    setupScope([funnelRow({ abandoned: '10.5' })]);
 
     await expect(computeCheckoutFunnel(BRAND_ID, fakeDeps)).rejects.toThrow(SyntaxError);
   });
 
-  // ── dataSource propagation ────────────────────────────────────────────────
-
   it('dataSource is "synthetic" when synthetic_cnt > 0', async () => {
-    setupClient([
-      { rows: [{ currency_code: 'INR' }] },
-      {
-        rows: [
-          funnelRow({
-            abandoned:     '5',
-            abandoned_value: '10000',
-            synthetic_cnt: '3', // some rows synthetic-stamped
-          }),
-        ],
-      },
-    ]);
+    setupScope([funnelRow({ abandoned: '5', abandoned_value: '10000', synthetic_cnt: '3' })]);
 
     const result = await computeCheckoutFunnel(BRAND_ID, fakeDeps);
 
@@ -189,63 +140,30 @@ describe('computeCheckoutFunnel — Shopflo abandoned-checkout funnel', () => {
   });
 
   it('dataSource is "live" when synthetic_cnt is 0', async () => {
-    setupClient([
-      { rows: [{ currency_code: 'INR' }] },
-      {
-        rows: [
-          funnelRow({
-            abandoned:       '2',
-            abandoned_value: '5000',
-            synthetic_cnt:   '0',
-          }),
-        ],
-      },
-    ]);
+    setupScope([funnelRow({ abandoned: '2', abandoned_value: '5000', synthetic_cnt: '0' })]);
 
     const result = await computeCheckoutFunnel(BRAND_ID, fakeDeps);
 
     expect(result.dataSource).toBe('live');
   });
 
-  // ── abandonedValueMinor strips decimal from numeric text ─────────────────
-
   it('abandonedValueMinor truncates trailing ".00" from SQL numeric text (split on ".")', async () => {
-    // The source does: BigInt(String(row.abandoned_value).split('.')[0])
-    // SQL SUM returns e.g. '250000.00' for a numeric cast — split keeps '250000'
-    setupClient([
-      { rows: [{ currency_code: 'INR' }] },
-      {
-        rows: [
-          funnelRow({
-            abandoned:        '5',
-            abandoned_value:  '250000.00', // simulates SQL numeric text with trailing .00
-            synthetic_cnt:    '0',
-          }),
-        ],
-      },
-    ]);
+    setupScope([funnelRow({ abandoned: '5', abandoned_value: '250000.00', synthetic_cnt: '0' })]);
 
     const result = await computeCheckoutFunnel(BRAND_ID, fakeDeps);
 
     expect(result.abandonedValueMinor).toBe(250000n);
   });
 
-  // ── zero discount / zero address ──────────────────────────────────────────
-
   it('discountAppliedCount=0n and withAddressCount=0n when no discount or address rows', async () => {
-    setupClient([
-      { rows: [{ currency_code: 'INR' }] },
-      {
-        rows: [
-          funnelRow({
-            abandoned:        '8',
-            discount_applied: '0',
-            with_address:     '0',
-            abandoned_value:  '80000',
-            synthetic_cnt:    '0',
-          }),
-        ],
-      },
+    setupScope([
+      funnelRow({
+        abandoned:        '8',
+        discount_applied: '0',
+        with_address:     '0',
+        abandoned_value:  '80000',
+        synthetic_cnt:    '0',
+      }),
     ]);
 
     const result = await computeCheckoutFunnel(BRAND_ID, fakeDeps);

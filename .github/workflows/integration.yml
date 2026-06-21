@@ -110,6 +110,20 @@ jobs:
             PG_PSQL="psql postgresql://brain:brain@localhost:5432/brain" \
             SR_MYSQL="mysql -h127.0.0.1 -P9030 -uroot --protocol=TCP"
 
+      # Iceberg-sourced Silver marts (silver_shipment, silver_checkout_signal) read the RAW Iceberg
+      # Bronze, which the Spark materializer populates — NOT stood up in this CI job. So we cannot
+      # `dbt run` them here; instead we COMPILE them (validates SQL/Jinja/ref/source graph against the
+      # project, no warehouse data needed) so a broken Iceberg-Silver model fails the PR. Full
+      # `make checkout-run` is gated on the Iceberg-in-CI materializer (tracked with silver_shipment).
+      - name: Validate Iceberg-sourced Silver models compile (checkout-signal)
+        env:
+          STARROCKS_USER: root
+          STARROCKS_PASSWORD: ''
+        run: |
+          make checkout-catalog SR_MYSQL="mysql -h127.0.0.1 -P9030 -uroot --protocol=TCP"
+          cd db/dbt && DBT_PROFILES_DIR=profiles ../../.dbt-venv/bin/dbt compile \
+            --select stg_checkout_signal_events silver_checkout_signal
+
       # Isolation fuzz + parity oracle — now against REAL StarRocks (the PR run has no Silver tier,
       # so the StarRocks cross-tenant negative-control only truly fires here).
       - name: Isolation fuzz (real engines)

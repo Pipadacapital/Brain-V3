@@ -2865,8 +2865,8 @@ export function registerBffRoutes(
 
   /**
    * GET /api/v1/analytics/checkout-funnel
-   * Abandoned-checkout funnel from shopflo.checkout_abandoned.v1 Bronze rows.
-   * REAL Shopflo self-serve webhook (NOT synthetic). PII hashed at boundary.
+   * Abandoned-checkout funnel from the silver_checkout_signal Silver mart (signal_type=
+   * 'checkout_abandoned'). REAL Shopflo self-serve webhook (NOT synthetic). PII hashed at boundary.
    */
   fastify.get(
     '/api/v1/analytics/checkout-funnel',
@@ -2877,20 +2877,20 @@ export function registerBffRoutes(
       if (!auth.brandId) {
         return reply.send({ request_id: requestId, data: { state: 'no_data' } });
       }
-      if (!rawPool) {
-        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' } });
+      if (!srPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (StarRocks) not available' } });
       }
-      const result = await getCheckoutFunnel(auth.brandId, { pool: rawPool });
+      const result = await getCheckoutFunnel(auth.brandId, { srPool });
       return reply.send({ request_id: requestId, data: result });
     },
   );
 
   /**
    * GET /api/v1/analytics/rto-risk-distribution
-   * Per-order RTO-risk distribution from gokwik.rto_predict.v1 Bronze rows (latest prediction per
-   * order, last 30d). Categorical risk_flag buckets — VERBATIM, never a fabricated score. Honest
-   * no_data (D-2). data_source='synthetic' drives the UI Synthetic badge (GoKwik read API is a
-   * documented follow-up; real shape, synthetic source in dev). Brand from session (D-1).
+   * Per-order RTO-risk distribution from the silver_checkout_signal Silver mart (signal_type=
+   * 'rto_predict'; latest prediction per order, last 30d). Categorical risk_flag buckets — VERBATIM,
+   * never a fabricated score. Honest no_data (D-2). data_source='synthetic' drives the UI Synthetic
+   * badge (GoKwik read API is a documented follow-up; real shape, synthetic source in dev).
    */
   fastify.get(
     '/api/v1/analytics/rto-risk-distribution',
@@ -2901,10 +2901,10 @@ export function registerBffRoutes(
       if (!auth.brandId) {
         return reply.send({ request_id: requestId, data: { state: 'no_data' } });
       }
-      if (!rawPool) {
-        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' } });
+      if (!srPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (StarRocks) not available' } });
       }
-      const result = await getRtoRiskDistribution(auth.brandId, { pool: rawPool });
+      const result = await getRtoRiskDistribution(auth.brandId, { srPool });
       return reply.send({ request_id: requestId, data: result });
     },
   );

@@ -9,11 +9,12 @@
  * (never a fabricated score). data_source reflects the actual payload stamp (synthetic in dev —
  * GoKwik's read API is undocumented; real shape, synthetic source).
  *
- * RLS / F-SEC-02: engine reads inside withBrandTxn. Brand from session (D-1).
+ * I-ST01 / isolation: the engine reads silver_checkout_signal via withSilverBrand (brand predicate
+ * injected at the seam). Brand from session (D-1).
  *
  * @see packages/metric-engine/src/cod-rto-prediction.ts
  */
-import type { EngineDeps } from '@brain/metric-engine';
+import type { SilverPool } from '@brain/metric-engine';
 import { computeRtoRiskDistribution } from '@brain/metric-engine';
 
 export type RtoRiskDistributionResult =
@@ -31,7 +32,7 @@ export type RtoRiskDistributionResult =
 
 export async function getRtoRiskDistribution(
   brandId: string,
-  deps: EngineDeps,
+  deps: { srPool: SilverPool },
 ): Promise<RtoRiskDistributionResult> {
   const r = await computeRtoRiskDistribution(brandId, deps);
   if (!r.hasData) return { state: 'no_data' };

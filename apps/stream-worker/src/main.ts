@@ -50,7 +50,10 @@ import { BackfillOrderConsumer } from './interfaces/consumers/BackfillOrderConsu
 import { LiveLedgerBridgeConsumer } from './interfaces/consumers/LiveLedgerBridgeConsumer.js';
 import { SettlementLedgerConsumer } from './interfaces/consumers/SettlementLedgerConsumer.js';
 import { SpendLedgerConsumer } from './interfaces/consumers/SpendLedgerConsumer.js';
-import { GokwikAwbLedgerConsumer } from './interfaces/consumers/GokwikAwbLedgerConsumer.js';
+// ShipmentLedgerConsumer handles BOTH gokwik.awb_status.v1 + shiprocket.shipment_status.v1
+// (shared logistics ledger). Imported under the back-compat GokwikAwbLedgerConsumer alias so the
+// existing wiring + gokwik-awb-ledger-wiring.e2e.test.ts guard are unchanged.
+import { GokwikAwbLedgerConsumer } from './interfaces/consumers/ShipmentLedgerConsumer.js';
 import { EventBronzeBridgeConsumer } from './interfaces/consumers/EventBronzeBridgeConsumer.js';
 import { LedgerWriter } from './infrastructure/pg/LedgerWriter.js';
 import mysql from 'mysql2/promise';
@@ -206,6 +209,15 @@ export async function main(): Promise<void> {
   const awbStatusBronzeConsumer = new EventBronzeBridgeConsumer(
     kafka, bridgeProcessEvent, topic, awbStatusBronzeGroupId, retryCounter,
     'gokwik.awb_status.v1', 'gokwik_awb_status_bronze_write_total',
+  );
+  // Shiprocket shipment-status Bronze bridge — the second logistics source feeding the SAME
+  // silver_shipment mart (Slice 2 multi-source). Ledger-fed via ShipmentLedgerConsumer AND
+  // Bronze-landed (SERVER_TRUSTED) so status/terminal_class/pincode/courier reach silver_shipment.
+  const shipmentStatusBronzeGroupId =
+    process.env['SHIPROCKET_SHIPMENT_BRONZE_CONSUMER_GROUP_ID'] ?? 'shiprocket-shipment-bronze-bridge';
+  const shipmentStatusBronzeConsumer = new EventBronzeBridgeConsumer(
+    kafka, bridgeProcessEvent, topic, shipmentStatusBronzeGroupId, retryCounter,
+    'shiprocket.shipment_status.v1', 'shiprocket_shipment_bronze_write_total',
   );
   // order.live.v1 (Shopify live + re-pull orders) is the SAME severed-landing class: the events
   // carry NO install_token, so the pixel CollectorEventConsumer (R2 gate ON) quarantines them as
@@ -462,6 +474,7 @@ export async function main(): Promise<void> {
       shopfloBronzeConsumer.stop(),
       rtoPredictBronzeConsumer.stop(),
       awbStatusBronzeConsumer.stop(),
+      shipmentStatusBronzeConsumer.stop(),
       syncRequestClaimer.stop(),
       dqChecker.stop(),
       ingestScheduler.stop(),
@@ -582,6 +595,11 @@ export async function main(): Promise<void> {
   log.info(`starting gokwik-awb-status-bronze bridge — topic=${topic} group=${awbStatusBronzeGroupId}`);
   await awbStatusBronzeConsumer.start();
   log.info('gokwik-awb-status-bronze bridge consumer running');
+
+  // ── Shiprocket shipment-status Bronze bridge consumer (Slice 2 — second logistics source) ──
+  log.info(`starting shiprocket-shipment-bronze bridge — topic=${topic} group=${shipmentStatusBronzeGroupId}`);
+  await shipmentStatusBronzeConsumer.start();
+  log.info('shiprocket-shipment-bronze bridge consumer running');
 
   // ── Live-order Bronze bridge consumer (P0 — un-sever the order SoR landing) ──
   // Same live topic, independent consumer group. Filters order.live.v1 → Bronze

@@ -1,0 +1,96 @@
+{
+  "_synthetic": true,
+  "_note": "SYNTHETIC dev fixture — real Shiprocket tracking read API/payload is a partner-gated platform follow-up (SPEC 3 gap). NEVER presented as live. Status labels use Shiprocket's documented vocabulary; the shared @brain/logistics-status normalizer maps them to terminal_class.",
+  "records": [
+    {
+      "awb": "SR-SYNTH-DELIVERED-0001",
+      "order_id": "sr_ord_deliv_1",
+      "status": "Pickup Scheduled",
+      "status_changed_at": "2026-06-05T08:00:00Z",
+      "payment_method": "cod",
+      "pincode": "560001",
+      "courier": "Delhivery"
+    },
+    {
+      "awb": "SR-SYNTH-DELIVERED-0001",
+      "order_id": "sr_ord_deliv_1",
+      "status": "In-Transit",
+      "status_changed_at": "2026-06-06T10:00:00Z",
+      "payment_method": "cod",
+      "pincode": "560001",
+      "courier": "Delhivery"
+    },
+    {
+      "awb": "SR-SYNTH-DELIVERED-0001",
+      "order_id": "sr_ord_deliv_1",
+      "status": "Out For Delivery",
+      "status_changed_at": "2026-06-07T07:30:00Z",
+      "payment_method": "cod",
+      "pincode": "560001",
+      "courier": "Delhivery"
+    },
+    {
+      "awb": "SR-SYNTH-DELIVERED-0001",
+      "order_id": "sr_ord_deliv_1",
+      "status": "Delivered",
+      "status_changed_at": "2026-06-07T14:15:00Z",
+      "payment_method": "cod",
+      "pincode": "560001",
+      "courier": "Delhivery"
+    },
+    {
+      "awb": "SR-SYNTH-RTO-0002",
+      "order_id": "sr_ord_rto_2",
+      "status": "Pickup Scheduled",
+      "status_changed_at": "2026-06-05T09:00:00Z",
+      "payment_method": "cod",
+      "pincode": "110001",
+      "courier": "Xpressbees"
+    },
+    {
+      "awb": "SR-SYNTH-RTO-0002",
+      "order_id": "sr_ord_rto_2",
+      "status": "Out For Delivery",
+      "status_changed_at": "2026-06-08T07:30:00Z",
+      "payment_method": "cod",
+      "pincode": "110001",
+      "courier": "Xpressbees"
+    },
+    {
+      "awb": "SR-SYNTH-RTO-0002",
+      "order_id": "sr_ord_rto_2",
+      "status": "Undelivered",
+      "status_changed_at": "2026-06-08T18:00:00Z",
+      "payment_method": "cod",
+      "pincode": "110001",
+      "courier": "Xpressbees"
+    },
+    {
+      "awb": "SR-SYNTH-RTO-0002",
+      "order_id": "sr_ord_rto_2",
+      "status": "RTO Initiated",
+      "status_changed_at": "2026-06-10T11:00:00Z",
+      "payment_method": "cod",
+      "pincode": "110001",
+      "courier": "Xpressbees"
+    },
+    {
+      "awb": "SR-SYNTH-RTO-0002",
+      "order_id": "sr_ord_rto_2",
+      "status": "RTO Delivered",
+      "status_changed_at": "2026-06-12T16:45:00Z",
+      "payment_method": "cod",
+      "pincode": "110001",
+      "courier": "Xpressbees"
+    },
+    {
+      "awb": "SR-SYNTH-PREPAID-RTO-0003",
+      "order_id": "sr_ord_prepaid_rto_3",
+      "status": "RTO Initiated",
+      "status_changed_at": "2026-06-11T12:00:00Z",
+      "payment_method": "prepaid",
+      "pincode": "400001",
+      "courier": "BlueDart"
+    }
+  ]
+}

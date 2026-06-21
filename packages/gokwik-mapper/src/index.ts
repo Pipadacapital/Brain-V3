@@ -27,6 +27,11 @@
  */
 
 import { createHash } from 'node:crypto';
+import {
+  classifyShipmentStatus,
+  isTerminalStatus as isTerminalStatusShared,
+  type TerminalClass,
+} from '@brain/logistics-status';
 
 // ── Event name constants ─────────────────────────────────────────────────────
 
@@ -37,52 +42,26 @@ export const GOKWIK_RTO_PREDICT_V1_EVENT_NAME = 'gokwik.rto_predict.v1' as const
 
 export type DataSource = 'real' | 'synthetic';
 
-// ── AWB terminal-state taxonomy (research finding 3 — verbatim end-state list) ──
+// ── AWB terminal-state taxonomy ───────────────────────────────────────────────
+// The status→terminal_class authority now lives in @brain/logistics-status (the SHARED
+// normalizer used by every logistics source — no per-source drift). We re-export the GoKwik
+// names below for back-compat; behavior is byte-identical (GoKwik labels are a subset of the
+// shared union). See packages/logistics-status/src/index.ts.
 
-/**
- * Terminal RTO end-states. A CoD order reaching any of these → recognized revenue is
- * clawed back (cod_rto_clawback). Matched case-insensitively after normalization.
- */
-export const RTO_TERMINAL_STATES = new Set([
-  'rto',
-  'rto initiated',
-  'rto in transit',
-  'rto undelivered',
-  'rto out for delivery',
-  'rto delivered',
-]);
+export type { TerminalClass };
+export {
+  RTO_TERMINAL_STATES,
+  DELIVERED_TERMINAL_STATES,
+  OTHER_TERMINAL_STATES,
+} from '@brain/logistics-status';
 
-/** Terminal Delivered end-states → confirms recognition (cod_delivery_confirmed). */
-export const DELIVERED_TERMINAL_STATES = new Set([
-  'delivered',
-  'completed',
-]);
-
-/** Other terminal end-states (no ledger effect in Slice 1 — recorded for provenance). */
-export const OTHER_TERMINAL_STATES = new Set([
-  'cancelled',
-  'lost',
-  'damaged',
-  'returned',
-]);
-
-export type TerminalClass = 'rto' | 'delivered' | 'other' | 'none';
-
-function normalizeStatus(raw: string | null | undefined): string {
-  return (raw ?? '').trim().toLowerCase().replace(/[_-]+/g, ' ').replace(/\s+/g, ' ');
-}
-
-/** Classify an AWB status into its terminal class (deterministic — no model). */
+/** Classify an AWB status into its terminal class (deterministic — shared authority). */
 export function classifyAwbStatus(rawStatus: string | null | undefined): TerminalClass {
-  const s = normalizeStatus(rawStatus);
-  if (RTO_TERMINAL_STATES.has(s)) return 'rto';
-  if (DELIVERED_TERMINAL_STATES.has(s)) return 'delivered';
-  if (OTHER_TERMINAL_STATES.has(s)) return 'other';
-  return 'none';
+  return classifyShipmentStatus(rawStatus);
 }
 
 export function isTerminalStatus(rawStatus: string | null | undefined): boolean {
-  return classifyAwbStatus(rawStatus) !== 'none';
+  return isTerminalStatusShared(rawStatus);
 }
 
 // ── Raw GoKwik shapes ─────────────────────────────────────────────────────────

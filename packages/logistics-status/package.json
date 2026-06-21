@@ -1,5 +1,5 @@
 {
-  "name": "@brain/gokwik-mapper",
+  "name": "@brain/logistics-status",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -11,9 +11,7 @@
     "lint": "eslint .",
     "test:unit": "vitest run --passWithNoTests"
   },
-  "dependencies": {
-    "@brain/logistics-status": "workspace:*"
-  },
+  "dependencies": {},
   "devDependencies": {
     "@types/node": "^20.0.0",
     "typescript": "^5.6.0",

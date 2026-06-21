@@ -155,6 +155,34 @@ dbt-core 1.11 + dbt-starrocks 1.12 connect to local StarRocks (`localhost:9030`,
 schema `brain_silver`); `dbt parse` compiles the 8 models. With these in place, Slice 4b (flip the
 Bronze sources to Iceberg + move shim transforms into staging + mart parity) is unblocked.
 
+### Slice 4b — touchpoint Bronze source flipped to Iceberg (PROVEN)
+
+`stg_touchpoint_events` reads its Bronze source via a reversible dbt var `bronze_source` (default `pg`):
+- `pg` → the JDBC read-shim view `oltp.bronze_touchpoint_src` (PG bronze_events, pre-filtered/cast)
+- `iceberg` → the raw `bronze_iceberg.collector_events` catalog + the journey event-type filter applied
+  in staging (the shim's `WHERE` moves into the model). Both expose `payload.properties.*` identically.
+
+Stand up both catalogs, then build + diff:
+
+```bash
+# both catalogs (JDBC baseline + Iceberg) and the PG shim views:
+docker exec -i brainv3-postgres-1 psql -U brain -d brain < db/starrocks/bronze_touchpoint_src.sql
+docker exec -i brainv3-starrocks-1 mysql -h127.0.0.1 -P9030 -uroot < db/starrocks/oltp_jdbc_catalog.sql
+cd db/dbt
+DBT_PROFILES_DIR=profiles dbt run  --select stg_touchpoint_events+                          # PG baseline
+DBT_PROFILES_DIR=profiles dbt run  --select stg_touchpoint_events+ --vars '{bronze_source: iceberg}'
+DBT_PROFILES_DIR=profiles dbt test --select silver_touchpoint+    --vars '{bronze_source: iceberg}'
+```
+
+VERIFIED: `silver_touchpoint` built from Iceberg is **byte-for-byte identical** to the PG-sourced mart
+(42 rows), and all 12 dbt tests (grain, replay-idempotency, not-null, accepted-values) pass under the
+Iceberg source. The reader flip is correct.
+
+**Not yet flipped:** `bronze_order_line_src` (the order-line path) — its shim UNNESTs `payload.properties.
+line_items`, which dev Iceberg data lacks (re-pull `order.live.v1` carries no line_items), so the
+unnest-in-staging transform can't be data-verified yet. The ledger + stitch-map sources stay on JDBC by
+design (derived, not raw Bronze).
+
 ## Related
 
 - ADR-0002 — `docs/adr/0002-iceberg-bronze-spark-streaming.md` (the Bronze→Iceberg flip plan)

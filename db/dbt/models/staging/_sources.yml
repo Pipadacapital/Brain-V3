@@ -137,3 +137,30 @@ sources:
             description: "brain_anon_id read back from the order (the join key onto touchpoints)."
           - name: brain_id
             description: "Resolved known identity (UUID→text, nullable; NULL = unlinked)."
+
+  # ── ADR-0002 Slice 4b: the Iceberg Bronze source (the flip target) ──────────────
+  # The StarRocks external Iceberg catalog over Bronze (db/starrocks/external_iceberg_catalog.sql,
+  # written by the Spark materializer). RAW collector_events — native string brand_id/event_id and a
+  # STRING payload (no uuid/jsonb cast → no read-shim). Staging models gated by var('bronze_source',
+  # 'pg'): when 'iceberg' they read this source + apply the event-type filter the PG shim used to do.
+  - name: bronze_iceberg
+    description: "Raw Bronze events on Iceberg (StarRocks REST catalog → S3). The Phase-3 Bronze read path."
+    database: brain_bronze_local   # StarRocks external Iceberg catalog
+    schema: brain_bronze           # Iceberg namespace
+    tables:
+      - name: collector_events
+        description: >
+          The raw append-only Bronze event log (one row per (brand_id, event_id)). payload is the
+          verbatim envelope JSON STRING — payload.event_name + payload.properties.* resolve exactly
+          as the PG BronzeRow payload, so staging extraction is identical.
+        columns:
+          - name: brand_id
+            description: "Tenant key (native STRING — no uuid cast needed)."
+          - name: event_id
+            description: "Bronze idempotency key (native STRING)."
+          - name: event_type
+            description: "Semantic event type — filter to journey types in staging."
+          - name: occurred_at
+            description: "Event-time (timestamp)."
+          - name: payload
+            description: "Verbatim envelope JSON (STRING). Journey signal under .properties."

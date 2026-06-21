@@ -46,14 +46,6 @@ export const CONNECTOR_CATALOG: readonly ConnectorDefinition[] = [
     description: 'Sync orders, products, customers.',
   },
   {
-    id: 'shopflo',
-    category: 'storefront',
-    displayName: 'Shopflo',
-    connectMethod: 'credential',
-    availability: 'available',
-    description: 'One-click checkout conversion & abandoned-checkout recovery signal.',
-  },
-  {
     id: 'woocommerce',
     category: 'storefront',
     displayName: 'WooCommerce',
@@ -79,6 +71,9 @@ export const CONNECTOR_CATALOG: readonly ConnectorDefinition[] = [
     description: 'Search & shopping campaigns.',
   },
   // ── payments ──────────────────────────────────────────────────────────────────
+  // Razorpay = payment processor (settlement). GoKwik + Shopflo = checkout/payment-gateway
+  // apps (CoD, one-click checkout, RTO) — payment-layer providers, NOT storefronts or
+  // logistics carriers. They are filed under sources/checkout/ in code and belong here.
   {
     id: 'razorpay',
     category: 'payments',
@@ -87,15 +82,23 @@ export const CONNECTOR_CATALOG: readonly ConnectorDefinition[] = [
     availability: 'available',
     description: 'Settlement reconciliation — net-of-fees realized revenue.',
   },
-  // ── logistics ────────────────────────────────────────────────────────────────
   {
     id: 'gokwik',
-    category: 'logistics',
+    category: 'payments',
     displayName: 'GoKwik',
     connectMethod: 'credential',
     availability: 'available',
     description: 'CoD verification + RTO (return-to-origin) outcome & checkout risk signal.',
   },
+  {
+    id: 'shopflo',
+    category: 'payments',
+    displayName: 'Shopflo',
+    connectMethod: 'credential',
+    availability: 'available',
+    description: 'One-click checkout conversion & abandoned-checkout recovery signal.',
+  },
+  // ── logistics ────────────────────────────────────────────────────────────────
   {
     id: 'shiprocket',
     category: 'logistics',

@@ -8,10 +8,14 @@
 > **BUILD STATUS (shipped to master):** WooCommerce (backfill + live REST + real-time webhook),
 > Shiprocket (Slice 1 + live-read scaffold), the multi-source logistics Silver surface, and the
 > Storefront Behavior analytics surface are all MERGED. GoKwik + Shopflo were consolidated in place.
-> The partner-doc-blocked remainder (GoKwik OTP/checkout, Shopflo Tier-B, Shiprocket NDR/COD-
-> remittance/freight/real-time-webhook) is tracked in docs/connectors/shiprocket-partner-blockers.md
-> and the per-spec "partner-gated" sections below. The "▶ IMPLEMENTATION PLAN — Shiprocket Slice 1"
-> section near the end is a historical record (executed + merged).
+> The partner-doc-blocked remainder (GoKwik OTP/checkout, Shopflo Tier-B + HMAC, Shiprocket NDR/COD-
+> remittance/freight/real-time-webhook) — with official portal URLs and what each needs to unblock —
+> is tracked in docs/connectors/partner-access-blockers.md (Shiprocket detail in
+> docs/connectors/shiprocket-partner-blockers.md) and the per-spec "partner-gated" sections below.
+> WooCommerce has NO partner dependency: its `per_page=100` cap + `modified_after`/`dates_are_gmt`
+> incremental cursor are VERIFIED correct against the public REST docs (2026-06-21) — no open gap.
+> The "▶ IMPLEMENTATION PLAN — Shiprocket Slice 1" section near the end is a historical record
+> (executed + merged).
 
 ---
 
@@ -293,7 +297,8 @@ the existing metric-engine sole-emitters; WooCommerce just adds rows to the same
   latest-state fold (replay-safe); webhook body ≠ REST shape → independent parser (per refutation).
 - **Final recommendation:** build it — lowest-risk, highest-coverage connector; ~90% reuse of the
   Shopify storefront canonical surface. The only genuine net-new work is the Woo source adapter +
-  mapper + HMAC verify; confirm `per_page` max + date-filter params at implementation time.
+  mapper + HMAC verify. (`per_page`=100 max + `modified_after`/`dates_are_gmt` date filters
+  VERIFIED against the public REST docs 2026-06-21 — implemented as such; no open gap.)
 
 # SPEC 3 — Shiprocket (category: logistics) — PRIMARY LOGISTICS SOURCE
 

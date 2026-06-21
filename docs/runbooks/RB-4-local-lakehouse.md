@@ -178,10 +178,39 @@ VERIFIED: `silver_touchpoint` built from Iceberg is **byte-for-byte identical** 
 (42 rows), and all 12 dbt tests (grain, replay-idempotency, not-null, accepted-values) pass under the
 Iceberg source. The reader flip is correct.
 
-**Not yet flipped:** `bronze_order_line_src` (the order-line path) — its shim UNNESTs `payload.properties.
-line_items`, which dev Iceberg data lacks (re-pull `order.live.v1` carries no line_items), so the
-unnest-in-staging transform can't be data-verified yet. The ledger + stitch-map sources stay on JDBC by
-design (derived, not raw Bronze).
+### Slice 4b — order-line Bronze source flipped to Iceberg (PROVEN)
+
+`stg_order_line_events` now carries the same reversible `bronze_source` var as the touchpoint model:
+- `pg` → the JDBC read-shim view `oltp.bronze_order_line_src` (latest-order pick + `line_items` unnest
+  done in the Postgres view via `jsonb_array_elements WITH ORDINALITY`).
+- `iceberg` → the raw `bronze_iceberg.collector_events` catalog; the latest-order pick (`row_number`)
+  and the `line_items` **array unnest move into staging**, done NATIVELY in StarRocks:
+  `cross join unnest(cast(parse_json(get_json_string(payload,'$.properties.line_items')) as array<json>))`.
+
+Dev `order.live.v1` re-pulls carry NO `line_items`, so a synthetic line-item order is seeded through the
+REAL ingest path (one inject → both sinks: PG via the bridge, Iceberg via Spark):
+
+```bash
+node tools/seed/seed-line-item-order.mjs        # order.live.v1 + properties.line_items → dev.collector.event.v1
+db/iceberg/spark/run-bronze-spike.sh            # materialize it into Iceberg
+docker exec brainv3-starrocks-1 mysql -h127.0.0.1 -P9030 -uroot \
+  -e "REFRESH EXTERNAL TABLE brain_bronze_local.brain_bronze.collector_events;"
+cd db/dbt
+DBT_PROFILES_DIR=profiles dbt run  --select stg_order_line_events+                          # PG baseline
+DBT_PROFILES_DIR=profiles dbt run  --select stg_order_line_events+ --vars '{bronze_source: iceberg}'
+DBT_PROFILES_DIR=profiles dbt test --select silver_order_line     --vars '{bronze_source: iceberg}'
+```
+
+VERIFIED: two-way `EXCEPT` on the line content (`sku, quantity, unit_price_minor, line_total_minor,
+line_discount_minor, product_id, variant_id, currency_code`) → **pg_rows=3, iceberg_rows=3, pg_only=0,
+iceberg_only=0 (CONTENT PARITY)**; all 9 dbt tests pass under the Iceberg source (grain + replay included).
+
+**ONE documented difference:** `line_index`. StarRocks unnest has no `WITH ORDINALITY` and `array_generate`
+needs literal bounds, so the Iceberg path assigns `line_index` as a DETERMINISTIC `row_number` over the
+line's own content (sku, variant_id, unit_price_minor) — 1..N, stable, replay-safe — rather than the PG
+shim's array position. `line_index` is a grain disambiguator, never a business value, so this is benign and
+the line CONTENT is byte-identical. With this, **all raw-Bronze reader sources are flipped** — the ledger +
+stitch-map sources stay on JDBC by design (derived, not raw Bronze).
 
 ## Slice 7 — Iceberg maintenance: compaction, 24-mo TTL, erasure-aware compaction
 

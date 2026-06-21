@@ -73,6 +73,7 @@ import { RequestConnectorSyncCommand } from './modules/connector/sync/applicatio
 import { registerShopifyWebhookRoutes } from './modules/connector/sources/storefront/shopify/interfaces/webhooks/shopifyWebhookHandler.js';
 import { registerRazorpayWebhookRoutes } from './modules/connector/sources/payment/razorpay/interfaces/webhooks/razorpayWebhookHandler.js';
 import { registerShopfloWebhookRoutes } from './modules/connector/sources/checkout/shopflo/interfaces/webhooks/shopfloWebhookHandler.js';
+import { registerWooCommerceWebhookRoutes } from './modules/connector/sources/storefront/woocommerce/interfaces/webhooks/woocommerceWebhookHandler.js';
 import { registerShopifyConnectorRoutes } from './modules/connector/sources/storefront/shopify/interfaces/http/shopifyConnectorRoutes.js';
 import { registerDevShopifySyncRoutes } from './modules/connector/sources/storefront/shopify/interfaces/http/devShopifySyncRoutes.js';
 import { registerPixelRoutes, buildDefaultSnippet } from './modules/connector/pixel/interfaces/http/pixelRoutes.js';
@@ -745,6 +746,17 @@ export async function main(): Promise<void> {
   });
 
   app.log.info({ topic: liveTopic }, '[core] Shopflo webhook receiver registered (Track B)');
+
+  registerWooCommerceWebhookRoutes(app, {
+    secretsManager: connectorSecretsManager,
+    rawPgPool,
+    producer: webhookProducer,
+    liveTopic,
+    getSaltHex: getWebhookSaltHex,
+    redis,
+  });
+
+  app.log.info({ topic: liveTopic }, '[core] WooCommerce webhook receiver registered (real-time orders)');
 
   // DEV-ONLY: validate-sync spike — pull live orders via the real connected token.
   // Mounted only outside production (token crosses the boundary here, I-S09).
@@ -1472,6 +1484,10 @@ export async function main(): Promise<void> {
           const consumerKey = credentials['consumer_key'];
           const consumerSecret = credentials['consumer_secret'];
           const siteUrl = credentials['site_url'];
+          // Optional: the WooCommerce webhook secret (set on the merchant's webhook). When present,
+          // real-time order webhooks are HMAC-verified (POST /api/v1/webhooks/woocommerce); when
+          // absent, the connector still works via the REST backfill/incremental re-pull.
+          const webhookSecret = credentials['webhook_secret'];
 
           if (!consumerKey || !consumerSecret || !siteUrl) {
             return reply.code(400).send({
@@ -1486,7 +1502,9 @@ export async function main(): Promise<void> {
           const { arn } = await connectorSecretsManager.storeSecret(
             brandId,
             { connectorType: 'woocommerce', subKey: siteUrl },
-            { consumer_key: consumerKey, consumer_secret: consumerSecret },
+            webhookSecret
+              ? { consumer_key: consumerKey, consumer_secret: consumerSecret, webhook_secret: webhookSecret }
+              : { consumer_key: consumerKey, consumer_secret: consumerSecret },
           );
 
           const now = new Date();

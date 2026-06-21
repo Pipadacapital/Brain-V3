@@ -31,6 +31,7 @@ export const PROVIDER_REPULL_RESOURCE: Record<string, string> = {
   meta: 'meta.insights',
   google_ads: 'google_ads.spend',
   gokwik: 'awb.lifecycle', // gokwik has a trailing-window AWB-lifecycle repull → on-demand syncable
+  woocommerce: 'orders.repull', // woocommerce REST order backfill/incremental repull → on-demand syncable
 };
 
 export type SyncRequestErrorCode =

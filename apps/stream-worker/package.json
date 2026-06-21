@@ -30,6 +30,7 @@
     "@brain/shopflo-mapper": "workspace:*",
     "@brain/shopify-mapper": "workspace:*",
     "@brain/tenant-context": "workspace:*",
+    "@brain/woocommerce-mapper": "workspace:*",
     "ioredis": "^5.11.1",
     "kafkajs": "^2.2.4",
     "mysql2": "^3.22.5",

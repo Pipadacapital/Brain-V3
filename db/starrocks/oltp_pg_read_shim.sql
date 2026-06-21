@@ -34,7 +34,12 @@ SELECT
     amount_minor,
     currency_code,
     occurred_at,
-    economic_effective_at
+    economic_effective_at,
+    -- appended (Phase G): CREATE OR REPLACE VIEW requires new columns at the END
+    ledger_event_id,
+    fee_minor,
+    recognition_label,
+    billing_posted_period
 FROM realized_revenue_ledger;
 
 -- Make the view readable through the JDBC catalog connection user (superuser `brain`

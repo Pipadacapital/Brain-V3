@@ -164,9 +164,15 @@ export async function main(): Promise<void> {
   // ── Bronze pipeline (LIVE collector lane — R2/R3 gate ON) ───────────────────
   const dedup = new RedisDedupAdapter(redisUrl);
   const bronze = new BronzeRepository(dbUrl);
+  // Slice 6 (ADR-0002): the PG Bronze write switch — default ENABLED. Set BRONZE_PG_WRITE_ENABLED=false
+  // ONLY to retire the PG write (Spark→Iceberg becomes the sole Bronze SoR). Do NOT flip until readers
+  // are on Iceberg (Slice 5) AND the Spark writer enforces R2/R3 + quarantine (it does not yet) AND a
+  // parity soak is green — see ProcessEventUseCase.pgWriteEnabled.
+  const pgWriteEnabled = process.env['BRONZE_PG_WRITE_ENABLED'] !== 'false';
+  if (!pgWriteEnabled) log.warn('BRONZE_PG_WRITE_ENABLED=false — PG bronze_events write RETIRED; Iceberg (Spark) is the sole Bronze SoR');
   // enforceTenantDerivation defaults TRUE: derive brand_id from install_token, quarantine
   // on unresolved/mismatch/absent-consent; audit writes pixel.brand_mismatch (R2/R3).
-  const useCase = new ProcessEventUseCase(dedup, bronze, auditWriter);
+  const useCase = new ProcessEventUseCase(dedup, bronze, auditWriter, true, pgWriteEnabled);
   const consumer = new CollectorEventConsumer(kafka, useCase, topic, groupId, retryCounter);
 
   // ── Bronze bridges (P0 — restore severed server-trusted-event landings) ──────
@@ -177,7 +183,7 @@ export async function main(): Promise<void> {
   // One shared ProcessEventUseCase + dedup + bronze (stateless). WIRED: do NOT remove without
   // updating the corresponding *-bronze-wiring.e2e.test.ts.
   const bridgeProcessEvent = new ProcessEventUseCase(
-    dedup, bronze, undefined, /* enforceTenantDerivation */ false,
+    dedup, bronze, undefined, /* enforceTenantDerivation */ false, pgWriteEnabled,
   );
   const shopfloBronzeGroupId =
     process.env['SHOPFLO_BRONZE_CONSUMER_GROUP_ID'] ?? 'shopflo-bronze-bridge';
@@ -266,7 +272,7 @@ export async function main(): Promise<void> {
   // (event_name='order.backfill.v1'); their brand_id is already server-trusted (derived from
   // the authenticated connector). The R2 browser-spoofing gate does not apply (architecture §5).
   const backfillProcessEvent = new ProcessEventUseCase(
-    backfillDedup, backfillBronze, undefined, /* enforceTenantDerivation */ false,
+    backfillDedup, backfillBronze, undefined, /* enforceTenantDerivation */ false, pgWriteEnabled,
   );
   const backfillConsumer = new BackfillOrderConsumer(
     kafka, backfillProcessEvent, ledgerWriter, backfillTopic, backfillGroupId, retryCounter,

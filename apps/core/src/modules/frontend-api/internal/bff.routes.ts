@@ -150,6 +150,8 @@ export function registerBffRoutes(
   onboardingService?: OnboardingService,
   srPool?: SilverPool,
   vaultService?: ContactPiiVaultService,
+  // Slice 5 (ADR-0002): Bronze source for operational reads — 'pg' (default) | 'iceberg'.
+  bronzeReadSource: 'pg' | 'iceberg' = 'pg',
 ): void {
   const sessionPreHandler = validateSessionPreHandler(authService);
 
@@ -192,7 +194,7 @@ export function registerBffRoutes(
     } finally {
       client.release();
     }
-    const dataHealth = await getDataHealth(brandId, { pool: rawPool! });
+    const dataHealth = await getDataHealth(brandId, { pool: rawPool!, srPool, bronzeSource: bronzeReadSource });
     const trust = await getMetricTrust(brandId, { pool: rawPool! });
     const hasData = dataHealth.state === 'has_data';
     return {
@@ -2710,7 +2712,7 @@ export function registerBffRoutes(
         return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' } });
       }
 
-      const result = await getDataHealth(auth.brandId, { pool: rawPool });
+      const result = await getDataHealth(auth.brandId, { pool: rawPool, srPool, bronzeSource: bronzeReadSource });
 
       return reply.send({ request_id: requestId, data: result });
     },

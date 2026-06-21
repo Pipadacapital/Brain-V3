@@ -129,9 +129,31 @@ brain_bronze_local;` and re-run the corrected `CREATE EXTERNAL CATALOG` from `ex
 **Remaining Slice 4 work (gated):** flip the dbt Bronze-derived sources (`bronze_touchpoint_src`,
 `bronze_order_line_src`) in `_sources.yml` to the Iceberg catalog and move the PG read-shim transforms
 (event-type filter, `line_items` unnest, JSON extraction) into the staging models — the ledger + stitch
-map stay on JDBC (they're derived, not raw Bronze). This needs a dbt-capable env and richer Iceberg
-event data (today Iceberg holds `order.live.v1` only — no touchpoint/line-item events), and is gated on
-the parity oracle being green.
+map stay on JDBC (they're derived, not raw Bronze). Gated on the parity oracle being green.
+
+### Slice 4b enablement (done — dev prerequisites)
+
+**Touchpoint events in both Bronze sinks** — generate realistic journey events through the real ingest
+path (POST /collect → pixel consumer → PG bronze, AND Spark → Iceberg):
+
+```bash
+node tools/pixel-fixture/seed-touchpoints.mjs   # uses brand 124e6af5 + its install_token + consent
+db/iceberg/spark/run-bronze-spike.sh            # pull them into Iceberg
+```
+
+Verified: `page.viewed`/`cart.viewed`/`cart.item_added` land in PG `bronze_events` AND Iceberg
+`collector_events` (same counts → parity).
+
+**Stand up dbt** (the Makefile expects `.dbt-venv`; gitignored):
+
+```bash
+python3 -m venv .dbt-venv && .dbt-venv/bin/pip install dbt-starrocks
+cd db/dbt && DBT_PROFILES_DIR=profiles ../../.dbt-venv/bin/dbt debug   # → All checks passed
+```
+
+dbt-core 1.11 + dbt-starrocks 1.12 connect to local StarRocks (`localhost:9030`, root, `default_catalog`,
+schema `brain_silver`); `dbt parse` compiles the 8 models. With these in place, Slice 4b (flip the
+Bronze sources to Iceberg + move shim transforms into staging + mart parity) is unblocked.
 
 ## Related
 

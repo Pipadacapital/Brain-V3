@@ -156,6 +156,21 @@ export class IdentityGraph {
     await this.driver.getServerInfo();
   }
 
+  /** Resolve the current brain_id for a single hashed identifier (brand-scoped). Null if unknown. */
+  async lookupBrainId(brandId: string, identifier: HashedIdentifier): Promise<string | null> {
+    const session = this.driver.session();
+    try {
+      const res = await session.run(
+        `MATCH (i:Identifier {brand_id: $b, type: $t, hash: $h})-[:IDENTIFIES]->(c:Customer)
+         RETURN c.brain_id AS brainId LIMIT 1`,
+        { b: brandId, t: identifier.type, h: identifier.hash },
+      );
+      return res.records[0]?.get('brainId') ?? null;
+    } finally {
+      await session.close();
+    }
+  }
+
   async close(): Promise<void> {
     await this.driver.close();
   }

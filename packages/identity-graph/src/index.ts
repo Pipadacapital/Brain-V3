@@ -138,6 +138,24 @@ export class IdentityGraph {
     }
   }
 
+  /**
+   * Delete an entire brand subgraph (every node carrying this brand_id). Used for test cleanup and
+   * for brand offboarding / crypto-shred (per-brand isolation makes this a clean, total wipe).
+   */
+  async purgeBrand(brandId: string): Promise<void> {
+    const session = this.driver.session();
+    try {
+      await session.run('MATCH (n) WHERE n.brand_id = $b DETACH DELETE n', { b: brandId });
+    } finally {
+      await session.close();
+    }
+  }
+
+  /** Liveness probe — resolves if Neo4j is reachable, throws otherwise. */
+  async verifyConnectivity(): Promise<void> {
+    await this.driver.getServerInfo();
+  }
+
   async close(): Promise<void> {
     await this.driver.close();
   }

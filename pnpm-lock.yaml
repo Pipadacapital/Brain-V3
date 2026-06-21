@@ -226,6 +226,9 @@ importers:
       '@brain/identity-core':
         specifier: workspace:*
         version: link:../../packages/identity-core
+      '@brain/identity-graph':
+        specifier: workspace:*
+        version: link:../../packages/identity-graph
       '@brain/metric-engine':
         specifier: workspace:*
         version: link:../../packages/metric-engine

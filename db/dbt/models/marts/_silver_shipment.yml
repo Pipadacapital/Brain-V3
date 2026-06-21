@@ -25,7 +25,8 @@ models:
         tests:
           - not_null
           - accepted_values:
-              values: ['rto', 'delivered', 'other', 'none']
+              arguments:
+                values: ['rto', 'delivered', 'other', 'none']
       - name: is_terminal
         description: "True iff terminal_class <> 'none'."
         tests: [not_null]
@@ -54,7 +55,8 @@ models:
         tests:
           - not_null
           - accepted_values:
-              values: ['rto', 'delivered', 'other', 'none']
+              arguments:
+                values: ['rto', 'delivered', 'other', 'none']
       - name: is_rto
         description: "True iff the latest state is a terminal RTO."
         tests: [not_null]

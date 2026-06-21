@@ -1,49 +1,36 @@
 /**
- * @brain/metric-engine — computeCodRtoRates (GoKwik AWB-lifecycle, Track C)
+ * @brain/metric-engine — computeCodRtoRates (RTO% by pincode cohort, Track C)
  *
- * The SOLE emitter of RTO-rate metrics from the `gokwik.awb_status.v1` Bronze
- * stream (migration 0030 / GoKwik AWB trailing-window re-pull). NO ad-hoc COUNT
- * in the analytics module — this is the named compute seam (mirrors
- * computeSettlementSummary / computeOrdersTimeseries).
+ * The SOLE emitter of RTO-rate metrics — terminal-RTO ÷ all-terminal shipments per pincode cohort —
+ * read from the MULTI-SOURCE Silver mart `silver_shipment` (StarRocks brain_silver) through the
+ * withSilverBrand seam. silver_shipment folds every logistics source (GoKwik AWB + Shiprocket) via
+ * the shared @brain/logistics-status terminal_class authority, so this one metric serves all sources.
  *
- * AWB lifecycle (architecture plan §3): each terminal AWB transition lands a Bronze
- * row keyed `event_id = uuidV5FromAwb(brand, awb, status, status_changed_at)`. A
- * terminal status is one of RTO* / Delivered / Cancelled / Lost. The mapper stamps:
- *   payload.status            — verbatim AWB status string (e.g. 'RTO_DELIVERED')
- *   payload.is_terminal       — boolean (mapper-computed)
- *   payload.pincode           — destination pincode (may be absent → 'unknown' cohort)
- *   payload.data_source       — 'synthetic' in dev (no partner sandbox) | 'live'
+ * ── WHY silver_shipment (re-point, ADR-0002): the original read the raw gokwik.awb_status.v1 rows
+ *    from PG bronze_events — but under the Iceberg-sole read posture those AWB events are not in PG
+ *    bronze, so that read returned empty. silver_shipment (Slice 2) is the canonical, multi-source,
+ *    Silver-tier home for shipment outcomes and is the correct seam. Shape/contract is unchanged.
  *
- * RTO% = terminal-RTO shipments ÷ all-terminal shipments, per cohort (pincode).
- *   Only TERMINAL rows count toward the denominator (an in-flight AWB has no outcome
- *   yet — counting it would understate RTO%). A pincode with no terminal rows is omitted
- *   (honest — never a fabricated 0% cohort).
+ * RTO% = terminal-RTO shipments ÷ all-terminal shipments, per cohort (pincode). Only TERMINAL rows
+ *   count (in-flight shipments have no outcome). A pincode with no terminal rows is omitted (honest).
+ *   No numeric RTO score is fabricated — terminal_class is the deterministic categorical outcome.
  *
- * DEV-HONESTY: the AWB data source in dev is SYNTHETIC (real shape, synthetic source —
- * GoKwik partner sandbox is a platform follow-up). `dataSource` is surfaced so the BFF
- * can render the `Synthetic (dev)` badge. We NEVER present synthetic AWB data as live.
- * We compute NO numeric RTO score — GoKwik's risk_flag is categorical (recorded verbatim).
+ * DEV-HONESTY: dataSource='synthetic' when ANY contributing row is synthetic-sourced (silver_shipment
+ * is_synthetic), so the BFF renders the Synthetic (dev) badge. Never present synthetic as live.
  *
- * F-SEC-02: all reads happen inside withBrandTxn (GUC transaction-scoped, RLS-enforced).
+ * I-ST01: the metric-engine is the SOLE Silver reader; reads go through withSilverBrand (brand
+ * predicate injected at the seam). brandId is from session (D-1; NEVER body).
  *
- * @see db/migrations/0030_gokwik_shopflo_connectors.sql (event_type extension)
- * @see settlement-summary.ts — the sibling compute fn this mirrors
+ * @see packages/metric-engine/src/shipment-outcomes.ts (sibling silver_shipment reader)
+ * @see packages/metric-engine/src/silver-deps.ts (the Silver read seam)
  */
 
-import type { EngineDeps } from './deps.js';
-import { withBrandTxn } from './deps.js';
-
-/** The Bronze event_type this read consumes (GoKwik AWB lifecycle). */
-const AWB_EVENT_TYPE = 'gokwik.awb_status.v1';
-
-/** Terminal AWB statuses that count as a return-to-origin outcome (prefix match on RTO). */
-function isRtoStatus(status: string): boolean {
-  return status.toUpperCase().startsWith('RTO');
-}
+import type { SilverPool } from './silver-deps.js';
+import { withSilverBrand, BRAND_PREDICATE } from './silver-deps.js';
 
 /** One pincode (or cohort) RTO row. */
 export interface CodRtoCohort {
-  /** Destination pincode, or 'unknown' when the AWB payload carried none. */
+  /** Destination pincode, or 'unknown' when the shipment carried none. */
   pincode: string;
   /** Count of terminal shipments in this cohort (the denominator). */
   terminalCount: bigint;
@@ -54,7 +41,7 @@ export interface CodRtoCohort {
 }
 
 export interface CodRtoRatesResult {
-  /** True iff the brand has ANY terminal AWB Bronze row (honest no_data discriminant). */
+  /** True iff the brand has ANY terminal shipment (honest no_data discriminant). */
   hasData: boolean;
   /** Overall RTO% across all cohorts (terminal-RTO ÷ terminal), 2dp string; null when no terminal rows. */
   overallRtoRatePct: string | null;
@@ -73,105 +60,99 @@ export interface CodRtoRatesResult {
 /** Exact 2-decimal percentage from two bigint counts (no float accumulation; null on zero denom). */
 function ratePct(numerator: bigint, denominator: bigint): string | null {
   if (denominator === 0n) return null;
-  // (numerator * 10000) / denominator → basis points → format as NN.NN with integer math.
   const bps = (numerator * 10000n) / denominator;
   const whole = bps / 100n;
   const frac = bps % 100n;
   return `${whole}.${String(frac).padStart(2, '0')}`;
 }
 
+interface ShipmentCohortRow {
+  pincode: string | null;
+  terminal_class: string;
+  cnt: string | number;
+  synthetic_cnt: string | number;
+}
+
 /**
- * computeCodRtoRates — RTO% by pincode cohort from terminal AWB Bronze rows.
+ * computeCodRtoRates — RTO% by pincode cohort from terminal shipment rows (silver_shipment).
  *
  * @param brandId - Brand UUID (from session — D-1; NEVER request body).
- * @param deps    - EngineDeps with raw pg.Pool.
- * @returns CodRtoRatesResult — hasData=false when no terminal AWB rows exist (honest no_data).
+ * @param deps    - SilverDeps with the StarRocks mysql2 pool.
+ * @returns CodRtoRatesResult — hasData=false when no terminal shipment rows exist (honest no_data).
  */
 export async function computeCodRtoRates(
   brandId: string,
-  deps: EngineDeps,
+  deps: { srPool: SilverPool },
 ): Promise<CodRtoRatesResult> {
-  return withBrandTxn(deps.pool, brandId, async (client) => {
-    // Per-(pincode,status) terminal counts. Only TERMINAL rows participate (is_terminal=true).
-    // The aggregation lives HERE (the named seam) — the analytics module does no COUNT (ADR-002).
-    // RLS scopes brand_id; the explicit WHERE is belt-and-suspenders (must agree).
-    const rows = await client.query<{
-      pincode: string | null;
-      status: string;
-      cnt: string;
-      synthetic_cnt: string;
-    }>(
-      `SELECT
-          NULLIF(payload->>'pincode', '')                       AS pincode,
-          payload->>'status'                                    AS status,
-          COUNT(*)::text                                        AS cnt,
-          COUNT(*) FILTER (
-            WHERE (payload->>'data_source') = 'synthetic'
-          )::text                                               AS synthetic_cnt
-        FROM bronze_events
-        WHERE brand_id = $1
-          AND event_type = $2
-          AND (payload->>'is_terminal') = 'true'
-        GROUP BY 1, 2`,
-      [brandId, AWB_EVENT_TYPE],
-    );
+  const rows = await withSilverBrand(deps.srPool, brandId, async (scope) =>
+    scope.runScoped<ShipmentCohortRow>(
+      `SELECT pincode,
+              terminal_class,
+              COUNT(*)                                          AS cnt,
+              COALESCE(SUM(CASE WHEN is_synthetic THEN 1 ELSE 0 END), 0) AS synthetic_cnt
+         FROM brain_silver.silver_shipment
+        WHERE is_terminal = 1
+          AND ${BRAND_PREDICATE}
+        GROUP BY pincode, terminal_class`,
+      [],
+    ),
+  );
 
-    if (rows.rows.length === 0) {
-      return {
-        hasData: false,
-        overallRtoRatePct: null,
-        totalTerminal: 0n,
-        totalRto: 0n,
-        cohorts: [],
-        dataSource: 'live',
-        pincodePending: false,
-      };
-    }
-
-    // Fold rows into per-pincode {terminal, rto} accumulators.
-    const byPincode = new Map<string, { terminal: bigint; rto: bigint }>();
-    let totalTerminal = 0n;
-    let totalRto = 0n;
-    let syntheticCount = 0n;
-    let anyPincode = false;
-
-    for (const r of rows.rows) {
-      const pincode = r.pincode ?? 'unknown';
-      if (r.pincode) anyPincode = true;
-      const cnt = BigInt(r.cnt);
-      const isRto = isRtoStatus(r.status);
-
-      const acc = byPincode.get(pincode) ?? { terminal: 0n, rto: 0n };
-      acc.terminal += cnt;
-      if (isRto) acc.rto += cnt;
-      byPincode.set(pincode, acc);
-
-      totalTerminal += cnt;
-      if (isRto) totalRto += cnt;
-      syntheticCount += BigInt(r.synthetic_cnt);
-    }
-
-    const cohorts: CodRtoCohort[] = Array.from(byPincode.entries())
-      .map(([pincode, acc]) => ({
-        pincode,
-        terminalCount: acc.terminal,
-        rtoCount: acc.rto,
-        rtoRatePct: ratePct(acc.rto, acc.terminal),
-      }))
-      .sort((a, b) => {
-        if (b.rtoCount !== a.rtoCount) return b.rtoCount > a.rtoCount ? 1 : -1;
-        return b.terminalCount > a.terminalCount ? 1 : -1;
-      });
-
+  if (rows.length === 0) {
     return {
-      hasData: true,
-      overallRtoRatePct: ratePct(totalRto, totalTerminal),
-      totalTerminal,
-      totalRto,
-      cohorts,
-      // ANY synthetic-sourced contributing row → the whole surface is labelled synthetic (dev).
-      dataSource: syntheticCount > 0n ? 'synthetic' : 'live',
-      pincodePending: !anyPincode,
+      hasData: false,
+      overallRtoRatePct: null,
+      totalTerminal: 0n,
+      totalRto: 0n,
+      cohorts: [],
+      dataSource: 'live',
+      pincodePending: false,
     };
-  });
+  }
+
+  // Fold rows into per-pincode {terminal, rto} accumulators.
+  const byPincode = new Map<string, { terminal: bigint; rto: bigint }>();
+  let totalTerminal = 0n;
+  let totalRto = 0n;
+  let syntheticCount = 0n;
+  let anyPincode = false;
+
+  for (const r of rows) {
+    const hasPincode = r.pincode !== null && String(r.pincode).trim() !== '';
+    const pincode = hasPincode ? String(r.pincode) : 'unknown';
+    if (hasPincode) anyPincode = true;
+    const cnt = BigInt(String(r.cnt));
+    const isRto = r.terminal_class === 'rto';
+
+    const acc = byPincode.get(pincode) ?? { terminal: 0n, rto: 0n };
+    acc.terminal += cnt;
+    if (isRto) acc.rto += cnt;
+    byPincode.set(pincode, acc);
+
+    totalTerminal += cnt;
+    if (isRto) totalRto += cnt;
+    syntheticCount += BigInt(String(r.synthetic_cnt));
+  }
+
+  const cohorts: CodRtoCohort[] = Array.from(byPincode.entries())
+    .map(([pincode, acc]) => ({
+      pincode,
+      terminalCount: acc.terminal,
+      rtoCount: acc.rto,
+      rtoRatePct: ratePct(acc.rto, acc.terminal),
+    }))
+    .sort((a, b) => {
+      if (b.rtoCount !== a.rtoCount) return b.rtoCount > a.rtoCount ? 1 : -1;
+      return b.terminalCount > a.terminalCount ? 1 : -1;
+    });
+
+  return {
+    hasData: true,
+    overallRtoRatePct: ratePct(totalRto, totalTerminal),
+    totalTerminal,
+    totalRto,
+    cohorts,
+    dataSource: syntheticCount > 0n ? 'synthetic' : 'live',
+    pincodePending: !anyPincode,
+  };
 }

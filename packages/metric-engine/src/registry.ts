@@ -54,6 +54,9 @@ export interface MetricDefinition {
     // Silver mart silver.touchpoint (StarRocks brain_silver), read via withSilverBrand
     // (Phase 4 — journey: first-touch mix, stitch hit-rate, touchpoint timeline).
     | 'silver_touchpoint'
+    // Silver mart silver_shipment (StarRocks brain_silver), read via withSilverBrand
+    // (Slice 2 — multi-source logistics: RTO%/courier/pincode, GoKwik AWB + Shiprocket).
+    | 'silver_shipment'
     // attribution_credit_ledger (Postgres Gold, 0032) — the credit/clawback SoR.
     // Read seams: attributed_gmv_as_of / channel_contribution_as_of / attribution_confidence_mart
     // (all SECURITY INVOKER). The WRITER (the metric engine) appends credit + clawback rows;
@@ -156,16 +159,16 @@ export const METRIC_REGISTRY = {
     v1: {
       metricId: 'cod_rto_rate' as const,
       version: 'v1' as const,
-      readSeam: 'awb_terminal_states' as const,
-      // RTO rate is a count ratio over AWB terminal states, not a recognition-staged fact → [].
+      readSeam: 'silver_shipment' as const,
+      // RTO rate is a count ratio over terminal shipment states, not a recognition-staged fact → [].
       recognitionLabels: [] as const,
       toleranceMinor: 0 as const,
       description:
-        'RTO rate = terminal-RTO shipments ÷ all-terminal shipments, by pincode cohort, ' +
-        'from gokwik.awb_status.v1 Bronze rows (is_terminal=true) via the awb_terminal_states ' +
-        'seam. In-flight AWBs excluded from the denominator. Categorical only — NO numeric RTO ' +
-        'score is fabricated (GoKwik exposes High/Med/Low, recorded verbatim). Synthetic source ' +
-        'in dev (real shape) → data_source surfaced for the honest Synthetic (dev) badge. ' +
+        'RTO rate = terminal-RTO shipments ÷ all-terminal shipments, by pincode cohort, from the ' +
+        'multi-source silver_shipment mart (is_terminal=1; GoKwik AWB + Shiprocket via the shared ' +
+        'terminal_class authority) through the withSilverBrand seam. In-flight shipments excluded ' +
+        'from the denominator. Categorical only — NO numeric RTO score is fabricated. Synthetic ' +
+        'source in dev (is_synthetic) → data_source surfaced for the honest Synthetic (dev) badge. ' +
         'Sole emitter: metric-engine only.',
     },
   },

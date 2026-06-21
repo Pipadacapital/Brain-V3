@@ -104,11 +104,12 @@ describe('metric-engine — registry (D-1)', () => {
     expect(def.description.toLowerCase()).toContain('spend>0');
   });
 
-  it('resolveMetric(cod_rto_rate, v1) — AWB terminal-states seam', () => {
+  it('resolveMetric(cod_rto_rate, v1) — silver_shipment seam', () => {
     const def = resolveMetric('cod_rto_rate', 'v1');
     expect(def.metricId).toBe('cod_rto_rate');
     expect(def.version).toBe('v1');
-    expect(def.readSeam).toBe('awb_terminal_states');
+    // Re-pointed from awb_terminal_states (PG bronze) → silver_shipment (multi-source Silver mart).
+    expect(def.readSeam).toBe('silver_shipment');
     expect(def.toleranceMinor).toBe(0);
   });
 

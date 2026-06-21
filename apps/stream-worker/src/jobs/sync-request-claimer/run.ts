@@ -38,33 +38,32 @@ const NIL_UUID = '00000000-0000-0000-0000-000000000000';
 /** Provider → the existing repull run() entrypoint (lazy-imported to avoid eager Kafka init). */
 type RepullRun = (connectorInstanceId: string) => Promise<void>;
 
+/**
+ * REPULL_DISPATCH — the DECLARATIVE provider→repull-loader registry (re-platform Phase B).
+ *
+ * Replaces the former switch statement: a single data-driven map so a provider's scheduled re-pull
+ * dispatch lives in ONE place (the audit's bottleneck was "forget a switch case → the connector shows
+ * connected but polls zero times, a silent miss"). Each value lazy-imports its run() (avoids eager
+ * Kafka init at module load). Adding a connector's re-pull = one entry. Coverage vs the connector
+ * catalog is asserted by sync-request-claimer dispatch tests.
+ */
+const REPULL_DISPATCH: Readonly<Record<string, () => Promise<RepullRun>>> = {
+  shopify: async () => (await import('../shopify-repull/run.js')).run,
+  razorpay: async () => (await import('../razorpay-settlement-repull/run.js')).run,
+  // The ad-spend repull enumerates both meta + google_ads; run(ciId) targets one.
+  meta: async () => (await import('../meta-spend-repull/run.js')).run,
+  google_ads: async () => (await import('../google-ads-spend-repull/run.js')).run,
+  gokwik: async () => (await import('../gokwik-awb-repull/run.js')).run,
+  shiprocket: async () => (await import('../shiprocket-shipment-repull/run.js')).run,
+  woocommerce: async () => (await import('../woocommerce-orders-repull/run.js')).run,
+};
+
+/** Providers that have a scheduled re-pull dispatch (the registry keys). */
+export const REPULL_PROVIDERS: readonly string[] = Object.keys(REPULL_DISPATCH);
+
 export async function loadRun(provider: string): Promise<RepullRun | null> {
-  switch (provider) {
-    case 'shopify':
-      return (await import('../shopify-repull/run.js')).run;
-    case 'razorpay':
-      return (await import('../razorpay-settlement-repull/run.js')).run;
-    case 'meta':
-    case 'google_ads':
-      // The ad-spend repull enumerates both meta + google_ads; run(ciId) targets one.
-      return (
-        provider === 'meta'
-          ? (await import('../meta-spend-repull/run.js')).run
-          : (await import('../google-ads-spend-repull/run.js')).run
-      );
-    case 'gokwik':
-      // P0: GoKwik AWB trailing-window re-pull. Previously had no dispatch case, so it ran only
-      // via CLI/e2e — the connector showed connected but ingested nothing on a schedule.
-      return (await import('../gokwik-awb-repull/run.js')).run;
-    case 'shiprocket':
-      // Shiprocket shipment-lifecycle trailing-window re-pull (logistics — SPEC 3 Slice 1).
-      return (await import('../shiprocket-shipment-repull/run.js')).run;
-    case 'woocommerce':
-      // WooCommerce REST order backfill/incremental re-pull (storefront — SPEC 2 Slice 1).
-      return (await import('../woocommerce-orders-repull/run.js')).run;
-    default:
-      return null;
-  }
+  const loader = REPULL_DISPATCH[provider];
+  return loader ? await loader() : null;
 }
 
 export interface ConnectorRow {

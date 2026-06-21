@@ -232,6 +232,11 @@ services:
         rpk topic create dev.collector.event.v1.quarantine --brokers redpanda:9092
           --config retention.ms=2592000000
           --partitions 12 --replicas 1 2>/dev/null || true &&
+        for e in orders customers shipments payments sessions ads; do
+          rpk topic create dev.brain.$$e --brokers redpanda:9092
+            --config retention.ms=604800000
+            --partitions 12 --replicas 1 2>/dev/null || true;
+        done &&
         echo 'Redpanda topics ready'
       "
     restart: "no"

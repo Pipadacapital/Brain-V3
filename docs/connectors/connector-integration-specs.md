@@ -6,8 +6,11 @@
 > deep-research run on the vendor's public capabilities (gaps flagged honestly).
 >
 > **BUILD STATUS (shipped to master):** WooCommerce (backfill + live REST + real-time webhook),
-> Shiprocket (Slice 1 + live-read scaffold), the multi-source logistics Silver surface, and the
-> Storefront Behavior analytics surface are all MERGED. GoKwik + Shopflo were consolidated in place.
+> Shiprocket (Slice 1 + live-read scaffold), the multi-source logistics Silver surface, the
+> payments-category Silver normalizer (`silver_checkout_signal` — folds GoKwik RTO-Predict +
+> Shopflo abandoned-checkout; the RTO-risk + checkout-funnel metrics now read Silver, not raw PG
+> Bronze), and the Storefront Behavior analytics surface are all MERGED. GoKwik + Shopflo were
+> consolidated in place.
 > The partner-doc-blocked remainder (GoKwik OTP/checkout, Shopflo Tier-B + HMAC, Shiprocket NDR/COD-
 > remittance/freight/real-time-webhook) — with official portal URLs and what each needs to unblock —
 > is tracked in docs/connectors/partner-access-blockers.md (Shiprocket detail in

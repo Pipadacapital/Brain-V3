@@ -49,9 +49,9 @@ export const CONNECTOR_CATALOG: readonly ConnectorDefinition[] = [
     id: 'woocommerce',
     category: 'storefront',
     displayName: 'WooCommerce',
-    connectMethod: 'coming_soon',
-    availability: 'coming_soon',
-    description: 'WordPress storefront sync.',
+    connectMethod: 'credential',
+    availability: 'available',
+    description: 'Sync orders, products, customers, refunds.',
   },
   // ── ads ───────────────────────────────────────────────────────────────────────
   {

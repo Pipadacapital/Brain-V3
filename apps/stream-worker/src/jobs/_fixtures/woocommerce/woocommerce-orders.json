@@ -1,0 +1,87 @@
+{
+  "_synthetic": true,
+  "_note": "SYNTHETIC dev fixture — no live WooCommerce store wired in dev. NEVER presented as live. Shape follows the wc/v3 REST order; the mapper emits the shared order.live.v1 canonical event.",
+  "orders": [
+    {
+      "id": 4001,
+      "status": "processing",
+      "currency": "INR",
+      "total": "1250.00",
+      "total_tax": "190.68",
+      "shipping_total": "50.00",
+      "discount_total": "100.00",
+      "date_created_gmt": "2026-06-10T08:00:00",
+      "date_modified_gmt": "2026-06-11T09:30:00",
+      "payment_method": "cod",
+      "payment_method_title": "Cash on delivery (COD)",
+      "customer_id": 55,
+      "billing": { "email": "wc.shopper1@example.com", "phone": "9876500001" },
+      "line_items": [
+        { "id": 1, "name": "Synth Tee", "sku": "WC-TEE-1", "quantity": 2, "price": "500.00", "subtotal": "1100.00", "total": "1000.00", "product_id": 11, "variation_id": 0 }
+      ],
+      "tax_lines": [{ "label": "GST", "rate_percent": 18, "tax_total": "190.68" }],
+      "coupon_lines": [{ "code": "SAVE100", "discount": "100.00", "discount_type": "fixed_cart" }]
+    },
+    {
+      "id": 4002,
+      "status": "completed",
+      "currency": "INR",
+      "total": "3499.00",
+      "total_tax": "533.75",
+      "shipping_total": "0.00",
+      "discount_total": "0.00",
+      "date_created_gmt": "2026-06-12T11:00:00",
+      "date_modified_gmt": "2026-06-13T15:00:00",
+      "date_paid_gmt": "2026-06-12T11:05:00",
+      "payment_method": "razorpay",
+      "payment_method_title": "Razorpay",
+      "transaction_id": "pay_synthwc002",
+      "customer_id": 56,
+      "billing": { "email": "wc.shopper2@example.com", "phone": "9876500002" },
+      "line_items": [
+        { "id": 2, "name": "Synth Jacket", "sku": "WC-JKT-1", "quantity": 1, "price": "3499.00", "subtotal": "3499.00", "total": "3499.00", "product_id": 12, "variation_id": 0 }
+      ],
+      "tax_lines": [{ "label": "GST", "rate_percent": 18, "tax_total": "533.75" }]
+    },
+    {
+      "id": 4003,
+      "status": "cancelled",
+      "currency": "INR",
+      "total": "899.00",
+      "total_tax": "137.13",
+      "shipping_total": "0.00",
+      "discount_total": "0.00",
+      "date_created_gmt": "2026-06-09T07:00:00",
+      "date_modified_gmt": "2026-06-14T10:00:00",
+      "payment_method": "cod",
+      "payment_method_title": "Cash on delivery (COD)",
+      "customer_id": 57,
+      "billing": { "email": "wc.shopper3@example.com", "phone": "9876500003" },
+      "line_items": [
+        { "id": 3, "name": "Synth Cap", "sku": "WC-CAP-1", "quantity": 1, "price": "899.00", "subtotal": "899.00", "total": "899.00", "product_id": 13, "variation_id": 0 }
+      ]
+    },
+    {
+      "id": 4004,
+      "status": "refunded",
+      "currency": "INR",
+      "total": "2000.00",
+      "total_tax": "305.08",
+      "shipping_total": "0.00",
+      "discount_total": "0.00",
+      "date_created_gmt": "2026-06-08T09:00:00",
+      "date_modified_gmt": "2026-06-15T12:00:00",
+      "payment_method": "razorpay",
+      "payment_method_title": "Razorpay",
+      "transaction_id": "pay_synthwc004",
+      "customer_id": 58,
+      "billing": { "email": "wc.shopper4@example.com", "phone": "9876500004" },
+      "line_items": [
+        { "id": 4, "name": "Synth Shoes", "sku": "WC-SHOE-1", "quantity": 1, "price": "2000.00", "subtotal": "2000.00", "total": "2000.00", "product_id": 14, "variation_id": 0 }
+      ],
+      "refunds": [
+        { "id": 90004, "reason": "customer return", "total": "-2000.00", "date_created": "2026-06-15T12:00:00" }
+      ]
+    }
+  ]
+}

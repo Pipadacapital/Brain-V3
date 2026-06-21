@@ -56,6 +56,9 @@ export async function loadRun(provider: string): Promise<RepullRun | null> {
       // P0: GoKwik AWB trailing-window re-pull. Previously had no dispatch case, so it ran only
       // via CLI/e2e — the connector showed connected but ingested nothing on a schedule.
       return (await import('../gokwik-awb-repull/run.js')).run;
+    case 'woocommerce':
+      // WooCommerce REST order backfill/incremental re-pull (storefront — SPEC 2 Slice 1).
+      return (await import('../woocommerce-orders-repull/run.js')).run;
     default:
       return null;
   }

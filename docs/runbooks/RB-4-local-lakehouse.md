@@ -60,6 +60,26 @@ docker compose --profile lakehouse down -v       # wipe the local warehouse + ca
 - **`brand-bronze` bucket missing:** `minio-init` creates `brain-bronze` + `brain-audit` on first
   boot; re-run `docker compose --profile lakehouse up -d` if it was skipped.
 
+## Slice 2 — Spark Bronze write spike
+
+Validates the Slice-3 writer (Spark Structured Streaming → Iceberg) against the local lakehouse:
+read the live Redpanda topic, MERGE into `brain_bronze.collector_events` (idempotent on
+`(brand_id, event_id)`), partitioned `bucket(16, brand_id) + days(occurred_at)`.
+
+```bash
+pnpm dev:lakehouse                       # ensure iceberg-rest + minio are up
+db/iceberg/spark/run-bronze-spike.sh     # one-shot Spark container, trigger=availableNow (drains + exits)
+```
+
+The runner joins Redpanda's network namespace (`--network container:brainv3-redpanda-1`) so the
+broker's `localhost:9092` advertised listener is reachable while `iceberg-rest`/`minio` DNS still
+resolves. Inspect the result with `db/iceberg/spark/validate_bronze.py` (row count, distinct
+event_type, Iceberg `.partitions` metadata, `DESCRIBE` spec, sample row).
+
+Re-running drains the same backlog (fresh container checkpoint) and the row count is unchanged —
+the MERGE is append-only/idempotent (I-E02 replay invariant). Verified: 888 `order.live.v1` rows,
+partitions `{brand_id_bucket, occurred_at_day}`, parquet/zstd/format-v2 under `s3://brain-bronze/`.
+
 ## Related
 
 - ADR-0002 — `docs/adr/0002-iceberg-bronze-spark-streaming.md` (the Bronze→Iceberg flip plan)

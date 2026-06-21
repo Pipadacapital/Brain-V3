@@ -57,4 +57,16 @@ psql "INSERT INTO brand_keyring (brand_id, kms_key_id, wrapped_dek_b64, key_vers
       ON CONFLICT (brand_id) DO UPDATE SET kms_key_id=EXCLUDED.kms_key_id,
         wrapped_dek_b64=EXCLUDED.wrapped_dek_b64, is_active=true;" >/dev/null
 echo "[prod-local]   keyring provisioned"
-echo "[prod-local] DONE — boot with:  APP_ENV=prod pnpm dev"
+
+echo "[prod-local] migrate connector secrets dev_secret → Secrets Manager (prod 'reconnect')"
+# In dev the connector tokens live in PG dev_secret (LocalSecretsManager); in prod the worker reads
+# them from Secrets Manager (AwsSecretsManager). Copy them verbatim so the prod-mode ingest repull
+# resolves its tokens — same secret NAME, raw value (getShopifyToken returns SecretString as-is).
+psql "SELECT name || E'\t' || secret_value FROM dev_secret" | grep -v '^$' | while IFS=$'\t' read -r name val; do
+  [ -z "$name" ] && continue
+  awsl secretsmanager create-secret --name "$name" --secret-string "$val" >/dev/null 2>&1 \
+    || awsl secretsmanager put-secret-value --secret-id "$name" --secret-string "$val" >/dev/null 2>&1
+  echo "[prod-local]   secret $name"
+done
+
+echo "[prod-local] DONE — boot with:  APP_ENV=prod pnpm dev   (or pnpm dev:prodlocal)"

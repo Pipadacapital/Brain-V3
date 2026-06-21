@@ -15,8 +15,8 @@
  * display at the UI layer.
  */
 
-import type { EngineDeps } from '@brain/metric-engine';
-import { withBrandTxn } from '@brain/metric-engine';
+import { withBrandTxn, withSilverBrand, BRAND_PREDICATE } from '@brain/metric-engine';
+import { type BronzeReadDeps, ICEBERG_BRONZE, useIceberg } from './_bronze-source.js';
 
 export interface RecentEventRow {
   event_id: string;
@@ -45,10 +45,39 @@ const DEFAULT_LIMIT = 20;
 export async function getRecentEvents(
   brandId: string,
   limit: number,
-  deps: EngineDeps,
+  deps: BronzeReadDeps,
 ): Promise<RecentEventsResult> {
   const safeLimit = Math.min(Math.max(1, limit || DEFAULT_LIMIT), MAX_LIMIT);
 
+  // ── Iceberg Bronze source (Slice 5) — brand-isolated via the withSilverBrand seam ──────────
+  if (useIceberg(deps)) {
+    const rows = await withSilverBrand(deps.srPool, brandId, async (scope) =>
+      // safeLimit is a clamped int (never user text) — safe to interpolate. The seam appends the
+      // brand predicate at ${BRAND_PREDICATE}; ORDER BY/LIMIT follow it.
+      scope.runScoped<{ event_id: string; event_type: string; occurred_at: Date | string; anon_id: string | null; session_id: string | null; has_consent: boolean | number }>(
+        `SELECT event_id, event_type, occurred_at,
+                get_json_object(payload, '$.properties.brain_anon_id') AS anon_id,
+                get_json_object(payload, '$.hashed_session_id')        AS session_id,
+                CASE WHEN get_json_object(payload, '$.consent_flags.analytics') = 'true' THEN true ELSE false END AS has_consent
+           FROM ${ICEBERG_BRONZE}
+          WHERE ${BRAND_PREDICATE}
+          ORDER BY occurred_at DESC
+          LIMIT ${safeLimit}`,
+      ),
+    );
+    return {
+      rows: rows.map((row) => ({
+        event_id: row.event_id,
+        event_type: row.event_type,
+        occurred_at: (row.occurred_at instanceof Date ? row.occurred_at : new Date(row.occurred_at)).toISOString(),
+        anon_id: row.anon_id,
+        session_id: row.session_id,
+        has_consent: row.has_consent === true || Number(row.has_consent) === 1,
+      })),
+    };
+  }
+
+  // ── Postgres Bronze source (default) ────────────────────────────────────────
   const rows = await withBrandTxn(deps.pool, brandId, async (client) => {
     // SELECT only type/time + anonymized ids. NEVER raw PII (I-S02).
     const result = await client.query<{

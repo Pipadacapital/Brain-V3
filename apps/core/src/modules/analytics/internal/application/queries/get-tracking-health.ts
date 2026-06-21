@@ -25,8 +25,8 @@
  * Honest-empty: state:'no_data' only when the brand has NO bronze_events at all.
  */
 
-import type { EngineDeps } from '@brain/metric-engine';
-import { withBrandTxn } from '@brain/metric-engine';
+import { withBrandTxn, withSilverBrand, BRAND_PREDICATE } from '@brain/metric-engine';
+import { type BronzeReadDeps, ICEBERG_BRONZE, useIceberg } from './_bronze-source.js';
 
 export interface TrackingHealthVolumeBucket {
   bucket: string; // 'YYYY-MM-DD'
@@ -56,8 +56,49 @@ const VOLUME_WINDOW_DAYS = 30;
  */
 export async function getTrackingHealth(
   brandId: string,
-  deps: EngineDeps,
+  deps: BronzeReadDeps,
 ): Promise<TrackingHealthResult> {
+  // ── Iceberg Bronze source (Slice 5) — brand-isolated via the withSilverBrand seam ──────────
+  if (useIceberg(deps)) {
+    return withSilverBrand(deps.srPool, brandId, async (scope) => {
+      const toDay = (v: Date | string | null | undefined): string =>
+        v == null ? '' : (v instanceof Date ? v : new Date(v)).toISOString().split('T')[0]!;
+      const toIso = (v: Date | string | null | undefined): string | null =>
+        v == null ? null : (v instanceof Date ? v : new Date(v)).toISOString();
+      const existsRows = await scope.runScoped<{ n: number | string }>(
+        `SELECT COUNT(*) AS n FROM ${ICEBERG_BRONZE} WHERE ${BRAND_PREDICATE}`,
+      );
+      if (Number(existsRows[0]?.n ?? 0) === 0) return { state: 'no_data' };
+      const volumeRows = await scope.runScoped<{ bucket: Date | string; count: number | string }>(
+        `SELECT date_trunc('day', occurred_at) AS bucket, COUNT(*) AS count FROM ${ICEBERG_BRONZE}
+          WHERE occurred_at >= date_sub(now(), INTERVAL ${VOLUME_WINDOW_DAYS} DAY) AND ${BRAND_PREDICATE}
+          GROUP BY 1 ORDER BY 1 ASC`,
+      );
+      const lastRows = await scope.runScoped<{ last_event_at: Date | string | null }>(
+        `SELECT MAX(occurred_at) AS last_event_at FROM ${ICEBERG_BRONZE} WHERE ${BRAND_PREDICATE}`,
+      );
+      // Consent is a top-level envelope field (payload.consent_flags) — present-and-true = granted.
+      const aggRows = await scope.runScoped<{ total: number | string; consent_total: number | string; consent_granted: number | string }>(
+        `SELECT COUNT(*) AS total,
+                COUNT(CASE WHEN get_json_object(payload, '$.consent_flags') IS NOT NULL THEN 1 END) AS consent_total,
+                COUNT(CASE WHEN get_json_object(payload, '$.consent_flags.analytics') = 'true' THEN 1 END) AS consent_granted
+           FROM ${ICEBERG_BRONZE}
+          WHERE occurred_at >= date_sub(now(), INTERVAL ${VOLUME_WINDOW_DAYS} DAY) AND ${BRAND_PREDICATE}`,
+      );
+      const agg = aggRows[0];
+      return {
+        state: 'has_data',
+        firstEventReceived: true,
+        eventVolume: volumeRows.map((r) => ({ bucket: toDay(r.bucket), count: String(r.count) })),
+        lastEventAt: toIso(lastRows[0]?.last_event_at),
+        totalEvents: String(agg?.total ?? '0'),
+        consentGrantedCount: String(agg?.consent_granted ?? '0'),
+        consentTotalCount: String(agg?.consent_total ?? '0'),
+      };
+    });
+  }
+
+  // ── Postgres Bronze source (default) ────────────────────────────────────────
   return withBrandTxn(deps.pool, brandId, async (client) => {
     // EXISTS check — honest-empty (D-2). No bronze rows → no_data → "waiting for
     // your first event…" stays honest (never faked).

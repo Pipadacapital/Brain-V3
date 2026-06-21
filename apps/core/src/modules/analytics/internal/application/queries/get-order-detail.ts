@@ -15,8 +15,8 @@
  * Money is bigint-as-string minor units exactly as the mapper stored it (I-S07; no float, no /100).
  * PII posture: OrderProperties already carries only hashed identifiers — no raw email/phone here.
  */
-import type { EngineDeps } from '@brain/metric-engine';
-import { withBrandTxn } from '@brain/metric-engine';
+import { withBrandTxn, withSilverBrand, BRAND_PREDICATE } from '@brain/metric-engine';
+import { type BronzeReadDeps, ICEBERG_BRONZE, useIceberg } from './_bronze-source.js';
 
 export interface OrderLineItemDto {
   sku: string | null;
@@ -141,14 +141,38 @@ function mapRefunds(raw: unknown): OrderRefundDto[] {
  *
  * @param brandId  Brand UUID (from session — D-1).
  * @param orderId  Order natural key (the Shopify order_id).
- * @param deps     EngineDeps with raw pg.Pool.
+ * @param deps     pg.Pool (+ optional srPool when reading Bronze from Iceberg).
  */
 export async function getOrderDetail(
   brandId: string,
   orderId: string,
-  deps: EngineDeps,
+  deps: BronzeReadDeps,
 ): Promise<OrderDetailResult> {
-  const row = await withBrandTxn(deps.pool, brandId, async (client) => {
+  // ── Iceberg Bronze source (Slice 5): props comes back as a JSON STRING → parse it; the rest of
+  // the mapping below is shared. Brand isolation via the withSilverBrand seam (${BRAND_PREDICATE}).
+  const fetchIceberg = async (
+    deps2: BronzeReadDeps & { srPool: NonNullable<BronzeReadDeps['srPool']> },
+  ): Promise<{ occurred_at: Date; props: RawProps | null } | null> => {
+    const ORDER_ID = "COALESCE(get_json_object(payload, '$.properties.order_id'), get_json_object(payload, '$.order_id'))";
+    const r = await withSilverBrand(deps2.srPool, brandId, async (scope) => {
+      const rs = await scope.runScoped<{ occurred_at: Date | string; props: string | null }>(
+        `SELECT occurred_at, get_json_object(payload, '$.properties') AS props
+           FROM ${ICEBERG_BRONZE}
+          WHERE event_type LIKE 'order.%' AND ${ORDER_ID} = ? AND ${BRAND_PREDICATE}
+          ORDER BY occurred_at DESC LIMIT 1`,
+        [orderId],
+      );
+      return rs[0] ?? null;
+    });
+    if (!r || r.props == null) return null;
+    let props: RawProps | null;
+    try { props = JSON.parse(r.props) as RawProps; } catch { props = null; }
+    return { occurred_at: r.occurred_at instanceof Date ? r.occurred_at : new Date(r.occurred_at), props };
+  };
+
+  const row = useIceberg(deps)
+    ? await fetchIceberg(deps)
+    : await withBrandTxn(deps.pool, brandId, async (client) => {
     const result = await client.query<{ occurred_at: Date; props: RawProps | null }>(
       `SELECT occurred_at, payload->'properties' AS props
          FROM bronze_events

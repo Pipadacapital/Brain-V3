@@ -12,6 +12,7 @@ set -euo pipefail
 
 SPARK_IMAGE="${SPARK_IMAGE:-apache/spark:3.5.3}"
 ICEBERG_VERSION="${ICEBERG_VERSION:-1.9.2}"
+PG_JDBC_VERSION="${PG_JDBC_VERSION:-42.7.4}"
 SCALA="2.12"
 SPARK_KAFKA="3.5.3"
 # Join Redpanda's network namespace so the broker's advertised listener (localhost:9092, set for
@@ -23,6 +24,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PACKAGES="org.apache.iceberg:iceberg-spark-runtime-3.5_${SCALA}:${ICEBERG_VERSION}"
 PACKAGES="${PACKAGES},org.apache.iceberg:iceberg-aws-bundle:${ICEBERG_VERSION}"
 PACKAGES="${PACKAGES},org.apache.spark:spark-sql-kafka-0-10_${SCALA}:${SPARK_KAFKA}"
+PACKAGES="${PACKAGES},org.postgresql:postgresql:${PG_JDBC_VERSION}"   # R2 install_token→brand JDBC lookup
 
 echo "[bronze-spike] image=${SPARK_IMAGE} netns=container:${REDPANDA_CONTAINER} packages=${PACKAGES}"
 
@@ -42,6 +44,10 @@ exec docker run --rm \
   -e AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:-brain}" \
   -e AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY:-brainbrain}" \
   -e AWS_REGION="${AWS_REGION:-us-east-1}" \
+  -e BRONZE_PG_JDBC_URL="${BRONZE_PG_JDBC_URL:-jdbc:postgresql://postgres:5432/brain}" \
+  -e BRONZE_PG_USER="${BRONZE_PG_USER:-brain}" \
+  -e BRONZE_PG_PASSWORD="${BRONZE_PG_PASSWORD:-brain}" \
+  -e TRIGGER_MODE="${TRIGGER_MODE:-availableNow}" \
   "${SPARK_IMAGE}" \
   /opt/spark/bin/spark-submit \
     --master "local[2]" \

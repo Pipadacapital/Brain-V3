@@ -3171,7 +3171,7 @@ export function registerBffRoutes(
         return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Bronze read pool not available' } });
       }
 
-      const result: ContractOrdersList = await getOrdersList(auth.brandId, { page, pageSize }, { pool: rawPool });
+      const result: ContractOrdersList = await getOrdersList(auth.brandId, { page, pageSize }, { pool: rawPool, srPool, bronzeSource: bronzeReadSource });
       return reply.send({ request_id: requestId, data: result });
     },
   );
@@ -3216,7 +3216,7 @@ export function registerBffRoutes(
         return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Bronze read pool not available' } });
       }
 
-      const result: ContractOrderDetail = await getOrderDetail(auth.brandId, orderId, { pool: rawPool });
+      const result: ContractOrderDetail = await getOrderDetail(auth.brandId, orderId, { pool: rawPool, srPool, bronzeSource: bronzeReadSource });
       return reply.send({ request_id: requestId, data: result });
     },
   );
@@ -3584,7 +3584,7 @@ export function registerBffRoutes(
         return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' } });
       }
 
-      const result = await getTrackingHealth(auth.brandId, { pool: rawPool });
+      const result = await getTrackingHealth(auth.brandId, { pool: rawPool, srPool, bronzeSource: bronzeReadSource });
 
       return reply.send({ request_id: requestId, data: result });
     },
@@ -3624,7 +3624,7 @@ export function registerBffRoutes(
       const query = request.query as { limit?: string };
       const limit = query.limit ? Math.min(parseInt(query.limit, 10), 50) : 20;
 
-      const result = await getRecentEvents(auth.brandId, limit, { pool: rawPool });
+      const result = await getRecentEvents(auth.brandId, limit, { pool: rawPool, srPool, bronzeSource: bronzeReadSource });
 
       return reply.send({ request_id: requestId, data: result });
     },

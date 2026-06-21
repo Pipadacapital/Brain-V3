@@ -20,7 +20,7 @@
  * @see packages/metric-engine/src/cod-rto-rates.ts
  */
 
-import type { EngineDeps } from '@brain/metric-engine';
+import type { SilverPool } from '@brain/metric-engine';
 import { computeCodRtoRates } from '@brain/metric-engine';
 
 export interface CodRtoCohortDto {
@@ -46,11 +46,11 @@ export type CodRtoRatesResult =
  * getCodRtoRates — returns a brand's RTO-rate cohort breakdown.
  *
  * @param brandId - Brand UUID (from session — D-1; NEVER request body).
- * @param deps    - EngineDeps with raw pg.Pool.
+ * @param deps    - The StarRocks Silver pool (mysql2) — silver_shipment via withSilverBrand.
  */
 export async function getCodRtoRates(
   brandId: string,
-  deps: EngineDeps,
+  deps: { srPool: SilverPool },
 ): Promise<CodRtoRatesResult> {
   const result = await computeCodRtoRates(brandId, deps);
 

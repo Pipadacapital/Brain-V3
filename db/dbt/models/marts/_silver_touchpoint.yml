@@ -41,7 +41,8 @@ models:
         tests:
           - not_null
           - accepted_values:
-              values: ['paid_meta', 'paid_google', 'paid_tiktok', 'paid', 'email', 'organic_social', 'referral', 'direct']
+              arguments:
+                values: ['paid_meta', 'paid_google', 'paid_tiktok', 'paid', 'email', 'organic_social', 'referral', 'direct']
       - name: occurred_at
         description: "Touch event-time (timestamptz)."
         tests:

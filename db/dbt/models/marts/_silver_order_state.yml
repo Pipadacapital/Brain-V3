@@ -22,7 +22,8 @@ models:
         tests:
           - not_null
           - accepted_values:
-              values: ['placed', 'confirmed', 'delivered', 'cancelled', 'rto', 'refunded']
+              arguments:
+                values: ['placed', 'confirmed', 'delivered', 'cancelled', 'rto', 'refunded']
       - name: is_terminal
         description: "Whether lifecycle_state is a terminal outcome."
         tests:

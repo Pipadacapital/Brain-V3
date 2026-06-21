@@ -50,6 +50,14 @@ models:
         description: "Dev-honesty flag: true for clearly-labelled synthetic fixture journeys."
         tests:
           - not_null
+      - name: page_type
+        description: "Storefront page classification (product/collection/cart/search/home/page/blog/other) on page.viewed touches; NULL otherwise."
+      - name: product_handle
+        description: "Shopify product handle on product.viewed touches; NULL otherwise."
+      - name: collection_handle
+        description: "Shopify collection handle on collection.viewed touches; NULL otherwise."
+      - name: search_query
+        description: "Search query on search.submitted touches; NULL otherwise."
     # Grain guarantee (exactly one row per (brand_id, brain_anon_id, touch_seq)) is
     # asserted by the singular test tests/assert_touchpoint_grain.sql (dependency-free).
     # No-money invariant by tests/assert_touchpoint_no_money.sql; replay-fold consistency

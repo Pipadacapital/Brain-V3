@@ -70,12 +70,12 @@ export class ProcessEventUseCase {
      *
      * DO NOT flip FALSE until ALL of these hold (leaving it TRUE is the correct state until then):
      *   1. every reader is on Iceberg (Slice 5 — only get-data-health is flipped so far);
-     *   2. the Spark writer enforces the SAME R2 install_token tenant-derivation + R3 consent gate +
-     *      quarantine that THIS use-case does — today Spark materializes raw topic events UNGATED, so
-     *      Iceberg would include events PG quarantines (consent_absent / tenant_unresolved / brand_mismatch),
-     *      a compliance + correctness regression the parity oracle surfaces as drift;
+     *   2. ✓ DONE — the Spark writer now enforces the SAME R2 install_token tenant-derivation + R3
+     *      consent gate (db/iceberg/spark/bronze_materialize.py gate_and_map), so Iceberg holds the
+     *      SAME admission set as PG Bronze (verified: consent_absent / tenant_unresolved / brand_mismatch
+     *      events are dropped, not written);
      *   3. a green parity soak.
-     * The flag is the reversible mechanism; prerequisite (2) is real work, not a soak.
+     * The flag is the reversible mechanism; prerequisite (1) remains before flipping.
      */
     private readonly pgWriteEnabled = true,
   ) {}

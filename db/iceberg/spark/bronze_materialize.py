@@ -21,7 +21,7 @@ import os
 
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
-    coalesce, col, concat, current_timestamp, from_json, lit, to_timestamp,
+    broadcast, coalesce, col, concat, current_timestamp, from_json, get_json_object, lit, to_timestamp,
 )
 from pyspark.sql.types import StringType, StructField, StructType
 
@@ -41,6 +41,22 @@ CHECKPOINT = os.environ.get("CHECKPOINT_LOCATION", "file:///tmp/bronze-spike-che
 # PROCESSING_TIME — the real-time Spark-on-K8s shape. Both use the same idempotent MERGE.
 TRIGGER_MODE = os.environ.get("TRIGGER_MODE", "availableNow")
 PROCESSING_TIME = os.environ.get("PROCESSING_TIME", "30 seconds")
+
+# ── Bronze admission policy (ADR-0002 Slice 6) — mirrors the stream-worker's bronze consumers ──
+# Spark MUST apply the SAME gating the PG writer (ProcessEventUseCase) does, else Iceberg Bronze
+# would include events PG quarantines/never-writes (a compliance + parity regression):
+#   - SERVER_TRUSTED_BRONZE: written with brand_id as-is (the enforce=false bronze bridges).
+#   - LEDGER_ONLY: consumed by the ledger bridges, NEVER written to PG bronze → EXCLUDE from Iceberg.
+#   - everything else = the PIXEL lane → R2 (install_token→brand) + R3 (consent_flags present).
+SERVER_TRUSTED_BRONZE = {"order.live.v1", "shopflo.checkout_abandoned.v1", "gokwik.rto_predict.v1"}
+LEDGER_ONLY = {"settlement.live.v1", "spend.live.v1", "gokwik.awb_status.v1"}
+
+# Postgres (for R2 install_token→brand resolution via pixel_installation). Read as the superuser
+# (cross-brand, RLS-bypass — the same ETL-writer posture as the JDBC catalog) so all brands' tokens
+# resolve. Mirrors resolve_brand_by_install_token (migration 0028) used by the stream-worker.
+PG_JDBC_URL = os.environ.get("BRONZE_PG_JDBC_URL", "jdbc:postgresql://postgres:5432/brain")
+PG_USER = os.environ.get("BRONZE_PG_USER", "brain")
+PG_PASSWORD = os.environ.get("BRONZE_PG_PASSWORD", "brain")
 
 # The CollectorEventV1 envelope — ONLY the scalar fields we map to Bronze columns. The nested
 # objects (properties / consent_flags) are deliberately NOT in this schema: typing an object as
@@ -108,41 +124,98 @@ def ensure_table(spark: SparkSession) -> None:
     )
 
 
-def to_bronze(parsed):
-    """Map a parsed envelope row to the Bronze table columns (mirrors BronzeRow / 0016 / bronze_table.sql)."""
-    e = col("e")
+def load_pixel_installations(spark: SparkSession):
+    """install_token → brand_id lookup for R2 (read once; a static side of the stream-static join).
+    NOTE: read at job start — a new pixel_installation added later won't resolve until restart; a
+    long-running prod job should refresh this periodically (or re-read per micro-batch)."""
     return (
+        spark.read.format("jdbc")
+        .option("url", PG_JDBC_URL)
+        .option("user", PG_USER)
+        .option("password", PG_PASSWORD)
+        .option("driver", "org.postgresql.Driver")
+        .option("query", "SELECT install_token::text AS install_token, brand_id::text AS derived_brand_id FROM pixel_installation")
+        .load()
+    )
+
+
+def _project_bronze(df):
+    """Final Bronze column projection (mirrors BronzeRow / 0016 / bronze_table.sql). Uses the
+    already-resolved `brand_id` (claimed for server-trusted, derived for pixel)."""
+    return df.select(
+        col("event_id"),
+        col("brand_id"),
+        col("occurred_at"),
+        col("ingested_at"),
+        lit("brain.collector.event.v1").alias("schema_name"),
+        lit(1).alias("schema_version"),
+        col("event_type"),
+        col("correlation_id"),
+        concat(col("brand_id"), lit(":"), col("event_id")).alias("partition_key"),
+        # payload: the full envelope JSON verbatim — downstream-EQUIVALENT to BronzeRow.payload
+        # (both expose payload.event_name + payload.properties.*); parity is (brand_id, event_id)-based.
+        col("payload"),
+        lit(None).cast("string").alias("processing_flags"),
+        lit(None).cast("string").alias("collector_version"),
+    )
+
+
+def gate_and_map(parsed, install_df):
+    """Apply the Bronze admission policy (R2/R3 + lane split) then map to Bronze columns.
+    Faithfully replicates the stream-worker's gating so Iceberg Bronze == the PG Bronze admission set."""
+    e = col("e")
+    base = (
         parsed.select(
             e["event_id"].alias("event_id"),
-            e["brand_id"].alias("brand_id"),
+            e["brand_id"].alias("claimed_brand_id"),
+            e["event_name"].alias("event_type"),
             to_timestamp(e["occurred_at"]).alias("occurred_at"),
             coalesce(to_timestamp(e["ingested_at"]), current_timestamp()).alias("ingested_at"),
-            lit("brain.collector.event.v1").alias("schema_name"),
-            lit(1).alias("schema_version"),
-            e["event_name"].alias("event_type"),
             e["correlation_id"].alias("correlation_id"),
-            concat(e["brand_id"], lit(":"), e["event_id"]).alias("partition_key"),
-            # payload: the full envelope JSON verbatim (lossless, no raw PII — the collector already
-            # hashed identifiers). This is downstream-EQUIVALENT to the stream-worker BronzeRow.payload:
-            # both expose payload.event_name and payload.properties.* (the paths dbt staging reads), the
-            # raw envelope simply also carries the top-level envelope fields (harmless supersets). Byte
-            # parity across two serializers (Node JSON.stringify vs Spark to_json) is neither achievable
-            # nor required — the parity gate compares (brand_id, event_id) identity (bronze_parity_check.py).
+            get_json_object(col("raw"), "$.properties.install_token").alias("install_token"),
+            # R3 signal: consent_flags PRESENT (object), not necessarily true — mirrors PG (absent → quarantine).
+            get_json_object(col("raw"), "$.consent_flags").alias("consent_flags_raw"),
             col("raw").alias("payload"),
-            lit(None).cast("string").alias("processing_flags"),
-            lit(None).cast("string").alias("collector_version"),
         )
-        # Drop envelopes missing the idempotency key or required time (malformed → never written).
-        .where(col("event_id").isNotNull() & col("brand_id").isNotNull() & col("occurred_at").isNotNull())
+        # Malformed (no idempotency key / no time) → never written, like PG.
+        .where(col("event_id").isNotNull() & col("claimed_brand_id").isNotNull() & col("occurred_at").isNotNull())
+        # Ledger-only events are not part of the PG Bronze set → exclude.
+        .where(~col("event_type").isin(*LEDGER_ONLY))
     )
+
+    # Server-trusted lane (enforce=false bridges): brand_id is already server-derived → trust it.
+    server = base.where(col("event_type").isin(*SERVER_TRUSTED_BRONZE)).withColumn(
+        "brand_id", col("claimed_brand_id")
+    )
+
+    # Pixel lane: R3 consent gate, then R2 — resolve brand from install_token; an INNER join drops
+    # unresolved tokens (PG 'tenant_unresolved' quarantine), and the equality filter drops a claimed
+    # brand_id that doesn't match the derived one (PG 'brand_mismatch' quarantine). brand_id = DERIVED.
+    pixel = (
+        base.where(~col("event_type").isin(*SERVER_TRUSTED_BRONZE))
+        .where(col("consent_flags_raw").isNotNull())  # R3
+        .join(broadcast(install_df), "install_token", "inner")  # R2: resolve (drop unresolved)
+        .where(col("claimed_brand_id") == col("derived_brand_id"))  # R2: drop brand_mismatch
+        .withColumn("brand_id", col("derived_brand_id"))
+    )
+
+    return _project_bronze(server).unionByName(_project_bronze(pixel))
 
 
 def upsert_factory(_spark: SparkSession):
     def upsert(batch_df, _batch_id: int) -> None:
-        # In foreachBatch the batch DataFrame belongs to a cloned session — register the view and run
-        # the MERGE on THAT session, not the captured outer one (else UnresolvedRelation).
+        # PARSE + GATE happen HERE, in the per-batch BATCH context — NOT in the streaming plan. A
+        # stream-static join + union does not emit reliably under availableNow; inside foreachBatch the
+        # batch DF has plain batch semantics, where the R2/R3 gate (proven in batch) works. We also
+        # re-read pixel_installation per batch (fresh installs resolve; small broadcast table).
         batch_spark = batch_df.sparkSession
-        batch_df.createOrReplaceTempView("bronze_batch")
+        install_df = load_pixel_installations(batch_spark)
+        parsed = batch_df.select(
+            from_json(col("value").cast("string"), ENVELOPE).alias("e"),
+            col("value").cast("string").alias("raw"),
+        )
+        gated = gate_and_map(parsed, install_df)
+        gated.createOrReplaceTempView("bronze_batch")
         # Dedup within the micro-batch first (a re-pull can emit the same (brand_id,event_id) twice),
         # then MERGE WHEN NOT MATCHED — append-only, idempotent (I-E02 / I-ST04).
         batch_spark.sql(
@@ -181,14 +254,9 @@ def main() -> None:
         .option("failOnDataLoss", "false")
         .load()
     )
-    parsed = raw.select(
-        from_json(col("value").cast("string"), ENVELOPE).alias("e"),
-        col("value").cast("string").alias("raw"),
-    )
-    bronze = to_bronze(parsed)
-
+    # Parse + R2/R3 gate + MERGE all happen inside foreachBatch (batch context) — see upsert_factory.
     writer = (
-        bronze.writeStream
+        raw.writeStream
         .foreachBatch(upsert_factory(spark))
         .option("checkpointLocation", CHECKPOINT)
     )

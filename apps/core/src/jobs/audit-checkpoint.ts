@@ -44,18 +44,32 @@ export interface AuditCheckpointResult {
   checkpoint?: AuditCheckpoint;
 }
 
-/** Read the audit chain HEAD (max id + entry_hash + total count) — BIGINT-safe as strings. */
+/** Read the audit chain HEAD (max id + entry_hash + total count) — BIGINT-safe as strings.
+ *
+ * The hash-chain is GLOBAL (one chain across all brands), but audit.audit_log now FORCEs RLS
+ * (migration 0067) scoped to the per-request brand. This job connects as brain_app, so it claims
+ * the privileged read-all escape via `SET app.role = 'audit_reader'` (the established GUC pattern,
+ * contact_pii/0017) on a dedicated session — without it, RLS would scope these reads to a (here
+ * unset) brand and the WORM anchor would silently see an empty chain. */
 export async function readAuditHead(pool: pg.Pool): Promise<AuditChainHead> {
-  const headRes = await pool.query<{ id: string; entry_hash: string }>(
-    `SELECT id::text AS id, entry_hash FROM audit_log ORDER BY id DESC LIMIT 1`,
-  );
-  const countRes = await pool.query<{ n: string }>(`SELECT count(*)::text AS n FROM audit_log`);
-  const head = headRes.rows[0];
-  return {
-    headId: head?.id ?? '0',
-    headEntryHash: head?.entry_hash ?? null,
-    rowCount: countRes.rows[0]?.n ?? '0',
-  };
+  const client = await pool.connect();
+  try {
+    // Session-scoped (the connection is released right after) — grants the cross-brand chain walk.
+    await client.query(`SET app.role = 'audit_reader'`);
+    const headRes = await client.query<{ id: string; entry_hash: string }>(
+      `SELECT id::text AS id, entry_hash FROM audit_log ORDER BY id DESC LIMIT 1`,
+    );
+    const countRes = await client.query<{ n: string }>(`SELECT count(*)::text AS n FROM audit_log`);
+    const head = headRes.rows[0];
+    return {
+      headId: head?.id ?? '0',
+      headEntryHash: head?.entry_hash ?? null,
+      rowCount: countRes.rows[0]?.n ?? '0',
+    };
+  } finally {
+    await client.query(`RESET app.role`).catch(() => undefined);
+    client.release();
+  }
 }
 
 /**

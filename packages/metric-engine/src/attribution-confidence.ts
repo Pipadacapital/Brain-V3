@@ -109,9 +109,15 @@ export function isDeterministicChannel(touch: {
   fbclid?: string | null;
   gclid?: string | null;
   ttclid?: string | null;
+  msclkid?: string | null;
+  gbraid?: string | null;
+  wbraid?: string | null;
+  dclid?: string | null;
 }): boolean {
   if (touch.channel === COOKIELESS_CHANNEL) return false;
-  const hasClickId = Boolean(touch.fbclid) || Boolean(touch.gclid) || Boolean(touch.ttclid);
+  const hasClickId =
+    Boolean(touch.fbclid) || Boolean(touch.gclid) || Boolean(touch.ttclid) ||
+    Boolean(touch.msclkid) || Boolean(touch.gbraid) || Boolean(touch.wbraid) || Boolean(touch.dclid);
   const hasMedium = Boolean(touch.utmMedium);
   return hasClickId || hasMedium;
 }

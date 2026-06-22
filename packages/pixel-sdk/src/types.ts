@@ -23,6 +23,14 @@ export interface ClickIds {
   fbclid?: string;
   gclid?: string;
   ttclid?: string;
+  /** Microsoft/Bing Ads click id — without it, Bing paid traffic is misclassified as `direct`. */
+  msclkid?: string;
+  /** Google iOS app→web click id (replaces gclid in that flow). */
+  gbraid?: string;
+  /** Google web→app click id (iOS). */
+  wbraid?: string;
+  /** Google Display/DV360 click id. */
+  dclid?: string;
 }
 
 export interface Utm {

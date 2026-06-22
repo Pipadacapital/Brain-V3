@@ -16,10 +16,15 @@
  */
 import { randomUUID } from 'node:crypto';
 import { ShopifyHmac } from '../../domain/value-objects/ShopifyHmac.js';
-import { ConnectorInstance } from '../../domain/entities/ConnectorInstance.js';
-import { ConnectorSyncStatus } from '../../domain/entities/ConnectorSyncStatus.js';
-import type { IConnectorInstanceRepository } from '../../domain/repositories/IConnectorInstanceRepository.js';
-import type { IConnectorSyncStatusRepository } from '../../domain/repositories/IConnectorSyncStatusRepository.js';
+import type {
+  IConnectorInstanceRepository,
+  IConnectorSyncStatusRepository,
+} from '@brain/connector-core';
+import { ConnectorSyncStatus } from '@brain/connector-core';
+import {
+  isValidShopDomain,
+  createShopifyConnectorInstance,
+} from '../../domain/ShopifyHostPolicy.js';
 import type { ISecretsManager } from '@brain/connector-secrets';
 import type { IOAuthStateStore } from '../../infrastructure/state/IOAuthStateStore.js';
 
@@ -102,7 +107,7 @@ export class HandleOAuthCallbackCommand {
 
     // ── Step 3: Shop domain validation ────────────────────────────────────────
     const shopDomain = typeof query['shop'] === 'string' ? query['shop'] : '';
-    if (!ConnectorInstance.isValidShopDomain(shopDomain)) {
+    if (!isValidShopDomain(shopDomain)) {
       throw new ShopDomainError(shopDomain);
     }
 
@@ -122,7 +127,7 @@ export class HandleOAuthCallbackCommand {
     // ADR-CM-5: connect ⇒ health_state='Healthy', safety_rating='safe'
     const instanceId = randomUUID();
     const now = new Date();
-    const instance = ConnectorInstance.create({
+    const instance = createShopifyConnectorInstance({
       id: instanceId,
       brandId,
       provider: 'shopify',

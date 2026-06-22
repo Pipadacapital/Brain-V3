@@ -1,16 +1,5 @@
 /**
- * IConnectorCursorRepository — domain repository interface.
- * Idempotent upsert on (brandId, connectorInstanceId, resource) (I-ST04).
+ * BACKWARD-COMPAT RE-EXPORT SHIM — interface moved to @brain/connector-core.
+ * New code should import from '@brain/connector-core' directly.
  */
-import type { ConnectorCursor } from '../entities/ConnectorCursor.js';
-
-export interface IConnectorCursorRepository {
-  findByResource(
-    brandId: string,
-    connectorInstanceId: string,
-    resource: string,
-  ): Promise<ConnectorCursor | null>;
-
-  /** Upsert — INSERT ... ON CONFLICT (brand_id, connector_instance_id, resource) DO UPDATE. */
-  upsert(cursor: ConnectorCursor): Promise<ConnectorCursor>;
-}
+export type { IConnectorCursorRepository } from '@brain/connector-core';

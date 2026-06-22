@@ -105,6 +105,9 @@ importers:
       '@brain/config':
         specifier: workspace:*
         version: link:../../packages/config
+      '@brain/connector-core':
+        specifier: workspace:*
+        version: link:../../packages/connector-core
       '@brain/connector-secrets':
         specifier: workspace:*
         version: link:../../packages/connector-secrets
@@ -392,6 +395,10 @@ importers:
         version: 2.1.9(@types/node@25.9.3)
 
   packages/ad-spend-mapper:
+    dependencies:
+      '@brain/connector-core':
+        specifier: workspace:*
+        version: link:../connector-core
     devDependencies:
       '@types/node':
         specifier: ^20.0.0
@@ -444,6 +451,18 @@ importers:
       '@types/node':
         specifier: 25.9.3
         version: 25.9.3
+
+  packages/connector-core:
+    devDependencies:
+      '@types/node':
+        specifier: ^20.0.0
+        version: 20.19.43
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.0
+        version: 2.1.9(@types/node@20.19.43)
 
   packages/connector-secrets:
     dependencies:
@@ -507,6 +526,9 @@ importers:
 
   packages/gokwik-mapper:
     dependencies:
+      '@brain/connector-core':
+        specifier: workspace:*
+        version: link:../connector-core
       '@brain/logistics-status':
         specifier: workspace:*
         version: link:../logistics-status
@@ -624,6 +646,10 @@ importers:
         version: 2.1.9(@types/node@25.9.3)
 
   packages/razorpay-mapper:
+    dependencies:
+      '@brain/connector-core':
+        specifier: workspace:*
+        version: link:../connector-core
     devDependencies:
       '@types/node':
         specifier: ^20.0.0
@@ -637,6 +663,9 @@ importers:
 
   packages/shiprocket-mapper:
     dependencies:
+      '@brain/connector-core':
+        specifier: workspace:*
+        version: link:../connector-core
       '@brain/logistics-status':
         specifier: workspace:*
         version: link:../logistics-status
@@ -653,6 +682,9 @@ importers:
 
   packages/shopflo-mapper:
     dependencies:
+      '@brain/connector-core':
+        specifier: workspace:*
+        version: link:../connector-core
       '@brain/identity-core':
         specifier: workspace:*
         version: link:../identity-core
@@ -669,6 +701,9 @@ importers:
 
   packages/shopify-mapper:
     dependencies:
+      '@brain/connector-core':
+        specifier: workspace:*
+        version: link:../connector-core
       '@brain/identity-core':
         specifier: workspace:*
         version: link:../identity-core
@@ -689,6 +724,9 @@ importers:
 
   packages/woocommerce-mapper:
     dependencies:
+      '@brain/connector-core':
+        specifier: workspace:*
+        version: link:../connector-core
       '@brain/identity-core':
         specifier: workspace:*
         version: link:../identity-core

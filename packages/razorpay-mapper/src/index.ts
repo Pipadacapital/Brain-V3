@@ -35,6 +35,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { hashToUuidShaped } from '@brain/connector-core';
 
 // ── Event name constant ──────────────────────────────────────────────────────
 
@@ -162,32 +163,7 @@ export interface RazorpayOrderMapRow {
   razorpay_payment_id: string;   // raw — stored in RLS-protected map table (internal join only)
 }
 
-// ── UUID utils (mirrors shopify-mapper hashToUuidShaped algorithm) ────────────
-
-/**
- * Format the first 16 bytes of a sha256 hash as a UUIDv5-shaped string.
- * Sets version nibble = 5 and RFC-4122 variant bits.
- * Algorithm IDENTICAL to packages/shopify-mapper/src/index.ts:hashToUuidShaped (I-ST04).
- */
-function hashToUuidShaped(input: string): string {
-  const hash = createHash('sha256').update(input, 'utf8').digest();
-  const bytes = Buffer.alloc(16);
-  hash.copy(bytes, 0, 0, 16);
-
-  // Version nibble = 5
-  bytes[6] = (bytes[6]! & 0x0f) | 0x50;
-  // Variant bits = RFC 4122 (10xx xxxx)
-  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
-
-  const hex = bytes.toString('hex');
-  return [
-    hex.slice(0, 8),
-    hex.slice(8, 12),
-    hex.slice(12, 16),
-    hex.slice(16, 20),
-    hex.slice(20, 32),
-  ].join('-');
-}
+// ── UUID utils — shared kernel util (@brain/connector-core), IDENTICAL byte layout (I-ST04) ──
 
 // ── C1: Boundary hash for DPDP financial identifiers ─────────────────────────
 

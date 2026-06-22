@@ -83,7 +83,7 @@ import { registerPixelRoutes, buildDefaultSnippet, isValidIngestHost } from './m
 import { getDefinition, isConnectable, CONNECTOR_CATALOG } from './modules/connector/catalog/index.js';
 import { registerOAuthDispatch, getOAuthDispatch } from './modules/connector/catalog/dispatch.js';
 import { InitiateOAuthCommand } from './modules/connector/sources/storefront/shopify/application/commands/InitiateOAuthCommand.js';
-import { ConnectorInstance as ConnectorInstanceEntity } from './modules/connector/sources/storefront/shopify/domain/entities/ConnectorInstance.js';
+import { ConnectorInstance as ConnectorInstanceEntity } from '@brain/connector-core';
 import {
   HandleOAuthCallbackCommand,
   HmacValidationError,

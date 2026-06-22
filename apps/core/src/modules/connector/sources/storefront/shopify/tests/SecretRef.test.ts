@@ -11,7 +11,8 @@
  * implementation to packages/connector-secrets/src/AwsSecretsManager.test.ts (#75).
  */
 import { describe, it, expect } from 'vitest';
-import { ConnectorInstance } from '../domain/entities/ConnectorInstance.js';
+import { ConnectorInstance } from '@brain/connector-core';
+import { createShopifyConnectorInstance } from '../domain/ShopifyHostPolicy.js';
 import { LocalSecretsManager } from '@brain/connector-secrets';
 
 const VALID_PROPS = {
@@ -59,10 +60,21 @@ describe('ConnectorInstance (NN-2 secret_ref enforcement)', () => {
     }
   });
 
-  it('rejects an invalid shop domain (not *.myshopify.com)', () => {
+  it('the neutral kernel entity no longer hardcodes the myshopify.com rule (it accepts any host)', () => {
+    // The host rule moved into ShopifyHostPolicy; the kernel is provider-agnostic.
+    const instance = ConnectorInstance.create({ ...VALID_PROPS, shopDomain: 'evil.example.com' });
+    expect(instance.shopDomain).toBe('evil.example.com');
+  });
+
+  it('the Shopify factory still rejects an invalid shop domain (NN-4 preserved)', () => {
     expect(() =>
-      ConnectorInstance.create({ ...VALID_PROPS, shopDomain: 'evil.example.com' }),
-    ).toThrow(/myshopify\.com/);
+      createShopifyConnectorInstance({ ...VALID_PROPS, shopDomain: 'evil.example.com' }),
+    ).toThrow(/Invalid host/);
+  });
+
+  it('the Shopify factory accepts a valid *.myshopify.com host', () => {
+    const instance = createShopifyConnectorInstance(VALID_PROPS);
+    expect(instance.shopDomain).toBe('teststore.myshopify.com');
   });
 
   it('validates that secretRef is an ARN-shaped string (structural check)', () => {

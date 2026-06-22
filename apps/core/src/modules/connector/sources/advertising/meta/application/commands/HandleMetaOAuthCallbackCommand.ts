@@ -22,10 +22,10 @@
  *   7. Emit connector.connected event (NO token, NO secret_ref in payload).
  */
 import { randomUUID } from 'node:crypto';
-import { ConnectorInstance } from '../../../../storefront/shopify/domain/entities/ConnectorInstance.js';
-import { ConnectorSyncStatus } from '../../../../storefront/shopify/domain/entities/ConnectorSyncStatus.js';
-import type { IConnectorInstanceRepository } from '../../../../storefront/shopify/domain/repositories/IConnectorInstanceRepository.js';
-import type { IConnectorSyncStatusRepository } from '../../../../storefront/shopify/domain/repositories/IConnectorSyncStatusRepository.js';
+import { ConnectorInstance } from '@brain/connector-core';
+import { ConnectorSyncStatus } from '@brain/connector-core';
+import type { IConnectorInstanceRepository } from '@brain/connector-core';
+import type { IConnectorSyncStatusRepository } from '@brain/connector-core';
 import type { ISecretsManager } from '@brain/connector-secrets';
 import type { IOAuthStateStore } from '../../../../storefront/shopify/infrastructure/state/IOAuthStateStore.js';
 import { META_GRAPH_API_VERSION } from './InitiateMetaOAuthCommand.js';

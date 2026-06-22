@@ -25,7 +25,7 @@
  * brandId is ALWAYS passed by the caller (from the connector row — MT-1), NEVER from the payload.
  */
 
-import { createHash } from 'node:crypto';
+import { hashToUuidShaped } from '@brain/connector-core';
 import { hashIdentifier, normalizePhone } from '@brain/identity-core';
 
 // ── Canonical event name (MUST equal shopify-mapper's — the shared contract) ──
@@ -199,19 +199,8 @@ export function tryDecimalToMinor(value: string | number | null | undefined): bi
   }
 }
 
-// ── UUID v5 (IDENTICAL algorithm + namespace to shopify-mapper — I-ST04) ──────
-
-function hashToUuidShaped(input: string): string {
-  const hash = createHash('sha256').update(input, 'utf8').digest();
-  const bytes = Buffer.alloc(16);
-  hash.copy(bytes, 0, 0, 16);
-  bytes[6] = (bytes[6]! & 0x0f) | 0x50;
-  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
-  const hex = bytes.toString('hex');
-  return [
-    hex.slice(0, 8), hex.slice(8, 12), hex.slice(12, 16), hex.slice(16, 20), hex.slice(20, 32),
-  ].join('-');
-}
+// ── UUID v5 — shared kernel util (@brain/connector-core). IDENTICAL byte layout +
+//    namespace to shopify-mapper so storefront sources share one Bronze dedup namespace (I-ST04).
 
 /**
  * Deterministic event_id for a LIVE order — SAME seed shape as shopify-mapper's

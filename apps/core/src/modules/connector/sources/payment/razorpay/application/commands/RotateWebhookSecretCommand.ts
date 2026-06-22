@@ -21,7 +21,7 @@
  */
 
 import type { ISecretsManager } from '@brain/connector-secrets';
-import type { IConnectorInstanceRepository } from '../../../../storefront/shopify/domain/repositories/IConnectorInstanceRepository.js';
+import type { IConnectorInstanceRepository } from '@brain/connector-core';
 
 export interface RotateWebhookSecretInput {
   connectorInstanceId: string;

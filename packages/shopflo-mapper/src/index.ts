@@ -20,7 +20,7 @@
  * the connector row (resolve_shopflo_connector_by_merchant — MT-1).
  */
 
-import { createHash } from 'node:crypto';
+import { hashToUuidShaped } from '@brain/connector-core';
 import { hashIdentifier, normalizePhone } from '@brain/identity-core';
 
 // ── Event name constant ──────────────────────────────────────────────────────
@@ -110,19 +110,7 @@ export interface MappedShopfloCheckoutEvent {
   properties: ShopfloCheckoutProperties;
 }
 
-// ── UUID util (IDENTICAL algorithm to shopify-mapper/razorpay-mapper — I-ST04) ──
-
-function hashToUuidShaped(input: string): string {
-  const hash = createHash('sha256').update(input, 'utf8').digest();
-  const bytes = Buffer.alloc(16);
-  hash.copy(bytes, 0, 0, 16);
-  bytes[6] = (bytes[6]! & 0x0f) | 0x50;   // version 5
-  bytes[8] = (bytes[8]! & 0x3f) | 0x80;   // RFC 4122 variant
-  const hex = bytes.toString('hex');
-  return [
-    hex.slice(0, 8), hex.slice(8, 12), hex.slice(12, 16), hex.slice(16, 20), hex.slice(20, 32),
-  ].join('-');
-}
+// ── UUID util — shared kernel util (@brain/connector-core), IDENTICAL byte layout (I-ST04) ──
 
 /**
  * Deterministic event_id for a Shopflo checkout_abandoned event.

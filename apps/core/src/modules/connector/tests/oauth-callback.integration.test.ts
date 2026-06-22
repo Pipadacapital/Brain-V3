@@ -55,10 +55,10 @@ import {
 } from '../sources/storefront/shopify/application/commands/HandleOAuthCallbackCommand.js';
 import { InProcessOAuthStateStore } from '../sources/storefront/shopify/infrastructure/state/InProcessOAuthStateStore.js';
 import { LocalSecretsManager } from '@brain/connector-secrets';
-import type { IConnectorInstanceRepository } from '../sources/storefront/shopify/domain/repositories/IConnectorInstanceRepository.js';
-import type { IConnectorSyncStatusRepository } from '../sources/storefront/shopify/domain/repositories/IConnectorSyncStatusRepository.js';
-import { ConnectorInstance } from '../sources/storefront/shopify/domain/entities/ConnectorInstance.js';
-import { ConnectorSyncStatus } from '../sources/storefront/shopify/domain/entities/ConnectorSyncStatus.js';
+import type { IConnectorInstanceRepository } from '@brain/connector-core';
+import type { IConnectorSyncStatusRepository } from '@brain/connector-core';
+import { ConnectorInstance } from '@brain/connector-core';
+import { ConnectorSyncStatus } from '@brain/connector-core';
 
 // ── Constants ───────────────────────────────────────────────────────────────────
 

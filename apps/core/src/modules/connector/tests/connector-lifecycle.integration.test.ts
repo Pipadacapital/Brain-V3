@@ -42,8 +42,8 @@ import type { DbPool, QueryContext } from '@brain/db';
 
 import { PgConnectorInstanceRepository } from '../sources/storefront/shopify/infrastructure/repositories/PgConnectorInstanceRepository.js';
 import { PgConnectorSyncStatusRepository } from '../sources/storefront/shopify/infrastructure/repositories/PgConnectorSyncStatusRepository.js';
-import { ConnectorInstance } from '../sources/storefront/shopify/domain/entities/ConnectorInstance.js';
-import { ConnectorSyncStatus } from '../sources/storefront/shopify/domain/entities/ConnectorSyncStatus.js';
+import { ConnectorInstance } from '@brain/connector-core';
+import { ConnectorSyncStatus } from '@brain/connector-core';
 
 // ── Config ─────────────────────────────────────────────────────────────────────
 

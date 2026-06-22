@@ -13,13 +13,15 @@
 -- ============================================================================
 {{
   config(
-    schema         = 'brain_gold',
-    materialized   = 'table',
-    table_type     = 'PRIMARY',
-    keys           = ['brand_id', 'ledger_event_id'],
-    distributed_by = ['brand_id'],
-    order_by       = ['brand_id', 'ledger_event_id'],
-    buckets        = 8,
+    schema               = 'brain_gold',
+    materialized         = 'incremental',
+    incremental_strategy = 'default',
+    unique_key           = ['brand_id', 'ledger_event_id'],
+    table_type           = 'PRIMARY',
+    keys                 = ['brand_id', 'ledger_event_id'],
+    distributed_by       = ['brand_id'],
+    order_by             = ['brand_id', 'ledger_event_id'],
+    buckets              = 8,
     properties     = {
       'replication_num'        : '1',
       'enable_persistent_index': 'true',
@@ -29,6 +31,11 @@
   )
 }}
 
+-- M3 — INCREMENTAL append. The ledger is strictly append-only: one IMMUTABLE row per
+-- (brand_id, ledger_event_id). So incremental is trivially correct — only rows ingested since the last
+-- run are inserted (watermark on created_at = ingestion time, which is fresh even for a backdated
+-- economic_effective_at, so nothing is missed). PRIMARY KEY upsert makes a re-pulled duplicate a no-op.
+-- First run (table absent) loads the full ledger.
 select
     brand_id,
     ledger_event_id,
@@ -42,6 +49,10 @@ select
     economic_effective_at,
     recognition_label,
     billing_posted_period,
+    created_at                                         as ingested_at,
     current_timestamp()                                as updated_at
 from {{ source('oltp', 'realized_revenue_ledger') }}
 where ledger_event_id is not null
+{% if is_incremental() %}
+  and created_at > (select coalesce(max(ingested_at), cast('1970-01-01 00:00:00' as datetime)) from {{ this }})
+{% endif %}

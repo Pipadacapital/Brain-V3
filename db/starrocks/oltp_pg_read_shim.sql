@@ -39,7 +39,10 @@ SELECT
     ledger_event_id,
     fee_minor,
     recognition_label,
-    billing_posted_period
+    billing_posted_period,
+    -- appended (M3): ingestion time — drives the incremental restatement watermark in silver_order_state
+    -- (any row ingested since the last run re-folds its order, so late/backdated events are never missed).
+    created_at
 -- Schema-qualified: this table was RANGE-partitioned via a twin-swap (migration 0073). An unqualified
 -- name made CREATE OR REPLACE VIEW re-bind to the renamed *_legacy table; qualifying pins the view to
 -- the canonical (partitioned) table so the shim always reads live data.

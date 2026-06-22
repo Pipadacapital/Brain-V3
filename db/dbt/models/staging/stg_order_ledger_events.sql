@@ -32,7 +32,8 @@ with source as (
         cast(amount_minor as bigint)            as amount_minor,
         currency_code,
         occurred_at,
-        economic_effective_at
+        economic_effective_at,
+        created_at                              as ingested_at  -- M3: ingestion-time incremental watermark
     from {{ source('oltp', 'realized_revenue_ledger') }}
     -- Only the event_types that contribute to the ORDER LIFECYCLE (architecture §2 map).
     -- Settlement/fee/adjustment event_types (0027) do not move lifecycle state → excluded.
@@ -73,6 +74,7 @@ select
     amount_minor,
     currency_code,
     occurred_at,
-    economic_effective_at
+    economic_effective_at,
+    ingested_at
 from deduped
 where _dedup_rn = 1

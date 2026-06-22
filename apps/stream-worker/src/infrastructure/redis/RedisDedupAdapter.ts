@@ -61,7 +61,14 @@ export class RedisDedupAdapter {
    */
   async check(brandId: string, eventId: string): Promise<boolean> {
     const key = buildDedupKey(brandId, eventId);
-    return (await this.redis.exists(key)) === 1;
+    try {
+      return (await this.redis.exists(key)) === 1;
+    } catch {
+      // Redis hiccup (not connected / reconnecting): this is ONLY a fast-path optimization. Treat as a
+      // cache MISS (false) so processing proceeds to the DURABLE dedup (bronze_events PK ON CONFLICT).
+      // NEVER throw here — a transient Redis error must not wedge the consumer on this offset.
+      return false;
+    }
   }
 
   /**
@@ -71,7 +78,12 @@ export class RedisDedupAdapter {
    */
   async claim(brandId: string, eventId: string): Promise<void> {
     const key = buildDedupKey(brandId, eventId);
-    await this.redis.set(key, '1', 'EX', DEDUP_TTL_SECONDS);
+    try {
+      await this.redis.set(key, '1', 'EX', DEDUP_TTL_SECONDS);
+    } catch {
+      // Best-effort by contract: the Bronze write already committed (durable PK dedup). A Redis hiccup
+      // priming the fast-path slot must NOT fail an already-durable event. Swallow and move on.
+    }
   }
 
   async quit(): Promise<void> {

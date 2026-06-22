@@ -12,14 +12,16 @@
  * (never divide-by-zero, never a fabricated ∞). The two exact BIGINT operands are always
  * returned so the consumer re-derives the ratio exactly (no silent float rounding).
  *
- * F-SEC-02: reads inside withBrandTxn (GUC transaction-scoped); seams SECURITY INVOKER.
+ * ── PHASE G re-point: reads the lakehouse via withSilverBrand (I-ST01) — attributed revenue from
+ *    brain_gold.gold_marketing_attribution (the channel_contribution_as_of math), spend from
+ *    brain_silver.silver_marketing_spend (the ad_spend_as_of math). PG is no longer a read source.
  *
  * @see 05-architecture.md §6 (channel ROAS)
  * @see packages/metric-engine/src/blended-roas.ts (the blended sibling)
  */
 
-import type { EngineDeps } from './deps.js';
-import { withBrandTxn } from './deps.js';
+import type { SilverPool } from './silver-deps.js';
+import { withSilverBrand, BRAND_PREDICATE } from './silver-deps.js';
 import type { AttributionModelId } from './attribution-models.js';
 
 /** Format an exact BIGINT ratio to a fixed-precision decimal string (no float). */
@@ -60,48 +62,59 @@ export interface ChannelRoasRow {
   roasRatio: string | null;
 }
 
-interface ChannelRow { channel: string; currency_code: string; contribution_minor: string }
-interface SpendRow { platform: string; currency_code: string; spend_minor: string }
+interface ChannelRow { channel: string; currency_code: string; contribution_minor: string | number }
+interface SpendRow { platform: string; currency_code: string; spend_minor: string | number }
 
 /**
  * computeChannelRoas — per-channel attributed-revenue ÷ ad-spend over [from, to].
  *
  * @param brandId - Brand UUID (from session — D-1).
  * @param params  - { model, fromDate, toDate } inclusive window.
- * @param deps    - EngineDeps with the pg.Pool.
+ * @param deps    - The StarRocks Silver/Gold pool — gold_marketing_attribution + silver_marketing_spend.
  * @returns       One row per (channel, currency) present on either side; roasRatio null when spend=0.
  */
 export async function computeChannelRoas(
   brandId: string,
   params: { model: AttributionModelId; fromDate: Date; toDate: Date },
-  deps: EngineDeps,
+  deps: { srPool: SilverPool },
 ): Promise<ChannelRoasRow[]> {
-  const fromStr = params.fromDate.toISOString().split('T')[0] as string;
+  const fromStr = params.fromDate.toISOString().split('T')[0] as string; // Date-formatted → injection-safe
   const toStr = params.toDate.toISOString().split('T')[0] as string;
+  // model is a typed AttributionModelId; guard to a safe identifier before interpolation.
+  const model = /^[a-z0-9_]+$/i.test(params.model) ? params.model : '__invalid__';
 
-  return withBrandTxn(deps.pool, brandId, async (client) => {
-    const channelRows = await client.query<ChannelRow>(
-      `SELECT channel, currency_code, contribution_minor
-         FROM channel_contribution_as_of($1::uuid, $2::text, $3::date, $4::date)`,
-      [brandId, params.model, fromStr, toStr],
+  return withSilverBrand(deps.srPool, brandId, async (scope) => {
+    // Attributed revenue per (channel, currency) — the channel_contribution_as_of math.
+    const channelRows = await scope.runScoped<ChannelRow>(
+      `SELECT channel, currency_code, COALESCE(SUM(credited_revenue_minor), 0) AS contribution_minor
+         FROM brain_gold.gold_marketing_attribution
+        WHERE model_id = '${model}'
+          AND CAST(economic_effective_at AS DATE) BETWEEN '${fromStr}' AND '${toStr}'
+          AND ${BRAND_PREDICATE}
+        GROUP BY channel, currency_code`,
+      [],
     );
-    const spendRows = await client.query<SpendRow>(
-      `SELECT platform, currency_code, spend_minor
-         FROM ad_spend_as_of($1::uuid, $2::date, $3::date)`,
-      [brandId, fromStr, toStr],
+    // Spend per (platform, currency) — the ad_spend_as_of math.
+    const spendRows = await scope.runScoped<SpendRow>(
+      `SELECT platform, currency_code, SUM(spend_minor) AS spend_minor
+         FROM brain_silver.silver_marketing_spend
+        WHERE stat_date BETWEEN '${fromStr}' AND '${toStr}'
+          AND ${BRAND_PREDICATE}
+        GROUP BY platform, currency_code`,
+      [],
     );
 
     // key = `${channel}␟${currency}` — sum within the same (channel, currency).
     const attributed = new Map<string, bigint>();
-    for (const r of channelRows.rows) {
+    for (const r of channelRows) {
       const key = `${r.channel}␟${r.currency_code}`;
-      attributed.set(key, (attributed.get(key) ?? 0n) + BigInt(r.contribution_minor));
+      attributed.set(key, (attributed.get(key) ?? 0n) + BigInt(String(r.contribution_minor).split('.')[0] ?? '0'));
     }
     const spend = new Map<string, bigint>();
-    for (const r of spendRows.rows) {
+    for (const r of spendRows) {
       const channel = platformToChannel(r.platform);
       const key = `${channel}␟${r.currency_code}`;
-      spend.set(key, (spend.get(key) ?? 0n) + BigInt(r.spend_minor));
+      spend.set(key, (spend.get(key) ?? 0n) + BigInt(String(r.spend_minor).split('.')[0] ?? '0'));
     }
 
     const keys = new Set<string>([...attributed.keys(), ...spend.keys()]);

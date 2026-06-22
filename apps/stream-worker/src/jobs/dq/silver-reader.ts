@@ -38,6 +38,14 @@ export interface SilverReader {
 
 export const BRAND_PREDICATE = '${BRAND_PREDICATE}';
 
+/**
+ * The Iceberg Bronze event table in the StarRocks external catalog (same instance the SilverReader
+ * connects to). DB-AUDIT C4: the DQ checks read Bronze from the lakehouse (the Bronze SoR), NOT the
+ * retired PG data_plane.bronze_events. Catalog name is env-overridable so prod can point at the Glue
+ * catalog without code change (mirrors analytics _bronze-source.ts ICEBERG_BRONZE).
+ */
+export const ICEBERG_BRONZE = `${process.env['STARROCKS_BRONZE_CATALOG'] ?? 'brain_bronze_local'}.brain_bronze.collector_events`;
+
 export function createSilverReader(config: SilverReaderConfig): SilverReader {
   const pool = mysql.createPool({
     host: config.host,

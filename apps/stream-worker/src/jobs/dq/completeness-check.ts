@@ -15,6 +15,8 @@
 import type { Pool } from 'pg';
 import { gradeBadnessRatio } from './grade.js';
 import type { DqCheckRow } from './writer.js';
+import { BRAND_PREDICATE, ICEBERG_BRONZE, type SilverReader } from './silver-reader.js';
+import { log } from '../../log.js';
 
 const NIL_UUID = '00000000-0000-0000-0000-000000000000';
 
@@ -25,14 +27,9 @@ interface CompletenessTarget {
   readonly maxNullRate: number;
 }
 
-/** Frozen completeness targets — required columns + max tolerated null rate. */
+/** PG completeness targets — the money ledgers (DB-AUDIT C4: bronze_events moved to the Iceberg SoR,
+ * read via StarRocks below; ledgers remain operational PG tables). */
 export const COMPLETENESS_TARGETS: readonly CompletenessTarget[] = [
-  {
-    target: 'bronze_events',
-    table: 'bronze_events',
-    requiredColumns: ['event_type', 'occurred_at'],
-    maxNullRate: 0,
-  },
   {
     target: 'realized_revenue_ledger',
     table: 'realized_revenue_ledger',
@@ -47,11 +44,52 @@ export const COMPLETENESS_TARGETS: readonly CompletenessTarget[] = [
   },
 ] as const;
 
+/** Required (NOT NULL) Bronze columns checked against the Iceberg SoR. */
+const BRONZE_REQUIRED_COLUMNS = ['event_type', 'occurred_at'] as const;
+
+/** Completeness of the Iceberg Bronze SoR (collector_events) via StarRocks, brand-scoped at the seam. */
+async function bronzeCompleteness(silver: SilverReader, brandId: string): Promise<DqCheckRow> {
+  const nullPredicate = BRONZE_REQUIRED_COLUMNS.map((c) => `${c} IS NULL`).join(' OR ');
+  const r = await silver.scopedQuery<{ total: string | number; bad: string | number }>(
+    brandId,
+    `SELECT COUNT(*) AS total,
+            COUNT(CASE WHEN ${nullPredicate} THEN 1 END) AS bad
+       FROM ${ICEBERG_BRONZE}
+      WHERE ${BRAND_PREDICATE}`,
+  );
+  const total = Number(r[0]?.total ?? 0);
+  const bad = Number(r[0]?.bad ?? 0);
+  if (total === 0) {
+    return { brandId, category: 'completeness', target: 'bronze_events', grade: 'A+', score: '0.0000',
+      observed: 'no_rows', threshold: '0', passing: true };
+  }
+  const nullRate = bad / total;
+  const outcome = gradeBadnessRatio(nullRate, 0);
+  return { brandId, category: 'completeness', target: 'bronze_events', grade: outcome.grade,
+    score: outcome.score, observed: nullRate.toFixed(4), threshold: (0).toFixed(4), passing: outcome.passing };
+}
+
 export async function completenessCheck(
   pool: Pool,
+  silver: SilverReader | null,
   brandId: string,
 ): Promise<DqCheckRow[]> {
   const rows: DqCheckRow[] = [];
+
+  // ── Bronze completeness (Iceberg SoR via StarRocks) ────────────────────────
+  if (silver !== null) {
+    try {
+      rows.push(await bronzeCompleteness(silver, brandId));
+    } catch (err) {
+      log.error(`iceberg bronze completeness read failed brand=${brandId}`, { err: err });
+      rows.push({ brandId, category: 'completeness', target: 'bronze_events', grade: 'D', score: null,
+        observed: 'unreachable', threshold: '0', passing: false });
+    }
+  } else {
+    rows.push({ brandId, category: 'completeness', target: 'bronze_events', grade: 'D', score: null,
+      observed: 'unreachable', threshold: '0', passing: false });
+  }
+
   const client = await pool.connect();
   try {
     await client.query('BEGIN');

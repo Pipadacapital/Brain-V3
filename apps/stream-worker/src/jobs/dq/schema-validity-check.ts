@@ -20,6 +20,8 @@
 import type { Pool } from 'pg';
 import { gradeBadnessRatio } from './grade.js';
 import type { DqCheckRow } from './writer.js';
+import { BRAND_PREDICATE, ICEBERG_BRONZE, type SilverReader } from './silver-reader.js';
+import { log } from '../../log.js';
 
 const NIL_UUID = '00000000-0000-0000-0000-000000000000';
 
@@ -34,11 +36,21 @@ export const VALIDITY_WINDOW_HOURS = 24;
 
 export async function schemaValidityCheck(
   pool: Pool,
+  silver: SilverReader | null,
   brandId: string,
 ): Promise<DqCheckRow[]> {
-  const client = await pool.connect();
+  // DB-AUDIT C4: accepted_count is now the Iceberg Bronze SoR (StarRocks); quarantine_count stays the
+  // PG audit_log signal. Cross-store. No StarRocks → accepted is unknown → honest D.
+  if (silver === null) {
+    return [{ brandId, category: 'schema_validity', target: 'collector.event', grade: 'D', score: null,
+      observed: 'bronze_unreachable', threshold: MAX_VALIDITY_FAILURE_RATE.toFixed(4), passing: false }];
+  }
+
   let quarantineCount = 0;
   let acceptedCount = 0;
+
+  // ── Quarantine count — audit_log (PG; RLS now brand-scoped per 0067, also explicit filter) ──
+  const client = await pool.connect();
   try {
     await client.query('BEGIN');
     await client.query(
@@ -47,36 +59,37 @@ export async function schemaValidityCheck(
               set_config('app.current_workspace_id', $2, true)`,
       [brandId, NIL_UUID],
     );
-
-    const windowStart = `NOW() - INTERVAL '${VALIDITY_WINDOW_HOURS} hours'`;
-
-    // Quarantine count — audit_log (RLS DISABLED → MANDATORY explicit brand filter).
     const quarantined = await client.query<{ n: string }>(
       `SELECT COUNT(*)::text AS n
          FROM audit_log
         WHERE brand_id = $1
           AND action = ANY($2::text[])
-          AND created_at >= ${windowStart}`,
+          AND created_at >= NOW() - INTERVAL '${VALIDITY_WINDOW_HOURS} hours'`,
       [brandId, QUARANTINE_ACTIONS],
     );
-
-    // Accepted count — bronze_events (RLS-scoped under the GUC, also explicit filter).
-    const accepted = await client.query<{ n: string }>(
-      `SELECT COUNT(*)::text AS n
-         FROM bronze_events
-        WHERE brand_id = $1
-          AND ingested_at >= ${windowStart}`,
-      [brandId],
-    );
     await client.query('COMMIT');
-
     quarantineCount = Number(quarantined.rows[0]?.n ?? '0');
-    acceptedCount = Number(accepted.rows[0]?.n ?? '0');
   } catch (err) {
     await client.query('ROLLBACK').catch(() => undefined);
     throw err;
   } finally {
     client.release();
+  }
+
+  // ── Accepted count — Iceberg Bronze SoR (StarRocks, brand-scoped at the seam) ──
+  try {
+    const accepted = await silver.scopedQuery<{ n: string | number }>(
+      brandId,
+      `SELECT COUNT(*) AS n
+         FROM ${ICEBERG_BRONZE}
+        WHERE ${BRAND_PREDICATE}
+          AND ingested_at >= date_sub(now(), INTERVAL ${VALIDITY_WINDOW_HOURS} HOUR)`,
+    );
+    acceptedCount = Number(accepted[0]?.n ?? 0);
+  } catch (err) {
+    log.error(`iceberg bronze accepted-count read failed brand=${brandId}`, { err: err });
+    return [{ brandId, category: 'schema_validity', target: 'collector.event', grade: 'D', score: null,
+      observed: 'bronze_unreachable', threshold: MAX_VALIDITY_FAILURE_RATE.toFixed(4), passing: false }];
   }
 
   {

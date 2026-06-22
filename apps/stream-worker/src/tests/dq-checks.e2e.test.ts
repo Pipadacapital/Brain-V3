@@ -25,6 +25,35 @@ import { completenessCheck } from '../jobs/dq/completeness-check.js';
 import { schemaValidityCheck } from '../jobs/dq/schema-validity-check.js';
 import { reconciliationCheck } from '../jobs/dq/reconciliation-check.js';
 import { runDqChecksForBrand } from '../jobs/dq/run.js';
+import type { SilverReader } from '../jobs/dq/silver-reader.js';
+
+/**
+ * Deterministic fake StarRocks reader for the Bronze side. DB-AUDIT C4 moved Bronze reads from PG
+ * to the Iceberg SoR (StarRocks), so the DQ checks read Bronze via the SilverReader seam. Seeding
+ * StarRocks/Iceberg per-test is heavy; this fake returns controlled Bronze aggregates by query shape
+ * (the PG side — ledger, audit_log, dq_check_result — stays real under brain_app). Silver-tier reads
+ * (silver_order_state) return empty here.
+ */
+function fakeSilver(opts: {
+  bronzeLatest?: string | null;
+  bronzeTotal?: number;
+  bronzeBad?: number;
+  bronzeAccepted?: number;
+} = {}): SilverReader {
+  return {
+    async scopedQuery<T = Record<string, unknown>>(_brand: string, sql: string): Promise<T[]> {
+      let out: unknown[] = [];
+      if (sql.includes('MAX(ingested_at)')) out = [{ latest: opts.bronzeLatest ?? null }];      // bronze freshness
+      else if (sql.includes('MAX(updated_at)')) out = [{ latest: null }];                        // silver freshness
+      else if (sql.includes('COUNT(CASE WHEN')) out = [{ total: opts.bronzeTotal ?? 0, bad: opts.bronzeBad ?? 0 }]; // completeness
+      else if (sql.includes('COUNT(*) AS n')) out = [{ n: opts.bronzeAccepted ?? 0 }];           // schema-validity accepted
+      else if (sql.includes('COUNT(DISTINCT order_id)')) out = [{ n: 0 }];                        // silver recon count
+      else if (sql.includes('COUNT(DISTINCT COALESCE')) out = [{ n: 0 }];                         // bronze recon count
+      return out as T[];
+    },
+    async end(): Promise<void> { /* no-op */ },
+  };
+}
 
 const BRAIN_APP_DB_URL =
   process.env['BRAIN_APP_DATABASE_URL'] ?? 'postgres://brain_app:brain_app@localhost:5432/brain';
@@ -80,10 +109,9 @@ describe('T1: freshness — the LIVE freshness-SLA monitor', () => {
     await assertBrainApp(appPool);
     const now = new Date('2026-06-18T12:00:00Z');
 
-    // FRESH: 5 minutes old (SLA 60m) → A+/A.
+    // FRESH: 5 minutes old (SLA 60m) → A+/A. Bronze freshness now reads the Iceberg SoR (fake reader).
     await cleanup(BRAND_A);
-    await seedBronzeEvent(BRAND_A, new Date('2026-06-18T11:55:00Z'));
-    const fresh = await freshnessCheck(appPool, null, BRAND_A, now);
+    const fresh = await freshnessCheck(appPool, fakeSilver({ bronzeLatest: '2026-06-18T11:55:00Z' }), BRAND_A, now);
     const bronzeFresh = fresh.find((r) => r.target === 'bronze_events');
     expect(bronzeFresh).toBeDefined();
     expect(bronzeFresh!.passing).toBe(true);
@@ -91,8 +119,7 @@ describe('T1: freshness — the LIVE freshness-SLA monitor', () => {
 
     // STALE: 5 hours old (SLA 60m) → breached → D.
     await cleanup(BRAND_A);
-    await seedBronzeEvent(BRAND_A, new Date('2026-06-18T07:00:00Z'));
-    const stale = await freshnessCheck(appPool, null, BRAND_A, now);
+    const stale = await freshnessCheck(appPool, fakeSilver({ bronzeLatest: '2026-06-18T07:00:00Z' }), BRAND_A, now);
     const bronzeStale = stale.find((r) => r.target === 'bronze_events');
     expect(bronzeStale!.grade).toBe('D');
     expect(bronzeStale!.passing).toBe(false);
@@ -111,8 +138,7 @@ describe('T1: freshness — the LIVE freshness-SLA monitor', () => {
 describe('T2: completeness', () => {
   it('complete bronze_events set → A+ (zero-tolerance null rate)', async () => {
     await cleanup(BRAND_A);
-    await seedBronzeEvent(BRAND_A, new Date());
-    const rows = await completenessCheck(appPool, BRAND_A);
+    const rows = await completenessCheck(appPool, fakeSilver({ bronzeTotal: 1, bronzeBad: 0 }), BRAND_A);
     const bronze = rows.find((r) => r.target === 'bronze_events');
     expect(bronze).toBeDefined();
     expect(bronze!.grade).toBe('A+');
@@ -123,8 +149,7 @@ describe('T2: completeness', () => {
 describe('T3: schema_validity — reuses the DLQ/quarantine signal', () => {
   it('accepted events + no quarantine → A+', async () => {
     await cleanup(BRAND_A);
-    await seedBronzeEvent(BRAND_A, new Date());
-    const rows = await schemaValidityCheck(appPool, BRAND_A);
+    const rows = await schemaValidityCheck(appPool, fakeSilver({ bronzeAccepted: 1 }), BRAND_A);
     expect(rows[0]!.grade).toBe('A+');
     expect(rows[0]!.passing).toBe(true);
   });

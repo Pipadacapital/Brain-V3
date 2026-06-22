@@ -229,11 +229,15 @@ export async function main(): Promise<void> {
     // (order-status-mix, journey, attribution-via-Silver) to 500 with ER_ACCESS_DENIED on a
     // fresh `pnpm dev`. Prod FAILS CLOSED if unset (never reuse the known weak dev password).
     starrocksPassword: requireEnvInProd('STARROCKS_ANALYTICS_PASSWORD', 'brain_analytics_dev'),
-    // Slice 5 (ADR-0002): which Bronze source the OPERATIONAL reads (data/tracking health, recent
-    // events, orders) use — 'pg' (bronze_events, default) or 'iceberg' (collector_events via the
-    // StarRocks external catalog + the withSilverBrand brand-isolation seam). Flag-gated + reversible;
-    // flip per-env to 'iceberg' once parity is proven, ahead of retiring the PG Bronze write (Slice 6).
-    bronzeOperationalReadSource: getEnv('BRONZE_OPERATIONAL_READ_SOURCE', 'pg'),
+    // DB-AUDIT C4: which Bronze source the OPERATIONAL reads (data/tracking health, recent events,
+    // orders) use. Default is now 'iceberg' (collector_events via the StarRocks external catalog +
+    // the withSilverBrand brand-isolation seam) — the lakehouse is the Bronze SoR. Parity was proven
+    // by the Iceberg-flip epic. Reversible: set BRONZE_OPERATIONAL_READ_SOURCE=pg to fall back.
+    // Safe-by-construction: useIceberg() requires srPool != null, so a deployment without StarRocks
+    // wired transparently falls back to the PG path rather than erroring.
+    // NOTE: dropping data_plane.bronze_events is blocked on migrating the DQ subsystem (5 stream-worker
+    // checks still read PG bronze) to Iceberg — tracked separately; this flag only moves operational reads.
+    bronzeOperationalReadSource: getEnv('BRONZE_OPERATIONAL_READ_SOURCE', 'iceberg'),
   };
 
   // Create Fastify instance.

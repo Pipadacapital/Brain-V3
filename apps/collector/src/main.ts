@@ -199,9 +199,25 @@ export async function main(): Promise<void> {
   // Prime + start the back-pressure gauge sampler (background interval; gate already wired).
   await backpressure.start();
 
+  // ── 6b. Spool retention reaper (DB-AUDIT M6) — bound collector_spool growth ──────────────────
+  // The drainer marks rows 'drained' but never deletes them; without a reaper the raw pre-tenant
+  // buffer grows unbounded. Periodically purge drained rows past a short trail window. Best-effort:
+  // a reap failure is logged, never fatal (the spool/ACK path is unaffected). unref so it never
+  // holds the process open.
+  const SPOOL_RETENTION_SECONDS = Number(process.env['SPOOL_RETENTION_SECONDS'] ?? 86_400); // 24h trail
+  const SPOOL_REAP_INTERVAL_MS = Number(process.env['SPOOL_REAP_INTERVAL_MS'] ?? 300_000); // every 5 min
+  const reaperTimer = setInterval(() => {
+    void spoolRepo
+      .reapDrained(SPOOL_RETENTION_SECONDS)
+      .then((n) => { if (n > 0) log.info('spool reaper purged drained rows', { purged: n }); })
+      .catch((err) => log.warn('spool reaper failed (non-fatal)', { err }));
+  }, SPOOL_REAP_INTERVAL_MS);
+  reaperTimer.unref?.();
+
   // ── 7. Graceful shutdown ─────────────────────────────────────────────────────
   const shutdown = async (signal: string): Promise<void> => {
     log.info('signal received — graceful shutdown', { signal });
+    clearInterval(reaperTimer);
     backpressure.stop();
     await drainer.stop();
     await app.close();

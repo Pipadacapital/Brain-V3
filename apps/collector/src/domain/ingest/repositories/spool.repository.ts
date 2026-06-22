@@ -33,6 +33,13 @@ export interface SpoolRepository {
   countPendingBounded(cap: number): Promise<number>;
 
   /**
+   * Retention reaper (DB-AUDIT M6): delete rows that have been 'drained' for longer than
+   * `olderThanSeconds` (a short post-drain trail window). Returns the number of rows purged.
+   * Bounds collector_spool growth — drained rows are disposable once produced to Kafka.
+   */
+  reapDrained(olderThanSeconds: number): Promise<number>;
+
+  /**
    * Health check — can the spool DB be reached?
    * Returns true if a simple query succeeds.
    */

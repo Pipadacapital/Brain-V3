@@ -66,6 +66,8 @@ export type { ShipmentOutcomesResult, CourierOutcome, PincodeOutcome } from './s
 // Storefront behavior — what shoppers browse/search/view, from silver_touchpoint (pixel auto-instr).
 export { computeStorefrontBehavior } from './storefront-behavior.js';
 export type { StorefrontBehaviorResult, PageTypeBucket, BrowsedItem } from './storefront-behavior.js';
+export { computeStorefrontFunnel } from './storefront-funnel.js';
+export type { StorefrontFunnelResult, FunnelStage, FunnelRange } from './storefront-funnel.js';
 export { computeCodMix } from './cod-mix.js';
 export type { CodMixResult } from './cod-mix.js';
 export { computeCheckoutFunnel } from './checkout-funnel.js';

@@ -18,7 +18,10 @@ import { captureClickIds, captureUtm } from './attribution.js';
 import { resolveConsent, defaultConsentReader, type ConsentReader } from './consent.js';
 import { Transport } from './transport.js';
 
-export type EventName = 'page.viewed' | 'cart.item_added' | 'cart.viewed';
+// DB-AUDIT M2: checkout.started completes the behavioral funnel (sessions→product→cart→CHECKOUT→
+// purchased). Fired on the storefront checkout page (Web Pixel / checkout integration); flows as a
+// normal session touch into silver_touchpoint, so the funnel gains a real checkout stage.
+export type EventName = 'page.viewed' | 'cart.item_added' | 'cart.viewed' | 'checkout.started';
 
 export interface PixelOptions {
   /** Override the CMP reader (default reads window.__brainConsent). */
@@ -36,6 +39,8 @@ export interface Pixel {
   cartItemAdded(extra?: Record<string, unknown>): Promise<void>;
   /** Emit cart.viewed. */
   cartViewed(extra?: Record<string, unknown>): Promise<void>;
+  /** Emit checkout.started (the checkout funnel stage). */
+  checkoutStarted(extra?: Record<string, unknown>): Promise<void>;
   /** Emit an arbitrary (bounded) event_name. */
   track(name: EventName, extra?: Record<string, unknown>): Promise<void>;
   /** Re-attempt delivery of any queued events. */
@@ -94,6 +99,7 @@ export function createPixel(env: BrowserEnv, options: PixelOptions = {}): Pixel 
     page: (extra) => emit('page.viewed', extra),
     cartItemAdded: (extra) => emit('cart.item_added', extra),
     cartViewed: (extra) => emit('cart.viewed', extra),
+    checkoutStarted: (extra) => emit('checkout.started', extra),
     track: (name, extra) => emit(name, extra),
     flush: () => transport.flush(),
   };

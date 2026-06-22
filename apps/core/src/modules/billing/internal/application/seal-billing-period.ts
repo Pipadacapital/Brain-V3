@@ -80,7 +80,12 @@ export async function sealBillingPeriod(
       `SELECT realized_gmv_for_period($1::uuid, $2::char(7))::text AS gmv`,
       [brandId, period],
     );
-    const gmv = gmvRes.rows[0]?.gmv ?? '0';
+    // Floor at 0: a period whose realized GMV is net-negative (reversals/refunds exceed the recognized
+    // sales that posted to it — e.g. RTO reversals landing before their provisionals finalize) meters as
+    // ZERO, never a negative bill. The ledger keeps the signed truth; the BILLED figure is non-negative
+    // (gmv_meter_snapshot.metered_gmv_minor CHECK >= 0). You never invoice a customer a negative amount.
+    const gmvRaw = BigInt(gmvRes.rows[0]?.gmv ?? '0');
+    const gmv = (gmvRaw < 0n ? 0n : gmvRaw).toString();
 
     // Provenance-only row count (NOT the money math, which goes through the function above — so not
     // the D-3-banned ad-hoc SUM): how many rows posted to this period stand behind the figure.

@@ -141,6 +141,23 @@ describe('beginRlsTxn — opens a multi-statement txn under the app role + GUCs 
   });
 });
 
+describe('buildContextGucSql — optional app.role escape (audit_reader / send_service)', () => {
+  it('omits SET LOCAL app.role when no role is given (additive, no behavior change)', () => {
+    const sql = buildContextGucSql({ brandId: BRAND_A, correlationId: CORR_ID });
+    expect(sql).not.toContain('app.role');
+  });
+
+  it('emits SET LOCAL app.role when ctx.role is set (trusted-subsystem escape)', () => {
+    const sql = buildContextGucSql({ correlationId: CORR_ID, role: 'audit_reader' });
+    expect(sql).toContain(`SET LOCAL app.role = 'audit_reader'`);
+  });
+
+  it('rejects an injection attempt in the role value (bare-identifier guard)', () => {
+    expect(() => buildContextGucSql({ correlationId: CORR_ID, role: "x'; DROP TABLE audit_log;--" }))
+      .toThrow('Invalid app.role GUC value');
+  });
+});
+
 describe('executeInRlsTxn — GUC + query run in ONE transaction under the app role', () => {
   it('emits BEGIN → SET LOCAL ROLE → SET LOCAL GUC, then the query, then COMMIT', async () => {
     const { client, calls } = recordingClient([{ id: 1 }], 1);

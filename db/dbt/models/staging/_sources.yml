@@ -248,3 +248,20 @@ sources:
             description: "SIGNED money in BIGINT minor units (I-S07)."
           - name: occurred_at
             description: "Event-time (timestamp); Iceberg partition days() source."
+
+      # ── DB-AUDIT H2 (mart #2): the attribution credit/clawback ledger, LANDED in Iceberg Bronze ────
+      # Materialized PG billing.attribution_credit_ledger → brain_bronze.attribution_credit by the Spark
+      # batch db/iceberg/spark/attribution_credit_materialize.py (idempotent MERGE on brand_id+credit_id).
+      # gold_marketing_attribution reads THIS when ledger_source='iceberg' (var-gated; default 'pg').
+      - name: attribution_credit
+        description: >
+          Iceberg Bronze copy of the attribution credit/clawback ledger (one row per brand_id+credit_id,
+          immutable/append-only). Lets gold_marketing_attribution be served from the lakehouse instead of
+          a live JDBC read of Postgres (H2). credited_revenue_minor is SIGNED BIGINT.
+        columns:
+          - name: brand_id
+            description: "Tenant key (STRING)."
+          - name: credit_id
+            description: "Deterministic sha256 credit id (idempotency key)."
+          - name: credited_revenue_minor
+            description: "SIGNED money in BIGINT minor units (+credit / -clawback)."

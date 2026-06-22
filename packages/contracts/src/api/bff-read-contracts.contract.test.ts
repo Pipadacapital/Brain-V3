@@ -373,7 +373,7 @@ describe('AskBrainResult (#11)', () => {
       params: { date_from: '2026-06-01', date_to: '2026-06-18', channel: 'paid_meta' },
       snapshot_id: 'snap_abc',
     },
-    number: { figure_kind: 'money', money: { INR: '123450', USD: '-500' }, no_data: false },
+    number: { figure_kind: 'money', money: { INR: '123450', USD: '-500' }, scalar: null, no_data: false },
     confidence_grade: 'B',
     trust_tier: 'Trusted',
     provenance_id: 'prov_1',
@@ -384,11 +384,11 @@ describe('AskBrainResult (#11)', () => {
     expect(AskBrainResultSchema.parse(refusal)).toEqual(refusal);
   });
   it('round-trips a none/no_data answer (figure_kind none, money null)', () => {
-    const none = { ...answer, number: { figure_kind: 'none', money: null, no_data: false } };
+    const none = { ...answer, number: { figure_kind: 'none', money: null, scalar: null, no_data: false } };
     expect(AskBrainResultSchema.parse(none)).toEqual(none);
   });
   it('REJECTS a float inside ComputedNumber.money', () => {
-    const drifted = { ...answer, number: { figure_kind: 'money', money: { INR: '1234.50' }, no_data: false } };
+    const drifted = { ...answer, number: { figure_kind: 'money', money: { INR: '1234.50' }, scalar: null, no_data: false } };
     const r = AskBrainResultSchema.safeParse(drifted);
     expect(r.success).toBe(false);
     expect(firstIssuePath(r)).toBe('number.money.INR');

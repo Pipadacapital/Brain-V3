@@ -59,8 +59,8 @@ interface RawModelRow {
   version: string;
   stage: ModelStage;
   framework: string;
-  feature_set: Record<string, unknown> | null;
-  metrics: Record<string, unknown> | null;
+  feature_set: unknown;
+  metrics: unknown;
   trained_at: Date | null;
   promoted_at: Date | null;
   created_at: Date;

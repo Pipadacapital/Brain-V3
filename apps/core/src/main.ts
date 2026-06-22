@@ -443,7 +443,12 @@ export async function main(): Promise<void> {
     query: async <T = unknown>(sql: string, params?: unknown[]) => {
       const client = await pool.connect();
       try {
-        return await client.query<T>({ correlationId: 'system' }, sql, params);
+        // audit_log FORCE-RLS (0067): reads gate on USING (cross-brand isolation) and an INSERT with
+        // RETURNING re-checks the new row against USING. The audit writer is the trusted, server-side,
+        // cross-brand SoR writer (it stamps brand_id + reads the per-brand hash-chain head), so it runs
+        // with the designed 'audit_reader' app.role escape — without it the chain-head SELECT silently
+        // sees 0 rows AND every INSERT ... RETURNING fails the policy (42501), breaking register/login.
+        return await client.query<T>({ correlationId: 'system', role: 'audit_reader' }, sql, params);
       } finally {
         client.release();
       }

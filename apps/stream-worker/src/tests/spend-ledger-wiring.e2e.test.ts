@@ -190,8 +190,11 @@ beforeAll(async () => {
   superPool = new Pool({ connectionString: SUPERUSER_DB_URL, max: 3 });
   appPool = new Pool({ connectionString: BRAIN_APP_DB_URL, max: 3 });
 
-  await seedTestBrand(superPool, AD_BRAND_A, 'USD');
-  await seedTestBrand(superPool, AD_BRAND_B, 'USD');
+  // Brand currency must be a supported region currency (M4 ref_currency: INR/AED/SAR — Brain's
+  // residency regions). Ad spend stays USD below (ad_spend_ledger.currency_code has no ref FK) — a
+  // realistic INR brand running USD-billed Meta/Google ads.
+  await seedTestBrand(superPool, AD_BRAND_A, 'INR');
+  await seedTestBrand(superPool, AD_BRAND_B, 'INR');
   await superPool.query(`DELETE FROM ad_spend_ledger WHERE brand_id IN ($1,$2)`, [AD_BRAND_A, AD_BRAND_B]).catch(() => undefined);
 
   kafka = new Kafka({ clientId: 'spend-ledger-wiring-test-producer', brokers: KAFKA_BROKERS, logLevel: 0, retry: { retries: 3 } });

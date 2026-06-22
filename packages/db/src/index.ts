@@ -83,6 +83,13 @@ export interface QueryContext {
    */
   userId?: string;
   /**
+   * Optional `app.role` GUC escape value (e.g. 'audit_reader', 'send_service') that specific RLS
+   * policies recognise as a trusted-subsystem read/write escape. Set ONLY by server-side subsystems
+   * (the audit writer, the send gate) — NEVER from user input. Emitted as `SET LOCAL app.role` inside
+   * the per-query RLS transaction. Validated as a bare identifier (injection guard).
+   */
+  role?: string;
+  /**
    * Correlation ID from the inbound request — propagated to Postgres session.
    * Used for query-level tracing.
    */
@@ -94,9 +101,18 @@ export interface QueryContext {
 export const BRAND_ID_GUC = 'app.current_brand_id' as const;
 export const WORKSPACE_ID_GUC = 'app.current_workspace_id' as const;
 export const USER_ID_GUC = 'app.current_user_id' as const;
+/**
+ * Privileged-escape role GUC. Distinct from `SET LOCAL ROLE` (the Postgres role) — this is the
+ * `app.role` GUC that specific RLS policies read as a trusted-subsystem escape (e.g. audit_log's
+ * 'audit_reader', contact_pii's 'send_service'). Set ONLY by server-side subsystems, never user input.
+ */
+export const APP_ROLE_GUC = 'app.role' as const;
 
-/** All three GUC names — used for reset-all at checkout. */
+/** All three brand/workspace/user GUC names — used for reset-all at checkout. */
 export const ALL_GUCS = [BRAND_ID_GUC, WORKSPACE_ID_GUC, USER_ID_GUC] as const;
+
+/** Valid app.role escape values are bare lowercase identifiers (no injection via SET LOCAL). */
+const APP_ROLE_RE = /^[a-z_]+$/;
 
 // ── UUID validation ───────────────────────────────────────────────────────────
 
@@ -157,11 +173,20 @@ export const NIL_UUID = '00000000-0000-0000-0000-000000000000' as const;
  * NIL_UUID keeps every cast valid AND fail-closed (no real row equals the nil uuid). (NN-1.)
  */
 export function buildContextGucSql(ctx: QueryContext): string {
-  return [
+  const stmts = [
     `SET LOCAL ${BRAND_ID_GUC} = '${gucValue('brandId', ctx.brandId)}'`,
     `SET LOCAL ${WORKSPACE_ID_GUC} = '${gucValue('workspaceId', ctx.workspaceId)}'`,
     `SET LOCAL ${USER_ID_GUC} = '${gucValue('userId', ctx.userId)}'`,
-  ].join('; ');
+  ];
+  // Optional trusted-subsystem escape (app.role). Additive: only emitted when a caller explicitly
+  // sets ctx.role. Validated as a bare identifier — the value is a code constant, never user input.
+  if (ctx.role !== undefined && ctx.role !== '') {
+    if (!APP_ROLE_RE.test(ctx.role)) {
+      throw new Error(`Invalid app.role GUC value: ${JSON.stringify(ctx.role)}`);
+    }
+    stmts.push(`SET LOCAL ${APP_ROLE_GUC} = '${ctx.role}'`);
+  }
+  return stmts.join('; ');
 }
 
 /**

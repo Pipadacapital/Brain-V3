@@ -27,7 +27,7 @@
 -- Additive column — NULL for all existing rows before backfill. NOT NULL enforced
 -- at the app layer after the backfill is confirmed green.
 
-ALTER TABLE connector_instance
+ALTER TABLE connectors.connector_instance
   ADD COLUMN IF NOT EXISTS connector_provider_config JSONB NULL;
 
 -- ── (A) Backfill: project existing fat columns into JSONB ────────────────────
@@ -47,7 +47,7 @@ ALTER TABLE connector_instance
 -- a failed migration is safe). Rows already written (e.g. by the app after
 -- this migration runs) keep their config.
 
-UPDATE connector_instance
+UPDATE connectors.connector_instance
 SET connector_provider_config = CASE provider
     WHEN 'shopify'     THEN jsonb_build_object('shop_domain', shop_domain)
     WHEN 'razorpay'    THEN jsonb_build_object('razorpay_account_id', razorpay_account_id)
@@ -64,7 +64,7 @@ WHERE connector_provider_config IS NULL;
 -- GIN index for JSONB queries (the generic fn does NOT use JSONB operators in its WHERE —
 -- it selects the entire column — but application-level queries may want JSONB containment).
 CREATE INDEX IF NOT EXISTS connector_instance_provider_config_gin_idx
-  ON connector_instance USING GIN (connector_provider_config)
+  ON connectors.connector_instance USING GIN (connector_provider_config)
   WHERE connector_provider_config IS NOT NULL;
 
 -- ── (B) Generic SECURITY DEFINER enumeration fn ───────────────────────────────
@@ -171,7 +171,7 @@ DECLARE
 BEGIN
   SELECT COUNT(*)
   INTO missing_count
-  FROM connector_instance
+  FROM connectors.connector_instance
   WHERE status = 'connected'
     AND connector_provider_config IS NULL;
 

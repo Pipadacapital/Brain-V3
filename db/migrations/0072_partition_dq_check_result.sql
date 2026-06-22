@@ -45,7 +45,11 @@ SELECT result_id, brand_id, category, target, grade, score, observed, threshold,
 FROM audit.dq_check_result;
 
 -- ── 3. Recreate the latest-lookup index + RLS + grants on the twin ─────────────────────────────────
-CREATE INDEX idx_dq_check_result_latest ON audit.dq_check_result_part (brand_id, category, target, checked_at DESC);
+-- Twin index uses the `_p` suffix (matches the 0073/0075/0078 twin-swap template) so it does not
+-- collide with the canonical idx_dq_check_result_latest the original table still owns at this point
+-- (index names are schema-unique; the original lives in `audit` after 0065's SET SCHEMA until the
+-- step-4 rename, and is dropped with the legacy table in 0081).
+CREATE INDEX idx_dq_check_result_latest_p ON audit.dq_check_result_part (brand_id, category, target, checked_at DESC);
 
 ALTER TABLE audit.dq_check_result_part ENABLE ROW LEVEL SECURITY;
 ALTER TABLE audit.dq_check_result_part FORCE ROW LEVEL SECURITY;

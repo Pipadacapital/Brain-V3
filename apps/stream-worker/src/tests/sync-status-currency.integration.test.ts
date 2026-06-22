@@ -269,9 +269,9 @@ describe('A3-2: trg_ledger_currency fires on currency mismatch (defect #8c / D-7
       `INSERT INTO realized_revenue_ledger (
          brand_id, ledger_event_id, order_id, event_type,
          amount_minor, currency_code, rounding_adjustment_minor,
-         occurred_at, economic_effective_at, billing_posted_period,
+         occurred_at, occurred_date, economic_effective_at, billing_posted_period,
          recognition_label
-       ) VALUES ($1, $2, $3, 'finalization', 100000, 'INR', 0, NOW(), NOW(), '2024-01', 'finalized')`,
+       ) VALUES ($1, $2, $3, 'finalization', 100000, 'INR', 0, NOW(), (timezone('UTC',NOW()::timestamptz))::date, NOW(), '2024-01', 'finalized')`,
       [CURRENCY_TEST_BRAND_AED, ledgerEventId, orderId],
     );
 
@@ -289,9 +289,9 @@ describe('A3-2: trg_ledger_currency fires on currency mismatch (defect #8c / D-7
         `INSERT INTO realized_revenue_ledger (
            brand_id, ledger_event_id, order_id, event_type,
            amount_minor, currency_code, rounding_adjustment_minor,
-           occurred_at, economic_effective_at, billing_posted_period,
+           occurred_at, occurred_date, economic_effective_at, billing_posted_period,
            recognition_label
-         ) VALUES ($1, $2, $3, 'finalization', 100000, 'INR', 0, NOW(), NOW(), '2024-01', 'finalized')`,
+         ) VALUES ($1, $2, $3, 'finalization', 100000, 'INR', 0, NOW(), (timezone('UTC',NOW()::timestamptz))::date, NOW(), '2024-01', 'finalized')`,
         [CURRENCY_TEST_BRAND_AED, ledgerEventId, orderId],
       );
     } catch (err: unknown) {
@@ -314,9 +314,9 @@ describe('A3-2: trg_ledger_currency fires on currency mismatch (defect #8c / D-7
         `INSERT INTO realized_revenue_ledger (
            brand_id, ledger_event_id, order_id, event_type,
            amount_minor, currency_code, rounding_adjustment_minor,
-           occurred_at, economic_effective_at, billing_posted_period,
+           occurred_at, occurred_date, economic_effective_at, billing_posted_period,
            recognition_label
-         ) VALUES ($1, $2, $3, 'finalization', 100000, 'AED', 0, NOW(), NOW(), '2024-01', 'finalized')`,
+         ) VALUES ($1, $2, $3, 'finalization', 100000, 'AED', 0, NOW(), (timezone('UTC',NOW()::timestamptz))::date, NOW(), '2024-01', 'finalized')`,
         [CURRENCY_TEST_BRAND_AED, ledgerEventId, orderId],
       ),
     ).resolves.toBeDefined(); // INSERT succeeds — no trigger exception
@@ -341,9 +341,9 @@ describe('A3-2: trg_ledger_currency fires on currency mismatch (defect #8c / D-7
       `INSERT INTO realized_revenue_ledger (
          brand_id, ledger_event_id, order_id, event_type,
          amount_minor, currency_code, rounding_adjustment_minor,
-         occurred_at, economic_effective_at, billing_posted_period,
+         occurred_at, occurred_date, economic_effective_at, billing_posted_period,
          recognition_label
-       ) VALUES ($1, $2, $3, 'finalization', 100000, 'GBP', 0, NOW(), NOW(), '2024-01', 'finalized')`,
+       ) VALUES ($1, $2, $3, 'finalization', 100000, 'GBP', 0, NOW(), (timezone('UTC',NOW()::timestamptz))::date, NOW(), '2024-01', 'finalized')`,
       [CURRENCY_TEST_BRAND_AED, ledgerEventId, orderId],
     );
 

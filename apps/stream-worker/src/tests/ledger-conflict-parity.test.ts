@@ -1,11 +1,17 @@
 /**
  * SEC-BF-M2 drift-guard — the realized_revenue_ledger dedup arbiter index is PARTIAL (migration
- * 0054: WHERE event_type <> 'refund'). Postgres can only infer a partial index as the ON CONFLICT
- * arbiter when that predicate is restated in the clause; a dedup-tuple ON CONFLICT WITHOUT it fails
- * plan-time inference on EVERY insert ("no unique or exclusion constraint matching the ON CONFLICT
+ * 0054: WHERE event_type <> 'refund'; carried forward as realized_revenue_ledger_dedup_p in the
+ * C4b partition migration 0073). Postgres can only infer a partial index as the ON CONFLICT arbiter
+ * when that predicate is restated in the clause; a dedup-tuple ON CONFLICT WITHOUT it fails plan-time
+ * inference on EVERY insert ("no unique or exclusion constraint matching the ON CONFLICT
  * specification"). The clause is hand-written in multiple places (PgLedgerRepository, LedgerWriter,
  * revenue-finalization, …) with no shared import, so this guard scans the WHOLE codebase and fails
  * if ANY dedup-tuple ON CONFLICT is missing the predicate. Pure source-text (no DB) → unit tier.
+ *
+ * C4b note: the arbiter tuple is now (brand_id, order_id, event_type, occurred_date) — occurred_date
+ * is an app-set NOT NULL column (CHECK-pinned to timezone('UTC', occurred_at)::date) and the table's
+ * RANGE partition key, replacing the old expression-index tuple (…, (timezone('UTC', occurred_at)::date)).
+ * Semantics are identical (occurred_date == the old expression); the predicate is still mandatory.
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
@@ -18,8 +24,8 @@ const REPO_ROOT = resolve(here, '../../../..'); // apps/stream-worker/src/tests 
 const SCAN_ROOTS = [join(REPO_ROOT, 'apps'), join(REPO_ROOT, 'packages')];
 const SKIP_DIRS = new Set(['node_modules', 'dist', '.turbo', '.next', 'coverage']);
 
-// The dedup arbiter tuple (migration 0018/0054). The capture group is the rest of that line.
-const DEDUP_TUPLE = /ON CONFLICT\s*\(brand_id,\s*order_id,\s*event_type,\s*\(timezone\('UTC',\s*occurred_at\)::date\)\)([^\n]*)/g;
+// The dedup arbiter tuple (migration 0018/0054 → 0073 partition). The capture group is the rest of that line.
+const DEDUP_TUPLE = /ON CONFLICT\s*\(brand_id,\s*order_id,\s*event_type,\s*occurred_date\)([^\n]*)/g;
 const REQUIRED_PREDICATE = "WHERE event_type <> 'refund'";
 
 function walk(dir: string): string[] {

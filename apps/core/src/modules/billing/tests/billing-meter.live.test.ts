@@ -44,10 +44,10 @@ async function insertLedgerRow(
   await superPool.query(
     `INSERT INTO realized_revenue_ledger
        (brand_id, ledger_event_id, order_id, event_type, amount_minor, currency_code,
-        occurred_at, economic_effective_at, billing_posted_period, recognition_label)
-     VALUES ($1, $2, $3, $4, $5, 'INR', $6, $6, $7,
+        occurred_at, occurred_date, economic_effective_at, billing_posted_period, recognition_label)
+     VALUES ($1, $2, $3, $4, $5, 'INR', $6, (timezone('UTC',$6::timestamptz))::date, $6, $7,
              CASE WHEN $4 = 'provisional_recognition' THEN 'provisional' ELSE 'finalized' END)
-     ON CONFLICT (brand_id, ledger_event_id) DO NOTHING`,
+     ON CONFLICT (brand_id, ledger_event_id, occurred_date) DO NOTHING`,
     [brandId, `evt-${brandId}-${seq}`, `order-${seq}`, eventType, amountMinor, effectiveAt, period],
   );
 }

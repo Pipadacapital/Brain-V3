@@ -41,10 +41,10 @@ async function seedRows(eventType: string, n: number, amountMinor: number): Prom
     await superPool.query(
       `INSERT INTO realized_revenue_ledger
          (brand_id, ledger_event_id, order_id, event_type, amount_minor, currency_code,
-          occurred_at, economic_effective_at, billing_posted_period, recognition_label)
-       VALUES ($1, $2, $3, $4, $5, 'INR', '2026-06-01Z', '2026-06-01Z', '2026-06',
+          occurred_at, occurred_date, economic_effective_at, billing_posted_period, recognition_label)
+       VALUES ($1, $2, $3, $4, $5, 'INR', '2026-06-01Z', (timezone('UTC','2026-06-01Z'::timestamptz))::date, '2026-06-01Z', '2026-06',
                CASE WHEN $4 = 'provisional_recognition' THEN 'provisional' ELSE 'finalized' END)
-       ON CONFLICT (brand_id, ledger_event_id) DO NOTHING`,
+       ON CONFLICT (brand_id, ledger_event_id, occurred_date) DO NOTHING`,
       [BRAND_A, `rto-evt-${seq}`, `rto-order-${seq}`, eventType, amountMinor],
     );
   }
@@ -97,9 +97,9 @@ beforeAll(async () => {
       await superPool.query(
         `INSERT INTO realized_revenue_ledger
            (brand_id, ledger_event_id, order_id, event_type, amount_minor, currency_code,
-            occurred_at, economic_effective_at, billing_posted_period, recognition_label)
-         VALUES ($1, $2, $3, 'finalization', 50000, 'INR', '2026-06-01Z', '2026-06-01Z', '2026-06', 'finalized')
-         ON CONFLICT (brand_id, ledger_event_id) DO NOTHING`,
+            occurred_at, occurred_date, economic_effective_at, billing_posted_period, recognition_label)
+         VALUES ($1, $2, $3, 'finalization', 50000, 'INR', '2026-06-01Z', (timezone('UTC','2026-06-01Z'::timestamptz))::date, '2026-06-01Z', '2026-06', 'finalized')
+         ON CONFLICT (brand_id, ledger_event_id, occurred_date) DO NOTHING`,
         [BRAND_A, `rto-fin-${i}`, `rto-order-${i}`],
       );
     }

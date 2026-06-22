@@ -42,9 +42,9 @@ async function seedLedger(brand: string, rows: Array<[string, number]>) {
     await superPool.query(
       `INSERT INTO realized_revenue_ledger
          (brand_id, ledger_event_id, order_id, event_type, amount_minor, currency_code,
-          occurred_at, economic_effective_at, billing_posted_period, recognition_label)
-       VALUES ($1,$2,$3,$4,$5::bigint,'INR','2026-06-1${i}Z','2026-06-1${i}Z','2026-06',$6)
-       ON CONFLICT (brand_id, ledger_event_id) DO NOTHING`,
+          occurred_at, occurred_date, economic_effective_at, billing_posted_period, recognition_label)
+       VALUES ($1,$2,$3,$4,$5::bigint,'INR','2026-06-1${i}Z',(timezone('UTC','2026-06-1${i}Z'::timestamptz))::date,'2026-06-1${i}Z','2026-06',$6)
+       ON CONFLICT (brand_id, ledger_event_id, occurred_date) DO NOTHING`,
       [brand, `${brand}-evt-${i}`, `${brand}-ord`, eventType, amt, label],
     );
   }

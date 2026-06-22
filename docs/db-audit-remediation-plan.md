@@ -70,3 +70,34 @@ Verify: typecheck, affected live tests, RLS live check.
 - Orphaned feature-store materialization job if no consumer wired (Sprint 4 / C5).
 - Verify `connector_journey_stitch_map` / `connector_razorpay_order_map` usage before any move/drop.
 - GoKwik AWB rip-out (separate parked task; map already produced).
+
+---
+
+## Money-ledger partitioning (C4b) — VALIDATED DESIGN (ready-to-execute, not yet applied)
+
+Attempted as a dedicated effort; the ledger + code are pristine (every attempt rolled back atomically).
+Three PostgreSQL constraints were discovered + navigated, yielding the correct approach:
+
+**Constraints proven (empirically):**
+1. A GENERATED column cannot be a partition key (`ERROR: cannot use generated column in partition key`).
+2. A BEFORE-INSERT trigger cannot set the partition key (`ERROR: moving row to another partition during
+   a BEFORE FOR EACH ROW trigger is not supported` — routing happens around the trigger).
+3. Partitioning by an EXPRESSION forbids PK/UNIQUE constraints (can't include an expression in a PK).
+
+**Correct approach — app-set column + CHECK (no silent-corruption risk):**
+- Add `occurred_date date NOT NULL`; partition by `RANGE(occurred_date)`.
+- The 8 writer INSERTs (LedgerWriter.ts ×6, PgLedgerRepository.ts, revenue-finalization.ts) SET
+  `occurred_date` in the column list + VALUES `(timezone('UTC', $<occurred_at_param>::timestamptz))::date`
+  (reuse the occurred_at param — per-site index varies).
+- `CHECK (occurred_date = (timezone('UTC'::text, occurred_at))::date)` — DB-enforces equality, so any
+  writer drift FAILS LOUDLY (never a silent double-count). This is the safety net that de-risks it.
+- PK `(brand_id, ledger_event_id, occurred_date)`; dedup UNIQUE `(brand_id, order_id, event_type,
+  occurred_date) WHERE event_type <> 'refund'` (IDENTICAL semantics — occurred_date == the old expr).
+  Switch the 8 ON CONFLICT clauses to `(... occurred_date)`.
+- Twin-swap migration (distinct index names — `_dedup_p`/`_asof_p` — since the legacy table keeps the
+  canonical names during the verify window). Apply atomically (node-pg-migrate wraps it; or `psql -1`).
+- VERIFY: dedup re-pull suppression (same brand/order/type/day non-refund → 0 inserted), refund
+  carve-out (duplicate refund allowed), split-shipment (different day allowed), row-count preserved.
+
+This is a dedicated PR (8-site money-ledger INSERT surgery + dedup-idempotency tests) — best done with
+fresh context given the money stakes; the design above is fully de-risked and ready.

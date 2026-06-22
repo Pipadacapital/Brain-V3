@@ -67,9 +67,9 @@ async function seedFinalizedLedgerRow(brandId: string, amountMinor: number): Pro
       `INSERT INTO realized_revenue_ledger (
          brand_id, ledger_event_id, order_id, event_type,
          amount_minor, currency_code, rounding_adjustment_minor,
-         occurred_at, economic_effective_at, billing_posted_period,
+         occurred_at, occurred_date, economic_effective_at, billing_posted_period,
          recognition_label
-       ) VALUES ($1, $2, $3, 'finalization', $4, 'INR', 0, NOW(), NOW(), $5, 'finalized')`,
+       ) VALUES ($1, $2, $3, 'finalization', $4, 'INR', 0, NOW(), (timezone('UTC',NOW()::timestamptz))::date, NOW(), $5, 'finalized')`,
       [brandId, ledgerEventId, orderId, amountMinor, billingPeriod],
     );
     return ledgerEventId;

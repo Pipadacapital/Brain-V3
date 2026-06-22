@@ -35,8 +35,8 @@ beforeAll(async () => {
     await superPool.query(`INSERT INTO organization (id,name,slug,owner_user_id) VALUES ($1,'CS',$2,$3)`, [ORG, `cs-${ORG.slice(-6)}`, USER]);
     await superPool.query(`INSERT INTO brand (id,organization_id,display_name,currency_code,status) VALUES ($1,$2,'CS','INR','active')`, [BRAND, ORG]);
     await superPool.query(
-      `INSERT INTO realized_revenue_ledger (brand_id, ledger_event_id, order_id, event_type, amount_minor, currency_code, occurred_at, economic_effective_at, billing_posted_period, recognition_label)
-       VALUES ($1,'cs-fin-1','cs-order-1','finalization',100000,'INR','2026-06-10T10:00:00Z','2026-06-10T10:00:00Z','2026-06','finalized')`,
+      `INSERT INTO realized_revenue_ledger (brand_id, ledger_event_id, order_id, event_type, amount_minor, currency_code, occurred_at, occurred_date, economic_effective_at, billing_posted_period, recognition_label)
+       VALUES ($1,'cs-fin-1','cs-order-1','finalization',100000,'INR','2026-06-10T10:00:00Z',(timezone('UTC','2026-06-10T10:00:00Z'::timestamptz))::date,'2026-06-10T10:00:00Z','2026-06','finalized')`,
       [BRAND],
     );
     await superPool.query(

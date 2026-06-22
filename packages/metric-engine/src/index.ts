@@ -68,6 +68,8 @@ export { computeStorefrontBehavior } from './storefront-behavior.js';
 export type { StorefrontBehaviorResult, PageTypeBucket, BrowsedItem } from './storefront-behavior.js';
 export { computeStorefrontFunnel } from './storefront-funnel.js';
 export type { StorefrontFunnelResult, FunnelStage, FunnelRange } from './storefront-funnel.js';
+export { computeAbandonedCart } from './storefront-abandoned-cart.js';
+export type { AbandonedCartResult, AbandonedCartRange } from './storefront-abandoned-cart.js';
 export { computeCodMix } from './cod-mix.js';
 export type { CodMixResult } from './cod-mix.js';
 export { computeCheckoutFunnel } from './checkout-funnel.js';

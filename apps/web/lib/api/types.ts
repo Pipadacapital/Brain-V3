@@ -33,6 +33,7 @@ export type {
   BrowsedItemDto as BehaviorBrowsedItemRow,
   FunnelAnalytics as AnalyticsFunnelResponse,
   FunnelStageDto as FunnelStageRow,
+  AbandonedCart as AnalyticsAbandonedCartResponse,
   OrderStatusMixRowDto as OrderStatusMixRow,
   OrderStatusMix as AnalyticsOrderStatusMixResponse,
   TopProducts as AnalyticsTopProductsResponse,

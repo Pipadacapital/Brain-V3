@@ -34,9 +34,9 @@ const CREATE_TABLE = `
 CREATE TABLE IF NOT EXISTS brain_silver.silver_touchpoint (
   brand_id          VARCHAR(64)  NOT NULL,
   brain_anon_id     VARCHAR(128) NOT NULL,
-  touch_seq         INT          NOT NULL,
-  session_key       VARCHAR(128),
-  session_seq       INT,
+  touch_seq         BIGINT       NOT NULL,
+  session_key       INT,
+  session_seq       BIGINT,
   is_first_touch    BOOLEAN,
   is_last_touch     BOOLEAN,
   occurred_at       DATETIME,
@@ -69,7 +69,7 @@ PROPERTIES ("replication_num" = "1")`;
 let seq = 0;
 async function seedTouch(
   brandId: string,
-  sessionKey: string,
+  sessionKey: number,
   eventType: string,
   stitchedOrderId: string | null,
 ): Promise<void> {
@@ -102,12 +102,12 @@ beforeAll(async () => {
   //   s1: browsed only (page.viewed)
   //   s2: viewed a product + added to cart (no purchase)
   //   s3: viewed + added to cart + stitched to an order (purchased)
-  await seedTouch(BRAND_A, 's1', 'page.viewed', null);
-  await seedTouch(BRAND_A, 's2', 'product.viewed', null);
-  await seedTouch(BRAND_A, 's2', 'cart.item_added', null);
-  await seedTouch(BRAND_A, 's3', 'product.viewed', null);
-  await seedTouch(BRAND_A, 's3', 'cart.item_added', null);
-  await seedTouch(BRAND_A, 's3', 'page.viewed', 'order-123'); // stitched → purchased
+  await seedTouch(BRAND_A, 1, 'page.viewed', null);
+  await seedTouch(BRAND_A, 2, 'product.viewed', null);
+  await seedTouch(BRAND_A, 2, 'cart.item_added', null);
+  await seedTouch(BRAND_A, 3, 'product.viewed', null);
+  await seedTouch(BRAND_A, 3, 'cart.item_added', null);
+  await seedTouch(BRAND_A, 3, 'page.viewed', 'order-123'); // stitched → purchased
 });
 
 afterAll(async () => {

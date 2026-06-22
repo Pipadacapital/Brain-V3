@@ -541,3 +541,20 @@ export const FunnelAnalyticsSchema = z.discriminatedUnion('state', [
   }),
 ]);
 export type FunnelAnalytics = z.infer<typeof FunnelAnalyticsSchema>;
+
+// ── Abandoned cart — cart sessions converted vs abandoned (Phase H pixel) ──
+export const AbandonedCartSchema = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('no_data') }),
+  z.object({
+    state: z.literal('has_data'),
+    from: z.string(),
+    to: z.string(),
+    cart_sessions: MinorUnitsSchema,
+    converted_sessions: MinorUnitsSchema,
+    abandoned_sessions: MinorUnitsSchema,
+    abandonment_rate_pct: z.string().nullable(),
+    recovery_rate_pct: z.string().nullable(),
+    data_source: DataSourceSchema,
+  }),
+]);
+export type AbandonedCart = z.infer<typeof AbandonedCartSchema>;

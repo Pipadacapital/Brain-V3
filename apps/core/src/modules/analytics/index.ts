@@ -92,6 +92,9 @@ export type { BehaviorOverviewResult, PageTypeBucketDto, BrowsedItemDto } from '
 // Storefront conversion funnel — sessions → product views → cart adds → purchases (Phase H pixel).
 export { getFunnelAnalytics } from './internal/application/queries/get-funnel-analytics.js';
 export type { FunnelAnalyticsResult, FunnelStageDto } from './internal/application/queries/get-funnel-analytics.js';
+// Abandoned cart — cart sessions converted vs abandoned (Phase H pixel).
+export { getAbandonedCart } from './internal/application/queries/get-abandoned-cart.js';
+export type { AbandonedCartResult } from './internal/application/queries/get-abandoned-cart.js';
 export { getCodMix } from './internal/application/queries/get-cod-mix.js';
 export type { CodMixResult } from './internal/application/queries/get-cod-mix.js';
 export { getCheckoutFunnel } from './internal/application/queries/get-checkout-funnel.js';

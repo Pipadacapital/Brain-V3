@@ -48,6 +48,7 @@ import { CapiDeletionConsumer } from './interfaces/consumers/CapiDeletionConsume
 import { RequestCapiDeletionUseCase } from './application/RequestCapiDeletionUseCase.js';
 import { CapiDeletionRepository } from './infrastructure/pg/CapiDeletionRepository.js';
 import { BackfillOrderConsumer } from './interfaces/consumers/BackfillOrderConsumer.js';
+import { BrainIdResolver } from './infrastructure/pg/BrainIdResolver.js';
 import { LiveLedgerBridgeConsumer } from './interfaces/consumers/LiveLedgerBridgeConsumer.js';
 import { SettlementLedgerConsumer } from './interfaces/consumers/SettlementLedgerConsumer.js';
 import { SpendLedgerConsumer } from './interfaces/consumers/SpendLedgerConsumer.js';
@@ -322,8 +323,12 @@ export async function main(): Promise<void> {
       : undefined;
   log.info(`live attribution clawback hook ${liveAttributionHook ? 'ON' : 'off (no StarRocks; hourly job backstops)'}`);
 
+  // DB-AUDIT C2: resolve each order's storefront_customer_id → identity brain_id and stamp it on the
+  // ledger (was NULL → silver_customers/CAC/cohorts/Customer-360 starved). Reuses the SAME per-brand
+  // salt the identity resolver uses. Best-effort: a miss leaves brain_id NULL exactly as before.
+  const brainIdResolver = new BrainIdResolver(new Pool({ connectionString: dbUrl, max: 3 }), saltProvider);
   const liveLedgerConsumer = new LiveLedgerBridgeConsumer(
-    kafka, liveLedgerWriter, topic, liveLedgerGroupId, retryCounter, liveAttributionHook,
+    kafka, liveLedgerWriter, topic, liveLedgerGroupId, retryCounter, liveAttributionHook, brainIdResolver,
   );
 
   // ── Settlement ledger bridge (ADR-RZ-6 / MB-4 WIRED) ───────────────────────

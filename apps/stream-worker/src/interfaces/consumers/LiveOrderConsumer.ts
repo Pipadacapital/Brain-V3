@@ -23,6 +23,7 @@
  */
 
 import type { LedgerWriter, BackfillOrderForLedger } from '../../infrastructure/pg/LedgerWriter.js';
+import type { BrainIdResolver } from '../../infrastructure/pg/BrainIdResolver.js';
 import { log } from "../../log.js";
 
 /**
@@ -92,6 +93,10 @@ export async function routeLiveOrderToLedger(
   brandId: string | undefined,
   eventId: string | undefined,
   ledgerWriter: LedgerWriter,
+  // DB-AUDIT C2: optional brain_id resolver. When present, the order's storefront_customer_id is
+  // resolved to its identity brain_id and stamped on the ledger row (best-effort — a miss leaves
+  // brain_id NULL, exactly as before). Absent → unchanged behaviour.
+  brainIdResolver?: BrainIdResolver,
 ): Promise<'reversal' | 'provisional' | 'skipped'> {
   const ledgerOrder = extractLiveOrderForLedger(rawValue, brandId, eventId);
   if (!ledgerOrder) return 'skipped';
@@ -105,6 +110,15 @@ export async function routeLiveOrderToLedger(
   }
 
   const props = (parsed['properties'] as Record<string, unknown>) ?? {};
+
+  // ── DB-AUDIT C2: stamp brain_id (ledger metadata) from the order's customer identity ──
+  if (brainIdResolver) {
+    const storefrontCustomerId = typeof props['storefront_customer_id'] === 'string'
+      ? props['storefront_customer_id']
+      : (typeof props['customer_id'] === 'string' ? props['customer_id'] : null);
+    const regionCode = typeof parsed['region_code'] === 'string' ? parsed['region_code'] : 'IN';
+    ledgerOrder.brainId = await brainIdResolver.resolve(ledgerOrder.brandId, storefrontCustomerId, regionCode);
+  }
   const cancelledAt = props['cancelled_at'];
   const isCancelled = typeof cancelledAt === 'string' && cancelledAt.length > 0;
 

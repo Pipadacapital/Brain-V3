@@ -1,0 +1,28 @@
+version: 2
+
+models:
+  - name: gold_revenue_analytics
+    description: >
+      Gold serving mart (brain_gold): realized revenue + order counts rolled up by
+      (brand_id, period_month, lifecycle_state, currency_code) from silver_order_state. Additive
+      components only (ADR-004) — the dashboard/metric-engine derives non-additive ratios. The
+      executive/revenue dashboard's drill source.
+    columns:
+      - name: brand_id
+        description: "Tenant key. First key/distribution column."
+        tests: [not_null]
+      - name: period_month
+        description: "YYYY-MM bucket of state_effective_at."
+        tests: [not_null]
+      - name: lifecycle_state
+        description: "Order lifecycle state (placed|confirmed|delivered|rto|cancelled|refunded)."
+        tests: [not_null]
+      - name: currency_code
+        description: "CHAR(3), paired with realized_value_minor."
+        tests: [not_null]
+      - name: order_count
+        description: "Additive count of orders in the cohort."
+        tests: [not_null]
+      - name: realized_value_minor
+        description: "Additive SUM of realized order value, BIGINT minor units (I-S07)."
+        tests: [not_null]

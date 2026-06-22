@@ -1,0 +1,21 @@
+version: 2
+
+models:
+  - name: gold_revenue_ledger
+    description: >
+      Realized-revenue ledger served from the lakehouse (brain_gold) — Phase G. One row per
+      (brand_id, ledger_event_id); signed BIGINT minor units. Sourced from realized_revenue_ledger via
+      the JDBC read-shim during transition (rebuilds from Bronze in prod); the money metric-engine reads
+      re-point here so PostgreSQL stops being a revenue read source. PG stays the write SoR until cutover.
+    columns:
+      - name: brand_id
+        tests: [not_null]
+      - name: ledger_event_id
+        tests: [not_null]
+      - name: event_type
+        tests: [not_null]
+      - name: amount_minor
+        description: "Signed realized amount, BIGINT minor units (I-S07)."
+        tests: [not_null]
+      - name: currency_code
+        tests: [not_null]

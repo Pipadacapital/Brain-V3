@@ -103,7 +103,7 @@ import type {
 } from '@brain/contracts';
 import { jtiFromJwt, csrfTokenForSession } from './csrf.js';
 import type { Pool as PgPool } from 'pg';
-import { getRevenueMetrics, getRevenueTimeseries, getKpiSummary, getRecognitionBreakdown, getRecentActivity, getOrdersTimeseries, getOrderStats, getDataHealth, getSettlementSummary, getTrackingHealth, getRecentEvents, getAdSpendTimeseries, getBlendedRoas, getCodRtoRates, getCodMix, getCheckoutFunnel, getRtoRiskDistribution, getOrderStatusMix, getTopProducts, getOrdersList, getOrderDetail, getContributionMargin, listCostInputs, upsertCostInput, getJourneyFirstTouchMix, getJourneyStitchRate, getJourneyTimeline, getShipmentOutcomes, getBehaviorOverview, getConsentCoverage, getConsentSuppressionSummary, getConsentGateActivity, getConsentWindowConfig, getAttributionByChannel, getAttributionReconciliation, getChannelRoas, getCapiFeedbackSummary, getCapiFeedbackEvents, getCapiFeedbackDeletions } from '../../analytics/index.js';
+import { getRevenueMetrics, getRevenueTimeseries, getKpiSummary, getRecognitionBreakdown, getRecentActivity, getOrdersTimeseries, getOrderStats, getDataHealth, getSettlementSummary, getTrackingHealth, getRecentEvents, getAdSpendTimeseries, getBlendedRoas, getCodRtoRates, getCustomerBaseSummary, getCodMix, getCheckoutFunnel, getRtoRiskDistribution, getOrderStatusMix, getTopProducts, getOrdersList, getOrderDetail, getContributionMargin, listCostInputs, upsertCostInput, getJourneyFirstTouchMix, getJourneyStitchRate, getJourneyTimeline, getShipmentOutcomes, getBehaviorOverview, getConsentCoverage, getConsentSuppressionSummary, getConsentGateActivity, getConsentWindowConfig, getAttributionByChannel, getAttributionReconciliation, getChannelRoas, getCapiFeedbackSummary, getCapiFeedbackEvents, getCapiFeedbackDeletions } from '../../analytics/index.js';
 import { getDataQualitySummary, getMetricTrust } from '../../data-quality/index.js';
 import { computeFoundationHealth, freshnessFromIngest, computeEntitlements, type FoundationSignals } from '../../analytics/index.js';
 import { CONNECTOR_CATALOG } from '../../connector/catalog/registry.js';
@@ -1806,7 +1806,7 @@ export function registerBffRoutes(
         });
       }
 
-      if (!rawPool) {
+      if (!rawPool || !srPool) {
         return reply.code(503).send({
           request_id: requestId,
           error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' },
@@ -1820,6 +1820,7 @@ export function registerBffRoutes(
       // The raw question is passed IN-MEMORY only; askBrain persists/logs only the redacted form.
       const result: ContractAskBrainResult = await askBrain(auth.brandId, body.question, asOf, {
         engine: { pool: rawPool },
+        srPool,
         resolver: askResolverClient,
       });
 
@@ -2615,8 +2616,8 @@ export function registerBffRoutes(
       if (!auth.brandId) {
         return reply.send({ request_id: requestId, data: { state: 'no_data', from: null, to: null, grain: 'day', platform: null } });
       }
-      if (!rawPool) {
-        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' } });
+      if (!srPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (StarRocks) not available' } });
       }
 
       const query = request.query as { from?: string; to?: string; grain?: string; platform?: string };
@@ -2633,7 +2634,7 @@ export function registerBffRoutes(
       const result = await getAdSpendTimeseries(
         auth.brandId,
         { fromDate: new Date(`${fromStr}T00:00:00Z`), toDate: new Date(`${toStr}T00:00:00Z`), grain, platform },
-        { pool: rawPool },
+        { srPool },
       );
 
       return reply.send({ request_id: requestId, data: result });
@@ -2676,8 +2677,8 @@ export function registerBffRoutes(
         const today = new Date().toISOString().split('T')[0] as string;
         return reply.send({ request_id: requestId, data: { state: 'no_data', from: today, to: today } });
       }
-      if (!rawPool) {
-        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' } });
+      if (!srPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (StarRocks) not available' } });
       }
 
       const query = request.query as { from?: string; to?: string };
@@ -2689,7 +2690,7 @@ export function registerBffRoutes(
       const result = await getBlendedRoas(
         auth.brandId,
         { fromDate: new Date(`${fromStr}T00:00:00Z`), toDate: new Date(`${toStr}T00:00:00Z`) },
-        { pool: rawPool },
+        { srPool },
       );
 
       return reply.send({ request_id: requestId, data: result });
@@ -2799,15 +2800,15 @@ export function registerBffRoutes(
         const today = new Date().toISOString().split('T')[0] as string;
         return reply.send({ request_id: requestId, data: { state: 'no_data', as_of: today } });
       }
-      if (!rawPool) {
-        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' } });
+      if (!srPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (StarRocks) not available' } });
       }
 
       const query = request.query as { as_of?: string };
       const asOfStr = query.as_of ?? (new Date().toISOString().split('T')[0] as string);
       const asOf = new Date(`${asOfStr}T00:00:00Z`);
 
-      const result = await getSettlementSummary(auth.brandId, asOf, { pool: rawPool });
+      const result = await getSettlementSummary(auth.brandId, asOf, { srPool });
 
       return reply.send({ request_id: requestId, data: result });
     },
@@ -2842,6 +2843,29 @@ export function registerBffRoutes(
   );
 
   /**
+   * GET /api/v1/dashboard/customer-360
+   * Customer-360 summary (customer count + lifetime value/orders + top customers) from the
+   * gold_customer_360 Gold mart via the metric-engine Silver/Gold seam (ADR-002 / I-ST01). Honest
+   * no_data when the brand has no customers. Brand from session (D-1).
+   */
+  fastify.get(
+    '/api/v1/dashboard/customer-360',
+    { preHandler: [bffProtectedPreHandler] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const auth = (request as AuthenticatedRequest).auth;
+      if (!auth.brandId) {
+        return reply.send({ request_id: requestId, data: { state: 'no_data' } });
+      }
+      if (!srPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (StarRocks) not available' } });
+      }
+      const result = await getCustomerBaseSummary(auth.brandId, { srPool });
+      return reply.send({ request_id: requestId, data: result });
+    },
+  );
+
+  /**
    * GET /api/v1/analytics/cod-mix
    * CoD CM2 + CoD-vs-prepaid mix from realized_revenue_ledger cod_* event_types.
    * Money = bigint minor-unit strings (signed; net may be negative — honest).
@@ -2855,10 +2879,10 @@ export function registerBffRoutes(
       if (!auth.brandId) {
         return reply.send({ request_id: requestId, data: { state: 'no_data' } });
       }
-      if (!rawPool) {
-        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' } });
+      if (!srPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (StarRocks) not available' } });
       }
-      const result = await getCodMix(auth.brandId, { pool: rawPool });
+      const result = await getCodMix(auth.brandId, { srPool });
       return reply.send({ request_id: requestId, data: result });
     },
   );
@@ -3045,8 +3069,9 @@ export function registerBffRoutes(
   /**
    * GET /api/v1/analytics/contribution-margin?as_of=YYYY-MM-DD
    * CM1/CM2 + cost_confidence over the brand's revenue/cost/spend (feat-cm2-cost-inputs). Brand from
-   * session (D-1). Honest no_data (D-2). Money = bigint minor-unit strings (I-S07). Reads via rawPool
-   * (metric-engine seam) — no manual SUM (F-SEC-02 / ADR-002).
+   * session (D-1). Honest no_data (D-2). Money = bigint minor-unit strings (I-S07). PHASE G: mixed-tier
+   * read — cost config via rawPool (PG, RLS), realized + spend via srPool (lakehouse). No manual SUM
+   * (F-SEC-02 / ADR-002).
    */
   fastify.get(
     '/api/v1/analytics/contribution-margin',
@@ -3062,10 +3087,10 @@ export function registerBffRoutes(
       if (!auth.brandId) {
         return reply.send({ request_id: requestId, data: { state: 'no_data', as_of: asOfStr } });
       }
-      if (!rawPool) {
-        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'read pool not available' } });
+      if (!rawPool || !srPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'read pool or Silver tier not available' } });
       }
-      const result: ContractContributionMargin = await getContributionMargin(auth.brandId, new Date(`${asOfStr}T23:59:59Z`), { pool: rawPool });
+      const result: ContractContributionMargin = await getContributionMargin(auth.brandId, new Date(`${asOfStr}T23:59:59Z`), { pool: rawPool, srPool });
       return reply.send({ request_id: requestId, data: result });
     },
   );
@@ -3579,8 +3604,8 @@ export function registerBffRoutes(
         const today = new Date().toISOString().split('T')[0] as string;
         return reply.send({ request_id: requestId, data: { state: 'no_data', from: today, to: today, model } });
       }
-      if (!rawPool) {
-        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' } });
+      if (!srPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (StarRocks) not available' } });
       }
       const today = new Date().toISOString().split('T')[0] as string;
       const toStr = query.to ?? today;
@@ -3596,7 +3621,7 @@ export function registerBffRoutes(
           toStr,
           dataSource: 'synthetic',
         },
-        { pool: rawPool },
+        { srPool },
       );
       return reply.send({ request_id: requestId, data: result });
     },
@@ -3622,8 +3647,8 @@ export function registerBffRoutes(
         const today = new Date().toISOString().split('T')[0] as string;
         return reply.send({ request_id: requestId, data: { state: 'no_data', from: today, to: today, model } });
       }
-      if (!rawPool) {
-        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' } });
+      if (!srPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (StarRocks) not available' } });
       }
       const today = new Date().toISOString().split('T')[0] as string;
       const toStr = query.to ?? today;
@@ -3639,7 +3664,7 @@ export function registerBffRoutes(
           toStr,
           dataSource: 'synthetic',
         },
-        { pool: rawPool },
+        { srPool },
       );
       return reply.send({ request_id: requestId, data: result });
     },
@@ -3665,8 +3690,8 @@ export function registerBffRoutes(
         const today = new Date().toISOString().split('T')[0] as string;
         return reply.send({ request_id: requestId, data: { state: 'no_data', from: today, to: today, model } });
       }
-      if (!rawPool) {
-        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' } });
+      if (!srPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (StarRocks) not available' } });
       }
       const today = new Date().toISOString().split('T')[0] as string;
       const toStr = query.to ?? today;
@@ -3682,7 +3707,7 @@ export function registerBffRoutes(
           toStr,
           dataSource: 'synthetic',
         },
-        { pool: rawPool },
+        { srPool },
       );
       return reply.send({ request_id: requestId, data: result });
     },

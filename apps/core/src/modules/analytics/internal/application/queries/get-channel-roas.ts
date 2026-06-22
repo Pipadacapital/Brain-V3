@@ -6,13 +6,18 @@
  * with ad_spend_ledger). SAME-CURRENCY ONLY; HONEST roas_ratio=null when spend=0 (no
  * divide-by-zero). NO ad-hoc arithmetic here (D-3). Serializes bigint→string (D-1).
  *
- * Honest no_data when the brand has zero ad_spend_ledger rows (no denominator → no ROAS).
+ * Honest no_data when the brand has zero marketing-spend rows (no denominator → no ROAS).
  * brandId from session (D-1; NEVER body).
+ *
+ * PHASE G: fully lakehouse — spend-exists from silver_marketing_spend, attribution-exists from
+ * gold_marketing_attribution, compute from both — via withSilverBrand. PG is no longer a read
+ * source for this surface. (The shared hasAttributionCredit helper + the other attribution
+ * surfaces remain on PG until their own re-point slice — re-pointing the helper alone would
+ * hide real PG data behind the still-empty lakehouse mart.)
  */
 
-import type { EngineDeps, AttributionModelId } from '@brain/metric-engine';
-import { computeChannelRoas, withBrandTxn } from '@brain/metric-engine';
-import { hasAttributionCredit } from './_attribution-credit.js';
+import type { SilverPool, AttributionModelId } from '@brain/metric-engine';
+import { computeChannelRoas, withSilverBrand, BRAND_PREDICATE } from '@brain/metric-engine';
 
 export interface ChannelRoasDto {
   channel: string;
@@ -46,17 +51,22 @@ export interface ChannelRoasParams {
 export async function getChannelRoas(
   brandId: string,
   params: ChannelRoasParams,
-  deps: EngineDeps,
+  deps: { srPool: SilverPool },
 ): Promise<ChannelRoasResult> {
-  // ROAS requires a spend denominator — no spend → no_data (honest, like blended_roas).
-  const hasSpend = await withBrandTxn(deps.pool, brandId, async (client) => {
-    const r = await client.query<{ exists: boolean }>(
-      `SELECT EXISTS(SELECT 1 FROM ad_spend_ledger WHERE brand_id = $1) AS exists`,
-      [brandId],
+  // Spend-exists + attribution-exists, both via the lakehouse brand-scoped seam (one round trip).
+  const { hasSpend, hasCredit } = await withSilverBrand(deps.srPool, brandId, async (scope) => {
+    const spend = await scope.runScoped<{ has_row: number }>(
+      `SELECT 1 AS has_row FROM brain_silver.silver_marketing_spend WHERE ${BRAND_PREDICATE} LIMIT 1`,
+      [],
     );
-    return r.rows[0]?.exists === true;
+    const credit = await scope.runScoped<{ has_row: number }>(
+      `SELECT 1 AS has_row FROM brain_gold.gold_marketing_attribution WHERE ${BRAND_PREDICATE} LIMIT 1`,
+      [],
+    );
+    return { hasSpend: spend.length > 0, hasCredit: credit.length > 0 };
   });
 
+  // ROAS requires a spend denominator — no spend → no_data (honest, like blended_roas).
   if (!hasSpend) {
     return { state: 'no_data', from: params.fromStr, to: params.toStr, model: params.model };
   }
@@ -64,7 +74,7 @@ export async function getChannelRoas(
   // Honest-not-computed (R-10): spend exists but the credit ledger is empty, so every channel's
   // attributed_minor would be 0 (ROAS = 0) — that reads as "ads drove nothing" when really
   // attribution just hasn't run. Surface it distinctly.
-  if (!(await hasAttributionCredit(brandId, deps))) {
+  if (!hasCredit) {
     return { state: 'not_computed', from: params.fromStr, to: params.toStr, model: params.model };
   }
 

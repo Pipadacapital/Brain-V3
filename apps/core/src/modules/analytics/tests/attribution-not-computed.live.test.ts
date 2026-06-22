@@ -1,29 +1,34 @@
 /**
- * attribution-not-computed.live.test.ts — honest attribution states (audit R-10), live Postgres.
+ * attribution-not-computed.live.test.ts — honest attribution states (audit R-10), live lakehouse.
  *
  * Proves the attribution read surfaces distinguish THREE states instead of rendering an empty
  * credit ledger as a real 0%/100% result:
  *   - no_data:       no realized revenue at all.
- *   - not_computed:  realized revenue exists, but attribution_credit_ledger is EMPTY (the credit
+ *   - not_computed:  realized revenue exists, but the attribution credit mart is EMPTY (the credit
  *                    pipeline hasn't run) — the case the audit flagged as indistinguishable from
  *                    no-data, now surfaced honestly.
  *   - has_data:      realized revenue AND credit rows exist.
  *
- * REQUIRES: Postgres with migrations through 0039 applied.
+ * PHASE G: getAttributionByChannel / getAttributionReconciliation now read the LAKEHOUSE
+ * (brain_gold.gold_revenue_ledger for realized, brain_gold.gold_marketing_attribution for credit)
+ * via withSilverBrand — so this test seeds StarRocks and passes { srPool }. The exists-check and the
+ * compute read the SAME store (no PG-data-hidden-by-empty-mart skew). SKIPS if StarRocks is down.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { randomUUID } from 'node:crypto';
-import pg from 'pg';
+import mysql from 'mysql2/promise';
+import type { SilverPool } from '@brain/metric-engine';
 import { getAttributionByChannel, getAttributionReconciliation } from '../index.js';
 
-const SUPERUSER_URL = process.env['DATABASE_URL'] ?? 'postgres://brain:brain@localhost:5432/brain';
+const SR_HOST = process.env['STARROCKS_HOST'] ?? '127.0.0.1';
+const SR_PORT = Number(process.env['STARROCKS_QUERY_PORT'] ?? 9030);
 
 const BRAND_EMPTY = 'a1000a1a-0a1a-4a1a-8a1a-000000000001'; // no revenue → no_data
 const BRAND_NOCREDIT = 'a1000a1a-0a1a-4a1a-8a1a-000000000002'; // revenue, no credit → not_computed
 const BRAND_CREDIT = 'a1000a1a-0a1a-4a1a-8a1a-000000000003'; // revenue + credit → has_data
 
-let pool: pg.Pool;
-let pgAvailable = false;
+let srPool: mysql.Pool;
+let srUp = false;
+const sr = (): SilverPool => srPool as unknown as SilverPool;
 
 const params = (model = 'last_touch' as const) => ({
   model,
@@ -34,79 +39,78 @@ const params = (model = 'last_touch' as const) => ({
   dataSource: 'live' as const,
 });
 
-async function seedRevenue(brandId: string) {
-  await pool.query(
-    `INSERT INTO realized_revenue_ledger
+async function seedRealized(brandId: string) {
+  await srPool.query(
+    `INSERT INTO brain_gold.gold_revenue_ledger
        (brand_id, ledger_event_id, order_id, brain_id, event_type, amount_minor, currency_code,
-        rounding_adjustment_minor, occurred_at, economic_effective_at, billing_posted_period, recognition_label)
-     VALUES ($1, $2, $3, $4, 'finalization', 100000, 'INR', 0, '2026-06-15T00:00:00Z', '2026-06-15T00:00:00Z', '2026-06', 'finalized')
-     ON CONFLICT DO NOTHING`,
-    [brandId, randomUUID(), `order-${brandId}`, randomUUID()],
+        fee_minor, occurred_at, economic_effective_at, recognition_label, billing_posted_period, updated_at)
+     VALUES (?, ?, ?, NULL, 'finalization', 100000, 'INR', 0, '2026-06-15 00:00:00', '2026-06-15 00:00:00', 'finalized', '2026-06', NOW())`,
+    [brandId, `fin-${brandId}`, `order-${brandId}`],
   );
 }
 
 async function seedCredit(brandId: string) {
-  await pool.query(
-    `INSERT INTO attribution_credit_ledger
-       (brand_id, credit_id, order_id, brain_anon_id, touch_seq, channel, model_id, row_kind,
-        weight_fraction, credited_revenue_minor, currency_code, realized_revenue_minor,
-        occurred_at, economic_effective_at, billing_posted_period)
-     VALUES ($1, $2, $3, 'anon-1', 1, 'google', 'last_touch', 'credit', 1.0, 100000, 'INR', 100000,
-             '2026-06-15T00:00:00Z', '2026-06-15T00:00:00Z', '2026-06')
-     ON CONFLICT DO NOTHING`,
-    [brandId, randomUUID(), `order-${brandId}`],
+  await srPool.query(
+    `INSERT INTO brain_gold.gold_marketing_attribution
+       (brand_id, credit_id, order_id, brain_anon_id, touch_seq, channel, campaign_id, model_id, row_kind,
+        credited_revenue_minor, currency_code, realized_revenue_minor, reversed_of_credit_id,
+        confidence_grade, attribution_confidence, model_version, occurred_at, economic_effective_at, billing_posted_period, updated_at)
+     VALUES (?, ?, ?, 'anon-1', 1, 'google', NULL, 'last_touch', 'credit', 100000, 'INR', 100000, NULL,
+             'A', 1.000, 'v1', '2026-06-15 00:00:00', '2026-06-15 00:00:00', '2026-06', NOW())`,
+    [brandId, `credit-${brandId}`, `order-${brandId}`],
   );
 }
 
 async function cleanup() {
+  if (!srUp) return;
   for (const b of [BRAND_EMPTY, BRAND_NOCREDIT, BRAND_CREDIT]) {
-    await pool.query(`DELETE FROM attribution_credit_ledger WHERE brand_id = $1`, [b]).catch(() => {});
-    await pool.query(`DELETE FROM realized_revenue_ledger WHERE brand_id = $1`, [b]).catch(() => {});
+    await srPool.query(`DELETE FROM brain_gold.gold_marketing_attribution WHERE brand_id = ?`, [b]).catch(() => {});
+    await srPool.query(`DELETE FROM brain_gold.gold_revenue_ledger WHERE brand_id = ?`, [b]).catch(() => {});
   }
 }
 
 beforeAll(async () => {
   try {
-    pool = new pg.Pool({ connectionString: SUPERUSER_URL, connectionTimeoutMillis: 4000 });
-    await pool.query('SELECT 1');
+    srPool = mysql.createPool({ host: SR_HOST, port: SR_PORT, user: 'root', password: '', connectionLimit: 2 });
+    await srPool.query('SELECT 1');
+    srUp = true;
     await cleanup();
-    await seedRevenue(BRAND_NOCREDIT);
-    await seedRevenue(BRAND_CREDIT);
+    await seedRealized(BRAND_NOCREDIT);
+    await seedRealized(BRAND_CREDIT);
     await seedCredit(BRAND_CREDIT);
-    pgAvailable = true;
   } catch {
-    pgAvailable = false;
+    srUp = false;
   }
 });
 
 afterAll(async () => {
-  if (pgAvailable) await cleanup();
-  if (pool) await pool.end();
+  if (srUp) await cleanup();
+  if (srPool) await srPool.end().catch(() => {});
 });
 
-describe('attribution honest states (live Postgres)', () => {
-  it('SKIP_IF_NO_PG', () => {
-    if (!pgAvailable) console.warn('[attribution-not-computed] Postgres unavailable — PENDING.');
+describe('attribution honest states (live lakehouse)', () => {
+  it('SKIP_IF_NO_STARROCKS', () => {
+    if (!srUp) console.warn('[attribution-not-computed] StarRocks unavailable — PENDING.');
     expect(true).toBe(true);
   });
 
   it('no realized revenue → no_data', async () => {
-    if (!pgAvailable) return;
-    const r = await getAttributionByChannel(BRAND_EMPTY, params(), { pool });
+    if (!srUp) return;
+    const r = await getAttributionByChannel(BRAND_EMPTY, params(), { srPool: sr() });
     expect(r.state).toBe('no_data');
   });
 
-  it('revenue but EMPTY credit ledger → not_computed (the honesty fix)', async () => {
-    if (!pgAvailable) return;
-    const byChannel = await getAttributionByChannel(BRAND_NOCREDIT, params(), { pool });
+  it('revenue but EMPTY credit mart → not_computed (the honesty fix)', async () => {
+    if (!srUp) return;
+    const byChannel = await getAttributionByChannel(BRAND_NOCREDIT, params(), { srPool: sr() });
     expect(byChannel.state).toBe('not_computed');
-    const recon = await getAttributionReconciliation(BRAND_NOCREDIT, params(), { pool });
+    const recon = await getAttributionReconciliation(BRAND_NOCREDIT, params(), { srPool: sr() });
     expect(recon.state).toBe('not_computed');
   });
 
   it('revenue + credit rows → NOT not_computed (real result)', async () => {
-    if (!pgAvailable) return;
-    const r = await getAttributionByChannel(BRAND_CREDIT, params(), { pool });
+    if (!srUp) return;
+    const r = await getAttributionByChannel(BRAND_CREDIT, params(), { srPool: sr() });
     expect(r.state).not.toBe('not_computed');
     expect(r.state).not.toBe('no_data');
   });

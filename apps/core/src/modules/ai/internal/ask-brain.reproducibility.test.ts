@@ -88,6 +88,7 @@ describe('askBrain — reproducible from snapshot_id (D3 / D6.4)', () => {
     // the FAKE pool returns empty rows for the dq summary reads → honest floor).
     const answer = await askBrain(BRAND, 'what is my realized revenue', asOf, {
       engine: { pool },
+      srPool: pool as never, // realized_revenue reads PG only — srPool unused on this path
       resolver: stubResolver,
     });
 
@@ -105,6 +106,7 @@ describe('askBrain — reproducible from snapshot_id (D3 / D6.4)', () => {
       { metric_id: answer.binding.metric_id, version: answer.binding.metric_version, params: answer.binding.params },
       answer.binding.snapshot_id,
       { pool },
+      pool as never, // realized_revenue reads PG only — srPool unused on this path
     );
 
     // Byte-identical money map — the reproducibility guarantee.

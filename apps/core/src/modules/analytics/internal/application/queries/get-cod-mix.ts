@@ -20,7 +20,7 @@
  * @see packages/metric-engine/src/cod-mix.ts
  */
 
-import type { EngineDeps } from '@brain/metric-engine';
+import type { SilverPool } from '@brain/metric-engine';
 import { computeCodMix } from '@brain/metric-engine';
 
 export type CodMixResult =
@@ -39,11 +39,11 @@ export type CodMixResult =
  * getCodMix — returns a brand's CoD CM2 + CoD-vs-prepaid mix.
  *
  * @param brandId - Brand UUID (from session — D-1; NEVER request body).
- * @param deps    - EngineDeps with raw pg.Pool.
+ * @param deps    - The StarRocks Silver/Gold pool — gold_revenue_ledger via withSilverBrand (Phase G).
  */
 export async function getCodMix(
   brandId: string,
-  deps: EngineDeps,
+  deps: { srPool: SilverPool },
 ): Promise<CodMixResult> {
   const result = await computeCodMix(brandId, deps);
 

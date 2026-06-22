@@ -13,7 +13,7 @@
  * use-case → the seams. brandId is from session (D-1; NEVER body).
  */
 
-import type { EngineDeps, AttributionModelId } from '@brain/metric-engine';
+import type { SilverPool, AttributionModelId } from '@brain/metric-engine';
 import { computeAttributionReconciliationRate } from '@brain/metric-engine';
 import { hasAttributionCredit } from './_attribution-credit.js';
 
@@ -52,7 +52,7 @@ export interface AttributionByChannelParams {
 export async function getAttributionByChannel(
   brandId: string,
   params: AttributionByChannelParams,
-  deps: EngineDeps,
+  deps: { srPool: SilverPool },
 ): Promise<AttributionByChannelResult> {
   const result = await computeAttributionReconciliationRate(
     brandId,

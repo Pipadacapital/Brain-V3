@@ -9,13 +9,16 @@
  * Serializes bigint → string for JSON safety (D-1); roasRatio is the engine's exact
  * fixed-precision decimal string (or null).
  *
- * Honest-empty: state='no_data' ONLY when the brand has ZERO ad_spend_ledger rows.
+ * Honest-empty: state='no_data' ONLY when the brand has ZERO marketing-spend rows.
  * Without spend there is no denominator → ROAS is undefined, so 'no_data' is the honest
  * surface (realized-only with no spend is not a ROAS).
+ *
+ * PHASE G: reads the lakehouse (silver_marketing_spend + gold_revenue_ledger) via
+ * withSilverBrand — PG ad_spend_ledger / realized_revenue_ledger are no longer read sources.
  */
 
-import type { EngineDeps } from '@brain/metric-engine';
-import { computeBlendedRoas, withBrandTxn } from '@brain/metric-engine';
+import type { SilverPool } from '@brain/metric-engine';
+import { computeBlendedRoas, withSilverBrand, BRAND_PREDICATE } from '@brain/metric-engine';
 
 export interface BlendedRoasDto {
   currency_code: string;
@@ -33,23 +36,24 @@ export type BlendedRoasResult =
  *
  * @param brandId - Brand UUID (from session — D-1).
  * @param params  - Inclusive date window { fromDate, toDate }.
- * @param deps    - EngineDeps with raw pg.Pool.
+ * @param deps    - The StarRocks Silver/Gold pool — silver_marketing_spend + gold_revenue_ledger.
  */
 export async function getBlendedRoas(
   brandId: string,
   params: { fromDate: Date; toDate: Date },
-  deps: EngineDeps,
+  deps: { srPool: SilverPool },
 ): Promise<BlendedRoasResult> {
   const fromStr = params.fromDate.toISOString().split('T')[0] as string;
   const toStr = params.toDate.toISOString().split('T')[0] as string;
 
   // EXISTS on spend — ROAS requires a denominator. No spend → no_data (honest).
-  const hasSpend = await withBrandTxn(deps.pool, brandId, async (client) => {
-    const r = await client.query<{ exists: boolean }>(
-      `SELECT EXISTS(SELECT 1 FROM ad_spend_ledger WHERE brand_id = $1) AS exists`,
-      [brandId],
+  // Reads the lakehouse Silver entity through the brand-scoped seam (BRAND_PREDICATE → brand_id = ?).
+  const hasSpend = await withSilverBrand(deps.srPool, brandId, async (scope) => {
+    const r = await scope.runScoped<{ has_row: number }>(
+      `SELECT 1 AS has_row FROM brain_silver.silver_marketing_spend WHERE ${BRAND_PREDICATE} LIMIT 1`,
+      [],
     );
-    return r.rows[0]?.exists === true;
+    return r.length > 0;
   });
 
   if (!hasSpend) {

@@ -74,6 +74,7 @@ async function readBronzeIceberg(
   brandId: string,
 ): Promise<{ exists: boolean; volume: DataHealthVolumeBucket[]; lastIngestAt: string | null }> {
   return withSilverBrand(srPool, brandId, async (scope) => {
+   try {
     const existsRows = await scope.runScoped<{ n: number | string }>(
       `SELECT COUNT(*) AS n FROM ${ICEBERG_BRONZE} WHERE ${BRAND_PREDICATE}`,
     );
@@ -101,6 +102,15 @@ async function readBronzeIceberg(
       })),
       lastIngestAt: toIso(ingestRows[0]?.last_ingest_at),
     };
+   } catch (err) {
+     // The Iceberg Bronze catalog isn't materialized/reachable yet (fresh env, or a transient
+     // external-catalog error that isn't the 'unknown table' the seam already swallows). Degrade to
+     // honest no-data so the dashboard's foundation signals stay up instead of 500-ing. Observable.
+     console.warn(
+       `[get-data-health] Iceberg Bronze read degraded to empty — catalog unavailable: ${err instanceof Error ? err.message : String(err)}`,
+     );
+     return { exists: false, volume: [], lastIngestAt: null };
+   }
   });
 }
 

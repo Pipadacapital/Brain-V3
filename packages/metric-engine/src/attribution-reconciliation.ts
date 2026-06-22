@@ -23,8 +23,8 @@
  * @see METRICS.md row `attribution_reconciliation_rate`
  */
 
-import type { EngineDeps } from './deps.js';
-import { withBrandTxn } from './deps.js';
+import type { SilverPool } from './silver-deps.js';
+import { withSilverBrand, BRAND_PREDICATE } from './silver-deps.js';
 import type { AttributionModelId } from './attribution-models.js';
 
 /**
@@ -114,8 +114,7 @@ export interface AttributionReconciliationResult {
   byChannel: ChannelContribution[];
 }
 
-interface ScalarRow { v: string | null }
-interface ChannelRow { channel: string; currency_code: string; contribution_minor: string }
+interface ChannelRow { channel: string; currency_code: string; contribution_minor: string | number }
 
 /**
  * computeAttributionReconciliationRate — the reconciliation rate + residual + channels.
@@ -125,61 +124,57 @@ interface ChannelRow { channel: string; currency_code: string; contribution_mino
  * realized_gmv_as_of(from−1) (the same windowing as blended_roas). The residual is
  * realized − attributed (always rendered, never hidden — METRICS.md §Rules).
  *
+ * ── PHASE G re-point: reads the lakehouse via withSilverBrand (I-ST01) — realized from
+ *    brain_gold.gold_revenue_ledger (realized_gmv_as_of math), attributed + per-channel from
+ *    brain_gold.gold_marketing_attribution (attributed_gmv_as_of / channel_contribution_as_of math).
+ *    Window-attributed = Σ of the per-channel contributions (one query). PG is no longer a read source.
+ *
  * @param brandId - Brand UUID (from session — D-1; NEVER body).
  * @param params  - { model, fromDate, toDate } inclusive window.
- * @param deps    - EngineDeps with the pg.Pool.
+ * @param deps    - The StarRocks Silver/Gold pool — gold_revenue_ledger + gold_marketing_attribution.
  */
 export async function computeAttributionReconciliationRate(
   brandId: string,
   params: { model: AttributionModelId; fromDate: Date; toDate: Date },
-  deps: EngineDeps,
+  deps: { srPool: SilverPool },
 ): Promise<AttributionReconciliationResult> {
   const toStr = isoDate(params.toDate);
   const fromStr = isoDate(params.fromDate);
-  const fromMinus1Str = previousDayIso(params.fromDate);
+  // model is a typed AttributionModelId; guard to a safe identifier before interpolation.
+  const model = /^[a-z0-9_]+$/i.test(params.model) ? params.model : '__invalid__';
 
-  return withBrandTxn(deps.pool, brandId, async (client) => {
-    const brandRow = await client.query<{ currency_code: string }>(
-      `SELECT currency_code FROM brand WHERE id = $1`,
-      [brandId],
+  return withSilverBrand(deps.srPool, brandId, async (scope) => {
+    // Realized (window) — the realized_gmv_as_of math: SUM(amount_minor) over economic_effective_at
+    // ∈ [from,to], excluding provisional. currency_code is single-per-brand (0018) — carried on rows.
+    const realizedRows = await scope.runScoped<{ v: string | number; currency_code: string | null }>(
+      `SELECT COALESCE(SUM(amount_minor), 0) AS v, MAX(currency_code) AS currency_code
+         FROM brain_gold.gold_revenue_ledger
+        WHERE CAST(economic_effective_at AS DATE) BETWEEN '${fromStr}' AND '${toStr}'
+          AND event_type <> 'provisional_recognition'
+          AND ${BRAND_PREDICATE}`,
+      [],
     );
-    const currencyCode = brandRow.rows[0]?.currency_code ?? null;
+    const realizedGmvMinor = BigInt(String(realizedRows[0]?.v ?? '0').split('.')[0] ?? '0');
 
-    // Realized (window) via the existing realized_gmv_as_of seam.
-    const realizedTo = await client.query<ScalarRow>(
-      `SELECT realized_gmv_as_of($1::uuid, $2::date) AS v`,
-      [brandId, toStr],
+    // Per-channel contributions (the channel_contribution_as_of math). Window-attributed = Σ of these.
+    const channelRows = await scope.runScoped<ChannelRow>(
+      `SELECT channel, currency_code, COALESCE(SUM(credited_revenue_minor), 0) AS contribution_minor
+         FROM brain_gold.gold_marketing_attribution
+        WHERE model_id = '${model}'
+          AND CAST(economic_effective_at AS DATE) BETWEEN '${fromStr}' AND '${toStr}'
+          AND ${BRAND_PREDICATE}
+        GROUP BY channel, currency_code`,
+      [],
     );
-    const realizedBefore = await client.query<ScalarRow>(
-      `SELECT realized_gmv_as_of($1::uuid, $2::date) AS v`,
-      [brandId, fromMinus1Str],
-    );
-    const realizedGmvMinor =
-      BigInt(realizedTo.rows[0]?.v ?? '0') - BigInt(realizedBefore.rows[0]?.v ?? '0');
-
-    // Attributed (window) via the attributed_gmv_as_of seam (net of clawback).
-    const attributedTo = await client.query<ScalarRow>(
-      `SELECT attributed_gmv_as_of($1::uuid, $2::text, $3::date) AS v`,
-      [brandId, params.model, toStr],
-    );
-    const attributedBefore = await client.query<ScalarRow>(
-      `SELECT attributed_gmv_as_of($1::uuid, $2::text, $3::date) AS v`,
-      [brandId, params.model, fromMinus1Str],
-    );
-    const attributedGmvMinor =
-      BigInt(attributedTo.rows[0]?.v ?? '0') - BigInt(attributedBefore.rows[0]?.v ?? '0');
-
-    // Per-channel contributions via the channel_contribution_as_of seam.
-    const channelRows = await client.query<ChannelRow>(
-      `SELECT channel, currency_code, contribution_minor
-         FROM channel_contribution_as_of($1::uuid, $2::text, $3::date, $4::date)`,
-      [brandId, params.model, fromStr, toStr],
-    );
-    const byChannel: ChannelContribution[] = channelRows.rows.map((r) => ({
+    const byChannel: ChannelContribution[] = channelRows.map((r) => ({
       channel: r.channel,
       currencyCode: r.currency_code,
-      contributionMinor: BigInt(r.contribution_minor),
+      contributionMinor: BigInt(String(r.contribution_minor).split('.')[0] ?? '0'),
     }));
+    const attributedGmvMinor = byChannel.reduce((acc, c) => acc + c.contributionMinor, 0n);
+
+    // Display currency: realized side (brand currency) first, else the attributed side.
+    const currencyCode = realizedRows[0]?.currency_code ?? byChannel[0]?.currencyCode ?? null;
 
     // Pure core does the rate/residual/closed-sum math (sort included) — unit-tested in isolation.
     return reconcileAttributionWindow({

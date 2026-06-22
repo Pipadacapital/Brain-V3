@@ -1,0 +1,20 @@
+version: 2
+
+models:
+  - name: gold_executive_metrics
+    description: >
+      Brand executive KPI rollup (brain_gold): additive components of the headline metrics
+      (realized revenue, order counts by lifecycle, distinct customers) per brand+currency. Ratios
+      (AOV, RTO%) are derived at read by the metric-engine — never stored (ADR-004).
+    columns:
+      - name: brand_id
+        tests: [not_null]
+      - name: currency_code
+        tests: [not_null]
+      - name: total_orders
+        tests: [not_null]
+      - name: realized_value_minor
+        description: "Additive SUM of realized order value, BIGINT minor units (I-S07)."
+        tests: [not_null]
+      - name: distinct_customers
+        tests: [not_null]

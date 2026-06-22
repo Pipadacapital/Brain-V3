@@ -83,6 +83,10 @@ jobs:
     schedule: "0 * * * *"          # hourly — horizon-based realization (stream-worker image)
     command: ["node", "dist/jobs/revenue-finalization.js"]
     useStreamWorkerImage: true
+  - name: feature-materialization
+    schedule: "40 * * * *"         # hourly at :40 — materialize Gold customer features → Redis online store
+    command: ["node", "dist/jobs/feature-materialization/run.js"]
+    useStreamWorkerImage: true
   - name: meta-token-refresh
     schedule: "0 3 * * *"          # daily 03:00 — proactively re-exchange Meta long-lived tokens
     command: ["node", "dist/jobs/meta-token-refresh/run.js"]

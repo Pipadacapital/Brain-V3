@@ -10,7 +10,7 @@
  * breakdown); this one is the rate + residual card. brandId from session (D-1; NEVER body).
  */
 
-import type { EngineDeps, AttributionModelId } from '@brain/metric-engine';
+import type { SilverPool, AttributionModelId } from '@brain/metric-engine';
 import { computeAttributionReconciliationRate } from '@brain/metric-engine';
 import { hasAttributionCredit } from './_attribution-credit.js';
 
@@ -42,7 +42,7 @@ export interface AttributionReconciliationParams {
 export async function getAttributionReconciliation(
   brandId: string,
   params: AttributionReconciliationParams,
-  deps: EngineDeps,
+  deps: { srPool: SilverPool },
 ): Promise<AttributionReconciliationResultDto> {
   const result = await computeAttributionReconciliationRate(
     brandId,

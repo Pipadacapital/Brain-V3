@@ -4,14 +4,12 @@
  * Blended ROAS = realized revenue ÷ ad spend, per currency_code, over [from, to].
  *
  * The metric engine is the SOLE sanctioned computation layer (ADR-002 / D-3).
- * Reads ONLY via the named DB seams — never an ad-hoc SUM:
- *   - numerator   = realized revenue WITHIN the window, derived from the EXISTING
- *                   realized_gmv_as_of(brand, date) seam (cumulative). Window-realized
- *                   = realized_gmv_as_of(to) − realized_gmv_as_of(from − 1 day). Both
- *                   operands are exact BIGINT (no float), so the difference is exact.
- *   - denominator = ad_spend_as_of(brand, from, to) — SUM(spend_minor) per
- *                   (platform, currency_code) over [from, to]. Summed across platforms
- *                   within the SAME currency to get total spend per currency.
+ *   - numerator   = realized revenue WITHIN the window. realized_gmv_as_of(brand, date)
+ *                   (0018) = SUM(amount_minor) WHERE economic_effective_at::date <= date
+ *                   AND event_type <> 'provisional_recognition'. So window-realized = the
+ *                   same SUM restricted to economic_effective_at::date ∈ [from, to] — exact BIGINT.
+ *   - denominator = SUM(spend_minor) per currency_code over stat_date ∈ [from, to], summed
+ *                   across platforms within the SAME currency to get total spend per currency.
  *
  * SAME-CURRENCY ONLY: ROAS is computed per currency_code and NEVER blended across
  * currencies (you cannot divide INR revenue by USD spend). Currencies present only on
@@ -23,12 +21,13 @@
  * returned so the consumer can re-derive the ratio exactly (no silent float rounding —
  * the ratio is formatted at the edge from the exact BIGINTs).
  *
- * F-SEC-02: all reads happen inside withBrandTxn so the GUC is transaction-scoped.
- * RLS scopes both ledgers to the active brand; both seams are SECURITY INVOKER.
+ * ── PHASE G re-point: reads the lakehouse via withSilverBrand (I-ST01) — realized from
+ *    brain_gold.gold_revenue_ledger, spend from brain_silver.silver_marketing_spend. PG is no
+ *    longer a read source for either (write SoR only). Per-brand isolation at the seam (BRAND_PREDICATE).
  */
 
-import type { EngineDeps } from './deps.js';
-import { withBrandTxn } from './deps.js';
+import type { SilverPool } from './silver-deps.js';
+import { withSilverBrand, BRAND_PREDICATE } from './silver-deps.js';
 
 export interface BlendedRoasRow {
   /** ISO 4217 currency code */
@@ -62,66 +61,54 @@ function exactRatioString(numerator: bigint, denominator: bigint, fractionalDigi
  *
  * @param brandId - Brand UUID (from session — D-1).
  * @param params  - Inclusive date window { fromDate, toDate }.
- * @param deps    - EngineDeps with raw pg.Pool.
+ * @param deps    - The StarRocks Silver/Gold pool — gold_revenue_ledger + silver_marketing_spend.
  * @returns       Array of BlendedRoasRow, one per currency_code present on either side.
  *                Empty array when neither realized nor spend rows exist in the window.
  */
 export async function computeBlendedRoas(
   brandId: string,
   params: { fromDate: Date; toDate: Date },
-  deps: EngineDeps,
+  deps: { srPool: SilverPool },
 ): Promise<BlendedRoasRow[]> {
-  const fromStr = params.fromDate.toISOString().split('T')[0] as string;
+  const fromStr = params.fromDate.toISOString().split('T')[0] as string; // Date-formatted → injection-safe
   const toStr = params.toDate.toISOString().split('T')[0] as string;
 
-  // from − 1 day, for the cumulative-realized difference (window-realized).
-  const fromMinus1 = new Date(params.fromDate.getTime() - 24 * 60 * 60 * 1000);
-  const fromMinus1Str = fromMinus1.toISOString().split('T')[0] as string;
-
-  return withBrandTxn(deps.pool, brandId, async (client) => {
-    // ── Numerator: window-realized via the realized_gmv_as_of seam (no ad-hoc SUM) ──
-    // realized_gmv_as_of returns a single scalar keyed to the brand's currency.
-    // The brand row carries the authoritative currency_code (single-currency-per-brand
-    // trigger, 0018). Window-realized = as_of(to) − as_of(from−1).
-    const brandRow = await client.query<{ currency_code: string }>(
-      `SELECT currency_code FROM brand WHERE id = $1`,
-      [brandId],
+  return withSilverBrand(deps.srPool, brandId, async (scope) => {
+    // ── Numerator: window-realized from the lakehouse ledger (the realized_gmv_as_of math) ──
+    // SUM(amount_minor) over economic_effective_at ∈ [from, to], excluding provisional rows.
+    // currency_code is single-per-brand (0018 trigger) — carried on the rows.
+    const realizedRows = await scope.runScoped<{ v: string | number; currency_code: string | null }>(
+      `SELECT COALESCE(SUM(amount_minor), 0) AS v, MAX(currency_code) AS currency_code
+         FROM brain_gold.gold_revenue_ledger
+        WHERE CAST(economic_effective_at AS DATE) BETWEEN '${fromStr}' AND '${toStr}'
+          AND event_type <> 'provisional_recognition'
+          AND ${BRAND_PREDICATE}`,
+      [],
     );
-    const realizedCcy = brandRow.rows[0]?.currency_code ?? null;
+    const realizedCcy = realizedRows[0]?.currency_code ?? null;
+    // Keep a real reversal honest (do NOT clamp a net-negative window away).
+    const realizedWindowMinor =
+      realizedCcy !== null ? BigInt(String(realizedRows[0]?.v ?? '0').split('.')[0] ?? '0') : 0n;
 
-    let realizedWindowMinor = 0n;
-    if (realizedCcy !== null) {
-      const realizedTo = await client.query<{ v: string }>(
-        `SELECT realized_gmv_as_of($1::uuid, $2::date) AS v`,
-        [brandId, toStr],
-      );
-      const realizedBefore = await client.query<{ v: string }>(
-        `SELECT realized_gmv_as_of($1::uuid, $2::date) AS v`,
-        [brandId, fromMinus1Str],
-      );
-      realizedWindowMinor =
-        BigInt(realizedTo.rows[0]?.v ?? '0') - BigInt(realizedBefore.rows[0]?.v ?? '0');
-      // Guard: realized is monotone non-decreasing in as_of, so the diff is >= 0; clamp
-      // defensively (e.g. a late RTO reversal landing inside the window could net negative —
-      // that is honest, keep it; do NOT clamp away a real reversal).
-    }
-
-    // ── Denominator: ad_spend_as_of seam, SUM per (platform, currency) over [from,to] ──
-    const spendRows = await client.query<{
+    // ── Denominator: spend per (platform, currency) over stat_date ∈ [from, to] ──
+    const spendRows = await scope.runScoped<{
       platform: string;
       currency_code: string;
-      spend_minor: string;
+      spend_minor: string | number;
     }>(
-      `SELECT platform, currency_code, spend_minor
-         FROM ad_spend_as_of($1::uuid, $2::date, $3::date)`,
-      [brandId, fromStr, toStr],
+      `SELECT platform, currency_code, SUM(spend_minor) AS spend_minor
+         FROM brain_silver.silver_marketing_spend
+        WHERE stat_date BETWEEN '${fromStr}' AND '${toStr}'
+          AND ${BRAND_PREDICATE}
+        GROUP BY platform, currency_code`,
+      [],
     );
 
     // Sum spend across platforms within the SAME currency.
     const spendByCcy = new Map<string, bigint>();
-    for (const r of spendRows.rows) {
+    for (const r of spendRows) {
       const prev = spendByCcy.get(r.currency_code) ?? 0n;
-      spendByCcy.set(r.currency_code, prev + BigInt(r.spend_minor));
+      spendByCcy.set(r.currency_code, prev + BigInt(String(r.spend_minor).split('.')[0] ?? '0'));
     }
 
     // Assemble per-currency rows. Realized is single-currency (the brand currency); it only

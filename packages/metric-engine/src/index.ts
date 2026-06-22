@@ -25,7 +25,7 @@ export { type EngineDeps, withBrandTxn } from './deps.js';
 export { computeRealizedRevenue } from './realized-revenue.js';
 // Contribution margin (CM1/CM2 — the True-CM2 moat). feat-cm2-cost-inputs.
 export { computeContributionMargin } from './contribution-margin.js';
-export type { ContributionMarginResult, CostConfidence } from './contribution-margin.js';
+export type { ContributionMarginResult, CostConfidence, ContributionMarginDeps } from './contribution-margin.js';
 export { computeProvisionalRevenue } from './provisional-revenue.js';
 
 // Re-export Phase 1 analytics compute functions
@@ -55,6 +55,10 @@ export type { BlendedRoasRow } from './blended-roas.js';
 // GoKwik + Shopflo CoD/RTO surface (Track C) — RTO rates, CoD mix/CM2, checkout funnel
 export { computeCodRtoRates } from './cod-rto-rates.js';
 export type { CodRtoRatesResult, CodRtoCohort } from './cod-rto-rates.js';
+
+// Customer 360 (Gold) summary — re-platform Phase E
+export { getCustomer360Summary } from './customer-360.js';
+export type { Customer360Summary, Customer360Row } from './customer-360.js';
 // Logistics shipment outcomes (Slice 2) — delivered/RTO/other + RTO% by courier/pincode,
 // from the multi-source silver_shipment mart (GoKwik AWB + Shiprocket).
 export { computeShipmentOutcomes } from './shipment-outcomes.js';

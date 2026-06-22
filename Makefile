@@ -43,6 +43,7 @@ PG_PSQL  ?= docker exec -i $(PG_CONTAINER) psql -U $(PG_USER) -d $(PG_DB)
 .PHONY: journey-catalog journey-run journey-build journey-verify journey-seed
 .PHONY: orderline-catalog orderline-ddl orderline-run orderline-build orderline-verify
 .PHONY: checkout-catalog checkout-run checkout-build checkout-verify
+.PHONY: gold-run
 .PHONY: attribution-migrate attribution-seed attribution-build attribution-verify
 
 silver-catalog:
@@ -262,3 +263,17 @@ attribution-verify: attribution-seed
 	else \
 		echo ">> REPLAY FAIL: attribution_credit_ledger row count changed between re-seeds."; exit 1; \
 	fi
+
+# ============================================================================
+# re-platform Phase E — Gold serving marts (brain_gold). Reads Silver only; ADR-004-safe
+# (additive aggregates only — non-additive ratios stay in the metric-engine). Gold models declare
+# config(schema='brain_gold') and land there via the generate_schema_name macro. Requires the Silver
+# marts to be built first (silver-run/journey-run/orderline-run/checkout-run).
+#
+#   gold-run — dbt run + test for every brain_gold model (tag:gold)
+# ============================================================================
+gold-run:
+	@echo ">> dbt run (brain_gold serving marts — tag:gold) ..."
+	cd $(DBT_DIR) && DBT_PROFILES_DIR=$(DBT_PROFILES) "$(DBT)" run --select tag:gold
+	@echo ">> dbt test (gold schema/grain tests) ..."
+	cd $(DBT_DIR) && DBT_PROFILES_DIR=$(DBT_PROFILES) "$(DBT)" test --select tag:gold

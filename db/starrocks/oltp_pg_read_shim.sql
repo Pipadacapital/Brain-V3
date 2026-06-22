@@ -34,9 +34,70 @@ SELECT
     amount_minor,
     currency_code,
     occurred_at,
-    economic_effective_at
+    economic_effective_at,
+    -- appended (Phase G): CREATE OR REPLACE VIEW requires new columns at the END
+    ledger_event_id,
+    fee_minor,
+    recognition_label,
+    billing_posted_period
 FROM realized_revenue_ledger;
 
 -- Make the view readable through the JDBC catalog connection user (superuser `brain`
 -- already owns it; explicit grant kept for documentation / non-superuser dev parity).
 GRANT SELECT ON silver_order_ledger_src TO brain;
+
+-- ============================================================================
+-- Phase G (marketing): read-shims for the ad-spend + attribution-credit ledgers.
+-- Same posture as silver_order_ledger_src — cast the uuid brand_id → text so the JDBC
+-- catalog can read it; cross-brand by construction (per-brand isolation at the Silver
+-- READ seam, I-ST01). PROD swap reads Iceberg Bronze (native strings) → shims disappear.
+-- ============================================================================
+
+-- ad_spend_ledger → silver_marketing_spend (Silver entity). spend is BIGINT minor units.
+CREATE OR REPLACE VIEW silver_marketing_spend_src AS
+SELECT
+    brand_id::text   AS brand_id,
+    spend_event_id,
+    platform,
+    level,
+    level_id,
+    parent_id,
+    campaign_id,
+    campaign_name,
+    stat_date,
+    spend_minor,
+    currency_code,
+    impressions,
+    clicks,
+    account_timezone,
+    occurred_at
+FROM ad_spend_ledger;
+
+GRANT SELECT ON silver_marketing_spend_src TO brain;
+
+-- attribution_credit_ledger → gold_marketing_attribution (Gold mart). credited_revenue_minor
+-- is SIGNED BIGINT (+credit / -clawback). brand_id is the only uuid column to cast.
+CREATE OR REPLACE VIEW gold_attribution_credit_src AS
+SELECT
+    brand_id::text   AS brand_id,
+    credit_id,
+    order_id,
+    brain_anon_id,
+    touch_seq,
+    channel,
+    campaign_id,
+    model_id,
+    row_kind,
+    credited_revenue_minor,
+    currency_code,
+    realized_revenue_minor,
+    reversed_of_credit_id,
+    confidence_grade,
+    attribution_confidence,
+    model_version,
+    occurred_at,
+    economic_effective_at,
+    billing_posted_period
+FROM attribution_credit_ledger;
+
+GRANT SELECT ON gold_attribution_credit_src TO brain;

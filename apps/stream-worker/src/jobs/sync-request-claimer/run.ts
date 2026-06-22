@@ -129,6 +129,22 @@ export async function enumerateConnectedConnectors(pool: Pool): Promise<Connecto
     rows.push({ ...r, provider: 'gokwik' });
   }
 
+  // Shiprocket logistics connectors (migration 0059 — fn + brain_app EXECUTE grant already exist).
+  const shiprocket = await pool.query<{ connector_instance_id: string; brand_id: string }>(
+    `SELECT connector_instance_id, brand_id FROM list_shiprocket_connectors_for_repull()`,
+  );
+  for (const r of shiprocket.rows) {
+    rows.push({ ...r, provider: 'shiprocket' });
+  }
+
+  // WooCommerce orders connectors (migration 0060 — fn + brain_app EXECUTE grant already exist).
+  const woocommerce = await pool.query<{ connector_instance_id: string; brand_id: string }>(
+    `SELECT connector_instance_id, brand_id FROM list_woocommerce_connectors_for_repull()`,
+  );
+  for (const r of woocommerce.rows) {
+    rows.push({ ...r, provider: 'woocommerce' });
+  }
+
   return rows;
 }
 

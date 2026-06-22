@@ -80,7 +80,7 @@ export async function main(argv: string[]): Promise<RedriveReport> {
   const args = parseArgs(argv);
   const brokers = (process.env['KAFKA_BROKERS'] ?? 'localhost:9092').split(',');
   const kafka = new Kafka({ clientId: 'dlq-redrive', brokers, retry: { retries: 5 } });
-  const producer = kafka.producer();
+  const producer = kafka.producer({ idempotent: true });
   const redriver = new DlqRedriver(kafka, producer, args.group);
   try {
     const report = await redriver.redrive(args.topic, {

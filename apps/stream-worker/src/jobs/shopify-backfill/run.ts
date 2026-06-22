@@ -83,7 +83,7 @@ interface ConnectorRow {
 export async function run(connectorInstanceId?: string): Promise<void> {
   const pool = new Pool({ connectionString: DB_URL, max: 3 });
   const kafka = new Kafka({ clientId: 'shopify-backfill-worker', brokers: BROKERS, retry: { retries: 5 } });
-  const producer = kafka.producer();
+  const producer = kafka.producer({ idempotent: true });
   const jobRepo = new PgBackfillJobRepository(DB_URL);
 
   // Worker-side secrets manager (ADR-BF-11: separate process from core)

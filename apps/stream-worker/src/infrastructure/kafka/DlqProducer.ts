@@ -15,7 +15,11 @@ export class DlqProducer {
   private connected = false;
 
   constructor(kafka: Kafka) {
-    this.producer = kafka.producer();
+    // Idempotent producer (exactly-once Kafka semantics at the broker layer):
+    // idempotent=true causes KafkaJS to enforce acks=-1 and maxInFlightRequests=1
+    // internally. Prevents duplicate DLQ entries on transient broker retries
+    // (no-event-loss invariant — a DLQ double-write is operationally harmful).
+    this.producer = kafka.producer({ idempotent: true });
   }
 
   async connect(): Promise<void> {

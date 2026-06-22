@@ -90,7 +90,7 @@ export async function run(targetConnectorInstanceId?: string): Promise<void> {
     brokers: BROKERS,
     retry: { retries: 5 },
   });
-  const producer = kafka.producer();
+  const producer = kafka.producer({ idempotent: true });
   const workerSecrets = buildWorkerSecretsManager();
   const saltSecrets = new LocalSecretsProvider();
   const saltProvider = new SaltProvider(saltSecrets, resolveSaltHex);

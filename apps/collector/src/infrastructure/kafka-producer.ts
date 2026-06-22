@@ -46,9 +46,15 @@ export class CollectorKafkaProducer {
   }
 
   async connect(): Promise<void> {
+    // Idempotent producer (exactly-once Kafka semantics at the broker layer):
+    // idempotent=true causes KafkaJS to enforce acks=-1 and maxInFlightRequests=1
+    // internally — setting them explicitly on ProducerConfig is not needed and not
+    // a valid field in this KafkaJS version. Prevents duplicate records on transient
+    // broker retries; spool-level dedup remains the application-layer guard on top.
+    // No-event-loss invariant.
     this.producer = this.kafka.producer({
       allowAutoTopicCreation: false,
-      idempotent: false, // spool dedup is the idempotency layer
+      idempotent: true,
     });
     await this.producer.connect();
   }

@@ -29,6 +29,7 @@ import {
   BehaviorOverviewSchema,
   FunnelAnalyticsSchema,
   AbandonedCartSchema,
+  EngagementSchema,
   JourneyTimelineSchema,
   JourneyStitchRateSchema,
   OrderStatusMixSchema,
@@ -133,6 +134,7 @@ import type {
   AnalyticsBehaviorOverviewResponse,
   AnalyticsFunnelResponse,
   AnalyticsAbandonedCartResponse,
+  AnalyticsEngagementResponse,
   AnalyticsJourneyStitchRateResponse,
   AnalyticsJourneyTimelineResponse,
   ConsentCoverageResponse,
@@ -1467,6 +1469,21 @@ export const analyticsApi = {
       `/v1/analytics/abandoned-cart${qsStr ? `?${qsStr}` : ''}`,
     );
     return parseData(AbandonedCartSchema, env);
+  },
+
+  /** GET /api/v1/analytics/engagement — engaged (multi-touch) vs bounce sessions + avg touches. */
+  getEngagement: async (params?: {
+    from?: string;
+    to?: string;
+  }): Promise<AnalyticsEngagementResponse> => {
+    const qs = new URLSearchParams();
+    if (params?.from) qs.set('from', params.from);
+    if (params?.to) qs.set('to', params.to);
+    const qsStr = qs.toString();
+    const env = await bffFetch<BffEnvelope<unknown>>(
+      `/v1/analytics/engagement${qsStr ? `?${qsStr}` : ''}`,
+    );
+    return parseData(EngagementSchema, env);
   },
 
   /** GET /api/v1/analytics/journey/stitch-rate — deterministic cart-stitch hit-rate. */

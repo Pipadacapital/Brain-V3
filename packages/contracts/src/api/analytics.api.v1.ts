@@ -558,3 +558,22 @@ export const AbandonedCartSchema = z.discriminatedUnion('state', [
   }),
 ]);
 export type AbandonedCart = z.infer<typeof AbandonedCartSchema>;
+
+// ── Engagement — engaged (multi-touch) vs bounce sessions + avg touches (Phase H pixel) ──
+export const EngagementSchema = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('no_data') }),
+  z.object({
+    state: z.literal('has_data'),
+    from: z.string(),
+    to: z.string(),
+    sessions: MinorUnitsSchema,
+    touches: MinorUnitsSchema,
+    engaged_sessions: MinorUnitsSchema,
+    bounce_sessions: MinorUnitsSchema,
+    engagement_rate_pct: z.string().nullable(),
+    bounce_rate_pct: z.string().nullable(),
+    avg_touches_per_session: z.string().nullable(),
+    data_source: DataSourceSchema,
+  }),
+]);
+export type Engagement = z.infer<typeof EngagementSchema>;

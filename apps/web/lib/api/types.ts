@@ -34,6 +34,7 @@ export type {
   FunnelAnalytics as AnalyticsFunnelResponse,
   FunnelStageDto as FunnelStageRow,
   AbandonedCart as AnalyticsAbandonedCartResponse,
+  Engagement as AnalyticsEngagementResponse,
   OrderStatusMixRowDto as OrderStatusMixRow,
   OrderStatusMix as AnalyticsOrderStatusMixResponse,
   TopProducts as AnalyticsTopProductsResponse,

@@ -95,6 +95,7 @@ const NAV_SECTIONS: NavSection[] = [
       { href: '/analytics/behavior', label: 'Behavior', icon: MousePointerClick },
       { href: '/analytics/funnel', label: 'Funnel', icon: Filter },
       { href: '/analytics/abandoned-cart', label: 'Abandoned Cart', icon: ShoppingCart },
+      { href: '/analytics/engagement', label: 'Engagement', icon: Activity },
       { href: '/analytics/journey', label: 'Journey', icon: Footprints, centerKey: 'journey' },
       { href: '/analytics/attribution', label: 'Attribution', icon: Target, centerKey: 'attribution' },
       { href: '/analytics/conversion-feedback', label: 'Conversion Feedback', icon: Send },

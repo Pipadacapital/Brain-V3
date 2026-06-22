@@ -339,6 +339,7 @@ export {
   FunnelStageDtoSchema,
   FunnelAnalyticsSchema,
   AbandonedCartSchema,
+  EngagementSchema,
 } from './api/analytics.api.v1.js';
 export type {
   RevenueSnapshot,
@@ -380,6 +381,7 @@ export type {
   FunnelStageDto,
   FunnelAnalytics,
   AbandonedCart,
+  Engagement,
 } from './api/analytics.api.v1.js';
 
 export {

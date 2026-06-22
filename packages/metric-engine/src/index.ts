@@ -70,6 +70,8 @@ export { computeStorefrontFunnel } from './storefront-funnel.js';
 export type { StorefrontFunnelResult, FunnelStage, FunnelRange } from './storefront-funnel.js';
 export { computeAbandonedCart } from './storefront-abandoned-cart.js';
 export type { AbandonedCartResult, AbandonedCartRange } from './storefront-abandoned-cart.js';
+export { computeStorefrontEngagement } from './storefront-engagement.js';
+export type { StorefrontEngagementResult, EngagementRange } from './storefront-engagement.js';
 export { computeCodMix } from './cod-mix.js';
 export type { CodMixResult } from './cod-mix.js';
 export { computeCheckoutFunnel } from './checkout-funnel.js';

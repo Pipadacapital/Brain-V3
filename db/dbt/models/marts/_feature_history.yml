@@ -22,3 +22,18 @@ models:
       - name: days_since_last_order
         description: "Recency feature (RFM / churn-label substrate)."
         tests: [not_null]
+
+  - name: snap_order_state
+    description: >
+      Daily order-lifecycle state snapshot (DB-AUDIT C3). INCREMENTAL, append-per-day, keyed
+      (brand_id, order_id, snapshot_date) — point-in-time order state for historical restatement +
+      transition analysis. Prior days preserved; same-day re-run idempotent.
+    columns:
+      - name: brand_id
+        tests: [not_null]
+      - name: order_id
+        tests: [not_null]
+      - name: snapshot_date
+        tests: [not_null]
+      - name: lifecycle_state
+        tests: [not_null]

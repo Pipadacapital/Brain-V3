@@ -123,10 +123,10 @@ async function seedRecognition(superPool: Pool, brandId: string, orderId: string
   await superPool.query(
     `INSERT INTO realized_revenue_ledger (
        brand_id, ledger_event_id, order_id, event_type, amount_minor, currency_code,
-       occurred_at, economic_effective_at, billing_posted_period, recognition_label, raw_event_id
+       occurred_at, occurred_date, economic_effective_at, billing_posted_period, recognition_label, raw_event_id
      ) VALUES ($1,$2,$3,'provisional_recognition',$4::bigint,'INR',
-       '2026-05-01T08:00:00Z','2026-05-01T08:00:00Z','2026-05','provisional',$2)
-     ON CONFLICT (brand_id, order_id, event_type, (timezone('UTC', occurred_at)::date)) WHERE event_type <> 'refund' DO NOTHING`,
+       '2026-05-01T08:00:00Z',(timezone('UTC','2026-05-01T08:00:00Z'::timestamptz))::date,'2026-05-01T08:00:00Z','2026-05','provisional',$2)
+     ON CONFLICT (brand_id, order_id, event_type, occurred_date) WHERE event_type <> 'refund' DO NOTHING`,
     [brandId, ledgerEventId, orderId, amountMinor],
   );
 }

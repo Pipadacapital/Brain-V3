@@ -63,8 +63,8 @@ beforeAll(async () => {
     for (const oid of [ORDER_WITH_BRONZE, ORDER_NO_BRONZE]) {
       await superPool.query(
         `INSERT INTO realized_revenue_ledger
-           (brand_id, ledger_event_id, order_id, event_type, amount_minor, currency_code, occurred_at, economic_effective_at, billing_posted_period, recognition_label)
-         VALUES ($1,$2,$3,'provisional_recognition',10000,'INR',now(),now(),'2026-06','provisional')`,
+           (brand_id, ledger_event_id, order_id, event_type, amount_minor, currency_code, occurred_at, occurred_date, economic_effective_at, billing_posted_period, recognition_label)
+         VALUES ($1,$2,$3,'provisional_recognition',10000,'INR',now(),(timezone('UTC',now()::timestamptz))::date,now(),'2026-06','provisional')`,
         [BRAND, `prov-led-${oid}`, oid],
       );
     }

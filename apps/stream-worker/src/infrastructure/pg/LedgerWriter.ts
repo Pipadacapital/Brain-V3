@@ -124,6 +124,7 @@ export class LedgerWriter {
           fx_rate_id,
           rounding_adjustment_minor,
           occurred_at,
+          occurred_date,
           economic_effective_at,
           billing_posted_period,
           recognition_label,
@@ -132,10 +133,10 @@ export class LedgerWriter {
           $1, $2, $3, $4, 'provisional_recognition',
           $5::bigint, $6, NULL,
           0::bigint,
-          $7, $7, $8, 'provisional',
+          $7, (timezone('UTC', $7::timestamptz))::date, $7, $8, 'provisional',
           $9
         )
-        ON CONFLICT (brand_id, order_id, event_type, (timezone('UTC', occurred_at)::date)) WHERE event_type <> 'refund'
+        ON CONFLICT (brand_id, order_id, event_type, occurred_date) WHERE event_type <> 'refund'
         DO NOTHING
         RETURNING ledger_event_id`,
         [
@@ -232,6 +233,7 @@ export class LedgerWriter {
           fx_rate_id,
           rounding_adjustment_minor,
           occurred_at,
+          occurred_date,
           economic_effective_at,
           billing_posted_period,
           recognition_label,
@@ -240,10 +242,10 @@ export class LedgerWriter {
           $1, $2, $3, $4, $5,
           $6::bigint, $7, NULL,
           0::bigint,
-          $8, $8, $9, 'finalized',
+          $8, (timezone('UTC', $8::timestamptz))::date, $8, $9, 'finalized',
           $10
         )
-        ON CONFLICT (brand_id, order_id, event_type, (timezone('UTC', occurred_at)::date)) WHERE event_type <> 'refund'
+        ON CONFLICT (brand_id, order_id, event_type, occurred_date) WHERE event_type <> 'refund'
         DO NOTHING
         RETURNING ledger_event_id`,
         [
@@ -288,9 +290,12 @@ export class LedgerWriter {
    *
    * The order's refunds ride on every order.live.v1 restatement (payload.properties.refunds[]); this
    * writes one ledger row PER REFUND so a refund actually reduces realized revenue. Idempotency is the
-   * PRIMARY KEY (brand_id, ledger_event_id) — ledger_event_id hashes the refund_id (passed as
-   * `refund.sourcePk`) — NOT the date-grain dedup (made partial-excluding-refund in migration 0054), so
-   * two distinct same-day refunds coexist while a re-delivered refund collapses to one row.
+   * PRIMARY KEY (brand_id, ledger_event_id, occurred_date) — ledger_event_id hashes the refund_id
+   * (passed as `refund.sourcePk`) and occurred_date is deterministic from the refund's processed_at —
+   * NOT the date-grain dedup (made partial-excluding-refund in migration 0054), so two distinct same-day
+   * refunds coexist while a re-delivered refund (same refund_id + same processed_at) collapses to one row.
+   * The occurred_date column joined the PK in the C4b partition migration (0073); it does not change
+   * refund semantics (a refund's economic time is stable across re-pulls).
    *
    * `refund.amountMinor` is the POSITIVE refund amount (minor units); it is negated here. `occurredAt`
    * is the refund's processed_at (its economic time). Returns true iff a new row was inserted.
@@ -315,13 +320,13 @@ export class LedgerWriter {
         `INSERT INTO realized_revenue_ledger (
           brand_id, ledger_event_id, order_id, brain_id, event_type,
           amount_minor, currency_code, fx_rate_id, rounding_adjustment_minor,
-          occurred_at, economic_effective_at, billing_posted_period, recognition_label, raw_event_id
+          occurred_at, occurred_date, economic_effective_at, billing_posted_period, recognition_label, raw_event_id
         ) VALUES (
           $1, $2, $3, $4, 'refund',
           $5::bigint, $6, NULL, 0::bigint,
-          $7, $7, $8, 'finalized', $9
+          $7, (timezone('UTC', $7::timestamptz))::date, $7, $8, 'finalized', $9
         )
-        ON CONFLICT (brand_id, ledger_event_id) DO NOTHING
+        ON CONFLICT (brand_id, ledger_event_id, occurred_date) DO NOTHING
         RETURNING ledger_event_id`,
         [
           refund.brandId,
@@ -466,6 +471,7 @@ export class LedgerWriter {
           fx_rate_id,
           rounding_adjustment_minor,
           occurred_at,
+          occurred_date,
           economic_effective_at,
           billing_posted_period,
           recognition_label,
@@ -478,11 +484,11 @@ export class LedgerWriter {
           $1, $2, $3, $4, $5,
           $6::bigint, $7, NULL,
           0::bigint,
-          $8, $8, $9, 'finalized',
+          $8, (timezone('UTC', $8::timestamptz))::date, $8, $9, 'finalized',
           $10, $11, $12, $13::bigint,
           $14
         )
-        ON CONFLICT (brand_id, order_id, event_type, (timezone('UTC', occurred_at)::date)) WHERE event_type <> 'refund'
+        ON CONFLICT (brand_id, order_id, event_type, occurred_date) WHERE event_type <> 'refund'
         DO NOTHING
         RETURNING ledger_event_id`,
         [
@@ -583,15 +589,15 @@ export class LedgerWriter {
         `INSERT INTO realized_revenue_ledger (
           brand_id, ledger_event_id, order_id, brain_id, event_type,
           amount_minor, currency_code, fx_rate_id, rounding_adjustment_minor,
-          occurred_at, economic_effective_at, billing_posted_period,
+          occurred_at, occurred_date, economic_effective_at, billing_posted_period,
           recognition_label, settlement_source, reconciliation_type, fee_minor, raw_event_id
         ) VALUES (
           $1, $2, $3, $4, 'payment_fee',
           $5::bigint, $6, NULL, 0::bigint,
-          $7, $7, $8, 'finalized',
+          $7, (timezone('UTC', $7::timestamptz))::date, $7, $8, 'finalized',
           $9, 'per_order', $10::bigint, $11
         )
-        ON CONFLICT (brand_id, order_id, event_type, (timezone('UTC', occurred_at)::date)) WHERE event_type <> 'refund'
+        ON CONFLICT (brand_id, order_id, event_type, occurred_date) WHERE event_type <> 'refund'
         DO NOTHING
         RETURNING ledger_event_id`,
         [
@@ -606,15 +612,15 @@ export class LedgerWriter {
         `INSERT INTO realized_revenue_ledger (
           brand_id, ledger_event_id, order_id, brain_id, event_type,
           amount_minor, currency_code, fx_rate_id, rounding_adjustment_minor,
-          occurred_at, economic_effective_at, billing_posted_period,
+          occurred_at, occurred_date, economic_effective_at, billing_posted_period,
           recognition_label, settlement_source, reconciliation_type, tax_code, raw_event_id
         ) VALUES (
           $1, $2, $3, $4, 'settlement_tax',
           $5::bigint, $6, NULL, 0::bigint,
-          $7, $7, $8, 'finalized',
+          $7, (timezone('UTC', $7::timestamptz))::date, $7, $8, 'finalized',
           $9, 'per_order', $10, $11
         )
-        ON CONFLICT (brand_id, order_id, event_type, (timezone('UTC', occurred_at)::date)) WHERE event_type <> 'refund'
+        ON CONFLICT (brand_id, order_id, event_type, occurred_date) WHERE event_type <> 'refund'
         DO NOTHING
         RETURNING ledger_event_id`,
         [
@@ -724,14 +730,14 @@ export class LedgerWriter {
         `INSERT INTO realized_revenue_ledger (
           brand_id, ledger_event_id, order_id, brain_id, event_type,
           amount_minor, currency_code, fx_rate_id, rounding_adjustment_minor,
-          occurred_at, economic_effective_at, billing_posted_period,
+          occurred_at, occurred_date, economic_effective_at, billing_posted_period,
           recognition_label, reconciliation_type, raw_event_id
         ) VALUES (
           $1, $2, $3, NULL, $4,
           $5::bigint, $6, NULL, 0::bigint,
-          $7, $7, $8, 'finalized', 'per_order', $9
+          $7, (timezone('UTC', $7::timestamptz))::date, $7, $8, 'finalized', 'per_order', $9
         )
-        ON CONFLICT (brand_id, order_id, event_type, (timezone('UTC', occurred_at)::date)) WHERE event_type <> 'refund'
+        ON CONFLICT (brand_id, order_id, event_type, occurred_date) WHERE event_type <> 'refund'
         DO NOTHING
         RETURNING ledger_event_id`,
         [

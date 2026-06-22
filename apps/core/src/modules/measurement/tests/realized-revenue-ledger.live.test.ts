@@ -541,12 +541,12 @@ describe('5. single-currency guard — BEFORE INSERT trigger', () => {
         `INSERT INTO realized_revenue_ledger (
           brand_id, ledger_event_id, order_id, event_type,
           amount_minor, currency_code, rounding_adjustment_minor,
-          occurred_at, economic_effective_at, billing_posted_period,
+          occurred_at, occurred_date, economic_effective_at, billing_posted_period,
           recognition_label
         ) VALUES (
           $1, $2, $3, 'finalization',
           10000, 'AED', 0,
-          NOW(), NOW(), $4, 'finalized'
+          NOW(), (timezone('UTC',NOW()::timestamptz))::date, NOW(), $4, 'finalized'
         )`,
         [BRAND_A, ledgerEventId, orderId, billingPeriod],
       ),
@@ -568,12 +568,12 @@ describe('5. single-currency guard — BEFORE INSERT trigger', () => {
         `INSERT INTO realized_revenue_ledger (
           brand_id, ledger_event_id, order_id, event_type,
           amount_minor, currency_code, rounding_adjustment_minor,
-          occurred_at, economic_effective_at, billing_posted_period,
+          occurred_at, occurred_date, economic_effective_at, billing_posted_period,
           recognition_label
         ) VALUES (
           $1, $2, $3, 'finalization',
           10000, 'INR', 0,
-          NOW(), NOW(), $4, 'finalized'
+          NOW(), (timezone('UTC',NOW()::timestamptz))::date, NOW(), $4, 'finalized'
         )`,
         [BRAND_A, ledgerEventId, orderId, billingPeriod],
       ),
@@ -600,9 +600,9 @@ describe('6. isolation negative-control under brain_app', () => {
       `INSERT INTO realized_revenue_ledger (
         brand_id, ledger_event_id, order_id, event_type,
         amount_minor, currency_code, rounding_adjustment_minor,
-        occurred_at, economic_effective_at, billing_posted_period,
+        occurred_at, occurred_date, economic_effective_at, billing_posted_period,
         recognition_label
-      ) VALUES ($1, $2, $3, 'finalization', 9999, 'INR', 0, NOW(), NOW(), $4, 'finalized')`,
+      ) VALUES ($1, $2, $3, 'finalization', 9999, 'INR', 0, NOW(), (timezone('UTC',NOW()::timestamptz))::date, NOW(), $4, 'finalized')`,
       [BRAND_A, randomUUID(), orderId, toBillingPostedPeriod(new Date())],
     );
 
@@ -652,9 +652,9 @@ describe('6. isolation negative-control under brain_app', () => {
       `INSERT INTO realized_revenue_ledger (
         brand_id, ledger_event_id, order_id, event_type,
         amount_minor, currency_code, rounding_adjustment_minor,
-        occurred_at, economic_effective_at, billing_posted_period,
+        occurred_at, occurred_date, economic_effective_at, billing_posted_period,
         recognition_label
-      ) VALUES ($1, $2, $3, 'finalization', 8888, 'INR', 0, NOW(), NOW(), $4, 'finalized')`,
+      ) VALUES ($1, $2, $3, 'finalization', 8888, 'INR', 0, NOW(), (timezone('UTC',NOW()::timestamptz))::date, NOW(), $4, 'finalized')`,
       [BRAND_B, randomUUID(), `order-brand-b-${randomUUID()}`, toBillingPostedPeriod(new Date())],
     );
 
@@ -788,8 +788,8 @@ describe('9. horizon finalization logic', () => {
       `INSERT INTO realized_revenue_ledger (
         brand_id, ledger_event_id, order_id, event_type,
         amount_minor, currency_code, rounding_adjustment_minor,
-        occurred_at, economic_effective_at, billing_posted_period, recognition_label
-      ) VALUES ($1, $2, $3, 'provisional_recognition', 30000, 'INR', 0, $4, $4, $5, 'provisional')`,
+        occurred_at, occurred_date, economic_effective_at, billing_posted_period, recognition_label
+      ) VALUES ($1, $2, $3, 'provisional_recognition', 30000, 'INR', 0, $4, (timezone('UTC',$4::timestamptz))::date, $4, $5, 'provisional')`,
       [BRAND_A, randomUUID(), orderId, pastDate.toISOString(), billingPeriod],
     );
 
@@ -828,8 +828,8 @@ describe('9. horizon finalization logic', () => {
       `INSERT INTO realized_revenue_ledger (
         brand_id, ledger_event_id, order_id, event_type,
         amount_minor, currency_code, rounding_adjustment_minor,
-        occurred_at, economic_effective_at, billing_posted_period, recognition_label
-      ) VALUES ($1, $2, $3, 'provisional_recognition', 30000, 'INR', 0, $4, $4, $5, 'provisional')`,
+        occurred_at, occurred_date, economic_effective_at, billing_posted_period, recognition_label
+      ) VALUES ($1, $2, $3, 'provisional_recognition', 30000, 'INR', 0, $4, (timezone('UTC',$4::timestamptz))::date, $4, $5, 'provisional')`,
       [BRAND_A, randomUUID(), orderId, pastDate.toISOString(), billingPeriod],
     );
 
@@ -838,8 +838,8 @@ describe('9. horizon finalization logic', () => {
       `INSERT INTO realized_revenue_ledger (
         brand_id, ledger_event_id, order_id, event_type,
         amount_minor, currency_code, rounding_adjustment_minor,
-        occurred_at, economic_effective_at, billing_posted_period, recognition_label
-      ) VALUES ($1, $2, $3, 'rto_reversal', -30000, 'INR', 0, NOW(), NOW(), $4, 'finalized')`,
+        occurred_at, occurred_date, economic_effective_at, billing_posted_period, recognition_label
+      ) VALUES ($1, $2, $3, 'rto_reversal', -30000, 'INR', 0, NOW(), (timezone('UTC',NOW()::timestamptz))::date, NOW(), $4, 'finalized')`,
       [BRAND_A, randomUUID(), orderId, toBillingPostedPeriod(new Date())],
     );
 
@@ -877,8 +877,8 @@ describe('9. horizon finalization logic', () => {
       `INSERT INTO realized_revenue_ledger (
         brand_id, ledger_event_id, order_id, event_type,
         amount_minor, currency_code, rounding_adjustment_minor,
-        occurred_at, economic_effective_at, billing_posted_period, recognition_label
-      ) VALUES ($1, $2, $3, 'provisional_recognition', 15000, 'INR', 0, $4, $4, $5, 'provisional')`,
+        occurred_at, occurred_date, economic_effective_at, billing_posted_period, recognition_label
+      ) VALUES ($1, $2, $3, 'provisional_recognition', 15000, 'INR', 0, $4, (timezone('UTC',$4::timestamptz))::date, $4, $5, 'provisional')`,
       [BRAND_A, randomUUID(), orderId, tenDaysAgo.toISOString(), billingPeriod],
     );
 
@@ -972,8 +972,8 @@ describe('10. F-SEC-01 fix — list_active_brand_ids() enumerates brands, job fi
       `INSERT INTO realized_revenue_ledger (
          brand_id, ledger_event_id, order_id, event_type,
          amount_minor, currency_code, rounding_adjustment_minor,
-         occurred_at, economic_effective_at, billing_posted_period, recognition_label
-       ) VALUES ($1, $2, $3, 'provisional_recognition', 50000, 'INR', 0, $4, $4, $5, 'provisional')`,
+         occurred_at, occurred_date, economic_effective_at, billing_posted_period, recognition_label
+       ) VALUES ($1, $2, $3, 'provisional_recognition', 50000, 'INR', 0, $4, (timezone('UTC',$4::timestamptz))::date, $4, $5, 'provisional')`,
       [BRAND_F1, randomUUID(), orderF1, pastDate.toISOString(), pastPeriod],
     );
 
@@ -982,8 +982,8 @@ describe('10. F-SEC-01 fix — list_active_brand_ids() enumerates brands, job fi
       `INSERT INTO realized_revenue_ledger (
          brand_id, ledger_event_id, order_id, event_type,
          amount_minor, currency_code, rounding_adjustment_minor,
-         occurred_at, economic_effective_at, billing_posted_period, recognition_label
-       ) VALUES ($1, $2, $3, 'provisional_recognition', 75000, 'INR', 0, $4, $4, $5, 'provisional')`,
+         occurred_at, occurred_date, economic_effective_at, billing_posted_period, recognition_label
+       ) VALUES ($1, $2, $3, 'provisional_recognition', 75000, 'INR', 0, $4, (timezone('UTC',$4::timestamptz))::date, $4, $5, 'provisional')`,
       [BRAND_F2, randomUUID(), orderF2Overdue, pastDate.toISOString(), pastPeriod],
     );
 
@@ -991,8 +991,8 @@ describe('10. F-SEC-01 fix — list_active_brand_ids() enumerates brands, job fi
       `INSERT INTO realized_revenue_ledger (
          brand_id, ledger_event_id, order_id, event_type,
          amount_minor, currency_code, rounding_adjustment_minor,
-         occurred_at, economic_effective_at, billing_posted_period, recognition_label
-       ) VALUES ($1, $2, $3, 'provisional_recognition', 20000, 'INR', 0, $4, $4, $5, 'provisional')`,
+         occurred_at, occurred_date, economic_effective_at, billing_posted_period, recognition_label
+       ) VALUES ($1, $2, $3, 'provisional_recognition', 20000, 'INR', 0, $4, (timezone('UTC',$4::timestamptz))::date, $4, $5, 'provisional')`,
       [BRAND_F2, randomUUID(), orderF2WithRto, pastDate.toISOString(), pastPeriod],
     );
 
@@ -1001,8 +1001,8 @@ describe('10. F-SEC-01 fix — list_active_brand_ids() enumerates brands, job fi
       `INSERT INTO realized_revenue_ledger (
          brand_id, ledger_event_id, order_id, event_type,
          amount_minor, currency_code, rounding_adjustment_minor,
-         occurred_at, economic_effective_at, billing_posted_period, recognition_label
-       ) VALUES ($1, $2, $3, 'rto_reversal', -20000, 'INR', 0, NOW(), NOW(), $4, 'finalized')`,
+         occurred_at, occurred_date, economic_effective_at, billing_posted_period, recognition_label
+       ) VALUES ($1, $2, $3, 'rto_reversal', -20000, 'INR', 0, NOW(), (timezone('UTC',NOW()::timestamptz))::date, NOW(), $4, 'finalized')`,
       [BRAND_F2, randomUUID(), orderF2WithRto, toBillingPostedPeriod(new Date())],
     );
   });
@@ -1107,15 +1107,14 @@ describe('10. F-SEC-01 fix — list_active_brand_ids() enumerates brands, job fi
             `INSERT INTO realized_revenue_ledger (
                brand_id, ledger_event_id, order_id, brain_id,
                event_type, amount_minor, currency_code, fx_rate_id,
-               rounding_adjustment_minor, occurred_at, economic_effective_at,
+               rounding_adjustment_minor, occurred_at, occurred_date, economic_effective_at,
                billing_posted_period, recognition_label,
                supersedes_ledger_event_id, raw_event_id
              ) VALUES (
                $1, $2, $3, NULL, 'finalization',
                $4::bigint, 'INR', NULL, 0::bigint,
-               $5, $5, $6, 'finalized', $7, NULL
-             ) ON CONFLICT (brand_id, order_id, event_type,
-               (timezone('UTC', occurred_at)::date)) WHERE event_type <> 'refund' DO NOTHING`,
+               $5, (timezone('UTC',$5::timestamptz))::date, $5, $6, 'finalized', $7, NULL
+             ) ON CONFLICT (brand_id, order_id, event_type, occurred_date) WHERE event_type <> 'refund' DO NOTHING`,
             [
               brand.id, eventId, prov.order_id, prov.amount_minor,
               now.toISOString(), toBillingPostedPeriod(now), prov.ledger_event_id,

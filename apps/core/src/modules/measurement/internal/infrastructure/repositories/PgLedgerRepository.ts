@@ -72,6 +72,7 @@ export class PgLedgerRepository {
           fx_rate_id,
           rounding_adjustment_minor,
           occurred_at,
+          occurred_date,
           economic_effective_at,
           billing_posted_period,
           recognition_label,
@@ -80,7 +81,7 @@ export class PgLedgerRepository {
           $1, $2, $3, $4, $5,
           $6::bigint, $7, NULL,
           $8::bigint,
-          $9, $10, $11, $12, $13
+          $9, (timezone('UTC', $9::timestamptz))::date, $10, $11, $12, $13
         )
         -- SEC-BF-M2: the dedup arbiter index (realized_revenue_ledger_dedup) was made PARTIAL in
         -- migration 0054 (WHERE event_type <> 'refund'). Postgres can only infer a partial index as
@@ -88,7 +89,7 @@ export class PgLedgerRepository {
         -- inference FAILS ("no unique or exclusion constraint matching the ON CONFLICT specification")
         -- on EVERY insert. Must stay byte-identical to apps/stream-worker LedgerWriter's clause (the
         -- drift-guard test ledger-conflict-parity.test.ts enforces this).
-        ON CONFLICT (brand_id, order_id, event_type, (timezone('UTC', occurred_at)::date)) WHERE event_type <> 'refund'
+        ON CONFLICT (brand_id, order_id, event_type, occurred_date) WHERE event_type <> 'refund'
         DO NOTHING
         RETURNING ledger_event_id`,
         [

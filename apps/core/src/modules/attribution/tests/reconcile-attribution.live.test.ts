@@ -47,10 +47,10 @@ async function seedLedgerRow(orderId: string, brainId: string | null, eventType:
   await pgPool.query(
     `INSERT INTO realized_revenue_ledger
        (brand_id, ledger_event_id, order_id, brain_id, event_type, amount_minor, currency_code,
-        occurred_at, economic_effective_at, billing_posted_period, recognition_label)
-     VALUES ($1,$2,$3,$4,$5,$6,'INR','2026-06-10Z','2026-06-10Z','2026-06',
+        occurred_at, occurred_date, economic_effective_at, billing_posted_period, recognition_label)
+     VALUES ($1,$2,$3,$4,$5,$6,'INR','2026-06-10Z',(timezone('UTC','2026-06-10Z'::timestamptz))::date,'2026-06-10Z','2026-06',
              CASE WHEN $5='provisional_recognition' THEN 'provisional' ELSE 'finalized' END)
-     ON CONFLICT (brand_id, ledger_event_id) DO NOTHING`,
+     ON CONFLICT (brand_id, ledger_event_id, occurred_date) DO NOTHING`,
     [BRAND, id, orderId, brainId, eventType, amount],
   );
   return id;

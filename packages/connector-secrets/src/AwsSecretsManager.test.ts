@@ -113,4 +113,41 @@ describe('AwsSecretsManager (HIGH-01/D-7/ADR-CM-4 — KMS CMK isolation)', () =>
     expect(cmd.input.SecretId).toBe(FAKE_ARN);
     expect(result).toEqual({ access_token: 'tok_test' });
   });
+
+  it('storeSecret UPSERT: ResourceExistsException → falls back to PutSecretValue, returns existing ARN (reconnect path)', async () => {
+    const { ResourceExistsException } = await import('@aws-sdk/client-secrets-manager');
+    const existsErr = new ResourceExistsException({ message: 'already exists', $metadata: {} });
+    // First call (CreateSecret) throws; second call (PutSecretValue) succeeds with the ARN.
+    sendMock
+      .mockRejectedValueOnce(existsErr)
+      .mockResolvedValueOnce({ ARN: FAKE_ARN });
+
+    const { AwsSecretsManager } = await import('./AwsSecretsManager.js');
+    const mgr = new AwsSecretsManager('us-east-1', 'arn:aws:secretsmanager:us-east-1:123:secret:shopify-client', KMS_KEY_ID);
+
+    // Must NOT throw — this is the reconnect path.
+    const result = await mgr.storeSecret(BRAND_ID, { connectorType: CONNECTOR_TYPE }, { api_key: 'k', api_secret: 's' });
+
+    expect(sendMock).toHaveBeenCalledTimes(2);
+    // Second call must be PutSecretValueCommand (not CreateSecretCommand).
+    const [putCmd] = sendMock.mock.calls[1]!;
+    expect(putCmd.input.SecretId).toBeDefined();
+    expect(putCmd.input.SecretString).toBe(JSON.stringify({ api_key: 'k', api_secret: 's' }));
+    // The returned ARN must be the one from PutSecretValue.
+    expect(result.arn).toBe(FAKE_ARN);
+  });
+
+  it('putSecretValue calls PutSecretValueCommand with the correct SecretId and SecretString', async () => {
+    sendMock.mockResolvedValue({ ARN: FAKE_ARN });
+
+    const { AwsSecretsManager } = await import('./AwsSecretsManager.js');
+    const mgr = new AwsSecretsManager('us-east-1', 'arn:aws:secretsmanager:us-east-1:123:secret:shopify-client', KMS_KEY_ID);
+
+    await mgr.putSecretValue(FAKE_ARN, { access_token: 'refreshed_tok' });
+
+    expect(sendMock).toHaveBeenCalledOnce();
+    const [cmd] = sendMock.mock.calls[0]!;
+    expect(cmd.input.SecretId).toBe(FAKE_ARN);
+    expect(cmd.input.SecretString).toBe(JSON.stringify({ access_token: 'refreshed_tok' }));
+  });
 });

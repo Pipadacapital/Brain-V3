@@ -58,6 +58,38 @@ describe('LocalSecretsManager — dev_secret write path (DEV-TOKEN-REACH)', () =
   });
 });
 
+describe('LocalSecretsManager — storeSecret UPSERT + putSecretValue (reconnect path)', () => {
+  it('storeSecret called twice with the same key does NOT throw and overwrites the value', async () => {
+    const mgr = new LocalSecretsManager(); // no pool — in-memory only
+    const brandId = 'aaaaaaaa-bbbb-cccc-dddd-000000000001';
+    const connectorRef = { connectorType: 'razorpay', subKey: 'rzp_test_account' };
+
+    const first = await mgr.storeSecret(brandId, connectorRef, { webhook_secret: 'old_secret' });
+    // REVERT-RED: remove the second storeSecret call and this test goes RED
+    const second = await mgr.storeSecret(brandId, connectorRef, { webhook_secret: 'new_secret' });
+
+    // Both calls must return the same ARN (NN-2: secret_ref must not change on reconnect).
+    expect(first.arn).toBe(second.arn);
+    expect(first.name).toBe(second.name);
+
+    // Reading back must return the overwritten value.
+    const stored = await mgr.getSecret(second.arn);
+    expect(stored?.['webhook_secret']).toBe('new_secret');
+  });
+
+  it('putSecretValue overwrites an existing in-memory secret by ARN', async () => {
+    const mgr = new LocalSecretsManager();
+    const brandId = 'aaaaaaaa-bbbb-cccc-dddd-000000000002';
+    const { arn } = await mgr.storeSecret(brandId, { connectorType: 'meta' }, { access_token: 'tok_old' });
+
+    await mgr.putSecretValue(arn, { access_token: 'tok_new', access_token_issued_at: '2026-06-22T00:00:00Z' });
+
+    const stored = await mgr.getSecret(arn);
+    expect(stored?.['access_token']).toBe('tok_new');
+    expect(stored?.['access_token_issued_at']).toBe('2026-06-22T00:00:00Z');
+  });
+});
+
 describe('LocalSecretsManager — prod-hard-fail (D-7)', () => {
   it('REVERT-RED: NODE_ENV=production → constructor throws [LocalSecretsManager] FATAL', () => {
     const prev = process.env['NODE_ENV'];

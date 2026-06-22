@@ -45,18 +45,21 @@ export async function exchangeLongLivedToken(
     throw new Error(`${META_APP_CREDS_MISSING}: META_APP_ID / META_APP_SECRET not configured`);
   }
 
-  // fb_exchange_token: a GET with the token in the query — but the token never lands in a LOG
-  // because we never log the URL (I-S09); only provider + connector id are logged by the caller.
-  const params = new URLSearchParams({
+  // SEC-AD-H1: client_secret + fb_exchange_token (the current access token) must ride the
+  // request BODY, never the URL query string — a secret in the URL lands in every
+  // reverse-proxy / ALB / CDN / WAF access log. POST + form-urlencoded body matches the
+  // pattern already used by HandleMetaOAuthCallbackCommand.exchangeCodeForToken (I-S09).
+  const requestBody = new URLSearchParams({
     grant_type: 'fb_exchange_token',
     client_id: appId,
     client_secret: appSecret,
     fb_exchange_token: currentToken,
   });
 
-  const res = await fetchImpl(`${OAUTH_URL}?${params.toString()}`, {
-    method: 'GET',
-    headers: { 'Content-Type': 'application/json' },
+  const res = await fetchImpl(OAUTH_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: requestBody.toString(),
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
 
@@ -64,13 +67,13 @@ export async function exchangeLongLivedToken(
     // 400/401/190 = the token is expired/invalid and cannot be extended → RECONNECT_REQUIRED.
     throw new Error(`${META_TOKEN_EXCHANGE_FAILED}: HTTP ${res.status}`);
   }
-  const body = (await res.json()) as { access_token?: string; expires_in?: number };
-  if (!body.access_token) {
+  const responseBody = (await res.json()) as { access_token?: string; expires_in?: number };
+  if (!responseBody.access_token) {
     throw new Error(`${META_TOKEN_EXCHANGE_FAILED}: no access_token in exchange response`);
   }
   return {
-    accessToken: body.access_token,
-    expiresInSeconds: typeof body.expires_in === 'number' ? body.expires_in : null,
+    accessToken: responseBody.access_token,
+    expiresInSeconds: typeof responseBody.expires_in === 'number' ? responseBody.expires_in : null,
   };
 }
 

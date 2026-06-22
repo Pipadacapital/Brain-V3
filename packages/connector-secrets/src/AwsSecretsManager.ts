@@ -31,7 +31,9 @@ import {
   SecretsManagerClient,
   GetSecretValueCommand,
   CreateSecretCommand,
+  PutSecretValueCommand,
   DeleteSecretCommand,
+  ResourceExistsException,
   type GetSecretValueCommandOutput,
 } from '@aws-sdk/client-secrets-manager';
 import type {
@@ -71,12 +73,16 @@ export class AwsSecretsManager implements ISecretsManager {
   ): Promise<SecretWriteResult> {
     const subKey = connectorRef.subKey ? `/${connectorRef.subKey.replace(/\./g, '-')}` : '';
     const name = `brain/connector/${connectorRef.connectorType}/${brandId}${subKey}`;
-    let response;
+    const secretString = JSON.stringify(credential);
+
+    // UPSERT: attempt Create; on ResourceExistsException (reconnect / repeated call) fall back
+    // to PutSecretValue so the ARN is preserved (NN-2: secret_ref in connector_instance must
+    // not change on reconnect). I-S09: secret string is never logged.
     try {
-      response = await this.client.send(
+      const response = await this.client.send(
         new CreateSecretCommand({
           Name: name,
-          SecretString: JSON.stringify(credential),
+          SecretString: secretString,
           // D-7/ADR-CM-4 (HIGH-01): KmsKeyId binds the secret to a customer-managed CMK.
           // The CMK's key policy enforces per-brand decryption isolation — without IAM
           // permission on this specific CMK, GetSecretValue is denied even with the ARN.
@@ -89,19 +95,55 @@ export class AwsSecretsManager implements ISecretsManager {
           ],
         }),
       );
+      const arn = response.ARN;
+      if (!arn) {
+        throw new Error(
+          `[AwsSecretsManager] CreateSecret returned no ARN for secret "${name}"`,
+        );
+      }
+      return { arn, name };
     } catch (err) {
+      // ResourceExistsException → secret already exists (reconnect path). Fall back to
+      // PutSecretValue, which updates the value on the existing ARN (NN-2 preserved).
+      if (err instanceof ResourceExistsException) {
+        const putResponse = await this.client.send(
+          new PutSecretValueCommand({
+            SecretId: name,
+            SecretString: secretString,
+          }),
+        );
+        const arn = putResponse.ARN;
+        if (!arn) {
+          throw new Error(
+            `[AwsSecretsManager] PutSecretValue returned no ARN for secret "${name}"`,
+          );
+        }
+        return { arn, name };
+      }
       // MED-03: do not include brand_id in error messages (linked identifier per COMPLIANCE.md).
       throw new Error(
         `[AwsSecretsManager] Failed to store secret for connector ${connectorRef.connectorType}: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
-    const arn = response.ARN;
-    if (!arn) {
+  }
+
+  async putSecretValue(
+    secretArn: string,
+    credential: Record<string, string>,
+  ): Promise<void> {
+    // I-S09: credential values are NEVER logged.
+    try {
+      await this.client.send(
+        new PutSecretValueCommand({
+          SecretId: secretArn,
+          SecretString: JSON.stringify(credential),
+        }),
+      );
+    } catch (err) {
       throw new Error(
-        `[AwsSecretsManager] CreateSecret returned no ARN for secret "${name}"`,
+        `[AwsSecretsManager] Failed to put secret value for "${secretArn}": ${err instanceof Error ? err.message : String(err)}`,
       );
     }
-    return { arn, name };
   }
 
   async getSecret(secretArn: string): Promise<Record<string, string> | null> {

@@ -72,6 +72,8 @@ import { PgSyncRequestRepository } from './modules/connector/sync/infrastructure
 import { RequestConnectorSyncCommand } from './modules/connector/sync/application/commands/RequestConnectorSyncCommand.js';
 import { registerShopifyWebhookRoutes } from './modules/connector/sources/storefront/shopify/interfaces/webhooks/shopifyWebhookHandler.js';
 import { registerRazorpayWebhookRoutes } from './modules/connector/sources/payment/razorpay/interfaces/webhooks/razorpayWebhookHandler.js';
+import { registerRazorpayConnectorRoutes } from './modules/connector/sources/payment/razorpay/interfaces/http/razorpayConnectorRoutes.js';
+import { RotateWebhookSecretCommand } from './modules/connector/sources/payment/razorpay/application/commands/RotateWebhookSecretCommand.js';
 import { registerShopfloWebhookRoutes } from './modules/connector/sources/checkout/shopflo/interfaces/webhooks/shopfloWebhookHandler.js';
 import { registerWooCommerceWebhookRoutes } from './modules/connector/sources/storefront/woocommerce/interfaces/webhooks/woocommerceWebhookHandler.js';
 import { registerShopifyConnectorRoutes } from './modules/connector/sources/storefront/shopify/interfaces/http/shopifyConnectorRoutes.js';
@@ -180,6 +182,38 @@ export async function main(): Promise<void> {
     secretsProvider.getSecret(jwtSigningSecretRef),
     secretsProvider.getSecret(cookieSecretRef),
   ]);
+
+  // ── App secrets: META_APP_SECRET + GOOGLE_ADS_CLIENT_SECRET (sub-fix 3) ─────
+  // In production these env vars hold AWS Secrets Manager ARNs; AwsSecretsProvider
+  // fetches the values at startup (fail-fast if absent — no silent drift).
+  // In dev they hold the raw values; LocalSecretsProvider returns them as-is.
+  // After resolution the values are written back to process.env so the existing
+  // command call sites (HandleMetaOAuthCallbackCommand, HandleGoogleAdsOAuthCallbackCommand,
+  // meta-token-client.ts) read the resolved values without further refactoring.
+  // FAIL-CLOSED: missing META_APP_SECRET in production → startup aborts.
+  if (isProduction) {
+    if (!process.env['META_APP_SECRET']) {
+      throw new Error(
+        '[core] FATAL: META_APP_SECRET must be set in production (ARN or Secrets Manager name). ' +
+          'HandleMetaOAuthCallbackCommand and the meta-token-refresh job require it.',
+      );
+    }
+    if (!process.env['GOOGLE_ADS_CLIENT_SECRET']) {
+      throw new Error(
+        '[core] FATAL: GOOGLE_ADS_CLIENT_SECRET must be set in production (ARN or Secrets Manager name). ' +
+          'HandleGoogleAdsOAuthCallbackCommand requires it.',
+      );
+    }
+  }
+  // Resolve (non-empty only — skip absent optional secrets in dev)
+  if (process.env['META_APP_SECRET']) {
+    const resolved = await secretsProvider.getSecret(process.env['META_APP_SECRET']);
+    process.env['META_APP_SECRET'] = resolved;
+  }
+  if (process.env['GOOGLE_ADS_CLIENT_SECRET']) {
+    const resolved = await secretsProvider.getSecret(process.env['GOOGLE_ADS_CLIENT_SECRET']);
+    process.env['GOOGLE_ADS_CLIENT_SECRET'] = resolved;
+  }
 
   // Load remaining configuration.
   const config = {
@@ -1619,6 +1653,31 @@ export async function main(): Promise<void> {
       getBrandId: (req) => getBrandId(req as Parameters<typeof getBrandId>[0]),
       callbackUrl: config.googleAdsCallbackUrl,
       appBaseUrl: config.appBaseUrl,
+    });
+
+    // ── Razorpay webhook-secret rotation (C2 / ADR-RZ-8 — owner/admin only) ───
+    // POST /api/v1/connectors/razorpay/:id/rotate-webhook-secret
+    // Rotates ONLY the webhook_secret in the composite bundle; key_id/key_secret are
+    // preserved. The ARN (connector_instance.secret_ref) is unchanged (NN-2).
+    const rotateWebhookSecretCmd = new RotateWebhookSecretCommand(
+      connectorSecretsManager,
+      connectorRepo,
+    );
+    registerRazorpayConnectorRoutes(scope, {
+      rotateWebhookSecret: rotateWebhookSecretCmd,
+      getBrandId: (req) => getBrandId(req as Parameters<typeof getBrandId>[0]),
+      onRotated: async (brandId, connectorInstanceId) => {
+        await auditWriter.append({
+          brand_id: brandId,
+          actor_id: null,
+          actor_role: 'admin',
+          action: 'connector.webhook_secret_rotated',
+          entity_type: 'connector_instance',
+          entity_id: connectorInstanceId,
+          payload: { connector_type: 'razorpay' },
+          // NO old_secret, NO new_secret in payload (I-S02/I-S09)
+        });
+      },
     });
 
     // Generic disconnect (ADR-CM-3 / Sec-C3 / Sec-C4 audit)

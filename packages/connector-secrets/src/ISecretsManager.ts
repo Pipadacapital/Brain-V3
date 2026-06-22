@@ -34,8 +34,9 @@ export interface ISecretsManager {
   // for back-compat but not called by new code.
 
   /**
-   * Store a connector credential generically.
-   * In prod: every write uses EncryptionContext: { brand_id, connector_type } (D-7).
+   * Store (UPSERT) a connector credential generically.
+   * Creates the secret if it does not exist; updates the value if it does (no throw on
+   * ResourceExistsException / reconnect). In prod: every write uses KmsKeyId (D-7).
    * Returns the ARN for storage in connector_instance.secret_ref.
    * The credential values NEVER reach the caller after this call (I-S09).
    *
@@ -48,6 +49,22 @@ export interface ISecretsManager {
     connectorRef: ConnectorSecretRef,
     credential: Record<string, string>,
   ): Promise<SecretWriteResult>;
+
+  /**
+   * Update the value of an existing secret by ARN (PutSecretValue semantics).
+   * Used when the ARN is already known (e.g. token rotation write-back) and the caller
+   * must NOT change the secret's metadata (tags, KMS key, name). Fails if the secret
+   * does not exist — callers that need create-or-update should use storeSecret instead.
+   *
+   * I-S09: credential values MUST NOT be logged by callers.
+   *
+   * @param secretArn  ARN stored in connector_instance.secret_ref.
+   * @param credential Key-value credential map (replaces the stored secret string).
+   */
+  putSecretValue(
+    secretArn: string,
+    credential: Record<string, string>,
+  ): Promise<void>;
 
   /**
    * Retrieve a stored connector credential by its ARN.

@@ -28,6 +28,7 @@ import {
   META_APP_CREDS_MISSING,
 } from './meta-token-client.js';
 import { log } from '../../log.js';
+import type { ISecretsManager } from '@brain/connector-secrets';
 
 /** Dev secret bundle for a Meta connector (extends the repull's bundle with the issued-at clock). */
 interface MetaSecretBundle {
@@ -61,10 +62,28 @@ async function readBundle(pool: Pool, secretRef: string): Promise<MetaSecretBund
 }
 
 /**
- * Write the refreshed bundle back. DEV: upsert dev_secret (the repull reads it the same way).
- * PROD: this is the seam for AwsSecretsManager.PutSecretValue(secretRef, JSON) — additive, prod-only.
+ * Write the refreshed bundle back.
+ *
+ * PROD: uses ISecretsManager.putSecretValue(secretRef, bundle) — writes the refreshed token
+ *       to AWS Secrets Manager under the same ARN (NN-2: ARN unchanged). Tokens never expire
+ *       silently because the write-back keeps the stored token fresh.
+ * DEV:  upserts dev_secret (the repull reads it the same way; cross-process durable).
+ *
+ * I-S09: bundle values are NEVER logged.
  */
-async function writeBundle(pool: Pool, secretRef: string, bundle: MetaSecretBundle): Promise<void> {
+async function writeBundle(
+  pool: Pool,
+  secretRef: string,
+  bundle: MetaSecretBundle,
+  secretsManager?: ISecretsManager,
+): Promise<void> {
+  if (secretsManager) {
+    // PROD seam: PutSecretValue on the existing ARN — preserves the ARN stored in
+    // connector_instance.secret_ref (NN-2). putSecretValue is the UPSERT from sub-fix 1.
+    await secretsManager.putSecretValue(secretRef, bundle as unknown as Record<string, string>);
+    return;
+  }
+  // DEV fallback: upsert into dev_secret so the repull job reads the fresh token.
   const name = secretRef.split(':secret:')[1] ?? secretRef;
   await pool.query(
     `INSERT INTO dev_secret (name, secret_value) VALUES ($1, $2)
@@ -74,17 +93,22 @@ async function writeBundle(pool: Pool, secretRef: string, bundle: MetaSecretBund
 }
 
 /**
- * Run one refresh pass. Exported + parameterised (nowMs, fetchImpl) for deterministic tests.
+ * Run one refresh pass. Exported + parameterised (nowMs, fetchImpl, secretsManager) for deterministic tests.
  *
- * @param pool         brain_app pool (enumerate is SECURITY DEFINER; dev_secret read/write is system).
- * @param nowMs        current time (injectable).
- * @param thresholdDays age at which a token is re-exchanged.
+ * @param pool           brain_app pool (enumerate is SECURITY DEFINER; dev_secret read/write is system).
+ * @param nowMs          current time (injectable).
+ * @param thresholdDays  age at which a token is re-exchanged.
+ * @param fetchImpl      fetch implementation (injectable for tests).
+ * @param secretsManager optional ISecretsManager for prod write-back. When provided (prod),
+ *                       the refreshed bundle is written to AWS Secrets Manager via putSecretValue.
+ *                       When absent (dev), the bundle is written to dev_secret as before.
  */
 export async function runMetaTokenRefresh(
   pool: Pool,
   nowMs: number = Date.now(),
   thresholdDays: number = DEFAULT_REFRESH_AGE_DAYS,
   fetchImpl: typeof fetch = fetch,
+  secretsManager?: ISecretsManager,
 ): Promise<MetaTokenRefreshReport> {
   const report: MetaTokenRefreshReport = {
     scanned: 0,
@@ -114,11 +138,16 @@ export async function runMetaTokenRefresh(
 
       try {
         const { accessToken } = await exchangeLongLivedToken(bundle.access_token, fetchImpl);
-        await writeBundle(pool, secretRef, {
-          ...bundle,
-          access_token: accessToken,
-          access_token_issued_at: new Date(nowMs).toISOString(),
-        });
+        await writeBundle(
+          pool,
+          secretRef,
+          {
+            ...bundle,
+            access_token: accessToken,
+            access_token_issued_at: new Date(nowMs).toISOString(),
+          },
+          secretsManager,
+        );
         report.refreshed += 1;
         incrementCounter('meta_token_refresh_total', { provider: 'meta' });
         log.info(`[meta-token-refresh] refreshed connector=${ciId} brand=${brandId}`);
@@ -156,7 +185,25 @@ export async function runMetaTokenRefresh(
 if (import.meta.url === `file://${process.argv[1]}`) {
   const dbUrl = process.env['BRAIN_APP_DATABASE_URL'] ?? process.env['DATABASE_URL'] ?? 'postgres://brain_app:brain_app@localhost:5432/brain';
   const pool = new Pool({ connectionString: dbUrl, max: 2 });
-  runMetaTokenRefresh(pool)
+
+  // PROD write-back seam (sub-fix 4): wire AwsSecretsManager so refreshed tokens are written
+  // to Secrets Manager (not just dev_secret). Requires CONNECTOR_SECRETS_KMS_KEY_ID in prod.
+  // In dev SHOPIFY_CLIENT_SECRET is absent → secretsMgr is undefined → dev_secret path.
+  let secretsMgr: ISecretsManager | undefined;
+  const isProductionEnv = process.env['NODE_ENV'] === 'production';
+  if (isProductionEnv) {
+    const { AwsSecretsManager } = await import('@brain/connector-secrets');
+    const region = process.env['AWS_REGION'] ?? 'us-east-1';
+    const clientSecretArn = process.env['SHOPIFY_CLIENT_SECRET'] ?? '';
+    const kmsKeyId = process.env['CONNECTOR_SECRETS_KMS_KEY_ID'] ?? '';
+    if (!clientSecretArn || !kmsKeyId) {
+      log.error('[meta-token-refresh] FATAL: SHOPIFY_CLIENT_SECRET + CONNECTOR_SECRETS_KMS_KEY_ID required in prod for Secrets Manager write-back');
+      process.exit(1);
+    }
+    secretsMgr = new AwsSecretsManager(region, clientSecretArn, kmsKeyId);
+  }
+
+  runMetaTokenRefresh(pool, Date.now(), DEFAULT_REFRESH_AGE_DAYS, fetch, secretsMgr)
     .then((r) => { void pool.end(); process.exit(r.errors > 0 ? 1 : 0); })
     .catch((err) => { log.error('[meta-token-refresh] fatal', { err }); void pool.end(); process.exit(1); });
 }

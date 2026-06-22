@@ -57,7 +57,24 @@ const LIVE_TOPIC = process.env['COLLECTOR_TOPIC'] ?? `${ENV}.${COLLECTOR_EVENT_V
 const REGION_CODE = process.env['BRAIN_REGION_CODE'] ?? 'IN';
 
 const ORDERS_CURSOR_RESOURCE = 'orders.repull' as const;
-const ORDERS_WINDOW_MS = 90 * 24 * 60 * 60 * 1000; // 90-day trailing window (storefront backfill)
+
+/**
+ * Backfill depth: configurable via WOOCOMMERCE_BACKFILL_DAYS env var (integer days).
+ * Defaults to 90 days. Accepts 1–730 (clamped). Example: WOOCOMMERCE_BACKFILL_DAYS=180.
+ */
+function resolveBackfillDepthMs(): number {
+  const envDays = process.env['WOOCOMMERCE_BACKFILL_DAYS'];
+  if (envDays) {
+    const parsed = parseInt(envDays, 10);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      const clamped = Math.min(Math.max(parsed, 1), 730);
+      return clamped * 24 * 60 * 60 * 1000;
+    }
+  }
+  return 90 * 24 * 60 * 60 * 1000; // default: 90-day trailing window (storefront backfill)
+}
+
+const ORDERS_WINDOW_MS = resolveBackfillDepthMs();
 
 interface WooConnectorRow {
   connector_instance_id: string;
@@ -365,4 +382,4 @@ if (process.argv[1]?.endsWith('run.ts') || process.argv[1]?.endsWith('run.js')) 
   });
 }
 
-export { enumerateConnectors, setSyncState, ORDERS_CURSOR_RESOURCE, ORDERS_WINDOW_MS };
+export { enumerateConnectors, setSyncState, ORDERS_CURSOR_RESOURCE, ORDERS_WINDOW_MS, resolveBackfillDepthMs };

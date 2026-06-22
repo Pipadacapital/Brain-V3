@@ -9,6 +9,8 @@
  *   4. serveCustomerScore writes EXACTLY ONE ml.prediction_log row (append-only) and is cross-brand
  *      isolated — another brand's GUC sees neither the score nor the logged prediction. When the brand
  *      has a Gold score row it returns has_data; otherwise the honest no_data path.
+ *   5. [EVAL GATE] promoteModel to production blocks a sklearn model with sub-baseline AUC (0.01)
+ *      via EvalGateError — the historical gap where any metrics could ship is closed.
  *
  * REQUIRES: Postgres (migration 0083 applied) + StarRocks :9030 with brain_gold.gold_customer_scores.
  * StarRocks-dependent assertions degrade to the honest no_data path if no score row exists.
@@ -23,6 +25,7 @@ import {
   serveCustomerScore,
   ModelNotFoundError,
   InvalidModelStageError,
+  EvalGateError,
 } from '../index.js';
 
 const SUPERUSER_URL = process.env['DATABASE_URL'] ?? 'postgres://brain:brain@localhost:5432/brain';
@@ -45,6 +48,8 @@ let srPool: mysql.Pool;
 let pgAvailable = false;
 let prodModelA = '';
 let stagingModelA = '';
+/** A sklearn staging model with auc=0.01 — should be blocked by the eval gate. */
+let subBaselineModelA = '';
 
 async function seed(): Promise<void> {
   await superPool.query(
@@ -77,6 +82,14 @@ async function seed(): Promise<void> {
     [BRAND_A, NAME],
   );
   stagingModelA = staging.rows[0]!.model_id;
+
+  // A sklearn staging model with auc=0.01 — the historical gap. The eval gate must block this.
+  const subBaseline = await superPool.query<{ model_id: string }>(
+    `INSERT INTO ml.model_registry (brand_id, name, version, stage, framework, metrics)
+     VALUES ($1, $2, 'v2-subbaseline', 'staging', 'sklearn', '{"auc":0.01,"precision":0.05,"recall":0.05,"f1":0.05,"accuracy":0.3}'::jsonb) RETURNING model_id`,
+    [BRAND_A, NAME],
+  );
+  subBaselineModelA = subBaseline.rows[0]!.model_id;
 }
 
 async function cleanup(): Promise<void> {
@@ -228,5 +241,32 @@ describe('ml platform (live)', () => {
     const isoRes = await serveCustomerScore(BRAND_B, scoredBrainId, CORR, { pool: dbPool, srPool });
     expect(isoRes.state).toBe('no_data'); // BRAND_B cannot see another brand's Gold score row
     expect(await predictionCount(BRAND_B)).toBe(isoBefore); // nothing logged for BRAND_B
+  });
+
+  it('5. [EVAL GATE] promoteModel blocks a sklearn model with sub-baseline metrics (auc=0.01)', async () => {
+    if (!pgAvailable) return;
+
+    // The sub-baseline sklearn model (auc=0.01) must be rejected by the eval gate before any
+    // registry write — the registry stays unchanged (no promotion, no archive of the current prod).
+    const beforeCount = await productionCount(BRAND_A);
+
+    await expect(
+      promoteModel(
+        BRAND_A,
+        { modelId: subBaselineModelA, toStage: 'production' },
+        CORR,
+        { rawPool },
+      ),
+    ).rejects.toBeInstanceOf(EvalGateError);
+
+    // Registry invariant: no promotion happened; production count is unchanged.
+    expect(await productionCount(BRAND_A)).toBe(beforeCount);
+
+    // The sub-baseline model itself must still be in 'staging' stage (gate rolled back).
+    const statusRow = await superPool.query<{ stage: string }>(
+      `SELECT stage FROM ml.model_registry WHERE model_id = $1`,
+      [subBaselineModelA],
+    );
+    expect(statusRow.rows[0]?.stage).toBe('staging');
   });
 });

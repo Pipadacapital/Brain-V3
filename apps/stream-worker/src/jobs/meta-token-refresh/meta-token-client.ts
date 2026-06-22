@@ -12,9 +12,9 @@
  * callback uses), the new token kept in memory / handed back to the caller, never logged (I-S09).
  */
 import { CircuitBreaker } from '@brain/observability';
+import { GRAPH_OAUTH_URL } from '../meta-constants.js';
 
-const GRAPH_API_VERSION = 'v25.0';
-const OAUTH_URL = `https://graph.facebook.com/${GRAPH_API_VERSION}/oauth/access_token`;
+const OAUTH_URL = GRAPH_OAUTH_URL;
 const REQUEST_TIMEOUT_MS = 15_000;
 
 /**

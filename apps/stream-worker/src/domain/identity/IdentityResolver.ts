@@ -26,11 +26,30 @@ export const RULE_VERSION = 'v1-deterministic';
 export interface ExtractedIdentifier {
   // C2: device_id + anon_id (brain_anon_id) are RESOLUTION INPUTS in addition to the strong PII
   // identifiers. They are tier='medium' — see the resolve-only / never-merge gating in resolve().
-  type: 'email' | 'phone' | 'storefront_customer_id' | 'device_id' | 'anon_id';
-  hash: string;         // 64-hex SHA-256(salt ‖ normalized)
+  //
+  // connector-pre-hashed-identity: 'pre_hashed_email' | 'pre_hashed_phone' are STRONG identifiers
+  // contributed by connector mappers when the upstream provider already performed the hash. They
+  // share the same tier as their PII counterparts but live in a distinct identifier_type namespace
+  // so they never collide with salted first-party hashes in identity_link. The `preHashed` flag
+  // tells the resolver and repository to SKIP re-hashing — the hash is already the final value.
+  type: 'email' | 'phone' | 'storefront_customer_id' | 'device_id' | 'anon_id'
+      | 'pre_hashed_email' | 'pre_hashed_phone';
+  hash: string;         // 64-hex SHA-256(salt ‖ normalized) for standard ids, or the ALREADY-HASHED value for pre_hashed_* ids
   tier: 'strong' | 'strong_on_link' | 'medium' | 'weak';
   confidence: 'high' | 'low';
   rawValue?: string;    // ONLY for contact_pii write — never stored in identity_link
+  /**
+   * True when the hash was supplied pre-computed by the upstream provider / connector mapper and
+   * MUST NOT be re-hashed by the identity pipeline.
+   *
+   * When `preHashed === true`:
+   *   - The resolver accepts the value as-is (validates it is 64-hex, then uses it directly).
+   *   - No per-brand salt is applied (the upstream provider did not have the salt).
+   *   - `rawValue` is always undefined (there is no plaintext PII to write to contact_pii).
+   *   - The identifier_type in identity_link is 'pre_hashed_email' or 'pre_hashed_phone' so it
+   *     occupies a distinct namespace from salted first-party hashes (no cross-path collision).
+   */
+  preHashed?: boolean;
 }
 
 /** Existing identity_link row returned from DB (only hashed values). */

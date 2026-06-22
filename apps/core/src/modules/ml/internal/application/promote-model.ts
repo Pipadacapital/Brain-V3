@@ -43,6 +43,136 @@ export class InvalidModelStageError extends Error {
   }
 }
 
+/**
+ * Thrown when a candidate model's eval metrics fail the production baseline gate.
+ *
+ * The eval gate is a fail-safe guard: ANY candidate whose metrics are missing or below any
+ * configured baseline is blocked from production — regardless of subjective "looks better" signals.
+ * This closes the audit finding that auc=0.01 could ship (no gate existed).
+ *
+ * Baselines are intentionally conservative defaults; the team may raise them per model name via
+ * EVAL_GATE_BASELINES_JSON env (a JSON map of { "<name>": { "auc": <n>, ... } }) but may never
+ * set them below the FLOOR values defined in EVAL_GATE_METRIC_FLOORS.
+ */
+export class EvalGateError extends Error {
+  constructor(
+    modelId: string,
+    public readonly failures: Array<{ metric: string; actual: number | undefined; baseline: number }>,
+  ) {
+    const details = failures
+      .map((f) => `${f.metric}: actual=${f.actual ?? 'missing'}, required>=${f.baseline}`)
+      .join('; ');
+    super(`Model ${modelId} failed the production eval gate: ${details}`);
+    this.name = 'EvalGateError';
+  }
+}
+
+/**
+ * Absolute floor values for eval metrics — the gate may never be configured below these.
+ * These are the production safety guarantees; raising them is safe, lowering below floor is rejected.
+ *
+ * auc=0.5  = random classifier (no better than coin flip) — the historical gap allowed auc=0.01
+ * precision/recall = 0.1 — absolute minimum signal (floor, not target)
+ */
+export const EVAL_GATE_METRIC_FLOORS: Readonly<Record<string, number>> = {
+  auc: 0.5,
+  precision: 0.1,
+  recall: 0.1,
+  f1: 0.1,
+  accuracy: 0.5,
+};
+
+/**
+ * Default production baselines. Metrics present in a model's metrics jsonb MUST meet these.
+ * Metrics absent from baselines are IGNORED (additive: adding a new metric to a model never
+ * blocks promotion; the baseline must be explicitly set for a metric to be gated on it).
+ *
+ * OVERRIDE: set EVAL_GATE_BASELINES_JSON={"customer_churn_rfm":{"auc":0.75}} per-deployment.
+ * Per-name overrides REPLACE the default for that metric for that model name.
+ * Floor values (EVAL_GATE_METRIC_FLOORS) are always enforced on top of the configured baseline.
+ */
+export const DEFAULT_EVAL_BASELINES: Readonly<Record<string, number>> = {
+  auc: 0.6,
+  precision: 0.5,
+  recall: 0.5,
+  f1: 0.5,
+  accuracy: 0.6,
+};
+
+/** Parse the EVAL_GATE_BASELINES_JSON env var (per-model override map). Silently returns {} on parse error. */
+function loadBaselineOverrides(): Record<string, Record<string, number>> {
+  const raw = process.env['EVAL_GATE_BASELINES_JSON'];
+  if (!raw) return {};
+  try {
+    return JSON.parse(raw) as Record<string, Record<string, number>>;
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Run the eval gate for a candidate model's metrics jsonb before production promotion.
+ *
+ * For each metric in DEFAULT_EVAL_BASELINES (or per-model override):
+ *   1. If the metric is absent from the candidate's metrics → fail (missing eval evidence).
+ *   2. If the metric is below the per-name baseline (or default, whichever is higher after floor) → fail.
+ *
+ * Deterministic-framework models (e.g. rule-based scorers) are EXEMPT: deterministic models have
+ * no learned metric to eval-gate; they are promoted on explicit declaration. A model with
+ * framework='deterministic' skips the eval gate entirely (it ships by design, not by measurement).
+ *
+ * @effort deterministic — arithmetic over a jsonb metrics object, no model call.
+ */
+export function runEvalGate(
+  modelId: string,
+  modelName: string,
+  framework: string,
+  metrics: unknown,
+): void {
+  // Deterministic models bypass the eval gate (they have no learned metrics).
+  if (framework === 'deterministic') return;
+
+  const overrides = loadBaselineOverrides();
+  const nameOverrides = overrides[modelName] ?? {};
+
+  // Resolve the effective baseline for each metric: max(floor, configured).
+  // All metrics in the default set are gated unless the model name has a per-metric override of 0
+  // (which is still floored, so effectively the floor).
+  const metricsObj =
+    metrics !== null && typeof metrics === 'object' && !Array.isArray(metrics)
+      ? (metrics as Record<string, unknown>)
+      : {};
+
+  const failures: Array<{ metric: string; actual: number | undefined; baseline: number }> = [];
+
+  for (const [metric, defaultBaseline] of Object.entries(DEFAULT_EVAL_BASELINES)) {
+    const floor = EVAL_GATE_METRIC_FLOORS[metric] ?? 0;
+    const configured = nameOverrides[metric] ?? defaultBaseline;
+    const effective = Math.max(floor, configured);
+
+    const rawActual = metricsObj[metric];
+    // Skip metrics not present in the model's metrics (additive gate: only gate on declared metrics
+    // that are in the default baseline set and present on the model). If a default-gated metric is
+    // completely absent from the model's metrics, treat it as a failure (missing eval evidence).
+    if (rawActual === undefined) {
+      // Only fail on absent metrics for metrics that ARE in the default baseline (not per-model extras).
+      // This prevents gating a model on metrics it was never evaluated on.
+      // For our canonical baselines (auc/precision/recall/f1/accuracy), absence = insufficient evidence.
+      failures.push({ metric, actual: undefined, baseline: effective });
+      continue;
+    }
+
+    const actual = typeof rawActual === 'number' ? rawActual : NaN;
+    if (isNaN(actual) || actual < effective) {
+      failures.push({ metric, actual: isNaN(actual) ? undefined : actual, baseline: effective });
+    }
+  }
+
+  if (failures.length > 0) {
+    throw new EvalGateError(modelId, failures);
+  }
+}
+
 export interface PromoteModelInput {
   modelId: string;
   toStage: ModelStage;
@@ -103,17 +233,22 @@ export async function promoteModel(
     await beginRlsTxn(client, { correlationId, brandId });
 
     // (a) Resolve the target model under RLS + brand scope. Invisible/absent → not found, nothing written.
-    const target = await client.query<{ name: string }>(
-      `SELECT name FROM ml.model_registry WHERE model_id = $1 AND brand_id = $2`,
+    const target = await client.query<{ name: string; framework: string; metrics: unknown }>(
+      `SELECT name, framework, metrics FROM ml.model_registry WHERE model_id = $1 AND brand_id = $2`,
       [modelId, brandId],
     );
     if (target.rows.length === 0) {
       await client.query('ROLLBACK').catch(() => undefined);
       throw new ModelNotFoundError(modelId);
     }
-    const name = target.rows[0]!.name;
+    const { name, framework, metrics } = target.rows[0]!;
 
     if (toStage === 'production') {
+      // (a2) Eval gate — block promotion if the candidate's metrics fail the baseline.
+      //      Runs BEFORE any state mutation so a failed gate leaves the registry untouched.
+      //      EvalGateError propagates out of the try block → ROLLBACK is executed in catch.
+      runEvalGate(modelId, name, framework, metrics);
+
       // (b) Archive the CURRENT production model of the same (brand, name) — respects the
       //     partial-unique "one production per (brand,name)" invariant (model_registry_one_production).
       //     Excludes the target itself (a re-promote is a no-op on this step). Skips the target row.

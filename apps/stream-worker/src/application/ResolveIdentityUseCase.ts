@@ -99,7 +99,68 @@ export class ResolveIdentityUseCase {
     const rawAnonId = typeof props['brain_anon_id'] === 'string' ? props['brain_anon_id'] :
                      typeof props['anon_id'] === 'string' ? props['anon_id'] : null;
 
-    if (!rawEmail && !rawPhone && !storefrontCustomerId && !rawDeviceId && !rawAnonId) {
+    // ── SECONDARY EXTRACTION: connector-pre-hashed-identity ─────────────────────
+    // Connector order/checkout events (Shopify / WooCommerce / Shopflo) may carry identifiers
+    // that the upstream platform already hashed before delivery.  Re-hashing would produce a
+    // different 64-hex value than the one written by a first-party Pixel or storefront event
+    // for the same customer → two identity_link rows → split brain_id → LTV/CAC gap.
+    //
+    // We read ALREADY-HASHED values from properties under these standardised field names:
+    //   hashed_customer_email  / customer_email_hash  — 64-hex SHA-256 of normalised email
+    //   hashed_customer_phone  / customer_phone_hash  — 64-hex SHA-256 of normalised phone
+    // AND from the CanonicalEvent contract's optional `pre_hashed_identifiers` map (the preferred
+    // path for new mappers — see CanonicalPreHashedIdentifiers in @brain/connector-core).
+    //
+    // Validation: we accept ONLY well-formed 64 lowercase hex chars. Anything else is ignored
+    // (fail-safe: it falls back to the raw-value path above if the raw value is also present,
+    // or is silently dropped if there is no raw value either — no crash, no double-hash).
+    //
+    // Security: pre-hashed values are stored under identifier_type 'pre_hashed_email' /
+    // 'pre_hashed_phone' — a DISTINCT NAMESPACE from the salted first-party hashes
+    // (identifier_type 'email' / 'phone').  The two namespaces NEVER collide in identity_link,
+    // so a pre-hashed connector event can stitch to a later raw-email storefront event only when
+    // the SAME brain_id already holds BOTH the pre_hashed_email and the email link (written by
+    // the connector and pixel paths respectively).  This is exactly the continuity repair needed.
+    //
+    // rawValue is ALWAYS undefined for pre-hashed ids — there is no plaintext PII to vault.
+    const PRE_HASHED_REGEX = /^[0-9a-f]{64}$/;
+
+    // Read from properties (legacy field names used by existing connectors)
+    const rawPreHashedEmail: string | null = (() => {
+      for (const key of ['hashed_customer_email', 'customer_email_hash']) {
+        const v = props[key];
+        if (typeof v === 'string' && PRE_HASHED_REGEX.test(v)) return v;
+      }
+      return null;
+    })();
+
+    const rawPreHashedPhone: string | null = (() => {
+      for (const key of ['hashed_customer_phone', 'customer_phone_hash']) {
+        const v = props[key];
+        if (typeof v === 'string' && PRE_HASHED_REGEX.test(v)) return v;
+      }
+      return null;
+    })();
+
+    // Read from the CanonicalEvent's `pre_hashed_identifiers` map (preferred path for new mappers)
+    const canonicalPreHashed = (payload['pre_hashed_identifiers'] as Record<string, unknown>) ?? null;
+    const canonicalPreHashedEmail: string | null = (() => {
+      if (!canonicalPreHashed) return null;
+      const v = canonicalPreHashed['hashed_customer_email'];
+      return typeof v === 'string' && PRE_HASHED_REGEX.test(v) ? v : null;
+    })();
+    const canonicalPreHashedPhone: string | null = (() => {
+      if (!canonicalPreHashed) return null;
+      const v = canonicalPreHashed['hashed_customer_phone'];
+      return typeof v === 'string' && PRE_HASHED_REGEX.test(v) ? v : null;
+    })();
+
+    // Merge: canonical path wins over legacy properties path for the same type
+    const preHashedEmail = canonicalPreHashedEmail ?? rawPreHashedEmail;
+    const preHashedPhone = canonicalPreHashedPhone ?? rawPreHashedPhone;
+
+    if (!rawEmail && !rawPhone && !storefrontCustomerId && !rawDeviceId && !rawAnonId
+        && !preHashedEmail && !preHashedPhone) {
       return { outcome: 'no_identifiers', brandId, eventId };
     }
 
@@ -170,6 +231,38 @@ export class ResolveIdentityUseCase {
         tier: 'medium',     // resolve-only, never a merge key (IdentityResolver §3b)
         confidence: 'low',
         rawValue: undefined, // not PII
+      });
+    }
+
+    // ── connector-pre-hashed-identity: ALREADY-HASHED identifiers (STRONG, tier='strong') ────
+    // These come from connector order/checkout events where the upstream platform already hashed
+    // the PII before delivering the webhook.  The hash is accepted AS-IS (preHashed: true) — no
+    // per-brand salt is applied and no re-hashing occurs.  They live in a distinct
+    // identifier_type namespace ('pre_hashed_email' / 'pre_hashed_phone') in identity_link so
+    // they coexist safely with salted first-party hashes without collision.
+    //
+    // NOTE: the salt fetch above is still required (it may be used by other identifier types on
+    // this same event).  For a pure pre-hashed event (no raw identifiers) the salt is fetched
+    // but not applied to the pre-hashed values — that is intentional and correct.
+    if (preHashedEmail) {
+      identifiers.push({
+        type: 'pre_hashed_email',
+        hash: preHashedEmail,  // already the final 64-hex value — no further hashing
+        tier: 'strong',
+        confidence: 'high',
+        rawValue: undefined,   // no plaintext PII — cannot write to contact_pii vault
+        preHashed: true,
+      });
+    }
+
+    if (preHashedPhone) {
+      identifiers.push({
+        type: 'pre_hashed_phone',
+        hash: preHashedPhone,  // already the final 64-hex value — no further hashing
+        tier: 'strong',
+        confidence: 'high',
+        rawValue: undefined,   // no plaintext PII — cannot write to contact_pii vault
+        preHashed: true,
       });
     }
 

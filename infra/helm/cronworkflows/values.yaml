@@ -87,6 +87,19 @@ jobs:
     schedule: "40 * * * *"         # hourly at :40 — materialize Gold customer features → Redis online store
     command: ["node", "dist/jobs/feature-materialization/run.js"]
     useStreamWorkerImage: true
+  - name: feature-freshness-check
+    schedule: "55 * * * *"         # hourly at :55 — 15 min AFTER materialization; alarms on stale features
+    # Reads the per-brand freshness sentinel from Redis. Exits non-zero (Argo job fails, alert fires) if
+    # ANY brand's sentinel is absent (TTL expired = materialization missed) or the materialization lag
+    # exceeds FEATURE_FRESHNESS_SLO_SECONDS (26 h). Closes the silent-stale-feature gap.
+    # Idempotent: read-only (does NOT write). concurrencyPolicy=Forbid is sufficient; any overlap
+    # means a prior run is still checking → the current run is skipped, not doubled.
+    command: ["node", "dist/jobs/feature-freshness-check/run.js"]
+    useStreamWorkerImage: true
+    env:
+      # Override the freshness SLO window here if the materialization cadence changes.
+      # Must be >= the materialization interval; default matches FEATURE_FRESHNESS_SLO_SECONDS (26 h).
+      - { name: FEATURE_FRESHNESS_SLO_SECONDS, value: "93600" }
   - name: meta-token-refresh
     schedule: "0 3 * * *"          # daily 03:00 — proactively re-exchange Meta long-lived tokens
     command: ["node", "dist/jobs/meta-token-refresh/run.js"]

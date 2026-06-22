@@ -57,6 +57,7 @@ export type {
   CanonicalEvent,
   CanonicalMoney,
   CanonicalProvenance,
+  CanonicalPreHashedIdentifiers,
 } from './contracts/CanonicalEvent.js';
 
 // ── Shared utils ───────────────────────────────────────────────────────────────

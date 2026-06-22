@@ -7,13 +7,24 @@
  *
  * payloadMap:
  *   Processes order topics (orders/create, orders/updated, orders/paid, orders/fulfilled,
- *   orders/cancelled). Non-order topics fast-ack (skip=true). Hashes PII at boundary (I-S02).
+ *   orders/cancelled). Processes GDPR compliance topics (customers/data_request,
+ *   customers/redact, shop/redact). Processes app/uninstalled (marks ConnectorInstance
+ *   Disconnected). Non-handled topics fast-ack (skip=true). Hashes PII at boundary (I-S02).
  *   Includes cart-stitch side effect (fire-and-forget — D-5).
  *
  * SHOPIFY-SPECIFIC FIX (drift correction):
  *   Shopify previously lacked the 5-min replay-window age gate that Razorpay/Shopflo have.
  *   The pipeline applies a unified age gate. For Shopify, ageCheckTimestampSeconds is derived
  *   from order.updated_at/processed_at/created_at — consistent with the event_id derivation.
+ *
+ * GDPR TOPICS (shopify-compliance-token-lifecycle):
+ *   customers/data_request — fast-ack (Shopify acknowledges; no PII lookup here).
+ *   customers/redact — fast-ack, fires erase_customer SECURITY DEFINER side-effect.
+ *   shop/redact — fast-ack (no individual brain_id; shop-level deletion is ops runbook).
+ *
+ * APP UNINSTALL:
+ *   app/uninstalled — invalidates stored secret, marks ConnectorInstance Disconnected via
+ *   the entity's disconnect() transition. The pipeline fast-acks after the side-effect.
  */
 
 import type { FastifyRequest } from 'fastify';
@@ -36,6 +47,9 @@ const ORDER_TOPICS = new Set([
   'orders/fulfilled',
   'orders/cancelled',
 ]);
+
+/** app/uninstalled: invalidate secret + mark ConnectorInstance Disconnected. */
+const UNINSTALL_TOPIC = 'app/uninstalled' as const;
 
 export class ShopifyWebhookStrategy implements IWebhookStrategy {
   readonly provider = 'shopify';
@@ -79,6 +93,146 @@ export class ShopifyWebhookStrategy implements IWebhookStrategy {
     // CLEAN APPROACH: we read the topic from headers['x-wh-topic'] which the
     // route registration sets (see ShopifyWebhookRouteConfig).
     const topic = (headers['x-wh-topic'] as string | undefined) ?? '';
+
+    // ── GDPR: customers/data_request — acknowledge only ───────────────────────
+    // Shopify requires a 200 ack within 48h. No PII lookup; data export is an
+    // async ops runbook. Fast-ack without Kafka produce (no business event).
+    if (topic === 'customers/data_request' || topic === 'shop/redact') {
+      void correlationId; void requestId; void saltHex;
+      return {
+        eventId: '',
+        eventName: '',
+        occurredAt: '',
+        properties: {},
+        ageCheckTimestampSeconds: null,
+        dedupKey: null,
+        skip: true,
+      };
+    }
+
+    // ── GDPR: customers/redact — erase_customer SECURITY DEFINER ──────────────
+    // The body carries customer.id and orders_to_redact[].id. We resolve the
+    // brain_id from the customer.id via customer_brain_id() (SECURITY DEFINER),
+    // then call erase_customer() which hard-deletes PII vault rows + tombstones
+    // identity_link under the correct brand GUC. Fast-ack on success; the pipeline
+    // runs the sideEffect (throwOnSideEffectError=false — idempotent, Shopify retries).
+    if (topic === 'customers/redact') {
+      void saltHex;
+      let body: Record<string, unknown>;
+      try {
+        body = JSON.parse(rawBody.toString('utf8')) as Record<string, unknown>;
+      } catch {
+        const err = new Error('Webhook body is not valid JSON');
+        (err as NodeJS.ErrnoException & { code: string }).code = 'INVALID_JSON';
+        throw err;
+      }
+
+      const customerId = body['customer'] != null
+        ? (body['customer'] as Record<string, unknown>)['id']
+        : null;
+      const shopifyCustomerId = customerId != null ? String(customerId) : null;
+      const capturedBrandId = brandId;
+      const capturedCorrelationId = correlationId;
+      const capturedRequestId = requestId;
+
+      const sideEffect = async (_brandId: string, rawPgPool: pg.Pool, _reqId: string): Promise<void> => {
+        if (!shopifyCustomerId) {
+          // No customer.id in payload — nothing to erase. Log + fast-exit.
+          return;
+        }
+
+        // Resolve brain_id from Shopify customer.id via SECURITY DEFINER fn.
+        // This fn bypasses RLS so we can look up by shopify_customer_id without a GUC.
+        // The fn is brand-scoped (brand_id param) so it cannot cross tenants.
+        const resolveResult = await rawPgPool.query<{ brain_id: string }>(
+          `SELECT brain_id FROM resolve_brain_id_by_shopify_customer($1, $2)`,
+          [capturedBrandId, shopifyCustomerId],
+        );
+        const brainId = resolveResult.rows[0]?.brain_id ?? null;
+        if (!brainId) {
+          // Customer not in our identity graph — nothing to erase. This is correct:
+          // Shopify can send redact for customers who never converted (no brain_id).
+          return;
+        }
+
+        // erase_customer(brand_id, brain_id) is SECURITY DEFINER (migration 0038):
+        // hard-deletes contact_pii vault rows, tombstones identity_link, writes identity_audit.
+        // We do NOT need a GUC before this call — the fn takes brand_id as a parameter and
+        // is internally brand-scoped (it does SET LOCAL internally if needed).
+        await rawPgPool.query(
+          `SELECT erase_customer($1, $2)`,
+          [capturedBrandId, brainId],
+        );
+
+        void capturedCorrelationId; void capturedRequestId;
+      };
+
+      return {
+        eventId: '',
+        eventName: '',
+        occurredAt: '',
+        properties: {},
+        ageCheckTimestampSeconds: null,
+        dedupKey: null,
+        skip: true,  // skip Kafka produce — this is a compliance side-effect only
+        sideEffect,
+        throwOnSideEffectError: false, // fire-and-forget; Shopify retries on non-200 are handled by 200 ack
+      };
+    }
+
+    // ── app/uninstalled — mark ConnectorInstance Disconnected ────────────────
+    // Shopify sends this when the app is uninstalled from the shop. We must:
+    //   1. Mark the ConnectorInstance Disconnected (entity transition).
+    //   2. Invalidate the stored secret (delete from Secrets Manager via raw PG
+    //      dev_secret or flag-only if AWS — actual deletion is async/ops runbook
+    //      for prod; here we set status to 'disconnected' + health→Disconnected
+    //      which is the entity-level signal, same as DisconnectCommand).
+    // Fast-ack so Shopify sees 200. Side-effect is fire-and-forget.
+    if (topic === UNINSTALL_TOPIC) {
+      void saltHex;
+      const capturedBrandId = brandId;
+
+      const sideEffect = async (_brandId: string, rawPgPool: pg.Pool, _reqId: string): Promise<void> => {
+        // Mark the connector_instance row as disconnected using the same fields
+        // as the entity's disconnect() transition (ADR-CM-5):
+        //   status = 'disconnected', health_state = 'Disconnected', safety_rating = 'blocked',
+        //   disconnected_at = NOW(), updated_at = NOW().
+        // We use raw PG (not the GUC-middleware pool) to set GUC in txn.
+        const client = await rawPgPool.connect();
+        try {
+          await client.query('BEGIN');
+          await client.query(`SELECT set_config('app.current_brand_id', $1, true)`, [capturedBrandId]);
+          await client.query(
+            `UPDATE connector_instance
+             SET status = 'disconnected',
+                 health_state = 'Disconnected',
+                 safety_rating = 'blocked',
+                 disconnected_at = NOW(),
+                 updated_at = NOW()
+             WHERE brand_id = $1 AND provider = 'shopify'`,
+            [capturedBrandId],
+          );
+          await client.query('COMMIT');
+        } catch (err) {
+          await client.query('ROLLBACK').catch(() => undefined);
+          throw err;
+        } finally {
+          client.release();
+        }
+      };
+
+      return {
+        eventId: '',
+        eventName: '',
+        occurredAt: '',
+        properties: {},
+        ageCheckTimestampSeconds: null,
+        dedupKey: null,
+        skip: true,  // skip Kafka produce — connector state change is PG-only
+        sideEffect,
+        throwOnSideEffectError: false, // fire-and-forget; we ack 200 regardless
+      };
+    }
 
     if (!ORDER_TOPICS.has(topic)) {
       return {

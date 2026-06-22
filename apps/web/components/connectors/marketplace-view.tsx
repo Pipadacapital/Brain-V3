@@ -184,52 +184,15 @@ function TileStatusIndicator({ tile, instance }: { tile: MarketplaceTile; instan
 /** Soft-gate reason copy for connecting a real store before email is verified. */
 const VERIFY_TO_CONNECT = 'Verify your email to connect a store';
 
-// ── Per-provider credential field sets (C2 / ADR-RZ-8 + GoKwik/Shopflo Track C) ──
-// A field marked secret=true is stored in the backend secret bundle and NEVER echoed
-// back to the client (type="password", autoComplete="off"). Non-secret fields are
-// merchant identifiers visible in the provider dashboard. The backend bundles all
-// fields under ONE secret_ref per connector.
-interface CredentialField {
-  key: string;
-  label: string;
-  placeholder: string;
-  secret: boolean;
-}
+// ── Per-provider credential field sets (C2 / ADR-RZ-8 + GoKwik/Shopflo Track C + WooCommerce) ──
+// Extracted to credential-fields.ts for unit-testability. Imported here for use within
+// ConnectorTile, and re-exported for any sibling that needs the pure function.
+import { credentialFieldsFor as _credentialFieldsFor } from './credential-fields';
+export type { CredentialField } from './credential-fields';
+export { credentialFieldsFor } from './credential-fields';
 
-const RAZORPAY_FIELDS: CredentialField[] = [
-  { key: 'key_id', label: 'Key ID', placeholder: 'rzp_live_XXXXXXXX', secret: false },
-  { key: 'key_secret', label: 'Key Secret', placeholder: '••••••••••••', secret: true },
-  { key: 'webhook_secret', label: 'Webhook Secret', placeholder: '••••••••••••', secret: true },
-  { key: 'razorpay_account_id', label: 'Account ID', placeholder: 'acc_XXXXXXXX', secret: false },
-];
-
-// Shopflo self-serve: static API Access Token + Merchant-ID + the webhook shared
-// secret the merchant pastes from Dashboard → Settings → Integrations. api_token +
-// webhook_secret are secrets; merchant_id is the (non-secret) merchant identifier.
-const SHOPFLO_FIELDS: CredentialField[] = [
-  { key: 'api_token', label: 'API Access Token', placeholder: '••••••••••••', secret: true },
-  { key: 'merchant_id', label: 'Merchant ID', placeholder: 'merchant_XXXXXXXX', secret: false },
-  { key: 'webhook_secret', label: 'Webhook Secret', placeholder: '••••••••••••', secret: true },
-];
-
-// GoKwik: static appid/appsecret (both partner-issued). appsecret is the secret; appid
-// is the (non-secret) app identifier used for AWB re-pull enumeration.
-const GOKWIK_FIELDS: CredentialField[] = [
-  { key: 'appid', label: 'App ID', placeholder: 'app_XXXXXXXX', secret: false },
-  { key: 'appsecret', label: 'App Secret', placeholder: '••••••••••••', secret: true },
-];
-
-/** Resolve a provider's credential fields; defaults to Razorpay's set for any other credential tile. */
-function credentialFieldsFor(tileId: string): CredentialField[] {
-  switch (tileId) {
-    case 'shopflo':
-      return SHOPFLO_FIELDS;
-    case 'gokwik':
-      return GOKWIK_FIELDS;
-    default:
-      return RAZORPAY_FIELDS;
-  }
-}
+// Local alias so ConnectorTile can call it without the re-export indirection.
+const credentialFieldsFor = _credentialFieldsFor;
 
 function ConnectorTile({ tile, readinessLock }: { tile: MarketplaceTile; readinessLock?: string | null }) {
   const { mutate: connect, isPending: isConnecting } = useConnectConnector();

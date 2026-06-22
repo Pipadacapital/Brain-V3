@@ -38,6 +38,20 @@ models:
       - name: lifecycle_state
         tests: [not_null]
 
+  - name: snap_attribution_credit
+    description: >
+      Daily attribution-result history snapshot (DB-AUDIT C3/H6 F8). INCREMENTAL, append-per-day, keyed
+      (brand_id, credit_id, snapshot_date) — reproduce attribution as-of a report date + compare model
+      versions over time. Completes the history layer (order/customer/attribution). Populates once
+      attribution flows (journey-stitch + reconcile on finalized orders).
+    columns:
+      - name: brand_id
+        tests: [not_null]
+      - name: credit_id
+        tests: [not_null]
+      - name: snapshot_date
+        tests: [not_null]
+
   - name: gold_customer_scores
     description: >
       Deterministic RFM + churn-risk customer scoring (DB-AUDIT C5, non-ML). Latest feature snapshot per

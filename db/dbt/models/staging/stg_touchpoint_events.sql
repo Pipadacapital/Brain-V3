@@ -37,7 +37,8 @@
 --   bronze_source='iceberg' → the raw Iceberg collector_events catalog; we apply the journey
 --                             event-type filter HERE (the shim's WHERE moves into staging).
 -- Both expose payload as a JSON string with the SAME .properties.* shape → identical extraction.
-{% set bronze_source = var('bronze_source', env_var('BRONZE_OPERATIONAL_READ_SOURCE', 'pg')) %}
+{# DB-AUDIT C4: default is 'iceberg' — PG bronze_events is retired (dropped). 'pg' remains as a legacy escape only. #}
+{% set bronze_source = var('bronze_source', env_var('BRONZE_OPERATIONAL_READ_SOURCE', 'iceberg')) %}
 with raw as (
 
     {% if bronze_source == 'iceberg' %}

@@ -25,6 +25,8 @@
 import type { Pool } from 'pg';
 import { gradeReconciliation } from './grade.js';
 import type { DqCheckRow } from './writer.js';
+import { BRAND_PREDICATE, ICEBERG_BRONZE, type SilverReader } from './silver-reader.js';
+import { log } from '../../log.js';
 
 const NIL_UUID = '00000000-0000-0000-0000-000000000000';
 
@@ -33,67 +35,79 @@ export const MAX_PROVENANCE_ORPHANS = 50;
 
 export const PROVENANCE_TARGET = 'bronze_vs_gold.realized_revenue';
 
+/**
+ * DB-AUDIT C4: Bronze is now the Iceberg SoR (StarRocks), while the ledger stays in PG — so this is a
+ * cross-store check. We fetch DISTINCT ledger order_ids (PG, brand-scoped GUC) and DISTINCT Bronze
+ * order_ids (StarRocks, brand-scoped seam) and compute the orphan set in app code (per-brand order
+ * cardinality is bounded). An orphan = a ledger order_id with NO order.* event in Bronze → a "Bronze
+ * is source of truth" violation.
+ */
 export async function bronzeLedgerProvenanceCheck(
   pool: Pool,
+  silver: SilverReader | null,
   brandId: string,
 ): Promise<DqCheckRow[]> {
+  if (silver === null) {
+    return [{ brandId, category: 'reconciliation', target: PROVENANCE_TARGET, grade: 'D', score: null,
+      observed: 'bronze_unreachable', threshold: String(MAX_PROVENANCE_ORPHANS), passing: false }];
+  }
+
+  // ── Ledger order_ids (PG, brand-scoped under GUC) ──────────────────────────
+  const ledgerOrderIds: string[] = [];
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    // GUC BEFORE the brand-scoped reads (NN-1 / RLS FORCE — brain_app, never superuser).
     await client.query(
       `SELECT set_config('app.current_brand_id', $1, true),
               set_config('app.current_user_id', $2, true),
               set_config('app.current_workspace_id', $2, true)`,
       [brandId, NIL_UUID],
     );
-
-    // Orphans = DISTINCT ledger order_ids with NO matching order.* event in Bronze for this brand.
-    // order_id lives at payload->'properties'->>'order_id' on order.* collector events (COALESCE the
-    // top-level form for legacy/synthetic payloads — same extraction as the reconciliation check).
-    const r = await client.query<{ orphans: string; ledger_orders: string }>(
-      `WITH ledger_orders AS (
-         SELECT DISTINCT order_id
-           FROM realized_revenue_ledger
-          WHERE brand_id = $1
-       ),
-       bronze_orders AS (
-         SELECT DISTINCT COALESCE(payload->'properties'->>'order_id', payload->>'order_id') AS order_id
-           FROM bronze_events
-          WHERE brand_id = $1
-            AND event_type LIKE 'order.%'
-            AND COALESCE(payload->'properties'->>'order_id', payload->>'order_id') IS NOT NULL
-       )
-       SELECT
-         COUNT(*) FILTER (WHERE b.order_id IS NULL)::text AS orphans,
-         COUNT(*)::text                                   AS ledger_orders
-       FROM ledger_orders l
-       LEFT JOIN bronze_orders b ON b.order_id = l.order_id`,
+    const r = await client.query<{ order_id: string | null }>(
+      `SELECT DISTINCT order_id FROM realized_revenue_ledger WHERE brand_id = $1`,
       [brandId],
     );
+    for (const row of r.rows) if (row.order_id != null) ledgerOrderIds.push(row.order_id);
     await client.query('COMMIT');
-
-    const orphans = Number(r.rows[0]?.orphans ?? '0');
-    const ledgerOrders = Number(r.rows[0]?.ledger_orders ?? '0');
-    const outcome = gradeReconciliation(orphans, MAX_PROVENANCE_ORPHANS);
-
-    return [
-      {
-        brandId,
-        category: 'reconciliation',
-        target: PROVENANCE_TARGET,
-        grade: outcome.grade,
-        score: outcome.score,
-        // observed encodes both the orphan count and the ledger population it was measured against.
-        observed: `orphans=${orphans} of ${ledgerOrders} ledger_orders`,
-        threshold: String(MAX_PROVENANCE_ORPHANS),
-        passing: outcome.passing,
-      },
-    ];
   } catch (err) {
     await client.query('ROLLBACK').catch(() => undefined);
     throw err;
   } finally {
     client.release();
   }
+
+  // ── Bronze order_ids (Iceberg SoR via StarRocks, brand-scoped at the seam) ──
+  const bronzeOrderIds = new Set<string>();
+  try {
+    const br = await silver.scopedQuery<{ order_id: string | null }>(
+      brandId,
+      `SELECT DISTINCT COALESCE(get_json_string(payload, '$.properties.order_id'), get_json_string(payload, '$.order_id')) AS order_id
+         FROM ${ICEBERG_BRONZE}
+        WHERE ${BRAND_PREDICATE}
+          AND event_type LIKE 'order.%'`,
+    );
+    for (const row of br) if (row.order_id != null) bronzeOrderIds.add(row.order_id);
+  } catch (err) {
+    log.error(`iceberg bronze provenance read failed brand=${brandId}`, { err: err });
+    return [{ brandId, category: 'reconciliation', target: PROVENANCE_TARGET, grade: 'D', score: null,
+      observed: 'bronze_unreachable', threshold: String(MAX_PROVENANCE_ORPHANS), passing: false }];
+  }
+
+  const orphans = ledgerOrderIds.filter((id) => !bronzeOrderIds.has(id)).length;
+  const ledgerOrders = ledgerOrderIds.length;
+  const outcome = gradeReconciliation(orphans, MAX_PROVENANCE_ORPHANS);
+
+  return [
+    {
+      brandId,
+      category: 'reconciliation',
+      target: PROVENANCE_TARGET,
+      grade: outcome.grade,
+      score: outcome.score,
+      // observed encodes both the orphan count and the ledger population it was measured against.
+      observed: `orphans=${orphans} of ${ledgerOrders} ledger_orders`,
+      threshold: String(MAX_PROVENANCE_ORPHANS),
+      passing: outcome.passing,
+    },
+  ];
 }

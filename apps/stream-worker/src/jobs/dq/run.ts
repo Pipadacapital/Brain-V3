@@ -55,11 +55,11 @@ export async function runDqChecksForBrand(
 
   const executors: Array<() => Promise<DqCheckRow[]>> = [
     () => freshnessCheck(pool, silver, brandId, now),
-    () => completenessCheck(pool, brandId),
-    () => schemaValidityCheck(pool, brandId),
+    () => completenessCheck(pool, silver, brandId),
+    () => schemaValidityCheck(pool, silver, brandId),
     () => reconciliationCheck(pool, silver, brandId),
     // P2.4: Bronze→Gold rebuildability proof — ledger order_ids must trace to a Bronze order event.
-    () => bronzeLedgerProvenanceCheck(pool, brandId),
+    () => bronzeLedgerProvenanceCheck(pool, silver, brandId),
   ];
 
   for (const exec of executors) {

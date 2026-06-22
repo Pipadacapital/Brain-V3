@@ -17,7 +17,7 @@
 import type { Pool } from 'pg';
 import { gradeFreshness } from './grade.js';
 import type { DqCheckRow } from './writer.js';
-import { BRAND_PREDICATE, type SilverReader } from './silver-reader.js';
+import { BRAND_PREDICATE, ICEBERG_BRONZE, type SilverReader } from './silver-reader.js';
 import { log } from "../../log.js";
 
 const NIL_UUID = '00000000-0000-0000-0000-000000000000';
@@ -91,12 +91,8 @@ export async function freshnessCheck(
       [brandId, NIL_UUID],
     );
 
-    const bronze = await client.query<{ latest: Date | null }>(
-      `SELECT MAX(ingested_at) AS latest FROM bronze_events WHERE brand_id = $1`,
-      [brandId],
-    );
-    rows.push(toRow(brandId, 'bronze_events', bronze.rows[0]?.latest ?? null, now));
-
+    // bronze_events freshness moved to the Iceberg Bronze SoR (read via StarRocks below). Only the
+    // operational connector_sync_status remains a PG freshness target.
     const sync = await client.query<{ latest: Date | null }>(
       `SELECT MAX(last_sync_at) AS latest FROM connector_sync_status WHERE brand_id = $1`,
       [brandId],
@@ -110,8 +106,25 @@ export async function freshnessCheck(
     client.release();
   }
 
-  // ── Silver target (StarRocks, brand-scoped at the seam) ────────────────────
+  // ── Lakehouse targets (StarRocks: Iceberg Bronze + Silver, brand-scoped at the seam) ──
+  // bronze_events freshness now reads the Iceberg Bronze SoR (collector_events), NOT PG.
   if (silver !== null) {
+    // Bronze (Iceberg) freshness.
+    try {
+      const br = await silver.scopedQuery<{ latest: string | null }>(
+        brandId,
+        `SELECT MAX(ingested_at) AS latest FROM ${ICEBERG_BRONZE} WHERE ${BRAND_PREDICATE}`,
+      );
+      const raw = br[0]?.latest ?? null;
+      rows.push(toRow(brandId, 'bronze_events', raw ? new Date(raw) : null, now));
+    } catch (err) {
+      log.error(`iceberg bronze freshness read failed brand=${brandId}`, { err: err });
+      rows.push({
+        brandId, category: 'freshness', target: 'bronze_events', grade: 'D', score: null,
+        observed: 'unreachable', threshold: String(FRESHNESS_SLA_MINUTES['bronze_events'] ?? 60), passing: false,
+      });
+    }
+    // Silver freshness.
     try {
       const sr = await silver.scopedQuery<{ latest: string | null }>(
         brandId,
@@ -135,6 +148,13 @@ export async function freshnessCheck(
         passing: false,
       });
     }
+  } else {
+    // No StarRocks wired → bronze_events (now lakehouse-only) is unknown → honest D (never a false A+).
+    // silver.order_state is skipped (not emitted) when Silver is disabled — matching prior behavior.
+    rows.push({
+      brandId, category: 'freshness', target: 'bronze_events', grade: 'D', score: null,
+      observed: 'unreachable', threshold: String(FRESHNESS_SLA_MINUTES['bronze_events'] ?? 60), passing: false,
+    });
   }
 
   return rows;

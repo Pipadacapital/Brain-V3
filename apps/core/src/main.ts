@@ -229,11 +229,6 @@ export async function main(): Promise<void> {
     // (order-status-mix, journey, attribution-via-Silver) to 500 with ER_ACCESS_DENIED on a
     // fresh `pnpm dev`. Prod FAILS CLOSED if unset (never reuse the known weak dev password).
     starrocksPassword: requireEnvInProd('STARROCKS_ANALYTICS_PASSWORD', 'brain_analytics_dev'),
-    // Slice 5 (ADR-0002): which Bronze source the OPERATIONAL reads (data/tracking health, recent
-    // events, orders) use — 'pg' (bronze_events, default) or 'iceberg' (collector_events via the
-    // StarRocks external catalog + the withSilverBrand brand-isolation seam). Flag-gated + reversible;
-    // flip per-env to 'iceberg' once parity is proven, ahead of retiring the PG Bronze write (Slice 6).
-    bronzeOperationalReadSource: getEnv('BRONZE_OPERATIONAL_READ_SOURCE', 'pg'),
   };
 
   // Create Fastify instance.
@@ -607,7 +602,7 @@ export async function main(): Promise<void> {
   registerWorkspaceRoutes(app, authService, workspaceService);
   registerBrandRoutes(app, authService, brandService);
   registerMemberRoutes(app, authService, inviteService, rawPgPool);
-  registerBffRoutes(app, authService, pool, config.cookieSecret, rateLimiter, rawPgPool, onboardingService, srPool, piiVaultService, config.bronzeOperationalReadSource === 'iceberg' ? 'iceberg' : 'pg');
+  registerBffRoutes(app, authService, pool, config.cookieSecret, rateLimiter, rawPgPool, onboardingService, srPool, piiVaultService);
 
   // D13: consent write + can_contact() gate-probe routes (brand-scoped, session-guarded).
   // grant/withdraw record the append-only consent SoR; check runs the default-closed

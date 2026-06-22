@@ -41,13 +41,18 @@ function exactRatioString(numerator: bigint, denominator: bigint, fractionalDigi
  * deterministic journey channel (paid_meta/paid_google/…); the ad_spend_ledger stores
  * the platform. This is the deterministic join key for per-channel ROAS.
  */
+// Keys MUST be the real ad-spend platform literals (@brain/ad-spend-mapper AdPlatform =
+// 'meta' | 'google_ads'). The previous 'google' key never matched the 'google_ads' spend literal,
+// so Google spend fell through to 'paid' and Google per-channel ROAS was wrong (attributed
+// paid_google revenue showed ∞/null ROAS with zero matched spend). 'tiktok' is forward-compat for
+// when TikTok spend lands. A parity test asserts every AdPlatform literal has a mapping here.
 const PLATFORM_TO_CHANNEL: Readonly<Record<string, string>> = {
   meta: 'paid_meta',
-  google: 'paid_google',
+  google_ads: 'paid_google',
   tiktok: 'paid_tiktok',
 } as const;
 
-function platformToChannel(platform: string): string {
+export function platformToChannel(platform: string): string {
   return PLATFORM_TO_CHANNEL[platform] ?? 'paid';
 }
 

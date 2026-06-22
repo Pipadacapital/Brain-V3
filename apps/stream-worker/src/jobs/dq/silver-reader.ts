@@ -38,6 +38,14 @@ export interface SilverReader {
 
 export const BRAND_PREDICATE = '${BRAND_PREDICATE}';
 
+/**
+ * The Iceberg Bronze event table in the StarRocks external catalog (same instance the SilverReader
+ * connects to). DB-AUDIT C4: the DQ checks read Bronze from the lakehouse (the Bronze SoR), NOT the
+ * retired PG data_plane.bronze_events. Catalog name is env-overridable so prod can point at the Glue
+ * catalog without code change (mirrors analytics _bronze-source.ts ICEBERG_BRONZE).
+ */
+export const ICEBERG_BRONZE = `${process.env['STARROCKS_BRONZE_CATALOG'] ?? 'brain_bronze_local'}.brain_bronze.collector_events`;
+
 export function createSilverReader(config: SilverReaderConfig): SilverReader {
   const pool = mysql.createPool({
     host: config.host,
@@ -65,6 +73,13 @@ export function createSilverReader(config: SilverReaderConfig): SilverReader {
         // server-trusted UUID from list_active_brand_ids()).
         const safeBrand = brandId.replace(/[^0-9a-fA-F-]/g, '');
         await conn.query(`SET @brain_current_brand_id = '${safeBrand}'`);
+        // DB-AUDIT M1 — fail CLOSED: a query missing the sentinel would run cross-brand (String.replace
+        // no-ops). Refuse rather than leak.
+        if (!sql.includes(BRAND_PREDICATE)) {
+          throw new Error(
+            'SilverReader.scopedQuery: query missing the ${BRAND_PREDICATE} sentinel — refusing to run un-scoped.',
+          );
+        }
         const finalSql = sql.replace(BRAND_PREDICATE, 'brand_id = ?');
         const finalParams = [...params, brandId];
         const [rows] = await conn.query(finalSql, finalParams);

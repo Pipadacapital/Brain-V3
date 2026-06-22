@@ -37,7 +37,8 @@
 --   bronze_source='iceberg' → the raw Iceberg collector_events catalog; we apply the journey
 --                             event-type filter HERE (the shim's WHERE moves into staging).
 -- Both expose payload as a JSON string with the SAME .properties.* shape → identical extraction.
-{% set bronze_source = var('bronze_source', env_var('BRONZE_OPERATIONAL_READ_SOURCE', 'pg')) %}
+{# DB-AUDIT C4: default is 'iceberg' — PG bronze_events is retired (dropped). 'pg' remains as a legacy escape only. #}
+{% set bronze_source = var('bronze_source', env_var('BRONZE_OPERATIONAL_READ_SOURCE', 'iceberg')) %}
 with raw as (
 
     {% if bronze_source == 'iceberg' %}
@@ -79,6 +80,10 @@ source as (
         get_json_string(pj, '$.properties.click_ids.fbclid') as fbclid,
         get_json_string(pj, '$.properties.click_ids.gclid')  as gclid,
         get_json_string(pj, '$.properties.click_ids.ttclid') as ttclid,
+        get_json_string(pj, '$.properties.click_ids.msclkid') as msclkid,
+        get_json_string(pj, '$.properties.click_ids.gbraid')  as gbraid,
+        get_json_string(pj, '$.properties.click_ids.wbraid')  as wbraid,
+        get_json_string(pj, '$.properties.click_ids.dclid')   as dclid,
         get_json_string(pj, '$.properties.referrer')        as referrer,
         get_json_string(pj, '$.properties.landing_path')    as landing_path,
         -- Richer activity signal (comprehensive auto-instrumentation): page classification + the
@@ -131,6 +136,10 @@ select
     fbclid,
     gclid,
     ttclid,
+    msclkid,
+    gbraid,
+    wbraid,
+    dclid,
     referrer,
     landing_path,
     page_type,

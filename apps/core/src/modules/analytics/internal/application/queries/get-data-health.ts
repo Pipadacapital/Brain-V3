@@ -7,19 +7,19 @@
  *   - syncState:   connector_sync_status.state (latest row by last_sync_at)
  *   - lastSyncAt:  connector_sync_status.last_sync_at (latest)
  *
- * BRONZE SOURCE (ADR-0002 Slice 5, flag-gated + reversible):
- *   - 'pg' (default): reads bronze_events inside withBrandTxn (Postgres RLS GUC).
- *   - 'iceberg': reads collector_events from the StarRocks external Iceberg catalog through the
- *     withSilverBrand seam (brand predicate injected at ${BRAND_PREDICATE} — the SAME isolation
- *     mechanism the metric-engine Silver reads use; a caller cannot forget the predicate).
- * connector_sync_status is NOT a Bronze table — it stays on Postgres in BOTH modes.
+ * BRONZE SOURCE (ADR-0002 Slice 5): the PG bronze_events table is RETIRED — Iceberg is the SOLE
+ * source. Reads collector_events from the StarRocks external Iceberg catalog through the
+ * withSilverBrand seam (brand predicate injected at ${BRAND_PREDICATE} — the SAME isolation
+ * mechanism the metric-engine Silver reads use; a caller cannot forget the predicate).
+ * connector_sync_status is NOT a Bronze table — it stays on Postgres.
  *
- * F-SEC-02: the PG path reads inside withBrandTxn (GUC, RLS-enforced); the Iceberg path is
- * brand-scoped by the withSilverBrand seam. Honest-empty: 'no_data' only when NO Bronze rows exist.
+ * F-SEC-02: the Iceberg path is brand-scoped by the withSilverBrand seam. Honest-empty: 'no_data'
+ * only when NO Bronze rows exist (or StarRocks isn't wired).
  */
 
 import type { EngineDeps, SilverPool } from '@brain/metric-engine';
 import { withBrandTxn, withSilverBrand, BRAND_PREDICATE } from '@brain/metric-engine';
+import { hasSilver } from './_bronze-source.js';
 
 export interface DataHealthVolumeBucket {
   bucket: string; // 'YYYY-MM-DD'
@@ -43,10 +43,8 @@ const VOLUME_WINDOW_DAYS = 30;
 const ICEBERG_BRONZE = 'brain_bronze_local.brain_bronze.collector_events';
 
 export interface DataHealthDeps extends EngineDeps {
-  /** StarRocks pool — required only when bronzeSource is 'iceberg'. */
+  /** StarRocks pool — required to read the Iceberg Bronze catalog. Absent → honest no_data. */
   readonly srPool?: SilverPool;
-  /** Which Bronze source to read: 'pg' (default) | 'iceberg'. */
-  readonly bronzeSource?: 'pg' | 'iceberg';
 }
 
 /** Read the connector_sync_status row (latest) for the brand from Postgres (both modes). */
@@ -124,72 +122,18 @@ export async function getDataHealth(
   brandId: string,
   deps: DataHealthDeps,
 ): Promise<DataHealthResult> {
-  // ── Iceberg Bronze source (Slice 5) ────────────────────────────────────────
-  if (deps.bronzeSource === 'iceberg' && deps.srPool) {
-    const bronze = await readBronzeIceberg(deps.srPool, brandId);
-    if (!bronze.exists) return { state: 'no_data' };
-    const sync = await readSyncStatus(deps, brandId);
-    return {
-      state: 'has_data',
-      eventVolume: bronze.volume,
-      lastIngestAt: bronze.lastIngestAt,
-      syncState: sync.state,
-      lastSyncAt: sync.lastSyncAt,
-    };
-  }
+  // no StarRocks wired → honest no_data (PG bronze retired)
+  if (!hasSilver(deps)) return { state: 'no_data' };
 
-  // ── Postgres Bronze source (default) ────────────────────────────────────────
-  return withBrandTxn(deps.pool, brandId, async (client) => {
-    // EXISTS check — honest-empty (D-2). No bronze rows → no_data.
-    const existsResult = await client.query<{ exists: boolean }>(
-      `SELECT EXISTS(SELECT 1 FROM bronze_events WHERE brand_id = $1) AS exists`,
-      [brandId],
-    );
-    if (existsResult.rows[0]?.exists !== true) {
-      return { state: 'no_data' };
-    }
-
-    // Per-day event volume over a bounded window (VOLUME_WINDOW_DAYS — interval literal
-    // is a constant, never user-interpolated). occurred_at is the event timestamp.
-    const volumeResult = await client.query<{ bucket: Date; count: string }>(
-      `SELECT date_trunc('day', occurred_at)::date AS bucket,
-              COUNT(*)::text AS count
-       FROM bronze_events
-       WHERE brand_id = $1
-         AND occurred_at >= (now() - ($2::int * INTERVAL '1 day'))
-       GROUP BY 1
-       ORDER BY 1 ASC`,
-      [brandId, VOLUME_WINDOW_DAYS],
-    );
-
-    // Last ingest timestamp across all bronze rows (not window-bounded).
-    const ingestResult = await client.query<{ last_ingest_at: Date | null }>(
-      `SELECT MAX(ingested_at) AS last_ingest_at FROM bronze_events WHERE brand_id = $1`,
-      [brandId],
-    );
-
-    // Latest connector sync status for the brand (newest by last_sync_at).
-    // LEFT-of-nothing: a brand may have bronze rows but no connector_sync_status row yet.
-    const syncResult = await client.query<{ state: string | null; last_sync_at: Date | null }>(
-      `SELECT state, last_sync_at
-       FROM connector_sync_status
-       WHERE brand_id = $1
-       ORDER BY last_sync_at DESC NULLS LAST
-       LIMIT 1`,
-      [brandId],
-    );
-
-    const syncRow = syncResult.rows[0];
-
-    return {
-      state: 'has_data',
-      eventVolume: volumeResult.rows.map((row) => ({
-        bucket: row.bucket.toISOString().split('T')[0] as string,
-        count: row.count,
-      })),
-      lastIngestAt: ingestResult.rows[0]?.last_ingest_at?.toISOString() ?? null,
-      syncState: syncRow?.state ?? null,
-      lastSyncAt: syncRow?.last_sync_at?.toISOString() ?? null,
-    };
-  });
+  // ── Iceberg Bronze source — brand-isolated via the withSilverBrand seam ────────────
+  const bronze = await readBronzeIceberg(deps.srPool, brandId);
+  if (!bronze.exists) return { state: 'no_data' };
+  const sync = await readSyncStatus(deps, brandId);
+  return {
+    state: 'has_data',
+    eventVolume: bronze.volume,
+    lastIngestAt: bronze.lastIngestAt,
+    syncState: sync.state,
+    lastSyncAt: sync.lastSyncAt,
+  };
 }

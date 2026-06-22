@@ -22,49 +22,19 @@ import type { Pool } from 'pg';
 import { incrementCounter } from '@brain/observability';
 import { gradeReconciliation } from './grade.js';
 import type { DqCheckRow } from './writer.js';
-import { BRAND_PREDICATE, type SilverReader } from './silver-reader.js';
+import { BRAND_PREDICATE, ICEBERG_BRONZE, type SilverReader } from './silver-reader.js';
 import { log } from "../../log.js";
-
-const NIL_UUID = '00000000-0000-0000-0000-000000000000';
 
 /** Frozen reconciliation tolerance: max tolerated |bronze - silver| order-count delta. */
 export const MAX_ROW_DELTA = 100;
 
 export async function reconciliationCheck(
-  pool: Pool,
+  _pool: Pool,
   silver: SilverReader | null,
   brandId: string,
 ): Promise<DqCheckRow[]> {
-  // ── Bronze order count (Postgres, brand-scoped under GUC) ──────────────────
-  let bronzeOrders = 0;
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    await client.query(
-      `SELECT set_config('app.current_brand_id', $1, true),
-              set_config('app.current_user_id', $2, true),
-              set_config('app.current_workspace_id', $2, true)`,
-      [brandId, NIL_UUID],
-    );
-    // order_id lives at payload->'properties'->>'order_id' on order.* collector events
-    // (Shopify order envelope). COALESCE the top-level form for legacy/synthetic payloads.
-    const r = await client.query<{ n: string }>(
-      `SELECT COUNT(DISTINCT COALESCE(payload->'properties'->>'order_id', payload->>'order_id'))::text AS n
-         FROM bronze_events
-        WHERE brand_id = $1
-          AND event_type LIKE 'order.%'
-          AND COALESCE(payload->'properties'->>'order_id', payload->>'order_id') IS NOT NULL`,
-      [brandId],
-    );
-    bronzeOrders = Number(r.rows[0]?.n ?? '0');
-    await client.query('COMMIT');
-  } catch (err) {
-    await client.query('ROLLBACK').catch(() => undefined);
-    throw err;
-  } finally {
-    client.release();
-  }
-
+  // DB-AUDIT C4: both tiers now read StarRocks — Bronze from the Iceberg SoR (collector_events),
+  // Silver from brain_silver. No StarRocks → cannot measure either side → honest D.
   if (silver === null) {
     return [
       {
@@ -74,6 +44,36 @@ export async function reconciliationCheck(
         grade: 'D',
         score: null,
         observed: 'silver_disabled',
+        threshold: String(MAX_ROW_DELTA),
+        passing: false,
+      },
+    ];
+  }
+
+  // ── Bronze order count (Iceberg Bronze via StarRocks, brand-scoped at the seam) ──
+  // order_id lives at payload.properties.order_id on order.* events (COALESCE the top-level form
+  // for legacy/synthetic payloads). collector_events.payload is a JSON string → get_json_string.
+  let bronzeOrders = 0;
+  try {
+    const br = await silver.scopedQuery<{ n: string | number }>(
+      brandId,
+      `SELECT COUNT(DISTINCT COALESCE(get_json_string(payload, '$.properties.order_id'), get_json_string(payload, '$.order_id'))) AS n
+         FROM ${ICEBERG_BRONZE}
+        WHERE ${BRAND_PREDICATE}
+          AND event_type LIKE 'order.%'`,
+    );
+    bronzeOrders = Number(br[0]?.n ?? 0);
+  } catch (err) {
+    log.error(`iceberg bronze reconciliation read failed brand=${brandId}`, { err: err });
+    incrementCounter('dq_silver_lag_breach_total', { reason: 'bronze_unreachable' });
+    return [
+      {
+        brandId,
+        category: 'reconciliation',
+        target: 'bronze_vs_silver.order_state',
+        grade: 'D',
+        score: null,
+        observed: 'bronze_unreachable',
         threshold: String(MAX_ROW_DELTA),
         passing: false,
       },

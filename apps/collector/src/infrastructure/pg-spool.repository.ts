@@ -85,6 +85,22 @@ export class PgSpoolRepository implements SpoolRepository {
     );
   }
 
+  async reapDrained(olderThanSeconds: number): Promise<number> {
+    // DELETE only already-drained rows past the trail window; bounded scan via
+    // idx_collector_spool_drained (partial WHERE status='drained'). Disposable once produced.
+    const result = await this.pool.query<{ n: string }>(
+      `WITH del AS (
+         DELETE FROM collector_spool
+          WHERE status = 'drained'
+            AND drained_at < now() - make_interval(secs => $1)
+         RETURNING 1
+       )
+       SELECT count(*)::text AS n FROM del`,
+      [olderThanSeconds],
+    );
+    return Number(result.rows[0]?.n ?? '0');
+  }
+
   async ping(): Promise<boolean> {
     try {
       await this.pool.query('SELECT 1');

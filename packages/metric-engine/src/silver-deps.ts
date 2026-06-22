@@ -129,6 +129,16 @@ export async function withSilverBrand<T>(
       async runScoped<R = Record<string, unknown>>(sql: string, params: unknown[] = []): Promise<R[]> {
         let finalSql: string;
         let finalParams: unknown[];
+        // DB-AUDIT M1 — fail CLOSED: String.replace silently no-ops if the sentinel is absent, which
+        // would run a query cross-brand with no error (a latent P0 tenant leak). Require the sentinel
+        // unless explicitly disabled (the mutation/negative-control proof). One forgotten ${BRAND_
+        // PREDICATE} now throws at the seam instead of leaking.
+        if (!disable && !sql.includes(BRAND_PREDICATE)) {
+          throw new Error(
+            'silver runScoped: query is missing the ${BRAND_PREDICATE} sentinel — refusing to run ' +
+              'un-scoped (would be cross-brand). Add `WHERE ... ${BRAND_PREDICATE}` to the query.',
+          );
+        }
         if (disable) {
           // Mutation/negative-control path: strip the predicate entirely → cross-brand.
           finalSql = sql.replace(BRAND_PREDICATE, '1 = 1');

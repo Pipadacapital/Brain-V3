@@ -58,3 +58,14 @@ PROPERTIES (
 --   FROM brain_bronze_local.brain_bronze.collector_events
 --  WHERE brand_id = '00000000-0000-0000-0000-000000000001'  -- test brand A
 --  GROUP BY brand_id;
+
+-- ────────────────────────────────────────────────────────────
+-- NEAR-REAL-TIME FRESHNESS — auto-refresh the Iceberg metadata cache.
+-- The continuous Spark sink (db/iceberg/spark/bronze_materialize.py) commits new Bronze snapshots
+-- every ~10s, but StarRocks serves a CACHED snapshot of the external Iceberg table — so a new commit
+-- is invisible to dashboards until the cache refreshes (proven: a freshly-committed pixel event was
+-- absent until `REFRESH EXTERNAL TABLE ...`). enable_background_refresh_connector_metadata is on by
+-- default (10-min interval); tighten it to 60s so operational dashboards (BRONZE_OPERATIONAL_READ_
+-- SOURCE=iceberg) reflect live pixel events within ~1 min without a manual REFRESH.
+ADMIN SET FRONTEND CONFIG ("enable_background_refresh_connector_metadata" = "true");
+ADMIN SET FRONTEND CONFIG ("background_refresh_metadata_interval_millis" = "60000");

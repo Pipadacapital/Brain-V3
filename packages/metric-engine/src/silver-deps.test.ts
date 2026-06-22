@@ -65,4 +65,15 @@ describe('withSilverBrand — Silver-unavailable degradation', () => {
     );
     expect(rows).toEqual([{ order_state: 'delivered', n: 3 }]);
   });
+
+  // DB-AUDIT M1 — fail-closed brand predicate.
+  it('THROWS when the query is missing the ${BRAND_PREDICATE} sentinel (never runs un-scoped)', async () => {
+    const pool = fakePool(() => Promise.resolve([[{ leaked: 'all brands' }], []]));
+    await expect(
+      withSilverBrand(pool, BRAND, (scope) =>
+        // No ${BRAND_PREDICATE} → would otherwise run cross-brand. Must throw, not leak.
+        scope.runScoped('SELECT * FROM silver_order_state'),
+      ),
+    ).rejects.toThrow(/BRAND_PREDICATE/);
+  });
 });

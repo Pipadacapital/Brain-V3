@@ -11,12 +11,13 @@
  * order.* event for the order_id — live order events are per-state rows keyed by updated_at, so the
  * most recent occurred_at is the current state.
  *
- * Read under withBrandTxn (RLS-scoped, brand_id from session — D-1; never manual WHERE — F-SEC-02).
+ * Read from the Iceberg collector_events catalog, brand-scoped by the withSilverBrand seam
+ * (brand_id from session — D-1; the seam injects the predicate — F-SEC-02).
  * Money is bigint-as-string minor units exactly as the mapper stored it (I-S07; no float, no /100).
  * PII posture: OrderProperties already carries only hashed identifiers — no raw email/phone here.
  */
-import { withBrandTxn, withSilverBrand, BRAND_PREDICATE } from '@brain/metric-engine';
-import { type BronzeReadDeps, ICEBERG_BRONZE, useIceberg } from './_bronze-source.js';
+import { withSilverBrand, BRAND_PREDICATE } from '@brain/metric-engine';
+import { type BronzeReadDeps, ICEBERG_BRONZE, hasSilver } from './_bronze-source.js';
 
 export interface OrderLineItemDto {
   sku: string | null;
@@ -148,7 +149,10 @@ export async function getOrderDetail(
   orderId: string,
   deps: BronzeReadDeps,
 ): Promise<OrderDetailResult> {
-  // ── Iceberg Bronze source (Slice 5): props comes back as a JSON STRING → parse it; the rest of
+  // no StarRocks wired → honest no_data (PG bronze retired)
+  if (!hasSilver(deps)) return { state: 'not_found', order_id: orderId };
+
+  // ── Iceberg Bronze source: props comes back as a JSON STRING → parse it; the rest of
   // the mapping below is shared. Brand isolation via the withSilverBrand seam (${BRAND_PREDICATE}).
   const fetchIceberg = async (
     deps2: BronzeReadDeps & { srPool: NonNullable<BronzeReadDeps['srPool']> },
@@ -170,21 +174,7 @@ export async function getOrderDetail(
     return { occurred_at: r.occurred_at instanceof Date ? r.occurred_at : new Date(r.occurred_at), props };
   };
 
-  const row = useIceberg(deps)
-    ? await fetchIceberg(deps)
-    : await withBrandTxn(deps.pool, brandId, async (client) => {
-    const result = await client.query<{ occurred_at: Date; props: RawProps | null }>(
-      `SELECT occurred_at, payload->'properties' AS props
-         FROM bronze_events
-        WHERE brand_id = $1
-          AND event_type LIKE 'order.%'
-          AND COALESCE(payload->'properties'->>'order_id', payload->>'order_id') = $2
-        ORDER BY occurred_at DESC
-        LIMIT 1`,
-      [brandId, orderId],
-    );
-    return result.rows[0] ?? null;
-  });
+  const row = await fetchIceberg(deps);
 
   if (!row || !row.props) {
     return { state: 'not_found', order_id: orderId };

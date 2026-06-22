@@ -26,7 +26,10 @@ export function parseQuery(href: string): Record<string, string> {
   return out;
 }
 
-const CLICK_ID_KEYS = ['fbclid', 'gclid', 'ttclid'] as const;
+// Acquisition click-ids captured at the edge. Capturing here is irreversible-if-missed: a click-id
+// not read off the landing URL is lost forever. msclkid (Bing), gbraid/wbraid (Google iOS app↔web),
+// dclid (Google Display) were missing → that paid traffic was misclassified as `direct`.
+const CLICK_ID_KEYS = ['fbclid', 'gclid', 'ttclid', 'msclkid', 'gbraid', 'wbraid', 'dclid'] as const;
 const UTM_KEYS = ['source', 'medium', 'campaign', 'term', 'content'] as const;
 
 /** Extract click-ids from the current URL + the _fbc cookie fallback. */

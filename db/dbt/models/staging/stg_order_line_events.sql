@@ -34,7 +34,8 @@
 --   bronze_source='pg'      → the JDBC read-shim view (PG bronze_events; latest-pick + unnest done in SQL view)
 --   bronze_source='iceberg' → the raw Iceberg collector_events catalog; the latest-order pick + the
 --                             line_items unnest move HERE (the shim's transform inlined into staging).
-{% set bronze_source = var('bronze_source', env_var('BRONZE_OPERATIONAL_READ_SOURCE', 'pg')) %}
+{# DB-AUDIT C4: default is 'iceberg' — PG bronze_events is retired (dropped). 'pg' remains as a legacy escape only. #}
+{% set bronze_source = var('bronze_source', env_var('BRONZE_OPERATIONAL_READ_SOURCE', 'iceberg')) %}
 with raw as (
 
     {% if bronze_source == 'iceberg' %}
@@ -43,11 +44,17 @@ with raw as (
         l.brand_id,
         l.order_id,
         -- See header: deterministic content-ordered ordinal (StarRocks has no WITH ORDINALITY).
+        -- DB-AUDIT M8: order by a TOTAL key so the ordinal is stable across rebuilds even when lines
+        -- share (sku, variant_id, unit_price_minor) — quantity + title + the full serialized item
+        -- break ties; only byte-identical lines may reorder (harmless — their content is identical).
         row_number() over (
             partition by l.brand_id, l.order_id
             order by get_json_string(t.item, '$.sku'),
                      get_json_string(t.item, '$.variant_id'),
-                     get_json_string(t.item, '$.unit_price_minor')
+                     get_json_string(t.item, '$.unit_price_minor'),
+                     get_json_string(t.item, '$.quantity'),
+                     get_json_string(t.item, '$.title'),
+                     cast(t.item as string)
         )                                                          as line_index,
         get_json_string(t.item, '$.sku')                          as sku,
         get_json_string(t.item, '$.title')                        as title,

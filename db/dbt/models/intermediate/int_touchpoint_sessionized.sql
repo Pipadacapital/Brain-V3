@@ -103,8 +103,13 @@ ordered as (
         -- else utm.medium mapped; else referrer non-empty → referral; else direct.
         case
             when fbclid is not null and fbclid <> '' then 'paid_meta'
-            when gclid  is not null and gclid  <> '' then 'paid_google'
+            -- Google click family: gclid + gbraid/wbraid (iOS app↔web) + dclid (Display/DV360).
+            when (gclid  is not null and gclid  <> '')
+              or (gbraid is not null and gbraid <> '')
+              or (wbraid is not null and wbraid <> '')
+              or (dclid  is not null and dclid  <> '')            then 'paid_google'
             when ttclid is not null and ttclid <> '' then 'paid_tiktok'
+            when msclkid is not null and msclkid <> '' then 'paid_bing'
             when lower(coalesce(utm_medium, '')) in ('cpc', 'ppc', 'paid')      then 'paid'
             when lower(coalesce(utm_medium, '')) = 'email'                      then 'email'
             when lower(coalesce(utm_medium, '')) in ('social', 'paid_social')   then 'organic_social'
@@ -121,6 +126,10 @@ ordered as (
         fbclid,
         gclid,
         ttclid,
+        msclkid,
+        gbraid,
+        wbraid,
+        dclid,
         referrer,
         landing_path,
         page_type,
@@ -153,6 +162,10 @@ select
     fbclid,
     gclid,
     ttclid,
+    msclkid,
+    gbraid,
+    wbraid,
+    dclid,
     referrer,
     -- referrer host (best-effort deterministic extraction; NULL when no referrer).
     case

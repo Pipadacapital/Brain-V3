@@ -1,25 +1,21 @@
 /**
- * _bronze-source.ts — shared helper for the operational-read Bronze source flip (ADR-0002 Slice 5).
+ * _bronze-source.ts — shared helper for the operational-read Bronze source (ADR-0002 Slice 5).
  *
- * Operational reads (data/tracking health, recent events, orders) read raw Bronze events. The flag
- * BRONZE_OPERATIONAL_READ_SOURCE selects the source: 'pg' (bronze_events, default) or 'iceberg'
- * (collector_events in the StarRocks external Iceberg catalog). The Iceberg path goes through the
- * metric-engine withSilverBrand seam, which injects the tenant predicate at ${BRAND_PREDICATE} — so
- * a query cannot omit brand isolation (the SAME mechanism the Silver reads use; verified non-inert by
- * the isolation-fuzz mutation test).
+ * Operational reads (data/tracking health, recent events, orders) read raw Bronze events. The PG
+ * bronze_events table has been RETIRED (dropped in db/migrations/0070) — Iceberg is now the SOLE
+ * Bronze source: collector_events in the StarRocks external Iceberg catalog. The Iceberg path goes
+ * through the metric-engine withSilverBrand seam, which injects the tenant predicate at
+ * ${BRAND_PREDICATE} — so a query cannot omit brand isolation (the SAME mechanism the Silver reads
+ * use; verified non-inert by the isolation-fuzz mutation test). When StarRocks isn't wired (srPool
+ * absent), the reads return an honest no_data shape rather than ever falling back to PG.
  */
 
 import type { EngineDeps, SilverPool } from '@brain/metric-engine';
 
-/** Bronze source for operational reads. */
-export type BronzeSource = 'pg' | 'iceberg';
-
-/** Deps for an operational read that can source Bronze from PG or Iceberg. */
+/** Deps for an operational read that sources Bronze from the Iceberg catalog. */
 export interface BronzeReadDeps extends EngineDeps {
-  /** StarRocks pool — required only when bronzeSource is 'iceberg'. */
+  /** StarRocks pool — required to read the Iceberg Bronze catalog. Absent → honest no_data. */
   readonly srPool?: SilverPool;
-  /** 'pg' (default) | 'iceberg'. */
-  readonly bronzeSource?: BronzeSource;
 }
 
 /**
@@ -29,7 +25,10 @@ export interface BronzeReadDeps extends EngineDeps {
  */
 export const ICEBERG_BRONZE = `${process.env['STARROCKS_BRONZE_CATALOG'] ?? 'brain_bronze_local'}.brain_bronze.collector_events`;
 
-/** True when the read should use the Iceberg path (flag set + srPool wired). */
-export function useIceberg(deps: BronzeReadDeps): deps is BronzeReadDeps & { srPool: SilverPool } {
-  return deps.bronzeSource === 'iceberg' && deps.srPool != null;
+/**
+ * True when the StarRocks pool is wired (the only Bronze source now). Guards srPool presence so a
+ * deployment without StarRocks returns honest no_data instead of erroring.
+ */
+export function hasSilver(deps: BronzeReadDeps): deps is BronzeReadDeps & { srPool: SilverPool } {
+  return deps.srPool != null;
 }

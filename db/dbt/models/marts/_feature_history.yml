@@ -1,0 +1,39 @@
+version: 2
+
+models:
+  - name: feature_customer_daily
+    description: >
+      Daily point-in-time customer feature snapshot (DB-AUDIT C3 — the first history table). INCREMENTAL,
+      append-per-day, keyed (brand_id, brain_id, snapshot_date); prior days preserved, same-day re-run
+      idempotent. The training substrate for churn/propensity/LTV (C5) + retention cohorts — features
+      as-of each date. NOTE: populated only once orders carry a resolved brain_id (depends on C2 identity
+      stitching); structurally complete today, data follows C2.
+    columns:
+      - name: brand_id
+        tests: [not_null]
+      - name: brain_id
+        tests: [not_null]
+      - name: snapshot_date
+        description: "The date this feature row was captured (current_date at run)."
+        tests: [not_null]
+      - name: lifetime_value_minor
+        description: "Additive realized LTV-to-date, BIGINT minor units (I-S07)."
+        tests: [not_null]
+      - name: days_since_last_order
+        description: "Recency feature (RFM / churn-label substrate)."
+        tests: [not_null]
+
+  - name: snap_order_state
+    description: >
+      Daily order-lifecycle state snapshot (DB-AUDIT C3). INCREMENTAL, append-per-day, keyed
+      (brand_id, order_id, snapshot_date) — point-in-time order state for historical restatement +
+      transition analysis. Prior days preserved; same-day re-run idempotent.
+    columns:
+      - name: brand_id
+        tests: [not_null]
+      - name: order_id
+        tests: [not_null]
+      - name: snapshot_date
+        tests: [not_null]
+      - name: lifecycle_state
+        tests: [not_null]

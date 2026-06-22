@@ -520,3 +520,24 @@ export const BehaviorOverviewSchema = z.discriminatedUnion('state', [
   }),
 ]);
 export type BehaviorOverview = z.infer<typeof BehaviorOverviewSchema>;
+
+// ── Funnel analytics — sessions → product views → cart adds → purchases (Phase H pixel) ──
+export const FunnelStageDtoSchema = z.object({
+  key: z.string(),
+  sessions: MinorUnitsSchema,
+  conversion_pct: z.string().nullable(),
+  step_pct: z.string().nullable(),
+});
+export type FunnelStageDto = z.infer<typeof FunnelStageDtoSchema>;
+
+export const FunnelAnalyticsSchema = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('no_data') }),
+  z.object({
+    state: z.literal('has_data'),
+    from: z.string(),
+    to: z.string(),
+    stages: z.array(FunnelStageDtoSchema),
+    data_source: DataSourceSchema,
+  }),
+]);
+export type FunnelAnalytics = z.infer<typeof FunnelAnalyticsSchema>;

@@ -31,6 +31,8 @@ export type {
   BehaviorOverview as AnalyticsBehaviorOverviewResponse,
   PageTypeBucketDto as BehaviorPageTypeRow,
   BrowsedItemDto as BehaviorBrowsedItemRow,
+  FunnelAnalytics as AnalyticsFunnelResponse,
+  FunnelStageDto as FunnelStageRow,
   OrderStatusMixRowDto as OrderStatusMixRow,
   OrderStatusMix as AnalyticsOrderStatusMixResponse,
   TopProducts as AnalyticsTopProductsResponse,

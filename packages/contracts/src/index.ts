@@ -336,6 +336,8 @@ export {
   PageTypeBucketDtoSchema,
   BrowsedItemDtoSchema,
   BehaviorOverviewSchema,
+  FunnelStageDtoSchema,
+  FunnelAnalyticsSchema,
 } from './api/analytics.api.v1.js';
 export type {
   RevenueSnapshot,
@@ -374,6 +376,8 @@ export type {
   PageTypeBucketDto,
   BrowsedItemDto,
   BehaviorOverview,
+  FunnelStageDto,
+  FunnelAnalytics,
 } from './api/analytics.api.v1.js';
 
 export {

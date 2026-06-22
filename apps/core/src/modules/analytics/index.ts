@@ -89,6 +89,9 @@ export type { ShipmentOutcomesResult, CourierOutcomeDto, PincodeOutcomeDto } fro
 // Storefront behavior — browse/search/view from silver_touchpoint (pixel auto-instrumentation).
 export { getBehaviorOverview } from './internal/application/queries/get-behavior-overview.js';
 export type { BehaviorOverviewResult, PageTypeBucketDto, BrowsedItemDto } from './internal/application/queries/get-behavior-overview.js';
+// Storefront conversion funnel — sessions → product views → cart adds → purchases (Phase H pixel).
+export { getFunnelAnalytics } from './internal/application/queries/get-funnel-analytics.js';
+export type { FunnelAnalyticsResult, FunnelStageDto } from './internal/application/queries/get-funnel-analytics.js';
 export { getCodMix } from './internal/application/queries/get-cod-mix.js';
 export type { CodMixResult } from './internal/application/queries/get-cod-mix.js';
 export { getCheckoutFunnel } from './internal/application/queries/get-checkout-funnel.js';

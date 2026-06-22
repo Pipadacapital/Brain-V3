@@ -20,9 +20,15 @@
  *
  * The decision logic is factored into PURE functions (decideRedrive / buildRedriveHeaders) so the
  * guard, routing, and header rewrite are unit-tested without a broker.
+ *
+ * DLQ PERSISTENCE (0094): every scanned dead-letter is also persisted to
+ * connectors.connector_dlq_record via an optional DlqRecordRepository. Persistence is
+ * fire-and-forget (errors logged, never thrown) so a DB hiccup does NOT block the operator's
+ * redrive session. Idempotent: ON CONFLICT (brand_id, dlq_id, created_at) DO NOTHING.
  */
 import type { Kafka, Producer, Consumer, IHeaders } from 'kafkajs';
 import { incrementCounter } from '@brain/observability';
+import type { DlqRecordRepository } from '../pg/DlqRecordRepository.js';
 
 /** Default max number of times a single message may be redriven before it is left parked as poison. */
 export const DEFAULT_MAX_REDRIVE = 3;
@@ -141,6 +147,10 @@ export interface RedriveOptions {
 /**
  * Drain a `.dlq` topic, republishing eligible messages to their original topic. One-shot: returns
  * once the backlog is drained (idle) or `limit` is reached, then the caller disconnects.
+ *
+ * dlqRecordRepo (optional): if supplied, every scanned message is persisted to
+ * connectors.connector_dlq_record (idempotent). Persistence errors are swallowed so a
+ * DB hiccup never aborts the redrive session.
  */
 export class DlqRedriver {
   private readonly consumer: Consumer;
@@ -151,6 +161,7 @@ export class DlqRedriver {
     producer: Producer,
     groupId = 'brain.stream-worker.dlq-redrive',
     private readonly nowIso: () => string = () => new Date().toISOString(),
+    private readonly dlqRecordRepo?: DlqRecordRepository,
   ) {
     this.consumer = kafka.consumer({ groupId });
     this.producer = producer;
@@ -184,11 +195,43 @@ export class DlqRedriver {
       this.consumer
         .run({
           autoCommit: true,
-          eachMessage: async ({ message }) => {
+          eachMessage: async ({ message, partition }) => {
             arm(); // a message arrived → reset the idle timer
             report.scanned += 1;
 
             const decision = decideRedrive(dlqTopic, message.headers, maxRedrive, opts.reasonFilter);
+
+            // ── DLQ persistence (0094): fire-and-forget, idempotent ──────────
+            // Persist every scanned dead-letter to connector_dlq_record so it is
+            // queryable beyond the 30d Kafka retention window. Errors are swallowed:
+            // a DB hiccup must NOT abort the operator's redrive session.
+            if (this.dlqRecordRepo) {
+              const rawPayload = message.value ? (() => {
+                try { return JSON.parse(message.value.toString('utf8')) as Record<string, unknown>; }
+                catch { return {}; }
+              })() : {};
+              // Derive brand_id from the parsed payload (the event schema stamps brand_id).
+              // If absent/invalid, fall back to a sentinel so the row still lands.
+              const payloadBrandId = typeof rawPayload['brand_id'] === 'string'
+                ? rawPayload['brand_id']
+                : '00000000-0000-0000-0000-000000000000';
+              const dlqReason = headerString(message.headers, H_DLQ_REASON) ?? 'unknown';
+              // Extract error class: take the portion before the first ':' or space.
+              const errorClass = dlqReason.split(/[:\s]/)[0] ?? 'unknown';
+              this.dlqRecordRepo.persist({
+                brandId:     payloadBrandId,
+                sourceTopic: dlqTopic,
+                partition,
+                kafkaOffset: BigInt(message.offset),
+                provider:    headerString(message.headers, 'x-dlq-original-topic')
+                               ?.split('.')[1] ?? 'unknown',
+                payload:     rawPayload,
+                errorClass,
+                errorDetail: dlqReason,
+              }).catch(() => {
+                // Intentionally swallowed — persistence is non-blocking forensic only.
+              });
+            }
 
             if (decision.action === 'filtered') {
               report.filtered += 1;

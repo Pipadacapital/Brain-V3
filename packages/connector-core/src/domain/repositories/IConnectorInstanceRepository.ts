@@ -23,7 +23,13 @@ export interface IConnectorInstanceRepository {
    */
   findAllByBrand(brandId: string): Promise<ConnectorInstance[]>;
 
-  /** Persist a new connector instance. Idempotent on (brand_id, provider). */
+  /**
+   * List all connector instances for a brand+provider pair (Gap B — multi-account-per-provider).
+   * Returns all accounts; caller handles per-account dispatch.
+   */
+  findAllByBrandAndProvider(brandId: string, provider: string): Promise<ConnectorInstance[]>;
+
+  /** Persist a new connector instance. Idempotent on (brand_id, provider, account_key). */
   save(instance: ConnectorInstance): Promise<ConnectorInstance>;
 
   /** Update an existing connector instance (status, health_state, safety_rating, etc.). */

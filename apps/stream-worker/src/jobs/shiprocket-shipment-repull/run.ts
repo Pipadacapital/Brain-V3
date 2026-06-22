@@ -50,6 +50,7 @@ import { SaltProvider, LocalSecretsProvider } from '../../infrastructure/secrets
 import { resolveSaltHex } from '@brain/identity-core';
 import { log } from '../../log.js';
 import { acquireCursorLock, getCursorValue, upsertCursorValue } from '../../infrastructure/pg/CursorRepository.js';
+import { SyncRunRepository } from '../../infrastructure/pg/SyncRunRepository.js';
 
 // ── Configuration ─────────────────────────────────────────────────────────────
 
@@ -91,6 +92,7 @@ export async function run(targetConnectorInstanceId?: string): Promise<void> {
 
   const saltSecrets = new LocalSecretsProvider();
   const saltProvider = new SaltProvider(saltSecrets, resolveSaltHex);
+  const syncRunRepo = new SyncRunRepository(pool);
 
   try {
     await producer.connect();
@@ -104,7 +106,7 @@ export async function run(targetConnectorInstanceId?: string): Promise<void> {
     log.info(`found ${connectors.length} connector(s) to re-pull`);
 
     for (const connector of connectors) {
-      await repullConnector({ connector, pool, producer, saltProvider });
+      await repullConnector({ connector, pool, producer, saltProvider, syncRunRepo });
     }
   } finally {
     await producer.disconnect();
@@ -141,17 +143,25 @@ interface RepullParams {
   pool: Pool;
   producer: Producer;
   saltProvider: SaltProvider;
+  syncRunRepo: SyncRunRepository;
 }
 
 async function repullConnector(params: RepullParams): Promise<void> {
-  const { connector, pool, producer, saltProvider } = params;
+  const { connector, pool, producer, saltProvider, syncRunRepo } = params;
   const { connector_instance_id: ciId, brand_id: brandId, secret_ref: secretRef } = connector;
 
   log.info(`connector=${ciId} brand=${brandId}`);
 
+  const runId = SyncRunRepository.newRunId();
+  const startedAt = await syncRunRepo.startRun({
+    runId, brandId, provider: 'shiprocket', runType: 'repull',
+    correlationId: `shiprocket-shipment-repull:${ciId}:${runId}`,
+  });
+
   const creds = await resolveShiprocketCredentials(secretRef);
   if (!creds) {
     log.error(`connector=${ciId} — credentials not found (RECONNECT_REQUIRED)`);
+    await syncRunRepo.closeRun({ runId, brandId, startedAt, status: 'failed', errorClass: 'AUTH_ERROR', errorDetail: 'credentials not found — RECONNECT_REQUIRED' });
     return;
   }
 
@@ -160,6 +170,7 @@ async function repullConnector(params: RepullParams): Promise<void> {
     saltHex = await saltProvider.saltHexForBrand(brandId);
   } catch (e) {
     log.error(`connector=${ciId} — salt fetch failed`, { detail: e });
+    await syncRunRepo.closeRun({ runId, brandId, startedAt, status: 'failed', errorClass: 'CONFIG_ERROR', errorDetail: String(e) });
     return;
   }
 
@@ -177,14 +188,17 @@ async function repullConnector(params: RepullParams): Promise<void> {
       recordConnectorAuthRejected('shiprocket');
       log.error(`connector=${ciId} — shiprocket auth error (RECONNECT_REQUIRED)`, { err });
       await setSyncState(pool, brandId, ciId, 'error', 'shiprocket auth error — RECONNECT_REQUIRED');
+      await syncRunRepo.closeRun({ runId, brandId, startedAt, status: 'failed', errorClass: 'AUTH_ERROR', errorDetail: 'shiprocket auth error — RECONNECT_REQUIRED' });
       return;
     }
     log.error(`connector=${ciId} cursor=${SHIPMENT_CURSOR_RESOURCE} error`, { err });
     await setSyncState(pool, brandId, ciId, 'error', 'shipment re-pull failed');
+    await syncRunRepo.closeRun({ runId, brandId, startedAt, status: 'failed', errorClass: 'FETCH_ERROR', errorDetail: String(err) });
     return;
   }
 
   await setSyncState(pool, brandId, ciId, 'connected', null);
+  await syncRunRepo.closeRun({ runId, brandId, startedAt, status: 'succeeded', rowsIngested: emitted });
   log.info(`connector=${ciId} COMPLETED emitted=${emitted}`);
 }
 

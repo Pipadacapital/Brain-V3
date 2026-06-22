@@ -140,6 +140,10 @@ export class HandleOAuthCallbackCommand {
       disconnectedAt: null,
       createdAt: now,
       updatedAt: now,
+      // Gap B: for Shopify, the shopDomain IS the per-account key (each store is its own account)
+      accountKey: shopDomain,
+      // Gap A: provider_config carries the shop_domain for the generic repull fn
+      providerConfig: { shop_domain: shopDomain },
     });
     const savedInstance = await this.connectorRepo.save(instance);
 

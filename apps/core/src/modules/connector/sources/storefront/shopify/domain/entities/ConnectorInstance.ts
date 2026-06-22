@@ -12,6 +12,7 @@
  */
 export {
   ConnectorInstance,
+  DEFAULT_ACCOUNT_KEY,
 } from '@brain/connector-core';
 export type {
   ConnectorInstanceProps,

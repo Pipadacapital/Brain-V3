@@ -13,6 +13,7 @@
 // ── Domain entities (provider-agnostic) ───────────────────────────────────────
 export {
   ConnectorInstance,
+  DEFAULT_ACCOUNT_KEY,
 } from './domain/entities/ConnectorInstance.js';
 export type {
   ConnectorInstanceProps,

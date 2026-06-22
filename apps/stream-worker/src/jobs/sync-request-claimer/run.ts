@@ -92,60 +92,27 @@ export async function claimDueRepullConnectors(
 }
 
 /**
- * Enumerate all connected connectors across the three existing SECURITY DEFINER fns.
- * Runs as brain_app (which calls the SECURITY DEFINER fns running as 'brain') — no GUC,
- * fail-closed: under brain_app without a GUC the fns are the ONLY way to see the rows.
+ * Enumerate all connected connectors via the generic SECURITY DEFINER fn
+ * list_connectors_for_repull(provider) (migration 0091, Gap A).
+ *
+ * Runs as brain_app (which calls the SECURITY DEFINER fn running as 'brain') — no GUC,
+ * fail-closed: under brain_app without a GUC the fn is the ONLY way to see the rows.
+ *
+ * One DB query per provider, parallel (Promise.all). The function returns
+ * (connector_instance_id, brand_id, provider) — provider is already stamped so callers
+ * need no per-provider branching. Replaces 6 bespoke per-provider SECURITY DEFINER calls.
  */
 export async function enumerateConnectedConnectors(pool: Pool): Promise<ConnectorRow[]> {
-  const rows: ConnectorRow[] = [];
-
-  const shopify = await pool.query<{ connector_instance_id: string; brand_id: string }>(
-    `SELECT connector_instance_id, brand_id FROM list_connectors_for_repull()`,
+  const results = await Promise.all(
+    REPULL_PROVIDERS.map((provider) =>
+      pool.query<ConnectorRow>(
+        `SELECT connector_instance_id, brand_id, provider
+         FROM list_connectors_for_repull($1)`,
+        [provider],
+      ),
+    ),
   );
-  for (const r of shopify.rows) {
-    rows.push({ ...r, provider: 'shopify' });
-  }
-
-  const razorpay = await pool.query<{ connector_instance_id: string; brand_id: string }>(
-    `SELECT connector_instance_id, brand_id FROM list_razorpay_connectors_for_settlement_repull()`,
-  );
-  for (const r of razorpay.rows) {
-    rows.push({ ...r, provider: 'razorpay' });
-  }
-
-  const ads = await pool.query<{ connector_instance_id: string; brand_id: string; provider: string }>(
-    `SELECT connector_instance_id, brand_id, provider FROM list_ad_connectors_for_spend_repull()`,
-  );
-  for (const r of ads.rows) {
-    rows.push({ connector_instance_id: r.connector_instance_id, brand_id: r.brand_id, provider: r.provider });
-  }
-
-  // P0: GoKwik AWB connectors — the SECURITY DEFINER fn existed (0030) but was never enumerated, so
-  // the scheduler/claimer never dispatched gokwik re-pulls. Same pattern as the others.
-  const gokwik = await pool.query<{ connector_instance_id: string; brand_id: string }>(
-    `SELECT connector_instance_id, brand_id FROM list_gokwik_connectors_for_awb_repull()`,
-  );
-  for (const r of gokwik.rows) {
-    rows.push({ ...r, provider: 'gokwik' });
-  }
-
-  // Shiprocket logistics connectors (migration 0059 — fn + brain_app EXECUTE grant already exist).
-  const shiprocket = await pool.query<{ connector_instance_id: string; brand_id: string }>(
-    `SELECT connector_instance_id, brand_id FROM list_shiprocket_connectors_for_repull()`,
-  );
-  for (const r of shiprocket.rows) {
-    rows.push({ ...r, provider: 'shiprocket' });
-  }
-
-  // WooCommerce orders connectors (migration 0060 — fn + brain_app EXECUTE grant already exist).
-  const woocommerce = await pool.query<{ connector_instance_id: string; brand_id: string }>(
-    `SELECT connector_instance_id, brand_id FROM list_woocommerce_connectors_for_repull()`,
-  );
-  for (const r of woocommerce.rows) {
-    rows.push({ ...r, provider: 'woocommerce' });
-  }
-
-  return rows;
+  return results.flatMap((r) => r.rows);
 }
 
 /**

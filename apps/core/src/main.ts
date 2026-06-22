@@ -1051,15 +1051,31 @@ export async function main(): Promise<void> {
       const requestId = (req.id as string) ?? randomUUID();
       // Fetch all connector instances for this brand (RLS enforced)
       const instances = await connectorRepo.findAllByBrand(brandId);
-      const instanceByProvider = new Map(instances.map((i) => [i.provider, i]));
+
+      // Gap B: group instances by provider — one provider can now have multiple accounts
+      const activeByProvider = new Map<string, typeof instances>();
+      for (const inst of instances) {
+        if (inst.status === 'disconnected') continue; // disconnected rows render as connectable
+        const list = activeByProvider.get(inst.provider) ?? [];
+        list.push(inst);
+        activeByProvider.set(inst.provider, list);
+      }
 
       // Join catalog with instance data → MarketplaceTile[]
       const tiles = CONNECTOR_CATALOG.map((def) => {
-        // A 'disconnected' instance row persists for audit, but the marketplace must present it
-        // as NOT connected (clean Connect button) — never as a connected/failing tile. Only an
-        // ACTIVE instance attaches to the tile; a disconnected one renders as connectable again.
-        const found = instanceByProvider.get(def.id);
-        const instance = found && found.status !== 'disconnected' ? found : null;
+        const activeInstances = activeByProvider.get(def.id) ?? [];
+        const firstInstance = activeInstances[0] ?? null;
+
+        const toInstanceShape = (inst: typeof instances[0]) => ({
+          id: inst.id,
+          status: inst.status,
+          health_state: inst.healthState,
+          safety_rating: inst.safetyRating,
+          shop_domain: inst.shopDomain || null,
+          connected_at: inst.connectedAt.toISOString(),
+          account_key: inst.accountKey,
+        });
+
         return {
           id: def.id,
           category: def.category,
@@ -1068,16 +1084,10 @@ export async function main(): Promise<void> {
           connect_method: def.connectMethod as 'oauth' | 'credential' | 'coming_soon',
           available: def.availability === 'available',
           // NN-2: NO secret_ref, NO token in this response (success criterion #4)
-          instance: instance
-            ? {
-                id: instance.id,
-                status: instance.status,
-                health_state: instance.healthState,
-                safety_rating: instance.safetyRating,
-                shop_domain: instance.shopDomain || null,
-                connected_at: instance.connectedAt.toISOString(),
-              }
-            : null,
+          // Back-compat: `instance` = first active instance (single-account consumers)
+          instance: firstInstance ? toInstanceShape(firstInstance) : null,
+          // Gap B: all active instances per provider (multi-account consumers)
+          instances: activeInstances.map(toInstanceShape),
         };
       });
 
@@ -1245,6 +1255,8 @@ export async function main(): Promise<void> {
             disconnectedAt: null,
             createdAt: now,
             updatedAt: now,
+            accountKey: razorpayAccountId,
+            providerConfig: { razorpay_account_id: razorpayAccountId },
           });
           await connectorRepo.save(instance);
 
@@ -1323,6 +1335,8 @@ export async function main(): Promise<void> {
             disconnectedAt: null,
             createdAt: now,
             updatedAt: now,
+            accountKey: merchantId,
+            providerConfig: { shopflo_merchant_id: merchantId },
           });
           await connectorRepo.save(instance);
 
@@ -1397,6 +1411,8 @@ export async function main(): Promise<void> {
             disconnectedAt: null,
             createdAt: now,
             updatedAt: now,
+            accountKey: appid,
+            providerConfig: { gokwik_appid: appid },
           });
           await connectorRepo.save(instance);
 
@@ -1461,6 +1477,7 @@ export async function main(): Promise<void> {
 
           const now = new Date();
           const connectorInstanceId = randomUUID();
+          const shiprocketAccountKey = channelId ?? email;
           const instance = ConnectorInstanceEntity.create({
             id: connectorInstanceId,
             brandId,
@@ -1474,6 +1491,8 @@ export async function main(): Promise<void> {
             disconnectedAt: null,
             createdAt: now,
             updatedAt: now,
+            accountKey: shiprocketAccountKey,
+            providerConfig: channelId ? { shiprocket_channel_id: channelId } : {},
           });
           await connectorRepo.save(instance);
 
@@ -1558,6 +1577,8 @@ export async function main(): Promise<void> {
             disconnectedAt: null,
             createdAt: now,
             updatedAt: now,
+            accountKey: siteUrl,
+            providerConfig: { woocommerce_site_url: siteUrl },
           });
           await connectorRepo.save(instance);
 
@@ -1593,7 +1614,7 @@ export async function main(): Promise<void> {
           });
         }
 
-        // Generic credential connector path (non-Razorpay — kept for future connectors)
+        // Generic credential connector path (non-specific — kept for future connectors)
         const { arn } = await connectorSecretsManager.storeSecret(brandId, { connectorType }, credentials);
         const now = new Date();
         const instance = ConnectorInstanceEntity.create({
@@ -1609,6 +1630,8 @@ export async function main(): Promise<void> {
           disconnectedAt: null,
           createdAt: now,
           updatedAt: now,
+          accountKey: '__default__',
+          providerConfig: {},
         });
         await connectorRepo.save(instance);
         await auditWriter.append({

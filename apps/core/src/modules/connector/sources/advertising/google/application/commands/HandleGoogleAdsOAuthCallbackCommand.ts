@@ -11,13 +11,18 @@
  *     stored INSIDE the bundle (the repull client needs it) AND on the connector_instance
  *     row (for enumeration / webhook-free brand resolution).
  *
+ * Gap B (multi-account-per-provider, migration 0092):
+ *   - resolveAllCustomerIds returns ALL accessible customer ids (not just the first).
+ *   - One ConnectorInstance is created per customer id, keyed by customer_id.
+ *   - Falls back to a single __default__ instance if no customers are resolvable.
+ *
  * Invariants (identical to Meta):
  *   - NO HMAC. The state nonce IS the auth. brand_id from consumeAndGetBrandId(state) ONLY (D-1).
  *   - The refresh token NEVER touches Postgres (NN-2 / I-S09) — only the ARN is stored.
  *   - provider='google_ads', shopDomain=''.
  */
 import { randomUUID } from 'node:crypto';
-import { ConnectorInstance } from '@brain/connector-core';
+import { ConnectorInstance, DEFAULT_ACCOUNT_KEY } from '@brain/connector-core';
 import { ConnectorSyncStatus } from '@brain/connector-core';
 import type { IConnectorInstanceRepository } from '@brain/connector-core';
 import type { IConnectorSyncStatusRepository } from '@brain/connector-core';
@@ -35,6 +40,8 @@ export interface GoogleAdsOAuthCallbackResult {
   brandId: string;
   /** Google Ads customer id (digits only), or null if not resolvable (honest). */
   adAccountId: string | null;
+  /** All resolved Google Ads customer ids (Gap B). */
+  adAccountIds: string[];
   status: 'connected';
 }
 
@@ -83,11 +90,11 @@ export class HandleGoogleAdsOAuthCallbackCommand {
     }
     const { refreshToken, accessToken } = await this.exchangeCodeForTokens(code);
 
-    // ── Step 3: Resolve customer id (best-effort; null is honest) ─────────────
-    const adAccountId = await this.resolveCustomerId(accessToken);
+    // ── Step 3: Resolve ALL customer ids (Gap B) — best-effort; empty → __default__ ──
+    const adAccountIds = await this.resolveAllCustomerIds(accessToken);
+    const adAccountId = adAccountIds[0] ?? null;
 
     // ── Step 4: Store the bundle in Secrets Manager → ARN (NN-2 / I-S09) ───────
-    // Bundle: { refresh_token, ad_account_id }. The refresh token is the durable secret.
     const bundle: Record<string, string> = { refresh_token: refreshToken };
     if (adAccountId) bundle['ad_account_id'] = adAccountId;
     const { arn: secretRef } = await this.secretsManager.storeSecret(
@@ -97,54 +104,68 @@ export class HandleGoogleAdsOAuthCallbackCommand {
     );
     // refreshToken + accessToken are now discarded — only secretRef proceeds.
 
-    // ── Step 5: Write connector_instance ──────────────────────────────────────
-    const instanceId = randomUUID();
+    // ── Step 5: Write one ConnectorInstance per customer (Gap B) ─────────────
+    const accountsToCreate: Array<string | null> = adAccountIds.length > 0
+      ? adAccountIds
+      : [null];
+
     const now = new Date();
-    const instance = ConnectorInstance.create({
-      id: instanceId,
-      brandId,
-      provider: 'google_ads',
-      shopDomain: '',
-      secretRef,
-      status: 'connected',
-      healthState: 'Healthy',
-      safetyRating: 'safe',
-      connectedAt: now,
-      disconnectedAt: null,
-      createdAt: now,
-      updatedAt: now,
-    });
-    const savedInstance = await this.connectorRepo.save(instance);
+    let firstInstanceId = '';
 
-    if (adAccountId && this.setAdAccountId) {
-      await this.setAdAccountId(brandId, savedInstance.id, adAccountId);
+    for (const accountId of accountsToCreate) {
+      const instanceId = randomUUID();
+      if (!firstInstanceId) firstInstanceId = instanceId;
+
+      const instance = ConnectorInstance.create({
+        id: instanceId,
+        brandId,
+        provider: 'google_ads',
+        shopDomain: '',
+        secretRef,
+        status: 'connected',
+        healthState: 'Healthy',
+        safetyRating: 'safe',
+        connectedAt: now,
+        disconnectedAt: null,
+        createdAt: now,
+        updatedAt: now,
+        accountKey: accountId ?? DEFAULT_ACCOUNT_KEY,
+        providerConfig: accountId ? { google_ads_customer_id: accountId } : {},
+      });
+      const savedInstance = await this.connectorRepo.save(instance);
+
+      if (accountId && this.setAdAccountId) {
+        await this.setAdAccountId(brandId, savedInstance.id, accountId);
+      }
+
+      // ── Step 6: connector_sync_status per instance ──────────────────────────
+      const syncStatus = ConnectorSyncStatus.create({
+        id: randomUUID(),
+        brandId,
+        connectorInstanceId: savedInstance.id,
+        state: 'waiting_for_data',
+        lastSyncAt: null,
+        lastError: null,
+        updatedAt: now,
+      });
+      await this.syncStatusRepo.save(syncStatus);
     }
-
-    // ── Step 6: connector_sync_status ─────────────────────────────────────────
-    const syncStatus = ConnectorSyncStatus.create({
-      id: randomUUID(),
-      brandId,
-      connectorInstanceId: savedInstance.id,
-      state: 'waiting_for_data',
-      lastSyncAt: null,
-      lastError: null,
-      updatedAt: now,
-    });
-    await this.syncStatusRepo.save(syncStatus);
 
     // ── Step 7: emit connector.connected (NO token, NO secret_ref) ────────────
     await this.emitEvent('connector.connected', {
       brand_id: brandId,
-      connector_instance_id: savedInstance.id,
+      connector_instance_id: firstInstanceId,
       provider: 'google_ads',
       ad_account_id: adAccountId,
+      ad_account_ids: adAccountIds,
       idempotency_key: idempotencyKey,
     });
 
     return {
-      connectorInstanceId: savedInstance.id,
+      connectorInstanceId: firstInstanceId,
       brandId,
       adAccountId,
+      adAccountIds,
       status: 'connected',
     };
   }
@@ -174,7 +195,7 @@ export class HandleGoogleAdsOAuthCallbackCommand {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: body.toString(),
-      signal: AbortSignal.timeout(15_000), // T2-9: bound the token exchange so the OAuth callback can't hang.
+      signal: AbortSignal.timeout(15_000),
     });
 
     if (!response.ok) {
@@ -193,14 +214,13 @@ export class HandleGoogleAdsOAuthCallbackCommand {
   }
 
   /**
-   * Best-effort resolution of the first accessible customer id via
-   * customers:listAccessibleCustomers. Returns null on any failure (honest).
-   * Requires a developer token; in dev (no approved token) this returns null and the
-   * connector still connects (the repull job resolves the customer at run time).
+   * Resolve ALL accessible Google Ads customer ids via customers:listAccessibleCustomers (Gap B).
+   * Returns an array of customer ids (digits only, e.g. ['1234567890', '9876543210']).
+   * Returns empty array on any failure — caller falls back to __default__ instance.
    */
-  private async resolveCustomerId(accessToken: string): Promise<string | null> {
+  private async resolveAllCustomerIds(accessToken: string): Promise<string[]> {
     const devToken = process.env['GOOGLE_ADS_DEVELOPER_TOKEN'];
-    if (!accessToken || !devToken) return null;
+    if (!accessToken || !devToken) return [];
     try {
       const response = await fetch(
         'https://googleads.googleapis.com/v24/customers:listAccessibleCustomers',
@@ -210,16 +230,16 @@ export class HandleGoogleAdsOAuthCallbackCommand {
             Authorization: `Bearer ${accessToken}`,
             'developer-token': devToken,
           },
-          signal: AbortSignal.timeout(15_000), // T2-9: bound the best-effort customer resolution.
+          signal: AbortSignal.timeout(15_000),
         },
       );
-      if (!response.ok) return null;
+      if (!response.ok) return [];
       const data = (await response.json()) as { resourceNames?: string[] };
-      const first = data.resourceNames?.[0]; // "customers/1234567890"
-      const id = first?.split('/')[1];
-      return id ?? null;
+      return (data.resourceNames ?? [])
+        .map((name) => name.split('/')[1])
+        .filter((id): id is string => typeof id === 'string' && id.length > 0);
     } catch {
-      return null;
+      return [];
     }
   }
 }

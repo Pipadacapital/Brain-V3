@@ -21,6 +21,12 @@
 
 export type ConnectorStatus = 'connected' | 'disconnected' | 'error';
 
+/**
+ * Sentinel account key for single-account connectors (Gap B — multi-account-per-provider).
+ * Every connector instance has an account_key; single-account connectors use this sentinel.
+ */
+export const DEFAULT_ACCOUNT_KEY = '__default__' as const;
+
 /** 7-state health model (migration 0021, ADR-CM-5). Column is persisted truth. */
 export type HealthState =
   | 'Healthy'
@@ -57,6 +63,18 @@ export interface ConnectorInstanceProps {
   readonly disconnectedAt: Date | null;
   readonly createdAt: Date;
   readonly updatedAt: Date;
+  /**
+   * Per-account key within a provider (Gap B — multi-account-per-provider, migration 0092).
+   * Defaults to DEFAULT_ACCOUNT_KEY ('__default__') for single-account connectors.
+   * Optional for backward compat — callers that omit it get the sentinel default.
+   */
+  readonly accountKey?: string;
+  /**
+   * Provider-specific config blob (Gap A — data-driven discovery, migration 0091).
+   * Populated by connect commands; consumed by list_connectors_for_repull fn.
+   * Optional for backward compat.
+   */
+  readonly providerConfig?: Record<string, string | null>;
 }
 
 export class ConnectorInstance {
@@ -75,6 +93,10 @@ export class ConnectorInstance {
   readonly disconnectedAt: Date | null;
   readonly createdAt: Date;
   readonly updatedAt: Date;
+  /** Account key within provider (Gap B). Defaults to DEFAULT_ACCOUNT_KEY. */
+  readonly accountKey: string;
+  /** Provider-specific config blob (Gap A). */
+  readonly providerConfig: Record<string, string | null>;
 
   private constructor(props: ConnectorInstanceProps) {
     this.id = props.id;
@@ -89,6 +111,8 @@ export class ConnectorInstance {
     this.disconnectedAt = props.disconnectedAt;
     this.createdAt = props.createdAt;
     this.updatedAt = props.updatedAt;
+    this.accountKey = props.accountKey ?? DEFAULT_ACCOUNT_KEY;
+    this.providerConfig = props.providerConfig ?? {};
   }
 
   /**
@@ -156,6 +180,8 @@ export class ConnectorInstance {
       disconnectedAt: this.disconnectedAt,
       createdAt: this.createdAt,
       updatedAt: this.updatedAt,
+      accountKey: this.accountKey,
+      providerConfig: this.providerConfig,
     };
   }
 }

@@ -73,6 +73,13 @@ export function createSilverReader(config: SilverReaderConfig): SilverReader {
         // server-trusted UUID from list_active_brand_ids()).
         const safeBrand = brandId.replace(/[^0-9a-fA-F-]/g, '');
         await conn.query(`SET @brain_current_brand_id = '${safeBrand}'`);
+        // DB-AUDIT M1 — fail CLOSED: a query missing the sentinel would run cross-brand (String.replace
+        // no-ops). Refuse rather than leak.
+        if (!sql.includes(BRAND_PREDICATE)) {
+          throw new Error(
+            'SilverReader.scopedQuery: query missing the ${BRAND_PREDICATE} sentinel — refusing to run un-scoped.',
+          );
+        }
         const finalSql = sql.replace(BRAND_PREDICATE, 'brand_id = ?');
         const finalParams = [...params, brandId];
         const [rows] = await conn.query(finalSql, finalParams);

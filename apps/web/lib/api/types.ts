@@ -1186,3 +1186,22 @@ export interface ProvisionOnboardingResponse {
   website_provided: boolean;
   onboarding_status: OnboardingStatus | null;
 }
+
+// ── Executive metrics (H9 — headline AOV/LTV/repeat_rate/CAC/ROAS over the Gold marts) ──
+// Surfaced from the registry-backed /v1/analytics/executive-metrics endpoint. All ratios are
+// honest-null when the denominator is 0 (never 0/∞). Money fields are minor-unit strings.
+export interface ExecutiveMetricDto {
+  currency_code: string;
+  realized_minor: string;
+  total_orders: string;
+  distinct_customers: string;
+  aov_minor: string | null;
+  ltv_minor: string | null;
+  repeat_rate_pct: string | null;
+  cac_minor: string | null;
+  roas_ratio: string | null;
+}
+
+export type AnalyticsExecutiveMetricsResponse =
+  | { state: 'no_data' }
+  | { state: 'has_data'; metrics: ExecutiveMetricDto[] };

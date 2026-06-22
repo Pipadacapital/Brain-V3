@@ -51,6 +51,18 @@ export function useKpiSummary(asOf?: string) {
 }
 
 /**
+ * useExecutiveMetrics — H9 headline AOV/LTV/repeat_rate/CAC/ROAS over the Gold marts.
+ */
+export function useExecutiveMetrics(params?: { from?: string; to?: string }) {
+  return useQuery({
+    queryKey: [...ANALYTICS_QUERY_KEY, 'executive-metrics', params?.from ?? 'd', params?.to ?? 'd'],
+    queryFn: () => analyticsApi.getExecutiveMetrics(params),
+    staleTime: 5 * 60_000,
+    refetchInterval: 60_000,
+  });
+}
+
+/**
  * useRecognitionBreakdown — fetches recognition state distribution.
  * @param asOf - YYYY-MM-DD date (optional; server defaults to today).
  */

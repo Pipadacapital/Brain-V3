@@ -223,11 +223,20 @@ export async function main(): Promise<void> {
       ? new KmsVaultKeyProvider(new PgPool({ connectionString: dbUrl, max: 2 }), new AwsKmsDecryptAdapter())
       : new DevVaultKeyProvider();
   const identityRepo = new IdentityRepository(dbUrl, vaultKeyProvider);
-  // Neo4j identity graph (re-platform Phase D) — dual-write target during transition. Only wired when
-  // NEO4J_URI is set; PG identity stays authoritative until parity is proven (then PG is decommissioned).
+  // Neo4j identity graph (re-platform Phase D experiment) — RETIRED as a dual-write by default.
+  // AUDIT-REMEDIATION (identity): Postgres is the DECLARED identity system-of-record (RLS-isolated,
+  // transactional, the single reader for Customer 360 / merge-admin / attribution). The Neo4j path
+  // mints brain_ids with a DIFFERENT algorithm (deterministicBrainId from the min hash) than the PG
+  // resolver (randomUUID mint + union-find), so it DIVERGES from the SoR and NOTHING reads it — running
+  // it produced a parity-less shadow graph for no consumer. See docs/adr/0003-postgres-identity-sor.md.
+  //
+  // The code is PRESERVED but gated default-OFF behind an explicit, clearly non-authoritative flag.
+  // Merely having Neo4j in the dev stack (NEO4J_URI set) no longer triggers divergent minting; you must
+  // also opt in with IDENTITY_NEO4J_DUAL_WRITE=true (a parity-free projection, never read by the app).
   let identityGraph: IdentityGraph | undefined;
   const neo4jUri = process.env['NEO4J_URI'];
-  if (neo4jUri) {
+  const neo4jDualWriteEnabled = process.env['IDENTITY_NEO4J_DUAL_WRITE'] === 'true';
+  if (neo4jUri && neo4jDualWriteEnabled) {
     identityGraph = new IdentityGraph(
       neo4jUri,
       process.env['NEO4J_USER'] ?? 'neo4j',
@@ -235,11 +244,16 @@ export async function main(): Promise<void> {
     );
     try {
       await identityGraph.bootstrap();
-      log.info(`[identity] Neo4j identity graph wired (dual-write) — ${neo4jUri}`);
+      log.warn('[identity] Neo4j identity graph wired as a NON-AUTHORITATIVE projection ' +
+        '(IDENTITY_NEO4J_DUAL_WRITE=true) — PG remains the system-of-record; this graph is parity-free ' +
+        `and read by nothing. See ADR-0003. — ${neo4jUri}`);
     } catch (err) {
-      log.warn(`[identity] Neo4j bootstrap failed — dual-write disabled this run: ${err instanceof Error ? err.message : String(err)}`);
+      log.warn(`[identity] Neo4j bootstrap failed — projection disabled this run: ${err instanceof Error ? err.message : String(err)}`);
       identityGraph = undefined;
     }
+  } else if (neo4jUri) {
+    log.info('[identity] Neo4j present but dual-write RETIRED (default-off; set IDENTITY_NEO4J_DUAL_WRITE=true ' +
+      'to enable the non-authoritative projection). PG is the identity system-of-record (ADR-0003).');
   }
   const resolveIdentityUseCase = new ResolveIdentityUseCase(saltProvider, identityRepo, identityGraph);
   const identityConsumer = new IdentityBridgeConsumer(

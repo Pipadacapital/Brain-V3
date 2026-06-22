@@ -28,6 +28,7 @@ import { resolveQuestion } from '../nlq/resolve-question.js';
 import type { ValidatedBinding } from '../nlq/resolve-question.js';
 import { getMetricTrust } from '../../data-quality/index.js';
 import { getRevenueMetrics, getBlendedRoas, getKpiSummary } from '../../analytics/index.js';
+import { computeCac } from '@brain/metric-engine';
 import { encodeSnapshot, decodeSnapshot } from './snapshot.js';
 import { redactQuestion } from '../provenance/redact-question.js';
 import { PgAiProvenanceRepository } from '../provenance/ai-provenance.repository.js';
@@ -261,6 +262,34 @@ async function computeBinding(
         no_data: false,
       };
     }
+    case 'cac': {
+      // H1 — CAC over [epoch, as_of] (windowed → deterministic given as_of, so reproducible). Per
+      // currency; surface a single scalar only for a single-currency brand. Money minor units.
+      const cacRows = await computeCac(brandId, { fromDate: WINDOW_EPOCH, toDate: asOfDate }, { srPool });
+      if (cacRows.length === 0) return { figure_kind: 'money', money: null, scalar: null, no_data: true };
+      const money: MoneyRecord = {};
+      let any = false;
+      for (const r of cacRows) {
+        if (r.cacMinor != null) {
+          // cacMinor is a decimal string of minor units; truncate to integer minor units for the money map.
+          money[r.currency_code] = r.cacMinor.split('.')[0] ?? '0';
+          any = true;
+        }
+      }
+      if (!any) return { figure_kind: 'money', money: null, scalar: null, no_data: true };
+      return { figure_kind: 'money', money, scalar: null, no_data: false };
+    }
+    case 'aov':
+    case 'ltv':
+    case 'repeat_rate':
+    case 'top_products':
+    case 'cohort_retention':
+      // H1 — these are NOW registered (so a question can BIND + be audited), but their figure is a
+      // CURRENT-STATE ratio/distribution over the Gold marts (gold_executive_metrics / gold_cohorts /
+      // silver_order_line) with no as-of window — surfacing one number here would break the
+      // snapshot-reproducibility guarantee (D3, same reasoning as the confidence grades below). The
+      // honest figure lives on the executive dashboard; we record the binding but surface no scalar.
+      return FIGURE_NONE;
     default:
       // The binding is valid + reproducible, but its figure is a distribution/timeline/grade —
       // not a single surfaced scalar (it lives on its dashboard). Honest: no number is surfaced

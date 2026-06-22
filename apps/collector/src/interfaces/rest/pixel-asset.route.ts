@@ -1,11 +1,19 @@
 /**
  * /pixel.js — the served brain.js browser asset (Track B).
  *
- * This is the production build of @brain/pixel-sdk emitted as a versioned, self-contained IIFE.
- * It is byte-identical in BEHAVIOUR to the tested SDK core (packages/pixel-sdk): shape-(a)
- * emission (ADR-1), ONE event per POST (REC-5), event_id minted once + reused on retry (R4),
- * client-side anon-id + 30-min session (NO Set-Cookie, REC-4), raw-only attribution capture,
- * consent fail-safe-absent (I-ST05), NO raw PII / NO salt on the wire (ADR-2).
+ * This is a hand-maintained IIFE that is CONTRACT-equivalent to @brain/pixel-sdk (NOT yet a
+ * literal build artifact of it — full build-unification is deferred; see notes). It enforces the
+ * same INVARIANTS the tested SDK core does, asserted by apps/collector/tests/pixel-asset.test.ts
+ * + packages/pixel-sdk parity tests: shape-(a) emission (ADR-1), ONE event per POST (REC-5),
+ * event_id minted once + reused on retry (R4), client-side anon-id + 30-min session (NO Set-Cookie,
+ * REC-4), raw-only attribution capture, consent fail-safe-absent (I-ST05), NO raw PII / NO salt on
+ * the wire (ADR-2).
+ *
+ * It additionally carries zero-merchant-code auto-instrumentation (SPA nav, cart-add/remove/update,
+ * checkout step, login/signup, clicks, scroll-depth) that the injectable SDK core deliberately does
+ * NOT (the core is env-injected + unit-testable). Click-id + behavioral-event COVERAGE is kept in
+ * lock-step between the two: URL ids (fbclid/gclid/ttclid/msclkid/gbraid/wbraid/dclid) + cookie ids
+ * (_fbc/_fbp DISTINCT, li_fat_id, _epik→epik), and the cart/checkout/account event set.
  *
  * The merchant snippet (buildDefaultSnippet, pixelRoutes.ts:136) sets
  *   window.__brain = { install_token, brand_id }
@@ -53,7 +61,18 @@ export const PIXEL_JS = `(function(){
     q.split("&").forEach(function(p){ if(!p) return; var i=p.indexOf("="), k=i<0?p:p.slice(0,i), v=i<0?"":p.slice(i+1); try{ out[decodeURIComponent(k)]=decodeURIComponent(v); }catch(e){ out[k]=v; } });
     return out;
   }
-  function clickIds(q){ var ids={}; ["fbclid","gclid","ttclid"].forEach(function(k){ if(q[k]) ids[k]=q[k]; }); return Object.keys(ids).length?ids:null; }
+  function cookie(name){ try { var m = (" "+(D.cookie||"")).match(new RegExp("[; ]"+name.replace(/[.$?*|{}()\\[\\]\\\\\\/+^]/g,"\\\\$&")+"=([^;]*)")); return m ? decodeURIComponent(m[1]) : ""; } catch(e){ return ""; } }
+  // URL click-ids: fbclid/gclid/ttclid + msclkid (Bing), gbraid/wbraid (Google iOS app↔web), dclid (Google Display).
+  // Cookie click-ids: _fbc/_fbp (Meta, DISTINCT — both needed for CAPI), li_fat_id (LinkedIn), _epik→epik (Pinterest).
+  // A click-id not read off the landing URL is lost forever; cookies persist past the landing hit. URL wins per key.
+  var CLICK_URL = ["fbclid","gclid","ttclid","msclkid","gbraid","wbraid","dclid"];
+  var CLICK_COOKIE = [["_fbc","_fbc"],["_fbp","_fbp"],["li_fat_id","li_fat_id"],["_epik","epik"]];
+  function clickIds(q){
+    var ids={};
+    CLICK_URL.forEach(function(k){ if(q[k]) ids[k]=q[k]; });
+    CLICK_COOKIE.forEach(function(p){ if(ids[p[1]]) return; var c=cookie(p[0]); if(c) ids[p[1]]=c; });
+    return Object.keys(ids).length?ids:null;
+  }
   function utm(q){ var u={}; ["source","medium","campaign","term","content"].forEach(function(k){ if(q["utm_"+k]) u[k]=q["utm_"+k]; }); return Object.keys(u).length?u:null; }
   function consent(){
     // 1. Explicit override: window.__brainConsent (host page sets it).
@@ -113,13 +132,17 @@ export const PIXEL_JS = `(function(){
   var flushing = false;
   function flush(){
     if (flushing) return; flushing = true;
-    var q = readQ();
+    // STORAGE-AUTHORITATIVE drain: re-read the queue on every step so events enqueued WHILE a flush
+    // is in flight (e.g. the auto-fire emits page.viewed + product.viewed/checkout.step_viewed back
+    // to back) are not clobbered by a stale in-memory slice. Send the head, then persist the tail.
     function step(){
+      var q = readQ();
       if (q.length === 0){ flushing = false; return; }
       var body = JSON.stringify(q[0]); // ONE object — never an array (REC-5)
       sendOne(body, function(ok){
-        if (!ok){ writeQ(q); flushing = false; return; }
-        q = q.slice(1); writeQ(q); step();
+        if (!ok){ flushing = false; return; } // leave the queue intact for the next trigger
+        writeQ(readQ().slice(1)); // drop ONLY the head we just sent; keep anything appended meanwhile
+        step();
       });
     }
     step();
@@ -130,7 +153,13 @@ export const PIXEL_JS = `(function(){
   W.brain = {
     page: function(x){ emit("page.viewed", x); },
     cartItemAdded: function(x){ emit("cart.item_added", x); },
+    cartItemRemoved: function(x){ emit("cart.item_removed", x); },
+    cartUpdated: function(x){ emit("cart.updated", x); },
     cartViewed: function(x){ emit("cart.viewed", x); },
+    checkoutStarted: function(x){ emit("checkout.started", x); },
+    checkoutStep: function(x){ emit("checkout.step_viewed", x); },
+    login: function(x){ emit("user.logged_in", x); },
+    signup: function(x){ emit("user.signed_up", x); },
     track: function(n,x){ emit(n, x); },
     flush: flush
   };
@@ -143,7 +172,12 @@ export const PIXEL_JS = `(function(){
     if (p.indexOf("/products/") >= 0) return "product";
     if (p.indexOf("/collections/") >= 0) return "collection";
     if (p === "/cart" || p.indexOf("/cart") === 0) return "cart";
+    if (p.indexOf("/checkout") >= 0) return "checkout";
     if (p.indexOf("/search") >= 0) return "search";
+    // Account page-type (Shopify: /account, /account/login, /account/register, /account/orders…).
+    if (p.indexOf("/account/register") >= 0) return "account_register";
+    if (p.indexOf("/account/login") >= 0) return "account_login";
+    if (p.indexOf("/account") >= 0) return "account";
     if (p === "/" || p === "") return "home";
     if (p.indexOf("/pages/") >= 0) return "page";
     if (p.indexOf("/blogs/") >= 0) return "blog";
@@ -156,6 +190,7 @@ export const PIXEL_JS = `(function(){
     if (t === "product") emit("product.viewed", { product_handle: handleAfter("/products/") });
     else if (t === "collection") emit("collection.viewed", { collection_handle: handleAfter("/collections/") });
     else if (t === "cart") emit("cart.viewed", {});
+    else if (t === "checkout") { var qc = parseQuery(); emit("checkout.step_viewed", { step: qc.step || handleAfter("/checkout/") || undefined }); }
     else if (t === "search") { var q = parseQuery(); emit("search.submitted", { query: q.q || q.query }); }
   }
 
@@ -168,18 +203,37 @@ export const PIXEL_JS = `(function(){
     W.addEventListener("popstate", function(){ setTimeout(onNav, 0); });
   } catch(e){}
 
-  // Add-to-cart interception — Shopify AJAX cart (fetch + XHR to /cart/add) + classic form submit.
+  // Cart-mutation interception — Shopify AJAX cart endpoints. Classify the cart op from the URL +
+  // body: /cart/add → cart.item_added; /cart/change|/cart/update with quantity 0 → cart.item_removed
+  // (remove_from_cart); other /cart/change|/cart/update → cart.updated (cart_update). Same logic for
+  // fetch + XHR + classic form submit.
   function cartAddProps(b){ var props = {}; try { if (b && typeof b === "object"){ var it = b.items && b.items[0]; props.variant_id = b.id || (it && it.id); props.quantity = b.quantity || (it && it.quantity); } } catch(e){} return props; }
+  // Returns the event_name for a Shopify cart URL+body, or null when it is not a cart mutation.
+  function cartEvent(u, b){
+    if (u.indexOf("/cart/add") >= 0) return "cart.item_added";
+    if (u.indexOf("/cart/change") >= 0 || u.indexOf("/cart/update") >= 0){
+      var qty; try { if (b && typeof b === "object"){ qty = (b.quantity != null) ? b.quantity : (b.updates ? null : undefined); } } catch(e){}
+      return (qty === 0 || qty === "0") ? "cart.item_removed" : "cart.updated";
+    }
+    return null;
+  }
+  function emitCart(u, b){ var n = cartEvent(u, b); if (n) emit(n, n === "cart.item_added" ? cartAddProps(b) : (cartAddProps(b))); }
   try {
     var _fetch = W.fetch;
-    if (_fetch) W.fetch = function(input, init){ try { var u = (typeof input === "string") ? input : (input && input.url) || ""; if (u.indexOf("/cart/add") >= 0){ var b = null; try { b = init && init.body ? JSON.parse(init.body) : null; } catch(e2){} emit("cart.item_added", cartAddProps(b)); } } catch(e){} return _fetch.apply(this, arguments); };
+    if (_fetch) W.fetch = function(input, init){ try { var u = (typeof input === "string") ? input : (input && input.url) || ""; var b = null; try { b = init && init.body ? JSON.parse(init.body) : null; } catch(e2){} emitCart(u, b); } catch(e){} return _fetch.apply(this, arguments); };
   } catch(e){}
   try {
     var _open = XMLHttpRequest.prototype.open, _send = XMLHttpRequest.prototype.send;
     XMLHttpRequest.prototype.open = function(m, u){ try { this.__bu = u; } catch(e){} return _open.apply(this, arguments); };
-    XMLHttpRequest.prototype.send = function(body){ try { if (("" + (this.__bu || "")).indexOf("/cart/add") >= 0){ var b = null; try { b = body ? JSON.parse(body) : null; } catch(e2){} emit("cart.item_added", cartAddProps(b)); } } catch(e){} return _send.apply(this, arguments); };
+    XMLHttpRequest.prototype.send = function(body){ try { var b = null; try { b = body ? JSON.parse(body) : null; } catch(e2){} emitCart("" + (this.__bu || ""), b); } catch(e){} return _send.apply(this, arguments); };
   } catch(e){}
-  D.addEventListener("submit", function(ev){ try { var f = ev.target; if (f && f.action && f.action.indexOf("/cart/add") >= 0) emit("cart.item_added", {}); } catch(e){} }, true);
+  D.addEventListener("submit", function(ev){ try { var f = ev.target; if (!f || !f.action) return; var a = "" + f.action;
+    if (a.indexOf("/cart/add") >= 0) emit("cart.item_added", {});
+    else if (a.indexOf("/cart/change") >= 0 || a.indexOf("/cart/update") >= 0) emit("cart.updated", {});
+    // Account auth forms (Shopify customer login / register) — login (returning) + signup (new-account).
+    else if (a.indexOf("/account/login") >= 0) emit("user.logged_in", {});
+    else if (a.indexOf("/account") >= 0 && (a.indexOf("register") >= 0 || a.indexOf("/account#") >= 0 || f.id === "create_customer")) emit("user.signed_up", {});
+  } catch(e){} }, true);
 
   // Click tracking (delegated) — links + buttons + opted-in elements, with context (no PII).
   D.addEventListener("click", function(ev){ try { var el = ev.target; if (!el || !el.closest) return; var a = el.closest("a,button,[role=button],[data-brain-track]"); if (!a) return; var txt = (a.textContent || "").replace(/\\s+/g, " ").trim().slice(0, 80); emit("element.clicked", { element: (a.tagName || "").toLowerCase(), text: txt || undefined, href: (a.getAttribute && a.getAttribute("href")) || undefined, el_id: a.id || undefined }); } catch(e){} }, true);

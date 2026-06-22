@@ -17,10 +17,13 @@ import {
 } from './resolver-schema.js';
 
 describe('ai-gateway-client — resolver schema (structural honesty ban)', () => {
-  it('metric_id enum == the 16 registry keys (no drift)', () => {
+  it('metric_id enum == the registry keys (no drift)', () => {
     const registryKeys = Object.keys(METRIC_REGISTRY).sort();
     expect([...METRIC_ID_ENUM].sort()).toEqual(registryKeys);
-    expect(METRIC_ID_ENUM.length).toBe(16);
+    // Count is derived from the registry (not a hardcoded literal) so registering a new metric
+    // (H9 added aov/cac/ltv/repeat_rate/top_products/cohort_retention) does not require touching
+    // this assertion — the enum is the registry keys, by construction.
+    expect(METRIC_ID_ENUM.length).toBe(Object.keys(METRIC_REGISTRY).length);
   });
 
   it('the binding branch metric_id enum is exactly the registry keys', () => {

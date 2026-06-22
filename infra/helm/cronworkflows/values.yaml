@@ -101,3 +101,19 @@ jobs:
     # Activation needs AUDIT_CHECKPOINT_BUCKET (= terraform output s3-audit.audit_bucket_name) +
     # AWS_REGION in the pod env (via core-env secret). The brain-jobs IRSA role already grants
     # Put/Get/List on checkpoints/* (s3-audit). Unset → the job safely no-ops (dev).
+  - name: partition-maintenance
+    schedule: "30 2 * * *"         # daily 02:30 IST — BEFORE any month rolls over (C4 audit finding)
+    command: ["node", "dist/jobs/partition-maintenance.js"]
+    useStreamWorkerImage: true
+    env:
+      # CREATE-AHEAD horizon. >=3 so writes NEVER fall into *_pdefault even if the controller is
+      # down for a few days near a month boundary. Without this job scheduled, from Oct 2026 every
+      # partitioned write would land in the *_pdefault catch-all (C4 CRITICAL).
+      - { name: PARTITION_AHEAD_MONTHS, value: "3" }
+      # DROP-OLD horizon (months). Drops partitions older than this; the catalog routine NEVER drops
+      # a DEFAULT. 36 months keeps 3y of partitioned data hot — tune per table-class retention.
+      - { name: PARTITION_RETENTION_MONTHS, value: "36" }
+    # Runs the SECURITY-DEFINER public.maintain_time_partitions(ahead, retention) (migration 0080)
+    # as brain_app. Idempotent (CREATE IF NOT EXISTS / guarded DROP) — Forbid + startingDeadline make
+    # a missed/retried run safe. ALERT: if any *_pdefault has rows, partition creation has been
+    # lagging — page on a non-zero row count (see infra/helm/cronworkflows/README.md → C4 alert).

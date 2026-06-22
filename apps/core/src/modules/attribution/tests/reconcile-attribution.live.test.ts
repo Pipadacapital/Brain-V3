@@ -142,6 +142,38 @@ describe('reconcileAttribution (live PG + StarRocks)', () => {
     expect(after.rows[0].n).toBe(before.rows[0].n);
   });
 
+  it('H8. no-model reconcile writes ALL FOUR models (not just position_based)', async () => {
+    if (!available) return;
+    // Fresh credit set: clear and re-run WITHOUT a model → loops ATTRIBUTION_MODEL_IDS.
+    await pgExec(`DELETE FROM attribution_credit_ledger WHERE brand_id = $1`, [BRAND]).catch(() => {});
+    const r = await reconcileAttribution(BRAND, CORR, { pool: pgPool, srPool });
+    // The one stitched order is credited under each of the 4 models → credited == 4.
+    expect(r.credited).toBe(4);
+
+    const models = await pgPool.query<{ model_id: string }>(
+      `SELECT DISTINCT model_id FROM attribution_credit_ledger
+        WHERE brand_id = $1 AND order_id = $2 AND row_kind = 'credit' ORDER BY model_id`,
+      [BRAND, ORDER_CREDITED],
+    );
+    expect(models.rows.map((m) => m.model_id).sort()).toEqual(
+      ['first_touch', 'last_touch', 'linear', 'position_based'],
+    );
+
+    // Each model's credit still closes to the realized basis (100000) at the order.
+    const perModel = await pgPool.query<{ model_id: string; sum: string }>(
+      `SELECT model_id, SUM(credited_revenue_minor)::text AS sum FROM attribution_credit_ledger
+        WHERE brand_id = $1 AND order_id = $2 AND row_kind = 'credit' GROUP BY model_id`,
+      [BRAND, ORDER_CREDITED],
+    );
+    for (const row of perModel.rows) expect(row.sum).toBe('100000');
+
+    // Restore the single-model state the clawback test below expects (position_based only).
+    await pgExec(
+      `DELETE FROM attribution_credit_ledger WHERE brand_id = $1 AND model_id <> $2`,
+      [BRAND, MODEL],
+    ).catch(() => {});
+  });
+
   it('4. clawback — a reversal nets the credited order to zero', async () => {
     if (!available) return;
     await seedLedgerRow(ORDER_CREDITED, BRAIN_ID, 'rto_reversal', -100000, 'attr-rev-1');

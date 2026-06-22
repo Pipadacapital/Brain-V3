@@ -115,12 +115,18 @@ def main() -> None:
     )
     src.createOrReplaceTempView("ledger_src")
 
-    # Idempotent append: insert only ledger_event_ids not already present (immutable rows).
+    # Idempotent: insert new rows; AND fill brain_id on existing rows that were backfilled in PG after
+    # their first materialization (migration 0089 stamps brain_id on historical orders — append-only to
+    # brain_app, but a superuser/identity backfill sets it). brain_id is the only field that legitimately
+    # transitions null→value on an otherwise-immutable ledger row, so this keeps Iceberg == PG truth
+    # without mutating any economic field. Re-run with no changes → no-op (idempotent).
     spark.sql(
         f"""
         MERGE INTO {TABLE} t
         USING ledger_src s
         ON t.brand_id = s.brand_id AND t.ledger_event_id = s.ledger_event_id
+        WHEN MATCHED AND t.brain_id IS NULL AND s.brain_id IS NOT NULL
+          THEN UPDATE SET t.brain_id = s.brain_id
         WHEN NOT MATCHED THEN INSERT *
         """
     )

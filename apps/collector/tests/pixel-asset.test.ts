@@ -25,6 +25,8 @@ function runAsset(opts: {
   search?: string;
   consent?: unknown;
   fetchOk?: boolean;
+  cookie?: string;
+  pathname?: string;
 } = {}): Harness {
   const sent: string[] = [];
   const store = new Map<string, string>();
@@ -33,7 +35,7 @@ function runAsset(opts: {
   const location = {
     protocol: 'https:',
     host: 'collect.example.com',
-    pathname: '/products/widget',
+    pathname: opts.pathname ?? '/products/widget',
     search: opts.search ?? '',
   };
 
@@ -67,12 +69,18 @@ function runAsset(opts: {
   const navigator = { userAgent: 'Mozilla/5.0 (Macintosh)', /* no sendBeacon */ };
   const document = {
     referrer: 'https://google.com/',
-    cookie: '',
+    cookie: opts.cookie ?? '',
     visibilityState: 'visible',
-    addEventListener: (ev: string, cb: () => void) => {
-      (listeners[ev] ??= []).push(cb);
+    addEventListener: (ev: string, cb: (e?: unknown) => void) => {
+      (listeners[ev] ??= []).push(cb as () => void);
     },
   };
+
+  // Minimal XMLHttpRequest so the asset's cart-mutation XHR hook installs without throwing.
+  class FakeXHR {
+    open(): void {}
+    send(): void {}
+  }
 
   const sandbox = {
     window: win,
@@ -81,6 +89,9 @@ function runAsset(opts: {
     location,
     Blob: win.Blob,
     fetch: fakeFetch,
+    XMLHttpRequest: FakeXHR,
+    RegExp,
+    decodeURIComponent,
     console: win.console,
     Date,
     Math,
@@ -88,9 +99,16 @@ function runAsset(opts: {
     Object,
     setTimeout,
   };
+  win.fetch = fakeFetch;
+  win.XMLHttpRequest = FakeXHR;
   vm.createContext(sandbox);
   vm.runInContext(PIXEL_JS, sandbox);
   return { sent, listeners, win };
+}
+
+/** Let the asset's promise-chained flush (sendOne → .then → step) drain queued events. */
+async function drain(): Promise<void> {
+  for (let i = 0; i < 10; i++) await Promise.resolve();
 }
 
 function randUuid(): string {
@@ -121,6 +139,24 @@ describe('served /pixel.js — shape-(a) parity (ADR-1)', () => {
     expect(obj.properties.utm).toEqual({ source: 'google', campaign: 'summer' });
   });
 
+  it('captures ALL URL click-ids (msclkid/gbraid/wbraid/dclid)', () => {
+    const { sent } = runAsset({ search: '?fbclid=FB&gclid=G&ttclid=TT&msclkid=MS&gbraid=GB&wbraid=WB&dclid=DC' });
+    expect(JSON.parse(sent[0]!).properties.click_ids).toEqual({
+      fbclid: 'FB', gclid: 'G', ttclid: 'TT', msclkid: 'MS', gbraid: 'GB', wbraid: 'WB', dclid: 'DC',
+    });
+  });
+
+  it('captures cookie click-ids (_fbc + _fbp DISTINCT, li_fat_id, _epik→epik)', () => {
+    const { sent } = runAsset({ cookie: '_fbc=fb.1.123.CLICK; _fbp=fb.1.123.BROWSER; li_fat_id=LI; _epik=EPIK' });
+    const ci = JSON.parse(sent[0]!).properties.click_ids;
+    expect(ci._fbc).toBe('fb.1.123.CLICK');
+    expect(ci._fbp).toBe('fb.1.123.BROWSER');
+    expect(ci._fbc).not.toBe(ci._fbp);
+    expect(ci.li_fat_id).toBe('LI');
+    expect(ci.epik).toBe('EPIK');
+    expect(ci.fbclid).toBeUndefined();
+  });
+
   it('consent fail-safe-absent — no CMP signal → NO consent_flags stamped', () => {
     const { sent } = runAsset({ consent: undefined });
     expect(JSON.parse(sent[0]!).consent_flags).toBeUndefined();
@@ -136,15 +172,54 @@ describe('served /pixel.js — shape-(a) parity (ADR-1)', () => {
     });
   });
 
-  it('exposes window.brain with page/cart/track/flush + registers flush triggers', () => {
+  it('exposes window.brain with page/cart/track/flush + the new behavioral methods', () => {
     const { win, listeners } = runAsset();
     const brain = win.brain as Record<string, unknown>;
-    expect(typeof brain.page).toBe('function');
-    expect(typeof brain.cartItemAdded).toBe('function');
-    expect(typeof brain.cartViewed).toBe('function');
-    expect(typeof brain.flush).toBe('function');
+    for (const m of [
+      'page', 'cartItemAdded', 'cartItemRemoved', 'cartUpdated', 'cartViewed',
+      'checkoutStarted', 'checkoutStep', 'login', 'signup', 'flush',
+    ]) {
+      expect(typeof brain[m], `window.brain.${m}`).toBe('function');
+    }
     expect(listeners['pagehide']?.length ?? 0).toBeGreaterThan(0);
     expect(listeners['visibilitychange']?.length ?? 0).toBeGreaterThan(0);
+  });
+
+  it('window.brain behavioral events parse against the REAL schema (M14 / H6)', async () => {
+    const { win, sent } = runAsset();
+    const brain = win.brain as Record<string, (x?: unknown) => void>;
+    brain.cartItemRemoved!({ variant_id: 1 });
+    brain.cartUpdated!({ quantity: 3 });
+    brain.checkoutStep!({ step: 'shipping' });
+    brain.login!();
+    brain.signup!();
+    await drain(); // let the auto-fire flush chain finish
+    brain.flush!(); // re-read the queue for events enqueued after the in-flight flush captured it
+    await drain();
+    const names = sent.map((b) => JSON.parse(b).event_name);
+    expect(names).toContain('cart.item_removed');
+    expect(names).toContain('cart.updated');
+    expect(names).toContain('checkout.step_viewed');
+    expect(names).toContain('user.logged_in');
+    expect(names).toContain('user.signed_up');
+    for (const body of sent) {
+      expect(CollectorEventV1Schema.safeParse(JSON.parse(body)).success).toBe(true);
+    }
+  });
+
+  it('classifies the account page-type into page.viewed props', () => {
+    expect(JSON.parse(runAsset({ pathname: '/account' }).sent[0]!).properties.page_type).toBe('account');
+    expect(JSON.parse(runAsset({ pathname: '/account/login' }).sent[0]!).properties.page_type).toBe('account_login');
+    expect(JSON.parse(runAsset({ pathname: '/account/register' }).sent[0]!).properties.page_type).toBe('account_register');
+  });
+
+  it('fires checkout.step_viewed on a checkout page', async () => {
+    const { sent } = runAsset({ pathname: '/checkout', search: '?step=shipping' });
+    await drain();
+    const names = sent.map((b) => JSON.parse(b).event_name);
+    expect(names).toContain('checkout.step_viewed');
+    const step = sent.map((b) => JSON.parse(b)).find((e) => e.event_name === 'checkout.step_viewed');
+    expect(step.properties.step).toBe('shipping');
   });
 
   it('no raw PII / no salt on the wire (ADR-2)', () => {

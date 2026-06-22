@@ -42,9 +42,10 @@ export class ResolveIdentityUseCase {
     private readonly saltProvider: SaltProvider,
     private readonly identityRepo: IdentityRepository,
     /**
-     * Optional Neo4j identity graph (re-platform Phase D transition). When present, the resolved
-     * identity is DUAL-WRITTEN to the graph best-effort — PG stays authoritative during transition,
-     * and a Neo4j hiccup never breaks identity resolution. Reuses the already-computed hashes.
+     * Optional Neo4j identity graph — a NON-AUTHORITATIVE, parity-free projection (default-OFF;
+     * gated by IDENTITY_NEO4J_DUAL_WRITE in the composition root). RETIRED as a dual-write source:
+     * Postgres is the declared identity system-of-record (ADR-0003). When wired, the resolved identity
+     * is mirrored best-effort and a Neo4j hiccup never affects PG resolution; nothing reads this graph.
      */
     private readonly identityGraph?: IdentityGraph,
   ) {}
@@ -89,7 +90,16 @@ export class ResolveIdentityUseCase {
     const storefrontCustomerId = typeof props['customer_id'] === 'string' ? props['customer_id'] :
                                  typeof props['storefront_customer_id'] === 'string' ? props['storefront_customer_id'] : null;
 
-    if (!rawEmail && !rawPhone && !storefrontCustomerId) {
+    // ── C2: device_id + anon_id (brain_anon_id) — medium-tier RESOLUTION INPUTS ──
+    // These let an anonymous device/session adopt an already-known brain_id (resolve-only,
+    // never a merge key — see IdentityResolver §3b). brain_anon_id is the pixel's stable
+    // anonymous id (payload.properties.brain_anon_id); device_id is an optional stable device id.
+    const rawDeviceId = typeof props['device_id'] === 'string' ? props['device_id'] :
+                        typeof props['$device_id'] === 'string' ? props['$device_id'] : null;
+    const rawAnonId = typeof props['brain_anon_id'] === 'string' ? props['brain_anon_id'] :
+                     typeof props['anon_id'] === 'string' ? props['anon_id'] : null;
+
+    if (!rawEmail && !rawPhone && !storefrontCustomerId && !rawDeviceId && !rawAnonId) {
       return { outcome: 'no_identifiers', brandId, eventId };
     }
 
@@ -136,6 +146,33 @@ export class ResolveIdentityUseCase {
       });
     }
 
+    // ── C2: device_id (medium) — hashed as a stable device id (trim-normalized like external_id) ──
+    if (rawDeviceId) {
+      const hash = hashIdentifier(rawDeviceId, 'device_id', saltHex, regionCode);
+      identifiers.push({
+        type: 'device_id',
+        hash,
+        tier: 'medium',     // resolve-only, never a merge key (IdentityResolver §3b)
+        confidence: 'low',
+        rawValue: undefined, // not PII
+      });
+    }
+
+    // ── C2: anon_id / brain_anon_id (medium) — the pixel's stable anonymous id ──
+    // Normalized as external_id (trim) and hashed with the per-brand salt — same wire format as
+    // every other identifier, so a device/anon session resolves to the SAME hash on every event.
+    if (rawAnonId) {
+      const normalized = normalizeIdentifier(rawAnonId, 'external_id', regionCode);
+      const hash = hashIdentifier(normalized, 'external_id', saltHex, regionCode);
+      identifiers.push({
+        type: 'anon_id',
+        hash,
+        tier: 'medium',     // resolve-only, never a merge key (IdentityResolver §3b)
+        confidence: 'low',
+        rawValue: undefined, // not PII
+      });
+    }
+
     // ── 4. Read pre-resolution state ─────────────────────────────────────────
     const idHashes = identifiers.map((i) => ({ type: i.type, hash: i.hash }));
     const state = await this.identityRepo.readState(brandId, idHashes);
@@ -154,13 +191,16 @@ export class ResolveIdentityUseCase {
     // ── 6. Write ──────────────────────────────────────────────────────────────
     await this.identityRepo.writeOutcome(brandId, outcome, identifiers);
 
-    // ── 6b. Dual-write to the Neo4j identity graph (Phase D transition) ─────────
-    // Best-effort: PG is authoritative during transition; a Neo4j error must NOT break identity.
-    // Reuses the already-computed hashes (no re-extraction). PG 'storefront_customer_id' → 'external_id'.
+    // ── 6b. Mirror to the Neo4j projection (NON-AUTHORITATIVE — default-OFF, ADR-0003) ──
+    // Best-effort: PG is the system-of-record; a Neo4j error must NOT affect identity. Reuses the
+    // already-computed hashes. PG 'storefront_customer_id' → graph 'external_id'; the new medium ids
+    // (device_id / anon_id) map straight through (anon_id → external_id in the graph's type space).
     if (this.identityGraph && idHashes.length > 0) {
       try {
         const graphIds: HashedIdentifier[] = idHashes.map((i) => ({
-          type: i.type === 'storefront_customer_id' ? 'external_id' : (i.type as HashedIdentifier['type']),
+          type: i.type === 'storefront_customer_id' || i.type === 'anon_id'
+            ? 'external_id'
+            : (i.type as HashedIdentifier['type']),
           hash: i.hash,
         }));
         await this.identityGraph.resolve(brandId, graphIds);

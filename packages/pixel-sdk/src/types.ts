@@ -31,6 +31,16 @@ export interface ClickIds {
   wbraid?: string;
   /** Google Display/DV360 click id. */
   dclid?: string;
+  /** Meta browser-id cookie (`_fbp`) — first-party, NOT the same as the `_fbc`/fbclid click id.
+   *  Required for Meta CAPI match-quality; captured DISTINCT from fbclid (downstream `click_ids._fbp`). */
+  _fbp?: string;
+  /** Meta click-id cookie (`_fbc`) — kept DISTINCT from `fbclid` so CAPI can pass the formatted
+   *  `fb.1.<ts>.<fbclid>` cookie value verbatim (downstream `click_ids._fbc`). */
+  _fbc?: string;
+  /** LinkedIn first-party ad cookie (`li_fat_id`) — LinkedIn Conversions API match key. */
+  li_fat_id?: string;
+  /** Pinterest click id cookie (`_epik` / `epik`) — Pinterest Conversions API match key. */
+  epik?: string;
 }
 
 export interface Utm {

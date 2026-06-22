@@ -9,13 +9,16 @@
 -- ============================================================================
 {{
   config(
-    schema         = 'brain_gold',
-    materialized   = 'table',
-    table_type     = 'PRIMARY',
-    keys           = ['brand_id', 'brain_id'],
-    distributed_by = ['brand_id', 'brain_id'],
-    order_by       = ['brand_id', 'brain_id'],
-    buckets        = 8,
+    schema               = 'brain_gold',
+    materialized         = 'incremental',
+    incremental_strategy = 'default',
+    on_schema_change     = 'append_new_columns',
+    unique_key           = ['brand_id', 'brain_id'],
+    table_type           = 'PRIMARY',
+    keys                 = ['brand_id', 'brain_id'],
+    distributed_by       = ['brand_id', 'brain_id'],
+    order_by             = ['brand_id', 'brain_id'],
+    buckets              = 8,
     properties     = {
       'replication_num'        : '1',
       'enable_persistent_index': 'true',
@@ -25,9 +28,23 @@
   )
 }}
 
+-- H4 — INCREMENTAL RESTATEMENT, per-customer grain (safe dirty-key upsert). Only customers whose
+-- silver_customers row was restated since the last run (newer customer_watermark = ingestion time)
+-- are re-built and upserted by (brand_id, brain_id); untouched customers keep their row. on_schema_change
+-- =append_new_columns avoids the StarRocks DROP COLUMN cascade. First run / no-new-orders behave like
+-- silver_order_state (full build / no-op idempotent).
+{% if is_incremental() %}
+with customers as (
+    select * from {{ ref('silver_customers') }}
+    where customer_watermark > (
+        select coalesce(max(customer_watermark), cast('1970-01-01 00:00:00' as datetime)) from {{ this }}
+    )
+),
+{% else %}
 with customers as (
     select * from {{ ref('silver_customers') }}
 ),
+{% endif %}
 
 lifecycle as (
     select
@@ -55,6 +72,7 @@ select
     coalesce(l.rto_orders, 0)       as rto_orders,
     coalesce(l.cancelled_orders, 0) as cancelled_orders,
     coalesce(l.refunded_orders, 0)  as refunded_orders,
+    c.customer_watermark,
     current_timestamp()             as updated_at
 from customers c
 left join lifecycle l

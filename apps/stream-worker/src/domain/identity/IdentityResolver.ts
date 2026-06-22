@@ -24,7 +24,9 @@ export const RULE_VERSION = 'v1-deterministic';
 
 /** An identifier extracted from the Bronze event payload. */
 export interface ExtractedIdentifier {
-  type: 'email' | 'phone' | 'storefront_customer_id';
+  // C2: device_id + anon_id (brain_anon_id) are RESOLUTION INPUTS in addition to the strong PII
+  // identifiers. They are tier='medium' — see the resolve-only / never-merge gating in resolve().
+  type: 'email' | 'phone' | 'storefront_customer_id' | 'device_id' | 'anon_id';
   hash: string;         // 64-hex SHA-256(salt ‖ normalized)
   tier: 'strong' | 'strong_on_link' | 'medium' | 'weak';
   confidence: 'high' | 'low';
@@ -158,7 +160,9 @@ export class IdentityResolver {
       }
     }
 
-    // ── 3. Match eligible strong identifiers against existing links ───────────
+    // ── 3. Match eligible STRONG identifiers against existing links ───────────
+    // Strong identifiers (email / phone / storefront_customer_id) are the ONLY merge keys:
+    // ≥2 distinct strong-matched brain_ids → a deterministic merge (the union-find step).
     const matchedBrainIds = new Set<string>();
     for (const id of eligibleStrongIds) {
       for (const link of existingLinks) {
@@ -170,6 +174,34 @@ export class IdentityResolver {
           matchedBrainIds.add(link.brain_id);
         }
       }
+    }
+
+    // ── 3b. C2: device_id / anon_id (tier='medium') — RESOLVE-ONLY, NEVER MERGE ──
+    // Medium identifiers let an anonymous event ADOPT an already-known brain_id (so a
+    // device/anon session that previously linked to a strong identifier resolves to the
+    // same person instead of minting a fresh ghost). They are TIER-GATED so they can NEVER
+    // fold two distinct people together:
+    //   • They are consulted ONLY when the strong identifiers produced ≤1 brain_id.
+    //   • If the medium matches would push the distinct-brain_id set to ≥2, we DISCARD the
+    //     medium contribution entirely (strong wins; a shared device never triggers a merge).
+    // This preserves the deterministic union-find: merges are decided exclusively by strong keys.
+    const mediumIds = identifiers.filter((i) => i.tier === 'medium');
+    if (matchedBrainIds.size <= 1 && mediumIds.length > 0) {
+      const mediumMatched = new Set<string>();
+      for (const id of mediumIds) {
+        for (const link of existingLinks) {
+          if (link.identifier_type === id.type && link.identifier_value === id.hash && link.is_active) {
+            mediumMatched.add(link.brain_id);
+          }
+        }
+      }
+      // Union the medium matches with the (≤1) strong match. Adopt ONLY if the result is a
+      // single brain_id — otherwise the medium ids are ambiguous (shared device) → drop them.
+      const union = new Set<string>([...matchedBrainIds, ...mediumMatched]);
+      if (union.size === 1) {
+        matchedBrainIds.add([...union][0]!);
+      }
+      // union.size >= 2 → medium evidence is conflicting; ignore it (no merge, no adoption).
     }
 
     // ── 4. Resolve decision ───────────────────────────────────────────────────

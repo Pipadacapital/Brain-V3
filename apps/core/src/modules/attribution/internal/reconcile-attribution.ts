@@ -22,7 +22,7 @@
 
 import type { Pool, QueryResultRow } from 'pg';
 import {
-  DEFAULT_ATTRIBUTION_MODEL,
+  ATTRIBUTION_MODEL_IDS,
   withSilverBrand,
   BRAND_PREDICATE,
   type AttributionModelId,
@@ -91,11 +91,42 @@ async function resolveBrainAnonId(
   return rows[0]?.brain_anon_id ?? null;
 }
 
+/**
+ * reconcileAttribution — drive the credit/clawback write pipeline for a brand.
+ *
+ * H8 FIX: when `model` is omitted (the production callers — the Argo job + the BFF reconcile
+ * route — all omit it), the credit pass loops over EVERY registered model in ATTRIBUTION_MODEL_IDS
+ * (first_touch / last_touch / linear / position_based) so all four models are written, not just the
+ * position_based default. Previously the default-arg meant only 1 of 4 models ever got credit rows,
+ * so the model selector on the dashboard had no data for 3 of its 4 options. When a SPECIFIC model is
+ * passed, only that model is reconciled (the single-model path the live tests exercise).
+ *
+ * The per-model counts are SUMMED across models (an order credited under N models counts N times in
+ * `credited`); idempotent per (brand, model) via deterministic credit_ids + ON CONFLICT.
+ */
 export async function reconcileAttribution(
   brandId: string,
   correlationId: string,
   deps: ReconcileDeps,
-  model: AttributionModelId = DEFAULT_ATTRIBUTION_MODEL,
+  model?: AttributionModelId,
+): Promise<ReconcileResult> {
+  const models: readonly AttributionModelId[] = model ? [model] : ATTRIBUTION_MODEL_IDS;
+  const total: ReconcileResult = { credited: 0, clawed_back: 0, unattributed: 0 };
+  for (const m of models) {
+    const r = await reconcileOneModel(brandId, correlationId, deps, m);
+    total.credited += r.credited;
+    total.clawed_back += r.clawed_back;
+    total.unattributed += r.unattributed;
+  }
+  return total;
+}
+
+/** Reconcile a single attribution model for a brand (the credit + clawback passes). */
+async function reconcileOneModel(
+  brandId: string,
+  correlationId: string,
+  deps: ReconcileDeps,
+  model: AttributionModelId,
 ): Promise<ReconcileResult> {
   const writer = new AttributionCreditWriter(deps.pool, deps.srPool);
   let credited = 0;

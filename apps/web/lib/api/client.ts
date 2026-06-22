@@ -109,6 +109,7 @@ import type {
   SyncState,
   AnalyticsTimeseriesResponse,
   AnalyticsKpiSummaryResponse,
+  AnalyticsExecutiveMetricsResponse,
   AnalyticsRecognitionBreakdownResponse,
   AnalyticsRecentActivityResponse,
   AnalyticsOrdersTimeseriesResponse,
@@ -1101,6 +1102,21 @@ export const analyticsApi = {
     const qs = asOf ? `?as_of=${encodeURIComponent(asOf)}` : '';
     const { data } = await bffFetch<BffEnvelope<AnalyticsKpiSummaryResponse>>(
       `/v1/analytics/kpi-summary${qs}`,
+    );
+    return data;
+  },
+
+  /**
+   * GET /api/v1/analytics/executive-metrics
+   * H9 — headline AOV/LTV/repeat_rate/CAC/ROAS over the Gold marts (registry-backed).
+   */
+  getExecutiveMetrics: async (params?: { from?: string; to?: string }): Promise<AnalyticsExecutiveMetricsResponse> => {
+    const qs = new URLSearchParams();
+    if (params?.from) qs.set('from', params.from);
+    if (params?.to) qs.set('to', params.to);
+    const qsStr = qs.toString();
+    const { data } = await bffFetch<BffEnvelope<AnalyticsExecutiveMetricsResponse>>(
+      `/v1/analytics/executive-metrics${qsStr ? `?${qsStr}` : ''}`,
     );
     return data;
   },

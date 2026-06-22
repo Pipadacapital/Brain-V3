@@ -1,36 +1,61 @@
 -- ============================================================
--- StarRocks Silver table DDL template (Sprint-0 placeholder)
--- Full Silver/Gold business marts are deferred to M1.
--- This template encodes the invariants for all future Silver tables:
---   - DISTRIBUTED BY HASH(brand_id, ...) — tenant-first hash distribution
---   - brand_id as the first key column — isolation anchor
---   - Row policy applied at creation (row_policy_template.sql)
+-- StarRocks Silver/Gold table DDL template (H3 — audit remediation).
+-- The canonical create-ahead DDL contract for every time-series Silver/Gold table.
+--
+-- This template encodes the invariants for all event-time marts:
+--   - DISTRIBUTED BY HASH(brand_id, ...) — tenant-first hash distribution (isolation anchor).
+--   - brand_id as the FIRST key column.
+--   - PARTITION BY RANGE on the event-time column — so old data prunes/TTLs and reads scan
+--     only the date window (the metric-engine always filters occurred_at/state_effective_at).
+--   - dynamic_partition — StarRocks CREATES partitions AHEAD (so ingestion never hits a
+--     "no partition" error) and DROPS partitions past the TTL (storage stays bounded).
+--   - BUCKETS >= 8 (H3) — enough parallelism for the per-partition tablet set.
+--   - replication_num = 3 in PROD (durability); dev overrides to 1 via the env/profile
+--     (the dbt marts read replication_num from config; standalone DDL ships the prod value
+--     and the dev applier rewrites it to 1 — see db/starrocks/ddl/README / the rebuild job).
+--   - Row policy applied at creation (row_policy_template.sql) for tenant isolation.
 -- ============================================================
 
--- Template (substitute <table_name> and additional PK columns):
+-- ── PRIMARY KEY (upsert / latest-state) time-series table ───────────────────────────────
+-- (substitute <table_name>, <event_time_col>, additional PK columns; set the dynamic_partition
+--  start/end/TTL window to the table's retention.)
 --
 -- CREATE TABLE IF NOT EXISTS brain_silver.<table_name> (
---   brand_id      VARCHAR(36)   NOT NULL COMMENT 'Tenant key — row policy anchor (I-S01)',
---   <pk_column>   <type>        NOT NULL COMMENT '<description>',
+--   brand_id          VARCHAR(64)   NOT NULL COMMENT 'Tenant key — row policy anchor (I-S01)',
+--   <pk_column>       <type>        NOT NULL COMMENT '<description>',
 --   ...
---   created_at    DATETIME      NOT NULL COMMENT 'Record creation time (UTC)',
---   updated_at    DATETIME      NOT NULL COMMENT 'Last upsert time (UTC)'
+--   <event_time_col>  DATETIME      NOT NULL COMMENT 'Event time — partition key (UTC)',
+--   updated_at        DATETIME      NOT NULL COMMENT 'Last upsert time (UTC)'
 -- )
--- PRIMARY KEY (brand_id, <pk_column>)
+-- ENGINE=OLAP
+-- PRIMARY KEY (brand_id, <pk_column>, <event_time_col>)        -- the partition col must be in the PK
+-- PARTITION BY RANGE (<event_time_col>) ()                      -- empty () = dynamic_partition manages it
 -- DISTRIBUTED BY HASH(brand_id, <pk_column>) BUCKETS 8
 -- ORDER BY (brand_id, <pk_column>)
 -- PROPERTIES (
---   "replication_num"        = "3",           -- dev: 1; prod: 3
---   "enable_persistent_index"= "true",        -- PK tables: persistent index for upsert perf
---   "compression"            = "LZ4"
+--   "replication_num"                  = "3",        -- prod: 3; dev applier rewrites to 1
+--   "enable_persistent_index"          = "true",     -- PK tables: persistent index for upsert perf
+--   "compression"                      = "LZ4",
+--   -- dynamic partitioning: create-ahead + TTL ------------------------------------------
+--   "dynamic_partition.enable"         = "true",
+--   "dynamic_partition.time_unit"      = "DAY",
+--   "dynamic_partition.start"          = "-400",      -- TTL: drop partitions older than 400 days
+--   "dynamic_partition.end"            = "7",         -- create 7 days of partitions ahead
+--   "dynamic_partition.prefix"         = "p",
+--   "dynamic_partition.buckets"        = "8",
+--   "dynamic_partition.history_partition_num" = "0"
 -- );
 --
--- After creating the table, apply row policy:
+-- ── DUPLICATE KEY (append / per-touch grain) time-series table ───────────────────────────
+-- Same partition + dynamic_partition + BUCKETS>=8 + replication_num block; use
+--   DUPLICATE KEY(brand_id, <grain_cols>, <event_time_col>)
+-- instead of PRIMARY KEY, and DROP enable_persistent_index (DUPLICATE tables have no PK index).
+--
+-- After creating the table, apply the row policy:
 -- CREATE ROW POLICY IF NOT EXISTS tenant_isolation
 --   ON brain_silver.<table_name>
 --   TO brain_analytics
 --   USING (brand_id = IFNULL(NULLIF(SESSION_VALUE('brain_current_brand_id'), ''),
 --                            '00000000-0000-0000-0000-000000000000'));
 
--- PLACEHOLDER — no business marts in Sprint-0 (deferred to M1 per scope ruling 6).
-SELECT 'silver_template.sql — Sprint-0 placeholder. Business marts added in M1.' AS note;
+SELECT 'silver_template.sql — H3 partition/dynamic_partition/buckets/replication contract.' AS note;

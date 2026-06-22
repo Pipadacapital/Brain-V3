@@ -1,0 +1,32 @@
+version: 2
+
+models:
+  - name: silver_sessions
+    description: >
+      Session-grain Silver mart (M10). One row per (brand_id, brain_anon_id, session_key) rolled up from
+      silver_touchpoint: touch_count, pageview/product-view counts, entry/exit channel, entry page_type,
+      session start/end + duration, bounce flag, and a deterministic converted flag (any touch stitched
+      to an order, D-5 read-back). Additive/deterministic projection; session RATES stay in the
+      metric-engine. NO money column. Per-brand isolation at the read seam (I-ST01).
+    columns:
+      - name: brand_id
+        description: "Tenant key. First key/distribution/order column."
+        tests: [not_null]
+      - name: brain_anon_id
+        description: "Anon journey key."
+        tests: [not_null]
+      - name: session_key
+        description: "Deterministic 30-min-inactivity session id (server-re-derived, replay-stable)."
+        tests: [not_null]
+      - name: touch_count
+        description: "Touches in the session (bounce = 1)."
+        tests: [not_null]
+      - name: entry_channel
+        description: "Channel of the first touch in the session."
+        tests: [not_null]
+      - name: is_bounce
+        description: "True iff the session has exactly one touch."
+        tests: [not_null]
+      - name: is_converted
+        description: "True iff any touch in the session stitched to an order (D-5)."
+        tests: [not_null]

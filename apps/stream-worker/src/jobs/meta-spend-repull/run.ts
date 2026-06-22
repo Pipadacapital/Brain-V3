@@ -25,6 +25,7 @@
 import { Pool } from 'pg';
 import { Kafka, type Producer } from 'kafkajs';
 import { recordConnectorAuthRejected } from '../../infrastructure/observability/connector-auth-health.js';
+import { updateConnectorInstanceHealth } from '../../infrastructure/pg/ConnectorInstanceHealthRepository.js';
 import { buildPartitionKey } from '@brain/events';
 import { CollectorEventV1Schema, COLLECTOR_EVENT_V1_TOPIC_SUFFIX } from '@brain/contracts';
 import {
@@ -157,10 +158,12 @@ async function repullConnector(params: RepullParams): Promise<void> {
     if (String(err).includes(META_AUTH_ERROR)) {
       recordConnectorAuthRejected('meta'); // P2.6: make the silent token-expiry death loud
       await setSyncState(pool, brandId, ciId, 'error', 'meta auth error — RECONNECT_REQUIRED');
+      await updateConnectorInstanceHealth(pool, brandId, ciId, 'token_expired');
       return;
     }
     if (String(err).includes(META_RATE_LIMITED)) {
       await setSyncState(pool, brandId, ciId, 'error', 'RateLimited — retry next run');
+      await updateConnectorInstanceHealth(pool, brandId, ciId, 'rate_limited');
       return;
     }
     log.error(`connector=${ciId} account meta fetch failed`, { err: err });
@@ -202,11 +205,13 @@ async function repullConnector(params: RepullParams): Promise<void> {
       if (String(err).includes(META_RATE_LIMITED)) {
         log.error(`connector=${ciId} RateLimited — aborting run (retry next)`);
         await setSyncState(pool, brandId, ciId, 'error', 'RateLimited — retry next run');
+        await updateConnectorInstanceHealth(pool, brandId, ciId, 'rate_limited');
         return;
       }
       if (String(err).includes(META_AUTH_ERROR)) {
         recordConnectorAuthRejected('meta'); // P2.6: make the silent token-expiry death loud
         await setSyncState(pool, brandId, ciId, 'error', 'meta auth error — RECONNECT_REQUIRED');
+        await updateConnectorInstanceHealth(pool, brandId, ciId, 'token_expired');
         return;
       }
       log.error(`connector=${ciId} level=${level} page error`, { err: err });

@@ -1,4 +1,5 @@
 import { log } from "../../log.js";
+import { CircuitBreaker } from '@brain/observability';
 
 /**
  * google-ads-searchstream-client.ts — Google Ads API SearchStream client (ADR-AD-3 / ADR-AD-7).
@@ -117,6 +118,7 @@ class TokenBucket {
 export class GoogleAdsSearchStreamClient {
   private accessToken: string | null = null;
   private readonly bucket: TokenBucket;
+  private readonly breaker: CircuitBreaker;
 
   /**
    * @param creds            refresh_token + client + developer-token + CID — NEVER logged
@@ -129,33 +131,36 @@ export class GoogleAdsSearchStreamClient {
     private readonly maxBackoffRetries = 5,
   ) {
     this.bucket = new TokenBucket(qpsPerCid);
+    this.breaker = new CircuitBreaker({ name: 'google-ads', failureThreshold: 5, openMs: 60_000 });
   }
 
   /** Exchange the refresh_token for a short-lived access_token (run start). NEVER logs tokens. */
   async authenticate(): Promise<void> {
-    const params = new URLSearchParams({
-      grant_type: 'refresh_token',
-      refresh_token: this.creds.refreshToken,
-      client_id: this.creds.clientId,
-      client_secret: this.creds.clientSecret,
+    await this.breaker.fire(async () => {
+      const params = new URLSearchParams({
+        grant_type: 'refresh_token',
+        refresh_token: this.creds.refreshToken,
+        client_id: this.creds.clientId,
+        client_secret: this.creds.clientSecret,
+      });
+      const res = await fetch(OAUTH_TOKEN_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: params.toString(),
+        signal: AbortSignal.timeout(OAUTH_TIMEOUT_MS),
+      });
+      if (res.status === 400 || res.status === 401) {
+        throw new Error(`${GOOGLE_AUTH_ERROR}: token exchange failed (HTTP ${res.status})`);
+      }
+      if (!res.ok) {
+        throw new Error(`[google-ads-client] token exchange HTTP ${res.status}`);
+      }
+      const body = (await res.json()) as { access_token?: string };
+      if (!body.access_token) {
+        throw new Error(`${GOOGLE_AUTH_ERROR}: no access_token in exchange response`);
+      }
+      this.accessToken = body.access_token; // in memory only; never logged
     });
-    const res = await fetch(OAUTH_TOKEN_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: params.toString(),
-      signal: AbortSignal.timeout(OAUTH_TIMEOUT_MS),
-    });
-    if (res.status === 400 || res.status === 401) {
-      throw new Error(`${GOOGLE_AUTH_ERROR}: token exchange failed (HTTP ${res.status})`);
-    }
-    if (!res.ok) {
-      throw new Error(`[google-ads-client] token exchange HTTP ${res.status}`);
-    }
-    const body = (await res.json()) as { access_token?: string };
-    if (!body.access_token) {
-      throw new Error(`${GOOGLE_AUTH_ERROR}: no access_token in exchange response`);
-    }
-    this.accessToken = body.access_token; // in memory only; never logged
   }
 
   /**
@@ -193,6 +198,7 @@ export class GoogleAdsSearchStreamClient {
     url: string,
     body: string,
   ): Promise<Array<{ results?: GoogleRawResult[] }>> {
+    return this.breaker.fire(async () => {
     for (let attempt = 0; attempt <= this.maxBackoffRetries; attempt++) {
       await this.bucket.take(); // self-imposed QPS cap (ADR-AD-7)
 
@@ -250,6 +256,7 @@ export class GoogleAdsSearchStreamClient {
       throw new Error(`[google-ads-client] HTTP ${res.status} from Google Ads SearchStream`);
     }
     throw new Error(`${GOOGLE_RESOURCE_TEMPORARILY_EXHAUSTED}: exceeded backoff retries`);
+    }); // end breaker.fire
   }
 }
 

@@ -24,6 +24,7 @@
  */
 
 import { Pool } from 'pg';
+import { updateConnectorInstanceHealth } from '../../infrastructure/pg/ConnectorInstanceHealthRepository.js';
 import { Kafka, type Producer } from 'kafkajs';
 import { buildPartitionKey } from '@brain/events';
 import { CollectorEventV1Schema, COLLECTOR_EVENT_V1_TOPIC_SUFFIX } from '@brain/contracts';
@@ -165,6 +166,7 @@ async function repullConnector(params: RepullParams): Promise<void> {
       recordConnectorAuthRejected('woocommerce');
       log.error(`connector=${ciId} — woocommerce auth error (RECONNECT_REQUIRED)`, { err });
       await setSyncState(pool, brandId, ciId, 'error', 'woocommerce auth error — RECONNECT_REQUIRED');
+      await updateConnectorInstanceHealth(pool, brandId, ciId, 'token_expired');
       await syncRunRepo.closeRun({ runId, brandId, startedAt, status: 'failed', errorClass: 'AUTH_ERROR', errorDetail: 'woocommerce auth error — RECONNECT_REQUIRED' });
       return;
     }

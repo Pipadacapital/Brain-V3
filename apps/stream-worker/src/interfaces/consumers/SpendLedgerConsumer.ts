@@ -28,6 +28,8 @@
  */
 
 import { Consumer, Kafka, EachMessagePayload } from 'kafkajs';
+import { extractKafkaTraceContext } from '@brain/observability';
+import { context } from '@opentelemetry/api';
 import { DlqProducer } from '../../infrastructure/kafka/DlqProducer.js';
 import type { IRetryCounter } from '../../infrastructure/redis/RetryCounterAdapter.js';
 import { LedgerWriter } from '../../infrastructure/pg/LedgerWriter.js';
@@ -87,6 +89,12 @@ export class SpendLedgerConsumer {
         const { topic, partition, message } = payload;
         const offset = message.offset;
 
+        // Resume producer trace context across the Kafka boundary (observability skill).
+        const traceCtx = extractKafkaTraceContext(
+          (message.headers ?? {}) as Record<string, Buffer | string | undefined>,
+        );
+
+        return context.with(traceCtx, async () => {
         try {
           let parsed: Record<string, unknown> | null = null;
           let eventName: string | null = null;
@@ -162,6 +170,8 @@ export class SpendLedgerConsumer {
             throw err;
           }
         }
+
+        }); // end context.with(traceCtx, ...)
       },
     });
   }

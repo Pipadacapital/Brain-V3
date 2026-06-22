@@ -245,3 +245,27 @@ groups:
         annotations:
           summary: "Over-reversal detected in the revenue ledger"
           description: "An order's cumulative reversals exceeded its recognized sale (realized went negative). Reconcile — likely a duplicate refund or refund+chargeback."
+
+  # ── Webhook produce health ───────────────────────────────────────────────────
+  - name: brain-webhook-health
+    rules:
+      - alert: BrainWebhookProduceFailing
+        # collector_webhook_produce_error_total: collector counter (+1 per message the collector
+        # failed to produce to Redpanda after exhausting retries). A non-zero rate means EVENTS
+        # ARE BEING DROPPED at the ingest spine entry — the no-event-loss guarantee (CLAUDE.md) is
+        # being violated. Immediate investigation required.
+        #
+        # Metric source: @brain/observability incrementCounter in the collector's Kafka producer
+        # retry wrapper. Set to 0 when the topic is healthy; any increment = a drop in the live lane.
+        #
+        # Two-window guard: 1m fast burn (drops right now) + 5m sustained (not a single-blip spike).
+        expr: |
+          (sum(rate(brain_collector_webhook_produce_error_total[1m])) > 0)
+          and
+          (sum(increase(brain_collector_webhook_produce_error_total[5m])) > 0)
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Collector webhook produce failing — events are being dropped"
+          description: "The collector cannot produce events to Redpanda after retries (brain_collector_webhook_produce_error_total is advancing). The no-event-loss guarantee is violated. Check broker health, topic availability, and producer credentials."

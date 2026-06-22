@@ -21,10 +21,12 @@
  *   same code path.
  */
 import { Consumer, Kafka, EachMessagePayload } from 'kafkajs';
+import { extractKafkaTraceContext } from '@brain/observability';
+import { context } from '@opentelemetry/api';
 import { ProjectConsentUseCase } from '../../application/ProjectConsentUseCase.js';
 import { DlqProducer } from '../../infrastructure/kafka/DlqProducer.js';
 import type { IRetryCounter } from '../../infrastructure/redis/RetryCounterAdapter.js';
-import { log } from "../../log.js";
+import { log } from '../../log.js';
 
 const MAX_RETRY = 5;
 
@@ -60,6 +62,12 @@ export class ConsentSuppressorConsumer {
         const offset = message.offset;
         const now = new Date().toISOString();
 
+        // Resume producer trace context across the Kafka boundary (observability skill).
+        const traceCtx = extractKafkaTraceContext(
+          (message.headers ?? {}) as Record<string, Buffer | string | undefined>,
+        );
+
+        return context.with(traceCtx, async () => {
         try {
           const result = await this.projectConsent.execute(message.value, now);
 
@@ -120,6 +128,8 @@ export class ConsentSuppressorConsumer {
             throw err;
           }
         }
+
+        }); // end context.with(traceCtx, ...)
       },
     });
   }

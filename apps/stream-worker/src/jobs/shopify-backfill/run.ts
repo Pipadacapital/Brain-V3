@@ -35,6 +35,7 @@
 
 import { Pool } from 'pg';
 import { recordConnectorAuthRejected } from '../../infrastructure/observability/connector-auth-health.js';
+import { updateConnectorInstanceHealth } from '../../infrastructure/pg/ConnectorInstanceHealthRepository.js';
 import { Kafka, Producer } from 'kafkajs';
 import { buildPartitionKey } from '@brain/events';
 import { SaltProvider, LocalSecretsProvider } from '../../infrastructure/secrets/SaltProvider.js';
@@ -149,6 +150,7 @@ export async function run(connectorInstanceId?: string): Promise<void> {
           cursorValue: claimedJob.cursor_value,  // preserve cursor for resume
         });
         recordConnectorAuthRejected('shopify'); // P2.6: make the silent token-loss death loud
+        await updateConnectorInstanceHealth(pool, brandId, ciId, 'token_expired');
         log.error(`job=${jobId} — token not found (RECONNECT_REQUIRED)`);
         continue;
       }
@@ -308,7 +310,7 @@ interface BackfillLoopParams {
 
 async function runBackfillLoop(params: BackfillLoopParams): Promise<void> {
   const {
-    jobId, brandId, connectorRow, accessToken, saltHex,
+    jobId, brandId, connectorInstanceId, connectorRow, accessToken, saltHex,
     resumeSinceId, producer, jobRepo, pool,
   } = params;
 
@@ -357,6 +359,7 @@ async function runBackfillLoop(params: BackfillLoopParams): Promise<void> {
             cursorValue: sinceId,
           });
           recordConnectorAuthRejected('shopify'); // P2.6: make the silent token-expiry death loud
+          await updateConnectorInstanceHealth(pool, brandId, connectorInstanceId, 'token_expired');
           log.error(`job=${jobId} 401 auth error — marked failed`);
           return;
         }

@@ -53,6 +53,42 @@ describe('ConnectorInstance (provider-agnostic)', () => {
     expect(inst.healthState).toBe('Disconnected');
     expect(inst.safetyRating).toBe('blocked');
   });
+
+  it('markTokenExpired flips to error/TokenExpired/blocked', () => {
+    const inst = ConnectorInstance.create(baseProps()).markTokenExpired();
+    expect(inst.status).toBe('error');
+    expect(inst.healthState).toBe('TokenExpired');
+    expect(inst.safetyRating).toBe('blocked');
+    // immutable — original is unchanged
+    const orig = ConnectorInstance.create(baseProps());
+    expect(orig.healthState).toBe('Healthy');
+  });
+
+  it('markRateLimited flips to error/RateLimited/degraded', () => {
+    const inst = ConnectorInstance.create(baseProps()).markRateLimited();
+    expect(inst.status).toBe('error');
+    expect(inst.healthState).toBe('RateLimited');
+    expect(inst.safetyRating).toBe('degraded');
+    // immutable — original is unchanged
+    const orig = ConnectorInstance.create(baseProps());
+    expect(orig.healthState).toBe('Healthy');
+  });
+
+  it('markError flips to error/Failed/blocked', () => {
+    const inst = ConnectorInstance.create(baseProps()).markError();
+    expect(inst.status).toBe('error');
+    expect(inst.healthState).toBe('Failed');
+    expect(inst.safetyRating).toBe('blocked');
+  });
+
+  it('state transitions produce fresh updatedAt', () => {
+    const before = new Date('2026-01-01T00:00:00Z');
+    const inst = ConnectorInstance.create({ ...baseProps(), updatedAt: before });
+    const afterExpired = inst.markTokenExpired();
+    expect(afterExpired.updatedAt.getTime()).toBeGreaterThanOrEqual(before.getTime());
+    const afterRateLimited = inst.markRateLimited();
+    expect(afterRateLimited.updatedAt.getTime()).toBeGreaterThanOrEqual(before.getTime());
+  });
 });
 
 describe('hashToUuidShaped', () => {

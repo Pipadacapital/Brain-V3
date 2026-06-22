@@ -70,12 +70,9 @@ import { PgBackfillJobRepository } from './modules/connector/backfill/infrastruc
 import type { BackfillJobProgress } from '@brain/contracts';
 import { PgSyncRequestRepository } from './modules/connector/sync/infrastructure/PgSyncRequestRepository.js';
 import { RequestConnectorSyncCommand } from './modules/connector/sync/application/commands/RequestConnectorSyncCommand.js';
-import { registerShopifyWebhookRoutes } from './modules/connector/sources/storefront/shopify/interfaces/webhooks/shopifyWebhookHandler.js';
-import { registerRazorpayWebhookRoutes } from './modules/connector/sources/payment/razorpay/interfaces/webhooks/razorpayWebhookHandler.js';
+import { registerAllWebhookRoutes } from './modules/connector/webhooks/platform/registerWebhookRoutes.js';
 import { registerRazorpayConnectorRoutes } from './modules/connector/sources/payment/razorpay/interfaces/http/razorpayConnectorRoutes.js';
 import { RotateWebhookSecretCommand } from './modules/connector/sources/payment/razorpay/application/commands/RotateWebhookSecretCommand.js';
-import { registerShopfloWebhookRoutes } from './modules/connector/sources/checkout/shopflo/interfaces/webhooks/shopfloWebhookHandler.js';
-import { registerWooCommerceWebhookRoutes } from './modules/connector/sources/storefront/woocommerce/interfaces/webhooks/woocommerceWebhookHandler.js';
 import { registerShopifyConnectorRoutes } from './modules/connector/sources/storefront/shopify/interfaces/http/shopifyConnectorRoutes.js';
 import { registerDevShopifySyncRoutes } from './modules/connector/sources/storefront/shopify/interfaces/http/devShopifySyncRoutes.js';
 import { registerPixelRoutes, buildDefaultSnippet, isValidIngestHost } from './modules/connector/pixel/interfaces/http/pixelRoutes.js';
@@ -742,22 +739,12 @@ export async function main(): Promise<void> {
     return salt;
   }
 
-  // Register Shopify webhook routes (PUBLIC — HMAC-protected, exempt from session guard).
-  // The CSRF middleware at the onRequest hook already exempts /api/v1/webhooks/ paths.
-  registerShopifyWebhookRoutes(app, {
-    secretsManager: connectorSecretsManager,
-    rawPgPool,
-    producer: webhookProducer,
-    liveTopic,
-    getSaltHex: getWebhookSaltHex,
-  });
-
-  app.log.info({ topic: liveTopic }, '[core] Shopify webhook receiver registered (B1)');
-
-  // ── B1: Razorpay webhook receiver (ADR-RZ-7 / C2 / C3 / MB-1) ───────────────
-  // PUBLIC route — HMAC-protected (NN-4); exempt from session guard + CSRF middleware.
-  // CSRF middleware already exempts /api/v1/webhooks/ paths (see onRequest hook above).
-  registerRazorpayWebhookRoutes(app, {
+  // ── Generic webhook pipeline (all 4 providers: Shopify/Razorpay/Shopflo/WooCommerce) ──
+  // PUBLIC routes — HMAC-protected (NN-4); exempt from session guard + CSRF middleware.
+  // The generic WebhookPipeline (Template Method) runs all common steps; per-provider
+  // WebhookStrategy (Strategy) handles signatureVerify + payloadMap only.
+  // Per-IP sliding-window rate-limit applied at the pipeline ingress.
+  registerAllWebhookRoutes(app, {
     secretsManager: connectorSecretsManager,
     rawPgPool,
     producer: webhookProducer,
@@ -766,33 +753,7 @@ export async function main(): Promise<void> {
     redis,
   });
 
-  app.log.info({ topic: liveTopic }, '[core] Razorpay webhook receiver registered (ADR-RZ-7)');
-
-  // ── B1: Shopflo webhook receiver (Track B — checkout_abandoned) ─────────────
-  // PUBLIC route — HMAC-protected (NN-4); exempt from session guard + CSRF middleware.
-  // Same deps as Razorpay: secretsManager, rawPgPool, producer, liveTopic, salt, redis.
-  // Brand is resolved server-side from the connector row (MT-1), never the body.
-  registerShopfloWebhookRoutes(app, {
-    secretsManager: connectorSecretsManager,
-    rawPgPool,
-    producer: webhookProducer,
-    liveTopic,
-    getSaltHex: getWebhookSaltHex,
-    redis,
-  });
-
-  app.log.info({ topic: liveTopic }, '[core] Shopflo webhook receiver registered (Track B)');
-
-  registerWooCommerceWebhookRoutes(app, {
-    secretsManager: connectorSecretsManager,
-    rawPgPool,
-    producer: webhookProducer,
-    liveTopic,
-    getSaltHex: getWebhookSaltHex,
-    redis,
-  });
-
-  app.log.info({ topic: liveTopic }, '[core] WooCommerce webhook receiver registered (real-time orders)');
+  app.log.info({ topic: liveTopic }, '[core] All webhook receivers registered via generic pipeline (Shopify/Razorpay/Shopflo/WooCommerce)');
 
   // DEV-ONLY: validate-sync spike — pull live orders via the real connected token.
   // Mounted only outside production (token crosses the boundary here, I-S09).

@@ -23,6 +23,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import type { GokwikAwbRecord, DataSource } from '@brain/gokwik-mapper';
 import { log } from "../../log.js";
+import { CircuitBreaker } from '@brain/observability';
 
 /**
  * Auth-rejection marker (connector-auth observability parity). The synthetic fixture client never
@@ -72,6 +73,7 @@ interface AwbFixtureFile {
 
 export class GokwikAwbClient {
   private readonly fixtureRecords: GokwikAwbRecord[];
+  private readonly breaker: CircuitBreaker;
 
   /**
    * @param credentials  appid + appsecret — held in memory only, NEVER logged (I-S09).
@@ -79,6 +81,7 @@ export class GokwikAwbClient {
    *                      fixture); they exist so the prod swap is a one-line change.
    */
   constructor(_credentials: GokwikApiCredentials, extraRecords: GokwikAwbRecord[] = []) {
+    this.breaker = new CircuitBreaker({ name: 'gokwik-awb', failureThreshold: 5, openMs: 30_000 });
     // credentials object intentionally not retained beyond the dev path (I-S09).
     let records: GokwikAwbRecord[] = [];
     try {
@@ -105,18 +108,20 @@ export class GokwikAwbClient {
    * @param skip    Pagination offset
    */
   async fetchAwbPage(fromTs: number, toTs: number, skip = 0): Promise<AwbPage> {
-    const eligible = this.fixtureRecords.filter((r) => {
-      const changed = r.status_changed_at ? Date.parse(r.status_changed_at) : NaN;
-      if (Number.isNaN(changed)) return false;
-      const sec = Math.floor(changed / 1000);
-      return sec >= fromTs && sec <= toTs;
-    });
+    return this.breaker.fire(async () => {
+      const eligible = this.fixtureRecords.filter((r) => {
+        const changed = r.status_changed_at ? Date.parse(r.status_changed_at) : NaN;
+        if (Number.isNaN(changed)) return false;
+        const sec = Math.floor(changed / 1000);
+        return sec >= fromTs && sec <= toTs;
+      });
 
-    const page = eligible.slice(skip, skip + PAGE_SIZE);
-    return Promise.resolve({
-      items: page,
-      hasMore: skip + PAGE_SIZE < eligible.length,
-      dataSource: 'synthetic',
+      const page = eligible.slice(skip, skip + PAGE_SIZE);
+      return {
+        items: page,
+        hasMore: skip + PAGE_SIZE < eligible.length,
+        dataSource: 'synthetic' as DataSource,
+      };
     });
   }
 }

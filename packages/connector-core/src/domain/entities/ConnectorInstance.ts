@@ -166,6 +166,38 @@ export class ConnectorInstance {
     });
   }
 
+  /**
+   * Token expired (401/invalid-token on any API call).
+   * ADR-CM-5: token-expiry → TokenExpired/blocked; status stays 'error' not 'disconnected'
+   * (the underlying connection was not intentionally closed — the credential was rejected).
+   * Pure — returns a new instance; does NOT persist.
+   */
+  markTokenExpired(): ConnectorInstance {
+    return new ConnectorInstance({
+      ...this.toProps(),
+      status: 'error',
+      healthState: 'TokenExpired',
+      safetyRating: 'blocked',
+      updatedAt: new Date(),
+    });
+  }
+
+  /**
+   * Rate-limited (429/throttle on any API call).
+   * ADR-CM-5: rate-limit → RateLimited/degraded; status 'error' (data is stale, not blocked completely).
+   * safetyRating 'degraded' (not 'blocked') — the connector auth is valid but data may be stale.
+   * Pure — returns a new instance; does NOT persist.
+   */
+  markRateLimited(): ConnectorInstance {
+    return new ConnectorInstance({
+      ...this.toProps(),
+      status: 'error',
+      healthState: 'RateLimited',
+      safetyRating: 'degraded',
+      updatedAt: new Date(),
+    });
+  }
+
   toProps(): ConnectorInstanceProps {
     return {
       id: this.id,

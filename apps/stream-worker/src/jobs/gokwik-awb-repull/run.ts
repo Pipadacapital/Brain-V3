@@ -31,6 +31,7 @@
  */
 
 import { Pool } from 'pg';
+import { updateConnectorInstanceHealth } from '../../infrastructure/pg/ConnectorInstanceHealthRepository.js';
 import { Kafka, type Producer } from 'kafkajs';
 import { buildPartitionKey } from '@brain/events';
 import { CollectorEventV1Schema, COLLECTOR_EVENT_V1_TOPIC_SUFFIX } from '@brain/contracts';
@@ -181,6 +182,7 @@ async function repullConnector(params: RepullParams): Promise<void> {
       recordConnectorAuthRejected('gokwik');
       log.error(`connector=${ciId} — gokwik auth error (RECONNECT_REQUIRED)`, { err: err });
       await setSyncState(pool, brandId, ciId, 'error', 'gokwik auth error — RECONNECT_REQUIRED');
+      await updateConnectorInstanceHealth(pool, brandId, ciId, 'token_expired');
       return;
     }
     log.error(`connector=${ciId} cursor=${AWB_CURSOR_RESOURCE} error`, { err: err });

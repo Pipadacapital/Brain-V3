@@ -383,6 +383,21 @@ services:
       timeout: 5s
       retries: 20
 
+  tempo:
+    image: grafana/tempo:2.5.0
+    profiles: ["observe"]
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./infra/observe/tempo.yml:/etc/tempo.yaml:ro
+    ports:
+      - "3200:3200"   # Tempo HTTP API / query-frontend
+      - "4317"        # OTLP gRPC (internal — otel-collector → tempo; not exposed to host)
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3200/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
   grafana:
     image: grafana/grafana:10.4.2
     profiles: ["observe"]
@@ -390,6 +405,8 @@ services:
       loki:
         condition: service_healthy
       prometheus:
+        condition: service_healthy
+      tempo:
         condition: service_healthy
     environment:
       GF_SECURITY_ADMIN_USER: admin
@@ -411,6 +428,8 @@ services:
       prometheus:
         condition: service_healthy
       loki:
+        condition: service_healthy
+      tempo:
         condition: service_healthy
     volumes:
       - ./infra/observe/otel-collector.yml:/etc/otelcol-contrib/config.yaml:ro

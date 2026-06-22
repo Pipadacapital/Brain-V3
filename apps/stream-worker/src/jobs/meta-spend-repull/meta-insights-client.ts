@@ -1,4 +1,5 @@
 import { log } from "../../log.js";
+import { CircuitBreaker } from '@brain/observability';
 
 /**
  * meta-insights-client.ts — Meta (Facebook) Ads Insights API client (ADR-AD-3 / ADR-AD-7).
@@ -88,6 +89,7 @@ export class MetaInsightsClient {
   private readonly accessToken: string;
   private readonly actId: string;
   private readonly maxBackoffRetries: number;
+  private readonly breaker: CircuitBreaker;
 
   /**
    * @param creds  access_token + ad_account_id — token NEVER logged (I-S09)
@@ -97,6 +99,7 @@ export class MetaInsightsClient {
     this.accessToken = creds.accessToken; // stays in memory; never logged
     this.actId = normalizeAccountId(creds.adAccountId);
     this.maxBackoffRetries = maxBackoffRetries;
+    this.breaker = new CircuitBreaker({ name: 'meta-insights', failureThreshold: 5, openMs: 60_000 });
   }
 
   /** Fetch account currency + timezone once (currency authority is the account, not the row). */
@@ -147,7 +150,9 @@ export class MetaInsightsClient {
    */
   private async getJson(url: string): Promise<unknown> {
     // The token rides the Authorization header (not the query string) so it never
-    // lands in any logged/recorded URL (I-S09).
+    // lands in any logged/recorded URL (I-S09). The circuit breaker wraps all calls
+    // to prevent a slow/throttling Meta API from stalling the ingest-scheduler tick.
+    return this.breaker.fire(async () => {
     for (let attempt = 0; attempt <= this.maxBackoffRetries; attempt++) {
       const res = await fetch(url, {
         headers: {
@@ -187,5 +192,6 @@ export class MetaInsightsClient {
       return res.json();
     }
     throw new Error(`${META_RATE_LIMITED}: exceeded backoff retries`);
+    }); // end breaker.fire
   }
 }

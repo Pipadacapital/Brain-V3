@@ -11,7 +11,9 @@ Postgres bronze_events path — it is a parallel, additive consumer (its own gro
 
 Idempotency: MERGE INTO ... ON (brand_id, event_id) WHEN NOT MATCHED THEN INSERT. Re-running
 over the same offsets (with a fresh checkpoint) never double-writes — the replay invariant
-(I-E02). Trigger = availableNow: drain the current backlog once, then exit (CI/spike friendly).
+(I-E02). Triggers: availableNow drains the current backlog once then exits (CI/spike). The live
+"continuous" sink runs a two-phase startup — availableNow drain (bounded catch-up, no cold-start
+deadlock) then a processingTime stream resuming the SAME checkpoint (steady-state only).
 
 Run via spark-submit inside a Spark+Iceberg+Kafka image on the compose network — see
 db/iceberg/spark/run-bronze-spike.sh and RB-4. All wiring is env-overridable; dev defaults
@@ -245,35 +247,57 @@ def upsert_factory(_spark: SparkSession):
     return upsert
 
 
-def main() -> None:
-    spark = build_spark()
-    spark.sparkContext.setLogLevel("WARN")
-    ensure_table(spark)
+def build_writer(spark: SparkSession):
+    """Build a FRESH Kafka→Bronze DataStreamWriter (read + foreachBatch + checkpoint).
 
+    Returned un-started so the caller picks the trigger. A streaming query can only be started
+    once, so the two-phase startup (drain → continuous) calls this twice — each phase gets its
+    own query object reading the SAME checkpoint, so offsets carry over and nothing re-processes.
+    """
     raw = (
         spark.readStream.format("kafka")
         .option("kafka.bootstrap.servers", KAFKA_BROKERS)
         .option("subscribe", TOPIC)
         .option("startingOffsets", STARTING_OFFSETS)
         .option("failOnDataLoss", "false")
+        # Bound every micro-batch — the catch-up drain (Trigger.AvailableNow) honors this to split the
+        # backlog into committed chunks, and steady-state is naturally small. Caps the cold-start batch.
+        .option("maxOffsetsPerTrigger", os.environ.get("MAX_OFFSETS_PER_TRIGGER", "2000"))
         .load()
     )
     # Parse + R2/R3 gate + MERGE all happen inside foreachBatch (batch context) — see upsert_factory.
-    writer = (
+    return (
         raw.writeStream
         .foreachBatch(upsert_factory(spark))
         .option("checkpointLocation", CHECKPOINT)
     )
-    if TRIGGER_MODE == "continuous":
-        query = writer.trigger(processingTime=PROCESSING_TIME).start()
-    else:
-        query = writer.trigger(availableNow=True).start()
-    query.awaitTermination()
 
-    # availableNow terminates after draining; report the final count. continuous never returns here.
-    if TRIGGER_MODE != "continuous":
-        total = spark.table(TABLE).count()
-        print(f"[bronze-spike] DONE — {TABLE} now has {total} rows", flush=True)
+
+def main() -> None:
+    spark = build_spark()
+    spark.sparkContext.setLogLevel("WARN")
+    ensure_table(spark)
+
+    if TRIGGER_MODE == "continuous":
+        # ── Two-phase startup — the cold-start fix (no native adaptive maxOffsetsPerTrigger). ──
+        # A fresh long-lived processingTime query against an `earliest` backlog deadlocks on its
+        # giant first micro-batch (the cold-start class of bug). Instead:
+        #   Phase 1: Trigger.AvailableNow drains the CURRENT backlog in bounded chunks
+        #            (honors maxOffsetsPerTrigger), commits each to Iceberg, then terminates.
+        #   Phase 2: the live processingTime query resumes from the SAME checkpoint, so it only
+        #            ever sees small steady-state batches — it NEVER faces a cold start.
+        print("[bronze-sink] phase 1/2 — draining backlog (availableNow, chunked)…", flush=True)
+        drain = build_writer(spark).trigger(availableNow=True).start()
+        drain.awaitTermination()
+        print(f"[bronze-sink] phase 1/2 done — {TABLE} now has {spark.table(TABLE).count()} rows", flush=True)
+
+        print(f"[bronze-sink] phase 2/2 — starting continuous stream (every {PROCESSING_TIME})…", flush=True)
+        live = build_writer(spark).trigger(processingTime=PROCESSING_TIME).start()
+        live.awaitTermination()  # long-lived — never returns
+    else:
+        query = build_writer(spark).trigger(availableNow=True).start()
+        query.awaitTermination()
+        print(f"[bronze-spike] DONE — {TABLE} now has {spark.table(TABLE).count()} rows", flush=True)
 
 
 if __name__ == "__main__":

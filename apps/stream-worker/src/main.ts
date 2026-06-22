@@ -172,8 +172,10 @@ export async function main(): Promise<void> {
   // ONLY to retire the PG write (Spark→Iceberg becomes the sole Bronze SoR). Do NOT flip until readers
   // are on Iceberg (Slice 5) AND the Spark writer enforces R2/R3 + quarantine (it does not yet) AND a
   // parity soak is green — see ProcessEventUseCase.pgWriteEnabled.
-  const pgWriteEnabled = process.env['BRONZE_PG_WRITE_ENABLED'] !== 'false';
-  if (!pgWriteEnabled) log.warn('BRONZE_PG_WRITE_ENABLED=false — PG bronze_events write RETIRED; Iceberg (Spark) is the sole Bronze SoR');
+  // DB-AUDIT C4: PG bronze write is RETIRED — default OFF (opt-in). Spark→Iceberg is the sole Bronze SoR
+  // and data_plane.bronze_events is dropped (0070). Set BRONZE_PG_WRITE_ENABLED=true only as a legacy escape.
+  const pgWriteEnabled = process.env['BRONZE_PG_WRITE_ENABLED'] === 'true';
+  if (!pgWriteEnabled) log.info('PG bronze_events write RETIRED (default) — Iceberg (Spark) is the sole Bronze SoR');
   // enforceTenantDerivation defaults TRUE: derive brand_id from install_token, quarantine
   // on unresolved/mismatch/absent-consent; audit writes pixel.brand_mismatch (R2/R3).
   const useCase = new ProcessEventUseCase(dedup, bronze, auditWriter, true, pgWriteEnabled);

@@ -64,20 +64,18 @@ export class ProcessEventUseCase {
      */
     private readonly enforceTenantDerivation = true,
     /**
-     * Slice 6 (ADR-0002): the PG Bronze write switch. TRUE (default) = persist bronze_events as today.
-     * FALSE = the dual-sink RETIREMENT — stop writing PG Bronze and rely solely on the Spark→Iceberg
-     * materializer as the Bronze system-of-record.
-     *
-     * DO NOT flip FALSE until ALL of these hold (leaving it TRUE is the correct state until then):
-     *   1. every reader is on Iceberg (Slice 5 — only get-data-health is flipped so far);
-     *   2. ✓ DONE — the Spark writer now enforces the SAME R2 install_token tenant-derivation + R3
-     *      consent gate (db/iceberg/spark/bronze_materialize.py gate_and_map), so Iceberg holds the
-     *      SAME admission set as PG Bronze (verified: consent_absent / tenant_unresolved / brand_mismatch
-     *      events are dropped, not written);
-     *   3. a green parity soak.
-     * The flag is the reversible mechanism; prerequisite (1) remains before flipping.
+     * DB-AUDIT C4: the PG Bronze write switch is now FALSE by default — the dual-sink RETIREMENT is
+     * complete. Spark→Iceberg (db/iceberg/spark/bronze_materialize.py) is the sole Bronze system-of-
+     * record; data_plane.bronze_events is dropped (migration 0070). All prerequisites are met:
+     *   1. ✓ operational reads + the DQ subsystem are on Iceberg;
+     *   2. ✓ the Spark writer enforces the SAME R2 install_token tenant-derivation + R3 consent gate
+     *      (gate_and_map), so Iceberg holds the SAME admission set PG Bronze did;
+     *   3. ✓ parity proven by the Iceberg-flip epic.
+     * Set BRONZE_PG_WRITE_ENABLED=true to re-enable (legacy/escape only — the PG table no longer exists).
+     * NOTE: R2 brand-derivation (this.bronze.resolveBrandByInstallToken — a pixel_installation read) and
+     * the R2/R3 gates STILL run before the early-return; only the PG bronze_events persistence is skipped.
      */
-    private readonly pgWriteEnabled = true,
+    private readonly pgWriteEnabled = false,
   ) {}
 
   /**

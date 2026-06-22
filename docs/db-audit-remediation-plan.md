@@ -10,6 +10,13 @@ Authorizations from product owner:
 
 ---
 
+## STATUS (updated as work lands)
+- ✅ **Sprint 1 DONE & committed** (`2b322aa`): C1 RLS isolation, H5 FK indexes, H1 ROAS bug, H3 click-id capture. M5 verified-and-deferred (PK already prevents refund double-count).
+- ✅ **Sprint 2a DONE** (`f882247`): C4 read-default→iceberg, M6 collector_spool reaper.
+- ✅ **Sprint 2b DONE** (`feafe32`): DQ subsystem (all 5 checks) migrated off PG bronze → Iceberg SoR; verified live against StarRocks.
+- ✅ **C4 COMPLETE (bronze_events retired)**: PG bronze writer default-OFF (ProcessEventUseCase), all 5 operational readers Iceberg-only (PG branch + BronzeSource flag removed), `0070_drop_bronze_events.sql` staged (applies on next migrate+restart per its deploy note). bronze_events is no longer read or written.
+- 🟡 **Sprint 2 remaining**: C4b partition the unbounded append-only PG tables; H2 ledgers→Bronze + rebuild Gold from Iceberg; M3 incremental/date-partitioned marts; M6 webhook-archive + dq_check_result retention.
+
 ## Sprint 1 — Critical isolation + low-risk high-value (SHIP-BLOCKERS)
 
 | ID | Item | Files / migration | Risk |

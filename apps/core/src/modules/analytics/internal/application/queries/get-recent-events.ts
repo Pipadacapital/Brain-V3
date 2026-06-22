@@ -2,9 +2,10 @@
  * getRecentEvents — bounded recent-rows read for the Tracking Center Event Explorer
  * (D-2 allowed exception).
  *
- * Selects the latest N bronze_events rows inside withBrandTxn (RLS-scoped). This is a
- * bounded row-read of the raw collected-event feed — NOT a metric computation (like
- * get-recent-activity). It lets a non-technical stakeholder watch data arrive.
+ * Selects the latest N Bronze rows from the Iceberg collector_events catalog via the
+ * brand-isolated withSilverBrand seam. This is a bounded row-read of the raw collected-event
+ * feed — NOT a metric computation (like get-recent-activity). It lets a non-technical
+ * stakeholder watch data arrive. Honest-empty (rows:[]) when StarRocks isn't wired.
  *
  * PII POSTURE (ADR-2 + I-S02): this read returns ONLY type/time + ANONYMIZED ids.
  *   - anonId:    payload->'properties'->>'brain_anon_id' (a client-minted uuid, not PII)
@@ -15,8 +16,8 @@
  * display at the UI layer.
  */
 
-import { withBrandTxn, withSilverBrand, BRAND_PREDICATE } from '@brain/metric-engine';
-import { type BronzeReadDeps, ICEBERG_BRONZE, useIceberg } from './_bronze-source.js';
+import { withSilverBrand, BRAND_PREDICATE } from '@brain/metric-engine';
+import { type BronzeReadDeps, ICEBERG_BRONZE, hasSilver } from './_bronze-source.js';
 
 export interface RecentEventRow {
   event_id: string;
@@ -49,8 +50,11 @@ export async function getRecentEvents(
 ): Promise<RecentEventsResult> {
   const safeLimit = Math.min(Math.max(1, limit || DEFAULT_LIMIT), MAX_LIMIT);
 
-  // ── Iceberg Bronze source (Slice 5) — brand-isolated via the withSilverBrand seam ──────────
-  if (useIceberg(deps)) {
+  // no StarRocks wired → honest no_data (PG bronze retired)
+  if (!hasSilver(deps)) return { rows: [] };
+
+  // ── Iceberg Bronze source — brand-isolated via the withSilverBrand seam ──────────
+  {
     const rows = await withSilverBrand(deps.srPool, brandId, async (scope) =>
       // safeLimit is a clamped int (never user text) — safe to interpolate. The seam appends the
       // brand predicate at ${BRAND_PREDICATE}; ORDER BY/LIMIT follow it.
@@ -76,45 +80,4 @@ export async function getRecentEvents(
       })),
     };
   }
-
-  // ── Postgres Bronze source (default) ────────────────────────────────────────
-  const rows = await withBrandTxn(deps.pool, brandId, async (client) => {
-    // SELECT only type/time + anonymized ids. NEVER raw PII (I-S02).
-    const result = await client.query<{
-      event_id: string;
-      event_type: string;
-      occurred_at: Date;
-      anon_id: string | null;
-      session_id: string | null;
-      has_consent: boolean;
-    }>(
-      `SELECT
-         event_id,
-         event_type,
-         occurred_at,
-         payload->'properties'->>'brain_anon_id' AS anon_id,
-         payload->>'hashed_session_id'           AS session_id,
-         COALESCE(
-           (payload->'consent_flags'->>'analytics') = 'true',
-           false
-         )                                        AS has_consent
-       FROM bronze_events
-       WHERE brand_id = $1
-       ORDER BY occurred_at DESC
-       LIMIT $2`,
-      [brandId, safeLimit],
-    );
-    return result.rows;
-  });
-
-  return {
-    rows: rows.map((row) => ({
-      event_id: row.event_id,
-      event_type: row.event_type,
-      occurred_at: row.occurred_at.toISOString(),
-      anon_id: row.anon_id,
-      session_id: row.session_id,
-      has_consent: row.has_consent,
-    })),
-  };
 }

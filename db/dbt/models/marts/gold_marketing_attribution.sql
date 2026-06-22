@@ -32,10 +32,10 @@
 
 -- H2 — SOURCE FLIP (var-gated + reversible), mirroring gold_revenue_ledger: serve the attribution
 -- ledger mart from the lakehouse, not a live read of Postgres.
---   ledger_source='pg'      → JDBC read-shim over PG attribution_credit_ledger (DEFAULT — current).
 --   ledger_source='iceberg' → brain_bronze.attribution_credit (landed by attribution_credit_materialize.py).
--- Both sources expose the identical column set. Default stays 'pg' until the parity bake; the attribution
--- ledger is currently data-starved (0 rows) so parity is trivially 0==0 until journeys flow.
+--   ledger_source='pg'      → JDBC read-shim over PG attribution_credit_ledger (DEFAULT — mirrors
+--                             gold_revenue_ledger; flip gated on the same dbt-starrocks incremental/
+--                             external-catalog fix, see that model's note). Data-starved (0 rows) today.
 {% set ledger_source = var('ledger_source', 'pg') %}
 
 select

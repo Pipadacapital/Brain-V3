@@ -33,13 +33,16 @@
 
 -- H2 — SOURCE FLIP (var-gated + reversible): serve the ledger mart from the lakehouse, not a live
 -- read of Postgres.
---   ledger_source='pg'      → JDBC read-shim view over PG billing.realized_revenue_ledger (default;
---                             current behavior — money metric-engine reads stay green).
 --   ledger_source='iceberg' → brain_bronze.revenue_ledger in the Iceberg catalog (landed by the Spark
 --                             batch revenue_ledger_materialize.py). PG stops being the analytical SoR.
--- Default stays 'pg' until the materializer runs continuously (CronWorkflow) + the parity bake passes —
--- the same reversible rollout the Bronze-flip epic used (build the path, prove parity, flip the flag).
--- Both sources expose the identical column set, so the projection below is source-agnostic.
+--   ledger_source='pg'      → JDBC read-shim over PG billing.realized_revenue_ledger (DEFAULT).
+-- Both sources expose the identical column set; the path is parity-proven (db/iceberg/parity/
+-- ledger_bronze_parity.sh: Iceberg==PG, 2142 rows / signed-sum). The flip to 'iceberg' is one var,
+-- gated on the scheduled refresh (run-ledger-bronze-refresh.sh) AND a dbt-starrocks fix: the
+-- INCREMENTAL __dbt_tmp CTAS fails against an external (Iceberg) catalog ("Unexpected input 'cascade'")
+-- whereas a full-refresh CTAS succeeds — so flipping the default also requires materializing this mart
+-- as `table` (full rebuild from the bounded Iceberg copy) instead of incremental. Default stays 'pg'
+-- so the build is green and the M3 incremental (from PG) keeps working until that follow-up lands.
 {% set ledger_source = var('ledger_source', 'pg') %}
 --
 -- M3 — INCREMENTAL append. The ledger is strictly append-only: one IMMUTABLE row per

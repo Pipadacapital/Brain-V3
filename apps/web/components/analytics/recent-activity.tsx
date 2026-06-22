@@ -12,7 +12,7 @@
  */
 
 import * as React from 'react';
-import { CheckCircle, Clock, AlertTriangle } from 'lucide-react';
+import { CheckCircle, Clock, AlertTriangle, RotateCcw, Receipt, CircleDot } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
 import { EmptyState } from '@/components/ui/empty-state';
 import { formatMoneyDisplay } from '@/lib/format/money-display';
@@ -26,7 +26,19 @@ interface RecentActivityProps {
   className?: string;
 }
 
-const EVENT_CONFIG = {
+interface EventStyle {
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
+  iconClass: string;
+  bgClass: string;
+  abbr: string;
+}
+
+// Styling for every event_type the realized-revenue ledger emits. The feed is
+// unfiltered, so this MUST cover the full set; anything not listed falls back to
+// FALLBACK_EVENT below (neutral styling, humanized label) so an unmapped type can
+// never crash the render (the original `cfg.icon` on undefined did exactly that).
+const EVENT_CONFIG: Record<string, EventStyle> = {
   provisional_recognition: {
     label: 'Provisional',
     icon: Clock,
@@ -48,7 +60,73 @@ const EVENT_CONFIG = {
     bgClass: 'bg-status-red-50',
     abbr: 'R',
   },
-} as const;
+  cod_delivery_confirmed: {
+    label: 'COD Delivered',
+    icon: CheckCircle,
+    iconClass: 'text-status-green-700',
+    bgClass: 'bg-status-green-50',
+    abbr: 'D',
+  },
+  cod_rto_clawback: {
+    label: 'COD RTO',
+    icon: RotateCcw,
+    iconClass: 'text-status-red-700',
+    bgClass: 'bg-status-red-50',
+    abbr: 'C',
+  },
+  refund: {
+    label: 'Refund',
+    icon: RotateCcw,
+    iconClass: 'text-status-red-700',
+    bgClass: 'bg-status-red-50',
+    abbr: 'Rf',
+  },
+  payment_fee: {
+    label: 'Payment Fee',
+    icon: Receipt,
+    iconClass: 'text-muted-foreground',
+    bgClass: 'bg-muted',
+    abbr: 'Fee',
+  },
+  settlement_finalization: {
+    label: 'Settlement',
+    icon: Receipt,
+    iconClass: 'text-status-green-700',
+    bgClass: 'bg-status-green-50',
+    abbr: 'S',
+  },
+  settlement_tax: {
+    label: 'Tax',
+    icon: Receipt,
+    iconClass: 'text-muted-foreground',
+    bgClass: 'bg-muted',
+    abbr: 'Tax',
+  },
+};
+
+const FALLBACK_EVENT: EventStyle = {
+  label: 'Ledger event',
+  icon: CircleDot,
+  iconClass: 'text-muted-foreground',
+  bgClass: 'bg-muted',
+  abbr: '•',
+};
+
+/** Humanize an unknown event_type slug (e.g. "chargeback_hold" → "Chargeback Hold"). */
+function humanizeEventType(eventType: string): string {
+  if (!eventType) return FALLBACK_EVENT.label;
+  return eventType
+    .split(/[_\s]+/)
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(' ');
+}
+
+function styleForEvent(eventType: string): EventStyle {
+  const known = EVENT_CONFIG[eventType];
+  if (known) return known;
+  return { ...FALLBACK_EVENT, label: humanizeEventType(eventType) };
+}
 
 function formatRelativeTime(isoStr: string): string {
   const d = new Date(isoStr);
@@ -101,11 +179,11 @@ export function RecentActivity({ data, isLoading, className }: RecentActivityPro
       aria-label="Recent ledger activity"
     >
       {rows.map((row, i) => {
-        const cfg = EVENT_CONFIG[row.event_type];
+        const cfg = styleForEvent(row.event_type);
         const Icon = cfg.icon;
         const formattedAmount = formatMoneyDisplay(row.amount_minor, row.currency_code as CurrencyCode);
         const relTime = formatRelativeTime(row.occurred_at);
-        const shortOrder = row.order_id.slice(-8);
+        const shortOrder = (row.order_id ?? '').slice(-8) || '—';
 
         return (
           <li

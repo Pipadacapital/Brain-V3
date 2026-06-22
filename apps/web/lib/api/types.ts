@@ -513,9 +513,29 @@ export type AnalyticsRecognitionBreakdownResponse =
   | { state: 'no_data'; as_of: string }
   | { state: 'has_data'; as_of: string; breakdown: AnalyticsRecognitionItem[] };
 
+/**
+ * Realized-revenue ledger event types surfaced in the activity feed. This is the
+ * FULL set the ledger emits (provisional/final/RTO plus COD-settlement + fee/tax
+ * rows) — kept as an open `string` union via the trailing `(string & {})` so a new
+ * ledger event_type added server-side never crashes the UI (the renderer falls back
+ * to a neutral config for any value not explicitly styled).
+ */
+export type LedgerEventType =
+  | 'provisional_recognition'
+  | 'finalization'
+  | 'rto_reversal'
+  | 'cod_delivery_confirmed'
+  | 'cod_rto_clawback'
+  | 'refund'
+  | 'payment_fee'
+  | 'settlement_finalization'
+  | 'settlement_tax'
+  // eslint-disable-next-line @typescript-eslint/ban-types
+  | (string & {});
+
 export interface AnalyticsActivityRow {
   order_id: string;
-  event_type: 'provisional_recognition' | 'finalization' | 'rto_reversal';
+  event_type: LedgerEventType;
   amount_minor: string;
   currency_code: string;
   occurred_at: string;

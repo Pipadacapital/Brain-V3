@@ -16,6 +16,7 @@
     schema               = 'brain_gold',
     materialized         = 'incremental',
     incremental_strategy = 'default',
+    on_schema_change     = 'append_new_columns',
     unique_key           = ['brand_id', 'ledger_event_id'],
     table_type           = 'PRIMARY',
     keys                 = ['brand_id', 'ledger_event_id'],
@@ -34,16 +35,15 @@
 -- H2 — SOURCE FLIP (var-gated + reversible): serve the ledger mart from the lakehouse, not a live
 -- read of Postgres.
 --   ledger_source='iceberg' → brain_bronze.revenue_ledger in the Iceberg catalog (landed by the Spark
---                             batch revenue_ledger_materialize.py). PG stops being the analytical SoR.
---   ledger_source='pg'      → JDBC read-shim over PG billing.realized_revenue_ledger (DEFAULT).
--- Both sources expose the identical column set; the path is parity-proven (db/iceberg/parity/
--- ledger_bronze_parity.sh: Iceberg==PG, 2142 rows / signed-sum). The flip to 'iceberg' is one var,
--- gated on the scheduled refresh (run-ledger-bronze-refresh.sh) AND a dbt-starrocks fix: the
--- INCREMENTAL __dbt_tmp CTAS fails against an external (Iceberg) catalog ("Unexpected input 'cascade'")
--- whereas a full-refresh CTAS succeeds — so flipping the default also requires materializing this mart
--- as `table` (full rebuild from the bounded Iceberg copy) instead of incremental. Default stays 'pg'
--- so the build is green and the M3 incremental (from PG) keeps working until that follow-up lands.
-{% set ledger_source = var('ledger_source', 'pg') %}
+--                             batch revenue_ledger_materialize.py). DEFAULT — PG is no longer the
+--                             analytical SoR for the ledger (the H2 goal). Parity-proven
+--                             (db/iceberg/parity/ledger_bronze_parity.sh: Iceberg==PG).
+--   ledger_source='pg'      → JDBC read-shim over PG billing.realized_revenue_ledger (reversible escape).
+-- FRESH ENV / SOURCE FLIP: the Iceberg revenue_ledger must exist + be fresh first
+-- (run-ledger-bronze-refresh.sh), and the FIRST build after a source switch must be a --full-refresh
+-- (the table's column TYPES change PG↔Iceberg; on_schema_change=append_new_columns means we re-seed via
+-- full-refresh rather than an unsupported StarRocks DROP COLUMN). Steady-state incrementals are clean.
+{% set ledger_source = var('ledger_source', 'iceberg') %}
 --
 -- M3 — INCREMENTAL append. The ledger is strictly append-only: one IMMUTABLE row per
 -- (brand_id, ledger_event_id). So incremental is trivially correct — only rows ingested since the last

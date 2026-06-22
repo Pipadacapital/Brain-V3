@@ -11,13 +11,18 @@ read the lakehouse.
    `billing.realized_revenue_ledger` → Iceberg `brain_bronze.revenue_ledger` with an idempotent
    `MERGE ON (brand_id, ledger_event_id)` (immutable rows; re-run never double-writes). Verified:
    2142 rows landed, exact parity with PG (count + signed `SUM(amount_minor)` = 610099183).
-2. **Gold served from Iceberg (flag-gated).** `gold_revenue_ledger` gained a `ledger_source` var:
-   - `ledger_source='pg'` (DEFAULT) → JDBC read-shim over PG (current behavior; money metric-engine
-     reads stay green).
-   - `ledger_source='iceberg'` → `brain_bronze.revenue_ledger` (PG no longer the analytical SoR).
-   Both paths produce **byte-identical** gold (validated: 2142 / 610099183 either way). Default stays
-   `pg` so nothing flips until the operational bake below — the same reversible rollout the Bronze-flip
-   epic (RB-5) used.
+2. **Gold served from Iceberg (now the DEFAULT).** `gold_revenue_ledger` / `gold_marketing_attribution`
+   read `brain_bronze.*` via `ledger_source` (default **`iceberg`** — PG is no longer the analytical SoR;
+   `ledger_source='pg'` is the reversible escape). Both paths produce **byte-identical** gold (2142 /
+   610099183), parity-proven. Full project build green 140/140 (full-refresh AND steady-state incremental).
+
+   **Adapter fix that unblocked the default flip:** the dbt-starrocks `sync_all_columns` schema-sync
+   fired on the PG→Iceberg source switch (column type `char(3)`→`string`) and emitted
+   `ALTER TABLE … DROP COLUMN … CASCADE`, which StarRocks rejects (`Unexpected input 'cascade'`). Fixed by
+   setting `on_schema_change='append_new_columns'` on the incremental ledger marts (never drops →
+   no invalid CASCADE). **A source flip / fresh env requires a one-time `--full-refresh`** (the table's
+   column types change PG↔Iceberg) + the Iceberg tables populated first (run-ledger-bronze-refresh.sh);
+   steady-state incrementals are then clean.
 
 ## Operational flip (when ready)
 

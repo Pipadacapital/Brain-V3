@@ -33,10 +33,11 @@
 -- H2 — SOURCE FLIP (var-gated + reversible), mirroring gold_revenue_ledger: serve the attribution
 -- ledger mart from the lakehouse, not a live read of Postgres.
 --   ledger_source='iceberg' → brain_bronze.attribution_credit (landed by attribution_credit_materialize.py).
---   ledger_source='pg'      → JDBC read-shim over PG attribution_credit_ledger (DEFAULT — mirrors
---                             gold_revenue_ledger; flip gated on the same dbt-starrocks incremental/
---                             external-catalog fix, see that model's note). Data-starved (0 rows) today.
-{% set ledger_source = var('ledger_source', 'pg') %}
+--                             DEFAULT (mirrors gold_revenue_ledger) — PG no longer the analytical SoR.
+--   ledger_source='pg'      → JDBC read-shim over PG attribution_credit_ledger (reversible escape).
+-- This mart is materialized=table (full CTAS each run) so a source flip needs no special handling.
+-- Data-starved (0 rows) today. Freshness via run-ledger-bronze-refresh.sh.
+{% set ledger_source = var('ledger_source', 'iceberg') %}
 
 select
     brand_id,

@@ -63,6 +63,9 @@ export type { CodRtoRatesResult, CodRtoCohort } from './cod-rto-rates.js';
 // Customer 360 (Gold) summary — re-platform Phase E
 export { getCustomer360Summary } from './customer-360.js';
 export type { Customer360Summary, Customer360Row } from './customer-360.js';
+// Single-customer RFM/churn score (Gold) — DB-AUDIT C5 ML serving
+export { getCustomerScore } from './customer-score.js';
+export type { CustomerScoreRow } from './customer-score.js';
 // Logistics shipment outcomes (Slice 2) — delivered/RTO/other + RTO% by courier/pincode,
 // from the multi-source silver_shipment mart (GoKwik AWB + Shiprocket).
 export { computeShipmentOutcomes } from './shipment-outcomes.js';

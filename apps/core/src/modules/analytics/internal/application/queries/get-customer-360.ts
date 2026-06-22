@@ -18,6 +18,8 @@ export interface Customer360RowDto {
   lifetime_value_minor: string;
   delivered_orders: string;
   rto_orders: string;
+  /** H6: acquisition time (first strong-identifier attach). Null = anonymous-only. */
+  first_identified_at: string | null;
 }
 
 export type Customer360Result =
@@ -49,6 +51,7 @@ export async function getCustomerBaseSummary(
       lifetime_value_minor: String(c.lifetimeValueMinor),
       delivered_orders: String(c.deliveredOrders),
       rto_orders: String(c.rtoOrders),
+      first_identified_at: c.firstIdentifiedAt,
     })),
   };
 }

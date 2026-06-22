@@ -49,6 +49,7 @@ select
     c.lifetime_value_minor,
     c.currency_code,
     c.first_seen_at,
+    c.first_identified_at,
     c.last_seen_at,
     coalesce(l.delivered_orders, 0) as delivered_orders,
     coalesce(l.rto_orders, 0)       as rto_orders,

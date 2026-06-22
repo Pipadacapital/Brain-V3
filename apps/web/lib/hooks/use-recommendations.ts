@@ -9,6 +9,7 @@
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { recommendationApi } from '@/lib/api/client';
+import type { RecommendationActionKind } from '@/lib/api/types';
 
 export const RECOMMENDATIONS_QUERY_KEY = ['recommendations'] as const;
 
@@ -26,6 +27,29 @@ export function useRefreshRecommendations() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: () => recommendationApi.refresh(),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: RECOMMENDATIONS_QUERY_KEY });
+    },
+  });
+}
+
+/**
+ * useRecommendationAction — record a human action on a recommendation (the decision-feedback loop).
+ * Appends to the append-only action ledger; 'dismissed'/'reopened' move the rec's status, so we
+ * invalidate the list to reflect the new open set (a dismissed rec drops off the Morning Brief).
+ */
+export function useRecommendationAction() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      recommendationId,
+      action,
+      reason,
+    }: {
+      recommendationId: string;
+      action: RecommendationActionKind;
+      reason?: string;
+    }) => recommendationApi.action(recommendationId, action, reason),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: RECOMMENDATIONS_QUERY_KEY });
     },

@@ -66,3 +66,38 @@ export const GenerateRecommendationsResultSchema = z.object({
   expired: z.number().int().nonnegative(),
 });
 export type GenerateRecommendationsResult = z.infer<typeof GenerateRecommendationsResultSchema>;
+
+/**
+ * The human decision-feedback loop (DB-AUDIT M7). The closed set of actions a user can take on a
+ * recommendation, recorded in the append-only action ledger (distinct from the system's outcome
+ * measurement). 'accepted'/'served'/'snoozed' are audit-only; 'dismissed'/'reopened' move the
+ * recommendation's lifecycle status.
+ */
+export const RecommendationActionKindSchema = z.enum([
+  'served',
+  'accepted',
+  'dismissed',
+  'snoozed',
+  'reopened',
+]);
+export type RecommendationActionKind = z.infer<typeof RecommendationActionKindSchema>;
+
+/** The request body for POST /api/v1/recommendations/:id/action. */
+export const RecordRecommendationActionRequestSchema = z.object({
+  action: RecommendationActionKindSchema,
+  reason: z.string().max(2000).optional(),
+});
+export type RecordRecommendationActionRequest = z.infer<
+  typeof RecordRecommendationActionRequestSchema
+>;
+
+/** The appended ledger row returned by the action endpoint. */
+export const RecommendationActionSchema = z.object({
+  action_id: z.string(),
+  recommendation_id: z.string(),
+  action: RecommendationActionKindSchema,
+  actor: z.string(),
+  reason: z.string().nullable(),
+  created_at: z.string(),
+});
+export type RecommendationAction = z.infer<typeof RecommendationActionSchema>;

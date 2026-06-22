@@ -507,6 +507,9 @@ export {
   RecommendationSchema,
   RecommendationsSchema,
   GenerateRecommendationsResultSchema,
+  RecommendationActionKindSchema,
+  RecordRecommendationActionRequestSchema,
+  RecommendationActionSchema,
 } from './api/recommendation.api.v1.js';
 export type {
   Confidence,
@@ -515,7 +518,28 @@ export type {
   Recommendation,
   Recommendations,
   GenerateRecommendationsResult,
+  RecommendationActionKind,
+  RecordRecommendationActionRequest,
+  RecommendationAction,
 } from './api/recommendation.api.v1.js';
+export {
+  ModelStageSchema,
+  ModelSchema,
+  ModelListSchema,
+  PromoteModelRequestSchema,
+  ServingModelSchema,
+  ServedScoreSchema,
+  CustomerScoreResultSchema,
+} from './api/ml.api.v1.js';
+export type {
+  ModelStage,
+  Model,
+  ModelList,
+  PromoteModelRequest,
+  ServingModel,
+  ServedScore,
+  CustomerScoreResult,
+} from './api/ml.api.v1.js';
 export { AttributionReconcileResultSchema } from './api/attribution.api.v1.js';
 export type { AttributionReconcileResult } from './api/attribution.api.v1.js';
 export {

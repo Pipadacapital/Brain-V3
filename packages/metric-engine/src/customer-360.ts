@@ -17,6 +17,8 @@ export interface Customer360Row {
   lifetimeValueMinor: bigint;
   deliveredOrders: bigint;
   rtoOrders: bigint;
+  /** H6: acquisition time — when this customer first attached a strong identifier. Null = anon-only. */
+  firstIdentifiedAt: string | null;
 }
 
 export interface Customer360Summary {
@@ -70,8 +72,10 @@ export async function getCustomer360Summary(
       lifetime_value_minor: string | number;
       delivered_orders: string | number;
       rto_orders: string | number;
+      first_identified_at: string | null;
     }>(
-      `SELECT brain_id, lifetime_orders, lifetime_value_minor, delivered_orders, rto_orders
+      `SELECT brain_id, lifetime_orders, lifetime_value_minor, delivered_orders, rto_orders,
+              first_identified_at
          FROM brain_gold.gold_customer_360
         WHERE ${BRAND_PREDICATE}
         ORDER BY lifetime_value_minor DESC
@@ -91,6 +95,7 @@ export async function getCustomer360Summary(
         lifetimeValueMinor: BigInt(String(r.lifetime_value_minor)),
         deliveredOrders: BigInt(String(r.delivered_orders)),
         rtoOrders: BigInt(String(r.rto_orders)),
+        firstIdentifiedAt: r.first_identified_at ?? null,
       })),
     };
   });

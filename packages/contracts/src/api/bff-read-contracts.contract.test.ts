@@ -56,6 +56,8 @@ import {
   SealPeriodResultSchema,
   IssueCreditNoteResultSchema,
   GenerateRecommendationsResultSchema,
+  RecommendationActionSchema,
+  RecordRecommendationActionRequestSchema,
 } from '../index.js';
 
 /** First-issue field path of a failed safeParse, dotted (e.g. 'kpis.0.realized_minor'). */
@@ -633,6 +635,36 @@ describe('Recommendations (#19 — decision engine)', () => {
     const r = RecommendationsSchema.safeParse(drifted);
     expect(r.success).toBe(false);
     expect(firstIssuePath(r)).toBe('recommendations.0.kind');
+  });
+});
+
+describe('RecommendationAction (M7 — decision-feedback loop)', () => {
+  const action = {
+    action_id: '22222222-2222-4222-8222-222222222222',
+    recommendation_id: '11111111-1111-4111-8111-111111111111',
+    action: 'dismissed',
+    actor: 'a444444a-0a1a-4a1a-8a1a-000000000001',
+    reason: 'not relevant',
+    created_at: '2026-06-22T00:00:00.000Z',
+  };
+  it('round-trips the appended ledger row', () => {
+    expect(RecommendationActionSchema.parse(action)).toEqual(action);
+    expect(RecommendationActionSchema.parse({ ...action, reason: null })).toEqual({
+      ...action,
+      reason: null,
+    });
+  });
+  it('REJECTS an out-of-enum action', () => {
+    const r = RecommendationActionSchema.safeParse({ ...action, action: 'frobnicate' });
+    expect(r.success).toBe(false);
+    expect(firstIssuePath(r)).toBe('action');
+  });
+  it('request: reason optional, action required + enum-checked', () => {
+    expect(RecordRecommendationActionRequestSchema.parse({ action: 'accepted' })).toEqual({
+      action: 'accepted',
+    });
+    expect(RecordRecommendationActionRequestSchema.safeParse({ action: 'nope' }).success).toBe(false);
+    expect(RecordRecommendationActionRequestSchema.safeParse({}).success).toBe(false);
   });
 });
 

@@ -35,6 +35,7 @@ normalized as (
         currency_code,
         occurred_at,
         economic_effective_at,
+        ingested_at,
         event_type,
 
         -- event_type → canonical lifecycle_state (architecture §2)

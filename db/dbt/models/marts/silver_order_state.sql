@@ -27,12 +27,14 @@
 -- ============================================================================
 {{
   config(
-    materialized   = 'table',
-    table_type     = 'PRIMARY',
-    keys           = ['brand_id', 'order_id'],
-    distributed_by = ['brand_id', 'order_id'],
-    order_by       = ['brand_id', 'order_id'],
-    buckets        = 8,
+    materialized         = 'incremental',
+    incremental_strategy = 'default',
+    unique_key           = ['brand_id', 'order_id'],
+    table_type           = 'PRIMARY',
+    keys                 = ['brand_id', 'order_id'],
+    distributed_by       = ['brand_id', 'order_id'],
+    order_by             = ['brand_id', 'order_id'],
+    buckets              = 8,
     properties     = {
       'replication_num'        : '1',
       'enable_persistent_index': 'true',
@@ -42,11 +44,38 @@
   )
 }}
 
+-- M3 — INCREMENTAL RESTATEMENT with an INGESTION-TIME watermark (not economic time, so a late or
+-- backdated event is never missed): on an incremental run, only orders that received a newly-ingested
+-- ledger event since the last run are re-folded. Crucially the FULL event history of each dirty order
+-- is re-folded (the winning lifecycle row may be an OLD event), then upserted by (brand_id, order_id)
+-- into the PRIMARY KEY table; untouched orders keep their existing row. Re-run with no new events →
+-- empty dirty set → no-op (idempotent). First run (table absent) folds everything (full build).
+{% if is_incremental() %}
+with dirty_orders as (
+
+    select distinct brand_id, order_id
+    from {{ ref('int_order_lifecycle') }}
+    where ingested_at > (
+        select coalesce(max(max_ingested_at), cast('1970-01-01 00:00:00' as datetime)) from {{ this }}
+    )
+
+),
+
+lifecycle as (
+
+    select l.*
+    from {{ ref('int_order_lifecycle') }} l
+    join dirty_orders d
+      on l.brand_id = d.brand_id and l.order_id = d.order_id
+
+),
+{% else %}
 with lifecycle as (
 
     select * from {{ ref('int_order_lifecycle') }}
 
 ),
+{% endif %}
 
 -- Per-order winning lifecycle row (the deterministic fold).
 ranked as (
@@ -107,7 +136,8 @@ order_times as (
         brand_id,
         order_id,
         min(occurred_at) as first_event_at,
-        max(economic_effective_at) as state_effective_at
+        max(economic_effective_at) as state_effective_at,
+        max(ingested_at) as max_ingested_at   -- M3 incremental watermark (max ingestion time per order)
     from lifecycle
     group by brand_id, order_id
 
@@ -123,6 +153,7 @@ select
     w.currency_code,
     t.first_event_at,
     t.state_effective_at,
+    t.max_ingested_at,
     current_timestamp() as updated_at
 from winner w
 left join order_value ov

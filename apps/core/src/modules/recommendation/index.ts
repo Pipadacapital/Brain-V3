@@ -19,3 +19,15 @@ export type {
   RecommendationEvidence,
   RecommendationOutcome,
 } from './internal/application/queries/get-recommendations.js';
+export {
+  recordRecommendationAction,
+  isRecommendationAction,
+  RECOMMENDATION_ACTIONS,
+  RecommendationNotFoundError,
+  InvalidRecommendationActionError,
+} from './internal/application/record-recommendation-action.js';
+export type {
+  RecommendationAction,
+  RecommendationActionKind,
+  RecordRecommendationActionInput,
+} from './internal/application/record-recommendation-action.js';

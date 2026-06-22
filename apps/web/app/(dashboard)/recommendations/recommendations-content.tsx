@@ -14,13 +14,13 @@
 
 import * as React from 'react';
 import Link from 'next/link';
-import { Lightbulb, AlertTriangle, TrendingUp, TrendingDown, ShieldCheck, ShieldAlert, RefreshCw } from 'lucide-react';
+import { Lightbulb, AlertTriangle, TrendingUp, TrendingDown, ShieldCheck, ShieldAlert, RefreshCw, Check, X, Clock } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
 import { EmptyState } from '@/components/ui/empty-state';
-import { useRecommendations, useRefreshRecommendations } from '@/lib/hooks/use-recommendations';
+import { useRecommendations, useRefreshRecommendations, useRecommendationAction } from '@/lib/hooks/use-recommendations';
 import { formatMoneyDisplay } from '@/lib/format/money-display';
 import type { Recommendation } from '@/lib/api/types';
 
@@ -71,6 +71,19 @@ function OutcomeStrip({ outcome }: { outcome: NonNullable<Recommendation['outcom
 function RecommendationCard({ rec }: { rec: Recommendation }) {
   const isRisk = rec.kind === 'risk';
   const gmvAtRisk = rec.evidence['gmv_at_risk_minor'];
+  const act = useRecommendationAction();
+  // Optimistic local acknowledgement: the action ledger is append-only and a dismissal also
+  // refetches the list (the rec drops off), but until that lands we reflect what the user chose.
+  const [acted, setActed] = React.useState<'accepted' | 'dismissed' | 'snoozed' | null>(null);
+
+  function onAct(action: 'accepted' | 'dismissed' | 'snoozed') {
+    setActed(action);
+    act.mutate(
+      { recommendationId: rec.recommendation_id, action },
+      { onError: () => setActed(null) },
+    );
+  }
+
   return (
     <Card>
       <CardHeader className="pb-2">
@@ -116,6 +129,54 @@ function RecommendationCard({ rec }: { rec: Recommendation }) {
               </div>
             ))}
         </dl>
+
+        {/* Decision-feedback loop (M7): the human acts on the recommendation. Recorded in the
+            append-only action ledger; a dismissal also drops the rec off the Morning Brief. */}
+        {acted ? (
+          <div
+            className="flex items-center gap-1.5 text-sm font-medium text-muted-foreground"
+            role="status"
+          >
+            {acted === 'accepted' ? (
+              <Check className="h-4 w-4 text-emerald-600" aria-hidden="true" />
+            ) : acted === 'snoozed' ? (
+              <Clock className="h-4 w-4 text-amber-600" aria-hidden="true" />
+            ) : (
+              <X className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+            )}
+            {acted === 'accepted' ? 'Accepted' : acted === 'snoozed' ? 'Snoozed' : 'Dismissed'}
+          </div>
+        ) : (
+          <div className="flex flex-wrap items-center gap-2 pt-1">
+            <Button size="sm" disabled={act.isPending} onClick={() => onAct('accepted')}>
+              <Check className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
+              Accept
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={act.isPending}
+              onClick={() => onAct('snoozed')}
+            >
+              <Clock className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
+              Snooze
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={act.isPending}
+              onClick={() => onAct('dismissed')}
+            >
+              <X className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
+              Dismiss
+            </Button>
+            {act.isError && (
+              <span className="text-xs text-destructive" role="alert">
+                Couldn&apos;t record that. Try again.
+              </span>
+            )}
+          </div>
+        )}
       </CardContent>
     </Card>
   );

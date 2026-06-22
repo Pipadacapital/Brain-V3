@@ -55,6 +55,10 @@ import {
   IssueCreditNoteResultSchema,
   RecommendationsSchema,
   GenerateRecommendationsResultSchema,
+  RecommendationActionSchema,
+  ModelListSchema,
+  ModelSchema,
+  CustomerScoreResultSchema,
   FoundationHealthSchema,
   EntitlementsSchema,
 } from '@brain/contracts';
@@ -165,6 +169,12 @@ import type {
   IssueCreditNoteResultResponse,
   RecommendationsResponse,
   GenerateRecommendationsResultResponse,
+  RecommendationActionResponse,
+  RecommendationActionKind,
+  MlModel,
+  MlModelListResponse,
+  MlModelStage,
+  MlCustomerScoreResponse,
 } from './types';
 
 /** All BFF routes proxied through Next.js API routes → frontend-api module */
@@ -1972,5 +1982,57 @@ export const recommendationApi = {
       method: 'POST',
     });
     return parseData(GenerateRecommendationsResultSchema, env);
+  },
+
+  /**
+   * POST /api/v1/recommendations/:id/action — record a human action (accept/dismiss/snooze/…).
+   * The append-only decision-feedback loop; returns the recorded ledger row.
+   */
+  action: async (
+    recommendationId: string,
+    action: RecommendationActionKind,
+    reason?: string,
+  ): Promise<RecommendationActionResponse> => {
+    const env = await bffFetch<BffEnvelope<unknown>>(
+      `/v1/recommendations/${encodeURIComponent(recommendationId)}/action`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ action, ...(reason ? { reason } : {}) }),
+        idempotencyKey: generateRequestId(),
+      },
+    );
+    return parseData(RecommendationActionSchema, env);
+  },
+};
+
+/**
+ * mlApi — the C5 ML platform surface (model registry + serving). BFF-only (I-ST01).
+ */
+export const mlApi = {
+  /** GET /api/v1/ml/models — the active brand's model registry. */
+  listModels: async (): Promise<MlModelListResponse> => {
+    const env = await bffFetch<BffEnvelope<unknown>>('/v1/ml/models');
+    return parseData(ModelListSchema, env);
+  },
+
+  /** POST /api/v1/ml/models/:id/promote — move a model to a new lifecycle stage. */
+  promote: async (modelId: string, stage: MlModelStage): Promise<MlModel> => {
+    const env = await bffFetch<BffEnvelope<unknown>>(
+      `/v1/ml/models/${encodeURIComponent(modelId)}/promote`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ stage }),
+        idempotencyKey: generateRequestId(),
+      },
+    );
+    return parseData(ModelSchema, env);
+  },
+
+  /** GET /api/v1/ml/customer-score?brain_id=… — serve a customer's RFM/churn score (honest no_data). */
+  customerScore: async (brainId: string): Promise<MlCustomerScoreResponse> => {
+    const env = await bffFetch<BffEnvelope<unknown>>(
+      `/v1/ml/customer-score?brain_id=${encodeURIComponent(brainId)}`,
+    );
+    return parseData(CustomerScoreResultSchema, env);
   },
 };

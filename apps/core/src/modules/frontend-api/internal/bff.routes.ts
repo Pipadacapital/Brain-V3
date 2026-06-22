@@ -110,7 +110,7 @@ import type {
 } from '@brain/contracts';
 import { jtiFromJwt, csrfTokenForSession } from './csrf.js';
 import type { Pool as PgPool } from 'pg';
-import { getRevenueMetrics, getRevenueTimeseries, getKpiSummary, getRecognitionBreakdown, getRecentActivity, getOrdersTimeseries, getOrderStats, getDataHealth, getSettlementSummary, getTrackingHealth, getRecentEvents, getAdSpendTimeseries, getBlendedRoas, getCodRtoRates, getCustomerBaseSummary, getCodMix, getCheckoutFunnel, getRtoRiskDistribution, getOrderStatusMix, getTopProducts, getOrdersList, getOrderDetail, getContributionMargin, listCostInputs, upsertCostInput, getJourneyFirstTouchMix, getJourneyStitchRate, getJourneyTimeline, getShipmentOutcomes, getBehaviorOverview, getFunnelAnalytics, getAbandonedCart, getEngagement, getConsentCoverage, getConsentSuppressionSummary, getConsentGateActivity, getConsentWindowConfig, getAttributionByChannel, getAttributionReconciliation, getChannelRoas, getCapiFeedbackSummary, getCapiFeedbackEvents, getCapiFeedbackDeletions } from '../../analytics/index.js';
+import { getRevenueMetrics, getRevenueTimeseries, getKpiSummary, getRecognitionBreakdown, getRecentActivity, getOrdersTimeseries, getOrderStats, getDataHealth, getSettlementSummary, getTrackingHealth, getRecentEvents, getAdSpendTimeseries, getBlendedRoas, getCodRtoRates, getCustomerBaseSummary, getCodMix, getCheckoutFunnel, getRtoRiskDistribution, getOrderStatusMix, getTopProducts, getOrdersList, getOrderDetail, getContributionMargin, listCostInputs, upsertCostInput, getJourneyFirstTouchMix, getJourneyStitchRate, getJourneyTimeline, getShipmentOutcomes, getBehaviorOverview, getFunnelAnalytics, getAbandonedCart, getEngagement, getConsentCoverage, getConsentSuppressionSummary, getConsentGateActivity, getConsentWindowConfig, getAttributionByChannel, getAttributionReconciliation, getChannelRoas, getCampaignRoas, getExecutiveMetrics, getCohortRetention, getCapiFeedbackSummary, getCapiFeedbackEvents, getCapiFeedbackDeletions } from '../../analytics/index.js';
 import { getDataQualitySummary, getMetricTrust } from '../../data-quality/index.js';
 import { computeFoundationHealth, freshnessFromIngest, computeEntitlements, type FoundationSignals } from '../../analytics/index.js';
 import { CONNECTOR_CATALOG } from '../../connector/catalog/registry.js';
@@ -2597,6 +2597,77 @@ export function registerBffRoutes(
   );
 
   /**
+   * GET /api/v1/analytics/executive-metrics?from=&to=
+   * H9 — the executive HEADLINE tiles (AOV, LTV, repeat_rate, CAC, ROAS) served from the Gold marts
+   * THROUGH the metric registry (gold_executive_metrics + gold_customer_360 + gold_cac + blended ROAS).
+   * Honest no_data when the brand has no Gold rows; ratios are null (never 0/∞) when the denominator is 0.
+   */
+  fastify.get(
+    '/api/v1/analytics/executive-metrics',
+    {
+      preHandler: [bffProtectedPreHandler],
+      schema: {
+        querystring: {
+          type: 'object',
+          properties: {
+            from: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
+            to: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
+          },
+          additionalProperties: false,
+        },
+      },
+      attachValidation: true,
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const validationError = (request as FastifyRequest & { validationError?: Error }).validationError;
+      if (validationError) {
+        return reply.code(400).send({ request_id: requestId, error: { code: 'INVALID_PARAMS', message: 'from and to must be YYYY-MM-DD.' } });
+      }
+      const auth = (request as AuthenticatedRequest).auth;
+      if (!auth.brandId) {
+        return reply.send({ request_id: requestId, data: { state: 'no_data' } });
+      }
+      if (!srPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (StarRocks) not available' } });
+      }
+      const query = request.query as { from?: string; to?: string };
+      const today = new Date().toISOString().split('T')[0] as string;
+      const toStr = query.to ?? today;
+      const fromStr = query.from ?? (new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0] as string);
+
+      const result = await getExecutiveMetrics(
+        auth.brandId,
+        { fromDate: new Date(`${fromStr}T00:00:00Z`), toDate: new Date(`${toStr}T00:00:00Z`) },
+        { srPool },
+      );
+      return reply.send({ request_id: requestId, data: result });
+    },
+  );
+
+  /**
+   * GET /api/v1/analytics/cohort-retention
+   * H9/H11 — acquisition-cohort curve (size, lifetime orders/value, orders-per-customer) over the
+   * order spine, from gold_cohorts via the metric registry. Honest no_data on zero cohorts.
+   */
+  fastify.get(
+    '/api/v1/analytics/cohort-retention',
+    { preHandler: [bffProtectedPreHandler] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const auth = (request as AuthenticatedRequest).auth;
+      if (!auth.brandId) {
+        return reply.send({ request_id: requestId, data: { state: 'no_data' } });
+      }
+      if (!srPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (StarRocks) not available' } });
+      }
+      const result = await getCohortRetention(auth.brandId, { srPool });
+      return reply.send({ request_id: requestId, data: result });
+    },
+  );
+
+  /**
    * GET /api/v1/analytics/recognition-breakdown?as_of=YYYY-MM-DD
    * Returns recognition state distribution: provisional/settling/finalized counts + amounts.
    */
@@ -4106,6 +4177,49 @@ export function registerBffRoutes(
           fromStr,
           toStr,
           dataSource: 'synthetic',
+        },
+        { srPool },
+      );
+      return reply.send({ request_id: requestId, data: result });
+    },
+  );
+
+  /**
+   * GET /api/v1/analytics/attribution/campaign-roas?from=&to=&model=
+   * H8 — per-CAMPAIGN ROAS = attributed_revenue ÷ ad_spend (honest null when spend=0). The granular
+   * sibling of channel-roas; joins gold_marketing_attribution × silver_marketing_spend on campaign_id.
+   */
+  fastify.get(
+    '/api/v1/analytics/attribution/campaign-roas',
+    { preHandler: [bffProtectedPreHandler], schema: { querystring: attributionQuerySchema }, attachValidation: true },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const validationError = (request as FastifyRequest & { validationError?: Error }).validationError;
+      if (validationError) {
+        return reply.code(400).send({ request_id: requestId, error: { code: 'INVALID_PARAMS', message: 'from/to must be YYYY-MM-DD; model must be a valid model id.' } });
+      }
+      const auth = (request as AuthenticatedRequest).auth;
+      const query = request.query as { from?: string; to?: string; model?: string };
+      const model = parseModel(query.model);
+      if (!auth.brandId) {
+        const today = new Date().toISOString().split('T')[0] as string;
+        return reply.send({ request_id: requestId, data: { state: 'no_data', from: today, to: today, model } });
+      }
+      if (!srPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (StarRocks) not available' } });
+      }
+      const today = new Date().toISOString().split('T')[0] as string;
+      const toStr = query.to ?? today;
+      const fromStr = query.from ?? (new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0] as string);
+
+      const result = await getCampaignRoas(
+        auth.brandId,
+        {
+          model,
+          fromDate: new Date(`${fromStr}T00:00:00Z`),
+          toDate: new Date(`${toStr}T00:00:00Z`),
+          fromStr,
+          toStr,
         },
         { srPool },
       );

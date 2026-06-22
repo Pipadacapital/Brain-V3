@@ -79,10 +79,28 @@ resource "redpanda_cluster" "main" {
 # Naming: {env}.{domain}.{event}.v{n}
 ###############################################################################
 
+# Live ingest lane. partition_count is the HARD ceiling on stream-worker consumer parallelism
+# (a consumer beyond the partition count sits idle), so it must be scale-sized in prod (H5 audit).
+# prod = 96 (room to autoscale the worker well past the old hard 12); non-prod stays 12 (dev/staging
+# load doesn't warrant it, and fewer partitions = less local/cluster overhead).
+#
+# !! REPARTITION ORDERING (H5) !! Today the producer key is the BRAND-PREFIXED COMPOSITE
+# `brand_id + ":" + event_id` (see infra/redpanda/topics.yml). Per-event-id keys already spread a
+# single brand's events across partitions, so raising partition_count is safe + additive — it only
+# widens consumer parallelism, it does NOT reassign existing keys. A *real* repartition that wants
+# per-brand ordering / co-location must FIRST change the producer key to `brand_id` ALONE — that is
+# owned by the analytics/identity stream and is deliberately NOT changed here.
+# NOTE: increasing partition_count is one-way (Kafka/Redpanda cannot shrink it) — do it deliberately.
+variable "live_topic_partition_count" {
+  type        = number
+  default     = null
+  description = "Override partition count for the live collector topic. Null = env default (prod 96, else 12)."
+}
+
 resource "redpanda_topic" "collector_event_live" {
   cluster_api_url    = redpanda_cluster.main.cluster_api_url
   name               = "${var.environment}.collector.event.v1"
-  partition_count    = 12
+  partition_count    = coalesce(var.live_topic_partition_count, var.environment == "prod" ? 96 : 12)
   replication_factor = 3
 
   configuration = {

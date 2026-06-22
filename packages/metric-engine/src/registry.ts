@@ -30,7 +30,14 @@ export type MetricId =
   | 'attribution_confidence'
   // Phase 7 Data Quality — computed grade OUTPUTS (frozen letter, no persisted float).
   | 'cost_confidence'
-  | 'effective_confidence';
+  | 'effective_confidence'
+  // H9 — executive headline metrics over the Gold serving marts (registry-as-SoR; parity-oracle'd).
+  | 'aov'
+  | 'cac'
+  | 'ltv'
+  | 'repeat_rate'
+  | 'top_products'
+  | 'cohort_retention';
 export type MetricVersion = `v${number}`;
 
 export interface MetricDefinition {
@@ -66,7 +73,20 @@ export interface MetricDefinition {
     // executors write (RLS FORCE per brand). cost_confidence/effective_confidence read the
     // LATEST grade per (category,target) here at metric-engine time — a computed grade OUTPUT,
     // never a persisted confidence float (I-ST01).
-    | 'dq_check_result';
+    | 'dq_check_result'
+    // H9 — Gold serving marts (StarRocks brain_gold), read via withSilverBrand (I-ST01 sole reader).
+    // gold_executive_metrics: brand-level additive components (realized value, orders, distinct
+    // customers) — AOV/LTV/repeat_rate derived NON-additively at read in the engine (ADR-004).
+    | 'gold_executive_metrics'
+    // gold_cac: ad spend ÷ newly-acquired customers per acquisition_month (the CAC components).
+    | 'gold_cac'
+    // gold_revenue_analytics: month × lifecycle × currency realized rollup — the repeat/nth-order
+    // and cohort-retention reads fold over the order spine via silver_order_state / gold_cohorts.
+    | 'gold_revenue_analytics'
+    // gold_cohorts: acquisition cohorts (first-seen month) → cohort_retention curve at read.
+    | 'gold_cohorts'
+    // silver_order_line rollup → top_products (per-SKU; non-additive at read, ADR-004).
+    | 'silver_order_line';
   /**
    * recognition_label semantics this metric covers.
    * Cross-checked in registry unit test: realized→finalized; provisional→provisional/settling.
@@ -376,6 +396,100 @@ export const METRIC_REGISTRY = {
         'Trusted (A+|A|B) → full recommendations + billing-cap applies + included in MMM; ' +
         'Estimated (C)/Untrusted (D) → degraded/blocked, no billing cap, excluded from MMM, ' +
         'blocks high-risk recommendations. Sole emitter: metric-engine only.',
+    },
+  },
+  // ── H9 — executive headline metrics over the Gold serving marts ─────────────
+  aov: {
+    v1: {
+      metricId: 'aov' as const,
+      version: 'v1' as const,
+      readSeam: 'gold_executive_metrics' as const,
+      recognitionLabels: ['finalized'] as const,
+      toleranceMinor: 0 as const,
+      description:
+        'Average Order Value = realized_value_minor ÷ total_orders, per currency_code, from the Gold ' +
+        'mart gold_executive_metrics (additive components: SUM realized value + COUNT orders). ' +
+        'NON-ADDITIVE ratio derived at READ in the engine (ADR-004) — Gold stores only the additive ' +
+        'components. Integer division of BIGINT minor units (no float); null when orders=0 (honest, ' +
+        'never divide-by-zero). SAME-CURRENCY ONLY. Read through withSilverBrand (I-ST01 sole reader). ' +
+        'Sole emitter: metric-engine only.',
+    },
+  },
+  cac: {
+    v1: {
+      metricId: 'cac' as const,
+      version: 'v1' as const,
+      readSeam: 'gold_cac' as const,
+      recognitionLabels: [] as const,
+      toleranceMinor: 0 as const,
+      description:
+        'Customer Acquisition Cost = acquisition_spend_minor ÷ new_customers per acquisition_month, ' +
+        'per currency_code, from the Gold mart gold_cac (ad spend joined to first-order customers). ' +
+        'BIGINT minor units (no float); null when new_customers=0 (honest, never divide-by-zero). ' +
+        'SAME-CURRENCY ONLY. CAC is not a recognition-staged fact. Read through withSilverBrand ' +
+        '(I-ST01 sole reader). Sole emitter: metric-engine only.',
+    },
+  },
+  ltv: {
+    v1: {
+      metricId: 'ltv' as const,
+      version: 'v1' as const,
+      readSeam: 'gold_executive_metrics' as const,
+      recognitionLabels: ['finalized'] as const,
+      toleranceMinor: 0 as const,
+      description:
+        'Lifetime Value (cohort-naive M1) = realized_value_minor ÷ distinct_customers, per ' +
+        'currency_code, from gold_executive_metrics. The honest realized-revenue-per-customer figure ' +
+        '(NOT a predicted/discounted LTV — no model, no forecast; predictive LTV is deferred to the ' +
+        'feature layer). NON-ADDITIVE ratio derived at READ (ADR-004). Integer division of BIGINT ' +
+        'minor units (no float); null when distinct_customers=0. SAME-CURRENCY ONLY. Read through ' +
+        'withSilverBrand (I-ST01 sole reader). Sole emitter: metric-engine only.',
+    },
+  },
+  repeat_rate: {
+    v1: {
+      metricId: 'repeat_rate' as const,
+      version: 'v1' as const,
+      readSeam: 'gold_cohorts' as const,
+      recognitionLabels: [] as const,
+      toleranceMinor: 0 as const,
+      description:
+        'Repeat-purchase rate = customers with ≥2 lifetime orders ÷ all customers, per currency_code, ' +
+        'folded over the customer order spine (gold_cohorts cohort_orders vs cohort_size). Integer ' +
+        'basis-point math (no float); null when there are zero customers (honest). A deterministic ' +
+        'count fold, not a recognition fact. NO subscription/repeat-billing connector (deferred) — ' +
+        'repeat is over realized orders only. Read through withSilverBrand (I-ST01 sole reader). Sole ' +
+        'emitter: metric-engine only.',
+    },
+  },
+  top_products: {
+    v1: {
+      metricId: 'top_products' as const,
+      version: 'v1' as const,
+      readSeam: 'silver_order_line' as const,
+      recognitionLabels: ['finalized'] as const,
+      toleranceMinor: 0 as const,
+      description:
+        'Top products = per-SKU realized units + realized value rollup over silver.order_line, ranked ' +
+        'desc by realized value, capped to top-N. NON-ADDITIVE rank/cap over the additive Silver mart ' +
+        '→ metric-engine, NOT dbt (ADR-004). MONEY = BIGINT minor units + currency_code (I-S07). Honest ' +
+        'no_data on zero lines. Read through withSilverBrand (I-ST01 sole reader). Sole emitter: ' +
+        'metric-engine only.',
+    },
+  },
+  cohort_retention: {
+    v1: {
+      metricId: 'cohort_retention' as const,
+      version: 'v1' as const,
+      readSeam: 'gold_cohorts' as const,
+      recognitionLabels: [] as const,
+      toleranceMinor: 0 as const,
+      description:
+        'Cohort retention curve = per-acquisition-cohort (first-seen month) customer counts + their ' +
+        'lifetime orders/value, from the Gold mart gold_cohorts. Retention RATIOS are derived ' +
+        'NON-ADDITIVELY at read (ADR-004); Gold holds only the additive cohort components. Integer ' +
+        'basis-point math (no float). A deterministic count fold, not a recognition fact. Read through ' +
+        'withSilverBrand (I-ST01 sole reader). Sole emitter: metric-engine only.',
     },
   },
 } as const;

@@ -177,3 +177,20 @@ export type {
   ChannelRoasDto,
   ChannelRoasParams,
 } from './internal/application/queries/get-channel-roas.js';
+export { getCampaignRoas } from './internal/application/queries/get-campaign-roas.js';
+export type {
+  CampaignRoasResult,
+  CampaignRoasDto,
+  CampaignRoasParams,
+} from './internal/application/queries/get-campaign-roas.js';
+export { getExecutiveMetrics } from './internal/application/queries/get-executive-metrics.js';
+export type {
+  ExecutiveMetricsResult,
+  ExecutiveMetricDto,
+  ExecutiveMetricsParams,
+} from './internal/application/queries/get-executive-metrics.js';
+export { getCohortRetention } from './internal/application/queries/get-cohort-retention.js';
+export type {
+  CohortRetentionResult,
+  CohortRetentionDto,
+} from './internal/application/queries/get-cohort-retention.js';

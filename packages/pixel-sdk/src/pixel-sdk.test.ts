@@ -34,6 +34,8 @@ interface FakeEnvOpts {
   windowConsent?: unknown;
   /** Make the first N sends fail (to drive retry). */
   failFirst?: number;
+  /** Cookie jar (name → value) for click-id cookie capture. */
+  cookies?: Record<string, string>;
 }
 
 /** A fake BrowserEnv that records each POST body (one per send). */
@@ -59,7 +61,7 @@ function fakeEnv(opts: FakeEnvOpts = {}): {
     pathname: () => '/products/widget',
     uaClass: () => 'desktop',
     viewport: () => '1920x1080',
-    cookie: () => '',
+    cookie: (name) => opts.cookies?.[name] ?? '',
     // No sendBeacon → forces fetchKeepalive (deterministic in tests).
     fetchKeepalive: async (_url, body) => {
       if (failRemaining > 0) {
@@ -188,6 +190,71 @@ describe('pixel-sdk — attribution capture (raw-only, RO1)', () => {
     const obj = JSON.parse(sent[0]!);
     expect(obj.properties.click_ids).toEqual({ gclid: 'G123' });
     expect(obj.properties.utm).toEqual({ source: 'google', medium: 'cpc', campaign: 'summer' });
+  });
+
+  it('captures ALL URL click-ids (msclkid/gbraid/wbraid/dclid included)', async () => {
+    const { env, sent } = fakeEnv({
+      href: 'https://shop.example.com/?fbclid=FB&gclid=G&ttclid=TT&msclkid=MS&gbraid=GB&wbraid=WB&dclid=DC',
+    });
+    const pixel = createPixel(env, { getWindowConsent: () => undefined });
+    await pixel.page();
+    expect(JSON.parse(sent[0]!).properties.click_ids).toEqual({
+      fbclid: 'FB', gclid: 'G', ttclid: 'TT', msclkid: 'MS', gbraid: 'GB', wbraid: 'WB', dclid: 'DC',
+    });
+  });
+
+  it('captures cookie click-ids: _fbc + _fbp DISTINCT, li_fat_id, _epik→epik', async () => {
+    const { env, sent } = fakeEnv({
+      cookies: { _fbc: 'fb.1.123.FBCLICK', _fbp: 'fb.1.123.BROWSER', li_fat_id: 'LI', _epik: 'EPIK' },
+    });
+    const pixel = createPixel(env, { getWindowConsent: () => undefined });
+    await pixel.page();
+    const ci = JSON.parse(sent[0]!).properties.click_ids;
+    expect(ci._fbc).toBe('fb.1.123.FBCLICK');
+    expect(ci._fbp).toBe('fb.1.123.BROWSER');
+    expect(ci._fbc).not.toBe(ci._fbp); // distinct — NOT conflated
+    expect(ci.li_fat_id).toBe('LI');
+    expect(ci.epik).toBe('EPIK');
+    expect(ci.fbclid).toBeUndefined(); // _fbc no longer masquerades as fbclid
+  });
+
+  it('a URL click-id wins over the same-key cookie value', async () => {
+    const { env, sent } = fakeEnv({
+      href: 'https://shop.example.com/?fbclid=URLFB',
+      cookies: { _fbc: 'cookieFbc' },
+    });
+    const pixel = createPixel(env, { getWindowConsent: () => undefined });
+    await pixel.page();
+    const ci = JSON.parse(sent[0]!).properties.click_ids;
+    expect(ci.fbclid).toBe('URLFB'); // URL fbclid kept
+    expect(ci._fbc).toBe('cookieFbc'); // distinct cookie field still captured
+  });
+
+  it('click-id capture is configurable (cookieKeys:[] disables cookie capture)', async () => {
+    const { env, sent } = fakeEnv({ cookies: { _fbc: 'x', _fbp: 'y' } });
+    const pixel = createPixel(env, { getWindowConsent: () => undefined, clickIds: { cookieKeys: [] } });
+    await pixel.page();
+    expect(JSON.parse(sent[0]!).properties.click_ids).toBeUndefined();
+  });
+});
+
+describe('pixel-sdk — behavioral events (M14 / H6) parse as shape (a)', () => {
+  it('cart.item_removed / cart.updated / checkout.step_viewed / user.logged_in / user.signed_up', async () => {
+    const { env, sent } = fakeEnv();
+    const pixel = createPixel(env, { getWindowConsent: () => undefined });
+    await pixel.cartItemRemoved({ variant_id: 1 });
+    await pixel.cartUpdated({ variant_id: 1, quantity: 3 });
+    await pixel.checkoutStep({ step: 'shipping' });
+    await pixel.login();
+    await pixel.signup();
+    expect(sent.length).toBe(5);
+    const names = sent.map((b) => JSON.parse(b).event_name);
+    expect(names).toEqual([
+      'cart.item_removed', 'cart.updated', 'checkout.step_viewed', 'user.logged_in', 'user.signed_up',
+    ]);
+    for (const body of sent) {
+      expect(CollectorEventV1Schema.safeParse(JSON.parse(body)).success).toBe(true);
+    }
   });
 });
 

@@ -14,14 +14,34 @@ import type {
   EventProperties,
 } from './types.js';
 import { getOrCreateAnonId, getOrRollSession } from './identity.js';
-import { captureClickIds, captureUtm } from './attribution.js';
+import { captureClickIds, captureUtm, type ClickIdCaptureOptions } from './attribution.js';
 import { resolveConsent, defaultConsentReader, type ConsentReader } from './consent.js';
 import { Transport } from './transport.js';
 
 // DB-AUDIT M2: checkout.started completes the behavioral funnel (sessions→product→cart→CHECKOUT→
 // purchased). Fired on the storefront checkout page (Web Pixel / checkout integration); flows as a
 // normal session touch into silver_touchpoint, so the funnel gains a real checkout stage.
-export type EventName = 'page.viewed' | 'cart.item_added' | 'cart.viewed' | 'checkout.started';
+//
+// M14 / H6-behavioral: the funnel was missing the un-do + multi-step + account events. All
+// dot.lowercase, all flow as normal session touches into Bronze→silver_touchpoint (the lakehouse
+// stream carries these new event_types through staging):
+//   - cart.item_removed  (remove_from_cart)  — un-does cart.item_added; abandonment signal
+//   - cart.updated       (cart_update)       — quantity/line edits without add/remove
+//   - checkout.step_viewed (checkout_steps)  — per-step funnel granularity (step in props)
+//   - user.logged_in     (login)             — account page-type / returning-customer signal
+//   - user.signed_up     (signup)            — new-account signal
+export type EventName =
+  | 'page.viewed'
+  | 'product.viewed'
+  | 'collection.viewed'
+  | 'cart.item_added'
+  | 'cart.item_removed'
+  | 'cart.updated'
+  | 'cart.viewed'
+  | 'checkout.started'
+  | 'checkout.step_viewed'
+  | 'user.logged_in'
+  | 'user.signed_up';
 
 export interface PixelOptions {
   /** Override the CMP reader (default reads window.__brainConsent). */
@@ -30,6 +50,8 @@ export interface PixelOptions {
   collectUrl?: string;
   /** Provider of window.__brainConsent (injected so the core stays env-agnostic). */
   getWindowConsent?: () => unknown;
+  /** Override which click-id URL/cookie keys are captured (keeps click-id capture configurable). */
+  clickIds?: ClickIdCaptureOptions;
 }
 
 export interface Pixel {
@@ -41,6 +63,16 @@ export interface Pixel {
   cartViewed(extra?: Record<string, unknown>): Promise<void>;
   /** Emit checkout.started (the checkout funnel stage). */
   checkoutStarted(extra?: Record<string, unknown>): Promise<void>;
+  /** Emit cart.item_removed (remove_from_cart). */
+  cartItemRemoved(extra?: Record<string, unknown>): Promise<void>;
+  /** Emit cart.updated (cart_update — quantity/line edits). */
+  cartUpdated(extra?: Record<string, unknown>): Promise<void>;
+  /** Emit checkout.step_viewed (checkout_steps — pass { step } for funnel granularity). */
+  checkoutStep(extra?: Record<string, unknown>): Promise<void>;
+  /** Emit user.logged_in (login). */
+  login(extra?: Record<string, unknown>): Promise<void>;
+  /** Emit user.signed_up (signup). */
+  signup(extra?: Record<string, unknown>): Promise<void>;
   /** Emit an arbitrary (bounded) event_name. */
   track(name: EventName, extra?: Record<string, unknown>): Promise<void>;
   /** Re-attempt delivery of any queued events. */
@@ -71,7 +103,7 @@ export function createPixel(env: BrowserEnv, options: PixelOptions = {}): Pixel 
       device: { ua_class: env.uaClass(), viewport: env.viewport() },
       ...extra,
     };
-    const clickIds = captureClickIds(env);
+    const clickIds = captureClickIds(env, options.clickIds);
     if (clickIds) properties.click_ids = clickIds;
     const utm = captureUtm(env);
     if (utm) properties.utm = utm;
@@ -100,6 +132,11 @@ export function createPixel(env: BrowserEnv, options: PixelOptions = {}): Pixel 
     cartItemAdded: (extra) => emit('cart.item_added', extra),
     cartViewed: (extra) => emit('cart.viewed', extra),
     checkoutStarted: (extra) => emit('checkout.started', extra),
+    cartItemRemoved: (extra) => emit('cart.item_removed', extra),
+    cartUpdated: (extra) => emit('cart.updated', extra),
+    checkoutStep: (extra) => emit('checkout.step_viewed', extra),
+    login: (extra) => emit('user.logged_in', extra),
+    signup: (extra) => emit('user.signed_up', extra),
     track: (name, extra) => emit(name, extra),
     flush: () => transport.flush(),
   };

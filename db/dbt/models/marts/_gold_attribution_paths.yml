@@ -1,0 +1,34 @@
+version: 2
+
+models:
+  - name: gold_attribution_paths
+    description: >
+      Journey/PATH-grain attribution mart (M9). One row per CONVERTED journey
+      (brand_id, brain_anon_id, stitched_order_id) with the ordered multi-touch channel path,
+      touch count, distinct-channel count, first/last touch channel, and the path span. Makes the
+      multi-touch journey inspectable (the flat gold_marketing_attribution credit ledger cannot).
+      Additive/deterministic projection over silver_touchpoint (converted = stitched_order_id present,
+      D-5 read-back). NO money column; revenue joins at read via stitched_order_id. Per-brand isolation
+      at the read seam (I-ST01).
+    columns:
+      - name: brand_id
+        description: "Tenant key. First key/distribution/order column."
+        tests: [not_null]
+      - name: brain_anon_id
+        description: "Anon journey key — the path subject."
+        tests: [not_null]
+      - name: stitched_order_id
+        description: "The order this journey deterministically stitched to (the conversion)."
+        tests: [not_null]
+      - name: channel_path
+        description: "Ordered ' > '-joined channel sequence of the journey (the inspectable path)."
+        tests: [not_null]
+      - name: touch_count
+        description: "Number of touches in the converted journey."
+        tests: [not_null]
+      - name: first_touch_channel
+        description: "Channel of the earliest touch (touch_seq min)."
+        tests: [not_null]
+      - name: last_touch_channel
+        description: "Channel of the latest touch (touch_seq max)."
+        tests: [not_null]

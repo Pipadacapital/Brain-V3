@@ -41,7 +41,8 @@ spec:
             - secretRef:
                 name: {{ $root.Values.envSecretName }}
           {{- end }}
-          {{- with $root.Values.env }}
+          {{- $mergedEnv := concat (default (list) $root.Values.env) (default (list) .env) }}
+          {{- with $mergedEnv }}
           env:
             {{- toYaml . | nindent 12 }}
           {{- end }}

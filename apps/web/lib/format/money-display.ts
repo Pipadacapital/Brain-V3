@@ -35,9 +35,37 @@ const MINOR_DIVISORS: Record<CurrencyCode, bigint> = {
  *   formatMoneyDisplay('123450', 'INR') // → '₹1,234.50'  (no float math)
  *   formatMoneyDisplay('50000', 'AED')  // → 'AED 500.00'
  */
+/**
+ * Coerce a minor-unit amount string to an integer-minor bigint.
+ *
+ * Most BFF money fields are already integer minor-unit strings ("123450"). But the
+ * derived headline ratios (CAC/LTV/AOV) are emitted by the metric engine as EXACT
+ * fractional minor-unit strings ("0.0000", "12345.6789") so the consumer can re-derive
+ * the ratio precisely. The smallest unit the UI can render is one whole minor unit
+ * (two fraction digits of the major unit), so we round half-away-from-zero to integer
+ * minor units here — a fractional paisa/fil/halala is not displayable. Without this,
+ * BigInt("0.0000") throws a SyntaxError and crashes the render.
+ */
+function toIntegerMinor(minorString: string): bigint {
+  const s = (minorString ?? '').trim();
+  const dot = s.indexOf('.');
+  if (dot === -1) return BigInt(s || '0'); // integer fast path
+
+  const negative = s.startsWith('-');
+  const intPart = s.slice(0, dot).replace('-', '') || '0';
+  const fracPart = s.slice(dot + 1);
+  let whole = BigInt(intPart);
+  // Round half-away-from-zero on the first fractional digit.
+  if (fracPart.length > 0 && Number(fracPart[0]) >= 5) {
+    whole += 1n;
+  }
+  return negative ? -whole : whole;
+}
+
 export function formatMoneyDisplay(minorString: string, currencyCode: CurrencyCode): string {
   // Build the Money VO — validates the currency code (throws on invalid).
-  const m = money(BigInt(minorString), currencyCode);
+  // Accepts integer ("123450") or exact-fractional ("0.0000") minor-unit strings.
+  const m = money(toIntegerMinor(minorString), currencyCode);
 
   // Integer-arithmetic split into major and fractional parts.
   const divisor = MINOR_DIVISORS[currencyCode];

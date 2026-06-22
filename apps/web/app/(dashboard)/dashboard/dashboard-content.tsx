@@ -27,7 +27,7 @@ import { TrendChart } from '@/components/analytics/trend-chart';
 import { RecognitionDonut } from '@/components/analytics/recognition-donut';
 import { RecentActivity } from '@/components/analytics/recent-activity';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { useKpiSummary, useRevenueTimeseries, useRecognitionBreakdown, useRecentActivity } from '@/lib/hooks/use-analytics';
+import { useKpiSummary, useExecutiveMetrics, useRevenueTimeseries, useRecognitionBreakdown, useRecentActivity } from '@/lib/hooks/use-analytics';
 import { useConnectionStatus } from '@/lib/hooks/use-dashboard';
 import { formatMoneyDisplay } from '@/lib/format/money-display';
 import type { CurrencyCode } from '@brain/money';
@@ -137,6 +137,60 @@ function KpiRow() {
 }
 
 /**
+ * ExecutiveMetricsRow — H9 headline economics tiles (CAC, LTV, ROAS, Repeat-rate) from the
+ * registry-backed Gold marts. Honest: each tile renders an em-dash when its ratio is null
+ * (denominator 0 — never a fabricated 0 or ∞). The whole row hides when the brand has no Gold rows.
+ */
+function ExecutiveMetricsRow() {
+  const { data, isLoading } = useExecutiveMetrics();
+  const row = data?.state === 'has_data' ? data.metrics[0] : null;
+  // Honest: no Gold executive rows yet (data foundation not built) → render nothing, no empty tiles.
+  if (data && data.state === 'no_data') return null;
+
+  const ccy = (row?.currency_code ?? 'INR') as CurrencyCode;
+  const cacValue = row?.cac_minor != null ? formatMoneyDisplay(row.cac_minor, ccy) : row ? '—' : null;
+  const ltvValue = row?.ltv_minor != null ? formatMoneyDisplay(row.ltv_minor, ccy) : row ? '—' : null;
+  const roasValue = row?.roas_ratio != null ? `${row.roas_ratio}×` : row ? '—' : null;
+  const repeatValue = row?.repeat_rate_pct != null ? `${row.repeat_rate_pct}%` : row ? '—' : null;
+
+  return (
+    <section aria-label="Unit economics">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <KpiTile
+          label="CAC"
+          value={cacValue}
+          isLoading={isLoading}
+          lowerIsBetter
+          sublabel="customer acquisition cost"
+          data-testid="kpi-cac"
+        />
+        <KpiTile
+          label="LTV"
+          value={ltvValue}
+          isLoading={isLoading}
+          sublabel="realized value per customer"
+          data-testid="kpi-ltv"
+        />
+        <KpiTile
+          label="Blended ROAS"
+          value={roasValue}
+          isLoading={isLoading}
+          sublabel="realized ÷ ad spend"
+          data-testid="kpi-roas"
+        />
+        <KpiTile
+          label="Repeat Rate"
+          value={repeatValue}
+          isLoading={isLoading}
+          sublabel="customers with 2+ orders"
+          data-testid="kpi-repeat-rate"
+        />
+      </div>
+    </section>
+  );
+}
+
+/**
  * TrendSection — TrendChart (2/3) + RecognitionDonut (1/3).
  */
 function TrendSection() {
@@ -224,6 +278,7 @@ export function DashboardContent() {
       {/* "Decide" pillar (doc 09): the top actions lead the metrics — a decision, not a chart. */}
       <TopActionsCard />
       <KpiRow />
+      <ExecutiveMetricsRow />
       <TrendSection />
       <ActivitySection />
 

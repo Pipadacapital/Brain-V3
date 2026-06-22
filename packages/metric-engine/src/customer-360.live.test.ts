@@ -1,6 +1,8 @@
 /**
  * customer-360.live.test.ts — getCustomer360Summary against live StarRocks (Phase E).
- * Reads the seeded brain_gold.gold_customer_360 fixtures. SKIPS if StarRocks is unreachable.
+ * SELF-SEEDS its 3 fixture rows into brain_gold.gold_customer_360 for a synthetic test brand, asserts,
+ * and cleans up — so it is ROBUST to a dbt rebuild of the mart from real data (which legitimately
+ * replaces any manually-seeded fixtures). SKIPS if StarRocks is unreachable.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import mysql from 'mysql2/promise';
@@ -18,6 +20,15 @@ beforeAll(async () => {
   try {
     pool = mysql.createPool({ host: HOST, port: PORT, user: 'root', password: '', database: 'brain_gold', connectionLimit: 2 });
     await pool.query('SELECT 1');
+    // Self-seed the fixture (idempotent): b1=175000/2 orders, b2=50000/1, b3=0/1 → 3 customers,
+    // 225000 total, 4 orders, top=b1. All NOT-NULL columns provided; PRIMARY-KEY upsert on re-run.
+    await pool.query('DELETE FROM gold_customer_360 WHERE brand_id = ?', [BRAND]);
+    const cols = '(brand_id,brain_id,lifetime_orders,lifetime_value_minor,currency_code,first_seen_at,'
+      + 'first_identified_at,last_seen_at,delivered_orders,rto_orders,cancelled_orders,refunded_orders,'
+      + 'customer_watermark,updated_at)';
+    const row = (b: string, o: number, v: number) =>
+      `('${BRAND}','${b}',${o},${v},'INR',NOW(),NOW(),NOW(),${o},0,0,0,NOW(),NOW())`;
+    await pool.query(`INSERT INTO gold_customer_360 ${cols} VALUES ${row('b1', 2, 175000)},${row('b2', 1, 50000)},${row('b3', 1, 0)}`);
     up = true;
   } catch {
     up = false;
@@ -25,7 +36,10 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  if (pool) await pool.end();
+  if (pool) {
+    await pool.query('DELETE FROM gold_customer_360 WHERE brand_id = ?', [BRAND]).catch(() => undefined);
+    await pool.end();
+  }
 });
 
 describe('getCustomer360Summary (gold_customer_360)', () => {

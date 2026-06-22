@@ -29,20 +29,59 @@ export function parseQuery(href: string): Record<string, string> {
 // Acquisition click-ids captured at the edge. Capturing here is irreversible-if-missed: a click-id
 // not read off the landing URL is lost forever. msclkid (Bing), gbraid/wbraid (Google iOS app↔web),
 // dclid (Google Display) were missing → that paid traffic was misclassified as `direct`.
-const CLICK_ID_KEYS = ['fbclid', 'gclid', 'ttclid', 'msclkid', 'gbraid', 'wbraid', 'dclid'] as const;
+// These ride the LANDING URL query string.
+export const CLICK_ID_URL_KEYS = [
+  'fbclid',
+  'gclid',
+  'ttclid',
+  'msclkid',
+  'gbraid',
+  'wbraid',
+  'dclid',
+] as const;
+
+// Cookie-resident ad ids set by the platforms' own first-party tags. They persist past the landing
+// URL (the click-id only appears on the first hit) so we read them on every event for CAPI match
+// quality. `_fbc`/`_fbp` are DISTINCT (a CAPI payload needs both); `li_fat_id` is LinkedIn's, the
+// Pinterest cookie is `_epik` (emitted under the `epik` key). [cookieName, clickIdKey].
+export const CLICK_ID_COOKIE_KEYS: ReadonlyArray<readonly [string, keyof ClickIds]> = [
+  ['_fbc', '_fbc'],
+  ['_fbp', '_fbp'],
+  ['li_fat_id', 'li_fat_id'],
+  ['_epik', 'epik'],
+];
+
 const UTM_KEYS = ['source', 'medium', 'campaign', 'term', 'content'] as const;
 
-/** Extract click-ids from the current URL + the _fbc cookie fallback. */
-export function captureClickIds(env: BrowserEnv): ClickIds | undefined {
+export interface ClickIdCaptureOptions {
+  /** Override the URL query keys captured (default CLICK_ID_URL_KEYS). */
+  urlKeys?: ReadonlyArray<keyof ClickIds>;
+  /** Override the cookie→key pairs captured (default CLICK_ID_COOKIE_KEYS). [] disables cookie capture. */
+  cookieKeys?: ReadonlyArray<readonly [string, keyof ClickIds]>;
+}
+
+/**
+ * Extract click-ids from the current URL query + the platform first-party cookies.
+ *
+ * URL keys win over cookie keys for the SAME field (the landing URL is the freshest signal). `_fbc`
+ * is captured DISTINCT from `fbclid` (NOT conflated) so Meta CAPI gets the formatted cookie verbatim.
+ */
+export function captureClickIds(
+  env: BrowserEnv,
+  options: ClickIdCaptureOptions = {},
+): ClickIds | undefined {
+  const urlKeys = options.urlKeys ?? CLICK_ID_URL_KEYS;
+  const cookieKeys = options.cookieKeys ?? CLICK_ID_COOKIE_KEYS;
   const q = parseQuery(env.href());
   const ids: ClickIds = {};
-  for (const k of CLICK_ID_KEYS) {
-    if (q[k]) ids[k] = q[k];
+  for (const k of urlKeys) {
+    const v = q[k as string];
+    if (v) ids[k] = v;
   }
-  // _fbc cookie carries the Facebook click-id when fbclid is not on the URL.
-  if (!ids.fbclid) {
-    const fbc = env.cookie('_fbc');
-    if (fbc) ids.fbclid = fbc;
+  for (const [cookieName, idKey] of cookieKeys) {
+    if (ids[idKey]) continue; // a URL value for this key wins
+    const c = env.cookie(cookieName);
+    if (c) ids[idKey] = c;
   }
   return Object.keys(ids).length > 0 ? ids : undefined;
 }

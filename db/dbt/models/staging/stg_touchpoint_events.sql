@@ -49,7 +49,14 @@ with raw as (
         occurred_at,
         parse_json(payload) as pj
     from {{ source('bronze_iceberg', 'collector_events') }}
-    where event_type in ('page.viewed', 'product.viewed', 'collection.viewed', 'cart.viewed', 'cart.item_added', 'search.submitted')
+    -- H6 (audit): the captured behavioral event set, NOT just the browse subset. Previously
+    -- 'checkout.started' (+ 'scroll.depth' / 'element.clicked') were silently dropped here, so the
+    -- storefront FUNNEL checkout stage was structurally always 0 and the engagement depth undercounted.
+    -- All three are emitted by the collector pixel (pixel-asset.route.ts) and carry the same
+    -- payload.properties.* shape (brain_anon_id + session_id + utm + click_ids), so they sessionize and
+    -- channel-classify identically and flow straight through int_touchpoint_sessionized → silver_touchpoint.
+    -- The existing journey/browse set is preserved verbatim — this is purely ADDITIVE.
+    where event_type in ('page.viewed', 'product.viewed', 'collection.viewed', 'cart.viewed', 'cart.item_added', 'search.submitted', 'checkout.started', 'scroll.depth', 'element.clicked')
     {% else %}
     select
         brand_id,

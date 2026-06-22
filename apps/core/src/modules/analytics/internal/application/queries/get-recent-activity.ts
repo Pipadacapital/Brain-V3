@@ -12,9 +12,27 @@
 import type { EngineDeps } from '@brain/metric-engine';
 import { withBrandTxn } from '@brain/metric-engine';
 
+/**
+ * The full set of event_type values the realized-revenue ledger emits. The SELECT
+ * below is unfiltered, so the feed surfaces ALL of them — not just the first three.
+ * Kept as a widened string union (open-ended) so a newly-added ledger event_type
+ * flows through honestly instead of being mistyped as one of the recognition states.
+ */
+export type LedgerEventType =
+  | 'provisional_recognition'
+  | 'finalization'
+  | 'rto_reversal'
+  | 'cod_delivery_confirmed'
+  | 'cod_rto_clawback'
+  | 'refund'
+  | 'payment_fee'
+  | 'settlement_finalization'
+  | 'settlement_tax'
+  | (string & {});
+
 export interface RecentActivityRow {
   order_id: string;
-  event_type: 'provisional_recognition' | 'finalization' | 'rto_reversal';
+  event_type: LedgerEventType;
   amount_minor: string;       // bigint → string
   currency_code: string;
   occurred_at: string;        // ISO timestamp string

@@ -14,7 +14,14 @@ export { createPixel, originOf } from './capture.js';
 export type { Pixel, PixelOptions, EventName } from './capture.js';
 export { normalizeBrandHost } from './normalize-host.js';
 export { getOrCreateAnonId, getOrRollSession } from './identity.js';
-export { captureClickIds, captureUtm, parseQuery } from './attribution.js';
+export {
+  captureClickIds,
+  captureUtm,
+  parseQuery,
+  CLICK_ID_URL_KEYS,
+  CLICK_ID_COOKIE_KEYS,
+} from './attribution.js';
+export type { ClickIdCaptureOptions } from './attribution.js';
 export { resolveConsent, defaultConsentReader } from './consent.js';
 export type { ConsentReader } from './consent.js';
 export { Transport } from './transport.js';

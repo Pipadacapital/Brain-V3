@@ -1,0 +1,21 @@
+-- 0085_drop_pg_bronze_events.sql — RETIRE PLAN ONLY (no drop yet). (audit M1)
+--
+-- The audit (M1) flagged data_plane.bronze_events as stale: the PG Bronze WRITER is default-OFF
+-- (ProcessEventUseCase.pgWriteEnabled=false) and the operational + DQ readers are Iceberg-only
+-- (Iceberg collector_events is the Bronze source of truth). The table holds only legacy dev rows.
+--
+-- HOWEVER, dropping it now is NOT safe: it is still referenced by (a) the dev read-shim view
+-- public.bronze_touchpoint_src (FROM bronze_events), which a DROP ... CASCADE removes, and (b) ~13
+-- e2e/live test files that seed/assert against it (the retired PG-bronze path). A drive-by DROP breaks
+-- those and buys only a cosmetic dev cleanup (Medium severity). Retiring bronze_events MUST be done
+-- TOGETHER with migrating those tests + the shim onto the Iceberg path — a dedicated follow-up, not a
+-- drop here. (An earlier DROP attempt in this remediation did exactly that damage and was reverted.)
+--
+-- So this migration is intentionally a NO-OP placeholder that records the decision: bronze_events is
+-- KEPT (its writer is off → harmless) until the test/shim migration lands. M1's other half — the
+-- pgmigrations ledger drift — is a dev-only artifact (0067+ are applied manually here and not recorded;
+-- a fresh prod deploy applies them in order via node-pg-migrate).
+--
+-- Tracked follow-up: "retire data_plane.bronze_events + bronze_touchpoint_src after migrating the
+-- bronze e2e/live tests onto Iceberg collector_events."
+SELECT 1;

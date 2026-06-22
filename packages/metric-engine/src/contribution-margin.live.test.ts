@@ -121,11 +121,13 @@ beforeAll(async () => {
 
   if (!pgAvailable) return;
   await cleanup();
-  await superPool.query(`INSERT INTO app_user (id,email,email_normalized,password_hash) VALUES ($1,$2,$3,'x')`, [USER, `${USER}@x.invalid`, `${USER}@x.invalid`]);
-  await superPool.query(`INSERT INTO organization (id,name,slug,owner_user_id) VALUES ($1,'CM',$2,$3)`, [ORG, `cm-${ORG.slice(-6)}`, USER]);
-  await superPool.query(`INSERT INTO organization (id,name,slug,owner_user_id) VALUES ($1,'CMB',$2,$3)`, [ORG_B, `cmb-${ORG_B.slice(-6)}`, USER]);
-  await superPool.query(`INSERT INTO brand (id,organization_id,display_name,currency_code,status) VALUES ($1,$2,'CM','INR','active')`, [BRAND_A, ORG]);
-  await superPool.query(`INSERT INTO brand (id,organization_id,display_name,currency_code,status) VALUES ($1,$2,'CMB','INR','active')`, [BRAND_B, ORG_B]);
+  // Idempotent fixtures (ON CONFLICT DO NOTHING): a prior crashed run can leave these fixed-id rows
+  // behind (cleanup may be blocked by an FK), which previously made beforeAll throw a duplicate-key.
+  await superPool.query(`INSERT INTO app_user (id,email,email_normalized,password_hash) VALUES ($1,$2,$3,'x') ON CONFLICT (id) DO NOTHING`, [USER, `${USER}@x.invalid`, `${USER}@x.invalid`]);
+  await superPool.query(`INSERT INTO organization (id,name,slug,owner_user_id) VALUES ($1,'CM',$2,$3) ON CONFLICT (id) DO NOTHING`, [ORG, `cm-${ORG.slice(-6)}`, USER]);
+  await superPool.query(`INSERT INTO organization (id,name,slug,owner_user_id) VALUES ($1,'CMB',$2,$3) ON CONFLICT (id) DO NOTHING`, [ORG_B, `cmb-${ORG_B.slice(-6)}`, USER]);
+  await superPool.query(`INSERT INTO brand (id,organization_id,display_name,currency_code,status) VALUES ($1,$2,'CM','INR','active') ON CONFLICT (id) DO NOTHING`, [BRAND_A, ORG]);
+  await superPool.query(`INSERT INTO brand (id,organization_id,display_name,currency_code,status) VALUES ($1,$2,'CMB','INR','active') ON CONFLICT (id) DO NOTHING`, [BRAND_B, ORG_B]);
   // Brand A: ₹1000 finalized revenue (lakehouse) + ₹200 ad spend (lakehouse), both ≤ AS_OF.
   await seedRealizedGold(BRAND_A, 100000n, 'INR', '2026-06-10');
   await seedSpendSilver(BRAND_A, 20000n, 'INR', '2026-06-12');

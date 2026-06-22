@@ -11,13 +11,21 @@
 -- ADDITIVE snapshot (no non-additive math here). MONEY = BIGINT minor units + currency_code (I-S07).
 -- ISOLATION: brand_id first key/dist column; per-brand isolation at the read seam (I-ST01).
 --
+-- M10 (audit) — FEATURE LAYER SEPARATION: this lives in the dedicated `brain_feature` schema, NOT
+-- brain_silver. brain_silver/brain_gold are the ANALYTICS medallion (additive marts the dashboards read);
+-- brain_feature is the ML FEATURE STORE substrate (point-in-time-correct, training/serving). Keeping the
+-- feature layer in its own schema makes the boundary explicit (feature ≠ analytics), so the offline
+-- training reads and the online feature reads target one namespace and can evolve without touching the
+-- serving marts. (dbt ref() is schema-agnostic, so gold_customer_scores' ref('feature_customer_daily')
+-- resolves unchanged across the move.)
+--
 -- SCHEDULING: run daily (the snapshot stamps current_date()). A missed day = a gap (acceptable); a
 -- re-run = idempotent. No is_incremental() filter: each run upserts TODAY's row per customer and
 -- leaves all prior snapshot_dates intact (the unique_key is the full grain incl. snapshot_date).
 -- ============================================================================
 {{
   config(
-    schema               = 'brain_silver',
+    schema               = 'brain_feature',
     materialized         = 'incremental',
     incremental_strategy = 'default',
     unique_key           = ['brand_id', 'brain_id', 'snapshot_date'],

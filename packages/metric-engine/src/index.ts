@@ -52,6 +52,14 @@ export type { AdSpendTimeseriesBucket, AdPlatform } from './ad-spend-timeseries.
 export { computeBlendedRoas } from './blended-roas.js';
 export type { BlendedRoasRow } from './blended-roas.js';
 export { computeCac } from './cac.js';
+// H9 — executive headline metrics (AOV/LTV/repeat_rate) + cohort retention over the Gold marts.
+export { computeExecutiveMetrics, computeCohortRetention } from './executive-metrics.js';
+export type {
+  ExecutiveMetricsResult,
+  ExecutiveMetricsRow,
+  CohortRetentionResult,
+  CohortRow,
+} from './executive-metrics.js';
 export { getCustomerCommerce } from './customer-commerce.js';
 export type { CustomerCommerceProfile } from './customer-commerce.js';
 export type { CacRow } from './cac.js';
@@ -181,6 +189,10 @@ export type {
 
 export { computeChannelRoas } from './attribution-channel-roas.js';
 export type { ChannelRoasRow } from './attribution-channel-roas.js';
+
+// H8 — campaign/ad-level ROAS (the granular sibling of channel ROAS; joins on campaign_id).
+export { computeCampaignRoas } from './attribution-campaign-roas.js';
+export type { CampaignRoasRow } from './attribution-campaign-roas.js';
 
 // Phase 7 Data Quality (feat-data-quality-engine) — cost_confidence + effective_confidence.
 // effective_confidence = min(cost_confidence, attribution_confidence). FROZEN grade lookups

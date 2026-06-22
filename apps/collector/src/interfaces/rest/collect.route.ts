@@ -39,6 +39,24 @@ export function registerCollectRoute(
   app: FastifyInstance,
   acceptUseCase: AcceptEventUseCase,
 ): void {
+  // ── CORS (REQUIRED) ──────────────────────────────────────────────────────────────────────────
+  // The pixel runs on arbitrary storefront origins (boddactive.com, …) and POSTs events cross-origin
+  // to this collector. The browser sends a CORS preflight (OPTIONS /collect) first; without an answer
+  // it 404s and the event POST is BLOCKED — so no events ever arrive. We allow any origin (the SDK
+  // posts with credentials:"omit", so wildcard is safe) and answer the preflight here, before routing.
+  app.addHook('onRequest', async (req: FastifyRequest, reply: FastifyReply) => {
+    reply.header('Access-Control-Allow-Origin', '*');
+    reply.header('Vary', 'Origin');
+    if (req.method === 'OPTIONS') {
+      await reply
+        .header('Access-Control-Allow-Methods', 'POST, OPTIONS')
+        .header('Access-Control-Allow-Headers', 'Content-Type, X-Correlation-Id, Idempotency-Key')
+        .header('Access-Control-Max-Age', '86400')
+        .code(204)
+        .send();
+    }
+  });
+
   app.post('/collect', async (req: FastifyRequest, reply: FastifyReply) => {
     const correlationId = extractCorrelationId(
       req.headers as Record<string, string | string[] | undefined>,

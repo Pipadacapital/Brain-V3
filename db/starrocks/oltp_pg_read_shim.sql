@@ -40,7 +40,10 @@ SELECT
     fee_minor,
     recognition_label,
     billing_posted_period
-FROM realized_revenue_ledger;
+-- Schema-qualified: this table was RANGE-partitioned via a twin-swap (migration 0073). An unqualified
+-- name made CREATE OR REPLACE VIEW re-bind to the renamed *_legacy table; qualifying pins the view to
+-- the canonical (partitioned) table so the shim always reads live data.
+FROM billing.realized_revenue_ledger;
 
 -- Make the view readable through the JDBC catalog connection user (superuser `brain`
 -- already owns it; explicit grant kept for documentation / non-superuser dev parity).
@@ -71,7 +74,8 @@ SELECT
     clicks,
     account_timezone,
     occurred_at
-FROM ad_spend_ledger;
+-- Schema-qualified (partitioned via twin-swap migration 0074) — see the note on silver_order_ledger_src.
+FROM billing.ad_spend_ledger;
 
 GRANT SELECT ON silver_marketing_spend_src TO brain;
 
@@ -101,3 +105,21 @@ SELECT
 FROM attribution_credit_ledger;
 
 GRANT SELECT ON gold_attribution_credit_src TO brain;
+
+-- ============================================================================
+-- DB-AUDIT H6: identity.customer read-shim → first_identified_at (acquisition time) into the
+-- customer marts. Casts the uuid brand_id/brain_id/merged_into → text for the JDBC catalog. Exposes
+-- first_identified_at (earliest strong-identifier attach) alongside created_at (node mint = first seen).
+-- Cross-brand by construction (superuser JDBC read); per-brand isolation at the Silver READ seam.
+-- ============================================================================
+CREATE OR REPLACE VIEW silver_customer_identity_src AS
+SELECT
+    brand_id::text            AS brand_id,
+    brain_id::text            AS brain_id,
+    lifecycle_state,
+    merged_into::text         AS merged_into,
+    created_at                AS minted_at,
+    first_identified_at
+FROM identity.customer;
+
+GRANT SELECT ON silver_customer_identity_src TO brain;

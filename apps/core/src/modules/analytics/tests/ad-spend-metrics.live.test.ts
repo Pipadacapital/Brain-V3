@@ -77,7 +77,7 @@ async function seedSpend(
        impressions, clicks, conversions_raw, account_timezone, raw_event_id, occurred_at
      ) VALUES ($1, $2, $3, 'campaign', $4, NULL, $4, 'Test Campaign', $5::date, $6, $7,
                1000, 50, NULL, 'Asia/Kolkata', $2, NOW())
-     ON CONFLICT (brand_id, spend_event_id) DO NOTHING`,
+     ON CONFLICT (brand_id, spend_event_id, stat_date) DO NOTHING`,
     [
       brandId,
       `${brandId}:${opts.platform}:${opts.levelId}:${opts.statDate}`,

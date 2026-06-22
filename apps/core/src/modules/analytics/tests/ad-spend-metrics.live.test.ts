@@ -114,17 +114,19 @@ async function seedSpendSilver(
   );
 }
 
-/** Seed a finalized revenue row (numerator side) via superuser. */
-async function seedFinalized(brandId: string, amountMinor: bigint, currency: string): Promise<void> {
-  const now = new Date();
-  await superPool.query(
-    `INSERT INTO realized_revenue_ledger (
-       brand_id, ledger_event_id, order_id, event_type,
-       amount_minor, currency_code, rounding_adjustment_minor,
-       occurred_at, economic_effective_at, billing_posted_period, recognition_label
-     ) VALUES ($1, $2, $3, 'finalization', $4, $5, 0, NOW(), NOW(), $6, 'finalized')`,
-    [brandId, randomUUID(), `order-${randomUUID()}`, String(amountMinor), currency, toBillingPostedPeriod(now)],
+/** Seed a finalized realized row into the lakehouse ledger (blended-roas numerator source). */
+async function seedRealizedSilver(brandId: string, amountMinor: bigint, currency: string): Promise<void> {
+  if (!srUp) return;
+  await srPool.query(
+    `INSERT INTO brain_gold.gold_revenue_ledger
+       (brand_id, ledger_event_id, order_id, brain_id, event_type, amount_minor, currency_code,
+        fee_minor, occurred_at, economic_effective_at, recognition_label, billing_posted_period, updated_at)
+     VALUES (?, ?, ?, NULL, 'finalization', ?, ?, 0, NOW(), NOW(), 'finalized', ?, NOW())`,
+    [brandId, `${brandId}:fin:${String(amountMinor)}:${currency}`, `order-${currency}`, String(amountMinor), currency, toBillingPostedPeriod(new Date())],
   );
+}
+async function clearRealizedSilver(brandId: string): Promise<void> {
+  if (srUp) await srPool.query(`DELETE FROM brain_gold.gold_revenue_ledger WHERE brand_id = ?`, [brandId]);
 }
 
 beforeAll(async () => {
@@ -249,7 +251,7 @@ describe('1. parity oracle — ad_spend engine(lakehouse)==PG seam exact-bigint 
 // ── 2. HONEST-EMPTY (D-2) ────────────────────────────────────────────────────
 
 describe('2. honest-empty — zero spend rows → no_data', () => {
-  beforeAll(async () => { await clearSpend(BRAND_A); await clearSpendSilver(BRAND_A); await clearRevenue(BRAND_A); });
+  beforeAll(async () => { await clearSpend(BRAND_A); await clearSpendSilver(BRAND_A); await clearRevenue(BRAND_A); await clearRealizedSilver(BRAND_A); });
 
   it('ad-spend-timeseries with no lakehouse rows → state=no_data', async () => {
     if (!srUp) return;
@@ -262,40 +264,42 @@ describe('2. honest-empty — zero spend rows → no_data', () => {
   });
 
   it('blended-roas with no spend → state=no_data (no denominator → honest)', async () => {
-    // Even with realized revenue present, no spend means no ROAS. (blended-roas still reads PG.)
-    await seedFinalized(BRAND_A, 500000n, 'INR');
+    if (!srUp) return;
+    // Even with realized revenue present, no spend means no ROAS (no_data driven by spend EXISTS).
+    await seedRealizedSilver(BRAND_A, 500000n, 'INR');
     const result = await getBlendedRoas(
       BRAND_A,
       { fromDate: new Date(`${daysAgoStr(10)}T00:00:00Z`), toDate: new Date(`${todayStr()}T00:00:00Z`) },
-      { pool: appPool },
+      { srPool: srPool as unknown as SilverPool },
     );
     expect(result.state).toBe('no_data');
-    await clearRevenue(BRAND_A);
+    await clearRealizedSilver(BRAND_A);
   });
 });
 
-// ── 3 + 4. BLENDED ROAS: same-currency-only + honest spend=0→null (PG-side, unchanged) ──
+// ── 3 + 4. BLENDED ROAS: same-currency-only + honest spend=0→null (lakehouse) ──
 
 describe('3+4. blended_roas — same-currency-only + honest spend=0→null', () => {
   const from = daysAgoStr(10);
   const to = todayStr();
 
   beforeAll(async () => {
-    await clearSpend(BRAND_A);
-    await clearRevenue(BRAND_A);
-    // realized: INR 5000.00 finalized (brand currency = INR)
-    await seedFinalized(BRAND_A, 500000n, 'INR');
+    await clearSpendSilver(BRAND_A);
+    await clearRealizedSilver(BRAND_A);
+    // realized: INR 5000.00 finalized (brand currency = INR) — lakehouse ledger
+    await seedRealizedSilver(BRAND_A, 500000n, 'INR');
     // spend: INR 100000 (paise) + USD 20000 (cents) — two currencies, must NOT blend
-    await seedSpend(BRAND_A, { platform: 'meta', levelId: 'inr1', statDate: daysAgoStr(4), spendMinor: 100000n, currency: 'INR' });
-    await seedSpend(BRAND_A, { platform: 'google_ads', levelId: 'usd1', statDate: daysAgoStr(3), spendMinor: 20000n, currency: 'USD' });
+    await seedSpendSilver(BRAND_A, { platform: 'meta', levelId: 'inr1', statDate: daysAgoStr(4), spendMinor: 100000n, currency: 'INR' });
+    await seedSpendSilver(BRAND_A, { platform: 'google_ads', levelId: 'usd1', statDate: daysAgoStr(3), spendMinor: 20000n, currency: 'USD' });
   });
-  afterAll(async () => { await clearSpend(BRAND_A); await clearRevenue(BRAND_A); });
+  afterAll(async () => { await clearSpendSilver(BRAND_A); await clearRealizedSilver(BRAND_A); });
 
   it('produces per-currency rows; INR row has realized+spend, USD row has spend only', async () => {
+    if (!srUp) return;
     const result = await getBlendedRoas(
       BRAND_A,
       { fromDate: new Date(`${from}T00:00:00Z`), toDate: new Date(`${to}T00:00:00Z`) },
-      { pool: appPool },
+      { srPool: srPool as unknown as SilverPool },
     );
     expect(result.state).toBe('has_data');
     if (result.state === 'has_data') {
@@ -320,13 +324,14 @@ describe('3+4. blended_roas — same-currency-only + honest spend=0→null', () 
   });
 
   it('engine: a currency with spend=0 reports roasRatio=null (honest, no divide-by-zero)', async () => {
+    if (!srUp) return;
     // Direct engine probe — fabricate a window where INR has realized but spend lands
     // outside the window for INR (so INR spend=0 inside window).
     const rows = await computeBlendedRoas(
       BRAND_A,
       // window that EXCLUDES the seeded spend dates (future window) → spend=0 everywhere
       { fromDate: new Date(`${daysAgoStr(1)}T00:00:00Z`), toDate: new Date(`${todayStr()}T00:00:00Z`) },
-      { pool: appPool },
+      { srPool: srPool as unknown as SilverPool },
     );
     // No spend in this narrow window → every row (if any) has spend=0 → roasRatio null.
     for (const r of rows) {

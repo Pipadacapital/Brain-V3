@@ -1806,7 +1806,7 @@ export function registerBffRoutes(
         });
       }
 
-      if (!rawPool) {
+      if (!rawPool || !srPool) {
         return reply.code(503).send({
           request_id: requestId,
           error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' },
@@ -1820,6 +1820,7 @@ export function registerBffRoutes(
       // The raw question is passed IN-MEMORY only; askBrain persists/logs only the redacted form.
       const result: ContractAskBrainResult = await askBrain(auth.brandId, body.question, asOf, {
         engine: { pool: rawPool },
+        srPool,
         resolver: askResolverClient,
       });
 
@@ -2676,8 +2677,8 @@ export function registerBffRoutes(
         const today = new Date().toISOString().split('T')[0] as string;
         return reply.send({ request_id: requestId, data: { state: 'no_data', from: today, to: today } });
       }
-      if (!rawPool) {
-        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' } });
+      if (!srPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (StarRocks) not available' } });
       }
 
       const query = request.query as { from?: string; to?: string };
@@ -2689,7 +2690,7 @@ export function registerBffRoutes(
       const result = await getBlendedRoas(
         auth.brandId,
         { fromDate: new Date(`${fromStr}T00:00:00Z`), toDate: new Date(`${toStr}T00:00:00Z`) },
-        { pool: rawPool },
+        { srPool },
       );
 
       return reply.send({ request_id: requestId, data: result });

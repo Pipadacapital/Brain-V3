@@ -22,7 +22,7 @@
  * @see 02-architecture.md §D3/D4/D7
  */
 
-import type { EngineDeps, MetricId, MetricVersion } from '@brain/metric-engine';
+import type { EngineDeps, MetricId, MetricVersion, SilverPool } from '@brain/metric-engine';
 import type { ResolverClient } from '@brain/ai-gateway-client';
 import { resolveQuestion } from '../nlq/resolve-question.js';
 import type { ValidatedBinding } from '../nlq/resolve-question.js';
@@ -97,6 +97,8 @@ export type AskBrainResult =
 export interface AskBrainDeps {
   /** Raw pg.Pool for the engine + provenance writer (EngineDeps-compatible). */
   readonly engine: EngineDeps;
+  /** StarRocks Silver/Gold pool — the lakehouse readers (ad_spend, blended_roas; Phase G). */
+  readonly srPool: SilverPool;
   /** The NLQ resolver gateway client (Track A). */
   readonly resolver: ResolverClient;
 }
@@ -125,7 +127,7 @@ export async function askBrain(
 
   // 3. Pin the read frame + compute over the metric-engine SOLE read path.
   const snapshotId = encodeSnapshot(asOf);
-  const number = await computeBinding(brandId, outcome, asOf, deps.engine);
+  const number = await computeBinding(brandId, outcome, asOf, deps.engine, deps.srPool);
 
   // 4. Frozen confidence + tier (Phase 7 — reused, never recomputed).
   const trust = await getMetricTrust(brandId, deps.engine);
@@ -172,12 +174,14 @@ export async function askBrain(
  * @param binding    - The persisted binding (metric_id, version, params).
  * @param snapshotId - The persisted snapshot handle.
  * @param deps       - EngineDeps (raw pg.Pool).
+ * @param srPool     - StarRocks Silver/Gold pool (lakehouse readers; Phase G).
  */
 export async function reproduceAnswer(
   brandId: string,
   binding: { metric_id: MetricId; version: MetricVersion; params: ResolvedParams },
   snapshotId: string,
   deps: EngineDeps,
+  srPool: SilverPool,
 ): Promise<ComputedNumber> {
   const asOf = decodeSnapshot(snapshotId); // throws on a corrupt handle (fail-closed)
   return computeBinding(
@@ -185,6 +189,7 @@ export async function reproduceAnswer(
     { kind: 'binding', metric_id: binding.metric_id, version: binding.version, params: binding.params },
     asOf,
     deps,
+    srPool,
   );
 }
 
@@ -201,6 +206,7 @@ async function computeBinding(
   binding: ValidatedBinding,
   asOf: string,
   deps: EngineDeps,
+  srPool: SilverPool,
 ): Promise<ComputedNumber> {
   const asOfDate = new Date(`${asOf}T00:00:00Z`);
 
@@ -219,7 +225,7 @@ async function computeBinding(
     case 'ad_spend': {
       // Ad spend to date — the spend_minor side of the blended-ROAS read (same named seam,
       // ad_spend_as_of). Windowed [epoch, as_of] → deterministic given as_of (reproducible).
-      const roas = await getBlendedRoas(brandId, { fromDate: WINDOW_EPOCH, toDate: asOfDate }, deps);
+      const roas = await getBlendedRoas(brandId, { fromDate: WINDOW_EPOCH, toDate: asOfDate }, { srPool });
       if (roas.state === 'no_data') return { figure_kind: 'money', money: null, scalar: null, no_data: true };
       const money: MoneyRecord = {};
       for (const r of roas.rows) money[r.currency_code] = r.spend_minor;
@@ -229,7 +235,7 @@ async function computeBinding(
       // ROAS = realized ÷ spend (engine-computed exact decimal, never re-derived here). Per
       // currency; surface a single scalar only for a single-currency brand (a blended ratio
       // across currencies is not one number → honest 'none').
-      const roas = await getBlendedRoas(brandId, { fromDate: WINDOW_EPOCH, toDate: asOfDate }, deps);
+      const roas = await getBlendedRoas(brandId, { fromDate: WINDOW_EPOCH, toDate: asOfDate }, { srPool });
       if (roas.state === 'no_data') return { figure_kind: 'ratio', money: null, scalar: null, no_data: true };
       if (roas.rows.length !== 1) return FIGURE_NONE;
       const row = roas.rows[0]!;

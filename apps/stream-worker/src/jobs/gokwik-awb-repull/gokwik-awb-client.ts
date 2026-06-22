@@ -78,7 +78,7 @@ export class GokwikAwbClient {
    *                      In dev they are accepted but not used (the source is the synthetic
    *                      fixture); they exist so the prod swap is a one-line change.
    */
-  constructor(_credentials: GokwikApiCredentials) {
+  constructor(_credentials: GokwikApiCredentials, extraRecords: GokwikAwbRecord[] = []) {
     // credentials object intentionally not retained beyond the dev path (I-S09).
     let records: GokwikAwbRecord[] = [];
     try {
@@ -88,7 +88,10 @@ export class GokwikAwbClient {
     } catch (err) {
       log.warn(`could not read synthetic AWB fixture — empty source: ${String(err)}`);
     }
-    this.fixtureRecords = records;
+    // DEV: merge brand-tied generated records (synthetic-awb-from-orders) with the static fixture so the
+    // AWB events actually reference the brand's recognized orders → the GoKwik analytics chain populates.
+    // Empty in prod (the HTTP-client swap passes no extraRecords). Same paged, window-filtered read.
+    this.fixtureRecords = [...records, ...extraRecords];
   }
 
   /**

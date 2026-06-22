@@ -41,6 +41,7 @@ import {
   type GokwikAwbRecord,
 } from '@brain/gokwik-mapper';
 import { GokwikAwbClient, type GokwikApiCredentials, GOKWIK_AWB_PAGE_SIZE, GOKWIK_AUTH_ERROR } from './gokwik-awb-client.js';
+import { generateSyntheticAwbFromOrders } from './synthetic-awb-from-orders.js';
 import { recordConnectorAuthRejected } from '../../infrastructure/observability/connector-auth-health.js';
 import { SaltProvider, LocalSecretsProvider } from '../../infrastructure/secrets/SaltProvider.js';
 import { resolveSaltHex } from '@brain/identity-core';
@@ -162,7 +163,14 @@ async function repullConnector(params: RepullParams): Promise<void> {
   // GUC-after-enumerate (MT-1): brand context set BEFORE any brand-scoped read/write.
   await setSyncState(pool, brandId, ciId, 'syncing', null);
 
-  const apiClient = new GokwikAwbClient(creds);
+  // DEV: generate brand-tied synthetic AWB records from the brand's own recognized orders so the GoKwik
+  // analytics actually populate (the static fixture's order_ids match no real brand). Gated by
+  // GOKWIK_SYNTH_FROM_ORDERS (on by default; set '0' to disable). Empty on failure (non-fatal).
+  const extraRecords =
+    process.env['GOKWIK_SYNTH_FROM_ORDERS'] !== '0'
+      ? await generateSyntheticAwbFromOrders(pool, brandId)
+      : [];
+  const apiClient = new GokwikAwbClient(creds, extraRecords);
 
   let emitted = 0;
   try {
@@ -304,18 +312,25 @@ async function setSyncState(
   try {
     await client.query('BEGIN');
     await client.query(`SELECT set_config('app.current_brand_id', $1, true)`, [brandId]);
+    // UPSERT, not UPDATE: a freshly-connected connector has no connector_sync_status row yet (it is
+    // created lazily by the first sync, not at connect time), so an UPDATE-only write is a silent
+    // no-op and the UI is stuck on "Not synced yet" forever. INSERT ... ON CONFLICT guarantees the row
+    // exists after the first repull. (brand_id, connector_instance_id) is UNIQUE.
     if (state === 'connected') {
       await client.query(
-        `UPDATE connector_sync_status
-           SET state = $3, last_sync_at = NOW(), last_error = $4, updated_at = NOW()
-         WHERE brand_id = $1 AND connector_instance_id = $2`,
+        `INSERT INTO connector_sync_status (brand_id, connector_instance_id, state, last_sync_at, last_error)
+           VALUES ($1, $2, $3, NOW(), $4)
+         ON CONFLICT (brand_id, connector_instance_id)
+           DO UPDATE SET state = EXCLUDED.state, last_sync_at = NOW(),
+                         last_error = EXCLUDED.last_error, updated_at = NOW()`,
         [brandId, connectorInstanceId, state, lastError],
       );
     } else {
       await client.query(
-        `UPDATE connector_sync_status
-           SET state = $3, last_error = $4, updated_at = NOW()
-         WHERE brand_id = $1 AND connector_instance_id = $2`,
+        `INSERT INTO connector_sync_status (brand_id, connector_instance_id, state, last_error)
+           VALUES ($1, $2, $3, $4)
+         ON CONFLICT (brand_id, connector_instance_id)
+           DO UPDATE SET state = EXCLUDED.state, last_error = EXCLUDED.last_error, updated_at = NOW()`,
         [brandId, connectorInstanceId, state, lastError],
       );
     }

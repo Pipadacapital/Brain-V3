@@ -18,6 +18,7 @@
     schema               = 'brain_silver',
     materialized         = 'incremental',
     incremental_strategy = 'default',
+    on_schema_change     = 'append_new_columns',
     unique_key           = ['brand_id', 'credit_id', 'snapshot_date'],
     table_type           = 'PRIMARY',
     keys                 = ['brand_id', 'credit_id', 'snapshot_date'],

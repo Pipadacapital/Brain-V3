@@ -5,7 +5,7 @@
  * math here. Serializes bigint → string (D-1); honest no_data; money is bigint-as-string minor units
  * (I-S07). brandId from session (D-1). @see packages/metric-engine/src/contribution-margin.ts
  */
-import type { EngineDeps, CostConfidence } from '@brain/metric-engine';
+import type { ContributionMarginDeps, CostConfidence } from '@brain/metric-engine';
 import { computeContributionMargin } from '@brain/metric-engine';
 
 export interface ContributionMarginDto {
@@ -26,7 +26,7 @@ export type ContributionMarginResult =
 export async function getContributionMargin(
   brandId: string,
   asOf: Date,
-  deps: EngineDeps,
+  deps: ContributionMarginDeps,
 ): Promise<ContributionMarginResult> {
   const asOfStr = asOf.toISOString().split('T')[0] as string;
   const r = await computeContributionMargin(brandId, asOf, deps);

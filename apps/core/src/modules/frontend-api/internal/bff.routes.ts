@@ -3069,8 +3069,9 @@ export function registerBffRoutes(
   /**
    * GET /api/v1/analytics/contribution-margin?as_of=YYYY-MM-DD
    * CM1/CM2 + cost_confidence over the brand's revenue/cost/spend (feat-cm2-cost-inputs). Brand from
-   * session (D-1). Honest no_data (D-2). Money = bigint minor-unit strings (I-S07). Reads via rawPool
-   * (metric-engine seam) — no manual SUM (F-SEC-02 / ADR-002).
+   * session (D-1). Honest no_data (D-2). Money = bigint minor-unit strings (I-S07). PHASE G: mixed-tier
+   * read — cost config via rawPool (PG, RLS), realized + spend via srPool (lakehouse). No manual SUM
+   * (F-SEC-02 / ADR-002).
    */
   fastify.get(
     '/api/v1/analytics/contribution-margin',
@@ -3086,10 +3087,10 @@ export function registerBffRoutes(
       if (!auth.brandId) {
         return reply.send({ request_id: requestId, data: { state: 'no_data', as_of: asOfStr } });
       }
-      if (!rawPool) {
-        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'read pool not available' } });
+      if (!rawPool || !srPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'read pool or Silver tier not available' } });
       }
-      const result: ContractContributionMargin = await getContributionMargin(auth.brandId, new Date(`${asOfStr}T23:59:59Z`), { pool: rawPool });
+      const result: ContractContributionMargin = await getContributionMargin(auth.brandId, new Date(`${asOfStr}T23:59:59Z`), { pool: rawPool, srPool });
       return reply.send({ request_id: requestId, data: result });
     },
   );

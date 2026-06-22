@@ -24,6 +24,7 @@
 
 import type { LedgerWriter, BackfillOrderForLedger } from '../../infrastructure/pg/LedgerWriter.js';
 import type { BrainIdResolver } from '../../infrastructure/pg/BrainIdResolver.js';
+import type { StitchMapWriter } from '../../infrastructure/pg/StitchMapWriter.js';
 import { log } from "../../log.js";
 
 /**
@@ -97,6 +98,10 @@ export async function routeLiveOrderToLedger(
   // resolved to its identity brain_id and stamped on the ledger row (best-effort — a miss leaves
   // brain_id NULL, exactly as before). Absent → unchanged behaviour.
   brainIdResolver?: BrainIdResolver,
+  // DB-AUDIT journey-stitch: optional stitch writer. When the order carries stitched_anon_id (read
+  // back from note_attributes), write the order→anon stitch (+ the resolved brain_id) so the
+  // repull/live lane stitches journeys, not just webhooks. Best-effort — never blocks the ledger.
+  stitchWriter?: StitchMapWriter,
 ): Promise<'reversal' | 'provisional' | 'skipped'> {
   const ledgerOrder = extractLiveOrderForLedger(rawValue, brandId, eventId);
   if (!ledgerOrder) return 'skipped';
@@ -118,6 +123,19 @@ export async function routeLiveOrderToLedger(
       : (typeof props['customer_id'] === 'string' ? props['customer_id'] : null);
     const regionCode = typeof parsed['region_code'] === 'string' ? parsed['region_code'] : 'IN';
     ledgerOrder.brainId = await brainIdResolver.resolve(ledgerOrder.brandId, storefrontCustomerId, regionCode);
+  }
+
+  // ── DB-AUDIT journey-stitch: write the order→anon stitch (live/repull lane), reusing the resolved
+  // brain_id so the anon journey links to the customer. Best-effort — never blocks the ledger write. ──
+  if (stitchWriter) {
+    const stitchedAnonId = typeof props['stitched_anon_id'] === 'string' ? props['stitched_anon_id'] : null;
+    if (stitchedAnonId) {
+      try {
+        await stitchWriter.upsert(ledgerOrder.brandId, ledgerOrder.orderId, stitchedAnonId, ledgerOrder.brainId ?? null);
+      } catch (err) {
+        log.warn(`[live-order] journey-stitch upsert failed (best-effort) order=${ledgerOrder.orderId}`, { err: err });
+      }
+    }
   }
   const cancelledAt = props['cancelled_at'];
   const isCancelled = typeof cancelledAt === 'string' && cancelledAt.length > 0;

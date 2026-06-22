@@ -30,6 +30,14 @@
   )
 }}
 
+-- H2 — SOURCE FLIP (var-gated + reversible), mirroring gold_revenue_ledger: serve the attribution
+-- ledger mart from the lakehouse, not a live read of Postgres.
+--   ledger_source='pg'      → JDBC read-shim over PG attribution_credit_ledger (DEFAULT — current).
+--   ledger_source='iceberg' → brain_bronze.attribution_credit (landed by attribution_credit_materialize.py).
+-- Both sources expose the identical column set. Default stays 'pg' until the parity bake; the attribution
+-- ledger is currently data-starved (0 rows) so parity is trivially 0==0 until journeys flow.
+{% set ledger_source = var('ledger_source', 'pg') %}
+
 select
     brand_id,
     credit_id,
@@ -51,5 +59,9 @@ select
     economic_effective_at,
     billing_posted_period,
     current_timestamp()                             as updated_at
+{% if ledger_source == 'iceberg' %}
+from {{ source('bronze_iceberg', 'attribution_credit') }}
+{% else %}
 from {{ source('oltp', 'attribution_credit_ledger') }}
+{% endif %}
 where credit_id is not null

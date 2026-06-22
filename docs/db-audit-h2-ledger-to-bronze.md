@@ -32,8 +32,11 @@ read the lakehouse.
 4. After the bake, the PG JDBC read-shim `silver_order_ledger_src` is analytics-dead (PG keeps only the
    write path).
 
-## Follow-up (same proven pattern)
+## Second mart — gold_marketing_attribution (DONE, same pattern)
 
-`gold_marketing_attribution` reads `attribution_credit_ledger` (currently data-starved — 0 rows). Applying
-H2 to it is mechanical: a sibling materializer (`attribution_credit_ledger` → `brain_bronze.attribution_credit`)
-+ the same `ledger_source` flip on that mart. Deferred only because there is no data to bake parity against yet.
+`attribution_credit_ledger` → Iceberg `brain_bronze.attribution_credit` via the sibling Spark batch
+`attribution_credit_materialize.py` (+ `run-attribution-credit-materialize.sh`), idempotent
+`MERGE ON (brand_id, credit_id)`. `gold_marketing_attribution` gained the same `ledger_source` var
+('pg' default | 'iceberg'); both paths build clean. The attribution ledger is currently data-starved
+(0 rows), so parity is trivially 0==0 and the table is established for when journeys flow — the flip is
+the same one-var operational step as the revenue mart, gated on the same parity bake.

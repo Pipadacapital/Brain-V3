@@ -107,6 +107,7 @@ beforeAll(async () => {
   await seedTouch(BRAND_A, 2, 'cart.item_added', null);
   await seedTouch(BRAND_A, 3, 'product.viewed', null);
   await seedTouch(BRAND_A, 3, 'cart.item_added', null);
+  await seedTouch(BRAND_A, 3, 'checkout.started', null);   // M2: reached checkout
   await seedTouch(BRAND_A, 3, 'page.viewed', 'order-123'); // stitched → purchased
 });
 
@@ -122,24 +123,27 @@ describe('computeStorefrontFunnel (live StarRocks)', () => {
     expect(true).toBe(true);
   });
 
-  it('computes the four-stage funnel with exact reach + conversion %', async () => {
+  it('computes the five-stage funnel (incl. checkout) with exact reach + conversion %', async () => {
     if (!srUp) return;
     const r = await computeStorefrontFunnel(BRAND_A, deps(), RANGE);
     expect(r.hasData).toBe(true);
     const byKey = Object.fromEntries(r.stages.map((s) => [s.key, s]));
 
     expect(byKey['sessions']!.sessions).toBe(3n);
-    expect(byKey['product_viewed']!.sessions).toBe(2n); // s2, s3
-    expect(byKey['cart_added']!.sessions).toBe(2n);     // s2, s3
-    expect(byKey['purchased']!.sessions).toBe(1n);      // s3
+    expect(byKey['product_viewed']!.sessions).toBe(2n);     // s2, s3
+    expect(byKey['cart_added']!.sessions).toBe(2n);         // s2, s3
+    expect(byKey['checkout_started']!.sessions).toBe(1n);   // s3 (M2)
+    expect(byKey['purchased']!.sessions).toBe(1n);          // s3
 
     // conversion vs top (3 sessions): 2/3 = 66.66, 1/3 = 33.33 (2dp truncation)
     expect(byKey['product_viewed']!.conversionPct).toBe('66.66');
+    expect(byKey['checkout_started']!.conversionPct).toBe('33.33');
     expect(byKey['purchased']!.conversionPct).toBe('33.33');
-    // step: product 2/3=66.66, cart 2/2=100.00, purchased 1/2=50.00
+    // step: cart 2/2=100.00, checkout 1/2=50.00, purchased 1/1=100.00 (now relative to checkout)
     expect(byKey['sessions']!.stepPct).toBeNull();
     expect(byKey['cart_added']!.stepPct).toBe('100.00');
-    expect(byKey['purchased']!.stepPct).toBe('50.00');
+    expect(byKey['checkout_started']!.stepPct).toBe('50.00');
+    expect(byKey['purchased']!.stepPct).toBe('100.00');
   });
 
   it('honest no_data when the brand has zero sessions in the window', async () => {

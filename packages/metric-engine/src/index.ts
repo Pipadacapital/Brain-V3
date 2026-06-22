@@ -52,6 +52,8 @@ export type { AdSpendTimeseriesBucket, AdPlatform } from './ad-spend-timeseries.
 export { computeBlendedRoas } from './blended-roas.js';
 export type { BlendedRoasRow } from './blended-roas.js';
 export { computeCac } from './cac.js';
+export { getCustomerCommerce } from './customer-commerce.js';
+export type { CustomerCommerceProfile } from './customer-commerce.js';
 export type { CacRow } from './cac.js';
 
 // GoKwik + Shopflo CoD/RTO surface (Track C) — RTO rates, CoD mix/CM2, checkout funnel

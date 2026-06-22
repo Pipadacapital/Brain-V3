@@ -19,8 +19,8 @@ export interface ModelDto {
   version: string;
   stage: 'training' | 'staging' | 'production' | 'archived';
   framework: string;
-  feature_set: Record<string, unknown> | null;
-  metrics: Record<string, unknown> | null;
+  feature_set: unknown;
+  metrics: unknown;
   trained_at: string | null;
   promoted_at: string | null;
   created_at: string;
@@ -33,8 +33,8 @@ interface ModelRow {
   version: string;
   stage: ModelDto['stage'];
   framework: string;
-  feature_set: Record<string, unknown> | null;
-  metrics: Record<string, unknown> | null;
+  feature_set: unknown;
+  metrics: unknown;
   trained_at: Date | null;
   promoted_at: Date | null;
   created_at: Date;

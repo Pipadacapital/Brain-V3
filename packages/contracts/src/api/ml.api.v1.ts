@@ -13,15 +13,23 @@ import { z } from 'zod';
 export const ModelStageSchema = z.enum(['training', 'staging', 'production', 'archived']);
 export type ModelStage = z.infer<typeof ModelStageSchema>;
 
-/** A model-registry row. metrics/feature_set are passthrough jsonb (loosely typed). */
+/**
+ * A model-registry row. metrics/feature_set are passthrough jsonb (loosely typed).
+ * feature_set is naturally a LIST of feature names (array), but a future model may carry a richer
+ * object spec — accept either so the contract never drifts on a valid jsonb shape.
+ */
+const JsonbPassthrough = z.union([
+  z.array(z.unknown()),
+  z.record(z.string(), z.unknown()),
+]);
 export const ModelSchema = z.object({
   model_id: z.string(),
   name: z.string(),
   version: z.string(),
   stage: ModelStageSchema,
   framework: z.string(),
-  feature_set: z.record(z.string(), z.unknown()).nullable(),
-  metrics: z.record(z.string(), z.unknown()).nullable(),
+  feature_set: JsonbPassthrough.nullable(),
+  metrics: JsonbPassthrough.nullable(),
   trained_at: z.string().nullable(),
   promoted_at: z.string().nullable(),
   created_at: z.string(),

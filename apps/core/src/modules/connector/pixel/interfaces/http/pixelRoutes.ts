@@ -171,12 +171,39 @@ export function registerPixelRoutes(fastify: FastifyInstance, deps: PixelRouteDe
   );
 }
 
-/** Default snippet builder — used by the routes. Can be swapped in tests. */
+/**
+ * A safe DNS hostname (label.label[.label]…), lowercase, no scheme/port/path. Used to validate a
+ * brand-supplied first-party CNAME ingest host before it is ever interpolated into snippet HTML.
+ */
+const HOSTNAME_RE = /^(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
+
+/** True iff `host` is a syntactically valid bare hostname (injection-safe for snippet interpolation). */
+export function isValidIngestHost(host: string): boolean {
+  return HOSTNAME_RE.test(host.toLowerCase());
+}
+
+/**
+ * Default snippet builder — used by the routes. Can be swapped in tests.
+ *
+ * When `customIngestHost` is a valid hostname, the snippet serves the SDK AND posts events from that
+ * first-party host (https://<host>/pixel.js + window.__brain.ingest_base_url) — the SDK honours
+ * ingest_base_url for its /collect target, so a brand's CNAME makes the pixel first-party end-to-end
+ * (ITP/ad-blocker resilience). Otherwise it falls back to the default ingest base URL.
+ */
 export function buildDefaultSnippet(
   installToken: string,
   brandId: string,
   ingestBaseUrl: string,
+  customIngestHost?: string | null,
 ): string {
+  if (customIngestHost && isValidIngestHost(customIngestHost)) {
+    const base = `https://${customIngestHost.toLowerCase()}`;
+    return `<!-- Brain Pixel (first-party) -->
+<script>
+  window.__brain = { install_token: '${installToken}', brand_id: '${brandId}', ingest_base_url: '${base}' };
+</script>
+<script src="${base}/pixel.js" defer></script>`;
+  }
   return `<!-- Brain Pixel (M1 verification tag) -->
 <script>
   window.__brain = { install_token: '${installToken}', brand_id: '${brandId}' };

@@ -416,6 +416,7 @@ export interface PixelInstallationResponse {
   installation_id?: string;
   install_token?: string;
   target_host?: string;
+  custom_ingest_host?: string | null; // First-party CNAME ingest host, or null for the default
   snippet?: string; // The HTML snippet to embed (from snippet_html)
   is_new?: boolean;
 }

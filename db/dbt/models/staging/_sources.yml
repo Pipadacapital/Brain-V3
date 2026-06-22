@@ -228,3 +228,23 @@ sources:
             description: "Event-time (timestamp)."
           - name: payload
             description: "Verbatim envelope JSON (STRING). Journey signal under .properties."
+
+      # ── DB-AUDIT H2: the worker-written realized-revenue ledger, LANDED in Iceberg Bronze ──────────
+      # Materialized PG billing.realized_revenue_ledger → brain_bronze.revenue_ledger by the Spark batch
+      # db/iceberg/spark/revenue_ledger_materialize.py (idempotent MERGE on brand_id+ledger_event_id).
+      # gold_revenue_ledger reads THIS when ledger_source='iceberg' (var-gated; default 'pg' until the
+      # continuous sink + parity bake). Native Iceberg types (brand_id/brain_id already STRING).
+      - name: revenue_ledger
+        description: >
+          Iceberg Bronze copy of the realized-revenue ledger (one row per brand_id+ledger_event_id,
+          immutable/append-only). Lets gold_revenue_ledger be served from the lakehouse instead of a
+          live JDBC read of Postgres — PG stops being the analytical SoR (H2). Money = BIGINT minor.
+        columns:
+          - name: brand_id
+            description: "Tenant key (STRING)."
+          - name: ledger_event_id
+            description: "Deterministic ledger id (idempotency key)."
+          - name: amount_minor
+            description: "SIGNED money in BIGINT minor units (I-S07)."
+          - name: occurred_at
+            description: "Event-time (timestamp); Iceberg partition days() source."

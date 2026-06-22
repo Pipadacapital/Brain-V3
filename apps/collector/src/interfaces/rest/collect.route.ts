@@ -78,4 +78,47 @@ export function registerCollectRoute(
       .status(202)
       .send({ accepted: true, received_at: result.receivedAt });
   });
+
+  /**
+   * POST /batch — accept-before-validate batch ingest (Phase H pixel). Body: { events: [...] }.
+   *
+   * Same D-1 ordering as /collect, per event: spool INSERT (durable commit) BEFORE the ACK; NO event
+   * validation / Apicurio / Kafka here (the drainer does that). The ONLY structural guard is transport-
+   * level — events must be a non-empty array within MAX_BATCH (caps payload vs the 1 MiB body limit);
+   * that is an envelope shape check, not event validation. Each event is spooled independently so one
+   * malformed event never blocks the rest (it lands in the drainer's quarantine downstream).
+   */
+  app.post('/batch', async (req: FastifyRequest, reply: FastifyReply) => {
+    const correlationId = extractCorrelationId(
+      req.headers as Record<string, string | string[] | undefined>,
+    );
+
+    const body = (req.body ?? {}) as { events?: unknown };
+    const events = body.events;
+    if (!Array.isArray(events) || events.length === 0 || events.length > MAX_BATCH) {
+      return reply.status(400).send({
+        accepted: 0,
+        error: { code: 'INVALID_BATCH', message: `events must be a non-empty array of at most ${MAX_BATCH} items.` },
+      });
+    }
+
+    // Spool each event durably (D-1) — independent inserts; ACK reflects the spool commit.
+    const spoolIds: string[] = [];
+    let receivedAt = '';
+    for (const ev of events) {
+      const rawEvent = (ev ?? {}) as Record<string, unknown>;
+      const result = await acceptUseCase.execute(rawEvent);
+      incrementCounter('collector_accept_total');
+      spoolIds.push(result.spoolId.toString());
+      receivedAt = result.receivedAt;
+    }
+
+    reply
+      .header('X-Correlation-Id', correlationId)
+      .status(200)
+      .send({ accepted: spoolIds.length, received_at: receivedAt, spool_ids: spoolIds });
+  });
 }
+
+/** Max events per /batch POST — caps payload against the 1 MiB body limit. */
+const MAX_BATCH = 50;

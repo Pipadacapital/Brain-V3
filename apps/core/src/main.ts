@@ -76,7 +76,7 @@ import { registerShopfloWebhookRoutes } from './modules/connector/sources/checko
 import { registerWooCommerceWebhookRoutes } from './modules/connector/sources/storefront/woocommerce/interfaces/webhooks/woocommerceWebhookHandler.js';
 import { registerShopifyConnectorRoutes } from './modules/connector/sources/storefront/shopify/interfaces/http/shopifyConnectorRoutes.js';
 import { registerDevShopifySyncRoutes } from './modules/connector/sources/storefront/shopify/interfaces/http/devShopifySyncRoutes.js';
-import { registerPixelRoutes, buildDefaultSnippet } from './modules/connector/pixel/interfaces/http/pixelRoutes.js';
+import { registerPixelRoutes, buildDefaultSnippet, isValidIngestHost } from './modules/connector/pixel/interfaces/http/pixelRoutes.js';
 // Connector catalog + dispatch (A3 — feat-connector-marketplace)
 import { getDefinition, isConnectable, CONNECTOR_CATALOG } from './modules/connector/catalog/index.js';
 import { registerOAuthDispatch, getOAuthDispatch } from './modules/connector/catalog/dispatch.js';
@@ -1881,7 +1881,7 @@ export async function main(): Promise<void> {
       if (!existing) {
         return reply.code(200).send({ request_id: requestId, data: { installed: false } });
       }
-      const snippet = buildDefaultSnippet(existing.installToken, brandId, config.pixelIngestBaseUrl);
+      const snippet = buildDefaultSnippet(existing.installToken, brandId, config.pixelIngestBaseUrl, existing.customIngestHost);
       return reply.code(200).send({
         request_id: requestId,
         data: {
@@ -1889,6 +1889,7 @@ export async function main(): Promise<void> {
           installation_id: existing.id,
           install_token: existing.installToken,
           target_host: existing.targetHost,
+          custom_ingest_host: existing.customIngestHost,
           snippet_html: snippet,
           is_new: false,
         },
@@ -1923,6 +1924,29 @@ export async function main(): Promise<void> {
       return reply.code(result.isNew ? 201 : 200).send({
         request_id: requestId,
         data: { installed: true, installation_id: result.installationId, install_token: result.installToken, target_host: result.targetHost, snippet_html: snippet, is_new: result.isNew },
+      });
+    });
+
+    // PATCH /api/v1/pixel/ingest-host (manager+) — set or clear the brand's first-party CNAME ingest
+    // host. When set (a valid hostname), the snippet serves the SDK + posts events from that host
+    // (first-party; ITP/ad-blocker resilience). Body: { custom_ingest_host: string | null }. Returns
+    // the refreshed snippet. Host is validated (bare hostname only) before it ever reaches the snippet.
+    scope.patch('/api/v1/pixel/ingest-host', async (req: FastifyRequest<{ Body: { custom_ingest_host?: string | null } }>, reply) => {
+      const brandId = getBrandId(req);
+      const requestId = (req.id as string) ?? randomUUID();
+      const raw = req.body?.custom_ingest_host;
+      const host = typeof raw === 'string' ? raw.trim().toLowerCase() : null;
+      if (host !== null && host !== '' && !isValidIngestHost(host)) {
+        return reply.code(400).send({ request_id: requestId, error: { code: 'INVALID_INGEST_HOST', message: 'custom_ingest_host must be a bare hostname (e.g. events.brand.com) or null to clear.' } });
+      }
+      const updated = await pixelInstallationRepo.setCustomIngestHost(brandId, host === '' ? null : host);
+      if (!updated) {
+        return reply.code(404).send({ request_id: requestId, error: { code: 'PIXEL_NOT_INSTALLED', message: 'No pixel installation for this brand. Provision the pixel first.' } });
+      }
+      const snippet = buildDefaultSnippet(updated.installToken, brandId, config.pixelIngestBaseUrl, updated.customIngestHost);
+      return reply.code(200).send({
+        request_id: requestId,
+        data: { installed: true, installation_id: updated.id, install_token: updated.installToken, target_host: updated.targetHost, custom_ingest_host: updated.customIngestHost, snippet_html: snippet, is_new: false },
       });
     });
 

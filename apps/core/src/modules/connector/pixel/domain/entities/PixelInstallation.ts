@@ -20,6 +20,12 @@ export interface PixelInstallationProps {
   readonly targetHost: string;
   /** Set after first-signal / verification success. */
   readonly installedAt: Date | null;
+  /**
+   * Optional brand-configured first-party ingest host (a CNAME → the collector, e.g. 'events.brand.com').
+   * When set, the snippet serves the SDK + posts events from this first-party host (ITP/ad-blocker
+   * resilience). Optional/absent = use the default ingest host. Public, not a secret.
+   */
+  readonly customIngestHost?: string | null;
   readonly createdAt: Date;
   readonly updatedAt: Date;
 }
@@ -30,6 +36,7 @@ export class PixelInstallation {
   readonly installToken: string;
   readonly targetHost: string;
   readonly installedAt: Date | null;
+  readonly customIngestHost: string | null;
   readonly createdAt: Date;
   readonly updatedAt: Date;
 
@@ -39,6 +46,7 @@ export class PixelInstallation {
     this.installToken = props.installToken;
     this.targetHost = props.targetHost;
     this.installedAt = props.installedAt;
+    this.customIngestHost = props.customIngestHost ?? null;
     this.createdAt = props.createdAt;
     this.updatedAt = props.updatedAt;
   }
@@ -74,6 +82,7 @@ export class PixelInstallation {
       installToken: this.installToken,
       targetHost: this.targetHost,
       installedAt: this.installedAt,
+      customIngestHost: this.customIngestHost,
       createdAt: this.createdAt,
       updatedAt: this.updatedAt,
     };

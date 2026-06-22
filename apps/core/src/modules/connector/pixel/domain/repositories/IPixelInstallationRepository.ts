@@ -15,4 +15,9 @@ export interface IPixelInstallationRepository {
    * @param ref       provider-side handle (Shopify ScriptTag id / Web Pixel id)
    */
   markAutoInstalled(brandId: string, provider: string, ref: string): Promise<void>;
+  /**
+   * Set (or clear, with null) the brand's first-party CNAME ingest host. Returns the updated
+   * installation, or null if no installation exists for the brand. RLS-scoped to the brand.
+   */
+  setCustomIngestHost(brandId: string, host: string | null): Promise<PixelInstallation | null>;
 }

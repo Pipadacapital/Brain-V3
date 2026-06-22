@@ -398,6 +398,30 @@ export function useFunnelAnalytics(params?: { from?: string; to?: string }) {
   });
 }
 
+/**
+ * useAbandonedCart — cart sessions converted vs abandoned + recovery rate over a range, from
+ * silver_touchpoint (Phase H pixel). Shares the 'analytics' prefix → auto-invalidates on brand switch.
+ */
+export function useAbandonedCart(params?: { from?: string; to?: string }) {
+  return useQuery({
+    queryKey: [...ANALYTICS_QUERY_KEY, 'abandoned-cart', params?.from, params?.to],
+    queryFn: () => analyticsApi.getAbandonedCart(params),
+    staleTime: 5 * 60_000,
+  });
+}
+
+/**
+ * useEngagement — engaged (multi-touch) vs bounce sessions + avg touches over a range, from
+ * silver_touchpoint (Phase H pixel). Shares the 'analytics' prefix → auto-invalidates on brand switch.
+ */
+export function useEngagement(params?: { from?: string; to?: string }) {
+  return useQuery({
+    queryKey: [...ANALYTICS_QUERY_KEY, 'engagement', params?.from, params?.to],
+    queryFn: () => analyticsApi.getEngagement(params),
+    staleTime: 5 * 60_000,
+  });
+}
+
 // ── Attribution (Phase 5 — feat-attribution-ledger) ──────────────────────────────
 // Reads the Gold attribution credit ledger via the metric-engine sole read path
 // (I-ST01 — UI never queries the ledger/StarRocks). The `model` is part of the query

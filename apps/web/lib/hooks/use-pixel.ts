@@ -23,6 +23,20 @@ export function useProvisionPixel() {
   });
 }
 
+/**
+ * Set or clear the brand's first-party CNAME ingest host (manager+). Pass null to clear. On success
+ * the installation query refreshes so the snippet reflects the first-party host.
+ */
+export function useSetPixelIngestHost() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (host: string | null) => pixelApi.setIngestHost(host),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: PIXEL_QUERY_KEY });
+    },
+  });
+}
+
 export function usePixelHealth() {
   return useQuery({
     queryKey: [...PIXEL_QUERY_KEY, 'health'],

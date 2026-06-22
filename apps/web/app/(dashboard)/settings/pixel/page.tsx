@@ -1,4 +1,5 @@
 import { TrackingCenter } from '@/components/pixel/tracking-center';
+import { FirstPartyHost } from '@/components/pixel/first-party-host';
 
 export const metadata = { title: 'Tracking Center — Brain' };
 
@@ -13,6 +14,7 @@ export default function PixelPage() {
         </p>
       </div>
       <TrackingCenter />
+      <FirstPartyHost />
     </div>
   );
 }

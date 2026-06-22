@@ -28,6 +28,8 @@ import {
   ShipmentOutcomesSchema,
   BehaviorOverviewSchema,
   FunnelAnalyticsSchema,
+  AbandonedCartSchema,
+  EngagementSchema,
   JourneyTimelineSchema,
   JourneyStitchRateSchema,
   OrderStatusMixSchema,
@@ -131,6 +133,8 @@ import type {
   AnalyticsShipmentOutcomesResponse,
   AnalyticsBehaviorOverviewResponse,
   AnalyticsFunnelResponse,
+  AnalyticsAbandonedCartResponse,
+  AnalyticsEngagementResponse,
   AnalyticsJourneyStitchRateResponse,
   AnalyticsJourneyTimelineResponse,
   ConsentCoverageResponse,
@@ -837,6 +841,7 @@ interface RawPixelInstallation {
   installation_id?: string;
   install_token?: string;
   target_host?: string;
+  custom_ingest_host?: string | null;
   snippet_html?: string;
   is_new?: boolean;
 }
@@ -847,6 +852,7 @@ function mapPixel(d: RawPixelInstallation): PixelInstallationResponse {
     installation_id: d.installation_id,
     install_token: d.install_token,
     target_host: d.target_host,
+    custom_ingest_host: d.custom_ingest_host ?? null,
     snippet: d.snippet_html,
     is_new: d.is_new,
   };
@@ -865,6 +871,15 @@ export const pixelApi = {
       method: 'POST',
       body: JSON.stringify({ target_host }),
       idempotencyKey: generateRequestId(),
+    });
+    return mapPixel(data);
+  },
+
+  // PATCH sets/clears the first-party CNAME ingest host (manager+). Pass null to clear.
+  setIngestHost: async (custom_ingest_host: string | null): Promise<PixelInstallationResponse> => {
+    const { data } = await bffFetch<{ data: RawPixelInstallation }>('/v1/pixel/ingest-host', {
+      method: 'PATCH',
+      body: JSON.stringify({ custom_ingest_host }),
     });
     return mapPixel(data);
   },
@@ -1450,6 +1465,36 @@ export const analyticsApi = {
       `/v1/analytics/funnel${qsStr ? `?${qsStr}` : ''}`,
     );
     return parseData(FunnelAnalyticsSchema, env);
+  },
+
+  /** GET /api/v1/analytics/abandoned-cart — cart sessions converted vs abandoned + recovery rate. */
+  getAbandonedCart: async (params?: {
+    from?: string;
+    to?: string;
+  }): Promise<AnalyticsAbandonedCartResponse> => {
+    const qs = new URLSearchParams();
+    if (params?.from) qs.set('from', params.from);
+    if (params?.to) qs.set('to', params.to);
+    const qsStr = qs.toString();
+    const env = await bffFetch<BffEnvelope<unknown>>(
+      `/v1/analytics/abandoned-cart${qsStr ? `?${qsStr}` : ''}`,
+    );
+    return parseData(AbandonedCartSchema, env);
+  },
+
+  /** GET /api/v1/analytics/engagement — engaged (multi-touch) vs bounce sessions + avg touches. */
+  getEngagement: async (params?: {
+    from?: string;
+    to?: string;
+  }): Promise<AnalyticsEngagementResponse> => {
+    const qs = new URLSearchParams();
+    if (params?.from) qs.set('from', params.from);
+    if (params?.to) qs.set('to', params.to);
+    const qsStr = qs.toString();
+    const env = await bffFetch<BffEnvelope<unknown>>(
+      `/v1/analytics/engagement${qsStr ? `?${qsStr}` : ''}`,
+    );
+    return parseData(EngagementSchema, env);
   },
 
   /** GET /api/v1/analytics/journey/stitch-rate — deterministic cart-stitch hit-rate. */

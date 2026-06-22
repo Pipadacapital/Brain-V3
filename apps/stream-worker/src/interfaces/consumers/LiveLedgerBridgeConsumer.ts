@@ -36,6 +36,7 @@ import { DlqProducer } from '../../infrastructure/kafka/DlqProducer.js';
 import type { IRetryCounter } from '../../infrastructure/redis/RetryCounterAdapter.js';
 import { LedgerWriter } from '../../infrastructure/pg/LedgerWriter.js';
 import type { BrainIdResolver } from '../../infrastructure/pg/BrainIdResolver.js';
+import type { StitchMapWriter } from '../../infrastructure/pg/StitchMapWriter.js';
 import { routeLiveOrderToLedger, extractLiveOrderForLedger } from './LiveOrderConsumer.js';
 import { log } from "../../log.js";
 
@@ -77,6 +78,8 @@ export class LiveLedgerBridgeConsumer {
     private readonly attributionHook?: LiveAttributionReversalHook,
     /** DB-AUDIT C2: optional brain_id resolver — stamps the order's identity brain_id on the ledger. */
     private readonly brainIdResolver?: BrainIdResolver,
+    /** DB-AUDIT journey-stitch: optional stitch writer — writes the order→anon stitch (+ brain_id). */
+    private readonly stitchWriter?: StitchMapWriter,
   ) {
     this.consumer = kafka.consumer({ groupId });
     this.dlqProducer = new DlqProducer(kafka);
@@ -135,6 +138,7 @@ export class LiveLedgerBridgeConsumer {
             eventId,
             this.ledgerWriter,
             this.brainIdResolver,
+            this.stitchWriter,
           );
 
           // D1: on a confirmed live reversal, fan out the attribution clawback (best-effort).

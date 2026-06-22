@@ -49,6 +49,7 @@ import { RequestCapiDeletionUseCase } from './application/RequestCapiDeletionUse
 import { CapiDeletionRepository } from './infrastructure/pg/CapiDeletionRepository.js';
 import { BackfillOrderConsumer } from './interfaces/consumers/BackfillOrderConsumer.js';
 import { BrainIdResolver } from './infrastructure/pg/BrainIdResolver.js';
+import { StitchMapWriter } from './infrastructure/pg/StitchMapWriter.js';
 import { LiveLedgerBridgeConsumer } from './interfaces/consumers/LiveLedgerBridgeConsumer.js';
 import { SettlementLedgerConsumer } from './interfaces/consumers/SettlementLedgerConsumer.js';
 import { SpendLedgerConsumer } from './interfaces/consumers/SpendLedgerConsumer.js';
@@ -327,8 +328,12 @@ export async function main(): Promise<void> {
   // ledger (was NULL → silver_customers/CAC/cohorts/Customer-360 starved). Reuses the SAME per-brand
   // salt the identity resolver uses. Best-effort: a miss leaves brain_id NULL exactly as before.
   const brainIdResolver = new BrainIdResolver(new Pool({ connectionString: dbUrl, max: 3 }), saltProvider);
+  // DB-AUDIT journey-stitch: write the order→anon stitch (+ resolved brain_id) on the live/repull lane,
+  // so repull'd orders stitch journeys (not just webhooks) → silver_touchpoint.stitched_* populates →
+  // attribution can credit. Reuses the brain_app pool; RLS-scoped per write.
+  const stitchWriter = new StitchMapWriter(new Pool({ connectionString: dbUrl, max: 3 }));
   const liveLedgerConsumer = new LiveLedgerBridgeConsumer(
-    kafka, liveLedgerWriter, topic, liveLedgerGroupId, retryCounter, liveAttributionHook, brainIdResolver,
+    kafka, liveLedgerWriter, topic, liveLedgerGroupId, retryCounter, liveAttributionHook, brainIdResolver, stitchWriter,
   );
 
   // ── Settlement ledger bridge (ADR-RZ-6 / MB-4 WIRED) ───────────────────────

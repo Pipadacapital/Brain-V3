@@ -113,6 +113,10 @@ export interface OrderProperties {
   hashed_customer_email?: string;
   hashed_customer_phone?: string;
   storefront_customer_id?: string;
+  // ── Journey-stitch key (read BACK from note_attributes, D-5) — the anon journey id the storefront
+  // pixel wrote at checkout. Carried on the order event so the LIVE/REPULL lane can write the
+  // order→anon stitch map (previously only the webhook did → repull'd orders never stitched).
+  stitched_anon_id?: string;
   // ── ADDITIVE (feat-shopify-order-depth): order economic breakdown ──────────────
   // All optional + minor-units (BIGINT-as-string, I-S07). Present only when the source order
   // carried the detail (live webhook always does; backfill once the fetch fields are widened).
@@ -464,6 +468,11 @@ export function mapOrderToEvent(
     ...(storefrontCustomerId !== undefined ? { storefront_customer_id: storefrontCustomerId } : {}),
     // ADDITIVE (feat-shopify-order-depth): merge the economic breakdown when the order carries it.
     ...projectOrderDepth(order),
+    // Journey-stitch (D-5): carry the anon journey key read back from note_attributes, so the
+    // live/repull lane can write the order→anon stitch (honest-absent when the pixel didn't tag).
+    ...(projectOrderStitch(order).stitchedAnonId
+      ? { stitched_anon_id: projectOrderStitch(order).stitchedAnonId as string }
+      : {}),
   };
 
   return { event_name: eventName, occurred_at: occurredAt, properties };

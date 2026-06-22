@@ -62,6 +62,25 @@ sources:
           - name: brain_id
             description: "Identity reference (UUID, nullable). Never PII."
 
+      # ── DB-AUDIT H6: identity history (first_identified_at) ─────────────────────
+      - name: silver_customer_identity_src
+        # Read THROUGH the Postgres read-shim view (db/starrocks/oltp_pg_read_shim.sql):
+        # casts identity.customer brand_id/brain_id/merged_into uuid→text. Exposes first_identified_at
+        # (earliest strong-identifier attach = acquisition time) + minted_at (created_at = first seen).
+        identifier: silver_customer_identity_src
+        description: >
+          Identity-graph customer node (identity.customer). Provides first_identified_at — the H6
+          acquisition timestamp distinct from first_seen_at — to the customer marts.
+        columns:
+          - name: brand_id
+            description: "Tenant key (UUID→text)."
+          - name: brain_id
+            description: "Identity-resolved customer key (UUID→text)."
+          - name: lifecycle_state
+            description: "active | merged."
+          - name: first_identified_at
+            description: "Earliest strong/durable identifier attach (acquisition / known time). Nullable = anonymous-only."
+
       # ── feat-journey-touchpoint (Phase 4) sources ──────────────────────────────
       - name: bronze_touchpoint_src
         # Read THROUGH the Postgres read-shim view (db/starrocks/bronze_touchpoint_src.sql):

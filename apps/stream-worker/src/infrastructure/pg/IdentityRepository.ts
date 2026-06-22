@@ -220,6 +220,22 @@ export class IdentityRepository {
         }
       }
 
+      // ── H6: stamp first_identified_at the moment this brain_id becomes KNOWN ──
+      // first_identified_at = when a strong/durable identifier first attached (acquisition time),
+      // distinct from created_at (node mint = first SEEN). COALESCE keeps it set-once (earliest);
+      // NOW() ≈ the just-inserted strong link's created_at. Only fires when a strong link exists, so a
+      // purely-anonymous customer stays NULL until it is actually identified.
+      await client.query(
+        `UPDATE customer c
+            SET first_identified_at = COALESCE(c.first_identified_at, NOW())
+          WHERE c.brand_id = $1 AND c.brain_id = $2 AND c.first_identified_at IS NULL
+            AND EXISTS (
+              SELECT 1 FROM identity_link l
+               WHERE l.brand_id = $1 AND l.brain_id = $2
+                 AND l.tier IN ('strong','strong_on_link') AND l.is_active = TRUE)`,
+        [brandId, outcome.brainId],
+      );
+
       // ── merge: identity_merge_event + brain_id_alias ──────────────────────
       if (outcome.action === 'merged' && outcome.merge) {
         const { canonicalBrainId, mergedBrainId, mergeId } = outcome.merge;
@@ -254,6 +270,19 @@ export class IdentityRepository {
              WHERE valid_to IS NULL
            DO NOTHING`,
           [brandId, mergedBrainId, canonicalBrainId, mergeId],
+        );
+
+        // H6: the canonical customer inherits the EARLIEST identification across the merge
+        // (LEAST ignores NULLs → the non-null / earlier value wins).
+        await client.query(
+          `UPDATE customer c
+              SET first_identified_at = LEAST(c.first_identified_at, m.first_identified_at)
+             FROM customer m
+            WHERE c.brand_id = $1 AND c.brain_id = $2
+              AND m.brand_id = $1 AND m.brain_id = $3
+              AND m.first_identified_at IS NOT NULL
+              AND (c.first_identified_at IS NULL OR m.first_identified_at < c.first_identified_at)`,
+          [brandId, canonicalBrainId, mergedBrainId],
         );
       }
 

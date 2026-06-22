@@ -28,15 +28,38 @@
   )
 }}
 
+with order_rollup as (
+    select
+        brand_id,
+        brain_id,
+        count(order_id)                          as lifetime_orders,
+        cast(sum(order_value_minor) as bigint)   as lifetime_value_minor,
+        max(currency_code)                       as currency_code,
+        min(first_event_at)                      as first_seen_at,
+        max(state_effective_at)                  as last_seen_at
+    from {{ ref('silver_order_state') }}
+    where brain_id is not null
+    group by brand_id, brain_id
+),
+
+-- H6: acquisition time (first strong-identifier attach) from the identity graph. LEFT JOIN so a
+-- customer with orders but no resolved identity row still appears (first_identified_at NULL).
+identity_node as (
+    select brand_id, brain_id, first_identified_at
+    from {{ source('oltp', 'silver_customer_identity_src') }}
+    where lifecycle_state <> 'merged'
+)
+
 select
-    brand_id,
-    brain_id,
-    count(order_id)                          as lifetime_orders,
-    cast(sum(order_value_minor) as bigint)   as lifetime_value_minor,
-    max(currency_code)                       as currency_code,
-    min(first_event_at)                      as first_seen_at,
-    max(state_effective_at)                  as last_seen_at,
+    o.brand_id,
+    o.brain_id,
+    o.lifetime_orders,
+    o.lifetime_value_minor,
+    o.currency_code,
+    o.first_seen_at,
+    i.first_identified_at,
+    o.last_seen_at,
     current_timestamp()                      as updated_at
-from {{ ref('silver_order_state') }}
-where brain_id is not null
-group by brand_id, brain_id
+from order_rollup o
+left join identity_node i
+    on o.brand_id = i.brand_id and o.brain_id = i.brain_id

@@ -28,6 +28,8 @@
  */
 
 import { Consumer, Kafka, EachMessagePayload } from 'kafkajs';
+import { extractKafkaTraceContext } from '@brain/observability';
+import { context } from '@opentelemetry/api';
 import { ProcessEventUseCase, ProcessResult } from '../../application/ProcessEventUseCase.js';
 import { DlqProducer } from '../../infrastructure/kafka/DlqProducer.js';
 import type { IRetryCounter } from '../../infrastructure/redis/RetryCounterAdapter.js';
@@ -70,6 +72,12 @@ export class BackfillOrderConsumer {
         const offset = message.offset;
         const now = new Date().toISOString();
 
+        // Resume producer trace context across the Kafka boundary (observability skill).
+        const traceCtx = extractKafkaTraceContext(
+          (message.headers ?? {}) as Record<string, Buffer | string | undefined>,
+        );
+
+        return context.with(traceCtx, async () => {
         try {
           // ── Step 1: Bronze write via ProcessEventUseCase (ADR-BF-8) ───────────
           // Idempotent on event_id (Redis NX + PG PK ON CONFLICT DO NOTHING)
@@ -146,6 +154,8 @@ export class BackfillOrderConsumer {
             throw err;
           }
         }
+
+        }); // end context.with(traceCtx, ...)
       },
     });
   }

@@ -160,6 +160,25 @@ services:
     image: ghcr.io/berriai/litellm:main-latest
     profiles: ["core"]
     ports: ["4000:4000"]
+    # Mount the gateway config (per-tenant virtual_key budgets + model aliases + routing policy).
+    # Dev-authorable: edit infra/litellm.config.yaml and restart this container — no image rebuild.
+    # Production: the same file is rendered from Helm values and mounted via a ConfigMap volume.
+    volumes:
+      - ./infra/litellm.config.yaml:/app/config.yaml:ro
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    environment:
+      # Provider API keys — set in .env.dev / .env.production (never committed).
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      # Gateway master key — gates the admin UI + virtual-key provisioning API.
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-brain-dev-master}
+      # OTel trace export (ai-observability-tracing; Tempo at :4317 in the observe profile).
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://tempo:4317}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
 
   localstack:
     image: localstack/localstack:3.4
@@ -223,7 +242,7 @@ services:
         rpk topic create dev.collector.event.v1 --brokers redpanda:9092
           --config retention.ms=604800000
           --partitions 12 --replicas 1 2>/dev/null || true &&
-        rpk topic create dev.collector.event.v1.backfill --brokers redpanda:9092
+        rpk topic create dev.collector.order.backfill.v1 --brokers redpanda:9092
           --config retention.ms=2592000000
           --partitions 12 --replicas 1 2>/dev/null || true &&
         rpk topic create dev.collector.event.v1.dlq --brokers redpanda:9092
@@ -383,6 +402,21 @@ services:
       timeout: 5s
       retries: 20
 
+  tempo:
+    image: grafana/tempo:2.5.0
+    profiles: ["observe"]
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./infra/observe/tempo.yml:/etc/tempo.yaml:ro
+    ports:
+      - "3200:3200"   # Tempo HTTP API / query-frontend
+      - "4317"        # OTLP gRPC (internal — otel-collector → tempo; not exposed to host)
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3200/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
   grafana:
     image: grafana/grafana:10.4.2
     profiles: ["observe"]
@@ -390,6 +424,8 @@ services:
       loki:
         condition: service_healthy
       prometheus:
+        condition: service_healthy
+      tempo:
         condition: service_healthy
     environment:
       GF_SECURITY_ADMIN_USER: admin
@@ -411,6 +447,8 @@ services:
       prometheus:
         condition: service_healthy
       loki:
+        condition: service_healthy
+      tempo:
         condition: service_healthy
     volumes:
       - ./infra/observe/otel-collector.yml:/etc/otelcol-contrib/config.yaml:ro

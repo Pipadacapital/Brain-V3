@@ -20,13 +20,30 @@ import { log } from "../../../../../../../log.js";
 /** Shopify Admin API version used for webhook registration. */
 const SHOPIFY_API_VERSION = '2025-07' as const;
 
-/** Order webhook topics to register (B2 / ADR-LV-5). */
-const ORDER_WEBHOOK_TOPICS = [
+/**
+ * Webhook topics to register (B2 / ADR-LV-5 + shopify-compliance-token-lifecycle).
+ *
+ * Order topics (live event lane):
+ *   orders/create, orders/updated, orders/paid, orders/fulfilled, orders/cancelled
+ *
+ * GDPR mandatory compliance topics (Shopify Partner requirement):
+ *   customers/data_request — data export request (48h SLA; ack only).
+ *   customers/redact       — GDPR/DPDP erasure; routes to erase_customer SECURITY DEFINER.
+ *   shop/redact            — shop-level deletion (ack + ops runbook).
+ *
+ * App lifecycle:
+ *   app/uninstalled — marks ConnectorInstance Disconnected + invalidates secret.
+ */
+const ALL_WEBHOOK_TOPICS = [
   'orders/create',
   'orders/updated',
   'orders/paid',
   'orders/fulfilled',
   'orders/cancelled',
+  'customers/data_request',
+  'customers/redact',
+  'shop/redact',
+  'app/uninstalled',
 ] as const;
 
 export interface RegisterWebhooksInput {
@@ -81,7 +98,7 @@ export class RegisterWebhooksCommand {
     const callbackUrl = `${input.callbackBaseUrl}/api/v1/webhooks/shopify`;
     let registered = 0;
 
-    for (const topic of ORDER_WEBHOOK_TOPICS) {
+    for (const topic of ALL_WEBHOOK_TOPICS) {
       const url = `https://${input.shopDomain}/admin/api/${SHOPIFY_API_VERSION}/webhooks.json`;
       const topicPath = topic.replace('/', '_'); // e.g. 'orders_create'
 

@@ -29,6 +29,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import type { ShiprocketShipmentRecord, DataSource } from '@brain/shiprocket-mapper';
 import { log } from '../../log.js';
+import { CircuitBreaker } from '@brain/observability';
 import {
   ShiprocketTokenProvider,
   SHIPROCKET_AUTH_ERROR,
@@ -72,6 +73,7 @@ export class ShiprocketShipmentClient {
   private readonly live: boolean;
   private readonly tokenProvider: ShiprocketTokenProvider;
   private fixtureRecords: ShiprocketShipmentRecord[] | null = null;
+  private readonly breaker: CircuitBreaker;
 
   private readonly baseUrl = (process.env['SHIPROCKET_BASE_URL'] ?? 'https://apiv2.shiprocket.in').replace(/\/+$/, '');
   private readonly shipmentsPath = process.env['SHIPROCKET_SHIPMENTS_PATH'] ?? '/v1/external/orders';
@@ -80,12 +82,15 @@ export class ShiprocketShipmentClient {
   constructor(credentials: ShiprocketApiCredentials) {
     this.live = isLiveMode();
     this.tokenProvider = new ShiprocketTokenProvider(credentials);
+    this.breaker = new CircuitBreaker({ name: 'shiprocket', failureThreshold: 5, openMs: 30_000 });
   }
 
   async fetchShipmentPage(fromTs: number, toTs: number, skip = 0): Promise<ShipmentPage> {
-    return this.live
-      ? this.fetchShipmentPageLive(fromTs, toTs, skip)
-      : this.fetchShipmentPageFixture(fromTs, toTs, skip);
+    return this.breaker.fire(() =>
+      this.live
+        ? this.fetchShipmentPageLive(fromTs, toTs, skip)
+        : this.fetchShipmentPageFixture(fromTs, toTs, skip),
+    );
   }
 
   // ── LIVE: real Shiprocket REST read (production-shaped; field map confirm-at-real-account) ──

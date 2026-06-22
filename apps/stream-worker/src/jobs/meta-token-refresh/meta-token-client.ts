@@ -11,9 +11,17 @@
  * the OAuth endpoint, app creds from ENV (META_APP_ID / META_APP_SECRET — the same the OAuth
  * callback uses), the new token kept in memory / handed back to the caller, never logged (I-S09).
  */
-const GRAPH_API_VERSION = 'v25.0';
-const OAUTH_URL = `https://graph.facebook.com/${GRAPH_API_VERSION}/oauth/access_token`;
+import { CircuitBreaker } from '@brain/observability';
+import { GRAPH_OAUTH_URL } from '../meta-constants.js';
+
+const OAUTH_URL = GRAPH_OAUTH_URL;
 const REQUEST_TIMEOUT_MS = 15_000;
+
+/**
+ * Module-level circuit breaker for Meta OAuth token exchange calls. Prevents a hanging
+ * or repeatedly-failing exchange from stalling the token-refresh cron job tick.
+ */
+const _metaTokenBreaker = new CircuitBreaker({ name: 'meta-token', failureThreshold: 3, openMs: 60_000 });
 
 /** Thrown when the app-level creds (META_APP_ID / META_APP_SECRET) are not configured. */
 export const META_APP_CREDS_MISSING = 'META_APP_CREDS_MISSING';
@@ -45,33 +53,38 @@ export async function exchangeLongLivedToken(
     throw new Error(`${META_APP_CREDS_MISSING}: META_APP_ID / META_APP_SECRET not configured`);
   }
 
-  // fb_exchange_token: a GET with the token in the query — but the token never lands in a LOG
-  // because we never log the URL (I-S09); only provider + connector id are logged by the caller.
-  const params = new URLSearchParams({
+  // SEC-AD-H1: client_secret + fb_exchange_token (the current access token) must ride the
+  // request BODY, never the URL query string — a secret in the URL lands in every
+  // reverse-proxy / ALB / CDN / WAF access log. POST + form-urlencoded body matches the
+  // pattern already used by HandleMetaOAuthCallbackCommand.exchangeCodeForToken (I-S09).
+  const requestBody = new URLSearchParams({
     grant_type: 'fb_exchange_token',
     client_id: appId,
     client_secret: appSecret,
     fb_exchange_token: currentToken,
   });
 
-  const res = await fetchImpl(`${OAUTH_URL}?${params.toString()}`, {
-    method: 'GET',
-    headers: { 'Content-Type': 'application/json' },
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-  });
+  return _metaTokenBreaker.fire(async () => {
+    const res = await fetchImpl(OAUTH_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: requestBody.toString(),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
 
-  if (!res.ok) {
-    // 400/401/190 = the token is expired/invalid and cannot be extended → RECONNECT_REQUIRED.
-    throw new Error(`${META_TOKEN_EXCHANGE_FAILED}: HTTP ${res.status}`);
-  }
-  const body = (await res.json()) as { access_token?: string; expires_in?: number };
-  if (!body.access_token) {
-    throw new Error(`${META_TOKEN_EXCHANGE_FAILED}: no access_token in exchange response`);
-  }
-  return {
-    accessToken: body.access_token,
-    expiresInSeconds: typeof body.expires_in === 'number' ? body.expires_in : null,
-  };
+    if (!res.ok) {
+      // 400/401/190 = the token is expired/invalid and cannot be extended → RECONNECT_REQUIRED.
+      throw new Error(`${META_TOKEN_EXCHANGE_FAILED}: HTTP ${res.status}`);
+    }
+    const responseBody = (await res.json()) as { access_token?: string; expires_in?: number };
+    if (!responseBody.access_token) {
+      throw new Error(`${META_TOKEN_EXCHANGE_FAILED}: no access_token in exchange response`);
+    }
+    return {
+      accessToken: responseBody.access_token,
+      expiresInSeconds: typeof responseBody.expires_in === 'number' ? responseBody.expires_in : null,
+    };
+  });
 }
 
 /** Default age (days) at which a token is re-exchanged — comfortably inside Meta's ~60-day window. */

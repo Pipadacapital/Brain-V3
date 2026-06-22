@@ -44,6 +44,16 @@ import { incrementCounter } from '@brain/observability';
 import type { IConnectorRateLimiter } from '../../infrastructure/redis/ConnectorRateLimiter.js';
 import { log } from "../../log.js";
 
+/**
+ * Maximum wall-clock budget for a single connector dispatch inside the tick.
+ * A connector that hangs here (e.g. a vendor whose circuit breaker has not yet opened)
+ * cannot stall the entire tick for all other connectors — the per-dispatch deadline races
+ * the run() call and throws, causing the loop's per-connector catch to log+skip it.
+ * Default: 5 minutes (generous; individual vendor-client calls already carry AbortSignal
+ * timeouts; this is the tick-level backstop against pathological hangs).
+ */
+export const DISPATCH_DEADLINE_MS = 5 * 60 * 1000;
+
 /** Hard floor on the interval — prevents a misconfigured env from stampeding providers. */
 export const MIN_INTERVAL_MS = 15_000;
 
@@ -97,8 +107,23 @@ export async function tick(
               `brand=${connector.brand_id} connector=${connector.connector_instance_id}`);
     try {
       // run()'s OWN FOR UPDATE SKIP LOCKED overlap-lock guards against a manual "sync now" click
-      // racing the claimed repull.
-      await run(connector.connector_instance_id);
+      // racing the claimed repull. A per-dispatch deadline races the call — a connector that
+      // hangs past DISPATCH_DEADLINE_MS is aborted and counted as an error so it cannot stall
+      // the sequential tick for all remaining connectors (DISPATCH_DEADLINE_MS backstop).
+      let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+      const deadlinePromise = new Promise<never>((_, reject) => {
+        deadlineTimer = setTimeout(() => {
+          reject(new Error(
+            `[ingest-scheduler] dispatch deadline exceeded provider=${connector.provider} ` +
+            `connector=${connector.connector_instance_id} limit=${DISPATCH_DEADLINE_MS}ms`,
+          ));
+        }, DISPATCH_DEADLINE_MS);
+      });
+      try {
+        await Promise.race([run(connector.connector_instance_id), deadlinePromise]);
+      } finally {
+        if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
+      }
       dispatched++;
       // P1: per-provider dispatch metric — the scale-limiting tier's throughput signal.
       incrementCounter('ingest_scheduler_dispatch_total', { provider: connector.provider });

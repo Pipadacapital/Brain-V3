@@ -1,4 +1,5 @@
 import { log } from "../../log.js";
+import { CircuitBreaker } from '@brain/observability';
 
 /**
  * shopify-paged-client.ts — Shopify Admin REST client for backfill (ADR-BF-6 / D-14 / IR-2).
@@ -52,6 +53,8 @@ const REQUEST_TIMEOUT_MS = 20_000;
 
 export class ShopifyBackfillClient {
   private readonly base: string;
+  /** Circuit breaker — guards ALL Shopify REST calls from this client instance. */
+  private readonly breaker: CircuitBreaker;
 
   /**
    * @param shopDomain    Shopify shop domain (e.g. mystore.myshopify.com)
@@ -65,6 +68,7 @@ export class ShopifyBackfillClient {
   ) {
     const host = shopDomain.replace(/^https?:\/\//, '');
     this.base = `https://${host}/admin/api/${apiVersion}`;
+    this.breaker = new CircuitBreaker({ name: 'shopify-backfill', failureThreshold: 5, openMs: 30_000 });
   }
 
   /**
@@ -75,24 +79,26 @@ export class ShopifyBackfillClient {
   async countOrders(createdAtMin: string): Promise<number | null> {
     const url = `${this.base}/orders/count.json?status=any&created_at_min=${encodeURIComponent(createdAtMin)}`;
     try {
-      const res = await fetch(url, {
-        headers: {
-          'X-Shopify-Access-Token': this.accessToken,
-          'Content-Type': 'application/json',
-        },
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      return await this.breaker.fire(async () => {
+        const res = await fetch(url, {
+          headers: {
+            'X-Shopify-Access-Token': this.accessToken,
+            'Content-Type': 'application/json',
+          },
+          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        });
+        if (res.status === 429) {
+          // Rate limited on count — return null (HP-1: never fabricate)
+          return null;
+        }
+        if (!res.ok) {
+          return null;
+        }
+        const body = await res.json() as { count: number };
+        return body.count;
       });
-      if (res.status === 429) {
-        // Rate limited on count — return null (HP-1: never fabricate)
-        return null;
-      }
-      if (!res.ok) {
-        return null;
-      }
-      const body = await res.json() as { count: number };
-      return body.count;
     } catch {
-      // Network error on count — return null (HP-1)
+      // Network error on count (or circuit open) — return null (HP-1)
       return null;
     }
   }
@@ -134,7 +140,11 @@ export class ShopifyBackfillClient {
 
     const url = `${this.base}/orders.json?${query}`;
 
-    // Retry loop for 429 rate-limit handling (IR-2 / D-14)
+    // Retry loop for 429 rate-limit handling (IR-2 / D-14).
+    // The entire retry loop runs inside the circuit breaker so a vendor that is
+    // persistently down/slow (not just 429-throttling) trips the breaker after
+    // failureThreshold overall failures, preventing the ingest-scheduler tick stall.
+    return this.breaker.fire(async () => {
     for (let attempt = 0; attempt < 10; attempt++) {
       const res = await fetch(url, {
         headers: {
@@ -180,6 +190,7 @@ export class ShopifyBackfillClient {
     }
 
     throw new Error('[shopify-backfill] Exceeded max 429 retry attempts on orders page');
+    }); // end breaker.fire
   }
 }
 

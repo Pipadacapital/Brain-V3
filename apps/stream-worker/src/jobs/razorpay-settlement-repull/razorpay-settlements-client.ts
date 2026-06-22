@@ -1,4 +1,5 @@
 import { log } from "../../log.js";
+import { CircuitBreaker } from '@brain/observability';
 
 /**
  * razorpay-settlements-client.ts — Razorpay Settlements API client (ADR-RZ-4).
@@ -63,6 +64,7 @@ function sleep(ms: number): Promise<void> {
 
 export class RazorpaySettlementsClient {
   private readonly authHeader: string;
+  private readonly breaker: CircuitBreaker;
 
   /**
    * @param credentials  key_id + key_secret — NEVER logged (I-S09)
@@ -72,6 +74,7 @@ export class RazorpaySettlementsClient {
     const encoded = Buffer.from(`${credentials.keyId}:${credentials.keySecret}`, 'utf8').toString('base64');
     this.authHeader = `Basic ${encoded}`;
     // credentials object DROPPED here — raw values don't escape this scope
+    this.breaker = new CircuitBreaker({ name: 'razorpay', failureThreshold: 5, openMs: 60_000 });
   }
 
   /**
@@ -89,6 +92,7 @@ export class RazorpaySettlementsClient {
       `${RAZORPAY_API_BASE}/settlements/recon/combined` +
       `?from=${fromTs}&to=${toTs}&count=${PAGE_SIZE}&skip=${skip}`;
 
+    return this.breaker.fire(async () => {
     for (let attempt = 0; attempt < 10; attempt++) {
       const res = await fetch(url, {
         headers: {
@@ -128,6 +132,7 @@ export class RazorpaySettlementsClient {
     }
 
     throw new Error('[razorpay-settlements-client] Exceeded max 429 retry attempts on recon page');
+    }); // end breaker.fire
   }
 
   /**

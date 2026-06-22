@@ -10,6 +10,11 @@
  *   - connected → health_state badge + safety_rating indicator; [Disconnect].
  *   - blocked/degraded safety → visible warning flag ("excluded — connector failing").
  *
+ * Gap B (multi-account-per-provider, migration 0092):
+ *   - tile.instances[] = all active accounts for this provider.
+ *   - Each account renders its own sub-card: health badge + Disconnect + SyncNowControl.
+ *   - Fallback to [tile.instance] for single-account back-compat.
+ *
  * A11y:
  *   - Status never colour-only: icon + label + role="status" on every badge.
  *   - Coming-soon button: disabled + aria-disabled="true" + aria-label.
@@ -47,7 +52,7 @@ import { useEntitlements } from '@/lib/hooks/use-entitlements';
 import { useEmailVerified } from '@/lib/hooks/use-auth';
 import { BffApiError } from '@/lib/api/client';
 import { toast } from '@/components/ui/toaster';
-import type { MarketplaceTile, ConnectorCategory, HealthState, SafetyRating } from '@/lib/api/types';
+import type { MarketplaceTile, MarketplaceTileInstance, ConnectorCategory, HealthState, SafetyRating } from '@/lib/api/types';
 import { cn } from '@/lib/utils';
 
 // ── Health state display config (icon + label — never colour-only, a11y) ──────
@@ -149,17 +154,17 @@ function HealthBadge({ tileId, healthState }: { tileId: string; healthState: Hea
 
 // ── Tile status indicator (combined connect status + health) ──────────────────
 
-function TileStatusIndicator({ tile }: { tile: MarketplaceTile }) {
-  if (!tile.instance) return null;
+function TileStatusIndicator({ tile, instance }: { tile: MarketplaceTile; instance: MarketplaceTileInstance | null }) {
+  if (!instance) return null;
 
-  const safetyFlag = SAFETY_FLAG[tile.instance.safety_rating];
+  const safetyFlag = SAFETY_FLAG[instance.safety_rating];
 
   return (
     <div
       className="flex flex-col items-end gap-1"
       data-testid={`connector-tile-${tile.id}-status`}
     >
-      <HealthBadge tileId={tile.id} healthState={tile.instance.health_state} />
+      <HealthBadge tileId={tile.id} healthState={instance.health_state} />
       {safetyFlag && (
         <span
           role="status"
@@ -179,52 +184,15 @@ function TileStatusIndicator({ tile }: { tile: MarketplaceTile }) {
 /** Soft-gate reason copy for connecting a real store before email is verified. */
 const VERIFY_TO_CONNECT = 'Verify your email to connect a store';
 
-// ── Per-provider credential field sets (C2 / ADR-RZ-8 + GoKwik/Shopflo Track C) ──
-// A field marked secret=true is stored in the backend secret bundle and NEVER echoed
-// back to the client (type="password", autoComplete="off"). Non-secret fields are
-// merchant identifiers visible in the provider dashboard. The backend bundles all
-// fields under ONE secret_ref per connector.
-interface CredentialField {
-  key: string;
-  label: string;
-  placeholder: string;
-  secret: boolean;
-}
+// ── Per-provider credential field sets (C2 / ADR-RZ-8 + GoKwik/Shopflo Track C + WooCommerce) ──
+// Extracted to credential-fields.ts for unit-testability. Imported here for use within
+// ConnectorTile, and re-exported for any sibling that needs the pure function.
+import { credentialFieldsFor as _credentialFieldsFor } from './credential-fields';
+export type { CredentialField } from './credential-fields';
+export { credentialFieldsFor } from './credential-fields';
 
-const RAZORPAY_FIELDS: CredentialField[] = [
-  { key: 'key_id', label: 'Key ID', placeholder: 'rzp_live_XXXXXXXX', secret: false },
-  { key: 'key_secret', label: 'Key Secret', placeholder: '••••••••••••', secret: true },
-  { key: 'webhook_secret', label: 'Webhook Secret', placeholder: '••••••••••••', secret: true },
-  { key: 'razorpay_account_id', label: 'Account ID', placeholder: 'acc_XXXXXXXX', secret: false },
-];
-
-// Shopflo self-serve: static API Access Token + Merchant-ID + the webhook shared
-// secret the merchant pastes from Dashboard → Settings → Integrations. api_token +
-// webhook_secret are secrets; merchant_id is the (non-secret) merchant identifier.
-const SHOPFLO_FIELDS: CredentialField[] = [
-  { key: 'api_token', label: 'API Access Token', placeholder: '••••••••••••', secret: true },
-  { key: 'merchant_id', label: 'Merchant ID', placeholder: 'merchant_XXXXXXXX', secret: false },
-  { key: 'webhook_secret', label: 'Webhook Secret', placeholder: '••••••••••••', secret: true },
-];
-
-// GoKwik: static appid/appsecret (both partner-issued). appsecret is the secret; appid
-// is the (non-secret) app identifier used for AWB re-pull enumeration.
-const GOKWIK_FIELDS: CredentialField[] = [
-  { key: 'appid', label: 'App ID', placeholder: 'app_XXXXXXXX', secret: false },
-  { key: 'appsecret', label: 'App Secret', placeholder: '••••••••••••', secret: true },
-];
-
-/** Resolve a provider's credential fields; defaults to Razorpay's set for any other credential tile. */
-function credentialFieldsFor(tileId: string): CredentialField[] {
-  switch (tileId) {
-    case 'shopflo':
-      return SHOPFLO_FIELDS;
-    case 'gokwik':
-      return GOKWIK_FIELDS;
-    default:
-      return RAZORPAY_FIELDS;
-  }
-}
+// Local alias so ConnectorTile can call it without the re-export indirection.
+const credentialFieldsFor = _credentialFieldsFor;
 
 function ConnectorTile({ tile, readinessLock }: { tile: MarketplaceTile; readinessLock?: string | null }) {
   const { mutate: connect, isPending: isConnecting } = useConnectConnector();
@@ -234,7 +202,16 @@ function ConnectorTile({ tile, readinessLock }: { tile: MarketplaceTile; readine
   // Razorpay credential form state (only used for credential tiles).
   const [creds, setCreds] = useState<Record<string, string>>({});
 
-  const isConnected = !!tile.instance;
+  // Gap B: derive active instances array; fall back to legacy tile.instance for back-compat.
+  const activeInstances: MarketplaceTileInstance[] =
+    tile.instances?.length > 0
+      ? tile.instances
+      : tile.instance
+        ? [tile.instance]
+        : [];
+
+  const isConnected = activeInstances.length > 0;
+  const firstInstance = activeInstances[0] ?? null;
   const isComingSoon = !tile.available;
   const isCredential = tile.connect_method === 'credential';
   // Per-provider credential fields (Razorpay / Shopflo / GoKwik) — not a single hardcoded set.
@@ -342,9 +319,8 @@ function ConnectorTile({ tile, readinessLock }: { tile: MarketplaceTile; readine
     }
   }
 
-  function handleDisconnect() {
-    if (!tile.instance) return;
-    disconnect(tile.instance.id, {
+  function handleDisconnect(instanceId: string) {
+    disconnect(instanceId, {
       onSuccess: () => {
         toast({ title: 'Disconnected', description: `${tile.display_name} has been disconnected.` });
       },
@@ -360,8 +336,8 @@ function ConnectorTile({ tile, readinessLock }: { tile: MarketplaceTile; readine
       data-testid={`connector-tile-${tile.id}`}
       className={cn(
         'transition-shadow',
-        tile.instance?.safety_rating === 'blocked' && 'border-status-red-200',
-        tile.instance?.safety_rating === 'degraded' && 'border-status-amber-200',
+        firstInstance?.safety_rating === 'blocked' && 'border-status-red-200',
+        firstInstance?.safety_rating === 'degraded' && 'border-status-amber-200',
       )}
     >
       <CardHeader className="pb-3">
@@ -382,7 +358,7 @@ function ConnectorTile({ tile, readinessLock }: { tile: MarketplaceTile; readine
             <CardDescription className="mt-1 text-sm">{tile.description}</CardDescription>
           </div>
           {/* Status — icon + label, never colour-only (a11y) */}
-          <TileStatusIndicator tile={tile} />
+          <TileStatusIndicator tile={tile} instance={firstInstance} />
         </div>
       </CardHeader>
 
@@ -402,28 +378,48 @@ function ConnectorTile({ tile, readinessLock }: { tile: MarketplaceTile; readine
           </Button>
         ) : isConnected ? (
           <div className="space-y-3">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-              {tile.instance?.shop_domain && (
-                <p className="text-sm text-muted-foreground truncate">{tile.instance.shop_domain}</p>
-              )}
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleDisconnect}
-                disabled={isDisconnecting}
-                data-testid={`btn-disconnect-${tile.id}`}
-              >
-                {isDisconnecting && (
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
-                )}
-                {isDisconnecting ? 'Disconnecting…' : 'Disconnect'}
-              </Button>
-            </div>
+            {/* Gap B: render per-account sub-cards for multi-account providers */}
+            {activeInstances.map((inst, idx) => {
+              const showAccountKey =
+                inst.account_key && inst.account_key !== '__default__';
+              return (
+                <div
+                  key={inst.id}
+                  className={cn(
+                    'flex flex-col gap-3 sm:flex-row sm:items-center',
+                    activeInstances.length > 1 && idx > 0 && 'pt-3 border-t border-border',
+                  )}
+                >
+                  <div className="flex-1 min-w-0">
+                    {showAccountKey && (
+                      <p className="text-xs text-muted-foreground truncate font-mono">
+                        {inst.account_key}
+                      </p>
+                    )}
+                    {inst.shop_domain && (
+                      <p className="text-sm text-muted-foreground truncate">{inst.shop_domain}</p>
+                    )}
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleDisconnect(inst.id)}
+                    disabled={isDisconnecting}
+                    data-testid={`btn-disconnect-${tile.id}${activeInstances.length > 1 ? `-${idx}` : ''}`}
+                  >
+                    {isDisconnecting && (
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
+                    )}
+                    {isDisconnecting ? 'Disconnecting…' : 'Disconnect'}
+                  </Button>
+                </div>
+              );
+            })}
             {/* Sync now — on-demand incremental re-pull. Status visible to all roles;
                 trigger gated to brand_admin+ (hidden for manager/analyst). */}
-            {tile.instance?.id && (
+            {firstInstance?.id && (
               <SyncNowControl
-                connectorId={tile.instance.id}
+                connectorId={firstInstance.id}
                 className="pt-3 border-t border-border"
               />
             )}

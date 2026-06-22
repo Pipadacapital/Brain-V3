@@ -22,6 +22,9 @@ export { createLogger } from './logger.js';
 export type { BrainLogger, LogFields, LogLevel, LoggerOptions } from './logger.js';
 export { initSentry, captureError } from './sentry.js';
 export type { SentryOptions } from './sentry.js';
+export { CircuitBreaker, CircuitOpenError } from './circuit-breaker.js';
+export type { BreakerState, CircuitBreakerOptions } from './circuit-breaker.js';
+export { extractKafkaTraceContext, injectKafkaTraceContext } from './kafka-trace.js';
 
 // ── Span interface (a PII-guarded facade over the real @opentelemetry/api Span) ──
 

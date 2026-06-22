@@ -12,20 +12,25 @@
  *     Manager ARN is stored in connector_instance.secret_ref.
  *   - provider='meta', shopDomain='' (ConnectorInstance.create skips shop validation when empty).
  *
+ * Gap B (multi-account-per-provider, migration 0092):
+ *   - resolveAllAdAccountIds returns ALL ad accounts (not just the first).
+ *   - One ConnectorInstance is created per ad account, keyed by account_id.
+ *   - Falls back to a single __default__ instance if no accounts are resolvable.
+ *
  * ENFORCEMENT ORDER:
  *   1. State nonce validation — consume server-stored nonce → derive brandId (single-use, ≤15-min).
  *   2. Token exchange with Meta (graph.facebook.com).
- *   3. Resolve ad_account_id (best-effort /me/adaccounts; null if unavailable — honest).
+ *   3. Resolve all ad_account_ids (best-effort /me/adaccounts; empty → single __default__ instance).
  *   4. Store token in Secrets Manager → get ARN. Token discarded.
- *   5. Write connector_instance (secret_ref = ARN only) + persist ad_account_id.
- *   6. Write connector_sync_status (waiting_for_data).
+ *   5. Write connector_instance per account (secret_ref = ARN only) + provider_config.
+ *   6. Write connector_sync_status per instance.
  *   7. Emit connector.connected event (NO token, NO secret_ref in payload).
  */
 import { randomUUID } from 'node:crypto';
-import { ConnectorInstance } from '../../../../storefront/shopify/domain/entities/ConnectorInstance.js';
-import { ConnectorSyncStatus } from '../../../../storefront/shopify/domain/entities/ConnectorSyncStatus.js';
-import type { IConnectorInstanceRepository } from '../../../../storefront/shopify/domain/repositories/IConnectorInstanceRepository.js';
-import type { IConnectorSyncStatusRepository } from '../../../../storefront/shopify/domain/repositories/IConnectorSyncStatusRepository.js';
+import { ConnectorInstance, DEFAULT_ACCOUNT_KEY } from '@brain/connector-core';
+import { ConnectorSyncStatus } from '@brain/connector-core';
+import type { IConnectorInstanceRepository } from '@brain/connector-core';
+import type { IConnectorSyncStatusRepository } from '@brain/connector-core';
 import type { ISecretsManager } from '@brain/connector-secrets';
 import type { IOAuthStateStore } from '../../../../storefront/shopify/infrastructure/state/IOAuthStateStore.js';
 import { META_GRAPH_API_VERSION } from './InitiateMetaOAuthCommand.js';
@@ -46,6 +51,8 @@ export interface MetaOAuthCallbackResult {
   brandId: string;
   /** Resolved Meta ad account id (e.g. `act_123`), or null if not resolvable (honest). */
   adAccountId: string | null;
+  /** All resolved ad account ids (Gap B). Empty = single __default__ instance created. */
+  adAccountIds: string[];
   status: 'connected';
 }
 
@@ -107,68 +114,84 @@ export class HandleMetaOAuthCallbackCommand {
     }
     const accessToken = await this.exchangeCodeForToken(code);
 
-    // ── Step 3: Resolve ad_account_id (best-effort; null is honest) ───────────
-    const adAccountId = await this.resolveAdAccountId(accessToken);
+    // ── Step 3: Resolve ALL ad account ids (Gap B) — best-effort; empty → __default__ ──
+    const adAccountIds = await this.resolveAllAdAccountIds(accessToken);
+    // Back-compat: expose first account id as adAccountId (or null if none).
+    const adAccountId = adAccountIds[0] ?? null;
 
     // ── Step 4: Store token in Secrets Manager → ARN (NN-2 / I-S09) ───────────
-    // subKey = adAccountId (operational ref, not a secret) when known.
     const { arn: secretRef } = await this.secretsManager.storeSecret(
       brandId,
       { connectorType: 'meta', subKey: adAccountId ?? undefined },
       // access_token_issued_at stamps the token's age so the proactive meta-token-refresh job
-      // (fb_exchange_token) knows when to re-exchange before the ~60-day expiry (feat-meta-token-refresh).
+      // (fb_exchange_token) knows when to re-exchange before the ~60-day expiry.
       { access_token: accessToken, access_token_issued_at: new Date().toISOString() },
     );
     // accessToken is now discarded — only secretRef (ARN) proceeds.
 
-    // ── Step 5: Write connector_instance (secret_ref only) ────────────────────
-    const instanceId = randomUUID();
+    // ── Step 5: Write one ConnectorInstance per account (Gap B) ─────────────────
+    // If no accounts resolved, create one __default__ instance.
+    const accountsToCreate: Array<string | null> = adAccountIds.length > 0
+      ? adAccountIds
+      : [null];
+
     const now = new Date();
-    const instance = ConnectorInstance.create({
-      id: instanceId,
-      brandId,
-      provider: 'meta',
-      shopDomain: '', // ads connectors have no shop domain (validation skipped when empty)
-      secretRef,
-      status: 'connected',
-      healthState: 'Healthy',
-      safetyRating: 'safe',
-      connectedAt: now,
-      disconnectedAt: null,
-      createdAt: now,
-      updatedAt: now,
-    });
-    const savedInstance = await this.connectorRepo.save(instance);
+    let firstInstanceId = '';
 
-    if (adAccountId && this.setAdAccountId) {
-      await this.setAdAccountId(brandId, savedInstance.id, adAccountId);
+    for (const accountId of accountsToCreate) {
+      const instanceId = randomUUID();
+      if (!firstInstanceId) firstInstanceId = instanceId;
+
+      const instance = ConnectorInstance.create({
+        id: instanceId,
+        brandId,
+        provider: 'meta',
+        shopDomain: '',
+        secretRef,
+        status: 'connected',
+        healthState: 'Healthy',
+        safetyRating: 'safe',
+        connectedAt: now,
+        disconnectedAt: null,
+        createdAt: now,
+        updatedAt: now,
+        accountKey: accountId ?? DEFAULT_ACCOUNT_KEY,
+        providerConfig: accountId ? { ad_account_id: accountId } : {},
+      });
+      const savedInstance = await this.connectorRepo.save(instance);
+
+      if (accountId && this.setAdAccountId) {
+        await this.setAdAccountId(brandId, savedInstance.id, accountId);
+      }
+
+      // ── Step 6: connector_sync_status per instance ──────────────────────────
+      const syncStatus = ConnectorSyncStatus.create({
+        id: randomUUID(),
+        brandId,
+        connectorInstanceId: savedInstance.id,
+        state: 'waiting_for_data',
+        lastSyncAt: null,
+        lastError: null,
+        updatedAt: now,
+      });
+      await this.syncStatusRepo.save(syncStatus);
     }
-
-    // ── Step 6: Write connector_sync_status ───────────────────────────────────
-    const syncStatus = ConnectorSyncStatus.create({
-      id: randomUUID(),
-      brandId,
-      connectorInstanceId: savedInstance.id,
-      state: 'waiting_for_data',
-      lastSyncAt: null,
-      lastError: null,
-      updatedAt: now,
-    });
-    await this.syncStatusRepo.save(syncStatus);
 
     // ── Step 7: Emit connector.connected (NO token, NO secret_ref) ────────────
     await this.emitEvent('connector.connected', {
       brand_id: brandId,
-      connector_instance_id: savedInstance.id,
+      connector_instance_id: firstInstanceId,
       provider: 'meta',
-      ad_account_id: adAccountId, // operational ref, not PII (I-S02)
+      ad_account_id: adAccountId, // back-compat: first account
+      ad_account_ids: adAccountIds, // Gap B: all accounts
       idempotency_key: idempotencyKey,
     });
 
     return {
-      connectorInstanceId: savedInstance.id,
+      connectorInstanceId: firstInstanceId,
       brandId,
       adAccountId,
+      adAccountIds,
       status: 'connected',
     };
   }
@@ -199,7 +222,7 @@ export class HandleMetaOAuthCallbackCommand {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: params.toString(),
-        signal: AbortSignal.timeout(15_000), // T2-9: bound the token exchange so the OAuth callback can't hang.
+        signal: AbortSignal.timeout(15_000),
       },
     );
 
@@ -216,29 +239,28 @@ export class HandleMetaOAuthCallbackCommand {
   }
 
   /**
-   * Best-effort resolution of the first ad account id via /me/adaccounts.
-   * Returns null on any failure (dev-honest: a connector with no resolvable account
-   * still connects; the repull job resolves accounts at run time).
+   * Resolve ALL accessible ad account ids via /me/adaccounts (Gap B).
+   * Returns an array of account ids (e.g. ['act_123', 'act_456']).
+   * Returns empty array on any failure — caller falls back to __default__ instance.
    */
-  private async resolveAdAccountId(accessToken: string): Promise<string | null> {
+  private async resolveAllAdAccountIds(accessToken: string): Promise<string[]> {
     try {
-      // SEC-AD-M1: the access_token rides the Authorization header, never the URL
-      // query string (proxy/CDN log exposure), consistent with MetaInsightsClient.
+      // SEC-AD-M1: the access_token rides the Authorization header, never the URL query string.
       const response = await fetch(
         `https://graph.facebook.com/${META_GRAPH_API_VERSION}/me/adaccounts?fields=account_id`,
         {
           method: 'GET',
           headers: { Authorization: `Bearer ${accessToken}` },
-          signal: AbortSignal.timeout(15_000), // T2-9: bound the best-effort account resolution.
+          signal: AbortSignal.timeout(15_000),
         },
       );
-      if (!response.ok) return null;
+      if (!response.ok) return [];
       const data = (await response.json()) as { data?: Array<{ account_id?: string; id?: string }> };
-      const first = data.data?.[0];
-      // Prefer the `act_`-prefixed id; fall back to account_id.
-      return first?.id ?? (first?.account_id ? `act_${first.account_id}` : null);
+      return (data.data ?? [])
+        .map((entry) => entry.id ?? (entry.account_id ? `act_${entry.account_id}` : null))
+        .filter((id): id is string => id !== null);
     } catch {
-      return null;
+      return [];
     }
   }
 }

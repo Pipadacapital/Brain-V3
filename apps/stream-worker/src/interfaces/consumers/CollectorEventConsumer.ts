@@ -17,7 +17,8 @@
  * Branch: feat/data-plane-ingest-spine — Track A (data-engineer) Slice 3.
  */
 import { Consumer, Kafka, EachMessagePayload } from 'kafkajs';
-import { incrementCounter } from '@brain/observability';
+import { incrementCounter, extractKafkaTraceContext } from '@brain/observability';
+import { context } from '@opentelemetry/api';
 import { ProcessEventUseCase, ProcessResult } from '../../application/ProcessEventUseCase.js';
 import { DlqProducer } from '../../infrastructure/kafka/DlqProducer.js';
 import type { IRetryCounter } from '../../infrastructure/redis/RetryCounterAdapter.js';
@@ -58,6 +59,14 @@ export class CollectorEventConsumer {
         const { topic, partition, message } = payload;
         const offset = message.offset;
         const now = new Date().toISOString();
+
+        // Resume the producer's trace context across the Kafka boundary (observability skill).
+        // propagation.extract() reads W3C 'traceparent'/'tracestate' from message headers so
+        // spans started here are children of the producer's span, not orphaned root spans.
+        const traceCtx = extractKafkaTraceContext(
+          (message.headers ?? {}) as Record<string, Buffer | string | undefined>,
+        );
+        await context.with(traceCtx, async () => {
 
         try {
           const result: ProcessResult = await this.processEvent.execute(
@@ -155,6 +164,8 @@ export class CollectorEventConsumer {
             throw err;
           }
         }
+
+        }); // end context.with(traceCtx, ...)
       },
     });
   }

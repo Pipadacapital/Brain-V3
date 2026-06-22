@@ -28,8 +28,8 @@ import { getDefinition, isConnectable } from '../catalog/index.js';
 import { mapHealthToSafety, HEALTH_TO_SAFETY } from '../catalog/healthSafety.js';
 import { LocalSecretsManager } from '@brain/connector-secrets';
 import { PgConnectorInstanceRepository } from '../sources/storefront/shopify/infrastructure/repositories/PgConnectorInstanceRepository.js';
-import { ConnectorInstance } from '../sources/storefront/shopify/domain/entities/ConnectorInstance.js';
-import type { HealthState } from '../sources/storefront/shopify/domain/entities/ConnectorInstance.js';
+import { ConnectorInstance } from '@brain/connector-core';
+import type { HealthState } from '@brain/connector-core';
 import type { DbPool, QueryContext } from '@brain/db';
 
 // ── Config ────────────────────────────────────────────────────────────────────

@@ -130,8 +130,10 @@ export const CONNECTOR_CATALOG: readonly ConnectorDefinition[] = [
     id: 'ga4',
     category: 'analytics',
     displayName: 'Google Analytics 4',
-    connectMethod: 'coming_soon',
-    availability: 'coming_soon',
-    description: 'Web analytics.',
+    connectMethod: 'oauth',
+    availability: 'available',
+    description:
+      'Web session analytics via GA4 Data API — sessions, source/medium, revenue, conversions. ' +
+      'Connect with OAuth2 or a service-account key. Sync path requires credentials to be configured.',
   },
 ] as const;

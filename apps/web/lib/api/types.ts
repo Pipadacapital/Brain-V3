@@ -389,6 +389,8 @@ export interface MarketplaceTileInstance {
   safety_rating: SafetyRating;
   shop_domain: string | null;
   connected_at: string | null;
+  /** Per-account key within provider (Gap B — multi-account-per-provider, migration 0092). */
+  account_key: string;
 }
 
 /** One tile in the marketplace (catalog ⨝ connector_instance). */
@@ -400,8 +402,10 @@ export interface MarketplaceTile {
   connect_method: 'oauth' | 'credential' | 'coming_soon';
   /** false = coming-soon, un-connectable (ADR-CM-2). */
   available: boolean;
-  /** null = not connected yet for this brand. */
+  /** null = not connected yet for this brand. Back-compat: first active instance. */
   instance: MarketplaceTileInstance | null;
+  /** All active instances for this provider (Gap B — multi-account). Empty = not connected. */
+  instances: MarketplaceTileInstance[];
 }
 
 /** Connect response discriminated union — oauth gets oauth_url, credential gets connected:true. */

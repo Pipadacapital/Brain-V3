@@ -89,6 +89,12 @@ exporters:
   loki:
     endpoint: "http://loki:3100/loki/api/v1/push"
 
+  # Tempo — local trace backend (observe profile). Receives traces via OTLP gRPC.
+  otlp/tempo:
+    endpoint: "http://tempo:4317"
+    tls:
+      insecure: true
+
   # Debug exporter (local dev only — remove in production)
   debug:
     verbosity: normal
@@ -109,7 +115,7 @@ service:
     traces:
       receivers: [otlp]
       processors: [memory_limiter, transform/redact_pii, resource, batch]
-      exporters: [debug]
+      exporters: [otlp/tempo, debug]
 
     metrics:
       receivers: [otlp]

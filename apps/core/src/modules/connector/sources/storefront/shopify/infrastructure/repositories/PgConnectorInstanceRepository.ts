@@ -8,10 +8,15 @@
  *
  * A1 (feat-connector-marketplace): extended to read/write health_state + safety_rating
  * (migration 0021_connector_health). Provider type widened from literal 'shopify' to string.
+ *
+ * Gap A (0091, data-driven-provider-discovery): SELECT includes connector_provider_config JSONB.
+ * Gap B (0092, multi-account-per-provider): SELECT includes account_key; UPSERT ON CONFLICT
+ * targets (brand_id, provider, account_key); findByBrandAndProvider returns first (back-compat);
+ * findAllByBrandAndProvider returns all accounts.
  */
 import type { DbPool, QueryContext } from '@brain/db';
 import type { IConnectorInstanceRepository } from '../../domain/repositories/IConnectorInstanceRepository.js';
-import { ConnectorInstance } from '../../domain/entities/ConnectorInstance.js';
+import { ConnectorInstance, DEFAULT_ACCOUNT_KEY } from '../../domain/entities/ConnectorInstance.js';
 import type { ConnectorInstanceProps } from '../../domain/entities/ConnectorInstance.js';
 import type { HealthState, SafetyRating } from '../../domain/entities/ConnectorInstance.js';
 
@@ -30,6 +35,10 @@ interface ConnectorInstanceRow {
   disconnected_at: Date | null;
   created_at: Date;
   updated_at: Date;
+  /** Added by migration 0092 (Gap B). DEFAULT '__default__' in DB. */
+  account_key: string;
+  /** Added by migration 0091 (Gap A). NULL for legacy rows. */
+  connector_provider_config: Record<string, string | null> | null;
 }
 
 function rowToEntity(row: ConnectorInstanceRow): ConnectorInstance {
@@ -46,11 +55,14 @@ function rowToEntity(row: ConnectorInstanceRow): ConnectorInstance {
     disconnectedAt: row.disconnected_at ? new Date(row.disconnected_at) : null,
     createdAt: new Date(row.created_at),
     updatedAt: new Date(row.updated_at),
+    accountKey: row.account_key ?? DEFAULT_ACCOUNT_KEY,
+    providerConfig: row.connector_provider_config ?? {},
   } satisfies ConnectorInstanceProps);
 }
 
 const SELECT_COLS = `id, brand_id, provider, shop_domain, secret_ref, status,
-  health_state, safety_rating, connected_at, disconnected_at, created_at, updated_at`;
+  health_state, safety_rating, connected_at, disconnected_at, created_at, updated_at,
+  account_key, connector_provider_config`;
 
 export class PgConnectorInstanceRepository implements IConnectorInstanceRepository {
   constructor(private readonly pool: DbPool) {}
@@ -66,7 +78,9 @@ export class PgConnectorInstanceRepository implements IConnectorInstanceReposito
         ctx,
         `SELECT ${SELECT_COLS}
          FROM connector_instance
-         WHERE brand_id = $1 AND provider = $2`,
+         WHERE brand_id = $1 AND provider = $2
+         ORDER BY created_at ASC
+         LIMIT 1`,
         [brandId, provider],
       );
       const row = result.rows[0];
@@ -115,30 +129,54 @@ export class PgConnectorInstanceRepository implements IConnectorInstanceReposito
     }
   }
 
+  /**
+   * List all connector instances for a brand+provider pair (Gap B — multi-account).
+   * Returns all accounts ordered by created_at; caller dispatches per-account.
+   */
+  async findAllByBrandAndProvider(brandId: string, provider: string): Promise<ConnectorInstance[]> {
+    const ctx: QueryContext = { brandId, correlationId: 'n/a' };
+    const client = await this.pool.connect();
+    try {
+      const result = await client.query<ConnectorInstanceRow>(
+        ctx,
+        `SELECT ${SELECT_COLS}
+         FROM connector_instance
+         WHERE brand_id = $1 AND provider = $2
+         ORDER BY created_at ASC`,
+        [brandId, provider],
+      );
+      return result.rows.map(rowToEntity);
+    } finally {
+      client.release();
+    }
+  }
+
   async save(instance: ConnectorInstance): Promise<ConnectorInstance> {
     const ctx: QueryContext = { brandId: instance.brandId, correlationId: 'n/a' };
     const client = await this.pool.connect();
     try {
       const result = await client.query<ConnectorInstanceRow>(
         ctx,
-        // UPSERT on (brand_id, provider): reconnecting after a disconnect must REACTIVATE the
-        // existing row, not INSERT a duplicate (which violated connector_instance_brand_provider_unique
-        // → 23505). On conflict, refresh the connection fields + clear disconnected_at; keep the
-        // original id + created_at (RETURNING yields the surviving row).
+        // UPSERT on (brand_id, provider, account_key): reconnecting after a disconnect must
+        // REACTIVATE the existing row, not INSERT a duplicate (23505). On conflict, refresh the
+        // connection fields + clear disconnected_at; keep the original id + created_at
+        // (RETURNING yields the surviving row).
         `INSERT INTO connector_instance
            (id, brand_id, provider, shop_domain, secret_ref, status,
             health_state, safety_rating,
-            connected_at, disconnected_at, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-         ON CONFLICT (brand_id, provider) DO UPDATE SET
-            shop_domain    = EXCLUDED.shop_domain,
-            secret_ref     = EXCLUDED.secret_ref,
-            status         = EXCLUDED.status,
-            health_state   = EXCLUDED.health_state,
-            safety_rating  = EXCLUDED.safety_rating,
-            connected_at   = EXCLUDED.connected_at,
-            disconnected_at = EXCLUDED.disconnected_at,
-            updated_at     = EXCLUDED.updated_at
+            connected_at, disconnected_at, created_at, updated_at,
+            account_key, connector_provider_config)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+         ON CONFLICT (brand_id, provider, account_key) DO UPDATE SET
+            shop_domain              = EXCLUDED.shop_domain,
+            secret_ref               = EXCLUDED.secret_ref,
+            status                   = EXCLUDED.status,
+            health_state             = EXCLUDED.health_state,
+            safety_rating            = EXCLUDED.safety_rating,
+            connected_at             = EXCLUDED.connected_at,
+            disconnected_at          = EXCLUDED.disconnected_at,
+            updated_at               = EXCLUDED.updated_at,
+            connector_provider_config = EXCLUDED.connector_provider_config
          RETURNING ${SELECT_COLS}`,
         [
           instance.id,
@@ -153,6 +191,10 @@ export class PgConnectorInstanceRepository implements IConnectorInstanceReposito
           instance.disconnectedAt?.toISOString() ?? null,
           instance.createdAt.toISOString(),
           instance.updatedAt.toISOString(),
+          instance.accountKey,
+          instance.providerConfig && Object.keys(instance.providerConfig).length > 0
+            ? JSON.stringify(instance.providerConfig)
+            : null,
         ],
       );
       const row = result.rows[0];

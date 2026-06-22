@@ -30,6 +30,7 @@
 
 import { Pool } from 'pg';
 import { recordConnectorAuthRejected } from '../../infrastructure/observability/connector-auth-health.js';
+import { updateConnectorInstanceHealth } from '../../infrastructure/pg/ConnectorInstanceHealthRepository.js';
 import { Kafka, type Producer } from 'kafkajs';
 import { buildPartitionKey, topicForEventType } from '@brain/events';
 import { SaltProvider, LocalSecretsProvider } from '../../infrastructure/secrets/SaltProvider.js';
@@ -90,7 +91,7 @@ export async function run(targetConnectorInstanceId?: string): Promise<void> {
     brokers: BROKERS,
     retry: { retries: 5 },
   });
-  const producer = kafka.producer();
+  const producer = kafka.producer({ idempotent: true });
   const workerSecrets = buildWorkerSecretsManager();
   const saltSecrets = new LocalSecretsProvider();
   const saltProvider = new SaltProvider(saltSecrets, resolveSaltHex);
@@ -238,6 +239,7 @@ async function repullConnector(params: RepullParams): Promise<void> {
           log.error(`connector=${ciId} 401 auth error — aborting re-pull`);
           recordConnectorAuthRejected('shopify'); // P2.6: make the silent token-expiry death loud
           await setSyncState(pool, brandId, ciId, 'error', '401 auth error — RECONNECT_REQUIRED');
+          await updateConnectorInstanceHealth(pool, brandId, ciId, 'token_expired');
           return;
         }
         log.error(`connector=${ciId} page error — aborting`, { err: err });

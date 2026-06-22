@@ -1,15 +1,5 @@
 /**
- * IConnectorSyncStatusRepository — domain repository interface.
+ * BACKWARD-COMPAT RE-EXPORT SHIM — interface moved to @brain/connector-core.
+ * New code should import from '@brain/connector-core' directly.
  */
-import type { ConnectorSyncStatus } from '../entities/ConnectorSyncStatus.js';
-
-export interface IConnectorSyncStatusRepository {
-  findByConnectorInstanceId(
-    connectorInstanceId: string,
-    brandId: string,
-  ): Promise<ConnectorSyncStatus | null>;
-
-  save(status: ConnectorSyncStatus): Promise<ConnectorSyncStatus>;
-
-  update(status: ConnectorSyncStatus): Promise<ConnectorSyncStatus>;
-}
+export type { IConnectorSyncStatusRepository } from '@brain/connector-core';

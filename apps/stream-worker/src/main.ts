@@ -256,8 +256,11 @@ export async function main(): Promise<void> {
       'to enable the non-authoritative projection). PG is the identity system-of-record (ADR-0003).');
   }
   const resolveIdentityUseCase = new ResolveIdentityUseCase(saltProvider, identityRepo, identityGraph);
+  // T2-8: pass the shared durable RetryCounterAdapter so identity-bridge retries survive
+  // pod restarts and a poison message always reaches the DLQ (mirrors ConsentSuppressor /
+  // Backfill / LiveLedger — every consumer that receives retryCounter here).
   const identityConsumer = new IdentityBridgeConsumer(
-    kafka, resolveIdentityUseCase, topic, identityGroupId,
+    kafka, resolveIdentityUseCase, topic, identityGroupId, retryCounter,
   );
 
   // ── Consent suppressor (feat-d13-consent-cancontact) ────────────────────────

@@ -1,0 +1,149 @@
+# litellm.config.yaml — Brain LLM gateway configuration (dev-authorable).
+#
+# OVERVIEW
+# --------
+# LiteLLM acts as the cost-routing gateway for all model calls in Brain (Tier 3 = small_model,
+# Tier 4 = large_model). Per the cost-routing-paradigms doctrine:
+#   - Every model call is made THROUGH this gateway (no direct provider SDK calls).
+#   - Per-tenant virtual keys carry a monthly budget cap. Above cap → non-critical paths degrade
+#     (quiet, not broken); critical-path calls continue until the hard-stop budget is hit.
+#   - Tier routing (small_model / large_model) is enforced by model alias policy below.
+#
+# VIRTUAL KEYS (per-tenant spend caps)
+# ─────────────────────────────────────
+# One virtual key per tenant tier. In production these are provisioned by the platform and stored
+# in AWS Secrets Manager; the values below are dev-safe defaults ($0.01 / month caps so no real
+# spend happens in local dev). Each key maps:
+#   max_budget   — monthly hard-stop (USD); non-critical calls are blocked above this.
+#   budget_duration — rolling window for the budget (monthly = 30d reset).
+#   models       — the alias policies this key may call (restricts to declared tiers).
+#   metadata     — tenant context for audit / cost attribution.
+#
+# ADDING A TENANT KEY
+# ───────────────────
+# 1. Add a new entry under virtual_keys with a unique key value and the tenant's brand_id in metadata.
+# 2. Set max_budget to the tenant's monthly model spend cap (minor units of USD; e.g. 5.00 = $5.00).
+# 3. Commit this file and redeploy the litellm container (a volume mount, no image rebuild required).
+# 4. Production: provision the key value in AWS Secrets Manager; supply via LITELLM_MASTER_KEY env.
+#
+# MODEL ALIASES (effort-tier routing)
+# ─────────────────────────────────────
+# small_model  — cheapest model passing the small-model eval bar (e.g. claude-haiku; swap without
+#                touching callsites — just update the alias here + re-run the tier eval suite).
+# large_model  — frontier model for multi-step synthesis / conversational orchestration.
+# Both tiers support fallback: if the primary is unavailable, traffic falls to the fallback model.
+# This ensures the "known-good model in the fallback chain" invariant from the eval gate doctrine.
+#
+# PROMPT CACHING
+# ──────────────
+# Stable system-prompt prefixes are cached by the gateway. Cache headers are emitted per-provider.
+# Cache misses on stable prefixes are flagged as cost bugs in the observability dashboard.
+
+model_list:
+  # ── Tier 3: small_model — bounded NL, classification, short structured output ──────────────────
+  - model_name: small_model
+    litellm_params:
+      model: anthropic/claude-haiku-4-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+      # Prompt caching: enabled for stable system-prompt prefixes (cost routing principle).
+      cache_prompt: true
+  - model_name: small_model_fallback
+    litellm_params:
+      model: openai/gpt-4o-mini
+      api_key: os.environ/OPENAI_API_KEY
+
+  # ── Tier 4: large_model — multi-step synthesis, conversational orchestration ──────────────────
+  - model_name: large_model
+    litellm_params:
+      model: anthropic/claude-sonnet-4-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+      cache_prompt: true
+  - model_name: large_model_fallback
+    litellm_params:
+      model: openai/gpt-4o
+      api_key: os.environ/OPENAI_API_KEY
+
+router_settings:
+  # Fallback chain: small_model → small_model_fallback; large_model → large_model_fallback.
+  # This is the "keep a known-good model in the fallback chain" invariant: a failed swap or
+  # provider outage degrades to a known-good model, never to "no answer".
+  model_group_alias:
+    small_model: ["small_model", "small_model_fallback"]
+    large_model: ["large_model", "large_model_fallback"]
+  # Routing strategy: cheapest provider first within the alias group (cost-routing-paradigms §Layer 1).
+  routing_strategy: cost-based-routing
+  # Retry failed calls up to 2 times before falling to the fallback group.
+  num_retries: 2
+  # Per-call timeout: small_model paths have tighter SLOs; large_model allows more synthesis time.
+  timeout: 30
+
+litellm_settings:
+  # Drop unsupported params silently (provider-agnostic routing).
+  drop_params: true
+  # OpenTelemetry tracing for all gateway calls (ai-observability-tracing doctrine).
+  success_callback: ["otel"]
+  failure_callback: ["otel"]
+  # Set OTEL_EXPORTER_OTLP_ENDPOINT in the container env (defaults to Tempo at localhost:4317 in dev).
+
+  # Budget soft-warn threshold: log a warning at 70% of the per-tenant cap (Layer 3).
+  # Hard stop at 100% blocks non-critical calls; critical-path work continues until exhausted.
+  budget_alerts:
+    - soft_budget_threshold: 0.70
+
+# ── Per-tenant virtual key budget caps ────────────────────────────────────────────────────────────
+# Format: one entry per tenant / tier combination.
+# Dev values are intentionally tiny ($0.01) so local dev cannot accidentally accrue real spend.
+# Production: provision via LITELLM_MASTER_KEY + tenant onboarding workflow.
+#
+# The platform team owns adding entries here. The AI/ML Engineer consumes tiers via the gateway
+# URL + the virtual key for their tenant — never by direct provider SDK calls.
+
+virtual_keys:
+  # ── Dev / test tenants ─────────────────────────────────────────────────────────────────────────
+  - key: sk-brain-dev-tenant-a
+    max_budget: 0.01          # $0.01/month dev cap — no real spend
+    budget_duration: monthly
+    models: ["small_model", "large_model"]
+    metadata:
+      tenant_tier: dev
+      brand_id: aaaa0000-0000-0000-0000-000000000001
+      description: Local dev tenant A — feature/agent eval work
+
+  - key: sk-brain-dev-tenant-b
+    max_budget: 0.01
+    budget_duration: monthly
+    models: ["small_model", "large_model"]
+    metadata:
+      tenant_tier: dev
+      brand_id: aaaa0000-0000-0000-0000-000000000002
+      description: Local dev tenant B — CI / eval harness
+
+  # ── Staging tenants ────────────────────────────────────────────────────────────────────────────
+  # Override max_budget in values-staging.yaml / values-prod.yaml via env var injection.
+  # Production provisioning: LITELLM_MASTER_KEY from AWS Secrets Manager; tenant keys from the
+  # platform's tenant-onboarding job (which writes the virtual_keys section and reloads LiteLLM).
+  - key: sk-brain-staging-default
+    max_budget: 5.00          # $5.00/month staging cap
+    budget_duration: monthly
+    models: ["small_model", "large_model"]
+    metadata:
+      tenant_tier: staging
+      description: Staging default key — shared across staging brands
+
+  # ── Production template (replace brand_id + key value per tenant) ─────────────────────────────
+  # Each production brand gets its own key + budget enforced by the gateway.
+  # Monthly cap = product plan's model-spend tier; align with Canon pricing tiers (THE-MOAT.md).
+  - key: sk-brain-prod-template
+    max_budget: 20.00         # $20.00/month — starter production tier (adjust per plan)
+    budget_duration: monthly
+    models: ["small_model", "large_model"]
+    metadata:
+      tenant_tier: production
+      description: Production tenant template — clone per brand; set brand_id + key from Secrets Manager
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  # Allow the admin UI at /ui (protected by master_key). Disable in production if not needed.
+  ui_access_mode: all
+  # Health probe endpoint at /health — used by the Docker / Kubernetes liveness check.
+  health_check_interval: 60

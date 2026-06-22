@@ -13,6 +13,11 @@
  *   UT-9: mapPaymentWebhookToMapRow — null when shopify_order_id missing
  *   UT-10: uuidV5 provably non-colliding with order.live.v1 / order.backfill.v1 namespaces
  *   UT-11: uuidV5FromSettlementItem correction discriminator — same (settlement+payment), diff entityType = DISTINCT ids
+ *   UT-14: uuidV5FromRazorpayWebhookWithType — entity_type discriminator non-collision
+ *   UT-15: mapRefundWebhookToEvent — refund.processed / refund.failed → entity_type='refund', C1 hashes, I-S07
+ *   UT-16: mapDisputeWebhookToEvent — dispute lifecycle + dispute_direction correctness (REVENUE REVERSAL on lost)
+ *   UT-17: mapOrderPaidWebhookToEvent — order.paid → entity_type='order_paid', I-S07
+ *   UT-18: mapPaymentAuthorizedToEvent — payment.authorized → entity_type='payment_authorized', C1 hash, I-S07
  */
 
 import { describe, it, expect } from 'vitest';
@@ -22,14 +27,24 @@ import {
   uuidV5FromSettlementItem,
   uuidV5FromSettlementSummary,
   uuidV5FromRazorpayWebhook,
+  uuidV5FromRazorpayWebhookWithType,
   mapSettlementItemToEvent,
   mapPaymentWebhookToMapRow,
+  mapRefundWebhookToEvent,
+  mapDisputeWebhookToEvent,
+  mapOrderPaidWebhookToEvent,
+  mapPaymentAuthorizedToEvent,
   RAZORPAY_FIELD_ALLOWLIST,
   CARD_FIELDS_BLOCKED,
   SETTLEMENT_LIVE_V1_EVENT_NAME,
   paisaToMinorString,
   type RazorpaySettlementItem,
   type RazorpayPaymentCapturedPayload,
+  type RazorpayRefundEntity,
+  type RazorpayDisputeEntity,
+  type RazorpayOrderEntity,
+  type RazorpayPaymentAuthorizedEntity,
+  type DisputeLifecycleType,
 } from '../index.js';
 
 // ── Test constants ─────────────────────────────────────────────────────────────
@@ -485,6 +500,362 @@ describe('UT-12: brand-level / order-keyless reconciliation_type', () => {
     };
     const event = mapSettlementItemToEvent(item, BRAND_A, SALT_A);
     expect(event.properties.reconciliation_type).toBe('brand_level');
+  });
+});
+
+// ── UT-14: uuidV5FromRazorpayWebhookWithType — entity_type discriminator ─────
+
+describe('UT-14: uuidV5FromRazorpayWebhookWithType — entity_type discriminator non-collision', () => {
+  const EVENT_ID = 'event_WEBHOOKTEST001';
+
+  it('same (brand, eventId) but DIFFERENT entityTypeTag → DISTINCT ids', () => {
+    const idRefundProcessed = uuidV5FromRazorpayWebhookWithType(BRAND_A, EVENT_ID, 'refund.processed');
+    const idRefundFailed    = uuidV5FromRazorpayWebhookWithType(BRAND_A, EVENT_ID, 'refund.failed');
+    const idDisputeCreated  = uuidV5FromRazorpayWebhookWithType(BRAND_A, EVENT_ID, 'payment.dispute.created');
+    const idDisputeLost     = uuidV5FromRazorpayWebhookWithType(BRAND_A, EVENT_ID, 'payment.dispute.lost');
+    const idOrderPaid       = uuidV5FromRazorpayWebhookWithType(BRAND_A, EVENT_ID, 'order.paid');
+
+    const ids = new Set([idRefundProcessed, idRefundFailed, idDisputeCreated, idDisputeLost, idOrderPaid]);
+    expect(ids.size).toBe(5);
+  });
+
+  it('does NOT collide with uuidV5FromRazorpayWebhook for the same (brand, eventId)', () => {
+    const legacy = uuidV5FromRazorpayWebhook(BRAND_A, EVENT_ID);
+    const typed  = uuidV5FromRazorpayWebhookWithType(BRAND_A, EVENT_ID, 'refund.processed');
+    expect(legacy).not.toBe(typed);
+  });
+
+  it('same inputs → same id (deterministic)', () => {
+    const id1 = uuidV5FromRazorpayWebhookWithType(BRAND_A, EVENT_ID, 'dispute.lost');
+    const id2 = uuidV5FromRazorpayWebhookWithType(BRAND_A, EVENT_ID, 'dispute.lost');
+    expect(id1).toBe(id2);
+  });
+
+  it('different brands → different ids (cross-brand non-collision)', () => {
+    const idA = uuidV5FromRazorpayWebhookWithType(BRAND_A, EVENT_ID, 'refund.processed');
+    const idB = uuidV5FromRazorpayWebhookWithType(BRAND_B, EVENT_ID, 'refund.processed');
+    expect(idA).not.toBe(idB);
+  });
+
+  it('returns a UUIDv5-shaped string (8-4-4-4-12 hex groups)', () => {
+    const id = uuidV5FromRazorpayWebhookWithType(BRAND_A, EVENT_ID, 'payment.authorized');
+    expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  });
+});
+
+// ── UT-15: mapRefundWebhookToEvent ────────────────────────────────────────────
+
+describe('UT-15: mapRefundWebhookToEvent — C1 hashes, I-S07 money, entity_type discriminator', () => {
+  const REFUND_ID = 'rfnd_TestRefund12345678';
+  const REFUND_PAYMENT_ID = 'pay_TestPayment12345678';
+
+  const validRefundEntity: RazorpayRefundEntity = {
+    id: REFUND_ID,
+    payment_id: REFUND_PAYMENT_ID,
+    amount: 50000,
+    currency: 'INR',
+    status: 'processed',
+    speed_processed: 'normal',
+    created_at: 1704067200,
+    processed_at: 1704153600,
+  };
+
+  it('entity_type is "refund"', () => {
+    const event = mapRefundWebhookToEvent(validRefundEntity, BRAND_A, SALT_A);
+    expect(event.properties.entity_type).toBe('refund');
+  });
+
+  it('raw refund_id NOT in output (C1) — only refund_id_hash present', () => {
+    const event = mapRefundWebhookToEvent(validRefundEntity, BRAND_A, SALT_A);
+    const json = JSON.stringify(event);
+    expect(json).not.toContain(REFUND_ID);
+    expect(event.properties.refund_id_hash).toBeTruthy();
+    expect(event.properties.refund_id_hash).toHaveLength(64); // sha256 hex
+  });
+
+  it('raw payment_id NOT in output (C1) — only payment_id_hash present', () => {
+    const event = mapRefundWebhookToEvent(validRefundEntity, BRAND_A, SALT_A);
+    const json = JSON.stringify(event);
+    expect(json).not.toContain(REFUND_PAYMENT_ID);
+    expect(event.properties.payment_id_hash).toBeTruthy();
+  });
+
+  it('refund_id_hash is deterministic (same input → same hash)', () => {
+    const ev1 = mapRefundWebhookToEvent(validRefundEntity, BRAND_A, SALT_A);
+    const ev2 = mapRefundWebhookToEvent(validRefundEntity, BRAND_A, SALT_A);
+    expect(ev1.properties.refund_id_hash).toBe(ev2.properties.refund_id_hash);
+  });
+
+  it('refund_id_hash differs for different brands (per-brand salt isolation)', () => {
+    const evA = mapRefundWebhookToEvent(validRefundEntity, BRAND_A, SALT_A);
+    const evB = mapRefundWebhookToEvent(validRefundEntity, BRAND_B, SALT_B);
+    expect(evA.properties.refund_id_hash).not.toBe(evB.properties.refund_id_hash);
+  });
+
+  it('amount_minor is BIGINT-as-string integer paisa (I-S07)', () => {
+    const event = mapRefundWebhookToEvent(validRefundEntity, BRAND_A, SALT_A);
+    expect(event.properties.amount_minor).toBe('50000');
+    expect(event.properties.amount_minor).toMatch(/^\d+$/);
+  });
+
+  it('currency_code is uppercased', () => {
+    const entity: RazorpayRefundEntity = { ...validRefundEntity, currency: 'inr' };
+    const event = mapRefundWebhookToEvent(entity, BRAND_A, SALT_A);
+    expect(event.properties.currency_code).toBe('INR');
+  });
+
+  it('status is preserved from entity', () => {
+    const event = mapRefundWebhookToEvent(validRefundEntity, BRAND_A, SALT_A);
+    expect(event.properties.status).toBe('processed');
+  });
+
+  it('payment_id_hash is null when payment_id is null', () => {
+    const entity: RazorpayRefundEntity = { ...validRefundEntity, payment_id: null };
+    const event = mapRefundWebhookToEvent(entity, BRAND_A, SALT_A);
+    expect(event.properties.payment_id_hash).toBeNull();
+  });
+
+  it('throws when refund id is missing', () => {
+    const entity: RazorpayRefundEntity = { ...validRefundEntity, id: null };
+    expect(() => mapRefundWebhookToEvent(entity, BRAND_A, SALT_A)).toThrow();
+  });
+
+  it('event_name is settlement.live.v1 (same lane as settlement events)', () => {
+    const event = mapRefundWebhookToEvent(validRefundEntity, BRAND_A, SALT_A);
+    expect(event.event_name).toBe(SETTLEMENT_LIVE_V1_EVENT_NAME);
+  });
+});
+
+// ── UT-16: mapDisputeWebhookToEvent ──────────────────────────────────────────
+
+describe('UT-16: mapDisputeWebhookToEvent — dispute lifecycle + REVENUE REVERSAL on lost', () => {
+  const DISPUTE_ID = 'disp_TestDispute12345678';
+  const DISPUTE_PAYMENT_ID = 'pay_TestPayment12345678';
+
+  const validDisputeEntity: RazorpayDisputeEntity = {
+    id: DISPUTE_ID,
+    payment_id: DISPUTE_PAYMENT_ID,
+    amount: 100000,
+    currency: 'INR',
+    reason_code: 'FROD',
+    reason_description: 'Fraudulent transaction',
+    status: 'open',
+    created_at: 1704067200,
+    respond_by: 1704672000,
+  };
+
+  it('entity_type is "dispute"', () => {
+    const event = mapDisputeWebhookToEvent(validDisputeEntity, 'dispute.created', BRAND_A, SALT_A);
+    expect(event.properties.entity_type).toBe('dispute');
+  });
+
+  it('dispute.created → dispute_direction=debit', () => {
+    const event = mapDisputeWebhookToEvent(validDisputeEntity, 'dispute.created', BRAND_A, SALT_A);
+    expect(event.properties.dispute_direction).toBe('debit');
+  });
+
+  it('dispute.under_review → dispute_direction=debit', () => {
+    const event = mapDisputeWebhookToEvent(validDisputeEntity, 'dispute.under_review', BRAND_A, SALT_A);
+    expect(event.properties.dispute_direction).toBe('debit');
+  });
+
+  it('dispute.won → dispute_direction=credit (money returned)', () => {
+    const event = mapDisputeWebhookToEvent(validDisputeEntity, 'dispute.won', BRAND_A, SALT_A);
+    expect(event.properties.dispute_direction).toBe('credit');
+  });
+
+  it('dispute.lost → dispute_direction=debit (REVENUE REVERSAL)', () => {
+    // This is the critical invariant: dispute.lost is a revenue reversal.
+    // Consumers MUST apply negative sign to amount_minor when dispute_direction = 'debit'
+    // on a dispute.lost event.
+    const event = mapDisputeWebhookToEvent(validDisputeEntity, 'dispute.lost', BRAND_A, SALT_A);
+    expect(event.properties.dispute_direction).toBe('debit');
+    expect(event.properties.dispute_lifecycle).toBe('dispute.lost');
+    // amount_minor is positive integer — the sign semantics are carried by dispute_direction
+    expect(event.properties.amount_minor).toBe('100000');
+    expect(event.properties.amount_minor).toMatch(/^\d+$/);
+  });
+
+  it('dispute_lifecycle is set correctly for each lifecycle stage', () => {
+    const stages: Array<{ input: DisputeLifecycleType; expected: string }> = [
+      { input: 'dispute.created',      expected: 'dispute.created' },
+      { input: 'dispute.under_review', expected: 'dispute.under_review' },
+      { input: 'dispute.won',          expected: 'dispute.won' },
+      { input: 'dispute.lost',         expected: 'dispute.lost' },
+    ];
+    for (const { input, expected } of stages) {
+      const event = mapDisputeWebhookToEvent(validDisputeEntity, input, BRAND_A, SALT_A);
+      expect(event.properties.dispute_lifecycle).toBe(expected);
+    }
+  });
+
+  it('raw dispute_id NOT in output (C1) — only dispute_id_hash present', () => {
+    const event = mapDisputeWebhookToEvent(validDisputeEntity, 'dispute.created', BRAND_A, SALT_A);
+    const json = JSON.stringify(event);
+    expect(json).not.toContain(DISPUTE_ID);
+    expect(event.properties.dispute_id_hash).toBeTruthy();
+    expect(event.properties.dispute_id_hash).toHaveLength(64);
+  });
+
+  it('raw payment_id NOT in output (C1) — only payment_id_hash present', () => {
+    const event = mapDisputeWebhookToEvent(validDisputeEntity, 'dispute.created', BRAND_A, SALT_A);
+    const json = JSON.stringify(event);
+    expect(json).not.toContain(DISPUTE_PAYMENT_ID);
+    expect(event.properties.payment_id_hash).toBeTruthy();
+  });
+
+  it('amount_minor is BIGINT-as-string integer paisa (I-S07)', () => {
+    const event = mapDisputeWebhookToEvent(validDisputeEntity, 'dispute.lost', BRAND_A, SALT_A);
+    expect(event.properties.amount_minor).toBe('100000');
+    expect(event.properties.amount_minor).toMatch(/^\d+$/);
+  });
+
+  it('reason_code is preserved', () => {
+    const event = mapDisputeWebhookToEvent(validDisputeEntity, 'dispute.created', BRAND_A, SALT_A);
+    expect(event.properties.reason_code).toBe('FROD');
+  });
+
+  it('respond_by is ISO-8601', () => {
+    const event = mapDisputeWebhookToEvent(validDisputeEntity, 'dispute.created', BRAND_A, SALT_A);
+    expect(event.properties.respond_by).toBe('2024-01-08T00:00:00.000Z');
+  });
+
+  it('throws when dispute id is missing', () => {
+    const entity: RazorpayDisputeEntity = { ...validDisputeEntity, id: null };
+    expect(() => mapDisputeWebhookToEvent(entity, 'dispute.created', BRAND_A, SALT_A)).toThrow();
+  });
+
+  it('event_name is settlement.live.v1', () => {
+    const event = mapDisputeWebhookToEvent(validDisputeEntity, 'dispute.lost', BRAND_A, SALT_A);
+    expect(event.event_name).toBe(SETTLEMENT_LIVE_V1_EVENT_NAME);
+  });
+
+  it('dispute.created and dispute.lost for same dispute produce DISTINCT event content (lifecycle discriminator)', () => {
+    const evCreated = mapDisputeWebhookToEvent(validDisputeEntity, 'dispute.created', BRAND_A, SALT_A);
+    const evLost    = mapDisputeWebhookToEvent(validDisputeEntity, 'dispute.lost',    BRAND_A, SALT_A);
+    // Both reference the same dispute_id_hash but carry different lifecycle + direction
+    expect(evCreated.properties.dispute_id_hash).toBe(evLost.properties.dispute_id_hash);
+    expect(evCreated.properties.dispute_lifecycle).not.toBe(evLost.properties.dispute_lifecycle);
+    expect(evCreated.properties.dispute_direction).toBe(evLost.properties.dispute_direction); // both debit
+  });
+});
+
+// ── UT-17: mapOrderPaidWebhookToEvent ─────────────────────────────────────────
+
+describe('UT-17: mapOrderPaidWebhookToEvent — entity_type=order_paid, I-S07', () => {
+  const validOrderEntity: RazorpayOrderEntity = {
+    id: 'order_TestOrder12345678',
+    amount: 200000,
+    amount_paid: 200000,
+    amount_due: 0,
+    currency: 'INR',
+    status: 'paid',
+    created_at: 1704067200,
+  };
+
+  it('entity_type is "order_paid"', () => {
+    const event = mapOrderPaidWebhookToEvent(validOrderEntity, BRAND_A, SALT_A);
+    expect(event.properties.entity_type).toBe('order_paid');
+  });
+
+  it('order_id is stored as opaque reference (not PII)', () => {
+    const event = mapOrderPaidWebhookToEvent(validOrderEntity, BRAND_A, SALT_A);
+    expect(event.properties.order_id).toBe('order_TestOrder12345678');
+  });
+
+  it('payment_id_hash is null (no payment_id on order entity)', () => {
+    const event = mapOrderPaidWebhookToEvent(validOrderEntity, BRAND_A, SALT_A);
+    expect(event.properties.payment_id_hash).toBeNull();
+  });
+
+  it('amount_minor is BIGINT-as-string integer paisa (I-S07)', () => {
+    const event = mapOrderPaidWebhookToEvent(validOrderEntity, BRAND_A, SALT_A);
+    expect(event.properties.amount_minor).toBe('200000');
+    expect(event.properties.amount_minor).toMatch(/^\d+$/);
+  });
+
+  it('currency_code is uppercased', () => {
+    const entity: RazorpayOrderEntity = { ...validOrderEntity, currency: 'inr' };
+    const event = mapOrderPaidWebhookToEvent(entity, BRAND_A, SALT_A);
+    expect(event.properties.currency_code).toBe('INR');
+  });
+
+  it('status is preserved', () => {
+    const event = mapOrderPaidWebhookToEvent(validOrderEntity, BRAND_A, SALT_A);
+    expect(event.properties.status).toBe('paid');
+  });
+
+  it('event_name is settlement.live.v1', () => {
+    const event = mapOrderPaidWebhookToEvent(validOrderEntity, BRAND_A, SALT_A);
+    expect(event.event_name).toBe(SETTLEMENT_LIVE_V1_EVENT_NAME);
+  });
+
+  it('occurred_at is ISO-8601 derived from created_at', () => {
+    const event = mapOrderPaidWebhookToEvent(validOrderEntity, BRAND_A, SALT_A);
+    expect(event.occurred_at).toBe('2024-01-01T00:00:00.000Z');
+  });
+});
+
+// ── UT-18: mapPaymentAuthorizedToEvent ────────────────────────────────────────
+
+describe('UT-18: mapPaymentAuthorizedToEvent — entity_type=payment_authorized, C1 hash, I-S07', () => {
+  const AUTH_PAYMENT_ID = 'pay_TestAuthorized123456';
+  const AUTH_ORDER_ID   = 'order_TestAuthorized12345';
+
+  const validAuthEntity: RazorpayPaymentAuthorizedEntity = {
+    id: AUTH_PAYMENT_ID,
+    order_id: AUTH_ORDER_ID,
+    amount: 150000,
+    currency: 'INR',
+    status: 'authorized',
+    created_at: 1704067200,
+  };
+
+  it('entity_type is "payment_authorized"', () => {
+    const event = mapPaymentAuthorizedToEvent(validAuthEntity, BRAND_A, SALT_A);
+    expect(event.properties.entity_type).toBe('payment_authorized');
+  });
+
+  it('raw payment_id NOT in output (C1) — only payment_id_hash', () => {
+    const event = mapPaymentAuthorizedToEvent(validAuthEntity, BRAND_A, SALT_A);
+    const json = JSON.stringify(event);
+    expect(json).not.toContain(AUTH_PAYMENT_ID);
+    expect(event.properties.payment_id_hash).toBeTruthy();
+    expect(event.properties.payment_id_hash).toHaveLength(64);
+  });
+
+  it('order_id is stored as opaque reference (not PII)', () => {
+    const event = mapPaymentAuthorizedToEvent(validAuthEntity, BRAND_A, SALT_A);
+    expect(event.properties.order_id).toBe(AUTH_ORDER_ID);
+  });
+
+  it('payment_id_hash is deterministic', () => {
+    const ev1 = mapPaymentAuthorizedToEvent(validAuthEntity, BRAND_A, SALT_A);
+    const ev2 = mapPaymentAuthorizedToEvent(validAuthEntity, BRAND_A, SALT_A);
+    expect(ev1.properties.payment_id_hash).toBe(ev2.properties.payment_id_hash);
+  });
+
+  it('payment_id_hash differs across brands (per-brand salt isolation)', () => {
+    const evA = mapPaymentAuthorizedToEvent(validAuthEntity, BRAND_A, SALT_A);
+    const evB = mapPaymentAuthorizedToEvent(validAuthEntity, BRAND_B, SALT_B);
+    expect(evA.properties.payment_id_hash).not.toBe(evB.properties.payment_id_hash);
+  });
+
+  it('amount_minor is BIGINT-as-string integer paisa (I-S07)', () => {
+    const event = mapPaymentAuthorizedToEvent(validAuthEntity, BRAND_A, SALT_A);
+    expect(event.properties.amount_minor).toBe('150000');
+    expect(event.properties.amount_minor).toMatch(/^\d+$/);
+  });
+
+  it('payment_id_hash is null when payment id missing', () => {
+    const entity: RazorpayPaymentAuthorizedEntity = { ...validAuthEntity, id: null };
+    const event = mapPaymentAuthorizedToEvent(entity, BRAND_A, SALT_A);
+    expect(event.properties.payment_id_hash).toBeNull();
+  });
+
+  it('event_name is settlement.live.v1', () => {
+    const event = mapPaymentAuthorizedToEvent(validAuthEntity, BRAND_A, SALT_A);
+    expect(event.event_name).toBe(SETTLEMENT_LIVE_V1_EVENT_NAME);
   });
 });
 

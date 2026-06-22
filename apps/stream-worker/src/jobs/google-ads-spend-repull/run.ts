@@ -24,6 +24,7 @@
 
 import { Pool } from 'pg';
 import { recordConnectorAuthRejected } from '../../infrastructure/observability/connector-auth-health.js';
+import { updateConnectorInstanceHealth } from '../../infrastructure/pg/ConnectorInstanceHealthRepository.js';
 import { Kafka, type Producer } from 'kafkajs';
 import { buildPartitionKey } from '@brain/events';
 import { CollectorEventV1Schema, COLLECTOR_EVENT_V1_TOPIC_SUFFIX } from '@brain/contracts';
@@ -79,7 +80,7 @@ interface GoogleSecretBundle {
 export async function run(targetConnectorInstanceId?: string): Promise<void> {
   const pool = new Pool({ connectionString: DB_URL, max: 5 });
   const kafka = new Kafka({ clientId: 'google-ads-spend-repull', brokers: BROKERS, retry: { retries: 5 } });
-  const producer = kafka.producer();
+  const producer = kafka.producer({ idempotent: true });
 
   try {
     await producer.connect();
@@ -156,6 +157,7 @@ async function repullConnector(params: RepullParams): Promise<void> {
     if (String(err).includes(GOOGLE_AUTH_ERROR)) {
       recordConnectorAuthRejected('google_ads'); // P2.6: make the silent token-expiry death loud
       await setSyncState(pool, brandId, ciId, 'error', 'google auth error — RECONNECT_REQUIRED');
+      await updateConnectorInstanceHealth(pool, brandId, ciId, 'token_expired');
       return;
     }
     log.error(`connector=${ciId} auth failed`, { err: err });
@@ -179,11 +181,13 @@ async function repullConnector(params: RepullParams): Promise<void> {
         // ADR-AD-7: daily quota (or exhausted QPS backoff) → mark RateLimited + ABORT run.
         log.error(`connector=${ciId} RateLimited — aborting run (retry next)`);
         await setSyncState(pool, brandId, ciId, 'error', 'RateLimited — retry next run');
+        await updateConnectorInstanceHealth(pool, brandId, ciId, 'rate_limited');
         return;
       }
       if (s.includes(GOOGLE_AUTH_ERROR)) {
         recordConnectorAuthRejected('google_ads'); // P2.6: make the silent token-expiry death loud
         await setSyncState(pool, brandId, ciId, 'error', 'google auth error — RECONNECT_REQUIRED');
+        await updateConnectorInstanceHealth(pool, brandId, ciId, 'token_expired');
         return;
       }
       log.error(`connector=${ciId} level=${level} stream error`, { err: err });

@@ -1,4 +1,5 @@
 import { log } from "../../log.js";
+import { CircuitBreaker } from '@brain/observability';
 
 /**
  * shopify-live-client.ts — Shopify Admin REST client for the live re-pull job.
@@ -47,6 +48,7 @@ const REQUEST_TIMEOUT_MS = 20_000;
 
 export class ShopifyLiveClient {
   private readonly base: string;
+  private readonly breaker: CircuitBreaker;
 
   constructor(
     private readonly shopDomain: string,
@@ -55,6 +57,7 @@ export class ShopifyLiveClient {
   ) {
     const host = shopDomain.replace(/^https?:\/\//, '');
     this.base = `https://${host}/admin/api/${apiVersion}`;
+    this.breaker = new CircuitBreaker({ name: 'shopify-live', failureThreshold: 5, openMs: 30_000 });
   }
 
   /**
@@ -82,6 +85,7 @@ export class ShopifyLiveClient {
 
     const url = `${this.base}/orders.json?${query}`;
 
+    return this.breaker.fire(async () => {
     for (let attempt = 0; attempt < 10; attempt++) {
       const res = await fetch(url, {
         headers: {
@@ -119,6 +123,7 @@ export class ShopifyLiveClient {
     }
 
     throw new Error('[shopify-repull] Exceeded max 429 retry attempts on orders page');
+    }); // end breaker.fire
   }
 }
 

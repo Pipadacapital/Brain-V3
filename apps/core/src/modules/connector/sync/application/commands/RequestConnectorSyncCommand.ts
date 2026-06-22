@@ -20,7 +20,7 @@
  */
 
 import type { AuditWriter } from '@brain/audit';
-import type { IConnectorInstanceRepository } from '../../../sources/storefront/shopify/domain/repositories/IConnectorInstanceRepository.js';
+import type { IConnectorInstanceRepository } from '@brain/connector-core';
 import type { ISecretsManager } from '@brain/connector-secrets';
 import { PgSyncRequestRepository } from '../../infrastructure/PgSyncRequestRepository.js';
 

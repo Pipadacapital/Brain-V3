@@ -70,10 +70,9 @@ import { PgBackfillJobRepository } from './modules/connector/backfill/infrastruc
 import type { BackfillJobProgress } from '@brain/contracts';
 import { PgSyncRequestRepository } from './modules/connector/sync/infrastructure/PgSyncRequestRepository.js';
 import { RequestConnectorSyncCommand } from './modules/connector/sync/application/commands/RequestConnectorSyncCommand.js';
-import { registerShopifyWebhookRoutes } from './modules/connector/sources/storefront/shopify/interfaces/webhooks/shopifyWebhookHandler.js';
-import { registerRazorpayWebhookRoutes } from './modules/connector/sources/payment/razorpay/interfaces/webhooks/razorpayWebhookHandler.js';
-import { registerShopfloWebhookRoutes } from './modules/connector/sources/checkout/shopflo/interfaces/webhooks/shopfloWebhookHandler.js';
-import { registerWooCommerceWebhookRoutes } from './modules/connector/sources/storefront/woocommerce/interfaces/webhooks/woocommerceWebhookHandler.js';
+import { registerAllWebhookRoutes } from './modules/connector/webhooks/platform/registerWebhookRoutes.js';
+import { registerRazorpayConnectorRoutes } from './modules/connector/sources/payment/razorpay/interfaces/http/razorpayConnectorRoutes.js';
+import { RotateWebhookSecretCommand } from './modules/connector/sources/payment/razorpay/application/commands/RotateWebhookSecretCommand.js';
 import { registerShopifyConnectorRoutes } from './modules/connector/sources/storefront/shopify/interfaces/http/shopifyConnectorRoutes.js';
 import { registerDevShopifySyncRoutes } from './modules/connector/sources/storefront/shopify/interfaces/http/devShopifySyncRoutes.js';
 import { registerPixelRoutes, buildDefaultSnippet, isValidIngestHost } from './modules/connector/pixel/interfaces/http/pixelRoutes.js';
@@ -81,7 +80,7 @@ import { registerPixelRoutes, buildDefaultSnippet, isValidIngestHost } from './m
 import { getDefinition, isConnectable, CONNECTOR_CATALOG } from './modules/connector/catalog/index.js';
 import { registerOAuthDispatch, getOAuthDispatch } from './modules/connector/catalog/dispatch.js';
 import { InitiateOAuthCommand } from './modules/connector/sources/storefront/shopify/application/commands/InitiateOAuthCommand.js';
-import { ConnectorInstance as ConnectorInstanceEntity } from './modules/connector/sources/storefront/shopify/domain/entities/ConnectorInstance.js';
+import { ConnectorInstance as ConnectorInstanceEntity } from '@brain/connector-core';
 import {
   HandleOAuthCallbackCommand,
   HmacValidationError,
@@ -180,6 +179,38 @@ export async function main(): Promise<void> {
     secretsProvider.getSecret(jwtSigningSecretRef),
     secretsProvider.getSecret(cookieSecretRef),
   ]);
+
+  // ── App secrets: META_APP_SECRET + GOOGLE_ADS_CLIENT_SECRET (sub-fix 3) ─────
+  // In production these env vars hold AWS Secrets Manager ARNs; AwsSecretsProvider
+  // fetches the values at startup (fail-fast if absent — no silent drift).
+  // In dev they hold the raw values; LocalSecretsProvider returns them as-is.
+  // After resolution the values are written back to process.env so the existing
+  // command call sites (HandleMetaOAuthCallbackCommand, HandleGoogleAdsOAuthCallbackCommand,
+  // meta-token-client.ts) read the resolved values without further refactoring.
+  // FAIL-CLOSED: missing META_APP_SECRET in production → startup aborts.
+  if (isProduction) {
+    if (!process.env['META_APP_SECRET']) {
+      throw new Error(
+        '[core] FATAL: META_APP_SECRET must be set in production (ARN or Secrets Manager name). ' +
+          'HandleMetaOAuthCallbackCommand and the meta-token-refresh job require it.',
+      );
+    }
+    if (!process.env['GOOGLE_ADS_CLIENT_SECRET']) {
+      throw new Error(
+        '[core] FATAL: GOOGLE_ADS_CLIENT_SECRET must be set in production (ARN or Secrets Manager name). ' +
+          'HandleGoogleAdsOAuthCallbackCommand requires it.',
+      );
+    }
+  }
+  // Resolve (non-empty only — skip absent optional secrets in dev)
+  if (process.env['META_APP_SECRET']) {
+    const resolved = await secretsProvider.getSecret(process.env['META_APP_SECRET']);
+    process.env['META_APP_SECRET'] = resolved;
+  }
+  if (process.env['GOOGLE_ADS_CLIENT_SECRET']) {
+    const resolved = await secretsProvider.getSecret(process.env['GOOGLE_ADS_CLIENT_SECRET']);
+    process.env['GOOGLE_ADS_CLIENT_SECRET'] = resolved;
+  }
 
   // Load remaining configuration.
   const config = {
@@ -708,22 +739,12 @@ export async function main(): Promise<void> {
     return salt;
   }
 
-  // Register Shopify webhook routes (PUBLIC — HMAC-protected, exempt from session guard).
-  // The CSRF middleware at the onRequest hook already exempts /api/v1/webhooks/ paths.
-  registerShopifyWebhookRoutes(app, {
-    secretsManager: connectorSecretsManager,
-    rawPgPool,
-    producer: webhookProducer,
-    liveTopic,
-    getSaltHex: getWebhookSaltHex,
-  });
-
-  app.log.info({ topic: liveTopic }, '[core] Shopify webhook receiver registered (B1)');
-
-  // ── B1: Razorpay webhook receiver (ADR-RZ-7 / C2 / C3 / MB-1) ───────────────
-  // PUBLIC route — HMAC-protected (NN-4); exempt from session guard + CSRF middleware.
-  // CSRF middleware already exempts /api/v1/webhooks/ paths (see onRequest hook above).
-  registerRazorpayWebhookRoutes(app, {
+  // ── Generic webhook pipeline (all 4 providers: Shopify/Razorpay/Shopflo/WooCommerce) ──
+  // PUBLIC routes — HMAC-protected (NN-4); exempt from session guard + CSRF middleware.
+  // The generic WebhookPipeline (Template Method) runs all common steps; per-provider
+  // WebhookStrategy (Strategy) handles signatureVerify + payloadMap only.
+  // Per-IP sliding-window rate-limit applied at the pipeline ingress.
+  registerAllWebhookRoutes(app, {
     secretsManager: connectorSecretsManager,
     rawPgPool,
     producer: webhookProducer,
@@ -732,33 +753,7 @@ export async function main(): Promise<void> {
     redis,
   });
 
-  app.log.info({ topic: liveTopic }, '[core] Razorpay webhook receiver registered (ADR-RZ-7)');
-
-  // ── B1: Shopflo webhook receiver (Track B — checkout_abandoned) ─────────────
-  // PUBLIC route — HMAC-protected (NN-4); exempt from session guard + CSRF middleware.
-  // Same deps as Razorpay: secretsManager, rawPgPool, producer, liveTopic, salt, redis.
-  // Brand is resolved server-side from the connector row (MT-1), never the body.
-  registerShopfloWebhookRoutes(app, {
-    secretsManager: connectorSecretsManager,
-    rawPgPool,
-    producer: webhookProducer,
-    liveTopic,
-    getSaltHex: getWebhookSaltHex,
-    redis,
-  });
-
-  app.log.info({ topic: liveTopic }, '[core] Shopflo webhook receiver registered (Track B)');
-
-  registerWooCommerceWebhookRoutes(app, {
-    secretsManager: connectorSecretsManager,
-    rawPgPool,
-    producer: webhookProducer,
-    liveTopic,
-    getSaltHex: getWebhookSaltHex,
-    redis,
-  });
-
-  app.log.info({ topic: liveTopic }, '[core] WooCommerce webhook receiver registered (real-time orders)');
+  app.log.info({ topic: liveTopic }, '[core] All webhook receivers registered via generic pipeline (Shopify/Razorpay/Shopflo/WooCommerce)');
 
   // DEV-ONLY: validate-sync spike — pull live orders via the real connected token.
   // Mounted only outside production (token crosses the boundary here, I-S09).
@@ -1017,15 +1012,31 @@ export async function main(): Promise<void> {
       const requestId = (req.id as string) ?? randomUUID();
       // Fetch all connector instances for this brand (RLS enforced)
       const instances = await connectorRepo.findAllByBrand(brandId);
-      const instanceByProvider = new Map(instances.map((i) => [i.provider, i]));
+
+      // Gap B: group instances by provider — one provider can now have multiple accounts
+      const activeByProvider = new Map<string, typeof instances>();
+      for (const inst of instances) {
+        if (inst.status === 'disconnected') continue; // disconnected rows render as connectable
+        const list = activeByProvider.get(inst.provider) ?? [];
+        list.push(inst);
+        activeByProvider.set(inst.provider, list);
+      }
 
       // Join catalog with instance data → MarketplaceTile[]
       const tiles = CONNECTOR_CATALOG.map((def) => {
-        // A 'disconnected' instance row persists for audit, but the marketplace must present it
-        // as NOT connected (clean Connect button) — never as a connected/failing tile. Only an
-        // ACTIVE instance attaches to the tile; a disconnected one renders as connectable again.
-        const found = instanceByProvider.get(def.id);
-        const instance = found && found.status !== 'disconnected' ? found : null;
+        const activeInstances = activeByProvider.get(def.id) ?? [];
+        const firstInstance = activeInstances[0] ?? null;
+
+        const toInstanceShape = (inst: typeof instances[0]) => ({
+          id: inst.id,
+          status: inst.status,
+          health_state: inst.healthState,
+          safety_rating: inst.safetyRating,
+          shop_domain: inst.shopDomain || null,
+          connected_at: inst.connectedAt.toISOString(),
+          account_key: inst.accountKey,
+        });
+
         return {
           id: def.id,
           category: def.category,
@@ -1034,16 +1045,10 @@ export async function main(): Promise<void> {
           connect_method: def.connectMethod as 'oauth' | 'credential' | 'coming_soon',
           available: def.availability === 'available',
           // NN-2: NO secret_ref, NO token in this response (success criterion #4)
-          instance: instance
-            ? {
-                id: instance.id,
-                status: instance.status,
-                health_state: instance.healthState,
-                safety_rating: instance.safetyRating,
-                shop_domain: instance.shopDomain || null,
-                connected_at: instance.connectedAt.toISOString(),
-              }
-            : null,
+          // Back-compat: `instance` = first active instance (single-account consumers)
+          instance: firstInstance ? toInstanceShape(firstInstance) : null,
+          // Gap B: all active instances per provider (multi-account consumers)
+          instances: activeInstances.map(toInstanceShape),
         };
       });
 
@@ -1211,6 +1216,8 @@ export async function main(): Promise<void> {
             disconnectedAt: null,
             createdAt: now,
             updatedAt: now,
+            accountKey: razorpayAccountId,
+            providerConfig: { razorpay_account_id: razorpayAccountId },
           });
           await connectorRepo.save(instance);
 
@@ -1289,6 +1296,8 @@ export async function main(): Promise<void> {
             disconnectedAt: null,
             createdAt: now,
             updatedAt: now,
+            accountKey: merchantId,
+            providerConfig: { shopflo_merchant_id: merchantId },
           });
           await connectorRepo.save(instance);
 
@@ -1363,6 +1372,8 @@ export async function main(): Promise<void> {
             disconnectedAt: null,
             createdAt: now,
             updatedAt: now,
+            accountKey: appid,
+            providerConfig: { gokwik_appid: appid },
           });
           await connectorRepo.save(instance);
 
@@ -1427,6 +1438,7 @@ export async function main(): Promise<void> {
 
           const now = new Date();
           const connectorInstanceId = randomUUID();
+          const shiprocketAccountKey = channelId ?? email;
           const instance = ConnectorInstanceEntity.create({
             id: connectorInstanceId,
             brandId,
@@ -1440,6 +1452,8 @@ export async function main(): Promise<void> {
             disconnectedAt: null,
             createdAt: now,
             updatedAt: now,
+            accountKey: shiprocketAccountKey,
+            providerConfig: channelId ? { shiprocket_channel_id: channelId } : {},
           });
           await connectorRepo.save(instance);
 
@@ -1524,6 +1538,8 @@ export async function main(): Promise<void> {
             disconnectedAt: null,
             createdAt: now,
             updatedAt: now,
+            accountKey: siteUrl,
+            providerConfig: { woocommerce_site_url: siteUrl },
           });
           await connectorRepo.save(instance);
 
@@ -1559,7 +1575,7 @@ export async function main(): Promise<void> {
           });
         }
 
-        // Generic credential connector path (non-Razorpay — kept for future connectors)
+        // Generic credential connector path (non-specific — kept for future connectors)
         const { arn } = await connectorSecretsManager.storeSecret(brandId, { connectorType }, credentials);
         const now = new Date();
         const instance = ConnectorInstanceEntity.create({
@@ -1575,6 +1591,8 @@ export async function main(): Promise<void> {
           disconnectedAt: null,
           createdAt: now,
           updatedAt: now,
+          accountKey: '__default__',
+          providerConfig: {},
         });
         await connectorRepo.save(instance);
         await auditWriter.append({
@@ -1619,6 +1637,31 @@ export async function main(): Promise<void> {
       getBrandId: (req) => getBrandId(req as Parameters<typeof getBrandId>[0]),
       callbackUrl: config.googleAdsCallbackUrl,
       appBaseUrl: config.appBaseUrl,
+    });
+
+    // ── Razorpay webhook-secret rotation (C2 / ADR-RZ-8 — owner/admin only) ───
+    // POST /api/v1/connectors/razorpay/:id/rotate-webhook-secret
+    // Rotates ONLY the webhook_secret in the composite bundle; key_id/key_secret are
+    // preserved. The ARN (connector_instance.secret_ref) is unchanged (NN-2).
+    const rotateWebhookSecretCmd = new RotateWebhookSecretCommand(
+      connectorSecretsManager,
+      connectorRepo,
+    );
+    registerRazorpayConnectorRoutes(scope, {
+      rotateWebhookSecret: rotateWebhookSecretCmd,
+      getBrandId: (req) => getBrandId(req as Parameters<typeof getBrandId>[0]),
+      onRotated: async (brandId, connectorInstanceId) => {
+        await auditWriter.append({
+          brand_id: brandId,
+          actor_id: null,
+          actor_role: 'admin',
+          action: 'connector.webhook_secret_rotated',
+          entity_type: 'connector_instance',
+          entity_id: connectorInstanceId,
+          payload: { connector_type: 'razorpay' },
+          // NO old_secret, NO new_secret in payload (I-S02/I-S09)
+        });
+      },
     });
 
     // Generic disconnect (ADR-CM-3 / Sec-C3 / Sec-C4 audit)

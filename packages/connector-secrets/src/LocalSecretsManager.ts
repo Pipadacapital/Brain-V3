@@ -101,6 +101,17 @@ export class LocalSecretsManager implements ISecretsManager {
     await this.devDelete(name); // DEV-TOKEN-REACH
   }
 
+  async putSecretValue(
+    secretArn: string,
+    credential: Record<string, string>,
+  ): Promise<void> {
+    // I-S09: credential values are NEVER logged.
+    const name = secretArn.split(':secret:')[1] ?? secretArn;
+    const json = JSON.stringify(credential);
+    this.store.set(name, json);
+    await this.devPersist(name, json); // DEV-TOKEN-REACH: durable + cross-process
+  }
+
   // ── Shopify-specific methods (back-compat — unused by new generic code) ───────
 
   async storeShopifyToken(

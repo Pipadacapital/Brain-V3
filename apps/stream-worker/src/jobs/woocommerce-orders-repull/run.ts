@@ -24,6 +24,7 @@
  */
 
 import { Pool } from 'pg';
+import { updateConnectorInstanceHealth } from '../../infrastructure/pg/ConnectorInstanceHealthRepository.js';
 import { Kafka, type Producer } from 'kafkajs';
 import { buildPartitionKey } from '@brain/events';
 import { CollectorEventV1Schema, COLLECTOR_EVENT_V1_TOPIC_SUFFIX } from '@brain/contracts';
@@ -44,6 +45,7 @@ import { SaltProvider, LocalSecretsProvider } from '../../infrastructure/secrets
 import { resolveSaltHex } from '@brain/identity-core';
 import { log } from '../../log.js';
 import { acquireCursorLock, getCursorValue, upsertCursorValue } from '../../infrastructure/pg/CursorRepository.js';
+import { SyncRunRepository } from '../../infrastructure/pg/SyncRunRepository.js';
 
 const DB_URL =
   process.env['BRAIN_APP_DATABASE_URL'] ??
@@ -55,7 +57,24 @@ const LIVE_TOPIC = process.env['COLLECTOR_TOPIC'] ?? `${ENV}.${COLLECTOR_EVENT_V
 const REGION_CODE = process.env['BRAIN_REGION_CODE'] ?? 'IN';
 
 const ORDERS_CURSOR_RESOURCE = 'orders.repull' as const;
-const ORDERS_WINDOW_MS = 90 * 24 * 60 * 60 * 1000; // 90-day trailing window (storefront backfill)
+
+/**
+ * Backfill depth: configurable via WOOCOMMERCE_BACKFILL_DAYS env var (integer days).
+ * Defaults to 90 days. Accepts 1–730 (clamped). Example: WOOCOMMERCE_BACKFILL_DAYS=180.
+ */
+function resolveBackfillDepthMs(): number {
+  const envDays = process.env['WOOCOMMERCE_BACKFILL_DAYS'];
+  if (envDays) {
+    const parsed = parseInt(envDays, 10);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      const clamped = Math.min(Math.max(parsed, 1), 730);
+      return clamped * 24 * 60 * 60 * 1000;
+    }
+  }
+  return 90 * 24 * 60 * 60 * 1000; // default: 90-day trailing window (storefront backfill)
+}
+
+const ORDERS_WINDOW_MS = resolveBackfillDepthMs();
 
 interface WooConnectorRow {
   connector_instance_id: string;
@@ -72,8 +91,9 @@ interface WooSecretBundle {
 export async function run(targetConnectorInstanceId?: string): Promise<void> {
   const pool = new Pool({ connectionString: DB_URL, max: 5 });
   const kafka = new Kafka({ clientId: 'woocommerce-orders-repull', brokers: BROKERS, retry: { retries: 5 } });
-  const producer = kafka.producer();
+  const producer = kafka.producer({ idempotent: true });
   const saltProvider = new SaltProvider(new LocalSecretsProvider(), resolveSaltHex);
+  const syncRunRepo = new SyncRunRepository(pool);
 
   try {
     await producer.connect();
@@ -87,7 +107,7 @@ export async function run(targetConnectorInstanceId?: string): Promise<void> {
     log.info(`found ${connectors.length} connector(s) to re-pull`);
 
     for (const connector of connectors) {
-      await repullConnector({ connector, pool, producer, saltProvider });
+      await repullConnector({ connector, pool, producer, saltProvider, syncRunRepo });
     }
   } finally {
     await producer.disconnect();
@@ -120,17 +140,25 @@ interface RepullParams {
   pool: Pool;
   producer: Producer;
   saltProvider: SaltProvider;
+  syncRunRepo: SyncRunRepository;
 }
 
 async function repullConnector(params: RepullParams): Promise<void> {
-  const { connector, pool, producer, saltProvider } = params;
+  const { connector, pool, producer, saltProvider, syncRunRepo } = params;
   const { connector_instance_id: ciId, brand_id: brandId, secret_ref: secretRef, woocommerce_site_url: siteUrl } = connector;
 
   log.info(`connector=${ciId} brand=${brandId}`);
 
+  const runId = SyncRunRepository.newRunId();
+  const startedAt = await syncRunRepo.startRun({
+    runId, brandId, provider: 'woocommerce', runType: 'repull',
+    correlationId: `woocommerce-orders-repull:${ciId}:${runId}`,
+  });
+
   const creds = await resolveWooCredentials(secretRef, siteUrl ?? '');
   if (!creds) {
     log.error(`connector=${ciId} — credentials not found (RECONNECT_REQUIRED)`);
+    await syncRunRepo.closeRun({ runId, brandId, startedAt, status: 'failed', errorClass: 'AUTH_ERROR', errorDetail: 'credentials not found — RECONNECT_REQUIRED' });
     return;
   }
 
@@ -139,6 +167,7 @@ async function repullConnector(params: RepullParams): Promise<void> {
     saltHex = await saltProvider.saltHexForBrand(brandId);
   } catch (e) {
     log.error(`connector=${ciId} — salt fetch failed`, { detail: e });
+    await syncRunRepo.closeRun({ runId, brandId, startedAt, status: 'failed', errorClass: 'CONFIG_ERROR', errorDetail: String(e) });
     return;
   }
 
@@ -154,14 +183,18 @@ async function repullConnector(params: RepullParams): Promise<void> {
       recordConnectorAuthRejected('woocommerce');
       log.error(`connector=${ciId} — woocommerce auth error (RECONNECT_REQUIRED)`, { err });
       await setSyncState(pool, brandId, ciId, 'error', 'woocommerce auth error — RECONNECT_REQUIRED');
+      await updateConnectorInstanceHealth(pool, brandId, ciId, 'token_expired');
+      await syncRunRepo.closeRun({ runId, brandId, startedAt, status: 'failed', errorClass: 'AUTH_ERROR', errorDetail: 'woocommerce auth error — RECONNECT_REQUIRED' });
       return;
     }
     log.error(`connector=${ciId} cursor=${ORDERS_CURSOR_RESOURCE} error`, { err });
     await setSyncState(pool, brandId, ciId, 'error', 'woocommerce re-pull failed');
+    await syncRunRepo.closeRun({ runId, brandId, startedAt, status: 'failed', errorClass: 'FETCH_ERROR', errorDetail: String(err) });
     return;
   }
 
   await setSyncState(pool, brandId, ciId, 'connected', null);
+  await syncRunRepo.closeRun({ runId, brandId, startedAt, status: 'succeeded', rowsIngested: emitted });
   log.info(`connector=${ciId} COMPLETED emitted=${emitted}`);
 }
 
@@ -349,4 +382,4 @@ if (process.argv[1]?.endsWith('run.ts') || process.argv[1]?.endsWith('run.js')) 
   });
 }
 
-export { enumerateConnectors, setSyncState, ORDERS_CURSOR_RESOURCE, ORDERS_WINDOW_MS };
+export { enumerateConnectors, setSyncState, ORDERS_CURSOR_RESOURCE, ORDERS_WINDOW_MS, resolveBackfillDepthMs };

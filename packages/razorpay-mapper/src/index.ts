@@ -11,7 +11,7 @@
  *          ALL card.* fields (card_last4, card_network, card_brand, card_issuer,
  *          card_international, card_type, card_country) are DROPPED at the boundary.
  *   MB-2 — uuidv5-shaped deterministic event_id seeds with entityType discriminator.
- *          Three seed fns: item, summary (brand-level), webhook.
+ *          Three seed fns: item, summary (brand-level), webhook, webhook-with-type.
  *          Provably non-colliding with ':order.live.v1' / ':order.backfill.v1' namespaces.
  *
  * Exports:
@@ -21,20 +21,36 @@
  *   uuidV5FromSettlementItem       — per-payment event_id seed (MB-2)
  *   uuidV5FromSettlementSummary    — brand-level event_id seed (MB-2)
  *   uuidV5FromRazorpayWebhook      — webhook event_id seed (MB-2)
+ *   uuidV5FromRazorpayWebhookWithType — webhook event_id seed with entity_type discriminator (MB-2)
  *   mapSettlementItemToEvent       — raw settlement item → MappedSettlementEvent (allowlisted + hashed)
  *   mapPaymentWebhookToMapRow      — payment.captured webhook payload → connector map row fields
+ *   mapRefundWebhookToEvent        — refund.processed / refund.failed → MappedSettlementEvent
+ *   mapDisputeWebhookToEvent       — payment.dispute.* lifecycle → MappedDisputeEvent
+ *   mapOrderPaidWebhookToEvent     — order.paid → MappedOrderEvent
+ *   mapPaymentAuthorizedToEvent    — payment.authorized → MappedOrderEvent
  *   RazorpaySettlementItem         — raw Razorpay settlement API response item type
- *   MappedSettlementEvent          — output type
+ *   RazorpayRefundEntity           — raw Razorpay refund webhook payload
+ *   RazorpayDisputeEntity          — raw Razorpay dispute webhook payload
+ *   RazorpayOrderEntity            — raw Razorpay order.paid webhook payload
+ *   MappedSettlementEvent          — output type (settlement + refund lane)
+ *   MappedDisputeEvent             — output type (dispute lane)
+ *   MappedOrderEvent               — output type (order.paid / payment.authorized lane)
  *   SettlementEventProperties      — properties payload type
+ *   DisputeEventProperties         — dispute event properties type
+ *   OrderEventProperties           — order/authorization event properties type
  *
  * Money: amount_minor stays BIGINT-as-string throughout (I-S07). Input is integer paisa.
  * PII: raw utr/payment_id consumed here and DROPPED — only hashed identifiers in output (C1).
  * settlement_id: NOT a PII identifier — identifies a batch, not a natural person.
  *                Stored as opaque operational reference (un-hashed) in Bronze/ledger.
  *                Documented as PII data catalog entry: "settlement_id — batch reference, not person-linkable".
+ * dispute.lost: REVENUE REVERSAL — amount_minor carried with negative sign semantics in
+ *               dispute_direction='debit' (amount itself is positive integer; consumers
+ *               must apply sign based on dispute_direction).
  */
 
 import { createHash } from 'node:crypto';
+import { hashToUuidShaped } from '@brain/connector-core';
 
 // ── Event name constant ──────────────────────────────────────────────────────
 
@@ -162,32 +178,7 @@ export interface RazorpayOrderMapRow {
   razorpay_payment_id: string;   // raw — stored in RLS-protected map table (internal join only)
 }
 
-// ── UUID utils (mirrors shopify-mapper hashToUuidShaped algorithm) ────────────
-
-/**
- * Format the first 16 bytes of a sha256 hash as a UUIDv5-shaped string.
- * Sets version nibble = 5 and RFC-4122 variant bits.
- * Algorithm IDENTICAL to packages/shopify-mapper/src/index.ts:hashToUuidShaped (I-ST04).
- */
-function hashToUuidShaped(input: string): string {
-  const hash = createHash('sha256').update(input, 'utf8').digest();
-  const bytes = Buffer.alloc(16);
-  hash.copy(bytes, 0, 0, 16);
-
-  // Version nibble = 5
-  bytes[6] = (bytes[6]! & 0x0f) | 0x50;
-  // Variant bits = RFC 4122 (10xx xxxx)
-  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
-
-  const hex = bytes.toString('hex');
-  return [
-    hex.slice(0, 8),
-    hex.slice(8, 12),
-    hex.slice(12, 16),
-    hex.slice(16, 20),
-    hex.slice(20, 32),
-  ].join('-');
-}
+// ── UUID utils — shared kernel util (@brain/connector-core), IDENTICAL byte layout (I-ST04) ──
 
 // ── C1: Boundary hash for DPDP financial identifiers ─────────────────────────
 
@@ -273,6 +264,31 @@ export function uuidV5FromRazorpayWebhook(
 ): string {
   return hashToUuidShaped(
     `${brandId}:${razorpayWebhookEventId}:settlement.webhook.v1`,
+  );
+}
+
+/**
+ * Deterministic event_id for a Razorpay webhook event with an entity_type discriminator.
+ * Seed: sha256(`${brandId}:${razorpayWebhookEventId}:${entityTypeTag}:settlement.webhook.v1`)
+ *
+ * The entityTypeTag discriminator is CRITICAL for events that can share the same Razorpay
+ * event_id but represent different semantic entities (e.g. refund.processed vs refund.failed
+ * both referencing the same refund_id). Using this fn instead of uuidV5FromRazorpayWebhook
+ * ensures the different event types land as DISTINCT Bronze rows.
+ *
+ * Provably non-colliding with uuidV5FromRazorpayWebhook (distinct token count in seed).
+ *
+ * @param brandId               Brand UUID
+ * @param razorpayWebhookEventId Razorpay event.id from the webhook body
+ * @param entityTypeTag          Opaque string discriminator (e.g. 'refund.processed', 'dispute.lost')
+ */
+export function uuidV5FromRazorpayWebhookWithType(
+  brandId: string,
+  razorpayWebhookEventId: string,
+  entityTypeTag: string,
+): string {
+  return hashToUuidShaped(
+    `${brandId}:${razorpayWebhookEventId}:${entityTypeTag}:settlement.webhook.v1`,
   );
 }
 
@@ -427,6 +443,406 @@ export function mapSettlementItemToEvent(
     settlement_at: settledAt,
     occurred_at: occurredAt,
     reconciliation_type: reconciliationType,
+  };
+
+  return {
+    event_name: SETTLEMENT_LIVE_V1_EVENT_NAME,
+    occurred_at: occurredAt,
+    properties,
+  };
+}
+
+// ── New event entity types ────────────────────────────────────────────────────
+
+/**
+ * Raw Razorpay refund entity from refund.processed / refund.failed webhook payload.
+ * card.* fields MUST NOT cross the boundary (C4).
+ */
+export interface RazorpayRefundEntity {
+  id?: string | null;                 // rfnd_XXXX — raw refund_id
+  payment_id?: string | null;         // pay_XXXX — the payment this refund belongs to
+  amount?: number | string | null;    // paisa integer — the refunded amount
+  currency?: string | null;
+  status?: string | null;             // 'processed' | 'failed'
+  speed_processed?: string | null;    // 'normal' | 'instant'
+  speed_requested?: string | null;
+  created_at?: number | null;         // Unix timestamp
+  processed_at?: number | null;       // Unix timestamp
+  notes?: Record<string, unknown> | null;
+  [key: string]: unknown;
+}
+
+/**
+ * Dispute lifecycle types — maps to Razorpay event names.
+ * dispute.lost is a REVENUE REVERSAL (debit direction).
+ */
+export type DisputeLifecycleType =
+  | 'dispute.created'
+  | 'dispute.under_review'
+  | 'dispute.won'
+  | 'dispute.lost';
+
+/**
+ * direction for dispute events: 'credit' (won/reversal returned) | 'debit' (created/lost — money withheld/taken).
+ */
+export type DisputeDirection = 'debit' | 'credit';
+
+/**
+ * Raw Razorpay dispute entity from payment.dispute.* webhook payloads.
+ */
+export interface RazorpayDisputeEntity {
+  id?: string | null;                 // disp_XXXX
+  payment_id?: string | null;         // pay_XXXX — the payment under dispute
+  amount?: number | string | null;    // paisa integer — disputed amount
+  currency?: string | null;
+  reason_code?: string | null;        // e.g. 'FROD'
+  reason_description?: string | null;
+  status?: string | null;             // 'open' | 'under_review' | 'won' | 'lost'
+  created_at?: number | null;         // Unix timestamp
+  respond_by?: number | null;         // Unix timestamp — chargeback response deadline
+  [key: string]: unknown;
+}
+
+/**
+ * Raw Razorpay order entity from order.paid webhook payload.
+ */
+export interface RazorpayOrderEntity {
+  id?: string | null;                 // order_XXXX
+  amount?: number | string | null;    // paisa integer — order amount
+  amount_paid?: number | string | null; // paisa integer — total paid so far
+  amount_due?: number | string | null;  // paisa integer — remaining
+  currency?: string | null;
+  status?: string | null;             // 'paid'
+  created_at?: number | null;         // Unix timestamp
+  [key: string]: unknown;
+}
+
+/**
+ * Raw Razorpay payment entity from payment.authorized webhook payload.
+ */
+export interface RazorpayPaymentAuthorizedEntity {
+  id?: string | null;                 // pay_XXXX
+  order_id?: string | null;           // order_XXXX
+  amount?: number | string | null;    // paisa integer
+  currency?: string | null;
+  status?: string | null;             // 'authorized'
+  created_at?: number | null;         // Unix timestamp
+  [key: string]: unknown;
+}
+
+// ── New output types ──────────────────────────────────────────────────────────
+
+/**
+ * Properties for refund.processed / refund.failed events on the settlement.live.v1 lane.
+ * Reuses the settlement lane so the ledger receives both settlements and refunds.
+ * PII: raw refund_id and payment_id are hashed (C1).
+ * Money: amount_minor is BIGINT-as-string in integer paisa (I-S07).
+ */
+export interface RefundEventProperties {
+  source: 'razorpay';
+  entity_type: 'refund';
+  refund_id_hash: string;             // sha256(salt ‖ rfnd_XXXX) — raw DROPPED (C1)
+  payment_id_hash: string | null;     // sha256(salt ‖ pay_XXXX) — raw DROPPED (C1)
+  amount_minor: string;               // BIGINT-as-string, INR paisa (I-S07)
+  currency_code: string;
+  status: string | null;              // 'processed' | 'failed'
+  speed_processed: string | null;
+  occurred_at: string;                // ISO-8601
+}
+
+/**
+ * Properties for payment.dispute.* lifecycle events on the settlement.live.v1 lane.
+ *
+ * dispute.lost is a REVENUE REVERSAL:
+ *   dispute_direction = 'debit' — the disputed amount is withheld / charged back.
+ *   Consumers (ledger writers) MUST apply a negative sign when dispute_direction = 'debit'.
+ *
+ * dispute.won is the reversal of a lost dispute (credit direction).
+ * dispute.created / dispute.under_review are informational (debit — amount withheld).
+ */
+export interface DisputeEventProperties {
+  source: 'razorpay';
+  entity_type: 'dispute';
+  dispute_lifecycle: DisputeLifecycleType;
+  /**
+   * 'debit'  — money withheld or taken (dispute.created, dispute.under_review, dispute.lost).
+   * 'credit' — money returned (dispute.won).
+   * Consumers MUST use dispute_direction to apply the correct sign to amount_minor.
+   */
+  dispute_direction: DisputeDirection;
+  dispute_id_hash: string;            // sha256(salt ‖ disp_XXXX) — raw DROPPED (C1)
+  payment_id_hash: string | null;     // sha256(salt ‖ pay_XXXX) — raw DROPPED (C1)
+  amount_minor: string;               // BIGINT-as-string, INR paisa (I-S07)
+  currency_code: string;
+  reason_code: string | null;
+  status: string | null;
+  respond_by: string | null;          // ISO-8601 — chargeback response deadline
+  occurred_at: string;                // ISO-8601
+}
+
+/**
+ * Properties for order.paid and payment.authorized events on the settlement.live.v1 lane.
+ * These are pre-settlement signals — no UTR, no refund context.
+ * PII: raw payment_id hashed (C1). order_id is not person-linkable.
+ */
+export interface OrderEventProperties {
+  source: 'razorpay';
+  entity_type: 'order_paid' | 'payment_authorized';
+  payment_id_hash: string | null;     // sha256(salt ‖ pay_XXXX) — raw DROPPED (C1); null for order.paid with no payment link
+  order_id: string | null;            // Razorpay-native order_XXXX — not PII
+  amount_minor: string;               // BIGINT-as-string, INR paisa (I-S07)
+  currency_code: string;
+  status: string | null;
+  occurred_at: string;                // ISO-8601
+}
+
+export interface MappedRefundEvent {
+  event_name: typeof SETTLEMENT_LIVE_V1_EVENT_NAME;
+  occurred_at: string;
+  properties: RefundEventProperties;
+}
+
+export interface MappedDisputeEvent {
+  event_name: typeof SETTLEMENT_LIVE_V1_EVENT_NAME;
+  occurred_at: string;
+  properties: DisputeEventProperties;
+}
+
+export interface MappedOrderEvent {
+  event_name: typeof SETTLEMENT_LIVE_V1_EVENT_NAME;
+  occurred_at: string;
+  properties: OrderEventProperties;
+}
+
+// ── Dispute direction resolver ────────────────────────────────────────────────
+
+/**
+ * Resolve dispute_direction from the lifecycle type.
+ *   debit  = money withheld or taken by payment processor (created, under_review, lost).
+ *   credit = money returned to merchant (won).
+ *
+ * dispute.lost is a REVENUE REVERSAL — consumers MUST apply negative sign to amount_minor
+ * when dispute_direction = 'debit'.
+ */
+function resolveDisputeDirection(lifecycle: DisputeLifecycleType): DisputeDirection {
+  switch (lifecycle) {
+    case 'dispute.won':
+      return 'credit';
+    case 'dispute.created':
+    case 'dispute.under_review':
+    case 'dispute.lost':
+    default:
+      return 'debit';
+  }
+}
+
+// ── New mapper functions ──────────────────────────────────────────────────────
+
+/**
+ * Map a Razorpay refund entity (from refund.processed or refund.failed webhook) to a
+ * MappedRefundEvent on the settlement.live.v1 lane.
+ *
+ * Key invariants:
+ *   1. refund_id (rfnd_XXXX) and payment_id (pay_XXXX) are hashed via sha256(salt ‖ normalized) (C1).
+ *   2. Raw identifiers are NOT in the returned struct.
+ *   3. amount_minor is BIGINT-as-string integer paisa (I-S07).
+ *   4. entity_type='refund' discriminates from settlement.live.v1 payment rows.
+ *
+ * @param entity          Raw Razorpay refund entity from webhook payload
+ * @param brandId         Brand UUID (from connector row, not from body)
+ * @param saltHex         Per-brand 64-char hex salt for PII hashing
+ */
+export function mapRefundWebhookToEvent(
+  entity: RazorpayRefundEntity,
+  brandId: string,
+  saltHex: string,
+): MappedRefundEvent {
+  void brandId; // reserved for future brand-scoped fields
+
+  const rawRefundId = entity.id ? String(entity.id).trim() : null;
+  const rawPaymentId = entity.payment_id ? String(entity.payment_id).trim() : null;
+  const currency = String(entity.currency ?? 'INR').trim().toUpperCase();
+
+  // ── C1: Hash DPDP identifiers at boundary — raw values DROPPED after this scope ──
+  if (!rawRefundId) {
+    throw new Error('[razorpay-mapper] mapRefundWebhookToEvent: refund id missing (I-S07)');
+  }
+  const refundIdHash = hashRazorpayId(rawRefundId, saltHex);
+  const paymentIdHash = rawPaymentId ? hashRazorpayId(rawPaymentId, saltHex) : null;
+
+  // ── I-S07: Integer paisa → BIGINT-as-string ──────────────────────────────────
+  const amountMinor = paisaToMinorString(entity.amount);
+
+  const occurredAt =
+    toIso(entity.processed_at) ??
+    toIso(entity.created_at) ??
+    new Date().toISOString();
+
+  const properties: RefundEventProperties = {
+    source: 'razorpay',
+    entity_type: 'refund',
+    refund_id_hash: refundIdHash,
+    payment_id_hash: paymentIdHash,
+    amount_minor: amountMinor,
+    currency_code: currency,
+    status: entity.status ? String(entity.status) : null,
+    speed_processed: entity.speed_processed ? String(entity.speed_processed) : null,
+    occurred_at: occurredAt,
+  };
+
+  return {
+    event_name: SETTLEMENT_LIVE_V1_EVENT_NAME,
+    occurred_at: occurredAt,
+    properties,
+  };
+}
+
+/**
+ * Map a Razorpay dispute entity to a MappedDisputeEvent on the settlement.live.v1 lane.
+ *
+ * REVENUE REVERSAL note (dispute.lost):
+ *   dispute_direction = 'debit' for dispute.lost — the disputed amount is charged back.
+ *   Consumers MUST check dispute_direction and apply negative sign when 'debit'.
+ *
+ * Key invariants:
+ *   1. dispute_id (disp_XXXX) and payment_id (pay_XXXX) are hashed (C1).
+ *   2. amount_minor is BIGINT-as-string integer paisa (I-S07).
+ *   3. entity_type='dispute' discriminates from settlement / refund rows.
+ *   4. dispute_direction='debit' for created/under_review/lost; 'credit' for won.
+ *
+ * @param entity          Raw Razorpay dispute entity from webhook payload
+ * @param lifecycle       The dispute lifecycle stage (from the webhook event name)
+ * @param brandId         Brand UUID (from connector row, not from body)
+ * @param saltHex         Per-brand 64-char hex salt for PII hashing
+ */
+export function mapDisputeWebhookToEvent(
+  entity: RazorpayDisputeEntity,
+  lifecycle: DisputeLifecycleType,
+  brandId: string,
+  saltHex: string,
+): MappedDisputeEvent {
+  void brandId; // reserved for future brand-scoped fields
+
+  const rawDisputeId = entity.id ? String(entity.id).trim() : null;
+  const rawPaymentId = entity.payment_id ? String(entity.payment_id).trim() : null;
+  const currency = String(entity.currency ?? 'INR').trim().toUpperCase();
+
+  // ── C1: Hash DPDP identifiers ──────────────────────────────────────────────
+  if (!rawDisputeId) {
+    throw new Error('[razorpay-mapper] mapDisputeWebhookToEvent: dispute id missing');
+  }
+  const disputeIdHash = hashRazorpayId(rawDisputeId, saltHex);
+  const paymentIdHash = rawPaymentId ? hashRazorpayId(rawPaymentId, saltHex) : null;
+
+  // ── I-S07: Integer paisa ────────────────────────────────────────────────────
+  const amountMinor = paisaToMinorString(entity.amount);
+
+  const occurredAt = toIso(entity.created_at) ?? new Date().toISOString();
+  const respondBy = entity.respond_by != null ? toIso(entity.respond_by) : null;
+  const direction = resolveDisputeDirection(lifecycle);
+
+  const properties: DisputeEventProperties = {
+    source: 'razorpay',
+    entity_type: 'dispute',
+    dispute_lifecycle: lifecycle,
+    dispute_direction: direction,
+    dispute_id_hash: disputeIdHash,
+    payment_id_hash: paymentIdHash,
+    amount_minor: amountMinor,
+    currency_code: currency,
+    reason_code: entity.reason_code ? String(entity.reason_code) : null,
+    status: entity.status ? String(entity.status) : null,
+    respond_by: respondBy ?? null,
+    occurred_at: occurredAt,
+  };
+
+  return {
+    event_name: SETTLEMENT_LIVE_V1_EVENT_NAME,
+    occurred_at: occurredAt,
+    properties,
+  };
+}
+
+/**
+ * Map a Razorpay order.paid entity to a MappedOrderEvent on the settlement.live.v1 lane.
+ * order.paid fires when ALL payments for an order are complete.
+ *
+ * Key invariants:
+ *   1. order_id is Razorpay-native (not PII) — stored as opaque reference.
+ *   2. No payment_id available directly on order entity (no hash needed here).
+ *   3. amount_minor / amount_paid_minor are BIGINT-as-string (I-S07).
+ *
+ * @param entity    Raw Razorpay order entity from order.paid webhook
+ * @param brandId   Brand UUID (from connector row)
+ * @param saltHex   Per-brand 64-char hex salt
+ */
+export function mapOrderPaidWebhookToEvent(
+  entity: RazorpayOrderEntity,
+  brandId: string,
+  saltHex: string,
+): MappedOrderEvent {
+  void brandId;
+  void saltHex; // No PII to hash on order entity — order_id is not person-linkable
+
+  const currency = String(entity.currency ?? 'INR').trim().toUpperCase();
+  const amountMinor = paisaToMinorString(entity.amount);
+  const occurredAt = toIso(entity.created_at) ?? new Date().toISOString();
+
+  const properties: OrderEventProperties = {
+    source: 'razorpay',
+    entity_type: 'order_paid',
+    payment_id_hash: null,            // no payment_id on order entity
+    order_id: entity.id ? String(entity.id).trim() : null,
+    amount_minor: amountMinor,
+    currency_code: currency,
+    status: entity.status ? String(entity.status) : null,
+    occurred_at: occurredAt,
+  };
+
+  return {
+    event_name: SETTLEMENT_LIVE_V1_EVENT_NAME,
+    occurred_at: occurredAt,
+    properties,
+  };
+}
+
+/**
+ * Map a Razorpay payment.authorized entity to a MappedOrderEvent on the settlement.live.v1 lane.
+ * payment.authorized fires when a payment is authorized but not yet captured.
+ *
+ * Key invariants:
+ *   1. payment_id (pay_XXXX) is hashed (C1).
+ *   2. order_id is Razorpay-native — not PII, stored as opaque reference.
+ *   3. amount_minor is BIGINT-as-string (I-S07).
+ *
+ * @param entity    Raw Razorpay payment entity from payment.authorized webhook
+ * @param brandId   Brand UUID (from connector row)
+ * @param saltHex   Per-brand 64-char hex salt for PII hashing
+ */
+export function mapPaymentAuthorizedToEvent(
+  entity: RazorpayPaymentAuthorizedEntity,
+  brandId: string,
+  saltHex: string,
+): MappedOrderEvent {
+  void brandId;
+
+  const rawPaymentId = entity.id ? String(entity.id).trim() : null;
+  const currency = String(entity.currency ?? 'INR').trim().toUpperCase();
+  const amountMinor = paisaToMinorString(entity.amount);
+  const occurredAt = toIso(entity.created_at) ?? new Date().toISOString();
+
+  // ── C1: Hash payment_id ────────────────────────────────────────────────────
+  const paymentIdHash = rawPaymentId ? hashRazorpayId(rawPaymentId, saltHex) : null;
+
+  const properties: OrderEventProperties = {
+    source: 'razorpay',
+    entity_type: 'payment_authorized',
+    payment_id_hash: paymentIdHash,
+    order_id: entity.order_id ? String(entity.order_id).trim() : null,
+    amount_minor: amountMinor,
+    currency_code: currency,
+    status: entity.status ? String(entity.status) : null,
+    occurred_at: occurredAt,
   };
 
   return {

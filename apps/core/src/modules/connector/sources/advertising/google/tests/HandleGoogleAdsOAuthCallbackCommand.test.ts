@@ -15,10 +15,10 @@ import {
 } from '../application/commands/HandleGoogleAdsOAuthCallbackCommand.js';
 import { InProcessOAuthStateStore } from '../../../storefront/shopify/infrastructure/state/InProcessOAuthStateStore.js';
 import { LocalSecretsManager } from '@brain/connector-secrets';
-import type { IConnectorInstanceRepository } from '../../../storefront/shopify/domain/repositories/IConnectorInstanceRepository.js';
-import type { IConnectorSyncStatusRepository } from '../../../storefront/shopify/domain/repositories/IConnectorSyncStatusRepository.js';
-import { ConnectorInstance } from '../../../storefront/shopify/domain/entities/ConnectorInstance.js';
-import { ConnectorSyncStatus } from '../../../storefront/shopify/domain/entities/ConnectorSyncStatus.js';
+import type { IConnectorInstanceRepository } from '@brain/connector-core';
+import type { IConnectorSyncStatusRepository } from '@brain/connector-core';
+import { ConnectorInstance } from '@brain/connector-core';
+import { ConnectorSyncStatus } from '@brain/connector-core';
 
 const REAL_BRAND_ID = '550e8400-e29b-41d4-a716-446655440000';
 const ATTACKER_BRAND_ID = 'ffffffff-ffff-ffff-ffff-ffffffffffff';
@@ -44,6 +44,7 @@ function makeConnectorRepo(brandId: string): IConnectorInstanceRepository {
     findByBrandAndProvider: vi.fn().mockResolvedValue(null),
     findById: vi.fn().mockResolvedValue(null),
     findAllByBrand: vi.fn().mockResolvedValue([]),
+    findAllByBrandAndProvider: vi.fn().mockResolvedValue([]),
     save: vi.fn().mockResolvedValue(base),
     update: vi.fn().mockResolvedValue(base),
   };

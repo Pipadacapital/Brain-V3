@@ -30,7 +30,8 @@ import {
   GOKWIK_RTO_PREDICT_V1_EVENT_NAME,
   type GokwikRtoPredictRecord,
 } from '@brain/gokwik-mapper';
-import { log } from "../../log.js";
+import { log } from '../../log.js';
+import { SyncRunRepository } from '../../infrastructure/pg/SyncRunRepository.js';
 
 const DB_URL =
   process.env['BRAIN_APP_DATABASE_URL'] ??
@@ -66,7 +67,8 @@ function loadFixture(): GokwikRtoPredictRecord[] {
 export async function run(targetConnectorInstanceId?: string): Promise<void> {
   const pool = new Pool({ connectionString: DB_URL, max: 5 });
   const kafka = new Kafka({ clientId: 'gokwik-rto-predict-emit', brokers: BROKERS, retry: { retries: 5 } });
-  const producer = kafka.producer();
+  const producer = kafka.producer({ idempotent: true });
+  const syncRunRepo = new SyncRunRepository(pool);
 
   try {
     await producer.connect();
@@ -80,7 +82,7 @@ export async function run(targetConnectorInstanceId?: string): Promise<void> {
 
     const records = loadFixture();
     for (const connector of connectors) {
-      await emitForConnector(connector, records, producer);
+      await emitForConnector(connector, records, producer, syncRunRepo);
     }
   } finally {
     await producer.disconnect();
@@ -111,8 +113,14 @@ async function emitForConnector(
   connector: GokwikConnectorRow,
   records: GokwikRtoPredictRecord[],
   producer: Producer,
+  syncRunRepo: SyncRunRepository,
 ): Promise<void> {
   const { connector_instance_id: ciId, brand_id: brandId } = connector;
+  const runId = SyncRunRepository.newRunId();
+  const startedAt = await syncRunRepo.startRun({
+    runId, brandId, provider: 'gokwik', runType: 'repull',
+    correlationId: `gokwik-rto-predict-emit:${ciId}:${runId}`,
+  });
   const messages = [];
   for (const record of records) {
     const orderId = record.order_id ? String(record.order_id) : '';
@@ -147,6 +155,9 @@ async function emitForConnector(
     await producer.send({ topic: LIVE_TOPIC, messages });
   }
   log.info(`connector=${ciId} brand=${brandId} emitted=${messages.length} (synthetic)`);
+  await syncRunRepo.closeRun({
+    runId, brandId, startedAt, status: 'succeeded', rowsIngested: messages.length,
+  });
 }
 
 if (process.argv[1]?.endsWith('run.ts') || process.argv[1]?.endsWith('run.js')) {

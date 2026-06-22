@@ -15,7 +15,8 @@
  * WIRED in main.ts — do NOT remove without updating the corresponding *-bronze-wiring.e2e.test.ts.
  */
 import { Consumer, Kafka, EachMessagePayload } from 'kafkajs';
-import { incrementCounter } from '@brain/observability';
+import { incrementCounter, extractKafkaTraceContext } from '@brain/observability';
+import { context } from '@opentelemetry/api';
 import { ProcessEventUseCase, ProcessResult } from '../../application/ProcessEventUseCase.js';
 import { DlqProducer } from '../../infrastructure/kafka/DlqProducer.js';
 import type { IRetryCounter } from '../../infrastructure/redis/RetryCounterAdapter.js';
@@ -59,6 +60,12 @@ export class EventBronzeBridgeConsumer {
         const offset = message.offset;
         const commitNext = () =>
           this.consumer.commitOffsets([{ topic, partition, offset: String(Number(offset) + 1) }]);
+
+        // Resume producer trace context across the Kafka boundary (observability skill).
+        const traceCtx = extractKafkaTraceContext(
+          (message.headers ?? {}) as Record<string, Buffer | string | undefined>,
+        );
+        return context.with(traceCtx, async () => {
 
         // ── Filter: only our event_name (cheap header peek, fallback to body) ──
         let eventName: string | null = null;
@@ -123,6 +130,8 @@ export class EventBronzeBridgeConsumer {
           }
           if (current < MAX_RETRY) throw err; // KafkaJS redelivers without committing
         }
+
+        }); // end context.with(traceCtx, ...)
       },
     });
   }

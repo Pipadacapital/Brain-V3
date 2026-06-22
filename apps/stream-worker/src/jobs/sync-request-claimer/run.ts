@@ -56,6 +56,9 @@ const REPULL_DISPATCH: Readonly<Record<string, () => Promise<RepullRun>>> = {
   gokwik: async () => (await import('../gokwik-awb-repull/run.js')).run,
   shiprocket: async () => (await import('../shiprocket-shipment-repull/run.js')).run,
   woocommerce: async () => (await import('../woocommerce-orders-repull/run.js')).run,
+  // GA4: polling re-pull (runReport). No inbound webhooks.
+  // Honest-empty guard: no creds → surfaces 'GA4 not connected', emits zero events.
+  ga4: async () => (await import('../ga4-repull/run.js')).run,
 };
 
 /** Providers that have a scheduled re-pull dispatch (the registry keys). */
@@ -92,44 +95,27 @@ export async function claimDueRepullConnectors(
 }
 
 /**
- * Enumerate all connected connectors across the three existing SECURITY DEFINER fns.
- * Runs as brain_app (which calls the SECURITY DEFINER fns running as 'brain') — no GUC,
- * fail-closed: under brain_app without a GUC the fns are the ONLY way to see the rows.
+ * Enumerate all connected connectors via the generic SECURITY DEFINER fn
+ * list_connectors_for_repull(provider) (migration 0091, Gap A).
+ *
+ * Runs as brain_app (which calls the SECURITY DEFINER fn running as 'brain') — no GUC,
+ * fail-closed: under brain_app without a GUC the fn is the ONLY way to see the rows.
+ *
+ * One DB query per provider, parallel (Promise.all). The function returns
+ * (connector_instance_id, brand_id, provider) — provider is already stamped so callers
+ * need no per-provider branching. Replaces 6 bespoke per-provider SECURITY DEFINER calls.
  */
 export async function enumerateConnectedConnectors(pool: Pool): Promise<ConnectorRow[]> {
-  const rows: ConnectorRow[] = [];
-
-  const shopify = await pool.query<{ connector_instance_id: string; brand_id: string }>(
-    `SELECT connector_instance_id, brand_id FROM list_connectors_for_repull()`,
+  const results = await Promise.all(
+    REPULL_PROVIDERS.map((provider) =>
+      pool.query<ConnectorRow>(
+        `SELECT connector_instance_id, brand_id, provider
+         FROM list_connectors_for_repull($1)`,
+        [provider],
+      ),
+    ),
   );
-  for (const r of shopify.rows) {
-    rows.push({ ...r, provider: 'shopify' });
-  }
-
-  const razorpay = await pool.query<{ connector_instance_id: string; brand_id: string }>(
-    `SELECT connector_instance_id, brand_id FROM list_razorpay_connectors_for_settlement_repull()`,
-  );
-  for (const r of razorpay.rows) {
-    rows.push({ ...r, provider: 'razorpay' });
-  }
-
-  const ads = await pool.query<{ connector_instance_id: string; brand_id: string; provider: string }>(
-    `SELECT connector_instance_id, brand_id, provider FROM list_ad_connectors_for_spend_repull()`,
-  );
-  for (const r of ads.rows) {
-    rows.push({ connector_instance_id: r.connector_instance_id, brand_id: r.brand_id, provider: r.provider });
-  }
-
-  // P0: GoKwik AWB connectors — the SECURITY DEFINER fn existed (0030) but was never enumerated, so
-  // the scheduler/claimer never dispatched gokwik re-pulls. Same pattern as the others.
-  const gokwik = await pool.query<{ connector_instance_id: string; brand_id: string }>(
-    `SELECT connector_instance_id, brand_id FROM list_gokwik_connectors_for_awb_repull()`,
-  );
-  for (const r of gokwik.rows) {
-    rows.push({ ...r, provider: 'gokwik' });
-  }
-
-  return rows;
+  return results.flatMap((r) => r.rows);
 }
 
 /**

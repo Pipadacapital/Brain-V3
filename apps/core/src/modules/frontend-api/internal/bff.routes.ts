@@ -183,7 +183,10 @@ export function registerBffRoutes(
   // FoundationSignals both verdicts derive from. Storefront detection is catalog-driven
   // (connector-GENERAL — Shopify is one storefront app of many). Callers guard pool/rawPool first.
   const STOREFRONT_PROVIDERS = CONNECTOR_CATALOG.filter((c) => c.category === 'storefront').map((c) => c.id);
-  const UNHEALTHY_CONNECTOR_STATES = new Set(['Failed', 'Disconnected', 'TokenExpired', 'Disabled']);
+  // All 7-state health values that mean data is NOT flowing reliably (ADR-CM-5).
+  // RateLimited added: a rate-limited connector cannot serve data and must not be reported healthy.
+  // NOTE: 'Delayed' is NOT included — data is still flowing, just behind schedule.
+  const UNHEALTHY_CONNECTOR_STATES = new Set(['Failed', 'Disconnected', 'TokenExpired', 'RateLimited', 'Disabled']);
   const gatherFoundationSignals = async (
     brandId: string,
     requestId: string,
@@ -212,7 +215,11 @@ export function registerBffRoutes(
       pixelInstalled = pixelRes.rows[0]?.installed === true;
       const commerce = commerceRes.rows[0];
       commerceConnected = commerce?.status === 'connected';
-      commerceHealthy = commerceConnected && !UNHEALTHY_CONNECTOR_STATES.has(commerce?.health_state ?? 'Healthy');
+      // Fail-closed: if health_state is NULL (should not happen post-0021 — column is NOT NULL — but
+      // defensively treat an absent/null health as 'Failed' so the gate does not pass silently).
+      // TokenExpired and RateLimited are in UNHEALTHY_CONNECTOR_STATES above, so a connector whose
+      // repull runner just transitioned its health_state will correctly report !commerceHealthy here.
+      commerceHealthy = commerceConnected && !UNHEALTHY_CONNECTOR_STATES.has(commerce?.health_state ?? 'Failed');
     } finally {
       client.release();
     }

@@ -22,7 +22,7 @@
  * PII: raw email/phone consumed here and DROPPED — only hashed identifiers in output (D-10/I-S02).
  */
 
-import { createHash } from 'node:crypto';
+import { hashToUuidShaped } from '@brain/connector-core';
 import { hashIdentifier, normalizePhone } from '@brain/identity-core';
 
 // ── Re-exported types used by both stream-worker (re-pull) and core (webhook) ─
@@ -222,31 +222,9 @@ export function tryDecimalToMinor(str: string | null | undefined): bigint | null
 // ── UUID utils (moved from shopify-backfill/uuid-utils.ts) ───────────────────
 
 /**
- * Format the first 16 bytes of a sha256 hash as a UUIDv5-shaped string.
- * Sets version nibble = 5 and RFC-4122 variant bits.
- * This is the same algorithm used by the original uuid-utils.ts (I-ST04).
- */
-function hashToUuidShaped(input: string): string {
-  const hash = createHash('sha256').update(input, 'utf8').digest();
-  const bytes = Buffer.alloc(16);
-  hash.copy(bytes, 0, 0, 16);
-
-  // Version nibble = 5
-  bytes[6] = (bytes[6]! & 0x0f) | 0x50;
-  // Variant bits = RFC 4122 (10xx xxxx)
-  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
-
-  const hex = bytes.toString('hex');
-  return [
-    hex.slice(0, 8),
-    hex.slice(8, 12),
-    hex.slice(12, 16),
-    hex.slice(16, 20),
-    hex.slice(20, 32),
-  ].join('-');
-}
-
-/**
+ * hashToUuidShaped — now the SHARED kernel util (@brain/connector-core). The byte layout is
+ * identical to the prior local copy, so deterministic event_ids are unchanged (I-ST04).
+ *
  * Deterministic event_id for a BACKFILLED Shopify order (unchanged semantics).
  * Input: sha256(`${brandId}:${shopifyOrderId}:order.backfill.v1`)
  * ONE id per (brand, order) — idempotent re-run dedup.

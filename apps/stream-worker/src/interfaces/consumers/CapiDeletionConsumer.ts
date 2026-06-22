@@ -27,6 +27,8 @@
  *   NOTHING) → identical state. 3× replay → one deletion request.
  */
 import { Consumer, Kafka, EachMessagePayload } from 'kafkajs';
+import { extractKafkaTraceContext } from '@brain/observability';
+import { context } from '@opentelemetry/api';
 import { RequestCapiDeletionUseCase } from '../../application/RequestCapiDeletionUseCase.js';
 import { DlqProducer } from '../../infrastructure/kafka/DlqProducer.js';
 import type { IRetryCounter } from '../../infrastructure/redis/RetryCounterAdapter.js';
@@ -66,6 +68,12 @@ export class CapiDeletionConsumer {
         const offset = message.offset;
         const now = new Date().toISOString();
 
+        // Resume producer trace context across the Kafka boundary (observability skill).
+        const traceCtx = extractKafkaTraceContext(
+          (message.headers ?? {}) as Record<string, Buffer | string | undefined>,
+        );
+
+        return context.with(traceCtx, async () => {
         try {
           const result = await this.requestDeletion.execute(message.value, now);
 
@@ -125,6 +133,8 @@ export class CapiDeletionConsumer {
             throw err;
           }
         }
+
+        }); // end context.with(traceCtx, ...)
       },
     });
   }

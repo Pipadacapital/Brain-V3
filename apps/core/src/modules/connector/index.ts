@@ -20,6 +20,5 @@
  */
 
 // Re-export domain types needed by the BFF / frontend-api module
-export type { ConnectorStatus } from './sources/storefront/shopify/domain/entities/ConnectorInstance.js';
-export type { SyncState } from './sources/storefront/shopify/domain/entities/ConnectorSyncStatus.js';
+export type { ConnectorStatus, SyncState } from '@brain/connector-core';
 export type { PixelState } from './pixel/domain/entities/PixelStatus.js';

@@ -12,29 +12,39 @@
  *
  * Brand isolation: ResolveIdentityUseCase sets set_config GUC per brand in-txn.
  * Connects as brain_app (never superuser brain) — RLS enforced (F-4).
+ *
+ * Durable retry counter (T2-8): the 5th constructor arg wires the same Redis-backed
+ * RetryCounterAdapter that ConsentSuppressor/Backfill consumers receive. Without it,
+ * the in-memory Map resets on pod restart so a poison message would never reach the DLQ
+ * and would wedge the partition forever. The retryScope isolates this group from other
+ * consumer groups reading the same topic.
  */
 
 import { Consumer, Kafka, EachMessagePayload } from 'kafkajs';
 import { ResolveIdentityUseCase } from '../application/ResolveIdentityUseCase.js';
 import { DlqProducer } from '../infrastructure/kafka/DlqProducer.js';
+import type { IRetryCounter } from '../infrastructure/redis/RetryCounterAdapter.js';
 import { log } from "../log.js";
 
 const MAX_RETRY = 5;
-type RetryKey = string;
 
 export class IdentityBridgeConsumer {
   private readonly consumer: Consumer;
   private readonly dlqProducer: DlqProducer;
-  private readonly retryCount = new Map<RetryKey, number>();
+  /** Durable retry-counter scope (T2-8): `{groupId}:{topic}` — isolates same-topic groups. */
+  private readonly retryScope: string;
 
   constructor(
     private readonly kafka: Kafka,
     private readonly resolveIdentity: ResolveIdentityUseCase,
     private readonly topic: string,
     private readonly groupId: string,
+    /** Durable (Redis) retry counter — survives restarts so a poison message reaches the DLQ (T2-8). */
+    private readonly retryCounter: IRetryCounter,
   ) {
     this.consumer = kafka.consumer({ groupId });
     this.dlqProducer = new DlqProducer(kafka);
+    this.retryScope = `${groupId}:${topic}`;
   }
 
   async start(): Promise<void> {
@@ -48,7 +58,6 @@ export class IdentityBridgeConsumer {
       eachMessage: async (payload: EachMessagePayload) => {
         const { topic, partition, message } = payload;
         const offset = message.offset;
-        const retryKey: RetryKey = `${partition}:${offset}`;
         const now = new Date().toISOString();
 
         try {
@@ -65,7 +74,7 @@ export class IdentityBridgeConsumer {
             await this.consumer.commitOffsets([
               { topic, partition, offset: String(Number(offset) + 1) },
             ]);
-            this.retryCount.delete(retryKey);
+            await this.retryCounter.reset(this.retryScope, partition, offset);
             log.info(`DLQ (invalid) partition=${partition} offset=${offset} reason=${result.reason}`);
             return;
           }
@@ -75,14 +84,13 @@ export class IdentityBridgeConsumer {
           await this.consumer.commitOffsets([
             { topic, partition, offset: String(Number(offset) + 1) },
           ]);
-          this.retryCount.delete(retryKey);
+          await this.retryCounter.reset(this.retryScope, partition, offset);
           log.info(`[identity-bridge] ${result.outcome} brand=${result.brandId ?? 'unknown'} ` +
                         `event=${result.eventId ?? 'unknown'} brain_id=${result.brainId ?? 'none'} ` +
                         `partition=${partition} offset=${offset}`);
         } catch (err) {
-          // Write error — do NOT commit offset. Increment retry counter.
-          const current = (this.retryCount.get(retryKey) ?? 0) + 1;
-          this.retryCount.set(retryKey, current);
+          // Write error — do NOT commit offset. Increment durable retry counter (T2-8).
+          const current = await this.retryCounter.increment(this.retryScope, partition, offset);
 
           log.error(`[identity-bridge] write error (attempt ${current}/${MAX_RETRY}) ` +
                         `partition=${partition} offset=${offset}`, { err: err });
@@ -98,7 +106,7 @@ export class IdentityBridgeConsumer {
               await this.consumer.commitOffsets([
                 { topic, partition, offset: String(Number(offset) + 1) },
               ]);
-              this.retryCount.delete(retryKey);
+              await this.retryCounter.reset(this.retryScope, partition, offset);
               log.warn(`DLQ (max retry) partition=${partition} offset=${offset}`);
             } catch (dlqErr) {
               log.error('DLQ produce failed — not committing offset', { err: dlqErr });

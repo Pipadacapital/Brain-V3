@@ -124,7 +124,8 @@ function makeSecretsManager(clientSecret: string): ISecretsManager {
     storeSecret: vi.fn(),
     getSecret: vi.fn(),
     deleteSecret: vi.fn(),
-  } as ISecretsManager;
+    putSecretValue: vi.fn().mockResolvedValue(undefined),
+  } as unknown as ISecretsManager;
 }
 
 // ── Build Fastify app for testing ─────────────────────────────────────────────

@@ -69,3 +69,17 @@ export function useInstallPixelShopify() {
     },
   });
 }
+
+/**
+ * Removal path: delete the Brain ScriptTag from the connected Shopify storefront and clear install
+ * state. On success the installation + health queries refresh, flipping the status to not-installed.
+ */
+export function useUninstallPixelShopify() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => pixelApi.uninstallShopify(),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: PIXEL_QUERY_KEY });
+    },
+  });
+}

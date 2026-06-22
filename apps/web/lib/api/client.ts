@@ -900,6 +900,15 @@ export const pixelApi = {
     return data;
   },
 
+  // Removal path: delete the Brain ScriptTag(s) from the connected storefront + clear install state.
+  uninstallShopify: async (): Promise<{ removed: number; already_absent: boolean }> => {
+    const { data } = await bffFetch<{ data: { removed: number; already_absent: boolean } }>(
+      '/v1/pixel/uninstall/shopify',
+      { method: 'POST', idempotencyKey: generateRequestId() },
+    );
+    return data;
+  },
+
   // BFF returns { request_id, data: {...} } — unwrap to flat PixelHealthResponse.
   getHealth: async (): Promise<PixelHealthResponse> => {
     const res = await bffFetch<{ request_id: string; data: PixelHealthResponse }>('/v1/pixel/health');

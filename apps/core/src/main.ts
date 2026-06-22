@@ -122,6 +122,8 @@ import { GetPixelHealthQuery } from './modules/connector/pixel/application/queri
 import { PgPixelInstallationRepository } from './modules/connector/pixel/infrastructure/repositories/PgPixelInstallationRepository.js';
 import { PgPixelStatusRepository } from './modules/connector/pixel/infrastructure/repositories/PgPixelStatusRepository.js';
 import { InstallPixelCommand, InstallPixelError } from './modules/connector/sources/storefront/shopify/application/commands/InstallPixelCommand.js';
+import { UninstallPixelCommand, UninstallPixelError } from './modules/connector/sources/storefront/shopify/application/commands/UninstallPixelCommand.js';
+import { ShopifyAdminClient } from './modules/connector/sources/storefront/shopify/infrastructure/api/ShopifyAdminClient.js';
 
 // ── RBAC guards (HIGH-MOUNT-01) ───────────────────────────────────────────────
 import { validateSessionPreHandler } from './modules/workspace-access/internal/interfaces/rest/auth.routes.js';
@@ -1847,12 +1849,32 @@ export async function main(): Promise<void> {
   // ── Pixel routes (HIGH-MOUNT-01) ───────────────────────────────────────────
   // pixelInstallationRepo / pixelStatusRepo / getOrCreateInstallation are constructed
   // earlier (above BrandService) so brand-create can auto-provision (ADR-4).
+  // Authoritative ScriptTag presence check for verify: a Shopify-auto-installed pixel never appears
+  // in the static storefront HTML (it loads via Shopify's JS loader), so we check the Admin API.
+  // Returns null when the brand has no connected Shopify storefront → verify falls back to HTML.
+  const shopifyScriptTagCheck = async (
+    brandId: string,
+  ): Promise<{ present: boolean; src: string | null } | null> => {
+    const conn = await connectorRepo.findByBrandAndProvider(brandId, 'shopify');
+    if (!conn || conn.status !== 'connected') return null;
+    const token = await connectorSecretsManager.getShopifyToken(conn.secretRef);
+    if (!token) return null;
+    try {
+      const client = new ShopifyAdminClient(conn.shopDomain, token);
+      const brainTags = (await client.listScriptTags()).filter((s) => s.src.includes('/pixel.js'));
+      return { present: brainTags.length > 0, src: brainTags[0]?.src ?? null };
+    } catch {
+      return null; // admin API hiccup → fall back to the HTML check rather than failing verify
+    }
+  };
+
   const verifyPixel = new VerifyPixelCommand(
     pixelInstallationRepo,
     pixelStatusRepo,
     async (_eventName: string, _payload: Record<string, unknown>) => {
       app.log.info({ event: _eventName, payload: _payload }, '[core] domain event emitted');
     },
+    shopifyScriptTagCheck,
   );
   const getPixelHealth = new GetPixelHealthQuery(pixelInstallationRepo, pixelStatusRepo);
 
@@ -1865,6 +1887,12 @@ export async function main(): Promise<void> {
     pixelInstallationRepo,
     pixelStatusRepo,
     config.pixelIngestBaseUrl,
+  );
+  // Removal path (delete the Brain ScriptTag + clear install state).
+  const uninstallPixel = new UninstallPixelCommand(
+    connectorRepo,
+    connectorSecretsManager,
+    pixelInstallationRepo,
   );
 
   // Pixel read routes (analyst+): GET /pixel/installation, GET /pixel/health
@@ -1986,6 +2014,25 @@ export async function main(): Promise<void> {
         });
       } catch (err) {
         if (err instanceof InstallPixelError) {
+          return reply.code(409).send({ request_id: requestId, error: { code: err.code, message: err.message } });
+        }
+        throw err;
+      }
+    });
+
+    // POST /pixel/uninstall/shopify — production removal path: delete the Brain ScriptTag(s) from the
+    // connected storefront + clear installed_at. Idempotent (removed=0 when nothing was installed).
+    scope.post('/api/v1/pixel/uninstall/shopify', async (req, reply) => {
+      const brandId = getBrandId(req);
+      const requestId = (req.id as string) ?? randomUUID();
+      try {
+        const result = await uninstallPixel.execute({ brandId });
+        return reply.code(200).send({
+          request_id: requestId,
+          data: { removed: result.removed, already_absent: result.alreadyAbsent },
+        });
+      } catch (err) {
+        if (err instanceof UninstallPixelError) {
           return reply.code(409).send({ request_id: requestId, error: { code: err.code, message: err.message } });
         }
         throw err;

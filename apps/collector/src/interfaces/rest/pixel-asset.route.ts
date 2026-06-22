@@ -99,9 +99,13 @@ export const PIXEL_JS = `(function(){
 
   function sendOne(body, done){
     // sendBeacon (survives unload) → fetch(keepalive) fallback. ONE object per POST, NO credentials.
-    try { if (NS.sendBeacon){ var blob = new Blob([body], {type:"application/json"}); if (NS.sendBeacon(COLLECT_URL, blob)){ done(true); return; } } } catch(e){}
+    // CONTENT-TYPE = text/plain (NOT application/json): text/plain is a CORS-"simple" content-type, so a
+    // cross-origin POST needs NO preflight. application/json forces an OPTIONS preflight — and a
+    // PREFLIGHTED sendBeacon is silently DROPPED by browsers (beacon returns true, the POST never sends),
+    // so events vanish. The body is still JSON text; the collector parses text/plain as JSON.
+    try { if (NS.sendBeacon){ var blob = new Blob([body], {type:"text/plain;charset=UTF-8"}); if (NS.sendBeacon(COLLECT_URL, blob)){ done(true); return; } } } catch(e){}
     try {
-      fetch(COLLECT_URL, { method:"POST", headers:{"Content-Type":"application/json"}, body:body, keepalive:true, credentials:"omit" })
+      fetch(COLLECT_URL, { method:"POST", headers:{"Content-Type":"text/plain;charset=UTF-8"}, body:body, keepalive:true, credentials:"omit" })
         .then(function(r){ done(!!(r && r.ok)); })["catch"](function(){ done(false); });
     } catch(e){ done(false); }
   }

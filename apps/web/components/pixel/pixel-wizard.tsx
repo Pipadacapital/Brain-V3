@@ -8,7 +8,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
 import { EmptyState } from '@/components/ui/empty-state';
-import { usePixelInstallation, useProvisionPixel, usePixelHealth, useVerifyPixel, useInstallPixelShopify } from '@/lib/hooks/use-pixel';
+import { usePixelInstallation, useProvisionPixel, usePixelHealth, useVerifyPixel, useInstallPixelShopify, useUninstallPixelShopify } from '@/lib/hooks/use-pixel';
 import { useBrandList } from '@/lib/hooks/use-workspace';
 import { BffApiError } from '@/lib/api/client';
 import { toast } from '@/components/ui/toaster';
@@ -76,6 +76,25 @@ export function PixelWizard() {
   const { mutate: verifyPixel, isPending: isVerifying } = useVerifyPixel();
   const { mutate: provisionPixel, isPending: isProvisioning } = useProvisionPixel();
   const { mutate: installShopify, isPending: isAutoInstalling } = useInstallPixelShopify();
+  const { mutate: uninstallShopify, isPending: isUninstalling } = useUninstallPixelShopify();
+
+  function handleUninstall() {
+    uninstallShopify(undefined, {
+      onSuccess: (res) => {
+        toast({
+          title: res.already_absent ? 'No pixel to remove' : 'Pixel removed from Shopify',
+          description: res.already_absent
+            ? 'There was no Brain Pixel on the storefront.'
+            : `Removed ${res.removed} pixel tag${res.removed === 1 ? '' : 's'} from your storefront.`,
+        });
+      },
+      onError: (err) => {
+        const description =
+          err instanceof BffApiError && err.message ? err.message : 'Could not remove the pixel. Try again.';
+        toast({ title: 'Remove failed', description, variant: 'destructive' });
+      },
+    });
+  }
 
   function handleAutoInstall() {
     installShopify(undefined, {
@@ -237,10 +256,23 @@ export function PixelWizard() {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <Button onClick={handleAutoInstall} disabled={isAutoInstalling} data-testid="btn-auto-install-shopify">
-            {isAutoInstalling && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />}
-            {isAutoInstalling ? 'Installing…' : 'Install on Shopify'}
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button onClick={handleAutoInstall} disabled={isAutoInstalling || isUninstalling} data-testid="btn-auto-install-shopify">
+              {isAutoInstalling && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />}
+              {isAutoInstalling ? 'Installing…' : installation?.installed ? 'Reinstall on Shopify' : 'Install on Shopify'}
+            </Button>
+            {installation?.installed && (
+              <Button
+                variant="outline"
+                onClick={handleUninstall}
+                disabled={isUninstalling || isAutoInstalling}
+                data-testid="btn-uninstall-shopify"
+              >
+                {isUninstalling && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />}
+                {isUninstalling ? 'Removing…' : 'Remove from Shopify'}
+              </Button>
+            )}
+          </div>
         </CardContent>
       </Card>
 

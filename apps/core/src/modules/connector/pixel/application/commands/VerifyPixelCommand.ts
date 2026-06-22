@@ -32,11 +32,24 @@ export class PixelInstallationNotFoundError extends Error {
   }
 }
 
+/**
+ * Port: authoritative presence check for an auto-installed (ScriptTag) pixel, via the storefront's own
+ * admin API (e.g. Shopify listScriptTags). Returns { present } when the brand has a connected
+ * auto-install storefront, or null when not applicable (no connected storefront / can't check) — in
+ * which case verify falls back to the public HTML check (manual-snippet installs). Injected by the
+ * composition root so this command stays decoupled from any specific connector.
+ */
+export type AutoInstallPixelChecker = (
+  brandId: string,
+) => Promise<{ present: boolean; src: string | null } | null>;
+
 export class VerifyPixelCommand {
   constructor(
     private readonly installationRepo: IPixelInstallationRepository,
     private readonly statusRepo: IPixelStatusRepository,
     private readonly emitEvent: (eventName: string, payload: Record<string, unknown>) => Promise<void>,
+    /** Optional authoritative check for auto-installed (ScriptTag) pixels. */
+    private readonly autoInstallCheck?: AutoInstallPixelChecker,
   ) {}
 
   async execute(input: VerifyPixelInput): Promise<VerifyPixelResult> {
@@ -57,12 +70,30 @@ export class VerifyPixelCommand {
       throw new Error(`[VerifyPixelCommand] pixel_status row missing for installation ${installation.id}`);
     }
 
-    // ── REAL backend HTTP check ──────────────────────────────────────────────
-    // Fetch the target host and look for the install_token in the response HTML.
-    const verificationResult = await this.checkPixelPresence(
-      installation.targetHost,
-      installation.installToken,
-    );
+    // ── Verification: authoritative auto-install check FIRST, then HTML fallback ──────────────
+    // Auto-installed (Shopify ScriptTag) pixels are injected by the storefront's own JS loader, so
+    // they NEVER appear in the static HTML — the public-HTML grep gives a false negative. When the
+    // brand has a connected auto-install storefront, the admin API (listScriptTags) is authoritative.
+    // For manual-snippet installs (no connected storefront), we fall back to the real HTML check.
+    let verificationResult: { found: boolean; reason: string };
+    const autoInstall = this.autoInstallCheck ? await this.autoInstallCheck(brandId) : null;
+    if (autoInstall && autoInstall.present) {
+      verificationResult = {
+        found: true,
+        reason: `Brain pixel ScriptTag is installed on ${installation.targetHost} (verified via the storefront admin API).`,
+      };
+    } else {
+      // Fetch the target host and look for the install_token in the response HTML (manual snippet).
+      const htmlResult = await this.checkPixelPresence(
+        installation.targetHost,
+        installation.installToken,
+      );
+      // If this brand auto-installs (ScriptTag) but no Brain tag was found, say so clearly.
+      verificationResult =
+        autoInstall && !autoInstall.present && !htmlResult.found
+          ? { found: false, reason: `No Brain pixel ScriptTag found on ${installation.targetHost}. Click "Install on Shopify" to add it.` }
+          : htmlResult;
+    }
 
     if (verificationResult.found) {
       // Mark installation as verified

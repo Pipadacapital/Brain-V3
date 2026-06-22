@@ -33,6 +33,13 @@ export class InstallPixelError extends Error {
   }
 }
 
+/**
+ * Defensive bare-hostname check before interpolating a brand's first-party CNAME into the ScriptTag
+ * src. The value is already validated at write time (PATCH /pixel/ingest-host) — this is belt-and-
+ * suspenders against a malformed stored host reaching Shopify.
+ */
+const HOSTNAME_RE = /^(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
+
 export interface InstallPixelInput {
   brandId: string;
   idempotencyKey: string;
@@ -94,26 +101,43 @@ export class InstallPixelCommand {
     // 4. Per-brand tokenized src — the ScriptTag-injected asset self-configures from the query
     //    string (no window.__brain available when injected by a ScriptTag).
     // Shopify REQUIRES the ScriptTag src to be HTTPS (and it must be publicly reachable by the
-    // storefront browser to actually fire). Fail fast with guidance rather than a Shopify 422.
-    if (!this.ingestBaseUrl.startsWith('https://')) {
+    // storefront browser to actually fire). Prefer the brand's configured first-party CNAME ingest
+    // host (always HTTPS) when set — that lets a brand auto-install without a global HTTPS ingest URL,
+    // and serves the pixel first-party (ITP/ad-blocker resilient). The stored host is already
+    // validated at write time (PATCH /pixel/ingest-host); a defensive check guards the interpolation.
+    const installation = await this.pixelInstallationRepo.findByBrandId(brandId);
+    const cname = installation?.customIngestHost ?? null;
+    const ingestBase =
+      cname && HOSTNAME_RE.test(cname) ? `https://${cname}` : this.ingestBaseUrl;
+
+    if (!ingestBase.startsWith('https://')) {
       throw new InstallPixelError(
         'INGEST_NOT_HTTPS',
-        'Shopify needs a public HTTPS pixel URL. Set PIXEL_INGEST_BASE_URL to an HTTPS host — a tunnel ' +
-          'locally (e.g. `pnpm dev:tunnel`) or your first-party CNAME in prod — then retry.',
+        'Shopify needs a public HTTPS pixel URL. Either set a first-party domain (Tracking Center → ' +
+          'First-party domain, a CNAME to Brain) or set PIXEL_INGEST_BASE_URL to an HTTPS host — a ' +
+          'tunnel locally (e.g. `pnpm dev:tunnel`) or your CNAME in prod — then retry.',
       );
     }
-    const src = `${this.ingestBaseUrl}/pixel.js?t=${inst.installToken}&b=${brandId}`;
+    const src = `${ingestBase}/pixel.js?t=${inst.installToken}&b=${brandId}`;
 
-    // 5/6. Idempotency: reuse an existing Brain ScriptTag if present; else create one.
+    // 5/6. Idempotency + RE-POINT: reuse an existing Brain ScriptTag ONLY if its src already matches
+    //      the desired src; otherwise delete the stale tag(s) and create a fresh one. Without this, a
+    //      ScriptTag created against an old ingest URL (e.g. a previous tunnel) would never be updated,
+    //      so the storefront keeps loading a dead pixel URL. We match on the exact src.
     const client = this.makeClient(conn.shopDomain, token);
     let ref: string;
     let alreadyPresent = false;
     try {
-      const existing = (await client.listScriptTags()).find((s) => s.src.includes('/pixel.js'));
-      if (existing) {
-        ref = String(existing.id);
+      const brainTags = (await client.listScriptTags()).filter((s) => s.src.includes('/pixel.js'));
+      const current = brainTags.find((s) => s.src === src);
+      if (current) {
+        ref = String(current.id);
         alreadyPresent = true;
       } else {
+        // Remove any stale Brain ScriptTag(s) pointing at a different src, then create the fresh one.
+        for (const stale of brainTags) {
+          await client.deleteScriptTag(stale.id);
+        }
         const created = await client.createScriptTag(src);
         ref = String(created.id);
       }

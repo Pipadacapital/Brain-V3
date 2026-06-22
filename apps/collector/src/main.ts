@@ -139,6 +139,17 @@ export async function main(): Promise<void> {
     trustProxy: true,
   });
 
+  // Parse text/plain bodies as JSON. The pixel SDK posts events as text/plain (a CORS-"simple"
+  // content-type) so cross-origin POSTs need no preflight — but the payload is still JSON. Accept-
+  // before-validate (D-1): an unparseable body becomes {} and is spooled anyway (never lose an event).
+  app.addContentTypeParser('text/plain', { parseAs: 'string' }, (_req, body, done) => {
+    try {
+      done(null, body && typeof body === 'string' ? JSON.parse(body) : {});
+    } catch {
+      done(null, {}); // accept-before-validate — spool it; the drainer/DQ handles malformed payloads
+    }
+  });
+
   // ── Edge abuse protection (REC-9): per-install_token rate-limit + origin allowlist ──
   // reject-before-spool preHandler (NOT a D-1 violation — admission gate, not validation).
   // VETO Set-Cookie on /collect (REC-4): the limiter is stateless, anon-id is client-side.

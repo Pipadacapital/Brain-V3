@@ -43,11 +43,17 @@ with raw as (
         l.brand_id,
         l.order_id,
         -- See header: deterministic content-ordered ordinal (StarRocks has no WITH ORDINALITY).
+        -- DB-AUDIT M8: order by a TOTAL key so the ordinal is stable across rebuilds even when lines
+        -- share (sku, variant_id, unit_price_minor) — quantity + title + the full serialized item
+        -- break ties; only byte-identical lines may reorder (harmless — their content is identical).
         row_number() over (
             partition by l.brand_id, l.order_id
             order by get_json_string(t.item, '$.sku'),
                      get_json_string(t.item, '$.variant_id'),
-                     get_json_string(t.item, '$.unit_price_minor')
+                     get_json_string(t.item, '$.unit_price_minor'),
+                     get_json_string(t.item, '$.quantity'),
+                     get_json_string(t.item, '$.title'),
+                     cast(t.item as string)
         )                                                          as line_index,
         get_json_string(t.item, '$.sku')                          as sku,
         get_json_string(t.item, '$.title')                        as title,

@@ -15,7 +15,9 @@ Authorizations from product owner:
 - ✅ **Sprint 2a DONE** (`f882247`): C4 read-default→iceberg, M6 collector_spool reaper.
 - ✅ **Sprint 2b DONE** (`feafe32`): DQ subsystem (all 5 checks) migrated off PG bronze → Iceberg SoR; verified live against StarRocks.
 - ✅ **C4 COMPLETE (bronze_events retired)**: PG bronze writer default-OFF (ProcessEventUseCase), all 5 operational readers Iceberg-only (PG branch + BronzeSource flag removed), `0070_drop_bronze_events.sql` staged (applies on next migrate+restart per its deploy note). bronze_events is no longer read or written.
-- 🟡 **Sprint 2 remaining**: C4b partition the unbounded append-only PG tables; H2 ledgers→Bronze + rebuild Gold from Iceberg; M3 incremental/date-partitioned marts; M6 webhook-archive + dq_check_result retention.
+- ✅ **M1 DONE** (`b14e8aa`): fail-closed brand-predicate at both StarRocks seams (was a latent cross-brand-leak footgun).
+- ✅ **M8 DONE**: deterministic total-order `line_index` in stg_order_line_events (stable across rebuilds).
+- 🟡 **Remaining (large, each its own focused effort)**: C4b partition the unbounded append-only PG tables; H2 ledgers→Bronze + rebuild Gold from Iceberg; M3 incremental/date-partitioned marts; M6 webhook-archive + dq_check_result retention; C3 SCD history snapshots + new marts (silver_session/journey/product, gold_funnel/cac, gold_attribution_by_channel); H4 campaign attribution; M2 checkout funnel stage; C2 identity-graph anon→known ingestion + brain_id-keyed attribution; H6/H7 identity+attribution history + true Customer 360; C5 feature-store wiring + ML foundation; M7 recommendation action ledger; M4 reference tables for hardcoded enums.
 
 ## Sprint 1 — Critical isolation + low-risk high-value (SHIP-BLOCKERS)
 

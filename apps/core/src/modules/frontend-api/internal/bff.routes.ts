@@ -1412,11 +1412,12 @@ export function registerBffRoutes(
         });
       }
 
-      // Pool guard: rawPool is required for the engine (F-SEC-02, D §3.1)
-      if (!rawPool) {
+      // Pool guard: the dashboard snapshot now reads the lakehouse gold ledger (PHASE G follow-up),
+      // so the Silver/Gold pool is required (billing still reads PG; this is the dashboard path).
+      if (!srPool) {
         return reply.code(503).send({
           request_id: requestId,
-          error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' },
+          error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier not available' },
         });
       }
 
@@ -1426,7 +1427,7 @@ export function registerBffRoutes(
       const asOf = new Date(`${asOfStr}T00:00:00Z`);
 
       // Call the analytics use-case — the SOLE read path (ADR-002, D-3)
-      const snapshot: ContractRevenueSnapshot = await getRevenueMetrics(auth.brandId, asOf, { pool: rawPool });
+      const snapshot: ContractRevenueSnapshot = await getRevenueMetrics(auth.brandId, asOf, { srPool });
 
       return reply.send({
         request_id: requestId,

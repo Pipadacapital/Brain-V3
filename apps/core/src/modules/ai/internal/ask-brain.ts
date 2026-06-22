@@ -213,12 +213,13 @@ async function computeBinding(
   switch (binding.metric_id) {
     case 'realized_revenue': {
       // Reuse the canonical analytics sole-read-path (identical to the dashboard number).
-      const snap = await getRevenueMetrics(brandId, asOfDate, deps);
+      // PHASE G follow-up: the snapshot reads the lakehouse gold ledger → pass { srPool }.
+      const snap = await getRevenueMetrics(brandId, asOfDate, { srPool });
       if (snap.state === 'no_data') return { figure_kind: 'money', money: null, scalar: null, no_data: true };
       return { figure_kind: 'money', money: snap.realized, scalar: null, no_data: false };
     }
     case 'provisional_revenue': {
-      const snap = await getRevenueMetrics(brandId, asOfDate, deps);
+      const snap = await getRevenueMetrics(brandId, asOfDate, { srPool });
       if (snap.state === 'no_data') return { figure_kind: 'money', money: null, scalar: null, no_data: true };
       return { figure_kind: 'money', money: snap.provisional, scalar: null, no_data: false };
     }

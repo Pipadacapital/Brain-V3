@@ -32,8 +32,8 @@
  * @see packages/metric-engine/src/realized-revenue.ts:71 (the ?? '0' landmine)
  */
 
-import type { EngineDeps } from '@brain/metric-engine';
-import { withBrandTxn, computeRealizedRevenue, computeProvisionalRevenue } from '@brain/metric-engine';
+import type { SilverDeps } from '@brain/metric-engine';
+import { withSilverBrand, BRAND_PREDICATE, computeRealizedRevenue, computeProvisionalRevenue } from '@brain/metric-engine';
 import type { RevenueSnapshot } from '../../domain/metrics/revenue-snapshot.js';
 import { serializeMoneyMap } from '../../domain/metrics/revenue-snapshot.js';
 
@@ -56,7 +56,7 @@ import { serializeMoneyMap } from '../../domain/metrics/revenue-snapshot.js';
 export async function getRevenueMetrics(
   brandId: string,
   asOf: Date,
-  deps: EngineDeps,
+  deps: SilverDeps,
 ): Promise<RevenueSnapshot> {
   const asOfStr = asOf.toISOString().split('T')[0] as string; // 'YYYY-MM-DD'
 
@@ -65,16 +65,14 @@ export async function getRevenueMetrics(
   // a brand whose recent orders are still inside the COD/prepaid recognition horizon has REAL
   // provisional revenue and must NOT be shown "No data yet". Realized may still be a true 0 (nothing
   // past the horizon yet) — that is honest, not a fabricated zero, and provisional carries the value.
-  // Runs inside withBrandTxn so the GUC is set and RLS scopes brand_id automatically.
-  const hasData = await withBrandTxn(deps.pool, brandId, async (client) => {
-    const r = await client.query<{ exists: boolean }>(
-      `SELECT EXISTS(
-         SELECT 1 FROM realized_revenue_ledger
-         WHERE brand_id = $1
-       ) AS exists`,
-      [brandId],
+  // PHASE G follow-up: existence is checked against the lakehouse gold ledger (the dashboard read
+  // source), scoped per-brand at the Silver seam (BRAND_PREDICATE).
+  const hasData = await withSilverBrand(deps.srPool, brandId, async (scope) => {
+    const rows = await scope.runScoped<{ one: number }>(
+      `SELECT 1 AS one FROM brain_gold.gold_revenue_ledger WHERE ${BRAND_PREDICATE} LIMIT 1`,
+      [],
     );
-    return r.rows[0]?.exists === true;
+    return rows.length > 0;
   });
 
   // Step 2: Honest-empty-state — only if the brand has NO ledger rows at all.

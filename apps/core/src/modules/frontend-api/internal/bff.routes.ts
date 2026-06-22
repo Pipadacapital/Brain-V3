@@ -3603,8 +3603,8 @@ export function registerBffRoutes(
         const today = new Date().toISOString().split('T')[0] as string;
         return reply.send({ request_id: requestId, data: { state: 'no_data', from: today, to: today, model } });
       }
-      if (!rawPool) {
-        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' } });
+      if (!srPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (StarRocks) not available' } });
       }
       const today = new Date().toISOString().split('T')[0] as string;
       const toStr = query.to ?? today;
@@ -3620,7 +3620,7 @@ export function registerBffRoutes(
           toStr,
           dataSource: 'synthetic',
         },
-        { pool: rawPool },
+        { srPool },
       );
       return reply.send({ request_id: requestId, data: result });
     },
@@ -3646,8 +3646,8 @@ export function registerBffRoutes(
         const today = new Date().toISOString().split('T')[0] as string;
         return reply.send({ request_id: requestId, data: { state: 'no_data', from: today, to: today, model } });
       }
-      if (!rawPool) {
-        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' } });
+      if (!srPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (StarRocks) not available' } });
       }
       const today = new Date().toISOString().split('T')[0] as string;
       const toStr = query.to ?? today;
@@ -3663,7 +3663,7 @@ export function registerBffRoutes(
           toStr,
           dataSource: 'synthetic',
         },
-        { pool: rawPool },
+        { srPool },
       );
       return reply.send({ request_id: requestId, data: result });
     },

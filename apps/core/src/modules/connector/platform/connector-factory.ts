@@ -9,6 +9,7 @@
  */
 import { ConnectorFactory } from '@brain/connector-core';
 import { ShopifyConnectorAdapter } from './ShopifyConnectorAdapter.js';
+import { Ga4ConnectorAdapter } from '../sources/analytics/ga4/Ga4ConnectorAdapter.js';
 
 /** Construct the connector factory with all available connectors registered. */
 export function buildConnectorFactory(): ConnectorFactory {
@@ -16,6 +17,12 @@ export function buildConnectorFactory(): ConnectorFactory {
 
   // ── storefront ────────────────────────────────────────────────────────────────
   factory.register('shopify', () => new ShopifyConnectorAdapter());
+
+  // ── analytics ─────────────────────────────────────────────────────────────────
+  // GA4: OAuth2 or service-account. Polling source (GA4 has no inbound webhooks).
+  // Sync path = ga4-repull stream-worker job. Honest-empty guard: no creds → surfaces
+  // 'GA4 not connected — add credentials', never fabricates sessions.
+  factory.register('ga4', () => new Ga4ConnectorAdapter());
 
   // Future providers register here, one line each (woocommerce, razorpay, shiprocket, ...).
   // Each is a thin IConnector adapter — never a per-source fork of the lifecycle.

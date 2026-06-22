@@ -56,6 +56,9 @@ const REPULL_DISPATCH: Readonly<Record<string, () => Promise<RepullRun>>> = {
   gokwik: async () => (await import('../gokwik-awb-repull/run.js')).run,
   shiprocket: async () => (await import('../shiprocket-shipment-repull/run.js')).run,
   woocommerce: async () => (await import('../woocommerce-orders-repull/run.js')).run,
+  // GA4: polling re-pull (runReport). No inbound webhooks.
+  // Honest-empty guard: no creds → surfaces 'GA4 not connected', emits zero events.
+  ga4: async () => (await import('../ga4-repull/run.js')).run,
 };
 
 /** Providers that have a scheduled re-pull dispatch (the registry keys). */

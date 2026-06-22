@@ -22,6 +22,7 @@ import { ShopifyWebhookStrategy } from '../strategies/ShopifyWebhookStrategy.js'
 import { RazorpayWebhookStrategy } from '../strategies/RazorpayWebhookStrategy.js';
 import { ShopfloWebhookStrategy } from '../strategies/ShopfloWebhookStrategy.js';
 import { WooCommerceWebhookStrategy } from '../strategies/WooCommerceWebhookStrategy.js';
+import { ShiprocketWebhookStrategy } from '../strategies/ShiprocketWebhookStrategy.js';
 
 export interface WebhookRegistrationDeps {
   secretsManager: ISecretsManager;
@@ -121,6 +122,37 @@ export function registerAllWebhookRoutes(
         },
         topicLabel: (req) =>
           (req.headers['x-wc-webhook-topic'] as string | undefined) ?? 'unknown',
+      },
+      pipelineDeps,
+    );
+    pipeline.register(fastify);
+  }
+
+  // ── Shiprocket: POST /api/v1/webhooks/shiprocket ─────────────────────────
+  // Verification: X-Api-Key shared-token compare (token scheme, not HMAC).
+  // Lookup key: x-shiprocket-channel-id header (fallback: x-shiprocket-account-id).
+  // Resolver fn: resolve_shiprocket_connector_by_channel (SECURITY DEFINER).
+  // FAIL-CLOSED: if webhook_secret is unset in the connector secret bundle,
+  //   verification fails — surfaces 'not connected / needs credentials'. No spoofed events.
+  {
+    const pipeline = new WebhookPipeline(
+      new ShiprocketWebhookStrategy(),
+      {
+        path: '/api/v1/webhooks/shiprocket',
+        resolverFn: 'resolve_shiprocket_connector_by_channel',
+        resolverArg: (req) =>
+          (req.headers['x-shiprocket-channel-id'] as string | undefined)?.trim() ||
+          (req.headers['x-shiprocket-account-id'] as string | undefined)?.trim() ||
+          '',
+        topicLabel: (_req, parsedBody) => {
+          const b = parsedBody as Record<string, unknown> | null;
+          return (
+            (b?.['event'] as string | undefined) ??
+            (b?.['topic'] as string | undefined) ??
+            (b?.['webhook_type'] as string | undefined) ??
+            'unknown'
+          );
+        },
       },
       pipelineDeps,
     );

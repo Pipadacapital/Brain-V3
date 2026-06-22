@@ -123,9 +123,15 @@ importers:
       '@brain/feature-flags':
         specifier: workspace:*
         version: link:../../packages/feature-flags
+      '@brain/gokwik-mapper':
+        specifier: workspace:*
+        version: link:../../packages/gokwik-mapper
       '@brain/identity-core':
         specifier: workspace:*
         version: link:../../packages/identity-core
+      '@brain/logistics-status':
+        specifier: workspace:*
+        version: link:../../packages/logistics-status
       '@brain/metric-engine':
         specifier: workspace:*
         version: link:../../packages/metric-engine
@@ -144,6 +150,9 @@ importers:
       '@brain/razorpay-mapper':
         specifier: workspace:*
         version: link:../../packages/razorpay-mapper
+      '@brain/shiprocket-mapper':
+        specifier: workspace:*
+        version: link:../../packages/shiprocket-mapper
       '@brain/shopflo-mapper':
         specifier: workspace:*
         version: link:../../packages/shopflo-mapper
@@ -229,6 +238,9 @@ importers:
       '@brain/feature-store':
         specifier: workspace:*
         version: link:../../packages/feature-store
+      '@brain/ga4-mapper':
+        specifier: workspace:*
+        version: link:../../packages/ga4-mapper
       '@brain/gokwik-mapper':
         specifier: workspace:*
         version: link:../../packages/gokwik-mapper
@@ -529,6 +541,22 @@ importers:
       mysql2:
         specifier: ^3.11.0
         version: 3.22.5(@types/node@25.9.3)
+
+  packages/ga4-mapper:
+    dependencies:
+      '@brain/connector-core':
+        specifier: workspace:*
+        version: link:../connector-core
+    devDependencies:
+      '@types/node':
+        specifier: ^20.0.0
+        version: 20.19.43
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.0
+        version: 2.1.9(@types/node@20.19.43)
 
   packages/gokwik-mapper:
     dependencies:

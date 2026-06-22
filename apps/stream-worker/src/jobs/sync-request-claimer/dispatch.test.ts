@@ -12,7 +12,7 @@ import { REPULL_PROVIDERS, loadRun } from './run.js';
 describe('repull dispatch registry (Phase B)', () => {
   it('dispatches exactly the known re-pull providers', () => {
     expect([...REPULL_PROVIDERS].sort()).toEqual(
-      ['google_ads', 'gokwik', 'meta', 'razorpay', 'shiprocket', 'shopify', 'woocommerce'].sort(),
+      ['ga4', 'google_ads', 'gokwik', 'meta', 'razorpay', 'shiprocket', 'shopify', 'woocommerce'].sort(),
     );
   });
 

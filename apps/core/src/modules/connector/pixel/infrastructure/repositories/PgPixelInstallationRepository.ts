@@ -125,6 +125,24 @@ export class PgPixelInstallationRepository implements IPixelInstallationReposito
     }
   }
 
+  async clearAutoInstall(brandId: string): Promise<void> {
+    const ctx: QueryContext = { brandId, correlationId: 'n/a' };
+    const client = await this.pool.connect();
+    try {
+      // Reverse markAutoInstalled: clear installed_at + the provider handle so the UI reflects
+      // "not installed". Idempotent (no-op when already clear). custom_ingest_host is preserved.
+      await client.query(
+        ctx,
+        `UPDATE pixel_installation
+         SET installed_at = NULL, auto_install_provider = NULL, auto_install_ref = NULL, updated_at = now()
+         WHERE brand_id = $1`,
+        [brandId],
+      );
+    } finally {
+      client.release();
+    }
+  }
+
   async setCustomIngestHost(brandId: string, host: string | null): Promise<PixelInstallation | null> {
     const ctx: QueryContext = { brandId, correlationId: 'n/a' };
     const client = await this.pool.connect();

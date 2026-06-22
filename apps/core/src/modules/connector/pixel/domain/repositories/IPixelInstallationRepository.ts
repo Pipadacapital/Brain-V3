@@ -16,6 +16,11 @@ export interface IPixelInstallationRepository {
    */
   markAutoInstalled(brandId: string, provider: string, ref: string): Promise<void>;
   /**
+   * Reverse markAutoInstalled: clear installed_at + the auto-install provider/ref so the UI reflects
+   * "not installed". Idempotent; custom_ingest_host is preserved. RLS-scoped to the brand.
+   */
+  clearAutoInstall(brandId: string): Promise<void>;
+  /**
    * Set (or clear, with null) the brand's first-party CNAME ingest host. Returns the updated
    * installation, or null if no installation exists for the brand. RLS-scoped to the brand.
    */

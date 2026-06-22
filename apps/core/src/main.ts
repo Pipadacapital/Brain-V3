@@ -122,6 +122,7 @@ import { GetPixelHealthQuery } from './modules/connector/pixel/application/queri
 import { PgPixelInstallationRepository } from './modules/connector/pixel/infrastructure/repositories/PgPixelInstallationRepository.js';
 import { PgPixelStatusRepository } from './modules/connector/pixel/infrastructure/repositories/PgPixelStatusRepository.js';
 import { InstallPixelCommand, InstallPixelError } from './modules/connector/sources/storefront/shopify/application/commands/InstallPixelCommand.js';
+import { UninstallPixelCommand, UninstallPixelError } from './modules/connector/sources/storefront/shopify/application/commands/UninstallPixelCommand.js';
 
 // ── RBAC guards (HIGH-MOUNT-01) ───────────────────────────────────────────────
 import { validateSessionPreHandler } from './modules/workspace-access/internal/interfaces/rest/auth.routes.js';
@@ -1866,6 +1867,12 @@ export async function main(): Promise<void> {
     pixelStatusRepo,
     config.pixelIngestBaseUrl,
   );
+  // Removal path (delete the Brain ScriptTag + clear install state).
+  const uninstallPixel = new UninstallPixelCommand(
+    connectorRepo,
+    connectorSecretsManager,
+    pixelInstallationRepo,
+  );
 
   // Pixel read routes (analyst+): GET /pixel/installation, GET /pixel/health
   await app.register(async (scope) => {
@@ -1986,6 +1993,25 @@ export async function main(): Promise<void> {
         });
       } catch (err) {
         if (err instanceof InstallPixelError) {
+          return reply.code(409).send({ request_id: requestId, error: { code: err.code, message: err.message } });
+        }
+        throw err;
+      }
+    });
+
+    // POST /pixel/uninstall/shopify — production removal path: delete the Brain ScriptTag(s) from the
+    // connected storefront + clear installed_at. Idempotent (removed=0 when nothing was installed).
+    scope.post('/api/v1/pixel/uninstall/shopify', async (req, reply) => {
+      const brandId = getBrandId(req);
+      const requestId = (req.id as string) ?? randomUUID();
+      try {
+        const result = await uninstallPixel.execute({ brandId });
+        return reply.code(200).send({
+          request_id: requestId,
+          data: { removed: result.removed, already_absent: result.alreadyAbsent },
+        });
+      } catch (err) {
+        if (err instanceof UninstallPixelError) {
           return reply.code(409).send({ request_id: requestId, error: { code: err.code, message: err.message } });
         }
         throw err;

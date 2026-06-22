@@ -300,6 +300,64 @@ services:
       start_period: 15s
 
   # ────────────────────────────────────────────────────────────────────────────
+  # The Bronze WRITER — Spark Structured Streaming: collector.event.v1 → Iceberg Bronze.
+  # The architecture's sole Bronze sink for ALL ingested events (pixel + connectors): the same
+  # ingestion platform end-to-end (Collector → Kafka → Bronze). Runs CONTINUOUSLY (a long-lived
+  # streaming query), the same shape we run in production. Shares Redpanda's network namespace so the
+  # advertised listener (localhost:9092) resolves; service-name DNS (iceberg-rest, minio, postgres)
+  # still resolves because Redpanda is on the compose network. Jars are baked into the image (no
+  # Maven at runtime). Reads start from earliest on a fresh checkpoint; the MERGE is idempotent.
+  # ────────────────────────────────────────────────────────────────────────────
+  spark-bronze-sink:
+    image: apache/spark:3.5.3
+    profiles: ["lakehouse"]
+    # Share Redpanda's network namespace so its advertised listener (localhost:9092) resolves; service
+    # DNS (iceberg-rest, minio, postgres) still resolves because Redpanda is on the compose network.
+    network_mode: "service:redpanda"
+    user: root
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      iceberg-rest:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKERS: "localhost:9092"
+      COLLECTOR_TOPIC: "dev.collector.event.v1"
+      STARTING_OFFSETS: "earliest"
+      TRIGGER_MODE: "continuous"
+      PROCESSING_TIME: "10 seconds"
+      ICEBERG_CATALOG: "rest"
+      ICEBERG_REST_URI: "http://iceberg-rest:8181"
+      BRONZE_NAMESPACE: "brain_bronze"
+      BRONZE_WAREHOUSE: "s3://brain-bronze/"
+      S3_ENDPOINT: "http://minio:9000"
+      AWS_ACCESS_KEY_ID: "brain"
+      AWS_SECRET_ACCESS_KEY: "brainbrain"
+      AWS_REGION: "us-east-1"
+      BRONZE_PG_JDBC_URL: "jdbc:postgresql://postgres:5432/brain"
+      BRONZE_PG_USER: "brain"
+      BRONZE_PG_PASSWORD: "brain"
+      CHECKPOINT_LOCATION: "file:///opt/checkpoint/bronze"
+    volumes:
+      - ./db/iceberg/spark:/opt/spike:ro
+      - brain-spark-ivy:/root/.ivy2
+      - brain-spark-checkpoint:/opt/checkpoint
+    # Runtime jar resolution (cached in the ivy volume after first start) — mirrors run-bronze-spike.sh,
+    # which is the verified-working path (the build-time bake is unreliable behind Maven).
+    command:
+      - /opt/spark/bin/spark-submit
+      - --master
+      - "local[2]"
+      - --packages
+      - "org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.9.2,org.apache.iceberg:iceberg-aws-bundle:1.9.2,org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.3,org.postgresql:postgresql:42.7.4"
+      - --conf
+      - spark.jars.ivy=/root/.ivy2
+      - /opt/spike/bronze_materialize.py
+    restart: unless-stopped
+
+  # ────────────────────────────────────────────────────────────────────────────
   # OBSERVE profile — Grafana + Loki + Prometheus + OTel Collector
   # ────────────────────────────────────────────────────────────────────────────
   prometheus:
@@ -365,3 +423,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 15
+
+volumes:
+  brain-spark-checkpoint:
+  brain-spark-ivy:

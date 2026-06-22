@@ -61,57 +61,6 @@ export const BRONZE_BRIDGES: readonly BronzeBridgeDef[] = [
     eventName: 'order.live.v1',
     metricName: 'live_order_bronze_write_total',
   },
-  // ── First-party PIXEL events (Phase H) — land the browser-captured journey/behavior events into
-  //    Bronze so the Tracking Center event feed + the journey/behavior/funnel Silver build (which reads
-  //    bronze_events via bronze_touchpoint_src) have real data. One bridge per server-trusted event_name.
-  {
-    groupIdEnv: 'PIXEL_PAGE_VIEWED_BRONZE_CONSUMER_GROUP_ID',
-    defaultGroupId: 'pixel-page-viewed-bronze-bridge',
-    eventName: 'page.viewed',
-    metricName: 'pixel_page_viewed_bronze_write_total',
-  },
-  {
-    groupIdEnv: 'PIXEL_PRODUCT_VIEWED_BRONZE_CONSUMER_GROUP_ID',
-    defaultGroupId: 'pixel-product-viewed-bronze-bridge',
-    eventName: 'product.viewed',
-    metricName: 'pixel_product_viewed_bronze_write_total',
-  },
-  {
-    groupIdEnv: 'PIXEL_COLLECTION_VIEWED_BRONZE_CONSUMER_GROUP_ID',
-    defaultGroupId: 'pixel-collection-viewed-bronze-bridge',
-    eventName: 'collection.viewed',
-    metricName: 'pixel_collection_viewed_bronze_write_total',
-  },
-  {
-    groupIdEnv: 'PIXEL_CART_VIEWED_BRONZE_CONSUMER_GROUP_ID',
-    defaultGroupId: 'pixel-cart-viewed-bronze-bridge',
-    eventName: 'cart.viewed',
-    metricName: 'pixel_cart_viewed_bronze_write_total',
-  },
-  {
-    groupIdEnv: 'PIXEL_CART_ITEM_ADDED_BRONZE_CONSUMER_GROUP_ID',
-    defaultGroupId: 'pixel-cart-item-added-bronze-bridge',
-    eventName: 'cart.item_added',
-    metricName: 'pixel_cart_item_added_bronze_write_total',
-  },
-  {
-    groupIdEnv: 'PIXEL_SEARCH_SUBMITTED_BRONZE_CONSUMER_GROUP_ID',
-    defaultGroupId: 'pixel-search-submitted-bronze-bridge',
-    eventName: 'search.submitted',
-    metricName: 'pixel_search_submitted_bronze_write_total',
-  },
-  {
-    groupIdEnv: 'PIXEL_SCROLL_DEPTH_BRONZE_CONSUMER_GROUP_ID',
-    defaultGroupId: 'pixel-scroll-depth-bronze-bridge',
-    eventName: 'scroll.depth',
-    metricName: 'pixel_scroll_depth_bronze_write_total',
-  },
-  {
-    groupIdEnv: 'PIXEL_ELEMENT_CLICKED_BRONZE_CONSUMER_GROUP_ID',
-    defaultGroupId: 'pixel-element-clicked-bronze-bridge',
-    eventName: 'element.clicked',
-    metricName: 'pixel_element_clicked_bronze_write_total',
-  },
 ];
 
 /**

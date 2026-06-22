@@ -31,8 +31,8 @@
  */
 
 import type { CurrencyCode } from '@brain/money';
-import type { EngineDeps } from './deps.js';
-import { withBrandTxn } from './deps.js';
+import type { SilverPool } from './silver-deps.js';
+import { withSilverBrand, BRAND_PREDICATE } from './silver-deps.js';
 
 /** A single fee/deduction line, magnitude POSITIVE (UI renders it as a subtraction). */
 export type SettlementFeeType =
@@ -89,49 +89,47 @@ const FEE_TYPE_ORDER: SettlementFeeType[] = [
  * Reads realized_revenue_ledger settlement rows directly (this IS the named seam —
  * the SUM lives in the engine, never in the analytics module). RLS-scoped via the GUC.
  *
+ * ── PHASE G re-point: reads the lakehouse ledger brain_gold.gold_revenue_ledger via withSilverBrand
+ *    (I-ST01), NOT PG realized_revenue_ledger. PG is no longer a settlement READ source (write SoR only).
+ *
  * @param brandId - Brand UUID (from session — D-1; never request body).
  * @param asOf    - As-of date (inclusive). economic_effective_at::date <= asOf.
- * @param deps    - EngineDeps with raw pg.Pool.
+ * @param deps    - The StarRocks Silver/Gold pool — gold_revenue_ledger via withSilverBrand.
  * @returns SettlementSummary — hasData=false when no settlement rows exist (honest no_data).
  */
 export async function computeSettlementSummary(
   brandId: string,
   asOf: Date,
-  deps: EngineDeps,
+  deps: { srPool: SilverPool },
 ): Promise<SettlementSummary> {
-  const asOfStr = asOf.toISOString().split('T')[0]; // 'YYYY-MM-DD'
+  const asOfStr = asOf.toISOString().split('T')[0]; // 'YYYY-MM-DD' (Date-formatted — injection-safe)
+  const eventTypeList = SETTLEMENT_EVENT_TYPES.map((t) => `'${t}'`).join(', '); // fixed consts
 
-  return withBrandTxn(deps.pool, brandId, async (client) => {
-    // Brand currency_code keys the per-currency reading (0018 enforces one ccy/brand).
-    const brandRow = await client.query<{ currency_code: string }>(
-      `SELECT currency_code FROM brand WHERE id = $1`,
-      [brandId],
-    );
-    const currencyCode = (brandRow.rows[0]?.currency_code ?? null) as CurrencyCode | null;
-
-    // Per-event_type signed sum + row count. Grouping by event_type is the only
+  return withSilverBrand(deps.srPool, brandId, async (scope) => {
+    // Per-event_type signed sum + the per-row currency. Grouping by event_type is the only
     // aggregation; the signed amount_minor carries the sign (the engine never re-signs).
-    // RLS scopes brand_id; the explicit WHERE is belt-and-suspenders (must agree).
-    const rows = await client.query<{ event_type: string; sum_minor: string; row_count: string }>(
+    const rows = await scope.runScoped<{ event_type: string; sum_minor: string | number; currency_code: string | null }>(
       `SELECT event_type,
-              COALESCE(SUM(amount_minor), 0)::text AS sum_minor,
-              COUNT(*)::text AS row_count
-         FROM realized_revenue_ledger
-        WHERE brand_id = $1
-          AND event_type = ANY($2::text[])
-          AND economic_effective_at::date <= $3::date
+              COALESCE(SUM(amount_minor), 0) AS sum_minor,
+              MAX(currency_code)             AS currency_code
+         FROM brain_gold.gold_revenue_ledger
+        WHERE event_type IN (${eventTypeList})
+          AND CAST(economic_effective_at AS DATE) <= '${asOfStr}'
+          AND ${BRAND_PREDICATE}
         GROUP BY event_type`,
-      [brandId, SETTLEMENT_EVENT_TYPES, asOfStr],
+      [],
     );
 
-    if (rows.rows.length === 0) {
+    if (rows.length === 0) {
       // No settlement rows at all → honest no_data (NEVER a fabricated zero).
-      return { hasData: false, currencyCode, grossMinor: 0n, netMinor: 0n, fees: [] };
+      return { hasData: false, currencyCode: null, grossMinor: 0n, netMinor: 0n, fees: [] };
     }
 
     const sumByType = new Map<string, bigint>();
-    for (const r of rows.rows) {
-      sumByType.set(r.event_type, BigInt(r.sum_minor));
+    let currencyCode: CurrencyCode | null = null;
+    for (const r of rows) {
+      sumByType.set(r.event_type, BigInt(String(r.sum_minor).split('.')[0] ?? '0'));
+      if (r.currency_code) currencyCode = r.currency_code as CurrencyCode;
     }
 
     // Net = sum of ALL signed rows (gross − fees, by construction of the signs).

@@ -19,7 +19,7 @@
  * @see packages/metric-engine/src/settlement-summary.ts
  */
 
-import type { EngineDeps } from '@brain/metric-engine';
+import type { SilverPool } from '@brain/metric-engine';
 import { computeSettlementSummary, type SettlementFeeType } from '@brain/metric-engine';
 
 /** A single fee/deduction line — magnitude POSITIVE, serialized to string (D-1). */
@@ -50,12 +50,12 @@ export type SettlementSummaryResult =
  *
  * @param brandId - Brand UUID (from session — D-1; NEVER request body).
  * @param asOf    - As-of date. Server-computed (never client-trusted).
- * @param deps    - EngineDeps with raw pg.Pool (rawPgPool, not the DbPool wrapper).
+ * @param deps    - The StarRocks Silver/Gold pool — gold_revenue_ledger via withSilverBrand (Phase G).
  */
 export async function getSettlementSummary(
   brandId: string,
   asOf: Date,
-  deps: EngineDeps,
+  deps: { srPool: SilverPool },
 ): Promise<SettlementSummaryResult> {
   const asOfStr = asOf.toISOString().split('T')[0] as string;
 

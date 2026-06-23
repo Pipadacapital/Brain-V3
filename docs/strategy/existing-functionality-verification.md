@@ -24,15 +24,25 @@ the missing inputs and watching the whole chain light up.
 
 ## Gaps found (the reason attribution showed nothing)
 
-### GAP-1 — Identity stitch never happens (anon ↔ known are disjoint islands)
-- `connector_journey_stitch_map` = **0 rows**; `identity_merge_event` = **0**.
-- `silver_touchpoint`: **0 of 5631** touches stitched to an order.
-- `identity_link`: **743 anon brain_ids vs 747 known (email/phone) brain_ids, OVERLAP = 0**.
-- **Root cause:** no event carries BOTH a `brain_anon_id` AND a customer identifier, so the anon
-  browsing journey is never linked to the known customer who ordered.
-- **Forward fix (this branch):** the pixel's client-side `identify()` emits an unsalted
-  `hashed_customer_email` that matches the order's `pre_hashed_email` → the resolver bridges them.
-  Historical data additionally needs a one-time stitch-map backfill from identity links.
+### GAP-1 — Identity stitch never happens (anon ↔ known disjoint islands)  ✅ FIXED (commit 41308d7)
+- Symptom: `connector_journey_stitch_map` = 0; `silver_touchpoint` 0 of 5631 stitched;
+  `identity_link` 743 anon brain_ids vs 747 known, OVERLAP = 0.
+- **Root cause:** no event carried BOTH a `brain_anon_id` AND a customer identifier, so the anon
+  journey was never linked to the customer who ordered. The bridge has two halves:
+  1. **Forward link (already wired):** pixel `identify` (anon + hashed_customer_email) →
+     IdentityBridgeConsumer (reads the collector topic) → resolver links the anon_id to the strong
+     id's brain_id (IdentityResolver §3b). It just had no `identify` events historically.
+  2. **Stitch derivation (was a dev-only bash script):** `tools/backfill/backfill-journey-stitch-map.sh`
+     re-derives the *dev* salt → yields **ZERO rows in prod** (KMS salt).
+- **Fix:** new **`journey-stitch-from-identity` job** — prod-correct (hashes via SaltProvider →
+  resolveSaltHex, matching the resolver in dev AND prod), unambiguous-only (skips multi-anon
+  customers — never guesses), brand-scoped/idempotent. Replaces the bash script.
+- **Verified e2e on live data:** 300 identity bridge links → job derived **389 stitch rows** (0
+  ambiguous) → silver stitched → attribution credited **330 orders × 4 models**, closed-sum parity
+  EXACT (Σ=96,419,747), 76 honestly unattributed. New live regression test.
+- *Note:* the live demo forged the bridge links directly (resolver-`linked` equivalent, same dev-salt
+  hash) due to a tsx workspace-resolution snag running the resolver standalone; the resolver path
+  itself is existing, separately-tested code + verified by reading IdentityResolver §3b.
 
 ### GAP-2 — Revenue-finalization never ran + COD double-count bug  ✅ FIXED (commit abe2a7a)
 - The runner **does exist**: `apps/stream-worker/src/jobs/revenue-finalization.ts` (not in
@@ -81,8 +91,10 @@ finalization event the job would emit, then let Silver→Gold rebuild determinis
 1. ~~**GAP-2:** revenue-finalization runner~~ ✅ **DONE** (commit abe2a7a): fixed the COD double-count +
    reversal-exclusion bugs, ran it (349 prepaid finalized), regression test added. Hardening follow-up:
    persist `payment_method` to close the in-flight-COD residual; schedule the job (Argo cron).
-2. **GAP-1:** ship the identity bridge end-to-end — verify the pixel `identify()` → resolver path
-   creates anon↔known links, + a one-time stitch-map backfill for history.
+2. ~~**GAP-1:** identity bridge end-to-end~~ ✅ **DONE** (commit 41308d7): prod-correct
+   `journey-stitch-from-identity` job (replaces the dev bash script), verified e2e (389 stitches →
+   330 attributed orders, parity exact). Follow-ups: schedule the job (Argo, after identity +
+   finalization); for production traffic the pixel `identify()` provides the real bridge signal.
 3. **GAP-3:** decide + implement the COD attribution basis. NOTE: with GAP-2 fixed, COD revenue now
    recognizes via `cod_delivery_confirmed` only (never finalization). Attribution still credits only
    `finalization`, so COD orders remain unattributed — should the credit basis be

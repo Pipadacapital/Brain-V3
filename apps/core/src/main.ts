@@ -75,7 +75,11 @@ import { registerRazorpayConnectorRoutes } from './modules/connector/sources/pay
 import { RotateWebhookSecretCommand } from './modules/connector/sources/payment/razorpay/application/commands/RotateWebhookSecretCommand.js';
 import { registerShopifyConnectorRoutes } from './modules/connector/sources/storefront/shopify/interfaces/http/shopifyConnectorRoutes.js';
 import { registerDevShopifySyncRoutes } from './modules/connector/sources/storefront/shopify/interfaces/http/devShopifySyncRoutes.js';
-import { registerPixelRoutes, buildDefaultSnippet, isValidIngestHost } from './modules/connector/pixel/interfaces/http/pixelRoutes.js';
+import { registerPixelRoutes, registerPixelInstallerRoutes, buildDefaultSnippet, isValidIngestHost } from './modules/connector/pixel/interfaces/http/pixelRoutes.js';
+import { PixelInstallerRegistry } from './modules/connector/pixel/application/install/PixelInstaller.js';
+import { ShopifyPixelInstaller } from './modules/connector/sources/storefront/shopify/application/install/ShopifyPixelInstaller.js';
+import { WooCommercePixelInstaller } from './modules/connector/sources/storefront/woocommerce/application/install/WooCommercePixelInstaller.js';
+import { InstallWooCommercePixelCommand } from './modules/connector/sources/storefront/woocommerce/application/commands/InstallWooCommercePixelCommand.js';
 // Connector catalog + dispatch (A3 — feat-connector-marketplace)
 import { getDefinition, isConnectable, CONNECTOR_CATALOG } from './modules/connector/catalog/index.js';
 import { registerOAuthDispatch, getOAuthDispatch } from './modules/connector/catalog/dispatch.js';
@@ -1938,6 +1942,23 @@ export async function main(): Promise<void> {
     pixelInstallationRepo,
   );
 
+  // WooCommerce install path (feat-universal-pixel): configure the Brain Pixel plugin on the
+  // connected WooCommerce store via its authenticated REST route. Same install_token + ingest as Shopify.
+  const installWooCommercePixel = new InstallWooCommercePixelCommand(
+    connectorRepo,
+    connectorSecretsManager,
+    getOrCreateInstallation,
+    pixelInstallationRepo,
+    pixelStatusRepo,
+    config.pixelIngestBaseUrl,
+  );
+
+  // Storefront-agnostic installer registry — the merchant connects a storefront, then Brain offers
+  // the install option(s) for the connected storefront(s). Adding a platform = register one installer.
+  const pixelInstallerRegistry = new PixelInstallerRegistry()
+    .register(new ShopifyPixelInstaller(installPixel, uninstallPixel, connectorRepo))
+    .register(new WooCommercePixelInstaller(installWooCommercePixel, connectorRepo));
+
   // Pixel read routes (analyst+): GET /pixel/installation, GET /pixel/health
   await app.register(async (scope) => {
     scope.addHook('preHandler', sessionPreHandler);
@@ -2083,6 +2104,10 @@ export async function main(): Promise<void> {
         throw err;
       }
     });
+
+    // Storefront-agnostic install surface: GET /pixel/installers, POST/DELETE /pixel/install/:provider,
+    // GET /pixel/woocommerce/plugin.zip. Connected-storefront-driven (each installer's isAvailable).
+    registerPixelInstallerRoutes(scope, { registry: pixelInstallerRegistry, getBrandId });
   });
 
   // Graceful shutdown.

@@ -19,6 +19,18 @@ import {
   InstallPixelError,
   type InstallPixelCommand,
 } from '../../../sources/storefront/shopify/application/commands/InstallPixelCommand.js';
+import type { PixelInstallerRegistry } from '../../application/install/PixelInstaller.js';
+import { buildWooCommercePluginZip, WC_PLUGIN_SLUG, pluginSourceHash } from '../../../sources/storefront/woocommerce/infrastructure/WooCommercePixelPlugin.js';
+
+/** True iff `err` is a typed install error carrying a stable string `.code` (→ HTTP 409 precondition). */
+function isCodedInstallError(err: unknown): err is { code: string; message: string } {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    typeof (err as { code?: unknown }).code === 'string' &&
+    typeof (err as { message?: unknown }).message === 'string'
+  );
+}
 
 export interface PixelRouteDeps {
   getOrCreateInstallation: GetOrCreatePixelInstallationCommand;
@@ -169,6 +181,109 @@ export function registerPixelRoutes(fastify: FastifyInstance, deps: PixelRouteDe
       });
     },
   );
+}
+
+/**
+ * registerPixelInstallerRoutes — the storefront-agnostic install surface, mounted inside the same
+ * RBAC-gated scope as the legacy /install/shopify route. This is the EXTENSIBLE path the product
+ * follows: the merchant connects a storefront first, then Brain offers exactly the install option(s)
+ * for the storefront(s) that are connected (driven by each installer's isAvailable). Adding a new
+ * storefront = register one PixelInstaller — these routes, and every existing installer, are untouched.
+ *
+ *   GET    /api/v1/pixel/installers              → install options for this brand (+ availability)
+ *   POST   /api/v1/pixel/install/:provider       → run the installer for the connected storefront
+ *   DELETE /api/v1/pixel/install/:provider       → remove (when the installer supports it)
+ *   GET    /api/v1/pixel/woocommerce/plugin.zip  → the ready-to-upload Brain Pixel WP plugin (no secrets)
+ */
+export function registerPixelInstallerRoutes(
+  fastify: FastifyInstance,
+  deps: { registry: PixelInstallerRegistry; getBrandId: (req: FastifyRequest) => string },
+): void {
+  const { registry, getBrandId } = deps;
+
+  fastify.get('/api/v1/pixel/installers', async (req: FastifyRequest, reply: FastifyReply) => {
+    const brandId = getBrandId(req);
+    const requestId = (req.id as string) ?? crypto.randomUUID();
+    const installers = await registry.describeForBrand(brandId);
+    return reply.code(200).send({ request_id: requestId, data: { installers } });
+  });
+
+  fastify.post(
+    '/api/v1/pixel/install/:provider',
+    async (req: FastifyRequest<{ Params: { provider: string } }>, reply: FastifyReply) => {
+      const brandId = getBrandId(req);
+      const requestId = (req.id as string) ?? crypto.randomUUID();
+      const provider = req.params.provider;
+      const idempotencyKey = (req.headers['idempotency-key'] as string | undefined) ?? crypto.randomUUID();
+
+      const installer = registry.get(provider);
+      if (!installer) {
+        return reply.code(404).send({
+          request_id: requestId,
+          error: { code: 'UNKNOWN_PROVIDER', message: `No pixel installer for provider "${provider}".` },
+        });
+      }
+      try {
+        const r = await installer.install({ brandId, idempotencyKey });
+        return reply.code(200).send({
+          request_id: requestId,
+          data: {
+            installed: r.installed,
+            provider: r.provider,
+            ref: r.ref,
+            install_token: r.installToken,
+            src: r.src,
+            already_present: r.alreadyPresent,
+            meta: r.meta ?? {},
+          },
+        });
+      } catch (err) {
+        if (isCodedInstallError(err)) {
+          return reply.code(409).send({ request_id: requestId, error: { code: err.code, message: err.message } });
+        }
+        throw err;
+      }
+    },
+  );
+
+  fastify.delete(
+    '/api/v1/pixel/install/:provider',
+    async (req: FastifyRequest<{ Params: { provider: string } }>, reply: FastifyReply) => {
+      const brandId = getBrandId(req);
+      const requestId = (req.id as string) ?? crypto.randomUUID();
+      const installer = registry.get(req.params.provider);
+      if (!installer || !installer.uninstall) {
+        return reply.code(404).send({
+          request_id: requestId,
+          error: { code: 'UNINSTALL_UNSUPPORTED', message: `No programmatic uninstall for "${req.params.provider}".` },
+        });
+      }
+      try {
+        const r = await installer.uninstall({ brandId });
+        return reply.code(200).send({
+          request_id: requestId,
+          data: { removed: r.removed, provider: r.provider, already_absent: r.alreadyAbsent },
+        });
+      } catch (err) {
+        if (isCodedInstallError(err)) {
+          return reply.code(409).send({ request_id: requestId, error: { code: err.code, message: err.message } });
+        }
+        throw err;
+      }
+    },
+  );
+
+  // The Brain Pixel WordPress plugin — built in-memory from embedded source (always fresh, no secrets).
+  fastify.get('/api/v1/pixel/woocommerce/plugin.zip', async (_req: FastifyRequest, reply: FastifyReply) => {
+    const zip = buildWooCommercePluginZip();
+    return reply
+      .header('Content-Type', 'application/zip')
+      .header('Content-Disposition', `attachment; filename="${WC_PLUGIN_SLUG}.zip"`)
+      .header('ETag', `"${pluginSourceHash()}"`)
+      .header('Cache-Control', 'public, max-age=300')
+      .code(200)
+      .send(zip);
+  });
 }
 
 /**

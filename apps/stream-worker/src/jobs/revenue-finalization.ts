@@ -113,11 +113,25 @@ async function run(): Promise<void> {
         await client.query('BEGIN');
         await client.query("SELECT set_config('app.current_brand_id', $1, true)", [brand.id]);
 
-        // Find qualifying provisionals:
-        // - occurred_at + horizon_days < NOW() (horizon passed)
-        // - no rto_reversal or cancellation for (brand_id, order_id)
-        // - no finalization yet for (brand_id, order_id)
-        // horizon_days chosen from payment_method in the source payload (JSONB path)
+        // Find qualifying provisionals to finalize. Finalization recognizes PREPAID revenue after
+        // the return/cancel window. COD revenue is recognized on a SEPARATE path
+        // (cod_delivery_confirmed on delivery; cod_rto_clawback on RTO) — so a COD order must NEVER
+        // also be finalized, or its revenue double-counts (realized = finalization +
+        // cod_delivery_confirmed + reversals). Every order gets a provisional_recognition (COD and
+        // prepaid alike), so the provisional row alone cannot tell them apart — we discriminate by the
+        // presence of a COD-specific recognition event.
+        //
+        // Qualify a provisional iff:
+        //   - past the recognition horizon (occurred_at + horizon < NOW). We use the LONGER (COD)
+        //     horizon conservatively so a not-yet-resolved COD order has had its full delivery window
+        //     to emit a cod_* event before we'd consider it; a genuinely prepaid order simply
+        //     recognizes at that horizon.
+        //   - has NO COD recognition/clawback event (cod_delivery_confirmed / cod_rto_clawback) →
+        //     it is a PREPAID order (the double-count + RTO'd-COD-over-recognition fix).
+        //   - has NO reversal of ANY kind (rto_reversal / cancellation / refund / chargeback /
+        //     concession) — previously only rto_reversal+cancellation were excluded, so a refunded or
+        //     charged-back order would still finalize.
+        //   - has NO finalization yet (idempotent; dedup index is the backstop).
         const provisionalsRes = await client.query<ProvisionalRow>(
           `SELECT
              l.ledger_event_id,
@@ -129,14 +143,20 @@ async function run(): Promise<void> {
            FROM realized_revenue_ledger l
            WHERE l.brand_id = $1
              AND l.event_type = 'provisional_recognition'
-             -- horizon check: use the max horizon (COD) conservatively; refine below
              AND l.occurred_at + ($2 || ' days')::interval < NOW()
-             -- no RTO or cancellation
+             -- PREPAID only: exclude orders recognized via the COD path (delivery or RTO clawback).
+             AND NOT EXISTS (
+               SELECT 1 FROM realized_revenue_ledger c
+               WHERE c.brand_id = $1
+                 AND c.order_id = l.order_id
+                 AND c.event_type IN ('cod_delivery_confirmed', 'cod_rto_clawback')
+             )
+             -- no reversal of any kind
              AND NOT EXISTS (
                SELECT 1 FROM realized_revenue_ledger r
                WHERE r.brand_id = $1
                  AND r.order_id = l.order_id
-                 AND r.event_type IN ('rto_reversal', 'cancellation')
+                 AND r.event_type IN ('rto_reversal', 'cancellation', 'refund', 'chargeback', 'concession')
              )
              -- no finalization yet
              AND NOT EXISTS (
@@ -147,9 +167,12 @@ async function run(): Promise<void> {
              )`,
           [
             brand.id,
-            // Use the smaller (prepaid) horizon as the minimum — any order older than
-            // the larger (cod) horizon is definitely eligible. We conservatively select
-            // using the cod (larger) horizon so we only finalize when certain.
+            // Conservative: the COD (larger) horizon. By this point a real COD order has emitted a
+            // cod_* event (delivered or RTO'd) and is excluded above; what remains is prepaid.
+            // KNOWN RESIDUAL: an in-flight COD order that emits NO cod_* event past this horizon
+            // (lost in transit, never marked RTO) is indistinguishable from prepaid and would
+            // finalize. Hardening = persist payment_method on the provisional row (the writer knows
+            // it) and filter payment_method='prepaid' here; tracked as a follow-up.
             brand.cod_recognition_horizon_days,
           ],
         );

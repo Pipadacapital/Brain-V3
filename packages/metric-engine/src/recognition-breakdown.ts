@@ -11,8 +11,8 @@
  * F-SEC-02: reads inside withBrandTxn (GUC transaction-scoped, RLS-enforced).
  */
 
-import type { EngineDeps } from './deps.js';
-import { withBrandTxn } from './deps.js';
+import type { SilverPool } from './silver-deps.js';
+import { withSilverBrand, BRAND_PREDICATE } from './silver-deps.js';
 
 export type RecognitionLabel = 'provisional' | 'settling' | 'finalized';
 
@@ -39,46 +39,43 @@ export interface RecognitionBreakdownItem {
 export async function computeRecognitionBreakdown(
   brandId: string,
   asOf: Date,
-  deps: EngineDeps,
+  deps: { srPool: SilverPool },
 ): Promise<RecognitionBreakdownItem[]> {
-  const asOfStr = asOf.toISOString().split('T')[0];
+  const asOfStr = asOf.toISOString().split('T')[0] as string;
 
-  return withBrandTxn(deps.pool, brandId, async (client) => {
-    // recognition_label is the canonical state column on the ledger.
-    // We sum amount_minor and count distinct order_id per (recognition_label, currency_code).
-    // Rows where recognition_label is NULL are excluded (should not exist by schema constraint).
-    const sql = `
-      SELECT
-        recognition_label,
-        currency_code,
-        SUM(amount_minor)::text AS amount_minor,
-        COUNT(DISTINCT order_id)::text AS order_count
-      FROM realized_revenue_ledger
-      WHERE brand_id = $1
-        AND occurred_at::date <= $2::date
-        AND recognition_label IS NOT NULL
-      GROUP BY recognition_label, currency_code
-      ORDER BY
-        CASE recognition_label
-          WHEN 'provisional' THEN 1
-          WHEN 'settling'    THEN 2
-          WHEN 'finalized'   THEN 3
-          ELSE 4
-        END,
-        currency_code
-    `;
-
-    const result = await client.query<{
+  // MEDALLION REALIGNMENT (Epic 1): read brain_gold.gold_revenue_ledger via withSilverBrand, not PG.
+  return withSilverBrand(deps.srPool, brandId, async (scope) => {
+    const rows = await scope.runScoped<{
       recognition_label: string;
       currency_code: string;
-      amount_minor: string;
-      order_count: string;
-    }>(sql, [brandId, asOfStr]);
+      amount_minor: string | number;
+      order_count: string | number;
+    }>(
+      `SELECT
+         recognition_label,
+         currency_code,
+         SUM(amount_minor)        AS amount_minor,
+         COUNT(DISTINCT order_id) AS order_count
+       FROM brain_gold.gold_revenue_ledger
+       WHERE CAST(occurred_at AS DATE) <= ?
+         AND recognition_label IS NOT NULL
+         AND ${BRAND_PREDICATE}
+       GROUP BY recognition_label, currency_code
+       ORDER BY
+         CASE recognition_label
+           WHEN 'provisional' THEN 1
+           WHEN 'settling'    THEN 2
+           WHEN 'finalized'   THEN 3
+           ELSE 4
+         END,
+         currency_code`,
+      [asOfStr],
+    );
 
-    return result.rows.map((row) => ({
+    return rows.map((row) => ({
       label: row.recognition_label as RecognitionLabel,
-      amountMinor: BigInt(row.amount_minor),
-      count: BigInt(row.order_count),
+      amountMinor: BigInt(String(row.amount_minor ?? '0').split('.')[0] || '0'),
+      count: BigInt(String(row.order_count ?? '0').split('.')[0] || '0'),
       currency_code: row.currency_code,
     }));
   });

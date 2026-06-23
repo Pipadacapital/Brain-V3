@@ -2755,15 +2755,16 @@ export function registerBffRoutes(
         const today = new Date().toISOString().split('T')[0] as string;
         return reply.send({ request_id: requestId, data: { state: 'no_data', as_of: today } });
       }
-      if (!rawPool) {
-        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' } });
+      if (!srPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (StarRocks) not available' } });
       }
 
       const query = request.query as { as_of?: string };
       const asOfStr = query.as_of ?? (new Date().toISOString().split('T')[0] as string);
       const asOf = new Date(`${asOfStr}T00:00:00Z`);
 
-      const result = await getRecognitionBreakdown(auth.brandId, asOf, { pool: rawPool });
+      // Epic 1: recognition breakdown now reads the lakehouse (gold_revenue_ledger), not the PG ledger.
+      const result = await getRecognitionBreakdown(auth.brandId, asOf, { srPool });
 
       return reply.send({ request_id: requestId, data: result });
     },

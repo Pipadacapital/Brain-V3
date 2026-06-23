@@ -50,7 +50,7 @@ async function cleanupSilver() {
 }
 
 async function cleanup() {
-  for (const t of ['ai_provenance', 'ad_spend_ledger', 'realized_revenue_ledger']) {
+  for (const t of ['ai_provenance', 'ad_spend_ledger']) {
     await pool.query(`DELETE FROM ${t} WHERE brand_id=$1`, [BRAND]).catch(() => {});
   }
   await cleanupSilver();
@@ -68,21 +68,7 @@ beforeAll(async () => {
     await pool.query(`INSERT INTO organization (id,name,slug,owner_user_id) VALUES ($1,'AB',$2,$3)`, [ORG, `ab-${ORG.slice(-6)}`, USER]);
     await pool.query(`INSERT INTO brand (id,organization_id,display_name,currency_code,status) VALUES ($1,$2,'AB','INR','active')`, [BRAND, ORG]);
 
-    // 100 finalized orders @ 1,000.00 INR; 10 RTO reversals → 10% RTO. realized = 100k − 10k.
-    for (let i = 1; i <= 100; i++) {
-      await pool.query(
-        `INSERT INTO realized_revenue_ledger (brand_id, ledger_event_id, order_id, event_type, amount_minor, currency_code, occurred_at, occurred_date, economic_effective_at, billing_posted_period, recognition_label)
-         VALUES ($1,$2,$3,'finalization',100000,'INR','2026-06-10T10:00:00Z',(timezone('UTC','2026-06-10T10:00:00Z'::timestamptz))::date,'2026-06-10T10:00:00Z','2026-06','finalized')`,
-        [BRAND, `ab-fin-${i}`, `ab-order-${i}`],
-      );
-    }
-    for (let i = 1; i <= 10; i++) {
-      await pool.query(
-        `INSERT INTO realized_revenue_ledger (brand_id, ledger_event_id, order_id, event_type, amount_minor, currency_code, occurred_at, occurred_date, economic_effective_at, billing_posted_period, recognition_label)
-         VALUES ($1,$2,$3,'rto_reversal',-100000,'INR','2026-06-11T10:00:00Z',(timezone('UTC','2026-06-11T10:00:00Z'::timestamptz))::date,'2026-06-11T10:00:00Z','2026-06','finalized')`,
-        [BRAND, `ab-rto-${i}`, `ab-order-${i}`],
-      );
-    }
+    // MEDALLION REALIGNMENT (Epic 1): revenue is the lakehouse gold ledger (seeded below), not PG.
     // Ad spend 2,000.00 INR → ROAS = realized ÷ spend.
     await pool.query(
       `INSERT INTO ad_spend_ledger (brand_id, spend_event_id, platform, level, level_id, stat_date, spend_minor, currency_code, raw_event_id, occurred_at)

@@ -82,7 +82,10 @@ Real events flow **Collector → Redpanda → Spark sink → Iceberg Bronze → 
   (or `make silver-catalog`) creates the JDBC catalog + Postgres read-shim it needs. Not auto-created by
   `starrocks-init` (the shim runs against Postgres, which only exists after migrations).
 - **Customer marts (churn/VIP scores) stay empty without identity resolution** — they need `brain_id`
-  on the order ledger; revenue + RTO insights work from order data alone.
+  on the order ledger; revenue + RTO insights work from order data alone. Historical ledger rows:
+  `tools/backfill/backfill-ledger-brain-id.sh <brand>` (after migration 0095).
+- **CAC + blended-ROAS insights need ad spend** — connect Meta/Google (OAuth) so the spend-repull jobs
+  fill `ad_spend_ledger`, or seed sample spend: `tools/seed/ad-spend-demo-seed.sh <brand>`.
 - **Step 5 must be `--full-refresh` the first time** after a wipe or an Iceberg/PG source flip.
 - **Skip step 3 → `password authentication failed for brain_app`.** Re-run it after every `down -v`.
 - `docker system prune` also drops images → step 1 re-pulls them (slower first boot).

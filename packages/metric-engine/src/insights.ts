@@ -117,6 +117,8 @@ export async function computeInsights(
 
   return withSilverBrand(deps.srPool, brandId, async (scope) => {
     const insights: Insight[] = [];
+    // Current-window net realized per currency (reused by the ROAS detector below).
+    const revCurByCcy = new Map<string, bigint>();
 
     // ── 1. Revenue swing (current 30d vs prior 30d) + biggest driver event_type ──
     const revRows = await scope.runScoped<{
@@ -176,6 +178,7 @@ export async function computeInsights(
     for (const r of revRows) {
       const cur = bi(r.cur_minor);
       const prior = bi(r.prior_minor);
+      revCurByCcy.set(r.currency_code, cur);
       const swing = cur - prior;
       const pct = pctChange(cur, prior);
       const pctNum = pct === null ? 0 : Math.abs(Number(pct));
@@ -413,6 +416,51 @@ export async function computeInsights(
           prior_month: prev.month,
           prior_cac_minor: prevCac.toString(),
         },
+        confidence: 'high',
+      });
+    }
+
+    // ── 6. Blended ROAS (current 30d) ← ad spend (silver_marketing_spend) vs realized revenue ──
+    // Blended (not attributed): realized revenue ÷ ad spend in the window. Fires only when there IS
+    // ad spend (the ad-connector signal). ROAS<1 = losing money on ads (high); <2 = thin (medium).
+    const spendRows = await scope.runScoped<{ currency_code: string; spend_minor: string | number }>(
+      `SELECT currency_code, COALESCE(SUM(spend_minor), 0) AS spend_minor
+         FROM brain_silver.silver_marketing_spend
+        WHERE stat_date >= '${window.current.from}' AND stat_date <= '${window.current.to}'
+          AND ${BRAND_PREDICATE}
+        GROUP BY currency_code`,
+      [],
+    );
+    for (const r of spendRows) {
+      const spend = bi(r.spend_minor);
+      if (spend === 0n) continue; // no ad spend → no ROAS insight
+      const realized = revCurByCcy.get(r.currency_code) ?? 0n;
+      const roas = ratioStr(realized, spend); // realized ÷ spend to 2 dp (e.g. '2.45' = 2.45x)
+      const roasNum = Number(roas);
+      const losing = realized <= 0n || roasNum < 1;
+      insights.push({
+        id: `blended_roas:${r.currency_code}`,
+        detector: 'blended_roas',
+        kind: losing || roasNum < 2 ? 'risk' : 'trend',
+        severity: realized <= 0n ? 'high' : roasNum < 1 ? 'high' : roasNum < 2 ? 'medium' : 'info',
+        title:
+          realized <= 0n
+            ? `Ads not returning — ${spend.toString()} minor spent, realized revenue ≤0 (last 30d)`
+            : `Blended ROAS ${roas}x (last 30d)`,
+        why:
+          `Spent ${spend.toString()} minor (${r.currency_code}) on ads in the last 30 days against ` +
+          `${realized.toString()} minor of net realized revenue (blended, not attributed).`,
+        recommendedAction:
+          losing
+            ? 'Pause the worst-ROAS campaigns now — spend is exceeding the revenue it returns; shift budget to your best channel and fix RTO/refund leakage eroding realized revenue.'
+            : roasNum < 2
+              ? 'Margins are thin at this ROAS — tighten targeting/creatives and re-check contribution margin before scaling spend.'
+              : 'Healthy blended ROAS — scale the winning channels while efficiency holds.',
+        currencyCode: r.currency_code,
+        impactMinor: spend.toString(),
+        direction: null,
+        deltaPct: null,
+        evidence: { spend_minor: spend.toString(), realized_minor: realized.toString(), roas_x: roas },
         confidence: 'high',
       });
     }

@@ -11,6 +11,7 @@ interface FakeTables {
   churn?: Array<Record<string, unknown>>;
   vip?: Array<Record<string, unknown>>;
   cac?: Array<Record<string, unknown>>;
+  spend?: Array<Record<string, unknown>>;
 }
 
 /** Fake StarRocks pool that routes each gold-mart query to the configured rows. */
@@ -24,6 +25,7 @@ function fakePool(t: FakeTables): SilverPool {
       if (sql.includes("churn_risk = 'high'")) return [t.churn ?? [], []];
       if (sql.includes('monetary_score = 5')) return [t.vip ?? [], []];
       if (sql.includes('gold_cac')) return [t.cac ?? [], []];
+      if (sql.includes('silver_marketing_spend')) return [t.spend ?? [], []];
       return [[], []];
     },
     release() {},
@@ -103,6 +105,27 @@ describe('computeInsights — deterministic Insight + Opportunity Engine', () =>
     expect(cac.kind).toBe('risk');
     expect(cac.direction).toBe('up');
     expect(cac.deltaPct).toBe('100.00'); // 2500 → 5000 per new customer
+  });
+
+  it('computes blended ROAS from ad spend vs realized revenue (and fires only with spend)', async () => {
+    // realized cur 150000 (from revenue row), spend 100000 → ROAS 1.50x → thin margins (medium, risk).
+    const withSpend = await computeInsights(BRAND, {
+      srPool: fakePool({
+        revenue: [{ currency_code: 'INR', cur_minor: '150000', prior_minor: '120000' }],
+        spend: [{ currency_code: 'INR', spend_minor: '100000' }],
+      }),
+    });
+    const roas = withSpend.insights.find((i) => i.detector === 'blended_roas')!;
+    expect(roas.evidence.roas_x).toBe('1.50');
+    expect(roas.impactMinor).toBe('100000'); // spend at stake
+    expect(roas.severity).toBe('medium'); // 1 <= ROAS < 2
+    expect(roas.kind).toBe('risk');
+
+    // No spend → no ROAS insight (the ad-connector signal is absent).
+    const noSpend = await computeInsights(BRAND, {
+      srPool: fakePool({ revenue: [{ currency_code: 'INR', cur_minor: '200000', prior_minor: '150000' }] }),
+    });
+    expect(noSpend.insights.find((i) => i.detector === 'blended_roas')).toBeUndefined();
   });
 
   it('suppresses the CAC insight when there is no ad spend (no meaningless 0/0 "CAC improving ?%")', async () => {

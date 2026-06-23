@@ -185,6 +185,15 @@ export const PIXEL_JS = `(function(){
     cartViewed: function(x){ emit("cart.viewed", x); },
     checkoutStarted: function(x){ emit("checkout.started", x); },
     checkoutStep: function(x){ emit("checkout.step_viewed", x); },
+    // Checkout / payment-page signals — call these from a script pasted on the payment-provider /
+    // thank-you screens (which a storefront ScriptTag cannot reach). Behavioral journey signals only;
+    // revenue + payment truth still come deterministically from the order/payment connectors.
+    shippingSelected: function(x){ emit("checkout.shipping_selected", x); },
+    paymentInitiated: function(x){ emit("payment.initiated", x); },
+    paymentSucceeded: function(x){ emit("payment.succeeded", x); },
+    paymentFailed: function(x){ emit("payment.failed", x); },
+    orderPlaced: function(x){ emit("order.placed", x); },
+    couponApplied: function(x){ emit("coupon.applied", x); },
     login: function(x){ emit("user.logged_in", x); },
     signup: function(x){ emit("user.signed_up", x); },
     identify: function(t){ identify(t); },
@@ -201,6 +210,8 @@ export const PIXEL_JS = `(function(){
     if (p.indexOf("/products/") >= 0 || p.indexOf("/product/") >= 0) return "product";
     if (p.indexOf("/collections/") >= 0 || p.indexOf("/product-category/") >= 0 || p.indexOf("/product-tag/") >= 0 || p === "/shop" || p.indexOf("/shop/") === 0) return "collection";
     if (p === "/cart" || p.indexOf("/cart") === 0) return "cart";
+    // Order confirmation / thank-you. Shopify: /thank_you, /thank-you, /orders/<id>. Woo: /order-received/.
+    if (p.indexOf("/thank_you") >= 0 || p.indexOf("/thank-you") >= 0 || p.indexOf("/order-received") >= 0 || /\\/orders\\/[0-9]/.test(p)) return "order_confirmation";
     if (p.indexOf("/checkout") >= 0) return "checkout";
     if (p.indexOf("/search") >= 0 || /[?&]s=/.test(q)) return "search"; // Woo search = ?s=
     // Account: Shopify /account*, WooCommerce /my-account*.
@@ -221,6 +232,9 @@ export const PIXEL_JS = `(function(){
     else if (t === "cart") emit("cart.viewed", {});
     else if (t === "checkout") { var qc = parseQuery(); emit("checkout.step_viewed", { step: qc.step || handleAfter("/checkout/") || undefined }); }
     else if (t === "search") { var q = parseQuery(); emit("search.submitted", { query: q.q || q.query }); }
+    // Order confirmation — a BEHAVIORAL funnel-completion marker (NOT revenue: revenue truth comes
+    // from the order connectors, never the pixel). order_id (if present in the URL) helps stitch.
+    else if (t === "order_confirmation") { emit("order.placed", { order_id: handleAfter("/orders/") || handleAfter("/order-received/") || undefined }); }
   }
 
   // SPA navigation (themes using the History API) → re-fire on path change.
@@ -263,19 +277,47 @@ export const PIXEL_JS = `(function(){
   } catch(e){}
   D.addEventListener("submit", function(ev){ try { var f = ev.target; if (!f) return; var a = "" + (f.action || "");
     var qs = f.querySelector ? function(s){ try { return f.querySelector(s); } catch(e){ return null; } } : function(){ return null; };
+    var classified = true;
     if (a.indexOf("/cart/add") >= 0 || a.indexOf("add-to-cart") >= 0) emit("cart.item_added", {});
     else if (a.indexOf("/cart/change") >= 0 || a.indexOf("/cart/update") >= 0) emit("cart.updated", {});
     // Account auth — Shopify (/account*) + WooCommerce (.woocommerce-form-login / -register).
     else if (a.indexOf("/account/login") >= 0 || qs(".woocommerce-form-login,[name=login]")) emit("user.logged_in", {});
     else if ((a.indexOf("/account") >= 0 && (a.indexOf("register") >= 0 || a.indexOf("/account#") >= 0 || f.id === "create_customer")) || qs(".woocommerce-form-register,[name=register]")) emit("user.signed_up", {});
+    else classified = false;
+    // Coupon / discount-code usage (Shopify "discount", Woo "coupon_code"). A discount code is not PII.
+    var cp = qs('input[name*="coupon" i],input[id*="coupon" i],input[name*="discount" i],input[id*="discount" i],input[name*="promo" i]');
+    if (cp && cp.value) emit("coupon.applied", { code: ("" + cp.value).trim().slice(0, 64) });
+    // Generic form submission (newsletter / contact / etc.) not already classified above.
+    if (!classified) emit("form.submitted", { form_id: f.id || undefined, form_name: (f.getAttribute && f.getAttribute("name")) || undefined });
     // Identity BRIDGE: any submit carrying an email (login / register / newsletter / checkout) → hash
     // it client-side (no raw PII on the wire) → links the anon journey to the known customer.
     var em = qs('input[type=email],input[name*="email" i],input[id*="email" i]');
     if (em && em.value) identify({ email: em.value });
   } catch(e){} }, true);
 
-  // Click tracking (delegated) — links + buttons + opted-in elements, with context (no PII).
-  D.addEventListener("click", function(ev){ try { var el = ev.target; if (!el || !el.closest) return; var a = el.closest("a,button,[role=button],[data-brain-track]"); if (!a) return; var txt = (a.textContent || "").replace(/\\s+/g, " ").trim().slice(0, 80); emit("element.clicked", { element: (a.tagName || "").toLowerCase(), text: txt || undefined, href: (a.getAttribute && a.getAttribute("href")) || undefined, el_id: a.id || undefined }); } catch(e){} }, true);
+  // Click tracking + frustration signals — links/buttons (element.clicked), plus rage clicks and
+  // dead clicks. The latter two are UX-friction signals that power "checkout bottleneck" /
+  // "conversion drop" insights. No PII.
+  var _clicks = [], _lastRage = 0;
+  D.addEventListener("click", function(ev){ try {
+    var el = ev.target; if (!el) return;
+    var now = Date.now(), x = (ev && ev.clientX) || 0, y = (ev && ev.clientY) || 0;
+    // Rage: >=3 clicks within 1s inside a ~40px box → ONE rage.click per burst (1.5s debounce).
+    _clicks.push({ t: now, x: x, y: y }); if (_clicks.length > 8) _clicks.shift();
+    var near = 0; for (var i = 0; i < _clicks.length; i++){ var c = _clicks[i]; if ((now - c.t) < 1000 && Math.abs(c.x - x) < 40 && Math.abs(c.y - y) < 40) near++; }
+    if (near >= 3 && (now - _lastRage) > 1500){ _lastRage = now; emit("rage.click", { count: near, x: x, y: y }); }
+    var a = el.closest ? el.closest("a,button,input,select,textarea,label,[role=button],[onclick],[data-brain-track],[contenteditable]") : null;
+    if (a){
+      var txt = (a.textContent || "").replace(/\\s+/g, " ").trim().slice(0, 80);
+      emit("element.clicked", { element: (a.tagName || "").toLowerCase(), text: txt || undefined, href: (a.getAttribute && a.getAttribute("href")) || undefined, el_id: a.id || undefined });
+    } else {
+      // Dead click: the element LOOKS clickable (cursor:pointer) but resolves to NO interactive
+      // ancestor — the user expected something to happen and nothing did. Precise (not every stray click).
+      var looksClickable = false;
+      try { var cs = W.getComputedStyle ? W.getComputedStyle(el) : null; looksClickable = !!(cs && cs.cursor === "pointer"); } catch(e2){}
+      if (looksClickable) emit("dead.click", { element: (el.tagName || "").toLowerCase(), x: x, y: y });
+    }
+  } catch(e){} }, true);
 
   // Scroll-depth milestones (25/50/75/100%), once each.
   var sm = {};

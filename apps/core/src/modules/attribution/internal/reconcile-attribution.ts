@@ -31,12 +31,25 @@ import {
 } from '@brain/metric-engine';
 import { AttributionCreditWriter } from './credit-writer.js';
 
+/**
+ * The order's RECOGNIZED-revenue events — the attribution credit basis. An order is "won" (and so
+ * gets attributed to its journey) when its revenue is recognized:
+ *   - finalization           — PREPAID, recognized after the return/cancel horizon (GAP-2 job).
+ *   - cod_delivery_confirmed  — COD, recognized on terminal delivery (the COD recognition path).
+ * These are mutually exclusive per order (GAP-2: finalization excludes COD orders), so an order is
+ * credited exactly once. Crediting ONLY 'finalization' (the old behaviour) left ALL COD revenue
+ * unattributed — a large gap for COD-heavy (India) brands and a structural parity-oracle shortfall
+ * (realized = every non-provisional event, which includes cod_delivery_confirmed). GAP-3 fix.
+ */
+const RECOGNITION_EVENT_TYPES: readonly string[] = ['finalization', 'cod_delivery_confirmed'];
+
 const REVERSAL_EVENT_TYPES: readonly string[] = [
   'rto_reversal',
   'refund',
   'chargeback',
   'cancellation',
   'concession',
+  'cod_rto_clawback', // COD RTO — reverses any credit on a COD order (GAP-3)
 ];
 
 export interface ReconcileResult {
@@ -133,20 +146,21 @@ async function reconcileOneModel(
   let clawedBack = 0;
   let unattributed = 0;
 
-  // ── CREDIT pass: finalized orders not yet credited (for this model) ─────────
+  // ── CREDIT pass: recognized orders not yet credited (for this model) ─────────
+  // Recognized = finalization (prepaid) OR cod_delivery_confirmed (COD) — see RECOGNITION_EVENT_TYPES.
   const finalized = await readScoped<FinalizedOrderRow>(
     deps.pool,
     brandId,
     correlationId,
     `SELECT f.order_id, f.brain_id, f.amount_minor::text AS amount_minor, f.currency_code, f.occurred_at
        FROM realized_revenue_ledger f
-      WHERE f.brand_id = $1 AND f.event_type = 'finalization'
+      WHERE f.brand_id = $1 AND f.event_type = ANY($3::text[])
         AND NOT EXISTS (
           SELECT 1 FROM attribution_credit_ledger a
            WHERE a.brand_id = $1 AND a.order_id = f.order_id
              AND a.row_kind = 'credit' AND a.model_id = $2
         )`,
-    [brandId, model],
+    [brandId, model, RECOGNITION_EVENT_TYPES],
   );
 
   for (const order of finalized) {

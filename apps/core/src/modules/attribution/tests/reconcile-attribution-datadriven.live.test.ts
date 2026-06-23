@@ -33,7 +33,9 @@ async function pgExec(sql: string, params: unknown[] = []): Promise<void> {
 
 async function cleanup(): Promise<void> {
   await pgExec(`DELETE FROM attribution_credit_ledger WHERE brand_id = $1`, [BRAND]).catch(() => {});
-  await pgExec(`DELETE FROM realized_revenue_ledger WHERE brand_id = $1`, [BRAND]).catch(() => {});
+  await (srPool as unknown as mysql.Pool)
+    .query(`DELETE FROM brain_gold.gold_revenue_ledger WHERE brand_id = ?`, [BRAND])
+    .catch(() => {});
   await pgExec(`DELETE FROM brand WHERE id = $1`, [BRAND]).catch(() => {});
   await pgExec(`DELETE FROM organization WHERE id = $1`, [ORG_ID]).catch(() => {});
   await pgExec(`DELETE FROM app_user WHERE id = $1`, [USER_ID]).catch(() => {});
@@ -70,13 +72,13 @@ beforeAll(async () => {
       [BRAND, ANON, BRAIN_ID, ORDER_DD, BRAND, ANON, BRAIN_ID, ORDER_DD, BRAND, 'anon-dd-nonconv'],
     );
 
-    // A recognized (finalized) order stitched to the journey.
-    await pgPool.query(
-      `INSERT INTO realized_revenue_ledger
+    // A recognized (finalized) order stitched to the journey — in the LAKEHOUSE gold ledger.
+    await sr.query(
+      `INSERT INTO brain_gold.gold_revenue_ledger
          (brand_id, ledger_event_id, order_id, brain_id, event_type, amount_minor, currency_code,
-          occurred_at, occurred_date, economic_effective_at, billing_posted_period, recognition_label)
-       VALUES ($1,'dd-fin-1',$2,$3,'finalization',90000,'INR','2026-06-10Z',(timezone('UTC','2026-06-10Z'::timestamptz))::date,'2026-06-10Z','2026-06','finalized')
-       ON CONFLICT (brand_id, ledger_event_id, occurred_date) DO NOTHING`,
+          fee_minor, occurred_at, economic_effective_at, recognition_label, billing_posted_period,
+          ingested_at, updated_at)
+       VALUES (?,'dd-fin-1',?,?,'finalization',90000,'INR',0,'2026-06-10 00:00:00','2026-06-10 00:00:00','finalized','2026-06','2026-06-10 00:00:00','2026-06-10 00:00:00')`,
       [BRAND, ORDER_DD, BRAIN_ID],
     );
     available = true;

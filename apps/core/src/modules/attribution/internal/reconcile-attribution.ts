@@ -85,6 +85,75 @@ interface ReversalRow {
   occurred_at: Date;
 }
 
+/**
+ * MEDALLION REALIGNMENT (Epic 2 / decision B): the attribution CREDIT BASIS now comes from the
+ * LAKEHOUSE ledger (brain_gold.gold_revenue_ledger, Bronze-sourced) via srPool — NOT the PG
+ * realized_revenue_ledger. The already-credited filter (the old NOT EXISTS / EXISTS against the PG
+ * attribution_credit_ledger) can't cross data stores, so we read the credited order_id set from PG
+ * and filter the lakehouse candidates in TS — same idempotency guarantee.
+ */
+
+/** order_ids already credited for (brand, model) — the idempotency filter (PG credit ledger). */
+async function readCreditedOrderIds(
+  pool: Pool,
+  brandId: string,
+  model: AttributionModelId,
+): Promise<Set<string>> {
+  const rows = await readScoped<{ order_id: string }>(
+    pool,
+    brandId,
+    '',
+    `SELECT DISTINCT order_id
+       FROM attribution_credit_ledger
+      WHERE brand_id = $1 AND row_kind = 'credit' AND model_id = $2`,
+    [brandId, model],
+  );
+  return new Set(rows.map((r) => r.order_id));
+}
+
+/** Recognized orders (credit basis) from the lakehouse gold ledger, NOT yet credited under `model`. */
+async function readUncreditedRecognized(
+  deps: ReconcileDeps,
+  brandId: string,
+  model: AttributionModelId,
+): Promise<FinalizedOrderRow[]> {
+  const credited = await readCreditedOrderIds(deps.pool, brandId, model);
+  const inList = RECOGNITION_EVENT_TYPES.map((t) => `'${t}'`).join(',');
+  const rows = await withSilverBrand(deps.srPool, brandId, async (scope) =>
+    scope.runScoped<FinalizedOrderRow>(
+      `SELECT order_id, brain_id, CAST(amount_minor AS CHAR) AS amount_minor, currency_code, occurred_at
+         FROM brain_gold.gold_revenue_ledger
+        WHERE ${BRAND_PREDICATE} AND event_type IN (${inList})`,
+      [],
+    ),
+  );
+  return rows
+    .filter((r) => !credited.has(r.order_id))
+    .map((r) => ({ ...r, occurred_at: new Date(r.occurred_at) }));
+}
+
+/** Reversals from the lakehouse gold ledger that land on orders already credited under `model`. */
+async function readReversalsOnCredited(
+  deps: ReconcileDeps,
+  brandId: string,
+  model: AttributionModelId,
+): Promise<ReversalRow[]> {
+  const credited = await readCreditedOrderIds(deps.pool, brandId, model);
+  if (credited.size === 0) return [];
+  const inList = REVERSAL_EVENT_TYPES.map((t) => `'${t}'`).join(',');
+  const rows = await withSilverBrand(deps.srPool, brandId, async (scope) =>
+    scope.runScoped<ReversalRow>(
+      `SELECT order_id, event_type, ledger_event_id, CAST(amount_minor AS CHAR) AS amount_minor, occurred_at
+         FROM brain_gold.gold_revenue_ledger
+        WHERE ${BRAND_PREDICATE} AND event_type IN (${inList})`,
+      [],
+    ),
+  );
+  return rows
+    .filter((r) => credited.has(r.order_id))
+    .map((r) => ({ ...r, occurred_at: new Date(r.occurred_at) }));
+}
+
 /** Resolve the journey key (brain_anon_id) stitched to an order's brain_id, via Silver. */
 async function resolveBrainAnonId(
   srPool: SilverPool,
@@ -164,21 +233,8 @@ export async function reconcileDataDrivenAttribution(
     return { credited: 0, clawed_back: 0, unattributed: 0 }; // no channels → nothing to attribute
   }
 
-  // 2. CREDIT pass — recognized orders not yet credited under data_driven.
-  const finalized = await readScoped<FinalizedOrderRow>(
-    deps.pool,
-    brandId,
-    correlationId,
-    `SELECT f.order_id, f.brain_id, f.amount_minor::text AS amount_minor, f.currency_code, f.occurred_at
-       FROM realized_revenue_ledger f
-      WHERE f.brand_id = $1 AND f.event_type = ANY($3::text[])
-        AND NOT EXISTS (
-          SELECT 1 FROM attribution_credit_ledger a
-           WHERE a.brand_id = $1 AND a.order_id = f.order_id
-             AND a.row_kind = 'credit' AND a.model_id = $2
-        )`,
-    [brandId, model, RECOGNITION_EVENT_TYPES],
-  );
+  // 2. CREDIT pass — recognized orders not yet credited under data_driven (lakehouse gold basis).
+  const finalized = await readUncreditedRecognized(deps, brandId, model);
 
   for (const order of finalized) {
     if (!order.brain_id) {
@@ -205,21 +261,8 @@ export async function reconcileDataDrivenAttribution(
     else unattributed += 1;
   }
 
-  // 3. CLAWBACK pass — reversals on data_driven-credited orders (SAVED weights).
-  const reversals = await readScoped<ReversalRow>(
-    deps.pool,
-    brandId,
-    correlationId,
-    `SELECT r.order_id, r.event_type, r.ledger_event_id, r.amount_minor::text AS amount_minor, r.occurred_at
-       FROM realized_revenue_ledger r
-      WHERE r.brand_id = $1 AND r.event_type = ANY($2::text[])
-        AND EXISTS (
-          SELECT 1 FROM attribution_credit_ledger a
-           WHERE a.brand_id = $1 AND a.order_id = r.order_id
-             AND a.row_kind = 'credit' AND a.model_id = $3
-        )`,
-    [brandId, REVERSAL_EVENT_TYPES, model],
-  );
+  // 3. CLAWBACK pass — reversals on data_driven-credited orders (SAVED weights; lakehouse basis).
+  const reversals = await readReversalsOnCredited(deps, brandId, model);
   for (const rev of reversals) {
     const res = await writer.writeClawback({
       brandId,
@@ -250,20 +293,8 @@ async function reconcileOneModel(
 
   // ── CREDIT pass: recognized orders not yet credited (for this model) ─────────
   // Recognized = finalization (prepaid) OR cod_delivery_confirmed (COD) — see RECOGNITION_EVENT_TYPES.
-  const finalized = await readScoped<FinalizedOrderRow>(
-    deps.pool,
-    brandId,
-    correlationId,
-    `SELECT f.order_id, f.brain_id, f.amount_minor::text AS amount_minor, f.currency_code, f.occurred_at
-       FROM realized_revenue_ledger f
-      WHERE f.brand_id = $1 AND f.event_type = ANY($3::text[])
-        AND NOT EXISTS (
-          SELECT 1 FROM attribution_credit_ledger a
-           WHERE a.brand_id = $1 AND a.order_id = f.order_id
-             AND a.row_kind = 'credit' AND a.model_id = $2
-        )`,
-    [brandId, model, RECOGNITION_EVENT_TYPES],
-  );
+  // Basis is the lakehouse gold ledger (Bronze-sourced), filtered by the PG credited set in TS.
+  const finalized = await readUncreditedRecognized(deps, brandId, model);
 
   for (const order of finalized) {
     if (!order.brain_id) {
@@ -288,21 +319,8 @@ async function reconcileOneModel(
     else unattributed += 1; // zero touches → no credit rows written
   }
 
-  // ── CLAWBACK pass: reversals on orders that have saved credits ───────────────
-  const reversals = await readScoped<ReversalRow>(
-    deps.pool,
-    brandId,
-    correlationId,
-    `SELECT r.order_id, r.event_type, r.ledger_event_id, r.amount_minor::text AS amount_minor, r.occurred_at
-       FROM realized_revenue_ledger r
-      WHERE r.brand_id = $1 AND r.event_type = ANY($2::text[])
-        AND EXISTS (
-          SELECT 1 FROM attribution_credit_ledger a
-           WHERE a.brand_id = $1 AND a.order_id = r.order_id
-             AND a.row_kind = 'credit' AND a.model_id = $3
-        )`,
-    [brandId, REVERSAL_EVENT_TYPES, model],
-  );
+  // ── CLAWBACK pass: reversals on orders that have saved credits (lakehouse gold basis) ──
+  const reversals = await readReversalsOnCredited(deps, brandId, model);
 
   for (const rev of reversals) {
     const res = await writer.writeClawback({

@@ -104,4 +104,15 @@ describe('computeInsights — deterministic Insight + Opportunity Engine', () =>
     expect(cac.direction).toBe('up');
     expect(cac.deltaPct).toBe('100.00'); // 2500 → 5000 per new customer
   });
+
+  it('suppresses the CAC insight when there is no ad spend (no meaningless 0/0 "CAC improving ?%")', async () => {
+    const pool = fakePool({
+      cac: [
+        { currency_code: 'INR', acquisition_month: '2026-06', spend_minor: '0', new_customers: '40' },
+        { currency_code: 'INR', acquisition_month: '2026-05', spend_minor: '0', new_customers: '30' },
+      ],
+    });
+    const res = await computeInsights(BRAND, { srPool: pool });
+    expect(res.insights.find((i) => i.detector === 'cac_trend')).toBeUndefined();
+  });
 });

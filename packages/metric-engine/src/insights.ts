@@ -383,17 +383,20 @@ export async function computeInsights(
       if (latest.cust === 0n || prev.cust === 0n) continue;
       const latestCac = latest.spend / latest.cust;
       const prevCac = prev.spend / prev.cust;
+      // No ad spend in either month → CAC is 0/0-meaningless; don't emit a "CAC improving ?%" insight.
+      if (latest.spend === 0n && prev.spend === 0n) continue;
       const pct = pctChange(latestCac, prevCac);
       const pctNum = pct === null ? 0 : Math.abs(Number(pct));
       const rising = latestCac > prevCac;
+      const cacPctLabel = pct !== null ? ` ${pct}%` : '';
       insights.push({
         id: `cac_trend:${ccy}`,
         detector: 'cac_trend',
         kind: rising ? 'risk' : 'trend',
         severity: rising ? severityFromAbsPct(pctNum) : 'info',
         title: rising
-          ? `CAC rising ${pct ?? '?'}% MoM (${latest.month})`
-          : `CAC improving ${pct ?? '?'}% MoM (${latest.month})`,
+          ? `CAC rising${cacPctLabel} MoM (${latest.month})`
+          : `CAC improving${cacPctLabel} MoM (${latest.month})`,
         why:
           `Acquisition cost moved from ${prevCac.toString()} (${prev.month}) to ${latestCac.toString()} minor ` +
           `(${latest.month}) per new customer in ${ccy}.`,

@@ -581,7 +581,9 @@ export async function main(): Promise<void> {
         const r = await rawPgPool.query<{ id: string }>('SELECT id FROM list_active_brand_ids()');
         return r.rows.map((x) => x.id);
       },
-      fetchCandidates: (brandId, from, to) => fetchFinalizedPurchaseCandidatesScoped(rawPgPool, brandId, from, to),
+      // Epic 1: finalized purchases come from the lakehouse gold ledger (srPool); subject_hash +
+      // passback dedup resolve in PG. Cross-store read inside fetchFinalizedPurchaseCandidatesScoped.
+      fetchCandidates: (brandId, from, to) => fetchFinalizedPurchaseCandidatesScoped(rawPgPool, srPool, brandId, from, to),
       passback: capiPassback,
       windowHours: Number(process.env['CAPI_PASSBACK_WINDOW_HOURS'] ?? 24),
       intervalMs: Number(process.env['CAPI_PASSBACK_INTERVAL_MS'] ?? 300_000),

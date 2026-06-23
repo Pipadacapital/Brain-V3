@@ -148,3 +148,24 @@ SELECT
 FROM connectors.connector_journey_stitch_map;
 
 GRANT SELECT ON connector_journey_stitch_map_src TO brain;
+
+-- ── Medallion realignment (Epic 1): shims for Silver recognition-from-Bronze ───────────────────
+-- brand recognition horizons (operational config — legitimately PG) for finalization.
+CREATE OR REPLACE VIEW brand_horizons_src AS
+SELECT id::text AS brand_id,
+       cod_recognition_horizon_days,
+       prepaid_recognition_horizon_days
+FROM tenancy.brand;
+GRANT SELECT ON brand_horizons_src TO brain;
+
+-- identity_link hash→brain_id (for resolving an order's brain_id from its pre_hashed_email).
+-- NOTE: identity is PG today (ADR-0003); Epic 3 re-points this to the Neo4j graph — the join key
+-- abstraction (order identity-hash → brain_id) is unchanged.
+CREATE OR REPLACE VIEW identity_link_src AS
+SELECT brand_id::text AS brand_id,
+       identifier_type,
+       identifier_value,
+       brain_id::text AS brain_id,
+       is_active
+FROM identity.identity_link;
+GRANT SELECT ON identity_link_src TO brain;

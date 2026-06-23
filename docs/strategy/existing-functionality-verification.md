@@ -58,11 +58,13 @@ the missing inputs and watching the whole chain light up.
   horizon is indistinguishable from prepaid → persist `payment_method` on the provisional row (the
   writer already knows it) and filter `payment_method='prepaid'`.
 
-### GAP-3 — Attribution credit pass ignores COD-realized revenue (design, flag)
-- `reconcile-attribution.ts` credit pass selects only `event_type='finalization'`. COD revenue is
-  realized as `cod_delivery_confirmed`, never `finalization`. For a COD-heavy (India) brand, COD orders
-  would **never attribute** even after the finalization job runs. Needs a product decision: should the
-  credit basis be `finalization` ∪ `cod_delivery_confirmed`?
+### GAP-3 — Attribution credit pass ignored COD-realized revenue  ✅ FIXED (commit 178410c)
+- `reconcile-attribution.ts` credited only `event_type='finalization'`; COD revenue is realized as
+  `cod_delivery_confirmed`, so COD orders never attributed (a structural parity-oracle shortfall, since
+  the oracle's "realized" includes COD).
+- **Fix:** credit basis = `finalization` ∪ `cod_delivery_confirmed` (mutually exclusive per order →
+  still credited once); clawback set += `cod_rto_clawback`. Live: re-reconcile credited 1368 (was
+  1320), **12 COD orders now attributed** (was 0). New isolated live test.
 
 ### Minor — `silver_order_line` thin (81 lines vs 930 orders); `gold_cac` = 2 rows.
 
@@ -95,9 +97,10 @@ finalization event the job would emit, then let Silver→Gold rebuild determinis
    `journey-stitch-from-identity` job (replaces the dev bash script), verified e2e (389 stitches →
    330 attributed orders, parity exact). Follow-ups: schedule the job (Argo, after identity +
    finalization); for production traffic the pixel `identify()` provides the real bridge signal.
-3. **GAP-3:** decide + implement the COD attribution basis. NOTE: with GAP-2 fixed, COD revenue now
-   recognizes via `cod_delivery_confirmed` only (never finalization). Attribution still credits only
-   `finalization`, so COD orders remain unattributed — should the credit basis be
-   `finalization` ∪ `cod_delivery_confirmed`?
-4. Only AFTER 1–3 produce real stitched+finalized journeys does **data-driven (Markov) attribution**
-   become meaningful — it reads the same `silver_touchpoint` corpus.
+3. ~~**GAP-3:** COD attribution basis~~ ✅ **DONE** (commit 178410c): credit basis =
+   `finalization` ∪ `cod_delivery_confirmed`; COD orders now attribute (12 live, was 0).
+4. With GAP-1/2/3 fixed, real stitched+finalized+COD journeys now flow → **data-driven (Markov)
+   attribution** is finally meaningful (reads the same `silver_touchpoint` corpus). The remaining
+   hardening backlog: schedule the three jobs (Argo crons: finalization → stitch-from-identity →
+   attribution-reconcile), and persist `payment_method` on the provisional row (closes the GAP-2
+   in-flight-COD residual).

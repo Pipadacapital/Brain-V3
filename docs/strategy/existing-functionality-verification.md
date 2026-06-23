@@ -99,8 +99,12 @@ finalization event the job would emit, then let Silver→Gold rebuild determinis
    finalization); for production traffic the pixel `identify()` provides the real bridge signal.
 3. ~~**GAP-3:** COD attribution basis~~ ✅ **DONE** (commit 178410c): credit basis =
    `finalization` ∪ `cod_delivery_confirmed`; COD orders now attribute (12 live, was 0).
-4. With GAP-1/2/3 fixed, real stitched+finalized+COD journeys now flow → **data-driven (Markov)
-   attribution** is finally meaningful (reads the same `silver_touchpoint` corpus). The remaining
-   hardening backlog: schedule the three jobs (Argo crons: finalization → stitch-from-identity →
-   attribution-reconcile), and persist `payment_method` on the provisional row (closes the GAP-2
-   in-flight-COD residual).
+4. ~~Data-driven (Markov) attribution~~ ✅ **DONE** (commit 84e3138): 5th model, GLOBAL Markov
+   removal-effect; verified live (342 orders, parity exact, channel split differs from position).
+5. ~~Dashboard serves data_driven~~ ✅ **DONE** (commit ec21687): `make attribution-gold-refresh`
+   rebuilds the attribution gold marts from the reconcile-written ledger; `computeChannelRoas`
+   returns data_driven with model-specific ROAS (paid_google 1.6155 vs 1.8659 position-based).
+
+**Remaining hardening backlog** (operational, not feature gaps): schedule the three jobs as Argo
+crons (finalization → stitch-from-identity → attribution-reconcile → attribution-gold-refresh), and
+persist `payment_method` on the provisional row (closes the GAP-2 in-flight-COD residual).

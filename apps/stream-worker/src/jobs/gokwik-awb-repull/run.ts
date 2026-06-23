@@ -42,7 +42,6 @@ import {
   type GokwikAwbRecord,
 } from '@brain/gokwik-mapper';
 import { GokwikAwbClient, type GokwikApiCredentials, GOKWIK_AWB_PAGE_SIZE, GOKWIK_AUTH_ERROR } from './gokwik-awb-client.js';
-import { generateSyntheticAwbFromOrders } from './synthetic-awb-from-orders.js';
 import { recordConnectorAuthRejected } from '../../infrastructure/observability/connector-auth-health.js';
 import { SaltProvider, LocalSecretsProvider } from '../../infrastructure/secrets/SaltProvider.js';
 import { resolveSaltHex } from '@brain/identity-core';
@@ -164,14 +163,10 @@ async function repullConnector(params: RepullParams): Promise<void> {
   // GUC-after-enumerate (MT-1): brand context set BEFORE any brand-scoped read/write.
   await setSyncState(pool, brandId, ciId, 'syncing', null);
 
-  // DEV: generate brand-tied synthetic AWB records from the brand's own recognized orders so the GoKwik
-  // analytics actually populate (the static fixture's order_ids match no real brand). Gated by
-  // GOKWIK_SYNTH_FROM_ORDERS (on by default; set '0' to disable). Empty on failure (non-fatal).
-  const extraRecords =
-    process.env['GOKWIK_SYNTH_FROM_ORDERS'] !== '0'
-      ? await generateSyntheticAwbFromOrders(pool, brandId)
-      : [];
-  const apiClient = new GokwikAwbClient(creds, extraRecords);
+  // MEDALLION REALIGNMENT (Epic 1 / decision B): the dev synthetic-AWB-from-PG-ledger shim was removed
+  // (the realized_revenue_ledger it read is dropped). Real gokwik.awb_status.v1 events already flow to
+  // Bronze; the repull uses the API client / fixtures directly.
+  const apiClient = new GokwikAwbClient(creds, []);
 
   let emitted = 0;
   try {

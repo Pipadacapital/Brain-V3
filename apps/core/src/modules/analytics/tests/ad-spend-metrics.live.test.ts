@@ -29,7 +29,11 @@ import mysql from 'mysql2/promise';
 import { computeAdSpendTimeseries, computeBlendedRoas } from '@brain/metric-engine';
 import type { SilverPool } from '@brain/metric-engine';
 import { getAdSpendTimeseries, getBlendedRoas } from '../index.js';
-import { toBillingPostedPeriod } from '../../measurement/internal/domain/recognition/entities/LedgerEntry.js';
+// MEDALLION REALIGNMENT (Epic 1): the measurement module was deleted with the PG ledger write path;
+// billing_posted_period is a trivial 'YYYY-MM' derivation, inlined here.
+function toBillingPostedPeriod(date: Date): string {
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`;
+}
 
 const SUPERUSER_URL =
   process.env['DATABASE_URL'] ?? 'postgres://brain:brain@localhost:5432/brain';
@@ -59,7 +63,8 @@ async function clearSpend(brandId: string): Promise<void> {
   await superPool.query(`DELETE FROM ad_spend_ledger WHERE brand_id = $1`, [brandId]);
 }
 async function clearRevenue(brandId: string): Promise<void> {
-  await superPool.query(`DELETE FROM realized_revenue_ledger WHERE brand_id = $1`, [brandId]);
+  // MEDALLION REALIGNMENT (Epic 1): revenue is the lakehouse gold ledger now, not the PG ledger.
+  if (srUp) await srPool.query(`DELETE FROM brain_gold.gold_revenue_ledger WHERE brand_id = ?`, [brandId]);
 }
 async function clearSpendSilver(brandId: string): Promise<void> {
   if (srUp) await srPool.query(`DELETE FROM brain_silver.silver_marketing_spend WHERE brand_id = ?`, [brandId]);

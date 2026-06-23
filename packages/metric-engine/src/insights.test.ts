@@ -168,6 +168,20 @@ describe('computeInsights — deterministic Insight + Opportunity Engine', () =>
     expect(p.impactMinor).toBe('600000');
   });
 
+  it('funnel: ignores trailing un-instrumented stages (0% checkout) and flags the real observed leak', async () => {
+    // 660 → 541 product (82%) → 34 cart (6.28%) → 0 checkout → 0 purchase. checkout/purchase are
+    // uninstrumented (storefront pixel emits no checkout events) → the leak is product→cart, NOT "0% checkout".
+    const res = await computeInsights(BRAND, {
+      srPool: fakePool({
+        funnel: [{ sessions: 660, product_viewed: 541, cart_added: 34, checkout_started: 0, purchased: 0 }],
+      }),
+    });
+    const f = res.insights.find((i) => i.detector === 'funnel_dropoff')!;
+    expect(f.evidence.step_pct).toBe('6.28'); // 34/541, not 0% checkout
+    expect(f.title).toContain('cart adds');
+    expect(f.title).not.toContain('checkout');
+  });
+
   it('suppresses the CAC insight when there is no ad spend (no meaningless 0/0 "CAC improving ?%")', async () => {
     const pool = fakePool({
       cac: [

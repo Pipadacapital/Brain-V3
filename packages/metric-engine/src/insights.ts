@@ -485,9 +485,16 @@ export async function computeInsights(
         purchased: 'purchase',
       };
       const top = funnel.stages[0];
-      const purchased = funnel.stages[funnel.stages.length - 1];
+      // Cap at the last stage that actually has sessions: a trailing all-zero stage (e.g. checkout
+      // when the storefront pixel doesn't emit checkout events — a Shopify checkout-extensibility gap,
+      // not a CRO leak) would otherwise be flagged as "0% reach …" and bury the real observed leak.
+      let lastNonZero = 0;
+      for (let k = 0; k < funnel.stages.length; k++) {
+        if ((funnel.stages[k]?.sessions ?? 0n) > 0n) lastNonZero = k;
+      }
+      const purchased = funnel.stages[lastNonZero];
       let worst: { key: string; prevKey: string; stepNum: number; stepPct: string | null; lost: bigint } | null = null;
-      for (let k = 1; k < funnel.stages.length; k++) {
+      for (let k = 1; k <= lastNonZero; k++) {
         const st = funnel.stages[k];
         const prev = funnel.stages[k - 1];
         if (!st || !prev || prev.sessions === 0n) continue;
@@ -508,8 +515,9 @@ export async function computeInsights(
           title: `Funnel leak: only ${worst.stepPct ?? '?'}% of ${HUMAN[worst.prevKey] ?? worst.prevKey} reach ${HUMAN[worst.key] ?? worst.key}`,
           why:
             `${top.sessions.toString()} sessions in the last 30 days; ${worst.lost.toString()} dropped between ` +
-            `${HUMAN[worst.prevKey] ?? worst.prevKey} and ${HUMAN[worst.key] ?? worst.key}. Overall session→purchase ` +
-            `conversion is ${purchased?.conversionPct ?? '?'}%.`,
+            `${HUMAN[worst.prevKey] ?? worst.prevKey} and ${HUMAN[worst.key] ?? worst.key}. Sessions reaching ` +
+            `${HUMAN[purchased?.key ?? ''] ?? purchased?.key ?? 'the last tracked stage'}: ${purchased?.conversionPct ?? '?'}%` +
+            `${lastNonZero < funnel.stages.length - 1 ? ' (checkout/purchase not yet tracked by the storefront pixel).' : '.'}`,
           recommendedAction: toCheckout
             ? 'Recover abandoned carts/checkouts (reminder + incentive) and cut checkout friction (address/payment).'
             : 'Improve the on-site experience at this stage (PDP merchandising, search, cart UX).',

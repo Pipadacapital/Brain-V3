@@ -18,6 +18,16 @@ streamWorkerImage:
   digest: ""
   pullPolicy: IfNotPresent
 
+# dbt-runner image (db/dbt/Dockerfile) — the runtime for scheduled dbt mart rebuilds (the attribution
+# gold refresh = chain step 4, and Silver intraday rebuilds). Node images can't run dbt. Jobs that use
+# it set `useDbtRunnerImage: true`. Those jobs ship `enabled: false` until CI publishes + pins this
+# image's digest (the template fail-closes on a missing digest) — flip the job's `enabled: true` per env.
+dbtRunnerImage:
+  repository: REPLACE_WITH_ECR_REGISTRY/brain-dbt-runner
+  tag: ""              # B3: digest preferred; CI populates at deploy (fail-closed in the template)
+  digest: ""
+  pullPolicy: IfNotPresent
+
 # Secret (External Secrets ← AWS Secrets Manager): DATABASE_URL, BRAIN_APP_DATABASE_URL,
 # STARROCKS_HOST/PORT/credentials, etc. Empty in defaults (set per env).
 envSecretName: ""
@@ -108,6 +118,19 @@ jobs:
     command: ["node", "dist/jobs/attribution-reconcile.js"]
     # Per brand: the 4 per-journey models (reconcileAttribution) + the GLOBAL data-driven Markov model
     # (reconcileDataDrivenAttribution). Credit basis = finalization ∪ cod_delivery_confirmed (COD-inclusive).
+  - name: attribution-gold-refresh
+    enabled: false                 # FLIP true per env once CI publishes + pins dbtRunnerImage.digest
+    schedule: "45 * * * *"         # hourly at :45 — ATTRIBUTION CHAIN step 4: materialize gold mart
+    command: ["/opt/brain/dbt/docker-entrypoint.sh"]
+    useDbtRunnerImage: true
+    # dbt rebuild of the attribution serving marts from the reconcile-written PG credit ledger
+    # (ledger_source=pg) → brain_gold.gold_marketing_attribution that the dashboard Attribution surface
+    # serves (incl. the data_driven model). Mirrors `make attribution-gold-refresh`. Idempotent (table
+    # CTAS). DBT_BOOTSTRAP_CATALOG=false → assumes the brain_oltp_pg JDBC catalog is already provisioned.
+    env:
+      - { name: DBT_SELECT, value: "gold_marketing_attribution gold_attribution_paths" }
+      - { name: DBT_VARS, value: "{ledger_source: pg}" }
+      - { name: DBT_THREADS, value: "1" }
   - name: feature-materialization
     schedule: "40 * * * *"         # hourly at :40 — materialize Gold customer features → Redis online store
     command: ["node", "dist/jobs/feature-materialization/run.js"]

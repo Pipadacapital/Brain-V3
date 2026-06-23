@@ -30,11 +30,21 @@ missed/retried run is safe (`concurrencyPolicy: Forbid` + `startingDeadlineSecon
    ∩ `realized_revenue_ledger(order→brain_id)`, unambiguous-only → `connector_journey_stitch_map`.
 3. **attribution-reconcile** (:30) — credit recognized orders (`finalization ∪ cod_delivery_confirmed`)
    to their journeys under all 4 per-journey models + the global data-driven (Markov) model; clawbacks.
-4. **gold-mart rebuild** — `make attribution-gold-refresh` (dbt) materializes the credit ledger →
-   `brain_gold.gold_marketing_attribution`, which the dashboard Attribution surface serves. **Not yet an
-   Argo cron:** dbt marts are built by the dbt-runner (CI/nightly today); an intraday rebuild cron is a
-   documented follow-up that needs a dbt-runner image (see `infra/observe/alerts/brain-slo.rules.yml`).
-   Until then the attribution marts refresh on the nightly dbt build — one cycle behind the ledger.
+4. **attribution-gold-refresh** (:45) — dbt rebuild of the credit ledger →
+   `brain_gold.gold_marketing_attribution` (incl. the data_driven model), which the dashboard
+   Attribution surface serves. Runs on the **dbt-runner image** (`db/dbt/Dockerfile`) — Node images
+   can't run dbt. **Shipped `enabled: false`**: flip `jobs[attribution-gold-refresh].enabled: true`
+   per env once CI publishes + pins `dbtRunnerImage.digest` (the template fail-closes on a missing
+   digest, so a disabled job is simply skipped). Until enabled, the marts refresh on the nightly dbt
+   build — one cycle behind the ledger. Mirrors `make attribution-gold-refresh`.
+
+### The dbt-runner image (`db/dbt/Dockerfile`)
+
+The runtime for scheduled dbt rebuilds (Node job images have no dbt/StarRocks-catalog runtime). Bundles
+the dbt project + `dbt-starrocks` + the catalog-bootstrap SQL; parameterized via env (`DBT_SELECT`,
+`DBT_VARS`, `DBT_FULL_REFRESH`, `DBT_THREADS`, `DBT_BOOTSTRAP_CATALOG`). Build:
+`docker build -f db/dbt/Dockerfile -t brain-dbt-runner db`. Also serves Silver intraday rebuilds (set
+`DBT_SELECT` accordingly) — closing the Silver-freshness follow-up in `brain-slo.rules.yml`.
 
 ## C4 — partition maintenance (CRITICAL)
 

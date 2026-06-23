@@ -10,10 +10,10 @@
 --   • gokwik.awb_status.v1 (terminal_class)            — COD delivery recognition / COD RTO clawback
 -- Brand recognition horizons come from tenancy.brand (operational config) via the JDBC catalog.
 --
--- OUTPUT CONTRACT = the legacy stg_order_ledger_events (so silver_order_state + the 6 marts it feeds
--- re-point to ref('silver_order_recognition') with no other change), after which stg_order_ledger_events
--- (the PG-ledger-sourced staging) is deleted. The PG ledger table itself is removed in a later slice,
--- once the metric-engine revenue readers + the billing seal are migrated off PG.
+-- OUTPUT CONTRACT mirrors the former PG-ledger staging, so int_order_lifecycle / silver_order_state
+-- (and the 6 marts they feed) now read this instead. The PG-sourced staging has been deleted; the PG
+-- ledger TABLE itself is removed in a later slice, once the metric-engine revenue readers + the billing
+-- seal are migrated off PG.
 --
 -- MONEY: signed BIGINT minor units, no float (I-S07). Reversals are signed-negative. DETERMINISTIC +
 -- REPLAY-SAFE: economic_effective_at of a finalization = occurred_at + horizon (the moment it became

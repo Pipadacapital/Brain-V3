@@ -9,8 +9,9 @@
  *   1. sessions        — all sessions (the funnel top / denominator).
  *   2. product_viewed  — sessions with a product.viewed touch.
  *   3. cart_added      — sessions with a cart.item_added touch.
- *   4. checkout_started — sessions with a checkout.started touch (DB-AUDIT M2: the previously-missing
- *                        checkout stage; fired by the storefront checkout integration).
+ *   4. checkout_started — sessions reaching checkout: a 'checkout.started' OR 'checkout.step_viewed'
+ *                        touch (the latter is what the storefront/payment-page pixel auto-emits on a
+ *                        /checkout URL, so a pasted checkout script counts toward this stage).
  *   5. purchased       — sessions whose anon was stitched back to an order (stitched_order_id present —
  *                        deterministic read-back, D-5; never inferred).
  *
@@ -96,7 +97,7 @@ export async function computeStorefrontFunnel(
          COUNT(DISTINCT session_key) AS sessions,
          COUNT(DISTINCT CASE WHEN event_type = 'product.viewed' THEN session_key END) AS product_viewed,
          COUNT(DISTINCT CASE WHEN event_type = 'cart.item_added' THEN session_key END) AS cart_added,
-         COUNT(DISTINCT CASE WHEN event_type = 'checkout.started' THEN session_key END) AS checkout_started,
+         COUNT(DISTINCT CASE WHEN event_type IN ('checkout.started', 'checkout.step_viewed') THEN session_key END) AS checkout_started,
          COUNT(DISTINCT CASE WHEN stitched_order_id IS NOT NULL THEN session_key END) AS purchased
        FROM brain_silver.silver_touchpoint
        WHERE occurred_at >= ? AND occurred_at <= ?

@@ -56,7 +56,7 @@ with raw as (
     -- payload.properties.* shape (brain_anon_id + session_id + utm + click_ids), so they sessionize and
     -- channel-classify identically and flow straight through int_touchpoint_sessionized → silver_touchpoint.
     -- The existing journey/browse set is preserved verbatim — this is purely ADDITIVE.
-    where event_type in ('page.viewed', 'product.viewed', 'collection.viewed', 'cart.viewed', 'cart.item_added', 'search.submitted', 'checkout.started', 'scroll.depth', 'element.clicked')
+    where event_type in ('page.viewed', 'product.viewed', 'collection.viewed', 'cart.viewed', 'cart.item_added', 'cart.item_removed', 'cart.updated', 'search.submitted', 'checkout.started', 'checkout.step_viewed', 'purchase.completed', 'user.logged_in', 'user.signed_up', 'identify', 'scroll.depth', 'element.clicked')
     {% else %}
     select
         brand_id,

@@ -150,6 +150,33 @@ export const PIXEL_JS = `(function(){
 
   function emit(name, extra){ var q = readQ(); q.push(build(name, extra)); writeQ(q); flush(); }
 
+  // ── Identity capture (the anon→customer BRIDGE) ────────────────────────────
+  // PRIVACY (ADR-2: NO raw PII / NO salt on the wire): the email is hashed CLIENT-SIDE with plain,
+  // UNSALTED SHA-256 of the normalized (trim+lowercase) value — the SAME format Shopify/Woo put in an
+  // order's hashed_customer_email. The resolver's pre_hashed_email path links it, so the anonymous
+  // journey (brain_anon_id on this event) and the order (carrying the SAME pre_hashed_email) resolve to
+  // ONE brain_id → the journey becomes a known-customer journey. No raw email ever leaves the page.
+  function sha256Hex(str, cb){
+    try {
+      if (W.crypto && W.crypto.subtle && W.TextEncoder){
+        W.crypto.subtle.digest("SHA-256", new W.TextEncoder().encode(str)).then(function(buf){
+          var b = new Uint8Array(buf), h = ""; for (var i=0;i<b.length;i++){ h += ("0"+b[i].toString(16)).slice(-2); } cb(h);
+        })["catch"](function(){ cb(null); });
+      } else { cb(null); }
+    } catch(e){ cb(null); }
+  }
+  var _identified = {};
+  function identify(traits){
+    if (!traits) return;
+    var email = traits.email;
+    if (email && ("" + email).indexOf("@") > 0){
+      var norm = ("" + email).trim().toLowerCase();
+      if (_identified[norm]) return; // once per email per page (no spam)
+      _identified[norm] = 1;
+      sha256Hex(norm, function(h){ if (h) emit("identify", { hashed_customer_email: h }); });
+    }
+  }
+
   W.brain = {
     page: function(x){ emit("page.viewed", x); },
     cartItemAdded: function(x){ emit("cart.item_added", x); },
@@ -160,6 +187,7 @@ export const PIXEL_JS = `(function(){
     checkoutStep: function(x){ emit("checkout.step_viewed", x); },
     login: function(x){ emit("user.logged_in", x); },
     signup: function(x){ emit("user.signed_up", x); },
+    identify: function(t){ identify(t); },
     track: function(n,x){ emit(n, x); },
     flush: flush
   };
@@ -168,27 +196,28 @@ export const PIXEL_JS = `(function(){
   // Captures all key storefront activity with zero merchant code. Checkout/thank-you pages are
   // OUT of ScriptTag scope (a separate origin) — those need the Web Pixels extension.
   function pageType(){
-    var p = location.pathname;
-    if (p.indexOf("/products/") >= 0) return "product";
-    if (p.indexOf("/collections/") >= 0) return "collection";
+    var p = location.pathname, q = location.search;
+    // Shopify: /products/<h>, /collections/<h>.  WooCommerce: /product/<h>, /product-category/<h>, /shop.
+    if (p.indexOf("/products/") >= 0 || p.indexOf("/product/") >= 0) return "product";
+    if (p.indexOf("/collections/") >= 0 || p.indexOf("/product-category/") >= 0 || p.indexOf("/product-tag/") >= 0 || p === "/shop" || p.indexOf("/shop/") === 0) return "collection";
     if (p === "/cart" || p.indexOf("/cart") === 0) return "cart";
     if (p.indexOf("/checkout") >= 0) return "checkout";
-    if (p.indexOf("/search") >= 0) return "search";
-    // Account page-type (Shopify: /account, /account/login, /account/register, /account/orders…).
+    if (p.indexOf("/search") >= 0 || /[?&]s=/.test(q)) return "search"; // Woo search = ?s=
+    // Account: Shopify /account*, WooCommerce /my-account*.
     if (p.indexOf("/account/register") >= 0) return "account_register";
     if (p.indexOf("/account/login") >= 0) return "account_login";
-    if (p.indexOf("/account") >= 0) return "account";
+    if (p.indexOf("/account") >= 0 || p.indexOf("/my-account") >= 0) return "account";
     if (p === "/" || p === "") return "home";
     if (p.indexOf("/pages/") >= 0) return "page";
-    if (p.indexOf("/blogs/") >= 0) return "blog";
+    if (p.indexOf("/blogs/") >= 0 || p.indexOf("/blog/") >= 0) return "blog";
     return "other";
   }
   function handleAfter(prefix){ var p = location.pathname, i = p.indexOf(prefix); if (i < 0) return undefined; var rest = p.slice(i + prefix.length); return rest.split("/")[0].split("?")[0].split("#")[0] || undefined; }
   function trackPageView(){
     var t = pageType();
     emit("page.viewed", { page_type: t });
-    if (t === "product") emit("product.viewed", { product_handle: handleAfter("/products/") });
-    else if (t === "collection") emit("collection.viewed", { collection_handle: handleAfter("/collections/") });
+    if (t === "product") emit("product.viewed", { product_handle: handleAfter("/products/") || handleAfter("/product/") });
+    else if (t === "collection") emit("collection.viewed", { collection_handle: handleAfter("/collections/") || handleAfter("/product-category/") || handleAfter("/product-tag/") });
     else if (t === "cart") emit("cart.viewed", {});
     else if (t === "checkout") { var qc = parseQuery(); emit("checkout.step_viewed", { step: qc.step || handleAfter("/checkout/") || undefined }); }
     else if (t === "search") { var q = parseQuery(); emit("search.submitted", { query: q.q || q.query }); }
@@ -210,11 +239,16 @@ export const PIXEL_JS = `(function(){
   function cartAddProps(b){ var props = {}; try { if (b && typeof b === "object"){ var it = b.items && b.items[0]; props.variant_id = b.id || (it && it.id); props.quantity = b.quantity || (it && it.quantity); } } catch(e){} return props; }
   // Returns the event_name for a Shopify cart URL+body, or null when it is not a cart mutation.
   function cartEvent(u, b){
+    // Shopify AJAX cart.
     if (u.indexOf("/cart/add") >= 0) return "cart.item_added";
     if (u.indexOf("/cart/change") >= 0 || u.indexOf("/cart/update") >= 0){
       var qty; try { if (b && typeof b === "object"){ qty = (b.quantity != null) ? b.quantity : (b.updates ? null : undefined); } } catch(e){}
       return (qty === 0 || qty === "0") ? "cart.item_removed" : "cart.updated";
     }
+    // WooCommerce: legacy AJAX (?wc-ajax=add_to_cart / ?add-to-cart=<id>) + the Store API (Blocks).
+    if (u.indexOf("wc-ajax=add_to_cart") >= 0 || u.indexOf("add-to-cart=") >= 0 || u.indexOf("/wc/store/v1/cart/add-item") >= 0 || u.indexOf("/cart/add-item") >= 0) return "cart.item_added";
+    if (u.indexOf("wc-ajax=remove_from_cart") >= 0 || u.indexOf("/wc/store/v1/cart/remove-item") >= 0) return "cart.item_removed";
+    if (u.indexOf("wc-ajax=update_cart") >= 0 || u.indexOf("/wc/store/v1/cart/update-item") >= 0 || u.indexOf("/wc/store/v1/batch") >= 0) return "cart.updated";
     return null;
   }
   function emitCart(u, b){ var n = cartEvent(u, b); if (n) emit(n, n === "cart.item_added" ? cartAddProps(b) : (cartAddProps(b))); }
@@ -227,12 +261,17 @@ export const PIXEL_JS = `(function(){
     XMLHttpRequest.prototype.open = function(m, u){ try { this.__bu = u; } catch(e){} return _open.apply(this, arguments); };
     XMLHttpRequest.prototype.send = function(body){ try { var b = null; try { b = body ? JSON.parse(body) : null; } catch(e2){} emitCart("" + (this.__bu || ""), b); } catch(e){} return _send.apply(this, arguments); };
   } catch(e){}
-  D.addEventListener("submit", function(ev){ try { var f = ev.target; if (!f || !f.action) return; var a = "" + f.action;
-    if (a.indexOf("/cart/add") >= 0) emit("cart.item_added", {});
+  D.addEventListener("submit", function(ev){ try { var f = ev.target; if (!f) return; var a = "" + (f.action || "");
+    var qs = f.querySelector ? function(s){ try { return f.querySelector(s); } catch(e){ return null; } } : function(){ return null; };
+    if (a.indexOf("/cart/add") >= 0 || a.indexOf("add-to-cart") >= 0) emit("cart.item_added", {});
     else if (a.indexOf("/cart/change") >= 0 || a.indexOf("/cart/update") >= 0) emit("cart.updated", {});
-    // Account auth forms (Shopify customer login / register) — login (returning) + signup (new-account).
-    else if (a.indexOf("/account/login") >= 0) emit("user.logged_in", {});
-    else if (a.indexOf("/account") >= 0 && (a.indexOf("register") >= 0 || a.indexOf("/account#") >= 0 || f.id === "create_customer")) emit("user.signed_up", {});
+    // Account auth — Shopify (/account*) + WooCommerce (.woocommerce-form-login / -register).
+    else if (a.indexOf("/account/login") >= 0 || qs(".woocommerce-form-login,[name=login]")) emit("user.logged_in", {});
+    else if ((a.indexOf("/account") >= 0 && (a.indexOf("register") >= 0 || a.indexOf("/account#") >= 0 || f.id === "create_customer")) || qs(".woocommerce-form-register,[name=register]")) emit("user.signed_up", {});
+    // Identity BRIDGE: any submit carrying an email (login / register / newsletter / checkout) → hash
+    // it client-side (no raw PII on the wire) → links the anon journey to the known customer.
+    var em = qs('input[type=email],input[name*="email" i],input[id*="email" i]');
+    if (em && em.value) identify({ email: em.value });
   } catch(e){} }, true);
 
   // Click tracking (delegated) — links + buttons + opted-in elements, with context (no PII).

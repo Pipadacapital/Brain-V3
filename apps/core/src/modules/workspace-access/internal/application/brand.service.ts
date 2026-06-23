@@ -10,6 +10,8 @@
 import { randomUUID } from 'node:crypto';
 import { normalizeBrandHost } from '@brain/pixel-sdk';
 import type { DbPool, QueryContext } from '@brain/db';
+import type { SilverPool } from '@brain/metric-engine';
+import { withSilverBrand, BRAND_PREDICATE } from '@brain/metric-engine';
 import type { AuditWriter } from '@brain/audit';
 
 /**
@@ -53,6 +55,12 @@ export class BrandService {
     private readonly pool: DbPool,
     private readonly audit: AuditWriter,
     private readonly provisionPixel?: ProvisionPixel,
+    /**
+     * StarRocks Silver/Gold pool — the currency-immutability guard reads the LAKEHOUSE ledger
+     * (brain_gold.gold_revenue_ledger), not the PG ledger (medallion realignment, Epic 1 / B).
+     * Optional: absent (Silver down) → guard treats the brand as having no financial data yet.
+     */
+    private readonly srPool?: SilverPool,
   ) {}
 
   /**
@@ -249,35 +257,30 @@ export class BrandService {
         throw new BrandError('FORBIDDEN', 'Requires owner or brand_admin role.', 403);
       }
 
-      // MA-11: currency_code immutability guard.
-      if (data.currencyCode !== undefined) {
-        // Check if any ledger row exists for this brand.
+      // MA-11: currency_code immutability guard. Once financial data has been recorded for the
+      // brand, its currency is locked. The SoR is now the LAKEHOUSE ledger (brain_gold.gold_revenue_
+      // _ledger), not the PG ledger (medallion realignment, Epic 1 / B). Silver unavailable → fail
+      // OPEN (treat as no financial data) so a transient Silver outage never blocks a legit edit.
+      if (data.currencyCode !== undefined && this.srPool) {
+        let hasLedgerRows = false;
         try {
-          const ledgerCheck = await client.query<{ exists: boolean }>(
-            ctx,
-            `SELECT EXISTS (
-               SELECT 1 FROM realized_revenue_ledger WHERE brand_id = $1 LIMIT 1
-             ) AS exists`,
-            [id],
-          );
-          const hasLedgerRows = ledgerCheck.rows[0]?.exists === true;
-          if (hasLedgerRows) {
-            throw new BrandError(
-              'CURRENCY_LOCKED',
-              'Currency cannot be changed after financial data has been recorded.',
-              409,
+          hasLedgerRows = await withSilverBrand(this.srPool, id, async (scope) => {
+            const rows = await scope.runScoped<{ one: number }>(
+              `SELECT 1 AS one FROM brain_gold.gold_revenue_ledger WHERE ${BRAND_PREDICATE} LIMIT 1`,
+              [],
             );
-          }
-        } catch (err) {
-          // PG error 42P01 = undefined_table (table doesn't exist yet in M1) → treat as no ledger rows.
-          const pgErr = err as { code?: string };
-          if (pgErr?.code !== '42P01') {
-            // If it's a BrandError (CURRENCY_LOCKED) re-throw it
-            if (err instanceof BrandError) throw err;
-            // Other DB errors — check if it's our own BrandError first
-            throw err;
-          }
-          // Table doesn't exist yet → no ledger rows → allow currency change.
+            return rows.length > 0;
+          });
+        } catch {
+          // Silver unavailable / table absent → treat as no financial data yet (fail open).
+          hasLedgerRows = false;
+        }
+        if (hasLedgerRows) {
+          throw new BrandError(
+            'CURRENCY_LOCKED',
+            'Currency cannot be changed after financial data has been recorded.',
+            409,
+          );
         }
       }
 

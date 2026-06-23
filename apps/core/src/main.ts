@@ -624,6 +624,7 @@ export async function main(): Promise<void> {
     async (brandId, targetHost, idempotencyKey) => {
       await getOrCreateInstallation.execute({ brandId, targetHost, idempotencyKey });
     },
+    srPool,
   );
   const inviteService = new InviteService(pool, auditWriter, notificationService, rawPgPool);
 

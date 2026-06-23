@@ -86,6 +86,11 @@ Real events flow **Collector → Redpanda → Spark sink → Iceberg Bronze → 
   `tools/backfill/backfill-ledger-brain-id.sh <brand>` (after migration 0095).
 - **CAC + blended-ROAS insights need ad spend** — connect Meta/Google (OAuth) so the spend-repull jobs
   fill `ad_spend_ledger`, or seed sample spend: `tools/seed/ad-spend-demo-seed.sh <brand>`.
+- **Attribution PATHS (`gold_attribution_paths`) need the journey→order stitch** — the storefront pixel
+  must write `brain_anon_id` into checkout `note_attributes` (Web-Pixel checkout extension) so the order
+  webhook reads it back (`connector_journey_stitch_map`). That ONE instrumentation also bridges identity
+  (anon↔customer) and fills the funnel checkout stage. Deterministic historical backfill (identity-graph
+  based, NEVER guessed — no-op when no bridge exists): `tools/backfill/backfill-journey-stitch-map.sh <brand>`.
 - **Step 5 must be `--full-refresh` the first time** after a wipe or an Iceberg/PG source flip.
 - **Skip step 3 → `password authentication failed for brain_app`.** Re-run it after every `down -v`.
 - `docker system prune` also drops images → step 1 re-pulls them (slower first boot).

@@ -110,7 +110,12 @@ finalization event the job would emit, then let Silver→Gold rebuild determinis
    attribution-reconcile (:30). Helm renders clean. Gold rebuild (step 4) intentionally deferred —
    needs a dbt-runner image (documented follow-up); marts refresh nightly meanwhile.
 
+7. ~~dbt-runner image + scheduled gold refresh~~ ✅ **DONE** (commit 85fed4f): `db/dbt/Dockerfile`
+   (built + verified live — rebuilt the gold mart from inside the container) + the gated
+   `attribution-gold-refresh` CronWorkflow (:45, chain step 4, `enabled:false` until CI pins the
+   digest). Also unblocks Silver intraday rebuilds.
+
 **Remaining hardening backlog** (operational, not feature gaps):
-- A **dbt-runner image** so `attribution-gold-refresh` (and Silver intraday rebuilds) can run as an
-  Argo cron — chain step 4. Until then marts refresh on the nightly dbt build, one cycle behind.
+- **CI**: build + push the dbt-runner image, pin `dbtRunnerImage.digest`, flip
+  `attribution-gold-refresh.enabled: true` per env (the one manual step left to make step 4 live).
 - Persist `payment_method` on the provisional row (closes the GAP-2 in-flight-COD residual).

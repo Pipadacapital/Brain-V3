@@ -11,10 +11,23 @@
  */
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { analyticsApi } from '@/lib/api/client';
+import { analyticsApi, insightsApi } from '@/lib/api/client';
 import type { AttributionModel } from '@/lib/api/types';
 
 export const ANALYTICS_QUERY_KEY = ['analytics'] as const;
+
+/**
+ * AI Copilot daily briefing — the deterministic insight/opportunity/risk feed over the Gold marts.
+ * Lives under the analytics query key so it auto-invalidates on brand switch; refreshes live.
+ */
+export function useInsightsBriefing() {
+  return useQuery({
+    queryKey: [...ANALYTICS_QUERY_KEY, 'insights-briefing'],
+    queryFn: () => insightsApi.getBriefing(),
+    staleTime: 5 * 60_000,
+    refetchInterval: 60_000,
+  });
+}
 
 /**
  * useRevenueTimeseries — fetches per-bucket realized + provisional revenue.

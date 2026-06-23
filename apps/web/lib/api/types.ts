@@ -1229,3 +1229,40 @@ export interface ExecutiveMetricDto {
 export type AnalyticsExecutiveMetricsResponse =
   | { state: 'no_data' }
   | { state: 'has_data'; metrics: ExecutiveMetricDto[] };
+
+// ── Insight + Opportunity Engine + AI Copilot briefing ──────────────────────
+// Mirrors apps/core analytics get-insights-briefing.ts (InsightDto / BriefingDto). Money stays a
+// minor-unit string; the UI formats per currency via formatMoneyDisplay.
+export type InsightKind = 'risk' | 'opportunity' | 'trend';
+export type InsightSeverity = 'high' | 'medium' | 'low' | 'info';
+export type InsightConfidence = 'high' | 'medium' | 'low';
+
+export interface InsightDto {
+  id: string;
+  detector: string;
+  kind: InsightKind;
+  severity: InsightSeverity;
+  title: string;
+  why: string;
+  recommended_action: string;
+  currency_code: string | null;
+  impact_minor: string | null;
+  direction: 'up' | 'down' | 'flat' | null;
+  delta_pct: string | null;
+  confidence: InsightConfidence;
+  evidence: Record<string, string | number | null>;
+}
+
+export interface BriefingDto {
+  headline: string;
+  summary: string[];
+  primary_currency: string | null;
+  counts: { risks: number; opportunities: number; trends: number };
+  total_impact_minor: string | null;
+  window: { current: { from: string; to: string }; prior: { from: string; to: string } };
+  source: 'deterministic';
+}
+
+export type AnalyticsInsightsBriefingResponse =
+  | { state: 'no_data' }
+  | { state: 'has_data'; briefing: BriefingDto; insights: InsightDto[] };

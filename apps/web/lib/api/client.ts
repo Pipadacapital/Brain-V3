@@ -110,6 +110,7 @@ import type {
   AnalyticsTimeseriesResponse,
   AnalyticsKpiSummaryResponse,
   AnalyticsExecutiveMetricsResponse,
+  AnalyticsInsightsBriefingResponse,
   AnalyticsRecognitionBreakdownResponse,
   AnalyticsRecentActivityResponse,
   AnalyticsOrdersTimeseriesResponse,
@@ -1612,6 +1613,20 @@ export const analyticsApi = {
       `/v1/analytics/attribution/channel-roas?${qs.toString()}`,
     );
     return parseData(ChannelRoasSchema, env);
+  },
+};
+
+// ── Insight + Opportunity Engine + AI Copilot ────────────────────────────────
+export const insightsApi = {
+  /**
+   * GET /api/v1/insights/briefing — deterministic insight/opportunity/risk feed + daily briefing
+   * over the Gold marts. Numbers come from the marts, never from a model. Honest no_data state.
+   */
+  getBriefing: async (): Promise<AnalyticsInsightsBriefingResponse> => {
+    const { data } = await bffFetch<BffEnvelope<AnalyticsInsightsBriefingResponse>>(
+      '/v1/insights/briefing',
+    );
+    return data;
   },
 };
 

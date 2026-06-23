@@ -251,7 +251,8 @@ async function computeBinding(
     }
     case 'cod_rto_rate': {
       // RTO rate % — the engine's KPI sole-read-path (rto_rate_pct, exact decimal string).
-      const kpi = await getKpiSummary(brandId, asOfDate, deps);
+      // Epic 1: reads the lakehouse gold ledger → pass { srPool }.
+      const kpi = await getKpiSummary(brandId, asOfDate, { srPool });
       if (kpi.state === 'no_data') return { figure_kind: 'percent', money: null, scalar: null, no_data: true };
       if (kpi.kpis.length !== 1) return FIGURE_NONE;
       const k = kpi.kpis[0]!;

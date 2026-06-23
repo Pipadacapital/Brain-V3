@@ -12,8 +12,8 @@
  * F-SEC-02: reads inside withBrandTxn (GUC transaction-scoped, RLS-enforced).
  */
 
-import type { EngineDeps } from './deps.js';
-import { withBrandTxn } from './deps.js';
+import type { SilverPool } from './silver-deps.js';
+import { withSilverBrand, BRAND_PREDICATE } from './silver-deps.js';
 
 export interface KpiSummaryResult {
   /** ISO 4217 currency code */
@@ -42,90 +42,55 @@ export interface KpiSummaryResult {
 export async function computeKpiSummary(
   brandId: string,
   asOf: Date,
-  deps: EngineDeps,
+  deps: { srPool: SilverPool },
 ): Promise<KpiSummaryResult[]> {
-  const asOfStr = asOf.toISOString().split('T')[0];
+  const asOfStr = asOf.toISOString().split('T')[0] as string;
 
-  return withBrandTxn(deps.pool, brandId, async (client) => {
-    const sql = `
-      WITH all_orders AS (
-        SELECT DISTINCT order_id, currency_code
-        FROM realized_revenue_ledger
-        WHERE brand_id = $1
-          AND occurred_at::date <= $2::date
-      ),
-      rto_orders AS (
-        SELECT DISTINCT order_id
-        FROM realized_revenue_ledger
-        WHERE brand_id = $1
-          AND event_type = 'rto_reversal'
-          AND occurred_at::date <= $2::date
-      ),
-      realized AS (
-        SELECT
-          currency_code,
-          SUM(amount_minor) AS realized_minor
-        FROM realized_revenue_ledger
-        WHERE brand_id = $1
-          AND event_type IN ('finalization', 'rto_reversal')
-          AND occurred_at::date <= $2::date
-        GROUP BY currency_code
-      ),
-      provisional AS (
-        SELECT
-          currency_code,
-          SUM(amount_minor) AS provisional_minor
-        FROM realized_revenue_ledger
-        WHERE brand_id = $1
-          AND event_type = 'provisional_recognition'
-          AND recognition_label IN ('provisional', 'settling')
-          AND occurred_at::date <= $2::date
-        GROUP BY currency_code
-      ),
-      order_counts AS (
-        SELECT
-          currency_code,
-          COUNT(*) AS order_count,
-          (SELECT COUNT(*) FROM rto_orders) AS rto_count
-        FROM all_orders
-        GROUP BY currency_code
-      )
-      SELECT
-        oc.currency_code,
-        COALESCE(r.realized_minor, 0)::text AS realized_minor,
-        COALESCE(p.provisional_minor, 0)::text AS provisional_minor,
-        oc.order_count::text,
-        oc.rto_count::text,
-        CASE WHEN oc.order_count > 0
-             THEN ROUND(oc.rto_count::numeric / oc.order_count * 100, 2)::text
-             ELSE '0'
-        END AS rto_rate_pct
-      FROM order_counts oc
-      LEFT JOIN realized r ON r.currency_code = oc.currency_code
-      LEFT JOIN provisional p ON p.currency_code = oc.currency_code
-      ORDER BY oc.currency_code
-    `;
-
-    const result = await client.query<{
+  // MEDALLION REALIGNMENT (Epic 1): read the lakehouse (brain_gold.gold_revenue_ledger) via
+  // withSilverBrand — NOT the PostgreSQL ledger. Realized = every non-provisional event (canonical,
+  // COD-inclusive); RTO = returns/clawbacks (rto_reversal + cod_rto_clawback). Ratios computed in TS.
+  return withSilverBrand(deps.srPool, brandId, async (scope) => {
+    const rows = await scope.runScoped<{
       currency_code: string;
-      realized_minor: string;
-      provisional_minor: string;
-      order_count: string;
-      rto_count: string;
-      rto_rate_pct: string;
-    }>(sql, [brandId, asOfStr]);
+      realized_minor: string | number;
+      provisional_minor: string | number;
+      order_count: string | number;
+      rto_count: string | number;
+    }>(
+      `SELECT
+         currency_code,
+         SUM(CASE WHEN event_type <> 'provisional_recognition' THEN amount_minor ELSE 0 END) AS realized_minor,
+         SUM(CASE WHEN event_type = 'provisional_recognition' THEN amount_minor ELSE 0 END)  AS provisional_minor,
+         COUNT(DISTINCT order_id) AS order_count,
+         COUNT(DISTINCT CASE WHEN event_type IN ('rto_reversal', 'cod_rto_clawback') THEN order_id END) AS rto_count
+       FROM brain_gold.gold_revenue_ledger
+       WHERE CAST(occurred_at AS DATE) <= ?
+         AND ${BRAND_PREDICATE}
+       GROUP BY currency_code
+       ORDER BY currency_code`,
+      [asOfStr],
+    );
 
-    return result.rows.map((row) => {
-      const orderCount = BigInt(row.order_count);
-      const realizedMinor = BigInt(row.realized_minor);
+    return rows.map((row) => {
+      const orderCount = BigInt(String(row.order_count ?? '0').split('.')[0] || '0');
+      const realizedMinor = BigInt(String(row.realized_minor ?? '0').split('.')[0] || '0');
+      const rtoCount = BigInt(String(row.rto_count ?? '0').split('.')[0] || '0');
       const aovMinor = orderCount > 0n ? realizedMinor / orderCount : 0n;
+      // RTO rate as a 2dp string from exact integer basis-points (no float).
+      const rtoRatePct =
+        orderCount > 0n
+          ? (() => {
+              const bps = (rtoCount * 10000n) / orderCount; // = pct × 100
+              return `${bps / 100n}.${String(bps % 100n).padStart(2, '0')}`;
+            })()
+          : '0';
       return {
         currency_code: row.currency_code,
         realizedMinor,
-        provisionalMinor: BigInt(row.provisional_minor),
+        provisionalMinor: BigInt(String(row.provisional_minor ?? '0').split('.')[0] || '0'),
         orderCount,
         aovMinor,
-        rtoRatePct: row.rto_rate_pct,
+        rtoRatePct,
       };
     });
   });

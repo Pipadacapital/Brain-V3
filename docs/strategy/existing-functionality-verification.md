@@ -34,15 +34,19 @@ the missing inputs and watching the whole chain light up.
   `hashed_customer_email` that matches the order's `pre_hashed_email` → the resolver bridges them.
   Historical data additionally needs a one-time stitch-map backfill from identity links.
 
-### GAP-2 — Revenue-finalization pipeline has never run (and has no runner here)
-- `realized_revenue_ledger` event types present: `provisional_recognition` (932),
-  `cod_delivery_confirmed` (180), `cod_rto_clawback` (60), `rto_reversal` (47), `refund` (11).
-  **`finalization` = 0.**
-- `finalization` is the canonical "won revenue" event emitted by `PostFinalizationCommand` (a separate
-  revenue-finalization job). That job has **no CLI/Argo runner in this repo** (only
-  `apps/core/src/jobs/attribution-reconcile.ts` exists).
-- The attribution credit pass (and several metric-engine realized-revenue reads) key on
-  `event_type='finalization'`, so with zero finalization rows they match zero orders.
+### GAP-2 — Revenue-finalization never ran + COD double-count bug  ✅ FIXED (commit abe2a7a)
+- The runner **does exist**: `apps/stream-worker/src/jobs/revenue-finalization.ts` (not in
+  `apps/core/src/jobs/`). It had never run on this env (0 `finalization` rows) **and** carried a real
+  bug: its qualifying query excluded only `rto_reversal`/`cancellation` and did **not** exclude orders
+  already recognized via the COD path. Since every order gets a `provisional_recognition` and COD
+  revenue is recognized separately (`cod_delivery_confirmed`/`cod_rto_clawback`), finalizing a COD
+  provisional double-counts realized revenue — exactly the **180** orders carrying both.
+- **Fix:** finalize PREPAID only — exclude orders with `cod_delivery_confirmed`/`cod_rto_clawback`
+  and exclude ALL reversal types (added refund/chargeback/concession). Live result: **349 prepaid
+  orders finalized (₹1,021,052.92), 0 COD wrongly finalized, idempotent**. New regression test.
+- **Known residual (hardening follow-up):** an in-flight COD order with no `cod_*` event past the
+  horizon is indistinguishable from prepaid → persist `payment_method` on the provisional row (the
+  writer already knows it) and filter `payment_method='prepaid'`.
 
 ### GAP-3 — Attribution credit pass ignores COD-realized revenue (design, flag)
 - `reconcile-attribution.ts` credit pass selects only `event_type='finalization'`. COD revenue is
@@ -74,10 +78,14 @@ finalization event the job would emit, then let Silver→Gold rebuild determinis
 
 ## Recommended fixes (priority order)
 
-1. **GAP-2:** add a revenue-finalization job runner (wrap `PostFinalizationCommand`, mirror
-   `attribution-reconcile.ts`) so provisional revenue actually finalizes.
+1. ~~**GAP-2:** revenue-finalization runner~~ ✅ **DONE** (commit abe2a7a): fixed the COD double-count +
+   reversal-exclusion bugs, ran it (349 prepaid finalized), regression test added. Hardening follow-up:
+   persist `payment_method` to close the in-flight-COD residual; schedule the job (Argo cron).
 2. **GAP-1:** ship the identity bridge end-to-end — verify the pixel `identify()` → resolver path
    creates anon↔known links, + a one-time stitch-map backfill for history.
-3. **GAP-3:** decide + implement the COD attribution basis (`finalization` ∪ `cod_delivery_confirmed`).
+3. **GAP-3:** decide + implement the COD attribution basis. NOTE: with GAP-2 fixed, COD revenue now
+   recognizes via `cod_delivery_confirmed` only (never finalization). Attribution still credits only
+   `finalization`, so COD orders remain unattributed — should the credit basis be
+   `finalization` ∪ `cod_delivery_confirmed`?
 4. Only AFTER 1–3 produce real stitched+finalized journeys does **data-driven (Markov) attribution**
    become meaningful — it reads the same `silver_touchpoint` corpus.

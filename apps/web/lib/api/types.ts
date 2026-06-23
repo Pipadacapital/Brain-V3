@@ -1251,6 +1251,9 @@ export interface InsightDto {
   delta_pct: string | null;
   confidence: InsightConfidence;
   evidence: Record<string, string | number | null>;
+  /** Set once the insight is materialized as a recommendation (the audited decision loop). */
+  recommendation_id?: string | null;
+  status?: string | null;
 }
 
 export interface BriefingDto {

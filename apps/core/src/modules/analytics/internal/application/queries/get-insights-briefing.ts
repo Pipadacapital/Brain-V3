@@ -30,6 +30,12 @@ export interface InsightDto {
   delta_pct: string | null;
   confidence: 'high' | 'medium' | 'low';
   evidence: Record<string, string | number | null>;
+  /**
+   * Set by the BFF after the insight is materialized as a recommendation (the audited decision loop).
+   * null when the recommendation bridge is unavailable. status ∈ open|dismissed|expired.
+   */
+  recommendation_id?: string | null;
+  status?: string | null;
 }
 
 export interface BriefingDto {

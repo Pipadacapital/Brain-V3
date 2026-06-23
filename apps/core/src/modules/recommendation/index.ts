@@ -10,6 +10,14 @@
  */
 export { generateRecommendations } from './internal/application/generate-recommendations.js';
 export type { GenerateResult } from './internal/application/generate-recommendations.js';
+// Insight + Opportunity Engine → recommendations bridge (converges the Gold-mart insight detectors
+// into the one audited decision/action/outcome loop — the RGUD substrate).
+export { materializeInsightsAsRecommendations } from './internal/application/materialize-insights.js';
+export type {
+  InsightForRecommendation,
+  MaterializedInsight,
+  MaterializeInsightsDeps,
+} from './internal/application/materialize-insights.js';
 export { measureRecommendationOutcomes } from './internal/application/measure-recommendation-outcomes.js';
 export type { MeasureResult } from './internal/application/measure-recommendation-outcomes.js';
 export { getRecommendations } from './internal/application/queries/get-recommendations.js';

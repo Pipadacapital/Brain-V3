@@ -133,6 +133,7 @@ import {
 import {
   getRecommendations,
   generateRecommendations,
+  materializeInsightsAsRecommendations,
   recordRecommendationAction,
   isRecommendationAction,
   RecommendationNotFoundError,
@@ -2693,6 +2694,27 @@ export function registerBffRoutes(
         return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (StarRocks) not available' } });
       }
       const result = await getInsightsBriefing(auth.brandId, { srPool });
+      // Converge insights into the audited decision loop: persist each as a recommendation (idempotent
+      // read-through) so Accept/Dismiss/Snooze write to the recommendation_action ledger and outcomes
+      // are measurable (RGUD). Merge the recommendation_id/status back onto each insight for the UI.
+      if (result.state === 'has_data' && pool) {
+        try {
+          const materialized = await materializeInsightsAsRecommendations(
+            auth.brandId,
+            result.insights,
+            requestId,
+            { pool },
+          );
+          const byId = new Map(materialized.map((m) => [m.insightId, m]));
+          result.insights = result.insights.map((i) => {
+            const m = byId.get(i.id);
+            return { ...i, recommendation_id: m?.recommendationId ?? null, status: m?.status ?? null };
+          });
+        } catch (err) {
+          // Non-fatal: the briefing still renders read-only if the recommendation bridge fails.
+          request.log.error({ err }, '[insights] materialize-as-recommendations failed; serving read-only');
+        }
+      }
       return reply.send({ request_id: requestId, data: result });
     },
   );

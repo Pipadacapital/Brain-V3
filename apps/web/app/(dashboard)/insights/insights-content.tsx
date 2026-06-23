@@ -9,16 +9,20 @@
  * state until real data flows (no fabricated charts).
  */
 
+import { useState } from 'react';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { EmptyState } from '@/components/ui/empty-state';
 import { KpiTile } from '@/components/analytics/kpi-tile';
 import { TrendChart } from '@/components/analytics/trend-chart';
-import { useInsightsBriefing, useRevenueTimeseries } from '@/lib/hooks/use-analytics';
+import { useInsightsBriefing, useRevenueTimeseries, ANALYTICS_QUERY_KEY } from '@/lib/hooks/use-analytics';
+import { recommendationApi } from '@/lib/api/client';
 import { formatMoneyDisplay } from '@/lib/format/money-display';
 import type { CurrencyCode } from '@brain/money';
-import type { InsightDto, InsightKind, InsightSeverity } from '@/lib/api/types';
-import { Sparkles, AlertTriangle, Lightbulb, TrendingUp, TrendingDown } from 'lucide-react';
+import type { InsightDto, InsightKind, InsightSeverity, RecommendationActionKind } from '@/lib/api/types';
+import { Sparkles, AlertTriangle, Lightbulb, TrendingUp, TrendingDown, Check } from 'lucide-react';
 
 const KIND_ICON: Record<InsightKind, React.ComponentType<{ className?: string }>> = {
   risk: AlertTriangle,
@@ -46,8 +50,25 @@ function InsightCard({ insight }: { insight: InsightDto }) {
   const Icon = KIND_ICON[insight.kind];
   const impact = money(insight.impact_minor, insight.currency_code);
   const deltaUp = insight.direction === 'up';
+  const queryClient = useQueryClient();
+  const dismissed = insight.status === 'dismissed';
+  const [lastAction, setLastAction] = useState<RecommendationActionKind | null>(null);
+
+  // Acting writes to the audited recommendation_action ledger (the decision-feedback loop / RGUD).
+  const act = useMutation({
+    mutationFn: (action: RecommendationActionKind) => {
+      if (!insight.recommendation_id) throw new Error('insight not yet actionable');
+      return recommendationApi.action(insight.recommendation_id, action);
+    },
+    onSuccess: (_data, action) => {
+      setLastAction(action);
+      void queryClient.invalidateQueries({ queryKey: [...ANALYTICS_QUERY_KEY, 'insights-briefing'] });
+    },
+  });
+  const actionable = Boolean(insight.recommendation_id) && !dismissed;
+
   return (
-    <Card className="p-5">
+    <Card className={`p-5 ${dismissed ? 'opacity-60' : ''}`}>
       <CardContent className="p-0 space-y-3">
         <div className="flex items-start justify-between gap-3">
           <div className="flex items-start gap-3">
@@ -90,6 +111,41 @@ function InsightCard({ insight }: { insight: InsightDto }) {
           <span className="font-medium text-foreground">Recommended: </span>
           <span className="text-muted-foreground">{insight.recommended_action}</span>
         </div>
+
+        {/* Audited decision loop — Accept / Snooze / Dismiss write to the recommendation_action ledger. */}
+        {actionable && (
+          <div className="flex flex-wrap items-center gap-2 pt-1">
+            <Button
+              size="sm"
+              onClick={() => act.mutate('accepted')}
+              disabled={act.isPending}
+              data-testid="insight-accept"
+            >
+              {lastAction === 'accepted' ? (
+                <span className="inline-flex items-center gap-1"><Check className="h-4 w-4" /> Accepted</span>
+              ) : (
+                'Accept'
+              )}
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => act.mutate('snoozed')} disabled={act.isPending}>
+              {lastAction === 'snoozed' ? 'Snoozed' : 'Snooze'}
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => act.mutate('dismissed')} disabled={act.isPending}>
+              Dismiss
+            </Button>
+            {act.isError && <span className="text-xs text-status-red-700">Couldn&apos;t record — retry.</span>}
+          </div>
+        )}
+        {dismissed && (
+          <div className="flex items-center gap-2 pt-1 text-sm text-muted-foreground">
+            <span>Dismissed.</span>
+            {insight.recommendation_id && (
+              <Button size="sm" variant="ghost" onClick={() => act.mutate('reopened')} disabled={act.isPending}>
+                Undo
+              </Button>
+            )}
+          </div>
+        )}
       </CardContent>
     </Card>
   );

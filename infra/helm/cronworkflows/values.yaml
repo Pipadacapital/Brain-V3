@@ -72,17 +72,42 @@ sparkBronze:
     limits: { cpu: "2", memory: 4Gi }
 
 # The scheduled jobs. `image` omitted → the default (core) image.
+#
+# ── THE ATTRIBUTION CHAIN — ordered by staggered schedule + idempotency (NOT an Argo DAG; matches
+#    this chart's one-container-per-CronWorkflow convention). Each step is idempotent, so the time
+#    gaps sequence them and a missed/retried run is safe (Forbid + startingDeadline):
+#      :00  revenue-finalization          prepaid recognized after horizon → finalization rows
+#      :15  journey-stitch-from-identity   identity links → connector_journey_stitch_map (the stitch)
+#      :30  attribution-reconcile          credit recognized orders to journeys (ALL 5 models incl.
+#                                          data_driven) + clawbacks
+#      (—)  gold-mart rebuild              `make attribution-gold-refresh` (dbt) materializes the credit
+#                                          ledger → brain_gold.gold_marketing_attribution that the
+#                                          dashboard serves. Built by the dbt-runner (CI/nightly today);
+#                                          an intraday Argo cron is the documented follow-up that needs
+#                                          a dbt-runner image (infra/observe/.../brain-slo.rules.yml).
+#                                          Until then the marts refresh on the nightly dbt build.
 jobs:
   - name: recommendation-detectors
     schedule: "0 6 * * *"          # daily 06:00 IST — the Morning Brief
     command: ["node", "dist/jobs/recommendation-detectors.js"]
-  - name: attribution-reconcile
-    schedule: "30 * * * *"         # hourly at :30 — attribute newly-finalized orders + clawbacks
-    command: ["node", "dist/jobs/attribution-reconcile.js"]
   - name: revenue-finalization
-    schedule: "0 * * * *"          # hourly — horizon-based realization (stream-worker image)
+    schedule: "0 * * * *"          # hourly at :00 — ATTRIBUTION CHAIN step 1 (stream-worker image)
     command: ["node", "dist/jobs/revenue-finalization.js"]
     useStreamWorkerImage: true
+  - name: journey-stitch-from-identity
+    schedule: "15 * * * *"         # hourly at :15 — ATTRIBUTION CHAIN step 2: derive the stitch map
+    command: ["node", "dist/jobs/journey-stitch-from-identity.js"]
+    useStreamWorkerImage: true
+    # Deterministic identity-graph stitch (GAP-1): silver_touchpoint anon → identity_link(anon_id)→
+    # brain_id ∩ realized_revenue_ledger(order→brain_id), UNAMBIGUOUS-ONLY (skips multi-anon customers,
+    # never guesses). Salt via SaltProvider→resolveSaltHex (prod KMS). Needs STARROCKS_* +
+    # BRAIN_APP_DATABASE_URL (envSecretName). Without it, repulled orders never stitch → attribution
+    # has no journeys to credit.
+  - name: attribution-reconcile
+    schedule: "30 * * * *"         # hourly at :30 — ATTRIBUTION CHAIN step 3: credit + clawback
+    command: ["node", "dist/jobs/attribution-reconcile.js"]
+    # Per brand: the 4 per-journey models (reconcileAttribution) + the GLOBAL data-driven Markov model
+    # (reconcileDataDrivenAttribution). Credit basis = finalization ∪ cod_delivery_confirmed (COD-inclusive).
   - name: feature-materialization
     schedule: "40 * * * *"         # hourly at :40 — materialize Gold customer features → Redis online store
     command: ["node", "dist/jobs/feature-materialization/run.js"]

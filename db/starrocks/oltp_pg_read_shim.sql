@@ -126,3 +126,25 @@ SELECT
 FROM identity.customer;
 
 GRANT SELECT ON silver_customer_identity_src TO brain;
+
+-- ============================================================================
+-- Touchpoint/journey Iceberg flip (silver_touchpoint): the per-touch mart LEFT JOINs the journey
+-- stitch map (connector_journey_stitch_map, migration 0031) to attach stitched_brain_id / order_id.
+-- The touchpoint EVENTS now read raw Iceberg Bronze (stg_touchpoint_events, bronze_source=iceberg) —
+-- bronze_touchpoint_src is RETIRED with bronze_events — but the stitch map is still PG, so it needs a
+-- uuid→text shim for the JDBC catalog. Moved here (from the legacy bronze_touchpoint_src.sql) so the
+-- standard `make silver-catalog` wiring creates it. SCHEMA-QUALIFIED to pin the view (avoids the
+-- CREATE-OR-REPLACE rebind-to-legacy hazard).
+-- ============================================================================
+CREATE OR REPLACE VIEW connector_journey_stitch_map_src AS
+SELECT
+    brand_id::text   AS brand_id,
+    order_id,
+    stitched_anon_id,
+    brain_id::text   AS brain_id,
+    click_ids::text  AS click_ids,   -- jsonb→text (JDBC cannot read jsonb)
+    utms::text       AS utms,        -- jsonb→text
+    created_at
+FROM connectors.connector_journey_stitch_map;
+
+GRANT SELECT ON connector_journey_stitch_map_src TO brain;

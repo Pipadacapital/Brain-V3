@@ -284,15 +284,12 @@ gold-run:
 # then build the Gold marts the Insight Engine reads (revenue / executive / customer / cac lineage)
 # from REAL Postgres data via dbt. ledger_source defaults to `pg` (dbt_project.yml).
 #
-# EXCLUDES the Iceberg-gated marts (silver_touchpoint → gold_attribution_paths, silver_sessions):
-# their PG `bronze_events` source was dropped in the DB-audit; the touchpoint/journey lineage moves to
-# Iceberg Bronze in a separate epic. Single-threaded: the macOS dbt multiprocessing spawn crashes on
-# >1 thread on a dev box.
+# Builds ALL marts: order/revenue/customer/cac from Postgres (JDBC) + touchpoint/journey/session from
+# raw Iceberg Bronze (stg_touchpoint_events reads bronze_iceberg.collector_events; the bronze_events PG
+# shim is retired). Single-threaded: the macOS dbt multiprocessing spawn crashes on >1 thread on a dev box.
 #   make insights-pipeline
 # ============================================================================
-GATED_MODELS = silver_touchpoint gold_attribution_paths silver_sessions
-
 insights-pipeline: silver-catalog
-	@echo ">> dbt run — insight marts from real Postgres data (ledger_source=pg), excluding Iceberg-gated marts ..."
-	cd $(DBT_DIR) && DBT_PROFILES_DIR=$(DBT_PROFILES) "$(DBT)" run --full-refresh --threads 1 --exclude $(GATED_MODELS)
-	@echo ">> Insight marts built. Open /insights (logged into a brand with order data)."
+	@echo ">> dbt run — all marts from real data (Postgres ledger via JDBC + touchpoint/journey via Iceberg Bronze) ..."
+	cd $(DBT_DIR) && DBT_PROFILES_DIR=$(DBT_PROFILES) "$(DBT)" run --full-refresh --threads 1
+	@echo ">> Marts built. Open /insights (logged into a brand with order + pixel data)."

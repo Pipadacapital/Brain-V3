@@ -12,6 +12,7 @@ interface FakeTables {
   vip?: Array<Record<string, unknown>>;
   cac?: Array<Record<string, unknown>>;
   spend?: Array<Record<string, unknown>>;
+  funnel?: Array<Record<string, unknown>>;
 }
 
 /** Fake StarRocks pool that routes each gold-mart query to the configured rows. */
@@ -26,6 +27,7 @@ function fakePool(t: FakeTables): SilverPool {
       if (sql.includes('monetary_score = 5')) return [t.vip ?? [], []];
       if (sql.includes('gold_cac')) return [t.cac ?? [], []];
       if (sql.includes('silver_marketing_spend')) return [t.spend ?? [], []];
+      if (sql.includes('silver_touchpoint')) return [t.funnel ?? [], []]; // computeStorefrontFunnel
       return [[], []];
     },
     release() {},
@@ -126,6 +128,22 @@ describe('computeInsights — deterministic Insight + Opportunity Engine', () =>
       srPool: fakePool({ revenue: [{ currency_code: 'INR', cur_minor: '200000', prior_minor: '150000' }] }),
     });
     expect(noSpend.insights.find((i) => i.detector === 'blended_roas')).toBeUndefined();
+  });
+
+  it('surfaces the leakiest funnel step as an opportunity (reuses the conversion-funnel emitter)', async () => {
+    // sessions 1000 → product 600 (60%) → cart 200 (33.33%) → checkout 120 (60%) → purchase 80 (66.67%).
+    // Lowest step-conversion = cart_added (33.33%) → that's the leak; 400 dropped product-view→cart.
+    const res = await computeInsights(BRAND, {
+      srPool: fakePool({
+        funnel: [{ sessions: 1000, product_viewed: 600, cart_added: 200, checkout_started: 120, purchased: 80 }],
+      }),
+    });
+    const f = res.insights.find((i) => i.detector === 'funnel_dropoff')!;
+    expect(f.kind).toBe('opportunity');
+    expect(f.severity).toBe('medium'); // 20 <= 33.33 < 50
+    expect(f.evidence.step_pct).toBe('33.33');
+    expect(f.evidence.lost_sessions).toBe('400');
+    expect(f.evidence.overall_conversion_pct).toBe('8.00'); // 80/1000
   });
 
   it('suppresses the CAC insight when there is no ad spend (no meaningless 0/0 "CAC improving ?%")', async () => {

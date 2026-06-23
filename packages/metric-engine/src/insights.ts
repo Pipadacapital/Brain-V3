@@ -23,6 +23,7 @@
 
 import type { SilverPool } from './silver-deps.js';
 import { withSilverBrand, BRAND_PREDICATE } from './silver-deps.js';
+import { computeStorefrontFunnel } from './storefront-funnel.js';
 
 export type InsightKind = 'risk' | 'opportunity' | 'trend';
 export type InsightSeverity = 'high' | 'medium' | 'low' | 'info';
@@ -114,6 +115,13 @@ export async function computeInsights(
     current: { from: isoDate(curFrom), to: isoDate(now) },
     prior: { from: isoDate(priorFrom), to: isoDate(curFrom) },
   };
+
+  // Storefront conversion funnel (current 30d) — computed via the canonical funnel emitter (own seam);
+  // reused below for the funnel-drop-off insight. Best-effort: a failure degrades to "no funnel insight".
+  const funnel = await computeStorefrontFunnel(brandId, deps, { from: curFrom, to: now }).catch(() => ({
+    hasData: false,
+    stages: [] as { key: string; sessions: bigint; conversionPct: string | null; stepPct: string | null }[],
+  }));
 
   return withSilverBrand(deps.srPool, brandId, async (scope) => {
     const insights: Insight[] = [];
@@ -463,6 +471,61 @@ export async function computeInsights(
         evidence: { spend_minor: spend.toString(), realized_minor: realized.toString(), roas_x: roas },
         confidence: 'high',
       });
+    }
+
+    // ── 7. Funnel drop-off (opportunity) ← storefront conversion funnel (silver_touchpoint) ──
+    // The leakiest step (lowest step-conversion) is where the most shoppers are lost — the highest-
+    // leverage CRO fix. Brand-level (no currency). Honest: only when the funnel has sessions.
+    if (funnel.hasData && funnel.stages.length >= 2) {
+      const HUMAN: Record<string, string> = {
+        sessions: 'sessions',
+        product_viewed: 'product views',
+        cart_added: 'cart adds',
+        checkout_started: 'checkout',
+        purchased: 'purchase',
+      };
+      const top = funnel.stages[0];
+      const purchased = funnel.stages[funnel.stages.length - 1];
+      let worst: { key: string; prevKey: string; stepNum: number; stepPct: string | null; lost: bigint } | null = null;
+      for (let k = 1; k < funnel.stages.length; k++) {
+        const st = funnel.stages[k];
+        const prev = funnel.stages[k - 1];
+        if (!st || !prev || prev.sessions === 0n) continue;
+        const stepNum = st.stepPct === null ? 100 : Number(st.stepPct);
+        const lost = prev.sessions - st.sessions;
+        if (lost <= 0n) continue;
+        if (!worst || stepNum < worst.stepNum) {
+          worst = { key: st.key, prevKey: prev.key, stepNum, stepPct: st.stepPct, lost };
+        }
+      }
+      if (worst && top) {
+        const toCheckout = worst.key === 'purchased' || worst.key === 'checkout_started';
+        insights.push({
+          id: 'funnel_dropoff',
+          detector: 'funnel_dropoff',
+          kind: 'opportunity',
+          severity: worst.stepNum < 20 ? 'high' : worst.stepNum < 50 ? 'medium' : 'low',
+          title: `Funnel leak: only ${worst.stepPct ?? '?'}% of ${HUMAN[worst.prevKey] ?? worst.prevKey} reach ${HUMAN[worst.key] ?? worst.key}`,
+          why:
+            `${top.sessions.toString()} sessions in the last 30 days; ${worst.lost.toString()} dropped between ` +
+            `${HUMAN[worst.prevKey] ?? worst.prevKey} and ${HUMAN[worst.key] ?? worst.key}. Overall session→purchase ` +
+            `conversion is ${purchased?.conversionPct ?? '?'}%.`,
+          recommendedAction: toCheckout
+            ? 'Recover abandoned carts/checkouts (reminder + incentive) and cut checkout friction (address/payment).'
+            : 'Improve the on-site experience at this stage (PDP merchandising, search, cart UX).',
+          currencyCode: null,
+          impactMinor: null,
+          direction: null,
+          deltaPct: null,
+          evidence: {
+            top_sessions: top.sessions.toString(),
+            lost_sessions: worst.lost.toString(),
+            step_pct: worst.stepPct,
+            overall_conversion_pct: purchased?.conversionPct ?? null,
+          },
+          confidence: 'high',
+        });
+      }
     }
 
     if (insights.length === 0) {

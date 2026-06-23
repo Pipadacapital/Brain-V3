@@ -528,6 +528,65 @@ export async function computeInsights(
       }
     }
 
+    // ── 8. Top product / revenue concentration (opportunity) ← silver_order_line ──
+    // The hero SKU is a lever (scale via lookalikes/bundles); over-concentration in one SKU is also a
+    // risk (supply / margin single-point-of-failure). One insight per currency, off real line-items.
+    const prodRows = await scope.runScoped<{
+      currency_code: string;
+      title: string;
+      prod_minor: string | number;
+    }>(
+      `SELECT currency_code, COALESCE(title, '(untitled)') AS title,
+              COALESCE(SUM(line_total_minor), 0) AS prod_minor
+         FROM brain_silver.silver_order_line
+        WHERE ${BRAND_PREDICATE} AND line_total_minor IS NOT NULL
+        GROUP BY currency_code, title`,
+      [],
+    );
+    const byCcyProducts = new Map<string, { total: bigint; top: bigint; topTitle: string; count: number }>();
+    for (const r of prodRows) {
+      const minor = bi(r.prod_minor);
+      const agg = byCcyProducts.get(r.currency_code) ?? { total: 0n, top: 0n, topTitle: '', count: 0 };
+      agg.total += minor;
+      agg.count += 1;
+      if (minor > agg.top) {
+        agg.top = minor;
+        agg.topTitle = r.title;
+      }
+      byCcyProducts.set(r.currency_code, agg);
+    }
+    for (const [ccy, p] of byCcyProducts) {
+      if (p.total <= 0n || p.top <= 0n) continue;
+      const sharePct = ratioStr(p.top * 100n, p.total);
+      const shareNum = Number(sharePct);
+      const concentrated = shareNum >= 25;
+      insights.push({
+        id: `product_concentration:${ccy}`,
+        detector: 'product_concentration',
+        kind: 'opportunity',
+        severity: shareNum >= 40 ? 'high' : shareNum >= 25 ? 'medium' : 'low',
+        title: `Top product '${p.topTitle}' drives ${sharePct}% of product revenue`,
+        why:
+          `Across ${p.count.toString()} products (${ccy}), '${p.topTitle}' is ${p.top.toString()} minor of ` +
+          `${p.total.toString()} minor in line-item revenue (${sharePct}%).`,
+        recommendedAction: concentrated
+          ? 'High revenue concentration in one SKU — protect supply + margin, and broaden the catalog; bundle it to lift AOV and de-risk.'
+          : 'Scale your top product with lookalike acquisition + bundles, and promote the next tier to widen the revenue mix.',
+        currencyCode: ccy,
+        impactMinor: p.top.toString(),
+        direction: null,
+        deltaPct: null,
+        evidence: {
+          top_product: p.topTitle,
+          top_revenue_minor: p.top.toString(),
+          top_share_pct: sharePct,
+          distinct_products: p.count,
+          total_line_revenue_minor: p.total.toString(),
+        },
+        confidence: 'high',
+      });
+    }
+
     if (insights.length === 0) {
       return { hasData: false, primaryCurrency: null, window, insights: [] };
     }

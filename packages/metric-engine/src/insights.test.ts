@@ -13,6 +13,7 @@ interface FakeTables {
   cac?: Array<Record<string, unknown>>;
   spend?: Array<Record<string, unknown>>;
   funnel?: Array<Record<string, unknown>>;
+  orderline?: Array<Record<string, unknown>>;
 }
 
 /** Fake StarRocks pool that routes each gold-mart query to the configured rows. */
@@ -27,6 +28,7 @@ function fakePool(t: FakeTables): SilverPool {
       if (sql.includes('monetary_score = 5')) return [t.vip ?? [], []];
       if (sql.includes('gold_cac')) return [t.cac ?? [], []];
       if (sql.includes('silver_marketing_spend')) return [t.spend ?? [], []];
+      if (sql.includes('silver_order_line')) return [t.orderline ?? [], []];
       if (sql.includes('silver_touchpoint')) return [t.funnel ?? [], []]; // computeStorefrontFunnel
       return [[], []];
     },
@@ -144,6 +146,26 @@ describe('computeInsights — deterministic Insight + Opportunity Engine', () =>
     expect(f.evidence.step_pct).toBe('33.33');
     expect(f.evidence.lost_sessions).toBe('400');
     expect(f.evidence.overall_conversion_pct).toBe('8.00'); // 80/1000
+  });
+
+  it('surfaces the top product + revenue concentration from order line-items', async () => {
+    // Hero 600000 of total 1000000 = 60% → high-concentration opportunity across 3 products.
+    const res = await computeInsights(BRAND, {
+      srPool: fakePool({
+        orderline: [
+          { currency_code: 'INR', title: 'Hero Bodysuit', prod_minor: '600000' },
+          { currency_code: 'INR', title: 'Mesh Tank', prod_minor: '300000' },
+          { currency_code: 'INR', title: 'Gloss Set', prod_minor: '100000' },
+        ],
+      }),
+    });
+    const p = res.insights.find((i) => i.detector === 'product_concentration')!;
+    expect(p.kind).toBe('opportunity');
+    expect(p.severity).toBe('high'); // 60% >= 40
+    expect(p.evidence.top_product).toBe('Hero Bodysuit');
+    expect(p.evidence.top_share_pct).toBe('60.00');
+    expect(p.evidence.distinct_products).toBe(3);
+    expect(p.impactMinor).toBe('600000');
   });
 
   it('suppresses the CAC insight when there is no ad spend (no meaningless 0/0 "CAC improving ?%")', async () => {

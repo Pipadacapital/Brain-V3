@@ -75,6 +75,14 @@ export class ShopifyLiveClient {
       'id', 'name', 'created_at', 'processed_at', 'updated_at', 'cancelled_at',
       'currency', 'current_total_price', 'financial_status', 'fulfillment_status',
       'gateway', 'payment_gateway_names', 'tags', 'customer',
+      // feat-shopify-order-depth: the economic breakdown parsed by @brain/shopify-mapper
+      // (projectOrderDepth) → silver_order_line / top-products. The live re-pull previously omitted
+      // these, so every repulled order.live.v1 carried totals only and silver_order_line was empty.
+      'line_items', 'tax_lines', 'total_tax', 'shipping_lines',
+      'total_discounts', 'discount_codes', 'refunds',
+      // journey-stitch read-back (D-5): brain_anon_id written into checkout note_attributes, mapped to
+      // stitched_anon_id → connector_journey_stitch_map (no-op until the Web-Pixel checkout writes it).
+      'note_attributes',
     ].join(',');
 
     // since_id=0 forces id-ascending stable walk (same fix as ShopifyBackfillClient)

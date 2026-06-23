@@ -161,6 +161,9 @@ export class ShopifyAdminClient {
       'currency', 'current_total_price', 'total_price', 'subtotal_price', 'total_tax',
       'financial_status', 'fulfillment_status', 'gateway', 'payment_gateway_names',
       'tags', 'test', 'refunds', 'customer',
+      // feat-shopify-order-depth: line-item / tax / discount breakdown parsed by @brain/shopify-mapper
+      // (projectOrderDepth) → silver_order_line / top-products. + note_attributes for the journey stitch.
+      'line_items', 'tax_lines', 'shipping_lines', 'total_discounts', 'discount_codes', 'note_attributes',
     ].join(',');
     const { orders } = await this.get<{ orders: ShopifyOrder[] }>(
       `/orders.json?status=any&limit=${limit}&fields=${fields}`,

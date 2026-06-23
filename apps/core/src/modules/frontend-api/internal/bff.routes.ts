@@ -2848,8 +2848,8 @@ export function registerBffRoutes(
       if (!auth.brandId) {
         return reply.send({ request_id: requestId, data: { state: 'no_data', from: null, to: null, grain: 'day', buckets: [] } });
       }
-      if (!rawPool) {
-        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' } });
+      if (!srPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (StarRocks) not available' } });
       }
 
       const query = request.query as { from?: string; to?: string; grain?: string };
@@ -2860,10 +2860,11 @@ export function registerBffRoutes(
       const fromStr = query.from ?? defaultFrom;
       const grain: TimeGrain = (query.grain === 'week' ? 'week' : 'day') as TimeGrain;
 
+      // Epic 1: orders timeseries now reads the lakehouse (gold_revenue_ledger), not the PG ledger.
       const result = await getOrdersTimeseries(
         auth.brandId,
         { fromDate: new Date(`${fromStr}T00:00:00Z`), toDate: new Date(`${toStr}T00:00:00Z`), grain },
-        { pool: rawPool },
+        { srPool },
       );
 
       return reply.send({ request_id: requestId, data: result });
@@ -2904,15 +2905,16 @@ export function registerBffRoutes(
         const today = new Date().toISOString().split('T')[0] as string;
         return reply.send({ request_id: requestId, data: { state: 'no_data', as_of: today } });
       }
-      if (!rawPool) {
-        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' } });
+      if (!srPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (StarRocks) not available' } });
       }
 
       const query = request.query as { as_of?: string };
       const asOfStr = query.as_of ?? (new Date().toISOString().split('T')[0] as string);
       const asOf = new Date(`${asOfStr}T00:00:00Z`);
 
-      const result = await getOrderStats(auth.brandId, asOf, { pool: rawPool });
+      // Epic 1: order stats now read the lakehouse (gold_revenue_ledger), not the PG ledger.
+      const result = await getOrderStats(auth.brandId, asOf, { srPool });
 
       return reply.send({ request_id: requestId, data: result });
     },

@@ -5,8 +5,8 @@
  * Serializes bigint → string for JSON safety (D-1).
  */
 
-import type { EngineDeps } from '@brain/metric-engine';
-import { computeOrderStats, withBrandTxn } from '@brain/metric-engine';
+import type { SilverPool } from '@brain/metric-engine';
+import { computeOrderStats, withSilverBrand, BRAND_PREDICATE } from '@brain/metric-engine';
 
 export interface OrderStatsDto {
   currency_code: string;
@@ -29,24 +29,24 @@ export type OrderStatsResult =
 export async function getOrderStats(
   brandId: string,
   asOf: Date,
-  deps: EngineDeps,
+  deps: { srPool: SilverPool },
 ): Promise<OrderStatsResult> {
   const asOfStr = asOf.toISOString().split('T')[0] as string;
 
-  // EXISTS check (D-2)
-  const hasData = await withBrandTxn(deps.pool, brandId, async (client) => {
-    const r = await client.query<{ exists: boolean }>(
-      `SELECT EXISTS(SELECT 1 FROM realized_revenue_ledger WHERE brand_id = $1) AS exists`,
-      [brandId],
+  // EXISTS check (D-2) — over the lakehouse ledger (Epic 1).
+  const hasData = await withSilverBrand(deps.srPool, brandId, async (scope) => {
+    const r = await scope.runScoped<{ n: string | number }>(
+      `SELECT COUNT(*) AS n FROM brain_gold.gold_revenue_ledger WHERE ${BRAND_PREDICATE}`,
+      [],
     );
-    return r.rows[0]?.exists === true;
+    return Number(r[0]?.n ?? 0) > 0;
   });
 
   if (!hasData) {
     return { state: 'no_data', as_of: asOfStr };
   }
 
-  const stats = await computeOrderStats(brandId, asOf, deps);
+  const stats = await computeOrderStats(brandId, asOf, { srPool: deps.srPool });
 
   return {
     state: 'has_data',

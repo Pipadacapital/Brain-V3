@@ -9,8 +9,8 @@
  * (same EXISTS pattern as get-revenue-timeseries.ts).
  */
 
-import type { EngineDeps } from '@brain/metric-engine';
-import { computeOrdersTimeseries, withBrandTxn } from '@brain/metric-engine';
+import type { SilverPool } from '@brain/metric-engine';
+import { computeOrdersTimeseries, withSilverBrand, BRAND_PREDICATE } from '@brain/metric-engine';
 import type { TimeGrain } from '@brain/metric-engine';
 
 export interface OrdersTimeseriesBucketDto {
@@ -35,18 +35,18 @@ export type OrdersTimeseriesResult =
 export async function getOrdersTimeseries(
   brandId: string,
   params: { fromDate: Date; toDate: Date; grain: TimeGrain },
-  deps: EngineDeps,
+  deps: { srPool: SilverPool },
 ): Promise<OrdersTimeseriesResult> {
   const fromStr = params.fromDate.toISOString().split('T')[0] as string;
   const toStr = params.toDate.toISOString().split('T')[0] as string;
 
-  // EXISTS check — authoritative honest-empty (D-2).
-  const hasData = await withBrandTxn(deps.pool, brandId, async (client) => {
-    const r = await client.query<{ exists: boolean }>(
-      `SELECT EXISTS(SELECT 1 FROM realized_revenue_ledger WHERE brand_id = $1) AS exists`,
-      [brandId],
+  // EXISTS check — honest-empty (D-2), over the lakehouse ledger (Epic 1).
+  const hasData = await withSilverBrand(deps.srPool, brandId, async (scope) => {
+    const r = await scope.runScoped<{ n: string | number }>(
+      `SELECT COUNT(*) AS n FROM brain_gold.gold_revenue_ledger WHERE ${BRAND_PREDICATE}`,
+      [],
     );
-    return r.rows[0]?.exists === true;
+    return Number(r[0]?.n ?? 0) > 0;
   });
 
   if (!hasData) {

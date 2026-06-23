@@ -155,6 +155,13 @@ export {
 } from './attribution-models.js';
 export type { AttributionModelId, TouchCredit, AttributionTouch } from './attribution-models.js';
 
+// Billing meter seam — per-period realized GMV from the lakehouse (gold), the PG-function replacement.
+export { computeRealizedGmvForPeriod } from './realized-gmv-period.js';
+export type { RealizedGmvForPeriod } from './realized-gmv-period.js';
+// Inspectable-bill seam — per-event_type composition of a period's realized GMV from the lakehouse.
+export { computeRealizedGmvCompositionForPeriod } from './realized-gmv-composition-period.js';
+export type { RealizedGmvCompositionLine } from './realized-gmv-composition-period.js';
+
 // Data-driven (Markov removal-effect) attribution — the GLOBAL, corpus-trained model.
 export {
   computeMarkovChannelWeights,

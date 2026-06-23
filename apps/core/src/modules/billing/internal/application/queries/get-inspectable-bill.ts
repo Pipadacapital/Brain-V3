@@ -21,6 +21,8 @@
  */
 
 import type { DbPool, QueryContext } from '@brain/db';
+import type { SilverPool } from '@brain/metric-engine';
+import { computeRealizedGmvCompositionForPeriod } from '@brain/metric-engine';
 import { roundToMinorBankers } from '@brain/money';
 
 /** Platform default billing rate when a brand has no billing_plan row (100 bps = 1.00%). */
@@ -73,6 +75,8 @@ export type InspectableBillResult =
 
 export interface BillDeps {
   pool: DbPool;
+  /** StarRocks Silver/Gold pool — the inspectable composition reads the lakehouse ledger (Epic 1 / B). */
+  srPool: SilverPool;
 }
 
 export async function getInspectableBill(
@@ -130,20 +134,16 @@ export async function getInspectableBill(
     );
 
     // 4. The inspectable composition for THIS period (named seam — D-3) — the per-event_type
-    //    breakdown of the period delta, reconciling to the sealed basis. Filtered to the basis
-    //    currency (M1 single-currency per brand; other currencies bill separately).
-    const compRes = await client.query<{ event_type: string; amount_minor: string }>(
-      ctx,
-      `SELECT event_type, amount_minor::text AS amount_minor
-         FROM realized_gmv_composition_for_period($1::uuid, $2::char(7))
-        WHERE currency_code = $3
-        ORDER BY amount_minor DESC`,
-      [brandId, period, currency],
-    );
-    const lines: BillLine[] = compRes.rows.map((r) => ({
-      event_type: r.event_type,
-      amount_minor: r.amount_minor,
-    }));
+    //    breakdown of the period delta, reconciling to the sealed basis. From the LAKEHOUSE ledger
+    //    (brain_gold.gold_revenue_ledger) via the metric-engine seam — NOT the PG ledger (medallion
+    //    realignment, Epic 1 / decision B). Filtered to the basis currency (M1 single-currency per
+    //    brand; other currencies bill separately).
+    const composition = await computeRealizedGmvCompositionForPeriod(brandId, period, {
+      srPool: deps.srPool,
+    });
+    const lines: BillLine[] = composition
+      .filter((l) => l.currencyCode === currency)
+      .map((l) => ({ event_type: l.eventType, amount_minor: l.amountMinor }));
     const liveComposition = lines.reduce((sum, l) => sum + BigInt(l.amount_minor), 0n);
     const drift = liveComposition - basisMinor;
 

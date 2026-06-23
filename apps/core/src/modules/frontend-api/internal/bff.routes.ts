@@ -1934,19 +1934,20 @@ export function registerBffRoutes(
           error: { code: 'NO_ACTIVE_BRAND', message: 'Select a brand before metering billing.' },
         });
       }
-      if (!pool) {
+      if (!pool || !srPool) {
         return reply.code(503).send({
           request_id: requestId,
-          error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' },
+          error: { code: 'SERVICE_UNAVAILABLE', message: 'Database / Silver tier not available' },
         });
       }
 
       const { period } = request.body as { period: string };
+      // Epic 1: the GMV meter reads the lakehouse gold ledger (srPool); the snapshot stays in PG (pool).
       const result: ContractSealPeriodResult = await sealBillingPeriod(
         auth.brandId,
         period,
         requestId,
-        { pool },
+        { pool, srPool },
       );
       return reply.send({ request_id: requestId, data: result });
     },
@@ -1994,7 +1995,7 @@ export function registerBffRoutes(
           data: { state: 'not_sealed', billing_period: period },
         });
       }
-      if (!pool) {
+      if (!pool || !srPool) {
         return reply.code(503).send({
           request_id: requestId,
           error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' },
@@ -2005,7 +2006,7 @@ export function registerBffRoutes(
         auth.brandId,
         period,
         requestId,
-        { pool },
+        { pool, srPool },
       );
       return reply.send({ request_id: requestId, data: result });
     },
@@ -2102,7 +2103,7 @@ export function registerBffRoutes(
           error: { code: 'NO_ACTIVE_BRAND', message: 'Select a brand before issuing an invoice.' },
         });
       }
-      if (!pool) {
+      if (!pool || !srPool) {
         return reply.code(503).send({
           request_id: requestId,
           error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' },
@@ -2114,7 +2115,7 @@ export function registerBffRoutes(
         auth.brandId,
         period,
         requestId,
-        { pool },
+        { pool, srPool },
       );
       return reply.send({ request_id: requestId, data: result });
     },

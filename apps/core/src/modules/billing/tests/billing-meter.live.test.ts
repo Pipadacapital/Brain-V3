@@ -16,10 +16,14 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import pg from 'pg';
+import mysql from 'mysql2/promise';
 import { createPool, type DbPool } from '@brain/db';
+import type { SilverPool } from '@brain/metric-engine';
 import { sealBillingPeriod, getBillingPeriods } from '../index.js';
 
 const SUPERUSER_URL = process.env['DATABASE_URL'] ?? 'postgres://brain:brain@localhost:5432/brain';
+const SR_HOST = process.env['STARROCKS_HOST'] ?? '127.0.0.1';
+const SR_PORT = Number(process.env['STARROCKS_QUERY_PORT'] ?? '9030');
 
 const BRAND_A = 'b111111a-0a1a-4a1a-8a1a-000000000001';
 const BRAND_B = 'b111111a-0a1a-4a1a-8a1a-000000000002';
@@ -30,9 +34,14 @@ const CORR = 'billing-meter-live-test';
 
 let superPool: pg.Pool;
 let dbPool: DbPool;
+let srPool: SilverPool;
 let pgAvailable = false;
 
 let seq = 0;
+/**
+ * MEDALLION REALIGNMENT (Epic 1 / decision B): the billing meter now reads the LAKEHOUSE ledger
+ * (brain_gold.gold_revenue_ledger on StarRocks), not the PG ledger. Seed there so the seal sees it.
+ */
 async function insertLedgerRow(
   brandId: string,
   eventType: string,
@@ -41,14 +50,26 @@ async function insertLedgerRow(
   period = '2099-03',
 ): Promise<void> {
   seq += 1;
-  await superPool.query(
-    `INSERT INTO realized_revenue_ledger
-       (brand_id, ledger_event_id, order_id, event_type, amount_minor, currency_code,
-        occurred_at, occurred_date, economic_effective_at, billing_posted_period, recognition_label)
-     VALUES ($1, $2, $3, $4, $5, 'INR', $6, (timezone('UTC',$6::timestamptz))::date, $6, $7,
-             CASE WHEN $4 = 'provisional_recognition' THEN 'provisional' ELSE 'finalized' END)
-     ON CONFLICT (brand_id, ledger_event_id, occurred_date) DO NOTHING`,
-    [brandId, `evt-${brandId}-${seq}`, `order-${seq}`, eventType, amountMinor, effectiveAt, period],
+  const recognitionLabel = eventType === 'provisional_recognition' ? 'provisional' : 'finalized';
+  await srPool.query(
+    `INSERT INTO brain_gold.gold_revenue_ledger
+       (brand_id, ledger_event_id, order_id, brain_id, event_type, amount_minor, currency_code,
+        fee_minor, occurred_at, economic_effective_at, recognition_label, billing_posted_period,
+        ingested_at, updated_at)
+     VALUES (?, ?, ?, NULL, ?, ?, 'INR', 0, ?, ?, ?, ?, ?, ?)`,
+    [
+      brandId,
+      `evt-${brandId}-${seq}`,
+      `order-${seq}`,
+      eventType,
+      amountMinor,
+      effectiveAt,
+      effectiveAt,
+      recognitionLabel,
+      period,
+      effectiveAt,
+      effectiveAt,
+    ],
   );
 }
 
@@ -77,7 +98,9 @@ async function seedBrand(): Promise<void> {
 async function cleanup(): Promise<void> {
   for (const b of [BRAND_A, BRAND_B]) {
     await superPool.query(`DELETE FROM gmv_meter_snapshot WHERE brand_id = $1`, [b]).catch(() => {});
-    await superPool.query(`DELETE FROM realized_revenue_ledger WHERE brand_id = $1`, [b]).catch(() => {});
+    await srPool
+      .query(`DELETE FROM brain_gold.gold_revenue_ledger WHERE brand_id = ?`, [b])
+      .catch(() => {});
   }
   await superPool.query(`DELETE FROM brand WHERE id = $1`, [BRAND_A]).catch(() => {});
   await superPool.query(`DELETE FROM organization WHERE id = $1`, [ORG_ID]).catch(() => {});
@@ -89,6 +112,14 @@ beforeAll(async () => {
     superPool = new pg.Pool({ connectionString: SUPERUSER_URL, connectionTimeoutMillis: 4000 });
     await superPool.query('SELECT 1');
     dbPool = await createPool({ connectionString: SUPERUSER_URL });
+    srPool = mysql.createPool({
+      host: SR_HOST,
+      port: SR_PORT,
+      user: 'root',
+      password: '',
+      connectionLimit: 2,
+    }) as unknown as SilverPool;
+    await srPool.query('SELECT 1');
     await cleanup();
     await seedBrand();
     // Realized GMV as-of 2099-03-31 = 100000 (finalization) − 20000 (refund) = 80000.
@@ -107,6 +138,7 @@ beforeAll(async () => {
 afterAll(async () => {
   if (pgAvailable) await cleanup();
   if (dbPool) await dbPool.end();
+  if (srPool) await (srPool as unknown as mysql.Pool).end().catch(() => {});
   if (superPool) await superPool.end();
 });
 
@@ -118,7 +150,7 @@ describe('billing meter (live Postgres)', () => {
 
   it('1. meter — seals the per-period realized GMV (provisional excluded, refund netted, other periods out)', async () => {
     if (!pgAvailable) return;
-    const r = await sealBillingPeriod(BRAND_A, PERIOD, CORR, { pool: dbPool });
+    const r = await sealBillingPeriod(BRAND_A, PERIOD, CORR, { pool: dbPool, srPool });
     expect(r.sealed).toBe(true);
     expect(r.billing_period).toBe(PERIOD);
     expect(r.currency_code).toBe('INR');
@@ -131,7 +163,7 @@ describe('billing meter (live Postgres)', () => {
     if (!pgAvailable) return;
     // A late finalization arrives AFTER the seal — must NOT change the sealed figure.
     await insertLedgerRow(BRAND_A, 'finalization', 777_000, '2099-03-25T00:00:00Z');
-    const r = await sealBillingPeriod(BRAND_A, PERIOD, CORR, { pool: dbPool });
+    const r = await sealBillingPeriod(BRAND_A, PERIOD, CORR, { pool: dbPool, srPool });
     expect(r.sealed).toBe(false); // already sealed
     expect(r.metered_gmv_minor).toBe('80000'); // original figure stands — immutable
   });

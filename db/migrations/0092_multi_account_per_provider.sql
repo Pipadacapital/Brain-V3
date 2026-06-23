@@ -38,7 +38,7 @@
 -- NOT NULL is safe here because the DEFAULT applies on INSERT; existing rows get the
 -- DEFAULT via the UPDATE backfill below.
 
-ALTER TABLE connector_instance
+ALTER TABLE connectors.connector_instance
   ADD COLUMN IF NOT EXISTS account_key TEXT NOT NULL DEFAULT '__default__';
 
 -- ── (A) Backfill existing rows ─────────────────────────────────────────────────
@@ -46,19 +46,19 @@ ALTER TABLE connector_instance
 -- Idempotent: the DEFAULT already sets '__default__' on new rows; this UPDATE is
 -- a no-op for rows inserted AFTER this migration runs (they already have the default).
 
-UPDATE connector_instance
+UPDATE connectors.connector_instance
 SET account_key = '__default__'
 WHERE account_key IS DISTINCT FROM '__default__';
 
 -- ── (B) Constraint swap ─────────────────────────────────────────────────────────
 -- Drop the old UNIQUE(brand_id, provider) that prevented multi-account.
-ALTER TABLE connector_instance
+ALTER TABLE connectors.connector_instance
   DROP CONSTRAINT IF EXISTS connector_instance_brand_provider_unique;
 
 -- Add UNIQUE(brand_id, provider, account_key).
 -- Two Shopify stores → same brand_id + 'shopify' but different account_key.
 -- Re-connect of the same single account → (brand, provider, '__default__') conflicts → UPSERT updates.
-ALTER TABLE connector_instance
+ALTER TABLE connectors.connector_instance
   ADD CONSTRAINT connector_instance_brand_provider_account_unique
     UNIQUE (brand_id, provider, account_key);
 
@@ -90,7 +90,7 @@ DECLARE
   null_count BIGINT;
 BEGIN
   SELECT COUNT(*) INTO null_count
-  FROM connector_instance
+  FROM connectors.connector_instance
   WHERE account_key IS NULL;
 
   IF null_count > 0 THEN
@@ -140,7 +140,7 @@ DECLARE
 BEGIN
   -- At migration time every row should be '__default__' since no app code writes other keys yet.
   SELECT COUNT(*) INTO non_default_count
-  FROM connector_instance
+  FROM connectors.connector_instance
   WHERE account_key <> '__default__';
 
   -- Not a hard failure — warn only (after this migration, the app may write non-default keys).

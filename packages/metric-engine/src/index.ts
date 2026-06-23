@@ -74,6 +74,15 @@ export type { Customer360Summary, Customer360Row } from './customer-360.js';
 // Single-customer RFM/churn score (Gold) — DB-AUDIT C5 ML serving
 export { getCustomerScore } from './customer-score.js';
 export type { CustomerScoreRow } from './customer-score.js';
+// Insight + Opportunity Engine (AI Copilot briefing source) — deterministic, over the Gold marts.
+export { computeInsights } from './insights.js';
+export type {
+  InsightsResult,
+  Insight,
+  InsightKind,
+  InsightSeverity,
+  InsightConfidence,
+} from './insights.js';
 // Logistics shipment outcomes (Slice 2) — delivered/RTO/other + RTO% by courier/pincode,
 // from the multi-source silver_shipment mart (GoKwik AWB + Shiprocket).
 export { computeShipmentOutcomes } from './shipment-outcomes.js';

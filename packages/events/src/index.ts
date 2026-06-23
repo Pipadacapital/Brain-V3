@@ -62,7 +62,13 @@ export async function registerSchema(
   config: ApicurioConfig,
   avscJson: string
 ): Promise<SchemaRegistrationResult> {
-  const url = `${config.baseUrl}/apis/registry/v2/groups/${config.groupId}/artifacts`;
+  // Apicurio Registry v2 takes `ifExists` as a QUERY PARAMETER, not the v1-style
+  // `X-Registry-IfExists` header (which this endpoint silently ignores → POST defaults to
+  // fail-if-exists → 409 on every re-registration). RETURN_OR_UPDATE makes re-registering an
+  // identical schema idempotent (returns the existing artifact); a genuinely non-additive change
+  // still 409s under the FULL_TRANSITIVE rule, which we surface as an error below.
+  const url =
+    `${config.baseUrl}/apis/registry/v2/groups/${config.groupId}/artifacts?ifExists=RETURN_OR_UPDATE`;
 
   const response = await fetch(url, {
     method: 'POST',
@@ -70,8 +76,6 @@ export async function registerSchema(
       'Content-Type': 'application/json; artifactType=AVRO',
       'X-Registry-ArtifactId': config.artifactId,
       'X-Registry-ArtifactType': 'AVRO',
-      // FULL_TRANSITIVE: reject any non-additive change
-      'X-Registry-IfExists': 'RETURN_OR_UPDATE',
     },
     body: avscJson,
   });

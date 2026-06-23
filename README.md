@@ -56,9 +56,14 @@ docker exec -i brainv3-postgres-1 psql -U brain -d brain \
 # 4. PROD secrets/KMS into LocalStack (jwt + cookie + shopify secrets, KMS CMK, brand keyring)
 pnpm bootstrap:prodlocal
 
-# 5. BUILD StarRocks Silver/Gold marts — FULL-REFRESH is required on a fresh env
-#    (Iceberg↔PG column-type switch; StarRocks can't DROP COLUMN. Steady-state runs drop --full-refresh.)
-cd db/dbt && DBT_PROFILES_DIR=profiles ../../.dbt-venv/bin/dbt build --full-refresh --profiles-dir profiles ; cd ../..
+# 5. WIRE the lakehouse read path + BUILD the Gold marts (ONE command).
+#    `make insights-pipeline` = create the brain_oltp_pg JDBC catalog + Postgres read-shim
+#    (silver-catalog), then dbt-build the insight marts (revenue/executive/customer/cac) from real
+#    Postgres data (ledger_source=pg, the dev default). Without the catalog/shim, dbt fails with
+#    "Unknown catalog 'brain_oltp_pg'". Single-threaded (macOS dbt multiprocessing spawn crash).
+make insights-pipeline
+#    Full marts incl. Iceberg-gated touchpoint/journey (separate epic; needs the Bronze flip):
+#    cd db/dbt && DBT_PROFILES_DIR=profiles ../../.dbt-venv/bin/dbt build --full-refresh --threads 1 --profiles-dir profiles ; cd ../..
 
 # 6. START all 4 apps in PROD mode (loads .env.prod, APP_ENV=prod)
 pnpm dev:prodlocal
@@ -66,13 +71,26 @@ pnpm dev:prodlocal
 
 Then open **http://localhost:3000** → register → onboard a brand → connect Shopify → **Sync now**.
 Real events flow **Collector → Redpanda → Spark sink → Iceberg Bronze → StarRocks**; re-run step 5
-(`dbt build`, no `--full-refresh` after the first) to populate Gold and the dashboards light up.
+(`make insights-pipeline`) to repopulate Gold and the dashboards/`/insights` light up.
 
 **Plain dev mode** (not prod-faithful): skip steps **4 & 6**, run `pnpm dev` instead — all else identical.
 
 ### Gotchas (all expected, not bugs)
 - **Marts/dashboards are empty until real data flows** — the honest-empty state by design.
-  Data appears only after register → connect → sync → `dbt build`.
+  Data appears only after register → connect → sync → `make insights-pipeline`.
+- **`Unknown catalog 'brain_oltp_pg'` from dbt → you skipped the catalog wiring.** `make insights-pipeline`
+  (or `make silver-catalog`) creates the JDBC catalog + Postgres read-shim it needs. Not auto-created by
+  `starrocks-init` (the shim runs against Postgres, which only exists after migrations).
+- **Customer marts (churn/VIP scores) stay empty without identity resolution** — they need `brain_id`
+  on the order ledger; revenue + RTO insights work from order data alone. Historical ledger rows:
+  `tools/backfill/backfill-ledger-brain-id.sh <brand>` (after migration 0095).
+- **CAC + blended-ROAS insights need ad spend** — connect Meta/Google (OAuth) so the spend-repull jobs
+  fill `ad_spend_ledger`, or seed sample spend: `tools/seed/ad-spend-demo-seed.sh <brand>`.
+- **Attribution PATHS (`gold_attribution_paths`) need the journey→order stitch** — the storefront pixel
+  must write `brain_anon_id` into checkout `note_attributes` (Web-Pixel checkout extension) so the order
+  webhook reads it back (`connector_journey_stitch_map`). That ONE instrumentation also bridges identity
+  (anon↔customer) and fills the funnel checkout stage. Deterministic historical backfill (identity-graph
+  based, NEVER guessed — no-op when no bridge exists): `tools/backfill/backfill-journey-stitch-map.sh <brand>`.
 - **Step 5 must be `--full-refresh` the first time** after a wipe or an Iceberg/PG source flip.
 - **Skip step 3 → `password authentication failed for brain_app`.** Re-run it after every `down -v`.
 - `docker system prune` also drops images → step 1 re-pulls them (slower first boot).

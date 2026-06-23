@@ -194,3 +194,13 @@ export type {
   CohortRetentionResult,
   CohortRetentionDto,
 } from './internal/application/queries/get-cohort-retention.js';
+
+// Insight + Opportunity Engine + AI Copilot briefing — deterministic insights over the Gold marts
+// (gold_revenue_ledger / gold_executive_metrics / gold_customer_scores / gold_cac). Numbers come from
+// the marts, never from a model; honest no_data when the brand has no realized rows.
+export { getInsightsBriefing } from './internal/application/queries/get-insights-briefing.js';
+export type {
+  InsightsBriefingResult,
+  BriefingDto,
+  InsightDto,
+} from './internal/application/queries/get-insights-briefing.js';

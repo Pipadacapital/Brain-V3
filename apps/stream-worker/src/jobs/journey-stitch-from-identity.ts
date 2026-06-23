@@ -10,7 +10,7 @@
  * the pixel `identify` event carries brain_anon_id + hashed_customer_email; the identity resolver
  * links that anon_id to the SAME brain_id as the order's pre_hashed_email. THIS job then reads those
  * links and writes the stitch:  raw anon (silver) --hash--> identity_link(anon_id)→brain_id --∩-->
- * realized_revenue_ledger(order→brain_id)  ⇒  (order_id, stitched_anon_id, brain_id).
+ * gold_revenue_ledger(order→brain_id, Bronze-sourced)  ⇒  (order_id, stitched_anon_id, brain_id).
  *
  * DETERMINISTIC, NEVER GUESSED (Brain rule: journey-before-attribution, never guess attribution):
  *   - The anon↔customer link comes ONLY from identity resolution (a real `identify`/order signal),
@@ -143,14 +143,17 @@ export async function runJourneyStitchFromIdentity(deps?: {
         if (brainToAnon.size === 0) continue;
 
         // 5. brain_id → orders, then upsert the stitch (order_id, raw anon, brain_id).
-        const orderRows = await readScoped<{ order_id: string; brain_id: string }>(
-          pool,
-          brand.id,
+        // MEDALLION REALIGNMENT (Epic 1): read orders from the lakehouse (brain_gold.gold_revenue_ledger,
+        // Bronze-sourced) via the StarRocks pool — NOT the PG ledger.
+        const brainIds = [...brainToAnon.keys()];
+        const inPlaceholders = brainIds.map(() => '?').join(',');
+        const [orderRowsRaw] = await srPool.query(
           `SELECT DISTINCT order_id, brain_id
-             FROM billing.realized_revenue_ledger
-            WHERE brand_id = $1 AND brain_id = ANY($2::uuid[])`,
-          [brand.id, [...brainToAnon.keys()]],
+             FROM brain_gold.gold_revenue_ledger
+            WHERE brand_id = ? AND brain_id IN (${inPlaceholders})`,
+          [brand.id, ...brainIds],
         );
+        const orderRows = orderRowsRaw as Array<{ order_id: string; brain_id: string }>;
 
         for (const o of orderRows) {
           const rawAnon = brainToAnon.get(o.brain_id);

@@ -43,7 +43,7 @@ PG_PSQL  ?= docker exec -i $(PG_CONTAINER) psql -U $(PG_USER) -d $(PG_DB)
 .PHONY: journey-catalog journey-run journey-build journey-verify journey-seed
 .PHONY: orderline-catalog orderline-ddl orderline-run orderline-build orderline-verify
 .PHONY: checkout-catalog checkout-run checkout-build checkout-verify
-.PHONY: gold-run insights-pipeline
+.PHONY: gold-run insights-pipeline attribution-gold-refresh
 .PHONY: attribution-migrate attribution-seed attribution-build attribution-verify
 
 silver-catalog:
@@ -293,3 +293,20 @@ insights-pipeline: silver-catalog
 	@echo ">> dbt run — all marts from real data (Postgres ledger via JDBC + touchpoint/journey via Iceberg Bronze) ..."
 	cd $(DBT_DIR) && DBT_PROFILES_DIR=$(DBT_PROFILES) "$(DBT)" run --full-refresh --threads 1
 	@echo ">> Marts built. Open /insights (logged into a brand with order + pixel data)."
+
+# ============================================================================
+# attribution-gold-refresh — rebuild ONLY the attribution serving marts from the (reconcile-written)
+# Postgres credit ledger, so the dashboard's Attribution surface (channel-ROAS / paths) serves the
+# CURRENT attribution — including the data-driven (Markov) model — without a full insights-pipeline.
+#
+# Run AFTER the attribution-reconcile job writes the ledger:
+#   node apps/.../jobs/attribution-reconcile.js   (writes all 5 models incl. data_driven to PG)
+#   make attribution-gold-refresh                 (PG ledger → brain_gold.gold_marketing_attribution
+#                                                   + gold_attribution_paths via dbt; ledger_source=pg)
+# Single-threaded (macOS dbt spawn). gold_marketing_attribution is a passthrough of model_id, so every
+# model the ledger holds (incl. data_driven) flows through with no mart change.
+# ============================================================================
+attribution-gold-refresh: silver-catalog
+	@echo ">> dbt run — attribution serving marts (gold_marketing_attribution + gold_attribution_paths) from PG ledger ..."
+	cd $(DBT_DIR) && DBT_PROFILES_DIR=$(DBT_PROFILES) "$(DBT)" run --select gold_marketing_attribution gold_attribution_paths --threads 1
+	@echo ">> Attribution gold marts refreshed. The dashboard Attribution surface now serves data_driven."

@@ -43,7 +43,7 @@ PG_PSQL  ?= docker exec -i $(PG_CONTAINER) psql -U $(PG_USER) -d $(PG_DB)
 .PHONY: journey-catalog journey-run journey-build journey-verify journey-seed
 .PHONY: orderline-catalog orderline-ddl orderline-run orderline-build orderline-verify
 .PHONY: checkout-catalog checkout-run checkout-build checkout-verify
-.PHONY: gold-run insights-pipeline attribution-gold-refresh
+.PHONY: gold-run insights-pipeline attribution-gold-refresh recognition-refresh
 .PHONY: attribution-migrate attribution-seed attribution-build attribution-verify
 
 silver-catalog:
@@ -56,11 +56,24 @@ silver-catalog:
 
 silver-run:
 	@echo ">> dbt run (staging -> intermediate -> mart) ..."
-	cd $(DBT_DIR) && DBT_PROFILES_DIR=$(DBT_PROFILES) "$(DBT)" run --select stg_order_ledger_events+
+	cd $(DBT_DIR) && DBT_PROFILES_DIR=$(DBT_PROFILES) "$(DBT)" run --select stg_order_events_bronze+
 	@echo ">> dbt test (grain, money-bigint, fold-consistency, schema tests) ..."
-	cd $(DBT_DIR) && DBT_PROFILES_DIR=$(DBT_PROFILES) "$(DBT)" test --select silver_order_state stg_order_ledger_events int_order_lifecycle
+	cd $(DBT_DIR) && DBT_PROFILES_DIR=$(DBT_PROFILES) "$(DBT)" test --select silver_order_state silver_order_recognition int_order_lifecycle
 
 silver-build: silver-catalog silver-run
+
+# ============================================================================
+# recognition-refresh — MEDALLION REALIGNMENT (Epic 1/2, decision B). Rebuild the revenue
+# RECOGNITION ledger from Bronze: stg_order_events_bronze (Bronze order.live.v1) →
+# silver_order_recognition (the 6 recognition event types) → gold_revenue_ledger. This is the
+# Bronze-sourced REPLACEMENT for the PG realized_revenue_ledger write path (LedgerWriter +
+# revenue-finalization). Scheduled hourly (cronworkflows: recognition-refresh) so the gold ledger
+# stays fresh as new orders land in Bronze — the precondition for retiring the PG write path.
+# `+gold_revenue_ledger` builds the model and every Bronze/oltp-shim parent.
+recognition-refresh: silver-catalog
+	@echo ">> dbt run — revenue recognition ledger (Bronze -> silver_order_recognition -> gold_revenue_ledger) ..."
+	cd $(DBT_DIR) && DBT_PROFILES_DIR=$(DBT_PROFILES) "$(DBT)" run --select +gold_revenue_ledger --threads 1
+	@echo ">> Recognition ledger refreshed. Billing + attribution + dashboards now serve the Bronze-sourced gold ledger."
 
 # Replay/idempotency proof: snapshot an order-independent content fingerprint (sum of
 # per-row hashes over ALL columns EXCEPT the build-time updated_at), rebuild, snapshot

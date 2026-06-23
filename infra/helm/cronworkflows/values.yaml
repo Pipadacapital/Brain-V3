@@ -100,10 +100,29 @@ jobs:
   - name: recommendation-detectors
     schedule: "0 6 * * *"          # daily 06:00 IST — the Morning Brief
     command: ["node", "dist/jobs/recommendation-detectors.js"]
+  - name: recognition-refresh
+    enabled: false                 # FLIP true per env once CI publishes + pins dbtRunnerImage.digest
+    schedule: "5 * * * *"          # hourly at :05 — ATTRIBUTION CHAIN step 0: rebuild the gold ledger
+    command: ["/opt/brain/dbt/docker-entrypoint.sh"]
+    useDbtRunnerImage: true
+    # MEDALLION REALIGNMENT (Epic 1/2, decision B). The Bronze-sourced REPLACEMENT for the PG
+    # realized_revenue_ledger write path (LedgerWriter + revenue-finalization). dbt rebuilds the
+    # revenue recognition ledger from Bronze: stg_order_events_bronze (order.live.v1) →
+    # silver_order_recognition (the 6 recognition event types incl. finalization after horizon, COD
+    # delivery/RTO) → brain_gold.gold_revenue_ledger, which billing + attribution + dashboards all
+    # read. Mirrors `make recognition-refresh`. Runs BEFORE journey-stitch (:15) + reconcile (:30) so
+    # they see the fresh ledger. Idempotent (table rebuild). Once green per env, revenue-finalization
+    # (the PG writer below) is retired.
+    env:
+      - { name: DBT_SELECT, value: "+gold_revenue_ledger" }
+      - { name: DBT_THREADS, value: "1" }
   - name: revenue-finalization
     schedule: "0 * * * *"          # hourly at :00 — ATTRIBUTION CHAIN step 1 (stream-worker image)
     command: ["node", "dist/jobs/revenue-finalization.js"]
     useStreamWorkerImage: true
+    # DEPRECATED (medallion realignment): writes the PG realized_revenue_ledger, which no app reads
+    # anymore — billing/attribution/dashboards read brain_gold.gold_revenue_ledger (recognition-refresh
+    # above). Retire once recognition-refresh is enabled + verified per env.
   - name: journey-stitch-from-identity
     schedule: "15 * * * *"         # hourly at :15 — ATTRIBUTION CHAIN step 2: derive the stitch map
     command: ["node", "dist/jobs/journey-stitch-from-identity.js"]

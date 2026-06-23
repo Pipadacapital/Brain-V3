@@ -2053,6 +2053,8 @@ export async function main(): Promise<void> {
             install_token: result.installToken,
             src: result.src,
             already_present: result.alreadyPresent,
+            // Checkout (Web Pixel) coverage status — UI shows live vs the one-time step to enable it.
+            web_pixel: result.webPixel,
           },
         });
       } catch (err) {

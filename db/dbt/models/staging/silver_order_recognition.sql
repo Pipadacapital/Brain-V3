@@ -124,12 +124,19 @@ events as (
 
 select
     brand_id,
+    -- Deterministic ledger_event_id (replaces the app-tier SHA-256) so gold_revenue_ledger + any
+    -- as-of reads have a stable, replay-idempotent key per (brand, order, event_type).
+    sha2(concat_ws('\0', brand_id, order_id, event_type, cast(economic_effective_at as string)), 256) as ledger_event_id,
     order_id,
     brain_id,
     event_type,
     cast(amount_minor as bigint) as amount_minor,
     currency_code,
+    cast(0 as bigint)                                   as fee_minor,
     occurred_at,
     economic_effective_at,
+    -- recognition_label: provisional vs finalized (reversals restate finalized truth).
+    case when event_type = 'provisional_recognition' then 'provisional' else 'finalized' end as recognition_label,
+    date_format(economic_effective_at, '%Y-%m')         as billing_posted_period,
     ingested_at
 from events

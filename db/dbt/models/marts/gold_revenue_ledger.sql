@@ -14,10 +14,7 @@
 {{
   config(
     schema               = 'brain_gold',
-    materialized         = 'incremental',
-    incremental_strategy = 'default',
-    on_schema_change     = 'append_new_columns',
-    unique_key           = ['brand_id', 'ledger_event_id'],
+    materialized         = 'table',
     table_type           = 'PRIMARY',
     keys                 = ['brand_id', 'ledger_event_id'],
     distributed_by       = ['brand_id'],
@@ -63,14 +60,11 @@ select
     economic_effective_at,
     recognition_label,
     billing_posted_period,
-    created_at                                         as ingested_at,
+    ingested_at,
     current_timestamp()                                as updated_at
-{% if ledger_source == 'iceberg' %}
-from {{ source('bronze_iceberg', 'revenue_ledger') }}
-{% else %}
-from {{ source('oltp', 'realized_revenue_ledger') }}
-{% endif %}
+-- MEDALLION REALIGNMENT (Epic 1): the revenue ledger is now computed in Silver FROM Bronze
+-- (silver_order_recognition), not the PostgreSQL ledger. Full-rebuild table so recognition events that
+-- become eligible later (e.g. a prepaid finalization once its horizon passes) are always captured —
+-- an incremental ingested-at watermark would miss them (they carry the order's original ingest time).
+from {{ ref('silver_order_recognition') }}
 where ledger_event_id is not null
-{% if is_incremental() %}
-  and created_at > (select coalesce(max(ingested_at), cast('1970-01-01 00:00:00' as datetime)) from {{ this }})
-{% endif %}

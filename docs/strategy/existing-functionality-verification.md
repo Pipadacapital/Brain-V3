@@ -115,7 +115,10 @@ finalization event the job would emit, then let Silver→Gold rebuild determinis
    `attribution-gold-refresh` CronWorkflow (:45, chain step 4, `enabled:false` until CI pins the
    digest). Also unblocks Silver intraday rebuilds.
 
-**Remaining hardening backlog** (operational, not feature gaps):
-- **CI**: build + push the dbt-runner image, pin `dbtRunnerImage.digest`, flip
-  `attribution-gold-refresh.enabled: true` per env (the one manual step left to make step 4 live).
-- Persist `payment_method` on the provisional row (closes the GAP-2 in-flight-COD residual).
+8. ~~Persist `payment_method` (GAP-2 in-flight-COD residual)~~ ✅ **DONE** (commit 6c1f3a2): migration
+   0097 + both writers + finalization now filters on the authoritative `payment_method` (COD never
+   finalizes; prepaid at the 7d horizon). Live: 573 prepaid finalized, 0 COD; in-flight-COD case tested.
+
+**Remaining backlog** — CI only (no code left):
+- Build + push the dbt-runner image, pin `dbtRunnerImage.digest`, flip
+  `attribution-gold-refresh.enabled: true` per env (makes chain step 4 live). Everything else is done.

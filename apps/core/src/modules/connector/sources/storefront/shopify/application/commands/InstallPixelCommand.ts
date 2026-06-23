@@ -162,6 +162,31 @@ export class InstallPixelCommand {
     // 7. Flip installed_at + record the provider handle (idempotent — keeps original install time).
     await this.pixelInstallationRepo.markAutoInstalled(brandId, 'shopify_script_tag', ref);
 
+    // 7.5. ALSO register the Web Pixel — the ScriptTag covers the online store but NOT checkout (a
+    //      separate origin), so checkout_started/completed (the funnel checkout stage + the journey→
+    //      order stitch) need the sandboxed Web Pixels API. BEST-EFFORT + NON-FATAL: it requires the
+    //      `brain-web-pixel` extension deployed (`shopify app deploy`) AND the write_pixels scope
+    //      (reconnect). When either is missing, webPixelCreate fails and we log + keep the working
+    //      ScriptTag install. An "already taken" userError on re-run is success (idempotent).
+    //      See docs/runbooks/enable-shopify-checkout-pixel.md.
+    try {
+      const wp = await client.webPixelCreate({
+        install_token: inst.installToken,
+        brand_id: brandId,
+        ingest_base_url: ingestBase,
+      });
+      log.info(
+        `[InstallPixelCommand] web pixel registered (checkout coverage) brand=${brandId} id=${wp.id} shop=${conn.shopDomain}`,
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const benign = /already|taken/i.test(msg);
+      log[benign ? 'info' : 'warn'](
+        `[InstallPixelCommand] web pixel ${benign ? 'already registered' : 'NOT registered (deploy brain-web-pixel + reconnect for write_pixels) — ScriptTag still active'} ` +
+          `brand=${brandId} shop=${conn.shopDomain}: ${msg}`,
+      );
+    }
+
     // 8. We verifiably placed the pixel → mark the status verified/connected for the UI.
     const status = await this.pixelStatusRepo.findByInstallationId(inst.installationId, brandId);
     if (status) await this.pixelStatusRepo.update(status.markVerified());

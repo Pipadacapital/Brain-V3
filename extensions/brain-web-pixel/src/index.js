@@ -34,7 +34,12 @@ register(({ analytics, settings, init }) => {
     }
   };
 
-  const send = (eventName, properties) => {
+  const send = (eventName, e, properties) => {
+    // Shopify's clientId is the STABLE visitor id, consistent across storefront → checkout → thank-you
+    // (the sandbox has NO DOM/localStorage, so it can't read the ScriptTag's brain_anon_id). Use it as
+    // the journey/anon spine so all Web-Pixel events sessionize together AND checkout_completed
+    // (order_id) stitches to the journey by the same key. Downstream keys journeys on brain_anon_id.
+    const clientId = (e && e.clientId) || (init && init.data && init.data.clientId) || undefined;
     const ev = {
       schema_version: '1',
       event_id: (self.crypto && self.crypto.randomUUID && self.crypto.randomUUID()) || `${Date.now()}-${Math.random()}`,
@@ -42,7 +47,10 @@ register(({ analytics, settings, init }) => {
       correlation_id: (self.crypto && self.crypto.randomUUID && self.crypto.randomUUID()) || `${Date.now()}`,
       event_name: eventName,
       occurred_at: new Date().toISOString(),
-      properties: Object.assign({ install_token: installToken, source: 'shopify_web_pixel' }, properties),
+      properties: Object.assign(
+        { install_token: installToken, source: 'shopify_web_pixel', brain_anon_id: clientId, session_id: clientId },
+        properties,
+      ),
     };
     const cf = consent();
     if (cf) ev.consent_flags = cf;
@@ -58,11 +66,16 @@ register(({ analytics, settings, init }) => {
     } catch (_e) { /* never throw in the sandbox */ }
   };
 
-  // Storefront + checkout coverage (the reason to use Web Pixels over a ScriptTag).
-  analytics.subscribe('page_viewed', (e) => send('page.viewed', { landing_path: e?.context?.document?.location?.pathname }));
-  analytics.subscribe('product_added_to_cart', (e) => send('cart.item_added', { cart: e?.data?.cartLine }));
-  analytics.subscribe('checkout_started', (e) => send('checkout.started', { checkout: summarize(e?.data?.checkout) }));
-  analytics.subscribe('checkout_completed', (e) => send('checkout.completed', { checkout: summarize(e?.data?.checkout) }));
+  // Full storefront + CHECKOUT coverage (the reason to use Web Pixels over a ScriptTag). Every event
+  // carries clientId (brain_anon_id) so the funnel is continuous browse→cart→checkout and the order
+  // (checkout_completed) stitches to the journey.
+  analytics.subscribe('page_viewed', (e) => send('page.viewed', e, { landing_path: e?.context?.document?.location?.pathname }));
+  analytics.subscribe('product_viewed', (e) => send('product.viewed', e, { product_handle: e?.data?.productVariant?.product?.handle }));
+  analytics.subscribe('collection_viewed', (e) => send('collection.viewed', e, { collection_handle: e?.data?.collection?.handle }));
+  analytics.subscribe('search_submitted', (e) => send('search.submitted', e, { query: e?.data?.searchResult?.query }));
+  analytics.subscribe('product_added_to_cart', (e) => send('cart.item_added', e, { cart: e?.data?.cartLine }));
+  analytics.subscribe('checkout_started', (e) => send('checkout.started', e, { checkout: summarize(e?.data?.checkout) }));
+  analytics.subscribe('checkout_completed', (e) => send('checkout.completed', e, { checkout: summarize(e?.data?.checkout) }));
 });
 
 /** Keep payloads small + PII-free (no raw email/phone on the wire — ADR-2). */

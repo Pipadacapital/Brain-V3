@@ -53,5 +53,6 @@ export function applyRecognitionPolicy(
     billingPostedPeriod: toBillingPostedPeriod(event.occurredAt),
     recognitionLabel: toLabel(event.eventType),
     rawEventId: event.rawEventId,
+    paymentMethod: event.paymentMethod ?? null, // persisted for finalization (0097 / GAP-2 residual)
   });
 }

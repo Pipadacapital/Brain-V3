@@ -128,13 +128,14 @@ export class LedgerWriter {
           economic_effective_at,
           billing_posted_period,
           recognition_label,
-          raw_event_id
+          raw_event_id,
+          payment_method
         ) VALUES (
           $1, $2, $3, $4, 'provisional_recognition',
           $5::bigint, $6, NULL,
           0::bigint,
           $7, (timezone('UTC', $7::timestamptz))::date, $7, $8, 'provisional',
-          $9
+          $9, $10
         )
         ON CONFLICT (brand_id, order_id, event_type, occurred_date) WHERE event_type <> 'refund'
         DO NOTHING
@@ -149,6 +150,7 @@ export class LedgerWriter {
           order.occurredAt,          // ISO-8601 → timestamptz cast (D-6)
           billingPostedPeriod,
           order.rawEventId,
+          order.paymentMethod,       // 0097: persist for finalization (GAP-2 in-flight-COD residual)
         ],
       );
 

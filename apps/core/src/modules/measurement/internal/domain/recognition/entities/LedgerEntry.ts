@@ -24,6 +24,9 @@ export interface LedgerEntry {
   readonly billingPostedPeriod: string;      // 'YYYY-MM' from occurred_at (D-2)
   readonly recognitionLabel: RecognitionLabel;
   readonly rawEventId: string | null;        // Bronze provenance
+  // The order's payment method (cod | prepaid), persisted so the finalization job finalizes prepaid
+  // only and never an in-flight COD order (0097 / GAP-2 residual). null when not known on this event.
+  readonly paymentMethod: 'cod' | 'prepaid' | null;
 }
 
 /**

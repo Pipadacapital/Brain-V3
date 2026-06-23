@@ -115,22 +115,18 @@ async function run(): Promise<void> {
 
         // Find qualifying provisionals to finalize. Finalization recognizes PREPAID revenue after
         // the return/cancel window. COD revenue is recognized on a SEPARATE path
-        // (cod_delivery_confirmed on delivery; cod_rto_clawback on RTO) — so a COD order must NEVER
-        // also be finalized, or its revenue double-counts (realized = finalization +
-        // cod_delivery_confirmed + reversals). Every order gets a provisional_recognition (COD and
-        // prepaid alike), so the provisional row alone cannot tell them apart — we discriminate by the
-        // presence of a COD-specific recognition event.
+        // (cod_delivery_confirmed on delivery; cod_rto_clawback on RTO) — a COD order must NEVER be
+        // finalized, or realized double-counts (= finalization + cod_delivery_confirmed + reversals).
         //
-        // Qualify a provisional iff:
-        //   - past the recognition horizon (occurred_at + horizon < NOW). We use the LONGER (COD)
-        //     horizon conservatively so a not-yet-resolved COD order has had its full delivery window
-        //     to emit a cod_* event before we'd consider it; a genuinely prepaid order simply
-        //     recognizes at that horizon.
-        //   - has NO COD recognition/clawback event (cod_delivery_confirmed / cod_rto_clawback) →
-        //     it is a PREPAID order (the double-count + RTO'd-COD-over-recognition fix).
-        //   - has NO reversal of ANY kind (rto_reversal / cancellation / refund / chargeback /
-        //     concession) — previously only rto_reversal+cancellation were excluded, so a refunded or
-        //     charged-back order would still finalize.
+        // payment_method (migration 0097) is the AUTHORITATIVE discriminator — the order's method,
+        // persisted on the provisional row by the writer. Qualify a provisional iff:
+        //   - payment_method <> 'cod'  → COD never finalizes here (closes the in-flight-COD residual:
+        //     a COD order that has emitted no cod_* event yet is now excluded by its method, not by a
+        //     fragile cod-event-presence guess).
+        //   - past the recognition horizon: PREPAID uses prepaid_recognition_horizon_days (faster,
+        //     correct); a legacy NULL-method row falls back to the conservative cod horizon.
+        //   - (backstop for legacy NULL rows) has NO cod_* event — keeps the pre-0097 behavior safe.
+        //   - has NO reversal of any kind (rto_reversal / cancellation / refund / chargeback / concession).
         //   - has NO finalization yet (idempotent; dedup index is the backstop).
         const provisionalsRes = await client.query<ProvisionalRow>(
           `SELECT
@@ -139,12 +135,15 @@ async function run(): Promise<void> {
              l.brain_id,
              l.amount_minor,
              l.currency_code,
-             NULL AS payment_method
+             l.payment_method
            FROM realized_revenue_ledger l
            WHERE l.brand_id = $1
              AND l.event_type = 'provisional_recognition'
-             AND l.occurred_at + ($2 || ' days')::interval < NOW()
-             -- PREPAID only: exclude orders recognized via the COD path (delivery or RTO clawback).
+             -- COD never finalizes here (authoritative; recognized via the COD path).
+             AND l.payment_method IS DISTINCT FROM 'cod'
+             -- Per-method horizon: prepaid → prepaid horizon; NULL (legacy) → conservative cod horizon.
+             AND l.occurred_at + ((CASE WHEN l.payment_method = 'prepaid' THEN $2 ELSE $3 END) || ' days')::interval < NOW()
+             -- Backstop for legacy NULL-method rows: exclude any order recognized via the COD path.
              AND NOT EXISTS (
                SELECT 1 FROM realized_revenue_ledger c
                WHERE c.brand_id = $1
@@ -167,13 +166,8 @@ async function run(): Promise<void> {
              )`,
           [
             brand.id,
-            // Conservative: the COD (larger) horizon. By this point a real COD order has emitted a
-            // cod_* event (delivered or RTO'd) and is excluded above; what remains is prepaid.
-            // KNOWN RESIDUAL: an in-flight COD order that emits NO cod_* event past this horizon
-            // (lost in transit, never marked RTO) is indistinguishable from prepaid and would
-            // finalize. Hardening = persist payment_method on the provisional row (the writer knows
-            // it) and filter payment_method='prepaid' here; tracked as a follow-up.
-            brand.cod_recognition_horizon_days,
+            brand.prepaid_recognition_horizon_days, // $2 — prepaid horizon (authoritative payment_method)
+            brand.cod_recognition_horizon_days,     // $3 — conservative fallback for legacy NULL-method rows
           ],
         );
 

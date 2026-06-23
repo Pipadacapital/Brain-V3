@@ -32,6 +32,7 @@ const ord = {
   cod: `fin-cod-delivered-${randomUUID()}`,
   codRto: `fin-cod-rto-${randomUUID()}`,
   refunded: `fin-cod-refunded-${randomUUID()}`,
+  inflightCod: `fin-cod-inflight-${randomUUID()}`, // 0097: COD, no cod_* event yet, past horizon
 };
 
 /** Insert a ledger row (superuser bypasses RLS). occurredDaysAgo controls the horizon test. */
@@ -41,6 +42,7 @@ async function seedRow(
   amountMinor: number,
   occurredDaysAgo: number,
   label: string,
+  paymentMethod: 'cod' | 'prepaid' | null = null,
 ): Promise<void> {
   const d = new Date();
   d.setDate(d.getDate() - occurredDaysAgo);
@@ -50,10 +52,10 @@ async function seedRow(
     `INSERT INTO billing.realized_revenue_ledger
        (brand_id, ledger_event_id, order_id, event_type, amount_minor, currency_code,
         rounding_adjustment_minor, occurred_at, occurred_date, economic_effective_at,
-        billing_posted_period, recognition_label)
-     VALUES ($1,$2,$3,$4,$5,'INR',0,$6,(timezone('UTC',$6::timestamptz))::date,$6,$7,$8)
+        billing_posted_period, recognition_label, payment_method)
+     VALUES ($1,$2,$3,$4,$5,'INR',0,$6,(timezone('UTC',$6::timestamptz))::date,$6,$7,$8,$9)
      ON CONFLICT DO NOTHING`,
-    [BRAND, randomUUID(), orderId, eventType, amountMinor, iso, period, label],
+    [BRAND, randomUUID(), orderId, eventType, amountMinor, iso, period, label, paymentMethod],
   );
 }
 
@@ -71,14 +73,18 @@ beforeAll(async () => {
                                       prepaid_recognition_horizon_days=7`,
       [BRAND, orgId],
     );
-    // All 30 days old → past the 25d COD horizon.
-    await seedRow(ord.prepaid, 'provisional_recognition', 50000, 30, 'provisional');
-    await seedRow(ord.cod, 'provisional_recognition', 60000, 30, 'provisional');
+    // All 30 days old → past both the 25d COD horizon and the 7d prepaid horizon.
+    await seedRow(ord.prepaid, 'provisional_recognition', 50000, 30, 'provisional', 'prepaid');
+    await seedRow(ord.cod, 'provisional_recognition', 60000, 30, 'provisional', 'cod');
     await seedRow(ord.cod, 'cod_delivery_confirmed', 60000, 5, 'finalized');
-    await seedRow(ord.codRto, 'provisional_recognition', 70000, 30, 'provisional');
+    await seedRow(ord.codRto, 'provisional_recognition', 70000, 30, 'provisional', 'cod');
     await seedRow(ord.codRto, 'cod_rto_clawback', -70000, 5, 'finalized');
-    await seedRow(ord.refunded, 'provisional_recognition', 80000, 30, 'provisional');
+    await seedRow(ord.refunded, 'provisional_recognition', 80000, 30, 'provisional', 'prepaid');
     await seedRow(ord.refunded, 'refund', -80000, 5, 'finalized');
+    // 0097 RESIDUAL FIX: a COD order past the horizon with NO cod_* event yet (lost in transit / RTO
+    // not recorded). Pre-0097 this was indistinguishable from prepaid and WOULD finalize; now it is
+    // excluded by payment_method='cod'.
+    await seedRow(ord.inflightCod, 'provisional_recognition', 90000, 30, 'provisional', 'cod');
     available = true;
   } catch {
     available = false;
@@ -114,6 +120,9 @@ describe('revenue-finalization — COD exclusion + reversal guard (live PG)', ()
     expect(await isFinalized(ord.cod), 'cod_delivery_confirmed order must NOT finalize (double-count)').toBe(false);
     expect(await isFinalized(ord.codRto), 'cod_rto_clawback order must NOT finalize').toBe(false);
     expect(await isFinalized(ord.refunded), 'refunded order must NOT finalize').toBe(false);
+    // 0097: the in-flight COD order (payment_method='cod', no cod_* event yet) must NOT finalize —
+    // excluded by method. This is the residual the persisted payment_method closes.
+    expect(await isFinalized(ord.inflightCod), 'in-flight COD (no cod_* event) must NOT finalize (0097)').toBe(false);
   });
 
   it('is idempotent — a second run finalizes nothing new for the test brand', async () => {

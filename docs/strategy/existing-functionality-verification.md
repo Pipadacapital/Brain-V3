@@ -105,6 +105,12 @@ finalization event the job would emit, then let Silver→Gold rebuild determinis
    rebuilds the attribution gold marts from the reconcile-written ledger; `computeChannelRoas`
    returns data_driven with model-specific ROAS (paid_google 1.6155 vs 1.8659 position-based).
 
-**Remaining hardening backlog** (operational, not feature gaps): schedule the three jobs as Argo
-crons (finalization → stitch-from-identity → attribution-reconcile → attribution-gold-refresh), and
-persist `payment_method` on the provisional row (closes the GAP-2 in-flight-COD residual).
+6. ~~Schedule the chain as Argo crons~~ ✅ **DONE** (commit 8cea05a): the three node jobs run hourly
+   in order — revenue-finalization (:00) → journey-stitch-from-identity (:15, NEW cron) →
+   attribution-reconcile (:30). Helm renders clean. Gold rebuild (step 4) intentionally deferred —
+   needs a dbt-runner image (documented follow-up); marts refresh nightly meanwhile.
+
+**Remaining hardening backlog** (operational, not feature gaps):
+- A **dbt-runner image** so `attribution-gold-refresh` (and Silver intraday rebuilds) can run as an
+  Argo cron — chain step 4. Until then marts refresh on the nightly dbt build, one cycle behind.
+- Persist `payment_method` on the provisional row (closes the GAP-2 in-flight-COD residual).

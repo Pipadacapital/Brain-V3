@@ -9,8 +9,8 @@
  * Serializes amount_minor (BIGINT) → string for JSON safety (D-1).
  */
 
-import type { EngineDeps } from '@brain/metric-engine';
-import { withBrandTxn } from '@brain/metric-engine';
+import type { SilverPool } from '@brain/metric-engine';
+import { withSilverBrand, BRAND_PREDICATE } from '@brain/metric-engine';
 
 /**
  * The full set of event_type values the realized-revenue ledger emits. The SELECT
@@ -53,38 +53,38 @@ export interface RecentActivityResult {
 export async function getRecentActivity(
   brandId: string,
   limit: number,
-  deps: EngineDeps,
+  deps: { srPool: SilverPool },
 ): Promise<RecentActivityResult> {
   // Cap limit to prevent excessive reads
   const safeLimit = Math.min(Math.max(1, limit), 50);
 
-  const rows = await withBrandTxn(deps.pool, brandId, async (client) => {
-    const result = await client.query<{
+  // MEDALLION REALIGNMENT (Epic 1): the recent-activity feed reads brain_gold.gold_revenue_ledger via
+  // withSilverBrand, not the PG ledger. Bounded row-read (D-2 allowed), brand-scoped at the seam.
+  const rows = await withSilverBrand(deps.srPool, brandId, async (scope) => {
+    return scope.runScoped<{
       order_id: string;
       event_type: string;
-      amount_minor: string;
+      amount_minor: string | number;
       currency_code: string;
-      occurred_at: Date;
+      occurred_at: string;
       recognition_label: string | null;
     }>(
-      `SELECT order_id, event_type, amount_minor::text, currency_code,
-              occurred_at, recognition_label
-       FROM realized_revenue_ledger
-       WHERE brand_id = $1
+      `SELECT order_id, event_type, amount_minor, currency_code, occurred_at, recognition_label
+       FROM brain_gold.gold_revenue_ledger
+       WHERE ${BRAND_PREDICATE}
        ORDER BY occurred_at DESC
-       LIMIT $2`,
-      [brandId, safeLimit],
+       LIMIT ${safeLimit}`,
+      [],
     );
-    return result.rows;
   });
 
   return {
     rows: rows.map((row) => ({
       order_id: row.order_id,
       event_type: row.event_type as RecentActivityRow['event_type'],
-      amount_minor: row.amount_minor,
+      amount_minor: String(row.amount_minor ?? '0').split('.')[0] || '0',
       currency_code: row.currency_code,
-      occurred_at: row.occurred_at.toISOString(),
+      occurred_at: new Date(row.occurred_at).toISOString(),
       recognition_label: row.recognition_label,
     })),
   };

@@ -2796,14 +2796,15 @@ export function registerBffRoutes(
       if (!auth.brandId) {
         return reply.send({ request_id: requestId, data: { rows: [] } });
       }
-      if (!rawPool) {
-        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' } });
+      if (!srPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (StarRocks) not available' } });
       }
 
       const query = request.query as { limit?: string };
       const limit = query.limit ? Math.min(parseInt(query.limit, 10), 50) : 20;
 
-      const result = await getRecentActivity(auth.brandId, limit, { pool: rawPool });
+      // Epic 1: recent activity now reads the lakehouse (gold_revenue_ledger), not the PG ledger.
+      const result = await getRecentActivity(auth.brandId, limit, { srPool });
 
       return reply.send({ request_id: requestId, data: result });
     },

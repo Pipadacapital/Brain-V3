@@ -2534,8 +2534,8 @@ export function registerBffRoutes(
       if (!auth.brandId) {
         return reply.send({ request_id: requestId, data: { state: 'no_data', from: null, to: null, grain: 'day', buckets: [] } });
       }
-      if (!rawPool) {
-        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' } });
+      if (!srPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (StarRocks) not available' } });
       }
 
       const query = request.query as { from?: string; to?: string; grain?: string };
@@ -2546,10 +2546,11 @@ export function registerBffRoutes(
       const fromStr = query.from ?? defaultFrom;
       const grain: TimeGrain = (query.grain === 'week' ? 'week' : 'day') as TimeGrain;
 
+      // Epic 1: revenue timeseries now reads the lakehouse (gold_revenue_ledger), not the PG ledger.
       const result = await getRevenueTimeseries(
         auth.brandId,
         { fromDate: new Date(`${fromStr}T00:00:00Z`), toDate: new Date(`${toStr}T00:00:00Z`), grain },
-        { pool: rawPool },
+        { srPool },
       );
 
       return reply.send({ request_id: requestId, data: result });

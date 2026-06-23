@@ -23,6 +23,7 @@
 import type { Pool, QueryResultRow } from 'pg';
 import {
   ATTRIBUTION_MODEL_IDS,
+  computeMarkovChannelWeights,
   withSilverBrand,
   BRAND_PREDICATE,
   type AttributionModelId,
@@ -132,6 +133,107 @@ export async function reconcileAttribution(
     total.unattributed += r.unattributed;
   }
   return total;
+}
+
+/**
+ * reconcileDataDrivenAttribution — the GLOBAL data-driven (Markov) pass for a brand.
+ *
+ * Unlike the per-journey models (reconcileAttribution), the data-driven weights are trained ONCE from
+ * the whole journey corpus, then applied per recognized order:
+ *   1. read the corpus (silver_touchpoint) → computeMarkovChannelWeights → per-channel weights.
+ *   2. CREDIT: each recognized order (finalization ∪ cod_delivery_confirmed) not yet credited under
+ *      model_id='data_driven', with a stitched journey → writeDataDrivenCredit (exact closed-sum).
+ *   3. CLAWBACK: reversals on data_driven-credited orders → writeClawback (SAVED weights).
+ * Idempotent (deterministic credit_id → ON CONFLICT). No journey / no channels → unattributed (honest).
+ */
+export async function reconcileDataDrivenAttribution(
+  brandId: string,
+  correlationId: string,
+  deps: ReconcileDeps,
+): Promise<ReconcileResult> {
+  const writer = new AttributionCreditWriter(deps.pool, deps.srPool);
+  const model: AttributionModelId = 'data_driven';
+  let credited = 0;
+  let clawedBack = 0;
+  let unattributed = 0;
+
+  // 1. Train the global channel weights from the corpus.
+  const corpus = await writer.readCorpusJourneys(brandId);
+  const { channelWeightUnits } = computeMarkovChannelWeights(corpus);
+  if (channelWeightUnits.size === 0) {
+    return { credited: 0, clawed_back: 0, unattributed: 0 }; // no channels → nothing to attribute
+  }
+
+  // 2. CREDIT pass — recognized orders not yet credited under data_driven.
+  const finalized = await readScoped<FinalizedOrderRow>(
+    deps.pool,
+    brandId,
+    correlationId,
+    `SELECT f.order_id, f.brain_id, f.amount_minor::text AS amount_minor, f.currency_code, f.occurred_at
+       FROM realized_revenue_ledger f
+      WHERE f.brand_id = $1 AND f.event_type = ANY($3::text[])
+        AND NOT EXISTS (
+          SELECT 1 FROM attribution_credit_ledger a
+           WHERE a.brand_id = $1 AND a.order_id = f.order_id
+             AND a.row_kind = 'credit' AND a.model_id = $2
+        )`,
+    [brandId, model, RECOGNITION_EVENT_TYPES],
+  );
+
+  for (const order of finalized) {
+    if (!order.brain_id) {
+      unattributed += 1;
+      continue;
+    }
+    const brainAnonId = await resolveBrainAnonId(deps.srPool, brandId, order.brain_id);
+    if (!brainAnonId) {
+      unattributed += 1;
+      continue;
+    }
+    const res = await writer.writeDataDrivenCredit(
+      {
+        brandId,
+        orderId: order.order_id,
+        brainAnonId,
+        realizedRevenueMinor: BigInt(order.amount_minor),
+        currencyCode: order.currency_code,
+        occurredAt: order.occurred_at,
+      },
+      channelWeightUnits,
+    );
+    if (res.inserted > 0) credited += 1;
+    else unattributed += 1;
+  }
+
+  // 3. CLAWBACK pass — reversals on data_driven-credited orders (SAVED weights).
+  const reversals = await readScoped<ReversalRow>(
+    deps.pool,
+    brandId,
+    correlationId,
+    `SELECT r.order_id, r.event_type, r.ledger_event_id, r.amount_minor::text AS amount_minor, r.occurred_at
+       FROM realized_revenue_ledger r
+      WHERE r.brand_id = $1 AND r.event_type = ANY($2::text[])
+        AND EXISTS (
+          SELECT 1 FROM attribution_credit_ledger a
+           WHERE a.brand_id = $1 AND a.order_id = r.order_id
+             AND a.row_kind = 'credit' AND a.model_id = $3
+        )`,
+    [brandId, REVERSAL_EVENT_TYPES, model],
+  );
+  for (const rev of reversals) {
+    const res = await writer.writeClawback({
+      brandId,
+      orderId: rev.order_id,
+      model,
+      reversalReason: rev.event_type as ReversalReason,
+      reversalLedgerEventId: rev.ledger_event_id,
+      reversalBasisMinor: BigInt(rev.amount_minor),
+      occurredAt: rev.occurred_at,
+    });
+    if (res.inserted > 0) clawedBack += 1;
+  }
+
+  return { credited, clawed_back: clawedBack, unattributed };
 }
 
 /** Reconcile a single attribution model for a brand (the credit + clawback passes). */

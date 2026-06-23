@@ -34,14 +34,40 @@
  * @see METRICS.md row `attribution_credit`
  */
 
-/** The closed model set. position_based is the brand default. */
-export type AttributionModelId = 'first_touch' | 'last_touch' | 'linear' | 'position_based';
+/**
+ * The model set. position_based is the brand default.
+ *
+ * 'data_driven' is the Markov removal-effect model (attribution-datadriven.ts). UNLIKE the other
+ * four it is GLOBAL — per-channel weights are learned from the whole journey corpus, not a
+ * closed-form of a single journey's touch count — so it is NOT in PER_JOURNEY_MODEL_IDS and is
+ * written by a separate corpus-trained driver, never the per-order writeCredit loop. It is still a
+ * first-class AttributionModelId for the ledger, serving (channel-roas) and the UI.
+ */
+export type AttributionModelId =
+  | 'first_touch'
+  | 'last_touch'
+  | 'linear'
+  | 'position_based'
+  | 'data_driven';
 
-export const ATTRIBUTION_MODEL_IDS: readonly AttributionModelId[] = [
+/** The PER-JOURNEY closed-form models — the set reconcileAttribution's per-order loop computes. */
+export const PER_JOURNEY_MODEL_IDS: readonly AttributionModelId[] = [
   'first_touch',
   'last_touch',
   'linear',
   'position_based',
+] as const;
+
+/**
+ * Back-compat alias — the per-order reconcile loop iterates this. Kept as the per-journey set
+ * (data_driven is global; adding it here would crash computeWeightUnits in the per-order path).
+ */
+export const ATTRIBUTION_MODEL_IDS: readonly AttributionModelId[] = PER_JOURNEY_MODEL_IDS;
+
+/** Every model the system can serve/select (per-journey + the global data_driven). */
+export const ALL_ATTRIBUTION_MODEL_IDS: readonly AttributionModelId[] = [
+  ...PER_JOURNEY_MODEL_IDS,
+  'data_driven',
 ] as const;
 
 export const DEFAULT_ATTRIBUTION_MODEL: AttributionModelId = 'position_based';
@@ -119,6 +145,14 @@ export function computeWeightUnits(model: AttributionModelId, touchCount: number
         });
       }
       break;
+    case 'data_driven':
+      // GLOBAL model — per-touch weights come from the corpus-trained channel weights, not a
+      // per-journey closed form. The data-driven driver supplies explicit per-touch weight units
+      // (computeTouchCreditsExplicit); this per-journey-count path is never valid for it.
+      throw new Error(
+        '[attribution-models] data_driven is a GLOBAL model — use the data-driven driver ' +
+          '(attribution-datadriven.ts) + computeTouchCreditsExplicit; it has no per-journey closed-form weight',
+      );
     default: {
       const _exhaustive: never = model;
       throw new Error(`[attribution-models] unknown model: ${String(_exhaustive)}`);
@@ -126,6 +160,79 @@ export function computeWeightUnits(model: AttributionModelId, touchCount: number
   }
 
   return distributeRemainder(base, WEIGHT_SCALE);
+}
+
+/**
+ * normalizeWeightUnits — scale arbitrary NON-NEGATIVE raw weights to sum EXACTLY to WEIGHT_SCALE.
+ *
+ * raw_i ≥ 0; out_i = floor(raw_i × WEIGHT_SCALE / Σraw), residual handed one-each to the largest
+ * fractional parts (deterministic tiebreak: index ascending). If Σraw == 0 (no signal) → UNIFORM
+ * (WEIGHT_SCALE/n, remainder distributed). Σ out == WEIGHT_SCALE EXACTLY. Pure integer math.
+ * Used by the data-driven model to turn global per-channel weights into per-touch weight units.
+ */
+export function normalizeWeightUnits(raw: readonly bigint[]): bigint[] {
+  const n = raw.length;
+  if (n === 0) return [];
+  for (const r of raw) if (r < 0n) throw new Error(`[attribution-models] negative raw weight: ${r}`);
+
+  const sum = raw.reduce((a, b) => a + b, 0n);
+  if (sum === 0n) {
+    // No signal → uniform across the touches.
+    const base = Array.from({ length: n }, () => WEIGHT_SCALE / BigInt(n));
+    return distributeRemainder(base, WEIGHT_SCALE);
+  }
+
+  const out: bigint[] = new Array(n).fill(0n);
+  const remainder: bigint[] = new Array(n).fill(0n);
+  let allocated = 0n;
+  for (let i = 0; i < n; i++) {
+    const numer = (raw[i] as bigint) * WEIGHT_SCALE;
+    out[i] = numer / sum; // floor (non-negative)
+    remainder[i] = numer % sum;
+    allocated += out[i]!;
+  }
+  let leftover = WEIGHT_SCALE - allocated; // ≥ 0, < n
+  const order = Array.from({ length: n }, (_, i) => i).sort((a, b) => {
+    const ra = remainder[a] as bigint;
+    const rb = remainder[b] as bigint;
+    if (ra > rb) return -1;
+    if (ra < rb) return 1;
+    return a - b;
+  });
+  let cursor = 0;
+  while (leftover > 0n && cursor < order.length) {
+    out[order[cursor] as number] = (out[order[cursor] as number] as bigint) + 1n;
+    leftover -= 1n;
+    cursor += 1;
+  }
+  return out;
+}
+
+/**
+ * computeTouchCreditsExplicit — per-touch credit from EXPLICIT weight units (Σ must == WEIGHT_SCALE).
+ *
+ * The data-driven analogue of computeTouchCredits: the caller supplies the per-touch weight units
+ * (derived from the corpus-trained channel weights), this apportions the revenue EXACTLY (closed-sum)
+ * and renders the weight_fraction strings. Σ credited == realizedRevenueMinor EXACTLY.
+ */
+export function computeTouchCreditsExplicit(
+  weightUnits: readonly bigint[],
+  touches: readonly AttributionTouch[],
+  realizedRevenueMinor: bigint,
+): TouchCredit[] {
+  if (touches.length === 0) return [];
+  if (weightUnits.length !== touches.length) {
+    throw new Error(
+      `[attribution-models] weightUnits/touches length mismatch: ${weightUnits.length} vs ${touches.length}`,
+    );
+  }
+  const credited = apportionMinor([...weightUnits], realizedRevenueMinor);
+  return touches.map((t, i) => ({
+    touchSeq: t.touchSeq,
+    weightUnits: weightUnits[i] as bigint,
+    weightFraction: weightFractionString(weightUnits[i] as bigint),
+    creditedRevenueMinor: credited[i] as bigint,
+  }));
 }
 
 /**

@@ -24,6 +24,7 @@
 import { Pool, type PoolClient } from 'pg';
 import {
   computeAttributionCredit,
+  computeAttributionCreditDataDriven,
   computeAttributionClawback,
   clampReversalBasis,
   type AttributionCreditRow,
@@ -31,6 +32,7 @@ import {
   type SavedCreditRow,
   type ReversalReason,
   type AttributionModelId,
+  type DataDrivenJourney,
   type SilverPool,
 } from '@brain/metric-engine';
 import { withSilverBrand, BRAND_PREDICATE } from '@brain/metric-engine';
@@ -162,6 +164,72 @@ export class AttributionCreditWriter {
     });
 
     return this.appendRows(params.brandId, rows);
+  }
+
+  /**
+   * writeDataDrivenCredit — append the GLOBAL data-driven (Markov) credit rows for one order's
+   * journey, given the corpus-trained per-channel weights. Mirrors writeCredit but uses
+   * computeAttributionCreditDataDriven (per-touch weights from the channel weights). Idempotent.
+   */
+  async writeDataDrivenCredit(
+    params: Omit<WriteCreditParams, 'model'>,
+    channelWeightUnits: Map<string, bigint>,
+  ): Promise<WriteResult> {
+    const touches = await this.readTouches(params.brandId, params.brainAnonId);
+    if (touches.length === 0) return { inserted: 0, suppressed: 0 };
+    const stitched = touches.some((t) => t.stitched_brain_id !== null);
+    const creditTouches: CreditTouch[] = touches.map((t) => ({
+      touchSeq: Number(t.touch_seq),
+      channel: t.channel,
+      campaignId: t.utm_campaign,
+      utmMedium: t.utm_medium,
+      fbclid: t.fbclid,
+      gclid: t.gclid,
+      ttclid: t.ttclid,
+    }));
+    const occurredAt = params.occurredAt;
+    const economicEffectiveAt = params.economicEffectiveAt ?? occurredAt;
+    const rows = computeAttributionCreditDataDriven(
+      {
+        brandId: params.brandId,
+        orderId: params.orderId,
+        brainAnonId: params.brainAnonId,
+        model: 'data_driven',
+        stitched,
+        realizedRevenueMinor: params.realizedRevenueMinor,
+        currencyCode: params.currencyCode,
+        touches: creditTouches,
+        occurredAt,
+        economicEffectiveAt,
+        billingPostedPeriod: toBillingPostedPeriod(occurredAt),
+      },
+      channelWeightUnits,
+    );
+    return this.appendRows(params.brandId, rows);
+  }
+
+  /**
+   * readCorpusJourneys — the WHOLE brand journey corpus for training the Markov model: every anon's
+   * ordered channel sequence + whether it converted (stitched to an order). Brand-scoped (I-ST01).
+   */
+  async readCorpusJourneys(brandId: string): Promise<DataDrivenJourney[]> {
+    const rows = await withSilverBrand(this.srPool, brandId, async (scope) =>
+      scope.runScoped<{ brain_anon_id: string; channel: string; touch_seq: string | number; stitched_order_id: string | null }>(
+        `SELECT brain_anon_id, channel, touch_seq, stitched_order_id
+           FROM brain_silver.silver_touchpoint
+          WHERE ${BRAND_PREDICATE}
+          ORDER BY brain_anon_id ASC, touch_seq ASC`,
+        [],
+      ),
+    );
+    const byAnon = new Map<string, { channels: string[]; converted: boolean }>();
+    for (const r of rows) {
+      const j = byAnon.get(r.brain_anon_id) ?? { channels: [], converted: false };
+      if (r.channel) j.channels.push(r.channel);
+      if (r.stitched_order_id !== null) j.converted = true;
+      byAnon.set(r.brain_anon_id, j);
+    }
+    return [...byAnon.values()];
   }
 
   /** Read the journey touches for a brain_anon_id via the brand-scoped Silver seam (I-ST01). */

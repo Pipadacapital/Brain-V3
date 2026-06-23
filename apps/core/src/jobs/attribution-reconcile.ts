@@ -16,7 +16,7 @@ import mysql from 'mysql2/promise';
 import type { SilverPool } from '@brain/metric-engine';
 import { createLogger } from '@brain/observability';
 import { requireEnvInProd } from '@brain/config';
-import { reconcileAttribution } from '../modules/attribution/index.js';
+import { reconcileAttribution, reconcileDataDrivenAttribution } from '../modules/attribution/index.js';
 
 const log = createLogger({ serviceName: 'job:attribution-reconcile' });
 
@@ -68,6 +68,11 @@ export async function runAttributionReconcile(deps?: {
         result.credited += r.credited;
         result.clawed_back += r.clawed_back;
         result.unattributed += r.unattributed;
+        // The GLOBAL data-driven (Markov) model — trained from the corpus, applied per recognized order.
+        const dd = await reconcileDataDrivenAttribution(brand.id, `attr-dd-${randomUUID()}`, { pool, srPool });
+        result.credited += dd.credited;
+        result.clawed_back += dd.clawed_back;
+        result.unattributed += dd.unattributed;
       } catch (err) {
         result.errors += 1;
         log.error('reconcile failed for brand', { brand_id: brand.id, err });

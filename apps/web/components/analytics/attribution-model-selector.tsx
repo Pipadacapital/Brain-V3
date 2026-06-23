@@ -1,13 +1,15 @@
 'use client';
 
 /**
- * AttributionModelSelector — the 4-model selector for the attribution surface.
+ * AttributionModelSelector — the model selector for the attribution surface.
  *
- * The 4 deterministic models (position_based is the brand default):
+ * Four deterministic models (position_based is the brand default) + the data-driven model:
  *   - first_touch    — 100% to the first touch.
  *   - last_touch     — 100% to the last touch.
  *   - linear         — even 1/N across all touches.
  *   - position_based — 40% first / 40% last / 20% across the middle (the default).
+ *   - data_driven    — Markov removal-effect: credit by each channel's MODELED contribution to
+ *                      conversion (learned from the whole journey corpus), not its position.
  *
  * The model is LOCAL UI state lifted into the parent (it drives the BFF query key, so a
  * change re-fetches every attribution read — not Redux, not URL: it's an ephemeral view
@@ -30,6 +32,7 @@ interface ModelOption {
 
 const MODELS: ModelOption[] = [
   { value: 'position_based', label: 'Position-based', rule: '40% first · 40% last · 20% middle (default)' },
+  { value: 'data_driven', label: 'Data-driven', rule: 'Markov: credit by each channel’s modeled contribution to conversion' },
   { value: 'linear', label: 'Linear', rule: 'Even credit (1/N) across every touch' },
   { value: 'first_touch', label: 'First-touch', rule: '100% credit to the first touch' },
   { value: 'last_touch', label: 'Last-touch', rule: '100% credit to the last touch' },

@@ -58,7 +58,7 @@ export type {
  * what makes the dead writer live; the analytics attribution reads flip not_computed→has_data once
  * a brand has been reconciled.
  */
-export { reconcileAttribution } from './internal/reconcile-attribution.js';
+export { reconcileAttribution, reconcileDataDrivenAttribution } from './internal/reconcile-attribution.js';
 export type { ReconcileResult, ReconcileDeps } from './internal/reconcile-attribution.js';
 
 /**

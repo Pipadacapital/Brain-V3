@@ -144,12 +144,23 @@ export {
   computeWeightUnits,
   apportionMinor,
   computeTouchCredits,
+  computeTouchCreditsExplicit,
+  normalizeWeightUnits,
   weightFractionString,
   WEIGHT_SCALE,
   ATTRIBUTION_MODEL_IDS,
+  PER_JOURNEY_MODEL_IDS,
+  ALL_ATTRIBUTION_MODEL_IDS,
   DEFAULT_ATTRIBUTION_MODEL,
 } from './attribution-models.js';
 export type { AttributionModelId, TouchCredit, AttributionTouch } from './attribution-models.js';
+
+// Data-driven (Markov removal-effect) attribution — the GLOBAL, corpus-trained model.
+export {
+  computeMarkovChannelWeights,
+  dataDrivenTouchWeightUnits,
+} from './attribution-datadriven.js';
+export type { DataDrivenJourney, MarkovResult } from './attribution-datadriven.js';
 
 export {
   gradeJourneyConfidence,
@@ -165,6 +176,7 @@ export type {
 
 export {
   computeAttributionCredit,
+  computeAttributionCreditDataDriven,
   computeCreditId,
   ATTRIBUTION_MODEL_VERSION,
 } from './attribution-credit.js';

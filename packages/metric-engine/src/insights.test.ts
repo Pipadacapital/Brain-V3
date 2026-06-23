@@ -71,6 +71,26 @@ describe('computeInsights — deterministic Insight + Opportunity Engine', () =>
     expect(res.insights).toHaveLength(0);
   });
 
+  it('handles net-negative realized (severe returns): RTO rate reported, $-leak suppressed (no nonsense)', async () => {
+    // Real-data edge case (brand "Bodd Active"): realized_value_minor < 0 → AOV is meaningless, so the
+    // RTO RATE leads but impact_minor is null; and a non-positive prior base yields no % (direction only).
+    const pool = fakePool({
+      revenue: [{ currency_code: 'INR', cur_minor: '5000', prior_minor: '0' }],
+      exec: [{ currency_code: 'INR', realized_value_minor: '-17107056', total_orders: '917', terminal_orders: '274', rto_orders: '103' }],
+    });
+    const res = await computeInsights(BRAND, { srPool: pool });
+
+    const rto = res.insights.find((i) => i.detector === 'rto_leakage')!;
+    expect(rto.evidence.rto_rate_pct).toBe('37.59'); // 103/274
+    expect(rto.impactMinor).toBe(null); // no fabricated negative ₹-leak
+    expect(rto.severity).toBe('high');
+
+    const rev = res.insights.find((i) => i.detector === 'revenue_trend')!;
+    expect(rev.deltaPct).toBe(null); // prior base ≤ 0 → no % quoted
+    expect(rev.direction).toBe('up'); // 5000 > 0 swing
+    expect(rev.title).not.toContain('%');
+  });
+
   it('flags rising CAC month-over-month from exact integer operands', async () => {
     const pool = fakePool({
       cac: [

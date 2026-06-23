@@ -77,9 +77,13 @@ function ratioStr(numerator: bigint, denominator: bigint, fractionalDigits = 2):
   const fracPart = abs(scaled % scale);
   return `${intPart.toString()}.${fracPart.toString().padStart(fractionalDigits, '0')}`;
 }
-/** Percent change ((cur-prior)/prior)*100 as exact string; null when prior=0 (honest, no ∞). */
+/**
+ * Percent change ((cur-prior)/prior)*100 as exact string; null when the prior base is non-positive
+ * (a % vs a zero/negative base is meaningless — report the absolute swing + direction instead, no ∞
+ * and no sign-flip artefacts from dividing by a negative net-realized base).
+ */
 function pctChange(cur: bigint, prior: bigint): string | null {
-  if (prior === 0n) return null;
+  if (prior <= 0n) return null;
   return ratioStr((cur - prior) * 100n, prior);
 }
 function severityFromAbsPct(pctAbs: number): InsightSeverity {
@@ -181,15 +185,19 @@ export async function computeInsights(
         isPrimary && topDriver
           ? ` Largest driver: '${topDriver.eventType}' moved ${topDriver.delta < 0n ? '-' : '+'}${abs(topDriver.delta).toString()} minor.`
           : '';
+      // When the prior base is non-positive we can't quote a %, so lead with the direction only;
+      // severity falls back to a medium band (a real swing the operator should look at).
+      const pctLabel = pct !== null ? ` ${pct}%` : '';
       insights.push({
         id: `revenue_trend:${r.currency_code}`,
         detector: 'revenue_trend',
         kind: swing < 0n ? 'risk' : 'trend',
-        severity: swing < 0n ? severityFromAbsPct(pctNum) : pctNum >= 15 ? 'medium' : 'info',
+        severity:
+          swing < 0n ? (pct !== null ? severityFromAbsPct(pctNum) : 'medium') : pctNum >= 15 ? 'medium' : 'info',
         title:
           swing < 0n
-            ? `Revenue down ${pct ?? '?'}% (last 30d vs prior 30d)`
-            : `Revenue up ${pct ?? '?'}% (last 30d vs prior 30d)`,
+            ? `Revenue down${pctLabel} (last 30d vs prior 30d)`
+            : `Revenue up${pctLabel} (last 30d vs prior 30d)`,
         why:
           `Realized revenue moved from ${prior.toString()} to ${cur.toString()} minor (${r.currency_code}) ` +
           `between the prior and current 30-day windows.${driverNote}`,
@@ -206,7 +214,7 @@ export async function computeInsights(
           prior_minor: prior.toString(),
           top_driver_event: isPrimary && topDriver ? topDriver.eventType : null,
         },
-        confidence: prior === 0n ? 'low' : 'high',
+        confidence: prior <= 0n ? 'low' : 'high',
       });
     }
 
@@ -235,8 +243,10 @@ export async function computeInsights(
       const rto = bi(r.rto_orders);
       if (terminal === 0n || rto === 0n) continue;
       const rtoRatePct = ratioStr(rto * 100n, terminal);
-      const aovMinor = orders > 0n ? realized / orders : 0n;
-      const leakedMinor = aovMinor * rto; // RTO orders × AOV ≈ GMV lost to returns
+      // AOV only makes sense on a positive realized base; when net realized is ≤0 (severe returns),
+      // the RTO RATE is still the headline signal but we don't quote a (nonsensical negative) ₹-leak.
+      const aovMinor = orders > 0n && realized > 0n ? realized / orders : 0n;
+      const leakedMinor = aovMinor > 0n ? aovMinor * rto : null; // RTO orders × AOV ≈ GMV lost
       const rateNum = Number(rtoRatePct);
       insights.push({
         id: `rto_leakage:${r.currency_code}`,
@@ -245,12 +255,15 @@ export async function computeInsights(
         severity: rateNum >= 10 ? 'high' : rateNum >= 5 ? 'medium' : 'low',
         title: `COD/RTO leakage at ${rtoRatePct}% of terminal orders`,
         why:
-          `${rto.toString()} of ${terminal.toString()} terminal orders were returned (RTO). At an AOV of ` +
-          `${aovMinor.toString()} minor (${r.currency_code}), that is ~${leakedMinor.toString()} minor of GMV lost.`,
+          leakedMinor !== null
+            ? `${rto.toString()} of ${terminal.toString()} terminal orders were returned (RTO). At an AOV of ` +
+              `${aovMinor.toString()} minor (${r.currency_code}), that is ~${leakedMinor.toString()} minor of GMV lost.`
+            : `${rto.toString()} of ${terminal.toString()} terminal orders were returned (RTO) — a ${rtoRatePct}% ` +
+              `return rate. Net realized revenue is already ≤0 here, so returns are eroding the whole P&L.`,
         recommendedAction:
           'Gate high-RTO-risk COD checkouts (address confidence / partial prepaid) and review the worst pincodes/couriers.',
         currencyCode: r.currency_code,
-        impactMinor: leakedMinor.toString(),
+        impactMinor: leakedMinor !== null ? leakedMinor.toString() : null,
         direction: null,
         deltaPct: null,
         evidence: {

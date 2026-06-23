@@ -43,7 +43,7 @@ PG_PSQL  ?= docker exec -i $(PG_CONTAINER) psql -U $(PG_USER) -d $(PG_DB)
 .PHONY: journey-catalog journey-run journey-build journey-verify journey-seed
 .PHONY: orderline-catalog orderline-ddl orderline-run orderline-build orderline-verify
 .PHONY: checkout-catalog checkout-run checkout-build checkout-verify
-.PHONY: gold-run
+.PHONY: gold-run insights-pipeline
 .PHONY: attribution-migrate attribution-seed attribution-build attribution-verify
 
 silver-catalog:
@@ -277,3 +277,22 @@ gold-run:
 	cd $(DBT_DIR) && DBT_PROFILES_DIR=$(DBT_PROFILES) "$(DBT)" run --select tag:gold
 	@echo ">> dbt test (gold schema/grain tests) ..."
 	cd $(DBT_DIR) && DBT_PROFILES_DIR=$(DBT_PROFILES) "$(DBT)" test --select tag:gold
+
+# ============================================================================
+# insights-pipeline — the buildable lakehouse path that powers the AI Copilot /insights surface.
+# ONE command for a fresh env: wire the brain_oltp_pg JDBC catalog + ledger read-shim (silver-catalog),
+# then build the Gold marts the Insight Engine reads (revenue / executive / customer / cac lineage)
+# from REAL Postgres data via dbt. ledger_source defaults to `pg` (dbt_project.yml).
+#
+# EXCLUDES the Iceberg-gated marts (silver_touchpoint → gold_attribution_paths, silver_sessions):
+# their PG `bronze_events` source was dropped in the DB-audit; the touchpoint/journey lineage moves to
+# Iceberg Bronze in a separate epic. Single-threaded: the macOS dbt multiprocessing spawn crashes on
+# >1 thread on a dev box.
+#   make insights-pipeline
+# ============================================================================
+GATED_MODELS = silver_touchpoint gold_attribution_paths silver_sessions
+
+insights-pipeline: silver-catalog
+	@echo ">> dbt run — insight marts from real Postgres data (ledger_source=pg), excluding Iceberg-gated marts ..."
+	cd $(DBT_DIR) && DBT_PROFILES_DIR=$(DBT_PROFILES) "$(DBT)" run --full-refresh --threads 1 --exclude $(GATED_MODELS)
+	@echo ">> Insight marts built. Open /insights (logged into a brand with order data)."

@@ -1,6 +1,13 @@
 name: brain
 version: "1.0.0"
 profile: brain
+
+# Default the ledger marts to the Postgres read-path (via the brain_oltp_pg JDBC catalog) — the dev/
+# transition source of truth. The Iceberg-Bronze default flip is gated on a dbt-starrocks incremental-
+# CTAS-from-external-catalog bug (see memory / gold_revenue_ledger.sql); prod overrides at build time:
+#   dbt build --vars '{ledger_source: iceberg}'
+vars:
+  ledger_source: pg
 # Layering (doc 05 §9): staging (1:1 Bronze + dedup on event_id) → intermediate
 # (normalize, identity projection) → marts (Silver + Gold). dbt does ADDITIVE marts only;
 # all non-additive math lives in packages/metric-engine (ADR-004).

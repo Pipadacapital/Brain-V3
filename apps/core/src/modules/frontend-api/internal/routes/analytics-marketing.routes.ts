@@ -14,6 +14,9 @@ import {
   getSettlementSummary,
   getAdSpendTimeseries,
   getBlendedRoas,
+  resolveBrandPrimaryCurrency,
+  blendToPrimary,
+  roasFromMinor,
 } from '../../../analytics/index.js';
 import { getDataQualitySummary } from '../../../data-quality/index.js';
 import type { DataQualitySummary as ContractDataQualitySummary } from '@brain/contracts';
@@ -139,6 +142,29 @@ export function registerAnalyticsMarketingRoutes(fastify: FastifyInstance, deps:
         { fromDate: new Date(`${fromStr}T00:00:00Z`), toDate: new Date(`${toStr}T00:00:00Z`) },
         { srPool },
       );
+
+      // FX convenience view (display-only): a SINGLE blended ROAS in the brand's primary currency.
+      // This is the headline number mixed-currency genuinely breaks — you can't compare INR spend to
+      // AED revenue. Σ(converted realized) ÷ Σ(converted spend). Native per-currency rows stay as-is.
+      if (result.state === 'has_data' && rawPool) {
+        const primary = await resolveBrandPrimaryCurrency(rawPool, auth.brandId);
+        const spendPrimary = await blendToPrimary(
+          result.rows.map((r) => ({ currency: r.currency_code, minor: r.spend_minor })), primary,
+        );
+        const realizedPrimary = await blendToPrimary(
+          result.rows.map((r) => ({ currency: r.currency_code, minor: r.realized_minor })), primary,
+        );
+        return reply.send({
+          request_id: requestId,
+          data: {
+            ...result,
+            primary_currency: primary,
+            spend_in_primary_minor: spendPrimary,
+            realized_in_primary_minor: realizedPrimary,
+            roas_in_primary: roasFromMinor(realizedPrimary, spendPrimary),
+          },
+        });
+      }
 
       return reply.send({ request_id: requestId, data: result });
     },

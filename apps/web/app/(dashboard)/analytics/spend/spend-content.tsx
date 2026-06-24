@@ -159,11 +159,22 @@ export function SpendContent() {
     : null;
   const totalSpendValue = totals ? formatMoneyDisplay(totals.total.toString(), totals.currency) : null;
 
-  // Blended ROAS headline — primary-currency row (Slice 1: single brand currency).
-  const roasRows: AnalyticsBlendedRoasRow[] = roasData?.state === 'has_data' ? roasData.rows : [];
+  // Blended ROAS headline. FX FIX: when spend/revenue span MULTIPLE currencies, the per-currency
+  // rows[0] is misleading (you can't read one currency's ROAS as "the" ROAS). Prefer the BFF's
+  // blended primary-currency ROAS (Σ converted realized ÷ Σ converted spend); fall back to the single
+  // per-currency row otherwise.
+  const roasHasData = roasData && roasData.state === 'has_data' ? roasData : null;
+  const roasRows: AnalyticsBlendedRoasRow[] = roasHasData ? roasHasData.rows : [];
   const primaryRoas = roasRows[0] ?? null;
-  // Render the exact decimal string directly (already 4 dp) — NEVER re-divide with floats.
-  const roasValue = primaryRoas?.roas_ratio != null ? `${primaryRoas.roas_ratio}x` : null;
+  const blendedRoas = roasHasData?.roas_in_primary ?? null;
+  const multiCurrency = roasRows.length > 1;
+  // Render the exact decimal string directly — NEVER re-divide with floats.
+  const roasValue =
+    multiCurrency && blendedRoas != null
+      ? `${blendedRoas}x`
+      : primaryRoas?.roas_ratio != null
+        ? `${primaryRoas.roas_ratio}x`
+        : null;
 
   // Hard error on the spend query → ErrorCard with the request_id (trace context surfaced).
   if (spendError) {
@@ -213,7 +224,9 @@ export function SpendContent() {
                 sublabel={
                   primaryRoas && primaryRoas.roas_ratio == null
                     ? 'no spend in window'
-                    : 'realized ÷ spend'
+                    : multiCurrency && blendedRoas != null
+                      ? `≈ blended in ${roasHasData?.primary_currency ?? 'primary'} (approx)`
+                      : 'realized ÷ spend'
                 }
                 data-testid="spend-kpi-roas"
               />

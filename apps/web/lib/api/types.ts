@@ -615,7 +615,17 @@ export interface AnalyticsBlendedRoasRow {
 
 export type AnalyticsBlendedRoasResponse =
   | { state: 'no_data'; from: string; to: string }
-  | { state: 'has_data'; from: string; to: string; rows: AnalyticsBlendedRoasRow[] };
+  | {
+      state: 'has_data';
+      from: string;
+      to: string;
+      rows: AnalyticsBlendedRoasRow[];
+      /** FX convenience view (display-only): a single blended ROAS in the brand's primary currency. */
+      primary_currency?: string | null;
+      spend_in_primary_minor?: string | null;
+      realized_in_primary_minor?: string | null;
+      roas_in_primary?: string | null;
+    };
 
 export interface AnalyticsDataHealthVolumeBucket {
   bucket: string; // 'YYYY-MM-DD'

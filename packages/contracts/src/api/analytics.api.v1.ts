@@ -44,6 +44,12 @@ export const RevenueSnapshotSchema = z.discriminatedUnion('state', [
     as_of: z.string(),
     realized: MoneyRecordSchema,
     provisional: MoneyRecordSchema, // empty {} when no provisional rows
+    // FX convenience view (display-only): realized/provisional rolled up to the brand's PRIMARY
+    // currency at the latest rate. The per-currency `realized`/`provisional` maps remain the source
+    // of truth. null when there's nothing to convert or FX was unavailable.
+    primary_currency: z.string().nullable().optional(),
+    realized_in_primary_minor: MinorUnitsSchema.nullable().optional(),
+    provisional_in_primary_minor: MinorUnitsSchema.nullable().optional(),
   }),
 ]);
 export type RevenueSnapshot = z.infer<typeof RevenueSnapshotSchema>;

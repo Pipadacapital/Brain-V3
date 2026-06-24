@@ -62,21 +62,24 @@ defaults:
 # PG⇄Iceberg parity oracle. Flip `enabled: true` per env only when ready to start the migration;
 # turn off to instantly stop the dual-sink. See db/iceberg/spark/ + docs/adr/0002-*.
 sparkBronze:
+  # enabled:false until CI builds + digest-pins the Spark image AND a cluster exists (external gate,
+  # same as the dbt-runner crons). Flipping it on schedules the Iceberg Bronze sink + maintenance.
   enabled: false
   image:
     repository: REPLACE_WITH_ECR_REGISTRY/brain-spark-bronze   # built from db/iceberg/spark/Dockerfile
     tag: ""            # B3: digest preferred; CI populates at deploy (fail-closed in the template)
     digest: ""
     pullPolicy: IfNotPresent
-  materializeSchedule: "*/15 * * * *"   # drain the topic → Iceberg every 15 min (availableNow)
-  paritySchedule: "*/30 * * * *"        # PG⇄Iceberg reconciliation every 30 min
+  materializeSchedule: "*/15 * * * *"   # drain BOTH lanes → Iceberg every 15 min (availableNow)
   maintenanceSchedule: "0 3 * * *"      # daily 03:00 IST — compaction + 24-mo snapshot-expiry (Slice 7)
   activeDeadlineSeconds: 1800
-  # Non-secret config; secrets (KAFKA_BROKERS, ICEBERG/Glue, CHECKPOINT_LOCATION s3a://, AWS_*) come
-  # from envSecretName. STARTING_OFFSETS=latest in steady state (earliest only for a one-off backfill).
+  # Non-secret config. Secrets come from envSecretName and MUST include: KAFKA_BROKERS, ICEBERG/Glue,
+  # CHECKPOINT_LOCATION (s3a://), AWS_*, and BOTH Bronze lane topics — COLLECTOR_TOPIC (live) AND
+  # BACKFILL_TOPIC (historical/backfill orders). The sink consumes both: omitting BACKFILL_TOPIC →
+  # backfilled orders silently never reach Bronze (they ride a separate topic, lane isolation ADR-BF-7).
+  # STARTING_OFFSETS=latest in steady state (earliest only for a one-off backfill).
   env:
     - { name: STARTING_OFFSETS, value: "latest" }
-    - { name: PARITY_TOLERANCE, value: "0" }
   resources:
     requests: { cpu: "1", memory: 2Gi }
     limits: { cpu: "2", memory: 4Gi }

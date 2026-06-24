@@ -163,7 +163,8 @@ async function insertDecisionLogBatch(
   const params: unknown[] = [brandId];
   const tuples = rows.map((r, i) => {
     const base = 2 + i * 5; // $1 is brand_id; each row contributes 5 params.
-    params.push(r.recommendationId, r.actor, r.action, r.reason, r.payload);
+    // decision_log.payload is NOT NULL; reason-only expire rows carry no evidence → empty object.
+    params.push(r.recommendationId, r.actor, r.action, r.reason, r.payload ?? '{}');
     return `($1, 'recommendation', $${base}, $${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}::jsonb)`;
   });
   await client.query(

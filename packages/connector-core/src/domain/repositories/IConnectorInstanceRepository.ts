@@ -34,4 +34,16 @@ export interface IConnectorInstanceRepository {
 
   /** Update an existing connector instance (status, health_state, safety_rating, etc.). */
   update(instance: ConnectorInstance): Promise<ConnectorInstance>;
+
+  /**
+   * Activate exactly ONE ad account (migration 0106). In a SINGLE transaction: set the target
+   * instance's activated_at and clear activated_at on every OTHER connected account of the same
+   * (brand, provider) — the "switch" semantics (exactly one active per brand+platform). Returns
+   * the activated instance, or null if the id is not found / not connected for this brand.
+   * Idempotent: re-activating the already-active account is a no-op switch.
+   */
+  activateAccount(
+    connectorInstanceId: string,
+    brandId: string,
+  ): Promise<ConnectorInstance | null>;
 }

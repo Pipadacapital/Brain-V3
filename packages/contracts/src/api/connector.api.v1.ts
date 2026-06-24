@@ -166,6 +166,27 @@ export type SafetyRating = z.infer<typeof SafetyRatingSchema>;
 // NN-2: NO secret_ref, NO token in this response (success criterion #4).
 // D-10: wrapped in { request_id, data } at the response level.
 
+/** One connected account for a provider tile (Gap B multi-account). NN-2: NO secret_ref/token. */
+export const MarketplaceTileInstanceSchema = z.object({
+  id: z.string().uuid(),
+  status: z.enum(['connected', 'disconnected', 'error']),
+  health_state: HealthStateSchema,
+  safety_rating: SafetyRatingSchema,
+  shop_domain: z.string().nullable(),
+  connected_at: z.string().datetime({ offset: true }).nullable(),
+  /** Per-account key (Gap B, 0092) — e.g. a Meta act_<id>. */
+  account_key: z.string().optional(),
+  /** Human name for the account (e.g. Meta ad-account name); null/absent ⇒ show account_key. */
+  account_label: z.string().nullable().optional(),
+  /** Ad-account activation (0106). When this account was chosen to ingest; null ⇒ not chosen. */
+  activated_at: z.string().datetime({ offset: true }).nullable().optional(),
+  /** This is the active (ingesting) account. Always true for non-ad providers. */
+  is_active: z.boolean().optional(),
+  /** Ad platform whose account has not been picked yet → UI prompts for a selection. */
+  requires_activation: z.boolean().optional(),
+});
+export type MarketplaceTileInstance = z.infer<typeof MarketplaceTileInstanceSchema>;
+
 export const MarketplaceTileSchema = z.object({
   id: z.string(),
   category: z.enum(['storefront', 'ads', 'payments', 'logistics', 'messaging', 'crm', 'analytics']),
@@ -176,24 +197,25 @@ export const MarketplaceTileSchema = z.object({
   available: z.boolean(),
   /**
    * Present only when this brand has a connector_instance for this provider.
-   * NN-2: NO secret_ref, NO token here.
+   * First active account (back-compat single-account UI). NN-2: NO secret_ref, NO token here.
    */
-  instance: z
-    .object({
-      id: z.string().uuid(),
-      status: z.enum(['connected', 'disconnected', 'error']),
-      health_state: HealthStateSchema,
-      safety_rating: SafetyRatingSchema,
-      shop_domain: z.string().nullable(),
-      connected_at: z.string().datetime({ offset: true }).nullable(),
-      /** Per-account key (Gap B, 0092) — e.g. a Meta act_<id>. */
-      account_key: z.string().optional(),
-      /** Human name for the account (e.g. Meta ad-account name); null/absent ⇒ show account_key. */
-      account_label: z.string().nullable().optional(),
-    })
-    .nullable(),
+  instance: MarketplaceTileInstanceSchema.nullable(),
+  /** ALL active accounts for this provider (Gap B multi-account). Empty when none connected. */
+  instances: z.array(MarketplaceTileInstanceSchema).optional(),
 });
 export type MarketplaceTile = z.infer<typeof MarketplaceTileSchema>;
+
+// ── Ad-account activation (0106) ─────────────────────────────────────────────
+export const ActivateAdAccountResponseSchema = z.object({
+  request_id: z.string(),
+  data: z.object({
+    connector_instance_id: z.string().uuid(),
+    provider: z.string(),
+    account_key: z.string(),
+    activated_at: z.string().datetime({ offset: true }),
+  }),
+});
+export type ActivateAdAccountResponse = z.infer<typeof ActivateAdAccountResponseSchema>;
 
 export const MarketplaceListResponseSchema = z.object({
   request_id: z.string(),

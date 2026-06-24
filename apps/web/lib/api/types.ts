@@ -393,6 +393,12 @@ export interface MarketplaceTileInstance {
   account_key: string;
   /** Human name for this account (e.g. Meta ad-account name), captured at connect. Null = show account_key. */
   account_label?: string | null;
+  /** Ad-account activation (0106). When this account was chosen to ingest; null = not chosen. */
+  activated_at?: string | null;
+  /** This is the active (ingesting) account. Always true for non-ad providers. */
+  is_active?: boolean;
+  /** Ad platform whose account has not been picked yet → UI prompts for a selection. */
+  requires_activation?: boolean;
 }
 
 /** One tile in the marketplace (catalog ⨝ connector_instance). */

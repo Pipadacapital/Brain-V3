@@ -112,6 +112,11 @@ export class HandleGoogleAdsOAuthCallbackCommand {
     const now = new Date();
     let firstInstanceId = '';
 
+    // 0106 ad-account activation: an MCC login exposes every accessible customer id (often other
+    // brands'). Don't ingest any until the user picks ONE. EXCEPTION: a single account is
+    // auto-activated (nothing to choose). Multiple → all NULL → the UI prompts for a selection.
+    const autoActivate = accountsToCreate.length === 1;
+
     for (const accountId of accountsToCreate) {
       const instanceId = randomUUID();
       if (!firstInstanceId) firstInstanceId = instanceId;
@@ -131,6 +136,8 @@ export class HandleGoogleAdsOAuthCallbackCommand {
         updatedAt: now,
         accountKey: accountId ?? DEFAULT_ACCOUNT_KEY,
         providerConfig: accountId ? { google_ads_customer_id: accountId } : {},
+        // 0106: auto-activate only when there's a single account; otherwise wait for selection.
+        activatedAt: autoActivate ? now : null,
       });
       const savedInstance = await this.connectorRepo.save(instance);
 

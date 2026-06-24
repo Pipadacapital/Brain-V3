@@ -141,6 +141,12 @@ export class HandleMetaOAuthCallbackCommand {
     const now = new Date();
     let firstInstanceId = '';
 
+    // 0106 ad-account activation: discovered accounts are NOT ingested until the user picks one
+    // (else an agency login pollutes the brand with every account's spend). EXCEPTION: when exactly
+    // one account exists there is nothing to choose, so auto-activate it. Multiple → all NULL → the
+    // UI prompts the user to select one before any meta spend ingests.
+    const autoActivate = accountsToCreate.length === 1;
+
     for (const account of accountsToCreate) {
       const accountId = account?.id ?? null;
       const accountName = account?.name ?? null;
@@ -166,6 +172,8 @@ export class HandleMetaOAuthCallbackCommand {
         providerConfig: accountId
           ? { ad_account_id: accountId, ...(accountName ? { ad_account_name: accountName } : {}) }
           : {},
+        // 0106: auto-activate only when there's a single account; otherwise wait for selection.
+        activatedAt: autoActivate ? now : null,
       });
       const savedInstance = await this.connectorRepo.save(instance);
 

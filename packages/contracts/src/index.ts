@@ -209,9 +209,12 @@ export {
   HealthStateSchema,
   SafetyRatingSchema,
   MarketplaceTileSchema,
+  MarketplaceTileInstanceSchema,
   MarketplaceListResponseSchema,
   ConnectRequestSchema,
   ConnectResponseSchema,
+  // Ad-account activation (0106)
+  ActivateAdAccountResponseSchema,
   // On-demand "Sync now" trigger (feat-connector-sync-now)
   SyncTriggerDataSchema,
   SyncTriggerResponseSchema,
@@ -228,9 +231,12 @@ export type {
   HealthState,
   SafetyRating,
   MarketplaceTile,
+  MarketplaceTileInstance,
   MarketplaceListResponse,
   ConnectRequest,
   ConnectResponse,
+  // Ad-account activation (0106)
+  ActivateAdAccountResponse,
   // On-demand "Sync now" trigger (feat-connector-sync-now)
   SyncTriggerData,
   SyncTriggerResponse,

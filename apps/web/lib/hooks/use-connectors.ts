@@ -74,3 +74,18 @@ export function useDisconnectConnector() {
     },
   });
 }
+
+/**
+ * useActivateAdAccount — choose the ONE ad account that ingests for this brand+platform (0106).
+ * Switch semantics: activating an account deactivates its siblings server-side. Invalidates the
+ * marketplace so every account sub-card re-renders its Active/Activate state.
+ */
+export function useActivateAdAccount() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (connectorId: string) => connectorsApi.activateAdAccount(connectorId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: MARKETPLACE_QUERY_KEY });
+    },
+  });
+}

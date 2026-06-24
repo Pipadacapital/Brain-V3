@@ -23,6 +23,9 @@ export type {
   HostValidator,
 } from './domain/entities/ConnectorInstance.js';
 
+export { AD_PLATFORM_PROVIDERS, isAdPlatformProvider } from './domain/ad-platform.js';
+export type { AdPlatformProvider } from './domain/ad-platform.js';
+
 export { ConnectorSyncStatus } from './domain/entities/ConnectorSyncStatus.js';
 export type {
   ConnectorSyncStatusProps,

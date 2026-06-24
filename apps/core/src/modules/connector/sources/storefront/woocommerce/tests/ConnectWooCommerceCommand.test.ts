@@ -31,7 +31,11 @@ function makeDeps() {
   const secretsManager = { storeSecret } as never;
 
   const savedInstances: Array<Record<string, unknown>> = [];
-  const connectorRepo = { save: vi.fn(async (i: Record<string, unknown>) => { savedInstances.push(i); }) } as never;
+  const connectorRepo = {
+    save: vi.fn(async (i: Record<string, unknown>) => { savedInstances.push(i); }),
+    // one-storefront-per-brand guard reads this; default = no existing storefront.
+    findAllByBrand: vi.fn(async () => []),
+  } as never;
   const syncStatusRepo = { save: vi.fn(async () => undefined) } as never;
 
   const queries: string[] = [];

@@ -32,6 +32,7 @@
 import type { ISecretsManager } from '@brain/connector-secrets';
 import type { IConnectorInstanceRepository, IConnectorSyncStatusRepository } from '@brain/connector-core';
 import { ConnectorInstance, ConnectorSyncStatus } from '@brain/connector-core';
+import { assertSingleStorefront } from '../../../storefront-exclusivity.js';
 import { randomUUID } from 'node:crypto';
 import type pg from 'pg';
 
@@ -223,6 +224,10 @@ export class ConnectWooCommerceCommand {
    */
   async execute(input: ConnectWooCommerceInput): Promise<ConnectWooCommerceResult> {
     const { brandId, siteUrl, consumerKey, consumerSecret, idempotencyKey } = input;
+
+    // One-storefront-per-brand (business rule): reject if the brand already has a DIFFERENT
+    // connected storefront (e.g. Shopify). Reconnecting WooCommerce is allowed (same provider).
+    await assertSingleStorefront(this.connectorRepo, brandId, 'woocommerce');
 
     // Normalise the site URL (strip trailing slash — it becomes the webhook lookup key).
     const normalizedSiteUrl = siteUrl.replace(/\/+$/, '');

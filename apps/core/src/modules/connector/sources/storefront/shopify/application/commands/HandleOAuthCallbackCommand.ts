@@ -21,6 +21,7 @@ import type {
   IConnectorSyncStatusRepository,
 } from '@brain/connector-core';
 import { ConnectorSyncStatus } from '@brain/connector-core';
+import { assertSingleStorefront } from '../../../storefront-exclusivity.js';
 import {
   isValidShopDomain,
   createShopifyConnectorInstance,
@@ -122,6 +123,11 @@ export class HandleOAuthCallbackCommand {
       accessToken,
     );
     // accessToken is now discarded — only secretRef (ARN) proceeds.
+
+    // One-storefront-per-brand (business rule): reject if the brand already has a DIFFERENT
+    // connected storefront (e.g. WooCommerce). Reconnecting/adding Shopify stores is allowed
+    // (same provider). Checked before the connector_instance write.
+    await assertSingleStorefront(this.connectorRepo, brandId, 'shopify');
 
     // ── Step 6: Write connector_instance (secret_ref only — NN-2) ────────────
     // ADR-CM-5: connect ⇒ health_state='Healthy', safety_rating='safe'

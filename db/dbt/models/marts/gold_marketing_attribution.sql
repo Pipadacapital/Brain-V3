@@ -1,43 +1,24 @@
 -- ============================================================================
--- gold_marketing_attribution — the attribution credit/clawback ledger, SERVED FROM THE LAKEHOUSE (Phase G).
+-- gold_marketing_attribution — the attribution credit/clawback ledger, SERVED FROM THE LAKEHOUSE.
 --
--- Phase G moves business data OUT of Postgres. This StarRocks mart in brain_gold is the lakehouse copy of
--- attribution_credit_ledger (sourced via the JDBC read-shim during transition; rebuilds from Bronze in
--- prod). The attribution metric-engine reads (channel-roas, attribution-credit, contribution-margin)
--- re-point here via withSilverBrand so PostgreSQL stops being a read source for attributed revenue. PG
--- remains the WRITE SoR until a later cutover (the attribution writer still appends there).
+-- MEDALLION REALIGNMENT (Epic 2): this is now a thin VIEW over brain_gold.gold_attribution_credit —
+-- the app-written StarRocks PRIMARY KEY ledger that the reconcile batch job (AttributionCreditWriter)
+-- appends to. PostgreSQL billing.attribution_credit_ledger + the Spark attribution_credit_materialize
+-- → Bronze hop + the gold_attribution_credit_src JDBC read-shim are GONE. The view keeps the same name
+-- + column shape the metric-engine reads (channel-roas, reconciliation, campaign-roas) and the
+-- snap_attribution_credit ref() — so the dashboard sees writes LIVE (no refresh lag).
 --
--- Append-only ledger semantics preserved: one row per (brand_id, credit_id) — the deterministic sha256
--- credit id. credited_revenue_minor is SIGNED BIGINT (+credit / -clawback; I-S07, never float). channel is
--- the canonical JourneyChannel COLUMN (ADR-CM-1 — never a per-channel table). ISOLATION: brand_id first
--- key; per-brand at the read seam (I-ST01). dbt writes all brands (ETL-writer posture).
+-- credited_revenue_minor is SIGNED BIGINT (+credit / -clawback; I-S07, never float). channel is the
+-- canonical JourneyChannel COLUMN (ADR-CM-1). ISOLATION: brand_id first; per-brand at the read seam
+-- (I-ST01). One row per (brand_id, credit_id) — the deterministic sha256 credit id.
 -- ============================================================================
 {{
   config(
-    schema         = 'brain_gold',
-    materialized   = 'table',
-    table_type     = 'PRIMARY',
-    keys           = ['brand_id', 'credit_id'],
-    distributed_by = ['brand_id'],
-    order_by       = ['brand_id', 'model_id', 'channel'],
-    buckets        = 8,
-    properties     = {
-      'replication_num'        : '1',
-      'enable_persistent_index': 'true',
-      'compression'            : 'LZ4'
-    },
+    schema       = 'brain_gold',
+    materialized = 'view',
     tags = ['gold', 'mart', 'attribution']
   )
 }}
-
--- H2 — SOURCE FLIP (var-gated + reversible), mirroring gold_revenue_ledger: serve the attribution
--- ledger mart from the lakehouse, not a live read of Postgres.
---   ledger_source='iceberg' → brain_bronze.attribution_credit (landed by attribution_credit_materialize.py).
---                             DEFAULT (mirrors gold_revenue_ledger) — PG no longer the analytical SoR.
---   ledger_source='pg'      → JDBC read-shim over PG attribution_credit_ledger (reversible escape).
--- This mart is materialized=table (full CTAS each run) so a source flip needs no special handling.
--- Data-starved (0 rows) today. Freshness via run-ledger-bronze-refresh.sh.
-{% set ledger_source = var('ledger_source', 'iceberg') %}
 
 select
     brand_id,
@@ -59,10 +40,6 @@ select
     occurred_at,
     economic_effective_at,
     billing_posted_period,
-    current_timestamp()                             as updated_at
-{% if ledger_source == 'iceberg' %}
-from {{ source('bronze_iceberg', 'attribution_credit') }}
-{% else %}
-from {{ source('oltp', 'attribution_credit_ledger') }}
-{% endif %}
+    updated_at
+from brain_gold.gold_attribution_credit
 where credit_id is not null

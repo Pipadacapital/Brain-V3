@@ -2489,7 +2489,7 @@ export function registerBffRoutes(
       const result: ContractAttributionReconcileResult = await reconcileAttribution(
         auth.brandId,
         requestId,
-        { pool: rawPool, srPool },
+        { srPool },
       );
       return reply.send({ request_id: requestId, data: result });
     },
@@ -3096,7 +3096,7 @@ export function registerBffRoutes(
         return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' } });
       }
 
-      const result: ContractDataQualitySummary = await getDataQualitySummary(auth.brandId, { pool: rawPool });
+      const result: ContractDataQualitySummary = await getDataQualitySummary(auth.brandId, { pool: rawPool, srPool });
 
       return reply.send({ request_id: requestId, data: result });
     },

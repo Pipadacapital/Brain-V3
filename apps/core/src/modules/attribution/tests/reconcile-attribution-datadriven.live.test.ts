@@ -31,8 +31,15 @@ async function pgExec(sql: string, params: unknown[] = []): Promise<void> {
   await pgPool.query(sql, params);
 }
 
+async function srGold<T = Record<string, unknown>>(sql: string, params: unknown[] = []): Promise<T[]> {
+  const [rows] = await (srPool as unknown as mysql.Pool).query(sql, params);
+  return rows as T[];
+}
+
 async function cleanup(): Promise<void> {
-  await pgExec(`DELETE FROM attribution_credit_ledger WHERE brand_id = $1`, [BRAND]).catch(() => {});
+  await (srPool as unknown as mysql.Pool)
+    .query(`DELETE FROM brain_gold.gold_attribution_credit WHERE brand_id = ?`, [BRAND])
+    .catch(() => {});
   await (srPool as unknown as mysql.Pool)
     .query(`DELETE FROM brain_gold.gold_revenue_ledger WHERE brand_id = ?`, [BRAND])
     .catch(() => {});
@@ -56,6 +63,16 @@ beforeAll(async () => {
         ttclid varchar(255), stitched_brain_id varchar(64), stitched_order_id varchar(128)
       ) DUPLICATE KEY(brand_id, brain_anon_id, touch_seq)
         DISTRIBUTED BY HASH(brand_id) BUCKETS 1 PROPERTIES ("replication_num" = "1")`);
+    await sr.query(`CREATE TABLE IF NOT EXISTS brain_gold.gold_attribution_credit (
+        brand_id varchar(64) NOT NULL, credit_id varchar(128) NOT NULL, order_id varchar(128),
+        brain_anon_id varchar(128), touch_seq int, channel varchar(64), campaign_id varchar(255),
+        model_id varchar(32), row_kind varchar(16), weight_fraction varchar(64),
+        credited_revenue_minor bigint, currency_code varchar(8), reversed_of_credit_id varchar(128),
+        reversal_reason varchar(32), realized_revenue_minor bigint, confidence_grade varchar(8),
+        attribution_confidence varchar(16), model_version varchar(32), metric_snapshot_id varchar(128),
+        occurred_at datetime, economic_effective_at datetime, billing_posted_period varchar(7), updated_at datetime
+      ) PRIMARY KEY (brand_id, credit_id) DISTRIBUTED BY HASH(brand_id) BUCKETS 1
+        PROPERTIES ("replication_num" = "1", "enable_persistent_index" = "true")`);
 
     await cleanup();
     await pgExec(`INSERT INTO app_user (id,email,email_normalized,password_hash) VALUES ($1,'dd@x.invalid','dd@x.invalid','x') ON CONFLICT DO NOTHING`, [USER_ID]);
@@ -97,30 +114,30 @@ afterAll(async () => {
 describe('reconcileDataDrivenAttribution — Markov model (live PG + StarRocks)', () => {
   it('credits the order under model_id=data_driven, summing to the realized basis', async () => {
     if (!available) { console.warn('[skip] PG/StarRocks unavailable'); return; }
-    const r = await reconcileDataDrivenAttribution(BRAND, CORR, { pool: pgPool, srPool });
+    const r = await reconcileDataDrivenAttribution(BRAND, CORR, { srPool });
     expect(r.credited).toBe(1);
 
-    const credit = await pgPool.query(
-      `SELECT count(*)::int AS n, COALESCE(SUM(credited_revenue_minor),0)::text AS sum
-         FROM attribution_credit_ledger
-        WHERE brand_id=$1 AND order_id=$2 AND row_kind='credit' AND model_id='data_driven'`,
+    const credit = await srGold<{ n: number; sum: string | number }>(
+      `SELECT COUNT(*) AS n, CAST(COALESCE(SUM(credited_revenue_minor),0) AS CHAR) AS sum
+         FROM brain_gold.gold_attribution_credit
+        WHERE brand_id=? AND order_id=? AND row_kind='credit' AND model_id='data_driven'`,
       [BRAND, ORDER_DD],
     );
-    expect(credit.rows[0].n).toBeGreaterThan(0);
-    expect(credit.rows[0].sum).toBe('90000'); // exact closed-sum at the order
+    expect(Number(credit[0]!.n)).toBeGreaterThan(0);
+    expect(String(credit[0]!.sum)).toBe('90000'); // exact closed-sum at the order
   });
 
   it('is idempotent — a re-run writes no new data_driven rows', async () => {
     if (!available) return;
-    const before = await pgPool.query(
-      `SELECT count(*)::int AS n FROM attribution_credit_ledger WHERE brand_id=$1 AND model_id='data_driven'`,
+    const before = await srGold<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM brain_gold.gold_attribution_credit WHERE brand_id=? AND model_id='data_driven'`,
       [BRAND],
     );
-    await reconcileDataDrivenAttribution(BRAND, CORR, { pool: pgPool, srPool });
-    const after = await pgPool.query(
-      `SELECT count(*)::int AS n FROM attribution_credit_ledger WHERE brand_id=$1 AND model_id='data_driven'`,
+    await reconcileDataDrivenAttribution(BRAND, CORR, { srPool });
+    const after = await srGold<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM brain_gold.gold_attribution_credit WHERE brand_id=? AND model_id='data_driven'`,
       [BRAND],
     );
-    expect(after.rows[0].n).toBe(before.rows[0].n);
+    expect(Number(after[0]!.n)).toBe(Number(before[0]!.n));
   });
 });

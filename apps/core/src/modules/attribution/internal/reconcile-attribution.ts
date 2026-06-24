@@ -20,7 +20,6 @@
  * write stays in its own context.
  */
 
-import type { Pool, QueryResultRow } from 'pg';
 import {
   ATTRIBUTION_MODEL_IDS,
   computeMarkovChannelWeights,
@@ -63,9 +62,11 @@ export interface ReconcileResult {
 }
 
 export interface ReconcileDeps {
-  /** Raw pg pool as brain_app (the writer + ledger reads use it; GUC-scoped per txn). */
-  pool: Pool;
-  /** StarRocks Silver pool (mysql2) — the touch source for credit apportionment. */
+  /**
+   * StarRocks Silver/Gold pool (mysql2) — MEDALLION REALIGNMENT (Epic 2): everything the reconcile
+   * driver touches is now in the lakehouse (credit basis = gold_revenue_ledger, credit ledger =
+   * gold_attribution_credit, touches = silver_touchpoint). No PostgreSQL.
+   */
   srPool: SilverPool;
 }
 
@@ -86,27 +87,25 @@ interface ReversalRow {
 }
 
 /**
- * MEDALLION REALIGNMENT (Epic 2 / decision B): the attribution CREDIT BASIS now comes from the
- * LAKEHOUSE ledger (brain_gold.gold_revenue_ledger, Bronze-sourced) via srPool — NOT the PG
- * realized_revenue_ledger. The already-credited filter (the old NOT EXISTS / EXISTS against the PG
- * attribution_credit_ledger) can't cross data stores, so we read the credited order_id set from PG
- * and filter the lakehouse candidates in TS — same idempotency guarantee.
+ * MEDALLION REALIGNMENT (Epic 2): BOTH the attribution CREDIT BASIS (brain_gold.gold_revenue_ledger)
+ * and the CREDIT LEDGER (brain_gold.gold_attribution_credit) are now in the lakehouse — the PG
+ * realized_revenue_ledger + attribution_credit_ledger are dropped. The already-credited idempotency
+ * filter reads the gold credit ledger via the same Silver seam.
  */
 
-/** order_ids already credited for (brand, model) — the idempotency filter (PG credit ledger). */
+/** order_ids already credited for (brand, model) — the idempotency filter (gold credit ledger). */
 async function readCreditedOrderIds(
-  pool: Pool,
+  srPool: SilverPool,
   brandId: string,
   model: AttributionModelId,
 ): Promise<Set<string>> {
-  const rows = await readScoped<{ order_id: string }>(
-    pool,
-    brandId,
-    '',
-    `SELECT DISTINCT order_id
-       FROM attribution_credit_ledger
-      WHERE brand_id = $1 AND row_kind = 'credit' AND model_id = $2`,
-    [brandId, model],
+  const rows = await withSilverBrand(srPool, brandId, async (scope) =>
+    scope.runScoped<{ order_id: string }>(
+      `SELECT DISTINCT order_id
+         FROM brain_gold.gold_attribution_credit
+        WHERE row_kind = 'credit' AND model_id = ? AND ${BRAND_PREDICATE}`,
+      [model],
+    ),
   );
   return new Set(rows.map((r) => r.order_id));
 }
@@ -117,7 +116,7 @@ async function readUncreditedRecognized(
   brandId: string,
   model: AttributionModelId,
 ): Promise<FinalizedOrderRow[]> {
-  const credited = await readCreditedOrderIds(deps.pool, brandId, model);
+  const credited = await readCreditedOrderIds(deps.srPool, brandId, model);
   const inList = RECOGNITION_EVENT_TYPES.map((t) => `'${t}'`).join(',');
   const rows = await withSilverBrand(deps.srPool, brandId, async (scope) =>
     scope.runScoped<FinalizedOrderRow>(
@@ -138,7 +137,7 @@ async function readReversalsOnCredited(
   brandId: string,
   model: AttributionModelId,
 ): Promise<ReversalRow[]> {
-  const credited = await readCreditedOrderIds(deps.pool, brandId, model);
+  const credited = await readCreditedOrderIds(deps.srPool, brandId, model);
   if (credited.size === 0) return [];
   const inList = REVERSAL_EVENT_TYPES.map((t) => `'${t}'`).join(',');
   const rows = await withSilverBrand(deps.srPool, brandId, async (scope) =>
@@ -220,7 +219,7 @@ export async function reconcileDataDrivenAttribution(
   correlationId: string,
   deps: ReconcileDeps,
 ): Promise<ReconcileResult> {
-  const writer = new AttributionCreditWriter(deps.pool, deps.srPool);
+  const writer = new AttributionCreditWriter(deps.srPool);
   const model: AttributionModelId = 'data_driven';
   let credited = 0;
   let clawedBack = 0;
@@ -286,7 +285,7 @@ async function reconcileOneModel(
   deps: ReconcileDeps,
   model: AttributionModelId,
 ): Promise<ReconcileResult> {
-  const writer = new AttributionCreditWriter(deps.pool, deps.srPool);
+  const writer = new AttributionCreditWriter(deps.srPool);
   let credited = 0;
   let clawedBack = 0;
   let unattributed = 0;
@@ -336,27 +335,4 @@ async function reconcileOneModel(
   }
 
   return { credited, clawed_back: clawedBack, unattributed };
-}
-
-/** Run a brand-scoped SELECT under brain_app with the brand GUC set (RLS), as a single txn. */
-async function readScoped<T extends QueryResultRow>(
-  pool: Pool,
-  brandId: string,
-  _correlationId: string,
-  sql: string,
-  params: unknown[],
-): Promise<T[]> {
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    await client.query("SELECT set_config('app.current_brand_id', $1, true)", [brandId]);
-    const res = await client.query<T>(sql, params);
-    await client.query('COMMIT');
-    return res.rows;
-  } catch (err) {
-    await client.query('ROLLBACK').catch(() => undefined);
-    throw err;
-  } finally {
-    client.release();
-  }
 }

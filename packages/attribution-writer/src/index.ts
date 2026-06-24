@@ -1,27 +1,25 @@
 /**
  * credit-writer.ts — the attribution credit-ledger WRITER use-case (Tier-0, append-only).
  *
- * The bounded-context write side for attribution_credit_ledger (Postgres Gold, 0032):
- *   • writeCredit(...)  — reads the journey touches (silver.touchpoint via the metric-engine
- *                         Silver seam) + the order's realized-revenue basis, computes the
- *                         per-touch credit rows (the metric engine is the SOLE math layer —
- *                         I-E03/E04), and APPENDS them (deterministic credit_id → ON CONFLICT
- *                         DO NOTHING, idempotent replay).
- *   • writeClawback(...) — on a realized-ledger reversal, reads the SAVED credit rows back from
- *                          the ledger and appends mirrored signed-negative clawback rows using
- *                          the SAVED weight_fraction (never re-apportioned). Deterministic
- *                          reversal id keyed on the source reversal event → idempotent.
+ * MEDALLION REALIGNMENT (Epic 2): attribution credit/clawback is written to the LAKEHOUSE
+ * (brain_gold.gold_attribution_credit on StarRocks) — NOT PostgreSQL billing.attribution_credit_ledger
+ * (dropped). The compute is deterministic (the metric-engine is the SOLE math layer — I-E03/E04: exact
+ * signed BIGINT minor units, deterministic credit_id, Markov for data_driven); this file is the I/O
+ * adapter. The bounded-context write side:
+ *   • writeCredit(...)  — reads the journey touches (silver.touchpoint via the Silver seam) + the order's
+ *                         realized-revenue basis, computes the per-touch credit rows, and APPENDS them
+ *                         (deterministic credit_id → pre-filter existing ⇒ INSERT-new-only, idempotent).
+ *   • writeClawback(...) — on a realized reversal, reads the SAVED credit rows back from the ledger and
+ *                          appends mirrored signed-negative clawback rows using the SAVED weight_fraction
+ *                          (never re-apportioned). Deterministic reversal id → idempotent.
  *
- * APPEND-ONLY by GRANT (0032 mirrors 0018): the connection is brain_app (SELECT+INSERT only,
- * no UPDATE/DELETE). Every write is a single txn with the brand GUC set first (RLS). Money is
- * signed BIGINT minor units — never float (I-S07). The compute is deterministic; this file is
- * the I/O adapter (DDD: the domain math lives in @brain/metric-engine).
- *
- * @see 05-architecture.md §1 (ledger) + §2 (models) + §3 (clawback)
- * @see apps/core/src/modules/measurement/internal/infrastructure/repositories/PgLedgerRepository.ts (the pattern)
+ * IDEMPOTENT: gold_attribution_credit is a StarRocks PRIMARY KEY table on (brand_id, credit_id). A PK
+ * upsert OVERWRITES, so to preserve ON-CONFLICT-DO-NOTHING semantics (keep the saved credit) the writer
+ * pre-SELECTs existing credit_ids in the batch and inserts ONLY the new ones. Money is signed BIGINT
+ * minor units — never float (I-S07). Per-brand isolation: explicit brand_id scoping on every read/write
+ * (StarRocks has no RLS; the metric-engine read seam enforces it for dashboard reads — I-ST01).
  */
 
-import { Pool, type PoolClient } from 'pg';
 import {
   computeAttributionCredit,
   computeAttributionCreditDataDriven,
@@ -42,6 +40,11 @@ function toBillingPostedPeriod(d: Date): string {
   const y = d.getUTCFullYear();
   const m = String(d.getUTCMonth() + 1).padStart(2, '0');
   return `${y}-${m}`;
+}
+
+/** StarRocks DATETIME literal ('YYYY-MM-DD HH:MM:SS', UTC) from a Date. */
+function toSrDatetime(d: Date): string {
+  return d.toISOString().slice(0, 19).replace('T', ' ');
 }
 
 /** The Silver touch projection used by the writer (a subset of silver.touchpoint). */
@@ -84,21 +87,20 @@ export interface WriteClawbackParams {
 }
 
 export interface WriteResult {
-  /** Rows inserted (after ON CONFLICT DO NOTHING suppression). */
+  /** Rows inserted (after existing-id suppression). */
   inserted: number;
-  /** Rows suppressed as replay duplicates. */
+  /** Rows suppressed as replay duplicates (credit_id already present). */
   suppressed: number;
 }
 
+const GOLD_TABLE = 'brain_gold.gold_attribution_credit';
+
 export class AttributionCreditWriter {
-  constructor(
-    private readonly pool: Pool,
-    private readonly srPool: SilverPool,
-  ) {}
+  constructor(private readonly srPool: SilverPool) {}
 
   /**
    * writeCredit — compute + append the credit rows for one order's journey.
-   * Idempotent: deterministic credit_id → ON CONFLICT DO NOTHING. Returns insert/suppress counts.
+   * Idempotent: deterministic credit_id → INSERT-new-only. Returns insert/suppress counts.
    * No journey (zero touches) → no rows (the order's realized revenue is unattributed — honest).
    */
   async writeCredit(params: WriteCreditParams): Promise<WriteResult> {
@@ -248,189 +250,108 @@ export class AttributionCreditWriter {
   }
 
   /**
-   * Read the SAVED credit rows (row_kind='credit') for an order+model back from the ledger.
-   * Brand-scoped via the GUC (RLS); the SAVED weight_fraction is the SOLE clawback basis.
+   * Read the SAVED credit rows (row_kind='credit') for an order+model back from the lakehouse ledger.
+   * Brand-scoped by explicit brand_id; the SAVED weight_fraction is the SOLE clawback basis.
    */
   private async readSavedCredits(
     brandId: string,
     orderId: string,
     model: AttributionModelId,
   ): Promise<SavedCreditRow[]> {
-    const client = await this.pool.connect();
-    try {
-      await client.query('BEGIN');
-      await client.query("SELECT set_config('app.current_brand_id', $1, true)", [brandId]);
-      const res = await client.query<{
-        credit_id: string;
-        brand_id: string;
-        order_id: string;
-        brain_anon_id: string;
-        touch_seq: number;
-        channel: string;
-        campaign_id: string | null;
-        model_id: AttributionModelId;
-        weight_fraction: string;
-        credited_revenue_minor: string;
-        currency_code: string;
-        realized_revenue_minor: string;
-        confidence_grade: SavedCreditRow['confidenceGrade'];
-        attribution_confidence: string;
-      }>(
-        `SELECT credit_id, brand_id, order_id, brain_anon_id, touch_seq, channel,
-                campaign_id, model_id, weight_fraction, credited_revenue_minor,
-                currency_code, realized_revenue_minor, confidence_grade, attribution_confidence
-           FROM attribution_credit_ledger
-          WHERE brand_id = $1 AND order_id = $2 AND model_id = $3 AND row_kind = 'credit'
-          ORDER BY touch_seq ASC`,
-        [brandId, orderId, model],
-      );
-      await client.query('COMMIT');
-      return res.rows.map((r) => ({
-        creditId: r.credit_id,
-        brandId: r.brand_id,
-        orderId: r.order_id,
-        brainAnonId: r.brain_anon_id,
-        touchSeq: Number(r.touch_seq),
-        channel: r.channel,
-        campaignId: r.campaign_id,
-        modelId: r.model_id,
-        weightFraction: r.weight_fraction,
-        creditedRevenueMinor: BigInt(r.credited_revenue_minor),
-        currencyCode: r.currency_code,
-        realizedRevenueMinor: BigInt(r.realized_revenue_minor),
-        confidenceGrade: r.confidence_grade,
-        attributionConfidence: r.attribution_confidence,
-      }));
-    } catch (err) {
-      await client.query('ROLLBACK').catch(() => undefined);
-      throw err;
-    } finally {
-      client.release();
-    }
+    const [rows] = await this.srPool.query(
+      `SELECT credit_id, brand_id, order_id, brain_anon_id, touch_seq, channel,
+              campaign_id, model_id, weight_fraction, credited_revenue_minor,
+              currency_code, realized_revenue_minor, confidence_grade, attribution_confidence
+         FROM ${GOLD_TABLE}
+        WHERE brand_id = ? AND order_id = ? AND model_id = ? AND row_kind = 'credit'
+        ORDER BY touch_seq ASC`,
+      [brandId, orderId, model],
+    );
+    const out = rows as Array<{
+      credit_id: string; brand_id: string; order_id: string; brain_anon_id: string;
+      touch_seq: number; channel: string; campaign_id: string | null; model_id: AttributionModelId;
+      weight_fraction: string; credited_revenue_minor: string | number; currency_code: string;
+      realized_revenue_minor: string | number; confidence_grade: SavedCreditRow['confidenceGrade'];
+      attribution_confidence: string;
+    }>;
+    return out.map((r) => ({
+      creditId: r.credit_id,
+      brandId: r.brand_id,
+      orderId: r.order_id,
+      brainAnonId: r.brain_anon_id,
+      touchSeq: Number(r.touch_seq),
+      channel: r.channel,
+      campaignId: r.campaign_id,
+      modelId: r.model_id,
+      weightFraction: r.weight_fraction,
+      creditedRevenueMinor: BigInt(String(r.credited_revenue_minor).split('.')[0] || '0'),
+      currencyCode: r.currency_code,
+      realizedRevenueMinor: BigInt(String(r.realized_revenue_minor).split('.')[0] || '0'),
+      confidenceGrade: r.confidence_grade,
+      attributionConfidence: r.attribution_confidence,
+    }));
   }
 
   /**
    * The magnitude of clawback ALREADY applied to an order+model (|Σ credited_revenue_minor| over the
    * clawback rows). Feeds the R-11 cumulative clamp so distinct reversals can't over-claw an order.
-   * A replay of the same reversal re-reads its own (already-written) clawback here, but the recomputed
-   * rows carry the same deterministic id → ON CONFLICT DO NOTHING, so the replay stays a safe no-op.
-   * Brand-scoped via the GUC (RLS) under brain_app.
+   * A replay of the same reversal re-reads its own (already-written) clawback here; the recomputed rows
+   * carry the same deterministic id → pre-filter suppresses them, so the replay stays a safe no-op.
    */
   private async readClawedBackTotal(
     brandId: string,
     orderId: string,
     model: AttributionModelId,
   ): Promise<bigint> {
-    const client = await this.pool.connect();
-    try {
-      await client.query('BEGIN');
-      await client.query("SELECT set_config('app.current_brand_id', $1, true)", [brandId]);
-      const res = await client.query<{ total: string }>(
-        `SELECT COALESCE(SUM(credited_revenue_minor), 0)::text AS total
-           FROM attribution_credit_ledger
-          WHERE brand_id = $1 AND order_id = $2 AND model_id = $3 AND row_kind = 'clawback'`,
-        [brandId, orderId, model],
-      );
-      await client.query('COMMIT');
-      const sum = BigInt(res.rows[0]?.total ?? '0'); // signed-negative (clawbacks are negative)
-      return sum < 0n ? -sum : sum; // return the positive magnitude
-    } catch (err) {
-      await client.query('ROLLBACK').catch(() => undefined);
-      throw err;
-    } finally {
-      client.release();
-    }
+    const [rows] = await this.srPool.query(
+      `SELECT COALESCE(SUM(credited_revenue_minor), 0) AS total
+         FROM ${GOLD_TABLE}
+        WHERE brand_id = ? AND order_id = ? AND model_id = ? AND row_kind = 'clawback'`,
+      [brandId, orderId, model],
+    );
+    const total = (rows as Array<{ total: string | number }>)[0]?.total ?? '0';
+    const sum = BigInt(String(total).split('.')[0] || '0'); // signed-negative (clawbacks are negative)
+    return sum < 0n ? -sum : sum; // return the positive magnitude
   }
 
   /**
-   * Append rows to attribution_credit_ledger. Single txn, GUC-first, ON CONFLICT
-   * (the dedup UNIQUE) DO NOTHING → idempotent. Returns insert/suppress counts.
+   * Append rows to gold_attribution_credit. Pre-filters existing credit_ids (PK = brand_id, credit_id)
+   * so an already-saved credit is NEVER overwritten (ON-CONFLICT-DO-NOTHING semantics on a PK-upsert
+   * store), then INSERTs only the new rows in one batched statement. Returns insert/suppress counts.
    */
   private async appendRows(brandId: string, rows: AttributionCreditRow[]): Promise<WriteResult> {
     if (rows.length === 0) return { inserted: 0, suppressed: 0 };
-    const client: PoolClient = await this.pool.connect();
-    let inserted = 0;
-    try {
-      await client.query('BEGIN');
-      await client.query("SELECT set_config('app.current_brand_id', $1, true)", [brandId]);
-      for (const r of rows) {
-        const res = await client.query(
-          `INSERT INTO attribution_credit_ledger (
-             brand_id, credit_id, order_id, brain_anon_id, touch_seq, channel, campaign_id,
-             model_id, row_kind, weight_fraction, credited_revenue_minor, currency_code,
-             reversed_of_credit_id, reversal_reason, realized_revenue_minor,
-             confidence_grade, attribution_confidence, model_version, metric_snapshot_id,
-             occurred_at, economic_effective_at, billing_posted_period
-           ) VALUES (
-             $1, $2, $3, $4, $5, $6, $7,
-             $8, $9, $10::numeric, $11::bigint, $12,
-             $13, $14, $15::bigint,
-             $16, $17::numeric, $18, $19,
-             $20, $21, $22
-           )
-           ON CONFLICT (brand_id, credit_id)
-           DO NOTHING`,
-          [
-            r.brandId, r.creditId, r.orderId, r.brainAnonId, r.touchSeq, r.channel, r.campaignId,
-            r.modelId, r.rowKind, r.weightFraction, r.creditedRevenueMinor.toString(), r.currencyCode,
-            r.reversedOfCreditId, r.reversalReason, r.realizedRevenueMinor.toString(),
-            r.confidenceGrade, r.attributionConfidence, r.modelVersion, r.metricSnapshotId,
-            r.occurredAt.toISOString(), r.economicEffectiveAt.toISOString(), r.billingPostedPeriod,
-          ],
-        );
-        inserted += res.rowCount ?? 0;
-      }
-      await client.query('COMMIT');
-      return { inserted, suppressed: rows.length - inserted };
-    } catch (err) {
-      await client.query('ROLLBACK').catch(() => undefined);
-      throw err;
-    } finally {
-      client.release();
-    }
-  }
-}
 
-/**
- * createAttributionReversalHook — adapt the writer to the measurement OrderEventConsumer
- * reversal fan-out. On a revenue reversal, fan out a clawback across ALL models that have
- * saved credit rows for the order (the writer's readSavedCredits is per-model, so we run the
- * default model set; idempotent ON CONFLICT means re-running a model with no saved rows is a
- * no-op). Returns the hook the composition root injects into OrderEventConsumer.
- *
- * @param pool   - The pg.Pool (brain_app).
- * @param srPool - The StarRocks Silver pool (mysql2; unused on the clawback path but the writer
- *                 is constructed once for both credit + clawback).
- */
-export function createAttributionReversalHook(
-  pool: Pool,
-  srPool: SilverPool,
-): {
-  onRevenueReversal(reversal: {
-    brandId: string;
-    orderId: string;
-    reversalReason: ReversalReason;
-    reversalLedgerEventId: string;
-    reversalBasisMinor: bigint;
-    occurredAt: Date;
-  }): Promise<void>;
-} {
-  const writer = new AttributionCreditWriter(pool, srPool);
-  // The default model set — clawback fans out per model that has saved credit rows.
-  const models: AttributionModelId[] = ['first_touch', 'last_touch', 'linear', 'position_based'];
-  return {
-    async onRevenueReversal(reversal): Promise<void> {
-      for (const model of models) {
-        await writer.writeClawback({
-          brandId: reversal.brandId,
-          orderId: reversal.orderId,
-          model,
-          reversalReason: reversal.reversalReason,
-          reversalLedgerEventId: reversal.reversalLedgerEventId,
-          reversalBasisMinor: reversal.reversalBasisMinor,
-          occurredAt: reversal.occurredAt,
-        });
-      }
-    },
-  };
+    const ids = rows.map((r) => r.creditId);
+    const [existRows] = await this.srPool.query(
+      `SELECT credit_id FROM ${GOLD_TABLE} WHERE brand_id = ? AND credit_id IN (${ids.map(() => '?').join(',')})`,
+      [brandId, ...ids],
+    );
+    const existing = new Set((existRows as Array<{ credit_id: string }>).map((r) => r.credit_id));
+    const newRows = rows.filter((r) => !existing.has(r.creditId));
+    if (newRows.length === 0) return { inserted: 0, suppressed: rows.length };
+
+    const tuple = `(${new Array(22).fill('?').join(',')}, NOW())`;
+    const params: unknown[] = [];
+    for (const r of newRows) {
+      params.push(
+        r.brandId, r.creditId, r.orderId, r.brainAnonId, r.touchSeq, r.channel, r.campaignId,
+        r.modelId, r.rowKind, r.weightFraction, r.creditedRevenueMinor.toString(), r.currencyCode,
+        r.reversedOfCreditId, r.reversalReason, r.realizedRevenueMinor.toString(),
+        r.confidenceGrade, r.attributionConfidence, r.modelVersion, r.metricSnapshotId,
+        toSrDatetime(r.occurredAt), toSrDatetime(r.economicEffectiveAt), r.billingPostedPeriod,
+      );
+    }
+    await this.srPool.query(
+      `INSERT INTO ${GOLD_TABLE} (
+         brand_id, credit_id, order_id, brain_anon_id, touch_seq, channel, campaign_id,
+         model_id, row_kind, weight_fraction, credited_revenue_minor, currency_code,
+         reversed_of_credit_id, reversal_reason, realized_revenue_minor,
+         confidence_grade, attribution_confidence, model_version, metric_snapshot_id,
+         occurred_at, economic_effective_at, billing_posted_period, updated_at
+       ) VALUES ${newRows.map(() => tuple).join(',')}`,
+      params,
+    );
+    return { inserted: newRows.length, suppressed: rows.length - newRows.length };
+  }
 }

@@ -64,12 +64,12 @@ export async function runAttributionReconcile(deps?: {
     for (const brand of brandsRes.rows) {
       result.brands += 1;
       try {
-        const r = await reconcileAttribution(brand.id, `attr-job-${randomUUID()}`, { pool, srPool });
+        const r = await reconcileAttribution(brand.id, `attr-job-${randomUUID()}`, { srPool });
         result.credited += r.credited;
         result.clawed_back += r.clawed_back;
         result.unattributed += r.unattributed;
         // The GLOBAL data-driven (Markov) model — trained from the corpus, applied per recognized order.
-        const dd = await reconcileDataDrivenAttribution(brand.id, `attr-dd-${randomUUID()}`, { pool, srPool });
+        const dd = await reconcileDataDrivenAttribution(brand.id, `attr-dd-${randomUUID()}`, { srPool });
         result.credited += dd.credited;
         result.clawed_back += dd.clawed_back;
         result.unattributed += dd.unattributed;

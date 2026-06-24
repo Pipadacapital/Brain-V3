@@ -392,9 +392,17 @@ function ConnectorTile({ tile, readinessLock }: { tile: MarketplaceTile; readine
                 >
                   <div className="flex-1 min-w-0">
                     {showAccountKey && (
-                      <p className="text-xs text-muted-foreground truncate font-mono">
-                        {inst.account_key}
-                      </p>
+                      <>
+                        {/* Human account name (e.g. Meta ad-account name) when captured; the
+                            raw account_key drops to a secondary mono line so multi-account
+                            providers are tellable apart at a glance. */}
+                        {inst.account_label && (
+                          <p className="text-sm font-medium truncate">{inst.account_label}</p>
+                        )}
+                        <p className="text-xs text-muted-foreground truncate font-mono">
+                          {inst.account_key}
+                        </p>
+                      </>
                     )}
                     {inst.shop_domain && (
                       <p className="text-sm text-muted-foreground truncate">{inst.shop_domain}</p>

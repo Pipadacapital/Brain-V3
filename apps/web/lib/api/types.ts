@@ -391,6 +391,8 @@ export interface MarketplaceTileInstance {
   connected_at: string | null;
   /** Per-account key within provider (Gap B — multi-account-per-provider, migration 0092). */
   account_key: string;
+  /** Human name for this account (e.g. Meta ad-account name), captured at connect. Null = show account_key. */
+  account_label?: string | null;
 }
 
 /** One tile in the marketplace (catalog ⨝ connector_instance). */

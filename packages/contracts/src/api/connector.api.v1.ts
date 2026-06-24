@@ -186,6 +186,10 @@ export const MarketplaceTileSchema = z.object({
       safety_rating: SafetyRatingSchema,
       shop_domain: z.string().nullable(),
       connected_at: z.string().datetime({ offset: true }).nullable(),
+      /** Per-account key (Gap B, 0092) — e.g. a Meta act_<id>. */
+      account_key: z.string().optional(),
+      /** Human name for the account (e.g. Meta ad-account name); null/absent ⇒ show account_key. */
+      account_label: z.string().nullable().optional(),
     })
     .nullable(),
 });

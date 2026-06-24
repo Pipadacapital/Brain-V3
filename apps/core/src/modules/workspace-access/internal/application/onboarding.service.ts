@@ -28,7 +28,7 @@ import { normalizeBrandHost } from '@brain/pixel-sdk';
 import type { CurrencyCode, BrandTimezone, RevenueDefinition } from '../domain/brand/entities.js';
 import { OrganizationRepository } from '../infrastructure/repositories/organization.repository.js';
 import { MembershipRepository } from '../infrastructure/repositories/membership.repository.js';
-import type { ProvisionPixel } from './brand.service.js';
+import type { ProvisionPixel, EmitDomainEvent } from './brand.service.js';
 import { deriveSlug } from './slugify.js';
 
 // Region derivation from currency_code (mirrors brand.service.ts:36 — kept in sync).
@@ -73,11 +73,13 @@ export class OnboardingService {
    * @param audit         Audit writer (organization.created + brand.created post-commit).
    * @param provisionPixel The SAME closure injected into BrandService — preserves the
    *                      feat-onboarding-website website→pixel path. Runs AFTER commit.
+   * @param emitEvent     Optional M1 lifecycle emitter (EV-2) — workspace.created + brand.created.
    */
   constructor(
     private readonly pool: DbPool,
     private readonly audit: AuditWriter,
     private readonly provisionPixel?: ProvisionPixel,
+    private readonly emitEvent?: EmitDomainEvent,
   ) {}
 
   /** Canonicalize the brand website (server-authoritative). null = skip-for-now. */
@@ -202,6 +204,28 @@ export class OnboardingService {
       },
       idempotency_key: randomUUID(),
     });
+
+    // EV-2: emit the workspace.created + brand.created M1 lifecycle events (versioned topics).
+    // The merged onboarding step is the PRIMARY org/brand-creation path; mirror BrandService's
+    // emit so a brand created here is on the bus too. Tenant keys come ONLY from the just-written
+    // ids (R2). The publisher fails OPEN (a bus blip never breaks onboarding — PG is the SoR).
+    if (this.emitEvent) {
+      await this.emitEvent('workspace.created', {
+        brand_id: organizationId, // pre-brand tenant key = organization_id (publisher envelope)
+        organization_id: organizationId,
+        name: input.workspaceName,
+        owner_user_id: input.ownerUserId,
+        region_code: regionCode,
+        correlation_id: correlationId,
+      });
+      await this.emitEvent('brand.created', {
+        brand_id: brandId,
+        organization_id: organizationId,
+        display_name: input.brandDisplayName,
+        region_code: regionCode,
+        correlation_id: correlationId,
+      });
+    }
 
     // feat-onboarding-website NON-REGRESSION: provision the per-brand pixel from the
     // just-written brand.id (never client input), only when a website was given.

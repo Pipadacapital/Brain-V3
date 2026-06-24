@@ -29,6 +29,7 @@ import type { Producer } from 'kafkajs';
 import {
   buildTopic,
   USER_REGISTERED_TOPIC_SUFFIX,
+  WORKSPACE_CREATED_TOPIC_SUFFIX,
   BRAND_CREATED_TOPIC_SUFFIX,
   CONNECTOR_CONNECTED_TOPIC_SUFFIX,
   PIXEL_INSTALLED_TOPIC_SUFFIX,
@@ -46,14 +47,16 @@ export type EmitEvent = (eventName: string, payload: Record<string, unknown>) =>
 
 /**
  * Map dotted domain-event name → versioned M1 topic suffix.
- * Only the names the task scopes (pixel.installed, connector.connected, brand.created,
- * user.registered) are published; others fall through to log-only (no regression).
+ * The lifecycle names (pixel.installed, connector.connected, brand.created,
+ * user.registered, workspace.created) are published; others fall through to log-only
+ * (no regression).
  */
 const EVENT_NAME_TO_TOPIC_SUFFIX: Record<string, string> = {
   'pixel.installed': PIXEL_INSTALLED_TOPIC_SUFFIX,
   'connector.connected': CONNECTOR_CONNECTED_TOPIC_SUFFIX,
   'brand.created': BRAND_CREATED_TOPIC_SUFFIX,
   'user.registered': USER_REGISTERED_TOPIC_SUFFIX,
+  'workspace.created': WORKSPACE_CREATED_TOPIC_SUFFIX,
 };
 
 export interface M1EventPublisherDeps {

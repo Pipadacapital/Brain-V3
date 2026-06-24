@@ -24,6 +24,13 @@ export type ProvisionPixel = (
   targetHost: string,
   idempotencyKey: string,
 ) => Promise<void>;
+
+/**
+ * M1 domain-event emitter seam (EV-2). Injected as a closure so BrandService stays free of
+ * the Kafka/publisher wiring. The publisher maps the dotted name → versioned topic and
+ * fails OPEN (a bus blip never breaks the brand-create write — PG is the SoR).
+ */
+export type EmitDomainEvent = (eventName: string, payload: Record<string, unknown>) => Promise<void>;
 import type { Brand, CurrencyCode, BrandTimezone, RevenueDefinition } from '../domain/brand/entities.js';
 import type { RoleCode } from '../domain/membership/entities.js';
 import { BrandRepository } from '../infrastructure/repositories/brand.repository.js';
@@ -63,6 +70,11 @@ export class BrandService {
      * Optional: absent (Silver down) → guard treats the brand as having no financial data yet.
      */
     private readonly srPool?: SilverPool,
+    /**
+     * M1 lifecycle event emitter (EV-2). Optional: absent in unit tests / non-publishing
+     * contexts → brand-create still works (the event is simply not placed on the bus).
+     */
+    private readonly emitEvent?: EmitDomainEvent,
   ) {}
 
   /**
@@ -160,6 +172,19 @@ export class BrandService {
         },
         idempotency_key: randomUUID(),
       });
+
+      // EV-2: emit the brand.created M1 lifecycle event (versioned topic brand.created.v1).
+      // Fires after the brand row + audit are committed. The publisher fails OPEN (a bus blip
+      // never breaks the create — PG is the SoR). brand_id is the just-written brand.id (R2).
+      if (this.emitEvent) {
+        await this.emitEvent('brand.created', {
+          brand_id: brand.id,
+          organization_id: data.organizationId,
+          display_name: brand.displayName,
+          region_code: brand.regionCode,
+          correlation_id: correlationId,
+        });
+      }
 
       // Auto-provision the per-brand pixel_installation (ADR-4). brandId is taken
       // ONLY from the just-written brand.id — never a client-sent brand_id (R2).

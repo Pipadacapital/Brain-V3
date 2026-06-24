@@ -108,10 +108,12 @@ describe('onboarding-ux LIVE — provision + isolation (brain_app)', () => {
     if (!rawPool) { console.warn('[SKIP] D3-1: Postgres not reachable'); return; }
     const dbPool = await createPool({ connectionString: DATABASE_URL, maxConnections: 3 });
     let pixelProvisioned = false;
+    const emitEvent = vi.fn().mockResolvedValue(undefined);
     const svc = new OnboardingService(
       dbPool,
       noopAudit() as never,
       async () => { pixelProvisioned = true; },
+      emitEvent,
     );
 
     const result = await svc.provisionWorkspaceAndBrand(
@@ -125,6 +127,14 @@ describe('onboarding-ux LIVE — provision + isolation (brain_app)', () => {
     expect(result.brandId).toBeTruthy();
     // Website given → pixel auto-provisioned (feat-onboarding-website non-regression).
     expect(pixelProvisioned).toBe(true);
+
+    // EV-2: the merged onboarding step published both lifecycle events with server-resolved
+    // tenant keys (workspace.created keyed by org, brand.created keyed by the new brand — R2).
+    const emitted = emitEvent.mock.calls.map(([name]) => name as string);
+    expect(emitted).toContain('workspace.created');
+    expect(emitted).toContain('brand.created');
+    const brandCall = emitEvent.mock.calls.find(([name]) => name === 'brand.created');
+    expect((brandCall?.[1] as Record<string, unknown>)['brand_id']).toBe(result.brandId);
 
     // Org row + derived slug (no slug was supplied; must be slugify('Onb Live A')-suffix).
     const org = await rawPool.query<{ slug: string; onboarding_status: string; onboarding_step: number }>(

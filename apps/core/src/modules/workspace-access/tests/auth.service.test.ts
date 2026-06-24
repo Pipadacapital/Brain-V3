@@ -364,6 +364,116 @@ describe('AuthService.forgotPassword — NN-5b no enumeration', () => {
   });
 });
 
+// ── EV-2: user.registered M1 lifecycle event emit ─────────────────────────────
+
+describe('AuthService.register — EV-2 user.registered emit', () => {
+  const CORR = 'corr-ev2-test';
+
+  function makeAuthService() {
+    const userRow = {
+      id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+      email: 'new@example.com',
+      email_normalized: 'new@example.com',
+      password_hash: '$argon2id$v=19$m=19456,t=2,p=1$salt$hash',
+      email_verified_at: null,
+      status: 'active',
+      created_at: new Date(),
+      updated_at: new Date(),
+    };
+
+    // Passthrough client (app_user has no RLS — register ctx carries no GUC IDs, mirrors
+    // the forgotPassword harness above; createStubClient's NN-1 guard would reject it).
+    const mockClient = {
+      query: vi.fn().mockImplementation(async (_ctx: unknown, sql: string) => {
+        if (sql.includes('INSERT INTO app_user')) return { rows: [userRow], rowCount: 1 };
+        if (sql.includes('FROM app_user')) return { rows: [], rowCount: 0 }; // findByEmail → no existing
+        if (sql.includes('INSERT INTO email_verification')) {
+          return {
+            rows: [{ id: 'ver-1', app_user_id: userRow.id, token_hash: 'h', expires_at: new Date(), used_at: null, created_at: new Date() }],
+            rowCount: 1,
+          };
+        }
+        return { rows: [], rowCount: 0 }; // markEmailVerified / invite lookup
+      }),
+      release: vi.fn(),
+    };
+    const mockPool = {
+      connect: vi.fn().mockResolvedValue(mockClient),
+      end: vi.fn().mockResolvedValue(undefined),
+    };
+    const mockAudit = {
+      append: vi.fn().mockResolvedValue({ id: 0n, entry_hash: 'abc' }),
+      getRecentEntries: vi.fn().mockResolvedValue([]),
+    };
+    const mockNotification = {
+      sendVerificationEmail: vi.fn().mockResolvedValue(undefined),
+      sendPasswordResetEmail: vi.fn(),
+      sendInviteEmail: vi.fn(),
+      canContact: vi.fn().mockResolvedValue({ decision: 'allow' as const, reason: 'transactional_exempt' as const }),
+    };
+    const emitEvent = vi.fn().mockResolvedValue(undefined);
+
+    return {
+      authService: new AuthService(
+        mockPool,
+        mockAudit,
+        mockNotification,
+        { jwtSigningSecret: 'test-secret-1234567890123456789012345678901234567890' },
+        undefined,
+        emitEvent,
+      ),
+      emitEvent,
+      userRow,
+    };
+  }
+
+  it('emits user.registered with the user.id as the pre-brand tenant key', async () => {
+    const { authService, emitEvent, userRow } = makeAuthService();
+
+    await authService.register('new@example.com', 'sufficiently-long-password', CORR);
+
+    expect(emitEvent).toHaveBeenCalledTimes(1);
+    const [eventName, payload] = emitEvent.mock.calls[0] as [string, Record<string, unknown>];
+    expect(eventName).toBe('user.registered');
+    expect(payload['user_id']).toBe(userRow.id);
+    // Pre-brand events carry the user.id as the tenant key (publisher resolves the envelope from it).
+    expect(payload['brand_id']).toBe(userRow.id);
+    // No raw PII on the bus — only the masked email (I-S02).
+    expect(String(payload['email_masked'])).not.toContain('new@example.com');
+    expect(payload['correlation_id']).toBe(CORR);
+  });
+
+  it('NEGATIVE CONTROL: does NOT emit for an existing-email collision (no created user)', async () => {
+    const emitEvent = vi.fn().mockResolvedValue(undefined);
+    // findByEmail returns an existing user → created=false path → no emit.
+    const existing = {
+      id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+      email: 'new@example.com', email_normalized: 'new@example.com',
+      password_hash: '$argon2id$v=19$m=19456,t=2,p=1$salt$hash',
+      email_verified_at: new Date(), status: 'active',
+      created_at: new Date(), updated_at: new Date(),
+    };
+    const mockClient = {
+      query: vi.fn().mockImplementation(async (_ctx: unknown, sql: string) => {
+        if (sql.includes('FROM app_user')) return { rows: [existing], rowCount: 1 };
+        return { rows: [], rowCount: 0 };
+      }),
+      release: vi.fn(),
+    };
+    const svc = new AuthService(
+      { connect: vi.fn().mockResolvedValue(mockClient), end: vi.fn() },
+      { append: vi.fn().mockResolvedValue({ id: 0n, entry_hash: 'x' }), getRecentEntries: vi.fn().mockResolvedValue([]) },
+      { sendVerificationEmail: vi.fn().mockResolvedValue(undefined), sendPasswordResetEmail: vi.fn(), sendInviteEmail: vi.fn(), canContact: vi.fn() },
+      { jwtSigningSecret: 'test-secret-1234567890123456789012345678901234567890' },
+      undefined,
+      emitEvent,
+    );
+
+    await svc.register('new@example.com', 'sufficiently-long-password', CORR);
+    expect(emitEvent).not.toHaveBeenCalled();
+  });
+});
+
 // ── AuthError — domain error shape ────────────────────────────────────────────
 
 describe('AuthError domain error', () => {

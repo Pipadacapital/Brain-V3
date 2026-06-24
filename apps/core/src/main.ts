@@ -551,9 +551,54 @@ export async function main(): Promise<void> {
     `[core] PII vault wired (${config.nodeEnv === 'production' ? 'PROD: AWS KMS per-brand DEK (brand_keyring)' : 'dev: per-brand derived DEK'}); MatchPiiPort ready for CAPI passback`,
   );
 
+  // ── B1: live-lane Kafka producer (ADR-LV-1..4) ───────────────────────────────
+  // Connected ONCE at startup and reused by the webhook pipeline AND the M1 event publisher.
+  // Built BEFORE the application services so the lifecycle emitters (user.registered,
+  // brand.created) can be injected into AuthService/BrandService below.
+  const webhookKafka = new Kafka({
+    clientId: 'core-webhook-receiver',
+    brokers: config.kafkaBrokers,
+    retry: { retries: 3 },
+  });
+  const webhookProducer = webhookKafka.producer();
+  await webhookProducer.connect();
+  const liveTopic = `${config.kafkaEnv}.collector.event.v1`;
+
+  // Per-brand salt for PII hashing in the webhook receiver.
+  // Mirrors the SaltProvider pattern from stream-worker: env var IDENTITY_SALT_<BRAND_UUID_NO_DASHES>.
+  async function getWebhookSaltHex(brandId: string): Promise<string> {
+    // Same shared resolution order as getCoreSaltHex / the worker SaltProvider —
+    // a live webhook ingest and a repull of the same order hash the same email
+    // identically (deterministic dev salt). D-2 guard below is unchanged.
+    const salt = resolveSaltHex(brandId);
+    if (!salt || salt.length !== 64) {
+      throw new Error(
+        `[webhook] salt for brand ${brandId} is missing or wrong length (expected 64 hex chars)`,
+      );
+    }
+    return salt;
+  }
+
+  // ── EV-2: the REAL M1 domain-event publisher ────────────────────────────────
+  // Replaces the prior log-only emitEvent stubs: publishes versioned M1 lifecycle events
+  // (pixel.installed.v1, connector.connected.v1, brand.created.v1, user.registered.v1) to
+  // Kafka via the same producer pattern the webhook pipeline + collector use. Wired into
+  // every command-event callback below (getOrCreateInstallation, the connector commands,
+  // verifyPixel) AND the lifecycle services (AuthService → user.registered, BrandService →
+  // brand.created) so the events actually reach the bus instead of only the log.
+  const emitEvent = createM1EventPublisher({
+    producer: webhookProducer,
+    env: config.kafkaEnv,
+    log: {
+      info: (obj, msg) => app.log.info(obj, msg),
+      warn: (obj, msg) => app.log.warn(obj, msg),
+      error: (obj, msg) => app.log.error(obj, msg),
+    },
+  });
+
   // Create application services.
   const authServiceConfig = { jwtSigningSecret: config.jwtSigningSecret };
-  const authService = new AuthService(pool, auditWriter, notificationService, authServiceConfig, rawPgPool);
+  const authService = new AuthService(pool, auditWriter, notificationService, authServiceConfig, rawPgPool, emitEvent);
   const workspaceService = new WorkspaceService(pool, auditWriter);
 
   // ── Connector infrastructure (global primitives shared by the connector registrar) ──
@@ -599,48 +644,6 @@ export async function main(): Promise<void> {
     ? new RedisOAuthStateStore(redis)
     : new InProcessOAuthStateStore();
 
-  // ── B1: live-lane Kafka producer (ADR-LV-1..4) ───────────────────────────────
-  // Connected ONCE at startup and reused by the webhook pipeline AND the M1 event publisher.
-  const webhookKafka = new Kafka({
-    clientId: 'core-webhook-receiver',
-    brokers: config.kafkaBrokers,
-    retry: { retries: 3 },
-  });
-  const webhookProducer = webhookKafka.producer();
-  await webhookProducer.connect();
-  const liveTopic = `${config.kafkaEnv}.collector.event.v1`;
-
-  // Per-brand salt for PII hashing in the webhook receiver.
-  // Mirrors the SaltProvider pattern from stream-worker: env var IDENTITY_SALT_<BRAND_UUID_NO_DASHES>.
-  async function getWebhookSaltHex(brandId: string): Promise<string> {
-    // Same shared resolution order as getCoreSaltHex / the worker SaltProvider —
-    // a live webhook ingest and a repull of the same order hash the same email
-    // identically (deterministic dev salt). D-2 guard below is unchanged.
-    const salt = resolveSaltHex(brandId);
-    if (!salt || salt.length !== 64) {
-      throw new Error(
-        `[webhook] salt for brand ${brandId} is missing or wrong length (expected 64 hex chars)`,
-      );
-    }
-    return salt;
-  }
-
-  // ── EV-2: the REAL M1 domain-event publisher ────────────────────────────────
-  // Replaces the prior log-only emitEvent stubs: publishes versioned M1 lifecycle events
-  // (pixel.installed.v1, connector.connected.v1, brand.created.v1, user.registered.v1) to
-  // Kafka via the same producer pattern the webhook pipeline + collector use. Wired into
-  // every command-event callback below (getOrCreateInstallation, the connector commands,
-  // verifyPixel) so the events actually reach the bus instead of only the log.
-  const emitEvent = createM1EventPublisher({
-    producer: webhookProducer,
-    env: config.kafkaEnv,
-    log: {
-      info: (obj, msg) => app.log.info(obj, msg),
-      warn: (obj, msg) => app.log.warn(obj, msg),
-      error: (obj, msg) => app.log.error(obj, msg),
-    },
-  });
-
   // Pixel provision wiring (ADR-4): construct the idempotent installation command
   // BEFORE BrandService so brand-create-with-website can auto-provision the per-brand
   // pixel_installation server-side. brandId flows ONLY from the just-written brand.id.
@@ -659,6 +662,7 @@ export async function main(): Promise<void> {
       await getOrCreateInstallation.execute({ brandId, targetHost, idempotencyKey });
     },
     srPool,
+    emitEvent,
   );
   const inviteService = new InviteService(pool, auditWriter, notificationService, rawPgPool);
 
@@ -672,6 +676,7 @@ export async function main(): Promise<void> {
     async (brandId, targetHost, idempotencyKey) => {
       await getOrCreateInstallation.execute({ brandId, targetHost, idempotencyKey });
     },
+    emitEvent,
   );
 
   // ── CQ-2: register the workspace-access + frontend-api (BFF) + notification context ──

@@ -33,18 +33,27 @@ import {
 } from './shared.js';
 import type { SessionService } from './session.service.js';
 
+/**
+ * M1 domain-event emitter seam (EV-2). Injected as a closure so RegistrationService stays
+ * free of the Kafka/publisher wiring. The publisher fails OPEN (a bus blip never breaks
+ * registration — PG is the SoR).
+ */
+export type EmitDomainEvent = (eventName: string, payload: Record<string, unknown>) => Promise<void>;
+
 export class RegistrationService {
   /**
    * @param pool         — GUC-middleware-wrapped pool for all standard queries.
    * @param audit        — Audit writer.
    * @param notification — Notification service.
    * @param sessions     — SessionService (for the auto-login session-minting primitive).
+   * @param emitEvent    — Optional M1 lifecycle event emitter (EV-2) for user.registered.
    */
   constructor(
     private readonly pool: DbPool,
     private readonly audit: AuditWriter,
     private readonly notification: NotificationService,
     private readonly sessions: SessionService,
+    private readonly emitEvent?: EmitDomainEvent,
   ) {}
 
   // ── Register ───────────────────────────────────────────────────────────────
@@ -213,6 +222,21 @@ export class RegistrationService {
       entity_id: user.id,
       payload: { email_masked: maskEmail(email) },
     });
+
+    // EV-2: emit the user.registered M1 lifecycle event (versioned topic user.registered.v1).
+    // Pre-brand event — there is no org/brand yet, so the tenant key is the user.id (same
+    // convention as the audit row above). The publisher fails OPEN (a bus blip never breaks
+    // registration — PG is the SoR). verification_required reflects the real gate state
+    // (dev auto-verifies; prod requires the emailed token).
+    if (this.emitEvent) {
+      await this.emitEvent('user.registered', {
+        brand_id: user.id, // pre-brand tenant key (publisher reads this for the envelope/partition)
+        user_id: user.id,
+        email_masked: maskEmail(email),
+        verification_required: emailVerifiedAt == null,
+        correlation_id: correlationId,
+      });
+    }
 
     // AC-7: Check for pending invite for this email (register-with-pending-invite).
     // A single indexed query; run AFTER the hash for timing equivalence.

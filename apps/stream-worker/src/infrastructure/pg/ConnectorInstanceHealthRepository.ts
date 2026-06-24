@@ -28,8 +28,8 @@ import type { Pool } from 'pg';
 import type { HealthState, SafetyRating } from '@brain/connector-core';
 import { log } from '../../log.js';
 
-/** The two health transitions this module drives from operational error branches. */
-export type HealthTransitionKind = 'token_expired' | 'rate_limited';
+/** The health transitions this module drives from operational error branches. */
+export type HealthTransitionKind = 'token_expired' | 'rate_limited' | 'account_disabled';
 
 const HEALTH_TRANSITION_MAP: Record<
   HealthTransitionKind,
@@ -37,6 +37,10 @@ const HEALTH_TRANSITION_MAP: Record<
 > = {
   token_expired: { healthState: 'TokenExpired', safetyRating: 'blocked' },
   rate_limited:  { healthState: 'RateLimited',  safetyRating: 'degraded' },
+  // account_disabled: the provider rejected the ad account itself (e.g. Google CUSTOMER_NOT_ENABLED
+  // — deactivated / not yet enabled). 'Disabled'/blocked is terminal until the account is re-enabled
+  // and reconnected; the repull backs off (no value retrying a disabled account every tick).
+  account_disabled: { healthState: 'Disabled', safetyRating: 'blocked' },
 };
 
 /**

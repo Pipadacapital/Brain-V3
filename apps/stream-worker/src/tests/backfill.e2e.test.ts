@@ -229,9 +229,8 @@ beforeAll(async () => {
 }, 30_000);
 
 afterAll(async () => {
-  // Clean up test data rows, then fixture brands
-  await superPool.query(`DELETE FROM realized_revenue_ledger WHERE brand_id IN ($1, $2)`, [BRAND_A, BRAND_B]).catch(() => undefined);
-  await superPool.query(`DELETE FROM bronze_events WHERE brand_id IN ($1, $2)`, [BRAND_A, BRAND_B]).catch(() => undefined);
+  // Clean up test data rows, then fixture brands. (revenue ledger is out of PG — Epic 1; bronze_events
+  // was dropped in the db-audit lakehouse move — neither analytical store is PG anymore.)
   await superPool.query(`DELETE FROM backfill_job WHERE brand_id IN ($1, $2)`, [BRAND_A, BRAND_B]).catch(() => undefined);
   await superPool.query(`DELETE FROM brand WHERE id IN ($1, $2)`, [BRAND_A, BRAND_B]).catch(() => undefined);
   await kafkaProducer.disconnect();

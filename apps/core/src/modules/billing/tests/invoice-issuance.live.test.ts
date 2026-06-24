@@ -87,7 +87,7 @@ async function cleanup(): Promise<void> {
   await superPool.query(`DELETE FROM credit_note_number_counter WHERE legal_entity = $1`, [LEGAL_ENTITY]).catch(() => {});
   await superPool.query(`DELETE FROM gmv_meter_snapshot WHERE brand_id IN ($1,$2)`, [BRAND_A, BRAND_B]).catch(() => {});
   await superPool.query(`DELETE FROM billing_plan WHERE brand_id IN ($1,$2)`, [BRAND_A, BRAND_B]).catch(() => {});
-  await superPool.query(`DELETE FROM realized_revenue_ledger WHERE brand_id IN ($1,$2)`, [BRAND_A, BRAND_B]).catch(() => {});
+  // revenue is out of PG (Epic 1) — the realized ledger lives in StarRocks gold_revenue_ledger (below).
   if (srPool) {
     await (srPool as unknown as mysql.Pool)
       .query(`DELETE FROM brain_gold.gold_revenue_ledger WHERE brand_id IN (?, ?)`, [BRAND_A, BRAND_B])

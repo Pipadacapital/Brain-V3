@@ -114,8 +114,8 @@ jobs:
     # MEDALLION REALIGNMENT (Epic 3 / ADR-0004): Neo4j is the identity SoR; dbt/StarRocks can't read it.
     # This materializes the active hash→brain_id edges from Neo4j → brain_silver.silver_identity_link
     # (StarRocks) so recognition-refresh (:05) resolves order brain_id + the customer marts populate.
-    # Runs BEFORE recognition-refresh. Needs NEO4J_* + STARROCKS_* env. One-time PG→Neo4j seed is the
-    # separate identity-backfill-neo4j job (not a cron).
+    # Runs BEFORE recognition-refresh. Needs NEO4J_* + STARROCKS_* env. (The one-time PG→Neo4j identity
+    # seed has been executed and removed — PG identity is dropped, so there is nothing left to backfill.)
   - name: recognition-refresh
     enabled: false                 # FLIP true per env once CI publishes + pins dbtRunnerImage.digest
     schedule: "5 * * * *"          # hourly at :05 — ATTRIBUTION CHAIN step 0: rebuild the gold ledger

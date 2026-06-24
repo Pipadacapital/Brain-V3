@@ -34,14 +34,14 @@ describe('withBrandTxn — RLS transaction (audit R-01 hardening)', () => {
 
     await withBrandTxn(pool, BRAND, async (c) => {
       sawClientInFn = c;
-      await c.query('SELECT 1 FROM realized_revenue_ledger');
+      await c.query('SELECT 1 AS probe');
       return 'ok';
     });
 
     expect(calls[0]).toBe('BEGIN');
     expect(calls[1]).toBe('SET LOCAL ROLE brain_app');
     expect(calls[2]).toBe("SELECT set_config('app.current_brand_id', $1, true)");
-    expect(calls[3]).toBe('SELECT 1 FROM realized_revenue_ledger');
+    expect(calls[3]).toBe('SELECT 1 AS probe');
     expect(calls[4]).toBe('COMMIT');
     expect(sawClientInFn).toBe(client);
   });

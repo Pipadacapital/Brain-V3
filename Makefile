@@ -44,7 +44,6 @@ PG_PSQL  ?= docker exec -i $(PG_CONTAINER) psql -U $(PG_USER) -d $(PG_DB)
 .PHONY: orderline-catalog orderline-ddl orderline-run orderline-build orderline-verify
 .PHONY: checkout-catalog checkout-run checkout-build checkout-verify
 .PHONY: gold-run insights-pipeline attribution-gold-refresh recognition-refresh
-.PHONY: attribution-migrate attribution-seed attribution-build attribution-verify
 
 silver-catalog:
 	@echo ">> Applying Postgres read-shim view silver_order_ledger_src (uuid->text for JDBC)..."
@@ -244,38 +243,15 @@ checkout-verify: checkout-run
 	fi
 
 # ============================================================================
-# Phase 5 — Attribution credit ledger (migration 0032 + synthetic fixtures).
-# The credit ledger is a Postgres Gold SoR (RLS FORCE, append-only). It is
-# rebuildable from silver.touchpoint + realized_revenue_ledger — the synthetic
-# fixtures are CLEARLY-LABELLED dev enrichment (real journey data is thin).
+# Phase 5 — Attribution credit ledger.
+# MEDALLION REALIGNMENT (Epic 2 / decision B): the credit ledger is no longer a Postgres SoR.
+# attribution_credit_ledger (migration 0032) was DROPPED (migration 0099); the ledger is now the
+# app-written StarRocks table brain_gold.gold_attribution_credit (attribution-writer), and
+# gold_marketing_attribution is a dbt VIEW over it. The reconcile driver (reconcile-attribution.ts)
+# rebuilds it from silver_touchpoint + the gold revenue ledger — no PG table, no synthetic PG seed.
+# The closed-sum parity oracle (packages/metric-engine attribution-parity-oracle.test.ts) is a pure
+# in-memory CI gate; the live legs write/read gold directly. No make target seeds attribution anymore.
 # ============================================================================
-
-attribution-migrate:
-	@echo ">> Applying additive migration 0032_attribution_credit_ledger.sql (RLS FORCE, append-only, seams)..."
-	$(PG_PSQL) -v ON_ERROR_STOP=1 < db/migrations/0032_attribution_credit_ledger.sql
-
-attribution-seed: attribution-migrate
-	@echo ">> Loading CLEARLY-LABELLED synthetic attribution fixtures (model_version=v1-synthetic-fixture) into the credit ledger..."
-	$(PG_PSQL) -v ON_ERROR_STOP=1 < db/dbt/seeds/attribution_synthetic_fixtures.sql
-
-attribution-build: attribution-seed
-
-# Replay/idempotency proof: re-running the seed must add NO rows (append-only +
-# ON CONFLICT DO NOTHING on the dedup key). Row count is stable across re-seeds.
-attribution-verify: attribution-seed
-	@echo ">> [replay] credit-ledger row count after seed #1 ..."
-	@$(PG_PSQL) -tAc "SELECT COUNT(*) FROM attribution_credit_ledger WHERE model_version='v1-synthetic-fixture';" > /tmp/acl_count_1.txt
-	@cat /tmp/acl_count_1.txt
-	@echo ">> [replay] re-loading the synthetic seed (must be a no-op) ..."
-	$(PG_PSQL) -v ON_ERROR_STOP=1 < db/dbt/seeds/attribution_synthetic_fixtures.sql > /dev/null
-	@echo ">> [replay] credit-ledger row count after seed #2 ..."
-	@$(PG_PSQL) -tAc "SELECT COUNT(*) FROM attribution_credit_ledger WHERE model_version='v1-synthetic-fixture';" > /tmp/acl_count_2.txt
-	@cat /tmp/acl_count_2.txt
-	@if diff -q /tmp/acl_count_1.txt /tmp/acl_count_2.txt >/dev/null; then \
-		echo ">> REPLAY PASS: attribution_credit_ledger row count is identical across re-seeds (append-only / idempotent)."; \
-	else \
-		echo ">> REPLAY FAIL: attribution_credit_ledger row count changed between re-seeds."; exit 1; \
-	fi
 
 # ============================================================================
 # re-platform Phase E — Gold serving marts (brain_gold). Reads Silver only; ADR-004-safe

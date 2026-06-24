@@ -22,7 +22,7 @@ import { DbAuditWriter, type AuditDbClient } from '@brain/audit';
 import { RedisDedupAdapter } from './infrastructure/redis/RedisDedupAdapter.js';
 import { RetryCounterAdapter } from './infrastructure/redis/RetryCounterAdapter.js';
 import { BronzeRepository } from './infrastructure/pg/BronzeRepository.js';
-import { IdentityRepository } from './infrastructure/pg/IdentityRepository.js';
+import { Neo4jIdentityRepository } from './infrastructure/neo4j/Neo4jIdentityRepository.js';
 import { SaltProvider, LocalSecretsProvider } from './infrastructure/secrets/SaltProvider.js';
 import { resolveSaltHex } from '@brain/identity-core';
 import { initObservability, initSentry, createLogger } from '@brain/observability';
@@ -40,7 +40,6 @@ import { ProcessEventUseCase } from './application/ProcessEventUseCase.js';
 import { ResolveIdentityUseCase } from './application/ResolveIdentityUseCase.js';
 import { CollectorEventConsumer } from './interfaces/consumers/CollectorEventConsumer.js';
 import { IdentityBridgeConsumer } from './identity-bridge/IdentityBridgeConsumer.js';
-import { IdentityGraph } from '@brain/identity-graph';
 import { ConsentSuppressorConsumer } from './interfaces/consumers/ConsentSuppressorConsumer.js';
 import { ProjectConsentUseCase } from './application/ProjectConsentUseCase.js';
 import { ConsentRepository } from './infrastructure/pg/ConsentRepository.js';
@@ -216,40 +215,25 @@ export async function main(): Promise<void> {
     process.env['NODE_ENV'] === 'production'
       ? new KmsVaultKeyProvider(new PgPool({ connectionString: dbUrl, max: 2 }), new AwsKmsDecryptAdapter())
       : new DevVaultKeyProvider();
-  const identityRepo = new IdentityRepository(dbUrl, vaultKeyProvider);
-  // Neo4j identity graph (re-platform Phase D experiment) — RETIRED as a dual-write by default.
-  // AUDIT-REMEDIATION (identity): Postgres is the DECLARED identity system-of-record (RLS-isolated,
-  // transactional, the single reader for Customer 360 / merge-admin / attribution). The Neo4j path
-  // mints brain_ids with a DIFFERENT algorithm (deterministicBrainId from the min hash) than the PG
-  // resolver (randomUUID mint + union-find), so it DIVERGES from the SoR and NOTHING reads it — running
-  // it produced a parity-less shadow graph for no consumer. See docs/adr/0003-postgres-identity-sor.md.
-  //
-  // The code is PRESERVED but gated default-OFF behind an explicit, clearly non-authoritative flag.
-  // Merely having Neo4j in the dev stack (NEO4J_URI set) no longer triggers divergent minting; you must
-  // also opt in with IDENTITY_NEO4J_DUAL_WRITE=true (a parity-free projection, never read by the app).
-  let identityGraph: IdentityGraph | undefined;
-  const neo4jUri = process.env['NEO4J_URI'];
-  const neo4jDualWriteEnabled = process.env['IDENTITY_NEO4J_DUAL_WRITE'] === 'true';
-  if (neo4jUri && neo4jDualWriteEnabled) {
-    identityGraph = new IdentityGraph(
-      neo4jUri,
-      process.env['NEO4J_USER'] ?? 'neo4j',
-      process.env['NEO4J_PASSWORD'] ?? 'neo4j',
-    );
-    try {
-      await identityGraph.bootstrap();
-      log.warn('[identity] Neo4j identity graph wired as a NON-AUTHORITATIVE projection ' +
-        '(IDENTITY_NEO4J_DUAL_WRITE=true) — PG remains the system-of-record; this graph is parity-free ' +
-        `and read by nothing. See ADR-0003. — ${neo4jUri}`);
-    } catch (err) {
-      log.warn(`[identity] Neo4j bootstrap failed — projection disabled this run: ${err instanceof Error ? err.message : String(err)}`);
-      identityGraph = undefined;
-    }
-  } else if (neo4jUri) {
-    log.info('[identity] Neo4j present but dual-write RETIRED (default-off; set IDENTITY_NEO4J_DUAL_WRITE=true ' +
-      'to enable the non-authoritative projection). PG is the identity system-of-record (ADR-0003).');
+  // MEDALLION REALIGNMENT (Epic 3 / ADR-0004): Neo4j is the identity SYSTEM-OF-RECORD. The graph
+  // (customer / identity_link edges / merge / alias / phone-guard / merge-review) lives in Neo4j; the
+  // immutable identity_audit ledger + the encrypted contact_pii vault + the brand phone-guard config
+  // stay in PostgreSQL (passed via dbUrl). The pure IdentityResolver runs unchanged (IdentityStore
+  // contract). Supersedes ADR-0003 (the retired PG-SoR + Neo4j-dual-write experiment).
+  const identityRepo = new Neo4jIdentityRepository(
+    process.env['NEO4J_URI'] ?? 'bolt://localhost:7687',
+    process.env['NEO4J_USER'] ?? 'neo4j',
+    process.env['NEO4J_PASSWORD'] ?? 'neo4j',
+    dbUrl,
+    vaultKeyProvider,
+  );
+  try {
+    await identityRepo.bootstrap();
+    log.info('[identity] Neo4j identity SoR wired (ADR-0004); audit + contact_pii in PG.');
+  } catch (err) {
+    log.warn(`[identity] Neo4j bootstrap failed: ${err instanceof Error ? err.message : String(err)}`);
   }
-  const resolveIdentityUseCase = new ResolveIdentityUseCase(saltProvider, identityRepo, identityGraph);
+  const resolveIdentityUseCase = new ResolveIdentityUseCase(saltProvider, identityRepo);
   // T2-8: pass the shared durable RetryCounterAdapter so identity-bridge retries survive
   // pod restarts and a poison message always reaches the DLQ (mirrors ConsentSuppressor /
   // Backfill / LiveLedger — every consumer that receives retryCounter here).
@@ -414,7 +398,6 @@ export async function main(): Promise<void> {
       dqChecker.stop(),
       ingestScheduler.stop(),
     ]);
-    if (identityGraph) await identityGraph.close().catch(() => undefined);
     await syncClaimerPool.end();
     await dqPool.end();
     await ingestSchedulerPool.end();

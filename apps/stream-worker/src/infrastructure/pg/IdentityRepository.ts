@@ -36,6 +36,24 @@ export interface IdentityReadState {
   brandConfig: BrandPhoneGuardConfig;
 }
 
+/**
+ * The identity store contract the resolver use-case depends on. Both the PG IdentityRepository (legacy)
+ * and the Neo4jIdentityRepository (the Epic-3 SoR, ADR-0004) satisfy it — so ResolveIdentityUseCase is
+ * store-agnostic and the SoR swap is a composition-root change.
+ */
+export interface IdentityStore {
+  readState(
+    brandId: string,
+    identifierHashes: Array<{ type: string; hash: string }>,
+    now?: Date,
+  ): Promise<IdentityReadState>;
+  writeOutcome(
+    brandId: string,
+    outcome: ResolveOutcome,
+    identifiers: ExtractedIdentifier[],
+  ): Promise<{ written: boolean }>;
+}
+
 export class IdentityRepository {
   private readonly pool: Pool;
 

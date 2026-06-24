@@ -21,6 +21,11 @@ services:
       POSTGRES_PASSWORD: brain
       POSTGRES_DB: brain
     ports: ["5432:5432"]
+    # Provision the brain_app LOGIN role on first init of a fresh volume (before migrations).
+    # Closes the cold-start gap where a wiped volume leaves brain_app unable to authenticate.
+    # See db/init/00_provision_brain_app_role.sql. Local substrate only; no effect on real prod.
+    volumes:
+      - ./db/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U brain -d brain"]
       interval: 5s
@@ -175,7 +180,9 @@ services:
       # OTel trace export (ai-observability-tracing; Tempo at :4317 in the observe profile).
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://tempo:4317}
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:4000/health"]
+      # The litellm image ships no `curl`, and /health requires the master key (401). Use the
+      # bundled python against the unauthenticated lightweight liveliness probe instead.
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:4000/health/liveliness').status==200 else 1)"]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -184,7 +191,7 @@ services:
     image: localstack/localstack:3.4
     profiles: ["core"]
     environment:
-      SERVICES: "s3,secretsmanager,kms,events"
+      SERVICES: "s3,secretsmanager,kms,ses,events"
     ports: ["4566:4566"]
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]

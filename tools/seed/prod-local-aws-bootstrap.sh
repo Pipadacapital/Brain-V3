@@ -42,6 +42,28 @@ for pair in "brain/jwt-signing-secret:JWT_SIGNING_SECRET" "brain/cookie-secret:C
   echo "[prod-local]   secret $name"
 done
 
+echo "[prod-local] SES: verify the sender identity (real SES rejects unverified senders)"
+# In prod-local LocalStack runs SES (compose SERVICES includes 'ses'). Like real SES, it rejects
+# sends from an unverified From address (MessageRejected). Verify the EMAIL_FROM_ADDRESS sender so
+# transactional email (verification, invites, alerts) actually sends. Real prod verifies the
+# domain/sender in SES once, out-of-band.
+FROM_ADDR="$(grep -E '^EMAIL_FROM_ADDRESS=' .env | cut -d= -f2-)"; FROM_ADDR="${FROM_ADDR:-noreply@brain.app}"
+awsl ses verify-email-identity --email-address "$FROM_ADDR" >/dev/null 2>&1 \
+  && echo "[prod-local]   verified sender $FROM_ADDR" \
+  || echo "[prod-local]   WARN: could not verify sender $FROM_ADDR (SES may be disabled)"
+
+echo "[prod-local] Secrets Manager: ad-platform app secrets (values from .env.dev)"
+# core boot fail-closes in prod without META_APP_SECRET / GOOGLE_ADS_CLIENT_SECRET. The dev raw
+# values live in .env.dev (not the base .env); copy them under the Secrets Manager names .env.prod
+# references, so AwsSecretsProvider resolves them at startup.
+for pair in "brain/meta-app-secret:META_APP_SECRET" "brain/google-ads-client-secret:GOOGLE_ADS_CLIENT_SECRET"; do
+  name="${pair%%:*}"; var="${pair#*:}"; val="$(grep -E "^${var}=" .env.dev | cut -d= -f2-)"
+  [ -z "$val" ] && { echo "[prod-local]   WARN: $var not in .env.dev — skipping $name"; continue; }
+  awsl secretsmanager create-secret --name "$name" --secret-string "$val" >/dev/null 2>&1 \
+    || awsl secretsmanager put-secret-value --secret-id "$name" --secret-string "$val" >/dev/null
+  echo "[prod-local]   secret $name"
+done
+
 echo "[prod-local] brand_keyring for $BRAND (KMS-wrapped dev DEK, for PII continuity)"
 WRAPPED=$(cd apps/core && cat > ._wrap.mjs <<EOF
 import { deriveDevVaultDek } from '@brain/identity-core';
@@ -62,7 +84,10 @@ echo "[prod-local] migrate connector secrets dev_secret → Secrets Manager (pro
 # In dev the connector tokens live in PG dev_secret (LocalSecretsManager); in prod the worker reads
 # them from Secrets Manager (AwsSecretsManager). Copy them verbatim so the prod-mode ingest repull
 # resolves its tokens — same secret NAME, raw value (getShopifyToken returns SecretString as-is).
-psql "SELECT name || E'\t' || secret_value FROM dev_secret" | grep -v '^$' | while IFS=$'\t' read -r name val; do
+# NOTE: no `grep -v '^$'` here — on a fresh/empty DB dev_secret has 0 rows, and grep exits 1 on
+# empty input which (under `set -o pipefail`) would kill the whole bootstrap before salt-seeding.
+# The in-loop empty-name guard below already skips blank lines.
+psql "SELECT name || E'\t' || secret_value FROM dev_secret" | while IFS=$'\t' read -r name val; do
   [ -z "$name" ] && continue
   awsl secretsmanager create-secret --name "$name" --secret-string "$val" >/dev/null 2>&1 \
     || awsl secretsmanager put-secret-value --secret-id "$name" --secret-string "$val" >/dev/null 2>&1

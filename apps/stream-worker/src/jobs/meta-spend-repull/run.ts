@@ -138,7 +138,14 @@ async function repullConnector(params: RepullParams): Promise<void> {
 
   const creds = await resolveMetaCredentials(secretRef, connector.ad_account_id);
   if (!creds) {
+    // FAIL LOUDLY (not a silent early-return): a missing/expired stored credential must surface as
+    // RECONNECT_REQUIRED on the connector — otherwise the tile shows a stale 'connected' while spend
+    // silently never ingests (the exact symptom seen in dev). setSyncState upserts, so the row is
+    // created even if connect never wrote one. token_expired → TokenExpired/blocked (needs reconnect).
     log.error(`connector=${ciId} — credentials not found (RECONNECT_REQUIRED)`);
+    recordConnectorAuthRejected('meta');
+    await setSyncState(pool, brandId, ciId, 'error', 'meta credentials missing — RECONNECT_REQUIRED');
+    await updateConnectorInstanceHealth(pool, brandId, ciId, 'token_expired');
     return;
   }
 

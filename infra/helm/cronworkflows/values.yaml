@@ -194,6 +194,22 @@ jobs:
     # threshold, BEFORE the ~60-day expiry — closes the silent spend-stale gap (feat-meta-token-refresh).
     # Needs META_APP_ID / META_APP_SECRET in the pod env (via the stream-worker secret); absent → the
     # job records an app_creds_missing error and no-ops (dev-safe).
+  - name: shopify-token-refresh
+    schedule: "30 3 * * *"         # daily 03:30 — proactively refresh Shopify offline tokens (mirrors meta-token-refresh)
+    command: ["node", "dist/jobs/shopify-token-refresh/run.js"]
+    useStreamWorkerImage: true
+    # Shopify offline-token expiry mandate (2026-04-01 → 1y expiry; 2027-01-01 → ALL expire). Enumerates
+    # connected Shopify connectors whose token is older than the threshold and exchanges it for a fresh
+    # one (write-back via ISecretsManager.putSecretValue — secret_ref/ARN unchanged, NN-2). Without this
+    # cron, offline tokens silently expire → Shopify sync dies. Idempotent (skips fresh tokens).
+  - name: phone-guard-reeval
+    schedule: "50 * * * *"         # hourly at :50 — re-evaluate expired phone-guard suppression windows
+    command: ["node", "dist/jobs/phone-guard-reeval.js"]
+    useStreamWorkerImage: true
+    # Windowed re-eval of the phone-guard SharedUtility state (Neo4j identity SoR + PG brand config):
+    # un-suppress a phone hash once its window slides below the per-brand distinct-brain_id threshold,
+    # else extend. Without it, a burst-suppressed (kiosk/COD) phone stays send-ineligible forever.
+    # Needs NEO4J_* + BRAIN_APP_DATABASE_URL. Idempotent; Forbid + startingDeadline make retries safe.
   - name: audit-checkpoint
     schedule: "15 * * * *"         # hourly at :15 — WORM-anchor the audit hash-chain head to S3 (R-19)
     command: ["node", "dist/jobs/audit-checkpoint.js"]

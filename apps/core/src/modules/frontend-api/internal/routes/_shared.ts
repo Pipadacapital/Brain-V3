@@ -63,6 +63,12 @@ export interface BffDeps {
   srPool?: SilverPool;
   vaultService?: ContactPiiVaultService;
   identityReader?: IdentityReader;
+  /**
+   * Per-brand salt resolver (the single brandSaltSource: dev-derived / prod KMS-unwrapped from
+   * brand_identity_salt). Used by the Customer-360 search to hash the query term identically to how
+   * the brand's identities were hashed. Optional: absent → callers fall back to the dev resolver.
+   */
+  getCoreSaltHex?: (brandId: string) => Promise<string>;
   /** Standard session validation pre-handler (NN-3). */
   sessionPreHandler: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
   /** Cookie + CSRF + session validation pre-handler used by every protected BFF route. */

@@ -57,5 +57,9 @@ export {
   UnwiredProdVaultKeyProvider,
   KmsVaultKeyProvider,
   AwsKmsDecryptAdapter,
+  AwsKmsEncryptAdapter,
+  KmsBrandSaltProvider,
+  DevBrandSaltProvider,
+  BrandCryptoProvisioner,
 } from '@brain/pii-vault';
-export type { VaultKeyProvider, KmsDecryptPort } from '@brain/pii-vault';
+export type { VaultKeyProvider, KmsDecryptPort, KmsEncryptPort, BrandSaltSource } from '@brain/pii-vault';

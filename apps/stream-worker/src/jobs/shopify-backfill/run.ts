@@ -39,8 +39,7 @@ import { updateConnectorInstanceHealth } from '../../infrastructure/pg/Connector
 import { Kafka, Producer } from 'kafkajs';
 import { buildPartitionKey } from '@brain/events';
 import { injectKafkaTraceContext } from '@brain/observability';
-import { SaltProvider, LocalSecretsProvider } from '../../infrastructure/secrets/SaltProvider.js';
-import { resolveSaltHex } from '@brain/identity-core';
+import { createSaltProvider } from '../../infrastructure/secrets/SaltProvider.js';
 import { PgBackfillJobRepository } from '../../infrastructure/pg/BackfillJobRepository.js';
 import { ORDER_BACKFILL_V1_TOPIC_SUFFIX, CollectorEventV1Schema } from '@brain/contracts';
 import { ShopifyBackfillClient } from './shopify-paged-client.js';
@@ -92,8 +91,7 @@ export async function run(connectorInstanceId?: string): Promise<void> {
   const workerSecrets = buildWorkerSecretsManager();
 
   // SaltProvider for PII hashing (same convention as identity bridge)
-  const saltSecrets = new LocalSecretsProvider();
-  const saltProvider = new SaltProvider(saltSecrets, resolveSaltHex);
+  const saltProvider = createSaltProvider(DB_URL);
 
   try {
     await producer.connect();

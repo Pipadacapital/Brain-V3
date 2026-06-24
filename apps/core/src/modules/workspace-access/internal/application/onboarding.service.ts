@@ -28,7 +28,7 @@ import { normalizeBrandHost } from '@brain/pixel-sdk';
 import type { CurrencyCode, BrandTimezone, RevenueDefinition } from '../domain/brand/entities.js';
 import { OrganizationRepository } from '../infrastructure/repositories/organization.repository.js';
 import { MembershipRepository } from '../infrastructure/repositories/membership.repository.js';
-import type { ProvisionPixel, EmitDomainEvent } from './brand.service.js';
+import type { ProvisionPixel, ProvisionBrandCrypto, EmitDomainEvent } from './brand.service.js';
 import { deriveSlug } from './slugify.js';
 
 // Region derivation from currency_code (mirrors brand.service.ts:36 — kept in sync).
@@ -84,6 +84,8 @@ export class OnboardingService {
     private readonly audit: AuditWriter,
     private readonly provisionPixel?: ProvisionPixel,
     private readonly emitEvent?: EmitDomainEvent,
+    // Per-brand identity-crypto provisioner (prod only; absent in dev / unit tests).
+    private readonly provisionBrandCrypto?: ProvisionBrandCrypto,
   ) {}
 
   /** Canonicalize the brand website (server-authoritative). null = skip-for-now. */
@@ -181,6 +183,13 @@ export class OnboardingService {
     }
 
     // ── Post-commit side effects (NOT inside the org/brand txn) ──────────────────
+    // Provision the brand's identity crypto (salt + DEK) FIRST — every other path that hashes PII
+    // or vaults contact data for this brand depends on it. brandId is the just-written id (R2).
+    // Idempotent; prod-only (dev derives). Throws on failure (visible > silently-broken brand).
+    if (this.provisionBrandCrypto) {
+      await this.provisionBrandCrypto(brandId);
+    }
+
     // Audit (append-only). Then the pixel provision — kept OUTSIDE the txn to avoid
     // cross-module transaction coupling, mirroring brand.service.ts:154-159. The pixel
     // command is idempotent (get-or-create), so a retry is safe.

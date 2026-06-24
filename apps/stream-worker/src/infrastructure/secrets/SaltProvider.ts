@@ -26,6 +26,10 @@
 // @brain/identity-core so the SAME brand resolves the SAME salt in every process. Every
 // worker salt-closure (main.ts + each repull) calls it directly; no worker-local copy.
 
+import { Pool as PgPool } from 'pg';
+import { resolveSaltHex } from '@brain/identity-core';
+import { KmsBrandSaltProvider, AwsKmsDecryptAdapter } from '@brain/pii-vault';
+
 /** Minimal SecretsProvider interface (mirrors apps/core/src/infrastructure/secrets/SecretsProvider.ts). */
 export interface SecretsProvider {
   getSecret(nameOrArn: string): Promise<string>;
@@ -39,6 +43,34 @@ export class LocalSecretsProvider implements SecretsProvider {
     }
     return value;
   }
+}
+
+/**
+ * Prod salt source as a SecretsProvider. In production the per-brand salt is NOT in an env var
+ * (a runtime-created brand has none) — it is KMS-wrapped in tenancy.brand_identity_salt (0109) and
+ * read via get_brand_identity_salt. This adapter resolves the 64-hex salt from that DB store keyed by
+ * brandId, so SaltProvider's seam (and its D-2 length guards) stay unchanged.
+ */
+export class DbSaltSecretsProvider implements SecretsProvider {
+  constructor(private readonly src: { saltHexForBrand(brandId: string): Promise<string> }) {}
+  async getSecret(brandId: string): Promise<string> {
+    return this.src.saltHexForBrand(brandId);
+  }
+}
+
+/**
+ * Build the per-brand SaltProvider for the current environment. DEV: env-backed (LocalSecretsProvider
+ * + resolveSaltHex's deterministic dev salt). PROD: the DB identity-salt store (KmsBrandSaltProvider,
+ * KMS-unwrapped) — runtime-created brands have no IDENTITY_SALT env, so prod must read the provisioned
+ * DB salt. Use this in main.ts AND every repull job so all salt sites resolve identically.
+ */
+export function createSaltProvider(dbUrl: string): SaltProvider {
+  if (process.env['NODE_ENV'] === 'production') {
+    const pool = new PgPool({ connectionString: dbUrl, max: 2 });
+    const dbSalt = new KmsBrandSaltProvider(pool, new AwsKmsDecryptAdapter());
+    return new SaltProvider(new DbSaltSecretsProvider(dbSalt), (brandId) => brandId);
+  }
+  return new SaltProvider(new LocalSecretsProvider(), resolveSaltHex);
 }
 
 /** Cache entry: Buffer of exactly 32 bytes. */

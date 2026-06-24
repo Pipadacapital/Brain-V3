@@ -43,8 +43,7 @@ import {
   type SettlementEntityType,
 } from '@brain/razorpay-mapper';
 import { RazorpaySettlementsClient, type RazorpayApiCredentials } from './razorpay-settlements-client.js';
-import { SaltProvider, LocalSecretsProvider } from '../../infrastructure/secrets/SaltProvider.js';
-import { resolveSaltHex } from '@brain/identity-core';
+import { createSaltProvider, type SaltProvider } from '../../infrastructure/secrets/SaltProvider.js';
 import { log } from "../../log.js";
 import { acquireCursorLock, getCursorValue, upsertCursorValue } from '../../infrastructure/pg/CursorRepository.js';
 
@@ -107,8 +106,7 @@ export async function run(targetConnectorInstanceId?: string): Promise<void> {
   });
   const producer = kafka.producer({ idempotent: true });
 
-  const saltSecrets = new LocalSecretsProvider();
-  const saltProvider = new SaltProvider(saltSecrets, resolveSaltHex);
+  const saltProvider = createSaltProvider(DB_URL);
 
   try {
     await producer.connect();

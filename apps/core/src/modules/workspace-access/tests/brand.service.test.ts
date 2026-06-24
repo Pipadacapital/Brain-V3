@@ -15,7 +15,10 @@ const USER_ID = '22222222-2222-4222-8222-222222222222';
 const BRAND_ID = '33333333-3333-4333-8333-333333333333';
 const CORR = 'corr-brand-ev2';
 
-function makeBrandService(emitEvent?: ReturnType<typeof vi.fn>) {
+function makeBrandService(
+  emitEvent?: ReturnType<typeof vi.fn>,
+  provisionBrandCrypto?: ReturnType<typeof vi.fn>,
+) {
   const brandRow = {
     id: BRAND_ID,
     organization_id: ORG_ID,
@@ -58,7 +61,8 @@ function makeBrandService(emitEvent?: ReturnType<typeof vi.fn>) {
   };
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const service = new BrandService(mockPool as any, mockAudit as any, undefined, undefined, emitEvent);
+  // args: pool, audit, provisionPixel, provisionBrandCrypto, srPool, emitEvent
+  const service = new BrandService(mockPool as any, mockAudit as any, undefined, provisionBrandCrypto, undefined, emitEvent);
   return { service };
 }
 
@@ -89,5 +93,32 @@ describe('BrandService.create — EV-2 brand.created emit', () => {
         CORR,
       ),
     ).resolves.toMatchObject({ id: BRAND_ID });
+  });
+});
+
+describe('BrandService.create — per-brand crypto provisioning (prod)', () => {
+  it('provisions brand crypto with the just-written brand.id (R2)', async () => {
+    const provisionBrandCrypto = vi.fn().mockResolvedValue(undefined);
+    const { service } = makeBrandService(undefined, provisionBrandCrypto);
+
+    await service.create(
+      { organizationId: ORG_ID, displayName: 'Acme', requestingUserId: USER_ID, requestingRole: 'owner' },
+      CORR,
+    );
+
+    expect(provisionBrandCrypto).toHaveBeenCalledTimes(1);
+    expect(provisionBrandCrypto).toHaveBeenCalledWith(BRAND_ID); // server-resolved id, never client-sent
+  });
+
+  it('propagates a provisioning failure (fail visible, not a silently-broken brand)', async () => {
+    const provisionBrandCrypto = vi.fn().mockRejectedValue(new Error('KMS unavailable'));
+    const { service } = makeBrandService(undefined, provisionBrandCrypto);
+
+    await expect(
+      service.create(
+        { organizationId: ORG_ID, displayName: 'Acme', requestingUserId: USER_ID, requestingRole: 'owner' },
+        CORR,
+      ),
+    ).rejects.toThrow('KMS unavailable');
   });
 });

@@ -27,8 +27,8 @@
  */
 import { Pool } from 'pg';
 import mysql from 'mysql2/promise';
-import { hashIdentifier, normalizeIdentifier, resolveSaltHex } from '@brain/identity-core';
-import { SaltProvider, LocalSecretsProvider } from '../infrastructure/secrets/SaltProvider.js';
+import { hashIdentifier, normalizeIdentifier } from '@brain/identity-core';
+import { createSaltProvider, type SaltProvider } from '../infrastructure/secrets/SaltProvider.js';
 import { StitchMapWriter } from '../infrastructure/pg/StitchMapWriter.js';
 import { log } from '../log.js';
 
@@ -85,7 +85,7 @@ export async function runJourneyStitchFromIdentity(deps?: {
       password: process.env['STARROCKS_ANALYTICS_PASSWORD'] ?? 'brain_analytics_dev',
       connectionLimit: 3,
     }) as unknown as SilverPoolLike);
-  const saltProvider = deps?.saltProvider ?? new SaltProvider(new LocalSecretsProvider(), resolveSaltHex);
+  const saltProvider = deps?.saltProvider ?? createSaltProvider(DB_URL);
   const stitchWriter = new StitchMapWriter(pool);
   const ownsPool = !deps?.pool;
   const ownsSr = !deps?.srPool;

@@ -39,7 +39,7 @@ import {
   type ShopifyOrderShape,
 } from '@brain/shopify-mapper';
 import { redactShopifyPii } from '../../sources/storefront/shopify/domain/redactPii.js';
-import { hashIdentifier, normalizeIdentifier, resolveSaltHex } from '@brain/identity-core';
+import { hashIdentifier, normalizeIdentifier } from '@brain/identity-core';
 
 const ORDER_TOPICS = new Set([
   'orders/create',
@@ -150,7 +150,11 @@ export class ShopifyWebhookStrategy implements IWebhookStrategy {
         // MEDALLION REALIGNMENT (Epic 3 / ADR-0004): resolve brain_id from the Shopify customer.id via
         // the Neo4j identity SoR (hash the storefront_customer_id with the brand salt, as the resolver
         // does), then erase (graph tombstone + PG contact_pii delete + audit).
-        const salt = resolveSaltHex(capturedBrandId);
+        // Use the salt already resolved for this brand by the pipeline (ctx.saltHex → getWebhookSaltHex
+        // → the single brandSaltSource: dev-derived / prod KMS-unwrapped from brand_identity_salt), NOT
+        // a second direct resolveSaltHex — so the redact path resolves identically to the order path
+        // and works for runtime-created prod brands (which have no IDENTITY_SALT env).
+        const salt = saltHex;
         if (!salt || salt.length !== 64) return; // bad salt → cannot match; never crash the webhook
         // storefront_customer_id is hashed under identity-core's 'external_id' type (matches the resolver).
         const hash = hashIdentifier(

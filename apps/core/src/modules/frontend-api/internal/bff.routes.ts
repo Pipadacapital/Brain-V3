@@ -80,6 +80,8 @@ export function registerBffRoutes(
   vaultService?: ContactPiiVaultService,
   /** MEDALLION REALIGNMENT (Epic 3 / ADR-0004): the identity SoR read/admin port (DIP — concrete Neo4jIdentityReader injected by main.ts). */
   identityReader?: IdentityReader,
+  /** Per-brand salt resolver (brandSaltSource) for Customer-360 search hashing. Trailing-optional. */
+  getCoreSaltHex?: (brandId: string) => Promise<string>,
 ): void {
   const sessionPreHandler = validateSessionPreHandler(authService);
 
@@ -212,6 +214,7 @@ export function registerBffRoutes(
     srPool,
     vaultService,
     identityReader,
+    getCoreSaltHex,
     sessionPreHandler,
     bffProtectedPreHandler,
     gatherFoundationSignals,

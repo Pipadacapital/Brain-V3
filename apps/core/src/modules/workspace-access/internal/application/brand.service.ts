@@ -26,6 +26,15 @@ export type ProvisionPixel = (
 ) => Promise<void>;
 
 /**
+ * Per-brand identity-crypto provisioning seam. In PROD, generates + KMS-wraps a random per-brand
+ * salt + DEK and writes tenancy.brand_identity_salt + brand_keyring (idempotent), so the brand can
+ * hash PII (identity/consent/webhooks) and use the contact_pii vault. Injected as a closure so the
+ * service stays free of KMS/pg wiring. UNDEFINED in dev (dev derives salt/DEK deterministically →
+ * no provisioning needed). Unlike the pixel, this is NOT domain-gated — EVERY brand needs crypto.
+ */
+export type ProvisionBrandCrypto = (brandId: string) => Promise<void>;
+
+/**
  * M1 domain-event emitter seam (EV-2). Injected as a closure so BrandService stays free of
  * the Kafka/publisher wiring. The publisher maps the dotted name → versioned topic and
  * fails OPEN (a bus blip never breaks the brand-create write — PG is the SoR).
@@ -68,6 +77,11 @@ export class BrandService {
     private readonly pool: DbPool,
     private readonly audit: AuditWriter,
     private readonly provisionPixel?: ProvisionPixel,
+    /**
+     * Per-brand identity-crypto provisioner (prod only). Provisions salt + DEK at brand creation so
+     * the brand can hash PII + use the vault. Absent in dev (derived) / unit tests.
+     */
+    private readonly provisionBrandCrypto?: ProvisionBrandCrypto,
     /**
      * StarRocks Silver/Gold pool — the currency-immutability guard reads the LAKEHOUSE ledger
      * (brain_gold.gold_revenue_ledger), not the PG ledger (medallion realignment, Epic 1 / B).
@@ -188,6 +202,14 @@ export class BrandService {
           region_code: brand.regionCode,
           correlation_id: correlationId,
         });
+      }
+
+      // Provision per-brand identity crypto (salt + DEK) BEFORE anything ingests for this brand.
+      // brandId is the just-written brand.id (R2). Idempotent; prod-only (dev derives). Not domain-
+      // gated — every brand needs a salt to hash PII. Throws on failure (visible > silently-broken
+      // brand); the SQL UPSERT makes a retry safe.
+      if (this.provisionBrandCrypto) {
+        await this.provisionBrandCrypto(brand.id);
       }
 
       // Auto-provision the per-brand pixel_installation (ADR-4). brandId is taken

@@ -23,8 +23,7 @@ import { RedisDedupAdapter } from './infrastructure/redis/RedisDedupAdapter.js';
 import { RetryCounterAdapter } from './infrastructure/redis/RetryCounterAdapter.js';
 import { BronzeRepository } from './infrastructure/pg/BronzeRepository.js';
 import { Neo4jIdentityRepository } from './infrastructure/neo4j/Neo4jIdentityRepository.js';
-import { SaltProvider, LocalSecretsProvider } from './infrastructure/secrets/SaltProvider.js';
-import { resolveSaltHex } from '@brain/identity-core';
+import { createSaltProvider } from './infrastructure/secrets/SaltProvider.js';
 import { initObservability, initSentry, createLogger } from '@brain/observability';
 import { requireEnvInProd } from '@brain/config';
 
@@ -197,11 +196,11 @@ export async function main(): Promise<void> {
   // SaltProvider: dev uses LocalSecretsProvider (env var holds 64-hex salt directly).
   // Prod: swap LocalSecretsProvider for AwsSecretsProvider (ARN in env var).
   // saltArnFn maps brand UUID → env var name or AWS Secrets Manager ARN.
-  const saltSecrets = new LocalSecretsProvider();
-  // Salt resolution: explicit IDENTITY_SALT_<brand> override → else deterministic dev salt
-  // (resolveSaltHex, shared with apps/core so the same email hashes identically) → prod path
-  // untouched (D-2 guard fires on empty). One resolver, every salt site (§3.1).
-  const saltProvider = new SaltProvider(saltSecrets, resolveSaltHex);
+  // Salt resolution: DEV uses the deterministic dev salt (resolveSaltHex, shared with apps/core so the
+  // same email hashes identically). PROD reads the per-brand salt from the DB identity-salt store
+  // (KMS-unwrapped) — a RUNTIME-created brand has no IDENTITY_SALT env, so the env path can't serve it.
+  // One resolver, every salt site (§3.1). D-2 guard still fires on any fetch/length failure.
+  const saltProvider = createSaltProvider(dbUrl);
   // PII vault DEK provider (P0-C): dev derives a deterministic per-brand DEK; prod unwraps
   // the brand_keyring DEK via AWS KMS. The contact_pii write-population encrypts with this key
   // (the SAME provider apps/core's vault read path uses, via @brain/pii-vault).

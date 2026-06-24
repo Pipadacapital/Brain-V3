@@ -49,6 +49,13 @@ export interface ListCustomersParams {
 export interface ListCustomersDeps {
   /** MEDALLION REALIGNMENT (Epic 3 / ADR-0004): identity is the Neo4j SoR (DIP — IdentityReader port). */
   reader: IdentityReader;
+  /**
+   * Per-brand salt resolver (the single brandSaltSource: dev-derived / prod KMS-unwrapped from
+   * brand_identity_salt). When present the search term is hashed with the SAME salt the brand's
+   * identities were hashed with — so search works for runtime-created prod brands (no IDENTITY_SALT
+   * env). Optional: absent (older callers / tests) → falls back to the dev resolveSaltHex.
+   */
+  saltFn?: (brandId: string) => Promise<string>;
 }
 
 function toIso(v: unknown): string | null {
@@ -96,7 +103,10 @@ export async function listCustomers(
     // Resolve the per-brand salt (shared resolution order with the resolver + consent gate). If the
     // salt is missing/wrong-length we treat the search as matching nothing rather than crash a read —
     // a browse must never hard-fail, and a bad salt could only ever mis-hash (never leak).
-    const salt = resolveSaltHex(brandId);
+    // Prefer the injected brandSaltSource (dev-derived / prod KMS-unwrapped); fall back to the dev
+    // resolver only when no saltFn was wired (older callers / tests). Fail-soft: a bad/missing salt
+    // makes the search match nothing — never crash a browse, never leak (a wrong salt only mis-hashes).
+    const salt = deps.saltFn ? await deps.saltFn(brandId).catch(() => '') : resolveSaltHex(brandId);
     identifierHashes = salt && salt.length === 64 ? searchHashes(term, salt) : [];
   }
 

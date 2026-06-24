@@ -40,7 +40,12 @@ import {
   DevVaultKeyProvider,
   KmsVaultKeyProvider,
   AwsKmsDecryptAdapter,
+  AwsKmsEncryptAdapter,
+  BrandCryptoProvisioner,
+  KmsBrandSaltProvider,
+  DevBrandSaltProvider,
 } from './modules/identity/index.js';
+import type { BrandSaltSource } from './modules/identity/index.js';
 import { Neo4jIdentityReader } from './modules/identity/internal/infrastructure/neo4j-identity-reader.js';
 import { initObservability, initSentry, createLogger } from '@brain/observability';
 
@@ -437,14 +442,20 @@ export async function main(): Promise<void> {
   // Per-brand salt for PII hashing in the consent gate (env var
   // IDENTITY_SALT_<BRAND_UUID_NO_DASHES>, 64-hex; HARD-CRASH on miss — D-2).
   // ONE salt source (Single-Primitive) reused for both consent hashing + webhooks.
+  // ── Per-brand identity salt source (shared by every core salt site) ──────────
+  // DEV: DevBrandSaltProvider → the deterministic dev salt (resolveDevSaltHex) — same value the
+  // worker derives, so a brand hashes identically core↔worker with zero seeding. PROD: the per-brand
+  // salt KMS-unwrapped from tenancy.brand_identity_salt (0109) — a RUNTIME-created brand has no
+  // IDENTITY_SALT env, so prod MUST read the provisioned DB salt. Per-brand cache; fails CLOSED (D-2).
+  const brandSaltSource: BrandSaltSource = isProduction
+    ? new KmsBrandSaltProvider(rawPgPool, new AwsKmsDecryptAdapter())
+    : new DevBrandSaltProvider();
+
   async function getCoreSaltHex(brandId: string): Promise<string> {
-    // Resolution order (shared with stream-worker via @brain/identity-core so the
-    // SAME email hashes identically core↔worker): explicit IDENTITY_SALT_<brand>
-    // env → else dev-only deterministic salt → else prod env value (untouched).
-    const salt = resolveSaltHex(brandId);
-    // D-2 guard stays intact and is the single crash point: in prod a missing/
-    // wrong-length salt still hard-refuses; in dev resolveSaltHex always returns a
-    // valid 64-hex so this never fires.
+    // Delegates to the single per-brand salt source above (dev-derived / prod-DB). The provider is
+    // the D-2 crash point (throws on missing/inactive/wrong-length salt); we re-assert the 64-hex
+    // length here as defence in depth so no caller ever hashes with a bad salt.
+    const salt = await brandSaltSource.saltHexForBrand(brandId);
     if (!salt || salt.length !== 64) {
       throw new Error(
         `[can_contact] salt for brand ${brandId} is missing or wrong length ` +
@@ -567,10 +578,10 @@ export async function main(): Promise<void> {
   // Per-brand salt for PII hashing in the webhook receiver.
   // Mirrors the SaltProvider pattern from stream-worker: env var IDENTITY_SALT_<BRAND_UUID_NO_DASHES>.
   async function getWebhookSaltHex(brandId: string): Promise<string> {
-    // Same shared resolution order as getCoreSaltHex / the worker SaltProvider —
-    // a live webhook ingest and a repull of the same order hash the same email
-    // identically (deterministic dev salt). D-2 guard below is unchanged.
-    const salt = resolveSaltHex(brandId);
+    // Same single brandSaltSource as getCoreSaltHex / the worker — a live webhook ingest and a repull
+    // of the same order hash the same email identically. The provider is the D-2 crash point; the
+    // length re-assert is defence in depth.
+    const salt = await brandSaltSource.saltHexForBrand(brandId);
     if (!salt || salt.length !== 64) {
       throw new Error(
         `[webhook] salt for brand ${brandId} is missing or wrong length (expected 64 hex chars)`,
@@ -655,12 +666,37 @@ export async function main(): Promise<void> {
     emitEvent,
   );
 
+  // Per-brand identity-crypto provisioner (prod): at brand creation, generate + KMS-wrap a random
+  // salt + DEK and write tenancy.brand_identity_salt + brand_keyring (0109) via the SECURITY DEFINER
+  // provision_brand_crypto, so a RUNTIME-created brand can hash PII (identity/consent/webhooks) and
+  // use the contact_pii vault — closing the prod onboarding gap. Dev derives both deterministically,
+  // so no provisioning closure is wired there. Uses rawPgPool (brain_app has EXECUTE; the fn is
+  // SECURITY DEFINER → no brand GUC needed) and the same connector CMK the bootstrap wraps with.
+  const provisionBrandCrypto = isProduction
+    ? ((): ((brandId: string) => Promise<void>) => {
+        // Key-domain separation (KMS best practice): identity salt + PII-vault DEK are a different
+        // data classification from connector OAuth tokens, so they SHOULD use a dedicated CMK. Honour
+        // IDENTITY_CRYPTO_KMS_KEY_ID when set; fall back to the connector CMK so existing single-key
+        // deployments keep working. The read side (AwsKmsDecryptAdapter) resolves the key from the
+        // wrapped blob's stored kms_key_id, so a future key swap is transparent to readers.
+        const identityKmsKeyId =
+          process.env['IDENTITY_CRYPTO_KMS_KEY_ID'] ?? connectorKmsKeyId;
+        const provisioner = new BrandCryptoProvisioner(
+          rawPgPool,
+          new AwsKmsEncryptAdapter(),
+          identityKmsKeyId,
+        );
+        return (brandId: string) => provisioner.provision(brandId);
+      })()
+    : undefined;
+
   const brandService = new BrandService(
     pool,
     auditWriter,
     async (brandId, targetHost, idempotencyKey) => {
       await getOrCreateInstallation.execute({ brandId, targetHost, idempotencyKey });
     },
+    provisionBrandCrypto,
     srPool,
     emitEvent,
   );
@@ -677,6 +713,7 @@ export async function main(): Promise<void> {
       await getOrCreateInstallation.execute({ brandId, targetHost, idempotencyKey });
     },
     emitEvent,
+    provisionBrandCrypto,
   );
 
   // ── CQ-2: register the workspace-access + frontend-api (BFF) + notification context ──

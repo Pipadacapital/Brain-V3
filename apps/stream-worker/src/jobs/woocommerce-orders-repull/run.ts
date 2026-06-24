@@ -42,8 +42,7 @@ import {
   type WooCommerceApiCredentials,
 } from './woocommerce-client.js';
 import { recordConnectorAuthRejected } from '../../infrastructure/observability/connector-auth-health.js';
-import { SaltProvider, LocalSecretsProvider } from '../../infrastructure/secrets/SaltProvider.js';
-import { resolveSaltHex } from '@brain/identity-core';
+import { createSaltProvider, type SaltProvider } from '../../infrastructure/secrets/SaltProvider.js';
 import { log } from '../../log.js';
 import { acquireCursorLock, getCursorValue, upsertCursorValue } from '../../infrastructure/pg/CursorRepository.js';
 import { SyncRunRepository } from '../../infrastructure/pg/SyncRunRepository.js';
@@ -93,7 +92,7 @@ export async function run(targetConnectorInstanceId?: string): Promise<void> {
   const pool = new Pool({ connectionString: DB_URL, max: 5 });
   const kafka = new Kafka({ clientId: 'woocommerce-orders-repull', brokers: BROKERS, retry: { retries: 5 } });
   const producer = kafka.producer({ idempotent: true });
-  const saltProvider = new SaltProvider(new LocalSecretsProvider(), resolveSaltHex);
+  const saltProvider = createSaltProvider(DB_URL);
   const syncRunRepo = new SyncRunRepository(pool);
 
   try {

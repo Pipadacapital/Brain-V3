@@ -85,7 +85,7 @@ export function registerIdentityRoutes(fastify: FastifyInstance, deps: BffDeps):
         auth.brandId,
         { lifecycle: q.lifecycle ?? null, search: q.search ?? null, limit, offset },
         requestId,
-        { reader: identityReader },
+        { reader: identityReader, saltFn: deps.getCoreSaltHex },
       );
       return reply.send({ request_id: requestId, data: result });
     },

@@ -50,6 +50,20 @@ silver-catalog:
 	$(PG_PSQL) < db/starrocks/oltp_pg_read_shim.sql
 	@echo ">> Creating StarRocks JDBC external catalog brain_oltp_pg (idempotent)..."
 	$(SR_MYSQL) < db/starrocks/oltp_jdbc_catalog.sql
+	@echo ">> Creating StarRocks-native identity/journey projection tables (idempotent DDL)..."
+	@echo "   dbt models (silver_order_recognition, silver_customers, silver_touchpoint) read these"
+	@echo "   PRIMARY KEY tables that the stream-worker export jobs populate; dbt cannot create them,"
+	@echo "   so a from-scratch build must create them BEFORE 'dbt run' or it dead-ends on Unknown table."
+	$(SR_MYSQL) < db/starrocks/silver_identity_link.sql
+	$(SR_MYSQL) < db/starrocks/silver_customer_identity.sql
+	$(SR_MYSQL) < db/starrocks/silver_journey_stitch.sql
+	$(SR_MYSQL) < db/starrocks/identity_export_state.sql
+	@echo ">> Creating StarRocks-native gold_attribution_credit (idempotent DDL)..."
+	@echo "   gold_marketing_attribution (dbt) reads gold_attribution_credit, populated by the"
+	@echo "   attribution-reconcile job; create it before 'dbt run' or the attribution mart dead-ends."
+	@echo "   (gold_ml_prediction_log is ML-serving infra applied by its own path — it hardcodes"
+	@echo "    replication_num=3 which a single-BE local StarRocks rejects; not needed by the marts.)"
+	$(SR_MYSQL) < db/starrocks/gold_attribution_credit.sql
 	@echo ">> Granting brain_analytics SELECT on tables + VIEWS + materialized views (idempotent)..."
 	$(SR_MYSQL) < db/starrocks/analytics_grants.sql
 	@echo ">> Catalogs:"

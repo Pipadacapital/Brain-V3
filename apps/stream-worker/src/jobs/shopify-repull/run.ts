@@ -34,8 +34,7 @@ import { updateConnectorInstanceHealth } from '../../infrastructure/pg/Connector
 import { Kafka, type Producer } from 'kafkajs';
 import { buildPartitionKey } from '@brain/events';
 import { injectKafkaTraceContext } from '@brain/observability';
-import { SaltProvider, LocalSecretsProvider } from '../../infrastructure/secrets/SaltProvider.js';
-import { resolveSaltHex } from '@brain/identity-core';
+import { createSaltProvider, type SaltProvider } from '../../infrastructure/secrets/SaltProvider.js';
 import { CollectorEventV1Schema, COLLECTOR_EVENT_V1_TOPIC_SUFFIX } from '@brain/contracts';
 import { ShopifyLiveClient } from './shopify-live-client.js';
 import {
@@ -94,8 +93,7 @@ export async function run(targetConnectorInstanceId?: string): Promise<void> {
   });
   const producer = kafka.producer({ idempotent: true });
   const workerSecrets = buildWorkerSecretsManager();
-  const saltSecrets = new LocalSecretsProvider();
-  const saltProvider = new SaltProvider(saltSecrets, resolveSaltHex);
+  const saltProvider = createSaltProvider(DB_URL);
 
   try {
     await producer.connect();

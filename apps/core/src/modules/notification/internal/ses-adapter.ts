@@ -81,7 +81,11 @@ export class SesEmailAdapter implements EmailAdapter {
 /** Factory: returns SES adapter in production, dev adapter otherwise. */
 export function createEmailAdapter(env: string, fromAddress: string): EmailAdapter {
   if (env === 'production' || env === 'staging') {
-    return new SesEmailAdapter(fromAddress);
+    // Honour the deployment region instead of hardcoding one: SES identities are region-scoped,
+    // so the From-address must be verified in whatever region the client targets. SES_REGION lets
+    // ops point email at a specific SES region; otherwise follow AWS_REGION; ap-south-1 last.
+    const region = process.env['SES_REGION'] ?? process.env['AWS_REGION'] ?? 'ap-south-1';
+    return new SesEmailAdapter(fromAddress, region);
   }
   return new DevEmailAdapter();
 }

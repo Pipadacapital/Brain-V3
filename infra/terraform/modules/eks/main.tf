@@ -231,7 +231,11 @@ resource "aws_eks_node_group" "system" {
 # ECR Repositories — per service, immutable tags
 ###############################################################################
 locals {
-  services = ["collector", "stream-worker", "core", "web"]
+  # The 4 app deployables + the 2 data-plane job images (dbt-runner runs the scheduled mart rebuilds;
+  # spark-bronze runs the Iceberg Bronze sink). All get an IMMUTABLE, KMS-encrypted, scan-on-push ECR
+  # repo + lifecycle policy. The cronworkflows chart (dbtRunnerImage / sparkBronze.image) pulls the
+  # latter two; CI builds + digest-pins them (see .github/workflows/main.yml build-data-images).
+  services = ["collector", "stream-worker", "core", "web", "dbt-runner", "spark-bronze"]
 }
 
 resource "aws_ecr_repository" "services" {

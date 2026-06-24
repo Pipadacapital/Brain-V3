@@ -18,6 +18,11 @@ deadlock) then a processingTime stream resuming the SAME checkpoint (steady-stat
 Run via spark-submit inside a Spark+Iceberg+Kafka image on the compose network — see
 db/iceberg/spark/run-bronze-spike.sh and RB-4. All wiring is env-overridable; dev defaults
 target the compose service names (iceberg-rest:8181, minio:9000, redpanda:9092).
+
+CI: this image (db/iceberg/spark/Dockerfile) is built + pushed + digest-pinned by
+.github/workflows/main.yml (build-data-images) and consumed by infra/helm/cronworkflows
+(sparkBronze.image). Enabling the sink is a one-line flip once a Spark-on-k8s cluster exists —
+see docs/runbooks/enable-prod-cron-pipeline.md.
 """
 import os
 import time

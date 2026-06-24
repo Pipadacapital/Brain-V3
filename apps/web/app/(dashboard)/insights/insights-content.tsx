@@ -192,6 +192,19 @@ export function InsightsContent() {
                 reason="This briefing is computed from synthetic demo data seeded into the Gold marts (real shape, synthetic source). Connect a live source to replace it — this is never live data."
               />
             )}
+            {/* FRESHNESS GUARD: if the gold marts haven't been rebuilt within the SLO (e.g. the dbt
+                refresh cron stalled in prod) the briefing warns instead of silently serving stale data. */}
+            {briefing?.stale && (
+              <span
+                role="status"
+                data-testid="insights-stale-badge"
+                title={briefing.as_of ? `Marts last refreshed ${new Date(briefing.as_of).toLocaleString()}` : 'Mart refresh is overdue'}
+                className="inline-flex items-center gap-1 rounded-md border border-status-amber-200 bg-status-amber-50 px-2 py-0.5 text-xs font-medium text-status-amber-700"
+              >
+                <AlertTriangle className="h-3 w-3" aria-hidden="true" />
+                Data may be stale
+              </span>
+            )}
           </CardTitle>
           {briefing && <CardDescription>{briefing.headline}</CardDescription>}
         </CardHeader>

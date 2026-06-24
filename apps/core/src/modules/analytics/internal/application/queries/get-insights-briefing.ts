@@ -69,7 +69,21 @@ export interface BriefingDto {
    * is NEVER presented as live (MK-1..MK-4). NEVER hardcoded — read from the marts' data_source col.
    */
   data_source: 'synthetic' | 'live';
+  /**
+   * FRESHNESS GUARD: when the gold marts were last REBUILT (max updated_at = dbt build time, NOT the
+   * latest order). ISO-8601 or null. `stale` = older than INSIGHT_FRESHNESS_SLO_HOURS → the UI warns
+   * the briefing may be out of date. Prod-safety: if the dbt refresh cron stalls, the briefing stops
+   * silently serving stale insights and says so. Best-effort (never throws).
+   */
+  as_of: string | null;
+  stale: boolean;
 }
+
+/**
+ * Freshness SLO (hours): the gold marts are rebuilt by the hourly dbt crons (recognition-refresh /
+ * attribution-gold-refresh). 6h gives generous slack for a missed/slow run before we flag stale.
+ */
+const FRESHNESS_SLO_HOURS = Number(process.env['INSIGHT_FRESHNESS_SLO_HOURS'] ?? 6);
 
 export type InsightsBriefingResult =
   | { state: 'no_data' }
@@ -136,6 +150,35 @@ async function resolveBriefingDataSource(
   });
 }
 
+/**
+ * Resolve mart freshness: the MAX(updated_at) (dbt build time) of the primary fact mart, brand-scoped,
+ * and whether it exceeds the freshness SLO. Best-effort: any error (column/mart absent) → { null,false }
+ * so the briefing never fails over a freshness probe. This is the prod-staleness guard — if the dbt
+ * refresh cron stalls, `stale` flips true and the UI warns instead of serving stale insights as fresh.
+ */
+async function resolveBriefingFreshness(
+  brandId: string,
+  deps: { srPool: SilverPool },
+): Promise<{ asOf: string | null; stale: boolean }> {
+  try {
+    return await withSilverBrand(deps.srPool, brandId, async (scope) => {
+      const rows = await scope.runScoped<{ as_of: string | null }>(
+        `SELECT CAST(MAX(updated_at) AS STRING) AS as_of FROM brain_gold.gold_revenue_ledger
+          WHERE ${BRAND_PREDICATE}`,
+        [],
+      );
+      const raw = rows[0]?.as_of ?? null;
+      if (!raw) return { asOf: null, stale: false };
+      const ms = Date.parse(raw.replace(' ', 'T') + 'Z');
+      if (Number.isNaN(ms)) return { asOf: null, stale: false };
+      const ageHours = (Date.now() - ms) / 3_600_000;
+      return { asOf: new Date(ms).toISOString(), stale: ageHours > FRESHNESS_SLO_HOURS };
+    });
+  } catch {
+    return { asOf: null, stale: false };
+  }
+}
+
 export async function getInsightsBriefing(
   brandId: string,
   deps: { srPool: SilverPool },
@@ -146,6 +189,7 @@ export async function getInsightsBriefing(
   }
 
   const dataSource = await resolveBriefingDataSource(brandId, deps);
+  const freshness = await resolveBriefingFreshness(brandId, deps);
 
   const { insights, primaryCurrency, window } = result;
   const risks = insights.filter((i) => i.kind === 'risk');
@@ -183,6 +227,8 @@ export async function getInsightsBriefing(
     window,
     source: 'deterministic',
     data_source: dataSource,
+    as_of: freshness.asOf,
+    stale: freshness.stale,
   };
 
   return { state: 'has_data', briefing, insights: insights.map(toDto) };

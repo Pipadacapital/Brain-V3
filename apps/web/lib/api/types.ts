@@ -1276,6 +1276,10 @@ export interface BriefingDto {
   source: 'deterministic';
   /** 'synthetic' when ANY contributing mart row is synthetic (demo seed) — drives the badge. */
   data_source: 'synthetic' | 'live';
+  /** Gold-mart build time (max updated_at), ISO-8601 or null. Freshness guard. */
+  as_of?: string | null;
+  /** True when as_of exceeds the freshness SLO → UI warns the briefing may be stale. */
+  stale?: boolean;
 }
 
 export type AnalyticsInsightsBriefingResponse =

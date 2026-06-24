@@ -317,6 +317,9 @@ importers:
       '@brain/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@brain/money':
+        specifier: workspace:*
+        version: link:../../packages/money
       '@brain/pixel-sdk':
         specifier: workspace:*
         version: link:../../packages/pixel-sdk

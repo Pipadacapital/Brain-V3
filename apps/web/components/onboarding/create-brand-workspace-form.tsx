@@ -47,23 +47,35 @@ import { sessionApi } from '@/lib/api/client';
 import { toast } from '@/components/ui/toaster';
 import { normalizeBrandHost } from '@brain/pixel-sdk';
 
-/** Default timezone per currency (mirrors backend CURRENCY_TIMEZONE). */
-const CURRENCY_TIMEZONE: Record<string, 'Asia/Kolkata' | 'Asia/Dubai' | 'Asia/Riyadh'> = {
+/** Default timezone per currency — GCC + India (DB source: tenancy.ref_*; migration 0107). */
+const CURRENCY_TIMEZONE: Record<string, string> = {
   INR: 'Asia/Kolkata',
   AED: 'Asia/Dubai',
   SAR: 'Asia/Riyadh',
+  QAR: 'Asia/Qatar',
+  KWD: 'Asia/Kuwait',
+  BHD: 'Asia/Bahrain',
+  OMR: 'Asia/Muscat',
 };
 
 const CURRENCY_LABELS: Record<string, string> = {
   INR: 'INR — Indian Rupee',
   AED: 'AED — UAE Dirham',
   SAR: 'SAR — Saudi Riyal',
+  QAR: 'QAR — Qatari Riyal',
+  KWD: 'KWD — Kuwaiti Dinar',
+  BHD: 'BHD — Bahraini Dinar',
+  OMR: 'OMR — Omani Rial',
 };
 
 const TIMEZONE_LABELS: Record<string, string> = {
   'Asia/Kolkata': 'Asia/Kolkata (IST, UTC+5:30)',
   'Asia/Dubai': 'Asia/Dubai (GST, UTC+4)',
   'Asia/Riyadh': 'Asia/Riyadh (AST, UTC+3)',
+  'Asia/Qatar': 'Asia/Qatar (AST, UTC+3)',
+  'Asia/Kuwait': 'Asia/Kuwait (AST, UTC+3)',
+  'Asia/Bahrain': 'Asia/Bahrain (AST, UTC+3)',
+  'Asia/Muscat': 'Asia/Muscat (GST, UTC+4)',
 };
 
 export function CreateBrandWorkspaceForm() {
@@ -102,9 +114,9 @@ export function CreateBrandWorkspaceForm() {
 
   const busy = isPending || finalizing;
 
-  function handleCurrencyChange(val: 'INR' | 'AED' | 'SAR') {
+  function handleCurrencyChange(val: CreateBrandWorkspaceFormValues['currency_code']) {
     setValue('currency_code', val);
-    const suggestedTz = CURRENCY_TIMEZONE[val];
+    const suggestedTz = CURRENCY_TIMEZONE[val] as CreateBrandWorkspaceFormValues['timezone'] | undefined;
     if (suggestedTz) setValue('timezone', suggestedTz);
     setCurrencyMismatch(false);
   }
@@ -315,7 +327,7 @@ export function CreateBrandWorkspaceForm() {
                 render={() => (
                   <Select
                     value={selectedCurrency}
-                    onValueChange={(val) => handleCurrencyChange(val as 'INR' | 'AED' | 'SAR')}
+                    onValueChange={(val) => handleCurrencyChange(val as CreateBrandWorkspaceFormValues['currency_code'])}
                   >
                     <SelectTrigger
                       id="currency_code"

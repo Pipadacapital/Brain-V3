@@ -13,13 +13,54 @@
 
 // ── Currency ──────────────────────────────────────────────────────────────────
 
-/** Phase-1 currencies. Extend via an ADR when Phase-5 multi-currency ships. */
-export type CurrencyCode = 'INR' | 'AED' | 'SAR';
+/**
+ * Any ISO-4217 alpha-3 currency code (e.g. 'INR', 'KWD', 'JPY', 'USD').
+ *
+ * MULTI-CURRENCY (was a 3-currency allowlist that THREW on anything else): a render must NEVER
+ * crash because an order arrived in a currency outside a hardcoded list. We accept ANY well-formed
+ * ISO code and drive decimals from the per-currency minor-unit table below. (The *onboarding*
+ * picker still constrains a brand's PRIMARY currency to the supported set — GCC + India for now —
+ * but the display layer tolerates any currency an order/connector might carry.)
+ */
+export type CurrencyCode = string;
 
-const VALID_CURRENCIES = new Set<CurrencyCode>(['INR', 'AED', 'SAR']);
+/**
+ * Minor-unit digits (the ISO-4217 exponent) for currencies that are NOT the 2-digit default.
+ * The correctness guardrail behind the "/100" bug class: the GCC dinars (KWD/BHD/OMR) have 1000
+ * sub-units (3 digits) and JPY has none (0 digits) — treating either as 2-digit renders amounts
+ * 10×–100× wrong. Everything not listed defaults to 2. Source: ISO-4217.
+ */
+const MINOR_UNIT_DIGITS_EXCEPTIONS: Record<string, number> = {
+  // 0-decimal currencies
+  BIF: 0, CLP: 0, DJF: 0, GNF: 0, ISK: 0, JPY: 0, KMF: 0, KRW: 0, PYG: 0,
+  RWF: 0, UGX: 0, VND: 0, VUV: 0, XAF: 0, XOF: 0, XPF: 0,
+  // 3-decimal currencies — includes GCC dinars KWD/BHD/OMR (supported now)
+  BHD: 3, IQD: 3, JOD: 3, KWD: 3, LYD: 3, OMR: 3, TND: 3,
+  // 4-decimal
+  CLF: 4, UYW: 4,
+};
 
+/** A well-formed ISO-4217 code is 3 ASCII letters. We accept any such code (no allowlist). */
+const ISO_4217_RE = /^[A-Za-z]{3}$/;
+
+/** Normalise to the upper-case 3-letter form the rest of the module uses. */
+function normalizeCurrency(code: string): string {
+  return (code ?? '').trim().toUpperCase();
+}
+
+/** True iff `code` is a well-formed ISO-4217 alpha-3 code. NOT an allowlist — format only. */
 export function isValidCurrency(code: string): code is CurrencyCode {
-  return VALID_CURRENCIES.has(code as CurrencyCode);
+  return ISO_4217_RE.test(normalizeCurrency(code));
+}
+
+/** Minor-unit digits (exponent) for a currency — 2 unless it's a known 0/3/4-digit currency. */
+export function minorUnitDigits(currency_code: string): number {
+  return MINOR_UNIT_DIGITS_EXCEPTIONS[normalizeCurrency(currency_code)] ?? 2;
+}
+
+/** Minor-units-per-major (10^exponent) for a currency — the divisor for minor↔major. */
+export function minorUnitsDivisor(currency_code: string): number {
+  return 10 ** minorUnitDigits(currency_code);
 }
 
 // ── Money value object ────────────────────────────────────────────────────────
@@ -53,10 +94,12 @@ export interface Money {
  * @param currency_code - ISO 4217 currency code.
  */
 export function money(amount_minor: bigint, currency_code: CurrencyCode): Money {
+  // Validate FORMAT only (3-letter ISO code), never an allowlist — a real order can be in any
+  // currency and money() is on the render path. Malformed/empty codes still throw (a genuine bug).
   if (!isValidCurrency(currency_code)) {
-    throw new Error(`[money] Unknown currency code: "${currency_code}". Valid: INR, AED, SAR.`);
+    throw new Error(`[money] Malformed currency code: "${currency_code}" (expected a 3-letter ISO-4217 code).`);
   }
-  return Object.freeze({ amount_minor, currency_code });
+  return Object.freeze({ amount_minor, currency_code: normalizeCurrency(currency_code) });
 }
 
 /**
@@ -111,30 +154,21 @@ function assertSameCurrency(a: Money, b: Money): void {
 // ── Display ───────────────────────────────────────────────────────────────────
 
 /**
- * Minor-units-per-major for each currency (10^exponent). This is the SINGLE source of the currency
- * exponent — `Record<CurrencyCode, number>` is exhaustiveness-checked, so adding a 0-decimal (JPY)
- * or 3-decimal (KWD/BHD) currency to CurrencyCode that does NOT add its divisor here is a COMPILE
- * error. That is the guardrail against the latent "hardcoded /100" bug class (a JPY value would
- * otherwise be sent to Meta CAPI 100× too small).
+ * Decimal places for a currency (e.g. INR → 2, KWD → 3, JPY → 0). Per-currency via the ISO-4217
+ * minor-unit table — the guardrail against the latent "hardcoded /100" bug class (a JPY value would
+ * otherwise be sent to Meta CAPI 100× too small; a KWD value 10×).
  */
-const MINOR_UNITS: Record<CurrencyCode, number> = {
-  INR: 100,
-  AED: 100,
-  SAR: 100,
-};
-
-/** Decimal places for a currency (e.g. INR → 2), derived from its minor-units divisor. */
 export function currencyExponent(currency_code: CurrencyCode): number {
-  return String(MINOR_UNITS[currency_code]).length - 1;
+  return minorUnitDigits(currency_code);
 }
 
 /**
  * Minor → major as a float, for WIRE BOUNDARIES ONLY — e.g. Meta CAPI `custom_data.value`, which
  * requires a major-unit number. NEVER use for money math: money stays integer minor units (I-S07).
- * The exponent is per-currency via MINOR_UNITS, so this is correct for 0-/2-/3-decimal currencies.
+ * The exponent is per-currency, so this is correct for 0-/2-/3-/4-decimal currencies.
  */
 export function minorToMajorNumber(amount_minor: bigint, currency_code: CurrencyCode): number {
-  return Number(amount_minor) / MINOR_UNITS[currency_code];
+  return Number(amount_minor) / minorUnitsDivisor(currency_code);
 }
 
 /**
@@ -142,11 +176,15 @@ export function minorToMajorNumber(amount_minor: bigint, currency_code: Currency
  * NOT for rendering — use locale-specific formatting in the UI layer.
  */
 export function formatMoney(m: Money): string {
-  const divisor = MINOR_UNITS[m.currency_code];
-  const major = m.amount_minor / BigInt(divisor);
-  const minor = m.amount_minor % BigInt(divisor);
-  const minorStr = String(minor < 0n ? -minor : minor).padStart(currencyExponent(m.currency_code), '0');
-  return `${m.currency_code} ${major}.${minorStr}`;
+  const divisor = BigInt(minorUnitsDivisor(m.currency_code));
+  const exponent = currencyExponent(m.currency_code);
+  const major = m.amount_minor / divisor;
+  const minor = m.amount_minor % divisor;
+  const absMajor = major < 0n ? -major : major;
+  const sign = m.amount_minor < 0n ? '-' : '';
+  if (exponent === 0) return `${m.currency_code} ${sign}${absMajor}`;
+  const minorStr = String(minor < 0n ? -minor : minor).padStart(exponent, '0');
+  return `${m.currency_code} ${sign}${absMajor}.${minorStr}`;
 }
 
 // ── Rounding ──────────────────────────────────────────────────────────────────

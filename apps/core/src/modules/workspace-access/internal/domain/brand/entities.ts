@@ -3,8 +3,11 @@
  */
 
 export type BrandStatus = 'active' | 'archived';
-export type CurrencyCode = 'INR' | 'AED' | 'SAR';
-export type BrandTimezone = 'Asia/Kolkata' | 'Asia/Dubai' | 'Asia/Riyadh';
+// Brand primary currency/timezone: GCC + India (expandable; DB source = tenancy.ref_currency/
+// ref_timezone, migration 0107). The display layer (@brain/money) tolerates any order currency.
+export type CurrencyCode = 'INR' | 'AED' | 'SAR' | 'QAR' | 'KWD' | 'BHD' | 'OMR';
+export type BrandTimezone =
+  | 'Asia/Kolkata' | 'Asia/Dubai' | 'Asia/Riyadh' | 'Asia/Kuwait' | 'Asia/Bahrain' | 'Asia/Muscat' | 'Asia/Qatar';
 export type RevenueDefinition = 'realized' | 'delivered';
 // MA-12: 'placed' is EXCLUDED — no placed_revenue metric in METRICS.md.
 

@@ -1,8 +1,16 @@
 -- ============================================================================
--- 0102_send_log.sql
+-- 0033_send_log.sql
 -- feat-d13-consent-cancontact — Track B (@backend-developer). Architecture §4.
--- (Renumbered 0033 → 0102 to resolve a duplicate-0033 ordinal with the consent SoR
---  migration 0033_consent_record_tombstone; send_log has no migration dependents.)
+--
+-- ORDINAL: this MUST stay at 0033 (before 0065 / 0077). LATER migrations operate on this table:
+--   0065_phase_a_operational_schemas  → ALTER TABLE send_log SET SCHEMA audit (un-guarded), and
+--   0077_partition_send_log           → twin-swaps audit.send_log into a partitioned table.
+-- A previous refactor renumbered this 0033 → 0102 ("to resolve a duplicate-0033 ordinal") which
+-- placed send_log's CREATE *after* 0065/0077 — a broken fresh-migrate chain (0065 would fail with
+-- "relation send_log does not exist"). Restored to 0033. The shared 0033_ prefix with
+-- 0033_consent_record_tombstone is NOT a collision: node-pg-migrate keys on the full migration
+-- name and orders 0033_consent_record_tombstone before 0033_send_log lexically (both already in the
+-- ledger on existing DBs), so a fresh DB and an existing DB converge to the same ordered history.
 -- ============================================================================
 --
 -- send_log — the OPERATIONAL record of outbound notification attempts AND the

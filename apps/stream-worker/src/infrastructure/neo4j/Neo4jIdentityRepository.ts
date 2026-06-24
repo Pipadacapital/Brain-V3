@@ -184,7 +184,8 @@ export class Neo4jIdentityRepository {
         // ── customer node ──
         await tx.run(
           `MERGE (c:Customer {brand_id:$brand, brain_id:$brainId})
-           ON CREATE SET c.lifecycle_state='active', c.created_at=$nowMs`,
+           ON CREATE SET c.lifecycle_state='active', c.created_at=$nowMs,
+                         c.ai_processing_consent=false, c.resolution_consent=false, c.anonymous_id=null`,
           { brand: brandId, brainId: outcome.brainId, nowMs },
         );
 

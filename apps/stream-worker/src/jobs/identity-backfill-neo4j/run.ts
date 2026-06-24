@@ -29,12 +29,19 @@ export async function runIdentityBackfill(): Promise<BackfillResult> {
   const pgPool = new pg.Pool({ connectionString: PG_URL, max: 4 });
   const driver = neo4j.driver(NEO4J_URI, neo4j.auth.basic(NEO4J_USER, NEO4J_PASSWORD));
   try {
-    // ── Customers ──
+    // ── Customers (all fields Customer 360 surfaces) ──
     const customers = (
-      await pgPool.query<{ brand_id: string; brain_id: string; lifecycle_state: string; merged_into: string | null; fia_ms: string | null }>(
+      await pgPool.query<{
+        brand_id: string; brain_id: string; lifecycle_state: string; merged_into: string | null;
+        anonymous_id: string | null; ai_processing_consent: boolean; resolution_consent: boolean;
+        fia_ms: string | null; created_ms: string | null;
+      }>(
         `SELECT brand_id::text, brain_id::text, lifecycle_state,
-                merged_into::text AS merged_into,
-                (EXTRACT(EPOCH FROM first_identified_at) * 1000)::bigint::text AS fia_ms
+                merged_into::text AS merged_into, anonymous_id::text AS anonymous_id,
+                COALESCE(ai_processing_consent, false) AS ai_processing_consent,
+                COALESCE(resolution_consent, false) AS resolution_consent,
+                (EXTRACT(EPOCH FROM first_identified_at) * 1000)::bigint::text AS fia_ms,
+                (EXTRACT(EPOCH FROM created_at) * 1000)::bigint::text AS created_ms
            FROM identity.customer`,
       )
     ).rows;
@@ -65,13 +72,18 @@ export async function runIdentityBackfill(): Promise<BackfillResult> {
       for (let i = 0; i < customers.length; i += BATCH) {
         const rows = customers.slice(i, i + BATCH).map((c) => ({
           brand_id: c.brand_id, brain_id: c.brain_id, lifecycle_state: c.lifecycle_state,
-          merged_into: c.merged_into, fia: c.fia_ms == null ? null : Number(c.fia_ms),
+          merged_into: c.merged_into, anonymous_id: c.anonymous_id,
+          ai_consent: c.ai_processing_consent === true, res_consent: c.resolution_consent === true,
+          fia: c.fia_ms == null ? null : Number(c.fia_ms),
+          created_at: c.created_ms == null ? null : Number(c.created_ms),
         }));
         await session.executeWrite((tx) =>
           tx.run(
             `UNWIND $rows AS r
              MERGE (c:Customer {brand_id:r.brand_id, brain_id:r.brain_id})
-             SET c.lifecycle_state=r.lifecycle_state, c.merged_into=r.merged_into, c.first_identified_at=r.fia`,
+             SET c.lifecycle_state=r.lifecycle_state, c.merged_into=r.merged_into,
+                 c.anonymous_id=r.anonymous_id, c.ai_processing_consent=r.ai_consent,
+                 c.resolution_consent=r.res_consent, c.first_identified_at=r.fia, c.created_at=r.created_at`,
             { rows },
           ),
         );

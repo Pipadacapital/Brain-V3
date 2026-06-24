@@ -114,8 +114,12 @@ export class HandleMetaOAuthCallbackCommand {
     }
     const accessToken = await this.exchangeCodeForToken(code);
 
-    // ── Step 3: Resolve ALL ad account ids (Gap B) — best-effort; empty → __default__ ──
-    const adAccountIds = await this.resolveAllAdAccountIds(accessToken);
+    // ── Step 3: Resolve ALL ad accounts (Gap B) — best-effort; empty → __default__ ──
+    // Each carries id + human name (e.g. "Acme Store — Meta") so the UI can label the
+    // per-account sub-cards instead of showing a raw act_<id> (the merchant connects many
+    // accounts and needs to tell them apart).
+    const adAccounts = await this.resolveAllAdAccounts(accessToken);
+    const adAccountIds = adAccounts.map((a) => a.id);
     // Back-compat: expose first account id as adAccountId (or null if none).
     const adAccountId = adAccountIds[0] ?? null;
 
@@ -131,14 +135,15 @@ export class HandleMetaOAuthCallbackCommand {
 
     // ── Step 5: Write one ConnectorInstance per account (Gap B) ─────────────────
     // If no accounts resolved, create one __default__ instance.
-    const accountsToCreate: Array<string | null> = adAccountIds.length > 0
-      ? adAccountIds
-      : [null];
+    const accountsToCreate: Array<{ id: string; name: string | null } | null> =
+      adAccounts.length > 0 ? adAccounts : [null];
 
     const now = new Date();
     let firstInstanceId = '';
 
-    for (const accountId of accountsToCreate) {
+    for (const account of accountsToCreate) {
+      const accountId = account?.id ?? null;
+      const accountName = account?.name ?? null;
       const instanceId = randomUUID();
       if (!firstInstanceId) firstInstanceId = instanceId;
 
@@ -156,7 +161,11 @@ export class HandleMetaOAuthCallbackCommand {
         createdAt: now,
         updatedAt: now,
         accountKey: accountId ?? DEFAULT_ACCOUNT_KEY,
-        providerConfig: accountId ? { ad_account_id: accountId } : {},
+        // ad_account_name = the human label the UI shows for this account's sub-card
+        // (falls back to the act_<id> when Meta doesn't return a name).
+        providerConfig: accountId
+          ? { ad_account_id: accountId, ...(accountName ? { ad_account_name: accountName } : {}) }
+          : {},
       });
       const savedInstance = await this.connectorRepo.save(instance);
 
@@ -239,15 +248,18 @@ export class HandleMetaOAuthCallbackCommand {
   }
 
   /**
-   * Resolve ALL accessible ad account ids via /me/adaccounts (Gap B).
-   * Returns an array of account ids (e.g. ['act_123', 'act_456']).
-   * Returns empty array on any failure — caller falls back to __default__ instance.
+   * Resolve ALL accessible ad accounts via /me/adaccounts (Gap B), each with its human name.
+   * Returns e.g. [{ id: 'act_123', name: 'Acme Store' }, …]. `name` is null when Meta omits it.
+   * Returns empty array on any failure — caller falls back to a single __default__ instance.
    */
-  private async resolveAllAdAccountIds(accessToken: string): Promise<string[]> {
+  private async resolveAllAdAccounts(
+    accessToken: string,
+  ): Promise<Array<{ id: string; name: string | null }>> {
     try {
       // SEC-AD-M1: the access_token rides the Authorization header, never the URL query string.
+      // `name` is requested so the UI can label each account sub-card (not just act_<id>).
       const response = await fetch(
-        `https://graph.facebook.com/${META_GRAPH_API_VERSION}/me/adaccounts?fields=account_id`,
+        `https://graph.facebook.com/${META_GRAPH_API_VERSION}/me/adaccounts?fields=account_id,name`,
         {
           method: 'GET',
           headers: { Authorization: `Bearer ${accessToken}` },
@@ -255,10 +267,15 @@ export class HandleMetaOAuthCallbackCommand {
         },
       );
       if (!response.ok) return [];
-      const data = (await response.json()) as { data?: Array<{ account_id?: string; id?: string }> };
+      const data = (await response.json()) as {
+        data?: Array<{ account_id?: string; id?: string; name?: string }>;
+      };
       return (data.data ?? [])
-        .map((entry) => entry.id ?? (entry.account_id ? `act_${entry.account_id}` : null))
-        .filter((id): id is string => id !== null);
+        .map((entry) => {
+          const id = entry.id ?? (entry.account_id ? `act_${entry.account_id}` : null);
+          return id ? { id, name: entry.name ?? null } : null;
+        })
+        .filter((e): e is { id: string; name: string | null } => e !== null);
     } catch {
       return [];
     }

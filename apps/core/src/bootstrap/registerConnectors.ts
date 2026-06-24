@@ -371,15 +371,26 @@ export function registerConnectors(app: FastifyInstance, deps: RegisterConnector
         const activeInstances = activeByProvider.get(def.id) ?? [];
         const firstInstance = activeInstances[0] ?? null;
 
-        const toInstanceShape = (inst: typeof instances[0]) => ({
-          id: inst.id,
-          status: inst.status,
-          health_state: inst.healthState,
-          safety_rating: inst.safetyRating,
-          shop_domain: inst.shopDomain || null,
-          connected_at: inst.connectedAt.toISOString(),
-          account_key: inst.accountKey,
-        });
+        const toInstanceShape = (inst: typeof instances[0]) => {
+          // account_label = the human name for this account's sub-card (Meta ad-account name,
+          // Google Ads descriptive name, …), stored in provider_config at connect time. Falls
+          // back to null so the UI shows the raw account_key when no name was captured.
+          const cfg = (inst.providerConfig ?? {}) as Record<string, unknown>;
+          const accountLabel =
+            (cfg['ad_account_name'] as string | undefined) ??
+            (cfg['account_name'] as string | undefined) ??
+            null;
+          return {
+            id: inst.id,
+            status: inst.status,
+            health_state: inst.healthState,
+            safety_rating: inst.safetyRating,
+            shop_domain: inst.shopDomain || null,
+            connected_at: inst.connectedAt.toISOString(),
+            account_key: inst.accountKey,
+            account_label: accountLabel,
+          };
+        };
 
         return {
           id: def.id,

@@ -137,6 +137,48 @@ describe('HandleMetaOAuthCallbackCommand', () => {
     );
   });
 
+  it('stores the Meta ad-account NAME in provider_config for each account (UI label, Gap B)', async () => {
+    const stateStore = new InProcessOAuthStateStore();
+    const secretsMgr = new LocalSecretsManager();
+    const connectorRepo = makeConnectorRepo(REAL_BRAND_ID);
+    const syncStatusRepo = makeSyncStatusRepo();
+    const emitEvent = vi.fn().mockResolvedValue(undefined);
+
+    // Two accounts, each with a human name — the field the UI labels its sub-cards with.
+    vi.stubGlobal('fetch', async (url: string | URL) => {
+      const u = typeof url === 'string' ? url : url.toString();
+      if (u.includes('/oauth/access_token')) {
+        return new Response(JSON.stringify({ access_token: TOKEN_VALUE }), { status: 200 });
+      }
+      if (u.includes('/me/adaccounts')) {
+        // the request MUST ask for the name field
+        expect(u).toContain('name');
+        return new Response(
+          JSON.stringify({
+            data: [
+              { id: 'act_111', account_id: '111', name: 'Acme Prospecting' },
+              { id: 'act_222', account_id: '222', name: 'Acme Retargeting' },
+            ],
+          }),
+          { status: 200 },
+        );
+      }
+      throw new Error(`[meta test] unexpected fetch: ${u}`);
+    });
+
+    const cmd = new HandleMetaOAuthCallbackCommand(secretsMgr, stateStore, connectorRepo, syncStatusRepo, emitEvent);
+    const stateNonce = 'meta-state-names';
+    await stateStore.set(REAL_BRAND_ID, stateNonce, 900);
+    await cmd.execute({ query: { code: 'auth_code_meta', state: stateNonce }, idempotencyKey: 'idem-names' });
+
+    const saveMock = connectorRepo.save as ReturnType<typeof vi.fn>;
+    expect(saveMock).toHaveBeenCalledTimes(2); // one instance per account (Gap B)
+    const saved = saveMock.mock.calls.map((c) => c[0] as ConnectorInstance);
+    const byKey = new Map(saved.map((s) => [s.accountKey, s.providerConfig as Record<string, unknown>]));
+    expect(byKey.get('act_111')).toMatchObject({ ad_account_id: 'act_111', ad_account_name: 'Acme Prospecting' });
+    expect(byKey.get('act_222')).toMatchObject({ ad_account_id: 'act_222', ad_account_name: 'Acme Retargeting' });
+  });
+
   it('does NOT expose the access token in the result and never emits it (NN-2 / I-S09)', async () => {
     const stateStore = new InProcessOAuthStateStore();
     const secretsMgr = new LocalSecretsManager();

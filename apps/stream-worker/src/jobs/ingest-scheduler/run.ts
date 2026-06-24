@@ -20,11 +20,13 @@
  *   3. OVERLAP SAFETY IS FREE — each run() already calls acquireRepullLock
  *      (FOR UPDATE SKIP LOCKED). A tick that overlaps a still-running repull (or the
  *      manual claimer) finds the row locked and SKIPs. The scheduler adds NO new lock.
- *   4. RATE-LIMIT SAFETY — connectors are dispatched SEQUENTIALLY within a tick (a
- *      plain for-loop, never Promise.all) so we never fan a burst at one provider; the
- *      per-page throttle (REPULL_PAGE_SLEEP_MS) inside each run() is respected. The
- *      inFlight guard means a long tick never re-enters. A >=15s interval floor
- *      prevents a misconfigured stampede.
+ *   4. RATE-LIMIT SAFETY — connectors are dispatched with a BOUNDED-CONCURRENCY worker pool
+ *      (REPULL_DISPATCH_CONCURRENCY, default 8) — parallel for throughput (one slow vendor no
+ *      longer blocks the rest, so a tick of N connectors costs ~max-chain, not the sum), but
+ *      capped so we never fan an unbounded burst. The per-provider global cap (rateLimiter,
+ *      atomic Redis) still gates EACH provider regardless of dispatch parallelism, and the
+ *      per-page throttle inside each run() is respected. The inFlight guard means a long tick
+ *      never re-enters. A >=15s interval floor prevents a misconfigured stampede.
  *
  * ISOLATION: the scheduler pool is brain_app (RLS FORCE), never superuser 'brain'. It
  * sets NO GUC itself — enumerate is GUC-less via SECURITY DEFINER; every brand-scoped
@@ -64,6 +66,85 @@ export const DEFAULT_INTERVAL_MS = 45_000;
 export const DEFAULT_CLAIM_BATCH = 100;
 
 /**
+ * Default in-tick dispatch concurrency. The claimed batch is processed by a bounded pool of this
+ * many workers instead of one serial loop, so repulls (which are dominated by live vendor-API
+ * latency) run in parallel and a tick of N connectors costs ~the slowest single chain rather than
+ * the SUM — the fix for TICK OVERRUN when many connectors come due at once. Bounded (not unbounded
+ * Promise.all) so we never fan a huge burst; the per-provider rateLimiter still gates each provider.
+ * Override via REPULL_DISPATCH_CONCURRENCY (clamped 1..32).
+ */
+export const DEFAULT_DISPATCH_CONCURRENCY = 8;
+
+/** Resolve the in-tick dispatch concurrency from env (REPULL_DISPATCH_CONCURRENCY), clamped 1..32. */
+export function resolveDispatchConcurrency(): number {
+  const env = process.env['REPULL_DISPATCH_CONCURRENCY'];
+  const parsed = env ? parseInt(env, 10) : NaN;
+  if (Number.isFinite(parsed) && parsed >= 1) return Math.min(parsed, 32);
+  return DEFAULT_DISPATCH_CONCURRENCY;
+}
+
+interface ClaimedConnector {
+  connector_instance_id: string;
+  brand_id: string;
+  provider: string;
+}
+
+/**
+ * Dispatch ONE connector's repull: loadRun → per-provider rate-limit gate → deadline-bounded run()
+ * → metrics. Returns true iff the repull was dispatched (false = no run() for provider, rate-limited,
+ * or errored). FAIL-ISOLATED: an error is logged + counted and swallowed (run() persists
+ * connector_sync_status.state='error' itself), so one bad connector never breaks the pool.
+ */
+async function dispatchOne(
+  connector: ClaimedConnector,
+  rateLimiter?: IConnectorRateLimiter,
+): Promise<boolean> {
+  const run = await loadRun(connector.provider);
+  if (!run) {
+    log.warn(`[ingest-scheduler] no repull run() for provider=${connector.provider} ` +
+                `connector=${connector.connector_instance_id}`);
+    return false;
+  }
+
+  // P1: global cross-replica per-provider cap (atomic Redis) — safe under parallel dispatch. Over the
+  // provider's quota → skip (the connector stays stamped + re-pulls next interval). Fail-open.
+  if (rateLimiter && !(await rateLimiter.tryAcquire(connector.provider))) {
+    incrementCounter('ingest_scheduler_rate_limited_total', { provider: connector.provider });
+    log.warn(`[ingest-scheduler] rate-limited provider=${connector.provider} connector=${connector.connector_instance_id} — skipped this tick`);
+    return false;
+  }
+
+  log.info(`[ingest-scheduler] dispatched provider=${connector.provider} ` +
+            `brand=${connector.brand_id} connector=${connector.connector_instance_id}`);
+  try {
+    // run()'s OWN FOR UPDATE SKIP LOCKED overlap-lock guards against a manual "sync now" racing the
+    // claimed repull. A per-dispatch deadline races the call — a connector that hangs past
+    // DISPATCH_DEADLINE_MS is aborted + counted as an error so it cannot stall its pool slot forever.
+    let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+    const deadlinePromise = new Promise<never>((_, reject) => {
+      deadlineTimer = setTimeout(() => {
+        reject(new Error(
+          `[ingest-scheduler] dispatch deadline exceeded provider=${connector.provider} ` +
+          `connector=${connector.connector_instance_id} limit=${DISPATCH_DEADLINE_MS}ms`,
+        ));
+      }, DISPATCH_DEADLINE_MS);
+    });
+    try {
+      await Promise.race([run(connector.connector_instance_id), deadlinePromise]);
+    } finally {
+      if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
+    }
+    incrementCounter('ingest_scheduler_dispatch_total', { provider: connector.provider });
+    return true;
+  } catch (err) {
+    incrementCounter('ingest_scheduler_dispatch_error_total', { provider: connector.provider });
+    log.error(`[ingest-scheduler] repull run failed provider=${connector.provider} ` +
+                `connector=${connector.connector_instance_id}`, { err: err });
+    return false;
+  }
+}
+
+/**
  * One scheduler tick (P1 work-queue): CLAIM a disjoint batch of DUE connectors (FOR UPDATE SKIP
  * LOCKED via claim_due_repull_connectors, 0053) — NOT enumerate-everything — and dispatch each
  * one's existing repull run(). Because the claim is atomic + stamps next_repull_at ahead, every
@@ -82,59 +163,27 @@ export async function tick(
     return 0; // nothing due — another replica took the batch, or all connectors are up to date
   }
   const brandCount = new Set(connectors.map((c) => c.brand_id)).size;
-  log.info(`tick start claimed=${connectors.length} brands=${brandCount}`);
+  const concurrency = Math.min(resolveDispatchConcurrency(), connectors.length);
+  log.info(`tick start claimed=${connectors.length} brands=${brandCount} concurrency=${concurrency}`);
 
+  // BOUNDED-CONCURRENCY POOL: `concurrency` workers each pull the next connector off a shared cursor
+  // and dispatch it, until the claimed batch is drained. Parallel (a slow vendor no longer blocks the
+  // rest — tick cost ≈ slowest single chain, not the SUM, which is the TICK OVERRUN fix), but capped
+  // so we never fan an unbounded burst. Per-connector dispatchOne is fully fail-isolated; the
+  // per-provider rateLimiter (atomic) still gates each provider regardless of parallelism. The
+  // shared `nextIdx`/`dispatched` increments are safe on Node's single-threaded loop.
   let dispatched = 0;
-  // SEQUENTIAL within a replica's claimed batch (never Promise.all) — rate-limit-safe per provider.
-  for (const connector of connectors) {
-    const run = await loadRun(connector.provider);
-    if (!run) {
-      log.warn(`[ingest-scheduler] no repull run() for provider=${connector.provider} ` +
-                  `connector=${connector.connector_instance_id}`);
-      continue;
+  let nextIdx = 0;
+  const worker = async (): Promise<void> => {
+    while (true) {
+      const i = nextIdx;
+      nextIdx += 1;
+      if (i >= connectors.length) return;
+      const ok = await dispatchOne(connectors[i]!, rateLimiter);
+      if (ok) dispatched += 1;
     }
-
-    // P1: global cross-replica per-provider cap. Over the provider's quota → skip this dispatch
-    // (the connector stays stamped + re-pulls next interval), protecting shared app quotas from a
-    // parallel-replica storm. Fail-open inside the limiter.
-    if (rateLimiter && !(await rateLimiter.tryAcquire(connector.provider))) {
-      incrementCounter('ingest_scheduler_rate_limited_total', { provider: connector.provider });
-      log.warn(`[ingest-scheduler] rate-limited provider=${connector.provider} connector=${connector.connector_instance_id} — skipped this tick`);
-      continue;
-    }
-
-    log.info(`[ingest-scheduler] dispatched provider=${connector.provider} ` +
-              `brand=${connector.brand_id} connector=${connector.connector_instance_id}`);
-    try {
-      // run()'s OWN FOR UPDATE SKIP LOCKED overlap-lock guards against a manual "sync now" click
-      // racing the claimed repull. A per-dispatch deadline races the call — a connector that
-      // hangs past DISPATCH_DEADLINE_MS is aborted and counted as an error so it cannot stall
-      // the sequential tick for all remaining connectors (DISPATCH_DEADLINE_MS backstop).
-      let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
-      const deadlinePromise = new Promise<never>((_, reject) => {
-        deadlineTimer = setTimeout(() => {
-          reject(new Error(
-            `[ingest-scheduler] dispatch deadline exceeded provider=${connector.provider} ` +
-            `connector=${connector.connector_instance_id} limit=${DISPATCH_DEADLINE_MS}ms`,
-          ));
-        }, DISPATCH_DEADLINE_MS);
-      });
-      try {
-        await Promise.race([run(connector.connector_instance_id), deadlinePromise]);
-      } finally {
-        if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
-      }
-      dispatched++;
-      // P1: per-provider dispatch metric — the scale-limiting tier's throughput signal.
-      incrementCounter('ingest_scheduler_dispatch_total', { provider: connector.provider });
-    } catch (err) {
-      // FAIL-ISOLATION: one bad/slow connector is logged and skipped — the loop
-      // continues. run() persists connector_sync_status.state='error' itself.
-      incrementCounter('ingest_scheduler_dispatch_error_total', { provider: connector.provider });
-      log.error(`[ingest-scheduler] repull run failed provider=${connector.provider} ` +
-                  `connector=${connector.connector_instance_id}`, { err: err });
-    }
-  }
+  };
+  await Promise.all(Array.from({ length: concurrency }, () => worker()));
 
   log.info(`tick done dispatched=${dispatched}/${connectors.length}`);
   return dispatched;

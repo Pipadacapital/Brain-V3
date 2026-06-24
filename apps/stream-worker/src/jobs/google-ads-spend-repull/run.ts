@@ -141,7 +141,12 @@ async function repullConnector(params: RepullParams): Promise<void> {
 
   const creds = await resolveGoogleCredentials(secretRef, connector.ad_account_id);
   if (!creds) {
+    // FAIL LOUDLY (not a silent early-return): a missing/expired credential surfaces as
+    // RECONNECT_REQUIRED on the connector instead of a stale 'connected' tile with no spend.
     log.error(`connector=${ciId} — credentials not found (RECONNECT_REQUIRED)`);
+    recordConnectorAuthRejected('google_ads');
+    await setSyncState(pool, brandId, ciId, 'error', 'google credentials missing — RECONNECT_REQUIRED');
+    await updateConnectorInstanceHealth(pool, brandId, ciId, 'token_expired');
     return;
   }
 

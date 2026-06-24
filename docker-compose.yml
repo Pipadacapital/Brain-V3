@@ -344,6 +344,7 @@ services:
     environment:
       KAFKA_BROKERS: "localhost:9092"
       COLLECTOR_TOPIC: "dev.collector.event.v1"
+      BACKFILL_TOPIC: "dev.collector.order.backfill.v1"
       STARTING_OFFSETS: "earliest"
       TRIGGER_MODE: "continuous"
       PROCESSING_TIME: "10 seconds"

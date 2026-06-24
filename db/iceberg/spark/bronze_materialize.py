@@ -32,6 +32,11 @@ NAMESPACE = os.environ.get("BRONZE_NAMESPACE", "brain_bronze")
 TABLE = f"{CATALOG}.{NAMESPACE}.collector_events"
 KAFKA_BROKERS = os.environ.get("KAFKA_BROKERS", "redpanda:9092")
 TOPIC = os.environ.get("COLLECTOR_TOPIC", "dev.collector.event.v1")
+# Backfill orders ride a SEPARATE topic + consumer group (lane isolation, ADR-BF-7) so they can never
+# lag the live collector lane. The Spark Bronze sink consumes BOTH so historical/backfilled orders
+# (order.backfill.v1) land in Iceberg Bronze too — without this they reach no Bronze store (the PG
+# bronze write was retired) and would be missing from the recognition ledger.
+BACKFILL_TOPIC = os.environ.get("BACKFILL_TOPIC", "dev.collector.order.backfill.v1")
 STARTING_OFFSETS = os.environ.get("STARTING_OFFSETS", "earliest")
 # Local checkpoint by default — keeps the spike free of the Hadoop S3A connector (Iceberg data
 # still lands in MinIO via S3FileIO). Clear it to re-process the backlog for an idempotency re-run.
@@ -54,7 +59,9 @@ PROCESSING_TIME = os.environ.get("PROCESSING_TIME", "30 seconds")
 # order.live.v1 precedent): the ShipmentLedgerConsumer consumes them for cod_rto_clawback/
 # cod_delivery_confirmed AND they are landed in Bronze so the rich shipment detail (status,
 # terminal_class, pincode, courier) is preserved for silver_shipment (Slice 2, multi-source).
-SERVER_TRUSTED_BRONZE = {"order.live.v1", "shopflo.checkout_abandoned.v1", "gokwik.rto_predict.v1", "gokwik.awb_status.v1", "shiprocket.shipment_status.v1"}
+# order.backfill.v1 is server-trusted too — the (retired) BackfillOrderConsumer wrote it with
+# enforceTenantDerivation=false (server-derived brand_id, no install_token); keep that parity here.
+SERVER_TRUSTED_BRONZE = {"order.live.v1", "order.backfill.v1", "shopflo.checkout_abandoned.v1", "gokwik.rto_predict.v1", "gokwik.awb_status.v1", "shiprocket.shipment_status.v1"}
 LEDGER_ONLY = {"settlement.live.v1", "spend.live.v1"}
 
 # Postgres (for R2 install_token→brand resolution via pixel_installation). Read as the superuser
@@ -257,7 +264,8 @@ def build_writer(spark: SparkSession):
     raw = (
         spark.readStream.format("kafka")
         .option("kafka.bootstrap.servers", KAFKA_BROKERS)
-        .option("subscribe", TOPIC)
+        # Consume the live collector lane AND the backfill lane (comma-separated) → both land in Bronze.
+        .option("subscribe", f"{TOPIC},{BACKFILL_TOPIC}")
         .option("startingOffsets", STARTING_OFFSETS)
         .option("failOnDataLoss", "false")
         # Bound every micro-batch — the catch-up drain (Trigger.AvailableNow) honors this to split the

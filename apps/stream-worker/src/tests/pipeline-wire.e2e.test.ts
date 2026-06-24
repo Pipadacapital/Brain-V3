@@ -1,28 +1,24 @@
 /**
  * pipeline-wire.e2e.test.ts — Full-wire end-to-end test (F-QA-01).
  *
- * Exercises the COMPLETE ingest spine in a single test — no mocked seams at
- * any cross-component boundary:
+ * Exercises the COMPLETE ingest spine in a single test — no mocked seams at any cross-component
+ * boundary, all the way to the Bronze system-of-record (Iceberg):
  *
  *   POST /collect (real TCP HTTP, collector on a real OS port)
  *     → collector_spool (INSERT, status=pending)
- *     → drainer produces to Redpanda (real broker)
+ *     → drainer produces to Redpanda (real broker, the collector topic)
  *     → collector_spool status=drained
- *     → CollectorEventConsumer reads from Redpanda (real consumer group, this process)
- *     → BronzeRepository.write() (as brain_app, RLS enforced)
- *     → bronze_events row visible under brain_app + correct-brand GUC
- *     → assert current_user = 'brain_app' (NOT 'brain' superuser — F-4 false-pass trap)
- *     → assert wrong-brand GUC → 0 rows (RLS negative control)
+ *     → the Spark Structured-Streaming sink consumes the topic and MERGEs into Iceberg Bronze
+ *       (brain_bronze.collector_events) — the SOLE Bronze writer (the PG bronze write is retired)
+ *     → the row is readable via the StarRocks external catalog, brand-scoped
+ *     → wrong-brand-scoped read → 0 rows (read-seam tenant isolation)
  *
- * REQUIRES live infra: Redpanda + Redis + Postgres.
- * Start with: docker compose up -d redpanda redis postgres
+ * The event is order.live.v1 (SERVER_TRUSTED lane) so it flows through the collector → Spark without
+ * the pixel-lane R2/R3 gate (that gate is owned by ingest-hardening.e2e.test.ts) — this suite proves
+ * the WIRING from the HTTP edge all the way to Iceberg Bronze.
  *
- * NON-INERT: the test is skipped only if infra is genuinely unreachable at the
- * TCP level.  It is never skipped silently when infra is up.
- *
- * The collector is started as a child process (via tsx) on a random OS port so
- * the real Fastify listener + drainer + spool path runs end-to-end.  The
- * stream-worker consumer (CollectorEventConsumer) runs in this process.
+ * REQUIRES the `lakehouse` docker profile (collector deps: Redpanda + PG; plus Spark sink + Iceberg
+ * REST + MinIO + StarRocks). The collector runs as a child process; the Spark sink runs in Docker.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -32,31 +28,17 @@ import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { Pool } from 'pg';
-import { Redis } from 'ioredis';
-import { Kafka } from 'kafkajs';
-import { RedisDedupAdapter } from '../infrastructure/redis/RedisDedupAdapter.js';
-import { BronzeRepository } from '../infrastructure/pg/BronzeRepository.js';
-import { ProcessEventUseCase } from '../application/ProcessEventUseCase.js';
-import { CollectorEventConsumer } from '../interfaces/consumers/CollectorEventConsumer.js';
-import { InMemoryRetryCounter } from './support/InMemoryRetryCounter.js';
-import { buildDedupKey } from '../domain/bronze/DedupPolicy.js';
+import type mysql from 'mysql2/promise';
+import { makeStarrocksPool, icebergBronzeAvailable, pollIcebergBronzeCount } from './helpers/iceberg-bronze.js';
 
 // ── Test config ────────────────────────────────────────────────────────────────
 
 const DATABASE_URL =
   process.env['DATABASE_URL'] ?? 'postgresql://brain:brain@localhost:5432/brain';
 
-const BRAIN_APP_DATABASE_URL =
-  process.env['BRAIN_APP_DATABASE_URL'] ??
-  'postgresql://brain_app:brain_app@localhost:5432/brain';
-
 const REDPANDA_BROKERS_STR =
   process.env['KAFKA_BROKERS'] ?? process.env['REDPANDA_BROKERS'] ?? 'localhost:9092';
 const REDPANDA_BROKERS = REDPANDA_BROKERS_STR.split(',').map((b) => b.trim());
-
-const REDIS_URL = process.env['REDIS_URL'] ?? 'redis://localhost:6379';
-const TOPIC = process.env['COLLECTOR_TOPIC'] ?? 'dev.collector.event.v1';
-const CONSUMER_GROUP = 'pipeline-wire-e2e';
 
 // Test brand UUIDs (valid UUIDv4)
 const BRAND_A = 'aaaa1111-aaaa-4aaa-8aaa-111111111111';
@@ -74,16 +56,6 @@ function tcpReachable(host: string, port: number, timeoutMs = 2000): Promise<boo
       .once('timeout', () => { sock.destroy(); resolve(false); })
       .connect(port, host);
   });
-}
-
-async function allInfraUp(): Promise<boolean> {
-  const [broker] = REDPANDA_BROKERS;
-  if (!broker) return false;
-  const [rpHost, rpPortStr] = broker.split(':');
-  const rpOk = await tcpReachable(rpHost ?? 'localhost', Number(rpPortStr ?? 9092));
-  const pgOk = await tcpReachable('127.0.0.1', 5432);
-  const redisOk = await tcpReachable('127.0.0.1', 6379);
-  return rpOk && pgOk && redisOk;
 }
 
 // ── Free-port helper ──────────────────────────────────────────────────────────
@@ -174,30 +146,34 @@ const COLLECTOR_MAIN = `${REPO_ROOT}apps/collector/src/main.ts`;
 
 // ── Test suite ─────────────────────────────────────────────────────────────────
 
-describe('Full-wire pipeline E2E (F-QA-01): POST /collect → spool → Redpanda → stream-worker → bronze_events', () => {
+describe('Full-wire pipeline E2E (F-QA-01): POST /collect → spool → Redpanda → Spark → Iceberg Bronze', () => {
   let collectorProc: ChildProcess | null = null;
   let collectorPort: number;
-  let consumer: CollectorEventConsumer | null = null;
-  let dedup: RedisDedupAdapter | null = null;
-  let bronze: BronzeRepository | null = null;
-  let brainAppPool: Pool | null = null;
-  let superPool: Pool | null = null;
+  let superPool: Pool | null = null;     // collector_spool (operational PG)
+  let sr: mysql.Pool | null = null;      // StarRocks — reads Iceberg Bronze (the SoR)
   let infraAvailable = false;
 
-  // Per-run unique event UUID to avoid cross-run collisions
-  // Must be a valid UUIDv4 because bronze_events.event_id is type UUID
+  // Per-run unique event UUID (Iceberg event_id is a string; UUID is fine).
   const TEST_EVENT_ID = crypto.randomUUID();
 
   beforeAll(async () => {
-    infraAvailable = await allInfraUp();
+    // Collector deps (Redpanda + PG) must be up, plus the lakehouse read path (StarRocks/Iceberg).
+    const [broker] = REDPANDA_BROKERS;
+    const [rpHost, rpPortStr] = (broker ?? 'localhost:9092').split(':');
+    const rpOk = await tcpReachable(rpHost ?? 'localhost', Number(rpPortStr ?? 9092));
+    const pgOk = await tcpReachable('127.0.0.1', 5432);
+    sr = makeStarrocksPool();
+    const lakehouseOk = await icebergBronzeAvailable(sr);
+    infraAvailable = rpOk && pgOk && lakehouseOk;
     if (!infraAvailable) {
-      console.warn('[pipeline-wire.e2e] SKIP — infra not reachable (Redpanda/PG/Redis)');
+      console.warn('[pipeline-wire.e2e] SKIP — infra not reachable (Redpanda/PG/StarRocks-Iceberg)');
       return;
     }
 
-    // ── 1. Start collector subprocess on a free port ──────────────────────────
-    collectorPort = await getFreePort();
+    superPool = new Pool({ connectionString: DATABASE_URL });
 
+    // ── Start collector subprocess on a free port ─────────────────────────────
+    collectorPort = await getFreePort();
     collectorProc = spawn(
       'pnpm',
       ['exec', 'tsx', COLLECTOR_MAIN],
@@ -206,28 +182,20 @@ describe('Full-wire pipeline E2E (F-QA-01): POST /collect → spool → Redpanda
           ...process.env,
           PORT: String(collectorPort),
           NODE_ENV: 'development',
-          DATABASE_URL: DATABASE_URL,
+          DATABASE_URL,
           REDPANDA_BROKERS: REDPANDA_BROKERS_STR,
           DRAIN_POLL_INTERVAL_MS: '200',
-          // Point Apicurio to a connection-refused port so the backoff exhausts
-          // quickly and the collector degrades gracefully to spool-only mode (D-10).
-          // This avoids the ~30s wait when the artifact already exists (409) in CI.
+          // Point Apicurio at a connection-refused port so the backoff exhausts quickly and the
+          // collector degrades gracefully to spool-only mode (D-10) — avoids the ~30s CI wait.
           APICURIO_REGISTRY_URL: 'http://127.0.0.1:9',
         },
         stdio: ['ignore', 'pipe', 'pipe'],
       },
     );
+    collectorProc.stdout?.on('data', (d: Buffer) => { process.stdout.write(`[collector-proc] ${d.toString()}`); });
+    collectorProc.stderr?.on('data', (d: Buffer) => { process.stderr.write(`[collector-proc:err] ${d.toString()}`); });
 
-    collectorProc.stdout?.on('data', (d: Buffer) => {
-      process.stdout.write(`[collector-proc] ${d.toString()}`);
-    });
-    collectorProc.stderr?.on('data', (d: Buffer) => {
-      process.stderr.write(`[collector-proc:err] ${d.toString()}`);
-    });
-
-    // Wait for the collector HTTP listener to be ready (poll /healthz).
-    // The collector starts listening AFTER registerSchemaWithBackoff() which has
-    // a 30s budget — so we poll for up to 45s to cover the full backoff window.
+    // Wait for the collector HTTP listener (it starts AFTER a schema-registry backoff budget).
     await pollUntil(
       () => httpGet(collectorPort, '/healthz').catch(() => null),
       (r) => r !== null && r.status === 200,
@@ -235,86 +203,45 @@ describe('Full-wire pipeline E2E (F-QA-01): POST /collect → spool → Redpanda
       500,
     );
     console.info(`[pipeline-wire.e2e] collector ready on port ${collectorPort}`);
-
-    // ── 2. Start stream-worker consumer (in-process) ──────────────────────────
-    const kafka = new Kafka({
-      clientId: 'pipeline-wire-e2e',
-      brokers: REDPANDA_BROKERS,
-      logLevel: 0,
-      retry: { retries: 3 },
-    });
-
-    dedup = new RedisDedupAdapter(REDIS_URL);
-    bronze = new BronzeRepository(BRAIN_APP_DATABASE_URL);
-    // enforceTenantDerivation=false: this suite proves the pipeline WIRING (collector →
-    // Redpanda → stream-worker → Bronze plumbing) with a trusted-brand fixture, NOT the R2
-    // token→brand gate (owned by ingest-hardening.e2e.test.ts, which drives a token-bearing event).
-    const useCase = new ProcessEventUseCase(dedup, bronze, undefined, false);
-    consumer = new CollectorEventConsumer(kafka, useCase, TOPIC, CONSUMER_GROUP, new InMemoryRetryCounter());
-
-    await consumer.start();
-    console.info('[pipeline-wire.e2e] stream-worker consumer started');
-
-    // ── 3. Assertion DB pools ─────────────────────────────────────────────────
-    brainAppPool = new Pool({ connectionString: BRAIN_APP_DATABASE_URL });
-    superPool = new Pool({ connectionString: DATABASE_URL });
-
-    // Clean any leftover from a prior aborted run
-    await superPool.query('DELETE FROM bronze_events WHERE event_id = $1', [TEST_EVENT_ID]);
-    const redis = new Redis(REDIS_URL);
-    await redis.del(buildDedupKey(BRAND_A, TEST_EVENT_ID));
-    await redis.quit();
   }, 90_000);
 
   afterAll(async () => {
-    // Clean up test data
-    await superPool?.query('DELETE FROM bronze_events WHERE event_id = $1', [TEST_EVENT_ID]).catch(() => undefined);
-    const redis = new Redis(REDIS_URL);
-    await redis.del(buildDedupKey(BRAND_A, TEST_EVENT_ID)).catch(() => undefined);
-    await redis.quit().catch(() => undefined);
-
-    await consumer?.stop().catch(() => undefined);
-    await dedup?.quit().catch(() => undefined);
-    await bronze?.end().catch(() => undefined);
-
-    // Terminate collector subprocess
     if (collectorProc && !collectorProc.killed) {
       collectorProc.kill('SIGTERM');
       await new Promise<void>((resolve) => {
-        // ChildProcess extends EventEmitter — cast via EventEmitter to access .once()
         const proc = collectorProc as unknown as NodeJS.EventEmitter;
         proc.once('exit', () => resolve());
         setTimeout(resolve, 3000);
       });
     }
-
-    await brainAppPool?.end().catch(() => undefined);
+    await sr?.end?.().catch(() => undefined);
     await superPool?.end().catch(() => undefined);
   }, 30_000);
 
   it(
-    'event travels end-to-end: POST /collect → spool(drained) → Redpanda → stream-worker → bronze_events under brain_app',
+    'event travels end-to-end: POST /collect → spool(drained) → Redpanda → Spark → Iceberg Bronze',
     async () => {
       if (!infraAvailable) {
         console.warn('[pipeline-wire.e2e] Skipping — infra not available');
         return;
       }
 
-      // ── Step 1: POST to collector via real TCP socket ─────────────────────
+      // ── Step 1: POST to the collector over a real TCP socket ──────────────
+      // order.live.v1 = SERVER_TRUSTED lane (server-derived brand, no install_token) → the Spark sink
+      // writes it as-is, exercising the full wire without the pixel gate.
       const syntheticEvent = {
         schema_version: '1',
         event_id: TEST_EVENT_ID,
         brand_id: BRAND_A,
         correlation_id: `corr-wire-${TEST_EVENT_ID}`,
-        event_name: 'page.viewed',
+        event_name: 'order.live.v1',
         occurred_at: new Date().toISOString(),
         ingested_at: new Date().toISOString(),
-        properties: { page: 'home', test: 'pipeline-wire-e2e' },
+        properties: { source: 'shopify', order_id: `wire-${TEST_EVENT_ID.slice(0, 8)}`, amount_minor: '100000', currency_code: 'INR', payment_method: 'prepaid', test: 'pipeline-wire-e2e' },
       };
 
       console.info(`[pipeline-wire.e2e] POST /collect event_id=${TEST_EVENT_ID}`);
       const postResp = await httpPost(collectorPort, '/collect', syntheticEvent);
-
       expect(postResp.status).toBe(200);
       expect((postResp.body as { accepted: boolean }).accepted).toBe(true);
 
@@ -322,8 +249,7 @@ describe('Full-wire pipeline E2E (F-QA-01): POST /collect → spool → Redpanda
       expect(spoolId).toBeTruthy();
       console.info(`[pipeline-wire.e2e] spool_id=${spoolId}`);
 
-      // ── Step 2: Poll collector_spool until status='drained' ────────────────
-      // The collector drainer (in the subprocess) polls every 200ms.
+      // ── Step 2: collector_spool reaches status='drained' (produced to Redpanda) ──
       const drainedRow = await pollUntil(
         async () => {
           const r = await superPool!.query<{ status: string }>(
@@ -337,68 +263,18 @@ describe('Full-wire pipeline E2E (F-QA-01): POST /collect → spool → Redpanda
         300,
       );
       expect(drainedRow.status).toBe('drained');
-      console.info(`[pipeline-wire.e2e] spool row drained — event produced to Redpanda`);
+      console.info('[pipeline-wire.e2e] spool row drained — event produced to Redpanda');
 
-      // ── Step 3: Poll bronze_events under brain_app + correct-brand GUC ────
-      // The in-process CollectorEventConsumer reads from Redpanda and writes to bronze_events.
-      const bronzeRow = await pollUntil(
-        async () => {
-          const client = await brainAppPool!.connect();
-          try {
-            // Set brand GUC for RLS (scoped to this session, not transaction)
-            await client.query(
-              "SELECT set_config('app.current_brand_id', $1, false)",
-              [BRAND_A],
-            );
-            const r = await client.query<{ event_id: string; current_user: string }>(
-              'SELECT event_id, current_user FROM bronze_events WHERE event_id = $1',
-              [TEST_EVENT_ID],
-            );
-            return r.rows[0] ?? null;
-          } finally {
-            client.release();
-          }
-        },
-        (row) => row.event_id === TEST_EVENT_ID,
-        30_000,
-        300,
-      );
+      // ── Step 3: the Spark sink lands it in Iceberg Bronze (read via StarRocks, brand-scoped) ──
+      const landed = await pollIcebergBronzeCount(sr!, { brandId: BRAND_A, eventId: TEST_EVENT_ID }, { min: 1, timeoutMs: 75_000 });
+      expect(landed).toBe(1);
+      console.info('[pipeline-wire.e2e] bronze row found in Iceberg under BRAND_A');
 
-      // ── Step 4: Assertions ────────────────────────────────────────────────
-
-      // Row arrived end-to-end
-      expect(bronzeRow.event_id).toBe(TEST_EVENT_ID);
-      console.info(`[pipeline-wire.e2e] bronze_events row found: event_id=${bronzeRow.event_id} current_user=${bronzeRow.current_user}`);
-
-      // Critical: must be brain_app, NOT brain superuser (F-4 false-pass trap)
-      expect(bronzeRow.current_user).toBe('brain_app');
-      expect(bronzeRow.current_user).not.toBe('brain');
-
-      // ── Step 5: RLS negative control (wrong brand → 0 rows) ──────────────
-      const wrongBrandClient = await brainAppPool!.connect();
-      let wrongBrandCount = -1;
-      let wrongBrandUser = 'unknown';
-      try {
-        await wrongBrandClient.query(
-          "SELECT set_config('app.current_brand_id', $1, false)",
-          [BRAND_B],
-        );
-        const userR = await wrongBrandClient.query<{ current_user: string }>('SELECT current_user');
-        wrongBrandUser = userR.rows[0]?.current_user ?? 'unknown';
-        const r = await wrongBrandClient.query<{ c: string }>(
-          "SELECT count(*)::text AS c FROM bronze_events WHERE event_id = $1",
-          [TEST_EVENT_ID],
-        );
-        wrongBrandCount = Number(r.rows[0]?.c ?? '-1');
-      } finally {
-        wrongBrandClient.release();
-      }
-
-      // Negative control: brand_B cannot see brand_A's rows
-      expect(wrongBrandUser).toBe('brain_app');
-      expect(wrongBrandCount).toBe(0);
-      console.info(`[pipeline-wire.e2e] RLS negative control: wrong-brand GUC → ${wrongBrandCount} rows (expected 0)`);
+      // ── Step 4: read-seam tenant isolation (wrong brand → 0 rows) ─────────
+      const wrongBrand = await pollIcebergBronzeCount(sr!, { brandId: BRAND_B, eventId: TEST_EVENT_ID }, { min: 1, timeoutMs: 3_000 });
+      expect(wrongBrand).toBe(0);
+      console.info(`[pipeline-wire.e2e] read-seam isolation: wrong-brand → ${wrongBrand} rows (expected 0)`);
     },
-    90_000,
+    120_000,
   );
 });

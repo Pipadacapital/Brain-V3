@@ -116,13 +116,9 @@ jobs:
     env:
       - { name: DBT_SELECT, value: "+gold_revenue_ledger" }
       - { name: DBT_THREADS, value: "1" }
-  - name: revenue-finalization
-    schedule: "0 * * * *"          # hourly at :00 — ATTRIBUTION CHAIN step 1 (stream-worker image)
-    command: ["node", "dist/jobs/revenue-finalization.js"]
-    useStreamWorkerImage: true
-    # DEPRECATED (medallion realignment): writes the PG realized_revenue_ledger, which no app reads
-    # anymore — billing/attribution/dashboards read brain_gold.gold_revenue_ledger (recognition-refresh
-    # above). Retire once recognition-refresh is enabled + verified per env.
+  # MEDALLION REALIGNMENT (Epic 1 / decision B): the `revenue-finalization` cron was REMOVED — its job
+  # (dist/jobs/revenue-finalization.js) is deleted and realized_revenue_ledger is dropped. Recognition
+  # (incl. finalization after horizon) is now a dbt build from Bronze — see `recognition-refresh` above.
   - name: journey-stitch-from-identity
     schedule: "15 * * * *"         # hourly at :15 — ATTRIBUTION CHAIN step 2: derive the stitch map
     command: ["node", "dist/jobs/journey-stitch-from-identity.js"]

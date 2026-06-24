@@ -104,6 +104,13 @@ jobs:
     schedule: "2 * * * *"          # hourly at :02 — ATTRIBUTION CHAIN step -1: materialize the identity graph
     command: ["node", "dist/jobs/identity-export/run.js"]
     useStreamWorkerImage: true
+  - name: journey-stitch-export
+    schedule: "3 * * * *"          # hourly at :03 — materialize the PG cart-stitch → silver_journey_stitch
+    command: ["node", "dist/jobs/journey-stitch-export/run.js"]
+    useStreamWorkerImage: true
+    # MEDALLION REALIGNMENT (Epic 4): connectors.connector_journey_stitch_map (PG capture) →
+    # brain_silver.silver_journey_stitch (StarRocks), so silver_touchpoint reads the lakehouse, not a
+    # PG JDBC shim. Needs STARROCKS_* + BRAIN_APP_DATABASE_URL.
     # MEDALLION REALIGNMENT (Epic 3 / ADR-0004): Neo4j is the identity SoR; dbt/StarRocks can't read it.
     # This materializes the active hash→brain_id edges from Neo4j → brain_silver.silver_identity_link
     # (StarRocks) so recognition-refresh (:05) resolves order brain_id + the customer marts populate.

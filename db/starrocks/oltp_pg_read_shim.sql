@@ -93,18 +93,9 @@ GRANT SELECT ON silver_customer_identity_src TO brain;
 -- standard `make silver-catalog` wiring creates it. SCHEMA-QUALIFIED to pin the view (avoids the
 -- CREATE-OR-REPLACE rebind-to-legacy hazard).
 -- ============================================================================
-CREATE OR REPLACE VIEW connector_journey_stitch_map_src AS
-SELECT
-    brand_id::text   AS brand_id,
-    order_id,
-    stitched_anon_id,
-    brain_id::text   AS brain_id,
-    click_ids::text  AS click_ids,   -- jsonb→text (JDBC cannot read jsonb)
-    utms::text       AS utms,        -- jsonb→text
-    created_at
-FROM connectors.connector_journey_stitch_map;
-
-GRANT SELECT ON connector_journey_stitch_map_src TO brain;
+-- MEDALLION REALIGNMENT (Epic 4): connector_journey_stitch_map_src (the PG JDBC read-shim) was REMOVED.
+-- The cart-stitch is materialized into brain_silver.silver_journey_stitch by the journey-stitch-export
+-- job; silver_touchpoint reads that StarRocks projection directly (no PG analytical read).
 
 -- ── Medallion realignment (Epic 1): shims for Silver recognition-from-Bronze ───────────────────
 -- brand recognition horizons (operational config — legitimately PG) for finalization.

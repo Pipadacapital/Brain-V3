@@ -369,23 +369,23 @@ async function setSyncState(
       `SELECT set_config('app.current_brand_id', $1, true)`,
       [brandId],
     );
+    // UPSERT, not UPDATE (matches gokwik-awb-repull): a missing connect-time row would make an
+    // UPDATE-only write a silent no-op → UI stuck on "Not synced yet". (brand_id, connector_instance_id) UNIQUE.
     if (state === 'connected') {
       await client.query(
-        `UPDATE connector_sync_status
-           SET state = $3,
-               last_sync_at = NOW(),
-               last_error = $4,
-               updated_at = NOW()
-         WHERE brand_id = $1 AND connector_instance_id = $2`,
+        `INSERT INTO connector_sync_status (brand_id, connector_instance_id, state, last_sync_at, last_error)
+           VALUES ($1, $2, $3, NOW(), $4)
+         ON CONFLICT (brand_id, connector_instance_id)
+           DO UPDATE SET state = EXCLUDED.state, last_sync_at = NOW(),
+                         last_error = EXCLUDED.last_error, updated_at = NOW()`,
         [brandId, connectorInstanceId, state, lastError],
       );
     } else {
       await client.query(
-        `UPDATE connector_sync_status
-           SET state = $3,
-               last_error = $4,
-               updated_at = NOW()
-         WHERE brand_id = $1 AND connector_instance_id = $2`,
+        `INSERT INTO connector_sync_status (brand_id, connector_instance_id, state, last_error)
+           VALUES ($1, $2, $3, $4)
+         ON CONFLICT (brand_id, connector_instance_id)
+           DO UPDATE SET state = EXCLUDED.state, last_error = EXCLUDED.last_error, updated_at = NOW()`,
         [brandId, connectorInstanceId, state, lastError],
       );
     }

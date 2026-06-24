@@ -8,6 +8,20 @@ streamWorkerImage:
   tag: ""              # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
   digest: ""
 
+# dbt-runner image — runs the scheduled mart rebuilds (recognition-refresh / attribution-gold-refresh).
+# CI (build-data-images) builds db/dbt/Dockerfile, pushes, and digest-pins this. Fail-closed until set.
+dbtRunnerImage:
+  repository: REPLACE_WITH_ECR_REGISTRY/brain-dbt-runner-staging
+  tag: ""
+  digest: ""
+
+# spark-bronze image — runs the Iceberg Bronze sink + maintenance crons (db/iceberg/spark/Dockerfile).
+sparkBronze:
+  image:
+    repository: REPLACE_WITH_ECR_REGISTRY/brain-spark-bronze-staging
+    tag: ""
+    digest: ""
+
 # The job pods read the same secret as the core/stream-worker deployments (DATABASE_URL,
 # BRAIN_APP_DATABASE_URL, STARROCKS_*). External Secrets ← AWS Secrets Manager.
 envSecretName: core-env

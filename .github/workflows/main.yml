@@ -112,12 +112,112 @@ jobs:
             ${{ steps.login-ecr.outputs.registry }}/brain-${{ matrix.app }}-${{ vars.ENVIRONMENT }}@${{ steps.push.outputs[format('{0}_digest', matrix.app)] }}
 
   # ─────────────────────────────────────────────────────────────────────────
+  # 1b. Build + push the DATA-PLANE job images (dbt-runner, spark-bronze)
+  # ─────────────────────────────────────────────────────────────────────────
+  # These are NOT pnpm packages, so the turbo --affected check can't see them. They change rarely,
+  # so we use PATH-BASED change detection (git diff of the push range). Same OIDC/ECR/cosign posture
+  # as build-and-push; each leg uploads imgref-<image> for the gitops job to digest-pin into the
+  # cronworkflows chart. Additive — does not touch the 4-app build above.
+  build-data-images:
+    name: Build, Sign, Push data images (dbt-runner, spark-bronze)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: dbt-runner
+            dockerfile: db/dbt/Dockerfile
+            context: db
+            paths: '^db/(dbt|starrocks)/'
+          - image: spark-bronze
+            dockerfile: db/iceberg/spark/Dockerfile
+            context: db/iceberg/spark
+            paths: '^db/iceberg/spark/'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Check if ${{ matrix.image }} is affected (path-based)
+        id: affected
+        run: |
+          set -euo pipefail
+          BEFORE="${{ github.event.before }}"
+          # Fail-OPEN to building (never skip a needed data image): build if the range is unknown
+          # (first push / force-push / zeros SHA) or if any file under the image's paths changed.
+          if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            echo "no usable before-SHA — building ${{ matrix.image }}"; echo "skip=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          CHANGED=$(git diff --name-only "$BEFORE" "${{ github.sha }}" || echo "__diff_failed__")
+          if [ "$CHANGED" = "__diff_failed__" ]; then
+            echo "diff failed — building ${{ matrix.image }} (fail-open)"; echo "skip=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if echo "$CHANGED" | grep -qE "${{ matrix.paths }}"; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=true" >> "$GITHUB_OUTPUT"; echo "no ${{ matrix.image }} path changes — skip"
+          fi
+
+      - name: Configure AWS credentials (OIDC)
+        if: steps.affected.outputs.skip == 'false'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ECR_PUSH_ROLE_ARN }}
+          aws-region: ap-south-1
+          role-session-name: GitHubActions-${{ github.run_id }}
+
+      - name: Login to Amazon ECR
+        if: steps.affected.outputs.skip == 'false'
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build Docker image
+        if: steps.affected.outputs.skip == 'false'
+        run: |
+          docker build \
+            -t ${{ steps.login-ecr.outputs.registry }}/brain-${{ matrix.image }}-${{ vars.ENVIRONMENT }}:${{ github.sha }} \
+            --label "git.sha=${{ github.sha }}" \
+            --label "git.ref=${{ github.ref }}" \
+            -f ${{ matrix.dockerfile }} \
+            ${{ matrix.context }}
+
+      - name: Push to ECR (immutable digest)
+        if: steps.affected.outputs.skip == 'false'
+        run: |
+          set -euo pipefail
+          REPO="${{ steps.login-ecr.outputs.registry }}/brain-${{ matrix.image }}-${{ vars.ENVIRONMENT }}"
+          docker push "${REPO}:${{ github.sha }}"
+          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "${REPO}:${{ github.sha }}" | cut -d@ -f2)
+          mkdir -p /tmp/imgref
+          echo "${REPO}@${DIGEST}" > "/tmp/imgref/${{ matrix.image }}"
+
+      - name: Upload pinned image reference (for gitops bump)
+        if: steps.affected.outputs.skip == 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: imgref-${{ matrix.image }}
+          path: /tmp/imgref/${{ matrix.image }}
+          retention-days: 1
+
+      - name: Install cosign
+        if: steps.affected.outputs.skip == 'false'
+        uses: sigstore/cosign-installer@v3
+
+      - name: cosign sign image (keyless OIDC)
+        if: steps.affected.outputs.skip == 'false'
+        run: |
+          set -euo pipefail
+          REPO="${{ steps.login-ecr.outputs.registry }}/brain-${{ matrix.image }}-${{ vars.ENVIRONMENT }}"
+          DIGEST=$(cut -d@ -f2 < "/tmp/imgref/${{ matrix.image }}")
+          cosign sign --yes "${REPO}@${DIGEST}"
+
+  # ─────────────────────────────────────────────────────────────────────────
   # 2. Bump Helm values + ArgoCD auto-sync to staging
   # ─────────────────────────────────────────────────────────────────────────
   gitops-staging:
     name: GitOps — Staging auto-sync
     runs-on: ubuntu-latest
-    needs: build-and-push
+    needs: [build-and-push, build-data-images]
     environment: staging
 
     steps:
@@ -154,6 +254,25 @@ jobs:
             sed -i -E "s|^( {2}digest:).*|\1 \"${DIGEST}\"|"      "$values"
             echo "bumped ${app}: ${REPO}@${DIGEST}"
           done
+
+      - name: Bump cronworkflows chart image digests (core/stream-worker/dbt-runner/spark-bronze)
+        run: |
+          set -euo pipefail
+          # The cronworkflows chart is ONE chart with FOUR image blocks at distinct yaml paths, so a
+          # blanket sed (which matches every `repository:`) is unsafe — use yq for path-precise edits.
+          # Each block is bumped ONLY when its imgref artifact exists (i.e. that image was affected).
+          values="infra/helm/cronworkflows/values-staging.yaml"
+          bump() {  # $1=imgref-key  $2=yq-path-prefix (e.g. .image / .dbtRunnerImage / .sparkBronze.image)
+            local ref_file="/tmp/imgref/$1" path="$2"
+            [ -f "$ref_file" ] || { echo "no imgref for $1 — skip ${path}"; return 0; }
+            local REF REPO DIGEST; REF="$(cat "$ref_file")"; REPO="${REF%@*}"; DIGEST="${REF#*@}"
+            REPO="$REPO" DIGEST="$DIGEST" yq -i "${path}.repository = strenv(REPO) | ${path}.digest = strenv(DIGEST)" "$values"
+            echo "cronworkflows bumped ${path}: ${REPO}@${DIGEST}"
+          }
+          bump core          .image
+          bump stream-worker .streamWorkerImage
+          bump dbt-runner    .dbtRunnerImage
+          bump spark-bronze  .sparkBronze.image
 
       - name: Commit + push staging values bump
         run: |
@@ -211,6 +330,27 @@ jobs:
             sed -i -E "s|^( {2}digest:).*|\1 \"${DIGEST}\"|" "$prd"
             echo "promoted ${app}: ${REPO}@${DIGEST}"
           done
+
+      - name: Promote cronworkflows chart digests (staging → prod) — path-precise via yq
+        run: |
+          set -euo pipefail
+          stg="infra/helm/cronworkflows/values-staging.yaml"
+          prd="infra/helm/cronworkflows/values-prod.yaml"
+          promote() {  # $1=yq-path-prefix
+            local path="$1" SREPO SDIGEST
+            SREPO="$(yq "${path}.repository" "$stg")"
+            SDIGEST="$(yq "${path}.digest" "$stg")"
+            [ -n "$SDIGEST" ] && [ "$SDIGEST" != "null" ] || { echo "no staging digest at ${path} — skip"; return 0; }
+            # build-once/promote-same-artifact: keep the SAME image (re-tag repo from -staging to -prod
+            # name but the immutable digest is identical — same artifact across envs).
+            local PREPO="${SREPO/-staging/-prod}"
+            PREPO="$PREPO" SDIGEST="$SDIGEST" yq -i "${path}.repository = strenv(PREPO) | ${path}.digest = strenv(SDIGEST)" "$prd"
+            echo "cronworkflows promoted ${path}: ${PREPO}@${SDIGEST}"
+          }
+          promote .image
+          promote .streamWorkerImage
+          promote .dbtRunnerImage
+          promote .sparkBronze.image
 
       - name: Commit prod values promotion
         run: |

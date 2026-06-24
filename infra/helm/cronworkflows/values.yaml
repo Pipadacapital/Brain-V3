@@ -62,8 +62,11 @@ defaults:
 # PG⇄Iceberg parity oracle. Flip `enabled: true` per env only when ready to start the migration;
 # turn off to instantly stop the dual-sink. See db/iceberg/spark/ + docs/adr/0002-*.
 sparkBronze:
-  # enabled:false until CI builds + digest-pins the Spark image AND a cluster exists (external gate,
-  # same as the dbt-runner crons). Flipping it on schedules the Iceberg Bronze sink + maintenance.
+  # CI now builds + digest-pins the spark-bronze image (build-data-images). The ONLY remaining gate is
+  # a Spark-on-k8s cluster (Spark Operator / a node pool sized for the driver). Enabling it WITHOUT that
+  # would schedule a CronWorkflow that fails at runtime, so it stays OFF here and is a documented
+  # ONE-LINE FLIP (enabled: true) per env once the cluster exists — see
+  # docs/runbooks/enable-prod-cron-pipeline.md. (The dbt crons above need no cluster → already enabled.)
   enabled: false
   image:
     repository: REPLACE_WITH_ECR_REGISTRY/brain-spark-bronze   # built from db/iceberg/spark/Dockerfile
@@ -124,7 +127,7 @@ jobs:
     # Runs BEFORE recognition-refresh. Needs NEO4J_* + STARROCKS_* env. (The one-time PG→Neo4j identity
     # seed has been executed and removed — PG identity is dropped, so there is nothing left to backfill.)
   - name: recognition-refresh
-    enabled: false                 # FLIP true per env once CI publishes + pins dbtRunnerImage.digest
+    enabled: true                  # ENABLED — CI now builds + digest-pins dbtRunnerImage (build-data-images)
     schedule: "5 * * * *"          # hourly at :05 — ATTRIBUTION CHAIN step 0: rebuild the gold ledger
     command: ["/opt/brain/dbt/docker-entrypoint.sh"]
     useDbtRunnerImage: true
@@ -139,6 +142,13 @@ jobs:
     env:
       - { name: DBT_SELECT, value: "+gold_revenue_ledger" }
       - { name: DBT_THREADS, value: "1" }
+      # CATALOG SELF-BOOTSTRAP: the FIRST dbt step of the hourly chain (re)registers the brain_oltp_pg
+      # JDBC catalog + the PG read-shim (db/starrocks/oltp_jdbc_catalog.sql + oltp_pg_read_shim.sql) via
+      # the entrypoint, idempotently (CREATE IF NOT EXISTS). So a fresh cluster — or one whose external
+      # catalog was dropped on a StarRocks restart — self-heals without a manual step. Needs core-env to
+      # provide BOOTSTRAP_DATABASE_URL (superuser PG DSN for the read-shim DDL) + STARROCKS_HOST/PORT/
+      # USER/PASSWORD. (attribution-gold-refresh does NOT bootstrap — it assumes the catalog exists.)
+      - { name: DBT_BOOTSTRAP_CATALOG, value: "true" }
   # MEDALLION REALIGNMENT (Epic 1 / decision B): the `revenue-finalization` cron was REMOVED — its job
   # (dist/jobs/revenue-finalization.js) is deleted and realized_revenue_ledger is dropped. Recognition
   # (incl. finalization after horizon) is now a dbt build from Bronze — see `recognition-refresh` above.
@@ -157,7 +167,7 @@ jobs:
     # Per brand: the 4 per-journey models (reconcileAttribution) + the GLOBAL data-driven Markov model
     # (reconcileDataDrivenAttribution). Credit basis = finalization ∪ cod_delivery_confirmed (COD-inclusive).
   - name: attribution-gold-refresh
-    enabled: false                 # FLIP true per env once CI publishes + pins dbtRunnerImage.digest
+    enabled: true                  # ENABLED — CI now builds + digest-pins dbtRunnerImage (build-data-images)
     schedule: "45 * * * *"         # hourly at :45 — ATTRIBUTION CHAIN step 4: materialize gold mart
     command: ["/opt/brain/dbt/docker-entrypoint.sh"]
     useDbtRunnerImage: true

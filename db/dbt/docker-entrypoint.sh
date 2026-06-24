@@ -2,6 +2,10 @@
 #
 # dbt-runner entrypoint — run a parameterized dbt build inside the dbt-runner image.
 #
+# CI: this image is built + pushed + digest-pinned by .github/workflows/main.yml (build-data-images)
+# and consumed by infra/helm/cronworkflows (dbtRunnerImage) for the hourly recognition-refresh /
+# attribution-gold-refresh crons. See docs/runbooks/enable-prod-cron-pipeline.md.
+#
 # The image bundles the dbt project (db/dbt) + the StarRocks catalog bootstrap SQL (db/starrocks).
 # It is the runtime for scheduled mart rebuilds (Argo CronWorkflows) — primarily the attribution gold
 # refresh (chain step 4) and Silver intraday rebuilds — that the Node job images cannot run (they have

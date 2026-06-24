@@ -13,8 +13,10 @@
  *      emit spend.live.v1 to the live lane (collector.event.v1 — NO new topic/envelope).
  *   5. advance cursor (high-water = max stat_date) after each page; sync_status syncing→connected.
  *
- * The re-pull does NOT write the ledger — it only lands spend.live.v1 on the live lane.
- * SpendLedgerConsumer writes ad_spend_ledger (ON CONFLICT DO NOTHING — idempotent re-read).
+ * The re-pull only lands spend.live.v1 on the live lane. From there the Spark Bronze sink writes it
+ * (server-trusted) to Bronze (Iceberg) → dbt projects silver_marketing_spend. Bronze is the SOLE
+ * spend SoR; dedup is the deterministic spend event_id (uuidV5FromSpendRow) under the Bronze MERGE.
+ * There is NO PostgreSQL spend ledger — ad spend is analytical, not operational state.
  *
  * Throttle (ADR-AD-7): META_RATE_LIMITED → mark health/error + abort this run (retry next run).
  * Tokens are NEVER logged (I-S09). brand_id ALWAYS from the fn result (MT-1).

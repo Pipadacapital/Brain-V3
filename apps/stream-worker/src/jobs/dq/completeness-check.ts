@@ -1,11 +1,11 @@
 /**
  * dq/completeness-check.ts — required-column non-null rate vs max_null_rate.
  *
- * Measures the null rate of required columns on brand-scoped Postgres tables and
- * grades the "badness" (null-rate / max_null_rate). Targets:
- *   • bronze_events            — required: event_type, occurred_at (brand_id is NOT NULL by schema)
- *   • realized_revenue_ledger  — required: amount_minor, currency_code (money pairing)
- *   • ad_spend_ledger          — required: currency_code (spend pairing)
+ * Measures the null rate of required columns and grades the "badness" (null-rate / max_null_rate).
+ * PG money ledgers (realized_revenue_ledger, ad_spend_ledger) have been dropped — their analytical
+ * facts now live in Bronze/Silver, so completeness is a dbt/Bronze build invariant. The only PG
+ * completeness target list (COMPLETENESS_TARGETS) is therefore empty; the live check covers the
+ * Iceberg Bronze SoR (collector_events: event_type, occurred_at) via bronzeCompleteness.
  *
  * Zero-tolerance (max_null_rate = 0): any null → D (breached), perfect → A+.
  * A table with no rows → A+ (vacuously complete) but observed='no_rows' for honesty —
@@ -27,17 +27,12 @@ interface CompletenessTarget {
   readonly maxNullRate: number;
 }
 
-/** PG completeness targets. MEDALLION REALIGNMENT (Epic 1 / decision B): realized_revenue_ledger was
- * dropped — the recognition ledger is the Bronze-sourced brain_gold.gold_revenue_ledger (completeness is
- * a dbt build invariant, not a PG check). Only ad_spend_ledger remains a PG money ledger here. */
-export const COMPLETENESS_TARGETS: readonly CompletenessTarget[] = [
-  {
-    target: 'ad_spend_ledger',
-    table: 'ad_spend_ledger',
-    requiredColumns: ['currency_code'],
-    maxNullRate: 0,
-  },
-] as const;
+/** PG completeness targets. MEDALLION REALIGNMENT: there are NO PG money ledgers left to check —
+ * realized_revenue_ledger was dropped (recognition is the Bronze-sourced gold_revenue_ledger) and
+ * ad_spend_ledger was dropped (ad spend is the Bronze-sourced silver_marketing_spend). Both are now
+ * dbt/Bronze build invariants, not PG completeness checks (see bronzeCompleteness below). This list is
+ * intentionally empty — a future operational PG fact would be added here. */
+export const COMPLETENESS_TARGETS: readonly CompletenessTarget[] = [] as const;
 
 /** Required (NOT NULL) Bronze columns checked against the Iceberg SoR. */
 const BRONZE_REQUIRED_COLUMNS = ['event_type', 'occurred_at'] as const;

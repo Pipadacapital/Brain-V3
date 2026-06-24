@@ -47,14 +47,13 @@ import { CapiDeletionConsumer } from './interfaces/consumers/CapiDeletionConsume
 import { RequestCapiDeletionUseCase } from './application/RequestCapiDeletionUseCase.js';
 import { CapiDeletionRepository } from './infrastructure/pg/CapiDeletionRepository.js';
 import { BackfillOrderConsumer } from './interfaces/consumers/BackfillOrderConsumer.js';
-import { SpendLedgerConsumer } from './interfaces/consumers/SpendLedgerConsumer.js';
-// MEDALLION REALIGNMENT (Epic 1 / decision B): the PG revenue-ledger write path (LiveLedgerBridge,
-// Settlement, Shipment/GokwikAwb consumers + revenue-finalization) has been REMOVED — the revenue
-// recognition ledger is now built FROM Bronze by dbt (silver_order_recognition → gold_revenue_ledger,
-// `make recognition-refresh`). Only the SpendLedgerConsumer (ad_spend_ledger — out of Epic-1 scope)
-// remains a PG-ledger writer.
+// MEDALLION REALIGNMENT: ALL PG-ledger write paths are now REMOVED. The revenue recognition ledger
+// is built FROM Bronze by dbt (silver_order_recognition → gold_revenue_ledger). Ad spend likewise
+// flows spend.live.v1 → Bronze (Iceberg, server-trusted) → silver_marketing_spend. The former
+// SpendLedgerConsumer (spend.live.v1 → PG billing.ad_spend_ledger) was a DUAL-WRITE that made PG a
+// second, divergent SoR; it is removed so Bronze is the SOLE spend SoR (dedup = deterministic
+// event_id MERGE in Bronze — no PG/Bronze count drift). PostgreSQL holds operational state only.
 import { BRONZE_BRIDGES, buildBronzeBridges } from './interfaces/consumers/bronzeBridges.js';
-import { LedgerWriter } from './infrastructure/pg/LedgerWriter.js';
 import { startHealthServer } from './infrastructure/health/HealthServer.js';
 import { startSyncRequestClaimer } from './jobs/sync-request-claimer/run.js';
 import { startDqChecks } from './jobs/dq/run.js';
@@ -99,11 +98,6 @@ export async function main(): Promise<void> {
   // WIRED HERE (MB-4 NON-NEGOTIABLE) — unwiring triggers durable-rule proposal (occurrence #3).
   const settlementLedgerGroupId =
     process.env['SETTLEMENT_LEDGER_CONSUMER_GROUP_ID'] ?? 'settlement-ledger-bridge';
-  // Spend ledger bridge (feat-ad-connectors / ADR-AD-6): separate consumer group on the live
-  // topic. Filters spend.live.v1 events; writes ad_spend_ledger (ON CONFLICT DO NOTHING).
-  // WIRED HERE (NON-NEGOTIABLE) — unwiring triggers the wired-to-nothing bounce.
-  const spendLedgerGroupId =
-    process.env['SPEND_LEDGER_CONSUMER_GROUP_ID'] ?? 'spend-ledger-bridge';
   // GoKwik AWB ledger bridge (feat-gokwik-shopflo-connectors / 0030): separate consumer group on
   // the live topic. Filters gokwik.awb_status.v1; terminal RTO → cod_rto_clawback (signed-negative),
   // terminal Delivered → cod_delivery_confirmed. WIRED HERE (NON-NEGOTIABLE) — unwiring is the
@@ -293,19 +287,10 @@ export async function main(): Promise<void> {
   // brain_gold.gold_revenue_ledger). The live attribution clawback hook + live journey-stitch they
   // carried are backstopped by the hourly attribution-reconcile + journey-stitch-from-identity crons.
 
-  // ── Spend ledger bridge (feat-ad-connectors / ADR-AD-6 WIRED) ──────────────
-  // Same live topic, separate consumer group (spendLedgerGroupId). Filters spend.live.v1;
-  // writes the append-only ad_spend_ledger fact (ON CONFLICT DO NOTHING — idempotent re-read).
-  // Brand GUC is set inside LedgerWriter.writeAdSpend before every INSERT (NN-1 / RLS).
-  // WIRED HERE: do NOT remove this block without updating spend-ledger-wiring.e2e.test.ts.
-  const spendLedgerWriter = new LedgerWriter(dbUrl);
-  const spendLedgerConsumer = new SpendLedgerConsumer(
-    kafka,
-    spendLedgerWriter,
-    topic,
-    spendLedgerGroupId,
-    retryCounter,
-  );
+  // NOTE: the SpendLedgerConsumer (spend.live.v1 → PG billing.ad_spend_ledger) was REMOVED — ad
+  // spend is analytical data, so it lands in Bronze (Iceberg) via the server-trusted lane like every
+  // other event and is projected to silver_marketing_spend. PG is no longer a spend sink (it was a
+  // divergent dual-write); Bronze is the sole SoR and dedups on the deterministic spend event_id.
 
   // ── On-demand "Sync now" claimer (feat-connector-sync-now) ──────────────────
   // NOT a new deployable: an interval loop in THIS process. Claims sentinel
@@ -391,7 +376,6 @@ export async function main(): Promise<void> {
       consentSuppressorConsumer.stop(),
       capiDeletionConsumer.stop(),
       backfillConsumer.stop(),
-      spendLedgerConsumer.stop(),
       // All registry-driven Bronze bridges (incl. live-order, which was previously missing a stop).
       ...bronzeBridgeConsumers.map((c) => c.stop()),
       syncRequestClaimer.stop(),
@@ -411,7 +395,6 @@ export async function main(): Promise<void> {
     await backfillBronze.end();
     await auditPool.end();
     await identityRepo.end();
-    await spendLedgerWriter.end();
     await healthServer.close();
     // Flush buffered telemetry LAST so shutdown spans/metrics are exported (C1).
     await shutdownObservability().catch(() => { /* ignore */ });
@@ -458,13 +441,7 @@ export async function main(): Promise<void> {
   // ── MEDALLION REALIGNMENT (Epic 1): live-ledger / settlement / gokwik-awb ledger bridges REMOVED.
   // The recognition ledger is built from Bronze by dbt (recognition-refresh). See the wiring note above.
 
-  // ── Spend ledger bridge consumer (feat-ad-connectors / ADR-AD-6 MANDATORY WIRE) ──
-  // Same live topic, independent consumer group. Filters spend.live.v1.
-  // Writes ad_spend_ledger (ON CONFLICT DO NOTHING). WIRED HERE: do NOT remove without
-  // updating spend-ledger-wiring.e2e.test.ts (wired-to-nothing bounce trigger).
-  log.info(`starting spend-ledger bridge — topic=${topic} group=${spendLedgerGroupId}`);
-  await spendLedgerConsumer.start();
-  log.info('spend-ledger bridge consumer running');
+  // (Spend reaches Bronze via the server-trusted lane in the Spark sink — no PG consumer here.)
 
   // ── Bronze bridge consumers (registry-driven — re-platform Phase B) ─────────
   // Start every bridge in BRONZE_BRIDGES on its own consumer group. The loop guarantees every

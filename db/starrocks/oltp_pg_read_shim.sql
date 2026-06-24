@@ -61,32 +61,10 @@ FROM billing.ad_spend_ledger;
 
 GRANT SELECT ON silver_marketing_spend_src TO brain;
 
--- attribution_credit_ledger → gold_marketing_attribution (Gold mart). credited_revenue_minor
--- is SIGNED BIGINT (+credit / -clawback). brand_id is the only uuid column to cast.
-CREATE OR REPLACE VIEW gold_attribution_credit_src AS
-SELECT
-    brand_id::text   AS brand_id,
-    credit_id,
-    order_id,
-    brain_anon_id,
-    touch_seq,
-    channel,
-    campaign_id,
-    model_id,
-    row_kind,
-    credited_revenue_minor,
-    currency_code,
-    realized_revenue_minor,
-    reversed_of_credit_id,
-    confidence_grade,
-    attribution_confidence,
-    model_version,
-    occurred_at,
-    economic_effective_at,
-    billing_posted_period
-FROM attribution_credit_ledger;
-
-GRANT SELECT ON gold_attribution_credit_src TO brain;
+-- MEDALLION REALIGNMENT (Epic 2): gold_attribution_credit_src (the read-shim over the PG
+-- attribution_credit_ledger) was REMOVED with migration 0099. The attribution credit ledger is now
+-- the app-written StarRocks table brain_gold.gold_attribution_credit; gold_marketing_attribution is a
+-- dbt VIEW over it (no PG, no Spark materialize, no shim).
 
 -- ============================================================================
 -- DB-AUDIT H6: identity.customer read-shim → first_identified_at (acquisition time) into the

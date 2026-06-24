@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import type { EngineDeps } from '@brain/metric-engine';
+import type { EngineDeps, SilverPool } from '@brain/metric-engine';
 import { getDataQualitySummary } from '../internal/application/queries/get-data-quality-summary.js';
 import { getMetricTrust } from '../internal/application/queries/get-metric-trust.js';
 
@@ -22,11 +22,15 @@ interface ScriptedRow {
   checked_at: Date;
 }
 
-/** A fake pool that returns scripted dq_check_result rows + attribution confidence grades. */
+/**
+ * A fake pool that returns scripted dq_check_result rows (PG) + a fake StarRocks srPool that returns the
+ * attribution confidence grades from brain_gold.gold_attribution_credit (MEDALLION REALIGNMENT Epic 2:
+ * the credit ledger moved to the lakehouse; fetchAttributionLetter reads it via withSilverBrand).
+ */
 function fakePool(opts: {
   dqRows?: ScriptedRow[] | 'undefined_table';
   attributionGrades?: string[] | 'undefined_table';
-}): EngineDeps {
+}): EngineDeps & { srPool: SilverPool } {
   const query = async (text: string): Promise<{ rows: unknown[] }> => {
     if (text.includes('BEGIN') || text.includes('COMMIT') || text.includes('set_config')) {
       return { rows: [] };
@@ -39,19 +43,32 @@ function fakePool(opts: {
       }
       return { rows: opts.dqRows ?? [] };
     }
-    if (text.includes('FROM attribution_credit_ledger')) {
-      if (opts.attributionGrades === 'undefined_table') {
-        const err = new Error('relation "attribution_credit_ledger" does not exist') as Error & { code: string };
-        err.code = '42P01';
-        throw err;
-      }
-      return { rows: (opts.attributionGrades ?? []).map((g) => ({ confidence_grade: g })) };
-    }
     return { rows: [] };
   };
   const client = { query, release: () => undefined };
   const pool = { connect: async () => client } as unknown as EngineDeps['pool'];
-  return { pool };
+
+  // Fake StarRocks srPool (mysql2 shape) serving the gold_attribution_credit confidence grades.
+  const srConn = {
+    async query(sql: string): Promise<[unknown[], unknown]> {
+      const text = String(sql);
+      if (text.startsWith('SET ')) return [[], undefined];
+      if (text.includes('gold_attribution_credit')) {
+        if (opts.attributionGrades === 'undefined_table') throw new Error('unknown table');
+        return [(opts.attributionGrades ?? []).map((g) => ({ confidence_grade: g })), undefined];
+      }
+      return [[], undefined];
+    },
+    release() {
+      /* no-op */
+    },
+  };
+  const srPool = {
+    getConnection: async () => srConn,
+    query: async (sql: string) => srConn.query(sql),
+  } as unknown as SilverPool;
+
+  return { pool, srPool };
 }
 
 const ts = new Date('2026-06-18T12:00:00.000Z');

@@ -48,6 +48,7 @@ select
     recognition_label,
     billing_posted_period,
     ingested_at,
+    cast('live' as varchar(16))                        as data_source,  -- MK-1: real builds = live; demo seed overwrites to 'synthetic'
     current_timestamp()                                as updated_at
 -- MEDALLION REALIGNMENT (Epic 1): the revenue ledger is now computed in Silver FROM Bronze
 -- (silver_order_recognition), not the PostgreSQL ledger. Full-rebuild table so recognition events that

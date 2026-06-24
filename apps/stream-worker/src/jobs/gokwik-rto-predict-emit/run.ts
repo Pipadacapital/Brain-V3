@@ -23,6 +23,7 @@ import { dirname, join } from 'node:path';
 import { Pool } from 'pg';
 import { Kafka, type Producer } from 'kafkajs';
 import { buildPartitionKey } from '@brain/events';
+import { injectKafkaTraceContext } from '@brain/observability';
 import { CollectorEventV1Schema, COLLECTOR_EVENT_V1_TOPIC_SUFFIX } from '@brain/contracts';
 import {
   mapGokwikRtoPredict,
@@ -53,7 +54,19 @@ interface RtoFixtureFile {
   records: GokwikRtoPredictRecord[];
 }
 
+/**
+ * MK-1..MK-4: the RTO-Predict source is a LABELLED SYNTHETIC FIXTURE. In production there is no live
+ * at-checkout call to observe yet, so the fixture must NOT be read — it would emit synthetic events
+ * onto the live lane masquerading as real. Gate to an empty source in prod; dev behaviour unchanged.
+ */
+const IS_PRODUCTION =
+  process.env['NODE_ENV'] === 'production' || (process.env['APP_ENV'] ?? '').startsWith('prod');
+
 function loadFixture(): GokwikRtoPredictRecord[] {
+  if (IS_PRODUCTION) {
+    log.info('production: synthetic RTO-Predict fixture gated (no real partner sandbox) — empty source');
+    return [];
+  }
   try {
     const raw = readFileSync(FIXTURE_PATH, 'utf8');
     const parsed = JSON.parse(raw) as RtoFixtureFile;
@@ -152,7 +165,11 @@ async function emitForConnector(
   }
 
   if (messages.length > 0) {
-    await producer.send({ topic: LIVE_TOPIC, messages });
+    // OTel trace-context propagation (OBS-1/OBS-2): stamp traceparent on each
+    // message so the bronze-bridge consumer resumes this emit's trace.
+    const traceHeaders: Record<string, Buffer | string> = {};
+    injectKafkaTraceContext(traceHeaders);
+    await producer.send({ topic: LIVE_TOPIC, messages: messages.map((m) => ({ ...m, headers: traceHeaders })) });
   }
   log.info(`connector=${ciId} brand=${brandId} emitted=${messages.length} (synthetic)`);
   await syncRunRepo.closeRun({

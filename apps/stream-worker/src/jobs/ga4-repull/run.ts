@@ -29,6 +29,7 @@ import { Kafka, type Producer } from 'kafkajs';
 import { recordConnectorAuthRejected } from '../../infrastructure/observability/connector-auth-health.js';
 import { updateConnectorInstanceHealth } from '../../infrastructure/pg/ConnectorInstanceHealthRepository.js';
 import { buildPartitionKey } from '@brain/events';
+import { injectKafkaTraceContext } from '@brain/observability';
 import { CollectorEventV1Schema, COLLECTOR_EVENT_V1_TOPIC_SUFFIX } from '@brain/contracts';
 import {
   mapGa4RowToEvent,
@@ -286,7 +287,11 @@ async function emitRows(
   }
 
   if (messages.length > 0) {
-    await p.producer.send({ topic: LIVE_TOPIC, messages });
+    // OTel trace-context propagation (OBS-1/OBS-2): stamp traceparent on each
+    // message so the bronze-bridge consumer resumes this repull's trace.
+    const traceHeaders: Record<string, Buffer | string> = {};
+    injectKafkaTraceContext(traceHeaders);
+    await p.producer.send({ topic: LIVE_TOPIC, messages: messages.map((m) => ({ ...m, headers: traceHeaders })) });
     log.info(`[ga4-repull] connector=${p.ciId} emitted=${messages.length}`);
   }
 

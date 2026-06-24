@@ -4,7 +4,7 @@ bronze_materialize.py — Spark Structured Streaming: collector.event.v1 → Ice
 ADR-0002 Slice 2 (write spike). Proves the target Bronze write path end-to-end against the
 local lakehouse (Iceberg REST catalog + MinIO): read the live Redpanda topic, parse the
 CollectorEventV1 envelope, and idempotently MERGE into the Iceberg Bronze table with the
-canonical partition spec (bucket(16, brand_id) + days(occurred_at)).
+canonical partition spec (bucket(256, brand_id) + days(occurred_at), per bronze_spec.json SC-2).
 
 This is the dev validation of the Slice 3 production writer. It does NOT touch the live
 Postgres bronze_events path — it is a parallel, additive consumer (its own group/checkpoint).
@@ -126,7 +126,7 @@ def ensure_table(spark: SparkSession) -> None:
           collector_version string
         )
         USING iceberg
-        PARTITIONED BY (bucket(16, brand_id), days(occurred_at))
+        PARTITIONED BY (bucket(256, brand_id), days(occurred_at))
         TBLPROPERTIES (
           'format-version'                  = '2',
           'write.format.default'            = 'parquet',
@@ -138,9 +138,14 @@ def ensure_table(spark: SparkSession) -> None:
 
 
 def load_pixel_installations(spark: SparkSession):
-    """install_token → brand_id lookup for R2 (read once; a static side of the stream-static join).
-    NOTE: read at job start — a new pixel_installation added later won't resolve until restart; a
-    long-running prod job should refresh this periodically (or re-read per micro-batch)."""
+    """install_token → brand_id lookup for R2 — a single full JDBC scan of pixel_installation.
+
+    PERF (PF-7): this is loaded ONCE at stream start (see upsert_factory), cached, and reused as the
+    broadcast side of the stream-static join across every micro-batch — NOT re-scanned per batch.
+    The table is small (one row per installed pixel) so the broadcast cost is negligible.
+    NOTE: a new pixel_installation added after start won't resolve until the lookup is refreshed; a
+    long-running prod job should refresh it periodically — e.g. unpersist + reload on a TTL boundary
+    inside the upsert closure (every N batches / minutes), which keeps the once-per-start default."""
     return (
         spark.read.format("jdbc")
         .option("url", PG_JDBC_URL)
@@ -215,14 +220,23 @@ def gate_and_map(parsed, install_df):
     return _project_bronze(server).unionByName(_project_bronze(pixel))
 
 
-def upsert_factory(_spark: SparkSession):
+def upsert_factory(spark: SparkSession):
+    # PF-7: load the install_token→brand lookup ONCE at stream start and CACHE it, then reuse the
+    # SAME DataFrame as the broadcast side of every micro-batch's R2 join. Previously this did a full
+    # unfiltered JDBC scan of pixel_installation on EVERY micro-batch (load_pixel_installations called
+    # inside `upsert`) — O(batches) Postgres scans. Caching collapses that to a single scan per run.
+    # Optional periodic refresh: a long-running prod job can unpersist + reload this on a TTL boundary
+    # inside `upsert` (e.g. every N batches) so installs added after start eventually resolve — kept
+    # out of the hot path by default so steady-state batches never touch Postgres.
+    install_df = load_pixel_installations(spark).cache()
+    install_df.count()  # force materialization of the cache once, before the first batch runs
+
     def upsert(batch_df, _batch_id: int) -> None:
         # PARSE + GATE happen HERE, in the per-batch BATCH context — NOT in the streaming plan. A
         # stream-static join + union does not emit reliably under availableNow; inside foreachBatch the
-        # batch DF has plain batch semantics, where the R2/R3 gate (proven in batch) works. We also
-        # re-read pixel_installation per batch (fresh installs resolve; small broadcast table).
+        # batch DF has plain batch semantics, where the R2/R3 gate (proven in batch) works. The cached
+        # `install_df` (loaded once above) is the small broadcast table for the R2 join — no per-batch read.
         batch_spark = batch_df.sparkSession
-        install_df = load_pixel_installations(batch_spark)
         parsed = batch_df.select(
             from_json(col("value").cast("string"), ENVELOPE).alias("e"),
             col("value").cast("string").alias("raw"),

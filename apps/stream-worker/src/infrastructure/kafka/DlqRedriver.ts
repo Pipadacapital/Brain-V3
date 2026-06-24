@@ -27,7 +27,7 @@
  * redrive session. Idempotent: ON CONFLICT (brand_id, dlq_id, created_at) DO NOTHING.
  */
 import type { Kafka, Producer, Consumer, IHeaders } from 'kafkajs';
-import { incrementCounter } from '@brain/observability';
+import { incrementCounter, injectKafkaTraceContext } from '@brain/observability';
 import type { DlqRecordRepository } from '../pg/DlqRecordRepository.js';
 
 /** Default max number of times a single message may be redriven before it is left parked as poison. */
@@ -240,18 +240,22 @@ export class DlqRedriver {
               incrementCounter('dlq_redrive_exhausted_total', { target_topic: decision.targetTopic });
             } else if (!opts.dryRun) {
               try {
+                const redriveHeaders = buildRedriveHeaders(
+                  message.headers,
+                  decision.nextCount,
+                  dlqTopic,
+                  this.nowIso(),
+                );
+                // OTel trace-context propagation (OBS-1/OBS-2): inject traceparent so the
+                // re-consuming worker resumes the trace across the redrive Kafka boundary.
+                injectKafkaTraceContext(redriveHeaders);
                 await this.producer.send({
                   topic: decision.targetTopic,
                   messages: [
                     {
                       key: message.key ?? undefined,
                       value: message.value,
-                      headers: buildRedriveHeaders(
-                        message.headers,
-                        decision.nextCount,
-                        dlqTopic,
-                        this.nowIso(),
-                      ),
+                      headers: redriveHeaders,
                     },
                   ],
                 });

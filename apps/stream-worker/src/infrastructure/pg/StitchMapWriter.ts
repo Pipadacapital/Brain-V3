@@ -49,4 +49,47 @@ export class StitchMapWriter {
       client.release();
     }
   }
+
+  /**
+   * Batched upsert — ONE transaction per brand for many stitch rows: connect, BEGIN, set the brand
+   * GUC once, then a single multi-row INSERT ... VALUES (...),(...) ON CONFLICT (...) DO UPDATE.
+   * Same ON CONFLICT (brand_id, order_id) + COALESCE(brain_id) semantics as upsert(), so a later
+   * resolution never clobbers an existing brain_id with NULL. Idempotent / replay-safe.
+   */
+  async upsertMany(
+    brandId: string,
+    rows: ReadonlyArray<{ orderId: string; stitchedAnonId: string; brainId: string | null }>,
+  ): Promise<void> {
+    if (rows.length === 0) return;
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(`SELECT set_config('app.current_brand_id', $1, true),
+                                 set_config('app.current_user_id', $2, true),
+                                 set_config('app.current_workspace_id', $2, true)`, [brandId, NIL_UUID]);
+      // brand_id is the same for every row (the brand GUC); each row contributes (order_id, anon, brain_id).
+      const params: unknown[] = [brandId];
+      const valuesSql = rows
+        .map((r, i) => {
+          const base = i * 3 + 2; // $1 is brand_id; each row uses 3 placeholders
+          params.push(r.orderId, r.stitchedAnonId, r.brainId);
+          return `($1, $${base}, $${base + 1}, $${base + 2})`;
+        })
+        .join(', ');
+      await client.query(
+        `INSERT INTO connectors.connector_journey_stitch_map (brand_id, order_id, stitched_anon_id, brain_id)
+         VALUES ${valuesSql}
+         ON CONFLICT (brand_id, order_id) DO UPDATE
+           SET stitched_anon_id = EXCLUDED.stitched_anon_id,
+               brain_id         = COALESCE(EXCLUDED.brain_id, connector_journey_stitch_map.brain_id)`,
+        params,
+      );
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err; // caller wraps best-effort
+    } finally {
+      client.release();
+    }
+  }
 }

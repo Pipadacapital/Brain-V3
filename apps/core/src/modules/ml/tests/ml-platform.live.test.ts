@@ -6,13 +6,15 @@
  *   2. promoteModel staging→production ARCHIVES the prior production model of the same (brand,name)
  *      and leaves EXACTLY ONE production row (the partial-unique invariant model_registry_one_production).
  *   3. promoteModel rejects an unknown model (ModelNotFoundError) and an unknown stage.
- *   4. serveCustomerScore writes EXACTLY ONE ml.prediction_log row (append-only) and is cross-brand
- *      isolated — another brand's GUC sees neither the score nor the logged prediction. When the brand
- *      has a Gold score row it returns has_data; otherwise the honest no_data path.
+ *   4. serveCustomerScore writes EXACTLY ONE inference row to the LAKEHOUSE log (StarRocks
+ *      brain_gold.gold_ml_prediction_log — MV-2/DB-2; the PG ml.prediction_log was dropped in 0103) and
+ *      is cross-brand isolated — another brand sees neither the score nor the logged prediction. When the
+ *      brand has a Gold score row it returns has_data; otherwise the honest no_data path.
  *   5. [EVAL GATE] promoteModel to production blocks a sklearn model with sub-baseline AUC (0.01)
  *      via EvalGateError — the historical gap where any metrics could ship is closed.
  *
- * REQUIRES: Postgres (migration 0083 applied) + StarRocks :9030 with brain_gold.gold_customer_scores.
+ * REQUIRES: Postgres (migration 0083 applied; 0103 drops ml.prediction_log) + StarRocks :9030 with
+ * brain_gold.gold_customer_scores + brain_gold.gold_ml_prediction_log.
  * StarRocks-dependent assertions degrade to the honest no_data path if no score row exists.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -94,7 +96,11 @@ async function seed(): Promise<void> {
 
 async function cleanup(): Promise<void> {
   for (const b of [BRAND_A, BRAND_B]) {
-    await superPool.query(`DELETE FROM ml.prediction_log WHERE brand_id = $1`, [b]).catch(() => {});
+    // MV-2/DB-2: the inference log moved to the lakehouse (brain_gold.gold_ml_prediction_log on
+    // StarRocks; the PG ml.prediction_log was dropped in 0103). DELETE so re-runs start clean.
+    await srPool
+      .query(`DELETE FROM brain_gold.gold_ml_prediction_log WHERE brand_id = ?`, [b])
+      .catch(() => {});
     await superPool.query(`DELETE FROM ml.model_registry WHERE brand_id = $1`, [b]).catch(() => {});
   }
   await superPool.query(`DELETE FROM brand WHERE id = ANY($1)`, [[BRAND_A, BRAND_B]]).catch(() => {});
@@ -109,6 +115,15 @@ beforeAll(async () => {
     rawPool = new pg.Pool({ connectionString: APP_URL, connectionTimeoutMillis: 4000 });
     dbPool = await createPool({ connectionString: APP_URL });
     srPool = mysql.createPool({ host: SR_HOST, port: SR_PORT, user: 'root', password: '', connectionLimit: 2 });
+    // The lakehouse inference log (MV-2/DB-2) — idempotent (mirrors db/starrocks/gold_ml_prediction_log.sql,
+    // dev rewrite: replication_num=1, no dynamic_partition). serveCustomerScore appends here.
+    await srPool.query(`CREATE DATABASE IF NOT EXISTS brain_gold`);
+    await srPool.query(`CREATE TABLE IF NOT EXISTS brain_gold.gold_ml_prediction_log (
+        brand_id varchar(64) NOT NULL, created_at datetime NOT NULL, prediction_id varchar(128) NOT NULL,
+        model_id varchar(128) NULL, subject_type varchar(64) NOT NULL, subject_key varchar(128) NOT NULL,
+        prediction varchar(65533) NULL, score double NULL
+      ) DUPLICATE KEY(brand_id, created_at, prediction_id)
+        DISTRIBUTED BY HASH(brand_id) BUCKETS 1 PROPERTIES ("replication_num" = "1")`);
     await cleanup();
     await seed();
     pgAvailable = true;
@@ -134,11 +149,12 @@ async function productionCount(brand: string): Promise<number> {
 }
 
 async function predictionCount(brand: string): Promise<number> {
-  const r = await superPool.query<{ n: number }>(
-    `SELECT count(*)::int AS n FROM ml.prediction_log WHERE brand_id = $1`,
+  // MV-2/DB-2: inference log is now the lakehouse table brain_gold.gold_ml_prediction_log (StarRocks).
+  const [rows] = await srPool.query(
+    `SELECT count(*) AS n FROM brain_gold.gold_ml_prediction_log WHERE brand_id = ?`,
     [brand],
   );
-  return r.rows[0]!.n;
+  return Number((rows as Array<{ n: string | number }>)[0]?.n ?? 0);
 }
 
 describe('ml platform (live)', () => {
@@ -194,7 +210,7 @@ describe('ml platform (live)', () => {
     ).rejects.toBeInstanceOf(InvalidModelStageError);
   });
 
-  it('4. serveCustomerScore writes exactly one prediction_log row + is cross-brand isolated', async () => {
+  it('4. serveCustomerScore writes exactly one lakehouse prediction row + is cross-brand isolated', async () => {
     if (!pgAvailable) return;
     // Find a brain_id with a Gold score for SOME brand. If StarRocks is down or empty, assert no_data.
     let scoredBrand: string | null = null;
@@ -226,7 +242,7 @@ describe('ml platform (live)', () => {
       return;
     }
 
-    // has_data: serve for the brand that owns the score; exactly one prediction_log row is appended.
+    // has_data: serve for the brand that owns the score; exactly one lakehouse prediction row is appended.
     const before = await predictionCount(scoredBrand);
     const res = await serveCustomerScore(scoredBrand, scoredBrainId, CORR, { pool: dbPool, srPool });
     expect(res.state).toBe('has_data');

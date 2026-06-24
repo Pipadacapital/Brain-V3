@@ -29,7 +29,7 @@ import type { Producer } from 'kafkajs';
 import type pg from 'pg';
 import { randomUUID } from 'node:crypto';
 
-import { incrementCounter } from '@brain/observability';
+import { incrementCounter, injectKafkaTraceContext } from '@brain/observability';
 import { WooCommerceHmac } from '../../domain/value-objects/WooCommerceHmac.js';
 import { RedisDedupAdapter } from '../../../../payment/razorpay/infrastructure/RedisDedupAdapter.js';
 import type { ISecretsManager } from '@brain/connector-secrets';
@@ -229,16 +229,20 @@ export function registerWooCommerceWebhookRoutes(
       });
 
       try {
+        // OTel trace-context propagation (OBS-1/OBS-2): inject traceparent so the
+        // stream-worker consumer resumes this trace across the Kafka boundary.
+        const headers: Record<string, Buffer | string> = {
+          correlation_id: Buffer.from(correlationId),
+          event_name: Buffer.from(ORDER_LIVE_V1_EVENT_NAME),
+        };
+        injectKafkaTraceContext(headers);
         await producer.send({
           topic: liveTopic,
           messages: [
             {
               key: brandId,
               value: Buffer.from(JSON.stringify(collectorEnvelope)),
-              headers: {
-                correlation_id: Buffer.from(correlationId),
-                event_name: Buffer.from(ORDER_LIVE_V1_EVENT_NAME),
-              },
+              headers,
             },
           ],
         });

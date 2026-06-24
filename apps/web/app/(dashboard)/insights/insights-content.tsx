@@ -16,6 +16,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { EmptyState } from '@/components/ui/empty-state';
 import { KpiTile } from '@/components/analytics/kpi-tile';
+import { SyntheticBadge } from '@/components/analytics/synthetic-badge';
 import { TrendChart } from '@/components/analytics/trend-chart';
 import { useInsightsBriefing, useRevenueTimeseries, ANALYTICS_QUERY_KEY } from '@/lib/hooks/use-analytics';
 import { recommendationApi } from '@/lib/api/client';
@@ -178,8 +179,19 @@ export function InsightsContent() {
       {/* Daily briefing */}
       <Card className="border-primary/30">
         <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Sparkles className="h-5 w-5 text-primary" /> Daily Briefing
+          <CardTitle className="flex flex-wrap items-center gap-2">
+            <span className="flex items-center gap-2">
+              <Sparkles className="h-5 w-5 text-primary" /> Daily Briefing
+            </span>
+            {/* DEV-HONESTY: data_source comes from the BFF (never hardcoded). When the contributing
+                Gold marts hold synthetic demo rows the briefing is badged Synthetic (dev) and is
+                NEVER presented as live; it disappears with no UI change once real data flows. */}
+            {briefing?.data_source === 'synthetic' && (
+              <SyntheticBadge
+                data-testid="insights-synthetic-badge"
+                reason="This briefing is computed from synthetic demo data seeded into the Gold marts (real shape, synthetic source). Connect a live source to replace it — this is never live data."
+              />
+            )}
           </CardTitle>
           {briefing && <CardDescription>{briefing.headline}</CardDescription>}
         </CardHeader>

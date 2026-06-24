@@ -10,6 +10,11 @@
 -- ADDITIVE snapshot (no non-additive math). MONEY = BIGINT minor units + currency_code (I-S07).
 -- ISOLATION: brand_id first key/dist column; per-brand isolation at the read seam (I-ST01).
 -- SCHEDULING: run daily (stamps current_date()). Missed day = gap (ok); re-run = idempotent.
+--
+-- PF-1 (partitioning): RANGE-partition on the snapshot_date grain (which is in the PK, as StarRocks
+-- PK tables require the partition column to be). Empty range () = dynamic_partition manages it —
+-- creates partitions ahead and drops partitions past the 400-day TTL (storage stays bounded).
+-- Mirrors db/starrocks/ddl/silver_template.sql.
 -- ============================================================================
 {{
   config(
@@ -19,13 +24,19 @@
     unique_key           = ['brand_id', 'order_id', 'snapshot_date'],
     table_type           = 'PRIMARY',
     keys                 = ['brand_id', 'order_id', 'snapshot_date'],
+    partition_by         = ['snapshot_date'],
     distributed_by       = ['brand_id'],
     order_by             = ['brand_id', 'order_id', 'snapshot_date'],
     buckets              = 8,
     properties           = {
-      'replication_num'        : '1',
-      'enable_persistent_index': 'true',
-      'compression'            : 'LZ4'
+      'replication_num'                : '1',
+      'enable_persistent_index'        : 'true',
+      'compression'                    : 'LZ4',
+      'dynamic_partition.enable'       : 'true',
+      'dynamic_partition.time_unit'    : 'DAY',
+      'dynamic_partition.start'        : '-400',
+      'dynamic_partition.end'          : '3',
+      'dynamic_partition.prefix'       : 'p'
     },
     tags = ['silver', 'snapshot', 'history']
   )

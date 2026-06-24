@@ -8,7 +8,9 @@
  *   - promoteModel    — gated stage transition; promoting to production archives the prior production
  *                       model of the same (brand,name) in ONE txn (partial-unique invariant).
  *   - serveCustomerScore — read the deterministic RFM/churn score from Gold, resolve the production
- *                       model, log an append-only ml.prediction_log row, return {model, score}.
+ *                       model (ml.model_registry, PG), append the served inference to the LAKEHOUSE log
+ *                       (StarRocks brain_gold.gold_ml_prediction_log — MV-2/DB-2; the PG ml.prediction_log
+ *                       was dropped in 0103), return {model, score}.
  */
 export { listModels } from './internal/application/queries/list-models.js';
 export type { ModelDto, ListModelsDeps } from './internal/application/queries/list-models.js';

@@ -34,6 +34,7 @@ import { Pool } from 'pg';
 import { updateConnectorInstanceHealth } from '../../infrastructure/pg/ConnectorInstanceHealthRepository.js';
 import { Kafka, type Producer } from 'kafkajs';
 import { buildPartitionKey } from '@brain/events';
+import { injectKafkaTraceContext } from '@brain/observability';
 import { CollectorEventV1Schema, COLLECTOR_EVENT_V1_TOPIC_SUFFIX } from '@brain/contracts';
 import {
   mapGokwikAwb,
@@ -57,6 +58,15 @@ const DB_URL =
 const BROKERS = (process.env['KAFKA_BROKERS'] ?? 'localhost:9092').split(',');
 const ENV = process.env['APP_ENV'] ?? 'dev';
 const LIVE_TOPIC = process.env['COLLECTOR_TOPIC'] ?? `${ENV}.${COLLECTOR_EVENT_V1_TOPIC_SUFFIX}`;
+
+/**
+ * MK-1..MK-4: the AWB read source is a LABELLED SYNTHETIC FIXTURE (GokwikAwbClient). In production
+ * there is no real partner sandbox yet, so the fixture must NOT be read — it would emit synthetic
+ * events onto the live lane and masquerade as real. Gate it to an empty source in prod; dev/local
+ * behaviour is unchanged. When a real partner HTTP client lands, swap this for the live call.
+ */
+const IS_PRODUCTION =
+  process.env['NODE_ENV'] === 'production' || (process.env['APP_ENV'] ?? '').startsWith('prod');
 
 /** Single cursor resource. WINDOW = 45 days — terminal AWB states arrive weeks late. */
 const AWB_CURSOR_RESOURCE = 'awb.lifecycle' as const;
@@ -162,6 +172,14 @@ async function repullConnector(params: RepullParams): Promise<void> {
 
   // GUC-after-enumerate (MT-1): brand context set BEFORE any brand-scoped read/write.
   await setSyncState(pool, brandId, ciId, 'syncing', null);
+
+  // MK-1..MK-4: never read the synthetic fixture in production — it would emit synthetic AWB events
+  // onto the live lane masquerading as real. Mark connected (no error) and emit nothing.
+  if (IS_PRODUCTION) {
+    log.info(`connector=${ciId} — production: synthetic AWB fixture gated (no real partner sandbox); emitted=0`);
+    await setSyncState(pool, brandId, ciId, 'connected', null);
+    return;
+  }
 
   // MEDALLION REALIGNMENT (Epic 1 / decision B): the dev synthetic-AWB-from-PG-ledger shim was removed
   // (the realized_revenue_ledger it read is dropped). Real gokwik.awb_status.v1 events already flow to
@@ -279,7 +297,11 @@ async function repullAwbCursor(params: CursorRepullParams): Promise<number> {
     }
 
     if (messages.length > 0) {
-      await producer.send({ topic: LIVE_TOPIC, messages });
+      // OTel trace-context propagation (OBS-1/OBS-2): stamp traceparent on each
+      // message so the bronze-bridge consumer resumes this repull's trace.
+      const traceHeaders: Record<string, Buffer | string> = {};
+      injectKafkaTraceContext(traceHeaders);
+      await producer.send({ topic: LIVE_TOPIC, messages: messages.map((m) => ({ ...m, headers: traceHeaders })) });
     }
     log.info(`[gokwik-awb-repull] connector=${ciId} cursor=${AWB_CURSOR_RESOURCE} ` +
             `skip=${skip} emitted=${messages.length} total=${recordsProcessed}`);

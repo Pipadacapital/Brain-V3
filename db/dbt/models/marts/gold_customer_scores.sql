@@ -86,5 +86,7 @@ select
         else 'low'
     end                                            as churn_risk,
 
+    cast('live' as varchar(16))                        as data_source,  -- MK-1: real builds = live; demo seed overwrites to 'synthetic'
+
     current_timestamp()                            as computed_at
 from latest

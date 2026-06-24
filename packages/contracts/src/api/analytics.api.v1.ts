@@ -559,6 +559,62 @@ export const AbandonedCartSchema = z.discriminatedUnion('state', [
 ]);
 export type AbandonedCart = z.infer<typeof AbandonedCartSchema>;
 
+// ── Insight + Opportunity Engine + AI Copilot briefing (GET /v1/insights/briefing) ──────────
+// @see apps/core/.../analytics/.../get-insights-briefing.ts (InsightDto / BriefingDto). Numbers come
+// from the Gold marts via the metric-engine, NEVER a model. Money = bigint minor-unit strings (I-S07).
+// data_source ('synthetic'|'live') is aggregated synthetic-if-any across the contributing marts so the
+// /insights surface can honestly badge synthetic demo data (MK-1..MK-4).
+
+export const InsightKindSchema = z.enum(['risk', 'opportunity', 'trend']);
+export const InsightSeveritySchema = z.enum(['high', 'medium', 'low', 'info']);
+export const InsightConfidenceSchema = z.enum(['high', 'medium', 'low']);
+
+export const InsightDtoSchema = z.object({
+  id: z.string(),
+  detector: z.string(),
+  kind: InsightKindSchema,
+  severity: InsightSeveritySchema,
+  title: z.string(),
+  why: z.string(),
+  recommended_action: z.string(),
+  currency_code: z.string().nullable(),
+  impact_minor: MinorUnitsSchema.nullable(),
+  direction: z.enum(['up', 'down', 'flat']).nullable(),
+  delta_pct: z.string().nullable(),
+  confidence: InsightConfidenceSchema,
+  evidence: z.record(z.union([z.string(), z.number(), z.null()])),
+  // Set by the BFF once the insight is materialized as a recommendation (the audited decision loop).
+  recommendation_id: z.string().nullable().optional(),
+  status: z.string().nullable().optional(),
+});
+export type InsightDto = z.infer<typeof InsightDtoSchema>;
+
+export const BriefingDtoSchema = z.object({
+  headline: z.string(),
+  summary: z.array(z.string()),
+  primary_currency: z.string().nullable(),
+  counts: z.object({ risks: z.number(), opportunities: z.number(), trends: z.number() }),
+  total_impact_minor: MinorUnitsSchema.nullable(),
+  window: z.object({
+    current: z.object({ from: z.string(), to: z.string() }),
+    prior: z.object({ from: z.string(), to: z.string() }),
+  }),
+  source: z.literal('deterministic'),
+  // Provenance of the contributing marts — 'synthetic' when ANY contributing row is synthetic.
+  data_source: DataSourceSchema,
+});
+export type BriefingDto = z.infer<typeof BriefingDtoSchema>;
+
+export const InsightsBriefingSchema = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('no_data') }),
+  z.object({
+    state: z.literal('has_data'),
+    briefing: BriefingDtoSchema,
+    insights: z.array(InsightDtoSchema),
+  }),
+]);
+export type InsightsBriefing = z.infer<typeof InsightsBriefingSchema>;
+
 // ── Engagement — engaged (multi-touch) vs bounce sessions + avg touches (Phase H pixel) ──
 export const EngagementSchema = z.discriminatedUnion('state', [
   z.object({ state: z.literal('no_data') }),

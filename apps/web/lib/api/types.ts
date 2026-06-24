@@ -1264,6 +1264,8 @@ export interface BriefingDto {
   total_impact_minor: string | null;
   window: { current: { from: string; to: string }; prior: { from: string; to: string } };
   source: 'deterministic';
+  /** 'synthetic' when ANY contributing mart row is synthetic (demo seed) — drives the badge. */
+  data_source: 'synthetic' | 'live';
 }
 
 export type AnalyticsInsightsBriefingResponse =

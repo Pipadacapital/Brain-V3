@@ -30,6 +30,7 @@ import type { Producer } from 'kafkajs';
 import type pg from 'pg';
 import { randomUUID, createHash } from 'node:crypto';
 
+import { injectKafkaTraceContext } from '@brain/observability';
 import { ShopifyHmac } from '../../domain/value-objects/ShopifyHmac.js';
 import { redactShopifyPii } from '../../domain/redactPii.js';
 import type { ISecretsManager } from '@brain/connector-secrets';
@@ -256,16 +257,20 @@ export function registerShopifyWebhookRoutes(
       // Direct produce — same durability profile as the backfill's direct produce.
       // Partition key = brand_id (tenant partition isolation).
       try {
+        // OTel trace-context propagation (OBS-1/OBS-2): inject traceparent so the
+        // stream-worker consumer resumes this trace across the Kafka boundary.
+        const headers: Record<string, Buffer | string> = {
+          correlation_id: Buffer.from(correlationId),
+          event_name: Buffer.from(ORDER_LIVE_V1_EVENT_NAME),
+        };
+        injectKafkaTraceContext(headers);
         await producer.send({
           topic: liveTopic,
           messages: [
             {
               key: brandId,
               value: Buffer.from(JSON.stringify(envelope)),
-              headers: {
-                correlation_id: Buffer.from(correlationId),
-                event_name: Buffer.from(ORDER_LIVE_V1_EVENT_NAME),
-              },
+              headers,
             },
           ],
         });

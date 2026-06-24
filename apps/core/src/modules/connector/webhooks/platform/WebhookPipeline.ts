@@ -35,7 +35,7 @@ import { randomUUID } from 'node:crypto';
 
 import type { ISecretsManager } from '@brain/connector-secrets';
 import { CollectorEventV1Schema } from '@brain/contracts';
-import { incrementCounter, startSpan } from '@brain/observability';
+import { incrementCounter, startSpan, injectKafkaTraceContext } from '@brain/observability';
 
 import type { IWebhookStrategy, WebhookIdentityReader } from './IWebhookStrategy.js';
 import { ProviderRedisDedupAdapter } from '../infrastructure/ProviderRedisDedupAdapter.js';
@@ -379,16 +379,20 @@ export class WebhookPipeline {
       // ── Idempotent Kafka produce (ADR-LV-3) ──────────────────────────────────
       // Partition key = brand_id (tenant isolation). Fail → 500 so provider retries.
       try {
+        // OTel trace-context propagation (OBS-1/OBS-2): inject traceparent so the
+        // stream-worker consumer resumes this trace across the Kafka boundary.
+        const headers: Record<string, Buffer | string> = {
+          correlation_id: Buffer.from(correlationId),
+          event_name: Buffer.from(mapped.eventName),
+        };
+        injectKafkaTraceContext(headers);
         await this.deps.producer.send({
           topic: this.deps.liveTopic,
           messages: [
             {
               key: brandId,
               value: Buffer.from(JSON.stringify(envelope)),
-              headers: {
-                correlation_id: Buffer.from(correlationId),
-                event_name: Buffer.from(mapped.eventName),
-              },
+              headers,
             },
           ],
         });

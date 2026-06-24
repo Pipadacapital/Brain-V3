@@ -38,6 +38,7 @@ import { recordConnectorAuthRejected } from '../../infrastructure/observability/
 import { updateConnectorInstanceHealth } from '../../infrastructure/pg/ConnectorInstanceHealthRepository.js';
 import { Kafka, Producer } from 'kafkajs';
 import { buildPartitionKey } from '@brain/events';
+import { injectKafkaTraceContext } from '@brain/observability';
 import { SaltProvider, LocalSecretsProvider } from '../../infrastructure/secrets/SaltProvider.js';
 import { resolveSaltHex } from '@brain/identity-core';
 import { PgBackfillJobRepository } from '../../infrastructure/pg/BackfillJobRepository.js';
@@ -417,9 +418,13 @@ async function runBackfillLoop(params: BackfillLoopParams): Promise<void> {
       }
 
       // ── D-4: Emit directly to Redpanda (not via collector HTTP edge) ──────
+      // OTel trace-context propagation (OBS-1/OBS-2): stamp traceparent on each
+      // message so the bronze-bridge consumer resumes this backfill's trace.
+      const traceHeaders: Record<string, Buffer | string> = {};
+      injectKafkaTraceContext(traceHeaders);
       await producer.send({
         topic: BACKFILL_TOPIC,
-        messages,
+        messages: messages.map((m) => ({ ...m, headers: traceHeaders })),
       });
 
       log.info(`job=${jobId} page=${pageCount} emitted=${messages.length} total=${recordsProcessed}`);

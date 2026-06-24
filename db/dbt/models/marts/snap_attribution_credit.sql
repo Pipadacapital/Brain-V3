@@ -12,6 +12,11 @@
 -- attribution + here). Populates once attribution flows (journey-stitch + reconcile on finalized
 -- orders); structurally complete + ready. MONEY = BIGINT minor units + currency_code (I-S07).
 -- ISOLATION: brand_id first key/dist column; per-brand at the read seam (I-ST01).
+--
+-- PF-1 (partitioning): RANGE-partition on the snapshot_date grain (which is in the PK, as StarRocks
+-- PK tables require the partition column to be). Empty range () = dynamic_partition manages it —
+-- creates partitions ahead and drops partitions past the 400-day TTL (storage stays bounded).
+-- Mirrors db/starrocks/ddl/silver_template.sql.
 -- ============================================================================
 {{
   config(
@@ -22,13 +27,19 @@
     unique_key           = ['brand_id', 'credit_id', 'snapshot_date'],
     table_type           = 'PRIMARY',
     keys                 = ['brand_id', 'credit_id', 'snapshot_date'],
+    partition_by         = ['snapshot_date'],
     distributed_by       = ['brand_id'],
     order_by             = ['brand_id', 'credit_id', 'snapshot_date'],
     buckets              = 8,
     properties           = {
-      'replication_num'        : '1',
-      'enable_persistent_index': 'true',
-      'compression'            : 'LZ4'
+      'replication_num'                : '1',
+      'enable_persistent_index'        : 'true',
+      'compression'                    : 'LZ4',
+      'dynamic_partition.enable'       : 'true',
+      'dynamic_partition.time_unit'    : 'DAY',
+      'dynamic_partition.start'        : '-400',
+      'dynamic_partition.end'          : '3',
+      'dynamic_partition.prefix'       : 'p'
     },
     tags = ['silver', 'snapshot', 'history', 'attribution']
   )

@@ -5,25 +5,65 @@
  *   (a) READ the customer's score row from the Gold mart brain_gold.gold_customer_scores via the
  *       metric-engine seam (withSilverBrand/runScoped — I-ST01; the engine is the SOLE Gold reader).
  *   (b) RESOLVE the production model_id for (brand, 'customer_churn_rfm') from ml.model_registry (PG,
- *       RLS-scoped). This is the model whose prediction we are serving.
- *   (c) LOG one ml.prediction_log row (subject_type='customer', subject_key=brainId, prediction=the
- *       scores jsonb, score=a composite scalar) — append-only (brain_app has SELECT+INSERT only).
+ *       RLS-scoped). The registry is operational lifecycle config — it legitimately STAYS in PG.
+ *   (c) LOG one inference row to the LAKEHOUSE (StarRocks brain_gold.gold_ml_prediction_log via srPool)
+ *       — append-only (subject_type='customer', subject_key=brainId, prediction=the scores jsonb,
+ *       score=a composite scalar). MEDALLION REALIGNMENT (audit MV-2/DB-2): high-volume model-inference
+ *       output is an analytical stream → lakehouse, NOT operational PG (ml.prediction_log was DROPPED in
+ *       migration 0103). prediction_id is deterministic (sha256 over brand‖model‖subject‖scored_on) so a
+ *       replay of the same served score is idempotent (StarRocks has no RLS/RETURNING; we pre-filter the
+ *       id → INSERT-new-only, preserving the prior PG append semantics).
  *   (d) RETURN { model, score payload }.
  *
  * HONEST no_data: if the brand has no score row for this customer, we return state:'no_data' and write
  * NOTHING (do NOT fabricate a prediction). If no production model is registered, we serve the score
  * read but with model:null (the registry is the lifecycle authority; we never invent a model).
  *
- * Tenant isolation: the Gold read injects the brand predicate at the seam; the PG reads/writes run
- * under brain_app + the brand GUC (RLS). brand_id is the session brand (BFF), never the request. The
- * `ml` schema is NOT on the brain_app search_path, so every reference is schema-qualified.
+ * Tenant isolation: the Gold read + the inference-log write inject/carry the brand predicate explicitly
+ * (StarRocks has no RLS — I-ST01 at the seam); the PG registry read runs under brain_app + the brand GUC
+ * (RLS). brand_id is the session brand (BFF), never the request. The `ml` schema is NOT on the brain_app
+ * search_path, so every PG reference is schema-qualified.
  *
  * @effort deterministic — reads a precomputed Gold score; no model call.
  */
 
+import { createHash } from 'node:crypto';
 import type { DbPool, QueryContext } from '@brain/db';
 import type { SilverPool } from '@brain/metric-engine';
 import { getCustomerScore } from '@brain/metric-engine';
+
+/** The lakehouse inference log (StarRocks). DDL: db/starrocks/gold_ml_prediction_log.sql. */
+const PREDICTION_LOG_TABLE = 'brain_gold.gold_ml_prediction_log';
+
+/** StarRocks DATETIME literal ('YYYY-MM-DD HH:MM:SS', UTC) from a Date. */
+function toSrDatetime(d: Date): string {
+  return d.toISOString().slice(0, 19).replace('T', ' ');
+}
+
+/**
+ * Deterministic prediction_id — sha256(brand‖model‖subject_type‖subject_key‖scored_on). Re-serving the
+ * SAME score (same scored_on) yields the SAME id → the pre-filter suppresses the replay (idempotent on the
+ * DUPLICATE-KEY append-only lakehouse table). model_id is folded in so a model change produces a new fact.
+ */
+function computePredictionId(parts: {
+  brandId: string;
+  modelId: string | null;
+  subjectType: string;
+  subjectKey: string;
+  scoredOn: string | null;
+}): string {
+  return createHash('sha256')
+    .update(
+      [
+        parts.brandId,
+        parts.modelId ?? '',
+        parts.subjectType,
+        parts.subjectKey,
+        parts.scoredOn ?? '',
+      ].join('‖'),
+    )
+    .digest('hex');
+}
 
 const CHURN_MODEL_NAME = 'customer_churn_rfm';
 
@@ -56,7 +96,9 @@ export type ServeCustomerScoreResult =
   | { state: 'has_data'; model: ServingModel | null; score: ServedScore; prediction_id: string };
 
 export interface ServeCustomerScoreDeps {
+  /** PG pool — reads the production model row from ml.model_registry (RLS-scoped, stays in PG). */
   pool: DbPool;
+  /** StarRocks pool — reads the Gold score AND appends the inference row to the lakehouse log. */
   srPool: SilverPool;
 }
 
@@ -87,6 +129,7 @@ export async function serveCustomerScore(
   };
 
   const ctx: QueryContext = { brandId, correlationId };
+  let model: ServingModel | null;
   const client = await deps.pool.connect();
   try {
     // (b) Resolve the production model for (brand, churn) — RLS-scoped.
@@ -104,7 +147,7 @@ export async function serveCustomerScore(
         LIMIT 1`,
       [brandId, CHURN_MODEL_NAME],
     );
-    const model: ServingModel | null = modelRes.rows[0]
+    model = modelRes.rows[0]
       ? {
           model_id: modelRes.rows[0].model_id,
           name: modelRes.rows[0].name,
@@ -113,27 +156,52 @@ export async function serveCustomerScore(
           framework: modelRes.rows[0].framework,
         }
       : null;
-
-    // (c) Append the prediction_log row (append-only — brain_app has no UPDATE/DELETE on it).
-    //     prediction = the scores jsonb; score = the composite scalar. model_id may be null when no
-    //     production model is registered (the prediction is still an honest record of what we served).
-    const ins = await client.query<{ prediction_id: string }>(
-      ctx,
-      `INSERT INTO ml.prediction_log
-              (brand_id, model_id, subject_type, subject_key, prediction, score)
-       VALUES ($1, $2, 'customer', $3, $4::jsonb, $5)
-       RETURNING prediction_id`,
-      [brandId, model?.model_id ?? null, brainId, JSON.stringify(served), composite],
-    );
-
-    // (d) Return the serving model + the score payload + the logged prediction id.
-    return {
-      state: 'has_data',
-      model,
-      score: served,
-      prediction_id: ins.rows[0]!.prediction_id,
-    };
   } finally {
     client.release();
   }
+
+  // (c) Append one inference row to the LAKEHOUSE log (StarRocks brain_gold.gold_ml_prediction_log) —
+  //     append-only; prediction = the scores jsonb (as JSON text), score = the composite scalar. model_id
+  //     may be NULL when no production model is registered (still an honest record of what we served).
+  //     Deterministic prediction_id → pre-filter existing → INSERT-new-only (idempotent on the
+  //     DUPLICATE-KEY table; StarRocks has no RLS/RETURNING). brand_id is carried explicitly (I-ST01).
+  const subjectType = 'customer';
+  const predictionId = computePredictionId({
+    brandId,
+    modelId: model?.model_id ?? null,
+    subjectType,
+    subjectKey: brainId,
+    scoredOn: served.scored_on,
+  });
+
+  const [existRows] = await deps.srPool.query(
+    `SELECT prediction_id FROM ${PREDICTION_LOG_TABLE} WHERE brand_id = ? AND prediction_id = ? LIMIT 1`,
+    [brandId, predictionId],
+  );
+  const alreadyLogged = (existRows as Array<{ prediction_id: string }>).length > 0;
+  if (!alreadyLogged) {
+    await deps.srPool.query(
+      `INSERT INTO ${PREDICTION_LOG_TABLE}
+              (brand_id, created_at, prediction_id, model_id, subject_type, subject_key, prediction, score)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        brandId,
+        toSrDatetime(new Date()),
+        predictionId,
+        model?.model_id ?? null,
+        subjectType,
+        brainId,
+        JSON.stringify(served),
+        composite,
+      ],
+    );
+  }
+
+  // (d) Return the serving model + the score payload + the logged prediction id.
+  return {
+    state: 'has_data',
+    model,
+    score: served,
+    prediction_id: predictionId,
+  };
 }

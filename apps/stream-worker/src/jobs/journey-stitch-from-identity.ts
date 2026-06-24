@@ -161,11 +161,17 @@ export async function runJourneyStitchFromIdentity(deps?: {
         );
         const orderRows = orderRowsRaw as Array<{ order_id: string; brain_id: string }>;
 
-        for (const o of orderRows) {
-          const rawAnon = brainToAnon.get(o.brain_id);
-          if (!rawAnon) continue;
-          await stitchWriter.upsert(brand.id, o.order_id, rawAnon, o.brain_id);
-          result.stitched += 1;
+        // PERF (PF-4): one txn per brand — collect the brand's stitch rows, then a single
+        // multi-row upsert (was a per-order connect→BEGIN→GUC→INSERT→COMMIT loop).
+        const stitchRows = orderRows
+          .map((o) => {
+            const rawAnon = brainToAnon.get(o.brain_id);
+            return rawAnon ? { orderId: o.order_id, stitchedAnonId: rawAnon, brainId: o.brain_id } : null;
+          })
+          .filter((r): r is { orderId: string; stitchedAnonId: string; brainId: string } => r !== null);
+        if (stitchRows.length > 0) {
+          await stitchWriter.upsertMany(brand.id, stitchRows);
+          result.stitched += stitchRows.length;
         }
       } catch (err) {
         result.errors += 1;

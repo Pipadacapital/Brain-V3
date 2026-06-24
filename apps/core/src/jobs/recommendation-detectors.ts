@@ -73,8 +73,13 @@ export async function runRecommendationDetectors(deps?: { pool?: DbPool; srPool?
         const r = await generateRecommendations(brandId, `reco-job-${randomUUID()}`, { pool, srPool });
         raised += r.raised;
         expired += r.expired;
-        // Learning loop: re-measure each open rec's headline metric (then-at-raise vs now).
-        const m = await measureRecommendationOutcomes(brandId, `reco-measure-${randomUUID()}`, { pool, srPool });
+        // Learning loop: re-measure each open rec's headline metric (then-at-raise vs now). Reuse
+        // the signals generate just fetched (PF-6) so measure does not re-read the same source.
+        const m = await measureRecommendationOutcomes(brandId, `reco-measure-${randomUUID()}`, {
+          pool,
+          srPool,
+          signals: r.signals,
+        });
         measured += m.measured;
       } catch (err) {
         errors += 1;

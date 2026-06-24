@@ -1,7 +1,7 @@
 -- ============================================================================
 -- gold_customer_segments — deterministic value-tier customer segments (re-platform Phase E, brain_gold).
 -- One row per (brand_id, segment): customer_count + total value per tier. Deterministic CASE bucketing
--- (NOT ML — ML/propensity segments come from the feature layer, Phase F). Additive. Reads silver_customers.
+-- (NOT ML — ML/propensity segments come from the feature layer, Phase F). Additive. Reads silver_customer.
 -- ============================================================================
 {{
   config(
@@ -24,7 +24,7 @@ with segmented as (
             when lifetime_value_minor > 0       then 'low_value'
             else 'no_realized_value'
         end as segment
-    from {{ ref('silver_customers') }}
+    from {{ ref('silver_customer') }}
 )
 
 select

@@ -87,6 +87,33 @@ export function registerAnalyticsMarketingRoutes(fastify: FastifyInstance, deps:
         { srPool },
       );
 
+      // FX convenience view (display-only): per-platform + total spend blended to the brand's PRIMARY
+      // currency. Spend can span currencies (e.g. Meta INR + AED); naively summing minor across them
+      // is wrong, so the client should prefer these blended totals. Native buckets stay as-is.
+      if (result.state === 'has_data' && result.buckets.length > 0 && rawPool) {
+        const primary = await resolveBrandPrimaryCurrency(rawPool, auth.brandId);
+        const byPlatformCcy = new Map<string, bigint>(); // "platform|currency" → minor sum
+        for (const b of result.buckets) {
+          const key = `${b.platform}|${b.currency_code}`;
+          byPlatformCcy.set(key, (byPlatformCcy.get(key) ?? 0n) + BigInt(b.spend_minor));
+        }
+        const entriesFor = (plat: string) =>
+          [...byPlatformCcy.entries()]
+            .filter(([k]) => k.startsWith(`${plat}|`))
+            .map(([k, minor]) => ({ currency: k.split('|')[1] as string, minor: minor.toString() }));
+        const allEntries = [...byPlatformCcy.entries()].map(([k, minor]) => ({ currency: k.split('|')[1] as string, minor: minor.toString() }));
+        return reply.send({
+          request_id: requestId,
+          data: {
+            ...result,
+            primary_currency: primary,
+            total_spend_in_primary_minor: await blendToPrimary(allEntries, primary),
+            meta_spend_in_primary_minor: await blendToPrimary(entriesFor('meta'), primary),
+            google_spend_in_primary_minor: await blendToPrimary(entriesFor('google_ads'), primary),
+          },
+        });
+      }
+
       return reply.send({ request_id: requestId, data: result });
     },
   );

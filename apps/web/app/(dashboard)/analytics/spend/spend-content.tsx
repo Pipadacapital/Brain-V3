@@ -153,11 +153,20 @@ export function SpendContent() {
 
   // Per-platform spend totals (from the current timeseries response).
   const totals = sumByPlatform(spendData);
-  const metaSpendValue = totals ? formatMoneyDisplay(totals.meta.toString(), totals.currency) : null;
-  const googleSpendValue = totals
-    ? formatMoneyDisplay(totals.google.toString(), totals.currency)
-    : null;
-  const totalSpendValue = totals ? formatMoneyDisplay(totals.total.toString(), totals.currency) : null;
+  // FX FIX: when spend spans MULTIPLE currencies, summing minor across them (sumByPlatform) is wrong.
+  // Prefer the BFF's blended primary-currency totals; fall back to the single-currency sum otherwise.
+  const spendHasData = spendData && spendData.state === 'has_data' ? spendData : null;
+  const spendCurrencies = spendHasData ? new Set(spendHasData.buckets.map((b) => b.currency_code)).size : 0;
+  const spendMultiCurrency = spendCurrencies > 1;
+  const spendPrimary = (spendHasData?.primary_currency ?? null) as CurrencyCode | null;
+  const useBlended = spendMultiCurrency && !!spendPrimary;
+  const fmtSpend = (native: bigint | undefined, blended: string | null | undefined): string | null => {
+    if (useBlended && blended != null && spendPrimary) return `≈ ${formatMoneyDisplay(blended, spendPrimary)}`;
+    return totals && native != null ? formatMoneyDisplay(native.toString(), totals.currency) : null;
+  };
+  const metaSpendValue = fmtSpend(totals?.meta, spendHasData?.meta_spend_in_primary_minor);
+  const googleSpendValue = fmtSpend(totals?.google, spendHasData?.google_spend_in_primary_minor);
+  const totalSpendValue = fmtSpend(totals?.total, spendHasData?.total_spend_in_primary_minor);
 
   // Blended ROAS headline. FX FIX: when spend/revenue span MULTIPLE currencies, the per-currency
   // rows[0] is misleading (you can't read one currency's ROAS as "the" ROAS). Prefer the BFF's

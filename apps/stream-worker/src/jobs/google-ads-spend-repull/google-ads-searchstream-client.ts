@@ -38,6 +38,13 @@ export const GOOGLE_RESOURCE_EXHAUSTED = 'GOOGLE_RESOURCE_EXHAUSTED';
 export const GOOGLE_RESOURCE_TEMPORARILY_EXHAUSTED = 'GOOGLE_RESOURCE_TEMPORARILY_EXHAUSTED';
 /** Non-retryable auth failure (refresh token revoked / invalid). */
 export const GOOGLE_AUTH_ERROR = 'GOOGLE_AUTH_ERROR';
+/**
+ * The ad account itself is unusable — Google authorizationError CUSTOMER_NOT_ENABLED (account
+ * deactivated / not yet enabled) or a customer-not-found. Distinct from GOOGLE_AUTH_ERROR (the
+ * TOKEN is fine; the ACCOUNT is the problem). Caller marks the connector Disabled and backs off —
+ * retrying a disabled account every tick just 403-loops (the original prod symptom).
+ */
+export const GOOGLE_ACCOUNT_DISABLED = 'GOOGLE_ACCOUNT_DISABLED';
 
 export interface GoogleAdsCredentials {
   refreshToken: string;     // NEVER logged (I-S09)
@@ -230,7 +237,7 @@ export class GoogleAdsSearchStreamClient {
         throw new Error(`${GOOGLE_AUTH_ERROR}: 401 Unauthorized from Google Ads`);
       }
 
-      // Error envelope: { error: { status, details:[{ errors:[{ errorCode:{ quotaError }}]}] } }
+      // Error envelope: { error: { status, message, details:[{ errors:[{ errorCode:{...}, message }]}] } }
       const errBody = (await res.json().catch(() => ({}))) as GoogleErrorBody;
       const kind = classifyGoogleError(errBody, res.status);
 
@@ -252,8 +259,24 @@ export class GoogleAdsSearchStreamClient {
         continue;
       }
 
-      // Any other error: hard fail (no body logged — C5).
-      throw new Error(`[google-ads-client] HTTP ${res.status} from Google Ads SearchStream`);
+      // Surface the REAL reason instead of a bare "HTTP 403". The GoogleAdsFailure errorCode +
+      // message are API-level diagnostics (no tokens / no tenant row data), safe to log per C5 —
+      // unlike the raw body. This is the production-observability fix: a 403 must say WHY.
+      const detail = extractGoogleErrorDetail(errBody);
+      const detailSuffix = detail.code
+        ? ` code=${detail.code}${detail.message ? ` msg="${detail.message}"` : ''}`
+        : '';
+
+      if (kind === 'ACCOUNT_DISABLED') {
+        // The ACCOUNT is unusable (CUSTOMER_NOT_ENABLED / not found). Token is fine; do NOT retry —
+        // the caller marks the connector Disabled and stops hammering a dead account.
+        log.warn(`[google-ads-client] ad account unusable (HTTP ${res.status})${detailSuffix} — RECONNECT/RE-ENABLE required`);
+        throw new Error(`${GOOGLE_ACCOUNT_DISABLED}: ${detail.code ?? 'CUSTOMER_NOT_ENABLED'}`);
+      }
+
+      // Any other error: hard fail, but now WITH the parsed reason (C5-safe; never the raw body).
+      log.error(`[google-ads-client] HTTP ${res.status} from Google Ads SearchStream${detailSuffix}`);
+      throw new Error(`[google-ads-client] HTTP ${res.status} from Google Ads SearchStream${detail.code ? ` (${detail.code})` : ''}`);
     }
     throw new Error(`${GOOGLE_RESOURCE_TEMPORARILY_EXHAUSTED}: exceeded backoff retries`);
     }); // end breaker.fire
@@ -262,11 +285,33 @@ export class GoogleAdsSearchStreamClient {
 
 // ── Error classification (ADR-AD-7 two-error branch) ─────────────────────────
 
+interface GoogleAdsError {
+  errorCode?: Record<string, string | undefined>;
+  message?: string;
+}
 interface GoogleErrorBody {
   error?: {
     status?: string;
-    details?: Array<{ errors?: Array<{ errorCode?: { quotaError?: string } }> }>;
+    message?: string;
+    details?: Array<{ errors?: GoogleAdsError[] }>;
   };
+}
+
+/** authorizationError values (and an authenticationError) that mean the ACCOUNT is unusable. */
+const ACCOUNT_DISABLED_CODES = new Set([
+  'CUSTOMER_NOT_ENABLED',          // account deactivated / not yet enabled (the prod symptom)
+  'CUSTOMER_NOT_FOUND',
+  'USER_PERMISSION_DENIED',        // the (login) user can't access this customer at all
+]);
+
+/** Flatten the first Google Ads error to a { code, message } for safe logging (no raw body / token). */
+export function extractGoogleErrorDetail(body: GoogleErrorBody): { code: string | null; message: string | null } {
+  const first = (body.error?.details ?? []).flatMap((d) => d.errors ?? [])[0];
+  // errorCode is a one-key object like { authorizationError: 'CUSTOMER_NOT_ENABLED' } — take its value.
+  const code =
+    (first?.errorCode ? Object.values(first.errorCode).find((v): v is string => !!v) : undefined) ?? null;
+  const message = first?.message ?? body.error?.message ?? null;
+  return { code, message };
 }
 
 /**
@@ -279,12 +324,22 @@ interface GoogleErrorBody {
 export function classifyGoogleError(
   body: GoogleErrorBody,
   httpStatus: number,
-): 'DAILY' | 'QPS' | 'OTHER' {
+): 'DAILY' | 'QPS' | 'ACCOUNT_DISABLED' | 'OTHER' {
   const status = body.error?.status;
-  const quotaErrors = (body.error?.details ?? [])
-    .flatMap((d) => d.errors ?? [])
+  const allErrors = (body.error?.details ?? []).flatMap((d) => d.errors ?? []);
+  const quotaErrors = allErrors
     .map((e) => e.errorCode?.quotaError)
     .filter((q): q is string => !!q);
+
+  // ACCOUNT_DISABLED is the most specific + terminal branch (CUSTOMER_NOT_ENABLED etc.). It carries
+  // NO quotaError, so it never shadows the quota branches below — but we check it first so a 403 on a
+  // dead account is classified terminal (caller backs off) instead of falling through to OTHER.
+  const anyDisabledCode = allErrors.some((e) =>
+    Object.values(e.errorCode ?? {}).some((v) => v && ACCOUNT_DISABLED_CODES.has(v)),
+  );
+  if (anyDisabledCode) {
+    return 'ACCOUNT_DISABLED';
+  }
 
   // Q-CURSOR (ADR-AD-7): the quotaError field is the authoritative discriminator,
   // and precedence matters. A QPS throttle arrives inside a gRPC RESOURCE_EXHAUSTED

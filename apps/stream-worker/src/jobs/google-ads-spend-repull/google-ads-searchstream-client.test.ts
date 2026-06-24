@@ -9,8 +9,10 @@
 import { describe, it, expect } from 'vitest';
 import {
   classifyGoogleError,
+  extractGoogleErrorDetail,
   GOOGLE_RESOURCE_EXHAUSTED,
   GOOGLE_RESOURCE_TEMPORARILY_EXHAUSTED,
+  GOOGLE_ACCOUNT_DISABLED,
 } from './google-ads-searchstream-client.js';
 
 describe('classifyGoogleError (ADR-AD-7 two-error branch)', () => {
@@ -53,8 +55,35 @@ describe('classifyGoogleError (ADR-AD-7 two-error branch)', () => {
     expect(classifyGoogleError({}, 500)).toBe('OTHER');
   });
 
-  it('exports stable throttle error constants', () => {
+  it('classifies CUSTOMER_NOT_ENABLED (deactivated account) as ACCOUNT_DISABLED → back off', () => {
+    const disabled = {
+      error: {
+        status: 'PERMISSION_DENIED',
+        details: [{ errors: [{ errorCode: { authorizationError: 'CUSTOMER_NOT_ENABLED' }, message: 'The customer account is not enabled.' }] }],
+      },
+    };
+    expect(classifyGoogleError(disabled, 403)).toBe('ACCOUNT_DISABLED');
+    // CUSTOMER_NOT_FOUND + USER_PERMISSION_DENIED also map to ACCOUNT_DISABLED (account unusable).
+    expect(classifyGoogleError(
+      { error: { details: [{ errors: [{ errorCode: { authorizationError: 'USER_PERMISSION_DENIED' } }] }] } }, 403,
+    )).toBe('ACCOUNT_DISABLED');
+  });
+
+  it('extractGoogleErrorDetail flattens the first error code + message (C5-safe, no raw body)', () => {
+    const body = {
+      error: {
+        status: 'PERMISSION_DENIED',
+        details: [{ errors: [{ errorCode: { authorizationError: 'CUSTOMER_NOT_ENABLED' }, message: 'not enabled' }] }],
+      },
+    };
+    expect(extractGoogleErrorDetail(body)).toEqual({ code: 'CUSTOMER_NOT_ENABLED', message: 'not enabled' });
+    // empty body → nulls (no throw).
+    expect(extractGoogleErrorDetail({})).toEqual({ code: null, message: null });
+  });
+
+  it('exports stable throttle + account-disabled error constants', () => {
     expect(GOOGLE_RESOURCE_EXHAUSTED).toBe('GOOGLE_RESOURCE_EXHAUSTED');
     expect(GOOGLE_RESOURCE_TEMPORARILY_EXHAUSTED).toBe('GOOGLE_RESOURCE_TEMPORARILY_EXHAUSTED');
+    expect(GOOGLE_ACCOUNT_DISABLED).toBe('GOOGLE_ACCOUNT_DISABLED');
   });
 });

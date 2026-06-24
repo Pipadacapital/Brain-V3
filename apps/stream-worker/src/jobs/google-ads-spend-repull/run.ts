@@ -38,6 +38,7 @@ import {
 import {
   GoogleAdsSearchStreamClient,
   GOOGLE_AUTH_ERROR,
+  GOOGLE_ACCOUNT_DISABLED,
   GOOGLE_RESOURCE_EXHAUSTED,
   GOOGLE_RESOURCE_TEMPORARILY_EXHAUSTED,
   type GoogleAdsCredentials,
@@ -190,6 +191,16 @@ async function repullConnector(params: RepullParams): Promise<void> {
         recordConnectorAuthRejected('google_ads'); // P2.6: make the silent token-expiry death loud
         await setSyncState(pool, brandId, ciId, 'error', 'google auth error — RECONNECT_REQUIRED');
         await updateConnectorInstanceHealth(pool, brandId, ciId, 'token_expired');
+        return;
+      }
+      if (s.includes(GOOGLE_ACCOUNT_DISABLED)) {
+        // The ad account itself is deactivated / not enabled (CUSTOMER_NOT_ENABLED). Token is fine;
+        // mark the connector Disabled + ABORT — retrying a dead account every tick just 403-loops
+        // (the original prod symptom). It re-enters only on reconnect/re-enable. (With 0106 ad-account
+        // activation, a disabled account also won't be claimed unless the user activated it.)
+        log.error(`connector=${ciId} ad account disabled/not-enabled — marking Disabled, aborting (RECONNECT/RE-ENABLE)`);
+        await setSyncState(pool, brandId, ciId, 'error', 'ad account disabled — re-enable or reconnect');
+        await updateConnectorInstanceHealth(pool, brandId, ciId, 'account_disabled');
         return;
       }
       log.error(`connector=${ciId} level=${level} stream error`, { err: err });

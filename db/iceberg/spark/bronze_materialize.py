@@ -20,6 +20,7 @@ db/iceberg/spark/run-bronze-spike.sh and RB-4. All wiring is env-overridable; de
 target the compose service names (iceberg-rest:8181, minio:9000, redpanda:9092).
 """
 import os
+import time
 
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
@@ -48,6 +49,12 @@ CHECKPOINT = os.environ.get("CHECKPOINT_LOCATION", "file:///tmp/bronze-spike-che
 # PROCESSING_TIME — the real-time Spark-on-K8s shape. Both use the same idempotent MERGE.
 TRIGGER_MODE = os.environ.get("TRIGGER_MODE", "availableNow")
 PROCESSING_TIME = os.environ.get("PROCESSING_TIME", "30 seconds")
+
+# PF-7 install-cache TTL: the install_token→brand lookup is cached once at start; a long-running prod
+# job reloads it on this TTL so pixels installed AFTER start eventually resolve WITHOUT a sink restart
+# (the prod symptom — new installs quarantined until manual restart). Seconds; <=0 disables refresh
+# (steady-state batches then never touch Postgres). 300s = a new install resolves within ~5 min.
+PIXEL_INSTALL_REFRESH_TTL_SECONDS = int(os.environ.get("PIXEL_INSTALL_REFRESH_TTL_SECONDS", "300"))
 
 # ── Bronze admission policy (ADR-0002 Slice 6) — mirrors the stream-worker's bronze consumers ──
 # Spark MUST apply the SAME gating the PG writer (ProcessEventUseCase) does, else Iceberg Bronze
@@ -235,17 +242,44 @@ def upsert_factory(spark: SparkSession):
     # SAME DataFrame as the broadcast side of every micro-batch's R2 join. Previously this did a full
     # unfiltered JDBC scan of pixel_installation on EVERY micro-batch (load_pixel_installations called
     # inside `upsert`) — O(batches) Postgres scans. Caching collapses that to a single scan per run.
-    # Optional periodic refresh: a long-running prod job can unpersist + reload this on a TTL boundary
-    # inside `upsert` (e.g. every N batches) so installs added after start eventually resolve — kept
-    # out of the hot path by default so steady-state batches never touch Postgres.
-    install_df = load_pixel_installations(spark).cache()
-    install_df.count()  # force materialization of the cache once, before the first batch runs
+    #
+    # PF-7 TTL refresh (prod-hardening): a pixel installed AFTER the sink started won't resolve against
+    # a frozen cache (its events get quarantined by the R2 inner join until restart — the prod symptom).
+    # We reload + recache on a TTL boundary so new installs resolve within PIXEL_INSTALL_REFRESH_TTL_SECONDS
+    # WITHOUT a restart, while steady-state batches inside the TTL still touch Postgres zero times.
+    state = {
+        "install_df": load_pixel_installations(spark).cache(),
+        "loaded_at": time.monotonic(),
+    }
+    state["install_df"].count()  # force materialization of the cache once, before the first batch runs
+
+    def _maybe_refresh_installs() -> None:
+        if PIXEL_INSTALL_REFRESH_TTL_SECONDS <= 0:
+            return  # refresh disabled — cache is frozen for the run
+        if time.monotonic() - state["loaded_at"] < PIXEL_INSTALL_REFRESH_TTL_SECONDS:
+            return  # still fresh — stay off Postgres
+        old = state["install_df"]
+        fresh = load_pixel_installations(spark).cache()
+        fresh.count()  # MATERIALIZE before swap so a batch never joins against a half-built/empty df
+        state["install_df"] = fresh
+        state["loaded_at"] = time.monotonic()
+        try:
+            old.unpersist()  # free the previous cache; best-effort
+        except Exception as exc:  # noqa: BLE001 — never fail a batch over a cache cleanup
+            print(f"[bronze-sink] install-cache unpersist failed (non-fatal): {exc}", flush=True)
+        print(
+            f"[bronze-sink] PF-7 install-cache refreshed ({fresh.count()} installs) "
+            f"after {PIXEL_INSTALL_REFRESH_TTL_SECONDS}s TTL",
+            flush=True,
+        )
 
     def upsert(batch_df, _batch_id: int) -> None:
         # PARSE + GATE happen HERE, in the per-batch BATCH context — NOT in the streaming plan. A
         # stream-static join + union does not emit reliably under availableNow; inside foreachBatch the
         # batch DF has plain batch semantics, where the R2/R3 gate (proven in batch) works. The cached
         # `install_df` (loaded once above) is the small broadcast table for the R2 join — no per-batch read.
+        _maybe_refresh_installs()  # TTL-bounded reload so post-start installs resolve without a restart
+        install_df = state["install_df"]
         batch_spark = batch_df.sparkSession
         parsed = batch_df.select(
             from_json(col("value").cast("string"), ENVELOPE).alias("e"),

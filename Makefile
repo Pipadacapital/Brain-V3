@@ -111,7 +111,7 @@ silver-verify: silver-run
 # ============================================================================
 
 journey-catalog:
-	@echo ">> Applying Postgres read-shim views bronze_touchpoint_src + connector_journey_stitch_map_src (uuid->text for JDBC)..."
+	@echo ">> Applying Postgres read-shim view bronze_touchpoint_src (uuid/jsonb->text for JDBC; dev/PG-mode only)..."
 	$(PG_PSQL) < db/starrocks/bronze_touchpoint_src.sql
 	@echo ">> Ensuring StarRocks JDBC external catalog brain_oltp_pg exists (idempotent)..."
 	$(SR_MYSQL) < db/starrocks/oltp_jdbc_catalog.sql

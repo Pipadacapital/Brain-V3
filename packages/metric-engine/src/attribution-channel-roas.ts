@@ -3,7 +3,7 @@
  *
  * Makes blended_roas PER-CHANNEL: for each channel, ROAS = attributed_revenue ÷ ad_spend.
  *   • numerator   = channel_contribution_as_of(brand, model, from, to) — Σ credited_revenue
- *                   per channel (net of clawback), from attribution_credit_ledger.
+ *                   per channel (net of clawback), from the gold attribution credit ledger.
  *   • denominator = ad_spend_as_of(brand, from, to) — SUM(spend_minor) per (platform, currency),
  *                   mapped to the JourneyChannel via the platform→channel map.
  *

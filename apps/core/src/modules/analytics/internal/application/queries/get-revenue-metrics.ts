@@ -7,25 +7,22 @@
  * It calls computeRealizedRevenue / computeProvisionalRevenue from the metric
  * engine — NO ad-hoc SUM(amount_minor) anywhere in this module (D-3).
  *
- * The ONLY additional SQL is the EXISTS existence check (D-2):
- *   EXISTS(SELECT 1 FROM realized_revenue_ledger WHERE recognition_label='finalized')
+ * The ONLY additional SQL is the existence check (D-2):
+ *   SELECT 1 FROM brain_gold.gold_revenue_ledger WHERE <brand> LIMIT 1
  * This is an existence signal, not a value computation — explicitly allowed by D-2.
  *
  * Honest-empty-state (D-2, HIGH-1 from CTO review):
- *   computeRealizedRevenue returns Map<ccy, 0n> when no finalized rows exist
- *   (the realized_gmv_as_of() ?? '0' landmine at realized-revenue.ts:71).
- *   We MUST NOT infer no_data from a zero value; the EXISTS check is authoritative.
+ *   computeRealizedRevenue returns Map<ccy, 0n> when no recognized rows exist.
+ *   We MUST NOT infer no_data from a zero value; the existence check is authoritative.
  *
- * RLS / F-SEC-02:
- *   withBrandTxn sets the GUC (app.current_brand_id) transaction-locally — the
- *   EXISTS check runs inside withBrandTxn so RLS scopes brand_id automatically.
- *   Do NOT add a manual WHERE brand_id=$1 as the isolation guarantee; RLS is the
- *   guarantee. Passing it as a query param is harmless (belt-and-suspenders) but
- *   BOTH the GUC scope and the explicit WHERE must agree.
+ * Isolation / F-SEC-02 (medallion realignment, Epic 1):
+ *   Revenue is out of PG — the ledger is the StarRocks gold revenue ledger. The existence
+ *   check runs inside withSilverBrand (the Silver/Gold read seam, I-ST01), brand-scoped via the
+ *   ${BRAND_PREDICATE} sentinel → brand_id = ?. App-layer per-brand isolation (no PG RLS here).
  *
- * Pool type (D §3.1, load-bearing):
- *   Receives EngineDeps ({ pool: pg.Pool }) — the RAW pg.Pool (rawPgPool from main.ts).
- *   Do NOT pass the DbPool wrapper — it would double-apply GUCs.
+ * Deps (load-bearing):
+ *   Receives a StarRocks pool (deps.srPool) for the gold existence check; the value
+ *   computations stay in the metric-engine Silver seam. No raw pg.Pool revenue read remains.
  *
  * @see D-2, D-3, D-8 (03-architecture-plan.md §4)
  * @see F-SEC-02 (02-cto-advisor-review.md §HIGH-4)

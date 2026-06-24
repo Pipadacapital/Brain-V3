@@ -3217,7 +3217,7 @@ export function registerBffRoutes(
 
   /**
    * GET /api/v1/analytics/cod-mix
-   * CoD CM2 + CoD-vs-prepaid mix from realized_revenue_ledger cod_* event_types.
+   * CoD CM2 + CoD-vs-prepaid mix from the gold revenue ledger cod_* recognition event_types.
    * Money = bigint minor-unit strings (signed; net may be negative — honest).
    */
   fastify.get(
@@ -4119,7 +4119,7 @@ export function registerBffRoutes(
   /**
    * GET /api/v1/analytics/attribution/by-channel?from=&to=&model=
    * Attributed revenue by channel + the unattributed residual + the reconciliation rate
-   * for a model + window, from attribution_credit_ledger.
+   * for a model + window, from the gold attribution credit ledger (brain_gold.gold_attribution_credit).
    */
   fastify.get(
     '/api/v1/analytics/attribution/by-channel',

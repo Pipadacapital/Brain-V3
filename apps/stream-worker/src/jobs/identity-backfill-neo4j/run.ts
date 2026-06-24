@@ -121,6 +121,6 @@ export async function runIdentityBackfill(): Promise<BackfillResult> {
 
 if (process.argv[1]?.endsWith('run.ts') || process.argv[1]?.endsWith('run.js')) {
   runIdentityBackfill()
-    .then((r) => { log.info(`[identity-backfill] done`, r); process.exit(0); })
+    .then((r) => { log.info(`[identity-backfill] done — ${r.customers} customers, ${r.links} links, ${r.aliases} aliases`); process.exit(0); })
     .catch((err) => { log.error('[identity-backfill] fatal', { err }); process.exit(1); });
 }

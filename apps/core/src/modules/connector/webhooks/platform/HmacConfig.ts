@@ -120,3 +120,21 @@ export function buildShopfloHmacConfig(): HmacConfig {
   ).toLowerCase();
   return new HmacConfig({ header, algorithm: 'sha256', encoding: 'hex' });
 }
+
+/**
+ * GoKwik webhook HMAC config (config-driven — GoKwik's signing scheme is POC-mediated and not in the
+ * public docs, so the header + digest encoding are env-overridable to match whatever GoKwik configures
+ * for the merchant WITHOUT a code change). Defaults: header 'x-gokwik-signature', hex(HMAC-SHA256).
+ *   GOKWIK_SIG_HEADER    — signature header name (default 'x-gokwik-signature')
+ *   GOKWIK_SIG_ENCODING  — 'hex' (default) | 'base64'
+ * Fail-closed: empty header or empty secret → reject (HmacConfig.validateWebhook).
+ */
+export function buildGokwikHmacConfig(): HmacConfig {
+  const configured = process.env['GOKWIK_SIG_HEADER'];
+  const header = (configured && configured.trim().length > 0
+    ? configured.trim()
+    : 'x-gokwik-signature'
+  ).toLowerCase();
+  const encoding: HmacEncoding = process.env['GOKWIK_SIG_ENCODING'] === 'base64' ? 'base64' : 'hex';
+  return new HmacConfig({ header, algorithm: 'sha256', encoding });
+}

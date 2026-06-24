@@ -660,6 +660,9 @@ export function registerConnectors(app: FastifyInstance, deps: RegisterConnector
         if (connectorType === 'gokwik') {
           const appid = credentials['appid'];
           const appsecret = credentials['appsecret'];
+          // OPTIONAL inbound-webhook signing secret (POC-mediated). When present, the GoKwik webhook
+          // receiver can verify signatures; without it the receiver fails CLOSED (no spoofed events).
+          const webhookSecret = credentials['webhook_secret'];
 
           if (!appid || !appsecret) {
             return reply.code(400).send({
@@ -674,7 +677,13 @@ export function registerConnectors(app: FastifyInstance, deps: RegisterConnector
           const { arn } = await connectorSecretsManager.storeSecret(
             brandId,
             { connectorType: 'gokwik', subKey: appid },
-            { appid, appsecret },
+            {
+              appid,
+              appsecret,
+              ...(webhookSecret && webhookSecret.trim().length > 0
+                ? { webhook_secret: webhookSecret.trim() }
+                : {}),
+            },
           );
 
           const now = new Date();

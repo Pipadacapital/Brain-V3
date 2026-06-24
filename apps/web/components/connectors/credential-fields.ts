@@ -15,6 +15,8 @@ export interface CredentialField {
   label: string;
   placeholder: string;
   secret: boolean;
+  /** When true, the field may be left blank (the connect submit isn't gated on it). */
+  optional?: boolean;
 }
 
 const RAZORPAY_FIELDS: CredentialField[] = [
@@ -36,6 +38,8 @@ const SHOPFLO_FIELDS: CredentialField[] = [
 const GOKWIK_FIELDS: CredentialField[] = [
   { key: 'appid', label: 'App ID', placeholder: 'app_XXXXXXXX', secret: false },
   { key: 'appsecret', label: 'App Secret', placeholder: '••••••••••••', secret: true },
+  // Optional inbound-webhook signing secret (GoKwik provides this when they point webhooks at us).
+  { key: 'webhook_secret', label: 'Webhook Secret (optional)', placeholder: '••••••••••••', secret: true, optional: true },
 ];
 
 // WooCommerce self-serve: the merchant pastes site URL + WC REST API consumer key/secret

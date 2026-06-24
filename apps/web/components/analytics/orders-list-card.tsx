@@ -90,6 +90,16 @@ export function OrdersListCard() {
                       </td>
                       <td className="px-4 py-2 text-right font-medium">
                         {formatMoneyDisplay(o.amount_minor, o.currency_code as CurrencyCode)}
+                        {/* FX convenience view: approximate amount in the brand's primary currency
+                            (latest rate, display-only). Native amount above stays authoritative. */}
+                        {o.amount_in_primary_minor && data.primary_currency && (
+                          <div
+                            className="text-[10px] font-normal text-muted-foreground"
+                            title="Approximate — converted to your primary currency at the latest exchange rate"
+                          >
+                            ≈ {formatMoneyDisplay(o.amount_in_primary_minor, data.primary_currency as CurrencyCode)} (approx)
+                          </div>
+                        )}
                       </td>
                     </tr>
                   ))}

@@ -2,7 +2,13 @@
 -- silver_touchpoint — the SECOND canonical Silver mart. The journey touchpoint table.
 -- feat-journey-touchpoint (Stage 3, @data-engineer). Architecture §2/§3.
 --
--- MATERIALIZATION: StarRocks PRIMARY KEY (upsert) table in brain_silver.
+-- MATERIALIZATION: StarRocks DUPLICATE-KEY table in brain_silver, RANGE-partitioned by occurred_at
+--   (day) with a dynamic-partition TTL. This is an APPEND event-grain mart (one row per touch), the
+--   highest-volume table in the lakehouse — it MUST prune by date (KPIs filter occurred_at) and MUST
+--   bound growth (PF-1/SC-3). It is a full-rebuild CTAS whose SELECT is already deduped (deterministic
+--   sessionization), so no storage-layer upsert is needed → DUPLICATE (not PRIMARY) is correct, and
+--   the partition column (occurred_at) need NOT be in a primary key. The model is filtered to the
+--   dynamic-partition retention window so every row lands in a partition (PF-1 entity-mart decision).
 -- GRAIN: exactly 1 row per (brand_id, brain_anon_id, touch_seq) — every touch in
 --        journey order, with is_first_touch / is_last_touch flags + session linkage.
 --        (Per-touch grain — NOT one-row-per-session — so §4 serves BOTH the first-touch
@@ -28,15 +34,16 @@
 {{
   config(
     materialized   = 'table',
-    table_type     = 'PRIMARY',
+    table_type     = 'DUPLICATE',
     keys           = ['brand_id', 'brain_anon_id', 'touch_seq'],
+    partition_type = 'Expr',
+    partition_by   = ["date_trunc('day', occurred_at)"],
     distributed_by = ['brand_id', 'brain_anon_id'],
     order_by       = ['brand_id', 'brain_anon_id', 'touch_seq'],
     buckets        = 8,
     properties     = {
-      'replication_num'        : '1',
-      'enable_persistent_index': 'true',
-      'compression'            : 'LZ4'
+      'replication_num' : '1',
+      'compression'     : 'LZ4'
     },
     tags = ['silver', 'mart', 'touchpoint']
   )
@@ -114,3 +121,9 @@ from touches t
 left join stitch_one s
     on t.brand_id = s.brand_id
    and t.brain_anon_id = s.stitched_anon_id
+-- TTL / partition-window guard (PF-1): keep only touches within the dynamic-partition retention
+-- window (dynamic_partition.start = -400d) so every row lands in an existing partition on the
+-- full-rebuild CTAS (StarRocks rejects a row whose partition value is outside the managed range).
+-- This IS the bounded-growth policy the audit required for the highest-volume behavioral mart.
+where t.occurred_at is not null
+  and t.occurred_at >= date_sub(current_timestamp(), interval 400 day)

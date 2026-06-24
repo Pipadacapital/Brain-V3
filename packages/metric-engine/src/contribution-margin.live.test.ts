@@ -67,8 +67,8 @@ async function seedRealizedGold(brandId: string, amountMinor: bigint, currency: 
   await srPool.query(
     `INSERT INTO brain_gold.gold_revenue_ledger
        (brand_id, ledger_event_id, order_id, brain_id, event_type, amount_minor, currency_code,
-        fee_minor, occurred_at, economic_effective_at, recognition_label, billing_posted_period, updated_at)
-     VALUES (?, ?, ?, NULL, 'finalization', ?, ?, 0, ?, ?, 'finalized', '2026-06', NOW())`,
+        fee_minor, occurred_at, economic_effective_at, recognition_label, billing_posted_period, data_source, updated_at)
+     VALUES (?, ?, ?, NULL, 'finalization', ?, ?, 0, ?, ?, 'finalized', '2026-06', 'live', NOW())`,
     [brandId, `${brandId}:fin:${String(amountMinor)}`, `order-${brandId.slice(-4)}`, String(amountMinor), currency, effectiveAt, effectiveAt],
   );
 }

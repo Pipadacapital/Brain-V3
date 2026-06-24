@@ -15,15 +15,16 @@
   config(
     schema               = 'brain_gold',
     materialized         = 'table',
-    table_type           = 'PRIMARY',
+    table_type           = 'DUPLICATE',
     keys                 = ['brand_id', 'ledger_event_id'],
+    partition_type       = 'Expr',
+    partition_by         = ["date_trunc('month', occurred_at)"],
     distributed_by       = ['brand_id'],
     order_by             = ['brand_id', 'ledger_event_id'],
     buckets              = 8,
     properties     = {
-      'replication_num'        : '1',
-      'enable_persistent_index': 'true',
-      'compression'            : 'LZ4'
+      'replication_num' : '1',
+      'compression'     : 'LZ4'
     },
     tags = ['gold', 'mart', 'ledger']
   )
@@ -55,4 +56,8 @@ select
 -- become eligible later (e.g. a prepaid finalization once its horizon passes) are always captured —
 -- an incremental ingested-at watermark would miss them (they carry the order's original ingest time).
 from {{ ref('silver_order_recognition') }}
+-- occurred_at NOT NULL: it is the expression-partition key (date_trunc('month', occurred_at)); StarRocks
+-- expression partitioning rejects a NULL partition value. Revenue is retained in full (month partitions
+-- are few + financial history is bounded by orders) — pruning, not TTL.
 where ledger_event_id is not null
+  and occurred_at is not null

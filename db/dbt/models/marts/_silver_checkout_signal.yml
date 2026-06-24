@@ -16,7 +16,7 @@ models:
       - name: event_id
         description: >
           Bronze idempotency key — uniquely identifies the signal event. Grain key with brand_id;
-          uniqueness of (brand_id, event_id) is enforced by the StarRocks PRIMARY KEY on the mart.
+          uniqueness of (brand_id, event_id) is guaranteed by the deterministic full-rebuild model + an assert_*_grain singular test (the mart is DUPLICATE-key + date-partitioned per ADR-0005).
         tests: [not_null]
       - name: signal_type
         description: "Deterministic signal discriminant."

@@ -46,6 +46,15 @@ WHERE NOT EXISTS (
 -- 4. Grants
 GRANT SELECT ON ALL TABLES IN DATABASE brain_silver TO 'brain_analytics'@'%';
 GRANT SELECT ON ALL TABLES IN DATABASE brain_gold   TO 'brain_analytics'@'%';
+-- VIEWS + MATERIALIZED VIEWS are SEPARATE object types in StarRocks — "ALL TABLES" does NOT cover
+-- them. dbt materializes some marts as views (e.g. brain_gold.gold_marketing_attribution / the
+-- attribution surfaces), so without these grants the analytics user gets "Access denied … SELECT on
+-- VIEW …" and the attribution endpoints 500. Grant both view classes so EVERY mart is readable
+-- regardless of its dbt materialization.
+GRANT SELECT ON ALL VIEWS IN DATABASE brain_silver TO 'brain_analytics'@'%';
+GRANT SELECT ON ALL VIEWS IN DATABASE brain_gold   TO 'brain_analytics'@'%';
+GRANT SELECT ON ALL MATERIALIZED VIEWS IN DATABASE brain_silver TO 'brain_analytics'@'%';
+GRANT SELECT ON ALL MATERIALIZED VIEWS IN DATABASE brain_gold   TO 'brain_analytics'@'%';
 
 -- 4a. Row Policy (NN-2 engine-level enforcement — M-01)
 -- ============================================================

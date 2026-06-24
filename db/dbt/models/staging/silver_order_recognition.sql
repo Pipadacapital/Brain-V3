@@ -38,9 +38,12 @@ horizons as (
 ),
 
 -- brain_id from the identity graph: the order's connector pre-hashed email → the resolved customer.
+-- MEDALLION REALIGNMENT (Epic 3 / ADR-0004): identity is the Neo4j SoR; the identity-export job
+-- materializes the active hash→brain_id edges into brain_silver.silver_identity_link (StarRocks), which
+-- this reads in place of the dropped PG identity_link JDBC shim.
 brain as (
     select brand_id, identifier_value as hashed_customer_email, min(brain_id) as brain_id
-    from {{ source('oltp', 'identity_link_src') }}
+    from brain_silver.silver_identity_link
     where identifier_type = 'pre_hashed_email' and is_active = true and brain_id is not null
     group by brand_id, identifier_value
 ),

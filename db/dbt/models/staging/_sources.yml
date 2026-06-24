@@ -92,22 +92,6 @@ sources:
             description: "Days after order before a COD order's revenue is considered final (recognized on delivery instead)."
           - name: prepaid_recognition_horizon_days
             description: "Days after order before a prepaid order finalizes (return/cancel window)."
-      - name: identity_link_src
-        identifier: identity_link_src
-        description: >
-          identity.identity_link hash→brain_id (uuid→text). Resolves an order's brain_id from its
-          pre_hashed_email. (Identity is PG today per ADR-0003; Epic 3 re-points to the Neo4j graph.)
-        columns:
-          - name: brand_id
-            description: "Tenant key (UUID→text)."
-          - name: identifier_type
-            description: "email | phone | pre_hashed_email | storefront_customer_id | anon_id | …"
-          - name: identifier_value
-            description: "64-hex hash (or the connector pre-hashed value)."
-          - name: brain_id
-            description: "Resolved customer key (UUID→text)."
-          - name: is_active
-            description: "Only active links resolve."
 
       # ── feat-journey-touchpoint (Phase 4) sources ──────────────────────────────
       - name: bronze_touchpoint_src

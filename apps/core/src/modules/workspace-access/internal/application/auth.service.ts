@@ -43,7 +43,7 @@ import {
   selectActiveContext,
   maskEmail,
 } from './auth/shared.js';
-import { RegistrationService } from './auth/registration.service.js';
+import { RegistrationService, type EmitDomainEvent } from './auth/registration.service.js';
 import { SessionService } from './auth/session.service.js';
 import { UserLifecycleService } from './auth/user-lifecycle.service.js';
 import { ContextService } from './auth/context.service.js';
@@ -73,6 +73,8 @@ export class AuthService {
    * @param config     — Auth config (signing secret).
    * @param rawPgPool  — Optional raw pg.Pool (no GUC middleware) for the rotateRefreshToken /
    *                     suspend / reactivate paths that need explicit BEGIN/COMMIT.
+   * @param emitEvent  — Optional M1 lifecycle event emitter (EV-2). Threaded to
+   *                     RegistrationService for the user.registered event.
    */
   constructor(
     pool: DbPool,
@@ -80,6 +82,7 @@ export class AuthService {
     notification: NotificationService,
     config: AuthServiceConfig,
     rawPgPool?: Pool,
+    emitEvent?: EmitDomainEvent,
   ) {
     // Wire the cohesive services. ContextService needs the JWT-minting primitive (MA-01:
     // switchBrandContext mints directly); SessionService owns it. SessionService needs
@@ -88,7 +91,7 @@ export class AuthService {
       this.sessions.mintSessionToken(userId, jti, ctx),
     );
     this.sessions = new SessionService(pool, audit, config, this.context, rawPgPool);
-    this.registration = new RegistrationService(pool, audit, notification, this.sessions);
+    this.registration = new RegistrationService(pool, audit, notification, this.sessions, emitEvent);
     this.lifecycle = new UserLifecycleService(pool, audit, notification, rawPgPool);
   }
 

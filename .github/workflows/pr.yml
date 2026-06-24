@@ -73,26 +73,16 @@ jobs:
       - name: Parity oracle (affected)
         run: pnpm turbo run test:parity --affected
 
-      # ── Always-on ledger gate (SEC-BF-M2) ────────────────────────────────────
-      # These Postgres-only *.live.test.ts ledger suites are the ones that catch dedup/ON CONFLICT
-      # regressions on realized_revenue_ledger. `test:unit --affected` above does NOT run them for a
-      # db/-only change: a migration PR (e.g. 0054, which made the dedup index PARTIAL) doesn't mark
-      # @brain/core affected in turbo's graph, so the ledger tests were skipped and the partial-index
-      # ON CONFLICT regression merged green. Run them EXPLICITLY on every PR (not --affected) against
-      # the already-provisioned + migrated Postgres so a schema/clause drift can never slip again.
-      # They self-skip if no PG (SKIP_IF_NO_PG); PG is up here, so they run for real. No StarRocks/
-      # Redpanda needed — those heavier live suites stay in integration.yml.
-      - name: Ledger live suites (Postgres — always-on, blocking)
-        run: >-
-          pnpm --filter @brain/core exec vitest run --no-file-parallelism
-          src/modules/measurement/tests/realized-revenue-ledger.live.test.ts
-          src/modules/measurement/tests/gmv-asof-guc.live.test.ts
-          src/modules/measurement/tests/attribution-credit-ledger.live.test.ts
-
-      # The whole-repo drift-guard (pure source scan, no infra): fails if ANY dedup-tuple ON CONFLICT
-      # omits the partial predicate. Run explicitly so it's covered even on a non-stream-worker PR.
-      - name: Ledger ON CONFLICT drift-guard (no infra)
-        run: pnpm --filter @brain/stream-worker exec vitest run src/tests/ledger-conflict-parity.test.ts
+      # ── Ledger integrity gate — MOVED (medallion realignment, Epics 1+2) ──────────────────────
+      # The former always-on PG ledger gate (SEC-BF-M2) guarded realized_revenue_ledger +
+      # attribution_credit_ledger dedup/ON CONFLICT. Both PG ledgers are DROPPED (migrations 0098/0099):
+      # revenue is now the StarRocks gold revenue ledger (Bronze→silver_order_recognition→gold, dbt) and
+      # attribution is the StarRocks gold_attribution_credit (attribution-writer). StarRocks PRIMARY KEY
+      # upsert handles dedup natively, so the PG partial-index ON CONFLICT drift-guard is obsolete (its
+      # test files were deleted with the tables). The equivalent integrity coverage — revenue-metrics,
+      # reconcile-attribution, attribution-credit-writer .live suites + the pure closed-sum parity oracle
+      # (test:parity) — now runs ALWAYS-ON against real StarRocks gold in integration.yml ("core live
+      # suites"). Nothing PG-only remains to gate here.
 
   # ─────────────────────────────────────────────────────────────────────────
   # C5 log-grep gate — scan source for raw PII / financial identifiers

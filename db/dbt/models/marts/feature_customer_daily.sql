@@ -24,7 +24,7 @@
 -- leaves all prior snapshot_dates intact (the unique_key is the full grain incl. snapshot_date).
 --
 -- PF-1 (partitioning): RANGE-partition on the snapshot_date grain (which is in the PK, as StarRocks
--- PK tables require the partition column to be). Empty range () = dynamic_partition manages it —
+-- PK tables require the partition column to be). StarRocks expression partitioning auto-creates a day partition per snapshot_date on insert;
 -- creates partitions ahead (ingestion never hits a missing partition) and drops partitions past the
 -- 400-day TTL (storage stays bounded). Mirrors db/starrocks/ddl/silver_template.sql.
 -- ============================================================================
@@ -36,7 +36,8 @@
     unique_key           = ['brand_id', 'brain_id', 'snapshot_date'],
     table_type           = 'PRIMARY',
     keys                 = ['brand_id', 'brain_id', 'snapshot_date'],
-    partition_by         = ['snapshot_date'],
+    partition_type       = 'Expr',
+    partition_by         = ["date_trunc('day', snapshot_date)"],
     distributed_by       = ['brand_id'],
     order_by             = ['brand_id', 'brain_id', 'snapshot_date'],
     buckets              = 8,
@@ -44,11 +45,7 @@
       'replication_num'                : '1',
       'enable_persistent_index'        : 'true',
       'compression'                    : 'LZ4',
-      'dynamic_partition.enable'       : 'true',
-      'dynamic_partition.time_unit'    : 'DAY',
-      'dynamic_partition.start'        : '-400',
-      'dynamic_partition.end'          : '3',
-      'dynamic_partition.prefix'       : 'p'
+      'partition_live_number'          : '400'
     },
     tags = ['silver', 'feature', 'snapshot', 'history']
   )

@@ -44,7 +44,11 @@ export async function computeKpiSummary(
   asOf: Date,
   deps: { srPool: SilverPool },
 ): Promise<KpiSummaryResult[]> {
-  const asOfStr = asOf.toISOString().split('T')[0] as string;
+  // Exclusive upper bound = asOf + 1 day, so `occurred_at < asOfExclusive` is the SARGABLE equivalent of
+  // `CAST(occurred_at AS DATE) <= asOf` — wrapping the column in CAST defeats StarRocks partition pruning
+  // + zone-map skipping on the new date-partitioned gold_revenue_ledger (audit PF-5/H4). Raw-column
+  // comparison prunes future partitions and skips by zone-map.
+  const asOfExclusiveStr = new Date(asOf.getTime() + 86_400_000).toISOString().split('T')[0] as string;
 
   // MEDALLION REALIGNMENT (Epic 1): read the lakehouse (brain_gold.gold_revenue_ledger) via
   // withSilverBrand — NOT the PostgreSQL ledger. Realized = every non-provisional event (canonical,
@@ -64,11 +68,11 @@ export async function computeKpiSummary(
          COUNT(DISTINCT order_id) AS order_count,
          COUNT(DISTINCT CASE WHEN event_type IN ('rto_reversal', 'cod_rto_clawback') THEN order_id END) AS rto_count
        FROM brain_gold.gold_revenue_ledger
-       WHERE CAST(occurred_at AS DATE) <= ?
+       WHERE occurred_at < ?
          AND ${BRAND_PREDICATE}
        GROUP BY currency_code
        ORDER BY currency_code`,
-      [asOfStr],
+      [asOfExclusiveStr],
     );
 
     return rows.map((row) => {

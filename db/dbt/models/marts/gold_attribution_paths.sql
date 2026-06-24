@@ -24,15 +24,16 @@
   config(
     schema         = 'brain_gold',
     materialized   = 'table',
-    table_type     = 'PRIMARY',
+    table_type     = 'DUPLICATE',
     keys           = ['brand_id', 'brain_anon_id', 'stitched_order_id'],
+    partition_type = 'Expr',
+    partition_by   = ["date_trunc('month', path_end_at)"],
     distributed_by = ['brand_id'],
     order_by       = ['brand_id', 'brain_anon_id', 'stitched_order_id'],
     buckets        = 8,
     properties     = {
-      'replication_num'        : '1',
-      'enable_persistent_index': 'true',
-      'compression'            : 'LZ4'
+      'replication_num' : '1',
+      'compression'     : 'LZ4'
     },
     tags = ['gold', 'mart', 'attribution', 'paths']
   )

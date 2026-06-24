@@ -15,15 +15,16 @@
 {{
   config(
     materialized   = 'table',
-    table_type     = 'PRIMARY',
+    table_type     = 'DUPLICATE',
     keys           = ['brand_id', 'spend_event_id'],
+    partition_type = 'Expr',
+    partition_by   = ["date_trunc('month', stat_date)"],
     distributed_by = ['brand_id'],
     order_by       = ['brand_id', 'stat_date', 'platform'],
     buckets        = 8,
     properties     = {
-      'replication_num'        : '1',
-      'enable_persistent_index': 'true',
-      'compression'            : 'LZ4'
+      'replication_num' : '1',
+      'compression'     : 'LZ4'
     },
     tags = ['silver', 'mart', 'marketing']
   )
@@ -47,4 +48,6 @@ select
     occurred_at,
     current_timestamp()                      as updated_at
 from {{ ref('stg_ad_spend_bronze') }}
+-- stat_date NOT NULL: it is the expression-partition key (date_trunc('month', stat_date)).
 where spend_event_id is not null
+  and stat_date is not null

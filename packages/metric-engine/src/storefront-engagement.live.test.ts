@@ -46,8 +46,8 @@ async function seedTouch(brandId: string, sessionKey: number): Promise<void> {
   seq += 1;
   await srPool.query(
     `INSERT INTO brain_silver.silver_touchpoint
-       (brand_id, brain_anon_id, touch_seq, session_key, occurred_at, event_type)
-     VALUES (?, ?, ?, ?, ?, 'page.viewed')`,
+       (brand_id, brain_anon_id, touch_seq, session_key, occurred_at, event_type, updated_at)
+     VALUES (?, ?, ?, ?, ?, 'page.viewed', NOW())`,
     [brandId, `anon-${sessionKey}`, seq, sessionKey, TS],
   );
 }

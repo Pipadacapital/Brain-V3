@@ -18,15 +18,16 @@
 {{
   config(
     materialized   = 'table',
-    table_type     = 'PRIMARY',
+    table_type     = 'DUPLICATE',
     keys           = ['brand_id', 'event_id'],
+    partition_type = 'Expr',
+    partition_by   = ["date_trunc('day', occurred_at)"],
     distributed_by = ['brand_id', 'event_id'],
     order_by       = ['brand_id', 'event_id'],
     buckets        = 8,
     properties     = {
-      'replication_num'        : '1',
-      'enable_persistent_index': 'true',
-      'compression'            : 'LZ4'
+      'replication_num' : '1',
+      'compression'     : 'LZ4'
     },
     tags = ['silver', 'mart', 'checkout', 'payments']
   )
@@ -47,3 +48,7 @@ select
     is_synthetic,
     current_timestamp() as updated_at
 from {{ ref('stg_checkout_signal_events') }}
+-- TTL / partition-window guard (PF-1): behavioral checkout signals retained ~13 months; the WHERE keeps
+-- the full-rebuild within the day-partition window. occurred_at NOT NULL = the expression-partition key.
+where occurred_at is not null
+  and occurred_at >= date_sub(current_timestamp(), interval 400 day)

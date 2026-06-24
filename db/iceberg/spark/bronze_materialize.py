@@ -61,8 +61,18 @@ PROCESSING_TIME = os.environ.get("PROCESSING_TIME", "30 seconds")
 # terminal_class, pincode, courier) is preserved for silver_shipment (Slice 2, multi-source).
 # order.backfill.v1 is server-trusted too — the (retired) BackfillOrderConsumer wrote it with
 # enforceTenantDerivation=false (server-derived brand_id, no install_token); keep that parity here.
-SERVER_TRUSTED_BRONZE = {"order.live.v1", "order.backfill.v1", "shopflo.checkout_abandoned.v1", "gokwik.rto_predict.v1", "gokwik.awb_status.v1", "shiprocket.shipment_status.v1"}
-LEDGER_ONLY = {"settlement.live.v1", "spend.live.v1"}
+#
+# MEDALLION REALIGNMENT (AV-1/MV-1 — marketing-spend lineage): spend.live.v1 is server-trusted AND
+# ledger-fed, exactly the order.live.v1 / shipment precedent. The repull jobs emit it on the live lane
+# with a server-derived brand_id (from the connector, MT-1 — NEVER the API response) and NO
+# install_token, so it carries no pixel R2/R3 signal. It MUST land in Bronze so Silver builds
+# silver_marketing_spend FROM Bronze (stg_ad_spend_bronze) instead of the retired PG JDBC shim over
+# ad_spend_ledger. The SpendLedgerConsumer still consumes it for the operational billing ledger
+# (ad_spend_ledger remains the WRITE SoR) — Bronze is purely the analytical source.
+#   settlement.live.v1 stays LEDGER_ONLY: it has no Silver-from-Bronze consumer yet (silver_settlement
+#   is still deferred — see [[payments-checkout-silver]]); promoting it now would land un-modeled rows.
+SERVER_TRUSTED_BRONZE = {"order.live.v1", "order.backfill.v1", "spend.live.v1", "shopflo.checkout_abandoned.v1", "gokwik.rto_predict.v1", "gokwik.awb_status.v1", "shiprocket.shipment_status.v1"}
+LEDGER_ONLY = {"settlement.live.v1"}
 
 # Postgres (for R2 install_token→brand resolution via pixel_installation). Read as the superuser
 # (cross-brand, RLS-bypass — the same ETL-writer posture as the JDBC catalog) so all brands' tokens

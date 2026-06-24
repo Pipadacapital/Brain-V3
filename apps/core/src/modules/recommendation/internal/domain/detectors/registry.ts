@@ -9,14 +9,20 @@
  * MEDALLION REALIGNMENT (Epic 1 / decision B): the REVENUE half of every signal now comes from the
  * lakehouse gold ledger (brain_gold.gold_revenue_ledger) via the metric-engine seams — NOT the
  * PostgreSQL realized_revenue_ledger + its rto_risk_signal_for_brand / realization_signal_for_brand /
- * cm2_signal_for_brand SQL functions (dropped with the table). The CM2 detector's marketing
- * (ad_spend_ledger) + cost (cost_input) halves stay PostgreSQL operational reads here.
+ * cm2_signal_for_brand SQL functions (dropped with the table).
+ *
+ * MEDALLION REALIGNMENT (AV-1 / MV-1): the CM2 detector's MARKETING half now reads ad spend from the
+ * lakehouse Silver entity brain_silver.silver_marketing_spend (Bronze-sourced) via the metric-engine
+ * seam computeCm2MarketingSignal — NOT the PG ad_spend_as_of() function. PG ad_spend_ledger stays the
+ * operational WRITE SoR only. The CM2 COST half (cost_input — operational margin config, not analytical
+ * event data) remains a PostgreSQL operational read here.
  */
 import type { DbClient, QueryContext } from '@brain/db';
 import {
   computeRtoRiskSignal,
   computeRealizationSignal,
   computeCm2RevenueSignal,
+  computeCm2MarketingSignal,
   type SilverPool,
 } from '@brain/metric-engine';
 import { rtoRiskDetector, type RtoSignal } from './rto-risk.detector.js';
@@ -60,17 +66,19 @@ export interface Detector {
   metric(signal: unknown): HeadlineMetric;
 }
 
-/** CM2 PG halves — marketing (ad_spend) + cost (cost_input) — read as the cm2_signal_for_brand fn did. */
-async function fetchCm2PgParts(
+/**
+ * CM2 COST half (cost_input — operational margin config) + the brand's currency, from PG.
+ * MARKETING (ad spend) moved to the Silver seam (AV-1/MV-1) — read in fetchCm2Signal. The brand
+ * currency is operational config (tenancy.brand); it scopes the Silver spend sum to the brand's
+ * currency, exactly as the dropped PG cm2_signal_for_brand JOIN brand ON currency_code did.
+ */
+async function fetchCm2CostParts(
   deps: SignalDeps,
   brandId: string,
-): Promise<{ marketingMinor: bigint; cogsPctBps: number; variablePctBps: number; hasCogs: boolean; confidenceRank: number }> {
-  const spend = await deps.client.query<{ marketing_minor: string }>(
+): Promise<{ currencyCode: string; cogsPctBps: number; variablePctBps: number; hasCogs: boolean; confidenceRank: number }> {
+  const brand = await deps.client.query<{ currency_code: string }>(
     deps.ctx,
-    `SELECT COALESCE(SUM(s.spend_minor), 0)::bigint AS marketing_minor
-       FROM ad_spend_as_of($1::uuid, DATE '2000-01-01', CURRENT_DATE) s
-       JOIN brand b ON b.currency_code = s.currency_code
-      WHERE b.id = $1::uuid`,
+    `SELECT currency_code FROM brand WHERE id = $1::uuid`,
     [brandId],
   );
   const cost = await deps.client.query<{
@@ -86,10 +94,9 @@ async function fetchCm2PgParts(
       WHERE scope = 'global'`,
     [brandId],
   );
-  const s = spend.rows[0];
   const c = cost.rows[0];
   return {
-    marketingMinor: BigInt(s?.marketing_minor ?? '0'),
+    currencyCode: brand.rows[0]?.currency_code ?? '',
     cogsPctBps: Number(c?.cogs_pct_bps ?? '0'),
     variablePctBps: Number(c?.variable_pct_bps ?? '0'),
     hasCogs: c?.has_cogs === true,
@@ -97,13 +104,15 @@ async function fetchCm2PgParts(
   };
 }
 
-/** Assemble the full Cm2Signal: revenue+orders from gold, marketing+cost from PG. */
+/** Assemble the full Cm2Signal: revenue+orders from gold, marketing from Silver, cost from PG. */
 async function fetchCm2Signal(deps: SignalDeps, brandId: string): Promise<Cm2Signal> {
   const rev = await computeCm2RevenueSignal(brandId, { srPool: deps.srPool });
-  const pg = await fetchCm2PgParts(deps, brandId);
+  const pg = await fetchCm2CostParts(deps, brandId);
+  // MARKETING half from the lakehouse Silver entity (Bronze-sourced) — scoped to the brand's currency.
+  const mkt = await computeCm2MarketingSignal(brandId, pg.currencyCode, { srPool: deps.srPool });
   return {
     netRevenueMinor: rev.netRevenueMinor,
-    marketingMinor: pg.marketingMinor,
+    marketingMinor: mkt.marketingMinor,
     orderCount: rev.orderCount,
     cogsPctBps: pg.cogsPctBps,
     variablePctBps: pg.variablePctBps,

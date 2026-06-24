@@ -1,5 +1,5 @@
 /**
- * SharedUtilityPolicy — phone-guard suppression rule (D-1).
+ * PhoneGuardPolicy — phone-guard suppression rule (D-1).
  *
  * India DTC context: courier/kiosk phones appear across many customers.
  * If an identifier (phone hash) has been linked to > phone_guard_threshold
@@ -23,7 +23,7 @@ export type PhoneGuardDecision =
   | { action: 'suppress'; reason: string }   // too many distinct brain_ids → exclude from merge
   | { action: 'already_suppressed'; suppressedUntil: Date };  // previously flagged, still active
 
-export class SharedUtilityPolicy {
+export class PhoneGuardPolicy {
   /**
    * Evaluate whether an identifier (phone hash) may be used as a merge key.
    *

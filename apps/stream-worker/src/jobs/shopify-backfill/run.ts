@@ -45,7 +45,7 @@ import { PgBackfillJobRepository } from '../../infrastructure/pg/BackfillJobRepo
 import { ORDER_BACKFILL_V1_TOPIC_SUFFIX, CollectorEventV1Schema } from '@brain/contracts';
 import { ShopifyBackfillClient } from './shopify-paged-client.js';
 import { mapOrderToBackfillEvent, computeAchievedDepthLabel } from './order-mapper.js';
-import { uuidV5FromOrderBackfill } from './uuid-utils.js';
+import { uuidV5FromOrderBackfill } from '@brain/shopify-mapper';
 import { buildWorkerSecretsManager } from './worker-secrets.js';
 import { log } from "../../log.js";
 

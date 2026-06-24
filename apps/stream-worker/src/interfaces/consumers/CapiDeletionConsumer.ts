@@ -72,6 +72,10 @@ export class CapiDeletionConsumer {
         const traceCtx = extractKafkaTraceContext(
           (message.headers ?? {}) as Record<string, Buffer | string | undefined>,
         );
+        // OBS-3: bind the producer's custom correlation_id header onto a per-message child logger
+        // so log lines correlate to the originating request even where no span is started.
+        const correlationId = message.headers?.['correlation_id']?.toString();
+        const msgLog = correlationId ? log.child({ correlation_id: correlationId }) : log;
 
         return context.with(traceCtx, async () => {
         try {
@@ -89,7 +93,7 @@ export class CapiDeletionConsumer {
               { topic, partition, offset: String(Number(offset) + 1) },
             ]);
             await this.retryCounter.reset(this.retryScope, partition, offset);
-            log.info(`DLQ (invalid) partition=${partition} offset=${offset} reason=${result.reason}`);
+            msgLog.info(`DLQ (invalid) partition=${partition} offset=${offset} reason=${result.reason}`);
             return;
           }
 
@@ -100,7 +104,7 @@ export class CapiDeletionConsumer {
             { topic, partition, offset: String(Number(offset) + 1) },
           ]);
           await this.retryCounter.reset(this.retryScope, partition, offset);
-          log.info(`[capi-deletion] ${result.outcome} brand=${result.brandId ?? 'unknown'} ` +
+          msgLog.info(`[capi-deletion] ${result.outcome} brand=${result.brandId ?? 'unknown'} ` +
                           `event=${result.eventId ?? 'unknown'} subject=${result.subjectHash ? result.subjectHash.slice(0, 12) + '…' : 'none'} ` +
                           `status=${result.status ?? '-'} scope=${result.eventCount ?? 0} ` +
                           `partition=${partition} offset=${offset}`);
@@ -108,7 +112,7 @@ export class CapiDeletionConsumer {
           // Write error (incl. salt failure D-2) — do NOT commit. Retry → DLQ@MAX_RETRY.
           const current = await this.retryCounter.increment(this.retryScope, partition, offset);
 
-          log.error(`[capi-deletion] write error (attempt ${current}/${MAX_RETRY}) ` +
+          msgLog.error(`[capi-deletion] write error (attempt ${current}/${MAX_RETRY}) ` +
                           `partition=${partition} offset=${offset}`, { err: err });
 
           if (current >= MAX_RETRY) {
@@ -123,9 +127,9 @@ export class CapiDeletionConsumer {
                 { topic, partition, offset: String(Number(offset) + 1) },
               ]);
               await this.retryCounter.reset(this.retryScope, partition, offset);
-              log.warn(`DLQ (max retry) partition=${partition} offset=${offset}`);
+              msgLog.warn(`DLQ (max retry) partition=${partition} offset=${offset}`);
             } catch (dlqErr) {
-              log.error('DLQ produce failed — not committing offset', { err: dlqErr });
+              msgLog.error('DLQ produce failed — not committing offset', { err: dlqErr });
             }
           }
 

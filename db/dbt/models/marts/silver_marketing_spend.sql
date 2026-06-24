@@ -1,11 +1,12 @@
 -- ============================================================================
 -- silver_marketing_spend — ad spend as a connector-agnostic Silver ENTITY (re-platform Phase G).
 --
--- Phase G moves business data OUT of Postgres. This StarRocks Silver mart is the lakehouse copy of
--- ad_spend_ledger (sourced via the JDBC read-shim during transition; rebuilds from Bronze in prod).
--- The marketing metric-engine reads (ad-spend-timeseries, channel-roas, blended-roas) re-point here
--- via withSilverBrand so PostgreSQL stops being a read source for spend. PG remains the WRITE SoR
--- until a later cutover (the spend repull jobs still append there); this mart is a derived projection.
+-- MEDALLION REALIGNMENT (AV-1 / MV-1): this mart now builds FROM Bronze (stg_ad_spend_bronze, which
+-- reads brain_bronze.collector_events WHERE event_type='spend.live.v1'), NOT from the PostgreSQL
+-- ad_spend_ledger via a JDBC read-shim. Bronze is the analytical source of truth; the PG ledger
+-- remains the operational WRITE SoR (billing/invoicing — the spend repull jobs still append there).
+-- The marketing metric-engine reads (ad-spend-timeseries, channel-roas, blended-roas) + the CM2
+-- recommendation detector read here via withSilverBrand so PostgreSQL is no longer a spend READ source.
 --
 -- Connector-agnostic by entity: the column is `platform` (meta | google_ads | …), never a connector
 -- name in the table name. MONEY = BIGINT minor units (I-S07). ISOLATION: brand_id first key; per-brand
@@ -45,5 +46,5 @@ select
     account_timezone,
     occurred_at,
     current_timestamp()                      as updated_at
-from {{ source('oltp', 'ad_spend_ledger') }}
+from {{ ref('stg_ad_spend_bronze') }}
 where spend_event_id is not null

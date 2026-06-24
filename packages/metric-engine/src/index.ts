@@ -167,11 +167,13 @@ export {
   computeRtoRiskSignal,
   computeRealizationSignal,
   computeCm2RevenueSignal,
+  computeCm2MarketingSignal,
 } from './recommendation-signals.js';
 export type {
   RtoRiskSignalRaw,
   RealizationSignalRaw,
   Cm2RevenueSignalRaw,
+  Cm2MarketingSignalRaw,
 } from './recommendation-signals.js';
 
 // Data-driven (Markov removal-effect) attribution — the GLOBAL, corpus-trained model.

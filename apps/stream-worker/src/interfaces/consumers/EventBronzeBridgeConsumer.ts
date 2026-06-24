@@ -65,6 +65,10 @@ export class EventBronzeBridgeConsumer {
         const traceCtx = extractKafkaTraceContext(
           (message.headers ?? {}) as Record<string, Buffer | string | undefined>,
         );
+        // OBS-3: bind the producer's custom correlation_id header onto a per-message child logger
+        // so log lines correlate to the originating request even where no span is started.
+        const correlationId = message.headers?.['correlation_id']?.toString();
+        const msgLog = correlationId ? log.child({ correlation_id: correlationId }) : log;
         return context.with(traceCtx, async () => {
 
         // ── Filter: only our event_name (cheap header peek, fallback to body) ──
@@ -98,7 +102,7 @@ export class EventBronzeBridgeConsumer {
             );
             await commitNext();
             await this.retryCounter.reset(this.retryScope, partition, offset);
-            log.info(`[bronze-bridge:${this.eventName}] DLQ (invalid) partition=${partition} offset=${offset} reason=${result.reason}`);
+            msgLog.info(`[bronze-bridge:${this.eventName}] DLQ (invalid) partition=${partition} offset=${offset} reason=${result.reason}`);
             return;
           }
 
@@ -108,10 +112,10 @@ export class EventBronzeBridgeConsumer {
           }
           await commitNext();
           await this.retryCounter.reset(this.retryScope, partition, offset);
-          log.info(`[bronze-bridge:${this.eventName}] ${result.outcome} brand=${result.brandId} event=${result.eventId} partition=${partition} offset=${offset}`);
+          msgLog.info(`[bronze-bridge:${this.eventName}] ${result.outcome} brand=${result.brandId} event=${result.eventId} partition=${partition} offset=${offset}`);
         } catch (err) {
           const current = await this.retryCounter.increment(this.retryScope, partition, offset);
-          log.error(`[bronze-bridge:${this.eventName}] write error (attempt ${current}/${MAX_RETRY}) partition=${partition} offset=${offset}`, { err });
+          msgLog.error(`[bronze-bridge:${this.eventName}] write error (attempt ${current}/${MAX_RETRY}) partition=${partition} offset=${offset}`, { err });
 
           if (current >= MAX_RETRY) {
             try {
@@ -123,9 +127,9 @@ export class EventBronzeBridgeConsumer {
               );
               await commitNext();
               await this.retryCounter.reset(this.retryScope, partition, offset);
-              log.warn(`[bronze-bridge:${this.eventName}] DLQ (max retry) partition=${partition} offset=${offset}`);
+              msgLog.warn(`[bronze-bridge:${this.eventName}] DLQ (max retry) partition=${partition} offset=${offset}`);
             } catch (dlqErr) {
-              log.error(`[bronze-bridge:${this.eventName}] DLQ produce failed — not committing offset`, { err: dlqErr });
+              msgLog.error(`[bronze-bridge:${this.eventName}] DLQ produce failed — not committing offset`, { err: dlqErr });
             }
           }
           if (current < MAX_RETRY) throw err; // KafkaJS redelivers without committing

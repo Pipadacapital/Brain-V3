@@ -38,28 +38,12 @@
 -- READ seam, I-ST01). PROD swap reads Iceberg Bronze (native strings) → shims disappear.
 -- ============================================================================
 
--- ad_spend_ledger → silver_marketing_spend (Silver entity). spend is BIGINT minor units.
-CREATE OR REPLACE VIEW silver_marketing_spend_src AS
-SELECT
-    brand_id::text   AS brand_id,
-    spend_event_id,
-    platform,
-    level,
-    level_id,
-    parent_id,
-    campaign_id,
-    campaign_name,
-    stat_date,
-    spend_minor,
-    currency_code,
-    impressions,
-    clicks,
-    account_timezone,
-    occurred_at
--- Schema-qualified (partitioned via twin-swap migration 0074) — see the note on silver_order_ledger_src.
-FROM billing.ad_spend_ledger;
-
-GRANT SELECT ON silver_marketing_spend_src TO brain;
+-- MEDALLION REALIGNMENT (AV-1 / MV-1): silver_marketing_spend_src (the read-shim over the PG
+-- billing.ad_spend_ledger) was REMOVED. silver_marketing_spend now builds from Bronze
+-- (stg_ad_spend_bronze → brain_bronze.collector_events WHERE event_type='spend.live.v1'); spend.live.v1
+-- lands in Bronze via the server-trusted spend bridge (bronze_materialize.py). billing.ad_spend_ledger
+-- remains the operational WRITE SoR (billing/invoicing) — only the ANALYTICAL read source moved. There
+-- is no PG spend ledger to shim.
 
 -- MEDALLION REALIGNMENT (Epic 2): gold_attribution_credit_src (the read-shim over the PG
 -- attribution_credit_ledger) was REMOVED with migration 0099. The attribution credit ledger is now

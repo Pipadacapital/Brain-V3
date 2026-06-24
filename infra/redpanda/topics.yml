@@ -70,21 +70,47 @@ topics:
     description: "Quarantine sink (R3) — events that PARSED but FAILED a security/compliance gate: unresolved/mismatched install_token → brand (R2 tenant-unresolved / brand_mismatch) or absent consent_flags. Distinct from .dlq (malformed/unparseable). Reuses the shipped DlqProducer with a .quarantine topic suffix — no new producer, no new topic family."
 
 consumer_groups:
-  - id: "brain.stream-worker.live"
+  # Reconciled to the code's actual group IDs (apps/stream-worker/src/main.ts defaults).
+  # All bridge groups read the SAME live topic but on independent groups (offset lag is isolated).
+  - id: "stream-worker-live"
     topic: "{env}.collector.event.v1"
-    description: "Live enrichment → Bronze write"
+    description: "Live enrichment → Bronze write (CONSUMER_GROUP_ID)"
 
-  - id: "brain.stream-worker.backfill"
-    topic: "{env}.collector.event.v1.backfill"
-    description: "Historical rebuild from Bronze → replay dedup"
+  - id: "identity-bridge-live"
+    topic: "{env}.collector.event.v1"
+    description: "Identity-resolution bridge → Neo4j (IDENTITY_CONSUMER_GROUP_ID)"
+
+  - id: "live-ledger-bridge"
+    topic: "{env}.collector.event.v1"
+    description: "order.live.v1 → realized-revenue ledger (LIVE_LEDGER_CONSUMER_GROUP_ID)"
+
+  - id: "settlement-ledger-bridge"
+    topic: "{env}.collector.event.v1"
+    description: "settlement.live.v1 → net-of-fees finalization (SETTLEMENT_LEDGER_CONSUMER_GROUP_ID)"
+
+  - id: "spend-ledger-bridge"
+    topic: "{env}.collector.event.v1"
+    description: "spend.live.v1 → ad_spend_ledger (SPEND_LEDGER_CONSUMER_GROUP_ID)"
+
+  - id: "gokwik-awb-ledger-bridge"
+    topic: "{env}.collector.event.v1"
+    description: "gokwik.awb_status.v1 → cod_rto_clawback ledger (GOKWIK_AWB_LEDGER_CONSUMER_GROUP_ID)"
+
+  - id: "stream-worker-consent-suppressor"
+    topic: "{env}.collector.event.v1"
+    description: "Consent-revocation suppressor (CONSENT_SUPPRESSOR_CONSUMER_GROUP_ID)"
+
+  - id: "stream-worker-capi-deletion"
+    topic: "{env}.collector.event.v1"
+    description: "CAPI deletion bridge (CAPI_DELETION_CONSUMER_GROUP_ID)"
 
   - id: "stream-worker-backfill"
     topic: "{env}.collector.order.backfill.v1"
-    description: "Backfill order consumer — isolated from live group; single-partition cap prevents storm lagging live path (ADR-BF-7 / D-3)"
+    description: "Backfill order consumer — isolated from live group; single-partition cap prevents storm lagging live path (ADR-BF-7 / D-3) (BACKFILL_CONSUMER_GROUP_ID)"
 
-  - id: "brain.stream-worker.dlq-monitor"
+  - id: "brain.stream-worker.dlq-redrive"
     topic: "{env}.collector.event.v1.dlq"
-    description: "DLQ monitor — alerts + quarantine routing"
+    description: "DLQ redrive — operator CLI replays dead-lettered messages back to origin topic (apps/stream-worker/src/jobs/dlq-redrive)"
 
 schema_registry:
   compatibility: FULL_TRANSITIVE

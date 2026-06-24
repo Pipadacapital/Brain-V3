@@ -93,6 +93,10 @@ export class SpendLedgerConsumer {
         const traceCtx = extractKafkaTraceContext(
           (message.headers ?? {}) as Record<string, Buffer | string | undefined>,
         );
+        // OBS-3: bind the producer's custom correlation_id header onto a per-message child logger
+        // so log lines correlate to the originating request even where no span is started.
+        const correlationId = message.headers?.['correlation_id']?.toString();
+        const msgLog = correlationId ? log.child({ correlation_id: correlationId }) : log;
 
         return context.with(traceCtx, async () => {
         try {
@@ -111,7 +115,7 @@ export class SpendLedgerConsumer {
               await this.consumer.commitOffsets([
                 { topic, partition, offset: String(Number(offset) + 1) },
               ]);
-              log.warn(`JSON parse error partition=${partition} offset=${offset} — skipping`);
+              msgLog.warn(`JSON parse error partition=${partition} offset=${offset} — skipping`);
               return;
             }
           }
@@ -125,7 +129,7 @@ export class SpendLedgerConsumer {
           }
 
           if (!brandId || !eventId || !parsed) {
-            log.warn(`spend.live.v1 missing brand_id or event_id partition=${partition} offset=${offset} — skipping`);
+            msgLog.warn(`spend.live.v1 missing brand_id or event_id partition=${partition} offset=${offset} — skipping`);
             await this.consumer.commitOffsets([
               { topic, partition, offset: String(Number(offset) + 1) },
             ]);
@@ -140,12 +144,12 @@ export class SpendLedgerConsumer {
           ]);
           await this.retryCounter.reset(this.retryScope, partition, offset);
 
-          log.info(`[spend-ledger] ${result} brand=${brandId} event=${eventId} ` +
+          msgLog.info(`[spend-ledger] ${result} brand=${brandId} event=${eventId} ` +
                         `partition=${partition} offset=${offset}`);
         } catch (err) {
           const current = await this.retryCounter.increment(this.retryScope, partition, offset);
 
-          log.error(`[spend-ledger] write error (attempt ${current}/${MAX_RETRY}) ` +
+          msgLog.error(`[spend-ledger] write error (attempt ${current}/${MAX_RETRY}) ` +
                         `partition=${partition} offset=${offset}`, { err: err });
 
           if (current >= MAX_RETRY) {
@@ -160,9 +164,9 @@ export class SpendLedgerConsumer {
                 { topic, partition, offset: String(Number(offset) + 1) },
               ]);
               await this.retryCounter.reset(this.retryScope, partition, offset);
-              log.warn(`DLQ (max retry) partition=${partition} offset=${offset}`);
+              msgLog.warn(`DLQ (max retry) partition=${partition} offset=${offset}`);
             } catch (dlqErr) {
-              log.error('DLQ produce failed — not committing offset', { err: dlqErr });
+              msgLog.error('DLQ produce failed — not committing offset', { err: dlqErr });
             }
           }
 

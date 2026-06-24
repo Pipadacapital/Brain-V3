@@ -156,6 +156,3 @@ export function defaultApicurioConfig(): ApicurioConfig {
     artifactId: process.env['APICURIO_ARTIFACT_ID'] ?? 'collector.event.v1',
   };
 }
-
-// Per-entity topic routing (re-platform Phase C)
-export * from './entity-routing.js';

@@ -14,13 +14,17 @@
  * Covers Phase-1 currencies: INR (100 paise/rupee), AED (100 fils/dirham), SAR (100 halalas/riyal).
  */
 
-import { money, type CurrencyCode } from '@brain/money';
+import { money, minorUnitDigits, minorUnitsDivisor, type CurrencyCode } from '@brain/money';
 
-/** Minor-unit divisors by currency (matches packages/money/src/index.ts MINOR_UNITS). */
-const MINOR_DIVISORS: Record<CurrencyCode, bigint> = {
-  INR: 100n,
-  AED: 100n,
-  SAR: 100n,
+/** Locales that render nicest per currency; anything else falls back to the runtime default. */
+const CURRENCY_LOCALE: Record<string, string> = {
+  INR: 'en-IN',
+  AED: 'en-AE',
+  SAR: 'en-SA',
+  KWD: 'en-KW',
+  BHD: 'en-BH',
+  OMR: 'en-OM',
+  QAR: 'en-QA',
 };
 
 /**
@@ -63,37 +67,40 @@ function toIntegerMinor(minorString: string): bigint {
 }
 
 export function formatMoneyDisplay(minorString: string, currencyCode: CurrencyCode): string {
-  // Build the Money VO — validates the currency code (throws on invalid).
+  // Build the Money VO — validates the code FORMAT only (no allowlist; any ISO currency renders).
   // Accepts integer ("123450") or exact-fractional ("0.0000") minor-unit strings.
   const m = money(toIntegerMinor(minorString), currencyCode);
+  const code = m.currency_code; // normalised upper-case
 
-  // Integer-arithmetic split into major and fractional parts.
-  const divisor = MINOR_DIVISORS[currencyCode];
+  // Per-currency exponent — KWD/BHD/OMR = 3, JPY = 0, default 2. Integer-only decomposition.
+  const exponent = minorUnitDigits(code);
+  const divisor = BigInt(minorUnitsDivisor(code));
   const major = m.amount_minor / divisor;
   const minorPart = m.amount_minor % divisor;
 
-  // Reconstruct a numeric value for Intl: compose as a string then parse as Number
-  // ONLY for display rendering — the value is already an integer decomposition so
-  // no precision is lost within the Number.MAX_SAFE_INTEGER range for typical amounts.
-  // For very large amounts (> Number.MAX_SAFE_INTEGER / 100), the bigint decomposition
-  // already handles precision correctly; we combine as a decimal string.
+  // Reconstruct a numeric value for Intl: compose as a string then parse as Number ONLY for display
+  // rendering — the value is already an integer decomposition so no precision is lost for typical
+  // amounts. The fractional pad width is the CURRENCY exponent (so KWD shows 3 dp, not 2).
   const sign = m.amount_minor < 0n ? '-' : '';
   const absMajor = major < 0n ? -major : major;
   const absMinor = minorPart < 0n ? -minorPart : minorPart;
-  const decimalString = `${sign}${absMajor}.${String(absMinor).padStart(2, '0')}`;
+  const decimalString =
+    exponent === 0
+      ? `${sign}${absMajor}`
+      : `${sign}${absMajor}.${String(absMinor).padStart(exponent, '0')}`;
 
-  // Intl.NumberFormat for locale-aware symbol, grouping, and decimal formatting.
-  // 'en-IN' is the canonical locale for INR display; AED/SAR use 'en-AE'/'en-SA'.
-  const localeMap: Record<CurrencyCode, string> = {
-    INR: 'en-IN',
-    AED: 'en-AE',
-    SAR: 'en-SA',
-  };
-
-  return new Intl.NumberFormat(localeMap[currencyCode], {
-    style: 'currency',
-    currency: currencyCode,
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(Number(decimalString));
+  // Intl.NumberFormat for locale-aware symbol, grouping, and decimals. Any ISO code works; for an
+  // unknown-to-Intl code it renders the code as the symbol (e.g. "KWD 12.500"). Wrapped in try/catch
+  // so a render NEVER crashes on a currency the runtime ICU doesn't know — the prod symptom.
+  try {
+    return new Intl.NumberFormat(CURRENCY_LOCALE[code], {
+      style: 'currency',
+      currency: code,
+      minimumFractionDigits: exponent,
+      maximumFractionDigits: exponent,
+    }).format(Number(decimalString));
+  } catch {
+    // Fail-soft fallback — show the code + the exact decimal string rather than throwing.
+    return `${code} ${decimalString}`;
+  }
 }

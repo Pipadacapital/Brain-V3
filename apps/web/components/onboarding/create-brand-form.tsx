@@ -24,30 +24,46 @@ import { toast } from '@/components/ui/toaster';
 import { Skeleton } from '@/components/ui/skeleton';
 import { normalizeBrandHost } from '@brain/pixel-sdk';
 
-/** Currency → region map (mirrors backend CURRENCY_TO_REGION). */
+/** Currency → region map (mirrors backend CURRENCY_TO_REGION) — GCC + India. */
 const CURRENCY_REGION: Record<string, string> = {
   INR: 'IN',
   AED: 'AE',
   SAR: 'SA',
+  QAR: 'QA',
+  KWD: 'KW',
+  BHD: 'BH',
+  OMR: 'OM',
 };
 
 const CURRENCY_LABELS: Record<string, string> = {
   INR: 'INR — Indian Rupee',
   AED: 'AED — UAE Dirham',
   SAR: 'SAR — Saudi Riyal',
+  QAR: 'QAR — Qatari Riyal',
+  KWD: 'KWD — Kuwaiti Dinar',
+  BHD: 'BHD — Bahraini Dinar',
+  OMR: 'OMR — Omani Rial',
 };
 
 const TIMEZONE_LABELS: Record<string, string> = {
   'Asia/Kolkata': 'Asia/Kolkata (IST, UTC+5:30)',
   'Asia/Dubai': 'Asia/Dubai (GST, UTC+4)',
   'Asia/Riyadh': 'Asia/Riyadh (AST, UTC+3)',
+  'Asia/Qatar': 'Asia/Qatar (AST, UTC+3)',
+  'Asia/Kuwait': 'Asia/Kuwait (AST, UTC+3)',
+  'Asia/Bahrain': 'Asia/Bahrain (AST, UTC+3)',
+  'Asia/Muscat': 'Asia/Muscat (GST, UTC+4)',
 };
 
-/** Default timezone per currency. */
+/** Default timezone per currency — GCC + India. */
 const CURRENCY_TIMEZONE: Record<string, string> = {
   INR: 'Asia/Kolkata',
   AED: 'Asia/Dubai',
   SAR: 'Asia/Riyadh',
+  QAR: 'Asia/Qatar',
+  KWD: 'Asia/Kuwait',
+  BHD: 'Asia/Bahrain',
+  OMR: 'Asia/Muscat',
 };
 
 export function CreateBrandForm() {

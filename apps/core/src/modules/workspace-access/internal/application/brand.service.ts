@@ -42,6 +42,10 @@ const CURRENCY_TO_REGION: Record<CurrencyCode, string> = {
   INR: 'IN',
   AED: 'AE',
   SAR: 'SA',
+  QAR: 'QA',
+  KWD: 'KW',
+  BHD: 'BH',
+  OMR: 'OM',
 };
 
 function deriveRegionCode(currencyCode: CurrencyCode): string {

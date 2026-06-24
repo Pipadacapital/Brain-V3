@@ -55,19 +55,31 @@ const CURRENCY_LABELS: Record<string, string> = {
   INR: 'INR — Indian Rupee',
   AED: 'AED — UAE Dirham',
   SAR: 'SAR — Saudi Riyal',
+  QAR: 'QAR — Qatari Riyal',
+  KWD: 'KWD — Kuwaiti Dinar',
+  BHD: 'BHD — Bahraini Dinar',
+  OMR: 'OMR — Omani Rial',
 };
 
 const TIMEZONE_LABELS: Record<string, string> = {
   'Asia/Kolkata': 'Asia/Kolkata (IST, UTC+5:30)',
   'Asia/Dubai': 'Asia/Dubai (GST, UTC+4)',
   'Asia/Riyadh': 'Asia/Riyadh (AST, UTC+3)',
+  'Asia/Qatar': 'Asia/Qatar (AST, UTC+3)',
+  'Asia/Kuwait': 'Asia/Kuwait (AST, UTC+3)',
+  'Asia/Bahrain': 'Asia/Bahrain (AST, UTC+3)',
+  'Asia/Muscat': 'Asia/Muscat (GST, UTC+4)',
 };
 
-/** Default timezone per currency (mirrors create-brand-form.tsx). */
+/** Default timezone per currency (mirrors create-brand-form.tsx) — GCC + India. */
 const CURRENCY_TIMEZONE: Record<string, string> = {
   INR: 'Asia/Kolkata',
   AED: 'Asia/Dubai',
   SAR: 'Asia/Riyadh',
+  QAR: 'Asia/Qatar',
+  KWD: 'Asia/Kuwait',
+  BHD: 'Asia/Bahrain',
+  OMR: 'Asia/Muscat',
 };
 
 // ── Types ────────────────────────────────────────────────────────────────────

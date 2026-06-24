@@ -99,13 +99,15 @@ export const createBrandSchema = z.object({
     .or(z.literal('')),
   /** ISO 4217 bounded allowlist — MA-12: matches backend CHECK constraint. */
   currency_code: z
-    .enum(['INR', 'AED', 'SAR'] as const, {
+    .enum(['INR', 'AED', 'SAR', 'QAR', 'KWD', 'BHD', 'OMR'] as const, {
       errorMap: () => ({ message: 'Select a supported currency' }),
     })
     .default('INR'),
   /** IANA timezone bounded allowlist. */
   timezone: z
-    .enum(['Asia/Kolkata', 'Asia/Dubai', 'Asia/Riyadh'] as const, {
+    .enum([
+      'Asia/Kolkata', 'Asia/Dubai', 'Asia/Riyadh', 'Asia/Kuwait', 'Asia/Bahrain', 'Asia/Muscat', 'Asia/Qatar',
+    ] as const, {
       errorMap: () => ({ message: 'Select a supported timezone' }),
     })
     .default('Asia/Kolkata'),
@@ -142,12 +144,14 @@ export const createBrandWorkspaceSchema = z.object({
     .optional()
     .or(z.literal('')),
   currency_code: z
-    .enum(['INR', 'AED', 'SAR'] as const, {
+    .enum(['INR', 'AED', 'SAR', 'QAR', 'KWD', 'BHD', 'OMR'] as const, {
       errorMap: () => ({ message: 'Select a supported currency' }),
     })
     .default('INR'),
   timezone: z
-    .enum(['Asia/Kolkata', 'Asia/Dubai', 'Asia/Riyadh'] as const, {
+    .enum([
+      'Asia/Kolkata', 'Asia/Dubai', 'Asia/Riyadh', 'Asia/Kuwait', 'Asia/Bahrain', 'Asia/Muscat', 'Asia/Qatar',
+    ] as const, {
       errorMap: () => ({ message: 'Select a supported timezone' }),
     })
     .default('Asia/Kolkata'),

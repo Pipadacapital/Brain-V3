@@ -252,10 +252,11 @@ export interface CreateBrandRequest {
   domain?: string;
   /** Derived server-side from currency_code; send if known but server overrides. */
   region_code?: string;
-  /** ISO 4217 currency code — bounded allowlist: INR | AED | SAR. */
-  currency_code?: 'INR' | 'AED' | 'SAR';
-  /** IANA timezone — bounded allowlist. */
-  timezone?: 'Asia/Kolkata' | 'Asia/Dubai' | 'Asia/Riyadh';
+  /** ISO 4217 currency code — supported brand-primary allowlist: GCC + India. */
+  currency_code?: 'INR' | 'AED' | 'SAR' | 'QAR' | 'KWD' | 'BHD' | 'OMR';
+  /** IANA timezone — bounded allowlist (GCC + India). */
+  timezone?:
+    | 'Asia/Kolkata' | 'Asia/Dubai' | 'Asia/Riyadh' | 'Asia/Kuwait' | 'Asia/Bahrain' | 'Asia/Muscat' | 'Asia/Qatar';
   /** Revenue recognition definition — MA-12: 'placed' excluded. */
   revenue_definition?: 'realized' | 'delivered';
 }
@@ -1205,8 +1206,9 @@ export interface ProvisionOnboardingRequest {
   brand_display_name: string;
   /** Optional brand website — powers the per-brand tracking pixel (server normalizes). */
   domain?: string;
-  currency_code?: 'INR' | 'AED' | 'SAR';
-  timezone?: 'Asia/Kolkata' | 'Asia/Dubai' | 'Asia/Riyadh';
+  currency_code?: 'INR' | 'AED' | 'SAR' | 'QAR' | 'KWD' | 'BHD' | 'OMR';
+  timezone?:
+    | 'Asia/Kolkata' | 'Asia/Dubai' | 'Asia/Riyadh' | 'Asia/Kuwait' | 'Asia/Bahrain' | 'Asia/Muscat' | 'Asia/Qatar';
   revenue_definition?: 'realized' | 'delivered';
 }
 

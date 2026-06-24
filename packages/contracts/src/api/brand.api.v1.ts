@@ -17,8 +17,13 @@ import { z } from 'zod';
 // ── Brand ─────────────────────────────────────────────────────────────────────
 
 // AC-4: locale columns — currency, timezone, revenue definition.
-export const CurrencyCodeSchema = z.enum(['INR', 'AED', 'SAR']);
-export const BrandTimezoneSchema = z.enum(['Asia/Kolkata', 'Asia/Dubai', 'Asia/Riyadh']);
+// Supported brand-PRIMARY currencies/timezones: GCC + India (expandable — the DB source of truth is
+// tenancy.ref_currency / ref_timezone, migration 0107). These enums gate the brand-create API to the
+// supported set; the DISPLAY layer (@brain/money) separately tolerates ANY currency an order carries.
+export const CurrencyCodeSchema = z.enum(['INR', 'AED', 'SAR', 'QAR', 'KWD', 'BHD', 'OMR']);
+export const BrandTimezoneSchema = z.enum([
+  'Asia/Kolkata', 'Asia/Dubai', 'Asia/Riyadh', 'Asia/Kuwait', 'Asia/Bahrain', 'Asia/Muscat', 'Asia/Qatar',
+]);
 export const RevenueDefinitionSchema = z.enum(['realized', 'delivered']); // MA-12: 'placed' excluded
 
 export const BrandSchema = z.object({

@@ -25,8 +25,17 @@ const SR_PASSWORD = process.env['STARROCKS_ROOT_PASSWORD'] ?? '';
 
 const BATCH = 1000;
 
+/** neo4j epoch-millis (stored as number/Integer) → JS number, or null. */
+function toMs(v: unknown): number | null {
+  if (v == null) return null;
+  if (neo4j.isInt(v)) return (v as neo4j.Integer).toNumber();
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
 export interface IdentityExportResult {
   edges: number;
+  customers: number;
 }
 
 interface EdgeRow {
@@ -82,7 +91,43 @@ export async function runIdentityExport(): Promise<IdentityExportResult> {
     }
 
     log.info(`[identity-export] materialized ${edges.length} active identity edges → silver_identity_link`);
-    return { edges: edges.length };
+
+    // 3. Export the Customer nodes (acquisition/lifecycle attrs the customer marts need).
+    const cSession = driver.session({ defaultAccessMode: neo4j.session.READ });
+    let customers: Array<{ brand_id: string; brain_id: string; lifecycle_state: string | null; merged_into: string | null; minted_at: number | null; first_identified_at: number | null }>;
+    try {
+      const cRes = await cSession.run(
+        `MATCH (c:Customer) WHERE c.brain_id IS NOT NULL
+         RETURN c.brand_id AS brand_id, c.brain_id AS brain_id, c.lifecycle_state AS lifecycle_state,
+                c.merged_into AS merged_into, c.created_at AS minted_at, c.first_identified_at AS first_identified_at`,
+      );
+      customers = cRes.records.map((rec) => ({
+        brand_id: rec.get('brand_id'),
+        brain_id: rec.get('brain_id'),
+        lifecycle_state: rec.get('lifecycle_state') ?? null,
+        merged_into: rec.get('merged_into') ?? null,
+        minted_at: toMs(rec.get('minted_at')),
+        first_identified_at: toMs(rec.get('first_identified_at')),
+      }));
+    } finally {
+      await cSession.close();
+    }
+    await sr.query('TRUNCATE TABLE brain_silver.silver_customer_identity');
+    const dt = (ms: number | null): string | null => (ms == null ? null : new Date(ms).toISOString().slice(0, 19).replace('T', ' '));
+    for (let i = 0; i < customers.length; i += BATCH) {
+      const chunk = customers.slice(i, i + BATCH);
+      const tuples = chunk.map(() => '(?,?,?,?,?,?,NOW())').join(',');
+      const params: unknown[] = [];
+      for (const c of chunk) params.push(c.brand_id, c.brain_id, c.lifecycle_state, c.merged_into, dt(c.minted_at), dt(c.first_identified_at));
+      await sr.query(
+        `INSERT INTO brain_silver.silver_customer_identity
+           (brand_id, brain_id, lifecycle_state, merged_into, minted_at, first_identified_at, updated_at)
+         VALUES ${tuples}`,
+        params,
+      );
+    }
+    log.info(`[identity-export] materialized ${customers.length} customers → silver_customer_identity`);
+    return { edges: edges.length, customers: customers.length };
   } finally {
     await driver.close();
     await sr.end();
@@ -91,6 +136,6 @@ export async function runIdentityExport(): Promise<IdentityExportResult> {
 
 if (process.argv[1]?.endsWith('run.ts') || process.argv[1]?.endsWith('run.js')) {
   runIdentityExport()
-    .then((r) => { log.info(`[identity-export] done — ${r.edges} edges`); process.exit(0); })
+    .then((r) => { log.info(`[identity-export] done — ${r.edges} edges, ${r.customers} customers`); process.exit(0); })
     .catch((err) => { log.error('[identity-export] fatal', { err }); process.exit(1); });
 }

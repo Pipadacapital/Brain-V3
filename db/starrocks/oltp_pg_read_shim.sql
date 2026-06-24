@@ -66,23 +66,9 @@ GRANT SELECT ON silver_marketing_spend_src TO brain;
 -- the app-written StarRocks table brain_gold.gold_attribution_credit; gold_marketing_attribution is a
 -- dbt VIEW over it (no PG, no Spark materialize, no shim).
 
--- ============================================================================
--- DB-AUDIT H6: identity.customer read-shim → first_identified_at (acquisition time) into the
--- customer marts. Casts the uuid brand_id/brain_id/merged_into → text for the JDBC catalog. Exposes
--- first_identified_at (earliest strong-identifier attach) alongside created_at (node mint = first seen).
--- Cross-brand by construction (superuser JDBC read); per-brand isolation at the Silver READ seam.
--- ============================================================================
-CREATE OR REPLACE VIEW silver_customer_identity_src AS
-SELECT
-    brand_id::text            AS brand_id,
-    brain_id::text            AS brain_id,
-    lifecycle_state,
-    merged_into::text         AS merged_into,
-    created_at                AS minted_at,
-    first_identified_at
-FROM identity.customer;
-
-GRANT SELECT ON silver_customer_identity_src TO brain;
+-- MEDALLION REALIGNMENT (Epic 3/4): silver_customer_identity_src (the PG identity.customer shim) was
+-- REMOVED — identity.customer is dropped (Neo4j SoR). The customer marts read brain_silver.silver_customer_identity
+-- (the identity-export projection of the Neo4j Customer nodes) for lifecycle + first_identified_at.
 
 -- ============================================================================
 -- Touchpoint/journey Iceberg flip (silver_touchpoint): the per-touch mart LEFT JOINs the journey

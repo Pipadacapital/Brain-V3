@@ -83,9 +83,11 @@ with order_rollup as (
 
 -- H6: acquisition time (first strong-identifier attach) from the identity graph. LEFT JOIN so a
 -- customer with orders but no resolved identity row still appears (first_identified_at NULL).
+-- MEDALLION REALIGNMENT (Epic 3/4): identity is the Neo4j SoR; read the customer-identity projection
+-- (identity-export → brain_silver.silver_customer_identity), not the dropped PG identity.customer shim.
 identity_node as (
     select brand_id, brain_id, first_identified_at
-    from {{ source('oltp', 'silver_customer_identity_src') }}
+    from brain_silver.silver_customer_identity
     where lifecycle_state <> 'merged'
 )
 

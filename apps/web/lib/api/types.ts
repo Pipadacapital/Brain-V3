@@ -604,6 +604,11 @@ export type AnalyticsAdSpendTimeseriesResponse =
       grain: string;
       platform: string | null;
       buckets: AnalyticsAdSpendBucket[];
+      /** FX convenience view (display-only): spend blended to the brand's primary currency. */
+      primary_currency?: string | null;
+      total_spend_in_primary_minor?: string | null;
+      meta_spend_in_primary_minor?: string | null;
+      google_spend_in_primary_minor?: string | null;
     };
 
 export interface AnalyticsBlendedRoasRow {

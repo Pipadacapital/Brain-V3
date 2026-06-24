@@ -63,6 +63,7 @@ export type { OrdersListResult, OrderListItemDto } from './internal/application/
 // FX conversion for the "show amounts in the brand's primary currency" dashboard view (display-only).
 export { fxRateService, createFxRateService } from './internal/infrastructure/fx-rate-service.js';
 export type { FxRateService } from './internal/infrastructure/fx-rate-service.js';
+export { resolveBrandPrimaryCurrency, blendToPrimary, roasFromMinor } from './internal/infrastructure/fx-blend.js';
 // Contribution margin (CM1/CM2) + cost inputs (feat-cm2-cost-inputs).
 export { getContributionMargin } from './internal/application/queries/get-contribution-margin.js';
 export type { ContributionMarginResult, ContributionMarginDto } from './internal/application/queries/get-contribution-margin.js';

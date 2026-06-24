@@ -190,6 +190,17 @@ export function RealizedRevenueCard() {
               No realized data
             </p>
           )}
+          {/* FX convenience view (display-only): a blended total in the brand's primary currency when
+              revenue spans MORE THAN ONE currency. Native per-currency values above stay authoritative. */}
+          {data.realized_in_primary_minor && data.primary_currency && realizedEntries.length > 1 && (
+            <p
+              data-testid="realized-revenue-primary-blended"
+              className="mt-1 text-xs text-muted-foreground"
+              title="Approximate — all currencies converted to your primary currency at the latest rate"
+            >
+              ≈ {formatMoneyDisplay(data.realized_in_primary_minor, data.primary_currency as CurrencyCode)} total (approx)
+            </p>
+          )}
           <p className="mt-1 text-xs text-muted-foreground">
             As of{' '}
             <time dateTime={as_of}>

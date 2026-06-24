@@ -18,6 +18,8 @@ import {
   getRevenueMetrics,
   computeFoundationHealth,
   computeEntitlements,
+  resolveBrandPrimaryCurrency,
+  blendToPrimary,
   type FoundationSignals,
 } from '../../../analytics/index.js';
 import type {
@@ -544,6 +546,25 @@ export function registerDashboardRoutes(fastify: FastifyInstance, deps: BffDeps)
 
       // Call the analytics use-case — the SOLE read path (ADR-002, D-3)
       const snapshot: ContractRevenueSnapshot = await getRevenueMetrics(auth.brandId, asOf, { srPool });
+
+      // FX convenience view (display-only): roll the per-currency realized/provisional maps up to the
+      // brand's PRIMARY currency at the latest rate. Best-effort — native maps stay authoritative.
+      if (snapshot.state === 'has_data' && rawPool) {
+        const primary = await resolveBrandPrimaryCurrency(rawPool, auth.brandId);
+        const toEntries = (m: Record<string, string>) =>
+          Object.entries(m).map(([currency, minor]) => ({ currency, minor }));
+        const realizedPrimary = await blendToPrimary(toEntries(snapshot.realized), primary);
+        const provisionalPrimary = await blendToPrimary(toEntries(snapshot.provisional), primary);
+        return reply.send({
+          request_id: requestId,
+          data: {
+            ...snapshot,
+            primary_currency: primary,
+            realized_in_primary_minor: realizedPrimary,
+            provisional_in_primary_minor: provisionalPrimary,
+          },
+        });
+      }
 
       return reply.send({
         request_id: requestId,

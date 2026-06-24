@@ -209,9 +209,12 @@ services:
       - --node-id
       - "0"
       - --kafka-addr
-      - PLAINTEXT://0.0.0.0:9092
+      # PLAINTEXT (localhost:9092) for host + same-netns clients; EXTERNAL (19092) advertised as a
+      # resolvable hostname so out-of-network clients (e.g. a local kind/k8s pod simulating prod, which
+      # routes to this container's brainv3_default IP via a hostAlias for brain-redpanda-ext) can consume.
+      - PLAINTEXT://0.0.0.0:9092,EXTERNAL://0.0.0.0:19092
       - --advertise-kafka-addr
-      - PLAINTEXT://localhost:9092
+      - PLAINTEXT://localhost:9092,EXTERNAL://brain-redpanda-ext:19092
       - --pandaproxy-addr
       - 0.0.0.0:8082
       - --advertise-pandaproxy-addr
@@ -219,7 +222,8 @@ services:
       - --schema-registry-addr
       - 0.0.0.0:8081
     ports:
-      - "9092:9092"   # Kafka API
+      - "9092:9092"   # Kafka API (PLAINTEXT listener)
+      - "19092:19092" # Kafka API (EXTERNAL listener — for kind/k8s pods)
       - "8081:8081"   # Redpanda schema registry (unused; Apicurio is canonical)
       - "8082:8082"   # Pandaproxy REST
       - "9644:9644"   # Admin API

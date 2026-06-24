@@ -60,7 +60,7 @@ spec:
         container:
           image: {{ $ref | quote }}
           imagePullPolicy: {{ $img.pullPolicy }}
-          command: ["/opt/spark/bin/spark-submit", "--master", "local[*]", "/opt/brain/bronze_materialize.py"]
+          command: ["/opt/spark/bin/spark-submit", "--master", "local[*]", "--driver-memory", {{ .Values.sparkBronze.driverMemory | quote }}, "/opt/brain/bronze_materialize.py"]
           env:
             - { name: TRIGGER_MODE, value: "availableNow" }
             {{- toYaml .Values.sparkBronze.env | nindent 12 }}
@@ -103,7 +103,7 @@ spec:
         container:
           image: {{ $ref | quote }}
           imagePullPolicy: {{ $img.pullPolicy }}
-          command: ["/opt/spark/bin/spark-submit", "--master", "local[*]", "/opt/brain/bronze_maintenance.py"]
+          command: ["/opt/spark/bin/spark-submit", "--master", "local[*]", "--driver-memory", {{ .Values.sparkBronze.driverMemory | quote }}, "/opt/brain/bronze_maintenance.py"]
           env:
             - { name: MODE, value: "maintain" }
             {{- toYaml .Values.sparkBronze.env | nindent 12 }}

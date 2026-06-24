@@ -46,6 +46,7 @@ import {
   KmsVaultKeyProvider,
   AwsKmsDecryptAdapter,
 } from './modules/identity/index.js';
+import { Neo4jIdentityReader } from './modules/identity/internal/infrastructure/neo4j-identity-reader.js';
 import { initObservability, initSentry, createLogger } from '@brain/observability';
 
 /** Structured logger for core's lifecycle/error logs (request logs go through Fastify's pino). */
@@ -545,8 +546,17 @@ export async function main(): Promise<void> {
     config.nodeEnv === 'production'
       ? new KmsVaultKeyProvider(rawPgPool, new AwsKmsDecryptAdapter())
       : new DevVaultKeyProvider();
+  // MEDALLION REALIGNMENT (Epic 3 / ADR-0004): the Neo4j identity SoR read/admin client. The identity
+  // surfaces (Customer 360, browse, merge-admin, GDPR erase, vault coverage) read it; contact_pii +
+  // identity_audit stay PG (passed via rawPgPool for the erase mutation).
+  const identityReader = new Neo4jIdentityReader(
+    process.env['NEO4J_URI'] ?? 'bolt://localhost:7687',
+    process.env['NEO4J_USER'] ?? 'neo4j',
+    process.env['NEO4J_PASSWORD'] ?? 'neo4j',
+    rawPgPool,
+  );
   const piiVaultService = new ContactPiiVaultService(
-    new ContactPiiVaultRepository(rawPgPool),
+    new ContactPiiVaultRepository(rawPgPool, identityReader),
     vaultKeyProvider,
   );
   // ── Meta CAPI passback ORCHESTRATOR (P0 — the missing driver) ────────────────
@@ -645,7 +655,7 @@ export async function main(): Promise<void> {
   registerWorkspaceRoutes(app, authService, workspaceService);
   registerBrandRoutes(app, authService, brandService);
   registerMemberRoutes(app, authService, inviteService, rawPgPool);
-  registerBffRoutes(app, authService, pool, config.cookieSecret, rateLimiter, rawPgPool, onboardingService, srPool, piiVaultService);
+  registerBffRoutes(app, authService, pool, config.cookieSecret, rateLimiter, rawPgPool, onboardingService, srPool, piiVaultService, identityReader);
 
   // D13: consent write + can_contact() gate-probe routes (brand-scoped, session-guarded).
   // grant/withdraw record the append-only consent SoR; check runs the default-closed

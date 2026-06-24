@@ -134,34 +134,43 @@ export async function fetchFinalizedPurchaseCandidatesScoped(
   );
   if (orders.length === 0) return [];
 
-  // ── 2. PG resolution: subject_hash per brain_id + already-attempted order_ids (brand GUC / RLS). ──
+  // ── 2a. subject_hash per brain_id — from the Neo4j-derived silver_identity_link (StarRocks). ──
+  // MEDALLION REALIGNMENT (Epic 3 / ADR-0004): identity moved off PG; the strong email/phone hash for a
+  // brain_id comes from the lakehouse identity projection. Prefer email, then phone (chosen in TS).
+  const brainIds = [...new Set(orders.map((o) => o.brain_id).filter((b): b is string => !!b))];
+  const subjByBrain = new Map<string, string>();
+  if (brainIds.length > 0) {
+    const subjRows = await withSilverBrand(srPool, brandId, async (scope) =>
+      scope.runScoped<{ brain_id: string; identifier_type: string; identifier_value: string }>(
+        `SELECT brain_id, identifier_type, identifier_value
+           FROM brain_silver.silver_identity_link
+          WHERE is_active = true
+            AND identifier_type IN ('email','phone')
+            AND tier IN ('strong','strong_on_link')
+            AND brain_id IN (${brainIds.map(() => '?').join(',')})
+            AND ${BRAND_PREDICATE}`,
+        [...brainIds],
+      ),
+    );
+    for (const r of subjRows) {
+      // Prefer email over phone; first-write-wins within a type.
+      const existing = subjByBrain.get(r.brain_id);
+      if (!existing || r.identifier_type === 'email') subjByBrain.set(r.brain_id, r.identifier_value);
+    }
+  }
+
+  // ── 2b. already-attempted order_ids — capi_passback_log stays PG (CAPI's own dedup log). ──
+  const alreadySent = new Set<string>();
   const client = await pool.connect();
-  let subjByBrain = new Map<string, string>();
-  let alreadySent = new Set<string>();
   try {
     await client.query('BEGIN');
     await client.query("SELECT set_config('app.current_brand_id', $1, true)", [brandId]);
-
-    const brainIds = [...new Set(orders.map((o) => o.brain_id).filter((b): b is string => !!b))];
-    if (brainIds.length > 0) {
-      const subj = await client.query<{ brain_id: string; identifier_value: string }>(
-        `SELECT DISTINCT ON (brain_id) brain_id, identifier_value
-           FROM identity_link
-          WHERE brand_id = $1 AND brain_id = ANY($2::uuid[]) AND is_active = TRUE
-            AND identifier_type IN ('email','phone') AND tier IN ('strong','strong_on_link')
-          ORDER BY brain_id, (identifier_type = 'email') DESC, created_at ASC`,
-        [brandId, brainIds],
-      );
-      subjByBrain = new Map(subj.rows.map((r) => [r.brain_id, r.identifier_value]));
-    }
-
     const orderIds = orders.map((o) => o.order_id);
     const sent = await client.query<{ order_id: string }>(
       `SELECT DISTINCT order_id FROM capi_passback_log WHERE brand_id = $1 AND order_id = ANY($2::text[])`,
       [brandId, orderIds],
     );
-    alreadySent = new Set(sent.rows.map((r) => r.order_id));
-
+    for (const r of sent.rows) alreadySent.add(r.order_id);
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK').catch(() => undefined);

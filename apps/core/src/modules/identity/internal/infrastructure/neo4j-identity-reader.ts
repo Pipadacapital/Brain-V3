@@ -266,9 +266,12 @@ export class Neo4jIdentityReader {
     try {
       await client.query('BEGIN');
       await client.query("SELECT set_config('app.current_brand_id', $1, true)", [brandId]);
-      await client.query("SELECT set_config('app.role', 'send_service', true)");
-      const del = await client.query('DELETE FROM contact_pii WHERE brand_id = $1 AND brain_id = $2', [brandId, brainId]);
-      piiDeleted = del.rowCount ?? 0;
+      // contact_pii hard-delete via the SECURITY DEFINER fn (brain_app has no DELETE grant; 0100).
+      const del = await client.query<{ erase_contact_pii_for_customer: number }>(
+        'SELECT erase_contact_pii_for_customer($1, $2) AS erase_contact_pii_for_customer',
+        [brandId, brainId],
+      );
+      piiDeleted = Number(del.rows[0]?.erase_contact_pii_for_customer ?? 0);
       await client.query(
         `INSERT INTO identity_audit (brand_id, brain_id, action, detail)
          VALUES ($1, $2, 'erase', $3::jsonb)`,
@@ -284,11 +287,14 @@ export class Neo4jIdentityReader {
     return { erased: true, contact_pii_deleted: piiDeleted, links_tombstoned: linksTombstoned };
   }
 
-  /** Total customer count for the brand (the vault-coverage denominator). */
-  async customerCount(brandId: string): Promise<number> {
+  /** Active (resolved) customer count for the brand — the vault-coverage denominator. */
+  async activeCustomerCount(brandId: string): Promise<number> {
     const s = this.driver.session({ defaultAccessMode: neo4j.session.READ });
     try {
-      const r = await s.run(`MATCH (c:Customer {brand_id:$b}) RETURN count(c) AS n`, { b: brandId });
+      const r = await s.run(
+        `MATCH (c:Customer {brand_id:$b}) WHERE c.lifecycle_state = 'active' RETURN count(c) AS n`,
+        { b: brandId },
+      );
       return toNum(r.records[0]?.get('n') ?? 0);
     } finally {
       await s.close();

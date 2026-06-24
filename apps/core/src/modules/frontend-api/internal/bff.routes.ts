@@ -122,6 +122,7 @@ import {
   resolveMergeReview,
   unmergeCustomer,
 } from '../../identity/index.js';
+import type { Neo4jIdentityReader } from '../../identity/internal/infrastructure/neo4j-identity-reader.js';
 import {
   getBillingPeriods,
   sealBillingPeriod,
@@ -175,6 +176,8 @@ export function registerBffRoutes(
   onboardingService?: OnboardingService,
   srPool?: SilverPool,
   vaultService?: ContactPiiVaultService,
+  /** MEDALLION REALIGNMENT (Epic 3 / ADR-0004): the Neo4j identity SoR read/admin client. */
+  identityReader?: Neo4jIdentityReader,
 ): void {
   const sessionPreHandler = validateSessionPreHandler(authService);
 
@@ -1508,8 +1511,8 @@ export function registerBffRoutes(
         searched: Boolean(q.search && q.search.trim().length > 0),
       };
 
-      // Honest empty: no active brand → no scope to browse.
-      if (!auth.brandId || !pool) {
+      // Honest empty: no active brand / identity graph → no scope to browse.
+      if (!auth.brandId || !identityReader) {
         return reply.send({ request_id: requestId, data: empty });
       }
 
@@ -1517,7 +1520,7 @@ export function registerBffRoutes(
         auth.brandId,
         { lifecycle: q.lifecycle ?? null, search: q.search ?? null, limit, offset },
         requestId,
-        { pool },
+        { reader: identityReader },
       );
       return reply.send({ request_id: requestId, data: result });
     },
@@ -1574,15 +1577,15 @@ export function registerBffRoutes(
         });
       }
 
-      if (!pool) {
+      if (!identityReader) {
         return reply.code(503).send({
           request_id: requestId,
-          error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' },
+          error: { code: 'SERVICE_UNAVAILABLE', message: 'Identity graph not available' },
         });
       }
 
       const result: ContractCustomer360 = await getCustomer360(auth.brandId, brain_id, requestId, {
-        pool,
+        reader: identityReader,
       });
 
       return reply.send({ request_id: requestId, data: result });
@@ -1669,14 +1672,14 @@ export function registerBffRoutes(
           error: { code: 'NO_ACTIVE_BRAND', message: 'Select a brand first.' },
         });
       }
-      if (!rawPool) {
+      if (!identityReader) {
         return reply.code(503).send({
           request_id: requestId,
-          error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' },
+          error: { code: 'SERVICE_UNAVAILABLE', message: 'Identity graph not available' },
         });
       }
 
-      const result: ContractErasureResult = await eraseCustomer(auth.brandId, brain_id, rawPool);
+      const result: ContractErasureResult = await eraseCustomer(auth.brandId, brain_id, identityReader);
       return reply.send({ request_id: requestId, data: result });
     },
   );
@@ -1689,10 +1692,10 @@ export function registerBffRoutes(
       const requestId = randomUUID();
       const auth = (request as AuthenticatedRequest).auth;
       const empty: ContractMergeReviewList = { reviews: [] };
-      if (!auth.brandId || !pool) {
+      if (!auth.brandId || !identityReader) {
         return reply.send({ request_id: requestId, data: empty });
       }
-      const data: ContractMergeReviewList = await listMergeReviews(auth.brandId, requestId, { pool });
+      const data: ContractMergeReviewList = await listMergeReviews(auth.brandId, requestId, { reader: identityReader });
       return reply.send({ request_id: requestId, data });
     },
   );
@@ -1729,13 +1732,13 @@ export function registerBffRoutes(
       }
       const auth = (request as AuthenticatedRequest).auth;
       const { review_id, decision } = request.body as { review_id: string; decision: 'merge' | 'reject' };
-      if (!auth.brandId || !rawPool) {
+      if (!auth.brandId || !identityReader) {
         return reply.code(409).send({
           request_id: requestId,
           error: { code: 'NO_ACTIVE_BRAND', message: 'Select a brand first.' },
         });
       }
-      const result: ContractMergeResolveResult = await resolveMergeReview(auth.brandId, review_id, decision, rawPool);
+      const result: ContractMergeResolveResult = await resolveMergeReview(auth.brandId, review_id, decision, identityReader);
       return reply.send({ request_id: requestId, data: result });
     },
   );
@@ -1771,13 +1774,13 @@ export function registerBffRoutes(
       }
       const auth = (request as AuthenticatedRequest).auth;
       const { brain_id } = request.body as { brain_id: string };
-      if (!auth.brandId || !rawPool) {
+      if (!auth.brandId || !identityReader) {
         return reply.code(409).send({
           request_id: requestId,
           error: { code: 'NO_ACTIVE_BRAND', message: 'Select a brand first.' },
         });
       }
-      const result: ContractUnmergeResult = await unmergeCustomer(auth.brandId, brain_id, rawPool);
+      const result: ContractUnmergeResult = await unmergeCustomer(auth.brandId, brain_id, identityReader);
       return reply.send({ request_id: requestId, data: result });
     },
   );

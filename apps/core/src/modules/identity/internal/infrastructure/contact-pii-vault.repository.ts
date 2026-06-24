@@ -36,7 +36,12 @@ export interface VaultCoverageCounts {
 }
 
 export class ContactPiiVaultRepository {
-  constructor(private readonly pool: Pool) {}
+  // MEDALLION REALIGNMENT (Epic 3 / ADR-0004): the contact_pii vault stays in PG; the resolved-customer
+  // denominator comes from the Neo4j identity SoR.
+  constructor(
+    private readonly pool: Pool,
+    private readonly identityReader: { activeCustomerCount(brandId: string): Promise<number> },
+  ) {}
 
   /**
    * Run fn inside a transaction with the elevated vault GUCs set. The ONLY place
@@ -152,14 +157,9 @@ export class ContactPiiVaultRepository {
           WHERE brand_id = $1 AND pii_ciphertext IS NOT NULL`,
         [brandId],
       );
-      const cust = await client.query<{ resolved_customers: string }>(
-        `SELECT COUNT(*) AS resolved_customers
-           FROM customer
-          WHERE brand_id = $1 AND lifecycle_state = 'active'`,
-        [brandId],
-      );
+      const resolvedCustomers = await this.identityReader.activeCustomerCount(brandId);
       return {
-        resolved_customers: Number(cust.rows[0]?.resolved_customers ?? 0),
+        resolved_customers: resolvedCustomers,
         vaulted_customers: Number(vault.rows[0]?.vaulted_customers ?? 0),
         email_count: Number(vault.rows[0]?.email_count ?? 0),
         phone_count: Number(vault.rows[0]?.phone_count ?? 0),

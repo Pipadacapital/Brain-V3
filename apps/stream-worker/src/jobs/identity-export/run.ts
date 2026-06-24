@@ -34,6 +34,7 @@ interface EdgeRow {
   identifier_type: string;
   identifier_value: string;
   brain_id: string;
+  tier: string | null;
   is_active: boolean;
 }
 
@@ -49,13 +50,14 @@ export async function runIdentityExport(): Promise<IdentityExportResult> {
         `MATCH (i:Identifier)-[r:IDENTIFIES]->(c:Customer)
          WHERE r.is_active = true AND c.brain_id IS NOT NULL
          RETURN i.brand_id AS brand_id, i.type AS identifier_type, i.hash AS identifier_value,
-                c.brain_id AS brain_id, r.is_active AS is_active`,
+                c.brain_id AS brain_id, r.tier AS tier, r.is_active AS is_active`,
       );
       edges = res.records.map((rec) => ({
         brand_id: rec.get('brand_id'),
         identifier_type: rec.get('identifier_type'),
         identifier_value: rec.get('identifier_value'),
         brain_id: rec.get('brain_id'),
+        tier: rec.get('tier') ?? null,
         is_active: rec.get('is_active') === true,
       }));
     } finally {
@@ -66,14 +68,14 @@ export async function runIdentityExport(): Promise<IdentityExportResult> {
     await sr.query('TRUNCATE TABLE brain_silver.silver_identity_link');
     for (let i = 0; i < edges.length; i += BATCH) {
       const chunk = edges.slice(i, i + BATCH);
-      const tuples = chunk.map(() => '(?,?,?,?,?,NOW())').join(',');
+      const tuples = chunk.map(() => '(?,?,?,?,?,?,NOW())').join(',');
       const params: unknown[] = [];
       for (const e of chunk) {
-        params.push(e.brand_id, e.identifier_type, e.identifier_value, e.brain_id, e.is_active ? 1 : 0);
+        params.push(e.brand_id, e.identifier_type, e.identifier_value, e.brain_id, e.tier, e.is_active ? 1 : 0);
       }
       await sr.query(
         `INSERT INTO brain_silver.silver_identity_link
-           (brand_id, identifier_type, identifier_value, brain_id, is_active, updated_at)
+           (brand_id, identifier_type, identifier_value, brain_id, tier, is_active, updated_at)
          VALUES ${tuples}`,
         params,
       );

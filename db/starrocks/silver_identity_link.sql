@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS brain_silver.silver_identity_link (
   identifier_type   varchar(32)  NOT NULL,
   identifier_value  varchar(128) NOT NULL,  -- 64-hex hash (never raw PII)
   brain_id          varchar(64),
+  tier              varchar(16),            -- strong | strong_on_link | medium | weak (for CAPI subject-hash selection)
   is_active         boolean,
   updated_at        datetime
 )

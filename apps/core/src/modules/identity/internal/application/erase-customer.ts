@@ -9,7 +9,7 @@
  * (brand_id, brain_id), so a brain_id belonging to another brand matches 0 rows → erased:false.
  * No raw PII is read or returned here.
  */
-import type { Pool } from 'pg';
+import type { Neo4jIdentityReader } from '../infrastructure/neo4j-identity-reader.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -19,17 +19,16 @@ export interface ErasureResult {
   links_tombstoned: number;
 }
 
+// MEDALLION REALIGNMENT (Epic 3 / ADR-0004): erase tombstones the identifier edges + marks the customer
+// 'erased' in the Neo4j SoR, and hard-deletes the contact_pii vault rows + writes the identity_audit row
+// in PostgreSQL (both stay PG). Counts only — no raw PII read or returned.
 export async function eraseCustomer(
   brandId: string,
   brainId: string,
-  pool: Pool,
+  reader: Neo4jIdentityReader,
 ): Promise<ErasureResult> {
   if (!UUID_RE.test(brainId)) {
     return { erased: false, contact_pii_deleted: 0, links_tombstoned: 0 };
   }
-  const r = await pool.query<{ result: ErasureResult }>(
-    'SELECT erase_customer($1, $2) AS result',
-    [brandId, brainId],
-  );
-  return r.rows[0]!.result;
+  return reader.eraseCustomer(brandId, brainId);
 }

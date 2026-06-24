@@ -95,6 +95,13 @@ VALUES
   ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'brand-A-secret-data', NOW()),
   ('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', 'brand-B-secret-data', NOW());
 
--- Grant SELECT to analytics user (local dev — no password enforcement)
+-- Grant SELECT to analytics user (local dev — no password enforcement).
+-- VIEWS + MATERIALIZED VIEWS are separate object types in StarRocks ("ALL TABLES" does NOT cover them);
+-- dbt materializes some marts as views (e.g. gold_marketing_attribution) → grant all three classes,
+-- else the analytics user gets "Access denied … SELECT on VIEW …" and the attribution endpoints 500.
 GRANT SELECT ON ALL TABLES IN DATABASE brain_silver TO 'brain_analytics'@'%';
 GRANT SELECT ON ALL TABLES IN DATABASE brain_gold   TO 'brain_analytics'@'%';
+GRANT SELECT ON ALL VIEWS IN DATABASE brain_silver TO 'brain_analytics'@'%';
+GRANT SELECT ON ALL VIEWS IN DATABASE brain_gold   TO 'brain_analytics'@'%';
+GRANT SELECT ON ALL MATERIALIZED VIEWS IN DATABASE brain_silver TO 'brain_analytics'@'%';
+GRANT SELECT ON ALL MATERIALIZED VIEWS IN DATABASE brain_gold   TO 'brain_analytics'@'%';

@@ -1,29 +1,30 @@
 /**
  * ad-spend-metrics.live.test.ts — Live tests for the Track 3 spend/ROAS metrics.
  *
- * PHASE G re-point: computeAdSpendTimeseries / getAdSpendTimeseries now read the LAKEHOUSE
- * Silver entity (brain_silver.silver_marketing_spend) via withSilverBrand, NOT PG ad_spend_ledger.
- * So the spend-timeseries assertions seed StarRocks and pass { srPool }. blended-roas is NOT yet
- * re-pointed (a later Phase-G slice) — its reads stay on PG via { pool }, so those sections still
- * seed ad_spend_ledger. PG remains the WRITE SoR (the repull jobs append there); only READS moved.
+ * PHASE G — FULLY RE-POINTED TO THE LAKEHOUSE: computeAdSpendTimeseries / getAdSpendTimeseries /
+ * computeBlendedRoas / getBlendedRoas all read brain_silver.silver_marketing_spend (+ gold_revenue_
+ * ledger for the ROAS numerator) via withSilverBrand. The PG ad_spend_as_of() function is no longer a
+ * production read path, so this test no longer seeds PG ad_spend_ledger or asserts the PG seam.
+ *   - PG ad_spend_ledger remains the operational WRITE SoR (the repull jobs append there); its
+ *     FORCE-RLS fail-closed isolation is covered by the dedicated stream-worker test
+ *     spend-ledger-wiring.e2e.test.ts (AD4) — not re-proven here.
+ *   (This is the deferred follow-up from the architecture-compliance refactor: "ad-spend-metrics.live
+ *   still seeds PG spend — repoint to Silver". Done — reads + seeds are now Silver/lakehouse only.)
  *
  * Proves:
- *   1. PARITY ORACLE (PG⇄lakehouse, sole-read-path, D-3):
- *      Seed identical spend into BOTH PG ad_spend_ledger AND Silver silver_marketing_spend;
- *      the engine total reading the lakehouse EXACTLY equals the PG ad_spend_as_of() seam SUM —
- *      exact BIGINT, no rounding. This is the cutover parity gate for the spend reader.
- *   2. HONEST-EMPTY (D-2): zero Silver spend rows → state='no_data' (timeseries).
- *      blended-roas with no PG spend → no_data.
- *   3. CROSS-CURRENCY GUARD + 4. honest spend=0→null: blended_roas, PG-side (unchanged).
- *   5. ISOLATION: timeseries via the Silver seam — BRAND_A spend invisible to BRAND_B
- *      (BRAND_PREDICATE → brand_id = ?). PG negative-control kept (ledger still FORCE-RLS as write SoR).
+ *   1. LAKEHOUSE TOTAL (D-3): seed spend into Silver; the engine total is the exact BIGINT sum and the
+ *      platform filter narrows correctly (no rounding).
+ *   2. HONEST-EMPTY (D-2): zero Silver spend rows → state='no_data' (timeseries + blended-roas).
+ *   3+4. CROSS-CURRENCY GUARD + honest spend=0→null: blended_roas over Silver/gold.
+ *   5. ISOLATION (I-ST01): the Silver read seam (BRAND_PREDICATE → brand_id = ?) scopes BRAND_A's
+ *      spend out for BRAND_B.
  *
- * REQUIRES: Postgres on localhost:5432 (migrations ≥0029) + StarRocks on :9030 with
- * brain_silver.silver_marketing_spend (dbt-built). The lakehouse sections SKIP if StarRocks is down.
+ * REQUIRES: Postgres on localhost:5432 (brand fixtures) + StarRocks on :9030 with
+ * brain_silver.silver_marketing_spend + brain_gold.gold_revenue_ledger (dbt-built). The lakehouse
+ * sections SKIP if StarRocks is down.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { randomUUID } from 'node:crypto';
 import pg from 'pg';
 import mysql from 'mysql2/promise';
 import { computeAdSpendTimeseries, computeBlendedRoas } from '@brain/metric-engine';
@@ -37,9 +38,6 @@ function toBillingPostedPeriod(date: Date): string {
 
 const SUPERUSER_URL =
   process.env['DATABASE_URL'] ?? 'postgres://brain:brain@localhost:5432/brain';
-const APP_URL =
-  process.env['BRAIN_APP_DATABASE_URL'] ??
-  'postgres://brain_app:brain_app@localhost:5432/brain';
 const SR_HOST = process.env['STARROCKS_HOST'] ?? '127.0.0.1';
 const SR_PORT = Number(process.env['STARROCKS_QUERY_PORT'] ?? 9030);
 
@@ -48,7 +46,6 @@ const BRAND_A = 'ad300a1a-0a1a-0a1a-0a1a-000000000001';
 const BRAND_B = 'ad300a1a-0a1a-0a1a-0a1a-000000000002';
 
 let superPool: pg.Pool;
-let appPool: pg.Pool;
 let srPool: mysql.Pool;
 let srUp = false;
 
@@ -59,9 +56,6 @@ function daysAgoStr(n: number): string {
   return new Date(Date.now() - n * 24 * 60 * 60 * 1000).toISOString().split('T')[0] as string;
 }
 
-async function clearSpend(brandId: string): Promise<void> {
-  await superPool.query(`DELETE FROM ad_spend_ledger WHERE brand_id = $1`, [brandId]);
-}
 async function clearRevenue(brandId: string): Promise<void> {
   // MEDALLION REALIGNMENT (Epic 1): revenue is the lakehouse gold ledger now, not the PG ledger.
   if (srUp) await srPool.query(`DELETE FROM brain_gold.gold_revenue_ledger WHERE brand_id = ?`, [brandId]);
@@ -70,32 +64,7 @@ async function clearSpendSilver(brandId: string): Promise<void> {
   if (srUp) await srPool.query(`DELETE FROM brain_silver.silver_marketing_spend WHERE brand_id = ?`, [brandId]);
 }
 
-/** Seed an ad_spend_ledger row via superuser (PG write SoR — feeds the as_of seam oracle). */
-async function seedSpend(
-  brandId: string,
-  opts: { platform: 'meta' | 'google_ads'; levelId: string; statDate: string; spendMinor: bigint; currency: string },
-): Promise<void> {
-  await superPool.query(
-    `INSERT INTO ad_spend_ledger (
-       brand_id, spend_event_id, platform, level, level_id, parent_id,
-       campaign_id, campaign_name, stat_date, spend_minor, currency_code,
-       impressions, clicks, conversions_raw, account_timezone, raw_event_id, occurred_at
-     ) VALUES ($1, $2, $3, 'campaign', $4, NULL, $4, 'Test Campaign', $5::date, $6, $7,
-               1000, 50, NULL, 'Asia/Kolkata', $2, NOW())
-     ON CONFLICT (brand_id, spend_event_id, stat_date) DO NOTHING`,
-    [
-      brandId,
-      `${brandId}:${opts.platform}:${opts.levelId}:${opts.statDate}`,
-      opts.platform,
-      opts.levelId,
-      opts.statDate,
-      String(opts.spendMinor),
-      opts.currency,
-    ],
-  );
-}
-
-/** Seed the SAME logical spend row into the lakehouse Silver entity (the re-pointed read source). */
+/** Seed a spend row into the lakehouse Silver entity (the sole re-pointed read source). */
 async function seedSpendSilver(
   brandId: string,
   opts: { platform: 'meta' | 'google_ads'; levelId: string; statDate: string; spendMinor: bigint; currency: string },
@@ -125,8 +94,8 @@ async function seedRealizedSilver(brandId: string, amountMinor: bigint, currency
   await srPool.query(
     `INSERT INTO brain_gold.gold_revenue_ledger
        (brand_id, ledger_event_id, order_id, brain_id, event_type, amount_minor, currency_code,
-        fee_minor, occurred_at, economic_effective_at, recognition_label, billing_posted_period, updated_at)
-     VALUES (?, ?, ?, NULL, 'finalization', ?, ?, 0, NOW(), NOW(), 'finalized', ?, NOW())`,
+        fee_minor, occurred_at, economic_effective_at, recognition_label, billing_posted_period, data_source, updated_at)
+     VALUES (?, ?, ?, NULL, 'finalization', ?, ?, 0, NOW(), NOW(), 'finalized', ?, 'live', NOW())`,
     [brandId, `${brandId}:fin:${String(amountMinor)}:${currency}`, `order-${currency}`, String(amountMinor), currency, toBillingPostedPeriod(new Date())],
   );
 }
@@ -136,9 +105,7 @@ async function clearRealizedSilver(brandId: string): Promise<void> {
 
 beforeAll(async () => {
   superPool = new pg.Pool({ connectionString: SUPERUSER_URL, max: 5 });
-  appPool = new pg.Pool({ connectionString: APP_URL, max: 5 });
   await superPool.query('SELECT 1');
-  await appPool.query('SELECT 1');
 
   try {
     srPool = mysql.createPool({ host: SR_HOST, port: SR_PORT, user: 'root', password: '', connectionLimit: 2 });
@@ -159,8 +126,6 @@ beforeAll(async () => {
       [id, useOrgId],
     );
   }
-  await clearSpend(BRAND_A);
-  await clearSpend(BRAND_B);
   await clearRevenue(BRAND_A);
   await clearRevenue(BRAND_B);
   await clearSpendSilver(BRAND_A);
@@ -168,37 +133,33 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await clearSpend(BRAND_A);
-  await clearSpend(BRAND_B);
   await clearRevenue(BRAND_A);
   await clearRevenue(BRAND_B);
   await clearSpendSilver(BRAND_A);
   await clearSpendSilver(BRAND_B);
   await superPool.query(`DELETE FROM brand WHERE id IN ($1, $2)`, [BRAND_A, BRAND_B]).catch(() => {});
   await superPool.end().catch(() => {});
-  await appPool.end().catch(() => {});
   if (srPool) await srPool.end().catch(() => {});
 });
 
-// ── 1. PARITY ORACLE — engine(lakehouse) SUM == PG ad_spend_as_of seam SUM (D-3) ──
+// ── 1. LAKEHOUSE TOTAL — engine SUM is exact bigint + platform filter (D-3) ──
 
-describe('1. parity oracle — ad_spend engine(lakehouse)==PG seam exact-bigint (D-3)', () => {
+describe('1. lakehouse spend total — exact bigint + platform filter (D-3)', () => {
   const from = daysAgoStr(10);
   const to = todayStr();
 
   beforeAll(async () => {
-    await clearSpend(BRAND_A);
     await clearSpendSilver(BRAND_A);
     const rows = [
       { platform: 'meta' as const, levelId: 'c1', statDate: daysAgoStr(5), spendMinor: 100000n, currency: 'INR' },
       { platform: 'meta' as const, levelId: 'c2', statDate: daysAgoStr(3), spendMinor: 50000n, currency: 'INR' },
       { platform: 'google_ads' as const, levelId: 'g1', statDate: daysAgoStr(2), spendMinor: 30000n, currency: 'INR' },
     ];
-    for (const r of rows) { await seedSpend(BRAND_A, r); await seedSpendSilver(BRAND_A, r); }
+    for (const r of rows) await seedSpendSilver(BRAND_A, r);
   });
-  afterAll(async () => { await clearSpend(BRAND_A); await clearSpendSilver(BRAND_A); });
+  afterAll(async () => { await clearSpendSilver(BRAND_A); });
 
-  it('engine(lakehouse) timeseries total == PG ad_spend_as_of seam SUM (exact, no rounding)', async () => {
+  it('engine(lakehouse) timeseries total == exact seeded SUM (no rounding)', async () => {
     if (!srUp) return;
     const buckets = await computeAdSpendTimeseries(
       BRAND_A,
@@ -206,25 +167,7 @@ describe('1. parity oracle — ad_spend engine(lakehouse)==PG seam exact-bigint 
       { srPool: srPool as unknown as SilverPool },
     );
     const engineTotal = buckets.reduce((acc, b) => acc + b.spendMinor, 0n);
-
-    // The PG seam SUM (the prior sole as-of read) — the parity oracle the lakehouse must match.
-    const client = await appPool.connect();
-    let seamTotal = 0n;
-    try {
-      await client.query('BEGIN');
-      await client.query(`SELECT set_config('app.current_brand_id', $1, true)`, [BRAND_A]);
-      const r = await client.query<{ spend_minor: string }>(
-        `SELECT spend_minor FROM ad_spend_as_of($1::uuid, $2::date, $3::date)`,
-        [BRAND_A, from, to],
-      );
-      await client.query('COMMIT');
-      seamTotal = r.rows.reduce((acc, row) => acc + BigInt(row.spend_minor), 0n);
-    } finally {
-      client.release();
-    }
-
-    expect(engineTotal).toBe(180000n);
-    expect(engineTotal).toBe(seamTotal); // PG⇄lakehouse parity — RED on any divergence at cutover
+    expect(engineTotal).toBe(180000n); // 100000 + 50000 + 30000, exact BIGINT
   });
 
   it('getAdSpendTimeseries (BFF use-case) total matches engine — same exact bigint', async () => {
@@ -256,7 +199,7 @@ describe('1. parity oracle — ad_spend engine(lakehouse)==PG seam exact-bigint 
 // ── 2. HONEST-EMPTY (D-2) ────────────────────────────────────────────────────
 
 describe('2. honest-empty — zero spend rows → no_data', () => {
-  beforeAll(async () => { await clearSpend(BRAND_A); await clearSpendSilver(BRAND_A); await clearRevenue(BRAND_A); await clearRealizedSilver(BRAND_A); });
+  beforeAll(async () => { await clearSpendSilver(BRAND_A); await clearRevenue(BRAND_A); await clearRealizedSilver(BRAND_A); });
 
   it('ad-spend-timeseries with no lakehouse rows → state=no_data', async () => {
     if (!srUp) return;
@@ -345,27 +288,15 @@ describe('3+4. blended_roas — same-currency-only + honest spend=0→null', () 
   });
 });
 
-// ── 5. ISOLATION — Silver-seam scoping (timeseries) + PG negative-control (write SoR) ──
+// ── 5. ISOLATION — Silver read-seam scoping (I-ST01) ──────────────────────────
 
-describe('5. isolation — cross-brand spend invisible (Silver seam + PG control)', () => {
+describe('5. isolation — cross-brand spend invisible via the Silver read seam', () => {
   beforeAll(async () => {
-    await clearSpend(BRAND_A);
-    await clearSpend(BRAND_B);
     await clearSpendSilver(BRAND_A);
     await clearSpendSilver(BRAND_B);
-    const row = { platform: 'meta' as const, levelId: 'iso1', statDate: daysAgoStr(2), spendMinor: 777000n, currency: 'INR' };
-    await seedSpend(BRAND_A, row);
-    await seedSpendSilver(BRAND_A, row);
+    await seedSpendSilver(BRAND_A, { platform: 'meta', levelId: 'iso1', statDate: daysAgoStr(2), spendMinor: 777000n, currency: 'INR' });
   });
-  afterAll(async () => { await clearSpend(BRAND_A); await clearSpend(BRAND_B); await clearSpendSilver(BRAND_A); await clearSpendSilver(BRAND_B); });
-
-  it('current_user is brain_app (non-superuser, NOBYPASSRLS) — PG isolation is non-inert', async () => {
-    const r = await appPool.query<{ current_user: string; is_superuser: boolean }>(
-      `SELECT current_user, (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) AS is_superuser`,
-    );
-    expect(r.rows[0]!.current_user).toBe('brain_app');
-    expect(r.rows[0]!.is_superuser).toBe(false);
-  });
+  afterAll(async () => { await clearSpendSilver(BRAND_A); await clearSpendSilver(BRAND_B); });
 
   it('BRAND_A spend visible to BRAND_A (positive control), invisible to BRAND_B (Silver seam)', async () => {
     if (!srUp) return;
@@ -379,26 +310,7 @@ describe('5. isolation — cross-brand spend invisible (Silver seam + PG control
       { fromDate: new Date(`${daysAgoStr(10)}T00:00:00Z`), toDate: new Date(`${todayStr()}T00:00:00Z`), grain: 'day' },
       { srPool: srPool as unknown as SilverPool },
     );
-    expect(a.state).toBe('has_data');
+    expect(a.state).toBe('has_data'); // positive control: BRAND_A sees its own spend
     expect(b.state).toBe('no_data'); // BRAND_PREDICATE (brand_id = ?) scopes BRAND_A's rows out for BRAND_B
-  });
-
-  it('[negative-control] GUC=BRAND_B querying BRAND_A spend rows → count 0 (PG RLS non-inert)', async () => {
-    const client = await appPool.connect();
-    let count: number;
-    try {
-      await client.query('BEGIN');
-      await client.query(`SELECT set_config('app.current_brand_id', $1, true)`, [BRAND_B]);
-      const r = await client.query<{ count: string }>(
-        `SELECT COUNT(*)::text AS count FROM ad_spend_ledger WHERE brand_id = $1`,
-        [BRAND_A],
-      );
-      await client.query('COMMIT');
-      count = parseInt(r.rows[0]?.count ?? '0', 10);
-    } finally {
-      client.release();
-    }
-    // MUST be 0 — goes RED if RLS policy dropped or role gains bypass.
-    expect(count).toBe(0);
   });
 });

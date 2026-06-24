@@ -78,7 +78,7 @@ PIXEL_INSTALL_REFRESH_TTL_SECONDS = int(os.environ.get("PIXEL_INSTALL_REFRESH_TT
 # (ad_spend_ledger remains the WRITE SoR) — Bronze is purely the analytical source.
 #   settlement.live.v1 stays LEDGER_ONLY: it has no Silver-from-Bronze consumer yet (silver_settlement
 #   is still deferred — see [[payments-checkout-silver]]); promoting it now would land un-modeled rows.
-SERVER_TRUSTED_BRONZE = {"order.live.v1", "order.backfill.v1", "spend.live.v1", "shopflo.checkout_abandoned.v1", "gokwik.rto_predict.v1", "gokwik.awb_status.v1", "shiprocket.shipment_status.v1"}
+SERVER_TRUSTED_BRONZE = {"order.live.v1", "order.backfill.v1", "spend.live.v1", "shopflo.checkout_abandoned.v1", "gokwik.rto_predict.v1", "gokwik.awb_status.v1", "gokwik.webhook.v1", "shiprocket.shipment_status.v1"}
 LEDGER_ONLY = {"settlement.live.v1"}
 
 # Postgres (for R2 install_token→brand resolution via pixel_installation). Read as the superuser

@@ -217,7 +217,7 @@ function ConnectorTile({ tile, readinessLock }: { tile: MarketplaceTile; readine
   const isCredential = tile.connect_method === 'credential';
   // Per-provider credential fields (Razorpay / Shopflo / GoKwik) — not a single hardcoded set.
   const credentialFields = credentialFieldsFor(tile.id);
-  const credsComplete = credentialFields.every((f) => (creds[f.key] ?? '').trim().length > 0);
+  const credsComplete = credentialFields.every((f) => f.optional || (creds[f.key] ?? '').trim().length > 0);
 
   /**
    * Connect-error toast. The server is the authoritative soft-gate (feat-onboarding-ux):

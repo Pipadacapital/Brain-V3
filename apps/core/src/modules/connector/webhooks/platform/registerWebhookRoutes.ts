@@ -24,6 +24,7 @@ import { RazorpayWebhookStrategy } from '../strategies/RazorpayWebhookStrategy.j
 import { ShopfloWebhookStrategy } from '../strategies/ShopfloWebhookStrategy.js';
 import { WooCommerceWebhookStrategy } from '../strategies/WooCommerceWebhookStrategy.js';
 import { ShiprocketWebhookStrategy } from '../strategies/ShiprocketWebhookStrategy.js';
+import { GokwikWebhookStrategy } from '../strategies/GokwikWebhookStrategy.js';
 
 export interface WebhookRegistrationDeps {
   secretsManager: ISecretsManager;
@@ -154,6 +155,41 @@ export function registerAllWebhookRoutes(
             (b?.['event'] as string | undefined) ??
             (b?.['topic'] as string | undefined) ??
             (b?.['webhook_type'] as string | undefined) ??
+            'unknown'
+          );
+        },
+      },
+      pipelineDeps,
+    );
+    pipeline.register(fastify);
+  }
+
+  // ── GoKwik: POST /api/v1/webhooks/gokwik ─────────────────────────────────
+  // Real-time payment/order/delivery status (POC-mediated delivery). HMAC-gated, fail-closed.
+  // Lookup key: x-gokwik-appid header, else appid/merchant_id in the body.
+  // Resolver fn: resolve_gokwik_connector_by_merchant (SECURITY DEFINER, 0108) — by gokwik_appid.
+  {
+    const pipeline = new WebhookPipeline(
+      new GokwikWebhookStrategy(),
+      {
+        path: '/api/v1/webhooks/gokwik',
+        resolverFn: 'resolve_gokwik_connector_by_merchant',
+        resolverArg: (req, parsedBody) => {
+          const hdr = (req.headers['x-gokwik-appid'] as string | undefined)?.trim();
+          if (hdr) return hdr;
+          const b = parsedBody as Record<string, unknown> | null;
+          for (const k of ['appid', 'app_id', 'gokwik_appid', 'merchant_id', 'mid']) {
+            const v = b?.[k];
+            if (typeof v === 'string' && v.trim()) return v.trim();
+          }
+          return '';
+        },
+        topicLabel: (_req, parsedBody) => {
+          const b = parsedBody as Record<string, unknown> | null;
+          return (
+            (b?.['event'] as string | undefined) ??
+            (b?.['event_type'] as string | undefined) ??
+            (b?.['type'] as string | undefined) ??
             'unknown'
           );
         },

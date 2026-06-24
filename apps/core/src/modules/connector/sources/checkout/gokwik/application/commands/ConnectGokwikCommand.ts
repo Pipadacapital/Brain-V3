@@ -32,6 +32,12 @@ export interface ConnectGokwikInput {
   appid: string;
   /** GoKwik application secret (header credential). Never logged (I-S09). */
   appsecret: string;
+  /**
+   * OPTIONAL GoKwik webhook signing secret (the shared key GoKwik signs inbound webhooks with —
+   * POC-mediated). Stored as `webhook_secret` on the bundle; the GokwikWebhookStrategy fails CLOSED
+   * without it (no signed inbound events accepted until it's set). Never logged (I-S09).
+   */
+  webhookSecret?: string;
   idempotencyKey: string;
 }
 
@@ -50,16 +56,18 @@ export class ConnectGokwikCommand {
   ) {}
 
   async execute(input: ConnectGokwikInput): Promise<ConnectGokwikResult> {
-    const { brandId, appid, appsecret, idempotencyKey } = input;
+    const { brandId, appid, appsecret, webhookSecret, idempotencyKey } = input;
 
     // Store composite credential bundle as ONE secret. subKey = appid (non-secret).
-    // I-S09: appsecret NEVER logged — only the resulting ARN is.
+    // I-S09: appsecret/webhook_secret NEVER logged — only the resulting ARN is.
     const { arn } = await this.secretsManager.storeSecret(
       brandId,
       { connectorType: 'gokwik', subKey: appid },
       {
         appid,
         appsecret,
+        // Only include webhook_secret when provided (the inbound-webhook HMAC key, POC-mediated).
+        ...(webhookSecret && webhookSecret.trim().length > 0 ? { webhook_secret: webhookSecret.trim() } : {}),
       },
     );
 

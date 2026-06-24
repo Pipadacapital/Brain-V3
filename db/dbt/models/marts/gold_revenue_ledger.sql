@@ -29,24 +29,11 @@
   )
 }}
 
--- H2 — SOURCE FLIP (var-gated + reversible): serve the ledger mart from the lakehouse, not a live
--- read of Postgres.
---   ledger_source='iceberg' → brain_bronze.revenue_ledger in the Iceberg catalog (landed by the Spark
---                             batch revenue_ledger_materialize.py). DEFAULT — PG is no longer the
---                             analytical SoR for the ledger (the H2 goal). Parity-proven
---                             (db/iceberg/parity/ledger_bronze_parity.sh: Iceberg==PG).
---   ledger_source='pg'      → JDBC read-shim over PG billing.realized_revenue_ledger (reversible escape).
--- FRESH ENV / SOURCE FLIP: the Iceberg revenue_ledger must exist + be fresh first
--- (run-ledger-bronze-refresh.sh), and the FIRST build after a source switch must be a --full-refresh
--- (the table's column TYPES change PG↔Iceberg; on_schema_change=append_new_columns means we re-seed via
--- full-refresh rather than an unsupported StarRocks DROP COLUMN). Steady-state incrementals are clean.
-{% set ledger_source = var('ledger_source', 'iceberg') %}
---
--- M3 — INCREMENTAL append. The ledger is strictly append-only: one IMMUTABLE row per
--- (brand_id, ledger_event_id). So incremental is trivially correct — only rows ingested since the last
--- run are inserted (watermark on created_at = ingestion time, which is fresh even for a backdated
--- economic_effective_at, so nothing is missed). PRIMARY KEY upsert makes a re-pulled duplicate a no-op.
--- First run (table absent) loads the full ledger.
+-- MEDALLION REALIGNMENT (Epic 1/4): this mart is built FROM Bronze via silver_order_recognition (the
+-- recognition transform), full-rebuild table. The old H2 var-gated source flip (ledger_source=iceberg→
+-- brain_bronze.revenue_ledger via revenue_ledger_materialize.py, or =pg via a JDBC shim over the PG
+-- realized_revenue_ledger) is GONE — the PG ledger + its Spark materializer + the bronze_iceberg.revenue_
+-- ledger source were removed (migration 0098 + Epic-4 cruft cleanup). The lone source is now Bronze.
 select
     brand_id,
     ledger_event_id,

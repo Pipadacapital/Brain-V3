@@ -1,18 +1,23 @@
 /**
  * cm2-signal.live.test.ts — the CM2 detector signal returns the right raw aggregates.
  *
- * MEDALLION REALIGNMENT (Epic 1 / decision B): the PG cm2_signal_for_brand() function was dropped with
- * realized_revenue_ledger. The CM2 signal is now assembled in the registry from two sources:
+ * MEDALLION REALIGNMENT (Epic 1 / decision B + Phase G): the PG cm2_signal_for_brand() function was
+ * dropped with realized_revenue_ledger. The CM2 signal is now assembled in the registry from three
+ * lakehouse/operational sources, exactly mirrored here:
  *   - REVENUE half (net_revenue, order_count) ← brain_gold.gold_revenue_ledger via the metric-engine
- *     seam computeCm2RevenueSignal (Bronze-sourced lakehouse), and
- *   - MARKETING + COST halves ← PostgreSQL ad_spend_ledger + cost_input (operational, SECURITY INVOKER
- *     reads under brain_app + GUC). This test seeds both planes and asserts the exact aggregates the
- *     margin-erosion / scale-opportunity detectors consume.
+ *     seam computeCm2RevenueSignal (Bronze-sourced lakehouse).
+ *   - MARKETING half (spend) ← brain_silver.silver_marketing_spend (Bronze-sourced) via the seam
+ *     computeCm2MarketingSignal — NOT the PG ad_spend_as_of() function. PG ad_spend_ledger stays the
+ *     operational WRITE SoR (billing); it is no longer a CM2 READ source. (Was: this test seeded PG
+ *     ad_spend_ledger and read ad_spend_as_of(); repointed to Silver to match the registry — the
+ *     deferred follow-up from the architecture-compliance refactor.)
+ *   - COST half (cogs/variable pct + confidence) ← PostgreSQL cost_input (operational, SECURITY
+ *     INVOKER read under brain_app + GUC). Cost stays PG by design.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import pg from 'pg';
 import mysql from 'mysql2/promise';
-import { computeCm2RevenueSignal, type SilverPool } from '@brain/metric-engine';
+import { computeCm2RevenueSignal, computeCm2MarketingSignal, type SilverPool } from '@brain/metric-engine';
 
 const SUPER = process.env['DATABASE_URL'] ?? 'postgres://brain:brain@localhost:5432/brain';
 const APP = process.env['BRAIN_APP_DATABASE_URL'] ?? 'postgres://brain_app:brain_app@localhost:5432/brain';
@@ -30,8 +35,11 @@ let srPool: SilverPool;
 let pgAvailable = false;
 
 async function cleanup() {
-  for (const t of ['cost_input', 'ad_spend_ledger']) await superPool.query(`DELETE FROM ${t} WHERE brand_id=$1`, [BRAND]).catch(() => {});
-  if (srPool) await (srPool as unknown as mysql.Pool).query(`DELETE FROM brain_gold.gold_revenue_ledger WHERE brand_id=?`, [BRAND]).catch(() => {});
+  await superPool.query(`DELETE FROM cost_input WHERE brand_id=$1`, [BRAND]).catch(() => {});
+  if (srPool) {
+    await (srPool as unknown as mysql.Pool).query(`DELETE FROM brain_gold.gold_revenue_ledger WHERE brand_id=?`, [BRAND]).catch(() => {});
+    await (srPool as unknown as mysql.Pool).query(`DELETE FROM brain_silver.silver_marketing_spend WHERE brand_id=?`, [BRAND]).catch(() => {});
+  }
   await superPool.query(`DELETE FROM brand WHERE id=$1`, [BRAND]).catch(() => {});
   await superPool.query(`DELETE FROM organization WHERE id=$1`, [ORG]).catch(() => {});
   await superPool.query(`DELETE FROM app_user WHERE id=$1`, [USER]).catch(() => {});
@@ -52,14 +60,18 @@ beforeAll(async () => {
     await (srPool as unknown as mysql.Pool).query(
       `INSERT INTO brain_gold.gold_revenue_ledger
          (brand_id, ledger_event_id, order_id, brain_id, event_type, amount_minor, currency_code,
-          fee_minor, occurred_at, economic_effective_at, recognition_label, billing_posted_period, ingested_at, updated_at)
-       VALUES (?,'cs-fin-1','cs-order-1',NULL,'finalization',100000,'INR',0,'2026-06-10 10:00:00','2026-06-10 10:00:00','finalized','2026-06','2026-06-10 10:00:00','2026-06-10 10:00:00')`,
+          fee_minor, occurred_at, economic_effective_at, recognition_label, billing_posted_period, ingested_at, data_source, updated_at)
+       VALUES (?,'cs-fin-1','cs-order-1',NULL,'finalization',100000,'INR',0,'2026-06-10 10:00:00','2026-06-10 10:00:00','finalized','2026-06','2026-06-10 10:00:00','live','2026-06-10 10:00:00')`,
       [BRAND],
     );
-    // MARKETING half → PG ad_spend_ledger (2,000.00 INR).
-    await superPool.query(
-      `INSERT INTO ad_spend_ledger (brand_id, spend_event_id, platform, level, level_id, stat_date, spend_minor, currency_code, raw_event_id, occurred_at)
-       VALUES ($1,'cs-spend-1','meta','campaign','c1','2026-06-12',20000,'INR','cs-spend-1','2026-06-12T00:00:00Z')`,
+    // MARKETING half → lakehouse Silver entity silver_marketing_spend (2,000.00 INR), Bronze-sourced
+    // shape. This is the read source the registry's computeCm2MarketingSignal consumes (Phase G).
+    await (srPool as unknown as mysql.Pool).query(
+      `INSERT INTO brain_silver.silver_marketing_spend
+         (brand_id, spend_event_id, platform, level, level_id, parent_id, campaign_id, campaign_name,
+          stat_date, spend_minor, currency_code, impressions, clicks, account_timezone, occurred_at, updated_at)
+       VALUES (?, 'cs-spend-1', 'meta', 'campaign', 'c1', NULL, 'c1', 'CS Campaign',
+               '2026-06-12', 20000, 'INR', 1000, 50, 'Asia/Kolkata', '2026-06-12 00:00:00', NOW())`,
       [BRAND],
     );
     // COST half → PG cost_input. COGS 40% (Trusted) + shipping 10% (Estimated) → floor Estimated (rank 1).
@@ -83,7 +95,7 @@ afterAll(async () => {
   await superPool?.end?.().catch(() => {});
 });
 
-describe('CM2 detector signal (gold revenue + PG marketing/cost)', () => {
+describe('CM2 detector signal (gold revenue + Silver marketing + PG cost)', () => {
   it('SKIP_IF_NO_PG', () => {
     if (!pgAvailable) console.warn('[cm2-signal] Postgres/StarRocks unavailable — PENDING.');
     expect(true).toBe(true);
@@ -96,19 +108,26 @@ describe('CM2 detector signal (gold revenue + PG marketing/cost)', () => {
     expect(rev.orderCount).toBe(1);
   });
 
-  it('MARKETING + COST halves — the same PG aggregates the registry reads (brain_app + GUC / RLS)', async () => {
+  it('MARKETING half — marketing_minor from the lakehouse Silver entity (the seam the registry reads)', async () => {
+    if (!pgAvailable) return;
+    const mkt = await computeCm2MarketingSignal(BRAND, 'INR', { srPool });
+    expect(String(mkt.marketingMinor)).toBe('20000');
+  });
+
+  it('MARKETING half — NEGATIVE CONTROL: a foreign-currency brand sees 0 (currency-scoped, no mix)', async () => {
+    if (!pgAvailable) return;
+    // The seeded spend is INR; a USD read must NOT sum it into a USD margin (the dropped PG
+    // cm2_signal_for_brand applied the same JOIN brand ON currency_code filter).
+    const mkt = await computeCm2MarketingSignal(BRAND, 'USD', { srPool });
+    expect(String(mkt.marketingMinor)).toBe('0');
+  });
+
+  it('COST half — the PG cost aggregates the registry reads (brain_app + GUC / RLS)', async () => {
     if (!pgAvailable) return;
     const c = await appPool.connect();
     try {
       await c.query('BEGIN');
       await c.query(`SELECT set_config('app.current_brand_id',$1,true), set_config('app.current_user_id',$2,true), set_config('app.current_workspace_id',$2,true)`, [BRAND, NIL]);
-      const spend = await c.query(
-        `SELECT COALESCE(SUM(s.spend_minor), 0)::bigint AS marketing_minor
-           FROM ad_spend_as_of($1::uuid, DATE '2000-01-01', CURRENT_DATE) s
-           JOIN brand b ON b.currency_code = s.currency_code
-          WHERE b.id = $1::uuid`,
-        [BRAND],
-      );
       const cost = await c.query(
         `SELECT
            COALESCE(SUM(pct_bps) FILTER (WHERE cost_type = 'cogs' AND pct_bps IS NOT NULL), 0)::bigint AS cogs_pct_bps,
@@ -120,9 +139,7 @@ describe('CM2 detector signal (gold revenue + PG marketing/cost)', () => {
         [BRAND],
       );
       await c.query('COMMIT');
-      const s = spend.rows[0] as Record<string, unknown>;
       const ct = cost.rows[0] as Record<string, unknown>;
-      expect(String(s['marketing_minor'])).toBe('20000');
       expect(Number(ct['cogs_pct_bps'])).toBe(4000);
       expect(Number(ct['variable_pct_bps'])).toBe(1000);
       expect(ct['has_cogs']).toBe(true);

@@ -73,6 +73,10 @@ sparkBronze:
   materializeSchedule: "*/15 * * * *"   # drain BOTH lanes → Iceberg every 15 min (availableNow)
   maintenanceSchedule: "0 3 * * *"      # daily 03:00 IST — compaction + 24-mo snapshot-expiry (Slice 7)
   activeDeadlineSeconds: 1800
+  # Spark driver heap (driver==executor under local[*]). Pinned < resources.limits.memory so the JVM +
+  # PySpark + Iceberg/Kafka machinery don't OOM on a backlog drain (the default 1g OOMs — same lesson
+  # as the local docker sink). Keep a margin below the pod memory limit for non-heap overhead.
+  driverMemory: "3g"
   # Non-secret config. Secrets come from envSecretName and MUST include: KAFKA_BROKERS, ICEBERG/Glue,
   # CHECKPOINT_LOCATION (s3a://), AWS_*, and BOTH Bronze lane topics — COLLECTOR_TOPIC (live) AND
   # BACKFILL_TOPIC (historical/backfill orders). The sink consumes both: omitting BACKFILL_TOPIC →

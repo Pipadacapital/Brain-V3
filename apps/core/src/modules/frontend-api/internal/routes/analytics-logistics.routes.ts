@@ -23,7 +23,9 @@ import {
   getContributionMargin,
   listCostInputs,
   upsertCostInput,
+  fxRateService,
 } from '../../../analytics/index.js';
+import { withBrandTxn } from '@brain/metric-engine';
 import type {
   OrderStatusMix as ContractOrderStatusMix,
   TopProducts as ContractTopProducts,
@@ -422,6 +424,39 @@ export function registerAnalyticsLogisticsRoutes(fastify: FastifyInstance, deps:
       }
 
       const result: ContractOrdersList = await getOrdersList(auth.brandId, { page, pageSize }, { pool: rawPool, srPool });
+
+      // FX convenience view (display-only): enrich each order with its amount in the brand's PRIMARY
+      // currency at the latest rate. Native amount/currency stay authoritative (revenue truth). Best-
+      // effort: any failure (brand read, FX provider down) just omits the converted value — the UI
+      // then shows the native amount only and never breaks.
+      if (result.state === 'has_data' && result.orders.length > 0) {
+        try {
+          const primaryCurrency = await withBrandTxn(rawPool, auth.brandId, async (client) => {
+            const r = await client.query<{ currency_code: string | null }>(
+              `SELECT currency_code FROM brand WHERE id = $1`,
+              [auth.brandId],
+            );
+            return r.rows[0]?.currency_code ?? null;
+          });
+          if (primaryCurrency) {
+            const enriched = await Promise.all(
+              result.orders.map(async (o) => ({
+                ...o,
+                amount_in_primary_minor:
+                  o.currency_code === primaryCurrency
+                    ? null
+                    : await fxRateService.convertMinorToPrimary(o.amount_minor, o.currency_code, primaryCurrency),
+              })),
+            );
+            return reply.send({
+              request_id: requestId,
+              data: { ...result, orders: enriched, primary_currency: primaryCurrency },
+            });
+          }
+        } catch {
+          // fall through to the un-enriched result (native amounts only)
+        }
+      }
       return reply.send({ request_id: requestId, data: result });
     },
   );

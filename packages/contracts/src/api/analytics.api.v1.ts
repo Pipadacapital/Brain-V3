@@ -336,6 +336,12 @@ export const OrderListItemDtoSchema = z.object({
   financial_status: z.string().nullable(),
   fulfillment_status: z.string().nullable(),
   has_depth: z.boolean(),
+  /**
+   * APPROXIMATE amount in the brand's primary currency (FX-converted at the latest rate, display
+   * only — the native amount_minor/currency_code remain the source of truth). null when the order
+   * is already in the primary currency or FX was unavailable. Pair with the result's primary_currency.
+   */
+  amount_in_primary_minor: MinorUnitsSchema.nullable().optional(),
 });
 export type OrderListItemDto = z.infer<typeof OrderListItemDtoSchema>;
 
@@ -352,6 +358,8 @@ export const OrdersListSchema = z.discriminatedUnion('state', [
     page_size: z.number(),
     total: MinorUnitsSchema,
     orders: z.array(OrderListItemDtoSchema),
+    /** The brand's primary currency — target of each order's amount_in_primary_minor (display). */
+    primary_currency: z.string().optional(),
   }),
 ]);
 export type OrdersList = z.infer<typeof OrdersListSchema>;

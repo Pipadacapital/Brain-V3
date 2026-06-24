@@ -610,6 +610,12 @@ export const BriefingDtoSchema = z.object({
   source: z.literal('deterministic'),
   // Provenance of the contributing marts — 'synthetic' when ANY contributing row is synthetic.
   data_source: DataSourceSchema,
+  // FRESHNESS GUARD: when the underlying gold marts were last REBUILT (dbt build time, not the
+  // latest order). ISO-8601, null if unknown. `stale` = as_of older than the freshness SLO → the UI
+  // warns the briefing may be out of date instead of silently serving stale insights (prod-safety:
+  // if the dbt refresh cron stops, this surfaces it).
+  as_of: z.string().datetime({ offset: true }).nullable().optional(),
+  stale: z.boolean().optional(),
 });
 export type BriefingDto = z.infer<typeof BriefingDtoSchema>;
 

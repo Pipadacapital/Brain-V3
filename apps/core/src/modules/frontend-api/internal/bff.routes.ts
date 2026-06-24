@@ -2247,7 +2247,7 @@ export function registerBffRoutes(
           error: { code: 'NO_ACTIVE_BRAND', message: 'Select a brand before running detectors.' },
         });
       }
-      if (!pool) {
+      if (!pool || !srPool) {
         return reply.code(503).send({
           request_id: requestId,
           error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' },
@@ -2257,7 +2257,7 @@ export function registerBffRoutes(
       const result: ContractGenerateRecommendationsResult = await generateRecommendations(
         auth.brandId,
         requestId,
-        { pool },
+        { pool, srPool },
       );
       return reply.send({ request_id: requestId, data: result });
     },

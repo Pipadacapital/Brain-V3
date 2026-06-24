@@ -1,13 +1,23 @@
 /**
- * cm2-signal.live.test.ts — cm2_signal_for_brand() returns the right raw aggregates (live PG + RLS).
- * Proves the certified signal the margin-erosion detector reads: net revenue, marketing, cogs/variable
- * rate sums, has_cogs, confidence floor, order count — under brain_app + GUC (SECURITY INVOKER → RLS).
+ * cm2-signal.live.test.ts — the CM2 detector signal returns the right raw aggregates.
+ *
+ * MEDALLION REALIGNMENT (Epic 1 / decision B): the PG cm2_signal_for_brand() function was dropped with
+ * realized_revenue_ledger. The CM2 signal is now assembled in the registry from two sources:
+ *   - REVENUE half (net_revenue, order_count) ← brain_gold.gold_revenue_ledger via the metric-engine
+ *     seam computeCm2RevenueSignal (Bronze-sourced lakehouse), and
+ *   - MARKETING + COST halves ← PostgreSQL ad_spend_ledger + cost_input (operational, SECURITY INVOKER
+ *     reads under brain_app + GUC). This test seeds both planes and asserts the exact aggregates the
+ *     margin-erosion / scale-opportunity detectors consume.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import pg from 'pg';
+import mysql from 'mysql2/promise';
+import { computeCm2RevenueSignal, type SilverPool } from '@brain/metric-engine';
 
 const SUPER = process.env['DATABASE_URL'] ?? 'postgres://brain:brain@localhost:5432/brain';
 const APP = process.env['BRAIN_APP_DATABASE_URL'] ?? 'postgres://brain_app:brain_app@localhost:5432/brain';
+const SR_HOST = process.env['STARROCKS_HOST'] ?? '127.0.0.1';
+const SR_PORT = Number(process.env['STARROCKS_QUERY_PORT'] ?? '9030');
 
 const BRAND = 'd1517a01-0a11-4a11-8a11-00000000aa01';
 const ORG = 'd1517a01-0a11-4a11-8a11-00000000ff01';
@@ -16,10 +26,12 @@ const NIL = '00000000-0000-0000-0000-000000000000';
 
 let superPool: pg.Pool;
 let appPool: pg.Pool;
+let srPool: SilverPool;
 let pgAvailable = false;
 
 async function cleanup() {
-  for (const t of ['cost_input', 'ad_spend_ledger', 'realized_revenue_ledger']) await superPool.query(`DELETE FROM ${t} WHERE brand_id=$1`, [BRAND]).catch(() => {});
+  for (const t of ['cost_input', 'ad_spend_ledger']) await superPool.query(`DELETE FROM ${t} WHERE brand_id=$1`, [BRAND]).catch(() => {});
+  if (srPool) await (srPool as unknown as mysql.Pool).query(`DELETE FROM brain_gold.gold_revenue_ledger WHERE brand_id=?`, [BRAND]).catch(() => {});
   await superPool.query(`DELETE FROM brand WHERE id=$1`, [BRAND]).catch(() => {});
   await superPool.query(`DELETE FROM organization WHERE id=$1`, [ORG]).catch(() => {});
   await superPool.query(`DELETE FROM app_user WHERE id=$1`, [USER]).catch(() => {});
@@ -30,21 +42,27 @@ beforeAll(async () => {
     superPool = new pg.Pool({ connectionString: SUPER, connectionTimeoutMillis: 4000, max: 3 });
     await superPool.query('SELECT 1');
     appPool = new pg.Pool({ connectionString: APP, max: 3 });
+    srPool = mysql.createPool({ host: SR_HOST, port: SR_PORT, user: 'root', password: '', connectionLimit: 2 }) as unknown as SilverPool;
+    await srPool.query('SELECT 1');
     await cleanup();
     await superPool.query(`INSERT INTO app_user (id,email,email_normalized,password_hash) VALUES ($1,$2,$3,'x')`, [USER, `${USER}@x.invalid`, `${USER}@x.invalid`]);
     await superPool.query(`INSERT INTO organization (id,name,slug,owner_user_id) VALUES ($1,'CS',$2,$3)`, [ORG, `cs-${ORG.slice(-6)}`, USER]);
     await superPool.query(`INSERT INTO brand (id,organization_id,display_name,currency_code,status) VALUES ($1,$2,'CS','INR','active')`, [BRAND, ORG]);
-    await superPool.query(
-      `INSERT INTO realized_revenue_ledger (brand_id, ledger_event_id, order_id, event_type, amount_minor, currency_code, occurred_at, occurred_date, economic_effective_at, billing_posted_period, recognition_label)
-       VALUES ($1,'cs-fin-1','cs-order-1','finalization',100000,'INR','2026-06-10T10:00:00Z',(timezone('UTC','2026-06-10T10:00:00Z'::timestamptz))::date,'2026-06-10T10:00:00Z','2026-06','finalized')`,
+    // REVENUE half → lakehouse gold ledger (one finalized order @ 1,000.00 INR).
+    await (srPool as unknown as mysql.Pool).query(
+      `INSERT INTO brain_gold.gold_revenue_ledger
+         (brand_id, ledger_event_id, order_id, brain_id, event_type, amount_minor, currency_code,
+          fee_minor, occurred_at, economic_effective_at, recognition_label, billing_posted_period, ingested_at, updated_at)
+       VALUES (?,'cs-fin-1','cs-order-1',NULL,'finalization',100000,'INR',0,'2026-06-10 10:00:00','2026-06-10 10:00:00','finalized','2026-06','2026-06-10 10:00:00','2026-06-10 10:00:00')`,
       [BRAND],
     );
+    // MARKETING half → PG ad_spend_ledger (2,000.00 INR).
     await superPool.query(
       `INSERT INTO ad_spend_ledger (brand_id, spend_event_id, platform, level, level_id, stat_date, spend_minor, currency_code, raw_event_id, occurred_at)
        VALUES ($1,'cs-spend-1','meta','campaign','c1','2026-06-12',20000,'INR','cs-spend-1','2026-06-12T00:00:00Z')`,
       [BRAND],
     );
-    // COGS 40% (Trusted) + shipping 10% (Estimated) — confidence floor should be Estimated (rank 1).
+    // COST half → PG cost_input. COGS 40% (Trusted) + shipping 10% (Estimated) → floor Estimated (rank 1).
     const c = await superPool.connect();
     await c.query('BEGIN');
     await c.query(`SELECT set_config('app.current_brand_id',$1,true)`, [BRAND]);
@@ -61,31 +79,54 @@ beforeAll(async () => {
 afterAll(async () => {
   if (pgAvailable) await cleanup();
   await appPool?.end?.().catch(() => {});
+  if (srPool) await (srPool as unknown as mysql.Pool).end().catch(() => {});
   await superPool?.end?.().catch(() => {});
 });
 
-describe('cm2_signal_for_brand (live Postgres)', () => {
+describe('CM2 detector signal (gold revenue + PG marketing/cost)', () => {
   it('SKIP_IF_NO_PG', () => {
-    if (!pgAvailable) console.warn('[cm2-signal] Postgres unavailable — PENDING.');
+    if (!pgAvailable) console.warn('[cm2-signal] Postgres/StarRocks unavailable — PENDING.');
     expect(true).toBe(true);
   });
 
-  it('returns the raw aggregates under brain_app + GUC (SECURITY INVOKER / RLS)', async () => {
+  it('REVENUE half — net_revenue_minor + order_count from the lakehouse gold ledger', async () => {
+    if (!pgAvailable) return;
+    const rev = await computeCm2RevenueSignal(BRAND, { srPool });
+    expect(String(rev.netRevenueMinor)).toBe('100000');
+    expect(rev.orderCount).toBe(1);
+  });
+
+  it('MARKETING + COST halves — the same PG aggregates the registry reads (brain_app + GUC / RLS)', async () => {
     if (!pgAvailable) return;
     const c = await appPool.connect();
     try {
       await c.query('BEGIN');
       await c.query(`SELECT set_config('app.current_brand_id',$1,true), set_config('app.current_user_id',$2,true), set_config('app.current_workspace_id',$2,true)`, [BRAND, NIL]);
-      const r = await c.query(`SELECT * FROM cm2_signal_for_brand($1::uuid)`, [BRAND]);
+      const spend = await c.query(
+        `SELECT COALESCE(SUM(s.spend_minor), 0)::bigint AS marketing_minor
+           FROM ad_spend_as_of($1::uuid, DATE '2000-01-01', CURRENT_DATE) s
+           JOIN brand b ON b.currency_code = s.currency_code
+          WHERE b.id = $1::uuid`,
+        [BRAND],
+      );
+      const cost = await c.query(
+        `SELECT
+           COALESCE(SUM(pct_bps) FILTER (WHERE cost_type = 'cogs' AND pct_bps IS NOT NULL), 0)::bigint AS cogs_pct_bps,
+           COALESCE(SUM(pct_bps) FILTER (WHERE cost_type IN ('shipping','packaging','payment_fee','marketplace_fee') AND pct_bps IS NOT NULL), 0)::bigint AS variable_pct_bps,
+           BOOL_OR(cost_type = 'cogs') AS has_cogs,
+           MIN(CASE cost_confidence WHEN 'Trusted' THEN 2 WHEN 'Estimated' THEN 1 ELSE 0 END) AS confidence_rank
+           FROM cost_inputs_as_of($1::uuid, CURRENT_DATE)
+          WHERE scope = 'global'`,
+        [BRAND],
+      );
       await c.query('COMMIT');
-      const row = r.rows[0] as Record<string, unknown>;
-      expect(String(row['net_revenue_minor'])).toBe('100000');
-      expect(String(row['marketing_minor'])).toBe('20000');
-      expect(Number(row['order_count'])).toBe(1);
-      expect(Number(row['cogs_pct_bps'])).toBe(4000);
-      expect(Number(row['variable_pct_bps'])).toBe(1000);
-      expect(row['has_cogs']).toBe(true);
-      expect(Number(row['confidence_rank'])).toBe(1); // floor of Trusted(2) + Estimated(1)
+      const s = spend.rows[0] as Record<string, unknown>;
+      const ct = cost.rows[0] as Record<string, unknown>;
+      expect(String(s['marketing_minor'])).toBe('20000');
+      expect(Number(ct['cogs_pct_bps'])).toBe(4000);
+      expect(Number(ct['variable_pct_bps'])).toBe(1000);
+      expect(ct['has_cogs']).toBe(true);
+      expect(Number(ct['confidence_rank'])).toBe(1); // floor of Trusted(2) + Estimated(1)
     } finally {
       c.release();
     }

@@ -10,6 +10,7 @@
  */
 
 import type { DbPool, QueryContext } from '@brain/db';
+import type { SilverPool } from '@brain/metric-engine';
 import { detectorById } from '../domain/detectors/registry.js';
 
 export interface MeasureResult {
@@ -19,6 +20,8 @@ export interface MeasureResult {
 
 export interface MeasureDeps {
   pool: DbPool;
+  /** StarRocks Silver/Gold pool — detector REVENUE signals read the lakehouse ledger (Epic 1 / B). */
+  srPool: SilverPool;
 }
 
 export async function measureRecommendationOutcomes(
@@ -45,7 +48,7 @@ export async function measureRecommendationOutcomes(
       const detector = detectorById(rec.detector);
       if (!detector) continue;
 
-      const signal = await detector.fetchSignal(client, ctx, brandId);
+      const signal = await detector.fetchSignal({ client, ctx, srPool: deps.srPool }, brandId);
       const m = detector.metric(signal);
       const now = m.value;
       const then = Number(rec.payload?.evidence?.[m.key] ?? now);

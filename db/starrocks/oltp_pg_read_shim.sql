@@ -25,32 +25,11 @@
 --      already a native string type) — this shim is dev/transition-only and disappears.
 -- ============================================================================
 
-CREATE OR REPLACE VIEW silver_order_ledger_src AS
-SELECT
-    brand_id::text              AS brand_id,
-    order_id,
-    brain_id::text              AS brain_id,
-    event_type,
-    amount_minor,
-    currency_code,
-    occurred_at,
-    economic_effective_at,
-    -- appended (Phase G): CREATE OR REPLACE VIEW requires new columns at the END
-    ledger_event_id,
-    fee_minor,
-    recognition_label,
-    billing_posted_period,
-    -- appended (M3): ingestion time — drives the incremental restatement watermark in silver_order_state
-    -- (any row ingested since the last run re-folds its order, so late/backdated events are never missed).
-    created_at
--- Schema-qualified: this table was RANGE-partitioned via a twin-swap (migration 0073). An unqualified
--- name made CREATE OR REPLACE VIEW re-bind to the renamed *_legacy table; qualifying pins the view to
--- the canonical (partitioned) table so the shim always reads live data.
-FROM billing.realized_revenue_ledger;
-
--- Make the view readable through the JDBC catalog connection user (superuser `brain`
--- already owns it; explicit grant kept for documentation / non-superuser dev parity).
-GRANT SELECT ON silver_order_ledger_src TO brain;
+-- MEDALLION REALIGNMENT (Epic 1 / decision B): silver_order_ledger_src (the read-shim over the PG
+-- realized_revenue_ledger) was REMOVED with migration 0098. Silver now builds the recognition ledger
+-- from Bronze (stg_order_events_bronze → silver_order_recognition → brain_gold.gold_revenue_ledger);
+-- there is no PG revenue ledger to shim. The brand_horizons_src + identity_link_src shims (used by
+-- silver_order_recognition for recognition horizons + identity resolution) remain below.
 
 -- ============================================================================
 -- Phase G (marketing): read-shims for the ad-spend + attribution-credit ledgers.

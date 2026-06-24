@@ -161,6 +161,18 @@ export type { RealizedGmvForPeriod } from './realized-gmv-period.js';
 // Inspectable-bill seam — per-event_type composition of a period's realized GMV from the lakehouse.
 export { computeRealizedGmvCompositionForPeriod } from './realized-gmv-composition-period.js';
 export type { RealizedGmvCompositionLine } from './realized-gmv-composition-period.js';
+// Recommendation signal seams — RTO / realization / CM2-revenue raw aggregates from the lakehouse gold
+// ledger (the PG rto_risk_signal_for_brand / realization_signal_for_brand / cm2 revenue-half replacement).
+export {
+  computeRtoRiskSignal,
+  computeRealizationSignal,
+  computeCm2RevenueSignal,
+} from './recommendation-signals.js';
+export type {
+  RtoRiskSignalRaw,
+  RealizationSignalRaw,
+  Cm2RevenueSignalRaw,
+} from './recommendation-signals.js';
 
 // Data-driven (Markov removal-effect) attribution — the GLOBAL, corpus-trained model.
 export {

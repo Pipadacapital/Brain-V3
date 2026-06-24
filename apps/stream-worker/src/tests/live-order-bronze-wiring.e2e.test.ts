@@ -1,58 +1,41 @@
 /**
- * live-order-bronze-wiring.e2e.test.ts — P0: the severed order.live.v1 → Bronze landing is restored.
+ * live-order-bronze-wiring.e2e.test.ts — P0: order.live.v1 lands in (Iceberg) Bronze.
  *
- * Shopify live + re-pull orders are produced as order.live.v1 to the live topic, but they carry NO
- * install_token. The pixel-lane CollectorEventConsumer (R2 gate ON) therefore quarantines them as
- * `tenant_unresolved` — so they NEVER reached Bronze, even though the LiveLedgerBridgeConsumer wrote
- * the ledger (its "CollectorEventConsumer already writes Bronze" comment is stale post-R2). With
- * Bronze empty, the Data Foundation health verdict (first_event / sync / fresh) never completes and
- * DQ bronze-ledger-provenance has orphans. This is the same severed-landing class the shopflo and
- * gokwik.rto_predict Bronze bridges already fixed — missed for orders.
+ * ICEBERG-BRONZE: Bronze is the Spark sink → Iceberg `brain_bronze.collector_events` (the PG
+ * data_plane.bronze_events table is dropped — migration 0070). order.live.v1 is a SERVER_TRUSTED lane
+ * event — the Spark sink writes it under its claimed (server-derived) brand_id with no token/consent
+ * gate. Shopify live + re-pull orders are produced as order.live.v1 carrying NO install_token; the
+ * server-trusted lane is exactly what lets them reach Bronze (the historical pixel-lane R2 gate would
+ * have quarantined them as tenant_unresolved).
  *
- * This test produces a REALISTIC order.live.v1 envelope (the post-mapper shape the Shopify re-pull
- * yields) to the live topic, lets the WIRED EventBronzeBridgeConsumer ('order.live.v1', enforce=false)
- * land it, and asserts:
- *   LO1: a bronze_events row with event_type='order.live.v1' under the (server-trusted) brand.
+ * This test produces a realistic re-pull order.live.v1 envelope to the collector topic and asserts it
+ * lands in Iceberg Bronze (read via the StarRocks external catalog).
  *
- * UN-WIRE PROOF: comment out `await consumer.start()` in beforeAll → LO1 poll times out → RED.
- *
- * NOTE (mock-ingestion): the envelope is a TEST fixture standing in for the real Shopify re-pull →
- * shopify-mapper → produce. It exercises the consumer→Bronze seam end-to-end on the REAL substrate
- * (Redpanda → Postgres bronze_events). REQUIRES Redpanda + Postgres + Redis.
+ * UN-WIRE PROOF: if the Spark bronze sink is not running, SKIP_IF_NO_LAKEHOUSE fires (PENDING).
+ * REQUIRES the `lakehouse` docker profile (Redpanda + Spark sink + Iceberg REST + MinIO + StarRocks).
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import pg from 'pg';
 import { Kafka, type Producer } from 'kafkajs';
-import { RedisDedupAdapter } from '../infrastructure/redis/RedisDedupAdapter.js';
-import { RetryCounterAdapter } from '../infrastructure/redis/RetryCounterAdapter.js';
-import { BronzeRepository } from '../infrastructure/pg/BronzeRepository.js';
-import { ProcessEventUseCase } from '../application/ProcessEventUseCase.js';
-import { EventBronzeBridgeConsumer } from '../interfaces/consumers/EventBronzeBridgeConsumer.js';
+import type mysql from 'mysql2/promise';
+import {
+  makeStarrocksPool,
+  icebergBronzeAvailable,
+  produceCollectorEvent,
+  pollIcebergBronzeCount,
+  KAFKA_BROKERS,
+  type CollectorEnvelope,
+} from './helpers/iceberg-bronze.js';
 
-const SUPER = process.env['DATABASE_URL'] ?? 'postgres://brain:brain@localhost:5432/brain';
-const APP = process.env['BRAIN_APP_DATABASE_URL'] ?? 'postgres://brain_app:brain_app@localhost:5432/brain';
-const REDIS = process.env['REDIS_URL'] ?? 'redis://localhost:6379';
-const BROKERS = (process.env['KAFKA_BROKERS'] ?? 'localhost:9092').split(',');
-const TOPIC = process.env['COLLECTOR_TOPIC'] ?? 'dev.collector.event.v1';
-const GROUP = 'live-order-bronze-wiring-test';
 const EVENT_NAME = 'order.live.v1';
-
 const BRAND = 'b9f10030-0030-4030-8030-0000000000b2';
-const ORG = 'b9f10030-0030-4030-8030-0000000000f2';
-const USER = 'b9f10030-0030-4030-8030-0000000000e2';
 
-let superPool: pg.Pool;
-let appPool: pg.Pool;
 let producer: Producer;
-let dedup: RedisDedupAdapter;
-let retryCounter: RetryCounterAdapter;
-let consumer: EventBronzeBridgeConsumer;
-let bronze: BronzeRepository;
+let sr: mysql.Pool;
 let infraUp = false;
 
 /** Realistic post-mapper Shopify live/re-pull order (the shape the re-pull produces to the live lane). */
-function liveOrderEnvelope() {
+function liveOrderEnvelope(): CollectorEnvelope {
   const orderId = String(7_600_000_000_000 + Math.floor(Number(`0x${randomUUID().slice(0, 8)}`) % 1_000_000));
   const occurredAt = new Date().toISOString();
   return {
@@ -80,38 +63,14 @@ function liveOrderEnvelope() {
 
 beforeAll(async () => {
   try {
-    superPool = new pg.Pool({ connectionString: SUPER, connectionTimeoutMillis: 4000 });
-    await superPool.query('SELECT 1');
-    appPool = new pg.Pool({ connectionString: APP, max: 3 });
-
-    await superPool.query(`DELETE FROM bronze_events WHERE brand_id=$1`, [BRAND]).catch(() => {});
-    await superPool.query(`DELETE FROM brand WHERE id=$1`, [BRAND]).catch(() => {});
-    await superPool.query(`DELETE FROM organization WHERE id=$1`, [ORG]).catch(() => {});
-    await superPool.query(`DELETE FROM app_user WHERE id=$1`, [USER]).catch(() => {});
-    await superPool.query(
-      `INSERT INTO app_user (id,email,email_normalized,password_hash)
-       VALUES ($1,'lo@example.invalid','lo@example.invalid','x') ON CONFLICT (id) DO NOTHING`, [USER]);
-    await superPool.query(
-      `INSERT INTO organization (id,name,slug,owner_user_id)
-       VALUES ($1,'LO Org','lo-org',$2) ON CONFLICT (id) DO NOTHING`, [ORG, USER]);
-    await superPool.query(
-      `INSERT INTO brand (id,organization_id,display_name,currency_code,status)
-       VALUES ($1,$2,'LO Brand','INR','active') ON CONFLICT (id) DO NOTHING`, [BRAND, ORG]);
-
-    const kafka = new Kafka({ clientId: 'live-order-bronze-wiring-producer', brokers: BROKERS, retry: { retries: 3 } });
+    sr = makeStarrocksPool();
+    if (!(await icebergBronzeAvailable(sr))) {
+      infraUp = false;
+      return;
+    }
+    const kafka = new Kafka({ clientId: 'live-order-bronze-wiring-producer', brokers: KAFKA_BROKERS, retry: { retries: 3 } });
     producer = kafka.producer();
     await producer.connect();
-
-    dedup = new RedisDedupAdapter(REDIS);
-    await dedup.connect();
-    retryCounter = new RetryCounterAdapter(REDIS);
-    await retryCounter.connect();
-    bronze = new BronzeRepository(APP);
-    const processEvent = new ProcessEventUseCase(dedup, bronze, undefined, /* enforceTenantDerivation */ false);
-    consumer = new EventBronzeBridgeConsumer(kafka, processEvent, TOPIC, GROUP, retryCounter, EVENT_NAME, 'live_order_bronze_write_total');
-    // UN-WIRE PROOF: comment the next line → LO1 poll times out → RED.
-    await consumer.start();
-    await new Promise((r) => setTimeout(r, 2500)); // let the group join + assign before producing
     infraUp = true;
   } catch {
     infraUp = false;
@@ -119,47 +78,21 @@ beforeAll(async () => {
 }, 30_000);
 
 afterAll(async () => {
-  await consumer?.stop?.().catch(() => {});
   await producer?.disconnect?.().catch(() => {});
-  await dedup?.quit?.().catch(() => {});
-  await retryCounter?.quit?.().catch(() => {});
-  await bronze?.end?.().catch(() => {});
-  if (infraUp) {
-    await superPool.query(`DELETE FROM bronze_events WHERE brand_id=$1`, [BRAND]).catch(() => {});
-    await superPool.query(`DELETE FROM brand WHERE id=$1`, [BRAND]).catch(() => {});
-    await superPool.query(`DELETE FROM organization WHERE id=$1`, [ORG]).catch(() => {});
-    await superPool.query(`DELETE FROM app_user WHERE id=$1`, [USER]).catch(() => {});
-  }
-  await appPool?.end?.().catch(() => {});
-  await superPool?.end?.().catch(() => {});
+  await sr?.end?.().catch(() => {});
 });
 
-async function pollBronzeCount(): Promise<number> {
-  for (let i = 0; i < 40; i++) {
-    const r = await superPool.query<{ c: string }>(
-      `SELECT COUNT(*)::text AS c FROM bronze_events WHERE brand_id=$1 AND event_type=$2`,
-      [BRAND, EVENT_NAME]);
-    if (Number(r.rows[0]?.c ?? '0') > 0) return Number(r.rows[0]!.c);
-    await new Promise((res) => setTimeout(res, 500));
-  }
-  return 0;
-}
-
-describe('order.live.v1 → Bronze wiring (P0, live infra)', () => {
-  it('SKIP_IF_NO_INFRA', () => {
-    if (!infraUp) console.warn('[live-order-bronze-wiring] Redpanda/Postgres/Redis unavailable — PENDING.');
+describe('order.live.v1 → Iceberg Bronze wiring (P0, lakehouse)', () => {
+  it('SKIP_IF_NO_LAKEHOUSE', () => {
+    if (!infraUp) console.warn('[live-order-bronze-wiring] lakehouse (Redpanda/Spark/Iceberg/StarRocks) unavailable — PENDING.');
     expect(true).toBe(true);
   });
 
-  it('LO1: a realistic order.live.v1 envelope lands in Bronze (was quarantined tenant_unresolved before the fix)', async () => {
+  it('LO1: a realistic order.live.v1 envelope lands in Iceberg Bronze (server-trusted lane)', async () => {
     if (!infraUp) return;
     const env = liveOrderEnvelope();
-    await producer.send({
-      topic: TOPIC,
-      messages: [{ key: BRAND, value: Buffer.from(JSON.stringify(env)),
-        headers: { event_name: Buffer.from(EVENT_NAME) } }],
-    });
-    const count = await pollBronzeCount();
-    expect(count).toBeGreaterThan(0); // the bridge wrote it to Bronze (server-trusted brand, enforce=false)
-  }, 30_000);
+    await produceCollectorEvent(producer, env);
+    const landed = await pollIcebergBronzeCount(sr, { brandId: BRAND, eventId: env.event_id }, { min: 1, timeoutMs: 60_000 });
+    expect(landed).toBeGreaterThan(0); // the Spark sink wrote it to Iceberg Bronze
+  }, 75_000);
 });

@@ -369,6 +369,11 @@ services:
       - /opt/spark/bin/spark-submit
       - --master
       - "local[2]"
+      # Local-sink heap: the default 1g driver (driver==executor under local[*]) OOMs the
+      # Iceberg+Kafka+MERGE machinery when draining a large cold-start backlog. The host has ample
+      # RAM; pin 4g so the phase-1 backlog drain + continuous MERGE batches stay within heap.
+      - --driver-memory
+      - "4g"
       - --packages
       - "org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.9.2,org.apache.iceberg:iceberg-aws-bundle:1.9.2,org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.3,org.postgresql:postgresql:42.7.4"
       - --conf

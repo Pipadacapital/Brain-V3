@@ -281,8 +281,13 @@ export async function resolveGoogleCredentials(
 
   const bundle = await readGoogleSecretBundle(secretRef);
   if (!bundle?.refresh_token) return null;
-  // customer_id (CID) is the OAuth-stored ad_account_id (or the connector_instance column); digits only.
-  const customerId = (bundle.customer_id ?? bundle.ad_account_id ?? adAccountIdCol ?? '').replace(/-/g, '');
+  // customer_id (CID), digits only. MULTI-ACCOUNT FIX: the connector_instance's OWN ad_account_id
+  // (adAccountIdCol, passed per-connector by the caller) MUST win. One OAuth login creates N
+  // connectors that SHARE a single secret bundle (subKey = the FIRST account at connect), so the
+  // bundle's ad_account_id is only the first account — using it made EVERY Google connector query
+  // that one CID (→ 403 CUSTOMER_NOT_ENABLED if it's disabled). The per-connector column is the
+  // authoritative account; the bundle fields are the single-account legacy fallback.
+  const customerId = (adAccountIdCol ?? bundle.customer_id ?? bundle.ad_account_id ?? '').replace(/-/g, '');
   if (!customerId) return null;
 
   return {

@@ -50,6 +50,8 @@ silver-catalog:
 	$(PG_PSQL) < db/starrocks/oltp_pg_read_shim.sql
 	@echo ">> Creating StarRocks JDBC external catalog brain_oltp_pg (idempotent)..."
 	$(SR_MYSQL) < db/starrocks/oltp_jdbc_catalog.sql
+	@echo ">> Granting brain_analytics SELECT on tables + VIEWS + materialized views (idempotent)..."
+	$(SR_MYSQL) < db/starrocks/analytics_grants.sql
 	@echo ">> Catalogs:"
 	@$(SR_MYSQL) -e "SHOW CATALOGS;"
 

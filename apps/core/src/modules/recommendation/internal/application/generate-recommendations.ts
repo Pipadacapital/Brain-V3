@@ -12,6 +12,7 @@
  */
 
 import type { DbPool, QueryContext } from '@brain/db';
+import type { SilverPool } from '@brain/metric-engine';
 import { DETECTORS } from '../domain/detectors/registry.js';
 
 export interface GenerateResult {
@@ -23,6 +24,8 @@ export interface GenerateResult {
 
 export interface GenerateDeps {
   pool: DbPool;
+  /** StarRocks Silver/Gold pool — detector REVENUE signals read the lakehouse ledger (Epic 1 / B). */
+  srPool: SilverPool;
 }
 
 export async function generateRecommendations(
@@ -36,7 +39,7 @@ export async function generateRecommendations(
   let expired = 0;
   try {
     for (const detector of DETECTORS) {
-      const signal = await detector.fetchSignal(client, ctx, brandId);
+      const signal = await detector.fetchSignal({ client, ctx, srPool: deps.srPool }, brandId);
       const rec = detector.detect(signal);
 
       if (rec) {

@@ -37,15 +37,12 @@ export type { TouchpointLayerDescriptor } from './internal/touchpoint-layer.js';
 
 /**
  * Phase 5 Attribution (feat-attribution-ledger) — the credit-ledger WRITER.
- * Appends credit + clawback rows to attribution_credit_ledger (Postgres Gold, 0032).
- * The metric engine is the SOLE math layer (Tier-0 deterministic); this is the I/O adapter.
- * createAttributionReversalHook adapts the writer to the measurement OrderEventConsumer
- * reversal fan-out (clawback trigger) — additive, no new deployable (I-E05).
+ * MEDALLION REALIGNMENT (Epic 2): appends credit + clawback rows to the LAKEHOUSE ledger
+ * brain_gold.gold_attribution_credit (StarRocks) — NOT PostgreSQL (dropped). The metric engine is the
+ * SOLE math layer (Tier-0 deterministic); this is the I/O adapter. (createAttributionReversalHook was
+ * removed — its only caller, the live-ledger consumer, was deleted with the PG revenue write path.)
  */
-export {
-  AttributionCreditWriter,
-  createAttributionReversalHook,
-} from './internal/credit-writer.js';
+export { AttributionCreditWriter } from './internal/credit-writer.js';
 export type {
   WriteCreditParams,
   WriteClawbackParams,
@@ -58,7 +55,7 @@ export type {
  * what makes the dead writer live; the analytics attribution reads flip not_computed→has_data once
  * a brand has been reconciled.
  */
-export { reconcileAttribution } from './internal/reconcile-attribution.js';
+export { reconcileAttribution, reconcileDataDrivenAttribution } from './internal/reconcile-attribution.js';
 export type { ReconcileResult, ReconcileDeps } from './internal/reconcile-attribution.js';
 
 /**

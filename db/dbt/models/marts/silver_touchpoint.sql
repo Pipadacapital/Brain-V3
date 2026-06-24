@@ -62,7 +62,9 @@ stitch as (
             partition by brand_id, stitched_anon_id
             order by created_at asc, order_id asc
         ) as _stitch_rn
-    from {{ source('oltp', 'connector_journey_stitch_map_src') }}
+    -- MEDALLION REALIGNMENT (Epic 4): read the StarRocks projection (journey-stitch-export from PG),
+    -- not the PG JDBC shim — the lakehouse no longer reaches into PG for the journey mart.
+    from brain_silver.silver_journey_stitch
 
 ),
 

@@ -215,8 +215,10 @@ groups:
           summary: "Meta token refresh failing ({{ $labels.reason }})"
           description: "The proactive Meta token re-exchange job is erroring ({{ $labels.reason }}). If app_creds_missing — set META_APP_ID/META_APP_SECRET; if exchange_failed — those connectors need a reconnect before their tokens expire and spend ingestion stalls."
 
-      # Silver freshness. Silver is built by dbt (CI/nightly; an intraday prod rebuild cron is a
-      # follow-up that needs a dbt-runner image), so it can lag Bronze between builds. The DQ
+      # Silver freshness. Silver is built by dbt (CI/nightly; an intraday prod rebuild cron is now
+      # possible via the dbt-runner image — db/dbt/Dockerfile — wired but disabled-by-default in
+      # infra/helm/cronworkflows; enable per env to cut Silver lag), so it can lag Bronze between
+      # builds until that cron is enabled. The DQ
       # reconciliation executor runs CONTINUOUSLY in the deployed worker and compares Bronze↔Silver
       # order counts; a sustained breach = Silver is stale or unreachable. The continuous
       # Silver-freshness signal.

@@ -20,9 +20,9 @@
  * write stays in its own context.
  */
 
-import type { Pool, QueryResultRow } from 'pg';
 import {
   ATTRIBUTION_MODEL_IDS,
+  computeMarkovChannelWeights,
   withSilverBrand,
   BRAND_PREDICATE,
   type AttributionModelId,
@@ -31,12 +31,25 @@ import {
 } from '@brain/metric-engine';
 import { AttributionCreditWriter } from './credit-writer.js';
 
+/**
+ * The order's RECOGNIZED-revenue events — the attribution credit basis. An order is "won" (and so
+ * gets attributed to its journey) when its revenue is recognized:
+ *   - finalization           — PREPAID, recognized after the return/cancel horizon (GAP-2 job).
+ *   - cod_delivery_confirmed  — COD, recognized on terminal delivery (the COD recognition path).
+ * These are mutually exclusive per order (GAP-2: finalization excludes COD orders), so an order is
+ * credited exactly once. Crediting ONLY 'finalization' (the old behaviour) left ALL COD revenue
+ * unattributed — a large gap for COD-heavy (India) brands and a structural parity-oracle shortfall
+ * (realized = every non-provisional event, which includes cod_delivery_confirmed). GAP-3 fix.
+ */
+const RECOGNITION_EVENT_TYPES: readonly string[] = ['finalization', 'cod_delivery_confirmed'];
+
 const REVERSAL_EVENT_TYPES: readonly string[] = [
   'rto_reversal',
   'refund',
   'chargeback',
   'cancellation',
   'concession',
+  'cod_rto_clawback', // COD RTO — reverses any credit on a COD order (GAP-3)
 ];
 
 export interface ReconcileResult {
@@ -49,9 +62,11 @@ export interface ReconcileResult {
 }
 
 export interface ReconcileDeps {
-  /** Raw pg pool as brain_app (the writer + ledger reads use it; GUC-scoped per txn). */
-  pool: Pool;
-  /** StarRocks Silver pool (mysql2) — the touch source for credit apportionment. */
+  /**
+   * StarRocks Silver/Gold pool (mysql2) — MEDALLION REALIGNMENT (Epic 2): everything the reconcile
+   * driver touches is now in the lakehouse (credit basis = gold_revenue_ledger, credit ledger =
+   * gold_attribution_credit, touches = silver_touchpoint). No PostgreSQL.
+   */
   srPool: SilverPool;
 }
 
@@ -69,6 +84,73 @@ interface ReversalRow {
   ledger_event_id: string;
   amount_minor: string;
   occurred_at: Date;
+}
+
+/**
+ * MEDALLION REALIGNMENT (Epic 2): BOTH the attribution CREDIT BASIS (brain_gold.gold_revenue_ledger)
+ * and the CREDIT LEDGER (brain_gold.gold_attribution_credit) are now in the lakehouse — the PG
+ * realized_revenue_ledger + attribution_credit_ledger are dropped. The already-credited idempotency
+ * filter reads the gold credit ledger via the same Silver seam.
+ */
+
+/** order_ids already credited for (brand, model) — the idempotency filter (gold credit ledger). */
+async function readCreditedOrderIds(
+  srPool: SilverPool,
+  brandId: string,
+  model: AttributionModelId,
+): Promise<Set<string>> {
+  const rows = await withSilverBrand(srPool, brandId, async (scope) =>
+    scope.runScoped<{ order_id: string }>(
+      `SELECT DISTINCT order_id
+         FROM brain_gold.gold_attribution_credit
+        WHERE row_kind = 'credit' AND model_id = ? AND ${BRAND_PREDICATE}`,
+      [model],
+    ),
+  );
+  return new Set(rows.map((r) => r.order_id));
+}
+
+/** Recognized orders (credit basis) from the lakehouse gold ledger, NOT yet credited under `model`. */
+async function readUncreditedRecognized(
+  deps: ReconcileDeps,
+  brandId: string,
+  model: AttributionModelId,
+): Promise<FinalizedOrderRow[]> {
+  const credited = await readCreditedOrderIds(deps.srPool, brandId, model);
+  const inList = RECOGNITION_EVENT_TYPES.map((t) => `'${t}'`).join(',');
+  const rows = await withSilverBrand(deps.srPool, brandId, async (scope) =>
+    scope.runScoped<FinalizedOrderRow>(
+      `SELECT order_id, brain_id, CAST(amount_minor AS CHAR) AS amount_minor, currency_code, occurred_at
+         FROM brain_gold.gold_revenue_ledger
+        WHERE ${BRAND_PREDICATE} AND event_type IN (${inList})`,
+      [],
+    ),
+  );
+  return rows
+    .filter((r) => !credited.has(r.order_id))
+    .map((r) => ({ ...r, occurred_at: new Date(r.occurred_at) }));
+}
+
+/** Reversals from the lakehouse gold ledger that land on orders already credited under `model`. */
+async function readReversalsOnCredited(
+  deps: ReconcileDeps,
+  brandId: string,
+  model: AttributionModelId,
+): Promise<ReversalRow[]> {
+  const credited = await readCreditedOrderIds(deps.srPool, brandId, model);
+  if (credited.size === 0) return [];
+  const inList = REVERSAL_EVENT_TYPES.map((t) => `'${t}'`).join(',');
+  const rows = await withSilverBrand(deps.srPool, brandId, async (scope) =>
+    scope.runScoped<ReversalRow>(
+      `SELECT order_id, event_type, ledger_event_id, CAST(amount_minor AS CHAR) AS amount_minor, occurred_at
+         FROM brain_gold.gold_revenue_ledger
+        WHERE ${BRAND_PREDICATE} AND event_type IN (${inList})`,
+      [],
+    ),
+  );
+  return rows
+    .filter((r) => credited.has(r.order_id))
+    .map((r) => ({ ...r, occurred_at: new Date(r.occurred_at) }));
 }
 
 /** Resolve the journey key (brain_anon_id) stitched to an order's brain_id, via Silver. */
@@ -121,6 +203,81 @@ export async function reconcileAttribution(
   return total;
 }
 
+/**
+ * reconcileDataDrivenAttribution — the GLOBAL data-driven (Markov) pass for a brand.
+ *
+ * Unlike the per-journey models (reconcileAttribution), the data-driven weights are trained ONCE from
+ * the whole journey corpus, then applied per recognized order:
+ *   1. read the corpus (silver_touchpoint) → computeMarkovChannelWeights → per-channel weights.
+ *   2. CREDIT: each recognized order (finalization ∪ cod_delivery_confirmed) not yet credited under
+ *      model_id='data_driven', with a stitched journey → writeDataDrivenCredit (exact closed-sum).
+ *   3. CLAWBACK: reversals on data_driven-credited orders → writeClawback (SAVED weights).
+ * Idempotent (deterministic credit_id → ON CONFLICT). No journey / no channels → unattributed (honest).
+ */
+export async function reconcileDataDrivenAttribution(
+  brandId: string,
+  correlationId: string,
+  deps: ReconcileDeps,
+): Promise<ReconcileResult> {
+  const writer = new AttributionCreditWriter(deps.srPool);
+  const model: AttributionModelId = 'data_driven';
+  let credited = 0;
+  let clawedBack = 0;
+  let unattributed = 0;
+
+  // 1. Train the global channel weights from the corpus.
+  const corpus = await writer.readCorpusJourneys(brandId);
+  const { channelWeightUnits } = computeMarkovChannelWeights(corpus);
+  if (channelWeightUnits.size === 0) {
+    return { credited: 0, clawed_back: 0, unattributed: 0 }; // no channels → nothing to attribute
+  }
+
+  // 2. CREDIT pass — recognized orders not yet credited under data_driven (lakehouse gold basis).
+  const finalized = await readUncreditedRecognized(deps, brandId, model);
+
+  for (const order of finalized) {
+    if (!order.brain_id) {
+      unattributed += 1;
+      continue;
+    }
+    const brainAnonId = await resolveBrainAnonId(deps.srPool, brandId, order.brain_id);
+    if (!brainAnonId) {
+      unattributed += 1;
+      continue;
+    }
+    const res = await writer.writeDataDrivenCredit(
+      {
+        brandId,
+        orderId: order.order_id,
+        brainAnonId,
+        realizedRevenueMinor: BigInt(order.amount_minor),
+        currencyCode: order.currency_code,
+        occurredAt: order.occurred_at,
+      },
+      channelWeightUnits,
+    );
+    if (res.inserted > 0) credited += 1;
+    else unattributed += 1;
+  }
+
+  // 3. CLAWBACK pass — reversals on data_driven-credited orders (SAVED weights; lakehouse basis).
+  const reversals = await readReversalsOnCredited(deps, brandId, model);
+  for (const rev of reversals) {
+    const res = await writer.writeClawback({
+      brandId,
+      orderId: rev.order_id,
+      model,
+      reversalReason: rev.event_type as ReversalReason,
+      reversalLedgerEventId: rev.ledger_event_id,
+      reversalBasisMinor: BigInt(rev.amount_minor),
+      occurredAt: rev.occurred_at,
+    });
+    if (res.inserted > 0) clawedBack += 1;
+  }
+
+  return { credited, clawed_back: clawedBack, unattributed };
+}
+
 /** Reconcile a single attribution model for a brand (the credit + clawback passes). */
 async function reconcileOneModel(
   brandId: string,
@@ -128,26 +285,15 @@ async function reconcileOneModel(
   deps: ReconcileDeps,
   model: AttributionModelId,
 ): Promise<ReconcileResult> {
-  const writer = new AttributionCreditWriter(deps.pool, deps.srPool);
+  const writer = new AttributionCreditWriter(deps.srPool);
   let credited = 0;
   let clawedBack = 0;
   let unattributed = 0;
 
-  // ── CREDIT pass: finalized orders not yet credited (for this model) ─────────
-  const finalized = await readScoped<FinalizedOrderRow>(
-    deps.pool,
-    brandId,
-    correlationId,
-    `SELECT f.order_id, f.brain_id, f.amount_minor::text AS amount_minor, f.currency_code, f.occurred_at
-       FROM realized_revenue_ledger f
-      WHERE f.brand_id = $1 AND f.event_type = 'finalization'
-        AND NOT EXISTS (
-          SELECT 1 FROM attribution_credit_ledger a
-           WHERE a.brand_id = $1 AND a.order_id = f.order_id
-             AND a.row_kind = 'credit' AND a.model_id = $2
-        )`,
-    [brandId, model],
-  );
+  // ── CREDIT pass: recognized orders not yet credited (for this model) ─────────
+  // Recognized = finalization (prepaid) OR cod_delivery_confirmed (COD) — see RECOGNITION_EVENT_TYPES.
+  // Basis is the lakehouse gold ledger (Bronze-sourced), filtered by the PG credited set in TS.
+  const finalized = await readUncreditedRecognized(deps, brandId, model);
 
   for (const order of finalized) {
     if (!order.brain_id) {
@@ -172,21 +318,8 @@ async function reconcileOneModel(
     else unattributed += 1; // zero touches → no credit rows written
   }
 
-  // ── CLAWBACK pass: reversals on orders that have saved credits ───────────────
-  const reversals = await readScoped<ReversalRow>(
-    deps.pool,
-    brandId,
-    correlationId,
-    `SELECT r.order_id, r.event_type, r.ledger_event_id, r.amount_minor::text AS amount_minor, r.occurred_at
-       FROM realized_revenue_ledger r
-      WHERE r.brand_id = $1 AND r.event_type = ANY($2::text[])
-        AND EXISTS (
-          SELECT 1 FROM attribution_credit_ledger a
-           WHERE a.brand_id = $1 AND a.order_id = r.order_id
-             AND a.row_kind = 'credit' AND a.model_id = $3
-        )`,
-    [brandId, REVERSAL_EVENT_TYPES, model],
-  );
+  // ── CLAWBACK pass: reversals on orders that have saved credits (lakehouse gold basis) ──
+  const reversals = await readReversalsOnCredited(deps, brandId, model);
 
   for (const rev of reversals) {
     const res = await writer.writeClawback({
@@ -202,27 +335,4 @@ async function reconcileOneModel(
   }
 
   return { credited, clawed_back: clawedBack, unattributed };
-}
-
-/** Run a brand-scoped SELECT under brain_app with the brand GUC set (RLS), as a single txn. */
-async function readScoped<T extends QueryResultRow>(
-  pool: Pool,
-  brandId: string,
-  _correlationId: string,
-  sql: string,
-  params: unknown[],
-): Promise<T[]> {
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    await client.query("SELECT set_config('app.current_brand_id', $1, true)", [brandId]);
-    const res = await client.query<T>(sql, params);
-    await client.query('COMMIT');
-    return res.rows;
-  } catch (err) {
-    await client.query('ROLLBACK').catch(() => undefined);
-    throw err;
-  } finally {
-    client.release();
-  }
 }

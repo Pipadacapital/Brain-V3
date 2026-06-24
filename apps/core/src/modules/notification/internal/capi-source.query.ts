@@ -39,7 +39,9 @@
  *   sees another brand's rows. brandId is from session (NEVER request body).
  */
 import { createHash } from 'node:crypto';
-import type { Pool, PoolClient } from 'pg';
+import type { Pool } from 'pg';
+import type { SilverPool } from '@brain/metric-engine';
+import { withSilverBrand, BRAND_PREDICATE } from '@brain/metric-engine';
 
 /** A single finalized-purchase candidate, pre-gate, pre-match-hash. */
 export interface CapiSourceRow {
@@ -86,97 +88,114 @@ export function capiEventId(
  *   has no resolvable strong identifier, subject_hash is NULL and the downstream gate
  *   treats it as default-closed (no consent key → cannot establish consent → BLOCK).
  */
-export async function fetchFinalizedPurchaseCandidates(
-  client: PoolClient,
-  brandId: string,
-  from: Date,
-  to: Date,
-): Promise<CapiSourceRow[]> {
-  const res = await client.query<{
-    order_id: string;
-    ledger_event_id: string;
-    subject_hash: string | null;
-    value_minor: string;
-    currency_code: string;
-    occurred_at: Date;
-  }>(
-    `SELECT
-        l.order_id,
-        l.ledger_event_id,
-        il.identifier_value AS subject_hash,
-        l.amount_minor::text AS value_minor,
-        l.currency_code,
-        l.occurred_at
-       FROM realized_revenue_ledger l
-       LEFT JOIN LATERAL (
-         SELECT identifier_value
-           FROM identity_link
-          WHERE brand_id = l.brand_id
-            AND brain_id = l.brain_id
-            AND is_active = TRUE
-            AND identifier_type IN ('email','phone')
-            AND tier IN ('strong','strong_on_link')
-          ORDER BY (identifier_type = 'email') DESC, created_at ASC
-          LIMIT 1
-       ) il ON TRUE
-      WHERE l.brand_id = $1
-        AND l.recognition_label = 'finalized'
-        AND l.event_type = 'finalization'
-        AND l.amount_minor > 0
-        AND l.occurred_at >= $2
-        AND l.occurred_at <= $3
-        -- Idempotency for the passback orchestrator: skip conversions already attempted (any
-        -- terminal status row in capi_passback_log). Keeps an every-tick loop from re-sending to
-        -- Meta. Keyed on (order_id, ledger_event_id) — the columns the log stores — under the same
-        -- brand GUC (RLS-scoped). A conversion is attempted at most once.
-        AND NOT EXISTS (
-          SELECT 1 FROM capi_passback_log pb
-           WHERE pb.brand_id = l.brand_id
-             AND pb.order_id = l.order_id
-             AND pb.ledger_event_id = l.ledger_event_id
-        )
-      ORDER BY l.occurred_at ASC`,
-    [brandId, from, to],
-  );
-
-  return res.rows.map((r) => ({
-    brandId,
-    eventId: capiEventId(brandId, r.order_id, r.ledger_event_id),
-    orderId: r.order_id,
-    ledgerEventId: r.ledger_event_id,
-    subjectHash: r.subject_hash,
-    valueMinor: r.value_minor,
-    currencyCode: r.currency_code,
-    occurredAt: r.occurred_at.toISOString(),
-    fbc: null,
-    fbp: null,
-    // Provisional: em/ph presence is decided at the send boundary (vault read); a
-    // resolvable subject_hash implies at least one hashable identifier → count >= 1.
-    matchKeyCount: r.subject_hash ? 1 : 0,
-  }));
-}
-
 /**
- * Convenience wrapper that opens its own transaction + sets the brand GUC, for callers
- * outside an existing transaction. Mirrors the analytics read seam.
+ * MEDALLION REALIGNMENT (Epic 1): the finalized purchases now come from the lakehouse
+ * (brain_gold.gold_revenue_ledger, Bronze-sourced) — NOT the PG realized_revenue_ledger. Because that
+ * ledger lives in StarRocks while the consent key (identity_link) and the passback idempotency log
+ * (capi_passback_log) live in PostgreSQL, this is a deterministic CROSS-STORE read:
+ *   1. StarRocks — finalized positive-amount purchases in the window (+ the resolved brain_id).
+ *   2. PostgreSQL — resolve subject_hash per brain_id (identity_link strong email/phone) AND drop any
+ *      order already attempted (capi_passback_log), under the brand GUC (RLS).
+ *
+ * IDEMPOTENCY (changed, deliberately): keyed on ORDER_ID only — robust against the recognition
+ * rebuild giving a finalization a new deterministic ledger_event_id. A purchase conversion is sent at
+ * most once per order regardless of ledger-id churn (Meta still dedups on the deterministic event_id).
  */
 export async function fetchFinalizedPurchaseCandidatesScoped(
   pool: Pool,
+  srPool: SilverPool,
   brandId: string,
   from: Date,
   to: Date,
 ): Promise<CapiSourceRow[]> {
+  const fromIso = from.toISOString();
+  const toIso = to.toISOString();
+
+  // ── 1. Finalized purchases from the lakehouse ledger (StarRocks). ──
+  const orders = await withSilverBrand(srPool, brandId, async (scope) =>
+    scope.runScoped<{
+      order_id: string;
+      ledger_event_id: string;
+      brain_id: string | null;
+      value_minor: string | number;
+      currency_code: string;
+      occurred_at: string;
+    }>(
+      `SELECT order_id, ledger_event_id, brain_id, amount_minor AS value_minor, currency_code, occurred_at
+         FROM brain_gold.gold_revenue_ledger
+        WHERE event_type = 'finalization'
+          AND recognition_label = 'finalized'
+          AND amount_minor > 0
+          AND occurred_at >= ? AND occurred_at <= ?
+          AND ${BRAND_PREDICATE}
+        ORDER BY occurred_at ASC`,
+      [fromIso, toIso],
+    ),
+  );
+  if (orders.length === 0) return [];
+
+  // ── 2a. subject_hash per brain_id — from the Neo4j-derived silver_identity_link (StarRocks). ──
+  // MEDALLION REALIGNMENT (Epic 3 / ADR-0004): identity moved off PG; the strong email/phone hash for a
+  // brain_id comes from the lakehouse identity projection. Prefer email, then phone (chosen in TS).
+  const brainIds = [...new Set(orders.map((o) => o.brain_id).filter((b): b is string => !!b))];
+  const subjByBrain = new Map<string, string>();
+  if (brainIds.length > 0) {
+    const subjRows = await withSilverBrand(srPool, brandId, async (scope) =>
+      scope.runScoped<{ brain_id: string; identifier_type: string; identifier_value: string }>(
+        `SELECT brain_id, identifier_type, identifier_value
+           FROM brain_silver.silver_identity_link
+          WHERE is_active = true
+            AND identifier_type IN ('email','phone')
+            AND tier IN ('strong','strong_on_link')
+            AND brain_id IN (${brainIds.map(() => '?').join(',')})
+            AND ${BRAND_PREDICATE}`,
+        [...brainIds],
+      ),
+    );
+    for (const r of subjRows) {
+      // Prefer email over phone; first-write-wins within a type.
+      const existing = subjByBrain.get(r.brain_id);
+      if (!existing || r.identifier_type === 'email') subjByBrain.set(r.brain_id, r.identifier_value);
+    }
+  }
+
+  // ── 2b. already-attempted order_ids — capi_passback_log stays PG (CAPI's own dedup log). ──
+  const alreadySent = new Set<string>();
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     await client.query("SELECT set_config('app.current_brand_id', $1, true)", [brandId]);
-    const rows = await fetchFinalizedPurchaseCandidates(client, brandId, from, to);
+    const orderIds = orders.map((o) => o.order_id);
+    const sent = await client.query<{ order_id: string }>(
+      `SELECT DISTINCT order_id FROM capi_passback_log WHERE brand_id = $1 AND order_id = ANY($2::text[])`,
+      [brandId, orderIds],
+    );
+    for (const r of sent.rows) alreadySent.add(r.order_id);
     await client.query('COMMIT');
-    return rows;
   } catch (err) {
     await client.query('ROLLBACK').catch(() => undefined);
     throw err;
   } finally {
     client.release();
   }
+
+  // ── 3. Assemble candidates (drop already-attempted; attach consent key + deterministic event_id). ──
+  return orders
+    .filter((o) => !alreadySent.has(o.order_id))
+    .map((o) => {
+      const subjectHash = o.brain_id ? subjByBrain.get(o.brain_id) ?? null : null;
+      return {
+        brandId,
+        eventId: capiEventId(brandId, o.order_id, o.ledger_event_id),
+        orderId: o.order_id,
+        ledgerEventId: o.ledger_event_id,
+        subjectHash,
+        valueMinor: String(o.value_minor ?? '0').split('.')[0] || '0',
+        currencyCode: o.currency_code,
+        occurredAt: new Date(o.occurred_at).toISOString(),
+        fbc: null,
+        fbp: null,
+        matchKeyCount: subjectHash ? 1 : 0,
+      };
+    });
 }

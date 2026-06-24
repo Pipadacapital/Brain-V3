@@ -10,12 +10,41 @@ run never double-applies and never piles up. Schedules are IST (`Asia/Kolkata`).
 | Job | Schedule (IST) | Image | Purpose |
 |---|---|---|---|
 | recommendation-detectors | `0 6 * * *` daily 06:00 | core | Morning Brief detectors |
-| attribution-reconcile | `30 * * * *` hourly :30 | core | Attribute finalized orders + clawbacks |
-| revenue-finalization | `0 * * * *` hourly | stream-worker | Horizon-based revenue realization |
+| revenue-finalization | `0 * * * *` hourly :00 | stream-worker | Attribution chain ① — horizon-based revenue realization |
+| journey-stitch-from-identity | `15 * * * *` hourly :15 | stream-worker | Attribution chain ② — identity-graph stitch (GAP-1) |
+| attribution-reconcile | `30 * * * *` hourly :30 | core | Attribution chain ③ — credit recognized orders (5 models incl. data_driven) + clawbacks |
 | feature-materialization | `40 * * * *` hourly :40 | stream-worker | Gold features → Redis online store |
 | meta-token-refresh | `0 3 * * *` daily 03:00 | stream-worker | Re-exchange Meta long-lived tokens |
 | audit-checkpoint | `15 * * * *` hourly :15 | core | WORM-anchor audit hash-chain head to S3 |
 | **partition-maintenance** | `30 2 * * *` daily 02:30 | stream-worker | **Create-ahead + drop-old RANGE partitions (C4)** |
+
+### The attribution chain (① → ② → ③ → gold rebuild)
+
+Ordered by **staggered schedule + idempotency**, not an Argo DAG (matching this chart's
+one-container-per-CronWorkflow convention). The time gaps sequence the steps; each is idempotent so a
+missed/retried run is safe (`concurrencyPolicy: Forbid` + `startingDeadlineSeconds`):
+
+1. **revenue-finalization** (:00) — prepaid recognized after the return/cancel horizon → `finalization`
+   rows (COD recognizes separately via `cod_delivery_confirmed`; never double-finalized).
+2. **journey-stitch-from-identity** (:15) — `silver_touchpoint` anon → `identity_link(anon_id)`→brain_id
+   ∩ `realized_revenue_ledger(order→brain_id)`, unambiguous-only → `connector_journey_stitch_map`.
+3. **attribution-reconcile** (:30) — credit recognized orders (`finalization ∪ cod_delivery_confirmed`)
+   to their journeys under all 4 per-journey models + the global data-driven (Markov) model; clawbacks.
+4. **attribution-gold-refresh** (:45) — dbt rebuild of the credit ledger →
+   `brain_gold.gold_marketing_attribution` (incl. the data_driven model), which the dashboard
+   Attribution surface serves. Runs on the **dbt-runner image** (`db/dbt/Dockerfile`) — Node images
+   can't run dbt. **Shipped `enabled: false`**: flip `jobs[attribution-gold-refresh].enabled: true`
+   per env once CI publishes + pins `dbtRunnerImage.digest` (the template fail-closes on a missing
+   digest, so a disabled job is simply skipped). Until enabled, the marts refresh on the nightly dbt
+   build — one cycle behind the ledger. Mirrors `make attribution-gold-refresh`.
+
+### The dbt-runner image (`db/dbt/Dockerfile`)
+
+The runtime for scheduled dbt rebuilds (Node job images have no dbt/StarRocks-catalog runtime). Bundles
+the dbt project + `dbt-starrocks` + the catalog-bootstrap SQL; parameterized via env (`DBT_SELECT`,
+`DBT_VARS`, `DBT_FULL_REFRESH`, `DBT_THREADS`, `DBT_BOOTSTRAP_CATALOG`). Build:
+`docker build -f db/dbt/Dockerfile -t brain-dbt-runner db`. Also serves Silver intraday rebuilds (set
+`DBT_SELECT` accordingly) — closing the Silver-freshness follow-up in `brain-slo.rules.yml`.
 
 ## C4 — partition maintenance (CRITICAL)
 

@@ -3,10 +3,11 @@ version: 2
 models:
   - name: gold_revenue_ledger
     description: >
-      Realized-revenue ledger served from the lakehouse (brain_gold) — Phase G. One row per
-      (brand_id, ledger_event_id); signed BIGINT minor units. Sourced from realized_revenue_ledger via
-      the JDBC read-shim during transition (rebuilds from Bronze in prod); the money metric-engine reads
-      re-point here so PostgreSQL stops being a revenue read source. PG stays the write SoR until cutover.
+      Realized-revenue ledger served from the lakehouse (brain_gold). One row per
+      (brand_id, ledger_event_id); signed BIGINT minor units. MEDALLION REALIGNMENT (Epic 1 / decision B):
+      built unconditionally from Bronze (stg_order_events_bronze → silver_order_recognition → this mart);
+      the PG realized_revenue_ledger has been DROPPED (migration 0098) and PostgreSQL is no longer a
+      revenue read OR write source — the lakehouse is the sole revenue SoR.
     columns:
       - name: brand_id
         tests: [not_null]

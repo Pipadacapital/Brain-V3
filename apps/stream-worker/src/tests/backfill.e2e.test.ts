@@ -41,14 +41,12 @@ import { Kafka, Producer } from 'kafkajs';
 import { ProcessEventUseCase } from '../application/ProcessEventUseCase.js';
 import { RedisDedupAdapter } from '../infrastructure/redis/RedisDedupAdapter.js';
 import { BronzeRepository } from '../infrastructure/pg/BronzeRepository.js';
-import { LedgerWriter } from '../infrastructure/pg/LedgerWriter.js';
 import { PgBackfillJobRepository } from '../infrastructure/pg/BackfillJobRepository.js';
 import { buildDedupKey } from '../domain/bronze/DedupPolicy.js';
 import { uuidV5FromOrderBackfill } from '../jobs/shopify-backfill/uuid-utils.js';
 import { decimalStringToMinor } from '../jobs/shopify-backfill/money-utils.js';
 import { mapOrderToBackfillEvent, computeAchievedDepthLabel } from '../jobs/shopify-backfill/order-mapper.js';
 import { findQueuedJob } from '../jobs/shopify-backfill/run.js';
-import { runRevenueFinalization } from '../jobs/revenue-finalization.js';
 import { CollectorEventV1Schema, ORDER_BACKFILL_V1_TOPIC_SUFFIX } from '@brain/contracts';
 import { buildPartitionKey } from '@brain/events';
 
@@ -84,7 +82,6 @@ let redisClient: Redis;
 let kafkaProducer: Producer;
 let dedup: RedisDedupAdapter;
 let bronze: BronzeRepository;
-let ledgerWriter: LedgerWriter;
 let jobRepo: PgBackfillJobRepository;
 let useCase: ProcessEventUseCase;
 
@@ -182,44 +179,11 @@ async function readBackfillJobAsApp(
   }
 }
 
-/** Read realized_revenue_ledger under brain_app + GUC. */
-async function readLedgerAsApp(
-  orderId: string,
-  brandId: string,
-): Promise<{ provisionalCount: number; finalizedCount: number; currentUser: string }> {
-  const client = await appPool.connect();
-  try {
-    const userResult = await client.query<{ current_user: string }>('SELECT current_user');
-    const currentUser = userResult.rows[0]?.current_user ?? 'unknown';
-    await client.query("SELECT set_config('app.current_brand_id', $1, false)", [brandId]);
-    const prov = await client.query<{ c: string }>(
-      "SELECT count(*)::text AS c FROM realized_revenue_ledger WHERE order_id=$1 AND event_type='provisional_recognition'",
-      [orderId],
-    );
-    const final = await client.query<{ c: string }>(
-      "SELECT count(*)::text AS c FROM realized_revenue_ledger WHERE order_id=$1 AND event_type='finalization'",
-      [orderId],
-    );
-    return {
-      provisionalCount: Number(prov.rows[0]?.c ?? 0),
-      finalizedCount: Number(final.rows[0]?.c ?? 0),
-      currentUser,
-    };
-  } finally {
-    client.release();
-  }
-}
-
 /** Clean up test data by event_id (superuser for teardown). */
 async function cleanupEvent(eventId: string, brandId: string): Promise<void> {
   await superPool.query('DELETE FROM bronze_events WHERE event_id = $1', [eventId]);
   await redisClient.del(buildDedupKey(BRAND_A, eventId));
   await redisClient.del(buildDedupKey(BRAND_B, eventId));
-}
-
-/** Clean up ledger rows for a test order_id. */
-async function cleanupLedger(orderId: string): Promise<void> {
-  await superPool.query('DELETE FROM realized_revenue_ledger WHERE order_id = $1', [orderId]);
 }
 
 // ── Setup / teardown ──────────────────────────────────────────────────────────
@@ -241,7 +205,6 @@ beforeAll(async () => {
   dedup = new RedisDedupAdapter(REDIS_URL);
   await dedup.connect();  // required: lazyConnect=true, enableOfflineQueue=false
   bronze = new BronzeRepository(BRAIN_APP_DB_URL);
-  ledgerWriter = new LedgerWriter(BRAIN_APP_DB_URL);
   jobRepo = new PgBackfillJobRepository(BRAIN_APP_DB_URL);
   // enforceTenantDerivation=false: matches the backfill-order production lane (main.ts) —
   // order.backfill.v1 events carry a server-trusted brand_id, no install_token.
@@ -266,15 +229,13 @@ beforeAll(async () => {
 }, 30_000);
 
 afterAll(async () => {
-  // Clean up test data rows, then fixture brands
-  await superPool.query(`DELETE FROM realized_revenue_ledger WHERE brand_id IN ($1, $2)`, [BRAND_A, BRAND_B]).catch(() => undefined);
-  await superPool.query(`DELETE FROM bronze_events WHERE brand_id IN ($1, $2)`, [BRAND_A, BRAND_B]).catch(() => undefined);
+  // Clean up test data rows, then fixture brands. (revenue ledger is out of PG — Epic 1; bronze_events
+  // was dropped in the db-audit lakehouse move — neither analytical store is PG anymore.)
   await superPool.query(`DELETE FROM backfill_job WHERE brand_id IN ($1, $2)`, [BRAND_A, BRAND_B]).catch(() => undefined);
   await superPool.query(`DELETE FROM brand WHERE id IN ($1, $2)`, [BRAND_A, BRAND_B]).catch(() => undefined);
   await kafkaProducer.disconnect();
   await dedup.quit();
   await bronze.end();
-  await ledgerWriter.end();
   await jobRepo.end();
   await redisClient.quit();
   await appPool.end();
@@ -358,106 +319,6 @@ describe('T2: uuidV5FromOrderBackfill is deterministic and stable across runs (S
   it('output is a valid UUID format', () => {
     const id = uuidV5FromOrderBackfill(BRAND_A, '99999');
     expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
-  });
-});
-
-// ── T3: Past-horizon order → provisional → finalized (SC#10 / ADR-BF-10) ──────
-
-describe('T3: Past-horizon backfilled order → provisional → finalized by revenue-finalization (SC#10)', () => {
-  const SHOPIFY_ORDER_ID = '9990000010';
-  const EVENT_ID = uuidV5FromOrderBackfill(BRAND_A, SHOPIFY_ORDER_ID);
-  // occurred_at in the far past → COD horizon (25 days) is satisfied immediately
-  const OCCURRED_AT = '2023-06-01T10:00:00.000Z';
-
-  it('LedgerWriter.writeProvisionalRecognition creates a provisional row with past occurred_at', async () => {
-    // Cleanup
-    await cleanupLedger(SHOPIFY_ORDER_ID);
-    await superPool.query('DELETE FROM realized_revenue_ledger WHERE order_id=$1', [SHOPIFY_ORDER_ID]);
-
-    const inserted = await ledgerWriter.writeProvisionalRecognition({
-      brandId: BRAND_A,
-      orderId: SHOPIFY_ORDER_ID,
-      brainId: null,
-      amountMinor: '125000', // 1250.00 INR in paisa
-      currencyCode: 'INR',
-      occurredAt: OCCURRED_AT, // D-6: past date, NOT NOW()
-      paymentMethod: 'prepaid',
-      sourcePk: EVENT_ID,
-      rawEventId: EVENT_ID,
-    });
-
-    expect(inserted).toBe(true);
-
-    // Verify ledger row under brain_app + GUC
-    const { provisionalCount, finalizedCount, currentUser } = await readLedgerAsApp(
-      SHOPIFY_ORDER_ID,
-      BRAND_A,
-    );
-    expect(currentUser).toBe('brain_app');
-    expect(provisionalCount).toBe(1);
-    expect(finalizedCount).toBe(0); // not yet finalized
-
-    // Cleanup
-    await superPool.query('DELETE FROM realized_revenue_ledger WHERE order_id=$1', [SHOPIFY_ORDER_ID]);
-  });
-
-  it('occurred_at in ledger row = past date from event (D-6) — NOT NOW()', async () => {
-    await cleanupLedger(SHOPIFY_ORDER_ID);
-
-    await ledgerWriter.writeProvisionalRecognition({
-      brandId: BRAND_A,
-      orderId: SHOPIFY_ORDER_ID,
-      brainId: null,
-      amountMinor: '125000',
-      currencyCode: 'INR',
-      occurredAt: OCCURRED_AT,
-      paymentMethod: 'prepaid',
-      sourcePk: EVENT_ID,
-      rawEventId: EVENT_ID,
-    });
-
-    // Read occurred_at directly via superuser (to verify the timestamp stored)
-    const result = await superPool.query<{ occurred_at: Date }>(
-      "SELECT occurred_at FROM realized_revenue_ledger WHERE order_id=$1 AND event_type='provisional_recognition'",
-      [SHOPIFY_ORDER_ID],
-    );
-    const storedOccurredAt = result.rows[0]?.occurred_at;
-    expect(storedOccurredAt).toBeDefined();
-    // The stored date should be the PAST date (2023), not NOW() (2026)
-    expect(storedOccurredAt!.getFullYear()).toBe(2023);
-
-    await superPool.query('DELETE FROM realized_revenue_ledger WHERE order_id=$1', [SHOPIFY_ORDER_ID]);
-  });
-
-  it('provisional row is idempotent (re-insert → 0 new rows, ON CONFLICT DO NOTHING)', async () => {
-    await cleanupLedger(SHOPIFY_ORDER_ID);
-
-    const first = await ledgerWriter.writeProvisionalRecognition({
-      brandId: BRAND_A,
-      orderId: SHOPIFY_ORDER_ID,
-      brainId: null,
-      amountMinor: '125000',
-      currencyCode: 'INR',
-      occurredAt: OCCURRED_AT,
-      paymentMethod: 'prepaid',
-      sourcePk: EVENT_ID,
-      rawEventId: EVENT_ID,
-    });
-    const second = await ledgerWriter.writeProvisionalRecognition({
-      brandId: BRAND_A,
-      orderId: SHOPIFY_ORDER_ID,
-      brainId: null,
-      amountMinor: '125000',
-      currencyCode: 'INR',
-      occurredAt: OCCURRED_AT,
-      paymentMethod: 'prepaid',
-      sourcePk: EVENT_ID,
-      rawEventId: EVENT_ID,
-    });
-    expect(first).toBe(true);
-    expect(second).toBe(false); // suppressed by ON CONFLICT DO NOTHING
-
-    await superPool.query('DELETE FROM realized_revenue_ledger WHERE order_id=$1', [SHOPIFY_ORDER_ID]);
   });
 });
 
@@ -674,43 +535,6 @@ describe('T9: BackfillJobRepository estimated_total null-safe (SC#6, HP-1)', () 
   });
 });
 
-// ── T10: BackfillJobRepository full lifecycle (D-2/D-9/D-14) ─────────────────
-
-describe('T10: BackfillJobRepository lifecycle: updateProgress with null estimated_total (D-8 honesty)', () => {
-  it('LedgerWriter handles brand_id GUC correctly (brain_app + set_config)', async () => {
-    // Pure DB layer test — verifies GUC is set before INSERT (NN-1 compliance)
-    // Uses an order_id that won't conflict with real data
-    const TEST_ORDER = 'T10-LEDGER-TEST-001';
-    const TEST_EVENT = uuidV5FromOrderBackfill(BRAND_A, TEST_ORDER);
-    await superPool.query('DELETE FROM realized_revenue_ledger WHERE order_id=$1', [TEST_ORDER]);
-
-    const inserted = await ledgerWriter.writeProvisionalRecognition({
-      brandId: BRAND_A,
-      orderId: TEST_ORDER,
-      brainId: null,
-      amountMinor: '100000',
-      currencyCode: 'INR',
-      occurredAt: '2023-12-01T00:00:00.000Z',
-      paymentMethod: 'cod',
-      sourcePk: TEST_EVENT,
-      rawEventId: TEST_EVENT,
-    });
-    expect(inserted).toBe(true);
-
-    // Verify via brain_app pool (RLS enforced — not superuser)
-    const { provisionalCount, currentUser } = await readLedgerAsApp(TEST_ORDER, BRAND_A);
-    expect(currentUser).toBe('brain_app');
-    expect(provisionalCount).toBe(1);
-
-    // Cross-brand: brand_B cannot see brand_A's ledger row
-    const { provisionalCount: wrongBrand, currentUser: u2 } = await readLedgerAsApp(TEST_ORDER, BRAND_B);
-    expect(u2).toBe('brain_app');
-    expect(wrongBrand).toBe(0); // NEGATIVE CONTROL — isolation verified
-
-    await superPool.query('DELETE FROM realized_revenue_ledger WHERE order_id=$1', [TEST_ORDER]);
-  });
-});
-
 // ── T11: SEC-BF-H1 fix — findQueuedJob uses list_queued_backfill_jobs() fn ───
 //
 // QA-BF-B1 gap: findQueuedJob was never directly tested under brain_app + FORCE
@@ -805,119 +629,3 @@ describe('T11: SEC-BF-H1 fix — findQueuedJob uses SECURITY DEFINER fn, returns
   });
 });
 
-// ── T12: QA-BF-B2 — past-dated backfilled order → REALIZED (end-to-end) ──────
-//
-// SC#10 end-to-end proof: a backfilled past-dated order's provisional_recognition
-// row, when the revenue-finalization job runs, becomes a 'finalization' ledger
-// row (event_type='finalization') → the order is REALIZED GMV.
-//
-// Previous test T3 only asserted finalizedCount===0 (not yet finalized) and did
-// not invoke revenue-finalization.ts. This test proves the payoff:
-//   1. Seed a past-horizon provisional_recognition (occurred_at well in the past)
-//      via LedgerWriter (the same path BackfillOrderConsumer uses).
-//   2. Invoke runRevenueFinalization() directly (the exported fn from revenue-finalization.ts).
-//   3. Assert finalizedCount===1 and event_type='finalization' in the ledger —
-//      under brain_app + correct GUC (RLS enforced, not superuser).
-//
-// The brand (BRAND_A) was inserted in beforeAll with COD horizon defaults. If
-// the brand row doesn't include horizon columns, revenue-finalization's
-// list_active_brand_ids() will use the brand's configured values.
-
-describe('T12: QA-BF-B2 — past-dated backfilled order → finalization row (realized GMV) (SC#10)', () => {
-  // Use a unique order_id to avoid conflicts with other tests
-  const T12_ORDER_ID = 'T12-PAST-DATED-ORDER-001';
-  const T12_EVENT_ID = uuidV5FromOrderBackfill(BRAND_A, T12_ORDER_ID);
-  // occurred_at = 3 years ago — COD horizon (max 90 days) is definitely satisfied
-  const T12_OCCURRED_AT = '2022-06-01T10:00:00.000Z';
-
-  beforeAll(async () => {
-    // Clean up any leftover rows from a prior run
-    await superPool.query('DELETE FROM realized_revenue_ledger WHERE order_id=$1', [T12_ORDER_ID]);
-  });
-
-  afterAll(async () => {
-    await superPool.query('DELETE FROM realized_revenue_ledger WHERE order_id=$1', [T12_ORDER_ID]);
-  });
-
-  it('seeds a past-horizon provisional_recognition row via LedgerWriter (same path as BackfillOrderConsumer)', async () => {
-    const inserted = await ledgerWriter.writeProvisionalRecognition({
-      brandId: BRAND_A,
-      orderId: T12_ORDER_ID,
-      brainId: null,
-      amountMinor: '250000', // 2500.00 INR in paisa
-      currencyCode: 'INR',
-      occurredAt: T12_OCCURRED_AT, // D-6: past date, NOT NOW()
-      paymentMethod: 'prepaid',
-      sourcePk: T12_EVENT_ID,
-      rawEventId: T12_EVENT_ID,
-    });
-    expect(inserted).toBe(true);
-
-    // Verify provisional row exists under brain_app + GUC
-    const { provisionalCount, finalizedCount, currentUser } = await readLedgerAsApp(T12_ORDER_ID, BRAND_A);
-    expect(currentUser).toBe('brain_app');
-    expect(currentUser).not.toBe('brain'); // F-4 false-pass prevention
-    expect(provisionalCount).toBe(1);
-    expect(finalizedCount).toBe(0); // not yet finalized — confirmed
-  });
-
-  it('runRevenueFinalization() converts the past-horizon provisional → finalization row (realized GMV)', async () => {
-    // BRAND_A was seeded in beforeAll with default brain config. list_active_brand_ids()
-    // returns brands with status='active' — BRAND_A is inserted with no explicit status
-    // so may default. Revenue-finalization picks up all brands returned by the fn.
-    // We set BRAIN_APP_DATABASE_URL so the job uses the test DB.
-    const prevDbUrl = process.env['BRAIN_APP_DATABASE_URL'];
-    process.env['BRAIN_APP_DATABASE_URL'] = BRAIN_APP_DB_URL;
-
-    try {
-      // Invoke the exported revenue-finalization run() function
-      await runRevenueFinalization();
-    } finally {
-      if (prevDbUrl !== undefined) {
-        process.env['BRAIN_APP_DATABASE_URL'] = prevDbUrl;
-      }
-    }
-
-    // Assert: the provisional row is now accompanied by a finalization row
-    const { provisionalCount, finalizedCount, currentUser } = await readLedgerAsApp(T12_ORDER_ID, BRAND_A);
-    expect(currentUser).toBe('brain_app'); // RLS enforced
-    expect(currentUser).not.toBe('brain'); // F-4 false-pass prevention
-    expect(provisionalCount).toBe(1); // provisional still exists (ledger is append-only)
-    // QA-BF-B2 criterion: finalizedCount === 1 proves past-dated order → realized GMV
-    expect(finalizedCount).toBe(1);
-
-    // Additionally verify the finalization row's event_type directly
-    const client = await appPool.connect();
-    try {
-      await client.query("SELECT set_config('app.current_brand_id', $1, false)", [BRAND_A]);
-      const result = await client.query<{ event_type: string; amount_minor: string }>(
-        `SELECT event_type, amount_minor::text
-         FROM realized_revenue_ledger
-         WHERE order_id = $1 AND event_type = 'finalization'`,
-        [T12_ORDER_ID],
-      );
-      expect(result.rows.length).toBe(1);
-      expect(result.rows[0]!.event_type).toBe('finalization');
-      // Amount is preserved (no float drift — I-S07)
-      expect(result.rows[0]!.amount_minor).toBe('250000');
-    } finally {
-      client.release();
-    }
-  });
-
-  it('runRevenueFinalization() is idempotent — second run produces no new finalization rows (dedup)', async () => {
-    const prevDbUrl = process.env['BRAIN_APP_DATABASE_URL'];
-    process.env['BRAIN_APP_DATABASE_URL'] = BRAIN_APP_DB_URL;
-    try {
-      await runRevenueFinalization();
-    } finally {
-      if (prevDbUrl !== undefined) {
-        process.env['BRAIN_APP_DATABASE_URL'] = prevDbUrl;
-      }
-    }
-
-    // Still exactly 1 finalization row (ON CONFLICT DO NOTHING idempotency)
-    const { finalizedCount } = await readLedgerAsApp(T12_ORDER_ID, BRAND_A);
-    expect(finalizedCount).toBe(1);
-  });
-});

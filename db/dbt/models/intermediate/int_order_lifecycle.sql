@@ -21,7 +21,7 @@
 
 with events as (
 
-    select * from {{ ref('stg_order_ledger_events') }}
+    select * from {{ ref('silver_order_recognition') }}  -- Epic 1: recognition from Bronze (was the PG-ledger staging)
 
 ),
 

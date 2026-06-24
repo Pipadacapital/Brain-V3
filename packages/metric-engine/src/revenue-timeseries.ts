@@ -19,8 +19,8 @@
  * RLS policy (brand_id = current_setting(...)) scopes rows to the active brand.
  */
 
-import type { EngineDeps } from './deps.js';
-import { withBrandTxn } from './deps.js';
+import type { SilverPool } from './silver-deps.js';
+import { withSilverBrand, BRAND_PREDICATE } from './silver-deps.js';
 
 export type TimeGrain = 'day' | 'week';
 
@@ -47,13 +47,17 @@ export interface TimeseriesBucket {
 export async function computeRevenueTimeseries(
   brandId: string,
   params: { fromDate: Date; toDate: Date; grain: TimeGrain },
-  deps: EngineDeps,
+  deps: { srPool: SilverPool },
 ): Promise<TimeseriesBucket[]> {
-  const fromStr = params.fromDate.toISOString().split('T')[0];
-  const toStr = params.toDate.toISOString().split('T')[0];
-  const grain = params.grain; // 'day' | 'week' — safe constant, not user-interpolated
+  const fromStr = params.fromDate.toISOString().split('T')[0] as string;
+  const toStr = params.toDate.toISOString().split('T')[0] as string;
+  // 'day' | 'week' — TS-controlled constant; guard before interpolating into date_trunc.
+  const grain = params.grain === 'week' ? 'week' : 'day';
 
-  return withBrandTxn(deps.pool, brandId, async (client) => {
+  // MEDALLION REALIGNMENT (Epic 1): read the lakehouse (brain_gold.gold_revenue_ledger, sourced from
+  // Bronze recognition) via withSilverBrand — NOT the PostgreSQL ledger. Realized = every non-provisional
+  // event (the canonical realized definition, COD-inclusive). One pass, conditional aggregation.
+  return withSilverBrand(deps.srPool, brandId, async (scope) => {
     // Two CTEs — realized and provisional — joined on (bucket, currency_code).
     // Realized = finalization + rto_reversal (net: rto_reversal amounts are negative
     // in the ledger by convention, so SUM gives the correct net figure).
@@ -67,68 +71,30 @@ export async function computeRevenueTimeseries(
     // a parameterized enum — here we use $3 to pass a string that pg casts to text.
     // We cannot use $3 directly inside date_trunc() because PostgreSQL requires a literal
     // for the first argument. We use CASE to translate.
-    const sql = `
-      WITH realized AS (
-        SELECT
-          date_trunc(
-            CASE $3::text
-              WHEN 'week' THEN 'week'
-              ELSE 'day'
-            END,
-            occurred_at
-          )::date AS bucket,
-          currency_code,
-          SUM(amount_minor) AS realized_minor
-        FROM realized_revenue_ledger
-        WHERE brand_id = $1
-          AND event_type IN ('finalization', 'rto_reversal')
-          AND occurred_at::date BETWEEN $2::date AND $4::date
-        GROUP BY 1, 2
-      ),
-      provisional AS (
-        SELECT
-          date_trunc(
-            CASE $3::text
-              WHEN 'week' THEN 'week'
-              ELSE 'day'
-            END,
-            occurred_at
-          )::date AS bucket,
-          currency_code,
-          SUM(amount_minor) AS provisional_minor
-        FROM realized_revenue_ledger
-        WHERE brand_id = $1
-          AND event_type = 'provisional_recognition'
-          AND recognition_label IN ('provisional', 'settling')
-          AND occurred_at::date BETWEEN $2::date AND $4::date
-        GROUP BY 1, 2
-      ),
-      combined AS (
-        SELECT COALESCE(r.bucket, p.bucket) AS bucket,
-               COALESCE(r.currency_code, p.currency_code) AS currency_code,
-               COALESCE(r.realized_minor, 0) AS realized_minor,
-               COALESCE(p.provisional_minor, 0) AS provisional_minor
-        FROM realized r
-        FULL OUTER JOIN provisional p
-          ON r.bucket = p.bucket AND r.currency_code = p.currency_code
-      )
-      SELECT bucket, currency_code, realized_minor::text, provisional_minor::text
-      FROM combined
-      ORDER BY bucket ASC, currency_code ASC
-    `;
-
-    const result = await client.query<{
-      bucket: Date;
+    const rows = await scope.runScoped<{
+      bucket: string;
       currency_code: string;
-      realized_minor: string;
-      provisional_minor: string;
-    }>(sql, [brandId, fromStr, grain, toStr]);
+      realized_minor: string | number;
+      provisional_minor: string | number;
+    }>(
+      `SELECT
+         CAST(date_trunc('${grain}', occurred_at) AS DATE) AS bucket,
+         currency_code,
+         SUM(CASE WHEN event_type <> 'provisional_recognition' THEN amount_minor ELSE 0 END) AS realized_minor,
+         SUM(CASE WHEN event_type = 'provisional_recognition' THEN amount_minor ELSE 0 END)  AS provisional_minor
+       FROM brain_gold.gold_revenue_ledger
+       WHERE CAST(occurred_at AS DATE) BETWEEN ? AND ?
+         AND ${BRAND_PREDICATE}
+       GROUP BY 1, 2
+       ORDER BY 1 ASC, 2 ASC`,
+      [fromStr, toStr],
+    );
 
-    return result.rows.map((row) => ({
-      bucket: row.bucket.toISOString().split('T')[0] as string,
+    return rows.map((row) => ({
+      bucket: String(row.bucket).split('T')[0] as string,
       currency_code: row.currency_code,
-      realizedMinor: BigInt(row.realized_minor),
-      provisionalMinor: BigInt(row.provisional_minor),
+      realizedMinor: BigInt(String(row.realized_minor ?? '0').split('.')[0] || '0'),
+      provisionalMinor: BigInt(String(row.provisional_minor ?? '0').split('.')[0] || '0'),
     }));
   });
 }

@@ -222,6 +222,35 @@ describe('served /pixel.js — shape-(a) parity (ADR-1)', () => {
     expect(step.properties.step).toBe('shipping');
   });
 
+  it('fires a BEHAVIORAL order.placed on the order-confirmation page (not revenue)', async () => {
+    const { sent } = runAsset({ pathname: '/checkout/order-received/12345' });
+    await drain();
+    const events = sent.map((b) => JSON.parse(b));
+    const order = events.find((e) => e.event_name === 'order.placed');
+    expect(order, 'order.placed should fire on the thank-you page').toBeTruthy();
+    expect(order.properties.order_id).toBe('12345');
+    for (const e of events) expect(CollectorEventV1Schema.safeParse(e).success).toBe(true);
+  });
+
+  it('new checkout/payment-funnel helpers emit schema-valid events (H-universal)', async () => {
+    const { win, sent } = runAsset();
+    const brain = win.brain as Record<string, (x?: unknown) => void>;
+    brain.shippingSelected!({ method: 'standard' });
+    brain.paymentInitiated!({ method: 'card' });
+    brain.paymentSucceeded!({ method: 'card' });
+    brain.paymentFailed!({ reason: 'declined' });
+    brain.orderPlaced!({ order_id: 'A1' });
+    brain.couponApplied!({ code: 'SAVE10' });
+    await drain();
+    brain.flush!();
+    await drain();
+    const names = sent.map((b) => JSON.parse(b).event_name);
+    for (const n of ['checkout.shipping_selected', 'payment.initiated', 'payment.succeeded', 'payment.failed', 'order.placed', 'coupon.applied']) {
+      expect(names, `expected ${n}`).toContain(n);
+    }
+    for (const body of sent) expect(CollectorEventV1Schema.safeParse(JSON.parse(body)).success).toBe(true);
+  });
+
   it('no raw PII / no salt on the wire (ADR-2)', () => {
     const { sent } = runAsset();
     const raw = sent[0]!.toLowerCase();

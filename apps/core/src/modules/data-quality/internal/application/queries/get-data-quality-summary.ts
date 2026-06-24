@@ -30,9 +30,12 @@ import type {
   EngineDeps,
   DqLetterGrade,
   AttributionConfidenceGrade,
+  SilverPool,
 } from '@brain/metric-engine';
 import {
   withBrandTxn,
+  withSilverBrand,
+  BRAND_PREDICATE,
   computeCostConfidence,
   computeEffectiveConfidence,
   evaluateGate,
@@ -41,6 +44,9 @@ import {
   type GateDecision,
   type TrustTier,
 } from '@brain/metric-engine';
+
+/** DQ deps: the PG engine pool + (optional) the StarRocks Silver/Gold pool for the lakehouse reads. */
+type DqDeps = EngineDeps & { srPool?: SilverPool };
 
 /** Postgres error code for "relation does not exist" (table not yet migrated by Track A). */
 const UNDEFINED_TABLE = '42P01';
@@ -167,7 +173,7 @@ interface LatestGradeRow {
  */
 async function fetchLatestGrades(
   brandId: string,
-  deps: EngineDeps,
+  deps: DqDeps,
 ): Promise<{ rows: LatestGradeRow[]; attribution: DqLetterGrade } | null> {
   return withBrandTxn(deps.pool, brandId, async (client) => {
     // DISTINCT ON (category, target) latest by checked_at — the index
@@ -193,7 +199,7 @@ async function fetchLatestGrades(
     // attribution_confidence: the latest letter grade stamped on the credit ledger. Best-
     // available; honest 'D' floor when no credit rows exist yet (no journey graded). Fail
     // closed to 'D' (lowest) if the attribution ledger is not yet migrated.
-    const attribution = await fetchAttributionLetter(client, brandId);
+    const attribution = await fetchAttributionLetter(deps.srPool, brandId);
     return { rows, attribution };
   });
 }
@@ -206,28 +212,31 @@ async function fetchLatestGrades(
  * FLOOR (worst) distinct grade across the brand's rows so a single weak journey is not
  * optimistically hidden. No rows / ledger not migrated → honest 'D' floor.
  */
+// MEDALLION REALIGNMENT (Epic 2): the credit ledger moved to the lakehouse
+// (brain_gold.gold_attribution_credit). Read the distinct confidence grades from gold via the Silver
+// seam. srPool absent (Silver down) → honest 'D' floor (same fail-closed posture as before).
 async function fetchAttributionLetter(
-  client: {
-    query: <R extends Record<string, unknown>>(text: string, params?: unknown[]) => Promise<{ rows: R[] }>;
-  },
+  srPool: SilverPool | undefined,
   brandId: string,
 ): Promise<DqLetterGrade> {
+  if (!srPool) return 'D';
   try {
-    const res = await client.query<{ confidence_grade: string }>(
-      `SELECT DISTINCT confidence_grade
-       FROM attribution_credit_ledger
-       WHERE brand_id = $1`,
-      [brandId],
+    const rows = await withSilverBrand(srPool, brandId, async (scope) =>
+      scope.runScoped<{ confidence_grade: string }>(
+        `SELECT DISTINCT confidence_grade
+           FROM brain_gold.gold_attribution_credit
+          WHERE ${BRAND_PREDICATE}`,
+        [],
+      ),
     );
-    const grades = res.rows
+    const grades = rows
       .map((r) => r.confidence_grade)
       .filter((g): g is AttributionConfidenceGrade => g === 'strong' || g === 'partial' || g === 'weak')
       .map((g) => LETTER_GRADE_BY_CONFIDENCE[g] as DqLetterGrade);
     if (grades.length === 0) return 'D'; // honest floor — no graded attribution yet.
     return grades.reduce((floor, g) => minGrade(floor, g));
-  } catch (err) {
-    if (isUndefinedTable(err)) return 'D'; // attribution ledger not migrated → honest floor.
-    throw err;
+  } catch {
+    return 'D'; // Silver unavailable / table absent → honest floor.
   }
 }
 
@@ -239,7 +248,7 @@ async function fetchAttributionLetter(
  */
 export async function getDataQualitySummary(
   brandId: string,
-  deps: EngineDeps,
+  deps: DqDeps,
 ): Promise<DataQualitySummaryResult> {
   const fetched = await fetchLatestGrades(brandId, deps);
   if (fetched === null) return { state: 'no_data' };

@@ -858,6 +858,30 @@ interface RawPixelInstallation {
   is_new?: boolean;
 }
 
+/** One install option the UI can render (connected-storefront-driven). */
+export interface PixelInstallerDescriptor {
+  provider: string;
+  displayName: string;
+  available: boolean;
+  supportsUninstall: boolean;
+}
+
+/** Uniform install result across storefronts; provider-specific extras ride in `meta`. */
+export interface PixelInstallResult {
+  installed: boolean;
+  provider: string;
+  ref: string;
+  install_token: string;
+  src: string;
+  already_present: boolean;
+  meta?: {
+    /** Shopify: checkout (Web Pixel) coverage status. */
+    webPixel?: { status: 'enabled' | 'pending'; message: string };
+    /** WooCommerce: the configured plugin version. */
+    pluginVersion?: string | null;
+  };
+}
+
 function mapPixel(d: RawPixelInstallation): PixelInstallationResponse {
   return {
     installed: d.installed,
@@ -920,6 +944,40 @@ export const pixelApi = {
     );
     return data;
   },
+
+  // ── Storefront-agnostic install surface (feat-universal-pixel) ──────────────
+  // The merchant connects a storefront first; Brain then offers the install option(s) for the
+  // connected storefront(s). Adding a platform on the backend surfaces here with no UI change.
+
+  // GET the install options available to this brand (connected-storefront-driven).
+  listInstallers: async (): Promise<{ installers: PixelInstallerDescriptor[] }> => {
+    const { data } = await bffFetch<{ data: { installers: PixelInstallerDescriptor[] } }>(
+      '/v1/pixel/installers',
+    );
+    return data;
+  },
+
+  // Run the installer for a connected storefront (shopify | woocommerce | …).
+  installProvider: async (provider: string): Promise<PixelInstallResult> => {
+    const { data } = await bffFetch<{ data: PixelInstallResult }>(`/v1/pixel/install/${provider}`, {
+      method: 'POST',
+      idempotencyKey: generateRequestId(),
+    });
+    return data;
+  },
+
+  // Remove the pixel from a storefront (when the installer supports it).
+  uninstallProvider: async (
+    provider: string,
+  ): Promise<{ removed: boolean; provider: string; already_absent: boolean }> => {
+    const { data } = await bffFetch<{
+      data: { removed: boolean; provider: string; already_absent: boolean };
+    }>(`/v1/pixel/install/${provider}`, { method: 'DELETE', idempotencyKey: generateRequestId() });
+    return data;
+  },
+
+  // Direct browser-download URL for the Brain Pixel WordPress/WooCommerce plugin (no secrets).
+  wooCommercePluginUrl: '/api/bff/v1/pixel/woocommerce/plugin.zip',
 
   // BFF returns { request_id, data: {...} } — unwrap to flat PixelHealthResponse.
   getHealth: async (): Promise<PixelHealthResponse> => {

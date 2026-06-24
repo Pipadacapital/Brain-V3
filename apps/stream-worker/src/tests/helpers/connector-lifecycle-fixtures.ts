@@ -249,9 +249,7 @@ export async function cleanupConnectorFixtures(
       .catch(() => undefined);
   }
 
-  await superPool
-    .query(`DELETE FROM realized_revenue_ledger WHERE brand_id IN (${placeholders})`, brandIds)
-    .catch(() => undefined);
+  // (revenue is out of PG — realized_revenue_ledger was dropped in the medallion realignment, Epic 1.)
 
   await superPool
     .query(`DELETE FROM brand WHERE id IN (${placeholders})`, brandIds)

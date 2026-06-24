@@ -35,12 +35,13 @@ export type MoneyRecord = z.infer<typeof MoneyRecordSchema>;
 
 // ── Shared enum mirrors (mirror the EXACT literal sets from the core/engine types) ──
 
-/** Mirrors `AttributionModelId` — packages/metric-engine/src/attribution-models.ts:38. */
+/** Mirrors `AttributionModelId` — packages/metric-engine/src/attribution-models.ts. */
 export const AttributionModelIdSchema = z.enum([
   'first_touch',
   'last_touch',
   'linear',
   'position_based',
+  'data_driven',
 ]);
 export type AttributionModelId = z.infer<typeof AttributionModelIdSchema>;
 

@@ -12,7 +12,9 @@
  * (doc 06 §"Argo jobs → Core"). NOT a long-running service.
  */
 import { randomUUID } from 'node:crypto';
+import mysql from 'mysql2/promise';
 import { createPool, type DbPool, type QueryContext } from '@brain/db';
+import type { SilverPool } from '@brain/metric-engine';
 import { createLogger } from '@brain/observability';
 import { generateRecommendations, measureRecommendationOutcomes } from '../modules/recommendation/index.js';
 
@@ -23,6 +25,17 @@ const DB_URL =
   process.env['DATABASE_URL'] ??
   'postgres://brain_app:brain_app@localhost:5432/brain';
 
+/** StarRocks Silver/Gold pool — detector REVENUE signals read the lakehouse ledger (Epic 1 / B). */
+function createSrPool(): SilverPool {
+  return mysql.createPool({
+    host: process.env['STARROCKS_HOST'] ?? 'localhost',
+    port: parseInt(process.env['STARROCKS_PORT'] ?? '9030', 10),
+    user: process.env['STARROCKS_ANALYTICS_USER'] ?? 'brain_analytics',
+    password: process.env['STARROCKS_ANALYTICS_PASSWORD'] ?? 'brain_analytics_dev',
+    connectionLimit: 3,
+  }) as unknown as SilverPool;
+}
+
 export interface RecommendationJobResult {
   brands: number;
   raised: number;
@@ -31,9 +44,11 @@ export interface RecommendationJobResult {
   errors: number;
 }
 
-export async function runRecommendationDetectors(deps?: { pool?: DbPool }): Promise<RecommendationJobResult> {
+export async function runRecommendationDetectors(deps?: { pool?: DbPool; srPool?: SilverPool }): Promise<RecommendationJobResult> {
   const pool = deps?.pool ?? (await createPool({ connectionString: DB_URL }));
   const ownsPool = !deps?.pool;
+  const srPool = deps?.srPool ?? createSrPool();
+  const ownsSrPool = !deps?.srPool;
   let brands = 0;
   let raised = 0;
   let expired = 0;
@@ -55,11 +70,11 @@ export async function runRecommendationDetectors(deps?: { pool?: DbPool }): Prom
     for (const brandId of brandIds) {
       brands += 1;
       try {
-        const r = await generateRecommendations(brandId, `reco-job-${randomUUID()}`, { pool });
+        const r = await generateRecommendations(brandId, `reco-job-${randomUUID()}`, { pool, srPool });
         raised += r.raised;
         expired += r.expired;
         // Learning loop: re-measure each open rec's headline metric (then-at-raise vs now).
-        const m = await measureRecommendationOutcomes(brandId, `reco-measure-${randomUUID()}`, { pool });
+        const m = await measureRecommendationOutcomes(brandId, `reco-measure-${randomUUID()}`, { pool, srPool });
         measured += m.measured;
       } catch (err) {
         errors += 1;
@@ -70,6 +85,7 @@ export async function runRecommendationDetectors(deps?: { pool?: DbPool }): Prom
     return { brands, raised, expired, measured, errors };
   } finally {
     if (ownsPool) await pool.end();
+    if (ownsSrPool) await (srPool as unknown as mysql.Pool).end().catch(() => undefined);
   }
 }
 

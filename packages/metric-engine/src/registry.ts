@@ -200,7 +200,7 @@ export const METRIC_REGISTRY = {
       recognitionLabels: ['finalized'] as const,
       toleranceMinor: 0 as const,
       description:
-        'CoD CM2 + CoD-vs-prepaid mix from realized_revenue_ledger cod_* event_types (0030): ' +
+        'CoD CM2 + CoD-vs-prepaid mix from the gold revenue ledger cod_* recognition event_types: ' +
         'net CoD = cod_delivery_confirmed (+) + cod_rto_clawback (−), per currency_code. RTO ' +
         'clawback is the realized cost of a return — net CoD is the contribution AFTER RTO ' +
         'leakage (the honest number the placed-CoD figure hides). Mix = net CoD ÷ (net CoD + ' +

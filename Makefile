@@ -43,8 +43,7 @@ PG_PSQL  ?= docker exec -i $(PG_CONTAINER) psql -U $(PG_USER) -d $(PG_DB)
 .PHONY: journey-catalog journey-run journey-build journey-verify journey-seed
 .PHONY: orderline-catalog orderline-ddl orderline-run orderline-build orderline-verify
 .PHONY: checkout-catalog checkout-run checkout-build checkout-verify
-.PHONY: gold-run insights-pipeline
-.PHONY: attribution-migrate attribution-seed attribution-build attribution-verify
+.PHONY: gold-run insights-pipeline attribution-gold-refresh recognition-refresh
 
 silver-catalog:
 	@echo ">> Applying Postgres read-shim view silver_order_ledger_src (uuid->text for JDBC)..."
@@ -56,11 +55,24 @@ silver-catalog:
 
 silver-run:
 	@echo ">> dbt run (staging -> intermediate -> mart) ..."
-	cd $(DBT_DIR) && DBT_PROFILES_DIR=$(DBT_PROFILES) "$(DBT)" run --select stg_order_ledger_events+
+	cd $(DBT_DIR) && DBT_PROFILES_DIR=$(DBT_PROFILES) "$(DBT)" run --select stg_order_events_bronze+
 	@echo ">> dbt test (grain, money-bigint, fold-consistency, schema tests) ..."
-	cd $(DBT_DIR) && DBT_PROFILES_DIR=$(DBT_PROFILES) "$(DBT)" test --select silver_order_state stg_order_ledger_events int_order_lifecycle
+	cd $(DBT_DIR) && DBT_PROFILES_DIR=$(DBT_PROFILES) "$(DBT)" test --select silver_order_state silver_order_recognition int_order_lifecycle
 
 silver-build: silver-catalog silver-run
+
+# ============================================================================
+# recognition-refresh — MEDALLION REALIGNMENT (Epic 1/2, decision B). Rebuild the revenue
+# RECOGNITION ledger from Bronze: stg_order_events_bronze (Bronze order.live.v1) →
+# silver_order_recognition (the 6 recognition event types) → gold_revenue_ledger. This is the
+# Bronze-sourced REPLACEMENT for the PG realized_revenue_ledger write path (LedgerWriter +
+# revenue-finalization). Scheduled hourly (cronworkflows: recognition-refresh) so the gold ledger
+# stays fresh as new orders land in Bronze — the precondition for retiring the PG write path.
+# `+gold_revenue_ledger` builds the model and every Bronze/oltp-shim parent.
+recognition-refresh: silver-catalog
+	@echo ">> dbt run — revenue recognition ledger (Bronze -> silver_order_recognition -> gold_revenue_ledger) ..."
+	cd $(DBT_DIR) && DBT_PROFILES_DIR=$(DBT_PROFILES) "$(DBT)" run --select +gold_revenue_ledger --threads 1
+	@echo ">> Recognition ledger refreshed. Billing + attribution + dashboards now serve the Bronze-sourced gold ledger."
 
 # Replay/idempotency proof: snapshot an order-independent content fingerprint (sum of
 # per-row hashes over ALL columns EXCEPT the build-time updated_at), rebuild, snapshot
@@ -99,7 +111,7 @@ silver-verify: silver-run
 # ============================================================================
 
 journey-catalog:
-	@echo ">> Applying Postgres read-shim views bronze_touchpoint_src + connector_journey_stitch_map_src (uuid->text for JDBC)..."
+	@echo ">> Applying Postgres read-shim view bronze_touchpoint_src (uuid/jsonb->text for JDBC; dev/PG-mode only)..."
 	$(PG_PSQL) < db/starrocks/bronze_touchpoint_src.sql
 	@echo ">> Ensuring StarRocks JDBC external catalog brain_oltp_pg exists (idempotent)..."
 	$(SR_MYSQL) < db/starrocks/oltp_jdbc_catalog.sql
@@ -231,38 +243,15 @@ checkout-verify: checkout-run
 	fi
 
 # ============================================================================
-# Phase 5 — Attribution credit ledger (migration 0032 + synthetic fixtures).
-# The credit ledger is a Postgres Gold SoR (RLS FORCE, append-only). It is
-# rebuildable from silver.touchpoint + realized_revenue_ledger — the synthetic
-# fixtures are CLEARLY-LABELLED dev enrichment (real journey data is thin).
+# Phase 5 — Attribution credit ledger.
+# MEDALLION REALIGNMENT (Epic 2 / decision B): the credit ledger is no longer a Postgres SoR.
+# attribution_credit_ledger (migration 0032) was DROPPED (migration 0099); the ledger is now the
+# app-written StarRocks table brain_gold.gold_attribution_credit (attribution-writer), and
+# gold_marketing_attribution is a dbt VIEW over it. The reconcile driver (reconcile-attribution.ts)
+# rebuilds it from silver_touchpoint + the gold revenue ledger — no PG table, no synthetic PG seed.
+# The closed-sum parity oracle (packages/metric-engine attribution-parity-oracle.test.ts) is a pure
+# in-memory CI gate; the live legs write/read gold directly. No make target seeds attribution anymore.
 # ============================================================================
-
-attribution-migrate:
-	@echo ">> Applying additive migration 0032_attribution_credit_ledger.sql (RLS FORCE, append-only, seams)..."
-	$(PG_PSQL) -v ON_ERROR_STOP=1 < db/migrations/0032_attribution_credit_ledger.sql
-
-attribution-seed: attribution-migrate
-	@echo ">> Loading CLEARLY-LABELLED synthetic attribution fixtures (model_version=v1-synthetic-fixture) into the credit ledger..."
-	$(PG_PSQL) -v ON_ERROR_STOP=1 < db/dbt/seeds/attribution_synthetic_fixtures.sql
-
-attribution-build: attribution-seed
-
-# Replay/idempotency proof: re-running the seed must add NO rows (append-only +
-# ON CONFLICT DO NOTHING on the dedup key). Row count is stable across re-seeds.
-attribution-verify: attribution-seed
-	@echo ">> [replay] credit-ledger row count after seed #1 ..."
-	@$(PG_PSQL) -tAc "SELECT COUNT(*) FROM attribution_credit_ledger WHERE model_version='v1-synthetic-fixture';" > /tmp/acl_count_1.txt
-	@cat /tmp/acl_count_1.txt
-	@echo ">> [replay] re-loading the synthetic seed (must be a no-op) ..."
-	$(PG_PSQL) -v ON_ERROR_STOP=1 < db/dbt/seeds/attribution_synthetic_fixtures.sql > /dev/null
-	@echo ">> [replay] credit-ledger row count after seed #2 ..."
-	@$(PG_PSQL) -tAc "SELECT COUNT(*) FROM attribution_credit_ledger WHERE model_version='v1-synthetic-fixture';" > /tmp/acl_count_2.txt
-	@cat /tmp/acl_count_2.txt
-	@if diff -q /tmp/acl_count_1.txt /tmp/acl_count_2.txt >/dev/null; then \
-		echo ">> REPLAY PASS: attribution_credit_ledger row count is identical across re-seeds (append-only / idempotent)."; \
-	else \
-		echo ">> REPLAY FAIL: attribution_credit_ledger row count changed between re-seeds."; exit 1; \
-	fi
 
 # ============================================================================
 # re-platform Phase E — Gold serving marts (brain_gold). Reads Silver only; ADR-004-safe
@@ -293,3 +282,20 @@ insights-pipeline: silver-catalog
 	@echo ">> dbt run — all marts from real data (Postgres ledger via JDBC + touchpoint/journey via Iceberg Bronze) ..."
 	cd $(DBT_DIR) && DBT_PROFILES_DIR=$(DBT_PROFILES) "$(DBT)" run --full-refresh --threads 1
 	@echo ">> Marts built. Open /insights (logged into a brand with order + pixel data)."
+
+# ============================================================================
+# attribution-gold-refresh — rebuild ONLY the attribution serving marts from the (reconcile-written)
+# Postgres credit ledger, so the dashboard's Attribution surface (channel-ROAS / paths) serves the
+# CURRENT attribution — including the data-driven (Markov) model — without a full insights-pipeline.
+#
+# Run AFTER the attribution-reconcile job writes the ledger:
+#   node apps/.../jobs/attribution-reconcile.js   (writes all 5 models incl. data_driven to PG)
+#   make attribution-gold-refresh                 (PG ledger → brain_gold.gold_marketing_attribution
+#                                                   + gold_attribution_paths via dbt; ledger_source=pg)
+# Single-threaded (macOS dbt spawn). gold_marketing_attribution is a passthrough of model_id, so every
+# model the ledger holds (incl. data_driven) flows through with no mart change.
+# ============================================================================
+attribution-gold-refresh: silver-catalog
+	@echo ">> dbt run — attribution serving marts (gold_marketing_attribution + gold_attribution_paths) from PG ledger ..."
+	cd $(DBT_DIR) && DBT_PROFILES_DIR=$(DBT_PROFILES) "$(DBT)" run --select gold_marketing_attribution gold_attribution_paths --threads 1
+	@echo ">> Attribution gold marts refreshed. The dashboard Attribution surface now serves data_driven."

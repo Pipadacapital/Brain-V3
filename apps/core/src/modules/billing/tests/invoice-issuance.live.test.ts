@@ -14,10 +14,14 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import pg from 'pg';
+import mysql from 'mysql2/promise';
 import { createPool, type DbPool } from '@brain/db';
+import type { SilverPool } from '@brain/metric-engine';
 import { sealBillingPeriod, issueInvoice, issueCreditNote, getInvoice } from '../index.js';
 
 const SUPERUSER_URL = process.env['DATABASE_URL'] ?? 'postgres://brain:brain@localhost:5432/brain';
+const SR_HOST = process.env['STARROCKS_HOST'] ?? '127.0.0.1';
+const SR_PORT = Number(process.env['STARROCKS_PORT'] ?? 9030);
 
 const BRAND_A = 'b333333a-0a1a-4a1a-8a1a-000000000001';
 const BRAND_B = 'b333333a-0a1a-4a1a-8a1a-000000000002';
@@ -34,6 +38,7 @@ const P2 = '2098-06';
 
 let superPool: pg.Pool;
 let dbPool: DbPool;
+let srPool: SilverPool;
 let pgAvailable = false;
 
 const cfg = { legalEntity: LEGAL_ENTITY };
@@ -41,14 +46,16 @@ const cfg = { legalEntity: LEGAL_ENTITY };
 let seq = 0;
 async function insertLedgerRow(period: string, eventType: string, amount: number, effectiveAt: string): Promise<void> {
   seq += 1;
-  await superPool.query(
-    `INSERT INTO realized_revenue_ledger
-       (brand_id, ledger_event_id, order_id, event_type, amount_minor, currency_code,
-        occurred_at, occurred_date, economic_effective_at, billing_posted_period, recognition_label)
-     VALUES ($1, $2, $3, $4, $5, 'INR', $6, (timezone('UTC',$6::timestamptz))::date, $6, $7,
-             CASE WHEN $4 = 'provisional_recognition' THEN 'provisional' ELSE 'finalized' END)
-     ON CONFLICT (brand_id, ledger_event_id, occurred_date) DO NOTHING`,
-    [BRAND_A, `inv-evt-${seq}`, `order-${seq}`, eventType, amount, effectiveAt, period],
+  // Epic 1: the billing meter reads the LAKEHOUSE ledger (brain_gold.gold_revenue_ledger). Seed there
+  // (StarRocks) so sealBillingPeriod's figure is driven by gold. recognition_label finalized for the
+  // non-provisional events the meter sums.
+  const label = eventType === 'provisional_recognition' ? 'provisional' : 'finalized';
+  await (srPool as unknown as mysql.Pool).query(
+    `INSERT INTO brain_gold.gold_revenue_ledger
+       (brand_id, ledger_event_id, order_id, brain_id, event_type, amount_minor, currency_code, fee_minor,
+        occurred_at, economic_effective_at, recognition_label, billing_posted_period, ingested_at, updated_at)
+     VALUES (?, ?, ?, NULL, ?, ?, 'INR', 0, ?, ?, ?, ?, ?, ?)`,
+    [BRAND_A, `inv-evt-${seq}`, `order-${seq}`, eventType, amount, effectiveAt, effectiveAt, label, period, effectiveAt, effectiveAt],
   );
 }
 
@@ -80,7 +87,12 @@ async function cleanup(): Promise<void> {
   await superPool.query(`DELETE FROM credit_note_number_counter WHERE legal_entity = $1`, [LEGAL_ENTITY]).catch(() => {});
   await superPool.query(`DELETE FROM gmv_meter_snapshot WHERE brand_id IN ($1,$2)`, [BRAND_A, BRAND_B]).catch(() => {});
   await superPool.query(`DELETE FROM billing_plan WHERE brand_id IN ($1,$2)`, [BRAND_A, BRAND_B]).catch(() => {});
-  await superPool.query(`DELETE FROM realized_revenue_ledger WHERE brand_id IN ($1,$2)`, [BRAND_A, BRAND_B]).catch(() => {});
+  // revenue is out of PG (Epic 1) — the realized ledger lives in StarRocks gold_revenue_ledger (below).
+  if (srPool) {
+    await (srPool as unknown as mysql.Pool)
+      .query(`DELETE FROM brain_gold.gold_revenue_ledger WHERE brand_id IN (?, ?)`, [BRAND_A, BRAND_B])
+      .catch(() => {});
+  }
   await superPool.query(`DELETE FROM brand WHERE id = $1`, [BRAND_A]).catch(() => {});
   await superPool.query(`DELETE FROM organization WHERE id = $1`, [ORG_ID]).catch(() => {});
   await superPool.query(`DELETE FROM app_user WHERE id = $1`, [USER_ID]).catch(() => {});
@@ -90,14 +102,15 @@ beforeAll(async () => {
   try {
     superPool = new pg.Pool({ connectionString: SUPERUSER_URL, connectionTimeoutMillis: 4000 });
     await superPool.query('SELECT 1');
+    srPool = mysql.createPool({ host: SR_HOST, port: SR_PORT, user: 'root', password: '', connectionLimit: 2 }) as unknown as SilverPool;
     dbPool = await createPool({ connectionString: SUPERUSER_URL });
     await cleanup();
     await seedBrand();
-    // P1 basis = 100000; P2 basis = 200000. Rate = default 100 bps (1%).
+    // P1 basis = 100000; P2 basis = 200000. Rate = default 100 bps (1%). Seeded into gold (the meter source).
     await insertLedgerRow(P1, 'finalization', 100_000, '2098-05-10T00:00:00Z');
     await insertLedgerRow(P2, 'finalization', 200_000, '2098-06-10T00:00:00Z');
-    await sealBillingPeriod(BRAND_A, P1, CORR, { pool: dbPool });
-    await sealBillingPeriod(BRAND_A, P2, CORR, { pool: dbPool });
+    await sealBillingPeriod(BRAND_A, P1, CORR, { pool: dbPool, srPool });
+    await sealBillingPeriod(BRAND_A, P2, CORR, { pool: dbPool, srPool });
     pgAvailable = true;
   } catch {
     pgAvailable = false;
@@ -108,6 +121,7 @@ afterAll(async () => {
   if (pgAvailable) await cleanup();
   if (dbPool) await dbPool.end();
   if (superPool) await superPool.end();
+  if (srPool) await (srPool as unknown as mysql.Pool).end().catch(() => {});
 });
 
 describe('invoice issuance (live Postgres)', () => {
@@ -118,7 +132,7 @@ describe('invoice issuance (live Postgres)', () => {
 
   it('1. issue — gapless number, fee on sealed basis, GST 18%, total = fee + tax', async () => {
     if (!pgAvailable) return;
-    const r = await issueInvoice(BRAND_A, P1, CORR, { pool: dbPool }, cfg);
+    const r = await issueInvoice(BRAND_A, P1, CORR, { pool: dbPool, srPool }, cfg);
     expect(r.state).toBe('issued');
     if (r.state !== 'issued') return;
     expect(r.issued).toBe(true);
@@ -142,7 +156,7 @@ describe('invoice issuance (live Postgres)', () => {
 
   it('2. idempotent — re-issue returns issued:false and consumes no new number', async () => {
     if (!pgAvailable) return;
-    const r = await issueInvoice(BRAND_A, P1, CORR, { pool: dbPool }, cfg);
+    const r = await issueInvoice(BRAND_A, P1, CORR, { pool: dbPool, srPool }, cfg);
     if (r.state !== 'issued') throw new Error('expected issued');
     expect(r.issued).toBe(false);
     expect(r.invoice_number).toBe(`${LEGAL_ENTITY}/2098-2099/000001`);
@@ -150,7 +164,7 @@ describe('invoice issuance (live Postgres)', () => {
 
   it('3. gapless numbering — the next period gets the next sequential number', async () => {
     if (!pgAvailable) return;
-    const r = await issueInvoice(BRAND_A, P2, CORR, { pool: dbPool }, cfg);
+    const r = await issueInvoice(BRAND_A, P2, CORR, { pool: dbPool, srPool }, cfg);
     if (r.state !== 'issued') throw new Error('expected issued');
     expect(r.issued).toBe(true);
     expect(r.invoice_number).toBe(`${LEGAL_ENTITY}/2098-2099/000002`);
@@ -186,7 +200,7 @@ describe('invoice issuance (live Postgres)', () => {
 
   it('5. not_sealed — issuing an unsealed period burns no number', async () => {
     if (!pgAvailable) return;
-    const r = await issueInvoice(BRAND_A, '2098-01', CORR, { pool: dbPool }, cfg);
+    const r = await issueInvoice(BRAND_A, '2098-01', CORR, { pool: dbPool, srPool }, cfg);
     expect(r.state).toBe('not_sealed');
   });
 

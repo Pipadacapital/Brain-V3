@@ -20,7 +20,6 @@ import { freshnessCheck } from './freshness-check.js';
 import { completenessCheck } from './completeness-check.js';
 import { schemaValidityCheck } from './schema-validity-check.js';
 import { reconciliationCheck } from './reconciliation-check.js';
-import { bronzeLedgerProvenanceCheck } from './bronze-ledger-provenance-check.js';
 import { writeDqResult, type DqCheckRow } from './writer.js';
 import { createSilverReader, type SilverReader, type SilverReaderConfig } from './silver-reader.js';
 import { withTickLeaderLock, LEADER_LOCK_DQ_CHECKS } from '../../infrastructure/pg/LeaderLock.js';
@@ -58,8 +57,8 @@ export async function runDqChecksForBrand(
     () => completenessCheck(pool, silver, brandId),
     () => schemaValidityCheck(pool, silver, brandId),
     () => reconciliationCheck(pool, silver, brandId),
-    // P2.4: Bronze→Gold rebuildability proof — ledger order_ids must trace to a Bronze order event.
-    () => bronzeLedgerProvenanceCheck(pool, silver, brandId),
+    // MEDALLION REALIGNMENT (Epic 1): bronzeLedgerProvenanceCheck removed — the gold_revenue_ledger is
+    // BUILT from Bronze by dbt, so Bronze→Gold provenance is a build invariant, not a runtime DQ check.
   ];
 
   for (const exec of executors) {

@@ -122,6 +122,7 @@ import {
   resolveMergeReview,
   unmergeCustomer,
 } from '../../identity/index.js';
+import type { Neo4jIdentityReader } from '../../identity/internal/infrastructure/neo4j-identity-reader.js';
 import {
   getBillingPeriods,
   sealBillingPeriod,
@@ -175,6 +176,8 @@ export function registerBffRoutes(
   onboardingService?: OnboardingService,
   srPool?: SilverPool,
   vaultService?: ContactPiiVaultService,
+  /** MEDALLION REALIGNMENT (Epic 3 / ADR-0004): the Neo4j identity SoR read/admin client. */
+  identityReader?: Neo4jIdentityReader,
 ): void {
   const sessionPreHandler = validateSessionPreHandler(authService);
 
@@ -1508,8 +1511,8 @@ export function registerBffRoutes(
         searched: Boolean(q.search && q.search.trim().length > 0),
       };
 
-      // Honest empty: no active brand → no scope to browse.
-      if (!auth.brandId || !pool) {
+      // Honest empty: no active brand / identity graph → no scope to browse.
+      if (!auth.brandId || !identityReader) {
         return reply.send({ request_id: requestId, data: empty });
       }
 
@@ -1517,7 +1520,7 @@ export function registerBffRoutes(
         auth.brandId,
         { lifecycle: q.lifecycle ?? null, search: q.search ?? null, limit, offset },
         requestId,
-        { pool },
+        { reader: identityReader },
       );
       return reply.send({ request_id: requestId, data: result });
     },
@@ -1574,15 +1577,15 @@ export function registerBffRoutes(
         });
       }
 
-      if (!pool) {
+      if (!identityReader) {
         return reply.code(503).send({
           request_id: requestId,
-          error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' },
+          error: { code: 'SERVICE_UNAVAILABLE', message: 'Identity graph not available' },
         });
       }
 
       const result: ContractCustomer360 = await getCustomer360(auth.brandId, brain_id, requestId, {
-        pool,
+        reader: identityReader,
       });
 
       return reply.send({ request_id: requestId, data: result });
@@ -1669,14 +1672,14 @@ export function registerBffRoutes(
           error: { code: 'NO_ACTIVE_BRAND', message: 'Select a brand first.' },
         });
       }
-      if (!rawPool) {
+      if (!identityReader) {
         return reply.code(503).send({
           request_id: requestId,
-          error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' },
+          error: { code: 'SERVICE_UNAVAILABLE', message: 'Identity graph not available' },
         });
       }
 
-      const result: ContractErasureResult = await eraseCustomer(auth.brandId, brain_id, rawPool);
+      const result: ContractErasureResult = await eraseCustomer(auth.brandId, brain_id, identityReader);
       return reply.send({ request_id: requestId, data: result });
     },
   );
@@ -1689,10 +1692,10 @@ export function registerBffRoutes(
       const requestId = randomUUID();
       const auth = (request as AuthenticatedRequest).auth;
       const empty: ContractMergeReviewList = { reviews: [] };
-      if (!auth.brandId || !pool) {
+      if (!auth.brandId || !identityReader) {
         return reply.send({ request_id: requestId, data: empty });
       }
-      const data: ContractMergeReviewList = await listMergeReviews(auth.brandId, requestId, { pool });
+      const data: ContractMergeReviewList = await listMergeReviews(auth.brandId, requestId, { reader: identityReader });
       return reply.send({ request_id: requestId, data });
     },
   );
@@ -1729,13 +1732,13 @@ export function registerBffRoutes(
       }
       const auth = (request as AuthenticatedRequest).auth;
       const { review_id, decision } = request.body as { review_id: string; decision: 'merge' | 'reject' };
-      if (!auth.brandId || !rawPool) {
+      if (!auth.brandId || !identityReader) {
         return reply.code(409).send({
           request_id: requestId,
           error: { code: 'NO_ACTIVE_BRAND', message: 'Select a brand first.' },
         });
       }
-      const result: ContractMergeResolveResult = await resolveMergeReview(auth.brandId, review_id, decision, rawPool);
+      const result: ContractMergeResolveResult = await resolveMergeReview(auth.brandId, review_id, decision, identityReader);
       return reply.send({ request_id: requestId, data: result });
     },
   );
@@ -1771,13 +1774,13 @@ export function registerBffRoutes(
       }
       const auth = (request as AuthenticatedRequest).auth;
       const { brain_id } = request.body as { brain_id: string };
-      if (!auth.brandId || !rawPool) {
+      if (!auth.brandId || !identityReader) {
         return reply.code(409).send({
           request_id: requestId,
           error: { code: 'NO_ACTIVE_BRAND', message: 'Select a brand first.' },
         });
       }
-      const result: ContractUnmergeResult = await unmergeCustomer(auth.brandId, brain_id, rawPool);
+      const result: ContractUnmergeResult = await unmergeCustomer(auth.brandId, brain_id, identityReader);
       return reply.send({ request_id: requestId, data: result });
     },
   );
@@ -1934,19 +1937,20 @@ export function registerBffRoutes(
           error: { code: 'NO_ACTIVE_BRAND', message: 'Select a brand before metering billing.' },
         });
       }
-      if (!pool) {
+      if (!pool || !srPool) {
         return reply.code(503).send({
           request_id: requestId,
-          error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' },
+          error: { code: 'SERVICE_UNAVAILABLE', message: 'Database / Silver tier not available' },
         });
       }
 
       const { period } = request.body as { period: string };
+      // Epic 1: the GMV meter reads the lakehouse gold ledger (srPool); the snapshot stays in PG (pool).
       const result: ContractSealPeriodResult = await sealBillingPeriod(
         auth.brandId,
         period,
         requestId,
-        { pool },
+        { pool, srPool },
       );
       return reply.send({ request_id: requestId, data: result });
     },
@@ -1994,7 +1998,7 @@ export function registerBffRoutes(
           data: { state: 'not_sealed', billing_period: period },
         });
       }
-      if (!pool) {
+      if (!pool || !srPool) {
         return reply.code(503).send({
           request_id: requestId,
           error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' },
@@ -2005,7 +2009,7 @@ export function registerBffRoutes(
         auth.brandId,
         period,
         requestId,
-        { pool },
+        { pool, srPool },
       );
       return reply.send({ request_id: requestId, data: result });
     },
@@ -2102,7 +2106,7 @@ export function registerBffRoutes(
           error: { code: 'NO_ACTIVE_BRAND', message: 'Select a brand before issuing an invoice.' },
         });
       }
-      if (!pool) {
+      if (!pool || !srPool) {
         return reply.code(503).send({
           request_id: requestId,
           error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' },
@@ -2114,7 +2118,7 @@ export function registerBffRoutes(
         auth.brandId,
         period,
         requestId,
-        { pool },
+        { pool, srPool },
       );
       return reply.send({ request_id: requestId, data: result });
     },
@@ -2246,7 +2250,7 @@ export function registerBffRoutes(
           error: { code: 'NO_ACTIVE_BRAND', message: 'Select a brand before running detectors.' },
         });
       }
-      if (!pool) {
+      if (!pool || !srPool) {
         return reply.code(503).send({
           request_id: requestId,
           error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' },
@@ -2256,7 +2260,7 @@ export function registerBffRoutes(
       const result: ContractGenerateRecommendationsResult = await generateRecommendations(
         auth.brandId,
         requestId,
-        { pool },
+        { pool, srPool },
       );
       return reply.send({ request_id: requestId, data: result });
     },
@@ -2488,7 +2492,7 @@ export function registerBffRoutes(
       const result: ContractAttributionReconcileResult = await reconcileAttribution(
         auth.brandId,
         requestId,
-        { pool: rawPool, srPool },
+        { srPool },
       );
       return reply.send({ request_id: requestId, data: result });
     },
@@ -2534,8 +2538,8 @@ export function registerBffRoutes(
       if (!auth.brandId) {
         return reply.send({ request_id: requestId, data: { state: 'no_data', from: null, to: null, grain: 'day', buckets: [] } });
       }
-      if (!rawPool) {
-        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' } });
+      if (!srPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (StarRocks) not available' } });
       }
 
       const query = request.query as { from?: string; to?: string; grain?: string };
@@ -2546,10 +2550,11 @@ export function registerBffRoutes(
       const fromStr = query.from ?? defaultFrom;
       const grain: TimeGrain = (query.grain === 'week' ? 'week' : 'day') as TimeGrain;
 
+      // Epic 1: revenue timeseries now reads the lakehouse (gold_revenue_ledger), not the PG ledger.
       const result = await getRevenueTimeseries(
         auth.brandId,
         { fromDate: new Date(`${fromStr}T00:00:00Z`), toDate: new Date(`${toStr}T00:00:00Z`), grain },
-        { pool: rawPool },
+        { srPool },
       );
 
       return reply.send({ request_id: requestId, data: result });
@@ -2590,15 +2595,16 @@ export function registerBffRoutes(
         const today = new Date().toISOString().split('T')[0] as string;
         return reply.send({ request_id: requestId, data: { state: 'no_data', as_of: today } });
       }
-      if (!rawPool) {
-        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' } });
+      if (!srPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (StarRocks) not available' } });
       }
 
       const query = request.query as { as_of?: string };
       const asOfStr = query.as_of ?? (new Date().toISOString().split('T')[0] as string);
       const asOf = new Date(`${asOfStr}T00:00:00Z`);
 
-      const result: ContractKpiSummary = await getKpiSummary(auth.brandId, asOf, { pool: rawPool });
+      // Epic 1: KPI summary now reads the lakehouse (gold_revenue_ledger), not the PG ledger.
+      const result: ContractKpiSummary = await getKpiSummary(auth.brandId, asOf, { srPool });
 
       return reply.send({ request_id: requestId, data: result });
     },
@@ -2753,15 +2759,16 @@ export function registerBffRoutes(
         const today = new Date().toISOString().split('T')[0] as string;
         return reply.send({ request_id: requestId, data: { state: 'no_data', as_of: today } });
       }
-      if (!rawPool) {
-        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' } });
+      if (!srPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (StarRocks) not available' } });
       }
 
       const query = request.query as { as_of?: string };
       const asOfStr = query.as_of ?? (new Date().toISOString().split('T')[0] as string);
       const asOf = new Date(`${asOfStr}T00:00:00Z`);
 
-      const result = await getRecognitionBreakdown(auth.brandId, asOf, { pool: rawPool });
+      // Epic 1: recognition breakdown now reads the lakehouse (gold_revenue_ledger), not the PG ledger.
+      const result = await getRecognitionBreakdown(auth.brandId, asOf, { srPool });
 
       return reply.send({ request_id: requestId, data: result });
     },
@@ -2793,14 +2800,15 @@ export function registerBffRoutes(
       if (!auth.brandId) {
         return reply.send({ request_id: requestId, data: { rows: [] } });
       }
-      if (!rawPool) {
-        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' } });
+      if (!srPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (StarRocks) not available' } });
       }
 
       const query = request.query as { limit?: string };
       const limit = query.limit ? Math.min(parseInt(query.limit, 10), 50) : 20;
 
-      const result = await getRecentActivity(auth.brandId, limit, { pool: rawPool });
+      // Epic 1: recent activity now reads the lakehouse (gold_revenue_ledger), not the PG ledger.
+      const result = await getRecentActivity(auth.brandId, limit, { srPool });
 
       return reply.send({ request_id: requestId, data: result });
     },
@@ -2846,8 +2854,8 @@ export function registerBffRoutes(
       if (!auth.brandId) {
         return reply.send({ request_id: requestId, data: { state: 'no_data', from: null, to: null, grain: 'day', buckets: [] } });
       }
-      if (!rawPool) {
-        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' } });
+      if (!srPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (StarRocks) not available' } });
       }
 
       const query = request.query as { from?: string; to?: string; grain?: string };
@@ -2858,10 +2866,11 @@ export function registerBffRoutes(
       const fromStr = query.from ?? defaultFrom;
       const grain: TimeGrain = (query.grain === 'week' ? 'week' : 'day') as TimeGrain;
 
+      // Epic 1: orders timeseries now reads the lakehouse (gold_revenue_ledger), not the PG ledger.
       const result = await getOrdersTimeseries(
         auth.brandId,
         { fromDate: new Date(`${fromStr}T00:00:00Z`), toDate: new Date(`${toStr}T00:00:00Z`), grain },
-        { pool: rawPool },
+        { srPool },
       );
 
       return reply.send({ request_id: requestId, data: result });
@@ -2902,15 +2911,16 @@ export function registerBffRoutes(
         const today = new Date().toISOString().split('T')[0] as string;
         return reply.send({ request_id: requestId, data: { state: 'no_data', as_of: today } });
       }
-      if (!rawPool) {
-        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' } });
+      if (!srPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (StarRocks) not available' } });
       }
 
       const query = request.query as { as_of?: string };
       const asOfStr = query.as_of ?? (new Date().toISOString().split('T')[0] as string);
       const asOf = new Date(`${asOfStr}T00:00:00Z`);
 
-      const result = await getOrderStats(auth.brandId, asOf, { pool: rawPool });
+      // Epic 1: order stats now read the lakehouse (gold_revenue_ledger), not the PG ledger.
+      const result = await getOrderStats(auth.brandId, asOf, { srPool });
 
       return reply.send({ request_id: requestId, data: result });
     },
@@ -3089,7 +3099,7 @@ export function registerBffRoutes(
         return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' } });
       }
 
-      const result: ContractDataQualitySummary = await getDataQualitySummary(auth.brandId, { pool: rawPool });
+      const result: ContractDataQualitySummary = await getDataQualitySummary(auth.brandId, { pool: rawPool, srPool });
 
       return reply.send({ request_id: requestId, data: result });
     },
@@ -3207,7 +3217,7 @@ export function registerBffRoutes(
 
   /**
    * GET /api/v1/analytics/cod-mix
-   * CoD CM2 + CoD-vs-prepaid mix from realized_revenue_ledger cod_* event_types.
+   * CoD CM2 + CoD-vs-prepaid mix from the gold revenue ledger cod_* recognition event_types.
    * Money = bigint minor-unit strings (signed; net may be negative — honest).
    */
   fastify.get(
@@ -4092,7 +4102,7 @@ export function registerBffRoutes(
   // (D-1, NEVER body). Honest no_data. data_source='synthetic' in dev (journey data is thin
   // → attribution is mostly synthetic; the badge is honest).
 
-  const ATTRIBUTION_MODELS = new Set<string>(['first_touch', 'last_touch', 'linear', 'position_based']);
+  const ATTRIBUTION_MODELS = new Set<string>(['first_touch', 'last_touch', 'linear', 'position_based', 'data_driven']);
   function parseModel(raw: string | undefined): AttributionModelId {
     return ATTRIBUTION_MODELS.has(raw ?? '') ? (raw as AttributionModelId) : 'position_based';
   }
@@ -4101,7 +4111,7 @@ export function registerBffRoutes(
     properties: {
       from: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
       to: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
-      model: { type: 'string', enum: ['first_touch', 'last_touch', 'linear', 'position_based'] },
+      model: { type: 'string', enum: ['first_touch', 'last_touch', 'linear', 'position_based', 'data_driven'] },
     },
     additionalProperties: false,
   } as const;
@@ -4109,7 +4119,7 @@ export function registerBffRoutes(
   /**
    * GET /api/v1/analytics/attribution/by-channel?from=&to=&model=
    * Attributed revenue by channel + the unattributed residual + the reconciliation rate
-   * for a model + window, from attribution_credit_ledger.
+   * for a model + window, from the gold attribution credit ledger (brain_gold.gold_attribution_credit).
    */
   fastify.get(
     '/api/v1/analytics/attribution/by-channel',

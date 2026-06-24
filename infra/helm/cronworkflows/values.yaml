@@ -18,6 +18,16 @@ streamWorkerImage:
   digest: ""
   pullPolicy: IfNotPresent
 
+# dbt-runner image (db/dbt/Dockerfile) — the runtime for scheduled dbt mart rebuilds (the attribution
+# gold refresh = chain step 4, and Silver intraday rebuilds). Node images can't run dbt. Jobs that use
+# it set `useDbtRunnerImage: true`. Those jobs ship `enabled: false` until CI publishes + pins this
+# image's digest (the template fail-closes on a missing digest) — flip the job's `enabled: true` per env.
+dbtRunnerImage:
+  repository: REPLACE_WITH_ECR_REGISTRY/brain-dbt-runner
+  tag: ""              # B3: digest preferred; CI populates at deploy (fail-closed in the template)
+  digest: ""
+  pullPolicy: IfNotPresent
+
 # Secret (External Secrets ← AWS Secrets Manager): DATABASE_URL, BRAIN_APP_DATABASE_URL,
 # STARROCKS_HOST/PORT/credentials, etc. Empty in defaults (set per env).
 envSecretName: ""
@@ -72,17 +82,86 @@ sparkBronze:
     limits: { cpu: "2", memory: 4Gi }
 
 # The scheduled jobs. `image` omitted → the default (core) image.
+#
+# ── THE ATTRIBUTION CHAIN — ordered by staggered schedule + idempotency (NOT an Argo DAG; matches
+#    this chart's one-container-per-CronWorkflow convention). Each step is idempotent, so the time
+#    gaps sequence them and a missed/retried run is safe (Forbid + startingDeadline):
+#      :00  revenue-finalization          prepaid recognized after horizon → finalization rows
+#      :15  journey-stitch-from-identity   identity links → connector_journey_stitch_map (the stitch)
+#      :30  attribution-reconcile          credit recognized orders to journeys (ALL 5 models incl.
+#                                          data_driven) + clawbacks
+#      (—)  gold-mart rebuild              `make attribution-gold-refresh` (dbt) materializes the credit
+#                                          ledger → brain_gold.gold_marketing_attribution that the
+#                                          dashboard serves. Built by the dbt-runner (CI/nightly today);
+#                                          an intraday Argo cron is the documented follow-up that needs
+#                                          a dbt-runner image (infra/observe/.../brain-slo.rules.yml).
+#                                          Until then the marts refresh on the nightly dbt build.
 jobs:
   - name: recommendation-detectors
     schedule: "0 6 * * *"          # daily 06:00 IST — the Morning Brief
     command: ["node", "dist/jobs/recommendation-detectors.js"]
-  - name: attribution-reconcile
-    schedule: "30 * * * *"         # hourly at :30 — attribute newly-finalized orders + clawbacks
-    command: ["node", "dist/jobs/attribution-reconcile.js"]
-  - name: revenue-finalization
-    schedule: "0 * * * *"          # hourly — horizon-based realization (stream-worker image)
-    command: ["node", "dist/jobs/revenue-finalization.js"]
+  - name: identity-export
+    schedule: "2 * * * *"          # hourly at :02 — ATTRIBUTION CHAIN step -1: materialize the identity graph
+    command: ["node", "dist/jobs/identity-export/run.js"]
     useStreamWorkerImage: true
+  - name: journey-stitch-export
+    schedule: "3 * * * *"          # hourly at :03 — materialize the PG cart-stitch → silver_journey_stitch
+    command: ["node", "dist/jobs/journey-stitch-export/run.js"]
+    useStreamWorkerImage: true
+    # MEDALLION REALIGNMENT (Epic 4): connectors.connector_journey_stitch_map (PG capture) →
+    # brain_silver.silver_journey_stitch (StarRocks), so silver_touchpoint reads the lakehouse, not a
+    # PG JDBC shim. Needs STARROCKS_* + BRAIN_APP_DATABASE_URL.
+    # MEDALLION REALIGNMENT (Epic 3 / ADR-0004): Neo4j is the identity SoR; dbt/StarRocks can't read it.
+    # This materializes the active hash→brain_id edges from Neo4j → brain_silver.silver_identity_link
+    # (StarRocks) so recognition-refresh (:05) resolves order brain_id + the customer marts populate.
+    # Runs BEFORE recognition-refresh. Needs NEO4J_* + STARROCKS_* env. (The one-time PG→Neo4j identity
+    # seed has been executed and removed — PG identity is dropped, so there is nothing left to backfill.)
+  - name: recognition-refresh
+    enabled: false                 # FLIP true per env once CI publishes + pins dbtRunnerImage.digest
+    schedule: "5 * * * *"          # hourly at :05 — ATTRIBUTION CHAIN step 0: rebuild the gold ledger
+    command: ["/opt/brain/dbt/docker-entrypoint.sh"]
+    useDbtRunnerImage: true
+    # MEDALLION REALIGNMENT (Epic 1/2, decision B). The Bronze-sourced REPLACEMENT for the PG
+    # realized_revenue_ledger write path (LedgerWriter + revenue-finalization). dbt rebuilds the
+    # revenue recognition ledger from Bronze: stg_order_events_bronze (order.live.v1) →
+    # silver_order_recognition (the 6 recognition event types incl. finalization after horizon, COD
+    # delivery/RTO) → brain_gold.gold_revenue_ledger, which billing + attribution + dashboards all
+    # read. Mirrors `make recognition-refresh`. Runs BEFORE journey-stitch (:15) + reconcile (:30) so
+    # they see the fresh ledger. Idempotent (table rebuild). Once green per env, revenue-finalization
+    # (the PG writer below) is retired.
+    env:
+      - { name: DBT_SELECT, value: "+gold_revenue_ledger" }
+      - { name: DBT_THREADS, value: "1" }
+  # MEDALLION REALIGNMENT (Epic 1 / decision B): the `revenue-finalization` cron was REMOVED — its job
+  # (dist/jobs/revenue-finalization.js) is deleted and realized_revenue_ledger is dropped. Recognition
+  # (incl. finalization after horizon) is now a dbt build from Bronze — see `recognition-refresh` above.
+  - name: journey-stitch-from-identity
+    schedule: "15 * * * *"         # hourly at :15 — ATTRIBUTION CHAIN step 2: derive the stitch map
+    command: ["node", "dist/jobs/journey-stitch-from-identity.js"]
+    useStreamWorkerImage: true
+    # Deterministic identity-graph stitch (GAP-1): silver_touchpoint anon → identity_link(anon_id)→
+    # brain_id ∩ realized_revenue_ledger(order→brain_id), UNAMBIGUOUS-ONLY (skips multi-anon customers,
+    # never guesses). Salt via SaltProvider→resolveSaltHex (prod KMS). Needs STARROCKS_* +
+    # BRAIN_APP_DATABASE_URL (envSecretName). Without it, repulled orders never stitch → attribution
+    # has no journeys to credit.
+  - name: attribution-reconcile
+    schedule: "30 * * * *"         # hourly at :30 — ATTRIBUTION CHAIN step 3: credit + clawback
+    command: ["node", "dist/jobs/attribution-reconcile.js"]
+    # Per brand: the 4 per-journey models (reconcileAttribution) + the GLOBAL data-driven Markov model
+    # (reconcileDataDrivenAttribution). Credit basis = finalization ∪ cod_delivery_confirmed (COD-inclusive).
+  - name: attribution-gold-refresh
+    enabled: false                 # FLIP true per env once CI publishes + pins dbtRunnerImage.digest
+    schedule: "45 * * * *"         # hourly at :45 — ATTRIBUTION CHAIN step 4: materialize gold mart
+    command: ["/opt/brain/dbt/docker-entrypoint.sh"]
+    useDbtRunnerImage: true
+    # dbt rebuild of the attribution serving marts from the reconcile-written PG credit ledger
+    # (ledger_source=pg) → brain_gold.gold_marketing_attribution that the dashboard Attribution surface
+    # serves (incl. the data_driven model). Mirrors `make attribution-gold-refresh`. Idempotent (table
+    # CTAS). DBT_BOOTSTRAP_CATALOG=false → assumes the brain_oltp_pg JDBC catalog is already provisioned.
+    env:
+      - { name: DBT_SELECT, value: "gold_marketing_attribution gold_attribution_paths" }
+      - { name: DBT_VARS, value: "{ledger_source: pg}" }
+      - { name: DBT_THREADS, value: "1" }
   - name: feature-materialization
     schedule: "40 * * * *"         # hourly at :40 — materialize Gold customer features → Redis online store
     command: ["node", "dist/jobs/feature-materialization/run.js"]

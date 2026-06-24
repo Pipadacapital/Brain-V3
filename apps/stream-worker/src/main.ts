@@ -22,7 +22,7 @@ import { DbAuditWriter, type AuditDbClient } from '@brain/audit';
 import { RedisDedupAdapter } from './infrastructure/redis/RedisDedupAdapter.js';
 import { RetryCounterAdapter } from './infrastructure/redis/RetryCounterAdapter.js';
 import { BronzeRepository } from './infrastructure/pg/BronzeRepository.js';
-import { IdentityRepository } from './infrastructure/pg/IdentityRepository.js';
+import { Neo4jIdentityRepository } from './infrastructure/neo4j/Neo4jIdentityRepository.js';
 import { SaltProvider, LocalSecretsProvider } from './infrastructure/secrets/SaltProvider.js';
 import { resolveSaltHex } from '@brain/identity-core';
 import { initObservability, initSentry, createLogger } from '@brain/observability';
@@ -40,7 +40,6 @@ import { ProcessEventUseCase } from './application/ProcessEventUseCase.js';
 import { ResolveIdentityUseCase } from './application/ResolveIdentityUseCase.js';
 import { CollectorEventConsumer } from './interfaces/consumers/CollectorEventConsumer.js';
 import { IdentityBridgeConsumer } from './identity-bridge/IdentityBridgeConsumer.js';
-import { IdentityGraph } from '@brain/identity-graph';
 import { ConsentSuppressorConsumer } from './interfaces/consumers/ConsentSuppressorConsumer.js';
 import { ProjectConsentUseCase } from './application/ProjectConsentUseCase.js';
 import { ConsentRepository } from './infrastructure/pg/ConsentRepository.js';
@@ -48,20 +47,14 @@ import { CapiDeletionConsumer } from './interfaces/consumers/CapiDeletionConsume
 import { RequestCapiDeletionUseCase } from './application/RequestCapiDeletionUseCase.js';
 import { CapiDeletionRepository } from './infrastructure/pg/CapiDeletionRepository.js';
 import { BackfillOrderConsumer } from './interfaces/consumers/BackfillOrderConsumer.js';
-import { BrainIdResolver } from './infrastructure/pg/BrainIdResolver.js';
-import { StitchMapWriter } from './infrastructure/pg/StitchMapWriter.js';
-import { LiveLedgerBridgeConsumer } from './interfaces/consumers/LiveLedgerBridgeConsumer.js';
-import { SettlementLedgerConsumer } from './interfaces/consumers/SettlementLedgerConsumer.js';
 import { SpendLedgerConsumer } from './interfaces/consumers/SpendLedgerConsumer.js';
-// ShipmentLedgerConsumer handles BOTH gokwik.awb_status.v1 + shiprocket.shipment_status.v1
-// (shared logistics ledger). Imported under the back-compat GokwikAwbLedgerConsumer alias so the
-// existing wiring + gokwik-awb-ledger-wiring.e2e.test.ts guard are unchanged.
-import { GokwikAwbLedgerConsumer } from './interfaces/consumers/ShipmentLedgerConsumer.js';
+// MEDALLION REALIGNMENT (Epic 1 / decision B): the PG revenue-ledger write path (LiveLedgerBridge,
+// Settlement, Shipment/GokwikAwb consumers + revenue-finalization) has been REMOVED — the revenue
+// recognition ledger is now built FROM Bronze by dbt (silver_order_recognition → gold_revenue_ledger,
+// `make recognition-refresh`). Only the SpendLedgerConsumer (ad_spend_ledger — out of Epic-1 scope)
+// remains a PG-ledger writer.
 import { BRONZE_BRIDGES, buildBronzeBridges } from './interfaces/consumers/bronzeBridges.js';
 import { LedgerWriter } from './infrastructure/pg/LedgerWriter.js';
-import mysql from 'mysql2/promise';
-import { createAttributionReversalHook } from '@brain/attribution-writer';
-import type { SilverPool } from '@brain/metric-engine';
 import { startHealthServer } from './infrastructure/health/HealthServer.js';
 import { startSyncRequestClaimer } from './jobs/sync-request-claimer/run.js';
 import { startDqChecks } from './jobs/dq/run.js';
@@ -222,40 +215,25 @@ export async function main(): Promise<void> {
     process.env['NODE_ENV'] === 'production'
       ? new KmsVaultKeyProvider(new PgPool({ connectionString: dbUrl, max: 2 }), new AwsKmsDecryptAdapter())
       : new DevVaultKeyProvider();
-  const identityRepo = new IdentityRepository(dbUrl, vaultKeyProvider);
-  // Neo4j identity graph (re-platform Phase D experiment) — RETIRED as a dual-write by default.
-  // AUDIT-REMEDIATION (identity): Postgres is the DECLARED identity system-of-record (RLS-isolated,
-  // transactional, the single reader for Customer 360 / merge-admin / attribution). The Neo4j path
-  // mints brain_ids with a DIFFERENT algorithm (deterministicBrainId from the min hash) than the PG
-  // resolver (randomUUID mint + union-find), so it DIVERGES from the SoR and NOTHING reads it — running
-  // it produced a parity-less shadow graph for no consumer. See docs/adr/0003-postgres-identity-sor.md.
-  //
-  // The code is PRESERVED but gated default-OFF behind an explicit, clearly non-authoritative flag.
-  // Merely having Neo4j in the dev stack (NEO4J_URI set) no longer triggers divergent minting; you must
-  // also opt in with IDENTITY_NEO4J_DUAL_WRITE=true (a parity-free projection, never read by the app).
-  let identityGraph: IdentityGraph | undefined;
-  const neo4jUri = process.env['NEO4J_URI'];
-  const neo4jDualWriteEnabled = process.env['IDENTITY_NEO4J_DUAL_WRITE'] === 'true';
-  if (neo4jUri && neo4jDualWriteEnabled) {
-    identityGraph = new IdentityGraph(
-      neo4jUri,
-      process.env['NEO4J_USER'] ?? 'neo4j',
-      process.env['NEO4J_PASSWORD'] ?? 'neo4j',
-    );
-    try {
-      await identityGraph.bootstrap();
-      log.warn('[identity] Neo4j identity graph wired as a NON-AUTHORITATIVE projection ' +
-        '(IDENTITY_NEO4J_DUAL_WRITE=true) — PG remains the system-of-record; this graph is parity-free ' +
-        `and read by nothing. See ADR-0003. — ${neo4jUri}`);
-    } catch (err) {
-      log.warn(`[identity] Neo4j bootstrap failed — projection disabled this run: ${err instanceof Error ? err.message : String(err)}`);
-      identityGraph = undefined;
-    }
-  } else if (neo4jUri) {
-    log.info('[identity] Neo4j present but dual-write RETIRED (default-off; set IDENTITY_NEO4J_DUAL_WRITE=true ' +
-      'to enable the non-authoritative projection). PG is the identity system-of-record (ADR-0003).');
+  // MEDALLION REALIGNMENT (Epic 3 / ADR-0004): Neo4j is the identity SYSTEM-OF-RECORD. The graph
+  // (customer / identity_link edges / merge / alias / phone-guard / merge-review) lives in Neo4j; the
+  // immutable identity_audit ledger + the encrypted contact_pii vault + the brand phone-guard config
+  // stay in PostgreSQL (passed via dbUrl). The pure IdentityResolver runs unchanged (IdentityStore
+  // contract). Supersedes ADR-0003 (the retired PG-SoR + Neo4j-dual-write experiment).
+  const identityRepo = new Neo4jIdentityRepository(
+    process.env['NEO4J_URI'] ?? 'bolt://localhost:7687',
+    process.env['NEO4J_USER'] ?? 'neo4j',
+    process.env['NEO4J_PASSWORD'] ?? 'neo4j',
+    dbUrl,
+    vaultKeyProvider,
+  );
+  try {
+    await identityRepo.bootstrap();
+    log.info('[identity] Neo4j identity SoR wired (ADR-0004); audit + contact_pii in PG.');
+  } catch (err) {
+    log.warn(`[identity] Neo4j bootstrap failed: ${err instanceof Error ? err.message : String(err)}`);
   }
-  const resolveIdentityUseCase = new ResolveIdentityUseCase(saltProvider, identityRepo, identityGraph);
+  const resolveIdentityUseCase = new ResolveIdentityUseCase(saltProvider, identityRepo);
   // T2-8: pass the shared durable RetryCounterAdapter so identity-bridge retries survive
   // pod restarts and a poison message always reaches the DLQ (mirrors ConsentSuppressor /
   // Backfill / LiveLedger — every consumer that receives retryCounter here).
@@ -294,8 +272,8 @@ export async function main(): Promise<void> {
   // Separate topic (backfillTopic) + separate consumer group (backfillGroupId)
   // → structurally impossible to lag the live consumer group (SI-3 / D-3).
   // Bronze write reuses the same ProcessEventUseCase (same code path, different lane).
-  // LedgerWriter wires Bronze order.backfill.v1 → provisional_recognition (ADR-BF-9).
-  const ledgerWriter = new LedgerWriter(dbUrl);
+  // MEDALLION REALIGNMENT (Epic 1): the backfill→PG-ledger wire is removed; backfilled orders reach
+  // the recognition ledger by landing in Bronze (dbt builds gold_revenue_ledger from there).
   const backfillDedup = new RedisDedupAdapter(redisUrl);
   const backfillBronze = new BronzeRepository(dbUrl);
   // Backfill-order lane: enforceTenantDerivation=FALSE — these events carry NO install_token
@@ -305,70 +283,15 @@ export async function main(): Promise<void> {
     backfillDedup, backfillBronze, undefined, /* enforceTenantDerivation */ false, pgWriteEnabled,
   );
   const backfillConsumer = new BackfillOrderConsumer(
-    kafka, backfillProcessEvent, ledgerWriter, backfillTopic, backfillGroupId, retryCounter,
+    kafka, backfillProcessEvent, backfillTopic, backfillGroupId, retryCounter,
   );
 
-  // ── Live-ledger bridge (ORCH-LV-H1 fix) ────────────────────────────────────
-  // Separate consumer group (liveLedgerGroupId) on the same live topic as
-  // CollectorEventConsumer (topic) and IdentityBridgeConsumer. This mirrors
-  // IdentityBridgeConsumer: same topic, independent offset, distinct group.
-  // Responsibility: filter order.live.v1 events → routeLiveOrderToLedger
-  //   → provisional_recognition (new sale) or rto_reversal (cancelled order).
-  // Does NOT touch Bronze (CollectorEventConsumer already writes Bronze).
-  // Brand GUC is set inside LiveLedgerBridgeConsumer before every ledger write (E-4).
-  const liveLedgerWriter = new LedgerWriter(dbUrl);
-
-  // ── D1: live attribution clawback hook (shared @brain/attribution-writer) ───
-  // On a confirmed live rto_reversal, fan out the SAME clawback the hourly reconcile job writes
-  // — real-time instead of ≤1h-lagged, no dual-writer. Gated on StarRocks (the writer's Silver
-  // seam; same gate as the reconcile job + dq). Absent → the hourly job remains the sole path.
-  // The hook is invoked BEST-EFFORT inside the consumer (cannot block the offset commit).
-  const attrSrHost = process.env['STARROCKS_HOST'];
-  const attributionPool = attrSrHost !== undefined ? new Pool({ connectionString: dbUrl, max: 3 }) : undefined;
-  const attributionSrPool =
-    attrSrHost !== undefined
-      ? mysql.createPool({
-          host: attrSrHost,
-          port: parseInt(process.env['STARROCKS_PORT'] ?? '9030', 10),
-          user: process.env['STARROCKS_ANALYTICS_USER'] ?? 'brain_analytics',
-          password: requireEnvInProd('STARROCKS_ANALYTICS_PASSWORD', 'brain_analytics_dev'),
-          connectionLimit: 3,
-        })
-      : undefined;
-  const liveAttributionHook =
-    attributionPool && attributionSrPool
-      ? createAttributionReversalHook(attributionPool, attributionSrPool as unknown as SilverPool)
-      : undefined;
-  log.info(`live attribution clawback hook ${liveAttributionHook ? 'ON' : 'off (no StarRocks; hourly job backstops)'}`);
-
-  // DB-AUDIT C2: resolve each order's storefront_customer_id → identity brain_id and stamp it on the
-  // ledger (was NULL → silver_customers/CAC/cohorts/Customer-360 starved). Reuses the SAME per-brand
-  // salt the identity resolver uses. Best-effort: a miss leaves brain_id NULL exactly as before.
-  const brainIdResolver = new BrainIdResolver(new Pool({ connectionString: dbUrl, max: 3 }), saltProvider);
-  // DB-AUDIT journey-stitch: write the order→anon stitch (+ resolved brain_id) on the live/repull lane,
-  // so repull'd orders stitch journeys (not just webhooks) → silver_touchpoint.stitched_* populates →
-  // attribution can credit. Reuses the brain_app pool; RLS-scoped per write.
-  const stitchWriter = new StitchMapWriter(new Pool({ connectionString: dbUrl, max: 3 }));
-  const liveLedgerConsumer = new LiveLedgerBridgeConsumer(
-    kafka, liveLedgerWriter, topic, liveLedgerGroupId, retryCounter, liveAttributionHook, brainIdResolver, stitchWriter,
-  );
-
-  // ── Settlement ledger bridge (ADR-RZ-6 / MB-4 WIRED) ───────────────────────
-  // Same live topic (topic) but separate consumer group (settlementLedgerGroupId).
-  // Filters settlement.live.v1; does TWO-HOP JOIN + net-of-fees finalization writes.
-  // The mapPool reads connector_razorpay_order_map under brain_app + GUC (RLS enforced).
-  // MB-4: NOT wiring this is occurrence #3 of the wired-to-nothing anti-pattern.
-  // The mandatory e2e wiring test (settlement-ledger-wiring.e2e.test.ts) catches unwiring.
-  const settlementMapPool = new PgPool({ connectionString: dbUrl, max: 3 });
-  const settlementLedgerWriter = new LedgerWriter(dbUrl);
-  const settlementLedgerConsumer = new SettlementLedgerConsumer(
-    kafka,
-    settlementLedgerWriter,
-    settlementMapPool,
-    topic,
-    settlementLedgerGroupId,
-    retryCounter,
-  );
+  // ── MEDALLION REALIGNMENT (Epic 1 / decision B) ────────────────────────────
+  // REMOVED: LiveLedgerBridgeConsumer (provisional/rto), SettlementLedgerConsumer (net-of-fees),
+  // GokwikAwb/ShipmentLedgerConsumer (COD delivery/RTO). All were pure PG realized_revenue_ledger
+  // writers. The recognition ledger is now built from Bronze by dbt (silver_order_recognition →
+  // brain_gold.gold_revenue_ledger). The live attribution clawback hook + live journey-stitch they
+  // carried are backstopped by the hourly attribution-reconcile + journey-stitch-from-identity crons.
 
   // ── Spend ledger bridge (feat-ad-connectors / ADR-AD-6 WIRED) ──────────────
   // Same live topic, separate consumer group (spendLedgerGroupId). Filters spend.live.v1;
@@ -381,21 +304,6 @@ export async function main(): Promise<void> {
     spendLedgerWriter,
     topic,
     spendLedgerGroupId,
-    retryCounter,
-  );
-
-  // ── GoKwik AWB ledger bridge (feat-gokwik-shopflo-connectors / 0030 WIRED) ──
-  // Same live topic, separate consumer group (gokwikAwbLedgerGroupId). Filters gokwik.awb_status.v1;
-  // terminal RTO → cod_rto_clawback (looks up the recognized CoD amount, writes signed-negative),
-  // terminal Delivered → cod_delivery_confirmed. Idempotent restatement via the ledger dedup key.
-  // Brand GUC is set inside LedgerWriter before every INSERT (NN-1 / RLS). WIRED HERE: do NOT remove
-  // without updating gokwik-awb-ledger-wiring.e2e.test.ts (wired-to-nothing bounce trigger).
-  const gokwikAwbLedgerWriter = new LedgerWriter(dbUrl);
-  const gokwikAwbLedgerConsumer = new GokwikAwbLedgerConsumer(
-    kafka,
-    gokwikAwbLedgerWriter,
-    topic,
-    gokwikAwbLedgerGroupId,
     retryCounter,
   );
 
@@ -483,17 +391,13 @@ export async function main(): Promise<void> {
       consentSuppressorConsumer.stop(),
       capiDeletionConsumer.stop(),
       backfillConsumer.stop(),
-      liveLedgerConsumer.stop(),
-      settlementLedgerConsumer.stop(),
       spendLedgerConsumer.stop(),
-      gokwikAwbLedgerConsumer.stop(),
       // All registry-driven Bronze bridges (incl. live-order, which was previously missing a stop).
       ...bronzeBridgeConsumers.map((c) => c.stop()),
       syncRequestClaimer.stop(),
       dqChecker.stop(),
       ingestScheduler.stop(),
     ]);
-    if (identityGraph) await identityGraph.close().catch(() => undefined);
     await syncClaimerPool.end();
     await dqPool.end();
     await ingestSchedulerPool.end();
@@ -507,14 +411,7 @@ export async function main(): Promise<void> {
     await backfillBronze.end();
     await auditPool.end();
     await identityRepo.end();
-    await ledgerWriter.end();
-    await liveLedgerWriter.end();
-    if (attributionPool) await attributionPool.end();
-    if (attributionSrPool) await attributionSrPool.end();
-    await settlementLedgerWriter.end();
-    await settlementMapPool.end();
     await spendLedgerWriter.end();
-    await gokwikAwbLedgerWriter.end();
     await healthServer.close();
     // Flush buffered telemetry LAST so shutdown spans/metrics are exported (C1).
     await shutdownObservability().catch(() => { /* ignore */ });
@@ -558,21 +455,8 @@ export async function main(): Promise<void> {
   await backfillConsumer.start();
   log.info('backfill consumer running');
 
-  // ── Live-ledger bridge consumer (ORCH-LV-H1 fix) ────────────────────────────
-  // Same live topic (topic) but separate consumer group (liveLedgerGroupId).
-  // Filters to order.live.v1; routes provisional_recognition / rto_reversal.
-  log.info(`starting live-ledger bridge — topic=${topic} group=${liveLedgerGroupId}`);
-  await liveLedgerConsumer.start();
-  log.info('live-ledger bridge consumer running');
-
-  // ── Settlement ledger bridge consumer (ADR-RZ-6 / MB-4 MANDATORY WIRE) ──────
-  // Same live topic, independent consumer group. Filters settlement.live.v1.
-  // TWO-HOP JOIN (MB-1) + net-of-fees finalization (MB-3) + brand-level path (MB-1.4).
-  // WIRED HERE: do NOT remove this block without updating settlement-ledger-wiring.e2e.test.ts
-  // and filing a durable-rule proposal (wired-to-nothing occurrence #3 trigger).
-  log.info(`starting settlement-ledger bridge — topic=${topic} group=${settlementLedgerGroupId}`);
-  await settlementLedgerConsumer.start();
-  log.info('settlement-ledger bridge consumer running');
+  // ── MEDALLION REALIGNMENT (Epic 1): live-ledger / settlement / gokwik-awb ledger bridges REMOVED.
+  // The recognition ledger is built from Bronze by dbt (recognition-refresh). See the wiring note above.
 
   // ── Spend ledger bridge consumer (feat-ad-connectors / ADR-AD-6 MANDATORY WIRE) ──
   // Same live topic, independent consumer group. Filters spend.live.v1.
@@ -581,14 +465,6 @@ export async function main(): Promise<void> {
   log.info(`starting spend-ledger bridge — topic=${topic} group=${spendLedgerGroupId}`);
   await spendLedgerConsumer.start();
   log.info('spend-ledger bridge consumer running');
-
-  // ── GoKwik AWB ledger bridge consumer (feat-gokwik-shopflo-connectors / 0030 MANDATORY WIRE) ──
-  // Same live topic, independent consumer group. Filters gokwik.awb_status.v1.
-  // terminal RTO → cod_rto_clawback; terminal Delivered → cod_delivery_confirmed.
-  // WIRED HERE: do NOT remove without updating gokwik-awb-ledger-wiring.e2e.test.ts.
-  log.info(`starting gokwik-awb-ledger bridge — topic=${topic} group=${gokwikAwbLedgerGroupId}`);
-  await gokwikAwbLedgerConsumer.start();
-  log.info('gokwik-awb-ledger bridge consumer running');
 
   // ── Bronze bridge consumers (registry-driven — re-platform Phase B) ─────────
   // Start every bridge in BRONZE_BRIDGES on its own consumer group. The loop guarantees every

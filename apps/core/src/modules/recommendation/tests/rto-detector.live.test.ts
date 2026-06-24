@@ -14,10 +14,14 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import pg from 'pg';
+import mysql from 'mysql2/promise';
 import { createPool, type DbPool } from '@brain/db';
+import type { SilverPool } from '@brain/metric-engine';
 import { generateRecommendations, getRecommendations } from '../index.js';
 
 const SUPERUSER_URL = process.env['DATABASE_URL'] ?? 'postgres://brain:brain@localhost:5432/brain';
+const SR_HOST = process.env['STARROCKS_HOST'] ?? '127.0.0.1';
+const SR_PORT = Number(process.env['STARROCKS_QUERY_PORT'] ?? '9030');
 
 const BRAND_A = 'b444444a-0a1a-4a1a-8a1a-000000000001';
 const BRAND_B = 'b444444a-0a1a-4a1a-8a1a-000000000002';
@@ -32,22 +36,33 @@ const UNTRUSTED_GATE = { tier: 'untrusted' as const, blocksHighRiskRecommendatio
 
 let superPool: pg.Pool;
 let dbPool: DbPool;
+let srPool: SilverPool;
 let pgAvailable = false;
 
+// MEDALLION REALIGNMENT (Epic 1 / decision B): the detector REVENUE signals read the LAKEHOUSE ledger
+// (brain_gold.gold_revenue_ledger). RTO in gold = 'cod_rto_clawback' (the Bronze gokwik terminal-RTO
+// event), not the PG 'rto_reversal'. Seed gold via srPool.
 let seq = 0;
-async function seedRows(eventType: string, n: number, amountMinor: number): Promise<void> {
+/** ONE batched multi-row INSERT — per-row StarRocks INSERTs are slow + would time the hook out. */
+async function seedGoldRows(eventType: string, n: number, amountMinor: number, orderPrefix = 'rto-order'): Promise<void> {
+  const label = eventType === 'provisional_recognition' ? 'provisional' : 'finalized';
+  const tuples: string[] = [];
+  const params: unknown[] = [];
   for (let i = 0; i < n; i++) {
     seq += 1;
-    await superPool.query(
-      `INSERT INTO realized_revenue_ledger
-         (brand_id, ledger_event_id, order_id, event_type, amount_minor, currency_code,
-          occurred_at, occurred_date, economic_effective_at, billing_posted_period, recognition_label)
-       VALUES ($1, $2, $3, $4, $5, 'INR', '2026-06-01Z', (timezone('UTC','2026-06-01Z'::timestamptz))::date, '2026-06-01Z', '2026-06',
-               CASE WHEN $4 = 'provisional_recognition' THEN 'provisional' ELSE 'finalized' END)
-       ON CONFLICT (brand_id, ledger_event_id, occurred_date) DO NOTHING`,
-      [BRAND_A, `rto-evt-${seq}`, `rto-order-${seq}`, eventType, amountMinor],
+    tuples.push(
+      `(?,?,?,NULL,?,?,'INR',0,'2026-06-01 00:00:00','2026-06-01 00:00:00',?,'2026-06','2026-06-01 00:00:00','2026-06-01 00:00:00')`,
     );
+    params.push(BRAND_A, `rto-evt-${seq}`, `${orderPrefix}-${seq}`, eventType, amountMinor, label);
   }
+  await (srPool as unknown as mysql.Pool).query(
+    `INSERT INTO brain_gold.gold_revenue_ledger
+       (brand_id, ledger_event_id, order_id, brain_id, event_type, amount_minor, currency_code,
+        fee_minor, occurred_at, economic_effective_at, recognition_label, billing_posted_period,
+        ingested_at, updated_at)
+     VALUES ${tuples.join(',')}`,
+    params,
+  );
 }
 
 async function seedBrand(): Promise<void> {
@@ -73,7 +88,7 @@ async function cleanup(): Promise<void> {
   for (const b of [BRAND_A, BRAND_B]) {
     await superPool.query(`DELETE FROM decision_log WHERE brand_id = $1`, [b]).catch(() => {});
     await superPool.query(`DELETE FROM recommendation WHERE brand_id = $1`, [b]).catch(() => {});
-    await superPool.query(`DELETE FROM realized_revenue_ledger WHERE brand_id = $1`, [b]).catch(() => {});
+    if (srPool) await (srPool as unknown as mysql.Pool).query(`DELETE FROM brain_gold.gold_revenue_ledger WHERE brand_id = ?`, [b]).catch(() => {});
   }
   await superPool.query(`DELETE FROM brand WHERE id = $1`, [BRAND_A]).catch(() => {});
   await superPool.query(`DELETE FROM organization WHERE id = $1`, [ORG_ID]).catch(() => {});
@@ -85,22 +100,32 @@ beforeAll(async () => {
     superPool = new pg.Pool({ connectionString: SUPERUSER_URL, connectionTimeoutMillis: 4000 });
     await superPool.query('SELECT 1');
     dbPool = await createPool({ connectionString: SUPERUSER_URL });
+    srPool = mysql.createPool({ host: SR_HOST, port: SR_PORT, user: 'root', password: '', connectionLimit: 2 }) as unknown as SilverPool;
+    await srPool.query('SELECT 1');
     await cleanup();
     await seedBrand();
-    // 200 orders, 20 RTO reversals → 10% RTO (> 3% threshold), 200 ≥ 100 → Trusted.
-    await seedRows('provisional_recognition', 200, 50_000);
-    await seedRows('rto_reversal', 20, -50_000);
-    // Settle the 200 provisional orders so the realization_gap detector (added after this test) does
-    // NOT also fire — this test is scoped to rto_risk. Finalizing the SAME order_ids adds no distinct
-    // orders, so the RTO rate is unchanged; it just moves provisional→realized below the 60% gap.
-    for (let i = 1; i <= 200; i++) {
-      await superPool.query(
-        `INSERT INTO realized_revenue_ledger
-           (brand_id, ledger_event_id, order_id, event_type, amount_minor, currency_code,
-            occurred_at, occurred_date, economic_effective_at, billing_posted_period, recognition_label)
-         VALUES ($1, $2, $3, 'finalization', 50000, 'INR', '2026-06-01Z', (timezone('UTC','2026-06-01Z'::timestamptz))::date, '2026-06-01Z', '2026-06', 'finalized')
-         ON CONFLICT (brand_id, ledger_event_id, occurred_date) DO NOTHING`,
-        [BRAND_A, `rto-fin-${i}`, `rto-order-${i}`],
+    // 200 orders (provisional), 20 COD-RTO clawbacks → 10% RTO (> 3% threshold), 200 ≥ 100 → Trusted.
+    await seedGoldRows('provisional_recognition', 200, 50_000); // rto-order-1..200
+    await seedGoldRows('cod_rto_clawback', 20, -50_000);        // rto-order-201..220
+    // Settle the 200 provisional orders so the realization_gap detector does NOT also fire — finalizing
+    // the SAME order_ids moves provisional→realized below the 60% gap (this test is scoped to rto_risk).
+    // ONE batched multi-row INSERT (per-row StarRocks INSERTs would time the hook out).
+    {
+      const tuples: string[] = [];
+      const params: unknown[] = [];
+      for (let i = 1; i <= 200; i++) {
+        tuples.push(
+          `(?,?,?,NULL,'finalization',50000,'INR',0,'2026-06-01 00:00:00','2026-06-01 00:00:00','finalized','2026-06','2026-06-01 00:00:00','2026-06-01 00:00:00')`,
+        );
+        params.push(BRAND_A, `rto-fin-${i}`, `rto-order-${i}`);
+      }
+      await (srPool as unknown as mysql.Pool).query(
+        `INSERT INTO brain_gold.gold_revenue_ledger
+           (brand_id, ledger_event_id, order_id, brain_id, event_type, amount_minor, currency_code,
+            fee_minor, occurred_at, economic_effective_at, recognition_label, billing_posted_period,
+            ingested_at, updated_at)
+         VALUES ${tuples.join(',')}`,
+        params,
       );
     }
     pgAvailable = true;
@@ -112,6 +137,7 @@ beforeAll(async () => {
 afterAll(async () => {
   if (pgAvailable) await cleanup();
   if (dbPool) await dbPool.end();
+  if (srPool) await (srPool as unknown as mysql.Pool).end().catch(() => {});
   if (superPool) await superPool.end();
 });
 
@@ -123,7 +149,7 @@ describe('RTO-risk detector (live Postgres)', () => {
 
   it('1. generate raises a risk rec with evidence + confidence + a decision_log entry', async () => {
     if (!pgAvailable) return;
-    const r = await generateRecommendations(BRAND_A, CORR, { pool: dbPool });
+    const r = await generateRecommendations(BRAND_A, CORR, { pool: dbPool, srPool });
     expect(r.raised).toBe(1);
     expect(r.expired).toBe(0);
 
@@ -137,7 +163,7 @@ describe('RTO-risk detector (live Postgres)', () => {
 
   it('2. idempotent/dedup — re-run refreshes the same rec (no duplicate), logs refreshed', async () => {
     if (!pgAvailable) return;
-    const r = await generateRecommendations(BRAND_A, CORR, { pool: dbPool });
+    const r = await generateRecommendations(BRAND_A, CORR, { pool: dbPool, srPool });
     expect(r.raised).toBe(1);
 
     const count = await superPool.query(
@@ -181,12 +207,12 @@ describe('RTO-risk detector (live Postgres)', () => {
 
   it('4. expiry — RTO drops below threshold → open rec expired + logged', async () => {
     if (!pgAvailable) return;
-    // Remove the RTO reversals → 0% RTO → detector no longer fires.
-    await superPool.query(
-      `DELETE FROM realized_revenue_ledger WHERE brand_id = $1 AND event_type = 'rto_reversal'`,
+    // Remove the COD-RTO clawbacks → 0% RTO → detector no longer fires.
+    await (srPool as unknown as mysql.Pool).query(
+      `DELETE FROM brain_gold.gold_revenue_ledger WHERE brand_id = ? AND event_type = 'cod_rto_clawback'`,
       [BRAND_A],
     );
-    const r = await generateRecommendations(BRAND_A, CORR, { pool: dbPool });
+    const r = await generateRecommendations(BRAND_A, CORR, { pool: dbPool, srPool });
     expect(r.raised).toBe(0);
     expect(r.expired).toBe(1);
 

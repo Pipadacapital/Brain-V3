@@ -10,8 +10,8 @@
  * F-SEC-02: reads inside withBrandTxn (GUC transaction-scoped, RLS-enforced).
  */
 
-import type { EngineDeps } from './deps.js';
-import { withBrandTxn } from './deps.js';
+import type { SilverPool } from './silver-deps.js';
+import { withSilverBrand, BRAND_PREDICATE } from './silver-deps.js';
 
 export interface OrderStatsResult {
   /** ISO 4217 currency code */
@@ -36,76 +36,45 @@ export interface OrderStatsResult {
 export async function computeOrderStats(
   brandId: string,
   asOf: Date,
-  deps: EngineDeps,
+  deps: { srPool: SilverPool },
 ): Promise<OrderStatsResult[]> {
-  const asOfStr = asOf.toISOString().split('T')[0];
+  const asOfStr = asOf.toISOString().split('T')[0] as string;
 
-  return withBrandTxn(deps.pool, brandId, async (client) => {
-    const sql = `
-      WITH all_orders AS (
-        SELECT DISTINCT order_id, currency_code
-        FROM realized_revenue_ledger
-        WHERE brand_id = $1
-          AND occurred_at::date <= $2::date
-      ),
-      rto_orders AS (
-        SELECT DISTINCT order_id, currency_code
-        FROM realized_revenue_ledger
-        WHERE brand_id = $1
-          AND event_type = 'rto_reversal'
-          AND occurred_at::date <= $2::date
-      ),
-      realized AS (
-        SELECT
-          currency_code,
-          SUM(amount_minor) AS realized_minor
-        FROM realized_revenue_ledger
-        WHERE brand_id = $1
-          AND event_type IN ('finalization', 'rto_reversal')
-          AND occurred_at::date <= $2::date
-        GROUP BY currency_code
-      ),
-      order_counts AS (
-        SELECT currency_code, COUNT(*) AS order_count
-        FROM all_orders
-        GROUP BY currency_code
-      ),
-      rto_counts AS (
-        SELECT currency_code, COUNT(*) AS rto_count
-        FROM rto_orders
-        GROUP BY currency_code
-      )
-      SELECT
-        oc.currency_code,
-        oc.order_count::text AS order_count,
-        COALESCE(r.realized_minor, 0)::text AS realized_minor,
-        CASE WHEN oc.order_count > 0
-             THEN ROUND(COALESCE(rc.rto_count, 0)::numeric / oc.order_count * 100, 2)::text
-             ELSE '0'
-        END AS rto_rate_pct
-      FROM order_counts oc
-      LEFT JOIN realized r ON r.currency_code = oc.currency_code
-      LEFT JOIN rto_counts rc ON rc.currency_code = oc.currency_code
-      ORDER BY oc.currency_code
-    `;
-
-    const result = await client.query<{
+  // MEDALLION REALIGNMENT (Epic 1): read brain_gold.gold_revenue_ledger via withSilverBrand, not PG.
+  // Realized = non-provisional (canonical, COD-inclusive); RTO = rto_reversal + cod_rto_clawback.
+  return withSilverBrand(deps.srPool, brandId, async (scope) => {
+    const rows = await scope.runScoped<{
       currency_code: string;
-      order_count: string;
-      realized_minor: string;
-      rto_rate_pct: string;
-    }>(sql, [brandId, asOfStr]);
+      order_count: string | number;
+      realized_minor: string | number;
+      rto_count: string | number;
+    }>(
+      `SELECT
+         currency_code,
+         COUNT(DISTINCT order_id) AS order_count,
+         SUM(CASE WHEN event_type <> 'provisional_recognition' THEN amount_minor ELSE 0 END) AS realized_minor,
+         COUNT(DISTINCT CASE WHEN event_type IN ('rto_reversal', 'cod_rto_clawback') THEN order_id END) AS rto_count
+       FROM brain_gold.gold_revenue_ledger
+       WHERE CAST(occurred_at AS DATE) <= ?
+         AND ${BRAND_PREDICATE}
+       GROUP BY currency_code
+       ORDER BY currency_code`,
+      [asOfStr],
+    );
 
-    return result.rows.map((row) => {
-      const orderCount = BigInt(row.order_count);
-      const realizedMinor = BigInt(row.realized_minor);
+    return rows.map((row) => {
+      const orderCount = BigInt(String(row.order_count ?? '0').split('.')[0] || '0');
+      const realizedMinor = BigInt(String(row.realized_minor ?? '0').split('.')[0] || '0');
+      const rtoCount = BigInt(String(row.rto_count ?? '0').split('.')[0] || '0');
       const aovMinor = orderCount > 0n ? realizedMinor / orderCount : 0n;
-      return {
-        currency_code: row.currency_code,
-        orderCount,
-        aovMinor,
-        rtoRatePct: row.rto_rate_pct,
-      };
+      const rtoRatePct =
+        orderCount > 0n
+          ? (() => {
+              const bps = (rtoCount * 10000n) / orderCount;
+              return `${bps / 100n}.${String(bps % 100n).padStart(2, '0')}`;
+            })()
+          : '0';
+      return { currency_code: row.currency_code, orderCount, aovMinor, rtoRatePct };
     });
   });
 }

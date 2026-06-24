@@ -27,15 +27,10 @@ interface CompletenessTarget {
   readonly maxNullRate: number;
 }
 
-/** PG completeness targets — the money ledgers (DB-AUDIT C4: bronze_events moved to the Iceberg SoR,
- * read via StarRocks below; ledgers remain operational PG tables). */
+/** PG completeness targets. MEDALLION REALIGNMENT (Epic 1 / decision B): realized_revenue_ledger was
+ * dropped — the recognition ledger is the Bronze-sourced brain_gold.gold_revenue_ledger (completeness is
+ * a dbt build invariant, not a PG check). Only ad_spend_ledger remains a PG money ledger here. */
 export const COMPLETENESS_TARGETS: readonly CompletenessTarget[] = [
-  {
-    target: 'realized_revenue_ledger',
-    table: 'realized_revenue_ledger',
-    requiredColumns: ['amount_minor', 'currency_code'],
-    maxNullRate: 0,
-  },
   {
     target: 'ad_spend_ledger',
     table: 'ad_spend_ledger',

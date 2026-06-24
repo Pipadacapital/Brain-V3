@@ -18,6 +18,8 @@
  */
 
 import type { DbPool, QueryContext } from '@brain/db';
+import type { SilverPool } from '@brain/metric-engine';
+import { computeRealizedGmvForPeriod } from '@brain/metric-engine';
 
 const PERIOD_RE = /^\d{4}-\d{2}$/;
 
@@ -35,6 +37,8 @@ export interface SealResult {
 
 export interface BillingDeps {
   pool: DbPool;
+  /** StarRocks Silver/Gold pool — the realized-GMV meter reads the lakehouse ledger (Epic 1 / decision B). */
+  srPool: SilverPool;
 }
 
 /** Last calendar day of a 'YYYY-MM' period as 'YYYY-MM-DD' (UTC; day 0 of next month = last day). */
@@ -55,49 +59,21 @@ export async function sealBillingPeriod(
   }
   const asOf = periodEndDate(period);
   const ctx: QueryContext = { brandId, correlationId };
+
+  // MEDALLION REALIGNMENT (Epic 1 / decision B): the metered figure comes from the LAKEHOUSE ledger
+  // (brain_gold.gold_revenue_ledger, Bronze-sourced) via the sanctioned metric-engine seam — NOT the
+  // PostgreSQL ledger. gmv_meter_snapshot (the operational billing record) stays in PG. The seam keeps
+  // D-3 (money math in the engine, not an ad-hoc app SUM). currency + provenance count come with it.
+  const meter = await computeRealizedGmvForPeriod(brandId, period, { srPool: deps.srPool });
+  const currency = (meter.currencyCode ?? 'INR').trim();
+  // Floor at 0: a net-negative period (reversals/refunds exceed recognized sales posted to it) meters
+  // as ZERO, never a negative bill (gmv_meter_snapshot.metered_gmv_minor CHECK >= 0). The ledger keeps
+  // the signed truth; the BILLED figure is non-negative.
+  const gmv = (meter.gmvMinor < 0n ? 0n : meter.gmvMinor).toString();
+  const rowCount = meter.rowCount;
+
   const client = await deps.pool.connect();
   try {
-    // Currency of the metered figure = the currency of the realized rows being summed. Read it
-    // from the ledger itself (billing's own bounded context) rather than the brand table — the
-    // brand row carries a workspace/membership-coupled RLS policy that needs GUCs billing doesn't
-    // set, and the figure's currency should match the rows summed, not a separately-configured one.
-    // M1 is single-currency per brand; default INR if empty.
-    const curRes = await client.query<{ currency_code: string }>(
-      ctx,
-      `SELECT currency_code
-         FROM realized_revenue_ledger
-        WHERE brand_id = $1 AND billing_posted_period = $2
-        ORDER BY economic_effective_at DESC
-        LIMIT 1`,
-      [brandId, period],
-    );
-    const currency = (curRes.rows[0]?.currency_code ?? 'INR').trim();
-
-    // Per-period realized GMV via the named seam (D-3) — the DELTA billed to THIS period
-    // (billing_posted_period), not the cumulative as-of total. ::text → bigint-as-string.
-    const gmvRes = await client.query<{ gmv: string }>(
-      ctx,
-      `SELECT realized_gmv_for_period($1::uuid, $2::char(7))::text AS gmv`,
-      [brandId, period],
-    );
-    // Floor at 0: a period whose realized GMV is net-negative (reversals/refunds exceed the recognized
-    // sales that posted to it — e.g. RTO reversals landing before their provisionals finalize) meters as
-    // ZERO, never a negative bill. The ledger keeps the signed truth; the BILLED figure is non-negative
-    // (gmv_meter_snapshot.metered_gmv_minor CHECK >= 0). You never invoice a customer a negative amount.
-    const gmvRaw = BigInt(gmvRes.rows[0]?.gmv ?? '0');
-    const gmv = (gmvRaw < 0n ? 0n : gmvRaw).toString();
-
-    // Provenance-only row count (NOT the money math, which goes through the function above — so not
-    // the D-3-banned ad-hoc SUM): how many rows posted to this period stand behind the figure.
-    const cntRes = await client.query<{ n: string }>(
-      ctx,
-      `SELECT count(*)::bigint::text AS n
-         FROM realized_revenue_ledger
-        WHERE brand_id = $1 AND billing_posted_period = $2`,
-      [brandId, period],
-    );
-    const rowCount = Number(cntRes.rows[0]?.n ?? '0');
-
     // Seal — idempotent. DO NOTHING means the period was already sealed; the original stands.
     const ins = await client.query<{ billing_period: string }>(
       ctx,

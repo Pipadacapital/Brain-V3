@@ -56,7 +56,14 @@ with raw as (
     -- payload.properties.* shape (brain_anon_id + session_id + utm + click_ids), so they sessionize and
     -- channel-classify identically and flow straight through int_touchpoint_sessionized → silver_touchpoint.
     -- The existing journey/browse set is preserved verbatim — this is purely ADDITIVE.
-    where event_type in ('page.viewed', 'product.viewed', 'collection.viewed', 'cart.viewed', 'cart.item_added', 'search.submitted', 'checkout.started', 'scroll.depth', 'element.clicked')
+    -- Universal capture set (feat-universal-pixel): the browse/cart/checkout journey PLUS the
+    -- comprehensive behavioral signals the served pixel now emits — UX-friction (rage.click /
+    -- dead.click), engagement (scroll.depth / element.clicked), conversion intent (search,
+    -- coupon.applied, form.submitted) and the checkout/payment funnel tail (shipping_selected,
+    -- payment.initiated/succeeded/failed, order.placed — BEHAVIORAL markers; revenue truth stays
+    -- connector-sourced). All carry the same payload.properties.* shape so they sessionize +
+    -- channel-classify identically. Purely ADDITIVE — the existing set is preserved verbatim.
+    where event_type in ('page.viewed', 'product.viewed', 'collection.viewed', 'cart.viewed', 'cart.item_added', 'cart.item_removed', 'cart.updated', 'search.submitted', 'checkout.started', 'checkout.step_viewed', 'checkout.shipping_selected', 'payment.initiated', 'payment.succeeded', 'payment.failed', 'order.placed', 'purchase.completed', 'coupon.applied', 'form.submitted', 'user.logged_in', 'user.signed_up', 'identify', 'scroll.depth', 'element.clicked', 'rage.click', 'dead.click')
     {% else %}
     select
         brand_id,

@@ -35,51 +35,17 @@ sources:
     database: brain_oltp_pg   # StarRocks external catalog name (DEV: JDBC→Postgres; PROD: Iceberg Bronze)
     schema: public            # Postgres schema
     tables:
-      - name: realized_revenue_ledger
-        # Read THROUGH the Postgres read-shim view (db/starrocks/oltp_pg_read_shim.sql):
-        # StarRocks' JDBC catalog cannot read Postgres uuid columns (UNKNOWN_TYPE), so the
-        # view casts brand_id/brain_id uuid→text. Prod (Iceberg) reads native strings → no shim.
-        identifier: silver_order_ledger_src
-        description: >
-          Append-only realized-revenue ledger (migrations 0018 + 0027 + 0030). One row per
-          (brand_id, order_id, event_type, occurred_at::date). The order lifecycle is NOT a
-          column — it is derived deterministically from the event_type discriminator downstream.
-        columns:
-          - name: brand_id
-            description: "Tenant key (UUID). First key column of every Silver table."
-          - name: order_id
-            description: "Order natural key (TEXT)."
-          - name: event_type
-            description: "Lifecycle/economic event discriminator (CHECK-constrained set)."
-          - name: amount_minor
-            description: "SIGNED money in BIGINT minor units (I-S07). Never float/NUMERIC."
-          - name: currency_code
-            description: "CHAR(3), always paired with amount_minor."
-          - name: occurred_at
-            description: "Event-time (timestamptz)."
-          - name: economic_effective_at
-            description: "Economic-time; drives latest-state ordering."
-          - name: brain_id
-            description: "Identity reference (UUID, nullable). Never PII."
-
-      # ── DB-AUDIT H6: identity history (first_identified_at) ─────────────────────
-      - name: silver_customer_identity_src
-        # Read THROUGH the Postgres read-shim view (db/starrocks/oltp_pg_read_shim.sql):
-        # casts identity.customer brand_id/brain_id/merged_into uuid→text. Exposes first_identified_at
-        # (earliest strong-identifier attach = acquisition time) + minted_at (created_at = first seen).
-        identifier: silver_customer_identity_src
-        description: >
-          Identity-graph customer node (identity.customer). Provides first_identified_at — the H6
-          acquisition timestamp distinct from first_seen_at — to the customer marts.
+      # ── Medallion realignment (Epic 1): Silver recognition-from-Bronze shims ────────────────
+      - name: brand_horizons_src
+        identifier: brand_horizons_src
+        description: "Per-brand COD/prepaid recognition horizons (tenancy.brand, operational config) for finalization."
         columns:
           - name: brand_id
             description: "Tenant key (UUID→text)."
-          - name: brain_id
-            description: "Identity-resolved customer key (UUID→text)."
-          - name: lifecycle_state
-            description: "active | merged."
-          - name: first_identified_at
-            description: "Earliest strong/durable identifier attach (acquisition / known time). Nullable = anonymous-only."
+          - name: cod_recognition_horizon_days
+            description: "Days after order before a COD order's revenue is considered final (recognized on delivery instead)."
+          - name: prepaid_recognition_horizon_days
+            description: "Days after order before a prepaid order finalizes (return/cancel window)."
 
       # ── feat-journey-touchpoint (Phase 4) sources ──────────────────────────────
       - name: bronze_touchpoint_src
@@ -162,46 +128,6 @@ sources:
           - name: currency_code
             description: "CHAR(3), always paired with spend_minor."
 
-      - name: attribution_credit_ledger
-        # Read THROUGH the Postgres read-shim view (db/starrocks/oltp_pg_read_shim.sql):
-        # casts brand_id uuid→text. Feeds gold_marketing_attribution.
-        identifier: gold_attribution_credit_src
-        description: >
-          Append-only attribution credit/clawback ledger (migration 0032). One row per
-          (brand_id, credit_id). credited_revenue_minor is SIGNED BIGINT (+credit / -clawback).
-          Cross-brand by construction (superuser JDBC read); isolation at the read seam.
-        columns:
-          - name: brand_id
-            description: "Tenant key (UUID→text). First key column."
-          - name: credit_id
-            description: "Deterministic sha256 credit id. Grain key with brand_id."
-          - name: model_id
-            description: "Attribution model (last_touch | linear | …)."
-          - name: channel
-            description: "Canonical JourneyChannel (column, not table)."
-          - name: credited_revenue_minor
-            description: "SIGNED BIGINT minor units (+credit / -clawback). Never float."
-          - name: currency_code
-            description: "CHAR(3), paired with credited_revenue_minor."
-
-      - name: connector_journey_stitch_map_src
-        # Read-shim over connector_journey_stitch_map (migration 0031); uuid→text for JDBC.
-        # The deterministic anon↔order stitch (D-5: read-back, never inferred). LEFT-joined
-        # into the mart to set stitched_brain_id (NULL = un-stitched = the §4 hit-rate denom).
-        identifier: connector_journey_stitch_map_src
-        description: >
-          Deterministic cart-stitch lookup: brain_anon_id read BACK from the order's
-          note_attributes onto a known order_id / brain_id (D-5, never probabilistic).
-        columns:
-          - name: brand_id
-            description: "Tenant key (UUID→text)."
-          - name: order_id
-            description: "Brain ledger spine key (= ledger.order_id)."
-          - name: stitched_anon_id
-            description: "brain_anon_id read back from the order (the join key onto touchpoints)."
-          - name: brain_id
-            description: "Resolved known identity (UUID→text, nullable; NULL = unlinked)."
-
   # ── ADR-0002 Slice 4b: the Iceberg Bronze source (the flip target) ──────────────
   # The StarRocks external Iceberg catalog over Bronze (db/starrocks/external_iceberg_catalog.sql,
   # written by the Spark materializer). RAW collector_events — native string brand_id/event_id and a
@@ -229,39 +155,3 @@ sources:
           - name: payload
             description: "Verbatim envelope JSON (STRING). Journey signal under .properties."
 
-      # ── DB-AUDIT H2: the worker-written realized-revenue ledger, LANDED in Iceberg Bronze ──────────
-      # Materialized PG billing.realized_revenue_ledger → brain_bronze.revenue_ledger by the Spark batch
-      # db/iceberg/spark/revenue_ledger_materialize.py (idempotent MERGE on brand_id+ledger_event_id).
-      # gold_revenue_ledger reads THIS when ledger_source='iceberg' (var-gated; default 'pg' until the
-      # continuous sink + parity bake). Native Iceberg types (brand_id/brain_id already STRING).
-      - name: revenue_ledger
-        description: >
-          Iceberg Bronze copy of the realized-revenue ledger (one row per brand_id+ledger_event_id,
-          immutable/append-only). Lets gold_revenue_ledger be served from the lakehouse instead of a
-          live JDBC read of Postgres — PG stops being the analytical SoR (H2). Money = BIGINT minor.
-        columns:
-          - name: brand_id
-            description: "Tenant key (STRING)."
-          - name: ledger_event_id
-            description: "Deterministic ledger id (idempotency key)."
-          - name: amount_minor
-            description: "SIGNED money in BIGINT minor units (I-S07)."
-          - name: occurred_at
-            description: "Event-time (timestamp); Iceberg partition days() source."
-
-      # ── DB-AUDIT H2 (mart #2): the attribution credit/clawback ledger, LANDED in Iceberg Bronze ────
-      # Materialized PG billing.attribution_credit_ledger → brain_bronze.attribution_credit by the Spark
-      # batch db/iceberg/spark/attribution_credit_materialize.py (idempotent MERGE on brand_id+credit_id).
-      # gold_marketing_attribution reads THIS when ledger_source='iceberg' (var-gated; default 'pg').
-      - name: attribution_credit
-        description: >
-          Iceberg Bronze copy of the attribution credit/clawback ledger (one row per brand_id+credit_id,
-          immutable/append-only). Lets gold_marketing_attribution be served from the lakehouse instead of
-          a live JDBC read of Postgres (H2). credited_revenue_minor is SIGNED BIGINT.
-        columns:
-          - name: brand_id
-            description: "Tenant key (STRING)."
-          - name: credit_id
-            description: "Deterministic sha256 credit id (idempotency key)."
-          - name: credited_revenue_minor
-            description: "SIGNED money in BIGINT minor units (+credit / -clawback)."

@@ -15,10 +15,14 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import pg from 'pg';
+import mysql from 'mysql2/promise';
 import { createPool, type DbPool } from '@brain/db';
+import type { SilverPool } from '@brain/metric-engine';
 import { sealBillingPeriod, getInspectableBill, DEFAULT_RATE_BPS } from '../index.js';
 
 const SUPERUSER_URL = process.env['DATABASE_URL'] ?? 'postgres://brain:brain@localhost:5432/brain';
+const SR_HOST = process.env['STARROCKS_HOST'] ?? '127.0.0.1';
+const SR_PORT = Number(process.env['STARROCKS_QUERY_PORT'] ?? '9030');
 
 const BRAND_A = 'b222222a-0a1a-4a1a-8a1a-000000000001';
 const ORG_ID = '0222222a-0a1a-4a1a-8a1a-000000000001';
@@ -28,19 +32,35 @@ const CORR = 'inspectable-bill-live-test';
 
 let superPool: pg.Pool;
 let dbPool: DbPool;
+let srPool: SilverPool;
 let pgAvailable = false;
 
 let seq = 0;
+/**
+ * MEDALLION REALIGNMENT (Epic 1 / decision B): the billing meter reads the LAKEHOUSE ledger
+ * (brain_gold.gold_revenue_ledger on StarRocks), not the PG ledger. Seed there so the seal sees it.
+ */
 async function insertLedgerRow(eventType: string, amountMinor: number, effectiveAt: string): Promise<void> {
   seq += 1;
-  await superPool.query(
-    `INSERT INTO realized_revenue_ledger
-       (brand_id, ledger_event_id, order_id, event_type, amount_minor, currency_code,
-        occurred_at, occurred_date, economic_effective_at, billing_posted_period, recognition_label)
-     VALUES ($1, $2, $3, $4, $5, 'INR', $6, (timezone('UTC',$6::timestamptz))::date, $6, '2099-03',
-             CASE WHEN $4 = 'provisional_recognition' THEN 'provisional' ELSE 'finalized' END)
-     ON CONFLICT (brand_id, ledger_event_id, occurred_date) DO NOTHING`,
-    [BRAND_A, `bill-evt-${seq}`, `order-${seq}`, eventType, amountMinor, effectiveAt],
+  const recognitionLabel = eventType === 'provisional_recognition' ? 'provisional' : 'finalized';
+  await srPool.query(
+    `INSERT INTO brain_gold.gold_revenue_ledger
+       (brand_id, ledger_event_id, order_id, brain_id, event_type, amount_minor, currency_code,
+        fee_minor, occurred_at, economic_effective_at, recognition_label, billing_posted_period,
+        ingested_at, updated_at)
+     VALUES (?, ?, ?, NULL, ?, ?, 'INR', 0, ?, ?, ?, '2099-03', ?, ?)`,
+    [
+      BRAND_A,
+      `bill-evt-${seq}`,
+      `order-${seq}`,
+      eventType,
+      amountMinor,
+      effectiveAt,
+      effectiveAt,
+      recognitionLabel,
+      effectiveAt,
+      effectiveAt,
+    ],
   );
 }
 
@@ -65,7 +85,9 @@ async function seedBrand(): Promise<void> {
 async function cleanup(): Promise<void> {
   await superPool.query(`DELETE FROM billing_plan WHERE brand_id = $1`, [BRAND_A]).catch(() => {});
   await superPool.query(`DELETE FROM gmv_meter_snapshot WHERE brand_id = $1`, [BRAND_A]).catch(() => {});
-  await superPool.query(`DELETE FROM realized_revenue_ledger WHERE brand_id = $1`, [BRAND_A]).catch(() => {});
+  await srPool
+    .query(`DELETE FROM brain_gold.gold_revenue_ledger WHERE brand_id = ?`, [BRAND_A])
+    .catch(() => {});
   await superPool.query(`DELETE FROM brand WHERE id = $1`, [BRAND_A]).catch(() => {});
   await superPool.query(`DELETE FROM organization WHERE id = $1`, [ORG_ID]).catch(() => {});
   await superPool.query(`DELETE FROM app_user WHERE id = $1`, [USER_ID]).catch(() => {});
@@ -76,13 +98,21 @@ beforeAll(async () => {
     superPool = new pg.Pool({ connectionString: SUPERUSER_URL, connectionTimeoutMillis: 4000 });
     await superPool.query('SELECT 1');
     dbPool = await createPool({ connectionString: SUPERUSER_URL });
+    srPool = mysql.createPool({
+      host: SR_HOST,
+      port: SR_PORT,
+      user: 'root',
+      password: '',
+      connectionLimit: 2,
+    }) as unknown as SilverPool;
+    await srPool.query('SELECT 1');
     await cleanup();
     await seedBrand();
     // Sealed basis as-of 2099-03-31 = 100000 (finalization) − 20000 (refund) = 80000.
     await insertLedgerRow('finalization', 100_000, '2099-03-10T00:00:00Z');
     await insertLedgerRow('refund', -20_000, '2099-03-20T00:00:00Z');
     await insertLedgerRow('provisional_recognition', 50_000, '2099-03-15T00:00:00Z'); // excluded
-    await sealBillingPeriod(BRAND_A, PERIOD, CORR, { pool: dbPool });
+    await sealBillingPeriod(BRAND_A, PERIOD, CORR, { pool: dbPool, srPool });
     pgAvailable = true;
   } catch {
     pgAvailable = false;
@@ -92,6 +122,7 @@ beforeAll(async () => {
 afterAll(async () => {
   if (pgAvailable) await cleanup();
   if (dbPool) await dbPool.end();
+  if (srPool) await (srPool as unknown as mysql.Pool).end().catch(() => {});
   if (superPool) await superPool.end();
 });
 
@@ -103,7 +134,7 @@ describe('inspectable bill (live Postgres)', () => {
 
   it('1. default rate — no plan → platform default, fee on sealed basis', async () => {
     if (!pgAvailable) return;
-    const b = await getInspectableBill(BRAND_A, PERIOD, CORR, { pool: dbPool });
+    const b = await getInspectableBill(BRAND_A, PERIOD, CORR, { pool: dbPool, srPool });
     expect(b.state).toBe('billed');
     if (b.state !== 'billed') return;
     expect(b.rate.source).toBe('default');
@@ -115,7 +146,7 @@ describe('inspectable bill (live Postgres)', () => {
 
   it('2. composition reconciles to the sealed basis (finalization + refund)', async () => {
     if (!pgAvailable) return;
-    const b = await getInspectableBill(BRAND_A, PERIOD, CORR, { pool: dbPool });
+    const b = await getInspectableBill(BRAND_A, PERIOD, CORR, { pool: dbPool, srPool });
     if (b.state !== 'billed') throw new Error('expected billed');
     const byType = Object.fromEntries(b.lines.map((l) => [l.event_type, l.amount_minor]));
     expect(byType['finalization']).toBe('100000');
@@ -133,7 +164,7 @@ describe('inspectable bill (live Postgres)', () => {
        ON CONFLICT (brand_id) DO UPDATE SET rate_bps = EXCLUDED.rate_bps`,
       [BRAND_A],
     );
-    const b = await getInspectableBill(BRAND_A, PERIOD, CORR, { pool: dbPool });
+    const b = await getInspectableBill(BRAND_A, PERIOD, CORR, { pool: dbPool, srPool });
     if (b.state !== 'billed') throw new Error('expected billed');
     expect(b.rate.source).toBe('plan');
     expect(b.rate.rate_bps).toBe(150);
@@ -145,7 +176,7 @@ describe('inspectable bill (live Postgres)', () => {
     if (!pgAvailable) return;
     // A finalization effective IN March arrives AFTER the seal — sealed basis must NOT move.
     await insertLedgerRow('finalization', 5_000, '2099-03-28T00:00:00Z');
-    const b = await getInspectableBill(BRAND_A, PERIOD, CORR, { pool: dbPool });
+    const b = await getInspectableBill(BRAND_A, PERIOD, CORR, { pool: dbPool, srPool });
     if (b.state !== 'billed') throw new Error('expected billed');
     expect(b.basis.metered_gmv_minor).toBe('80000'); // sealed figure unchanged
     expect(b.reconciliation.live_composition_minor).toBe('85000'); // live recompute
@@ -156,7 +187,7 @@ describe('inspectable bill (live Postgres)', () => {
 
   it('5. not_sealed — an unsealed period returns state:not_sealed', async () => {
     if (!pgAvailable) return;
-    const b = await getInspectableBill(BRAND_A, '2099-01', CORR, { pool: dbPool });
+    const b = await getInspectableBill(BRAND_A, '2099-01', CORR, { pool: dbPool, srPool });
     expect(b.state).toBe('not_sealed');
   });
 });

@@ -55,6 +55,15 @@ export interface InstallPixelResult {
   src: string;
   /** True when a Brain ScriptTag was already present (idempotent re-run). */
   alreadyPresent: boolean;
+  /**
+   * Checkout (Web Pixel) coverage outcome — set by the best-effort webPixelCreate. The ScriptTag
+   * (above) covers the online store; the Web Pixel adds CHECKOUT. The UI surfaces this so the merchant
+   * sees whether checkout tracking is live, or what one-time step unblocks it.
+   *   enabled   — the Web Pixel registered (or was already registered): checkout tracking is live.
+   *   pending   — needs a one-time Shopify-side step (deploy the app extension / reconnect for
+   *               write_pixels); the ScriptTag (storefront) keeps working meanwhile.
+   */
+  webPixel: { status: 'enabled' | 'pending'; message: string };
 }
 
 export class InstallPixelCommand {
@@ -169,22 +178,38 @@ export class InstallPixelCommand {
     //      (reconnect). When either is missing, webPixelCreate fails and we log + keep the working
     //      ScriptTag install. An "already taken" userError on re-run is success (idempotent).
     //      See docs/runbooks/enable-shopify-checkout-pixel.md.
+    let webPixel: InstallPixelResult['webPixel'] = {
+      status: 'pending',
+      message: 'Checkout tracking pending — see below.',
+    };
     try {
       const wp = await client.webPixelCreate({
         install_token: inst.installToken,
         brand_id: brandId,
         ingest_base_url: ingestBase,
       });
+      webPixel = { status: 'enabled', message: 'Checkout tracking is live (Web Pixel registered).' };
       log.info(
         `[InstallPixelCommand] web pixel registered (checkout coverage) brand=${brandId} id=${wp.id} shop=${conn.shopDomain}`,
       );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      const benign = /already|taken/i.test(msg);
-      log[benign ? 'info' : 'warn'](
-        `[InstallPixelCommand] web pixel ${benign ? 'already registered' : 'NOT registered (deploy brain-web-pixel + reconnect for write_pixels) — ScriptTag still active'} ` +
-          `brand=${brandId} shop=${conn.shopDomain}: ${msg}`,
-      );
+      if (/already|taken/i.test(msg)) {
+        webPixel = { status: 'enabled', message: 'Checkout tracking is live (Web Pixel already registered).' };
+        log.info(`[InstallPixelCommand] web pixel already registered brand=${brandId} shop=${conn.shopDomain}`);
+      } else if (/403|401|scope|access|pixel/i.test(msg)) {
+        webPixel = {
+          status: 'pending',
+          message: 'Reconnect Shopify to grant the write_pixels scope, then re-run install to enable checkout tracking.',
+        };
+        log.warn(`[InstallPixelCommand] web pixel needs write_pixels (reconnect) brand=${brandId}: ${msg}`);
+      } else {
+        webPixel = {
+          status: 'pending',
+          message: 'Checkout tracking needs a one-time setup: deploy the brain-web-pixel app extension (shopify app deploy). The storefront pixel is active meanwhile.',
+        };
+        log.warn(`[InstallPixelCommand] web pixel not registered (deploy extension) brand=${brandId}: ${msg}`);
+      }
     }
 
     // 8. We verifiably placed the pixel → mark the status verified/connected for the UI.
@@ -195,6 +220,6 @@ export class InstallPixelCommand {
       `[InstallPixelCommand] pixel auto-installed brand=${brandId} provider=shopify_script_tag ` +
         `ref=${ref} alreadyPresent=${alreadyPresent} shop=${conn.shopDomain}`,
     );
-    return { installed: true, provider: 'shopify_script_tag', ref, installToken: inst.installToken, src, alreadyPresent };
+    return { installed: true, provider: 'shopify_script_tag', ref, installToken: inst.installToken, src, alreadyPresent, webPixel };
   }
 }

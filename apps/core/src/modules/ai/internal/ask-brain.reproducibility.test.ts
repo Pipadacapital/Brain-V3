@@ -23,8 +23,45 @@ import type { ResolverClient } from '@brain/ai-gateway-client';
 const BRAND = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const FIXED_REALIZED_MINOR = '123456'; // the deterministic seam value (INR minor units)
 
-/** Records every as_of the realized_gmv_as_of seam is called with (proves the pin). */
+/** Records every as_of the realized-revenue gold read is called with (proves the pin). */
 const seamAsOfCalls: string[] = [];
+
+/**
+ * A minimal deterministic fake StarRocks pool (mysql2/promise shape). MEDALLION REALIGNMENT: the
+ * realized + provisional revenue seams now read brain_gold.gold_revenue_ledger via withSilverBrand
+ * (a dedicated connection + `${BRAND_PREDICATE}` → `brand_id = ?`). The realized value is CONSTANT —
+ * so the only way the two runs could differ is a snapshot-decode bug, which this test would catch.
+ * The as_of is inlined into the gold query (`economic_effective_at <= 'YYYY-MM-DD'`); we record it.
+ */
+function makeFakeSilverPool(): never {
+  const conn = {
+    async query(sql: string): Promise<[unknown[], unknown]> {
+      const text = String(sql);
+      if (text.startsWith('SET ')) return [[], undefined];
+      // realized-revenue read: SUM(...) AS v, MAX(currency_code) — record the inlined as_of.
+      if (text.includes('MAX(currency_code)') && text.includes('gold_revenue_ledger')) {
+        const m = text.match(/<=\s*'(\d{4}-\d{2}-\d{2})'/);
+        if (m) seamAsOfCalls.push(m[1] as string);
+        return [[{ v: FIXED_REALIZED_MINOR, currency_code: 'INR' }], undefined];
+      }
+      // provisional-revenue read: empty (no provisional rows).
+      if (text.includes('provisional_minor')) return [[], undefined];
+      // hasData existence check.
+      if (text.includes('AS one') && text.includes('gold_revenue_ledger')) {
+        return [[{ one: 1 }], undefined];
+      }
+      // Any other gold read → empty (fail-closed).
+      return [[], undefined];
+    },
+    release() {
+      /* no-op */
+    },
+  };
+  return {
+    getConnection: async () => conn,
+    query: async (sql: string) => conn.query(sql),
+  } as never;
+}
 
 /**
  * A minimal deterministic fake pg.Pool. It supports the exact query sequence
@@ -82,13 +119,14 @@ describe('askBrain — reproducible from snapshot_id (D3 / D6.4)', () => {
   it('re-running (binding, snapshot_id) yields the IDENTICAL serialized number', async () => {
     seamAsOfCalls.length = 0;
     const pool = makeFakePool();
+    const srPool = makeFakeSilverPool();
     const asOf = '2026-06-18';
 
     // getMetricTrust reads dq data → no_data path returns grade 'D' (fine for this test;
     // the FAKE pool returns empty rows for the dq summary reads → honest floor).
     const answer = await askBrain(BRAND, 'what is my realized revenue', asOf, {
       engine: { pool },
-      srPool: pool as never, // realized_revenue reads PG only — srPool unused on this path
+      srPool, // realized + provisional now read the lakehouse gold ledger
       resolver: stubResolver,
     });
 
@@ -106,7 +144,7 @@ describe('askBrain — reproducible from snapshot_id (D3 / D6.4)', () => {
       { metric_id: answer.binding.metric_id, version: answer.binding.metric_version, params: answer.binding.params },
       answer.binding.snapshot_id,
       { pool },
-      pool as never, // realized_revenue reads PG only — srPool unused on this path
+      srPool, // realized + provisional now read the lakehouse gold ledger
     );
 
     // Byte-identical money map — the reproducibility guarantee.

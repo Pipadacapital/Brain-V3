@@ -49,21 +49,8 @@ WHERE event_type IN ('page.viewed', 'cart.viewed', 'cart.item_added');
 
 GRANT SELECT ON bronze_touchpoint_src TO brain;
 
--- ── connector_journey_stitch_map read-shim (uuid→text for the dbt LEFT JOIN) ────
--- The stitch map (migration 0031) is keyed by uuid brand_id + nullable uuid brain_id.
--- dbt reads it through the SAME JDBC catalog to LEFT JOIN stitched_brain_id onto the
--- per-touch mart. Cast uuid→text for the same JDBC reason. Cross-brand by construction
--- (superuser read) — isolation is at the metric-engine seam.
-DROP VIEW IF EXISTS connector_journey_stitch_map_src;
-CREATE VIEW connector_journey_stitch_map_src AS
-SELECT
-    brand_id::text   AS brand_id,
-    order_id,
-    stitched_anon_id,
-    brain_id::text   AS brain_id,
-    click_ids::text  AS click_ids,   -- jsonb→text (JDBC cannot read jsonb)
-    utms::text       AS utms,        -- jsonb→text
-    created_at
-FROM connector_journey_stitch_map;
-
-GRANT SELECT ON connector_journey_stitch_map_src TO brain;
+-- MEDALLION REALIGNMENT (Epic 4): the connector_journey_stitch_map_src read-shim that used to live here
+-- was REMOVED. The cart-stitch is materialized into brain_silver.silver_journey_stitch by the
+-- journey-stitch-export job (PG capture → StarRocks); silver_touchpoint reads that StarRocks projection
+-- directly, so there is no PG stitch shim to create. (The bronze_touchpoint_src view above belongs to the
+-- separate Iceberg-Bronze retirement — dev/PG-mode only; prod reads Iceberg Bronze.)

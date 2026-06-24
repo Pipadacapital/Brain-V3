@@ -8,7 +8,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
 import { EmptyState } from '@/components/ui/empty-state';
-import { usePixelInstallation, useProvisionPixel, usePixelHealth, useVerifyPixel, useInstallPixelShopify, useUninstallPixelShopify } from '@/lib/hooks/use-pixel';
+import { usePixelInstallation, useProvisionPixel, usePixelHealth, useVerifyPixel } from '@/lib/hooks/use-pixel';
+import { StorefrontInstallCards } from '@/components/pixel/storefront-install-cards';
 import { useBrandList } from '@/lib/hooks/use-workspace';
 import { BffApiError } from '@/lib/api/client';
 import { toast } from '@/components/ui/toaster';
@@ -75,45 +76,6 @@ export function PixelWizard() {
   const { data: health, isLoading: loadingHealth } = usePixelHealth();
   const { mutate: verifyPixel, isPending: isVerifying } = useVerifyPixel();
   const { mutate: provisionPixel, isPending: isProvisioning } = useProvisionPixel();
-  const { mutate: installShopify, isPending: isAutoInstalling } = useInstallPixelShopify();
-  const { mutate: uninstallShopify, isPending: isUninstalling } = useUninstallPixelShopify();
-
-  function handleUninstall() {
-    uninstallShopify(undefined, {
-      onSuccess: (res) => {
-        toast({
-          title: res.already_absent ? 'No pixel to remove' : 'Pixel removed from Shopify',
-          description: res.already_absent
-            ? 'There was no Brain Pixel on the storefront.'
-            : `Removed ${res.removed} pixel tag${res.removed === 1 ? '' : 's'} from your storefront.`,
-        });
-      },
-      onError: (err) => {
-        const description =
-          err instanceof BffApiError && err.message ? err.message : 'Could not remove the pixel. Try again.';
-        toast({ title: 'Remove failed', description, variant: 'destructive' });
-      },
-    });
-  }
-
-  function handleAutoInstall() {
-    installShopify(undefined, {
-      onSuccess: (res) => {
-        toast({
-          title: res.already_present ? 'Pixel already installed' : 'Pixel installed on Shopify',
-          description: 'The Brain Pixel is now live on your storefront — no manual paste needed.',
-        });
-      },
-      onError: (err) => {
-        // The server returns actionable codes (STOREFRONT_NOT_CONNECTED / RECONNECT_REQUIRED_SCOPE).
-        const description =
-          err instanceof BffApiError && err.message
-            ? err.message
-            : 'Could not auto-install the pixel. Try the manual snippet below.';
-        toast({ title: 'Auto-install failed', description, variant: 'destructive' });
-      },
-    });
-  }
 
   function handleGenerate() {
     const targetHost = brandHost ?? (typeof window !== 'undefined' ? window.location.host : '');
@@ -243,40 +205,11 @@ export function PixelWizard() {
         </Card>
       )}
 
-      {/* Step 2a: One-click auto-install onto a connected Shopify storefront (recommended). */}
-      <Card data-testid="pixel-auto-install-card">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Zap className="h-4 w-4 text-primary" aria-hidden="true" />
-            Install automatically on Shopify
-          </CardTitle>
-          <CardDescription>
-            Inject the Brain Pixel onto your connected Shopify storefront in one click — no theme
-            edit, no copy-paste. Requires a connected Shopify store.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="flex flex-wrap items-center gap-2">
-            <Button onClick={handleAutoInstall} disabled={isAutoInstalling || isUninstalling} data-testid="btn-auto-install-shopify">
-              {isAutoInstalling && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />}
-              {isAutoInstalling ? 'Installing…' : installation?.installed ? 'Reinstall on Shopify' : 'Install on Shopify'}
-            </Button>
-            {installation?.installed && (
-              <Button
-                variant="outline"
-                onClick={handleUninstall}
-                disabled={isUninstalling || isAutoInstalling}
-                data-testid="btn-uninstall-shopify"
-              >
-                {isUninstalling && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />}
-                {isUninstalling ? 'Removing…' : 'Remove from Shopify'}
-              </Button>
-            )}
-          </div>
-        </CardContent>
-      </Card>
+      {/* Step 2a: One-click auto-install — connected-storefront-driven (Shopify, WooCommerce, …).
+          Data-driven from the installer registry: a new storefront surfaces here with no UI change. */}
+      <StorefrontInstallCards installed={installation?.installed ?? false} />
 
-      {/* Step 2b: Manual snippet (fallback when not on Shopify, or for any storefront). */}
+      {/* Step 2b: Manual snippet (fallback for a custom storefront, or any platform). */}
       <Card data-testid="pixel-snippet-card">
         <CardHeader>
           <CardTitle>Or install manually</CardTitle>

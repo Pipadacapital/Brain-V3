@@ -40,25 +40,39 @@ async function pgExec(sql: string, params: unknown[] = []): Promise<void> {
   await pgPool.query(sql, params);
 }
 
+// MEDALLION REALIGNMENT (Epic 2): the credit ledger is now brain_gold.gold_attribution_credit
+// (StarRocks), written by the reconcile job. Query it via srPool (mysql2 `?` placeholders).
+async function srGold<T = Record<string, unknown>>(sql: string, params: unknown[] = []): Promise<T[]> {
+  const [rows] = await (srPool as unknown as mysql.Pool).query(sql, params);
+  return rows as T[];
+}
+
 let seq = 0;
+// MEDALLION REALIGNMENT (Epic 2 / decision B): the attribution credit basis is the LAKEHOUSE ledger
+// (brain_gold.gold_revenue_ledger on StarRocks), not the PG ledger — seed there.
 async function seedLedgerRow(orderId: string, brainId: string | null, eventType: string, amount: number, ledgerEventId?: string): Promise<string> {
   seq += 1;
   const id = ledgerEventId ?? `attr-evt-${seq}`;
-  await pgPool.query(
-    `INSERT INTO realized_revenue_ledger
+  const label = eventType === 'provisional_recognition' ? 'provisional' : 'finalized';
+  await (srPool as unknown as mysql.Pool).query(
+    `INSERT INTO brain_gold.gold_revenue_ledger
        (brand_id, ledger_event_id, order_id, brain_id, event_type, amount_minor, currency_code,
-        occurred_at, occurred_date, economic_effective_at, billing_posted_period, recognition_label)
-     VALUES ($1,$2,$3,$4,$5,$6,'INR','2026-06-10Z',(timezone('UTC','2026-06-10Z'::timestamptz))::date,'2026-06-10Z','2026-06',
-             CASE WHEN $5='provisional_recognition' THEN 'provisional' ELSE 'finalized' END)
-     ON CONFLICT (brand_id, ledger_event_id, occurred_date) DO NOTHING`,
-    [BRAND, id, orderId, brainId, eventType, amount],
+        fee_minor, occurred_at, economic_effective_at, recognition_label, billing_posted_period,
+        ingested_at, updated_at)
+     VALUES (?,?,?,?,?,?,'INR',0,'2026-06-10 00:00:00','2026-06-10 00:00:00',?,'2026-06',
+             '2026-06-10 00:00:00','2026-06-10 00:00:00')`,
+    [BRAND, id, orderId, brainId, eventType, amount, label],
   );
   return id;
 }
 
 async function cleanup(): Promise<void> {
-  await pgExec(`DELETE FROM attribution_credit_ledger WHERE brand_id = $1`, [BRAND]).catch(() => {});
-  await pgExec(`DELETE FROM realized_revenue_ledger WHERE brand_id = $1`, [BRAND]).catch(() => {});
+  await (srPool as unknown as mysql.Pool)
+    .query(`DELETE FROM brain_gold.gold_attribution_credit WHERE brand_id = ?`, [BRAND])
+    .catch(() => {});
+  await (srPool as unknown as mysql.Pool)
+    .query(`DELETE FROM brain_gold.gold_revenue_ledger WHERE brand_id = ?`, [BRAND])
+    .catch(() => {});
   await pgExec(`DELETE FROM brand WHERE id = $1`, [BRAND]).catch(() => {});
   await pgExec(`DELETE FROM organization WHERE id = $1`, [ORG_ID]).catch(() => {});
   await pgExec(`DELETE FROM app_user WHERE id = $1`, [USER_ID]).catch(() => {});
@@ -80,6 +94,17 @@ beforeAll(async () => {
         ttclid varchar(255), stitched_brain_id varchar(64)
       ) DUPLICATE KEY(brand_id, brain_anon_id, touch_seq)
         DISTRIBUTED BY HASH(brand_id) BUCKETS 1 PROPERTIES ("replication_num" = "1")`);
+    // The lakehouse credit ledger (the reconcile job writes here) — idempotent (mirrors db/starrocks/gold_attribution_credit.sql).
+    await sr.query(`CREATE TABLE IF NOT EXISTS brain_gold.gold_attribution_credit (
+        brand_id varchar(64) NOT NULL, credit_id varchar(128) NOT NULL, order_id varchar(128),
+        brain_anon_id varchar(128), touch_seq int, channel varchar(64), campaign_id varchar(255),
+        model_id varchar(32), row_kind varchar(16), weight_fraction varchar(64),
+        credited_revenue_minor bigint, currency_code varchar(8), reversed_of_credit_id varchar(128),
+        reversal_reason varchar(32), realized_revenue_minor bigint, confidence_grade varchar(8),
+        attribution_confidence varchar(16), model_version varchar(32), metric_snapshot_id varchar(128),
+        occurred_at datetime, economic_effective_at datetime, billing_posted_period varchar(7), updated_at datetime
+      ) PRIMARY KEY (brand_id, credit_id) DISTRIBUTED BY HASH(brand_id) BUCKETS 1
+        PROPERTIES ("replication_num" = "1", "enable_persistent_index" = "true")`);
 
     await cleanup();
     // app_user → org → brand (currency trigger needs brand.currency_code)
@@ -119,73 +144,73 @@ describe('reconcileAttribution (live PG + StarRocks)', () => {
 
   it('1+3. credit — stitched order credited (sum=realized); no-journey order unattributed', async () => {
     if (!available) return;
-    const r = await reconcileAttribution(BRAND, CORR, { pool: pgPool, srPool }, MODEL);
+    const r = await reconcileAttribution(BRAND, CORR, { srPool }, MODEL);
     expect(r.credited).toBe(1);
     expect(r.unattributed).toBe(1); // the no-journey finalized order
 
-    const credit = await pgPool.query(
-      `SELECT count(*)::int AS n, COALESCE(SUM(credited_revenue_minor),0)::text AS sum
-         FROM attribution_credit_ledger
-        WHERE brand_id=$1 AND order_id=$2 AND row_kind='credit' AND model_id=$3`,
+    const credit = await srGold<{ n: number; sum: string | number }>(
+      `SELECT COUNT(*) AS n, CAST(COALESCE(SUM(credited_revenue_minor),0) AS CHAR) AS sum
+         FROM brain_gold.gold_attribution_credit
+        WHERE brand_id=? AND order_id=? AND row_kind='credit' AND model_id=?`,
       [BRAND, ORDER_CREDITED, MODEL],
     );
-    expect(credit.rows[0].n).toBeGreaterThan(0);
-    expect(credit.rows[0].sum).toBe('100000'); // closed-sum-at-order = realized basis
+    expect(Number(credit[0]!.n)).toBeGreaterThan(0);
+    expect(String(credit[0]!.sum)).toBe('100000'); // closed-sum-at-order = realized basis
   });
 
   it('2. idempotent — re-running reconcile writes no new credit rows', async () => {
     if (!available) return;
-    const before = await pgPool.query(`SELECT count(*)::int AS n FROM attribution_credit_ledger WHERE brand_id=$1`, [BRAND]);
-    const r = await reconcileAttribution(BRAND, CORR, { pool: pgPool, srPool }, MODEL);
+    const before = await srGold<{ n: number }>(`SELECT COUNT(*) AS n FROM brain_gold.gold_attribution_credit WHERE brand_id=?`, [BRAND]);
+    const r = await reconcileAttribution(BRAND, CORR, { srPool }, MODEL);
     expect(r.credited).toBe(0);
-    const after = await pgPool.query(`SELECT count(*)::int AS n FROM attribution_credit_ledger WHERE brand_id=$1`, [BRAND]);
-    expect(after.rows[0].n).toBe(before.rows[0].n);
+    const after = await srGold<{ n: number }>(`SELECT COUNT(*) AS n FROM brain_gold.gold_attribution_credit WHERE brand_id=?`, [BRAND]);
+    expect(Number(after[0]!.n)).toBe(Number(before[0]!.n));
   });
 
   it('H8. no-model reconcile writes ALL FOUR models (not just position_based)', async () => {
     if (!available) return;
     // Fresh credit set: clear and re-run WITHOUT a model → loops ATTRIBUTION_MODEL_IDS.
-    await pgExec(`DELETE FROM attribution_credit_ledger WHERE brand_id = $1`, [BRAND]).catch(() => {});
-    const r = await reconcileAttribution(BRAND, CORR, { pool: pgPool, srPool });
+    await srGold(`DELETE FROM brain_gold.gold_attribution_credit WHERE brand_id = ?`, [BRAND]);
+    const r = await reconcileAttribution(BRAND, CORR, { srPool });
     // The one stitched order is credited under each of the 4 models → credited == 4.
     expect(r.credited).toBe(4);
 
-    const models = await pgPool.query<{ model_id: string }>(
-      `SELECT DISTINCT model_id FROM attribution_credit_ledger
-        WHERE brand_id = $1 AND order_id = $2 AND row_kind = 'credit' ORDER BY model_id`,
+    const models = await srGold<{ model_id: string }>(
+      `SELECT DISTINCT model_id FROM brain_gold.gold_attribution_credit
+        WHERE brand_id = ? AND order_id = ? AND row_kind = 'credit' ORDER BY model_id`,
       [BRAND, ORDER_CREDITED],
     );
-    expect(models.rows.map((m) => m.model_id).sort()).toEqual(
+    expect(models.map((m) => m.model_id).sort()).toEqual(
       ['first_touch', 'last_touch', 'linear', 'position_based'],
     );
 
     // Each model's credit still closes to the realized basis (100000) at the order.
-    const perModel = await pgPool.query<{ model_id: string; sum: string }>(
-      `SELECT model_id, SUM(credited_revenue_minor)::text AS sum FROM attribution_credit_ledger
-        WHERE brand_id = $1 AND order_id = $2 AND row_kind = 'credit' GROUP BY model_id`,
+    const perModel = await srGold<{ model_id: string; sum: string | number }>(
+      `SELECT model_id, CAST(SUM(credited_revenue_minor) AS CHAR) AS sum FROM brain_gold.gold_attribution_credit
+        WHERE brand_id = ? AND order_id = ? AND row_kind = 'credit' GROUP BY model_id`,
       [BRAND, ORDER_CREDITED],
     );
-    for (const row of perModel.rows) expect(row.sum).toBe('100000');
+    for (const row of perModel) expect(String(row.sum)).toBe('100000');
 
     // Restore the single-model state the clawback test below expects (position_based only).
-    await pgExec(
-      `DELETE FROM attribution_credit_ledger WHERE brand_id = $1 AND model_id <> $2`,
+    await srGold(
+      `DELETE FROM brain_gold.gold_attribution_credit WHERE brand_id = ? AND model_id <> ?`,
       [BRAND, MODEL],
-    ).catch(() => {});
+    );
   });
 
   it('4. clawback — a reversal nets the credited order to zero', async () => {
     if (!available) return;
     await seedLedgerRow(ORDER_CREDITED, BRAIN_ID, 'rto_reversal', -100000, 'attr-rev-1');
-    const r = await reconcileAttribution(BRAND, CORR, { pool: pgPool, srPool }, MODEL);
+    const r = await reconcileAttribution(BRAND, CORR, { srPool }, MODEL);
     expect(r.clawed_back).toBe(1);
 
-    const net = await pgPool.query(
-      `SELECT COALESCE(SUM(credited_revenue_minor),0)::text AS net
-         FROM attribution_credit_ledger
-        WHERE brand_id=$1 AND order_id=$2 AND model_id=$3`,
+    const net = await srGold<{ net: string | number }>(
+      `SELECT CAST(COALESCE(SUM(credited_revenue_minor),0) AS CHAR) AS net
+         FROM brain_gold.gold_attribution_credit
+        WHERE brand_id=? AND order_id=? AND model_id=?`,
       [BRAND, ORDER_CREDITED, MODEL],
     );
-    expect(net.rows[0].net).toBe('0'); // credit + clawback = 0 (closed-sum)
+    expect(String(net[0]!.net)).toBe('0'); // credit + clawback = 0 (closed-sum)
   });
 });

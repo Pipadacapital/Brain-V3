@@ -12,8 +12,8 @@
  * in-process and never persisted or logged, and never reaches Postgres.
  */
 
-import type { DbPool, QueryContext } from '@brain/db';
 import { hashIdentifier, resolveSaltHex } from '@brain/identity-core';
+import type { Neo4jIdentityReader } from '../../infrastructure/neo4j-identity-reader.js';
 
 const MAX_LIMIT = 100;
 const DEFAULT_LIMIT = 25;
@@ -47,7 +47,8 @@ export interface ListCustomersParams {
 }
 
 export interface ListCustomersDeps {
-  pool: DbPool;
+  /** MEDALLION REALIGNMENT (Epic 3 / ADR-0004): identity is the Neo4j SoR. */
+  reader: Neo4jIdentityReader;
 }
 
 function toIso(v: unknown): string | null {
@@ -82,7 +83,7 @@ function searchHashes(term: string, saltHex: string): string[] {
 export async function listCustomers(
   brandId: string,
   params: ListCustomersParams,
-  correlationId: string,
+  _correlationId: string,
   deps: ListCustomersDeps,
 ): Promise<CustomerList> {
   const limit = Math.min(Math.max(params.limit ?? DEFAULT_LIMIT, 1), MAX_LIMIT);
@@ -99,48 +100,27 @@ export async function listCustomers(
     identifierHashes = salt && salt.length === 64 ? searchHashes(term, salt) : [];
   }
 
-  const ctx: QueryContext = { brandId, correlationId };
-  const client = await deps.pool.connect();
-  try {
-    const res = await client.query<{
-      brain_id: string;
-      anonymous_id: string | null;
-      lifecycle_state: string;
-      merged_into: string | null;
-      ai_processing_consent: boolean;
-      resolution_consent: boolean;
-      identifier_count: string;
-      last_identifier_at: Date | null;
-      created_at: Date;
-      total_count: string;
-    }>(
-      ctx,
-      `SELECT brain_id, anonymous_id, lifecycle_state, merged_into,
-              ai_processing_consent, resolution_consent, identifier_count,
-              last_identifier_at, created_at, total_count
-         FROM customer_list_for_brand($1, $2, $3, $4, $5)`,
-      [brandId, lifecycle, identifierHashes, limit, offset],
-    );
-
-    const total = res.rows.length > 0 ? Number(res.rows[0]!.total_count) : 0;
-    return {
-      items: res.rows.map((r) => ({
-        brain_id: r.brain_id,
-        anonymous_id: r.anonymous_id,
-        lifecycle_state: r.lifecycle_state,
-        merged_into: r.merged_into,
-        ai_processing_consent: r.ai_processing_consent,
-        resolution_consent: r.resolution_consent,
-        identifier_count: Number(r.identifier_count),
-        last_identifier_at: toIso(r.last_identifier_at),
-        created_at: toIso(r.created_at) ?? '',
-      })),
-      total,
-      limit,
-      offset,
-      searched: term.length > 0,
-    };
-  } finally {
-    client.release();
-  }
+  const { items, total } = await deps.reader.listCustomers(brandId, {
+    lifecycle,
+    identifierHashes: identifierHashes ?? [],
+    limit,
+    offset,
+  });
+  return {
+    items: items.map((r) => ({
+      brain_id: r.brain_id,
+      anonymous_id: r.anonymous_id,
+      lifecycle_state: r.lifecycle_state,
+      merged_into: r.merged_into,
+      ai_processing_consent: r.ai_processing_consent,
+      resolution_consent: r.resolution_consent,
+      identifier_count: r.identifier_count,
+      last_identifier_at: toIso(r.last_identifier_at),
+      created_at: toIso(r.created_at) ?? '',
+    })),
+    total,
+    limit,
+    offset,
+    searched: term.length > 0,
+  };
 }

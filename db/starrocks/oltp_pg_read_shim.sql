@@ -25,32 +25,11 @@
 --      already a native string type) — this shim is dev/transition-only and disappears.
 -- ============================================================================
 
-CREATE OR REPLACE VIEW silver_order_ledger_src AS
-SELECT
-    brand_id::text              AS brand_id,
-    order_id,
-    brain_id::text              AS brain_id,
-    event_type,
-    amount_minor,
-    currency_code,
-    occurred_at,
-    economic_effective_at,
-    -- appended (Phase G): CREATE OR REPLACE VIEW requires new columns at the END
-    ledger_event_id,
-    fee_minor,
-    recognition_label,
-    billing_posted_period,
-    -- appended (M3): ingestion time — drives the incremental restatement watermark in silver_order_state
-    -- (any row ingested since the last run re-folds its order, so late/backdated events are never missed).
-    created_at
--- Schema-qualified: this table was RANGE-partitioned via a twin-swap (migration 0073). An unqualified
--- name made CREATE OR REPLACE VIEW re-bind to the renamed *_legacy table; qualifying pins the view to
--- the canonical (partitioned) table so the shim always reads live data.
-FROM billing.realized_revenue_ledger;
-
--- Make the view readable through the JDBC catalog connection user (superuser `brain`
--- already owns it; explicit grant kept for documentation / non-superuser dev parity).
-GRANT SELECT ON silver_order_ledger_src TO brain;
+-- MEDALLION REALIGNMENT (Epic 1 / decision B): silver_order_ledger_src (the read-shim over the PG
+-- realized_revenue_ledger) was REMOVED with migration 0098. Silver now builds the recognition ledger
+-- from Bronze (stg_order_events_bronze → silver_order_recognition → brain_gold.gold_revenue_ledger);
+-- there is no PG revenue ledger to shim. The brand_horizons_src + identity_link_src shims (used by
+-- silver_order_recognition for recognition horizons + identity resolution) remain below.
 
 -- ============================================================================
 -- Phase G (marketing): read-shims for the ad-spend + attribution-credit ledgers.
@@ -82,50 +61,14 @@ FROM billing.ad_spend_ledger;
 
 GRANT SELECT ON silver_marketing_spend_src TO brain;
 
--- attribution_credit_ledger → gold_marketing_attribution (Gold mart). credited_revenue_minor
--- is SIGNED BIGINT (+credit / -clawback). brand_id is the only uuid column to cast.
-CREATE OR REPLACE VIEW gold_attribution_credit_src AS
-SELECT
-    brand_id::text   AS brand_id,
-    credit_id,
-    order_id,
-    brain_anon_id,
-    touch_seq,
-    channel,
-    campaign_id,
-    model_id,
-    row_kind,
-    credited_revenue_minor,
-    currency_code,
-    realized_revenue_minor,
-    reversed_of_credit_id,
-    confidence_grade,
-    attribution_confidence,
-    model_version,
-    occurred_at,
-    economic_effective_at,
-    billing_posted_period
-FROM attribution_credit_ledger;
+-- MEDALLION REALIGNMENT (Epic 2): gold_attribution_credit_src (the read-shim over the PG
+-- attribution_credit_ledger) was REMOVED with migration 0099. The attribution credit ledger is now
+-- the app-written StarRocks table brain_gold.gold_attribution_credit; gold_marketing_attribution is a
+-- dbt VIEW over it (no PG, no Spark materialize, no shim).
 
-GRANT SELECT ON gold_attribution_credit_src TO brain;
-
--- ============================================================================
--- DB-AUDIT H6: identity.customer read-shim → first_identified_at (acquisition time) into the
--- customer marts. Casts the uuid brand_id/brain_id/merged_into → text for the JDBC catalog. Exposes
--- first_identified_at (earliest strong-identifier attach) alongside created_at (node mint = first seen).
--- Cross-brand by construction (superuser JDBC read); per-brand isolation at the Silver READ seam.
--- ============================================================================
-CREATE OR REPLACE VIEW silver_customer_identity_src AS
-SELECT
-    brand_id::text            AS brand_id,
-    brain_id::text            AS brain_id,
-    lifecycle_state,
-    merged_into::text         AS merged_into,
-    created_at                AS minted_at,
-    first_identified_at
-FROM identity.customer;
-
-GRANT SELECT ON silver_customer_identity_src TO brain;
+-- MEDALLION REALIGNMENT (Epic 3/4): silver_customer_identity_src (the PG identity.customer shim) was
+-- REMOVED — identity.customer is dropped (Neo4j SoR). The customer marts read brain_silver.silver_customer_identity
+-- (the identity-export projection of the Neo4j Customer nodes) for lifecycle + first_identified_at.
 
 -- ============================================================================
 -- Touchpoint/journey Iceberg flip (silver_touchpoint): the per-touch mart LEFT JOINs the journey
@@ -136,15 +79,20 @@ GRANT SELECT ON silver_customer_identity_src TO brain;
 -- standard `make silver-catalog` wiring creates it. SCHEMA-QUALIFIED to pin the view (avoids the
 -- CREATE-OR-REPLACE rebind-to-legacy hazard).
 -- ============================================================================
-CREATE OR REPLACE VIEW connector_journey_stitch_map_src AS
-SELECT
-    brand_id::text   AS brand_id,
-    order_id,
-    stitched_anon_id,
-    brain_id::text   AS brain_id,
-    click_ids::text  AS click_ids,   -- jsonb→text (JDBC cannot read jsonb)
-    utms::text       AS utms,        -- jsonb→text
-    created_at
-FROM connectors.connector_journey_stitch_map;
+-- MEDALLION REALIGNMENT (Epic 4): connector_journey_stitch_map_src (the PG JDBC read-shim) was REMOVED.
+-- The cart-stitch is materialized into brain_silver.silver_journey_stitch by the journey-stitch-export
+-- job; silver_touchpoint reads that StarRocks projection directly (no PG analytical read).
 
-GRANT SELECT ON connector_journey_stitch_map_src TO brain;
+-- ── Medallion realignment (Epic 1): shims for Silver recognition-from-Bronze ───────────────────
+-- brand recognition horizons (operational config — legitimately PG) for finalization.
+CREATE OR REPLACE VIEW brand_horizons_src AS
+SELECT id::text AS brand_id,
+       cod_recognition_horizon_days,
+       prepaid_recognition_horizon_days
+FROM tenancy.brand;
+GRANT SELECT ON brand_horizons_src TO brain;
+
+-- MEDALLION REALIGNMENT (Epic 3 / ADR-0004): identity_link_src (the PG identity_link JDBC shim) was
+-- REMOVED. Identity is the Neo4j SoR; the identity-export job materializes the active hash→brain_id
+-- edges into brain_silver.silver_identity_link (StarRocks), which silver_order_recognition reads
+-- directly. There is no PG identity table to shim.

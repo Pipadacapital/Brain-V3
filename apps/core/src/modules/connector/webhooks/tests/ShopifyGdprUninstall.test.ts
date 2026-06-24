@@ -104,21 +104,33 @@ describe('ShopifyWebhookStrategy — GDPR + uninstall compliance (shopify-compli
     expect(result.eventId).toBe('');
   });
 
-  it('customers/redact sideEffect calls resolve_brain_id_by_shopify_customer then erase_customer', async () => {
-    const { pool, getQueries } = makeMockPool();
+  it('customers/redact sideEffect resolves brain_id then erases via the Neo4j identity reader (ADR-0004)', async () => {
+    // Pin the per-brand salt for 'brand-uuid-001' so the resolve hash path runs deterministically.
+    process.env['IDENTITY_SALT_BRANDUUID001'] = 'aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899';
+    const { pool } = makeMockPool();
     const body = { customer: { id: 99001 } };
     const result = await strategy.payloadMap(makeCtx('customers/redact', body));
-
     expect(result.sideEffect).toBeDefined();
-    // Invoke the side-effect with our mock pool
-    await result.sideEffect!('brand-uuid-001', pool, 'req-001');
 
-    const queries = getQueries();
-    // Must have called resolve_brain_id (or erase_customer) — order matters
-    const hasResolve = queries.some((q) => q.includes('resolve_brain_id_by_shopify_customer'));
-    const hasErase = queries.some((q) => q.includes('erase_customer'));
-    expect(hasResolve).toBe(true);
-    expect(hasErase).toBe(true);
+    // MEDALLION REALIGNMENT (Epic 3): identity is the Neo4j SoR — the redact resolves + erases via the
+    // injected reader (4th arg), not the dropped PG erase_customer/resolve_brain_id functions.
+    const calls: string[] = [];
+    const reader = {
+      resolveBrainIdByStorefrontCustomerId: async (b: string, h: string) => {
+        calls.push(`resolve:${b}:${h.slice(0, 8)}`);
+        return 'brain-id-from-graph';
+      },
+      eraseCustomer: async (b: string, id: string) => {
+        calls.push(`erase:${b}:${id}`);
+        return { erased: true, contact_pii_deleted: 0, links_tombstoned: 1 };
+      },
+    };
+    // The redact uses the brand captured at payloadMap time (ctx.brandId='brand-uuid-001'), not the
+    // call-time arg — that is the brand the webhook was received for.
+    await result.sideEffect!('ignored-call-arg', pool, 'req-001', reader);
+
+    expect(calls.some((c) => c.startsWith('resolve:brand-uuid-001:'))).toBe(true);
+    expect(calls.some((c) => c === 'erase:brand-uuid-001:brain-id-from-graph')).toBe(true);
   });
 
   it('customers/redact sideEffect with no customer.id in body → no-op (no erase call)', async () => {

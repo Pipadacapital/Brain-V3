@@ -43,7 +43,7 @@ import {
 } from '../domain/identity/IdentityResolver.js';
 import { ResolveIdentityUseCase } from '../application/ResolveIdentityUseCase.js';
 import type { SaltProvider } from '../infrastructure/secrets/SaltProvider.js';
-import type { IdentityRepository } from '../infrastructure/pg/IdentityRepository.js';
+import type { IdentityStore } from '../domain/identity/IdentityStore.js';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -271,7 +271,7 @@ describe('ResolveIdentityUseCase — pre-hashed extraction from Buffer payload',
       },
     ),
     end: vi.fn().mockResolvedValue(undefined),
-  } as unknown as IdentityRepository;
+  } as unknown as IdentityStore;
 
   const useCase = new ResolveIdentityUseCase(saltProviderMock, identityRepoMock);
 

@@ -46,6 +46,7 @@ import {
   KmsVaultKeyProvider,
   AwsKmsDecryptAdapter,
 } from './modules/identity/index.js';
+import { Neo4jIdentityReader } from './modules/identity/internal/infrastructure/neo4j-identity-reader.js';
 import { initObservability, initSentry, createLogger } from '@brain/observability';
 
 /** Structured logger for core's lifecycle/error logs (request logs go through Fastify's pino). */
@@ -75,7 +76,11 @@ import { registerRazorpayConnectorRoutes } from './modules/connector/sources/pay
 import { RotateWebhookSecretCommand } from './modules/connector/sources/payment/razorpay/application/commands/RotateWebhookSecretCommand.js';
 import { registerShopifyConnectorRoutes } from './modules/connector/sources/storefront/shopify/interfaces/http/shopifyConnectorRoutes.js';
 import { registerDevShopifySyncRoutes } from './modules/connector/sources/storefront/shopify/interfaces/http/devShopifySyncRoutes.js';
-import { registerPixelRoutes, buildDefaultSnippet, isValidIngestHost } from './modules/connector/pixel/interfaces/http/pixelRoutes.js';
+import { registerPixelRoutes, registerPixelInstallerRoutes, buildDefaultSnippet, isValidIngestHost } from './modules/connector/pixel/interfaces/http/pixelRoutes.js';
+import { PixelInstallerRegistry } from './modules/connector/pixel/application/install/PixelInstaller.js';
+import { ShopifyPixelInstaller } from './modules/connector/sources/storefront/shopify/application/install/ShopifyPixelInstaller.js';
+import { WooCommercePixelInstaller } from './modules/connector/sources/storefront/woocommerce/application/install/WooCommercePixelInstaller.js';
+import { InstallWooCommercePixelCommand } from './modules/connector/sources/storefront/woocommerce/application/commands/InstallWooCommercePixelCommand.js';
 // Connector catalog + dispatch (A3 — feat-connector-marketplace)
 import { getDefinition, isConnectable, CONNECTOR_CATALOG } from './modules/connector/catalog/index.js';
 import { registerOAuthDispatch, getOAuthDispatch } from './modules/connector/catalog/dispatch.js';
@@ -541,8 +546,17 @@ export async function main(): Promise<void> {
     config.nodeEnv === 'production'
       ? new KmsVaultKeyProvider(rawPgPool, new AwsKmsDecryptAdapter())
       : new DevVaultKeyProvider();
+  // MEDALLION REALIGNMENT (Epic 3 / ADR-0004): the Neo4j identity SoR read/admin client. The identity
+  // surfaces (Customer 360, browse, merge-admin, GDPR erase, vault coverage) read it; contact_pii +
+  // identity_audit stay PG (passed via rawPgPool for the erase mutation).
+  const identityReader = new Neo4jIdentityReader(
+    process.env['NEO4J_URI'] ?? 'bolt://localhost:7687',
+    process.env['NEO4J_USER'] ?? 'neo4j',
+    process.env['NEO4J_PASSWORD'] ?? 'neo4j',
+    rawPgPool,
+  );
   const piiVaultService = new ContactPiiVaultService(
-    new ContactPiiVaultRepository(rawPgPool),
+    new ContactPiiVaultRepository(rawPgPool, identityReader),
     vaultKeyProvider,
   );
   // ── Meta CAPI passback ORCHESTRATOR (P0 — the missing driver) ────────────────
@@ -577,7 +591,9 @@ export async function main(): Promise<void> {
         const r = await rawPgPool.query<{ id: string }>('SELECT id FROM list_active_brand_ids()');
         return r.rows.map((x) => x.id);
       },
-      fetchCandidates: (brandId, from, to) => fetchFinalizedPurchaseCandidatesScoped(rawPgPool, brandId, from, to),
+      // Epic 1: finalized purchases come from the lakehouse gold ledger (srPool); subject_hash +
+      // passback dedup resolve in PG. Cross-store read inside fetchFinalizedPurchaseCandidatesScoped.
+      fetchCandidates: (brandId, from, to) => fetchFinalizedPurchaseCandidatesScoped(rawPgPool, srPool, brandId, from, to),
       passback: capiPassback,
       windowHours: Number(process.env['CAPI_PASSBACK_WINDOW_HOURS'] ?? 24),
       intervalMs: Number(process.env['CAPI_PASSBACK_INTERVAL_MS'] ?? 300_000),
@@ -618,6 +634,7 @@ export async function main(): Promise<void> {
     async (brandId, targetHost, idempotencyKey) => {
       await getOrCreateInstallation.execute({ brandId, targetHost, idempotencyKey });
     },
+    srPool,
   );
   const inviteService = new InviteService(pool, auditWriter, notificationService, rawPgPool);
 
@@ -638,7 +655,7 @@ export async function main(): Promise<void> {
   registerWorkspaceRoutes(app, authService, workspaceService);
   registerBrandRoutes(app, authService, brandService);
   registerMemberRoutes(app, authService, inviteService, rawPgPool);
-  registerBffRoutes(app, authService, pool, config.cookieSecret, rateLimiter, rawPgPool, onboardingService, srPool, piiVaultService);
+  registerBffRoutes(app, authService, pool, config.cookieSecret, rateLimiter, rawPgPool, onboardingService, srPool, piiVaultService, identityReader);
 
   // D13: consent write + can_contact() gate-probe routes (brand-scoped, session-guarded).
   // grant/withdraw record the append-only consent SoR; check runs the default-closed
@@ -751,6 +768,7 @@ export async function main(): Promise<void> {
     liveTopic,
     getSaltHex: getWebhookSaltHex,
     redis,
+    identityReader, // Epic 3 / ADR-0004: GDPR redact resolves + erases via the Neo4j identity SoR
   });
 
   app.log.info({ topic: liveTopic }, '[core] All webhook receivers registered via generic pipeline (Shopify/Razorpay/Shopflo/WooCommerce)');
@@ -1938,6 +1956,23 @@ export async function main(): Promise<void> {
     pixelInstallationRepo,
   );
 
+  // WooCommerce install path (feat-universal-pixel): configure the Brain Pixel plugin on the
+  // connected WooCommerce store via its authenticated REST route. Same install_token + ingest as Shopify.
+  const installWooCommercePixel = new InstallWooCommercePixelCommand(
+    connectorRepo,
+    connectorSecretsManager,
+    getOrCreateInstallation,
+    pixelInstallationRepo,
+    pixelStatusRepo,
+    config.pixelIngestBaseUrl,
+  );
+
+  // Storefront-agnostic installer registry — the merchant connects a storefront, then Brain offers
+  // the install option(s) for the connected storefront(s). Adding a platform = register one installer.
+  const pixelInstallerRegistry = new PixelInstallerRegistry()
+    .register(new ShopifyPixelInstaller(installPixel, uninstallPixel, connectorRepo))
+    .register(new WooCommercePixelInstaller(installWooCommercePixel, connectorRepo));
+
   // Pixel read routes (analyst+): GET /pixel/installation, GET /pixel/health
   await app.register(async (scope) => {
     scope.addHook('preHandler', sessionPreHandler);
@@ -2053,6 +2088,8 @@ export async function main(): Promise<void> {
             install_token: result.installToken,
             src: result.src,
             already_present: result.alreadyPresent,
+            // Checkout (Web Pixel) coverage status — UI shows live vs the one-time step to enable it.
+            web_pixel: result.webPixel,
           },
         });
       } catch (err) {
@@ -2081,6 +2118,10 @@ export async function main(): Promise<void> {
         throw err;
       }
     });
+
+    // Storefront-agnostic install surface: GET /pixel/installers, POST/DELETE /pixel/install/:provider,
+    // GET /pixel/woocommerce/plugin.zip. Connected-storefront-driven (each installer's isAvailable).
+    registerPixelInstallerRoutes(scope, { registry: pixelInstallerRegistry, getBrandId });
   });
 
   // Graceful shutdown.

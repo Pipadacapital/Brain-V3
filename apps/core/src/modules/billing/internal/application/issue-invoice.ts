@@ -11,6 +11,7 @@
  */
 
 import type { DbPool, QueryContext } from '@brain/db';
+import type { SilverPool } from '@brain/metric-engine';
 import { roundToMinorBankers } from '@brain/money';
 import { getInspectableBill } from './queries/get-inspectable-bill.js';
 import { getInvoiceConfig, financialYear, type InvoiceConfig } from './invoice-config.js';
@@ -33,6 +34,8 @@ export type IssueInvoiceResult =
 
 export interface IssueInvoiceDeps {
   pool: DbPool;
+  /** StarRocks Silver/Gold pool — the bill composition reads the lakehouse ledger (Epic 1 / B). */
+  srPool: SilverPool;
 }
 
 export async function issueInvoice(
@@ -45,7 +48,10 @@ export async function issueInvoice(
   const cfg = { ...getInvoiceConfig(), ...configOverride };
 
   // Compute the fee on the sealed basis via the SAME path as the inspectable bill (preview == issued).
-  const bill = await getInspectableBill(brandId, period, correlationId, { pool: deps.pool });
+  const bill = await getInspectableBill(brandId, period, correlationId, {
+    pool: deps.pool,
+    srPool: deps.srPool,
+  });
   if (bill.state !== 'billed') {
     return { state: 'not_sealed', billing_period: period };
   }

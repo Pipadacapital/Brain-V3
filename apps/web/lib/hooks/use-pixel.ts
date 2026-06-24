@@ -83,3 +83,38 @@ export function useUninstallPixelShopify() {
     },
   });
 }
+
+// ── Storefront-agnostic install surface (feat-universal-pixel) ────────────────
+
+/**
+ * The install options available to this brand — connected-storefront-driven. Each descriptor says
+ * whether that storefront is connected (available) and supports programmatic uninstall.
+ */
+export function usePixelInstallers() {
+  return useQuery({
+    queryKey: [...PIXEL_QUERY_KEY, 'installers'],
+    queryFn: () => pixelApi.listInstallers(),
+  });
+}
+
+/** Run the installer for a connected storefront (shopify | woocommerce | …). */
+export function useInstallPixelProvider() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (provider: string) => pixelApi.installProvider(provider),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: PIXEL_QUERY_KEY });
+    },
+  });
+}
+
+/** Remove the pixel from a storefront (when the installer supports it). */
+export function useUninstallPixelProvider() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (provider: string) => pixelApi.uninstallProvider(provider),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: PIXEL_QUERY_KEY });
+    },
+  });
+}

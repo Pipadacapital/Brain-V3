@@ -39,6 +39,7 @@ import {
   type ShopifyOrderShape,
 } from '@brain/shopify-mapper';
 import { redactShopifyPii } from '../../sources/storefront/shopify/domain/redactPii.js';
+import { hashIdentifier, normalizeIdentifier, resolveSaltHex } from '@brain/identity-core';
 
 const ORDER_TOPICS = new Set([
   'orders/create',
@@ -135,34 +136,34 @@ export class ShopifyWebhookStrategy implements IWebhookStrategy {
       const capturedCorrelationId = correlationId;
       const capturedRequestId = requestId;
 
-      const sideEffect = async (_brandId: string, rawPgPool: pg.Pool, _reqId: string): Promise<void> => {
-        if (!shopifyCustomerId) {
-          // No customer.id in payload — nothing to erase. Log + fast-exit.
+      const sideEffect = async (
+        _brandId: string,
+        _rawPgPool: pg.Pool,
+        _reqId: string,
+        identityReader?: { resolveBrainIdByStorefrontCustomerId(b: string, h: string): Promise<string | null>; eraseCustomer(b: string, id: string): Promise<{ erased: boolean }> },
+      ): Promise<void> => {
+        if (!shopifyCustomerId || !identityReader) {
+          // No customer.id in payload, or no identity graph wired — nothing to erase. Fast-exit.
           return;
         }
 
-        // Resolve brain_id from Shopify customer.id via SECURITY DEFINER fn.
-        // This fn bypasses RLS so we can look up by shopify_customer_id without a GUC.
-        // The fn is brand-scoped (brand_id param) so it cannot cross tenants.
-        const resolveResult = await rawPgPool.query<{ brain_id: string }>(
-          `SELECT brain_id FROM resolve_brain_id_by_shopify_customer($1, $2)`,
-          [capturedBrandId, shopifyCustomerId],
+        // MEDALLION REALIGNMENT (Epic 3 / ADR-0004): resolve brain_id from the Shopify customer.id via
+        // the Neo4j identity SoR (hash the storefront_customer_id with the brand salt, as the resolver
+        // does), then erase (graph tombstone + PG contact_pii delete + audit).
+        const salt = resolveSaltHex(capturedBrandId);
+        if (!salt || salt.length !== 64) return; // bad salt → cannot match; never crash the webhook
+        // storefront_customer_id is hashed under identity-core's 'external_id' type (matches the resolver).
+        const hash = hashIdentifier(
+          normalizeIdentifier(shopifyCustomerId, 'external_id'),
+          'external_id',
+          salt,
         );
-        const brainId = resolveResult.rows[0]?.brain_id ?? null;
+        const brainId = await identityReader.resolveBrainIdByStorefrontCustomerId(capturedBrandId, hash);
         if (!brainId) {
-          // Customer not in our identity graph — nothing to erase. This is correct:
-          // Shopify can send redact for customers who never converted (no brain_id).
+          // Customer not in our identity graph — nothing to erase (never converted). Correct no-op.
           return;
         }
-
-        // erase_customer(brand_id, brain_id) is SECURITY DEFINER (migration 0038):
-        // hard-deletes contact_pii vault rows, tombstones identity_link, writes identity_audit.
-        // We do NOT need a GUC before this call — the fn takes brand_id as a parameter and
-        // is internally brand-scoped (it does SET LOCAL internally if needed).
-        await rawPgPool.query(
-          `SELECT erase_customer($1, $2)`,
-          [capturedBrandId, brainId],
-        );
+        await identityReader.eraseCustomer(capturedBrandId, brainId);
 
         void capturedCorrelationId; void capturedRequestId;
       };

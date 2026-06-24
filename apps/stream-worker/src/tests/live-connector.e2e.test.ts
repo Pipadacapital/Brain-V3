@@ -34,7 +34,6 @@ import { Pool } from 'pg';
 import { ProcessEventUseCase } from '../application/ProcessEventUseCase.js';
 import { RedisDedupAdapter } from '../infrastructure/redis/RedisDedupAdapter.js';
 import { BronzeRepository } from '../infrastructure/pg/BronzeRepository.js';
-import { LedgerWriter } from '../infrastructure/pg/LedgerWriter.js';
 import { uuidV5FromOrderBackfill, uuidV5FromOrderLive } from '../jobs/shopify-backfill/uuid-utils.js';
 import { CollectorEventV1Schema, COLLECTOR_EVENT_V1_TOPIC_SUFFIX } from '@brain/contracts';
 import {
@@ -48,7 +47,6 @@ import {
   assertBrainApp,
 } from './helpers/connector-lifecycle-fixtures.js';
 import { acquireRepullLock, upsertRepullCursor } from '../jobs/shopify-repull/run.js';
-import { extractLiveOrderForLedger, routeLiveOrderToLedger } from '../interfaces/consumers/LiveOrderConsumer.js';
 
 // ── Config ─────────────────────────────────────────────────────────────────────
 
@@ -73,7 +71,6 @@ let superPool: Pool;
 let appPool: Pool;
 let dedup: RedisDedupAdapter;
 let bronze: BronzeRepository;
-let ledgerWriter: LedgerWriter;
 let useCase: ProcessEventUseCase;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -169,34 +166,6 @@ async function countBronzeForBrand(brandId: string, eventId: string): Promise<nu
   return rows.filter((r) => r.brand_id === brandId).length;
 }
 
-/** Read ledger rows with GUC */
-async function readLedgerRows(
-  brandId: string,
-  orderId: string,
-  eventType?: string,
-): Promise<Array<{ event_type: string; amount_minor: string }>> {
-  const client = await appPool.connect();
-  try {
-    await client.query('BEGIN');
-    await client.query(`SELECT set_config('app.current_brand_id', $1, true)`, [brandId]);
-    let sql = `SELECT event_type, amount_minor FROM realized_revenue_ledger
-               WHERE brand_id = $1 AND order_id = $2`;
-    const params: unknown[] = [brandId, orderId];
-    if (eventType) {
-      sql += ` AND event_type = $3`;
-      params.push(eventType);
-    }
-    const result = await client.query<{ event_type: string; amount_minor: string }>(sql, params);
-    await client.query('COMMIT');
-    return result.rows;
-  } catch (err) {
-    await client.query('ROLLBACK').catch(() => undefined);
-    throw err;
-  } finally {
-    client.release();
-  }
-}
-
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
 
 beforeAll(async () => {
@@ -205,7 +174,6 @@ beforeAll(async () => {
   dedup = new RedisDedupAdapter(REDIS_URL);
   await dedup.connect();
   bronze = new BronzeRepository(BRAIN_APP_DB_URL);
-  ledgerWriter = new LedgerWriter(BRAIN_APP_DB_URL);
   // enforceTenantDerivation=false: order.live.v1 / connector events carry a server-trusted
   // brand_id, no install_token — the R2 browser-spoofing gate does not apply here.
   useCase = new ProcessEventUseCase(dedup, bronze, undefined, false);
@@ -232,7 +200,6 @@ afterAll(async () => {
 
   await dedup.quit();
   await bronze.end();
-  await ledgerWriter.end();
   await superPool.end();
   await appPool.end();
 }, 30_000);
@@ -412,120 +379,6 @@ describe('T3: Per-state Bronze — two distinct updated_at → two live rows; sa
     // Only ONE Bronze row for this event_id — GUC-wrapped for FORCE RLS
     const bronzeRows = await readBronzeRows(BRAND_A, [eventId]);
     expect(bronzeRows).toHaveLength(1);
-  });
-});
-
-// ── T4: RTO reversal ──────────────────────────────────────────────────────────
-
-describe('T4: RTO reversal — cancelled order → new negative rto_reversal row; sale untouched; realized falls (D-13)', () => {
-  it('non-cancelled live order → provisional_recognition row in ledger', async () => {
-    await assertBrainApp(appPool);
-
-    const orderId = 'RTO-T4-ORDER-001';
-    const updatedAtMs = new Date('2026-06-05T10:00:00Z').getTime();
-    const eventId = uuidV5FromOrderLive(BRAND_A, orderId, updatedAtMs);
-    const occurredAt = new Date(updatedAtMs).toISOString();
-
-    const buf = makeLiveEventBuffer({
-      eventId,
-      brandId: BRAND_A,
-      orderId,
-      amountMinor: '125000',
-      currencyCode: 'INR',
-      occurredAt,
-      cancelledAt: null,   // NOT cancelled
-    });
-
-    // Write to Bronze first
-    await writeToBronze(buf, BRAND_A, eventId);
-
-    // Route to ledger
-    const ledgerResult = await routeLiveOrderToLedger(buf, BRAND_A, eventId, ledgerWriter);
-    expect(ledgerResult).toBe('provisional');
-
-    // Verify provisional row exists — GUC-wrapped for FORCE RLS
-    const ledgerRows = await readLedgerRows(BRAND_A, orderId, 'provisional_recognition');
-    expect(ledgerRows.length).toBeGreaterThan(0);
-    expect(ledgerRows[0]!.event_type).toBe('provisional_recognition');
-    expect(Number(ledgerRows[0]!.amount_minor)).toBe(125000);
-  });
-
-  it('cancelled live order → rto_reversal row (negative), provisional untouched, realized falls (D-13)', async () => {
-    await assertBrainApp(appPool);
-
-    const orderId = 'RTO-T4-ORDER-002';
-    const saleAtMs = new Date('2026-06-01T10:00:00Z').getTime();
-    const cancelAtMs = new Date('2026-06-14T15:00:00Z').getTime();
-
-    const saleEventId = uuidV5FromOrderLive(BRAND_A, orderId, saleAtMs);
-    const cancelEventId = uuidV5FromOrderLive(BRAND_A, orderId, cancelAtMs);
-
-    // Step 1: write the sale (non-cancelled state) — provisional recognition
-    const saleBuf = makeLiveEventBuffer({
-      eventId: saleEventId,
-      brandId: BRAND_A,
-      orderId,
-      amountMinor: '100000',
-      currencyCode: 'INR',
-      occurredAt: new Date(saleAtMs).toISOString(),
-      cancelledAt: null,
-    });
-
-    await writeToBronze(saleBuf, BRAND_A, saleEventId);
-    const saleResult = await routeLiveOrderToLedger(saleBuf, BRAND_A, saleEventId, ledgerWriter);
-    expect(saleResult).toBe('provisional');
-
-    // Step 2: write the cancellation (RTO state — different updated_at)
-    const cancelBuf = makeLiveEventBuffer({
-      eventId: cancelEventId,
-      brandId: BRAND_A,
-      orderId,
-      amountMinor: '100000',
-      currencyCode: 'INR',
-      occurredAt: new Date(cancelAtMs).toISOString(),
-      cancelledAt: new Date(cancelAtMs).toISOString(),  // cancelled_at is set
-    });
-
-    await writeToBronze(cancelBuf, BRAND_A, cancelEventId);
-    const cancelResult = await routeLiveOrderToLedger(cancelBuf, BRAND_A, cancelEventId, ledgerWriter);
-    expect(cancelResult).toBe('reversal');
-
-    // Verify: sale row UNTOUCHED (provisional_recognition still exists, positive) — GUC-wrapped
-    const saleRows = await readLedgerRows(BRAND_A, orderId, 'provisional_recognition');
-    expect(saleRows.length).toBeGreaterThan(0);
-    expect(Number(saleRows[0]!.amount_minor)).toBeGreaterThan(0);  // still positive
-
-    // Verify: rto_reversal row is new and negative — GUC-wrapped
-    const reversalRows = await readLedgerRows(BRAND_A, orderId, 'rto_reversal');
-    expect(reversalRows).toHaveLength(1);
-    expect(Number(reversalRows[0]!.amount_minor)).toBeLessThan(0);  // negative
-
-    // Verify: reversal is idempotent (write again → DO NOTHING)
-    const cancelResult2 = await routeLiveOrderToLedger(cancelBuf, BRAND_A, cancelEventId, ledgerWriter);
-    expect(cancelResult2).toBe('reversal');  // returns 'reversal' regardless; inner dedup is DO NOTHING
-
-    const reversalRows2 = await readLedgerRows(BRAND_A, orderId, 'rto_reversal');
-    expect(reversalRows2).toHaveLength(1);  // still only ONE reversal row
-
-    // Verify: realized_gmv_as_of reflects the negative (provisional excluded, reversal included)
-    // Note: realized_gmv_as_of excludes provisional_recognition — so it only shows the reversal
-    // Must wrap in a GUC transaction since realized_gmv_as_of reads the ledger (FORCE RLS)
-    const realizedClient = await appPool.connect();
-    let realized: number;
-    try {
-      await realizedClient.query('BEGIN');
-      await realizedClient.query(`SELECT set_config('app.current_brand_id', $1, true)`, [BRAND_A]);
-      const realizedResult = await realizedClient.query<{ realized: string }>(
-        `SELECT realized_gmv_as_of($1, CURRENT_DATE) AS realized`,
-        [BRAND_A],
-      );
-      await realizedClient.query('COMMIT');
-      realized = Number(realizedResult.rows[0]!.realized);
-    } finally {
-      realizedClient.release();
-    }
-    // The reversal is -100000; provisional not counted. Net <= 0 from this order.
-    expect(realized).toBeLessThanOrEqual(0);
   });
 });
 

@@ -16,10 +16,9 @@
  */
 
 import { normalizeIdentifier, hashIdentifier, normalizePhone } from '@brain/identity-core';
-import type { IdentityGraph, HashedIdentifier } from '@brain/identity-graph';
 import { log } from '../log.js';
 import { SaltProvider } from '../infrastructure/secrets/SaltProvider.js';
-import { IdentityRepository } from '../infrastructure/pg/IdentityRepository.js';
+import type { IdentityStore } from '../domain/identity/IdentityStore.js';
 import {
   IdentityResolver,
   ExtractedIdentifier,
@@ -40,14 +39,12 @@ export class ResolveIdentityUseCase {
 
   constructor(
     private readonly saltProvider: SaltProvider,
-    private readonly identityRepo: IdentityRepository,
     /**
-     * Optional Neo4j identity graph — a NON-AUTHORITATIVE, parity-free projection (default-OFF;
-     * gated by IDENTITY_NEO4J_DUAL_WRITE in the composition root). RETIRED as a dual-write source:
-     * Postgres is the declared identity system-of-record (ADR-0003). When wired, the resolved identity
-     * is mirrored best-effort and a Neo4j hiccup never affects PG resolution; nothing reads this graph.
+     * The identity store (system-of-record). MEDALLION REALIGNMENT (Epic 3 / ADR-0004): wired to the
+     * Neo4jIdentityRepository in the composition root — Neo4j is the SoR. The use-case is store-agnostic
+     * (the resolver is pure; this is the IdentityStore contract).
      */
-    private readonly identityGraph?: IdentityGraph,
+    private readonly identityRepo: IdentityStore,
   ) {}
 
   /**
@@ -281,26 +278,8 @@ export class ResolveIdentityUseCase {
       state.aliasChain,
     );
 
-    // ── 6. Write ──────────────────────────────────────────────────────────────
+    // ── 6. Write to the identity SoR (Neo4j — ADR-0004) + the PG audit/contact_pii records ──────
     await this.identityRepo.writeOutcome(brandId, outcome, identifiers);
-
-    // ── 6b. Mirror to the Neo4j projection (NON-AUTHORITATIVE — default-OFF, ADR-0003) ──
-    // Best-effort: PG is the system-of-record; a Neo4j error must NOT affect identity. Reuses the
-    // already-computed hashes. PG 'storefront_customer_id' → graph 'external_id'; the new medium ids
-    // (device_id / anon_id) map straight through (anon_id → external_id in the graph's type space).
-    if (this.identityGraph && idHashes.length > 0) {
-      try {
-        const graphIds: HashedIdentifier[] = idHashes.map((i) => ({
-          type: i.type === 'storefront_customer_id' || i.type === 'anon_id'
-            ? 'external_id'
-            : (i.type as HashedIdentifier['type']),
-          hash: i.hash,
-        }));
-        await this.identityGraph.resolve(brandId, graphIds);
-      } catch (err) {
-        log.warn(`[identity] Neo4j dual-write skipped (best-effort) brand=${brandId}: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    }
 
     return {
       outcome: outcome.action,

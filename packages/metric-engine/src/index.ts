@@ -144,12 +144,42 @@ export {
   computeWeightUnits,
   apportionMinor,
   computeTouchCredits,
+  computeTouchCreditsExplicit,
+  normalizeWeightUnits,
   weightFractionString,
   WEIGHT_SCALE,
   ATTRIBUTION_MODEL_IDS,
+  PER_JOURNEY_MODEL_IDS,
+  ALL_ATTRIBUTION_MODEL_IDS,
   DEFAULT_ATTRIBUTION_MODEL,
 } from './attribution-models.js';
 export type { AttributionModelId, TouchCredit, AttributionTouch } from './attribution-models.js';
+
+// Billing meter seam — per-period realized GMV from the lakehouse (gold), the PG-function replacement.
+export { computeRealizedGmvForPeriod } from './realized-gmv-period.js';
+export type { RealizedGmvForPeriod } from './realized-gmv-period.js';
+// Inspectable-bill seam — per-event_type composition of a period's realized GMV from the lakehouse.
+export { computeRealizedGmvCompositionForPeriod } from './realized-gmv-composition-period.js';
+export type { RealizedGmvCompositionLine } from './realized-gmv-composition-period.js';
+// Recommendation signal seams — RTO / realization / CM2-revenue raw aggregates from the lakehouse gold
+// ledger (the PG rto_risk_signal_for_brand / realization_signal_for_brand / cm2 revenue-half replacement).
+export {
+  computeRtoRiskSignal,
+  computeRealizationSignal,
+  computeCm2RevenueSignal,
+} from './recommendation-signals.js';
+export type {
+  RtoRiskSignalRaw,
+  RealizationSignalRaw,
+  Cm2RevenueSignalRaw,
+} from './recommendation-signals.js';
+
+// Data-driven (Markov removal-effect) attribution — the GLOBAL, corpus-trained model.
+export {
+  computeMarkovChannelWeights,
+  dataDrivenTouchWeightUnits,
+} from './attribution-datadriven.js';
+export type { DataDrivenJourney, MarkovResult } from './attribution-datadriven.js';
 
 export {
   gradeJourneyConfidence,
@@ -165,6 +195,7 @@ export type {
 
 export {
   computeAttributionCredit,
+  computeAttributionCreditDataDriven,
   computeCreditId,
   ATTRIBUTION_MODEL_VERSION,
 } from './attribution-credit.js';

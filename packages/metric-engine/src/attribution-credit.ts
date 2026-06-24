@@ -21,8 +21,10 @@
 import { createHash } from 'node:crypto';
 import {
   computeTouchCredits,
+  computeTouchCreditsExplicit,
   type AttributionModelId,
 } from './attribution-models.js';
+import { dataDrivenTouchWeightUnits } from './attribution-datadriven.js';
 import {
   gradeJourneyConfidence,
   isDeterministicChannel,
@@ -129,8 +131,40 @@ export function computeAttributionCredit(input: CreditInput): AttributionCreditR
   if (input.touches.length === 0) return [];
 
   const credits = computeTouchCredits(input.model, input.touches, input.realizedRevenueMinor);
+  return buildRows(input, credits);
+}
 
-  // Confidence floor over the CREDITED touches' channel determinism.
+/**
+ * computeAttributionCreditDataDriven — the per-touch CREDIT rows for one journey under the GLOBAL
+ * data-driven (Markov) model, given the corpus-trained per-channel weights.
+ *
+ * Identical row shape + confidence + deterministic credit_id to computeAttributionCredit, but the
+ * per-touch weights come from dataDrivenTouchWeightUnits(journey channels, channelWeightUnits) rather
+ * than a per-journey closed form. Σ credited == realizedRevenueMinor EXACTLY (computeTouchCreditsExplicit).
+ * model is forced to 'data_driven' regardless of input.model.
+ */
+export function computeAttributionCreditDataDriven(
+  input: CreditInput,
+  channelWeightUnits: Map<string, bigint>,
+): AttributionCreditRow[] {
+  if (input.touches.length === 0) return [];
+  const weightUnits = dataDrivenTouchWeightUnits(
+    input.touches.map((t) => t.channel),
+    channelWeightUnits,
+  );
+  const credits = computeTouchCreditsExplicit(
+    weightUnits,
+    input.touches.map((t) => ({ touchSeq: t.touchSeq })),
+    input.realizedRevenueMinor,
+  );
+  return buildRows({ ...input, model: 'data_driven' }, credits);
+}
+
+/** Shared row builder — turns per-touch credits into ledger rows (confidence + deterministic id). */
+function buildRows(
+  input: CreditInput,
+  credits: ReturnType<typeof computeTouchCredits>,
+): AttributionCreditRow[] {
   const confidence = gradeJourneyConfidence(
     input.stitched,
     input.touches.map((t) => ({ isDeterministicChannel: isDeterministicChannel(t) })),

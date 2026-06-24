@@ -18,7 +18,7 @@
 import { normalizeIdentifier, hashIdentifier, normalizePhone } from '@brain/identity-core';
 import { log } from '../log.js';
 import { SaltProvider } from '../infrastructure/secrets/SaltProvider.js';
-import type { IdentityStore } from '../infrastructure/pg/IdentityRepository.js';
+import type { IdentityStore } from '../domain/identity/IdentityStore.js';
 import {
   IdentityResolver,
   ExtractedIdentifier,

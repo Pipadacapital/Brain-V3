@@ -117,16 +117,22 @@ export async function runJourneyStitchFromIdentity(deps?: {
           hashToRaw.set(h, raw);
         }
 
-        // 3. anon hash → brain_id via the identity graph (active anon_id links only).
-        const linkRows = await readScoped<{ identifier_value: string; brain_id: string }>(
-          pool,
-          brand.id,
-          `SELECT identifier_value, brain_id
-             FROM identity.identity_link
-            WHERE brand_id = $1 AND identifier_type = 'anon_id' AND is_active = TRUE
-              AND brain_id IS NOT NULL AND identifier_value = ANY($2::text[])`,
-          [brand.id, [...hashToRaw.keys()]],
-        );
+        // 3. anon hash → brain_id via the identity graph projection (active anon_id links only).
+        // MEDALLION REALIGNMENT (Epic 3 / ADR-0004): identity is the Neo4j SoR; the active hash→brain_id
+        // edges are materialized into brain_silver.silver_identity_link (StarRocks) by the identity-export
+        // job — read it via srPool instead of the dropped PG identity_link.
+        const anonHashes = [...hashToRaw.keys()];
+        let linkRows: Array<{ identifier_value: string; brain_id: string }> = [];
+        if (anonHashes.length > 0) {
+          const [rows] = await srPool.query(
+            `SELECT identifier_value, brain_id
+               FROM brain_silver.silver_identity_link
+              WHERE brand_id = ? AND identifier_type = 'anon_id' AND is_active = true
+                AND brain_id IS NOT NULL AND identifier_value IN (${anonHashes.map(() => '?').join(',')})`,
+            [brand.id, ...anonHashes],
+          );
+          linkRows = rows as Array<{ identifier_value: string; brain_id: string }>;
+        }
 
         // 4. brain_id → anon(s). UNAMBIGUOUS-ONLY: keep brain_ids that map to exactly one anon.
         const brainToAnons = new Map<string, Set<string>>();

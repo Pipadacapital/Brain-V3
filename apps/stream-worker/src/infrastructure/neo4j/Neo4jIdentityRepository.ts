@@ -32,7 +32,7 @@ import type {
   BrandPhoneGuardConfig,
   ResolveOutcome,
 } from '../../domain/identity/IdentityResolver.js';
-import type { IdentityReadState } from '../pg/IdentityRepository.js';
+import type { IdentityReadState } from '../../domain/identity/IdentityStore.js';
 
 const STRONG_TIERS = ['strong', 'strong_on_link'];
 

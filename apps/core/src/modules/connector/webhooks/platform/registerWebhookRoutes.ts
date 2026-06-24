@@ -18,6 +18,7 @@ import type { Redis } from 'ioredis';
 import type { ISecretsManager } from '@brain/connector-secrets';
 
 import { WebhookPipeline, type WebhookPipelineDeps } from './WebhookPipeline.js';
+import type { WebhookIdentityReader } from './IWebhookStrategy.js';
 import { ShopifyWebhookStrategy } from '../strategies/ShopifyWebhookStrategy.js';
 import { RazorpayWebhookStrategy } from '../strategies/RazorpayWebhookStrategy.js';
 import { ShopfloWebhookStrategy } from '../strategies/ShopfloWebhookStrategy.js';
@@ -32,6 +33,8 @@ export interface WebhookRegistrationDeps {
   getSaltHex: (brandId: string) => Promise<string>;
   redis: Redis;
   regionCode?: string;
+  /** MEDALLION REALIGNMENT (Epic 3 / ADR-0004): Neo4j identity reader for GDPR redact side-effects. */
+  identityReader?: WebhookIdentityReader;
 }
 
 export function registerAllWebhookRoutes(
@@ -46,6 +49,7 @@ export function registerAllWebhookRoutes(
     getSaltHex: deps.getSaltHex,
     redis: deps.redis,
     regionCode: deps.regionCode ?? 'IN',
+    identityReader: deps.identityReader,
   };
 
   // ── Shopify: POST /api/v1/webhooks/shopify/:topic ─────────────────────────

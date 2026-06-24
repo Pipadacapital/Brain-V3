@@ -37,7 +37,7 @@ import type { ISecretsManager } from '@brain/connector-secrets';
 import { CollectorEventV1Schema } from '@brain/contracts';
 import { incrementCounter, startSpan } from '@brain/observability';
 
-import type { IWebhookStrategy } from './IWebhookStrategy.js';
+import type { IWebhookStrategy, WebhookIdentityReader } from './IWebhookStrategy.js';
 import { ProviderRedisDedupAdapter } from '../infrastructure/ProviderRedisDedupAdapter.js';
 import { RawArchiveRepository } from '../infrastructure/RawArchiveRepository.js';
 
@@ -94,6 +94,8 @@ export interface WebhookPipelineDeps {
   getSaltHex: (brandId: string) => Promise<string>;
   redis: Redis;
   regionCode?: string;
+  /** MEDALLION REALIGNMENT (Epic 3 / ADR-0004): Neo4j identity reader for GDPR redact side-effects. */
+  identityReader?: WebhookIdentityReader;
 }
 
 // ── Route config per provider ─────────────────────────────────────────────────
@@ -415,7 +417,7 @@ export class WebhookPipeline {
         if (mapped.throwOnSideEffectError) {
           // Blocking side-effect (Razorpay MB-1 map-table — fail 500 so Razorpay retries)
           try {
-            await sideEffect(brandId, this.deps.rawPgPool, requestId);
+            await sideEffect(brandId, this.deps.rawPgPool, requestId, this.deps.identityReader);
           } catch (seErr) {
             req.log?.error(
               { request_id: requestId, brand_id: brandId, provider, err: seErr },
@@ -430,7 +432,7 @@ export class WebhookPipeline {
           }
         } else {
           // Fire-and-forget (cart-stitch, etc.)
-          sideEffect(brandId, this.deps.rawPgPool, requestId).catch((seErr: unknown) => {
+          sideEffect(brandId, this.deps.rawPgPool, requestId, this.deps.identityReader).catch((seErr: unknown) => {
             req.log?.warn(
               { request_id: requestId, provider, err: seErr },
               '[webhook] side-effect failed (non-fatal)',

@@ -768,6 +768,7 @@ export async function main(): Promise<void> {
     liveTopic,
     getSaltHex: getWebhookSaltHex,
     redis,
+    identityReader, // Epic 3 / ADR-0004: GDPR redact resolves + erases via the Neo4j identity SoR
   });
 
   app.log.info({ topic: liveTopic }, '[core] All webhook receivers registered via generic pipeline (Shopify/Razorpay/Shopflo/WooCommerce)');

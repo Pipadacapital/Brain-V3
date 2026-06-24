@@ -287,6 +287,21 @@ export class Neo4jIdentityReader {
     return { erased: true, contact_pii_deleted: piiDeleted, links_tombstoned: linksTombstoned };
   }
 
+  /** Resolve brain_id from a hashed storefront_customer_id (e.g. Shopify GDPR redact). Null if unknown. */
+  async resolveBrainIdByStorefrontCustomerId(brandId: string, storefrontHash: string): Promise<string | null> {
+    const s = this.driver.session({ defaultAccessMode: neo4j.session.READ });
+    try {
+      const r = await s.run(
+        `MATCH (i:Identifier {brand_id:$b, type:'storefront_customer_id', hash:$h})-[r:IDENTIFIES]->(c:Customer)
+         WHERE r.is_active = true RETURN c.brain_id AS brain_id LIMIT 1`,
+        { b: brandId, h: storefrontHash },
+      );
+      return r.records[0]?.get('brain_id') ?? null;
+    } finally {
+      await s.close();
+    }
+  }
+
   /** Active (resolved) customer count for the brand — the vault-coverage denominator. */
   async activeCustomerCount(brandId: string): Promise<number> {
     const s = this.driver.session({ defaultAccessMode: neo4j.session.READ });

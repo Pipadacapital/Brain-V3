@@ -16,6 +16,15 @@ import type { FastifyRequest } from 'fastify';
 import type pg from 'pg';
 
 /**
+ * The minimal Neo4j identity-reader surface a webhook side-effect needs (GDPR redact). Structural so the
+ * webhook layer stays loosely coupled to the identity module.
+ */
+export interface WebhookIdentityReader {
+  resolveBrainIdByStorefrontCustomerId(brandId: string, storefrontHash: string): Promise<string | null>;
+  eraseCustomer(brandId: string, brainId: string): Promise<{ erased: boolean; contact_pii_deleted: number; links_tombstoned: number }>;
+}
+
+/**
  * Result of a successful signatureVerify call.
  * The lookupKey is provider-specific (shopDomain, accountId, merchantId, siteUrl) and
  * is used as the argument to the brand-resolution DB function. It is NOT the brand_id.
@@ -64,7 +73,14 @@ export interface PayloadMapResult {
    * Shopify's cart-stitch upsert). Runs AFTER successful Kafka produce + BEFORE sync touch.
    * Fire-and-forget semantics (errors logged, not re-thrown) unless throwOnError is true.
    */
-  sideEffect?: (brandId: string, rawPgPool: pg.Pool, requestId: string) => Promise<void>;
+  sideEffect?: (
+    brandId: string,
+    rawPgPool: pg.Pool,
+    requestId: string,
+    // MEDALLION REALIGNMENT (Epic 3 / ADR-0004): the Neo4j identity reader — for GDPR redact
+    // (resolve brain_id + erase) now that identity is the Neo4j SoR.
+    identityReader?: WebhookIdentityReader,
+  ) => Promise<void>;
   /**
    * If true, a sideEffect error returns 500 (not fire-and-forget).
    * Razorpay uses this for the map-table upsert (MB-1 HARD prerequisite).

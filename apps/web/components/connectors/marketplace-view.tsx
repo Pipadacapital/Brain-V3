@@ -47,7 +47,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { SyncNowControl } from '@/components/connectors/sync-now-control';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
-import { useMarketplace, useConnectConnector, useDisconnectConnector } from '@/lib/hooks/use-connectors';
+import { useMarketplace, useConnectConnector, useDisconnectConnector, useActivateAdAccount } from '@/lib/hooks/use-connectors';
 import { useEntitlements } from '@/lib/hooks/use-entitlements';
 import { useEmailVerified } from '@/lib/hooks/use-auth';
 import { BffApiError } from '@/lib/api/client';
@@ -197,6 +197,7 @@ const credentialFieldsFor = _credentialFieldsFor;
 function ConnectorTile({ tile, readinessLock }: { tile: MarketplaceTile; readinessLock?: string | null }) {
   const { mutate: connect, isPending: isConnecting } = useConnectConnector();
   const { mutate: disconnect, isPending: isDisconnecting } = useDisconnectConnector();
+  const { mutate: activateAccount, isPending: isActivating } = useActivateAdAccount();
   const { emailVerified } = useEmailVerified();
   const [shopDomain, setShopDomain] = useState('');
   // Razorpay credential form state (only used for credential tiles).
@@ -331,6 +332,29 @@ function ConnectorTile({ tile, readinessLock }: { tile: MarketplaceTile; readine
     });
   }
 
+  // 0106: ad-account activation. An agency/MCC login exposes many accounts; only the activated one
+  // ingests (switch semantics — activating one deactivates its siblings). Controls show only for ad
+  // tiles. `noneActive` (multiple accounts, none chosen) drives the "select an account" prompt.
+  const isAdTile = tile.category === 'ads';
+  const noneActive = isAdTile && activeInstances.length > 0 && !activeInstances.some((i) => i.is_active);
+  // Sync-now should target the chosen account when there is one.
+  const activeOrFirst = activeInstances.find((i) => i.is_active) ?? firstInstance;
+
+  function handleActivate(instanceId: string, label: string) {
+    activateAccount(instanceId, {
+      onSuccess: () => {
+        toast({
+          title: 'Account activated',
+          description: `Only ${label} will ingest ${tile.display_name} data from now on.`,
+        });
+      },
+      onError: (err) => {
+        const msg = err instanceof BffApiError ? err.message : 'Could not activate this account.';
+        toast({ title: 'Activation failed', description: msg, variant: 'destructive' });
+      },
+    });
+  }
+
   return (
     <Card
       data-testid={`connector-tile-${tile.id}`}
@@ -378,10 +402,27 @@ function ConnectorTile({ tile, readinessLock }: { tile: MarketplaceTile; readine
           </Button>
         ) : isConnected ? (
           <div className="space-y-3">
+            {/* 0106: ad platforms expose MANY accounts (the agency/MCC has one per brand). Until the
+                user picks ONE, none ingests — prompt them so the brand isn't polluted with cross-
+                brand spend. Shown only for ad tiles with multiple accounts and none chosen. */}
+            {noneActive && (
+              <div
+                role="status"
+                className="flex items-start gap-2 rounded-md border border-status-amber-200 bg-status-amber-50 px-3 py-2 text-xs text-status-amber-700"
+                data-testid={`connector-tile-${tile.id}-select-account`}
+              >
+                <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                <span>
+                  Select <strong>one</strong> ad account to ingest. Only the activated account&apos;s
+                  spend flows into this brand — the others stay connected but idle.
+                </span>
+              </div>
+            )}
             {/* Gap B: render per-account sub-cards for multi-account providers */}
             {activeInstances.map((inst, idx) => {
               const showAccountKey =
                 inst.account_key && inst.account_key !== '__default__';
+              const accountLabel = inst.account_label ?? inst.account_key ?? tile.display_name;
               return (
                 <div
                   key={inst.id}
@@ -408,26 +449,55 @@ function ConnectorTile({ tile, readinessLock }: { tile: MarketplaceTile; readine
                       <p className="text-sm text-muted-foreground truncate">{inst.shop_domain}</p>
                     )}
                   </div>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => handleDisconnect(inst.id)}
-                    disabled={isDisconnecting}
-                    data-testid={`btn-disconnect-${tile.id}${activeInstances.length > 1 ? `-${idx}` : ''}`}
-                  >
-                    {isDisconnecting && (
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
-                    )}
-                    {isDisconnecting ? 'Disconnecting…' : 'Disconnect'}
-                  </Button>
+                  <div className="flex items-center gap-2">
+                    {/* 0106: activation control (ad tiles only). The active account shows a badge;
+                        the rest show an Activate button (switch — activating deactivates siblings). */}
+                    {isAdTile && (inst.is_active ? (
+                      <span
+                        role="status"
+                        aria-label={`${accountLabel} is the active ingesting account`}
+                        data-testid={`connector-tile-${tile.id}-active-${idx}`}
+                        className="inline-flex items-center gap-1 rounded-md border border-status-green-200 bg-status-green-50 px-2 py-0.5 text-xs font-medium text-status-green-700"
+                      >
+                        <CheckCircle className="h-3 w-3" aria-hidden="true" />
+                        Active
+                      </span>
+                    ) : (
+                      <Button
+                        variant="default"
+                        size="sm"
+                        onClick={() => handleActivate(inst.id, accountLabel)}
+                        disabled={isActivating}
+                        data-testid={`btn-activate-${tile.id}-${idx}`}
+                      >
+                        {isActivating && (
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
+                        )}
+                        Activate
+                      </Button>
+                    ))}
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => handleDisconnect(inst.id)}
+                      disabled={isDisconnecting}
+                      data-testid={`btn-disconnect-${tile.id}${activeInstances.length > 1 ? `-${idx}` : ''}`}
+                    >
+                      {isDisconnecting && (
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
+                      )}
+                      {isDisconnecting ? 'Disconnecting…' : 'Disconnect'}
+                    </Button>
+                  </div>
                 </div>
               );
             })}
-            {/* Sync now — on-demand incremental re-pull. Status visible to all roles;
-                trigger gated to brand_admin+ (hidden for manager/analyst). */}
-            {firstInstance?.id && (
+            {/* Sync now — on-demand incremental re-pull, targeting the ACTIVE account for ad tiles.
+                Status visible to all roles; trigger gated to brand_admin+ (hidden for manager/analyst).
+                Hidden when an ad platform has no active account yet (nothing to sync). */}
+            {activeOrFirst?.id && !noneActive && (
               <SyncNowControl
-                connectorId={firstInstance.id}
+                connectorId={activeOrFirst.id}
                 className="pt-3 border-t border-border"
               />
             )}

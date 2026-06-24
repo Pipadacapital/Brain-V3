@@ -74,6 +74,7 @@ function makeConnectorRepo(saveResult?: ConnectorInstance): IConnectorInstanceRe
     findById: vi.fn().mockResolvedValue(null),
     findAllByBrand: vi.fn().mockResolvedValue([]),
     findAllByBrandAndProvider: vi.fn().mockResolvedValue([]),
+    activateAccount: vi.fn().mockResolvedValue(null),
     save: vi.fn().mockResolvedValue(saveResult ?? base),
     update: vi.fn().mockResolvedValue(saveResult ?? base),
   };

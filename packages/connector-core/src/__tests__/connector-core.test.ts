@@ -89,6 +89,46 @@ describe('ConnectorInstance (provider-agnostic)', () => {
     const afterRateLimited = inst.markRateLimited();
     expect(afterRateLimited.updatedAt.getTime()).toBeGreaterThanOrEqual(before.getTime());
   });
+
+  // ── ad-account activation (0106) ────────────────────────────────────────────
+  it('defaults activatedAt to null (isActive false) when not provided', () => {
+    const inst = ConnectorInstance.create(baseProps());
+    expect(inst.activatedAt).toBeNull();
+    expect(inst.isActive).toBe(false);
+  });
+
+  it('activate() sets activatedAt + isActive; deactivate() clears it (both immutable)', () => {
+    const inst = ConnectorInstance.create({ ...baseProps(), provider: 'meta' });
+    const active = inst.activate();
+    expect(active.isActive).toBe(true);
+    expect(active.activatedAt).toBeInstanceOf(Date);
+    expect(inst.isActive).toBe(false); // original unchanged
+
+    const back = active.deactivate();
+    expect(back.isActive).toBe(false);
+    expect(back.activatedAt).toBeNull();
+  });
+
+  it('activate() is idempotent — re-activating keeps the original activatedAt', () => {
+    const stamp = new Date('2026-02-02T00:00:00Z');
+    const inst = ConnectorInstance.create({ ...baseProps(), provider: 'meta', activatedAt: stamp });
+    const again = inst.activate();
+    expect(again).toBe(inst); // same instance, no churn
+    expect(again.activatedAt).toEqual(stamp);
+  });
+});
+
+describe('isAdPlatformProvider (0106)', () => {
+  it('classifies only the ad platforms', async () => {
+    const { isAdPlatformProvider, AD_PLATFORM_PROVIDERS } = await import('../index.js');
+    expect(isAdPlatformProvider('meta')).toBe(true);
+    expect(isAdPlatformProvider('google_ads')).toBe(true);
+    expect(isAdPlatformProvider('shopify')).toBe(false);
+    expect(isAdPlatformProvider('woocommerce')).toBe(false);
+    expect(isAdPlatformProvider('razorpay')).toBe(false);
+    expect(isAdPlatformProvider('gokwik')).toBe(false);
+    expect([...AD_PLATFORM_PROVIDERS]).toEqual(['meta', 'google_ads']);
+  });
 });
 
 describe('hashToUuidShaped', () => {

@@ -39,6 +39,8 @@ interface ConnectorInstanceRow {
   account_key: string;
   /** Added by migration 0091 (Gap A). NULL for legacy rows. */
   connector_provider_config: Record<string, string | null> | null;
+  /** Added by migration 0106 (ad-account activation). NULL = not the chosen account. */
+  activated_at: Date | null;
 }
 
 function rowToEntity(row: ConnectorInstanceRow): ConnectorInstance {
@@ -57,12 +59,13 @@ function rowToEntity(row: ConnectorInstanceRow): ConnectorInstance {
     updatedAt: new Date(row.updated_at),
     accountKey: row.account_key ?? DEFAULT_ACCOUNT_KEY,
     providerConfig: row.connector_provider_config ?? {},
+    activatedAt: row.activated_at ? new Date(row.activated_at) : null,
   } satisfies ConnectorInstanceProps);
 }
 
 const SELECT_COLS = `id, brand_id, provider, shop_domain, secret_ref, status,
   health_state, safety_rating, connected_at, disconnected_at, created_at, updated_at,
-  account_key, connector_provider_config`;
+  account_key, connector_provider_config, activated_at`;
 
 export class PgConnectorInstanceRepository implements IConnectorInstanceRepository {
   constructor(private readonly pool: DbPool) {}
@@ -165,8 +168,8 @@ export class PgConnectorInstanceRepository implements IConnectorInstanceReposito
            (id, brand_id, provider, shop_domain, secret_ref, status,
             health_state, safety_rating,
             connected_at, disconnected_at, created_at, updated_at,
-            account_key, connector_provider_config)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+            account_key, connector_provider_config, activated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
          ON CONFLICT (brand_id, provider, account_key) DO UPDATE SET
             shop_domain              = EXCLUDED.shop_domain,
             secret_ref               = EXCLUDED.secret_ref,
@@ -177,6 +180,8 @@ export class PgConnectorInstanceRepository implements IConnectorInstanceReposito
             disconnected_at          = EXCLUDED.disconnected_at,
             updated_at               = EXCLUDED.updated_at,
             connector_provider_config = EXCLUDED.connector_provider_config
+            -- activated_at is NOT clobbered on reconnect: the user's activation choice survives a
+            -- token refresh / reconnect. New rows persist the INSERT value (auto-activate-if-single).
          RETURNING ${SELECT_COLS}`,
         [
           instance.id,
@@ -195,6 +200,7 @@ export class PgConnectorInstanceRepository implements IConnectorInstanceReposito
           instance.providerConfig && Object.keys(instance.providerConfig).length > 0
             ? JSON.stringify(instance.providerConfig)
             : null,
+          instance.activatedAt?.toISOString() ?? null,
         ],
       );
       const row = result.rows[0];
@@ -229,6 +235,55 @@ export class PgConnectorInstanceRepository implements IConnectorInstanceReposito
       const row = result.rows[0];
       if (!row) throw new Error('[PgConnectorInstanceRepository] UPDATE returned no row');
       return rowToEntity(row);
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Activate exactly ONE ad account (migration 0106), with switch semantics. Done as a SINGLE
+   * multi-CTE statement so it is ATOMIC and runs under the per-query RLS transaction (the ctx GUC
+   * scopes every CTE to this brand): the sibling-deactivation and the target-activation either both
+   * commit or neither does — there is never a window with two active accounts.
+   *
+   * In Postgres, data-modifying CTEs all execute exactly once to completion against the same
+   * snapshot, regardless of reference order. `target` resolves the connected instance for this
+   * brand; `deactivate_siblings` clears every OTHER active account of the same (brand, provider);
+   * the final UPDATE activates the target (idempotent via COALESCE — re-activating keeps the
+   * original activated_at). 0 rows back (bad id / not connected / wrong brand) → returns null.
+   */
+  async activateAccount(
+    connectorInstanceId: string,
+    brandId: string,
+  ): Promise<ConnectorInstance | null> {
+    const ctx: QueryContext = { brandId, correlationId: 'n/a' };
+    const client = await this.pool.connect();
+    try {
+      const result = await client.query<ConnectorInstanceRow>(
+        ctx,
+        `WITH target AS (
+           SELECT id, brand_id, provider
+             FROM connector_instance
+            WHERE id = $1 AND brand_id = $2 AND status = 'connected'
+         ),
+         deactivate_siblings AS (
+           UPDATE connector_instance ci
+              SET activated_at = NULL, updated_at = now()
+             FROM target t
+            WHERE ci.brand_id = t.brand_id
+              AND ci.provider = t.provider
+              AND ci.id <> t.id
+              AND ci.activated_at IS NOT NULL
+         )
+         UPDATE connector_instance ci
+            SET activated_at = COALESCE(ci.activated_at, now()), updated_at = now()
+           FROM target t
+          WHERE ci.id = t.id
+         RETURNING ${SELECT_COLS}`,
+        [connectorInstanceId, brandId],
+      );
+      const row = result.rows[0];
+      return row ? rowToEntity(row) : null;
     } finally {
       client.release();
     }

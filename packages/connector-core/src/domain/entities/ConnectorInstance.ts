@@ -75,6 +75,13 @@ export interface ConnectorInstanceProps {
    * Optional for backward compat.
    */
   readonly providerConfig?: Record<string, string | null>;
+  /**
+   * Ad-account activation marker (migration 0106). NULL = discovered-but-not-ingesting; a Date =
+   * the chosen account that ingests. Exactly one active per (brand, ad-platform provider). Only
+   * meaningful for ad-platform providers (meta/google_ads/…); storefront + payment connectors
+   * ignore it and always ingest when status='connected'. Optional for backward compat.
+   */
+  readonly activatedAt?: Date | null;
 }
 
 export class ConnectorInstance {
@@ -97,6 +104,8 @@ export class ConnectorInstance {
   readonly accountKey: string;
   /** Provider-specific config blob (Gap A). */
   readonly providerConfig: Record<string, string | null>;
+  /** Ad-account activation marker (0106). null = not the chosen account; a Date = active. */
+  readonly activatedAt: Date | null;
 
   private constructor(props: ConnectorInstanceProps) {
     this.id = props.id;
@@ -113,6 +122,37 @@ export class ConnectorInstance {
     this.updatedAt = props.updatedAt;
     this.accountKey = props.accountKey ?? DEFAULT_ACCOUNT_KEY;
     this.providerConfig = props.providerConfig ?? {};
+    this.activatedAt = props.activatedAt ?? null;
+  }
+
+  /** True iff this ad account is the activated (ingesting) one. */
+  get isActive(): boolean {
+    return this.activatedAt !== null;
+  }
+
+  /**
+   * Activate this account (it becomes the ingesting one). Pure — returns a new instance; the
+   * sibling-deactivation switch (exactly one active per brand+provider) is enforced at the
+   * repository/command layer in a single transaction. Re-activating is idempotent (keeps the
+   * original activated_at so the watermark/ordering is stable).
+   */
+  activate(): ConnectorInstance {
+    if (this.activatedAt !== null) return this;
+    return new ConnectorInstance({
+      ...this.toProps(),
+      activatedAt: new Date(),
+      updatedAt: new Date(),
+    });
+  }
+
+  /** Deactivate this account (stops ingesting; the OAuth connection stays connected). Pure. */
+  deactivate(): ConnectorInstance {
+    if (this.activatedAt === null) return this;
+    return new ConnectorInstance({
+      ...this.toProps(),
+      activatedAt: null,
+      updatedAt: new Date(),
+    });
   }
 
   /**
@@ -214,6 +254,7 @@ export class ConnectorInstance {
       updatedAt: this.updatedAt,
       accountKey: this.accountKey,
       providerConfig: this.providerConfig,
+      activatedAt: this.activatedAt,
     };
   }
 }

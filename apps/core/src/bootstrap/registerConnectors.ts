@@ -28,6 +28,7 @@ import { PgBackfillJobRepository } from '../modules/connector/backfill/infrastru
 import { RequestConnectorBackfillCommand } from '../modules/connector/backfill/application/commands/RequestConnectorBackfillCommand.js';
 import { PgSyncRequestRepository } from '../modules/connector/sync/infrastructure/PgSyncRequestRepository.js';
 import { RequestConnectorSyncCommand } from '../modules/connector/sync/application/commands/RequestConnectorSyncCommand.js';
+import { ActivateAdAccountCommand } from '../modules/connector/sources/advertising/application/commands/ActivateAdAccountCommand.js';
 import { registerAllWebhookRoutes } from '../modules/connector/webhooks/platform/registerWebhookRoutes.js';
 import { registerRazorpayConnectorRoutes } from '../modules/connector/sources/payment/razorpay/interfaces/http/razorpayConnectorRoutes.js';
 import { RotateWebhookSecretCommand } from '../modules/connector/sources/payment/razorpay/application/commands/RotateWebhookSecretCommand.js';
@@ -40,7 +41,7 @@ import { InstallWooCommercePixelCommand } from '../modules/connector/sources/sto
 import { getDefinition, isConnectable, CONNECTOR_CATALOG } from '../modules/connector/catalog/index.js';
 import { registerOAuthDispatch, getOAuthDispatch } from '../modules/connector/catalog/dispatch.js';
 import { InitiateOAuthCommand } from '../modules/connector/sources/storefront/shopify/application/commands/InitiateOAuthCommand.js';
-import { ConnectorInstance as ConnectorInstanceEntity } from '@brain/connector-core';
+import { ConnectorInstance as ConnectorInstanceEntity, isAdPlatformProvider } from '@brain/connector-core';
 import {
   HandleOAuthCallbackCommand,
   HmacValidationError,
@@ -389,6 +390,12 @@ export function registerConnectors(app: FastifyInstance, deps: RegisterConnector
             connected_at: inst.connectedAt.toISOString(),
             account_key: inst.accountKey,
             account_label: accountLabel,
+            // 0106: ad-account activation. is_active = this is the chosen ingesting account.
+            // requires_activation = an ad platform whose account has not been picked yet (the UI
+            // shows a "select an account" prompt + Activate controls).
+            activated_at: inst.activatedAt ? inst.activatedAt.toISOString() : null,
+            is_active: isAdPlatformProvider(inst.provider) ? inst.isActive : true,
+            requires_activation: isAdPlatformProvider(inst.provider) && !inst.isActive,
           };
         };
 
@@ -996,6 +1003,8 @@ export function registerConnectors(app: FastifyInstance, deps: RegisterConnector
     backfillJobRepo,
     auditWriter,
   );
+  // 0106: choose the ONE ad account that ingests per (brand, ad platform). Generic across platforms.
+  const activateAdAccount = new ActivateAdAccountCommand(connectorRepo, auditWriter);
 
   void app.register(async (scope) => {
     scope.addHook('preHandler', sessionPreHandler);
@@ -1030,6 +1039,41 @@ export function registerConnectors(app: FastifyInstance, deps: RegisterConnector
           connector_instance_id: result.connectorInstanceId,
           status: result.status,
           requested_at: result.requestedAt,
+        },
+      });
+    });
+
+    // 0106 — Activate ONE ad account per (brand, platform). Generic: meta/google_ads/future.
+    // Switch semantics — activating this one deactivates its siblings in a single txn.
+    scope.post('/api/v1/connectors/:id/activate', async (req: FastifyRequest<{ Params: { id: string } }>, reply) => {
+      const requestId = (req.id as string) ?? randomUUID();
+      const brandId = getBrandId(req);
+      const connectorInstanceId = req.params.id;
+      const auth = (req as typeof req & { auth?: { userId?: string; role?: string } }).auth;
+
+      const result = await activateAdAccount.execute({
+        connectorInstanceId,
+        brandId,
+        correlationId: requestId,
+        actorId: auth?.userId ?? null,
+        actorRole: auth?.role ?? 'unknown',
+      });
+
+      if (!result.ok) {
+        const httpCode = result.code === 'CONNECTOR_NOT_FOUND' ? 404 : 409;
+        return reply.code(httpCode).send({
+          request_id: requestId,
+          error: { code: result.code, message: result.message },
+        });
+      }
+
+      return reply.code(200).send({
+        request_id: requestId,
+        data: {
+          connector_instance_id: result.connectorInstanceId,
+          provider: result.provider,
+          account_key: result.accountKey,
+          activated_at: result.activatedAt,
         },
       });
     });

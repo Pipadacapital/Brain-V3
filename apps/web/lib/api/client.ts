@@ -844,6 +844,21 @@ export const connectorsApi = {
       method: 'DELETE',
       idempotencyKey: generateRequestId(),
     }),
+
+  // 0106: activate ONE ad account per (brand, platform) — switch semantics (activating one
+  // deactivates its siblings server-side). Only the activated account ingests spend.
+  activateAdAccount: async (
+    connectorId: string,
+  ): Promise<{ connector_instance_id: string; provider: string; account_key: string; activated_at: string }> => {
+    const res = await bffFetch<{
+      request_id: string;
+      data: { connector_instance_id: string; provider: string; account_key: string; activated_at: string };
+    }>(`/v1/connectors/${connectorId}/activate`, {
+      method: 'POST',
+      idempotencyKey: generateRequestId(),
+    });
+    return res.data;
+  },
 };
 
 // ── Pixel ─────────────────────────────────────────────────────────────────────

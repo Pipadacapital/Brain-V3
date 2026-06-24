@@ -18,8 +18,9 @@
  *                                         if it still surfaces here, mark RateLimited + abort.
  *   Self-imposed QPS cap is enforced in the client (token bucket, default 1 rps/CID).
  *
- * Tokens NEVER logged (I-S09). The re-pull does NOT write the ledger — it lands spend.live.v1;
- * SpendLedgerConsumer writes ad_spend_ledger (ON CONFLICT DO NOTHING — idempotent re-read).
+ * Tokens NEVER logged (I-S09). The re-pull only lands spend.live.v1 on the live lane; the Spark
+ * Bronze sink writes it (server-trusted) to Bronze (Iceberg) → silver_marketing_spend. Bronze is the
+ * SOLE spend SoR (dedup = deterministic event_id MERGE). There is NO PostgreSQL spend ledger.
  */
 
 import { Pool } from 'pg';

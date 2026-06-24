@@ -13,7 +13,7 @@
  */
 
 import { hashIdentifier, resolveSaltHex } from '@brain/identity-core';
-import type { Neo4jIdentityReader } from '../../infrastructure/neo4j-identity-reader.js';
+import type { IdentityReader } from '../../infrastructure/neo4j-identity-reader.js';
 
 const MAX_LIMIT = 100;
 const DEFAULT_LIMIT = 25;
@@ -47,8 +47,8 @@ export interface ListCustomersParams {
 }
 
 export interface ListCustomersDeps {
-  /** MEDALLION REALIGNMENT (Epic 3 / ADR-0004): identity is the Neo4j SoR. */
-  reader: Neo4jIdentityReader;
+  /** MEDALLION REALIGNMENT (Epic 3 / ADR-0004): identity is the Neo4j SoR (DIP — IdentityReader port). */
+  reader: IdentityReader;
 }
 
 function toIso(v: unknown): string | null {

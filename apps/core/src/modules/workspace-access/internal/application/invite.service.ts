@@ -22,7 +22,10 @@ import type { Membership } from '../domain/membership/entities.js';
 import type { RoleCode } from '../domain/membership/entities.js';
 import { INVITE_EXPIRY_DAYS } from '../domain/invite/entities.js';
 import { ROLE_HIERARCHY } from '../domain/membership/entities.js';
-import { InviteRepository, MembershipRepository, AppUserRepository, UserSessionRepository } from '../infrastructure/repositories.js';
+import { InviteRepository } from '../infrastructure/repositories/invite.repository.js';
+import { MembershipRepository } from '../infrastructure/repositories/membership.repository.js';
+import { AppUserRepository } from '../infrastructure/repositories/app-user.repository.js';
+import { UserSessionRepository } from '../infrastructure/repositories/user-session.repository.js';
 import { maskEmail } from './auth.service.js';
 
 export class InviteError extends Error {

@@ -26,7 +26,9 @@ export type ProvisionPixel = (
 ) => Promise<void>;
 import type { Brand, CurrencyCode, BrandTimezone, RevenueDefinition } from '../domain/brand/entities.js';
 import type { RoleCode } from '../domain/membership/entities.js';
-import { BrandRepository, MembershipRepository, OrganizationRepository } from '../infrastructure/repositories.js';
+import { BrandRepository } from '../infrastructure/repositories/brand.repository.js';
+import { MembershipRepository } from '../infrastructure/repositories/membership.repository.js';
+import { OrganizationRepository } from '../infrastructure/repositories/organization.repository.js';
 
 // Region derivation from currency_code (AC-4, plan §4).
 const CURRENCY_TO_REGION: Record<CurrencyCode, string> = {

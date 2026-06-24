@@ -13,7 +13,7 @@
  * No metric-engine coupling: identity is its own bounded context (boundary discipline).
  */
 
-import type { Neo4jIdentityReader } from '../../infrastructure/neo4j-identity-reader.js';
+import type { IdentityReader } from '../../infrastructure/neo4j-identity-reader.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -62,8 +62,8 @@ export type Customer360 =
     };
 
 export interface Customer360Deps {
-  /** MEDALLION REALIGNMENT (Epic 3 / ADR-0004): identity is the Neo4j SoR. */
-  reader: Neo4jIdentityReader;
+  /** MEDALLION REALIGNMENT (Epic 3 / ADR-0004): identity is the Neo4j SoR (DIP — IdentityReader port). */
+  reader: IdentityReader;
 }
 
 export async function getCustomer360(

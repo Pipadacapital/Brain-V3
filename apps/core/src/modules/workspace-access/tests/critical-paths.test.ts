@@ -17,7 +17,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import { AuthService, AuthError } from '../internal/application/auth.service.js';
 import { InviteService } from '../internal/application/invite.service.js';
-import { OrganizationRepository } from '../internal/infrastructure/repositories.js';
+import { OrganizationRepository } from '../internal/infrastructure/repositories/organization.repository.js';
 import { createStubClient } from '@brain/db';
 
 // ── SHA-256 helper ─────────────────────────────────────────────────────────────
@@ -270,7 +270,7 @@ describe('AC-2: revokeAllForUser and removeMember session-revocation atomicity',
     });
     const client = createStubClient(executor);
 
-    const { UserSessionRepository } = await import('../internal/infrastructure/repositories.js');
+    const { UserSessionRepository } = await import('../internal/infrastructure/repositories/user-session.repository.js');
     const repo = new UserSessionRepository(client);
 
     const count = await repo.revokeAllForUser(userId, { correlationId: 'corr', userId });

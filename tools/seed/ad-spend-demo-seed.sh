@@ -12,6 +12,9 @@
 # Usage: tools/seed/ad-spend-demo-seed.sh <BRAND_UUID>
 set -euo pipefail
 
+# MK-1..MK-4: seeds must NEVER masquerade as real data and must NEVER run in production.
+[[ "${APP_ENV:-dev}" == prod* ]] && { echo "refusing: $0 writes synthetic demo data and must not run in production (APP_ENV=$APP_ENV)" >&2; exit 1; }
+
 BRAND="${1:-}"
 if [[ -z "$BRAND" ]]; then echo "usage: $0 <BRAND_UUID>" >&2; exit 2; fi
 PG="docker exec -i brainv3-postgres-1 psql -U brain -d brain -v ON_ERROR_STOP=1"

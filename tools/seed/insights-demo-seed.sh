@@ -15,6 +15,9 @@
 #   docker exec brainv3-postgres-1 psql -U brain -d brain -tAc "SELECT brand_id FROM tenancy.brand LIMIT 1;"
 set -euo pipefail
 
+# MK-1..MK-4: seeds must NEVER masquerade as real data and must NEVER run in production.
+[[ "${APP_ENV:-dev}" == prod* ]] && { echo "refusing: $0 writes synthetic demo data and must not run in production (APP_ENV=$APP_ENV)" >&2; exit 1; }
+
 BRAND="${1:-}"
 if [[ -z "$BRAND" ]]; then echo "usage: $0 <BRAND_UUID>" >&2; exit 2; fi
 SR="docker exec -i brainv3-starrocks-1 mysql -P9030 -h127.0.0.1 -uroot"
@@ -22,22 +25,32 @@ SR="docker exec -i brainv3-starrocks-1 mysql -P9030 -h127.0.0.1 -uroot"
 echo "Seeding /insights demo data for brand $BRAND ..."
 
 $SR <<SQL
+-- Every mart carries a data_source column so synthetic demo rows are distinguishable from real ones
+-- (MK-1..MK-4). The seeder stamps data_source='synthetic'; the /insights briefing aggregates this
+-- synthetic-if-any and badges the surface. The real dbt pipeline overwrites these tables on build.
 CREATE TABLE IF NOT EXISTS brain_gold.gold_revenue_ledger (
   brand_id varchar(36), ledger_event_id varchar(64), currency_code varchar(8),
-  event_type varchar(48), amount_minor bigint, occurred_at datetime
+  event_type varchar(48), amount_minor bigint, occurred_at datetime, data_source varchar(16)
 ) ENGINE=OLAP DUPLICATE KEY(brand_id) DISTRIBUTED BY HASH(brand_id) BUCKETS 1 PROPERTIES("replication_num"="1");
 CREATE TABLE IF NOT EXISTS brain_gold.gold_executive_metrics (
   brand_id varchar(36), currency_code varchar(8), realized_value_minor bigint,
-  total_orders bigint, terminal_orders bigint, rto_orders bigint
+  total_orders bigint, terminal_orders bigint, rto_orders bigint, data_source varchar(16)
 ) ENGINE=OLAP DUPLICATE KEY(brand_id) DISTRIBUTED BY HASH(brand_id) BUCKETS 1 PROPERTIES("replication_num"="1");
 CREATE TABLE IF NOT EXISTS brain_gold.gold_customer_scores (
   brand_id varchar(36), brain_id varchar(64), currency_code varchar(8),
-  lifetime_value_minor bigint, monetary_score int, churn_risk varchar(16)
+  lifetime_value_minor bigint, monetary_score int, churn_risk varchar(16), data_source varchar(16)
 ) ENGINE=OLAP DUPLICATE KEY(brand_id) DISTRIBUTED BY HASH(brand_id) BUCKETS 1 PROPERTIES("replication_num"="1");
 CREATE TABLE IF NOT EXISTS brain_gold.gold_cac (
   brand_id varchar(36), currency_code varchar(8), acquisition_month varchar(7),
-  new_customers bigint, acquisition_spend_minor bigint
+  new_customers bigint, acquisition_spend_minor bigint, data_source varchar(16)
 ) ENGINE=OLAP DUPLICATE KEY(brand_id) DISTRIBUTED BY HASH(brand_id) BUCKETS 1 PROPERTIES("replication_num"="1");
+
+-- Ensure the data_source column exists even if the table pre-dates this seeder (CREATE IF NOT EXISTS
+-- above does not retro-add columns to an existing table).
+ALTER TABLE brain_gold.gold_revenue_ledger   ADD COLUMN IF NOT EXISTS data_source varchar(16);
+ALTER TABLE brain_gold.gold_executive_metrics ADD COLUMN IF NOT EXISTS data_source varchar(16);
+ALTER TABLE brain_gold.gold_customer_scores   ADD COLUMN IF NOT EXISTS data_source varchar(16);
+ALTER TABLE brain_gold.gold_cac               ADD COLUMN IF NOT EXISTS data_source varchar(16);
 
 -- Idempotent: clear any prior demo rows for this brand.
 DELETE FROM brain_gold.gold_revenue_ledger   WHERE brand_id='$BRAND';
@@ -46,29 +59,30 @@ DELETE FROM brain_gold.gold_customer_scores   WHERE brand_id='$BRAND';
 DELETE FROM brain_gold.gold_cac               WHERE brand_id='$BRAND';
 
 -- Revenue: net prior ₹11.8L -> cur ₹9.676L (-18.0%); biggest driver = rto_reversal.
+-- Every row stamped data_source='synthetic' (MK-1..MK-4 — never masquerade as real).
 INSERT INTO brain_gold.gold_revenue_ledger VALUES
- ('$BRAND','p1','INR','provisional_recognition', 120000000, DATE_SUB(NOW(), INTERVAL 45 DAY)),
- ('$BRAND','p2','INR','rto_reversal',             -2000000, DATE_SUB(NOW(), INTERVAL 44 DAY)),
- ('$BRAND','c1','INR','provisional_recognition', 118000000, DATE_SUB(NOW(), INTERVAL 15 DAY)),
- ('$BRAND','c2','INR','rto_reversal',            -21240000, DATE_SUB(NOW(), INTERVAL 12 DAY));
+ ('$BRAND','p1','INR','provisional_recognition', 120000000, DATE_SUB(NOW(), INTERVAL 45 DAY),'synthetic'),
+ ('$BRAND','p2','INR','rto_reversal',             -2000000, DATE_SUB(NOW(), INTERVAL 44 DAY),'synthetic'),
+ ('$BRAND','c1','INR','provisional_recognition', 118000000, DATE_SUB(NOW(), INTERVAL 15 DAY),'synthetic'),
+ ('$BRAND','c2','INR','rto_reversal',            -21240000, DATE_SUB(NOW(), INTERVAL 12 DAY),'synthetic');
 
 -- Exec: RTO 80/400 = 20%; AOV ₹5,000 -> leaked ₹4.0L.
-INSERT INTO brain_gold.gold_executive_metrics VALUES ('$BRAND','INR', 215000000, 430, 400, 80);
+INSERT INTO brain_gold.gold_executive_metrics VALUES ('$BRAND','INR', 215000000, 430, 400, 80,'synthetic');
 
 -- CAC: ₹10,000 (2026-05) -> ₹12,500 (2026-06) = +25% MoM.
 INSERT INTO brain_gold.gold_cac VALUES
- ('$BRAND','INR','2026-06', 40, 50000000),
- ('$BRAND','INR','2026-05', 40, 40000000);
+ ('$BRAND','INR','2026-06', 40, 50000000,'synthetic'),
+ ('$BRAND','INR','2026-05', 40, 40000000,'synthetic');
 SQL
 
 # 12 high-churn customers (sum LTV ₹8.7L) + 8 VIPs (monetary_score=5, sum LTV ₹12L).
 {
   for i in $(seq 1 12); do
     if [[ $i -le 6 ]]; then ltv=7000000; else ltv=7500000; fi
-    echo "INSERT INTO brain_gold.gold_customer_scores VALUES ('$BRAND','churn-$i','INR',$ltv,2,'high');"
+    echo "INSERT INTO brain_gold.gold_customer_scores VALUES ('$BRAND','churn-$i','INR',$ltv,2,'high','synthetic');"
   done
   for i in $(seq 1 8); do
-    echo "INSERT INTO brain_gold.gold_customer_scores VALUES ('$BRAND','vip-$i','INR',15000000,5,'low');"
+    echo "INSERT INTO brain_gold.gold_customer_scores VALUES ('$BRAND','vip-$i','INR',15000000,5,'low','synthetic');"
   done
 } | $SR
 

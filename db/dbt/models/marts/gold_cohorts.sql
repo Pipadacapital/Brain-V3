@@ -1,7 +1,7 @@
 -- ============================================================================
 -- gold_cohorts — acquisition cohorts (re-platform Phase E, brain_gold).
 -- One row per (brand_id, cohort_month, currency_code): customers first seen in that month + their
--- lifetime value/orders. Additive (ADR-004) — retention ratios derived at read. Reads silver_customers.
+-- lifetime value/orders. Additive (ADR-004) — retention ratios derived at read. Reads silver_customer.
 -- ============================================================================
 {{
   config(
@@ -21,6 +21,6 @@ select
     cast(sum(lifetime_value_minor) as bigint)  as cohort_value_minor,
     cast(sum(lifetime_orders) as bigint)       as cohort_orders,
     current_timestamp()                        as updated_at
-from {{ ref('silver_customers') }}
+from {{ ref('silver_customer') }}
 where first_seen_at is not null
 group by brand_id, date_format(first_seen_at, '%Y-%m')

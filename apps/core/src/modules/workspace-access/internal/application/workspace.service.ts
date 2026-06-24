@@ -7,7 +7,8 @@ import type { DbPool, QueryContext } from '@brain/db';
 import type { AuditWriter } from '@brain/audit';
 import type { Organization } from '../domain/organization/entities.js';
 import type { Membership } from '../domain/membership/entities.js';
-import { OrganizationRepository, MembershipRepository } from '../infrastructure/repositories.js';
+import { OrganizationRepository } from '../infrastructure/repositories/organization.repository.js';
+import { MembershipRepository } from '../infrastructure/repositories/membership.repository.js';
 import { deriveSlug } from './slugify.js';
 
 export class WorkspaceError extends Error {

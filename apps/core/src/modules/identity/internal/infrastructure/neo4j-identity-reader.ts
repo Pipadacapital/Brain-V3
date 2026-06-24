@@ -40,7 +40,40 @@ export interface CustomerListRow {
   last_identifier_at: Date | null; created_at: Date | null;
 }
 
-export class Neo4jIdentityReader {
+/**
+ * IdentityReader — the PUBLIC read/admin port over the identity SoR (DIP boundary, AV-2/DZ-1).
+ *
+ * Consumers (the BFF + any other module) depend on THIS abstraction, never the concrete
+ * Neo4jIdentityReader implementation. Re-exported from the identity barrel (index.ts); the
+ * concrete class stays internal. main.ts constructs Neo4jIdentityReader and passes it as an
+ * IdentityReader. The method set is exactly what the identity application use-cases (and thus
+ * the BFF, transitively) invoke — no more, no less.
+ */
+export interface IdentityReader {
+  getCustomer360(brandId: string, brainId: string): Promise<Customer360Row>;
+  listCustomers(
+    brandId: string,
+    opts: { lifecycle: string | null; identifierHashes: string[]; limit: number; offset: number },
+  ): Promise<{ items: CustomerListRow[]; total: number }>;
+  listMergeReviews(
+    brandId: string,
+  ): Promise<Array<{ review_id: string; brain_id_a: string; brain_id_b: string; trigger_reason: string; created_at: Date | null }>>;
+  resolveMergeReview(
+    brandId: string,
+    reviewId: string,
+    decision: 'approve' | 'reject',
+  ): Promise<{ resolved: boolean; reason?: string }>;
+  unmergeCustomer(
+    brandId: string,
+    mergedBrainId: string,
+  ): Promise<{ unmerged: boolean; reason?: string; brain_id?: string }>;
+  eraseCustomer(
+    brandId: string,
+    brainId: string,
+  ): Promise<{ erased: boolean; contact_pii_deleted: number; links_tombstoned: number }>;
+}
+
+export class Neo4jIdentityReader implements IdentityReader {
   private readonly driver: Driver;
 
   constructor(uri: string, user: string, password: string, private readonly pgPool: Pool) {

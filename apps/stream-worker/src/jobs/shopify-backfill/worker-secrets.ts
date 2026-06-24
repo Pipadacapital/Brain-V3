@@ -31,19 +31,19 @@
 import { AwsSecretsManager } from '@brain/connector-secrets';
 
 /** Minimal secrets interface for the worker (subset of ISecretsManager) */
-export interface WorkerSecretsManager {
+export interface WorkerSecretsProvider {
   getShopifyToken(secretRef: string): Promise<string | null>;
 }
 
 /**
- * Build the worker's ISecretsManager based on environment.
+ * Build the worker's secrets provider based on environment.
  * PROD: AwsSecretsManager (injected via env vars BRAIN_AWS_REGION / SHOPIFY_CLIENT_SECRET_ARN / KMS_KEY_ID).
- * DEV: WorkerLocalSecretsManager (reads from env vars + dev fallback).
+ * DEV: LocalWorkerSecretsProvider (reads from env vars + dev fallback).
  */
-export function buildWorkerSecretsManager(): WorkerSecretsManager {
+export function buildWorkerSecretsManager(): WorkerSecretsProvider {
   if (process.env['NODE_ENV'] === 'production') {
     // Prod: delegate to the shared AwsSecretsManager (@brain/connector-secrets). It implements the
-    // full ISecretsManager — including getShopifyToken — so it satisfies WorkerSecretsManager.
+    // full ISecretsManager — including getShopifyToken — so it satisfies WorkerSecretsProvider.
     const region = process.env['BRAIN_AWS_REGION'] ?? 'us-east-1';
     const clientSecretArn = process.env['SHOPIFY_CLIENT_SECRET_ARN'] ?? '';
     const kmsKeyId = process.env['KMS_KEY_ID'] ?? '';
@@ -51,8 +51,8 @@ export function buildWorkerSecretsManager(): WorkerSecretsManager {
     return new AwsSecretsManager(region, clientSecretArn, kmsKeyId);
   }
 
-  // Dev: use WorkerLocalSecretsManager (env-var backed, no in-memory dependency on core)
-  return new WorkerLocalSecretsManager();
+  // Dev: use LocalWorkerSecretsProvider (env-var backed, no in-memory dependency on core)
+  return new LocalWorkerSecretsProvider();
 }
 
 /**
@@ -71,14 +71,14 @@ export function buildWorkerSecretsManager(): WorkerSecretsManager {
  */
 import pg from 'pg';
 
-export class WorkerLocalSecretsManager implements WorkerSecretsManager {
+export class LocalWorkerSecretsProvider implements WorkerSecretsProvider {
   constructor() {
     // SEC-CLR-MED-01: hard-fail if instantiated in production (belt-and-suspenders), mirroring
     // core's LocalSecretsManager. buildWorkerSecretsManager() already branches to AwsSecretsManager
     // in prod; this guard defends against a future direct-instantiation bypassing the factory.
     if (process.env['NODE_ENV'] === 'production') {
       throw new Error(
-        '[WorkerLocalSecretsManager] FATAL: must not be instantiated in production. ' +
+        '[LocalWorkerSecretsProvider] FATAL: must not be instantiated in production. ' +
           'Use AwsSecretsManager via buildWorkerSecretsManager().',
       );
     }

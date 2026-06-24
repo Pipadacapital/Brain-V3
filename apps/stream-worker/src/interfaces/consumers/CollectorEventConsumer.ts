@@ -66,6 +66,10 @@ export class CollectorEventConsumer {
         const traceCtx = extractKafkaTraceContext(
           (message.headers ?? {}) as Record<string, Buffer | string | undefined>,
         );
+        // OBS-3: bind the producer's custom correlation_id header onto a per-message child logger
+        // so log lines correlate to the originating request even where no span is started.
+        const correlationId = message.headers?.['correlation_id']?.toString();
+        const msgLog = correlationId ? log.child({ correlation_id: correlationId }) : log;
         await context.with(traceCtx, async () => {
 
         try {
@@ -87,7 +91,7 @@ export class CollectorEventConsumer {
               { topic, partition, offset: String(Number(offset) + 1) },
             ]);
             await this.retryCounter.reset(this.retryScope, partition, offset);
-            log.info(`DLQ (invalid) partition=${partition} offset=${offset} reason=${result.reason}`);
+            msgLog.info(`DLQ (invalid) partition=${partition} offset=${offset} reason=${result.reason}`);
             return;
           }
 
@@ -106,7 +110,7 @@ export class CollectorEventConsumer {
               { topic, partition, offset: String(Number(offset) + 1) },
             ]);
             await this.retryCounter.reset(this.retryScope, partition, offset);
-            log.info(`QUARANTINE partition=${partition} offset=${offset} reason=${result.reason} brand=${result.brandId ?? 'unresolved'}`);
+            msgLog.info(`QUARANTINE partition=${partition} offset=${offset} reason=${result.reason} brand=${result.brandId ?? 'unresolved'}`);
             return;
           }
 
@@ -132,12 +136,12 @@ export class CollectorEventConsumer {
             { topic, partition, offset: String(Number(offset) + 1) },
           ]);
           await this.retryCounter.reset(this.retryScope, partition, offset);
-          log.info(`${result.outcome} brand=${result.brandId} event=${result.eventId} partition=${partition} offset=${offset}`);
+          msgLog.info(`${result.outcome} brand=${result.brandId} event=${result.eventId} partition=${partition} offset=${offset}`);
         } catch (err) {
           // Write error — do NOT commit offset (D-7). Increment retry counter.
           const current = await this.retryCounter.increment(this.retryScope, partition, offset);
 
-          log.error(`write error (attempt ${current}/${MAX_RETRY}) partition=${partition} offset=${offset}`, { err: err });
+          msgLog.error(`write error (attempt ${current}/${MAX_RETRY}) partition=${partition} offset=${offset}`, { err: err });
 
           if (current >= MAX_RETRY) {
             // After MAX_RETRY failures → DLQ → commit (D-7).
@@ -152,9 +156,9 @@ export class CollectorEventConsumer {
                 { topic, partition, offset: String(Number(offset) + 1) },
               ]);
               await this.retryCounter.reset(this.retryScope, partition, offset);
-              log.warn(`DLQ (max retry) partition=${partition} offset=${offset}`);
+              msgLog.warn(`DLQ (max retry) partition=${partition} offset=${offset}`);
             } catch (dlqErr) {
-              log.error('DLQ produce failed — not committing offset', { err: dlqErr });
+              msgLog.error('DLQ produce failed — not committing offset', { err: dlqErr });
               // Do NOT commit — will retry the whole message next poll.
             }
           }

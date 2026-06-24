@@ -1,7 +1,7 @@
 version: 2
 
 models:
-  - name: silver_customers
+  - name: silver_customer
     description: >
       Canonical customer entity — one row per (brand_id, brain_id), the identity-resolved customer
       spine. Lifetime orders/value + first/last seen, derived additively from silver_order_state.

@@ -33,7 +33,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { Pool } from 'pg';
 import { Kafka, type Producer } from 'kafkajs';
 import type mysql from 'mysql2/promise';
-import { uuidV5FromOrderBackfill, uuidV5FromOrderLive } from '../jobs/shopify-backfill/uuid-utils.js';
+import { uuidV5FromOrderBackfill, uuidV5FromOrderLive } from '@brain/shopify-mapper';
 import { CollectorEventV1Schema, COLLECTOR_EVENT_V1_TOPIC_SUFFIX, ORDER_BACKFILL_V1_TOPIC_SUFFIX } from '@brain/contracts';
 import {
   makeStarrocksPool,

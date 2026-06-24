@@ -14,7 +14,20 @@
  */
 
 import type { SilverPool, Insight, InsightKind, InsightSeverity } from '@brain/metric-engine';
-import { computeInsights } from '@brain/metric-engine';
+import { computeInsights, withSilverBrand, BRAND_PREDICATE } from '@brain/metric-engine';
+
+/**
+ * The Gold marts the Insight engine reads (insights.ts). Each now carries a `data_source`
+ * ('synthetic'|'live') column (added to the gold marts). We resolve the briefing's provenance
+ * by checking whether ANY contributing row across these marts is synthetic — if so the whole
+ * briefing is badged 'synthetic' (MK-1..MK-4: synthetic demo data must never read as live).
+ */
+const INSIGHT_GOLD_MARTS = [
+  'brain_gold.gold_revenue_ledger',
+  'brain_gold.gold_executive_metrics',
+  'brain_gold.gold_customer_scores',
+  'brain_gold.gold_cac',
+] as const;
 
 export interface InsightDto {
   id: string;
@@ -50,6 +63,12 @@ export interface BriefingDto {
   window: { current: { from: string; to: string }; prior: { from: string; to: string } };
   /** How the narrative was produced — deterministic today; 'llm_polished' once the polish lands. */
   source: 'deterministic';
+  /**
+   * Provenance of the contributing Gold marts — 'synthetic' when ANY contributing row is synthetic
+   * (demo seed), else 'live'. Drives the Synthetic (dev) badge on /insights so synthetic demo data
+   * is NEVER presented as live (MK-1..MK-4). NEVER hardcoded — read from the marts' data_source col.
+   */
+  data_source: 'synthetic' | 'live';
 }
 
 export type InsightsBriefingResult =
@@ -89,6 +108,34 @@ function totalImpactMinor(insights: Insight[], ccy: string | null): string | nul
   return any ? sum.toString() : null;
 }
 
+/**
+ * Resolve the briefing's data_source by reading the contributing Gold marts' `data_source` column.
+ * Returns 'synthetic' if ANY contributing row (across any of the marts the engine reads) is
+ * synthetic, else 'live' (synthetic-if-any aggregation — MK-1..MK-4). Brand-scoped via the seam.
+ * Best-effort: a mart that does not yet expose the column degrades to 'live' for that mart, never
+ * throwing (the briefing is still honest about the marts that DO report synthetic).
+ */
+async function resolveBriefingDataSource(
+  brandId: string,
+  deps: { srPool: SilverPool },
+): Promise<'synthetic' | 'live'> {
+  return withSilverBrand(deps.srPool, brandId, async (scope) => {
+    for (const mart of INSIGHT_GOLD_MARTS) {
+      try {
+        const rows = await scope.runScoped<{ has_synthetic: number }>(
+          `SELECT 1 AS has_synthetic FROM ${mart}
+            WHERE ${BRAND_PREDICATE} AND data_source = 'synthetic' LIMIT 1`,
+          [],
+        );
+        if (rows.length > 0) return 'synthetic';
+      } catch {
+        // Mart not yet exposing data_source (or absent) — skip it; do not fail the briefing.
+      }
+    }
+    return 'live';
+  });
+}
+
 export async function getInsightsBriefing(
   brandId: string,
   deps: { srPool: SilverPool },
@@ -97,6 +144,8 @@ export async function getInsightsBriefing(
   if (!result.hasData) {
     return { state: 'no_data' };
   }
+
+  const dataSource = await resolveBriefingDataSource(brandId, deps);
 
   const { insights, primaryCurrency, window } = result;
   const risks = insights.filter((i) => i.kind === 'risk');
@@ -133,6 +182,7 @@ export async function getInsightsBriefing(
     total_impact_minor: totalImpactMinor(insights, primaryCurrency),
     window,
     source: 'deterministic',
+    data_source: dataSource,
   };
 
   return { state: 'has_data', briefing, insights: insights.map(toDto) };

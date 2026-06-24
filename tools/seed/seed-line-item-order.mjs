@@ -13,6 +13,12 @@ import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
+// MK-1..MK-4: seeds must NEVER masquerade as real data and must NEVER run in production.
+if ((process.env.APP_ENV ?? 'dev').startsWith('prod')) {
+  console.error(`refusing: this script injects a synthetic order and must not run in production (APP_ENV=${process.env.APP_ENV})`);
+  process.exit(1);
+}
+
 // kafkajs lives in the stream-worker workspace (pnpm, not hoisted) — resolve it from there
 // regardless of cwd / this script's location.
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -55,6 +61,9 @@ const envelope = {
     financial_status: 'paid',
     fulfillment_status: 'fulfilled',
     line_items: lineItems,
+    // MK-1..MK-4: stamp the synthetic flag onto the Bronze envelope so this seeded order is
+    // distinguishable from real ingest downstream (mirrors the gokwik jobs' convention).
+    processing_flags: { _synthetic: true },
   },
 };
 

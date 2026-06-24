@@ -26,10 +26,8 @@ import type { AuditWriter } from '@brain/audit';
 import { normalizeBrandHost } from '@brain/pixel-sdk';
 
 import type { CurrencyCode, BrandTimezone, RevenueDefinition } from '../domain/brand/entities.js';
-import {
-  OrganizationRepository,
-  MembershipRepository,
-} from '../infrastructure/repositories.js';
+import { OrganizationRepository } from '../infrastructure/repositories/organization.repository.js';
+import { MembershipRepository } from '../infrastructure/repositories/membership.repository.js';
 import type { ProvisionPixel } from './brand.service.js';
 import { deriveSlug } from './slugify.js';
 

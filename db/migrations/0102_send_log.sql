@@ -1,6 +1,8 @@
 -- ============================================================================
--- 0033_send_log.sql
+-- 0102_send_log.sql
 -- feat-d13-consent-cancontact — Track B (@backend-developer). Architecture §4.
+-- (Renumbered 0033 → 0102 to resolve a duplicate-0033 ordinal with the consent SoR
+--  migration 0033_consent_record_tombstone; send_log has no migration dependents.)
 -- ============================================================================
 --
 -- send_log — the OPERATIONAL record of outbound notification attempts AND the

@@ -105,28 +105,11 @@ sources:
           - name: occurred_at
             description: "Event-time of the order's latest state (timestamptz)."
 
-      # ── Phase G (marketing) sources — ad-spend + attribution-credit ledgers ──────
-      - name: ad_spend_ledger
-        # Read THROUGH the Postgres read-shim view (db/starrocks/oltp_pg_read_shim.sql):
-        # casts brand_id uuid→text for the JDBC catalog. Feeds silver_marketing_spend.
-        identifier: silver_marketing_spend_src
-        description: >
-          Per-(platform, level, stat_date) ad spend (migration 0029). spend_minor is BIGINT
-          minor units (I-S07), click-date anchored (stat_date, ADR-AD-8). Cross-brand by
-          construction (superuser JDBC read); per-brand isolation at the Silver READ seam.
-        columns:
-          - name: brand_id
-            description: "Tenant key (UUID→text). First key column of every Silver table."
-          - name: spend_event_id
-            description: "Deterministic dedup id (ADR-AD-5). Grain key with brand_id."
-          - name: platform
-            description: "'meta' | 'google_ads'."
-          - name: stat_date
-            description: "Click-date-anchored stat date (canonical, ADR-AD-8)."
-          - name: spend_minor
-            description: "Money in BIGINT minor units (I-S07). Never float."
-          - name: currency_code
-            description: "CHAR(3), always paired with spend_minor."
+      # ── MEDALLION REALIGNMENT (AV-1 / MV-1) ──────────────────────────────────────
+      # The ad_spend_ledger PG source (read via the silver_marketing_spend_src JDBC shim) was REMOVED.
+      # silver_marketing_spend now builds FROM Bronze (stg_ad_spend_bronze → bronze_iceberg source
+      # filtered to event_type='spend.live.v1'); PG ad_spend_ledger stays the operational WRITE SoR
+      # only. The shim view was dropped from db/starrocks/oltp_pg_read_shim.sql.
 
   # ── ADR-0002 Slice 4b: the Iceberg Bronze source (the flip target) ──────────────
   # The StarRocks external Iceberg catalog over Bronze (db/starrocks/external_iceberg_catalog.sql,

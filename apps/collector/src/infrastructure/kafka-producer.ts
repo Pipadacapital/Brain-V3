@@ -7,6 +7,7 @@
  */
 import { Kafka, type Producer, type KafkaConfig, CompressionTypes } from 'kafkajs';
 import { buildPartitionKey } from '@brain/events';
+import { injectKafkaTraceContext } from '@brain/observability';
 
 export interface KafkaProducerConfig {
   brokers: string[];
@@ -82,6 +83,15 @@ export class CollectorKafkaProducer {
     const eventId = typeof rawBody['event_id'] === 'string' ? rawBody['event_id'] : 'unknown';
     const partitionKey = buildPartitionKey(brandId, eventId);
 
+    // OTel W3C trace-context propagation across the Kafka boundary (OBS-1/OBS-2):
+    // inject traceparent/tracestate so the stream-worker consumer resumes this trace
+    // instead of starting an orphan root span. Carried alongside correlation_id.
+    const headers: Record<string, string> = {
+      correlation_id: correlationId,
+      source: 'collector-drainer',
+    };
+    injectKafkaTraceContext(headers);
+
     await this.producer.send({
       topic: this.topic,
       compression: CompressionTypes.None,
@@ -89,10 +99,7 @@ export class CollectorKafkaProducer {
         {
           key: partitionKey,
           value: JSON.stringify(rawBody),
-          headers: {
-            correlation_id: correlationId,
-            source: 'collector-drainer',
-          },
+          headers,
         },
       ],
     });

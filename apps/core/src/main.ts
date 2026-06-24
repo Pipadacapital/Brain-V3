@@ -21,7 +21,7 @@ import { Redis } from 'ioredis';
 import { requireEnvInProd } from '@brain/config';
 import { Kafka } from 'kafkajs';
 
-import { createPool, beginRlsTxn } from '@brain/db';
+import { createPool } from '@brain/db';
 import { resolveSaltHex } from '@brain/identity-core';
 import pg from 'pg';
 import mysql from 'mysql2/promise';
@@ -33,12 +33,7 @@ import { WorkspaceService } from './modules/workspace-access/internal/applicatio
 import { BrandService } from './modules/workspace-access/internal/application/brand.service.js';
 import { OnboardingService } from './modules/workspace-access/internal/application/onboarding.service.js';
 import { InviteService } from './modules/workspace-access/internal/application/invite.service.js';
-import { registerAuthRoutes } from './modules/workspace-access/internal/interfaces/rest/auth.routes.js';
 import { RateLimiter } from './modules/workspace-access/internal/infrastructure/rate-limiter.js';
-import { registerWorkspaceRoutes } from './modules/workspace-access/internal/interfaces/rest/workspace.routes.js';
-import { registerBrandRoutes } from './modules/workspace-access/internal/interfaces/rest/brand.routes.js';
-import { registerMemberRoutes } from './modules/workspace-access/internal/interfaces/rest/member.routes.js';
-import { registerBffRoutes } from './modules/frontend-api/internal/bff.routes.js';
 import {
   ContactPiiVaultRepository,
   ContactPiiVaultService,
@@ -53,7 +48,6 @@ import { initObservability, initSentry, createLogger } from '@brain/observabilit
 const log = createLogger({ serviceName: 'core' });
 import { jtiFromJwt, csrfTokenForSession, csrfTokenMatches } from './modules/frontend-api/internal/csrf.js';
 import { NotificationServiceImpl } from './modules/notification/internal/notification.service.impl.js';
-import { registerDevRoutes } from './modules/notification/internal/dev.routes.js';
 import { createEmailAdapter } from './modules/notification/internal/ses-adapter.js';
 import { createCapiAdapter } from './modules/notification/internal/capi-adapter.js';
 import { createCapiCredsPort } from './modules/notification/internal/compliance/capi-creds.adapter.js';
@@ -64,52 +58,8 @@ import { CanContactEngine } from './modules/notification/internal/compliance/can
 import { FunctionSaltPort } from './modules/notification/internal/compliance/salt.adapter.js';
 import { PgSuppressionQuery } from './modules/notification/internal/compliance/suppression.query.js';
 import { StubDltRegistry, StubNcprRegistry } from './modules/notification/internal/compliance/stubs.js';
-import { registerConsentRoutes } from './modules/notification/internal/compliance/consent.routes.js';
 
-// ── Connector infrastructure imports (HIGH-MOUNT-01) ─────────────────────────
-import { PgBackfillJobRepository } from './modules/connector/backfill/infrastructure/PgBackfillJobRepository.js';
-import type { BackfillJobProgress } from '@brain/contracts';
-import { PgSyncRequestRepository } from './modules/connector/sync/infrastructure/PgSyncRequestRepository.js';
-import { RequestConnectorSyncCommand } from './modules/connector/sync/application/commands/RequestConnectorSyncCommand.js';
-import { registerAllWebhookRoutes } from './modules/connector/webhooks/platform/registerWebhookRoutes.js';
-import { registerRazorpayConnectorRoutes } from './modules/connector/sources/payment/razorpay/interfaces/http/razorpayConnectorRoutes.js';
-import { RotateWebhookSecretCommand } from './modules/connector/sources/payment/razorpay/application/commands/RotateWebhookSecretCommand.js';
-import { registerShopifyConnectorRoutes } from './modules/connector/sources/storefront/shopify/interfaces/http/shopifyConnectorRoutes.js';
-import { registerDevShopifySyncRoutes } from './modules/connector/sources/storefront/shopify/interfaces/http/devShopifySyncRoutes.js';
-import { registerPixelRoutes, registerPixelInstallerRoutes, buildDefaultSnippet, isValidIngestHost } from './modules/connector/pixel/interfaces/http/pixelRoutes.js';
-import { PixelInstallerRegistry } from './modules/connector/pixel/application/install/PixelInstaller.js';
-import { ShopifyPixelInstaller } from './modules/connector/sources/storefront/shopify/application/install/ShopifyPixelInstaller.js';
-import { WooCommercePixelInstaller } from './modules/connector/sources/storefront/woocommerce/application/install/WooCommercePixelInstaller.js';
-import { InstallWooCommercePixelCommand } from './modules/connector/sources/storefront/woocommerce/application/commands/InstallWooCommercePixelCommand.js';
-// Connector catalog + dispatch (A3 — feat-connector-marketplace)
-import { getDefinition, isConnectable, CONNECTOR_CATALOG } from './modules/connector/catalog/index.js';
-import { registerOAuthDispatch, getOAuthDispatch } from './modules/connector/catalog/dispatch.js';
-import { InitiateOAuthCommand } from './modules/connector/sources/storefront/shopify/application/commands/InitiateOAuthCommand.js';
-import { ConnectorInstance as ConnectorInstanceEntity } from '@brain/connector-core';
-import {
-  HandleOAuthCallbackCommand,
-  HmacValidationError,
-  StateNonceError,
-  ShopDomainError,
-} from './modules/connector/sources/storefront/shopify/application/commands/HandleOAuthCallbackCommand.js';
-import {
-  DisconnectCommand,
-  ConnectorNotFoundError,
-} from './modules/connector/sources/storefront/shopify/application/commands/DisconnectCommand.js';
-import { GetConnectorStatusQuery } from './modules/connector/sources/storefront/shopify/application/queries/GetConnectorStatusQuery.js';
-// ── Advertising OAuth connectors (feat-ad-connectors Track 1) ─────────────────
-import { InitiateMetaOAuthCommand } from './modules/connector/sources/advertising/meta/application/commands/InitiateMetaOAuthCommand.js';
-import { HandleMetaOAuthCallbackCommand } from './modules/connector/sources/advertising/meta/application/commands/HandleMetaOAuthCallbackCommand.js';
-import {
-  registerMetaInstallRoute,
-  registerMetaCallbackRoute,
-} from './modules/connector/sources/advertising/meta/interfaces/http/metaConnectorRoutes.js';
-import { InitiateGoogleAdsOAuthCommand } from './modules/connector/sources/advertising/google/application/commands/InitiateGoogleAdsOAuthCommand.js';
-import { HandleGoogleAdsOAuthCallbackCommand } from './modules/connector/sources/advertising/google/application/commands/HandleGoogleAdsOAuthCallbackCommand.js';
-import {
-  registerGoogleAdsInstallRoute,
-  registerGoogleAdsCallbackRoute,
-} from './modules/connector/sources/advertising/google/interfaces/http/googleAdsConnectorRoutes.js';
+// ── Connector infrastructure (global primitives; route wiring lives in bootstrap/) ──
 import { PgConnectorInstanceRepository } from './modules/connector/sources/storefront/shopify/infrastructure/repositories/PgConnectorInstanceRepository.js';
 import { PgConnectorSyncStatusRepository } from './modules/connector/sources/storefront/shopify/infrastructure/repositories/PgConnectorSyncStatusRepository.js';
 import { LocalSecretsManager } from '@brain/connector-secrets';
@@ -118,22 +68,13 @@ import { InProcessOAuthStateStore } from './modules/connector/sources/storefront
 import { RedisOAuthStateStore } from './modules/connector/sources/storefront/shopify/infrastructure/state/RedisOAuthStateStore.js';
 import type { IOAuthStateStore } from './modules/connector/sources/storefront/shopify/infrastructure/state/IOAuthStateStore.js';
 import { GetOrCreatePixelInstallationCommand } from './modules/connector/pixel/application/commands/GetOrCreatePixelInstallationCommand.js';
-import {
-  VerifyPixelCommand,
-  PixelInstallationNotFoundError,
-} from './modules/connector/pixel/application/commands/VerifyPixelCommand.js';
-import { GetPixelHealthQuery } from './modules/connector/pixel/application/queries/GetPixelHealthQuery.js';
 import { PgPixelInstallationRepository } from './modules/connector/pixel/infrastructure/repositories/PgPixelInstallationRepository.js';
 import { PgPixelStatusRepository } from './modules/connector/pixel/infrastructure/repositories/PgPixelStatusRepository.js';
-import { InstallPixelCommand, InstallPixelError } from './modules/connector/sources/storefront/shopify/application/commands/InstallPixelCommand.js';
-import { UninstallPixelCommand, UninstallPixelError } from './modules/connector/sources/storefront/shopify/application/commands/UninstallPixelCommand.js';
-import { ShopifyAdminClient } from './modules/connector/sources/storefront/shopify/infrastructure/api/ShopifyAdminClient.js';
 
-// ── RBAC guards (HIGH-MOUNT-01) ───────────────────────────────────────────────
-import { validateSessionPreHandler } from './modules/workspace-access/internal/interfaces/rest/auth.routes.js';
-import { requireRole } from './modules/workspace-access/internal/security/rbac.js';
-import { requireVerifiedEmail } from './modules/workspace-access/internal/security/email-verified.guard.js';
-import type { AuthenticatedRequest } from './modules/workspace-access/internal/interfaces/rest/auth.routes.js';
+// ── Bounded-context registrars (CQ-2) + the M1 event publisher (EV-2) ─────────
+import { registerWorkspaceAccess } from './bootstrap/registerWorkspaceAccess.js';
+import { registerConnectors } from './bootstrap/registerConnectors.js';
+import { createM1EventPublisher } from './infrastructure/events/M1EventPublisher.js';
 
 // ── Secrets provider (HIGH-SECRETS-01) ───────────────────────────────────────
 import { AwsSecretsProvider } from './infrastructure/secrets/AwsSecretsProvider.js';
@@ -615,80 +556,9 @@ export async function main(): Promise<void> {
   const authService = new AuthService(pool, auditWriter, notificationService, authServiceConfig, rawPgPool);
   const workspaceService = new WorkspaceService(pool, auditWriter);
 
-  // Pixel provision wiring (ADR-4): construct the idempotent installation command
-  // BEFORE BrandService so brand-create-with-website can auto-provision the per-brand
-  // pixel_installation server-side. brandId flows ONLY from the just-written brand.id.
-  const pixelInstallationRepo = new PgPixelInstallationRepository(pool);
-  const pixelStatusRepo = new PgPixelStatusRepository(pool);
-  const getOrCreateInstallation = new GetOrCreatePixelInstallationCommand(
-    pixelInstallationRepo,
-    pixelStatusRepo,
-    async (eventName: string, payload: Record<string, unknown>) => {
-      app.log.info({ event: eventName, payload }, '[core] domain event emitted');
-    },
-  );
-
-  const brandService = new BrandService(
-    pool,
-    auditWriter,
-    async (brandId, targetHost, idempotencyKey) => {
-      await getOrCreateInstallation.execute({ brandId, targetHost, idempotencyKey });
-    },
-    srPool,
-  );
-  const inviteService = new InviteService(pool, auditWriter, notificationService, rawPgPool);
-
-  // feat-onboarding-ux (D3): merged workspace+brand provisioning. Reuses the SAME pixel
-  // provisioner injected into BrandService so the website→pixel path is not regressed; the
-  // org+brand+memberships are created atomically by provision_workspace_and_brand() (0047),
-  // run through the RLS pool under brain_app (feat-tenancy-runtime-brain-app A1).
-  const onboardingService = new OnboardingService(
-    pool,
-    auditWriter,
-    async (brandId, targetHost, idempotencyKey) => {
-      await getOrCreateInstallation.execute({ brandId, targetHost, idempotencyKey });
-    },
-  );
-
-  // Register workspace-access + BFF routes.
-  registerAuthRoutes(app, authService, rateLimiter);
-  registerWorkspaceRoutes(app, authService, workspaceService);
-  registerBrandRoutes(app, authService, brandService);
-  registerMemberRoutes(app, authService, inviteService, rawPgPool);
-  registerBffRoutes(app, authService, pool, config.cookieSecret, rateLimiter, rawPgPool, onboardingService, srPool, piiVaultService, identityReader);
-
-  // D13: consent write + can_contact() gate-probe routes (brand-scoped, session-guarded).
-  // grant/withdraw record the append-only consent SoR; check runs the default-closed
-  // gate and audits the decision (surfaced by the Track-C gate-activity feed).
-  registerConsentRoutes(app, {
-    pool,
-    audit: auditWriter,
-    saltFn: getCoreSaltHex,
-    sessionPreHandler: validateSessionPreHandler(authService),
-  });
-
-  // DEV-ONLY: surface email action links (verify/reset/invite) for browser testing
-  // without a real inbox. Registered ONLY outside production — the route does not
-  // exist in prod, and dev-link-capture never stores anything in prod either.
-  if (nodeEnv !== 'production') {
-    registerDevRoutes(app);
-    app.log.warn('[dev] /api/v1/dev/last-email-link mounted (NODE_ENV != production)');
-  }
-
-  // ── HIGH-MOUNT-01: Mount connector + pixel routes with guards wired HERE ────
-  //
-  // The preHandlers are always passed to the route registration functions so
-  // the guard enforcement is self-contained at mount time — no deferred wiring,
-  // no "comment says it will be done later".
-  //
-  // Guard assignments per the plan's RBAC:
-  //   - Reads  (GET connectors, GET status):         analyst+
-  //   - Writes (install, disconnect, pixel/verify):  manager+
-  //   - Callback route is PUBLIC (Shopify-called), protected by HMAC (NN-4).
-  //   - Pixel health read:                           analyst+
-  //   - Pixel installation snippet:                  analyst+
-
-  // ── Connector infrastructure ──────────────────────────────────────────────
+  // ── Connector infrastructure (global primitives shared by the connector registrar) ──
+  // Constructed here (before pixel provisioning + the registrars) so the SAME instances are
+  // reused across contexts and the webhook producer is available to the M1 event publisher.
   const connectorRepo = new PgConnectorInstanceRepository(pool);
   const syncStatusRepo = new PgConnectorSyncStatusRepository(pool);
 
@@ -729,9 +599,8 @@ export async function main(): Promise<void> {
     ? new RedisOAuthStateStore(redis)
     : new InProcessOAuthStateStore();
 
-  // ── B1: Shopify webhook receiver (ADR-LV-1..4) ───────────────────────────────
-  // Kafka producer for the live lane (direct produce to dev.collector.event.v1 — ADR-LV-3).
-  // The producer is connected ONCE at startup and reused across all webhook requests.
+  // ── B1: live-lane Kafka producer (ADR-LV-1..4) ───────────────────────────────
+  // Connected ONCE at startup and reused by the webhook pipeline AND the M1 event publisher.
   const webhookKafka = new Kafka({
     clientId: 'core-webhook-receiver',
     brokers: config.kafkaBrokers,
@@ -756,1372 +625,104 @@ export async function main(): Promise<void> {
     return salt;
   }
 
-  // ── Generic webhook pipeline (all 4 providers: Shopify/Razorpay/Shopflo/WooCommerce) ──
-  // PUBLIC routes — HMAC-protected (NN-4); exempt from session guard + CSRF middleware.
-  // The generic WebhookPipeline (Template Method) runs all common steps; per-provider
-  // WebhookStrategy (Strategy) handles signatureVerify + payloadMap only.
-  // Per-IP sliding-window rate-limit applied at the pipeline ingress.
-  registerAllWebhookRoutes(app, {
-    secretsManager: connectorSecretsManager,
-    rawPgPool,
+  // ── EV-2: the REAL M1 domain-event publisher ────────────────────────────────
+  // Replaces the prior log-only emitEvent stubs: publishes versioned M1 lifecycle events
+  // (pixel.installed.v1, connector.connected.v1, brand.created.v1, user.registered.v1) to
+  // Kafka via the same producer pattern the webhook pipeline + collector use. Wired into
+  // every command-event callback below (getOrCreateInstallation, the connector commands,
+  // verifyPixel) so the events actually reach the bus instead of only the log.
+  const emitEvent = createM1EventPublisher({
     producer: webhookProducer,
-    liveTopic,
-    getSaltHex: getWebhookSaltHex,
-    redis,
-    identityReader, // Epic 3 / ADR-0004: GDPR redact resolves + erases via the Neo4j identity SoR
+    env: config.kafkaEnv,
+    log: {
+      info: (obj, msg) => app.log.info(obj, msg),
+      warn: (obj, msg) => app.log.warn(obj, msg),
+      error: (obj, msg) => app.log.error(obj, msg),
+    },
   });
 
-  app.log.info({ topic: liveTopic }, '[core] All webhook receivers registered via generic pipeline (Shopify/Razorpay/Shopflo/WooCommerce)');
-
-  // DEV-ONLY: validate-sync spike — pull live orders via the real connected token.
-  // Mounted only outside production (token crosses the boundary here, I-S09).
-  if (nodeEnv !== 'production') {
-    registerDevShopifySyncRoutes(app, connectorSecretsManager);
-    app.log.warn('[dev] /api/v1/dev/shopify/validate-sync mounted (NODE_ENV != production)');
-  }
-
-  const initiateOAuth = new InitiateOAuthCommand(connectorSecretsManager, oauthStateStore);
-  const handleCallback = new HandleOAuthCallbackCommand(
-    connectorSecretsManager,
-    oauthStateStore,
-    connectorRepo,
-    syncStatusRepo,
-    async (_eventName: string, _payload: Record<string, unknown>) => {
-      // Event stub: M1 uses in-process logging; async event bus is M2.
-      app.log.info({ event: _eventName, payload: _payload }, '[core] domain event emitted');
-    },
-  );
-  const disconnectCommand = new DisconnectCommand(
-    connectorRepo,
-    syncStatusRepo,
-    connectorSecretsManager,
-    async (_eventName: string, _payload: Record<string, unknown>) => {
-      app.log.info({ event: _eventName, payload: _payload }, '[core] domain event emitted');
-    },
-  );
-  const getConnectorStatus = new GetConnectorStatusQuery(connectorRepo, syncStatusRepo);
-
-  // ── Advertising OAuth connectors (feat-ad-connectors Track 1) ──────────────
-  // setAdAccountId: persists ad_account_id onto connector_instance via a brand-scoped
-  // direct UPDATE (mirrors how razorpay_account_id is set — kept out of the generic repo).
-  const setAdAccountId = async (
-    brandId: string,
-    connectorInstanceId: string,
-    adAccountId: string,
-  ): Promise<void> => {
-    const client = await rawPgPool.connect();
-    try {
-      // brain_app + brand GUC (connector_instance_isolation) — see feat-tenancy-runtime-brain-app A1.
-      await beginRlsTxn(client, { correlationId: 'connector:set-ad-account', brandId });
-      await client.query(
-        `UPDATE connector_instance SET ad_account_id = $1 WHERE id = $2 AND brand_id = $3`,
-        [adAccountId, connectorInstanceId, brandId],
-      );
-      await client.query('COMMIT');
-    } catch (err) {
-      await client.query('ROLLBACK').catch(() => undefined);
-      throw err;
-    } finally {
-      client.release();
-    }
-  };
-
-  const emitConnectorEvent = async (eventName: string, payload: Record<string, unknown>): Promise<void> => {
-    app.log.info({ event: eventName, payload }, '[core] domain event emitted');
-  };
-
-  const initiateMetaOAuth = new InitiateMetaOAuthCommand(oauthStateStore);
-  const handleMetaCallback = new HandleMetaOAuthCallbackCommand(
-    connectorSecretsManager,
-    oauthStateStore,
-    connectorRepo,
-    syncStatusRepo,
-    emitConnectorEvent,
-    setAdAccountId,
-  );
-  const initiateGoogleAdsOAuth = new InitiateGoogleAdsOAuthCommand(oauthStateStore);
-  const handleGoogleAdsCallback = new HandleGoogleAdsOAuthCallbackCommand(
-    connectorSecretsManager,
-    oauthStateStore,
-    connectorRepo,
-    syncStatusRepo,
-    emitConnectorEvent,
-    setAdAccountId,
+  // Pixel provision wiring (ADR-4): construct the idempotent installation command
+  // BEFORE BrandService so brand-create-with-website can auto-provision the per-brand
+  // pixel_installation server-side. brandId flows ONLY from the just-written brand.id.
+  const pixelInstallationRepo = new PgPixelInstallationRepository(pool);
+  const pixelStatusRepo = new PgPixelStatusRepository(pool);
+  const getOrCreateInstallation = new GetOrCreatePixelInstallationCommand(
+    pixelInstallationRepo,
+    pixelStatusRepo,
+    emitEvent,
   );
 
-  // Audit hook for a successful ads OAuth connect (brandId is state-derived — D-1).
-  const auditAdConnected =
-    (connectorType: 'meta' | 'google_ads') =>
-    async (brandId: string, connectorInstanceId: string): Promise<void> => {
-      await auditWriter.append({
-        brand_id: brandId,
-        actor_id: null,
-        actor_role: 'system',
-        action: 'connector.connected',
-        entity_type: 'connector_instance',
-        entity_id: connectorInstanceId,
-        payload: { connector_type: connectorType },
-        // NO secret_ref, NO token in payload (I-S02 / I-S09)
-      });
-    };
-
-  // Shared session preHandler for connector/pixel routes (NN-3).
-  const sessionPreHandler = validateSessionPreHandler(authService);
-
-  // Helper to extract brand_id from the authenticated request.
-  function getBrandId(req: Parameters<typeof sessionPreHandler>[0]): string {
-    const auth = (req as AuthenticatedRequest).auth;
-    if (!auth?.brandId) {
-      throw Object.assign(new Error('No brand context in JWT'), { statusCode: 400, code: 'NO_BRAND_CONTEXT' });
-    }
-    return auth.brandId;
-  }
-
-  // ── Shopify connector routes (HIGH-MOUNT-01) ─────────────────────────────
-  //
-  // Route-level guard assignment (guards are passed INTO the route file, which
-  // applies them at registration time — self-contained, no deferred comment).
-  //
-  // The route file (shopifyConnectorRoutes.ts) is owned by the connector builder
-  // and accepts a `preHandlers` option. Since it does not currently expose that
-  // parameter, we use a wrapper Fastify scope that pre-registers the guards as
-  // a scope-level preHandler, then mounts the connector routes inside it.
-  //
-  // Read routes (GET /connectors, GET /connectors/:id/status) → analyst+
-  // Write routes (GET /install → starts OAuth, DELETE /:id) → manager+
-  // Callback is PUBLIC — no session guard (Shopify-called, HMAC-protected).
-  //
-  // Implementation: Fastify scope with selective preHandler per route group.
-  // The connector route function registers directly onto the fastify instance it
-  // receives, so we give it a scoped instance that already has the preHandlers set.
-  //
-  // For the callback (public), we register it directly on `app` outside the scope.
-
-  // ── OAUTH_DISPATCH_TABLE registration (A3 — ADR-CM-3) ─────────────────────
-  // Shopify InitiateOAuthCommand registered under 'shopify' key.
-  // meta/google_ads are NOT registered (coming_soon → 422 before dispatch reaches here).
-  registerOAuthDispatch('shopify', {
-    initiate: async ({ brandId, shopDomain, callbackUrl }) => {
-      if (!shopDomain) {
-        throw Object.assign(new Error('shop_domain is required for shopify OAuth'), {
-          code: 'MISSING_SHOP_DOMAIN',
-          statusCode: 400,
-        });
-      }
-      const result = await initiateOAuth.execute({ brandId, shopDomain, callbackUrl });
-      return { oauth_url: result.installUrl };
-    },
-  });
-
-  // ── Ads OAuth dispatch (feat-ad-connectors Track 1 / ADR-AD-2) ─────────────
-  // No shopDomain. The provider-specific callbackUrl is bound from config (the generic
-  // POST /api/v1/connectors route passes the shopify callbackUrl, which ads ignore).
-  registerOAuthDispatch('meta', {
-    initiate: async ({ brandId }) => {
-      const result = await initiateMetaOAuth.execute({
-        brandId,
-        callbackUrl: config.metaCallbackUrl,
-      });
-      return { oauth_url: result.installUrl };
-    },
-  });
-  registerOAuthDispatch('google_ads', {
-    initiate: async ({ brandId }) => {
-      const result = await initiateGoogleAdsOAuth.execute({
-        brandId,
-        callbackUrl: config.googleAdsCallbackUrl,
-      });
-      return { oauth_url: result.installUrl };
-    },
-  });
-
-  // ── Ads OAuth callback routes (PUBLIC — state nonce is the auth, ADR-AD-2) ──
-  // Mounted directly on the app, outside the authenticated scope. These live in the
-  // connector module (mirror shopifyConnectorRoutes) and do NOT touch bff.routes.ts.
-  registerMetaCallbackRoute(app, {
-    initiateOAuth: initiateMetaOAuth,
-    handleCallback: handleMetaCallback,
-    getBrandId: () => {
-      throw new Error('getBrandId is not used on the public callback route');
-    },
-    callbackUrl: config.metaCallbackUrl,
-    appBaseUrl: config.appBaseUrl,
-    onConnected: auditAdConnected('meta'),
-  });
-  registerGoogleAdsCallbackRoute(app, {
-    initiateOAuth: initiateGoogleAdsOAuth,
-    handleCallback: handleGoogleAdsCallback,
-    getBrandId: () => {
-      throw new Error('getBrandId is not used on the public callback route');
-    },
-    callbackUrl: config.googleAdsCallbackUrl,
-    appBaseUrl: config.appBaseUrl,
-    onConnected: auditAdConnected('google_ads'),
-  });
-
-  // ── Generic OAuth callback (ADR-CM-3 / D-1) ───────────────────────────────
-  // REPLACES the divergent main.ts:422 handler that read brand_id from query.
-  // brand_id is derived EXCLUSIVELY from consumeAndGetBrandId(state) — D-1.
-  // The :type param dispatches to the correct command (shopify only in M1).
-  //
-  // PUBLIC route (no session guard) — HMAC is the auth mechanism (NN-4).
-  // idempotencyKey does NOT include brand_id (unknown pre-state-consume — ADR-CM-3).
-  app.get('/api/v1/oauth/callback/:type', async (req: FastifyRequest<{ Params: { type: string } }>, reply) => {
-    const query = req.query as Record<string, string | string[] | undefined>;
-    const requestId = (req.id as string) ?? randomUUID();
-    const connectorType = req.params.type;
-    const state = typeof query['state'] === 'string' ? query['state'] : 'unknown';
-    // ADR-CM-3: idempotency key does NOT include brand_id (not yet known)
-    const idempotencyKey = `${connectorType}-oauth-${state}`;
-
-    try {
-      // Dispatch to the type-specific callback command
-      // For Shopify: HandleOAuthCallbackCommand (HMAC-first, brand from state — NN-4 / D-1)
-      let result: { connectorInstanceId: string; shopDomain: string; status: string };
-      if (connectorType === 'shopify') {
-        const cbResult = await handleCallback.execute({ query, idempotencyKey });
-        result = {
-          connectorInstanceId: cbResult.connectorInstanceId,
-          shopDomain: cbResult.shopDomain,
-          status: cbResult.status,
-        };
-        // Audit: connector.connected (D-11 / Sec-C4)
-        // brandId from cbResult is state-derived (D-1 — never from query)
-        await auditWriter.append({
-          brand_id: cbResult.brandId,
-          actor_id: null,
-          actor_role: 'system',
-          action: 'connector.connected',
-          entity_type: 'connector_instance',
-          entity_id: result.connectorInstanceId,
-          payload: { connector_type: connectorType },
-          // NO secret_ref, NO token in payload (I-S02/I-S09)
-        });
-      } else {
-        // Browser-facing callback → redirect back to the marketplace with an error, not JSON.
-        return reply.redirect(`${config.appBaseUrl}/settings/connectors?connect_error=unknown_connector`);
-      }
-
-      // SUCCESS: redirect the browser back to the marketplace (good UX) instead of returning raw
-      // JSON. The connectors page refetches and the tile flips to Connected. requestId is logged.
-      req.log?.info({ requestId, connectorType, connectorInstanceId: result.connectorInstanceId }, 'oauth callback success');
-      return reply.redirect(`${config.appBaseUrl}/settings/connectors?connected=${encodeURIComponent(connectorType)}`);
-    } catch (err) {
-      // Browser-facing: always land back on the connectors page with an error code (no JSON page).
-      let code = 'unexpected';
-      if (err instanceof HmacValidationError) code = 'auth_failed';
-      else if (err instanceof StateNonceError) code = 'state_invalid';
-      else if (err instanceof ShopDomainError) code = 'shop_invalid';
-      else req.log?.error({ requestId, err }, 'oauth callback unexpected error'); // keep unexpected errors visible
-      return reply.redirect(`${config.appBaseUrl}/settings/connectors?connect_error=${code}`);
-    }
-  });
-
-  // ── Connector read routes (analyst+) ────────────────────────────────────────
-  // GET /api/v1/connectors → marketplace list (catalog ⨝ instance, ADR-CM-1/ADR-CM-8)
-  // GET /api/v1/connectors/:id/status → legacy per-connector status
-  await app.register(async (scope) => {
-    scope.addHook('preHandler', sessionPreHandler);
-    scope.addHook('preHandler', requireRole('analyst'));
-
-    // Marketplace catalog⨝instance list (A3 — ADR-CM-1/ADR-CM-8/D-10)
-    scope.get('/api/v1/connectors', async (req, reply) => {
-      const brandId = getBrandId(req);
-      const requestId = (req.id as string) ?? randomUUID();
-      // Fetch all connector instances for this brand (RLS enforced)
-      const instances = await connectorRepo.findAllByBrand(brandId);
-
-      // Gap B: group instances by provider — one provider can now have multiple accounts
-      const activeByProvider = new Map<string, typeof instances>();
-      for (const inst of instances) {
-        if (inst.status === 'disconnected') continue; // disconnected rows render as connectable
-        const list = activeByProvider.get(inst.provider) ?? [];
-        list.push(inst);
-        activeByProvider.set(inst.provider, list);
-      }
-
-      // Join catalog with instance data → MarketplaceTile[]
-      const tiles = CONNECTOR_CATALOG.map((def) => {
-        const activeInstances = activeByProvider.get(def.id) ?? [];
-        const firstInstance = activeInstances[0] ?? null;
-
-        const toInstanceShape = (inst: typeof instances[0]) => ({
-          id: inst.id,
-          status: inst.status,
-          health_state: inst.healthState,
-          safety_rating: inst.safetyRating,
-          shop_domain: inst.shopDomain || null,
-          connected_at: inst.connectedAt.toISOString(),
-          account_key: inst.accountKey,
-        });
-
-        return {
-          id: def.id,
-          category: def.category,
-          display_name: def.displayName,
-          description: def.description,
-          connect_method: def.connectMethod as 'oauth' | 'credential' | 'coming_soon',
-          available: def.availability === 'available',
-          // NN-2: NO secret_ref, NO token in this response (success criterion #4)
-          // Back-compat: `instance` = first active instance (single-account consumers)
-          instance: firstInstance ? toInstanceShape(firstInstance) : null,
-          // Gap B: all active instances per provider (multi-account consumers)
-          instances: activeInstances.map(toInstanceShape),
-        };
-      });
-
-      return reply.code(200).send({ request_id: requestId, data: { tiles } });
-    });
-
-    scope.get('/api/v1/connectors/:id/status', async (req: FastifyRequest<{ Params: { id: string } }>, reply) => {
-      const requestId = (req.id as string) ?? randomUUID();
-      const brandId = getBrandId(req);
-      const id = req.params.id;
-
-      // Back-compat: the legacy Shopify dashboard calls this with id='shopify'
-      // (or any non-UUID). Return the provider-resolved Shopify view (unchanged).
-      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
-      if (!isUuid) {
-        const status = await getConnectorStatus.execute(brandId);
-        return reply.code(200).send({ request_id: requestId, data: status.shopify });
-      }
-
-      // feat-connector-sync-now §4: per-connector status by connector_instance_id
-      // (any provider). Real connector_sync_status row — never simulated.
-      const view = await getConnectorStatus.executeForConnector(id, brandId);
-      if (!view) {
-        return reply.code(404).send({
-          request_id: requestId,
-          error: { code: 'CONNECTOR_NOT_FOUND', message: 'Connector not found for this brand.' },
-        });
-      }
-
-      return reply.code(200).send({
-        request_id: requestId,
-        data: {
-          id: view.connectorInstanceId,
-          provider: view.provider,
-          status: view.status,
-          sync_state: view.syncState,
-          last_sync_at: view.lastSyncAt,
-          last_error: view.lastError,
-        },
-      });
-    });
-  });
-
-  // ── Connector write routes (manager+) ────────────────────────────────────────
-  // POST /api/v1/connectors  → generic connect (ADR-CM-2)
-  // GET  /api/v1/connectors/shopify/install  → legacy Shopify install path
-  // DELETE /api/v1/connectors/:id → disconnect (ADR-CM-5 + Sec-C4 audit)
-  await app.register(async (scope) => {
-    scope.addHook('preHandler', sessionPreHandler);
-    scope.addHook('preHandler', requireRole('manager'));
-    // feat-onboarding-ux (Deliverable 2): connecting a real store is a sensitive
-    // action — block unverified users server-side (403 EMAIL_NOT_VERIFIED). Runs AFTER
-    // session + role. Covers POST /api/v1/connectors (generic connect → OAuth initiate),
-    // GET /api/v1/connectors/shopify/install, and the ads install routes in this scope.
-    // The public OAuth callbacks live in a different (state/HMAC-authed) scope → ungated.
-    scope.addHook('preHandler', requireVerifiedEmail(authService));
-
-    // Generic connect (ADR-CM-2 / D-5 / D-10)
-    scope.post('/api/v1/connectors', async (req: FastifyRequest<{ Body: { type?: string; shop_domain?: string; credentials?: Record<string, string> } }>, reply) => {
-      const brandId = getBrandId(req);
-      const auth = (req as typeof req & { auth?: { userId?: string; role?: string } }).auth;
-      const requestId = (req.id as string) ?? randomUUID();
-      const body = req.body ?? {};
-      const connectorType = body.type;
-
-      if (!connectorType) {
-        return reply.code(400).send({ request_id: requestId, error: { code: 'MISSING_CONNECTOR_TYPE', message: 'type is required' } });
-      }
-
-      // 1. Catalog lookup (unknown type ⇒ 400 — Int-C3)
-      const def = getDefinition(connectorType);
-      if (!def) {
-        return reply.code(400).send({ request_id: requestId, error: { code: 'UNKNOWN_CONNECTOR_TYPE', message: `Unknown connector type: ${connectorType}` } });
-      }
-
-      // 2. Coming-soon gate ⇒ 422 (Sec-C5 / D-5 / success criterion #2)
-      if (!isConnectable(def)) {
-        return reply.code(422).send({ request_id: requestId, error: { code: 'CONNECTOR_NOT_AVAILABLE', message: `${def.displayName} is not yet available for connection.` } });
-      }
-
-      // 3a. OAuth connector
-      if (def.connectMethod === 'oauth') {
-        const dispatch = getOAuthDispatch(connectorType);
-        if (!dispatch) {
-          return reply.code(422).send({ request_id: requestId, error: { code: 'CONNECTOR_NOT_AVAILABLE', message: `OAuth not configured for ${connectorType}` } });
-        }
-        try {
-          const { oauth_url } = await dispatch.initiate({
-            brandId,
-            shopDomain: body.shop_domain,
-            callbackUrl: config.shopifyCallbackUrl,
-          });
-          // Audit: connect initiated (actor from auth)
-          await auditWriter.append({
-            brand_id: brandId,
-            actor_id: auth?.userId ?? null,
-            actor_role: auth?.role ?? 'unknown',
-            action: 'connector.connected',
-            entity_type: 'connector_instance',
-            entity_id: `${connectorType}:${brandId}`,
-            payload: { connector_type: connectorType, phase: 'oauth_initiated' },
-          });
-          return reply.code(200).send({ request_id: requestId, data: { kind: 'oauth', oauth_url } });
-        } catch (err) {
-          if ((err as { code?: string }).code === 'MISSING_SHOP_DOMAIN') {
-            return reply.code(400).send({ request_id: requestId, error: { code: 'MISSING_SHOP_DOMAIN', message: (err as Error).message } });
-          }
-          // Dev boundary: the OAuth app for this provider (e.g. Meta/Google Ads) isn't
-          // configured. Fail gracefully (503 + friendly message the UI toasts), not a 500.
-          if ((err as { code?: string }).code === 'OAUTH_NOT_CONFIGURED') {
-            return reply.code(503).send({ request_id: requestId, error: { code: 'OAUTH_NOT_CONFIGURED', message: (err as Error).message } });
-          }
-          throw err;
-        }
-      }
-
-      // 3b. Credential connector
-      if (def.connectMethod === 'credential') {
-        const credentials = body.credentials;
-        if (!credentials || Object.keys(credentials).length === 0) {
-          return reply.code(400).send({ request_id: requestId, error: { code: 'MISSING_CREDENTIALS', message: 'credentials are required for credential connectors' } });
-        }
-
-        // ── Razorpay credential connector (C2 / ADR-RZ-8) ─────────────────
-        // Requires: key_id, key_secret, webhook_secret, razorpay_account_id.
-        // razorpay_account_id is stored on connector_instance (NOT in the secret bundle —
-        // it is a merchant identifier, not a secret) and used by
-        // resolve_razorpay_connector_by_account() for webhook brand resolution (ADR-RZ-7).
-        if (connectorType === 'razorpay') {
-          const keyId = credentials['key_id'];
-          const keySecret = credentials['key_secret'];
-          const webhookSecret = credentials['webhook_secret'];
-          const razorpayAccountId = credentials['razorpay_account_id'];
-
-          if (!keyId || !keySecret || !webhookSecret || !razorpayAccountId) {
-            return reply.code(400).send({
-              request_id: requestId,
-              error: {
-                code: 'MISSING_RAZORPAY_CREDENTIALS',
-                message: 'razorpay connector requires: key_id, key_secret, webhook_secret, razorpay_account_id',
-              },
-            });
-          }
-
-          // Store composite bundle (C2 — ONE secret_ref, webhook_secret independently rotatable)
-          // I-S09: subKey = razorpayAccountId (merchant ID, not secret)
-          const { arn } = await connectorSecretsManager.storeSecret(
-            brandId,
-            { connectorType: 'razorpay', subKey: razorpayAccountId },
-            { key_id: keyId, key_secret: keySecret, webhook_secret: webhookSecret },
-          );
-
-          const now = new Date();
-          const connectorInstanceId = randomUUID();
-          const instance = ConnectorInstanceEntity.create({
-            id: connectorInstanceId,
-            brandId,
-            provider: 'razorpay',
-            shopDomain: '',
-            secretRef: arn,
-            status: 'connected',
-            healthState: 'Healthy',
-            safetyRating: 'safe',
-            connectedAt: now,
-            disconnectedAt: null,
-            createdAt: now,
-            updatedAt: now,
-            accountKey: razorpayAccountId,
-            providerConfig: { razorpay_account_id: razorpayAccountId },
-          });
-          await connectorRepo.save(instance);
-
-          // Set razorpay_account_id on connector_instance (migration 0027 column)
-          // Required by resolve_razorpay_connector_by_account() for webhook brand resolution.
-          const rzClient = await rawPgPool.connect();
-          try {
-            await beginRlsTxn(rzClient, { correlationId: requestId, brandId });
-            await rzClient.query(
-              `UPDATE connector_instance SET razorpay_account_id = $1 WHERE id = $2 AND brand_id = $3`,
-              [razorpayAccountId, connectorInstanceId, brandId],
-            );
-            await rzClient.query('COMMIT');
-          } catch (rzErr) {
-            await rzClient.query('ROLLBACK').catch(() => undefined);
-            throw rzErr;
-          } finally {
-            rzClient.release();
-          }
-
-          await auditWriter.append({
-            brand_id: brandId,
-            actor_id: auth?.userId ?? null,
-            actor_role: auth?.role ?? 'unknown',
-            action: 'connector.connected',
-            entity_type: 'connector_instance',
-            entity_id: connectorInstanceId,
-            payload: { connector_type: 'razorpay' },
-            // NO key_id, NO key_secret, NO webhook_secret in payload (I-S09)
-          });
-          return reply.code(200).send({
-            request_id: requestId,
-            data: { kind: 'credential', connected: true, connector_instance_id: connectorInstanceId },
-          });
-        }
-
-        // ── Shopflo credential connector (Track B) ────────────────────────
-        // Requires: api_token, merchant_id, webhook_secret.
-        // merchant_id is stored on connector_instance.shopflo_merchant_id (NOT in the
-        // secret bundle as a secret — it is the non-secret lookup key) and used by
-        // resolve_shopflo_connector_by_merchant() for webhook brand resolution (MT-1).
-        if (connectorType === 'shopflo') {
-          const apiToken = credentials['api_token'];
-          const merchantId = credentials['merchant_id'];
-          const webhookSecret = credentials['webhook_secret'];
-
-          if (!apiToken || !merchantId || !webhookSecret) {
-            return reply.code(400).send({
-              request_id: requestId,
-              error: {
-                code: 'MISSING_SHOPFLO_CREDENTIALS',
-                message: 'shopflo connector requires: api_token, merchant_id, webhook_secret',
-              },
-            });
-          }
-
-          // ONE secret_ref bundle. subKey = merchantId (non-secret). I-S09: values never logged.
-          const { arn } = await connectorSecretsManager.storeSecret(
-            brandId,
-            { connectorType: 'shopflo', subKey: merchantId },
-            { api_token: apiToken, merchant_id: merchantId, webhook_secret: webhookSecret },
-          );
-
-          const now = new Date();
-          const connectorInstanceId = randomUUID();
-          const instance = ConnectorInstanceEntity.create({
-            id: connectorInstanceId,
-            brandId,
-            provider: 'shopflo',
-            shopDomain: '',
-            secretRef: arn,
-            status: 'connected',
-            healthState: 'Healthy',
-            safetyRating: 'safe',
-            connectedAt: now,
-            disconnectedAt: null,
-            createdAt: now,
-            updatedAt: now,
-            accountKey: merchantId,
-            providerConfig: { shopflo_merchant_id: merchantId },
-          });
-          await connectorRepo.save(instance);
-
-          // Set shopflo_merchant_id (migration 0030 column) under brand GUC — webhook resolution key.
-          const sfClient = await rawPgPool.connect();
-          try {
-            await beginRlsTxn(sfClient, { correlationId: requestId, brandId });
-            await sfClient.query(
-              `UPDATE connector_instance SET shopflo_merchant_id = $1 WHERE id = $2 AND brand_id = $3`,
-              [merchantId, connectorInstanceId, brandId],
-            );
-            await sfClient.query('COMMIT');
-          } catch (sfErr) {
-            await sfClient.query('ROLLBACK').catch(() => undefined);
-            throw sfErr;
-          } finally {
-            sfClient.release();
-          }
-
-          await auditWriter.append({
-            brand_id: brandId,
-            actor_id: auth?.userId ?? null,
-            actor_role: auth?.role ?? 'unknown',
-            action: 'connector.connected',
-            entity_type: 'connector_instance',
-            entity_id: connectorInstanceId,
-            payload: { connector_type: 'shopflo' },
-            // NO api_token, NO webhook_secret in payload (I-S09)
-          });
-          return reply.code(200).send({
-            request_id: requestId,
-            data: { kind: 'credential', connected: true, connector_instance_id: connectorInstanceId },
-          });
-        }
-
-        // ── GoKwik credential connector (Track B) ─────────────────────────
-        // Requires: appid, appsecret. No webhook_secret (no self-serve inbound webhook).
-        // appid is stored on connector_instance.gokwik_appid (non-secret) for AWB
-        // re-pull enumeration via list_gokwik_connectors_for_awb_repull().
-        if (connectorType === 'gokwik') {
-          const appid = credentials['appid'];
-          const appsecret = credentials['appsecret'];
-
-          if (!appid || !appsecret) {
-            return reply.code(400).send({
-              request_id: requestId,
-              error: {
-                code: 'MISSING_GOKWIK_CREDENTIALS',
-                message: 'gokwik connector requires: appid, appsecret',
-              },
-            });
-          }
-
-          const { arn } = await connectorSecretsManager.storeSecret(
-            brandId,
-            { connectorType: 'gokwik', subKey: appid },
-            { appid, appsecret },
-          );
-
-          const now = new Date();
-          const connectorInstanceId = randomUUID();
-          const instance = ConnectorInstanceEntity.create({
-            id: connectorInstanceId,
-            brandId,
-            provider: 'gokwik',
-            shopDomain: '',
-            secretRef: arn,
-            status: 'connected',
-            healthState: 'Healthy',
-            safetyRating: 'safe',
-            connectedAt: now,
-            disconnectedAt: null,
-            createdAt: now,
-            updatedAt: now,
-            accountKey: appid,
-            providerConfig: { gokwik_appid: appid },
-          });
-          await connectorRepo.save(instance);
-
-          // Set gokwik_appid (migration 0030 column) under brand GUC — enumeration key.
-          const gkClient = await rawPgPool.connect();
-          try {
-            await beginRlsTxn(gkClient, { correlationId: requestId, brandId });
-            await gkClient.query(
-              `UPDATE connector_instance SET gokwik_appid = $1 WHERE id = $2 AND brand_id = $3`,
-              [appid, connectorInstanceId, brandId],
-            );
-            await gkClient.query('COMMIT');
-          } catch (gkErr) {
-            await gkClient.query('ROLLBACK').catch(() => undefined);
-            throw gkErr;
-          } finally {
-            gkClient.release();
-          }
-
-          await auditWriter.append({
-            brand_id: brandId,
-            actor_id: auth?.userId ?? null,
-            actor_role: auth?.role ?? 'unknown',
-            action: 'connector.connected',
-            entity_type: 'connector_instance',
-            entity_id: connectorInstanceId,
-            payload: { connector_type: 'gokwik' },
-            // NO appsecret in payload (I-S09)
-          });
-          return reply.code(200).send({
-            request_id: requestId,
-            data: { kind: 'credential', connected: true, connector_instance_id: connectorInstanceId },
-          });
-        }
-
-        // ── Shiprocket credential connector (logistics) ──────────────────
-        // Requires: email, password (the dedicated Shiprocket API user). Optional channel_id.
-        // No webhook_secret in Slice 1 (pull-based shipment re-pull). The 10-day Bearer JWT is
-        // minted + cached by the repull job, never here. channel_id stored on
-        // connector_instance.shiprocket_channel_id (non-secret) for re-pull enumeration via
-        // list_shiprocket_connectors_for_repull().
-        if (connectorType === 'shiprocket') {
-          const email = credentials['email'];
-          const password = credentials['password'];
-          const channelId = credentials['channel_id'] ?? null;
-
-          if (!email || !password) {
-            return reply.code(400).send({
-              request_id: requestId,
-              error: {
-                code: 'MISSING_SHIPROCKET_CREDENTIALS',
-                message: 'shiprocket connector requires: email, password',
-              },
-            });
-          }
-
-          const { arn } = await connectorSecretsManager.storeSecret(
-            brandId,
-            { connectorType: 'shiprocket', subKey: channelId ?? email },
-            { email, password },
-          );
-
-          const now = new Date();
-          const connectorInstanceId = randomUUID();
-          const shiprocketAccountKey = channelId ?? email;
-          const instance = ConnectorInstanceEntity.create({
-            id: connectorInstanceId,
-            brandId,
-            provider: 'shiprocket',
-            shopDomain: '',
-            secretRef: arn,
-            status: 'connected',
-            healthState: 'Healthy',
-            safetyRating: 'safe',
-            connectedAt: now,
-            disconnectedAt: null,
-            createdAt: now,
-            updatedAt: now,
-            accountKey: shiprocketAccountKey,
-            providerConfig: channelId ? { shiprocket_channel_id: channelId } : {},
-          });
-          await connectorRepo.save(instance);
-
-          // Set shiprocket_channel_id (migration 0059 column) under brand GUC — enumeration key. Optional.
-          if (channelId) {
-            const srClient = await rawPgPool.connect();
-            try {
-              await beginRlsTxn(srClient, { correlationId: requestId, brandId });
-              await srClient.query(
-                `UPDATE connector_instance SET shiprocket_channel_id = $1 WHERE id = $2 AND brand_id = $3`,
-                [channelId, connectorInstanceId, brandId],
-              );
-              await srClient.query('COMMIT');
-            } catch (srErr) {
-              await srClient.query('ROLLBACK').catch(() => undefined);
-              throw srErr;
-            } finally {
-              srClient.release();
-            }
-          }
-
-          await auditWriter.append({
-            brand_id: brandId,
-            actor_id: auth?.userId ?? null,
-            actor_role: auth?.role ?? 'unknown',
-            action: 'connector.connected',
-            entity_type: 'connector_instance',
-            entity_id: connectorInstanceId,
-            payload: { connector_type: 'shiprocket' },
-            // NO password in payload (I-S09)
-          });
-          return reply.code(200).send({
-            request_id: requestId,
-            data: { kind: 'credential', connected: true, connector_instance_id: connectorInstanceId },
-          });
-        }
-
-        // ── WooCommerce credential connector (storefront) ─────────────────
-        // Requires: consumer_key, consumer_secret, site_url (the store base URL). The REST API
-        // uses Basic auth (key/secret) over HTTPS; site_url is stored on
-        // connector_instance.woocommerce_site_url (non-secret) for re-pull enumeration + webhook
-        // resolution. Emits the SHARED order.live.v1 canonical event → reuses the order→ledger path.
-        if (connectorType === 'woocommerce') {
-          const consumerKey = credentials['consumer_key'];
-          const consumerSecret = credentials['consumer_secret'];
-          const siteUrl = credentials['site_url'];
-          // Optional: the WooCommerce webhook secret (set on the merchant's webhook). When present,
-          // real-time order webhooks are HMAC-verified (POST /api/v1/webhooks/woocommerce); when
-          // absent, the connector still works via the REST backfill/incremental re-pull.
-          const webhookSecret = credentials['webhook_secret'];
-
-          if (!consumerKey || !consumerSecret || !siteUrl) {
-            return reply.code(400).send({
-              request_id: requestId,
-              error: {
-                code: 'MISSING_WOOCOMMERCE_CREDENTIALS',
-                message: 'woocommerce connector requires: consumer_key, consumer_secret, site_url',
-              },
-            });
-          }
-
-          const { arn } = await connectorSecretsManager.storeSecret(
-            brandId,
-            { connectorType: 'woocommerce', subKey: siteUrl },
-            webhookSecret
-              ? { consumer_key: consumerKey, consumer_secret: consumerSecret, webhook_secret: webhookSecret }
-              : { consumer_key: consumerKey, consumer_secret: consumerSecret },
-          );
-
-          const now = new Date();
-          const connectorInstanceId = randomUUID();
-          const instance = ConnectorInstanceEntity.create({
-            id: connectorInstanceId,
-            brandId,
-            provider: 'woocommerce',
-            shopDomain: siteUrl, // storefront site URL (non-secret)
-            secretRef: arn,
-            status: 'connected',
-            healthState: 'Healthy',
-            safetyRating: 'safe',
-            connectedAt: now,
-            disconnectedAt: null,
-            createdAt: now,
-            updatedAt: now,
-            accountKey: siteUrl,
-            providerConfig: { woocommerce_site_url: siteUrl },
-          });
-          await connectorRepo.save(instance);
-
-          // Set woocommerce_site_url (migration 0060 column) under brand GUC — enumeration key.
-          const wcClient = await rawPgPool.connect();
-          try {
-            await beginRlsTxn(wcClient, { correlationId: requestId, brandId });
-            await wcClient.query(
-              `UPDATE connector_instance SET woocommerce_site_url = $1 WHERE id = $2 AND brand_id = $3`,
-              [siteUrl, connectorInstanceId, brandId],
-            );
-            await wcClient.query('COMMIT');
-          } catch (wcErr) {
-            await wcClient.query('ROLLBACK').catch(() => undefined);
-            throw wcErr;
-          } finally {
-            wcClient.release();
-          }
-
-          await auditWriter.append({
-            brand_id: brandId,
-            actor_id: auth?.userId ?? null,
-            actor_role: auth?.role ?? 'unknown',
-            action: 'connector.connected',
-            entity_type: 'connector_instance',
-            entity_id: connectorInstanceId,
-            payload: { connector_type: 'woocommerce' },
-            // NO consumer_secret in payload (I-S09)
-          });
-          return reply.code(200).send({
-            request_id: requestId,
-            data: { kind: 'credential', connected: true, connector_instance_id: connectorInstanceId },
-          });
-        }
-
-        // Generic credential connector path (non-specific — kept for future connectors)
-        const { arn } = await connectorSecretsManager.storeSecret(brandId, { connectorType }, credentials);
-        const now = new Date();
-        const instance = ConnectorInstanceEntity.create({
-          id: randomUUID(),
-          brandId,
-          provider: connectorType,
-          shopDomain: '',
-          secretRef: arn,
-          status: 'connected',
-          healthState: 'Healthy',
-          safetyRating: 'safe',
-          connectedAt: now,
-          disconnectedAt: null,
-          createdAt: now,
-          updatedAt: now,
-          accountKey: '__default__',
-          providerConfig: {},
-        });
-        await connectorRepo.save(instance);
-        await auditWriter.append({
-          brand_id: brandId,
-          actor_id: auth?.userId ?? null,
-          actor_role: auth?.role ?? 'unknown',
-          action: 'connector.connected',
-          entity_type: 'connector_instance',
-          entity_id: instance.id,
-          payload: { connector_type: connectorType },
-        });
-        return reply.code(200).send({ request_id: requestId, data: { kind: 'credential', connected: true } });
-      }
-
-      return reply.code(422).send({ request_id: requestId, error: { code: 'CONNECTOR_NOT_AVAILABLE', message: 'Connector type not available' } });
-    });
-
-    // Legacy Shopify install path (kept for back-compat; routes through same initiateOAuth)
-    scope.get('/api/v1/connectors/shopify/install', async (req: FastifyRequest<{ Querystring: { shop: string } }>, reply) => {
-      const brandId = getBrandId(req);
-      const shopDomain = req.query.shop;
-      if (!shopDomain) {
-        return reply.code(400).send({ request_id: (req.id as string) ?? randomUUID(), error: { code: 'MISSING_SHOP_PARAM', message: 'shop query parameter is required' } });
-      }
-      const result = await initiateOAuth.execute({ brandId, shopDomain, callbackUrl: config.shopifyCallbackUrl });
-      return reply.code(200).send({ request_id: (req.id as string) ?? randomUUID(), data: { install_url: result.installUrl } });
-    });
-
-    // ── Ads install routes (manager+ — feat-ad-connectors Track 1) ──────────
-    // Return oauth_url + set the brand-bound state nonce. The connector module owns
-    // these route files (mirror shopifyConnectorRoutes); no bff.routes.ts edit.
-    registerMetaInstallRoute(scope, {
-      initiateOAuth: initiateMetaOAuth,
-      handleCallback: handleMetaCallback,
-      getBrandId: (req) => getBrandId(req as Parameters<typeof getBrandId>[0]),
-      callbackUrl: config.metaCallbackUrl,
-      appBaseUrl: config.appBaseUrl,
-    });
-    registerGoogleAdsInstallRoute(scope, {
-      initiateOAuth: initiateGoogleAdsOAuth,
-      handleCallback: handleGoogleAdsCallback,
-      getBrandId: (req) => getBrandId(req as Parameters<typeof getBrandId>[0]),
-      callbackUrl: config.googleAdsCallbackUrl,
-      appBaseUrl: config.appBaseUrl,
-    });
-
-    // ── Razorpay webhook-secret rotation (C2 / ADR-RZ-8 — owner/admin only) ───
-    // POST /api/v1/connectors/razorpay/:id/rotate-webhook-secret
-    // Rotates ONLY the webhook_secret in the composite bundle; key_id/key_secret are
-    // preserved. The ARN (connector_instance.secret_ref) is unchanged (NN-2).
-    const rotateWebhookSecretCmd = new RotateWebhookSecretCommand(
-      connectorSecretsManager,
-      connectorRepo,
-    );
-    registerRazorpayConnectorRoutes(scope, {
-      rotateWebhookSecret: rotateWebhookSecretCmd,
-      getBrandId: (req) => getBrandId(req as Parameters<typeof getBrandId>[0]),
-      onRotated: async (brandId, connectorInstanceId) => {
-        await auditWriter.append({
-          brand_id: brandId,
-          actor_id: null,
-          actor_role: 'admin',
-          action: 'connector.webhook_secret_rotated',
-          entity_type: 'connector_instance',
-          entity_id: connectorInstanceId,
-          payload: { connector_type: 'razorpay' },
-          // NO old_secret, NO new_secret in payload (I-S02/I-S09)
-        });
-      },
-    });
-
-    // Generic disconnect (ADR-CM-3 / Sec-C3 / Sec-C4 audit)
-    scope.delete('/api/v1/connectors/:id', async (req: FastifyRequest<{ Params: { id: string } }>, reply) => {
-      const brandId = getBrandId(req);
-      const auth = (req as typeof req & { auth?: { userId?: string; role?: string } }).auth;
-      const idempotencyKey = (req.headers['idempotency-key'] as string | undefined) ?? randomUUID();
-      const requestId = (req.id as string) ?? randomUUID();
-      try {
-        await disconnectCommand.execute({ connectorInstanceId: req.params.id, brandId, idempotencyKey });
-        // Audit: connector.disconnected (D-11 / Sec-C4)
-        await auditWriter.append({
-          brand_id: brandId,
-          actor_id: auth?.userId ?? null,
-          actor_role: auth?.role ?? 'unknown',
-          action: 'connector.disconnected',
-          entity_type: 'connector_instance',
-          entity_id: req.params.id,
-          payload: { connector_instance_id: req.params.id },
-          // NO secret_ref, NO token in payload (I-S02/I-S09)
-        });
-        return reply.code(200).send({ request_id: requestId, data: { disconnected: true } });
-      } catch (err) {
-        if (err instanceof ConnectorNotFoundError) {
-          return reply.code(404).send({ request_id: requestId, error: { code: 'CONNECTOR_NOT_FOUND', message: (err as Error).message } });
-        }
-        throw err;
-      }
-    });
-  });
-
-  // ── Backfill routes (brand_admin+ — ADR-BF-2/3/4/7/9/15) ───────────────────
-  //
-  // POST /api/v1/connectors/:id/backfill  (B1 — trigger, ADR-BF-3)
-  //   1. Load connector_instance (brand-scoped, NN-1 RLS).
-  //   2. getSecret(secret_ref) — null => 409 RECONNECT_REQUIRED (D-7).
-  //   3. Overlap-lock SELECT FOR UPDATE SKIP LOCKED => 409 BACKFILL_ALREADY_RUNNING (D-9/HP-2).
-  //   4. INSERT backfill_job status=queued.
-  //   5. Audit connector.backfill.requested (NO secret/token in payload — I-S09).
-  //   6. 202 {request_id, data: {job_id, status:'queued'}}
-  //
-  // GET  /api/v1/connectors/:id/jobs      (B2 — progress, ADR-BF-4)
-  //   findLatestForConnector => BackfillJobProgress (percent=null when estimated_total null — D-8).
-  //
-  // Guard: brand_admin+ (D-15). Manager => 403 (non-inert negative control).
-  // brand_id from JWT session, NEVER from request body (ADR-BF-13 / MT-1).
-  // NO secret_ref / token in any response (I-S09).
-  const backfillJobRepo = new PgBackfillJobRepository(pool);
-
-  // ── On-demand "Sync now" trigger (feat-connector-sync-now) ──────────────────
-  // Enqueues an INCREMENTAL trailing-window re-pull request for one connector;
-  // the in-worker claimer dispatches the SAME run() the scheduler invokes (same
-  // code path). Overlap-locked (run()'s own FOR UPDATE SKIP LOCKED) + spam-safe
-  // (sentinel-row dedup). brand_admin+ only; brand_id from session, never the body.
-  const syncRequestRepo = new PgSyncRequestRepository(pool);
-  const requestConnectorSync = new RequestConnectorSyncCommand(
-    connectorRepo,
-    connectorSecretsManager,
-    syncRequestRepo,
+  const brandService = new BrandService(
+    pool,
     auditWriter,
-  );
-
-  await app.register(async (scope) => {
-    scope.addHook('preHandler', sessionPreHandler);
-    // Scope minimum is MANAGER (sync = Owner/Brand-Admin/Manager per the data-ingestion
-    // spec — sync is lower-risk than backfill). Backfill routes below re-tighten to
-    // brand_admin+ via a per-route preHandler, so only "Sync now" gains Manager.
-    scope.addHook('preHandler', requireRole('manager'));
-
-    // ── POST /api/v1/connectors/:id/sync — "Sync now" (feat-connector-sync-now) ─
-    // Owner/Brand-Admin/Manager (Analyst → 403 + UI-hidden);
-    // brand_id from session (MT-1); token check → 409 RECONNECT_REQUIRED;
-    // overlap pre-checks → 409 SYNC_ALREADY_RUNNING / SYNC_ALREADY_REQUESTED;
-    // enqueue sentinel request; audit connector.sync.requested; 202 {status:'syncing'}.
-    scope.post('/api/v1/connectors/:id/sync', async (req: FastifyRequest<{ Params: { id: string } }>, reply) => {
-      const requestId = (req.id as string) ?? randomUUID();
-      const brandId = getBrandId(req);
-      const connectorInstanceId = req.params.id;
-      const auth = (req as typeof req & { auth?: { userId?: string; role?: string } }).auth;
-
-      const result = await requestConnectorSync.execute({
-        connectorInstanceId,
-        brandId,
-        correlationId: requestId,
-        actorId: auth?.userId ?? null,
-        actorRole: auth?.role ?? 'unknown',
-      });
-
-      if (!result.ok) {
-        const httpCode = result.code === 'CONNECTOR_NOT_FOUND' ? 404 : 409;
-        return reply.code(httpCode).send({
-          request_id: requestId,
-          error: { code: result.code, message: result.message },
-        });
-      }
-
-      return reply.code(202).send({
-        request_id: requestId,
-        data: {
-          connector_instance_id: result.connectorInstanceId,
-          status: result.status,
-          requested_at: result.requestedAt,
-        },
-      });
-    });
-
-    // B1 — Backfill trigger (ADR-BF-3). Re-tighten to brand_admin+ (Manager → 403):
-    // backfill stays Owner/Brand-Admin only, unlike the Manager-allowed sync above.
-    scope.post<{ Params: { id: string } }>('/api/v1/connectors/:id/backfill', { preHandler: requireRole('brand_admin') }, async (req, reply) => {
-      const requestId = (req.id as string) ?? randomUUID();
-      const brandId = getBrandId(req);
-      const connectorInstanceId = req.params.id;
-      const auth = (req as typeof req & { auth?: { userId?: string; role?: string } }).auth;
-
-      // Step 1: Load connector_instance (brand-scoped via RLS — NN-1).
-      const connectorInstance = await connectorRepo.findById(connectorInstanceId, brandId);
-      if (!connectorInstance) {
-        return reply.code(404).send({
-          request_id: requestId,
-          error: { code: 'CONNECTOR_NOT_FOUND', message: 'Connector not found for this brand.' },
-        });
-      }
-
-      // Step 2: getSecret(secret_ref) — if null => 409 RECONNECT_REQUIRED (D-7).
-      // NO token value is ever logged or included in any response (I-S09).
-      const secret = await connectorSecretsManager.getSecret(connectorInstance.secretRef);
-      if (secret === null) {
-        return reply.code(409).send({
-          request_id: requestId,
-          error: {
-            code: 'RECONNECT_REQUIRED',
-            message: 'Your Shopify connection has expired. Please reconnect the store before backfilling.',
-          },
-        });
-      }
-
-      // Step 3: Overlap-lock — SELECT FOR UPDATE SKIP LOCKED (D-9 / HP-2 — DB-level, not in-process).
-      const activeJobId = await backfillJobRepo.checkActiveJob(connectorInstanceId, brandId, requestId);
-      if (activeJobId !== null) {
-        return reply.code(409).send({
-          request_id: requestId,
-          error: {
-            code: 'BACKFILL_ALREADY_RUNNING',
-            message: 'A backfill job is already queued or running for this connector.',
-          },
-        });
-      }
-
-      // Step 4: INSERT backfill_job status=queued.
-      const jobId = await backfillJobRepo.insertQueued(brandId, connectorInstanceId, requestId);
-
-      // Step 5: Audit connector.backfill.requested — actor, connector_instance_id, brand_id.
-      // NO secret_ref, NO token in payload (I-S09 / I-S02).
-      await auditWriter.append({
-        brand_id: brandId,
-        actor_id: auth?.userId ?? null,
-        actor_role: auth?.role ?? 'unknown',
-        action: 'connector.backfill.requested',
-        entity_type: 'backfill_job',
-        entity_id: jobId,
-        payload: {
-          job_id: jobId,
-          connector_instance_id: connectorInstanceId,
-          // NO secret_ref, NO token (I-S09)
-        },
-      });
-
-      // Step 6: 202 {request_id, data: {job_id, status:'queued'}} (BackfillTriggerResponse)
-      return reply.code(202).send({
-        request_id: requestId,
-        data: { job_id: jobId, status: 'queued' },
-      });
-    });
-
-    // B2 — Progress API (ADR-BF-4)
-    scope.get<{ Params: { id: string } }>('/api/v1/connectors/:id/jobs', { preHandler: requireRole('brand_admin') }, async (req, reply) => {
-      const requestId = (req.id as string) ?? randomUUID();
-      const brandId = getBrandId(req);
-      const connectorInstanceId = req.params.id;
-
-      // Verify the connector exists for this brand (brand-scoped, NN-1 RLS).
-      const connectorInstance = await connectorRepo.findById(connectorInstanceId, brandId);
-      if (!connectorInstance) {
-        return reply.code(404).send({
-          request_id: requestId,
-          error: { code: 'CONNECTOR_NOT_FOUND', message: 'Connector not found for this brand.' },
-        });
-      }
-
-      const job = await backfillJobRepo.findLatestForConnector(connectorInstanceId, brandId, requestId);
-      if (!job) {
-        return reply.code(404).send({
-          request_id: requestId,
-          error: { code: 'NO_BACKFILL_JOB', message: 'No backfill job found for this connector.' },
-        });
-      }
-
-      // Map PG row → BackfillJobProgress.
-      // percent = null when estimated_total is null (D-8 honesty — never fabricate).
-      // NO secret_ref / token in response (I-S09).
-      const recordsProcessed = parseInt(job.records_processed, 10);
-      const estimatedTotal = job.estimated_total !== null ? parseInt(job.estimated_total, 10) : null;
-      const percent =
-        estimatedTotal !== null && estimatedTotal > 0
-          ? Math.min(100, Math.round((recordsProcessed / estimatedTotal) * 100))
-          : null;
-
-      const progress: BackfillJobProgress = {
-        job_id: job.id,
-        status: job.status,
-        records_processed: recordsProcessed,
-        estimated_total: estimatedTotal,
-        percent,
-        cursor_date: job.cursor_date ?? null,
-        achieved_depth_label: job.achieved_depth_label ?? null,
-        failure_reason: job.failure_reason ?? null,
-        started_at: job.started_at ?? null,
-        completed_at: job.completed_at ?? null,
-      };
-
-      return reply.code(200).send({
-        request_id: requestId,
-        data: progress,
-      });
-    });
-  });
-
-  // ── Pixel routes (HIGH-MOUNT-01) ───────────────────────────────────────────
-  // pixelInstallationRepo / pixelStatusRepo / getOrCreateInstallation are constructed
-  // earlier (above BrandService) so brand-create can auto-provision (ADR-4).
-  // Authoritative ScriptTag presence check for verify: a Shopify-auto-installed pixel never appears
-  // in the static storefront HTML (it loads via Shopify's JS loader), so we check the Admin API.
-  // Returns null when the brand has no connected Shopify storefront → verify falls back to HTML.
-  const shopifyScriptTagCheck = async (
-    brandId: string,
-  ): Promise<{ present: boolean; src: string | null } | null> => {
-    const conn = await connectorRepo.findByBrandAndProvider(brandId, 'shopify');
-    if (!conn || conn.status !== 'connected') return null;
-    const token = await connectorSecretsManager.getShopifyToken(conn.secretRef);
-    if (!token) return null;
-    try {
-      const client = new ShopifyAdminClient(conn.shopDomain, token);
-      const brainTags = (await client.listScriptTags()).filter((s) => s.src.includes('/pixel.js'));
-      return { present: brainTags.length > 0, src: brainTags[0]?.src ?? null };
-    } catch {
-      return null; // admin API hiccup → fall back to the HTML check rather than failing verify
-    }
-  };
-
-  const verifyPixel = new VerifyPixelCommand(
-    pixelInstallationRepo,
-    pixelStatusRepo,
-    async (_eventName: string, _payload: Record<string, unknown>) => {
-      app.log.info({ event: _eventName, payload: _payload }, '[core] domain event emitted');
+    async (brandId, targetHost, idempotencyKey) => {
+      await getOrCreateInstallation.execute({ brandId, targetHost, idempotencyKey });
     },
-    shopifyScriptTagCheck,
+    srPool,
   );
-  const getPixelHealth = new GetPixelHealthQuery(pixelInstallationRepo, pixelStatusRepo);
+  const inviteService = new InviteService(pool, auditWriter, notificationService, rawPgPool);
 
-  // Production install path (feat-pixel-production-install): auto-inject the pixel onto the
-  // connected Shopify storefront via the Admin API (ScriptTag) and flip installed_at.
-  const installPixel = new InstallPixelCommand(
-    connectorRepo,
-    connectorSecretsManager,
-    getOrCreateInstallation,
-    pixelInstallationRepo,
-    pixelStatusRepo,
-    config.pixelIngestBaseUrl,
-  );
-  // Removal path (delete the Brain ScriptTag + clear install state).
-  const uninstallPixel = new UninstallPixelCommand(
-    connectorRepo,
-    connectorSecretsManager,
-    pixelInstallationRepo,
+  // feat-onboarding-ux (D3): merged workspace+brand provisioning. Reuses the SAME pixel
+  // provisioner injected into BrandService so the website→pixel path is not regressed; the
+  // org+brand+memberships are created atomically by provision_workspace_and_brand() (0047),
+  // run through the RLS pool under brain_app (feat-tenancy-runtime-brain-app A1).
+  const onboardingService = new OnboardingService(
+    pool,
+    auditWriter,
+    async (brandId, targetHost, idempotencyKey) => {
+      await getOrCreateInstallation.execute({ brandId, targetHost, idempotencyKey });
+    },
   );
 
-  // WooCommerce install path (feat-universal-pixel): configure the Brain Pixel plugin on the
-  // connected WooCommerce store via its authenticated REST route. Same install_token + ingest as Shopify.
-  const installWooCommercePixel = new InstallWooCommercePixelCommand(
-    connectorRepo,
-    connectorSecretsManager,
-    getOrCreateInstallation,
-    pixelInstallationRepo,
-    pixelStatusRepo,
-    config.pixelIngestBaseUrl,
-  );
-
-  // Storefront-agnostic installer registry — the merchant connects a storefront, then Brain offers
-  // the install option(s) for the connected storefront(s). Adding a platform = register one installer.
-  const pixelInstallerRegistry = new PixelInstallerRegistry()
-    .register(new ShopifyPixelInstaller(installPixel, uninstallPixel, connectorRepo))
-    .register(new WooCommercePixelInstaller(installWooCommercePixel, connectorRepo));
-
-  // Pixel read routes (analyst+): GET /pixel/installation, GET /pixel/health
-  await app.register(async (scope) => {
-    scope.addHook('preHandler', sessionPreHandler);
-    scope.addHook('preHandler', requireRole('analyst'));
-
-    // SEC-0009-M01: GET is READ-ONLY (no write). Returns the existing installation
-    // or { installed: false }. Provisioning is the POST below (CSRF-protected).
-    scope.get('/api/v1/pixel/installation', async (req, reply) => {
-      const brandId = getBrandId(req);
-      const requestId = (req.id as string) ?? randomUUID();
-      const existing = await pixelInstallationRepo.findByBrandId(brandId);
-      if (!existing) {
-        return reply.code(200).send({ request_id: requestId, data: { installed: false } });
-      }
-      const snippet = buildDefaultSnippet(existing.installToken, brandId, config.pixelIngestBaseUrl, existing.customIngestHost);
-      return reply.code(200).send({
-        request_id: requestId,
-        data: {
-          installed: true,
-          installation_id: existing.id,
-          install_token: existing.installToken,
-          target_host: existing.targetHost,
-          custom_ingest_host: existing.customIngestHost,
-          snippet_html: snippet,
-          is_new: false,
-        },
-      });
-    });
-
-    scope.get('/api/v1/pixel/health', async (req, reply) => {
-      const brandId = getBrandId(req);
-      const requestId = (req.id as string) ?? randomUUID();
-      const health = await getPixelHealth.execute(brandId);
-      return reply.code(200).send({ request_id: requestId, data: health });
-    });
+  // ── CQ-2: register the workspace-access + frontend-api (BFF) + notification context ──
+  registerWorkspaceAccess(app, {
+    nodeEnv,
+    cookieSecret: config.cookieSecret,
+    pool,
+    rawPgPool,
+    srPool,
+    rateLimiter,
+    auditWriter,
+    authService,
+    workspaceService,
+    brandService,
+    inviteService,
+    onboardingService,
+    piiVaultService,
+    identityReader,
+    getCoreSaltHex,
   });
 
-  // Pixel write routes (manager+): POST /pixel/installation (provision), POST /pixel/verify
-  await app.register(async (scope) => {
-    scope.addHook('preHandler', sessionPreHandler);
-    scope.addHook('preHandler', requireRole('manager'));
-
-    // SEC-0009-M01: provisioning (get-or-create) is a POST — the write path, behind
-    // the app-wide CSRF check. Idempotent: returns the existing installation if any.
-    scope.post('/api/v1/pixel/installation', async (req: FastifyRequest<{ Body: { target_host?: string } }>, reply) => {
-      const brandId = getBrandId(req);
-      const requestId = (req.id as string) ?? randomUUID();
-      const idempotencyKey = (req.headers['idempotency-key'] as string | undefined) ?? randomUUID();
-      const targetHost = (req.body?.target_host ?? '').trim();
-      if (!targetHost) {
-        return reply.code(400).send({ request_id: requestId, error: { code: 'MISSING_TARGET_HOST', message: 'target_host is required' } });
-      }
-      const result = await getOrCreateInstallation.execute({ brandId, targetHost, idempotencyKey });
-      const snippet = buildDefaultSnippet(result.installToken, brandId, config.pixelIngestBaseUrl);
-      return reply.code(result.isNew ? 201 : 200).send({
-        request_id: requestId,
-        data: { installed: true, installation_id: result.installationId, install_token: result.installToken, target_host: result.targetHost, snippet_html: snippet, is_new: result.isNew },
-      });
-    });
-
-    // PATCH /api/v1/pixel/ingest-host (manager+) — set or clear the brand's first-party CNAME ingest
-    // host. When set (a valid hostname), the snippet serves the SDK + posts events from that host
-    // (first-party; ITP/ad-blocker resilience). Body: { custom_ingest_host: string | null }. Returns
-    // the refreshed snippet. Host is validated (bare hostname only) before it ever reaches the snippet.
-    scope.patch('/api/v1/pixel/ingest-host', async (req: FastifyRequest<{ Body: { custom_ingest_host?: string | null } }>, reply) => {
-      const brandId = getBrandId(req);
-      const requestId = (req.id as string) ?? randomUUID();
-      const raw = req.body?.custom_ingest_host;
-      const host = typeof raw === 'string' ? raw.trim().toLowerCase() : null;
-      if (host !== null && host !== '' && !isValidIngestHost(host)) {
-        return reply.code(400).send({ request_id: requestId, error: { code: 'INVALID_INGEST_HOST', message: 'custom_ingest_host must be a bare hostname (e.g. events.brand.com) or null to clear.' } });
-      }
-      const updated = await pixelInstallationRepo.setCustomIngestHost(brandId, host === '' ? null : host);
-      if (!updated) {
-        return reply.code(404).send({ request_id: requestId, error: { code: 'PIXEL_NOT_INSTALLED', message: 'No pixel installation for this brand. Provision the pixel first.' } });
-      }
-      const snippet = buildDefaultSnippet(updated.installToken, brandId, config.pixelIngestBaseUrl, updated.customIngestHost);
-      return reply.code(200).send({
-        request_id: requestId,
-        data: { installed: true, installation_id: updated.id, install_token: updated.installToken, target_host: updated.targetHost, custom_ingest_host: updated.customIngestHost, snippet_html: snippet, is_new: false },
-      });
-    });
-
-    scope.post('/api/v1/pixel/verify', async (req, reply) => {
-      const brandId = getBrandId(req);
-      const requestId = (req.id as string) ?? randomUUID();
-      const idempotencyKey = (req.headers['idempotency-key'] as string | undefined) ?? randomUUID();
-      try {
-        const result = await verifyPixel.execute({ brandId, idempotencyKey });
-        return reply.code(200).send({ request_id: requestId, data: { verified: result.verified, state: result.state, message: result.message } });
-      } catch (err) {
-        if (err instanceof PixelInstallationNotFoundError) {
-          return reply.code(404).send({ request_id: requestId, error: { code: 'PIXEL_NOT_INSTALLED', message: (err as Error).message } });
-        }
-        throw err;
-      }
-    });
-
-    // POST /pixel/install/shopify — production install path: auto-inject onto the connected
-    // Shopify storefront (Admin API ScriptTag) + flip installed_at. Idempotent. No manual paste.
-    scope.post('/api/v1/pixel/install/shopify', async (req, reply) => {
-      const brandId = getBrandId(req);
-      const requestId = (req.id as string) ?? randomUUID();
-      const idempotencyKey = (req.headers['idempotency-key'] as string | undefined) ?? randomUUID();
-      try {
-        const result = await installPixel.execute({ brandId, idempotencyKey });
-        return reply.code(200).send({
-          request_id: requestId,
-          data: {
-            installed: result.installed,
-            provider: result.provider,
-            ref: result.ref,
-            install_token: result.installToken,
-            src: result.src,
-            already_present: result.alreadyPresent,
-            // Checkout (Web Pixel) coverage status — UI shows live vs the one-time step to enable it.
-            web_pixel: result.webPixel,
-          },
-        });
-      } catch (err) {
-        if (err instanceof InstallPixelError) {
-          return reply.code(409).send({ request_id: requestId, error: { code: err.code, message: err.message } });
-        }
-        throw err;
-      }
-    });
-
-    // POST /pixel/uninstall/shopify — production removal path: delete the Brain ScriptTag(s) from the
-    // connected storefront + clear installed_at. Idempotent (removed=0 when nothing was installed).
-    scope.post('/api/v1/pixel/uninstall/shopify', async (req, reply) => {
-      const brandId = getBrandId(req);
-      const requestId = (req.id as string) ?? randomUUID();
-      try {
-        const result = await uninstallPixel.execute({ brandId });
-        return reply.code(200).send({
-          request_id: requestId,
-          data: { removed: result.removed, already_absent: result.alreadyAbsent },
-        });
-      } catch (err) {
-        if (err instanceof UninstallPixelError) {
-          return reply.code(409).send({ request_id: requestId, error: { code: err.code, message: err.message } });
-        }
-        throw err;
-      }
-    });
-
-    // Storefront-agnostic install surface: GET /pixel/installers, POST/DELETE /pixel/install/:provider,
-    // GET /pixel/woocommerce/plugin.zip. Connected-storefront-driven (each installer's isAvailable).
-    registerPixelInstallerRoutes(scope, { registry: pixelInstallerRegistry, getBrandId });
+  // ── CQ-2: register the connector + pixel context (HIGH-MOUNT-01) ────────────
+  // All connector/pixel route wiring + per-context command construction lives in the
+  // registrar; the global primitives it needs are built above and passed in.
+  registerConnectors(app, {
+    config: {
+      nodeEnv,
+      appBaseUrl: config.appBaseUrl,
+      shopifyCallbackUrl: config.shopifyCallbackUrl,
+      metaCallbackUrl: config.metaCallbackUrl,
+      googleAdsCallbackUrl: config.googleAdsCallbackUrl,
+      pixelIngestBaseUrl: config.pixelIngestBaseUrl,
+      kafkaEnv: config.kafkaEnv,
+    },
+    pool,
+    rawPgPool,
+    redis,
+    authService,
+    auditWriter,
+    connectorRepo,
+    syncStatusRepo,
+    connectorSecretsManager,
+    oauthStateStore,
+    webhookProducer,
+    liveTopic,
+    getWebhookSaltHex,
+    identityReader,
+    pixelInstallationRepo,
+    pixelStatusRepo,
+    getOrCreateInstallation,
+    emitEvent,
   });
 
   // Graceful shutdown.

@@ -9,7 +9,7 @@
  * (brand_id, brain_id), so a brain_id belonging to another brand matches 0 rows → erased:false.
  * No raw PII is read or returned here.
  */
-import type { Neo4jIdentityReader } from '../infrastructure/neo4j-identity-reader.js';
+import type { IdentityReader } from '../infrastructure/neo4j-identity-reader.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -25,7 +25,7 @@ export interface ErasureResult {
 export async function eraseCustomer(
   brandId: string,
   brainId: string,
-  reader: Neo4jIdentityReader,
+  reader: IdentityReader,
 ): Promise<ErasureResult> {
   if (!UUID_RE.test(brainId)) {
     return { erased: false, contact_pii_deleted: 0, links_tombstoned: 0 };

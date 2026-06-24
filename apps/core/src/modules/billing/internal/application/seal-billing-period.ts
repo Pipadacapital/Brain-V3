@@ -42,7 +42,7 @@ export interface BillingDeps {
 }
 
 /** Last calendar day of a 'YYYY-MM' period as 'YYYY-MM-DD' (UTC; day 0 of next month = last day). */
-function periodEndDate(period: string): string {
+export function periodEndDate(period: string): string {
   const [y, m] = period.split('-').map(Number) as [number, number];
   const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate();
   return `${period}-${String(lastDay).padStart(2, '0')}`;

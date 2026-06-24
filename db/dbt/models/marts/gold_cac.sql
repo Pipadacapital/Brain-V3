@@ -3,7 +3,7 @@
 --
 -- The audit found CAC had no supporting model — nothing joined ad spend to first-order customers.
 -- This mart joins acquisition spend (silver_marketing_spend) to newly-acquired customers
--- (silver_customers.first_seen_at) per brand × acquisition_month × currency.
+-- (silver_customer.first_seen_at) per brand × acquisition_month × currency.
 --
 -- ADDITIVE ONLY (ADR-004): exposes new_customers (COUNT) + acquisition_spend_minor (SUM). The CAC
 -- RATIO (spend ÷ new_customers, honest-null when new_customers=0) is NON-additive and is derived at
@@ -39,7 +39,7 @@ with new_customers as (
         date_format(first_seen_at, '%Y-%m')  as acquisition_month,
         currency_code,
         count(*)                             as new_customers
-    from {{ ref('silver_customers') }}
+    from {{ ref('silver_customer') }}
     where first_seen_at is not null
       and currency_code is not null
     group by 1, 2, 3
@@ -66,6 +66,7 @@ select
     coalesce(n.currency_code, s.currency_code)                as currency_code,
     coalesce(n.new_customers, 0)                              as new_customers,
     coalesce(s.acquisition_spend_minor, 0)                    as acquisition_spend_minor,
+    cast('live' as varchar(16))                        as data_source,  -- MK-1: real builds = live; demo seed overwrites to 'synthetic'
     current_timestamp()                                       as updated_at
 from new_customers n
 full outer join spend s

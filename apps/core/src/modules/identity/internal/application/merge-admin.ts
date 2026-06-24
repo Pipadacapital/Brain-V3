@@ -6,7 +6,7 @@
  * functions resolve_merge_review() / admin_unmerge_customer() (migration 0039). brandId is the
  * SESSION brand; the functions are scoped to it, so no cross-tenant mutation is possible.
  */
-import type { Neo4jIdentityReader } from '../infrastructure/neo4j-identity-reader.js';
+import type { IdentityReader } from '../infrastructure/neo4j-identity-reader.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -49,7 +49,7 @@ export interface UnmergeResult {
 export async function listMergeReviews(
   brandId: string,
   _correlationId: string,
-  deps: { reader: Neo4jIdentityReader },
+  deps: { reader: IdentityReader },
 ): Promise<MergeReviewList> {
   const reviews = await deps.reader.listMergeReviews(brandId);
   return {
@@ -68,7 +68,7 @@ export async function resolveMergeReview(
   brandId: string,
   reviewId: string,
   decision: MergeDecision,
-  reader: Neo4jIdentityReader,
+  reader: IdentityReader,
 ): Promise<MergeResolveResult> {
   if (!UUID_RE.test(reviewId)) {
     return { resolved: false, reason: 'not_found' };
@@ -82,7 +82,7 @@ export async function resolveMergeReview(
 export async function unmergeCustomer(
   brandId: string,
   mergedBrainId: string,
-  reader: Neo4jIdentityReader,
+  reader: IdentityReader,
 ): Promise<UnmergeResult> {
   if (!UUID_RE.test(mergedBrainId)) {
     return { unmerged: false, reason: 'not_found' };

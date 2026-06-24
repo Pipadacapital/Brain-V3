@@ -32,7 +32,8 @@ import { Pool } from 'pg';
 import { recordConnectorAuthRejected } from '../../infrastructure/observability/connector-auth-health.js';
 import { updateConnectorInstanceHealth } from '../../infrastructure/pg/ConnectorInstanceHealthRepository.js';
 import { Kafka, type Producer } from 'kafkajs';
-import { buildPartitionKey, topicForEventType } from '@brain/events';
+import { buildPartitionKey } from '@brain/events';
+import { injectKafkaTraceContext } from '@brain/observability';
 import { SaltProvider, LocalSecretsProvider } from '../../infrastructure/secrets/SaltProvider.js';
 import { resolveSaltHex } from '@brain/identity-core';
 import { CollectorEventV1Schema, COLLECTOR_EVENT_V1_TOPIC_SUFFIX } from '@brain/contracts';
@@ -285,16 +286,14 @@ async function repullConnector(params: RepullParams): Promise<void> {
         recordsProcessed++;
       }
 
-      // Emit to LIVE lane (ADR-LV-3 / ADR-LV-12 / D-14)
-      await producer.send({ topic: LIVE_TOPIC, messages });
+      // OTel trace-context propagation (OBS-1/OBS-2): stamp traceparent on each
+      // message so the bronze-bridge consumer resumes this repull's trace.
+      const traceHeaders: Record<string, Buffer | string> = {};
+      injectKafkaTraceContext(traceHeaders);
+      const tracedMessages = messages.map((m) => ({ ...m, headers: traceHeaders }));
 
-      // Dual-produce to the per-entity topic (re-platform Phase C) — ADDITIVE + flag-gated. The
-      // firehose stays the consumer source until cutover; this just shadows order.live.v1 onto
-      // dev.brain.orders so the entity backbone can be validated before consumers migrate.
-      if (process.env['ENTITY_TOPICS_DUAL_PRODUCE'] === 'true') {
-        const entityTopic = topicForEventType(ORDER_LIVE_V1_EVENT_NAME, ENV);
-        if (entityTopic) await producer.send({ topic: entityTopic, messages });
-      }
+      // Emit to LIVE lane (ADR-LV-3 / ADR-LV-12 / D-14)
+      await producer.send({ topic: LIVE_TOPIC, messages: tracedMessages });
 
       log.info(`connector=${ciId} page=${pageCount} emitted=${messages.length} total=${recordsProcessed}`);
 

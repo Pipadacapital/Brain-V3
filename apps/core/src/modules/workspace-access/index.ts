@@ -21,7 +21,8 @@ export { registerMemberRoutes } from './internal/interfaces/rest/member.routes.j
 // Infrastructure primitives the composition root (frontend-api BFF) wires into routes.
 // Exposed via the barrel so consumers go through the public surface, not module internals
 // (I-E05 — the no-restricted-imports reach-around guard now enforces this).
-export { OrganizationRepository, MembershipRepository } from './internal/infrastructure/repositories.js';
+export { OrganizationRepository } from './internal/infrastructure/repositories/organization.repository.js';
+export { MembershipRepository } from './internal/infrastructure/repositories/membership.repository.js';
 export {
   RateLimiter,
   loginFailKeySync,

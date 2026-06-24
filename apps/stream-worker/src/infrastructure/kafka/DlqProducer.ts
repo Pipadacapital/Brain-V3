@@ -9,6 +9,7 @@
  * DLQ topic: dev.collector.event.v1.dlq (created by redpanda-init; 30d retention)
  */
 import { Kafka, Producer } from 'kafkajs';
+import { injectKafkaTraceContext } from '@brain/observability';
 
 export class DlqProducer {
   private readonly producer: Producer;
@@ -39,17 +40,21 @@ export class DlqProducer {
     value: Buffer | null,
     errorReason: string,
   ): Promise<void> {
+    // OTel trace-context propagation (OBS-1/OBS-2): inject traceparent so a DLQ
+    // redrive/inspection resumes the trace across the Kafka boundary.
+    const headers: Record<string, Buffer | string> = {
+      'x-dlq-reason': Buffer.from(errorReason),
+      'x-dlq-original-topic': Buffer.from(topic.replace('.dlq', '')),
+      'x-dlq-ts': Buffer.from(new Date().toISOString()),
+    };
+    injectKafkaTraceContext(headers);
     await this.producer.send({
       topic,
       messages: [
         {
           key: key ?? undefined,
           value,
-          headers: {
-            'x-dlq-reason': Buffer.from(errorReason),
-            'x-dlq-original-topic': Buffer.from(topic.replace('.dlq', '')),
-            'x-dlq-ts': Buffer.from(new Date().toISOString()),
-          },
+          headers,
         },
       ],
     });

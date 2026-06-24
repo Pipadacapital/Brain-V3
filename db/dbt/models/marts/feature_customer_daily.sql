@@ -22,6 +22,11 @@
 -- SCHEDULING: run daily (the snapshot stamps current_date()). A missed day = a gap (acceptable); a
 -- re-run = idempotent. No is_incremental() filter: each run upserts TODAY's row per customer and
 -- leaves all prior snapshot_dates intact (the unique_key is the full grain incl. snapshot_date).
+--
+-- PF-1 (partitioning): RANGE-partition on the snapshot_date grain (which is in the PK, as StarRocks
+-- PK tables require the partition column to be). Empty range () = dynamic_partition manages it —
+-- creates partitions ahead (ingestion never hits a missing partition) and drops partitions past the
+-- 400-day TTL (storage stays bounded). Mirrors db/starrocks/ddl/silver_template.sql.
 -- ============================================================================
 {{
   config(
@@ -31,13 +36,19 @@
     unique_key           = ['brand_id', 'brain_id', 'snapshot_date'],
     table_type           = 'PRIMARY',
     keys                 = ['brand_id', 'brain_id', 'snapshot_date'],
+    partition_by         = ['snapshot_date'],
     distributed_by       = ['brand_id'],
     order_by             = ['brand_id', 'brain_id', 'snapshot_date'],
     buckets              = 8,
     properties           = {
-      'replication_num'        : '1',
-      'enable_persistent_index': 'true',
-      'compression'            : 'LZ4'
+      'replication_num'                : '1',
+      'enable_persistent_index'        : 'true',
+      'compression'                    : 'LZ4',
+      'dynamic_partition.enable'       : 'true',
+      'dynamic_partition.time_unit'    : 'DAY',
+      'dynamic_partition.start'        : '-400',
+      'dynamic_partition.end'          : '3',
+      'dynamic_partition.prefix'       : 'p'
     },
     tags = ['silver', 'feature', 'snapshot', 'history']
   )
@@ -56,4 +67,4 @@ select
     first_seen_at,
     last_seen_at,
     current_timestamp()                                         as computed_at
-from {{ ref('silver_customers') }}
+from {{ ref('silver_customer') }}

@@ -25,13 +25,13 @@
   },
 
   "partition_spec": {
-    "_comment": "Non-retrofittable. bucket(brand_id) + days(occurred_at). brand_id first for tenant-scoped scan pruning. bucket(16) gives ~16 brand shards — increase N via partition evolution (additive) when tenant count grows beyond 100.",
+    "_comment": "Non-retrofittable. bucket(brand_id) + days(occurred_at). brand_id first for tenant-scoped scan pruning. bucket(256) gives ~256 brand shards — sized for >100 tenants (SC-2). N can be raised further via partition evolution (additive) as tenant count grows.",
     "fields": [
       {
         "source_id": 2,
         "field_id": 1000,
         "name": "brand_id_bucket",
-        "transform": "bucket[16]",
+        "transform": "bucket[256]",
         "source_field": "brand_id"
       },
       {

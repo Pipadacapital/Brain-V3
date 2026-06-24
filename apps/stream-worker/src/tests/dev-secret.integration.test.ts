@@ -5,20 +5,20 @@
  * Pins: dev_secret cross-process round-trip + prod-hard-fail guards.
  * Code-under-test:
  *   apps/core/src/.../LocalSecretsManager.ts (storeSecret/storeShopifyToken → devPersist)
- *   apps/stream-worker/src/jobs/shopify-backfill/worker-secrets.ts (WorkerLocalSecretsManager.getShopifyToken)
+ *   apps/stream-worker/src/jobs/shopify-backfill/worker-secrets.ts (LocalWorkerSecretsProvider.getShopifyToken)
  *   db/migrations/0024_dev_secret.sql (dev_secret table, brain_app GRANT)
  *
  * ROUND-TRIP MECHANISM:
  *   LocalSecretsManager (core) writes to dev_secret via storeShopifyToken → devPersist.
- *   WorkerLocalSecretsManager (worker) reads from dev_secret via getShopifyToken.
+ *   LocalWorkerSecretsProvider (worker) reads from dev_secret via getShopifyToken.
  *   Same token survives the "cross-process" hop because both share the dev_secret table.
  *   This is the DEV-TOKEN-REACH fix (ADR-BF-11).
  *
  * TESTS:
- *   1. storeShopifyToken → WorkerLocalSecretsManager.getShopifyToken returns same token.
+ *   1. storeShopifyToken → LocalWorkerSecretsProvider.getShopifyToken returns same token.
  *   2. deleteShopifyToken → getShopifyToken returns null.
  *   3. LocalSecretsManager prod-hard-fail: NODE_ENV=production → constructor throws.
- *   4. it.skip: WorkerLocalSecretsManager prod-hard-fail — DISCOVERED GAP (ADR-R3).
+ *   4. it.skip: LocalWorkerSecretsProvider prod-hard-fail — DISCOVERED GAP (ADR-R3).
  *
  * REVERT-RED:
  *   Test 1: if LocalSecretsManager.devPersist() is removed → worker reads null → RED.
@@ -87,7 +87,7 @@ afterAll(async () => {
   await superPool.end().catch(() => undefined);
 });
 
-// ── A4-1: round-trip — storeShopifyToken → WorkerLocalSecretsManager reads it ─
+// ── A4-1: round-trip — storeShopifyToken → LocalWorkerSecretsProvider reads it ─
 
 describe('A4-1: dev_secret cross-process round-trip (defect #8b / D-8)', () => {
   let storedArn: string;
@@ -124,20 +124,20 @@ describe('A4-1: dev_secret cross-process round-trip (defect #8b / D-8)', () => {
     expect(row.rows[0]?.secret_value).toBe(TEST_ACCESS_TOKEN);
   });
 
-  it('WorkerLocalSecretsManager.getShopifyToken reads the SAME token from dev_secret (cross-process read)', async () => {
+  it('LocalWorkerSecretsProvider.getShopifyToken reads the SAME token from dev_secret (cross-process read)', async () => {
     /**
-     * WorkerLocalSecretsManager.getShopifyToken:
+     * LocalWorkerSecretsProvider.getShopifyToken:
      *   name = secretRef.split(':secret:')[1] ?? secretRef
      *   → SELECT secret_value FROM dev_secret WHERE name = $1
      *
      * This simulates the cross-process read: core wrote via LocalSecretsManager,
-     * worker reads via WorkerLocalSecretsManager — both share the dev_secret table.
+     * worker reads via LocalWorkerSecretsProvider — both share the dev_secret table.
      *
      * REVERT-RED: if LocalSecretsManager.devPersist() is removed, the row doesn't
      * exist and this returns null → expect(token).toBe(TEST_ACCESS_TOKEN) → RED.
      */
 
-    // WorkerLocalSecretsManager reads from dev_secret via BRAIN_APP_DATABASE_URL
+    // LocalWorkerSecretsProvider reads from dev_secret via BRAIN_APP_DATABASE_URL
     // We set the env var so the worker's lazy pool uses the test DB
     const prevDbUrl = process.env['BRAIN_APP_DATABASE_URL'];
     process.env['BRAIN_APP_DATABASE_URL'] = BRAIN_APP_DB_URL;
@@ -170,7 +170,7 @@ describe('A4-1: dev_secret cross-process round-trip (defect #8b / D-8)', () => {
     expect(token).toBe(TEST_ACCESS_TOKEN);
   });
 
-  it('disconnect: deleteShopifyToken → WorkerLocalSecretsManager.getShopifyToken returns null', async () => {
+  it('disconnect: deleteShopifyToken → LocalWorkerSecretsProvider.getShopifyToken returns null', async () => {
     /**
      * D-8 round-trip: deleteSecret removes from dev_secret; worker subsequently reads null.
      *
@@ -222,23 +222,23 @@ describe('A4-1: dev_secret cross-process round-trip (defect #8b / D-8)', () => {
 // A4-2 (core LocalSecretsManager prod-hard-fail) lives in apps/core
 // (LocalSecretsManager.test.ts) — in-package, no cross-rootDir import (QA-CLR-LOW-01).
 
-// ── A4-3: WorkerLocalSecretsManager prod-hard-fail (SEC-CLR-MED-01 — now FIXED) ─
+// ── A4-3: LocalWorkerSecretsProvider prod-hard-fail (SEC-CLR-MED-01 — now FIXED) ─
 
-describe('A4-3: WorkerLocalSecretsManager prod-hard-fail (SEC-CLR-MED-01)', () => {
+describe('A4-3: LocalWorkerSecretsProvider prod-hard-fail (SEC-CLR-MED-01)', () => {
   it(
-    // SEC-CLR-MED-01 (was ADR-R3 discovered gap, now FIXED): WorkerLocalSecretsManager's
+    // SEC-CLR-MED-01 (was ADR-R3 discovered gap, now FIXED): LocalWorkerSecretsProvider's
     // constructor now hard-fails under NODE_ENV=production, mirroring core's LocalSecretsManager.
     // buildWorkerSecretsManager() branches to AwsSecretsManager in prod; this guard defends a
     // direct-instantiation bypass. REVERT-RED: remove the guard at worker-secrets.ts → no throw.
-    'WorkerLocalSecretsManager hard-fails under NODE_ENV=production',
+    'LocalWorkerSecretsProvider hard-fails under NODE_ENV=production',
     async () => {
-      const { WorkerLocalSecretsManager } = await import('../jobs/shopify-backfill/worker-secrets.js');
+      const { LocalWorkerSecretsProvider } = await import('../jobs/shopify-backfill/worker-secrets.js');
 
       const prev = process.env['NODE_ENV'];
       process.env['NODE_ENV'] = 'production';
       try {
-        expect(() => new WorkerLocalSecretsManager()).toThrow(
-          /WorkerLocalSecretsManager.*FATAL|must not be instantiated in production/i,
+        expect(() => new LocalWorkerSecretsProvider()).toThrow(
+          /LocalWorkerSecretsProvider.*FATAL|must not be instantiated in production/i,
         );
       } finally {
         if (prev !== undefined) {

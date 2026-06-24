@@ -37,6 +37,11 @@ export type {
   Customer360Deps,
 } from './internal/application/queries/get-customer-360.js';
 
+// DIP port (AV-2/DZ-1): the PUBLIC read/admin abstraction over the identity SoR. Consumers
+// (the BFF, main.ts wiring) depend on this interface; the concrete Neo4jIdentityReader stays
+// internal. Defined alongside the implementation so the class can `implements IdentityReader`.
+export type { IdentityReader } from './internal/infrastructure/neo4j-identity-reader.js';
+
 // PII vault (P0-C slice 2) — encrypted contact_pii read/write + MatchPiiPort + coverage.
 export { ContactPiiVaultRepository } from './internal/infrastructure/contact-pii-vault.repository.js';
 export type { VaultPiiType } from './internal/infrastructure/contact-pii-vault.repository.js';

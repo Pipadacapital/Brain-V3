@@ -31,6 +31,7 @@ import type { Producer } from 'kafkajs';
 import type pg from 'pg';
 import { randomUUID } from 'node:crypto';
 
+import { injectKafkaTraceContext } from '@brain/observability';
 import { RazorpayHmac } from '../../domain/value-objects/RazorpayHmac.js';
 import { RedisDedupAdapter } from '../../infrastructure/RedisDedupAdapter.js';
 import { PgRazorpayOrderMapRepository } from '../../infrastructure/repositories/PgRazorpayOrderMapRepository.js';
@@ -382,16 +383,20 @@ export function registerRazorpayWebhookRoutes(
           });
 
           try {
+            // OTel trace-context propagation (OBS-1/OBS-2): inject traceparent so the
+            // stream-worker consumer resumes this trace across the Kafka boundary.
+            const headers: Record<string, Buffer | string> = {
+              correlation_id: Buffer.from(correlationId),
+              event_name: Buffer.from(SETTLEMENT_LIVE_V1_EVENT_NAME),
+            };
+            injectKafkaTraceContext(headers);
             await producer.send({
               topic: liveTopic,
               messages: [
                 {
                   key: brandId,  // partition key = brand_id (tenant isolation)
                   value: Buffer.from(JSON.stringify(collectorEnvelope)),
-                  headers: {
-                    correlation_id: Buffer.from(correlationId),
-                    event_name: Buffer.from(SETTLEMENT_LIVE_V1_EVENT_NAME),
-                  },
+                  headers,
                 },
               ],
             });

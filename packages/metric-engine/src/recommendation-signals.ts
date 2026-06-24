@@ -85,7 +85,7 @@ export interface Cm2RevenueSignalRaw {
   orderCount: number;
 }
 
-/** CM2 REVENUE half from gold (marketing + cost halves stay PG in the registry). */
+/** CM2 REVENUE half from gold (cost half stays PG in the registry; marketing → computeCm2MarketingSignal). */
 export async function computeCm2RevenueSignal(
   brandId: string,
   deps: { srPool: SilverPool },
@@ -101,5 +101,41 @@ export async function computeCm2RevenueSignal(
     );
     const r = rows[0];
     return { netRevenueMinor: bi(r?.net_revenue_minor), orderCount: num(r?.order_count) };
+  });
+}
+
+export interface Cm2MarketingSignalRaw {
+  /** Σ ad spend in the brand's currency — BIGINT minor units (I-S07). */
+  marketingMinor: bigint;
+}
+
+/**
+ * CM2 MARKETING half from the lakehouse Silver entity brain_silver.silver_marketing_spend
+ * (Bronze-sourced — AV-1/MV-1), via the StarRocks read seam (I-ST01). Replaces the PG
+ * ad_spend_as_of() read. Spend is summed ONLY for rows in the brand's currency — the exact
+ * filter the dropped PG cm2_signal_for_brand() applied (JOIN brand b ON b.currency_code =
+ * s.currency_code), so CM2 never mixes a foreign-currency spend total into a brand-currency margin.
+ *
+ * @param brandId  Brand UUID (from session — D-1; NEVER request body).
+ * @param currencyCode  The brand's ISO-4217 currency (operational config, read from PG by the caller).
+ * @param deps     The StarRocks Silver pool — silver_marketing_spend via withSilverBrand.
+ */
+export async function computeCm2MarketingSignal(
+  brandId: string,
+  currencyCode: string,
+  deps: { srPool: SilverPool },
+): Promise<Cm2MarketingSignalRaw> {
+  // currencyCode is operational config (CHAR(3)); defensively strip to ISO-4217 alpha before
+  // interpolation (StarRocks SET/param caveats mirror withSilverBrand's brand-id escaping).
+  const safeCcy = currencyCode.replace(/[^A-Za-z]/g, '').toUpperCase().slice(0, 3);
+  return withSilverBrand(deps.srPool, brandId, async (scope) => {
+    const rows = await scope.runScoped<{ marketing_minor: string | number }>(
+      `SELECT COALESCE(SUM(spend_minor), 0) AS marketing_minor
+         FROM brain_silver.silver_marketing_spend
+        WHERE currency_code = '${safeCcy}'
+          AND ${BRAND_PREDICATE}`,
+      [],
+    );
+    return { marketingMinor: bi(rows[0]?.marketing_minor) };
   });
 }

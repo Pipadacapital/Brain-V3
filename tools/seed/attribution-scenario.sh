@@ -14,6 +14,10 @@
 #
 # Prereqs: full stack up, silver built, dbt venv (.dbt-venv), touchpoints seeded (seed-touchpoints.mjs).
 set -euo pipefail
+
+# MK-1..MK-4: seeds must NEVER masquerade as real data and must NEVER run in production.
+[[ "${APP_ENV:-dev}" == prod* ]] && { echo "refusing: $0 writes synthetic demo data and must not run in production (APP_ENV=$APP_ENV)" >&2; exit 1; }
+
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 
 BRAND="${BRAND_ID:-124e6af5-e6c5-4b85-bf43-7b36fa528101}"

@@ -9,7 +9,11 @@
  * Epic-1 scope (a separate operational PG money ledger feeding the gold spend marts).
  *
  * Money: spend_minor stays BIGINT-as-string throughout (I-S07).
- * Idempotent: ON CONFLICT (brand_id, platform, level, level_id, stat_date) DO NOTHING (I-ST04).
+ * Restatement-safe: ON CONFLICT (brand_id, platform, level, level_id, stat_date) DO UPDATE the
+ * mutable measures (spend_minor/currency_code, impressions, clicks, occurred_at) — ad platforms
+ * RESTATE a stat_date for 72h+, so a corrected re-pull must overwrite the stale row, not be dropped
+ * (PF-9). The UPDATE is guarded to only fire when a value actually changed, so re-applying identical
+ * values is a no-op → still idempotent/replay-safe (I-ST04).
  * All writes under brain_app + set_config GUC per brand (NN-1 / RLS).
  */
 
@@ -29,14 +33,19 @@ export class LedgerWriter {
   }
 
   // ── ad_spend_ledger (feat-ad-connectors / ADR-AD-6) ────────────────────────
-  //   - ON CONFLICT (brand_id, platform, level, level_id, stat_date) DO NOTHING (I-ST04 —
-  //     idempotent trailing re-read; spend is fixed at click-date so the key is stable).
-  //   - spend_minor is BIGINT-as-string (I-S07 — no parseFloat anywhere upstream).
-  //   - Append-only by GRANT (brain_app: SELECT+INSERT only on ad_spend_ledger).
+  //   - ON CONFLICT (brand_id, platform, level, level_id, stat_date) DO UPDATE the mutable
+  //     measures (PF-9 — ad platforms restate a stat_date for 72h+; a corrected re-pull must
+  //     overwrite the stale row, not be silently dropped, or ROAS goes wrong). The UPDATE is
+  //     guarded so identical values are a no-op → idempotent/replay-safe (I-ST04).
+  //   - spend_minor is BIGINT-as-string (I-S07 — no parseFloat anywhere upstream); currency_code
+  //     is restated alongside spend_minor so the amount/currency pair stays intact.
+  //   - Append-only is now insert-or-restate by GRANT (brain_app: SELECT+INSERT+UPDATE on
+  //     ad_spend_ledger).
 
   /**
-   * Write an ad_spend_ledger row. Idempotent on the dedup key.
-   * Returns true if inserted, false if deduped (replay / re-pull).
+   * Write an ad_spend_ledger row. Idempotent on the dedup key; a re-pull with restated values
+   * overwrites the existing row (PF-9), while an identical re-pull is a no-op.
+   * Returns true if the row was inserted or its measures changed, false if nothing changed.
    */
   async writeAdSpend(params: {
     brandId: string;
@@ -78,7 +87,17 @@ export class LedgerWriter {
           $12::bigint, $13::bigint, $14::jsonb, $15, $16, $17
         )
         ON CONFLICT (brand_id, platform, level, level_id, stat_date)
-        DO NOTHING
+        DO UPDATE SET
+          spend_minor   = EXCLUDED.spend_minor,
+          currency_code = EXCLUDED.currency_code,
+          impressions   = EXCLUDED.impressions,
+          clicks        = EXCLUDED.clicks,
+          occurred_at   = EXCLUDED.occurred_at
+        WHERE ad_spend_ledger.spend_minor   IS DISTINCT FROM EXCLUDED.spend_minor
+           OR ad_spend_ledger.currency_code IS DISTINCT FROM EXCLUDED.currency_code
+           OR ad_spend_ledger.impressions   IS DISTINCT FROM EXCLUDED.impressions
+           OR ad_spend_ledger.clicks        IS DISTINCT FROM EXCLUDED.clicks
+           OR ad_spend_ledger.occurred_at   IS DISTINCT FROM EXCLUDED.occurred_at
         RETURNING spend_event_id`,
         [
           params.brandId,
@@ -103,13 +122,14 @@ export class LedgerWriter {
 
       await client.query('COMMIT');
 
-      const inserted = (result.rowCount ?? 0) > 0;
-      if (inserted) {
+      // rowCount > 0 ⇒ inserted OR restated (guarded DO UPDATE fired); 0 ⇒ identical re-pull (no-op).
+      const written = (result.rowCount ?? 0) > 0;
+      if (written) {
         log.info(`[ledger-writer] ad_spend brand=${params.brandId} platform=${params.platform} ` +
                     `level=${params.level} level_id=${params.levelId} stat_date=${params.statDate} ` +
                     `spend=${params.spendMinor} ${params.currencyCode}`);
       }
-      return inserted;
+      return written;
     } catch (err) {
       await client.query('ROLLBACK').catch(() => undefined);
       throw err;

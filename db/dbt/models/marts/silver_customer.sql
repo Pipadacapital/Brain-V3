@@ -1,5 +1,5 @@
 -- ============================================================================
--- silver_customers — the canonical CUSTOMER entity (re-platform Phase D/E).
+-- silver_customer — the canonical CUSTOMER entity (re-platform Phase D/E).
 --
 -- One row per resolved customer (brand_id, brain_id) — the customer entity the spec lists under
 -- Silver. brain_id is the identity-resolved key (minted by the identity graph / @brain/identity-graph

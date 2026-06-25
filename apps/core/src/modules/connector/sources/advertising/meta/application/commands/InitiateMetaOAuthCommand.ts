@@ -13,6 +13,7 @@
  *
  * The Meta App Secret is NOT needed at initiation — only at callback token exchange.
  */
+import { loadCoreConfig } from '@brain/config';
 import type { IOAuthStateStore } from '../../../../storefront/shopify/infrastructure/state/IOAuthStateStore.js';
 import { OAuthStateNonce } from '../../../../storefront/shopify/domain/value-objects/OAuthStateNonce.js';
 
@@ -41,7 +42,7 @@ export class InitiateMetaOAuthCommand {
   async execute(input: InitiateMetaOAuthInput): Promise<InitiateMetaOAuthResult> {
     const { brandId, callbackUrl } = input;
 
-    const clientId = input.clientId ?? process.env['META_APP_ID'];
+    const clientId = input.clientId ?? loadCoreConfig().META_APP_ID;
     if (!clientId) {
       // Dev boundary: real Meta OAuth needs a configured app (META_APP_ID + secret + a
       // public callback). Surface a graceful, typed error the route maps to a friendly

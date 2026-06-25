@@ -12,6 +12,13 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import type { AcceptEventUseCase } from '../../application/accept-event.usecase.js';
 import { extractCorrelationId, incrementCounter } from '@brain/observability';
+import { loadCollectorConfig } from '@brain/config';
+import { log } from '../../log.js';
+
+/** brand_id (tenant key, a UUID — not PII) off a raw ingest body, when present pre-validation. */
+function brandIdOf(rawBody: Record<string, unknown>): string | undefined {
+  return typeof rawBody['brand_id'] === 'string' ? (rawBody['brand_id'] as string) : undefined;
+}
 
 /**
  * ITP defense (M1 pixel scope): set the brain_anon_id as a SERVER-set first-party cookie. Safari/ITP
@@ -20,12 +27,11 @@ import { extractCorrelationId, incrementCounter } from '@brain/observability';
  * Flag-gated (PIXEL_FIRST_PARTY_COOKIE=true) + only effective on a first-party ingest host; the
  * stateless-edge default (REC-4) stays unless enabled. UUID-guarded (no header injection).
  */
-const FIRST_PARTY_COOKIE = process.env['PIXEL_FIRST_PARTY_COOKIE'] === 'true';
 const ANON_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const TWO_YEARS_SECONDS = 63_072_000;
 
 function maybeSetFirstPartyCookie(rawBody: Record<string, unknown>, reply: FastifyReply): void {
-  if (!FIRST_PARTY_COOKIE) return;
+  if (!loadCollectorConfig().PIXEL_FIRST_PARTY_COOKIE) return;
   const props = rawBody['properties'] as Record<string, unknown> | undefined;
   const anon = typeof props?.['brain_anon_id'] === 'string' ? (props['brain_anon_id'] as string) : '';
   if (!ANON_UUID_RE.test(anon)) return;
@@ -65,11 +71,17 @@ export function registerCollectRoute(
     // Body is accepted as raw JSON — no schema validation in this handler (D-1).
     const rawBody = (req.body ?? {}) as Record<string, unknown>;
 
+    // Request-scoped child logger: bind correlation_id (start of the trace chain, echoed in the
+    // X-Correlation-Id header and carried on the spooled body → injected onto Kafka by the drainer)
+    // and brand_id (tenant key, a UUID — not PII) so every accept-path line is correlatable.
+    const rlog = log.child({ correlation_id: correlationId, brand_id: brandIdOf(rawBody) });
+
     // ACK boundary: spool INSERT must commit before we reply.
     const result = await acceptUseCase.execute(rawBody);
 
     // ACK counter — the denominator of the collector accept+ack SLO (C2 / R-05).
     incrementCounter('collector_accept_total');
+    rlog.debug('event accepted + spooled', { spool_id: result.spoolId.toString() });
     maybeSetFirstPartyCookie(rawBody, reply); // ITP defense (flag-gated)
     reply
       .header('X-Correlation-Id', correlationId)
@@ -85,9 +97,11 @@ export function registerCollectRoute(
       req.headers as Record<string, string | string[] | undefined>,
     );
     const rawBody = (req.body ?? {}) as Record<string, unknown>;
+    const rlog = log.child({ correlation_id: correlationId, brand_id: brandIdOf(rawBody) });
     const result = await acceptUseCase.execute(rawBody);
 
     incrementCounter('collector_accept_total');
+    rlog.debug('event accepted + spooled', { spool_id: result.spoolId.toString() });
     maybeSetFirstPartyCookie(rawBody, reply); // ITP defense (flag-gated)
     reply
       .header('X-Correlation-Id', correlationId)
@@ -111,9 +125,17 @@ export function registerCollectRoute(
       req.headers as Record<string, string | string[] | undefined>,
     );
 
+    // Request-scoped child logger — correlation_id binds the whole batch; brand_id is per-event
+    // (a batch may span events from one storefront) so it is not bound at batch scope.
+    const rlog = log.child({ correlation_id: correlationId });
+
     const body = (req.body ?? {}) as { events?: unknown };
     const events = body.events;
     if (!Array.isArray(events) || events.length === 0 || events.length > MAX_BATCH) {
+      rlog.warn('rejected /batch — events must be a non-empty array within MAX_BATCH', {
+        count: Array.isArray(events) ? events.length : 0,
+        max_batch: MAX_BATCH,
+      });
       return reply.status(400).send({
         accepted: 0,
         error: { code: 'INVALID_BATCH', message: `events must be a non-empty array of at most ${MAX_BATCH} items.` },
@@ -131,6 +153,7 @@ export function registerCollectRoute(
       receivedAt = result.receivedAt;
     }
 
+    rlog.debug('batch accepted + spooled', { accepted: spoolIds.length });
     reply
       .header('X-Correlation-Id', correlationId)
       .status(200)

@@ -14,7 +14,11 @@
  */
 import type { DrainEventsUseCase } from '../../application/drain-events.usecase.js';
 import type { CollectorKafkaProducer } from '../../infrastructure/kafka-producer.js';
-import { log } from "../../log.js";
+import { log as rootLog } from "../../log.js";
+
+// Job-scoped child logger — every drainer line carries { job: 'collector-drainer' } so the
+// background drain loop is distinguishable from request-path logs in the structured stream.
+const log = rootLog.child({ job: 'collector-drainer' });
 
 export interface DrainerConfig {
   /** How often to poll the spool for pending rows (ms). Default: 1000. */
@@ -53,7 +57,7 @@ export class Drainer {
       log.info('Kafka producer connected');
     } catch (err) {
       // Redpanda may be down — drainer starts anyway (back-pressure hold).
-      log.warn(`Kafka producer connect failed (back-pressure mode): ${String(err)}`);
+      log.warn('Kafka producer connect failed (back-pressure mode)', { err });
     }
   }
 
@@ -66,7 +70,8 @@ export class Drainer {
       }
     } catch (err) {
       // Unexpected drainer error — log but do not crash the loop.
-      log.error(`tick error: ${String(err)}`);
+      // Pass the Error in fields.err so Sentry + stack handling fires.
+      log.error('tick error', { err });
     }
   }
 
@@ -80,7 +85,7 @@ export class Drainer {
       await this.producer.disconnect();
       log.info('stopped and Kafka producer disconnected');
     } catch (err) {
-      log.warn(`disconnect error: ${String(err)}`);
+      log.warn('disconnect error', { err });
     }
   }
 }

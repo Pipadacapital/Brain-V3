@@ -18,7 +18,7 @@
  */
 
 import Fastify from 'fastify';
-import { parseEnv, CollectorEnvSchema } from '@brain/config';
+import { loadCollectorConfig } from '@brain/config';
 import { initObservability, initSentry, createLogger } from '@brain/observability';
 import { registerSchema, defaultApicurioConfig } from '@brain/events';
 import { PgSpoolRepository } from './infrastructure/pg-spool.repository.js';
@@ -36,10 +36,10 @@ import { fileURLToPath } from 'node:url';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
-const cfg = parseEnv(CollectorEnvSchema, {
-  ...process.env,
-  SERVICE_NAME: process.env['SERVICE_NAME'] ?? 'collector',
-});
+// intentional: SERVICE_NAME defaults to 'collector' (the schema requires the literal) — set the
+// env default BEFORE the memoized loader parses so an unset SERVICE_NAME still validates.
+process.env['SERVICE_NAME'] = process.env['SERVICE_NAME'] ?? 'collector';
+const cfg = loadCollectorConfig();
 
 /** Structured logger for collector lifecycle/error logs. */
 const log = createLogger({ serviceName: 'collector' });
@@ -47,7 +47,7 @@ const log = createLogger({ serviceName: 'collector' });
 // ── Apicurio schema registration with exponential backoff (D-10) ──────────────
 
 async function registerSchemaWithBackoff(): Promise<void> {
-  const apicurioUrl = cfg.APICURIO_REGISTRY_URL ?? process.env['APICURIO_URL'] ?? 'http://localhost:8080';
+  const apicurioUrl = cfg.APICURIO_REGISTRY_URL ?? cfg.APICURIO_URL;
 
   // Load the Avro schema from the contracts package generated artifact.
   // Path: packages/contracts/generated/avro/brain.collector.event.v1.avsc
@@ -120,9 +120,9 @@ export async function main(): Promise<void> {
 
   // ── 2. Use-cases ─────────────────────────────────────────────────────────────
   const acceptUseCase = new AcceptEventUseCase(spoolRepo);
-  const DRAIN_BATCH_SIZE = 100;
+  const DRAIN_BATCH_SIZE = cfg.DRAIN_BATCH_SIZE;
   const drainUseCase = new DrainEventsUseCase(spoolRepo, kafkaProducer, DRAIN_BATCH_SIZE);
-  const DRAIN_POLL_MS = Number(process.env['DRAIN_POLL_INTERVAL_MS'] ?? 1_000);
+  const DRAIN_POLL_MS = cfg.DRAIN_POLL_INTERVAL_MS;
 
   const drainer = new Drainer(drainUseCase, kafkaProducer, {
     pollIntervalMs: DRAIN_POLL_MS,
@@ -145,8 +145,12 @@ export async function main(): Promise<void> {
   app.addContentTypeParser('text/plain', { parseAs: 'string' }, (_req, body, done) => {
     try {
       done(null, body && typeof body === 'string' ? JSON.parse(body) : {});
-    } catch {
-      done(null, {}); // accept-before-validate — spool it; the drainer/DQ handles malformed payloads
+    } catch (err) {
+      // intentional: accept-before-validate — an unparseable beacon body becomes {} and is spooled
+      // anyway (never lose an event); the drainer/DQ quarantines malformed payloads downstream. Logged
+      // at debug only (hot path: a misbehaving client could fire this per-request).
+      log.debug('unparseable text/plain body — spooling empty envelope (accept-before-validate)', { err });
+      done(null, {});
     }
   });
 
@@ -154,12 +158,9 @@ export async function main(): Promise<void> {
   // reject-before-spool preHandler (NOT a D-1 violation — admission gate, not validation).
   // VETO Set-Cookie on /collect (REC-4): the limiter is stateless, anon-id is client-side.
   const edgeLimiter = new EdgeRateLimiter({
-    maxPerWindow: Number(process.env['EDGE_RATE_MAX_PER_WINDOW'] ?? 600),
-    windowMs: Number(process.env['EDGE_RATE_WINDOW_MS'] ?? 60_000),
-    originAllowlist: (process.env['EDGE_ORIGIN_ALLOWLIST'] ?? '')
-      .split(',')
-      .map((o) => o.trim())
-      .filter((o) => o.length > 0),
+    maxPerWindow: cfg.EDGE_RATE_MAX_PER_WINDOW,
+    windowMs: cfg.EDGE_RATE_WINDOW_MS,
+    originAllowlist: cfg.EDGE_ORIGIN_ALLOWLIST,
   });
   registerEdgeGuard(app, edgeLimiter);
 
@@ -204,8 +205,8 @@ export async function main(): Promise<void> {
   // buffer grows unbounded. Periodically purge drained rows past a short trail window. Best-effort:
   // a reap failure is logged, never fatal (the spool/ACK path is unaffected). unref so it never
   // holds the process open.
-  const SPOOL_RETENTION_SECONDS = Number(process.env['SPOOL_RETENTION_SECONDS'] ?? 86_400); // 24h trail
-  const SPOOL_REAP_INTERVAL_MS = Number(process.env['SPOOL_REAP_INTERVAL_MS'] ?? 300_000); // every 5 min
+  const SPOOL_RETENTION_SECONDS = cfg.SPOOL_RETENTION_SECONDS; // 24h trail
+  const SPOOL_REAP_INTERVAL_MS = cfg.SPOOL_REAP_INTERVAL_MS; // every 5 min
   const reaperTimer = setInterval(() => {
     void spoolRepo
       .reapDrained(SPOOL_RETENTION_SECONDS)
@@ -223,8 +224,10 @@ export async function main(): Promise<void> {
     await app.close();
     await (spoolRepo as PgSpoolRepository & { end(): Promise<void> }).end();
     // Flush buffered telemetry LAST so shutdown spans/metrics are exported (C1).
-    await shutdownObservability().catch(() => { /* ignore */ });
-    await closeSentry().catch(() => { /* ignore */ });
+    // intentional: a flush failure during shutdown must not block process exit — best-effort,
+    // logged at debug so a stuck exporter is still traceable.
+    await shutdownObservability().catch((err) => log.debug('observability flush failed on shutdown', { err }));
+    await closeSentry().catch((err) => log.debug('Sentry flush failed on shutdown', { err }));
     log.info('shutdown complete');
     process.exit(0);
   };

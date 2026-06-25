@@ -28,13 +28,29 @@ export function queryOrganization(client: DbClient, ctx: QueryContext, workspace
 }
 
 /**
- * All member brands within the active workspace (drives the switcher, newest first).
+ * All ACTIVE member brands within the active workspace (drives the switcher, newest first).
  * brand_self_read (0013) ensures brain_app sees only member brands in the active org.
+ * Archived brands are excluded here so the switcher only lists brands the user can work in;
+ * archived brands are surfaced (and restored) on the dedicated Archived Brands settings page.
  */
 export function queryBrandList(client: DbClient, ctx: QueryContext, workspaceId: string) {
   return client.query<BrandRow>(
     ctx,
-    `SELECT id, display_name, domain, status FROM brand WHERE organization_id = $1 ORDER BY created_at DESC LIMIT 20`,
+    `SELECT id, display_name, domain, status FROM brand WHERE organization_id = $1 AND status = 'active' ORDER BY created_at DESC LIMIT 20`,
+    [workspaceId],
+  );
+}
+
+/**
+ * All ARCHIVED member brands within the active workspace (drives the Archived Brands
+ * settings page, newest first). brand_self_read (0013) ensures brain_app sees only
+ * member brands in the active org. A brand is restored by setting status back to 'active'
+ * via PATCH /api/v1/brands/:id — after which it reappears in queryBrandList (the switcher).
+ */
+export function queryArchivedBrandList(client: DbClient, ctx: QueryContext, workspaceId: string) {
+  return client.query<BrandRow>(
+    ctx,
+    `SELECT id, display_name, domain, status FROM brand WHERE organization_id = $1 AND status = 'archived' ORDER BY created_at DESC LIMIT 50`,
     [workspaceId],
   );
 }

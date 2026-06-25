@@ -67,7 +67,11 @@ export async function readAuditHead(pool: pg.Pool): Promise<AuditChainHead> {
       rowCount: countRes.rows[0]?.n ?? '0',
     };
   } finally {
-    await client.query(`RESET app.role`).catch(() => undefined);
+    // Best-effort GUC reset before release — the session is released immediately after, so a
+    // failure here is harmless. Log at debug rather than swallow silently. // intentional
+    await client
+      .query(`RESET app.role`)
+      .catch((err) => log.debug('audit-checkpoint: RESET app.role failed (session released)', { err }));
     client.release();
   }
 }

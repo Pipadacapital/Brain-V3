@@ -8,6 +8,7 @@ import type { FastifyInstance } from 'fastify';
 import type { SpoolRepository } from '../../domain/ingest/repositories/spool.repository.js';
 import type { SpoolBackpressure } from './spool-backpressure.js';
 
+// intentional: npm_package_version is an npm-injected runtime var (not app config) — leave raw.
 const VERSION = process.env['npm_package_version'] ?? '0.0.0';
 
 export function registerHealthRoutes(

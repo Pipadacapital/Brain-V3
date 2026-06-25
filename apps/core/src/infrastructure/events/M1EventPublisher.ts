@@ -26,6 +26,7 @@
 
 import { randomUUID } from 'node:crypto';
 import type { Producer } from 'kafkajs';
+import { injectKafkaTraceContext } from '@brain/observability';
 import {
   buildTopic,
   USER_REGISTERED_TOPIC_SUFFIX,
@@ -116,6 +117,14 @@ export function createM1EventPublisher(deps: M1EventPublisherDeps): EmitEvent {
       payload,
     };
 
+    // Inject the W3C trace context (traceparent) so the consumer resumes THIS producer's
+    // trace (extractKafkaTraceContext on the consumer side) — unbroken end-to-end trace.
+    const headers: Record<string, string | Buffer> = {
+      correlation_id: Buffer.from(correlationId),
+      event_name: Buffer.from(eventName),
+    };
+    injectKafkaTraceContext(headers);
+
     try {
       await producer.send({
         topic,
@@ -124,10 +133,7 @@ export function createM1EventPublisher(deps: M1EventPublisherDeps): EmitEvent {
             // Partition key: brand_id:event_id (tenant-leading — mirrors m1.events.v1 doc).
             key: `${brandId}:${eventId}`,
             value: Buffer.from(JSON.stringify(envelope)),
-            headers: {
-              correlation_id: Buffer.from(correlationId),
-              event_name: Buffer.from(eventName),
-            },
+            headers,
           },
         ],
       });

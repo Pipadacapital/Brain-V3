@@ -275,7 +275,13 @@ export const CONNECTOR_CATALOG: readonly ConnectorDefinition[] = [
     connectMethod: 'oauth',
     availability: 'available',
     description:
-      'Web session analytics via GA4 Data API — sessions, source/medium, revenue, conversions. ' +
-      'Connect with OAuth2 or a service-account key. Sync path requires credentials to be configured.',
+      'Web session analytics via GA4 Data API — sessions, source/medium, revenue, conversions.',
+    // GA4 connects through the OAuth2 authorization-code flow using Brain's registered Google app —
+    // there is NO merchant-entered credential. authFields is therefore intentionally OMITTED so the
+    // marketplace renders a pure OAuth "Connect" action, NOT a credential form. (Previously, a
+    // field-less connector fell through to another connector's hardcoded fields — e.g. Razorpay's —
+    // on the web; that fallback has been removed so a missing authFields can never leak another
+    // connector's credential inputs.) Unlike Shopify/Meta/Google Ads, GA4 does not expose the
+    // optional "bring your own OAuth app" pair, so it carries no authFields at all.
   },
 ] as const;

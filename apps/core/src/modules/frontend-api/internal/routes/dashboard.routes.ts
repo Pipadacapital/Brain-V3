@@ -31,6 +31,7 @@ import type { BffDeps } from './_shared.js';
 import {
   queryOrganization,
   queryBrandList,
+  queryArchivedBrandList,
   queryActiveBrandMemberCount,
   queryLatestConnectorWithSync,
   queryLatestPixelStatus,
@@ -115,6 +116,62 @@ export function registerDashboardRoutes(fastify: FastifyInstance, deps: BffDeps)
             brand_count: brandResult.rows.length,
             member_count: parseInt(memberResult.rows[0]?.count ?? '0', 10),
             brands: brandResult.rows.map((b) => ({
+              id: b.id,
+              display_name: b.display_name,
+              domain: b.domain,
+              status: b.status,
+            })),
+          },
+        });
+      } finally {
+        client.release();
+      }
+    },
+  );
+
+  /**
+   * GET /v1/dashboard/archived-brands
+   * Returns the ARCHIVED (soft-deleted) brands for the current workspace so the
+   * Archived Brands settings page can list them and offer a Restore action.
+   *
+   * Honest empty: an empty array when nothing is archived — never 404. RLS scopes
+   * the read to member brands in the active org (brand_self_read, 0013); userId is
+   * REQUIRED for the same membership-subquery reason as brand-summary.
+   *
+   * Restore is the inverse of archive: PATCH /api/v1/brands/:id { status: 'active' }
+   * (brand.service.update). After restore the brand reappears in the switcher list.
+   */
+  fastify.get(
+    '/api/v1/dashboard/archived-brands',
+    { preHandler: [bffProtectedPreHandler] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const auth = (request as AuthenticatedRequest).auth;
+
+      if (!auth.workspaceId) {
+        // No workspace context yet — honest empty.
+        return reply.send({ request_id: requestId, data: { brands: [] } });
+      }
+
+      if (!pool) {
+        return reply.code(503).send({
+          request_id: requestId,
+          error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' },
+        });
+      }
+
+      const ctx: QueryContext = {
+        workspaceId: auth.workspaceId,
+        userId: auth.userId,
+        correlationId: requestId,
+      };
+      const client = await pool.connect();
+      try {
+        const result = await queryArchivedBrandList(client, ctx, auth.workspaceId);
+        return reply.send({
+          request_id: requestId,
+          data: {
+            brands: result.rows.map((b) => ({
               id: b.id,
               display_name: b.display_name,
               domain: b.domain,

@@ -18,6 +18,9 @@
 import { minorUnitsDivisor } from '@brain/money';
 
 const PROVIDER_URL = (base: string): string => `https://open.er-api.com/v6/latest/${encodeURIComponent(base)}`;
+// intentional: module-load constants. Fields exist in @brain/config (FX_CACHE_TTL_MS/FX_FETCH_TIMEOUT_MS)
+// but loadCoreConfig() at module-load validates the full schema + process.exit(1)s on missing env,
+// which would crash standalone unit imports. Left raw to preserve zero import-time behaviour change.
 const CACHE_TTL_MS = Number(process.env['FX_CACHE_TTL_MS'] ?? 12 * 60 * 60 * 1000);
 const FETCH_TIMEOUT_MS = Number(process.env['FX_FETCH_TIMEOUT_MS'] ?? 8000);
 

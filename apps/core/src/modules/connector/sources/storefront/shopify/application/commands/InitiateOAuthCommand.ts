@@ -6,6 +6,7 @@
  *
  * Shopify client secret is fetched from Secrets Manager (never from env in prod).
  */
+import { loadCoreConfig } from '@brain/config';
 import type { ISecretsManager } from '@brain/connector-secrets';
 import type { IOAuthStateStore } from '../../infrastructure/state/IOAuthStateStore.js';
 import { OAuthStateNonce } from '../../domain/value-objects/OAuthStateNonce.js';
@@ -49,7 +50,7 @@ export class InitiateOAuthCommand {
 
     // Per-brand BYO-app client_id (resolved by the connect handler) → env app (back-compat).
     // The client SECRET is not needed at initiation — only at callback.
-    const clientId = input.clientId ?? process.env['SHOPIFY_CLIENT_ID'];
+    const clientId = input.clientId ?? loadCoreConfig().SHOPIFY_CLIENT_ID;
     if (!clientId) {
       throw Object.assign(new Error('no Shopify client_id — provide your app credentials or set SHOPIFY_CLIENT_ID'), {
         code: 'OAUTH_NOT_CONFIGURED',

@@ -179,10 +179,15 @@ export function registerAuthRoutes(
         correlationId,
       );
 
-      // Success — reset failure counters.
+      // Success — reset failure counters. Best-effort: a reset failure only means the counter
+      // lingers until TTL, never blocks the login. Log at debug rather than swallow. // intentional
       if (rateLimiter) {
-        rateLimiter.reset(loginFailKeySync(parsed.data.email, ip)).catch(() => {});
-        rateLimiter.reset(loginIpKey(ip)).catch(() => {});
+        rateLimiter
+          .reset(loginFailKeySync(parsed.data.email, ip))
+          .catch((err) => log.debug('login rate-limit reset failed (email key)', { correlation_id: correlationId, err }));
+        rateLimiter
+          .reset(loginIpKey(ip))
+          .catch((err) => log.debug('login rate-limit reset failed (ip key)', { correlation_id: correlationId, err }));
       }
 
       return reply.send({
@@ -320,7 +325,8 @@ export function registerAuthRoutes(
 
     // Fire-and-forget — result is always the same (NN-5 / MA-04).
     authService.forgotPassword(parsed.data.email, correlationId).catch((err) => {
-      log.error('forgotPassword error', { err: { correlationId, err } });
+      // Error at fields.err (top-level) so Sentry + stack handling fire; correlation_id is a sibling.
+      log.error('forgotPassword error', { correlation_id: correlationId, err });
     });
 
     return reply.send({ request_id: requestId, ...FORGOT_PASSWORD_RESPONSE });

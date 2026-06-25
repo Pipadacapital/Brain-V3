@@ -17,6 +17,7 @@
 
 import type { Pool, PoolClient } from 'pg';
 import { beginRlsTxn } from '@brain/db';
+import { loadCoreConfig } from '@brain/config';
 import type { ModelDto } from './queries/list-models.js';
 
 /** The closed set of stages a model can be promoted/demoted to (mirrors the 0083 CHECK). */
@@ -101,7 +102,7 @@ export const DEFAULT_EVAL_BASELINES: Readonly<Record<string, number>> = {
 
 /** Parse the EVAL_GATE_BASELINES_JSON env var (per-model override map). Silently returns {} on parse error. */
 function loadBaselineOverrides(): Record<string, Record<string, number>> {
-  const raw = process.env['EVAL_GATE_BASELINES_JSON'];
+  const raw = loadCoreConfig().EVAL_GATE_BASELINES_JSON;
   if (!raw) return {};
   try {
     return JSON.parse(raw) as Record<string, Record<string, number>>;

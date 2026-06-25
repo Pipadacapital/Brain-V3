@@ -9,6 +9,8 @@
  * NEVER logged (I-S09).
  */
 
+import { loadCoreConfig } from '@brain/config';
+
 /** Carries the HTTP status so callers can branch (e.g. 403 → missing scope → reconnect required). */
 export class ShopifyApiError extends Error {
   constructor(public readonly status: number, message: string) {
@@ -41,7 +43,7 @@ export class ShopifyAdminClient {
   constructor(
     private readonly shopDomain: string,
     private readonly accessToken: string,
-    apiVersion: string = process.env['SHOPIFY_API_VERSION'] ?? DEFAULT_API_VERSION,
+    apiVersion: string = loadCoreConfig().SHOPIFY_API_VERSION ?? DEFAULT_API_VERSION,
   ) {
     const host = shopDomain.replace(/^https?:\/\//, '');
     this.base = `https://${host}/admin/api/${apiVersion}`;

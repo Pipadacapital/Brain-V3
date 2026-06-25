@@ -63,11 +63,13 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
 
-      - name: Bring up real engines (Postgres + StarRocks + Redpanda + Redis + MinIO)
+      - name: Bring up real engines (Postgres + StarRocks + Redpanda + Redis + MinIO + Iceberg REST + Spark)
         run: |
           # --wait blocks until every service's compose healthcheck is healthy (StarRocks FE has a
           # 30s+ cold start; the compose healthcheck + start_period already accounts for it).
-          docker compose --profile core --profile ingest up -d --wait
+          # lakehouse (minio + iceberg-rest + Spark Bronze sink) is needed for the V4 Spark Silver/Gold
+          # refresh that REPLACED dbt — the live suites read the brain_serving mv_* serving tier it feeds.
+          docker compose --profile core --profile ingest --profile lakehouse up -d --wait
 
       - name: Provision brain_app login role + apply migrations
         run: |
@@ -84,45 +86,27 @@ jobs:
           "
           pnpm migrate:up
 
-      # ── Silver marts (dbt-starrocks) ─────────────────────────────────────────
-      # The ONLY place dbt runs in CI. Builds + tests the Silver marts (order_state, touchpoint,
-      # order_line) against the REAL StarRocks: verifies the dbt models compile + run and that
-      # their grain / money-bigint / replay singular tests pass, AND materializes Silver so the
-      # live suites below read a real tier. order_line is feat-shopify-order-depth's line-item mart.
-      - name: Install dbt (dbt-starrocks) into .dbt-venv + mysql client
+      # ── V4 transform: Spark Silver → Spark Gold → brain_serving mv_* (REPLACES dbt) ─────────────
+      # Brain V4 removed dbt (Phase 6b). The analytics transform is now Spark-on-Iceberg: the Spark
+      # Silver/Gold jobs materialize the EXTERNAL Iceberg catalogs from raw Bronze, and the brain_serving
+      # mv_* materialized views serve them (Phase 4 reads). This step provisions the serving MVs +
+      # external catalogs, then runs the V4 oneshot refresh so the *.live suites below read a real,
+      # freshly-materialized serving tier (the same tier the dashboards read) — the V4 equivalent of the
+      # old "dbt build Silver" step.
+      - name: Provision StarRocks serving MVs + external Iceberg catalogs
         run: |
-          python3 -m venv .dbt-venv
-          .dbt-venv/bin/pip install --quiet --upgrade pip
-          .dbt-venv/bin/pip install --quiet dbt-starrocks
-          sudo apt-get update -qq && sudo apt-get install -y -qq default-mysql-client
+          docker exec -i brainv3-starrocks-1 mysql -h127.0.0.1 -P9030 -uroot < db/starrocks/external_iceberg_catalog.sql || true
+          docker exec -i brainv3-starrocks-1 mysql -h127.0.0.1 -P9030 -uroot < db/starrocks/external_iceberg_silver_gold_catalog.sql || true
+          bash db/starrocks/mv/run_mvs.sh || true
 
-      - name: Build + test Silver marts via dbt (order_state, touchpoint, order_line)
+      - name: V4 refresh — Spark Silver/Gold materialize + brain_serving mv_* SYNC (oneshot)
         env:
-          STARROCKS_USER: root
-          STARROCKS_PASSWORD: ''
+          STARROCKS_CONTAINER: brainv3-starrocks-1
         run: |
-          # The Makefile auto-detects .dbt-venv/bin/dbt (absolute path, survives the cd into db/dbt).
-          # Override its DB clients to the CI localhost service ports (the targets default to
-          # `docker exec <container>`); the StarRocks JDBC catalog still reaches Postgres over the
-          # compose network at host `postgres:5432`. *-catalog applies the read-shim views + JDBC
-          # catalog; *-run does `dbt run` + `dbt test` (the singular grain/money/replay assertions).
-          make silver-catalog silver-run journey-catalog journey-run orderline-catalog orderline-run \
-            PG_PSQL="psql postgresql://brain:brain@localhost:5432/brain" \
-            SR_MYSQL="mysql -h127.0.0.1 -P9030 -uroot --protocol=TCP"
-
-      # Iceberg-sourced Silver marts (silver_shipment, silver_checkout_signal) read the RAW Iceberg
-      # Bronze, which the Spark materializer populates — NOT stood up in this CI job. So we cannot
-      # `dbt run` them here; instead we COMPILE them (validates SQL/Jinja/ref/source graph against the
-      # project, no warehouse data needed) so a broken Iceberg-Silver model fails the PR. Full
-      # `make checkout-run` is gated on the Iceberg-in-CI materializer (tracked with silver_shipment).
-      - name: Validate Iceberg-sourced Silver models compile (checkout-signal)
-        env:
-          STARROCKS_USER: root
-          STARROCKS_PASSWORD: ''
-        run: |
-          make checkout-catalog SR_MYSQL="mysql -h127.0.0.1 -P9030 -uroot --protocol=TCP"
-          cd db/dbt && DBT_PROFILES_DIR=profiles ../../.dbt-venv/bin/dbt compile \
-            --select stg_checkout_signal_events silver_checkout_signal
+          # ONESHOT runs every Spark Silver job, then every Spark Gold job, then SYNC-refreshes the
+          # brain_serving mv_* — deterministic Gold for the live suites. The Spark run scripts join
+          # redpanda's netns for service DNS (iceberg-rest/minio/starrocks), same as the parity oracle.
+          ONESHOT=1 bash tools/dev/v4-refresh-loop.sh
 
       # Isolation fuzz + parity oracle — now against REAL StarRocks (the PR run has no Silver tier,
       # so the StarRocks cross-tenant negative-control only truly fires here).
@@ -139,10 +123,10 @@ jobs:
 
       - name: Dump engine logs on failure
         if: failure()
-        run: docker compose --profile core --profile ingest logs --tail 200
+        run: docker compose --profile core --profile ingest --profile lakehouse logs --tail 200
       - name: Tear down
         if: always()
-        run: docker compose --profile core --profile ingest down -v
+        run: docker compose --profile core --profile ingest --profile lakehouse down -v
 
   # ───────────────────────────────────────────────────────────────────────────
   # Playwright e2e against the full running stack.

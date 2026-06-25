@@ -27,8 +27,10 @@ PG="docker exec -i brainv3-postgres-1 psql -U brain -d brain -v ON_ERROR_STOP=1"
 TSV=/tmp/bf-stitch-anons.tsv
 SQL=/tmp/bf-stitch.sql
 
-echo ">> Extracting distinct raw journey anons from silver_touchpoint for $BRAND ..."
-$SR -e "SELECT DISTINCT brain_anon_id FROM brain_silver.silver_touchpoint
+echo ">> Extracting distinct raw journey anons from the touchpoint serving MV for $BRAND ..."
+# Brain V4: the dbt-internal brain_silver DB is retired. silver_touchpoint lives in the Iceberg Silver
+# catalog and is SERVED by the StarRocks async MV brain_serving.mv_silver_touchpoint — read it there.
+$SR -e "SELECT DISTINCT brain_anon_id FROM brain_serving.mv_silver_touchpoint
         WHERE brand_id='$BRAND' AND brain_anon_id IS NOT NULL" > "$TSV"
 echo ">> $(wc -l < "$TSV") distinct anons."
 
@@ -68,4 +70,4 @@ SQL
 
 echo ">> Upserting stitch rows (deterministic, identity-graph based) ..."
 $PG < "$SQL" | tail -4
-echo ">> Done. Re-run 'make insights-pipeline' to rebuild silver_touchpoint + gold_attribution_paths."
+echo ">> Done. Re-run 'ONESHOT=1 pnpm dev:v4-refresh' to rebuild silver_touchpoint + gold_attribution_paths."

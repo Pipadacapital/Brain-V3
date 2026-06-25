@@ -23,6 +23,8 @@ import { PageHeader } from '@/components/ui/page-header';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
+import { DateRangeFilter, type DateRange, initialRange } from '@/components/ui/date-range-filter';
+import { TableSearch, matchesQuery } from '@/components/ui/table-search';
 import { KpiTile } from '@/components/analytics/kpi-tile';
 import { SyntheticBadge } from '@/components/analytics/synthetic-badge';
 import { useShipmentOutcomes } from '@/lib/hooks/use-analytics';
@@ -30,18 +32,11 @@ import type { AnalyticsShipmentOutcomesResponse } from '@/lib/api/types';
 
 type ShipmentHasData = Extract<AnalyticsShipmentOutcomesResponse, { state: 'has_data' }>;
 
-const RANGE_PRESETS = [
+const LOGISTICS_RANGE_PRESETS = [
   { key: '30', label: 'Last 30 days', days: 30 },
   { key: '90', label: 'Last 90 days', days: 90 },
   { key: '180', label: 'Last 180 days', days: 180 },
 ] as const;
-type RangeKey = (typeof RANGE_PRESETS)[number]['key'];
-
-function rangeFor(days: number): { from: string; to: string } {
-  const to = new Date().toISOString().split('T')[0] as string;
-  const from = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().split('T')[0] as string;
-  return { from, to };
-}
 
 function num(s: string): string {
   return Number(s).toLocaleString('en-IN');
@@ -92,16 +87,32 @@ function RtoTable({
   keyLabel,
   rows,
   testid,
+  searchPlaceholder,
 }: {
   title: string;
   keyLabel: string;
   rows: { key: string; delivered: string; rto: string; rto_pct: string | null }[];
   testid: string;
+  searchPlaceholder: string;
 }) {
+  const [q, setQ] = useState('');
+  const visible = rows.filter((r) => matchesQuery(q, r.key));
+
   return (
     <Card data-testid={testid}>
       <CardHeader className="pb-2">
-        <CardTitle className="text-sm font-medium text-muted-foreground">{title}</CardTitle>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <CardTitle className="text-sm font-medium text-muted-foreground">{title}</CardTitle>
+          {rows.length > 0 && (
+            <TableSearch
+              value={q}
+              onChange={setQ}
+              placeholder={searchPlaceholder}
+              className="w-full sm:w-48"
+              aria-label={`Search ${keyLabel.toLowerCase()}`}
+            />
+          )}
+        </div>
       </CardHeader>
       <CardContent>
         {rows.length === 0 ? (
@@ -109,28 +120,35 @@ function RtoTable({
             No {keyLabel.toLowerCase()} breakdown in this window yet.
           </p>
         ) : (
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="text-left text-muted-foreground border-b border-border">
-                <th className="py-1.5 font-medium">{keyLabel}</th>
-                <th className="py-1.5 font-medium text-right">Delivered</th>
-                <th className="py-1.5 font-medium text-right">RTO</th>
-                <th className="py-1.5 font-medium text-right">RTO %</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r) => (
-                <tr key={r.key} className="border-b border-border/50 last:border-0">
-                  <td className="py-1.5 text-foreground">{r.key}</td>
-                  <td className="py-1.5 text-right tabular-nums">{num(r.delivered)}</td>
-                  <td className="py-1.5 text-right tabular-nums">{num(r.rto)}</td>
-                  <td className="py-1.5 text-right tabular-nums font-medium">
-                    {r.rto_pct === null ? '—' : `${r.rto_pct}%`}
-                  </td>
+          <>
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-muted-foreground border-b border-border">
+                  <th className="py-1.5 font-medium">{keyLabel}</th>
+                  <th className="py-1.5 font-medium text-right">Delivered</th>
+                  <th className="py-1.5 font-medium text-right">RTO</th>
+                  <th className="py-1.5 font-medium text-right">RTO %</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {visible.map((r) => (
+                  <tr key={r.key} className="border-b border-border/50 last:border-0">
+                    <td className="py-1.5 text-foreground">{r.key}</td>
+                    <td className="py-1.5 text-right tabular-nums">{num(r.delivered)}</td>
+                    <td className="py-1.5 text-right tabular-nums">{num(r.rto)}</td>
+                    <td className="py-1.5 text-right tabular-nums font-medium">
+                      {r.rto_pct === null ? '—' : `${r.rto_pct}%`}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {q && visible.length === 0 && (
+              <p className="py-3 text-center text-sm text-muted-foreground" role="status">
+                No matches for &ldquo;{q}&rdquo;
+              </p>
+            )}
+          </>
         )}
       </CardContent>
     </Card>
@@ -138,11 +156,11 @@ function RtoTable({
 }
 
 export function LogisticsContent() {
-  const [rangeKey, setRangeKey] = useState<RangeKey>('90');
-  const preset = RANGE_PRESETS.find((p) => p.key === rangeKey) ?? RANGE_PRESETS[1];
-  const { from, to } = rangeFor(preset.days);
+  const [range, setRange] = useState<DateRange>(() =>
+    initialRange(LOGISTICS_RANGE_PRESETS, '90'),
+  );
 
-  const q = useShipmentOutcomes({ from, to });
+  const q = useShipmentOutcomes({ from: range.from, to: range.to });
   const data = q.data;
   const synthetic = data?.state === 'has_data' && data.data_source === 'synthetic';
 
@@ -170,23 +188,12 @@ export function LogisticsContent() {
               <SyntheticBadge reason="Shipment lifecycle is fixture-sourced in dev (real shape, synthetic source) until partner sandbox access. Never presented as live." />
             )}
           </div>
-          <div role="group" aria-label="Date range" className="inline-flex rounded-md border border-border p-0.5">
-            {RANGE_PRESETS.map((p) => (
-              <button
-                key={p.key}
-                type="button"
-                onClick={() => setRangeKey(p.key)}
-                aria-pressed={rangeKey === p.key}
-                className={
-                  rangeKey === p.key
-                    ? 'rounded px-3 py-1 text-xs font-medium bg-foreground text-background'
-                    : 'rounded px-3 py-1 text-xs font-medium text-muted-foreground hover:text-foreground'
-                }
-              >
-                {p.label}
-              </button>
-            ))}
-          </div>
+          <DateRangeFilter
+            value={range}
+            onChange={setRange}
+            presets={LOGISTICS_RANGE_PRESETS}
+            aria-label="Shipment outcomes date range"
+          />
         </div>
 
         {q.isLoading && <Loading />}
@@ -214,12 +221,14 @@ function OutcomesData({ data }: { data: ShipmentHasData }) {
           title="RTO by courier"
           keyLabel="Courier"
           testid="logistics-by-courier"
+          searchPlaceholder="Search courier…"
           rows={data.by_courier.map((c) => ({ key: c.courier, delivered: c.delivered, rto: c.rto, rto_pct: c.rto_pct }))}
         />
         <RtoTable
           title="RTO by pincode"
           keyLabel="Pincode"
           testid="logistics-by-pincode"
+          searchPlaceholder="Search pincode…"
           rows={data.by_pincode.map((p) => ({ key: p.pincode, delivered: p.delivered, rto: p.rto, rto_pct: p.rto_pct }))}
         />
       </div>

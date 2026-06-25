@@ -50,7 +50,7 @@ WHERE event_type IN ('page.viewed', 'cart.viewed', 'cart.item_added');
 GRANT SELECT ON bronze_touchpoint_src TO brain;
 
 -- MEDALLION REALIGNMENT (Epic 4): the connector_journey_stitch_map_src read-shim that used to live here
--- was REMOVED. The cart-stitch is materialized into brain_silver.silver_journey_stitch by the
+-- was REMOVED. The cart-stitch is materialized into brain_ops.silver_journey_stitch by the
 -- journey-stitch-export job (PG capture → StarRocks); silver_touchpoint reads that StarRocks projection
 -- directly, so there is no PG stitch shim to create. (The bronze_touchpoint_src view above belongs to the
 -- separate Iceberg-Bronze retirement — dev/PG-mode only; prod reads Iceberg Bronze.)

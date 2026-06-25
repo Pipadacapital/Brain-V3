@@ -112,23 +112,21 @@ jobs:
             ${{ steps.login-ecr.outputs.registry }}/brain-${{ matrix.app }}-${{ vars.ENVIRONMENT }}@${{ steps.push.outputs[format('{0}_digest', matrix.app)] }}
 
   # ─────────────────────────────────────────────────────────────────────────
-  # 1b. Build + push the DATA-PLANE job images (dbt-runner, spark-bronze)
+  # 1b. Build + push the DATA-PLANE job images (spark-bronze)
   # ─────────────────────────────────────────────────────────────────────────
   # These are NOT pnpm packages, so the turbo --affected check can't see them. They change rarely,
   # so we use PATH-BASED change detection (git diff of the push range). Same OIDC/ECR/cosign posture
   # as build-and-push; each leg uploads imgref-<image> for the gitops job to digest-pin into the
   # cronworkflows chart. Additive — does not touch the 4-app build above.
+  # NOTE: the dbt-runner image was retired in Brain V4 (Phase 6b) — dbt is removed; the transform is
+  # Spark-on-Iceberg + brain_serving mv_* (the spark-bronze image + the Spark Silver/Gold jobs).
   build-data-images:
-    name: Build, Sign, Push data images (dbt-runner, spark-bronze)
+    name: Build, Sign, Push data images (spark-bronze)
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         include:
-          - image: dbt-runner
-            dockerfile: db/dbt/Dockerfile
-            context: db
-            paths: '^db/(dbt|starrocks)/'
           - image: spark-bronze
             dockerfile: db/iceberg/spark/Dockerfile
             context: db/iceberg/spark
@@ -255,14 +253,14 @@ jobs:
             echo "bumped ${app}: ${REPO}@${DIGEST}"
           done
 
-      - name: Bump cronworkflows chart image digests (core/stream-worker/dbt-runner/spark-bronze)
+      - name: Bump cronworkflows chart image digests (core/stream-worker/spark-bronze)
         run: |
           set -euo pipefail
-          # The cronworkflows chart is ONE chart with FOUR image blocks at distinct yaml paths, so a
-          # blanket sed (which matches every `repository:`) is unsafe — use yq for path-precise edits.
-          # Each block is bumped ONLY when its imgref artifact exists (i.e. that image was affected).
+          # The cronworkflows chart has distinct image blocks at distinct yaml paths, so a blanket sed
+          # (which matches every `repository:`) is unsafe — use yq for path-precise edits. Each block is
+          # bumped ONLY when its imgref artifact exists (i.e. that image was affected).
           values="infra/helm/cronworkflows/values-staging.yaml"
-          bump() {  # $1=imgref-key  $2=yq-path-prefix (e.g. .image / .dbtRunnerImage / .sparkBronze.image)
+          bump() {  # $1=imgref-key  $2=yq-path-prefix (e.g. .image / .streamWorkerImage / .sparkBronze.image)
             local ref_file="/tmp/imgref/$1" path="$2"
             [ -f "$ref_file" ] || { echo "no imgref for $1 — skip ${path}"; return 0; }
             local REF REPO DIGEST; REF="$(cat "$ref_file")"; REPO="${REF%@*}"; DIGEST="${REF#*@}"
@@ -271,7 +269,6 @@ jobs:
           }
           bump core          .image
           bump stream-worker .streamWorkerImage
-          bump dbt-runner    .dbtRunnerImage
           bump spark-bronze  .sparkBronze.image
 
       - name: Commit + push staging values bump
@@ -349,7 +346,6 @@ jobs:
           }
           promote .image
           promote .streamWorkerImage
-          promote .dbtRunnerImage
           promote .sparkBronze.image
 
       - name: Commit prod values promotion

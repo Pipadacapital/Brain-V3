@@ -113,7 +113,13 @@ export class HandleMetaOAuthCallbackCommand {
     if (!code) {
       throw new MetaOAuthError('Authorization code missing from callback');
     }
-    const accessToken = await this.exchangeCodeForToken(code, brandId);
+    const shortLivedToken = await this.exchangeCodeForToken(code, brandId);
+    // Exchange the short-lived (~1-2h) user token for a LONG-LIVED (~60-day) one IMMEDIATELY, so the
+    // connection survives past the hour. The prior behaviour stored the short-lived token and relied
+    // on the proactive meta-token-refresh job to re-exchange — but if that job hasn't run yet (or at
+    // all in dev), the token expires in ~1-2h and the spend re-pull dies with TokenExpired /
+    // RECONNECT_REQUIRED. Best-effort: falls back to the short-lived token on any exchange failure.
+    const accessToken = await this.exchangeForLongLivedToken(shortLivedToken, brandId);
 
     // ── Step 3: Resolve ALL ad accounts (Gap B) — best-effort; empty → __default__ ──
     // Each carries id + human name (e.g. "Acme Store — Meta") so the UI can label the
@@ -256,6 +262,43 @@ export class HandleMetaOAuthCallbackCommand {
       throw new MetaOAuthError('Token exchange: access_token missing in response');
     }
     return data.access_token;
+  }
+
+  /**
+   * Exchange a short-lived Meta user token for a LONG-LIVED one (~60 days) via
+   * grant_type=fb_exchange_token. Without this the code-exchange token (~1-2h) expires within the
+   * hour and the spend re-pull fails RECONNECT_REQUIRED. Best-effort: on any failure we return the
+   * short-lived token so connect still succeeds (the refresh job can re-exchange later).
+   * SEC-AD-H1: client_secret rides the BODY, never the URL.
+   */
+  private async exchangeForLongLivedToken(shortLivedToken: string, brandId: string): Promise<string> {
+    const creds = await resolveBrandOAuthAppCreds(this.secretsManager, 'meta', brandId, {
+      clientId: process.env['META_APP_ID'] ?? '',
+      clientSecret: process.env['META_APP_SECRET'] ?? '',
+    });
+    if (!creds?.clientId || !creds?.clientSecret) return shortLivedToken;
+    const params = new URLSearchParams({
+      grant_type: 'fb_exchange_token',
+      client_id: creds.clientId,
+      client_secret: creds.clientSecret,
+      fb_exchange_token: shortLivedToken,
+    });
+    try {
+      const response = await fetch(
+        `https://graph.facebook.com/${META_GRAPH_API_VERSION}/oauth/access_token`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: params.toString(),
+          signal: AbortSignal.timeout(15_000),
+        },
+      );
+      if (!response.ok) return shortLivedToken;
+      const data = (await response.json()) as { access_token?: string };
+      return data.access_token ?? shortLivedToken;
+    } catch {
+      return shortLivedToken;
+    }
   }
 
   /**

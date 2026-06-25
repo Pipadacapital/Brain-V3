@@ -24,6 +24,7 @@ import { StatusBadge, type StatusTone } from '@/components/ui/status-badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
 import { EmptyState } from '@/components/ui/empty-state';
+import { TableSearch, matchesQuery } from '@/components/ui/table-search';
 import { useModels, usePromoteModel, useCustomerScore } from '@/lib/hooks/use-ml';
 import { formatMoneyDisplay } from '@/lib/format/money-display';
 import type { MlModel, MlModelStage } from '@/lib/api/types';
@@ -237,6 +238,11 @@ function CustomerScorePanel() {
 export function MlContent() {
   const { data, isLoading, error, refetch } = useModels();
   const models = data?.models ?? [];
+  const [modelsQ, setModelsQ] = React.useState('');
+
+  const filteredModels = models.filter((m) =>
+    matchesQuery(modelsQ, m.name, m.version, m.stage, m.framework),
+  );
 
   return (
     <div className="space-y-6">
@@ -247,10 +253,20 @@ export function MlContent() {
 
       <Card>
         <CardHeader className="pb-2">
-          <CardTitle className="flex items-center gap-2 text-base">
-            <Boxes className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
-            Model registry
-          </CardTitle>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Boxes className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+              Model registry
+            </CardTitle>
+            {models.length > 0 && (
+              <TableSearch
+                value={modelsQ}
+                onChange={setModelsQ}
+                placeholder="Search models…"
+                aria-label="Search model registry"
+              />
+            )}
+          </div>
         </CardHeader>
         <CardContent>
           {isLoading ? (
@@ -266,6 +282,10 @@ export function MlContent() {
               title="No models registered"
               description="Models appear here once a brand has a registered scorer. The deterministic RFM / churn model is seeded for every active brand."
             />
+          ) : filteredModels.length === 0 ? (
+            <p className="py-4 text-sm text-muted-foreground" role="status">
+              No matching models for &ldquo;{modelsQ}&rdquo;.
+            </p>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-left text-sm">
@@ -280,7 +300,7 @@ export function MlContent() {
                   </tr>
                 </thead>
                 <tbody>
-                  {models.map((m) => (
+                  {filteredModels.map((m) => (
                     <ModelRow key={m.model_id} model={m} />
                   ))}
                 </tbody>

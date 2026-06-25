@@ -59,7 +59,7 @@ export async function computeRtoRiskDistribution(
       `WITH latest AS (
          SELECT order_id, risk_flag, is_synthetic,
                 ROW_NUMBER() OVER (PARTITION BY order_id ORDER BY occurred_at DESC) AS rn
-           FROM brain_silver.silver_checkout_signal
+           FROM brain_serving.mv_silver_checkout_signal
           WHERE signal_type = 'rto_predict'
             AND order_id IS NOT NULL
             AND occurred_at >= DATE_SUB(NOW(), INTERVAL ${WINDOW_DAYS} DAY)

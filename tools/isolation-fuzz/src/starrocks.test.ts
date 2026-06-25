@@ -29,7 +29,7 @@
  *     run the following SQL (adapt to actual table name) as the StarRocks admin user:
  *
  *       CREATE ROW POLICY IF NOT EXISTS tenant_isolation_policy
- *         ON brain_silver.isolation_test
+ *         ON brain_ops.isolation_test
  *         TO 'brain_analytics'@'%'
  *         USING (brand_id = IFNULL(NULLIF(@brain_current_brand_id, ''),
  *                                  '00000000-0000-0000-0000-000000000000'));
@@ -98,18 +98,18 @@ beforeAll(async () => {
 
   // F-5: check whether the table was actually created by bootstrap.sql.
   try {
-    const [rows] = await conn.query(`SELECT COUNT(*) AS cnt FROM brain_silver.isolation_test`);
+    const [rows] = await conn.query(`SELECT COUNT(*) AS cnt FROM brain_ops.isolation_test`);
     const cnt = Number((rows[0] as Record<string, unknown>)['cnt'] ?? 0);
     tableAvailable = cnt >= 2; // expect at least 2 rows (brand-A + brand-B seeded)
     if (!tableAvailable) {
       console.warn(
-        '[isolation-fuzz/starrocks] brain_silver.isolation_test exists but has fewer than 2 rows. ' +
+        '[isolation-fuzz/starrocks] brain_ops.isolation_test exists but has fewer than 2 rows. ' +
         'Re-run: mysql -h localhost -P 9030 -u root < db/starrocks/bootstrap.sql'
       );
     }
   } catch {
     console.warn(
-      '[isolation-fuzz/starrocks] brain_silver.isolation_test does not exist. ' +
+      '[isolation-fuzz/starrocks] brain_ops.isolation_test does not exist. ' +
       'Bootstrap did not run. Apply manually: ' +
       'mysql -h localhost -P 9030 -u root < db/starrocks/bootstrap.sql'
     );
@@ -121,7 +121,7 @@ beforeAll(async () => {
   // StarRocks 3.3.2 allin1 (open-source) does NOT support this.
   // We probe by attempting a SHOW ROW POLICY query; if it errors, policy is not active.
   try {
-    await conn.query(`SHOW ROW POLICY ON brain_silver.isolation_test`);
+    await conn.query(`SHOW ROW POLICY ON brain_ops.isolation_test`);
     // If it reaches here without an error, the command is supported.
     // We still don't know if our specific policy is applied, but the engine supports it.
     // The negative-control test below will determine whether the policy IS enforced.
@@ -170,7 +170,7 @@ describe('StarRocks row policy — Layer (b) isolation-fuzz (NN-2)', () => {
     // This is the POSITIVE path — the application middleware MUST inject this on every query.
     await conn.query(`SET @brain_current_brand_id = '${BRAND_A}'`);
     const [rows] = await conn.query(
-      `SELECT brand_id, test_value FROM brain_silver.isolation_test WHERE brand_id = @brain_current_brand_id`
+      `SELECT brand_id, test_value FROM brain_ops.isolation_test WHERE brand_id = @brain_current_brand_id`
     );
     await conn.query(`SET @brain_current_brand_id = ''`);
 
@@ -198,7 +198,7 @@ describe('StarRocks row policy — Layer (b) isolation-fuzz (NN-2)', () => {
     // No session variable set (or set to empty — engine policy is the only guard here).
     await conn.query(`SET @brain_current_brand_id = '${BRAND_A}'`); // brand-A context
     const [rows] = await conn.query(
-      `SELECT * FROM brain_silver.isolation_test WHERE brand_id = '${BRAND_B}'`
+      `SELECT * FROM brain_ops.isolation_test WHERE brand_id = '${BRAND_B}'`
       // Note: NO `AND brand_id = @brain_current_brand_id` — we rely on engine row policy only.
     );
     await conn.query(`SET @brain_current_brand_id = ''`);
@@ -229,7 +229,7 @@ describe('StarRocks row policy — Layer (b) isolation-fuzz (NN-2)', () => {
     // PASSES on compliant cluster; FAILS on open-source (correct loud-fail for M-01 gap).
     await conn.query(`SET @brain_current_brand_id = ''`);
     const [rows] = await conn.query(
-      `SELECT * FROM brain_silver.isolation_test`
+      `SELECT * FROM brain_ops.isolation_test`
       // No predicate — purely relying on engine row policy.
     );
 
@@ -257,7 +257,7 @@ describe('StarRocks row policy — Layer (b) isolation-fuzz (NN-2)', () => {
     // middleware does). All negative-control tests above rely on the engine only.
     await conn.query(`SET @brain_current_brand_id = '${BRAND_A}'`);
     const [rows] = await conn.query(
-      `SELECT * FROM brain_silver.isolation_test ` +
+      `SELECT * FROM brain_ops.isolation_test ` +
       `WHERE brand_id = '${BRAND_B}' AND brand_id = @brain_current_brand_id`
     );
     await conn.query(`SET @brain_current_brand_id = ''`);
@@ -278,7 +278,7 @@ describe('StarRocks row policy — Layer (b) isolation-fuzz (NN-2)', () => {
     //   On StarRocks Enterprise or managed cluster (e.g., StarRocks Cloud):
     //
     //   CREATE ROW POLICY IF NOT EXISTS tenant_isolation_policy
-    //     ON brain_silver.isolation_test
+    //     ON brain_ops.isolation_test
     //     TO 'brain_analytics'@'%'
     //     USING (brand_id = IFNULL(NULLIF(@brain_current_brand_id, ''),
     //                               '00000000-0000-0000-0000-000000000000'));

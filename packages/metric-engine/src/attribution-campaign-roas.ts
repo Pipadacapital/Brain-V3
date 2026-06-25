@@ -72,7 +72,7 @@ export async function computeCampaignRoas(
     // Attributed revenue per (campaign, currency) — net of clawback (signed credited_revenue_minor).
     const attrRows = await scope.runScoped<CampaignAttrRow>(
       `SELECT campaign_id, currency_code, COALESCE(SUM(credited_revenue_minor), 0) AS contribution_minor
-         FROM brain_gold.gold_marketing_attribution
+         FROM brain_serving.mv_gold_marketing_attribution
         WHERE model_id = '${model}'
           AND campaign_id IS NOT NULL
           AND CAST(economic_effective_at AS DATE) BETWEEN '${fromStr}' AND '${toStr}'
@@ -83,7 +83,7 @@ export async function computeCampaignRoas(
     // Spend per (campaign, currency) — carries campaign_name for the label.
     const spendRows = await scope.runScoped<CampaignSpendRow>(
       `SELECT campaign_id, MAX(campaign_name) AS campaign_name, currency_code, SUM(spend_minor) AS spend_minor
-         FROM brain_silver.silver_marketing_spend
+         FROM brain_serving.mv_silver_marketing_spend
         WHERE campaign_id IS NOT NULL
           AND stat_date BETWEEN '${fromStr}' AND '${toStr}'
           AND ${BRAND_PREDICATE}

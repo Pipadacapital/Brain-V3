@@ -43,7 +43,7 @@ export async function computeRealizedGmvCompositionForPeriod(
       `SELECT event_type,
               currency_code,
               SUM(amount_minor) AS amount_minor
-         FROM brain_gold.gold_revenue_ledger
+         FROM brain_serving.mv_gold_revenue_ledger
         WHERE billing_posted_period = ?
           AND event_type <> 'provisional_recognition'
           AND ${BRAND_PREDICATE}

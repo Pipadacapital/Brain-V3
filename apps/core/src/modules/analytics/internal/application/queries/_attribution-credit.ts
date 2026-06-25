@@ -12,7 +12,7 @@ import { withSilverBrand, BRAND_PREDICATE } from '@brain/metric-engine';
 /**
  * True if the brand has ANY attribution credit rows (the credit pipeline has populated).
  *
- * PHASE G: reads the lakehouse mart brain_gold.gold_marketing_attribution via withSilverBrand —
+ * V4 PHASE 4b: reads the serving mv brain_serving.mv_gold_marketing_attribution via withSilverBrand —
  * PG attribution_credit_ledger is no longer a read source. Moved together with the attribution
  * read surfaces (channel-roas reads its own inline; by-channel + reconciliation use this), so the
  * exists-check and the compute always read the SAME store (no PG-data-hidden-by-empty-mart skew).
@@ -20,7 +20,7 @@ import { withSilverBrand, BRAND_PREDICATE } from '@brain/metric-engine';
 export async function hasAttributionCredit(brandId: string, deps: { srPool: SilverPool }): Promise<boolean> {
   return withSilverBrand(deps.srPool, brandId, async (scope) => {
     const r = await scope.runScoped<{ has_row: number }>(
-      `SELECT 1 AS has_row FROM brain_gold.gold_marketing_attribution WHERE ${BRAND_PREDICATE} LIMIT 1`,
+      `SELECT 1 AS has_row FROM brain_serving.mv_gold_marketing_attribution WHERE ${BRAND_PREDICATE} LIMIT 1`,
       [],
     );
     return r.length > 0;

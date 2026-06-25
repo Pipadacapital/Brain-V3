@@ -2,7 +2,7 @@
  * dq/silver-reader.ts — minimal per-brand Silver (StarRocks) reader for the DQ jobs.
  *
  * The DQ freshness + reconciliation checks read aggregate signals from the Silver
- * tier (StarRocks brain_silver.silver_order_state) over the MySQL wire protocol
+ * tier (StarRocks brain_serving.mv_silver_order_state) over the MySQL wire protocol
  * (mysql2, :9030) as the SELECT-only brain_analytics user. This mirrors the
  * metric-engine withSilverBrand seam (packages/metric-engine/src/silver-deps.ts):
  * the brand predicate is injected HERE (the dev allin1 StarRocks image has no

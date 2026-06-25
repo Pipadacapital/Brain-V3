@@ -2,7 +2,7 @@
  * getCampaignRoas — analytics use-case (ADR-002 sole-read-path).
  *
  * H8: per-CAMPAIGN ROAS = attributed_revenue ÷ ad_spend, from computeCampaignRoas (metric engine).
- * The granular sibling of getChannelRoas — joins gold_marketing_attribution × silver_marketing_spend
+ * The granular sibling of getChannelRoas — joins mv_gold_marketing_attribution × mv_silver_marketing_spend
  * on campaign_id (the level marketers optimize). SAME-CURRENCY ONLY; HONEST roas_ratio=null when
  * spend=0 (no divide-by-zero). NO ad-hoc arithmetic here (D-3). Serializes bigint→string (D-1).
  *
@@ -49,12 +49,12 @@ export async function getCampaignRoas(
 ): Promise<CampaignRoasResult> {
   const { hasSpend, hasCredit } = await withSilverBrand(deps.srPool, brandId, async (scope) => {
     const spend = await scope.runScoped<{ has_row: number }>(
-      `SELECT 1 AS has_row FROM brain_silver.silver_marketing_spend
+      `SELECT 1 AS has_row FROM brain_serving.mv_silver_marketing_spend
         WHERE campaign_id IS NOT NULL AND ${BRAND_PREDICATE} LIMIT 1`,
       [],
     );
     const credit = await scope.runScoped<{ has_row: number }>(
-      `SELECT 1 AS has_row FROM brain_gold.gold_marketing_attribution
+      `SELECT 1 AS has_row FROM brain_serving.mv_gold_marketing_attribution
         WHERE campaign_id IS NOT NULL AND ${BRAND_PREDICATE} LIMIT 1`,
       [],
     );

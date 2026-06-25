@@ -1,0 +1,20 @@
+# gitleaks per-finding waivers — NARROW, auditable, one line per finding.
+# Each entry is <commit>:<file>:<rule>:<line>. A waiver here suppresses ONLY that
+# exact finding; the brain-db-password rule stays fully active everywhere else, so a
+# genuinely hardcoded secret elsewhere is still caught.
+#
+# Why these 4 are false positives:
+#   The brain-db-password regex captures the first 8+ non-space chars after
+#   `PG_PASSWORD =`, which on an env-var READ (`PG_PASSWORD = os.environ.get(...)`)
+#   is the CODE `os.environ.get(`, not a secret. The only literal default is the
+#   5-char local-dev dockerized password `brain` (postgres:5432/brain, user `brain`)
+#   — identical to the Spark suite already on master, never a production credential.
+#   These are dev/CI Spark jobs that read the real password from the environment.
+
+# V4 Phase 0 — parity oracle (env-var read, local-dev default)
+e63befe577adc57d908a2cb2c3802a2a493242fd:db/iceberg/spark/parity/parity_oracle.py:brain-db-password:70
+# V4 Phase 1 — Spark Silver order_state (env-var read, local-dev default)
+ed931f32d3cc42d8f614d1548cb27bf6d0557dca:db/iceberg/spark/silver/silver_order_state.py:brain-db-password:55
+# V4 Phase 2 — Spark Gold marts (env-var reads, local-dev default)
+e148aec6e593fcf2f6dfa10797d3a53a1539cb2b:db/iceberg/spark/gold/gold_contribution_margin.py:brain-db-password:52
+e148aec6e593fcf2f6dfa10797d3a53a1539cb2b:db/iceberg/spark/gold/gold_revenue_ledger.py:brain-db-password:72

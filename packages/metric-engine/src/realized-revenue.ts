@@ -49,7 +49,7 @@ export async function computeRealizedRevenue(
             AND event_type <> 'provisional_recognition'
            THEN amount_minor ELSE 0 END), 0) AS v,
          MAX(currency_code) AS currency_code
-       FROM brain_gold.gold_revenue_ledger
+       FROM brain_serving.mv_gold_revenue_ledger
        WHERE ${BRAND_PREDICATE}`,
       [],
     );

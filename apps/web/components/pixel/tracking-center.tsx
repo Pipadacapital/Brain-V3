@@ -2,24 +2,23 @@
 
 /**
  * TrackingCenter — the Brain Pixel surface. Owns the page header (with a live, honest
- * status pill) and a single, trust-ordered vertical flow:
+ * status pill) and a TABBED layout so the page fits without a long scroll:
  *
- *   1. Live verification — the honest "waiting → first event received" flip leads,
- *      so a stakeholder sees the real signal first.
- *   2. Setup — install the pixel (connected-storefront-driven), verify it, copy the
- *      manual snippet.
- *   3. First-party host — optional CNAME ingest host.
- *   4. Tracking health — status + KPIs + volume.
- *   5. Event explorer — the recent-event feed.
+ *   - Overview — live verification (the honest "waiting → first event received" flip)
+ *     + tracking health (status, KPIs, volume). The at-a-glance signal.
+ *   - Install — install the pixel (connected-storefront-driven), verify it, copy the
+ *     manual snippet, + the optional first-party CNAME ingest host.
+ *   - Events — the recent-event feed (full captured context).
  *
  * The header status pill is derived ONLY from real backend state (pixel_status +
  * tracking-health). It is never faked: no data ⇒ neutral, not a green "connected".
  */
 
 import * as React from 'react';
+import { Activity, Download, ListTree } from 'lucide-react';
 import { PageHeader } from '@/components/ui/page-header';
 import { StatusBadge, type StatusTone } from '@/components/ui/status-badge';
-import { Separator } from '@/components/ui/separator';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { usePixelHealth } from '@/lib/hooks/use-pixel';
 import { useTrackingHealth } from '@/lib/hooks/use-tracking-health';
 import { LiveVerification } from './live-verification';
@@ -53,17 +52,11 @@ function useHeaderStatus(): { tone: StatusTone; label: string; pulse: boolean } 
   }
 }
 
-function SectionHeading({ children }: { children: React.ReactNode }) {
-  return (
-    <h2 className="text-base font-semibold tracking-tight text-foreground">{children}</h2>
-  );
-}
-
 export function TrackingCenter() {
   const status = useHeaderStatus();
 
   return (
-    <div className="space-y-8" data-testid="tracking-center">
+    <div className="space-y-6" data-testid="tracking-center">
       {/* Heading kept as "Tracking Center" for the stable surface name. */}
       <PageHeader
         title="Tracking Center"
@@ -75,28 +68,40 @@ export function TrackingCenter() {
         }
       />
 
-      {/* 1. Live verification leads — the honest first-event flip */}
-      <LiveVerification />
+      {/* Tabbed layout — each tab is one focused section, so the page no longer scrolls long. */}
+      <Tabs defaultValue="overview">
+        <TabsList aria-label="Tracking Center sections">
+          <TabsTrigger value="overview">
+            <Activity className="size-4" aria-hidden="true" />
+            Overview
+          </TabsTrigger>
+          <TabsTrigger value="install">
+            <Download className="size-4" aria-hidden="true" />
+            Install
+          </TabsTrigger>
+          <TabsTrigger value="events">
+            <ListTree className="size-4" aria-hidden="true" />
+            Events
+          </TabsTrigger>
+        </TabsList>
 
-      <Separator />
+        {/* Overview — the at-a-glance signal: live verification + health. */}
+        <TabsContent value="overview" className="space-y-6">
+          <LiveVerification />
+          <TrackingHealthPanel />
+        </TabsContent>
 
-      {/* 2. Setup: install → verify → manual snippet */}
-      <section aria-label="Setup and installation" className="space-y-4">
-        <SectionHeading>Setup &amp; installation</SectionHeading>
-        <PixelWizard />
-        <FirstPartyHost />
-      </section>
+        {/* Install — setup the pixel + the optional first-party host. */}
+        <TabsContent value="install" className="space-y-6">
+          <PixelWizard />
+          <FirstPartyHost />
+        </TabsContent>
 
-      <Separator />
-
-      {/* 3. Tracking health */}
-      <section aria-label="Tracking health" className="space-y-4">
-        <SectionHeading>Tracking health</SectionHeading>
-        <TrackingHealthPanel />
-      </section>
-
-      {/* 4. Event explorer */}
-      <EventExplorer />
+        {/* Events — the recent-event feed with full captured context. */}
+        <TabsContent value="events">
+          <EventExplorer />
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

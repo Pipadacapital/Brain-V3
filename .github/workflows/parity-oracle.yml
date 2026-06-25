@@ -1,0 +1,83 @@
+# parity-oracle.yml — Brain V4: the Spark-Iceberg-Gold ⇄ serving parity gate.
+#
+# Stands up the REAL lakehouse engines (compose: iceberg-rest + minio + starrocks + redpanda + postgres)
+# and runs db/iceberg/spark/parity/run-parity.sh — the reusable oracle that, for every Silver/Gold mart,
+# proves the Spark→Iceberg table EQUALS the brain_serving mv_* it feeds (row-identity keyed by the mart
+# PK + per-currency minor-unit Σ for money columns), or SKIPs gracefully when the mart doesn't exist yet.
+#
+# NOTE: dbt was removed in Brain V4 (Phase 6b). This oracle no longer compares against the retired
+# dbt/StarRocks brain_gold/brain_silver marts — it does NOT run dbt (no build/run/seed); it only invokes
+# run-parity.sh against the Iceberg lakehouse + serving tier.
+#
+# ⚠️ INTRODUCED NON-BLOCKING ON PURPOSE (mirrors integration.yml's doctrine): in Phase 0 NO Spark→Iceberg
+# Silver/Gold mart exists yet, so every mart SKIPs (status=SKIP reason=new-mart-absent) and the harness
+# exits 0 — this is the intended green "stub" state that proves the gate is WIRED before any phase relies
+# on it. As Phases 1-2 build real Iceberg marts this gate begins doing real comparisons. PROMOTE TO A
+# BLOCKING required check once the first Spark mart lands and its parity is reliably green (add it to
+# branch protection — a repo-admin setting, not expressible here).
+#
+# Same OIDC-free, compose-up, path-filtered shape as integration.yml; it does NOT touch any read path
+# or app code (additive parity check only).
+
+name: parity-oracle
+on:
+  workflow_dispatch:
+    inputs:
+      mart:
+        description: 'Mart to check (default: all). e.g. gold_attribution_credit'
+        required: false
+        default: 'all'
+  schedule:
+    - cron: '30 2 * * *' # nightly 02:30 UTC (after integration's 02:00)
+  push:
+    branches: [master]
+    paths:
+      - 'db/iceberg/spark/parity/**'
+      - 'db/iceberg/spark/**'
+      - '.github/workflows/parity-oracle.yml'
+  pull_request:
+    paths:
+      - 'db/iceberg/spark/parity/**'
+      - '.github/workflows/parity-oracle.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  parity-oracle:
+    name: Spark Iceberg-Gold ⇄ serving parity oracle
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Bring up real engines (Postgres + StarRocks + Redpanda + MinIO + Iceberg REST + Spark sink)
+        run: |
+          # --wait blocks until every service's compose healthcheck is healthy (StarRocks FE + the
+          # iceberg-rest fixture both have a cold start; their healthchecks + start_period account for it).
+          # core = postgres + starrocks(+init); ingest = redpanda; lakehouse = minio + iceberg-rest +
+          # the continuous Spark Bronze sink (the parity container joins redpanda's netns, exactly like
+          # the Bronze parity oracle, so iceberg-rest/starrocks/postgres/minio service DNS resolves).
+          docker compose --profile core --profile ingest --profile lakehouse up -d --wait
+
+      - name: Run the parity oracle (all marts; SKIPs absent Iceberg marts in Phase 0)
+        env:
+          # REDPANDA_CONTAINER is the netns the one-shot Spark container joins (matches run-parity.sh default,
+          # but pin it from the actual compose project name so a renamed project still resolves).
+          PARITY_MART: ${{ github.event.inputs.mart || 'all' }}
+        run: |
+          # Resolve the running redpanda container name (compose project prefix can vary in CI).
+          RP=$(docker ps --filter "name=redpanda" --format '{{.Names}}' | head -n1)
+          echo "redpanda container = ${RP:-<none>}"
+          REDPANDA_CONTAINER="${RP:-brainv3-redpanda-1}" \
+            db/iceberg/spark/parity/run-parity.sh
+
+      - name: Dump engine logs on failure
+        if: failure()
+        run: docker compose --profile core --profile ingest --profile lakehouse logs --tail 200
+
+      - name: Tear down
+        if: always()
+        run: docker compose --profile core --profile ingest --profile lakehouse down -v

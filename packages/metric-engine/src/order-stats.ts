@@ -54,7 +54,7 @@ export async function computeOrderStats(
          COUNT(DISTINCT order_id) AS order_count,
          SUM(CASE WHEN event_type <> 'provisional_recognition' THEN amount_minor ELSE 0 END) AS realized_minor,
          COUNT(DISTINCT CASE WHEN event_type IN ('rto_reversal', 'cod_rto_clawback') THEN order_id END) AS rto_count
-       FROM brain_gold.gold_revenue_ledger
+       FROM brain_serving.mv_gold_revenue_ledger
        WHERE CAST(occurred_at AS DATE) <= ?
          AND ${BRAND_PREDICATE}
        GROUP BY currency_code

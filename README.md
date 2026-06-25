@@ -10,8 +10,8 @@ the structure here matches **doc 05 §2–§3**.
 - `packages/` — shared libs: contracts (Zod = source of truth), metric-engine, money,
   feature-flags, tenant-context, identity-core, audit, db, events, observability,
   ai-gateway-client, config, ui
-- `db/` — migrations · starrocks · iceberg · dbt   ·   `infra/` — terraform · helm · argocd
-- `tools/` — parity-oracle · eval · isolation-fuzz · seed   ·   `docs/` — adr · runbooks · playbooks · architecture
+- `db/` — migrations · starrocks (serving MVs + ops + teardown) · iceberg (Spark medallion)   ·   `infra/` — terraform · helm · argocd  _(Brain V4: dbt removed — Spark is sole compute)_
+- `tools/` — parity-oracle · eval · isolation-fuzz · seed · lint (v4-naming-guard)   ·   `docs/` — adr · runbooks · playbooks · architecture
 
 ## The two rules that keep it a *modular* monolith
 1. `apps/` may import `packages/`, never another `apps/`; `packages/` never import `apps/`.
@@ -58,31 +58,30 @@ docker exec -i brainv3-postgres-1 psql -U brain -d brain \
 # 4. Secrets/KMS into LocalStack (jwt + cookie + shopify/meta/google secrets, KMS CMK, brand keyring)
 pnpm bootstrap
 
-# 5. WIRE the lakehouse read path + BUILD the Gold marts (ONE command).
-#    `make insights-pipeline` = create the brain_oltp_pg JDBC catalog + Postgres read-shim
-#    (silver-catalog), then dbt-build the insight marts (revenue/executive/customer/cac) from real
-#    Postgres data (ledger_source=pg, the dev default). Without the catalog/shim, dbt fails with
-#    "Unknown catalog 'brain_oltp_pg'". Single-threaded (macOS dbt multiprocessing spawn crash).
-make insights-pipeline
-#    Full marts incl. Iceberg-gated touchpoint/journey (separate epic; needs the Bronze flip):
-#    cd db/dbt && DBT_PROFILES_DIR=profiles ../../.dbt-venv/bin/dbt build --full-refresh --threads 1 --profiles-dir profiles ; cd ../..
+# 5. MATERIALIZE the V4 analytics layer (ONE command). Brain V4 removed dbt: the transform is
+#    Spark-on-Iceberg. `pnpm dev:v4-refresh` (ONESHOT=1 for one pass) runs every Spark Silver job
+#    (Bronze → Iceberg brain_silver), then every Spark Gold job (Silver → Iceberg brain_gold), then
+#    SYNC-refreshes the brain_serving mv_* materialized views the dashboards read. Needs the lakehouse
+#    profile up (minio + iceberg-rest) — `pnpm dev:full` brings it up.
+ONESHOT=1 pnpm dev:v4-refresh
 
 # 6. START all 4 apps (local-prod = NODE_ENV=production vs LocalStack; loads .env.local-prod)
 pnpm dev
 ```
 
 Then open **http://localhost:3000** → register → onboard a brand → connect Shopify → **Sync now**.
-Real events flow **Collector → Redpanda → Spark sink → Iceberg Bronze → StarRocks**; re-run step 5
-(`make insights-pipeline`) to repopulate Gold and the dashboards/`/insights` light up.
+Real events flow **Collector → Redpanda → Spark sink → Iceberg Bronze → Spark Silver/Gold → StarRocks
+serving mv_***; re-run step 5 (`ONESHOT=1 pnpm dev:v4-refresh`) to repopulate Gold and the
+dashboards/`/insights` light up. Or run `pnpm dev:v4-refresh` (no ONESHOT) to keep it fresh on a loop.
 
 **Plain dev mode** (not prod-faithful): skip steps **4 & 6**, run `pnpm dev` instead — all else identical.
 
 ### Gotchas (all expected, not bugs)
 - **Marts/dashboards are empty until real data flows** — the honest-empty state by design.
-  Data appears only after register → connect → sync → `make insights-pipeline`.
-- **`Unknown catalog 'brain_oltp_pg'` from dbt → you skipped the catalog wiring.** `make insights-pipeline`
-  (or `make silver-catalog`) creates the JDBC catalog + Postgres read-shim it needs. Not auto-created by
-  `starrocks-init` (the shim runs against Postgres, which only exists after migrations).
+  Data appears only after register → connect → sync → `ONESHOT=1 pnpm dev:v4-refresh`.
+- **Dashboards stale after a sync?** The V4 serving mv_* only track Iceberg after the Spark Silver/Gold
+  jobs run. Re-run `ONESHOT=1 pnpm dev:v4-refresh` (or leave `pnpm dev:v4-refresh` looping) to
+  re-materialize Iceberg + SYNC-refresh the brain_serving mv_*.
 - **Customer marts (churn/VIP scores) stay empty without identity resolution** — they need `brain_id`
   on the order ledger; revenue + RTO insights work from order data alone. Historical ledger rows:
   `tools/backfill/backfill-ledger-brain-id.sh <brand>` (after migration 0095).

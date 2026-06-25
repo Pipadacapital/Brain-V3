@@ -87,10 +87,14 @@ interface ReversalRow {
 }
 
 /**
- * MEDALLION REALIGNMENT (Epic 2): BOTH the attribution CREDIT BASIS (brain_gold.gold_revenue_ledger)
- * and the CREDIT LEDGER (brain_gold.gold_attribution_credit) are now in the lakehouse — the PG
- * realized_revenue_ledger + attribution_credit_ledger are dropped. The already-credited idempotency
- * filter reads the gold credit ledger via the same Silver seam.
+ * BRAIN V4 PHASE 6a: the attribution credit LEDGER is now produced SOLELY by the Spark gold job
+ * (db/iceberg/spark/gold/gold_attribution_credit.py). This driver still RESOLVES journeys and DRIVES the
+ * (now read-only) AttributionCreditWriter so the deterministic compute + the BFF reconcile route + the
+ * live tests keep exercising the exact apportionment math — but the writer no longer persists (Phase 6a),
+ * so this is effectively a parity/observability driver, not a producer. Every read below targets the
+ * Phase-3 serving MVs (brain_serving.mv_gold_*) — there are NO references to the retiring dbt-internal
+ * brain_gold DB here. The credit BASIS (recognized revenue) reads brain_serving.mv_gold_revenue_ledger;
+ * the already-credited idempotency filter reads brain_serving.mv_gold_attribution_credit (Spark-served).
  */
 
 /** order_ids already credited for (brand, model) — the idempotency filter (gold credit ledger). */
@@ -102,7 +106,7 @@ async function readCreditedOrderIds(
   const rows = await withSilverBrand(srPool, brandId, async (scope) =>
     scope.runScoped<{ order_id: string }>(
       `SELECT DISTINCT order_id
-         FROM brain_gold.gold_attribution_credit
+         FROM brain_serving.mv_gold_attribution_credit
         WHERE row_kind = 'credit' AND model_id = ? AND ${BRAND_PREDICATE}`,
       [model],
     ),
@@ -121,7 +125,7 @@ async function readUncreditedRecognized(
   const rows = await withSilverBrand(deps.srPool, brandId, async (scope) =>
     scope.runScoped<FinalizedOrderRow>(
       `SELECT order_id, brain_id, CAST(amount_minor AS CHAR) AS amount_minor, currency_code, occurred_at
-         FROM brain_gold.gold_revenue_ledger
+         FROM brain_serving.mv_gold_revenue_ledger
         WHERE ${BRAND_PREDICATE} AND event_type IN (${inList})`,
       [],
     ),
@@ -143,7 +147,7 @@ async function readReversalsOnCredited(
   const rows = await withSilverBrand(deps.srPool, brandId, async (scope) =>
     scope.runScoped<ReversalRow>(
       `SELECT order_id, event_type, ledger_event_id, CAST(amount_minor AS CHAR) AS amount_minor, occurred_at
-         FROM brain_gold.gold_revenue_ledger
+         FROM brain_serving.mv_gold_revenue_ledger
         WHERE ${BRAND_PREDICATE} AND event_type IN (${inList})`,
       [],
     ),
@@ -162,7 +166,7 @@ async function resolveBrainAnonId(
   const rows = await withSilverBrand(srPool, brandId, async (scope) =>
     scope.runScoped<{ brain_anon_id: string }>(
       `SELECT brain_anon_id
-         FROM brain_silver.silver_touchpoint
+         FROM brain_serving.mv_silver_touchpoint
         WHERE stitched_brain_id = ?
           AND ${BRAND_PREDICATE}
         ORDER BY touch_seq ASC

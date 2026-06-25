@@ -67,9 +67,9 @@ function shortId(id: string | null): string {
   return id.length > 10 ? `${id.slice(0, 8)}…` : id;
 }
 
-/** 'product_id' → 'product id' for a readable detail label. */
+/** 'product_id' / 'utm.source' → 'product id' / 'utm source' for a readable detail label. */
 function humanizeKey(key: string): string {
-  return key.replace(/_/g, ' ');
+  return key.replace(/[._]/g, ' ');
 }
 
 function EventRow({ row }: { row: AnalyticsRecentEventRow }) {
@@ -139,7 +139,7 @@ export function EventExplorer() {
           )}
         </span>
       }
-      description="Events received through your pixel (type, time, anonymized ids, and event details). Updates live. Connector data (orders, spend) is not shown here. No raw personal data is shown."
+      description="Events received through your pixel — type, time, anonymized ids, and the full captured context (UTMs, click ids like gclid/fbclid, device, referrer, landing path, …). Updates live. Connector data (orders, spend) is not shown here. No raw personal data is shown."
       data-testid="event-explorer"
     >
       {isLoading ? (

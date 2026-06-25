@@ -14,6 +14,7 @@ import {
   getRevenueTimeseries,
   getKpiSummary,
   getRecognitionBreakdown,
+  getRevenueMonthly,
   getRecentActivity,
   getOrdersTimeseries,
   getOrderStats,
@@ -301,6 +302,31 @@ export function registerAnalyticsCoreRoutes(fastify: FastifyInstance, deps: BffD
       // Epic 1: recognition breakdown now reads the lakehouse (gold_revenue_ledger), not the PG ledger.
       const result = await getRecognitionBreakdown(auth.brandId, asOf, { srPool });
 
+      return reply.send({ request_id: requestId, data: result });
+    },
+  );
+
+  /**
+   * GET /api/v1/analytics/revenue-monthly
+   * Per-month revenue-lifecycle breakdown from the Gold monthly mart
+   * (gold_revenue_analytics): placed → confirmed → cancelled, realized value +
+   * order/terminal counts. Drives MoM growth, the recognition funnel, and the
+   * net-realized series. Brand from session (D-1); honest no_data when empty.
+   */
+  fastify.get(
+    '/api/v1/analytics/revenue-monthly',
+    { preHandler: [bffProtectedPreHandler] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const auth = (request as AuthenticatedRequest).auth;
+      if (!auth.brandId) {
+        return reply.send({ request_id: requestId, data: { state: 'no_data' } });
+      }
+      if (!srPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (StarRocks) not available' } });
+      }
+
+      const result = await getRevenueMonthly(auth.brandId, { srPool });
       return reply.send({ request_id: requestId, data: result });
     },
   );

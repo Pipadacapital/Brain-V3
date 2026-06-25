@@ -138,7 +138,7 @@ export async function computeInsights(
               SUM(CASE WHEN occurred_at >= '${window.current.from} 00:00:00' THEN amount_minor ELSE 0 END) AS cur_minor,
               SUM(CASE WHEN occurred_at >= '${window.prior.from} 00:00:00'
                         AND occurred_at <  '${window.current.from} 00:00:00' THEN amount_minor ELSE 0 END) AS prior_minor
-         FROM brain_gold.gold_revenue_ledger
+         FROM brain_serving.mv_gold_revenue_ledger
         WHERE occurred_at >= '${window.prior.from} 00:00:00'
           AND ${BRAND_PREDICATE}
         GROUP BY currency_code`,
@@ -168,7 +168,7 @@ export async function computeInsights(
                 SUM(CASE WHEN occurred_at >= '${window.current.from} 00:00:00' THEN amount_minor ELSE 0 END) AS cur_minor,
                 SUM(CASE WHEN occurred_at >= '${window.prior.from} 00:00:00'
                           AND occurred_at <  '${window.current.from} 00:00:00' THEN amount_minor ELSE 0 END) AS prior_minor
-           FROM brain_gold.gold_revenue_ledger
+           FROM brain_serving.mv_gold_revenue_ledger
           WHERE occurred_at >= '${window.prior.from} 00:00:00'
             AND currency_code = ?
             AND ${BRAND_PREDICATE}
@@ -242,7 +242,7 @@ export async function computeInsights(
               COALESCE(SUM(total_orders), 0)         AS total_orders,
               COALESCE(SUM(terminal_orders), 0)      AS terminal_orders,
               COALESCE(SUM(rto_orders), 0)           AS rto_orders
-         FROM brain_gold.gold_executive_metrics
+         FROM brain_serving.mv_gold_executive_metrics
         WHERE ${BRAND_PREDICATE}
         GROUP BY currency_code`,
       [],
@@ -296,7 +296,7 @@ export async function computeInsights(
       `SELECT currency_code,
               COUNT(*)                       AS high_risk_customers,
               COALESCE(SUM(lifetime_value_minor), 0) AS ltv_at_risk_minor
-         FROM brain_gold.gold_customer_scores
+         FROM brain_serving.mv_gold_customer_scores
         WHERE churn_risk = 'high'
           AND ${BRAND_PREDICATE}
         GROUP BY currency_code`,
@@ -335,7 +335,7 @@ export async function computeInsights(
       `SELECT currency_code,
               COUNT(*)                               AS vip_customers,
               COALESCE(SUM(lifetime_value_minor), 0) AS vip_ltv_minor
-         FROM brain_gold.gold_customer_scores
+         FROM brain_serving.mv_gold_customer_scores
         WHERE monetary_score = 5
           AND ${BRAND_PREDICATE}
         GROUP BY currency_code`,
@@ -375,7 +375,7 @@ export async function computeInsights(
       `SELECT currency_code, acquisition_month,
               COALESCE(SUM(acquisition_spend_minor), 0) AS spend_minor,
               COALESCE(SUM(new_customers), 0)           AS new_customers
-         FROM brain_gold.gold_cac
+         FROM brain_serving.mv_gold_cac
         WHERE ${BRAND_PREDICATE}
         GROUP BY currency_code, acquisition_month
         ORDER BY acquisition_month DESC`,
@@ -433,7 +433,7 @@ export async function computeInsights(
     // ad spend (the ad-connector signal). ROAS<1 = losing money on ads (high); <2 = thin (medium).
     const spendRows = await scope.runScoped<{ currency_code: string; spend_minor: string | number }>(
       `SELECT currency_code, COALESCE(SUM(spend_minor), 0) AS spend_minor
-         FROM brain_silver.silver_marketing_spend
+         FROM brain_serving.mv_silver_marketing_spend
         WHERE stat_date >= '${window.current.from}' AND stat_date <= '${window.current.to}'
           AND ${BRAND_PREDICATE}
         GROUP BY currency_code`,
@@ -546,7 +546,7 @@ export async function computeInsights(
     }>(
       `SELECT currency_code, COALESCE(title, '(untitled)') AS title,
               COALESCE(SUM(line_total_minor), 0) AS prod_minor
-         FROM brain_silver.silver_order_line
+         FROM brain_serving.mv_silver_order_line
         WHERE ${BRAND_PREDICATE} AND line_total_minor IS NOT NULL
         GROUP BY currency_code, title`,
       [],

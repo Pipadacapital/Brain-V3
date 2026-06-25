@@ -8,7 +8,7 @@
  * engine — NO ad-hoc SUM(amount_minor) anywhere in this module (D-3).
  *
  * The ONLY additional SQL is the existence check (D-2):
- *   SELECT 1 FROM brain_gold.gold_revenue_ledger WHERE <brand> LIMIT 1
+ *   SELECT 1 FROM brain_serving.mv_gold_revenue_ledger WHERE <brand> LIMIT 1
  * This is an existence signal, not a value computation — explicitly allowed by D-2.
  *
  * Honest-empty-state (D-2, HIGH-1 from CTO review):
@@ -66,7 +66,7 @@ export async function getRevenueMetrics(
   // source), scoped per-brand at the Silver seam (BRAND_PREDICATE).
   const hasData = await withSilverBrand(deps.srPool, brandId, async (scope) => {
     const rows = await scope.runScoped<{ one: number }>(
-      `SELECT 1 AS one FROM brain_gold.gold_revenue_ledger WHERE ${BRAND_PREDICATE} LIMIT 1`,
+      `SELECT 1 AS one FROM brain_serving.mv_gold_revenue_ledger WHERE ${BRAND_PREDICATE} LIMIT 1`,
       [],
     );
     return rows.length > 0;

@@ -43,7 +43,7 @@ export async function computeRtoRiskSignal(
          COUNT(DISTINCT CASE WHEN event_type = 'provisional_recognition' THEN order_id END) AS order_count,
          COUNT(CASE WHEN event_type = 'cod_rto_clawback' THEN 1 END) AS rto_count,
          COALESCE(SUM(CASE WHEN event_type = 'cod_rto_clawback' THEN ABS(amount_minor) ELSE 0 END), 0) AS rto_gmv_minor
-       FROM brain_gold.gold_revenue_ledger
+       FROM brain_serving.mv_gold_revenue_ledger
        WHERE ${BRAND_PREDICATE}`,
       [],
     );
@@ -69,7 +69,7 @@ export async function computeRealizationSignal(
          COALESCE(SUM(CASE WHEN event_type = 'provisional_recognition' THEN amount_minor ELSE 0 END), 0) AS provisional_minor,
          COALESCE(SUM(CASE WHEN event_type <> 'provisional_recognition' THEN amount_minor ELSE 0 END), 0) AS realized_minor,
          COUNT(DISTINCT order_id) AS order_count
-       FROM brain_gold.gold_revenue_ledger
+       FROM brain_serving.mv_gold_revenue_ledger
        WHERE ${BRAND_PREDICATE}`,
       [],
     );
@@ -95,7 +95,7 @@ export async function computeCm2RevenueSignal(
       `SELECT
          COALESCE(SUM(CASE WHEN event_type <> 'provisional_recognition' THEN amount_minor ELSE 0 END), 0) AS net_revenue_minor,
          COUNT(DISTINCT CASE WHEN event_type <> 'provisional_recognition' THEN order_id END) AS order_count
-       FROM brain_gold.gold_revenue_ledger
+       FROM brain_serving.mv_gold_revenue_ledger
        WHERE ${BRAND_PREDICATE}`,
       [],
     );
@@ -131,7 +131,7 @@ export async function computeCm2MarketingSignal(
   return withSilverBrand(deps.srPool, brandId, async (scope) => {
     const rows = await scope.runScoped<{ marketing_minor: string | number }>(
       `SELECT COALESCE(SUM(spend_minor), 0) AS marketing_minor
-         FROM brain_silver.silver_marketing_spend
+         FROM brain_serving.mv_silver_marketing_spend
         WHERE currency_code = '${safeCcy}'
           AND ${BRAND_PREDICATE}`,
       [],

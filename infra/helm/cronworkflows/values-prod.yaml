@@ -21,6 +21,14 @@ sparkBronze:
     tag: ""
     digest: ""
 
+# spark V4 Silver/Gold transform + mv refresh crons — same image as sparkBronze (the Dockerfile carries the
+# V4 marts). Flip enabled:true once the prod V4 cluster + digest are ready (gated off by default).
+sparkV4:
+  image:
+    repository: REPLACE_WITH_ECR_REGISTRY/brain-spark-bronze-prod
+    tag: ""
+    digest: ""
+
 envSecretName: core-env
 
 serviceAccount:

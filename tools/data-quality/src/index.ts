@@ -11,7 +11,7 @@
  *   - reconciliation: Bronze row count vs Redpanda offset
  *
  * @see data-quality skill
- * @see db/dbt/tests/_dq_stubs.yml — dbt test stubs
+ *      (dbt was removed in Brain V4 — the transform is now Spark-on-Iceberg under db/iceberg/spark/)
  */
 
 import { z } from 'zod';

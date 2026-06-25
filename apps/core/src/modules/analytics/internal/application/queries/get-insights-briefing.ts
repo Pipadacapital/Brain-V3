@@ -23,10 +23,10 @@ import { computeInsights, withSilverBrand, BRAND_PREDICATE } from '@brain/metric
  * briefing is badged 'synthetic' (MK-1..MK-4: synthetic demo data must never read as live).
  */
 const INSIGHT_GOLD_MARTS = [
-  'brain_gold.gold_revenue_ledger',
-  'brain_gold.gold_executive_metrics',
-  'brain_gold.gold_customer_scores',
-  'brain_gold.gold_cac',
+  'brain_serving.mv_gold_revenue_ledger',
+  'brain_serving.mv_gold_executive_metrics',
+  'brain_serving.mv_gold_customer_scores',
+  'brain_serving.mv_gold_cac',
 ] as const;
 
 export interface InsightDto {
@@ -166,7 +166,7 @@ async function resolveBriefingFreshness(
   try {
     return await withSilverBrand(deps.srPool, brandId, async (scope) => {
       const rows = await scope.runScoped<{ as_of: string | null }>(
-        `SELECT CAST(MAX(updated_at) AS STRING) AS as_of FROM brain_gold.gold_revenue_ledger
+        `SELECT CAST(MAX(updated_at) AS STRING) AS as_of FROM brain_serving.mv_gold_revenue_ledger
           WHERE ${BRAND_PREDICATE}`,
         [],
       );

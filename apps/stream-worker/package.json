@@ -27,7 +27,6 @@
     "@brain/feature-store": "workspace:*",
     "@brain/gokwik-mapper": "workspace:*",
     "@brain/identity-core": "workspace:*",
-    "@brain/identity-graph": "workspace:*",
     "@brain/metric-engine": "workspace:*",
     "@brain/observability": "workspace:*",
     "@brain/pii-vault": "workspace:*",

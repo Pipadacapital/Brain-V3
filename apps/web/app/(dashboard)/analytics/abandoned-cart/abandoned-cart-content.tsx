@@ -22,23 +22,11 @@ import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
 import { KpiTile } from '@/components/analytics/kpi-tile';
+import { DateRangeFilter, initialRange, type DateRange } from '@/components/ui/date-range-filter';
 import { useAbandonedCart } from '@/lib/hooks/use-analytics';
 import type { AnalyticsAbandonedCartResponse } from '@/lib/api/types';
 
 type AbandonedHasData = Extract<AnalyticsAbandonedCartResponse, { state: 'has_data' }>;
-
-const RANGE_PRESETS = [
-  { key: '7', label: 'Last 7 days', days: 7 },
-  { key: '30', label: 'Last 30 days', days: 30 },
-  { key: '90', label: 'Last 90 days', days: 90 },
-] as const;
-type RangeKey = (typeof RANGE_PRESETS)[number]['key'];
-
-function rangeFor(days: number): { from: string; to: string } {
-  const to = new Date().toISOString().split('T')[0] as string;
-  const from = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().split('T')[0] as string;
-  return { from, to };
-}
 
 function num(s: string): string {
   return Number(s).toLocaleString('en-IN');
@@ -115,11 +103,9 @@ function RecoveryBar({ data }: { data: AbandonedHasData }) {
 }
 
 export function AbandonedCartContent() {
-  const [rangeKey, setRangeKey] = useState<RangeKey>('30');
-  const preset = RANGE_PRESETS.find((p) => p.key === rangeKey) ?? RANGE_PRESETS[1];
-  const { from, to } = rangeFor(preset.days);
+  const [range, setRange] = useState<DateRange>(() => initialRange());
 
-  const q = useAbandonedCart({ from, to });
+  const q = useAbandonedCart({ from: range.from, to: range.to });
   const data = q.data;
 
   return (
@@ -141,23 +127,7 @@ export function AbandonedCartContent() {
       <section aria-label="Cart recovery">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
           <h2 className="text-lg font-semibold text-foreground">Cart recovery</h2>
-          <div role="group" aria-label="Date range" className="inline-flex rounded-md border border-border p-0.5">
-            {RANGE_PRESETS.map((p) => (
-              <button
-                key={p.key}
-                type="button"
-                onClick={() => setRangeKey(p.key)}
-                aria-pressed={rangeKey === p.key}
-                className={
-                  rangeKey === p.key
-                    ? 'rounded px-3 py-1 text-xs font-medium bg-foreground text-background'
-                    : 'rounded px-3 py-1 text-xs font-medium text-muted-foreground hover:text-foreground'
-                }
-              >
-                {p.label}
-              </button>
-            ))}
-          </div>
+          <DateRangeFilter value={range} onChange={setRange} aria-label="Abandoned cart date range" />
         </div>
 
         {q.isLoading && <Loading />}

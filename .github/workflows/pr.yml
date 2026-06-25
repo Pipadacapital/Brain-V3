@@ -76,7 +76,7 @@ jobs:
       # ── Ledger integrity gate — MOVED (medallion realignment, Epics 1+2) ──────────────────────
       # The former always-on PG ledger gate (SEC-BF-M2) guarded realized_revenue_ledger +
       # attribution_credit_ledger dedup/ON CONFLICT. Both PG ledgers are DROPPED (migrations 0098/0099):
-      # revenue is now the StarRocks gold revenue ledger (Bronze→silver_order_recognition→gold, dbt) and
+      # revenue is now the StarRocks gold revenue ledger (Bronze→silver_order_recognition→gold, Spark) and
       # attribution is the StarRocks gold_attribution_credit (attribution-writer). StarRocks PRIMARY KEY
       # upsert handles dedup natively, so the PG partial-index ON CONFLICT drift-guard is obsolete (its
       # test files were deleted with the tables). The equivalent integrity coverage — revenue-metrics,
@@ -104,6 +104,24 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Run C5 log-grep gate
         run: pnpm log-grep
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Brain V4 naming guard — BLOCKING. Fails on retired-dbt-DB refs (brain_gold./
+  # brain_silver.), any dbt invocation, permanent feature precompute (feature_customer_daily
+  # / brain_feature write), and Gold/Silver reads not via mv_* / rest-Iceberg.
+  # See tools/lint/v4-naming-guard.sh (--selftest proves the rules; runs first).
+  # ─────────────────────────────────────────────────────────────────────────
+  v4-naming-guard:
+    name: Brain V4 Naming Guard (no dbt / retired DBs)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Self-test the guard (proves it catches each rule)
+        run: tools/lint/v4-naming-guard.sh --selftest
+      - name: Run the V4 naming guard over the tree
+        run: tools/lint/v4-naming-guard.sh
 
   # ─────────────────────────────────────────────────────────────────────────
   # Secret scan — gitleaks (every PR diff; must never find a secret)

@@ -88,6 +88,19 @@ export function useRecognitionBreakdown(asOf?: string) {
 }
 
 /**
+ * useRevenueMonthly — per-month revenue-lifecycle breakdown from the Gold monthly
+ * mart (gold_revenue_analytics). Drives MoM growth, recognition funnel, net-realized.
+ */
+export function useRevenueMonthly() {
+  return useQuery({
+    queryKey: [...ANALYTICS_QUERY_KEY, 'revenue-monthly'],
+    queryFn: () => analyticsApi.getRevenueMonthly(),
+    staleTime: 5 * 60_000,
+    refetchInterval: 60_000,
+  });
+}
+
+/**
  * useRecentActivity — fetches the latest N ledger rows.
  * @param limit - Max rows (default 20).
  */

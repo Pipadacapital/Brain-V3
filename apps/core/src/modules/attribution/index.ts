@@ -36,11 +36,12 @@ export {
 export type { TouchpointLayerDescriptor } from './internal/touchpoint-layer.js';
 
 /**
- * Phase 5 Attribution (feat-attribution-ledger) — the credit-ledger WRITER.
- * MEDALLION REALIGNMENT (Epic 2): appends credit + clawback rows to the LAKEHOUSE ledger
- * brain_gold.gold_attribution_credit (StarRocks) — NOT PostgreSQL (dropped). The metric engine is the
- * SOLE math layer (Tier-0 deterministic); this is the I/O adapter. (createAttributionReversalHook was
- * removed — its only caller, the live-ledger consumer, was deleted with the PG revenue write path.)
+ * Phase 5 Attribution (feat-attribution-ledger) — the credit-ledger adapter.
+ * BRAIN V4 PHASE 6a: the TS write path is RETIRED — the credit ledger is now produced SOLELY by the
+ * Spark gold job (db/iceberg/spark/gold/gold_attribution_credit.py), served to the app via the serving
+ * MV brain_serving.mv_gold_attribution_credit. AttributionCreditWriter is kept (read-only: its writes are
+ * neutralized no-ops, its read-backs target the serving MV) so import paths + the deterministic math are
+ * preserved. The metric engine remains the SOLE math layer (Tier-0 deterministic).
  */
 export { AttributionCreditWriter } from './internal/credit-writer.js';
 export type {

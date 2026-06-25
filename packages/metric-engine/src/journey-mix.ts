@@ -236,7 +236,7 @@ export async function computeFirstTouchMix(
     return scope.runScoped<FirstTouchRow>(
       `SELECT channel,
               COUNT(DISTINCT brain_anon_id) AS cnt
-         FROM brain_silver.silver_touchpoint
+         FROM brain_serving.mv_silver_touchpoint
         WHERE is_first_touch = 1
           AND occurred_at >= ?
           AND occurred_at <= ?
@@ -295,7 +295,7 @@ export async function computeStitchHitRate(
     return scope.runScoped<StitchRow>(
       `SELECT COUNT(DISTINCT CASE WHEN stitched_brain_id IS NOT NULL THEN brain_anon_id END) AS stitched,
               COUNT(DISTINCT brain_anon_id) AS total
-         FROM brain_silver.silver_touchpoint
+         FROM brain_serving.mv_silver_touchpoint
         WHERE occurred_at >= ?
           AND occurred_at <= ?
           AND ${BRAND_PREDICATE}`,
@@ -336,20 +336,23 @@ export async function computeTouchpointTimeline(
     if ('orderId' in selector) {
       // Resolve the anon journey from the stitch map (deterministic read-back, D-5),
       // then fetch its touches. The seam injects ${BRAND_PREDICATE} → `brand_id = ?`
-      // against the (un-aliased) silver_touchpoint table (placed LAST so the appended
+      // against the (un-aliased) mv_silver_touchpoint table (placed LAST so the appended
       // brandId binds positionally). The stitch-map subselect is correlated to the same
-      // brand via `m.brand_id = silver_touchpoint.brand_id` (column equality — no extra
+      // brand via `m.brand_id = mv_silver_touchpoint.brand_id` (column equality — no extra
       // param), so the map row is necessarily the same brand. order_id binds first.
+      // V4 (Phase 6b): the stitch-map shim moved OFF the retiring brain_silver DB → it is now
+      // the JDBC live-read view brain_ops.connector_journey_stitch_map (over the same PG OLTP
+      // connectors.connector_journey_stitch_map via brain_oltp_pg). No Iceberg serving source yet.
       return scope.runScoped<TimelineRow>(
         `SELECT brain_anon_id, touch_seq, is_first_touch, is_last_touch,
                 occurred_at, channel, utm_source, utm_medium, utm_campaign,
                 utm_term, utm_content, fbclid, gclid, ttclid,
                 referrer_host, landing_path, stitched_brain_id, event_type
-           FROM brain_silver.silver_touchpoint
+           FROM brain_serving.mv_silver_touchpoint
           WHERE brain_anon_id IN (
               SELECT m.stitched_anon_id
-                FROM brain_silver.connector_journey_stitch_map m
-               WHERE m.brand_id = silver_touchpoint.brand_id
+                FROM brain_ops.connector_journey_stitch_map m
+               WHERE m.brand_id = mv_silver_touchpoint.brand_id
                  AND m.order_id = ?
             )
             AND ${BRAND_PREDICATE}
@@ -363,7 +366,7 @@ export async function computeTouchpointTimeline(
               occurred_at, channel, utm_source, utm_medium, utm_campaign,
               utm_term, utm_content, fbclid, gclid, ttclid,
               referrer_host, landing_path, stitched_brain_id, event_type
-         FROM brain_silver.silver_touchpoint
+         FROM brain_serving.mv_silver_touchpoint
         WHERE brain_anon_id = ?
           AND ${BRAND_PREDICATE}
         ORDER BY touch_seq ASC`,

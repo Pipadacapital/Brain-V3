@@ -9,7 +9,7 @@
  * (same EXISTS pattern as get-revenue-timeseries.ts). Within a window with no rows the
  * engine returns [] — that is an empty has_data set, distinct from no_data.
  *
- * PHASE G: reads the lakehouse Silver entity (brain_silver.silver_marketing_spend) via
+ * V4 PHASE 4b: reads the serving mv (brain_serving.mv_silver_marketing_spend) via
  * withSilverBrand — PG ad_spend_ledger is no longer a read source (write SoR only).
  */
 
@@ -55,7 +55,7 @@ export async function getAdSpendTimeseries(
   // through the brand-scoped seam (BRAND_PREDICATE → brand_id = ?), no window filter.
   const hasData = await withSilverBrand(deps.srPool, brandId, async (scope) => {
     const r = await scope.runScoped<{ has_row: number }>(
-      `SELECT 1 AS has_row FROM brain_silver.silver_marketing_spend WHERE ${BRAND_PREDICATE} LIMIT 1`,
+      `SELECT 1 AS has_row FROM brain_serving.mv_silver_marketing_spend WHERE ${BRAND_PREDICATE} LIMIT 1`,
       [],
     );
     return r.length > 0;

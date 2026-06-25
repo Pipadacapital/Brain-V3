@@ -68,11 +68,11 @@ B=<BRAND_UUID>
 # checkout.started now arriving in Bronze
 docker exec brainv3-starrocks-1 mysql -P9030 -h127.0.0.1 -uroot -N -e \
  "SELECT count(*) FROM brain_bronze_local.brain_bronze.collector_events WHERE brand_id='$B' AND event_type='checkout.started';"
-make insights-pipeline   # rebuild funnel
+ONESHOT=1 pnpm dev:v4-refresh   # rebuild funnel (Spark Silver/Gold → brain_serving mv_*; dbt removed in V4)
 # funnel now has a non-zero checkout stage; the journey→order stitch (clientId) populates:
 tools/backfill/backfill-journey-stitch-map.sh $B   # once checkout_completed carries order_id + clientId
 docker exec brainv3-starrocks-1 mysql -P9030 -h127.0.0.1 -uroot -N -e \
- "SELECT count(*) FROM brain_gold.gold_attribution_paths WHERE brand_id='$B';"
+ "SELECT count(*) FROM brain_serving.mv_gold_attribution_paths WHERE brand_id='$B';"
 ```
 
 ## What it unlocks

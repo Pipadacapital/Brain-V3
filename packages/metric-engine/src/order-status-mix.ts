@@ -133,7 +133,7 @@ export async function computeOrderStatusMix(
               COUNT(*)                       AS cnt,
               COALESCE(SUM(order_value_minor), 0) AS value_minor,
               MIN(currency_code)             AS currency_code
-         FROM brain_silver.silver_order_state
+         FROM brain_serving.mv_silver_order_state
         WHERE state_effective_at >= ?
           AND state_effective_at <= ?
           AND ${BRAND_PREDICATE}

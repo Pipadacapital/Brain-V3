@@ -33,6 +33,7 @@ import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
 import { EmptyState } from '@/components/ui/empty-state';
+import { TableSearch, matchesQuery } from '@/components/ui/table-search';
 import {
   useBillingPeriods,
   useSealPeriod,
@@ -361,8 +362,14 @@ function BillDetail({ period }: { period: string }) {
 export function BillingContent() {
   const [period, setPeriod] = React.useState(currentPeriod());
   const [selectedPeriod, setSelectedPeriod] = React.useState<string | null>(null);
+  const [periodsQ, setPeriodsQ] = React.useState('');
   const { data, isLoading, error, refetch } = useBillingPeriods();
   const seal = useSealPeriod();
+
+  const allPeriods = data?.state === 'has_data' ? data.periods : [];
+  const filteredPeriods = allPeriods.filter((p) =>
+    matchesQuery(periodsQ, p.billing_period, p.as_of_date),
+  );
 
   function onSeal(e: React.FormEvent) {
     e.preventDefault();
@@ -430,10 +437,20 @@ export function BillingContent() {
       {/* ── Sealed periods ───────────────────────────────────────────────── */}
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <Receipt className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
-            Sealed periods
-          </CardTitle>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Receipt className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+              Sealed periods
+            </CardTitle>
+            {allPeriods.length > 0 && (
+              <TableSearch
+                value={periodsQ}
+                onChange={setPeriodsQ}
+                placeholder="Search periods…"
+                aria-label="Search sealed billing periods"
+              />
+            )}
+          </div>
         </CardHeader>
         <CardContent>
           {isLoading ? (
@@ -450,6 +467,10 @@ export function BillingContent() {
               title="No periods sealed yet"
               description="Seal a billing period above to meter this brand's realized GMV. Once a period is sealed its figure is immutable."
             />
+          ) : filteredPeriods.length === 0 ? (
+            <p className="py-4 text-sm text-muted-foreground" role="status">
+              No matching periods for &ldquo;{periodsQ}&rdquo;.
+            </p>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
@@ -465,7 +486,7 @@ export function BillingContent() {
                   </tr>
                 </thead>
                 <tbody>
-                  {data.periods.map((p) => (
+                  {filteredPeriods.map((p) => (
                     <tr key={p.billing_period} className="border-b last:border-0">
                       <th scope="row" className="py-2 pr-4 font-medium">
                         <span className="inline-flex items-center gap-1.5">

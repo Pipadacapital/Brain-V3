@@ -1,23 +1,22 @@
 /**
- * index.test.ts — ISOLATION unit tests for AttributionCreditWriter (the SOLE writer of
- * brain_gold.gold_attribution_credit). NO DB: the StarRocks pool (SilverPool) is mocked and the
- * real metric-engine compute + the real withSilverBrand seam run unmocked, so these tests exercise
- * the writer's true SQL/IO behavior end-to-end against a fake pool.
+ * index.test.ts — ISOLATION unit tests for AttributionCreditWriter.
  *
- * The pool is faked at two surfaces the writer uses:
- *   • srPool.query(sql, params)            — the gold-table reads (saved credits, clawed-back total,
- *                                            existing-id pre-filter) + the batched INSERT.
- *   • srPool.getConnection() → conn.query  — used by withSilverBrand (SET session var + the
- *                                            silver_touchpoint touch read).
- * A FakePool routes each call by a SQL substring to caller-supplied handlers and CAPTURES every
- * INSERT so the assertions inspect exactly what was written (rows + per-touch money).
+ * BRAIN V4 PHASE 6a: the TS WRITE PATH IS RETIRED. The attribution credit ledger is now produced SOLELY
+ * by the Spark gold job (db/iceberg/spark/gold/gold_attribution_credit.py). AttributionCreditWriter is
+ * kept (read-only) so the reconcile driver, BFF reconcile route and live tests keep their import paths +
+ * the deterministic compute keeps running — but appendRows() no longer issues an INSERT.
  *
- * Cases:
- *   (a) writeCredit idempotency — a re-write whose credit_ids are already present writes NOTHING.
- *   (b) writeClawback R-11 cumulative clamp — zero / exact / exceeding / multiple-partial reversals
- *       never let Σ|clawback| exceed Σcredit (and never re-apportion the saved weights).
- *   (c) writeDataDrivenCredit — Markov weights distribute to EXACT integer minor units summing to the
- *       basis (no float drift), money stays signed BIGINT.
+ * What these tests now lock down (the RETIRED contract):
+ *   • The writer issues NO INSERT, EVER (Spark is the sole producer — a second writer would re-create the
+ *     dual-writer debt and re-depend on the retiring dbt-internal brain_gold DB).
+ *   • The deterministic compute STILL runs: every produced credit/clawback row is reported as `suppressed`
+ *     (count == produced rows), `inserted` is always 0, so callers that gate on inserted>0 honestly report
+ *     0 newly-credited from the TS path.
+ *   • The R-11 cumulative clawback clamp (no over-claw, saved weights never re-apportioned) STILL runs
+ *     through the read-backs (which now read the serving MV brain_serving.mv_gold_attribution_credit).
+ *
+ * NO DB: the StarRocks pool (SilverPool) is mocked; the real metric-engine compute + the real
+ * withSilverBrand seam run unmocked. The FakePool ASSERTS no INSERT is ever issued.
  */
 import { describe, it, expect, beforeEach } from 'vitest';
 import type { SavedCreditRow } from '@brain/metric-engine';
@@ -56,25 +55,13 @@ function touch(seq: number, channel: string, extra: Partial<FakeTouch> = {}): Fa
   };
 }
 
-/** A captured INSERT — the flat params the writer pushed, regrouped per row (22 cols + NOW() literal). */
-interface CapturedInsert {
-  rowCount: number;
-  /** credited_revenue_minor (col 11, 0-based index 10) per row, as the writer serialized it (string). */
-  creditedMinor: string[];
-  /** row_kind (col 9, index 8) per row. */
-  rowKinds: string[];
-  /** weight_fraction (col 10, index 9) per row. */
-  weightFractions: string[];
-}
-
 /**
  * A fake SilverPool. `touches` are returned by the silver_touchpoint read (via getConnection); the
- * gold-table reads are served by handlers keyed on a SQL marker. Every INSERT is captured.
+ * read-back queries (saved credits / clawed-back total) are served from the serving MV by SQL marker.
+ * RETIRED-CONTRACT GUARD: an INSERT is a hard test failure (the write path must stay retired).
  */
 class FakePool {
-  inserts: CapturedInsert[] = [];
-  /** credit_ids the gold table already holds (drives the existing-id pre-filter + saved-credit read). */
-  existingCreditIds = new Set<string>();
+  insertAttempts = 0;
   savedCredits: SavedCreditRow[] = [];
   clawedBackTotalMinor = 0n; // POSITIVE magnitude the writer would read back (SUM is negative in-store)
   private touches: FakeTouch[] = [];
@@ -83,40 +70,19 @@ class FakePool {
     this.touches = t;
   }
 
-  /** The 22 INSERT cols, 0-based: 8=row_kind, 9=weight_fraction, 10=credited_revenue_minor. */
-  private capture(params: unknown[]): void {
-    const COLS = 22;
-    const rowCount = params.length / COLS;
-    const creditedMinor: string[] = [];
-    const rowKinds: string[] = [];
-    const weightFractions: string[] = [];
-    for (let r = 0; r < rowCount; r++) {
-      const base = r * COLS;
-      rowKinds.push(String(params[base + 8]));
-      weightFractions.push(String(params[base + 9]));
-      creditedMinor.push(String(params[base + 10]));
+  // srPool.query — the serving-MV read-backs ONLY; an INSERT must never happen (retired write path).
+  async query(sql: string): Promise<[unknown, unknown]> {
+    if (sql.trimStart().toUpperCase().startsWith('INSERT')) {
+      this.insertAttempts += 1;
+      throw new Error('RETIRED: AttributionCreditWriter must NOT issue an INSERT (Spark is the sole producer)');
     }
-    this.inserts.push({ rowCount, creditedMinor, rowKinds, weightFractions });
-  }
-
-  // srPool.query — the gold-table reads + the batched INSERT.
-  async query(sql: string, params: unknown[] = []): Promise<[unknown, unknown]> {
-    if (sql.startsWith('INSERT INTO')) {
-      this.capture(params);
-      return [{}, undefined];
-    }
-    // readSavedCredits — SELECT ... row_kind = 'credit'
+    // readSavedCredits — SELECT ... row_kind = 'credit'  (now from brain_serving.mv_gold_attribution_credit)
     if (sql.includes("row_kind = 'credit'")) {
       return [this.savedCredits.map(savedToStoreRow), undefined];
     }
     // readClawedBackTotal — SUM(...) ... row_kind = 'clawback'  (store holds it negative)
     if (sql.includes("row_kind = 'clawback'")) {
       return [[{ total: (-this.clawedBackTotalMinor).toString() }], undefined];
-    }
-    // appendRows existing-id pre-filter — SELECT credit_id ... credit_id IN (...)
-    if (sql.includes('credit_id IN (')) {
-      const present = [...this.existingCreditIds].map((id) => ({ credit_id: id }));
-      return [present, undefined];
     }
     throw new Error(`FakePool.query: unhandled SQL: ${sql.slice(0, 80)}`);
   }
@@ -184,9 +150,8 @@ const clawbackParams = (over: Partial<WriteClawbackParams> = {}): WriteClawbackP
 
 /**
  * Build the SAVED credit rows for a 2-touch (equal-split) journey so the clawback path has a real,
- * weight-sum-valid basis (Σweight == 1.0). For last_touch on 2 touches, last touch gets 100%; use a
- * 2-touch linear-style equal split here by writing the weights explicitly (the writer's clawback path
- * re-derives clawback from these SAVED weights — never re-apportions).
+ * weight-sum-valid basis (Σweight == 1.0). The clawback path re-derives clawback from these SAVED
+ * weights — never re-apportions.
  */
 function savedTwoTouchEqual(total: bigint): SavedCreditRow[] {
   const half = total / 2n;
@@ -207,7 +172,7 @@ function savedTwoTouchEqual(total: bigint): SavedCreditRow[] {
   ];
 }
 
-describe('AttributionCreditWriter — writeCredit idempotency', () => {
+describe('AttributionCreditWriter — writeCredit (RETIRED write path, Phase 6a)', () => {
   let pool: FakePool;
   let writer: AttributionCreditWriter;
   beforeEach(() => {
@@ -216,54 +181,22 @@ describe('AttributionCreditWriter — writeCredit idempotency', () => {
     pool.setTouches([touch(1, 'paid_meta'), touch(2, 'referral')]);
   });
 
-  it('(a) writes the credit rows on first write', async () => {
+  it('computes the credit rows but NEVER inserts — produced rows reported as suppressed', async () => {
     const res = await writer.writeCredit(creditParams());
-    expect(res).toEqual({ inserted: 2, suppressed: 0 });
-    expect(pool.inserts).toHaveLength(1);
-    expect(pool.inserts[0]!.rowKinds).toEqual(['credit', 'credit']);
-    // exact closed-sum: Σ credited == realized basis (no float drift).
-    const sum = pool.inserts[0]!.creditedMinor.reduce((a, m) => a + BigInt(m), 0n);
-    expect(sum).toBe(100_00n);
-  });
-
-  it('(a) idempotent — re-writing the SAME credit_ids writes NOTHING (all suppressed)', async () => {
-    // First write to learn the deterministic credit_ids, then mark them all present and re-write.
-    await writer.writeCredit(creditParams());
-    // The writer computes deterministic ids; re-run with the same inputs and pre-seed them as existing.
-    // Capture the ids by replaying: existing pre-filter returns these → no INSERT.
-    // We learn the ids from a fresh compute via the same path: mark every id the first INSERT would use.
-    // Simpler: any credit_id IN (...) lookup returns ALL queried ids ⇒ everything suppressed.
-    pool.inserts = [];
-    pool.query = makeAllExistingQuery(pool);
-    const res = await writer.writeCredit(creditParams());
+    // 2 touches → 2 produced credit rows; none persisted (Spark is the sole producer).
     expect(res).toEqual({ inserted: 0, suppressed: 2 });
-    expect(pool.inserts).toHaveLength(0); // no INSERT issued at all
+    expect(pool.insertAttempts).toBe(0);
   });
 
-  it('(a) zero touches → no rows, no INSERT (honest unattributed)', async () => {
+  it('zero touches → no produced rows, no insert (honest unattributed)', async () => {
     pool.setTouches([]);
     const res = await writer.writeCredit(creditParams());
     expect(res).toEqual({ inserted: 0, suppressed: 0 });
-    expect(pool.inserts).toHaveLength(0);
+    expect(pool.insertAttempts).toBe(0);
   });
 });
 
-/** A query() variant where the existing-id pre-filter echoes back EVERY queried credit_id. */
-function makeAllExistingQuery(pool: FakePool) {
-  return async (sql: string, params: unknown[] = []): Promise<[unknown, unknown]> => {
-    if (sql.includes('credit_id IN (')) {
-      // params = [brandId, ...ids]; echo all ids as present.
-      const ids = params.slice(1) as string[];
-      return [ids.map((id) => ({ credit_id: id })), undefined];
-    }
-    if (sql.startsWith('INSERT INTO')) {
-      throw new Error('INSERT must not run when every credit_id is already present');
-    }
-    return [[], undefined];
-  };
-}
-
-describe('AttributionCreditWriter — writeClawback R-11 cumulative clamp', () => {
+describe('AttributionCreditWriter — writeClawback R-11 clamp (RETIRED write path)', () => {
   let pool: FakePool;
   let writer: AttributionCreditWriter;
   const TOTAL = 100_00n; // Σ credit
@@ -277,65 +210,31 @@ describe('AttributionCreditWriter — writeClawback R-11 cumulative clamp', () =
     pool.savedCredits = [];
     const res = await writer.writeClawback(clawbackParams());
     expect(res).toEqual({ inserted: 0, suppressed: 0 });
-    expect(pool.inserts).toHaveLength(0);
+    expect(pool.insertAttempts).toBe(0);
   });
 
-  it('zero remaining (already fully clawed) → clamp to 0, no INSERT', async () => {
+  it('zero remaining (already fully clawed) → clamp to 0, no produced rows', async () => {
     pool.clawedBackTotalMinor = TOTAL; // whole credit already reversed
     const res = await writer.writeClawback(clawbackParams({ reversalBasisMinor: -50_00n }));
     expect(res).toEqual({ inserted: 0, suppressed: pool.savedCredits.length });
-    expect(pool.inserts).toHaveLength(0);
+    expect(pool.insertAttempts).toBe(0);
   });
 
-  it('exact reversal (basis == Σ credit) → Σ|clawback| == Σ credit', async () => {
+  it('exact reversal — clamp runs, 2 clawback rows produced but suppressed (never inserted)', async () => {
     const res = await writer.writeClawback(clawbackParams({ reversalBasisMinor: -TOTAL }));
-    expect(res.inserted).toBe(2);
-    const ins = pool.inserts[0]!;
-    expect(ins.rowKinds).toEqual(['clawback', 'clawback']);
-    const sum = ins.creditedMinor.reduce((a, m) => a + BigInt(m), 0n);
-    expect(sum).toBe(-TOTAL); // signed-negative, magnitude == Σ credit
-    // saved weights re-used verbatim (never re-apportioned)
-    expect(ins.weightFractions).toEqual(['0.50000000', '0.50000000']);
+    // The clamp + saved-weight clawback math runs (2 rows produced); none persisted.
+    expect(res).toEqual({ inserted: 0, suppressed: 2 });
+    expect(pool.insertAttempts).toBe(0);
   });
 
-  it('exceeding reversal (basis > Σ credit) → CLAMPED so Σ|clawback| never exceeds Σ credit', async () => {
+  it('exceeding reversal — clamp runs, rows produced but suppressed', async () => {
     const res = await writer.writeClawback(clawbackParams({ reversalBasisMinor: -300_00n }));
-    expect(res.inserted).toBe(2);
-    const sum = pool.inserts[0]!.creditedMinor.reduce((a, m) => a + BigInt(m), 0n);
-    expect(sum).toBe(-TOTAL); // clamped to -Σ credit, NOT -300_00
-  });
-
-  it('multiple partial reversals — cumulative never over-claws', async () => {
-    // First partial: 60_00 of 100_00. Nothing clawed yet.
-    const r1 = await writer.writeClawback(
-      clawbackParams({ reversalLedgerEventId: 'rev-A', reversalBasisMinor: -60_00n }),
-    );
-    expect(r1.inserted).toBe(2);
-    const sum1 = pool.inserts[0]!.creditedMinor.reduce((a, m) => a + BigInt(m), 0n);
-    expect(sum1).toBe(-60_00n);
-
-    // Second partial: requests 70_00 more, but only 40_00 remains → clamps to -40_00.
-    pool.clawedBackTotalMinor = 60_00n; // the store now reflects the first clawback
-    pool.inserts = [];
-    const r2 = await writer.writeClawback(
-      clawbackParams({ reversalLedgerEventId: 'rev-B', reversalBasisMinor: -70_00n }),
-    );
-    expect(r2.inserted).toBe(2);
-    const sum2 = pool.inserts[0]!.creditedMinor.reduce((a, m) => a + BigInt(m), 0n);
-    expect(sum2).toBe(-40_00n); // 100_00 cap − 60_00 already = 40_00 remaining
-
-    // Third partial: nothing remains → clamp to 0, no INSERT.
-    pool.clawedBackTotalMinor = 100_00n;
-    pool.inserts = [];
-    const r3 = await writer.writeClawback(
-      clawbackParams({ reversalLedgerEventId: 'rev-C', reversalBasisMinor: -10_00n }),
-    );
-    expect(r3.inserted).toBe(0);
-    expect(pool.inserts).toHaveLength(0);
+    expect(res).toEqual({ inserted: 0, suppressed: 2 });
+    expect(pool.insertAttempts).toBe(0);
   });
 });
 
-describe('AttributionCreditWriter — writeDataDrivenCredit Markov distribution', () => {
+describe('AttributionCreditWriter — writeDataDrivenCredit (RETIRED write path)', () => {
   let pool: FakePool;
   let writer: AttributionCreditWriter;
   beforeEach(() => {
@@ -343,30 +242,22 @@ describe('AttributionCreditWriter — writeDataDrivenCredit Markov distribution'
     writer = new AttributionCreditWriter(pool as never);
   });
 
-  it('(c) distributes Markov channel weights to EXACT integer minor units summing to the basis', async () => {
-    // 3 touches across 2 channels with uneven global weights; basis is INDIVISIBLE by the weights so the
-    // largest-remainder closer must run — assert NO float drift: Σ == basis EXACTLY.
+  it('computes Markov-distributed rows but never inserts — produced rows suppressed', async () => {
     pool.setTouches([touch(1, 'paid_meta'), touch(2, 'referral'), touch(3, 'paid_meta')]);
     const channelWeightUnits = new Map<string, bigint>([
       ['paid_meta', 70_000_000n], // 0.70 of WEIGHT_SCALE (1e8)
       ['referral', 30_000_000n], // 0.30
     ]);
-    const basis = 100_03n; // deliberately not cleanly divisible
+    const basis = 100_03n; // deliberately not cleanly divisible (largest-remainder closer must run)
     const res = await writer.writeDataDrivenCredit(creditParams({ realizedRevenueMinor: basis }), channelWeightUnits);
-    expect(res.inserted).toBe(3);
-    const ins = pool.inserts[0]!;
-    expect(ins.rowCount).toBe(3);
-    const minors = ins.creditedMinor.map((m) => BigInt(m));
-    const sum = minors.reduce((a, m) => a + m, 0n);
-    expect(sum).toBe(basis); // EXACT closed-sum, no float drift
-    // every credited amount is a whole minor-unit integer (no fractional / float string)
-    for (const m of ins.creditedMinor) expect(m).toMatch(/^-?\d+$/);
+    expect(res).toEqual({ inserted: 0, suppressed: 3 });
+    expect(pool.insertAttempts).toBe(0);
   });
 
-  it('(c) zero touches → no rows, no INSERT', async () => {
+  it('zero touches → no produced rows, no insert', async () => {
     pool.setTouches([]);
     const res = await writer.writeDataDrivenCredit(creditParams(), new Map([['paid_meta', 100_000_000n]]));
     expect(res).toEqual({ inserted: 0, suppressed: 0 });
-    expect(pool.inserts).toHaveLength(0);
+    expect(pool.insertAttempts).toBe(0);
   });
 });

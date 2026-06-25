@@ -97,7 +97,7 @@ export async function computeStorefrontBehavior(
       `SELECT COUNT(DISTINCT session_key)    AS sessions,
               COUNT(DISTINCT brain_anon_id)  AS journeys,
               COUNT(*)                       AS touches
-         FROM brain_silver.silver_touchpoint
+         FROM brain_serving.mv_silver_touchpoint
         WHERE occurred_at >= ? AND occurred_at <= ?
           AND ${BRAND_PREDICATE}`,
       [fromTs, toTs],
@@ -111,7 +111,7 @@ export async function computeStorefrontBehavior(
 
     const pageTypeRows = await scope.runScoped<PageTypeRow>(
       `SELECT page_type, COUNT(*) AS cnt
-         FROM brain_silver.silver_touchpoint
+         FROM brain_serving.mv_silver_touchpoint
         WHERE event_type = 'page.viewed' AND page_type IS NOT NULL AND page_type <> ''
           AND occurred_at >= ? AND occurred_at <= ?
           AND ${BRAND_PREDICATE}
@@ -122,7 +122,7 @@ export async function computeStorefrontBehavior(
 
     const productRows = await scope.runScoped<ItemRow>(
       `SELECT product_handle AS k, COUNT(*) AS cnt, COUNT(DISTINCT brain_anon_id) AS reach
-         FROM brain_silver.silver_touchpoint
+         FROM brain_serving.mv_silver_touchpoint
         WHERE event_type = 'product.viewed' AND product_handle IS NOT NULL AND product_handle <> ''
           AND occurred_at >= ? AND occurred_at <= ?
           AND ${BRAND_PREDICATE}
@@ -134,7 +134,7 @@ export async function computeStorefrontBehavior(
 
     const searchRows = await scope.runScoped<ItemRow>(
       `SELECT search_query AS k, COUNT(*) AS cnt, COUNT(DISTINCT brain_anon_id) AS reach
-         FROM brain_silver.silver_touchpoint
+         FROM brain_serving.mv_silver_touchpoint
         WHERE event_type = 'search.submitted' AND search_query IS NOT NULL AND search_query <> ''
           AND occurred_at >= ? AND occurred_at <= ?
           AND ${BRAND_PREDICATE}

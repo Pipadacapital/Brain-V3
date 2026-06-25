@@ -58,7 +58,7 @@ export async function getRecentActivity(
   // Cap limit to prevent excessive reads
   const safeLimit = Math.min(Math.max(1, limit), 50);
 
-  // MEDALLION REALIGNMENT (Epic 1): the recent-activity feed reads brain_gold.gold_revenue_ledger via
+  // V4 PHASE 4b: the recent-activity feed reads brain_serving.mv_gold_revenue_ledger via
   // withSilverBrand, not the PG ledger. Bounded row-read (D-2 allowed), brand-scoped at the seam.
   const rows = await withSilverBrand(deps.srPool, brandId, async (scope) => {
     return scope.runScoped<{
@@ -70,7 +70,7 @@ export async function getRecentActivity(
       recognition_label: string | null;
     }>(
       `SELECT order_id, event_type, amount_minor, currency_code, occurred_at, recognition_label
-       FROM brain_gold.gold_revenue_ledger
+       FROM brain_serving.mv_gold_revenue_ledger
        WHERE ${BRAND_PREDICATE}
        ORDER BY occurred_at DESC
        LIMIT ${safeLimit}`,

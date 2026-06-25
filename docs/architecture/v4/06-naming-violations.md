@@ -4,6 +4,14 @@
 **Scope:** Conformance of filenames, class names, function names, table/column names, event names, and API routes against the V4 NAMING contract.
 **Evidence base:** Validated audit bundle (RECON-1 + 8 domain audits) plus direct filesystem verification noted inline.
 
+> **ENFORCEMENT (now CI-gated).** The mart/serving-object naming rule below is enforced by
+> `tools/lint/v4-naming-guard.sh` (blocking step in `.github/workflows/pr.yml`): it fails any live
+> (non-test, non-comment) reference to the retired dbt DBs `brain_gold.`/`brain_silver.`, any `dbt`
+> invocation, any permanent feature precompute (`feature_customer_daily` / a `brain_feature` write), and
+> any Gold/Silver read not via `brain_serving.mv_*` or the rest-Iceberg catalogs. The retired DBs are
+> torn down by `db/starrocks/teardown/drop_dbt_internal_dbs.sql` (brain_gold/brain_silver) and
+> `db/starrocks/teardown/drop_dead_feature_db.sql` (brain_feature). Readers serve from `brain_serving.mv_*`.
+
 ---
 
 ## V4 naming contract (the rule)

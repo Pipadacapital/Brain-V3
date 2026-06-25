@@ -70,7 +70,7 @@ export async function computeCac(
       `SELECT currency_code,
               SUM(new_customers)            AS new_customers,
               SUM(acquisition_spend_minor)  AS acquisition_spend_minor
-         FROM brain_gold.gold_cac
+         FROM brain_serving.mv_gold_cac
         WHERE acquisition_month BETWEEN '${fromMonth}' AND '${toMonth}'
           AND ${BRAND_PREDICATE}
         GROUP BY currency_code`,

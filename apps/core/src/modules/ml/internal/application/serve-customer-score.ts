@@ -6,11 +6,12 @@
  *       metric-engine seam (withSilverBrand/runScoped — I-ST01; the engine is the SOLE Gold reader).
  *   (b) RESOLVE the production model_id for (brand, 'customer_churn_rfm') from ml.model_registry (PG,
  *       RLS-scoped). The registry is operational lifecycle config — it legitimately STAYS in PG.
- *   (c) LOG one inference row to the LAKEHOUSE (StarRocks brain_gold.gold_ml_prediction_log via srPool)
+ *   (c) LOG one inference row to the OPERATIONAL StarRocks DB brain_ops.ops_ml_prediction_log via srPool
  *       — append-only (subject_type='customer', subject_key=brainId, prediction=the scores jsonb,
- *       score=a composite scalar). MEDALLION REALIGNMENT (audit MV-2/DB-2): high-volume model-inference
- *       output is an analytical stream → lakehouse, NOT operational PG (ml.prediction_log was DROPPED in
- *       migration 0103). prediction_id is deterministic (sha256 over brand‖model‖subject‖scored_on) so a
+ *       score=a composite scalar). V4 PHASE 5 (audit MV-2/DB-2): model-inference output is OPERATIONAL
+ *       serving state → its own operational StarRocks DB brain_ops, NOT the dbt-internal brain_gold (retired
+ *       in Phase 6) and NOT operational PG (ml.prediction_log was DROPPED in migration 0103).
+ *       prediction_id is deterministic (sha256 over brand‖model‖subject‖scored_on) so a
  *       replay of the same served score is idempotent (StarRocks has no RLS/RETURNING; we pre-filter the
  *       id → INSERT-new-only, preserving the prior PG append semantics).
  *   (d) RETURN { model, score payload }.
@@ -32,8 +33,8 @@ import type { DbPool, QueryContext } from '@brain/db';
 import type { SilverPool } from '@brain/metric-engine';
 import { getCustomerScore } from '@brain/metric-engine';
 
-/** The lakehouse inference log (StarRocks). DDL: db/starrocks/gold_ml_prediction_log.sql. */
-const PREDICTION_LOG_TABLE = 'brain_gold.gold_ml_prediction_log';
+/** The operational inference log (StarRocks brain_ops). DDL: db/starrocks/ops/ops_ml_prediction_log.sql. */
+const PREDICTION_LOG_TABLE = 'brain_ops.ops_ml_prediction_log';
 
 /** StarRocks DATETIME literal ('YYYY-MM-DD HH:MM:SS', UTC) from a Date. */
 function toSrDatetime(d: Date): string {
@@ -160,7 +161,7 @@ export async function serveCustomerScore(
     client.release();
   }
 
-  // (c) Append one inference row to the LAKEHOUSE log (StarRocks brain_gold.gold_ml_prediction_log) —
+  // (c) Append one inference row to the OPERATIONAL log (StarRocks brain_ops.ops_ml_prediction_log) —
   //     append-only; prediction = the scores jsonb (as JSON text), score = the composite scalar. model_id
   //     may be NULL when no production model is registered (still an honest record of what we served).
   //     Deterministic prediction_id → pre-filter existing → INSERT-new-only (idempotent on the

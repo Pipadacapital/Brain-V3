@@ -56,7 +56,7 @@ export async function computeRecognitionBreakdown(
          currency_code,
          SUM(amount_minor)        AS amount_minor,
          COUNT(DISTINCT order_id) AS order_count
-       FROM brain_gold.gold_revenue_ledger
+       FROM brain_serving.mv_gold_revenue_ledger
        WHERE CAST(occurred_at AS DATE) <= ?
          AND recognition_label IS NOT NULL
          AND ${BRAND_PREDICATE}

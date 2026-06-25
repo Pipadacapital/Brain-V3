@@ -26,7 +26,7 @@
  *    seam (I-ST01), NOT PG realized_revenue_ledger — PostgreSQL is no longer a revenue READ source.
  *    PG remains the write SoR during transition; gold_revenue_ledger is the derived lakehouse copy.
  *
- * @see db/dbt/models/marts/gold_revenue_ledger.sql (the lakehouse ledger)
+ * @see db/iceberg/spark/gold/ + brain_serving.mv_gold_revenue_ledger (the V4 lakehouse ledger; dbt removed)
  * @see settlement-summary.ts — the sibling compute fn this mirrors
  */
 
@@ -82,7 +82,7 @@ export async function computeCodMix(
       `SELECT event_type,
               COALESCE(SUM(amount_minor), 0) AS sum_minor,
               MAX(currency_code)             AS currency_code
-         FROM brain_gold.gold_revenue_ledger
+         FROM brain_serving.mv_gold_revenue_ledger
         WHERE event_type IN ('${COD_DELIVERED}', '${COD_CLAWBACK}', '${PREPAID_FINALIZATION}')
           AND ${BRAND_PREDICATE}
         GROUP BY event_type`,

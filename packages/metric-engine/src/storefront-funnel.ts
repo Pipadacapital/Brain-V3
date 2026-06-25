@@ -99,7 +99,7 @@ export async function computeStorefrontFunnel(
          COUNT(DISTINCT CASE WHEN event_type = 'cart.item_added' THEN session_key END) AS cart_added,
          COUNT(DISTINCT CASE WHEN event_type IN ('checkout.started', 'checkout.step_viewed') THEN session_key END) AS checkout_started,
          COUNT(DISTINCT CASE WHEN stitched_order_id IS NOT NULL THEN session_key END) AS purchased
-       FROM brain_silver.silver_touchpoint
+       FROM brain_serving.mv_silver_touchpoint
        WHERE occurred_at >= ? AND occurred_at <= ?
          AND ${BRAND_PREDICATE}`,
       [fromTs, toTs],

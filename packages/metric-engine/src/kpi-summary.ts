@@ -67,7 +67,7 @@ export async function computeKpiSummary(
          SUM(CASE WHEN event_type = 'provisional_recognition' THEN amount_minor ELSE 0 END)  AS provisional_minor,
          COUNT(DISTINCT order_id) AS order_count,
          COUNT(DISTINCT CASE WHEN event_type IN ('rto_reversal', 'cod_rto_clawback') THEN order_id END) AS rto_count
-       FROM brain_gold.gold_revenue_ledger
+       FROM brain_serving.mv_gold_revenue_ledger
        WHERE occurred_at < ?
          AND ${BRAND_PREDICATE}
        GROUP BY currency_code

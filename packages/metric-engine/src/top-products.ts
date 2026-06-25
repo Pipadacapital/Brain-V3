@@ -100,7 +100,7 @@ export async function computeTopProducts(
               COALESCE(SUM(line_total_minor), 0)  AS line_gmv_minor,
               COUNT(DISTINCT order_id)            AS order_count,
               MIN(currency_code)                  AS currency_code
-         FROM brain_silver.silver_order_line
+         FROM brain_serving.mv_silver_order_line
         WHERE occurred_at >= ?
           AND occurred_at <= ?
           AND sku IS NOT NULL

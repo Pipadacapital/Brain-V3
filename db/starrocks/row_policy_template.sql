@@ -42,9 +42,12 @@ CREATE USER IF NOT EXISTS 'brain_analytics'@'%' IDENTIFIED BY '${STARROCKS_ANALY
 -- into every external catalog query. The assertion in isolation-fuzz/starrocks.test.ts
 -- verifies that omitting this clause returns 0 rows (via an explicit test with a raw query).
 
--- Silver table row policy template (applied when Silver tables are created in M1):
+-- Row policy template (applied to the serving MVs / operational tables that carry brand_id).
+-- V4: the medallion is Iceberg-served via brain_serving.mv_*; the only StarRocks-native app state is
+-- brain_ops. Substitute the serving/ops object per table (the retired dbt brain_silver/brain_gold DBs
+-- no longer exist):
 -- CREATE ROW POLICY IF NOT EXISTS tenant_isolation_policy
---   ON brain_silver.<table_name>
+--   ON brain_ops.<table_name>      -- or brain_serving.mv_<mart>
 --   TO brain_analytics
 --   USING (brand_id = IFNULL(NULLIF(SESSION_VALUE('brain_current_brand_id'), ''), '00000000-0000-0000-0000-000000000000'));
 --
@@ -56,28 +59,30 @@ CREATE USER IF NOT EXISTS 'brain_analytics'@'%' IDENTIFIED BY '${STARROCKS_ANALY
 -- Step 4: Grant minimum privileges to the analytics user
 -- Read-only: SELECT on Silver/Gold databases; no DDL; no DML.
 -- ────────────────────────────────────────────────────────────
--- (Applied after Silver/Gold databases are created in M1)
--- GRANT SELECT ON ALL TABLES IN DATABASE brain_silver TO brain_analytics;
--- GRANT SELECT ON ALL TABLES IN DATABASE brain_gold   TO brain_analytics;
+-- (Applied after the serving MVs + brain_ops exist)
+-- GRANT SELECT ON ALL TABLES             IN DATABASE brain_serving TO brain_analytics;
+-- GRANT SELECT ON ALL MATERIALIZED VIEWS IN DATABASE brain_serving TO brain_analytics;
+-- GRANT SELECT ON ALL TABLES             IN DATABASE brain_ops     TO brain_analytics;
 
 -- ────────────────────────────────────────────────────────────
 -- Step 5: Negative-control assertion (isolation-fuzz verification)
 -- The isolation-fuzz test (tools/isolation-fuzz/src/starrocks.test.ts) executes:
 --   SET brain_current_brand_id = '<brand_A_id>';
---   SELECT COUNT(*) FROM brain_silver.test_table WHERE brand_id = '<brand_B_id>';
+--   SELECT COUNT(*) FROM brain_ops.isolation_test WHERE brand_id = '<brand_B_id>';
 -- Expected result: 0 rows (row policy filters to brand_A only).
 -- Removing the row policy MUST cause the test to FAIL (it will return >0 rows).
 -- ────────────────────────────────────────────────────────────
 
 -- ────────────────────────────────────────────────────────────
--- BOOTSTRAP SQL for cluster setup (runs via starrocks-init container)
+-- BOOTSTRAP SQL for cluster setup (this file is a TEMPLATE — the live local-dev bootstrap is
+-- db/starrocks/bootstrap.sql, run by the starrocks-init container. Keep the two in sync.)
 -- ────────────────────────────────────────────────────────────
--- Create test databases for isolation-fuzz CI
-CREATE DATABASE IF NOT EXISTS brain_silver;
-CREATE DATABASE IF NOT EXISTS brain_gold;
+-- V4: the isolation-fuzz fixture is a StarRocks-native operational table → brain_ops (NOT the retired
+-- dbt brain_silver/brain_gold DBs). brain_serving holds the served MVs.
+CREATE DATABASE IF NOT EXISTS brain_ops;
 
--- Create minimal test table for isolation-fuzz (Sprint-0 stub)
-CREATE TABLE IF NOT EXISTS brain_silver.isolation_test (
+-- Create the isolation-fuzz test table (Sprint-0 stub)
+CREATE TABLE IF NOT EXISTS brain_ops.isolation_test (
   brand_id     VARCHAR(36)   NOT NULL COMMENT 'Tenant key — row policy anchor',
   test_value   VARCHAR(255)            COMMENT 'Test payload',
   created_at   DATETIME                COMMENT 'Row creation timestamp'
@@ -90,18 +95,16 @@ PROPERTIES (
 );
 
 -- Seed test data for isolation-fuzz (two brands)
-INSERT INTO brain_silver.isolation_test (brand_id, test_value, created_at)
+INSERT INTO brain_ops.isolation_test (brand_id, test_value, created_at)
 VALUES
   ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'brand-A-secret-data', NOW()),
   ('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', 'brand-B-secret-data', NOW());
 
 -- Grant SELECT to analytics user (local dev — no password enforcement).
--- VIEWS + MATERIALIZED VIEWS are separate object types in StarRocks ("ALL TABLES" does NOT cover them);
--- dbt materializes some marts as views (e.g. gold_marketing_attribution) → grant all three classes,
--- else the analytics user gets "Access denied … SELECT on VIEW …" and the attribution endpoints 500.
-GRANT SELECT ON ALL TABLES IN DATABASE brain_silver TO 'brain_analytics'@'%';
-GRANT SELECT ON ALL TABLES IN DATABASE brain_gold   TO 'brain_analytics'@'%';
-GRANT SELECT ON ALL VIEWS IN DATABASE brain_silver TO 'brain_analytics'@'%';
-GRANT SELECT ON ALL VIEWS IN DATABASE brain_gold   TO 'brain_analytics'@'%';
-GRANT SELECT ON ALL MATERIALIZED VIEWS IN DATABASE brain_silver TO 'brain_analytics'@'%';
-GRANT SELECT ON ALL MATERIALIZED VIEWS IN DATABASE brain_gold   TO 'brain_analytics'@'%';
+-- VIEWS + MATERIALIZED VIEWS are separate object types in StarRocks ("ALL TABLES" does NOT cover them),
+-- so grant every class on the serving DB; plus the operational tables.
+CREATE DATABASE IF NOT EXISTS brain_serving;
+GRANT SELECT ON ALL TABLES             IN DATABASE brain_serving TO 'brain_analytics'@'%';
+GRANT SELECT ON ALL VIEWS              IN DATABASE brain_serving TO 'brain_analytics'@'%';
+GRANT SELECT ON ALL MATERIALIZED VIEWS IN DATABASE brain_serving TO 'brain_analytics'@'%';
+GRANT SELECT ON ALL TABLES             IN DATABASE brain_ops     TO 'brain_analytics'@'%';

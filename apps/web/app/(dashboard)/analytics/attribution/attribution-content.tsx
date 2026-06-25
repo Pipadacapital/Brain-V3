@@ -51,6 +51,7 @@ import { AttributedChannelChart } from '@/components/analytics/attributed-channe
 import { ConfidenceGradeBadge } from '@/components/analytics/confidence-grade-badge';
 import { ChannelRoasTable } from '@/components/analytics/channel-roas-table';
 import { ReconciliationResidualCard } from '@/components/analytics/reconciliation-residual-card';
+import { DateRangeFilter, initialRange, type DateRange, type RangePreset } from '@/components/ui/date-range-filter';
 import {
   useAttributionByChannel,
   useAttributionReconciliation,
@@ -68,21 +69,12 @@ import type {
 type ByChannelHasData = Extract<AnalyticsAttributionByChannelResponse, { state: 'has_data' }>;
 type ReconHasData = Extract<AnalyticsAttributionReconciliationResponse, { state: 'has_data' }>;
 
-/** Date-range presets (days). The range drives every attribution BFF query. */
-const RANGE_PRESETS = [
+/** Date-range presets for attribution — longer windows than the default 7/30/90. */
+const ATTRIBUTION_PRESETS: readonly RangePreset[] = [
   { key: '30', label: 'Last 30 days', days: 30 },
   { key: '90', label: 'Last 90 days', days: 90 },
   { key: '180', label: 'Last 180 days', days: 180 },
-] as const;
-type RangeKey = (typeof RANGE_PRESETS)[number]['key'];
-
-function rangeFor(days: number): { from: string; to: string } {
-  const to = new Date().toISOString().split('T')[0] as string;
-  const from = new Date(Date.now() - days * 24 * 60 * 60 * 1000)
-    .toISOString()
-    .split('T')[0] as string;
-  return { from, to };
-}
+];
 
 function AttributionSkeleton() {
   return (
@@ -126,13 +118,11 @@ function EmptyAttributionCard() {
 
 export function AttributionContent() {
   const [model, setModel] = useState<AttributionModel>('position_based');
-  const [rangeKey, setRangeKey] = useState<RangeKey>('90');
-  const preset = RANGE_PRESETS.find((p) => p.key === rangeKey) ?? RANGE_PRESETS[1];
-  const { from, to } = rangeFor(preset.days);
+  const [range, setRange] = useState<DateRange>(() => initialRange(ATTRIBUTION_PRESETS, '90'));
 
-  const byChannelQ = useAttributionByChannel({ model, from, to });
-  const reconQ = useAttributionReconciliation({ model, from, to });
-  const roasQ = useChannelRoas({ model, from, to });
+  const byChannelQ = useAttributionByChannel({ model, from: range.from, to: range.to });
+  const reconQ = useAttributionReconciliation({ model, from: range.from, to: range.to });
+  const roasQ = useChannelRoas({ model, from: range.from, to: range.to });
 
   const isLoading = byChannelQ.isLoading;
   const error = byChannelQ.error;
@@ -176,28 +166,12 @@ export function AttributionContent() {
           </div>
 
           {/* Date-range selector — drives the BFF query (local UI state). */}
-          <div
-            role="group"
-            aria-label="Date range"
-            className="inline-flex rounded-md border border-border p-0.5"
-          >
-            {RANGE_PRESETS.map((p) => (
-              <button
-                key={p.key}
-                type="button"
-                onClick={() => setRangeKey(p.key)}
-                aria-pressed={rangeKey === p.key}
-                data-testid={`attribution-range-${p.key}`}
-                className={
-                  rangeKey === p.key
-                    ? 'rounded px-3 py-1 text-xs font-medium bg-foreground text-background'
-                    : 'rounded px-3 py-1 text-xs font-medium text-muted-foreground hover:text-foreground'
-                }
-              >
-                {p.label}
-              </button>
-            ))}
-          </div>
+          <DateRangeFilter
+            value={range}
+            onChange={setRange}
+            presets={ATTRIBUTION_PRESETS}
+            aria-label="Attribution date range"
+          />
         </div>
       </section>
 

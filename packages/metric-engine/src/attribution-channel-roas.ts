@@ -92,7 +92,7 @@ export async function computeChannelRoas(
     // Attributed revenue per (channel, currency) — the channel_contribution_as_of math.
     const channelRows = await scope.runScoped<ChannelRow>(
       `SELECT channel, currency_code, COALESCE(SUM(credited_revenue_minor), 0) AS contribution_minor
-         FROM brain_gold.gold_marketing_attribution
+         FROM brain_serving.mv_gold_marketing_attribution
         WHERE model_id = '${model}'
           AND CAST(economic_effective_at AS DATE) BETWEEN '${fromStr}' AND '${toStr}'
           AND ${BRAND_PREDICATE}
@@ -102,7 +102,7 @@ export async function computeChannelRoas(
     // Spend per (platform, currency) — the ad_spend_as_of math.
     const spendRows = await scope.runScoped<SpendRow>(
       `SELECT platform, currency_code, SUM(spend_minor) AS spend_minor
-         FROM brain_silver.silver_marketing_spend
+         FROM brain_serving.mv_silver_marketing_spend
         WHERE stat_date BETWEEN '${fromStr}' AND '${toStr}'
           AND ${BRAND_PREDICATE}
         GROUP BY platform, currency_code`,

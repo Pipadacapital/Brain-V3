@@ -9,8 +9,8 @@
  * Honest no_data when the brand has zero marketing-spend rows (no denominator → no ROAS).
  * brandId from session (D-1; NEVER body).
  *
- * PHASE G: fully lakehouse — spend-exists from silver_marketing_spend, attribution-exists from
- * gold_marketing_attribution, compute from both — via withSilverBrand. PG is no longer a read
+ * V4 PHASE 4b: fully serving — spend-exists from mv_silver_marketing_spend, attribution-exists from
+ * mv_gold_marketing_attribution, compute from both — via withSilverBrand. PG is no longer a read
  * source for this surface. (The shared hasAttributionCredit helper + the other attribution
  * surfaces remain on PG until their own re-point slice — re-pointing the helper alone would
  * hide real PG data behind the still-empty lakehouse mart.)
@@ -56,11 +56,11 @@ export async function getChannelRoas(
   // Spend-exists + attribution-exists, both via the lakehouse brand-scoped seam (one round trip).
   const { hasSpend, hasCredit } = await withSilverBrand(deps.srPool, brandId, async (scope) => {
     const spend = await scope.runScoped<{ has_row: number }>(
-      `SELECT 1 AS has_row FROM brain_silver.silver_marketing_spend WHERE ${BRAND_PREDICATE} LIMIT 1`,
+      `SELECT 1 AS has_row FROM brain_serving.mv_silver_marketing_spend WHERE ${BRAND_PREDICATE} LIMIT 1`,
       [],
     );
     const credit = await scope.runScoped<{ has_row: number }>(
-      `SELECT 1 AS has_row FROM brain_gold.gold_marketing_attribution WHERE ${BRAND_PREDICATE} LIMIT 1`,
+      `SELECT 1 AS has_row FROM brain_serving.mv_gold_marketing_attribution WHERE ${BRAND_PREDICATE} LIMIT 1`,
       [],
     );
     return { hasSpend: spend.length > 0, hasCredit: credit.length > 0 };

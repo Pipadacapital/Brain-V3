@@ -332,6 +332,30 @@ export async function setSyncState(
 async function resolveMetaCredentials(
   secretRef: string, adAccountIdCol: string | null,
 ): Promise<MetaApiCredentials | null> {
+  // PROD / local-prod: the token bundle is stored in AWS Secrets Manager at connect time (core's
+  // AwsSecretsManager.storeSecret). Resolve it from THERE — dev_secret only exists in pure dev, so
+  // the legacy dev-only path below returned null in local-prod (NODE_ENV=production) → "credentials
+  // not found (RECONNECT_REQUIRED)" even though the secret was present. Mirrors gokwik/razorpay.
+  if (process.env['NODE_ENV'] === 'production') {
+    try {
+      const { AwsSecretsManager } = await import('@brain/connector-secrets');
+      const region = process.env['BRAIN_AWS_REGION'] ?? process.env['AWS_REGION'] ?? 'us-east-1';
+      const mgr = new AwsSecretsManager(
+        region, '', process.env['CONNECTOR_SECRETS_KMS_KEY_ID'] ?? process.env['KMS_KEY_ID'] ?? '',
+      );
+      const bundle = await mgr.getSecret(secretRef); // GetSecretValue → parsed JSON (honors AWS_ENDPOINT_URL)
+      const adAccountId =
+        (typeof bundle?.['ad_account_id'] === 'string' ? bundle['ad_account_id'] : adAccountIdCol) ?? '';
+      if (bundle && typeof bundle['access_token'] === 'string' && adAccountId) {
+        return { accessToken: bundle['access_token'], adAccountId };
+      }
+      log.error(`[meta] secret ${secretRef.slice(-24)} resolved but missing access_token`);
+    } catch (err) {
+      log.error('[meta] AwsSecretsManager getSecret failed', { err });
+    }
+    // fall through to dev_secret / env (won't exist in prod, but harmless).
+  }
+
   const { Pool: PgPool } = await import('pg');
   const devPool = new PgPool({
     connectionString: process.env['BRAIN_APP_DATABASE_URL'] ?? process.env['DATABASE_URL'],

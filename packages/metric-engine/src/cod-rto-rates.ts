@@ -90,7 +90,7 @@ export async function computeCodRtoRates(
               terminal_class,
               COUNT(*)                                          AS cnt,
               COALESCE(SUM(CASE WHEN is_synthetic THEN 1 ELSE 0 END), 0) AS synthetic_cnt
-         FROM brain_silver.silver_shipment
+         FROM brain_serving.mv_silver_shipment
         WHERE is_terminal = 1
           AND ${BRAND_PREDICATE}
         GROUP BY pincode, terminal_class`,

@@ -15,6 +15,7 @@ import { StatusBadge } from '@/components/ui/status-badge';
 import { ErrorCard } from '@/components/ui/error-card';
 import { EmptyState } from '@/components/ui/empty-state';
 import { Skeleton } from '@/components/ui/skeleton';
+import { TableSearch, matchesQuery } from '@/components/ui/table-search';
 import { useContributionMargin, useCostInputs, useUpsertCostInput } from '@/lib/hooks/use-analytics';
 import { formatMoneyDisplay } from '@/lib/format/money-display';
 import type { CurrencyCode } from '@brain/money';
@@ -54,6 +55,7 @@ export function MarginContent() {
 
   const [costType, setCostType] = useState<(typeof COST_TYPES)[number]['value']>('cogs');
   const [pct, setPct] = useState('');
+  const [costQ, setCostQ] = useState('');
 
   const m = margin.data?.state === 'has_data' ? margin.data.margin : null;
   const ccy = (m?.currency_code ?? 'INR') as CurrencyCode;
@@ -135,23 +137,45 @@ export function MarginContent() {
           </form>
 
           {costs.isLoading && <Skeleton className="h-16 w-full" />}
-          {costs.data && costs.data.cost_inputs.length > 0 && (
-            <table className="w-full text-sm">
-              <thead className="border-b text-left text-xs uppercase text-muted-foreground">
-                <tr><th className="py-2 font-medium">Cost</th><th className="py-2 font-medium">Scope</th><th className="py-2 text-right font-medium">Rate</th><th className="py-2 text-right font-medium">Confidence</th></tr>
-              </thead>
-              <tbody>
-                {costs.data.cost_inputs.map((c) => (
-                  <tr key={`${c.cost_type}-${c.scope}-${c.scope_ref}`} className="border-b last:border-0">
-                    <td className="py-2">{COST_TYPES.find((t) => t.value === c.cost_type)?.label ?? c.cost_type}</td>
-                    <td className="py-2 text-muted-foreground">{c.scope}{c.scope_ref ? `:${c.scope_ref}` : ''}</td>
-                    <td className="py-2 text-right">{c.pct_bps !== null ? `${(c.pct_bps / 100).toFixed(2)}%` : formatMoneyDisplay(c.amount_minor ?? '0', c.currency_code as CurrencyCode)}</td>
-                    <td className="py-2 text-right"><ConfidenceBadge c={c.cost_confidence} /></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
+          {costs.data && costs.data.cost_inputs.length > 0 && (() => {
+            const allInputs = costs.data.cost_inputs;
+            const labelFor = (ct: string) => COST_TYPES.find((t) => t.value === ct)?.label ?? ct;
+            const visible = allInputs.filter((c) =>
+              matchesQuery(costQ, labelFor(c.cost_type), c.scope, c.scope_ref ?? null),
+            );
+            return (
+              <div className="space-y-2">
+                <div className="flex justify-end">
+                  <TableSearch
+                    value={costQ}
+                    onChange={setCostQ}
+                    placeholder="Search costs…"
+                    aria-label="Search cost inputs"
+                  />
+                </div>
+                <table className="w-full text-sm">
+                  <thead className="border-b text-left text-xs uppercase text-muted-foreground">
+                    <tr><th className="py-2 font-medium">Cost</th><th className="py-2 font-medium">Scope</th><th className="py-2 text-right font-medium">Rate</th><th className="py-2 text-right font-medium">Confidence</th></tr>
+                  </thead>
+                  <tbody>
+                    {visible.map((c) => (
+                      <tr key={`${c.cost_type}-${c.scope}-${c.scope_ref}`} className="border-b last:border-0">
+                        <td className="py-2">{labelFor(c.cost_type)}</td>
+                        <td className="py-2 text-muted-foreground">{c.scope}{c.scope_ref ? `:${c.scope_ref}` : ''}</td>
+                        <td className="py-2 text-right">{c.pct_bps !== null ? `${(c.pct_bps / 100).toFixed(2)}%` : formatMoneyDisplay(c.amount_minor ?? '0', c.currency_code as CurrencyCode)}</td>
+                        <td className="py-2 text-right"><ConfidenceBadge c={c.cost_confidence} /></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {costQ && visible.length === 0 && (
+                  <p className="py-2 text-center text-sm text-muted-foreground" role="status">
+                    No matches for &ldquo;{costQ}&rdquo;
+                  </p>
+                )}
+              </div>
+            );
+          })()}
           {costs.data && costs.data.cost_inputs.length === 0 && (
             <p className="text-sm text-muted-foreground">No costs entered yet. Add your COGS % above to compute true margin.</p>
           )}

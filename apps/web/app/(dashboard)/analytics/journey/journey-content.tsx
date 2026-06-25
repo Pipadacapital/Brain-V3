@@ -48,6 +48,7 @@ import { SyntheticBadge } from '@/components/analytics/synthetic-badge';
 import { FirstTouchMixChart } from '@/components/analytics/first-touch-mix-chart';
 import { StitchRateCard } from '@/components/analytics/stitch-rate-card';
 import { TouchpointTimeline } from '@/components/analytics/touchpoint-timeline';
+import { DateRangeFilter, initialRange, type DateRange, type RangePreset } from '@/components/ui/date-range-filter';
 import {
   useJourneyFirstTouchMix,
   useJourneyStitchRate,
@@ -60,21 +61,12 @@ import type {
 type FirstTouchHasData = Extract<AnalyticsJourneyFirstTouchMixResponse, { state: 'has_data' }>;
 type StitchHasData = Extract<AnalyticsJourneyStitchRateResponse, { state: 'has_data' }>;
 
-/** Date-range presets (days). The range drives the BFF query + local UI state. */
-const RANGE_PRESETS = [
+/** Date-range presets for journey mix — longer windows than the default 7/30/90. */
+const JOURNEY_PRESETS: readonly RangePreset[] = [
   { key: '30', label: 'Last 30 days', days: 30 },
   { key: '90', label: 'Last 90 days', days: 90 },
   { key: '180', label: 'Last 180 days', days: 180 },
-] as const;
-type RangeKey = (typeof RANGE_PRESETS)[number]['key'];
-
-function rangeFor(days: number): { from: string; to: string } {
-  const to = new Date().toISOString().split('T')[0] as string;
-  const from = new Date(Date.now() - days * 24 * 60 * 60 * 1000)
-    .toISOString()
-    .split('T')[0] as string;
-  return { from, to };
-}
+];
 
 function MixSkeleton() {
   return (
@@ -117,12 +109,10 @@ function EmptyPixelCard() {
 }
 
 export function JourneyContent() {
-  const [rangeKey, setRangeKey] = useState<RangeKey>('90');
-  const preset = RANGE_PRESETS.find((p) => p.key === rangeKey) ?? RANGE_PRESETS[1];
-  const { from, to } = rangeFor(preset.days);
+  const [range, setRange] = useState<DateRange>(() => initialRange(JOURNEY_PRESETS, '90'));
 
-  const mixQ = useJourneyFirstTouchMix({ from, to });
-  const stitchQ = useJourneyStitchRate({ from, to });
+  const mixQ = useJourneyFirstTouchMix({ from: range.from, to: range.to });
+  const stitchQ = useJourneyStitchRate({ from: range.from, to: range.to });
 
   const isLoading = mixQ.isLoading;
   const error = mixQ.error;
@@ -165,28 +155,12 @@ export function JourneyContent() {
           </div>
 
           {/* Date-range selector — drives the BFF query (local UI state). */}
-          <div
-            role="group"
-            aria-label="Date range"
-            className="inline-flex rounded-md border border-border p-0.5"
-          >
-            {RANGE_PRESETS.map((p) => (
-              <button
-                key={p.key}
-                type="button"
-                onClick={() => setRangeKey(p.key)}
-                aria-pressed={rangeKey === p.key}
-                data-testid={`journey-range-${p.key}`}
-                className={
-                  rangeKey === p.key
-                    ? 'rounded px-3 py-1 text-xs font-medium bg-foreground text-background'
-                    : 'rounded px-3 py-1 text-xs font-medium text-muted-foreground hover:text-foreground'
-                }
-              >
-                {p.label}
-              </button>
-            ))}
-          </div>
+          <DateRangeFilter
+            value={range}
+            onChange={setRange}
+            presets={JOURNEY_PRESETS}
+            aria-label="Journey date range"
+          />
         </div>
 
         {isLoading && <MixSkeleton />}

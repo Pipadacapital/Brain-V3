@@ -25,6 +25,12 @@ import { PageHeader } from '@/components/ui/page-header';
 import { Button } from '@/components/ui/button';
 import { EmptyState } from '@/components/ui/empty-state';
 import { ErrorCard } from '@/components/ui/error-card';
+import {
+  DateRangeFilter,
+  type DateRange,
+  type RangePreset,
+  initialRange,
+} from '@/components/ui/date-range-filter';
 import { KpiTile } from '@/components/analytics/kpi-tile';
 import { AdSpendTrendChart } from '@/components/analytics/ad-spend-trend-chart';
 import { useAdSpendTimeseries, useBlendedRoas } from '@/lib/hooks/use-analytics';
@@ -35,6 +41,12 @@ import type {
   AnalyticsBlendedRoasRow,
 } from '@/lib/api/types';
 import { cn } from '@/lib/utils';
+
+const SPEND_RANGE_PRESETS: readonly RangePreset[] = [
+  { key: '7', label: 'Last 7 days', days: 7 },
+  { key: '30', label: 'Last 30 days', days: 30 },
+  { key: '60', label: 'Last 60 days', days: 60 },
+];
 
 type Grain = 'day' | 'week';
 type PlatformFilter = 'all' | 'meta' | 'google_ads';
@@ -127,12 +139,9 @@ function sumByPlatform(
 export function SpendContent() {
   const [grain, setGrain] = useState<Grain>('day');
   const [platform, setPlatform] = useState<PlatformFilter>('all');
-
-  // Last 35 days — matches the Track-3 default trailing window for ad spend.
-  const toDate = new Date().toISOString().split('T')[0] as string;
-  const fromDate = new Date(Date.now() - 35 * 24 * 60 * 60 * 1000)
-    .toISOString()
-    .split('T')[0] as string;
+  const [range, setRange] = useState<DateRange>(() =>
+    initialRange(SPEND_RANGE_PRESETS, '30'),
+  );
 
   const {
     data: spendData,
@@ -140,8 +149,8 @@ export function SpendContent() {
     error: spendError,
     refetch: refetchSpend,
   } = useAdSpendTimeseries({
-    from: fromDate,
-    to: toDate,
+    from: range.from,
+    to: range.to,
     grain,
     platform: platform === 'all' ? undefined : platform,
   });
@@ -150,7 +159,7 @@ export function SpendContent() {
     data: roasData,
     isLoading: roasLoading,
     error: roasError,
-  } = useBlendedRoas({ from: fromDate, to: toDate });
+  } = useBlendedRoas({ from: range.from, to: range.to });
 
   // Per-platform spend totals (from the current timeseries response).
   const totals = sumByPlatform(spendData);
@@ -244,7 +253,7 @@ export function SpendContent() {
                 label="Total Spend"
                 value={totalSpendValue}
                 isLoading={spendLoading}
-                sublabel="last 35 days"
+                sublabel={`${range.from} → ${range.to}`}
                 lowerIsBetter
                 data-testid="spend-kpi-total"
               />
@@ -265,7 +274,7 @@ export function SpendContent() {
             </div>
           </section>
 
-          {/* Spend-over-time chart with grain + platform filters */}
+          {/* Spend-over-time chart with date range + grain + platform filters */}
           <section aria-label="Ad spend trend chart">
             <Card>
               <CardHeader className="pb-2">
@@ -275,6 +284,12 @@ export function SpendContent() {
                     Spend Over Time
                   </CardTitle>
                   <div className="flex flex-wrap items-center gap-2">
+                    <DateRangeFilter
+                      value={range}
+                      onChange={setRange}
+                      presets={SPEND_RANGE_PRESETS}
+                      aria-label="Ad spend date range"
+                    />
                     <PlatformToggle platform={platform} onChange={setPlatform} />
                     <GrainToggle grain={grain} onChange={setGrain} />
                   </div>

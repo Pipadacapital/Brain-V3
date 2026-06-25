@@ -33,6 +33,7 @@ import { EmptyState } from '@/components/ui/empty-state';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
+import { DateRangeFilter, type DateRange, initialRange } from '@/components/ui/date-range-filter';
 import { KpiTile } from '@/components/analytics/kpi-tile';
 import { OrdersTrendChart } from '@/components/analytics/orders-trend-chart';
 import { TopProductsCard } from '@/components/analytics/top-products-card';
@@ -56,20 +57,11 @@ type OrderStatusMixHasData = Extract<AnalyticsOrderStatusMixResponse, { state: '
 
 // ── Date-range presets (Status tab) ─────────────────────────────────────────
 
-const RANGE_PRESETS = [
+const STATUS_RANGE_PRESETS = [
   { key: '30', label: 'Last 30 days', days: 30 },
   { key: '90', label: 'Last 90 days', days: 90 },
   { key: '180', label: 'Last 180 days', days: 180 },
 ] as const;
-type RangeKey = (typeof RANGE_PRESETS)[number]['key'];
-
-function rangeFor(days: number): { from: string; to: string } {
-  const to = new Date().toISOString().split('T')[0] as string;
-  const from = new Date(Date.now() - days * 24 * 60 * 60 * 1000)
-    .toISOString()
-    .split('T')[0] as string;
-  return { from, to };
-}
 
 // ── Pure display helpers ──────────────────────────────────────────────────────
 
@@ -421,11 +413,14 @@ function OverviewTab() {
 // ── Status tab content ────────────────────────────────────────────────────────
 
 function StatusTab() {
-  const [rangeKey, setRangeKey] = useState<RangeKey>('90');
-  const preset = RANGE_PRESETS.find((p) => p.key === rangeKey) ?? RANGE_PRESETS[1];
-  const { from, to } = rangeFor(preset.days);
+  const [range, setRange] = useState<DateRange>(() =>
+    initialRange(STATUS_RANGE_PRESETS, '90'),
+  );
 
-  const { data, isLoading, error, refetch } = useOrderStatusMix({ from, to });
+  const { data, isLoading, error, refetch } = useOrderStatusMix({
+    from: range.from,
+    to: range.to,
+  });
 
   return (
     <div className="space-y-4">
@@ -441,28 +436,12 @@ function StatusTab() {
         </div>
 
         {/* Date-range selector — drives the BFF query (local UI state). */}
-        <div
-          role="group"
-          aria-label="Date range"
-          className="inline-flex rounded-md border border-border p-0.5"
-        >
-          {RANGE_PRESETS.map((p) => (
-            <button
-              key={p.key}
-              type="button"
-              onClick={() => setRangeKey(p.key)}
-              aria-pressed={rangeKey === p.key}
-              data-testid={`order-status-range-${p.key}`}
-              className={
-                rangeKey === p.key
-                  ? 'rounded px-3 py-1 text-xs font-medium bg-foreground text-background'
-                  : 'rounded px-3 py-1 text-xs font-medium text-muted-foreground hover:text-foreground'
-              }
-            >
-              {p.label}
-            </button>
-          ))}
-        </div>
+        <DateRangeFilter
+          value={range}
+          onChange={setRange}
+          presets={STATUS_RANGE_PRESETS}
+          aria-label="Status date range"
+        />
       </div>
 
       {isLoading && <StatusSectionSkeleton />}

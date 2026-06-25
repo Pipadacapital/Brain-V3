@@ -27,6 +27,7 @@ import { useState } from 'react';
 import { TrendingUp, BarChart3, CalendarRange } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { PageHeader } from '@/components/ui/page-header';
+import { DateRangeFilter, type DateRange, initialRange } from '@/components/ui/date-range-filter';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import {
   Table,
@@ -143,17 +144,12 @@ function aggregateMonthly(rows: AnalyticsRevenueMonthlyRow[]): MonthlyAgg[] {
 
 export function RevenueContent() {
   const [grain, setGrain] = useState<Grain>('day');
-
-  // Last 90 days window (Phase 2 adds a date-range picker).
-  const toDate = new Date().toISOString().split('T')[0] as string;
-  const fromDate = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000)
-    .toISOString()
-    .split('T')[0] as string;
+  const [range, setRange] = useState<DateRange>(() => initialRange());
 
   const { data: kpiData, isLoading: kpiLoading } = useKpiSummary();
   const { data: trendData, isLoading: trendLoading } = useRevenueTimeseries({
-    from: fromDate,
-    to: toDate,
+    from: range.from,
+    to: range.to,
     grain,
   });
   const { data: breakdownData, isLoading: breakdownLoading } = useRecognitionBreakdown();
@@ -225,12 +221,19 @@ export function RevenueContent() {
         <TabsContent value="trend">
           <Card>
             <CardHeader className="pb-2">
-              <div className="flex items-center justify-between gap-4">
+              <div className="flex flex-wrap items-center justify-between gap-4">
                 <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
                   <TrendingUp className="h-4 w-4" aria-hidden="true" />
-                  Realized vs Provisional — last 90 days
+                  Realized vs Provisional
                 </CardTitle>
-                <GrainToggle grain={grain} onChange={setGrain} />
+                <div className="flex flex-wrap items-center gap-2">
+                  <DateRangeFilter
+                    value={range}
+                    onChange={setRange}
+                    aria-label="Revenue trend date range"
+                  />
+                  <GrainToggle grain={grain} onChange={setGrain} />
+                </div>
               </div>
             </CardHeader>
             <CardContent>

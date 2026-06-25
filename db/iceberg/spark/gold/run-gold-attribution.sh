@@ -12,10 +12,11 @@
 #
 # Each job is an idempotent MERGE on its model PK (replay-safe). Requires the compose `lakehouse` profile
 # (iceberg-rest + minio) up + Iceberg brain_silver.silver_touchpoint populated (the Phase-1 Spark Silver job).
-# The credit job ALSO reads the StarRocks brain_gold.gold_revenue_ledger over the MySQL wire (the recognized
-# revenue basis — the same cross-catalog read posture silver_touchpoint.py uses for the stitch map) → the
-# MySQL JDBC driver is on the classpath. _attribution_math.py is shipped as a --py-files dep (the exact
-# minor-unit port of the metric-engine apportionment).
+# The credit job reads its recognized-revenue BASIS from the ICEBERG rest.brain_gold.gold_revenue_ledger
+# (materialized by gold_revenue_ledger.py / run-gold-revenue.sh from Iceberg Bronze) — NOT from StarRocks.
+# So this script materializes the Iceberg revenue ledger FIRST (a no-op idempotent MERGE if already current)
+# so the BASIS is present before gold_attribution_credit reads it. _attribution_math.py is shipped as a
+# --py-files dep (the exact minor-unit port of the metric-engine apportionment).
 #
 # Usage:  db/iceberg/spark/gold/run-gold-attribution.sh
 #         MODEL=gold_attribution_credit db/iceberg/spark/gold/run-gold-attribution.sh   # one model
@@ -44,6 +45,15 @@ MODELS="${MODEL:-gold_attribution_credit gold_marketing_attribution gold_attribu
 echo "[gold-attribution] image=${SPARK_IMAGE} netns=container:${REDPANDA_CONTAINER} models='${MODELS}'"
 
 docker volume create brain-spark-ivy >/dev/null
+
+# ── DEPENDENCY ORDER: materialize the Iceberg gold_revenue_ledger BEFORE gold_attribution_credit reads its
+# recognized basis from it. gold_revenue_ledger.py lives one dir up (run-gold-revenue.sh) and folds the
+# recognition chain from Iceberg Bronze; its MERGE is idempotent so this is a no-op if already current.
+# Skip when the caller asked for a single non-credit MODEL (those marts don't read the revenue ledger).
+if [ -z "${SKIP_REVENUE_LEDGER:-}" ] && printf '%s' " ${MODELS} " | grep -q ' gold_attribution_credit '; then
+  echo "[gold-attribution] ensuring Iceberg gold_revenue_ledger (recognized basis) is materialized first"
+  "${SPARK_DIR}/run-gold-revenue.sh" ledger
+fi
 
 for model in ${MODELS}; do
   echo ""

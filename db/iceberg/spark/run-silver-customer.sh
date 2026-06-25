@@ -16,8 +16,10 @@
 #   db/iceberg/spark/run-silver-customer.sh                 # both jobs (identity then customer)
 #   STAGE=identity db/iceberg/spark/run-silver-customer.sh  # only silver_customer_identity
 #   STAGE=customer db/iceberg/spark/run-silver-customer.sh  # only silver_customer
+# silver_customer now reads the Iceberg brain_silver.silver_order_state ONLY (Spark Phase 1 always
+# writes it) — the old StarRocks-JDBC order-state fallback is gone, so no brain_silver. dbt-DB read.
 # Env: SPARK_IMAGE, ICEBERG_VERSION, NEO4J_CONNECTOR_VERSION, MYSQL_JDBC_VERSION, REDPANDA_CONTAINER,
-#      NEO4J_URI/USER/PASSWORD, ORDER_STATE_SOURCE (auto|iceberg|starrocks) overridable.
+#      NEO4J_URI/USER/PASSWORD overridable.
 set -euo pipefail
 
 SPARK_IMAGE="${SPARK_IMAGE:-apache/spark:3.5.3}"

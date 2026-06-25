@@ -46,9 +46,12 @@ currency_code, per-currency (NEVER blended). brand_id is the tenant key, first c
 the exact DECIMAL(9,8) string. Replay-safe: MERGE on (brand_id, credit_id) — ON-CONFLICT-keep semantics
 (WHEN MATCHED keeps the saved credit; the deterministic id makes a re-run a no-op).
 
-Run via run-gold-attribution.sh (Iceberg + MySQL JDBC packages — the recognized basis is read from the
-StarRocks gold_revenue_ledger over the MySQL wire, the same cross-catalog posture silver_touchpoint.py uses
-for the stitch map; the Iceberg gold_revenue_ledger is owned by the revenue Phase-2 group and not required).
+Run via run-gold-attribution.sh. The recognized basis is read DIRECTLY from the Iceberg
+rest.brain_gold.gold_revenue_ledger (the SAME rest catalog this job already uses for silver_touchpoint and
+writes the credit ledger into) — materialized by gold_revenue_ledger.py (run-gold-revenue.sh) which folds
+the recognition chain from Iceberg Bronze. This is the Iceberg-sole-SoR read: NO StarRocks MySQL-wire JDBC,
+NO brain_gold.* StarRocks reference. The revenue ledger MUST be materialized BEFORE this job runs (the
+gold-tier refresh ordering guarantees gold_revenue_ledger precedes gold_attribution_credit).
 """
 from __future__ import annotations  # Python 3.8 on the Spark image.
 
@@ -69,12 +72,10 @@ TABLE_NAME = "gold_attribution_credit"
 # Recognized-revenue basis — the SAME event types reconcile-attribution.ts credits on (RECOGNITION_EVENT_TYPES).
 RECOGNITION_EVENT_TYPES = ("finalization", "cod_delivery_confirmed")
 
-# The recognized basis lives in the gold revenue ledger. The Iceberg copy is owned by the revenue Phase-2
-# group; until it lands, read the LIVE StarRocks brain_gold.gold_revenue_ledger over the MySQL wire (the same
-# cross-catalog read posture silver_touchpoint.py uses for the stitch map; superuser RLS-bypass ETL read).
-SR_JDBC_URL = os.environ.get("GOLD_SR_JDBC_URL", "jdbc:mysql://starrocks:9030")
-SR_USER = os.environ.get("GOLD_SR_USER", "root")
-SR_PASSWORD = os.environ.get("GOLD_SR_PASSWORD", "")
+# The recognized basis lives in the Iceberg gold revenue ledger (rest.brain_gold.gold_revenue_ledger),
+# materialized by gold_revenue_ledger.py from Iceberg Bronze. Read it from the SAME rest catalog this job
+# already uses — Iceberg-sole-SoR, no StarRocks MySQL-wire JDBC, no brain_gold.* StarRocks reference.
+GOLD_REVENUE_LEDGER = f"{CATALOG}.{GOLD_NAMESPACE}.gold_revenue_ledger"
 
 # Column contract — db/starrocks/gold_attribution_credit.sql column order (the PK ledger). brand_id first.
 _COLUMNS = """
@@ -131,29 +132,42 @@ def _read_silver_touchpoint(spark: SparkSession):
 
 
 def _read_recognized_basis(spark: SparkSession):
-    """Recognized orders (the credit basis) from the gold revenue ledger over JDBC. One row per order_id."""
+    """Recognized orders (the credit basis) from the ICEBERG gold revenue ledger. One row per order_id.
+
+    Reads rest.brain_gold.gold_revenue_ledger (the SAME rest catalog this job uses for silver_touchpoint
+    and the credit ledger) — NOT the StarRocks copy. Filters to the recognition event types and collapses
+    to ONE basis row per (brand_id, order_id) — deterministic earliest occurred_at — matching the TS
+    per-order credit (each order is credited once). amount_minor is the signed realized basis; brain_id
+    resolves the journey. If the Iceberg ledger is absent (revenue group hasn't run) → None → 0 credit rows.
+    """
     in_list = ", ".join(f"'{t}'" for t in RECOGNITION_EVENT_TYPES)
-    # Pick ONE basis row per order (deterministic earliest), matching the TS per-order credit (each order
-    # is credited once). amount_minor is the realized basis; brain_id resolves the journey.
-    query = (
-        "(SELECT brand_id, order_id, brain_id, "
-        "CAST(amount_minor AS SIGNED) AS amount_minor, currency_code, occurred_at "
-        "FROM brain_gold.gold_revenue_ledger "
-        f"WHERE event_type IN ({in_list})) g"
-    )
     try:
-        return (
-            spark.read.format("jdbc")
-            .option("url", SR_JDBC_URL)
-            .option("user", SR_USER)
-            .option("password", SR_PASSWORD)
-            .option("driver", "com.mysql.cj.jdbc.Driver")
-            .option("dbtable", query)
-            .load()
-        )
+        spark.table(GOLD_REVENUE_LEDGER).schema  # probe — raises if the table doesn't exist yet
     except Exception as exc:  # noqa: BLE001 — ledger absent → no recognized basis → 0 credit rows
-        print(f"[gold_attribution_credit] gold_revenue_ledger unavailable ({exc}); 0 recognized orders", flush=True)
+        print(
+            f"[gold_attribution_credit] Iceberg {GOLD_REVENUE_LEDGER} unavailable ({exc}); 0 recognized orders",
+            flush=True,
+        )
         return None
+    # One basis row per order: earliest occurred_at wins (deterministic, idempotent). cast amount_minor to
+    # SIGNED bigint (it already is in the Iceberg contract) and keep brand_id (tenant key) + currency_code.
+    return spark.sql(
+        f"""
+        with recognized as (
+            select brand_id, order_id, brain_id,
+                   cast(amount_minor as bigint) as amount_minor, currency_code, occurred_at,
+                   row_number() over (
+                       partition by brand_id, order_id
+                       order by occurred_at asc, event_type asc
+                   ) as _rn
+            from {GOLD_REVENUE_LEDGER}
+            where event_type in ({in_list})
+        )
+        select brand_id, order_id, brain_id, amount_minor, currency_code, occurred_at
+        from recognized
+        where _rn = 1
+        """
+    )
 
 
 def _billing_period(occurred_at) -> str:

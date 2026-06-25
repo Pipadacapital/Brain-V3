@@ -22,12 +22,12 @@ perf optimization that yields the identical end-state, so the Spark dual-run doe
         brand_id, brain_id, lifetime_orders, lifetime_value_minor, currency_code,
         first_seen_at, first_identified_at, last_seen_at, customer_watermark, updated_at
 
-SOURCES (mirrors the dbt ref() graph onto the Spark→Iceberg dual-run, with a live fallback):
-  - silver_order_state: prefer the Spark→Iceberg brain_silver.silver_order_state (the dual-run sibling
-    mart, owned by the order-state group). If that Iceberg table is absent yet (the order-state Spark
-    job hasn't landed), FALL BACK to the live StarRocks brain_silver.silver_order_state over JDBC so
-    this job is runnable independently during the staged dual-run. Controlled by ORDER_STATE_SOURCE
-    (auto|iceberg|starrocks). Either source is the SAME logical table — read parity is unaffected.
+SOURCES (mirrors the dbt ref() graph onto the Spark→Iceberg dual-run):
+  - silver_order_state: read the Spark→Iceberg {CATALOG}.brain_silver.silver_order_state (the dual-run
+    sibling mart, owned by the order-state group). Spark Phase 1 ALWAYS writes this Iceberg table, so it
+    is the single source — there is NO StarRocks-JDBC fallback (no brain_silver. dbt-DB read remains).
+    The Iceberg sibling carries the true first_event_at / max_ingested_at watermark columns the roll-up
+    needs (the serving DDL did not), so this read is also strictly more faithful than the old fallback.
   - silver_customer_identity: read the Spark→Iceberg brain_silver.silver_customer_identity built by
     silver_customer_identity.py (this group's sibling job). Absent → treat as empty (LEFT JOIN, so
     first_identified_at is simply NULL — exactly the dbt LEFT-JOIN-on-missing-identity behavior).
@@ -55,14 +55,6 @@ from iceberg_base import CATALOG, SILVER_NAMESPACE, build_spark, create_iceberg_
 
 TABLE_NAME = "silver_customer"
 
-# silver_order_state source selection: "iceberg" | "starrocks" | "auto" (iceberg if present else SR).
-ORDER_STATE_SOURCE = os.environ.get("ORDER_STATE_SOURCE", "auto").strip().lower()
-
-# CURRENT-side StarRocks JDBC (the live dual-run sibling) for the fallback read of silver_order_state.
-SR_JDBC_URL = os.environ.get("SILVER_SR_JDBC_URL", "jdbc:mysql://starrocks:9030")
-SR_USER = os.environ.get("SILVER_SR_USER", "root")
-SR_PASSWORD = os.environ.get("SILVER_SR_PASSWORD", "")
-
 # Column contract — the dbt silver_customer select list (additive roll-up). brand_id first (tenant key).
 _COLUMNS = """
           brand_id             string    NOT NULL,
@@ -78,65 +70,21 @@ _COLUMNS = """
 """.strip("\n")
 
 
-def _iceberg_order_state(spark: SparkSession):
-    """Read the Spark→Iceberg brain_silver.silver_order_state; None if the table isn't built yet."""
-    fqtn = f"{CATALOG}.{SILVER_NAMESPACE}.silver_order_state"
-    try:
-        df = spark.table(fqtn)
-        df.schema  # force metadata resolution so an absent table raises here
-        return df
-    except (AnalysisException, Exception) as exc:  # noqa: BLE001 — REST catalog raises generic Py4J
-        msg = str(exc).lower()
-        if any(s in msg for s in ("not found", "does not exist", "no such", "nosuchtable", "cannot be found")):
-            return None
-        raise
-
-
-def _starrocks_order_state(spark: SparkSession):
-    """Fallback: read the live StarRocks brain_silver.silver_order_state over JDBC (the dual-run sibling).
-
-    The StarRocks DDL exposes state_effective_at + occurred_at but NOT first_event_at / max_ingested_at
-    (those are dbt-internal watermark columns not persisted in the serving DDL). For the roll-up:
-      - first_seen_at uses occurred_at (the event time of the latest transition) as the best available
-        per-row time when reading the SERVING table; this is a documented fallback-only approximation
-        (the Iceberg sibling carries the true first_event_at). The PREFERRED path is the Iceberg read.
-      - customer_watermark uses state_effective_at (the serving table's economic-time column).
-    These approximations affect ONLY first_seen_at/customer_watermark (timestamps), never money or PK.
-    """
-    query = (
-        "SELECT brand_id, order_id, brain_id, order_value_minor, currency_code, "
-        "occurred_at AS first_event_at, state_effective_at, state_effective_at AS max_ingested_at "
-        "FROM brain_silver.silver_order_state"
-    )
-    return (
-        spark.read.format("jdbc")
-        .option("url", SR_JDBC_URL)
-        .option("user", SR_USER)
-        .option("password", SR_PASSWORD)
-        .option("driver", "com.mysql.cj.jdbc.Driver")
-        .option("query", query)
-        .load()
-    )
-
-
 def _read_order_state(spark: SparkSession):
-    ice = None
-    if ORDER_STATE_SOURCE in ("auto", "iceberg"):
-        ice = _iceberg_order_state(spark)
-    if ice is not None and ORDER_STATE_SOURCE != "starrocks":
-        print("[silver_customer] order-state source = Iceberg brain_silver.silver_order_state", flush=True)
-        # Normalize to the column set the roll-up needs (the Iceberg dbt-parity mart carries them all).
-        return ice.select(
-            "brand_id", "order_id", "brain_id", "order_value_minor", "currency_code",
-            "first_event_at", "state_effective_at", "max_ingested_at",
-        )
-    if ORDER_STATE_SOURCE == "iceberg":
-        raise SystemExit(
-            "[silver_customer] ORDER_STATE_SOURCE=iceberg but brain_silver.silver_order_state is absent — "
-            "build the order-state Spark mart first, or use ORDER_STATE_SOURCE=auto|starrocks."
-        )
-    print("[silver_customer] order-state source = StarRocks brain_silver.silver_order_state (JDBC fallback)", flush=True)
-    return _starrocks_order_state(spark)
+    """Read the Spark→Iceberg {CATALOG}.brain_silver.silver_order_state — the single source.
+
+    Spark Phase 1 (silver_order_state.py) ALWAYS writes this Iceberg sibling, so there is no
+    StarRocks-JDBC fallback: zero brain_silver. dbt-DB reads remain. The Iceberg mart carries the true
+    first_event_at / max_ingested_at watermark columns the roll-up needs (the serving DDL did not), so
+    this is the same logical table the primary path always used — just without the absent-table branch.
+    """
+    fqtn = f"{CATALOG}.{SILVER_NAMESPACE}.silver_order_state"
+    print(f"[silver_customer] order-state source = Iceberg {fqtn}", flush=True)
+    # Project the exact column set the roll-up needs (the Iceberg dbt-parity mart carries them all).
+    return spark.table(fqtn).select(
+        "brand_id", "order_id", "brain_id", "order_value_minor", "currency_code",
+        "first_event_at", "state_effective_at", "max_ingested_at",
+    )
 
 
 def _read_identity(spark: SparkSession):

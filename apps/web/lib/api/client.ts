@@ -561,6 +561,14 @@ export const brandApi = {
       body: JSON.stringify({ brand_id: id }),
       idempotencyKey: generateRequestId(),
     }),
+
+  // Archive (soft-delete) a brand created by mistake → DELETE /api/v1/brands/:id. The brand drops
+  // out of lists and its ingest stops; reversible server-side. Owner / brand_admin only.
+  remove: (id: string) =>
+    bffFetch<{ request_id: string; data: { id: string; archived: boolean } }>(`/v1/brands/${id}`, {
+      method: 'DELETE',
+      idempotencyKey: generateRequestId(),
+    }),
 };
 
 // ── Members ───────────────────────────────────────────────────────────────────

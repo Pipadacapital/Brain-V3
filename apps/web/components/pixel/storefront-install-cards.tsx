@@ -1,27 +1,36 @@
 'use client';
 
-import { Loader2, Zap, Download } from 'lucide-react';
+import { Zap, Download, Plug } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { SectionCard } from '@/components/ui/section-card';
+import { StatusBadge } from '@/components/ui/status-badge';
+import { Alert } from '@/components/ui/alert';
 import { Skeleton } from '@/components/ui/skeleton';
+import Link from 'next/link';
 import {
   usePixelInstallers,
   useInstallPixelProvider,
   useUninstallPixelProvider,
 } from '@/lib/hooks/use-pixel';
-import { BffApiError, pixelApi, type PixelInstallerDescriptor, type PixelInstallResult } from '@/lib/api/client';
+import {
+  BffApiError,
+  pixelApi,
+  type PixelInstallerDescriptor,
+  type PixelInstallResult,
+} from '@/lib/api/client';
 import { toast } from '@/components/ui/toaster';
 
 /**
- * StorefrontInstallCards — the storefront-agnostic, connected-driven pixel-install surface.
+ * StorefrontInstallCards — the connected-storefront-driven, one-click install surface.
  *
- * The merchant connects a storefront first; this component then renders exactly the install
- * option(s) for the storefront(s) that are connected (from GET /api/v1/pixel/installers). Adding a
- * new storefront on the backend (one PixelInstaller) surfaces a new card here with ZERO changes to
- * this component — it is fully data-driven off the registry descriptors.
+ * INSTALL-TARGET RULE:
+ *   - When a storefront IS connected (any installer `available`), show ONLY the install
+ *     action(s) for the connected storefront(s).
+ *   - When NO storefront is connected, show ALL install options with a "connect first"
+ *     hint, so the merchant knows what to do next.
  *
- * Provider-specific guidance is rendered from the install result's `meta` (Shopify's checkout
- * Web-Pixel status; WooCommerce's one-time plugin download) without special-casing the happy path.
+ * Fully data-driven off GET /api/v1/pixel/installers — registering a new PixelInstaller
+ * on the backend surfaces a new option here with ZERO changes to this component.
  */
 
 const PROVIDER_COPY: Record<string, { connectHint: string }> = {
@@ -29,7 +38,8 @@ const PROVIDER_COPY: Record<string, { connectHint: string }> = {
   woocommerce: { connectHint: 'Connect a WooCommerce store to enable one-click install.' },
 };
 
-function ProviderCard({ d, installed }: { d: PixelInstallerDescriptor; installed: boolean }) {
+/** A connected storefront: a real, working install action. */
+function ConnectedProviderCard({ d }: { d: PixelInstallerDescriptor }) {
   const { mutate: install, isPending: installing } = useInstallPixelProvider();
   const { mutate: uninstall, isPending: removing } = useUninstallPixelProvider();
 
@@ -38,11 +48,10 @@ function ProviderCard({ d, installed }: { d: PixelInstallerDescriptor; installed
       onSuccess: (res: PixelInstallResult) => {
         toast({
           title: res.already_present
-            ? `Pixel already installed on ${d.displayName}`
+            ? `Pixel already live on ${d.displayName}`
             : `Pixel installed on ${d.displayName}`,
-          description: 'The Brain Pixel is now live on your storefront — no manual paste needed.',
+          description: 'The Brain Pixel is live on your storefront — no manual paste needed.',
         });
-        // Surface provider-specific follow-ups (checkout coverage / plugin version) honestly.
         if (res.meta?.webPixel && res.meta.webPixel.status === 'pending') {
           toast({ title: 'Checkout tracking pending', description: res.meta.webPixel.message });
         }
@@ -78,80 +87,121 @@ function ProviderCard({ d, installed }: { d: PixelInstallerDescriptor; installed
   const isWoo = d.provider === 'woocommerce';
 
   return (
-    <Card data-testid={`pixel-install-card-${d.provider}`}>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <Zap className="h-4 w-4 text-primary" aria-hidden="true" />
-          Install automatically on {d.displayName}
-        </CardTitle>
-        <CardDescription>
-          {d.available
-            ? `Place the Brain Pixel on your connected ${d.displayName} store in one click — no theme edit, no copy-paste.`
-            : PROVIDER_COPY[d.provider]?.connectHint ??
-              `Connect a ${d.displayName} store to enable one-click install.`}
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-3">
+    <SectionCard
+      title={
+        <span className="flex items-center gap-2">
+          <Zap className="size-4 text-primary" aria-hidden="true" />
+          Install on {d.displayName}
+        </span>
+      }
+      description={`Place the Brain Pixel on your connected ${d.displayName} store in one click — no theme edit, no copy-paste.`}
+      meta={<StatusBadge tone="success">Connected</StatusBadge>}
+      data-testid={`pixel-install-card-${d.provider}`}
+    >
+      <div className="space-y-3">
         <div className="flex flex-wrap items-center gap-2">
-          <Button
-            onClick={onInstall}
-            disabled={!d.available || installing || removing}
-            data-testid={`btn-install-${d.provider}`}
-          >
-            {installing && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />}
-            {installing ? 'Installing…' : installed ? `Reinstall on ${d.displayName}` : `Install on ${d.displayName}`}
+          <Button onClick={onInstall} loading={installing} disabled={removing} data-testid={`btn-install-${d.provider}`}>
+            <Zap />
+            {installing ? 'Installing…' : `Install on ${d.displayName}`}
           </Button>
-          {d.supportsUninstall && installed && (
+          {d.supportsUninstall && (
             <Button
               variant="outline"
               onClick={onUninstall}
-              disabled={!d.available || removing || installing}
+              loading={removing}
+              disabled={installing}
               data-testid={`btn-uninstall-${d.provider}`}
             >
-              {removing && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />}
-              {removing ? 'Removing…' : `Remove from ${d.displayName}`}
+              {removing ? 'Removing…' : 'Remove pixel'}
             </Button>
           )}
         </div>
 
-        {/* WooCommerce one-time step: download + activate the Brain Pixel plugin (parallel of Shopify's
-            one-time OAuth authorization). After that, the button above configures it in one click. */}
+        {/* WooCommerce one-time prerequisite: install + activate the plugin (parallel to Shopify OAuth). */}
         {isWoo && (
-          <div className="rounded-md border-l-2 border-primary pl-3 py-2 space-y-1">
-            <p className="text-xs text-muted-foreground">
-              One-time setup: install the Brain Pixel plugin on your WordPress site (Plugins → Add New →
-              Upload), activate it, then click Install above.
+          <Alert variant="neutral" title="One-time setup">
+            <p>
+              Install the Brain Pixel plugin on your WordPress site (Plugins → Add New → Upload), activate
+              it, then click Install above.
             </p>
-            <a href={pixelApi.wooCommercePluginUrl} download data-testid="btn-download-woo-plugin">
+            <a href={pixelApi.wooCommercePluginUrl} download data-testid="btn-download-woo-plugin" className="mt-2 inline-block no-underline">
               <Button variant="outline" size="sm">
-                <Download className="mr-1 h-3.5 w-3.5" aria-hidden="true" />
-                Download Brain Pixel plugin (.zip)
+                <Download />
+                Download plugin (.zip)
               </Button>
             </a>
-          </div>
+          </Alert>
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </SectionCard>
   );
 }
 
-export function StorefrontInstallCards({ installed }: { installed: boolean }) {
+/**
+ * No storefront connected yet: surface every option as a "connect first" prompt
+ * that links to the connectors marketplace.
+ */
+function ConnectPrompt({ options }: { options: PixelInstallerDescriptor[] }) {
+  return (
+    <SectionCard
+      title={
+        <span className="flex items-center gap-2">
+          <Plug className="size-4 text-muted-foreground" aria-hidden="true" />
+          Install automatically
+        </span>
+      }
+      description="Connect a storefront to install the Brain Pixel in one click — no theme edit or copy-paste. Until then, use the manual snippet below."
+      actions={
+        <Button asChild size="sm">
+          <Link href="/settings/connectors">Connect a storefront</Link>
+        </Button>
+      }
+      data-testid="storefront-connect-prompt"
+    >
+      <ul className="space-y-2">
+        {options.map((d) => (
+          <li
+            key={d.provider}
+            className="flex items-center justify-between gap-3 rounded-md border border-border px-3 py-2"
+            data-testid={`pixel-connect-hint-${d.provider}`}
+          >
+            <span className="text-sm font-medium text-foreground">{d.displayName}</span>
+            <span className="text-xs text-muted-foreground">
+              {PROVIDER_COPY[d.provider]?.connectHint ?? `Connect a ${d.displayName} store first.`}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </SectionCard>
+  );
+}
+
+export function StorefrontInstallCards() {
   const { data, isLoading } = usePixelInstallers();
 
   if (isLoading) {
-    return <Skeleton className="h-40 w-full" data-testid="pixel-installers-loading" />;
+    return <Skeleton className="h-40 w-full rounded-lg" data-testid="pixel-installers-loading" />;
   }
+
   const installers = data?.installers ?? [];
   if (installers.length === 0) return null;
 
-  // Connected storefronts first (actionable), then the rest (with a connect hint).
-  const sorted = [...installers].sort((a, b) => Number(b.available) - Number(a.available));
+  const connected = installers.filter((d) => d.available);
+
+  // RULE: any storefront connected ⇒ show ONLY the connected one(s); else show all as connect prompts.
+  if (connected.length > 0) {
+    return (
+      <div className="space-y-6" data-testid="storefront-install-cards">
+        {connected.map((d) => (
+          <ConnectedProviderCard key={d.provider} d={d} />
+        ))}
+      </div>
+    );
+  }
 
   return (
-    <div className="space-y-4" data-testid="storefront-install-cards">
-      {sorted.map((d) => (
-        <ProviderCard key={d.provider} d={d} installed={installed} />
-      ))}
+    <div data-testid="storefront-install-cards">
+      <ConnectPrompt options={installers} />
     </div>
   );
 }

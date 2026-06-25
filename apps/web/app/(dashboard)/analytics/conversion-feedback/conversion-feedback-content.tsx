@@ -32,6 +32,8 @@
 import Link from 'next/link';
 import { ShieldCheck, FlaskConical, Send, Trash2, Target, ArrowRight } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
+import { PageHeader } from '@/components/ui/page-header';
+import { Alert } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
@@ -110,23 +112,18 @@ function NoConversionsEmpty({ testId }: { testId: string }) {
 /** The dev-boundary banner — explicit "would-send in dev, no live Meta creds". */
 function DevBoundaryBanner() {
   return (
-    <div
-      role="note"
+    <Alert
+      variant="warning"
+      title="Would-send in dev — no live Meta CAPI credentials"
+      icon={<FlaskConical className="size-4" />}
       aria-label="Development boundary"
       data-testid="capi-dev-boundary-banner"
-      className="flex items-start gap-3 rounded-md border border-status-amber-700/20 bg-status-amber-50 px-4 py-3 text-sm text-status-amber-700"
     >
-      <FlaskConical className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
-      <div>
-        <p className="font-medium">Would-send in dev — no live Meta CAPI credentials</p>
-        <p className="mt-0.5 text-status-amber-700/90">
-          Conversions are matched, hashed, and gated by can_contact() — but the actual Meta
-          send is a default-closed stub in development (no access token / pixel id). These
-          events show <span className="font-medium">would-send</span>; they are never sent and
-          never faked. Live sending is a platform follow-up.
-        </p>
-      </div>
-    </div>
+      Conversions are matched, hashed, and gated by can_contact() — but the actual Meta
+      send is a default-closed stub in development (no access token / pixel id). These
+      events show <span className="font-medium">would-send</span>; they are never sent and
+      never faked. Live sending is a platform follow-up.
+    </Alert>
   );
 }
 
@@ -189,9 +186,20 @@ export function ConversionFeedbackContent() {
 
   return (
     <div className="space-y-8">
-      <div>
-        <div className="flex flex-wrap items-center gap-2">
-          <h1 className="text-2xl font-bold text-foreground">Conversion Feedback</h1>
+      <PageHeader
+        title="Conversion Feedback"
+        description={
+          <>
+            Realized conversions passed back to Meta to improve optimization — every passback
+            first clears the single <span className="font-medium text-foreground">can_contact()</span>{' '}
+            gate on the <span className="font-medium text-foreground">advertising</span> consent
+            category, which is{' '}
+            <span className="font-medium text-foreground">default-closed</span>. No consent →
+            no passback. PII is SHA-256-hashed at the boundary (Meta match spec); raw email and
+            phone are never stored, logged, or sent.
+          </>
+        }
+        meta={
           <span
             data-testid="capi-platform-label"
             className="inline-flex items-center gap-1 rounded-md border border-border bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"
@@ -200,17 +208,8 @@ export function ConversionFeedbackContent() {
             <Target className="h-3 w-3" aria-hidden="true" />
             Meta CAPI
           </span>
-        </div>
-        <p className="mt-1 max-w-2xl text-muted-foreground">
-          Realized conversions passed back to Meta to improve optimization — every passback
-          first clears the single <span className="font-medium text-foreground">can_contact()</span>{' '}
-          gate on the <span className="font-medium text-foreground">advertising</span> consent
-          category, which is{' '}
-          <span className="font-medium text-foreground">default-closed</span>. No consent →
-          no passback. PII is SHA-256-hashed at the boundary (Meta match spec); raw email and
-          phone are never stored, logged, or sent.
-        </p>
-      </div>
+        }
+      />
 
       {/* The dev boundary — explicit when any event is 'would_send_dev'. */}
       {devBoundary && <DevBoundaryBanner />}

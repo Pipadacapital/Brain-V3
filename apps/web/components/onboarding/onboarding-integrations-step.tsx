@@ -2,48 +2,38 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Loader2, CheckCircle, XCircle, Plug, ArrowRight } from 'lucide-react';
+import { Loader2, ArrowRight, Store } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Badge } from '@/components/ui/badge';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Label } from '@/components/ui/label';
+import { Alert } from '@/components/ui/alert';
+import { StatusBadge, type StatusTone } from '@/components/ui/status-badge';
+import { SectionCard } from '@/components/ui/section-card';
+import { EmptyState } from '@/components/ui/empty-state';
 import { ErrorCard } from '@/components/ui/error-card';
+import { Skeleton } from '@/components/ui/skeleton';
 import { sessionApi } from '@/lib/api/client';
 import { useConnectorList, useShopifyInstallUrl } from '@/lib/hooks/use-connectors';
 import { toast } from '@/components/ui/toaster';
 import type { ConnectorListItem, ConnectorStatus } from '@/lib/api/types';
-import { cn } from '@/lib/utils';
 import { BffApiError, userFacingMessage } from '@/lib/api/client';
 
 /**
- * Step 3 of 4 — Integration selection.
+ * Step 2 of 3 — Storefront connection.
  *
+ * - Onboarding only offers STOREFRONT connectors (Shopify, WooCommerce) — order truth is the
+ *   data foundation that everything else (attribution, revenue, identity) is built on, so we
+ *   capture it first. Ads/payments/logistics/messaging connectors live in Settings, post-setup.
  * - Shopify: connect-now (OAuth) or skip.
- * - Meta Ads, Google Ads: coming soon (disabled — never shown as wizard step).
- * - Pixel: NOT in the wizard (per MA-10, stays in settings/pixel).
- * - OAuth failure leaves source Disconnected with retry — does NOT block the wizard.
- * - "Skip For Now" → advance onboarding_status to integration_selected → Step 4.
+ * - Connector status is shown with a labelled StatusBadge (never colour-only).
+ * - OAuth failure leaves the source Disconnected with retry — does NOT block the wizard.
+ * - "Skip for now" → advance onboarding_status to integration_selected → Step 3.
  */
 
-const STATUS_CONFIG: Record<
-  ConnectorStatus,
-  { icon: React.ElementType; label: string; textClass: string }
-> = {
-  connected: {
-    icon: CheckCircle,
-    label: 'Connected',
-    textClass: 'text-green-700',
-  },
-  disconnected: {
-    icon: Plug,
-    label: 'Disconnected',
-    textClass: 'text-muted-foreground',
-  },
-  error: {
-    icon: XCircle,
-    label: 'Error — retry to reconnect',
-    textClass: 'text-red-700',
-  },
+const STATUS_TONE: Record<ConnectorStatus, { tone: StatusTone; label: string; pulse?: boolean }> = {
+  connected: { tone: 'success', label: 'Connected' },
+  disconnected: { tone: 'neutral', label: 'Not connected' },
+  error: { tone: 'destructive', label: 'Needs attention — retry to reconnect' },
 };
 
 function ConnectorWizardCard({
@@ -88,104 +78,90 @@ function ConnectorWizardCard({
     });
   }
 
+  const statusMeta = isConnected && status ? STATUS_TONE[status] : null;
+
   return (
-    <Card data-testid={`connector-card-${item.provider}`}>
-      <CardHeader className="pb-3">
-        <div className="flex items-start justify-between gap-4">
-          <div className="flex-1 min-w-0">
-            <CardTitle className="text-base flex items-center gap-2">
-              {item.display_name}
-              {item.coming_soon && (
-                <Badge variant="outline" className="text-xs">
-                  Coming Soon
-                </Badge>
-              )}
-            </CardTitle>
-            <CardDescription className="mt-1">{item.description}</CardDescription>
-          </div>
-          {/* Status indicator — never colour-only (a11y) */}
-          {isConnected && status && (
-            <span
-              role="status"
-              aria-label={`${item.display_name} status: ${STATUS_CONFIG[status].label}`}
-              className={cn(
-                'flex items-center gap-1.5 text-sm font-medium shrink-0',
-                STATUS_CONFIG[status].textClass,
-              )}
-            >
-              {(() => {
-                const Icon = STATUS_CONFIG[status].icon;
-                return <Icon className="h-4 w-4" aria-hidden="true" />;
-              })()}
-              <span>{STATUS_CONFIG[status].label}</span>
-            </span>
-          )}
-        </div>
-      </CardHeader>
-      <CardContent>
-        {connectError && (
-          <p className="mb-3 text-xs text-destructive" role="alert">
-            {connectError} — you can skip and connect later.
-          </p>
-        )}
-        {item.coming_soon ? (
-          <Button
-            variant="outline"
-            disabled
-            aria-label={`${item.display_name} — Coming Soon`}
-            aria-disabled="true"
-            className="cursor-not-allowed"
+    <SectionCard
+      data-testid={`connector-card-${item.provider}`}
+      title={item.display_name}
+      description={item.description}
+      actions={
+        item.coming_soon ? (
+          <StatusBadge tone="neutral">Coming soon</StatusBadge>
+        ) : statusMeta ? (
+          <StatusBadge
+            tone={statusMeta.tone}
+            pulse={statusMeta.pulse}
+            role="status"
+            aria-label={`${item.display_name} status: ${statusMeta.label}`}
           >
-            Coming Soon
+            {statusMeta.label}
+          </StatusBadge>
+        ) : undefined
+      }
+    >
+      {connectError && (
+        <Alert variant="warning" className="mb-4">
+          {connectError} You can skip and connect later.
+        </Alert>
+      )}
+
+      {item.coming_soon ? (
+        <Button
+          variant="outline"
+          disabled
+          aria-label={`${item.display_name} — Coming soon`}
+          aria-disabled="true"
+        >
+          Coming soon
+        </Button>
+      ) : isConnected ? (
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          {item.instance?.shop_domain && (
+            <p className="text-sm font-medium tabular-nums text-foreground">
+              {item.instance.shop_domain}
+            </p>
+          )}
+          <Button
+            size="sm"
+            onClick={onAdvance}
+            className="ml-auto"
+            data-testid={`btn-continue-after-connect-${item.provider}`}
+          >
+            Continue
+            <ArrowRight className="ml-2 size-4" aria-hidden="true" />
           </Button>
-        ) : isConnected ? (
-          <div className="flex items-center gap-3">
-            {item.instance?.shop_domain && (
-              <p className="text-sm text-muted-foreground">{item.instance.shop_domain}</p>
-            )}
-            <Button
-              size="sm"
-              onClick={onAdvance}
-              data-testid={`btn-continue-after-connect-${item.provider}`}
-            >
-              Continue
-              <ArrowRight className="ml-2 h-4 w-4" aria-hidden="true" />
-            </Button>
-          </div>
-        ) : (
-          <div className="space-y-2">
-            {item.provider === 'shopify' && (
-              <div className="space-y-1">
-                <label htmlFor={`shop-${item.provider}`} className="text-xs text-muted-foreground">
-                  Your Shopify store domain
-                </label>
-                <Input
-                  id={`shop-${item.provider}`}
-                  value={shopDomain}
-                  onChange={(e) => setShopDomain(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') handleConnect();
-                  }}
-                  placeholder="my-store.myshopify.com"
-                  autoComplete="off"
-                  data-testid={`input-shop-${item.provider}`}
-                />
-              </div>
-            )}
-            <Button
-              onClick={handleConnect}
-              disabled={isConnecting || (item.provider === 'shopify' && !shopDomain.trim())}
-              data-testid={`btn-connect-${item.provider}`}
-            >
-              {isConnecting && (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
-              )}
-              {isConnecting ? 'Connecting…' : `Connect ${item.display_name}`}
-            </Button>
-          </div>
-        )}
-      </CardContent>
-    </Card>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {item.provider === 'shopify' && (
+            <div className="space-y-1.5">
+              <Label htmlFor={`shop-${item.provider}`}>Your Shopify store domain</Label>
+              <Input
+                id={`shop-${item.provider}`}
+                value={shopDomain}
+                onChange={(e) => setShopDomain(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleConnect();
+                }}
+                placeholder="my-store.myshopify.com"
+                autoComplete="off"
+                inputMode="url"
+                data-testid={`input-shop-${item.provider}`}
+              />
+            </div>
+          )}
+          <Button
+            onClick={handleConnect}
+            loading={isConnecting}
+            disabled={item.provider === 'shopify' && !shopDomain.trim()}
+            data-testid={`btn-connect-${item.provider}`}
+          >
+            {isConnecting ? 'Connecting…' : `Connect ${item.display_name}`}
+          </Button>
+        </div>
+      )}
+    </SectionCard>
   );
 }
 
@@ -213,54 +189,57 @@ export function OnboardingIntegrationsStep() {
 
   if (isLoading) {
     return (
-      <div className="space-y-4" aria-busy="true" aria-label="Loading integrations…">
-        {[1, 2, 3].map((i) => (
-          <div key={i} className="h-36 w-full rounded-lg bg-muted animate-pulse" aria-hidden="true" />
+      <div className="space-y-4" aria-busy="true" aria-label="Loading storefront connectors…">
+        {[1, 2].map((i) => (
+          <Skeleton key={i} className="h-40 w-full" aria-hidden="true" />
         ))}
       </div>
     );
   }
 
   if (error) {
-    return (
-      <ErrorCard
-        error={error}
-        retry={refetch}
-      />
-    );
+    return <ErrorCard error={error} retry={refetch} />;
   }
 
-  // Pixel is NOT in the wizard (MA-10 / plan §F-2).
-  // The connector API returns shopify | meta | google — all valid wizard entries.
-  const wizardConnectors = data ?? [];
+  // Onboarding offers ONLY storefront connectors — order truth is the data foundation captured
+  // first; every other connector category is handled later in Settings (data foundation before
+  // dashboards). `category` is carried on ConnectorListItem from the web-api catalog.
+  const storefrontConnectors = (data ?? []).filter((item) => item.category === 'storefront');
 
   return (
     <div className="space-y-6">
       {advanceError && (
-        <p className="text-sm text-destructive" role="alert">
-          {advanceError}
-        </p>
+        <Alert variant="destructive">{advanceError}</Alert>
       )}
 
-      <div className="space-y-4">
-        {wizardConnectors.map((item) => (
-          <ConnectorWizardCard key={item.provider} item={item} onAdvance={advance} />
-        ))}
-      </div>
+      {storefrontConnectors.length === 0 ? (
+        <SectionCard>
+          <EmptyState
+            icon={<Store aria-hidden="true" />}
+            title="No storefront connectors available"
+            description="We couldn’t load any storefront integrations right now. You can continue and connect your store later from Settings."
+          />
+        </SectionCard>
+      ) : (
+        <div className="space-y-4">
+          {storefrontConnectors.map((item) => (
+            <ConnectorWizardCard key={item.provider} item={item} onAdvance={advance} />
+          ))}
+        </div>
+      )}
 
-      <div className="flex items-center justify-between border-t pt-4">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-5">
         <p className="text-sm text-muted-foreground">
-          You can always connect integrations later from Settings.
+          You can always connect more integrations later from Settings.
         </p>
         <Button
           variant="outline"
           onClick={advance}
-          disabled={isAdvancing}
+          loading={isAdvancing}
           data-testid="btn-skip-integrations"
         >
-          {isAdvancing && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />}
           {isAdvancing ? 'Saving…' : 'Skip for now'}
-          {!isAdvancing && <ArrowRight className="ml-2 h-4 w-4" aria-hidden="true" />}
+          {!isAdvancing && <ArrowRight className="ml-2 size-4" aria-hidden="true" />}
         </Button>
       </div>
     </div>

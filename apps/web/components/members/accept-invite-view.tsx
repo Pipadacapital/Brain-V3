@@ -69,7 +69,7 @@ export function AcceptInviteView() {
           <Card>
             <CardHeader>
               <div className="flex justify-center mb-2">
-                <AlertTriangle className="h-10 w-10 text-amber-500" aria-hidden="true" />
+                <AlertTriangle className="h-10 w-10 text-warning" aria-hidden="true" />
               </div>
               <CardTitle className="text-center">Wrong email address</CardTitle>
               <CardDescription className="text-center">
@@ -132,7 +132,7 @@ export function AcceptInviteView() {
       <Card>
         <CardHeader>
           <div className="flex justify-center mb-2">
-            <CheckCircle className="h-10 w-10 text-green-600" aria-hidden="true" />
+            <CheckCircle className="h-10 w-10 text-success" aria-hidden="true" />
           </div>
           <CardTitle className="text-center">You&apos;re in!</CardTitle>
           <CardDescription className="text-center">

@@ -140,7 +140,7 @@ export function InviteMemberDialog({ onSuccess, currentUserRole = 'analyst' }: I
                 id="invite-verify-hint"
                 role="note"
                 data-testid="invite-verify-hint"
-                className="rounded-md border border-status-amber-200 bg-status-amber-50 px-3 py-2 text-xs text-status-amber-700"
+                className="rounded-md border border-warning/30 bg-warning-subtle px-3 py-2 text-xs text-warning-subtle-foreground"
               >
                 {VERIFY_TO_INVITE}. We&apos;ll send the invite once your email is verified.
               </p>

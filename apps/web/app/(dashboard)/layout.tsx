@@ -47,6 +47,7 @@ import {
   Lightbulb,
   Boxes,
   Sparkles,
+  Archive,
 } from 'lucide-react';
 import { UserMenu } from '@/components/dashboard/user-menu';
 import { RequireSession } from '@/components/dashboard/require-session';
@@ -134,10 +135,14 @@ const NAV_SECTIONS: NavSection[] = [
       { href: '/settings/pixel', label: 'Brain Pixel', icon: Zap },
       { href: '/settings/members', label: 'Members', icon: Users },
       { href: '/settings/consent', label: 'Consent & Compliance', icon: ShieldCheck },
+      { href: '/settings/archived-brands', label: 'Archived Brands', icon: Archive },
       { href: '/settings', label: 'Settings', icon: Settings },
     ],
   },
 ];
+
+const NAV_LINK_BASE =
+  'group flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm font-medium transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring';
 
 function NavLink({ item }: { item: NavItem }) {
   const pathname = usePathname();
@@ -158,7 +163,7 @@ function NavLink({ item }: { item: NavItem }) {
   if (locked) {
     return (
       <div
-        className="flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium text-muted-foreground/50 cursor-not-allowed select-none"
+        className={cn(NAV_LINK_BASE, 'text-muted-foreground/45 cursor-not-allowed select-none hover:bg-transparent')}
         aria-disabled="true"
         role="link"
         tabIndex={-1}
@@ -166,7 +171,7 @@ function NavLink({ item }: { item: NavItem }) {
         aria-label={`${item.label} — locked. ${ent?.unlock_hint ?? 'Connect your data sources — this unlocks automatically once Brain has enough data.'}`}
       >
         <item.icon className="h-4 w-4 shrink-0" aria-hidden="true" />
-        <span>{item.label}</span>
+        <span className="truncate">{item.label}</span>
         <Lock className="ml-auto h-3.5 w-3.5 shrink-0" aria-hidden="true" />
       </div>
     );
@@ -175,14 +180,14 @@ function NavLink({ item }: { item: NavItem }) {
   if (item.disabled || !item.href) {
     return (
       <div
-        className="flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium text-muted-foreground/50 cursor-not-allowed select-none"
+        className={cn(NAV_LINK_BASE, 'text-muted-foreground/45 cursor-not-allowed select-none hover:bg-transparent')}
         aria-disabled="true"
         role="link"
         tabIndex={-1}
         aria-label={`${item.label} — coming soon`}
       >
         <item.icon className="h-4 w-4 shrink-0" aria-hidden="true" />
-        <span>{item.label}</span>
+        <span className="truncate">{item.label}</span>
         {item.comingSoon && (
           <Badge
             variant="secondary"
@@ -200,16 +205,18 @@ function NavLink({ item }: { item: NavItem }) {
     <Link
       href={item.href}
       className={cn(
-        'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
-        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1',
+        NAV_LINK_BASE,
         isActive
-          ? 'bg-accent text-accent-foreground'
-          : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+          ? 'bg-primary/10 text-primary'
+          : 'text-muted-foreground hover:bg-accent hover:text-foreground',
       )}
       aria-current={isActive ? 'page' : undefined}
     >
-      <item.icon className="h-4 w-4 shrink-0" aria-hidden="true" />
-      <span>{item.label}</span>
+      <item.icon
+        className={cn('h-4 w-4 shrink-0 transition-colors', isActive ? 'text-primary' : 'text-muted-foreground/70 group-hover:text-foreground')}
+        aria-hidden="true"
+      />
+      <span className="truncate">{item.label}</span>
     </Link>
   );
 }
@@ -219,23 +226,29 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     <div className="flex min-h-screen bg-background">
       {/* Sidebar */}
       <aside
-        className="w-60 shrink-0 border-r bg-card flex flex-col"
+        className="sticky top-0 h-screen w-60 shrink-0 border-r border-border bg-surface flex flex-col"
         aria-label="Main navigation"
       >
-        <div className="px-6 py-5 border-b">
-          <span className="text-lg font-bold text-foreground">Brain</span>
+        <div className="flex h-14 items-center gap-2 px-5">
+          <span
+            className="flex h-7 w-7 items-center justify-center rounded-md bg-primary text-sm font-bold text-primary-foreground"
+            aria-hidden="true"
+          >
+            B
+          </span>
+          <span className="text-base font-semibold tracking-tight text-foreground">Brain</span>
         </div>
 
         {/* B4: Brand switcher — always rendered (MA-15), org-scoped via brand-summary (MA-14) */}
         <BrandSwitcher />
 
-        <nav className="flex-1 py-4 px-3 overflow-y-auto" aria-label="Navigation links">
-          <ul className="space-y-5" role="list">
+        <nav className="flex-1 overflow-y-auto px-3 py-4" aria-label="Navigation links">
+          <ul className="space-y-6" role="list">
             {NAV_SECTIONS.map((section) => (
               <li key={section.title}>
                 {/* Section header — decorative, aria-hidden */}
                 <p
-                  className="px-3 mb-1 text-[10px] font-semibold tracking-widest text-muted-foreground uppercase select-none"
+                  className="mb-1.5 px-2.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70 select-none"
                   aria-hidden="true"
                 >
                   {section.title}
@@ -256,12 +269,14 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       </aside>
 
       {/* Main content */}
-      <div className="flex-1 flex flex-col min-w-0">
+      <div className="flex flex-1 flex-col min-w-0">
         {/* Soft-gate UX (feat-onboarding-ux): dismissible verify-email banner. The actual
             block on sensitive actions is enforced server-side — this is guidance only. */}
         <VerifyEmailBanner />
-        <main className="flex-1 p-8 overflow-auto">
-          <RequireSession>{children}</RequireSession>
+        <main className="flex-1 overflow-auto">
+          <div className="mx-auto w-full max-w-7xl px-6 py-8 lg:px-8">
+            <RequireSession>{children}</RequireSession>
+          </div>
         </main>
       </div>
     </div>

@@ -4,7 +4,6 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -74,9 +73,9 @@ export function RegisterForm() {
   }
 
   return (
-    <Card>
+    <Card className="shadow-md">
       <CardHeader>
-        <CardTitle>Create your account</CardTitle>
+        <CardTitle className="text-lg">Create your account</CardTitle>
         <CardDescription>Enter your details to get started.</CardDescription>
       </CardHeader>
       <CardContent>
@@ -146,16 +145,15 @@ export function RegisterForm() {
             <Button
               type="submit"
               className="w-full"
-              disabled={isPending}
+              loading={isPending}
               data-testid="btn-register"
             >
-              {isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />}
               {isPending ? 'Creating account…' : 'Create account'}
             </Button>
 
-            <p className="text-center text-sm text-muted-foreground">
+            <p className="pt-1 text-center text-sm text-muted-foreground">
               Already have an account?{' '}
-              <Link href="/login" className="text-primary underline-offset-4 hover:underline">
+              <Link href="/login" className="font-medium text-primary underline-offset-4 hover:underline">
                 Sign in
               </Link>
             </p>

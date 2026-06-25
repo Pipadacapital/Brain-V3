@@ -15,28 +15,16 @@
  */
 
 import { CheckCircle2, XCircle, Clock } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { StatusBadge, type StatusTone } from '@/components/ui/status-badge';
 import type { ConsentGateDecision } from '@/lib/api/types';
 
 const DECISION_META: Record<
   ConsentGateDecision,
-  { label: string; Icon: typeof CheckCircle2; cls: string }
+  { label: string; Icon: typeof CheckCircle2; tone: StatusTone }
 > = {
-  allow: {
-    label: 'Allowed',
-    Icon: CheckCircle2,
-    cls: 'bg-status-green-50 text-status-green-700 border-current/20',
-  },
-  block: {
-    label: 'Blocked',
-    Icon: XCircle,
-    cls: 'bg-status-red-50 text-status-red-700 border-current/20',
-  },
-  queue_pending_window: {
-    label: 'Queued',
-    Icon: Clock,
-    cls: 'bg-status-amber-50 text-status-amber-700 border-current/20',
-  },
+  allow: { label: 'Allowed', Icon: CheckCircle2, tone: 'success' },
+  block: { label: 'Blocked', Icon: XCircle, tone: 'destructive' },
+  queue_pending_window: { label: 'Queued', Icon: Clock, tone: 'warning' },
 };
 
 export function GateDecisionBadge({
@@ -48,17 +36,15 @@ export function GateDecisionBadge({
 }) {
   const meta = DECISION_META[decision];
   return (
-    <span
+    <StatusBadge
+      tone={meta.tone}
+      hideDot
       role="status"
       aria-label={`Decision: ${meta.label}`}
-      className={cn(
-        'inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-xs font-semibold',
-        meta.cls,
-        className,
-      )}
+      className={className}
     >
       <meta.Icon className="h-3.5 w-3.5" aria-hidden="true" />
       <span>{meta.label}</span>
-    </span>
+    </StatusBadge>
   );
 }

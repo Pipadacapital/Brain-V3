@@ -40,6 +40,7 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { Layers, ArrowRight, Target, TrendingUp } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { PageHeader } from '@/components/ui/page-header';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
@@ -146,10 +147,10 @@ export function AttributionContent() {
 
   return (
     <div className="space-y-8">
-      <div>
-        <div className="flex flex-wrap items-center gap-2">
-          <h1 className="text-2xl font-bold text-foreground">Attribution</h1>
-          {/* Subtle provenance: journeys come from the Silver tier. */}
+      <PageHeader
+        title="Attribution"
+        description="Multi-touch attributed revenue by channel, the unattributed residual (the closed sum always adds up), and per-channel ROAS — every figure deterministically credited from your journeys and realized revenue."
+        meta={
           <span
             data-testid="attribution-silver-label"
             className="inline-flex items-center gap-1 rounded-md border border-border bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"
@@ -158,13 +159,8 @@ export function AttributionContent() {
             <Layers className="h-3 w-3" aria-hidden="true" />
             Powered by the Silver tier
           </span>
-        </div>
-        <p className="text-muted-foreground mt-1">
-          Multi-touch attributed revenue by channel, the unattributed residual (the closed sum
-          always adds up), and per-channel ROAS — every figure deterministically credited from
-          your journeys and realized revenue.
-        </p>
-      </div>
+        }
+      />
 
       {/* ── Model selector + date range ── */}
       <section aria-label="Attribution controls" data-testid="attribution-controls">

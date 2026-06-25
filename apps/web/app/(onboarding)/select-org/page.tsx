@@ -1,16 +1,15 @@
 import { SelectOrgForm } from '@/components/onboarding/select-org-form';
+import { WizardHeader } from '@/components/onboarding/wizard-steps';
 
 export const metadata = { title: 'Select Workspace — Brain' };
 
 export default function SelectOrgPage() {
   return (
-    <div>
-      <div className="mb-8">
-        <h2 className="text-2xl font-bold text-foreground">Your workspaces</h2>
-        <p className="text-muted-foreground mt-1">
-          Choose which workspace you want to open.
-        </p>
-      </div>
+    <div className="space-y-8">
+      <WizardHeader
+        title="Your workspaces"
+        description="Choose which workspace you want to open."
+      />
       <SelectOrgForm />
     </div>
   );

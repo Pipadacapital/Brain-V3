@@ -22,6 +22,7 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Sparkles, BrainCircuit, SearchX, Inbox } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
+import { PageHeader as PageHeaderPrimitive } from '@/components/ui/page-header';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -44,19 +45,24 @@ const SAMPLE_QUESTIONS = [
 
 function PageHeader() {
   return (
-    <div>
-      <h1 className="text-2xl font-bold text-foreground flex items-center gap-2">
-        <BrainCircuit className="h-6 w-6" aria-hidden="true" />
-        Ask Brain
-      </h1>
-      <p className="text-muted-foreground mt-1 max-w-2xl">
-        Ask a question about your metrics in plain language. Brain resolves it to a{' '}
-        <strong className="font-medium text-foreground">certified metric</strong> and the
-        metric-engine computes the number — it never makes one up. Every answer shows its
-        binding, confidence, and snapshot so you can trace it.{' '}
-        <span className="font-medium text-foreground">Computed, not generated.</span>
-      </p>
-    </div>
+    <PageHeaderPrimitive
+      eyebrow={
+        <span className="inline-flex items-center gap-1.5 normal-case tracking-normal">
+          <BrainCircuit className="h-3.5 w-3.5" aria-hidden="true" />
+          Decision intelligence
+        </span>
+      }
+      title="Ask Brain"
+      description={
+        <>
+          Ask a question about your metrics in plain language. Brain resolves it to a{' '}
+          <strong className="font-medium text-foreground">certified metric</strong> and the
+          metric-engine computes the number — it never makes one up. Every answer shows its
+          binding, confidence, and snapshot so you can trace it.{' '}
+          <span className="font-medium text-foreground">Computed, not generated.</span>
+        </>
+      }
+    />
   );
 }
 

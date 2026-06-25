@@ -20,6 +20,8 @@ import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
 import { EmptyState } from '@/components/ui/empty-state';
+import { PageHeader } from '@/components/ui/page-header';
+import { StatusBadge } from '@/components/ui/status-badge';
 import { useRecommendations, useRefreshRecommendations, useRecommendationAction } from '@/lib/hooks/use-recommendations';
 import { formatMoneyDisplay } from '@/lib/format/money-display';
 import type { Recommendation } from '@/lib/api/types';
@@ -27,19 +29,15 @@ import type { Recommendation } from '@/lib/api/types';
 /** Confidence → badge styling (Trusted strongest; engine never overstates — doc 09 Part 7). */
 function ConfidenceBadge({ confidence }: { confidence: string }) {
   const tone =
-    confidence === 'Trusted'
-      ? 'bg-emerald-50 text-emerald-700'
-      : confidence === 'Estimated'
-        ? 'bg-amber-50 text-amber-800'
-        : 'bg-muted text-muted-foreground';
+    confidence === 'Trusted' ? 'success' : confidence === 'Estimated' ? 'warning' : 'neutral';
   // The icon must match the tier — a verified check only for Trusted. Showing a green ShieldCheck on
   // an Estimated/Insufficient rec would overstate certainty (the exact thing the engine prevents).
   const Icon = confidence === 'Trusted' ? ShieldCheck : ShieldAlert;
   return (
-    <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${tone}`}>
+    <StatusBadge tone={tone} hideDot>
       <Icon className="h-3 w-3" aria-hidden="true" />
       {confidence}
-    </span>
+    </StatusBadge>
   );
 }
 
@@ -54,7 +52,9 @@ function inr(minor: string): string {
 /** The learning-loop outcome strip: the detector's headline metric then-at-raise vs now. */
 function OutcomeStrip({ outcome }: { outcome: NonNullable<Recommendation['outcome']> }) {
   const label = outcome.metric.replace(/_/g, ' ').replace(/ pct$/, ' %');
-  const tone = outcome.improved ? 'text-emerald-700 bg-emerald-50' : 'text-amber-800 bg-amber-50';
+  const tone = outcome.improved
+    ? 'text-success-subtle-foreground bg-success-subtle'
+    : 'text-warning-subtle-foreground bg-warning-subtle';
   const Icon = outcome.improved ? TrendingDown : TrendingUp;
   return (
     <div className={`flex items-center gap-2 rounded-md px-3 py-1.5 text-xs ${tone}`}>
@@ -90,9 +90,9 @@ function RecommendationCard({ rec }: { rec: Recommendation }) {
         <div className="flex items-start justify-between gap-3">
           <CardTitle className="flex items-center gap-2 text-base">
             {isRisk ? (
-              <AlertTriangle className="h-4 w-4 text-amber-600" aria-hidden="true" />
+              <AlertTriangle className="h-4 w-4 text-warning" aria-hidden="true" />
             ) : (
-              <TrendingUp className="h-4 w-4 text-emerald-600" aria-hidden="true" />
+              <TrendingUp className="h-4 w-4 text-success" aria-hidden="true" />
             )}
             {rec.title}
           </CardTitle>
@@ -138,9 +138,9 @@ function RecommendationCard({ rec }: { rec: Recommendation }) {
             role="status"
           >
             {acted === 'accepted' ? (
-              <Check className="h-4 w-4 text-emerald-600" aria-hidden="true" />
+              <Check className="h-4 w-4 text-success" aria-hidden="true" />
             ) : acted === 'snoozed' ? (
-              <Clock className="h-4 w-4 text-amber-600" aria-hidden="true" />
+              <Clock className="h-4 w-4 text-warning" aria-hidden="true" />
             ) : (
               <X className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
             )}
@@ -193,13 +193,13 @@ function HeldRecommendationCard({ rec }: { rec: Recommendation }) {
       <CardHeader className="pb-2">
         <div className="flex items-start justify-between gap-3">
           <CardTitle className="flex items-center gap-2 text-base text-muted-foreground">
-            <ShieldAlert className="h-4 w-4 text-amber-600" aria-hidden="true" />
+            <ShieldAlert className="h-4 w-4 text-warning" aria-hidden="true" />
             {rec.title}
           </CardTitle>
-          <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800">
+          <StatusBadge tone="warning" hideDot className="shrink-0">
             <ShieldAlert className="h-3 w-3" aria-hidden="true" />
             Held
-          </span>
+          </StatusBadge>
         </div>
       </CardHeader>
       <CardContent className="space-y-2">
@@ -225,24 +225,21 @@ export function RecommendationsContent() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Recommendations</h1>
-          <p className="text-sm text-muted-foreground">
-            Deterministic detectors over your certified data — ranked actions with confidence and the
-            evidence behind them. Recommend-only: nothing is changed automatically.
-          </p>
-        </div>
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={refresh.isPending}
-          onClick={() => refresh.mutate()}
-        >
-          <RefreshCw className={`mr-1.5 h-3.5 w-3.5 ${refresh.isPending ? 'animate-spin' : ''}`} aria-hidden="true" />
-          {refresh.isPending ? 'Running…' : 'Run detectors'}
-        </Button>
-      </div>
+      <PageHeader
+        title="Recommendations"
+        description="Deterministic detectors over your certified data — ranked actions with confidence and the evidence behind them. Recommend-only: nothing is changed automatically."
+        actions={
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={refresh.isPending}
+            onClick={() => refresh.mutate()}
+          >
+            <RefreshCw className={`mr-1.5 h-3.5 w-3.5 ${refresh.isPending ? 'animate-spin' : ''}`} aria-hidden="true" />
+            {refresh.isPending ? 'Running…' : 'Run detectors'}
+          </Button>
+        }
+      />
 
       {refresh.isError && (
         <p className="text-sm text-destructive" role="alert">

@@ -261,18 +261,46 @@ export interface CreateBrandRequest {
   revenue_definition?: 'realized' | 'delivered';
 }
 
+/** Brand lifecycle status — 'archived' = soft-deleted (drops out of default lists, ingest stops). */
+export type BrandStatus = 'active' | 'archived';
+
 export interface BrandResponse {
   id: string;
   organization_id: string;
   display_name: string;
   domain: string | null;
-  status: 'active' | 'archived';
+  status: BrandStatus;
   region_code: string;
   currency_code: string;
   timezone: string;
   revenue_definition: string;
   created_at: string;
   updated_at: string;
+}
+
+/**
+ * One brand entry on the dashboard brand-summary (and the brand switcher). Carries `status`
+ * so the switcher can filter active vs archived without a second fetch. Mirrors the BFF
+ * brand-summary `brands[]` shape — the server is authoritative for `status`.
+ */
+export interface BrandSummaryEntry {
+  id: string;
+  display_name: string;
+  domain: string | null;
+  status: BrandStatus;
+}
+
+/** DELETE /api/v1/brands/:id → soft-delete (archive). Reversible server-side. */
+export interface BrandArchiveResponse {
+  id: string;
+  archived: boolean;
+}
+
+/** Restore (un-archive) a previously soft-deleted brand → POST /api/v1/brands/:id/restore. */
+export interface BrandRestoreResponse {
+  id: string;
+  /** false once the brand is active again. */
+  archived: boolean;
 }
 
 // ── Members ───────────────────────────────────────────────────────────────────
@@ -339,6 +367,8 @@ export interface ConnectorListItem {
   provider: ConnectorProvider | 'meta' | 'google';
   display_name: string;
   description: string;
+  /** Connector category from the marketplace catalog — drives grouped/filtered rendering. */
+  category: ConnectorCategory;
   coming_soon: boolean;
   /** present only when coming_soon = false and a connection exists */
   instance?: ConnectorInstanceResponse;
@@ -476,8 +506,9 @@ export interface DashboardBrandSummaryResponse {
   member_count: number;
   /** MA-06/B2: active brand id from auth.brandId — switcher pivots on this, not array index. */
   active_brand_id: string | null;
-  /** Full brand list in the active org — drives the switcher (MA-14/15). */
-  brands: Array<{ id: string; display_name: string; domain: string | null; status: string }>;
+  /** Full brand list in the active org — drives the switcher (MA-14/15). Each carries `status`
+   *  so the switcher can filter active vs archived. */
+  brands: BrandSummaryEntry[];
 }
 
 export interface DashboardConnectionStatusResponse {
@@ -559,7 +590,13 @@ export type LedgerEventType =
   | 'payment_fee'
   | 'settlement_finalization'
   | 'settlement_tax'
-  // eslint-disable-next-line @typescript-eslint/ban-types
+  // `string & {}` is the deliberate "open union" trick: it keeps the literal
+  // autocomplete above while still accepting any forward-added server event_type.
+  // NOTE: the original `// eslint-disable-next-line @typescript-eslint/ban-types`
+  // directive was REMOVED — this repo's flat ESLint config does not load
+  // @typescript-eslint/eslint-plugin, so naming that rule errored as "rule not
+  // found", and a plain disable became an "unused directive" warning. With no
+  // ban-types rule active there is nothing to suppress.
   | (string & {});
 
 export interface AnalyticsActivityRow {

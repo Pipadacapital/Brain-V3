@@ -24,12 +24,13 @@
 import { useForm, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useRouter } from 'next/navigation';
-import { Loader2, AlertCircle } from 'lucide-react';
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
+import { Alert } from '@/components/ui/alert';
+import { SectionCard } from '@/components/ui/section-card';
 import {
   Select,
   SelectContent,
@@ -194,38 +195,27 @@ export function CreateBrandWorkspaceForm() {
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Create your brand</CardTitle>
-        <CardDescription>
-          Name your workspace and set up your first brand. We&apos;ll provision both — you can add
-          more brands and team members later.
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
+    <SectionCard
+      title="Create your brand"
+      description="Name your workspace and set up your first brand. We’ll provision both — you can add more brands and team members later."
+    >
+      <div>
         {currencyMismatch && (
-          <div
-            role="alert"
-            className="mb-4 flex items-start gap-3 rounded-md border border-amber-300 bg-amber-50 p-4 text-sm text-amber-800"
-          >
-            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
-            <div className="flex-1">
-              <p className="font-medium">Currency and timezone may not match</p>
-              <p className="mt-1 text-amber-700">
-                The selected currency ({selectedCurrency}) is typically used with{' '}
-                {CURRENCY_TIMEZONE[selectedCurrency ?? 'INR']}, but you chose {selectedTimezone}.
-                This is allowed — confirm only if intentional.
-              </p>
-              <div className="mt-3 flex gap-2">
-                <Button size="sm" variant="outline" onClick={cancelMismatch} data-testid="btn-mismatch-cancel">
-                  Go back
-                </Button>
-                <Button size="sm" onClick={confirmMismatch} data-testid="btn-mismatch-confirm">
-                  Confirm and continue
-                </Button>
-              </div>
+          <Alert variant="warning" title="Currency and timezone may not match" className="mb-4">
+            <p>
+              The selected currency ({selectedCurrency}) is typically used with{' '}
+              {CURRENCY_TIMEZONE[selectedCurrency ?? 'INR']}, but you chose {selectedTimezone}.
+              This is allowed — confirm only if intentional.
+            </p>
+            <div className="mt-3 flex gap-2">
+              <Button size="sm" variant="outline" onClick={cancelMismatch} data-testid="btn-mismatch-cancel">
+                Go back
+              </Button>
+              <Button size="sm" onClick={confirmMismatch} data-testid="btn-mismatch-confirm">
+                Confirm and continue
+              </Button>
             </div>
-          </div>
+          </Alert>
         )}
 
         <form onSubmit={handleSubmit(onSubmit)} noValidate>
@@ -276,12 +266,10 @@ export function CreateBrandWorkspaceForm() {
             </div>
 
             {/* Website → tracking pixel (feat-onboarding-website preserved verbatim) */}
-            <div className="space-y-1.5 rounded-md border border-primary/30 bg-primary/5 p-4">
+            <div className="space-y-1.5 rounded-lg border border-primary/30 bg-primary/5 p-4">
               <Label htmlFor="domain" className="flex items-center gap-2">
                 Website
-                <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[11px] font-medium uppercase tracking-wide text-primary">
-                  Recommended
-                </span>
+                <Badge variant="info">Recommended</Badge>
               </Label>
               <Input
                 id="domain"
@@ -430,10 +418,10 @@ export function CreateBrandWorkspaceForm() {
               <Button
                 type="submit"
                 className="w-full"
-                disabled={busy || currencyMismatch}
+                loading={busy}
+                disabled={currencyMismatch}
                 data-testid="btn-create-brand"
               >
-                {busy && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />}
                 {busy ? 'Creating…' : 'Create brand'}
               </Button>
               <Button
@@ -449,7 +437,7 @@ export function CreateBrandWorkspaceForm() {
             </div>
           </div>
         </form>
-      </CardContent>
-    </Card>
+      </div>
+    </SectionCard>
   );
 }

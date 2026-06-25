@@ -17,6 +17,7 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { MousePointerClick, ArrowRight, Eye, Search } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { PageHeader } from '@/components/ui/page-header';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
@@ -172,9 +173,10 @@ export function BehaviorContent() {
 
   return (
     <div className="space-y-8">
-      <div>
-        <div className="flex flex-wrap items-center gap-2">
-          <h1 className="text-2xl font-bold text-foreground">Behavior</h1>
+      <PageHeader
+        title="Behavior"
+        description="What shoppers actually do on the storefront — page-type mix, the products they view, and the searches they run — captured by the Brain Pixel and folded into the journey touchpoints."
+        meta={
           <span
             className="inline-flex items-center gap-1 rounded-md border border-border bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"
             title="Read from the Silver tier (silver_touchpoint) via the metric-engine storefront-behavior seam."
@@ -182,12 +184,8 @@ export function BehaviorContent() {
             <MousePointerClick className="h-3 w-3" aria-hidden="true" />
             Powered by the Silver tier
           </span>
-        </div>
-        <p className="text-muted-foreground mt-1">
-          What shoppers actually do on the storefront — page-type mix, the products they view, and the
-          searches they run — captured by the Brain Pixel and folded into the journey touchpoints.
-        </p>
-      </div>
+        }
+      />
 
       <section aria-label="Storefront behavior">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-3">

@@ -60,13 +60,13 @@ export function CoverageCard({
               </th>
               <th scope="col" className="py-2 text-right font-medium">
                 <span className="inline-flex items-center gap-1">
-                  <ShieldCheck className="h-3.5 w-3.5 text-status-green-700" aria-hidden="true" />
+                  <ShieldCheck className="h-3.5 w-3.5 text-success" aria-hidden="true" />
                   Granted
                 </span>
               </th>
               <th scope="col" className="py-2 text-right font-medium">
                 <span className="inline-flex items-center gap-1">
-                  <ShieldX className="h-3.5 w-3.5 text-status-red-700" aria-hidden="true" />
+                  <ShieldX className="h-3.5 w-3.5 text-destructive" aria-hidden="true" />
                   Withdrawn
                 </span>
               </th>

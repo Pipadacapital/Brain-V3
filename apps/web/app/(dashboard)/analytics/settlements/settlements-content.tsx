@@ -19,6 +19,7 @@
 import Link from 'next/link';
 import { Receipt, ArrowRight, Minus } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { PageHeader } from '@/components/ui/page-header';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
@@ -55,12 +56,10 @@ export function SettlementsContent() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-foreground">Settlements</h1>
-        <p className="text-muted-foreground mt-1">
-          Net-of-fees realized revenue from Razorpay settlement reconciliation.
-        </p>
-      </div>
+      <PageHeader
+        title="Settlements"
+        description="Net-of-fees realized revenue from Razorpay settlement reconciliation."
+      />
 
       {isLoading && <SettlementsSkeleton />}
 
@@ -177,7 +176,7 @@ function SettlementsData({ data }: { data: SettlementsHasData }) {
                   {data.fees.map((fee) => (
                     <tr key={fee.type} className="border-b last:border-0">
                       <td className="py-2">{FEE_LABELS[fee.type]}</td>
-                      <td className="py-2 text-right tabular-nums font-medium text-status-red-700">
+                      <td className="py-2 text-right tabular-nums font-medium text-destructive">
                         − {formatMoneyDisplay(fee.amount_minor, ccy)}
                       </td>
                     </tr>

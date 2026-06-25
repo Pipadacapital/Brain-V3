@@ -20,6 +20,7 @@
 import Link from 'next/link';
 import { ShieldCheck, Gauge, Layers, Activity } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
+import { PageHeader as PageHeaderPrimitive } from '@/components/ui/page-header';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
 import { EmptyState } from '@/components/ui/empty-state';
@@ -32,19 +33,21 @@ import { useDataQualitySummary } from '@/lib/hooks/use-analytics';
 
 function PageHeader() {
   return (
-    <div>
-      <h1 className="text-2xl font-bold text-foreground">Data Quality</h1>
-      <p className="text-muted-foreground mt-1">
-        Per-table check grades, freshness-SLA status, coverage, and the
-        effective-confidence gate that governs billing and MMM eligibility.{' '}
-        <Link
-          href="/data/health"
-          className="text-foreground underline underline-offset-2 hover:no-underline"
-        >
-          See ingestion health →
-        </Link>
-      </p>
-    </div>
+    <PageHeaderPrimitive
+      title="Data Quality"
+      description={
+        <>
+          Per-table check grades, freshness-SLA status, coverage, and the
+          effective-confidence gate that governs billing and MMM eligibility.{' '}
+          <Link
+            href="/data/health"
+            className="text-foreground underline underline-offset-2 hover:no-underline"
+          >
+            See ingestion health →
+          </Link>
+        </>
+      }
+    />
   );
 }
 

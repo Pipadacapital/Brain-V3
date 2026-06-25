@@ -1,5 +1,6 @@
 import { CreateBrandWorkspaceForm } from '@/components/onboarding/create-brand-workspace-form';
 import { OnboardingGate } from '@/components/onboarding/onboarding-gate';
+import { WizardSteps, WizardHeader } from '@/components/onboarding/wizard-steps';
 
 export const metadata = { title: 'Create your brand — Brain' };
 
@@ -13,20 +14,12 @@ export const metadata = { title: 'Create your brand — Brain' };
 export default function OnboardingStartPage() {
   return (
     <OnboardingGate step="pending">
-      <div>
-        <div className="mb-8">
-          <p
-            className="text-xs font-medium text-muted-foreground tracking-wide uppercase mb-1"
-            aria-label="Step 1 of 3"
-            data-testid="step-indicator"
-          >
-            Step 1 of 3
-          </p>
-          <h2 className="text-2xl font-bold text-foreground">Set up your brand</h2>
-          <p className="text-muted-foreground mt-1">
-            Name your workspace and configure your first brand. We&apos;ll set up both.
-          </p>
-        </div>
+      <div className="space-y-8">
+        <WizardSteps current={1} />
+        <WizardHeader
+          title="Set up your brand"
+          description="Name your workspace and configure your first brand — we’ll provision both. This is the foundation Brain builds your revenue truth on."
+        />
         <CreateBrandWorkspaceForm />
       </div>
     </OnboardingGate>

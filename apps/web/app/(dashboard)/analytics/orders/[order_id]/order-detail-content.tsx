@@ -15,6 +15,7 @@
 import Link from 'next/link';
 import { ArrowLeft, Package, Receipt, RotateCcw } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { PageHeader } from '@/components/ui/page-header';
 import { Badge } from '@/components/ui/badge';
 import { ErrorCard } from '@/components/ui/error-card';
 import { EmptyState } from '@/components/ui/empty-state';
@@ -74,23 +75,19 @@ export function OrderDetailContent({ orderId }: { orderId: string }) {
 
   return (
     <div className="space-y-6">
-      {back}
-
-      {/* Header */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-bold">Order {d.order_id}</h1>
-          <p className="text-sm text-muted-foreground">
-            {new Date(d.occurred_at).toLocaleString('en-IN')} · {ccy}
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          {d.payment_method && <Badge variant="secondary">{d.payment_method.toUpperCase()}</Badge>}
-          {d.financial_status && <Badge>{d.financial_status}</Badge>}
-          {d.fulfillment_status && <Badge variant="outline">{d.fulfillment_status}</Badge>}
-          {d.cancelled_at && <Badge variant="destructive">cancelled</Badge>}
-        </div>
-      </div>
+      <PageHeader
+        eyebrow={back}
+        title={`Order ${d.order_id}`}
+        description={`${new Date(d.occurred_at).toLocaleString('en-IN')} · ${ccy}`}
+        actions={
+          <div className="flex flex-wrap gap-2">
+            {d.payment_method && <Badge variant="secondary">{d.payment_method.toUpperCase()}</Badge>}
+            {d.financial_status && <Badge>{d.financial_status}</Badge>}
+            {d.fulfillment_status && <Badge variant="outline">{d.fulfillment_status}</Badge>}
+            {d.cancelled_at && <Badge variant="destructive">cancelled</Badge>}
+          </div>
+        }
+      />
 
       {/* Order total + breakdown */}
       <Card>
@@ -104,9 +101,9 @@ export function OrderDetailContent({ orderId }: { orderId: string }) {
             <dt className="text-muted-foreground">Shipping</dt>
             <dd className="text-right"><Money minor={d.shipping_total_minor} ccy={ccy} /></dd>
             <dt className="text-muted-foreground">Discounts</dt>
-            <dd className="text-right text-emerald-600"><Money minor={d.discount_total_minor} ccy={ccy} /></dd>
+            <dd className="text-right text-success"><Money minor={d.discount_total_minor} ccy={ccy} /></dd>
             <dt className="text-muted-foreground">Refunded</dt>
-            <dd className="text-right text-amber-600"><Money minor={d.refund_total_minor} ccy={ccy} /></dd>
+            <dd className="text-right text-warning"><Money minor={d.refund_total_minor} ccy={ccy} /></dd>
             <dt className="border-t pt-2 font-medium">Total</dt>
             <dd className="border-t pt-2 text-right font-semibold">{formatMoneyDisplay(d.amount_minor, ccy)}</dd>
           </dl>
@@ -185,7 +182,7 @@ export function OrderDetailContent({ orderId }: { orderId: string }) {
                     {r.processed_at ? new Date(r.processed_at).toLocaleDateString('en-IN') : 'refund'}
                     {r.reason ? ` · ${r.reason}` : ''}
                   </span>
-                  <span className="text-amber-600">{formatMoneyDisplay(r.amount_minor, ccy)}</span>
+                  <span className="text-warning">{formatMoneyDisplay(r.amount_minor, ccy)}</span>
                 </li>
               ))}
             </ul>

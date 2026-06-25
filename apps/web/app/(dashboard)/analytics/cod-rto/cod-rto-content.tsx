@@ -28,6 +28,7 @@
 import Link from 'next/link';
 import { Truck, ArrowRight, ShoppingBag, Wallet, Minus } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { PageHeader } from '@/components/ui/page-header';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
@@ -97,13 +98,10 @@ function EmptyConnectCard({
 export function CodRtoContent() {
   return (
     <div className="space-y-8">
-      <div>
-        <h1 className="text-2xl font-bold text-foreground">CoD / RTO</h1>
-        <p className="text-muted-foreground mt-1">
-          Cash-on-delivery economics and return-to-origin (RTO) — the India-D2C signal from
-          GoKwik shipments and Shopflo checkout.
-        </p>
-      </div>
+      <PageHeader
+        title="CoD / RTO"
+        description="Cash-on-delivery economics and return-to-origin (RTO) — the India-D2C signal from GoKwik shipments and Shopflo checkout."
+      />
 
       <RtoSection />
       <RtoRiskSection />

@@ -3,11 +3,12 @@
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Loader2 } from 'lucide-react';
+import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Alert } from '@/components/ui/alert';
 import { ErrorCard } from '@/components/ui/error-card';
 import { resetPasswordSchema, type ResetPasswordFormValues } from '@/lib/api/schemas';
 import { useResetPassword } from '@/lib/hooks/use-auth';
@@ -41,20 +42,23 @@ export function ResetPasswordForm() {
 
   if (!token) {
     return (
-      <Card>
-        <CardContent className="py-8">
-          <p className="text-center text-sm text-destructive">
-            Invalid or missing reset token. Please request a new password reset.
-          </p>
+      <Card className="shadow-md">
+        <CardContent className="space-y-4 py-8">
+          <Alert variant="destructive" title="Invalid or missing reset token">
+            This password reset link is no longer valid. Request a new one to continue.
+          </Alert>
+          <Button asChild variant="outline" className="w-full">
+            <Link href="/forgot-password">Request a new link</Link>
+          </Button>
         </CardContent>
       </Card>
     );
   }
 
   return (
-    <Card>
+    <Card className="shadow-md">
       <CardHeader>
-        <CardTitle>Set a new password</CardTitle>
+        <CardTitle className="text-lg">Set a new password</CardTitle>
         <CardDescription>Enter and confirm your new password.</CardDescription>
       </CardHeader>
       <CardContent>
@@ -103,8 +107,7 @@ export function ResetPasswordForm() {
               )}
             </div>
 
-            <Button type="submit" className="w-full" disabled={isPending} data-testid="btn-reset-password">
-              {isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />}
+            <Button type="submit" className="w-full" loading={isPending} data-testid="btn-reset-password">
               {isPending ? 'Updating…' : 'Update password'}
             </Button>
           </div>

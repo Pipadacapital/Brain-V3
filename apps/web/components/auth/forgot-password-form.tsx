@@ -3,7 +3,7 @@
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import Link from 'next/link';
-import { Loader2, CheckCircle } from 'lucide-react';
+import { CheckCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -29,19 +29,19 @@ export function ForgotPasswordForm() {
 
   if (isSuccess) {
     return (
-      <Card>
+      <Card className="shadow-md">
         <CardContent className="py-8">
           <div className="flex flex-col items-center gap-3 text-center">
-            <CheckCircle className="h-10 w-10 text-green-600" aria-hidden="true" />
+            <span className="flex h-11 w-11 items-center justify-center rounded-full bg-success-subtle text-success-subtle-foreground" aria-hidden="true">
+              <CheckCircle className="h-6 w-6" />
+            </span>
             <h2 className="text-base font-semibold">Check your inbox</h2>
-            <p className="text-sm text-muted-foreground max-w-xs">
+            <p className="max-w-xs text-sm text-muted-foreground">
               If an account exists for that email, we&apos;ve sent a password reset link. Check your inbox (and spam folder).
             </p>
-            <Link href="/login">
-              <Button variant="outline" className="mt-2">
-                Back to sign in
-              </Button>
-            </Link>
+            <Button asChild variant="outline" className="mt-2">
+              <Link href="/login">Back to sign in</Link>
+            </Button>
           </div>
         </CardContent>
       </Card>
@@ -49,9 +49,9 @@ export function ForgotPasswordForm() {
   }
 
   return (
-    <Card>
+    <Card className="shadow-md">
       <CardHeader>
-        <CardTitle>Reset your password</CardTitle>
+        <CardTitle className="text-lg">Reset your password</CardTitle>
         <CardDescription>
           Enter your email and we&apos;ll send you a reset link if an account exists.
         </CardDescription>
@@ -80,13 +80,12 @@ export function ForgotPasswordForm() {
               )}
             </div>
 
-            <Button type="submit" className="w-full" disabled={isPending} data-testid="btn-send-reset">
-              {isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />}
+            <Button type="submit" className="w-full" loading={isPending} data-testid="btn-send-reset">
               {isPending ? 'Sending…' : 'Send reset link'}
             </Button>
 
-            <p className="text-center text-sm text-muted-foreground">
-              <Link href="/login" className="text-primary underline-offset-4 hover:underline">
+            <p className="pt-1 text-center text-sm text-muted-foreground">
+              <Link href="/login" className="font-medium text-primary underline-offset-4 hover:underline">
                 Back to sign in
               </Link>
             </p>

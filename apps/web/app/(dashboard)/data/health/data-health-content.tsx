@@ -16,6 +16,8 @@
 
 import { Activity, Database, RefreshCw, Clock } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { PageHeader as PageHeaderPrimitive } from '@/components/ui/page-header';
+import { Alert } from '@/components/ui/alert';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
 import { EmptyState } from '@/components/ui/empty-state';
@@ -34,12 +36,10 @@ import { useDataHealth } from '@/lib/hooks/use-analytics';
 
 function PageHeader() {
   return (
-    <div>
-      <h1 className="text-2xl font-bold text-foreground">Data Health</h1>
-      <p className="text-muted-foreground mt-1">
-        Ingestion volume, freshness, and connector sync status.
-      </p>
-    </div>
+    <PageHeaderPrimitive
+      title="Data Health"
+      description="Ingestion volume, freshness, and connector sync status."
+    />
   );
 }
 
@@ -161,18 +161,11 @@ export function DataHealthContent() {
 
       {/* Honest stale callout — only when ingestion is lagging/stale */}
       {(freshness.verdict === 'lagging' || freshness.verdict === 'stale') && (
-        <div
-          role="status"
-          aria-live="polite"
-          className="flex items-start gap-2 rounded-lg border border-status-amber-700/30 bg-status-amber-50 p-3 text-sm text-status-amber-700"
-        >
-          <Clock className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
-          <span>
-            {freshness.verdict === 'stale'
-              ? `Ingestion is stale — the last event arrived ${lastIngestRelative}. Numbers across analytics may be out of date even if the connector reads "${syncState ?? 'connected'}".`
-              : `Ingestion is lagging — the last event arrived ${lastIngestRelative}. Recent figures may be incomplete.`}
-          </span>
-        </div>
+        <Alert variant="warning" icon={<Clock className="size-4" />}>
+          {freshness.verdict === 'stale'
+            ? `Ingestion is stale — the last event arrived ${lastIngestRelative}. Numbers across analytics may be out of date even if the connector reads "${syncState ?? 'connected'}".`
+            : `Ingestion is lagging — the last event arrived ${lastIngestRelative}. Recent figures may be incomplete.`}
+        </Alert>
       )}
 
       {/* Event volume over time */}

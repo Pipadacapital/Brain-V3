@@ -69,17 +69,17 @@ export function LiveIndicator() {
     Icon = AlertTriangle;
     label = 'Reconnecting';
     detail = 'retrying live updates';
-    toneClass = 'text-status-amber-700';
+    toneClass = 'text-warning-subtle-foreground';
   } else if (isFetching) {
     Icon = RefreshCw;
     label = 'Updating';
     detail = 'fetching latest data';
-    toneClass = 'text-status-green-700';
+    toneClass = 'text-success-subtle-foreground';
   } else {
     Icon = Radio;
     label = 'Live';
     detail = formatUpdatedAgo(dataUpdatedAt);
-    toneClass = 'text-status-green-700';
+    toneClass = 'text-success-subtle-foreground';
     pulse = true;
   }
 

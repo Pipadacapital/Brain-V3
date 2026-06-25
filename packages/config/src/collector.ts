@@ -10,7 +10,7 @@ import { CommonEnvSchema, defineConfig } from './common.js';
 // ── Collector env vars ────────────────────────────────────────────────────────
 
 export const CollectorEnvSchema = CommonEnvSchema.extend({
-  SERVICE_NAME: z.literal('collector'),
+  SERVICE_NAME: z.literal('collector').default('collector'),
   PORT: z.coerce.number().int().min(1024).max(65535).default(3001),
   DATABASE_URL: z.string().url(),
   REDIS_URL: z.string().url().default('redis://localhost:6379'),

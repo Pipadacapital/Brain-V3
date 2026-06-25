@@ -20,7 +20,9 @@ const strictTrueBool = z
   .transform((v) => v === 'true');
 
 export const CoreEnvSchema = CommonEnvSchema.extend({
-  SERVICE_NAME: z.literal('core'),
+  // Self-satisfying so the memoized loader validates even when SERVICE_NAME is unset (the common
+  // case — it is rarely injected per-service in dev). default() fills the literal when env omits it.
+  SERVICE_NAME: z.literal('core').default('core'),
   PORT: z.coerce.number().int().min(1024).max(65535).default(3000),
   DATABASE_URL: z.string().url(),
   REDIS_URL: z.string().url().default('redis://localhost:6379'),

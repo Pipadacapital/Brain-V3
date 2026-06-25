@@ -107,14 +107,20 @@ export function TrendChart({ data, isLoading, grain = 'day', className }: TrendC
   // Derive primary currency from first bucket
   const primaryCurrency = (buckets[0]?.currency_code ?? 'INR') as CurrencyCode;
 
-  const chartData = buckets.map((b) => ({
-    bucket: b.bucket,
-    realized: minorToMajor(b.realized_minor),
-    provisional: minorToMajor(b.provisional_minor),
-    // Keep raw for tooltip
-    realized_minor: b.realized_minor,
-    provisional_minor: b.provisional_minor,
-  }));
+  // One row per bucket: filter to the primary currency. The buckets array is per
+  // (bucket, currency_code) — a multi-currency brand returns several rows per date.
+  // We never blend currencies, so the chart renders ONE currency; mixing them would
+  // both double-plot the x-axis and collide the React keys (two rows, same bucket).
+  const chartData = buckets
+    .filter((b) => b.currency_code === primaryCurrency)
+    .map((b) => ({
+      bucket: b.bucket,
+      realized: minorToMajor(b.realized_minor),
+      provisional: minorToMajor(b.provisional_minor),
+      // Keep raw for tooltip
+      realized_minor: b.realized_minor,
+      provisional_minor: b.provisional_minor,
+    }));
 
   // Format bucket label for X axis
   const formatBucket = (bucket: string): string => {
@@ -140,18 +146,8 @@ export function TrendChart({ data, isLoading, grain = 'day', className }: TrendC
         {chartData.map((row) => (
           <tr key={row.bucket}>
             <td>{row.bucket}</td>
-            <td>
-              {formatMoneyDisplay(
-                buckets.find((b) => b.bucket === row.bucket)?.realized_minor ?? '0',
-                primaryCurrency,
-              )}
-            </td>
-            <td>
-              {formatMoneyDisplay(
-                buckets.find((b) => b.bucket === row.bucket)?.provisional_minor ?? '0',
-                primaryCurrency,
-              )}
-            </td>
+            <td>{formatMoneyDisplay(row.realized_minor, primaryCurrency)}</td>
+            <td>{formatMoneyDisplay(row.provisional_minor, primaryCurrency)}</td>
           </tr>
         ))}
       </tbody>

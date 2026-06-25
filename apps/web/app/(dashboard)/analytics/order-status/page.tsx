@@ -1,16 +1,13 @@
 /**
- * Order-status mix page — server component shell (Silver tier, Track 3).
+ * /analytics/order-status — permanent redirect to /analytics/orders?tab=status.
  *
- * The FIRST stakeholder-visible surface powered by the new Silver analytics tier
- * (dbt → StarRocks silver.order_state). It reads counts + share by order lifecycle
- * state over a date range, via the BFF → metric-engine Silver seam (I-ST01 — the UI
- * NEVER queries StarRocks directly). order-status-mix is a NON-additive aggregation
- * computed in the metric-engine, not dbt (ADR-004).
+ * The Order Status view was consolidated into the Orders page as its "Status" tab.
+ * Old bookmarks and sidebar links automatically land on the correct tab.
  */
-import { OrderStatusContent } from './order-status-content';
+import { redirect } from 'next/navigation';
 
 export const metadata = { title: 'Order Status — Brain' };
 
 export default function OrderStatusPage() {
-  return <OrderStatusContent />;
+  redirect('/analytics/orders?tab=status');
 }

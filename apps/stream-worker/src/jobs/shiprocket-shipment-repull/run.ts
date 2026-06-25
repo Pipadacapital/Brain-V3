@@ -60,7 +60,7 @@ const DB_URL =
   'postgres://brain_app:brain_app@localhost:5432/brain';
 
 const BROKERS = (process.env['KAFKA_BROKERS'] ?? 'localhost:9092').split(',');
-const ENV = process.env['APP_ENV'] ?? 'dev';
+const ENV = process.env['NODE_ENV'] === 'production' ? 'prod' : 'dev';
 const LIVE_TOPIC = process.env['COLLECTOR_TOPIC'] ?? `${ENV}.${COLLECTOR_EVENT_V1_TOPIC_SUFFIX}`;
 
 /** Single cursor resource. WINDOW = 45 days — terminal shipment states arrive late. */

@@ -5,11 +5,11 @@
 # Provisions, in LocalStack (docker-compose `core` profile, :4566):
 #   • a KMS CMK + alias/brain-connector-secrets   (connector-secret + PII-vault DEK isolation)
 #   • Secrets Manager: brain/jwt-signing-secret, brain/cookie-secret, brain/shopify-client-secret
-#     (values copied from the dev base `.env` so the same secrets resolve)
+#     (raw SEED_* values from .env.local-prod so the same secrets resolve)
 #   • brand_keyring row for the dev brand: the deterministic dev DEK, KMS-WRAPPED, so the prod
 #     KmsVaultKeyProvider unwraps the SAME 32-byte DEK the dev provider derives (PII continuity).
 #
-# After this, boot the prod profile:  APP_ENV=prod pnpm dev   (loads .env.prod)
+# After this, boot:  pnpm dev
 # See docs/runbooks/RB-5 "prod-on-local". Requires: stack up (db + localstack), .dbt not needed.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
@@ -18,7 +18,7 @@ LS=brainv3-localstack-1
 PG=brainv3-postgres-1
 BRAND="${BRAND_ID:-124e6af5-e6c5-4b85-bf43-7b36fa528101}"
 ALIAS="alias/brain-connector-secrets"
-PW="$(grep -E '^DATABASE_URL=' .env | sed -E 's#^.*://[^:]+:([^@]+)@.*#\1#')"
+PW="$(grep -E '^DATABASE_URL=' .env.local-prod | sed -E 's#^.*://[^:]+:([^@]+)@.*#\1#')"
 psql() { docker exec -i -e PGPASSWORD="$PW" "$PG" psql -U brain -d brain -tAc "$1"; }
 awsl() { docker exec "$LS" awslocal "$@"; }
 
@@ -34,9 +34,9 @@ fi
 KEY_ARN=$(awsl kms describe-key --key-id "$ALIAS" --query KeyMetadata.Arn --output text)
 echo "[prod-local]   key=$KEY_ARN"
 
-echo "[prod-local] Secrets Manager (values from dev .env)"
-for pair in "brain/jwt-signing-secret:JWT_SIGNING_SECRET" "brain/cookie-secret:COOKIE_SECRET" "brain/shopify-client-secret:SHOPIFY_CLIENT_SECRET"; do
-  name="${pair%%:*}"; var="${pair#*:}"; val="$(grep -E "^${var}=" .env | cut -d= -f2-)"
+echo "[prod-local] Secrets Manager (raw SEED_* values from .env.local-prod)"
+for pair in "brain/jwt-signing-secret:SEED_JWT_SIGNING_SECRET" "brain/cookie-secret:SEED_COOKIE_SECRET" "brain/shopify-client-secret:SEED_SHOPIFY_CLIENT_SECRET"; do
+  name="${pair%%:*}"; var="${pair#*:}"; val="$(grep -E "^${var}=" .env.local-prod | cut -d= -f2-)"
   awsl secretsmanager create-secret --name "$name" --secret-string "$val" >/dev/null 2>&1 \
     || awsl secretsmanager put-secret-value --secret-id "$name" --secret-string "$val" >/dev/null
   echo "[prod-local]   secret $name"
@@ -49,18 +49,18 @@ echo "[prod-local] SES: verify the sender identity (real SES rejects unverified 
 # domain/sender in SES once, out-of-band.
 # `|| true`: EMAIL_FROM_ADDRESS may be absent from .env; under `set -e` a failed grep in this
 # assignment would kill the whole bootstrap before the ad-platform secrets are seeded.
-FROM_ADDR="$(grep -E '^EMAIL_FROM_ADDRESS=' .env | cut -d= -f2- || true)"; FROM_ADDR="${FROM_ADDR:-noreply@brain.app}"
+FROM_ADDR="$(grep -E '^EMAIL_FROM_ADDRESS=' .env.local-prod | cut -d= -f2- || true)"; FROM_ADDR="${FROM_ADDR:-noreply@brain.app}"
 awsl ses verify-email-identity --email-address "$FROM_ADDR" >/dev/null 2>&1 \
   && echo "[prod-local]   verified sender $FROM_ADDR" \
   || echo "[prod-local]   WARN: could not verify sender $FROM_ADDR (SES may be disabled)"
 
-echo "[prod-local] Secrets Manager: ad-platform app secrets (values from .env.dev)"
-# core boot fail-closes in prod without META_APP_SECRET / GOOGLE_ADS_CLIENT_SECRET. The dev raw
-# values live in .env.dev (not the base .env); copy them under the Secrets Manager names .env.prod
-# references, so AwsSecretsProvider resolves them at startup.
-for pair in "brain/meta-app-secret:META_APP_SECRET" "brain/google-ads-client-secret:GOOGLE_ADS_CLIENT_SECRET"; do
-  name="${pair%%:*}"; var="${pair#*:}"; val="$(grep -E "^${var}=" .env.dev | cut -d= -f2-)"
-  [ -z "$val" ] && { echo "[prod-local]   WARN: $var not in .env.dev — skipping $name"; continue; }
+echo "[prod-local] Secrets Manager: ad-platform app secrets (SEED_* from .env.local-prod)"
+# core boot fail-closes in prod without META_APP_SECRET / GOOGLE_ADS_CLIENT_SECRET. Seed the raw
+# SEED_* values from .env.local-prod under the Secrets Manager names the app references, so
+# AwsSecretsProvider resolves them at startup.
+for pair in "brain/meta-app-secret:SEED_META_APP_SECRET" "brain/google-ads-client-secret:SEED_GOOGLE_ADS_CLIENT_SECRET"; do
+  name="${pair%%:*}"; var="${pair#*:}"; val="$(grep -E "^${var}=" .env.local-prod | cut -d= -f2-)"
+  [ -z "$val" ] && { echo "[prod-local]   WARN: $var not in .env.local-prod — skipping $name"; continue; }
   awsl secretsmanager create-secret --name "$name" --secret-string "$val" >/dev/null 2>&1 \
     || awsl secretsmanager put-secret-value --secret-id "$name" --secret-string "$val" >/dev/null
   echo "[prod-local]   secret $name"
@@ -96,12 +96,12 @@ psql "SELECT name || E'\t' || secret_value FROM dev_secret" | while IFS=$'\t' re
   echo "[prod-local]   secret $name"
 done
 
-echo "[prod-local] seed per-brand identity salts → .env.prod (prod has no dev-salt fallback)"
+echo "[prod-local] seed per-brand identity salts → .env.local-prod (prod has no dev-salt fallback)"
 # resolveSaltHex returns the deterministic dev salt ONLY when NODE_ENV!='production'. In prod it
 # needs IDENTITY_SALT_<BRAND_NODASHES_UPPER>, else the D-2 guard hard-crashes PII hashing in the
 # identity bridge AND the ingest repull mapper (so "Sync now" produces nothing). Seed each brand's
 # salt = its SAME deterministic dev value, preserving hash continuity with the existing data.
-ENV_PROD="$(pwd)/.env.prod"
+ENV_PROD="$(pwd)/.env.local-prod"
 for B in $(psql "SELECT id FROM brand"); do
   [ -z "$B" ] && continue
   KEY="IDENTITY_SALT_$(echo "$B" | tr -d '-' | tr '[:lower:]' '[:upper:]')"
@@ -116,4 +116,4 @@ for B in $(psql "SELECT id FROM brand"); do
   echo "[prod-local]   salt $KEY"
 done
 
-echo "[prod-local] DONE — boot with:  APP_ENV=prod pnpm dev   (or pnpm dev:prodlocal)"
+echo "[prod-local] DONE — boot with:  pnpm dev"

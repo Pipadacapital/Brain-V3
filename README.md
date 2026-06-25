@@ -49,12 +49,14 @@ pnpm migrate
 
 # 3. PROVISION brain_app LOGIN  ← REQUIRED, and NOT in migrations by design
 #    (0001 creates `brain_app` NOLOGIN; the LOGIN+password step is a provisioning concern.
-#     Password MUST match BRAIN_APP_DATABASE_URL in .env — default brain_app:brain_app.)
+#     Password MUST match BRAIN_APP_DATABASE_URL in .env.local-prod — default brain_app:brain_app.
+#     NOTE: db/init/00_provision_brain_app_role.sql auto-provisions this on a fresh volume; this
+#     manual step is only needed if the role somehow lacks LOGIN.)
 docker exec -i brainv3-postgres-1 psql -U brain -d brain \
   -c "ALTER ROLE brain_app WITH LOGIN PASSWORD 'brain_app';"
 
-# 4. PROD secrets/KMS into LocalStack (jwt + cookie + shopify secrets, KMS CMK, brand keyring)
-pnpm bootstrap:prodlocal
+# 4. Secrets/KMS into LocalStack (jwt + cookie + shopify/meta/google secrets, KMS CMK, brand keyring)
+pnpm bootstrap
 
 # 5. WIRE the lakehouse read path + BUILD the Gold marts (ONE command).
 #    `make insights-pipeline` = create the brain_oltp_pg JDBC catalog + Postgres read-shim
@@ -65,8 +67,8 @@ make insights-pipeline
 #    Full marts incl. Iceberg-gated touchpoint/journey (separate epic; needs the Bronze flip):
 #    cd db/dbt && DBT_PROFILES_DIR=profiles ../../.dbt-venv/bin/dbt build --full-refresh --threads 1 --profiles-dir profiles ; cd ../..
 
-# 6. START all 4 apps in PROD mode (loads .env.prod, APP_ENV=prod)
-pnpm dev:prodlocal
+# 6. START all 4 apps (local-prod = NODE_ENV=production vs LocalStack; loads .env.local-prod)
+pnpm dev
 ```
 
 Then open **http://localhost:3000** → register → onboard a brand → connect Shopify → **Sync now**.

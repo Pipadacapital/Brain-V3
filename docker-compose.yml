@@ -172,7 +172,7 @@ services:
       - ./infra/litellm.config.yaml:/app/config.yaml:ro
     command: ["--config", "/app/config.yaml", "--port", "4000"]
     environment:
-      # Provider API keys — set in .env.dev / .env.production (never committed).
+      # Provider API keys — set in .env.local-prod / .env.production (never committed).
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       # Gateway master key — gates the admin UI + virtual-key provisioning API.

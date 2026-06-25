@@ -54,7 +54,7 @@ const DB_URL =
   process.env['BRAIN_APP_DATABASE_URL'] ??
   'postgres://brain_app:brain_app@localhost:5432/brain';
 const BROKERS = (process.env['KAFKA_BROKERS'] ?? 'localhost:9092').split(',');
-const ENV = process.env['APP_ENV'] ?? 'dev';
+const ENV = process.env['NODE_ENV'] === 'production' ? 'prod' : 'dev';
 const LIVE_TOPIC = `${ENV}.${COLLECTOR_EVENT_V1_TOPIC_SUFFIX}`;
 
 const CURSOR_RESOURCE = 'google_ads.spend' as const;

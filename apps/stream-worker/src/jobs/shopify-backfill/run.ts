@@ -55,7 +55,7 @@ const DB_URL =
   'postgres://brain_app:brain_app@localhost:5432/brain';
 
 const BROKERS = (process.env['KAFKA_BROKERS'] ?? 'localhost:9092').split(',');
-const ENV = process.env['APP_ENV'] ?? 'dev';
+const ENV = process.env['NODE_ENV'] === 'production' ? 'prod' : 'dev';
 const BACKFILL_TOPIC = `${ENV}.${ORDER_BACKFILL_V1_TOPIC_SUFFIX}`;
 
 /** 24-month backfill window in milliseconds (D-8 / D-14) */

@@ -7,7 +7,7 @@
     "build": "tsc -b",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "dev": "PORT=8787 tsx watch --env-file=../../.env --env-file-if-exists=../../.env.${APP_ENV:-dev} src/main.ts",
+    "dev": "PORT=8787 tsx watch --env-file=../../.env.${APP_ENV:-local-prod} src/main.ts",
     "start": "node dist/main.js",
     "test:unit": "vitest run",
     "test:durability": "vitest run tests/durability.test.ts"

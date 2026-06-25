@@ -104,7 +104,7 @@ export async function main(): Promise<void> {
   const gokwikAwbLedgerGroupId =
     process.env['GOKWIK_AWB_LEDGER_CONSUMER_GROUP_ID'] ?? 'gokwik-awb-ledger-bridge';
   // Backfill lane (ADR-BF-7 / D-3): separate topic + group → zero live-lane lag impact
-  const backfillTopic = process.env['BACKFILL_TOPIC'] ?? `${(process.env['APP_ENV'] ?? 'dev')}.collector.order.backfill.v1`;
+  const backfillTopic = process.env['BACKFILL_TOPIC'] ?? `${process.env['NODE_ENV'] === 'production' ? 'prod' : 'dev'}.collector.order.backfill.v1`;
   const backfillGroupId = process.env['BACKFILL_CONSUMER_GROUP_ID'] ?? 'stream-worker-backfill';
 
   const kafka = new Kafka({

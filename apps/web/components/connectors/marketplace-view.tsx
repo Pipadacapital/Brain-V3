@@ -187,7 +187,7 @@ const VERIFY_TO_CONNECT = 'Verify your email to connect a store';
 // ── Per-provider credential field sets (C2 / ADR-RZ-8 + GoKwik/Shopflo Track C + WooCommerce) ──
 // Extracted to credential-fields.ts for unit-testability. Imported here for use within
 // ConnectorTile, and re-exported for any sibling that needs the pure function.
-import { credentialFieldsFor as _credentialFieldsFor } from './credential-fields';
+import { credentialFieldsFor as _credentialFieldsFor, authFieldsToCredentialFields } from './credential-fields';
 export type { CredentialField } from './credential-fields';
 export { credentialFieldsFor } from './credential-fields';
 
@@ -220,9 +220,15 @@ function ConnectorTile({ tile, readinessLock }: { tile: MarketplaceTile; readine
   const isOauthApp =
     tile.connect_method === 'oauth' &&
     (tile.id === 'shopify' || tile.id === 'meta' || tile.id === 'google_ads');
-  // Per-provider credential fields (Razorpay / Shopflo / GoKwik), or the OAuth-app
-  // Client ID / Client Secret pair for OAuth tiles — not a single hardcoded set.
-  const credentialFields = isCredential || isOauthApp ? credentialFieldsFor(tile.id) : [];
+  // Per-connector credential fields come from the server catalog (tile.auth_fields — single SoR);
+  // the hardcoded credentialFieldsFor() is an offline fallback for older servers. Covers both
+  // credential connectors and the OAuth "bring your own app" Client ID/Secret pair.
+  const credentialFields =
+    isCredential || isOauthApp
+      ? tile.auth_fields && tile.auth_fields.length > 0
+        ? authFieldsToCredentialFields(tile.auth_fields)
+        : credentialFieldsFor(tile.id)
+      : [];
   const credsComplete = credentialFields.every((f) => f.optional || (creds[f.key] ?? '').trim().length > 0);
 
   /**

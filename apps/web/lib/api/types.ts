@@ -402,6 +402,20 @@ export interface MarketplaceTileInstance {
   requires_activation?: boolean;
 }
 
+/**
+ * One declarative auth/credential field for a connector's connect form (server-supplied — the
+ * connector catalog is the single source of truth). `secret` fields render masked and are never
+ * echoed back. Mirrors apps/core ConnectorAuthField over the wire.
+ */
+export interface ConnectorAuthFieldDto {
+  key: string;
+  label: string;
+  type: 'text' | 'password' | 'url';
+  secret: boolean;
+  optional: boolean;
+  hint: string | null;
+}
+
 /** One tile in the marketplace (catalog ⨝ connector_instance). */
 export interface MarketplaceTile {
   id: string;
@@ -411,6 +425,8 @@ export interface MarketplaceTile {
   connect_method: 'oauth' | 'credential' | 'coming_soon';
   /** false = coming-soon, un-connectable (ADR-CM-2). */
   available: boolean;
+  /** The credential/auth fields the connect form renders (single SoR — the server catalog). */
+  auth_fields?: ConnectorAuthFieldDto[];
   /** null = not connected yet for this brand. Back-compat: first active instance. */
   instance: MarketplaceTileInstance | null;
   /** All active instances for this provider (Gap B — multi-account). Empty = not connected. */

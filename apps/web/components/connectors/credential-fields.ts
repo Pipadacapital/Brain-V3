@@ -1,14 +1,17 @@
 /**
- * credential-fields.ts — per-provider credential field definitions for connector connect forms.
+ * credential-fields.ts — connector connect-form field helpers.
  *
- * Extracted as a pure module so it can be unit-tested without the full component tree.
- * Imported by marketplace-view.tsx.
+ * SINGLE SOURCE OF TRUTH: the server catalog. The marketplace renders from `tile.auth_fields`
+ * (GET /api/v1/connectors), mapped via authFieldsToCredentialFields(). The hardcoded *_FIELDS sets
+ * below are an OFFLINE FALLBACK only — used when a tile lacks auth_fields (older server) — and are
+ * kept in sync with the catalog so behaviour is identical either way.
  *
- * A field marked secret=true is stored in the backend secret bundle and NEVER echoed
- * back to the client (renders as type="password", autoComplete="off"). Non-secret fields are
- * merchant identifiers visible in the provider dashboard. The backend bundles all
- * fields under ONE secret_ref per connector.
+ * A field marked secret=true is stored in the backend secret bundle and NEVER echoed back to the
+ * client (renders as type="password", autoComplete="off"). Non-secret fields are merchant
+ * identifiers visible in the provider dashboard. The backend bundles secret fields under ONE
+ * secret_ref per connector and writes the routing identifier to provider_config.
  */
+import type { ConnectorAuthFieldDto } from '@/lib/api/types';
 
 export interface CredentialField {
   key: string;
@@ -49,8 +52,17 @@ const GOKWIK_FIELDS: CredentialField[] = [
 // identifier; consumer_key and consumer_secret are secrets (never echoed back to the client).
 const WOOCOMMERCE_FIELDS: CredentialField[] = [
   { key: 'site_url', label: 'Store URL', placeholder: 'https://my-store.example.com', secret: false },
-  { key: 'consumer_key', label: 'Consumer Key', placeholder: 'ck_xxxxxxxxxxxxxxxxxxxx', secret: false },
+  { key: 'consumer_key', label: 'Consumer Key', placeholder: 'ck_xxxxxxxxxxxxxxxxxxxx', secret: true },
   { key: 'consumer_secret', label: 'Consumer Secret', placeholder: '••••••••••••', secret: true },
+  { key: 'webhook_secret', label: 'Webhook Secret (optional)', placeholder: '••••••••••••', secret: true, optional: true },
+];
+
+// Shiprocket: dashboard email + password (the token provider mints a JWT from these), plus an
+// optional Channel ID to scope the repull to one sales channel.
+const SHIPROCKET_FIELDS: CredentialField[] = [
+  { key: 'email', label: 'Email', placeholder: 'you@brand.com', secret: false },
+  { key: 'password', label: 'Password', placeholder: '••••••••••••', secret: true },
+  { key: 'channel_id', label: 'Channel ID (optional)', placeholder: '1234567', secret: false, optional: true },
 ];
 
 // ── OAuth "bring your own app" credentials (Shopify / Meta / Google Ads) ──────
@@ -88,6 +100,8 @@ export function credentialFieldsFor(tileId: string): CredentialField[] {
       return SHOPFLO_FIELDS;
     case 'gokwik':
       return GOKWIK_FIELDS;
+    case 'shiprocket':
+      return SHIPROCKET_FIELDS;
     // OAuth "bring your own app" tiles — all-optional Client ID + Client Secret.
     case 'shopify':
       return SHOPIFY_OAUTH_FIELDS;
@@ -98,4 +112,32 @@ export function credentialFieldsFor(tileId: string): CredentialField[] {
     default:
       return RAZORPAY_FIELDS;
   }
+}
+
+/** Generic placeholder for a server-declared field (the catalog carries no per-field placeholder). */
+function placeholderFor(f: ConnectorAuthFieldDto): string {
+  if (f.secret) return '••••••••••••';
+  if (f.type === 'url') return 'https://your-store.example.com';
+  return '';
+}
+
+/** Map ONE server auth field (catalog SoR) → the form's CredentialField shape. */
+export function authFieldToCredentialField(f: ConnectorAuthFieldDto): CredentialField {
+  return {
+    key: f.key,
+    label: f.label,
+    placeholder: placeholderFor(f),
+    secret: f.secret,
+    optional: f.optional,
+    ...(f.hint ? { hint: f.hint } : {}),
+  };
+}
+
+/**
+ * Map the server-supplied auth fields (tile.auth_fields) → the connect form's fields. This is the
+ * PRIMARY path — the marketplace prefers it over the hardcoded fallback so the catalog is the only
+ * place a connector's fields are defined.
+ */
+export function authFieldsToCredentialFields(fields: ConnectorAuthFieldDto[]): CredentialField[] {
+  return fields.map(authFieldToCredentialField);
 }

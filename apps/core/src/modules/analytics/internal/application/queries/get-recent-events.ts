@@ -7,6 +7,11 @@
  * feed — NOT a metric computation (like get-recent-activity). It lets a non-technical
  * stakeholder watch data arrive. Honest-empty (rows:[]) when StarRocks isn't wired.
  *
+ * PIXEL-ONLY: this is the Tracking-Center (pixel) Event Explorer, so it returns ONLY events we
+ * received THROUGH the pixel (PIXEL_EVENT_TYPES — browser events via /collect). Server-trusted
+ * connector events (order.live.v1, spend.live.v1, gokwik.*, shopflo.*, shiprocket.*, …) are
+ * EXCLUDED. Each row also carries a PII-safe `details` map (the event's non-PII properties).
+ *
  * PII POSTURE (ADR-2 + I-S02): this read returns ONLY type/time + ANONYMIZED ids.
  *   - anonId:    payload->'properties'->>'brain_anon_id' (a client-minted uuid, not PII)
  *   - sessionId: payload->>'hashed_session_id' (an opaque session hash, never a
@@ -18,6 +23,7 @@
 
 import { withSilverBrand, BRAND_PREDICATE } from '@brain/metric-engine';
 import { type BronzeReadDeps, ICEBERG_BRONZE, hasSilver } from './_bronze-source.js';
+import { PIXEL_EVENT_IN } from './_pixel-events.js';
 
 export interface RecentEventRow {
   event_id: string;
@@ -26,6 +32,12 @@ export interface RecentEventRow {
   anon_id: string | null;      // brain_anon_id (anonymized) or null
   session_id: string | null;   // hashed_session_id (anonymized) or null
   has_consent: boolean;        // analytics-consent flag present-and-true
+  /**
+   * PII-safe, bounded view of the event's `properties` — the per-event detail (page path, product
+   * id, cart value, checkout step, coupon code, click selector, scroll depth, …). PII-keyed and
+   * empty values are dropped server-side (ADR-2 posture); the browser never sends raw PII anyway.
+   */
+  details: Record<string, string>;
 }
 
 export interface RecentEventsResult {
@@ -35,6 +47,33 @@ export interface RecentEventsResult {
 /** Hard cap on rows returned to the Event Explorer. */
 const MAX_LIMIT = 50;
 const DEFAULT_LIMIT = 20;
+
+/** Drop properties whose KEY looks like PII (defence-in-depth; the pixel sends hashed/anon ids only). */
+const PII_KEY = /(^|_)(email|phone|mobile|name|firstname|lastname|fullname|address|street|city|zip|postal|dob|ssn|pan|aadhaar|ip)(_|$)/i;
+/** Max detail keys + per-value length returned to the Explorer (keep the feed compact + bounded). */
+const MAX_DETAIL_KEYS = 10;
+const MAX_VALUE_LEN = 160;
+
+/** Parse the event's properties JSON into a PII-safe, bounded { key: string } detail map. */
+function safeDetails(propertiesJson: string | null): Record<string, string> {
+  if (!propertiesJson) return {};
+  let obj: unknown;
+  try {
+    obj = JSON.parse(propertiesJson);
+  } catch {
+    return {};
+  }
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return {};
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+    if (Object.keys(out).length >= MAX_DETAIL_KEYS) break;
+    if (PII_KEY.test(k)) continue;
+    if (v === null || v === undefined || v === '') continue;
+    if (typeof v === 'object') continue; // only scalars in the compact detail view
+    out[k] = String(v).slice(0, MAX_VALUE_LEN);
+  }
+  return out;
+}
 
 /**
  * getRecentEvents — returns the latest N collected events for the brand (anonymized).
@@ -56,15 +95,19 @@ export async function getRecentEvents(
   // ── Iceberg Bronze source — brand-isolated via the withSilverBrand seam ──────────
   {
     const rows = await withSilverBrand(deps.srPool, brandId, async (scope) =>
-      // safeLimit is a clamped int (never user text) — safe to interpolate. The seam appends the
-      // brand predicate at ${BRAND_PREDICATE}; ORDER BY/LIMIT follow it.
-      scope.runScoped<{ event_id: string; event_type: string; occurred_at: Date | string; anon_id: string | null; session_id: string | null; has_consent: boolean | number }>(
+      // safeLimit is a clamped int (never user text) and PIXEL_EVENT_IN is a static code-defined list
+      // — both safe to interpolate. The seam appends the brand predicate at ${BRAND_PREDICATE};
+      // the pixel-only filter + ORDER BY/LIMIT follow it. ONLY pixel-origin events are returned —
+      // server-trusted connector events (order.live.v1, spend.*, gokwik.*, …) are excluded.
+      scope.runScoped<{ event_id: string; event_type: string; occurred_at: Date | string; anon_id: string | null; session_id: string | null; has_consent: boolean | number; properties_json: string | null }>(
         `SELECT event_id, event_type, occurred_at,
                 get_json_object(payload, '$.properties.brain_anon_id') AS anon_id,
                 get_json_object(payload, '$.hashed_session_id')        AS session_id,
-                CASE WHEN get_json_object(payload, '$.consent_flags.analytics') = 'true' THEN true ELSE false END AS has_consent
+                CASE WHEN get_json_object(payload, '$.consent_flags.analytics') = 'true' THEN true ELSE false END AS has_consent,
+                get_json_object(payload, '$.properties')               AS properties_json
            FROM ${ICEBERG_BRONZE}
           WHERE ${BRAND_PREDICATE}
+            AND event_type IN (${PIXEL_EVENT_IN})
           ORDER BY occurred_at DESC
           LIMIT ${safeLimit}`,
       ),
@@ -77,6 +120,7 @@ export async function getRecentEvents(
         anon_id: row.anon_id,
         session_id: row.session_id,
         has_consent: row.has_consent === true || Number(row.has_consent) === 1,
+        details: safeDetails(row.properties_json),
       })),
     };
   }

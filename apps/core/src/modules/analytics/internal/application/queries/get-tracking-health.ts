@@ -3,9 +3,12 @@
  *
  * Mirrors get-data-health.ts exactly, but scoped to the *pixel collection* surface
  * (the Tracking Center). Surfaces — for the active brand only, RLS-enforced — the
- * signals a business stakeholder needs to see the pixel working:
- *   - firstEventReceived: has ANY Bronze row landed for this brand (the honest
- *     "✅ first event received" flip — true ONLY when a real Bronze row exists).
+ * signals a business stakeholder needs to see the pixel working. EVERY read here is
+ * constrained to PIXEL_EVENT_TYPES (events received through the pixel) — server-trusted
+ * connector events (order.live.v1, spend.*, gokwik.*, …) are NEVER counted, so a brand
+ * with only connector data honestly shows no_data until a real pixel event lands.
+ *   - firstEventReceived: has any PIXEL Bronze row landed for this brand (the honest
+ *     "✅ first event received" flip — true ONLY when a real pixel event exists).
  *   - eventVolume:        per-day Bronze event counts over a bounded recent window.
  *   - lastEventAt:        MAX(occurred_at) — last-event freshness.
  *   - totalEvents:        bounded-window total count.
@@ -27,6 +30,7 @@
 
 import { withSilverBrand, BRAND_PREDICATE } from '@brain/metric-engine';
 import { type BronzeReadDeps, ICEBERG_BRONZE, hasSilver } from './_bronze-source.js';
+import { PIXEL_EVENT_IN } from './_pixel-events.js';
 
 export interface TrackingHealthVolumeBucket {
   bucket: string; // 'YYYY-MM-DD'
@@ -69,16 +73,16 @@ export async function getTrackingHealth(
       const toIso = (v: Date | string | null | undefined): string | null =>
         v == null ? null : (v instanceof Date ? v : new Date(v)).toISOString();
       const existsRows = await scope.runScoped<{ n: number | string }>(
-        `SELECT COUNT(*) AS n FROM ${ICEBERG_BRONZE} WHERE ${BRAND_PREDICATE}`,
+        `SELECT COUNT(*) AS n FROM ${ICEBERG_BRONZE} WHERE ${BRAND_PREDICATE} AND event_type IN (${PIXEL_EVENT_IN})`,
       );
       if (Number(existsRows[0]?.n ?? 0) === 0) return { state: 'no_data' };
       const volumeRows = await scope.runScoped<{ bucket: Date | string; count: number | string }>(
         `SELECT date_trunc('day', occurred_at) AS bucket, COUNT(*) AS count FROM ${ICEBERG_BRONZE}
-          WHERE occurred_at >= date_sub(now(), INTERVAL ${VOLUME_WINDOW_DAYS} DAY) AND ${BRAND_PREDICATE}
+          WHERE occurred_at >= date_sub(now(), INTERVAL ${VOLUME_WINDOW_DAYS} DAY) AND ${BRAND_PREDICATE} AND event_type IN (${PIXEL_EVENT_IN})
           GROUP BY 1 ORDER BY 1 ASC`,
       );
       const lastRows = await scope.runScoped<{ last_event_at: Date | string | null }>(
-        `SELECT MAX(occurred_at) AS last_event_at FROM ${ICEBERG_BRONZE} WHERE ${BRAND_PREDICATE}`,
+        `SELECT MAX(occurred_at) AS last_event_at FROM ${ICEBERG_BRONZE} WHERE ${BRAND_PREDICATE} AND event_type IN (${PIXEL_EVENT_IN})`,
       );
       // Consent is a top-level envelope field (payload.consent_flags) — present-and-true = granted.
       const aggRows = await scope.runScoped<{ total: number | string; consent_total: number | string; consent_granted: number | string }>(
@@ -86,7 +90,7 @@ export async function getTrackingHealth(
                 COUNT(CASE WHEN get_json_object(payload, '$.consent_flags') IS NOT NULL THEN 1 END) AS consent_total,
                 COUNT(CASE WHEN get_json_object(payload, '$.consent_flags.analytics') = 'true' THEN 1 END) AS consent_granted
            FROM ${ICEBERG_BRONZE}
-          WHERE occurred_at >= date_sub(now(), INTERVAL ${VOLUME_WINDOW_DAYS} DAY) AND ${BRAND_PREDICATE}`,
+          WHERE occurred_at >= date_sub(now(), INTERVAL ${VOLUME_WINDOW_DAYS} DAY) AND ${BRAND_PREDICATE} AND event_type IN (${PIXEL_EVENT_IN})`,
       );
       const agg = aggRows[0];
       return {

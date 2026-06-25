@@ -47,7 +47,9 @@ echo "[prod-local] SES: verify the sender identity (real SES rejects unverified 
 # sends from an unverified From address (MessageRejected). Verify the EMAIL_FROM_ADDRESS sender so
 # transactional email (verification, invites, alerts) actually sends. Real prod verifies the
 # domain/sender in SES once, out-of-band.
-FROM_ADDR="$(grep -E '^EMAIL_FROM_ADDRESS=' .env | cut -d= -f2-)"; FROM_ADDR="${FROM_ADDR:-noreply@brain.app}"
+# `|| true`: EMAIL_FROM_ADDRESS may be absent from .env; under `set -e` a failed grep in this
+# assignment would kill the whole bootstrap before the ad-platform secrets are seeded.
+FROM_ADDR="$(grep -E '^EMAIL_FROM_ADDRESS=' .env | cut -d= -f2- || true)"; FROM_ADDR="${FROM_ADDR:-noreply@brain.app}"
 awsl ses verify-email-identity --email-address "$FROM_ADDR" >/dev/null 2>&1 \
   && echo "[prod-local]   verified sender $FROM_ADDR" \
   || echo "[prod-local]   WARN: could not verify sender $FROM_ADDR (SES may be disabled)"

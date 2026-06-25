@@ -28,6 +28,24 @@ export interface ConnectorSecretRef {
   subKey?: string;
 }
 
+/**
+ * Sanitize a secret-name sub-key to a valid Secrets Manager name segment.
+ *
+ * A secret name may only contain alphanumerics + `-/_+=.@!`. Sub-keys often carry raw values like a
+ * WooCommerce site_url (`https://ulinen.com/`) whose `:` (and scheme/slashes) make the name invalid
+ * ("Invalid name. Must be a valid name containing alphanumeric characters, or any of: -/_+=.@!").
+ * We collapse anything outside `[A-Za-z0-9._-]` to `-`, squeeze repeats, and trim — yielding a flat,
+ * stable, valid segment (e.g. `https-ulinen.com`). The full original value is still kept as the
+ * connector_instance account_key, so uniqueness is preserved there; the secret is fetched by ARN, so
+ * the exact name never needs to be reconstructed.
+ */
+export function sanitizeSecretSubKey(subKey: string): string {
+  return subKey
+    .replace(/[^A-Za-z0-9._-]/g, '-')
+    .replace(/-{2,}/g, '-')
+    .replace(/^[-.]+|[-.]+$/g, '');
+}
+
 export interface ISecretsManager {
   // ── Generic methods (ADR-CM-4 / D-3) ────────────────────────────────────────
   // Used by the generic connect seam. Shopify-specific methods below are kept

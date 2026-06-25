@@ -19,6 +19,7 @@ import type {
   SecretWriteResult,
   ConnectorSecretRef,
 } from './ISecretsManager.js';
+import { sanitizeSecretSubKey } from './ISecretsManager.js';
 import type { Pool } from 'pg';
 
 export class LocalSecretsManager implements ISecretsManager {
@@ -74,7 +75,7 @@ export class LocalSecretsManager implements ISecretsManager {
     connectorRef: ConnectorSecretRef,
     credential: Record<string, string>,
   ): Promise<SecretWriteResult> {
-    const subKey = connectorRef.subKey ? `/${connectorRef.subKey.replace(/\./g, '-')}` : '';
+    const subKey = connectorRef.subKey ? `/${sanitizeSecretSubKey(connectorRef.subKey)}` : '';
     const name = `brain/connector/${connectorRef.connectorType}/${brandId}${subKey}`;
     const json = JSON.stringify(credential);
     this.store.set(name, json);

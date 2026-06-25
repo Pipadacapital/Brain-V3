@@ -44,7 +44,8 @@ export class InitiateGoogleAdsOAuthCommand {
         'Google Ads connection isn’t configured in this environment yet. ' +
           'Add the Google Ads app credentials (GOOGLE_ADS_CLIENT_ID) to enable it.',
       );
-      (err as Error & { code: string }).code = 'OAUTH_NOT_CONFIGURED';
+      (err as Error & { code: string; statusCode: number }).code = 'OAUTH_NOT_CONFIGURED';
+      (err as Error & { code: string; statusCode: number }).statusCode = 503;
       throw err;
     }
 

@@ -87,11 +87,26 @@ export function registerAskRoutes(fastify: FastifyInstance, deps: BffDeps): void
       const asOf = body.as_of ?? (new Date().toISOString().split('T')[0] as string);
 
       // The raw question is passed IN-MEMORY only; askBrain persists/logs only the redacted form.
-      const result: ContractAskBrainResult = await askBrain(auth.brandId, body.question, asOf, {
-        engine: { pool: rawPool },
-        srPool,
-        resolver: askResolverClient,
-      });
+      let result: ContractAskBrainResult;
+      try {
+        result = await askBrain(auth.brandId, body.question, asOf, {
+          engine: { pool: rawPool },
+          srPool,
+          resolver: askResolverClient,
+        });
+      } catch (err) {
+        // The LLM gateway (litellm via @brain/ai-gateway-client) can throw a bare Error with
+        // raw status detail — NEVER leak that to the client. Log it server-side, return a
+        // friendly 503 dependency-down refusal.
+        request.log.error({ err, request_id: requestId }, 'askBrain failed — AI gateway unavailable');
+        return reply.code(503).send({
+          request_id: requestId,
+          error: {
+            code: 'AI_UNAVAILABLE',
+            message: 'The assistant is temporarily unavailable. Please try again shortly.',
+          },
+        });
+      }
 
       return reply.send({ request_id: requestId, data: result });
     },

@@ -35,14 +35,27 @@ export function registerGoogleAdsInstallRoute(
     async (req: FastifyRequest, reply: FastifyReply) => {
       const requestId = (req.id as string) ?? randomUUID();
       const brandId = deps.getBrandId(req);
-      const result = await deps.initiateOAuth.execute({
-        brandId,
-        callbackUrl: deps.callbackUrl,
-      });
-      return reply.code(200).send({
-        request_id: requestId,
-        data: { oauth_url: result.installUrl },
-      });
+      try {
+        const result = await deps.initiateOAuth.execute({
+          brandId,
+          callbackUrl: deps.callbackUrl,
+        });
+        return reply.code(200).send({
+          request_id: requestId,
+          data: { oauth_url: result.installUrl },
+        });
+      } catch (err) {
+        if ((err as { code?: string }).code === 'OAUTH_NOT_CONFIGURED') {
+          return reply.code(503).send({
+            request_id: requestId,
+            error: {
+              code: 'OAUTH_NOT_CONFIGURED',
+              message: "This connector isn't configured yet.",
+            },
+          });
+        }
+        throw err;
+      }
     },
   );
 }

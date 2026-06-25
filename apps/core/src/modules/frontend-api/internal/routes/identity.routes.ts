@@ -149,9 +149,20 @@ export function registerIdentityRoutes(fastify: FastifyInstance, deps: BffDeps):
         });
       }
 
-      const result: ContractCustomer360 = await getCustomer360(auth.brandId, brain_id, requestId, {
-        reader: identityReader,
-      });
+      let result: ContractCustomer360;
+      try {
+        result = await getCustomer360(auth.brandId, brain_id, requestId, {
+          reader: identityReader,
+        });
+      } catch {
+        return reply.code(503).send({
+          request_id: requestId,
+          error: {
+            code: 'IDENTITY_GRAPH_UNAVAILABLE',
+            message: 'The identity service is temporarily unavailable. Please try again.',
+          },
+        });
+      }
 
       return reply.send({ request_id: requestId, data: result });
     },
@@ -244,7 +255,18 @@ export function registerIdentityRoutes(fastify: FastifyInstance, deps: BffDeps):
         });
       }
 
-      const result: ContractErasureResult = await eraseCustomer(auth.brandId, brain_id, identityReader);
+      let result: ContractErasureResult;
+      try {
+        result = await eraseCustomer(auth.brandId, brain_id, identityReader);
+      } catch {
+        return reply.code(503).send({
+          request_id: requestId,
+          error: {
+            code: 'IDENTITY_GRAPH_UNAVAILABLE',
+            message: 'The identity service is temporarily unavailable. Please try again.',
+          },
+        });
+      }
       return reply.send({ request_id: requestId, data: result });
     },
   );
@@ -303,7 +325,18 @@ export function registerIdentityRoutes(fastify: FastifyInstance, deps: BffDeps):
           error: { code: 'NO_ACTIVE_BRAND', message: 'Select a brand first.' },
         });
       }
-      const result: ContractMergeResolveResult = await resolveMergeReview(auth.brandId, review_id, decision, identityReader);
+      let result: ContractMergeResolveResult;
+      try {
+        result = await resolveMergeReview(auth.brandId, review_id, decision, identityReader);
+      } catch {
+        return reply.code(503).send({
+          request_id: requestId,
+          error: {
+            code: 'IDENTITY_GRAPH_UNAVAILABLE',
+            message: 'The identity service is temporarily unavailable. Please try again.',
+          },
+        });
+      }
       return reply.send({ request_id: requestId, data: result });
     },
   );
@@ -345,7 +378,18 @@ export function registerIdentityRoutes(fastify: FastifyInstance, deps: BffDeps):
           error: { code: 'NO_ACTIVE_BRAND', message: 'Select a brand first.' },
         });
       }
-      const result: ContractUnmergeResult = await unmergeCustomer(auth.brandId, brain_id, identityReader);
+      let result: ContractUnmergeResult;
+      try {
+        result = await unmergeCustomer(auth.brandId, brain_id, identityReader);
+      } catch {
+        return reply.code(503).send({
+          request_id: requestId,
+          error: {
+            code: 'IDENTITY_GRAPH_UNAVAILABLE',
+            message: 'The identity service is temporarily unavailable. Please try again.',
+          },
+        });
+      }
       return reply.send({ request_id: requestId, data: result });
     },
   );

@@ -51,7 +51,7 @@ export class InitiateOAuthCommand {
     // The client SECRET is not needed at initiation — only at callback.
     const clientId = input.clientId ?? process.env['SHOPIFY_CLIENT_ID'];
     if (!clientId) {
-      throw Object.assign(new Error('[InitiateOAuthCommand] no Shopify client_id — provide your app credentials or set SHOPIFY_CLIENT_ID'), {
+      throw Object.assign(new Error('no Shopify client_id — provide your app credentials or set SHOPIFY_CLIENT_ID'), {
         code: 'OAUTH_NOT_CONFIGURED',
         statusCode: 503,
       });

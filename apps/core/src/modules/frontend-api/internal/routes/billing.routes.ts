@@ -116,14 +116,24 @@ export function registerBillingRoutes(fastify: FastifyInstance, deps: BffDeps): 
       }
 
       const { period } = request.body as { period: string };
-      // Epic 1: the GMV meter reads the lakehouse gold ledger (srPool); the snapshot stays in PG (pool).
-      const result: ContractSealPeriodResult = await sealBillingPeriod(
-        auth.brandId,
-        period,
-        requestId,
-        { pool, srPool },
-      );
-      return reply.send({ request_id: requestId, data: result });
+      try {
+        // Epic 1: the GMV meter reads the lakehouse gold ledger (srPool); the snapshot stays in PG (pool).
+        const result: ContractSealPeriodResult = await sealBillingPeriod(
+          auth.brandId,
+          period,
+          requestId,
+          { pool, srPool },
+        );
+        return reply.send({ request_id: requestId, data: result });
+      } catch (err) {
+        if ((err as { code?: string }).code === '23505') {
+          return reply.code(409).send({
+            request_id: requestId,
+            error: { code: 'ALREADY_ISSUED', message: 'This document was already issued.' },
+          });
+        }
+        throw err;
+      }
     },
   );
 
@@ -285,13 +295,23 @@ export function registerBillingRoutes(fastify: FastifyInstance, deps: BffDeps): 
       }
 
       const { period } = request.body as { period: string };
-      const result: ContractIssueInvoiceResult = await issueInvoice(
-        auth.brandId,
-        period,
-        requestId,
-        { pool, srPool },
-      );
-      return reply.send({ request_id: requestId, data: result });
+      try {
+        const result: ContractIssueInvoiceResult = await issueInvoice(
+          auth.brandId,
+          period,
+          requestId,
+          { pool, srPool },
+        );
+        return reply.send({ request_id: requestId, data: result });
+      } catch (err) {
+        if ((err as { code?: string }).code === '23505') {
+          return reply.code(409).send({
+            request_id: requestId,
+            error: { code: 'ALREADY_ISSUED', message: 'This document was already issued.' },
+          });
+        }
+        throw err;
+      }
     },
   );
 
@@ -350,15 +370,25 @@ export function registerBillingRoutes(fastify: FastifyInstance, deps: BffDeps): 
         reason: string;
         taxable_minor?: string;
       };
-      const result: ContractIssueCreditNoteResult = await issueCreditNote(
-        auth.brandId,
-        period,
-        reason,
-        requestId,
-        { pool },
-        taxable_minor != null ? { taxableMinor: BigInt(taxable_minor) } : undefined,
-      );
-      return reply.send({ request_id: requestId, data: result });
+      try {
+        const result: ContractIssueCreditNoteResult = await issueCreditNote(
+          auth.brandId,
+          period,
+          reason,
+          requestId,
+          { pool },
+          taxable_minor != null ? { taxableMinor: BigInt(taxable_minor) } : undefined,
+        );
+        return reply.send({ request_id: requestId, data: result });
+      } catch (err) {
+        if ((err as { code?: string }).code === '23505') {
+          return reply.code(409).send({
+            request_id: requestId,
+            error: { code: 'ALREADY_ISSUED', message: 'This document was already issued.' },
+          });
+        }
+        throw err;
+      }
     },
   );
 }

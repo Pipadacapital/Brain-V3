@@ -368,14 +368,18 @@ export function registerAnalyticsLogisticsRoutes(fastify: FastifyInstance, deps:
         return reply.code(400).send({ request_id: requestId, error: { code: 'INVALID_PARAMS', message: 'Invalid cost input.' } });
       }
       const auth = (request as AuthenticatedRequest).auth;
-      if (!auth.brandId) return reply.code(403).send({ request_id: requestId, error: { code: 'NO_BRAND', message: 'No active brand' } });
+      if (!auth.brandId) return reply.code(409).send({ request_id: requestId, error: { code: 'NO_ACTIVE_BRAND', message: 'Select a brand first.' } });
       if (!rawPool) return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'read pool not available' } });
       const b = request.body as Parameters<typeof upsertCostInput>[1];
       try {
         const out = await upsertCostInput(auth.brandId, b, { pool: rawPool });
         return reply.send({ request_id: requestId, data: out });
       } catch (err) {
-        return reply.code(400).send({ request_id: requestId, error: { code: 'INVALID_PARAMS', message: String((err as Error).message) } });
+        request.log.error({ err }, 'cost input upsert failed');
+        if ((err as { code?: string }).code === '23505') {
+          return reply.code(409).send({ request_id: requestId, error: { code: 'COST_ALREADY_RECORDED', message: 'This cost has already been recorded.' } });
+        }
+        return reply.code(500).send({ request_id: requestId, error: { code: 'INTERNAL_ERROR', message: 'Could not save cost input.' } });
       }
     },
   );
@@ -453,7 +457,8 @@ export function registerAnalyticsLogisticsRoutes(fastify: FastifyInstance, deps:
               data: { ...result, orders: enriched, primary_currency: primaryCurrency },
             });
           }
-        } catch {
+        } catch (err) {
+          request.log.warn({ err }, 'fx enrichment failed');
           // fall through to the un-enriched result (native amounts only)
         }
       }

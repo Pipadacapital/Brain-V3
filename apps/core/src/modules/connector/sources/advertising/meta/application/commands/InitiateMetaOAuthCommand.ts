@@ -50,7 +50,8 @@ export class InitiateMetaOAuthCommand {
         'Meta Ads connection isn’t configured in this environment yet. ' +
           'Add the Meta app credentials (META_APP_ID) to enable it.',
       );
-      (err as Error & { code: string }).code = 'OAUTH_NOT_CONFIGURED';
+      (err as Error & { code: string; statusCode: number }).code = 'OAUTH_NOT_CONFIGURED';
+      (err as Error & { code: string; statusCode: number }).statusCode = 503;
       throw err;
     }
 

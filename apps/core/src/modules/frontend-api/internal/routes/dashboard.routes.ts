@@ -549,21 +549,27 @@ export function registerDashboardRoutes(fastify: FastifyInstance, deps: BffDeps)
 
       // FX convenience view (display-only): roll the per-currency realized/provisional maps up to the
       // brand's PRIMARY currency at the latest rate. Best-effort — native maps stay authoritative.
+      // Fail-soft: an FX-API failure must NOT take down the revenue panel — fall through to native.
       if (snapshot.state === 'has_data' && rawPool) {
-        const primary = await resolveBrandPrimaryCurrency(rawPool, auth.brandId);
-        const toEntries = (m: Record<string, string>) =>
-          Object.entries(m).map(([currency, minor]) => ({ currency, minor }));
-        const realizedPrimary = await blendToPrimary(toEntries(snapshot.realized), primary);
-        const provisionalPrimary = await blendToPrimary(toEntries(snapshot.provisional), primary);
-        return reply.send({
-          request_id: requestId,
-          data: {
-            ...snapshot,
-            primary_currency: primary,
-            realized_in_primary_minor: realizedPrimary,
-            provisional_in_primary_minor: provisionalPrimary,
-          },
-        });
+        try {
+          const primary = await resolveBrandPrimaryCurrency(rawPool, auth.brandId);
+          const toEntries = (m: Record<string, string>) =>
+            Object.entries(m).map(([currency, minor]) => ({ currency, minor }));
+          const realizedPrimary = await blendToPrimary(toEntries(snapshot.realized), primary);
+          const provisionalPrimary = await blendToPrimary(toEntries(snapshot.provisional), primary);
+          return reply.send({
+            request_id: requestId,
+            data: {
+              ...snapshot,
+              primary_currency: primary,
+              realized_in_primary_minor: realizedPrimary,
+              provisional_in_primary_minor: provisionalPrimary,
+            },
+          });
+        } catch (err) {
+          request.log.warn({ err }, 'FX primary-currency conversion failed; serving native-currency revenue');
+          // fall through to the native-currency response below
+        }
       }
 
       return reply.send({

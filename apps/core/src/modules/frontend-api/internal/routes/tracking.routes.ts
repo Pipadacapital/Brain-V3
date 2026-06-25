@@ -38,9 +38,19 @@ export function registerTrackingRoutes(fastify: FastifyInstance, deps: BffDeps):
         return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' } });
       }
 
-      const result = await getTrackingHealth(auth.brandId, { pool: rawPool, srPool });
+      try {
+        const result = await getTrackingHealth(auth.brandId, { pool: rawPool, srPool });
 
-      return reply.send({ request_id: requestId, data: result });
+        return reply.send({ request_id: requestId, data: result });
+      } catch {
+        return reply.code(503).send({
+          request_id: requestId,
+          error: {
+            code: 'SERVICE_UNAVAILABLE',
+            message: 'This data is temporarily unavailable. Please try again.',
+          },
+        });
+      }
     },
   );
 
@@ -78,9 +88,19 @@ export function registerTrackingRoutes(fastify: FastifyInstance, deps: BffDeps):
       const query = request.query as { limit?: string };
       const limit = query.limit ? Math.min(parseInt(query.limit, 10), 50) : 20;
 
-      const result = await getRecentEvents(auth.brandId, limit, { pool: rawPool, srPool });
+      try {
+        const result = await getRecentEvents(auth.brandId, limit, { pool: rawPool, srPool });
 
-      return reply.send({ request_id: requestId, data: result });
+        return reply.send({ request_id: requestId, data: result });
+      } catch {
+        return reply.code(503).send({
+          request_id: requestId,
+          error: {
+            code: 'SERVICE_UNAVAILABLE',
+            message: 'This data is temporarily unavailable. Please try again.',
+          },
+        });
+      }
     },
   );
 }

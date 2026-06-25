@@ -520,7 +520,7 @@ export function registerConnectors(app: FastifyInstance, deps: RegisterConnector
             return reply.code(400).send({ request_id: requestId, error: { code: 'MISSING_SHOP_DOMAIN', message: (err as Error).message } });
           }
           if ((err as { code?: string }).code === 'OAUTH_NOT_CONFIGURED') {
-            return reply.code(503).send({ request_id: requestId, error: { code: 'OAUTH_NOT_CONFIGURED', message: (err as Error).message } });
+            return reply.code(503).send({ request_id: requestId, error: { code: 'OAUTH_NOT_CONFIGURED', message: "This connector isn't configured yet. Add your app credentials and try again." } });
           }
           throw err;
         }
@@ -549,11 +549,16 @@ export function registerConnectors(app: FastifyInstance, deps: RegisterConnector
             });
           }
 
-          const { arn } = await connectorSecretsManager.storeSecret(
-            brandId,
-            { connectorType: 'razorpay', subKey: razorpayAccountId },
-            { key_id: keyId, key_secret: keySecret, webhook_secret: webhookSecret },
-          );
+          let arn: string;
+          try {
+            ({ arn } = await connectorSecretsManager.storeSecret(
+              brandId,
+              { connectorType: 'razorpay', subKey: razorpayAccountId },
+              { key_id: keyId, key_secret: keySecret, webhook_secret: webhookSecret },
+            ));
+          } catch {
+            return reply.code(503).send({ request_id: requestId, error: { code: 'SECRETS_UNAVAILABLE', message: 'Could not securely store credentials right now — please retry.' } });
+          }
 
           const now = new Date();
           const connectorInstanceId = randomUUID();
@@ -621,11 +626,16 @@ export function registerConnectors(app: FastifyInstance, deps: RegisterConnector
             });
           }
 
-          const { arn } = await connectorSecretsManager.storeSecret(
-            brandId,
-            { connectorType: 'shopflo', subKey: merchantId },
-            { api_token: apiToken, merchant_id: merchantId, webhook_secret: webhookSecret },
-          );
+          let arn: string;
+          try {
+            ({ arn } = await connectorSecretsManager.storeSecret(
+              brandId,
+              { connectorType: 'shopflo', subKey: merchantId },
+              { api_token: apiToken, merchant_id: merchantId, webhook_secret: webhookSecret },
+            ));
+          } catch {
+            return reply.code(503).send({ request_id: requestId, error: { code: 'SECRETS_UNAVAILABLE', message: 'Could not securely store credentials right now — please retry.' } });
+          }
 
           const now = new Date();
           const connectorInstanceId = randomUUID();
@@ -695,17 +705,22 @@ export function registerConnectors(app: FastifyInstance, deps: RegisterConnector
             });
           }
 
-          const { arn } = await connectorSecretsManager.storeSecret(
-            brandId,
-            { connectorType: 'gokwik', subKey: appid },
-            {
-              appid,
-              appsecret,
-              ...(webhookSecret && webhookSecret.trim().length > 0
-                ? { webhook_secret: webhookSecret.trim() }
-                : {}),
-            },
-          );
+          let arn: string;
+          try {
+            ({ arn } = await connectorSecretsManager.storeSecret(
+              brandId,
+              { connectorType: 'gokwik', subKey: appid },
+              {
+                appid,
+                appsecret,
+                ...(webhookSecret && webhookSecret.trim().length > 0
+                  ? { webhook_secret: webhookSecret.trim() }
+                  : {}),
+              },
+            ));
+          } catch {
+            return reply.code(503).send({ request_id: requestId, error: { code: 'SECRETS_UNAVAILABLE', message: 'Could not securely store credentials right now — please retry.' } });
+          }
 
           const now = new Date();
           const connectorInstanceId = randomUUID();
@@ -773,11 +788,16 @@ export function registerConnectors(app: FastifyInstance, deps: RegisterConnector
             });
           }
 
-          const { arn } = await connectorSecretsManager.storeSecret(
-            brandId,
-            { connectorType: 'shiprocket', subKey: channelId ?? email },
-            { email, password },
-          );
+          let arn: string;
+          try {
+            ({ arn } = await connectorSecretsManager.storeSecret(
+              brandId,
+              { connectorType: 'shiprocket', subKey: channelId ?? email },
+              { email, password },
+            ));
+          } catch {
+            return reply.code(503).send({ request_id: requestId, error: { code: 'SECRETS_UNAVAILABLE', message: 'Could not securely store credentials right now — please retry.' } });
+          }
 
           const now = new Date();
           const connectorInstanceId = randomUUID();
@@ -849,13 +869,18 @@ export function registerConnectors(app: FastifyInstance, deps: RegisterConnector
             });
           }
 
-          const { arn } = await connectorSecretsManager.storeSecret(
-            brandId,
-            { connectorType: 'woocommerce', subKey: siteUrl },
-            webhookSecret
-              ? { consumer_key: consumerKey, consumer_secret: consumerSecret, webhook_secret: webhookSecret }
-              : { consumer_key: consumerKey, consumer_secret: consumerSecret },
-          );
+          let arn: string;
+          try {
+            ({ arn } = await connectorSecretsManager.storeSecret(
+              brandId,
+              { connectorType: 'woocommerce', subKey: siteUrl },
+              webhookSecret
+                ? { consumer_key: consumerKey, consumer_secret: consumerSecret, webhook_secret: webhookSecret }
+                : { consumer_key: consumerKey, consumer_secret: consumerSecret },
+            ));
+          } catch {
+            return reply.code(503).send({ request_id: requestId, error: { code: 'SECRETS_UNAVAILABLE', message: 'Could not securely store credentials right now — please retry.' } });
+          }
 
           const now = new Date();
           const connectorInstanceId = randomUUID();
@@ -908,7 +933,12 @@ export function registerConnectors(app: FastifyInstance, deps: RegisterConnector
         }
 
         // Generic credential connector path
-        const { arn } = await connectorSecretsManager.storeSecret(brandId, { connectorType }, credentials);
+        let arn: string;
+        try {
+          ({ arn } = await connectorSecretsManager.storeSecret(brandId, { connectorType }, credentials));
+        } catch {
+          return reply.code(503).send({ request_id: requestId, error: { code: 'SECRETS_UNAVAILABLE', message: 'Could not securely store credentials right now — please retry.' } });
+        }
         const now = new Date();
         const instance = ConnectorInstanceEntity.create({
           id: randomUUID(),
@@ -949,8 +979,15 @@ export function registerConnectors(app: FastifyInstance, deps: RegisterConnector
       if (!shopDomain) {
         return reply.code(400).send({ request_id: (req.id as string) ?? randomUUID(), error: { code: 'MISSING_SHOP_PARAM', message: 'shop query parameter is required' } });
       }
-      const result = await initiateOAuth.execute({ brandId, shopDomain, callbackUrl: config.shopifyCallbackUrl });
-      return reply.code(200).send({ request_id: (req.id as string) ?? randomUUID(), data: { install_url: result.installUrl } });
+      try {
+        const result = await initiateOAuth.execute({ brandId, shopDomain, callbackUrl: config.shopifyCallbackUrl });
+        return reply.code(200).send({ request_id: (req.id as string) ?? randomUUID(), data: { install_url: result.installUrl } });
+      } catch (err) {
+        if ((err as { code?: string }).code === 'OAUTH_NOT_CONFIGURED') {
+          return reply.code(503).send({ request_id: (req.id as string) ?? randomUUID(), error: { code: 'OAUTH_NOT_CONFIGURED', message: "This connector isn't configured yet. Add your app credentials and try again." } });
+        }
+        throw err;
+      }
     });
 
     // ── Ads install routes (manager+ — feat-ad-connectors Track 1) ──────────

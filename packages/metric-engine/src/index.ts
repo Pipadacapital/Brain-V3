@@ -35,6 +35,8 @@ export { computeKpiSummary } from './kpi-summary.js';
 export type { KpiSummaryResult } from './kpi-summary.js';
 export { computeRecognitionBreakdown } from './recognition-breakdown.js';
 export type { RecognitionLabel, RecognitionBreakdownItem } from './recognition-breakdown.js';
+export { computeRevenueMonthly } from './revenue-monthly.js';
+export type { RevenueMonthlyRow } from './revenue-monthly.js';
 
 // Phase 2 analytics compute functions
 export { computeOrdersTimeseries } from './orders-timeseries.js';

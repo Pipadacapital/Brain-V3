@@ -574,6 +574,24 @@ export type AnalyticsRecognitionBreakdownResponse =
   | { state: 'has_data'; as_of: string; breakdown: AnalyticsRecognitionItem[] };
 
 /**
+ * Per-month revenue-lifecycle row from the Gold monthly mart (gold_revenue_analytics).
+ * All amount/count fields are bigint-serialized strings (D-1). Money is minor units
+ * + currency_code; rows are never blended across currencies.
+ */
+export interface AnalyticsRevenueMonthlyRow {
+  period_month: string;          // 'YYYY-MM'
+  lifecycle_state: string;       // placed | confirmed | cancelled | ...
+  currency_code: string;
+  order_count: string;           // bigint string
+  realized_value_minor: string;  // bigint string (minor units)
+  terminal_order_count: string;  // bigint string
+}
+
+export type AnalyticsRevenueMonthlyResponse =
+  | { state: 'no_data' }
+  | { state: 'has_data'; rows: AnalyticsRevenueMonthlyRow[] };
+
+/**
  * Realized-revenue ledger event types surfaced in the activity feed. This is the
  * FULL set the ledger emits (provisional/final/RTO plus COD-settlement + fee/tax
  * rows) — kept as an open `string` union via the trailing `(string & {})` so a new

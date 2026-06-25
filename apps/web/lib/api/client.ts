@@ -114,6 +114,7 @@ import type {
   AnalyticsExecutiveMetricsResponse,
   AnalyticsInsightsBriefingResponse,
   AnalyticsRecognitionBreakdownResponse,
+  AnalyticsRevenueMonthlyResponse,
   AnalyticsRecentActivityResponse,
   AnalyticsOrdersTimeseriesResponse,
   AnalyticsOrderStatsResponse,
@@ -1246,6 +1247,18 @@ export const analyticsApi = {
     const qs = asOf ? `?as_of=${encodeURIComponent(asOf)}` : '';
     const { data } = await bffFetch<BffEnvelope<AnalyticsRecognitionBreakdownResponse>>(
       `/v1/analytics/recognition-breakdown${qs}`,
+    );
+    return data;
+  },
+
+  /**
+   * GET /api/v1/analytics/revenue-monthly
+   * Per-month revenue-lifecycle breakdown (gold_revenue_analytics): MoM growth,
+   * recognition funnel, net-realized series. Numbers come from the Gold mart.
+   */
+  getRevenueMonthly: async (): Promise<AnalyticsRevenueMonthlyResponse> => {
+    const { data } = await bffFetch<BffEnvelope<AnalyticsRevenueMonthlyResponse>>(
+      `/v1/analytics/revenue-monthly`,
     );
     return data;
   },

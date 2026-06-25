@@ -10,7 +10,7 @@ mean a missed or retried run never double-applies and never piles up.
 {{- if ne (default true .enabled) false }}
 {{- /* Image selection: dbt-runner > stream-worker > core (default). */ -}}
 {{- $image := $root.Values.image -}}
-{{- if .useDbtRunnerImage }}{{- $image = $root.Values.dbtRunnerImage -}}{{- else if .useStreamWorkerImage }}{{- $image = $root.Values.streamWorkerImage -}}{{- end -}}
+{{- if .useDbtRunnerImage }}{{- $image = $root.Values.dbtRunnerImage -}}{{- else if .useStreamWorkerImage }}{{- $image = $root.Values.streamWorkerImage -}}{{- end }}
 ---
 apiVersion: argoproj.io/v1alpha1
 kind: CronWorkflow

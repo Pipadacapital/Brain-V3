@@ -37,6 +37,8 @@ import { assertSingleStorefront } from '../../../storefront-exclusivity.js';
 import { randomUUID } from 'node:crypto';
 import type pg from 'pg';
 import { log } from '../../../../../../../log.js';
+import { getDefinition } from '../../../../../catalog/index.js';
+import { planCredentialConnect } from '../../../../../credential-schema.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -239,17 +241,25 @@ export class ConnectWooCommerceCommand {
     // it is NEVER logged at any level.
     const webhookSecret = randomUUID().replace(/-/g, '') + randomUUID().replace(/-/g, '');
 
+    // Derive the secret bundle from the declarative catalog (single SoR for the secret/non-secret
+    // split — see credential-schema.ts). For woocommerce the plan yields
+    // { consumer_key, consumer_secret, webhook_secret, site_url }: site_url is a non-secret
+    // bundleNonSecretField the repull client + pixel-install read the store base URL from the bundle.
+    // webhookSecret is generated here (not merchant-entered) and threaded through the value map.
+    const def = getDefinition('woocommerce')!;
+    const { secretBundle } = planCredentialConnect(def.authFields!, def.credentialConnect!, {
+      site_url: normalizedSiteUrl,
+      consumer_key: consumerKey,
+      consumer_secret: consumerSecret,
+      webhook_secret: webhookSecret,
+    });
+
     // Store composite credential bundle as ONE secret (single secret_ref per connector).
     // subKey = normalizedSiteUrl (non-secret store identifier, URL-safe).
     const { arn } = await this.secretsManager.storeSecret(
       brandId,
       { connectorType: 'woocommerce', subKey: normalizedSiteUrl },
-      {
-        consumer_key: consumerKey,
-        consumer_secret: consumerSecret,
-        webhook_secret: webhookSecret,
-        site_url: normalizedSiteUrl,
-      },
+      secretBundle,
     );
 
     const now = new Date();

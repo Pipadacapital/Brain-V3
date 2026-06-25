@@ -354,8 +354,11 @@ services:
         condition: service_healthy
     environment:
       KAFKA_BROKERS: "localhost:9092"
-      COLLECTOR_TOPIC: "dev.collector.event.v1"
-      BACKFILL_TOPIC: "dev.collector.order.backfill.v1"
+      # Topic prefix MUST match the app's NODE_ENV-derived prefix. local-prod runs NODE_ENV=production,
+      # so core/collector/stream-worker produce to prod.* — the sink must consume prod.* or it sees no
+      # real data and Bronze never fills (the same break would hit prod if these were left as dev.*).
+      COLLECTOR_TOPIC: "prod.collector.event.v1"
+      BACKFILL_TOPIC: "prod.collector.order.backfill.v1"
       STARTING_OFFSETS: "earliest"
       TRIGGER_MODE: "continuous"
       PROCESSING_TIME: "10 seconds"

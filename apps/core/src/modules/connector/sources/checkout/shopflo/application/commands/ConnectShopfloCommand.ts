@@ -1,9 +1,14 @@
 /**
  * ConnectShopfloCommand — wires up a Shopflo credential connector (Track B).
  *
- * Clone of ConnectRazorpayCommand. Stores three Shopflo credentials as ONE composite
+ * Clone of ConnectRazorpayCommand. Stores the Shopflo credentials as ONE composite
  * JSON bundle under a single secret_ref per connector_instance:
- *   { api_token, merchant_id, webhook_secret }
+ *   { api_token, webhook_secret }
+ *
+ * The secret/non-secret split is derived from the declarative catalog (authFields +
+ * credentialConnect) via planCredentialConnect — see credential-schema.ts. merchant_id is a
+ * routing-only identifier (NOT in the bundle): the webhook handler resolves it from the
+ * connector_instance column, never the bundle, so it is not stored as a credential.
  *
  * Constraints:
  *   - api_token + webhook_secret are NEVER logged at any level (I-S09).
@@ -23,6 +28,8 @@ import { ConnectorInstance } from '@brain/connector-core';
 import { ConnectorSyncStatus } from '@brain/connector-core';
 import { randomUUID } from 'node:crypto';
 import type pg from 'pg';
+import { getDefinition } from '../../../../../catalog/index.js';
+import { planCredentialConnect } from '../../../../../credential-schema.js';
 
 export interface ConnectShopfloInput {
   brandId: string;
@@ -56,17 +63,23 @@ export class ConnectShopfloCommand {
   async execute(input: ConnectShopfloInput): Promise<ConnectShopfloResult> {
     const { brandId, apiToken, merchantId, webhookSecret, idempotencyKey } = input;
 
+    // Derive the secret bundle from the declarative catalog (single SoR for the secret/non-secret
+    // split — see credential-schema.ts). For shopflo the plan yields { api_token, webhook_secret };
+    // merchant_id is routing-only and is NOT placed in the bundle.
+    const def = getDefinition('shopflo')!;
+    const { secretBundle } = planCredentialConnect(def.authFields!, def.credentialConnect!, {
+      api_token: apiToken,
+      merchant_id: merchantId,
+      webhook_secret: webhookSecret,
+    });
+
     // Store composite credential bundle as ONE secret (single secret_ref per connector).
     // I-S09 / C5: credential values NEVER logged — only the resulting ARN is.
     // subKey = merchantId (the non-secret merchant identifier).
     const { arn } = await this.secretsManager.storeSecret(
       brandId,
       { connectorType: 'shopflo', subKey: merchantId },
-      {
-        api_token: apiToken,
-        merchant_id: merchantId,
-        webhook_secret: webhookSecret,
-      },
+      secretBundle,
     );
 
     const now = new Date();

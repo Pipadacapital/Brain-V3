@@ -1,0 +1,211 @@
+{{- /*
+Brain V4 Spark Silver/Gold transform + StarRocks mv_* refresh CronWorkflows.
+
+V4 makes Spark the SOLE compute: Iceberg (brain_bronze/silver/gold) holds the medallion, StarRocks
+brain_serving.mv_* serve. dbt is GONE. This chart's existing `.Values.jobs` (recognition-refresh /
+attribution-gold-refresh on dbtRunnerImage) are the V3 shape; these CronWorkflows are the V4 replacement:
+they spark-submit the Silver/Gold mart jobs the image now CARRIES (db/iceberg/spark/{silver,gold}/*.py,
+COPYed into /opt/brain by the Dockerfile) and then SYNC-refresh the serving MVs — mirroring the
+spark-bronze.yaml pattern (single spark-submit --master local[*] pod, no Spark Operator/cluster).
+
+DEPENDENCY ORDER is enforced by STAGGERED SCHEDULES (this chart's one-container-per-CronWorkflow
+convention — NOT an Argo DAG) + idempotency (every Spark MERGE is replay-safe; Forbid + startingDeadline
+make a missed/retried run safe). The full V4 attribution chain — identity → order-state → silver →
+journey-stitch → gold → mv refresh — is split across the node `.Values.jobs` (identity-export,
+journey-stitch-from-identity, journey-stitch-export) and these Spark crons:
+
+  :05  v4-silver       spark-submit run-silver-orders.sh (order_state spine, brain_id) + the rest of Silver.
+       (identity-export at :02 + the node journey-stitch jobs at :15/:16 sequence around these via schedule.)
+  :25  v4-gold         spark-submit run-gold-revenue.sh (recognized basis) + run-gold-attribution.sh +
+                       customer/gap/executive marts (reads the stitched silver_touchpoint).
+  :40  v4-mv-refresh   REFRESH MATERIALIZED VIEW brain_serving.mv_* WITH SYNC MODE (deterministic serving).
+
+GATED OFF by default (.Values.sparkV4.enabled=false): enabling needs the CI-built+digest-pinned Spark
+image carrying the V4 marts (B3 fail-closed below) + a cluster — same external gate as spark-bronze /
+the dbt crons. The mv-refresh uses a small mysql-client image (.Values.sparkV4.mysqlImage) to issue the
+StarRocks REFRESH over the MySQL wire (StarRocks host/port/creds from the env secret).
+
+Image MUST be pinned by digest (B3) — same fail-closed rule as the generic + Bronze templates.
+*/ -}}
+{{- if .Values.sparkV4.enabled }}
+{{- $img := .Values.sparkV4.image -}}
+{{- $ref := "" -}}
+{{- if $img.digest -}}
+  {{- $ref = printf "%s@%s" $img.repository $img.digest -}}
+{{- else if and $img.tag (ne $img.tag "latest") -}}
+  {{- $ref = printf "%s:%s" $img.repository $img.tag -}}
+{{- else -}}
+  {{- fail "sparkV4.image.digest (preferred) or an immutable non-':latest' tag is required (B3) — refusing to deploy an unpinned image" -}}
+{{- end -}}
+{{- $envFrom := .Values.envSecretName -}}
+{{- $sa := .Values.serviceAccount.name -}}
+{{- $tz := .Values.timezone -}}
+{{- $dm := .Values.sparkV4.driverMemory -}}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: CronWorkflow
+metadata:
+  name: v4-silver
+  labels:
+    {{- include "brain.labels" . | nindent 4 }}
+    brain.io/job: v4-silver
+spec:
+  schedule: {{ .Values.sparkV4.silverSchedule | quote }}
+  timezone: {{ $tz | quote }}
+  concurrencyPolicy: Forbid            # never overlap a Silver build with itself (idempotent, but serialize)
+  startingDeadlineSeconds: {{ .Values.defaults.startingDeadlineSeconds }}
+  successfulJobsHistoryLimit: {{ .Values.defaults.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.defaults.failedJobsHistoryLimit }}
+  workflowSpec:
+    serviceAccountName: {{ $sa }}      # IRSA: S3 (Iceberg warehouse) + Glue/REST catalog access
+    entrypoint: run
+    activeDeadlineSeconds: {{ .Values.sparkV4.activeDeadlineSeconds }}
+    podGC:
+      strategy: OnWorkflowSuccess
+    templates:
+      - name: run
+        retryStrategy:
+          limit: {{ .Values.defaults.backoffLimit | quote }}    # bounded retry: every Silver MERGE is idempotent
+          retryPolicy: OnError
+        container:
+          image: {{ $ref | quote }}
+          imagePullPolicy: {{ $img.pullPolicy }}
+          # The image CARRIES db/iceberg/spark → /opt/brain. The run-*.sh scripts spin docker (compose-only),
+          # so on the cluster we spark-submit the mart py files DIRECTLY. order_state (the brain_id spine)
+          # FIRST, then the rest of Silver, then a touchpoint re-pass (after the node stitch jobs land the
+          # stitch). SPARK_MAX_RETRIES gives each submit a bounded in-pod retry too (idempotent MERGE).
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              source /opt/brain/_retry.sh
+              submit() { spark_retry "v4-silver/$1" /opt/spark/bin/spark-submit --master "local[*]" --driver-memory {{ $dm | quote }} --py-files /opt/brain/iceberg_base.py "/opt/brain/silver/$1"; }
+              submit silver_order_state.py        # spine — resolves brain_id from brain_ops.silver_identity_link
+              for j in /opt/brain/silver/silver_*.py; do
+                b="$(basename "$j")"; [ "$b" = "silver_order_state.py" ] && continue
+                spark_retry "v4-silver/$b" /opt/spark/bin/spark-submit --master "local[*]" --driver-memory {{ $dm | quote }} --py-files /opt/brain/iceberg_base.py "$j"
+              done
+          env:
+            - { name: SPARK_MAX_RETRIES, value: {{ .Values.sparkV4.sparkMaxRetries | quote }} }
+            {{- toYaml .Values.sparkV4.env | nindent 12 }}
+          {{- if $envFrom }}
+          envFrom:
+            - secretRef:
+                name: {{ $envFrom }}    # ICEBERG_REST_URI/Glue + AWS_*, STARROCKS_*/NEO4J_* (mart dim reads)
+          {{- end }}
+          resources:
+            {{- toYaml .Values.sparkV4.resources | nindent 12 }}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: CronWorkflow
+metadata:
+  name: v4-gold
+  labels:
+    {{- include "brain.labels" . | nindent 4 }}
+    brain.io/job: v4-gold
+spec:
+  schedule: {{ .Values.sparkV4.goldSchedule | quote }}
+  timezone: {{ $tz | quote }}
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: {{ .Values.defaults.startingDeadlineSeconds }}
+  successfulJobsHistoryLimit: {{ .Values.defaults.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.defaults.failedJobsHistoryLimit }}
+  workflowSpec:
+    serviceAccountName: {{ $sa }}
+    entrypoint: run
+    activeDeadlineSeconds: {{ .Values.sparkV4.activeDeadlineSeconds }}
+    podGC:
+      strategy: OnWorkflowSuccess
+    templates:
+      - name: run
+        retryStrategy:
+          limit: {{ .Values.defaults.backoffLimit | quote }}
+          retryPolicy: OnError
+        container:
+          image: {{ $ref | quote }}
+          imagePullPolicy: {{ $img.pullPolicy }}
+          # gold_revenue_ledger (recognized basis) FIRST, then attribution (reads the stitched
+          # silver_touchpoint + the ledger basis), then the remaining Gold marts. _attribution_math.py is a
+          # --py-files dep for the credit job (exact minor-unit apportionment port).
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              source /opt/brain/_retry.sh
+              submit() { spark_retry "v4-gold/$1" /opt/spark/bin/spark-submit --master "local[*]" --driver-memory {{ $dm | quote }} --py-files "$2" "/opt/brain/gold/$1"; }
+              submit gold_revenue_ledger.py        /opt/brain/iceberg_base.py
+              submit gold_attribution_credit.py    /opt/brain/iceberg_base.py,/opt/brain/gold/_attribution_math.py
+              submit gold_marketing_attribution.py /opt/brain/iceberg_base.py,/opt/brain/gold/_attribution_math.py
+              submit gold_attribution_paths.py     /opt/brain/iceberg_base.py
+              for j in /opt/brain/gold/gold_*.py /opt/brain/gold/snap_*.py; do
+                b="$(basename "$j")"
+                case "$b" in gold_revenue_ledger.py|gold_attribution_credit.py|gold_marketing_attribution.py|gold_attribution_paths.py) continue;; esac
+                case "$b" in _*) continue;; esac
+                spark_retry "v4-gold/$b" /opt/spark/bin/spark-submit --master "local[*]" --driver-memory {{ $dm | quote }} --py-files /opt/brain/iceberg_base.py "$j"
+              done
+          env:
+            - { name: SPARK_MAX_RETRIES, value: {{ .Values.sparkV4.sparkMaxRetries | quote }} }
+            {{- toYaml .Values.sparkV4.env | nindent 12 }}
+          {{- if $envFrom }}
+          envFrom:
+            - secretRef:
+                name: {{ $envFrom }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.sparkV4.resources | nindent 12 }}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: CronWorkflow
+metadata:
+  name: v4-mv-refresh
+  labels:
+    {{- include "brain.labels" . | nindent 4 }}
+    brain.io/job: v4-mv-refresh
+spec:
+  schedule: {{ .Values.sparkV4.mvRefreshSchedule | quote }}
+  timezone: {{ $tz | quote }}
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: {{ .Values.defaults.startingDeadlineSeconds }}
+  successfulJobsHistoryLimit: {{ .Values.defaults.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.defaults.failedJobsHistoryLimit }}
+  workflowSpec:
+    serviceAccountName: {{ $sa }}
+    entrypoint: run
+    activeDeadlineSeconds: {{ .Values.defaults.activeDeadlineSeconds }}
+    podGC:
+      strategy: OnWorkflowSuccess
+    templates:
+      - name: run
+        retryStrategy:
+          limit: {{ .Values.defaults.backoffLimit | quote }}    # WITH SYNC MODE is idempotent — safe to retry
+          retryPolicy: OnError
+        container:
+          image: {{ .Values.sparkV4.mysqlImage | quote }}    # small mysql-client (StarRocks speaks MySQL wire)
+          # Enumerate every brain_serving mv_* and SYNC-refresh it (deterministic serving), mirroring the
+          # dev v4-refresh-loop.sh. Reads STARROCKS_HOST/PORT/USER/PASSWORD from the env secret. SYNC MODE
+          # blocks until each refresh completes; non-zero exit ⇒ Argo marks the run failed (visible alert).
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              SR="mysql -h${STARROCKS_HOST} -P${STARROCKS_PORT:-9030} -u${STARROCKS_ROOT_USER:-root} ${STARROCKS_ROOT_PASSWORD:+-p${STARROCKS_ROOT_PASSWORD}} -N"
+              mvs=$($SR -e "SELECT TABLE_NAME FROM information_schema.materialized_views WHERE TABLE_SCHEMA='brain_serving' AND TABLE_NAME LIKE 'mv\\_%' ORDER BY TABLE_NAME;")
+              [ -n "$mvs" ] || { echo "no brain_serving mv_* found"; exit 1; }
+              for mv in $mvs; do
+                src=${mv#mv_}
+                # Invalidate the StarRocks Iceberg metadata cache FIRST so the mv sees the Spark write's new
+                # snapshot (else the mv lands 0 rows until the ~60s background refresh). Refresh BOTH the gold
+                # + silver Iceberg source candidates (the wrong one silently no-ops). Additive / metadata-only.
+                $SR -e "REFRESH EXTERNAL TABLE brain_gold_local.brain_gold.$src;" 2>/dev/null || true
+                $SR -e "REFRESH EXTERNAL TABLE brain_silver_local.brain_silver.$src;" 2>/dev/null || true
+                echo "REFRESH brain_serving.$mv WITH SYNC MODE"
+                $SR -e "REFRESH MATERIALIZED VIEW brain_serving.$mv WITH SYNC MODE;"
+              done
+          {{- if $envFrom }}
+          envFrom:
+            - secretRef:
+                name: {{ $envFrom }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.defaults.resources | nindent 12 }}
+{{- end }}

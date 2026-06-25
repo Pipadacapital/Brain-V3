@@ -34,6 +34,13 @@ from pyspark.sql import DataFrame, SparkSession  # noqa: E402
 from pyspark.sql.functions import col, get_json_object  # noqa: E402
 
 from iceberg_base import CATALOG, SILVER_NAMESPACE, build_spark, create_iceberg_table  # noqa: E402
+from job_log import JobMetrics, emit_job_log  # noqa: E402
+
+# The metrics bag for the job currently running through run_job(). merge_on_pk + read_bronze_events
+# write into it WITHOUT changing any caller's signature — so the structured per-job line carries the
+# brand-AGNOSTIC rows_in + merge_upserted counts even though every build(spark) signature is unchanged.
+# Module-level (one job per spark-submit process) — never shared across jobs.
+_ACTIVE_METRICS: JobMetrics | None = None
 
 # Bronze source (NEW-side read) — the raw Iceberg Bronze the operational reads use (Iceberg-sole SoR).
 BRONZE_NAMESPACE = os.environ.get("BRONZE_NAMESPACE", "brain_bronze")
@@ -48,13 +55,21 @@ def read_bronze_events(spark: SparkSession, event_types: list[str]) -> DataFrame
     brand_id/event_id/occurred_at/ingested_at are the Bronze idempotency + tenant keys.
     """
     in_list = ", ".join(f"'{e}'" for e in event_types)
-    return spark.sql(
+    df = spark.sql(
         f"""
         SELECT brand_id, event_id, event_type, occurred_at, ingested_at, payload AS pj
         FROM {BRONZE_TABLE}
         WHERE event_type IN ({in_list})
         """
     )
+    # Best-effort, brand-AGNOSTIC source-row signal for the structured job line. Cached so the count
+    # does not re-scan Bronze when the build then consumes the same DataFrame.
+    if _ACTIVE_METRICS is not None:
+        try:
+            _ACTIVE_METRICS.add_rows_in(df.cache().count())
+        except Exception:  # noqa: BLE001 — observability must never break the read path
+            pass
+    return df
 
 
 def prop(pj_col: str, path: str):
@@ -83,20 +98,31 @@ def merge_on_pk(
     on_clause = " AND ".join(f"t.{c} = s.{c}" for c in pk)
     part = ", ".join(pk)
     order = ", ".join(f"{c} DESC" for c in order_by_desc)
-    spark.sql(
-        f"""
-        MERGE INTO {fqtn} t
-        USING (
+    deduped_sql = f"""
           SELECT {cols} FROM (
             SELECT *, row_number() OVER (PARTITION BY {part} ORDER BY {order}) AS _rn
             FROM _silver_stage
           ) WHERE _rn = 1
+    """
+    spark.sql(
+        f"""
+        MERGE INTO {fqtn} t
+        USING (
+        {deduped_sql}
         ) s
         ON {on_clause}
         WHEN MATCHED THEN UPDATE SET *
         WHEN NOT MATCHED THEN INSERT *
         """
     )
+    # Best-effort merge-upserted signal (rows the MERGE acted on this run = the deduped staged count).
+    # Iceberg MERGE does not return an affected-row count; the post-dedup staged count is the exact set
+    # of PKs the MERGE inserted-or-updated. Brand-AGNOSTIC, no money/PII.
+    if _ACTIVE_METRICS is not None:
+        try:
+            _ACTIVE_METRICS.add_upserted(spark.sql(f"SELECT COUNT(*) AS n FROM ({deduped_sql})").collect()[0]["n"])
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def ensure_silver_table(spark: SparkSession, table: str, columns_sql: str, *, partitioned_by: str) -> str:
@@ -107,8 +133,27 @@ def ensure_silver_table(spark: SparkSession, table: str, columns_sql: str, *, pa
 
 
 def run_job(app_name: str, build_fn) -> None:
-    """Standard entrypoint: build a Spark session, run build_fn(spark), report the row count."""
+    """Standard entrypoint: build a Spark session, run build_fn(spark), emit ONE structured job line.
+
+    build_fn keeps its existing `(fqtn, rows_out) = build(spark)` contract — the rows_in + merge_upserted
+    signals are captured transparently by read_bronze_events + merge_on_pk writing into the module-level
+    _ACTIVE_METRICS bag set here. ADDITIVE: the legacy "[job] DONE — N rows" line is still printed.
+    """
+    global _ACTIVE_METRICS
+    import time
+
     spark = build_spark(app_name)
     spark.sparkContext.setLogLevel("WARN")
-    fqtn, n = build_fn(spark)
-    print(f"[{app_name}] DONE — {fqtn} now has {n} rows", flush=True)
+    _ACTIVE_METRICS = JobMetrics()
+    started = time.monotonic()
+    try:
+        fqtn, n = build_fn(spark)
+        duration_ms = int((time.monotonic() - started) * 1000)
+        emit_job_log(app_name, status="ok", rows_out=n, metrics=_ACTIVE_METRICS, fqtn=fqtn, duration_ms=duration_ms)
+        print(f"[{app_name}] DONE — {fqtn} now has {n} rows", flush=True)
+    except Exception as exc:  # noqa: BLE001 — emit a fail line, then re-raise (must still fail loudly)
+        duration_ms = int((time.monotonic() - started) * 1000)
+        emit_job_log(app_name, status="fail", metrics=_ACTIVE_METRICS, duration_ms=duration_ms, error=str(exc))
+        raise
+    finally:
+        _ACTIVE_METRICS = None

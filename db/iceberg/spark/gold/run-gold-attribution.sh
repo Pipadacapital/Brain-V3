@@ -34,6 +34,9 @@ REDPANDA_CONTAINER="${REDPANDA_CONTAINER:-brainv3-redpanda-1}"
 GOLD_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SPARK_DIR="$(cd "${GOLD_DIR}/.." && pwd)"   # holds iceberg_base.py (shared --py-files)
 
+# Bounded retry around each (idempotent MERGE) spark-submit — a transient blip is safe to re-run.
+source "${SPARK_DIR}/_retry.sh"
+
 # Iceberg runtime + AWS bundle + MySQL JDBC (the cross-catalog recognized-basis read).
 PACKAGES="org.apache.iceberg:iceberg-spark-runtime-3.5_${SCALA}:${ICEBERG_VERSION}"
 PACKAGES="${PACKAGES},org.apache.iceberg:iceberg-aws-bundle:${ICEBERG_VERSION}"
@@ -58,6 +61,7 @@ fi
 for model in ${MODELS}; do
   echo ""
   echo "================ BUILD gold mart: ${model} ================"
+  spark_retry "gold-attribution/${model}" \
   docker run --rm \
     --network "container:${REDPANDA_CONTAINER}" \
     --user root \
@@ -75,6 +79,7 @@ for model in ${MODELS}; do
     -e AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:-brain}" \
     -e AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY:-brainbrain}" \
     -e AWS_REGION="${AWS_REGION:-us-east-1}" \
+    -e V4_CORRELATION_ID="${V4_CORRELATION_ID:-}" \
     "${SPARK_IMAGE}" \
     /opt/spark/bin/spark-submit \
       --master "local[2]" \

@@ -25,3 +25,12 @@ export type {
 
 export { getMetricTrust } from './internal/application/queries/get-metric-trust.js';
 export type { MetricTrustResult } from './internal/application/queries/get-metric-trust.js';
+
+// V4-pipeline observability: serving-tier freshness + per-mart row counts (brand-AGNOSTIC ops
+// metadata read over StarRocks information_schema; see the query header for the no-tenant-seam rationale).
+export { getServingFreshness } from './internal/application/queries/get-serving-freshness.js';
+export type {
+  ServingFreshnessResult,
+  ServingMartRow,
+  MartFreshness,
+} from './internal/application/queries/get-serving-freshness.js';

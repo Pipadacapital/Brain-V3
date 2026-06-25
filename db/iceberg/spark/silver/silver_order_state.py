@@ -361,9 +361,30 @@ def build(spark: SparkSession) -> str:
 
 
 def main() -> None:
+    # Structured per-job observability (additive) — one machine-parseable spark_job line with status +
+    # duration + final row count, carrying V4_CORRELATION_ID when the v4-refresh-loop set it. The legacy
+    # human "[silver_order_state] MERGE complete" line inside build() is unchanged.
+    import os
+    import sys
+    import time
+
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from job_log import emit_job_log  # noqa: E402
+
     spark = build_spark("silver-order-state")
     spark.sparkContext.setLogLevel("WARN")
-    build(spark)
+    started = time.monotonic()
+    try:
+        fqtn = build(spark)
+        emit_job_log(
+            "silver-order-state", status="ok", fqtn=fqtn,
+            rows_out=spark.table(fqtn).count(),
+            duration_ms=int((time.monotonic() - started) * 1000),
+        )
+    except Exception as exc:  # noqa: BLE001
+        emit_job_log("silver-order-state", status="fail",
+                     duration_ms=int((time.monotonic() - started) * 1000), error=str(exc))
+        raise
 
 
 if __name__ == "__main__":

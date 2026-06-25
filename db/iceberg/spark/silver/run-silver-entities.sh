@@ -61,6 +61,7 @@ for job in "${JOBS[@]}"; do
     -e AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:-brain}" \
     -e AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY:-brainbrain}" \
     -e AWS_REGION="${AWS_REGION:-us-east-1}" \
+    -e V4_CORRELATION_ID="${V4_CORRELATION_ID:-}" \
     -e NEO4J_URI="${NEO4J_URI:-}" \
     -e NEO4J_USER="${NEO4J_USER:-neo4j}" \
     -e NEO4J_PASSWORD="${NEO4J_PASSWORD:-}" \

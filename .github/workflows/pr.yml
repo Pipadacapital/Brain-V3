@@ -106,6 +106,24 @@ jobs:
         run: pnpm log-grep
 
   # ─────────────────────────────────────────────────────────────────────────
+  # Brain V4 naming guard — BLOCKING. Fails on retired-dbt-DB refs (brain_gold./
+  # brain_silver.), any dbt invocation, permanent feature precompute (feature_customer_daily
+  # / brain_feature write), and Gold/Silver reads not via mv_* / rest-Iceberg.
+  # See tools/lint/v4-naming-guard.sh (--selftest proves the rules; runs first).
+  # ─────────────────────────────────────────────────────────────────────────
+  v4-naming-guard:
+    name: Brain V4 Naming Guard (no dbt / retired DBs)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Self-test the guard (proves it catches each rule)
+        run: tools/lint/v4-naming-guard.sh --selftest
+      - name: Run the V4 naming guard over the tree
+        run: tools/lint/v4-naming-guard.sh
+
+  # ─────────────────────────────────────────────────────────────────────────
   # Secret scan — gitleaks (every PR diff; must never find a secret)
   # ─────────────────────────────────────────────────────────────────────────
   secret-scan:

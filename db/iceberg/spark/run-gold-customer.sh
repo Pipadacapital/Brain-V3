@@ -17,14 +17,13 @@
 #   STAGE=segments db/iceberg/spark/run-gold-customer.sh  # only gold_customer_segments
 #   STAGE=cohorts  db/iceberg/spark/run-gold-customer.sh  # only gold_cohorts
 #   STAGE=scores   db/iceberg/spark/run-gold-customer.sh  # only gold_customer_scores
-# Env: SPARK_IMAGE, ICEBERG_VERSION, MYSQL_JDBC_VERSION, REDPANDA_CONTAINER, GOLD_NAMESPACE,
-#      FEATURE_SOURCE (silver|starrocks) overridable.
+# Env: SPARK_IMAGE, ICEBERG_VERSION, REDPANDA_CONTAINER, GOLD_NAMESPACE overridable.
+# (Brain V4: gold_customer_scores folds features at RUNTIME from Iceberg silver_customer — the retired
+#  FEATURE_SOURCE=starrocks brain_feature JDBC read is GONE, so no StarRocks JDBC env is passed here.)
 set -euo pipefail
 
 SPARK_IMAGE="${SPARK_IMAGE:-apache/spark:3.5.3}"
 ICEBERG_VERSION="${ICEBERG_VERSION:-1.9.2}"
-# MySQL Connector/J — StarRocks speaks the MySQL wire protocol (FEATURE_SOURCE=starrocks fallback read).
-MYSQL_JDBC_VERSION="${MYSQL_JDBC_VERSION:-8.0.33}"
 SCALA="2.12"
 REDPANDA_CONTAINER="${REDPANDA_CONTAINER:-brainv3-redpanda-1}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -32,7 +31,6 @@ STAGE="${STAGE:-all}"
 
 PACKAGES="org.apache.iceberg:iceberg-spark-runtime-3.5_${SCALA}:${ICEBERG_VERSION}"
 PACKAGES="${PACKAGES},org.apache.iceberg:iceberg-aws-bundle:${ICEBERG_VERSION}"
-PACKAGES="${PACKAGES},com.mysql:mysql-connector-j:${MYSQL_JDBC_VERSION}"
 
 echo "[gold-customer] image=${SPARK_IMAGE} netns=container:${REDPANDA_CONTAINER} stage=${STAGE}"
 echo "[gold-customer] packages=${PACKAGES}"
@@ -57,10 +55,7 @@ run_job() {
     -e AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:-brain}" \
     -e AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY:-brainbrain}" \
     -e AWS_REGION="${AWS_REGION:-us-east-1}" \
-    -e FEATURE_SOURCE="${FEATURE_SOURCE:-silver}" \
-    -e SILVER_SR_JDBC_URL="${SILVER_SR_JDBC_URL:-jdbc:mysql://starrocks:9030}" \
-    -e SILVER_SR_USER="${SILVER_SR_USER:-root}" \
-    -e SILVER_SR_PASSWORD="${SILVER_SR_PASSWORD:-}" \
+    -e V4_CORRELATION_ID="${V4_CORRELATION_ID:-}" \
     "${SPARK_IMAGE}" \
     /opt/spark/bin/spark-submit \
       --master "local[2]" \

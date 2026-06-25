@@ -7,16 +7,15 @@ rule-based recency/frequency/monetary tiers + a churn-risk band.
 ADDITIVE / dual-run: reads Iceberg brain_silver, writes Iceberg brain_gold.gold_customer_scores BESIDE
 the live dbt→StarRocks copy. Repoints NO reader, changes NO dbt, touches NO app code.
 
-THE TRANSFORM (the COMPOSED dbt graph reproduced faithfully end-to-end):
-  The dbt gold_customer_scores reads the LATEST per-customer snapshot from feature_customer_daily
-  (brain_feature) and applies the scoring CASE ladders. feature_customer_daily is in turn a daily
-  point-in-time snapshot DERIVED from silver_customer (db/dbt/models/marts/feature_customer_daily.sql):
+THE TRANSFORM (Brain V4 — features are RUNTIME, not a precompute table):
+  In V4 there is NO permanent feature-precompute table. The retired dbt graph used to read the LATEST
+  per-customer snapshot from feature_customer_daily (the StarRocks brain_feature DB), which was itself a
+  daily point-in-time snapshot DERIVED from silver_customer. dbt is GONE and brain_feature is retired
+  (db/starrocks/teardown/drop_dead_feature_db.sql), so this job FOLDS that feature snapshot INLINE from
+  the Iceberg silver_customer spine at runtime (identical formulae), then applies the scoring:
         snapshot_date         = current_date()
         days_since_last_order = datediff(current_date(), cast(last_seen_at as date))
         (+ lifetime_orders / lifetime_value_minor / currency_code carried from silver_customer)
-  There is NO Iceberg brain_feature table in the lakehouse (the feature store is StarRocks-only), so to
-  keep the Spark dual-run self-contained we FOLD the feature_customer_daily snapshot INLINE from the
-  Iceberg silver_customer spine (identical formulae), then apply gold_customer_scores' scoring:
         scored_on             = snapshot_date  (= current_date())
         recency_score   ∈ 1..5 by days_since_last_order  (≤30→5, ≤60→4, ≤90→3, ≤180→2, else 1)
         frequency_score ∈ 1..5 by lifetime_orders        (≥10→5, ≥5→4, ≥3→3, ≥2→2, else 1)
@@ -25,13 +24,10 @@ THE TRANSFORM (the COMPOSED dbt graph reproduced faithfully end-to-end):
         data_source     = 'live'        (MK-1: real builds = live; the demo seed overwrites 'synthetic')
         computed_at     = current_timestamp()
 
-  WHY inline-from-silver, not read-feature: the "latest snapshot per customer" the dbt selects is, on a
-  single-snapshot-per-day grain, exactly today's silver_customer projection — so building today's
-  snapshot from silver_customer yields the SAME latest row the dbt scoring reads. (Money columns are
-  carried verbatim; no re-derivation → no rounding.) PARITY CAVEAT (recorded, not hidden): if the live
-  StarRocks feature_customer_daily holds an OLDER snapshot than today (a backfilled history row whose
-  last_seen_at differs), days_since_last_order — and hence the recency/churn tiers + scored_on — can
-  differ by the day-delta. Non-money columns only; money Σ (no money column on this mart) is unaffected.
+  WHY runtime-fold-from-silver: on a single-snapshot-per-day grain, "today's latest feature snapshot per
+  customer" IS today's silver_customer projection — so building it from silver_customer at run time is
+  point-in-time-correct (money columns carried verbatim; no re-derivation → no rounding). This is the V4
+  rule: features are computed at runtime from the Silver spine, never read from a permanent precompute DB.
 
 GRAIN: ONE row per (brand_id, brain_id). No money column on this mart (it carries lifetime_value_minor
   as a descriptive bigint minor field, but the parity oracle treats this mart as row-identity only —
@@ -54,15 +50,10 @@ from iceberg_base import CATALOG, GOLD_NAMESPACE, SILVER_NAMESPACE, build_spark,
 
 TABLE_NAME = "gold_customer_scores"
 
-# FEATURE_SOURCE controls where the "latest customer snapshot" comes from:
-#   "silver"     (default): fold feature_customer_daily inline from Iceberg silver_customer (self-contained).
-#   "starrocks"           : read the live brain_feature.feature_customer_daily over JDBC (exact dbt input).
-# The 'starrocks' mode reads the SAME table the dbt scoring reads → strongest parity when the feature
-# store carries a today snapshot; the default keeps the Spark dual-run independent of the feature store.
-FEATURE_SOURCE = os.environ.get("FEATURE_SOURCE", "silver").strip().lower()
-SR_JDBC_URL = os.environ.get("SILVER_SR_JDBC_URL", "jdbc:mysql://starrocks:9030")
-SR_USER = os.environ.get("SILVER_SR_USER", "root")
-SR_PASSWORD = os.environ.get("SILVER_SR_PASSWORD", "")
+# Brain V4: features are RUNTIME. The "latest customer snapshot" is folded inline from the Iceberg
+# silver_customer spine (see module docstring). The retired dbt-era alternative — reading the StarRocks
+# brain_feature.feature_customer_daily precompute table over JDBC — is GONE (brain_feature is dead;
+# db/starrocks/teardown/drop_dead_feature_db.sql). There is exactly one feature source now: silver.
 
 _COLUMNS = """
           brand_id              string    NOT NULL,
@@ -113,40 +104,14 @@ def _latest_feature_from_silver(spark: SparkSession):
     )
 
 
-def _latest_feature_from_starrocks(spark: SparkSession):
-    """Read the live brain_feature.feature_customer_daily and pick the latest snapshot per customer
-    (row_number() over (partition by brand_id, brain_id order by snapshot_date desc) = 1) — the EXACT
-    'latest' the dbt gold_customer_scores selects."""
-    query = (
-        "SELECT brand_id, brain_id, currency_code, snapshot_date, lifetime_orders, "
-        "lifetime_value_minor, days_since_last_order FROM brain_feature.feature_customer_daily"
-    )
-    df = (
-        spark.read.format("jdbc")
-        .option("url", SR_JDBC_URL)
-        .option("user", SR_USER)
-        .option("password", SR_PASSWORD)
-        .option("driver", "com.mysql.cj.jdbc.Driver")
-        .option("query", query)
-        .load()
-    )
-    from pyspark.sql.window import Window  # local import — only needed for this path
-
-    w = Window.partitionBy("brand_id", "brain_id").orderBy(F.col("snapshot_date").desc())
-    return df.withColumn("_rn", F.row_number().over(w)).where(F.col("_rn") == 1).drop("_rn")
-
-
 def materialize(spark: SparkSession) -> str:
     fqtn = create_iceberg_table(
         spark, GOLD_NAMESPACE, TABLE_NAME, _COLUMNS, partitioned_by="bucket(8, brand_id)"
     )
 
-    if FEATURE_SOURCE == "starrocks":
-        print("[gold_customer_scores] feature source = StarRocks brain_feature.feature_customer_daily (JDBC)", flush=True)
-        latest = _latest_feature_from_starrocks(spark)
-    else:
-        print("[gold_customer_scores] feature source = Iceberg silver_customer (inline feature fold)", flush=True)
-        latest = _latest_feature_from_silver(spark)
+    # V4: the sole feature source is the runtime fold from the Iceberg silver_customer spine.
+    print("[gold_customer_scores] feature source = Iceberg silver_customer (runtime feature fold)", flush=True)
+    latest = _latest_feature_from_silver(spark)
 
     d = F.col("days_since_last_order")
     lo = F.col("lifetime_orders")

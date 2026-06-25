@@ -1,14 +1,15 @@
 /**
  * parity-oracle/reference.ts — INDEPENDENT reference recompute for realized revenue.
  *
- * ── MEDALLION RE-POINT (Phase G) ─────────────────────────────────────────────
+ * ── MEDALLION RE-POINT (Phase G) → V4 SERVING (Phase 4/6b) ───────────────────
  * The realized-revenue READ path moved off the PG `realized_revenue_ledger`
- * (dropped as a dashboard source) onto the lakehouse gold ledger
- * `brain_gold.gold_revenue_ledger`, reached over the StarRocks MySQL wire
- * (mysql2). The engine (computeRealizedRevenue / computeProvisionalRevenue) now
- * reads gold via withSilverBrand. So this independent reference reads the SAME
- * gold table — but with a STRUCTURALLY DIFFERENT predicate path, preserving the
- * non-tautological gate.
+ * (dropped as a dashboard source) onto the lakehouse gold ledger. In Brain V4
+ * the dbt-internal StarRocks DB `brain_gold` is RETIRED — Gold lives in the
+ * Iceberg catalog (brain_gold_local) and is SERVED to readers by the StarRocks
+ * async materialized view `brain_serving.mv_gold_revenue_ledger`. This
+ * independent reference therefore reads the SAME serving MV the engine
+ * (computeRealizedRevenue / computeProvisionalRevenue) reads — but with a
+ * STRUCTURALLY DIFFERENT predicate path, preserving the non-tautological gate.
  *
  * CRITICAL INVARIANT (D-2, non-tautological parity gate):
  *   This helper MUST NOT import @brain/metric-engine.
@@ -67,13 +68,13 @@ interface GoldRevenueRow {
  * getIndependentReferenceRevenue — INDEPENDENT recompute of realized revenue
  * from the lakehouse gold ledger.
  *
- * Runs the reference SQL directly against brain_gold.gold_revenue_ledger with a
+ * Runs the reference SQL directly against brain_serving.mv_gold_revenue_ledger with a
  * structurally different predicate than the engine's realized path. Returns
  * Map<currency_code, bigint>.
  *
  * REFERENCE SQL:
  *   SELECT currency_code, SUM(amount_minor) AS amount_minor
- *   FROM brain_gold.gold_revenue_ledger
+ *   FROM brain_serving.mv_gold_revenue_ledger
  *   WHERE brand_id = ?
  *     AND CAST(economic_effective_at AS DATE) <= ?
  *     AND recognition_label = 'finalized'
@@ -95,7 +96,7 @@ export async function getIndependentReferenceRevenue(
   //   - Uses GROUP BY currency_code (not a scalar SUM + MAX(currency_code) single row)
   const [rows] = await db.query(
     `SELECT currency_code, COALESCE(SUM(amount_minor), 0) AS amount_minor
-       FROM brain_gold.gold_revenue_ledger
+       FROM brain_serving.mv_gold_revenue_ledger
       WHERE brand_id = ?
         AND CAST(economic_effective_at AS DATE) <= ?
         AND recognition_label = 'finalized'
@@ -123,7 +124,7 @@ export async function getIndependentReferenceRevenue(
  *
  * REFERENCE SQL:
  *   SELECT currency_code, SUM(amount_minor) AS amount_minor
- *   FROM brain_gold.gold_revenue_ledger
+ *   FROM brain_serving.mv_gold_revenue_ledger
  *   WHERE brand_id = ?
  *     AND CAST(economic_effective_at AS DATE) <= ?
  *     AND event_type = 'provisional_recognition'
@@ -142,7 +143,7 @@ export async function getIndependentReferenceProvisional(
 ): Promise<Map<string, bigint>> {
   const [rows] = await db.query(
     `SELECT currency_code, COALESCE(SUM(amount_minor), 0) AS amount_minor
-       FROM brain_gold.gold_revenue_ledger
+       FROM brain_serving.mv_gold_revenue_ledger
       WHERE brand_id = ?
         AND CAST(economic_effective_at AS DATE) <= ?
         AND event_type = 'provisional_recognition'

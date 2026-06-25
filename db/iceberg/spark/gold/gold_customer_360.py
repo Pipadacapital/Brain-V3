@@ -186,10 +186,30 @@ def materialize(spark: SparkSession) -> str:
 
 
 def main() -> None:
+    # Structured per-job observability (additive) — one machine-parseable spark_job line carrying
+    # V4_CORRELATION_ID when the v4-refresh-loop set it; the legacy human DONE line is unchanged.
+    import os
+    import sys
+    import time
+
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from job_log import emit_job_log  # noqa: E402
+
     spark = build_spark("gold-customer-360")
     spark.sparkContext.setLogLevel("WARN")
-    materialize(spark)
-    print("[gold_customer_360] DONE — Iceberg Customer-360 serving mart populated ✓", flush=True)
+    started = time.monotonic()
+    try:
+        fqtn = materialize(spark)
+        emit_job_log(
+            "gold-customer-360", status="ok", fqtn=fqtn,
+            rows_out=spark.table(fqtn).count(),
+            duration_ms=int((time.monotonic() - started) * 1000),
+        )
+        print("[gold_customer_360] DONE — Iceberg Customer-360 serving mart populated ✓", flush=True)
+    except Exception as exc:  # noqa: BLE001
+        emit_job_log("gold-customer-360", status="fail",
+                     duration_ms=int((time.monotonic() - started) * 1000), error=str(exc))
+        raise
 
 
 if __name__ == "__main__":

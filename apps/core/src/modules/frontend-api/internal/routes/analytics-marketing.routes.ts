@@ -18,7 +18,7 @@ import {
   blendToPrimary,
   roasFromMinor,
 } from '../../../analytics/index.js';
-import { getDataQualitySummary } from '../../../data-quality/index.js';
+import { getDataQualitySummary, getServingFreshness } from '../../../data-quality/index.js';
 import type { DataQualitySummary as ContractDataQualitySummary } from '@brain/contracts';
 import type { AdPlatform, TimeGrain } from '@brain/metric-engine';
 import type { BffDeps } from './_shared.js';
@@ -263,6 +263,29 @@ export function registerAnalyticsMarketingRoutes(fastify: FastifyInstance, deps:
 
       const result: ContractDataQualitySummary = await getDataQualitySummary(auth.brandId, { pool: rawPool, srPool });
 
+      return reply.send({ request_id: requestId, data: result });
+    },
+  );
+
+  /**
+   * GET /api/v1/data-quality/serving-freshness  (V4-pipeline observability)
+   *
+   * Returns the V4 SERVING-TIER freshness + per-mart row counts: for each brain_serving.mv_* the row
+   * count, last-refresh timestamp + age, refresh state, and a text freshness verdict
+   * (fresh|stale|failed|never), plus a worst-of surface status. The data-health surface reads this to
+   * answer "is the analytics serving tier fresh, and which marts have data".
+   *
+   * BRAND-AGNOSTIC by design: this is cross-brand PIPELINE health read from StarRocks information_schema
+   * metadata — there is NO tenant row to scope (no business rows, no brand_id column), so it is gated on
+   * a valid session (bffProtectedPreHandler) but NOT brand-scoped. See the query header.
+   * Honest no_data (D-2): state='no_data' when StarRocks is down or brain_serving has no MVs.
+   */
+  fastify.get(
+    '/api/v1/data-quality/serving-freshness',
+    { preHandler: [bffProtectedPreHandler] },
+    async (_request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const result = await getServingFreshness({ srPool });
       return reply.send({ request_id: requestId, data: result });
     },
   );

@@ -1,0 +1,52 @@
+-- ============================================================================================
+-- BRAIN V4 — TEARDOWN: DROP the dead StarRocks feature-precompute DB `brain_feature`
+-- ============================================================================================
+--
+--   ████  DESTRUCTIVE DDL — READ THE GUARD BLOCK BELOW BEFORE RUNNING  ████
+--
+-- WHAT THIS DROPS
+--   • brain_feature  — held exactly one table, `feature_customer_daily`: the dbt-era daily
+--     point-in-time customer feature snapshot (RFM inputs) that gold_customer_scores used to read.
+--
+-- WHY IT IS DEAD (safe to drop)
+--   Brain V4 makes features RUNTIME: there is NO permanent feature-precompute table. The dbt model
+--   that WROTE brain_feature.feature_customer_daily (db/dbt/models/marts/feature_customer_daily.sql)
+--   was removed with the rest of dbt (Phase 6b — db/dbt no longer exists). The only remaining READER,
+--   the FEATURE_SOURCE=starrocks branch in db/iceberg/spark/gold/gold_customer_scores.py, was deleted:
+--   that job now folds the feature snapshot INLINE from the Iceberg silver_customer spine at run time
+--   (the V4 rule — features computed at runtime from Silver, never read from a precompute DB).
+--   Verified before authoring this teardown:
+--     • db/dbt directory is GONE; feature_customer_daily.sql exists nowhere in the tree.
+--     • No live writer to brain_feature / feature_customer_daily anywhere in apps/, packages/, db/, tools/.
+--     • The only reader was removed (gold_customer_scores.py — runtime fold is now the sole path).
+--     • The live table held 0 rows (no data is lost).
+--
+-- ────────────────────────────────────────────────────────────────────────────────────────────
+--   GUARD — DO **NOT** DROP / ALTER ANY OF THE FOLLOWING. They are the V4 system of record + serving:
+--     • brain_bronze_local / brain_silver_local / brain_gold_local  — EXTERNAL Iceberg catalogs (the SoR).
+--     • brain_serving                                               — the mv_* serving layer over Iceberg.
+--     • brain_ops                                                   — app-owned operational StarRocks state.
+--   ONLY the dead `brain_feature` database is retired by this file.
+-- ────────────────────────────────────────────────────────────────────────────────────────────
+--
+--   PRE-DROP CHECK (verify, do not assume):
+--     SHOW TABLES FROM brain_feature;                      -- expect ONLY feature_customer_daily
+--     SELECT COUNT(*) FROM brain_feature.feature_customer_daily;  -- expect 0 (no live writer)
+--
+--   REVERSIBILITY: brain_feature is fully RE-DERIVABLE — the customer feature snapshot is a deterministic
+--   projection of silver_customer (snapshot_date = current_date(); days_since_last_order =
+--   datediff(current_date(), last_seen_at::date); lifetime_orders / lifetime_value_minor carried
+--   verbatim). To restore the DB, recreate it and repopulate from the Iceberg silver_customer spine
+--   (the same formulae gold_customer_scores._latest_feature_from_silver folds at runtime). No source
+--   data is lost — features are derived, never a system of record.
+--
+--   APPLY (loud, explicit — never folded into an automated migration):
+--     docker exec -i brainv3-starrocks-1 mysql -h127.0.0.1 -P9030 -uroot < db/starrocks/teardown/drop_dead_feature_db.sql
+-- ============================================================================================
+
+-- DROP the dead feature-precompute DB (V4 features are runtime; the dbt writer + StarRocks reader are gone).
+DROP DATABASE IF EXISTS brain_feature;
+
+-- POST-DROP EXPECTATION (verify by hand):
+--   SHOW DATABASES;  -- MUST still list: brain_serving, brain_ops (+ the external brain_*_local catalogs).
+--                    -- MUST NOT list:  brain_feature, brain_gold, brain_silver.

@@ -38,6 +38,34 @@ missed/retried run is safe (`concurrencyPolicy: Forbid` + `startingDeadlineSecon
    digest, so a disabled job is simply skipped). Until enabled, the marts refresh on the nightly dbt
    build — one cycle behind the ledger. Mirrors `make attribution-gold-refresh`.
 
+## Brain V4 Spark Silver/Gold + mv refresh (`templates/spark-v4.yaml`)
+
+Under **Brain V4** Spark is the sole compute and dbt is gone: the Iceberg medallion
+(`brain_bronze`/`brain_silver`/`brain_gold`) is built by Spark jobs and StarRocks `brain_serving.mv_*`
+serve. These three CronWorkflows are the V4 replacement for the dbt recognition/attribution crons above —
+they `spark-submit` the mart jobs the Spark image now **carries** (`db/iceberg/spark/{silver,gold}/*.py`,
+COPYed into `/opt/brain` by the Dockerfile) and then SYNC-refresh the serving MVs. They mirror the
+`spark-bronze.yaml` pattern (one `spark-submit --master local[*]` pod, no Spark Operator/cluster).
+
+| Job | Schedule (IST) | Image | Purpose |
+|---|---|---|---|
+| v4-silver | `5 * * * *` hourly :05 | spark-v4 | `silver_order_state` (brain_id spine) + the rest of Silver |
+| v4-gold | `25 * * * *` hourly :25 | spark-v4 | `gold_revenue_ledger` → attribution → customer/gap/executive marts |
+| v4-mv-refresh | `40 * * * *` hourly :40 | mysql-client | `REFRESH MATERIALIZED VIEW brain_serving.mv_* WITH SYNC MODE` |
+
+**Dependency order** is enforced by staggered schedule + idempotency (not an Argo DAG), and interleaves
+with the node `.Values.jobs`: `identity-export` (:02) → **v4-silver** (:05) → `journey-stitch-from-identity`
++ `journey-stitch-export` (:15/:16) → **v4-gold** (:25) → **v4-mv-refresh** (:40). That is the full V4
+attribution chain — identity → order-state → silver → stitch → gold → mv refresh — so the customer +
+attribution marts populate instead of computing 0. The dev mirror of this exact chain is
+`tools/dev/v4-refresh-loop.sh` (`pnpm dev:v4-refresh`).
+
+**GATED OFF by default** (`sparkV4.enabled: false`): the same external gate as `sparkBronze` — flip
+`sparkV4.enabled: true` per env once CI publishes + digest-pins the V4 spark image (the template
+fail-closes on a missing digest, B3) and a cluster is ready. Each `spark-submit` runs an idempotent
+Iceberg MERGE wrapped in a bounded in-pod retry (`SPARK_MAX_RETRIES`, via `_retry.sh`) on top of the
+Argo `backoffLimit` — a transient blip is safe to re-run.
+
 ### The dbt-runner image (`db/dbt/Dockerfile`)
 
 The runtime for scheduled dbt rebuilds (Node job images have no dbt/StarRocks-catalog runtime). Bundles

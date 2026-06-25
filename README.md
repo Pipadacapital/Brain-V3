@@ -10,8 +10,8 @@ the structure here matches **doc 05 §2–§3**.
 - `packages/` — shared libs: contracts (Zod = source of truth), metric-engine, money,
   feature-flags, tenant-context, identity-core, audit, db, events, observability,
   ai-gateway-client, config, ui
-- `db/` — migrations · starrocks · iceberg · dbt   ·   `infra/` — terraform · helm · argocd
-- `tools/` — parity-oracle · eval · isolation-fuzz · seed   ·   `docs/` — adr · runbooks · playbooks · architecture
+- `db/` — migrations · starrocks (serving MVs + ops + teardown) · iceberg (Spark medallion)   ·   `infra/` — terraform · helm · argocd  _(Brain V4: dbt removed — Spark is sole compute)_
+- `tools/` — parity-oracle · eval · isolation-fuzz · seed · lint (v4-naming-guard)   ·   `docs/` — adr · runbooks · playbooks · architecture
 
 ## The two rules that keep it a *modular* monolith
 1. `apps/` may import `packages/`, never another `apps/`; `packages/` never import `apps/`.

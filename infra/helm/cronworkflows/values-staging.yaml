@@ -22,6 +22,14 @@ sparkBronze:
     tag: ""
     digest: ""
 
+# spark V4 Silver/Gold transform + mv refresh crons — same image as sparkBronze (the Dockerfile now
+# COPYs the V4 marts). GATED OFF by default; flip sparkV4.enabled once the V4 cluster + digest are ready.
+sparkV4:
+  image:
+    repository: REPLACE_WITH_ECR_REGISTRY/brain-spark-bronze-staging
+    tag: ""
+    digest: ""
+
 # The job pods read the same secret as the core/stream-worker deployments (DATABASE_URL,
 # BRAIN_APP_DATABASE_URL, STARROCKS_*). External Secrets ← AWS Secrets Manager.
 envSecretName: core-env

@@ -20,7 +20,15 @@ WORKDIR /opt/brain
 # Bronze writer/oracle/maintenance/inspector + the shared Iceberg base and the Silver/Gold
 # provisioner + medallion maintenance (V4 Phase 0, additive — the Silver/Gold seam jobs reuse).
 COPY bronze_materialize.py bronze_parity_check.py bronze_maintenance.py validate_bronze.py \
-     iceberg_base.py provision_silver_gold.py medallion_maintenance.py /opt/brain/
+     iceberg_base.py provision_silver_gold.py medallion_maintenance.py job_log.py /opt/brain/
+
+# V4 Spark Silver/Gold MART jobs + run scripts + the shared bounded-retry helper. Additive: the image
+# now CARRIES the transform marts so the V4 CronWorkflows (infra/helm/cronworkflows → spark-v4.yaml) can
+# spark-submit them in prod, mirroring the Bronze crons. The run-*.sh scripts source _retry.sh, so it is
+# copied alongside. (The compose dev path mounts the repo instead; this COPY is for the built image.)
+COPY _retry.sh /opt/brain/
+COPY silver/ /opt/brain/silver/
+COPY gold/   /opt/brain/gold/
 
 # Resolve + cache the runtime jars at build time, then place them on the default Spark classpath.
 # NOTE: `spark-submit --packages ... --version` prints the banner and exits BEFORE Ivy resolution —

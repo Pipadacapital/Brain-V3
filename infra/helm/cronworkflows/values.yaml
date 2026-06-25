@@ -94,6 +94,36 @@ sparkBronze:
     requests: { cpu: "1", memory: 2Gi }
     limits: { cpu: "2", memory: 4Gi }
 
+# Brain V4 Spark Silver/Gold transform + StarRocks mv_* refresh (templates/spark-v4.yaml). The V4
+# replacement for the dbt recognition/attribution crons below: Spark is sole compute, dbt is gone. Three
+# staggered CronWorkflows — v4-silver (:05) → v4-gold (:25) → v4-mv-refresh (:40) — that spark-submit the
+# mart jobs the spark image now CARRIES (db/iceberg/spark/{silver,gold}/*.py via the Dockerfile) and then
+# SYNC-refresh the serving MVs. The identity-export + journey-stitch node jobs (.Values.jobs) sequence
+# around them by schedule to complete the attribution chain (identity → order-state → silver → stitch →
+# gold → mv). GATED OFF by default — enabling needs the CI-built+digest-pinned V4 spark image (B3
+# fail-closed) + a cluster, the same external gate as sparkBronze. Flip enabled:true per env.
+sparkV4:
+  enabled: false
+  image:
+    repository: REPLACE_WITH_ECR_REGISTRY/brain-spark-bronze   # same image — Dockerfile now carries the V4 marts
+    tag: ""            # B3: digest preferred; CI populates at deploy (fail-closed in the template)
+    digest: ""
+    pullPolicy: IfNotPresent
+  # Small mysql client used ONLY by v4-mv-refresh to issue StarRocks REFRESH over the MySQL wire.
+  mysqlImage: "mysql:8.0"
+  silverSchedule: "5 * * * *"     # hourly :05 — order_state spine + the rest of Silver (after identity :02)
+  goldSchedule: "25 * * * *"      # hourly :25 — revenue → attribution → customer/gap/exec (after stitch :15/:16)
+  mvRefreshSchedule: "40 * * * *" # hourly :40 — SYNC-refresh every brain_serving mv_*
+  activeDeadlineSeconds: 2400     # 40 min per Silver/Gold build
+  driverMemory: "3g"              # < resources.limits.memory (non-heap overhead margin) — same as sparkBronze
+  sparkMaxRetries: "1"            # bounded in-pod retry per spark-submit (idempotent MERGE); + Argo backoffLimit
+  # Non-secret config. Secrets (ICEBERG_REST_URI/Glue, AWS_*, STARROCKS_*, NEO4J_*) come from envSecretName.
+  env:
+    - { name: ICEBERG_CATALOG, value: "rest" }
+  resources:
+    requests: { cpu: "1", memory: 2Gi }
+    limits: { cpu: "2", memory: 4Gi }
+
 # The scheduled jobs. `image` omitted → the default (core) image.
 #
 # ── THE ATTRIBUTION CHAIN (post-medallion) — ordered by staggered schedule + idempotency (NOT an

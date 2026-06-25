@@ -44,6 +44,12 @@ from iceberg_base import (  # noqa: E402
     build_spark,
     create_iceberg_table,
 )
+from job_log import JobMetrics, emit_job_log  # noqa: E402
+
+# The metrics bag for the Gold job currently running through run_job(). merge_on_pk writes the
+# brand-AGNOSTIC merge_upserted count into it without changing any caller's build(spark) signature.
+# Module-level (one job per spark-submit process) — never shared across jobs.
+_ACTIVE_METRICS: JobMetrics | None = None
 
 # The Silver namespace these Gold jobs READ from (Iceberg-sole SoR, built Phase 1/1b).
 SILVER_NS = os.environ.get("SILVER_NAMESPACE", SILVER_NAMESPACE)
@@ -87,6 +93,16 @@ def merge_on_pk(spark: SparkSession, fqtn: str, staged: DataFrame, pk: list[str]
     """
     staged.createOrReplaceTempView("_gold_stage")
     on_clause = " AND ".join(f"t.{c} = s.{c}" for c in pk)
+    # Best-effort, brand-AGNOSTIC merge-upserted + rows_in signal for the structured job line. The Gold
+    # staged rollup is already 1 row per PK, so its count IS the set of PKs the MERGE inserts-or-updates
+    # AND the source-row signal for this recompute. No money/PII — counts only.
+    if _ACTIVE_METRICS is not None:
+        try:
+            staged_n = spark.sql("SELECT COUNT(*) AS n FROM _gold_stage").collect()[0]["n"]
+            _ACTIVE_METRICS.add_upserted(staged_n)
+            _ACTIVE_METRICS.add_rows_in(staged_n)
+        except Exception:  # noqa: BLE001 — observability must never break the merge
+            pass
     spark.sql(
         f"""
         MERGE INTO {fqtn} t
@@ -99,8 +115,27 @@ def merge_on_pk(spark: SparkSession, fqtn: str, staged: DataFrame, pk: list[str]
 
 
 def run_job(app_name: str, build_fn) -> None:
-    """Standard entrypoint: build a Spark session, run build_fn(spark), report the row count."""
+    """Standard entrypoint: build a Spark session, run build_fn(spark), emit ONE structured job line.
+
+    build_fn keeps its existing `(fqtn, rows_out) = build(spark)` contract — merge_upserted/rows_in are
+    captured transparently by merge_on_pk writing into the module-level _ACTIVE_METRICS bag set here.
+    ADDITIVE: the legacy "[job] DONE — N rows" line is still printed.
+    """
+    global _ACTIVE_METRICS
+    import time
+
     spark = build_spark(app_name)
     spark.sparkContext.setLogLevel("WARN")
-    fqtn, n = build_fn(spark)
-    print(f"[{app_name}] DONE — {fqtn} now has {n} rows", flush=True)
+    _ACTIVE_METRICS = JobMetrics()
+    started = time.monotonic()
+    try:
+        fqtn, n = build_fn(spark)
+        duration_ms = int((time.monotonic() - started) * 1000)
+        emit_job_log(app_name, status="ok", rows_out=n, metrics=_ACTIVE_METRICS, fqtn=fqtn, duration_ms=duration_ms)
+        print(f"[{app_name}] DONE — {fqtn} now has {n} rows", flush=True)
+    except Exception as exc:  # noqa: BLE001 — emit a fail line, then re-raise (must still fail loudly)
+        duration_ms = int((time.monotonic() - started) * 1000)
+        emit_job_log(app_name, status="fail", metrics=_ACTIVE_METRICS, duration_ms=duration_ms, error=str(exc))
+        raise
+    finally:
+        _ACTIVE_METRICS = None

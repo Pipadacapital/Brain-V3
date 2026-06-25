@@ -48,6 +48,7 @@ run_job() {
     -e AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:-brain}" \
     -e AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY:-brainbrain}" \
     -e AWS_REGION="${AWS_REGION:-us-east-1}" \
+    -e V4_CORRELATION_ID="${V4_CORRELATION_ID:-}" \
     -e SILVER_PG_JDBC_URL="${SILVER_PG_JDBC_URL:-jdbc:postgresql://postgres:5432/brain}" \
     -e SILVER_PG_USER="${SILVER_PG_USER:-brain}" \
     -e SILVER_PG_PASSWORD="${SILVER_PG_PASSWORD:-brain}" \

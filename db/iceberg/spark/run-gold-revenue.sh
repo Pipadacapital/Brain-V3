@@ -28,6 +28,9 @@ REDPANDA_CONTAINER="${REDPANDA_CONTAINER:-brainv3-redpanda-1}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WHICH="${1:-all}"
 
+# Bounded retry around the (idempotent MERGE) spark-submit — a transient blip is safe to re-run.
+source "${SCRIPT_DIR}/_retry.sh"
+
 PACKAGES="org.apache.iceberg:iceberg-spark-runtime-3.5_${SCALA}:${ICEBERG_VERSION}"
 PACKAGES="${PACKAGES},org.apache.iceberg:iceberg-aws-bundle:${ICEBERG_VERSION}"
 PACKAGES="${PACKAGES},org.postgresql:postgresql:${PG_JDBC_VERSION}"
@@ -38,6 +41,7 @@ docker volume create brain-spark-ivy >/dev/null
 run_job() {
   local script="$1"
   echo "[gold-revenue] >>> ${script}"
+  spark_retry "gold-revenue/${script}" \
   docker run --rm \
     --network "container:${REDPANDA_CONTAINER}" \
     --user root \
@@ -53,6 +57,7 @@ run_job() {
     -e AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:-brain}" \
     -e AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY:-brainbrain}" \
     -e AWS_REGION="${AWS_REGION:-us-east-1}" \
+    -e V4_CORRELATION_ID="${V4_CORRELATION_ID:-}" \
     -e GOLD_PG_JDBC_URL="${GOLD_PG_JDBC_URL:-jdbc:postgresql://postgres:5432/brain}" \
     -e GOLD_PG_USER="${GOLD_PG_USER:-brain}" \
     -e GOLD_PG_PASSWORD="${GOLD_PG_PASSWORD:-brain}" \

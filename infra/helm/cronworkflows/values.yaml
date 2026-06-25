@@ -96,19 +96,25 @@ sparkBronze:
 
 # The scheduled jobs. `image` omitted → the default (core) image.
 #
-# ── THE ATTRIBUTION CHAIN — ordered by staggered schedule + idempotency (NOT an Argo DAG; matches
-#    this chart's one-container-per-CronWorkflow convention). Each step is idempotent, so the time
-#    gaps sequence them and a missed/retried run is safe (Forbid + startingDeadline):
-#      :00  revenue-finalization          prepaid recognized after horizon → finalization rows
+# ── THE ATTRIBUTION CHAIN (post-medallion) — ordered by staggered schedule + idempotency (NOT an
+#    Argo DAG; matches this chart's one-container-per-CronWorkflow convention). Each step is
+#    idempotent, so the time gaps sequence them and a missed/retried run is safe (Forbid +
+#    startingDeadline). MEDALLION REALIGNMENT: there is NO PG `revenue-finalization` cron and NO PG
+#    provisional ledger — recognition (incl. prepaid finalization after horizon + COD delivery/RTO)
+#    is now a dbt build FROM Bronze (silver_order_recognition → gold_revenue_ledger). payment_method
+#    drives the COD-vs-prepaid recognition branch entirely inside that dbt path (stg_order_events_
+#    bronze → silver_order_recognition), so the obsolete "persist payment_method on provisional"
+#    concern no longer exists. The live, scheduled chain is:
+#      :02  identity-export                Neo4j identity graph → silver_identity_link (StarRocks) so
+#                                          recognition resolves order brain_id. Runs BEFORE recognition.
+#      :05  recognition-refresh (dbt)      Bronze → silver_order_recognition → gold_revenue_ledger
+#                                          (the "finalization" step now). dbtRunnerImage.
 #      :15  journey-stitch-from-identity   identity links → connector_journey_stitch_map (the stitch)
 #      :30  attribution-reconcile          credit recognized orders to journeys (ALL 5 models incl.
 #                                          data_driven) + clawbacks
-#      (—)  gold-mart rebuild              `make attribution-gold-refresh` (dbt) materializes the credit
-#                                          ledger → brain_gold.gold_marketing_attribution that the
-#                                          dashboard serves. Built by the dbt-runner (CI/nightly today);
-#                                          an intraday Argo cron is the documented follow-up that needs
-#                                          a dbt-runner image (infra/observe/.../brain-slo.rules.yml).
-#                                          Until then the marts refresh on the nightly dbt build.
+#      :45  attribution-gold-refresh (dbt) materializes the credit ledger →
+#                                          brain_gold.gold_marketing_attribution that the dashboard
+#                                          serves. dbtRunnerImage (intraday cron, no longer a TODO).
 jobs:
   - name: recommendation-detectors
     schedule: "0 6 * * *"          # daily 06:00 IST — the Morning Brief

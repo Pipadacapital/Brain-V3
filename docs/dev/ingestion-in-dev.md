@@ -54,12 +54,12 @@ header shows a **"Live · updated Ns ago"** indicator driven by the real
 
 ## True webhook push (optional — needs a tunnel)
 
-To get sub-30s provider push in dev you must expose the collector
-(`apps/collector`, default port `3001`) on a public URL and register it with the
-provider:
+To get sub-30s provider push in dev you must expose **core** (`apps/core`, port
+`3001` — the connector webhook receivers live there) on a public URL and register
+it with the provider:
 
 ```bash
-pnpm dev:tunnel    # cloudflared quick tunnel over the local collector (best-effort)
+pnpm dev:tunnel    # cloudflared quick tunnel over CORE :3001 (connector webhooks)
 ```
 
 Then register the printed `https://…` URL as the provider webhook endpoint
@@ -67,6 +67,28 @@ Then register the printed `https://…` URL as the provider webhook endpoint
 not active** — the polling scheduler remains the only live path. `dev:tunnel`
 requires `cloudflared` on your PATH and is strictly optional; the scheduler ships
 and works without it.
+
+## Storefront pixel in dev (needs a SEPARATE tunnel → the collector)
+
+The browser pixel is a DIFFERENT surface: the storefront loads `/pixel.js` and
+POSTs `/collect` to the **collector** (`apps/collector`, port `8787`), not core.
+A real storefront can't reach `localhost`, so it needs a public tunnel pointed at
+:8787 and the URL wired into `PIXEL_INGEST_BASE_URL`:
+
+```bash
+pnpm dev:pixel-tunnel   # cloudflared → collector :8787, auto-writes PIXEL_INGEST_BASE_URL
+```
+
+Quick-tunnel URLs are **ephemeral** (a new URL each start). After (re)starting it:
+1. restart core + collector so they load the new `PIXEL_INGEST_BASE_URL`, then
+2. **Reinstall the pixel** in Brain (Settings → Pixel) so the Shopify ScriptTag's
+   `src` is re-pointed to the new URL — otherwise the storefront keeps loading the
+   OLD (dead) pixel URL and Brain receives nothing.
+
+Keep the tunnel process running; the URL holds only while `cloudflared` is up. For
+a URL that survives restarts, use a cloudflared **named tunnel** on a domain you
+control. NB: **ngrok's free tier won't work** — it serves a browser-warning
+interstitial instead of `pixel.js`, which a `<script>` tag can't bypass.
 
 ## What is guaranteed (and what isn't)
 

@@ -209,7 +209,183 @@ _SILVER_NEW_ENTITIES: List[MartSpec] = [
     ),
 ]
 
-MARTS: Dict[str, MartSpec] = {spec.name: spec for spec in (_GOLD + _SILVER + _SILVER_NEW_ENTITIES)}
+# ── GAP canonical Silver marts (Phase 1b, category/pixel coverage gap-fill) — parity status=NEW ──────
+# The matrix (docs/architecture/v4/_category-coverage-matrix.md §4) GAP tables: each connector category
+# AND the universal pixel must have a normalized canonical Silver. Like the Phase-1 new-entities, these
+# have NO dbt/StarRocks predecessor → the oracle SKIPs (current-mart-absent) until a baseline ever lands.
+_SILVER_GAP: List[MartSpec] = [
+    # MESSAGING gap (matrix §1, category='messaging' / WhatsApp+outbound): normalize the outbound
+    # send/delivery/read lifecycle into ONE canonical row per message. GRAIN = (brand_id, message_id);
+    # money = cost_minor (provider per-message price, bigint minor) + currency_code. recipient_hash is the
+    # identity-core subject_hash (hashed-PII only). DATA-THIN: no message.*.v1 in Bronze yet (0 rows).
+    MartSpec(
+        name="silver_message_send",
+        layer="silver",
+        pk=["brand_id", "message_id"],
+        money_columns=["cost_minor"],
+        current_schema="brain_silver",
+        provisional=True,
+    ),
+]
+
+# ── GAP pixel-engagement Silver marts (Phase 1b, GROUP pixel-engagement) — parity status=NEW ─────────
+# Two first-party-pixel gap-fill marts (matrix §2) with NO dbt/StarRocks predecessor → the oracle SKIPs
+# (current-mart-absent) until a baseline ever lands. Both are non-money grains keyed by the Bronze
+# idempotency key (brand_id, event_id) — row-identity parity only (money_columns=[]).
+_SILVER_GAP_PIXEL_ENGAGEMENT: List[MartSpec] = [
+    # silver_engagement_signal: 1 row per (brand_id, event_id) — the normalized UX-quality/engagement signal
+    # grain folded from rage.click/dead.click/scroll.depth/element.clicked. No money (a UX-quality marker).
+    MartSpec(
+        name="silver_engagement_signal",
+        layer="silver",
+        pk=["brand_id", "event_id"],
+        current_schema="brain_silver",
+        provisional=True,
+    ),
+    # silver_form_submission: 1 row per (brand_id, event_id) — the lead/conversion-feedback grain from
+    # form.submitted (STRUCTURAL metadata ONLY — NO raw field values / PII). No money.
+    MartSpec(
+        name="silver_form_submission",
+        layer="silver",
+        pk=["brand_id", "event_id"],
+        current_schema="brain_silver",
+        provisional=True,
+    ),
+]
+
+# ── GAP storefront-category Silver marts (Phase 1b, GROUP storefront gap-fill) — parity status=NEW ────
+# The matrix (docs/architecture/v4/_category-coverage-matrix.md §1, storefront) GAP tables built as
+# Spark→Iceberg jobs reading raw Bronze (silver_refund.py / silver_fulfillment.py / silver_product_variant.py
+# / silver_inventory_level.py), dual-run beside dbt brain_silver. NO dbt/StarRocks predecessor → the oracle
+# SKIPs (current-mart-absent) until a baseline ever lands. DATA-THIN: refund.*/fulfillment.recorded.v1/
+# product.upsert.v1 are not in Bronze yet (the resources are unsynced) → correct EMPTY tables today.
+_SILVER_GAP_STOREFRONT: List[MartSpec] = [
+    # refund normalizer (refund.recorded.v1 / refund.processed). Money = amount_minor (settled total) + currency_code.
+    MartSpec(
+        name="silver_refund",
+        layer="silver",
+        pk=["brand_id", "event_id"],
+        money_columns=["amount_minor"],
+        current_schema="brain_silver",
+        provisional=True,
+    ),
+    # fulfillment latest-state grain (fulfillment.recorded.v1). PK (brand_id, fulfillment_id); no money column.
+    MartSpec(
+        name="silver_fulfillment",
+        layer="silver",
+        pk=["brand_id", "fulfillment_id"],
+        current_schema="brain_silver",
+        provisional=True,
+    ),
+    # per-variant catalogue grain (product.upsert.v1 variants[] / woo flat). Money = price_minor + currency_code.
+    MartSpec(
+        name="silver_product_variant",
+        layer="silver",
+        pk=["brand_id", "product_id", "variant_id"],
+        money_columns=["price_minor"],
+        current_schema="brain_silver",
+        provisional=True,
+    ),
+    # point-in-time per-variant stock history (product.upsert.v1). PK (brand_id, product_id, variant_id, observed_at);
+    # no money — inventory_quantity is a count, not money.
+    MartSpec(
+        name="silver_inventory_level",
+        layer="silver",
+        pk=["brand_id", "product_id", "variant_id", "observed_at"],
+        current_schema="brain_silver",
+        provisional=True,
+    ),
+]
+
+# ── GAP pixel-behavior Silver marts (Phase 1b, GROUP pixel-behavior) — parity status=NEW ─────────────
+# The universal first-party-pixel BEHAVIOR grains the coverage matrix §2 flags as GAP. NO dbt/StarRocks
+# predecessor → the oracle SKIPs (current-mart-absent) until a baseline ever lands. All three are
+# event-grain keyed by the Bronze idempotency key (brand_id, event_id); behavior is impression/interaction
+# counting → NO money (page-view/search), EXCEPT the OPTIONAL cart line/total value_minor (bigint minor +
+# currency_code, populated only when a storefront emits cart value; NULL for Shopify cart-XHR).
+_SILVER_GAP_PIXEL_BEHAVIOR: List[MartSpec] = [
+    # silver_page_view: page.viewed / product.viewed / collection.viewed → behavior, funnel. No money.
+    MartSpec(
+        name="silver_page_view",
+        layer="silver",
+        pk=["brand_id", "event_id"],
+        current_schema="brain_silver",
+        provisional=True,
+    ),
+    # silver_cart_event: cart.* + coupon.applied → abandoned-cart, funnel. value_minor is OPTIONAL cart
+    # value (minor + currency_code; NULL when the storefront's cart payload carries no price).
+    MartSpec(
+        name="silver_cart_event",
+        layer="silver",
+        pk=["brand_id", "event_id"],
+        money_columns=["value_minor"],
+        current_schema="brain_silver",
+        provisional=True,
+    ),
+    # silver_search: search.submitted → behavior, merchandising. No money.
+    MartSpec(
+        name="silver_search",
+        layer="silver",
+        pk=["brand_id", "event_id"],
+        current_schema="brain_silver",
+        provisional=True,
+    ),
+]
+
+# ── GAP payments/logistics-category Silver marts (Phase 1b, GROUP payments/logistics) — parity status=NEW ─
+# The matrix (docs/architecture/v4/_category-coverage-matrix.md §1, payments/logistics) GAP tables built as
+# Spark→Iceberg jobs reading raw Bronze (silver_dispute.py / silver_cod_rto.py / silver_ad_account.py),
+# dual-run beside dbt brain_silver. NO dbt/StarRocks predecessor → the oracle SKIPs (current-mart-absent)
+# until a baseline ever lands. PK + money CONFIRMED against the built Spark jobs; verified live over current
+# Bronze: silver_cod_rto = 492 rows (COD orders ⨝ rto-predict ⨝ awb); silver_dispute / silver_ad_account =
+# correctly EMPTY (data-thin: no dispute/settlement events; spend.live.v1 carries no ad_account_id yet).
+_SILVER_GAP_PAYMENTS_LOGISTICS: List[MartSpec] = [
+    # chargeback/dispute normalizer (settlement.live.v1 entity_type='dispute' + standalone dispute.*).
+    # GRAIN (brand_id, event_id); money = amount_minor (POSITIVE chargeback amount; sign applied by
+    # consumers from dispute_direction) + currency_code.
+    MartSpec(
+        name="silver_dispute",
+        layer="silver",
+        pk=["brand_id", "event_id"],
+        money_columns=["amount_minor"],
+        current_schema="brain_silver",
+        provisional=True,
+    ),
+    # COD/RTO risk-and-outcome surface (cod order.live.v1 ⨝ gokwik.rto_predict.v1 ⨝ gokwik.awb_status.v1).
+    # GRAIN (brand_id, order_id); money = cod_amount_minor (at-risk COD cash) + currency_code.
+    MartSpec(
+        name="silver_cod_rto",
+        layer="silver",
+        pk=["brand_id", "order_id"],
+        money_columns=["cod_amount_minor"],
+        current_schema="brain_silver",
+        provisional=True,
+    ),
+    # ad-account DIMENSION (1 row per brand/platform/ad_account_id from spend.live.v1).
+    # GRAIN (brand_id, platform, ad_account_id); money = lifetime_spend_minor + currency_code.
+    MartSpec(
+        name="silver_ad_account",
+        layer="silver",
+        pk=["brand_id", "platform", "ad_account_id"],
+        money_columns=["lifetime_spend_minor"],
+        current_schema="brain_silver",
+        provisional=True,
+    ),
+]
+
+MARTS: Dict[str, MartSpec] = {
+    spec.name: spec
+    for spec in (
+        _GOLD
+        + _SILVER
+        + _SILVER_NEW_ENTITIES
+        + _SILVER_GAP
+        + _SILVER_GAP_PIXEL_ENGAGEMENT
+        + _SILVER_GAP_STOREFRONT
+        + _SILVER_GAP_PIXEL_BEHAVIOR
+        + _SILVER_GAP_PAYMENTS_LOGISTICS
+    )
+}
 
 
 def resolve_mart(name: str) -> MartSpec:

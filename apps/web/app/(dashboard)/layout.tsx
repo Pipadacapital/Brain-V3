@@ -5,8 +5,8 @@
  * Sidebar sections (Phase 1):
  *   OVERVIEW  → Dashboard
  *   ANALYTICS → Revenue, Orders (soon), Settlements (soon)
- *   DATA      → Connectors
- *   SETTINGS  → Brain Pixel, Members, Settings
+ *   DATA      → Connectors, Brain Pixel, Data Health, Data Quality
+ *   SETTINGS  → Members, Consent, Archived Brands, Settings
  *
  * feat-multi-brand (B4): BrandSwitcher is mounted in the sidebar below the logo,
  * above the nav links. It is always rendered even for single-brand users (MA-15).
@@ -127,6 +127,7 @@ const NAV_SECTIONS: NavSection[] = [
     title: 'DATA',
     items: [
       { href: '/settings/connectors', label: 'Connectors', icon: Plug },
+      { href: '/settings/pixel', label: 'Brain Pixel', icon: Zap },
       { href: '/data/health', label: 'Data Health', icon: Activity },
       { href: '/data/quality', label: 'Data Quality', icon: Gauge },
     ],
@@ -134,7 +135,6 @@ const NAV_SECTIONS: NavSection[] = [
   {
     title: 'SETTINGS',
     items: [
-      { href: '/settings/pixel', label: 'Brain Pixel', icon: Zap },
       { href: '/settings/members', label: 'Members', icon: Users },
       { href: '/settings/consent', label: 'Consent & Compliance', icon: ShieldCheck },
       { href: '/settings/archived-brands', label: 'Archived Brands', icon: Archive },

@@ -315,6 +315,35 @@ export class BffApiError extends Error {
     super(message);
     this.name = 'BffApiError';
   }
+
+  /** True for server-side (5xx) failures — the user can't fix these; they should just retry/contact support. */
+  get isServerError(): boolean {
+    return this.status >= 500;
+  }
+}
+
+/**
+ * userFacingMessage — the ONE place that turns any thrown error into a clean, customer-safe string.
+ *
+ * Goals (don't leak internals, don't show request IDs in the message, never a raw "Internal server
+ * error"): 4xx → the server's specific, actionable message (e.g. "Verify your email…"). 5xx / unknown
+ * → a friendly, reassuring generic line. The request_id is NOT appended here — it is support context,
+ * surfaced subtly by ErrorCard only for true server errors (see getSupportReference).
+ */
+export function userFacingMessage(error: unknown): string {
+  if (error instanceof BffApiError) {
+    if (error.isServerError || !error.message) {
+      return 'Something went wrong on our end. Please try again in a moment.';
+    }
+    return error.message;
+  }
+  if (error instanceof Error && error.message) return error.message;
+  return 'Something went wrong. Please try again.';
+}
+
+/** The request id to cite in support — ONLY for server errors (4xx are self-explanatory; no id shown). */
+export function getSupportReference(error: unknown): string | undefined {
+  return error instanceof BffApiError && error.isServerError ? error.requestId : undefined;
 }
 
 /**

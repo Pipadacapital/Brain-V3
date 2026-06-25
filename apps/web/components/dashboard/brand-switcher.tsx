@@ -24,7 +24,7 @@ import { Loader2, ChevronDown, Building2, Plus, CheckCircle2 } from 'lucide-reac
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
-import { brandApi, BffApiError } from '@/lib/api/client';
+import { brandApi, BffApiError, userFacingMessage } from '@/lib/api/client';
 import { useBrandSummary } from '@/lib/hooks/use-dashboard';
 import { DASHBOARD_QUERY_KEY } from '@/lib/hooks/use-dashboard';
 import { ANALYTICS_QUERY_KEY } from '@/lib/hooks/use-analytics';
@@ -111,7 +111,7 @@ export function BrandSwitcher() {
     } catch (err) {
       const msg =
         err instanceof BffApiError
-          ? `${err.message} (Request ID: ${err.requestId})`
+          ? userFacingMessage(err)
           : 'Could not switch brand. Please try again.';
       setSwitchError(msg);
       setSelectingId(null);

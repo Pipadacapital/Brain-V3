@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { Loader2, CheckCircle2, LayoutDashboard } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { sessionApi } from '@/lib/api/client';
-import { BffApiError } from '@/lib/api/client';
+import { BffApiError, userFacingMessage } from '@/lib/api/client';
 
 /**
  * Step 4 of 4 — Done.
@@ -27,7 +27,7 @@ export function OnboardingDoneStep() {
     } catch (err) {
       const msg =
         err instanceof BffApiError
-          ? `${err.message} (Request ID: ${err.requestId})`
+          ? userFacingMessage(err)
           : 'Could not complete setup. Please try again.';
       setError(msg);
       setIsPending(false);

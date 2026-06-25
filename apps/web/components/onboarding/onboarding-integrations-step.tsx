@@ -13,7 +13,7 @@ import { useConnectorList, useShopifyInstallUrl } from '@/lib/hooks/use-connecto
 import { toast } from '@/components/ui/toaster';
 import type { ConnectorListItem, ConnectorStatus } from '@/lib/api/types';
 import { cn } from '@/lib/utils';
-import { BffApiError } from '@/lib/api/client';
+import { BffApiError, userFacingMessage } from '@/lib/api/client';
 
 /**
  * Step 3 of 4 — Integration selection.
@@ -204,7 +204,7 @@ export function OnboardingIntegrationsStep() {
     } catch (err) {
       const msg =
         err instanceof BffApiError
-          ? `${err.message} (Request ID: ${err.requestId})`
+          ? userFacingMessage(err)
           : 'Could not save progress. Please try again.';
       setAdvanceError(msg);
       setIsAdvancing(false);

@@ -45,7 +45,7 @@ import {
 } from '@/components/ui/select';
 import { ErrorCard } from '@/components/ui/error-card';
 import { toast } from '@/components/ui/toaster';
-import { brandApi, BffApiError } from '@/lib/api/client';
+import { brandApi, BffApiError, userFacingMessage } from '@/lib/api/client';
 import { DASHBOARD_QUERY_KEY } from '@/lib/hooks/use-dashboard';
 import { createBrandSchema, type CreateBrandFormValues } from '@/lib/api/schemas';
 
@@ -177,7 +177,7 @@ export function DashboardCreateBrandDialog({ open, onOpenChange }: DashboardCrea
     } catch (err) {
       const msg =
         err instanceof BffApiError
-          ? `${err.message} (Request ID: ${err.requestId})`
+          ? userFacingMessage(err)
           : 'Could not create brand. Please try again.';
       setSubmitError(msg);
       setIsPending(false);

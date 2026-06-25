@@ -50,7 +50,7 @@ import { ErrorCard } from '@/components/ui/error-card';
 import { useMarketplace, useConnectConnector, useDisconnectConnector, useActivateAdAccount } from '@/lib/hooks/use-connectors';
 import { useEntitlements } from '@/lib/hooks/use-entitlements';
 import { useEmailVerified } from '@/lib/hooks/use-auth';
-import { BffApiError } from '@/lib/api/client';
+import { BffApiError, userFacingMessage } from '@/lib/api/client';
 import { toast } from '@/components/ui/toaster';
 import type { MarketplaceTile, MarketplaceTileInstance, ConnectorCategory, HealthState, SafetyRating } from '@/lib/api/types';
 import { cn } from '@/lib/utils';
@@ -233,7 +233,7 @@ function ConnectorTile({ tile, readinessLock }: { tile: MarketplaceTile; readine
       });
       return;
     }
-    const msg = err instanceof BffApiError ? err.message : 'Could not start connection.';
+    const msg = err instanceof BffApiError ? userFacingMessage(err) : 'Could not start connection.';
     toast({ title: 'Connection failed', description: msg, variant: 'destructive' });
   }
 
@@ -274,7 +274,7 @@ function ConnectorTile({ tile, readinessLock }: { tile: MarketplaceTile; readine
             }
           },
           onError: (err) => {
-            const msg = err instanceof BffApiError ? err.message : `Could not connect ${tile.display_name}. Check your credentials and try again.`;
+            const msg = err instanceof BffApiError ? userFacingMessage(err) : `Could not connect ${tile.display_name}. Check your credentials and try again.`;
             toast({ title: 'Connection failed', description: msg, variant: 'destructive' });
           },
         },

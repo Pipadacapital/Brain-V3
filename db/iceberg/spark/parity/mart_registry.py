@@ -47,60 +47,113 @@ _GOLD: List[MartSpec] = [
         money_columns=["credited_revenue_minor", "realized_revenue_minor"],
         current_schema="brain_gold",
     ),
-    # ⚠️ HIGH-RISK money marts (report 08 §3.3) — PK/money provisional until the Phase-2 Spark job lands.
+    # ── GROUP revenue (Phase 2 Spark Gold, dual-run) — PK + money CONFIRMED against the built Spark jobs
+    # (db/iceberg/spark/gold/gold_revenue_ledger.py / gold_revenue_analytics.py) AND the live StarRocks
+    # DESC of the dbt marts (db/dbt/models/marts/gold_revenue_{ledger,analytics}.sql). ──────────────
+    # gold_revenue_ledger: the realized-revenue RECOGNITION ledger. GRAIN = (brand_id, ledger_event_id) —
+    # the deterministic sha2 ledger id (NOT order_id; one order has up to 6 recognition events). MONEY =
+    # amount_minor (signed minor units) + fee_minor (always 0 from silver_order_recognition), paired with
+    # currency_code on-row. dbt source = silver_order_recognition (a VIEW → no Iceberg table; the Spark job
+    # folds the SAME recognition chain from Iceberg Bronze).
     MartSpec(
         name="gold_revenue_ledger",
         layer="gold",
-        pk=["brand_id", "order_id"],
-        money_columns=["realized_revenue_minor"],
+        pk=["brand_id", "ledger_event_id"],
+        money_columns=["amount_minor", "fee_minor"],
         current_schema="brain_gold",
-        provisional=True,
     ),
+    # gold_revenue_analytics: per-month × lifecycle × currency realized-revenue rollup over silver_order_state.
+    # GRAIN = (brand_id, period_month, lifecycle_state, currency_code). MONEY = realized_value_minor
+    # (signed minor units, Σ of order_value_minor) — currency_code is IN the PK so the per-(brand,currency)
+    # Σ check groups by the natural grain.
     MartSpec(
         name="gold_revenue_analytics",
         layer="gold",
-        pk=["brand_id", "period"],
-        money_columns=["realized_revenue_minor"],
+        pk=["brand_id", "period_month", "lifecycle_state", "currency_code"],
+        money_columns=["realized_value_minor"],
         current_schema="brain_gold",
-        provisional=True,
     ),
+    # CONFIRMED (Phase 2, GROUP attribution) against the live StarRocks VIEW definition + the Spark mart
+    # (db/iceberg/spark/gold/gold_marketing_attribution.py): gold_marketing_attribution is a dbt VIEW over
+    # gold_attribution_credit → SAME grain/PK (brand_id, credit_id) and the SAME signed minor-unit money
+    # cols (credited_revenue_minor, realized_revenue_minor). The earlier provisional channel/campaign/period
+    # PK + attributed_revenue_minor/spend_minor were a wrong guess — that shape never existed; the view is
+    # the credit-ledger projection (one row per credit_id, NOT a per-channel/campaign rollup).
     MartSpec(
         name="gold_marketing_attribution",
         layer="gold",
-        pk=["brand_id", "channel", "campaign_id", "period"],
-        money_columns=["attributed_revenue_minor", "spend_minor"],
+        pk=["brand_id", "credit_id"],
+        money_columns=["credited_revenue_minor", "realized_revenue_minor"],
         current_schema="brain_gold",
-        provisional=True,
     ),
+    # CONFIRMED (Phase 2, GROUP attribution) against db/dbt/models/marts/gold_attribution_paths.sql + the
+    # live StarRocks DESC brain_gold.gold_attribution_paths + the Spark mart
+    # (db/iceberg/spark/gold/gold_attribution_paths.py): PATH grain PK (brand_id, brain_anon_id,
+    # stitched_order_id); NO money column (the path is not monetary — revenue joins at read via
+    # stitched_order_id → gold_revenue_ledger). Row-identity parity only. The earlier provisional
+    # (brand_id, path_id) + attributed_revenue_minor were a wrong guess — there is no path_id and no money
+    # column on this mart.
     MartSpec(
         name="gold_attribution_paths",
         layer="gold",
-        pk=["brand_id", "path_id"],
-        money_columns=["attributed_revenue_minor"],
+        pk=["brand_id", "brain_anon_id", "stitched_order_id"],
         current_schema="brain_gold",
-        provisional=True,
     ),
+    # CONFIRMED (Phase 2, GROUP customer) against db/dbt/models/marts/gold_customer_360.sql + the live
+    # StarRocks DESC brain_gold.gold_customer_360: PK (brand_id, brain_id); money = lifetime_value_minor
+    # (bigint minor + currency_code) — carried verbatim from the silver_customer spine (the 360 mart is a
+    # denormalized JOIN, not a money computation). The earlier ltv_minor/total_revenue_minor were a
+    # provisional guess; the real dbt model emits lifetime_value_minor only.
     MartSpec(
         name="gold_customer_360",
         layer="gold",
         pk=["brand_id", "brain_id"],
-        money_columns=["ltv_minor", "total_revenue_minor"],
+        money_columns=["lifetime_value_minor"],
         current_schema="brain_gold",
-        provisional=True,
     ),
+    # CONFIRMED (Phase 2, GROUP executive+cac) against db/dbt/models/marts/gold_cac.sql + the live
+    # StarRocks DESC brain_gold.gold_cac: GRAIN = (brand_id, acquisition_month, currency_code);
+    # money = acquisition_spend_minor (bigint minor) + currency_code. (The earlier provisional PK
+    # channel/period + cac_minor/spend_minor predated the build — gold_cac has NO channel column and the
+    # CAC RATIO is NON-additive / derived at read by the metric-engine, never stored: there is no
+    # cac_minor column. The only money column is acquisition_spend_minor.)
     MartSpec(
         name="gold_cac",
         layer="gold",
-        pk=["brand_id", "channel", "period"],
-        money_columns=["cac_minor", "spend_minor"],
+        pk=["brand_id", "acquisition_month", "currency_code"],
+        money_columns=["acquisition_spend_minor"],
         current_schema="brain_gold",
-        provisional=True,
     ),
-    # Non-money Gold marts (PR-2.1) — row-identity parity only.
-    MartSpec(name="gold_customer_scores", layer="gold", pk=["brand_id", "brain_id"], current_schema="brain_gold", provisional=True),
-    MartSpec(name="gold_customer_segments", layer="gold", pk=["brand_id", "brain_id"], current_schema="brain_gold", provisional=True),
-    MartSpec(name="gold_cohorts", layer="gold", pk=["brand_id", "cohort_month"], current_schema="brain_gold", provisional=True),
-    MartSpec(name="gold_executive_metrics", layer="gold", pk=["brand_id", "metric_date"], current_schema="brain_gold", provisional=True),
+    # CONFIRMED (Phase 2, GROUP customer) against the dbt models + the live StarRocks DESCs:
+    #   gold_customer_scores   PK (brand_id, brain_id); ROW-IDENTITY only — the lifetime_value_minor field
+    #                          is descriptive, not a money-Σ column on a per-customer score grain → money_columns=[].
+    #   gold_customer_segments PK (brand_id, SEGMENT) [NOT brain_id — the dbt model GROUPs by brand+segment].
+    #                          ROW-IDENTITY only (money_columns=[]): segment_value_minor IS a bigint minor Σ,
+    #                          but the dbt segment grain carries NO currency_code column (it blends currencies
+    #                          into one per-(brand,segment) sum). The oracle's money path REQUIRES a sibling
+    #                          currency_code (it groups + SELECTs by it), so a money_columns entry here would
+    #                          FAIL with "Column 'currency_code' cannot be resolved" — not a real parity diff,
+    #                          a harness assumption. Registered row-identity-only; the segment_value_minor Σ is
+    #                          verified out-of-band (the build's MERGE log) and reconciles by construction (a
+    #                          pure additive sum carried verbatim from silver_customer.lifetime_value_minor).
+    #   gold_cohorts           PK (brand_id, cohort_month, currency_code) [StarRocks PK]; money =
+    #                          cohort_value_minor (Σ lifetime_value_minor per acquisition month, bigint minor)
+    #                          + currency_code (max() per cohort — the dbt groups by brand+month only).
+    MartSpec(name="gold_customer_scores", layer="gold", pk=["brand_id", "brain_id"], current_schema="brain_gold"),
+    MartSpec(name="gold_customer_segments", layer="gold", pk=["brand_id", "segment"], current_schema="brain_gold"),
+    MartSpec(name="gold_cohorts", layer="gold", pk=["brand_id", "cohort_month", "currency_code"], money_columns=["cohort_value_minor"], current_schema="brain_gold"),
+    # CONFIRMED (Phase 2, GROUP executive+cac) against db/dbt/models/marts/gold_executive_metrics.sql +
+    # the live StarRocks DESC brain_gold.gold_executive_metrics: GRAIN = (brand_id, currency_code) — one
+    # additive-KPI rollup row per brand×currency; money = realized_value_minor (Σ order_value_minor, bigint
+    # minor) + currency_code. (The earlier provisional PK metric_date was wrong — this mart is NOT
+    # date-grained; it is the current brand×currency executive KPI rollup.)
+    MartSpec(
+        name="gold_executive_metrics",
+        layer="gold",
+        pk=["brand_id", "currency_code"],
+        money_columns=["realized_value_minor"],
+        current_schema="brain_gold",
+    ),
 ]
 
 # ── Silver entity marts (Phase 1) — row-identity parity keyed by (brand_id, entity_id) ────────────
@@ -121,6 +174,13 @@ _SILVER: List[MartSpec] = [
     MartSpec(name="silver_order_state", layer="silver", pk=["brand_id", "order_id"], money_columns=["order_value_minor"], current_schema="brain_silver"),
     MartSpec(name="silver_order_line", layer="silver", pk=["brand_id", "order_id", "line_index"], money_columns=["unit_price_minor", "line_total_minor", "line_discount_minor"], current_schema="brain_silver"),
     MartSpec(name="silver_product", layer="silver", pk=["brand_id", "product_key", "currency_code"], money_columns=["gross_revenue_minor", "discount_minor"], current_schema="brain_silver"),
+    # CONFIRMED (Phase 2, GROUP executive+cac) against db/dbt/models/marts/snap_order_state.sql + the live
+    # StarRocks DESC brain_silver.snap_order_state: the daily order-state SCD snapshot. GRAIN/PK =
+    # (brand_id, order_id, snapshot_date); money = order_value_minor (carried verbatim, bigint minor) +
+    # currency_code. It is a brain_SILVER table (the dbt model is schema='brain_silver'), not Gold.
+    # PARITY CAVEAT: snapshot_date = the RUN date on both sides → the Spark + dbt jobs must run the SAME
+    # calendar day for like-for-like rows (the oracle keys on the full PK incl. snapshot_date).
+    MartSpec(name="snap_order_state", layer="silver", pk=["brand_id", "order_id", "snapshot_date"], money_columns=["order_value_minor"], current_schema="brain_silver"),
     # CONFIRMED (Phase 1, GROUP touchpoint+sessions) against the built Spark jobs + the dbt grain:
     #   silver_touchpoint PK (brand_id, brain_anon_id, touch_seq) — per-touch grain; there is NO
     #                     touchpoint_id column (silver_touchpoint.sql config keys = brand_id/brain_anon_id/
@@ -153,6 +213,20 @@ _SILVER: List[MartSpec] = [
         layer="silver",
         pk=["brand_id", "spend_event_id"],
         money_columns=["spend_minor"],
+        current_schema="brain_silver",
+    ),
+    # CONFIRMED (Phase 2, GROUP attribution) against db/dbt/models/marts/snap_attribution_credit.sql + the
+    # live StarRocks DESC brain_silver.snap_attribution_credit + the Spark mart
+    # (db/iceberg/spark/gold/snap_attribution_credit.py): the DAILY attribution-history snapshot. Although
+    # it lives in the attribution group it is a brain_SILVER mart (config schema='brain_silver'). GRAIN /
+    # PK = (brand_id, credit_id, snapshot_date) — credit-as-of each date; money = credited_revenue_minor
+    # (signed bigint minor) + currency_code. snapshot_date = current_date() is run-date-dependent → run the
+    # Spark job + the dbt build SAME-DAY for the PK (which includes snapshot_date) to align.
+    MartSpec(
+        name="snap_attribution_credit",
+        layer="silver",
+        pk=["brand_id", "credit_id", "snapshot_date"],
+        money_columns=["credited_revenue_minor"],
         current_schema="brain_silver",
     ),
 ]
@@ -373,10 +447,109 @@ _SILVER_GAP_PAYMENTS_LOGISTICS: List[MartSpec] = [
     ),
 ]
 
+# ── NET-NEW gap Gold marts (Phase 2, GROUP "NEW gap Gold products") — parity status=NEW ──────────────
+# The matrix (docs/architecture/v4/_category-coverage-matrix.md §3/4) GAP Gold products: each reads Iceberg
+# brain_silver, writes Iceberg brain_gold, money minor + currency. NO dbt/StarRocks predecessor → the oracle
+# reads the NEW Iceberg mart, finds no current mart, and emits status=SKIP reason=current-mart-absent
+# (exit 0) — the honest "NEW, no baseline" signal (parity policy: status=NEW). current_schema points at
+# brain_gold (where a dbt predecessor would live); current-absent → SKIP today. PK + money columns CONFIRMED
+# against the built Spark jobs (db/iceberg/spark/gold/*.py). Money columns are bigint minor + currency_code.
+_GOLD_GAP_NEW: List[MartSpec] = [
+    # CM1/CM2 margin per (brand_id, currency_code). Money = net_revenue/cogs/variable/cm1/marketing/cm2 minor.
+    MartSpec(
+        name="gold_contribution_margin",
+        layer="gold",
+        pk=["brand_id", "currency_code"],
+        money_columns=[
+            "net_revenue_minor", "cogs_minor", "variable_minor",
+            "cm1_minor", "marketing_minor", "cm2_minor",
+        ],
+        current_schema="brain_gold",
+        provisional=True,
+    ),
+    # delivery/RTO performance per (brand_id, courier). No money (delivery counts + integer-bps rates).
+    MartSpec(
+        name="gold_logistics_performance",
+        layer="gold",
+        pk=["brand_id", "courier"],
+        current_schema="brain_gold",
+        provisional=True,
+    ),
+    # COD/RTO outcomes per (brand_id, currency_code). Money = cod_amount_minor (at-risk COD cash).
+    MartSpec(
+        name="gold_cod_rto",
+        layer="gold",
+        pk=["brand_id", "currency_code"],
+        money_columns=["cod_amount_minor"],
+        current_schema="brain_gold",
+        provisional=True,
+    ),
+    # net-of-fees settlement per (brand_id, currency_code). Money = gross/fee/tax/refund/dispute/net minor.
+    MartSpec(
+        name="gold_settlement_summary",
+        layer="gold",
+        pk=["brand_id", "currency_code"],
+        money_columns=["gross_minor", "fee_minor", "tax_minor", "refund_minor", "dispute_minor", "net_minor"],
+        current_schema="brain_gold",
+        provisional=True,
+    ),
+    # checkout/browse funnel per (brand_id, funnel_date). No money (session-reach counts).
+    MartSpec(
+        name="gold_funnel",
+        layer="gold",
+        pk=["brand_id", "funnel_date"],
+        current_schema="brain_gold",
+        provisional=True,
+    ),
+    # abandoned-cart recovery per (brand_id, cart_date, currency_code). Money = abandoned_value_minor.
+    MartSpec(
+        name="gold_abandoned_cart",
+        layer="gold",
+        pk=["brand_id", "cart_date", "currency_code"],
+        money_columns=["abandoned_value_minor"],
+        current_schema="brain_gold",
+        provisional=True,
+    ),
+    # UX-engagement rollup per (brand_id, engagement_date, signal_type). No money.
+    MartSpec(
+        name="gold_engagement",
+        layer="gold",
+        pk=["brand_id", "engagement_date", "signal_type"],
+        current_schema="brain_gold",
+        provisional=True,
+    ),
+    # browse behavior per (brand_id, behavior_date, page_type). No money.
+    MartSpec(
+        name="gold_behavior",
+        layer="gold",
+        pk=["brand_id", "behavior_date", "page_type"],
+        current_schema="brain_gold",
+        provisional=True,
+    ),
+    # conversion-feedback / lead per (brand_id, feedback_date, form_id). No money (lead + payment-reach counts).
+    MartSpec(
+        name="gold_conversion_feedback",
+        layer="gold",
+        pk=["brand_id", "feedback_date", "form_id"],
+        current_schema="brain_gold",
+        provisional=True,
+    ),
+    # per-campaign performance per (brand_id, platform, campaign_id, currency_code). Money = spend/attributed minor.
+    MartSpec(
+        name="gold_campaign_performance",
+        layer="gold",
+        pk=["brand_id", "platform", "campaign_id", "currency_code"],
+        money_columns=["spend_minor", "attributed_minor"],
+        current_schema="brain_gold",
+        provisional=True,
+    ),
+]
+
 MARTS: Dict[str, MartSpec] = {
     spec.name: spec
     for spec in (
         _GOLD
+        + _GOLD_GAP_NEW
         + _SILVER
         + _SILVER_NEW_ENTITIES
         + _SILVER_GAP

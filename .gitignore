@@ -36,3 +36,4 @@ test-results/
 
 # Python bytecode (Spark/Iceberg helper scripts)
 __pycache__/
+db/iceberg/spark/gold/__pycache__/

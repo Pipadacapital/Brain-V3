@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# run-gold-revenue.sh — Brain V4 Phase 2 (Spark Gold, dual-run). GROUP=revenue (HIGH-RISK money math).
+#
+# Builds the two revenue-group Spark Gold marts into Iceberg brain_gold, BESIDE the live dbt→StarRocks
+# brain_gold (dual-run / NON-BREAKING — touches no reader, no dbt model, no app code):
+#   gold_revenue_ledger    — the realized-revenue RECOGNITION ledger. Folds the silver_order_recognition
+#                            chain from Iceberg Bronze (the view has no Iceberg table) + the same small
+#                            PG/StarRocks dimension reads (brand horizons, identity link).
+#   gold_revenue_analytics — per-month × lifecycle × currency rollup over Iceberg brain_silver.silver_order_state.
+#
+# Dependency order: gold_revenue_analytics reads the Phase-1 Iceberg silver_order_state (must already be
+# built by run-silver-orders.sh); gold_revenue_ledger is independent (folds Bronze). Order here is
+# ledger then analytics for readability; either order is fine.
+#
+# Requires the lakehouse profile up (iceberg-rest + minio) AND postgres + starrocks + redpanda.
+# Joins Redpanda's netns so iceberg-rest / minio / postgres / starrocks service DNS resolves.
+# Mirrors run-silver-orders.sh exactly (Iceberg + PG + MySQL JDBC packages, shared ivy volume).
+#
+# Usage:  db/iceberg/spark/run-gold-revenue.sh [ledger|analytics|all]   (default: all)
+set -euo pipefail
+
+SPARK_IMAGE="${SPARK_IMAGE:-apache/spark:3.5.3}"
+ICEBERG_VERSION="${ICEBERG_VERSION:-1.9.2}"
+PG_JDBC_VERSION="${PG_JDBC_VERSION:-42.7.4}"
+MYSQL_JDBC_VERSION="${MYSQL_JDBC_VERSION:-8.0.33}"
+SCALA="2.12"
+REDPANDA_CONTAINER="${REDPANDA_CONTAINER:-brainv3-redpanda-1}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WHICH="${1:-all}"
+
+PACKAGES="org.apache.iceberg:iceberg-spark-runtime-3.5_${SCALA}:${ICEBERG_VERSION}"
+PACKAGES="${PACKAGES},org.apache.iceberg:iceberg-aws-bundle:${ICEBERG_VERSION}"
+PACKAGES="${PACKAGES},org.postgresql:postgresql:${PG_JDBC_VERSION}"
+PACKAGES="${PACKAGES},com.mysql:mysql-connector-j:${MYSQL_JDBC_VERSION}"
+
+docker volume create brain-spark-ivy >/dev/null
+
+run_job() {
+  local script="$1"
+  echo "[gold-revenue] >>> ${script}"
+  docker run --rm \
+    --network "container:${REDPANDA_CONTAINER}" \
+    --user root \
+    -v "${SCRIPT_DIR}":/opt/spike:ro \
+    -v brain-spark-ivy:/root/.ivy2 \
+    -e ICEBERG_CATALOG="${ICEBERG_CATALOG:-rest}" \
+    -e ICEBERG_REST_URI="${ICEBERG_REST_URI:-http://iceberg-rest:8181}" \
+    -e ICEBERG_WAREHOUSE="${ICEBERG_WAREHOUSE:-s3://brain-bronze/}" \
+    -e BRONZE_NAMESPACE="${BRONZE_NAMESPACE:-brain_bronze}" \
+    -e SILVER_NAMESPACE="${SILVER_NAMESPACE:-brain_silver}" \
+    -e GOLD_NAMESPACE="${GOLD_NAMESPACE:-brain_gold}" \
+    -e S3_ENDPOINT="${S3_ENDPOINT:-http://minio:9000}" \
+    -e AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:-brain}" \
+    -e AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY:-brainbrain}" \
+    -e AWS_REGION="${AWS_REGION:-us-east-1}" \
+    -e GOLD_PG_JDBC_URL="${GOLD_PG_JDBC_URL:-jdbc:postgresql://postgres:5432/brain}" \
+    -e GOLD_PG_USER="${GOLD_PG_USER:-brain}" \
+    -e GOLD_PG_PASSWORD="${GOLD_PG_PASSWORD:-brain}" \
+    -e GOLD_SR_JDBC_URL="${GOLD_SR_JDBC_URL:-jdbc:mysql://starrocks:9030}" \
+    -e GOLD_SR_USER="${GOLD_SR_USER:-root}" \
+    -e GOLD_SR_PASSWORD="${GOLD_SR_PASSWORD:-}" \
+    "${SPARK_IMAGE}" \
+    /opt/spark/bin/spark-submit \
+      --master "local[2]" \
+      --packages "${PACKAGES}" \
+      --conf spark.jars.ivy=/root/.ivy2 \
+      "/opt/spike/gold/${script}"
+}
+
+case "${WHICH}" in
+  ledger)    run_job gold_revenue_ledger.py ;;
+  analytics) run_job gold_revenue_analytics.py ;;
+  all)
+    run_job gold_revenue_ledger.py
+    run_job gold_revenue_analytics.py   # reads the Phase-1 Iceberg silver_order_state
+    ;;
+  *) echo "usage: $0 [ledger|analytics|all]"; exit 2 ;;
+esac
+
+echo "[gold-revenue] DONE (${WHICH})"

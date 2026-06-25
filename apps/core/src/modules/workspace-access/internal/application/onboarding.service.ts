@@ -174,9 +174,22 @@ export class OnboardingService {
       brandId = row.brand_id;
     } catch (err) {
       if ((err as { code?: string })?.code === '23505') {
-        const row = await provision(deriveSlug(input.workspaceName)); // fresh random-suffixed slug
-        organizationId = row.organization_id;
-        brandId = row.brand_id;
+        try {
+          const row = await provision(deriveSlug(input.workspaceName)); // fresh random-suffixed slug
+          organizationId = row.organization_id;
+          brandId = row.brand_id;
+        } catch (retryErr) {
+          // A residual unique-violation after the slug retry is a genuine conflict (e.g. the
+          // workspace/brand already exists) — map it to a clean 409 instead of leaking the SQLSTATE.
+          if ((retryErr as { code?: string })?.code === '23505') {
+            throw new OnboardingError(
+              'WORKSPACE_OR_BRAND_EXISTS',
+              'A workspace or brand with these details already exists.',
+              409,
+            );
+          }
+          throw retryErr;
+        }
       } else {
         throw err;
       }

@@ -28,6 +28,24 @@ export interface ConnectorSecretRef {
   subKey?: string;
 }
 
+/**
+ * Sanitize a secret-name sub-key to a valid Secrets Manager name segment.
+ *
+ * A secret name may only contain alphanumerics + `-/_+=.@!`. Sub-keys often carry raw values like a
+ * WooCommerce site_url (`https://ulinen.com/`) whose `:` (and scheme/slashes) make the name invalid
+ * ("Invalid name. Must be a valid name containing alphanumeric characters, or any of: -/_+=.@!").
+ * We collapse anything outside `[A-Za-z0-9._-]` to `-`, squeeze repeats, and trim — yielding a flat,
+ * stable, valid segment (e.g. `https-ulinen.com`). The full original value is still kept as the
+ * connector_instance account_key, so uniqueness is preserved there; the secret is fetched by ARN, so
+ * the exact name never needs to be reconstructed.
+ */
+export function sanitizeSecretSubKey(subKey: string): string {
+  return subKey
+    .replace(/[^A-Za-z0-9._-]/g, '-')
+    .replace(/-{2,}/g, '-')
+    .replace(/^[-.]+|[-.]+$/g, '');
+}
+
 export interface ISecretsManager {
   // ── Generic methods (ADR-CM-4 / D-3) ────────────────────────────────────────
   // Used by the generic connect seam. Shopify-specific methods below are kept
@@ -67,12 +85,14 @@ export interface ISecretsManager {
   ): Promise<void>;
 
   /**
-   * Retrieve a stored connector credential by its ARN.
+   * Retrieve a stored connector credential by its ARN **or** its friendly name (AWS GetSecretValue
+   * and LocalSecretsManager both accept either as the SecretId — e.g. the per-brand OAuth-app creds
+   * are looked up by the deterministic name `brain/connector/<provider>_app/<brandId>`, no ARN needed).
    * Callers MUST NOT log or persist the value (I-S09).
    *
-   * @param secretArn  ARN stored in connector_instance.secret_ref.
+   * @param secretNameOrArn  The ARN stored in connector_instance.secret_ref, or a friendly secret name.
    */
-  getSecret(secretArn: string): Promise<Record<string, string> | null>;
+  getSecret(secretNameOrArn: string): Promise<Record<string, string> | null>;
 
   /**
    * Delete a connector credential (called on disconnect).

@@ -40,6 +40,11 @@ import { WooCommercePixelInstaller } from '../modules/connector/sources/storefro
 import { InstallWooCommercePixelCommand } from '../modules/connector/sources/storefront/woocommerce/application/commands/InstallWooCommercePixelCommand.js';
 import { getDefinition, isConnectable, CONNECTOR_CATALOG } from '../modules/connector/catalog/index.js';
 import { registerOAuthDispatch, getOAuthDispatch } from '../modules/connector/catalog/dispatch.js';
+import {
+  storeBrandOAuthAppCreds,
+  resolveBrandOAuthClientId,
+  type OAuthProvider,
+} from '../modules/connector/oauth-app-creds.js';
 import { InitiateOAuthCommand } from '../modules/connector/sources/storefront/shopify/application/commands/InitiateOAuthCommand.js';
 import { ConnectorInstance as ConnectorInstanceEntity, isAdPlatformProvider } from '@brain/connector-core';
 import {
@@ -254,32 +259,34 @@ export function registerConnectors(app: FastifyInstance, deps: RegisterConnector
 
   // ── OAUTH_DISPATCH_TABLE registration (A3 — ADR-CM-3) ─────────────────────
   registerOAuthDispatch('shopify', {
-    initiate: async ({ brandId, shopDomain, callbackUrl }) => {
+    initiate: async ({ brandId, shopDomain, callbackUrl, clientId }) => {
       if (!shopDomain) {
         throw Object.assign(new Error('shop_domain is required for shopify OAuth'), {
           code: 'MISSING_SHOP_DOMAIN',
           statusCode: 400,
         });
       }
-      const result = await initiateOAuth.execute({ brandId, shopDomain, callbackUrl });
+      const result = await initiateOAuth.execute({ brandId, shopDomain, callbackUrl, clientId });
       return { oauth_url: result.installUrl };
     },
   });
 
   registerOAuthDispatch('meta', {
-    initiate: async ({ brandId }) => {
+    initiate: async ({ brandId, clientId }) => {
       const result = await initiateMetaOAuth.execute({
         brandId,
         callbackUrl: config.metaCallbackUrl,
+        clientId,
       });
       return { oauth_url: result.installUrl };
     },
   });
   registerOAuthDispatch('google_ads', {
-    initiate: async ({ brandId }) => {
+    initiate: async ({ brandId, clientId }) => {
       const result = await initiateGoogleAdsOAuth.execute({
         brandId,
         callbackUrl: config.googleAdsCallbackUrl,
+        clientId,
       });
       return { oauth_url: result.installUrl };
     },
@@ -479,10 +486,24 @@ export function registerConnectors(app: FastifyInstance, deps: RegisterConnector
           return reply.code(422).send({ request_id: requestId, error: { code: 'CONNECTOR_NOT_AVAILABLE', message: `OAuth not configured for ${connectorType}` } });
         }
         try {
+          // Per-brand BYO-app creds (Shopify/Meta/Google): if the connect body carries client_id +
+          // client_secret, store them for this brand (Secrets Manager); the client_secret is used at
+          // the callback. Then resolve the client_id for the authorize URL — the brand's own app, else
+          // the env app (back-compat). client_secret NEVER goes on connector_instance (NN-2) or a log.
+          const provider = connectorType as OAuthProvider;
+          const appCreds = body.credentials;
+          if (appCreds?.['client_id'] && appCreds?.['client_secret']) {
+            await storeBrandOAuthAppCreds(connectorSecretsManager, provider, brandId, {
+              clientId: appCreds['client_id'],
+              clientSecret: appCreds['client_secret'],
+            });
+          }
+          const clientId = await resolveBrandOAuthClientId(connectorSecretsManager, provider, brandId);
           const { oauth_url } = await dispatch.initiate({
             brandId,
             shopDomain: body.shop_domain,
             callbackUrl: config.shopifyCallbackUrl,
+            clientId,
           });
           await auditWriter.append({
             brand_id: brandId,
@@ -499,7 +520,7 @@ export function registerConnectors(app: FastifyInstance, deps: RegisterConnector
             return reply.code(400).send({ request_id: requestId, error: { code: 'MISSING_SHOP_DOMAIN', message: (err as Error).message } });
           }
           if ((err as { code?: string }).code === 'OAUTH_NOT_CONFIGURED') {
-            return reply.code(503).send({ request_id: requestId, error: { code: 'OAUTH_NOT_CONFIGURED', message: (err as Error).message } });
+            return reply.code(503).send({ request_id: requestId, error: { code: 'OAUTH_NOT_CONFIGURED', message: "This connector isn't configured yet. Add your app credentials and try again." } });
           }
           throw err;
         }
@@ -528,11 +549,16 @@ export function registerConnectors(app: FastifyInstance, deps: RegisterConnector
             });
           }
 
-          const { arn } = await connectorSecretsManager.storeSecret(
-            brandId,
-            { connectorType: 'razorpay', subKey: razorpayAccountId },
-            { key_id: keyId, key_secret: keySecret, webhook_secret: webhookSecret },
-          );
+          let arn: string;
+          try {
+            ({ arn } = await connectorSecretsManager.storeSecret(
+              brandId,
+              { connectorType: 'razorpay', subKey: razorpayAccountId },
+              { key_id: keyId, key_secret: keySecret, webhook_secret: webhookSecret },
+            ));
+          } catch {
+            return reply.code(503).send({ request_id: requestId, error: { code: 'SECRETS_UNAVAILABLE', message: 'Could not securely store credentials right now — please retry.' } });
+          }
 
           const now = new Date();
           const connectorInstanceId = randomUUID();
@@ -600,11 +626,16 @@ export function registerConnectors(app: FastifyInstance, deps: RegisterConnector
             });
           }
 
-          const { arn } = await connectorSecretsManager.storeSecret(
-            brandId,
-            { connectorType: 'shopflo', subKey: merchantId },
-            { api_token: apiToken, merchant_id: merchantId, webhook_secret: webhookSecret },
-          );
+          let arn: string;
+          try {
+            ({ arn } = await connectorSecretsManager.storeSecret(
+              brandId,
+              { connectorType: 'shopflo', subKey: merchantId },
+              { api_token: apiToken, merchant_id: merchantId, webhook_secret: webhookSecret },
+            ));
+          } catch {
+            return reply.code(503).send({ request_id: requestId, error: { code: 'SECRETS_UNAVAILABLE', message: 'Could not securely store credentials right now — please retry.' } });
+          }
 
           const now = new Date();
           const connectorInstanceId = randomUUID();
@@ -674,17 +705,22 @@ export function registerConnectors(app: FastifyInstance, deps: RegisterConnector
             });
           }
 
-          const { arn } = await connectorSecretsManager.storeSecret(
-            brandId,
-            { connectorType: 'gokwik', subKey: appid },
-            {
-              appid,
-              appsecret,
-              ...(webhookSecret && webhookSecret.trim().length > 0
-                ? { webhook_secret: webhookSecret.trim() }
-                : {}),
-            },
-          );
+          let arn: string;
+          try {
+            ({ arn } = await connectorSecretsManager.storeSecret(
+              brandId,
+              { connectorType: 'gokwik', subKey: appid },
+              {
+                appid,
+                appsecret,
+                ...(webhookSecret && webhookSecret.trim().length > 0
+                  ? { webhook_secret: webhookSecret.trim() }
+                  : {}),
+              },
+            ));
+          } catch {
+            return reply.code(503).send({ request_id: requestId, error: { code: 'SECRETS_UNAVAILABLE', message: 'Could not securely store credentials right now — please retry.' } });
+          }
 
           const now = new Date();
           const connectorInstanceId = randomUUID();
@@ -752,11 +788,16 @@ export function registerConnectors(app: FastifyInstance, deps: RegisterConnector
             });
           }
 
-          const { arn } = await connectorSecretsManager.storeSecret(
-            brandId,
-            { connectorType: 'shiprocket', subKey: channelId ?? email },
-            { email, password },
-          );
+          let arn: string;
+          try {
+            ({ arn } = await connectorSecretsManager.storeSecret(
+              brandId,
+              { connectorType: 'shiprocket', subKey: channelId ?? email },
+              { email, password },
+            ));
+          } catch {
+            return reply.code(503).send({ request_id: requestId, error: { code: 'SECRETS_UNAVAILABLE', message: 'Could not securely store credentials right now — please retry.' } });
+          }
 
           const now = new Date();
           const connectorInstanceId = randomUUID();
@@ -828,13 +869,18 @@ export function registerConnectors(app: FastifyInstance, deps: RegisterConnector
             });
           }
 
-          const { arn } = await connectorSecretsManager.storeSecret(
-            brandId,
-            { connectorType: 'woocommerce', subKey: siteUrl },
-            webhookSecret
-              ? { consumer_key: consumerKey, consumer_secret: consumerSecret, webhook_secret: webhookSecret }
-              : { consumer_key: consumerKey, consumer_secret: consumerSecret },
-          );
+          let arn: string;
+          try {
+            ({ arn } = await connectorSecretsManager.storeSecret(
+              brandId,
+              { connectorType: 'woocommerce', subKey: siteUrl },
+              webhookSecret
+                ? { consumer_key: consumerKey, consumer_secret: consumerSecret, webhook_secret: webhookSecret }
+                : { consumer_key: consumerKey, consumer_secret: consumerSecret },
+            ));
+          } catch {
+            return reply.code(503).send({ request_id: requestId, error: { code: 'SECRETS_UNAVAILABLE', message: 'Could not securely store credentials right now — please retry.' } });
+          }
 
           const now = new Date();
           const connectorInstanceId = randomUUID();
@@ -887,7 +933,12 @@ export function registerConnectors(app: FastifyInstance, deps: RegisterConnector
         }
 
         // Generic credential connector path
-        const { arn } = await connectorSecretsManager.storeSecret(brandId, { connectorType }, credentials);
+        let arn: string;
+        try {
+          ({ arn } = await connectorSecretsManager.storeSecret(brandId, { connectorType }, credentials));
+        } catch {
+          return reply.code(503).send({ request_id: requestId, error: { code: 'SECRETS_UNAVAILABLE', message: 'Could not securely store credentials right now — please retry.' } });
+        }
         const now = new Date();
         const instance = ConnectorInstanceEntity.create({
           id: randomUUID(),
@@ -928,8 +979,15 @@ export function registerConnectors(app: FastifyInstance, deps: RegisterConnector
       if (!shopDomain) {
         return reply.code(400).send({ request_id: (req.id as string) ?? randomUUID(), error: { code: 'MISSING_SHOP_PARAM', message: 'shop query parameter is required' } });
       }
-      const result = await initiateOAuth.execute({ brandId, shopDomain, callbackUrl: config.shopifyCallbackUrl });
-      return reply.code(200).send({ request_id: (req.id as string) ?? randomUUID(), data: { install_url: result.installUrl } });
+      try {
+        const result = await initiateOAuth.execute({ brandId, shopDomain, callbackUrl: config.shopifyCallbackUrl });
+        return reply.code(200).send({ request_id: (req.id as string) ?? randomUUID(), data: { install_url: result.installUrl } });
+      } catch (err) {
+        if ((err as { code?: string }).code === 'OAUTH_NOT_CONFIGURED') {
+          return reply.code(503).send({ request_id: (req.id as string) ?? randomUUID(), error: { code: 'OAUTH_NOT_CONFIGURED', message: "This connector isn't configured yet. Add your app credentials and try again." } });
+        }
+        throw err;
+      }
     });
 
     // ── Ads install routes (manager+ — feat-ad-connectors Track 1) ──────────

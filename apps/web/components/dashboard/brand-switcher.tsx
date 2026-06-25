@@ -20,11 +20,11 @@
 
 import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { Loader2, ChevronDown, Building2, Plus, CheckCircle2 } from 'lucide-react';
+import { Loader2, ChevronDown, Building2, Plus, CheckCircle2, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
-import { brandApi, BffApiError } from '@/lib/api/client';
+import { brandApi, BffApiError, userFacingMessage } from '@/lib/api/client';
 import { useBrandSummary } from '@/lib/hooks/use-dashboard';
 import { DASHBOARD_QUERY_KEY } from '@/lib/hooks/use-dashboard';
 import { ANALYTICS_QUERY_KEY } from '@/lib/hooks/use-analytics';
@@ -42,6 +42,8 @@ export function BrandSwitcher() {
   const [switchError, setSwitchError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   if (isLoading) {
     return (
@@ -111,10 +113,33 @@ export function BrandSwitcher() {
     } catch (err) {
       const msg =
         err instanceof BffApiError
-          ? `${err.message} (Request ID: ${err.requestId})`
+          ? userFacingMessage(err)
           : 'Could not switch brand. Please try again.';
       setSwitchError(msg);
       setSelectingId(null);
+    }
+  }
+
+  // Archive (soft-delete) a brand created by mistake. Reversible server-side; the brand drops out of
+  // the list and its ingest stops. Only non-active brands are deletable here (switch away first).
+  async function handleDeleteBrand(id: string) {
+    setDeletingId(id);
+    setSwitchError(null);
+    try {
+      await brandApi.remove(id);
+      setConfirmDeleteId(null);
+      await Promise.all([
+        refetch(),
+        queryClient.invalidateQueries({ queryKey: DASHBOARD_QUERY_KEY }),
+      ]);
+    } catch (err) {
+      const msg =
+        err instanceof BffApiError
+          ? userFacingMessage(err)
+          : 'Could not delete brand. Please try again.';
+      setSwitchError(msg);
+    } finally {
+      setDeletingId(null);
     }
   }
 
@@ -192,22 +217,65 @@ export function BrandSwitcher() {
                     )}
                   </span>
 
-                  {!isActive && (
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => handleSelectBrand(brand.id)}
-                      disabled={selectingId !== null}
-                      aria-label={`Switch to brand ${brand.display_name}`}
-                      data-testid={`btn-select-brand-${brand.id}`}
-                      className="h-6 text-xs px-2 py-0"
-                    >
-                      {isSwitching ? (
-                        <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
-                      ) : (
-                        'Switch'
-                      )}
-                    </Button>
+                  {!isActive && confirmDeleteId !== brand.id && (
+                    <span className="flex items-center gap-1 shrink-0">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => handleSelectBrand(brand.id)}
+                        disabled={selectingId !== null || deletingId !== null}
+                        aria-label={`Switch to brand ${brand.display_name}`}
+                        data-testid={`btn-select-brand-${brand.id}`}
+                        className="h-6 text-xs px-2 py-0"
+                      >
+                        {isSwitching ? (
+                          <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+                        ) : (
+                          'Switch'
+                        )}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => setConfirmDeleteId(brand.id)}
+                        disabled={selectingId !== null || deletingId !== null}
+                        aria-label={`Delete brand ${brand.display_name}`}
+                        data-testid={`btn-delete-brand-${brand.id}`}
+                        className="h-6 w-6 p-0 text-muted-foreground hover:text-destructive"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                      </Button>
+                    </span>
+                  )}
+
+                  {!isActive && confirmDeleteId === brand.id && (
+                    <span className="flex items-center gap-1 shrink-0">
+                      <span className="text-xs text-muted-foreground">Delete?</span>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => setConfirmDeleteId(null)}
+                        disabled={deletingId === brand.id}
+                        className="h-6 text-xs px-2 py-0"
+                      >
+                        Cancel
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="destructive"
+                        onClick={() => handleDeleteBrand(brand.id)}
+                        disabled={deletingId === brand.id}
+                        aria-label={`Confirm delete brand ${brand.display_name}`}
+                        data-testid={`btn-confirm-delete-brand-${brand.id}`}
+                        className="h-6 text-xs px-2 py-0"
+                      >
+                        {deletingId === brand.id ? (
+                          <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+                        ) : (
+                          'Delete'
+                        )}
+                      </Button>
+                    </span>
                   )}
                 </div>
               );

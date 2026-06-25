@@ -37,11 +37,12 @@ export class EmailVerificationRepository {
       expires_at: Date; used_at: Date | null; created_at: Date;
     }>(
       ctx,
+      // Pre-auth lookup: the user is not logged in here, so app.current_user_id is unset and a direct
+      // SELECT on the RLS-isolated iam.email_verification returns zero rows. Read via the SECURITY
+      // DEFINER reader (0110) — the token hash IS the authorization, so no user GUC is needed; it
+      // returns only the matching unused/unexpired row.
       `SELECT id, app_user_id, token_hash, expires_at, used_at, created_at
-       FROM email_verification
-       WHERE token_hash = $1
-         AND used_at IS NULL
-         AND expires_at > NOW()`,
+       FROM find_email_verification_by_hash($1)`,
       [tokenHash],
     );
     const row = result.rows[0];

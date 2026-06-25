@@ -20,6 +20,8 @@ export interface InitiateMetaOAuthInput {
   brandId: string;
   /** Public HTTPS callback URL (dev: localhost; prod: a real public callback — platform follow-up). */
   callbackUrl: string;
+  /** Per-brand BYO-app client_id (resolved by the connect handler); falls back to env. */
+  clientId?: string;
 }
 
 export interface InitiateMetaOAuthResult {
@@ -39,7 +41,7 @@ export class InitiateMetaOAuthCommand {
   async execute(input: InitiateMetaOAuthInput): Promise<InitiateMetaOAuthResult> {
     const { brandId, callbackUrl } = input;
 
-    const clientId = process.env['META_APP_ID'];
+    const clientId = input.clientId ?? process.env['META_APP_ID'];
     if (!clientId) {
       // Dev boundary: real Meta OAuth needs a configured app (META_APP_ID + secret + a
       // public callback). Surface a graceful, typed error the route maps to a friendly
@@ -48,7 +50,8 @@ export class InitiateMetaOAuthCommand {
         'Meta Ads connection isn’t configured in this environment yet. ' +
           'Add the Meta app credentials (META_APP_ID) to enable it.',
       );
-      (err as Error & { code: string }).code = 'OAUTH_NOT_CONFIGURED';
+      (err as Error & { code: string; statusCode: number }).code = 'OAUTH_NOT_CONFIGURED';
+      (err as Error & { code: string; statusCode: number }).statusCode = 503;
       throw err;
     }
 

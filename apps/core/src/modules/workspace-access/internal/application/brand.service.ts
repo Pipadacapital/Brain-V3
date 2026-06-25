@@ -375,4 +375,56 @@ export class BrandService {
       client.release();
     }
   }
+
+  /**
+   * Archive (soft-delete) a brand — for "created by mistake" cleanup. Sets status='archived' so the
+   * brand drops out of lists/switcher and cross-tenant jobs (list_active_brand_ids filters
+   * status='active'), and DISCONNECTS its connectors so the ingest scheduler (which claims only
+   * status='connected') stops pulling for it. REVERSIBLE: the row + all data are retained; PATCH
+   * status='active' restores it (connectors must be reconnected). Owner / brand_admin only.
+   * Idempotent — re-archiving is a no-op.
+   */
+  async archive(
+    id: string,
+    requestingUserId: string,
+    organizationId: string,
+    correlationId: string,
+  ): Promise<void> {
+    const ctx: QueryContext = { correlationId, brandId: id, workspaceId: organizationId };
+    const client = await this.pool.connect();
+    try {
+      const brandRepo = new BrandRepository(client);
+      const memberRepo = new MembershipRepository(client);
+
+      // Assert org membership + role (same authority as create/update).
+      const membership = await memberRepo.findByUserAndOrg(requestingUserId, organizationId, null, ctx);
+      if (!membership || (membership.roleCode !== 'owner' && membership.roleCode !== 'brand_admin')) {
+        throw new BrandError('FORBIDDEN', 'Requires owner or brand_admin role to delete a brand.', 403);
+      }
+
+      const updated = await brandRepo.update(id, { status: 'archived' }, ctx);
+      if (!updated) throw new BrandError('NOT_FOUND', 'Brand not found.', 404);
+
+      // Stop ingest: disconnect the brand's connectors (the scheduler claims status='connected' only).
+      // RLS-scoped to this brand via ctx.brandId → app.current_brand_id.
+      await client.query(
+        ctx,
+        `UPDATE connector_instance SET status = 'disconnected', disconnected_at = NOW()
+         WHERE brand_id = $1 AND status = 'connected'`,
+        [id],
+      );
+
+      await this.audit.append({
+        brand_id: id,
+        actor_id: requestingUserId,
+        actor_role: membership.roleCode,
+        action: 'brand.archived',
+        entity_type: 'brand',
+        entity_id: id,
+        payload: { status: 'archived' },
+      });
+    } finally {
+      client.release();
+    }
+  }
 }

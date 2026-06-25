@@ -90,6 +90,7 @@ export class BrandRepository {
       `SELECT id, organization_id, display_name, domain, status, region_code, currency_code, timezone, revenue_definition, created_at, updated_at
        FROM brand
        WHERE organization_id = $1
+         AND status <> 'archived'
          ${cursorId ? 'AND id > $3' : ''}
        ORDER BY id ASC
        LIMIT $2`,

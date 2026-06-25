@@ -50,7 +50,7 @@ import { ErrorCard } from '@/components/ui/error-card';
 import { useMarketplace, useConnectConnector, useDisconnectConnector, useActivateAdAccount } from '@/lib/hooks/use-connectors';
 import { useEntitlements } from '@/lib/hooks/use-entitlements';
 import { useEmailVerified } from '@/lib/hooks/use-auth';
-import { BffApiError } from '@/lib/api/client';
+import { BffApiError, userFacingMessage } from '@/lib/api/client';
 import { toast } from '@/components/ui/toaster';
 import type { MarketplaceTile, MarketplaceTileInstance, ConnectorCategory, HealthState, SafetyRating } from '@/lib/api/types';
 import { cn } from '@/lib/utils';
@@ -215,8 +215,14 @@ function ConnectorTile({ tile, readinessLock }: { tile: MarketplaceTile; readine
   const firstInstance = activeInstances[0] ?? null;
   const isComingSoon = !tile.available;
   const isCredential = tile.connect_method === 'credential';
-  // Per-provider credential fields (Razorpay / Shopflo / GoKwik) — not a single hardcoded set.
-  const credentialFields = credentialFieldsFor(tile.id);
+  // OAuth tiles that support "bring your own OAuth app" — an OPTIONAL Client ID + Client
+  // Secret pair surfaced alongside the OAuth connect flow (env-app fallback server-side).
+  const isOauthApp =
+    tile.connect_method === 'oauth' &&
+    (tile.id === 'shopify' || tile.id === 'meta' || tile.id === 'google_ads');
+  // Per-provider credential fields (Razorpay / Shopflo / GoKwik), or the OAuth-app
+  // Client ID / Client Secret pair for OAuth tiles — not a single hardcoded set.
+  const credentialFields = isCredential || isOauthApp ? credentialFieldsFor(tile.id) : [];
   const credsComplete = credentialFields.every((f) => f.optional || (creds[f.key] ?? '').trim().length > 0);
 
   /**
@@ -233,7 +239,7 @@ function ConnectorTile({ tile, readinessLock }: { tile: MarketplaceTile; readine
       });
       return;
     }
-    const msg = err instanceof BffApiError ? err.message : 'Could not start connection.';
+    const msg = err instanceof BffApiError ? userFacingMessage(err) : 'Could not start connection.';
     toast({ title: 'Connection failed', description: msg, variant: 'destructive' });
   }
 
@@ -274,13 +280,23 @@ function ConnectorTile({ tile, readinessLock }: { tile: MarketplaceTile; readine
             }
           },
           onError: (err) => {
-            const msg = err instanceof BffApiError ? err.message : `Could not connect ${tile.display_name}. Check your credentials and try again.`;
+            const msg = err instanceof BffApiError ? userFacingMessage(err) : `Could not connect ${tile.display_name}. Check your credentials and try again.`;
             toast({ title: 'Connection failed', description: msg, variant: 'destructive' });
           },
         },
       );
       return;
     }
+
+    // "Bring your own OAuth app": include any Client ID / Client Secret the brand entered.
+    // Only non-empty values are sent — omitting them lets the server fall back to Brain's
+    // env-registered OAuth app. Returns undefined when nothing was filled in.
+    const oauthCredentials = (() => {
+      const entries = credentialFields
+        .map((f) => [f.key, (creds[f.key] ?? '').trim()] as const)
+        .filter(([, v]) => v.length > 0);
+      return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+    })();
 
     if (tile.connect_method === 'oauth' && tile.id === 'shopify') {
       const shop = shopDomain.trim().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
@@ -293,7 +309,7 @@ function ConnectorTile({ tile, readinessLock }: { tile: MarketplaceTile; readine
         return;
       }
       connect(
-        { type: tile.id, shop_domain: shop },
+        { type: tile.id, shop_domain: shop, ...(oauthCredentials ? { credentials: oauthCredentials } : {}) },
         {
           onSuccess: (data) => {
             if (data.kind === 'oauth') {
@@ -305,9 +321,9 @@ function ConnectorTile({ tile, readinessLock }: { tile: MarketplaceTile; readine
         },
       );
     } else if (tile.connect_method === 'oauth') {
-      // Non-shopify oauth (future)
+      // Non-shopify oauth (Meta / Google Ads). Pass any brand-supplied OAuth app creds.
       connect(
-        { type: tile.id },
+        { type: tile.id, ...(oauthCredentials ? { credentials: oauthCredentials } : {}) },
         {
           onSuccess: (data) => {
             if (data.kind === 'oauth') {
@@ -539,10 +555,11 @@ function ConnectorTile({ tile, readinessLock }: { tile: MarketplaceTile; readine
               />
             )}
 
-            {/* Credential connectors (Razorpay) collect their credentials inline.
-                Secret fields use type="password" + autoComplete="off"; the values are
-                sent once to the BFF and never read back (the server omits them). */}
-            {isCredential && (
+            {/* Credential connectors (Razorpay) collect their credentials inline; OAuth tiles
+                (Shopify / Meta / Google Ads) surface an OPTIONAL "bring your own OAuth app"
+                Client ID + Client Secret pair. Secret fields use type="password" +
+                autoComplete="off"; values are sent once to the BFF and never read back. */}
+            {(isCredential || isOauthApp) && credentialFields.length > 0 && (
               <div className="space-y-2" data-testid={`credential-form-${tile.id}`}>
                 {credentialFields.map((f) => (
                   <div key={f.key} className="space-y-1">
@@ -565,6 +582,15 @@ function ConnectorTile({ tile, readinessLock }: { tile: MarketplaceTile; readine
                       autoComplete="off"
                       data-testid={`input-${tile.id}-${f.key}`}
                     />
+                    {f.hint && (
+                      <p
+                        id={`cred-${tile.id}-${f.key}-hint`}
+                        className="text-[11px] text-muted-foreground"
+                        role="note"
+                      >
+                        {f.hint}
+                      </p>
+                    )}
                   </div>
                 ))}
               </div>

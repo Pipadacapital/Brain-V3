@@ -80,6 +80,24 @@ export class RedisOAuthStateStore implements IOAuthStateStore {
     }
   }
 
+  async peekBrandId(state: string): Promise<{ brandId: string } | null> {
+    const key = `${this.keyPrefix}${state}`;
+    try {
+      // Read-only GET (no DEL) — resolve the brand to pick its per-app client_secret for HMAC.
+      const brandId = (await this.redis.get(key)) as string | null;
+      if (!brandId) return null;
+      return { brandId };
+    } catch (err) {
+      log.error(JSON.stringify({
+        msg: 'oauth_state_redis_peek_failed',
+        event: 'redis_unavailable_fail_closed',
+        level: 'error',
+        err: err instanceof Error ? err.message : String(err),
+      }));
+      return null;
+    }
+  }
+
   /** Expose TTL constant for use in handler (mirrors InProcessOAuthStateStore). */
   static readonly TTL_SECONDS = OAuthStateNonce.TTL_SECONDS;
 }

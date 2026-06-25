@@ -14,6 +14,11 @@ export interface InitiateOAuthInput {
   brandId: string;
   shopDomain: string;
   callbackUrl: string; // public HTTPS callback URL (C5: requires staging env for E2E)
+  /**
+   * Per-brand BYO-app OAuth client_id (resolved by the connect handler: the brand's own app creds,
+   * else the env app). When absent, falls back to process.env.SHOPIFY_CLIENT_ID for back-compat.
+   */
+  clientId?: string;
 }
 
 export interface InitiateOAuthResult {
@@ -42,11 +47,14 @@ export class InitiateOAuthCommand {
   async execute(input: InitiateOAuthInput): Promise<InitiateOAuthResult> {
     const { brandId, shopDomain, callbackUrl } = input;
 
-    // Fetch client ID from Secrets Manager (or env for dev).
+    // Per-brand BYO-app client_id (resolved by the connect handler) → env app (back-compat).
     // The client SECRET is not needed at initiation — only at callback.
-    const clientId = process.env['SHOPIFY_CLIENT_ID'];
+    const clientId = input.clientId ?? process.env['SHOPIFY_CLIENT_ID'];
     if (!clientId) {
-      throw new Error('[InitiateOAuthCommand] SHOPIFY_CLIENT_ID not configured');
+      throw Object.assign(new Error('no Shopify client_id — provide your app credentials or set SHOPIFY_CLIENT_ID'), {
+        code: 'OAUTH_NOT_CONFIGURED',
+        statusCode: 503,
+      });
     }
 
     // Generate state nonce (NN-4: crypto.randomBytes(16))

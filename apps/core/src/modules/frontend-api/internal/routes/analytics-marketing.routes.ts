@@ -91,27 +91,33 @@ export function registerAnalyticsMarketingRoutes(fastify: FastifyInstance, deps:
       // currency. Spend can span currencies (e.g. Meta INR + AED); naively summing minor across them
       // is wrong, so the client should prefer these blended totals. Native buckets stay as-is.
       if (result.state === 'has_data' && result.buckets.length > 0 && rawPool) {
-        const primary = await resolveBrandPrimaryCurrency(rawPool, auth.brandId);
-        const byPlatformCcy = new Map<string, bigint>(); // "platform|currency" → minor sum
-        for (const b of result.buckets) {
-          const key = `${b.platform}|${b.currency_code}`;
-          byPlatformCcy.set(key, (byPlatformCcy.get(key) ?? 0n) + BigInt(b.spend_minor));
+        try {
+          const primary = await resolveBrandPrimaryCurrency(rawPool, auth.brandId);
+          const byPlatformCcy = new Map<string, bigint>(); // "platform|currency" → minor sum
+          for (const b of result.buckets) {
+            const key = `${b.platform}|${b.currency_code}`;
+            byPlatformCcy.set(key, (byPlatformCcy.get(key) ?? 0n) + BigInt(b.spend_minor));
+          }
+          const entriesFor = (plat: string) =>
+            [...byPlatformCcy.entries()]
+              .filter(([k]) => k.startsWith(`${plat}|`))
+              .map(([k, minor]) => ({ currency: k.split('|')[1] as string, minor: minor.toString() }));
+          const allEntries = [...byPlatformCcy.entries()].map(([k, minor]) => ({ currency: k.split('|')[1] as string, minor: minor.toString() }));
+          return reply.send({
+            request_id: requestId,
+            data: {
+              ...result,
+              primary_currency: primary,
+              total_spend_in_primary_minor: await blendToPrimary(allEntries, primary),
+              meta_spend_in_primary_minor: await blendToPrimary(entriesFor('meta'), primary),
+              google_spend_in_primary_minor: await blendToPrimary(entriesFor('google_ads'), primary),
+            },
+          });
+        } catch (err) {
+          // FX is display-only / fail-soft: an FX-provider failure must NOT 500 a successful
+          // native-currency read. Fall through to send native amounts.
+          request.log.warn({ err }, 'fx enrichment failed');
         }
-        const entriesFor = (plat: string) =>
-          [...byPlatformCcy.entries()]
-            .filter(([k]) => k.startsWith(`${plat}|`))
-            .map(([k, minor]) => ({ currency: k.split('|')[1] as string, minor: minor.toString() }));
-        const allEntries = [...byPlatformCcy.entries()].map(([k, minor]) => ({ currency: k.split('|')[1] as string, minor: minor.toString() }));
-        return reply.send({
-          request_id: requestId,
-          data: {
-            ...result,
-            primary_currency: primary,
-            total_spend_in_primary_minor: await blendToPrimary(allEntries, primary),
-            meta_spend_in_primary_minor: await blendToPrimary(entriesFor('meta'), primary),
-            google_spend_in_primary_minor: await blendToPrimary(entriesFor('google_ads'), primary),
-          },
-        });
       }
 
       return reply.send({ request_id: requestId, data: result });
@@ -174,23 +180,29 @@ export function registerAnalyticsMarketingRoutes(fastify: FastifyInstance, deps:
       // This is the headline number mixed-currency genuinely breaks — you can't compare INR spend to
       // AED revenue. Σ(converted realized) ÷ Σ(converted spend). Native per-currency rows stay as-is.
       if (result.state === 'has_data' && rawPool) {
-        const primary = await resolveBrandPrimaryCurrency(rawPool, auth.brandId);
-        const spendPrimary = await blendToPrimary(
-          result.rows.map((r) => ({ currency: r.currency_code, minor: r.spend_minor })), primary,
-        );
-        const realizedPrimary = await blendToPrimary(
-          result.rows.map((r) => ({ currency: r.currency_code, minor: r.realized_minor })), primary,
-        );
-        return reply.send({
-          request_id: requestId,
-          data: {
-            ...result,
-            primary_currency: primary,
-            spend_in_primary_minor: spendPrimary,
-            realized_in_primary_minor: realizedPrimary,
-            roas_in_primary: roasFromMinor(realizedPrimary, spendPrimary),
-          },
-        });
+        try {
+          const primary = await resolveBrandPrimaryCurrency(rawPool, auth.brandId);
+          const spendPrimary = await blendToPrimary(
+            result.rows.map((r) => ({ currency: r.currency_code, minor: r.spend_minor })), primary,
+          );
+          const realizedPrimary = await blendToPrimary(
+            result.rows.map((r) => ({ currency: r.currency_code, minor: r.realized_minor })), primary,
+          );
+          return reply.send({
+            request_id: requestId,
+            data: {
+              ...result,
+              primary_currency: primary,
+              spend_in_primary_minor: spendPrimary,
+              realized_in_primary_minor: realizedPrimary,
+              roas_in_primary: roasFromMinor(realizedPrimary, spendPrimary),
+            },
+          });
+        } catch (err) {
+          // FX is display-only / fail-soft: an FX-provider failure must NOT 500 a successful
+          // native-currency read. Fall through to send native amounts.
+          request.log.warn({ err }, 'fx enrichment failed');
+        }
       }
 
       return reply.send({ request_id: requestId, data: result });

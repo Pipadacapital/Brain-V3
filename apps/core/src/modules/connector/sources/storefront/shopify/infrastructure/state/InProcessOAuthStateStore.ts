@@ -56,6 +56,15 @@ export class InProcessOAuthStateStore implements IOAuthStateStore {
     return { brandId: entry.brandId };
   }
 
+  async peekBrandId(state: string): Promise<{ brandId: string } | null> {
+    // Read-only (no delete) — resolve the brand to pick its per-app client_secret for HMAC.
+    const key = `shopify:oauth:state:${state}`;
+    const entry = this.store.get(key);
+    if (!entry) return null;
+    if (new Date() > entry.expiresAt) return null;
+    return { brandId: entry.brandId };
+  }
+
   /** Expose TTL constant for use in handler. */
   static readonly TTL_SECONDS = OAuthStateNonce.TTL_SECONDS;
 }

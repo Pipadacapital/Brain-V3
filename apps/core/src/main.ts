@@ -338,7 +338,7 @@ export async function main(): Promise<void> {
     return reply.code(statusCode).send({
       request_id: requestId,
       error: {
-        code: error.code ?? 'INTERNAL_ERROR',
+        code: statusCode >= 500 ? 'INTERNAL_ERROR' : (error.code ?? 'INTERNAL_ERROR'),
         message: statusCode >= 500 ? 'Internal server error' : error.message,
       },
     });

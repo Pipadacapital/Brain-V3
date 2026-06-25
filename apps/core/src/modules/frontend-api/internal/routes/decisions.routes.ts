@@ -65,20 +65,30 @@ export function registerDecisionsRoutes(fastify: FastifyInstance, deps: BffDeps)
         });
       }
 
-      // "Confidence before decisions" (P0): resolve the brand's CURRENT trust gate and pass it so
-      // getRecommendations caps each rec's surfaced confidence + holds high-risk recs below Trusted.
-      // Fail-closed to 'untrusted' when the engine pool is unavailable (no trust proof → hold).
-      const trust = rawPool
-        ? await getMetricTrust(auth.brandId, { pool: rawPool })
-        : { tier: 'untrusted' as const, gate: { blocksHighRiskRecommendation: true } };
-      const result: ContractRecommendations = await getRecommendations(auth.brandId, requestId, {
-        pool,
-        gate: {
-          tier: trust.tier,
-          blocksHighRiskRecommendation: trust.gate.blocksHighRiskRecommendation,
-        },
-      });
-      return reply.send({ request_id: requestId, data: result });
+      try {
+        // "Confidence before decisions" (P0): resolve the brand's CURRENT trust gate and pass it so
+        // getRecommendations caps each rec's surfaced confidence + holds high-risk recs below Trusted.
+        // Fail-closed to 'untrusted' when the engine pool is unavailable (no trust proof → hold).
+        const trust = rawPool
+          ? await getMetricTrust(auth.brandId, { pool: rawPool })
+          : { tier: 'untrusted' as const, gate: { blocksHighRiskRecommendation: true } };
+        const result: ContractRecommendations = await getRecommendations(auth.brandId, requestId, {
+          pool,
+          gate: {
+            tier: trust.tier,
+            blocksHighRiskRecommendation: trust.gate.blocksHighRiskRecommendation,
+          },
+        });
+        return reply.send({ request_id: requestId, data: result });
+      } catch {
+        return reply.code(503).send({
+          request_id: requestId,
+          error: {
+            code: 'SERVICE_UNAVAILABLE',
+            message: 'This data is temporarily unavailable. Please try again.',
+          },
+        });
+      }
     },
   );
 
@@ -106,12 +116,22 @@ export function registerDecisionsRoutes(fastify: FastifyInstance, deps: BffDeps)
         });
       }
 
-      const result: ContractGenerateRecommendationsResult = await generateRecommendations(
-        auth.brandId,
-        requestId,
-        { pool, srPool },
-      );
-      return reply.send({ request_id: requestId, data: result });
+      try {
+        const result: ContractGenerateRecommendationsResult = await generateRecommendations(
+          auth.brandId,
+          requestId,
+          { pool, srPool },
+        );
+        return reply.send({ request_id: requestId, data: result });
+      } catch {
+        return reply.code(503).send({
+          request_id: requestId,
+          error: {
+            code: 'SERVICE_UNAVAILABLE',
+            message: 'This data is temporarily unavailable. Please try again.',
+          },
+        });
+      }
     },
   );
 
@@ -206,9 +226,19 @@ export function registerDecisionsRoutes(fastify: FastifyInstance, deps: BffDeps)
           error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' },
         });
       }
-      const models = await listModels(auth.brandId, requestId, { pool });
-      const result: ContractModelList = { models: models as ContractModel[] };
-      return reply.send({ request_id: requestId, data: result });
+      try {
+        const models = await listModels(auth.brandId, requestId, { pool });
+        const result: ContractModelList = { models: models as ContractModel[] };
+        return reply.send({ request_id: requestId, data: result });
+      } catch {
+        return reply.code(503).send({
+          request_id: requestId,
+          error: {
+            code: 'SERVICE_UNAVAILABLE',
+            message: 'This data is temporarily unavailable. Please try again.',
+          },
+        });
+      }
     },
   );
 
@@ -301,13 +331,23 @@ export function registerDecisionsRoutes(fastify: FastifyInstance, deps: BffDeps)
           error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (StarRocks) not available' },
         });
       }
-      const result: ContractCustomerScoreResult = await serveCustomerScore(
-        auth.brandId,
-        brainId,
-        requestId,
-        { pool, srPool },
-      );
-      return reply.send({ request_id: requestId, data: result });
+      try {
+        const result: ContractCustomerScoreResult = await serveCustomerScore(
+          auth.brandId,
+          brainId,
+          requestId,
+          { pool, srPool },
+        );
+        return reply.send({ request_id: requestId, data: result });
+      } catch {
+        return reply.code(503).send({
+          request_id: requestId,
+          error: {
+            code: 'SERVICE_UNAVAILABLE',
+            message: 'This data is temporarily unavailable. Please try again.',
+          },
+        });
+      }
     },
   );
 }

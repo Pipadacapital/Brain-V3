@@ -395,7 +395,12 @@ describe('defect #4b — forged HMAC → 302 connect_error (never JSON, never co
 
   it('forged callback → connector is NOT created (no connector_instance write)', async () => {
     const stateNonce = randomUUID();
-    // Do NOT seed the state — forged request should fail at HMAC before state consumption
+    // Seed a VALID state so the brand resolves — per-brand BYO-app HMAC is keyed by the brand's own
+    // app secret, so the brand is PEEKED from the state record (read-only) to pick the secret, THEN
+    // HMAC is validated BEFORE any state consume / token exchange / connector write. A forged HMAC
+    // therefore still fails the gate → auth_failed → no connector. (An UNSEEDED state fails earlier
+    // as a state error — also rejected, no connector — covered by the state-nonce tests.)
+    await stateStore.set(B2_BRAND_ID, stateNonce, 900);
     const query = buildForgedShopifyQuery(stateNonce);
     const qs = new URLSearchParams(query).toString();
 

@@ -257,4 +257,33 @@ export function registerBrandRoutes(
       }
     },
   );
+
+  // ── DELETE /api/v1/brands/:id — archive (soft-delete) a brand ───────────────
+  // For "created by mistake" cleanup. Archives the brand (drops out of lists + stops ingest);
+  // reversible. Owner / brand_admin only (enforced in the service). RLS-scoped to the brand.
+  fastify.delete(
+    '/api/v1/brands/:id',
+    { preHandler: [sessionPreHandler] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const correlationId = (request.headers['x-correlation-id'] as string) ?? requestId;
+      const auth = (request as AuthenticatedRequest).auth;
+      const { id } = request.params as { id: string };
+      const workspaceId = auth.workspaceId ?? (request.query as { workspace_id?: string }).workspace_id;
+
+      if (!workspaceId) {
+        return reply.code(400).send({ request_id: requestId, error: { code: 'MISSING_WORKSPACE', message: 'workspace_id required.' } });
+      }
+
+      try {
+        await brandService.archive(id, auth.userId, workspaceId, correlationId);
+        return reply.send({ request_id: requestId, data: { id, archived: true } });
+      } catch (err) {
+        if (err instanceof BrandError) {
+          return reply.code(err.statusCode).send({ request_id: requestId, error: { code: err.code, message: err.message } });
+        }
+        throw err;
+      }
+    },
+  );
 }

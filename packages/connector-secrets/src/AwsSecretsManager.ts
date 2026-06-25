@@ -41,6 +41,7 @@ import type {
   SecretWriteResult,
   ConnectorSecretRef,
 } from './ISecretsManager.js';
+import { sanitizeSecretSubKey } from './ISecretsManager.js';
 
 export class AwsSecretsManager implements ISecretsManager {
   private readonly client: SecretsManagerClient;
@@ -71,7 +72,7 @@ export class AwsSecretsManager implements ISecretsManager {
     connectorRef: ConnectorSecretRef,
     credential: Record<string, string>,
   ): Promise<SecretWriteResult> {
-    const subKey = connectorRef.subKey ? `/${connectorRef.subKey.replace(/\./g, '-')}` : '';
+    const subKey = connectorRef.subKey ? `/${sanitizeSecretSubKey(connectorRef.subKey)}` : '';
     const name = `brain/connector/${connectorRef.connectorType}/${brandId}${subKey}`;
     const secretString = JSON.stringify(credential);
 

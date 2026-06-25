@@ -17,6 +17,8 @@ export interface OAuthDispatch {
     brandId: string;
     shopDomain?: string;
     callbackUrl: string;
+    /** Per-brand BYO-app client_id (resolved by the connect handler); falls back to the env app. */
+    clientId?: string;
   }): Promise<{ oauth_url: string }>;
 }
 

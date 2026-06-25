@@ -6,7 +6,7 @@ import { Loader2, Building2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { sessionApi } from '@/lib/api/client';
-import { BffApiError } from '@/lib/api/client';
+import { BffApiError, userFacingMessage } from '@/lib/api/client';
 import { resolveOnboardingRoute } from '@/components/auth/login-form';
 import { useWorkspaceList } from '@/lib/hooks/use-workspace';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -34,7 +34,7 @@ export function SelectOrgForm() {
     } catch (err) {
       const msg =
         err instanceof BffApiError
-          ? `${err.message} (Request ID: ${err.requestId})`
+          ? userFacingMessage(err)
           : 'Could not switch workspace. Please try again.';
       setSelectError(msg);
       setSelectingId(null);

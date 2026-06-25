@@ -38,11 +38,11 @@ export class PasswordResetRepository {
       expires_at: Date; used_at: Date | null; created_at: Date;
     }>(
       ctx,
+      // Pre-auth lookup (no app.current_user_id GUC) on an RLS-isolated table → use the SECURITY
+      // DEFINER reader (0110). The token hash is the authorization; returns only the matching
+      // unused/unexpired row. See email-verification.repository for the full rationale.
       `SELECT id, app_user_id, token_hash, expires_at, used_at, created_at
-       FROM password_reset
-       WHERE token_hash = $1
-         AND used_at IS NULL
-         AND expires_at > NOW()`,
+       FROM find_password_reset_by_hash($1)`,
       [tokenHash],
     );
     const row = result.rows[0];

@@ -28,6 +28,7 @@ import {
 } from '../../domain/ShopifyHostPolicy.js';
 import type { ISecretsManager } from '@brain/connector-secrets';
 import type { IOAuthStateStore } from '../../infrastructure/state/IOAuthStateStore.js';
+import { resolveBrandOAuthAppCreds } from '../../../../../oauth-app-creds.js';
 
 export interface OAuthCallbackInput {
   /** All query parameters from the Shopify callback URL. */
@@ -83,27 +84,46 @@ export class HandleOAuthCallbackCommand {
   async execute(input: OAuthCallbackInput): Promise<OAuthCallbackResult> {
     const { query, idempotencyKey } = input;
 
-    // ── Step 1: HMAC validation — ABSOLUTE FIRST (NN-4) ──────────────────────
-    // Any failure immediately rejects. No other processing before this passes.
-    const clientSecret = await this.secretsManager.getShopifyClientSecret();
-    const hmacValid = ShopifyHmac.validateOAuthCallback(query, clientSecret);
-    if (!hmacValid) {
-      throw new HmacValidationError();
-    }
-
-    // ── Step 2: State nonce validation + brand_id derivation ─────────────────
-    // MED-CALLBACK-01: brandId is derived from the server-side state record, NOT
-    // from the query string. The query's `state` param is the lookup key; the
-    // server-stored record holds the authoritative brandId bound at install time.
+    // ── Step 0: Resolve the brand's OAuth app creds (read-only) ──────────────
+    // Per-brand BYO-app: Shopify signs the callback HMAC with the brand's OWN client_secret, so we
+    // must know the brand to validate HMAC. brandId comes from the server-side state record — PEEKED
+    // (read-only, no consume): HMAC must still pass before the single-use consume (NN-4) and before
+    // any token exchange. A forged/garbage state peeks to null → rejected, nothing mutated.
     const state = typeof query['state'] === 'string' ? query['state'] : '';
     if (!state) {
       throw new StateNonceError('State parameter missing');
     }
+    // Resolve the brand from the state record FIRST (read-only peek). An unknown/forged state returns
+    // null here → rejected with only a cheap state-store read, BEFORE any Secrets Manager / KMS access
+    // (SEC review MED-1: the common forgery never touches the secret store). Only a state that exists
+    // server-side (an unforgeable 128-bit single-use nonce) proceeds to resolve the brand's app secret.
+    const peeked = await this.stateStore.peekBrandId(state);
+    if (!peeked) {
+      throw new StateNonceError('State nonce not found, expired, or already used');
+    }
+    // The brand's app creds (its own app → env app fallback). Secret used for HMAC + token exchange;
+    // never logged (I-S09).
+    const appCreds = await resolveBrandOAuthAppCreds(this.secretsManager, 'shopify', peeked.brandId, {
+      clientId: process.env['SHOPIFY_CLIENT_ID'] ?? '',
+      clientSecret: await this.secretsManager.getShopifyClientSecret(),
+    });
+    if (!appCreds?.clientSecret) {
+      throw new HmacValidationError();
+    }
+
+    // ── Step 1: HMAC validation — first GATE (NN-4), using the brand's app secret ──
+    // No state consumption / token exchange happens before this passes.
+    const hmacValid = ShopifyHmac.validateOAuthCallback(query, appCreds.clientSecret);
+    if (!hmacValid) {
+      throw new HmacValidationError();
+    }
+
+    // ── Step 2: Consume the state nonce (single-use) → authoritative brand_id ─
+    // MED-CALLBACK-01: brandId is the server-side record, never the query string.
     const stateRecord = await this.stateStore.consumeAndGetBrandId(state);
     if (!stateRecord) {
       throw new StateNonceError('State nonce not found, expired, or already used');
     }
-    // brandId is now server-trusted — never from query param
     const brandId = stateRecord.brandId;
 
     // ── Step 3: Shop domain validation ────────────────────────────────────────
@@ -112,9 +132,9 @@ export class HandleOAuthCallbackCommand {
       throw new ShopDomainError(shopDomain);
     }
 
-    // ── Step 4: Token exchange with Shopify ───────────────────────────────────
+    // ── Step 4: Token exchange with the brand's app client_id + client_secret ──
     const code = typeof query['code'] === 'string' ? query['code'] : '';
-    const accessToken = await this.exchangeCodeForToken(shopDomain, code, clientSecret);
+    const accessToken = await this.exchangeCodeForToken(shopDomain, code, appCreds.clientId, appCreds.clientSecret);
 
     // ── Step 5: Store token in Secrets Manager → get ARN (NN-2) ──────────────
     const { arn: secretRef } = await this.secretsManager.storeShopifyToken(
@@ -188,11 +208,11 @@ export class HandleOAuthCallbackCommand {
   private async exchangeCodeForToken(
     shopDomain: string,
     code: string,
+    clientId: string,
     clientSecret: string,
   ): Promise<string> {
-    const clientId = process.env['SHOPIFY_CLIENT_ID'];
     if (!clientId) {
-      throw new Error('[HandleOAuthCallbackCommand] SHOPIFY_CLIENT_ID not configured');
+      throw new Error('[HandleOAuthCallbackCommand] no Shopify client_id for token exchange');
     }
 
     const response = await fetch(`https://${shopDomain}/admin/oauth/access_token`, {

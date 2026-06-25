@@ -29,6 +29,7 @@ import type { IConnectorSyncStatusRepository } from '@brain/connector-core';
 import type { ISecretsManager } from '@brain/connector-secrets';
 import type { IOAuthStateStore } from '../../../../storefront/shopify/infrastructure/state/IOAuthStateStore.js';
 import type { SetAdAccountIdFn } from '../../../meta/application/commands/HandleMetaOAuthCallbackCommand.js';
+import { resolveBrandOAuthAppCreds } from '../../../../../oauth-app-creds.js';
 
 export interface GoogleAdsOAuthCallbackInput {
   query: Record<string, string | string[] | undefined>;
@@ -88,7 +89,7 @@ export class HandleGoogleAdsOAuthCallbackCommand {
     if (!code) {
       throw new GoogleAdsOAuthError('Authorization code missing from callback');
     }
-    const { refreshToken, accessToken } = await this.exchangeCodeForTokens(code);
+    const { refreshToken, accessToken } = await this.exchangeCodeForTokens(code, brandId);
 
     // ── Step 3: Resolve ALL customer ids (Gap B) — best-effort; empty → __default__ ──
     const adAccountIds = await this.resolveAllCustomerIds(accessToken);
@@ -180,19 +181,22 @@ export class HandleGoogleAdsOAuthCallbackCommand {
   /** Exchange the authorization code for {refresh_token, access_token} via Google's token endpoint. */
   private async exchangeCodeForTokens(
     code: string,
+    brandId: string,
   ): Promise<{ refreshToken: string; accessToken: string }> {
-    const clientId = process.env['GOOGLE_ADS_CLIENT_ID'];
-    const clientSecret = process.env['GOOGLE_ADS_CLIENT_SECRET'];
+    const creds = await resolveBrandOAuthAppCreds(this.secretsManager, 'google_ads', brandId, {
+      clientId: process.env['GOOGLE_ADS_CLIENT_ID'] ?? '',
+      clientSecret: process.env['GOOGLE_ADS_CLIENT_SECRET'] ?? '',
+    });
     const callbackUrl = process.env['GOOGLE_ADS_CALLBACK_URL'];
-    if (!clientId || !clientSecret) {
+    if (!creds?.clientId || !creds?.clientSecret) {
       throw new Error(
         '[HandleGoogleAdsOAuthCallbackCommand] GOOGLE_ADS_CLIENT_ID / GOOGLE_ADS_CLIENT_SECRET not configured',
       );
     }
 
     const body = new URLSearchParams({
-      client_id: clientId,
-      client_secret: clientSecret,
+      client_id: creds.clientId,
+      client_secret: creds.clientSecret,
       code,
       grant_type: 'authorization_code',
       ...(callbackUrl ? { redirect_uri: callbackUrl } : {}),

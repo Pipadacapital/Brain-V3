@@ -48,13 +48,21 @@ export interface RecentEventsResult {
 const MAX_LIMIT = 50;
 const DEFAULT_LIMIT = 20;
 
-/** Drop properties whose KEY looks like PII (defence-in-depth; the pixel sends hashed/anon ids only). */
-const PII_KEY = /(^|_)(email|phone|mobile|name|firstname|lastname|fullname|address|street|city|zip|postal|dob|ssn|pan|aadhaar|ip)(_|$)/i;
-/** Max detail keys + per-value length returned to the Explorer (keep the feed compact + bounded). */
-const MAX_DETAIL_KEYS = 10;
-const MAX_VALUE_LEN = 160;
+/**
+ * Drop properties whose KEY looks like PII (defence-in-depth; the pixel sends hashed/anon ids only).
+ * `.` and `_` are word boundaries so nested/flattened keys are caught too (e.g. utm.email, foo_email).
+ */
+const PII_KEY = /(^|[_.])(email|phone|mobile|name|firstname|lastname|fullname|address|street|city|zip|postal|dob|ssn|pan|aadhaar|ip)([_.]|$)/i;
+/** Max detail keys + per-value length returned to the Explorer (surface the full captured context, bounded). */
+const MAX_DETAIL_KEYS = 30;
+const MAX_VALUE_LEN = 200;
 
-/** Parse the event's properties JSON into a PII-safe, bounded { key: string } detail map. */
+/**
+ * Parse the event's `properties` JSON into a PII-safe, bounded { key: string } detail map — surfacing
+ * the FULL captured context. Nested groups (utm.*, click_ids.*, device.*) are FLATTENED one level with
+ * dotted keys so UTMs, click ids (gclid/fbclid/…), and device context all show. Arrays are joined.
+ * PII-keyed and empty values are dropped (ADR-2); the browser never sends raw PII anyway.
+ */
 function safeDetails(propertiesJson: string | null): Record<string, string> {
   if (!propertiesJson) return {};
   let obj: unknown;
@@ -65,12 +73,24 @@ function safeDetails(propertiesJson: string | null): Record<string, string> {
   }
   if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return {};
   const out: Record<string, string> = {};
+  const put = (key: string, val: unknown): void => {
+    if (Object.keys(out).length >= MAX_DETAIL_KEYS) return;
+    if (PII_KEY.test(key)) return;
+    if (val === null || val === undefined || val === '') return;
+    out[key] = String(val).slice(0, MAX_VALUE_LEN);
+  };
   for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
-    if (Object.keys(out).length >= MAX_DETAIL_KEYS) break;
-    if (PII_KEY.test(k)) continue;
-    if (v === null || v === undefined || v === '') continue;
-    if (typeof v === 'object') continue; // only scalars in the compact detail view
-    out[k] = String(v).slice(0, MAX_VALUE_LEN);
+    if (v !== null && typeof v === 'object' && !Array.isArray(v)) {
+      // Flatten one level: utm.source, click_ids.gclid, device.viewport, … (2-levels-deep skipped).
+      for (const [k2, v2] of Object.entries(v as Record<string, unknown>)) {
+        if (v2 !== null && typeof v2 === 'object') continue;
+        put(`${k}.${k2}`, v2);
+      }
+    } else if (Array.isArray(v)) {
+      put(k, v.filter((x) => x !== null && typeof x !== 'object').join(', '));
+    } else {
+      put(k, v);
+    }
   }
   return out;
 }

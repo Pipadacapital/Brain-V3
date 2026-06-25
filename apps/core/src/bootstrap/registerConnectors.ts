@@ -39,6 +39,7 @@ import { ShopifyPixelInstaller } from '../modules/connector/sources/storefront/s
 import { WooCommercePixelInstaller } from '../modules/connector/sources/storefront/woocommerce/application/install/WooCommercePixelInstaller.js';
 import { InstallWooCommercePixelCommand } from '../modules/connector/sources/storefront/woocommerce/application/commands/InstallWooCommercePixelCommand.js';
 import { getDefinition, isConnectable, CONNECTOR_CATALOG } from '../modules/connector/catalog/index.js';
+import { planCredentialConnect } from '../modules/connector/credential-schema.js';
 import { registerOAuthDispatch, getOAuthDispatch } from '../modules/connector/catalog/dispatch.js';
 import {
   storeBrandOAuthAppCreds,
@@ -413,6 +414,16 @@ export function registerConnectors(app: FastifyInstance, deps: RegisterConnector
           description: def.description,
           connect_method: def.connectMethod as 'oauth' | 'credential' | 'coming_soon',
           available: def.availability === 'available',
+          // The declarative credential/auth fields the marketplace form renders (single SoR — the
+          // catalog). secret fields render as masked password inputs and are never echoed back.
+          auth_fields: (def.authFields ?? []).map((f) => ({
+            key: f.key,
+            label: f.label,
+            type: f.type,
+            secret: f.secret,
+            optional: f.optional ?? false,
+            hint: f.hint ?? null,
+          })),
           instance: firstInstance ? toInstanceShape(firstInstance) : null,
           instances: activeInstances.map(toInstanceShape),
         };
@@ -532,419 +543,46 @@ export function registerConnectors(app: FastifyInstance, deps: RegisterConnector
           return reply.code(400).send({ request_id: requestId, error: { code: 'MISSING_CREDENTIALS', message: 'credentials are required for credential connectors' } });
         }
 
-        // ── Razorpay credential connector (C2 / ADR-RZ-8) ─────────────────
-        if (connectorType === 'razorpay') {
-          const keyId = credentials['key_id'];
-          const keySecret = credentials['key_secret'];
-          const webhookSecret = credentials['webhook_secret'];
-          const razorpayAccountId = credentials['razorpay_account_id'];
+        // ── Generic credential connector (schema-driven, ADR-CM unified path) ─────────
+        // Validation, the Secrets Manager bundle, the provider_config routing identifier, and the
+        // dedicated column are ALL declared in the catalog (def.authFields + def.credentialConnect).
+        // There is NO connector-specific code here — adding a credential connector is a catalog edit.
+        // See modules/connector/credential-schema.ts → planCredentialConnect.
+        const spec = def.credentialConnect;
+        if (!spec || !def.authFields) {
+          return reply.code(422).send({ request_id: requestId, error: { code: 'CONNECTOR_NOT_AVAILABLE', message: `${def.displayName} is not configured for credential connect.` } });
+        }
 
-          if (!keyId || !keySecret || !webhookSecret || !razorpayAccountId) {
-            return reply.code(400).send({
-              request_id: requestId,
-              error: {
-                code: 'MISSING_RAZORPAY_CREDENTIALS',
-                message: 'razorpay connector requires: key_id, key_secret, webhook_secret, razorpay_account_id',
-              },
-            });
-          }
-
-          let arn: string;
-          try {
-            ({ arn } = await connectorSecretsManager.storeSecret(
-              brandId,
-              { connectorType: 'razorpay', subKey: razorpayAccountId },
-              { key_id: keyId, key_secret: keySecret, webhook_secret: webhookSecret },
-            ));
-          } catch {
-            return reply.code(503).send({ request_id: requestId, error: { code: 'SECRETS_UNAVAILABLE', message: 'Could not securely store credentials right now — please retry.' } });
-          }
-
-          const now = new Date();
-          const connectorInstanceId = randomUUID();
-          const instance = ConnectorInstanceEntity.create({
-            id: connectorInstanceId,
-            brandId,
-            provider: 'razorpay',
-            shopDomain: '',
-            secretRef: arn,
-            status: 'connected',
-            healthState: 'Healthy',
-            safetyRating: 'safe',
-            connectedAt: now,
-            disconnectedAt: null,
-            createdAt: now,
-            updatedAt: now,
-            accountKey: razorpayAccountId,
-            providerConfig: { razorpay_account_id: razorpayAccountId },
-          });
-          await connectorRepo.save(instance);
-
-          const rzClient = await rawPgPool.connect();
-          try {
-            await beginRlsTxn(rzClient, { correlationId: requestId, brandId });
-            await rzClient.query(
-              `UPDATE connector_instance SET razorpay_account_id = $1 WHERE id = $2 AND brand_id = $3`,
-              [razorpayAccountId, connectorInstanceId, brandId],
-            );
-            await rzClient.query('COMMIT');
-          } catch (rzErr) {
-            await rzClient.query('ROLLBACK').catch(() => undefined);
-            throw rzErr;
-          } finally {
-            rzClient.release();
-          }
-
-          await auditWriter.append({
-            brand_id: brandId,
-            actor_id: auth?.userId ?? null,
-            actor_role: auth?.role ?? 'unknown',
-            action: 'connector.connected',
-            entity_type: 'connector_instance',
-            entity_id: connectorInstanceId,
-            payload: { connector_type: 'razorpay' },
-          });
-          return reply.code(200).send({
+        const plan = planCredentialConnect(def.authFields, spec, credentials);
+        if (plan.missingRequired.length > 0) {
+          const required = def.authFields.filter((f) => !f.optional).map((f) => f.key);
+          return reply.code(400).send({
             request_id: requestId,
-            data: { kind: 'credential', connected: true, connector_instance_id: connectorInstanceId },
+            error: {
+              code: `MISSING_${connectorType.toUpperCase()}_CREDENTIALS`,
+              message: `${connectorType} connector requires: ${required.join(', ')}`,
+            },
           });
         }
 
-        // ── Shopflo credential connector (Track B) ────────────────────────
-        if (connectorType === 'shopflo') {
-          const apiToken = credentials['api_token'];
-          const merchantId = credentials['merchant_id'];
-          const webhookSecret = credentials['webhook_secret'];
-
-          if (!apiToken || !merchantId || !webhookSecret) {
-            return reply.code(400).send({
-              request_id: requestId,
-              error: {
-                code: 'MISSING_SHOPFLO_CREDENTIALS',
-                message: 'shopflo connector requires: api_token, merchant_id, webhook_secret',
-              },
-            });
-          }
-
-          let arn: string;
-          try {
-            ({ arn } = await connectorSecretsManager.storeSecret(
-              brandId,
-              { connectorType: 'shopflo', subKey: merchantId },
-              { api_token: apiToken, merchant_id: merchantId, webhook_secret: webhookSecret },
-            ));
-          } catch {
-            return reply.code(503).send({ request_id: requestId, error: { code: 'SECRETS_UNAVAILABLE', message: 'Could not securely store credentials right now — please retry.' } });
-          }
-
-          const now = new Date();
-          const connectorInstanceId = randomUUID();
-          const instance = ConnectorInstanceEntity.create({
-            id: connectorInstanceId,
-            brandId,
-            provider: 'shopflo',
-            shopDomain: '',
-            secretRef: arn,
-            status: 'connected',
-            healthState: 'Healthy',
-            safetyRating: 'safe',
-            connectedAt: now,
-            disconnectedAt: null,
-            createdAt: now,
-            updatedAt: now,
-            accountKey: merchantId,
-            providerConfig: { shopflo_merchant_id: merchantId },
-          });
-          await connectorRepo.save(instance);
-
-          const sfClient = await rawPgPool.connect();
-          try {
-            await beginRlsTxn(sfClient, { correlationId: requestId, brandId });
-            await sfClient.query(
-              `UPDATE connector_instance SET shopflo_merchant_id = $1 WHERE id = $2 AND brand_id = $3`,
-              [merchantId, connectorInstanceId, brandId],
-            );
-            await sfClient.query('COMMIT');
-          } catch (sfErr) {
-            await sfClient.query('ROLLBACK').catch(() => undefined);
-            throw sfErr;
-          } finally {
-            sfClient.release();
-          }
-
-          await auditWriter.append({
-            brand_id: brandId,
-            actor_id: auth?.userId ?? null,
-            actor_role: auth?.role ?? 'unknown',
-            action: 'connector.connected',
-            entity_type: 'connector_instance',
-            entity_id: connectorInstanceId,
-            payload: { connector_type: 'shopflo' },
-          });
-          return reply.code(200).send({
-            request_id: requestId,
-            data: { kind: 'credential', connected: true, connector_instance_id: connectorInstanceId },
-          });
-        }
-
-        // ── GoKwik credential connector (Track B) ─────────────────────────
-        if (connectorType === 'gokwik') {
-          const appid = credentials['appid'];
-          const appsecret = credentials['appsecret'];
-          // OPTIONAL inbound-webhook signing secret (POC-mediated). When present, the GoKwik webhook
-          // receiver can verify signatures; without it the receiver fails CLOSED (no spoofed events).
-          const webhookSecret = credentials['webhook_secret'];
-
-          if (!appid || !appsecret) {
-            return reply.code(400).send({
-              request_id: requestId,
-              error: {
-                code: 'MISSING_GOKWIK_CREDENTIALS',
-                message: 'gokwik connector requires: appid, appsecret',
-              },
-            });
-          }
-
-          let arn: string;
-          try {
-            ({ arn } = await connectorSecretsManager.storeSecret(
-              brandId,
-              { connectorType: 'gokwik', subKey: appid },
-              {
-                appid,
-                appsecret,
-                ...(webhookSecret && webhookSecret.trim().length > 0
-                  ? { webhook_secret: webhookSecret.trim() }
-                  : {}),
-              },
-            ));
-          } catch {
-            return reply.code(503).send({ request_id: requestId, error: { code: 'SECRETS_UNAVAILABLE', message: 'Could not securely store credentials right now — please retry.' } });
-          }
-
-          const now = new Date();
-          const connectorInstanceId = randomUUID();
-          const instance = ConnectorInstanceEntity.create({
-            id: connectorInstanceId,
-            brandId,
-            provider: 'gokwik',
-            shopDomain: '',
-            secretRef: arn,
-            status: 'connected',
-            healthState: 'Healthy',
-            safetyRating: 'safe',
-            connectedAt: now,
-            disconnectedAt: null,
-            createdAt: now,
-            updatedAt: now,
-            accountKey: appid,
-            providerConfig: { gokwik_appid: appid },
-          });
-          await connectorRepo.save(instance);
-
-          const gkClient = await rawPgPool.connect();
-          try {
-            await beginRlsTxn(gkClient, { correlationId: requestId, brandId });
-            await gkClient.query(
-              `UPDATE connector_instance SET gokwik_appid = $1 WHERE id = $2 AND brand_id = $3`,
-              [appid, connectorInstanceId, brandId],
-            );
-            await gkClient.query('COMMIT');
-          } catch (gkErr) {
-            await gkClient.query('ROLLBACK').catch(() => undefined);
-            throw gkErr;
-          } finally {
-            gkClient.release();
-          }
-
-          await auditWriter.append({
-            brand_id: brandId,
-            actor_id: auth?.userId ?? null,
-            actor_role: auth?.role ?? 'unknown',
-            action: 'connector.connected',
-            entity_type: 'connector_instance',
-            entity_id: connectorInstanceId,
-            payload: { connector_type: 'gokwik' },
-          });
-          return reply.code(200).send({
-            request_id: requestId,
-            data: { kind: 'credential', connected: true, connector_instance_id: connectorInstanceId },
-          });
-        }
-
-        // ── Shiprocket credential connector (logistics) ──────────────────
-        if (connectorType === 'shiprocket') {
-          const email = credentials['email'];
-          const password = credentials['password'];
-          const channelId = credentials['channel_id'] ?? null;
-
-          if (!email || !password) {
-            return reply.code(400).send({
-              request_id: requestId,
-              error: {
-                code: 'MISSING_SHIPROCKET_CREDENTIALS',
-                message: 'shiprocket connector requires: email, password',
-              },
-            });
-          }
-
-          let arn: string;
-          try {
-            ({ arn } = await connectorSecretsManager.storeSecret(
-              brandId,
-              { connectorType: 'shiprocket', subKey: channelId ?? email },
-              { email, password },
-            ));
-          } catch {
-            return reply.code(503).send({ request_id: requestId, error: { code: 'SECRETS_UNAVAILABLE', message: 'Could not securely store credentials right now — please retry.' } });
-          }
-
-          const now = new Date();
-          const connectorInstanceId = randomUUID();
-          const shiprocketAccountKey = channelId ?? email;
-          const instance = ConnectorInstanceEntity.create({
-            id: connectorInstanceId,
-            brandId,
-            provider: 'shiprocket',
-            shopDomain: '',
-            secretRef: arn,
-            status: 'connected',
-            healthState: 'Healthy',
-            safetyRating: 'safe',
-            connectedAt: now,
-            disconnectedAt: null,
-            createdAt: now,
-            updatedAt: now,
-            accountKey: shiprocketAccountKey,
-            providerConfig: channelId ? { shiprocket_channel_id: channelId } : {},
-          });
-          await connectorRepo.save(instance);
-
-          if (channelId) {
-            const srClient = await rawPgPool.connect();
-            try {
-              await beginRlsTxn(srClient, { correlationId: requestId, brandId });
-              await srClient.query(
-                `UPDATE connector_instance SET shiprocket_channel_id = $1 WHERE id = $2 AND brand_id = $3`,
-                [channelId, connectorInstanceId, brandId],
-              );
-              await srClient.query('COMMIT');
-            } catch (srErr) {
-              await srClient.query('ROLLBACK').catch(() => undefined);
-              throw srErr;
-            } finally {
-              srClient.release();
-            }
-          }
-
-          await auditWriter.append({
-            brand_id: brandId,
-            actor_id: auth?.userId ?? null,
-            actor_role: auth?.role ?? 'unknown',
-            action: 'connector.connected',
-            entity_type: 'connector_instance',
-            entity_id: connectorInstanceId,
-            payload: { connector_type: 'shiprocket' },
-          });
-          return reply.code(200).send({
-            request_id: requestId,
-            data: { kind: 'credential', connected: true, connector_instance_id: connectorInstanceId },
-          });
-        }
-
-        // ── WooCommerce credential connector (storefront) ─────────────────
-        if (connectorType === 'woocommerce') {
-          const consumerKey = credentials['consumer_key'];
-          const consumerSecret = credentials['consumer_secret'];
-          const siteUrl = credentials['site_url'];
-          const webhookSecret = credentials['webhook_secret'];
-
-          if (!consumerKey || !consumerSecret || !siteUrl) {
-            return reply.code(400).send({
-              request_id: requestId,
-              error: {
-                code: 'MISSING_WOOCOMMERCE_CREDENTIALS',
-                message: 'woocommerce connector requires: consumer_key, consumer_secret, site_url',
-              },
-            });
-          }
-
-          let arn: string;
-          try {
-            ({ arn } = await connectorSecretsManager.storeSecret(
-              brandId,
-              { connectorType: 'woocommerce', subKey: siteUrl },
-              webhookSecret
-                ? { consumer_key: consumerKey, consumer_secret: consumerSecret, webhook_secret: webhookSecret }
-                : { consumer_key: consumerKey, consumer_secret: consumerSecret },
-            ));
-          } catch {
-            return reply.code(503).send({ request_id: requestId, error: { code: 'SECRETS_UNAVAILABLE', message: 'Could not securely store credentials right now — please retry.' } });
-          }
-
-          const now = new Date();
-          const connectorInstanceId = randomUUID();
-          const instance = ConnectorInstanceEntity.create({
-            id: connectorInstanceId,
-            brandId,
-            provider: 'woocommerce',
-            shopDomain: siteUrl,
-            secretRef: arn,
-            status: 'connected',
-            healthState: 'Healthy',
-            safetyRating: 'safe',
-            connectedAt: now,
-            disconnectedAt: null,
-            createdAt: now,
-            updatedAt: now,
-            accountKey: siteUrl,
-            providerConfig: { woocommerce_site_url: siteUrl },
-          });
-          await connectorRepo.save(instance);
-
-          const wcClient = await rawPgPool.connect();
-          try {
-            await beginRlsTxn(wcClient, { correlationId: requestId, brandId });
-            await wcClient.query(
-              `UPDATE connector_instance SET woocommerce_site_url = $1 WHERE id = $2 AND brand_id = $3`,
-              [siteUrl, connectorInstanceId, brandId],
-            );
-            await wcClient.query('COMMIT');
-          } catch (wcErr) {
-            await wcClient.query('ROLLBACK').catch(() => undefined);
-            throw wcErr;
-          } finally {
-            wcClient.release();
-          }
-
-          await auditWriter.append({
-            brand_id: brandId,
-            actor_id: auth?.userId ?? null,
-            actor_role: auth?.role ?? 'unknown',
-            action: 'connector.connected',
-            entity_type: 'connector_instance',
-            entity_id: connectorInstanceId,
-            payload: { connector_type: 'woocommerce' },
-          });
-          return reply.code(200).send({
-            request_id: requestId,
-            data: { kind: 'credential', connected: true, connector_instance_id: connectorInstanceId },
-          });
-        }
-
-        // Generic credential connector path
         let arn: string;
         try {
-          ({ arn } = await connectorSecretsManager.storeSecret(brandId, { connectorType }, credentials));
+          ({ arn } = await connectorSecretsManager.storeSecret(
+            brandId,
+            { connectorType, subKey: plan.accountKey },
+            plan.secretBundle,
+          ));
         } catch {
           return reply.code(503).send({ request_id: requestId, error: { code: 'SECRETS_UNAVAILABLE', message: 'Could not securely store credentials right now — please retry.' } });
         }
+
         const now = new Date();
+        const connectorInstanceId = randomUUID();
         const instance = ConnectorInstanceEntity.create({
-          id: randomUUID(),
+          id: connectorInstanceId,
           brandId,
           provider: connectorType,
-          shopDomain: '',
+          shopDomain: plan.shopDomain,
           secretRef: arn,
           status: 'connected',
           healthState: 'Healthy',
@@ -953,20 +591,44 @@ export function registerConnectors(app: FastifyInstance, deps: RegisterConnector
           disconnectedAt: null,
           createdAt: now,
           updatedAt: now,
-          accountKey: '__default__',
-          providerConfig: {},
+          accountKey: plan.accountKey,
+          providerConfig: plan.providerConfig,
         });
         await connectorRepo.save(instance);
+
+        // Mirror the routing identifier into its dedicated column (webhook/repull lookup key). The
+        // column name is a static catalog value, guarded by SAFE_IDENTIFIER in planCredentialConnect.
+        if (plan.instanceColumnUpdate) {
+          const { column, value } = plan.instanceColumnUpdate;
+          const colClient = await rawPgPool.connect();
+          try {
+            await beginRlsTxn(colClient, { correlationId: requestId, brandId });
+            await colClient.query(
+              `UPDATE connector_instance SET ${column} = $1 WHERE id = $2 AND brand_id = $3`,
+              [value, connectorInstanceId, brandId],
+            );
+            await colClient.query('COMMIT');
+          } catch (colErr) {
+            await colClient.query('ROLLBACK').catch(() => undefined);
+            throw colErr;
+          } finally {
+            colClient.release();
+          }
+        }
+
         await auditWriter.append({
           brand_id: brandId,
           actor_id: auth?.userId ?? null,
           actor_role: auth?.role ?? 'unknown',
           action: 'connector.connected',
           entity_type: 'connector_instance',
-          entity_id: instance.id,
+          entity_id: connectorInstanceId,
           payload: { connector_type: connectorType },
         });
-        return reply.code(200).send({ request_id: requestId, data: { kind: 'credential', connected: true } });
+        return reply.code(200).send({
+          request_id: requestId,
+          data: { kind: 'credential', connected: true, connector_instance_id: connectorInstanceId },
+        });
       }
 
       return reply.code(422).send({ request_id: requestId, error: { code: 'CONNECTOR_NOT_AVAILABLE', message: 'Connector type not available' } });

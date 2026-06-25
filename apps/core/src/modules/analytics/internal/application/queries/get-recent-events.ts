@@ -23,6 +23,7 @@
 
 import { withSilverBrand, BRAND_PREDICATE } from '@brain/metric-engine';
 import { type BronzeReadDeps, ICEBERG_BRONZE, hasSilver } from './_bronze-source.js';
+import { PIXEL_EVENT_IN } from './_pixel-events.js';
 
 export interface RecentEventRow {
   event_id: string;
@@ -46,27 +47,6 @@ export interface RecentEventsResult {
 /** Hard cap on rows returned to the Event Explorer. */
 const MAX_LIMIT = 50;
 const DEFAULT_LIMIT = 20;
-
-/**
- * The PIXEL event taxonomy — the events we receive THROUGH the pixel (browser-originated, via the
- * collector /collect endpoint). The Event Explorer is a pixel surface, so it shows ONLY these and
- * NEVER server-trusted connector events (order.live.v1, spend.live.v1, gokwik.*, shopflo.*,
- * shiprocket.*, settlement.*). Mirrors the pixel SDK (packages/pixel-sdk/src/capture.ts) + the
- * universal capture script (apps/collector/src/interfaces/rest/pixel-asset.route.ts). NB: the pixel's
- * client-side `order.placed` is distinct from the connector's server `order.live.v1`.
- */
-const PIXEL_EVENT_TYPES = [
-  'page.viewed', 'product.viewed', 'collection.viewed', 'search.submitted',
-  'cart.item_added', 'cart.item_removed', 'cart.updated', 'cart.viewed',
-  'checkout.started', 'checkout.step_viewed', 'checkout.shipping_selected',
-  'payment.initiated', 'payment.succeeded', 'payment.failed',
-  'coupon.applied', 'form.submitted', 'order.placed',
-  'rage.click', 'dead.click', 'element.clicked', 'scroll.depth',
-  'user.logged_in', 'user.signed_up', 'identify',
-] as const;
-
-/** Static, code-defined values — safe to inline into the IN list (never user input). */
-const PIXEL_EVENT_IN = PIXEL_EVENT_TYPES.map((t) => `'${t}'`).join(', ');
 
 /** Drop properties whose KEY looks like PII (defence-in-depth; the pixel sends hashed/anon ids only). */
 const PII_KEY = /(^|_)(email|phone|mobile|name|firstname|lastname|fullname|address|street|city|zip|postal|dob|ssn|pan|aadhaar|ip)(_|$)/i;

@@ -52,6 +52,37 @@ export interface ConnectorAuthField {
   hint?: string;
 }
 
+/**
+ * CredentialConnectSpec — the declarative storage shape for ONE credential connector.
+ *
+ * This replaces the hand-written per-connector "which key is the secret bundle vs the routing
+ * identifier vs the dedicated column" branches that used to live in bootstrap/registerConnectors.ts.
+ * The generic connect handler reads this + authFields and needs NO connector-specific code.
+ *
+ * Storage model (per brand_id, see modules/connector/credential-schema.ts → planCredentialConnect):
+ *   - Secrets Manager bundle  = the secret:true authFields  ∪  `bundleNonSecretFields`. The second
+ *     set are NON-secret values the provider's API nonetheless needs alongside the secret to
+ *     authenticate (e.g. Razorpay key_id, GoKwik appid, Shiprocket email) — they ride in the same
+ *     encrypted per-brand bundle the repull/token code already reads. Nothing else goes in the bundle.
+ *   - connector_instance.provider_config + the dedicated `instanceColumn` = the routing identifier
+ *     (`accountKeyField` value), the safe-to-display merchant id used for webhook/repull lookup.
+ */
+export interface CredentialConnectSpec {
+  /** authField key whose value is the per-account sub-key (secret ref) + accountKey on the row. */
+  accountKeyField: string;
+  /** When `accountKeyField` is optional and absent, use this field's value for the sub-key/accountKey. */
+  accountKeyFallbackField?: string;
+  /**
+   * The connector_instance column (== provider_config key) set to the `accountKeyField` value when
+   * it is present. MUST be a static, lowercase snake_case identifier (it is interpolated into SQL).
+   */
+  instanceColumn: string;
+  /** authField key whose value becomes connector_instance.shop_domain (default '' when omitted). */
+  shopDomainField?: string;
+  /** NON-secret authField keys that must ALSO ride in the Secrets Manager bundle (provider auth set). */
+  bundleNonSecretFields?: string[];
+}
+
 export interface ConnectorDefinition {
   /** Canonical type key — matches provider CHECK in connector_instance where it has a backend. */
   id: string;
@@ -62,11 +93,18 @@ export interface ConnectorDefinition {
   availability: 'available' | 'coming_soon';
   description: string;
   /**
-   * Declarative per-connector auth/credential fields (ADDITIVE — see ConnectorAuthField).
-   * Present for credential connectors and for OAuth tiles that accept optional BYO-app creds.
-   * Absent for coming_soon tiles with no backend.
+   * Declarative per-connector auth/credential fields (see ConnectorAuthField). Present for
+   * credential connectors and for OAuth tiles that accept optional BYO-app creds. Absent for
+   * coming_soon tiles with no backend. This DRIVES the generic credential connect handler
+   * (validation + the form the marketplace renders).
    */
   authFields?: ConnectorAuthField[];
+  /**
+   * Declarative credential-storage spec for connectMethod==='credential' connectors. DRIVES the
+   * generic connect handler's secret-bundle / provider_config / column split. Omitted for OAuth
+   * and coming_soon tiles.
+   */
+  credentialConnect?: CredentialConnectSpec;
 }
 
 /** Shared hint for OAuth "bring your own app" client credentials (all optional). */
@@ -102,6 +140,11 @@ export const CONNECTOR_CATALOG: readonly ConnectorDefinition[] = [
       { key: 'consumer_secret', label: 'Consumer Secret', type: 'password', secret: true },
       { key: 'webhook_secret', label: 'Webhook Secret', type: 'password', secret: true, optional: true },
     ],
+    credentialConnect: {
+      accountKeyField: 'site_url',
+      instanceColumn: 'woocommerce_site_url',
+      shopDomainField: 'site_url',
+    },
   },
   // ── ads ───────────────────────────────────────────────────────────────────────
   {
@@ -136,9 +179,16 @@ export const CONNECTOR_CATALOG: readonly ConnectorDefinition[] = [
     authFields: [
       { key: 'key_id', label: 'Key ID', type: 'text', secret: false },
       { key: 'key_secret', label: 'Key Secret', type: 'password', secret: true },
-      { key: 'webhook_secret', label: 'Webhook Secret', type: 'password', secret: true, optional: true },
+      // Required: the inbound webhook HMAC secret — the Razorpay webhook receiver fails closed without it.
+      { key: 'webhook_secret', label: 'Webhook Secret', type: 'password', secret: true },
       { key: 'razorpay_account_id', label: 'Account ID', type: 'text', secret: false },
     ],
+    credentialConnect: {
+      accountKeyField: 'razorpay_account_id',
+      instanceColumn: 'razorpay_account_id',
+      // key_id is non-secret but the settlement-repull API client reads it from the bundle.
+      bundleNonSecretFields: ['key_id'],
+    },
   },
   {
     id: 'gokwik',
@@ -152,6 +202,12 @@ export const CONNECTOR_CATALOG: readonly ConnectorDefinition[] = [
       { key: 'appsecret', label: 'App Secret', type: 'password', secret: true },
       { key: 'webhook_secret', label: 'Webhook Secret', type: 'password', secret: true, optional: true },
     ],
+    credentialConnect: {
+      accountKeyField: 'appid',
+      instanceColumn: 'gokwik_appid',
+      // appid is the routing id AND part of the AWB API auth set (repull reads it from the bundle).
+      bundleNonSecretFields: ['appid'],
+    },
   },
   {
     id: 'shopflo',
@@ -165,6 +221,11 @@ export const CONNECTOR_CATALOG: readonly ConnectorDefinition[] = [
       { key: 'merchant_id', label: 'Merchant ID', type: 'text', secret: false },
       { key: 'webhook_secret', label: 'Webhook Secret', type: 'password', secret: true },
     ],
+    credentialConnect: {
+      // merchant_id is routing-only — webhook lookup reads it from the column, never the bundle.
+      accountKeyField: 'merchant_id',
+      instanceColumn: 'shopflo_merchant_id',
+    },
   },
   // ── logistics ────────────────────────────────────────────────────────────────
   {
@@ -179,6 +240,14 @@ export const CONNECTOR_CATALOG: readonly ConnectorDefinition[] = [
       { key: 'password', label: 'Password', type: 'password', secret: true },
       { key: 'channel_id', label: 'Channel ID', type: 'text', secret: false, optional: true },
     ],
+    credentialConnect: {
+      // channel_id (optional) is the routing key when given; else the email is the sub-key.
+      accountKeyField: 'channel_id',
+      accountKeyFallbackField: 'email',
+      instanceColumn: 'shiprocket_channel_id',
+      // email is non-secret but the token provider mints the JWT from {email,password} in the bundle.
+      bundleNonSecretFields: ['email'],
+    },
   },
   // ── messaging ────────────────────────────────────────────────────────────────
   {

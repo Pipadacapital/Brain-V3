@@ -38,7 +38,7 @@ const DB_URL =
   process.env['BRAIN_APP_DATABASE_URL'] ??
   'postgres://brain_app:brain_app@localhost:5432/brain';
 const BROKERS = (process.env['KAFKA_BROKERS'] ?? 'localhost:9092').split(',');
-const ENV = process.env['APP_ENV'] ?? 'dev';
+const ENV = process.env['NODE_ENV'] === 'production' ? 'prod' : 'dev';
 const LIVE_TOPIC = process.env['COLLECTOR_TOPIC'] ?? `${ENV}.${COLLECTOR_EVENT_V1_TOPIC_SUFFIX}`;
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -59,8 +59,7 @@ interface RtoFixtureFile {
  * at-checkout call to observe yet, so the fixture must NOT be read — it would emit synthetic events
  * onto the live lane masquerading as real. Gate to an empty source in prod; dev behaviour unchanged.
  */
-const IS_PRODUCTION =
-  process.env['NODE_ENV'] === 'production' || (process.env['APP_ENV'] ?? '').startsWith('prod');
+const IS_PRODUCTION = process.env['NODE_ENV'] === 'production';
 
 function loadFixture(): GokwikRtoPredictRecord[] {
   if (IS_PRODUCTION) {

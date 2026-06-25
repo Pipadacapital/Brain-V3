@@ -197,7 +197,9 @@ export async function main(): Promise<void> {
     pixelIngestBaseUrl: getEnv('PIXEL_INGEST_BASE_URL', 'http://localhost:8787'),
     // Webhook live-lane Kafka config (B1 / ADR-LV-3)
     kafkaBrokers: (getEnv('KAFKA_BROKERS', 'localhost:9092')).split(','),
-    kafkaEnv: getEnv('APP_ENV', 'dev'),
+    // Kafka topic prefix — derived from NODE_ENV (production → 'prod') so it agrees with the
+    // collector (which derives 'prod' from NODE_ENV) regardless of the APP_ENV env-file selector.
+    kafkaEnv: process.env['NODE_ENV'] === 'production' ? 'prod' : 'dev',
     // Webhook registration callback base URL (B2 / ADR-LV-5 — public URL in prod)
     webhookCallbackBaseUrl: getEnv('WEBHOOK_CALLBACK_BASE_URL', 'http://localhost:3001'),
     // Silver tier (StarRocks) read pool — feat-silver-tier-order-state. The metric-engine

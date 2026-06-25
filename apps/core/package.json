@@ -7,7 +7,7 @@
     "build": "tsc -b",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "dev": "tsx watch --env-file=../../.env --env-file-if-exists=../../.env.${APP_ENV:-dev} src/main.ts",
+    "dev": "tsx watch --env-file=../../.env.${APP_ENV:-local-prod} src/main.ts",
     "test:unit": "vitest run --passWithNoTests",
     "test:isolation": "vitest run isolation --passWithNoTests",
     "test:parity": "vitest run parity --passWithNoTests"

@@ -127,10 +127,10 @@ CONTENT is byte-identical). See RB-4 Slice 4b (order-line).
 
 The cut-over flags live in per-env files, auto-selected by `APP_ENV` and layered over the shared base:
 `tsx --env-file=../../.env --env-file-if-exists=../../.env.${APP_ENV:-dev}` (core, stream-worker,
-collector). Local/dev → `.env.dev` (APP_ENV unset → `dev`); prod → `.env.prod` (deploy sets
-`APP_ENV=prod` + `NODE_ENV=production`). So "going live" is literally setting `BRONZE_OPERATIONAL_READ_SOURCE`
+collector). Local/dev → `.env.local-prod` (APP_ENV unset → `dev`); prod → `.env.local-prod` (deploy sets
+`APP_ENV=local-prod` + `NODE_ENV=production`). So "going live" is literally setting `BRONZE_OPERATIONAL_READ_SOURCE`
 (then `BRONZE_PG_WRITE_ENABLED`) in the environment's override file (or the injected secret) and redeploying —
-the same flip rehearsed locally below. See `.env.prod.example`, and the **prod-on-local** section for running
+the same flip rehearsed locally below. See `.env.production.example`, and the **prod-on-local** section for running
 the full production code paths (AWS Secrets Manager + KMS via LocalStack) locally.
 
 ## Local cut-over rehearsal (executed against Docker)
@@ -143,7 +143,7 @@ iceberg-rest) as a production simulation — every gate verified:
   (via the live-order-bronze-bridge) and Iceberg (via Spark) — dual-sink confirmed.
 - **Phase 2 (parity):** identity reconciliation — real tenant brand `124e6af5` exact (940 = 940);
   the only delta was the `b9f10030` D13-erasure *test* brand (Iceberg-only). Gate green.
-- **Phase 3 (read flip):** `BRONZE_OPERATIONAL_READ_SOURCE=iceberg` in `.env.dev`; silver rebuilt from
+- **Phase 3 (read flip):** `BRONZE_OPERATIONAL_READ_SOURCE=iceberg` in `.env.local-prod`; silver rebuilt from
   Iceberg (env-driven, no `--vars`); core restarted healthy on the Iceberg read path.
 - **Phase 4 (write retire):** `BRONZE_PG_WRITE_ENABLED=false`; stream-worker restarted. A post-retire
   `order.live.v1` landed in Iceberg (1) but NOT in PG bronze (0); PG bronze total held flat (940) —
@@ -164,19 +164,19 @@ secrets), `KmsVaultKeyProvider` (per-brand PII-vault DEK unwrapped via KMS from 
 LocalStack (compose `core` profile) stands in for AWS Secrets Manager + KMS. One-time seed:
 
 ```bash
-pnpm bootstrap:prodlocal     # tools/seed/prod-local-aws-bootstrap.sh — idempotent:
+pnpm bootstrap     # tools/seed/prod-local-aws-bootstrap.sh — idempotent:
                              #  • KMS CMK + alias/brain-connector-secrets
                              #  • SM secrets brain/{jwt-signing,cookie,shopify-client}-secret (from dev .env)
                              #  • brand_keyring: dev DEK KMS-wrapped (prod unwraps the SAME 32-byte DEK)
-pnpm dev:prodlocal           # APP_ENV=prod turbo run dev … → loads .env.prod (NODE_ENV=production)
+pnpm dev           # APP_ENV=local-prod turbo run dev … → loads .env.local-prod (NODE_ENV=production)
 ```
 
-`.env.prod` (gitignored; template `.env.prod.example`) points the AWS SDK at LocalStack via
+`.env.local-prod` (gitignored; template `.env.production.example`) points the AWS SDK at LocalStack via
 `AWS_ENDPOINT_URL=http://localhost:4566` and carries the secret *references* (names, not values),
 the KMS key id, `COLLECTOR_TOPIC=prod.collector.event.v1`, and the go-live Bronze flags.
 
 **Naming (important):** `NODE_ENV=production` (the `@brain/config` enum) flips the code paths;
-`APP_ENV=prod` (short) is the topic prefix — both required, and `APP_ENV` MUST be `prod` so the
+`APP_ENV=local-prod` (short) is the topic prefix — both required, and `APP_ENV` MUST be `prod` so the
 core live lane + stream-worker + collector all agree on `prod.collector.event.v1`. `turbo.json`
 `globalPassThroughEnv` must include `APP_ENV` (and the AWS/Bronze/StarRocks vars) or turbo strips
 them and the `.env.${APP_ENV}` selection silently falls back to `dev`.

@@ -62,12 +62,15 @@ defaults:
 # PG⇄Iceberg parity oracle. Flip `enabled: true` per env only when ready to start the migration;
 # turn off to instantly stop the dual-sink. See db/iceberg/spark/ + docs/adr/0002-*.
 sparkBronze:
-  # CI now builds + digest-pins the spark-bronze image (build-data-images). The ONLY remaining gate is
-  # a Spark-on-k8s cluster (Spark Operator / a node pool sized for the driver). Enabling it WITHOUT that
-  # would schedule a CronWorkflow that fails at runtime, so it stays OFF here and is a documented
-  # ONE-LINE FLIP (enabled: true) per env once the cluster exists — see
-  # docs/runbooks/enable-prod-cron-pipeline.md. (The dbt crons above need no cluster → already enabled.)
-  enabled: false
+  # ENABLED. CORRECTION: the sink runs spark-submit --master local[*] in a SINGLE Argo Workflow pod
+  # (see templates/spark-bronze.yaml + the Dockerfile ENTRYPOINT) — it needs NO Spark Operator and NO
+  # dedicated cluster, just a pod sized for the driver (resources below give 4Gi; driverMemory 3g). The
+  # image is CI-built + digest-pinned (build-data-images). The remaining PREREQUISITE is operational,
+  # not infra: core-env (envSecretName) MUST carry the sink's config — KAFKA_BROKERS, ICEBERG_REST_URI/
+  # warehouse + AWS creds, CHECKPOINT_LOCATION (a DURABLE s3a:// path), and BOTH lane topics
+  # (COLLECTOR_TOPIC + BACKFILL_TOPIC). Without those the runs fail LOUDLY (visible Argo failures, not
+  # silent). See docs/runbooks/enable-attribution-unlocks.md. Flip back to false to instantly stop it.
+  enabled: true
   image:
     repository: REPLACE_WITH_ECR_REGISTRY/brain-spark-bronze   # built from db/iceberg/spark/Dockerfile
     tag: ""            # B3: digest preferred; CI populates at deploy (fail-closed in the template)

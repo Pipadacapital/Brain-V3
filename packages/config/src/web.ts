@@ -29,7 +29,7 @@ import { CommonEnvSchema, defineConfig } from './common.js';
 // ── Web (server-side) env vars ────────────────────────────────────────────────
 
 export const WebEnvSchema = CommonEnvSchema.extend({
-  SERVICE_NAME: z.literal('web'),
+  SERVICE_NAME: z.literal('web').default('web'),
 
   // ── Server-side rewrite targets (consumed in next.config.js rewrites()) ─────
   // The web app talks ONLY to the frontend-api BFF (ADR-011); next.config.js

@@ -39,7 +39,9 @@ const strictOne = (def: boolean) =>
 // ── Stream-worker env vars ────────────────────────────────────────────────────
 
 export const StreamWorkerEnvSchema = CommonEnvSchema.extend({
-  SERVICE_NAME: z.literal('stream-worker'),
+  // Self-satisfying so the memoized loader validates even when SERVICE_NAME is unset (the common
+  // case — it is rarely injected per-service in dev). default() fills the literal when env omits it.
+  SERVICE_NAME: z.literal('stream-worker').default('stream-worker'),
 
   // ── Core infra ──────────────────────────────────────────────────────────────
   /** Kafka broker list (comma-split). main.ts + every repull/backfill job. */

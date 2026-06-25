@@ -965,11 +965,12 @@ export type AnalyticsTrackingHealthResponse =
 
 export interface AnalyticsRecentEventRow {
   event_id: string;
-  event_type: string;        // 'page.viewed' | 'cart.item_added' | ...
+  event_type: string;        // 'page.viewed' | 'cart.item_added' | ... (pixel events only)
   occurred_at: string;       // ISO timestamp
   anon_id: string | null;    // brain_anon_id (anonymized)
   session_id: string | null; // hashed_session_id (anonymized)
   has_consent: boolean;
+  details: Record<string, string>; // PII-safe per-event properties (page path, value, step, …)
 }
 
 export interface AnalyticsRecentEventsResponse {

@@ -17,6 +17,8 @@ export interface CredentialField {
   secret: boolean;
   /** When true, the field may be left blank (the connect submit isn't gated on it). */
   optional?: boolean;
+  /** Optional helper text rendered beneath the input. */
+  hint?: string;
 }
 
 const RAZORPAY_FIELDS: CredentialField[] = [
@@ -51,6 +53,29 @@ const WOOCOMMERCE_FIELDS: CredentialField[] = [
   { key: 'consumer_secret', label: 'Consumer Secret', placeholder: '••••••••••••', secret: true },
 ];
 
+// ── OAuth "bring your own app" credentials (Shopify / Meta / Google Ads) ──────
+// These OAuth tiles connect via the auth-code redirect flow. By default Brain's own
+// registered OAuth app handles the handshake (env-app fallback, server-side). A brand
+// may instead supply ITS OWN OAuth app's Client ID + Client Secret here; both are
+// OPTIONAL — left blank, the server falls back to Brain's app. client_secret is a
+// secret (type="password", never echoed back). Keys MUST be client_id / client_secret.
+const OAUTH_APP_HINT = "Optional — leave blank to use Brain's app";
+
+const SHOPIFY_OAUTH_FIELDS: CredentialField[] = [
+  { key: 'client_id', label: 'Client ID', placeholder: 'Your Shopify app API key', secret: false, optional: true, hint: OAUTH_APP_HINT },
+  { key: 'client_secret', label: 'Client Secret', placeholder: '••••••••••••', secret: true, optional: true, hint: OAUTH_APP_HINT },
+];
+
+const META_OAUTH_FIELDS: CredentialField[] = [
+  { key: 'client_id', label: 'Client ID', placeholder: 'Your Meta app ID', secret: false, optional: true, hint: OAUTH_APP_HINT },
+  { key: 'client_secret', label: 'Client Secret', placeholder: '••••••••••••', secret: true, optional: true, hint: OAUTH_APP_HINT },
+];
+
+const GOOGLE_ADS_OAUTH_FIELDS: CredentialField[] = [
+  { key: 'client_id', label: 'Client ID', placeholder: 'Your Google OAuth client ID', secret: false, optional: true, hint: OAUTH_APP_HINT },
+  { key: 'client_secret', label: 'Client Secret', placeholder: '••••••••••••', secret: true, optional: true, hint: OAUTH_APP_HINT },
+];
+
 /**
  * Resolve a provider's credential fields; defaults to Razorpay's set for any other credential tile.
  * Exported for unit-testing.
@@ -63,6 +88,13 @@ export function credentialFieldsFor(tileId: string): CredentialField[] {
       return SHOPFLO_FIELDS;
     case 'gokwik':
       return GOKWIK_FIELDS;
+    // OAuth "bring your own app" tiles — all-optional Client ID + Client Secret.
+    case 'shopify':
+      return SHOPIFY_OAUTH_FIELDS;
+    case 'meta':
+      return META_OAUTH_FIELDS;
+    case 'google_ads':
+      return GOOGLE_ADS_OAUTH_FIELDS;
     default:
       return RAZORPAY_FIELDS;
   }

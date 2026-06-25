@@ -134,6 +134,28 @@ describe('HandleOAuthCallbackCommand', () => {
     expect(emitEvent).not.toHaveBeenCalled();
   });
 
+  it('rejects an unknown/forged state WITHOUT touching the secret store (SEC MED-1 negative control)', async () => {
+    const stateStore = new InProcessOAuthStateStore();
+    const secretsMgr = new LocalSecretsManager();
+    const getSecretSpy = vi.spyOn(secretsMgr, 'getSecret');
+    const cmd = new HandleOAuthCallbackCommand(
+      secretsMgr,
+      stateStore,
+      makeConnectorRepo(),
+      makeSyncStatusRepo(),
+      vi.fn().mockResolvedValue(undefined),
+    );
+
+    // No state seeded → peekBrandId returns null → reject BEFORE resolving any per-brand secret.
+    const query = buildValidQuery('unknown-forged-state');
+    await expect(
+      cmd.execute({ query, idempotencyKey: 'idem-forged' }),
+    ).rejects.toThrow(StateNonceError);
+
+    // The forged callback must not reach Secrets Manager / KMS at all.
+    expect(getSecretSpy).not.toHaveBeenCalled();
+  });
+
   it('throws StateNonceError for invalid state AFTER HMAC passes (NN-4 order check)', async () => {
     const stateStore = new InProcessOAuthStateStore();
     const secretsMgr = new LocalSecretsManager();

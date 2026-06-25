@@ -33,4 +33,13 @@ export interface IOAuthStateStore {
    * NN-4: single-use — the nonce MUST be deleted on first successful consume.
    */
   consumeAndGetBrandId(state: string): Promise<{ brandId: string } | null>;
+
+  /**
+   * Peek the server-stored brandId for a state nonce WITHOUT consuming it. Needed for per-brand
+   * BYO-app OAuth: the callback must resolve the brand's own client_secret to HMAC-validate the
+   * request, and that resolution needs the brandId — but HMAC must pass BEFORE the single-use consume
+   * (NN-4). Read-only: a forged/garbage state simply returns null (no mutation, no enumeration). The
+   * authoritative single-use deletion still happens via consumeAndGetBrandId after HMAC passes.
+   */
+  peekBrandId(state: string): Promise<{ brandId: string } | null>;
 }

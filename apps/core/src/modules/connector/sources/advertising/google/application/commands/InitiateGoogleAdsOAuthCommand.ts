@@ -17,6 +17,8 @@ export interface InitiateGoogleAdsOAuthInput {
   brandId: string;
   /** Public HTTPS callback URL (dev: localhost; prod: a real public callback — platform follow-up). */
   callbackUrl: string;
+  /** Per-brand BYO-app client_id (resolved by the connect handler); falls back to env. */
+  clientId?: string;
 }
 
 export interface InitiateGoogleAdsOAuthResult {
@@ -33,7 +35,7 @@ export class InitiateGoogleAdsOAuthCommand {
   async execute(input: InitiateGoogleAdsOAuthInput): Promise<InitiateGoogleAdsOAuthResult> {
     const { brandId, callbackUrl } = input;
 
-    const clientId = process.env['GOOGLE_ADS_CLIENT_ID'];
+    const clientId = input.clientId ?? process.env['GOOGLE_ADS_CLIENT_ID'];
     if (!clientId) {
       // Dev boundary: real Google Ads OAuth needs a configured app (GOOGLE_ADS_CLIENT_ID +
       // secret + a public callback). Surface a graceful, typed error the route maps to a

@@ -34,6 +34,7 @@ import type { IConnectorSyncStatusRepository } from '@brain/connector-core';
 import type { ISecretsManager } from '@brain/connector-secrets';
 import type { IOAuthStateStore } from '../../../../storefront/shopify/infrastructure/state/IOAuthStateStore.js';
 import { META_GRAPH_API_VERSION } from './InitiateMetaOAuthCommand.js';
+import { resolveBrandOAuthAppCreds } from '../../../../../oauth-app-creds.js';
 
 export interface MetaOAuthCallbackInput {
   /** All query parameters from the Meta callback URL. */
@@ -112,7 +113,7 @@ export class HandleMetaOAuthCallbackCommand {
     if (!code) {
       throw new MetaOAuthError('Authorization code missing from callback');
     }
-    const accessToken = await this.exchangeCodeForToken(code);
+    const accessToken = await this.exchangeCodeForToken(code, brandId);
 
     // ── Step 3: Resolve ALL ad accounts (Gap B) — best-effort; empty → __default__ ──
     // Each carries id + human name (e.g. "Acme Store — Meta") so the UI can label the
@@ -214,17 +215,19 @@ export class HandleMetaOAuthCallbackCommand {
   }
 
   /** Exchange the authorization code for an access token via Meta's token endpoint. */
-  private async exchangeCodeForToken(code: string): Promise<string> {
-    const clientId = process.env['META_APP_ID'];
-    const clientSecret = process.env['META_APP_SECRET'];
+  private async exchangeCodeForToken(code: string, brandId: string): Promise<string> {
+    const creds = await resolveBrandOAuthAppCreds(this.secretsManager, 'meta', brandId, {
+      clientId: process.env['META_APP_ID'] ?? '',
+      clientSecret: process.env['META_APP_SECRET'] ?? '',
+    });
     const callbackUrl = process.env['META_CALLBACK_URL'];
-    if (!clientId || !clientSecret) {
+    if (!creds?.clientId || !creds?.clientSecret) {
       throw new Error('[HandleMetaOAuthCallbackCommand] META_APP_ID / META_APP_SECRET not configured');
     }
 
     const params = new URLSearchParams({
-      client_id: clientId,
-      client_secret: clientSecret,
+      client_id: creds.clientId,
+      client_secret: creds.clientSecret,
       code,
       ...(callbackUrl ? { redirect_uri: callbackUrl } : {}),
     });

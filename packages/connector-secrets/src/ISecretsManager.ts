@@ -85,12 +85,14 @@ export interface ISecretsManager {
   ): Promise<void>;
 
   /**
-   * Retrieve a stored connector credential by its ARN.
+   * Retrieve a stored connector credential by its ARN **or** its friendly name (AWS GetSecretValue
+   * and LocalSecretsManager both accept either as the SecretId — e.g. the per-brand OAuth-app creds
+   * are looked up by the deterministic name `brain/connector/<provider>_app/<brandId>`, no ARN needed).
    * Callers MUST NOT log or persist the value (I-S09).
    *
-   * @param secretArn  ARN stored in connector_instance.secret_ref.
+   * @param secretNameOrArn  The ARN stored in connector_instance.secret_ref, or a friendly secret name.
    */
-  getSecret(secretArn: string): Promise<Record<string, string> | null>;
+  getSecret(secretNameOrArn: string): Promise<Record<string, string> | null>;
 
   /**
    * Delete a connector credential (called on disconnect).

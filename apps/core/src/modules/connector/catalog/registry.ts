@@ -144,6 +144,9 @@ export const CONNECTOR_CATALOG: readonly ConnectorDefinition[] = [
       accountKeyField: 'site_url',
       instanceColumn: 'woocommerce_site_url',
       shopDomainField: 'site_url',
+      // site_url is non-secret but the WooCommerce repull client + pixel-install read the store
+      // base URL from the bundle (woocommerce-client throws when it is absent), so it rides along.
+      bundleNonSecretFields: ['site_url'],
     },
   },
   // ── ads ───────────────────────────────────────────────────────────────────────

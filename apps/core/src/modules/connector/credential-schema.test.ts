@@ -82,26 +82,87 @@ describe('planCredentialConnect — shiprocket', () => {
 });
 
 describe('planCredentialConnect — woocommerce', () => {
-  it('site_url → shop_domain + column; bundle = consumer key/secret (+ optional webhook)', () => {
+  it('site_url → shop_domain + column AND rides in the bundle (repull/pixel read it from there)', () => {
     const plan = planFor('woocommerce', {
       site_url: 'https://store.example.com',
       consumer_key: 'ck',
       consumer_secret: 'cs',
       webhook_secret: 'wh',
     });
-    expect(plan.secretBundle).toEqual({ consumer_key: 'ck', consumer_secret: 'cs', webhook_secret: 'wh' });
+    expect(plan.secretBundle).toEqual({
+      consumer_key: 'ck',
+      consumer_secret: 'cs',
+      webhook_secret: 'wh',
+      site_url: 'https://store.example.com',
+    });
     expect(plan.shopDomain).toBe('https://store.example.com');
     expect(plan.providerConfig).toEqual({ woocommerce_site_url: 'https://store.example.com' });
     expect(plan.instanceColumnUpdate).toEqual({ column: 'woocommerce_site_url', value: 'https://store.example.com' });
   });
-  it('omitting an optional webhook_secret is valid and leaves it out of the bundle', () => {
+  it('omitting an optional webhook_secret is valid and leaves it out of the bundle (site_url stays)', () => {
     const plan = planFor('woocommerce', { site_url: 'https://s.co', consumer_key: 'ck', consumer_secret: 'cs' });
-    expect(plan.secretBundle).toEqual({ consumer_key: 'ck', consumer_secret: 'cs' });
+    expect(plan.secretBundle).toEqual({ consumer_key: 'ck', consumer_secret: 'cs', site_url: 'https://s.co' });
     expect(plan.missingRequired).toEqual([]);
   });
   it('missing a required secret is reported', () => {
     const plan = planFor('woocommerce', { site_url: 'https://s.co', consumer_key: 'ck' });
     expect(plan.missingRequired).toContain('consumer_secret');
+  });
+});
+
+/**
+ * Command-parity pins — each bespoke Connect command (ConnectRazorpay/Woo/Shopflo/Gokwik) now
+ * derives its storeSecret bundle from planCredentialConnect(def.authFields, def.credentialConnect, …).
+ * These assertions PIN the resulting bundle equals exactly what each command previously hard-coded,
+ * so the single-SoR split can never silently drift from what the repull jobs / webhook receivers read.
+ */
+describe('bespoke-command bundle parity (storeSecret payload === plan.secretBundle)', () => {
+  it('razorpay bundle === { key_id, key_secret, webhook_secret } (no razorpay_account_id)', () => {
+    const plan = planFor('razorpay', {
+      key_id: 'rzp_k',
+      key_secret: 'rzp_s',
+      webhook_secret: 'whsec',
+      razorpay_account_id: 'acc_1',
+    });
+    expect(plan.secretBundle).toEqual({ key_id: 'rzp_k', key_secret: 'rzp_s', webhook_secret: 'whsec' });
+    expect(plan.secretBundle).not.toHaveProperty('razorpay_account_id');
+  });
+
+  it('woocommerce bundle === { consumer_key, consumer_secret, webhook_secret, site_url }', () => {
+    const plan = planFor('woocommerce', {
+      site_url: 'https://store.example.com',
+      consumer_key: 'ck',
+      consumer_secret: 'cs',
+      webhook_secret: 'generated_wh',
+    });
+    expect(plan.secretBundle).toEqual({
+      consumer_key: 'ck',
+      consumer_secret: 'cs',
+      webhook_secret: 'generated_wh',
+      site_url: 'https://store.example.com',
+    });
+  });
+
+  it('shopflo bundle === { api_token, webhook_secret } (merchant_id is routing-only)', () => {
+    const plan = planFor('shopflo', { api_token: 'tok', merchant_id: 'm_1', webhook_secret: 'wh' });
+    expect(plan.secretBundle).toEqual({ api_token: 'tok', webhook_secret: 'wh' });
+    expect(plan.secretBundle).not.toHaveProperty('merchant_id');
+  });
+
+  it('gokwik bundle === { appid, appsecret, webhook_secret } when webhook_secret supplied', () => {
+    const plan = planFor('gokwik', { appid: 'app_1', appsecret: 'sec', webhook_secret: 'wh' });
+    expect(plan.secretBundle).toEqual({ appid: 'app_1', appsecret: 'sec', webhook_secret: 'wh' });
+  });
+
+  it('gokwik bundle === { appid, appsecret } when webhook_secret blank/absent (omitted)', () => {
+    expect(planFor('gokwik', { appid: 'app_1', appsecret: 'sec', webhook_secret: '' }).secretBundle).toEqual({
+      appid: 'app_1',
+      appsecret: 'sec',
+    });
+    expect(planFor('gokwik', { appid: 'app_1', appsecret: 'sec' }).secretBundle).toEqual({
+      appid: 'app_1',
+      appsecret: 'sec',
+    });
   });
 });
 

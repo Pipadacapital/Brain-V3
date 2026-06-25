@@ -25,6 +25,8 @@ import { ConnectorInstance } from '@brain/connector-core';
 import { ConnectorSyncStatus } from '@brain/connector-core';
 import { randomUUID } from 'node:crypto';
 import type pg from 'pg';
+import { getDefinition } from '../../../../../catalog/index.js';
+import { planCredentialConnect } from '../../../../../credential-schema.js';
 
 export interface ConnectGokwikInput {
   brandId: string;
@@ -58,17 +60,25 @@ export class ConnectGokwikCommand {
   async execute(input: ConnectGokwikInput): Promise<ConnectGokwikResult> {
     const { brandId, appid, appsecret, webhookSecret, idempotencyKey } = input;
 
+    // Derive the secret bundle from the declarative catalog (single SoR for the secret/non-secret
+    // split — see credential-schema.ts). For gokwik the plan yields { appid, appsecret } and adds
+    // webhook_secret ONLY when supplied (the optional inbound-webhook HMAC key, POC-mediated):
+    // splitConnectorCredentials trims and drops blank/absent values, so an empty webhook_secret is
+    // omitted from the bundle exactly as before. appid is a non-secret bundleNonSecretField the AWB
+    // re-pull client reads from the bundle.
+    const def = getDefinition('gokwik')!;
+    const { secretBundle } = planCredentialConnect(def.authFields!, def.credentialConnect!, {
+      appid,
+      appsecret,
+      webhook_secret: webhookSecret,
+    });
+
     // Store composite credential bundle as ONE secret. subKey = appid (non-secret).
     // I-S09: appsecret/webhook_secret NEVER logged — only the resulting ARN is.
     const { arn } = await this.secretsManager.storeSecret(
       brandId,
       { connectorType: 'gokwik', subKey: appid },
-      {
-        appid,
-        appsecret,
-        // Only include webhook_secret when provided (the inbound-webhook HMAC key, POC-mediated).
-        ...(webhookSecret && webhookSecret.trim().length > 0 ? { webhook_secret: webhookSecret.trim() } : {}),
-      },
+      secretBundle,
     );
 
     const now = new Date();

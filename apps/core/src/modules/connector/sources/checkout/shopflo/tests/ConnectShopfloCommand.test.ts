@@ -2,7 +2,8 @@
  * ConnectShopfloCommand.test.ts — Track B unit test.
  *
  * Proves:
- *   - Composite bundle { api_token, merchant_id, webhook_secret } stored under ONE secret_ref.
+ *   - Composite bundle { api_token, webhook_secret } stored under ONE secret_ref — derived from the
+ *     declarative catalog (merchant_id is routing-only, resolved from the column, NOT in the bundle).
  *   - provider='shopflo'; only the ARN (secret_ref) is persisted on connector_instance (NN-2).
  *   - shopflo_merchant_id set under brand GUC (set_config call observed).
  *   - The connector.connected audit/event payload contains NO credential values (I-S09).
@@ -55,11 +56,13 @@ describe('ConnectShopfloCommand', () => {
 
     expect(result.status).toBe('connected');
 
-    // ONE storeSecret call with the full bundle, keyed by merchant_id (non-secret subKey).
+    // ONE storeSecret call with the catalog-derived bundle, keyed by merchant_id (non-secret subKey).
+    // merchant_id is routing-only — the webhook handler resolves it from the column, never the bundle.
     expect(d.storeSecret).toHaveBeenCalledTimes(1);
     const [, ref, bundle] = d.storeSecret.mock.calls[0]!;
     expect(ref).toEqual({ connectorType: 'shopflo', subKey: 'mrc_001' });
-    expect(bundle).toEqual({ api_token: 'tok_secret_value', merchant_id: 'mrc_001', webhook_secret: 'whsec_secret_value' });
+    expect(bundle).toEqual({ api_token: 'tok_secret_value', webhook_secret: 'whsec_secret_value' });
+    expect(bundle).not.toHaveProperty('merchant_id');
 
     // Persisted instance carries the ARN, never the raw credential values.
     const instance = d.savedInstances[0]! as { secretRef: string; provider: string };

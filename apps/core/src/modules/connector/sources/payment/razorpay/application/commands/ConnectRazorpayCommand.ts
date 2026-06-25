@@ -23,6 +23,8 @@ import { ConnectorInstance } from '@brain/connector-core';
 import { ConnectorSyncStatus } from '@brain/connector-core';
 import { randomUUID } from 'node:crypto';
 import type pg from 'pg';
+import { getDefinition } from '../../../../../catalog/index.js';
+import { planCredentialConnect } from '../../../../../credential-schema.js';
 
 export interface ConnectRazorpayInput {
   brandId: string;
@@ -65,17 +67,25 @@ export class ConnectRazorpayCommand {
       idempotencyKey,
     } = input;
 
+    // Derive the secret bundle from the declarative catalog (single SoR for the secret/non-secret
+    // split — see credential-schema.ts). The flat value map keys MUST match the connector's
+    // authFields. For razorpay the plan yields { key_id, key_secret, webhook_secret } (key_id is a
+    // non-secret bundleNonSecretField the settlement-repull client reads from the bundle).
+    const def = getDefinition('razorpay')!;
+    const { secretBundle } = planCredentialConnect(def.authFields!, def.credentialConnect!, {
+      key_id: keyId,
+      key_secret: keySecret,
+      webhook_secret: webhookSecret,
+      razorpay_account_id: razorpayAccountId,
+    });
+
     // Store composite credential bundle as ONE secret (C2 — single secret_ref per connector).
     // The bundle keys are the field names expected by the webhook handler and re-pull job.
     // I-S09 / C5: credential values NEVER logged — only the resulting ARN is.
     const { arn } = await this.secretsManager.storeSecret(
       brandId,
       { connectorType: 'razorpay', subKey: razorpayAccountId },
-      {
-        key_id: keyId,
-        key_secret: keySecret,
-        webhook_secret: webhookSecret,
-      },
+      secretBundle,
     );
 
     const now = new Date();

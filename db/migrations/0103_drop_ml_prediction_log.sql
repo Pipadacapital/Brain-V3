@@ -4,9 +4,11 @@
 --
 -- ml.prediction_log (created in 0083, RANGE-partitioned by created_at per C4b) is high-volume,
 -- append-only model-inference data — an analytical stream. Like every other such stream it belongs in the
--- lakehouse, NOT in operational PG. It is now written to StarRocks brain_gold.gold_ml_prediction_log (DDL:
--- db/starrocks/gold_ml_prediction_log.sql) by the serving path (serveCustomerScore appends each served
--- prediction via the srPool). This migration drops the PG table (CASCADE removes its two partition children
+-- lakehouse, NOT in operational PG. It is now written to StarRocks (V4 Phase 5: the operational DB
+-- brain_ops.ops_ml_prediction_log, DDL db/starrocks/ops/ops_ml_prediction_log.sql; originally
+-- brain_gold.gold_ml_prediction_log before brain_gold's Phase-6 retirement) by the serving path
+-- (serveCustomerScore appends each served prediction via the srPool). This migration drops the PG table
+-- (CASCADE removes its two partition children
 -- — prediction_log_p2026_06 + prediction_log_pdefault — its RLS policy, and its two indexes).
 --
 -- KEEP: ml.model_registry — it is legitimately operational lifecycle/config (versioning, stage promotion,

@@ -26,6 +26,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import type { WooOrderShape, DataSource } from '@brain/woocommerce-mapper';
+import { loadStreamWorkerConfig } from '@brain/config';
 import { log } from '../../log.js';
 
 export const WOOCOMMERCE_AUTH_ERROR = 'WOOCOMMERCE_AUTH_ERROR';
@@ -84,7 +85,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_FIXTURE_PATH = join(__dirname, '..', '_fixtures', 'woocommerce', 'woocommerce-orders.json');
 
 function fixturePath(): string {
-  return process.env['WOOCOMMERCE_FIXTURE_PATH'] ?? DEFAULT_FIXTURE_PATH;
+  return loadStreamWorkerConfig().WOOCOMMERCE_FIXTURE_PATH ?? DEFAULT_FIXTURE_PATH;
 }
 
 interface OrdersFixtureFile {

@@ -24,6 +24,7 @@ import { dirname, join } from 'node:path';
 import type { GokwikAwbRecord, DataSource } from '@brain/gokwik-mapper';
 import { log } from "../../log.js";
 import { CircuitBreaker } from '@brain/observability';
+import { loadStreamWorkerConfig } from '@brain/config';
 
 /**
  * Auth-rejection marker (connector-auth observability parity). The synthetic fixture client never
@@ -63,7 +64,7 @@ const DEFAULT_FIXTURE_PATH = join(
  * trailing window over wall-clock time). Dev/prod use the default committed fixture.
  */
 function fixturePath(): string {
-  return process.env['GOKWIK_AWB_FIXTURE_PATH'] ?? DEFAULT_FIXTURE_PATH;
+  return loadStreamWorkerConfig().GOKWIK_AWB_FIXTURE_PATH ?? DEFAULT_FIXTURE_PATH;
 }
 
 interface AwbFixtureFile {

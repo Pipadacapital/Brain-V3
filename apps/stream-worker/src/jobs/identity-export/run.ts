@@ -29,18 +29,21 @@
  */
 import neo4j from 'neo4j-driver';
 import mysql from 'mysql2/promise';
+import { loadStreamWorkerConfig } from '@brain/config';
 import { log } from '../../log.js';
 
-const NEO4J_URI = process.env['NEO4J_URI'] ?? 'bolt://localhost:7687';
-const NEO4J_USER = process.env['NEO4J_USER'] ?? 'neo4j';
-const NEO4J_PASSWORD = process.env['NEO4J_PASSWORD'] ?? 'neo4j';
-const SR_HOST = process.env['STARROCKS_HOST'] ?? '127.0.0.1';
+const cfg = loadStreamWorkerConfig();
+const NEO4J_URI = cfg.NEO4J_URI;
+const NEO4J_USER = cfg.NEO4J_USER;
+const NEO4J_PASSWORD = cfg.NEO4J_PASSWORD;
+const SR_HOST = cfg.STARROCKS_HOST ?? '127.0.0.1';
+// intentional raw: two-var fallback chain (STARROCKS_QUERY_PORT ?? STARROCKS_PORT) — preserve exactly.
 const SR_PORT = Number(process.env['STARROCKS_QUERY_PORT'] ?? process.env['STARROCKS_PORT'] ?? '9030');
-const SR_USER = process.env['STARROCKS_ROOT_USER'] ?? 'root';
-const SR_PASSWORD = process.env['STARROCKS_ROOT_PASSWORD'] ?? '';
+const SR_USER = cfg.STARROCKS_ROOT_USER;
+const SR_PASSWORD = cfg.STARROCKS_ROOT_PASSWORD;
 
 /** Force a full TRUNCATE + reload of both projections (recovery / first build). */
-const FULL_REFRESH = process.env['IDENTITY_EXPORT_FULL'] === '1';
+const FULL_REFRESH = cfg.IDENTITY_EXPORT_FULL;
 
 const BATCH = 1000;
 

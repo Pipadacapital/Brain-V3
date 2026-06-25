@@ -18,11 +18,11 @@
  */
 
 import { Pool } from 'pg';
+import { loadStreamWorkerConfig } from '@brain/config';
 import { log } from '../log.js';
 
-const DB_URL =
-  process.env['BRAIN_APP_DATABASE_URL'] ??
-  'postgres://brain_app:brain_app@localhost:5432/brain';
+const cfg = loadStreamWorkerConfig();
+const DB_URL = cfg.BRAIN_APP_DATABASE_URL;
 
 interface MaintenanceRow {
   action: string;
@@ -30,8 +30,8 @@ interface MaintenanceRow {
 }
 
 export async function runPartitionMaintenance(): Promise<{ created: number; dropped: number }> {
-  const aheadMonths = Number.parseInt(process.env['PARTITION_AHEAD_MONTHS'] ?? '3', 10);
-  const retentionRaw = process.env['PARTITION_RETENTION_MONTHS'];
+  const aheadMonths = cfg.PARTITION_AHEAD_MONTHS;
+  const retentionRaw = cfg.PARTITION_RETENTION_MONTHS;
   const retentionMonths =
     retentionRaw && retentionRaw.trim() !== '' ? Number.parseInt(retentionRaw, 10) : null;
 

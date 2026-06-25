@@ -39,12 +39,11 @@ import {
 } from './shopify-token-client.js';
 import { log } from '../../log.js';
 import type { ISecretsManager } from '@brain/connector-secrets';
+import { loadStreamWorkerConfig } from '@brain/config';
 
 // ── Configuration ──────────────────────────────────────────────────────────────
 
-const DB_URL =
-  process.env['BRAIN_APP_DATABASE_URL'] ??
-  'postgres://brain_app:brain_app@localhost:5432/brain';
+const DB_URL = loadStreamWorkerConfig().BRAIN_APP_DATABASE_URL;
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 

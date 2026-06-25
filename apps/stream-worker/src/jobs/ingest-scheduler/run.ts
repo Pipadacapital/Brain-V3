@@ -43,6 +43,7 @@ import {
   loadRun,
 } from '../sync-request-claimer/run.js';
 import { incrementCounter } from '@brain/observability';
+import { loadStreamWorkerConfig } from '@brain/config';
 import type { IConnectorRateLimiter } from '../../infrastructure/redis/ConnectorRateLimiter.js';
 import { log } from "../../log.js";
 
@@ -77,7 +78,7 @@ export const DEFAULT_DISPATCH_CONCURRENCY = 8;
 
 /** Resolve the in-tick dispatch concurrency from env (REPULL_DISPATCH_CONCURRENCY), clamped 1..32. */
 export function resolveDispatchConcurrency(): number {
-  const env = process.env['REPULL_DISPATCH_CONCURRENCY'];
+  const env = loadStreamWorkerConfig().REPULL_DISPATCH_CONCURRENCY;
   const parsed = env ? parseInt(env, 10) : NaN;
   if (Number.isFinite(parsed) && parsed >= 1) return Math.min(parsed, 32);
   return DEFAULT_DISPATCH_CONCURRENCY;

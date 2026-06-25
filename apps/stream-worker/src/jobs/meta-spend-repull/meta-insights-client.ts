@@ -1,5 +1,6 @@
 import { log } from "../../log.js";
 import { CircuitBreaker } from '@brain/observability';
+import { loadStreamWorkerConfig } from '@brain/config';
 import { GRAPH_API_BASE } from '../meta-constants.js';
 
 /**
@@ -207,7 +208,7 @@ export class MetaInsightsClient {
   constructor(
     creds: MetaApiCredentials,
     maxBackoffRetries = 5,
-    defaultAsyncMode = process.env['META_INSIGHTS_ASYNC_MODE'] === '1',
+    defaultAsyncMode = loadStreamWorkerConfig().META_INSIGHTS_ASYNC_MODE,
   ) {
     this.accessToken = creds.accessToken; // stays in memory; never logged
     this.actId = normalizeAccountId(creds.adAccountId);

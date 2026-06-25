@@ -13,6 +13,7 @@
  */
 
 import mysql from 'mysql2/promise';
+import { loadStreamWorkerConfig } from '@brain/config';
 
 export interface SilverReaderConfig {
   readonly host: string;
@@ -44,7 +45,7 @@ export const BRAND_PREDICATE = '${BRAND_PREDICATE}';
  * retired PG data_plane.bronze_events. Catalog name is env-overridable so prod can point at the Glue
  * catalog without code change (mirrors analytics _bronze-source.ts ICEBERG_BRONZE).
  */
-export const ICEBERG_BRONZE = `${process.env['STARROCKS_BRONZE_CATALOG'] ?? 'brain_bronze_local'}.brain_bronze.collector_events`;
+export const ICEBERG_BRONZE = `${loadStreamWorkerConfig().STARROCKS_BRONZE_CATALOG}.brain_bronze.collector_events`;
 
 export function createSilverReader(config: SilverReaderConfig): SilverReader {
   const pool = mysql.createPool({

@@ -37,11 +37,13 @@ import { Pool } from 'pg';
 import { recordConnectorAuthRejected } from '../../infrastructure/observability/connector-auth-health.js';
 import { updateConnectorInstanceHealth } from '../../infrastructure/pg/ConnectorInstanceHealthRepository.js';
 import { Kafka, Producer } from 'kafkajs';
+import { createIdempotentProducer } from '../../infrastructure/kafka/idempotent-producer.js';
 import { buildPartitionKey } from '@brain/events';
 import { injectKafkaTraceContext } from '@brain/observability';
 import { createSaltProvider } from '../../infrastructure/secrets/SaltProvider.js';
 import { PgBackfillJobRepository } from '../../infrastructure/pg/BackfillJobRepository.js';
 import { ORDER_BACKFILL_V1_TOPIC_SUFFIX, CollectorEventV1Schema } from '@brain/contracts';
+import { loadStreamWorkerConfig } from '@brain/config';
 import { ShopifyBackfillClient } from './shopify-paged-client.js';
 import { mapOrderToBackfillEvent, computeAchievedDepthLabel } from './order-mapper.js';
 import { uuidV5FromOrderBackfill } from '@brain/shopify-mapper';
@@ -50,11 +52,11 @@ import { log } from "../../log.js";
 
 // ── Configuration ─────────────────────────────────────────────────────────────
 
-const DB_URL =
-  process.env['BRAIN_APP_DATABASE_URL'] ??
-  'postgres://brain_app:brain_app@localhost:5432/brain';
+const cfg = loadStreamWorkerConfig();
+const DB_URL = cfg.BRAIN_APP_DATABASE_URL;
 
-const BROKERS = (process.env['KAFKA_BROKERS'] ?? 'localhost:9092').split(',');
+const BROKERS = cfg.KAFKA_BROKERS.split(',');
+// intentional raw: NODE_ENV-derived Kafka topic-prefix selection (must precede config load).
 const ENV = process.env['NODE_ENV'] === 'production' ? 'prod' : 'dev';
 const BACKFILL_TOPIC = `${ENV}.${ORDER_BACKFILL_V1_TOPIC_SUFFIX}`;
 
@@ -84,7 +86,7 @@ interface ConnectorRow {
 export async function run(connectorInstanceId?: string): Promise<void> {
   const pool = new Pool({ connectionString: DB_URL, max: 3 });
   const kafka = new Kafka({ clientId: 'shopify-backfill-worker', brokers: BROKERS, retry: { retries: 5 } });
-  const producer = kafka.producer({ idempotent: true });
+  const producer = createIdempotentProducer(kafka);
   const jobRepo = new PgBackfillJobRepository(DB_URL);
 
   // Worker-side secrets manager (ADR-BF-11: separate process from core)
@@ -334,7 +336,7 @@ async function runBackfillLoop(params: BackfillLoopParams): Promise<void> {
   let oldestOccurredAt: Date | null = null;
   let pageCount = 0;
 
-  const POLL_SLEEP_MS = parseInt(process.env['BACKFILL_PAGE_SLEEP_MS'] ?? '0', 10);
+  const POLL_SLEEP_MS = cfg.BACKFILL_PAGE_SLEEP_MS;
 
   try {
     while (true) {

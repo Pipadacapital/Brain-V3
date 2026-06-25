@@ -26,11 +26,13 @@
 
 import { Pool } from 'pg';
 import { Kafka, type Producer } from 'kafkajs';
+import { createIdempotentProducer } from '../../infrastructure/kafka/idempotent-producer.js';
 import { recordConnectorAuthRejected } from '../../infrastructure/observability/connector-auth-health.js';
 import { updateConnectorInstanceHealth } from '../../infrastructure/pg/ConnectorInstanceHealthRepository.js';
 import { buildPartitionKey } from '@brain/events';
 import { injectKafkaTraceContext } from '@brain/observability';
 import { CollectorEventV1Schema, COLLECTOR_EVENT_V1_TOPIC_SUFFIX } from '@brain/contracts';
+import { loadStreamWorkerConfig } from '@brain/config';
 import {
   mapMetaInsightToEvent,
   uuidV5FromSpendRow,
@@ -46,10 +48,10 @@ import {
 import { log } from "../../log.js";
 import { acquireCursorLock, upsertCursorValue } from '../../infrastructure/pg/CursorRepository.js';
 
-const DB_URL =
-  process.env['BRAIN_APP_DATABASE_URL'] ??
-  'postgres://brain_app:brain_app@localhost:5432/brain';
-const BROKERS = (process.env['KAFKA_BROKERS'] ?? 'localhost:9092').split(',');
+const cfg = loadStreamWorkerConfig();
+const DB_URL = cfg.BRAIN_APP_DATABASE_URL;
+const BROKERS = cfg.KAFKA_BROKERS.split(',');
+// intentional raw: NODE_ENV-derived Kafka topic-prefix selection (must precede config load).
 const ENV = process.env['NODE_ENV'] === 'production' ? 'prod' : 'dev';
 const LIVE_TOPIC = `${ENV}.${COLLECTOR_EVENT_V1_TOPIC_SUFFIX}`;
 
@@ -77,7 +79,7 @@ interface MetaSecretBundle {
 export async function run(targetConnectorInstanceId?: string): Promise<void> {
   const pool = new Pool({ connectionString: DB_URL, max: 5 });
   const kafka = new Kafka({ clientId: 'meta-spend-repull', brokers: BROKERS, retry: { retries: 5 } });
-  const producer = kafka.producer({ idempotent: true });
+  const producer = createIdempotentProducer(kafka);
 
   try {
     await producer.connect();

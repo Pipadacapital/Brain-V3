@@ -10,6 +10,7 @@
  */
 import { Kafka, Producer } from 'kafkajs';
 import { injectKafkaTraceContext } from '@brain/observability';
+import { createIdempotentProducer } from './idempotent-producer.js';
 
 export class DlqProducer {
   private readonly producer: Producer;
@@ -20,7 +21,8 @@ export class DlqProducer {
     // idempotent=true causes KafkaJS to enforce acks=-1 and maxInFlightRequests=1
     // internally. Prevents duplicate DLQ entries on transient broker retries
     // (no-event-loss invariant — a DLQ double-write is operationally harmful).
-    this.producer = kafka.producer({ idempotent: true });
+    // EoS requires unbounded produce retries; see createIdempotentProducer.
+    this.producer = createIdempotentProducer(kafka);
   }
 
   async connect(): Promise<void> {

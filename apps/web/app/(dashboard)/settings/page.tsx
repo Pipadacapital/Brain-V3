@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { Plug, Zap, Users, ShieldCheck, Archive, ChevronRight } from 'lucide-react';
+import { Plug, Zap, Users, ShieldCheck, Archive, Building2, ChevronRight } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { PageHeader } from '@/components/ui/page-header';
 
@@ -29,6 +29,12 @@ const settingsItems = [
     title: 'Consent & Compliance',
     description: 'Consent coverage, the marketing suppression count, the 9–9 IST send window, and the can_contact() gate.',
     icon: ShieldCheck,
+  },
+  {
+    href: '/settings/brands',
+    title: 'Brands',
+    description: 'View all your brands and delete (archive) ones you no longer need.',
+    icon: Building2,
   },
   {
     href: '/settings/archived-brands',

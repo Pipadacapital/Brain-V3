@@ -11,13 +11,13 @@
  * What carries over from the prior steps:
  *   - The slug input is GONE — the server derives the workspace slug from the name
  *     (it's an implementation detail; never shown to the user).
- *   - The website field + live normalized-host preview + the first-class "skip website"
- *     affordance are preserved verbatim (feat-onboarding-website non-regression). A website
- *     auto-provisions this brand's tracking pixel server-side; skipping is honest (no pixel).
+ *   - The website field + live normalized-host preview. Website is now REQUIRED (no skip) — it
+ *     auto-provisions this brand's tracking pixel server-side; without it we can't install the
+ *     pixel or attribute events.
  *   - Currency/timezone/revenue config with the currency↔timezone mismatch confirm.
  *
  * After provisioning we re-mint the session context (sessionApi.setOrg → new brand/role +
- * onboarding_status), then route to the tracking interstitial (?w=1 captured / ?w=0 skipped),
+ * onboarding_status), then route to the tracking interstitial (?w=1 — website is always captured),
  * matching the existing post-brand-create flow.
  */
 
@@ -127,10 +127,7 @@ export function CreateBrandWorkspaceForm() {
     return !!expectedTz && expectedTz !== timezone;
   }
 
-  function doSubmit(
-    data: CreateBrandWorkspaceFormValues,
-    opts?: { skipWebsite?: boolean },
-  ) {
+  function doSubmit(data: CreateBrandWorkspaceFormValues) {
     const mismatch = isMismatch(data.currency_code ?? 'INR', data.timezone ?? 'Asia/Kolkata');
     if (mismatch && !currencyMismatch) {
       setPendingSubmit(data);
@@ -140,8 +137,8 @@ export function CreateBrandWorkspaceForm() {
     setCurrencyMismatch(false);
     setPendingSubmit(null);
 
-    // Skip-for-now stays first-class: submit with no website → no pixel provision.
-    const submittedDomain = opts?.skipWebsite ? undefined : data.domain?.trim() || undefined;
+    // Website is required → it always provisions this brand's tracking pixel.
+    const submittedDomain = data.domain.trim();
 
     provision(
       {
@@ -176,10 +173,6 @@ export function CreateBrandWorkspaceForm() {
 
   function onSubmit(data: CreateBrandWorkspaceFormValues) {
     doSubmit(data);
-  }
-
-  function handleSkipWebsite() {
-    void handleSubmit((data) => doSubmit(data, { skipWebsite: true }))();
   }
 
   function confirmMismatch() {
@@ -269,7 +262,7 @@ export function CreateBrandWorkspaceForm() {
             <div className="space-y-1.5 rounded-lg border border-primary/30 bg-primary/5 p-4">
               <Label htmlFor="domain" className="flex items-center gap-2">
                 Website
-                <Badge variant="info">Recommended</Badge>
+                <Badge variant="info">Required</Badge>
               </Label>
               <Input
                 id="domain"
@@ -298,7 +291,7 @@ export function CreateBrandWorkspaceForm() {
               )}
               <p id="brand-domain-hint" className="text-xs text-muted-foreground">
                 Powers your tracking pixel — we&apos;ll generate an install snippet for this
-                site right after. You can still add it later.
+                site right after. Required so we can install the pixel and track events.
               </p>
               {errors.domain && (
                 <p id="brand-domain-error" className="text-xs text-destructive" role="alert">
@@ -423,16 +416,6 @@ export function CreateBrandWorkspaceForm() {
                 data-testid="btn-create-brand"
               >
                 {busy ? 'Creating…' : 'Create brand'}
-              </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                className="w-full text-muted-foreground"
-                onClick={handleSkipWebsite}
-                disabled={busy || currencyMismatch}
-                data-testid="btn-skip-website"
-              >
-                Create without a website — add it later
               </Button>
             </div>
           </div>

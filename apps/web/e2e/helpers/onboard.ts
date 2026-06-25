@@ -71,7 +71,9 @@ export async function completeMergedStep(page: Page, opts?: { workspace?: string
   await expect(page).toHaveURL(/\/onboarding\/start/);
   await page.getByTestId('input-workspace-name').fill(opts?.workspace ?? 'E2E Workspace');
   await page.getByTestId('input-brand-name').fill(opts?.brand ?? 'E2E Brand');
-  await page.getByTestId('btn-skip-website').click();
+  // Website is now REQUIRED (no skip) — fill it, then submit the merged step.
+  await page.getByTestId('input-brand-domain').fill('e2e-store.com');
+  await page.getByTestId('btn-create-brand').click();
   await expect(page).toHaveURL(/\/onboarding\/tracking/);
 }
 
@@ -86,7 +88,7 @@ export async function onboardToDashboard(
 ): Promise<{ email: string; password: string }> {
   const { email, password } = await registerAndVerify(page, prefix);
 
-  // Step 1 — merged create (workspace + brand), website skipped → tracking interstitial.
+  // Step 1 — merged create (workspace + brand) with the required website → tracking interstitial.
   await completeMergedStep(page);
 
   // Tracking interstitial → continue to integrations.

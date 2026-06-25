@@ -67,6 +67,14 @@ const SELECT_COLS = `id, brand_id, provider, shop_domain, secret_ref, status,
   health_state, safety_rating, connected_at, disconnected_at, created_at, updated_at,
   account_key, connector_provider_config, activated_at`;
 
+/**
+ * SELECT_COLS prefixed with a table alias — required in a RETURNING clause of an
+ * `UPDATE connector_instance ci ... FROM target t` where bare column names (id/brand_id/provider
+ * also exist on `target`) are ambiguous (Postgres 42702). Returns columns of the UPDATED row.
+ */
+const qualifiedCols = (alias: string): string =>
+  SELECT_COLS.split(',').map((c) => `${alias}.${c.trim()}`).join(', ');
+
 export class PgConnectorInstanceRepository implements IConnectorInstanceRepository {
   constructor(private readonly pool: DbPool) {}
 
@@ -279,7 +287,7 @@ export class PgConnectorInstanceRepository implements IConnectorInstanceReposito
             SET activated_at = COALESCE(ci.activated_at, now()), updated_at = now()
            FROM target t
           WHERE ci.id = t.id
-         RETURNING ${SELECT_COLS}`,
+         RETURNING ${qualifiedCols('ci')}`,
         [connectorInstanceId, brandId],
       );
       const row = result.rows[0];

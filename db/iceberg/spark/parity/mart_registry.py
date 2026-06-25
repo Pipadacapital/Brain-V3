@@ -107,26 +107,109 @@ _GOLD: List[MartSpec] = [
 # Silver is canonical entities; most carry no money column (money lands in Gold). Provisional PKs are
 # the documented entity grain from report 08 §3.2; the Phase-1 owner confirms when each Spark job lands.
 _SILVER: List[MartSpec] = [
-    MartSpec(name="silver_customer", layer="silver", pk=["brand_id", "customer_id"], current_schema="brain_silver", provisional=True),
-    MartSpec(name="silver_order_state", layer="silver", pk=["brand_id", "order_id"], current_schema="brain_silver", provisional=True),
-    MartSpec(name="silver_order_line", layer="silver", pk=["brand_id", "order_id", "line_id"], current_schema="brain_silver", provisional=True),
-    MartSpec(name="silver_product", layer="silver", pk=["brand_id", "product_id"], current_schema="brain_silver", provisional=True),
-    MartSpec(name="silver_touchpoint", layer="silver", pk=["brand_id", "touchpoint_id"], current_schema="brain_silver", provisional=True),
-    MartSpec(name="silver_sessions", layer="silver", pk=["brand_id", "session_id"], current_schema="brain_silver", provisional=True),
-    MartSpec(name="silver_checkout_signal", layer="silver", pk=["brand_id", "checkout_id"], current_schema="brain_silver", provisional=True),
-    MartSpec(name="silver_shipment", layer="silver", pk=["brand_id", "shipment_id"], current_schema="brain_silver", provisional=True),
-    MartSpec(name="silver_shipment_event", layer="silver", pk=["brand_id", "shipment_event_id"], current_schema="brain_silver", provisional=True),
+    # CONFIRMED (Phase 1, GROUP customer+identity) against db/dbt/models/marts/silver_customer.sql:
+    #   silver_customer          PK (brand_id, brain_id) [identity-resolved key, NOT customer_id];
+    #                            money = lifetime_value_minor (bigint minor + currency_code).
+    #   silver_customer_identity PK (brand_id, brain_id); no money — the Neo4j Customer-node projection
+    #                            (identity SoR, ADR-0004); CURRENT side = StarRocks (TS identity-export).
+    MartSpec(name="silver_customer", layer="silver", pk=["brand_id", "brain_id"], money_columns=["lifetime_value_minor"], current_schema="brain_silver"),
+    MartSpec(name="silver_customer_identity", layer="silver", pk=["brand_id", "brain_id"], current_schema="brain_silver"),
+    # CONFIRMED (Phase 1, GROUP orders) against the built Spark jobs + live StarRocks DESC:
+    #   silver_order_state PK (brand_id, order_id);                    money order_value_minor.
+    #   silver_order_line  PK (brand_id, order_id, line_index);        money unit_price/line_total/line_discount_minor.
+    #   silver_product     PK (brand_id, product_key, currency_code);  money gross_revenue_minor/discount_minor.
+    MartSpec(name="silver_order_state", layer="silver", pk=["brand_id", "order_id"], money_columns=["order_value_minor"], current_schema="brain_silver"),
+    MartSpec(name="silver_order_line", layer="silver", pk=["brand_id", "order_id", "line_index"], money_columns=["unit_price_minor", "line_total_minor", "line_discount_minor"], current_schema="brain_silver"),
+    MartSpec(name="silver_product", layer="silver", pk=["brand_id", "product_key", "currency_code"], money_columns=["gross_revenue_minor", "discount_minor"], current_schema="brain_silver"),
+    # CONFIRMED (Phase 1, GROUP touchpoint+sessions) against the built Spark jobs + the dbt grain:
+    #   silver_touchpoint PK (brand_id, brain_anon_id, touch_seq) — per-touch grain; there is NO
+    #                     touchpoint_id column (silver_touchpoint.sql config keys = brand_id/brain_anon_id/
+    #                     touch_seq). No money (asserted no-money mart) → row-identity parity only.
+    #   silver_sessions   PK (brand_id, brain_anon_id, session_key) — the 30-min session grain rolled up
+    #                     from silver_touchpoint. No money → row-identity parity only.
+    MartSpec(name="silver_touchpoint", layer="silver", pk=["brand_id", "brain_anon_id", "touch_seq"], current_schema="brain_silver"),
+    MartSpec(name="silver_sessions", layer="silver", pk=["brand_id", "brain_anon_id", "session_key"], current_schema="brain_silver"),
+    # ── GROUP checkout+shipment (Phase 1 Spark Silver, dual-run) — PK/money CONFIRMED against the built
+    # Spark jobs (db/iceberg/spark/silver/*.py) + the live StarRocks DESC of the dbt marts. ───────
+    # silver_checkout_signal grain = (brand_id, event_id); money = total_price_minor / total_discount_minor
+    # (bigint minor, paired with currency_code on-row — only populated for shopflo checkout_abandoned rows).
+    MartSpec(
+        name="silver_checkout_signal",
+        layer="silver",
+        pk=["brand_id", "event_id"],
+        money_columns=["total_price_minor", "total_discount_minor"],
+        current_schema="brain_silver",
+    ),
+    # silver_shipment latest-state grain = (brand_id, order_id); no money column.
+    MartSpec(name="silver_shipment", layer="silver", pk=["brand_id", "order_id"], current_schema="brain_silver"),
+    # silver_shipment_event transition-log grain = (brand_id, event_id); no money column.
+    MartSpec(name="silver_shipment_event", layer="silver", pk=["brand_id", "event_id"], current_schema="brain_silver"),
+    # CONFIRMED (Phase 1, GROUP marketing) against db/dbt/models/marts/silver_marketing_spend.sql +
+    # the live StarRocks DESC brain_silver.silver_marketing_spend: GRAIN = (brand_id, spend_event_id),
+    # money = spend_minor (bigint minor) + currency_code. (The earlier provisional PK
+    # platform/campaign_id/spend_date predated the Bronze rebuild; spend_date is not a column.)
     MartSpec(
         name="silver_marketing_spend",
         layer="silver",
-        pk=["brand_id", "platform", "campaign_id", "spend_date"],
+        pk=["brand_id", "spend_event_id"],
         money_columns=["spend_minor"],
+        current_schema="brain_silver",
+    ),
+]
+
+# ── NET-NEW canonical-entity Silver marts (Phase 1, GROUP new-entities) — parity status=NEW ──────────
+# These five entities have NO dbt/StarRocks predecessor, so there is no CURRENT table to compare against:
+# the oracle reads the NEW Iceberg mart, finds no current mart, and emits status=SKIP
+# reason=current-mart-absent (exit 0) — the honest "NEW, no baseline" signal (parity policy: status=NEW).
+# Registered so they are first-class in the harness the moment any baseline predecessor ever lands.
+# current_schema points at brain_silver (where they'd live if dbt built them); current-absent → SKIP today.
+_SILVER_NEW_ENTITIES: List[MartSpec] = [
+    # settlement/refund/dispute normalizer (settlement.live.v1). Money = amount/fee/tax minor + currency_code.
+    MartSpec(
+        name="silver_settlement",
+        layer="silver",
+        pk=["brand_id", "event_id"],
+        money_columns=["amount_minor", "fee_minor", "tax_minor"],
+        current_schema="brain_silver",
+        provisional=True,
+    ),
+    # payment-event grain (pixel payment.* + razorpay pre-settlement). amount_minor + currency_code.
+    MartSpec(
+        name="silver_payment",
+        layer="silver",
+        pk=["brand_id", "event_id"],
+        money_columns=["amount_minor"],
+        current_schema="brain_silver",
+        provisional=True,
+    ),
+    # marketing-campaign DIMENSION (1 row per brand/platform/campaign). lifetime_spend_minor + currency_code.
+    MartSpec(
+        name="silver_campaign",
+        layer="silver",
+        pk=["brand_id", "platform", "campaign_id"],
+        money_columns=["lifetime_spend_minor"],
+        current_schema="brain_silver",
+        provisional=True,
+    ),
+    # journey ENTITY grain (1 row per brand/brain_anon_id). No money (revenue truth stays in order/settlement).
+    MartSpec(
+        name="silver_journey",
+        layer="silver",
+        pk=["brand_id", "brain_anon_id"],
+        current_schema="brain_silver",
+        provisional=True,
+    ),
+    # identity_alias = Iceberg projection of Neo4j IDENTIFIES edges. Hashed identifier → brain_id. No money.
+    MartSpec(
+        name="silver_identity_alias",
+        layer="silver",
+        pk=["brand_id", "identifier_type", "identifier_value"],
         current_schema="brain_silver",
         provisional=True,
     ),
 ]
 
-MARTS: Dict[str, MartSpec] = {spec.name: spec for spec in (_GOLD + _SILVER)}
+MARTS: Dict[str, MartSpec] = {spec.name: spec for spec in (_GOLD + _SILVER + _SILVER_NEW_ENTITIES)}
 
 
 def resolve_mart(name: str) -> MartSpec:

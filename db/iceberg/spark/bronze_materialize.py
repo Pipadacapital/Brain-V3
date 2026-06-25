@@ -174,7 +174,11 @@ def load_pixel_installations(spark: SparkSession):
         .option("user", PG_USER)
         .option("password", PG_PASSWORD)
         .option("driver", "org.postgresql.Driver")
-        .option("query", "SELECT install_token::text AS install_token, brand_id::text AS derived_brand_id FROM pixel_installation")
+        # Schema-qualified: the re-platform (Phase A) moved pixel_installation out of `public` into the
+        # `pixel` schema. The JDBC superuser's search_path does NOT include `pixel`, so an unqualified
+        # name fails with relation-does-not-exist and crash-loops the sink (Bronze stops filling). Same
+        # break would hit prod — always schema-qualify cross-schema reads from the sink.
+        .option("query", "SELECT install_token::text AS install_token, brand_id::text AS derived_brand_id FROM pixel.pixel_installation")
         .load()
     )
 

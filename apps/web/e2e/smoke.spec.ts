@@ -51,10 +51,10 @@ test('register → auto-login → Step1 merged create → Step2 Integrations (Sk
   await expect(page.getByTestId('select-currency-code')).toBeVisible();
   await expect(page.getByTestId('select-timezone')).toBeVisible();
   await expect(page.getByTestId('select-revenue-definition')).toBeVisible();
-  // Skip the website (no live storefront in the smoke env) → tracking interstitial (add-website).
-  await page.getByTestId('btn-skip-website').click();
+  // Website is required → fill it, then the tracking interstitial (captured/snippet state).
+  await page.getByTestId('input-brand-domain').fill('smoke-store.com');
+  await page.getByTestId('btn-create-brand').click();
   await expect(page).toHaveURL(/\/onboarding\/tracking/);
-  await expect(page.getByTestId('tracking-ready-skipped')).toBeVisible({ timeout: 15_000 });
   await page.getByTestId('btn-tracking-continue').click();
 
   // After provision: onboarding_status=brand_created → Step 2 (integrations).
@@ -113,10 +113,11 @@ test('resume assertion: user at brand_created lands on Step 2 (/onboarding/integ
   await expect(page).toHaveURL(/\/onboarding\/start/);
   await markEmailVerified(email);
 
-  // Step 1 — merged create, skipping the website (leaves status at brand_created).
+  // Step 1 — merged create with the required website (leaves status at brand_created).
   await page.getByTestId('input-workspace-name').fill('Resume Workspace');
   await page.getByTestId('input-brand-name').fill('Resume Brand');
-  await page.getByTestId('btn-skip-website').click();
+  await page.getByTestId('input-brand-domain').fill('resume-store.com');
+  await page.getByTestId('btn-create-brand').click();
   // Tracking interstitial — simulate crash (navigate away) without completing Step 2.
   await expect(page).toHaveURL(/\/onboarding\/tracking/);
 

@@ -62,51 +62,17 @@ test.describe('onboarding website → tracking', () => {
     await expect(page).toHaveURL(/\/onboarding\/(integrations|done)|\/dashboard/);
   });
 
-  test('skips website → honest add-website state', async ({ page }) => {
-    await toBrandStep(page, 'ow_skip');
+  test('website is required → submitting without one is blocked', async ({ page }) => {
+    await toBrandStep(page, 'ow_req');
 
-    await page.getByTestId('input-brand-name').fill('OW Skip Brand');
-    // No website typed; use the first-class Skip action.
-    await page.getByTestId('btn-skip-website').click();
+    await page.getByTestId('input-brand-name').fill('OW Req Brand');
+    // Website is mandatory — there is no skip affordance.
+    await expect(page.getByTestId('btn-skip-website')).toHaveCount(0);
 
-    // → tracking interstitial in the add-website state (no faked snippet).
-    await expect(page).toHaveURL(/\/onboarding\/tracking\?w=0/);
-    await expect(page.getByTestId('tracking-ready-skipped')).toBeVisible({ timeout: 15_000 });
-    await expect(page.getByTestId('tracking-ready-skipped')).toContainText(
-      'Add your website to start tracking',
-    );
-    // It must NOT pretend a snippet exists.
-    await expect(page.getByTestId('tracking-ready-snippet-code')).toHaveCount(0);
-    await expect(page.getByTestId('link-add-website')).toBeVisible();
-
-    await expectNoA11yViolations(page);
-
-    await page.getByTestId('btn-tracking-continue').click();
-    await expect(page).toHaveURL(/\/onboarding\/(integrations|done)|\/dashboard/);
-  });
-
-  test('Tracking Center surfaces snippet + status + add-website path', async ({ page }) => {
-    await toBrandStep(page, 'ow_tc');
-
-    // Skip at onboarding so the brand reaches the Tracking Center with no installation,
-    // exercising the inline "add website → provision" path.
-    await page.getByTestId('input-brand-name').fill('OW TC Brand');
-    await page.getByTestId('btn-skip-website').click();
-    await expect(page).toHaveURL(/\/onboarding\/tracking\?w=0/);
-
-    await page.goto('/settings/pixel');
-    await expect(
-      page.getByRole('heading', { name: 'Tracking Center', level: 1 }),
-    ).toBeVisible({ timeout: 10_000 });
-
-    // No installation yet → the generate (provision) card is offered.
-    await expect(page.getByTestId('pixel-generate-card')).toBeVisible({ timeout: 10_000 });
-    await expect(page.getByTestId('btn-generate-pixel')).toBeVisible();
-
-    // Provision inline → snippet + target_host surface.
-    await page.getByTestId('btn-generate-pixel').click();
-    await expect(page.getByTestId('pixel-snippet-card')).toBeVisible({ timeout: 15_000 });
-    await expect(page.getByTestId('pixel-snippet')).toContainText('/pixel.js');
+    // Submit with no website → stays on the create step with the required validation error.
+    await page.getByTestId('btn-create-brand').click();
+    await expect(page).toHaveURL(/\/onboarding\/start/);
+    await expect(page.getByText(/website is required/i)).toBeVisible();
 
     await expectNoA11yViolations(page);
   });

@@ -115,7 +115,7 @@ export function CreateBrandForm() {
     return !!expectedTz && expectedTz !== timezone;
   }
 
-  function doSubmit(data: CreateBrandFormValues, opts?: { skipWebsite?: boolean }) {
+  function doSubmit(data: CreateBrandFormValues) {
     if (!workspaceId) return;
 
     const mismatch = isMismatch(data.currency_code ?? 'INR', data.timezone ?? 'Asia/Kolkata');
@@ -130,9 +130,9 @@ export function CreateBrandForm() {
     setCurrencyMismatch(false);
     setPendingSubmit(null);
 
-    // Skip-for-now stays first-class: submit with no website → no pixel provision.
-    const submittedDomain = opts?.skipWebsite ? undefined : data.domain?.trim() || undefined;
-    const websiteProvided = !!submittedDomain;
+    // Website is required → it always provisions this brand's tracking pixel.
+    const submittedDomain = data.domain.trim();
+    const websiteProvided = true;
 
     createBrand(
       {
@@ -166,11 +166,6 @@ export function CreateBrandForm() {
 
   function onSubmit(data: CreateBrandFormValues) {
     doSubmit(data);
-  }
-
-  function handleSkipWebsite() {
-    // Validate the rest of the form, then submit with website cleared.
-    void handleSubmit((data) => doSubmit(data, { skipWebsite: true }))();
   }
 
   function confirmMismatch() {
@@ -250,7 +245,7 @@ export function CreateBrandForm() {
               <Label htmlFor="domain" className="flex items-center gap-2">
                 Website
                 <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[11px] font-medium uppercase tracking-wide text-primary">
-                  Recommended
+                  Required
                 </span>
               </Label>
               <Input
@@ -280,7 +275,7 @@ export function CreateBrandForm() {
               )}
               <p id="brand-domain-hint" className="text-xs text-muted-foreground">
                 Powers your tracking pixel — we&apos;ll generate an install snippet for this
-                site right after. You can still add it later.
+                site right after. Required so we can install the pixel and track events.
               </p>
               {errors.domain && (
                 <p id="brand-domain-error" className="text-xs text-destructive" role="alert">
@@ -411,16 +406,6 @@ export function CreateBrandForm() {
               >
                 {isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />}
                 {isPending ? 'Creating…' : 'Create brand'}
-              </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                className="w-full text-muted-foreground"
-                onClick={handleSkipWebsite}
-                disabled={isPending || !workspaceId || currencyMismatch}
-                data-testid="btn-skip-website"
-              >
-                Create without a website — add it later
               </Button>
             </div>
           </div>

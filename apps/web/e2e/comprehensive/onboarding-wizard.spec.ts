@@ -43,19 +43,20 @@ test.describe('onboarding-wizard', () => {
     await expect(page.getByTestId('input-workspace-name')).toBeVisible();
     await expect(page.getByTestId('input-brand-name')).toBeVisible();
     await expect(page.getByTestId('btn-create-brand')).toBeVisible();
-    await expect(page.getByTestId('btn-skip-website')).toBeVisible();
+    // Website is required — the field is present and there is no skip affordance.
+    await expect(page.getByTestId('input-brand-domain')).toBeVisible();
+    await expect(page.getByTestId('btn-skip-website')).toHaveCount(0);
   });
 
-  test('[positive] skipping the website routes to the tracking interstitial (add-website state)', async ({ page }) => {
+  test('[positive] completing the merged step (with the required website) routes to the tracking interstitial', async ({ page }) => {
     await registerAndVerify(page, 'onb_track');
-    // completeMergedStep fills names, clicks btn-skip-website, asserts /onboarding/tracking.
+    // completeMergedStep fills names + the required website, clicks create, asserts /onboarding/tracking.
     await completeMergedStep(page, { workspace: 'Track WS', brand: 'Track Brand' });
 
     await expect(page).toHaveURL(/\/onboarding\/tracking/);
     await expect(page.getByRole('heading', { name: 'Set up tracking' })).toBeVisible();
-    // Skipped the website -> honest "add website" state, never a fake snippet.
-    await expect(page.getByTestId('tracking-ready-skipped')).toBeVisible();
-    await expect(page.getByTestId('btn-tracking-continue')).toBeVisible();
+    // Website captured → the continue affordance is present (snippet state, never a fake).
+    await expect(page.getByTestId('btn-tracking-continue')).toBeVisible({ timeout: 15_000 });
   });
 
   test('[negative] empty workspace and brand names show validation errors and do not advance', async ({ page }) => {

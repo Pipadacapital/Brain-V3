@@ -80,23 +80,21 @@ export const createBrandSchema = z.object({
     .min(1, 'Brand name is required')
     .max(80, 'Brand name must be under 80 characters'),
   /**
-   * Brand website — recommended (powers the tracking pixel), NOT required (Skip-for-now
-   * stays first-class, ADR-5). The server is authoritative for normalization
+   * Brand website — REQUIRED (powers the tracking pixel; without it we can't install the pixel
+   * or attribute browser events to the brand). The server is authoritative for normalization
    * (`normalizeBrandHost` in @brain/pixel-sdk): it canonicalizes whatever the user types
    * (bare host, full URL, www-prefixed) to one host and provisions the pixel from it.
    *
-   * Client-side we accept either a bare host (`mystore.com`) or a full URL — we only
-   * reject obvious garbage (a value with no dot) so the field stays forgiving; the server
-   * does the strict parse + 422 on a non-empty-but-invalid value.
+   * Client-side we accept either a bare host (`mystore.com`) or a full URL — we require a value
+   * and only reject obvious garbage (no dot); the server does the strict parse + 422 on an invalid.
    */
   domain: z
     .string()
     .trim()
-    .refine((v) => v === '' || v.includes('.'), {
+    .min(1, 'Website is required')
+    .refine((v) => v.includes('.'), {
       message: 'Enter a valid website (e.g. mystore.com or https://mystore.com)',
-    })
-    .optional()
-    .or(z.literal('')),
+    }),
   /** ISO 4217 bounded allowlist — MA-12: matches backend CHECK constraint. */
   currency_code: z
     .enum(['INR', 'AED', 'SAR', 'QAR', 'KWD', 'BHD', 'OMR'] as const, {
@@ -124,8 +122,8 @@ export type CreateBrandFormValues = z.infer<typeof createBrandSchema>;
 //
 // One step that provisions both the organization (workspace) and its first brand. There is
 // NO slug field — the server derives the slug from the workspace name. All brand-config
-// fields (website/currency/timezone/revenue) carry over from createBrandSchema so the
-// website→pixel UX (preview + skip) from feat-onboarding-website is preserved unchanged.
+// fields (website/currency/timezone/revenue) carry over from createBrandSchema; website is
+// REQUIRED (the pixel needs it) — there is no skip-for-now.
 export const createBrandWorkspaceSchema = z.object({
   workspace_name: z
     .string()
@@ -138,11 +136,10 @@ export const createBrandWorkspaceSchema = z.object({
   domain: z
     .string()
     .trim()
-    .refine((v) => v === '' || v.includes('.'), {
+    .min(1, 'Website is required')
+    .refine((v) => v.includes('.'), {
       message: 'Enter a valid website (e.g. mystore.com or https://mystore.com)',
-    })
-    .optional()
-    .or(z.literal('')),
+    }),
   currency_code: z
     .enum(['INR', 'AED', 'SAR', 'QAR', 'KWD', 'BHD', 'OMR'] as const, {
       errorMap: () => ({ message: 'Select a supported currency' }),

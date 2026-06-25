@@ -71,7 +71,7 @@ test.describe('feat-onboarding-ux', () => {
 
   test('forward-only: Back from a later step does not re-show the created form', async ({ page }) => {
     await registerAndVerify(page, 'oux_back');
-    // Complete the merged step (skip website) → tracking interstitial → integrations.
+    // Complete the merged step (with the required website) → tracking interstitial → integrations.
     await completeMergedStep(page);
     await page.getByTestId('btn-tracking-continue').click();
     await expect(page).toHaveURL(/\/onboarding\/integrations/);

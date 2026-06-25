@@ -276,6 +276,33 @@ export function DashboardCreateBrandDialog({ open, onOpenChange }: DashboardCrea
               )}
             </div>
 
+            {/* Website → tracking pixel. REQUIRED — without it we can't install the pixel or
+                attribute browser events to this brand. Mirrors the onboarding website capture. */}
+            <div className="space-y-1.5">
+              <Label htmlFor="dialog-domain">Website</Label>
+              <Input
+                id="dialog-domain"
+                type="url"
+                inputMode="url"
+                placeholder="mystore.com"
+                aria-required="true"
+                aria-invalid={!!errors.domain}
+                aria-describedby={errors.domain ? 'dialog-domain-error' : 'dialog-domain-hint'}
+                data-testid="input-dialog-domain"
+                {...register('domain')}
+              />
+              {errors.domain ? (
+                <p id="dialog-domain-error" className="text-xs text-destructive" role="alert">
+                  {errors.domain.message}
+                </p>
+              ) : (
+                <p id="dialog-domain-hint" className="text-xs text-muted-foreground">
+                  Where your store lives — we use this to install the tracking pixel and attribute
+                  events to this brand.
+                </p>
+              )}
+            </div>
+
             {/* Currency */}
             <div className="space-y-1.5">
               <Label htmlFor="dialog-currency_code">Currency</Label>

@@ -1,10 +1,13 @@
-# parity-oracle.yml — Brain V4 Phase 0 (AREA C): the Spark-Iceberg-Gold ⇄ dbt/StarRocks parity gate.
+# parity-oracle.yml — Brain V4: the Spark-Iceberg-Gold ⇄ serving parity gate.
 #
 # Stands up the REAL lakehouse engines (compose: iceberg-rest + minio + starrocks + redpanda + postgres)
-# and runs db/iceberg/spark/parity/run-parity.sh — the reusable cut-over oracle that, for every Silver/
-# Gold mart, proves the NEW Spark→Iceberg table EQUALS the CURRENT dbt/StarRocks one (row-identity keyed
-# by the mart PK + per-currency minor-unit Σ for money columns), or SKIPs gracefully when the new mart
-# doesn't exist yet.
+# and runs db/iceberg/spark/parity/run-parity.sh — the reusable oracle that, for every Silver/Gold mart,
+# proves the Spark→Iceberg table EQUALS the brain_serving mv_* it feeds (row-identity keyed by the mart
+# PK + per-currency minor-unit Σ for money columns), or SKIPs gracefully when the mart doesn't exist yet.
+#
+# NOTE: dbt was removed in Brain V4 (Phase 6b). This oracle no longer compares against the retired
+# dbt/StarRocks brain_gold/brain_silver marts — it does NOT run dbt (no build/run/seed); it only invokes
+# run-parity.sh against the Iceberg lakehouse + serving tier.
 #
 # ⚠️ INTRODUCED NON-BLOCKING ON PURPOSE (mirrors integration.yml's doctrine): in Phase 0 NO Spark→Iceberg
 # Silver/Gold mart exists yet, so every mart SKIPs (status=SKIP reason=new-mart-absent) and the harness
@@ -13,8 +16,8 @@
 # BLOCKING required check once the first Spark mart lands and its parity is reliably green (add it to
 # branch protection — a repo-admin setting, not expressible here).
 #
-# Same OIDC-free, compose-up, path-filtered shape as integration.yml; it does NOT touch any read path,
-# dbt model, or app code (Phase 0 is additive).
+# Same OIDC-free, compose-up, path-filtered shape as integration.yml; it does NOT touch any read path
+# or app code (additive parity check only).
 
 name: parity-oracle
 on:
@@ -42,7 +45,7 @@ permissions:
 
 jobs:
   parity-oracle:
-    name: Spark Iceberg-Gold ⇄ dbt/StarRocks parity oracle
+    name: Spark Iceberg-Gold ⇄ serving parity oracle
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:

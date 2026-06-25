@@ -88,7 +88,7 @@ export function registerAttributionRoutes(fastify: FastifyInstance, deps: BffDep
   /**
    * GET /api/v1/analytics/attribution/by-channel?from=&to=&model=
    * Attributed revenue by channel + the unattributed residual + the reconciliation rate
-   * for a model + window, from the gold attribution credit ledger (brain_gold.gold_attribution_credit).
+   * for a model + window, from the serving attribution credit ledger (brain_serving.mv_gold_attribution_credit).
    */
   fastify.get(
     '/api/v1/analytics/attribution/by-channel',

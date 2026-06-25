@@ -26,7 +26,7 @@
  *    seam (I-ST01), NOT PG realized_revenue_ledger — PostgreSQL is no longer a revenue READ source.
  *    PG remains the write SoR during transition; gold_revenue_ledger is the derived lakehouse copy.
  *
- * @see db/dbt/models/marts/gold_revenue_ledger.sql (the lakehouse ledger)
+ * @see db/iceberg/spark/gold/ + brain_serving.mv_gold_revenue_ledger (the V4 lakehouse ledger; dbt removed)
  * @see settlement-summary.ts — the sibling compute fn this mirrors
  */
 

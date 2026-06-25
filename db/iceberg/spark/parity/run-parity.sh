@@ -1,19 +1,25 @@
 #!/usr/bin/env bash
-# run-parity.sh — Brain V4 Phase 0 (AREA C): run the Spark-Iceberg-Gold ⇄ dbt/StarRocks parity oracle.
+# run-parity.sh — Brain V4: run the Spark-Iceberg ⇄ StarRocks parity oracle (repurposed in Phase 6b).
 #
-# The reusable cut-over gate for Phases 1-6. Reads the NEW Spark→Iceberg Silver/Gold mart and the
-# CURRENT dbt/StarRocks (or PG) base table and proves row-identity + per-currency minor-unit Σ parity,
-# or honestly SKIPs when the new mart doesn't exist yet (the Phase-0/dual-run reality). Exits non-zero
-# on a real parity FAIL (CI/gate friendly); SKIP is exit 0.
+# The reusable cut-over / serving gate. Reads the NEW Spark→Iceberg Silver/Gold mart and a BASELINE and
+# proves row-identity + per-currency minor-unit Σ parity, or honestly SKIPs when either side is absent.
+# Exits non-zero on a real parity FAIL (CI/gate friendly); SKIP is exit 0.
+#
+# BASELINE (PARITY_BASELINE):
+#   serving (DEFAULT, Phase 6b+) — compare against the StarRocks SERVING MV brain_serving.mv_<mart>:
+#                                  proves the mv_* the app reads EQUALS its Iceberg source. dbt is gone.
+#   dbt (RETIRED)                — the legacy dbt brain_gold/brain_silver base table (DROPPED in 6b →
+#                                  StarRocks-sourced marts SKIP). PG-sourced marts still read PG.
 #
 # Mirrors ../run-bronze-parity.sh: a one-shot Spark container in Redpanda's network namespace so the
 # iceberg-rest / starrocks / postgres / minio service DNS resolves. Requires the lakehouse profile
 # (iceberg-rest + minio) AND core (starrocks) + ingest (redpanda) up.
 #
 # Usage:
-#   db/iceberg/spark/parity/run-parity.sh                 # check ALL marts (skips absent ones)
+#   db/iceberg/spark/parity/run-parity.sh                 # serving parity, ALL marts (skips absent ones)
 #   PARITY_MART=gold_attribution_credit db/iceberg/spark/parity/run-parity.sh
 #   PARITY_BRAND_ID=<uuid> PARITY_MART=gold_revenue_ledger db/iceberg/spark/parity/run-parity.sh
+#   PARITY_BASELINE=dbt db/iceberg/spark/parity/run-parity.sh   # (RETIRED) legacy dbt baseline
 set -euo pipefail
 
 SPARK_IMAGE="${SPARK_IMAGE:-apache/spark:3.5.3}"
@@ -30,7 +36,7 @@ PACKAGES="${PACKAGES},org.apache.iceberg:iceberg-aws-bundle:${ICEBERG_VERSION}"
 PACKAGES="${PACKAGES},org.postgresql:postgresql:${PG_JDBC_VERSION}"
 PACKAGES="${PACKAGES},com.mysql:mysql-connector-j:${MYSQL_JDBC_VERSION}"
 
-echo "[parity-oracle] image=${SPARK_IMAGE} netns=container:${REDPANDA_CONTAINER} mart=${PARITY_MART:-all}"
+echo "[parity-oracle] image=${SPARK_IMAGE} netns=container:${REDPANDA_CONTAINER} mart=${PARITY_MART:-all} baseline=${PARITY_BASELINE:-serving}"
 
 docker volume create brain-spark-ivy >/dev/null
 
@@ -50,6 +56,8 @@ exec docker run --rm \
   -e AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:-brain}" \
   -e AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY:-brainbrain}" \
   -e AWS_REGION="${AWS_REGION:-us-east-1}" \
+  -e PARITY_BASELINE="${PARITY_BASELINE:-serving}" \
+  -e PARITY_SERVING_SCHEMA="${PARITY_SERVING_SCHEMA:-brain_serving}" \
   -e PARITY_SR_JDBC_URL="${PARITY_SR_JDBC_URL:-jdbc:mysql://starrocks:9030}" \
   -e PARITY_SR_USER="${PARITY_SR_USER:-root}" \
   -e PARITY_SR_PASSWORD="${PARITY_SR_PASSWORD:-}" \

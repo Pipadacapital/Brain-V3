@@ -10,7 +10,7 @@
 #
 # Each job is an idempotent MERGE on its model PK (replay-safe). Requires the compose `lakehouse` profile
 # (iceberg-rest + minio) up; Bronze (rest.brain_bronze.collector_events) populated by the Bronze sink.
-# silver_touchpoint also reads the StarRocks brain_silver.silver_journey_stitch export over the MySQL wire
+# silver_touchpoint also reads the StarRocks brain_ops.silver_journey_stitch export over the MySQL wire
 # (the same cross-catalog stitch SoR the dbt model reads) → the MySQL JDBC driver is on the classpath.
 #
 # Usage:  db/iceberg/spark/silver/run-silver-touchpoint-sessions.sh

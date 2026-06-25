@@ -142,9 +142,8 @@ export async function fetchFinalizedPurchaseCandidatesScoped(
   if (brainIds.length > 0) {
     const subjRows = await withSilverBrand(srPool, brandId, async (scope) =>
       scope.runScoped<{ brain_id: string; identifier_type: string; identifier_value: string }>(
-        // V4-FLAG: no Iceberg serving source yet
         `SELECT brain_id, identifier_type, identifier_value
-           FROM brain_silver.silver_identity_link
+           FROM brain_ops.silver_identity_link
           WHERE is_active = true
             AND identifier_type IN ('email','phone')
             AND tier IN ('strong','strong_on_link')

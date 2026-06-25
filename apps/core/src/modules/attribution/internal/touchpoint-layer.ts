@@ -11,7 +11,7 @@
  * (domain layer of the bounded context per DDD). The metric-engine is the SOLE reader of
  * the mart (I-ST01); this file never queries it.
  *
- * @see db/dbt/models/marts/silver_touchpoint.sql — the mart DDL (owned by @data-engineer)
+ * @see db/iceberg/spark/silver/ + brain_serving.mv_silver_touchpoint — the V4 mart (dbt removed)
  * @see packages/metric-engine/src/journey-mix.ts — the SOLE reader of this layer
  */
 

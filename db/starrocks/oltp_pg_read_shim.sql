@@ -64,7 +64,7 @@
 -- CREATE-OR-REPLACE rebind-to-legacy hazard).
 -- ============================================================================
 -- MEDALLION REALIGNMENT (Epic 4): connector_journey_stitch_map_src (the PG JDBC read-shim) was REMOVED.
--- The cart-stitch is materialized into brain_silver.silver_journey_stitch by the journey-stitch-export
+-- The cart-stitch is materialized into brain_ops.silver_journey_stitch by the journey-stitch-export
 -- job; silver_touchpoint reads that StarRocks projection directly (no PG analytical read).
 
 -- ── Medallion realignment (Epic 1): shims for Silver recognition-from-Bronze ───────────────────
@@ -78,5 +78,5 @@ GRANT SELECT ON brand_horizons_src TO brain;
 
 -- MEDALLION REALIGNMENT (Epic 3 / ADR-0004): identity_link_src (the PG identity_link JDBC shim) was
 -- REMOVED. Identity is the Neo4j SoR; the identity-export job materializes the active hash→brain_id
--- edges into brain_silver.silver_identity_link (StarRocks), which silver_order_recognition reads
+-- edges into brain_ops.silver_identity_link (StarRocks), which silver_order_recognition reads
 -- directly. There is no PG identity table to shim.

@@ -52,4 +52,4 @@ echo ">> $(wc -l < "$TSV") order→email tuples."
 
 echo ">> Stamping brain_id on the ledger (idempotent, NULL-only) ..."
 $PG < "$SQL" | tail -4
-echo ">> Done. Re-run 'make insights-pipeline' to rebuild the customer marts."
+echo ">> Done. Re-run 'ONESHOT=1 pnpm dev:v4-refresh' to rebuild the customer marts."

@@ -1,5 +1,5 @@
 /**
- * journey-stitch-export — materialize the PG cart-stitch → StarRocks brain_silver.silver_journey_stitch.
+ * journey-stitch-export — materialize the PG cart-stitch → StarRocks brain_ops.silver_journey_stitch.
  *
  * MEDALLION REALIGNMENT (Epic 4): connectors.connector_journey_stitch_map is the transactional capture
  * (anon read BACK from the order's note_attributes + the cron-resolved brain_id). dbt/StarRocks can't
@@ -40,7 +40,7 @@ export async function runJourneyStitchExport(): Promise<StitchExportResult> {
       )
     ).rows;
 
-    await sr.query('TRUNCATE TABLE brain_silver.silver_journey_stitch');
+    await sr.query('TRUNCATE TABLE brain_ops.silver_journey_stitch');
     const dt = (d: Date | null): string | null => (d ? d.toISOString().slice(0, 19).replace('T', ' ') : null);
     for (let i = 0; i < rows.length; i += BATCH) {
       const chunk = rows.slice(i, i + BATCH);
@@ -48,7 +48,7 @@ export async function runJourneyStitchExport(): Promise<StitchExportResult> {
       const params: unknown[] = [];
       for (const r of chunk) params.push(r.brand_id, r.order_id, r.stitched_anon_id, r.brain_id, dt(r.created_at));
       await sr.query(
-        `INSERT INTO brain_silver.silver_journey_stitch
+        `INSERT INTO brain_ops.silver_journey_stitch
            (brand_id, order_id, stitched_anon_id, brain_id, created_at, updated_at)
          VALUES ${tuples}`,
         params,

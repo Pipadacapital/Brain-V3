@@ -120,15 +120,14 @@ export async function runJourneyStitchFromIdentity(deps?: {
 
         // 3. anon hash → brain_id via the identity graph projection (active anon_id links only).
         // MEDALLION REALIGNMENT (Epic 3 / ADR-0004): identity is the Neo4j SoR; the active hash→brain_id
-        // edges are materialized into brain_silver.silver_identity_link (StarRocks) by the identity-export
+        // edges are materialized into brain_ops.silver_identity_link (StarRocks) by the identity-export
         // job — read it via srPool instead of the dropped PG identity_link.
         const anonHashes = [...hashToRaw.keys()];
         let linkRows: Array<{ identifier_value: string; brain_id: string }> = [];
         if (anonHashes.length > 0) {
           const [rows] = await srPool.query(
-            // V4-FLAG: no Iceberg serving source yet
             `SELECT identifier_value, brain_id
-               FROM brain_silver.silver_identity_link
+               FROM brain_ops.silver_identity_link
               WHERE brand_id = ? AND identifier_type = 'anon_id' AND is_active = true
                 AND brain_id IS NOT NULL AND identifier_value IN (${anonHashes.map(() => '?').join(',')})`,
             [brand.id, ...anonHashes],

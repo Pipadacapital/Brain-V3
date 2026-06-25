@@ -1,6 +1,6 @@
 /**
- * identity-export — materialize the Neo4j identity graph → StarRocks brain_silver.silver_identity_link
- * + silver_customer_identity.
+ * identity-export — materialize the Neo4j identity graph → StarRocks brain_ops.silver_identity_link
+ * + brain_silver.silver_customer_identity.
  *
  * MEDALLION REALIGNMENT (Epic 3 / ADR-0004): Neo4j is the identity SoR, but dbt/StarRocks cannot read
  * Neo4j. silver_order_recognition (gold revenue ledger) + customer marts resolve brain_id from the
@@ -86,9 +86,8 @@ interface CustomerRow {
 /** Read the persisted high-watermark (MAX created_at exported) for a scope; 0 if never run / full mode. */
 async function readWatermark(sr: mysql.Pool, scope: string): Promise<number> {
   if (FULL_REFRESH) return 0;
-  // V4-FLAG: no Iceberg serving source yet
   const [rows] = await sr.query(
-    'SELECT last_created_at_ms FROM brain_silver.identity_export_state WHERE scope = ?',
+    'SELECT last_created_at_ms FROM brain_ops.identity_export_state WHERE scope = ?',
     [scope],
   );
   const r = (rows as Array<{ last_created_at_ms: number | null }>)[0];
@@ -98,7 +97,7 @@ async function readWatermark(sr: mysql.Pool, scope: string): Promise<number> {
 /** Persist the advanced high-watermark for a scope (PK upsert — single row per scope). */
 async function writeWatermark(sr: mysql.Pool, scope: string, ms: number): Promise<void> {
   await sr.query(
-    `INSERT INTO brain_silver.identity_export_state (scope, last_created_at_ms, updated_at)
+    `INSERT INTO brain_ops.identity_export_state (scope, last_created_at_ms, updated_at)
      VALUES (?,?,NOW())`,
     [scope, ms],
   );
@@ -117,7 +116,7 @@ async function upsertEdges(sr: mysql.Pool, edges: EdgeRow[]): Promise<void> {
       params.push(e.brand_id, e.identifier_type, e.identifier_value, e.brain_id, e.tier, e.is_active ? 1 : 0);
     }
     await sr.query(
-      `INSERT INTO brain_silver.silver_identity_link
+      `INSERT INTO brain_ops.silver_identity_link
          (brand_id, identifier_type, identifier_value, brain_id, tier, is_active, updated_at)
        VALUES ${tuples}`,
       params,
@@ -174,7 +173,7 @@ export async function runIdentityExport(): Promise<IdentityExportResult> {
     // ── 1. IDENTIFIES edges → silver_identity_link ───────────────────────────────────────────────
     const linkWatermark = await readWatermark(sr, SCOPE_LINK);
     if (FULL_REFRESH) {
-      await sr.query('TRUNCATE TABLE brain_silver.silver_identity_link');
+      await sr.query('TRUNCATE TABLE brain_ops.silver_identity_link');
     }
 
     const edgeSession = driver.session({ defaultAccessMode: neo4j.session.READ });

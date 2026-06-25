@@ -42,7 +42,7 @@ IDEMPOTENT / REPLAY-SAFE: MERGE on (brand_id, ledger_event_id) — re-run yields
 
 CURRENT-SIDE DIMENSION READS (same JDBC posture as silver_order_state.py / dbt cross-catalog):
   - brand prepaid recognition horizon  → PG tenancy.brand (brand_horizons_src shim columns)
-  - hashed-email → brain_id            → StarRocks brain_silver.silver_identity_link (the Neo4j export)
+  - hashed-email → brain_id            → StarRocks brain_ops.silver_identity_link (the Neo4j export)
 
 Run via run-gold-revenue.sh (mirrors run-silver-orders.sh — Iceberg + PG + MySQL JDBC packages).
 """
@@ -117,17 +117,17 @@ def _read_horizons(spark: SparkSession):
 
 
 def _read_identity_link(spark: SparkSession):
-    """hashed-email → brain_id from the identity export (StarRocks brain_silver.silver_identity_link).
+    """hashed-email → brain_id from the identity export (StarRocks brain_ops.silver_identity_link).
 
-    silver_order_recognition resolves brain_id from brain_silver.silver_identity_link where
+    silver_order_recognition resolves brain_id from brain_ops.silver_identity_link where
     identifier_type='pre_hashed_email' and is_active and brain_id is not null, min(brain_id) per
-    (brand_id, identifier_value). Read that StarRocks dbt table over the MySQL wire and aggregate
+    (brand_id, identifier_value). Read that StarRocks app-written table over the MySQL wire and aggregate
     identically — the SAME identity SoR the dbt path reads (no second source). IDENTICAL to
     silver_order_state.py so the brain_id column matches byte-for-byte.
     """
     query = (
         "(SELECT brand_id, identifier_value AS hashed_customer_email, MIN(brain_id) AS brain_id "
-        "FROM brain_silver.silver_identity_link "
+        "FROM brain_ops.silver_identity_link "
         "WHERE identifier_type = 'pre_hashed_email' AND is_active = true AND brain_id IS NOT NULL "
         "GROUP BY brand_id, identifier_value) b"
     )

@@ -35,4 +35,4 @@ echo ">> Generating 40 days of sample ad spend (meta + google) for $BRAND ..."
 } > "$SQL"
 
 $PG < "$SQL" | tail -4
-echo ">> Done. Re-run 'make insights-pipeline' to rebuild gold_cac + silver_marketing_spend, then /insights shows CAC + blended ROAS."
+echo ">> Done. Re-run 'ONESHOT=1 pnpm dev:v4-refresh' to rebuild gold_cac + silver_marketing_spend, then /insights shows CAC + blended ROAS."

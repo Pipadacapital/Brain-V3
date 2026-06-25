@@ -87,10 +87,14 @@ interface ReversalRow {
 }
 
 /**
- * MEDALLION REALIGNMENT (Epic 2): BOTH the attribution CREDIT BASIS (brain_gold.gold_revenue_ledger)
- * and the CREDIT LEDGER (brain_gold.gold_attribution_credit) are now in the lakehouse — the PG
- * realized_revenue_ledger + attribution_credit_ledger are dropped. The already-credited idempotency
- * filter reads the gold credit ledger via the same Silver seam.
+ * BRAIN V4 PHASE 6a: the attribution credit LEDGER is now produced SOLELY by the Spark gold job
+ * (db/iceberg/spark/gold/gold_attribution_credit.py). This driver still RESOLVES journeys and DRIVES the
+ * (now read-only) AttributionCreditWriter so the deterministic compute + the BFF reconcile route + the
+ * live tests keep exercising the exact apportionment math — but the writer no longer persists (Phase 6a),
+ * so this is effectively a parity/observability driver, not a producer. Every read below targets the
+ * Phase-3 serving MVs (brain_serving.mv_gold_*) — there are NO references to the retiring dbt-internal
+ * brain_gold DB here. The credit BASIS (recognized revenue) reads brain_serving.mv_gold_revenue_ledger;
+ * the already-credited idempotency filter reads brain_serving.mv_gold_attribution_credit (Spark-served).
  */
 
 /** order_ids already credited for (brand, model) — the idempotency filter (gold credit ledger). */

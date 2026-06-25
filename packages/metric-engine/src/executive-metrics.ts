@@ -18,7 +18,7 @@
  * NO MODEL, NO FORECAST: LTV here is the honest realized-revenue-per-customer (cohort-naive M1), NOT
  * a predicted/discounted LTV (that is deferred to the feature layer). Labelled accordingly.
  *
- * @see db/dbt/models/marts/gold_executive_metrics.sql + gold_cohorts.sql
+ * @see db/iceberg/spark/gold/ + brain_serving.mv_gold_executive_metrics / mv_gold_cohorts (dbt removed in V4)
  * @see packages/metric-engine/src/customer-360.ts (sibling Gold reader)
  */
 

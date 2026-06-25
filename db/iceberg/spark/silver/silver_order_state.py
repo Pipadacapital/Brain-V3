@@ -24,7 +24,7 @@ IDEMPOTENT / REPLAY-SAFE: MERGE on (brand_id, order_id) — re-run yields byte-i
 
 SOURCES it cannot get from Iceberg (read via JDBC, exactly as dbt does cross-catalog):
   - brand prepaid recognition horizon  → PG tenancy.brand (the brand_horizons_src shim columns)
-  - hashed-email → brain_id            → StarRocks brain_silver.silver_identity_link (the Neo4j export)
+  - hashed-email → brain_id            → StarRocks brain_ops.silver_identity_link (the Neo4j export)
 Both are small dimension reads; the order/recognition logic itself is pure over Iceberg Bronze.
 
 Run via run-silver-orders.sh (mirrors run-bronze-parity.sh — Iceberg + PG + MySQL JDBC packages).
@@ -96,16 +96,16 @@ def _read_horizons(spark: SparkSession):
 
 
 def _read_identity_link(spark: SparkSession):
-    """hashed-email → brain_id from the identity export (StarRocks brain_silver.silver_identity_link).
+    """hashed-email → brain_id from the identity export (StarRocks brain_ops.silver_identity_link).
 
-    silver_order_recognition resolves brain_id from brain_silver.silver_identity_link where
+    silver_order_recognition resolves brain_id from brain_ops.silver_identity_link where
     identifier_type='pre_hashed_email' and is_active and brain_id is not null, min(brain_id) per
-    (brand_id, identifier_value). We read that StarRocks dbt table over the MySQL wire and aggregate
-    identically. (Net-new dual-run reads the SAME identity SoR the dbt path reads — no second source.)
+    (brand_id, identifier_value). We read that StarRocks app-written table over the MySQL wire and
+    aggregate identically. (Net-new dual-run reads the SAME identity SoR the dbt path reads — no second source.)
     """
     query = (
         "(SELECT brand_id, identifier_value AS hashed_customer_email, MIN(brain_id) AS brain_id "
-        "FROM brain_silver.silver_identity_link "
+        "FROM brain_ops.silver_identity_link "
         "WHERE identifier_type = 'pre_hashed_email' AND is_active = true AND brain_id IS NOT NULL "
         "GROUP BY brand_id, identifier_value) b"
     )

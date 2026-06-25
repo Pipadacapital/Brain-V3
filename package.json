@@ -22,7 +22,7 @@
     "bootstrap": "bash tools/seed/prod-local-aws-bootstrap.sh",
     "dev:tunnel": "cloudflared tunnel --url http://localhost:3001",
     "dev:pixel-tunnel": "bash tools/dev/pixel-tunnel.sh",
-    "dev:dbt-refresh": "bash tools/dev/dbt-refresh-loop.sh",
+    "dev:v4-refresh": "bash tools/dev/v4-refresh-loop.sh",
     "seed": "node tools/seed/seed.mjs",
     "down": "docker compose down",
     "migrate": "node scripts/migrate.mjs up",

@@ -1,17 +1,31 @@
 """
-parity_oracle.py — the Spark-Iceberg-Gold ⇄ current-dbt/StarRocks parity oracle (Brain V4 Phase 0, AREA C).
+parity_oracle.py — the Spark-Iceberg ⇄ StarRocks parity oracle (Brain V4 Phase 0, AREA C; repurposed 6b).
 
-The reusable cut-over gate for EVERY later phase of the V4 re-platform. Phases 1-3 build the new
-Spark→Iceberg Silver/Gold layer BESIDE the live dbt→StarRocks one (dual-run, non-breaking); a reader
-only cuts over (Phase 4+) once this oracle proves the new table EQUALS the current one. It mirrors the
-proven Bronze parity oracle (../bronze_parity_check.py) in style, connections and exit-code discipline,
-and lifts it from Bronze's identity-only check to the Gold/Silver mart shape:
+The reusable cut-over gate for EVERY phase of the V4 re-platform. Phases 1-3 built the new Spark→Iceberg
+Silver/Gold layer BESIDE the live dbt→StarRocks one (dual-run, non-breaking); a reader only cut over
+(Phase 4+) once this oracle proved the new table EQUALS the current one. It mirrors the proven Bronze
+parity oracle (../bronze_parity_check.py) in style, connections and exit-code discipline, and lifts it
+from Bronze's identity-only check to the Gold/Silver mart shape.
 
   - NEW side      = the Spark-built Iceberg mart (rest.brain_gold.<mart> / rest.brain_silver.<mart>),
                     read through the SAME Iceberg REST catalog wiring as the Bronze jobs.
-  - CURRENT side  = the live dbt/StarRocks base table (brain_gold.<mart> / brain_silver.<mart>),
-                    read over StarRocks' MySQL-wire protocol via JDBC (default), or Postgres JDBC
-                    for the few marts whose current SoR is still PG.
+  - BASELINE side = configurable via PARITY_BASELINE (see below).
+
+── PARITY_BASELINE — WHICH baseline the NEW Iceberg mart is compared against ──────────────────────────
+  PARITY_BASELINE=serving  (DEFAULT — Phase 6b onward):
+      The StarRocks SERVING materialized view `brain_serving.mv_<mart>` (read over the MySQL wire via
+      JDBC). The MV reads the SAME Iceberg table the NEW side reads, so this proves SERVING PARITY: the
+      mv_* the app actually queries EQUALS its Iceberg source (no stale / lossy MV refresh). This is the
+      live gate after dbt-on-StarRocks was retired in 6b. A mart with no mv_* (most provisional GAP
+      marts) is absent on the baseline side → graceful SKIP (current-mart-absent).
+
+  PARITY_BASELINE=dbt  (RETIRED — Phase 6b dropped brain_gold + brain_silver):
+      The legacy dbt-built StarRocks base table `brain_gold.<mart>` / `brain_silver.<mart>` (or the PG
+      table for source="pg" marts). This was the original cut-over baseline (Phases 0-4) but the
+      dbt-internal brain_gold/brain_silver DBs were DROPPED in Phase 6b
+      (db/starrocks/teardown/drop_dbt_internal_dbs.sql), so on a 6b+ environment every StarRocks-sourced
+      mart will SKIP (current-mart-absent). Kept ONLY for (a) historical reference and (b) PG-sourced
+      marts whose baseline is still Postgres. Do NOT rely on it as a live gate — it is RETIRED.
 
 Comparison (per V4 rule 5 — "parity is exact, money is minor-unit"):
   1. ROW COUNT keyed by the mart's PRIMARY KEY — distinct PK count on each side + the symmetric-
@@ -56,10 +70,19 @@ SILVER_WAREHOUSE = os.environ.get("SILVER_WAREHOUSE", "s3://brain-silver/")
 GOLD_WAREHOUSE = os.environ.get("GOLD_WAREHOUSE", "s3://brain-gold/")
 S3_ENDPOINT = os.environ.get("S3_ENDPOINT", "http://minio:9000")
 
-# ── CURRENT side (dbt/StarRocks, or PG) JDBC wiring ───────────────────────────────────────────────
-# StarRocks speaks the MySQL wire protocol on :9030, so the MySQL Connector/J driver reads its base
-# tables directly. This is the live serving SoR today (report 09) — the thing the new Iceberg mart
-# must equal before any reader cuts over.
+# ── BASELINE side selector (Phase 6b) ─────────────────────────────────────────────────────────────
+# "serving" (default): compare the NEW Iceberg mart against the StarRocks SERVING MV brain_serving.mv_<mart>
+#                      — proves the mv_* the app reads equals its Iceberg source.
+# "dbt" (RETIRED):     compare against the legacy dbt brain_gold/brain_silver base table (DROPPED in 6b;
+#                      PG-sourced marts still read PG). See the module docstring.
+PARITY_BASELINE = os.environ.get("PARITY_BASELINE", "serving").strip().lower()
+# The StarRocks DB that holds the serving materialized views (mv_<mart>) — the V4 serving layer.
+SERVING_SCHEMA = os.environ.get("PARITY_SERVING_SCHEMA", "brain_serving")
+
+# ── CURRENT/BASELINE side (StarRocks serving MV, retired dbt base table, or PG) JDBC wiring ────────
+# StarRocks speaks the MySQL wire protocol on :9030, so the MySQL Connector/J driver reads its tables
+# directly. In serving mode this targets brain_serving.mv_<mart>; in (retired) dbt mode the dbt base
+# table. PG-sourced marts (source="pg") always read Postgres regardless of mode.
 SR_JDBC_URL = os.environ.get("PARITY_SR_JDBC_URL", "jdbc:mysql://starrocks:9030")
 SR_USER = os.environ.get("PARITY_SR_USER", "root")
 SR_PASSWORD = os.environ.get("PARITY_SR_PASSWORD", "")
@@ -142,14 +165,31 @@ def _read_new(spark: SparkSession, spec: MartSpec):
     return df
 
 
-def _read_current(spark: SparkSession, spec: MartSpec):
-    """Read the CURRENT dbt/StarRocks (or PG) mart over JDBC. Returns None if absent (graceful skip)."""
+def _baseline_target(spec: MartSpec) -> tuple:
+    """Resolve the BASELINE side (store + schema.table) for this mart, honouring PARITY_BASELINE.
+
+    Returns (is_starrocks, db_qualified). PG-sourced marts (source="pg") always read Postgres. In
+    serving mode the StarRocks baseline is brain_serving.mv_<mart>; in retired dbt mode it is the dbt
+    base table spec.current_schema.<mart>.
+    """
     if spec.source == "pg":
-        url, user, pw, driver = PG_JDBC_URL, PG_USER, PG_PASSWORD, "org.postgresql.Driver"
-        db_qualified = f"{spec.current_schema}.{spec.name}"
-    else:  # starrocks (MySQL wire)
+        # An operational ledger whose baseline is still Postgres — unaffected by the dbt→serving switch.
+        return False, f"{spec.current_schema}.{spec.name}"
+    if PARITY_BASELINE == "serving":
+        # Serving parity: the mv_* the app reads must equal its Iceberg source (mart names carry their
+        # silver_/gold_/snap_ prefix, so the MV is exactly mv_<spec.name>).
+        return True, f"{SERVING_SCHEMA}.mv_{spec.name}"
+    # RETIRED dbt baseline (brain_gold/brain_silver dropped in 6b → will SKIP as current-mart-absent).
+    return True, f"{spec.current_schema}.{spec.name}"
+
+
+def _read_current(spark: SparkSession, spec: MartSpec):
+    """Read the BASELINE mart (serving MV / retired dbt base table / PG) over JDBC. None if absent (skip)."""
+    is_sr, db_qualified = _baseline_target(spec)
+    if is_sr:  # StarRocks (MySQL wire) — serving MV or dbt base table
         url, user, pw, driver = SR_JDBC_URL, SR_USER, SR_PASSWORD, "com.mysql.cj.jdbc.Driver"
-        db_qualified = f"{spec.current_schema}.{spec.name}"
+    else:  # Postgres
+        url, user, pw, driver = PG_JDBC_URL, PG_USER, PG_PASSWORD, "org.postgresql.Driver"
 
     is_sr = spec.source != "pg"
 
@@ -223,7 +263,8 @@ def _money_parity(new_df, cur_df, spec: MartSpec):
 
 def check_mart(spark: SparkSession, spec: MartSpec) -> bool:
     """Run the full parity check for one mart. Returns True if PASS or SKIP (gate stays open), False on FAIL."""
-    header = f"================ PARITY ORACLE: {spec.name} ({spec.layer}, current={spec.source}:{spec.current_schema}) ================"
+    _, baseline_tbl = _baseline_target(spec)
+    header = f"================ PARITY ORACLE: {spec.name} ({spec.layer}, baseline={PARITY_BASELINE}:{baseline_tbl}) ================"
     print(f"\n{header}", flush=True)
     if BRAND_ID:
         print(f"  scoped to brand_id={BRAND_ID}", flush=True)
@@ -296,7 +337,19 @@ def main() -> None:
     else:
         specs = list(MARTS.values())
 
-    print(f"\n[parity-oracle] checking {len(specs)} mart(s): {[s.name for s in specs]}", flush=True)
+    if PARITY_BASELINE == "dbt":
+        print(
+            "\n[parity-oracle] ⚠ PARITY_BASELINE=dbt is RETIRED — the dbt-internal brain_gold/brain_silver "
+            "DBs were DROPPED in Phase 6b. StarRocks-sourced marts will SKIP (current-mart-absent). "
+            "Use PARITY_BASELINE=serving (default) for the live Iceberg⇄brain_serving.mv_* gate.",
+            flush=True,
+        )
+    print(
+        f"\n[parity-oracle] baseline={PARITY_BASELINE} "
+        f"({'Iceberg ⇄ brain_serving.mv_*' if PARITY_BASELINE == 'serving' else 'Iceberg ⇄ retired dbt base table'})",
+        flush=True,
+    )
+    print(f"[parity-oracle] checking {len(specs)} mart(s): {[s.name for s in specs]}", flush=True)
     all_pass = True
     for spec in specs:
         try:

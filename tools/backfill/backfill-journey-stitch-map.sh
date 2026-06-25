@@ -68,4 +68,4 @@ SQL
 
 echo ">> Upserting stitch rows (deterministic, identity-graph based) ..."
 $PG < "$SQL" | tail -4
-echo ">> Done. Re-run 'make insights-pipeline' to rebuild silver_touchpoint + gold_attribution_paths."
+echo ">> Done. Re-run 'ONESHOT=1 pnpm dev:v4-refresh' to rebuild silver_touchpoint + gold_attribution_paths."

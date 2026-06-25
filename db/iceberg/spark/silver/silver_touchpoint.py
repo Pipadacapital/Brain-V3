@@ -2,7 +2,7 @@
 silver_touchpoint.py — Brain V4 Phase 1 (Spark Silver, dual-run). GROUP=touchpoint+sessions.
 
 Reimplements the dbt model db/dbt/models/marts/silver_touchpoint.sql as a Spark job that READS
-Iceberg Bronze (rest.brain_bronze.collector_events) + the StarRocks brain_silver.silver_journey_stitch
+Iceberg Bronze (rest.brain_bronze.collector_events) + the StarRocks brain_ops.silver_journey_stitch
 export, and WRITES Iceberg brain_silver.silver_touchpoint, reproducing the dbt SQL transform EXACTLY.
 This runs BESIDE the live dbt→StarRocks brain_silver (dual-run, NON-BREAKING). It repoints no reader,
 changes no dbt model, changes no app code.
@@ -171,16 +171,16 @@ def _register_murmur_udf(spark: SparkSession) -> None:
 
 
 def _read_stitch(spark: SparkSession):
-    """Deterministic cart-stitch map from the StarRocks export (brain_silver.silver_journey_stitch).
+    """Deterministic cart-stitch map from the StarRocks export (brain_ops.silver_journey_stitch).
 
-    silver_touchpoint.sql LEFT JOINs brain_silver.silver_journey_stitch (the journey-stitch export from
+    silver_touchpoint.sql LEFT JOINs brain_ops.silver_journey_stitch (the journey-stitch export from
     PG, read as the StarRocks projection — the lakehouse no longer reaches into PG for the journey mart).
     We read the SAME StarRocks table over the MySQL wire so the dual-run join is against the identical
     stitch SoR. Returns None when the export table is absent/empty-catalog (→ all stitch NULL, dbt parity
     when the stitch map has 0 rows, which is the current local state)."""
     query = (
         "(SELECT brand_id, stitched_anon_id, order_id, brain_id AS stitched_brain_id, created_at "
-        "FROM brain_silver.silver_journey_stitch) s"
+        "FROM brain_ops.silver_journey_stitch) s"
     )
     try:
         return (

@@ -1,23 +1,32 @@
 /**
  * credit-writer.ts — the attribution credit-ledger WRITER use-case (Tier-0, append-only).
  *
- * MEDALLION REALIGNMENT (Epic 2): attribution credit/clawback is written to the LAKEHOUSE
- * (brain_gold.gold_attribution_credit on StarRocks) — NOT PostgreSQL billing.attribution_credit_ledger
- * (dropped). The compute is deterministic (the metric-engine is the SOLE math layer — I-E03/E04: exact
- * signed BIGINT minor units, deterministic credit_id, Markov for data_driven); this file is the I/O
- * adapter. The bounded-context write side:
- *   • writeCredit(...)  — reads the journey touches (silver.touchpoint via the Silver seam) + the order's
- *                         realized-revenue basis, computes the per-touch credit rows, and APPENDS them
- *                         (deterministic credit_id → pre-filter existing ⇒ INSERT-new-only, idempotent).
- *   • writeClawback(...) — on a realized reversal, reads the SAVED credit rows back from the ledger and
- *                          appends mirrored signed-negative clawback rows using the SAVED weight_fraction
- *                          (never re-apportioned). Deterministic reversal id → idempotent.
+ * ┌──────────────────────────────────────────────────────────────────────────────────────────────┐
+ * │ BRAIN V4 PHASE 6a — TS WRITE PATH RETIRED. Spark is now the SOLE PRODUCER of the attribution    │
+ * │ credit ledger. The Spark gold job db/iceberg/spark/gold/gold_attribution_credit.py (+           │
+ * │ _attribution_math.py, Phase 2) re-drives this EXACT pipeline (Markov/position/largest-remainder │
+ * │ apportionment, deterministic credit_id) and MERGEs into the Iceberg gold ledger                  │
+ * │ brain_gold_local.brain_gold.gold_attribution_credit, served to the app via the serving MV        │
+ * │ brain_serving.mv_gold_attribution_credit. This TS adapter NO LONGER WRITES: appendRows() is a    │
+ * │ neutralized no-op and the read-backs (saved credits / clawed-back total) now read the serving MV │
+ * │ — so there are ZERO references to the retiring dbt-internal brain_gold DB here. The class is kept │
+ * │ (read-only) so the reconcile driver, BFF reconcile route and live tests keep their import paths.  │
+ * └──────────────────────────────────────────────────────────────────────────────────────────────┘
  *
- * IDEMPOTENT: gold_attribution_credit is a StarRocks PRIMARY KEY table on (brand_id, credit_id). A PK
- * upsert OVERWRITES, so to preserve ON-CONFLICT-DO-NOTHING semantics (keep the saved credit) the writer
- * pre-SELECTs existing credit_ids in the batch and inserts ONLY the new ones. Money is signed BIGINT
- * minor units — never float (I-S07). Per-brand isolation: explicit brand_id scoping on every read/write
- * (StarRocks has no RLS; the metric-engine read seam enforces it for dashboard reads — I-ST01).
+ * Historically (pre-V4) this adapter WROTE credit/clawback to StarRocks brain_gold.gold_attribution_credit
+ * (PG billing.attribution_credit_ledger was dropped at the Epic-2 medallion realignment). The deterministic
+ * compute (metric-engine is the SOLE math layer — I-E03/E04: exact signed BIGINT minor units, deterministic
+ * credit_id, Markov for data_driven) is preserved verbatim in the Spark port; only the I/O sink changed.
+ *
+ * GAP FLAGGED for the Spark job (db/iceberg/spark/gold/gold_attribution_credit.py): that job ONLY produces
+ * the row_kind='credit' fold. The CLAWBACK fold (row_kind='clawback', signed-negative rows that re-use the
+ * SAVED weight_fraction on a realized reversal — see computeAttributionClawback below + the R-11 cumulative
+ * clamp) is documented there as omitted ("a strict no-op on the current 0-credit ledger … a follow-up once
+ * stitched journeys + credit rows exist"). Once credit rows + reversals coexist, the Spark job MUST gain the
+ * clawback fold to reach parity with this retired TS path. The clawback math is intact in @brain/metric-engine.
+ *
+ * Money is signed BIGINT minor units — never float (I-S07). Per-brand isolation: explicit brand_id scoping on
+ * every read (StarRocks has no RLS; the metric-engine read seam enforces it for dashboard reads — I-ST01).
  */
 
 import {
@@ -40,11 +49,6 @@ function toBillingPostedPeriod(d: Date): string {
   const y = d.getUTCFullYear();
   const m = String(d.getUTCMonth() + 1).padStart(2, '0');
   return `${y}-${m}`;
-}
-
-/** StarRocks DATETIME literal ('YYYY-MM-DD HH:MM:SS', UTC) from a Date. */
-function toSrDatetime(d: Date): string {
-  return d.toISOString().slice(0, 19).replace('T', ' ');
 }
 
 /** The Silver touch projection used by the writer (a subset of silver.touchpoint). */
@@ -93,7 +97,13 @@ export interface WriteResult {
   suppressed: number;
 }
 
-const GOLD_TABLE = 'brain_gold.gold_attribution_credit';
+/**
+ * READ-back source for the saved credit / clawed-back totals (clawback basis + idempotency).
+ * V4 PHASE 6a: the WRITE sink is retired (Spark is the sole producer); the read-backs now read the
+ * Phase-3 serving MV brain_serving.mv_gold_attribution_credit (which serves the Spark-written Iceberg
+ * gold ledger) — NEVER the retiring dbt-internal brain_gold DB. No `brain_gold.` table refs remain here.
+ */
+const GOLD_READ_VIEW = 'brain_serving.mv_gold_attribution_credit';
 
 export class AttributionCreditWriter {
   constructor(private readonly srPool: SilverPool) {}
@@ -262,7 +272,7 @@ export class AttributionCreditWriter {
       `SELECT credit_id, brand_id, order_id, brain_anon_id, touch_seq, channel,
               campaign_id, model_id, weight_fraction, credited_revenue_minor,
               currency_code, realized_revenue_minor, confidence_grade, attribution_confidence
-         FROM ${GOLD_TABLE}
+         FROM ${GOLD_READ_VIEW}
         WHERE brand_id = ? AND order_id = ? AND model_id = ? AND row_kind = 'credit'
         ORDER BY touch_seq ASC`,
       [brandId, orderId, model],
@@ -305,7 +315,7 @@ export class AttributionCreditWriter {
   ): Promise<bigint> {
     const [rows] = await this.srPool.query(
       `SELECT COALESCE(SUM(credited_revenue_minor), 0) AS total
-         FROM ${GOLD_TABLE}
+         FROM ${GOLD_READ_VIEW}
         WHERE brand_id = ? AND order_id = ? AND model_id = ? AND row_kind = 'clawback'`,
       [brandId, orderId, model],
     );
@@ -315,43 +325,18 @@ export class AttributionCreditWriter {
   }
 
   /**
-   * Append rows to gold_attribution_credit. Pre-filters existing credit_ids (PK = brand_id, credit_id)
-   * so an already-saved credit is NEVER overwritten (ON-CONFLICT-DO-NOTHING semantics on a PK-upsert
-   * store), then INSERTs only the new rows in one batched statement. Returns insert/suppress counts.
+   * appendRows — RETIRED no-op (Brain V4 Phase 6a). The attribution credit ledger is now produced
+   * SOLELY by the Spark gold job (db/iceberg/spark/gold/gold_attribution_credit.py), which MERGEs the
+   * SAME deterministic-credit_id rows into the Iceberg gold ledger. This TS adapter NO LONGER writes
+   * to brain_gold.gold_attribution_credit — keeping a second writer would re-create the dual-writer
+   * debt and re-introduce a dependency on the retiring dbt-internal brain_gold DB.
+   *
+   * The math above (computeAttributionCredit / Clawback / DataDriven) is intentionally preserved so the
+   * reconcile driver, BFF reconcile route and live tests keep exercising it; the produced rows are simply
+   * NOT persisted here. Every produced row is reported as `suppressed` (never `inserted`) so callers that
+   * gate on inserted>0 (reconcile-attribution.ts) honestly report 0 newly-credited from the TS path.
    */
-  private async appendRows(brandId: string, rows: AttributionCreditRow[]): Promise<WriteResult> {
-    if (rows.length === 0) return { inserted: 0, suppressed: 0 };
-
-    const ids = rows.map((r) => r.creditId);
-    const [existRows] = await this.srPool.query(
-      `SELECT credit_id FROM ${GOLD_TABLE} WHERE brand_id = ? AND credit_id IN (${ids.map(() => '?').join(',')})`,
-      [brandId, ...ids],
-    );
-    const existing = new Set((existRows as Array<{ credit_id: string }>).map((r) => r.credit_id));
-    const newRows = rows.filter((r) => !existing.has(r.creditId));
-    if (newRows.length === 0) return { inserted: 0, suppressed: rows.length };
-
-    const tuple = `(${new Array(22).fill('?').join(',')}, NOW())`;
-    const params: unknown[] = [];
-    for (const r of newRows) {
-      params.push(
-        r.brandId, r.creditId, r.orderId, r.brainAnonId, r.touchSeq, r.channel, r.campaignId,
-        r.modelId, r.rowKind, r.weightFraction, r.creditedRevenueMinor.toString(), r.currencyCode,
-        r.reversedOfCreditId, r.reversalReason, r.realizedRevenueMinor.toString(),
-        r.confidenceGrade, r.attributionConfidence, r.modelVersion, r.metricSnapshotId,
-        toSrDatetime(r.occurredAt), toSrDatetime(r.economicEffectiveAt), r.billingPostedPeriod,
-      );
-    }
-    await this.srPool.query(
-      `INSERT INTO ${GOLD_TABLE} (
-         brand_id, credit_id, order_id, brain_anon_id, touch_seq, channel, campaign_id,
-         model_id, row_kind, weight_fraction, credited_revenue_minor, currency_code,
-         reversed_of_credit_id, reversal_reason, realized_revenue_minor,
-         confidence_grade, attribution_confidence, model_version, metric_snapshot_id,
-         occurred_at, economic_effective_at, billing_posted_period, updated_at
-       ) VALUES ${newRows.map(() => tuple).join(',')}`,
-      params,
-    );
-    return { inserted: newRows.length, suppressed: rows.length - newRows.length };
+  private async appendRows(_brandId: string, rows: AttributionCreditRow[]): Promise<WriteResult> {
+    return { inserted: 0, suppressed: rows.length };
   }
 }

@@ -4,7 +4,7 @@ silver_identity_alias.py — NET-NEW canonical Silver `identity_alias` entity (B
 NO dbt predecessor (parity status=NEW). The Iceberg-Silver projection of the identity graph's IDENTIFIES
 edges — one row per (brand_id, identifier_type, identifier_value): a hashed identifier (64-hex, NEVER raw
 PII) → the resolved brain_id. This is the Spark→Iceberg sibling of the existing StarRocks
-brain_silver.silver_identity_link (materialized by apps/stream-worker/.../identity-export/run.ts).
+brain_ops.silver_identity_link (materialized by apps/stream-worker/.../identity-export/run.ts).
 
 WHY this exists (ADR-0004 / identity SoR = Neo4j): dbt/StarRocks cannot read Neo4j, so identity has no dbt
 model — the stream-worker exports it to StarRocks for the dbt marts. Brain V4 moves the Silver layer onto

@@ -17,9 +17,11 @@
  */
 'use client';
 
+import * as React from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
+  ChevronDown,
   LayoutDashboard,
   TrendingUp,
   ShoppingCart,
@@ -221,6 +223,52 @@ function NavLink({ item }: { item: NavItem }) {
   );
 }
 
+/**
+ * A collapsible nav section — open by default ONLY when it contains the active route, so the
+ * sidebar stays short instead of showing every item at once. The active section re-opens
+ * automatically when you navigate into it; you can toggle any section by clicking its header.
+ */
+function NavSectionGroup({ section }: { section: NavSection }) {
+  const pathname = usePathname();
+  const containsActive = section.items.some(
+    (it) =>
+      it.href &&
+      (it.href === '/dashboard' ? pathname === '/dashboard' : pathname.startsWith(it.href)),
+  );
+  const [open, setOpen] = React.useState(containsActive);
+  React.useEffect(() => {
+    if (containsActive) setOpen(true);
+  }, [containsActive]);
+
+  const contentId = `nav-section-${section.title.toLowerCase().replace(/\s+/g, '-')}`;
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="mb-1.5 flex w-full items-center justify-between rounded-md px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        aria-expanded={open}
+        aria-controls={contentId}
+      >
+        <span>{section.title}</span>
+        <ChevronDown
+          className={cn('size-3 shrink-0 transition-transform duration-150', open ? '' : '-rotate-90')}
+          aria-hidden="true"
+        />
+      </button>
+      {open && (
+        <ul id={contentId} className="space-y-0.5" role="list">
+          {section.items.map((item) => (
+            <li key={item.label}>
+              <NavLink item={item} />
+            </li>
+          ))}
+        </ul>
+      )}
+    </li>
+  );
+}
+
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex min-h-screen bg-background">
@@ -243,24 +291,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         <BrandSwitcher />
 
         <nav className="flex-1 overflow-y-auto px-3 py-4" aria-label="Navigation links">
-          <ul className="space-y-6" role="list">
+          <ul className="space-y-2" role="list">
             {NAV_SECTIONS.map((section) => (
-              <li key={section.title}>
-                {/* Section header — decorative, aria-hidden */}
-                <p
-                  className="mb-1.5 px-2.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70 select-none"
-                  aria-hidden="true"
-                >
-                  {section.title}
-                </p>
-                <ul className="space-y-0.5" role="list">
-                  {section.items.map((item) => (
-                    <li key={item.label}>
-                      <NavLink item={item} />
-                    </li>
-                  ))}
-                </ul>
-              </li>
+              <NavSectionGroup key={section.title} section={section} />
             ))}
           </ul>
         </nav>

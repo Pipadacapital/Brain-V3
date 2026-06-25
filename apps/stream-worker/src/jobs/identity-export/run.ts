@@ -1,6 +1,6 @@
 /**
  * identity-export — materialize the Neo4j identity graph → StarRocks brain_ops.silver_identity_link
- * + brain_silver.silver_customer_identity.
+ * + brain_ops.silver_customer_identity.
  *
  * MEDALLION REALIGNMENT (Epic 3 / ADR-0004): Neo4j is the identity SoR, but dbt/StarRocks cannot read
  * Neo4j. silver_order_recognition (gold revenue ledger) + customer marts resolve brain_id from the
@@ -134,7 +134,7 @@ async function upsertCustomers(sr: mysql.Pool, customers: CustomerRow[]): Promis
       params.push(c.brand_id, c.brain_id, c.lifecycle_state, c.merged_into, dt(c.minted_at), dt(c.first_identified_at));
     }
     await sr.query(
-      `INSERT INTO brain_silver.silver_customer_identity
+      `INSERT INTO brain_ops.silver_customer_identity
          (brand_id, brain_id, lifecycle_state, merged_into, minted_at, first_identified_at, updated_at)
        VALUES ${tuples}`,
       params,
@@ -211,7 +211,7 @@ export async function runIdentityExport(): Promise<IdentityExportResult> {
     // ── 2. Customer nodes → silver_customer_identity ─────────────────────────────────────────────
     const customerWatermark = await readWatermark(sr, SCOPE_CUSTOMER);
     if (FULL_REFRESH) {
-      await sr.query('TRUNCATE TABLE brain_silver.silver_customer_identity');
+      await sr.query('TRUNCATE TABLE brain_ops.silver_customer_identity');
     }
 
     const cSession = driver.session({ defaultAccessMode: neo4j.session.READ });

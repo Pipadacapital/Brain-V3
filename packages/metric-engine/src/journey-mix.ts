@@ -340,7 +340,9 @@ export async function computeTouchpointTimeline(
       // brandId binds positionally). The stitch-map subselect is correlated to the same
       // brand via `m.brand_id = mv_silver_touchpoint.brand_id` (column equality — no extra
       // param), so the map row is necessarily the same brand. order_id binds first.
-      // V4-FLAG: no Iceberg serving source yet (connector_journey_stitch_map stays on brain_silver)
+      // V4 (Phase 6b): the stitch-map shim moved OFF the retiring brain_silver DB → it is now
+      // the JDBC live-read view brain_ops.connector_journey_stitch_map (over the same PG OLTP
+      // connectors.connector_journey_stitch_map via brain_oltp_pg). No Iceberg serving source yet.
       return scope.runScoped<TimelineRow>(
         `SELECT brain_anon_id, touch_seq, is_first_touch, is_last_touch,
                 occurred_at, channel, utm_source, utm_medium, utm_campaign,
@@ -349,7 +351,7 @@ export async function computeTouchpointTimeline(
            FROM brain_serving.mv_silver_touchpoint
           WHERE brain_anon_id IN (
               SELECT m.stitched_anon_id
-                FROM brain_silver.connector_journey_stitch_map m
+                FROM brain_ops.connector_journey_stitch_map m
                WHERE m.brand_id = mv_silver_touchpoint.brand_id
                  AND m.order_id = ?
             )

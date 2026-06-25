@@ -228,7 +228,7 @@ export class AttributionCreditWriter {
     const rows = await withSilverBrand(this.srPool, brandId, async (scope) =>
       scope.runScoped<{ brain_anon_id: string; channel: string; touch_seq: string | number; stitched_order_id: string | null }>(
         `SELECT brain_anon_id, channel, touch_seq, stitched_order_id
-           FROM brain_silver.silver_touchpoint
+           FROM brain_serving.mv_silver_touchpoint
           WHERE ${BRAND_PREDICATE}
           ORDER BY brain_anon_id ASC, touch_seq ASC`,
         [],
@@ -250,7 +250,7 @@ export class AttributionCreditWriter {
       return scope.runScoped<SilverTouchRow>(
         `SELECT touch_seq, channel, utm_campaign, utm_medium,
                 fbclid, gclid, ttclid, stitched_brain_id
-           FROM brain_silver.silver_touchpoint
+           FROM brain_serving.mv_silver_touchpoint
           WHERE brain_anon_id = ?
             AND ${BRAND_PREDICATE}
           ORDER BY touch_seq ASC`,

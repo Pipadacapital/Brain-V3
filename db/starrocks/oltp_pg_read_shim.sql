@@ -63,9 +63,24 @@
 -- standard `make silver-catalog` wiring creates it. SCHEMA-QUALIFIED to pin the view (avoids the
 -- CREATE-OR-REPLACE rebind-to-legacy hazard).
 -- ============================================================================
--- MEDALLION REALIGNMENT (Epic 4): connector_journey_stitch_map_src (the PG JDBC read-shim) was REMOVED.
--- The cart-stitch is materialized into brain_ops.silver_journey_stitch by the journey-stitch-export
--- job; silver_touchpoint reads that StarRocks projection directly (no PG analytical read).
+-- MEDALLION REALIGNMENT (Epic 4): the connector_journey_stitch_map_src shim used by the dbt
+-- silver_touchpoint MART was REMOVED — that mart now reads the materialized projection
+-- brain_ops.silver_journey_stitch (journey-stitch-export job), not a live PG read.
+--
+-- BRAIN V4 PHASE 6b: a SEPARATE, request-time LIVE read-back of the same PG cart-stitch is
+-- still needed by metric-engine's touchpoint-timeline (deterministic order→anon resolution,
+-- D-5). That shim was relocated OFF brain_silver into brain_ops
+-- (db/starrocks/ops/ops_connector_journey_stitch_map.sql — the StarRocks VIEW
+-- brain_ops.connector_journey_stitch_map). It reads THIS PG-side cast view through the
+-- brain_oltp_pg JDBC catalog (uuid brand_id → text, jsonb columns omitted — the read needs
+-- only brand_id/order_id/stitched_anon_id). Cross-brand by construction here; scoped at the
+-- metric-engine read seam (${BRAND_PREDICATE}, I-ST01). SCHEMA-QUALIFIED to pin the view.
+CREATE OR REPLACE VIEW connectors.connector_journey_stitch_map_src AS
+SELECT brand_id::text AS brand_id,   -- JDBC catalog cannot read PG uuid → cast to text
+       order_id,
+       stitched_anon_id
+FROM connectors.connector_journey_stitch_map;
+GRANT SELECT ON connectors.connector_journey_stitch_map_src TO brain;
 
 -- ── Medallion realignment (Epic 1): shims for Silver recognition-from-Bronze ───────────────────
 -- brand recognition horizons (operational config — legitimately PG) for finalization.

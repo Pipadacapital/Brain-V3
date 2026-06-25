@@ -21,6 +21,7 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { TrendingUp, BarChart3, Plug } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { PageHeader } from '@/components/ui/page-header';
 import { Button } from '@/components/ui/button';
 import { EmptyState } from '@/components/ui/empty-state';
 import { ErrorCard } from '@/components/ui/error-card';
@@ -366,11 +367,9 @@ export function SpendContent() {
 
 function SpendHeader() {
   return (
-    <div>
-      <h1 className="text-2xl font-bold text-foreground">Ad Spend &amp; ROAS</h1>
-      <p className="text-muted-foreground mt-1">
-        Meta &amp; Google ad spend over time, with blended return on ad spend — last 35 days.
-      </p>
-    </div>
+    <PageHeader
+      title="Ad Spend & ROAS"
+      description="Meta & Google ad spend over time, with blended return on ad spend — last 35 days."
+    />
   );
 }

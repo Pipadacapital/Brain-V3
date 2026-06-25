@@ -43,6 +43,10 @@ import { RawArchiveRepository } from '../infrastructure/RawArchiveRepository.js'
 
 // ── Per-IP sliding-window rate-limit ──────────────────────────────────────────
 
+// intentional: module-level constants read at import time. Fields exist in @brain/config
+// (WEBHOOK_IP_RATE_LIMIT_MAX/_WINDOW_SECONDS) but loadCoreConfig() validates the WHOLE schema
+// (incl. required DATABASE_URL) and process.exit(1)s on failure — calling it at module-load would
+// crash unit imports that don't set full env. Left raw to preserve zero import-time behaviour change.
 const IP_RATE_LIMIT_MAX = parseInt(process.env['WEBHOOK_IP_RATE_LIMIT_MAX'] ?? '60', 10);
 const IP_RATE_LIMIT_WINDOW_SECONDS = parseInt(process.env['WEBHOOK_IP_RATE_LIMIT_WINDOW_SECONDS'] ?? '60', 10);
 

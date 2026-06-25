@@ -14,6 +14,7 @@ import pg from 'pg';
 import type { SpoolRepository } from '../domain/ingest/repositories/spool.repository.js';
 import type { IngestEnvelope } from '../domain/ingest/value-objects/envelope.js';
 import type { PendingSpoolEntry } from '../domain/ingest/entities/spool-entry.js';
+import { log } from '../log.js';
 
 const { Pool } = pg;
 
@@ -105,7 +106,10 @@ export class PgSpoolRepository implements SpoolRepository {
     try {
       await this.pool.query('SELECT 1');
       return true;
-    } catch {
+    } catch (err) {
+      // Spool DB unreachable — return false so /readyz reports not_ready (the false IS the signal),
+      // but surface the cause in the structured log instead of swallowing it (degraded, recoverable).
+      log.warn('spool DB ping failed — readiness will report unreachable', { err });
       return false;
     }
   }

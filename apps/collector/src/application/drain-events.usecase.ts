@@ -30,19 +30,25 @@ export class DrainEventsUseCase {
     let drained = 0;
 
     for (const entry of pending) {
+      const correlationId =
+        typeof entry.rawBody['correlation_id'] === 'string'
+          ? entry.rawBody['correlation_id']
+          : `spool-${entry.id.toString()}`;
+      // Per-message child logger: bind correlation_id + brand_id (tenant key, a UUID — not PII)
+      // so every drain line for this event is correlatable end-to-end with the downstream
+      // stream-worker consumer (which extracts the same correlation_id off the Kafka headers).
+      const brandId =
+        typeof entry.rawBody['brand_id'] === 'string' ? entry.rawBody['brand_id'] : undefined;
+      const mlog = log.child({ correlation_id: correlationId, brand_id: brandId, spool_id: entry.id.toString() });
       try {
-        const correlationId =
-          typeof entry.rawBody['correlation_id'] === 'string'
-            ? entry.rawBody['correlation_id']
-            : `spool-${entry.id.toString()}`;
-
         await this.kafka.produce(entry.rawBody, correlationId);
         await this.spool.markDrained(entry.id);
         drained++;
       } catch (err) {
         // F-3 back-pressure: leave this row 'pending'. Redpanda may be down.
         // Log the error but do NOT throw — the drainer loop must continue to next tick.
-        log.error(`produce failed for spool id=${entry.id.toString()}: ${String(err)}`);
+        // Pass the Error in fields.err so Sentry + stack handling fires (not a stringified message).
+        mlog.error('produce failed — leaving spool row pending (back-pressure)', { err });
         // Stop processing this batch on first failure — producer reconnect may be needed.
         // Next tick the drainer will retry from the oldest pending row.
         break;

@@ -1,16 +1,16 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Plug, Unplug, CheckCircle, AlertTriangle, XCircle, Clock, Radio } from 'lucide-react';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Unplug, CheckCircle, XCircle, Clock, Radio } from 'lucide-react';
+import { SectionCard } from '@/components/ui/section-card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
 import { EmptyState } from '@/components/ui/empty-state';
+import { StatusBadge, type StatusTone } from '@/components/ui/status-badge';
 import { useConnectionStatus } from '@/lib/hooks/use-dashboard';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import type { SyncState } from '@/lib/api/types';
-import { cn } from '@/lib/utils';
 
 /**
  * Connection Status widget
@@ -63,48 +63,42 @@ function isLive(syncState: SyncState | null, lastSyncAt: string | null): boolean
 
 // ── State display config (base — never colour-only, a11y) ─────────────────────
 
-const SYNC_STATE_CONFIG: Record<
-  SyncState,
-  { icon: React.ElementType; label: string; ariaLabel: string; textClass: string; bgClass: string }
-> = {
+type PillCfg = { icon: React.ElementType; label: string; ariaLabel: string; tone: StatusTone };
+
+const SYNC_STATE_CONFIG: Record<SyncState, PillCfg> = {
   connected: {
     icon: CheckCircle,
     label: 'Connected',
     ariaLabel: 'Connector status: Connected',
-    textClass: 'text-status-green-700',
-    bgClass: 'bg-status-green-50',
+    tone: 'success',
   },
   syncing: {
     icon: Clock,
     label: 'Syncing',
     ariaLabel: 'Connector status: Syncing data',
-    textClass: 'text-status-amber-700',
-    bgClass: 'bg-status-amber-50',
+    tone: 'warning',
   },
   waiting_for_data: {
     icon: Clock,
     label: 'Waiting for data',
     ariaLabel: 'Connector status: Waiting for data',
-    textClass: 'text-muted-foreground',
-    bgClass: 'bg-muted/50',
+    tone: 'neutral',
   },
   error: {
     icon: XCircle,
     label: 'Error',
     ariaLabel: 'Connector status: Error',
-    textClass: 'text-status-red-700',
-    bgClass: 'bg-status-red-50',
+    tone: 'destructive',
   },
 };
 
 // ── Live pill config (overrides 'connected' when last_sync_at is recent) ─────
 
-const LIVE_CONFIG = {
+const LIVE_CONFIG: PillCfg = {
   icon: Radio,
   label: 'Live',
   ariaLabel: 'Connector status: Live — actively syncing',
-  textClass: 'text-status-green-700',
-  bgClass: 'bg-status-green-50',
+  tone: 'success',
 };
 
 // ── LiveSyncIndicator ─────────────────────────────────────────────────────────
@@ -135,21 +129,7 @@ function LiveSyncIndicator({
   const live = isLive(syncState, lastSyncAt);
   const syncing = syncState === 'syncing';
 
-  // Determine pill config
-  let pillCfg: {
-    icon: React.ElementType;
-    label: string;
-    ariaLabel: string;
-    textClass: string;
-    bgClass: string;
-  };
-
-  if (live) {
-    pillCfg = LIVE_CONFIG;
-  } else {
-    pillCfg = SYNC_STATE_CONFIG[syncState];
-  }
-
+  const pillCfg: PillCfg = live ? LIVE_CONFIG : SYNC_STATE_CONFIG[syncState];
   const PillIcon = pillCfg.icon;
 
   // Freshness text: shown for connected (non-live) and live states
@@ -159,25 +139,19 @@ function LiveSyncIndicator({
   return (
     <div className="flex flex-col gap-1.5">
       {/* Status pill — icon + label + role="status" — never colour-only (a11y) */}
-      <span
+      <StatusBadge
+        tone={pillCfg.tone}
+        pulse={live || syncing}
         role="status"
         aria-label={pillCfg.ariaLabel}
         data-testid="connection-live-indicator"
-        className={cn(
-          'inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-sm font-medium',
-          pillCfg.bgClass,
-          pillCfg.textClass,
-          // Syncing: pulse animation signals active work
-          syncing && 'animate-pulse',
-        )}
+        hideDot
+        className="self-start px-2.5 py-1 text-sm"
       >
-        <PillIcon
-          className={cn('h-4 w-4 shrink-0', live && 'animate-pulse')}
-          aria-hidden="true"
-        />
+        <PillIcon className="h-4 w-4 shrink-0" aria-hidden="true" />
         {pillCfg.label}
         {syncing && '…'}
-      </span>
+      </StatusBadge>
 
       {/* Freshness text — honest relative time from last_sync_at */}
       {relativeTime && (
@@ -208,25 +182,20 @@ export function ConnectionStatusCard() {
 
   if (isLoading) {
     return (
-      <Card>
-        <CardHeader>
-          <Skeleton className="h-5 w-40" />
-        </CardHeader>
-        <CardContent className="space-y-2">
+      <SectionCard title="Connection status" className="h-full">
+        <div className="space-y-2">
           <Skeleton className="h-8 w-32" />
           <Skeleton className="h-4 w-24" />
-        </CardContent>
-      </Card>
+        </div>
+      </SectionCard>
     );
   }
 
   if (error) {
     return (
-      <Card>
-        <CardContent className="pt-6">
-          <ErrorCard error={error} retry={refetch} />
-        </CardContent>
-      </Card>
+      <SectionCard title="Connection status" className="h-full">
+        <ErrorCard error={error} retry={refetch} />
+      </SectionCard>
     );
   }
 
@@ -237,80 +206,52 @@ export function ConnectionStatusCard() {
   if (data && data.connector_status === 'disconnected') {
     const rel = formatRelativeTime(data.last_sync_at);
     return (
-      <Card data-testid="connection-status-card">
-        <CardHeader className="pb-2">
-          <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
-            <Plug className="h-4 w-4" aria-hidden="true" />
-            Connection Status
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <span
-            role="status"
-            aria-label="Connector status: Disconnected"
-            data-testid="connection-disconnected-indicator"
-            className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-sm font-medium bg-muted/60 text-muted-foreground"
-          >
-            <Unplug className="h-4 w-4 shrink-0" aria-hidden="true" />
-            Disconnected
-          </span>
-          <p className="text-xs text-muted-foreground mt-1.5" data-testid="connection-freshness">
-            {rel ? `Showing last-synced data · synced ${rel}` : 'Showing last-synced data'}
-          </p>
-          <Link href="/settings/connectors" className="mt-3 inline-block">
-            <Button size="sm" variant="outline">
-              Reconnect
-            </Button>
-          </Link>
-        </CardContent>
-      </Card>
+      <SectionCard title="Connection status" className="h-full" data-testid="connection-status-card">
+        <StatusBadge
+          tone="neutral"
+          hideDot
+          role="status"
+          aria-label="Connector status: Disconnected"
+          data-testid="connection-disconnected-indicator"
+          className="self-start px-2.5 py-1 text-sm"
+        >
+          <Unplug className="h-4 w-4 shrink-0" aria-hidden="true" />
+          Disconnected
+        </StatusBadge>
+        <p className="text-xs text-muted-foreground mt-2" data-testid="connection-freshness">
+          {rel ? `Showing last-synced data · synced ${rel}` : 'Showing last-synced data'}
+        </p>
+        <Button asChild size="sm" variant="outline" className="mt-3">
+          <Link href="/settings/connectors">Reconnect</Link>
+        </Button>
+      </SectionCard>
     );
   }
 
   if (!data || !data.sync_state) {
     return (
-      <Card data-testid="connection-status-card">
-        <CardHeader className="pb-2">
-          <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
-            <Plug className="h-4 w-4" aria-hidden="true" />
-            Connection Status
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <EmptyState
-            title="Not connected yet"
-            description="Connect a data source to see connection status."
-            action={
-              <Link href="/settings/connectors">
-                <Button size="sm" variant="outline">
-                  Connect data source
-                </Button>
-              </Link>
-            }
-          />
-        </CardContent>
-      </Card>
+      <SectionCard title="Connection status" className="h-full" data-testid="connection-status-card">
+        <EmptyState
+          compact
+          title="Not connected yet"
+          description="Connect a data source to see connection status."
+          action={
+            <Button asChild size="sm" variant="outline">
+              <Link href="/settings/connectors">Connect data source</Link>
+            </Button>
+          }
+        />
+      </SectionCard>
     );
   }
 
   return (
-    <Card data-testid="connection-status-card">
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
-          <Plug className="h-4 w-4" aria-hidden="true" />
-          Connection Status
-        </CardTitle>
-      </CardHeader>
-      <CardContent>
-        {data.provider && (
-          <p className="text-xs text-muted-foreground capitalize mb-2">{data.provider}</p>
-        )}
-        {/* C1: Live-sync indicator — reflects real connector_sync_status; never faked */}
-        <LiveSyncIndicator
-          syncState={data.sync_state}
-          lastSyncAt={data.last_sync_at}
-        />
-      </CardContent>
-    </Card>
+    <SectionCard title="Connection status" className="h-full" data-testid="connection-status-card">
+      {data.provider && (
+        <p className="text-xs capitalize text-muted-foreground mb-2">{data.provider}</p>
+      )}
+      {/* C1: Live-sync indicator — reflects real connector_sync_status; never faked */}
+      <LiveSyncIndicator syncState={data.sync_state} lastSyncAt={data.last_sync_at} />
+    </SectionCard>
   );
 }

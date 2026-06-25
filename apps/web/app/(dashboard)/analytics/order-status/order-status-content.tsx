@@ -30,6 +30,7 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { Layers, ArrowRight, PackageSearch } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { PageHeader } from '@/components/ui/page-header';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
@@ -123,10 +124,10 @@ export function OrderStatusContent() {
 
   return (
     <div className="space-y-8">
-      <div>
-        <div className="flex flex-wrap items-center gap-2">
-          <h1 className="text-2xl font-bold text-foreground">Order Status</h1>
-          {/* Subtle provenance: this surface is powered by the new Silver tier. */}
+      <PageHeader
+        title="Order Status"
+        description="Order-status mix and fulfillment funnel — counts and share by lifecycle state (placed → confirmed → delivered, with cancelled / RTO / refunded), over a date range."
+        meta={
           <span
             data-testid="order-status-silver-label"
             className="inline-flex items-center gap-1 rounded-md border border-border bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"
@@ -135,12 +136,8 @@ export function OrderStatusContent() {
             <Layers className="h-3 w-3" aria-hidden="true" />
             Powered by the Silver tier
           </span>
-        </div>
-        <p className="text-muted-foreground mt-1">
-          Order-status mix and fulfillment funnel — counts and share by lifecycle state
-          (placed → confirmed → delivered, with cancelled / RTO / refunded), over a date range.
-        </p>
-      </div>
+        }
+      />
 
       <section aria-label="Order status mix" data-testid="order-status-section">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-3">

@@ -30,6 +30,7 @@
 
 import { ShieldQuestion } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
+import { PageHeader } from '@/components/ui/page-header';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
 import { CoverageCard } from '@/components/consent/coverage-card';
@@ -103,17 +104,21 @@ export function ConsentComplianceContent() {
 
   return (
     <div className="space-y-8">
-      <div>
-        <h1 className="text-2xl font-bold text-foreground">Consent &amp; Compliance</h1>
-        <p className="mt-1 max-w-2xl text-muted-foreground">
-          Every marketing message is checked before it sends, and by default the answer is{' '}
-          <span className="font-medium text-foreground">no</span>: it&apos;s blocked if consent is
-          missing or withdrawn, the template isn&apos;t registered with the carrier (DLT), or
-          it&apos;s outside the allowed send window. These rules are enforced for you and
-          can&apos;t be turned off — they keep you compliant with India&apos;s DPDP and DLT
-          messaging requirements.
-        </p>
-      </div>
+      <PageHeader
+        title="Consent & Compliance"
+        description={
+          <>
+            Every marketing message is checked before it sends, and by default the answer is{' '}
+            <span className="font-medium text-foreground">no</span>: it&apos;s blocked if consent is
+            missing or withdrawn, the template isn&apos;t registered with the carrier (DLT), or
+            it&apos;s outside the allowed send window. These rules are enforced for you and
+            can&apos;t be turned off — they keep you compliant with India&apos;s DPDP and DLT
+            messaging requirements.
+          </>
+        }
+      />
+
+      {/* spacer kept by space-y; PageHeader carries its own bottom padding */}
 
       {/* 2 — Suppression summary (the headline fail-closed count) */}
       <Panel

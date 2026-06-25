@@ -9,15 +9,17 @@
  */
 import mysql from 'mysql2/promise';
 import { RedisOnlineStore, materializeCustomerFeatures, type Customer360Row } from '@brain/feature-store';
+import { loadStreamWorkerConfig } from '@brain/config';
 import { log } from '../../log.js';
 
 export async function run(): Promise<void> {
-  const host = process.env['STARROCKS_HOST'] ?? '127.0.0.1';
-  const port = Number(process.env['STARROCKS_QUERY_PORT'] ?? 9030);
+  const cfg = loadStreamWorkerConfig();
+  const host = cfg.STARROCKS_HOST ?? '127.0.0.1';
+  const port = cfg.STARROCKS_QUERY_PORT;
   // Dev: root/''. Prod: a SELECT-grant feature user. STARROCKS_FEATURE_USER overrides.
-  const user = process.env['STARROCKS_FEATURE_USER'] ?? 'root';
-  const password = process.env['STARROCKS_FEATURE_PASSWORD'] ?? '';
-  const redisUrl = process.env['REDIS_URL'] ?? 'redis://localhost:6379';
+  const user = cfg.STARROCKS_FEATURE_USER;
+  const password = cfg.STARROCKS_FEATURE_PASSWORD;
+  const redisUrl = cfg.REDIS_URL;
   const computedAt = new Date().toISOString();
 
   const sr = mysql.createPool({ host, port, user, password, database: 'brain_gold', connectionLimit: 4 });

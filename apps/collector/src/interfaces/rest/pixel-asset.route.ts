@@ -26,6 +26,7 @@
  * window and asserts the emitted event parses with the REAL CollectorEventV1Schema.
  */
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import { loadCollectorConfig } from '@brain/config';
 
 export const PIXEL_VERSION = 'pixel@0.1.0';
 
@@ -355,11 +356,11 @@ export function registerPixelAssetRoute(app: FastifyInstance): void {
       const proto = String(req.headers['x-forwarded-proto'] ?? '').split(',')[0] || 'https';
       const reqOrigin =
         /^[a-z0-9.-]+(:[0-9]+)?$/i.test(rawHost) && /^https?$/.test(proto) ? `${proto}://${rawHost}` : '';
-      const ingest = reqOrigin || process.env['PIXEL_INGEST_BASE_URL'] || '';
+      const ingest = reqOrigin || loadCollectorConfig().PIXEL_INGEST_BASE_URL || '';
       const ingestField = /^https?:\/\/[a-z0-9.:/-]+$/i.test(ingest) ? `,ingest_base_url:"${ingest}"` : '';
       // Default-granted consent (merchant-accepted, flag-gated): only applied by consent() when no
       // real consent signal (window.__brainConsent / Shopify Customer Privacy) exists. See README/RB-4.
-      const consentField = process.env['PIXEL_CONSENT_DEFAULT'] === 'granted' ? ',consent_default:"granted"' : '';
+      const consentField = loadCollectorConfig().PIXEL_CONSENT_DEFAULT === 'granted' ? ',consent_default:"granted"' : '';
       body = `window.__brain={install_token:"${t}",brand_id:"${b}"${ingestField}${consentField}};\n${PIXEL_JS}`;
     }
     reply

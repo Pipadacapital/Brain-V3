@@ -5,20 +5,23 @@
  *
  * Layout: tiles grouped by category (storefront, ads, payments, logistics, messaging, crm, analytics).
  * Each tile shows TRUTHFUL status from catalog ⨝ instance:
- *   - Not connected → [Connect] button (oauth or credential).
- *   - coming_soon / available=false → [Coming Soon] disabled button (un-connectable at UI level).
- *   - connected → health_state badge + safety_rating indicator; [Disconnect].
- *   - blocked/degraded safety → visible warning flag ("excluded — connector failing").
+ *   - Not connected → [Connect] action (oauth or credential).
+ *   - coming_soon / available=false → "Coming Soon" disabled state (un-connectable at UI level).
+ *   - connected → health StatusBadge + safety flag; per-account Disconnect + SyncNow.
+ *   - blocked/degraded safety → visible warning flag.
+ *
+ * Connect-method rendering (the GA4 fix):
+ *   - connect_method==='oauth' WITHOUT auth_fields  → a pure "Connect" action, NO credential inputs
+ *     (GA4 connects via OAuth — it must never render another connector's credential form).
+ *   - connect_method==='oauth' WITH auth_fields      → "Connect" + an OPTIONAL "bring your own app"
+ *     Client ID / Client Secret pair (Shopify / Meta / Google Ads), driven by the server catalog.
+ *   - connect_method==='credential'                  → the catalog's required credential fields.
+ *   Fields come ONLY from the server catalog (tile.auth_fields). There is no cross-connector fallback.
  *
  * Gap B (multi-account-per-provider, migration 0092):
- *   - tile.instances[] = all active accounts for this provider.
- *   - Each account renders its own sub-card: health badge + Disconnect + SyncNowControl.
- *   - Fallback to [tile.instance] for single-account back-compat.
+ *   - tile.instances[] = all active accounts for this provider; each renders its own sub-row.
  *
- * A11y:
- *   - Status never colour-only: icon + label + role="status" on every badge.
- *   - Coming-soon button: disabled + aria-disabled="true" + aria-label.
- *   - Health badges: icon + text label (CheckCircle/Clock/XCircle/Plug/Gauge/Key/Ban).
+ * A11y: status is never colour-only (StatusBadge = dot + text); disabled actions carry aria-disabled.
  *
  * data-testids (per architecture plan B2):
  *   marketplace-page, connector-tile-{id}, connector-tile-{id}-status,
@@ -26,7 +29,7 @@
  *   marketplace-category-{cat}, btn-skip-for-now
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import {
   CheckCircle,
@@ -39,12 +42,17 @@ import {
   Loader2,
   AlertTriangle,
   Lock,
+  PlugZap,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { StatusBadge, type StatusTone } from '@/components/ui/status-badge';
+import { SectionCard } from '@/components/ui/section-card';
+import { EmptyState } from '@/components/ui/empty-state';
 import { SyncNowControl } from '@/components/connectors/sync-now-control';
+import { ConnectorLogo } from '@/components/connectors/connector-logo';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
 import { useMarketplace, useConnectConnector, useDisconnectConnector, useActivateAdAccount } from '@/lib/hooks/use-connectors';
@@ -55,71 +63,28 @@ import { toast } from '@/components/ui/toaster';
 import type { MarketplaceTile, MarketplaceTileInstance, ConnectorCategory, HealthState, SafetyRating } from '@/lib/api/types';
 import { cn } from '@/lib/utils';
 
-// ── Health state display config (icon + label — never colour-only, a11y) ──────
+// ── Health state display config (icon + tone + label — never colour-only, a11y) ──────
+// Tones map onto the design-system StatusBadge semantics (success/info/warning/destructive/neutral).
 
-const HEALTH_CONFIG: Record<
-  HealthState,
-  { icon: React.ElementType; label: string; badgeClass: string; textClass: string }
-> = {
-  Healthy: {
-    icon: CheckCircle,
-    label: 'Healthy',
-    badgeClass: 'bg-status-green-50 text-status-green-700 border-status-green-200',
-    textClass: 'text-status-green-700',
-  },
-  Delayed: {
-    icon: Clock,
-    label: 'Delayed',
-    badgeClass: 'bg-status-amber-50 text-status-amber-700 border-status-amber-200',
-    textClass: 'text-status-amber-700',
-  },
-  RateLimited: {
-    icon: Gauge,
-    label: 'Rate Limited',
-    badgeClass: 'bg-status-amber-50 text-status-amber-700 border-status-amber-200',
-    textClass: 'text-status-amber-700',
-  },
-  Failed: {
-    icon: XCircle,
-    label: 'Failed',
-    badgeClass: 'bg-status-red-50 text-status-red-700 border-status-red-200',
-    textClass: 'text-status-red-700',
-  },
-  Disconnected: {
-    icon: Plug,
-    label: 'Disconnected',
-    badgeClass: 'bg-muted text-muted-foreground border-border',
-    textClass: 'text-muted-foreground',
-  },
-  TokenExpired: {
-    icon: Key,
-    label: 'Token Expired',
-    badgeClass: 'bg-status-red-50 text-status-red-700 border-status-red-200',
-    textClass: 'text-status-red-700',
-  },
-  Disabled: {
-    icon: Ban,
-    label: 'Disabled',
-    badgeClass: 'bg-muted text-muted-foreground border-border',
-    textClass: 'text-muted-foreground',
-  },
+const HEALTH_CONFIG: Record<HealthState, { icon: React.ElementType; label: string; tone: StatusTone; pulse?: boolean }> = {
+  Healthy: { icon: CheckCircle, label: 'Healthy', tone: 'success' },
+  Delayed: { icon: Clock, label: 'Delayed', tone: 'warning' },
+  RateLimited: { icon: Gauge, label: 'Rate limited', tone: 'warning' },
+  Failed: { icon: XCircle, label: 'Failed', tone: 'destructive' },
+  Disconnected: { icon: Plug, label: 'Disconnected', tone: 'neutral' },
+  TokenExpired: { icon: Key, label: 'Token expired', tone: 'destructive' },
+  Disabled: { icon: Ban, label: 'Disabled', tone: 'neutral' },
 };
 
 // ── Safety rating flag display ────────────────────────────────────────────────
 
-const SAFETY_FLAG: Record<SafetyRating, { label: string; className: string } | null> = {
+const SAFETY_FLAG: Record<SafetyRating, { label: string; tone: 'warning' | 'destructive' } | null> = {
   safe: null,
-  degraded: {
-    label: 'degraded — data may be incomplete',
-    className: 'text-status-amber-700',
-  },
-  blocked: {
-    label: 'excluded — connector failing',
-    className: 'text-status-red-700',
-  },
+  degraded: { label: 'Degraded — data may be incomplete', tone: 'warning' },
+  blocked: { label: 'Excluded — connector failing', tone: 'destructive' },
 };
 
-// ── Category display names ────────────────────────────────────────────────────
+// ── Category display + helper copy ─────────────────────────────────────────────
 
 const CATEGORY_LABELS: Record<ConnectorCategory, string> = {
   storefront: 'Storefront',
@@ -131,24 +96,31 @@ const CATEGORY_LABELS: Record<ConnectorCategory, string> = {
   analytics: 'Analytics',
 };
 
+const CATEGORY_BLURB: Record<ConnectorCategory, string> = {
+  storefront: 'The order spine — Brain’s source of truth for every sale.',
+  ads: 'Campaign spend & performance for true blended ROAS.',
+  payments: 'Settlement, CoD verification and checkout-risk signal.',
+  logistics: 'Shipment lifecycle, delivery and RTO outcomes.',
+  messaging: 'Customer messaging channels.',
+  crm: 'Contacts and deals from your CRM.',
+  analytics: 'Web session analytics and source attribution.',
+};
+
 // ── Health badge ─────────────────────────────────────────────────────────────
 
 function HealthBadge({ tileId, healthState }: { tileId: string; healthState: HealthState }) {
   const cfg = HEALTH_CONFIG[healthState];
   const Icon = cfg.icon;
   return (
-    <span
+    <StatusBadge
+      tone={cfg.tone}
       role="status"
       aria-label={`Connection health: ${cfg.label}`}
       data-testid={`connector-health-badge-${tileId}`}
-      className={cn(
-        'inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-xs font-medium',
-        cfg.badgeClass,
-      )}
     >
       <Icon className="h-3 w-3" aria-hidden="true" />
       {cfg.label}
-    </span>
+    </StatusBadge>
   );
 }
 
@@ -156,20 +128,19 @@ function HealthBadge({ tileId, healthState }: { tileId: string; healthState: Hea
 
 function TileStatusIndicator({ tile, instance }: { tile: MarketplaceTile; instance: MarketplaceTileInstance | null }) {
   if (!instance) return null;
-
   const safetyFlag = SAFETY_FLAG[instance.safety_rating];
 
   return (
-    <div
-      className="flex flex-col items-end gap-1"
-      data-testid={`connector-tile-${tile.id}-status`}
-    >
+    <div className="flex flex-col items-end gap-1.5" data-testid={`connector-tile-${tile.id}-status`}>
       <HealthBadge tileId={tile.id} healthState={instance.health_state} />
       {safetyFlag && (
         <span
           role="status"
           aria-label={safetyFlag.label}
-          className={cn('flex items-center gap-1 text-xs font-medium', safetyFlag.className)}
+          className={cn(
+            'flex items-center gap-1 text-xs font-medium',
+            safetyFlag.tone === 'destructive' ? 'text-destructive' : 'text-warning',
+          )}
         >
           <AlertTriangle className="h-3 w-3" aria-hidden="true" />
           {safetyFlag.label}
@@ -179,20 +150,17 @@ function TileStatusIndicator({ tile, instance }: { tile: MarketplaceTile; instan
   );
 }
 
-// ── ConnectorTile ─────────────────────────────────────────────────────────────
-
-/** Soft-gate reason copy for connecting a real store before email is verified. */
-const VERIFY_TO_CONNECT = 'Verify your email to connect a store';
-
-// ── Per-provider credential field sets (C2 / ADR-RZ-8 + GoKwik/Shopflo Track C + WooCommerce) ──
-// Extracted to credential-fields.ts for unit-testability. Imported here for use within
-// ConnectorTile, and re-exported for any sibling that needs the pure function.
+// ── Per-provider credential field sets (server catalog = single SoR) ──────────
+// credentialFieldsFor() is a no-fallback shim (returns []); the marketplace renders from the
+// server-supplied tile.auth_fields. Re-exported for any sibling that needs the pure functions.
 import { credentialFieldsFor as _credentialFieldsFor, authFieldsToCredentialFields } from './credential-fields';
 export type { CredentialField } from './credential-fields';
 export { credentialFieldsFor } from './credential-fields';
 
-// Local alias so ConnectorTile can call it without the re-export indirection.
 const credentialFieldsFor = _credentialFieldsFor;
+
+/** Soft-gate reason copy for connecting a real store before email is verified. */
+const VERIFY_TO_CONNECT = 'Verify your email to connect a store';
 
 function ConnectorTile({ tile, readinessLock }: { tile: MarketplaceTile; readinessLock?: string | null }) {
   const { mutate: connect, isPending: isConnecting } = useConnectConnector();
@@ -200,42 +168,37 @@ function ConnectorTile({ tile, readinessLock }: { tile: MarketplaceTile; readine
   const { mutate: activateAccount, isPending: isActivating } = useActivateAdAccount();
   const { emailVerified } = useEmailVerified();
   const [shopDomain, setShopDomain] = useState('');
-  // Razorpay credential form state (only used for credential tiles).
   const [creds, setCreds] = useState<Record<string, string>>({});
+  // OAuth tiles hide the optional "bring your own app" fields behind a disclosure to keep the tile calm.
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   // Gap B: derive active instances array; fall back to legacy tile.instance for back-compat.
   const activeInstances: MarketplaceTileInstance[] =
-    tile.instances?.length > 0
-      ? tile.instances
-      : tile.instance
-        ? [tile.instance]
-        : [];
+    tile.instances?.length > 0 ? tile.instances : tile.instance ? [tile.instance] : [];
 
   const isConnected = activeInstances.length > 0;
   const firstInstance = activeInstances[0] ?? null;
   const isComingSoon = !tile.available;
   const isCredential = tile.connect_method === 'credential';
-  // OAuth tiles that support "bring your own OAuth app" — an OPTIONAL Client ID + Client
-  // Secret pair surfaced alongside the OAuth connect flow (env-app fallback server-side).
-  const isOauthApp =
-    tile.connect_method === 'oauth' &&
-    (tile.id === 'shopify' || tile.id === 'meta' || tile.id === 'google_ads');
-  // Per-connector credential fields come from the server catalog (tile.auth_fields — single SoR);
-  // the hardcoded credentialFieldsFor() is an offline fallback for older servers. Covers both
-  // credential connectors and the OAuth "bring your own app" Client ID/Secret pair.
-  const credentialFields =
-    isCredential || isOauthApp
-      ? tile.auth_fields && tile.auth_fields.length > 0
-        ? authFieldsToCredentialFields(tile.auth_fields)
-        : credentialFieldsFor(tile.id)
-      : [];
+  const isOauth = tile.connect_method === 'oauth';
+
+  // Server catalog is the SoR for fields. For OAuth tiles the catalog only declares the OPTIONAL
+  // "bring your own app" Client ID/Secret pair — a field-less OAuth tile (GA4) renders NO inputs,
+  // just the OAuth Connect action. The hardcoded fallback is intentionally empty (no cross-connector
+  // leakage), so fields exist ONLY when the server sent them.
+  const serverFields =
+    tile.auth_fields && tile.auth_fields.length > 0
+      ? authFieldsToCredentialFields(tile.auth_fields)
+      : credentialFieldsFor(tile.id);
+
+  // Credential connectors render their required fields inline. OAuth tiles render the optional BYO-app
+  // fields ONLY when the catalog declares them (so GA4, with none, stays a pure Connect button).
+  const credentialFields = isCredential ? serverFields : [];
+  const oauthAppFields = isOauth ? serverFields : [];
+  const hasOauthAppFields = oauthAppFields.length > 0;
+
   const credsComplete = credentialFields.every((f) => f.optional || (creds[f.key] ?? '').trim().length > 0);
 
-  /**
-   * Connect-error toast. The server is the authoritative soft-gate (feat-onboarding-ux):
-   * an unverified user hitting connect gets 403 EMAIL_NOT_VERIFIED even if the UI hint was
-   * bypassed — surface that as a clear, actionable message rather than a generic failure.
-   */
   function handleConnectError(err: unknown) {
     if (err instanceof BffApiError && err.code === 'EMAIL_NOT_VERIFIED') {
       toast({
@@ -250,13 +213,9 @@ function ConnectorTile({ tile, readinessLock }: { tile: MarketplaceTile; readine
   }
 
   function handleConnect() {
-    if (isComingSoon) return; // guard: UI should never reach here for coming-soon tiles
+    if (isComingSoon) return;
 
-    // ── Credential connect (Razorpay — C2 / ADR-RZ-8) ──────────────────────────
-    // Sends { key_id, key_secret, webhook_secret, razorpay_account_id }. The backend
-    // stores secrets server-side and returns { kind:'credential', connected:true } —
-    // it NEVER echoes the secrets. On success the marketplace query invalidates and
-    // the tile flips to Connected (handled by useConnectConnector.onSuccess).
+    // ── Credential connect ──────────────────────────────────────────────────
     if (isCredential) {
       if (!credsComplete) {
         toast({
@@ -274,7 +233,6 @@ function ConnectorTile({ tile, readinessLock }: { tile: MarketplaceTile; readine
         {
           onSuccess: (data) => {
             if (data.kind === 'credential') {
-              // Clear the secret form fields from memory immediately after a successful connect.
               setCreds({});
               toast({
                 title: `${tile.display_name} connected`,
@@ -294,17 +252,17 @@ function ConnectorTile({ tile, readinessLock }: { tile: MarketplaceTile; readine
       return;
     }
 
-    // "Bring your own OAuth app": include any Client ID / Client Secret the brand entered.
-    // Only non-empty values are sent — omitting them lets the server fall back to Brain's
-    // env-registered OAuth app. Returns undefined when nothing was filled in.
+    // ── OAuth connect ─────────────────────────────────────────────────────────
+    // Include any optional BYO-app Client ID/Secret the brand entered; omitting them lets the server
+    // fall back to Brain's env-registered OAuth app. (oauthAppFields is empty for GA4 → never set.)
     const oauthCredentials = (() => {
-      const entries = credentialFields
+      const entries = oauthAppFields
         .map((f) => [f.key, (creds[f.key] ?? '').trim()] as const)
         .filter(([, v]) => v.length > 0);
       return entries.length > 0 ? Object.fromEntries(entries) : undefined;
     })();
 
-    if (tile.connect_method === 'oauth' && tile.id === 'shopify') {
+    if (tile.id === 'shopify') {
       const shop = shopDomain.trim().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
       if (!shop) {
         toast({
@@ -318,23 +276,18 @@ function ConnectorTile({ tile, readinessLock }: { tile: MarketplaceTile; readine
         { type: tile.id, shop_domain: shop, ...(oauthCredentials ? { credentials: oauthCredentials } : {}) },
         {
           onSuccess: (data) => {
-            if (data.kind === 'oauth') {
-              // Redirect to provider OAuth URL (D-10: data is already unwrapped)
-              window.location.href = data.oauth_url;
-            }
+            if (data.kind === 'oauth') window.location.href = data.oauth_url;
           },
           onError: handleConnectError,
         },
       );
-    } else if (tile.connect_method === 'oauth') {
-      // Non-shopify oauth (Meta / Google Ads). Pass any brand-supplied OAuth app creds.
+    } else {
+      // Meta / Google Ads / GA4. Pass any brand-supplied OAuth app creds (none for GA4).
       connect(
         { type: tile.id, ...(oauthCredentials ? { credentials: oauthCredentials } : {}) },
         {
           onSuccess: (data) => {
-            if (data.kind === 'oauth') {
-              window.location.href = data.oauth_url;
-            }
+            if (data.kind === 'oauth') window.location.href = data.oauth_url;
           },
           onError: handleConnectError,
         },
@@ -355,11 +308,9 @@ function ConnectorTile({ tile, readinessLock }: { tile: MarketplaceTile; readine
   }
 
   // 0106: ad-account activation. An agency/MCC login exposes many accounts; only the activated one
-  // ingests (switch semantics — activating one deactivates its siblings). Controls show only for ad
-  // tiles. `noneActive` (multiple accounts, none chosen) drives the "select an account" prompt.
+  // ingests (switch semantics — activating one deactivates its siblings).
   const isAdTile = tile.category === 'ads';
   const noneActive = isAdTile && activeInstances.length > 0 && !activeInstances.some((i) => i.is_active);
-  // Sync-now should target the chosen account when there is one.
   const activeOrFirst = activeInstances.find((i) => i.is_active) ?? firstInstance;
 
   function handleActivate(instanceId: string, label: string) {
@@ -377,60 +328,91 @@ function ConnectorTile({ tile, readinessLock }: { tile: MarketplaceTile; readine
     });
   }
 
+  // ── Credential input rows (shared by credential connectors + OAuth BYO-app disclosure) ──
+  const renderFields = (fields: typeof credentialFields) => (
+    <div className="space-y-3" data-testid={`credential-form-${tile.id}`}>
+      {fields.map((f) => (
+        <div key={f.key} className="space-y-1">
+          <Label htmlFor={`cred-${tile.id}-${f.key}`} className="text-xs text-muted-foreground">
+            {f.label}
+          </Label>
+          <Input
+            id={`cred-${tile.id}-${f.key}`}
+            type={f.secret ? 'password' : 'text'}
+            value={creds[f.key] ?? ''}
+            onChange={(e) => setCreds((c) => ({ ...c, [f.key]: e.target.value }))}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && (!isCredential || credsComplete)) handleConnect();
+            }}
+            placeholder={f.placeholder}
+            aria-label={`${tile.display_name} ${f.label}`}
+            autoComplete="off"
+            data-testid={`input-${tile.id}-${f.key}`}
+          />
+          {f.hint && (
+            <p id={`cred-${tile.id}-${f.key}-hint`} className="text-[11px] text-muted-foreground" role="note">
+              {f.hint}
+            </p>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+
+  const safetyBorder =
+    firstInstance?.safety_rating === 'blocked'
+      ? 'border-destructive/40'
+      : firstInstance?.safety_rating === 'degraded'
+        ? 'border-warning/40'
+        : 'border-border';
+
   return (
-    <Card
+    <div
       data-testid={`connector-tile-${tile.id}`}
       className={cn(
-        'transition-shadow',
-        firstInstance?.safety_rating === 'blocked' && 'border-status-red-200',
-        firstInstance?.safety_rating === 'degraded' && 'border-status-amber-200',
+        'flex flex-col rounded-lg border bg-card p-5 shadow-xs transition-shadow hover:shadow-sm',
+        safetyBorder,
       )}
     >
-      <CardHeader className="pb-3">
-        <div className="flex items-start justify-between gap-4">
-          <div className="flex-1 min-w-0">
-            <CardTitle className="text-base flex items-center gap-2">
-              {tile.display_name}
+      {/* Header: logo + name + status */}
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex min-w-0 items-start gap-3">
+          <ConnectorLogo id={tile.id} name={tile.display_name} size={40} />
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <h3 className="truncate text-base font-semibold text-foreground">{tile.display_name}</h3>
               {isComingSoon && (
-                <Badge
-                  variant="outline"
-                  className="text-xs"
-                  data-testid="connector-tile-coming-soon"
-                >
-                  Coming Soon
+                <Badge variant="secondary" className="shrink-0" data-testid="connector-tile-coming-soon">
+                  Coming soon
                 </Badge>
               )}
-            </CardTitle>
-            <CardDescription className="mt-1 text-sm">{tile.description}</CardDescription>
+            </div>
+            <p className="mt-0.5 text-sm text-muted-foreground">{tile.description}</p>
           </div>
-          {/* Status — icon + label, never colour-only (a11y) */}
-          <TileStatusIndicator tile={tile} instance={firstInstance} />
         </div>
-      </CardHeader>
+        <TileStatusIndicator tile={tile} instance={firstInstance} />
+      </div>
 
-      <CardContent>
+      {/* Action region */}
+      <div className="mt-4">
         {isComingSoon ? (
-          /* Coming-soon: disabled + aria-disabled — structurally un-connectable at UI level */
           <Button
             variant="outline"
             disabled
             aria-label={`${tile.display_name} — Coming Soon, not yet available`}
             aria-disabled="true"
-            className="cursor-not-allowed"
+            className="w-full cursor-not-allowed"
             title="This integration is coming soon"
             data-testid={`connector-tile-${tile.id}-connect`}
           >
-            Coming Soon
+            Coming soon
           </Button>
         ) : isConnected ? (
           <div className="space-y-3">
-            {/* 0106: ad platforms expose MANY accounts (the agency/MCC has one per brand). Until the
-                user picks ONE, none ingests — prompt them so the brand isn't polluted with cross-
-                brand spend. Shown only for ad tiles with multiple accounts and none chosen. */}
             {noneActive && (
               <div
                 role="status"
-                className="flex items-start gap-2 rounded-md border border-status-amber-200 bg-status-amber-50 px-3 py-2 text-xs text-status-amber-700"
+                className="flex items-start gap-2 rounded-md bg-warning-subtle px-3 py-2 text-xs text-warning-subtle-foreground"
                 data-testid={`connector-tile-${tile.id}-select-account`}
               >
                 <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
@@ -440,99 +422,80 @@ function ConnectorTile({ tile, readinessLock }: { tile: MarketplaceTile; readine
                 </span>
               </div>
             )}
-            {/* Gap B: render per-account sub-cards for multi-account providers */}
             {activeInstances.map((inst, idx) => {
-              const showAccountKey =
-                inst.account_key && inst.account_key !== '__default__';
+              const showAccountKey = inst.account_key && inst.account_key !== '__default__';
               const accountLabel = inst.account_label ?? inst.account_key ?? tile.display_name;
               return (
                 <div
                   key={inst.id}
                   className={cn(
                     'flex flex-col gap-3 sm:flex-row sm:items-center',
-                    activeInstances.length > 1 && idx > 0 && 'pt-3 border-t border-border',
+                    activeInstances.length > 1 && idx > 0 && 'border-t border-border pt-3',
                   )}
                 >
-                  <div className="flex-1 min-w-0">
+                  <div className="min-w-0 flex-1">
                     {showAccountKey && (
                       <>
-                        {/* Human account name (e.g. Meta ad-account name) when captured; the
-                            raw account_key drops to a secondary mono line so multi-account
-                            providers are tellable apart at a glance. */}
                         {inst.account_label && (
-                          <p className="text-sm font-medium truncate">{inst.account_label}</p>
+                          <p className="truncate text-sm font-medium text-foreground">{inst.account_label}</p>
                         )}
-                        <p className="text-xs text-muted-foreground truncate font-mono">
+                        <p className="truncate font-mono text-xs text-muted-foreground tabular-nums">
                           {inst.account_key}
                         </p>
                       </>
                     )}
                     {inst.shop_domain && (
-                      <p className="text-sm text-muted-foreground truncate">{inst.shop_domain}</p>
+                      <p className="truncate text-sm text-muted-foreground">{inst.shop_domain}</p>
                     )}
                   </div>
                   <div className="flex items-center gap-2">
-                    {/* 0106: activation control (ad tiles only). The active account shows a badge;
-                        the rest show an Activate button (switch — activating deactivates siblings). */}
-                    {isAdTile && (inst.is_active ? (
-                      <span
-                        role="status"
-                        aria-label={`${accountLabel} is the active ingesting account`}
-                        data-testid={`connector-tile-${tile.id}-active-${idx}`}
-                        className="inline-flex items-center gap-1 rounded-md border border-status-green-200 bg-status-green-50 px-2 py-0.5 text-xs font-medium text-status-green-700"
-                      >
-                        <CheckCircle className="h-3 w-3" aria-hidden="true" />
-                        Active
-                      </span>
-                    ) : (
-                      <Button
-                        variant="default"
-                        size="sm"
-                        onClick={() => handleActivate(inst.id, accountLabel)}
-                        disabled={isActivating}
-                        data-testid={`btn-activate-${tile.id}-${idx}`}
-                      >
-                        {isActivating && (
-                          <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
-                        )}
-                        Activate
-                      </Button>
-                    ))}
+                    {isAdTile &&
+                      (inst.is_active ? (
+                        <StatusBadge
+                          tone="success"
+                          role="status"
+                          aria-label={`${accountLabel} is the active ingesting account`}
+                          data-testid={`connector-tile-${tile.id}-active-${idx}`}
+                        >
+                          <CheckCircle className="h-3 w-3" aria-hidden="true" />
+                          Active
+                        </StatusBadge>
+                      ) : (
+                        <Button
+                          variant="default"
+                          size="sm"
+                          onClick={() => handleActivate(inst.id, accountLabel)}
+                          loading={isActivating}
+                          data-testid={`btn-activate-${tile.id}-${idx}`}
+                        >
+                          Activate
+                        </Button>
+                      ))}
                     <Button
                       variant="outline"
                       size="sm"
                       onClick={() => handleDisconnect(inst.id)}
-                      disabled={isDisconnecting}
+                      loading={isDisconnecting}
                       data-testid={`btn-disconnect-${tile.id}${activeInstances.length > 1 ? `-${idx}` : ''}`}
                     >
-                      {isDisconnecting && (
-                        <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
-                      )}
                       {isDisconnecting ? 'Disconnecting…' : 'Disconnect'}
                     </Button>
                   </div>
                 </div>
               );
             })}
-            {/* Sync now — on-demand incremental re-pull, targeting the ACTIVE account for ad tiles.
-                Status visible to all roles; trigger gated to brand_admin+ (hidden for manager/analyst).
-                Hidden when an ad platform has no active account yet (nothing to sync). */}
             {activeOrFirst?.id && !noneActive && (
-              <SyncNowControl
-                connectorId={activeOrFirst.id}
-                className="pt-3 border-t border-border"
-              />
+              <SyncNowControl connectorId={activeOrFirst.id} className="border-t border-border pt-3" />
             )}
           </div>
         ) : readinessLock ? (
-          /* Progressive unlock (P2): this category isn't ready in the data foundation yet.
-             We don't offer Connect — we explain what unlocks it, so the order is guided. */
+          /* Progressive unlock (P2): category not ready yet — explain, don't offer Connect. */
           <div className="space-y-2" data-testid={`connector-tile-${tile.id}-locked`}>
             <Button
               variant="outline"
               disabled
               aria-disabled="true"
-              className="cursor-not-allowed"
+              className="w-full cursor-not-allowed"
               title={readinessLock}
               aria-label={`${tile.display_name} — locked. ${readinessLock}`}
               data-testid={`connector-tile-${tile.id}-connect`}
@@ -545,85 +508,69 @@ function ConnectorTile({ tile, readinessLock }: { tile: MarketplaceTile; readine
             </p>
           </div>
         ) : (
-          <div className="space-y-2">
-            {/* Shopify needs the store domain before OAuth redirect */}
-            {tile.id === 'shopify' && tile.connect_method === 'oauth' && (
-              <Input
-                value={shopDomain}
-                onChange={(e) => setShopDomain(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') handleConnect();
-                }}
-                placeholder="my-store.myshopify.com"
-                aria-label="Shopify store domain"
-                autoComplete="off"
-                data-testid={`input-shop-${tile.id}`}
-              />
-            )}
-
-            {/* Credential connectors (Razorpay) collect their credentials inline; OAuth tiles
-                (Shopify / Meta / Google Ads) surface an OPTIONAL "bring your own OAuth app"
-                Client ID + Client Secret pair. Secret fields use type="password" +
-                autoComplete="off"; values are sent once to the BFF and never read back. */}
-            {(isCredential || isOauthApp) && credentialFields.length > 0 && (
-              <div className="space-y-2" data-testid={`credential-form-${tile.id}`}>
-                {credentialFields.map((f) => (
-                  <div key={f.key} className="space-y-1">
-                    <label
-                      htmlFor={`cred-${tile.id}-${f.key}`}
-                      className="text-xs font-medium text-muted-foreground"
-                    >
-                      {f.label}
-                    </label>
-                    <Input
-                      id={`cred-${tile.id}-${f.key}`}
-                      type={f.secret ? 'password' : 'text'}
-                      value={creds[f.key] ?? ''}
-                      onChange={(e) => setCreds((c) => ({ ...c, [f.key]: e.target.value }))}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' && credsComplete) handleConnect();
-                      }}
-                      placeholder={f.placeholder}
-                      aria-label={`${tile.display_name} ${f.label}`}
-                      autoComplete="off"
-                      data-testid={`input-${tile.id}-${f.key}`}
-                    />
-                    {f.hint && (
-                      <p
-                        id={`cred-${tile.id}-${f.key}-hint`}
-                        className="text-[11px] text-muted-foreground"
-                        role="note"
-                      >
-                        {f.hint}
-                      </p>
-                    )}
-                  </div>
-                ))}
+          <div className="space-y-3">
+            {/* Shopify needs the store domain before the OAuth redirect. */}
+            {tile.id === 'shopify' && isOauth && (
+              <div className="space-y-1">
+                <Label htmlFor={`input-shop-${tile.id}`} className="text-xs text-muted-foreground">
+                  Store domain
+                </Label>
+                <Input
+                  id={`input-shop-${tile.id}`}
+                  value={shopDomain}
+                  onChange={(e) => setShopDomain(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleConnect();
+                  }}
+                  placeholder="my-store.myshopify.com"
+                  aria-label="Shopify store domain"
+                  autoComplete="off"
+                  data-testid={`input-shop-${tile.id}`}
+                />
               </div>
             )}
 
+            {/* Credential connectors: required fields rendered inline (server catalog SoR). */}
+            {isCredential && credentialFields.length > 0 && renderFields(credentialFields)}
+
             <Button
               onClick={handleConnect}
+              className="w-full"
+              loading={isConnecting}
               disabled={
                 isConnecting ||
                 !emailVerified ||
-                (tile.id === 'shopify' && tile.connect_method === 'oauth' && !shopDomain.trim()) ||
+                (tile.id === 'shopify' && isOauth && !shopDomain.trim()) ||
                 (isCredential && !credsComplete)
               }
               aria-describedby={!emailVerified ? `connect-verify-hint-${tile.id}` : undefined}
               title={!emailVerified ? VERIFY_TO_CONNECT : undefined}
               data-testid={`connector-tile-${tile.id}-connect`}
             >
-              {isConnecting && (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
-              )}
+              {!isConnecting && <PlugZap className="mr-2 h-4 w-4" aria-hidden="true" />}
               {isConnecting ? 'Connecting…' : `Connect ${tile.display_name}`}
             </Button>
-            {/* Soft-gate reason hint — UX guidance only; the server gate is authoritative. */}
+
+            {/* OAuth BYO-app: optional Client ID/Secret tucked behind a disclosure (catalog-declared only). */}
+            {isOauth && hasOauthAppFields && (
+              <div className="space-y-3">
+                <button
+                  type="button"
+                  onClick={() => setShowAdvanced((v) => !v)}
+                  className="text-xs font-medium text-muted-foreground underline-offset-4 hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
+                  aria-expanded={showAdvanced}
+                  data-testid={`oauth-advanced-toggle-${tile.id}`}
+                >
+                  {showAdvanced ? 'Use Brain’s app instead' : 'Use your own OAuth app (optional)'}
+                </button>
+                {showAdvanced && renderFields(oauthAppFields)}
+              </div>
+            )}
+
             {!emailVerified && (
               <p
                 id={`connect-verify-hint-${tile.id}`}
-                className="text-xs text-status-amber-700"
+                className="text-xs text-warning"
                 data-testid={`connect-verify-hint-${tile.id}`}
                 role="note"
               >
@@ -632,8 +579,8 @@ function ConnectorTile({ tile, readinessLock }: { tile: MarketplaceTile; readine
             )}
           </div>
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </div>
   );
 }
 
@@ -646,35 +593,38 @@ function CategorySection({
 }: {
   category: ConnectorCategory;
   tiles: MarketplaceTile[];
-  /** Set when this category isn't unlocked by the data foundation yet (the unlock hint). */
   readinessLock?: string | null;
 }) {
+  const connectedCount = tiles.filter((t) => (t.instances?.length ?? 0) > 0 || t.instance).length;
+
   return (
-    <section aria-labelledby={`category-heading-${category}`} data-testid={`marketplace-category-${category}`}>
-      <div className="mb-3 flex items-center gap-2">
-        <h2
-          id={`category-heading-${category}`}
-          className="text-sm font-semibold text-muted-foreground uppercase tracking-wide"
-        >
-          {CATEGORY_LABELS[category]}
-        </h2>
-        {readinessLock && (
-          <span
-            className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground"
-            role="status"
-            title={readinessLock}
-          >
-            <Lock className="h-3 w-3" aria-hidden="true" />
-            Locks until ready
-          </span>
-        )}
-      </div>
+    <SectionCard
+      data-testid={`marketplace-category-${category}`}
+      aria-labelledby={`category-heading-${category}`}
+      title={<span id={`category-heading-${category}`}>{CATEGORY_LABELS[category]}</span>}
+      description={CATEGORY_BLURB[category]}
+      meta={
+        <>
+          {connectedCount > 0 && (
+            <StatusBadge tone="success" role="status">
+              {connectedCount} connected
+            </StatusBadge>
+          )}
+          {readinessLock && (
+            <StatusBadge tone="neutral" role="status" title={readinessLock}>
+              <Lock className="h-3 w-3" aria-hidden="true" />
+              Locks until ready
+            </StatusBadge>
+          )}
+        </>
+      }
+    >
       <div className="grid gap-4 sm:grid-cols-1 lg:grid-cols-2">
         {tiles.map((tile) => (
           <ConnectorTile key={tile.id} tile={tile} readinessLock={readinessLock} />
         ))}
       </div>
-    </section>
+    </SectionCard>
   );
 }
 
@@ -682,11 +632,14 @@ function CategorySection({
 
 function MarketplaceSkeleton() {
   return (
-    <div className="space-y-8" aria-busy="true" aria-label="Loading marketplace…">
+    <div className="space-y-6" aria-busy="true" aria-label="Loading marketplace…">
       {[1, 2, 3].map((i) => (
-        <div key={i} className="space-y-3">
-          <Skeleton className="h-4 w-24" />
-          <Skeleton className="h-36 w-full" />
+        <div key={i} className="rounded-lg border border-border bg-card p-5">
+          <Skeleton className="mb-4 h-4 w-28" />
+          <div className="grid gap-4 lg:grid-cols-2">
+            <Skeleton className="h-28 w-full" />
+            <Skeleton className="h-28 w-full" />
+          </div>
         </div>
       ))}
     </div>
@@ -720,15 +673,12 @@ export function MarketplaceView() {
   const searchParams = useSearchParams();
   const router = useRouter();
 
-  // Progressive unlock (P2): a category locks until the data foundation supports it. Lookup by key;
-  // absent → unlocked (default-allow). storefront is always unlocked (the foundation root).
   const categoryLock = (cat: ConnectorCategory): string | null => {
     const e = entitlements?.connector_categories.find((c) => c.key === cat);
     return e && !e.eligible ? (e.unlock_hint ?? 'Unlocks automatically once your data is ready.') : null;
   };
 
   // The OAuth callback redirects back here with ?connected=<type> or ?connect_error=<code>.
-  // Surface it as a toast, then strip the param so it doesn't re-fire on refetch/navigation.
   useEffect(() => {
     const connected = searchParams.get('connected');
     const connectError = searchParams.get('connect_error');
@@ -746,33 +696,49 @@ export function MarketplaceView() {
     router.replace('/settings/connectors');
   }, [searchParams, router]);
 
-  if (isLoading) return <MarketplaceSkeleton />;
+  // Group tiles by category in canonical order.
+  const byCategory = useMemo(() => {
+    const map = new Map<ConnectorCategory, MarketplaceTile[]>();
+    for (const cat of CATEGORY_ORDER) map.set(cat, []);
+    for (const tile of tiles ?? []) {
+      const cat = tile.category as ConnectorCategory;
+      if (map.has(cat)) map.get(cat)!.push(tile);
+    }
+    return map;
+  }, [tiles]);
 
-  if (error) {
+  if (isLoading) return <MarketplaceSkeleton />;
+  if (error) return <ErrorCard error={error} retry={refetch} />;
+
+  if (!tiles || tiles.length === 0) {
     return (
-      <ErrorCard
-        error={error}
-        retry={refetch}
-      />
+      <SectionCard>
+        <EmptyState
+          icon={<Plug />}
+          title="No integrations available yet"
+          description="The connector catalog is empty. Check back shortly — integrations appear here as soon as they are enabled for your workspace."
+        />
+      </SectionCard>
     );
   }
 
-  // Group tiles by category in canonical order
-  const byCategory = new Map<ConnectorCategory, MarketplaceTile[]>();
-  for (const cat of CATEGORY_ORDER) {
-    byCategory.set(cat, []);
-  }
-  for (const tile of tiles ?? []) {
-    const cat = tile.category as ConnectorCategory;
-    if (byCategory.has(cat)) {
-      byCategory.get(cat)!.push(tile);
-    }
-  }
+  const connectedTotal = (tiles ?? []).filter((t) => (t.instances?.length ?? 0) > 0 || t.instance).length;
 
   return (
-    <div
-      className="space-y-8"
-    >
+    <div className="space-y-6">
+      {connectedTotal === 0 && (
+        <div
+          className="flex items-start gap-3 rounded-lg border border-border bg-muted/40 px-4 py-3"
+          role="note"
+        >
+          <PlugZap className="mt-0.5 h-4 w-4 shrink-0 text-primary" aria-hidden="true" />
+          <p className="text-sm text-muted-foreground">
+            Start with your <span className="font-medium text-foreground">Storefront</span> — it’s the
+            order spine and the source of truth everything else builds on.
+          </p>
+        </div>
+      )}
+
       {CATEGORY_ORDER.map((cat) => {
         const catTiles = byCategory.get(cat) ?? [];
         if (catTiles.length === 0) return null;

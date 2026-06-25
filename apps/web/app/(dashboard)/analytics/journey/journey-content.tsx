@@ -39,6 +39,7 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { Layers, ArrowRight, Footprints } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { PageHeader } from '@/components/ui/page-header';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
@@ -135,10 +136,10 @@ export function JourneyContent() {
 
   return (
     <div className="space-y-8">
-      <div>
-        <div className="flex flex-wrap items-center gap-2">
-          <h1 className="text-2xl font-bold text-foreground">Journey</h1>
-          {/* Subtle provenance: this surface is powered by the Silver tier. */}
+      <PageHeader
+        title="Journey"
+        description="First-touch channel mix, the deterministic cart-stitch hit-rate, and a per-order touchpoint timeline — sessionized from SDK page views, deterministically linked to known orders (never inferred)."
+        meta={
           <span
             data-testid="journey-silver-label"
             className="inline-flex items-center gap-1 rounded-md border border-border bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"
@@ -147,13 +148,8 @@ export function JourneyContent() {
             <Layers className="h-3 w-3" aria-hidden="true" />
             Powered by the Silver tier
           </span>
-        </div>
-        <p className="text-muted-foreground mt-1">
-          First-touch channel mix, the deterministic cart-stitch hit-rate, and a
-          per-order touchpoint timeline — sessionized from SDK page views, deterministically
-          linked to known orders (never inferred).
-        </p>
-      </div>
+        }
+      />
 
       {/* ── First-touch mix + coverage + stitch-rate ── */}
       <section aria-label="First-touch channel mix" data-testid="journey-mix-section">

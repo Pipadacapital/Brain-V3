@@ -13,16 +13,15 @@
  *  - No StarRocks/Analytics API call in this module (ADR-002).
  */
 
-import Fastify, { type FastifyRequest, type FastifyError } from 'fastify';
+import Fastify, { type FastifyError } from 'fastify';
 import fastifyCookie from '@fastify/cookie';
 import fastifyRawBody from 'fastify-raw-body';
 import { randomUUID } from 'node:crypto';
 import { Redis } from 'ioredis';
-import { requireEnvInProd } from '@brain/config';
+import { requireEnvInProd, loadCoreConfig } from '@brain/config';
 import { Kafka } from 'kafkajs';
 
 import { createPool } from '@brain/db';
-import { resolveSaltHex } from '@brain/identity-core';
 import pg from 'pg';
 import mysql from 'mysql2/promise';
 import type { SilverPool } from '@brain/metric-engine';
@@ -214,6 +213,11 @@ export async function main(): Promise<void> {
     // fresh `pnpm dev`. Prod FAILS CLOSED if unset (never reuse the known weak dev password).
     starrocksPassword: requireEnvInProd('STARROCKS_ANALYTICS_PASSWORD', 'brain_analytics_dev'),
   };
+
+  // Typed config single-source-of-record (parsed once, frozen). Loaded AFTER the META/GOOGLE
+  // secret-resolution writeback above so any env mutation that matters is already applied; none of
+  // the fields below depend on it, but ordering is preserved for safety.
+  const cfg = loadCoreConfig();
 
   // Create Fastify instance.
   const app = Fastify({
@@ -504,9 +508,9 @@ export async function main(): Promise<void> {
   // surfaces (Customer 360, browse, merge-admin, GDPR erase, vault coverage) read it; contact_pii +
   // identity_audit stay PG (passed via rawPgPool for the erase mutation).
   const identityReader = new Neo4jIdentityReader(
-    process.env['NEO4J_URI'] ?? 'bolt://localhost:7687',
-    process.env['NEO4J_USER'] ?? 'neo4j',
-    process.env['NEO4J_PASSWORD'] ?? 'neo4j',
+    cfg.NEO4J_URI,
+    cfg.NEO4J_USER,
+    cfg.NEO4J_PASSWORD,
     rawPgPool,
   );
   const piiVaultService = new ContactPiiVaultService(
@@ -539,7 +543,7 @@ export async function main(): Promise<void> {
     }
   };
   let stopCapiPassback: (() => void) | null = null;
-  if (process.env['CAPI_PASSBACK_ENABLED'] === 'true') {
+  if (cfg.CAPI_PASSBACK_ENABLED) {
     const handle = startCapiPassback({
       enumerateBrandIds: async () => {
         const r = await rawPgPool.query<{ id: string }>('SELECT id FROM list_active_brand_ids()');
@@ -549,8 +553,8 @@ export async function main(): Promise<void> {
       // passback dedup resolve in PG. Cross-store read inside fetchFinalizedPurchaseCandidatesScoped.
       fetchCandidates: (brandId, from, to) => fetchFinalizedPurchaseCandidatesScoped(rawPgPool, srPool, brandId, from, to),
       passback: capiPassback,
-      windowHours: Number(process.env['CAPI_PASSBACK_WINDOW_HOURS'] ?? 24),
-      intervalMs: Number(process.env['CAPI_PASSBACK_INTERVAL_MS'] ?? 300_000),
+      windowHours: cfg.CAPI_PASSBACK_WINDOW_HOURS,
+      intervalMs: cfg.CAPI_PASSBACK_INTERVAL_MS,
       log: { info: (m) => app.log.info(m), warn: (m, meta) => app.log.warn(meta ?? {}, m), error: (m, meta) => app.log.error(meta ?? {}, m) },
     });
     stopCapiPassback = handle.stop;
@@ -644,7 +648,7 @@ export async function main(): Promise<void> {
         'EncryptionContext isolation (D-7/ADR-CM-4). Set the env var and restart.',
     );
   }
-  const connectorKmsKeyId = getEnv('CONNECTOR_SECRETS_KMS_KEY_ID', 'alias/brain-connector-secrets-dev');
+  const connectorKmsKeyId = cfg.CONNECTOR_SECRETS_KMS_KEY_ID;
   const connectorSecretsManager = isProduction
     ? new AwsSecretsManager(getEnv('AWS_REGION', 'us-east-1'), shopifyClientSecretRef, connectorKmsKeyId)
     // DEV-TOKEN-REACH (0024): pass rawPgPool so dev tokens persist to dev_secret —
@@ -682,7 +686,7 @@ export async function main(): Promise<void> {
         // deployments keep working. The read side (AwsKmsDecryptAdapter) resolves the key from the
         // wrapped blob's stored kms_key_id, so a future key swap is transparent to readers.
         const identityKmsKeyId =
-          process.env['IDENTITY_CRYPTO_KMS_KEY_ID'] ?? connectorKmsKeyId;
+          cfg.IDENTITY_CRYPTO_KMS_KEY_ID ?? connectorKmsKeyId;
         const provisioner = new BrandCryptoProvisioner(
           rawPgPool,
           new AwsKmsEncryptAdapter(),

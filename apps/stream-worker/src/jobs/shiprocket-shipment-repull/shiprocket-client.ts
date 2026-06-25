@@ -28,6 +28,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import type { ShiprocketShipmentRecord, DataSource } from '@brain/shiprocket-mapper';
+import { loadStreamWorkerConfig } from '@brain/config';
 import { log } from '../../log.js';
 import { CircuitBreaker } from '@brain/observability';
 import {
@@ -52,7 +53,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_FIXTURE_PATH = join(__dirname, '..', '_fixtures', 'shiprocket', 'shiprocket-shipment-lifecycle.json');
 
 function fixturePath(): string {
-  return process.env['SHIPROCKET_FIXTURE_PATH'] ?? DEFAULT_FIXTURE_PATH;
+  return loadStreamWorkerConfig().SHIPROCKET_FIXTURE_PATH ?? DEFAULT_FIXTURE_PATH;
 }
 
 interface ShipmentFixtureFile {
@@ -75,9 +76,9 @@ export class ShiprocketShipmentClient {
   private fixtureRecords: ShiprocketShipmentRecord[] | null = null;
   private readonly breaker: CircuitBreaker;
 
-  private readonly baseUrl = (process.env['SHIPROCKET_BASE_URL'] ?? 'https://apiv2.shiprocket.in').replace(/\/+$/, '');
-  private readonly shipmentsPath = process.env['SHIPROCKET_SHIPMENTS_PATH'] ?? '/v1/external/orders';
-  private readonly shipmentsKey = process.env['SHIPROCKET_SHIPMENTS_KEY'] ?? 'data';
+  private readonly baseUrl = loadStreamWorkerConfig().SHIPROCKET_BASE_URL.replace(/\/+$/, '');
+  private readonly shipmentsPath = loadStreamWorkerConfig().SHIPROCKET_SHIPMENTS_PATH;
+  private readonly shipmentsKey = loadStreamWorkerConfig().SHIPROCKET_SHIPMENTS_KEY;
 
   constructor(credentials: ShiprocketApiCredentials) {
     this.live = isLiveMode();

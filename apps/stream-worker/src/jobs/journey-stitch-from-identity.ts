@@ -30,10 +30,11 @@ import mysql from 'mysql2/promise';
 import { hashIdentifier, normalizeIdentifier } from '@brain/identity-core';
 import { createSaltProvider, type SaltProvider } from '../infrastructure/secrets/SaltProvider.js';
 import { StitchMapWriter } from '../infrastructure/pg/StitchMapWriter.js';
+import { loadStreamWorkerConfig } from '@brain/config';
 import { log } from '../log.js';
 
-const DB_URL =
-  process.env['BRAIN_APP_DATABASE_URL'] ?? 'postgres://brain_app:brain_app@localhost:5432/brain';
+const cfg = loadStreamWorkerConfig();
+const DB_URL = cfg.BRAIN_APP_DATABASE_URL;
 
 export interface StitchFromIdentityResult {
   brands: number;
@@ -69,7 +70,7 @@ export async function runJourneyStitchFromIdentity(deps?: {
   srPool?: SilverPoolLike;
   saltProvider?: SaltProvider;
 }): Promise<StitchFromIdentityResult> {
-  const srHost = process.env['STARROCKS_HOST'];
+  const srHost = cfg.STARROCKS_HOST;
   if (!deps?.srPool && srHost === undefined) {
     log.warn('journey-stitch-from-identity skipped — STARROCKS_HOST unset (no Silver tier to read anons)');
     return { brands: 0, stitched: 0, ambiguousSkipped: 0, errors: 0 };
@@ -80,9 +81,9 @@ export async function runJourneyStitchFromIdentity(deps?: {
     deps?.srPool ??
     (mysql.createPool({
       host: srHost,
-      port: parseInt(process.env['STARROCKS_PORT'] ?? '9030', 10),
-      user: process.env['STARROCKS_ANALYTICS_USER'] ?? 'brain_analytics',
-      password: process.env['STARROCKS_ANALYTICS_PASSWORD'] ?? 'brain_analytics_dev',
+      port: cfg.STARROCKS_PORT,
+      user: cfg.STARROCKS_ANALYTICS_USER,
+      password: cfg.STARROCKS_ANALYTICS_PASSWORD,
       connectionLimit: 3,
     }) as unknown as SilverPoolLike);
   const saltProvider = deps?.saltProvider ?? createSaltProvider(DB_URL);

@@ -1,0 +1,45 @@
+{
+  "_synthetic": true,
+  "_note": "SYNTHETIC dev fixture — no live WooCommerce store wired in dev. NEVER presented as live. Shape follows the wc/v3 REST product; the ingestion-framework mapper emits the shared product.upsert.v1 canonical event. date_modified_gmt drives the framework backfill cursor (page_number) + per-state dedup identity.",
+  "products": [
+    {
+      "id": 700,
+      "name": "Aurora Ceramic Mug",
+      "slug": "aurora-ceramic-mug",
+      "status": "publish",
+      "type": "simple",
+      "sku": "MUG-AURORA",
+      "price": "299.00",
+      "regular_price": "349.00",
+      "stock_quantity": 142,
+      "date_created_gmt": "2026-01-10T08:00:00",
+      "date_modified_gmt": "2026-06-01T10:00:00"
+    },
+    {
+      "id": 701,
+      "name": "Nimbus Travel Bottle",
+      "slug": "nimbus-travel-bottle",
+      "status": "publish",
+      "type": "variable",
+      "sku": "BTL-NIMBUS",
+      "price": "799.00",
+      "regular_price": "799.00",
+      "stock_quantity": 58,
+      "date_created_gmt": "2026-02-14T09:30:00",
+      "date_modified_gmt": "2026-06-03T12:15:00"
+    },
+    {
+      "id": 702,
+      "name": "Sienna Tote",
+      "slug": "sienna-tote",
+      "status": "draft",
+      "type": "simple",
+      "sku": "TOTE-SIENNA",
+      "price": "1199.00",
+      "regular_price": "1199.00",
+      "stock_quantity": 0,
+      "date_created_gmt": "2026-03-01T07:45:00",
+      "date_modified_gmt": "2026-06-05T16:20:00"
+    }
+  ]
+}

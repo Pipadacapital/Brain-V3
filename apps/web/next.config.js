@@ -28,6 +28,13 @@ const nextConfig = {
   },
   // Web app talks ONLY to the frontend-api BFF (ADR-011).
   // BFF base URL is environment-specific; in dev, it proxies to apps/core.
+  //
+  // intentional: BFF_BASE_URL / CORE_API_URL are read raw here (not via
+  // @brain/config's loadWebConfig). They ARE the typed source-of-record in
+  // packages/config/src/web.ts (WebEnvSchema, same names + defaults), but this
+  // file is plain CommonJS evaluated by Node before Next's workspace-transpile
+  // pipeline, and @brain/config ships raw ESM TypeScript (main = src/index.ts)
+  // which Node cannot import here. Defaults below match WebEnvSchema exactly.
   async rewrites() {
     return [
       {

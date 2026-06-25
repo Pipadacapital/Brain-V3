@@ -1,5 +1,6 @@
 import { log } from "../../log.js";
 import { CircuitBreaker } from '@brain/observability';
+import { loadStreamWorkerConfig } from '@brain/config';
 
 /**
  * shopify-paged-client.ts — Shopify Admin REST client for backfill (ADR-BF-6 / D-14 / IR-2).
@@ -64,7 +65,7 @@ export class ShopifyBackfillClient {
   constructor(
     private readonly shopDomain: string,
     private readonly accessToken: string,
-    apiVersion: string = process.env['SHOPIFY_API_VERSION'] ?? DEFAULT_API_VERSION,
+    apiVersion: string = loadStreamWorkerConfig().SHOPIFY_API_VERSION ?? DEFAULT_API_VERSION,
   ) {
     const host = shopDomain.replace(/^https?:\/\//, '');
     this.base = `https://${host}/admin/api/${apiVersion}`;

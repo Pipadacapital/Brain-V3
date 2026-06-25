@@ -19,6 +19,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { ShoppingCart, TrendingDown, Search } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { PageHeader } from '@/components/ui/page-header';
 import { ErrorCard } from '@/components/ui/error-card';
 import { EmptyState } from '@/components/ui/empty-state';
 import { KpiTile } from '@/components/analytics/kpi-tile';
@@ -134,15 +135,11 @@ export function OrdersContent() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold text-foreground">Orders</h1>
-          <p className="text-muted-foreground mt-1">
-            Order volume, average order value, and RTO rate — last 90 days.
-          </p>
-        </div>
-        <OrderLookup />
-      </div>
+      <PageHeader
+        title="Orders"
+        description="Order volume, average order value, and RTO rate — last 90 days."
+        actions={<OrderLookup />}
+      />
 
       {/* Honest error path — surfaces the request_id for support (trace context propagated). */}
       {statsError && (

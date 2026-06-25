@@ -29,12 +29,14 @@
  *     continues to work via polling.
  */
 
+import { loadCoreConfig } from '@brain/config';
 import type { ISecretsManager } from '@brain/connector-secrets';
 import type { IConnectorInstanceRepository, IConnectorSyncStatusRepository } from '@brain/connector-core';
 import { ConnectorInstance, ConnectorSyncStatus } from '@brain/connector-core';
 import { assertSingleStorefront } from '../../../storefront-exclusivity.js';
 import { randomUUID } from 'node:crypto';
 import type pg from 'pg';
+import { log } from '../../../../../../../log.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -73,7 +75,7 @@ const WC_WEBHOOK_TOPICS = ['order.created', 'order.updated'] as const;
 
 // Delivery URL for WooCommerce outbound webhooks.
 function webhookDeliveryUrl(): string {
-  const base = (process.env['BRAIN_WEBHOOK_BASE_URL'] ?? 'https://api.brain.ai').replace(/\/+$/, '');
+  const base = loadCoreConfig().BRAIN_WEBHOOK_BASE_URL.replace(/\/+$/, '');
   return `${base}/api/v1/webhooks/woocommerce`;
 }
 
@@ -332,7 +334,11 @@ export class ConnectWooCommerceCommand {
         }
       }
     } catch (err) {
-      // Webhook registration is non-fatal; log and continue.
+      // Webhook registration is non-fatal; log and continue. // intentional
+      log.warn('woocommerce webhook auto-registration failed (non-fatal — connection proceeds)', {
+        brand_id: brandId,
+        err,
+      });
       webhookRegistrationErrors.push(`webhook auto-registration error: ${String(err)}`);
     }
 

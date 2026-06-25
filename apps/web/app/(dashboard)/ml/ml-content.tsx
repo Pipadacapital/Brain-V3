@@ -16,9 +16,11 @@
 import * as React from 'react';
 import { Boxes, Cpu, Search, ShieldCheck } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { PageHeader } from '@/components/ui/page-header';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
+import { StatusBadge, type StatusTone } from '@/components/ui/status-badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
 import { EmptyState } from '@/components/ui/empty-state';
@@ -28,19 +30,19 @@ import type { MlModel, MlModelStage } from '@/lib/api/types';
 
 /** Stage → badge tone. Production strongest; archived muted. */
 function StageBadge({ stage }: { stage: MlModelStage }) {
-  const tone =
+  const tone: StatusTone =
     stage === 'production'
-      ? 'bg-emerald-50 text-emerald-700'
+      ? 'success'
       : stage === 'staging'
-        ? 'bg-amber-50 text-amber-800'
+        ? 'warning'
         : stage === 'training'
-          ? 'bg-sky-50 text-sky-700'
-          : 'bg-muted text-muted-foreground';
+          ? 'info'
+          : 'neutral';
   return (
-    <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${tone}`}>
+    <StatusBadge tone={tone} hideDot>
       {stage === 'production' && <ShieldCheck className="h-3 w-3" aria-hidden="true" />}
       {stage}
-    </span>
+    </StatusBadge>
   );
 }
 
@@ -238,13 +240,10 @@ export function MlContent() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Models</h1>
-        <p className="text-sm text-muted-foreground">
-          The model registry and serving layer. Promote a model through its lifecycle — promoting to
-          production automatically archives the prior production model so exactly one stays live.
-        </p>
-      </div>
+      <PageHeader
+        title="Models"
+        description="The model registry and serving layer. Promote a model through its lifecycle — promoting to production automatically archives the prior production model so exactly one stays live."
+      />
 
       <Card>
         <CardHeader className="pb-2">

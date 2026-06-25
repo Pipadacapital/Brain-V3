@@ -26,9 +26,10 @@ import {
   CircleSlash,
 } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
+import { PageHeader } from '@/components/ui/page-header';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
+import { StatusBadge } from '@/components/ui/status-badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
 import { EmptyState } from '@/components/ui/empty-state';
@@ -43,22 +44,22 @@ const LIFECYCLES = ['', 'anonymous', 'active', 'merged', 'split', 'erased'] as c
 function LifecycleBadge({ state }: { state: string }) {
   const tone =
     state === 'active'
-      ? 'bg-emerald-600'
+      ? 'success'
       : state === 'erased'
-        ? 'bg-destructive'
+        ? 'destructive'
         : state === 'merged' || state === 'split'
-          ? 'bg-amber-600'
-          : undefined;
-  return tone ? (
-    <Badge className={`${tone} text-[10px]`}>{humanize(state)}</Badge>
-  ) : (
-    <Badge variant="secondary" className="text-[10px]">{humanize(state)}</Badge>
+          ? 'warning'
+          : 'neutral';
+  return (
+    <StatusBadge tone={tone} hideDot>
+      {humanize(state)}
+    </StatusBadge>
   );
 }
 
 function ConsentDot({ on, label }: { on: boolean; label: string }) {
   return on ? (
-    <ShieldCheck className="h-4 w-4 text-emerald-600" aria-label={`${label}: granted`} />
+    <ShieldCheck className="h-4 w-4 text-success" aria-label={`${label}: granted`} />
   ) : (
     <ShieldOff className="h-4 w-4 text-muted-foreground" aria-label={`${label}: not granted`} />
   );
@@ -97,14 +98,10 @@ export function CustomersContent() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Customers</h1>
-        <p className="text-sm text-muted-foreground">
-          Browse and find resolved customers for the active brand. Open one to see its full 360 —
-          identifiers, merge history, consent — or to merge, unmerge, or erase. Identifiers are vaulted;
-          search by email or phone resolves them without ever exposing raw PII.
-        </p>
-      </div>
+      <PageHeader
+        title="Customers"
+        description="Browse and find resolved customers for the active brand. Open one to see its full 360 — identifiers, merge history, consent — or to merge, unmerge, or erase. Identifiers are vaulted; search by email or phone resolves them without ever exposing raw PII."
+      />
 
       {/* Filters */}
       <div className="flex flex-wrap items-end gap-3">
@@ -205,7 +202,7 @@ export function CustomersContent() {
                           {c.brain_id}
                         </Link>
                         {c.merged_into ? (
-                          <span className="ml-2 text-[10px] text-amber-700">→ merged</span>
+                          <span className="ml-2 text-[10px] text-warning">→ merged</span>
                         ) : null}
                       </td>
                       <td className="px-4 py-2.5">

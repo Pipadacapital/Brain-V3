@@ -14,6 +14,7 @@
 import { GitMerge, Check, X } from 'lucide-react';
 import { humanize } from '@/lib/format/humanize';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { PageHeader } from '@/components/ui/page-header';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
@@ -27,16 +28,10 @@ export function MergeReviewContent() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
-          <GitMerge className="h-6 w-6" aria-hidden="true" />
-          Merge Review
-        </h1>
-        <p className="text-sm text-muted-foreground">
-          Candidate identity merges the resolver flagged for human review. Approve to merge the
-          second profile into the first, or reject to keep them separate.
-        </p>
-      </div>
+      <PageHeader
+        title="Merge Review"
+        description="Candidate identity merges the resolver flagged for human review. Approve to merge the second profile into the first, or reject to keep them separate."
+      />
 
       <div aria-live="polite" aria-busy={isLoading || isFetching}>
         {isLoading ? (

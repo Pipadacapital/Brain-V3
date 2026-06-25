@@ -26,6 +26,7 @@ import {
   CircleSlash,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { PageHeader } from '@/components/ui/page-header';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -39,7 +40,7 @@ function ConsentBadge({ on, label }: { on: boolean; label: string }) {
   return (
     <span className="inline-flex items-center gap-1.5 text-sm">
       {on ? (
-        <ShieldCheck className="h-4 w-4 text-emerald-600" aria-hidden="true" />
+        <ShieldCheck className="h-4 w-4 text-success" aria-hidden="true" />
       ) : (
         <ShieldOff className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
       )}
@@ -65,13 +66,10 @@ export function Customer360Content({ initialBrainId = '' }: { initialBrainId?: s
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Customer 360</h1>
-        <p className="text-sm text-muted-foreground">
-          Resolve a customer by their Brain ID to see lifecycle, consent, linked identifiers, and
-          merge history. Identifiers are shown hashed — raw PII never leaves the vault.
-        </p>
-      </div>
+      <PageHeader
+        title="Customer 360"
+        description="Resolve a customer by their Brain ID to see lifecycle, consent, linked identifiers, and merge history. Identifiers are shown hashed — raw PII never leaves the vault."
+      />
 
       <form onSubmit={onSubmit} className="flex items-end gap-3" role="search">
         <div className="flex-1 max-w-xl">
@@ -153,7 +151,7 @@ export function Customer360Content({ initialBrainId = '' }: { initialBrainId?: s
                           {unmerge.isPending ? 'Splitting…' : 'Split (unmerge)'}
                         </Button>
                         {unmerge.data?.unmerged ? (
-                          <span className="ml-2 text-sm text-emerald-700">Split — re-look-up to refresh.</span>
+                          <span className="ml-2 text-sm text-success">Split — re-look-up to refresh.</span>
                         ) : null}
                       </dd>
                     </div>
@@ -251,7 +249,7 @@ export function Customer360Content({ initialBrainId = '' }: { initialBrainId?: s
                     identifiers, and mark them erased. This cannot be undone.
                   </p>
                   {erase.data?.erased ? (
-                    <p className="text-sm font-medium text-emerald-700">
+                    <p className="text-sm font-medium text-success">
                       Erased — {erase.data.contact_pii_deleted} PII record(s) deleted,{' '}
                       {erase.data.links_tombstoned} identifier(s) deactivated. Re-look-up to refresh.
                     </p>

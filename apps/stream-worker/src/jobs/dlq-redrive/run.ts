@@ -22,7 +22,10 @@
  * idempotent. Genuinely-poison messages are bounded by --max-redrive and stay parked in the DLQ.
  */
 import { Kafka } from 'kafkajs';
+import { loadStreamWorkerConfig } from '@brain/config';
+import { createIdempotentProducer } from '../../infrastructure/kafka/idempotent-producer.js';
 import { DlqRedriver, DEFAULT_MAX_REDRIVE, type RedriveReport } from '../../infrastructure/kafka/DlqRedriver.js';
+import { log } from '../../log.js';
 
 interface CliArgs {
   topic: string;
@@ -78,9 +81,13 @@ export function formatReport(args: CliArgs, report: RedriveReport): string {
 
 export async function main(argv: string[]): Promise<RedriveReport> {
   const args = parseArgs(argv);
-  const brokers = (process.env['KAFKA_BROKERS'] ?? 'localhost:9092').split(',');
+  // Job-scoped child logger: every line carries { job, topic } so an operator can
+  // correlate a redrive run end-to-end (DLQ state is global ops, not per-brand).
+  const jobLog = log.child({ job: 'dlq-redrive', topic: args.topic });
+  jobLog.info('start', { maxRedrive: args.maxRedrive, dryRun: args.dryRun, reason: args.reason });
+  const brokers = loadStreamWorkerConfig().KAFKA_BROKERS.split(',');
   const kafka = new Kafka({ clientId: 'dlq-redrive', brokers, retry: { retries: 5 } });
-  const producer = kafka.producer({ idempotent: true });
+  const producer = createIdempotentProducer(kafka);
   const redriver = new DlqRedriver(kafka, producer, args.group);
   try {
     const report = await redriver.redrive(args.topic, {
@@ -91,11 +98,21 @@ export async function main(argv: string[]): Promise<RedriveReport> {
       idleMs: args.idleMs,
       groupId: args.group,
     });
-    // eslint-disable-next-line no-console
-    console.log(formatReport(args, report));
+    // Operator-facing human report (stdout) — this CLI's stakeholder surface.
+    jobLog.info(formatReport(args, report));
+    jobLog.info('finish', {
+      scanned: report.scanned,
+      redriven: report.redriven,
+      exhausted: report.exhausted,
+      filtered: report.filtered,
+      errors: report.errors,
+    });
     return report;
   } finally {
-    await producer.disconnect().catch(() => {});
+    await producer.disconnect().catch((err) => {
+      // intentional: best-effort producer teardown on a CLI exit path.
+      jobLog.debug('producer disconnect failed (non-fatal)', { err });
+    });
   }
 }
 
@@ -104,8 +121,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   main(process.argv.slice(2))
     .then((r) => process.exit(r.errors > 0 ? 1 : 0))
     .catch((err) => {
-      // eslint-disable-next-line no-console
-      console.error('[dlq-redrive] failed:', err);
+      log.error('[dlq-redrive] failed', { err });
       process.exit(1);
     });
 }

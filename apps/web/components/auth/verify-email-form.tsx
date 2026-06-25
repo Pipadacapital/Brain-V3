@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { Loader2, MailCheck, FlaskConical } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { Alert } from '@/components/ui/alert';
 import { ErrorCard } from '@/components/ui/error-card';
 import { useVerifyEmail } from '@/lib/hooks/use-auth';
 import { toast } from '@/components/ui/toaster';
@@ -55,7 +56,7 @@ export function VerifyEmailForm() {
 
   if (token) {
     return (
-      <Card>
+      <Card className="shadow-md">
         <CardContent className="py-8">
           <div className="flex flex-col items-center gap-4">
             {isPending && (
@@ -75,12 +76,14 @@ export function VerifyEmailForm() {
   }
 
   return (
-    <Card>
+    <Card className="shadow-md">
       <CardHeader>
-        <div className="flex justify-center mb-2">
-          <MailCheck className="h-10 w-10 text-primary" aria-hidden="true" />
+        <div className="mb-1 flex justify-center">
+          <span className="flex h-11 w-11 items-center justify-center rounded-full bg-primary/10 text-primary" aria-hidden="true">
+            <MailCheck className="h-6 w-6" />
+          </span>
         </div>
-        <CardTitle className="text-center">Check your email</CardTitle>
+        <CardTitle className="text-center text-lg">Check your email</CardTitle>
         <CardDescription className="text-center">
           {email
             ? `We sent a verification link to ${email}.`
@@ -94,20 +97,22 @@ export function VerifyEmailForm() {
           Once verified, you will be redirected to sign in automatically.
         </p>
         {isDev && devToken && (
-          <div className="mt-4 rounded-md border border-dashed border-amber-400 bg-amber-50 p-3 text-center dark:bg-amber-950/30">
-            <p className="mb-2 flex items-center justify-center gap-1.5 text-xs font-medium text-amber-700 dark:text-amber-400">
-              <FlaskConical className="h-3.5 w-3.5" aria-hidden="true" />
-              Dev mode — no real email is sent
-            </p>
+          <Alert
+            variant="warning"
+            className="mt-4"
+            icon={<FlaskConical className="h-4 w-4" aria-hidden="true" />}
+            title="Dev mode — no real email is sent"
+          >
             <Button
               size="sm"
               variant="outline"
+              className="mt-2"
               data-testid="btn-dev-verify-now"
               onClick={() => router.push(`/verify-email?token=${encodeURIComponent(devToken)}`)}
             >
               Verify now (dev)
             </Button>
-          </div>
+          </Alert>
         )}
         <div className="mt-4 text-center">
           <Button variant="link" onClick={() => router.push('/login')}>

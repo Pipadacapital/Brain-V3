@@ -10,6 +10,7 @@
  * `access_type=offline` + `prompt=consent` so Google returns a REFRESH token (Google
  * access tokens are short-lived; the repull job exchanges refresh→access at run start).
  */
+import { loadCoreConfig } from '@brain/config';
 import type { IOAuthStateStore } from '../../../../storefront/shopify/infrastructure/state/IOAuthStateStore.js';
 import { OAuthStateNonce } from '../../../../storefront/shopify/domain/value-objects/OAuthStateNonce.js';
 
@@ -35,7 +36,7 @@ export class InitiateGoogleAdsOAuthCommand {
   async execute(input: InitiateGoogleAdsOAuthInput): Promise<InitiateGoogleAdsOAuthResult> {
     const { brandId, callbackUrl } = input;
 
-    const clientId = input.clientId ?? process.env['GOOGLE_ADS_CLIENT_ID'];
+    const clientId = input.clientId ?? loadCoreConfig().GOOGLE_ADS_CLIENT_ID;
     if (!clientId) {
       // Dev boundary: real Google Ads OAuth needs a configured app (GOOGLE_ADS_CLIENT_ID +
       // secret + a public callback). Surface a graceful, typed error the route maps to a

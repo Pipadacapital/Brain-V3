@@ -166,12 +166,12 @@ export interface OrderRefund {
 }
 
 // ── Event name constants ──────────────────────────────────────────────────────
+// Defined in the leaf module ./event-names.ts to keep them out of the
+// index <-> manifest <-> resources import cycle (ESM TDZ). Imported for local use
+// (typeof references below) AND re-exported so external consumers are unchanged.
 
-/** Backfill event name (unchanged from packages/contracts) */
-export const ORDER_BACKFILL_V1_EVENT_NAME = 'order.backfill.v1' as const;
-
-/** Live event name — NEW (D-6) */
-export const ORDER_LIVE_V1_EVENT_NAME = 'order.live.v1' as const;
+import { ORDER_BACKFILL_V1_EVENT_NAME, ORDER_LIVE_V1_EVENT_NAME } from './event-names.js';
+export { ORDER_BACKFILL_V1_EVENT_NAME, ORDER_LIVE_V1_EVENT_NAME };
 
 // ── Money util (moved from shopify-backfill/money-utils.ts) ──────────────────
 
@@ -522,3 +522,43 @@ export function computeAchievedDepthLabel(
   }
   return `since store creation (${achievedMonths} months)`;
 }
+
+// ── ADDITIVE (ingestion-framework onboarding) ─────────────────────────────────
+// The Shopify IngestionManifest + the pure mappers for the ADDITIONAL resources (products,
+// customers, refunds, fulfillments) onboarded onto @brain/connector-core's resumable backfill
+// driver. These are purely additive re-exports — the FROZEN order API above is unchanged.
+
+export {
+  SHOPIFY_PROVIDER,
+  SHOPIFY_MANIFEST,
+  SHOPIFY_ORDERS_RESOURCE,
+  SHOPIFY_PRODUCTS_RESOURCE,
+  SHOPIFY_CUSTOMERS_RESOURCE,
+  SHOPIFY_REFUNDS_RESOURCE,
+  SHOPIFY_FULFILLMENTS_RESOURCE,
+} from './manifest.js';
+
+export {
+  PRODUCT_UPSERT_V1_EVENT_NAME,
+  CUSTOMER_UPSERT_V1_EVENT_NAME,
+  REFUND_RECORDED_V1_EVENT_NAME,
+  FULFILLMENT_RECORDED_V1_EVENT_NAME,
+  mapProductToDraft,
+  mapCustomerToDraft,
+  mapRefundToDraft,
+  mapFulfillmentToDraft,
+} from './resources.js';
+
+export type {
+  MappedResourceRecord,
+  ShopifyProductShape,
+  ShopifyProductVariant,
+  ProductUpsertProperties,
+  ShopifyCustomerShape,
+  CustomerUpsertProperties,
+  ShopifyRefundShape,
+  ShopifyRefundTxn,
+  RefundRecordedProperties,
+  ShopifyFulfillmentShape,
+  FulfillmentRecordedProperties,
+} from './resources.js';

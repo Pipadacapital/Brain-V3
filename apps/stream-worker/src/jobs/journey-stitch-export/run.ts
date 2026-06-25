@@ -10,13 +10,18 @@
  */
 import pg from 'pg';
 import mysql from 'mysql2/promise';
+import { loadStreamWorkerConfig } from '@brain/config';
 import { log } from '../../log.js';
 
+const cfg = loadStreamWorkerConfig();
+// intentional raw: distinct DATABASE_URL fallback + a different (superuser 'brain') default
+// than the worker brain_app default centralized in config — preserve the exact chain here.
 const PG_URL = process.env['BRAIN_APP_DATABASE_URL'] ?? process.env['DATABASE_URL'] ?? 'postgres://brain:brain@localhost:5432/brain';
-const SR_HOST = process.env['STARROCKS_HOST'] ?? '127.0.0.1';
+const SR_HOST = cfg.STARROCKS_HOST ?? '127.0.0.1';
+// intentional raw: two-var fallback chain (STARROCKS_QUERY_PORT ?? STARROCKS_PORT) — preserve exactly.
 const SR_PORT = Number(process.env['STARROCKS_QUERY_PORT'] ?? process.env['STARROCKS_PORT'] ?? '9030');
-const SR_USER = process.env['STARROCKS_ROOT_USER'] ?? 'root';
-const SR_PASSWORD = process.env['STARROCKS_ROOT_PASSWORD'] ?? '';
+const SR_USER = cfg.STARROCKS_ROOT_USER;
+const SR_PASSWORD = cfg.STARROCKS_ROOT_PASSWORD;
 const BATCH = 1000;
 
 export interface StitchExportResult {

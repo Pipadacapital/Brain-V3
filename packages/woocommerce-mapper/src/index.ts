@@ -29,7 +29,10 @@ import { hashToUuidShaped } from '@brain/connector-core';
 import { hashIdentifier, normalizePhone } from '@brain/identity-core';
 
 // ── Canonical event name (MUST equal shopify-mapper's — the shared contract) ──
-export const ORDER_LIVE_V1_EVENT_NAME = 'order.live.v1' as const;
+// Defined in the leaf ./event-names.ts to stay out of the index <-> manifest <->
+// resources import cycle (ESM TDZ). Imported for local use AND re-exported unchanged.
+import { ORDER_LIVE_V1_EVENT_NAME } from './event-names.js';
+export { ORDER_LIVE_V1_EVENT_NAME };
 
 export type DataSource = 'real' | 'synthetic';
 
@@ -364,3 +367,27 @@ export function mapWooOrderToEvent(
     properties,
   };
 }
+
+// ── ADDITIVE (ingestion-framework onboarding) ─────────────────────────────────
+// The WooCommerce IngestionManifest + the framework-record mappers (orders adapter + products) for
+// the resumable backfill driver. Purely additive — the FROZEN order mapper above is unchanged.
+
+export {
+  WOOCOMMERCE_PROVIDER,
+  WOOCOMMERCE_MANIFEST,
+  WOOCOMMERCE_ORDERS_RESOURCE,
+  WOOCOMMERCE_PRODUCTS_RESOURCE,
+} from './manifest.js';
+
+export {
+  PRODUCT_UPSERT_V1_EVENT_NAME,
+  mapWooProductToDraft,
+  mapWooOrderToDraft,
+} from './resources.js';
+
+export type {
+  MappedResourceRecord,
+  WooProductShape,
+  WooProductVariation,
+  WooProductUpsertProperties,
+} from './resources.js';

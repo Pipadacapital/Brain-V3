@@ -8,6 +8,14 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
 import { EmptyState } from '@/components/ui/empty-state';
 import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -53,7 +61,7 @@ export function PendingInvitesSection({ currentUserRole = 'analyst' }: PendingIn
   if (isLoading) {
     return (
       <div
-        className="space-y-3"
+        className="space-y-px p-5"
         aria-busy="true"
         aria-label="Loading pending invites…"
         data-testid="pending-invites-section"
@@ -68,7 +76,7 @@ export function PendingInvitesSection({ currentUserRole = 'analyst' }: PendingIn
 
   if (error) {
     return (
-      <div data-testid="pending-invites-section" data-state="error">
+      <div className="p-5" data-testid="pending-invites-section" data-state="error">
         <ErrorCard error={error} retry={refetch} />
       </div>
     );
@@ -119,71 +127,68 @@ export function PendingInvitesSection({ currentUserRole = 'analyst' }: PendingIn
 
   return (
     <>
-      <div
-        className="rounded-md border"
-        role="table"
+      <Table
         aria-label="Pending invitations"
         data-testid="pending-invites-section"
       >
-        <div
-          className="grid grid-cols-[1fr_auto_auto_auto] gap-4 px-4 py-3 border-b bg-muted/50 text-xs font-medium text-muted-foreground uppercase tracking-wide"
-          role="row"
-        >
-          <span role="columnheader">Email</span>
-          <span role="columnheader">Role</span>
-          <span role="columnheader">Expires</span>
-          <span role="columnheader">
-            <span className="sr-only">Actions</span>
-          </span>
-        </div>
-        {invites.map((invite) => (
-          <div
-            key={invite.id}
-            className="grid grid-cols-[1fr_auto_auto_auto] gap-4 items-center px-4 py-3 border-b last:border-0"
-            role="row"
-            data-testid={`pending-invite-row-${invite.id}`}
-            aria-label={`Pending invite for ${invite.email}, role ${ROLE_LABELS[invite.role_code]}, expires ${formatDate(invite.expires_at)}`}
-          >
-            <div role="cell">
-              <p className="text-sm font-medium text-foreground">{invite.email}</p>
-            </div>
-            <div role="cell">
-              <Badge variant="outline" aria-label={`Invited as ${ROLE_LABELS[invite.role_code]}`}>
-                {ROLE_LABELS[invite.role_code]}
-              </Badge>
-            </div>
-            <div role="cell">
-              <span className="text-xs text-muted-foreground">{formatDate(invite.expires_at)}</span>
-            </div>
-            <div role="cell" className="flex items-center gap-1">
-              <Button
-                variant="ghost"
-                size="icon"
-                aria-label={`Resend invite to ${invite.email}`}
-                onClick={() => handleResend(invite)}
-                disabled={isResending && resendingId === invite.id}
-                data-testid={`btn-resend-invite-${invite.id}`}
-              >
-                {isResending && resendingId === invite.id ? (
-                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                ) : (
-                  <RefreshCw className="h-4 w-4" aria-hidden="true" />
-                )}
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon"
-                aria-label={`Revoke invite for ${invite.email}`}
-                className="text-destructive hover:text-destructive"
-                onClick={() => setRevokeDialogInvite(invite)}
-                data-testid={`btn-revoke-invite-${invite.id}`}
-              >
-                <X className="h-4 w-4" aria-hidden="true" />
-              </Button>
-            </div>
-          </div>
-        ))}
-      </div>
+        <TableHeader>
+          <TableRow className="hover:bg-transparent">
+            <TableHead>Email</TableHead>
+            <TableHead>Role</TableHead>
+            <TableHead>Expires</TableHead>
+            <TableHead className="text-right">
+              <span className="sr-only">Actions</span>
+            </TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {invites.map((invite) => (
+            <TableRow
+              key={invite.id}
+              data-testid={`pending-invite-row-${invite.id}`}
+              aria-label={`Pending invite for ${invite.email}, role ${ROLE_LABELS[invite.role_code]}, expires ${formatDate(invite.expires_at)}`}
+            >
+              <TableCell className="text-sm font-medium text-foreground">{invite.email}</TableCell>
+              <TableCell>
+                <Badge variant="outline" aria-label={`Invited as ${ROLE_LABELS[invite.role_code]}`}>
+                  {ROLE_LABELS[invite.role_code]}
+                </Badge>
+              </TableCell>
+              <TableCell className="text-xs text-muted-foreground">
+                {formatDate(invite.expires_at)}
+              </TableCell>
+              <TableCell>
+                <div className="flex items-center justify-end gap-1">
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label={`Resend invite to ${invite.email}`}
+                    onClick={() => handleResend(invite)}
+                    disabled={isResending && resendingId === invite.id}
+                    data-testid={`btn-resend-invite-${invite.id}`}
+                  >
+                    {isResending && resendingId === invite.id ? (
+                      <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                    ) : (
+                      <RefreshCw className="h-4 w-4" aria-hidden="true" />
+                    )}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label={`Revoke invite for ${invite.email}`}
+                    className="text-destructive hover:text-destructive"
+                    onClick={() => setRevokeDialogInvite(invite)}
+                    data-testid={`btn-revoke-invite-${invite.id}`}
+                  >
+                    <X className="h-4 w-4" aria-hidden="true" />
+                  </Button>
+                </div>
+              </TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
 
       {/* Revoke invite confirmation dialog */}
       <Dialog

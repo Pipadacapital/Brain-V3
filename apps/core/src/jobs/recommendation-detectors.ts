@@ -14,6 +14,7 @@
 import { randomUUID } from 'node:crypto';
 import mysql from 'mysql2/promise';
 import { createPool, type DbPool, type QueryContext } from '@brain/db';
+import { loadCoreConfig } from '@brain/config';
 import type { SilverPool } from '@brain/metric-engine';
 import { createLogger } from '@brain/observability';
 import { generateRecommendations, measureRecommendationOutcomes } from '../modules/recommendation/index.js';
@@ -27,11 +28,12 @@ const DB_URL =
 
 /** StarRocks Silver/Gold pool — detector REVENUE signals read the lakehouse ledger (Epic 1 / B). */
 function createSrPool(): SilverPool {
+  const cfg = loadCoreConfig();
   return mysql.createPool({
-    host: process.env['STARROCKS_HOST'] ?? 'localhost',
-    port: parseInt(process.env['STARROCKS_PORT'] ?? '9030', 10),
-    user: process.env['STARROCKS_ANALYTICS_USER'] ?? 'brain_analytics',
-    password: process.env['STARROCKS_ANALYTICS_PASSWORD'] ?? 'brain_analytics_dev',
+    host: cfg.STARROCKS_HOST,
+    port: cfg.STARROCKS_PORT,
+    user: cfg.STARROCKS_ANALYTICS_USER,
+    password: cfg.STARROCKS_ANALYTICS_PASSWORD,
     connectionLimit: 3,
   }) as unknown as SilverPool;
 }
@@ -90,7 +92,11 @@ export async function runRecommendationDetectors(deps?: { pool?: DbPool; srPool?
     return { brands, raised, expired, measured, errors };
   } finally {
     if (ownsPool) await pool.end();
-    if (ownsSrPool) await (srPool as unknown as mysql.Pool).end().catch(() => undefined);
+    if (ownsSrPool)
+      await (srPool as unknown as mysql.Pool)
+        .end()
+        // Best-effort pool teardown — log at debug rather than swallow silently. // intentional
+        .catch((err) => log.debug('recommendation-detectors: StarRocks pool end failed', { err }));
   }
 }
 

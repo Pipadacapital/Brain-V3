@@ -15,7 +15,7 @@ import pg from 'pg';
 import mysql from 'mysql2/promise';
 import type { SilverPool } from '@brain/metric-engine';
 import { createLogger } from '@brain/observability';
-import { requireEnvInProd } from '@brain/config';
+import { requireEnvInProd, loadCoreConfig } from '@brain/config';
 import { reconcileAttribution, reconcileDataDrivenAttribution } from '../modules/attribution/index.js';
 
 const log = createLogger({ serviceName: 'job:attribution-reconcile' });
@@ -48,8 +48,8 @@ export async function runAttributionReconcile(deps?: {
     deps?.srPool ??
     (mysql.createPool({
       host: srHost,
-      port: Number(process.env['STARROCKS_PORT'] ?? 9030),
-      user: process.env['STARROCKS_ANALYTICS_USER'] ?? 'brain_analytics',
+      port: loadCoreConfig().STARROCKS_PORT,
+      user: loadCoreConfig().STARROCKS_ANALYTICS_USER,
       password: requireEnvInProd('STARROCKS_ANALYTICS_PASSWORD', 'brain_analytics_dev'),
       connectionLimit: 3,
     }) as unknown as SilverPool);

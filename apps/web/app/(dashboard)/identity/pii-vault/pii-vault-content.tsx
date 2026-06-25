@@ -14,6 +14,7 @@
 import * as React from 'react';
 import { Lock, ShieldCheck, Mail, Phone, Users } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { PageHeader } from '@/components/ui/page-header';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
 import { useVaultCoverage } from '@/lib/hooks/use-identity';
@@ -45,17 +46,10 @@ export function PiiVaultContent() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
-          <Lock className="h-6 w-6" aria-hidden="true" />
-          PII Vault
-        </h1>
-        <p className="text-sm text-muted-foreground">
-          Customer email and phone are stored encrypted at rest (AES-256-GCM, per-brand key).
-          Raw values never leave the vault — only the conversion-passback path decrypts them
-          transiently to compute Meta match hashes.
-        </p>
-      </div>
+      <PageHeader
+        title="PII Vault"
+        description="Customer email and phone are stored encrypted at rest (AES-256-GCM, per-brand key). Raw values never leave the vault — only the conversion-passback path decrypts them transiently to compute Meta match hashes."
+      />
 
       <div aria-live="polite" aria-busy={isLoading || isFetching}>
         {isLoading ? (

@@ -5,9 +5,18 @@ import { Loader2, Trash2, Shield, Users, PauseCircle, PlayCircle } from 'lucide-
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { StatusBadge } from '@/components/ui/status-badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
 import { EmptyState } from '@/components/ui/empty-state';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
 import { BffApiError } from '@/lib/api/client';
 import {
   Dialog,
@@ -91,7 +100,7 @@ export function MembersTable({ currentUserRole = 'analyst', currentMemberId }: M
 
   if (isLoading) {
     return (
-      <div className="space-y-3" aria-busy="true" aria-label="Loading members…">
+      <div className="space-y-px p-5" aria-busy="true" aria-label="Loading members…">
         {[1, 2, 3].map((i) => (
           <Skeleton key={i} className="h-14 w-full" />
         ))}
@@ -114,7 +123,11 @@ export function MembersTable({ currentUserRole = 'analyst', currentMemberId }: M
         />
       );
     }
-    return <ErrorCard error={error} retry={refetch} />;
+    return (
+      <div className="p-5">
+        <ErrorCard error={error} retry={refetch} />
+      </div>
+    );
   }
 
   const members = data?.data ?? [];
@@ -195,131 +208,129 @@ export function MembersTable({ currentUserRole = 'analyst', currentMemberId }: M
   return (
     <>
       {/* Members list */}
-      <div className="rounded-md border" role="table" aria-label="Team members">
-        <div
-          className="grid grid-cols-[1fr_auto_auto_auto] gap-4 px-4 py-3 border-b bg-muted/50 text-xs font-medium text-muted-foreground uppercase tracking-wide"
-          role="row"
-        >
-          <span role="columnheader">Member</span>
-          <span role="columnheader">Status</span>
-          <span role="columnheader">Role</span>
-          <span role="columnheader">
-            <span className="sr-only">Actions</span>
-          </span>
-        </div>
-        {members.map((member) => {
-          const isSelf = member.id === currentMemberId;
-          const isOwner = member.role_code === 'owner';
-          const isSuspended = member.user_status === 'suspended';
-          const canActOnMember = !isSelf && !isOwner && actorOutranks(currentUserRole, member.role_code);
-          const canChangeRole = canActOnMember && rolesActorCanAssign.length > 0;
+      <Table aria-label="Team members">
+        <TableHeader>
+          <TableRow className="hover:bg-transparent">
+            <TableHead>Member</TableHead>
+            <TableHead>Status</TableHead>
+            <TableHead>Role</TableHead>
+            <TableHead className="text-right">
+              <span className="sr-only">Actions</span>
+            </TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {members.map((member) => {
+            const isSelf = member.id === currentMemberId;
+            const isOwner = member.role_code === 'owner';
+            const isSuspended = member.user_status === 'suspended';
+            const canActOnMember = !isSelf && !isOwner && actorOutranks(currentUserRole, member.role_code);
+            const canChangeRole = canActOnMember && rolesActorCanAssign.length > 0;
 
-          return (
-            <div
-              key={member.id}
-              className={`grid grid-cols-[1fr_auto_auto_auto] gap-4 items-center px-4 py-3 border-b last:border-0 ${isSuspended ? 'bg-muted/30 opacity-75' : ''}`}
-              role="row"
-              data-testid={`member-row-${member.id}`}
-              aria-label={`${member.user_full_name}, ${ROLE_LABELS[member.role_code]}, ${isSuspended ? 'suspended' : 'active'}`}
-            >
-              <div role="cell">
-                <p className="text-sm font-medium text-foreground">{member.user_full_name}</p>
-                <p className="text-xs text-muted-foreground">{member.user_email}</p>
-              </div>
-              <div role="cell">
-                {isSuspended ? (
+            return (
+              <TableRow
+                key={member.id}
+                className={isSuspended ? 'opacity-75' : undefined}
+                data-testid={`member-row-${member.id}`}
+                aria-label={`${member.user_full_name}, ${ROLE_LABELS[member.role_code]}, ${isSuspended ? 'suspended' : 'active'}`}
+              >
+                <TableCell>
+                  <p className="text-sm font-medium text-foreground">{member.user_full_name}</p>
+                  <p className="text-xs text-muted-foreground">{member.user_email}</p>
+                </TableCell>
+                <TableCell>
+                  {isSuspended ? (
+                    <StatusBadge
+                      tone="warning"
+                      aria-label="Status: Suspended"
+                      data-testid={`badge-suspended-${member.id}`}
+                    >
+                      Suspended
+                    </StatusBadge>
+                  ) : (
+                    <StatusBadge
+                      tone="success"
+                      aria-label="Status: Active"
+                      data-testid={`badge-active-${member.id}`}
+                    >
+                      Active
+                    </StatusBadge>
+                  )}
+                </TableCell>
+                <TableCell>
                   <Badge
-                    variant="outline"
-                    className="text-amber-700 border-amber-300 bg-amber-50"
-                    aria-label="Status: Suspended"
-                    data-testid={`badge-suspended-${member.id}`}
+                    variant={ROLE_BADGE_VARIANTS[member.role_code]}
+                    aria-label={`Role: ${ROLE_LABELS[member.role_code]}`}
                   >
-                    Suspended
+                    {ROLE_LABELS[member.role_code]}
                   </Badge>
-                ) : (
-                  <Badge
-                    variant="outline"
-                    className="text-green-700 border-green-300 bg-green-50"
-                    aria-label="Status: Active"
-                    data-testid={`badge-active-${member.id}`}
-                  >
-                    Active
-                  </Badge>
-                )}
-              </div>
-              <div role="cell">
-                <Badge
-                  variant={ROLE_BADGE_VARIANTS[member.role_code]}
-                  aria-label={`Role: ${ROLE_LABELS[member.role_code]}`}
-                >
-                  {ROLE_LABELS[member.role_code]}
-                </Badge>
-              </div>
-              <div role="cell" className="flex items-center gap-1">
-                {canChangeRole && (
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    aria-label={`Change role for ${member.user_full_name}`}
-                    onClick={() => {
-                      // Pre-select a role the actor can actually assign (default to first available).
-                      const preselect = rolesActorCanAssign.includes(member.role_code)
-                        ? member.role_code
-                        : (rolesActorCanAssign[0] ?? 'analyst');
-                      setSelectedRole(preselect);
-                      setRoleDialogMember(member);
-                    }}
-                    data-testid={`btn-change-role-${member.id}`}
-                  >
-                    <Shield className="h-4 w-4" aria-hidden="true" />
-                  </Button>
-                )}
-                {canActOnMember && !isSuspended && (
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    aria-label={`Suspend ${member.user_full_name}`}
-                    className="text-amber-600 hover:text-amber-700"
-                    onClick={() => setSuspendDialogMember(member)}
-                    data-testid={`btn-suspend-${member.id}`}
-                  >
-                    <PauseCircle className="h-4 w-4" aria-hidden="true" />
-                  </Button>
-                )}
-                {canActOnMember && isSuspended && (
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    aria-label={`Reactivate ${member.user_full_name}`}
-                    className="text-green-600 hover:text-green-700"
-                    onClick={() => handleReactivate(member)}
-                    disabled={isReactivating}
-                    data-testid={`btn-reactivate-${member.id}`}
-                  >
-                    {isReactivating ? (
-                      <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                    ) : (
-                      <PlayCircle className="h-4 w-4" aria-hidden="true" />
+                </TableCell>
+                <TableCell>
+                  <div className="flex items-center justify-end gap-1">
+                    {canChangeRole && (
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-label={`Change role for ${member.user_full_name}`}
+                        onClick={() => {
+                          // Pre-select a role the actor can actually assign (default to first available).
+                          const preselect = rolesActorCanAssign.includes(member.role_code)
+                            ? member.role_code
+                            : (rolesActorCanAssign[0] ?? 'analyst');
+                          setSelectedRole(preselect);
+                          setRoleDialogMember(member);
+                        }}
+                        data-testid={`btn-change-role-${member.id}`}
+                      >
+                        <Shield className="h-4 w-4" aria-hidden="true" />
+                      </Button>
                     )}
-                  </Button>
-                )}
-                {canActOnMember && (
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    aria-label={`Remove ${member.user_full_name}`}
-                    className="text-destructive hover:text-destructive"
-                    onClick={() => setRemoveDialogMember(member)}
-                    data-testid={`btn-remove-member-${member.id}`}
-                  >
-                    <Trash2 className="h-4 w-4" aria-hidden="true" />
-                  </Button>
-                )}
-              </div>
-            </div>
-          );
-        })}
-      </div>
+                    {canActOnMember && !isSuspended && (
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-label={`Suspend ${member.user_full_name}`}
+                        onClick={() => setSuspendDialogMember(member)}
+                        data-testid={`btn-suspend-${member.id}`}
+                      >
+                        <PauseCircle className="h-4 w-4" aria-hidden="true" />
+                      </Button>
+                    )}
+                    {canActOnMember && isSuspended && (
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-label={`Reactivate ${member.user_full_name}`}
+                        onClick={() => handleReactivate(member)}
+                        disabled={isReactivating}
+                        data-testid={`btn-reactivate-${member.id}`}
+                      >
+                        {isReactivating ? (
+                          <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                        ) : (
+                          <PlayCircle className="h-4 w-4" aria-hidden="true" />
+                        )}
+                      </Button>
+                    )}
+                    {canActOnMember && (
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-label={`Remove ${member.user_full_name}`}
+                        className="text-destructive hover:text-destructive"
+                        onClick={() => setRemoveDialogMember(member)}
+                        data-testid={`btn-remove-member-${member.id}`}
+                      >
+                        <Trash2 className="h-4 w-4" aria-hidden="true" />
+                      </Button>
+                    )}
+                  </div>
+                </TableCell>
+              </TableRow>
+            );
+          })}
+        </TableBody>
+      </Table>
 
       {/* Change role dialog — hierarchy-gated (D-6/D-7 UI side) */}
       <Dialog

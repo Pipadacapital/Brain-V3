@@ -26,14 +26,15 @@ import { KpiTile } from '@/components/analytics/kpi-tile';
 import { TrendChart } from '@/components/analytics/trend-chart';
 import { RecognitionDonut } from '@/components/analytics/recognition-donut';
 import { RecentActivity } from '@/components/analytics/recent-activity';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { PageHeader } from '@/components/ui/page-header';
+import { SectionCard } from '@/components/ui/section-card';
+import { Alert } from '@/components/ui/alert';
 import { useKpiSummary, useExecutiveMetrics, useRevenueTimeseries, useRecognitionBreakdown, useRecentActivity } from '@/lib/hooks/use-analytics';
 import { useConnectionStatus } from '@/lib/hooks/use-dashboard';
 import { formatMoneyDisplay } from '@/lib/format/money-display';
 import type { CurrencyCode } from '@brain/money';
 import { Button } from '@/components/ui/button';
 import Link from 'next/link';
-import { TrendingUp, BarChart3, Activity, AlertTriangle } from 'lucide-react';
 
 /**
  * DisconnectedBanner — honest notice when the active brand's connector is disconnected.
@@ -44,26 +45,18 @@ function DisconnectedBanner() {
   const { data } = useConnectionStatus();
   if (!data || data.connector_status !== 'disconnected') return null;
   return (
-    <div
-      role="status"
+    <Alert
+      variant="warning"
+      title="Shopify disconnected — showing last-synced data"
       data-testid="dashboard-disconnected-banner"
-      className="flex items-start gap-3 rounded-md border border-status-amber-700/20 bg-status-amber-50 px-4 py-3"
     >
-      <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0 text-status-amber-700" aria-hidden="true" />
-      <div className="min-w-0">
-        <p className="text-sm font-medium text-status-amber-700">
-          Shopify disconnected — showing last-synced data
-        </p>
-        <p className="text-xs text-status-amber-700/80 mt-0.5">
-          Your historical data is preserved. Reconnect to resume live updates.
-        </p>
-      </div>
-      <Link href="/settings/connectors" className="ml-auto shrink-0">
-        <Button size="sm" variant="outline">
-          Reconnect
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <span>Your historical data is preserved. Reconnect to resume live updates.</span>
+        <Button asChild size="sm" variant="outline" className="shrink-0">
+          <Link href="/settings/connectors">Reconnect</Link>
         </Button>
-      </Link>
-    </div>
+      </div>
+    </Alert>
   );
 }
 
@@ -199,30 +192,17 @@ function TrendSection() {
 
   return (
     <section aria-label="Revenue trends and recognition">
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-        <Card className="lg:col-span-2">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
-              <TrendingUp className="h-4 w-4" aria-hidden="true" />
-              Revenue Trend
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <TrendChart data={trendData} isLoading={trendLoading} grain="day" />
-          </CardContent>
-        </Card>
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+        <SectionCard title="Revenue trend" className="lg:col-span-2">
+          <TrendChart data={trendData} isLoading={trendLoading} grain="day" />
+        </SectionCard>
 
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
-              <BarChart3 className="h-4 w-4" aria-hidden="true" />
-              Recognition States
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <RecognitionDonut data={donutData} isLoading={donutLoading} />
-          </CardContent>
-        </Card>
+        <SectionCard
+          title="Recognition states"
+          description="How revenue is recognised across its lifecycle."
+        >
+          <RecognitionDonut data={donutData} isLoading={donutLoading} />
+        </SectionCard>
       </div>
     </section>
   );
@@ -236,18 +216,10 @@ function ActivitySection() {
 
   return (
     <section aria-label="Recent activity and connection status">
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-        <Card className="lg:col-span-2">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
-              <Activity className="h-4 w-4" aria-hidden="true" />
-              Recent Activity
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <RecentActivity data={activityData} isLoading={activityLoading} />
-          </CardContent>
-        </Card>
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+        <SectionCard title="Recent activity" className="lg:col-span-2">
+          <RecentActivity data={activityData} isLoading={activityLoading} />
+        </SectionCard>
 
         <div>
           <ConnectionStatusCard />
@@ -260,33 +232,35 @@ function ActivitySection() {
 export function DashboardContent() {
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-bold text-foreground">Dashboard</h1>
-          <p className="text-muted-foreground mt-1">
-            See what's true about your commerce — as your data comes in.
-          </p>
-        </div>
-        {/* feat-realtime-ingestion-pipeline (Track C): honest near-real-time liveness.
-            Reflects the primary dashboard query's real last-fetch — never a faked "Live". */}
-        <LiveIndicator />
-      </div>
+      <PageHeader
+        title="Dashboard"
+        description="See what's true about your commerce — as your data comes in."
+        actions={
+          /* feat-realtime-ingestion-pipeline (Track C): honest near-real-time liveness.
+             Reflects the primary dashboard query's real last-fetch — never a faked "Live". */
+          <LiveIndicator />
+        }
+      />
 
       <DisconnectedBanner />
-      {/* Foundation-first (P1): readiness verdict leads the dashboard — health before charts. */}
-      <FoundationHealthCard />
-      {/* "Decide" pillar (doc 09): the top actions lead the metrics — a decision, not a chart. */}
-      <TopActionsCard />
+
+      {/* Foundation-first (P1): readiness verdict + next decision lead the dashboard —
+          health and a decision before charts. */}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+        <div className="lg:col-span-2">
+          <FoundationHealthCard />
+        </div>
+        {/* "Decide" pillar (doc 09): the top actions lead the metrics — a decision, not a chart. */}
+        <TopActionsCard />
+      </div>
+
       <KpiRow />
       <ExecutiveMetricsRow />
       <TrendSection />
       <ActivitySection />
 
-      <div className="max-w-md">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <BrandSummaryCard />
-      </div>
-
-      <div className="max-w-md">
         <OnboardingProgressCard />
       </div>
     </div>

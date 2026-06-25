@@ -83,6 +83,9 @@ export interface BriefingDto {
  * Freshness SLO (hours): the gold marts are rebuilt by the hourly dbt crons (recognition-refresh /
  * attribution-gold-refresh). 6h gives generous slack for a missed/slow run before we flag stale.
  */
+// intentional: module-load constant. INSIGHT_FRESHNESS_SLO_HOURS exists in @brain/config, but
+// loadCoreConfig() at module-load validates the full schema + process.exit(1)s on missing env →
+// would crash standalone unit imports. Left raw to preserve zero import-time behaviour change.
 const FRESHNESS_SLO_HOURS = Number(process.env['INSIGHT_FRESHNESS_SLO_HOURS'] ?? 6);
 
 export type InsightsBriefingResult =

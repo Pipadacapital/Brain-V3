@@ -10,7 +10,8 @@
 import { useState } from 'react';
 import { Coins, TrendingUp, ShieldCheck, ShieldAlert } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
+import { PageHeader } from '@/components/ui/page-header';
+import { StatusBadge } from '@/components/ui/status-badge';
 import { ErrorCard } from '@/components/ui/error-card';
 import { EmptyState } from '@/components/ui/empty-state';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -27,9 +28,23 @@ const COST_TYPES = [
 ] as const;
 
 function ConfidenceBadge({ c }: { c: 'Trusted' | 'Estimated' | 'Insufficient' }) {
-  if (c === 'Trusted') return <Badge className="gap-1 bg-emerald-600"><ShieldCheck className="h-3 w-3" /> Trusted</Badge>;
-  if (c === 'Estimated') return <Badge variant="secondary" className="gap-1"><ShieldAlert className="h-3 w-3" /> Estimated</Badge>;
-  return <Badge variant="outline" className="gap-1 text-amber-600"><ShieldAlert className="h-3 w-3" /> Insufficient</Badge>;
+  if (c === 'Trusted')
+    return (
+      <StatusBadge tone="success" hideDot>
+        <ShieldCheck className="h-3 w-3" /> Trusted
+      </StatusBadge>
+    );
+  if (c === 'Estimated')
+    return (
+      <StatusBadge tone="info" hideDot>
+        <ShieldAlert className="h-3 w-3" /> Estimated
+      </StatusBadge>
+    );
+  return (
+    <StatusBadge tone="warning" hideDot>
+      <ShieldAlert className="h-3 w-3" /> Insufficient
+    </StatusBadge>
+  );
 }
 
 export function MarginContent() {
@@ -45,12 +60,10 @@ export function MarginContent() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold">Margin &amp; Costs</h1>
-        <p className="mt-1 text-muted-foreground">
-          Contribution margin after costs. Enter your cost structure to unlock trusted CM2.
-        </p>
-      </div>
+      <PageHeader
+        title="Margin & Costs"
+        description="Contribution margin after costs. Enter your cost structure to unlock trusted CM2."
+      />
 
       {margin.error && <ErrorCard error={margin.error} />}
 
@@ -71,18 +84,18 @@ export function MarginContent() {
               <dt className="text-muted-foreground">Net revenue</dt>
               <dd className="text-right">{formatMoneyDisplay(m.net_revenue_minor, ccy)}</dd>
               <dt className="text-muted-foreground">− COGS</dt>
-              <dd className="text-right text-amber-600">{formatMoneyDisplay(m.cogs_minor, ccy)}</dd>
+              <dd className="text-right text-warning">{formatMoneyDisplay(m.cogs_minor, ccy)}</dd>
               <dt className="text-muted-foreground">− Variable costs</dt>
-              <dd className="text-right text-amber-600">{formatMoneyDisplay(m.variable_cost_minor, ccy)}</dd>
+              <dd className="text-right text-warning">{formatMoneyDisplay(m.variable_cost_minor, ccy)}</dd>
               <dt className="border-t pt-2 font-medium">CM1</dt>
               <dd className="border-t pt-2 text-right font-semibold">{formatMoneyDisplay(m.cm1_minor, ccy)}</dd>
               <dt className="text-muted-foreground">− Marketing</dt>
-              <dd className="text-right text-amber-600">{formatMoneyDisplay(m.marketing_minor, ccy)}</dd>
+              <dd className="text-right text-warning">{formatMoneyDisplay(m.marketing_minor, ccy)}</dd>
               <dt className="border-t pt-2 font-medium">CM2</dt>
-              <dd className="border-t pt-2 text-right text-lg font-bold text-emerald-700">{formatMoneyDisplay(m.cm2_minor, ccy)}</dd>
+              <dd className="border-t pt-2 text-right text-lg font-bold text-success">{formatMoneyDisplay(m.cm2_minor, ccy)}</dd>
             </dl>
             {m.cost_confidence === 'Insufficient' && (
-              <p className="mt-3 text-xs text-amber-600">Enter at least a COGS rate below to make CM2 trustworthy (and eligible for the billing cap).</p>
+              <p className="mt-3 text-xs text-warning">Enter at least a COGS rate below to make CM2 trustworthy (and eligible for the billing cap).</p>
             )}
           </CardContent>
         </Card>

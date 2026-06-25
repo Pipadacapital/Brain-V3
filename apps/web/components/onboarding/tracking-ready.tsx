@@ -23,9 +23,12 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { Loader2, Copy, CheckCircle, AlertCircle, ArrowRight, Globe } from 'lucide-react';
+import { Copy, Check, ArrowRight, Globe } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { SectionCard } from '@/components/ui/section-card';
+import { EmptyState } from '@/components/ui/empty-state';
+import { Alert } from '@/components/ui/alert';
+import { StatusBadge } from '@/components/ui/status-badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
 import { usePixelInstallation } from '@/lib/hooks/use-pixel';
@@ -43,12 +46,7 @@ export function TrackingReady({ websiteProvided }: TrackingReadyProps) {
   const [copied, setCopied] = useState(false);
   const [continuing, setContinuing] = useState(false);
 
-  const {
-    data: installation,
-    isLoading,
-    error,
-    refetch,
-  } = usePixelInstallation();
+  const { data: installation, isLoading, error, refetch } = usePixelInstallation();
 
   function handleCopy() {
     if (!installation?.snippet) return;
@@ -69,34 +67,33 @@ export function TrackingReady({ websiteProvided }: TrackingReadyProps) {
     }
   }
 
+  const continueButton = (
+    <Button onClick={handleContinue} loading={continuing} data-testid="btn-tracking-continue">
+      Continue setup
+      {!continuing && <ArrowRight className="ml-2 size-4" aria-hidden="true" />}
+    </Button>
+  );
+
   // ── Add-website state (website skipped) — honest, no faked snippet ───────────
   // Show this immediately when the user skipped; don't wait on the read (there is
   // nothing to read — no installation was provisioned).
   if (!websiteProvided) {
     return (
-      <Card data-testid="tracking-ready-skipped">
-        <CardHeader>
-          <div className="mb-2 flex h-10 w-10 items-center justify-center rounded-full bg-muted">
-            <Globe className="h-5 w-5 text-muted-foreground" aria-hidden="true" />
-          </div>
-          <CardTitle>Add your website to start tracking</CardTitle>
-          <CardDescription>
-            You skipped adding a website, so there&apos;s no tracking pixel yet. Add your store&apos;s
-            website any time in the Tracking Center to generate your install snippet and start
-            collecting first-party data.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-3 sm:flex-row">
-          <Button asChild variant="outline" data-testid="link-add-website">
-            <Link href="/settings/pixel">Add website in Tracking Center</Link>
-          </Button>
-          <Button onClick={handleContinue} disabled={continuing} data-testid="btn-tracking-continue">
-            {continuing && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />}
-            Continue setup
-            <ArrowRight className="ml-2 h-4 w-4" aria-hidden="true" />
-          </Button>
-        </CardContent>
-      </Card>
+      <SectionCard data-testid="tracking-ready-skipped">
+        <EmptyState
+          icon={<Globe aria-hidden="true" />}
+          title="Add your website to start tracking"
+          description="You skipped adding a website, so there’s no tracking pixel yet. Add your store’s website any time in the Tracking Center to generate your install snippet and start collecting first-party data."
+          action={
+            <div className="flex flex-col gap-3 sm:flex-row">
+              <Button asChild variant="outline" data-testid="link-add-website">
+                <Link href="/settings/pixel">Add website in Tracking Center</Link>
+              </Button>
+              {continueButton}
+            </div>
+          }
+        />
+      </SectionCard>
     );
   }
 
@@ -119,57 +116,47 @@ export function TrackingReady({ websiteProvided }: TrackingReadyProps) {
   // provision/verify there — never fabricate a snippet.
   if (!installation || !installation.installed || !installation.snippet) {
     return (
-      <Card data-testid="tracking-ready-pending">
-        <CardHeader>
-          <div className="mb-2 flex h-10 w-10 items-center justify-center rounded-full bg-status-amber-50">
-            <AlertCircle className="h-5 w-5 text-status-amber-700" aria-hidden="true" />
-          </div>
-          <CardTitle>Finishing your tracking setup</CardTitle>
-          <CardDescription>
-            Your website is saved. Your install snippet will be ready in the Tracking Center —
-            head there to copy it and verify your installation.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-3 sm:flex-row">
+      <SectionCard
+        data-testid="tracking-ready-pending"
+        title="Finishing your tracking setup"
+        meta={<StatusBadge tone="warning" pulse>Provisioning</StatusBadge>}
+        description="Your website is saved. Your install snippet will be ready in the Tracking Center — head there to copy it and verify your installation."
+      >
+        <div className="flex flex-col gap-3 sm:flex-row">
           <Button asChild variant="outline" data-testid="link-tracking-center">
             <Link href="/settings/pixel">Open Tracking Center</Link>
           </Button>
-          <Button onClick={handleContinue} disabled={continuing} data-testid="btn-tracking-continue">
-            {continuing && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />}
-            Continue setup
-            <ArrowRight className="ml-2 h-4 w-4" aria-hidden="true" />
-          </Button>
-        </CardContent>
-      </Card>
+          {continueButton}
+        </div>
+      </SectionCard>
     );
   }
 
   return (
     <div className="space-y-6" data-testid="tracking-ready-snippet">
-      <Card>
-        <CardHeader>
-          {/* Status: icon + text label — never colour-only (WCAG 1.4.1) */}
-          <span
-            role="status"
-            className="mb-2 inline-flex w-fit items-center gap-2 rounded-full bg-status-green-50 px-3 py-1.5 text-sm font-medium text-status-green-700"
-            data-testid="tracking-ready-badge"
-          >
-            <CheckCircle className="h-4 w-4 shrink-0" aria-hidden="true" />
+      <SectionCard
+        title="Install the Brain Pixel"
+        meta={
+          <StatusBadge tone="success" data-testid="tracking-ready-badge">
             Your tracking is ready
-          </span>
-          <CardTitle>Install the Brain Pixel</CardTitle>
-          <CardDescription>
+          </StatusBadge>
+        }
+        description={
+          <>
             We generated a tracking pixel for{' '}
-            <strong data-testid="tracking-ready-host">{installation.target_host}</strong>. Paste
-            this snippet into the{' '}
+            <strong className="text-foreground" data-testid="tracking-ready-host">
+              {installation.target_host}
+            </strong>
+            . Paste this snippet into the{' '}
             <code className="rounded bg-muted px-1 py-0.5 text-xs">&lt;head&gt;</code> of every page
             on your site.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
+          </>
+        }
+      >
+        <div className="space-y-4">
           <div className="relative">
             <pre
-              className="overflow-x-auto whitespace-pre-wrap rounded-md bg-muted p-4 font-mono text-xs"
+              className="overflow-x-auto whitespace-pre-wrap rounded-md border border-border bg-muted/60 p-4 font-mono text-xs"
               aria-label="Brain Pixel installation code snippet"
               data-testid="tracking-ready-snippet-code"
             >
@@ -185,12 +172,12 @@ export function TrackingReady({ websiteProvided }: TrackingReadyProps) {
             >
               {copied ? (
                 <>
-                  <CheckCircle className="mr-1 h-3.5 w-3.5" aria-hidden="true" />
+                  <Check className="mr-1 size-3.5" aria-hidden="true" />
                   Copied
                 </>
               ) : (
                 <>
-                  <Copy className="mr-1 h-3.5 w-3.5" aria-hidden="true" />
+                  <Copy className="mr-1 size-3.5" aria-hidden="true" />
                   Copy
                 </>
               )}
@@ -200,21 +187,17 @@ export function TrackingReady({ websiteProvided }: TrackingReadyProps) {
             Already installed it? You can verify it any time in the{' '}
             <Link
               href="/settings/pixel"
-              className="text-primary underline-offset-4 hover:underline"
+              className="font-medium text-primary underline-offset-4 hover:underline"
               data-testid="link-verify-later"
             >
               Tracking Center
             </Link>
             .
           </p>
-        </CardContent>
-      </Card>
+        </div>
+      </SectionCard>
 
-      <Button onClick={handleContinue} disabled={continuing} data-testid="btn-tracking-continue">
-        {continuing && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />}
-        Continue setup
-        <ArrowRight className="ml-2 h-4 w-4" aria-hidden="true" />
-      </Button>
+      {continueButton}
     </div>
   );
 }

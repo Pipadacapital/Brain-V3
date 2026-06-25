@@ -1,129 +1,26 @@
 /**
  * @brain/config — Zod-validated environment configuration.
  *
+ * The single source of record for configurable values across the Brain monorepo.
+ *
  * Pattern: parse env vars at startup, crash on invalid config (process.exit(1)).
  * This ensures misconfigured services fail immediately rather than silently.
  *
- * Usage:
- *   import { getConfig } from '@brain/config';
- *   const cfg = getConfig(); // throws / exits on missing required vars
+ * Usage (per-service memoized loaders parse once + freeze):
+ *   import { loadCoreConfig } from '@brain/config';
+ *   const cfg = loadCoreConfig(); // throws / exits on missing required vars
  *
- * Sprint-0: stub config schema covering the required env vars for each service.
- * M1 expands each service's config as it is implemented.
+ * File ownership (disjoint — each service owns its own file):
+ *   - common.ts        → CommonEnvSchema, requireEnvInProd, parseEnv, defineConfig
+ *   - core.ts          → CoreEnvSchema, loadCoreConfig
+ *   - collector.ts     → CollectorEnvSchema, loadCollectorConfig
+ *   - stream-worker.ts → StreamWorkerEnvSchema, loadStreamWorkerConfig
+ *   - web.ts           → WebEnvSchema, loadWebConfig
+ *
+ * This barrel preserves every previously-exported name so existing imports keep working.
  */
-import { z } from 'zod';
-
-// ── Common env vars ───────────────────────────────────────────────────────────
-
-const CommonEnvSchema = z.object({
-  /** Service name — used in OTel resource attrs and log fields. */
-  SERVICE_NAME: z.string().min(1),
-  /** Node environment. */
-  NODE_ENV: z.enum(['development', 'test', 'staging', 'production']).default('development'),
-  /** Log level. */
-  LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).default('info'),
-  /** OTLP endpoint for OTel exporter (e.g. http://otel-collector:4317). */
-  OTEL_EXPORTER_OTLP_ENDPOINT: z.string().url().optional(),
-});
-
-// ── Collector env vars ────────────────────────────────────────────────────────
-
-export const CollectorEnvSchema = CommonEnvSchema.extend({
-  SERVICE_NAME: z.literal('collector'),
-  PORT: z.coerce.number().int().min(1024).max(65535).default(3001),
-  DATABASE_URL: z.string().url(),
-  REDIS_URL: z.string().url().default('redis://localhost:6379'),
-  REDPANDA_BROKERS: z.string().min(1),
-  REDPANDA_SASL_USERNAME: z.string().optional(),
-  REDPANDA_SASL_PASSWORD: z.string().optional(),
-  APICURIO_REGISTRY_URL: z.string().url().optional(),
-  /** Rate limit: max events per brand per minute. */
-  RATE_LIMIT_EVENTS_PER_MINUTE: z.coerce.number().int().min(1).default(10_000),
-  /**
-   * Spool back-pressure (C4 / R-09). High-water mark on the pending spool backlog: at or above
-   * this depth, /collect sheds load with 503 SPOOL_FULL + Retry-After so the spool cannot grow
-   * unbounded and fill the Postgres volume (which would fail the durability anchor for everyone).
-   */
-  SPOOL_MAX_PENDING: z.coerce.number().int().min(1).default(100_000),
-  /** Low-water mark: back-pressure clears once the backlog recedes below this (hysteresis; must be < SPOOL_MAX_PENDING). */
-  SPOOL_RESUME_PENDING: z.coerce.number().int().min(0).default(80_000),
-  /** Background gauge refresh cadence (ms) for the back-pressure sampler. */
-  SPOOL_SAMPLE_INTERVAL_MS: z.coerce.number().int().min(100).default(1_000),
-  /** Retry-After (seconds) returned on a 503 SPOOL_FULL. */
-  SPOOL_RETRY_AFTER_SECONDS: z.coerce.number().int().min(1).default(5),
-}).refine((c) => c.SPOOL_RESUME_PENDING < c.SPOOL_MAX_PENDING, {
-  message: 'SPOOL_RESUME_PENDING must be < SPOOL_MAX_PENDING (hysteresis deadband)',
-  path: ['SPOOL_RESUME_PENDING'],
-});
-
-export type CollectorEnv = z.infer<typeof CollectorEnvSchema>;
-
-// ── Core service env vars ─────────────────────────────────────────────────────
-
-export const CoreEnvSchema = CommonEnvSchema.extend({
-  SERVICE_NAME: z.literal('core'),
-  PORT: z.coerce.number().int().min(1024).max(65535).default(3000),
-  DATABASE_URL: z.string().url(),
-  REDIS_URL: z.string().url().default('redis://localhost:6379'),
-});
-
-export type CoreEnv = z.infer<typeof CoreEnvSchema>;
-
-// ── Prod-required credentials ───────────────────────────────────────────────────
-
-/**
- * A secret/credential env var that MUST be set in production but keeps a frictionless dev default.
- *
- * In production, a missing/empty value is a FAIL-CLOSED startup error — we never silently fall back
- * to a known weak dev credential (e.g. a default analytics/DB password committed to the repo), which
- * would be a real footgun if an env var is forgotten in a prod deploy. Outside production, returns
- * the dev default so `pnpm dev` works without wiring secrets.
- *
- * @throws {Error} in production when the variable is unset/empty.
- */
-export function requireEnvInProd(
-  name: string,
-  devDefault: string,
-  env: Record<string, string | undefined> = process.env,
-): string {
-  const val = env[name];
-  if (val) return val;
-  if (env['NODE_ENV'] === 'production') {
-    throw new Error(
-      `[config] ${name} must be set in production — refusing to fall back to the dev default ` +
-        '(a known weak credential). Inject it from your secret store.',
-    );
-  }
-  return devDefault;
-}
-
-// ── Generic config parser ─────────────────────────────────────────────────────
-
-/**
- * Parse and validate an environment schema.
- * On validation failure, logs the errors and exits the process.
- *
- * @param schema - Zod schema to validate process.env against.
- * @param env - Environment map (defaults to process.env).
- */
-export function parseEnv<T extends z.ZodType>(
-  schema: T,
-  env: Record<string, string | undefined> = process.env,
-): z.infer<T> {
-  const result = schema.safeParse(env);
-  if (!result.success) {
-    const errors = result.error.errors
-      .map((e) => `  ${e.path.join('.')}: ${e.message}`)
-      .join('\n');
-    console.error(
-      `[config] FATAL: Invalid environment configuration:\n${errors}\n` +
-        'Fix the environment variables and restart the service.',
-    );
-    // process.exit(1) in real services; throw in tests.
-    if (env === process.env) {
-      process.exit(1);
-    }
-    throw new Error(`Invalid environment configuration:\n${errors}`);
-  }
-  return result.data;
-}
+export * from './common.js';
+export * from './core.js';
+export * from './collector.js';
+export * from './stream-worker.js';
+export * from './web.js';

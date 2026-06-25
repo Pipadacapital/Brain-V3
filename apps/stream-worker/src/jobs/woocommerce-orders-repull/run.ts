@@ -26,9 +26,11 @@
 import { Pool } from 'pg';
 import { updateConnectorInstanceHealth } from '../../infrastructure/pg/ConnectorInstanceHealthRepository.js';
 import { Kafka, type Producer } from 'kafkajs';
+import { createIdempotentProducer } from '../../infrastructure/kafka/idempotent-producer.js';
 import { buildPartitionKey } from '@brain/events';
 import { injectKafkaTraceContext } from '@brain/observability';
 import { CollectorEventV1Schema, COLLECTOR_EVENT_V1_TOPIC_SUFFIX } from '@brain/contracts';
+import { loadStreamWorkerConfig } from '@brain/config';
 import {
   mapWooOrderToEvent,
   uuidV5FromOrderLive,
@@ -47,14 +49,14 @@ import { log } from '../../log.js';
 import { acquireCursorLock, getCursorValue, upsertCursorValue } from '../../infrastructure/pg/CursorRepository.js';
 import { SyncRunRepository } from '../../infrastructure/pg/SyncRunRepository.js';
 
-const DB_URL =
-  process.env['BRAIN_APP_DATABASE_URL'] ??
-  'postgres://brain_app:brain_app@localhost:5432/brain';
+const cfg = loadStreamWorkerConfig();
+const DB_URL = cfg.BRAIN_APP_DATABASE_URL;
 
-const BROKERS = (process.env['KAFKA_BROKERS'] ?? 'localhost:9092').split(',');
+const BROKERS = cfg.KAFKA_BROKERS.split(',');
+// intentional raw: NODE_ENV-derived Kafka topic-prefix selection (must precede config load).
 const ENV = process.env['NODE_ENV'] === 'production' ? 'prod' : 'dev';
 const LIVE_TOPIC = process.env['COLLECTOR_TOPIC'] ?? `${ENV}.${COLLECTOR_EVENT_V1_TOPIC_SUFFIX}`;
-const REGION_CODE = process.env['BRAIN_REGION_CODE'] ?? 'IN';
+const REGION_CODE = cfg.BRAIN_REGION_CODE;
 
 const ORDERS_CURSOR_RESOURCE = 'orders.repull' as const;
 
@@ -63,7 +65,7 @@ const ORDERS_CURSOR_RESOURCE = 'orders.repull' as const;
  * Defaults to 90 days. Accepts 1–730 (clamped). Example: WOOCOMMERCE_BACKFILL_DAYS=180.
  */
 function resolveBackfillDepthMs(): number {
-  const envDays = process.env['WOOCOMMERCE_BACKFILL_DAYS'];
+  const envDays = cfg.WOOCOMMERCE_BACKFILL_DAYS;
   if (envDays) {
     const parsed = parseInt(envDays, 10);
     if (Number.isFinite(parsed) && parsed > 0) {
@@ -91,7 +93,7 @@ interface WooSecretBundle {
 export async function run(targetConnectorInstanceId?: string): Promise<void> {
   const pool = new Pool({ connectionString: DB_URL, max: 5 });
   const kafka = new Kafka({ clientId: 'woocommerce-orders-repull', brokers: BROKERS, retry: { retries: 5 } });
-  const producer = kafka.producer({ idempotent: true });
+  const producer = createIdempotentProducer(kafka);
   const saltProvider = createSaltProvider(DB_URL);
   const syncRunRepo = new SyncRunRepository(pool);
 

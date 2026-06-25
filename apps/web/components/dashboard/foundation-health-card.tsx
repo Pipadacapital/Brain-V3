@@ -12,7 +12,8 @@
 import * as React from 'react';
 import Link from 'next/link';
 import { Check, Circle, ShieldCheck, ShieldAlert, Hourglass, Rocket } from 'lucide-react';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { SectionCard } from '@/components/ui/section-card';
+import { StatusBadge, type StatusTone } from '@/components/ui/status-badge';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useFoundationHealth } from '@/lib/hooks/use-foundation-health';
@@ -20,12 +21,12 @@ import type { FoundationTier } from '@/lib/api/types';
 
 const TIER_META: Record<
   FoundationTier,
-  { label: string; icon: React.ComponentType<{ className?: string }>; chip: string; bar: string }
+  { label: string; icon: React.ComponentType<{ className?: string }>; tone: StatusTone; bar: string }
 > = {
-  blocked: { label: 'Blocked', icon: ShieldAlert, chip: 'bg-red-50 text-red-700', bar: 'bg-red-500' },
-  building: { label: 'Building', icon: Hourglass, chip: 'bg-amber-50 text-amber-800', bar: 'bg-amber-500' },
-  ready: { label: 'Ready', icon: Rocket, chip: 'bg-blue-50 text-blue-700', bar: 'bg-blue-500' },
-  healthy: { label: 'Healthy', icon: ShieldCheck, chip: 'bg-emerald-50 text-emerald-700', bar: 'bg-emerald-500' },
+  blocked: { label: 'Blocked', icon: ShieldAlert, tone: 'destructive', bar: 'bg-destructive' },
+  building: { label: 'Building', icon: Hourglass, tone: 'warning', bar: 'bg-warning' },
+  ready: { label: 'Ready', icon: Rocket, tone: 'info', bar: 'bg-info' },
+  healthy: { label: 'Healthy', icon: ShieldCheck, tone: 'success', bar: 'bg-success' },
 };
 
 export function FoundationHealthCard() {
@@ -44,24 +45,19 @@ export function FoundationHealthCard() {
   const pct = total > 0 ? Math.round((doneCount / total) * 100) : 0;
 
   return (
-    <Card data-testid="foundation-health-card">
-      <CardHeader className="pb-3">
-        <div className="flex items-start justify-between gap-3">
-          <div className="space-y-1">
-            <CardTitle className="text-base">Data foundation</CardTitle>
-            <p className="text-sm text-muted-foreground">{data.headline}</p>
-          </div>
-          <span
-            className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold ${meta.chip}`}
-            role="status"
-            aria-label={`Data foundation: ${meta.label}`}
-          >
-            <Icon className="h-3.5 w-3.5" aria-hidden="true" />
-            {meta.label}
-          </span>
-        </div>
-      </CardHeader>
-      <CardContent className="space-y-4">
+    <SectionCard
+      data-testid="foundation-health-card"
+      title="Data foundation"
+      description={data.headline}
+      actions={
+        <StatusBadge tone={meta.tone} aria-label={`Data foundation: ${meta.label}`}>
+          <Icon className="h-3.5 w-3.5" aria-hidden="true" />
+          {meta.label}
+        </StatusBadge>
+      }
+      className="h-full"
+    >
+      <div className="space-y-5">
         {/* Progress bar — honest "X of N foundations in place". */}
         <div className="space-y-1.5">
           <div className="flex items-center justify-between text-xs text-muted-foreground">
@@ -80,9 +76,9 @@ export function FoundationHealthCard() {
           {data.steps.map((step) => (
             <li key={step.key} className="flex items-center gap-2 text-sm">
               {step.done ? (
-                <Check className="h-4 w-4 shrink-0 text-emerald-600" aria-hidden="true" />
+                <Check className="h-4 w-4 shrink-0 text-success" aria-hidden="true" />
               ) : (
-                <Circle className="h-4 w-4 shrink-0 text-muted-foreground/50" aria-hidden="true" />
+                <Circle className="h-4 w-4 shrink-0 text-muted-foreground/40" aria-hidden="true" />
               )}
               <span className={step.done ? 'text-foreground' : 'text-muted-foreground'}>{step.label}</span>
               <span className="sr-only">{step.done ? '— done' : '— not done'}</span>
@@ -92,17 +88,17 @@ export function FoundationHealthCard() {
 
         {/* The single most important next step. */}
         {data.next_action && (
-          <div className="flex items-center justify-between gap-3 rounded-md border bg-muted/30 px-3 py-2">
+          <div className="flex items-center justify-between gap-3 rounded-md border border-border bg-muted/40 px-3 py-2.5">
             <span className="text-sm">
               <span className="font-medium">Next step: </span>
               {data.next_action.label}
             </span>
-            <Button asChild size="sm">
-              <Link href={data.next_action.href}>Start →</Link>
+            <Button asChild size="sm" className="shrink-0">
+              <Link href={data.next_action.href}>Start</Link>
             </Button>
           </div>
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </SectionCard>
   );
 }

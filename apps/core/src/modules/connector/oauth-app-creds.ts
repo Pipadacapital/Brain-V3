@@ -17,6 +17,7 @@
  *
  * I-S09: credential values are never logged here or returned to anywhere that logs them.
  */
+import { loadCoreConfig } from '@brain/config';
 import type { ISecretsManager } from '@brain/connector-secrets';
 
 /** OAuth connector providers that support per-brand BYO-app credentials. */
@@ -39,13 +40,14 @@ function appSecretName(provider: OAuthProvider, brandId: string): string {
 
 /** The app-level (env) client_id for a provider — the back-compat fallback when a brand has no own app. */
 export function envClientId(provider: OAuthProvider): string | undefined {
+  const cfg = loadCoreConfig();
   switch (provider) {
     case 'shopify':
-      return process.env['SHOPIFY_CLIENT_ID'];
+      return cfg.SHOPIFY_CLIENT_ID;
     case 'meta':
-      return process.env['META_APP_ID'];
+      return cfg.META_APP_ID;
     case 'google_ads':
-      return process.env['GOOGLE_ADS_CLIENT_ID'];
+      return cfg.GOOGLE_ADS_CLIENT_ID;
   }
 }
 

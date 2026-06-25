@@ -2,63 +2,241 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * Brain design tokens.
+ * Ethos: Capture Truth -> Build Trust -> Enable Decisions.
+ * Calm, restrained, data-forward. Linear / Vercel / Stripe calibre.
+ *
+ * All colour is HSL channels (no hsl() wrapper) so Tailwind can compose
+ * opacity via `bg-primary/90`. Never hard-code hex in components — always
+ * reference a token.
+ */
+
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 224 71.4% 4.1%;
+    /* Surfaces ------------------------------------------------------------ */
+    --background: 220 33% 99%; /* app canvas — barely-tinted cool white */
+    --foreground: 224 24% 12%; /* near-black ink, not pure #000 */
+    --surface: 0 0% 100%; /* raised neutral surface (subtle panels) */
+    --surface-foreground: 224 24% 12%;
     --card: 0 0% 100%;
-    --card-foreground: 224 71.4% 4.1%;
-    --primary: 262.1 83.3% 57.8%;
-    --primary-foreground: 210 20% 98%;
-    --secondary: 220 14.3% 95.9%;
-    --secondary-foreground: 220.9 39.3% 11%;
-    --muted: 220 14.3% 95.9%;
-    --muted-foreground: 220 8.9% 46.1%;
-    --accent: 220 14.3% 95.9%;
-    --accent-foreground: 220.9 39.3% 11%;
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 210 20% 98%;
-    --border: 220 13% 91%;
-    --input: 220 13% 91%;
-    --ring: 262.1 83.3% 57.8%;
-    --radius: 0.5rem;
-    /* Chart color tokens (shadcn chart pattern) */
-    --chart-1: 262 83% 58%;
-    --chart-2: 201 90% 42%;
-    --chart-3: 142 71% 45%;
-    --chart-4: 45 93% 47%;
-    --chart-5: 0 74% 52%;
+    --card-foreground: 224 24% 12%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 224 24% 12%;
+
+    /* Brand --------------------------------------------------------------- */
+    /* Restrained indigo. One brand hue only — colour earns attention. */
+    --primary: 245 58% 51%;
+    --primary-foreground: 0 0% 100%;
+
+    /* Neutral roles ------------------------------------------------------- */
+    --secondary: 220 16% 96%;
+    --secondary-foreground: 224 22% 20%;
+    --muted: 220 16% 96%;
+    --muted-foreground: 220 9% 46%;
+    --accent: 220 16% 95%;
+    --accent-foreground: 224 22% 20%;
+
+    /* Semantic status — calm, never neon ---------------------------------- */
+    --success: 152 56% 36%;
+    --success-foreground: 0 0% 100%;
+    --success-subtle: 152 52% 96%;
+    --success-subtle-foreground: 154 60% 24%;
+
+    --warning: 35 86% 44%;
+    --warning-foreground: 0 0% 100%;
+    --warning-subtle: 40 90% 95%;
+    --warning-subtle-foreground: 28 74% 30%;
+
+    --destructive: 0 67% 49%;
+    --destructive-foreground: 0 0% 100%;
+    --destructive-subtle: 0 80% 97%;
+    --destructive-subtle-foreground: 0 64% 38%;
+
+    --info: 211 80% 47%;
+    --info-foreground: 0 0% 100%;
+    --info-subtle: 208 90% 96%;
+    --info-subtle-foreground: 212 66% 34%;
+
+    /* Lines & controls ---------------------------------------------------- */
+    --border: 220 16% 90%;
+    --input: 220 16% 88%;
+    --ring: 245 58% 51%;
+
+    /* Geometry ------------------------------------------------------------ */
+    --radius: 0.625rem; /* 10px base; sm/md/lg derive in tailwind config */
+
+    /* Elevation — soft, low-contrast shadows (calm, not heavy) ------------ */
+    --shadow-xs: 0 1px 2px 0 hsl(224 24% 12% / 0.04);
+    --shadow-sm: 0 1px 2px 0 hsl(224 24% 12% / 0.05), 0 1px 3px 0 hsl(224 24% 12% / 0.04);
+    --shadow-md: 0 2px 4px -1px hsl(224 24% 12% / 0.05), 0 4px 12px -2px hsl(224 24% 12% / 0.08);
+    --shadow-lg: 0 8px 24px -4px hsl(224 24% 12% / 0.1), 0 2px 6px -2px hsl(224 24% 12% / 0.06);
+
+    /* Charts — categorical, distinct yet harmonious ----------------------- */
+    --chart-1: 245 58% 55%;
+    --chart-2: 188 70% 41%;
+    --chart-3: 152 56% 40%;
+    --chart-4: 35 86% 50%;
+    --chart-5: 280 50% 56%;
+    --chart-6: 211 80% 50%;
+  }
+
+  .dark {
+    --background: 224 30% 7%;
+    --foreground: 220 18% 92%;
+    --surface: 224 24% 11%;
+    --surface-foreground: 220 18% 92%;
+    --card: 224 24% 10%;
+    --card-foreground: 220 18% 92%;
+    --popover: 224 24% 11%;
+    --popover-foreground: 220 18% 92%;
+
+    --primary: 245 72% 68%;
+    --primary-foreground: 224 40% 8%;
+
+    --secondary: 222 18% 17%;
+    --secondary-foreground: 220 16% 88%;
+    --muted: 222 18% 16%;
+    --muted-foreground: 220 12% 62%;
+    --accent: 222 18% 18%;
+    --accent-foreground: 220 16% 90%;
+
+    --success: 152 50% 46%;
+    --success-foreground: 224 40% 8%;
+    --success-subtle: 154 40% 14%;
+    --success-subtle-foreground: 150 56% 72%;
+
+    --warning: 38 80% 56%;
+    --warning-foreground: 224 40% 8%;
+    --warning-subtle: 34 50% 16%;
+    --warning-subtle-foreground: 40 86% 72%;
+
+    --destructive: 0 64% 58%;
+    --destructive-foreground: 224 40% 8%;
+    --destructive-subtle: 0 44% 16%;
+    --destructive-subtle-foreground: 0 80% 80%;
+
+    --info: 211 78% 60%;
+    --info-foreground: 224 40% 8%;
+    --info-subtle: 212 48% 16%;
+    --info-subtle-foreground: 208 86% 78%;
+
+    --border: 220 14% 20%;
+    --input: 220 14% 22%;
+    --ring: 245 72% 68%;
+
+    --shadow-xs: 0 1px 2px 0 hsl(0 0% 0% / 0.3);
+    --shadow-sm: 0 1px 2px 0 hsl(0 0% 0% / 0.32), 0 1px 3px 0 hsl(0 0% 0% / 0.28);
+    --shadow-md: 0 2px 4px -1px hsl(0 0% 0% / 0.36), 0 4px 12px -2px hsl(0 0% 0% / 0.4);
+    --shadow-lg: 0 8px 24px -4px hsl(0 0% 0% / 0.5), 0 2px 6px -2px hsl(0 0% 0% / 0.4);
+
+    --chart-1: 245 72% 70%;
+    --chart-2: 188 64% 56%;
+    --chart-3: 152 52% 55%;
+    --chart-4: 38 80% 62%;
+    --chart-5: 280 56% 70%;
+    --chart-6: 211 78% 64%;
   }
 
   * {
     @apply border-border;
   }
 
-  body {
-    @apply bg-background text-foreground;
-    font-feature-settings: "rlig" 1, "calt" 1;
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-rendering: optimizeLegibility;
   }
 
-  /* Accessibility: respect reduced motion */
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family:
+      ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
+      'Inter', sans-serif;
+    font-feature-settings: 'rlig' 1, 'calt' 1, 'ss01' 1, 'cv01' 1;
+  }
+
+  /* Tabular figures for any element that displays numbers / money / metrics. */
+  .tabular-nums,
+  [data-tabular] {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: 'tnum' 1;
+  }
+
+  :focus-visible {
+    outline: none;
+  }
+
+  /* Accessibility: respect reduced motion. */
   @media (prefers-reduced-motion: reduce) {
     *,
     *::before,
     *::after {
       animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
       transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
     }
   }
 }
 
-/* Visually hidden utility for screen-reader-only content */
-.sr-only {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border-width: 0;
+@layer utilities {
+  /* Screen-reader-only content. */
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border-width: 0;
+  }
+
+  /*
+   * Lightweight enter/exit animation utilities for Radix-driven primitives
+   * (dialog, select, toast, tooltip). Provides `animate-in` / `animate-out`
+   * and the fade/zoom/slide modifiers WITHOUT the tailwindcss-animate plugin.
+   * The Radix components already pair these with their data-state classes, so a
+   * mounted overlay/popover gets a calm enter; exit is best-effort.
+   */
+  @keyframes brain-fade-in {
+    from {
+      opacity: 0;
+      transform: translateY(-2px) scale(0.98);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+    }
+  }
+  @keyframes brain-fade-out {
+    from {
+      opacity: 1;
+    }
+    to {
+      opacity: 0;
+    }
+  }
+  @keyframes brain-overlay-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
+  .animate-in {
+    animation: brain-fade-in 150ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .animate-out {
+    animation: brain-fade-out 120ms ease-in forwards;
+  }
+
+  /* Radix sets data-state on its own elements; animate on open. */
+  [data-state='open'] {
+    animation-duration: 150ms;
+    animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+  }
 }

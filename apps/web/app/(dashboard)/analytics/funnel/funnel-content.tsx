@@ -17,6 +17,7 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { Filter, ArrowRight } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { PageHeader } from '@/components/ui/page-header';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
@@ -139,9 +140,10 @@ export function FunnelContent() {
 
   return (
     <div className="space-y-8">
-      <div>
-        <div className="flex flex-wrap items-center gap-2">
-          <h1 className="text-2xl font-bold text-foreground">Funnel</h1>
+      <PageHeader
+        title="Funnel"
+        description="How storefront sessions convert — from browsing to viewing a product, adding to cart, and purchasing — captured by the Brain Pixel and stitched to orders in the Silver tier."
+        meta={
           <span
             className="inline-flex items-center gap-1 rounded-md border border-border bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"
             title="Read from the Silver tier (silver_touchpoint) via the metric-engine storefront-funnel seam."
@@ -149,12 +151,8 @@ export function FunnelContent() {
             <Filter className="h-3 w-3" aria-hidden="true" />
             Powered by the Silver tier
           </span>
-        </div>
-        <p className="text-muted-foreground mt-1">
-          How storefront sessions convert — from browsing to viewing a product, adding to cart, and
-          purchasing — captured by the Brain Pixel and stitched to orders in the Silver tier.
-        </p>
-      </div>
+        }
+      />
 
       <section aria-label="Conversion funnel">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-3">

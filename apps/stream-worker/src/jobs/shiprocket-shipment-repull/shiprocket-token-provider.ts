@@ -14,6 +14,7 @@
  * NEVER logs email / password / the token (I-S09).
  */
 
+import { loadStreamWorkerConfig } from '@brain/config';
 import { log } from '../../log.js';
 
 export const SHIPROCKET_AUTH_ERROR = 'SHIPROCKET_AUTH_ERROR';
@@ -22,8 +23,6 @@ export interface ShiprocketApiCredentials {
   email: string;     // NEVER logged (I-S09)
   password: string;  // NEVER logged (I-S09)
 }
-
-const DEFAULT_BASE_URL = 'https://apiv2.shiprocket.in';
 const LOGIN_PATH = '/v1/external/auth/login';
 /** Re-mint a little before the documented 240h so an in-flight pull never trips expiry. */
 const TOKEN_TTL_MS = 9 * 24 * 60 * 60 * 1000; // 9 days (< 10-day validity)
@@ -43,7 +42,7 @@ export class ShiprocketTokenProvider {
 
   constructor(
     private readonly creds: ShiprocketApiCredentials,
-    private readonly baseUrl: string = process.env['SHIPROCKET_BASE_URL'] ?? DEFAULT_BASE_URL,
+    private readonly baseUrl: string = loadStreamWorkerConfig().SHIPROCKET_BASE_URL,
     private readonly now: () => number = () => Date.now(),
   ) {}
 

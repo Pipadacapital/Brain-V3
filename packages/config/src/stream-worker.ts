@@ -1,0 +1,188 @@
+/**
+ * @brain/config — stream-worker service configuration.
+ *
+ * Typed single-source-of-record for every configurable value the stream-worker
+ * service reads from the environment. Each field mirrors a `process.env[...]`
+ * read in apps/stream-worker/src with its EXACT prior default + coercion, so
+ * repointing reads to this object is a pure refactor (zero behavior change).
+ *
+ * Intentionally LEFT RAW in the service (NOT modeled here):
+ *  - NODE_ENV / APP_ENV gating that runs before config loads or selects the
+ *    Kafka topic prefix.
+ *  - Dynamic env keys (e.g. process.env[def.groupIdEnv] in bronzeBridges — the
+ *    var name is computed from a registry, not a fixed identifier).
+ *  - Secret/credential resolution that branches on prod and reads vendor secret
+ *    ARNs/IDs/tokens (Shopify/Meta/Google/Razorpay/Shiprocket/GoKwik/Woo creds,
+ *    AWS region + KMS key ids, *_ACCESS_TOKEN, *_CLIENT_SECRET). These are
+ *    handled by the per-brand secret vault / prod secret-resolution paths.
+ */
+import { z } from 'zod';
+import { CommonEnvSchema, defineConfig } from './common.js';
+
+/**
+ * Strict ==='true' boolean coerce (NOT z.coerce.boolean, which treats any
+ * non-empty string as true). Mirrors `process.env['X'] === 'true'`.
+ */
+const strictTrue = (def: boolean) =>
+  z
+    .string()
+    .optional()
+    .transform((v) => (v === undefined ? def : v === 'true'));
+
+/** Strict ==='1' boolean coerce. Mirrors `process.env['X'] === '1'`. */
+const strictOne = (def: boolean) =>
+  z
+    .string()
+    .optional()
+    .transform((v) => (v === undefined ? def : v === '1'));
+
+// ── Stream-worker env vars ────────────────────────────────────────────────────
+
+export const StreamWorkerEnvSchema = CommonEnvSchema.extend({
+  SERVICE_NAME: z.literal('stream-worker'),
+
+  // ── Core infra ──────────────────────────────────────────────────────────────
+  /** Kafka broker list (comma-split). main.ts + every repull/backfill job. */
+  KAFKA_BROKERS: z.string().default('localhost:9092'),
+  /** Redis connection URL. main.ts + feature-materialization. */
+  REDIS_URL: z.string().default('redis://localhost:6379'),
+  /**
+   * Worker DB connection — MUST be brain_app (RLS enforced). main.ts + most jobs
+   * read BRAIN_APP_DATABASE_URL with this default; a few jobs fall back to
+   * DATABASE_URL before defaulting (kept raw in those jobs — see notes).
+   */
+  BRAIN_APP_DATABASE_URL: z
+    .string()
+    .default('postgres://brain_app:brain_app@localhost:5432/brain'),
+
+  // ── Live lane: topic + consumer groups (main.ts) ─────────────────────────────
+  /** Live collector topic the consumers subscribe to. */
+  COLLECTOR_TOPIC: z.string().default('dev.collector.event.v1'),
+  CONSUMER_GROUP_ID: z.string().default('stream-worker-live'),
+  IDENTITY_CONSUMER_GROUP_ID: z.string().default('identity-bridge-live'),
+  CONSENT_SUPPRESSOR_CONSUMER_GROUP_ID: z
+    .string()
+    .default('stream-worker-consent-suppressor'),
+  CAPI_DELETION_CONSUMER_GROUP_ID: z.string().default('stream-worker-capi-deletion'),
+  LIVE_LEDGER_CONSUMER_GROUP_ID: z.string().default('live-ledger-bridge'),
+  SETTLEMENT_LEDGER_CONSUMER_GROUP_ID: z.string().default('settlement-ledger-bridge'),
+  GOKWIK_AWB_LEDGER_CONSUMER_GROUP_ID: z.string().default('gokwik-awb-ledger-bridge'),
+
+  // ── Backfill lane (main.ts) ──────────────────────────────────────────────────
+  /**
+   * Backfill topic. Default DERIVES from NODE_ENV (prod→'prod', else→'dev'); the
+   * field below is optional and, when unset, the loader computes the derived
+   * default — see the loader's post-parse step.
+   */
+  BACKFILL_TOPIC: z.string().optional(),
+  BACKFILL_CONSUMER_GROUP_ID: z.string().default('stream-worker-backfill'),
+
+  // ── Health / probes (main.ts) ────────────────────────────────────────────────
+  HEALTH_PORT: z.coerce.number().int().default(8090),
+
+  // ── Bronze write switch (main.ts) ────────────────────────────────────────────
+  /** PG bronze_events write — RETIRED, default OFF (===' true' semantics). */
+  BRONZE_PG_WRITE_ENABLED: strictTrue(false),
+
+  // ── CAPI creds gate (main.ts) ────────────────────────────────────────────────
+  META_CAPI_CREDS_WIRED: strictTrue(false),
+
+  // ── In-process interval loops (main.ts) ──────────────────────────────────────
+  SYNC_REQUEST_CLAIMER_INTERVAL_MS: z.coerce.number().int().default(5000),
+  DQ_CHECK_INTERVAL_MS: z.coerce.number().int().default(300000),
+  SYNC_SCHEDULER_INTERVAL_MS: z.coerce.number().int().default(45000),
+  REPULL_CLAIM_BATCH: z.coerce.number().int().default(100),
+
+  // ── StarRocks (Silver) readers ───────────────────────────────────────────────
+  /** Optional — when absent, Silver-tier DQ checks emit an honest 'D'. */
+  STARROCKS_HOST: z.string().optional(),
+  /** DQ/journey-stitch reader port (main.ts + journey-stitch-from-identity). */
+  STARROCKS_PORT: z.coerce.number().int().default(9030),
+  /** feature-materialization / journey-stitch-export / identity-export port. */
+  STARROCKS_QUERY_PORT: z.coerce.number().int().default(9030),
+  STARROCKS_ANALYTICS_USER: z.string().default('brain_analytics'),
+  STARROCKS_ANALYTICS_PASSWORD: z.string().default('brain_analytics_dev'),
+  STARROCKS_FEATURE_USER: z.string().default('root'),
+  STARROCKS_FEATURE_PASSWORD: z.string().default(''),
+  STARROCKS_ROOT_USER: z.string().default('root'),
+  STARROCKS_ROOT_PASSWORD: z.string().default(''),
+  /** Iceberg Bronze external catalog name (dq silver-reader). */
+  STARROCKS_BRONZE_CATALOG: z.string().default('brain_bronze_local'),
+
+  // ── Identity store (Neo4j) — main.ts + phone-guard + identity-export ─────────
+  NEO4J_URI: z.string().default('bolt://localhost:7687'),
+  NEO4J_USER: z.string().default('neo4j'),
+  NEO4J_PASSWORD: z.string().default('neo4j'),
+
+  // ── Region (woocommerce + ingestion backfill) ───────────────────────────────
+  BRAIN_REGION_CODE: z.string().default('IN'),
+
+  // ── Partition-maintenance job ────────────────────────────────────────────────
+  PARTITION_AHEAD_MONTHS: z.coerce.number().int().default(3),
+  /** Optional — no default (job branches on undefined). */
+  PARTITION_RETENTION_MONTHS: z.string().optional(),
+
+  // ── Repull / backfill paging knobs ───────────────────────────────────────────
+  /** shopify-backfill page sleep (ms). */
+  BACKFILL_PAGE_SLEEP_MS: z.coerce.number().int().default(0),
+  /** shopify-repull page sleep (ms). */
+  REPULL_PAGE_SLEEP_MS: z.coerce.number().int().default(0),
+  /** Optional — ingest-scheduler dispatch concurrency (job parses when present). */
+  REPULL_DISPATCH_CONCURRENCY: z.string().optional(),
+  /** Optional — woocommerce backfill window (days); job parses when present. */
+  WOOCOMMERCE_BACKFILL_DAYS: z.string().optional(),
+  /** Optional — ingestion-backfill target brand (job branches on undefined). */
+  INGEST_BACKFILL_BRAND_ID: z.string().optional(),
+
+  // ── Vendor client knobs (non-secret) ─────────────────────────────────────────
+  /** Shopify Admin API version (shared across shopify clients/fetchers). */
+  SHOPIFY_API_VERSION: z.string().optional(),
+  /** meta-insights async mode ('1' → async). */
+  META_INSIGHTS_ASYNC_MODE: strictOne(false),
+  /** WooCommerce live-mode override ('1' → live, also true in prod). */
+  WOOCOMMERCE_LIVE: strictOne(false),
+  /** WooCommerce orders fixture path (dev). Optional — client defaults. */
+  WOOCOMMERCE_FIXTURE_PATH: z.string().optional(),
+  /** WooCommerce products fixture path (dev). Optional — fetcher defaults. */
+  WOOCOMMERCE_PRODUCTS_FIXTURE_PATH: z.string().optional(),
+  /** Shiprocket live-mode override ('1' → live, also true in prod). */
+  SHIPROCKET_LIVE: strictOne(false),
+  /** Shiprocket fixture path (dev). Optional — client defaults. */
+  SHIPROCKET_FIXTURE_PATH: z.string().optional(),
+  SHIPROCKET_BASE_URL: z.string().default('https://apiv2.shiprocket.in'),
+  SHIPROCKET_SHIPMENTS_PATH: z.string().default('/v1/external/orders'),
+  SHIPROCKET_SHIPMENTS_KEY: z.string().default('data'),
+  /** GoKwik AWB fixture path (dev). Optional — client defaults. */
+  GOKWIK_AWB_FIXTURE_PATH: z.string().optional(),
+
+  // ── identity-export job flag ─────────────────────────────────────────────────
+  /** Full refresh ('1' → full). */
+  IDENTITY_EXPORT_FULL: strictOne(false),
+});
+
+export type StreamWorkerEnv = z.infer<typeof StreamWorkerEnvSchema>;
+
+/** Loader return type: BACKFILL_TOPIC is always resolved (NODE_ENV-derived). */
+export type StreamWorkerConfig = Omit<StreamWorkerEnv, 'BACKFILL_TOPIC'> & {
+  BACKFILL_TOPIC: string;
+};
+
+/**
+ * Memoized + frozen loader for the stream-worker config (parsed once per process).
+ *
+ * Post-parse: BACKFILL_TOPIC derives its default from NODE_ENV when unset
+ * (mirrors `process.env['BACKFILL_TOPIC'] ?? \`${prod?'prod':'dev'}.collector.order.backfill.v1\``).
+ */
+const baseLoad = defineConfig(StreamWorkerEnvSchema);
+let derived: StreamWorkerConfig | undefined;
+export const loadStreamWorkerConfig = (): StreamWorkerConfig => {
+  if (derived) return derived;
+  const cfg = baseLoad();
+  const envPrefix = cfg.NODE_ENV === 'production' ? 'prod' : 'dev';
+  derived = Object.freeze({
+    ...cfg,
+    BACKFILL_TOPIC:
+      cfg.BACKFILL_TOPIC ?? `${envPrefix}.collector.order.backfill.v1`,
+  });
+  return derived;
+};

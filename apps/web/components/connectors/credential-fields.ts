@@ -2,9 +2,12 @@
  * credential-fields.ts — connector connect-form field helpers.
  *
  * SINGLE SOURCE OF TRUTH: the server catalog. The marketplace renders from `tile.auth_fields`
- * (GET /api/v1/connectors), mapped via authFieldsToCredentialFields(). The hardcoded *_FIELDS sets
- * below are an OFFLINE FALLBACK only — used when a tile lacks auth_fields (older server) — and are
- * kept in sync with the catalog so behaviour is identical either way.
+ * (GET /api/v1/connectors), mapped via authFieldsToCredentialFields(). There is NO hardcoded
+ * per-connector field set here anymore — the previous fallback sets duplicated the catalog and,
+ * worse, a connector without auth_fields used to fall through to RAZORPAY's fields (so GA4 / an
+ * OAuth tile could render Razorpay's credential form). credentialFieldsFor() now returns an EMPTY
+ * set for an unknown connector: a tile with no server-declared fields renders NO credential inputs,
+ * never another connector's.
  *
  * A field marked secret=true is stored in the backend secret bundle and NEVER echoed back to the
  * client (renders as type="password", autoComplete="off"). Non-secret fields are merchant
@@ -24,94 +27,15 @@ export interface CredentialField {
   hint?: string;
 }
 
-const RAZORPAY_FIELDS: CredentialField[] = [
-  { key: 'key_id', label: 'Key ID', placeholder: 'rzp_live_XXXXXXXX', secret: false },
-  { key: 'key_secret', label: 'Key Secret', placeholder: '••••••••••••', secret: true },
-  { key: 'webhook_secret', label: 'Webhook Secret', placeholder: '••••••••••••', secret: true },
-  { key: 'razorpay_account_id', label: 'Account ID', placeholder: 'acc_XXXXXXXX', secret: false },
-];
-
-// Shopflo self-serve: static API Access Token + Merchant-ID + the webhook shared
-// secret the merchant pastes from Dashboard → Settings → Integrations.
-const SHOPFLO_FIELDS: CredentialField[] = [
-  { key: 'api_token', label: 'API Access Token', placeholder: '••••••••••••', secret: true },
-  { key: 'merchant_id', label: 'Merchant ID', placeholder: 'merchant_XXXXXXXX', secret: false },
-  { key: 'webhook_secret', label: 'Webhook Secret', placeholder: '••••••••••••', secret: true },
-];
-
-// GoKwik: static appid/appsecret (both partner-issued).
-const GOKWIK_FIELDS: CredentialField[] = [
-  { key: 'appid', label: 'App ID', placeholder: 'app_XXXXXXXX', secret: false },
-  { key: 'appsecret', label: 'App Secret', placeholder: '••••••••••••', secret: true },
-  // Optional inbound-webhook signing secret (GoKwik provides this when they point webhooks at us).
-  { key: 'webhook_secret', label: 'Webhook Secret (optional)', placeholder: '••••••••••••', secret: true, optional: true },
-];
-
-// WooCommerce self-serve: the merchant pastes site URL + WC REST API consumer key/secret
-// (generated from WooCommerce → Settings → Advanced → REST API). site_url is a non-secret
-// identifier; consumer_key and consumer_secret are secrets (never echoed back to the client).
-const WOOCOMMERCE_FIELDS: CredentialField[] = [
-  { key: 'site_url', label: 'Store URL', placeholder: 'https://my-store.example.com', secret: false },
-  { key: 'consumer_key', label: 'Consumer Key', placeholder: 'ck_xxxxxxxxxxxxxxxxxxxx', secret: true },
-  { key: 'consumer_secret', label: 'Consumer Secret', placeholder: '••••••••••••', secret: true },
-  { key: 'webhook_secret', label: 'Webhook Secret (optional)', placeholder: '••••••••••••', secret: true, optional: true },
-];
-
-// Shiprocket: dashboard email + password (the token provider mints a JWT from these), plus an
-// optional Channel ID to scope the repull to one sales channel.
-const SHIPROCKET_FIELDS: CredentialField[] = [
-  { key: 'email', label: 'Email', placeholder: 'you@brand.com', secret: false },
-  { key: 'password', label: 'Password', placeholder: '••••••••••••', secret: true },
-  { key: 'channel_id', label: 'Channel ID (optional)', placeholder: '1234567', secret: false, optional: true },
-];
-
-// ── OAuth "bring your own app" credentials (Shopify / Meta / Google Ads) ──────
-// These OAuth tiles connect via the auth-code redirect flow. By default Brain's own
-// registered OAuth app handles the handshake (env-app fallback, server-side). A brand
-// may instead supply ITS OWN OAuth app's Client ID + Client Secret here; both are
-// OPTIONAL — left blank, the server falls back to Brain's app. client_secret is a
-// secret (type="password", never echoed back). Keys MUST be client_id / client_secret.
-const OAUTH_APP_HINT = "Optional — leave blank to use Brain's app";
-
-const SHOPIFY_OAUTH_FIELDS: CredentialField[] = [
-  { key: 'client_id', label: 'Client ID', placeholder: 'Your Shopify app API key', secret: false, optional: true, hint: OAUTH_APP_HINT },
-  { key: 'client_secret', label: 'Client Secret', placeholder: '••••••••••••', secret: true, optional: true, hint: OAUTH_APP_HINT },
-];
-
-const META_OAUTH_FIELDS: CredentialField[] = [
-  { key: 'client_id', label: 'Client ID', placeholder: 'Your Meta app ID', secret: false, optional: true, hint: OAUTH_APP_HINT },
-  { key: 'client_secret', label: 'Client Secret', placeholder: '••••••••••••', secret: true, optional: true, hint: OAUTH_APP_HINT },
-];
-
-const GOOGLE_ADS_OAUTH_FIELDS: CredentialField[] = [
-  { key: 'client_id', label: 'Client ID', placeholder: 'Your Google OAuth client ID', secret: false, optional: true, hint: OAUTH_APP_HINT },
-  { key: 'client_secret', label: 'Client Secret', placeholder: '••••••••••••', secret: true, optional: true, hint: OAUTH_APP_HINT },
-];
-
 /**
- * Resolve a provider's credential fields; defaults to Razorpay's set for any other credential tile.
- * Exported for unit-testing.
+ * Offline fallback for a tile that arrives with no server `auth_fields` (an older server). The
+ * server catalog is the SoR, so there is intentionally NO hardcoded per-connector field set and NO
+ * cross-connector default: an unknown / field-less connector returns an empty set and the tile
+ * simply renders no credential inputs. This prevents the class of bug where one connector rendered
+ * another connector's credential form. Kept (returning []) so existing imports stay valid.
  */
-export function credentialFieldsFor(tileId: string): CredentialField[] {
-  switch (tileId) {
-    case 'woocommerce':
-      return WOOCOMMERCE_FIELDS;
-    case 'shopflo':
-      return SHOPFLO_FIELDS;
-    case 'gokwik':
-      return GOKWIK_FIELDS;
-    case 'shiprocket':
-      return SHIPROCKET_FIELDS;
-    // OAuth "bring your own app" tiles — all-optional Client ID + Client Secret.
-    case 'shopify':
-      return SHOPIFY_OAUTH_FIELDS;
-    case 'meta':
-      return META_OAUTH_FIELDS;
-    case 'google_ads':
-      return GOOGLE_ADS_OAUTH_FIELDS;
-    default:
-      return RAZORPAY_FIELDS;
-  }
+export function credentialFieldsFor(_tileId: string): CredentialField[] {
+  return [];
 }
 
 /** Generic placeholder for a server-declared field (the catalog carries no per-field placeholder). */
@@ -135,8 +59,8 @@ export function authFieldToCredentialField(f: ConnectorAuthFieldDto): Credential
 
 /**
  * Map the server-supplied auth fields (tile.auth_fields) → the connect form's fields. This is the
- * PRIMARY path — the marketplace prefers it over the hardcoded fallback so the catalog is the only
- * place a connector's fields are defined.
+ * ONLY path that produces credential inputs — the marketplace renders exclusively from the catalog,
+ * so a connector's fields are defined in exactly one place (apps/core catalog/registry.ts).
  */
 export function authFieldsToCredentialFields(fields: ConnectorAuthFieldDto[]): CredentialField[] {
   return fields.map(authFieldToCredentialField);

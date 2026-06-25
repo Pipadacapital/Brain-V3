@@ -65,12 +65,12 @@ export function VerifyEmailBanner() {
       role="status"
       aria-live="polite"
       data-testid="verify-email-banner"
-      className="flex items-start gap-3 border-b border-status-amber-200 bg-status-amber-50 px-6 py-3 text-sm text-status-amber-700"
+      className="flex items-start gap-3 border-b border-warning/25 bg-warning-subtle px-6 py-3 text-sm text-warning-subtle-foreground"
     >
       <MailWarning className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
       <div className="flex-1">
         <p className="font-medium">Verify your email to unlock everything</p>
-        <p className="mt-0.5 text-status-amber-700/90">
+        <p className="mt-0.5 opacity-90">
           You can explore Brain now, but connecting a real store, inviting members, and billing
           stay locked until your email is verified.
         </p>
@@ -80,7 +80,7 @@ export function VerifyEmailBanner() {
         size="sm"
         variant="outline"
         data-testid="btn-resend-verification"
-        className="shrink-0 border-status-amber-200 bg-white/60"
+        className="shrink-0"
       >
         <Link href={verifyHref}>Verify email</Link>
       </Button>
@@ -89,7 +89,7 @@ export function VerifyEmailBanner() {
         onClick={handleDismiss}
         aria-label="Dismiss verify-email reminder"
         data-testid="btn-dismiss-verify-banner"
-        className="shrink-0 rounded p-1 text-status-amber-700 hover:bg-status-amber-200/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-status-amber-200"
+        className="shrink-0 rounded p-1 transition-colors hover:bg-warning/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         <X className="h-4 w-4" aria-hidden="true" />
       </button>

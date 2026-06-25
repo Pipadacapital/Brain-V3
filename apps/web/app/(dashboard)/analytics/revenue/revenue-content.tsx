@@ -7,6 +7,7 @@
 import { useState } from 'react';
 import { TrendingUp, BarChart3 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { PageHeader } from '@/components/ui/page-header';
 import { KpiTile } from '@/components/analytics/kpi-tile';
 import { TrendChart } from '@/components/analytics/trend-chart';
 import { RecognitionDonut } from '@/components/analytics/recognition-donut';
@@ -78,12 +79,10 @@ export function RevenueContent() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-foreground">Revenue</h1>
-        <p className="text-muted-foreground mt-1">
-          Realized vs provisional revenue — last 90 days.
-        </p>
-      </div>
+      <PageHeader
+        title="Revenue"
+        description="Realized vs provisional revenue — last 90 days."
+      />
 
       {/* KPI tiles */}
       <section aria-label="Revenue KPIs">

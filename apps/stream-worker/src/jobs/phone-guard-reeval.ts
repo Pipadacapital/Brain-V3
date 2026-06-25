@@ -14,14 +14,14 @@
 
 import { Pool } from 'pg';
 import neo4j from 'neo4j-driver';
+import { loadStreamWorkerConfig } from '@brain/config';
 import { log } from '../log.js';
 
-const DB_URL =
-  process.env['BRAIN_APP_DATABASE_URL'] ??
-  'postgres://brain_app:brain_app@localhost:5432/brain';
-const NEO4J_URI = process.env['NEO4J_URI'] ?? 'bolt://localhost:7687';
-const NEO4J_USER = process.env['NEO4J_USER'] ?? 'neo4j';
-const NEO4J_PASSWORD = process.env['NEO4J_PASSWORD'] ?? 'neo4j';
+const cfg = loadStreamWorkerConfig();
+const DB_URL = cfg.BRAIN_APP_DATABASE_URL;
+const NEO4J_URI = cfg.NEO4J_URI;
+const NEO4J_USER = cfg.NEO4J_USER;
+const NEO4J_PASSWORD = cfg.NEO4J_PASSWORD;
 
 function toNum(v: unknown): number {
   if (v == null) return 0;

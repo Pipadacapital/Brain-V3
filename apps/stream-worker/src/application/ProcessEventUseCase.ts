@@ -235,8 +235,11 @@ export class ProcessEventUseCase {
   private async claimDedupBestEffort(brandId: string, eventId: string): Promise<void> {
     try {
       await this.dedup.claim(brandId, eventId);
-    } catch {
-      // Non-fatal: the PK is the durable dedup; the fast-path slot is just an optimization.
+    } catch (err) {
+      // intentional non-fatal: the PK is the durable dedup; the fast-path slot is just an
+      // optimization. Surface at debug so a persistently-degraded Redis is visible without
+      // ever failing an already-committed event.
+      log.debug('redis dedup fast-path claim failed (non-fatal)', { brand_id: brandId, err });
     }
   }
 

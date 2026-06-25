@@ -19,6 +19,7 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { Truck, ArrowRight } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { PageHeader } from '@/components/ui/page-header';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
@@ -147,9 +148,10 @@ export function LogisticsContent() {
 
   return (
     <div className="space-y-8">
-      <div>
-        <div className="flex flex-wrap items-center gap-2">
-          <h1 className="text-2xl font-bold text-foreground">Logistics</h1>
+      <PageHeader
+        title="Logistics"
+        description="Delivery vs RTO outcomes and courier / pincode performance — folded deterministically from shipment-lifecycle events across every logistics source (GoKwik AWB, Shiprocket)."
+        meta={
           <span
             className="inline-flex items-center gap-1 rounded-md border border-border bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"
             title="Read from the Silver tier (silver_shipment) via the metric-engine shipment-outcomes seam."
@@ -157,12 +159,8 @@ export function LogisticsContent() {
             <Truck className="h-3 w-3" aria-hidden="true" />
             Powered by the Silver tier
           </span>
-        </div>
-        <p className="text-muted-foreground mt-1">
-          Delivery vs RTO outcomes and courier / pincode performance — folded deterministically
-          from shipment-lifecycle events across every logistics source (GoKwik AWB, Shiprocket).
-        </p>
-      </div>
+        }
+      />
 
       <section aria-label="Shipment outcomes">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-3">

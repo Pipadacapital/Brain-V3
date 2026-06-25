@@ -25,7 +25,7 @@ import { BronzeRepository } from './infrastructure/pg/BronzeRepository.js';
 import { Neo4jIdentityRepository } from './infrastructure/neo4j/Neo4jIdentityRepository.js';
 import { createSaltProvider } from './infrastructure/secrets/SaltProvider.js';
 import { initObservability, initSentry, createLogger } from '@brain/observability';
-import { requireEnvInProd } from '@brain/config';
+import { requireEnvInProd, loadStreamWorkerConfig } from '@brain/config';
 
 /** Structured logger for stream-worker lifecycle/error logs. */
 const log = createLogger({ serviceName: 'stream-worker' });
@@ -62,50 +62,46 @@ import { ConnectorRateLimiter } from './infrastructure/redis/ConnectorRateLimite
 export async function main(): Promise<void> {
   // Real OpenTelemetry export (ADR-009) — gated by OTEL_EXPORTER_OTLP_ENDPOINT (no-op in dev).
   // Keep the flush fns so graceful shutdown can export the final batch before exit (C1).
-  const shutdownObservability = await initObservability({ serviceName: 'stream-worker', otlpEndpoint: process.env['OTEL_EXPORTER_OTLP_ENDPOINT'] });
+  const cfg = loadStreamWorkerConfig();
+  const shutdownObservability = await initObservability({ serviceName: 'stream-worker', otlpEndpoint: cfg.OTEL_EXPORTER_OTLP_ENDPOINT });
   const closeSentry = await initSentry({ serviceName: 'stream-worker' }); // gated by SENTRY_DSN (no-op in dev)
 
-  const brokers = (process.env['KAFKA_BROKERS'] ?? 'localhost:9092').split(',');
-  const redisUrl = process.env['REDIS_URL'] ?? 'redis://localhost:6379';
+  const brokers = cfg.KAFKA_BROKERS.split(',');
+  const redisUrl = cfg.REDIS_URL;
   // IMPORTANT: must connect as brain_app to enforce RLS (not superuser 'brain')
-  const dbUrl =
-    process.env['BRAIN_APP_DATABASE_URL'] ??
-    'postgres://brain_app:brain_app@localhost:5432/brain';
-  const topic = process.env['COLLECTOR_TOPIC'] ?? 'dev.collector.event.v1';
-  const groupId = process.env['CONSUMER_GROUP_ID'] ?? 'stream-worker-live';
-  const identityGroupId = process.env['IDENTITY_CONSUMER_GROUP_ID'] ?? 'identity-bridge-live';
+  const dbUrl = cfg.BRAIN_APP_DATABASE_URL;
+  const topic = cfg.COLLECTOR_TOPIC;
+  const groupId = cfg.CONSUMER_GROUP_ID;
+  const identityGroupId = cfg.IDENTITY_CONSUMER_GROUP_ID;
   // Consent-suppressor (feat-d13-consent-cancontact): separate consumer group on the
   // SAME live topic (no new topic, no new deployable — I-E05). Projects the first-class
   // consent_flags envelope field into consent_record + consent_tombstone (the SoR the
   // can_contact() chokepoint queries fail-closed). WIRED HERE: do NOT remove without
   // updating consent-suppressor.e2e.test.ts.
-  const consentSuppressorGroupId =
-    process.env['CONSENT_SUPPRESSOR_CONSUMER_GROUP_ID'] ?? 'stream-worker-consent-suppressor';
+  const consentSuppressorGroupId = cfg.CONSENT_SUPPRESSOR_CONSUMER_GROUP_ID;
   // CAPI retroactive-deletion (feat-capi-conversion-feedback / Phase 6): a SEPARATE
   // consumer group on the SAME live topic (no new topic, no new deployable — I-E05).
   // On an 'advertising' consent withdrawal/erasure → records a capi_deletion_log request
   // within the DPDP ≤15min withdrawal-propagation SLA. WIRED HERE: do NOT remove without
   // updating capi-deletion.e2e.test.ts.
-  const capiDeletionGroupId =
-    process.env['CAPI_DELETION_CONSUMER_GROUP_ID'] ?? 'stream-worker-capi-deletion';
+  const capiDeletionGroupId = cfg.CAPI_DELETION_CONSUMER_GROUP_ID;
   // Live-ledger bridge (ORCH-LV-H1 fix): separate consumer group on the live topic — mirrors
   // IdentityBridgeConsumer pattern. Does NOT double-write Bronze (CollectorEventConsumer handles
   // Bronze). Filters to order.live.v1 events only; routes provisional_recognition / rto_reversal.
-  const liveLedgerGroupId = process.env['LIVE_LEDGER_CONSUMER_GROUP_ID'] ?? 'live-ledger-bridge';
+  const liveLedgerGroupId = cfg.LIVE_LEDGER_CONSUMER_GROUP_ID;
   // Settlement ledger bridge (ADR-RZ-6 / MB-4): separate consumer group on the live topic.
   // Filters settlement.live.v1 events; does TWO-HOP JOIN → net-of-fees finalization writes.
   // WIRED HERE (MB-4 NON-NEGOTIABLE) — unwiring triggers durable-rule proposal (occurrence #3).
-  const settlementLedgerGroupId =
-    process.env['SETTLEMENT_LEDGER_CONSUMER_GROUP_ID'] ?? 'settlement-ledger-bridge';
+  const settlementLedgerGroupId = cfg.SETTLEMENT_LEDGER_CONSUMER_GROUP_ID;
   // GoKwik AWB ledger bridge (feat-gokwik-shopflo-connectors / 0030): separate consumer group on
   // the live topic. Filters gokwik.awb_status.v1; terminal RTO → cod_rto_clawback (signed-negative),
   // terminal Delivered → cod_delivery_confirmed. WIRED HERE (NON-NEGOTIABLE) — unwiring is the
   // wired-to-nothing anti-pattern (gokwik-awb-ledger-wiring.e2e.test.ts catches it).
-  const gokwikAwbLedgerGroupId =
-    process.env['GOKWIK_AWB_LEDGER_CONSUMER_GROUP_ID'] ?? 'gokwik-awb-ledger-bridge';
-  // Backfill lane (ADR-BF-7 / D-3): separate topic + group → zero live-lane lag impact
-  const backfillTopic = process.env['BACKFILL_TOPIC'] ?? `${process.env['NODE_ENV'] === 'production' ? 'prod' : 'dev'}.collector.order.backfill.v1`;
-  const backfillGroupId = process.env['BACKFILL_CONSUMER_GROUP_ID'] ?? 'stream-worker-backfill';
+  const gokwikAwbLedgerGroupId = cfg.GOKWIK_AWB_LEDGER_CONSUMER_GROUP_ID;
+  // Backfill lane (ADR-BF-7 / D-3): separate topic + group → zero live-lane lag impact.
+  // BACKFILL_TOPIC default derives from NODE_ENV inside the config loader.
+  const backfillTopic = cfg.BACKFILL_TOPIC;
+  const backfillGroupId = cfg.BACKFILL_CONSUMER_GROUP_ID;
 
   const kafka = new Kafka({
     clientId: 'stream-worker',
@@ -145,7 +141,7 @@ export async function main(): Promise<void> {
   // (brain_app) — a SELECT 1 needs no RLS GUC.
   let consumersReady = false;
   const healthServer = startHealthServer({
-    port: parseInt(process.env['HEALTH_PORT'] ?? '8090', 10),
+    port: cfg.HEALTH_PORT,
     isReady: () => consumersReady,
     pingDb: async () => {
       await auditPool.query('SELECT 1');
@@ -162,7 +158,7 @@ export async function main(): Promise<void> {
   // parity soak is green — see ProcessEventUseCase.pgWriteEnabled.
   // DB-AUDIT C4: PG bronze write is RETIRED — default OFF (opt-in). Spark→Iceberg is the sole Bronze SoR
   // and data_plane.bronze_events is dropped (0070). Set BRONZE_PG_WRITE_ENABLED=true only as a legacy escape.
-  const pgWriteEnabled = process.env['BRONZE_PG_WRITE_ENABLED'] === 'true';
+  const pgWriteEnabled = cfg.BRONZE_PG_WRITE_ENABLED;
   if (!pgWriteEnabled) log.info('PG bronze_events write RETIRED (default) — Iceberg (Spark) is the sole Bronze SoR');
   // enforceTenantDerivation defaults TRUE: derive brand_id from install_token, quarantine
   // on unresolved/mismatch/absent-consent; audit writes pixel.brand_mismatch (R2/R3).
@@ -204,6 +200,7 @@ export async function main(): Promise<void> {
   // PII vault DEK provider (P0-C): dev derives a deterministic per-brand DEK; prod unwraps
   // the brand_keyring DEK via AWS KMS. The contact_pii write-population encrypts with this key
   // (the SAME provider apps/core's vault read path uses, via @brain/pii-vault).
+  // intentional raw: NODE_ENV prod-gating selects the secret/KMS code path.
   const vaultKeyProvider: VaultKeyProvider =
     process.env['NODE_ENV'] === 'production'
       ? new KmsVaultKeyProvider(new PgPool({ connectionString: dbUrl, max: 2 }), new AwsKmsDecryptAdapter())
@@ -214,9 +211,9 @@ export async function main(): Promise<void> {
   // stay in PostgreSQL (passed via dbUrl). The pure IdentityResolver runs unchanged (IdentityStore
   // contract). Supersedes ADR-0003 (the retired PG-SoR + Neo4j-dual-write experiment).
   const identityRepo = new Neo4jIdentityRepository(
-    process.env['NEO4J_URI'] ?? 'bolt://localhost:7687',
-    process.env['NEO4J_USER'] ?? 'neo4j',
-    process.env['NEO4J_PASSWORD'] ?? 'neo4j',
+    cfg.NEO4J_URI,
+    cfg.NEO4J_USER,
+    cfg.NEO4J_PASSWORD,
     dbUrl,
     vaultKeyProvider,
   );
@@ -252,7 +249,7 @@ export async function main(): Promise<void> {
   // the right prior passbacks. Default-closed: in dev (no Meta creds) the request is
   // recorded as 'would_delete_dev' — NOTHING is sent to Meta. hasMetaCreds is derived
   // from env (false in dev); prod wires the Secrets Manager fetch (platform follow-up).
-  const capiHasMetaCreds = process.env['META_CAPI_CREDS_WIRED'] === 'true';
+  const capiHasMetaCreds = cfg.META_CAPI_CREDS_WIRED;
   const capiDeletionRepo = new CapiDeletionRepository(dbUrl);
   const requestCapiDeletionUseCase = new RequestCapiDeletionUseCase(
     saltProvider, capiDeletionRepo, capiHasMetaCreds,
@@ -299,10 +296,7 @@ export async function main(): Promise<void> {
   // (RLS enforced) — never superuser 'brain'. WIRED HERE: do not remove without
   // updating sync-request-claimer.live.test.ts.
   const syncClaimerPool = new PgPool({ connectionString: dbUrl, max: 3 });
-  const syncRequestClaimerIntervalMs = parseInt(
-    process.env['SYNC_REQUEST_CLAIMER_INTERVAL_MS'] ?? '5000',
-    10,
-  );
+  const syncRequestClaimerIntervalMs = cfg.SYNC_REQUEST_CLAIMER_INTERVAL_MS;
   const syncRequestClaimer = startSyncRequestClaimer(syncClaimerPool, syncRequestClaimerIntervalMs);
   log.info(`sync-request claimer running — interval=${syncRequestClaimerIntervalMs}ms`,
   );
@@ -318,16 +312,16 @@ export async function main(): Promise<void> {
   // (RLS enforced) — never superuser 'brain'. WIRED HERE: do not remove without updating
   // dq-checks.e2e.test.ts. Tier-0 deterministic (no model; $0/mo).
   const dqPool = new PgPool({ connectionString: dbUrl, max: 3 });
-  const dqIntervalMs = parseInt(process.env['DQ_CHECK_INTERVAL_MS'] ?? '300000', 10);
+  const dqIntervalMs = cfg.DQ_CHECK_INTERVAL_MS;
   // Silver (StarRocks) config — when absent, the Silver-tier checks emit an honest D row
   // (never a false A+). Reuses the same brain_analytics SELECT-only credentials as core.
-  const dqSilverHost = process.env['STARROCKS_HOST'];
+  const dqSilverHost = cfg.STARROCKS_HOST;
   const dqSilver =
     dqSilverHost !== undefined
       ? {
           host: dqSilverHost,
-          port: parseInt(process.env['STARROCKS_PORT'] ?? '9030', 10),
-          user: process.env['STARROCKS_ANALYTICS_USER'] ?? 'brain_analytics',
+          port: cfg.STARROCKS_PORT,
+          user: cfg.STARROCKS_ANALYTICS_USER,
           password: requireEnvInProd('STARROCKS_ANALYTICS_PASSWORD', 'brain_analytics_dev'),
         }
       : undefined;
@@ -348,11 +342,8 @@ export async function main(): Promise<void> {
   // NO brand GUC; every brand-scoped op happens inside run() under its own GUC (MT-1).
   // WIRED HERE: do not remove without updating ingest-scheduler.e2e.test.ts.
   const ingestSchedulerPool = new PgPool({ connectionString: dbUrl, max: 3 });
-  const ingestSchedulerIntervalMs = parseInt(
-    process.env['SYNC_SCHEDULER_INTERVAL_MS'] ?? '45000',
-    10,
-  );
-  const ingestSchedulerBatch = parseInt(process.env['REPULL_CLAIM_BATCH'] ?? '100', 10);
+  const ingestSchedulerIntervalMs = cfg.SYNC_SCHEDULER_INTERVAL_MS;
+  const ingestSchedulerBatch = cfg.REPULL_CLAIM_BATCH;
   // P1: global cross-replica per-provider rate limiter (Redis) — caps shared app-quota providers
   // (Meta/Google) so the parallel work-queue can't storm them across replicas. Fail-open.
   const connectorRateLimiter = new ConnectorRateLimiter(redisUrl);
@@ -448,6 +439,7 @@ export async function main(): Promise<void> {
   // bronzeBridges.test.ts; the per-source landings are covered by *-bronze-wiring.e2e.test.ts.
   for (let i = 0; i < bronzeBridgeConsumers.length; i++) {
     const def = BRONZE_BRIDGES[i]!;
+    // intentional raw: groupIdEnv is a DYNAMIC env-var name from the registry, not a fixed field.
     log.info(`starting bronze bridge ${def.eventName} — topic=${topic} group=${process.env[def.groupIdEnv] ?? def.defaultGroupId}`);
     await bronzeBridgeConsumers[i]!.start();
     log.info(`bronze bridge ${def.eventName} consumer running`);

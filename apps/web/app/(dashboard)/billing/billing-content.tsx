@@ -27,6 +27,7 @@ import {
   FileMinus,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { PageHeader } from '@/components/ui/page-header';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -109,7 +110,7 @@ function InvoiceSection({ period, currency }: { period: string; currency: string
     <div className="rounded-lg border p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="inline-flex items-center gap-2">
-          <FileCheck2 className="h-4 w-4 text-emerald-600" aria-hidden="true" />
+          <FileCheck2 className="h-4 w-4 text-success" aria-hidden="true" />
           <span className="font-medium">Invoice {data.invoice_number}</span>
           <span className="text-xs text-muted-foreground">
             issued {new Date(data.issued_at).toLocaleDateString()}
@@ -163,11 +164,11 @@ function InvoiceSection({ period, currency }: { period: string; currency: string
             {data.credit_notes.map((cn) => (
               <li key={cn.credit_note_id} className="flex flex-wrap items-baseline justify-between gap-2 text-sm">
                 <span className="inline-flex items-center gap-1.5">
-                  <FileMinus className="h-3.5 w-3.5 text-amber-600" aria-hidden="true" />
+                  <FileMinus className="h-3.5 w-3.5 text-warning" aria-hidden="true" />
                   <span className="font-medium">{cn.credit_note_number}</span>
                   <span className="text-muted-foreground">— {cn.reason}</span>
                 </span>
-                <span className="tabular-nums text-amber-700">−{money(cn.total_minor, currency)}</span>
+                <span className="tabular-nums text-warning">−{money(cn.total_minor, currency)}</span>
               </li>
             ))}
           </ul>
@@ -335,12 +336,12 @@ function BillDetail({ period }: { period: string }) {
 
       {/* Reconciliation — does the live composition still equal the sealed basis? */}
       {reconciled ? (
-        <div className="inline-flex items-center gap-1.5 rounded-md bg-emerald-50 px-2.5 py-1.5 text-sm text-emerald-700">
+        <div className="inline-flex items-center gap-1.5 rounded-md bg-success-subtle px-2.5 py-1.5 text-sm text-success-subtle-foreground">
           <ShieldCheck className="h-4 w-4" aria-hidden="true" />
           Reconciles — the live composition equals the sealed basis.
         </div>
       ) : (
-        <div className="flex items-start gap-1.5 rounded-md bg-amber-50 px-2.5 py-1.5 text-sm text-amber-800">
+        <div className="flex items-start gap-1.5 rounded-md bg-warning-subtle px-2.5 py-1.5 text-sm text-warning-subtle-foreground">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
           <span>
             Backdated rows landed after sealing: the live composition is{' '}
@@ -370,14 +371,16 @@ export function BillingContent() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Billing</h1>
-        <p className="text-sm text-muted-foreground">
-          Brain bills on a share of <strong>realized GMV</strong>. Each billing period is sealed
-          into an immutable snapshot — the figure you&apos;re billed on is reproducible from the
-          ledger and can never silently change.
-        </p>
-      </div>
+      <PageHeader
+        title="Billing"
+        description={
+          <>
+            Brain bills on a share of <strong className="font-medium text-foreground">realized GMV</strong>. Each billing period is sealed
+            into an immutable snapshot — the figure you&apos;re billed on is reproducible from the
+            ledger and can never silently change.
+          </>
+        }
+      />
 
       {/* ── Meter a period ───────────────────────────────────────────────── */}
       <Card>
@@ -413,7 +416,7 @@ export function BillingContent() {
               </span>
             )}
             {seal.isSuccess && seal.data && (
-              <span className="inline-flex items-center gap-1.5 text-emerald-600">
+              <span className="inline-flex items-center gap-1.5 text-success">
                 <ShieldCheck className="h-4 w-4" aria-hidden="true" />
                 {seal.data.sealed ? 'Sealed' : 'Already sealed'} {seal.data.billing_period}:{' '}
                 <strong>{money(seal.data.metered_gmv_minor, seal.data.currency_code)}</strong>{' '}

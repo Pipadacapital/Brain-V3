@@ -3,6 +3,8 @@
 import { InviteMemberDialog } from '@/components/members/invite-member-dialog';
 import { MembersTable } from '@/components/members/members-table';
 import { PendingInvitesSection } from '@/components/members/pending-invites-section';
+import { PageHeader } from '@/components/ui/page-header';
+import { SectionCard } from '@/components/ui/section-card';
 import { useMemberList } from '@/lib/hooks/use-members';
 import { useCurrentUser } from '@/lib/hooks/use-auth';
 import type { RoleCode } from '@/lib/api/types';
@@ -32,33 +34,38 @@ export function MembersPageClient() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-foreground">Team members</h1>
-          <p className="text-muted-foreground mt-1">
-            Manage who has access to your workspace.
-          </p>
-        </div>
-        <InviteMemberDialog
-          currentUserRole={currentUserRole}
-          data-testid="invite-member-trigger"
-        />
-      </div>
-
-      <MembersTable
-        currentUserRole={currentUserRole}
-        currentMemberId={currentMemberId}
+      <PageHeader
+        title="Team members"
+        description="Manage who has access to your workspace and what they can do."
+        actions={
+          <InviteMemberDialog
+            currentUserRole={currentUserRole}
+            data-testid="invite-member-trigger"
+          />
+        }
       />
+
+      <SectionCard
+        title="Members"
+        description="People with access to this workspace and their assigned roles."
+        flush
+      >
+        <MembersTable
+          currentUserRole={currentUserRole}
+          currentMemberId={currentMemberId}
+        />
+      </SectionCard>
 
       {/* Pending invites section — visible to Owner and Brand Admin (D-4). */}
       {(currentUserRole === 'owner' || currentUserRole === 'brand_admin') && (
-        <div className="space-y-3" data-testid="pending-invites-container">
-          <h2 className="text-lg font-semibold text-foreground">Pending invitations</h2>
-          <p className="text-sm text-muted-foreground">
-            Invitations waiting to be accepted.
-          </p>
+        <SectionCard
+          title="Pending invitations"
+          description="Invitations that have been sent but not yet accepted."
+          flush
+          data-testid="pending-invites-container"
+        >
           <PendingInvitesSection currentUserRole={currentUserRole} />
-        </div>
+        </SectionCard>
       )}
     </div>
   );

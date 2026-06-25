@@ -20,6 +20,7 @@
 import type { EngineDeps, SilverPool } from '@brain/metric-engine';
 import { withBrandTxn, withSilverBrand, BRAND_PREDICATE } from '@brain/metric-engine';
 import { hasSilver } from './_bronze-source.js';
+import { log } from '../../../../../log.js';
 
 export interface DataHealthVolumeBucket {
   bucket: string; // 'YYYY-MM-DD'
@@ -104,9 +105,10 @@ async function readBronzeIceberg(
      // The Iceberg Bronze catalog isn't materialized/reachable yet (fresh env, or a transient
      // external-catalog error that isn't the 'unknown table' the seam already swallows). Degrade to
      // honest no-data so the dashboard's foundation signals stay up instead of 500-ing. Observable.
-     console.warn(
-       `[get-data-health] Iceberg Bronze read degraded to empty — catalog unavailable: ${err instanceof Error ? err.message : String(err)}`,
-     );
+     log.warn('get-data-health: Iceberg Bronze read degraded to empty — catalog unavailable', {
+       brand_id: brandId,
+       err,
+     });
      return { exists: false, volume: [], lastIngestAt: null };
    }
   });

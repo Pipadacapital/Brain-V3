@@ -26,19 +26,28 @@ export function UserMenu() {
   }
 
   return (
-    <div className="border-t px-3 py-4">
+    <div className="border-t border-border p-3">
       {email && (
-        <p
-          className="px-3 pb-2 text-xs text-muted-foreground truncate"
-          title={email}
-          data-testid="current-user-email"
-        >
-          {email}
-        </p>
+        <div className="flex items-center gap-2.5 rounded-md px-2.5 py-1.5">
+          <span
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-semibold uppercase text-muted-foreground"
+            aria-hidden="true"
+          >
+            {email.charAt(0)}
+          </span>
+          <p
+            className="min-w-0 flex-1 truncate text-xs text-muted-foreground"
+            title={email}
+            data-testid="current-user-email"
+          >
+            {email}
+          </p>
+        </div>
       )}
       <Button
         variant="ghost"
-        className="w-full justify-start gap-3 text-muted-foreground hover:text-foreground"
+        size="sm"
+        className="mt-0.5 w-full justify-start gap-2.5 text-muted-foreground hover:text-foreground"
         onClick={handleLogout}
         disabled={isPending}
         data-testid="btn-logout"

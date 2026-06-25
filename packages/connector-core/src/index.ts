@@ -35,10 +35,17 @@ export type {
 export { ConnectorCursor } from './domain/entities/ConnectorCursor.js';
 export type { ConnectorCursorProps } from './domain/entities/ConnectorCursor.js';
 
+export { ResourceBackfillState } from './domain/entities/ResourceBackfillState.js';
+export type {
+  ResourceBackfillStateProps,
+  ResourceBackfillStatus,
+} from './domain/entities/ResourceBackfillState.js';
+
 // ── Repository interfaces ──────────────────────────────────────────────────────
 export type { IConnectorInstanceRepository } from './domain/repositories/IConnectorInstanceRepository.js';
 export type { IConnectorSyncStatusRepository } from './domain/repositories/IConnectorSyncStatusRepository.js';
 export type { IConnectorCursorRepository } from './domain/repositories/IConnectorCursorRepository.js';
+export type { IResourceBackfillStateRepository } from './domain/repositories/IResourceBackfillStateRepository.js';
 
 // ── Unified contracts ──────────────────────────────────────────────────────────
 export type {
@@ -62,6 +69,57 @@ export type {
   CanonicalProvenance,
   CanonicalPreHashedIdentifiers,
 } from './contracts/CanonicalEvent.js';
+
+// ── Ingestion framework: manifest (resource registry) ────────────────────────────
+export {
+  TWO_YEARS_MS,
+  UNBOUNDED_BACKFILL_WINDOW_MS,
+  resolveBackfillFloor,
+  getResource,
+  backfillableResources,
+  assertManifestValid,
+} from './contracts/IngestionManifest.js';
+export type {
+  IngestionManifest,
+  ResourceDescriptor,
+  ResourceKind,
+  CursorStrategy,
+  DedupKeyStrategy,
+} from './contracts/IngestionManifest.js';
+
+// ── Ingestion framework: dedup (deterministic event-id) ──────────────────────────
+export {
+  DeterministicDedupKeyDeriver,
+  deterministicDedupKeyDeriver,
+  buildDedupNamespace,
+} from './contracts/Dedup.js';
+export type { IDedupKeyDeriver, DedupKeyInput } from './contracts/Dedup.js';
+
+// ── Ingestion framework: no-loss (retry + DLQ) ───────────────────────────────────
+export {
+  deliverWithNoLoss,
+  backoffDelayMs,
+  DEFAULT_RETRY_POLICY,
+} from './contracts/NoLoss.js';
+export type {
+  IEventSink,
+  IDeadLetterSink,
+  DeadLetterRecord,
+  RetryPolicy,
+  Sleeper,
+  DeliveryOutcome,
+} from './contracts/NoLoss.js';
+
+// ── Ingestion framework: resumable chunked backfill driver ───────────────────────
+export { runResumableBackfill } from './contracts/Backfill.js';
+export type {
+  IResourcePageFetcher,
+  ResourcePage,
+  FetchedRecord,
+  CanonicalEventDraft,
+  BackfillRunResult,
+  BackfillStopReason,
+} from './contracts/Backfill.js';
 
 // ── Shared utils ───────────────────────────────────────────────────────────────
 export { hashToUuidShaped } from './util/hash-to-uuid-shaped.js';

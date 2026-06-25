@@ -23,6 +23,9 @@ export interface BronzeReadDeps extends EngineDeps {
  * (db/starrocks/external_iceberg_catalog.sql). Catalog name is env-overridable so prod can point at
  * the Glue catalog (brain_bronze_prod) without code change.
  */
+// intentional: module-load constant. STARROCKS_BRONZE_CATALOG exists in @brain/config, but
+// loadCoreConfig() at module-load validates the full schema + process.exit(1)s on missing env →
+// would crash standalone unit imports. Left raw to preserve zero import-time behaviour change.
 export const ICEBERG_BRONZE = `${process.env['STARROCKS_BRONZE_CATALOG'] ?? 'brain_bronze_local'}.brain_bronze.collector_events`;
 
 /**

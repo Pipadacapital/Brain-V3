@@ -4,7 +4,8 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Loader2, Building2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Alert } from '@/components/ui/alert';
+import { SectionCard } from '@/components/ui/section-card';
 import { sessionApi } from '@/lib/api/client';
 import { BffApiError, userFacingMessage } from '@/lib/api/client';
 import { resolveOnboardingRoute } from '@/components/auth/login-form';
@@ -74,51 +75,48 @@ export function SelectOrgForm() {
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Select a workspace</CardTitle>
-        <CardDescription>
-          You belong to multiple workspaces. Choose which one to open.
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        {selectError && (
-          <p className="mb-4 text-sm text-destructive" role="alert">
-            {selectError}
-          </p>
-        )}
-        <div className="space-y-3" role="list" aria-label="Workspaces">
-          {workspaces.map((ws) => (
-            <div
-              key={ws.id}
-              role="listitem"
-              className="flex items-center justify-between rounded-md border p-4 hover:bg-muted/50 transition-colors"
-            >
-              <div className="flex items-center gap-3 min-w-0">
-                <Building2 className="h-5 w-5 shrink-0 text-muted-foreground" aria-hidden="true" />
-                <div className="min-w-0">
-                  <p className="font-medium text-sm truncate">{ws.name}</p>
-                  <p className="text-xs text-muted-foreground truncate">{ws.slug}</p>
-                </div>
-              </div>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => handleSelect(ws.id)}
-                disabled={selectingId !== null}
-                aria-label={`Open workspace ${ws.name}`}
-                data-testid={`btn-select-org-${ws.id}`}
+    <SectionCard
+      title="Select a workspace"
+      description="You belong to multiple workspaces. Choose which one to open."
+    >
+      {selectError && (
+        <Alert variant="destructive" className="mb-4">
+          {selectError}
+        </Alert>
+      )}
+      <div className="space-y-3" role="list" aria-label="Workspaces">
+        {workspaces.map((ws) => (
+          <div
+            key={ws.id}
+            role="listitem"
+            className="flex items-center justify-between gap-3 rounded-lg border border-border p-4 transition-colors hover:bg-muted/50"
+          >
+            <div className="flex min-w-0 items-center gap-3">
+              <span
+                className="flex size-9 shrink-0 items-center justify-center rounded-md border border-border bg-muted/60 text-muted-foreground"
+                aria-hidden="true"
               >
-                {selectingId === ws.id ? (
-                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                ) : (
-                  'Open'
-                )}
-              </Button>
+                <Building2 className="size-4" />
+              </span>
+              <div className="min-w-0">
+                <p className="truncate text-sm font-medium text-foreground">{ws.name}</p>
+                <p className="truncate text-xs text-muted-foreground">{ws.slug}</p>
+              </div>
             </div>
-          ))}
-        </div>
-      </CardContent>
-    </Card>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => handleSelect(ws.id)}
+              loading={selectingId === ws.id}
+              disabled={selectingId !== null}
+              aria-label={`Open workspace ${ws.name}`}
+              data-testid={`btn-select-org-${ws.id}`}
+            >
+              {selectingId === ws.id ? '' : 'Open'}
+            </Button>
+          </div>
+        ))}
+      </div>
+    </SectionCard>
   );
 }

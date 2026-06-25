@@ -79,6 +79,8 @@ import type {
   SessionRefreshResponse,
   CreateBrandRequest,
   BrandResponse,
+  BrandStatus,
+  BrandArchiveResponse,
   MemberResponse,
   InviteResponse,
   InviteMemberRequest,
@@ -565,7 +567,7 @@ export const brandApi = {
   // Archive (soft-delete) a brand created by mistake → DELETE /api/v1/brands/:id. The brand drops
   // out of lists and its ingest stops; reversible server-side. Owner / brand_admin only.
   remove: (id: string) =>
-    bffFetch<{ request_id: string; data: { id: string; archived: boolean } }>(`/v1/brands/${id}`, {
+    bffFetch<{ request_id: string; data: BrandArchiveResponse }>(`/v1/brands/${id}`, {
       method: 'DELETE',
       idempotencyKey: generateRequestId(),
     }),
@@ -725,6 +727,7 @@ function mapConnectorList(raw: RawConnectorListEnvelope): ConnectorListItem[] {
     provider: 'shopify',
     display_name: 'Shopify',
     description: 'Connect your Shopify store to sync orders and revenue data.',
+    category: 'storefront',
     coming_soon: false,
     instance: shopify.connected && shopify.connectorInstanceId
       ? {
@@ -748,6 +751,7 @@ function mapConnectorList(raw: RawConnectorListEnvelope): ConnectorListItem[] {
       provider: 'meta',
       display_name: 'Meta Ads',
       description: 'Connect your Meta Ads account for campaign performance data.',
+      category: 'ads',
       coming_soon: true,
     });
   }
@@ -758,6 +762,7 @@ function mapConnectorList(raw: RawConnectorListEnvelope): ConnectorListItem[] {
       provider: 'google',
       display_name: 'Google Ads',
       description: 'Connect your Google Ads account for search campaign data.',
+      category: 'ads',
       coming_soon: true,
     });
   }
@@ -805,6 +810,7 @@ export const connectorsApi = {
         provider: tile.id as ConnectorListItem['provider'],
         display_name: tile.display_name,
         description: tile.description,
+        category: tile.category,
         coming_soon: !tile.available,
         instance: isConnected && tile.instance
           ? {
@@ -1851,7 +1857,8 @@ interface RawBrandSummary {
   active_brand_id: string | null;
   brand_count: number;
   member_count: number;
-  brands: Array<{ id: string; display_name: string; domain: string | null; status: string }>;
+  // status is server-trusted from the BFF brand-summary contract ('active' | 'archived').
+  brands: Array<{ id: string; display_name: string; domain: string | null; status: BrandStatus }>;
 }
 
 interface RawConnectionStatus {

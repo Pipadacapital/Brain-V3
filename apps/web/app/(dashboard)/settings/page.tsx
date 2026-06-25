@@ -1,6 +1,7 @@
 import Link from 'next/link';
-import { Plug, Zap, Users, ShieldCheck } from 'lucide-react';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Plug, Zap, Users, ShieldCheck, Archive, ChevronRight } from 'lucide-react';
+import { Card, CardContent } from '@/components/ui/card';
+import { PageHeader } from '@/components/ui/page-header';
 
 export const metadata = { title: 'Settings — Brain' };
 
@@ -29,28 +30,44 @@ const settingsItems = [
     description: 'Consent coverage, the marketing suppression count, the 9–9 IST send window, and the can_contact() gate.',
     icon: ShieldCheck,
   },
+  {
+    href: '/settings/archived-brands',
+    title: 'Archived Brands',
+    description: 'View archived brands and restore one to bring it back to the switcher.',
+    icon: Archive,
+  },
 ];
 
 export default function SettingsPage() {
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-foreground">Settings</h1>
-        <p className="text-muted-foreground mt-1">
-          Manage your workspace configuration.
-        </p>
-      </div>
+      <PageHeader
+        title="Settings"
+        description="Manage your workspace configuration — data sources, tracking, your team, and compliance."
+      />
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
         {settingsItems.map(({ href, title, description, icon: Icon }) => (
-          <Link key={href} href={href} className="group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-lg">
-            <Card className="h-full hover:border-primary/50 transition-colors">
-              <CardHeader className="pb-3">
-                <CardTitle className="text-base flex items-center gap-2">
-                  <Icon className="h-4 w-4 text-muted-foreground group-hover:text-primary transition-colors" aria-hidden="true" />
-                  {title}
-                </CardTitle>
-                <CardDescription>{description}</CardDescription>
-              </CardHeader>
+          <Link
+            key={href}
+            href={href}
+            className="group rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <Card className="h-full transition-colors hover:border-primary/50">
+              <CardContent className="flex items-start gap-3 p-5">
+                <span className="flex size-9 flex-shrink-0 items-center justify-center rounded-md border border-border bg-muted/60 text-muted-foreground transition-colors group-hover:border-primary/40 group-hover:text-primary">
+                  <Icon className="size-4" aria-hidden="true" />
+                </span>
+                <div className="min-w-0 flex-1 space-y-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <h2 className="text-base font-semibold tracking-tight text-foreground">{title}</h2>
+                    <ChevronRight
+                      className="size-4 flex-shrink-0 text-muted-foreground/60 transition-transform group-hover:translate-x-0.5 group-hover:text-primary"
+                      aria-hidden="true"
+                    />
+                  </div>
+                  <p className="text-sm text-muted-foreground">{description}</p>
+                </div>
+              </CardContent>
             </Card>
           </Link>
         ))}

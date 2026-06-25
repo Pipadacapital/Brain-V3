@@ -15,6 +15,8 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { EmptyState } from '@/components/ui/empty-state';
+import { PageHeader } from '@/components/ui/page-header';
+import { StatusBadge } from '@/components/ui/status-badge';
 import { KpiTile } from '@/components/analytics/kpi-tile';
 import { SyntheticBadge } from '@/components/analytics/synthetic-badge';
 import { TrendChart } from '@/components/analytics/trend-chart';
@@ -96,7 +98,7 @@ function InsightCard({ insight }: { insight: InsightDto }) {
           {insight.delta_pct && (
             <span
               className={`inline-flex items-center gap-1 tabular-nums ${
-                deltaUp ? 'text-status-green-700' : 'text-status-red-700'
+                deltaUp ? 'text-success' : 'text-destructive'
               }`}
             >
               {deltaUp ? <TrendingUp className="h-4 w-4" /> : <TrendingDown className="h-4 w-4" />}
@@ -134,7 +136,7 @@ function InsightCard({ insight }: { insight: InsightDto }) {
             <Button size="sm" variant="ghost" onClick={() => act.mutate('dismissed')} disabled={act.isPending}>
               Dismiss
             </Button>
-            {act.isError && <span className="text-xs text-status-red-700">Couldn&apos;t record — retry.</span>}
+            {act.isError && <span className="text-xs text-destructive">Couldn&apos;t record — retry.</span>}
           </div>
         )}
         {dismissed && (
@@ -164,17 +166,16 @@ export function InsightsContent() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center gap-3">
-        <span className="rounded-lg bg-primary/10 p-2 text-primary">
-          <Sparkles className="h-6 w-6" />
-        </span>
-        <div>
-          <h1 className="text-2xl font-bold text-foreground">Insights &amp; Copilot</h1>
-          <p className="text-muted-foreground mt-0.5">
-            What changed, why, and what to do — computed from your lakehouse, never guessed.
-          </p>
-        </div>
-      </div>
+      <PageHeader
+        eyebrow={
+          <span className="inline-flex items-center gap-1.5 normal-case tracking-normal">
+            <Sparkles className="h-3.5 w-3.5 text-primary" aria-hidden="true" />
+            Copilot
+          </span>
+        }
+        title="Insights & Copilot"
+        description="What changed, why, and what to do — computed from your lakehouse, never guessed."
+      />
 
       {/* Daily briefing */}
       <Card className="border-primary/30">
@@ -195,15 +196,16 @@ export function InsightsContent() {
             {/* FRESHNESS GUARD: if the gold marts haven't been rebuilt within the SLO (e.g. the dbt
                 refresh cron stalled in prod) the briefing warns instead of silently serving stale data. */}
             {briefing?.stale && (
-              <span
+              <StatusBadge
+                tone="warning"
+                hideDot
                 role="status"
                 data-testid="insights-stale-badge"
                 title={briefing.as_of ? `Marts last refreshed ${new Date(briefing.as_of).toLocaleString()}` : 'Mart refresh is overdue'}
-                className="inline-flex items-center gap-1 rounded-md border border-status-amber-200 bg-status-amber-50 px-2 py-0.5 text-xs font-medium text-status-amber-700"
               >
                 <AlertTriangle className="h-3 w-3" aria-hidden="true" />
                 Data may be stale
-              </span>
+              </StatusBadge>
             )}
           </CardTitle>
           {briefing && <CardDescription>{briefing.headline}</CardDescription>}
@@ -211,7 +213,7 @@ export function InsightsContent() {
         <CardContent>
           {isLoading && <p className="text-sm text-muted-foreground">Analysing your commerce…</p>}
           {error && (
-            <p className="text-sm text-status-red-700">
+            <p className="text-sm text-destructive">
               Couldn&apos;t load the briefing. Your data is safe — please retry shortly.
             </p>
           )}

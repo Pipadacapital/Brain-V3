@@ -79,6 +79,7 @@ export function buildBronzeBridges(deps: {
         deps.kafka,
         deps.processEvent,
         deps.topic,
+        // intentional raw: groupIdEnv is a DYNAMIC env-var name from the registry, not a fixed field.
         process.env[def.groupIdEnv] ?? def.defaultGroupId,
         deps.retryCounter,
         def.eventName,

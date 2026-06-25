@@ -100,6 +100,46 @@ module "oidc_github" {
 # module "s3_audit"   { ... }
 
 ###############################################################################
+# Brain V4 PHASE 0 — Iceberg MEDALLION (Silver + Gold) + Spark jobs IRSA.
+# DECLARED only (mirrors the deferred-apply discipline above); apply alongside
+# s3_iceberg at M1/M4 for staging-prod parity. Uncomment when the prod S3 layer
+# is applied. ADDITIVE: no read path / dbt / app code change.
+###############################################################################
+# module "s3_iceberg_silver" {
+#   source             = "../../modules/s3-iceberg-medallion"
+#   layer              = "silver"
+#   environment        = local.environment
+#   project            = local.project
+#   kms_key_arn        = module.kms.root_kms_key_arn
+#   analytics_role_arn = module.irsa_core.role_arn
+# }
+#
+# module "s3_iceberg_gold" {
+#   source             = "../../modules/s3-iceberg-medallion"
+#   layer              = "gold"
+#   environment        = local.environment
+#   project            = local.project
+#   kms_key_arn        = module.kms.root_kms_key_arn
+#   analytics_role_arn = module.irsa_core.role_arn
+# }
+#
+# module "irsa_spark_jobs" {
+#   source               = "../../modules/irsa"
+#   role_name            = "jobs"
+#   oidc_provider_arn    = module.eks.oidc_provider_arn
+#   oidc_provider_url    = module.eks.oidc_provider_url
+#   namespace            = "argo"
+#   service_account_name = "brain-jobs"
+#   environment          = local.environment
+#   project              = local.project
+#   policy_arns = [
+#     module.s3_iceberg.stream_worker_s3_policy_arn,
+#     module.s3_iceberg_silver.spark_write_policy_arn,
+#     module.s3_iceberg_gold.spark_write_policy_arn,
+#   ]
+# }
+
+###############################################################################
 # Outputs — bootstrap phase (oidc + kms only)
 ###############################################################################
 output "github_plan_role_arn" { value = module.oidc_github.github_plan_role_arn }

@@ -17,7 +17,10 @@ ARG PG_JDBC_VERSION=42.7.4
 ARG SCALA=2.12
 
 WORKDIR /opt/brain
-COPY bronze_materialize.py bronze_parity_check.py bronze_maintenance.py validate_bronze.py /opt/brain/
+# Bronze writer/oracle/maintenance/inspector + the shared Iceberg base and the Silver/Gold
+# provisioner + medallion maintenance (V4 Phase 0, additive — the Silver/Gold seam jobs reuse).
+COPY bronze_materialize.py bronze_parity_check.py bronze_maintenance.py validate_bronze.py \
+     iceberg_base.py provision_silver_gold.py medallion_maintenance.py /opt/brain/
 
 # Resolve + cache the runtime jars at build time, then place them on the default Spark classpath.
 # NOTE: `spark-submit --packages ... --version` prints the banner and exits BEFORE Ivy resolution —

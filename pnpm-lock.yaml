@@ -253,9 +253,6 @@ importers:
       '@brain/identity-core':
         specifier: workspace:*
         version: link:../../packages/identity-core
-      '@brain/identity-graph':
-        specifier: workspace:*
-        version: link:../../packages/identity-graph
       '@brain/metric-engine':
         specifier: workspace:*
         version: link:../../packages/metric-engine
@@ -595,16 +592,6 @@ importers:
         specifier: ^25.9.3
         version: 25.9.3
 
-  packages/identity-graph:
-    dependencies:
-      neo4j-driver:
-        specifier: ^5.21.0
-        version: 5.28.3
-    devDependencies:
-      '@types/node':
-        specifier: ^25.9.3
-        version: 25.9.3
-
   packages/logistics-status:
     devDependencies:
       '@types/node':
@@ -799,8 +786,6 @@ importers:
       vitest:
         specifier: ^2.1.0
         version: 2.1.9(@types/node@25.9.3)
-
-  tools/eval: {}
 
   tools/isolation-fuzz:
     dependencies:

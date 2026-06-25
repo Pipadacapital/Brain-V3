@@ -48,7 +48,7 @@ export async function getCustomer360Summary(
               COALESCE(SUM(lifetime_value_minor), 0)    AS total_value,
               COALESCE(SUM(lifetime_orders), 0)         AS total_orders,
               MAX(currency_code)                        AS currency_code
-         FROM brain_gold.gold_customer_360
+         FROM brain_serving.mv_gold_customer_360
         WHERE ${BRAND_PREDICATE}`,
       [],
     );
@@ -76,7 +76,7 @@ export async function getCustomer360Summary(
     }>(
       `SELECT brain_id, lifetime_orders, lifetime_value_minor, delivered_orders, rto_orders,
               first_identified_at
-         FROM brain_gold.gold_customer_360
+         FROM brain_serving.mv_gold_customer_360
         WHERE ${BRAND_PREDICATE}
         ORDER BY lifetime_value_minor DESC
         LIMIT ${TOP_N}`,

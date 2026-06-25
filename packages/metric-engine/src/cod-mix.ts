@@ -82,7 +82,7 @@ export async function computeCodMix(
       `SELECT event_type,
               COALESCE(SUM(amount_minor), 0) AS sum_minor,
               MAX(currency_code)             AS currency_code
-         FROM brain_gold.gold_revenue_ledger
+         FROM brain_serving.mv_gold_revenue_ledger
         WHERE event_type IN ('${COD_DELIVERED}', '${COD_CLAWBACK}', '${PREPAID_FINALIZATION}')
           AND ${BRAND_PREDICATE}
         GROUP BY event_type`,

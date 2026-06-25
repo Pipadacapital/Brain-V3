@@ -224,7 +224,7 @@ async function fetchAttributionLetter(
     const rows = await withSilverBrand(srPool, brandId, async (scope) =>
       scope.runScoped<{ confidence_grade: string }>(
         `SELECT DISTINCT confidence_grade
-           FROM brain_gold.gold_attribution_credit
+           FROM brain_serving.mv_gold_attribution_credit
           WHERE ${BRAND_PREDICATE}`,
         [],
       ),

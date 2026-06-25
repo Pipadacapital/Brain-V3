@@ -86,6 +86,7 @@ interface CustomerRow {
 /** Read the persisted high-watermark (MAX created_at exported) for a scope; 0 if never run / full mode. */
 async function readWatermark(sr: mysql.Pool, scope: string): Promise<number> {
   if (FULL_REFRESH) return 0;
+  // V4-FLAG: no Iceberg serving source yet
   const [rows] = await sr.query(
     'SELECT last_created_at_ms FROM brain_silver.identity_export_state WHERE scope = ?',
     [scope],

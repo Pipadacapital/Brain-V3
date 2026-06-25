@@ -49,7 +49,7 @@ export async function computeRealizedGmvForPeriod(
          SUM(CASE WHEN event_type <> 'provisional_recognition' THEN amount_minor ELSE 0 END) AS gmv_minor,
          MAX(currency_code) AS currency_code,
          COUNT(*) AS row_count
-       FROM brain_gold.gold_revenue_ledger
+       FROM brain_serving.mv_gold_revenue_ledger
        WHERE billing_posted_period = ?
          AND ${BRAND_PREDICATE}`,
       [period],

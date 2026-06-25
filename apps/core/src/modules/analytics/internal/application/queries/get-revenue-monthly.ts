@@ -2,7 +2,7 @@
  * getRevenueMonthly — analytics use-case (ADR-002 sole-read-path).
  *
  * Thin query wrapper around computeRevenueMonthly (metric engine). Reads the Gold
- * monthly mart brain_gold.gold_revenue_analytics for the per-month revenue-lifecycle
+ * monthly mart brain_serving.mv_gold_revenue_analytics for the per-month revenue-lifecycle
  * breakdown (placed → confirmed → cancelled with realized value + order/terminal
  * counts). The engine is the SOLE computation layer (D-3); this wrapper only
  * serializes bigint → string (D-1) and applies the honest-empty state (D-2).
@@ -40,7 +40,7 @@ export async function getRevenueMonthly(
   // EXISTS check (D-2) over the monthly Gold mart — authoritative honest-empty.
   const hasData = await withSilverBrand(deps.srPool, brandId, async (scope) => {
     const r = await scope.runScoped<{ n: string | number }>(
-      `SELECT COUNT(*) AS n FROM brain_gold.gold_revenue_analytics WHERE ${BRAND_PREDICATE}`,
+      `SELECT COUNT(*) AS n FROM brain_serving.mv_gold_revenue_analytics WHERE ${BRAND_PREDICATE}`,
       [],
     );
     return Number(r[0]?.n ?? 0) > 0;

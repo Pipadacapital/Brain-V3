@@ -101,7 +101,7 @@ export async function computeStorefrontEngagement(
          SUM(CASE WHEN touches > 1 THEN 1 ELSE 0 END) AS engaged
        FROM (
          SELECT session_key, COUNT(*) AS touches
-           FROM brain_silver.silver_touchpoint
+           FROM brain_serving.mv_silver_touchpoint
           WHERE occurred_at >= ? AND occurred_at <= ?
             AND ${BRAND_PREDICATE}
           GROUP BY session_key

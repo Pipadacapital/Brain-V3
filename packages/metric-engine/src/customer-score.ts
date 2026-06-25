@@ -48,7 +48,7 @@ export async function getCustomerScore(
     }>(
       `SELECT brain_id, recency_score, frequency_score, monetary_score, churn_risk,
               lifetime_orders, lifetime_value_minor, days_since_last_order, scored_on
-         FROM brain_gold.gold_customer_scores
+         FROM brain_serving.mv_gold_customer_scores
         WHERE brain_id = ? AND ${BRAND_PREDICATE}
         LIMIT 1`,
       [brainId],

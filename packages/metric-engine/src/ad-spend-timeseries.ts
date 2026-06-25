@@ -72,7 +72,7 @@ export async function computeAdSpendTimeseries(
               platform,
               currency_code,
               SUM(spend_minor) AS spend_minor
-         FROM brain_silver.silver_marketing_spend
+         FROM brain_serving.mv_silver_marketing_spend
         WHERE stat_date BETWEEN '${fromStr}' AND '${toStr}'
           ${platformPredicate}
           AND ${BRAND_PREDICATE}

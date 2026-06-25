@@ -78,7 +78,7 @@ export async function computeExecutiveMetrics(
               COALESCE(SUM(realized_value_minor), 0) AS realized_value_minor,
               COALESCE(SUM(total_orders), 0)         AS total_orders,
               COALESCE(SUM(distinct_customers), 0)   AS distinct_customers
-         FROM brain_gold.gold_executive_metrics
+         FROM brain_serving.mv_gold_executive_metrics
         WHERE ${BRAND_PREDICATE}
         GROUP BY currency_code`,
       [],
@@ -100,7 +100,7 @@ export async function computeExecutiveMetrics(
       `SELECT currency_code,
               COUNT(*)                                                AS total_customers,
               SUM(CASE WHEN lifetime_orders >= 2 THEN 1 ELSE 0 END)   AS repeat_customers
-         FROM brain_gold.gold_customer_360
+         FROM brain_serving.mv_gold_customer_360
         WHERE ${BRAND_PREDICATE}
         GROUP BY currency_code`,
       [],
@@ -178,7 +178,7 @@ export async function computeCohortRetention(
               COALESCE(SUM(cohort_size), 0)        AS cohort_size,
               COALESCE(SUM(cohort_orders), 0)      AS cohort_orders,
               COALESCE(SUM(cohort_value_minor), 0) AS cohort_value_minor
-         FROM brain_gold.gold_cohorts
+         FROM brain_serving.mv_gold_cohorts
         WHERE ${BRAND_PREDICATE}
         GROUP BY cohort_month, currency_code
         ORDER BY cohort_month ASC`,

@@ -13,7 +13,7 @@
  * Without spend there is no denominator → ROAS is undefined, so 'no_data' is the honest
  * surface (realized-only with no spend is not a ROAS).
  *
- * PHASE G: reads the lakehouse (silver_marketing_spend + gold_revenue_ledger) via
+ * V4 PHASE 4b: reads the serving mvs (mv_silver_marketing_spend + mv_gold_revenue_ledger) via
  * withSilverBrand — PG ad_spend_ledger / realized_revenue_ledger are no longer read sources.
  */
 
@@ -50,7 +50,7 @@ export async function getBlendedRoas(
   // Reads the lakehouse Silver entity through the brand-scoped seam (BRAND_PREDICATE → brand_id = ?).
   const hasSpend = await withSilverBrand(deps.srPool, brandId, async (scope) => {
     const r = await scope.runScoped<{ has_row: number }>(
-      `SELECT 1 AS has_row FROM brain_silver.silver_marketing_spend WHERE ${BRAND_PREDICATE} LIMIT 1`,
+      `SELECT 1 AS has_row FROM brain_serving.mv_silver_marketing_spend WHERE ${BRAND_PREDICATE} LIMIT 1`,
       [],
     );
     return r.length > 0;

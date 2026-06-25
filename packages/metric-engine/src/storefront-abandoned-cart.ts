@@ -85,7 +85,7 @@ export async function computeAbandonedCart(
          SELECT session_key,
                 MAX(CASE WHEN stitched_order_id IS NOT NULL THEN 1 ELSE 0 END) AS converted,
                 MAX(CASE WHEN event_type = 'cart.item_added' THEN 1 ELSE 0 END) AS has_cart
-           FROM brain_silver.silver_touchpoint
+           FROM brain_serving.mv_silver_touchpoint
           WHERE occurred_at >= ? AND occurred_at <= ?
             AND ${BRAND_PREDICATE}
           GROUP BY session_key

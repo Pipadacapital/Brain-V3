@@ -122,7 +122,7 @@ export async function fetchFinalizedPurchaseCandidatesScoped(
       occurred_at: string;
     }>(
       `SELECT order_id, ledger_event_id, brain_id, amount_minor AS value_minor, currency_code, occurred_at
-         FROM brain_gold.gold_revenue_ledger
+         FROM brain_serving.mv_gold_revenue_ledger
         WHERE event_type = 'finalization'
           AND recognition_label = 'finalized'
           AND amount_minor > 0
@@ -142,6 +142,7 @@ export async function fetchFinalizedPurchaseCandidatesScoped(
   if (brainIds.length > 0) {
     const subjRows = await withSilverBrand(srPool, brandId, async (scope) =>
       scope.runScoped<{ brain_id: string; identifier_type: string; identifier_value: string }>(
+        // V4-FLAG: no Iceberg serving source yet
         `SELECT brain_id, identifier_type, identifier_value
            FROM brain_silver.silver_identity_link
           WHERE is_active = true

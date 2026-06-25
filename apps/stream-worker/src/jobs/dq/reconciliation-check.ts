@@ -86,7 +86,7 @@ export async function reconciliationCheck(
     const sr = await silver.scopedQuery<{ n: string | number }>(
       brandId,
       `SELECT COUNT(DISTINCT order_id) AS n
-         FROM brain_silver.silver_order_state
+         FROM brain_serving.mv_silver_order_state
         WHERE ${BRAND_PREDICATE}`,
     );
     silverOrders = Number(sr[0]?.n ?? 0);

@@ -1,7 +1,7 @@
 /**
  * feature-materialization/run.ts — offline feature materialization job (re-platform Phase F).
  *
- * Reads the Gold customer mart (brain_gold.gold_customer_360) from StarRocks and materializes the
+ * Reads the Gold customer mart (brain_serving.mv_gold_customer_360) from StarRocks and materializes the
  * customer feature set into the Redis online store (@brain/feature-store) for low-latency serving to
  * recommendations / the decision engine. ETL-writer posture: enumerates all brands present in Gold and
  * writes brand-scoped online keys. Idempotent (overwrites per key). Runs on a schedule (Argo cron),
@@ -22,16 +22,16 @@ export async function run(): Promise<void> {
   const redisUrl = cfg.REDIS_URL;
   const computedAt = new Date().toISOString();
 
-  const sr = mysql.createPool({ host, port, user, password, database: 'brain_gold', connectionLimit: 4 });
+  const sr = mysql.createPool({ host, port, user, password, database: 'brain_serving', connectionLimit: 4 });
   const store = new RedisOnlineStore(redisUrl);
   try {
-    const [brandRows] = await sr.query('SELECT DISTINCT brand_id FROM gold_customer_360');
+    const [brandRows] = await sr.query('SELECT DISTINCT brand_id FROM mv_gold_customer_360');
     const brandIds = (brandRows as Record<string, unknown>[]).map((r) => String(r['brand_id']));
     let totalCustomers = 0;
     let totalFeatures = 0;
     for (const brandId of brandIds) {
       const [rowsRaw] = await sr.query(
-        'SELECT brain_id, lifetime_value_minor, lifetime_orders, delivered_orders, rto_orders FROM gold_customer_360 WHERE brand_id = ?',
+        'SELECT brain_id, lifetime_value_minor, lifetime_orders, delivered_orders, rto_orders FROM mv_gold_customer_360 WHERE brand_id = ?',
         [brandId],
       );
       const rows: Customer360Row[] = (rowsRaw as Record<string, unknown>[]).map((r) => ({

@@ -43,7 +43,7 @@ export async function computeProvisionalRevenue(
     // Only currencies with provisional rows appear (GROUP BY) — matching the prior seam's TABLE shape.
     const rows = await scope.runScoped<{ currency_code: string; provisional_minor: string | number }>(
       `SELECT currency_code, COALESCE(SUM(amount_minor), 0) AS provisional_minor
-         FROM brain_gold.gold_revenue_ledger
+         FROM brain_serving.mv_gold_revenue_ledger
         WHERE CAST(economic_effective_at AS DATE) <= '${asOfStr}'
           AND recognition_label IN ('provisional', 'settling')
           AND ${BRAND_PREDICATE}

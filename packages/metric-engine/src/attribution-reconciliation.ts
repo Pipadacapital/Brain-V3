@@ -148,7 +148,7 @@ export async function computeAttributionReconciliationRate(
     // ∈ [from,to], excluding provisional. currency_code is single-per-brand (0018) — carried on rows.
     const realizedRows = await scope.runScoped<{ v: string | number; currency_code: string | null }>(
       `SELECT COALESCE(SUM(amount_minor), 0) AS v, MAX(currency_code) AS currency_code
-         FROM brain_gold.gold_revenue_ledger
+         FROM brain_serving.mv_gold_revenue_ledger
         WHERE CAST(economic_effective_at AS DATE) BETWEEN '${fromStr}' AND '${toStr}'
           AND event_type <> 'provisional_recognition'
           AND ${BRAND_PREDICATE}`,
@@ -159,7 +159,7 @@ export async function computeAttributionReconciliationRate(
     // Per-channel contributions (the channel_contribution_as_of math). Window-attributed = Σ of these.
     const channelRows = await scope.runScoped<ChannelRow>(
       `SELECT channel, currency_code, COALESCE(SUM(credited_revenue_minor), 0) AS contribution_minor
-         FROM brain_gold.gold_marketing_attribution
+         FROM brain_serving.mv_gold_marketing_attribution
         WHERE model_id = '${model}'
           AND CAST(economic_effective_at AS DATE) BETWEEN '${fromStr}' AND '${toStr}'
           AND ${BRAND_PREDICATE}

@@ -68,7 +68,7 @@ export async function computeRevenueMonthly(
          order_count,
          realized_value_minor,
          terminal_order_count
-       FROM brain_gold.gold_revenue_analytics
+       FROM brain_serving.mv_gold_revenue_analytics
        WHERE ${BRAND_PREDICATE}
        ORDER BY period_month ASC, lifecycle_state ASC, currency_code ASC`,
       [],

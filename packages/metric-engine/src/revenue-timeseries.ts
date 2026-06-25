@@ -82,7 +82,7 @@ export async function computeRevenueTimeseries(
          currency_code,
          SUM(CASE WHEN event_type <> 'provisional_recognition' THEN amount_minor ELSE 0 END) AS realized_minor,
          SUM(CASE WHEN event_type = 'provisional_recognition' THEN amount_minor ELSE 0 END)  AS provisional_minor
-       FROM brain_gold.gold_revenue_ledger
+       FROM brain_serving.mv_gold_revenue_ledger
        WHERE CAST(occurred_at AS DATE) BETWEEN ? AND ?
          AND ${BRAND_PREDICATE}
        GROUP BY 1, 2

@@ -58,7 +58,7 @@ export async function getCustomerCommerce(
       `SELECT currency_code, lifetime_orders, lifetime_value_minor,
               delivered_orders, rto_orders, cancelled_orders, refunded_orders,
               CAST(first_seen_at AS CHAR) AS first_seen_at, CAST(last_seen_at AS CHAR) AS last_seen_at
-         FROM brain_gold.gold_customer_360
+         FROM brain_serving.mv_gold_customer_360
         WHERE brain_id = ? AND ${BRAND_PREDICATE}
         LIMIT 1`,
       [brainId],

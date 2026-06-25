@@ -128,7 +128,7 @@ export async function freshnessCheck(
     try {
       const sr = await silver.scopedQuery<{ latest: string | null }>(
         brandId,
-        `SELECT MAX(updated_at) AS latest FROM brain_silver.silver_order_state WHERE ${BRAND_PREDICATE}`,
+        `SELECT MAX(updated_at) AS latest FROM brain_serving.mv_silver_order_state WHERE ${BRAND_PREDICATE}`,
       );
       const raw = sr[0]?.latest ?? null;
       // raw is a JS Date (mysql2 parses DATETIME) built using the pool's UTC timezone (see

@@ -83,7 +83,7 @@ export async function computeCheckoutFunnel(
           COALESCE(SUM(total_price_minor), 0)                                   AS abandoned_value,
           SUM(CASE WHEN is_synthetic THEN 1 ELSE 0 END)                         AS synthetic_cnt,
           MAX(currency_code)                                                    AS currency_code
-        FROM brain_silver.silver_checkout_signal
+        FROM brain_serving.mv_silver_checkout_signal
         WHERE signal_type = 'checkout_abandoned'
           AND occurred_at >= DATE_SUB(NOW(), INTERVAL ${FUNNEL_WINDOW_DAYS} DAY)
           AND ${BRAND_PREDICATE}`,

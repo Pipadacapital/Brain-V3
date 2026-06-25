@@ -102,7 +102,7 @@ async function readCreditedOrderIds(
   const rows = await withSilverBrand(srPool, brandId, async (scope) =>
     scope.runScoped<{ order_id: string }>(
       `SELECT DISTINCT order_id
-         FROM brain_gold.gold_attribution_credit
+         FROM brain_serving.mv_gold_attribution_credit
         WHERE row_kind = 'credit' AND model_id = ? AND ${BRAND_PREDICATE}`,
       [model],
     ),
@@ -121,7 +121,7 @@ async function readUncreditedRecognized(
   const rows = await withSilverBrand(deps.srPool, brandId, async (scope) =>
     scope.runScoped<FinalizedOrderRow>(
       `SELECT order_id, brain_id, CAST(amount_minor AS CHAR) AS amount_minor, currency_code, occurred_at
-         FROM brain_gold.gold_revenue_ledger
+         FROM brain_serving.mv_gold_revenue_ledger
         WHERE ${BRAND_PREDICATE} AND event_type IN (${inList})`,
       [],
     ),
@@ -143,7 +143,7 @@ async function readReversalsOnCredited(
   const rows = await withSilverBrand(deps.srPool, brandId, async (scope) =>
     scope.runScoped<ReversalRow>(
       `SELECT order_id, event_type, ledger_event_id, CAST(amount_minor AS CHAR) AS amount_minor, occurred_at
-         FROM brain_gold.gold_revenue_ledger
+         FROM brain_serving.mv_gold_revenue_ledger
         WHERE ${BRAND_PREDICATE} AND event_type IN (${inList})`,
       [],
     ),
@@ -162,7 +162,7 @@ async function resolveBrainAnonId(
   const rows = await withSilverBrand(srPool, brandId, async (scope) =>
     scope.runScoped<{ brain_anon_id: string }>(
       `SELECT brain_anon_id
-         FROM brain_silver.silver_touchpoint
+         FROM brain_serving.mv_silver_touchpoint
         WHERE stitched_brain_id = ?
           AND ${BRAND_PREDICATE}
         ORDER BY touch_seq ASC

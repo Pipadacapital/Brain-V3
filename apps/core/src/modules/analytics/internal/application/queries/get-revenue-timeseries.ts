@@ -43,7 +43,7 @@ export async function getRevenueTimeseries(
   // EXISTS check — authoritative honest-empty (D-2), now over the lakehouse ledger (Epic 1).
   const hasData = await withSilverBrand(deps.srPool, brandId, async (scope) => {
     const r = await scope.runScoped<{ n: string | number }>(
-      `SELECT COUNT(*) AS n FROM brain_gold.gold_revenue_ledger WHERE ${BRAND_PREDICATE}`,
+      `SELECT COUNT(*) AS n FROM brain_serving.mv_gold_revenue_ledger WHERE ${BRAND_PREDICATE}`,
       [],
     );
     return Number(r[0]?.n ?? 0) > 0;

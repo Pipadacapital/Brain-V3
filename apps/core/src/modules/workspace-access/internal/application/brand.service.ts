@@ -319,7 +319,7 @@ export class BrandService {
         try {
           hasLedgerRows = await withSilverBrand(this.srPool, id, async (scope) => {
             const rows = await scope.runScoped<{ one: number }>(
-              `SELECT 1 AS one FROM brain_gold.gold_revenue_ledger WHERE ${BRAND_PREDICATE} LIMIT 1`,
+              `SELECT 1 AS one FROM brain_serving.mv_gold_revenue_ledger WHERE ${BRAND_PREDICATE} LIMIT 1`,
               [],
             );
             return rows.length > 0;

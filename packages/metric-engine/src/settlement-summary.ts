@@ -112,7 +112,7 @@ export async function computeSettlementSummary(
       `SELECT event_type,
               COALESCE(SUM(amount_minor), 0) AS sum_minor,
               MAX(currency_code)             AS currency_code
-         FROM brain_gold.gold_revenue_ledger
+         FROM brain_serving.mv_gold_revenue_ledger
         WHERE event_type IN (${eventTypeList})
           AND CAST(economic_effective_at AS DATE) <= '${asOfStr}'
           AND ${BRAND_PREDICATE}

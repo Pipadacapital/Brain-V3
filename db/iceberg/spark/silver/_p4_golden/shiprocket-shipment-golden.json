@@ -1,0 +1,110 @@
+[
+  {
+    "raw_shipment": {
+      "awb": "SR123456789",
+      "order_id": "ORD-1001",
+      "status": "RTO Initiated",
+      "status_changed_at": "2026-06-20T10:00:00Z",
+      "payment_method": "cod",
+      "pincode": "560001",
+      "courier": "Delhivery"
+    },
+    "brand_id": "444a25f2-57d4-4e04-9f70-98a6480e1fc4",
+    "salt_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "data_source": "real",
+    "expected": {
+      "event_id": "450281a1-d60f-50ad-9823-d7bd81261a20",
+      "occurred_at": "2026-06-20T10:00:00.000Z",
+      "status_changed_at": "2026-06-20T10:00:00.000Z",
+      "awb_number_hash": "8aaa6f28f93efdb95a9a2d3804e24c75da06217ab489f4fd7d6bcc051a3c00b8",
+      "order_id": "ORD-1001",
+      "status": "RTO Initiated",
+      "terminal_class": "rto",
+      "is_terminal": true,
+      "payment_method": "cod",
+      "pincode": "560001",
+      "courier": "Delhivery"
+    }
+  },
+  {
+    "raw_shipment": {
+      "awb": "SR987654321",
+      "order_id": "ORD-1002",
+      "status": "Delivered",
+      "status_changed_at": "2026-06-21T12:30:45Z",
+      "payment_method": "prepaid",
+      "pincode": "110011",
+      "courier": "Bluedart"
+    },
+    "brand_id": "444a25f2-57d4-4e04-9f70-98a6480e1fc4",
+    "salt_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "data_source": "real",
+    "expected": {
+      "event_id": "fbb8d66c-e304-54ad-aaf4-cc1cddb12381",
+      "occurred_at": "2026-06-21T12:30:45.000Z",
+      "status_changed_at": "2026-06-21T12:30:45.000Z",
+      "awb_number_hash": "4d8c247e3c5d2fee1d7d5d99c907cd81b7774d7039e25db931d18d8900b1d778",
+      "order_id": "ORD-1002",
+      "status": "Delivered",
+      "terminal_class": "delivered",
+      "is_terminal": true,
+      "payment_method": "prepaid",
+      "pincode": "110011",
+      "courier": "Bluedart"
+    }
+  },
+  {
+    "raw_shipment": {
+      "awb": null,
+      "order_id": "ORD-1003",
+      "status": "In Transit",
+      "status_changed_at": "2026-06-22T08:15:00Z",
+      "payment_method": null,
+      "pincode": null,
+      "courier": null
+    },
+    "brand_id": "444a25f2-57d4-4e04-9f70-98a6480e1fc4",
+    "salt_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "data_source": "real",
+    "expected": {
+      "event_id": "2fdfba38-eee3-5396-bbae-0894f5ee368e",
+      "occurred_at": "2026-06-22T08:15:00.000Z",
+      "status_changed_at": "2026-06-22T08:15:00.000Z",
+      "awb_number_hash": null,
+      "order_id": "ORD-1003",
+      "status": "In Transit",
+      "terminal_class": "none",
+      "is_terminal": false,
+      "payment_method": null,
+      "pincode": null,
+      "courier": null
+    }
+  },
+  {
+    "raw_shipment": {
+      "awb": "SR555000111",
+      "order_id": "ORD-1004",
+      "status": "Returned",
+      "status_changed_at": "2026-06-23T06:00:00Z",
+      "payment_method": "Cash on Delivery",
+      "pincode": "400001",
+      "courier": "XpressBees"
+    },
+    "brand_id": "444a25f2-57d4-4e04-9f70-98a6480e1fc4",
+    "salt_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "data_source": "real",
+    "expected": {
+      "event_id": "191a2912-7744-56eb-9687-3647120cd052",
+      "occurred_at": "2026-06-23T06:00:00.000Z",
+      "status_changed_at": "2026-06-23T06:00:00.000Z",
+      "awb_number_hash": "7e1d058d02cc5dc1b4dd1ae038e719c2381026e7ce11267820e117aba301b8a0",
+      "order_id": "ORD-1004",
+      "status": "Returned",
+      "terminal_class": "other",
+      "is_terminal": true,
+      "payment_method": "cod",
+      "pincode": "400001",
+      "courier": "XpressBees"
+    }
+  }
+]

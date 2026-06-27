@@ -159,6 +159,9 @@ async function repullConnector(params: RepullParams): Promise<void> {
   const creds = await resolveGokwikCredentials(secretRef);
   if (!creds) {
     log.error(`connector=${ciId} — credentials not found (RECONNECT_REQUIRED)`);
+    // Mark RECONNECT_REQUIRED so the tile prompts reconnect (not a stale 'connected') and the scheduler
+    // backs this connector off (0112) instead of re-dispatching a guaranteed-to-fail repull every tick.
+    await setSyncState(pool, brandId, ciId, 'error', 'gokwik credentials not found — RECONNECT_REQUIRED');
     return;
   }
 

@@ -102,4 +102,50 @@ describe('repull work-queue claim (P1, live Postgres)', () => {
     const again = await claimDueRepullConnectors(appPool, 50, 45);
     expect(mine(again)).toEqual([]);
   });
+
+  // WQ3 (0112): a connector stuck in the TERMINAL reconnect-required error state must be BACKED OFF —
+  // not re-claimed every interval — while a TRANSIENT-error connector keeps fast-retrying, and a
+  // reconnect (clearing the error) makes it immediately claimable again. This is the durable fix for
+  // the infinite error-level repull loop a missing/rotated secret used to cause.
+  it('WQ3: RECONNECT_REQUIRED connectors are backed off; transient errors and reconnects are not', async () => {
+    if (!pgAvailable) return;
+    const reconnect = ids[0]!; // terminal RECONNECT_REQUIRED → must be excluded
+    const transient = ids[1]!; // transient error → must still be claimed
+    const clean = ids[2]!;     // healthy → must still be claimed
+
+    // Make all three due again (WQ1 stamped them ahead).
+    for (const x of [reconnect, transient, clean]) {
+      await superPool.query(`UPDATE connector_instance SET next_repull_at = NULL WHERE id=$1`, [x.ci]);
+    }
+    // Seed sync_status: terminal reconnect-required vs a transient blip. clean has no row.
+    await superPool.query(
+      `INSERT INTO connector_sync_status (id, brand_id, connector_instance_id, state, last_error, updated_at)
+         VALUES (gen_random_uuid(), $1, $2, 'error', 'shopify token not found — RECONNECT_REQUIRED', now())
+       ON CONFLICT (brand_id, connector_instance_id)
+         DO UPDATE SET state='error', last_error=EXCLUDED.last_error, updated_at=now()`,
+      [reconnect.brand, reconnect.ci],
+    );
+    await superPool.query(
+      `INSERT INTO connector_sync_status (id, brand_id, connector_instance_id, state, last_error, updated_at)
+         VALUES (gen_random_uuid(), $1, $2, 'error', 'page_error: transient 503', now())
+       ON CONFLICT (brand_id, connector_instance_id)
+         DO UPDATE SET state='error', last_error=EXCLUDED.last_error, updated_at=now()`,
+      [transient.brand, transient.ci],
+    );
+
+    const claimed = new Set(mine(await claimDueRepullConnectors(appPool, 50, 45)));
+    expect(claimed.has(reconnect.ci)).toBe(false); // backed off
+    expect(claimed.has(transient.ci)).toBe(true);  // transient error still fast-retries
+    expect(claimed.has(clean.ci)).toBe(true);      // healthy still claimed
+
+    // Reconnect: state→connected, last_error cleared. The connector becomes claimable again immediately
+    // (no reset job needed). It's still due (was never claimed above → next_repull_at still NULL).
+    await superPool.query(
+      `UPDATE connector_sync_status SET state='connected', last_error=NULL, updated_at=now()
+         WHERE connector_instance_id=$1`,
+      [reconnect.ci],
+    );
+    const afterReconnect = new Set(mine(await claimDueRepullConnectors(appPool, 50, 45)));
+    expect(afterReconnect.has(reconnect.ci)).toBe(true);
+  });
 });

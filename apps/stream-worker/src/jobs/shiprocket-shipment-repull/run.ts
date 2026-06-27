@@ -163,6 +163,9 @@ async function repullConnector(params: RepullParams): Promise<void> {
   const creds = await resolveShiprocketCredentials(secretRef);
   if (!creds) {
     log.error(`connector=${ciId} — credentials not found (RECONNECT_REQUIRED)`);
+    // Mark the tile RECONNECT_REQUIRED (not just close the run) so the UI prompts reconnect and the
+    // scheduler backs this connector off (0112) instead of re-dispatching a doomed repull every tick.
+    await setSyncState(pool, brandId, ciId, 'error', 'shiprocket credentials not found — RECONNECT_REQUIRED');
     await syncRunRepo.closeRun({ runId, brandId, startedAt, status: 'failed', errorClass: 'AUTH_ERROR', errorDetail: 'credentials not found — RECONNECT_REQUIRED' });
     return;
   }

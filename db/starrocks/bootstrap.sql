@@ -59,7 +59,14 @@ CREATE DATABASE IF NOT EXISTS brain_serving;
 GRANT SELECT ON ALL TABLES             IN DATABASE brain_serving TO 'brain_analytics'@'%';
 GRANT SELECT ON ALL VIEWS              IN DATABASE brain_serving TO 'brain_analytics'@'%';
 GRANT SELECT ON ALL MATERIALIZED VIEWS IN DATABASE brain_serving TO 'brain_analytics'@'%';
+-- brain_ops: grant ALL THREE object classes here too. The journey-stitch-from-identity job reads
+-- brain_ops.silver_identity_link (+ silver_customer_identity / silver_journey_stitch) as the analytics
+-- user, and any MV-materialized brain_ops mart would 500 with "Access denied … SELECT on VIEW …" if
+-- only TABLES were granted. This makes bootstrap self-complete so a from-zero cluster init needs no
+-- follow-up run of analytics_grants.sql (which remains the idempotent manual re-run for live clusters).
 GRANT SELECT ON ALL TABLES             IN DATABASE brain_ops     TO 'brain_analytics'@'%';
+GRANT SELECT ON ALL VIEWS              IN DATABASE brain_ops     TO 'brain_analytics'@'%';
+GRANT SELECT ON ALL MATERIALIZED VIEWS IN DATABASE brain_ops     TO 'brain_analytics'@'%';
 
 -- 2a. Row Policy (NN-2 engine-level enforcement — M-01)
 -- ============================================================

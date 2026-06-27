@@ -181,11 +181,31 @@ export async function runJourneyStitchFromIdentity(deps?: {
     }
 
     log.info('journey-stitch-from-identity complete', { ...result });
+    // Per-brand errors are ISOLATED operational states (e.g. a brand whose identity crypto is not
+    // provisioned, or whose salt was wrapped by a now-rotated KMS key) — they are logged + counted
+    // above and the brand simply retries next cycle. They must NOT poison the whole cross-brand batch
+    // (see the non-systemic exit code below). Surface them as a degradation signal, not a failure.
+    if (result.errors > 0 && result.errors < result.brands) {
+      log.warn('journey-stitch-from-identity partial — some brands skipped on per-tenant errors (isolated; pipeline continues)', {
+        errored: result.errors, brands: result.brands,
+      });
+    }
     return result;
   } finally {
     if (ownsPool) await pool.end();
     if (ownsSr) await srPool.end();
   }
+}
+
+/**
+ * Process exit code for a completed run. Non-zero ONLY on a SYSTEMIC failure — every attempted brand
+ * failed (errors === brands, brands > 0), signalling an infra problem (KMS/StarRocks/DB down) rather
+ * than isolated per-tenant data states. A single brand with unprovisioned/stale crypto must NOT fail
+ * the whole cross-brand batch (the poison-pill that used to fail the v4-refresh step). Pure + exported
+ * so the policy is unit-tested without spawning a process.
+ */
+export function journeyStitchExitCode(result: Pick<StitchFromIdentityResult, 'brands' | 'errors'>): number {
+  return result.brands > 0 && result.errors === result.brands ? 1 : 0;
 }
 
 // Entry point — only when run directly (not when imported in tests).
@@ -194,7 +214,7 @@ if (
   process.argv[1]?.endsWith('journey-stitch-from-identity.js')
 ) {
   runJourneyStitchFromIdentity()
-    .then((r) => process.exit(r.errors > 0 ? 1 : 0))
+    .then((r) => process.exit(journeyStitchExitCode(r)))
     .catch((err) => {
       log.error('fatal', { err });
       process.exit(1);

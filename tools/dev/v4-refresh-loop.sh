@@ -270,6 +270,14 @@ run_once() {
     run_node_job identity-export @brain/stream-worker src/jobs/identity-export/run.ts || failures=$((failures+1))
   fi
 
+  # 0b. SILVER COLLECTOR EVENT (ADR-0006 P2) — the R2/R3 admission gate over the RAW Kafka-Connect Bronze
+  #     (brain_bronze.collector_events_raw), materializing brain_silver.silver_collector_event. ALL the
+  #     downstream silver_* jobs that used to read brain_bronze.collector_events now read THIS gated table,
+  #     so it MUST build before them. Idempotent MERGE; no-op when the raw table is empty.
+  if [ "${SKIP_COLLECTOR_GATE:-0}" != "1" ]; then
+    run_spark_script silver-collector-event "$SILVER_DIR/run-silver-collector-event.sh" || failures=$((failures+1))
+  fi
+
   # 1. SILVER ORDER STATE — the spine; resolves brain_id from silver_identity_link.
   run_spark_script silver-order-state "$SPARK_ROOT/run-silver-orders.sh" || failures=$((failures+1))
 

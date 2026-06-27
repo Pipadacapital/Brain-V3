@@ -196,11 +196,36 @@ run_node_job() {  # $1=label  $2=package-filter  $3=tsx-relative-path
   return "$rc"
 }
 
+# MV definitions (db/starrocks/mv/mv_*.sql) — applied idempotently so a from-zero cluster's first cycle
+# MATERIALIZES the serving tier. Each file is CREATE MATERIALIZED VIEW IF NOT EXISTS … AS SELECT FROM the
+# Iceberg Gold/Silver table, so this is the create-half of run_mvs.sh; the loop keeps its own refresh
+# (which also REFRESH EXTERNAL TABLE-invalidates the Iceberg metadata cache — run_mvs.sh does not).
+MV_DIR="$ROOT/db/starrocks/mv"
+
+# ensure_mv <mv_name>: apply MV_DIR/<mv_name>.sql (CREATE … IF NOT EXISTS). Idempotent + non-fatal — if the
+# MV's source Iceberg table isn't built yet the CREATE fails and is swallowed; the NEXT cycle (after the
+# Spark job builds it) creates it. The serving catalogs (brain_{gold,silver}_local) are registered at
+# starrocks-init, so they always exist here.
+ensure_mv() {
+  local f="$MV_DIR/${1}.sql"
+  [ -f "$f" ] || return 0
+  docker exec -i "$SR_CONTAINER" mysql -h127.0.0.1 -P9030 -uroot < "$f" >/dev/null 2>&1 || true
+}
+
 refresh_serving_mvs() {  # $1 (optional) = explicit space-separated mv list; default = ALL mv_*
-  local explicit="${1:-}" mvs
+  local explicit="${1:-}" mvs f
   if [ -n "$explicit" ]; then
+    # CREATE-IF-MISSING the named MVs before refreshing (cold start: they don't exist yet).
+    for m in $explicit; do ensure_mv "$m"; done
     mvs="$(printf '%s\n' $explicit)"
   else
+    # COLD-START SELF-BOOTSTRAP: apply EVERY mv_*.sql (CREATE … IF NOT EXISTS) so a from-zero cluster
+    # materializes all serving MVs on the first cycle — the loop previously only REFRESHed pre-existing
+    # MVs, so a fresh stack served 0 rows until run_mvs.sh was run by hand. Idempotent every cycle after.
+    for f in "$MV_DIR"/mv_*.sql; do
+      [ -e "$f" ] || continue
+      docker exec -i "$SR_CONTAINER" mysql -h127.0.0.1 -P9030 -uroot < "$f" >/dev/null 2>&1 || true
+    done
     mvs="$(docker exec "$SR_CONTAINER" mysql -h127.0.0.1 -P9030 -uroot -N \
       -e "SELECT TABLE_NAME FROM information_schema.materialized_views WHERE TABLE_SCHEMA='${SERVING_DB}' AND TABLE_NAME LIKE 'mv\_%' ORDER BY TABLE_NAME;" 2>/dev/null)" \
       || { echo "[$(ts)] ⚠ could not list ${SERVING_DB} MVs (is StarRocks up?)"; return 1; }

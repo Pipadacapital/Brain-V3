@@ -513,6 +513,9 @@ importers:
         specifier: ^3.25.76
         version: 3.25.76
     devDependencies:
+      '@brain/ai-gateway-client':
+        specifier: workspace:*
+        version: link:../ai-gateway-client
       tsx:
         specifier: ^4.22.4
         version: 4.22.4

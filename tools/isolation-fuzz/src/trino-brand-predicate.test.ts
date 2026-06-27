@@ -112,10 +112,10 @@ describe('[unit] withTrinoBrand — predicate injection (no live Trino)', () => 
     let capturedSql = '';
     let capturedParams: unknown[] = [];
     const pool: TrinoPool = {
-      async query(sql, params = []) {
+      async query<T = Record<string, unknown>>(sql: string, params: unknown[] = []): Promise<T[]> {
         capturedSql = sql;
         capturedParams = params;
-        return [{ brand_id: BRAND_B }]; // simulated cross-brand leak
+        return [{ brand_id: BRAND_B }] as unknown as T[]; // simulated cross-brand leak
       },
     };
 

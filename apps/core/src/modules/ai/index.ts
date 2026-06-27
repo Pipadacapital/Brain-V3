@@ -47,3 +47,7 @@ export type {
 // Track B — the READ-ONLY MCP tool registry (I-S08: writeToolCount === 0, CI-blocking).
 export { MCP_TOOLS, writeToolCount, listMetricIds, FORBIDDEN_TOOL_NAME_SUBSTRINGS } from './mcp/tools.js';
 export type { McpToolSpec, McpToolAccess } from './mcp/tools.js';
+
+// Track B — the READ-ONLY MCP tool DISPATCH MOUNT (D5 / I-S08 / I-S01). brand_id from the principal.
+export { createMcpDispatch } from './mcp/tools.js';
+export type { McpMountDeps, McpIdentitySeams } from './mcp/tools.js';

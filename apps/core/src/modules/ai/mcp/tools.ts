@@ -20,3 +20,11 @@ export {
   type McpToolSpec,
   type McpToolAccess,
 } from '@brain/ai-gateway-client';
+
+// The MCP MOUNT — wires the read-only dispatch to its real read seams (intelligence/marketing via
+// the metric-engine; identity injected by the app assembly). brand_id from the principal (I-S01).
+export {
+  createMcpDispatch,
+  type McpMountDeps,
+  type McpIdentitySeams,
+} from './dispatch-wiring.js';

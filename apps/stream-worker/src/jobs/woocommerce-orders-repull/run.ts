@@ -160,6 +160,10 @@ async function repullConnector(params: RepullParams): Promise<void> {
   const creds = await resolveWooCredentials(secretRef, siteUrl ?? '');
   if (!creds) {
     log.error(`connector=${ciId} — credentials not found (RECONNECT_REQUIRED)`);
+    // Mark the tile RECONNECT_REQUIRED (not just close the run) so (a) the UI prompts reconnect instead
+    // of showing a stale 'connected', and (b) claim_due_repull_connectors backs this connector off (0112)
+    // rather than re-dispatching a guaranteed-to-fail repull every interval. Mirrors the auth-error path.
+    await setSyncState(pool, brandId, ciId, 'error', 'woocommerce credentials not found — RECONNECT_REQUIRED');
     await syncRunRepo.closeRun({ runId, brandId, startedAt, status: 'failed', errorClass: 'AUTH_ERROR', errorDetail: 'credentials not found — RECONNECT_REQUIRED' });
     return;
   }

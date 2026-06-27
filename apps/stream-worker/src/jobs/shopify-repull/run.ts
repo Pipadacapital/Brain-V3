@@ -182,10 +182,22 @@ async function repullConnector(params: RepullParams): Promise<void> {
   // brand_id authority = list_connectors_for_repull() fn result (MT-1).
   // Token fetch + saltProvider are not brand-scoped reads, but connector_sync_status is.
 
-  // Resolve access token (I-S09: NEVER logged)
-  const accessToken = await workerSecrets.getShopifyToken(secretRef);
+  // Resolve access token (I-S09: NEVER logged).
+  // The token can be ABSENT two ways: getShopifyToken returns null (secret_ref present but empty), or
+  // it THROWS (the Secrets Manager secret itself is gone — "can't find the specified secret"). BOTH mean
+  // the same thing: the credential needs a human reconnect. Mark connector_sync_status='error' with a
+  // RECONNECT_REQUIRED reason (mirrors the 401 path below + meta/woo) so (a) the tile prompts reconnect
+  // instead of showing a stale 'connected', and (b) the scheduler's claim_due_repull_connectors backs
+  // this connector off (0112) instead of re-dispatching a guaranteed-to-fail repull every interval.
+  let accessToken: string | null = null;
+  try {
+    accessToken = await workerSecrets.getShopifyToken(secretRef);
+  } catch (err) {
+    log.error(`connector=${ciId} — token fetch failed (RECONNECT_REQUIRED)`, { detail: String(err) });
+  }
   if (!accessToken) {
     log.error(`connector=${ciId} — token not found (RECONNECT_REQUIRED)`);
+    await setSyncState(pool, brandId, ciId, 'error', 'shopify token not found — RECONNECT_REQUIRED');
     return;
   }
 

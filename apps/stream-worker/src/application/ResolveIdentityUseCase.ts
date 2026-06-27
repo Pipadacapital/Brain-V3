@@ -16,17 +16,59 @@
  */
 
 import { normalizeIdentifier, hashIdentifier, normalizePhone } from '@brain/identity-core';
+import type { ConfidenceVerdict, IdentifierComboMember } from '@brain/contracts';
 import { log } from '../log.js';
 import { SaltProvider } from '../infrastructure/secrets/SaltProvider.js';
 import type { IdentityStore } from '../domain/identity/IdentityStore.js';
 import {
   IdentityResolver,
   ExtractedIdentifier,
+  RULE_VERSION,
 } from '../domain/identity/IdentityResolver.js';
 import {
   buildIdentityEvents,
   type IdentityEventPublisher,
 } from '../domain/identity/IdentityEventPublisher.js';
+import { ConfidenceEngine, gradeResolverOutcome } from '../domain/identity/confidence/index.js';
+import { DecisionEngine } from '../domain/identity/decisions/DecisionEngine.js';
+import type { DecisionLogRepository } from '../domain/identity/decisions/DecisionLogRepository.js';
+import type { EvidenceStore } from '../domain/identity/decisions/EvidenceStore.js';
+import { PROBABILISTIC_MATCHER_ID } from '../domain/identity/matchers/ProbabilisticMatcher.js';
+
+/** The deterministic strong-key authority id — the verdict stamped on every committed graph edge. */
+const DETERMINISTIC_MATCHER_ID = 'deterministic-union-find';
+
+/**
+ * The confidence/decision collaborators wired into the live resolve path. ALL OPTIONAL: when absent
+ * the use-case runs exactly as before (deterministic resolve + graph write only) — the probabilistic
+ * review gate is purely additive. The graph write stays FIRST (commit-after-write); a confidence or
+ * review-write failure NEVER loses the deterministic graph write (every step here is fail-open).
+ */
+export interface ConfidenceReviewDeps {
+  confidenceEngine: ConfidenceEngine;
+  decisionEngine: DecisionEngine;
+  decisionLog: DecisionLogRepository;
+  evidenceStore: EvidenceStore;
+}
+
+/**
+ * The deterministic verdict to STAMP on a committed graph edge. The founding identifiers of a
+ * minted/linked customer (and every strong-key merge) are deterministically that customer's →
+ * exact/100. A probabilistic verdict NEVER reaches this function (it routes to review, not commit).
+ */
+function deterministicEdgeVerdict(
+  ruleVersion: string,
+  combo: IdentifierComboMember[],
+): ConfidenceVerdict {
+  return {
+    score: 100,
+    band: 'exact',
+    reasons: ['deterministic:strong_key'],
+    matcher_id: DETERMINISTIC_MATCHER_ID,
+    rule_version: ruleVersion,
+    identifier_combo: combo,
+  };
+}
 
 export type ResolveOutcomeType = 'minted' | 'linked' | 'merged' | 'suppressed' | 'skipped' | 'no_identifiers' | 'invalid';
 
@@ -55,6 +97,12 @@ export class ResolveIdentityUseCase {
      * domain-event emission is skipped. Publishing happens AFTER the graph write (commit-after-write).
      */
     private readonly identityEventPublisher?: IdentityEventPublisher,
+    /**
+     * The confidence/decision layer that grades the resolution and ENFORCES the probabilistic
+     * review gate (weak-signal agreement → route_to_review, NEVER auto-merge). Optional + fail-open:
+     * when undefined the deterministic path is unchanged. Wired in the stream-worker composition root.
+     */
+    private readonly confidence?: ConfidenceReviewDeps,
   ) {}
 
   /**
@@ -326,8 +374,135 @@ export class ResolveIdentityUseCase {
       state.aliasChain,
     );
 
+    // ── 5b. Confidence + review gate (deterministic-first; fail-open) ────────────────────────────
+    // BEFORE the graph write so the real verdict can be stamped on the edge. Everything here is a
+    // pure assessment + a READ (weak-candidate fetch): if any of it throws we fall back to the
+    // deterministic exact stamp and skip the review — the deterministic graph write below ALWAYS runs
+    // (commit-after-write). A probabilistic weak-signal agreement maps to a route_to_review Command
+    // (persisted after the write); it can NEVER auto-merge (band is sub-'exact' by construction).
+    let edgeVerdict: ConfidenceVerdict | undefined;
+    let reviewDecision: ReturnType<DecisionEngine['routeProbabilisticReview']> | undefined;
+    let reviewVerdict: ConfidenceVerdict | undefined;
+    let reviewCandidateBrainIds: string[] = [];
+
+    if (this.confidence) {
+      try {
+        const { confidenceEngine, decisionEngine } = this.confidence;
+
+        // Explicit weak-signal candidate fetch (the dedicated probabilistic surface). Only the event's
+        // weak hashes, and ONLY when the deterministic resolver did NOT already auto-merge on a strong
+        // key (a merge needs no probabilistic consultation — deterministic-first).
+        const weakHashes =
+          outcome.action !== 'merged'
+            ? identifiers.filter((i) => i.tier === 'weak').map((i) => ({ type: i.type, hash: i.hash }))
+            : [];
+        const weakCandidates =
+          weakHashes.length > 0 && this.identityRepo.findCandidatesByWeakSignals
+            ? await this.identityRepo.findCandidatesByWeakSignals(brandId, weakHashes)
+            : [];
+
+        const assessed = gradeResolverOutcome(confidenceEngine, {
+          brand_id: brandId,
+          identifiers,
+          existingLinks: state.existingLinks,
+          weakCandidates,
+          outcome,
+        });
+
+        if (
+          outcome.action !== 'merged' &&
+          assessed.matcher_id === PROBABILISTIC_MATCHER_ID &&
+          !confidenceEngine.isMergeEligible(assessed)
+        ) {
+          // PROBABILISTIC weak-signal agreement → REVIEW (never merge). The graph edge keeps the
+          // deterministic stamp (the mint/link itself is deterministic); the probabilistic verdict
+          // only ever produces the review record.
+          reviewCandidateBrainIds = [...new Set(weakCandidates.map((c) => c.brain_id))].filter(
+            (b) => b && b !== outcome.brainId,
+          );
+          if (reviewCandidateBrainIds.length > 0) {
+            reviewVerdict = assessed;
+            reviewDecision = decisionEngine.routeProbabilisticReview({
+              brand_id: brandId,
+              rule_version: RULE_VERSION,
+              decided_at: _now,
+              subject_brain_id: outcome.brainId,
+              candidate_brain_ids: reviewCandidateBrainIds,
+              verdict: assessed,
+            });
+          }
+          edgeVerdict = deterministicEdgeVerdict(RULE_VERSION, [...assessed.identifier_combo]);
+        } else {
+          // DETERMINISTIC verdict (exact strong/merge, or sub-exact 'medium' cross-device adoption).
+          // A pure mint with no existing match grades 'none'/0 — its FOUNDING links are exact/100.
+          edgeVerdict =
+            assessed.band === 'none'
+              ? deterministicEdgeVerdict(RULE_VERSION, [...assessed.identifier_combo])
+              : assessed;
+        }
+      } catch (err) {
+        // FAIL-OPEN: never block the deterministic graph write on a confidence error.
+        edgeVerdict = undefined;
+        reviewDecision = undefined;
+        reviewVerdict = undefined;
+        log.warn(
+          `[identity] confidence/review assessment failed (fail-open, deterministic write proceeds): ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
+
     // ── 6. Write to the identity SoR (Neo4j — ADR-0004) + the PG audit/contact_pii records ──────
-    await this.identityRepo.writeOutcome(brandId, outcome, identifiers);
+    // FIRST write — commit-after-write. `edgeVerdict` (deterministic) is stamped on the committed
+    // edges; undefined → the adapter's deterministic-exact fallback (back-compat).
+    await this.identityRepo.writeOutcome(brandId, outcome, identifiers, edgeVerdict);
+
+    // ── 6b. Persist the review-gated decision AFTER the graph write (fail-open) ──────────────────
+    // The route_to_review Command + its evidence land additively in the Decision Log + Evidence Store
+    // (identity_audit), and the pair is enqueued to the graph review queue. A failure here NEVER
+    // unwinds the committed graph write (the deterministic resolution is already durable).
+    if (reviewDecision && reviewVerdict && this.confidence) {
+      const { decisionEngine, decisionLog, evidenceStore } = this.confidence;
+      try {
+        const evidence = decisionEngine.buildEvidence(reviewDecision, reviewVerdict, {
+          matcher_version: reviewVerdict.rule_version,
+          recorded_at: _now,
+        });
+        await evidenceStore.put(evidence);
+        await decisionLog.append({
+          decision_id: evidence.decision_id,
+          brand_id: brandId,
+          decision: reviewDecision,
+          evidence_ref: evidence.decision_id,
+          recorded_at: _now,
+        });
+        if (this.identityRepo.enqueueReview) {
+          await this.identityRepo.enqueueReview(brandId, {
+            review_id: reviewDecision.review_id,
+            brain_id_a: reviewDecision.brain_id_a,
+            brain_id_b: reviewDecision.brain_id_b,
+            reason: reviewDecision.reason,
+            evidence: {
+              matcher_id: reviewVerdict.matcher_id,
+              score: reviewVerdict.score,
+              band: reviewVerdict.band,
+              signals: reviewVerdict.reasons,
+              identifier_combo: reviewVerdict.identifier_combo,
+            },
+          });
+        }
+        log.info(
+          `[identity] probabilistic weak-signal match routed to review (NOT merged): review_id=${reviewDecision.review_id} band=${reviewVerdict.band} score=${reviewVerdict.score}`,
+        );
+      } catch (err) {
+        log.warn(
+          `[identity] review persistence failed (fail-open, graph write already committed): ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
 
     // ── 7. Publish the identity.* outcome events AFTER the graph write (commit-after-write) ──────
     // The publisher is fail-open (a Kafka blip never throws here) and emits deterministic event_ids,

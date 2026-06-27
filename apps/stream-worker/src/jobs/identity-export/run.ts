@@ -51,6 +51,22 @@ const BATCH = 1000;
 const SCOPE_LINK = 'identity_link';
 const SCOPE_CUSTOMER = 'customer_identity';
 
+// ── F2: ALIAS-RESOLUTION — project the CANONICAL brain_id into ops.silver_identity_link ────────────
+// A merge tombstones the merged Customer and links (m)-[:ALIAS_OF {valid_to:null}]->(canonical), but does
+// NOT re-point the merged node's IDENTIFIES edges. So this edge export MUST resolve each identifier's
+// brain_id THROUGH the live ALIAS_OF chain to the canonical survivor — otherwise the marts (silver_order_
+// recognition / gold_revenue_ledger / journey-stitch / CAPI) that read this table resolve post-merge
+// identifiers to the DEAD brain_id and customer LTV splits across the merge boundary. This OPTIONAL-MATCH
+// fragment (parameterised on the bound `c:Customer`) walks the live chain to its terminal canonical node:
+// multi-hop (*1..50, cycle-safe — Neo4j never reuses a rel in one path), live-only (valid_to IS NULL),
+// terminal (canon has no live outgoing ALIAS_OF). This is the AUTHORITATIVE multi-hop resolver; the Spark
+// readers also fold merged_into one hop as a defensive net.
+const CANONICAL_OF_C = `
+        OPTIONAL MATCH _cano = (c)-[:ALIAS_OF*1..50]->(canon:Customer)
+        WHERE all(rel IN relationships(_cano) WHERE rel.valid_to IS NULL)
+          AND NOT EXISTS { MATCH (canon)-[ra:ALIAS_OF]->() WHERE ra.valid_to IS NULL }`;
+const CANONICAL_BRAIN_ID = 'coalesce(canon.brain_id, c.brain_id)';
+
 /** neo4j epoch-millis (stored as number/Integer) → JS number, or null. */
 function toMs(v: unknown): number | null {
   if (v == null) return null;
@@ -203,19 +219,25 @@ export async function runIdentityExport(): Promise<IdentityExportResult> {
     try {
       // FULL: every active edge.  INCREMENTAL: edges created since the watermark (new attachments) UNION
       // the bounded set of inactive edges (GDPR/merge tombstones — no created_at signal on the flip).
+      // F2: brain_id is the CANONICAL (alias-resolved) survivor, not the raw IDENTIFIES target.
+      // INCREMENTAL also re-pulls edges whose Customer is non-'active' (merged/split/erased) — those
+      // edges keep is_active=true with an OLD created_at, so a pure created_at watermark would MISS the
+      // canonical re-projection after a merge. This mirrors the customer tombstone sweep (bounded set).
       const res = FULL_REFRESH
         ? await edgeSession.run(
             `MATCH (i:Identifier)-[r:IDENTIFIES]->(c:Customer)
-             WHERE r.is_active = true AND c.brain_id IS NOT NULL
+             WHERE r.is_active = true AND c.brain_id IS NOT NULL${CANONICAL_OF_C}
              RETURN i.brand_id AS brand_id, i.type AS identifier_type, i.hash AS identifier_value,
-                    c.brain_id AS brain_id, r.tier AS tier, r.is_active AS is_active, r.created_at AS created_at`,
+                    ${CANONICAL_BRAIN_ID} AS brain_id, r.tier AS tier, r.is_active AS is_active, r.created_at AS created_at`,
           )
         : await edgeSession.run(
             `MATCH (i:Identifier)-[r:IDENTIFIES]->(c:Customer)
              WHERE c.brain_id IS NOT NULL
-               AND ( (r.is_active = true AND coalesce(r.created_at, 0) > $wm) OR r.is_active = false )
+               AND ( (r.is_active = true AND coalesce(r.created_at, 0) > $wm)
+                     OR r.is_active = false
+                     OR coalesce(c.lifecycle_state, 'active') <> 'active' )${CANONICAL_OF_C}
              RETURN i.brand_id AS brand_id, i.type AS identifier_type, i.hash AS identifier_value,
-                    c.brain_id AS brain_id, r.tier AS tier, r.is_active AS is_active, r.created_at AS created_at`,
+                    ${CANONICAL_BRAIN_ID} AS brain_id, r.tier AS tier, r.is_active AS is_active, r.created_at AS created_at`,
             { wm: neo4j.int(linkWatermark) },
           );
       edges = res.records.map(mapEdge);

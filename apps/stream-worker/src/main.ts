@@ -49,6 +49,10 @@ import {
 } from '@brain/pii-vault';
 import { ProcessEventUseCase } from './application/ProcessEventUseCase.js';
 import { ResolveIdentityUseCase } from './application/ResolveIdentityUseCase.js';
+import { ConfidenceEngine } from './domain/identity/confidence/index.js';
+import { createDefaultMatcherRegistry } from './domain/identity/matchers/MatcherRegistry.js';
+import { DecisionEngine } from './domain/identity/decisions/DecisionEngine.js';
+import { IdentityAuditDecisionLog } from './infrastructure/identity/IdentityAuditDecisionLog.js';
 import { CollectorEventConsumer } from './interfaces/consumers/CollectorEventConsumer.js';
 import { IdentityBridgeConsumer } from './identity-bridge/IdentityBridgeConsumer.js';
 import { ConsentSuppressorConsumer } from './interfaces/consumers/ConsentSuppressorConsumer.js';
@@ -254,7 +258,29 @@ export async function main(): Promise<void> {
   const identityEventPublisher = new KafkaIdentityEventPublisher(
     identityEventProducer, identityEventEnvPrefix, log,
   );
-  const resolveIdentityUseCase = new ResolveIdentityUseCase(saltProvider, identityRepo, identityEventPublisher);
+  // ── Confidence + decision layer (F1): WIRE the probabilistic review gate into the live path ──
+  // ConfidenceEngine aggregates the ENABLED matchers from createDefaultMatcherRegistry (deterministic
+  // union-find + the review-gated ProbabilisticMatcher; disabled ML/household/cross-device are never
+  // invoked). DecisionEngine maps a sub-exact (probabilistic) verdict to a reversible route_to_review
+  // Command; IdentityAuditDecisionLog persists it ADDITIVELY into the identity_audit ledger (it is
+  // BOTH the DecisionLogRepository and the EvidenceStore). A weak-signal agreement → route_to_review,
+  // NEVER auto-merge (isMergeEligible stays band==='exact'); deterministic strong-key merges are
+  // unchanged. All optional + fail-open: a confidence/review failure never loses the graph write.
+  const matcherRegistry = createDefaultMatcherRegistry();
+  const confidenceEngine = new ConfidenceEngine({ matchers: matcherRegistry.enabled() });
+  const decisionEngine = new DecisionEngine();
+  const identityDecisionLog = new IdentityAuditDecisionLog(new PgPool({ connectionString: dbUrl, max: 3 }));
+  const resolveIdentityUseCase = new ResolveIdentityUseCase(
+    saltProvider,
+    identityRepo,
+    identityEventPublisher,
+    {
+      confidenceEngine,
+      decisionEngine,
+      decisionLog: identityDecisionLog,
+      evidenceStore: identityDecisionLog,
+    },
+  );
   // T2-8: pass the shared durable RetryCounterAdapter so identity-bridge retries survive
   // pod restarts and a poison message always reaches the DLQ (mirrors ConsentSuppressor /
   // Backfill / LiveLedger — every consumer that receives retryCounter here).

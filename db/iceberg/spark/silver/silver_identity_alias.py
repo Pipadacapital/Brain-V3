@@ -56,11 +56,19 @@ NEO4J_USER = os.environ.get("NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = os.environ.get("NEO4J_PASSWORD", "")
 
 # The active-edge export Cypher — mirrors identity-export/run.ts (FULL projection of active IDENTIFIES edges).
+# F2 ALIAS-RESOLVE: brain_id is the CANONICAL (survivor) — follow the live ALIAS_OF chain to its terminal
+# node (multi-hop *1..50 cycle-safe; live-only valid_to IS NULL; canon has no live outgoing ALIAS_OF), so
+# snap_identity_link (which reads this Iceberg projection) carries the canonical brain_id after a merge, not
+# the dead alias. coalesce(canon.brain_id, c.brain_id) = canonical for a merged node, own brain_id otherwise.
 IDENTITY_CYPHER = (
     "MATCH (i:Identifier)-[r:IDENTIFIES]->(c:Customer) "
     "WHERE c.brain_id IS NOT NULL "
+    "OPTIONAL MATCH _cano = (c)-[:ALIAS_OF*1..50]->(canon:Customer) "
+    "WHERE all(rel IN relationships(_cano) WHERE rel.valid_to IS NULL) "
+    "  AND NOT EXISTS { MATCH (canon)-[ra:ALIAS_OF]->() WHERE ra.valid_to IS NULL } "
     "RETURN i.brand_id AS brand_id, i.type AS identifier_type, i.hash AS identifier_value, "
-    "c.brain_id AS brain_id, r.tier AS tier, r.is_active AS is_active, r.created_at AS created_at_ms"
+    "coalesce(canon.brain_id, c.brain_id) AS brain_id, r.tier AS tier, r.is_active AS is_active, "
+    "r.created_at AS created_at_ms"
 )
 
 COLUMNS_SQL = """

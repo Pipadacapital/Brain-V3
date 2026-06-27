@@ -32,7 +32,8 @@ import type {
   BrandPhoneGuardConfig,
   ResolveOutcome,
 } from '../../domain/identity/IdentityResolver.js';
-import type { IdentityReadState } from '../../domain/identity/IdentityStore.js';
+import type { ConfidenceVerdict } from '@brain/contracts';
+import type { IdentityReadState, ReviewQueueItem } from '../../domain/identity/IdentityStore.js';
 import { RULE_VERSION } from '../../domain/identity/IdentityResolver.js';
 
 const STRONG_TIERS = ['strong', 'strong_on_link'];
@@ -47,6 +48,26 @@ const DETERMINISTIC_MATCHER_ID = 'deterministic-union-find';
 const DETERMINISTIC_CONFIDENCE_SCORE = 100; // integer 0-100 (graph-native number), band 'exact'
 const DETERMINISTIC_CONFIDENCE_BAND = 'exact';
 const IDENTITY_SCHEMA_VERSION = '1'; // doc-07 envelope schema_version (graph-side mirror)
+
+// ── F2: ALIAS-RESOLUTION — chase the live merged_into chain to the CANONICAL brain_id ─────────────
+// A merge tombstones the merged Customer (lifecycle='merged', merged_into=<canonical>) and links it
+// (m)-[:ALIAS_OF {valid_to:null}]->(canonical). The merged node's IDENTIFIES edges are NOT re-pointed,
+// so an identifier that still IDENTIFIES the merged node must resolve THROUGH the alias chain to the
+// canonical — otherwise a post-merge identifier (and its orders/LTV) resolves to the DEAD brain_id and
+// the merge is defeated. This OPTIONAL-MATCH fragment (parameterised on a bound `c:Customer`) follows
+// the LIVE (valid_to IS NULL) ALIAS_OF chain to its terminal canonical node:
+//   - multi-hop: variable-length `*1..50` walks A→B→C; Neo4j never traverses a relationship twice in
+//     one path, so an accidental cycle cannot infinite-loop, and 50 caps practical merge depth (the
+//     bounded cycle guard).
+//   - live-only: `all(rel ... valid_to IS NULL)` ignores stale (un-merged) alias edges.
+//   - terminal: the canon node itself has NO live outgoing ALIAS_OF (it is the survivor).
+// `coalesce(canon.brain_id, c.brain_id)` then yields the canonical brain_id for a merged node, or the
+// node's own brain_id when it is already canonical (no path matched). Bind the alias var `c` first.
+const CANONICAL_OF_C = `
+        OPTIONAL MATCH _cano = (c)-[:ALIAS_OF*1..50]->(canon:Customer)
+        WHERE all(rel IN relationships(_cano) WHERE rel.valid_to IS NULL)
+          AND NOT EXISTS { MATCH (canon)-[ra:ALIAS_OF]->() WHERE ra.valid_to IS NULL }`;
+const CANONICAL_BRAIN_ID = 'coalesce(canon.brain_id, c.brain_id)';
 
 export class Neo4jIdentityRepository {
   private readonly driver: Driver;
@@ -113,10 +134,13 @@ export class Neo4jIdentityRepository {
       const existingLinks: ExistingLink[] = [];
       if (identifierHashes.length > 0) {
         const pairs = identifierHashes.map((i) => [i.type, i.hash]);
+        // F2 ALIAS-RESOLVE: return the CANONICAL brain_id (follow the live ALIAS_OF chain), so a
+        // post-merge identifier resolves to the survivor — a subsequent event then LINKS to the
+        // canonical node, not the dead alias (and the resolver never re-merges an already-merged pair).
         const res = await session.run(
           `MATCH (i:Identifier {brand_id:$brand})-[r:IDENTIFIES]->(c:Customer)
-           WHERE r.is_active = true AND [i.type, i.hash] IN $pairs
-           RETURN c.brain_id AS brain_id, i.type AS identifier_type, i.hash AS identifier_value, r.is_active AS is_active`,
+           WHERE r.is_active = true AND [i.type, i.hash] IN $pairs${CANONICAL_OF_C}
+           RETURN ${CANONICAL_BRAIN_ID} AS brain_id, i.type AS identifier_type, i.hash AS identifier_value, r.is_active AS is_active`,
           { brand: brandId, pairs },
         );
         for (const rec of res.records) {
@@ -180,6 +204,66 @@ export class Neo4jIdentityRepository {
   }
 
   /**
+   * Fetch candidate customers that share any of the event's WEAK-signal hashes — the active
+   * tier='weak' IDENTIFIES edges (device_fingerprint / cookie_id / session_id / ip). These edges
+   * carry NO merge authority (weak is never in STRONG_TIERS); they exist SOLELY to feed the
+   * review-gated ProbabilisticMatcher, which can at most ROUTE TO REVIEW. brand_id-first, hash-only.
+   */
+  async findCandidatesByWeakSignals(
+    brandId: string,
+    weakHashes: Array<{ type: string; hash: string }>,
+  ): Promise<ExistingLink[]> {
+    if (weakHashes.length === 0) return [];
+    const session = this.driver.session({ defaultAccessMode: neo4j.session.READ });
+    try {
+      const pairs = weakHashes.map((i) => [i.type, i.hash]);
+      const res = await session.run(
+        `MATCH (i:Identifier {brand_id:$brand})-[r:IDENTIFIES]->(c:Customer)
+         WHERE r.is_active = true AND r.tier = 'weak' AND [i.type, i.hash] IN $pairs
+         RETURN c.brain_id AS brain_id, i.type AS identifier_type, i.hash AS identifier_value, r.is_active AS is_active`,
+        { brand: brandId, pairs },
+      );
+      return res.records.map((rec) => ({
+        brain_id: rec.get('brain_id'),
+        identifier_type: rec.get('identifier_type'),
+        identifier_value: rec.get('identifier_value'),
+        is_active: rec.get('is_active'),
+      }));
+    } finally {
+      await session.close();
+    }
+  }
+
+  /**
+   * Enqueue a probabilistic weak-signal pair to the human review queue (a MergeReview node), the
+   * graph-side review surface. Idempotent on the deterministic review_id (MERGE key) → a replay
+   * re-enqueues nothing. status='pending' + source flags it as a probabilistic (never-auto-merge)
+   * review, distinct from the deterministic cycle-guard reviews. brand_id-first, hash-only evidence.
+   */
+  async enqueueReview(brandId: string, item: ReviewQueueItem): Promise<void> {
+    const session = this.driver.session();
+    try {
+      await session.run(
+        `MERGE (mr:MergeReview {brand_id:$brand, review_id:$reviewId})
+         ON CREATE SET mr.brain_id_a=$a, mr.brain_id_b=$b, mr.trigger_reason=$reason,
+                       mr.evidence=$evidence, mr.status='pending', mr.created_at=$nowMs,
+                       mr.source='probabilistic-fellegi-sunter'`,
+        {
+          brand: brandId,
+          reviewId: item.review_id,
+          a: item.brain_id_a,
+          b: item.brain_id_b,
+          reason: item.reason,
+          evidence: JSON.stringify(item.evidence),
+          nowMs: Date.now(),
+        },
+      );
+    } finally {
+      await session.close();
+    }
+  }
+
+  /**
    * Write the resolution outcome. The identity GRAPH (customer / links / merge / alias / phone-guard /
    * review) is one Neo4j write transaction; identity_audit + contact_pii are written to PG (ADR-0004).
    * Idempotent: MERGE on stable keys; deterministic ids → replay-safe.
@@ -188,8 +272,17 @@ export class Neo4jIdentityRepository {
     brandId: string,
     outcome: ResolveOutcome,
     identifiers: ExtractedIdentifier[],
+    verdict?: ConfidenceVerdict,
   ): Promise<{ written: boolean }> {
     const nowMs = Date.now();
+    // The structured confidence/provenance to stamp on the committed edges/nodes. DETERMINISTIC
+    // outcomes only ever reach here (a probabilistic verdict routes to review, never commits) — so
+    // `verdict` is the deterministic grade (exact for strong/merge, sub-exact 'medium' for a
+    // cross-device adoption). Falls back to the deterministic exact constants for back-compat callers.
+    const confScore = verdict?.score ?? DETERMINISTIC_CONFIDENCE_SCORE;
+    const confBand = verdict?.band ?? DETERMINISTIC_CONFIDENCE_BAND;
+    const matcherIdStamp = verdict?.matcher_id ?? DETERMINISTIC_MATCHER_ID;
+    const ruleVersionStamp = verdict?.rule_version ?? RULE_VERSION;
     const session = this.driver.session();
     try {
       await session.executeWrite(async (tx) => {
@@ -217,8 +310,8 @@ export class Neo4jIdentityRepository {
              ON MATCH SET r.is_active=true`,
             {
               brand: brandId, brainId: outcome.brainId, t: id.type, h: id.hash, tier: id.tier, nowMs,
-              confScore: DETERMINISTIC_CONFIDENCE_SCORE, confBand: DETERMINISTIC_CONFIDENCE_BAND,
-              matcherId: DETERMINISTIC_MATCHER_ID, ruleVersion: RULE_VERSION,
+              confScore, confBand,
+              matcherId: matcherIdStamp, ruleVersion: ruleVersionStamp,
               schemaVersion: IDENTITY_SCHEMA_VERSION,
             },
           );
@@ -258,8 +351,8 @@ export class Neo4jIdentityRepository {
                              a.matcher_id=$matcherId, a.schema_version=$schemaVersion`,
             {
               brand: brandId, canonical: canonicalBrainId, merged: mergedBrainId, mergeId, nowMs,
-              confScore: DETERMINISTIC_CONFIDENCE_SCORE, confBand: DETERMINISTIC_CONFIDENCE_BAND,
-              matcherId: DETERMINISTIC_MATCHER_ID, ruleVersion: RULE_VERSION,
+              confScore, confBand,
+              matcherId: matcherIdStamp, ruleVersion: ruleVersionStamp,
               schemaVersion: IDENTITY_SCHEMA_VERSION,
             },
           );

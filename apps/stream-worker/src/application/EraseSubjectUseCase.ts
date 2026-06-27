@@ -238,7 +238,7 @@ export class EraseSubjectUseCase {
     // STEP 3 — Scoped Gold re-projection.
     // REUSE the existing IScopedRecomputeRepository.upsert() path (the same repo
     // IdentityChangeRecomputeConsumer uses). The ScopedRecompute mapper already handles
-    // 'identity.erased'. We write directly to brain_ops (no Kafka emit needed — the
+    // 'identity.erased'. We write directly to ops (no Kafka emit needed — the
     // identity.erased.v1 contract does not yet exist in packages/contracts v1).
     const erasedInput: IdentityChangeInput = {
       event_name: 'identity.erased',

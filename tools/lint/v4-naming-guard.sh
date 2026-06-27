@@ -10,24 +10,28 @@
 #     the rest-Iceberg catalogs by Spark). No reader queries a bare brain_gold./brain_silver. DB.
 #   • Features are RUNTIME — there is NO permanent feature-precompute table (no feature_customer_daily,
 #     no brain_feature write). brain_feature is dead (db/starrocks/teardown/drop_dead_feature_db.sql).
-#   • Trino is the SERVING engine (Brain V4 removes StarRocks). The app / BFF / metric-engine read
-#     brain_serving.mv_* over TRINO (Iceberg). A Trino client (withTrinoBrand/createTrinoPool/TrinoPool)
-#     in core serving code is now ALLOWED — R5 (which banned it) is RETIRED this wave.
+#   • Trino is the SERVING engine (Brain V4 removes StarRocks ENTIRELY — wire AND serving). The app /
+#     BFF / metric-engine read brain_serving.mv_* over TRINO (the iceberg.brain_serving.* VIEWS over the
+#     Iceberg Gold/Silver marts), fronted by a Redis analytics cache. A Trino client
+#     (withTrinoBrand/createTrinoPool/TrinoPool) in core serving code is ALLOWED; NEW StarRocks coupling
+#     (a mysql2 driver, the :9030 query port, or a STARROCKS_* env read) in serving app code is FORBIDDEN — R5.
 #
 # It FAILS (exit 1) when LIVE (non-test, non-comment) source contains any of:
 #   R1  a bare `brain_gold.` / `brain_silver.` reference (the retired dbt StarRocks DBs).
 #         — `brain_gold_local.` / `brain_silver_local.` (Iceberg catalogs), `rest.brain_*.`,
 #           `{CATALOG}.brain_*.` (Spark Iceberg namespaces), `iceberg.brain_*.` (the Trino Iceberg
-#           serving catalog), and `brain_serving.` are ALLOWED.
+#           serving catalog — incl. iceberg.brain_serving.*), and `brain_serving.` are ALLOWED.
 #   R2  a `dbt` INVOCATION in a script / CI workflow / compose file (dbt run|build|test|seed|…).
 #         — the word "dbt" in a comment (explaining it was removed) is allowed.
 #   R3  a permanent feature precompute table — a `feature_customer_daily` reference or a `brain_feature`
 #         WRITE (CREATE/INSERT/MERGE/UPSERT/REFRESH/GRANT) in live code.
 #   R4  a Gold/Silver read that is NOT via mv_* / rest-Iceberg — i.e. `FROM`/`JOIN brain_gold.` or
 #         `brain_silver.` (a strict subset of R1, surfaced separately for a clearer message).
-#   R5  RETIRED (this wave): Trino is now the SERVING path — a withTrinoBrand/createTrinoPool/TrinoPool
-#         reference in apps/core/src serving code is ALLOWED. The previous ban (Trino as additive-only)
-#         is removed. (Broader StarRocks-removal rules land in a later wave.)
+#   R5  NEW StarRocks COUPLING in serving app code (apps/core/** + apps/collector/**, non-test): a
+#         `mysql2` import (the StarRocks wire driver), the StarRocks query port `:9030`, or a `STARROCKS_*`
+#         env read. Brain V4 removed StarRocks ENTIRELY — serving is Trino-over-Iceberg
+#         (createTrinoPool / withTrinoBrand) fronted by Redis. This rule stops StarRocks creeping back into
+#         the app after the Trino cut-over. (Trino clients are ALLOWED; this only bans the StarRocks wire.)
 #
 # EXCLUDED from scanning (by design):
 #   • test fixtures: *.test.ts, *.spec.ts, *.live.test.ts, tools/isolation-fuzz/**, **/test/**
@@ -206,8 +210,33 @@ scan_feature_precompute() {
   done < <(candidate_files 'brain_feature|feature_customer_daily')
 }
 
-# R5 — RETIRED this wave. Trino is now the Brain V4 SERVING engine, so a Trino client in
-# apps/core/src serving code is ALLOWED (no scan). The previous additive-only ban is removed.
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# R5: NEW StarRocks coupling in serving app code (apps/core/** + apps/collector/**, non-test).
+#   Brain V4 removed StarRocks ENTIRELY; serving is Trino-over-Iceberg (createTrinoPool / withTrinoBrand)
+#   fronted by Redis. The StarRocks wire MUST NOT creep back: a mysql2 import, the :9030 query port, or a
+#   STARROCKS_* env read in serving app code is a violation. (A Trino client is ALLOWED — not scanned.)
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+scan_starrocks_coupling() {
+  local f l content
+  while IFS= read -r f; do
+    # Scope to the SERVING app surfaces only — the metric-engine/BFF/core/collector read paths.
+    case "$f" in
+      apps/core/*|apps/collector/*) ;;
+      *) continue ;;
+    esac
+    is_excluded "$f" && continue
+    while IFS= read -r line; do
+      l="${line%%:*}"; content="${line#*:}"
+      if printf '%s' "$content" | grep -qE "(from[[:space:]]+['\"]mysql2|require\(['\"]mysql2|['\"]mysql2/promise['\"])"; then
+        flag R5 "$f:$l" "mysql2 (the StarRocks wire driver) in serving app code — Brain V4 removed StarRocks; serving is Trino-over-Iceberg (createTrinoPool/withTrinoBrand): ${content#"${content%%[![:space:]]*}"}"
+      elif printf '%s' "$content" | grep -qE 'STARROCKS_[A-Z0-9_]+'; then
+        flag R5 "$f:$l" "STARROCKS_* env read in serving app code — StarRocks is removed in Brain V4; use TRINO_* / the Iceberg catalog name (createTrinoPool): ${content#"${content%%[![:space:]]*}"}"
+      elif printf '%s' "$content" | grep -qE '(^|[^0-9])9030([^0-9]|$)'; then
+        flag R5 "$f:$l" "the StarRocks query port :9030 in serving app code — Brain V4 serving is Trino (HTTP, default :8090): ${content#"${content%%[![:space:]]*}"}"
+      fi
+    done < <(noncomment_lines "$f")
+  done < <(candidate_files 'mysql2|STARROCKS_|(^|[^0-9])9030([^0-9]|$)' | grep -E '\.tsx?$' || true)
+}
 
 # ── Self-test ──────────────────────────────────────────────────────────────────────────────────────
 # Proves the guard FAILS on a known-bad corpus (one line per rule) and PASSES on the allowed forms.
@@ -228,6 +257,12 @@ EOF
 dbt run --select gold
 SELECT brain_anon_id FROM brain_silver.silver_touchpoint
 EOF
+  # R5 bad corpus — NEW StarRocks coupling in serving app code (one signal per line).
+  cat > "$d/bad.starrocks.ts" <<'EOF'
+import mysql from 'mysql2/promise';
+const host = process.env['STARROCKS_HOST'];
+const pool = mysql.createPool({ host, port: 9030, user: 'brain_analytics' });
+EOF
 
   # ── Good corpus (must NOT trigger) ────────────────────────────────────────
   cat > "$d/good.sql" <<'EOF'
@@ -243,6 +278,12 @@ This Spark job WRITES Iceberg brain_silver.silver_touchpoint (prose docstring �
 fqtn = f"{CATALOG}.{SILVER_NAMESPACE}.silver_touchpoint"
 df = spark.table("rest.brain_silver.silver_touchpoint")
 # dbt was removed in V4 (comment mentioning dbt — allowed)
+EOF
+  # R5 good corpus — the Trino serving client + iceberg.brain_serving views (allowed, no StarRocks wire).
+  cat > "$d/good.starrocks.ts" <<'EOF'
+import { createTrinoPool, withTrinoBrand } from '@brain/metric-engine';
+const trino = createTrinoPool({ baseUrl: process.env['TRINO_URL'] ?? 'http://trino:8090', user: 'brain' });
+// reads iceberg.brain_serving.mv_gold_revenue_ledger over Trino — no mysql2, no :9030, no STARROCKS_ env.
 EOF
 
   local fail_bad=0 fail_good=0
@@ -261,7 +302,16 @@ EOF
     [ "$hits" -gt 0 ] || { echo "${RED}SELFTEST FAIL: guard missed a violation in $(basename "$f")${RST}"; fail_bad=1; }
   done
 
-  # R5 RETIRED — no Trino-serving-path check (Trino is the V4 serving engine; allowed in core).
+  # ── Check bad.starrocks.ts catches R5 (mysql2 / STARROCKS_ / :9030) ───────────
+  local r5_hits; r5_hits=0
+  while IFS= read -r line; do
+    local content="${line#*:}"
+    printf '%s' "$content" | grep -qE "(from[[:space:]]+['\"]mysql2|require\(['\"]mysql2|['\"]mysql2/promise['\"])" && r5_hits=$((r5_hits+1))
+    printf '%s' "$content" | grep -qE 'STARROCKS_[A-Z0-9_]+' && r5_hits=$((r5_hits+1))
+    printf '%s' "$content" | grep -qE '(^|[^0-9])9030([^0-9]|$)' && r5_hits=$((r5_hits+1))
+  done < <(noncomment_lines "$d/bad.starrocks.ts")
+  # The 3-line corpus carries all three signals; require every one to be caught.
+  [ "$r5_hits" -ge 3 ] || { echo "${RED}SELFTEST FAIL: R5 missed a StarRocks-coupling signal in bad.starrocks.ts (hits=$r5_hits)${RST}"; fail_bad=1; }
 
   # ── Check good.sql + good.py produce NO false positives ───────────────────
   for f in "$d/good.sql" "$d/good.py"; do
@@ -275,8 +325,18 @@ EOF
     [ "$hits" -eq 0 ] || { echo "${RED}SELFTEST FAIL: guard false-positived on allowed form in $(basename "$f")${RST}"; fail_good=1; }
   done
 
+  # ── Check good.starrocks.ts (Trino client) produces NO R5 false positives ──────
+  local r5_fp; r5_fp=0
+  while IFS= read -r line; do
+    local content="${line#*:}"
+    printf '%s' "$content" | grep -qE "(from[[:space:]]+['\"]mysql2|require\(['\"]mysql2|['\"]mysql2/promise['\"])" && r5_fp=$((r5_fp+1))
+    printf '%s' "$content" | grep -qE 'STARROCKS_[A-Z0-9_]+' && r5_fp=$((r5_fp+1))
+    printf '%s' "$content" | grep -qE '(^|[^0-9])9030([^0-9]|$)' && r5_fp=$((r5_fp+1))
+  done < <(noncomment_lines "$d/good.starrocks.ts")
+  [ "$r5_fp" -eq 0 ] || { echo "${RED}SELFTEST FAIL: R5 false-positived on the allowed Trino client in good.starrocks.ts (hits=$r5_fp)${RST}"; fail_good=1; }
+
   if [ "$fail_bad" -eq 0 ] && [ "$fail_good" -eq 0 ]; then
-    echo "${GRN}✓ v4-naming-guard self-test passed (catches R1/R2/R3 on the bad corpus; no false positives on allowed forms; R5 retired — Trino is the V4 serving engine).${RST}"
+    echo "${GRN}✓ v4-naming-guard self-test passed (catches R1/R2/R3 on the bad corpus + R5 StarRocks coupling; no false positives on allowed Trino/Iceberg forms).${RST}"
     return 0
   fi
   return 1
@@ -292,16 +352,18 @@ echo "${YEL}v4-naming-guard${RST} — scanning the tree for retired-dbt / non-V4
 scan_dead_db_refs
 scan_dbt_invocations
 scan_feature_precompute
+scan_starrocks_coupling
 
 if [ "$violations" -gt 0 ]; then
   echo ""
   echo "${RED}v4-naming-guard FAILED: ${violations} violation(s).${RST}"
   echo "Brain V4: Spark is sole compute; medallion lives in the brain_*_local Iceberg catalogs;"
-  echo "Gold/Silver are served ONLY via brain_serving.mv_* (or read from rest-Iceberg by Spark);"
+  echo "Gold/Silver are SERVED via Trino views brain_serving.mv_* over Iceberg (fronted by Redis);"
   echo "dbt and the dbt-internal brain_gold/brain_silver DBs are REMOVED; features are RUNTIME."
-  echo "Trino is the V4 serving engine (R5 retired); brain_serving.mv_* are Trino views over Iceberg."
+  echo "StarRocks is REMOVED entirely — NEW StarRocks coupling (mysql2 / :9030 / STARROCKS_*) in serving"
+  echo "app code is FORBIDDEN (R5); use the Trino client (createTrinoPool / withTrinoBrand)."
   exit 1
 fi
 
-echo "${GRN}✓ v4-naming-guard passed — no retired-dbt-DB refs, no dbt invocations, no feature precompute.${RST}"
+echo "${GRN}✓ v4-naming-guard passed — no retired-dbt-DB refs, no dbt invocations, no feature precompute, no StarRocks coupling.${RST}"
 exit 0

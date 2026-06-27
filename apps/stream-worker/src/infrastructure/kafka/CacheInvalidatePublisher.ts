@@ -2,11 +2,11 @@
  * CacheInvalidatePublisher — Kafka adapter that publishes cache.invalidate.v1 events
  * on the intelligence.cache.invalidate.v1 lane, one event per affected Gold mart.
  *
- * Invoked by IdentityChangeRecomputeConsumer AFTER the durable brain_ops write so the
+ * Invoked by IdentityChangeRecomputeConsumer AFTER the durable ops write so the
  * Analytics Gateway can immediately bust its Redis serving cache for the affected brand
  * + mart without waiting for the next Spark Gold recompute cycle.
  *
- * FAIL-OPEN: the brain_ops write (the durable side of this pipeline) has already
+ * FAIL-OPEN: the ops write (the durable side of this pipeline) has already
  * succeeded before this publisher is called. A Kafka blip on the cache.invalidate
  * publish is non-fatal — the Spark scoped-recompute job will eventually recompute the
  * Gold mart and emit gold.rewritten.v1, which the Analytics Gateway also consumes to
@@ -150,10 +150,10 @@ export class CacheInvalidatePublisher implements ICacheInvalidatePublisher {
         },
       );
     } catch (err) {
-      // Fail-open: the durable brain_ops write has already succeeded. Log and return;
+      // Fail-open: the durable ops write has already succeeded. Log and return;
       // the caller (consumer) wraps this in a try/catch and logs the warn-level outcome.
       this.log?.error(
-        '[cache-invalidate-publisher] publish failed (non-fatal — brain_ops write is durable)',
+        '[cache-invalidate-publisher] publish failed (non-fatal — ops write is durable)',
         { topic, brand_id: recompute.brand_id, err },
       );
       throw err; // re-throw so the consumer's fail-open catch block can log at warn level

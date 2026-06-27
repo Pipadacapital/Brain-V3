@@ -14,6 +14,7 @@
  * @see packages/metric-engine/src/journey-mix.ts
  */
 
+import type { Pool } from 'pg';
 import type { SilverPool, JourneyChannel, TimelineSelector } from '@brain/metric-engine';
 import { computeTouchpointTimeline } from '@brain/metric-engine';
 
@@ -56,12 +57,13 @@ export interface JourneyTimelineParams {
  * getJourneyTimeline — the ordered touchpoint timeline for one journey.
  *
  * @param brandId - Brand UUID (from session — D-1; NEVER request body).
- * @param deps    - The StarRocks Silver pool (mysql2, brain_analytics).
+ * @param deps    - The Trino serving pool (srPool) + the PG pool (pool) used to resolve an
+ *                  order → its stitched anon(s) from the PG-native stitch map.
  * @param params  - The selector (orderId | brainAnonId) + data_source flag.
  */
 export async function getJourneyTimeline(
   brandId: string,
-  deps: { srPool: SilverPool },
+  deps: { srPool: SilverPool; pool?: Pool },
   params: JourneyTimelineParams,
 ): Promise<JourneyTimelineResult> {
   const result = await computeTouchpointTimeline(brandId, deps, params.selector);

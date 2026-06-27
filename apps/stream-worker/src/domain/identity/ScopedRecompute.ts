@@ -103,7 +103,7 @@ export interface ScopedRecompute {
   /**
    * Deterministic idempotency key:
    * deterministicUuid(`${brand_id}||scoped-recompute||${source_event_id}`).
-   * Same Kafka message redelivered → same request_id → brain_ops upsert is a no-op.
+   * Same Kafka message redelivered → same request_id → ops upsert is a no-op.
    */
   request_id: string;
   /** The identity event_id that triggered this request (causation chain + audit). */

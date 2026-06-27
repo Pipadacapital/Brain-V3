@@ -95,11 +95,12 @@ services:
       retries: 10
 
   minio:
+    # DEFAULT (always-on): the Iceberg warehouse S3 backend for the Trino serving
+    # engine (now a default service the app reads) + bronze/audit S3 for core. Was
+    # profiles:[core,lakehouse]; promoted to default so trino's serving substrate
+    # resolves without an explicit profile. Always-on services still start under the
+    # existing core/lakehouse invocations, so no profile flow regresses.
     image: minio/minio:RELEASE.2024-04-06T05-26-02Z
-    # core: bronze/audit S3. lakehouse: nessie/Iceberg warehouse depends_on minio
-    # (so nessie's dependency resolves under --profile lakehouse). NOT in ingest —
-    # the ingest apps (collector/stream-worker) write Bronze to Postgres, not S3.
-    profiles: ["core", "lakehouse"]
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: brain
@@ -114,10 +115,10 @@ services:
       retries: 10
       start_period: 10s
 
-  # MinIO bucket + prefix bootstrap (runs once; idempotent)
+  # MinIO bucket + prefix bootstrap (runs once; idempotent). DEFAULT (always-on)
+  # alongside minio so the Trino serving warehouse buckets exist without a profile.
   minio-init:
     image: minio/mc:latest
-    profiles: ["core", "lakehouse"]
     depends_on:
       minio:
         condition: service_healthy
@@ -127,39 +128,6 @@ services:
         mc mb --ignore-existing local/brain-bronze &&
         mc mb --ignore-existing local/brain-audit &&
         echo 'MinIO buckets ready: brain-bronze brain-audit'
-      "
-    restart: "no"
-
-  starrocks:
-    image: starrocks/allin1-ubuntu:3.3.2
-    profiles: ["core"]
-    ports:
-      - "9030:9030"   # MySQL protocol (FE)
-      - "8030:8030"   # HTTP REST (FE)
-      - "8040:8040"   # BE HTTP
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8030/api/health || exit 1"]
-      interval: 15s
-      timeout: 10s
-      retries: 20
-      start_period: 30s
-
-  # StarRocks post-startup bootstrap — row-policy template + external catalog (NN-2)
-  starrocks-init:
-    image: mysql:8.0
-    profiles: ["core"]
-    depends_on:
-      starrocks:
-        condition: service_healthy
-    volumes:
-      - ./db/starrocks:/sql:ro
-    entrypoint: >
-      /bin/sh -c "
-        echo 'Waiting for StarRocks FE...' &&
-        mysql -h starrocks -P 9030 -u root --connect-timeout=10 < /sql/bootstrap.sql &&
-        echo 'Registering external Silver/Gold Iceberg catalogs...' &&
-        mysql -h starrocks -P 9030 -u root < /sql/external_iceberg_silver_gold_catalog.sql &&
-        echo 'StarRocks bootstrap complete'
       "
     restart: "no"
 
@@ -294,14 +262,14 @@ services:
   # Apache's reference iceberg-rest-fixture, backing the Iceberg warehouse onto MinIO (S3).
   # Replaces the previously-broken projectnessie/nessie:0.90.2 (unpullable tag, PR #72) with
   # a pinned, pullable image. Spark Structured Streaming (the Bronze writer, ADR-0002) and
-  # StarRocks read Bronze through this catalog.
+  # Trino (the serving engine) read Iceberg through this catalog.
   #
-  # OPTIONAL lakehouse infra, NOT part of the default dev loop — start via `pnpm dev:lakehouse`.
-  # Kept out of "ingest" because the live ingest path still writes Bronze to Postgres until the
-  # Iceberg flip completes (ADR-0002 dual-sink); this catalog is the target SoR substrate.
+  # DEFAULT (always-on): the Trino serving engine (a default service the app reads) resolves
+  # the Iceberg medallion through this catalog, so it must be present without a profile. Was
+  # profiles:[lakehouse]; promoted to default. Spark Bronze sink / Gold jobs (lakehouse profile)
+  # still reach it because always-on services run under every invocation.
   iceberg-rest:
     image: apache/iceberg-rest-fixture:1.9.2
-    profiles: ["lakehouse"]
     depends_on:
       minio:
         condition: service_healthy
@@ -462,15 +430,14 @@ services:
       - brain-connect-plugins:/opt/connect-plugins
     restart: unless-stopped
 
-  # ── Trino — ad-hoc / federated Iceberg exploration (lakehouse profile ONLY) ──
+  # ── Trino — serving query engine over Iceberg (DEFAULT profile) ──
   # Read-only query layer over the SAME Iceberg REST catalog + MinIO that Spark
-  # and StarRocks use. For ad-hoc exploration ONLY — NEVER an app serving path.
-  # App / BFF / metric-engine read StarRocks brain_serving.mv_* solely.
-  # Host port 8090 (not 8080) avoids collision with Apicurio's 8080:8080 mapping
-  # when both lakehouse + ingest profiles run simultaneously.
+  # uses. This is now the app serving path: App / BFF / metric-engine read the
+  # Trino `mv_*` views (db/trino/views) over Iceberg + a Redis cache. StarRocks
+  # has been removed entirely. Host port 8090 (not 8080) avoids collision with
+  # Apicurio's 8080:8080 mapping when the ingest profile runs simultaneously.
   trino:
     image: trinodb/trino:455
-    profiles: ["lakehouse"]
     depends_on:
       iceberg-rest:
         condition: service_healthy

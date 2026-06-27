@@ -22,14 +22,34 @@ vi.mock('./silver-deps.js', async () => {
   };
 });
 
+// The orderId timeline path resolves order → stitched anon(s) from the PG-native stitch map via
+// withBrandTxn (Brain V4 — the stitch map is PG operational state, not on the Trino serving tier).
+vi.mock('./deps.js', async () => {
+  const actual = await vi.importActual<typeof import('./deps.js')>('./deps.js');
+  return {
+    ...actual,
+    withBrandTxn: vi.fn(),
+  };
+});
+
 import {
   computeFirstTouchMix,
   computeStitchHitRate,
   computeTouchpointTimeline,
 } from './journey-mix.js';
 import { withSilverBrand } from './silver-deps.js';
+import { withBrandTxn } from './deps.js';
 
 const withSilverBrandMock = vi.mocked(withSilverBrand);
+const withBrandTxnMock = vi.mocked(withBrandTxn);
+
+/** Wire withBrandTxn to resolve an order → the given stitched anon ids (PG stitch-map read). */
+function setupStitchAnons(anonIds: string[]) {
+  withBrandTxnMock.mockImplementation(async (_pool, _brandId, fn) => {
+    const client = { query: async () => ({ rows: anonIds.map((a) => ({ stitched_anon_id: a })) }) };
+    return fn(client as never);
+  });
+}
 
 const BRAND_ID = '00000000-0000-0000-0000-000000000001';
 const fakeDeps = { srPool: {} as never };
@@ -274,9 +294,26 @@ describe('computeTouchpointTimeline — ordered touch projection for one journey
   });
 
   it('stitched=true when any touch carries a stitched_brain_id (deterministic read-back)', async () => {
+    setupStitchAnons(['anon-x']); // order-1 → anon-x via the PG stitch map
+    setupRows(TOUCH_ROWS);
+    const result = await computeTouchpointTimeline(BRAND_ID, { srPool: {} as never, pool: {} as never }, { orderId: 'order-1' });
+    expect(result.stitched).toBe(true);
+  });
+
+  it('orderId with no stitch-map row resolves to honest no_data (never reads the serving tier)', async () => {
+    setupStitchAnons([]); // order has no stitched anon
+    setupRows(TOUCH_ROWS); // would be non-empty if the serving read ran
+    const result = await computeTouchpointTimeline(BRAND_ID, { srPool: {} as never, pool: {} as never }, { orderId: 'order-x' });
+    expect(result.hasData).toBe(false);
+    expect(result.touches).toEqual([]);
+    expect(withSilverBrandMock).not.toHaveBeenCalled();
+  });
+
+  it('orderId with no PG pool degrades to honest no_data (stitch map is PG-native)', async () => {
     setupRows(TOUCH_ROWS);
     const result = await computeTouchpointTimeline(BRAND_ID, fakeDeps, { orderId: 'order-1' });
-    expect(result.stitched).toBe(true);
+    expect(result.hasData).toBe(false);
+    expect(result.touches).toEqual([]);
   });
 
   it('stitched=false when no touch is stitched (un-stitched anon journey is honest)', async () => {
@@ -296,8 +333,9 @@ describe('computeTouchpointTimeline — ordered touch projection for one journey
   });
 
   it('reads through the seam with the SESSION brandId (tenant-scoped; D-1)', async () => {
+    setupStitchAnons(['anon-x']);
     const captured = captureBrand(TOUCH_ROWS);
-    await computeTouchpointTimeline(BRAND_ID, fakeDeps, { orderId: 'order-1' });
+    await computeTouchpointTimeline(BRAND_ID, { srPool: {} as never, pool: {} as never }, { orderId: 'order-1' });
     expect(captured.brandId).toBe(BRAND_ID);
   });
 });

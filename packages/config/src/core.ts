@@ -44,14 +44,6 @@ export const CoreEnvSchema = CommonEnvSchema.extend({
   /** KMS key for per-brand connector-secret EncryptionContext isolation (dev default; prod fail-closed gate stays raw). */
   CONNECTOR_SECRETS_KMS_KEY_ID: z.string().default('alias/brain-connector-secrets-dev'),
 
-  // ── StarRocks Silver/Gold read pool (shared by jobs) ────────────────────────
-  STARROCKS_HOST: z.string().default('localhost'),
-  STARROCKS_PORT: z.coerce.number().default(9030),
-  STARROCKS_ANALYTICS_USER: z.string().default('brain_analytics'),
-  STARROCKS_ANALYTICS_PASSWORD: z.string().default('brain_analytics_dev'),
-  /** Iceberg Bronze catalog name (env-overridable so prod can point at the Glue catalog). */
-  STARROCKS_BRONZE_CATALOG: z.string().default('brain_bronze_local'),
-
   // ── OAuth app (non-secret) client ids — BYO-app back-compat fallbacks ────────
   SHOPIFY_CLIENT_ID: z.string().optional(),
   META_APP_ID: z.string().optional(),
@@ -74,10 +66,10 @@ export const CoreEnvSchema = CommonEnvSchema.extend({
   FX_CACHE_TTL_MS: z.coerce.number().default(12 * 60 * 60 * 1000),
   FX_FETCH_TIMEOUT_MS: z.coerce.number().default(8000),
 
-  // ── Trino ad-hoc / federated Iceberg exploration ─────────────────────────────
-  // ADDITIVE and read-only — for ad-hoc/exploration ONLY, never an app serving path.
-  // App / BFF / metric-engine read StarRocks brain_serving.mv_* solely; a cache-miss
-  // on a known metric goes to StarRocks, not Trino.
+  // ── Trino serving / Iceberg reads ────────────────────────────────────────────
+  // Brain V4: Trino IS the serving engine (StarRocks removed). App / BFF / metric-engine
+  // read brain_serving.mv_* (Trino views over Iceberg Gold/Silver) through the withSilverBrand
+  // seam; a cache-miss on a known metric goes to Trino. createTrinoPool builds from these.
   TRINO_HOST: z.string().default('localhost'),
   /** Host-mapped port for Trino HTTP/JDBC (container: 8080, host: 8090 in docker-compose). */
   TRINO_PORT: z.coerce.number().default(8090),

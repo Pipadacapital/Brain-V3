@@ -116,21 +116,15 @@ export const StreamWorkerEnvSchema = CommonEnvSchema.extend({
   SYNC_SCHEDULER_INTERVAL_MS: z.coerce.number().int().default(45000),
   REPULL_CLAIM_BATCH: z.coerce.number().int().default(100),
 
-  // ── StarRocks (Silver) readers ───────────────────────────────────────────────
-  /** Optional — when absent, Silver-tier DQ checks emit an honest 'D'. */
-  STARROCKS_HOST: z.string().optional(),
-  /** DQ/journey-stitch reader port (main.ts + journey-stitch-from-identity). */
-  STARROCKS_PORT: z.coerce.number().int().default(9030),
-  /** feature-materialization / journey-stitch-export / identity-export port. */
-  STARROCKS_QUERY_PORT: z.coerce.number().int().default(9030),
-  STARROCKS_ANALYTICS_USER: z.string().default('brain_analytics'),
-  STARROCKS_ANALYTICS_PASSWORD: z.string().default('brain_analytics_dev'),
-  STARROCKS_FEATURE_USER: z.string().default('root'),
-  STARROCKS_FEATURE_PASSWORD: z.string().default(''),
-  STARROCKS_ROOT_USER: z.string().default('root'),
-  STARROCKS_ROOT_PASSWORD: z.string().default(''),
-  /** Iceberg Bronze external catalog name (dq silver-reader). */
-  STARROCKS_BRONZE_CATALOG: z.string().default('brain_bronze_local'),
+  // ── Trino serving (Silver/Gold) readers — Brain V4 (StarRocks removed) ───────
+  /**
+   * Optional — when absent, the Silver-tier DQ checks + the journey-stitch / feature
+   * materialization jobs degrade to honest no_data (the serving tier is the SOLE source).
+   * Optional-absence semantics carried over from the removed StarRocks host field.
+   */
+  TRINO_HOST: z.string().optional(),
+  /** Trino HTTP/JDBC port (container: 8080, host: 8090 in docker-compose). */
+  TRINO_PORT: z.coerce.number().int().default(8090),
 
   // ── Identity store (Neo4j) — main.ts + phone-guard + identity-export ─────────
   NEO4J_URI: z.string().default('bolt://localhost:7687'),

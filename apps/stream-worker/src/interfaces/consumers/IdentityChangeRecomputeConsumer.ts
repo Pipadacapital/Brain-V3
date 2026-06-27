@@ -3,13 +3,14 @@
  *
  * Consumes identity.{merged,suppressed,minted,linked,review_queued}.v1 topics.
  * For every identity.merged or identity.suppressed event it:
- *   (a) Persists a ScopedRecompute request to brain_ops.scoped_recompute_request
- *       (idempotent upsert — PRIMARY KEY table, same request_id on retry = no-op).
+ *   (a) Persists a ScopedRecompute request to ops.scoped_recompute_request (PG `ops` schema —
+ *       V4 StarRocks REMOVAL, migration 0116; idempotent upsert — PRIMARY KEY table, same
+ *       request_id on retry = no-op).
  *   (b) Publishes cache.invalidate.v1 for each affected customer-grained Gold mart
  *       so the Analytics Gateway can bust its Redis serving cache immediately.
  *
  * Events that do NOT require a scoped recompute (minted, linked, review_queued) are
- * consumed and committed with outcome='skipped' — no brain_ops write, no publish.
+ * consumed and committed with outcome='skipped' — no ops write, no publish.
  *
  * SEAM — identity.erased: not yet a live event type in contracts v1. When
  * identity.erased.v1 is added to packages/contracts/src/events/identity.events.v1.ts,
@@ -17,14 +18,14 @@
  * arm to processMessage. The ScopedRecompute mapper already handles the erased arm.
  *
  * OFFSET DISCIPLINE (D-7):
- *   Commit ONLY after the brain_ops write returns without throwing. The cache.invalidate
- *   publish is FAIL-OPEN (the durable brain_ops write is sufficient for pipeline
- *   correctness). On brain_ops write error: do NOT commit; increment the durable retry
+ *   Commit ONLY after the PG ops write returns without throwing. The cache.invalidate
+ *   publish is FAIL-OPEN (the durable ops write is sufficient for pipeline
+ *   correctness). On ops write error: do NOT commit; increment the durable retry
  *   counter; DLQ after MAX_RETRY=5.
  *
  * IDEMPOTENCY:
  *   - request_id is deterministicUuid(brand_id || 'scoped-recompute' || source_event_id).
- *     Re-delivering the same Kafka message → same request_id → brain_ops PK upsert = no-op.
+ *     Re-delivering the same Kafka message → same request_id → ops PK upsert = no-op.
  *   - cache.invalidate event_id is deterministic on (brand_id, mart, causation_event_id)
  *     → the Analytics Gateway dedups on (brand_id, event_id).
  *
@@ -114,11 +115,11 @@ export class IdentityChangeRecomputeConsumer {
    * Per-message processing logic, extracted from eachMessage for unit-testability.
    *
    * CONTRACT:
-   *   - Returns 'recomputed' when a brain_ops write + cache.invalidate publish succeed.
+   *   - Returns 'recomputed' when a ops write + cache.invalidate publish succeed.
    *   - Returns 'skipped' for event types that don't require a recompute (minted, linked,
    *     review_queued) or when no identity-change fields are present.
    *   - Returns 'invalid' for unparseable / contract-violating messages (→ DLQ path).
-   *   - THROWS if the brain_ops write throws (→ consumer retry path, offset not committed).
+   *   - THROWS if the ops write throws (→ consumer retry path, offset not committed).
    *     The cache.invalidate publish error is caught internally (fail-open).
    */
   async processMessage(rawValue: Buffer | null, now: string): Promise<ProcessOutcome> {
@@ -159,7 +160,7 @@ export class IdentityChangeRecomputeConsumer {
       };
       const recompute = mapIdentityEventToScopedRecompute(input, now);
 
-      // (a) Durable write to brain_ops — FAIL-CLOSED. Throws on error → consumer retries.
+      // (a) Durable write to ops — FAIL-CLOSED. Throws on error → consumer retries.
       await this.repository.upsert(recompute);
 
       // (b) Cache invalidation — FAIL-OPEN. Already have the durable write; a Kafka blip
@@ -167,7 +168,7 @@ export class IdentityChangeRecomputeConsumer {
       try {
         await this.publisher.publishForRecompute(recompute, event_id);
       } catch (err) {
-        log.warn('[identity-recompute] cache.invalidate publish failed (non-fatal — brain_ops durable)', {
+        log.warn('[identity-recompute] cache.invalidate publish failed (non-fatal — ops durable)', {
           brand_id, request_id: recompute.request_id, err,
         });
       }
@@ -207,7 +208,7 @@ export class IdentityChangeRecomputeConsumer {
       try {
         await this.publisher.publishForRecompute(recompute, event_id);
       } catch (err) {
-        log.warn('[identity-recompute] cache.invalidate publish failed (non-fatal — brain_ops durable)', {
+        log.warn('[identity-recompute] cache.invalidate publish failed (non-fatal — ops durable)', {
           brand_id, request_id: recompute.request_id, err,
         });
       }
@@ -325,7 +326,7 @@ export class IdentityChangeRecomputeConsumer {
               );
             }
           } catch (err) {
-            // brain_ops write error — do NOT commit. Increment durable retry counter (T2-8).
+            // ops write error — do NOT commit. Increment durable retry counter (T2-8).
             const current = await this.retryCounter.increment(retryScope, partition, offset);
 
             msgLog.error(

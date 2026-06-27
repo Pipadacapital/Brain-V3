@@ -2,7 +2,7 @@
  * @brain/metric-engine — journey seam (Silver touchpoint, Tier-0 deterministic).
  *
  * The SOLE emitter of the journey signals over the Silver mart silver.touchpoint
- * (StarRocks brain_silver), read through the Silver read seam (withSilverBrand).
+ * (brain_serving.mv_silver_touchpoint over Trino/Iceberg), read through the Silver read seam (withSilverBrand).
  * Three non-additive reads:
  *
  *   1. computeFirstTouchMix      — COUNT + integer-basis-point share of journeys by
@@ -38,8 +38,10 @@
  * @see 05-architecture.md §4
  */
 
+import type { Pool } from 'pg';
 import type { SilverPool } from './silver-deps.js';
 import { withSilverBrand, BRAND_PREDICATE } from './silver-deps.js';
+import { withBrandTxn } from './deps.js';
 
 /**
  * The canonical first-touch channels (matches the dbt int_touchpoint_sessionized
@@ -116,7 +118,7 @@ export interface TouchpointTimelineRow {
   touchSeq: number;
   isFirstTouch: boolean;
   isLastTouch: boolean;
-  occurredAt: string; // raw StarRocks DATETIME string (UTC); serialized verbatim
+  occurredAt: string; // raw Trino/Iceberg timestamp string (UTC); serialized verbatim
   channel: JourneyChannel;
   utmSource: string | null;
   utmMedium: string | null;
@@ -159,8 +161,8 @@ function ratePct(numerator: bigint, denominator: bigint): string | null {
   return `${whole}.${String(absFrac).padStart(2, '0')}`;
 }
 
-/** Format a Date as a StarRocks DATETIME literal 'YYYY-MM-DD HH:MM:SS' (UTC). */
-function toStarRocksTs(d: Date): string {
+/** Format a Date as a serving timestamp literal 'YYYY-MM-DD HH:MM:SS' (UTC) for Trino comparisons. */
+function toServingTs(d: Date): string {
   return d.toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, '');
 }
 
@@ -218,7 +220,7 @@ interface TimelineRow {
  * basis-point share (no float). Honest no_data on zero rows.
  *
  * @param brandId - Brand UUID (from session — D-1; NEVER request body).
- * @param deps    - SilverDeps with the StarRocks mysql2 pool (brain_analytics).
+ * @param deps    - SilverDeps with the Trino serving pool (srPool).
  * @param range   - The occurred_at window [from, to] (inclusive).
  */
 export async function computeFirstTouchMix(
@@ -226,8 +228,8 @@ export async function computeFirstTouchMix(
   deps: { srPool: SilverPool },
   range: JourneyRange,
 ): Promise<FirstTouchMixResult> {
-  const fromTs = toStarRocksTs(range.from);
-  const toTs = toStarRocksTs(range.to);
+  const fromTs = toServingTs(range.from);
+  const toTs = toServingTs(range.to);
 
   const rows = await withSilverBrand(deps.srPool, brandId, async (scope) => {
     // The seam substitutes ${BRAND_PREDICATE} → `brand_id = ?` (parameterized to brandId).
@@ -279,7 +281,7 @@ export async function computeFirstTouchMix(
  * (D-5), never inferred. Honest no_data on zero rows.
  *
  * @param brandId - Brand UUID (from session — D-1; NEVER request body).
- * @param deps    - SilverDeps with the StarRocks mysql2 pool (brain_analytics).
+ * @param deps    - SilverDeps with the Trino serving pool (srPool).
  * @param range   - The occurred_at window [from, to] (inclusive).
  */
 export async function computeStitchHitRate(
@@ -287,8 +289,8 @@ export async function computeStitchHitRate(
   deps: { srPool: SilverPool },
   range: JourneyRange,
 ): Promise<StitchHitRateResult> {
-  const fromTs = toStarRocksTs(range.from);
-  const toTs = toStarRocksTs(range.to);
+  const fromTs = toServingTs(range.from);
+  const toTs = toServingTs(range.to);
 
   const rows = await withSilverBrand(deps.srPool, brandId, async (scope) => {
     // ${BRAND_PREDICATE} LAST → the seam-appended brandId binds positionally.
@@ -324,40 +326,57 @@ export async function computeStitchHitRate(
  * brand-scoped seam. Honest no_data when the journey resolves to zero touches.
  *
  * @param brandId  - Brand UUID (from session — D-1; NEVER request body).
- * @param deps     - SilverDeps with the StarRocks mysql2 pool (brain_analytics).
+ * @param deps     - The Trino serving pool (srPool) + the PG pool (pool) used to resolve an
+ *                   order → its stitched anon(s) from the PG-native stitch map.
  * @param selector - Either { orderId } (resolved via the stitch map) or { brainAnonId }.
  */
 export async function computeTouchpointTimeline(
   brandId: string,
-  deps: { srPool: SilverPool },
+  deps: { srPool: SilverPool; pool?: Pool },
   selector: TimelineSelector,
 ): Promise<TouchpointTimelineResult> {
+  // Resolve the journey to its anon key(s). The order→anon stitch map is PG-NATIVE
+  // (connectors.connector_journey_stitch_map) — it is operational state that the Trino serving
+  // tier cannot see (a Trino read of brain_ops.* silently returns empty). V4 (StarRocks REMOVAL):
+  // resolve the order→anon mapping from PG here, then read the touches from the Trino Silver view.
+  let anonIds: string[] | null = null; // null = brainAnonId selector (single anon); [] = no stitch
+  if ('orderId' in selector) {
+    if (!deps.pool) {
+      // No PG pool reachable → cannot resolve order → anon (the stitch map is PG-native). Degrade to
+      // honest no_data rather than silently reading a non-existent brain_ops table over Trino.
+      return { hasData: false, brainAnonId: null, stitched: false, touches: [] };
+    }
+    // Deterministic read-back (D-5), brand-scoped by RLS via the GUC inside withBrandTxn.
+    const stitchRows = await withBrandTxn(deps.pool, brandId, async (client) => {
+      const r = await client.query<{ stitched_anon_id: string }>(
+        `SELECT DISTINCT stitched_anon_id
+           FROM connectors.connector_journey_stitch_map
+          WHERE order_id = $1 AND stitched_anon_id IS NOT NULL`,
+        [selector.orderId],
+      );
+      return r.rows;
+    });
+    anonIds = stitchRows.map((r) => r.stitched_anon_id);
+    if (anonIds.length === 0) {
+      return { hasData: false, brainAnonId: null, stitched: false, touches: [] };
+    }
+  }
+
   const rows = await withSilverBrand(deps.srPool, brandId, async (scope) => {
-    if ('orderId' in selector) {
-      // Resolve the anon journey from the stitch map (deterministic read-back, D-5),
-      // then fetch its touches. The seam injects ${BRAND_PREDICATE} → `brand_id = ?`
-      // against the (un-aliased) mv_silver_touchpoint table (placed LAST so the appended
-      // brandId binds positionally). The stitch-map subselect is correlated to the same
-      // brand via `m.brand_id = mv_silver_touchpoint.brand_id` (column equality — no extra
-      // param), so the map row is necessarily the same brand. order_id binds first.
-      // V4 (Phase 6b): the stitch-map shim moved OFF the retiring brain_silver DB → it is now
-      // the JDBC live-read view brain_ops.connector_journey_stitch_map (over the same PG OLTP
-      // connectors.connector_journey_stitch_map via brain_oltp_pg). No Iceberg serving source yet.
+    if (anonIds !== null) {
+      // ${BRAND_PREDICATE} LAST → the seam-appended brandId binds positionally; the anon IN-list
+      // params bind first.
+      const placeholders = anonIds.map(() => '?').join(', ');
       return scope.runScoped<TimelineRow>(
         `SELECT brain_anon_id, touch_seq, is_first_touch, is_last_touch,
                 occurred_at, channel, utm_source, utm_medium, utm_campaign,
                 utm_term, utm_content, fbclid, gclid, ttclid,
                 referrer_host, landing_path, stitched_brain_id, event_type
            FROM brain_serving.mv_silver_touchpoint
-          WHERE brain_anon_id IN (
-              SELECT m.stitched_anon_id
-                FROM brain_ops.connector_journey_stitch_map m
-               WHERE m.brand_id = mv_silver_touchpoint.brand_id
-                 AND m.order_id = ?
-            )
+          WHERE brain_anon_id IN (${placeholders})
             AND ${BRAND_PREDICATE}
           ORDER BY touch_seq ASC`,
-        [selector.orderId],
+        [...anonIds],
       );
     }
     // ${BRAND_PREDICATE} LAST → the seam-appended brandId binds positionally.
@@ -370,7 +389,7 @@ export async function computeTouchpointTimeline(
         WHERE brain_anon_id = ?
           AND ${BRAND_PREDICATE}
         ORDER BY touch_seq ASC`,
-      [selector.brainAnonId],
+      [(selector as { brainAnonId: string }).brainAnonId],
     );
   });
 

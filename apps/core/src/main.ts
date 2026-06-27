@@ -214,17 +214,8 @@ export async function main(): Promise<void> {
     kafkaEnv: process.env['NODE_ENV'] === 'production' ? 'prod' : 'dev',
     // Webhook registration callback base URL (B2 / ADR-LV-5 — public URL in prod)
     webhookCallbackBaseUrl: getEnv('WEBHOOK_CALLBACK_BASE_URL', 'http://localhost:3001'),
-    // Silver tier (StarRocks) read pool — feat-silver-tier-order-state. The metric-engine
-    // Silver seam reads silver.order_state as the SELECT-only brain_analytics user (NOT root).
-    // Optional: when absent the order-status-mix route returns an honest 503.
-    starrocksHost: getEnv('STARROCKS_HOST', 'localhost'),
-    starrocksPort: parseInt(getEnv('STARROCKS_PORT', '9030'), 10),
-    starrocksUser: getEnv('STARROCKS_ANALYTICS_USER', 'brain_analytics'),
-    // Dev default MUST match db/starrocks/bootstrap.sql, which creates brain_analytics
-    // IDENTIFIED BY 'brain_analytics_dev'. An empty default caused every Silver-read route
-    // (order-status-mix, journey, attribution-via-Silver) to 500 with ER_ACCESS_DENIED on a
-    // fresh `pnpm dev`. Prod FAILS CLOSED if unset (never reuse the known weak dev password).
-    starrocksPassword: requireEnvInProd('STARROCKS_ANALYTICS_PASSWORD', 'brain_analytics_dev'),
+    // Brain V4: the Silver/Gold SERVING pool is the Trino HTTP adapter (createTrinoPool) built below
+    // from cfg.TRINO_HOST/TRINO_PORT — StarRocks is removed. No starrocks* fields here.
   };
 
   // Typed config single-source-of-record (parsed once, frozen). Loaded AFTER the META/GOOGLE

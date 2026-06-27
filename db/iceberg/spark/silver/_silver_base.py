@@ -44,7 +44,7 @@ _ACTIVE_METRICS: JobMetrics | None = None
 
 # Bronze source (NEW-side read) — the raw Iceberg Bronze the operational reads use (Iceberg-sole SoR).
 BRONZE_NAMESPACE = os.environ.get("BRONZE_NAMESPACE", "brain_bronze")
-BRONZE_TABLE = f"{CATALOG}.{BRONZE_NAMESPACE}.collector_events"
+BRONZE_TABLE = f"{CATALOG}.{os.environ.get('SILVER_NAMESPACE', 'brain_silver')}.silver_collector_event"  # ADR-0006 P3: gated source (R2/R3 now in Silver)
 
 
 def read_bronze_events(spark: SparkSession, event_types: list[str]) -> DataFrame:

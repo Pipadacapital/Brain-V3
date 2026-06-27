@@ -483,6 +483,20 @@ _GOLD_MARTS: List[GoldMartSpec] = [
         grain="brand_credit_date",
         layer="silver",
     ),
+    GoldMartSpec(
+        name="snap_identity_link",
+        module="snap_identity_link.py",
+        # Snapshot PK incl. snapshot_date — the AS-OF (point-in-time) identity-link history.
+        pk=["brand_id", "identifier_type", "identifier_value", "snapshot_date"],
+        mv_name="brain_serving.mv_snap_identity_link",
+        # Pure Spark Iceberg read of the Neo4j-derived identity-link projection (sibling of the
+        # StarRocks-native brain_ops.silver_identity_link). Neo4j stays the identity SoR (ADR-0004).
+        reads_from=["silver_identity_alias"],
+        money_columns=[],  # an identity mapping carries no money; identifier_value is a hash (no PII)
+        enabled=True,
+        grain="brand_identifier_date",
+        layer="silver",
+    ),
 
     # ── DEFERRED PREDICTIVE MARTS (enabled=False — registered-disabled) ────────
     # Registered so they are first-class the moment the ML platform builds the backing model.

@@ -40,60 +40,66 @@ export class WorkspaceService {
       const orgRepo = new OrganizationRepository(client);
       const memberRepo = new MembershipRepository(client);
 
-      // Resolve the slug: a caller-supplied slug must be unique (explicit 409);
-      // a derived slug carries a random suffix and self-heals on the residual
-      // unique-violation race (retry once with a fresh suffix). Shared rule with
-      // OnboardingService — slugify.ts is the single source.
-      let slug: string;
-      if (data.slug) {
-        const existing = await orgRepo.findBySlug(data.slug, ctx);
-        if (existing) {
+      // Provision org + org-level owner membership atomically via the SECURITY DEFINER fn (0113) — the
+      // SAME RLS-safe pattern as provision_workspace_and_brand (0047). A direct orgRepo.insert under the
+      // non-superuser brain_app role fails the organization FORCE-RLS WITH CHECK
+      // (id = app.current_workspace_id): the id is DB-generated, so there is no way to set that GUC
+      // BEFORE the insert (chicken-and-egg) → 42501. The fn runs as definer; authorization is the
+      // caller's (p_owner_user_id = the authenticated session user, so a caller only ever provisions a
+      // workspace they own). Slug uniqueness is now enforced atomically by the DB constraint (23505) —
+      // a pre-check under RLS could not even SEE another user's org to detect the collision.
+      const provision = async (slug: string): Promise<string> => {
+        const res = await client.query<{ organization_id: string }>(
+          ctx,
+          `SELECT organization_id FROM provision_workspace($1, $2, $3, $4)`,
+          [data.ownerUserId, data.name, slug, 'IN'],
+        );
+        return res.rows[0]!.organization_id;
+      };
+
+      // A caller-supplied slug carries an explicit uniqueness contract (409 on collision); a derived
+      // slug has a random suffix and self-heals on the residual unique-violation race (retry once).
+      let orgId: string;
+      try {
+        orgId = await provision(data.slug ?? deriveSlug(data.name));
+      } catch (err) {
+        if ((err as { code?: string })?.code !== '23505') throw err;
+        if (data.slug) {
           throw new WorkspaceError('SLUG_TAKEN', 'This workspace slug is already taken.', 409);
         }
-        slug = data.slug;
-      } else {
-        slug = deriveSlug(data.name);
-        // The suffix makes a collision near-zero; a single pre-check covers it.
-        if (await orgRepo.findBySlug(slug, ctx)) {
-          slug = deriveSlug(data.name);
+        try {
+          orgId = await provision(deriveSlug(data.name)); // fresh random-suffixed slug
+        } catch (retryErr) {
+          if ((retryErr as { code?: string })?.code === '23505') {
+            throw new WorkspaceError('SLUG_TAKEN', 'This workspace slug is already taken.', 409);
+          }
+          throw retryErr;
         }
       }
 
-      // Create the organization.
-      const org = await orgRepo.insert(
-        { name: data.name, slug, ownerUserId: data.ownerUserId },
-        ctx,
-      );
-
-      // Add the owner as org-level membership.
-      const ctxWithWorkspace: QueryContext = { ...ctx, workspaceId: org.id };
-      const membership = await memberRepo.insert(
-        {
-          organizationId: org.id,
-          brandId: null,
-          appUserId: data.ownerUserId,
-          roleCode: 'owner',
-        },
+      // Read back the full entities under the now-valid workspace context — the org + membership exist,
+      // so both the membership-based self_read and the workspaceId isolation policy admit the read.
+      const ctxWithWorkspace: QueryContext = { ...ctx, workspaceId: orgId };
+      const organization = (await orgRepo.findById(orgId, ctxWithWorkspace))!;
+      const membership = (await memberRepo.findByUserAndOrg(
+        data.ownerUserId,
+        orgId,
+        null, // org-level owner membership (brand_id NULL)
         ctxWithWorkspace,
-      );
-
-      // AC-5: Advance onboarding_status → 'org_created' (forward-only).
-      // M1: onboarding_status tracks first-brand onboarding only; multi-brand onboarding
-      // is post-M1 (routes via dashboard onboarding-progress widget).
-      await orgRepo.advanceOnboardingStatus(org.id, 'org_created', 1, ctxWithWorkspace);
+      ))!;
 
       await this.audit.append({
-        brand_id: org.id,
+        brand_id: orgId,
         actor_id: data.ownerUserId,
         actor_role: 'owner',
         action: 'organization.created',
         entity_type: 'organization',
-        entity_id: org.id,
-        payload: { name: org.name, slug: org.slug },
+        entity_id: orgId,
+        payload: { name: organization.name, slug: organization.slug },
         idempotency_key: randomUUID(),
       });
 
-      return { organization: org, membership };
+      return { organization, membership };
     } finally {
       client.release();
     }

@@ -1,24 +1,33 @@
 /**
  * m1.events.v1 — Zod schemas for all 9 M1 domain events (doc-07 envelope).
  *
- * Envelope shape: schema_version, event_id, brand_id, correlation_id,
- *   event_name, occurred_at, payload.
+ * Envelope shape (doc-07 15-field parity — all additions additive-OPTIONAL):
+ *   1. schema_version   2. event_id        3. brand_id        4. correlation_id
+ *   5. event_name       6. occurred_at     7. producer        8. schema_id
+ *   9. partition_key   10. causation_id   11. ingested_at    12. source
+ *  13. sequence        14. consent_flags  15. schema_name (canonical alias of event_name)
+ *   (+ payload — supplied per-event by each .extend()).
  *
  * Topics: {env}.{domain}.{event}.v1
- * Partition key: brand_id:event_id
+ * Partition key: brand_id:event_id  (carried explicitly in the `partition_key` field)
  * Idempotency key: (brand_id, event_id)
  *
  * INVARIANTS:
  *  - brand_id REQUIRED on every event (I-S01). For user/workspace events
  *    with no brand yet, brand_id carries the organization_id as the tenant key.
- *  - No raw PII in any payload (I-S02).
- *  - schema_version = additive evolution only (I-E02 FULL_TRANSITIVE).
+ *  - No raw PII in any payload (I-S02) — hashes only.
+ *  - schema_version = additive evolution only (I-E02 FULL_TRANSITIVE). Every field
+ *    added below fields 7-15 is `.optional()` (and `.nullable()` where noted) so the
+ *    9 existing M1 events — and every already-emitted wire record — stay valid.
+ *  - `trace_id` is DELIBERATELY ABSENT here: distributed-trace context is an
+ *    observability concern and rides `correlation_id` + Kafka headers, not the envelope.
  */
 import { z } from 'zod';
 
 // ── Base event envelope (doc-07) ──────────────────────────────────────────────
 
 export const EventEnvelopeBaseSchema = z.object({
+  // ── Original doc-07 core (fields 1-6 — UNCHANGED, do not reorder/retype) ──
   schema_version: z.literal('1').default('1'),
   event_id: z.string().uuid(),
   /**
@@ -29,6 +38,70 @@ export const EventEnvelopeBaseSchema = z.object({
   correlation_id: z.string().min(1).max(128),
   event_name: z.string().min(1).max(128),
   occurred_at: z.string().datetime({ offset: false }),
+
+  // ── doc-07 15-field widening (fields 7-15 — additive-OPTIONAL, FULL_TRANSITIVE) ──
+
+  /**
+   * Logical producer that emitted this event — the service/job name
+   * (e.g. 'core', 'stream-worker', 'identity-resolver'). Provenance for replay/audit.
+   */
+  producer: z.string().min(1).max(128).optional(),
+
+  /**
+   * Schema-registry identifier for the wire schema this record was serialized against
+   * (Apicurio global/content id or subject@version). Lets a consumer resolve the exact
+   * Avro schema without guessing from event_name.
+   */
+  schema_id: z.string().min(1).max(256).optional(),
+
+  /**
+   * The Kafka/Redpanda partition key actually used when producing this record.
+   * Tenant-first by construction — for every brand-scoped lane this is `brand_id`
+   * (identity.* MUST set partition_key = brand_id). Carried explicitly so Bronze can
+   * audit partition discipline without re-deriving it.
+   */
+  partition_key: z.string().min(1).max(256).optional(),
+
+  /**
+   * The event_id of the event that DIRECTLY CAUSED this one (causation chain).
+   * null at the root of a chain (no upstream cause). Distinct from correlation_id,
+   * which groups a whole request flow.
+   */
+  causation_id: z.string().uuid().nullable().optional(),
+
+  /**
+   * ISO-8601 timestamp (UTC) when the event was first received/persisted at the
+   * ingest boundary. NOT occurred_at (source time). Set by the collector/producer;
+   * immutable once written to Bronze.
+   */
+  ingested_at: z.string().datetime({ offset: false }).optional(),
+
+  /**
+   * Origin system/lane the event came from (e.g. 'live', 'backfill', 'shopify',
+   * 'pixel', 'internal'). Free-form provenance tag; mirrors the collector `source` use.
+   */
+  source: z.string().min(1).max(128).optional(),
+
+  /**
+   * Monotonic per-producer (or per-aggregate) sequence number for ordering/gap-detection.
+   * Non-negative integer. null when the producer does not assign a sequence.
+   */
+  sequence: z.number().int().nonnegative().nullable().optional(),
+
+  /**
+   * Consent flags captured at the source as a nullable map of category → boolean
+   * (DPDP lawful-basis categories — see consent/suppression.ts CONSENT_CATEGORIES).
+   * Capture-only at this layer; enforcement is the can_contact() chokepoint, not here.
+   * null = explicitly unknown; absent = not applicable to this event.
+   */
+  consent_flags: z.record(z.string(), z.boolean()).nullable().optional(),
+
+  /**
+   * Canonical alias of `event_name` — the registry schema name (dot-path, no version).
+   * Kept in lockstep with event_name; present so registry-driven consumers can key off a
+   * stable name field even where event_name is narrowed to a literal in a subtype.
+   */
+  schema_name: z.string().min(1).max(128).optional(),
 });
 
 export type EventEnvelopeBase = z.infer<typeof EventEnvelopeBaseSchema>;

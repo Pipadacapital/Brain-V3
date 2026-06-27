@@ -56,6 +56,47 @@ export type {
   PixelVerifiedEvent,
 } from './events/m1.events.v1.js';
 
+// ── Identity Domain Events (5 events — doc-07 15-field envelope) ───────────────
+export {
+  ConfidenceVerdictBandSchema,
+  IdentityMintedPayloadSchema,
+  IdentityMintedEventSchema,
+  IdentityLinkedPayloadSchema,
+  IdentityLinkedEventSchema,
+  IdentityMergedPayloadSchema,
+  IdentityMergedEventSchema,
+  IdentitySuppressionReasonSchema,
+  IdentitySuppressedPayloadSchema,
+  IdentitySuppressedEventSchema,
+  IdentityReviewQueuedPayloadSchema,
+  IdentityReviewQueuedEventSchema,
+  IDENTITY_MINTED_TOPIC_SUFFIX,
+  IDENTITY_LINKED_TOPIC_SUFFIX,
+  IDENTITY_MERGED_TOPIC_SUFFIX,
+  IDENTITY_SUPPRESSED_TOPIC_SUFFIX,
+  IDENTITY_REVIEW_QUEUED_TOPIC_SUFFIX,
+  IDENTITY_MINTED_AVRO_SUBJECT,
+  IDENTITY_LINKED_AVRO_SUBJECT,
+  IDENTITY_MERGED_AVRO_SUBJECT,
+  IDENTITY_SUPPRESSED_AVRO_SUBJECT,
+  IDENTITY_REVIEW_QUEUED_AVRO_SUBJECT,
+  IDENTITY_EVENT_SCHEMAS,
+} from './events/identity.events.v1.js';
+export type {
+  ConfidenceVerdictBand,
+  IdentityMintedPayload,
+  IdentityMintedEvent,
+  IdentityLinkedPayload,
+  IdentityLinkedEvent,
+  IdentityMergedPayload,
+  IdentityMergedEvent,
+  IdentitySuppressionReason,
+  IdentitySuppressedPayload,
+  IdentitySuppressedEvent,
+  IdentityReviewQueuedPayload,
+  IdentityReviewQueuedEvent,
+} from './events/identity.events.v1.js';
+
 // ── API contracts (Sprint-0 legacy) ──────────────────────────────────────────
 export {
   IngestEventHeadersSchema,
@@ -482,6 +523,66 @@ export type {
   MergeResolveResult,
   UnmergeResult,
 } from './api/identity.api.v1.js';
+
+// ── Identity DOMAIN contracts (v3 cluster — resolver/matcher/graph-repo vocabulary) ──
+// Distinct from the api/identity.api.v1 READ DTOs above: the hash-only Identifier value
+// object, the integer ConfidenceVerdict, the reversible IdentityDecision command union, the
+// Matcher port + registry (deferred strategies registered-DISABLED), and the Neo4j
+// IdentityGraphRepository port. See packages/contracts/src/identity/index.ts.
+export {
+  IDENTITY_RULE_VERSION,
+  IdentifierTypeSchema,
+  IdentifierTierSchema,
+  IdentifierHashSchema,
+  IdentifierSchema,
+  ConfidenceBandSchema,
+  IdentifierComboMemberSchema,
+  ConfidenceVerdictSchema,
+  CompensationKindSchema,
+  CompensationSchema,
+  MintDecisionSchema,
+  LinkDecisionSchema,
+  MergeDecisionSchema,
+  UnmergeDecisionSchema,
+  SuppressDecisionSchema,
+  RouteToReviewDecisionSchema,
+  IdentityDecisionSchema,
+  IdentityCommandSchema,
+  MatcherStatusSchema,
+  MatcherStrategySchema,
+  MatcherDescriptorSchema,
+  NotImplementedYet,
+  DisabledMatcher,
+  IDENTITY_MATCHER_REGISTRY,
+} from './identity/index.js';
+export type {
+  IdentifierType,
+  IdentifierTier,
+  IdentifierHash,
+  Identifier,
+  ConfidenceBand,
+  IdentifierComboMember,
+  ConfidenceVerdict,
+  CompensationKind,
+  Compensation,
+  MintDecision,
+  LinkDecision,
+  MergeDecision,
+  UnmergeDecision,
+  SuppressDecision,
+  RouteToReviewDecision,
+  IdentityDecision,
+  IdentityCommand,
+  MatcherStatus,
+  MatcherStrategy,
+  MatcherInput,
+  Matcher,
+  MatcherDescriptor,
+  IdentityGraphReadState,
+  IdentityDecisionReceipt,
+  IdentityGraphRepository,
+} from './identity/index.js';
+
 export {
   BillingPeriodSchema,
   BillingPeriodsSchema,
@@ -562,3 +663,54 @@ export type {
 } from './api/foundation.api.v1.js';
 export { EntitlementEntrySchema, EntitlementsSchema } from './api/entitlements.api.v1.js';
 export type { EntitlementEntry, Entitlements } from './api/entitlements.api.v1.js';
+
+// ── V4 Intelligence layer — attribution-model port + registry + Gold data product ──
+export {
+  MedallionLayerSchema,
+  ConfidenceScoreSchema,
+  WEIGHT_SCALE,
+  AttributionModelClassSchema,
+  EnabledAttributionModelSchema,
+  DisabledPredictiveModelSchema,
+  ATTRIBUTION_MODEL_REGISTRY,
+  DISABLED_PREDICTIVE_MODELS,
+  NotImplementedYetError,
+  isAttributionModelEnabled,
+  assertAttributionModelEnabled,
+  GoldDataProductSchema,
+  GoldDataProductsSchema,
+} from './api/intelligence.api.v1.js';
+export type {
+  MedallionLayer,
+  ConfidenceScore,
+  AttributionTouchInput,
+  AttributionModelPort,
+  AttributionModelClass,
+  EnabledAttributionModel,
+  DisabledPredictiveModel,
+  GoldDataProduct,
+  GoldDataProducts,
+} from './api/intelligence.api.v1.js';
+
+// ── V4 Cache-invalidation events (gold.rewritten.v1 / cache.invalidate.v1) ────────
+export {
+  CacheScopeSchema,
+  GoldRewrittenPayloadSchema,
+  GoldRewrittenEventSchema,
+  GOLD_REWRITTEN_V1_TOPIC_SUFFIX,
+  GOLD_REWRITTEN_V1_EVENT_NAME,
+  GOLD_REWRITTEN_V1_AVRO_SUBJECT,
+  CacheInvalidateReasonSchema,
+  CacheInvalidatePayloadSchema,
+  CacheInvalidateEventSchema,
+  CACHE_INVALIDATE_V1_TOPIC_SUFFIX,
+  CACHE_INVALIDATE_V1_EVENT_NAME,
+  CACHE_INVALIDATE_V1_AVRO_SUBJECT,
+  CACHE_EVENT_SCHEMAS,
+} from './events/cache.invalidate.v1.js';
+export type {
+  CacheScope,
+  GoldRewrittenEvent,
+  CacheInvalidateReason,
+  CacheInvalidateEvent,
+} from './events/cache.invalidate.v1.js';

@@ -14,6 +14,7 @@
 #   gold_settlement_summary.py     (silver_settlement → net-of-fees settlement, money minor)
 #   gold_campaign_performance.py   (silver_marketing_spend/campaign[+gold_attribution_credit] → ROAS/CTR/CPC)
 #   gold_contribution_margin.py    (silver_order_state/marketing_spend + PG cost config → CM1/CM2, money minor)
+#   gold_retention.py              (silver_customer → repeat-purchase / returning-customer / cohort retention)
 #
 # Mirrors run-silver-payments-logistics.sh: one-shot Spark containers in Redpanda's network namespace so
 # the iceberg-rest / minio / postgres service DNS resolves. Requires the lakehouse profile (iceberg-rest +
@@ -86,6 +87,7 @@ case "${STAGE}" in
   settlement)           run_job "gold_settlement_summary.py" ;;
   campaign)             run_job "gold_campaign_performance.py" ;;
   contribution_margin)  run_job "gold_contribution_margin.py" ;;
+  retention)            run_job "gold_retention.py" ;;
   all)
     run_job "gold_funnel.py"
     run_job "gold_abandoned_cart.py"
@@ -97,6 +99,7 @@ case "${STAGE}" in
     run_job "gold_settlement_summary.py"
     run_job "gold_campaign_performance.py"
     run_job "gold_contribution_margin.py"
+    run_job "gold_retention.py"
     ;;
   *) echo "unknown STAGE=${STAGE}"; exit 2 ;;
 esac

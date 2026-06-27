@@ -213,6 +213,48 @@ export class DecisionEngine {
   }
 
   /**
+   * Issue a REVIEW-GATED RouteToReview Command for a SUB-EXACT (probabilistic) verdict — the
+   * weak-signal agreement that must NEVER auto-merge. Reached when the deterministic resolver did NOT
+   * merge on a strong key (the subject was minted/linked) yet the ProbabilisticMatcher found a
+   * weak-signal candidate. The Command pairs the subject brain_id with the candidate(s) and is
+   * persisted to the review queue; it can never merge anything (band is sub-'exact' by construction).
+   *
+   * Deterministic review_id (same derivation as the cycle-guard route) → idempotent on replay (D-4).
+   * Inverse: withdraw_review.
+   */
+  routeProbabilisticReview(args: {
+    brand_id: string;
+    rule_version: string;
+    decided_at: string;
+    /** The brain_id the deterministic resolver just minted/linked (the review subject). */
+    subject_brain_id: string;
+    /** Existing candidate brain_ids that share a weak signal with the subject. */
+    candidate_brain_ids: string[];
+    /** The sub-exact probabilistic verdict that triggered the route (never merge-eligible). */
+    verdict: ConfidenceVerdict;
+    reason?: string;
+  }): RouteToReviewDecision {
+    const sorted = [...new Set([args.subject_brain_id, ...args.candidate_brain_ids])].sort();
+    const brain_id_a = sorted[0] ?? args.subject_brain_id;
+    const brain_id_b = sorted[sorted.length - 1] ?? args.subject_brain_id;
+    const review_id = deriveUuid(
+      `${args.brand_id}|review|${brain_id_a}|${brain_id_b}|${args.rule_version}`,
+    );
+    return {
+      command: 'route_to_review',
+      brand_id: args.brand_id,
+      rule_version: args.rule_version,
+      decided_at: args.decided_at,
+      review_id,
+      brain_id_a,
+      brain_id_b,
+      reason: args.reason ?? 'probabilistic_match: weak-signal agreement (review-gated, never auto-merge)',
+      verdict: args.verdict,
+      compensation: { kind: 'withdraw_review', review_id },
+    };
+  }
+
+  /**
    * Derive one Suppress Command per phone-guard suppression in the outcome. Inverse: lift_suppression.
    * Only suppressions with a concrete `suppressed_until` are emitted (the others are observational).
    */

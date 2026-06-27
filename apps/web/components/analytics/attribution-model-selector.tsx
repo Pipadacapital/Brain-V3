@@ -3,11 +3,13 @@
 /**
  * AttributionModelSelector — the model selector for the attribution surface.
  *
- * Four deterministic models (position_based is the brand default) + the data-driven model:
+ * Five deterministic models (position_based is the brand default) + the data-driven model:
  *   - first_touch    — 100% to the first touch.
  *   - last_touch     — 100% to the last touch.
  *   - linear         — even 1/N across all touches.
  *   - position_based — 40% first / 40% last / 20% across the middle (the default).
+ *   - time_decay     — recency-weighted: credit halves every half-life of touch positions, so
+ *                      touches closer to conversion earn exponentially more.
  *   - data_driven    — Markov removal-effect: credit by each channel's MODELED contribution to
  *                      conversion (learned from the whole journey corpus), not its position.
  *
@@ -33,6 +35,7 @@ interface ModelOption {
 const MODELS: ModelOption[] = [
   { value: 'position_based', label: 'Position-based', rule: '40% first · 40% last · 20% middle (default)' },
   { value: 'data_driven', label: 'Data-driven', rule: 'Markov: credit by each channel’s modeled contribution to conversion' },
+  { value: 'time_decay', label: 'Time-decay', rule: 'Recency-weighted: credit halves every step back from conversion' },
   { value: 'linear', label: 'Linear', rule: 'Even credit (1/N) across every touch' },
   { value: 'first_touch', label: 'First-touch', rule: '100% credit to the first touch' },
   { value: 'last_touch', label: 'Last-touch', rule: '100% credit to the last touch' },

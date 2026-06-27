@@ -32,8 +32,14 @@ export interface ExtractedIdentifier {
   // share the same tier as their PII counterparts but live in a distinct identifier_type namespace
   // so they never collide with salted first-party hashes in identity_link. The `preHashed` flag
   // tells the resolver and repository to SKIP re-hashing — the hash is already the final value.
+  //
+  // PROB weak signals: 'cookie_id' | 'ip' | 'device_fingerprint' | 'session_id' are tier='weak'
+  // RESOLVE-ONLY signals consumed ONLY by the rule-based ProbabilisticMatcher. The resolver below
+  // reads ONLY strong (merge) + medium (resolve-only adoption) tiers — weak identifiers are NEVER
+  // consulted for either merge or adoption, so the deterministic union-find is unaffected by them.
   type: 'email' | 'phone' | 'storefront_customer_id' | 'device_id' | 'anon_id'
-      | 'pre_hashed_email' | 'pre_hashed_phone';
+      | 'pre_hashed_email' | 'pre_hashed_phone'
+      | 'cookie_id' | 'ip' | 'device_fingerprint' | 'session_id';
   hash: string;         // 64-hex SHA-256(salt ‖ normalized) for standard ids, or the ALREADY-HASHED value for pre_hashed_* ids
   tier: 'strong' | 'strong_on_link' | 'medium' | 'weak';
   confidence: 'high' | 'low';

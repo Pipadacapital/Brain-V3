@@ -122,12 +122,27 @@ def _read_identity_link(spark: SparkSession):
     (brand_id, identifier_value). brain_ops moved to the PG `ops` schema (PG operational-only store), so
     we read it over the SAME PG JDBC connection as the horizons dimension and aggregate identically —
     IDENTICAL to silver_order_state.py so the brain_id column matches byte-for-byte.
+
+    F2 (merge → canonical LTV): the identity export already projects the CANONICAL (alias-resolved)
+    brain_id into silver_identity_link; as a DEFENSIVE single-hop net this also folds
+    ops.silver_customer_identity.merged_into → canonical (COALESCE(c.merged_into, l.brain_id)) BEFORE the
+    MIN/group. Non-merged → merged_into NULL → COALESCE = original brain_id (parity no-op); merged → the
+    dead brain_id maps to the survivor. brain_id is NOT part of ledger_event_id (sha2 of brand_id/order_id/
+    event_type/economic_effective_at), so the money key + amounts are byte-identical — only the resolved
+    customer changes. Kept IDENTICAL to silver_order_state.py's reader.
+
+    NOTE: brain_id/merged_into are PG `uuid` and PostgreSQL has no min(uuid) aggregate, so the
+    MIN operand is cast ::text (the projected brain_id column is `string` anyway). This was already
+    required by the pre-F2 MIN(brain_id) form; the COALESCE fold keeps the same uuid→text shape.
     """
     query = (
-        "(SELECT brand_id, identifier_value AS hashed_customer_email, MIN(brain_id) AS brain_id "
-        "FROM ops.silver_identity_link "
-        "WHERE identifier_type = 'pre_hashed_email' AND is_active = true AND brain_id IS NOT NULL "
-        "GROUP BY brand_id, identifier_value) b"
+        "(SELECT l.brand_id, l.identifier_value AS hashed_customer_email, "
+        "MIN(COALESCE(c.merged_into, l.brain_id)::text) AS brain_id "
+        "FROM ops.silver_identity_link l "
+        "LEFT JOIN ops.silver_customer_identity c "
+        "  ON c.brand_id = l.brand_id AND c.brain_id = l.brain_id "
+        "WHERE l.identifier_type = 'pre_hashed_email' AND l.is_active = true AND l.brain_id IS NOT NULL "
+        "GROUP BY l.brand_id, l.identifier_value) b"
     )
     try:
         return (

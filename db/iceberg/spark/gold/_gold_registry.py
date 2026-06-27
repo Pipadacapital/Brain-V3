@@ -27,6 +27,7 @@ TS MIRROR: GoldDataProduct (packages/contracts/src/api/intelligence.api.v1.ts) i
                                     (richer here: MoneyColumn vs bare List[str])
     GoldMartSpec.reads_from     <-> GoldDataProduct.reads_from
     GoldMartSpec.mv_name        <-> GoldDataProduct.serving_mv
+    GoldMartSpec.phase          <-> GoldDataProduct.phase ('identity' | 'bi')
   Python-only additions: module, grain, enabled, not_implemented_reason.
 
 SNAP MARTS (snap_order_state / snap_attribution_credit): these jobs live in the gold/ directory
@@ -41,6 +42,17 @@ from __future__ import annotations  # Defer annotation eval — Python 3.8 Spark
 
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
+
+
+# ── Phase classifier ────────────────────────────────────────────────────────────
+# Every Gold mart belongs to exactly one product phase:
+#   'identity' — the customer/journey identity spine (gold_customer_360, gold_journey,
+#                identity-side snapshots). These products answer "who is this person".
+#   'bi'       — business-intelligence marts (attribution, segments, scores, health, cac,
+#                executive, recommendation, retention, revenue, logistics, settlement, funnel,
+#                engagement, campaign, …). These products answer "what is happening / why".
+# Mirrors GoldDataProduct.phase (packages/contracts/src/api/intelligence.api.v1.ts).
+VALID_PHASES = frozenset({"identity", "bi"})
 
 
 # ── Money column descriptor ────────────────────────────────────────────────────
@@ -101,6 +113,11 @@ class GoldMartSpec:
     grain: str
     """Human-readable grain description (e.g. 'brand_date_currency', 'brand_credit_row')."""
 
+    phase: str
+    """Product phase classifier — one of VALID_PHASES ('identity' | 'bi'). Pure metadata that
+    routes a mart to the identity spine vs the business-intelligence surface.
+    Corresponds to GoldDataProduct.phase (packages/contracts/src/api/intelligence.api.v1.ts)."""
+
     # ── Optional / defaulted ───────────────────────────────────────────────────
     layer: str = "gold"
     """Medallion layer: 'gold' for Gold marts, 'silver' for snap_* Silver-snapshot marts.
@@ -125,6 +142,7 @@ _GOLD_MARTS: List[GoldMartSpec] = [
 
     GoldMartSpec(
         name="gold_attribution_credit",
+        phase="bi",
         module="gold_attribution_credit.py",
         pk=["brand_id", "credit_id"],
         mv_name="brain_serving.mv_gold_attribution_credit",
@@ -138,6 +156,7 @@ _GOLD_MARTS: List[GoldMartSpec] = [
     ),
     GoldMartSpec(
         name="gold_attribution_paths",
+        phase="bi",
         module="gold_attribution_paths.py",
         pk=["brand_id", "brain_anon_id", "stitched_order_id"],
         mv_name="brain_serving.mv_gold_attribution_paths",
@@ -148,6 +167,7 @@ _GOLD_MARTS: List[GoldMartSpec] = [
     ),
     GoldMartSpec(
         name="gold_marketing_attribution",
+        phase="bi",
         module="gold_marketing_attribution.py",
         pk=["brand_id", "credit_id"],
         mv_name="brain_serving.mv_gold_marketing_attribution",
@@ -165,6 +185,7 @@ _GOLD_MARTS: List[GoldMartSpec] = [
 
     GoldMartSpec(
         name="gold_revenue_ledger",
+        phase="bi",
         module="gold_revenue_ledger.py",
         pk=["brand_id", "ledger_event_id"],
         mv_name="brain_serving.mv_gold_revenue_ledger",
@@ -178,6 +199,7 @@ _GOLD_MARTS: List[GoldMartSpec] = [
     ),
     GoldMartSpec(
         name="gold_revenue_analytics",
+        phase="bi",
         module="gold_revenue_analytics.py",
         pk=["brand_id", "period_month", "lifecycle_state", "currency_code"],
         mv_name="brain_serving.mv_gold_revenue_analytics",
@@ -193,6 +215,7 @@ _GOLD_MARTS: List[GoldMartSpec] = [
 
     GoldMartSpec(
         name="gold_executive_metrics",
+        phase="bi",
         module="gold_executive_metrics.py",
         pk=["brand_id", "currency_code"],
         mv_name="brain_serving.mv_gold_executive_metrics",
@@ -205,6 +228,7 @@ _GOLD_MARTS: List[GoldMartSpec] = [
     ),
     GoldMartSpec(
         name="gold_cac",
+        phase="bi",
         module="gold_cac.py",
         pk=["brand_id", "acquisition_month", "currency_code"],
         mv_name="brain_serving.mv_gold_cac",
@@ -220,11 +244,20 @@ _GOLD_MARTS: List[GoldMartSpec] = [
 
     GoldMartSpec(
         name="gold_customer_360",
+        phase="identity",
         module="gold_customer_360.py",
         pk=["brand_id", "brain_id"],
         mv_name="brain_serving.mv_gold_customer_360",
-        reads_from=["silver_customer", "silver_order_state"],
+        # B2 enrichment reads: silver_touchpoint (channel/acquisition/last-activity + anon→brain bridge),
+        # silver_page_view (device), silver_order_line (top_category), + the OPTIONAL sibling Gold folds
+        # gold_customer_health (health_band) / gold_customer_scores (churn). All optional → NULL if absent.
+        reads_from=[
+            "silver_customer", "silver_order_state", "silver_touchpoint", "silver_page_view",
+            "silver_order_line", "gold_customer_health", "gold_customer_scores",
+        ],
         money_columns=[
+            # aov_minor is a DERIVED per-row ratio (exact integer division), NOT a parity-Σ money column —
+            # only lifetime_value_minor is summed by the parity oracle (per (brand, currency)).
             MoneyColumn("lifetime_value_minor"),
         ],
         enabled=True,
@@ -232,6 +265,7 @@ _GOLD_MARTS: List[GoldMartSpec] = [
     ),
     GoldMartSpec(
         name="gold_customer_scores",
+        phase="bi",
         module="gold_customer_scores.py",
         pk=["brand_id", "brain_id"],
         mv_name="brain_serving.mv_gold_customer_scores",
@@ -245,20 +279,28 @@ _GOLD_MARTS: List[GoldMartSpec] = [
     ),
     GoldMartSpec(
         name="gold_customer_segments",
+        phase="bi",
         module="gold_customer_segments.py",
-        pk=["brand_id", "segment"],
+        # Two orthogonal segment dimensions on one rollup, keyed by the segment_type discriminator:
+        #   'value_tier' (high/mid/low/no_realized_value) + 'lifecycle' (VIP/loyal/at_risk/churned/…).
+        # segment_type is in the PK because 'high_value' is a label in BOTH ladders.
+        pk=["brand_id", "segment_type", "segment"],
         mv_name="brain_serving.mv_gold_customer_segments",
+        # Signals (RFM/recency/health) are FOLDED INLINE from silver_customer at runtime (V4 runtime
+        # features) — NOT read from gold_customer_scores/gold_customer_health — so segments carries no
+        # cross-Gold build-ordering dependency (it runs in Phase 1 before those marts are built).
         reads_from=["silver_customer"],
         # Row-identity only: segment_value_minor blends all currencies for a brand-segment bucket
-        # (the dbt model carries no currency_code on the segment grain — honest deviation documented
-        # in parity/mart_registry.py). The money rule requires a sibling currency_code, which this
-        # grain lacks; verified reconciled out-of-band by the MERGE log.
+        # (no currency_code on the segment grain — honest deviation documented in parity/mart_registry.py).
+        # The money rule requires a sibling currency_code, which this grain lacks; verified reconciled
+        # out-of-band by the MERGE log.
         money_columns=[],
         enabled=True,
-        grain="brand_segment",
+        grain="brand_segment_type_segment",
     ),
     GoldMartSpec(
         name="gold_cohorts",
+        phase="bi",
         module="gold_cohorts.py",
         # Spark MERGE ON (brand_id, cohort_month). The StarRocks DDL PK includes currency_code
         # (it is max(currency_code) per cohort — an aggregate, not a grouping key); the Spark job's
@@ -278,6 +320,7 @@ _GOLD_MARTS: List[GoldMartSpec] = [
 
     GoldMartSpec(
         name="gold_contribution_margin",
+        phase="bi",
         module="gold_contribution_margin.py",
         pk=["brand_id", "currency_code"],
         mv_name="brain_serving.mv_gold_contribution_margin",
@@ -295,6 +338,7 @@ _GOLD_MARTS: List[GoldMartSpec] = [
     ),
     GoldMartSpec(
         name="gold_logistics_performance",
+        phase="bi",
         module="gold_logistics_performance.py",
         pk=["brand_id", "courier"],
         mv_name="brain_serving.mv_gold_logistics_performance",
@@ -305,6 +349,7 @@ _GOLD_MARTS: List[GoldMartSpec] = [
     ),
     GoldMartSpec(
         name="gold_cod_rto",
+        phase="bi",
         module="gold_cod_rto.py",
         pk=["brand_id", "currency_code"],
         mv_name="brain_serving.mv_gold_cod_rto",
@@ -317,6 +362,7 @@ _GOLD_MARTS: List[GoldMartSpec] = [
     ),
     GoldMartSpec(
         name="gold_settlement_summary",
+        phase="bi",
         module="gold_settlement_summary.py",
         pk=["brand_id", "currency_code"],
         mv_name="brain_serving.mv_gold_settlement_summary",
@@ -334,6 +380,7 @@ _GOLD_MARTS: List[GoldMartSpec] = [
     ),
     GoldMartSpec(
         name="gold_funnel",
+        phase="bi",
         module="gold_funnel.py",
         pk=["brand_id", "funnel_date"],
         mv_name="brain_serving.mv_gold_funnel",
@@ -344,6 +391,7 @@ _GOLD_MARTS: List[GoldMartSpec] = [
     ),
     GoldMartSpec(
         name="gold_abandoned_cart",
+        phase="bi",
         module="gold_abandoned_cart.py",
         pk=["brand_id", "cart_date", "currency_code"],
         mv_name="brain_serving.mv_gold_abandoned_cart",
@@ -356,6 +404,7 @@ _GOLD_MARTS: List[GoldMartSpec] = [
     ),
     GoldMartSpec(
         name="gold_engagement",
+        phase="bi",
         module="gold_engagement.py",
         pk=["brand_id", "engagement_date", "signal_type"],
         mv_name="brain_serving.mv_gold_engagement",
@@ -366,6 +415,7 @@ _GOLD_MARTS: List[GoldMartSpec] = [
     ),
     GoldMartSpec(
         name="gold_behavior",
+        phase="bi",
         module="gold_behavior.py",
         pk=["brand_id", "behavior_date", "page_type"],
         mv_name="brain_serving.mv_gold_behavior",
@@ -376,6 +426,7 @@ _GOLD_MARTS: List[GoldMartSpec] = [
     ),
     GoldMartSpec(
         name="gold_conversion_feedback",
+        phase="bi",
         module="gold_conversion_feedback.py",
         pk=["brand_id", "feedback_date", "form_id"],
         mv_name="brain_serving.mv_gold_conversion_feedback",
@@ -385,7 +436,21 @@ _GOLD_MARTS: List[GoldMartSpec] = [
         grain="brand_date_form",
     ),
     GoldMartSpec(
+        name="gold_retention",
+        phase="bi",
+        module="gold_retention.py",
+        # Spark MERGE ON (brand_id, cohort_month) — the acquisition-cohort grain reused VERBATIM from
+        # gold_cohorts. currency_code is max() per cohort (an aggregate descriptor, not a grouping key).
+        pk=["brand_id", "cohort_month"],
+        mv_name="brain_serving.mv_gold_retention",
+        reads_from=["silver_customer"],
+        money_columns=[],  # behavioral counts + integer-bps rates — no money (per-currency descriptor only)
+        enabled=True,
+        grain="brand_cohort_month",
+    ),
+    GoldMartSpec(
         name="gold_campaign_performance",
+        phase="bi",
         module="gold_campaign_performance.py",
         pk=["brand_id", "platform", "campaign_id", "currency_code"],
         mv_name="brain_serving.mv_gold_campaign_performance",
@@ -404,6 +469,7 @@ _GOLD_MARTS: List[GoldMartSpec] = [
 
     GoldMartSpec(
         name="gold_journey",
+        phase="identity",
         module="gold_journey.py",
         # Spark MERGE ON (brand_id, brain_anon_id). brain_anon_id is the journey/visitor key
         # (brain_id is sparse pre-stitch), so the honest grain is the anon visitor.
@@ -416,6 +482,7 @@ _GOLD_MARTS: List[GoldMartSpec] = [
     ),
     GoldMartSpec(
         name="gold_customer_health",
+        phase="bi",
         module="gold_customer_health.py",
         pk=["brand_id", "brain_id"],
         mv_name="brain_serving.mv_gold_customer_health",
@@ -428,18 +495,24 @@ _GOLD_MARTS: List[GoldMartSpec] = [
     ),
     GoldMartSpec(
         name="gold_recommendation_features",
+        phase="bi",
         module="gold_recommendation_features.py",
         pk=["brand_id", "brain_id"],
         mv_name="brain_serving.mv_gold_recommendation_features",
-        reads_from=["silver_customer", "silver_order_state", "silver_touchpoint"],
+        reads_from=[
+            "silver_customer", "silver_order_state", "silver_order_line",
+            "silver_touchpoint", "silver_page_view",
+        ],
         money_columns=[
-            MoneyColumn("monetary_minor"),   # the M of RFM (silver_customer.lifetime_value_minor)
+            MoneyColumn("monetary_minor"),        # the M of RFM (silver_customer.lifetime_value_minor)
+            MoneyColumn("typical_price_minor"),   # modal purchased unit price (price affinity), per-currency
         ],
         enabled=True,
         grain="brand_customer",
     ),
     GoldMartSpec(
         name="gold_ai_features",
+        phase="bi",
         module="gold_ai_features.py",
         pk=["brand_id", "brain_id"],
         mv_name="brain_serving.mv_gold_ai_features",
@@ -459,6 +532,7 @@ _GOLD_MARTS: List[GoldMartSpec] = [
 
     GoldMartSpec(
         name="snap_order_state",
+        phase="bi",
         module="snap_order_state.py",
         pk=["brand_id", "order_id", "snapshot_date"],
         mv_name="brain_serving.mv_snap_order_state",
@@ -472,6 +546,7 @@ _GOLD_MARTS: List[GoldMartSpec] = [
     ),
     GoldMartSpec(
         name="snap_attribution_credit",
+        phase="bi",
         module="snap_attribution_credit.py",
         pk=["brand_id", "credit_id", "snapshot_date"],
         mv_name="brain_serving.mv_snap_attribution_credit",
@@ -485,6 +560,7 @@ _GOLD_MARTS: List[GoldMartSpec] = [
     ),
     GoldMartSpec(
         name="snap_identity_link",
+        phase="identity",
         module="snap_identity_link.py",
         # Snapshot PK incl. snapshot_date — the AS-OF (point-in-time) identity-link history.
         pk=["brand_id", "identifier_type", "identifier_value", "snapshot_date"],
@@ -505,6 +581,7 @@ _GOLD_MARTS: List[GoldMartSpec] = [
 
     GoldMartSpec(
         name="predictive_ltv",
+        phase="bi",
         module=None,
         pk=["brand_id", "brain_id"],
         mv_name=None,
@@ -523,6 +600,7 @@ _GOLD_MARTS: List[GoldMartSpec] = [
     ),
     GoldMartSpec(
         name="predictive_health",
+        phase="bi",
         module=None,
         pk=["brand_id", "brain_id"],
         mv_name=None,
@@ -570,6 +648,7 @@ def disabled_marts() -> List[GoldMartSpec]:
 
 
 __all__ = [
+    "VALID_PHASES",
     "MoneyColumn",
     "GoldMartSpec",
     "_GOLD_MARTS",

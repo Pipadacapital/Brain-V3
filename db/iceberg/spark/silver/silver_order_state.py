@@ -113,12 +113,28 @@ def _read_identity_link(spark: SparkSession):
     identifier_type='pre_hashed_email' and is_active and brain_id is not null, min(brain_id) per
     (brand_id, identifier_value). brain_ops moved to the PG `ops` schema (PG operational-only store), so
     we read it over the SAME PG JDBC connection as the other dimensions and aggregate identically.
+
+    F2 (merge → canonical LTV): the identity export already projects the CANONICAL (alias-resolved)
+    brain_id into silver_identity_link, so a post-merge identifier resolves to the survivor. As a
+    DEFENSIVE single-hop net (covers the window before an export catches a fresh merge) we additionally
+    fold ops.silver_customer_identity.merged_into → canonical here: COALESCE(c.merged_into, l.brain_id).
+    For a non-merged customer merged_into IS NULL → COALESCE = the original brain_id (parity-exact, no-op);
+    for a merged one it maps the dead brain_id to the survivor BEFORE the MIN/group, so a merged customer's
+    orders all roll up under the single canonical brain_id. brain_id is NOT part of any money key, so this
+    cannot perturb the recognition ledger / order value.
+
+    NOTE: brain_id/merged_into are PG `uuid` and PostgreSQL has no min(uuid) aggregate, so the MIN
+    operand is cast ::text (the projected brain_id column is `string` anyway). This was already required
+    by the pre-F2 MIN(brain_id) form; the COALESCE fold keeps the same uuid→text shape.
     """
     query = (
-        "(SELECT brand_id, identifier_value AS hashed_customer_email, MIN(brain_id) AS brain_id "
-        "FROM ops.silver_identity_link "
-        "WHERE identifier_type = 'pre_hashed_email' AND is_active = true AND brain_id IS NOT NULL "
-        "GROUP BY brand_id, identifier_value) b"
+        "(SELECT l.brand_id, l.identifier_value AS hashed_customer_email, "
+        "MIN(COALESCE(c.merged_into, l.brain_id)::text) AS brain_id "
+        "FROM ops.silver_identity_link l "
+        "LEFT JOIN ops.silver_customer_identity c "
+        "  ON c.brand_id = l.brand_id AND c.brain_id = l.brain_id "
+        "WHERE l.identifier_type = 'pre_hashed_email' AND l.is_active = true AND l.brain_id IS NOT NULL "
+        "GROUP BY l.brand_id, l.identifier_value) b"
     )
     try:
         return (

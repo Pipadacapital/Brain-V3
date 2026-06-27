@@ -61,6 +61,14 @@ describe('getRecommendationFeatures — Gold recommendation features', () => {
           top_channel: 'paid_meta',
           distinct_products: '7',
           tenure_days: '365',
+          favourite_brand: 'SKU-RED-TEE',
+          favourite_category: 'tops',
+          category_affinity_pct: '62',
+          typical_price_minor: '149900',
+          price_affinity_band: 'premium',
+          discount_sensitivity_pct: '40',
+          device_preference: 'mobile',
+          purchase_cadence_days: '45',
         },
       ],
     );
@@ -77,9 +85,18 @@ describe('getRecommendationFeatures — Gold recommendation features', () => {
     expect(row.topChannel).toBe('paid_meta');
     expect(row.distinctProducts).toBe(7n);
     expect(row.tenureDays).toBe(365);
+    // ── affinity vectors ──
+    expect(row.favouriteBrand).toBe('SKU-RED-TEE');
+    expect(row.favouriteCategory).toBe('tops');
+    expect(row.categoryAffinityPct).toBe(62);
+    expect(row.typicalPriceMinor).toBe(149900n);
+    expect(row.priceAffinityBand).toBe('premium');
+    expect(row.discountSensitivityPct).toBe(40);
+    expect(row.devicePreference).toBe('mobile');
+    expect(row.purchaseCadenceDays).toBe(45);
   });
 
-  it('null behavioural/temporal fields degrade to null (anon-only / no last-seen)', async () => {
+  it('null behavioural/temporal/affinity fields degrade to null (anon-only / no purchases)', async () => {
     setupScope(
       [{ customer_count: '1' }],
       [
@@ -92,6 +109,14 @@ describe('getRecommendationFeatures — Gold recommendation features', () => {
           top_channel: null,
           distinct_products: '0',
           tenure_days: null,
+          favourite_brand: null,
+          favourite_category: null,
+          category_affinity_pct: null,
+          typical_price_minor: null,
+          price_affinity_band: null,
+          discount_sensitivity_pct: null,
+          device_preference: null,
+          purchase_cadence_days: null,
         },
       ],
     );
@@ -103,9 +128,18 @@ describe('getRecommendationFeatures — Gold recommendation features', () => {
     expect(row.tenureDays).toBe(null);
     expect(row.monetaryMinor).toBe(0n);
     expect(row.distinctProducts).toBe(0n);
+    // ── affinity vectors degrade to null (never fabricated) ──
+    expect(row.favouriteBrand).toBe(null);
+    expect(row.favouriteCategory).toBe(null);
+    expect(row.categoryAffinityPct).toBe(null);
+    expect(row.typicalPriceMinor).toBe(null);
+    expect(row.priceAffinityBand).toBe(null);
+    expect(row.discountSensitivityPct).toBe(null);
+    expect(row.devicePreference).toBe(null);
+    expect(row.purchaseCadenceDays).toBe(null);
   });
 
-  it('truncates a decimal-formatted monetary value to bigint minor units', async () => {
+  it('truncates decimal-formatted monetary values (monetary + typical price) to bigint minor units', async () => {
     setupScope(
       [{ customer_count: '1' }],
       [
@@ -118,10 +152,19 @@ describe('getRecommendationFeatures — Gold recommendation features', () => {
           top_channel: 'direct',
           distinct_products: 3,
           tenure_days: 90,
+          favourite_brand: 'SKU-1',
+          favourite_category: 'shoes',
+          category_affinity_pct: 100,
+          typical_price_minor: '250000.00',
+          price_affinity_band: 'luxury',
+          discount_sensitivity_pct: 0,
+          device_preference: 'desktop',
+          purchase_cadence_days: 30,
         },
       ],
     );
     const result = await getRecommendationFeatures(BRAND_ID, fakeDeps);
     expect(result.rows[0]!.monetaryMinor).toBe(500000n);
+    expect(result.rows[0]!.typicalPriceMinor).toBe(250000n);
   });
 });

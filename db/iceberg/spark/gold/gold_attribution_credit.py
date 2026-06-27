@@ -25,7 +25,7 @@ THE PIPELINE (folded from reconcile-attribution.ts, reproduced EXACTLY):
                       journey → the order's realized revenue is UNATTRIBUTED (no rows — honest, never
                       fabricated). (Current local Silver has 0 stitched touchpoints → 0 credit rows, exactly
                       like the live empty StarRocks ledger — parity-exact dual-run.)
-  PER-JOURNEY MODELS — for each of first_touch / last_touch / linear / position_based: compute the per-touch
+  PER-JOURNEY MODELS — for each of first_touch / last_touch / linear / position_based / time_decay: per-touch
                       weight units (closed-form, Σ==1e8) and apportion the order's realized revenue with the
                       SIGN-PRESERVING largest-remainder split (Σ credited == realized EXACTLY, zero drift).
   DATA-DRIVEN MODEL  — train the GLOBAL Markov removal-effect channel weights ONCE from the whole brand
@@ -217,7 +217,7 @@ def _compute_brand_rows(brand_id, touches_by_anon, brain_to_anon, recognized, ch
         period = _billing_period(order["occurred_at"])
         n = len(touches)
 
-        # ── the 4 per-journey closed-form models ──
+        # ── the per-journey closed-form models (PER_JOURNEY_MODEL_IDS, incl. time_decay) ──
         for model in models:
             wunits = M.compute_weight_units(model, n)
             credited = M.apportion_minor(wunits, realized)

@@ -6,7 +6,8 @@ parity-exact with the live TS-written StarRocks brain_gold.gold_attribution_cred
 
 Mirrored verbatim (1:1) from:
   - packages/metric-engine/src/attribution-models.ts
-        WEIGHT_SCALE=1e8, computeWeightUnits (first/last/linear/position_based), distributeRemainder
+        WEIGHT_SCALE=1e8, computeWeightUnits (first/last/linear/position_based/time_decay),
+        integerNthRoot + timeDecayRawWeights (2^(-age/H) fixed-point), distributeRemainder
         (deterministic 0,n-1,1..n-2 order), apportionMinor (largest-remainder, SIGN-PRESERVING),
         normalizeWeightUnits, computeTouchCredits / computeTouchCreditsExplicit, weightFractionString.
   - packages/metric-engine/src/attribution-datadriven.ts
@@ -32,8 +33,10 @@ import hashlib
 WEIGHT_SCALE = 100_000_000               # 1e8 hundred-millionths == DECIMAL(9,8) granularity
 POSITION_ENDPOINT = 40_000_000           # position-based endpoint weight 0.40
 POSITION_MIDDLE_MASS = 20_000_000        # position-based total middle mass 0.20
+TIME_DECAY_DEFAULT_HALF_LIFE = 1         # time_decay half-life in touch positions (hot path: exact)
+TIME_DECAY_PRECISION = 1_000_000_000_000_000_000  # 1e18 fixed-point for the 2^(-age/H) ratio
 ATTRIBUTION_MODEL_VERSION = "v1"
-PER_JOURNEY_MODEL_IDS = ("first_touch", "last_touch", "linear", "position_based")
+PER_JOURNEY_MODEL_IDS = ("first_touch", "last_touch", "linear", "position_based", "time_decay")
 
 # attribution-confidence.ts: frozen numeric confidence + letter per grade.
 CONFIDENCE_BY_GRADE = {"strong": "1.000", "partial": "0.700", "weak": "0.400"}
@@ -73,13 +76,53 @@ def _distribute_remainder(base, target):
     return out
 
 
-def compute_weight_units(model: str, touch_count: int):
+def _integer_nth_root(value: int, k: int) -> int:
+    """attribution-models.integerNthRoot — floor(value^(1/k)) over int (no float). Identical to TS."""
+    if k < 1:
+        raise ValueError(f"integerNthRoot needs k >= 1, got {k}")
+    if value < 0:
+        raise ValueError(f"integerNthRoot of negative: {value}")
+    if k == 1 or value < 2:
+        return value
+    hi = 1
+    while hi ** k <= value:
+        hi *= 2
+    lo = hi // 2
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if mid ** k <= value:
+            lo = mid
+        else:
+            hi = mid - 1
+    return lo
+
+
+def time_decay_raw_weights(n: int, half_life_positions: int):
+    """attribution-models.timeDecayRawWeights — 2^(-age/H) integer raw weights (1e18 fixed-point).
+
+    touch i (0-based) has age = (n-1) - i (last touch age 0); raw_i = r^age * S^i with
+    r = floor((S^H / 2)^(1/H)) ~= S * 2^(-1/H). Strictly increasing in i (recency). NO float.
+    """
+    if n <= 0:
+        return []
+    if not isinstance(half_life_positions, int) or half_life_positions < 1:
+        raise ValueError(f"time_decay half-life must be an integer >= 1, got {half_life_positions}")
+    S = TIME_DECAY_PRECISION
+    r = S // 2 if half_life_positions == 1 else _integer_nth_root(S ** half_life_positions // 2, half_life_positions)
+    max_age = n - 1
+    return [r ** (max_age - i) * S ** i for i in range(n)]
+
+
+def compute_weight_units(model: str, touch_count: int, half_life_positions: int = TIME_DECAY_DEFAULT_HALF_LIFE):
     """attribution-models.computeWeightUnits — per-touch 1e8 weight units; Σ == WEIGHT_SCALE exactly."""
     n = touch_count
     if n <= 0:
         return []
     if n == 1:
         return [WEIGHT_SCALE]
+    if model == "time_decay":
+        # normalize_to_scale already closes to WEIGHT_SCALE exactly (no second distribute).
+        return normalize_to_scale(time_decay_raw_weights(n, half_life_positions))
     if model == "first_touch":
         return [WEIGHT_SCALE if i == 0 else 0 for i in range(n)]
     if model == "last_touch":

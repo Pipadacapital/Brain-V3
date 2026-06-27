@@ -8,7 +8,13 @@
 -- materialized by Spark; the view is a column projection only (no compute).
 -- Redis fronts hot reads (analytics-cache.ts; wired in phase 2).
 --
--- Per-(brand_id, segment) rollup. Money: segment_value_minor bigint MINOR units (no currency_code at this grain), never blended across brands.
+-- Per-(brand_id, segment_type, segment) rollup. segment_type is the dimension discriminator:
+--   'value_tier' — the value ladder (high_value / mid_value / low_value / no_realized_value)
+--   'lifecycle'  — the named lifecycle ladder (VIP / high_value / loyal / first_time_buyer /
+--                  at_risk / churned / cart_abandoner / window_shopper)
+-- The label 'high_value' exists in BOTH ladders; segment_type is what keeps them distinct, so a
+-- reader MUST filter segment_type (e.g. WHERE segment_type = 'lifecycle') to avoid double-counting.
+-- Money: segment_value_minor bigint MINOR units (no currency_code at this grain), never blended across brands.
 --
 -- The metric-engine reads this as the two-part name brain_serving.mv_gold_customer_segments;
 -- with the Trino default catalog = iceberg that resolves to
@@ -18,6 +24,7 @@
 CREATE OR REPLACE VIEW iceberg.brain_serving.mv_gold_customer_segments AS
 SELECT
   brand_id,
+  segment_type,
   segment,
   customer_count,
   segment_value_minor,

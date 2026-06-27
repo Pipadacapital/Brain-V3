@@ -22,6 +22,12 @@
  *   • position_based:  N=1 → 1.0;  N=2 → 0.5/0.5;
  *                      N≥3 → first=last=0.40, middle 0.20 split evenly across the
  *                      N−2 middle touches (0.20/(N−2) each), remainder largest-rem'd.
+ *   • time_decay:      recency-weighted — a touch's raw weight is 2^(−age/H) where `age`
+ *                      is the touch's POSITIONAL distance to conversion (last touch age 0,
+ *                      first touch age N−1) and H = half-life in touch positions. Closer to
+ *                      conversion ⇒ exponentially more credit; credit halves every H positions.
+ *                      Computed in HIGH-PRECISION INTEGER fixed-point (no float), then closed to
+ *                      WEIGHT_SCALE by largest-remainder — strictly increasing by recency.
  *
  * ── CLOSED-SUM APPORTIONMENT (the per-order leg of the parity oracle) ─────────
  * credited_revenue_minor is NOT round(weight×revenue) independently (that leaks
@@ -48,6 +54,7 @@ export type AttributionModelId =
   | 'last_touch'
   | 'linear'
   | 'position_based'
+  | 'time_decay'
   | 'data_driven';
 
 /** The PER-JOURNEY closed-form models — the set reconcileAttribution's per-order loop computes. */
@@ -56,6 +63,7 @@ export const PER_JOURNEY_MODEL_IDS: readonly AttributionModelId[] = [
   'last_touch',
   'linear',
   'position_based',
+  'time_decay',
 ] as const;
 
 /**
@@ -79,6 +87,20 @@ export const WEIGHT_SCALE = 100_000_000n;
 const POSITION_ENDPOINT = 40_000_000n;
 /** Position-based total middle mass (0.20) in scaled units. */
 const POSITION_MIDDLE_MASS = 20_000_000n;
+
+/**
+ * time_decay default half-life, in TOUCH POSITIONS. Credit halves every `H` positions back from the
+ * conversion. The hot path (per-order reconcile + the Spark gold mart) uses this default, for which the
+ * decay ratio 2^(1/1) = 2 is EXACT integer math (no root) → parity-trivial. Configurable per call.
+ */
+export const TIME_DECAY_DEFAULT_HALF_LIFE = 1;
+
+/**
+ * time_decay fixed-point precision (1e18). The recency ratio per position is r/S where
+ * r = ⌊(S^H / 2)^(1/H)⌋ (integer H-th root) and S = this precision. 1e18 ≫ the 1e8 weight granularity,
+ * so the closed (largest-remainder) weights are stable. Pure BigInt — no float ever touches a weight.
+ */
+export const TIME_DECAY_PRECISION = 1_000_000_000_000_000_000n;
 
 /** A single touch's resolved credit (weight + apportioned money). */
 export interface TouchCredit {
@@ -112,11 +134,63 @@ export function weightFractionString(units: bigint): string {
 }
 
 /**
+ * integerNthRoot — ⌊value^(1/k)⌋ over BigInt (no float). value ≥ 0, k ≥ 1.
+ * Deterministic monotone binary search; identical in the Spark Python port (parity-exact).
+ */
+export function integerNthRoot(value: bigint, k: number): bigint {
+  if (k < 1) throw new Error(`[attribution-models] integerNthRoot needs k ≥ 1, got ${k}`);
+  if (value < 0n) throw new Error(`[attribution-models] integerNthRoot of negative: ${value}`);
+  if (k === 1 || value < 2n) return value;
+  const kk = BigInt(k);
+  const pow = (b: bigint) => b ** kk;
+  let hi = 1n;
+  while (pow(hi) <= value) hi *= 2n;
+  let lo = hi / 2n;
+  while (lo < hi) {
+    const mid = (lo + hi + 1n) / 2n;
+    if (pow(mid) <= value) lo = mid;
+    else hi = mid - 1n;
+  }
+  return lo;
+}
+
+/**
+ * timeDecayRawWeights — pre-normalization integer raw weights for the time_decay model.
+ *
+ * For n touches in conversion order, touch i (0-based) has positional `age = (n−1) − i` (last touch
+ * age 0). Its raw weight ∝ 2^(−age/H); rendered exactly in 1e18 fixed-point as r^age · S^i with
+ * S = TIME_DECAY_PRECISION and r = ⌊(S^H / 2)^(1/H)⌋ (so r/S ≈ 2^(−1/H)). Strictly increasing in i.
+ * Caller normalizes to WEIGHT_SCALE. NO float.
+ */
+export function timeDecayRawWeights(n: number, halfLifePositions: number): bigint[] {
+  if (n <= 0) return [];
+  if (!Number.isInteger(halfLifePositions) || halfLifePositions < 1) {
+    throw new Error(`[attribution-models] time_decay half-life must be an integer ≥ 1, got ${halfLifePositions}`);
+  }
+  const S = TIME_DECAY_PRECISION;
+  // r = ⌊(S^H / 2)^(1/H)⌋ ≈ S · 2^(−1/H). For H=1 this is exactly S/2 (no root).
+  const r = halfLifePositions === 1 ? S / 2n : integerNthRoot(S ** BigInt(halfLifePositions) / 2n, halfLifePositions);
+  const maxAge = n - 1;
+  const raw: bigint[] = new Array(n);
+  for (let i = 0; i < n; i++) {
+    const age = maxAge - i;
+    raw[i] = r ** BigInt(age) * S ** BigInt(i);
+  }
+  return raw;
+}
+
+/**
  * computeWeightUnits — the raw integer weight (1e8 scale) per touch for a model.
  * Returns one bigint per touch (same order as input). Σ == WEIGHT_SCALE EXACTLY
  * (largest-remainder closes any integer-division residual). Empty input → [].
+ *
+ * `halfLifePositions` configures the time_decay half-life (touch positions); ignored by other models.
  */
-export function computeWeightUnits(model: AttributionModelId, touchCount: number): bigint[] {
+export function computeWeightUnits(
+  model: AttributionModelId,
+  touchCount: number,
+  halfLifePositions: number = TIME_DECAY_DEFAULT_HALF_LIFE,
+): bigint[] {
   const n = touchCount;
   if (n <= 0) return [];
   if (n === 1) return [WEIGHT_SCALE];
@@ -145,6 +219,10 @@ export function computeWeightUnits(model: AttributionModelId, touchCount: number
         });
       }
       break;
+    case 'time_decay':
+      // Recency-weighted: normalize the 2^(−age/H) integer raw weights to WEIGHT_SCALE. normalize-
+      // WeightUnits already closes to TOTAL exactly, so return it directly (no second distribute).
+      return normalizeWeightUnits(timeDecayRawWeights(n, halfLifePositions));
     case 'data_driven':
       // GLOBAL model — per-touch weights come from the corpus-trained channel weights, not a
       // per-journey closed form. The data-driven driver supplies explicit per-touch weight units

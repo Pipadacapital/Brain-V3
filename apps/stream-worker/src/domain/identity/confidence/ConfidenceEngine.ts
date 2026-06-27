@@ -42,7 +42,11 @@ import type {
   MatcherInput,
 } from '@brain/contracts';
 import { DeterministicUnionFindMatcher } from '../matchers/DeterministicUnionFindMatcher.js';
+import { ProbabilisticMatcher } from '../matchers/ProbabilisticMatcher.js';
 import { RULE_VERSION } from '../IdentityResolver.js';
+
+/** The canonical id of the deterministic (strong-key) authority — the only matcher that may emit 'exact'. */
+const DETERMINISTIC_MATCHER_ID = 'deterministic-union-find';
 import {
   DeterministicMergeHook,
   DeterministicCrossDeviceHook,
@@ -107,6 +111,12 @@ export interface ConfidenceEvidence {
   strongMatches: readonly IdentifierMatch[];
   /** MEDIUM-tier (device/anon) identifiers that matched an existing active link → which brain_id. */
   mediumMatches: readonly IdentifierMatch[];
+  /**
+   * WEAK-tier signals (device_fingerprint / cookie_id / session_id / ip) that matched an existing
+   * active link → which brain_id. Fed ONLY to the rule-based ProbabilisticMatcher; never a merge key.
+   * A probabilistic agreement here can at most ROUTE TO REVIEW (sub-'exact'), never auto-merge.
+   */
+  weakMatches?: readonly IdentifierMatch[];
   /** Set when the resolver flagged this for human review (cycle-guard / conflict) → caps below 'exact'. */
   routeToReview?: boolean;
   /** Audit reason for the review route. */
@@ -149,8 +159,9 @@ export interface ConfidenceEngineOptions {
   perTenant?: ReadonlyMap<string, TenantConfidenceOverride>;
   /**
    * The matchers whose evidence is aggregated. Only `status === 'enabled'` matchers are ever
-   * invoked; disabled matchers in this list are SKIPPED (never throw). Defaults to the single
-   * enabled `DeterministicUnionFindMatcher`.
+   * invoked; disabled matchers in this list are SKIPPED (never throw). Defaults to the two enabled
+   * matchers: the deterministic union-find (strong-key authority) + the rule-based, review-gated
+   * probabilistic Fellegi–Sunter matcher (weak signals; never auto-merges).
    */
   matchers?: readonly Matcher[];
 }
@@ -170,7 +181,7 @@ export class ConfidenceEngine {
   constructor(opts: ConfidenceEngineOptions = {}) {
     this.defaults = opts.defaults ?? DEFAULT_CONFIDENCE_CONFIG;
     this.perTenant = opts.perTenant ?? new Map();
-    this.matchers = opts.matchers ?? [new DeterministicUnionFindMatcher()];
+    this.matchers = opts.matchers ?? [new DeterministicUnionFindMatcher(), new ProbabilisticMatcher()];
   }
 
   /** The effective per-tenant config (defaults deep-merged with any brand override). */
@@ -211,25 +222,42 @@ export class ConfidenceEngine {
     const mediumBrainIds = sortedDistinct(evidence.mediumMatches.map((m) => m.brain_id));
 
     // ── Aggregate ENABLED matchers (disabled are skipped, never invoked → never throw). ──
+    // Candidates carry strong + medium + WEAK matches; each matcher self-selects the tiers it reads
+    // (deterministic → strong/medium; probabilistic → weak only). Hash-only, brand-scoped.
     const candidates: Identifier[] = [
       ...evidence.strongMatches.map((m) => m.identifier),
       ...evidence.mediumMatches.map((m) => m.identifier),
+      ...(evidence.weakMatches ?? []).map((m) => m.identifier),
     ];
     const matcherInput: MatcherInput = {
       brand_id: evidence.brand_id,
       identifiers: [...evidence.identifiers],
       candidates,
     };
-    const enabledVerdicts = this.matchers
+    const graded = this.matchers
       .filter((m) => m.status === 'enabled')
-      .map((m) => m.match(matcherInput));
-    // Highest score wins (the deterministic strong matcher emits 100 on overlap, else 0).
-    const bestStrong = enabledVerdicts.reduce<ConfidenceVerdict | undefined>(
-      (acc, v) => (acc === undefined || v.score > acc.score ? v : acc),
-      undefined,
-    );
+      .map((m) => ({ matcher: m, verdict: m.match(matcherInput) }));
+
+    // DETERMINISTIC-FIRST: the deterministic matcher is the strong-key AUTHORITY — the ONLY matcher
+    // that may emit band 'exact'/100. Identify it by id; fall back to the first enabled matcher.
+    const deterministic =
+      graded.find((g) => g.matcher.id === DETERMINISTIC_MATCHER_ID) ?? graded[0];
+    const bestStrong = deterministic?.verdict;
     const strongScore = bestStrong?.score ?? 0;
-    const matcherId = bestStrong?.matcher_id ?? this.matchers[0]?.id ?? 'deterministic-union-find';
+    const deterministicId = deterministic?.matcher.id ?? DETERMINISTIC_MATCHER_ID;
+
+    // PROBABILISTIC contribution: the best SUB-EXACT verdict from any NON-deterministic enabled
+    // matcher. Consulted ONLY when the deterministic path finds no strong key (the branch below), so
+    // deterministic stays primary. A probabilistic verdict is sub-'exact' by construction → it can
+    // never auto-merge; it ROUTES TO REVIEW.
+    const probabilistic = graded
+      .filter((g) => g !== deterministic && g.verdict.score > 0 && g.verdict.band !== 'exact')
+      .reduce<ConfidenceVerdict | undefined>(
+        (acc, g) => (acc === undefined || g.verdict.score > acc.score ? g.verdict : acc),
+        undefined,
+      );
+
+    let matcherId = deterministicId;
 
     // ── Deterministic strategy hooks over the structural evidence. ──
     const mergeDetection = this.mergeHook.detect({ brand_id: evidence.brand_id, strongBrainIds, mediumBrainIds });
@@ -241,6 +269,7 @@ export class ConfidenceEngine {
 
     if (strongScore >= cfg.bandThresholds.exact) {
       // ── STRONG exact match → deterministic certainty. ──
+      matcherId = bestStrong?.matcher_id ?? deterministicId;
       score = cfg.bandThresholds.exact;
       reasons.push(...(bestStrong?.reasons ?? []));
       combo = bestStrong && bestStrong.identifier_combo.length > 0
@@ -266,6 +295,18 @@ export class ConfidenceEngine {
         reasons.push(`cross_device:adopt:${t}`);
       }
       combo = toCombo(evidence.mediumMatches.map((m) => m.identifier));
+    } else if (probabilistic) {
+      // ── PROBABILISTIC weak-signal agreement → SUB-'exact', ROUTE TO REVIEW (NEVER auto-merge). ──
+      // Reached ONLY when there is no strong key and no medium adoption (deterministic-first). The
+      // probabilistic score is hard-capped strictly below 'exact' (the never-merge guarantee), so the
+      // band can never be 'exact'/merge-eligible — a positive match is a human-review candidate.
+      matcherId = probabilistic.matcher_id;
+      score = Math.min(probabilistic.score, cfg.bandThresholds.exact - 1);
+      reasons.push(...probabilistic.reasons);
+      reasons.push('route_to_review:probabilistic_match');
+      combo = probabilistic.identifier_combo.length > 0
+        ? [...probabilistic.identifier_combo]
+        : toCombo((evidence.weakMatches ?? []).map((m) => m.identifier));
     } else {
       // ── No actionable match → mint a fresh identity. ──
       score = 0;

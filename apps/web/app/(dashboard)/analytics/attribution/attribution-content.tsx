@@ -14,7 +14,7 @@
  * macro). The UI never re-apportions weights and never does float money math.
  *
  * What it shows:
- *   - A 4-model selector (default = position_based, the brand's active model).
+ *   - A model selector (default = position_based, the brand's active model).
  *   - Attributed revenue BY CHANNEL (Recharts horizontal bars + SR-table + confidence grade).
  *   - The RECONCILIATION RESIDUAL alongside — the closed-sum parity oracle made visible
  *     (attributed + unattributed = realized; the residual is never hidden).

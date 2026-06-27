@@ -120,12 +120,17 @@ export const IDENTITY_MATCHER_REGISTRY: readonly MatcherDescriptor[] = [
   },
   {
     id: 'probabilistic-fellegi-sunter',
-    version: 'v0',
-    status: 'disabled-not-implemented',
+    version: 'v1-fellegi-sunter',
+    status: 'enabled',
     strategy: 'probabilistic',
     description:
-      'DEFERRED (D-5). Fellegi–Sunter probabilistic record linkage over weighted partial ' +
-      'matches. Registered-disabled — match() throws NotImplementedYet; no verdict is faked.',
+      'ENABLED — RULE-BASED, REVIEW-GATED Fellegi–Sunter record linkage over the WEAK signals ' +
+      '(device_fingerprint / cookie_id / session_id / ip). Weighted partial agreement → an INTEGER ' +
+      'confidence whose band is SUB-EXACT (high|medium|low), NEVER "exact"/100. Conservative by ' +
+      'construction: it can never reach a merge-eligible band, so a probabilistic match ROUTES TO ' +
+      'REVIEW (route_to_review) and NEVER auto-merges. Deterministic union-find stays primary; this ' +
+      'matcher only contributes when no strong key is found. Implemented by ProbabilisticMatcher ' +
+      '(apps/stream-worker).',
   },
   {
     id: 'ml-embedding-similarity',
@@ -135,5 +140,25 @@ export const IDENTITY_MATCHER_REGISTRY: readonly MatcherDescriptor[] = [
     description:
       'DEFERRED (D-5). Learned-embedding similarity over identity features. Registered-disabled ' +
       '— match() throws NotImplementedYet; no verdict is faked.',
+  },
+  {
+    id: 'household-clustering',
+    version: 'v0',
+    status: 'disabled-not-implemented',
+    strategy: 'fuzzy',
+    description:
+      'DEFERRED (D-5). Fuzzy graph clustering of distinct people sharing an address/payment ' +
+      'instrument into a household. Out of scope for deterministic v1. Registered-disabled — ' +
+      'match() throws NotImplementedYet; no verdict is faked.',
+  },
+  {
+    id: 'cross-device-graph',
+    version: 'v0',
+    status: 'disabled-not-implemented',
+    strategy: 'fuzzy',
+    description:
+      'DEFERRED (D-5). Fuzzy graph stitching of device/anon identities across devices beyond the ' +
+      'deterministic resolve-only adoption the resolver already does. Registered-disabled — ' +
+      'match() throws NotImplementedYet; no verdict is faked.',
   },
 ] as const;

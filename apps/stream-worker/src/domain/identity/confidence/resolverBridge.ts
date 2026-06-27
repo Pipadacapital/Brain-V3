@@ -42,14 +42,33 @@ export function evidenceFromResolver(args: {
   brand_id: string;
   identifiers: readonly ExtractedIdentifier[];
   existingLinks: readonly ExistingLink[];
+  /**
+   * Explicit weak-signal candidates (from IdentityStore.findCandidatesByWeakSignals). When provided,
+   * the weak matches are derived from THIS set (the dedicated probabilistic candidate fetch); when
+   * omitted, weak matches fall back to `existingLinks` (which already contains them). Strong/medium
+   * matches always come from `existingLinks` (the deterministic read-state).
+   */
+  weakCandidates?: readonly ExistingLink[];
   outcome?: ResolveOutcome;
 }): ConfidenceEvidence {
   const identifiers: Identifier[] = args.identifiers.map((e) => toIdentifier(args.brand_id, e));
   const strongMatches: IdentifierMatch[] = [];
   const mediumMatches: IdentifierMatch[] = [];
+  const weakMatches: IdentifierMatch[] = [];
+
+  const weakSource = args.weakCandidates ?? args.existingLinks;
 
   for (const e of args.identifiers) {
     const idf = toIdentifier(args.brand_id, e);
+    if (e.tier === 'weak') {
+      // PROB signals → graded ONLY against the weak candidate set, fed to ProbabilisticMatcher.
+      for (const l of weakSource) {
+        if (l.is_active && l.identifier_type === e.type && l.identifier_value === e.hash) {
+          weakMatches.push({ identifier: idf, brain_id: l.brain_id });
+        }
+      }
+      continue;
+    }
     for (const l of args.existingLinks) {
       if (l.is_active && l.identifier_type === e.type && l.identifier_value === e.hash) {
         const match: IdentifierMatch = { identifier: idf, brain_id: l.brain_id };
@@ -64,6 +83,7 @@ export function evidenceFromResolver(args: {
     identifiers,
     strongMatches,
     mediumMatches,
+    weakMatches,
     routeToReview: args.outcome?.routeToReview,
     routeReason: args.outcome?.reviewReason,
   };
@@ -79,6 +99,7 @@ export function gradeResolverOutcome(
     brand_id: string;
     identifiers: readonly ExtractedIdentifier[];
     existingLinks: readonly ExistingLink[];
+    weakCandidates?: readonly ExistingLink[];
     outcome?: ResolveOutcome;
   },
 ): ConfidenceVerdict {

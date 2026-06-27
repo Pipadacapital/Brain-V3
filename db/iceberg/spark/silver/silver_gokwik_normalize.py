@@ -52,7 +52,8 @@ from pyspark.sql.types import BooleanType, StringType  # noqa: E402
 
 from iceberg_base import CATALOG, SILVER_NAMESPACE, build_spark, create_iceberg_table  # noqa: E402
 from job_log import emit_job_log  # noqa: E402
-import _raw_normalize as rn  # noqa: E402
+import _raw_normalize as rn
+from _raw_normalize import classify_terminal_class as _classify_shipment_status, normalize_status as _normalize_status  # consolidated primitives (ADR-0006)  # noqa: E402
 
 BRONZE_NAMESPACE = os.environ.get("BRONZE_NAMESPACE", "brain_bronze")
 RAW_TABLE = f"{CATALOG}.{BRONZE_NAMESPACE}." + os.environ.get("RAW_TABLE", "gokwik_events_raw")

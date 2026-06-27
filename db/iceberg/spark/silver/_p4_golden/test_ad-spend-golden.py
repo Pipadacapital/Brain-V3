@@ -23,6 +23,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from _raw_normalize import uuid_shaped  # noqa: E402  (the ONLY shared port reused)
+from _raw_normalize import major_decimal_to_minor, micros_to_minor, to_count_string  # consolidated primitives (ADR-0006)
 
 GOLDEN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ad-spend-golden.json")
 
@@ -32,39 +33,10 @@ _COUNT_RE = re.compile(r"^(\d+)(?:\.\d+)?$")
 
 
 # ── LOCAL PORTS (byte-identical to silver_ad_spend_normalize.py) ───────────────────────────────────────
-def major_decimal_to_minor(value):
-    if value is None:
-        return "0"
-    s = str(value).strip()
-    if s == "":
-        return "0"
-    m = _DECIMAL_RE.match(s)
-    if not m:
-        return None
-    whole = m.group(1)
-    frac = (m.group(2) or "").ljust(2, "0")[:2]
-    return str(int(whole) * 100 + int(frac))
 
 
-def micros_to_minor(value):
-    if value is None:
-        return "0"
-    s = str(value).strip()
-    if not _INT_RE.match(s):
-        return None
-    return str(int(s) // 10000)
 
 
-def to_count_string(value):
-    if value is None:
-        return None
-    s = str(value).strip()
-    if s == "":
-        return None
-    m = _COUNT_RE.match(s)
-    if not m:
-        return None
-    return m.group(1)
 
 
 def resolve_level(raw, fallback="campaign"):

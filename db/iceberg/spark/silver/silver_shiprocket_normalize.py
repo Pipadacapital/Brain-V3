@@ -42,7 +42,8 @@ from pyspark.sql.types import BooleanType, StringType  # noqa: E402
 
 from iceberg_base import CATALOG, SILVER_NAMESPACE, build_spark, create_iceberg_table  # noqa: E402
 from job_log import emit_job_log  # noqa: E402
-import _raw_normalize as rn  # noqa: E402
+import _raw_normalize as rn
+from _raw_normalize import classify_terminal_class as _classify_shipment_status, normalize_status as _normalize_status  # consolidated primitives (ADR-0006)  # noqa: E402
 
 BRONZE_NAMESPACE = os.environ.get("BRONZE_NAMESPACE", "brain_bronze")
 RAW_TABLE = f"{CATALOG}.{BRONZE_NAMESPACE}.shiprocket_shipments_raw"
@@ -80,22 +81,8 @@ _OTHER_TERMINAL = {
 }
 
 
-def _normalize_status(raw):
-    s = (raw or "").strip().lower()
-    s = re.sub(r"[_-]+", " ", s)
-    s = re.sub(r"\s+", " ", s)
-    return s
 
 
-def _classify_shipment_status(raw):
-    s = _normalize_status(raw)
-    if s in _RTO_TERMINAL:
-        return "rto"
-    if s in _DELIVERED_TERMINAL:
-        return "delivered"
-    if s in _OTHER_TERMINAL:
-        return "other"
-    return "none"
 
 
 def _resolve_payment_method(raw):

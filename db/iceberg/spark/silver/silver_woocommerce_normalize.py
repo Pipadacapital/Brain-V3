@@ -50,7 +50,8 @@ from pyspark.sql.types import LongType, StringType  # noqa: E402
 
 from iceberg_base import CATALOG, SILVER_NAMESPACE, build_spark, create_iceberg_table  # noqa: E402
 from job_log import emit_job_log  # noqa: E402
-import _raw_normalize as rn  # noqa: E402
+import _raw_normalize as rn
+from _raw_normalize import iso_ms_assume_utc as woo_to_utc_iso  # consolidated primitives (ADR-0006)  # noqa: E402
 
 BRONZE_NAMESPACE = os.environ.get("BRONZE_NAMESPACE", "brain_bronze")
 RAW_TABLE = f"{CATALOG}.{BRONZE_NAMESPACE}.woocommerce_orders_raw"
@@ -76,19 +77,6 @@ _WOO_TZ_RE = re.compile(r"([zZ]$)|([+-]\d{2}:?\d{2}$)")
 _WOO_COD_METHODS = {"cod", "cash_on_delivery", "cheque"}
 
 
-def woo_to_utc_iso(value):
-    """@brain/woocommerce-mapper toUtcIso (no fallback variant): a wc/v3 `*_gmt` string is GMT but
-    frequently lacks a tz suffix, so `new Date(naive)` would parse as LOCAL — append 'Z' (treat as UTC)
-    when no offset is present, then format as new Date(x).toISOString() (.mmmZ via the shared iso_ms).
-    Returns None when there is no value (row is then quarantined rather than stamped with a non-det now())."""
-    if value is None:
-        return None
-    raw = str(value).strip()
-    if not raw:
-        return None
-    if not _WOO_TZ_RE.search(raw):
-        raw = raw + "Z"
-    return rn.iso_ms(raw)
 
 
 def classify_payment_woo(payment_method, payment_method_title):

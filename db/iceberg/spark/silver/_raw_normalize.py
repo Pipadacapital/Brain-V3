@@ -144,3 +144,125 @@ def iso_ms(*candidates):
 def epoch_ms(raw):
     """new Date(raw).getTime() — integer epoch milliseconds (the event_id seed component)."""
     return int(_parse_utc(raw).timestamp() * 1000)
+
+
+# ======================================================================================================
+# P4 CONNECTOR PRIMITIVE PORTS — consolidated from the per-connector normalizers (ADR-0006 cutover
+# follow-up). Each is a BYTE-FOR-BYTE port of a connector's TS helper; the per-connector golden tests
+# (_p4_golden/test_<c>-golden.py) are the regression guard. The money ports are a FAMILY (not one fn):
+# each provider has subtly different regex + null/throw semantics, deliberately preserved here.
+# ======================================================================================================
+
+# -- Money family (provider-specific; all integer-only, minor units, never float) ----------------------
+_MAJOR_DECIMAL_RE = re.compile(r"^(\d+)(?:\.(\d+))?$")  # ad-spend: allows >2 frac, rounds DOWN to 2
+_INT_RE = re.compile(r"^\d+$")
+_COUNT_RE = re.compile(r"^(\d+)(?:\.\d+)?$")
+_MONEY_STRICT2_RE = re.compile(r"^\d+(\.\d{1,2})?$")  # shopflo: at most 2 dp, else raise
+
+
+def major_decimal_to_minor(value):
+    """ad-spend majorDecimalToMinorString (Meta major-decimal -> minor; cut beyond 2dp; null/empty -> '0';
+    malformed -> None/quarantine). Returns a BIGINT-as-string."""
+    if value is None:
+        return "0"
+    s = str(value).strip()
+    if s == "":
+        return "0"
+    m = _MAJOR_DECIMAL_RE.match(s)
+    if not m:
+        return None
+    frac = (m.group(2) or "").ljust(2, "0")[:2]
+    return str(int(m.group(1)) * 100 + int(frac))
+
+
+def micros_to_minor(value):
+    """ad-spend microsToMinorString (Google cost_micros // 10_000; null -> '0'; non-int -> None)."""
+    if value is None:
+        return "0"
+    s = str(value).strip()
+    if not _INT_RE.match(s):
+        return None
+    return str(int(s) // 10000)
+
+
+def to_count_string(value):
+    """ad-spend toCountString (integer-part-only count string; null/empty/malformed -> None)."""
+    if value is None:
+        return None
+    s = str(value).strip()
+    if s == "":
+        return None
+    m = _COUNT_RE.match(s)
+    return m.group(1) if m else None
+
+
+def money_to_minor_string(value):
+    """shopflo moneyToMinorString (major -> minor; null -> '0' [NOT None]; >2dp/negative/non-numeric ->
+    RAISES like the TS throw; the build wrapper catches -> quarantine)."""
+    if value is None:
+        return "0"
+    if isinstance(value, bool):
+        raise ValueError(f"invalid money value {value!r}")
+    if isinstance(value, float):
+        s = str(int(value)) if value.is_integer() else repr(value)
+    elif isinstance(value, int):
+        s = str(value)
+    else:
+        s = str(value).strip()
+    if s == "":
+        return "0"
+    if not _MONEY_STRICT2_RE.match(s):
+        raise ValueError(f"invalid money value {s!r} (I-S07)")
+    if "." not in s:
+        return str(int(s) * 100)
+    whole, frac = s.split(".", 1)
+    return str(int(whole) * 100 + int((frac + "00")[:2]))
+
+
+# -- Time (gmt-naive variant) --------------------------------------------------------------------------
+_TZ_RE = re.compile(r"([zZ]$)|([+-]\d{2}:?\d{2}$)")
+
+
+def iso_ms_assume_utc(value):
+    """woocommerce toUtcIso — a wc/v3 *_gmt string is GMT but often lacks a tz suffix; append 'Z' (treat
+    as UTC) when no offset is present, then iso_ms (.mmmZ). None on empty."""
+    if value is None:
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    if not _TZ_RE.search(raw):
+        raw = raw + "Z"
+    return iso_ms(raw)
+
+
+# -- Logistics status -> terminal_class (the logistics-status frozen authority; shiprocket + gokwik) ----
+_RTO_TERMINAL = {
+    "rto", "rto initiated", "rto in transit", "rto undelivered", "rto out for delivery",
+    "rto delivered", "rto ofd", "rto acknowledged", "rto rejected", "rto ndr", "rto disposed",
+}
+_DELIVERED_TERMINAL = {"delivered", "completed"}
+_OTHER_TERMINAL = {
+    "cancelled", "lost", "damaged", "returned", "canceled", "destroyed", "disposed", "disposed of",
+}
+
+
+def normalize_status(raw):
+    """Lower + collapse [_-]/whitespace -> canonical status token (shared by shiprocket + gokwik)."""
+    s = (raw or "").strip().lower()
+    s = re.sub(r"[_-]+", " ", s)
+    s = re.sub(r"\s+", " ", s)
+    return s
+
+
+def classify_terminal_class(raw):
+    """status -> terminal_class in {rto, delivered, other, none} — the frozen 3-set authority that drives
+    the bigint-minor cod_rto_clawback downstream. In lockstep with packages/logistics-status."""
+    s = normalize_status(raw)
+    if s in _RTO_TERMINAL:
+        return "rto"
+    if s in _DELIVERED_TERMINAL:
+        return "delivered"
+    if s in _OTHER_TERMINAL:
+        return "other"
+    return "none"

@@ -49,7 +49,8 @@ from pyspark.sql.types import StringType, StructField, StructType  # noqa: E402
 
 from iceberg_base import CATALOG, SILVER_NAMESPACE, build_spark, create_iceberg_table  # noqa: E402
 from job_log import emit_job_log  # noqa: E402
-import _raw_normalize as rn  # noqa: E402
+import _raw_normalize as rn
+from _raw_normalize import money_to_minor_string  # consolidated primitives (ADR-0006)  # noqa: E402
 
 SHOPFLO_EVENT_NAME = "shopflo.checkout_abandoned.v1"
 
@@ -86,30 +87,6 @@ COLUMNS_SQL = """
 _MONEY_RE = re.compile(r"^\d+(\.\d{1,2})?$")
 
 
-def money_to_minor_string(value):
-    """@brain/shopflo-mapper moneyToMinorString — decimal/number major units → BIGINT-as-string minor units.
-    null/undefined → '0' (NOT None — this differs from the shared decimal_to_minor_strict). Integer-only
-    (no parseFloat): split on '.'. Raises on an invalid value (>2 dp / negative / non-numeric), exactly like
-    the TS throws; the build wrapper catches it → row quarantined."""
-    if value is None:
-        return "0"
-    if isinstance(value, bool):  # JS: typeof boolean !== number → String(true) → invalid → throw
-        raise ValueError(f"invalid money value {value!r}")
-    if isinstance(value, float):
-        s = str(int(value)) if value.is_integer() else repr(value)  # JS Number.toString drops a trailing .0
-    elif isinstance(value, int):
-        s = str(value)
-    else:
-        s = str(value).strip()
-    if s == "":
-        return "0"
-    if not _MONEY_RE.match(s):
-        raise ValueError(f"invalid money value {s!r} (I-S07)")
-    if "." not in s:
-        return str(int(s) * 100)
-    whole, frac = s.split(".", 1)
-    frac = (frac + "00")[:2]  # padEnd(2, '0')
-    return str(int(whole) * 100 + int(frac))
 
 
 def to_quantity(value):

@@ -24,6 +24,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from _raw_normalize import hash_salted_bytes, iso_ms, uuid_shaped  # noqa: E402
+from _raw_normalize import classify_terminal_class as _classify_shipment_status, normalize_status as _normalize_status  # consolidated primitives (ADR-0006)
 
 GOLDEN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gokwik-golden.json")
 

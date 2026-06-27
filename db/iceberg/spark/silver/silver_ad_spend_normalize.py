@@ -63,7 +63,8 @@ from pyspark.sql.types import StringType  # noqa: E402
 
 from iceberg_base import CATALOG, SILVER_NAMESPACE, build_spark, create_iceberg_table  # noqa: E402
 from job_log import emit_job_log  # noqa: E402
-import _raw_normalize as rn  # noqa: E402  (SHARED ports — uuid_shaped reused; never re-implemented here)
+import _raw_normalize as rn
+from _raw_normalize import major_decimal_to_minor, micros_to_minor, to_count_string  # consolidated primitives (ADR-0006)  # noqa: E402  (SHARED ports — uuid_shaped reused; never re-implemented here)
 
 BRONZE_NAMESPACE = os.environ.get("BRONZE_NAMESPACE", "brain_bronze")
 RAW_META_TABLE = f"{CATALOG}.{BRONZE_NAMESPACE}.meta_spend_raw"
@@ -102,46 +103,10 @@ _INT_RE = re.compile(r"^\d+$")
 _COUNT_RE = re.compile(r"^(\d+)(?:\.\d+)?$")
 
 
-def major_decimal_to_minor(value):
-    """majorDecimalToMinorString — Meta major-unit decimal string ("12.34") → BIGINT-as-string minor
-    units. Integer-only: whole*100 + frac(padEnd 2, truncate beyond). null/empty → "0". Malformed → None
-    (the TS THROWS; in Silver we quarantine the row instead of crashing the batch)."""
-    if value is None:
-        return "0"
-    s = str(value).strip()
-    if s == "":
-        return "0"
-    m = _DECIMAL_RE.match(s)
-    if not m:
-        return None
-    whole = m.group(1)
-    frac = (m.group(2) or "").ljust(2, "0")[:2]  # exactly 2 digits (padEnd then slice)
-    return str(int(whole) * 100 + int(frac))
 
 
-def micros_to_minor(value):
-    """microsToMinorString — Google cost_micros (integer micros) → BIGINT-as-string minor units via
-    integer division micros // 10_000. null/undefined → "0". Non-integer → None (TS throws → quarantine)."""
-    if value is None:
-        return "0"
-    s = str(value).strip()
-    if not _INT_RE.match(s):
-        return None
-    return str(int(s) // 10000)
 
 
-def to_count_string(value):
-    """toCountString — integer-ish count → BIGINT-as-string (integer part only) or None. null/empty/
-    malformed → None."""
-    if value is None:
-        return None
-    s = str(value).strip()
-    if s == "":
-        return None
-    m = _COUNT_RE.match(s)
-    if not m:
-        return None
-    return m.group(1)
 
 
 def resolve_level(raw, fallback="campaign"):

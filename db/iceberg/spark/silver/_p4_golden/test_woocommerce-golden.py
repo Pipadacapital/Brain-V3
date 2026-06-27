@@ -23,6 +23,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from _raw_normalize import (  # noqa: E402
     decimal_to_minor_strict, epoch_ms, event_id_order_live, hash_identifier, iso_ms,
+    iso_ms_assume_utc as woo_to_utc_iso,
 )
 
 GOLDEN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "woocommerce-order-golden.json")
@@ -32,15 +33,6 @@ _WOO_TZ_RE = re.compile(r"([zZ]$)|([+-]\d{2}:?\d{2}$)")
 _WOO_COD_METHODS = {"cod", "cash_on_delivery", "cheque"}
 
 
-def woo_to_utc_iso(value):
-    if value is None:
-        return None
-    raw = str(value).strip()
-    if not raw:
-        return None
-    if not _WOO_TZ_RE.search(raw):
-        raw = raw + "Z"
-    return iso_ms(raw)
 
 
 def classify_payment_woo(payment_method, payment_method_title):

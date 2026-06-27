@@ -24,6 +24,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from _raw_normalize import hash_identifier, iso_ms, normalize_phone_in, uuid_shaped  # noqa: E402
+from _raw_normalize import money_to_minor_string  # consolidated primitives (ADR-0006)
 
 GOLDEN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shopflo-checkout-golden.json")
 SHOPFLO_EVENT_NAME = "shopflo.checkout_abandoned.v1"
@@ -32,26 +33,6 @@ SHOPFLO_EVENT_NAME = "shopflo.checkout_abandoned.v1"
 _MONEY_RE = re.compile(r"^\d+(\.\d{1,2})?$")
 
 
-def money_to_minor_string(value):
-    if value is None:
-        return "0"
-    if isinstance(value, bool):
-        raise ValueError(f"invalid money value {value!r}")
-    if isinstance(value, float):
-        s = str(int(value)) if value.is_integer() else repr(value)
-    elif isinstance(value, int):
-        s = str(value)
-    else:
-        s = str(value).strip()
-    if s == "":
-        return "0"
-    if not _MONEY_RE.match(s):
-        raise ValueError(f"invalid money value {s!r} (I-S07)")
-    if "." not in s:
-        return str(int(s) * 100)
-    whole, frac = s.split(".", 1)
-    frac = (frac + "00")[:2]
-    return str(int(whole) * 100 + int(frac))
 
 
 def to_quantity(value):

@@ -679,6 +679,12 @@ export {
   assertAttributionModelEnabled,
   GoldDataProductSchema,
   GoldDataProductsSchema,
+  GOLD_DATA_PRODUCT_REGISTRY,
+  findGoldDataProduct,
+  HealthBandSchema,
+  ChurnScoreSchema,
+  LifecycleStageSchema,
+  Customer360ContractSchema,
 } from './api/intelligence.api.v1.js';
 export type {
   MedallionLayer,
@@ -690,6 +696,10 @@ export type {
   DisabledPredictiveModel,
   GoldDataProduct,
   GoldDataProducts,
+  HealthBand,
+  ChurnScore,
+  LifecycleStage,
+  Customer360Contract,
 } from './api/intelligence.api.v1.js';
 
 // ── V4 MCP read-only lookup-tool schemas (input/output; brand_id never an input) ──
@@ -775,3 +785,18 @@ export type {
   CacheInvalidateReason,
   CacheInvalidateEvent,
 } from './events/cache.invalidate.v1.js';
+
+// ── V4 Customer360 recompute receipt (intelligence.customer360.recomputed.v1) ─────
+export {
+  Customer360RecomputeReasonSchema,
+  Customer360RecomputedPayloadSchema,
+  Customer360RecomputedEventSchema,
+  CUSTOMER360_RECOMPUTED_V1_TOPIC_SUFFIX,
+  CUSTOMER360_RECOMPUTED_V1_EVENT_NAME,
+  CUSTOMER360_RECOMPUTED_V1_AVRO_SUBJECT,
+  CUSTOMER360_EVENT_SCHEMAS,
+} from './events/intelligence.customer360.recomputed.v1.js';
+export type {
+  Customer360RecomputeReason,
+  Customer360RecomputedEvent,
+} from './events/intelligence.customer360.recomputed.v1.js';

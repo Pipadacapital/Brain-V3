@@ -8,7 +8,11 @@
 -- materialized by Spark; the view is a column projection only (no compute).
 -- Redis fronts hot reads (analytics-cache.ts; wired in phase 2).
 --
--- Recommendation INPUT features (a Gold SERVING product, NOT a feature-precompute table). monetary_minor BIGINT minor units + currency_code. Grain (brand_id, brain_id).
+-- Recommendation INPUT features (a Gold SERVING product, NOT a feature-precompute table): RFM
+-- (recency/frequency/monetary) + behaviour (top_channel/distinct_products) + AFFINITY
+-- (favourite_brand/favourite_category/category_affinity_pct/typical_price_minor/price_affinity_band/
+-- discount_sensitivity_pct/device_preference/purchase_cadence_days). monetary_minor AND typical_price_minor
+-- are BIGINT minor units + the shared currency_code sibling. Grain (brand_id, brain_id).
 --
 -- The metric-engine reads this as the two-part name brain_serving.mv_gold_recommendation_features;
 -- with the Trino default catalog = iceberg that resolves to
@@ -26,5 +30,13 @@ SELECT
   top_channel,
   distinct_products,
   tenure_days,
+  favourite_brand,
+  favourite_category,
+  category_affinity_pct,
+  typical_price_minor,
+  price_affinity_band,
+  discount_sensitivity_pct,
+  device_preference,
+  purchase_cadence_days,
   updated_at
 FROM iceberg.brain_gold.gold_recommendation_features;

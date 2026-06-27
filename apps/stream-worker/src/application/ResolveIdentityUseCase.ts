@@ -109,6 +109,24 @@ export class ResolveIdentityUseCase {
     const rawAnonId = typeof props['brain_anon_id'] === 'string' ? props['brain_anon_id'] :
                      typeof props['anon_id'] === 'string' ? props['anon_id'] : null;
 
+    // ── PROB weak signals — tier='weak', RESOLVE-ONLY (consumed ONLY by the ProbabilisticMatcher) ──
+    // MUST stay byte-identical to extract-identifiers.ts buildIdentifiers (the OPERATOR replay path).
+    // These are NEVER merge keys and are IGNORED by the deterministic resolver below; they exist so a
+    // later rule-based, review-gated probabilistic match can ROUTE TO REVIEW (never auto-merge).
+    const firstString = (obj: Record<string, unknown>, keys: string[]): string | null => {
+      for (const k of keys) {
+        const v = obj[k];
+        if (typeof v === 'string' && v.trim().length > 0) return v;
+      }
+      return null;
+    };
+    const deviceCtx = (props['device'] as Record<string, unknown>) ?? {};
+    const rawCookieId = firstString(props, ['cookie_id', '$cookie_id', 'cookie']) ?? firstString(deviceCtx, ['cookie_id']);
+    const rawIp = firstString(props, ['ip', 'ip_address', 'client_ip', '$ip']) ?? firstString(deviceCtx, ['ip', 'ip_address']);
+    const rawDeviceFingerprint =
+      firstString(props, ['device_fingerprint', '$device_fingerprint', 'fingerprint']) ?? firstString(deviceCtx, ['fingerprint', 'device_fingerprint']);
+    const rawSessionId = firstString(props, ['session_id', '$session_id']) ?? firstString(deviceCtx, ['session_id']);
+
     // ── SECONDARY EXTRACTION: connector-pre-hashed-identity ─────────────────────
     // Connector order/checkout events (Shopify / WooCommerce / Shopflo) may carry identifiers
     // that the upstream platform already hashed before delivery.  Re-hashing would produce a
@@ -170,7 +188,8 @@ export class ResolveIdentityUseCase {
     const preHashedPhone = canonicalPreHashedPhone ?? rawPreHashedPhone;
 
     if (!rawEmail && !rawPhone && !storefrontCustomerId && !rawDeviceId && !rawAnonId
-        && !preHashedEmail && !preHashedPhone) {
+        && !preHashedEmail && !preHashedPhone
+        && !rawCookieId && !rawIp && !rawDeviceFingerprint && !rawSessionId) {
       return { outcome: 'no_identifiers', brandId, eventId };
     }
 
@@ -274,6 +293,22 @@ export class ResolveIdentityUseCase {
         rawValue: undefined,   // no plaintext PII — cannot write to contact_pii vault
         preHashed: true,
       });
+    }
+
+    // ── PROB weak signals (tier='weak', confidence='low', RESOLVE-ONLY) ──
+    // Hashed with the per-brand salt (external_id = trim) like every other identifier. The
+    // deterministic resolver below IGNORES tier='weak' entirely (no merge, no adoption) — these feed
+    // ONLY the rule-based ProbabilisticMatcher, which can never auto-merge (routes to review).
+    for (const [type, raw] of [
+      ['device_fingerprint', rawDeviceFingerprint],
+      ['cookie_id', rawCookieId],
+      ['session_id', rawSessionId],
+      ['ip', rawIp],
+    ] as const) {
+      if (!raw) continue;
+      const normalized = normalizeIdentifier(raw, 'external_id', regionCode);
+      const hash = hashIdentifier(normalized, 'external_id', saltHex, regionCode);
+      identifiers.push({ type, hash, tier: 'weak', confidence: 'low', rawValue: undefined });
     }
 
     // ── 4. Read pre-resolution state ─────────────────────────────────────────

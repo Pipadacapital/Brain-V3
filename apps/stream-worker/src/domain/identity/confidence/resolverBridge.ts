@@ -47,6 +47,7 @@ export function evidenceFromResolver(args: {
   const identifiers: Identifier[] = args.identifiers.map((e) => toIdentifier(args.brand_id, e));
   const strongMatches: IdentifierMatch[] = [];
   const mediumMatches: IdentifierMatch[] = [];
+  const weakMatches: IdentifierMatch[] = [];
 
   for (const e of args.identifiers) {
     const idf = toIdentifier(args.brand_id, e);
@@ -55,6 +56,7 @@ export function evidenceFromResolver(args: {
         const match: IdentifierMatch = { identifier: idf, brain_id: l.brain_id };
         if (isStrongTier(e.tier)) strongMatches.push(match);
         else if (e.tier === 'medium') mediumMatches.push(match);
+        else if (e.tier === 'weak') weakMatches.push(match); // PROB signals → ProbabilisticMatcher only
       }
     }
   }
@@ -64,6 +66,7 @@ export function evidenceFromResolver(args: {
     identifiers,
     strongMatches,
     mediumMatches,
+    weakMatches,
     routeToReview: args.outcome?.routeToReview,
     routeReason: args.outcome?.reviewReason,
   };

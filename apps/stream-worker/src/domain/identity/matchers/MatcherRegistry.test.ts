@@ -2,14 +2,19 @@
  * MatcherRegistry.test.ts — runtime registry + deterministic-first (D-5) enforcement.
  *
  * Proves:
- *   (1) only the deterministic matcher is ENABLED; the four deferred strategies are registered-DISABLED.
+ *   (1) the deterministic + the rule-based probabilistic matchers are ENABLED; ML / household /
+ *       cross-device remain registered-DISABLED.
  *   (2) a disabled matcher's match() — and the registry's invoke() of it — throws NotImplementedYet,
  *       NEVER a fabricated verdict.
  *   (3) runEnabled() iterates ONLY enabled matchers.
  *   (4) duplicate / unknown id guards.
  */
 import { describe, it, expect } from 'vitest';
-import { NotImplementedYet, type MatcherInput } from '@brain/contracts';
+import {
+  NotImplementedYet,
+  IDENTITY_MATCHER_REGISTRY,
+  type MatcherInput,
+} from '@brain/contracts';
 import {
   MatcherRegistry,
   DuplicateMatcherError,
@@ -18,7 +23,6 @@ import {
 } from './MatcherRegistry.js';
 import { DeterministicUnionFindMatcher } from './DeterministicUnionFindMatcher.js';
 import {
-  ProbabilisticMatcher,
   MlMatcher,
   HouseholdMatcher,
   CrossDeviceMatcher,
@@ -29,7 +33,6 @@ const input: MatcherInput = { brand_id: BRAND, identifiers: [], candidates: [] }
 
 describe('DisabledMatchers — registered-DISABLED, never faked (D-5)', () => {
   const disabled = [
-    new ProbabilisticMatcher(),
     new MlMatcher(),
     new HouseholdMatcher(),
     new CrossDeviceMatcher(),
@@ -44,21 +47,24 @@ describe('DisabledMatchers — registered-DISABLED, never faked (D-5)', () => {
 });
 
 describe('MatcherRegistry', () => {
-  it('the default registry: exactly one enabled (deterministic), four disabled', () => {
+  it('the default registry: two enabled (deterministic + probabilistic), three disabled', () => {
     const reg = createDefaultMatcherRegistry();
     expect(reg.list()).toHaveLength(5);
     const enabled = reg.enabled();
-    expect(enabled).toHaveLength(1);
-    expect(enabled[0]!.id).toBe('deterministic-union-find');
+    expect(enabled).toHaveLength(2);
+    expect(enabled.map((m) => m.id).sort()).toEqual(
+      ['deterministic-union-find', 'probabilistic-fellegi-sunter'].sort(),
+    );
   });
 
   it('runEnabled() iterates ONLY enabled matchers (never invokes a disabled one)', () => {
     const reg = createDefaultMatcherRegistry();
-    // Use a real overlap so the deterministic matcher returns a verdict (and no disabled throws).
+    // Empty input → both enabled matchers return a 'none' verdict; no disabled matcher is invoked.
     const results = reg.runEnabled(input);
-    expect(results).toHaveLength(1);
-    expect(results[0]!.matcher_id).toBe('deterministic-union-find');
-    expect(results[0]!.verdict.matcher_id).toBe('deterministic-union-find');
+    expect(results).toHaveLength(2);
+    expect(results.map((r) => r.matcher_id).sort()).toEqual(
+      ['deterministic-union-find', 'probabilistic-fellegi-sunter'].sort(),
+    );
   });
 
   it('invoke() of the enabled matcher returns its verdict', () => {
@@ -68,12 +74,43 @@ describe('MatcherRegistry', () => {
     expect(verdict.score).toBe(0); // no candidates → none
   });
 
+  it('invoke() of the probabilistic matcher returns its verdict (now ENABLED, never throws)', () => {
+    const reg = createDefaultMatcherRegistry();
+    const verdict = reg.invoke('probabilistic-fellegi-sunter', input);
+    expect(verdict.matcher_id).toBe('probabilistic-fellegi-sunter');
+    expect(verdict.score).toBe(0); // no weak-signal agreement on empty input → band 'none'
+    expect(verdict.band).toBe('none');
+  });
+
   it('invoke() of a DISABLED matcher is REJECTED with NotImplementedYet', () => {
     const reg = createDefaultMatcherRegistry();
     expect(() => reg.invoke('ml-embedding-similarity', input)).toThrow(NotImplementedYet);
-    expect(() => reg.invoke('probabilistic-fellegi-sunter', input)).toThrow(NotImplementedYet);
     expect(() => reg.invoke('household-clustering', input)).toThrow(NotImplementedYet);
     expect(() => reg.invoke('cross-device-graph', input)).toThrow(NotImplementedYet);
+  });
+
+  it('runtime registry and the @brain/contracts descriptor registry AGREE on ids+status (no drift)', () => {
+    const reg = createDefaultMatcherRegistry();
+
+    // Same set of ids, same cardinality (all 5 matchers enumerated on both sides).
+    const runtimeIds = reg
+      .list()
+      .map((m) => m.id)
+      .sort();
+    const descriptorIds = IDENTITY_MATCHER_REGISTRY.map((d) => d.id).sort();
+    expect(runtimeIds).toEqual(descriptorIds);
+    expect(runtimeIds).toHaveLength(5);
+
+    // Each id agrees on lifecycle status between the runtime instance and its descriptor.
+    for (const descriptor of IDENTITY_MATCHER_REGISTRY) {
+      const runtime = reg.require(descriptor.id);
+      expect(runtime.status).toBe(descriptor.status);
+    }
+
+    // And the enabled/disabled split matches: exactly two enabled on both sides.
+    const enabledDescriptors = IDENTITY_MATCHER_REGISTRY.filter((d) => d.status === 'enabled');
+    expect(enabledDescriptors.map((d) => d.id).sort()).toEqual(reg.enabled().map((m) => m.id).sort());
+    expect(enabledDescriptors).toHaveLength(2);
   });
 
   it('rejects duplicate registration and unknown ids', () => {

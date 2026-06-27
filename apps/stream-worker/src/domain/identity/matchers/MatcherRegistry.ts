@@ -20,8 +20,8 @@ import {
   type ConfidenceVerdict,
 } from '@brain/contracts';
 import { DeterministicUnionFindMatcher } from './DeterministicUnionFindMatcher.js';
+import { ProbabilisticMatcher } from './ProbabilisticMatcher.js';
 import {
-  ProbabilisticMatcher,
   MlMatcher,
   HouseholdMatcher,
   CrossDeviceMatcher,
@@ -104,8 +104,9 @@ export class MatcherRegistry {
 }
 
 /**
- * The canonical wiring: one ENABLED deterministic matcher + the four registered-DISABLED
- * strategies. This is the registry the stream-worker composition root should use.
+ * The canonical wiring: two ENABLED matchers (deterministic union-find + the rule-based, review-gated
+ * probabilistic Fellegi–Sunter) + the three registered-DISABLED strategies (ML / household /
+ * cross-device). This is the registry the stream-worker composition root should use.
  */
 export function createDefaultMatcherRegistry(
   deterministic: DeterministicUnionFindMatcher = new DeterministicUnionFindMatcher(),

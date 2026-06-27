@@ -41,6 +41,7 @@ export const AttributionModelIdSchema = z.enum([
   'last_touch',
   'linear',
   'position_based',
+  'time_decay',
   'data_driven',
 ]);
 export type AttributionModelId = z.infer<typeof AttributionModelIdSchema>;

@@ -33,6 +33,12 @@ export const IDENTITY_RULE_VERSION = 'v1-deterministic' as const;
  * IdentityResolver.ts (repo wins). `pre_hashed_*` occupy a distinct namespace from the
  * salted first-party hashes so an upstream-provided hash never collides with a first-party
  * salted hash in the identity graph.
+ *
+ * WEAK SIGNALS (cookie_id / ip / device_fingerprint / session_id) are RESOLVE-ONLY,
+ * tier='weak' observational identifiers consumed EXCLUSIVELY by the rule-based, review-gated
+ * ProbabilisticMatcher (Fellegi–Sunter). They are NEVER strong merge keys and are IGNORED by
+ * the deterministic union-find resolver (which only reads `strong`/`strong_on_link` for merges
+ * and `medium` for resolve-only adoption) — so the deterministic graph is unaffected by them.
  */
 export const IdentifierTypeSchema = z.enum([
   'email',
@@ -42,6 +48,11 @@ export const IdentifierTypeSchema = z.enum([
   'anon_id',
   'pre_hashed_email',
   'pre_hashed_phone',
+  // ── Weak probabilistic signals (tier='weak', resolve-only, never a merge key) ──
+  'cookie_id',
+  'ip',
+  'device_fingerprint',
+  'session_id',
 ]);
 export type IdentifierType = z.infer<typeof IdentifierTypeSchema>;
 

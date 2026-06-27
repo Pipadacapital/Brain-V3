@@ -127,20 +127,23 @@ _GOLD: List[MartSpec] = [
     # CONFIRMED (Phase 2, GROUP customer) against the dbt models + the live StarRocks DESCs:
     #   gold_customer_scores   PK (brand_id, brain_id); ROW-IDENTITY only — the lifetime_value_minor field
     #                          is descriptive, not a money-Σ column on a per-customer score grain → money_columns=[].
-    #   gold_customer_segments PK (brand_id, SEGMENT) [NOT brain_id — the dbt model GROUPs by brand+segment].
-    #                          ROW-IDENTITY only (money_columns=[]): segment_value_minor IS a bigint minor Σ,
-    #                          but the dbt segment grain carries NO currency_code column (it blends currencies
-    #                          into one per-(brand,segment) sum). The oracle's money path REQUIRES a sibling
-    #                          currency_code (it groups + SELECTs by it), so a money_columns entry here would
-    #                          FAIL with "Column 'currency_code' cannot be resolved" — not a real parity diff,
-    #                          a harness assumption. Registered row-identity-only; the segment_value_minor Σ is
-    #                          verified out-of-band (the build's MERGE log) and reconciles by construction (a
-    #                          pure additive sum carried verbatim from silver_customer.lifetime_value_minor).
+    #   gold_customer_segments PK (brand_id, SEGMENT_TYPE, SEGMENT) — TWO orthogonal dimensions on one
+    #                          rollup keyed by segment_type ('value_tier' value ladder + 'lifecycle' named
+    #                          ladder VIP/loyal/at_risk/churned/…). segment_type is in the PK because
+    #                          'high_value' is a label in BOTH ladders. ROW-IDENTITY only (money_columns=[]):
+    #                          segment_value_minor IS a bigint minor Σ, but the segment grain carries NO
+    #                          currency_code column (it blends currencies into one per-(brand,segment_type,
+    #                          segment) sum). The oracle's money path REQUIRES a sibling currency_code (it
+    #                          groups + SELECTs by it), so a money_columns entry here would FAIL with
+    #                          "Column 'currency_code' cannot be resolved" — not a real parity diff, a harness
+    #                          assumption. Registered row-identity-only; the segment_value_minor Σ is verified
+    #                          out-of-band (the build's MERGE log) and reconciles by construction (a pure
+    #                          additive sum carried verbatim from silver_customer.lifetime_value_minor).
     #   gold_cohorts           PK (brand_id, cohort_month, currency_code) [StarRocks PK]; money =
     #                          cohort_value_minor (Σ lifetime_value_minor per acquisition month, bigint minor)
     #                          + currency_code (max() per cohort — the dbt groups by brand+month only).
     MartSpec(name="gold_customer_scores", layer="gold", pk=["brand_id", "brain_id"], current_schema="brain_gold"),
-    MartSpec(name="gold_customer_segments", layer="gold", pk=["brand_id", "segment"], current_schema="brain_gold"),
+    MartSpec(name="gold_customer_segments", layer="gold", pk=["brand_id", "segment_type", "segment"], current_schema="brain_gold"),
     MartSpec(name="gold_cohorts", layer="gold", pk=["brand_id", "cohort_month", "currency_code"], money_columns=["cohort_value_minor"], current_schema="brain_gold"),
     # CONFIRMED (Phase 2, GROUP executive+cac) against db/dbt/models/marts/gold_executive_metrics.sql +
     # the live StarRocks DESC brain_gold.gold_executive_metrics: GRAIN = (brand_id, currency_code) — one

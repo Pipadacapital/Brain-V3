@@ -36,6 +36,11 @@ export interface RawIdentifierFields {
   /** Already-final 64-hex hashes supplied by an upstream connector (NEVER re-hashed). */
   preHashedEmail: string | null;
   preHashedPhone: string | null;
+  // ── PROB weak signals (tier='weak', resolve-only; consumed ONLY by ProbabilisticMatcher) ──
+  rawCookieId: string | null;
+  rawIp: string | null;
+  rawDeviceFingerprint: string | null;
+  rawSessionId: string | null;
 }
 
 export interface ExtractedRawIdentifiers {
@@ -94,6 +99,16 @@ export function extractRawIdentifierFields(parsed: Record<string, unknown>): Ext
   const preHashedEmail = canonicalPreHashedEmail ?? propPreHashedEmail;
   const preHashedPhone = canonicalPreHashedPhone ?? propPreHashedPhone;
 
+  // ── PROB weak signals (resolve-only; never a merge key; never affect the deterministic graph) ──
+  // device{...} sub-object is a common shape for the device-context bag; read both the flat property
+  // names and the nested device.* fallbacks so storefront/pixel payloads resolve consistently.
+  const device = ((props['device'] as Record<string, unknown>) ?? {}) as Record<string, unknown>;
+  const rawCookieId = firstString(props, ['cookie_id', '$cookie_id', 'cookie']) ?? firstString(device, ['cookie_id']);
+  const rawIp = firstString(props, ['ip', 'ip_address', 'client_ip', '$ip']) ?? firstString(device, ['ip', 'ip_address']);
+  const rawDeviceFingerprint =
+    firstString(props, ['device_fingerprint', '$device_fingerprint', 'fingerprint']) ?? firstString(device, ['fingerprint', 'device_fingerprint']);
+  const rawSessionId = firstString(props, ['session_id', '$session_id']) ?? firstString(device, ['session_id']);
+
   const fields: RawIdentifierFields = {
     rawEmail,
     rawPhone,
@@ -102,13 +117,27 @@ export function extractRawIdentifierFields(parsed: Record<string, unknown>): Ext
     rawAnonId,
     preHashedEmail,
     preHashedPhone,
+    rawCookieId,
+    rawIp,
+    rawDeviceFingerprint,
+    rawSessionId,
   };
 
   const hasAny =
     !!rawEmail || !!rawPhone || !!storefrontCustomerId || !!rawDeviceId || !!rawAnonId ||
-    !!preHashedEmail || !!preHashedPhone;
+    !!preHashedEmail || !!preHashedPhone ||
+    !!rawCookieId || !!rawIp || !!rawDeviceFingerprint || !!rawSessionId;
 
   return { fields, regionCode, hasAny };
+}
+
+/** Return the first key whose value is a non-empty string, else null. */
+function firstString(obj: Record<string, unknown>, keys: string[]): string | null {
+  for (const k of keys) {
+    const v = obj[k];
+    if (typeof v === 'string' && v.trim().length > 0) return v;
+  }
+  return null;
 }
 
 /** Return the first key whose value is a well-formed 64-hex string, else null. */
@@ -172,6 +201,23 @@ export function buildIdentifiers(
 
   if (fields.preHashedPhone) {
     identifiers.push({ type: 'pre_hashed_phone', hash: fields.preHashedPhone, tier: 'strong', confidence: 'high', rawValue: undefined, preHashed: true });
+  }
+
+  // ── PROB weak signals — tier='weak', confidence='low', RESOLVE-ONLY ──
+  // Hashed (external_id normalization = trim) with the per-brand salt like every other identifier so
+  // the same signal resolves to the same hash on every event. They are tier='weak': the deterministic
+  // resolver IGNORES them entirely (neither merge nor adoption); ONLY the ProbabilisticMatcher reads
+  // them. NEVER carry a rawValue (not PII to vault; hash-only, I-S02).
+  for (const [type, raw] of [
+    ['device_fingerprint', fields.rawDeviceFingerprint],
+    ['cookie_id', fields.rawCookieId],
+    ['session_id', fields.rawSessionId],
+    ['ip', fields.rawIp],
+  ] as const) {
+    if (!raw) continue;
+    const normalized = normalizeIdentifier(raw, 'external_id', regionCode);
+    const hash = hashIdentifier(normalized, 'external_id', saltHex, regionCode);
+    identifiers.push({ type, hash, tier: 'weak', confidence: 'low', rawValue: undefined });
   }
 
   return identifiers;

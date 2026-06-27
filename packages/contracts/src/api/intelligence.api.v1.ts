@@ -22,7 +22,7 @@
  */
 import { z } from 'zod';
 
-import { AttributionModelIdSchema } from './_money.js';
+import { AttributionModelIdSchema, LifecycleStateSchema, MinorUnitsSchema } from './_money.js';
 import type { AttributionModelId } from './_money.js';
 
 // ── Shared intelligence primitives ────────────────────────────────────────────
@@ -83,7 +83,7 @@ export interface AttributionModelPort {
 
 /**
  * How a model derives its weights:
- *  - deterministic: a closed-form of a single journey's touch count (first/last/linear/position_based).
+ *  - deterministic: a closed-form of a single journey's touches (first/last/linear/position_based/time_decay).
  *  - statistical:   weights LEARNED from the whole journey corpus (data_driven Markov removal-effect) —
  *                   GLOBAL, not per-journey (so it is NOT in metric-engine PER_JOURNEY_MODEL_IDS).
  *  - predictive:    a not-yet-built ML model (uplift/survival/Shapley) — registered DISABLED below.
@@ -124,8 +124,9 @@ export const DisabledPredictiveModelSchema = z.object({
 export type DisabledPredictiveModel = z.infer<typeof DisabledPredictiveModelSchema>;
 
 /**
- * The ENABLED attribution models, keyed by AttributionModelId. The four deterministic models are
- * per-journey closed-forms; data_driven is the GLOBAL Markov removal-effect model. This is the single
+ * The ENABLED attribution models, keyed by AttributionModelId. The deterministic models
+ * (first/last/linear/position_based/time_decay) are per-journey closed-forms; data_driven is the
+ * GLOBAL Markov removal-effect model. This is the single
  * registry the engine, serving (channel-roas) and the UI agree on which ids may be selected.
  */
 export const ATTRIBUTION_MODEL_REGISTRY: Record<AttributionModelId, EnabledAttributionModel> = {
@@ -133,6 +134,7 @@ export const ATTRIBUTION_MODEL_REGISTRY: Record<AttributionModelId, EnabledAttri
   last_touch: { id: 'last_touch', status: 'enabled', model_class: 'deterministic', global: false },
   linear: { id: 'linear', status: 'enabled', model_class: 'deterministic', global: false },
   position_based: { id: 'position_based', status: 'enabled', model_class: 'deterministic', global: false },
+  time_decay: { id: 'time_decay', status: 'enabled', model_class: 'deterministic', global: false },
   data_driven: { id: 'data_driven', status: 'enabled', model_class: 'statistical', global: true },
 };
 
@@ -213,6 +215,15 @@ export const GoldDataProductSchema = z.object({
   name: z.string().min(1),
   /** Medallion layer → picks the Iceberg catalog/namespace. */
   layer: MedallionLayerSchema,
+  /**
+   * Product PHASE classifier — routes the mart to the identity spine vs the BI surface:
+   *   'identity' — the customer/journey identity products (gold_customer_360, gold_journey,
+   *                identity-side snapshots): "who is this person".
+   *   'bi'       — business-intelligence marts (attribution, segments, scores, health, cac,
+   *                executive, recommendation, retention, …): "what is happening / why".
+   * Mirrors GoldMartSpec.phase (db/iceberg/spark/gold/_gold_registry.py). Pure metadata.
+   */
+  phase: z.enum(['identity', 'bi']),
   /** Iceberg catalog the product lives in (V4: brain_{bronze,silver,gold}_local). */
   iceberg_catalog: z.string().min(1),
   /**
@@ -247,3 +258,129 @@ export type GoldDataProduct = z.infer<typeof GoldDataProductSchema>;
 /** A set of data-product descriptors (e.g. the products one IntelligenceJob rebuilds). */
 export const GoldDataProductsSchema = z.array(GoldDataProductSchema);
 export type GoldDataProducts = z.infer<typeof GoldDataProductsSchema>;
+
+// ── 3. The Gold data-product REGISTRY (the declared, served products) ──────────
+
+/**
+ * GOLD_DATA_PRODUCT_REGISTRY — the canonical, validated array of the Gold data products that have a
+ * built Spark job + a Trino serving view (db/trino/views/mv_*.sql) + a metric-engine read seam. A mart
+ * is "done" only once it has a row HERE (the V4 definition-of-done registry entry). This is the TS
+ * mirror of db/iceberg/spark/parity/mart_registry.py for the products the intelligence/serving layer
+ * binds to — NOT every mart, but the ones with a formal serving contract.
+ *
+ * Parsed through GoldDataProductsSchema at module load so a malformed entry fails loudly at import.
+ */
+export const GOLD_DATA_PRODUCT_REGISTRY: GoldDataProducts = GoldDataProductsSchema.parse([
+  {
+    // CONFIRMED against mart_registry.py MartSpec(gold_customer_360) + db/iceberg/spark/gold/
+    // gold_customer_360.py + db/trino/views/mv_gold_customer_360.sql. PK (brand_id, brain_id); the only
+    // money column is lifetime_value_minor (bigint minor + sibling currency_code), carried verbatim from
+    // the silver_customer spine (the 360 is a denormalized JOIN, not a money computation).
+    name: 'gold_customer_360',
+    layer: 'gold',
+    // identity-phase: the denormalized "who is this person" 360 spine (Phase-1 → Phase-2 handoff).
+    phase: 'identity',
+    iceberg_catalog: 'brain_gold_local',
+    pk: ['brand_id', 'brain_id'],
+    money_columns: ['lifetime_value_minor'],
+    tenant_column: 'brand_id',
+    currency_column: 'currency_code',
+    reads_from: ['silver_customer', 'silver_order_state'],
+    // V4 serving is a Trino view (db/trino/views/mv_gold_customer_360.sql) — the app reads the product
+    // THROUGH this two-part name, never the Iceberg table directly.
+    serving_mv: 'brain_serving.mv_gold_customer_360',
+    provisional: false,
+  },
+]);
+
+/** Look up a registered Gold data product by name (undefined ⇔ not a declared/served product). */
+export function findGoldDataProduct(name: string): GoldDataProduct | undefined {
+  return GOLD_DATA_PRODUCT_REGISTRY.find((p) => p.name === name);
+}
+
+// ── 4. The Customer360 CONTRACT (Phase-1 Identity → Phase-2 BI handoff) ────────
+
+/**
+ * Deterministic customer-health band — the recency/frequency churn signal, mirroring the
+ * db/iceberg/spark/gold/gold_customer_health.py vocabulary (healthy ≤90d, at_risk ≤180d, else churned).
+ * The closed set Phase-2 binds to; NEVER a free string at the BI boundary.
+ */
+export const HealthBandSchema = z.enum(['healthy', 'at_risk', 'churned']);
+export type HealthBand = z.infer<typeof HealthBandSchema>;
+
+/**
+ * Churn score as an INTEGER 0-100 (0 = no churn risk, 100 = certain churn). It is a RISK score, NOT a
+ * confidence and NOT money — kept as its own int seam so it is never blended with the money columns
+ * (V4 money/confidence non-blending rule). Mirrors the deterministic churn-risk band of
+ * gold_customer_scores (high/medium/low) projected onto a 0-100 scale at the mart boundary.
+ */
+export const ChurnScoreSchema = z.number().int().min(0).max(100);
+export type ChurnScore = z.infer<typeof ChurnScoreSchema>;
+
+/**
+ * Customer LIFECYCLE STAGE — the closed deterministic stage folded onto gold_customer_360 from the
+ * gold_customer_health band + the lifetime order count (db/iceberg/spark/gold/_customer_360_enrich.py):
+ *   new      — healthy (recent) with <= 1 order (just acquired)
+ *   active   — healthy (recent) with  > 1 order (engaged repeat customer)
+ *   at_risk  — recency past the at-risk threshold (gold_customer_health 'at_risk')
+ *   churned  — recency past the churn threshold  (gold_customer_health 'churned')
+ * Distinct from `lifecycle_state` (the ORDER terminal-state vocabulary, delivered/rto/…). NEVER a free
+ * string at the BI boundary. Null ⇔ no health row yet for this customer (cold refresh cycle).
+ */
+export const LifecycleStageSchema = z.enum(['new', 'active', 'at_risk', 'churned']);
+export type LifecycleStage = z.infer<typeof LifecycleStageSchema>;
+
+/**
+ * Customer360Contract — the FORMAL Phase-1 Identity → Phase-2 BI handoff boundary: ONE denormalized row
+ * per (brand_id, brain_id) that names EXACTLY the fields Phase-2/BI consumes off gold_customer_360.
+ * Phase-2 binds to THIS contract and NEVER re-derives identity (brand_id/brain_id are the resolved
+ * Phase-1 identity keys, taken as given) nor re-computes money/lifecycle/health — it reads them here.
+ *
+ * This is distinct from the identity control-plane `Customer360` (identity.api.v1 — the merge/identifier
+ * admin view): that is the identity-graph projection; THIS is the BI data-product row.
+ *
+ * INVARIANTS:
+ *  - PII HASH-ONLY: brain_id + brand_id only — NEVER a raw email/phone (V4 PII rule).
+ *  - MONEY: lifetime_value_minor / aov_minor are bigint-minor-unit STRINGS (MinorUnits, never a float),
+ *    both denominated by the SINGLE sibling currency_code — per-currency, never blended.
+ *  - confidence/churn are integers, never blended with money (churn_score is its own int 0-100 seam).
+ *  - brand_id is the implicit-first tenant key.
+ */
+export const Customer360ContractSchema = z.object({
+  /** Tenant key — implicit-first column (V4 rule 5). */
+  brand_id: z.string().min(1),
+  /** The resolved Phase-1 identity key (Neo4j SoR, ADR-0004). Phase-2 takes this as given. */
+  brain_id: z.string().min(1),
+  /** Lifetime realized value in bigint MINOR units (string) — denominated by currency_code, never blended. */
+  lifetime_value_minor: MinorUnitsSchema,
+  /** Average order value in bigint MINOR units (string) — same currency_code as lifetime_value_minor. */
+  aov_minor: MinorUnitsSchema,
+  /** The single ISO-4217 currency both money columns are denominated by (the sibling currency seam). */
+  currency_code: z.string().min(1),
+  /** Lifetime order count (non-monetary cardinal). */
+  lifetime_orders: z.number().int().nonnegative(),
+  /** Current deterministic lifecycle state — reuses the closed LifecycleState set. */
+  lifecycle_state: LifecycleStateSchema,
+  /** Deterministic recency/frequency health band (the churn signal). */
+  health_band: HealthBandSchema,
+  /** Churn-risk score as an INTEGER 0-100 — NOT money, NOT confidence. */
+  churn_score: ChurnScoreSchema,
+  /** RFM/value segment label this customer belongs to (gold_customer_segments grain). */
+  segment: z.string().min(1),
+  /** First-touch acquisition source/channel (deterministic journey attribution of first identification). */
+  acquisition_source: z.string().min(1),
+  /** ISO-8601 timestamp of last observed activity (last_seen). Null ⇔ never observed post-identification. */
+  last_activity: z.string().min(1).nullable(),
+  // ── B2 enrichment fields (folded onto gold_customer_360; nullable = no source signal) ──────────
+  /** ISO-8601 timestamp of the most recent observed activity (max touchpoint, else last_seen). */
+  last_activity_at: z.string().min(1).nullable(),
+  /** Deterministic MODE of the customer's journey channel (silver_touchpoint). Null ⇔ no journey. */
+  preferred_channel: z.string().min(1).nullable(),
+  /** Deterministic MODE of the customer's device class (silver_page_view via the journey bridge). */
+  preferred_device: z.string().min(1).nullable(),
+  /** Deterministic MODE of the customer's purchased product category (silver_order_line). */
+  top_category: z.string().min(1).nullable(),
+  /** Customer lifecycle stage — closed set, folded from health_band + order count. Null ⇔ no health row. */
+  lifecycle_stage: LifecycleStageSchema.nullable(),
+});
+export type Customer360Contract = z.infer<typeof Customer360ContractSchema>;

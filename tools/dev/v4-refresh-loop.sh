@@ -46,9 +46,25 @@
 # pure orchestration. Every Spark MERGE + every job is idempotent → a retried/missed run is safe, so the
 # loop wraps each step in a BOUNDED retry and surfaces a clear per-step failure.
 #
-# Usage:  pnpm dev:v4-refresh                 # every 300s (default)
+# ── TWO-PHASE PIPELINE (F2) ──────────────────────────────────────────────────────────────────────────
+# The Silver→Gold refresh is an explicit TWO-PHASE pipeline with a single handoff contract: CUSTOMER360.
+#   PHASE 1 — IDENTITY: identity-export (Neo4j → brain_ops.silver_identity_link + silver_customer_identity)
+#             → the brain_id-resolved Silver spine → gold_revenue_ledger + stitch-input views → journey-
+#             stitch → the customer-360 GOLD build (run-gold-customer.sh: gold_customer_360 + segments/
+#             cohorts/scores). OUTPUT = the Customer360 contract (the resolved spine + gold_customer_360).
+#   PHASE 2 — BUSINESS INTELLIGENCE: CONSUMES Customer360 — revenue analytics, attribution/marketing-
+#             attribution, executive/cac, and the gap marts (funnel/engagement/health/retention/
+#             recommendation/…), then the full brain_serving Trino view tier. Runs strictly AFTER Phase 1.
+# Customer360 is the HANDOFF: Phase 2 must never read a stale, un-resolved customer grain, so Phase 1
+# (identity + Customer360) always completes before any Phase-2 BI mart runs. `--phase=both` (the default)
+# is a pure regrouping of the pre-F2 sequence — no step was moved, added, or reordered.
+#
+# Usage:  pnpm dev:v4-refresh                 # every 300s (default; --phase=both)
 #         REFRESH_INTERVAL_SECONDS=120 pnpm dev:v4-refresh
 #         ONESHOT=1 pnpm dev:v4-refresh        # run the pipeline once and exit (CI / manual reproduce)
+#         pnpm dev:v4-refresh -- --phase=1     # run ONLY Phase 1 (identity → Customer360 contract)
+#         pnpm dev:v4-refresh -- --phase=2     # run ONLY Phase 2 (BI gold; assumes Customer360 is fresh)
+#         PHASE=2 pnpm dev:v4-refresh          # same as --phase=2 (env form; the flag overrides the env)
 #         SKIP_IDENTITY=1 / SKIP_STITCH=1      # skip the Neo4j/stitch sub-steps (e.g. Neo4j down)
 #         MAX_RETRIES=2                        # bounded per-step retries (default 1 retry = 2 attempts)
 set -uo pipefail
@@ -65,6 +81,22 @@ ENV_FILE="$ROOT/.env.${APP_ENV}"
 # Bounded retry: total attempts = MAX_RETRIES + 1 (so MAX_RETRIES=1 ⇒ one retry ⇒ 2 attempts).
 MAX_RETRIES="${MAX_RETRIES:-1}"
 RETRY_SLEEP_SECONDS="${RETRY_SLEEP_SECONDS:-10}"
+
+# ── two-phase selector (F2) ────────────────────────────────────────────────────────────────────────────
+# PHASE = 1 (identity → Customer360) | 2 (BI gold, consumes Customer360) | both (default). The env form
+# (PHASE=…) sets the default; the --phase=… CLI flag overrides it. Default `both` keeps the pre-F2 path.
+PHASE="${PHASE:-both}"
+for _arg in "$@"; do
+  case "$_arg" in
+    --phase=1|--phase=2|--phase=both) PHASE="${_arg#--phase=}" ;;
+    --phase=*) echo "✗ invalid --phase '${_arg#--phase=}' (expected 1|2|both)" >&2; exit 2 ;;
+    *) : ;;  # ignore unknown args (forward-compatible)
+  esac
+done
+case "$PHASE" in
+  1|2|both) : ;;
+  *) echo "✗ invalid PHASE '$PHASE' (expected 1|2|both)" >&2; exit 2 ;;
+esac
 
 # ── Spark tier scripts ───────────────────────────────────────────────────────────────────────────────
 # NOTE: the PREVIOUS loop globbed only "$SILVER_DIR"/run-*.sh and "$GOLD_DIR"/run-*.sh — which SILENTLY
@@ -83,10 +115,20 @@ done
 # (step 2) so the stitch job has a touchpoint corpus to read. Both passes hit the same idempotent MERGE.
 TOUCHPOINT_SCRIPT="$SILVER_DIR/run-silver-touchpoint-sessions.sh"
 
-GOLD_SCRIPTS=()
+# Gold is partitioned across the two phases by the Customer360 handoff:
+#   GOLD_IDENTITY (Phase 1) — the customer-360 build (run-gold-customer.sh → gold_customer_360 + segments/
+#                             cohorts/scores). It is the LAST Phase-1 step and materializes the Customer360
+#                             contract Phase 2 consumes. It was already the FIRST script in the pre-F2 gold
+#                             glob, so `--phase=both` runs the gold scripts in the identical order.
+#   GOLD_BI (Phase 2)       — every other gold mart (revenue analytics / attribution / executive-cac / gap).
+GOLD_IDENTITY=()
+GOLD_BI=()
 for g in "$SPARK_ROOT"/run-gold-*.sh "$GOLD_DIR"/run-*.sh; do
   [ -e "$g" ] || continue
-  GOLD_SCRIPTS+=("$g")
+  case "$(basename "$g")" in
+    run-gold-customer.sh) GOLD_IDENTITY+=("$g") ;;
+    *)                    GOLD_BI+=("$g") ;;
+  esac
 done
 
 ts() { printf '%(%H:%M:%S)T' -1 2>/dev/null || date +%H:%M:%S; }
@@ -244,67 +286,106 @@ refresh_serving_mvs() {  # $1 (optional) = explicit space-separated mv list; def
   return "$rc"
 }
 
+# ── run_phase: one phase of the two-phase pipeline (F2) ────────────────────────────────────────────────
+# run_phase <1|2> — runs exactly one phase and returns its number of failed steps. PHASE 1 builds the
+# Customer360 contract (identity → resolved Silver spine → stitch → customer-360 Gold); PHASE 2 consumes
+# Customer360 to build the BI Gold + serving views. The two-phase split is a pure REGROUPING of the pre-F2
+# `run_once` body — every step keeps its original order, retry, jlog, and SKIP_* gate. Phase 2 MUST run
+# after Phase 1 (run_once enforces this); never invoke run_phase 2 against a stale/empty Customer360.
+run_phase() {
+  local phase="$1" failures=0
+  case "$phase" in
+    1)
+      jlog v4_phase phase=1 name=identity status=start
+      # ── PHASE 1 — IDENTITY → CUSTOMER360 ──────────────────────────────────────────────────────────────
+      # 0. IDENTITY EXPORT — Neo4j → brain_ops.silver_identity_link (resolves order brain_id downstream).
+      if [ "${SKIP_IDENTITY:-0}" != "1" ]; then
+        run_node_job identity-export @brain/stream-worker src/jobs/identity-export/run.ts || failures=$((failures+1))
+      fi
+
+      # 0b. SILVER COLLECTOR EVENT (ADR-0006 P2) — the R2/R3 admission gate over the RAW Kafka-Connect Bronze
+      #     (brain_bronze.collector_events_raw), materializing brain_silver.silver_collector_event. ALL the
+      #     downstream silver_* jobs that used to read brain_bronze.collector_events now read THIS gated table,
+      #     so it MUST build before them. Idempotent MERGE; no-op when the raw table is empty.
+      if [ "${SKIP_COLLECTOR_GATE:-0}" != "1" ]; then
+        run_spark_script silver-collector-event "$SILVER_DIR/run-silver-collector-event.sh" || failures=$((failures+1))
+      fi
+
+      # 1. SILVER ORDER STATE — the spine; resolves brain_id from silver_identity_link.
+      run_spark_script silver-order-state "$SPARK_ROOT/run-silver-orders.sh" || failures=$((failures+1))
+
+      # 2. THE REST OF SILVER — every other silver_* mart (incl. an initial silver_touchpoint pass so the
+      #    stitch job has a journey corpus to read in step 3b). run-silver-orders.sh is re-run here as part of
+      #    the bulk glob, which is a harmless idempotent no-op (already current from step 1).
+      run_spark_tier silver "${SILVER_REST[@]}"; failures=$((failures+$?))
+
+      # 3a. GOLD REVENUE LEDGER + ensure the two Trino views the stitch job reads EXIST (mv_silver_touchpoint
+      #     journey anons, mv_gold_revenue_ledger order→brain_id). As Trino views they are always-fresh over
+      #     Iceberg — we just guarantee they're created BEFORE journey-stitch reads them on a cold stack.
+      run_spark_script gold-revenue-ledger "$SPARK_ROOT/run-gold-revenue.sh" || failures=$((failures+1))
+      refresh_serving_mvs "mv_silver_touchpoint mv_gold_revenue_ledger"
+
+      # 3b. JOURNEY STITCH — deterministic, unambiguous-only anon→customer→order stitch (GAP-1), then export
+      #     PG connector_journey_stitch_map → brain_ops.silver_journey_stitch. Populates the stitch silver_
+      #     touchpoint reads in step 4.
+      if [ "${SKIP_STITCH:-0}" != "1" ]; then
+        run_node_job journey-stitch-from-identity @brain/stream-worker src/jobs/journey-stitch-from-identity.ts || failures=$((failures+1))
+        run_node_job journey-stitch-export        @brain/stream-worker src/jobs/journey-stitch-export/run.ts    || failures=$((failures+1))
+      fi
+
+      # 4. REBUILD silver_touchpoint — now that brain_ops.silver_journey_stitch is populated, rebuild so the
+      #    stitched_anon_id / stitched_brain_id columns the attribution job reads are no longer NULL.
+      run_spark_script silver-touchpoint-restitch "$TOUCHPOINT_SCRIPT" || failures=$((failures+1))
+
+      # 4b. CUSTOMER-360 GOLD — the HANDOFF. run-gold-customer.sh materializes gold_customer_360 (+ segments/
+      #     cohorts/scores) from the now identity-resolved Silver spine. This is the LAST Phase-1 step and the
+      #     Customer360 contract Phase 2's BI marts consume. It was already the FIRST script in the pre-F2
+      #     gold glob, so `--phase=both` runs the gold scripts in the identical order.
+      run_spark_tier gold-customer "${GOLD_IDENTITY[@]}"; failures=$((failures+$?))
+      jlog v4_phase phase=1 name=identity status=end failures="$failures"
+      ;;
+    2)
+      jlog v4_phase phase=2 name=business_intelligence status=start
+      # ── PHASE 2 — BUSINESS INTELLIGENCE (consumes Customer360) ─────────────────────────────────────────
+      # 5. THE BI GOLD — revenue analytics (idempotent gold_revenue_ledger no-op + analytics), attribution
+      #    (reads stitched touchpoints + ledger basis), executive/cac, and the gap marts (funnel/engagement/
+      #    health/retention/recommendation/…). Every mart reads the fresh Phase-1 Customer360 + Silver spine.
+      run_spark_tier gold "${GOLD_BI[@]}"; failures=$((failures+$?))
+
+      # 5b. SCOPED RECOMPUTE — REMOVED with StarRocks. Its sole job was a TARGETED "REFRESH MATERIALIZED VIEW
+      #     … WITH SYNC MODE" for the customer-grained brain_serving MVs after an identity merge/suppress, to
+      #     avoid waiting for the full async refresh. Under V4-final the serving tier is Trino VIEWS over
+      #     Iceberg — always-fresh, no refresh to schedule — so per-brand targeted refresh is moot. Draining
+      #     the scoped_recompute_request queue (now the PG ops schema, migration 0116) is owned by the app/
+      #     consumer side, not this Spark-orchestration loop.
+
+      # 6. mv_* views (ensure) — idempotent CREATE OR REPLACE of every brain_serving Trino view so the serving
+      #    tier exposes the fresh Iceberg Gold. Views always reflect the latest snapshot; no refresh needed.
+      refresh_serving_mvs
+      jlog v4_phase phase=2 name=business_intelligence status=end failures="$failures"
+      ;;
+    *)
+      echo "[$(ts)] ✗ run_phase: unknown phase '$phase' (expected 1|2)"; return 1 ;;
+  esac
+  return "$failures"
+}
+
 run_once() {
   local failures=0 cycle_start cycle_end
   # New correlation_id per cycle, EXPORTED so every Spark job (job_log.py) + node job echoes it.
   export V4_CORRELATION_ID="$(new_correlation_id)"
   cycle_start=$(now_ms)
-  echo "[$(ts)] ── V4 refresh: identity → silver_order_state → silver → stitch → gold → mv views ──"
-  jlog v4_cycle phase=start
+  echo "[$(ts)] ── V4 refresh (phase=${PHASE}): [1] identity→Customer360  →  [2] BI gold→mv views ──"
+  jlog v4_cycle phase=start pipeline_phase="$PHASE"
 
-  # 0. IDENTITY EXPORT — Neo4j → brain_ops.silver_identity_link (resolves order brain_id downstream).
-  if [ "${SKIP_IDENTITY:-0}" != "1" ]; then
-    run_node_job identity-export @brain/stream-worker src/jobs/identity-export/run.ts || failures=$((failures+1))
+  # Two-phase pipeline (F2). Phase 2 runs strictly AFTER Phase 1 so the BI marts always consume a fresh,
+  # identity-resolved Customer360. Default --phase=both runs both in order (the pre-F2 sequence).
+  if [ "$PHASE" = "1" ] || [ "$PHASE" = "both" ]; then
+    run_phase 1; failures=$((failures+$?))
   fi
-
-  # 0b. SILVER COLLECTOR EVENT (ADR-0006 P2) — the R2/R3 admission gate over the RAW Kafka-Connect Bronze
-  #     (brain_bronze.collector_events_raw), materializing brain_silver.silver_collector_event. ALL the
-  #     downstream silver_* jobs that used to read brain_bronze.collector_events now read THIS gated table,
-  #     so it MUST build before them. Idempotent MERGE; no-op when the raw table is empty.
-  if [ "${SKIP_COLLECTOR_GATE:-0}" != "1" ]; then
-    run_spark_script silver-collector-event "$SILVER_DIR/run-silver-collector-event.sh" || failures=$((failures+1))
+  if [ "$PHASE" = "2" ] || [ "$PHASE" = "both" ]; then
+    run_phase 2; failures=$((failures+$?))
   fi
-
-  # 1. SILVER ORDER STATE — the spine; resolves brain_id from silver_identity_link.
-  run_spark_script silver-order-state "$SPARK_ROOT/run-silver-orders.sh" || failures=$((failures+1))
-
-  # 2. THE REST OF SILVER — every other silver_* mart (incl. an initial silver_touchpoint pass so the
-  #    stitch job has a journey corpus to read in step 3b). run-silver-orders.sh is re-run here as part of
-  #    the bulk glob, which is a harmless idempotent no-op (already current from step 1).
-  run_spark_tier silver "${SILVER_REST[@]}"; failures=$((failures+$?))
-
-  # 3a. GOLD REVENUE LEDGER + ensure the two Trino views the stitch job reads EXIST (mv_silver_touchpoint
-  #     journey anons, mv_gold_revenue_ledger order→brain_id). As Trino views they are always-fresh over
-  #     Iceberg — we just guarantee they're created BEFORE journey-stitch reads them on a cold stack.
-  run_spark_script gold-revenue-ledger "$SPARK_ROOT/run-gold-revenue.sh" || failures=$((failures+1))
-  refresh_serving_mvs "mv_silver_touchpoint mv_gold_revenue_ledger"
-
-  # 3b. JOURNEY STITCH — deterministic, unambiguous-only anon→customer→order stitch (GAP-1), then export
-  #     PG connector_journey_stitch_map → brain_ops.silver_journey_stitch. Populates the stitch silver_
-  #     touchpoint reads in step 4.
-  if [ "${SKIP_STITCH:-0}" != "1" ]; then
-    run_node_job journey-stitch-from-identity @brain/stream-worker src/jobs/journey-stitch-from-identity.ts || failures=$((failures+1))
-    run_node_job journey-stitch-export        @brain/stream-worker src/jobs/journey-stitch-export/run.ts    || failures=$((failures+1))
-  fi
-
-  # 4. REBUILD silver_touchpoint — now that brain_ops.silver_journey_stitch is populated, rebuild so the
-  #    stitched_anon_id / stitched_brain_id columns the attribution job reads are no longer NULL.
-  run_spark_script silver-touchpoint-restitch "$TOUCHPOINT_SCRIPT" || failures=$((failures+1))
-
-  # 5. THE REST OF GOLD — revenue (idempotent no-op), attribution (reads stitched touchpoints + ledger
-  #    basis), customer, gap, executive marts. gold_revenue is re-run here via the glob (idempotent).
-  run_spark_tier gold "${GOLD_SCRIPTS[@]}"; failures=$((failures+$?))
-
-  # 5b. SCOPED RECOMPUTE — REMOVED with StarRocks. Its sole job was a TARGETED "REFRESH MATERIALIZED VIEW
-  #     … WITH SYNC MODE" for the customer-grained brain_serving MVs after an identity merge/suppress, to
-  #     avoid waiting for the full async refresh. Under V4-final the serving tier is Trino VIEWS over
-  #     Iceberg — always-fresh, no refresh to schedule — so per-brand targeted refresh is moot. Draining
-  #     the scoped_recompute_request queue (now the PG ops schema, migration 0116) is owned by the app/
-  #     consumer side, not this Spark-orchestration loop.
-
-  # 6. mv_* views (ensure) — idempotent CREATE OR REPLACE of every brain_serving Trino view so the serving
-  #    tier exposes the fresh Iceberg Gold. Views always reflect the latest snapshot; no refresh needed.
-  refresh_serving_mvs
 
   cycle_end=$(now_ms)
   if [ "$failures" -eq 0 ]; then
@@ -312,7 +393,8 @@ run_once() {
   else
     echo "[$(ts)] ⚠ V4 refresh cycle complete with ${failures} failed step(s) — see /tmp/v4-refresh-*.log"
   fi
-  jlog v4_cycle phase=end status="$([ "$failures" -eq 0 ] && echo ok || echo degraded)" \
+  jlog v4_cycle phase=end pipeline_phase="$PHASE" \
+    status="$([ "$failures" -eq 0 ] && echo ok || echo degraded)" \
     failures="$failures" duration_ms=$(( cycle_end - cycle_start ))
   return "$failures"
 }
@@ -322,7 +404,7 @@ if [ "${ONESHOT:-0}" = "1" ]; then
   exit $?
 fi
 
-echo "▶ V4 refresh loop — every ${INTERVAL}s (Ctrl-C to stop)"
+echo "▶ V4 refresh loop — phase=${PHASE}, every ${INTERVAL}s (Ctrl-C to stop)"
 while true; do
   run_once || true   # a failed cycle is logged; the loop keeps the analytics layer converging next pass
   echo "[$(ts)] next cycle in ${INTERVAL}s"

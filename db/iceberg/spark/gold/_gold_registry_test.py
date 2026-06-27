@@ -6,13 +6,15 @@ by actual on-disk artifacts so the registry never drifts silently from the codeb
 
 CHECKS:
   1. No duplicate mart names in _GOLD_MARTS.
-  2. Expected total count: 28 enabled (25 Gold + 3 Silver-snap) + 2 disabled.
+  2. Expected total count: 29 enabled (26 Gold + 3 Silver-snap) + 2 disabled.
   3. brand_id is pk[0] on every spec (V4 tenant-key invariant).
   4. money_columns entries have non-empty minor_col + non-empty currency_code_col.
   5. Disabled specs carry a not_implemented_reason starting with "NotImplementedYet",
      and have module=None + mv_name=None.
   6. Every enabled spec's module file EXISTS on disk in db/iceberg/spark/gold/.
-  7. Every spec with a non-None mv_name has a matching db/starrocks/mv/<mv>.sql file.
+  7. Every spec with a non-None mv_name has a matching db/trino/views/<mv>.sql file
+     (V4 serving = Trino views over Iceberg; StarRocks removed).
+  8. Every spec has a phase in VALID_PHASES ('identity' | 'bi').
 
 Run: python3 db/iceberg/spark/gold/_gold_registry_test.py
 Exit 0 = all green, exit 1 = one or more failures.
@@ -34,7 +36,8 @@ _PROJECT_ROOT = os.path.dirname(
         )
     )
 )
-_MV_DIR = os.path.join(_PROJECT_ROOT, "db", "starrocks", "mv")
+# V4 serving = Trino views over Iceberg (StarRocks removed). brain_serving.mv_* are Trino views.
+_MV_DIR = os.path.join(_PROJECT_ROOT, "db", "trino", "views")
 
 # Make _gold_registry importable (no Spark dependency — pure dataclasses).
 sys.path.insert(0, _GOLD_DIR)
@@ -42,6 +45,7 @@ sys.path.insert(0, _GOLD_DIR)
 from _gold_registry import (  # noqa: E402
     _GOLD_MARTS,
     GOLD_MART_REGISTRY,
+    VALID_PHASES,
     disabled_marts,
     enabled_marts,
 )
@@ -80,7 +84,7 @@ def test_expected_counts() -> None:
     """Verify the expected enabled (28) + disabled (2) counts."""
     n_enabled = len(list(enabled_marts()))
     n_disabled = len(list(disabled_marts()))
-    EXPECTED_ENABLED = 28   # 25 gold_* + 3 snap_* (Silver-snapshot)
+    EXPECTED_ENABLED = 29   # 26 gold_* + 3 snap_* (Silver-snapshot)
     EXPECTED_DISABLED = 2   # predictive_ltv + predictive_health
 
     if n_enabled != EXPECTED_ENABLED:
@@ -90,7 +94,7 @@ def test_expected_counts() -> None:
             f"Update EXPECTED_ENABLED in this test when adding a new mart.",
         )
     else:
-        _pass("expected_counts", f"{n_enabled} enabled marts (25 gold + 3 snap)")
+        _pass("expected_counts", f"{n_enabled} enabled marts (26 gold + 3 snap)")
 
     if n_disabled != EXPECTED_DISABLED:
         _record_fail(
@@ -174,7 +178,7 @@ def test_enabled_module_files_exist() -> None:
 
 
 def test_mv_sql_files_exist() -> None:
-    """Every spec with mv_name set must have a matching db/starrocks/mv/<mv>.sql file."""
+    """Every spec with mv_name set must have a matching db/trino/views/<mv>.sql file."""
     bad: list[str] = []
     for spec in GOLD_MART_REGISTRY.values():
         if spec.mv_name is None:
@@ -193,6 +197,22 @@ def test_mv_sql_files_exist() -> None:
     else:
         served = sum(1 for s in GOLD_MART_REGISTRY.values() if s.mv_name is not None)
         _pass("mv_sql_files_exist", f"{served} specs with mv_name — all mv_*.sql files found on disk")
+
+
+def test_phase_valid() -> None:
+    """Every spec must carry a phase in VALID_PHASES ('identity' | 'bi')."""
+    bad = [
+        f"{s.name}: phase={s.phase!r} not in {sorted(VALID_PHASES)}"
+        for s in GOLD_MART_REGISTRY.values()
+        if s.phase not in VALID_PHASES
+    ]
+    if bad:
+        for b in bad:
+            _record_fail("phase_valid", b)
+    else:
+        n_identity = sum(1 for s in GOLD_MART_REGISTRY.values() if s.phase == "identity")
+        n_bi = sum(1 for s in GOLD_MART_REGISTRY.values() if s.phase == "bi")
+        _pass("phase_valid", f"{len(GOLD_MART_REGISTRY)} specs — all phases valid ({n_identity} identity, {n_bi} bi)")
 
 
 def test_registry_dict_keys_match_names() -> None:
@@ -220,6 +240,7 @@ def run_all() -> None:
         test_disabled_specs_shape,
         test_enabled_module_files_exist,
         test_mv_sql_files_exist,
+        test_phase_valid,
         test_registry_dict_keys_match_names,
     ]
 

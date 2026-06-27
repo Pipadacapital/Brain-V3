@@ -71,7 +71,7 @@ export function registerAttributionRoutes(fastify: FastifyInstance, deps: BffDep
   // (D-1, NEVER body). Honest no_data. data_source='synthetic' in dev (journey data is thin
   // → attribution is mostly synthetic; the badge is honest).
 
-  const ATTRIBUTION_MODELS = new Set<string>(['first_touch', 'last_touch', 'linear', 'position_based', 'data_driven']);
+  const ATTRIBUTION_MODELS = new Set<string>(['first_touch', 'last_touch', 'linear', 'position_based', 'time_decay', 'data_driven']);
   function parseModel(raw: string | undefined): AttributionModelId {
     return ATTRIBUTION_MODELS.has(raw ?? '') ? (raw as AttributionModelId) : 'position_based';
   }
@@ -80,7 +80,7 @@ export function registerAttributionRoutes(fastify: FastifyInstance, deps: BffDep
     properties: {
       from: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
       to: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
-      model: { type: 'string', enum: ['first_touch', 'last_touch', 'linear', 'position_based', 'data_driven'] },
+      model: { type: 'string', enum: ['first_touch', 'last_touch', 'linear', 'position_based', 'time_decay', 'data_driven'] },
     },
     additionalProperties: false,
   } as const;

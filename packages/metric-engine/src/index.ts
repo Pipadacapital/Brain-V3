@@ -62,6 +62,9 @@ export type {
   CohortRetentionResult,
   CohortRow,
 } from './executive-metrics.js';
+// B7 — repeat-purchase / returning-customer retention by acquisition cohort over the gold_retention mart.
+export { computeRetention } from './retention.js';
+export type { RetentionResult, RetentionCohortRow } from './retention.js';
 export { getCustomerCommerce } from './customer-commerce.js';
 export type { CustomerCommerceProfile } from './customer-commerce.js';
 export type { CacRow } from './cac.js';
@@ -85,6 +88,16 @@ export type { AiFeaturesResult, AiFeatureRow, AiFeaturesOptions } from './ai-fea
 // Customer health/churn band (Gold) — V4 NET-NEW deterministic per-customer health surface.
 export { getCustomerHealthSummary } from './customer-health.js';
 export type { CustomerHealthSummary, CustomerHealthRow, HealthBand } from './customer-health.js';
+// Customer segments (Gold) — deterministic value-tier + named lifecycle ladders over
+// mv_gold_customer_segments (segment_type discriminates the two dimensions).
+export { getCustomerSegments } from './customer-segments.js';
+export type {
+  CustomerSegmentsSummary,
+  SegmentRow,
+  SegmentType,
+  LifecycleSegment,
+  ValueTier,
+} from './customer-segments.js';
 // Recommendation INPUT features (Gold) — per-customer RFM + behaviour vectors over
 // mv_gold_recommendation_features (RUNTIME Silver fold, NOT a permanent feature-precompute table).
 export { getRecommendationFeatures } from './recommendation-features.js';
@@ -162,7 +175,11 @@ export {
   computeTouchCreditsExplicit,
   normalizeWeightUnits,
   weightFractionString,
+  integerNthRoot,
+  timeDecayRawWeights,
   WEIGHT_SCALE,
+  TIME_DECAY_DEFAULT_HALF_LIFE,
+  TIME_DECAY_PRECISION,
   ATTRIBUTION_MODEL_IDS,
   PER_JOURNEY_MODEL_IDS,
   ALL_ATTRIBUTION_MODEL_IDS,

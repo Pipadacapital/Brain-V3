@@ -182,9 +182,9 @@ async function resolveBrainAnonId(
  *
  * H8 FIX: when `model` is omitted (the production callers — the Argo job + the BFF reconcile
  * route — all omit it), the credit pass loops over EVERY registered model in ATTRIBUTION_MODEL_IDS
- * (first_touch / last_touch / linear / position_based) so all four models are written, not just the
- * position_based default. Previously the default-arg meant only 1 of 4 models ever got credit rows,
- * so the model selector on the dashboard had no data for 3 of its 4 options. When a SPECIFIC model is
+ * (first_touch / last_touch / linear / position_based / time_decay) so all per-journey models are
+ * written, not just the position_based default. Previously the default-arg meant only 1 model ever got
+ * credit rows, so the model selector on the dashboard had no data for its other options. When a SPECIFIC model is
  * passed, only that model is reconciled (the single-model path the live tests exercise).
  *
  * The per-model counts are SUMMED across models (an order credited under N models counts N times in

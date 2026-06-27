@@ -265,3 +265,110 @@ describe('ConfidenceEngine — invariants', () => {
     expect(v.reasons).toContain(`merge:canonical=${A}`);
   });
 });
+
+// ── PROB: the rule-based probabilistic matcher → ROUTE TO REVIEW, never auto-merge ──────────────
+const FP_HASH = h('fingerprint-xyz');
+const COOKIE_HASH = h('cookie-xyz');
+
+function weakFingerprint(brand = BRAND, hash = FP_HASH): Identifier {
+  return { brand_id: brand, identifier_type: 'device_fingerprint', identifier_hash: hash, tier: 'weak' };
+}
+function weakCookie(brand = BRAND, hash = COOKIE_HASH): Identifier {
+  return { brand_id: brand, identifier_type: 'cookie_id', identifier_hash: hash, tier: 'weak' };
+}
+
+describe('ConfidenceEngine — PROBABILISTIC weak-signal path (route-to-review, NEVER merge)', () => {
+  it('strong weak-signal agreement, no strong key → high-confidence but SUB-EXACT, routed to review, NOT merged', () => {
+    const fp = weakFingerprint();
+    const cookie = weakCookie();
+    const v = engine.assess({
+      brand_id: BRAND,
+      identifiers: [fp, cookie],
+      strongMatches: [],
+      mediumMatches: [],
+      weakMatches: [match(fp, A), match(cookie, A)], // both weak signals point at the same brain_id
+    });
+    // High confidence (fingerprint+cookie+co-occurrence = 95) but the band is NEVER 'exact'.
+    expect(v.score).toBe(95);
+    expect(v.band).toBe('high');
+    expect(v.band).not.toBe('exact');
+    expect(engine.isMergeEligible(v)).toBe(false); // ← the critical guarantee: cannot auto-merge
+    expect(v.matcher_id).toBe('probabilistic-fellegi-sunter');
+    expect(v.reasons).toContain('route_to_review:probabilistic_match');
+    expect(v.reasons).toContain('never_merge:route_to_review');
+    expect(v.identifier_combo).toEqual(
+      expect.arrayContaining([
+        { identifier_type: 'device_fingerprint', identifier_hash: FP_HASH },
+        { identifier_type: 'cookie_id', identifier_hash: COOKIE_HASH },
+      ]),
+    );
+  });
+
+  it('a probabilistic verdict is NEVER merge-eligible — across every weak-agreement strength', () => {
+    const fp = weakFingerprint();
+    const cookie = weakCookie();
+    const ip: Identifier = { brand_id: BRAND, identifier_type: 'ip', identifier_hash: h('ip-1'), tier: 'weak' };
+    const cases: Identifier[][] = [[ip], [fp], [fp, cookie], [fp, cookie, ip]];
+    for (const ids of cases) {
+      const v = engine.assess({
+        brand_id: BRAND,
+        identifiers: ids,
+        strongMatches: [],
+        mediumMatches: [],
+        weakMatches: ids.map((i) => match(i, A)),
+      });
+      expect(v.band).not.toBe('exact');
+      expect(v.score).toBeLessThan(100);
+      expect(engine.isMergeEligible(v)).toBe(false);
+    }
+  });
+
+  it('DETERMINISTIC-FIRST: a strong-key match WINS over a weak-signal agreement (probabilistic does not interfere)', () => {
+    const email = strongEmail();
+    const fp = weakFingerprint();
+    const v = engine.assess({
+      brand_id: BRAND,
+      identifiers: [email, fp],
+      strongMatches: [match(email, A)], // strong key present
+      mediumMatches: [],
+      weakMatches: [match(fp, A)],
+    });
+    // Deterministic exact wins; the probabilistic contribution is NOT consulted.
+    expect(v.score).toBe(100);
+    expect(v.band).toBe('exact');
+    expect(v.matcher_id).toBe('deterministic-union-find');
+    expect(engine.isMergeEligible(v)).toBe(true);
+    expect(v.reasons).not.toContain('route_to_review:probabilistic_match');
+  });
+
+  it('weak signals with NO graph agreement → mint (probabilistic contributes nothing)', () => {
+    const fp = weakFingerprint();
+    const v = engine.assess({
+      brand_id: BRAND,
+      identifiers: [fp],
+      strongMatches: [],
+      mediumMatches: [],
+      weakMatches: [], // no candidate agreement
+    });
+    expect(v.score).toBe(0);
+    expect(v.band).toBe('none');
+    expect(v.reasons).toContain('no_match:mint');
+    expect(engine.isMergeEligible(v)).toBe(false);
+  });
+
+  it('deterministic email merge still works unchanged with the probabilistic matcher enabled', () => {
+    const email = strongEmail();
+    const phone = strongPhone();
+    const v = engine.assess({
+      brand_id: BRAND,
+      identifiers: [email, phone],
+      strongMatches: [match(email, B), match(phone, A)],
+      mediumMatches: [],
+    });
+    expect(v.score).toBe(100);
+    expect(v.band).toBe('exact');
+    expect(engine.isMergeEligible(v)).toBe(true);
+    expect(v.reasons).toContain('merge:deterministic_union_find');
+    expect(v.reasons).toContain(`merge:canonical=${A}`);
+  });
+});

@@ -1,65 +1,940 @@
 {
   "tools": [
     {
-      "name": "brain.collector.get_brand_event_count",
-      "description": "Returns the count of events for a given brand and event name within a time window. Read-only (I-S08).",
+      "name": "list_metrics",
+      "description": "List the certified metric ids the assistant may bind to (the registry enum). Read-only; returns names only — no SQL, no number.",
       "read_only": true,
-      "scope": "analytics:read",
+      "access": "read",
+      "status": "enabled"
+    },
+    {
+      "name": "resolve_and_compute",
+      "description": "Resolve a natural-language question to a certified metric_binding and compute the number over the metric-engine sole read path, returning the binding + provenance. Read-only; the model selects the binding, the engine produces the number (never the model).",
+      "read_only": true,
+      "access": "read",
+      "status": "enabled"
+    },
+    {
+      "name": "customer360_lookup",
+      "description": "The customer-base intelligence aggregate for the principal brand: customer count, total lifetime value (bigint minor units + currency_code) and top customers. Read-only; the engine produces every number. Honest-empty when the brand has no customers.",
+      "read_only": true,
+      "access": "read",
+      "status": "enabled",
+      "scope": "read:intelligence",
       "inputSchema": {
         "type": "object",
+        "properties": {}
+      },
+      "outputSchema": {
+        "type": "object",
         "properties": {
-          "brand_id": {
-            "type": "string",
-            "format": "uuid"
+          "has_data": {
+            "type": "boolean"
           },
-          "event_name": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 128
+          "customer_count": {
+            "type": "string"
           },
-          "from_date": {
-            "type": "string",
-            "format": "date-time"
+          "total_lifetime_value_minor": {
+            "type": "string"
           },
-          "to_date": {
-            "type": "string",
-            "format": "date-time"
+          "total_lifetime_orders": {
+            "type": "string"
+          },
+          "currency_code": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "top_customers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "brain_id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "lifetime_orders": {
+                  "type": "string"
+                },
+                "lifetime_value_minor": {
+                  "type": "string"
+                },
+                "currency_code": {
+                  "oneOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "delivered_orders": {
+                  "type": "string"
+                },
+                "rto_orders": {
+                  "type": "string"
+                },
+                "first_identified_at": {
+                  "oneOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "brain_id",
+                "lifetime_orders",
+                "lifetime_value_minor",
+                "currency_code",
+                "delivered_orders",
+                "rto_orders",
+                "first_identified_at"
+              ]
+            }
           }
         },
         "required": [
-          "brand_id",
-          "event_name",
-          "from_date",
-          "to_date"
+          "has_data",
+          "customer_count",
+          "total_lifetime_value_minor",
+          "total_lifetime_orders",
+          "currency_code",
+          "top_customers"
+        ]
+      }
+    },
+    {
+      "name": "journey_lookup",
+      "description": "The journey-intelligence aggregate for the principal brand: journey/conversion counts, touchpoint stats and top journeys. NO money. Read-only; engine-produced numbers only.",
+      "read_only": true,
+      "access": "read",
+      "status": "enabled",
+      "scope": "read:journey",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "has_data": {
+            "type": "boolean"
+          },
+          "journey_count": {
+            "type": "string"
+          },
+          "converted_journey_count": {
+            "type": "string"
+          },
+          "conversion_rate_pct": {
+            "type": "number"
+          },
+          "total_touchpoints": {
+            "type": "string"
+          },
+          "avg_touchpoints_per_journey": {
+            "type": "number"
+          },
+          "avg_days_to_convert": {
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "top_journeys": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "brain_anon_id": {
+                  "type": "string"
+                },
+                "touchpoint_count": {
+                  "type": "string"
+                },
+                "distinct_channels": {
+                  "type": "integer"
+                },
+                "distinct_sessions": {
+                  "type": "string"
+                },
+                "first_channel": {
+                  "oneOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "last_channel": {
+                  "oneOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "first_touch_at": {
+                  "oneOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "last_touch_at": {
+                  "oneOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "converted": {
+                  "type": "boolean"
+                },
+                "days_to_convert": {
+                  "oneOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "brain_anon_id",
+                "touchpoint_count",
+                "distinct_channels",
+                "distinct_sessions",
+                "first_channel",
+                "last_channel",
+                "first_touch_at",
+                "last_touch_at",
+                "converted",
+                "days_to_convert"
+              ]
+            }
+          }
+        },
+        "required": [
+          "has_data",
+          "journey_count",
+          "converted_journey_count",
+          "conversion_rate_pct",
+          "total_touchpoints",
+          "avg_touchpoints_per_journey",
+          "avg_days_to_convert",
+          "top_journeys"
+        ]
+      }
+    },
+    {
+      "name": "timeline_lookup",
+      "description": "The identity DECISION timeline for one brain_id: the chronological mint/link/merge/unmerge/ rebind/erase log with rule_version + evidence references. Hash-only (identifier TYPES, never raw PII). Read-only; brand_id is from the principal.",
+      "read_only": true,
+      "access": "read",
+      "status": "enabled",
+      "scope": "read:identity",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "brain_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "brain_id"
         ]
       },
       "outputSchema": {
         "type": "object",
         "properties": {
-          "brand_id": {
-            "type": "string",
-            "format": "uuid"
+          "has_data": {
+            "type": "boolean"
           },
-          "event_name": {
+          "brain_id": {
             "type": "string"
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "sequence": {
+                  "type": "integer"
+                },
+                "action": {
+                  "type": "string"
+                },
+                "occurred_at": {
+                  "oneOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "rule_version": {
+                  "type": "string"
+                },
+                "merge_id": {
+                  "oneOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "related_brain_id": {
+                  "oneOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "identifier_types": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "reason": {
+                  "oneOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "decision_id": {
+                  "oneOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "sequence",
+                "action",
+                "occurred_at",
+                "rule_version",
+                "merge_id",
+                "related_brain_id",
+                "identifier_types",
+                "reason",
+                "decision_id"
+              ]
+            }
           },
           "count": {
             "type": "integer"
-          },
-          "metric_version": {
-            "type": "integer"
-          },
-          "snapshot_id": {
+          }
+        },
+        "required": [
+          "has_data",
+          "brain_id",
+          "entries",
+          "count"
+        ]
+      }
+    },
+    {
+      "name": "identity_explainability_lookup",
+      "description": "Explain WHY two profiles are the same person for one brain_id: the merge verdicts with their rule_version, integer 0-100 confidence and the identifier combination (12-hex salted-hash prefixes — never raw PII). Identity graph only; never coupled to the money aggregate. Read-only.",
+      "read_only": true,
+      "access": "read",
+      "status": "enabled",
+      "scope": "read:identity",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "brain_id": {
             "type": "string",
             "format": "uuid"
           }
         },
         "required": [
-          "brand_id",
-          "event_name",
-          "count",
-          "metric_version",
-          "snapshot_id"
+          "brain_id"
+        ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "has_data": {
+            "type": "boolean"
+          },
+          "brain_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "role": {
+            "oneOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "canonical",
+                  "merged"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "merges": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "role": {
+                  "type": "string",
+                  "enum": [
+                    "canonical",
+                    "merged"
+                  ]
+                },
+                "merged_brain_id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "rule_version": {
+                  "type": "string"
+                },
+                "confidence": {
+                  "type": "integer"
+                },
+                "reasons": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "identifier_combo": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "identifier_type": {
+                        "type": "string"
+                      },
+                      "identifier_hash_prefix": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "identifier_type",
+                      "identifier_hash_prefix"
+                    ]
+                  }
+                }
+              },
+              "required": [
+                "role",
+                "merged_brain_id",
+                "rule_version",
+                "confidence",
+                "reasons",
+                "identifier_combo"
+              ]
+            }
+          }
+        },
+        "required": [
+          "has_data",
+          "brain_id",
+          "role",
+          "merges"
+        ]
+      }
+    },
+    {
+      "name": "attribution_lookup",
+      "description": "Per-channel attributed revenue ÷ ad-spend (ROAS) for the principal brand over a date window under a chosen attribution model. Money is bigint minor units + currency_code. Read-only; engine-produced numbers only.",
+      "read_only": true,
+      "access": "read",
+      "status": "enabled",
+      "scope": "read:marketing",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "enum": [
+              "first_touch",
+              "last_touch",
+              "linear",
+              "position_based",
+              "data_driven"
+            ]
+          },
+          "date_from": {
+            "type": "string"
+          },
+          "date_to": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "model",
+          "date_from",
+          "date_to"
+        ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "has_data": {
+            "type": "boolean"
+          },
+          "model": {
+            "type": "string",
+            "enum": [
+              "first_touch",
+              "last_touch",
+              "linear",
+              "position_based",
+              "data_driven"
+            ]
+          },
+          "channels": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "channel": {
+                  "type": "string"
+                },
+                "currency_code": {
+                  "type": "string"
+                },
+                "attributed_minor": {
+                  "type": "string"
+                },
+                "spend_minor": {
+                  "type": "string"
+                },
+                "roas_ratio": {
+                  "oneOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "channel",
+                "currency_code",
+                "attributed_minor",
+                "spend_minor",
+                "roas_ratio"
+              ]
+            }
+          }
+        },
+        "required": [
+          "has_data",
+          "model",
+          "channels"
+        ]
+      }
+    },
+    {
+      "name": "ltv_lookup",
+      "description": "The lifetime value + RFM score for one brain_id: lifetime orders, lifetime value (bigint minor units + currency_code) and recency/frequency/monetary scores. Read-only; brand_id from the principal. Honest-empty when the subject has no score.",
+      "read_only": true,
+      "access": "read",
+      "status": "enabled",
+      "scope": "read:intelligence",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "brain_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "brain_id"
+        ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "has_data": {
+            "type": "boolean"
+          },
+          "brain_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "lifetime_orders": {
+            "type": "string"
+          },
+          "lifetime_value_minor": {
+            "type": "string"
+          },
+          "currency_code": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "recency_score": {
+            "type": "integer"
+          },
+          "frequency_score": {
+            "type": "integer"
+          },
+          "monetary_score": {
+            "type": "integer"
+          },
+          "churn_risk": {
+            "type": "string"
+          },
+          "days_since_last_order": {
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "scored_on": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "has_data",
+          "brain_id",
+          "lifetime_orders",
+          "lifetime_value_minor",
+          "currency_code",
+          "recency_score",
+          "frequency_score",
+          "monetary_score",
+          "churn_risk",
+          "days_since_last_order",
+          "scored_on"
+        ]
+      }
+    },
+    {
+      "name": "marketingperf_lookup",
+      "description": "Marketing performance for the principal brand over a date window under a chosen attribution model: per-channel AND per-campaign attributed revenue ÷ spend (ROAS). Money is bigint minor units + currency_code. Read-only; engine-produced numbers only.",
+      "read_only": true,
+      "access": "read",
+      "status": "enabled",
+      "scope": "read:marketing",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "enum": [
+              "first_touch",
+              "last_touch",
+              "linear",
+              "position_based",
+              "data_driven"
+            ]
+          },
+          "date_from": {
+            "type": "string"
+          },
+          "date_to": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "model",
+          "date_from",
+          "date_to"
+        ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "has_data": {
+            "type": "boolean"
+          },
+          "model": {
+            "type": "string",
+            "enum": [
+              "first_touch",
+              "last_touch",
+              "linear",
+              "position_based",
+              "data_driven"
+            ]
+          },
+          "channels": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "channel": {
+                  "type": "string"
+                },
+                "currency_code": {
+                  "type": "string"
+                },
+                "attributed_minor": {
+                  "type": "string"
+                },
+                "spend_minor": {
+                  "type": "string"
+                },
+                "roas_ratio": {
+                  "oneOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "channel",
+                "currency_code",
+                "attributed_minor",
+                "spend_minor",
+                "roas_ratio"
+              ]
+            }
+          },
+          "campaigns": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "campaign_id": {
+                  "type": "string"
+                },
+                "campaign_name": {
+                  "oneOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "currency_code": {
+                  "type": "string"
+                },
+                "attributed_minor": {
+                  "type": "string"
+                },
+                "spend_minor": {
+                  "type": "string"
+                },
+                "roas_ratio": {
+                  "oneOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "campaign_id",
+                "campaign_name",
+                "currency_code",
+                "attributed_minor",
+                "spend_minor",
+                "roas_ratio"
+              ]
+            }
+          }
+        },
+        "required": [
+          "has_data",
+          "model",
+          "channels",
+          "campaigns"
+        ]
+      }
+    },
+    {
+      "name": "recfeature_lookup",
+      "description": "The recommendation RFM features for the principal brand: per-customer recency/frequency, monetary value (bigint minor units + currency_code), top channel and product breadth. Read-only; engine-produced numbers only. Honest-empty when the brand has no customers.",
+      "read_only": true,
+      "access": "read",
+      "status": "enabled",
+      "scope": "read:intelligence",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "has_data": {
+            "type": "boolean"
+          },
+          "customer_count": {
+            "type": "string"
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "brain_id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "recency_days": {
+                  "oneOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "frequency": {
+                  "type": "string"
+                },
+                "monetary_minor": {
+                  "type": "string"
+                },
+                "currency_code": {
+                  "oneOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "top_channel": {
+                  "oneOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "distinct_products": {
+                  "type": "string"
+                },
+                "tenure_days": {
+                  "oneOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "brain_id",
+                "recency_days",
+                "frequency",
+                "monetary_minor",
+                "currency_code",
+                "top_channel",
+                "distinct_products",
+                "tenure_days"
+              ]
+            }
+          }
+        },
+        "required": [
+          "has_data",
+          "customer_count",
+          "rows"
+        ]
+      }
+    },
+    {
+      "name": "segment_lookup",
+      "description": "DISABLED — per-subject segment membership for one brain_id. No honest per-brain_id backing read exists (gold_customer_segments is brand-grained). Fails closed (NotImplementedYet).",
+      "read_only": true,
+      "access": "read",
+      "status": "disabled-not-implemented",
+      "scope": "read:intelligence",
+      "disabled": true,
+      "not_implemented_reason": "gold_customer_segments is BRAND-grained, not a per-brain_id lookup — there is no honest per-subject backing read. Registered DISABLED; dispatch fails closed (NotImplementedYet). Do NOT fake an empty segment.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "brain_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "brain_id"
         ]
       }
     }

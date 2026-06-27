@@ -6,6 +6,7 @@
 #   gold_executive_metrics  → brain_gold.gold_executive_metrics   (brand×currency executive KPI rollup)
 #   gold_cac                → brain_gold.gold_cac                 (CAC components: new customers + spend)
 #   snap_order_state        → brain_silver.snap_order_state       (daily order-state SCD snapshot)
+#   snap_identity_link      → brain_silver.snap_identity_link     (daily AS-OF identity-link SCD snapshot)
 #
 # RETIRED (V4 forbids permanent feature tables): feature_customer_daily is INTENTIONALLY NOT built here.
 #   V4 makes features RUNTIME, so this group does NOT port the dbt feature_customer_daily into a Spark
@@ -20,7 +21,7 @@
 # JDBC (the Silver sources are already materialized in Iceberg). Joins Redpanda's netns so the
 # iceberg-rest / minio service DNS resolves (same network posture as the Silver jobs).
 #
-# Usage:  db/iceberg/spark/gold/run-gold-executive-cac.sh [executive|cac|snap|all]   (default: all)
+# Usage:  db/iceberg/spark/gold/run-gold-executive-cac.sh [executive|cac|snap|snap-identity|all]   (default: all)
 set -euo pipefail
 
 SPARK_IMAGE="${SPARK_IMAGE:-apache/spark:3.5.3}"
@@ -67,15 +68,17 @@ run_job() {
 }
 
 case "${WHICH}" in
-  executive) run_job gold_executive_metrics.py ;;
-  cac)       run_job gold_cac.py ;;
-  snap)      run_job snap_order_state.py ;;
+  executive)     run_job gold_executive_metrics.py ;;
+  cac)           run_job gold_cac.py ;;
+  snap)          run_job snap_order_state.py ;;
+  snap-identity) run_job snap_identity_link.py ;;
   all)
     run_job gold_executive_metrics.py
     run_job gold_cac.py
     run_job snap_order_state.py
+    run_job snap_identity_link.py
     ;;
-  *) echo "usage: $0 [executive|cac|snap|all]"; exit 2 ;;
+  *) echo "usage: $0 [executive|cac|snap|snap-identity|all]"; exit 2 ;;
 esac
 
 echo "[gold-executive-cac] DONE (${WHICH}) ✓"

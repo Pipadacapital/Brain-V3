@@ -75,7 +75,7 @@ export class ContactPiiVaultService {
     if (rows.length === 0) return null;
     const out: VaultMatchPii = {};
     for (const row of rows) {
-      const { dek } = await this.keys.getDek(args.brandId, row.keyVersion);
+      const { dek } = await this.keys.getDek(args.brandId, { keyVersion: row.keyVersion });
       const value = decryptPii(dek, { ciphertext: row.ciphertext, iv: row.iv, authTag: row.authTag });
       if (row.piiType === 'email') out.email = value;
       else if (row.piiType === 'phone') out.phone = value;

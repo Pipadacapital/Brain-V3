@@ -307,6 +307,84 @@ run_once() {
   #    basis), customer, gap, executive marts. gold_revenue is re-run here via the glob (idempotent).
   run_spark_tier gold "${GOLD_SCRIPTS[@]}"; failures=$((failures+$?))
 
+  # 5b. SCOPED RECOMPUTE (optional — gated by SCOPED_RECOMPUTE=1) ─────────────────────────────────
+  # Drains pending brain_ops.scoped_recompute_request rows written by IdentityChangeRecomputeConsumer
+  # (identity.merged + identity.suppressed events → upsert → this drain step picks them up).
+  # For each pending request this step:
+  #   (a) Logs the affected brand_ids + brain_id counts so the cycle log shows which tenants were
+  #       impacted (observability — the correlation_id ties this to the Kafka consumer's log lines).
+  #   (b) Issues SYNC refresh for ONLY the customer-grained mv_* (the serving MVs whose rows are
+  #       keyed on brain_id). This is faster than the full mv_* refresh (step 6) when only a few
+  #       brain_ids changed — step 6 still runs as the safety net.
+  #   (c) Marks all processed rows: UPDATE SET processed_at = NOW() WHERE processed_at IS NULL.
+  #       StarRocks PRIMARY KEY UPDATE is idempotent (same row written again = no-op next cycle).
+  #
+  # PURE ORCHESTRATION: touches NO Spark jobs, NO Iceberg catalogs destructively. Only issues
+  # StarRocks SQL (SELECT + UPDATE + REFRESH MATERIALIZED VIEW). Every op is idempotent.
+  # GATE: SCOPED_RECOMPUTE=1 must be set explicitly — default behavior is unchanged (step 6 still
+  # runs a full mv_* refresh covering the same customer-grained MVs).
+  #
+  # Customer-grained MVs (match CUSTOMER_GRAINED_MARTS + MART_TO_MV in ScopedRecompute.ts):
+  SCOPED_MVS="mv_gold_customer_360 mv_gold_customer_scores mv_gold_customer_segments mv_gold_cohorts mv_gold_customer_health mv_gold_journey mv_gold_recommendation_features mv_gold_ai_features mv_gold_attribution_credit mv_gold_attribution_paths mv_gold_marketing_attribution"
+
+  if [ "${SCOPED_RECOMPUTE:-0}" = "1" ]; then
+    scoped_start=$(now_ms)
+    echo "[$(ts)] ── V4 scoped recompute: draining brain_ops.scoped_recompute_request ──"
+
+    # Count pending rows.
+    pending=$(docker exec "$SR_CONTAINER" mysql -h127.0.0.1 -P9030 -uroot -N \
+      -e "SELECT COUNT(*) FROM brain_ops.scoped_recompute_request WHERE processed_at IS NULL;" 2>/dev/null) || pending=0
+
+    if [ "${pending:-0}" -gt 0 ] 2>/dev/null; then
+      echo "[$(ts)] scoped-recompute: ${pending} pending request(s)"
+      jlog v4_scoped_recompute phase=drain pending="$pending"
+
+      # Log affected brands + request counts (observability — ties to consumer correlation_id chain).
+      docker exec "$SR_CONTAINER" mysql -h127.0.0.1 -P9030 -uroot \
+        -e "SELECT brand_id, COUNT(*) AS req_count, MIN(requested_at) AS oldest_at
+            FROM brain_ops.scoped_recompute_request
+            WHERE processed_at IS NULL
+            GROUP BY brand_id
+            ORDER BY brand_id;" 2>/dev/null || true
+
+      # Issue SYNC refresh for the customer-grained MVs only.
+      # ensure_mv + REFRESH EXTERNAL TABLE + REFRESH MATERIALIZED VIEW WITH SYNC MODE
+      # — mirrors refresh_serving_mvs() but scoped to SCOPED_MVS (not all brain_serving MVs).
+      echo "[$(ts)] scoped-recompute: refreshing customer-grained MVs (scoped)"
+      scoped_ok=0; scoped_fail=0
+      for mv in $SCOPED_MVS; do
+        ensure_mv "$mv"
+        local_src="${mv#mv_}"
+        docker exec "$SR_CONTAINER" mysql -h127.0.0.1 -P9030 -uroot -N \
+          -e "REFRESH EXTERNAL TABLE brain_gold_local.brain_gold.${local_src};" >/dev/null 2>&1 || true
+        docker exec "$SR_CONTAINER" mysql -h127.0.0.1 -P9030 -uroot -N \
+          -e "REFRESH EXTERNAL TABLE brain_silver_local.brain_silver.${local_src};" >/dev/null 2>&1 || true
+        if docker exec "$SR_CONTAINER" mysql -h127.0.0.1 -P9030 -uroot -N \
+          -e "REFRESH MATERIALIZED VIEW ${SERVING_DB}.${mv} WITH SYNC MODE;" >/dev/null 2>&1; then
+          scoped_ok=$((scoped_ok+1))
+        else
+          scoped_fail=$((scoped_fail+1))
+          echo "[$(ts)] ⚠ scoped-recompute: refresh ${SERVING_DB}.${mv} failed"
+        fi
+      done
+      echo "[$(ts)] scoped-recompute: ${scoped_ok} MVs refreshed, ${scoped_fail} failed"
+
+      # Mark all pending rows as processed (UPDATE idempotent — re-UPDATE on retry = no-op next cycle).
+      docker exec "$SR_CONTAINER" mysql -h127.0.0.1 -P9030 -uroot -N \
+        -e "UPDATE brain_ops.scoped_recompute_request SET processed_at = NOW() WHERE processed_at IS NULL;" \
+        >/dev/null 2>&1 \
+        && echo "[$(ts)] scoped-recompute: ${pending} request(s) marked processed" \
+        || { echo "[$(ts)] ⚠ scoped-recompute: failed to mark rows processed (will retry next cycle)"; failures=$((failures+1)); }
+
+      scoped_end=$(now_ms)
+      jlog v4_scoped_recompute phase=done pending="$pending" \
+        mvs_ok="$scoped_ok" mvs_fail="$scoped_fail" duration_ms=$(( scoped_end - scoped_start ))
+    else
+      echo "[$(ts)] scoped-recompute: no pending requests — skipping targeted refresh"
+      jlog v4_scoped_recompute phase=noop pending=0 duration_ms=0
+    fi
+  fi
+
   # 6. mv_* SYNC refresh — every brain_serving mv_* so the serving tier reflects the fresh Iceberg Gold.
   refresh_serving_mvs
 

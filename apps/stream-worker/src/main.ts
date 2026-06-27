@@ -17,12 +17,25 @@
  */
 import { Kafka } from 'kafkajs';
 import { Pool, Pool as PgPool } from 'pg';
+import mysql from 'mysql2/promise';
 import { assertRoleEnforcesRls } from '@brain/db';
 import { DbAuditWriter, type AuditDbClient } from '@brain/audit';
+import {
+  buildTopic,
+  IDENTITY_MERGED_TOPIC_SUFFIX,
+  IDENTITY_SUPPRESSED_TOPIC_SUFFIX,
+} from '@brain/contracts';
 import { RedisDedupAdapter } from './infrastructure/redis/RedisDedupAdapter.js';
 import { RetryCounterAdapter } from './infrastructure/redis/RetryCounterAdapter.js';
 import { BronzeRepository } from './infrastructure/pg/BronzeRepository.js';
 import { Neo4jIdentityRepository } from './infrastructure/neo4j/Neo4jIdentityRepository.js';
+import { createIdempotentProducer } from './infrastructure/kafka/idempotent-producer.js';
+import { KafkaIdentityEventPublisher } from './infrastructure/kafka/KafkaIdentityEventPublisher.js';
+import { IdentityChangeRecomputeConsumer } from './interfaces/consumers/IdentityChangeRecomputeConsumer.js';
+import { StarRocksScopedRecomputeRepository } from './infrastructure/starrocks/ScopedRecomputeRepository.js';
+import { CacheInvalidatePublisher } from './infrastructure/kafka/CacheInvalidatePublisher.js';
+import { AnalyticsCacheInvalidateConsumer } from './interfaces/consumers/AnalyticsCacheInvalidateConsumer.js';
+import { Redis } from 'ioredis';
 import { createSaltProvider } from './infrastructure/secrets/SaltProvider.js';
 import { initObservability, initSentry, createLogger } from '@brain/observability';
 import { requireEnvInProd, loadStreamWorkerConfig } from '@brain/config';
@@ -45,6 +58,9 @@ import { ConsentRepository } from './infrastructure/pg/ConsentRepository.js';
 import { CapiDeletionConsumer } from './interfaces/consumers/CapiDeletionConsumer.js';
 import { RequestCapiDeletionUseCase } from './application/RequestCapiDeletionUseCase.js';
 import { CapiDeletionRepository } from './infrastructure/pg/CapiDeletionRepository.js';
+import { ErasureOrchestratorConsumer } from './interfaces/consumers/ErasureOrchestratorConsumer.js';
+import { EraseSubjectUseCase, type IBrainIdLookup } from './application/EraseSubjectUseCase.js';
+import { ErasureRepository } from './infrastructure/pg/ErasureRepository.js';
 import { BackfillOrderConsumer } from './interfaces/consumers/BackfillOrderConsumer.js';
 // MEDALLION REALIGNMENT: ALL PG-ledger write paths are now REMOVED. The revenue recognition ledger
 // is built FROM Bronze by dbt (silver_order_recognition → gold_revenue_ledger). Ad spend likewise
@@ -85,6 +101,11 @@ export async function main(): Promise<void> {
   // within the DPDP ≤15min withdrawal-propagation SLA. WIRED HERE: do NOT remove without
   // updating capi-deletion.e2e.test.ts.
   const capiDeletionGroupId = cfg.CAPI_DELETION_CONSUMER_GROUP_ID;
+  // DPDP/PDPL crypto-shred erasure orchestrator: separate consumer group on the live topic.
+  // On a subject-erasure: shreds subject DEK (is_active=FALSE) + belt-and-suspenders hard delete
+  // + surrogate tombstone + scoped Gold re-projection + CAPI deletion. Ordered, idempotent,
+  // DLQ-after-MAX_RETRY. WIRED HERE: do NOT remove without updating erasure-orchestrator.unit.test.ts.
+  const erasureOrchestratorGroupId = cfg.ERASURE_ORCHESTRATOR_CONSUMER_GROUP_ID;
   // Live-ledger bridge (ORCH-LV-H1 fix): separate consumer group on the live topic — mirrors
   // IdentityBridgeConsumer pattern. Does NOT double-write Bronze (CollectorEventConsumer handles
   // Bronze). Filters to order.live.v1 events only; routes provisional_recognition / rto_reversal.
@@ -223,12 +244,78 @@ export async function main(): Promise<void> {
   } catch (err) {
     log.warn(`[identity] Neo4j bootstrap failed: ${err instanceof Error ? err.message : String(err)}`);
   }
-  const resolveIdentityUseCase = new ResolveIdentityUseCase(saltProvider, identityRepo);
+  // ── Identity domain-event publisher (identity.{minted,linked,merged,suppressed,review_queued}.v1) ──
+  // One idempotent producer for the identity lane (EoS at the broker, no-event-loss). The use-case
+  // publishes the outcome AFTER the Neo4j graph write (commit-after-write) with deterministic
+  // event_ids → replay-safe. Partition key = brand_id (tenant-first). env prefix mirrors the rest of
+  // the worker (NODE_ENV-driven, same scheme as BACKFILL_TOPIC).
+  const identityEventEnvPrefix = cfg.NODE_ENV === 'production' ? 'prod' : 'dev';
+  const identityEventProducer = createIdempotentProducer(kafka);
+  await identityEventProducer.connect();
+  const identityEventPublisher = new KafkaIdentityEventPublisher(
+    identityEventProducer, identityEventEnvPrefix, log,
+  );
+  const resolveIdentityUseCase = new ResolveIdentityUseCase(saltProvider, identityRepo, identityEventPublisher);
   // T2-8: pass the shared durable RetryCounterAdapter so identity-bridge retries survive
   // pod restarts and a poison message always reaches the DLQ (mirrors ConsentSuppressor /
   // Backfill / LiveLedger — every consumer that receives retryCounter here).
   const identityConsumer = new IdentityBridgeConsumer(
     kafka, resolveIdentityUseCase, topic, identityGroupId, retryCounter,
+  );
+
+  // ── Identity-change → scoped-Gold-recompute consumer (V4 / §H) ──────────────
+  // Listens to identity.{merged,suppressed}.v1 — the topics KafkaIdentityEventPublisher
+  // emits to. On merge/suppress:
+  //   (a) FAIL-CLOSED: upserts a ScopedRecompute row to brain_ops.scoped_recompute_request
+  //       (StarRocks PRIMARY KEY table — idempotent on retry via same request_id).
+  //   (b) FAIL-OPEN: publishes cache.invalidate.v1 per affected customer-grained Gold mart
+  //       so the serving layer can bust its Redis cache immediately.
+  // The v4-refresh-loop.sh SCOPED_RECOMPUTE=1 step drains these rows + issues targeted MV
+  // SYNC refreshes; step 6 (full mv_* refresh) still runs as a safety net.
+  //
+  // Shares the SAME identityEventEnvPrefix + identityEventProducer as KafkaIdentityEventPublisher
+  // so the consume topics EXACTLY match the produce topics (NODE_ENV-driven prefix).
+  //
+  // brain_ops pool: mysql2/promise, StarRocks mysql-protocol port 9030 (root user, same creds
+  // as identity-export/run.ts). Defaults to 127.0.0.1 when STARROCKS_HOST is absent (dev without
+  // StarRocks — the upsert will fail → consumer retries → DLQ after 5 = correct fail-closed).
+  const identityRecomputeGroupId = cfg.IDENTITY_CHANGE_RECOMPUTE_CONSUMER_GROUP_ID;
+  const srOpsPool = mysql.createPool({
+    host:            cfg.STARROCKS_HOST ?? '127.0.0.1',
+    port:            cfg.STARROCKS_QUERY_PORT,
+    user:            cfg.STARROCKS_ROOT_USER,
+    password:        cfg.STARROCKS_ROOT_PASSWORD,
+    connectionLimit: 3,
+  });
+  const scopedRecomputeRepo = new StarRocksScopedRecomputeRepository(srOpsPool);
+  // CacheInvalidatePublisher reuses identityEventProducer (already connected, idempotent EoS).
+  const cacheInvalidatePublisher = new CacheInvalidatePublisher(
+    identityEventProducer, identityEventEnvPrefix, log,
+  );
+  const identityRecomputeTopics = [
+    buildTopic(identityEventEnvPrefix, IDENTITY_MERGED_TOPIC_SUFFIX),
+    buildTopic(identityEventEnvPrefix, IDENTITY_SUPPRESSED_TOPIC_SUFFIX),
+  ];
+  const identityRecomputeConsumer = new IdentityChangeRecomputeConsumer(
+    kafka,
+    scopedRecomputeRepo,
+    cacheInvalidatePublisher,
+    identityRecomputeTopics,
+    identityRecomputeGroupId,
+    retryCounter,
+  );
+
+  // ── Analytics cache-invalidation consumer (the CONSUMER side of cache.invalidate.v1) ──
+  // The identity-recompute consumer EMITS cache.invalidate.v1 after an identity merge/suppress;
+  // this consumer evicts the brand-scoped serving-cache keys so the serving tier never serves
+  // stale Gold (no waiting for TTL). A dedicated ioredis client (mirrors RetryCounterAdapter) —
+  // ioredis Redis satisfies ICacheEvictionClient structurally (del/scan), all deletes brand-gated.
+  const cacheEvictionRedis = new Redis(redisUrl);
+  const analyticsCacheInvalidateConsumer = new AnalyticsCacheInvalidateConsumer(
+    kafka,
+    cacheEvictionRedis,
+    identityEventEnvPrefix,
+    cfg.ANALYTICS_CACHE_INVALIDATE_CONSUMER_GROUP_ID,
   );
 
   // ── Consent suppressor (feat-d13-consent-cancontact) ────────────────────────
@@ -256,6 +343,40 @@ export async function main(): Promise<void> {
   );
   const capiDeletionConsumer = new CapiDeletionConsumer(
     kafka, requestCapiDeletionUseCase, topic, capiDeletionGroupId, retryCounter,
+  );
+
+  // ── Erasure orchestrator (DPDP/PDPL crypto-shred — feat-erasure-orchestrator) ──
+  // Same live topic, separate consumer group. Drives the ordered 6-step per-subject erasure
+  // sequence: DEK shred (subject_keyring is_active=FALSE) → surrogate tombstone → scoped
+  // Gold re-projection → disabled Iceberg compaction seam → CAPI deletion → erasure complete.
+  // Reuses the SAME saltProvider, requestCapiDeletionUseCase, and identityRepo as the other
+  // consumers on this topic — no new hashing logic, no duplicated CAPI deletion path.
+  //
+  // brainIdLookup: inline adapter over identityRepo.readState() — returns the first active
+  // brain_id linked to the subject hash in the Neo4j graph. Throws on Neo4j down (→ retry).
+  // Returns null on not-found (→ 'no_brain_id' skip, WARN logged, no retry).
+  const brainIdLookup: IBrainIdLookup = {
+    async findBrainId(lookupBrandId, subjectHash, identifierType) {
+      // SEC H-1: match on the SUBJECT'S identifier type (email OR phone) — hardcoding 'email'
+      // silently dropped phone-only RTBF erasures (acknowledged, never shredded = DPDP failure).
+      const state = await identityRepo.readState(lookupBrandId, [
+        { type: identifierType, hash: subjectHash },
+      ]);
+      return state.existingLinks.find((l) => l.is_active)?.brain_id ?? null;
+    },
+  };
+  const erasureRepo = new ErasureRepository(dbUrl);
+  const eraseSubjectUseCase = new EraseSubjectUseCase(
+    saltProvider,
+    erasureRepo,
+    brainIdLookup,
+    scopedRecomputeRepo,
+    requestCapiDeletionUseCase,
+    // SEC M-1: evict the hot subject DEK from this process's vault cache the instant it is shredded.
+    (b, s) => vaultKeyProvider.invalidate(b, s),
+  );
+  const erasureOrchestratorConsumer = new ErasureOrchestratorConsumer(
+    kafka, eraseSubjectUseCase, topic, erasureOrchestratorGroupId, retryCounter,
   );
 
   // ── Backfill lane (ADR-BF-7 / ADR-BF-8 / ADR-BF-9) ────────────────────────
@@ -363,8 +484,11 @@ export async function main(): Promise<void> {
     await Promise.all([
       consumer.stop(),
       identityConsumer.stop(),
+      identityRecomputeConsumer.stop(),
+      analyticsCacheInvalidateConsumer.stop(),
       consentSuppressorConsumer.stop(),
       capiDeletionConsumer.stop(),
+      erasureOrchestratorConsumer.stop(),
       backfillConsumer.stop(),
       // All registry-driven Bronze bridges (incl. live-order, which was previously missing a stop).
       ...bronzeBridgeConsumers.map((c) => c.stop()),
@@ -378,12 +502,16 @@ export async function main(): Promise<void> {
     await connectorRateLimiter.quit().catch(() => undefined);
     await consentRepo.end();
     await capiDeletionRepo.end();
+    await erasureRepo.end();
     await retryCounter.quit();
     await dedup.quit();
     await backfillDedup.quit();
     await bronze.end();
     await backfillBronze.end();
     await auditPool.end();
+    await identityEventProducer.disconnect().catch(() => undefined);
+    await cacheEvictionRedis.quit().catch(() => undefined);
+    await srOpsPool.end().catch(() => undefined);
     await identityRepo.end();
     await healthServer.close();
     // Flush buffered telemetry LAST so shutdown spans/metrics are exported (C1).
@@ -404,6 +532,21 @@ export async function main(): Promise<void> {
   await identityConsumer.start();
   log.info('identity bridge consumer running');
 
+  // ── Identity-change recompute consumer (V4 scoped Gold-recompute MANDATORY WIRE) ──
+  // Subscribes to the SAME topics KafkaIdentityEventPublisher emits to (same env prefix).
+  // Must start AFTER identityEventProducer is connected (it shares the producer for
+  // cache.invalidate.v1 publishes). WIRED HERE: do NOT remove without verifying the
+  // scoped-recompute-loop integration test and the brain_ops.scoped_recompute_request drain.
+  log.info(`starting identity-recompute consumer — topics=${identityRecomputeTopics.join(',')} group=${identityRecomputeGroupId}`);
+  await identityRecomputeConsumer.start();
+
+  // Cache-invalidation consumer: evict brand-scoped serving-cache keys on cache.invalidate.v1
+  // (the CONSUMER side of what identityRecomputeConsumer emits). Closes LOW-1 — without it,
+  // cache.invalidate events are published but never consumed → serving cache stays stale to TTL.
+  log.info(`starting analytics cache-invalidate consumer — group=${cfg.ANALYTICS_CACHE_INVALIDATE_CONSUMER_GROUP_ID}`);
+  await analyticsCacheInvalidateConsumer.start();
+  log.info('identity-recompute consumer running');
+
   // ── Consent suppressor consumer (feat-d13-consent-cancontact MANDATORY WIRE) ──
   // Same live topic, independent consumer group. Projects consent_flags →
   // consent_record + consent_tombstone (the SoR can_contact() reads fail-closed).
@@ -420,6 +563,14 @@ export async function main(): Promise<void> {
   log.info(`starting capi-deletion consumer — topic=${topic} group=${capiDeletionGroupId}`);
   await capiDeletionConsumer.start();
   log.info('capi-deletion consumer running');
+
+  // ── Erasure orchestrator consumer (feat-erasure-orchestrator MANDATORY WIRE) ──────
+  // Same live topic, independent consumer group. Drives the ordered DPDP/PDPL 6-step
+  // crypto-shred sequence on a subject-erasure signal. WIRED HERE: do NOT remove without
+  // updating erasure-orchestrator.unit.test.ts.
+  log.info(`starting erasure orchestrator — topic=${topic} group=${erasureOrchestratorGroupId}`);
+  await erasureOrchestratorConsumer.start();
+  log.info('erasure orchestrator consumer running');
 
   // ── Backfill lane consumer (ADR-BF-7 / ADR-BF-8 / ADR-BF-9) ───────────────
   // Separate from live lane: backfillTopic != topic → Redpanda isolation guarantee.

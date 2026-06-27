@@ -47,4 +47,37 @@ export {
   FORBIDDEN_TOOL_NAME_SUBSTRINGS,
   type McpToolSpec,
   type McpToolAccess,
+  type McpToolStatus,
+  type McpReadScope,
 } from './mcp-tools.js';
+
+// The READ-ONLY MCP tool DISPATCH (Brain V4; D5 / I-S08 / I-S01). The single dispatch imported by
+// BOTH apps/core (the mount, wiring the real read seams) AND tools/isolation-fuzz (the I-S08 canary).
+export {
+  dispatchMcpTool,
+  assertSeamNamesClean,
+  MCP_READ_SEAM_NAMES,
+  FORBIDDEN_SEAM_NAME_SUBSTRINGS,
+  NotImplementedYetError,
+  McpPrincipalScopeError,
+  UnknownMcpToolError,
+  type McpPrincipal,
+  type McpReadSeams,
+  type McpSchemaProvider,
+  type SchemaLike,
+  type RoasParamsLike,
+  type Customer360RowLike,
+  type Customer360SummaryLike,
+  type CustomerJourneyRowLike,
+  type CustomerJourneySummaryLike,
+  type TimelineEntryLike,
+  type IdentityTimelineLike,
+  type ExplainIdentifierLike,
+  type ExplainMergeLike,
+  type IdentityExplainLike,
+  type ChannelRoasLike,
+  type CampaignRoasLike,
+  type CustomerScoreLike,
+  type RecFeatureRowLike,
+  type RecommendationFeaturesLike,
+} from './mcp-dispatch.js';

@@ -37,7 +37,7 @@ import {
 } from '@brain/connector-core';
 import { SHOPIFY_MANIFEST } from '@brain/shopify-mapper';
 import { WOOCOMMERCE_MANIFEST } from '@brain/woocommerce-mapper';
-import { COLLECTOR_EVENT_V1_TOPIC_SUFFIX } from '@brain/contracts';
+import { ORDER_BACKFILL_V1_TOPIC_SUFFIX } from '@brain/contracts';
 import { loadStreamWorkerConfig } from '@brain/config';
 import { createIdempotentProducer } from '../../infrastructure/kafka/idempotent-producer.js';
 import { createSaltProvider } from '../../infrastructure/secrets/SaltProvider.js';
@@ -61,7 +61,10 @@ const DB_URL = cfg.BRAIN_APP_DATABASE_URL;
 const BROKERS = cfg.KAFKA_BROKERS.split(',');
 // intentional raw: NODE_ENV-derived Kafka topic-prefix selection (must precede config load).
 const ENV = process.env['NODE_ENV'] === 'production' ? 'prod' : 'dev';
-const LIVE_TOPIC = process.env['COLLECTOR_TOPIC'] ?? `${ENV}.${COLLECTOR_EVENT_V1_TOPIC_SUFFIX}`;
+// §6.4 lane isolation: backfill events MUST go to the backfill topic (same lane the
+// BackfillOrderConsumer reads) — NEVER to the live collector topic. Using the live topic
+// would starve/contaminate the live consumer group and violates ADR-BF-7 / SI-3.
+export const BACKFILL_TOPIC = `${ENV}.${ORDER_BACKFILL_V1_TOPIC_SUFFIX}`;
 const REGION_CODE = cfg.BRAIN_REGION_CODE;
 
 const NIL_UUID = '00000000-0000-0000-0000-000000000000';
@@ -214,7 +217,7 @@ export async function run(
 
   try {
     await producer.connect();
-    log.info(`[ingestion-backfill] provider=${provider} resource=${resourceName} topic=${LIVE_TOPIC}`);
+    log.info(`[ingestion-backfill] provider=${provider} resource=${resourceName} topic=${BACKFILL_TOPIC}`);
 
     let saltHex: string;
     try {
@@ -237,7 +240,7 @@ export async function run(
       return;
     }
 
-    const sink = new KafkaEventSink(producer, LIVE_TOPIC, `ingest:${provider}:${resourceName}:${connectorInstanceId}`);
+    const sink = new KafkaEventSink(producer, BACKFILL_TOPIC, `ingest:${provider}:${resourceName}:${connectorInstanceId}`);
     const dlq = new PgDeadLetterSink(dlqRepo, ENV);
 
     const result = await runResumableBackfill({

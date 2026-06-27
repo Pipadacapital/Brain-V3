@@ -73,9 +73,22 @@ export type { CodRtoRatesResult, CodRtoCohort } from './cod-rto-rates.js';
 // Customer 360 (Gold) summary — re-platform Phase E
 export { getCustomer360Summary } from './customer-360.js';
 export type { Customer360Summary, Customer360Row } from './customer-360.js';
+// Customer journey-intelligence (Gold) summary — V4 gold_journey rollup (NO money, NO PII; brain_anon_id key)
+export { getCustomerJourneySummary } from './customer-journey.js';
+export type { CustomerJourneySummary, CustomerJourneyRow } from './customer-journey.js';
 // Single-customer RFM/churn score (Gold) — DB-AUDIT C5 ML serving
 export { getCustomerScore } from './customer-score.js';
 export type { CustomerScoreRow } from './customer-score.js';
+// AI/ML input feature vector (Gold ai_features serving mart) — V4 runtime Silver fold, not a precompute table.
+export { getAiFeatures } from './ai-features.js';
+export type { AiFeaturesResult, AiFeatureRow, AiFeaturesOptions } from './ai-features.js';
+// Customer health/churn band (Gold) — V4 NET-NEW deterministic per-customer health surface.
+export { getCustomerHealthSummary } from './customer-health.js';
+export type { CustomerHealthSummary, CustomerHealthRow, HealthBand } from './customer-health.js';
+// Recommendation INPUT features (Gold) — per-customer RFM + behaviour vectors over
+// mv_gold_recommendation_features (RUNTIME Silver fold, NOT a permanent feature-precompute table).
+export { getRecommendationFeatures } from './recommendation-features.js';
+export type { RecommendationFeaturesResult, RecommendationFeatureRow } from './recommendation-features.js';
 // Insight + Opportunity Engine (AI Copilot briefing source) — deterministic, over the Gold marts.
 export { computeInsights } from './insights.js';
 export type {
@@ -255,3 +268,26 @@ export type { DqLetterGrade } from './cost-confidence.js';
 // no cap, excluded from MMM. CI-blocking: blocks high-risk recommendations below trusted.
 export { gateMetric, evaluateGate } from './quality-gate.js';
 export type { TrustTier, GateDecision } from './quality-gate.js';
+
+// ── Trino ad-hoc exploration PORT (ADDITIVE, READ-ONLY — NOT a serving dependency) ──
+// brain_serving.mv_* (StarRocks) is the SOLE app/BFF/metric-engine serving path.
+// Trino is operator/explicit ad-hoc exploration only. Known metrics NEVER route here.
+// The AI-ad-hoc-Trino path is DISABLED (routeAiAdHocTrino throws NotImplementedYet).
+export { withTrinoBrand } from './trino-deps.js';
+export type { TrinoPool, TrinoQueryPort, TrinoScope, WithTrinoBrandOptions } from './trino-deps.js';
+// Concrete Trino HTTP adapter (composition root injects via createTrinoPool).
+export { createTrinoPool } from './trino-adapter.js';
+export type { TrinoAdapterConfig } from './trino-adapter.js';
+
+// ── Analytics cache PORT (brand_id-leading composite keys + stampede guard) ──
+export { buildCacheKey, IoredisCacheAdapter } from './analytics-cache.js';
+export type { AnalyticsCachePort, RedisCacheClient } from './analytics-cache.js';
+
+// ── Query routing (known metrics → StarRocks; AI-Trino DISABLED) ──────────────
+export {
+  QueryRoute,
+  routeKnownMetric,
+  routeAiAdHocTrino,
+  NotImplementedYet,
+} from './query-route.js';
+export type { KnownMetricRoute } from './query-route.js';

@@ -33,8 +33,20 @@ import type {
   ResolveOutcome,
 } from '../../domain/identity/IdentityResolver.js';
 import type { IdentityReadState } from '../../domain/identity/IdentityStore.js';
+import { RULE_VERSION } from '../../domain/identity/IdentityResolver.js';
 
 const STRONG_TIERS = ['strong', 'strong_on_link'];
+
+// ── Structured confidence / provenance stamped on every graph edge + merge node ──────────────
+// Deterministic-first (D-5): the ONLY live matcher is the union-find resolver, so every committed
+// IDENTIFIES / ALIAS_OF edge and MergeEvent node carries an EXACT verdict — a NUMERIC confidence
+// (the integer 100, never a float, never blended with money), the matcher id, the coarse band, and
+// the schema/rule version. Stamped additively (ON CREATE SET) so the writes stay idempotent and
+// non-breaking: pre-existing edges/nodes are untouched on replay, new ones gain the provenance.
+const DETERMINISTIC_MATCHER_ID = 'deterministic-union-find';
+const DETERMINISTIC_CONFIDENCE_SCORE = 100; // integer 0-100 (graph-native number), band 'exact'
+const DETERMINISTIC_CONFIDENCE_BAND = 'exact';
+const IDENTITY_SCHEMA_VERSION = '1'; // doc-07 envelope schema_version (graph-side mirror)
 
 export class Neo4jIdentityRepository {
   private readonly driver: Driver;
@@ -192,13 +204,23 @@ export class Neo4jIdentityRepository {
         // ── identity_link edges (new identifiers) ──
         for (const id of outcome.newLinks) {
           await tx.run(
+            // Structured confidence/provenance is stamped ON CREATE only (additive, idempotent,
+            // non-breaking): a replayed link keeps its original stamp; ON MATCH only re-activates.
             `MERGE (i:Identifier {brand_id:$brand, type:$t, hash:$h})
              WITH i
              MATCH (c:Customer {brand_id:$brand, brain_id:$brainId})
              MERGE (i)-[r:IDENTIFIES]->(c)
-             ON CREATE SET r.tier=$tier, r.is_active=true, r.created_at=$nowMs
+             ON CREATE SET r.tier=$tier, r.is_active=true, r.created_at=$nowMs,
+                           r.confidence_score=$confScore, r.confidence_band=$confBand,
+                           r.matcher_id=$matcherId, r.rule_version=$ruleVersion,
+                           r.schema_version=$schemaVersion
              ON MATCH SET r.is_active=true`,
-            { brand: brandId, brainId: outcome.brainId, t: id.type, h: id.hash, tier: id.tier, nowMs },
+            {
+              brand: brandId, brainId: outcome.brainId, t: id.type, h: id.hash, tier: id.tier, nowMs,
+              confScore: DETERMINISTIC_CONFIDENCE_SCORE, confBand: DETERMINISTIC_CONFIDENCE_BAND,
+              matcherId: DETERMINISTIC_MATCHER_ID, ruleVersion: RULE_VERSION,
+              schemaVersion: IDENTITY_SCHEMA_VERSION,
+            },
           );
         }
 
@@ -218,16 +240,28 @@ export class Neo4jIdentityRepository {
         if (outcome.action === 'merged' && outcome.merge) {
           const { canonicalBrainId, mergedBrainId, mergeId } = outcome.merge;
           await tx.run(
+            // The MergeEvent node + the ALIAS_OF edge both carry the structured deterministic verdict
+            // (numeric confidence + matcher + band + rule/schema version). Stamped ON CREATE only —
+            // idempotent on replay (MERGE keys: merge_id / the alias pair), non-breaking, tenant-scoped.
             `MERGE (m:Customer {brand_id:$brand, brain_id:$merged})
              SET m.lifecycle_state='merged', m.merged_into=$canonical
              MERGE (mev:MergeEvent {merge_id:$mergeId})
                ON CREATE SET mev.brand_id=$brand, mev.canonical_brain_id=$canonical,
-                             mev.merged_brain_id=$merged, mev.rule_version='v1-deterministic', mev.committed_at=$nowMs
+                             mev.merged_brain_id=$merged, mev.rule_version=$ruleVersion, mev.committed_at=$nowMs,
+                             mev.confidence_score=$confScore, mev.confidence_band=$confBand,
+                             mev.matcher_id=$matcherId, mev.schema_version=$schemaVersion
              WITH m
              MATCH (can:Customer {brand_id:$brand, brain_id:$canonical})
              MERGE (m)-[a:ALIAS_OF]->(can)
-               ON CREATE SET a.merge_id=$mergeId, a.rule_version='v1-deterministic', a.valid_from=$nowMs, a.valid_to=null`,
-            { brand: brandId, canonical: canonicalBrainId, merged: mergedBrainId, mergeId, nowMs },
+               ON CREATE SET a.merge_id=$mergeId, a.rule_version=$ruleVersion, a.valid_from=$nowMs, a.valid_to=null,
+                             a.confidence_score=$confScore, a.confidence_band=$confBand,
+                             a.matcher_id=$matcherId, a.schema_version=$schemaVersion`,
+            {
+              brand: brandId, canonical: canonicalBrainId, merged: mergedBrainId, mergeId, nowMs,
+              confScore: DETERMINISTIC_CONFIDENCE_SCORE, confBand: DETERMINISTIC_CONFIDENCE_BAND,
+              matcherId: DETERMINISTIC_MATCHER_ID, ruleVersion: RULE_VERSION,
+              schemaVersion: IDENTITY_SCHEMA_VERSION,
+            },
           );
           // Canonical inherits the EARLIEST identification across the merge.
           await tx.run(

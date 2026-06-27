@@ -8,6 +8,17 @@
  * merge/unmerge admin + the PII vault follow in later slices).
  */
 export { getCustomer360 } from './internal/application/queries/get-customer-360.js';
+export { getIdentityTimeline } from './internal/application/queries/get-identity-timeline.js';
+export type {
+  IdentityTimelineEntry,
+  IdentityTimelineResult,
+  IdentityTimelineDeps,
+} from './internal/application/queries/get-identity-timeline.js';
+export { PgIdentityTimelineReader } from './internal/infrastructure/identity-timeline-reader.js';
+export type {
+  IdentityTimelineReader,
+  IdentityTimelineEventRow,
+} from './internal/infrastructure/identity-timeline-reader.js';
 export { listCustomers } from './internal/application/queries/list-customers.js';
 export type {
   CustomerList,

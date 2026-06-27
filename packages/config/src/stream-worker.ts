@@ -66,9 +66,30 @@ export const StreamWorkerEnvSchema = CommonEnvSchema.extend({
     .string()
     .default('stream-worker-consent-suppressor'),
   CAPI_DELETION_CONSUMER_GROUP_ID: z.string().default('stream-worker-capi-deletion'),
+  /**
+   * Consumer group for the DPDP/PDPL crypto-shred erasure orchestrator. Reads the same
+   * live collector topic as ConsentSuppressorConsumer / CapiDeletionConsumer — separate
+   * group, no new topic, no new deployable (I-E05). Runs the ordered 6-step shred sequence.
+   */
+  ERASURE_ORCHESTRATOR_CONSUMER_GROUP_ID: z
+    .string()
+    .default('stream-worker-erasure-orchestrator'),
   LIVE_LEDGER_CONSUMER_GROUP_ID: z.string().default('live-ledger-bridge'),
   SETTLEMENT_LEDGER_CONSUMER_GROUP_ID: z.string().default('settlement-ledger-bridge'),
   GOKWIK_AWB_LEDGER_CONSUMER_GROUP_ID: z.string().default('gokwik-awb-ledger-bridge'),
+  /** Consumer group for identity-change → scoped-Gold-recompute pipeline (V4). */
+  IDENTITY_CHANGE_RECOMPUTE_CONSUMER_GROUP_ID: z
+    .string()
+    .default('stream-worker-identity-recompute'),
+
+  /**
+   * Consumer group for the analytics cache-invalidation consumer — it consumes
+   * cache.invalidate.v1 (emitted by the identity-recompute consumer) and evicts the
+   * brand-scoped serving-cache keys so the serving tier never serves stale Gold.
+   */
+  ANALYTICS_CACHE_INVALIDATE_CONSUMER_GROUP_ID: z
+    .string()
+    .default('stream-worker-analytics-cache-invalidate'),
 
   // ── Backfill lane (main.ts) ──────────────────────────────────────────────────
   /**

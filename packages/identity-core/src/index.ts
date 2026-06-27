@@ -364,3 +364,19 @@ const DEV_VAULT_DEK_MASTER = 'brain-dev-pii-vault-dek-v1';
 export function deriveDevVaultDek(brandId: string): Buffer {
   return createHash('sha256').update(`${DEV_VAULT_DEK_MASTER}||${brandId.trim().toLowerCase()}`).digest();
 }
+
+/** Fixed dev master constant for per-subject vault DEK derivation. NOT a prod secret. */
+const DEV_SUBJECT_VAULT_DEK_MASTER = 'brain-dev-pii-subject-vault-dek-v1';
+
+/**
+ * Dev-only deterministic per-subject 32-byte DEK. Same (brandId, subjectId) → same key across
+ * all processes, so a value encrypted in one process decrypts in another. Distinct from the
+ * per-brand DEK (different master constant + includes subjectId in the derivation input) so
+ * cross-subject DEKs are uncorrelatable. MUST NOT be used when NODE_ENV === 'production' —
+ * prod unwraps the real tenancy.subject_keyring DEK via KMS (the caller gates this).
+ */
+export function deriveDevSubjectVaultDek(brandId: string, subjectId: string): Buffer {
+  return createHash('sha256')
+    .update(`${DEV_SUBJECT_VAULT_DEK_MASTER}||${brandId.trim().toLowerCase()}||${subjectId.trim().toLowerCase()}`)
+    .digest();
+}

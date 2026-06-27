@@ -462,6 +462,31 @@ services:
       - brain-connect-plugins:/opt/connect-plugins
     restart: unless-stopped
 
+  # ── Trino — ad-hoc / federated Iceberg exploration (lakehouse profile ONLY) ──
+  # Read-only query layer over the SAME Iceberg REST catalog + MinIO that Spark
+  # and StarRocks use. For ad-hoc exploration ONLY — NEVER an app serving path.
+  # App / BFF / metric-engine read StarRocks brain_serving.mv_* solely.
+  # Host port 8090 (not 8080) avoids collision with Apicurio's 8080:8080 mapping
+  # when both lakehouse + ingest profiles run simultaneously.
+  trino:
+    image: trinodb/trino:455
+    profiles: ["lakehouse"]
+    depends_on:
+      iceberg-rest:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    ports:
+      - "8090:8080"   # Trino HTTP UI + JDBC (host 8090 → container 8080)
+    volumes:
+      - ./db/trino/catalog:/etc/trino/catalog:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/v1/info"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
+
   # Registers the iceberg-bronze-collector connector once Connect is up (idempotent PUT .../config).
   kafka-connect-init:
     image: curlimages/curl:8.8.0

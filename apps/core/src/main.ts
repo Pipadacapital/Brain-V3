@@ -43,9 +43,13 @@ import {
   BrandCryptoProvisioner,
   KmsBrandSaltProvider,
   DevBrandSaltProvider,
+  PgIdentityTimelineReader,
+  getIdentityTimeline,
+  getCustomer360,
 } from './modules/identity/index.js';
 import type { BrandSaltSource } from './modules/identity/index.js';
 import { Neo4jIdentityReader } from './modules/identity/internal/infrastructure/neo4j-identity-reader.js';
+import { createMcpDispatch } from './modules/ai/index.js';
 import { initObservability, initSentry, createLogger } from '@brain/observability';
 
 /** Structured logger for core's lifecycle/error logs (request logs go through Fastify's pino). */
@@ -517,6 +521,43 @@ export async function main(): Promise<void> {
     new ContactPiiVaultRepository(rawPgPool, identityReader),
     vaultKeyProvider,
   );
+
+  // ── READ-ONLY MCP dispatch MOUNT (Brain V4; D5 / I-S08 / I-S01) ──────────────
+  // Compose the read-only MCP dispatch over its real seams: INTELLIGENCE/MARKETING via the
+  // metric-engine (inside the ai module, over brain_serving.mv_*), IDENTITY injected here as
+  // read-only closures over the identity module reads (timeline = identity_audit projection;
+  // explainability = the Neo4j graph merges, hash-only). brand_id is taken from the principal at
+  // dispatch time — never a tool input. The MCP server transport (deferred) calls this function.
+  const identityTimelineReader = new PgIdentityTimelineReader(rawPgPool);
+  const mcpDispatch = createMcpDispatch({
+    srPool,
+    identity: {
+      identityTimeline: (brandId, brainId) =>
+        getIdentityTimeline(brandId, brainId, randomUUID(), { reader: identityTimelineReader }),
+      identityExplain: async (brandId, brainId) => {
+        const r = await getCustomer360(brandId, brainId, randomUUID(), { reader: identityReader });
+        if (r.state === 'not_found') return { state: 'not_found', brain_id: brainId };
+        return {
+          state: 'found',
+          brain_id: r.customer.brain_id,
+          identifiers: r.identifiers.map((i) => ({
+            identifier_type: i.identifier_type,
+            identifier_hash_prefix: i.identifier_hash_prefix,
+          })),
+          merges: r.merges.map((m) => ({
+            role: m.role,
+            canonical_brain_id: m.canonical_brain_id,
+            merged_brain_id: m.merged_brain_id,
+            confidence: m.confidence,
+            rule_version: m.rule_version,
+          })),
+        };
+      },
+    },
+  });
+  // The dispatch is constructed at assembly time so the wiring is live; the MCP server transport
+  // (LiteLLM/MCP, deferred to M3) binds to it. Referenced to keep it in the assembly graph.
+  void mcpDispatch;
   // ── Meta CAPI passback ORCHESTRATOR (P0 — the missing driver) ────────────────
   // Nothing previously called passback(); the service was constructed then void-ed. This wires the
   // periodic driver: enumerate brands → fetch finalized-purchase candidates (anti-joined vs

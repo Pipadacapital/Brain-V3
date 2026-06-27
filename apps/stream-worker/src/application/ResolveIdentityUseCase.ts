@@ -23,6 +23,10 @@ import {
   IdentityResolver,
   ExtractedIdentifier,
 } from '../domain/identity/IdentityResolver.js';
+import {
+  buildIdentityEvents,
+  type IdentityEventPublisher,
+} from '../domain/identity/IdentityEventPublisher.js';
 
 export type ResolveOutcomeType = 'minted' | 'linked' | 'merged' | 'suppressed' | 'skipped' | 'no_identifiers' | 'invalid';
 
@@ -45,6 +49,12 @@ export class ResolveIdentityUseCase {
      * (the resolver is pure; this is the IdentityStore contract).
      */
     private readonly identityRepo: IdentityStore,
+    /**
+     * The identity.* outbound event publisher (Kafka adapter in infrastructure). OPTIONAL: when
+     * absent (some tests / legacy wiring) the resolution still runs and writes the graph — only the
+     * domain-event emission is skipped. Publishing happens AFTER the graph write (commit-after-write).
+     */
+    private readonly identityEventPublisher?: IdentityEventPublisher,
   ) {}
 
   /**
@@ -67,6 +77,9 @@ export class ResolveIdentityUseCase {
 
     const brandId = typeof parsed['brand_id'] === 'string' ? parsed['brand_id'] : null;
     const eventId = typeof parsed['event_id'] === 'string' ? parsed['event_id'] : null;
+    // correlation_id of the source event — threaded onto the published identity.* envelope so the
+    // identity events stay on the same trace/flow as the Bronze event that triggered them.
+    const correlationId = typeof parsed['correlation_id'] === 'string' ? parsed['correlation_id'] : undefined;
 
     if (!brandId || !eventId) {
       return { outcome: 'invalid', reason: 'missing brand_id or event_id' };
@@ -280,6 +293,19 @@ export class ResolveIdentityUseCase {
 
     // ── 6. Write to the identity SoR (Neo4j — ADR-0004) + the PG audit/contact_pii records ──────
     await this.identityRepo.writeOutcome(brandId, outcome, identifiers);
+
+    // ── 7. Publish the identity.* outcome events AFTER the graph write (commit-after-write) ──────
+    // The publisher is fail-open (a Kafka blip never throws here) and emits deterministic event_ids,
+    // so a genuine reprocess re-emits identical, dedupable events. Skipped entirely when unwired.
+    if (this.identityEventPublisher) {
+      const events = buildIdentityEvents(brandId, outcome, identifiers);
+      if (events.length > 0) {
+        await this.identityEventPublisher.publish(brandId, events, {
+          correlationId,
+          causationId: eventId,
+        });
+      }
+    }
 
     return {
       outcome: outcome.action,

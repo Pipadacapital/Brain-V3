@@ -25,9 +25,12 @@ import {
   IngestEventBodySchema,
   IngestEventAcceptedResponseSchema,
   ApiErrorResponseSchema,
-  GetBrandEventCountInputSchema,
-  GetBrandEventCountOutputSchema,
+  MCP_LOOKUP_SCHEMAS,
 } from '../src/index.js';
+// The SINGLE MCP tool-registry SoR (names, access, status, scope, schema refs). The codegen
+// enumerates THIS — there is no second, divergent tool list here (the old brand_id-as-arg
+// genMCP definition is removed; brand_id is never an MCP tool input — I-S01).
+import { MCP_TOOLS } from '@brain/ai-gateway-client';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -102,8 +105,17 @@ function zodToJsonSchema(schema: z.ZodTypeAny, defs: Record<string, unknown> = {
     return { const: (schema as z.ZodLiteral<unknown>).value };
   }
 
+  if (schema instanceof z.ZodEnum) {
+    return { type: 'string', enum: [...(schema.options as readonly string[])] };
+  }
+
   if (schema instanceof z.ZodOptional) {
     return zodToJsonSchema(schema.unwrap(), defs);
+  }
+
+  if (schema instanceof z.ZodNullable) {
+    const inner = zodToJsonSchema(schema.unwrap(), defs) as Record<string, unknown>;
+    return { oneOf: [inner, { type: 'null' }] };
   }
 
   if (schema instanceof z.ZodDefault) {
@@ -294,20 +306,70 @@ function genAvro() {
 
 // ── 4. MCP tool JSON schema ───────────────────────────────────────────────────
 
+/**
+ * Resolve a McpToolSpec schema ref (input/output) to its Zod schema → JSON schema. A ref that is
+ * missing from MCP_LOOKUP_SCHEMAS is a build-time error (no silent drift between the registry SoR
+ * and the contracts schemas).
+ */
+function refToJsonSchema(ref: string | undefined): unknown | undefined {
+  if (ref === undefined) return undefined;
+  const schema = MCP_LOOKUP_SCHEMAS[ref];
+  if (schema === undefined) {
+    throw new Error(`MCP codegen: tool references schema "${ref}" not found in MCP_LOOKUP_SCHEMAS`);
+  }
+  return zodToJsonSchema(schema);
+}
+
+/** Recursively collect every `properties` key name in a generated JSON schema (for the brand_id ban). */
+function collectPropertyNames(node: unknown, acc: Set<string>): void {
+  if (node === null || typeof node !== 'object') return;
+  const obj = node as Record<string, unknown>;
+  if (obj.properties && typeof obj.properties === 'object') {
+    for (const key of Object.keys(obj.properties as Record<string, unknown>)) acc.add(key);
+  }
+  for (const value of Object.values(obj)) {
+    if (Array.isArray(value)) value.forEach((v) => collectPropertyNames(v, acc));
+    else collectPropertyNames(value, acc);
+  }
+}
+
+/**
+ * genMCP — enumerate the SINGLE tool-registry SoR (@brain/ai-gateway-client MCP_TOOLS). Every tool is
+ * read-only (I-S08); a `disabled-not-implemented` tool is emitted with `disabled:true` + its reason and
+ * NO input/output schema (it fails closed). brand_id is asserted ABSENT from every generated input
+ * schema — the lookup key is brain_id; brand_id comes from the MCP principal (fixes the I-S01 divergence).
+ */
 function genMCP() {
   ensure(join(GENERATED_DIR, 'mcp'));
 
-  const tools = [
-    {
-      name: 'brain.collector.get_brand_event_count',
-      description:
-        'Returns the count of events for a given brand and event name within a time window. Read-only (I-S08).',
-      read_only: true,
-      scope: 'analytics:read',
-      inputSchema: zodToJsonSchema(GetBrandEventCountInputSchema),
-      outputSchema: zodToJsonSchema(GetBrandEventCountOutputSchema),
-    },
-  ];
+  const tools = MCP_TOOLS.map((t) => {
+    const disabled = t.status === 'disabled-not-implemented';
+    const inputSchema = refToJsonSchema(t.inputSchemaRef);
+    const outputSchema = refToJsonSchema(t.outputSchemaRef);
+
+    // I-S01: brand_id is NEVER a tool input — it is taken from the MCP principal.
+    if (inputSchema !== undefined) {
+      const props = new Set<string>();
+      collectPropertyNames(inputSchema, props);
+      if (props.has('brand_id')) {
+        throw new Error(
+          `MCP codegen: tool "${t.name}" input schema contains brand_id — brand_id must come from the principal, never a tool arg (I-S01).`,
+        );
+      }
+    }
+
+    return {
+      name: t.name,
+      description: t.description,
+      read_only: true, // every tool is access:'read' (I-S08) — there is no write tool.
+      access: t.access,
+      status: t.status,
+      ...(t.scope ? { scope: t.scope } : {}),
+      ...(disabled ? { disabled: true, not_implemented_reason: t.notImplementedReason ?? null } : {}),
+      ...(inputSchema !== undefined ? { inputSchema } : {}),
+      ...(outputSchema !== undefined ? { outputSchema } : {}),
+    };
+  });
 
   write(join(GENERATED_DIR, 'mcp', 'tools.json'), JSON.stringify({ tools }, null, 2));
 }

@@ -35,7 +35,9 @@ import {
   type ShopifyProductShape,
 } from '@brain/shopify-mapper';
 import { WOOCOMMERCE_MANIFEST } from '@brain/woocommerce-mapper';
+import { ORDER_BACKFILL_V1_TOPIC_SUFFIX, COLLECTOR_EVENT_V1_TOPIC_SUFFIX } from '@brain/contracts';
 import { KafkaEventSink, PgDeadLetterSink, frameworkDlqTopic } from './sinks.js';
+import { BACKFILL_TOPIC } from './run.js';
 
 const BRAND = '11111111-1111-1111-1111-111111111111';
 const CONNECTOR = '99999999-9999-9999-9999-999999999999';
@@ -257,6 +259,46 @@ describe('ingestion framework — strict dedup + no loss', () => {
   });
 });
 
+// ── §6.4 lane-isolation assertions ────────────────────────────────────────────────────────────────
+// These tests MUST fail if the producer topic is ever re-pointed to the live collector topic.
+// The backfill consumer (BackfillOrderConsumer, main.ts) reads ONLY the backfill topic; routing
+// backfill events to the live topic would starve/contaminate the live consumer group (ADR-BF-7).
+describe('§6.4 lane isolation — ingestion-backfill emits to BACKFILL topic, never LIVE', () => {
+  it('BACKFILL_TOPIC is derived from ORDER_BACKFILL_V1_TOPIC_SUFFIX (backfill lane)', () => {
+    expect(BACKFILL_TOPIC).toContain(ORDER_BACKFILL_V1_TOPIC_SUFFIX);
+  });
+
+  it('BACKFILL_TOPIC does NOT contain COLLECTOR_EVENT_V1_TOPIC_SUFFIX (live lane excluded)', () => {
+    expect(BACKFILL_TOPIC).not.toContain(COLLECTOR_EVENT_V1_TOPIC_SUFFIX);
+  });
+
+  it('BACKFILL_TOPIC is prefixed with the NODE_ENV-derived env segment (topic namespace)', () => {
+    // In test/dev NODE_ENV, ENV resolves to "dev". Validates the full derived topic shape.
+    const expectedEnv = process.env['NODE_ENV'] === 'production' ? 'prod' : 'dev';
+    expect(BACKFILL_TOPIC).toBe(`${expectedEnv}.${ORDER_BACKFILL_V1_TOPIC_SUFFIX}`);
+  });
+
+  it('KafkaEventSink sends to the BACKFILL topic when constructed with BACKFILL_TOPIC', async () => {
+    const sent: Array<{ topic: string }> = [];
+    const fakeProducer = {
+      send: vi.fn(async (args: { topic: string; messages: unknown[] }) => {
+        sent.push({ topic: args.topic });
+      }),
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const sink = new KafkaEventSink(fakeProducer as any, BACKFILL_TOPIC, 'ingest:shopify:products:ci-1');
+    await sink.deliver({
+      event_name: 'product.upsert.v1',
+      occurred_at: '2026-06-01T10:00:00.000Z',
+      provenance: { brand_id: BRAND, source: 'shopify', event_id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' },
+      properties: {},
+    });
+    expect(sent[0]!.topic).toBe(BACKFILL_TOPIC);
+    expect(sent[0]!.topic).toContain(ORDER_BACKFILL_V1_TOPIC_SUFFIX);
+    expect(sent[0]!.topic).not.toContain(COLLECTOR_EVENT_V1_TOPIC_SUFFIX);
+  });
+});
+
 describe('runtime sinks', () => {
   it('KafkaEventSink projects a CanonicalEvent into a valid CollectorEventV1 envelope', async () => {
     const sent: Array<{ topic: string; messages: Array<{ value: Buffer }> }> = [];
@@ -265,8 +307,9 @@ describe('runtime sinks', () => {
         sent.push(args);
       }),
     };
+    // Use BACKFILL_TOPIC (the correct ingestion-backfill target — lane isolation §6.4)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const sink = new KafkaEventSink(fakeProducer as any, 'dev.collector.event.v1', 'ingest:test');
+    const sink = new KafkaEventSink(fakeProducer as any, BACKFILL_TOPIC, 'ingest:test');
     const event: CanonicalEvent = {
       event_name: 'product.upsert.v1',
       occurred_at: '2026-06-01T10:00:00.000Z',
@@ -284,7 +327,7 @@ describe('runtime sinks', () => {
   it('KafkaEventSink propagates a producer failure (so NoLoss retries engage)', async () => {
     const fakeProducer = { send: vi.fn(async () => { throw new Error('produce failed'); }) };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const sink = new KafkaEventSink(fakeProducer as any, 'dev.collector.event.v1', 'ingest:test');
+    const sink = new KafkaEventSink(fakeProducer as any, BACKFILL_TOPIC, 'ingest:test');
     const event: CanonicalEvent = {
       event_name: 'product.upsert.v1',
       occurred_at: '2026-06-01T10:00:00.000Z',

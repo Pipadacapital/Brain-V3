@@ -69,6 +69,10 @@ export const StreamWorkerEnvSchema = CommonEnvSchema.extend({
   LIVE_LEDGER_CONSUMER_GROUP_ID: z.string().default('live-ledger-bridge'),
   SETTLEMENT_LEDGER_CONSUMER_GROUP_ID: z.string().default('settlement-ledger-bridge'),
   GOKWIK_AWB_LEDGER_CONSUMER_GROUP_ID: z.string().default('gokwik-awb-ledger-bridge'),
+  /** Consumer group for identity-change → scoped-Gold-recompute pipeline (V4). */
+  IDENTITY_CHANGE_RECOMPUTE_CONSUMER_GROUP_ID: z
+    .string()
+    .default('stream-worker-identity-recompute'),
 
   // ── Backfill lane (main.ts) ──────────────────────────────────────────────────
   /**

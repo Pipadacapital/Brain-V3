@@ -17,14 +17,23 @@
  */
 import { Kafka } from 'kafkajs';
 import { Pool, Pool as PgPool } from 'pg';
+import mysql from 'mysql2/promise';
 import { assertRoleEnforcesRls } from '@brain/db';
 import { DbAuditWriter, type AuditDbClient } from '@brain/audit';
+import {
+  buildTopic,
+  IDENTITY_MERGED_TOPIC_SUFFIX,
+  IDENTITY_SUPPRESSED_TOPIC_SUFFIX,
+} from '@brain/contracts';
 import { RedisDedupAdapter } from './infrastructure/redis/RedisDedupAdapter.js';
 import { RetryCounterAdapter } from './infrastructure/redis/RetryCounterAdapter.js';
 import { BronzeRepository } from './infrastructure/pg/BronzeRepository.js';
 import { Neo4jIdentityRepository } from './infrastructure/neo4j/Neo4jIdentityRepository.js';
 import { createIdempotentProducer } from './infrastructure/kafka/idempotent-producer.js';
 import { KafkaIdentityEventPublisher } from './infrastructure/kafka/KafkaIdentityEventPublisher.js';
+import { IdentityChangeRecomputeConsumer } from './interfaces/consumers/IdentityChangeRecomputeConsumer.js';
+import { StarRocksScopedRecomputeRepository } from './infrastructure/starrocks/ScopedRecomputeRepository.js';
+import { CacheInvalidatePublisher } from './infrastructure/kafka/CacheInvalidatePublisher.js';
 import { createSaltProvider } from './infrastructure/secrets/SaltProvider.js';
 import { initObservability, initSentry, createLogger } from '@brain/observability';
 import { requireEnvInProd, loadStreamWorkerConfig } from '@brain/config';
@@ -244,6 +253,48 @@ export async function main(): Promise<void> {
     kafka, resolveIdentityUseCase, topic, identityGroupId, retryCounter,
   );
 
+  // ── Identity-change → scoped-Gold-recompute consumer (V4 / §H) ──────────────
+  // Listens to identity.{merged,suppressed}.v1 — the topics KafkaIdentityEventPublisher
+  // emits to. On merge/suppress:
+  //   (a) FAIL-CLOSED: upserts a ScopedRecompute row to brain_ops.scoped_recompute_request
+  //       (StarRocks PRIMARY KEY table — idempotent on retry via same request_id).
+  //   (b) FAIL-OPEN: publishes cache.invalidate.v1 per affected customer-grained Gold mart
+  //       so the serving layer can bust its Redis cache immediately.
+  // The v4-refresh-loop.sh SCOPED_RECOMPUTE=1 step drains these rows + issues targeted MV
+  // SYNC refreshes; step 6 (full mv_* refresh) still runs as a safety net.
+  //
+  // Shares the SAME identityEventEnvPrefix + identityEventProducer as KafkaIdentityEventPublisher
+  // so the consume topics EXACTLY match the produce topics (NODE_ENV-driven prefix).
+  //
+  // brain_ops pool: mysql2/promise, StarRocks mysql-protocol port 9030 (root user, same creds
+  // as identity-export/run.ts). Defaults to 127.0.0.1 when STARROCKS_HOST is absent (dev without
+  // StarRocks — the upsert will fail → consumer retries → DLQ after 5 = correct fail-closed).
+  const identityRecomputeGroupId = cfg.IDENTITY_CHANGE_RECOMPUTE_CONSUMER_GROUP_ID;
+  const srOpsPool = mysql.createPool({
+    host:            cfg.STARROCKS_HOST ?? '127.0.0.1',
+    port:            cfg.STARROCKS_QUERY_PORT,
+    user:            cfg.STARROCKS_ROOT_USER,
+    password:        cfg.STARROCKS_ROOT_PASSWORD,
+    connectionLimit: 3,
+  });
+  const scopedRecomputeRepo = new StarRocksScopedRecomputeRepository(srOpsPool);
+  // CacheInvalidatePublisher reuses identityEventProducer (already connected, idempotent EoS).
+  const cacheInvalidatePublisher = new CacheInvalidatePublisher(
+    identityEventProducer, identityEventEnvPrefix, log,
+  );
+  const identityRecomputeTopics = [
+    buildTopic(identityEventEnvPrefix, IDENTITY_MERGED_TOPIC_SUFFIX),
+    buildTopic(identityEventEnvPrefix, IDENTITY_SUPPRESSED_TOPIC_SUFFIX),
+  ];
+  const identityRecomputeConsumer = new IdentityChangeRecomputeConsumer(
+    kafka,
+    scopedRecomputeRepo,
+    cacheInvalidatePublisher,
+    identityRecomputeTopics,
+    identityRecomputeGroupId,
+    retryCounter,
+  );
+
   // ── Consent suppressor (feat-d13-consent-cancontact) ────────────────────────
   // Same live topic, separate consumer group. Reuses the SAME SaltProvider as the
   // identity bridge (one sanctioned per-brand hasher — D-2 hard-crash on salt failure)
@@ -376,6 +427,7 @@ export async function main(): Promise<void> {
     await Promise.all([
       consumer.stop(),
       identityConsumer.stop(),
+      identityRecomputeConsumer.stop(),
       consentSuppressorConsumer.stop(),
       capiDeletionConsumer.stop(),
       backfillConsumer.stop(),
@@ -398,6 +450,7 @@ export async function main(): Promise<void> {
     await backfillBronze.end();
     await auditPool.end();
     await identityEventProducer.disconnect().catch(() => undefined);
+    await srOpsPool.end().catch(() => undefined);
     await identityRepo.end();
     await healthServer.close();
     // Flush buffered telemetry LAST so shutdown spans/metrics are exported (C1).
@@ -417,6 +470,15 @@ export async function main(): Promise<void> {
   log.info(`starting identity bridge — topic=${topic} group=${identityGroupId}`);
   await identityConsumer.start();
   log.info('identity bridge consumer running');
+
+  // ── Identity-change recompute consumer (V4 scoped Gold-recompute MANDATORY WIRE) ──
+  // Subscribes to the SAME topics KafkaIdentityEventPublisher emits to (same env prefix).
+  // Must start AFTER identityEventProducer is connected (it shares the producer for
+  // cache.invalidate.v1 publishes). WIRED HERE: do NOT remove without verifying the
+  // scoped-recompute-loop integration test and the brain_ops.scoped_recompute_request drain.
+  log.info(`starting identity-recompute consumer — topics=${identityRecomputeTopics.join(',')} group=${identityRecomputeGroupId}`);
+  await identityRecomputeConsumer.start();
+  log.info('identity-recompute consumer running');
 
   // ── Consent suppressor consumer (feat-d13-consent-cancontact MANDATORY WIRE) ──
   // Same live topic, independent consumer group. Projects consent_flags →

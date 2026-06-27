@@ -396,6 +396,93 @@ services:
       - /opt/spike/bronze_materialize.py
     restart: unless-stopped
 
+  # ── Bronze writer (ADR-0006): Kafka Connect + Apache Iceberg Sink — the Spark-sink REPLACEMENT ──
+  # Writes RAW Redpanda topic records DIRECTLY to Iceberg Bronze. No app-managed streaming checkpoint —
+  # the sink's coordinator ties Kafka offset commits to Iceberg snapshot commits (the Spark-sink
+  # "Incomplete log file" checkpoint-corruption class is gone). Shares Redpanda's network namespace
+  # (localhost:9092 resolves, exactly like spark-bronze-sink); iceberg-rest + minio still resolve over
+  # compose DNS because Redpanda is on the compose network. Connect REST API → redpanda:8083.
+  # P1 of the migration: runs IN PARALLEL with the Spark sink (no cutover yet) onto a SEPARATE raw table
+  # (brain_bronze.collector_events_raw), so Bronze parity can be checked before retiring the Spark leg.
+  kafka-connect:
+    image: confluentinc/cp-kafka-connect:7.6.1
+    profiles: ["lakehouse"]
+    # root so the runtime plugin install can write the /opt/connect-plugins volume (the image's default
+    # appuser cannot mkdir there); Connect's run script is root-safe (mirrors spark-bronze-sink user: root).
+    user: root
+    # Same netns trick as spark-bronze-sink (see its comment) — resolves Redpanda's localhost:9092
+    # advertised listener while keeping compose-DNS for iceberg-rest/minio.
+    network_mode: "service:redpanda"
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      iceberg-rest:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      CONNECT_BOOTSTRAP_SERVERS: "localhost:9092"
+      CONNECT_REST_ADVERTISED_HOST_NAME: "redpanda"
+      CONNECT_REST_PORT: "8083"
+      CONNECT_GROUP_ID: "brain-bronze-connect"
+      CONNECT_CONFIG_STORAGE_TOPIC: "_connect-configs"
+      CONNECT_OFFSET_STORAGE_TOPIC: "_connect-offsets"
+      CONNECT_STATUS_STORAGE_TOPIC: "_connect-status"
+      CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: "1"
+      CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: "1"
+      CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: "1"
+      CONNECT_KEY_CONVERTER: "org.apache.kafka.connect.storage.StringConverter"
+      CONNECT_VALUE_CONVERTER: "org.apache.kafka.connect.json.JsonConverter"
+      CONNECT_VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
+      CONNECT_PLUGIN_PATH: "/usr/share/java,/usr/share/confluent-hub-components,/opt/connect-plugins"
+      # Tabular's iceberg-kafka-connect distribution (the connector later donated to Apache Iceberg).
+      # Published as a GitHub release asset; connector.class = io.tabular.iceberg.connect.IcebergSinkConnector.
+      ICEBERG_CONNECT_VERSION: "0.6.19"
+    # Resolve the Iceberg connect plugin at runtime (cached in the volume), mirroring spark-bronze-sink's
+    # runtime-package approach (build-time bakes are unreliable behind Maven).
+    command:
+      - bash
+      - -c
+      - |
+        set -e
+        # Plugin must be a DIRECT child of a plugin.path entry (with lib/*.jar) for Connect to scan it.
+        # The cp image ships no `unzip`, but DOES ship `jar` (it's a JDK image) — extract with that.
+        PLUGIN_DIR=/opt/connect-plugins/iceberg-kafka-connect-runtime-$${ICEBERG_CONNECT_VERSION}
+        if [ ! -f "$$PLUGIN_DIR/manifest.json" ]; then
+          echo "Downloading Apache Iceberg (Tabular) Kafka Connect runtime $${ICEBERG_CONNECT_VERSION}..."
+          curl -fsSL -o /tmp/iceberg-connect.zip \
+            "https://github.com/tabular-io/iceberg-kafka-connect/releases/download/v$${ICEBERG_CONNECT_VERSION}/iceberg-kafka-connect-runtime-$${ICEBERG_CONNECT_VERSION}.zip"
+          ( cd /opt/connect-plugins && jar xf /tmp/iceberg-connect.zip )
+          echo "Iceberg connect plugin installed ($$(ls $$PLUGIN_DIR/lib/*.jar | wc -l) jars)."
+        fi
+        exec /etc/confluent/docker/run
+    volumes:
+      - brain-connect-plugins:/opt/connect-plugins
+    restart: unless-stopped
+
+  # Registers the iceberg-bronze-collector connector once Connect is up (idempotent PUT .../config).
+  kafka-connect-init:
+    image: curlimages/curl:8.8.0
+    profiles: ["lakehouse"]
+    depends_on:
+      kafka-connect:
+        condition: service_started
+    volumes:
+      - ./infra/kafka-connect:/config:ro
+    entrypoint:
+      - sh
+      - -c
+      - |
+        echo 'Waiting for Kafka Connect REST (redpanda:8083)...'
+        until curl -fsS http://redpanda:8083/connectors >/dev/null 2>&1; do sleep 3; done
+        echo 'Registering iceberg-bronze-collector...'
+        code=$$(curl -s -o /tmp/resp -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+          --data @/config/iceberg-bronze-collector.json http://redpanda:8083/connectors)
+        if [ "$$code" = "201" ] || [ "$$code" = "409" ]; then
+          echo "connector registered (HTTP $$code)"; else
+          echo "FAILED (HTTP $$code):"; cat /tmp/resp; exit 1; fi
+    restart: "no"
+
   # ────────────────────────────────────────────────────────────────────────────
   # OBSERVE profile — Grafana + Loki + Prometheus + OTel Collector
   # ────────────────────────────────────────────────────────────────────────────
@@ -485,3 +572,4 @@ services:
 volumes:
   brain-spark-checkpoint:
   brain-spark-ivy:
+  brain-connect-plugins:

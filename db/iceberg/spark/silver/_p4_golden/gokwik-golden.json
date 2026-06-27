@@ -1,0 +1,139 @@
+[
+  {
+    "record_type": "awb",
+    "record": {
+      "awb_number": "AWB-12345",
+      "order_id": "ord_1",
+      "status": "RTO Initiated",
+      "status_changed_at": "2026-05-05T16:00:00Z",
+      "payment_method": "cod",
+      "pincode": "110001"
+    },
+    "brand_id": "444a25f2-57d4-4e04-9f70-98a6480e1fc4",
+    "salt_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "data_source": "real",
+    "expected": {
+      "event_id": "b923e955-cc45-5c2c-af8b-0890102f6a5b",
+      "event_type": "gokwik.awb_status.v1",
+      "occurred_at": "2026-05-05T16:00:00.000Z",
+      "source": "gokwik",
+      "data_source": "real",
+      "awb_number_hash": "202a52e51fcd46d5b3783aa485cc9d6c39e929d004b90407582c7b921ff506f4",
+      "order_id": "ord_1",
+      "status": "RTO Initiated",
+      "terminal_class": "rto",
+      "is_terminal": true,
+      "payment_method": "cod",
+      "pincode": "110001",
+      "status_changed_at": "2026-05-05T16:00:00.000Z"
+    }
+  },
+  {
+    "record_type": "awb",
+    "record": {
+      "awb_number": "AWB-99",
+      "order_id": "ord_2",
+      "status": "Delivered",
+      "status_changed_at": "2026-05-06T09:30:45Z",
+      "payment_method": "prepaid",
+      "pincode": "560034"
+    },
+    "brand_id": "444a25f2-57d4-4e04-9f70-98a6480e1fc4",
+    "salt_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "data_source": "synthetic",
+    "expected": {
+      "event_id": "8bcf165a-441c-5b10-a6b6-57e618dda9ff",
+      "event_type": "gokwik.awb_status.v1",
+      "occurred_at": "2026-05-06T09:30:45.000Z",
+      "source": "gokwik",
+      "data_source": "synthetic",
+      "awb_number_hash": "8688ccc43617c159a6db0da97c383a86d1c550afe79cc3d81274faefb8644006",
+      "order_id": "ord_2",
+      "status": "Delivered",
+      "terminal_class": "delivered",
+      "is_terminal": true,
+      "payment_method": "prepaid",
+      "pincode": "560034",
+      "status_changed_at": "2026-05-06T09:30:45.000Z"
+    }
+  },
+  {
+    "record_type": "awb",
+    "record": {
+      "awb_number": null,
+      "order_id": "ord_3",
+      "status": "In Transit",
+      "status_changed_at": "2026-05-07T11:00:00Z",
+      "payment_method": null,
+      "pincode": null
+    },
+    "brand_id": "444a25f2-57d4-4e04-9f70-98a6480e1fc4",
+    "salt_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "data_source": "real",
+    "expected": {
+      "event_id": "411f3811-7ef9-5ff5-a9d0-c5cf6740ab0f",
+      "event_type": "gokwik.awb_status.v1",
+      "occurred_at": "2026-05-07T11:00:00.000Z",
+      "source": "gokwik",
+      "data_source": "real",
+      "awb_number_hash": null,
+      "order_id": "ord_3",
+      "status": "In Transit",
+      "terminal_class": "none",
+      "is_terminal": false,
+      "payment_method": null,
+      "pincode": null,
+      "status_changed_at": "2026-05-07T11:00:00.000Z"
+    }
+  },
+  {
+    "record_type": "rto_predict",
+    "record": {
+      "order_id": "ord_1",
+      "request_id": "req_1",
+      "risk_flag": "High Risk",
+      "risk_reason": "high-RTO pincode",
+      "occurred_at": "2026-05-01T08:58:00Z"
+    },
+    "brand_id": "444a25f2-57d4-4e04-9f70-98a6480e1fc4",
+    "salt_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "data_source": "real",
+    "expected": {
+      "event_id": "8ddad7b1-e4ba-5a99-bc1c-43c246aa017a",
+      "event_type": "gokwik.rto_predict.v1",
+      "occurred_at": "2026-05-01T08:58:00.000Z",
+      "source": "gokwik",
+      "data_source": "real",
+      "order_id": "ord_1",
+      "request_id": "req_1",
+      "risk_flag": "high",
+      "risk_flag_raw": "High Risk",
+      "risk_reason": "high-RTO pincode"
+    }
+  },
+  {
+    "record_type": "rto_predict",
+    "record": {
+      "order_id": "ord_2",
+      "request_id": "req_2",
+      "risk_flag": "Low",
+      "risk_reason": null,
+      "occurred_at": "2026-05-02T10:15:30Z"
+    },
+    "brand_id": "444a25f2-57d4-4e04-9f70-98a6480e1fc4",
+    "salt_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "data_source": "synthetic",
+    "expected": {
+      "event_id": "ed965a3e-ffaa-5766-9b86-15e315db560f",
+      "event_type": "gokwik.rto_predict.v1",
+      "occurred_at": "2026-05-02T10:15:30.000Z",
+      "source": "gokwik",
+      "data_source": "synthetic",
+      "order_id": "ord_2",
+      "request_id": "req_2",
+      "risk_flag": "low",
+      "risk_flag_raw": "Low",
+      "risk_reason": null
+    }
+  }
+]

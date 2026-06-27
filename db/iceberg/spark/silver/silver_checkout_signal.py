@@ -50,7 +50,7 @@ from iceberg_base import (  # noqa: E402
 )
 
 BRONZE_NAMESPACE = os.environ.get("BRONZE_NAMESPACE", "brain_bronze")
-BRONZE_TABLE = f"{CATALOG}.{BRONZE_NAMESPACE}.collector_events"
+BRONZE_TABLE = f"{CATALOG}.{os.environ.get('SILVER_NAMESPACE', 'brain_silver')}.silver_collector_event"  # ADR-0006 P3: gated source (R2/R3 now in Silver)
 SILVER_TABLE = f"{CATALOG}.{SILVER_NAMESPACE}.silver_checkout_signal"
 
 # The TTL/partition-window guard from the dbt mart (interval 400 day). Overridable so a full backfill

@@ -45,7 +45,7 @@ from iceberg_base import (
 
 # ── Bronze (source) wiring — the raw analytical SoR this Silver mart builds FROM ──────────────────
 BRONZE_NAMESPACE = os.environ.get("BRONZE_NAMESPACE", "brain_bronze")
-BRONZE_TABLE = f"{CATALOG}.{BRONZE_NAMESPACE}.collector_events"
+BRONZE_TABLE = f"{CATALOG}.{os.environ.get('SILVER_NAMESPACE', 'brain_silver')}.silver_collector_event"  # ADR-0006 P3: gated source (R2/R3 now in Silver)
 # The one Bronze event_type that carries spend rows (the @brain/ad-spend bridge / SERVER_TRUSTED_BRONZE).
 SPEND_EVENT_TYPE = os.environ.get("SPEND_EVENT_TYPE", "spend.live.v1")
 

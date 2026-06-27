@@ -16,7 +16,6 @@
  * Honest empty: skeleton → empty-state → data. Never fabricated 0.
  */
 
-import { BrandSummaryCard } from '@/components/dashboard/brand-summary-card';
 import { FoundationHealthCard } from '@/components/dashboard/foundation-health-card';
 import { TopActionsCard } from '@/components/dashboard/top-actions-card';
 import { ConnectionStatusCard } from '@/components/dashboard/connection-status-card';
@@ -257,10 +256,6 @@ export function DashboardContent() {
       <ExecutiveMetricsRow />
       <TrendSection />
       <ActivitySection />
-
-      <div className="grid grid-cols-1 gap-6">
-        <BrandSummaryCard />
-      </div>
     </div>
   );
 }

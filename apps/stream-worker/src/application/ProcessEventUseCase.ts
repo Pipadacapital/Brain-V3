@@ -29,7 +29,28 @@ export type ProcessOutcome =
   | 'dedup_hit'     // Redis NX failed — already seen
   | 'pk_conflict'   // PK unique violation — durable second-line dedup
   | 'quarantined'   // R3: PARSED but failed a security/compliance gate → .quarantine sink
+  | 'skipped'       // server-trusted lane event seen by the pixel gate — handled by its own bridge
   | 'invalid';      // Zod parse failed — goes to DLQ without retry
+
+/**
+ * SERVER-TRUSTED lane event names — connector/worker-emitted events whose brand_id is server-derived
+ * (from the authenticated connector_instance) and which carry NO install_token. They land in Bronze via
+ * their OWN dedicated server-trusted consumers (the BRONZE_BRIDGES + the Kafka-Connect raw lane), NOT via
+ * the pixel install_token gate. The pixel-lane consumer (enforceTenantDerivation=true) must therefore
+ * SKIP them — applying install_token derivation would spuriously quarantine them as `tenant_unresolved`
+ * (they legitimately have no token). Browser pixel events (page.viewed, product.viewed, cart.*, checkout.*)
+ * are NOT in this set and stay fully subject to the R2 tenant + R3 consent gate.
+ */
+export const SERVER_TRUSTED_EVENT_NAMES: ReadonlySet<string> = new Set([
+  'order.live.v1',
+  'order.backfill.v1',
+  'spend.live.v1',
+  'settlement.live.v1',
+  'shopflo.checkout_abandoned.v1',
+  'gokwik.rto_predict.v1',
+  'gokwik.awb_status.v1',
+  'shiprocket.shipment_status.v1',
+]);
 
 export interface ProcessResult {
   outcome: ProcessOutcome;
@@ -133,6 +154,14 @@ export class ProcessEventUseCase {
     // brand_id is already server-trusted; they carry no install_token).
     let brand_id = claimedBrandId;
     if (this.enforceTenantDerivation) {
+      // SERVER-TRUSTED bypass: connector/worker-emitted lane events (order.live.v1, spend.live.v1, the
+      // logistics/checkout bridge events, …) carry a server-derived brand_id and NO install_token, and
+      // land in Bronze via their OWN server-trusted bridges. The pixel install_token gate must NOT touch
+      // them — doing so quarantines them as `tenant_unresolved`. Skip (commit, no quarantine, no Bronze
+      // write here); their dedicated consumer owns the landing. Pixel/browser events fall through to the gate.
+      if (SERVER_TRUSTED_EVENT_NAMES.has(event_name)) {
+        return { outcome: 'skipped', brandId: claimedBrandId, eventId: event_id, eventName: event_name, reason: 'server_trusted_lane' };
+      }
       const installToken = (properties as Record<string, unknown> | undefined)?.['install_token'];
       const derivedBrandId = await this.bronze.resolveBrandByInstallToken(installToken);
 

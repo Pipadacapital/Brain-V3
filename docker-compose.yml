@@ -157,6 +157,8 @@ services:
       /bin/sh -c "
         echo 'Waiting for StarRocks FE...' &&
         mysql -h starrocks -P 9030 -u root --connect-timeout=10 < /sql/bootstrap.sql &&
+        echo 'Registering external Silver/Gold Iceberg catalogs...' &&
+        mysql -h starrocks -P 9030 -u root < /sql/external_iceberg_silver_gold_catalog.sql &&
         echo 'StarRocks bootstrap complete'
       "
     restart: "no"

@@ -73,6 +73,16 @@ export const CoreEnvSchema = CommonEnvSchema.extend({
   INSIGHT_FRESHNESS_SLO_HOURS: z.coerce.number().default(6),
   FX_CACHE_TTL_MS: z.coerce.number().default(12 * 60 * 60 * 1000),
   FX_FETCH_TIMEOUT_MS: z.coerce.number().default(8000),
+
+  // ── Trino ad-hoc / federated Iceberg exploration ─────────────────────────────
+  // ADDITIVE and read-only — for ad-hoc/exploration ONLY, never an app serving path.
+  // App / BFF / metric-engine read StarRocks brain_serving.mv_* solely; a cache-miss
+  // on a known metric goes to StarRocks, not Trino.
+  TRINO_HOST: z.string().default('localhost'),
+  /** Host-mapped port for Trino HTTP/JDBC (container: 8080, host: 8090 in docker-compose). */
+  TRINO_PORT: z.coerce.number().default(8090),
+  /** Enable result caching for Trino ad-hoc queries (default off; exploration only). */
+  TRINO_ADHOC_CACHE_ENABLED: strictTrueBool,
 });
 
 export type CoreEnv = z.infer<typeof CoreEnvSchema>;

@@ -268,3 +268,26 @@ export type { DqLetterGrade } from './cost-confidence.js';
 // no cap, excluded from MMM. CI-blocking: blocks high-risk recommendations below trusted.
 export { gateMetric, evaluateGate } from './quality-gate.js';
 export type { TrustTier, GateDecision } from './quality-gate.js';
+
+// ── Trino ad-hoc exploration PORT (ADDITIVE, READ-ONLY — NOT a serving dependency) ──
+// brain_serving.mv_* (StarRocks) is the SOLE app/BFF/metric-engine serving path.
+// Trino is operator/explicit ad-hoc exploration only. Known metrics NEVER route here.
+// The AI-ad-hoc-Trino path is DISABLED (routeAiAdHocTrino throws NotImplementedYet).
+export { withTrinoBrand } from './trino-deps.js';
+export type { TrinoPool, TrinoQueryPort, TrinoScope, WithTrinoBrandOptions } from './trino-deps.js';
+// Concrete Trino HTTP adapter (composition root injects via createTrinoPool).
+export { createTrinoPool } from './trino-adapter.js';
+export type { TrinoAdapterConfig } from './trino-adapter.js';
+
+// ── Analytics cache PORT (brand_id-leading composite keys + stampede guard) ──
+export { buildCacheKey, IoredisCacheAdapter } from './analytics-cache.js';
+export type { AnalyticsCachePort, RedisCacheClient } from './analytics-cache.js';
+
+// ── Query routing (known metrics → StarRocks; AI-Trino DISABLED) ──────────────
+export {
+  QueryRoute,
+  routeKnownMetric,
+  routeAiAdHocTrino,
+  NotImplementedYet,
+} from './query-route.js';
+export type { KnownMetricRoute } from './query-route.js';

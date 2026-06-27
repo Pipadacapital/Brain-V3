@@ -34,6 +34,8 @@ import { KafkaIdentityEventPublisher } from './infrastructure/kafka/KafkaIdentit
 import { IdentityChangeRecomputeConsumer } from './interfaces/consumers/IdentityChangeRecomputeConsumer.js';
 import { StarRocksScopedRecomputeRepository } from './infrastructure/starrocks/ScopedRecomputeRepository.js';
 import { CacheInvalidatePublisher } from './infrastructure/kafka/CacheInvalidatePublisher.js';
+import { AnalyticsCacheInvalidateConsumer } from './interfaces/consumers/AnalyticsCacheInvalidateConsumer.js';
+import { Redis } from 'ioredis';
 import { createSaltProvider } from './infrastructure/secrets/SaltProvider.js';
 import { initObservability, initSentry, createLogger } from '@brain/observability';
 import { requireEnvInProd, loadStreamWorkerConfig } from '@brain/config';
@@ -295,6 +297,19 @@ export async function main(): Promise<void> {
     retryCounter,
   );
 
+  // ── Analytics cache-invalidation consumer (the CONSUMER side of cache.invalidate.v1) ──
+  // The identity-recompute consumer EMITS cache.invalidate.v1 after an identity merge/suppress;
+  // this consumer evicts the brand-scoped serving-cache keys so the serving tier never serves
+  // stale Gold (no waiting for TTL). A dedicated ioredis client (mirrors RetryCounterAdapter) —
+  // ioredis Redis satisfies ICacheEvictionClient structurally (del/scan), all deletes brand-gated.
+  const cacheEvictionRedis = new Redis(redisUrl);
+  const analyticsCacheInvalidateConsumer = new AnalyticsCacheInvalidateConsumer(
+    kafka,
+    cacheEvictionRedis,
+    identityEventEnvPrefix,
+    cfg.ANALYTICS_CACHE_INVALIDATE_CONSUMER_GROUP_ID,
+  );
+
   // ── Consent suppressor (feat-d13-consent-cancontact) ────────────────────────
   // Same live topic, separate consumer group. Reuses the SAME SaltProvider as the
   // identity bridge (one sanctioned per-brand hasher — D-2 hard-crash on salt failure)
@@ -428,6 +443,7 @@ export async function main(): Promise<void> {
       consumer.stop(),
       identityConsumer.stop(),
       identityRecomputeConsumer.stop(),
+      analyticsCacheInvalidateConsumer.stop(),
       consentSuppressorConsumer.stop(),
       capiDeletionConsumer.stop(),
       backfillConsumer.stop(),
@@ -450,6 +466,7 @@ export async function main(): Promise<void> {
     await backfillBronze.end();
     await auditPool.end();
     await identityEventProducer.disconnect().catch(() => undefined);
+    await cacheEvictionRedis.quit().catch(() => undefined);
     await srOpsPool.end().catch(() => undefined);
     await identityRepo.end();
     await healthServer.close();
@@ -478,6 +495,12 @@ export async function main(): Promise<void> {
   // scoped-recompute-loop integration test and the brain_ops.scoped_recompute_request drain.
   log.info(`starting identity-recompute consumer — topics=${identityRecomputeTopics.join(',')} group=${identityRecomputeGroupId}`);
   await identityRecomputeConsumer.start();
+
+  // Cache-invalidation consumer: evict brand-scoped serving-cache keys on cache.invalidate.v1
+  // (the CONSUMER side of what identityRecomputeConsumer emits). Closes LOW-1 — without it,
+  // cache.invalidate events are published but never consumed → serving cache stays stale to TTL.
+  log.info(`starting analytics cache-invalidate consumer — group=${cfg.ANALYTICS_CACHE_INVALIDATE_CONSUMER_GROUP_ID}`);
+  await analyticsCacheInvalidateConsumer.start();
   log.info('identity-recompute consumer running');
 
   // ── Consent suppressor consumer (feat-d13-consent-cancontact MANDATORY WIRE) ──

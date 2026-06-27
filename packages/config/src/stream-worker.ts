@@ -74,6 +74,15 @@ export const StreamWorkerEnvSchema = CommonEnvSchema.extend({
     .string()
     .default('stream-worker-identity-recompute'),
 
+  /**
+   * Consumer group for the analytics cache-invalidation consumer — it consumes
+   * cache.invalidate.v1 (emitted by the identity-recompute consumer) and evicts the
+   * brand-scoped serving-cache keys so the serving tier never serves stale Gold.
+   */
+  ANALYTICS_CACHE_INVALIDATE_CONSUMER_GROUP_ID: z
+    .string()
+    .default('stream-worker-analytics-cache-invalidate'),
+
   // ── Backfill lane (main.ts) ──────────────────────────────────────────────────
   /**
    * Backfill topic. Default DERIVES from NODE_ENV (prod→'prod', else→'dev'); the

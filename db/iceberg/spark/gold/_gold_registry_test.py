@@ -6,7 +6,7 @@ by actual on-disk artifacts so the registry never drifts silently from the codeb
 
 CHECKS:
   1. No duplicate mart names in _GOLD_MARTS.
-  2. Expected total count: 23 enabled (21 Gold + 2 Silver-snap) + 2 disabled.
+  2. Expected total count: 27 enabled (25 Gold + 2 Silver-snap) + 2 disabled.
   3. brand_id is pk[0] on every spec (V4 tenant-key invariant).
   4. money_columns entries have non-empty minor_col + non-empty currency_code_col.
   5. Disabled specs carry a not_implemented_reason starting with "NotImplementedYet",
@@ -80,7 +80,7 @@ def test_expected_counts() -> None:
     """Verify the expected enabled (23) + disabled (2) counts."""
     n_enabled = len(list(enabled_marts()))
     n_disabled = len(list(disabled_marts()))
-    EXPECTED_ENABLED = 23   # 21 gold_* + 2 snap_* (Silver-snapshot)
+    EXPECTED_ENABLED = 27   # 25 gold_* + 2 snap_* (Silver-snapshot)
     EXPECTED_DISABLED = 2   # predictive_ltv + predictive_health
 
     if n_enabled != EXPECTED_ENABLED:
@@ -90,7 +90,7 @@ def test_expected_counts() -> None:
             f"Update EXPECTED_ENABLED in this test when adding a new mart.",
         )
     else:
-        _pass("expected_counts", f"{n_enabled} enabled marts (21 gold + 2 snap)")
+        _pass("expected_counts", f"{n_enabled} enabled marts (25 gold + 2 snap)")
 
     if n_disabled != EXPECTED_DISABLED:
         _record_fail(

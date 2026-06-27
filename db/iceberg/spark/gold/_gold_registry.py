@@ -398,6 +398,60 @@ _GOLD_MARTS: List[GoldMartSpec] = [
         grain="brand_platform_campaign_currency",
     ),
 
+    # ── GROUP: NET-NEW gap Gold INTELLIGENCE marts (Phase 2, parity status=NEW) ─
+    # Journey rollup + deterministic customer-health + recommendation/AI feature vectors.
+    # No dbt predecessor — read Iceberg Silver, write Iceberg Gold only.
+
+    GoldMartSpec(
+        name="gold_journey",
+        module="gold_journey.py",
+        # Spark MERGE ON (brand_id, brain_anon_id). brain_anon_id is the journey/visitor key
+        # (brain_id is sparse pre-stitch), so the honest grain is the anon visitor.
+        pk=["brand_id", "brain_anon_id"],
+        mv_name="brain_serving.mv_gold_journey",
+        reads_from=["silver_journey", "silver_touchpoint", "silver_sessions"],
+        money_columns=[],  # journey entity carries no revenue — revenue truth stays in order/settlement marts
+        enabled=True,
+        grain="brand_anon_visitor",
+    ),
+    GoldMartSpec(
+        name="gold_customer_health",
+        module="gold_customer_health.py",
+        pk=["brand_id", "brain_id"],
+        mv_name="brain_serving.mv_gold_customer_health",
+        reads_from=["silver_order_state", "silver_customer"],
+        money_columns=[
+            MoneyColumn("lifetime_value_minor"),   # carried VERBATIM from silver_customer (never blended into score)
+        ],
+        enabled=True,
+        grain="brand_customer",
+    ),
+    GoldMartSpec(
+        name="gold_recommendation_features",
+        module="gold_recommendation_features.py",
+        pk=["brand_id", "brain_id"],
+        mv_name="brain_serving.mv_gold_recommendation_features",
+        reads_from=["silver_customer", "silver_order_state", "silver_touchpoint"],
+        money_columns=[
+            MoneyColumn("monetary_minor"),   # the M of RFM (silver_customer.lifetime_value_minor)
+        ],
+        enabled=True,
+        grain="brand_customer",
+    ),
+    GoldMartSpec(
+        name="gold_ai_features",
+        module="gold_ai_features.py",
+        pk=["brand_id", "brain_id"],
+        mv_name="brain_serving.mv_gold_ai_features",
+        reads_from=["silver_customer", "silver_order_state", "silver_touchpoint", "silver_journey"],
+        money_columns=[
+            MoneyColumn("lifetime_value_minor"),    # Σ recognized order value (minor + sibling currency_code)
+            MoneyColumn("avg_order_value_minor"),   # lifetime_value_minor DIV order_count (per-currency, never float)
+        ],
+        enabled=True,
+        grain="brand_customer",
+    ),
+
     # ── GROUP: Silver-snapshot marts (layer='silver') ──────────────────────────
     # These jobs live in the gold/ directory and run in the gold refresh group but write to
     # Iceberg brain_SILVER (dbt config schema='brain_silver' for these SCD snapshot marts).

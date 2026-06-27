@@ -73,9 +73,22 @@ export type { CodRtoRatesResult, CodRtoCohort } from './cod-rto-rates.js';
 // Customer 360 (Gold) summary — re-platform Phase E
 export { getCustomer360Summary } from './customer-360.js';
 export type { Customer360Summary, Customer360Row } from './customer-360.js';
+// Customer journey-intelligence (Gold) summary — V4 gold_journey rollup (NO money, NO PII; brain_anon_id key)
+export { getCustomerJourneySummary } from './customer-journey.js';
+export type { CustomerJourneySummary, CustomerJourneyRow } from './customer-journey.js';
 // Single-customer RFM/churn score (Gold) — DB-AUDIT C5 ML serving
 export { getCustomerScore } from './customer-score.js';
 export type { CustomerScoreRow } from './customer-score.js';
+// AI/ML input feature vector (Gold ai_features serving mart) — V4 runtime Silver fold, not a precompute table.
+export { getAiFeatures } from './ai-features.js';
+export type { AiFeaturesResult, AiFeatureRow, AiFeaturesOptions } from './ai-features.js';
+// Customer health/churn band (Gold) — V4 NET-NEW deterministic per-customer health surface.
+export { getCustomerHealthSummary } from './customer-health.js';
+export type { CustomerHealthSummary, CustomerHealthRow, HealthBand } from './customer-health.js';
+// Recommendation INPUT features (Gold) — per-customer RFM + behaviour vectors over
+// mv_gold_recommendation_features (RUNTIME Silver fold, NOT a permanent feature-precompute table).
+export { getRecommendationFeatures } from './recommendation-features.js';
+export type { RecommendationFeaturesResult, RecommendationFeatureRow } from './recommendation-features.js';
 // Insight + Opportunity Engine (AI Copilot briefing source) — deterministic, over the Gold marts.
 export { computeInsights } from './insights.js';
 export type {

@@ -57,7 +57,12 @@ from iceberg_base import (  # noqa: E402 — sys.path tweak above
 )
 
 BRONZE_NAMESPACE = os.environ.get("BRONZE_NAMESPACE", "brain_bronze")
-BRONZE_TABLE = f"{CATALOG}.{BRONZE_NAMESPACE}.collector_events"
+# ADR-0006 P3: read the GATED collector source (brain_silver.silver_collector_event) — the R2/R3
+# admission gate now lives in Silver (silver_collector_event.py) over the RAW Kafka-Connect Bronze,
+# not in the retired Spark sink. Same `payload`-is-the-full-envelope column contract, so the
+# get_json_object extraction below is unchanged. Override SILVER_NAMESPACE for tests.
+_SILVER_NS = os.environ.get("SILVER_NAMESPACE", "brain_silver")
+BRONZE_TABLE = f"{CATALOG}.{_SILVER_NS}.silver_collector_event"
 TABLE_NAME = "silver_touchpoint"
 
 # CURRENT-side cart-stitch read (same JDBC posture dbt uses cross-catalog; superuser RLS-bypass ETL read).

@@ -75,8 +75,9 @@ All Avro schemas are registered in Apicurio with `FULL_TRANSITIVE` compatibility
 # Start ingest profile
 docker compose --profile ingest up -d
 
-# Create topics manually (already done by redpanda-init)
-docker compose exec redpanda rpk topic list --brokers localhost:9092
+# List topics (already created by redpanda-init). Apache Kafka KRaft broker; the
+# compose service/DNS name stays `redpanda` but the image is apache/kafka.
+docker compose exec redpanda /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list
 
 # Register a schema in Apicurio
 curl -X POST http://localhost:8080/apis/registry/v2/groups/brain/artifacts \

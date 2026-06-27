@@ -41,7 +41,17 @@ CREATE TABLE IF NOT EXISTS brain_bronze.collector_events (
 
   -- Optional / evolution-safe fields (added as nullable with defaults)
   processing_flags STRING                COMMENT 'JSON metadata from stream-worker. Null on first write.',
-  collector_version STRING               COMMENT 'Collector deployment version. Nullable.'
+  collector_version STRING               COMMENT 'Collector deployment version. Nullable.',
+
+  -- Ingestion metadata (K2a) — Kafka source lineage + receipt/write wall-clocks + trace id.
+  -- Pure RECEIPT metadata, NOT business logic. Additive-optional (nullable) — I-E02 schema-evolution.
+  kafka_topic     STRING                 COMMENT 'Source Kafka topic (collector vs backfill lane).',
+  kafka_partition INT                    COMMENT 'Source Kafka partition.',
+  kafka_offset    BIGINT                 COMMENT 'Source Kafka offset — exact replay coordinate.',
+  kafka_timestamp TIMESTAMP              COMMENT 'Kafka record/broker timestamp.',
+  received_at     TIMESTAMP              COMMENT 'Sink wall-clock when the record was consumed into the micro-batch.',
+  written_at      TIMESTAMP              COMMENT 'Sink wall-clock at the Iceberg MERGE write (durable-land time).',
+  trace_id        STRING                 COMMENT 'Distributed-trace id from the Kafka traceparent header, else correlation_id.'
 )
 USING iceberg
 PARTITIONED BY (

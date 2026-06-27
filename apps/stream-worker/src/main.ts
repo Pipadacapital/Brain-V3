@@ -58,6 +58,9 @@ import { ConsentRepository } from './infrastructure/pg/ConsentRepository.js';
 import { CapiDeletionConsumer } from './interfaces/consumers/CapiDeletionConsumer.js';
 import { RequestCapiDeletionUseCase } from './application/RequestCapiDeletionUseCase.js';
 import { CapiDeletionRepository } from './infrastructure/pg/CapiDeletionRepository.js';
+import { ErasureOrchestratorConsumer } from './interfaces/consumers/ErasureOrchestratorConsumer.js';
+import { EraseSubjectUseCase, type IBrainIdLookup } from './application/EraseSubjectUseCase.js';
+import { ErasureRepository } from './infrastructure/pg/ErasureRepository.js';
 import { BackfillOrderConsumer } from './interfaces/consumers/BackfillOrderConsumer.js';
 // MEDALLION REALIGNMENT: ALL PG-ledger write paths are now REMOVED. The revenue recognition ledger
 // is built FROM Bronze by dbt (silver_order_recognition → gold_revenue_ledger). Ad spend likewise
@@ -98,6 +101,11 @@ export async function main(): Promise<void> {
   // within the DPDP ≤15min withdrawal-propagation SLA. WIRED HERE: do NOT remove without
   // updating capi-deletion.e2e.test.ts.
   const capiDeletionGroupId = cfg.CAPI_DELETION_CONSUMER_GROUP_ID;
+  // DPDP/PDPL crypto-shred erasure orchestrator: separate consumer group on the live topic.
+  // On a subject-erasure: shreds subject DEK (is_active=FALSE) + belt-and-suspenders hard delete
+  // + surrogate tombstone + scoped Gold re-projection + CAPI deletion. Ordered, idempotent,
+  // DLQ-after-MAX_RETRY. WIRED HERE: do NOT remove without updating erasure-orchestrator.unit.test.ts.
+  const erasureOrchestratorGroupId = cfg.ERASURE_ORCHESTRATOR_CONSUMER_GROUP_ID;
   // Live-ledger bridge (ORCH-LV-H1 fix): separate consumer group on the live topic — mirrors
   // IdentityBridgeConsumer pattern. Does NOT double-write Bronze (CollectorEventConsumer handles
   // Bronze). Filters to order.live.v1 events only; routes provisional_recognition / rto_reversal.
@@ -337,6 +345,40 @@ export async function main(): Promise<void> {
     kafka, requestCapiDeletionUseCase, topic, capiDeletionGroupId, retryCounter,
   );
 
+  // ── Erasure orchestrator (DPDP/PDPL crypto-shred — feat-erasure-orchestrator) ──
+  // Same live topic, separate consumer group. Drives the ordered 6-step per-subject erasure
+  // sequence: DEK shred (subject_keyring is_active=FALSE) → surrogate tombstone → scoped
+  // Gold re-projection → disabled Iceberg compaction seam → CAPI deletion → erasure complete.
+  // Reuses the SAME saltProvider, requestCapiDeletionUseCase, and identityRepo as the other
+  // consumers on this topic — no new hashing logic, no duplicated CAPI deletion path.
+  //
+  // brainIdLookup: inline adapter over identityRepo.readState() — returns the first active
+  // brain_id linked to the subject hash in the Neo4j graph. Throws on Neo4j down (→ retry).
+  // Returns null on not-found (→ 'no_brain_id' skip, WARN logged, no retry).
+  const brainIdLookup: IBrainIdLookup = {
+    async findBrainId(lookupBrandId, subjectHash, identifierType) {
+      // SEC H-1: match on the SUBJECT'S identifier type (email OR phone) — hardcoding 'email'
+      // silently dropped phone-only RTBF erasures (acknowledged, never shredded = DPDP failure).
+      const state = await identityRepo.readState(lookupBrandId, [
+        { type: identifierType, hash: subjectHash },
+      ]);
+      return state.existingLinks.find((l) => l.is_active)?.brain_id ?? null;
+    },
+  };
+  const erasureRepo = new ErasureRepository(dbUrl);
+  const eraseSubjectUseCase = new EraseSubjectUseCase(
+    saltProvider,
+    erasureRepo,
+    brainIdLookup,
+    scopedRecomputeRepo,
+    requestCapiDeletionUseCase,
+    // SEC M-1: evict the hot subject DEK from this process's vault cache the instant it is shredded.
+    (b, s) => vaultKeyProvider.invalidate(b, s),
+  );
+  const erasureOrchestratorConsumer = new ErasureOrchestratorConsumer(
+    kafka, eraseSubjectUseCase, topic, erasureOrchestratorGroupId, retryCounter,
+  );
+
   // ── Backfill lane (ADR-BF-7 / ADR-BF-8 / ADR-BF-9) ────────────────────────
   // Separate topic (backfillTopic) + separate consumer group (backfillGroupId)
   // → structurally impossible to lag the live consumer group (SI-3 / D-3).
@@ -446,6 +488,7 @@ export async function main(): Promise<void> {
       analyticsCacheInvalidateConsumer.stop(),
       consentSuppressorConsumer.stop(),
       capiDeletionConsumer.stop(),
+      erasureOrchestratorConsumer.stop(),
       backfillConsumer.stop(),
       // All registry-driven Bronze bridges (incl. live-order, which was previously missing a stop).
       ...bronzeBridgeConsumers.map((c) => c.stop()),
@@ -459,6 +502,7 @@ export async function main(): Promise<void> {
     await connectorRateLimiter.quit().catch(() => undefined);
     await consentRepo.end();
     await capiDeletionRepo.end();
+    await erasureRepo.end();
     await retryCounter.quit();
     await dedup.quit();
     await backfillDedup.quit();
@@ -519,6 +563,14 @@ export async function main(): Promise<void> {
   log.info(`starting capi-deletion consumer — topic=${topic} group=${capiDeletionGroupId}`);
   await capiDeletionConsumer.start();
   log.info('capi-deletion consumer running');
+
+  // ── Erasure orchestrator consumer (feat-erasure-orchestrator MANDATORY WIRE) ──────
+  // Same live topic, independent consumer group. Drives the ordered DPDP/PDPL 6-step
+  // crypto-shred sequence on a subject-erasure signal. WIRED HERE: do NOT remove without
+  // updating erasure-orchestrator.unit.test.ts.
+  log.info(`starting erasure orchestrator — topic=${topic} group=${erasureOrchestratorGroupId}`);
+  await erasureOrchestratorConsumer.start();
+  log.info('erasure orchestrator consumer running');
 
   // ── Backfill lane consumer (ADR-BF-7 / ADR-BF-8 / ADR-BF-9) ───────────────
   // Separate from live lane: backfillTopic != topic → Redpanda isolation guarantee.

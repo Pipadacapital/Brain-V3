@@ -17,7 +17,15 @@ deadlock) then a processingTime stream resuming the SAME checkpoint (steady-stat
 
 Run via spark-submit inside a Spark+Iceberg+Kafka image on the compose network — see
 db/iceberg/spark/run-bronze-spike.sh and RB-4. All wiring is env-overridable; dev defaults
-target the compose service names (iceberg-rest:8181, minio:9000, redpanda:9092).
+target the compose service names (iceberg-rest:8181, minio:9000, redpanda:9092 — K1: the broker is
+now Apache Kafka KRaft, but the compose service / DNS name is preserved as `redpanda`).
+
+K2a — RAW + INGESTION METADATA, no-data-loss offsets: Bronze stays RAW/append-only/immutable (no
+clean/dedup-of-business-state/identity/stitch/sessionize/attribution before Bronze). Alongside the raw
+envelope, each row also lands pure Kafka-source INGESTION METADATA (kafka_topic, kafka_partition,
+kafka_offset, kafka_timestamp, received_at, written_at, trace_id) — receipt lineage, NOT business
+logic. The Kafka offset is committed to the checkpoint ONLY AFTER the durable Iceberg MERGE — see the
+build_writer docstring for the offset-after-Iceberg-commit ordering proof (no event loss).
 
 CI: this image (db/iceberg/spark/Dockerfile) is built + pushed + digest-pinned by
 .github/workflows/main.yml (build-data-images) and consumed by infra/helm/cronworkflows
@@ -29,13 +37,18 @@ import time
 
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
-    broadcast, coalesce, col, concat, current_timestamp, from_json, get_json_object, lit, to_timestamp,
+    broadcast, coalesce, col, concat, current_timestamp, expr, from_json, get_json_object, lit, to_timestamp,
 )
 from pyspark.sql.types import StringType, StructField, StructType
 
 CATALOG = os.environ.get("ICEBERG_CATALOG", "rest")
 NAMESPACE = os.environ.get("BRONZE_NAMESPACE", "brain_bronze")
 TABLE = f"{CATALOG}.{NAMESPACE}.collector_events"
+# Kafka broker (K1: Apache Kafka KRaft replaced Redpanda). The compose service / DNS name is
+# DELIBERATELY preserved as `redpanda` (so every existing reference — depends_on, network_mode
+# service:redpanda, --bootstrap-server — keeps working unchanged), so this default still resolves.
+# Same-netns clients reach the PLAINTEXT advertised listener at localhost:9092; the compose service
+# and run-bronze-spike.sh both override KAFKA_BROKERS accordingly.
 KAFKA_BROKERS = os.environ.get("KAFKA_BROKERS", "redpanda:9092")
 TOPIC = os.environ.get("COLLECTOR_TOPIC", "dev.collector.event.v1")
 # Backfill orders ride a SEPARATE topic + consumer group (lane isolation, ADR-BF-7) so they can never
@@ -128,9 +141,32 @@ def build_spark() -> SparkSession:
     )
 
 
+# ── Ingestion metadata (TASK K2a) — Kafka source lineage landed alongside the RAW envelope ──
+# Pure RECEIPT metadata (NO business logic — no clean/dedup/identity/stitch/sessionize/attribution):
+# the Kafka coordinates of the record + the sink's receive/write wall-clocks + the propagated trace
+# id. Added as ADDITIVE-OPTIONAL (nullable) columns (I-E02 schema-evolution rule) so an existing
+# Bronze table is forward-extended, never rewritten. Declared ONCE here so the CREATE-TABLE DDL, the
+# ALTER-ADD self-heal (for tables created before this change), and the projection/MERGE stay in lockstep.
+INGESTION_METADATA_COLUMNS = [
+    ("kafka_topic", "string"),        # source topic — the collector vs backfill lane the row landed on
+    ("kafka_partition", "int"),       # source partition
+    ("kafka_offset", "bigint"),       # source offset — the exact replay coordinate
+    ("kafka_timestamp", "timestamp"), # broker/record timestamp (Kafka message time)
+    ("received_at", "timestamp"),     # wall-clock when Spark consumed the record into the micro-batch
+    ("written_at", "timestamp"),      # wall-clock at the Iceberg MERGE write (durable-land time)
+    ("trace_id", "string"),           # distributed-trace id from the Kafka `traceparent` header, else correlation_id
+]
+
+
 def ensure_table(spark: SparkSession) -> None:
-    """Create the Bronze namespace + table if absent — canonical DDL (db/iceberg/bronze_table.sql)."""
+    """Create the Bronze namespace + table if absent — canonical DDL (db/iceberg/bronze_table.sql).
+
+    Also forward-migrates a pre-existing Bronze table by ALTER-ADDing any missing ingestion-metadata
+    column (additive-optional, nullable — I-E02). This is idempotent and lossless: existing rows keep
+    NULL for the new columns; no business data is touched.
+    """
     spark.sql(f"CREATE NAMESPACE IF NOT EXISTS {CATALOG}.{NAMESPACE}")
+    metadata_ddl = ",\n          ".join(f"{name:17} {sqltype}" for name, sqltype in INGESTION_METADATA_COLUMNS)
     spark.sql(
         f"""
         CREATE TABLE IF NOT EXISTS {TABLE} (
@@ -145,7 +181,8 @@ def ensure_table(spark: SparkSession) -> None:
           partition_key     string  NOT NULL,
           payload           string  NOT NULL,
           processing_flags  string,
-          collector_version string
+          collector_version string,
+          {metadata_ddl}
         )
         USING iceberg
         PARTITIONED BY (bucket(256, brand_id), days(occurred_at))
@@ -157,6 +194,13 @@ def ensure_table(spark: SparkSession) -> None:
         )
         """
     )
+    # Self-heal: a table created before K2a lacks the metadata columns — ADD the missing ones (nullable).
+    existing = {f.name.lower() for f in spark.table(TABLE).schema.fields}
+    missing = [(n, t) for n, t in INGESTION_METADATA_COLUMNS if n.lower() not in existing]
+    if missing:
+        add_ddl = ", ".join(f"{name} {sqltype}" for name, sqltype in missing)
+        spark.sql(f"ALTER TABLE {TABLE} ADD COLUMNS ({add_ddl})")
+        print(f"[bronze-sink] added ingestion-metadata columns: {[n for n, _ in missing]}", flush=True)
 
 
 def load_pixel_installations(spark: SparkSession):
@@ -201,6 +245,15 @@ def _project_bronze(df):
         col("payload"),
         lit(None).cast("string").alias("processing_flags"),
         lit(None).cast("string").alias("collector_version"),
+        # Ingestion metadata (K2a) — Kafka source lineage carried verbatim from the batch; NO business
+        # logic. written_at is stamped HERE (at the projection that feeds the MERGE) = durable-land time.
+        col("kafka_topic"),
+        col("kafka_partition"),
+        col("kafka_offset"),
+        col("kafka_timestamp"),
+        col("received_at"),
+        current_timestamp().alias("written_at"),
+        col("trace_id"),
     )
 
 
@@ -220,6 +273,13 @@ def gate_and_map(parsed, install_df):
             # R3 signal: consent_flags PRESENT (object), not necessarily true — mirrors PG (absent → quarantine).
             get_json_object(col("raw"), "$.consent_flags").alias("consent_flags_raw"),
             col("raw").alias("payload"),
+            # Ingestion metadata (K2a) — carried through the gate untouched so both lanes land it.
+            col("kafka_topic"),
+            col("kafka_partition"),
+            col("kafka_offset"),
+            col("kafka_timestamp"),
+            col("received_at"),
+            col("trace_id"),
         )
         # Malformed (no idempotency key / no time) → never written, like PG.
         .where(col("event_id").isNotNull() & col("claimed_brand_id").isNotNull() & col("occurred_at").isNotNull())
@@ -293,6 +353,20 @@ def upsert_factory(spark: SparkSession):
         parsed = batch_df.select(
             from_json(col("value").cast("string"), ENVELOPE).alias("e"),
             col("value").cast("string").alias("raw"),
+            # ── Ingestion metadata (K2a) — pure Kafka-source lineage, captured BEFORE any gating. ──
+            col("topic").alias("kafka_topic"),
+            col("partition").alias("kafka_partition"),
+            col("offset").cast("bigint").alias("kafka_offset"),
+            col("timestamp").alias("kafka_timestamp"),
+            current_timestamp().alias("received_at"),  # when Spark consumed this record into the batch
+            # trace_id: the distributed-trace id propagated from the collector via a Kafka header
+            # (traceparent / trace_id); fall back to the envelope correlation_id (ADR-009) when absent.
+            # includeHeaders=true (see build_writer) makes `headers` available; filter()[0] → null if no header.
+            coalesce(
+                expr("CAST(filter(headers, h -> h.key = 'traceparent')[0].value AS STRING)"),
+                expr("CAST(filter(headers, h -> h.key = 'trace_id')[0].value AS STRING)"),
+                col("e.correlation_id"),
+            ).alias("trace_id"),
         )
         gated = gate_and_map(parsed, install_df)
         gated.createOrReplaceTempView("bronze_batch")
@@ -311,10 +385,12 @@ def upsert_factory(spark: SparkSession):
             ON t.brand_id = s.brand_id AND t.event_id = s.event_id
             WHEN NOT MATCHED THEN INSERT (
               event_id, brand_id, occurred_at, ingested_at, schema_name, schema_version,
-              event_type, correlation_id, partition_key, payload, processing_flags, collector_version
+              event_type, correlation_id, partition_key, payload, processing_flags, collector_version,
+              kafka_topic, kafka_partition, kafka_offset, kafka_timestamp, received_at, written_at, trace_id
             ) VALUES (
               s.event_id, s.brand_id, s.occurred_at, s.ingested_at, s.schema_name, s.schema_version,
-              s.event_type, s.correlation_id, s.partition_key, s.payload, s.processing_flags, s.collector_version
+              s.event_type, s.correlation_id, s.partition_key, s.payload, s.processing_flags, s.collector_version,
+              s.kafka_topic, s.kafka_partition, s.kafka_offset, s.kafka_timestamp, s.received_at, s.written_at, s.trace_id
             )
             """
         )
@@ -327,6 +403,24 @@ def build_writer(spark: SparkSession):
     Returned un-started so the caller picks the trigger. A streaming query can only be started
     once, so the two-phase startup (drain → continuous) calls this twice — each phase gets its
     own query object reading the SAME checkpoint, so offsets carry over and nothing re-processes.
+
+    NO-DATA-LOSS / OFFSET-AFTER-ICEBERG-COMMIT ORDERING (K2a contract — the Kafka offset is committed
+    to the checkpoint ONLY after the durable Iceberg write):
+      Structured Streaming commits a micro-batch in two checkpoint phases. (1) BEFORE running the batch
+      it writes the planned Kafka end-offsets to `offsets/<batchId>` (the WAL) — this is a PLAN, not a
+      commit of progress. (2) It then executes the batch; our foreachBatch runs the idempotent Iceberg
+      MERGE, whose Iceberg snapshot commit (the durable land in MinIO/S3) MUST return successfully
+      before foreachBatch returns. (3) ONLY after foreachBatch returns without throwing does Spark write
+      `commits/<batchId>`, which is what marks the offsets as durably processed and advances committed
+      progress. So the committed Kafka position never moves ahead of the Iceberg write:
+        • If the process dies after the Iceberg MERGE commits but before `commits/<batchId>`, the batch
+          has NO commit marker → on restart Spark RE-READS the same Kafka offsets and re-runs the MERGE.
+          The MERGE is WHEN-NOT-MATCHED on (brand_id,event_id) → the replay is a no-op, NO double-write.
+        • If the process dies DURING/BEFORE the Iceberg MERGE, neither the snapshot nor `commits/<batchId>`
+          exists → the same offsets are re-read and re-landed. NO data loss.
+      `repair_incomplete_checkpoint` additionally clears an empty trailing `offsets/<id>` left by an
+      unclean kill so the above resume path is never wedged. Net: at-least-once delivery into an
+      idempotent sink = effectively exactly-once Bronze, with zero event loss.
     """
     raw = (
         spark.readStream.format("kafka")
@@ -335,6 +429,8 @@ def build_writer(spark: SparkSession):
         .option("subscribe", f"{TOPIC},{BACKFILL_TOPIC}")
         .option("startingOffsets", STARTING_OFFSETS)
         .option("failOnDataLoss", "false")
+        # Expose Kafka record headers so the ingestion-metadata `trace_id` (traceparent) can be landed.
+        .option("includeHeaders", "true")
         # Bound every micro-batch — the catch-up drain (Trigger.AvailableNow) honors this to split the
         # backlog into committed chunks, and steady-state is naturally small. Caps the cold-start batch.
         .option("maxOffsetsPerTrigger", os.environ.get("MAX_OFFSETS_PER_TRIGGER", "2000"))

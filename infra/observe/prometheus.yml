@@ -25,8 +25,11 @@ scrape_configs:
     static_configs:
       - targets: ['host.docker.internal:9092']  # stream-worker metrics endpoint (local dev)
 
-  # Redpanda native metrics (/public_metrics) — backs DLQ-depth + consumer-lag alerts.
-  - job_name: 'redpanda'
-    metrics_path: '/public_metrics'
-    static_configs:
-      - targets: ['redpanda:9644']
+  # Broker metrics — DISABLED after the Redpanda → Apache Kafka (KRaft) swap.
+  # Redpanda exposed a Prometheus endpoint at redpanda:9644/public_metrics (redpanda_kafka_*);
+  # Apache Kafka only emits JMX, so there is no scrape target until a JMX-exporter sidecar is
+  # added. Re-enable with a kafka-jmx-exporter job (and update brain-slo.rules.yml) when wired.
+  # - job_name: 'redpanda'
+  #   metrics_path: '/public_metrics'
+  #   static_configs:
+  #     - targets: ['redpanda:9644']

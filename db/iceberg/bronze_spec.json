@@ -20,7 +20,14 @@
       { "id": 9,  "name": "partition_key",    "required": true,  "type": "string",  "doc": "brand_id:event_id — derived, stored for log correlation." },
       { "id": 10, "name": "payload",          "required": true,  "type": "string",  "doc": "JSON-encoded event body. No raw PII (I-S02)." },
       { "id": 11, "name": "processing_flags", "required": false, "type": "string",  "doc": "Optional JSON metadata set by stream-worker (dedup status, watermark lag). Null on first write." },
-      { "id": 12, "name": "collector_version","required": false, "type": "string",  "doc": "Optional collector deployment version. Nullable — schema-evolution safe field." }
+      { "id": 12, "name": "collector_version","required": false, "type": "string",  "doc": "Optional collector deployment version. Nullable — schema-evolution safe field." },
+      { "id": 13, "name": "kafka_topic",      "required": false, "type": "string",      "doc": "Ingestion metadata (K2a). Source Kafka topic — collector vs backfill lane. Additive-optional." },
+      { "id": 14, "name": "kafka_partition",  "required": false, "type": "int",         "doc": "Ingestion metadata (K2a). Source Kafka partition. Additive-optional." },
+      { "id": 15, "name": "kafka_offset",     "required": false, "type": "long",        "doc": "Ingestion metadata (K2a). Source Kafka offset — exact replay coordinate. Additive-optional." },
+      { "id": 16, "name": "kafka_timestamp",  "required": false, "type": "timestamptz", "doc": "Ingestion metadata (K2a). Kafka record/broker timestamp. Additive-optional." },
+      { "id": 17, "name": "received_at",      "required": false, "type": "timestamptz", "doc": "Ingestion metadata (K2a). Sink wall-clock when consumed into the micro-batch. Additive-optional." },
+      { "id": 18, "name": "written_at",       "required": false, "type": "timestamptz", "doc": "Ingestion metadata (K2a). Sink wall-clock at the Iceberg MERGE write (durable-land time). Additive-optional." },
+      { "id": 19, "name": "trace_id",         "required": false, "type": "string",      "doc": "Ingestion metadata (K2a). Distributed-trace id from the Kafka traceparent header, else correlation_id. Additive-optional." }
     ]
   },
 

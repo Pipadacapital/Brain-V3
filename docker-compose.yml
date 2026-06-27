@@ -1,6 +1,6 @@
 # Local dev — profiles per zone (doc 05 §10).
 # core    = control-plane + serving (default for most feature work)
-# ingest  = strict-SLA event path (Redpanda + Apicurio)
+# ingest  = strict-SLA event path (Apache Kafka KRaft + Apicurio)
 # observe = Grafana + Loki + Prometheus OTel stack
 # All profiles combined: docker compose --profile core --profile ingest --profile observe up -d
 #
@@ -170,74 +170,84 @@ services:
       retries: 20
 
   # ────────────────────────────────────────────────────────────────────────────
-  # INGEST profile — Redpanda + Apicurio + Iceberg REST catalog
+  # INGEST profile — Apache Kafka (KRaft) + Apicurio + Iceberg REST catalog
   # ────────────────────────────────────────────────────────────────────────────
+  # Apache Kafka in KRaft mode (single combined controller+broker, no ZooKeeper).
+  # The service/DNS name stays `redpanda` so every existing reference keeps working
+  # unchanged: depends_on, `network_mode: service:redpanda` (spark-bronze-sink +
+  # spark-bronze-raw-sink share its netns), `--bootstrap-server redpanda:9092`,
+  # and prometheus targets. Only the EXTERNAL host alias was renamed
+  # brain-redpanda-ext → brain-kafka-ext.
+  #
+  # Dual listeners (preserved 1:1 from the Redpanda setup):
+  #   • PLAINTEXT 9092  advertised localhost:9092       — host + same-netns clients
+  #   • EXTERNAL  19092 advertised brain-kafka-ext:19092 — out-of-network clients
+  #     (e.g. a local kind/k8s pod simulating prod, routed to this container's
+  #     brainv3_default IP via a hostAlias for brain-kafka-ext).
+  # CONTROLLER 9093 is the internal KRaft quorum listener (single self-voter).
+  # Topic auto-create is OFF — topics are created idempotently by `redpanda-init`.
   redpanda:
-    image: redpandadata/redpanda:v24.1.7
+    image: apache/kafka:3.8.1
     profiles: ["ingest"]
-    command:
-      - redpanda
-      - start
-      - --overprovisioned
-      - --smp
-      - "1"
-      - --memory
-      - 1G
-      - --node-id
-      - "0"
-      - --kafka-addr
-      # PLAINTEXT (localhost:9092) for host + same-netns clients; EXTERNAL (19092) advertised as a
-      # resolvable hostname so out-of-network clients (e.g. a local kind/k8s pod simulating prod, which
-      # routes to this container's brainv3_default IP via a hostAlias for brain-redpanda-ext) can consume.
-      - PLAINTEXT://0.0.0.0:9092,EXTERNAL://0.0.0.0:19092
-      - --advertise-kafka-addr
-      - PLAINTEXT://localhost:9092,EXTERNAL://brain-redpanda-ext:19092
-      - --pandaproxy-addr
-      - 0.0.0.0:8082
-      - --advertise-pandaproxy-addr
-      - localhost:8082
-      - --schema-registry-addr
-      - 0.0.0.0:8081
+    environment:
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: "broker,controller"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@localhost:9093"
+      KAFKA_LISTENERS: "PLAINTEXT://0.0.0.0:9092,EXTERNAL://0.0.0.0:19092,CONTROLLER://0.0.0.0:9093"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://localhost:9092,EXTERNAL://brain-kafka-ext:19092"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT"
+      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+      CLUSTER_ID: "brain-kafka-kraft-0"
     ports:
       - "9092:9092"   # Kafka API (PLAINTEXT listener)
       - "19092:19092" # Kafka API (EXTERNAL listener — for kind/k8s pods)
-      - "8081:8081"   # Redpanda schema registry (unused; Apicurio is canonical)
-      - "8082:8082"   # Pandaproxy REST
-      - "9644:9644"   # Admin API
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:9644/v1/status/ready || exit 1"]
+      # No Redpanda admin API (9644) on Kafka; probe the broker via the Kafka CLI.
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1 || exit 1"]
       interval: 10s
-      timeout: 5s
+      timeout: 10s
       retries: 20
-      start_period: 15s
+      start_period: 20s
 
-  # Redpanda topic bootstrap (idempotent)
+  # Kafka topic bootstrap (idempotent). Ported from `rpk` to the Kafka CLI
+  # (kafka-topics.sh) using the same apache/kafka image. Shares the broker's network
+  # namespace (like spark-bronze-sink) so the PLAINTEXT advertised
+  # listener `localhost:9092` resolves to the broker. Same topic set + partitions
+  # + retention as before; `--if-not-exists` keeps it idempotent across restarts.
   redpanda-init:
-    image: redpandadata/redpanda:v24.1.7
+    image: apache/kafka:3.8.1
     profiles: ["ingest"]
+    network_mode: "service:redpanda"
     depends_on:
       redpanda:
         condition: service_healthy
     entrypoint: >
       /bin/sh -c "
-        rpk topic create dev.collector.event.v1 --brokers redpanda:9092
-          --config retention.ms=604800000
-          --partitions 12 --replicas 1 2>/dev/null || true &&
-        rpk topic create dev.collector.order.backfill.v1 --brokers redpanda:9092
-          --config retention.ms=2592000000
-          --partitions 12 --replicas 1 2>/dev/null || true &&
-        rpk topic create dev.collector.event.v1.dlq --brokers redpanda:9092
-          --config retention.ms=2592000000
-          --partitions 12 --replicas 1 2>/dev/null || true &&
-        rpk topic create dev.collector.event.v1.quarantine --brokers redpanda:9092
-          --config retention.ms=2592000000
-          --partitions 12 --replicas 1 2>/dev/null || true &&
+        KT=/opt/kafka/bin/kafka-topics.sh &&
+        $$KT --bootstrap-server localhost:9092 --create --if-not-exists
+          --topic dev.collector.event.v1 --partitions 12 --replication-factor 1
+          --config retention.ms=604800000 &&
+        $$KT --bootstrap-server localhost:9092 --create --if-not-exists
+          --topic dev.collector.order.backfill.v1 --partitions 12 --replication-factor 1
+          --config retention.ms=2592000000 &&
+        $$KT --bootstrap-server localhost:9092 --create --if-not-exists
+          --topic dev.collector.event.v1.dlq --partitions 12 --replication-factor 1
+          --config retention.ms=2592000000 &&
+        $$KT --bootstrap-server localhost:9092 --create --if-not-exists
+          --topic dev.collector.event.v1.quarantine --partitions 12 --replication-factor 1
+          --config retention.ms=2592000000 &&
         for e in orders customers shipments payments sessions ads; do
-          rpk topic create dev.brain.$$e --brokers redpanda:9092
-            --config retention.ms=604800000
-            --partitions 12 --replicas 1 2>/dev/null || true;
+          $$KT --bootstrap-server localhost:9092 --create --if-not-exists
+            --topic dev.brain.$$e --partitions 12 --replication-factor 1
+            --config retention.ms=604800000;
         done &&
-        echo 'Redpanda topics ready'
+        echo 'Kafka topics ready'
       "
     restart: "no"
 
@@ -311,8 +321,10 @@ services:
   spark-bronze-sink:
     image: apache/spark:3.5.3
     profiles: ["lakehouse"]
-    # Share Redpanda's network namespace so its advertised listener (localhost:9092) resolves; service
-    # DNS (iceberg-rest, minio, postgres) still resolves because Redpanda is on the compose network.
+    # Share the Kafka broker's network namespace so its PLAINTEXT advertised listener (localhost:9092)
+    # resolves; service DNS (iceberg-rest, minio, postgres) still resolves because the broker is on the
+    # compose network. K1: broker is Apache Kafka KRaft (Redpanda removed); the service / DNS name is
+    # preserved as `redpanda`, so KAFKA_BROKERS=localhost:9092 via this netns is unchanged + correct.
     network_mode: "service:redpanda"
     user: root
     depends_on:
@@ -323,6 +335,7 @@ services:
       minio:
         condition: service_healthy
     environment:
+      # Same-netns bootstrap to the Apache Kafka KRaft broker's PLAINTEXT advertised listener (K1).
       KAFKA_BROKERS: "localhost:9092"
       # Topic prefix MUST match the app's NODE_ENV-derived prefix. local-prod runs NODE_ENV=production,
       # so core/collector/stream-worker produce to prod.* — the sink must consume prod.* or it sees no
@@ -366,23 +379,22 @@ services:
       - /opt/spike/bronze_materialize.py
     restart: unless-stopped
 
-  # ── Bronze writer (ADR-0006): Kafka Connect + Apache Iceberg Sink — the Spark-sink REPLACEMENT ──
-  # Writes RAW Redpanda topic records DIRECTLY to Iceberg Bronze. No app-managed streaming checkpoint —
-  # the sink's coordinator ties Kafka offset commits to Iceberg snapshot commits (the Spark-sink
-  # "Incomplete log file" checkpoint-corruption class is gone). Shares Redpanda's network namespace
-  # (localhost:9092 resolves, exactly like spark-bronze-sink); iceberg-rest + minio still resolve over
-  # compose DNS because Redpanda is on the compose network. Connect REST API → redpanda:8083.
-  # P1 of the migration: runs IN PARALLEL with the Spark sink (no cutover yet) onto a SEPARATE raw table
-  # (brain_bronze.collector_events_raw), so Bronze parity can be checked before retiring the Spark leg.
-  kafka-connect:
-    image: confluentinc/cp-kafka-connect:7.6.1
+  # ── Bronze writer (ADR-0006, Spark-SS landing REVERT): generic RAW landing for the connector lanes ──
+  # Lands the nine connector *.raw.v1 lanes (shopify/woocommerce/meta/google/ga4/shiprocket/gokwik/
+  # shopflo/razorpay) VERBATIM into brain_bronze.<lane>_raw — RAW, append-only, NO business logic before
+  # Bronze. This REPLACES the retired Kafka Connect Iceberg sinks (kafka-connect + kafka-connect-init +
+  # infra/kafka-connect/iceberg-bronze-*.json) so Spark is the SOLE landing compute. One streaming query
+  # subscribes to all nine topics and routes each record to its table by Kafka topic (single checkpoint).
+  # Offsets commit ONLY after the durable Iceberg append (no data loss); the append is an idempotent MERGE
+  # on the Kafka coordinate (topic,partition,offset) so replays never double-write. Shares the KRaft
+  # broker's network namespace (localhost:9092 resolves, like spark-bronze-sink); iceberg-rest + minio
+  # still resolve over compose DNS because the broker is on the compose network. Jars resolved at runtime
+  # (cached in the ivy volume). The collector/pixel lane keeps its OWN gated sink (spark-bronze-sink).
+  spark-bronze-raw-sink:
+    image: apache/spark:3.5.3
     profiles: ["lakehouse"]
-    # root so the runtime plugin install can write the /opt/connect-plugins volume (the image's default
-    # appuser cannot mkdir there); Connect's run script is root-safe (mirrors spark-bronze-sink user: root).
-    user: root
-    # Same netns trick as spark-bronze-sink (see its comment) — resolves Redpanda's localhost:9092
-    # advertised listener while keeping compose-DNS for iceberg-rest/minio.
     network_mode: "service:redpanda"
+    user: root
     depends_on:
       redpanda:
         condition: service_healthy
@@ -391,43 +403,40 @@ services:
       minio:
         condition: service_healthy
     environment:
-      CONNECT_BOOTSTRAP_SERVERS: "localhost:9092"
-      CONNECT_REST_ADVERTISED_HOST_NAME: "redpanda"
-      CONNECT_REST_PORT: "8083"
-      CONNECT_GROUP_ID: "brain-bronze-connect"
-      CONNECT_CONFIG_STORAGE_TOPIC: "_connect-configs"
-      CONNECT_OFFSET_STORAGE_TOPIC: "_connect-offsets"
-      CONNECT_STATUS_STORAGE_TOPIC: "_connect-status"
-      CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: "1"
-      CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: "1"
-      CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: "1"
-      CONNECT_KEY_CONVERTER: "org.apache.kafka.connect.storage.StringConverter"
-      CONNECT_VALUE_CONVERTER: "org.apache.kafka.connect.json.JsonConverter"
-      CONNECT_VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
-      CONNECT_PLUGIN_PATH: "/usr/share/java,/usr/share/confluent-hub-components,/opt/connect-plugins"
-      # Tabular's iceberg-kafka-connect distribution (the connector later donated to Apache Iceberg).
-      # Published as a GitHub release asset; connector.class = io.tabular.iceberg.connect.IcebergSinkConnector.
-      ICEBERG_CONNECT_VERSION: "0.6.19"
-    # Resolve the Iceberg connect plugin at runtime (cached in the volume), mirroring spark-bronze-sink's
-    # runtime-package approach (build-time bakes are unreliable behind Maven).
-    command:
-      - bash
-      - -c
-      - |
-        set -e
-        # Plugin must be a DIRECT child of a plugin.path entry (with lib/*.jar) for Connect to scan it.
-        # The cp image ships no `unzip`, but DOES ship `jar` (it's a JDK image) — extract with that.
-        PLUGIN_DIR=/opt/connect-plugins/iceberg-kafka-connect-runtime-$${ICEBERG_CONNECT_VERSION}
-        if [ ! -f "$$PLUGIN_DIR/manifest.json" ]; then
-          echo "Downloading Apache Iceberg (Tabular) Kafka Connect runtime $${ICEBERG_CONNECT_VERSION}..."
-          curl -fsSL -o /tmp/iceberg-connect.zip \
-            "https://github.com/tabular-io/iceberg-kafka-connect/releases/download/v$${ICEBERG_CONNECT_VERSION}/iceberg-kafka-connect-runtime-$${ICEBERG_CONNECT_VERSION}.zip"
-          ( cd /opt/connect-plugins && jar xf /tmp/iceberg-connect.zip )
-          echo "Iceberg connect plugin installed ($$(ls $$PLUGIN_DIR/lib/*.jar | wc -l) jars)."
-        fi
-        exec /etc/confluent/docker/run
+      KAFKA_BROKERS: "localhost:9092"
+      # Topic prefix MUST match the app's NODE_ENV-derived prefix. local-prod runs NODE_ENV=production,
+      # so the connectors produce to prod.* — land prod.* or no raw data flows (same break would hit prod).
+      TOPIC_ENV_PREFIX: "prod"
+      LANE: ""                       # empty → all nine lanes in one stream (set a LANES key for one lane)
+      STARTING_OFFSETS: "earliest"
+      TRIGGER_MODE: "continuous"
+      PROCESSING_TIME: "10 seconds"
+      ICEBERG_CATALOG: "rest"
+      ICEBERG_REST_URI: "http://iceberg-rest:8181"
+      BRONZE_NAMESPACE: "brain_bronze"
+      BRONZE_WAREHOUSE: "s3://brain-bronze/"
+      S3_ENDPOINT: "http://minio:9000"
+      AWS_ACCESS_KEY_ID: "brain"
+      AWS_SECRET_ACCESS_KEY: "brainbrain"
+      AWS_REGION: "us-east-1"
+      CHECKPOINT_LOCATION: "file:///opt/checkpoint/bronze-raw"
     volumes:
-      - brain-connect-plugins:/opt/connect-plugins
+      - ./db/iceberg/spark:/opt/spike:ro
+      - brain-spark-ivy:/root/.ivy2
+      - brain-spark-checkpoint:/opt/checkpoint
+    command:
+      - /opt/spark/bin/spark-submit
+      - --master
+      - "local[2]"
+      # 4g driver (driver==executor under local[*]) so the cold-start backlog drain + the per-lane MERGE
+      # machinery stay within heap — mirrors spark-bronze-sink.
+      - --driver-memory
+      - "4g"
+      - --packages
+      - "org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.9.2,org.apache.iceberg:iceberg-aws-bundle:1.9.2,org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.3"
+      - --conf
+      - spark.jars.ivy=/root/.ivy2
+      - /opt/spike/bronze_raw_landing.py
     restart: unless-stopped
 
   # ── Trino — serving query engine over Iceberg (DEFAULT profile) ──
@@ -453,29 +462,6 @@ services:
       timeout: 10s
       retries: 20
       start_period: 30s
-
-  # Registers the iceberg-bronze-collector connector once Connect is up (idempotent PUT .../config).
-  kafka-connect-init:
-    image: curlimages/curl:8.8.0
-    profiles: ["lakehouse"]
-    depends_on:
-      kafka-connect:
-        condition: service_started
-    volumes:
-      - ./infra/kafka-connect:/config:ro
-    entrypoint:
-      - sh
-      - -c
-      - |
-        echo 'Waiting for Kafka Connect REST (redpanda:8083)...'
-        until curl -fsS http://redpanda:8083/connectors >/dev/null 2>&1; do sleep 3; done
-        echo 'Registering iceberg-bronze-collector...'
-        code=$$(curl -s -o /tmp/resp -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
-          --data @/config/iceberg-bronze-collector.json http://redpanda:8083/connectors)
-        if [ "$$code" = "201" ] || [ "$$code" = "409" ]; then
-          echo "connector registered (HTTP $$code)"; else
-          echo "FAILED (HTTP $$code):"; cat /tmp/resp; exit 1; fi
-    restart: "no"
 
   # ────────────────────────────────────────────────────────────────────────────
   # OBSERVE profile — Grafana + Loki + Prometheus + OTel Collector
@@ -566,4 +552,3 @@ services:
 volumes:
   brain-spark-checkpoint:
   brain-spark-ivy:
-  brain-connect-plugins:

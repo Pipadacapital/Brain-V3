@@ -23,6 +23,8 @@ import { RedisDedupAdapter } from './infrastructure/redis/RedisDedupAdapter.js';
 import { RetryCounterAdapter } from './infrastructure/redis/RetryCounterAdapter.js';
 import { BronzeRepository } from './infrastructure/pg/BronzeRepository.js';
 import { Neo4jIdentityRepository } from './infrastructure/neo4j/Neo4jIdentityRepository.js';
+import { createIdempotentProducer } from './infrastructure/kafka/idempotent-producer.js';
+import { KafkaIdentityEventPublisher } from './infrastructure/kafka/KafkaIdentityEventPublisher.js';
 import { createSaltProvider } from './infrastructure/secrets/SaltProvider.js';
 import { initObservability, initSentry, createLogger } from '@brain/observability';
 import { requireEnvInProd, loadStreamWorkerConfig } from '@brain/config';
@@ -223,7 +225,18 @@ export async function main(): Promise<void> {
   } catch (err) {
     log.warn(`[identity] Neo4j bootstrap failed: ${err instanceof Error ? err.message : String(err)}`);
   }
-  const resolveIdentityUseCase = new ResolveIdentityUseCase(saltProvider, identityRepo);
+  // ── Identity domain-event publisher (identity.{minted,linked,merged,suppressed,review_queued}.v1) ──
+  // One idempotent producer for the identity lane (EoS at the broker, no-event-loss). The use-case
+  // publishes the outcome AFTER the Neo4j graph write (commit-after-write) with deterministic
+  // event_ids → replay-safe. Partition key = brand_id (tenant-first). env prefix mirrors the rest of
+  // the worker (NODE_ENV-driven, same scheme as BACKFILL_TOPIC).
+  const identityEventEnvPrefix = cfg.NODE_ENV === 'production' ? 'prod' : 'dev';
+  const identityEventProducer = createIdempotentProducer(kafka);
+  await identityEventProducer.connect();
+  const identityEventPublisher = new KafkaIdentityEventPublisher(
+    identityEventProducer, identityEventEnvPrefix, log,
+  );
+  const resolveIdentityUseCase = new ResolveIdentityUseCase(saltProvider, identityRepo, identityEventPublisher);
   // T2-8: pass the shared durable RetryCounterAdapter so identity-bridge retries survive
   // pod restarts and a poison message always reaches the DLQ (mirrors ConsentSuppressor /
   // Backfill / LiveLedger — every consumer that receives retryCounter here).
@@ -384,6 +397,7 @@ export async function main(): Promise<void> {
     await bronze.end();
     await backfillBronze.end();
     await auditPool.end();
+    await identityEventProducer.disconnect().catch(() => undefined);
     await identityRepo.end();
     await healthServer.close();
     // Flush buffered telemetry LAST so shutdown spans/metrics are exported (C1).

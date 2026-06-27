@@ -27,6 +27,14 @@ later consolidation into the shared framework.
 DUAL-RUN (P4): writes to a SHADOW table by default (TARGET_TABLE override) so parity can be checked against
 the live canonical silver_collector_event shiprocket rows before the connector cutover. brand_id is the
 tenant key, first column, taken ONLY from the server-trusted envelope (MT-1) — never the provider body.
+
+STAGE-1 GATE (Brain V4 two-stage): the mapper THROWS on an empty order_id (the ledger spine key), which the
+inline `.where(event_id & occurred_at_iso & order_id_norm non-empty)` gate then SILENTLY DROPPED. Those
+drops are now ROUTED through _silver_technical.write_quarantine (stage='dq') to brain_silver.silver_quarantine:
+empty order_id → empty_identifier:order_id, un-seedable event_id → empty_identifier:event_id, unparseable
+status_changed_at → unparseable_timestamp. The admitted set is IDENTICAL (good rows byte-identical /
+parity-faithful); logistics is MONEY-FREE and the diagnostic payload carries only NON-PII fields (the raw
+AWB is the hash input — NEVER threaded), and Bronze keeps the untouched original (replay-safe).
 """
 from __future__ import annotations
 
@@ -37,11 +45,12 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pyspark.sql import SparkSession  # noqa: E402
-from pyspark.sql.functions import col, lit, to_json, struct, udf  # noqa: E402
+from pyspark.sql.functions import col, concat_ws, lit, to_json, struct, udf, when  # noqa: E402
 from pyspark.sql.types import BooleanType, StringType  # noqa: E402
 
 from iceberg_base import CATALOG, SILVER_NAMESPACE, build_spark, create_iceberg_table  # noqa: E402
 from job_log import emit_job_log  # noqa: E402
+from _silver_technical import write_quarantine  # noqa: E402
 import _raw_normalize as rn
 from _raw_normalize import classify_terminal_class as _classify_shipment_status, normalize_status as _normalize_status  # consolidated primitives (ADR-0006)  # noqa: E402
 
@@ -159,13 +168,39 @@ def build(spark: SparkSession):
         .withColumn("pincode_norm", trim(col("pincode")))
         .withColumn("courier_norm", trim(col("courier")))
         .withColumn("event_id", u_eid(col("brand_id"), raw_awb, raw_status, col("occurred_at_iso")))
-        # order_id is the ledger spine key — drop un-keyed transitions (mapper THROWS on empty order_id).
-        .where(
-            col("event_id").isNotNull()
-            & col("occurred_at_iso").isNotNull()
-            & (col("order_id_norm").isNotNull() & (col("order_id_norm") != lit("")))
-        )
     )
+
+    # ── Stage-1 DQ gate: order_id is the ledger spine key (mapper THROWS on empty); route that + un-seedable
+    #    id / unparseable ts to brain_silver.silver_quarantine (stage='dq') instead of silently dropping.
+    #    Same admission set; good rows byte-identical; NON-PII diagnostic payload (raw AWB never threaded).
+    _ok = (
+        col("event_id").isNotNull()
+        & col("occurred_at_iso").isNotNull()
+        & (col("order_id_norm").isNotNull() & (col("order_id_norm") != lit("")))
+    )
+    _reason = concat_ws(
+        ",",
+        when(col("order_id_norm").isNull() | (col("order_id_norm") == lit("")), lit("empty_identifier:order_id")),
+        when(col("event_id").isNull(), lit("empty_identifier:event_id")),
+        when(col("occurred_at_iso").isNull(), lit("unparseable_timestamp")),
+    )
+    write_quarantine(
+        spark,
+        canon.where(~_ok).select(
+            col("brand_id"),
+            lit("shiprocket").alias("source"),
+            col("event_id").alias("bronze_event_id"),
+            lit(TARGET.rsplit(".", 1)[1]).alias("canonical_target"),
+            _reason.alias("reason"),
+            to_json(struct(
+                col("order_id_norm"), col("status_norm"), col("terminal_class"),
+                col("payment_method_norm"), col("pincode_norm"), col("courier_norm"),
+                col("occurred_at_iso"),
+            )).alias("payload"),
+        ),
+        stage="dq",
+    )
+    canon = canon.where(_ok)
 
     # Reconstruct the canonical shiprocket.shipment_status.v1 envelope as the `payload` JSON the
     # shipment mart get_json_object's. Field shape == ShiprocketShipmentProperties.

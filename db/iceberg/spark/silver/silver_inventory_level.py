@@ -23,6 +23,17 @@ ISOLATION: brand_id first column + the bucket() partition anchor (tenant key on 
 DATA AVAILABILITY (this session): current Bronze has ZERO product.upsert.v1 rows (the product resource is
 unsynced), so this writes a correct EMPTY table over current Bronze. Schema + transform are the deliverable;
 a Shopify/Woo product repull populates it with no code change. Parity status=NEW (no dbt/StarRocks baseline).
+
+STAGE-1 GATE (Brain V4 two-stage): after typing each stock observation but BEFORE the canonical MERGE,
+  every row is run through the Stage-1 DQ gate _silver_technical.dq_check (via dq_violations_udf) on its
+  observed_at (future / unparseable timestamp). observed_at is a NOT-NULL grain key, so an unparseable or
+  implausibly-future stock timestamp is diverted to brain_silver.silver_quarantine (stage='dq', threading
+  the source event_id + a JSON of the observation for a replayable quarantine row) and EXCLUDED from
+  silver_inventory_level; Bronze keeps the original (replay-safe). The OTHER dq rules are N/A here: there
+  is NO money (stock is a count, never money) so the money/currency gate does not apply; and
+  inventory_quantity can be legitimately NEGATIVE (oversold/backorder) so impossible_quantity must not
+  divert it; product_id/variant_id are structurally non-null (base filters product_id, variant_id
+  coalesces to product_id). Good rows are byte-identical to before.
 """
 from __future__ import annotations
 
@@ -30,6 +41,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from pyspark.sql import SparkSession  # noqa: E402
 
@@ -39,6 +51,8 @@ from iceberg_base import (  # noqa: E402
     build_spark,
     create_iceberg_table,
 )
+from pyspark.sql.functions import array_join, col, lit, size, struct, to_json  # noqa: E402
+from _silver_technical import dq_violations_udf, write_quarantine  # noqa: E402
 
 BRONZE_NAMESPACE = os.environ.get("BRONZE_NAMESPACE", "brain_bronze")
 BRONZE_TABLE = f"{CATALOG}.{os.environ.get('SILVER_NAMESPACE', 'brain_silver')}.silver_collector_event"  # ADR-0006 P3: gated source (R2/R3 now in Silver)
@@ -86,12 +100,12 @@ def build(spark: SparkSession) -> tuple:
     # ── SHOPIFY: explode variants[] → one stock observation per variant ──
     shopify_inv = """
         with exploded as (
-            select b.brand_id, b.source, b.product_id, b.occurred_at, b.ingested_at, item
+            select b.brand_id, b.event_id, b.source, b.product_id, b.occurred_at, b.ingested_at, item
             from inv_base b
             lateral view explode(from_json(coalesce(b.variants_json, '[]'), 'array<string>')) e as item
         )
         select
-            brand_id, product_id,
+            brand_id, event_id, product_id,
             coalesce(get_json_object(item, '$.variant_id'), product_id)  as variant_id,
             source,
             get_json_object(item, '$.sku')                               as sku,
@@ -104,7 +118,7 @@ def build(spark: SparkSession) -> tuple:
     # ── WOOCOMMERCE (flat): synthesize one stock observation from product-level stock_quantity ──
     woo_inv = """
         select
-            brand_id, product_id,
+            brand_id, event_id, product_id,
             product_id                                                   as variant_id,
             source,
             flat_sku                                                     as sku,
@@ -125,7 +139,7 @@ def build(spark: SparkSession) -> tuple:
         ),
         typed as (
             select
-                brand_id, product_id, variant_id,
+                brand_id, event_id, product_id, variant_id,
                 cast(occurred_at as timestamp)  as observed_at,
                 source, sku,
                 case when inventory_quantity_raw rlike '^-?[0-9]+$' then cast(inventory_quantity_raw as bigint) else null end as inventory_quantity,
@@ -140,11 +154,30 @@ def build(spark: SparkSession) -> tuple:
                 ) as _rn
             from typed
         )
-        select brand_id, product_id, variant_id, observed_at, source, sku, inventory_quantity, ingested_at
+        select brand_id, product_id, variant_id, observed_at, source, sku, inventory_quantity, ingested_at, event_id
         from deduped
         where _rn = 1
     """
-    spark.sql(typed_sql).createOrReplaceTempView("silver_inventory_level_new")
+    # ── Stage-1 DQ gate: observed_at validity (future / unparseable) — see module docstring ───────────
+    typed_df = spark.sql(typed_sql).withColumn(
+        "_dq",
+        dq_violations_udf()(lit(None).cast("bigint"), lit(None).cast("string"), col("observed_at").cast("string")),
+    )
+    write_quarantine(
+        spark,
+        typed_df.where(size(col("_dq")) > 0).select(
+            col("brand_id"),
+            lit("product.upsert.v1").alias("source"),
+            col("event_id").alias("bronze_event_id"),
+            lit(TABLE_NAME).alias("canonical_target"),
+            array_join(col("_dq"), ",").alias("reason"),
+            to_json(struct("brand_id", "product_id", "variant_id", "observed_at", "inventory_quantity")).alias("payload"),
+        ),
+        stage="dq",
+    )
+    typed_df.where(size(col("_dq")) == 0).drop("_dq", "event_id").createOrReplaceTempView(
+        "silver_inventory_level_new"
+    )
 
     spark.sql(
         f"""

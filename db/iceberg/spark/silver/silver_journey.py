@@ -21,6 +21,18 @@ PII     : brain_anon_id is a pseudonymous id (not raw PII). No raw contact/finan
 MONEY   : none — the journey entity carries no money (revenue truth stays in the order/settlement marts).
 ISOLATION: brand_id first column + bucket() partition anchor.
 
+STAGE-1 GATE (Brain V4 two-stage, _silver_technical): the gate runs at the TOUCH grain, BEFORE the
+  per-anon journey aggregation, so a bad touch never pollutes a journey summary. NO money on this entity, so
+  two rules apply, both → stage='dq':
+    - empty_identifier:brain_anon_id — the honest no-anon drop (cannot sessionize) is REPLACED by a routed
+      write_quarantine (same admitted set, now observable + replayable). The journey-entity row count is
+      unchanged (un-keyed touches still excluded), but the drop is now visible.
+    - future/unparseable timestamp — each kept touch runs through dq_check (occurred_at only); a bad-timestamp
+      touch is diverted to silver_quarantine and EXCLUDED from the journey it would otherwise distort.
+  N/A: money/currency rules (no money), impossible_quantity (no quantity field), clean_name/clean_string
+  (utm/landing_path/referrer are URLs/campaign metadata, not titlecased display names). Bronze keeps every
+  original (replay-safe); the surviving touches roll up byte-identically to before (parity-faithful).
+
 DATA AVAILABILITY (this session): current Bronze HAS journey touches (page.viewed=302, product.viewed=207,
 …) BUT only the SDK-instrumented subset carries brain_anon_id, so the journey-entity row count == the
 distinct keyed-anon count (honest; un-keyed touches are dropped, mirroring dbt). Parity status=NEW (no dbt
@@ -29,8 +41,9 @@ journey-entity predecessor to compare against).
 from __future__ import annotations
 
 from _silver_base import ensure_silver_table, merge_on_pk, prop, read_bronze_events, run_job
+from _silver_technical import dq_violations_udf, write_quarantine
 from pyspark.sql import functions as F
-from pyspark.sql.functions import coalesce, col, lit, lower, when
+from pyspark.sql.functions import array_join, coalesce, col, lit, lower, size, when
 from pyspark.sql.window import Window
 
 TABLE = "silver_journey"
@@ -88,30 +101,70 @@ def build(spark):
     )
 
     raw = read_bronze_events(spark, JOURNEY_EVENTS)
-    touches = (
-        raw.select(
+    base = raw.select(
+        col("brand_id"),
+        col("event_id"),
+        col("event_type"),
+        col("occurred_at"),
+        prop("pj", "brain_anon_id").alias("brain_anon_id"),
+        prop("pj", "session_id").alias("session_id_raw"),
+        prop("pj", "utm.source").alias("utm_source"),
+        prop("pj", "utm.medium").alias("utm_medium"),
+        prop("pj", "utm.campaign").alias("utm_campaign"),
+        prop("pj", "click_ids.fbclid").alias("fbclid"),
+        prop("pj", "click_ids.gclid").alias("gclid"),
+        prop("pj", "click_ids.ttclid").alias("ttclid"),
+        prop("pj", "click_ids.msclkid").alias("msclkid"),
+        prop("pj", "click_ids.gbraid").alias("gbraid"),
+        prop("pj", "click_ids.wbraid").alias("wbraid"),
+        prop("pj", "click_ids.dclid").alias("dclid"),
+        prop("pj", "referrer").alias("referrer"),
+        prop("pj", "landing_path").alias("landing_path"),
+        when(prop("pj", "_synthetic") == "true", lit(True)).otherwise(lit(False)).alias("is_synthetic"),
+        # Transient Stage-1 carrier (dropped before the rollup): the raw payload (replayable quarantine row).
+        col("pj").alias("_payload"),
+    ).where(col("brand_id").isNotNull() & col("event_id").isNotNull())
+
+    # ── Stage-1 empty_identifier: REPLACE the silent no-anon drop with a routed quarantine (observable) ──
+    anon_missing = base.where(col("brain_anon_id").isNull() | (col("brain_anon_id") == lit("")))
+    write_quarantine(
+        spark,
+        anon_missing.select(
             col("brand_id"),
-            col("event_id"),
-            col("event_type"),
-            col("occurred_at"),
-            prop("pj", "brain_anon_id").alias("brain_anon_id"),
-            prop("pj", "session_id").alias("session_id_raw"),
-            prop("pj", "utm.source").alias("utm_source"),
-            prop("pj", "utm.medium").alias("utm_medium"),
-            prop("pj", "utm.campaign").alias("utm_campaign"),
-            prop("pj", "click_ids.fbclid").alias("fbclid"),
-            prop("pj", "click_ids.gclid").alias("gclid"),
-            prop("pj", "click_ids.ttclid").alias("ttclid"),
-            prop("pj", "click_ids.msclkid").alias("msclkid"),
-            prop("pj", "click_ids.gbraid").alias("gbraid"),
-            prop("pj", "click_ids.wbraid").alias("wbraid"),
-            prop("pj", "click_ids.dclid").alias("dclid"),
-            prop("pj", "referrer").alias("referrer"),
-            prop("pj", "landing_path").alias("landing_path"),
-            when(prop("pj", "_synthetic") == "true", lit(True)).otherwise(lit(False)).alias("is_synthetic"),
-        )
-        # Honest drop: no journey key → cannot sessionize (mirror stg_touchpoint_events).
-        .where(col("brain_anon_id").isNotNull() & (col("brain_anon_id") != ""))
+            col("event_type").alias("source"),
+            col("event_id").alias("bronze_event_id"),
+            lit(TABLE).alias("canonical_target"),
+            lit("empty_identifier:brain_anon_id").alias("reason"),
+            col("_payload").alias("payload"),
+        ),
+        stage="dq",
+    )
+    keyed = base.where(col("brain_anon_id").isNotNull() & (col("brain_anon_id") != lit("")))
+
+    # ── Stage-1 DQ gate (per touch): future/unparseable occurred_at → quarantine(stage='dq'); a bad touch is
+    #    excluded from the journey it would otherwise distort. ──
+    gated = keyed.withColumn(
+        "_dq",
+        dq_violations_udf()(
+            lit(None).cast("bigint"), lit(None).cast("string"),
+            col("occurred_at").cast("string"), lit(None).cast("bigint"),
+        ),
+    )
+    write_quarantine(
+        spark,
+        gated.where(size(col("_dq")) > 0).select(
+            col("brand_id"),
+            col("event_type").alias("source"),
+            col("event_id").alias("bronze_event_id"),
+            lit(TABLE).alias("canonical_target"),
+            array_join(col("_dq"), ",").alias("reason"),
+            col("_payload").alias("payload"),
+        ),
+        stage="dq",
+    )
+
+    touches = (
+        gated.where(size(col("_dq")) == 0).drop("_dq", "_payload")
         # Dedup the Bronze idempotency key first (re-delivered event_id collapses to one touch).
         .withColumn(
             "_dedup_rn",

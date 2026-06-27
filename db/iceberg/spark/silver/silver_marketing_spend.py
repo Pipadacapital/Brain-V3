@@ -26,6 +26,14 @@ REPLAY-SAFE: pure deterministic projection + MERGE WHEN MATCHED THEN UPDATE / WH
   keyed on (brand_id, spend_event_id) — re-running over the same Bronze is a no-op on identity and
   refreshes the latest-ingested values.
 
+STAGE-1 GATE (Brain V4 two-stage): this job now runs the Stage-1 DQ gate _silver_technical.dq_check over
+  each canonical spend fact BEFORE the MERGE: a row whose spend_minor is negative/non-integer, whose
+  currency_code is not ISO-4217 alpha-3, or whose occurred_at is future/unparseable is diverted to
+  brain_silver.silver_quarantine (stage='dq', carrying the original Bronze payload) and NEVER written to
+  silver_marketing_spend; Bronze keeps the original (replay-safe: fix + re-run re-admits). The grain
+  filters (spend_event_id / stat_date NOT NULL) are unchanged dbt-parity grain selection. Good rows are
+  byte-identical (parity-faithful).
+
 Run via spark-submit inside the Spark+Iceberg image — see run-silver-marketing-spend.sh. All wiring is
 env-overridable; dev defaults target the compose service names (iceberg-rest:8181, minio:9000).
 """
@@ -42,6 +50,7 @@ from iceberg_base import (
     build_spark,
     create_iceberg_table,
 )
+from _silver_technical import dq_violations_udf, write_quarantine
 
 # ── Bronze (source) wiring — the raw analytical SoR this Silver mart builds FROM ──────────────────
 BRONZE_NAMESPACE = os.environ.get("BRONZE_NAMESPACE", "brain_bronze")
@@ -103,7 +112,9 @@ def build_marketing_spend(spark: SparkSession) -> DataFrame:
     """Reproduce stg_ad_spend_bronze + silver_marketing_spend.sql EXACTLY, returning the mart rows.
 
     Folds the staging view (read→type→dedup) into the mart projection (cast/coalesce/filter). The result
-    schema matches `_COLUMNS_SQL` (the dbt output), money as bigint minor + currency_code.
+    schema matches `_COLUMNS_SQL` (the dbt output) plus a trailing `_payload` carry-through column (the
+    verbatim Bronze envelope) used by the Stage-1 quarantine in run(); run() drops `_payload` before the
+    MERGE so the canonical table is byte-identical. Money as bigint minor + currency_code.
     """
     payload = F.col("payload")
 
@@ -129,6 +140,8 @@ def build_marketing_spend(spark: SparkSession) -> DataFrame:
             _prop(payload, "account_timezone").alias("account_timezone"),
             F.col("occurred_at"),
             F.col("ingested_at"),
+            # Thread the verbatim Bronze envelope through so a Stage-1 reject is replayable from quarantine.
+            payload.alias("_payload"),
         )
         # Drop malformed events with no spend_event_id (cannot be a canonical spend row).
         .where(F.col("spend_event_id").isNotNull() & (F.col("spend_event_id") != F.lit("")))
@@ -166,6 +179,7 @@ def build_marketing_spend(spark: SparkSession) -> DataFrame:
         F.col("account_timezone"),
         F.col("occurred_at"),
         F.current_timestamp().alias("updated_at"),
+        F.col("_payload"),
     ).where(
         # stat_date NOT NULL: it is the dbt expression-partition key. spend_event_id NOT NULL: grain.
         F.col("spend_event_id").isNotNull() & F.col("stat_date").isNotNull()
@@ -199,7 +213,32 @@ def run(spark: SparkSession) -> None:
     src_n = mart.count()
     print(f"[silver_marketing_spend] built {src_n} mart rows from Bronze {SPEND_EVENT_TYPE}", flush=True)
 
-    merge_into_silver(spark, fqtn, mart)
+    # ── Stage-1 DQ gate: spend money (spend_minor + currency) at a real event time. Negative/non-int amount,
+    # non-ISO-4217 currency, or future/unparseable occurred_at → silver_quarantine (stage='dq', original
+    # Bronze payload), NEVER silver_marketing_spend; Bronze keeps the original (replay-safe). Good rows drop
+    # the _payload carry-through so the MERGE target is byte-identical.
+    gated = mart.withColumn(
+        "_dq",
+        dq_violations_udf()(F.col("spend_minor"), F.col("currency_code"), F.col("occurred_at").cast("string")),
+    )
+    write_quarantine(
+        spark,
+        gated.where(F.size(F.col("_dq")) > 0).select(
+            F.col("brand_id"),
+            F.lit(SPEND_EVENT_TYPE).alias("source"),
+            F.col("spend_event_id").alias("bronze_event_id"),
+            F.lit(TABLE_NAME).alias("canonical_target"),
+            F.array_join(F.col("_dq"), ",").alias("reason"),
+            F.col("_payload").alias("payload"),
+        ),
+        stage="dq",
+    )
+    good = gated.where(F.size(F.col("_dq")) == 0).drop("_dq", "_payload")
+    bad_n = src_n - good.count()
+    if bad_n:
+        print(f"[silver_marketing_spend] quarantined {bad_n} spend rows (stage=dq)", flush=True)
+
+    merge_into_silver(spark, fqtn, good)
 
     total = spark.table(fqtn).count()
     print(f"[silver_marketing_spend] MERGE complete — {fqtn} now has {total} rows", flush=True)

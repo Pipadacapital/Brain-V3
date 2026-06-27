@@ -30,6 +30,15 @@ never the provider body.
 
 DUAL-RUN (P4): writes to a SHADOW table by default (TARGET_TABLE override) so parity can be checked against
 the live canonical silver_collector_event settlement rows before the connector cutover.
+
+STAGE-1 GATE (Brain V4 two-stage): paisa_to_minor_string RETURNS None for a non-integer amount/fee/tax (the
+TS THROWS — money is never a float, never blended), which the inline `.where(event_id & occurred_at_iso &
+amount_minor & fee_minor & tax_minor isNotNull)` gate then SILENTLY DROPPED. Those drops are now ROUTED
+through _silver_technical.write_quarantine (stage='dq') to brain_silver.silver_quarantine: malformed paisa →
+non_integer_amount, unparseable settled/created ts → unparseable_timestamp, un-seedable event_id →
+empty_identifier:event_id. The admitted set is IDENTICAL (good rows byte-identical / parity-faithful); the
+diagnostic payload carries only NON-PII recon fields (payment_id / utr are hashed C1 PII — NEVER threaded;
+card.* never crosses the boundary), and Bronze keeps the untouched original (replay-safe).
 """
 from __future__ import annotations
 
@@ -41,11 +50,12 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pyspark.sql import SparkSession  # noqa: E402
-from pyspark.sql.functions import coalesce, col, lit, struct, to_json, trim, udf, upper, when  # noqa: E402
+from pyspark.sql.functions import coalesce, col, concat_ws, lit, struct, to_json, trim, udf, upper, when  # noqa: E402
 from pyspark.sql.types import StringType  # noqa: E402
 
 from iceberg_base import CATALOG, SILVER_NAMESPACE, build_spark, create_iceberg_table  # noqa: E402
 from job_log import emit_job_log  # noqa: E402
+from _silver_technical import write_quarantine  # noqa: E402
 import _raw_normalize as rn  # noqa: E402
 
 BRONZE_NAMESPACE = os.environ.get("BRONZE_NAMESPACE", "brain_bronze")
@@ -184,14 +194,43 @@ def build(spark: SparkSession):
         .withColumn("utr_hash", u_hash(col("utr"), col("salt_hex")))
         .withColumn("reconciliation_type", u_recon(col("entity_type"), col("payment_id")))
         .withColumn("event_id", u_eid(col("brand_id"), col("settlement_id"), col("payment_id"), col("entity_type")))
-        .where(
-            col("event_id").isNotNull()
-            & col("occurred_at_iso").isNotNull()
-            & col("amount_minor").isNotNull()
-            & col("fee_minor").isNotNull()
-            & col("tax_minor").isNotNull()
-        )
     )
+
+    # ── Stage-1 DQ gate: route the inline money/timestamp/id drops to brain_silver.silver_quarantine
+    #    (stage='dq') instead of silently dropping. Same admission set; good rows byte-identical; the
+    #    diagnostic payload carries NON-PII recon fields only (payment_id/utr are hashed PII, never threaded).
+    _ok = (
+        col("event_id").isNotNull()
+        & col("occurred_at_iso").isNotNull()
+        & col("amount_minor").isNotNull()
+        & col("fee_minor").isNotNull()
+        & col("tax_minor").isNotNull()
+    )
+    _reason = concat_ws(
+        ",",
+        when(col("event_id").isNull(), lit("empty_identifier:event_id")),
+        when(col("occurred_at_iso").isNull(), lit("unparseable_timestamp")),
+        when(col("amount_minor").isNull(), lit("non_integer_amount")),
+        when(col("fee_minor").isNull(), lit("non_integer_amount")),
+        when(col("tax_minor").isNull(), lit("non_integer_amount")),
+    )
+    write_quarantine(
+        spark,
+        canon.where(~_ok).select(
+            col("brand_id"),
+            lit("razorpay").alias("source"),
+            col("event_id").alias("bronze_event_id"),
+            lit(TARGET.rsplit(".", 1)[1]).alias("canonical_target"),
+            _reason.alias("reason"),
+            to_json(struct(
+                col("settlement_id"), col("order_id"), col("amount"), col("fee"), col("tax"),
+                col("status"), col("created_at"), col("settled_at"), col("currency"),
+                col("entity_type_raw"),
+            )).alias("payload"),
+        ),
+        stage="dq",
+    )
+    canon = canon.where(_ok)
 
     # Reconstruct the canonical settlement.live.v1 SettlementEventProperties as the `payload` JSON the
     # settlement marts get_json_object. Field order + names mirror the TS SettlementEventProperties exactly.

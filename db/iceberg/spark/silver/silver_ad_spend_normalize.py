@@ -42,6 +42,15 @@ ISOLATION: brand_id is the tenant key, first column, taken ONLY from the server-
 DUAL-RUN (P4): writes to a SHADOW table by default (TARGET_TABLE override) so parity can be checked against
 the live canonical silver_collector_event spend rows before the connector cutover.
 
+STAGE-1 GATE (Brain V4 two-stage): this normalizer previously DROPPED malformed rows SILENTLY via an inline
+where-gate (event_id / spend_minor / occurred_at all non-null). That silent drop is now REPLACED by a routed
+_silver_technical.write_quarantine (stage='dq') — the SAME admission set (good rows are byte-identical), but
+the rejects are now OBSERVABLE and REPLAYABLE: a row whose event_id seed component is missing
+(empty_identifier:event_id), whose money could not be normalized to minor units (non_integer_amount), or
+whose stat_date is missing/unparseable (unparseable_timestamp) is appended to brain_silver.silver_quarantine
+carrying the reconstructed canonical spend.live.v1 envelope as payload. Bronze keeps the verbatim raw row
+(replay-safe: fix the mapper/data, re-run, it re-admits).
+
 CORRECTNESS: every computed field goes through GOLDEN-VECTOR-VERIFIED ports — the SHARED ports in
 _raw_normalize.py (uuid_shaped) plus the connector-LOCAL ports defined below (major_decimal_to_minor,
 micros_to_minor, to_count_string, resolve_level/level_id/parent_id, stat_date_to_iso, event_id_spend_live).
@@ -58,13 +67,14 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pyspark.sql import DataFrame, SparkSession  # noqa: E402
-from pyspark.sql.functions import col, lit, struct, to_json, udf  # noqa: E402
+from pyspark.sql.functions import col, concat_ws, lit, struct, to_json, udf, when  # noqa: E402
 from pyspark.sql.types import StringType  # noqa: E402
 
 from iceberg_base import CATALOG, SILVER_NAMESPACE, build_spark, create_iceberg_table  # noqa: E402
 from job_log import emit_job_log  # noqa: E402
 import _raw_normalize as rn
 from _raw_normalize import major_decimal_to_minor, micros_to_minor, to_count_string  # consolidated primitives (ADR-0006)  # noqa: E402  (SHARED ports — uuid_shaped reused; never re-implemented here)
+from _silver_technical import write_quarantine  # noqa: E402  (Stage-1 quarantine sink — replaces silent drop)
 
 BRONZE_NAMESPACE = os.environ.get("BRONZE_NAMESPACE", "brain_bronze")
 RAW_META_TABLE = f"{CATALOG}.{BRONZE_NAMESPACE}.meta_spend_raw"
@@ -178,6 +188,35 @@ u_eid = udf(
 )
 
 
+# Stage-1 admission gate (was the inline `.where(...)` silent drop): a canonical spend row needs a seeded
+# event_id, a normalized minor amount, and a parseable stat_date-derived occurred_at. The COMPLEMENT is now
+# routed to silver_quarantine instead of being dropped — same admission set, observable + replayable.
+_SPEND_ADMIT = col("event_id").isNotNull() & col("spend_minor").isNotNull() & col("occurred_at_iso").isNotNull()
+
+
+def _spend_reject_reason():
+    """Per-row reason for a quarantined spend normalization (the failed admission predicate(s), joined)."""
+    return concat_ws(
+        ",",
+        when(col("event_id").isNull(), lit("empty_identifier:event_id")),
+        when(col("spend_minor").isNull(), lit("non_integer_amount")),
+        when(col("occurred_at_iso").isNull(), lit("unparseable_timestamp")),
+    )
+
+
+def _spend_rejects(canon: DataFrame, platform: str, payload_col) -> DataFrame:
+    """The quarantine projection for rows that FAIL _SPEND_ADMIT (brand_id, source, bronze_event_id,
+    canonical_target, reason, payload). payload = the reconstructed canonical envelope (replayable)."""
+    return canon.where(~_SPEND_ADMIT).select(
+        col("brand_id"),
+        lit(platform).alias("source"),
+        col("event_id").alias("bronze_event_id"),
+        lit(TARGET.rsplit(".", 1)[1]).alias("canonical_target"),
+        _spend_reject_reason().alias("reason"),
+        payload_col.alias("payload"),
+    )
+
+
 def _collector_event_select(canon: DataFrame, payload_col) -> DataFrame:
     """Project a per-platform canonical DataFrame onto the silver_collector_event 10-column contract.
     Identical output schema for both platforms → unionByName is safe (payload is a single JSON STRING)."""
@@ -195,8 +234,8 @@ def _collector_event_select(canon: DataFrame, payload_col) -> DataFrame:
     )
 
 
-def build_meta(spark: SparkSession) -> DataFrame:
-    """RAW Meta Insights rows → canonical spend.live.v1 collector_event rows."""
+def build_meta(spark: SparkSession):
+    """RAW Meta Insights rows → (good canonical spend.live.v1 collector_event rows, Stage-1 quarantine rejects)."""
     r = META_ROW
     df = spark.table(RAW_META_TABLE).select(
         col("brand_id").cast("string").alias("brand_id"),  # MT-1: server-trusted envelope ONLY
@@ -230,17 +269,10 @@ def build_meta(spark: SparkSession) -> DataFrame:
             "event_id",
             u_eid(col("brand_id"), col("platform"), col("stat_date"), col("level"), col("level_id")),
         )
-        .where(
-            col("event_id").isNotNull()
-            & col("spend_minor").isNotNull()
-            & col("occurred_at_iso").isNotNull()
-        )
     )
 
     # conversions_raw (ADR-AD-8): Meta → { actions } when present, else null. Native nested struct so the
     # single to_json on the envelope emits proper nested JSON (raw passthrough — not a normalized port).
-    from pyspark.sql.functions import when
-
     conversions_raw = when(col("actions").isNotNull(), struct(col("actions").alias("actions")))
 
     props = struct(
@@ -267,11 +299,14 @@ def build_meta(spark: SparkSession) -> DataFrame:
             props.alias("properties"),
         )
     )
-    return _collector_event_select(canon, payload)
+    # Stage-1: admit good rows; route the (formerly silently-dropped) complement to quarantine.
+    good = _collector_event_select(canon.where(_SPEND_ADMIT), payload)
+    rejects = _spend_rejects(canon, "meta", payload)
+    return good, rejects
 
 
-def build_google(spark: SparkSession) -> DataFrame:
-    """RAW Google Ads SearchStream rows → canonical spend.live.v1 collector_event rows."""
+def build_google(spark: SparkSession):
+    """RAW Google Ads SearchStream rows → (good canonical spend.live.v1 collector_event rows, Stage-1 rejects)."""
     r = GOOGLE_ROW
     df = spark.table(RAW_GOOGLE_TABLE).select(
         col("brand_id").cast("string").alias("brand_id"),  # MT-1
@@ -312,11 +347,6 @@ def build_google(spark: SparkSession) -> DataFrame:
             "event_id",
             u_eid(col("brand_id"), col("platform"), col("stat_date"), col("level"), col("level_id")),
         )
-        .where(
-            col("event_id").isNotNull()
-            & col("spend_minor").isNotNull()
-            & col("occurred_at_iso").isNotNull()
-        )
     )
 
     # conversions_raw (ADR-AD-8): Google → BOTH conversions + all_conversions RAW (null-preserving).
@@ -349,7 +379,10 @@ def build_google(spark: SparkSession) -> DataFrame:
             props.alias("properties"),
         )
     )
-    return _collector_event_select(canon, payload)
+    # Stage-1: admit good rows; route the (formerly silently-dropped) complement to quarantine.
+    good = _collector_event_select(canon.where(_SPEND_ADMIT), payload)
+    rejects = _spend_rejects(canon, "google_ads", payload)
+    return good, rejects
 
 
 def _trim(c):
@@ -381,9 +414,12 @@ def build(spark: SparkSession):
         partitioned_by="bucket(256, brand_id), days(occurred_at)",
     )
 
-    meta = build_meta(spark)
-    google = build_google(spark)
-    union = meta.unionByName(google)
+    meta_good, meta_rejects = build_meta(spark)
+    google_good, google_rejects = build_google(spark)
+    union = meta_good.unionByName(google_good)
+
+    # Stage-1: route the formerly silently-dropped rows to silver_quarantine (observable + replayable).
+    write_quarantine(spark, meta_rejects.unionByName(google_rejects), stage="dq")
 
     union.createOrReplaceTempView("_ad_spend_canon")
     spark.sql(

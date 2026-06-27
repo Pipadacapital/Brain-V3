@@ -24,6 +24,18 @@ lines tie on (sku, variant_id, unit_price_minor, quantity, title) the FINAL tieb
 item) can order differently between engines → line_index 1↔2 may swap for byte-identical-on-the-leading-
 keys lines. line_index is a grain disambiguator, never a business value (dbt's own header says so), so
 the line CONTENT is identical; only the index label may differ on exact-tie lines.
+
+STAGE-1 GATE (Brain V4 two-stage): AFTER typing each line but BEFORE the canonical MERGE, every line is
+  run through the Stage-1 DQ gate _silver_technical.dq_check (via dq_violations_udf) on its money
+  (line_total_minor — negative/non-integer), its sibling currency_code (invalid ISO-4217 / missing while
+  money present — the money-needs-a-currency invariant; well-formed order lines always carry the order's
+  currency), its occurred_at (future / unparseable timestamp) and its quantity (impossible_quantity:
+  negative or absurd). A line that fails is diverted to brain_silver.silver_quarantine (stage='dq',
+  threading the source order event_id + the line item JSON for a replayable quarantine row) and EXCLUDED
+  from silver_order_line; Bronze keeps the original (replay-safe). The three money columns share the one
+  currency; line_total_minor is the representative line economic value. Good lines are byte-identical to
+  before (parity-faithful). clean_string is NOT applied to `title` — it would mutate a parity-faithful
+  passthrough column; titlecasing a catalogue title is out of scope here (N/A, like the reference jobs).
 """
 from __future__ import annotations
 
@@ -31,6 +43,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from pyspark.sql import SparkSession
 
@@ -40,6 +53,8 @@ from iceberg_base import (  # noqa: E402
     build_spark,
     create_iceberg_table,
 )
+from pyspark.sql.functions import array_join, col, lit, size  # noqa: E402
+from _silver_technical import dq_violations_udf, write_quarantine  # noqa: E402
 
 BRONZE_NAMESPACE = os.environ.get("BRONZE_NAMESPACE", "brain_bronze")
 BRONZE_TABLE = f"{CATALOG}.{os.environ.get('SILVER_NAMESPACE', 'brain_silver')}.silver_collector_event"  # ADR-0006 P3: gated source (R2/R3 now in Silver)
@@ -75,10 +90,10 @@ def build(spark: SparkSession) -> str:
 
     # ── latest order.* event per (brand_id, order_id) with a non-empty line_items array ──
     latest_order = """
-        select brand_id, event_id, occurred_at, order_id, currency_code, line_items_json
+        select brand_id, event_id, event_type, occurred_at, order_id, currency_code, line_items_json
         from (
             select
-                brand_id, event_id, occurred_at,
+                brand_id, event_id, event_type, occurred_at,
                 coalesce(get_json_object(payload, '$.properties.order_id'),
                          get_json_object(payload, '$.order_id'))               as order_id,
                 get_json_object(payload, '$.properties.currency_code')         as currency_code,
@@ -104,13 +119,14 @@ def build(spark: SparkSession) -> str:
     unnest_sql = """
         with exploded as (
             select
-                l.brand_id, l.order_id, l.currency_code, l.occurred_at,
+                l.brand_id, l.event_id, l.event_type, l.order_id, l.currency_code, l.occurred_at,
                 item
             from latest_order l
             lateral view explode(from_json(l.line_items_json, 'array<string>')) e as item
         )
         select
-            brand_id, order_id, currency_code, occurred_at,
+            brand_id, event_id, event_type, order_id, currency_code, occurred_at,
+            item as _item,
             row_number() over (
                 partition by brand_id, order_id
                 order by get_json_object(item, '$.sku'),
@@ -136,7 +152,7 @@ def build(spark: SparkSession) -> str:
     typed_sql = """
         with typed as (
             select
-                brand_id, order_id, line_index, sku, title,
+                brand_id, event_id, event_type, _item, order_id, line_index, sku, title,
                 case when quantity_raw            rlike '^[0-9]+$'   then cast(quantity_raw as bigint)            else 0 end as quantity,
                 case when unit_price_minor_raw    rlike '^-?[0-9]+$' then cast(unit_price_minor_raw as bigint)    else 0 end as unit_price_minor,
                 case when line_total_minor_raw    rlike '^-?[0-9]+$' then cast(line_total_minor_raw as bigint)    else 0 end as line_total_minor,
@@ -156,11 +172,33 @@ def build(spark: SparkSession) -> str:
         select
             brand_id, order_id, line_index, sku, title, quantity,
             unit_price_minor, line_total_minor, line_discount_minor,
-            product_id, variant_id, currency_code, occurred_at
+            product_id, variant_id, currency_code, occurred_at,
+            event_id, event_type, _item
         from deduped
         where _dedup_rn = 1
     """
-    spark.sql(typed_sql).createOrReplaceTempView("silver_order_line_new")
+    # ── Stage-1 DQ gate: money (line_total_minor) / currency / occurred_at / quantity validity ─────────
+    typed_df = spark.sql(typed_sql).withColumn(
+        "_dq",
+        dq_violations_udf()(
+            col("line_total_minor"), col("currency_code"), col("occurred_at").cast("string"), col("quantity")
+        ),
+    )
+    write_quarantine(
+        spark,
+        typed_df.where(size(col("_dq")) > 0).select(
+            col("brand_id"),
+            col("event_type").alias("source"),
+            col("event_id").alias("bronze_event_id"),
+            lit(TABLE_NAME).alias("canonical_target"),
+            array_join(col("_dq"), ",").alias("reason"),
+            col("_item").alias("payload"),
+        ),
+        stage="dq",
+    )
+    typed_df.where(size(col("_dq")) == 0).drop("_dq", "event_id", "event_type", "_item").createOrReplaceTempView(
+        "silver_order_line_new"
+    )
 
     spark.sql(
         f"""

@@ -33,6 +33,17 @@ PII     : pseudonymous-only — brain_anon_id is an opaque id (not raw PII); `se
           selector/role, never user-entered text. NO raw contact/financial identifier is read or stored.
 ISOLATION: brand_id is the FIRST column + the bucket() partition anchor (tenant isolation by construction).
 
+STAGE-1 GATE (Brain V4 two-stage, _silver_technical): an engagement signal is a TIMESTAMPED behavioral
+  event with NO money — so the ONLY Stage-1 DQ rule that genuinely applies is the timestamp gate. Each
+  signal is run through dq_check (via dq_violations_udf, occurred_at only) and a row whose occurred_at is
+  future-dated (> now + skew) or unparseable is diverted to brain_silver.silver_quarantine (stage='dq')
+  and NEVER written to silver_engagement_signal; Bronze keeps the original (replay-safe). N/A here:
+  money/currency rules (no money column), impossible_quantity (the int fields scroll_pct/click_count/x/y
+  are coordinates/milestones, not a quantity), empty_identifier (brain_anon_id is nullable on this grain —
+  a position-only rage/scroll signal can fire pre-identification), and clean_name/clean_string (no non-PII
+  display name/title — `selector` is a structural element selector, not titlecased text). Good rows are
+  byte-identical to before (parity-faithful).
+
 DATA AVAILABILITY (this session): current Bronze HAS these signals (scroll.depth=585, element.clicked=383,
 dead.click=127, rage.click=1) so this materializes a populated table. Parity status=NEW (no dbt
 engagement-signal predecessor to compare against — the oracle emits SKIP reason=current-mart-absent).
@@ -40,7 +51,8 @@ engagement-signal predecessor to compare against — the oracle emits SKIP reaso
 from __future__ import annotations  # Spark image is Python 3.8 — defer `str | None` annotation eval.
 
 from _silver_base import ensure_silver_table, merge_on_pk, prop, read_bronze_events, run_job
-from pyspark.sql.functions import col, lit, when
+from _silver_technical import dq_violations_udf, write_quarantine
+from pyspark.sql.functions import array_join, col, lit, size, when
 
 TABLE = "silver_engagement_signal"
 
@@ -83,7 +95,7 @@ def build(spark):
     )
 
     raw = read_bronze_events(spark, ENGAGEMENT_EVENTS)
-    staged = raw.select(
+    typed = raw.select(
         col("brand_id"),
         col("event_id"),
         _signal_type(col("event_type")).alias("signal_type"),
@@ -102,7 +114,33 @@ def build(spark):
         prop("pj", "device.viewport").alias("viewport"),
         col("occurred_at"),
         col("ingested_at"),
+        # Transient carriers for the Stage-1 gate (dropped before the canonical MERGE): the source
+        # event_name (quarantine `source`) and the raw payload (replayable quarantine row).
+        col("event_type").alias("_source_event"),
+        col("pj").alias("_payload"),
     ).where(col("event_id").isNotNull() & col("brand_id").isNotNull())
+
+    # ── Stage-1 DQ gate: timestamped signal → future/unparseable occurred_at → quarantine(stage='dq') ──
+    gated = typed.withColumn(
+        "_dq",
+        dq_violations_udf()(
+            lit(None).cast("bigint"), lit(None).cast("string"),
+            col("occurred_at").cast("string"), lit(None).cast("bigint"),
+        ),
+    )
+    write_quarantine(
+        spark,
+        gated.where(size(col("_dq")) > 0).select(
+            col("brand_id"),
+            col("_source_event").alias("source"),
+            col("event_id").alias("bronze_event_id"),
+            lit(TABLE).alias("canonical_target"),
+            array_join(col("_dq"), ",").alias("reason"),
+            col("_payload").alias("payload"),
+        ),
+        stage="dq",
+    )
+    staged = gated.where(size(col("_dq")) == 0).drop("_dq", "_payload", "_source_event")
 
     merge_on_pk(spark, fqtn, staged, ["brand_id", "event_id"], order_by_desc=["ingested_at", "occurred_at"])
     return fqtn, spark.table(fqtn).count()

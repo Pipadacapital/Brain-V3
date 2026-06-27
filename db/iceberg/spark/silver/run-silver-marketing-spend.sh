@@ -48,5 +48,5 @@ exec docker run --rm \
     --master "local[2]" \
     --packages "${PACKAGES}" \
     --conf spark.jars.ivy=/root/.ivy2 \
-    --py-files /opt/spark-src/iceberg_base.py \
+    --py-files /opt/spark-src/iceberg_base.py,/opt/spark-src/silver/_silver_technical.py \
     /opt/spark-src/silver/silver_marketing_spend.py

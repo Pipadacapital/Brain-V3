@@ -28,6 +28,14 @@ GRAIN: 1 row per (brand_id, order_id) — latest shipment state per order. brand
 PII: none raw — awb_number_hash already hashed.  MONEY: none.
 IDEMPOTENT: MERGE WHEN MATCHED UPDATE / WHEN NOT MATCHED INSERT on (brand_id,order_id) — replay-safe.
 
+STAGE-1 GATE (Brain V4 two-stage): N/A — this job is a TRUSTED downstream PROJECTION. It does not read raw
+  Bronze; it only folds the SAME-tier Silver transition log silver_shipment_event (which ALREADY runs the
+  Stage-1 DQ timestamp gate at the transition grain, so future/unparseable-timestamp rows never reach this
+  fold). This mart carries NO money, NO quantity, and NO human display name — terminal_class / current_status
+  come from the @brain/logistics-status authority, awb_number_hash is already hashed. No additional Stage-1
+  DQ or business rule independently applies, so per the Stage-1 contract no gate is forced here (re-gating
+  would be redundant with the upstream event-log gate). Output is byte-identical to before (parity-faithful).
+
 Run via spark-submit inside the Spark+Iceberg image (see run-silver-checkout-shipment.sh).
 """
 from __future__ import annotations

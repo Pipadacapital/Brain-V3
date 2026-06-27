@@ -28,6 +28,22 @@ MONEY: total_price_minor / total_discount_minor are bigint MINOR UNITS paired wi
 PII: none raw — only order_id / risk band / money / address-present flag.
 IDEMPOTENT: MERGE WHEN MATCHED UPDATE / WHEN NOT MATCHED INSERT on (brand_id,event_id) — replay-safe.
 
+STAGE-1 GATE (Brain V4 two-stage, _silver_technical): a checkout signal is MONEY-BEARING (total_price_minor
+  + currency_code) and TIMESTAMPED, so the technical dq_check gate applies (mirrors silver_order_state),
+  routing rejects → stage='dq'. After the staging fold, each signal runs through dq_check on
+  (total_price_minor, currency_code, occurred_at):
+    - negative_amount / non_integer_amount — total_price_minor must be a non-negative bigint minor-unit total.
+    - invalid_currency / missing_currency  — a row carrying total_price_minor must carry a sibling ISO-4217
+      currency_code (HARD RULE — money never blended/assumed; a NULL price OMITS the money fields, no false
+      missing_currency).
+    - future_occurred_at / unparseable_timestamp — on occurred_at.
+  A failing signal is diverted to brain_silver.silver_quarantine (stage='dq') and NEVER written to
+  silver_checkout_signal; Bronze keeps the original (replay-safe). N/A: impossible_quantity (no quantity
+  field — total_discount_minor is money, gated by the price rule's siblings, not a count), empty_identifier
+  (the (brand_id, event_id) PK is structurally guarded), clean_name/clean_string (risk_flag is an enum,
+  order_id an opaque ref — no titlecased display name). Good rows are byte-identical to before
+  (parity-faithful).
+
 Run via spark-submit inside the Spark+Iceberg image (see run-silver-checkout-shipment.sh). All wiring
 is env-overridable; dev defaults target the compose service names (iceberg-rest:8181, minio:9000).
 """
@@ -39,8 +55,10 @@ import sys
 # iceberg_base lives one dir up (db/iceberg/spark). run-silver-checkout-shipment.sh puts it on
 # PYTHONPATH via --py-files; for a direct local run, add the parent dir to sys.path defensively.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # silver/ — for _silver_technical
 
 from pyspark.sql import SparkSession  # noqa: E402
+from pyspark.sql.functions import array_join, col, lit, size  # noqa: E402
 
 from iceberg_base import (  # noqa: E402
     CATALOG,
@@ -48,6 +66,7 @@ from iceberg_base import (  # noqa: E402
     build_spark,
     create_iceberg_table,
 )
+from _silver_technical import dq_violations_udf, write_quarantine  # noqa: E402
 
 BRONZE_NAMESPACE = os.environ.get("BRONZE_NAMESPACE", "brain_bronze")
 BRONZE_TABLE = f"{CATALOG}.{os.environ.get('SILVER_NAMESPACE', 'brain_silver')}.silver_collector_event"  # ADR-0006 P3: gated source (R2/R3 now in Silver)
@@ -95,6 +114,7 @@ def _build_signal_df(spark: SparkSession):
                 event_id,
                 event_type,
                 occurred_at,
+                payload AS _payload,  -- Stage-1: replayable quarantine payload (dropped before the MERGE).
                 CASE event_type
                     WHEN 'gokwik.rto_predict.v1'         THEN 'rto_predict'
                     WHEN 'shopflo.checkout_abandoned.v1' THEN 'checkout_abandoned'
@@ -135,7 +155,8 @@ def _build_signal_df(spark: SparkSession):
             currency_code,
             occurred_at,
             is_synthetic,
-            current_timestamp() AS updated_at
+            current_timestamp() AS updated_at,
+            _payload
         FROM deduped
         WHERE _dedup_rn = 1
           -- silver_checkout_signal mart TTL/partition guard (interval {TTL_DAYS} day):
@@ -155,7 +176,30 @@ def run(spark: SparkSession) -> None:
     )
 
     df = _build_signal_df(spark)
-    df.createOrReplaceTempView("silver_checkout_signal_batch")
+
+    # ── Stage-1 DQ gate: money (total_price_minor + currency) + occurred_at → quarantine(stage='dq') ──
+    gated = df.withColumn(
+        "_dq",
+        dq_violations_udf()(
+            col("total_price_minor"), col("currency_code"),
+            col("occurred_at").cast("string"), lit(None).cast("bigint"),
+        ),
+    )
+    write_quarantine(
+        spark,
+        gated.where(size(col("_dq")) > 0).select(
+            col("brand_id"),
+            col("source"),
+            col("event_id").alias("bronze_event_id"),
+            lit("silver_checkout_signal").alias("canonical_target"),
+            array_join(col("_dq"), ",").alias("reason"),
+            col("_payload").alias("payload"),
+        ),
+        stage="dq",
+    )
+    gated.where(size(col("_dq")) == 0).drop("_dq", "_payload").createOrReplaceTempView(
+        "silver_checkout_signal_batch"
+    )
 
     # Idempotent MERGE on the model PK (brand_id, event_id). WHEN MATCHED UPDATE keeps the row current
     # on re-run (the dedup already collapsed to 1 row per PK, so the inner row_number guard is belt+braces).

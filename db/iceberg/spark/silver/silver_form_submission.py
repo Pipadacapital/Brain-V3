@@ -30,6 +30,14 @@ NO RAW FIELD VALUES / PII: this job projects ONLY the structural columns above. 
 MONEY   : none — a form submission carries no money (it is a lead/intent signal). NO money column on this mart.
 ISOLATION: brand_id is the FIRST column + the bucket() partition anchor (tenant isolation by construction).
 
+STAGE-1 GATE (Brain V4 two-stage): a form submission carries NO money and NO quantity, so the applicable
+  Stage-1 DQ rule is the TIMESTAMP gate — _silver_technical.dq_check over occurred_at (future_occurred_at /
+  unparseable_timestamp). A submission whose occurred_at is unparseable or in the future is diverted to
+  brain_silver.silver_quarantine (stage='dq') and NEVER written to silver_form_submission; Bronze keeps the
+  original (replay-safe). form_id / form_name are DOM structural identifiers (NOT human display names, and
+  NEVER the typed field values), so clean_name/clean_string do NOT apply — no parity-altering rewrite. Good
+  rows are byte-identical to before (parity-faithful).
+
 DATA AVAILABILITY (this session): current Bronze HAS form.submitted=12 rows, so this materializes a small
 populated table. Parity status=NEW (no dbt form-submission predecessor — oracle emits SKIP
 reason=current-mart-absent).
@@ -37,7 +45,8 @@ reason=current-mart-absent).
 from __future__ import annotations  # Spark image is Python 3.8 — defer `str | None` annotation eval.
 
 from _silver_base import ensure_silver_table, merge_on_pk, prop, read_bronze_events, run_job
-from pyspark.sql.functions import col
+from _silver_technical import dq_violations_udf, write_quarantine
+from pyspark.sql.functions import array_join, col, lit, size
 
 TABLE = "silver_form_submission"
 
@@ -80,9 +89,30 @@ def build(spark):
         prop("pj", "device.viewport").alias("viewport"),
         col("occurred_at"),
         col("ingested_at"),
+        # Carry the raw payload so a quarantined reject is replayable from the quarantine row alone.
+        col("pj").alias("_payload"),
     ).where(col("event_id").isNotNull() & col("brand_id").isNotNull())
 
-    merge_on_pk(spark, fqtn, staged, ["brand_id", "event_id"], order_by_desc=["ingested_at", "occurred_at"])
+    # ── Stage-1 DQ gate: timestamp validity only (no money / no quantity on a form submission) ─────────
+    gated = staged.withColumn(
+        "_dq",
+        dq_violations_udf()(lit(None).cast("bigint"), lit(None).cast("string"), col("occurred_at").cast("string")),
+    )
+    write_quarantine(
+        spark,
+        gated.where(size(col("_dq")) > 0).select(
+            col("brand_id"),
+            lit("form.submitted").alias("source"),
+            col("event_id").alias("bronze_event_id"),
+            lit(TABLE).alias("canonical_target"),
+            array_join(col("_dq"), ",").alias("reason"),
+            col("_payload").alias("payload"),
+        ),
+        stage="dq",
+    )
+    good = gated.where(size(col("_dq")) == 0).drop("_dq", "_payload")
+
+    merge_on_pk(spark, fqtn, good, ["brand_id", "event_id"], order_by_desc=["ingested_at", "occurred_at"])
     return fqtn, spark.table(fqtn).count()
 
 

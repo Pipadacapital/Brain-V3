@@ -1,11 +1,14 @@
 /**
- * identity-export — materialize the Neo4j identity graph → StarRocks brain_ops.silver_identity_link
- * + brain_ops.silver_customer_identity.
+ * identity-export — materialize the Neo4j identity graph → ops.silver_identity_link
+ * + ops.silver_customer_identity (PG `ops` schema).
  *
- * MEDALLION REALIGNMENT (Epic 3 / ADR-0004): Neo4j is the identity SoR, but dbt/StarRocks cannot read
- * Neo4j. silver_order_recognition (gold revenue ledger) + customer marts resolve brain_id from the
+ * MEDALLION REALIGNMENT (Epic 3 / ADR-0004): Neo4j is the identity SoR, but the marts cannot read Neo4j.
+ * silver_order_recognition (gold revenue ledger) + customer marts resolve brain_id from the
  * hashed-identifier→brain_id mapping. This job reads the IDENTIFIES edges + Customer nodes from Neo4j and
- * UPSERTs them into the StarRocks PRIMARY KEY tables the marts read. Runs BEFORE recognition-refresh (cron).
+ * UPSERTs them into the operational PG tables the marts read. V4 (StarRocks REMOVAL, migration 0116) moved
+ * these projections into the PG `ops` schema — PG is the SOLE operational store; the StarRocks PRIMARY-KEY
+ * "INSERT == upsert" is now an explicit INSERT ... ON CONFLICT (<pk>) DO UPDATE. Runs BEFORE
+ * recognition-refresh (cron).
  *
  * INCREMENTAL by default (SC-1): a TRUNCATE + full reload every run is O(graph) regardless of churn and
  * won't scale. So each run exports only what changed since a persisted high-watermark, in two parts:
@@ -28,7 +31,7 @@
  * Invoked by the core/worker job entrypoint: `node dist/jobs/identity-export/run.js`.
  */
 import neo4j from 'neo4j-driver';
-import mysql from 'mysql2/promise';
+import pg from 'pg';
 import { loadStreamWorkerConfig } from '@brain/config';
 import { log } from '../../log.js';
 
@@ -36,11 +39,9 @@ const cfg = loadStreamWorkerConfig();
 const NEO4J_URI = cfg.NEO4J_URI;
 const NEO4J_USER = cfg.NEO4J_USER;
 const NEO4J_PASSWORD = cfg.NEO4J_PASSWORD;
-const SR_HOST = cfg.STARROCKS_HOST ?? '127.0.0.1';
-// intentional raw: two-var fallback chain (STARROCKS_QUERY_PORT ?? STARROCKS_PORT) — preserve exactly.
-const SR_PORT = Number(process.env['STARROCKS_QUERY_PORT'] ?? process.env['STARROCKS_PORT'] ?? '9030');
-const SR_USER = cfg.STARROCKS_ROOT_USER;
-const SR_PASSWORD = cfg.STARROCKS_ROOT_PASSWORD;
+// V4 (migration 0116): ops.* lives in PG. brain_app dbUrl (centralized) with the same DATABASE_URL
+// fallback as the sibling journey-stitch-export job.
+const PG_URL = cfg.BRAIN_APP_DATABASE_URL ?? process.env['DATABASE_URL'] ?? 'postgres://brain:brain@localhost:5432/brain';
 
 /** Force a full TRUNCATE + reload of both projections (recovery / first build). */
 const FULL_REFRESH = cfg.IDENTITY_EXPORT_FULL;
@@ -84,59 +85,80 @@ interface CustomerRow {
 }
 
 /** Read the persisted high-watermark (MAX created_at exported) for a scope; 0 if never run / full mode. */
-async function readWatermark(sr: mysql.Pool, scope: string): Promise<number> {
+async function readWatermark(db: pg.Pool, scope: string): Promise<number> {
   if (FULL_REFRESH) return 0;
-  const [rows] = await sr.query(
-    'SELECT last_created_at_ms FROM brain_ops.identity_export_state WHERE scope = ?',
+  const res = await db.query<{ last_created_at_ms: string | number | null }>(
+    'SELECT last_created_at_ms FROM ops.identity_export_state WHERE scope = $1',
     [scope],
   );
-  const r = (rows as Array<{ last_created_at_ms: number | null }>)[0];
+  const r = res.rows[0];
   return r?.last_created_at_ms != null ? Number(r.last_created_at_ms) : 0;
 }
 
-/** Persist the advanced high-watermark for a scope (PK upsert — single row per scope). */
-async function writeWatermark(sr: mysql.Pool, scope: string, ms: number): Promise<void> {
-  await sr.query(
-    `INSERT INTO brain_ops.identity_export_state (scope, last_created_at_ms, updated_at)
-     VALUES (?,?,NOW())`,
+/** Persist the advanced high-watermark for a scope (UPSERT — single row per scope, PK = scope). */
+async function writeWatermark(db: pg.Pool, scope: string, ms: number): Promise<void> {
+  await db.query(
+    `INSERT INTO ops.identity_export_state (scope, last_created_at_ms, updated_at)
+     VALUES ($1,$2,NOW())
+     ON CONFLICT (scope) DO UPDATE SET
+       last_created_at_ms = EXCLUDED.last_created_at_ms,
+       updated_at         = NOW()`,
     [scope, ms],
   );
 }
 
+/** epoch-millis → ISO-8601 UTC string (PG timestamptz-parseable), or null. */
 const dt = (ms: number | null): string | null =>
-  ms == null ? null : new Date(ms).toISOString().slice(0, 19).replace('T', ' ');
+  ms == null ? null : new Date(ms).toISOString();
 
-/** Batched UPSERT into the silver_identity_link PRIMARY KEY table (INSERT == upsert by PK). */
-async function upsertEdges(sr: mysql.Pool, edges: EdgeRow[]): Promise<void> {
+/** Batched UPSERT into ops.silver_identity_link (INSERT ... ON CONFLICT DO UPDATE, PK = (brand_id, identifier_type, identifier_value)). */
+async function upsertEdges(db: pg.Pool, edges: EdgeRow[]): Promise<void> {
   for (let i = 0; i < edges.length; i += BATCH) {
     const chunk = edges.slice(i, i + BATCH);
-    const tuples = chunk.map(() => '(?,?,?,?,?,?,NOW())').join(',');
     const params: unknown[] = [];
-    for (const e of chunk) {
-      params.push(e.brand_id, e.identifier_type, e.identifier_value, e.brain_id, e.tier, e.is_active ? 1 : 0);
-    }
-    await sr.query(
-      `INSERT INTO brain_ops.silver_identity_link
+    const tuples = chunk
+      .map((e, j) => {
+        const b = j * 6;
+        params.push(e.brand_id, e.identifier_type, e.identifier_value, e.brain_id, e.tier, e.is_active);
+        return `($${b + 1},$${b + 2},$${b + 3},$${b + 4},$${b + 5},$${b + 6},NOW())`;
+      })
+      .join(',');
+    await db.query(
+      `INSERT INTO ops.silver_identity_link
          (brand_id, identifier_type, identifier_value, brain_id, tier, is_active, updated_at)
-       VALUES ${tuples}`,
+       VALUES ${tuples}
+       ON CONFLICT (brand_id, identifier_type, identifier_value) DO UPDATE SET
+         brain_id   = EXCLUDED.brain_id,
+         tier       = EXCLUDED.tier,
+         is_active  = EXCLUDED.is_active,
+         updated_at = NOW()`,
       params,
     );
   }
 }
 
-/** Batched UPSERT into the silver_customer_identity PRIMARY KEY table (INSERT == upsert by PK). */
-async function upsertCustomers(sr: mysql.Pool, customers: CustomerRow[]): Promise<void> {
+/** Batched UPSERT into ops.silver_customer_identity (INSERT ... ON CONFLICT DO UPDATE, PK = (brand_id, brain_id)). */
+async function upsertCustomers(db: pg.Pool, customers: CustomerRow[]): Promise<void> {
   for (let i = 0; i < customers.length; i += BATCH) {
     const chunk = customers.slice(i, i + BATCH);
-    const tuples = chunk.map(() => '(?,?,?,?,?,?,NOW())').join(',');
     const params: unknown[] = [];
-    for (const c of chunk) {
-      params.push(c.brand_id, c.brain_id, c.lifecycle_state, c.merged_into, dt(c.minted_at), dt(c.first_identified_at));
-    }
-    await sr.query(
-      `INSERT INTO brain_ops.silver_customer_identity
+    const tuples = chunk
+      .map((c, j) => {
+        const b = j * 6;
+        params.push(c.brand_id, c.brain_id, c.lifecycle_state, c.merged_into, dt(c.minted_at), dt(c.first_identified_at));
+        return `($${b + 1},$${b + 2},$${b + 3},$${b + 4},$${b + 5},$${b + 6},NOW())`;
+      })
+      .join(',');
+    await db.query(
+      `INSERT INTO ops.silver_customer_identity
          (brand_id, brain_id, lifecycle_state, merged_into, minted_at, first_identified_at, updated_at)
-       VALUES ${tuples}`,
+       VALUES ${tuples}
+       ON CONFLICT (brand_id, brain_id) DO UPDATE SET
+         lifecycle_state     = EXCLUDED.lifecycle_state,
+         merged_into         = EXCLUDED.merged_into,
+         minted_at           = EXCLUDED.minted_at,
+         first_identified_at = EXCLUDED.first_identified_at,
+         updated_at          = NOW()`,
       params,
     );
   }
@@ -167,13 +189,13 @@ function mapCustomer(rec: neo4j.Record): CustomerRow {
 
 export async function runIdentityExport(): Promise<IdentityExportResult> {
   const driver = neo4j.driver(NEO4J_URI, neo4j.auth.basic(NEO4J_USER, NEO4J_PASSWORD));
-  const sr = mysql.createPool({ host: SR_HOST, port: SR_PORT, user: SR_USER, password: SR_PASSWORD, connectionLimit: 4 });
+  const db = new pg.Pool({ connectionString: PG_URL, max: 4 });
   const mode: 'full' | 'incremental' = FULL_REFRESH ? 'full' : 'incremental';
   try {
     // ── 1. IDENTIFIES edges → silver_identity_link ───────────────────────────────────────────────
-    const linkWatermark = await readWatermark(sr, SCOPE_LINK);
+    const linkWatermark = await readWatermark(db, SCOPE_LINK);
     if (FULL_REFRESH) {
-      await sr.query('TRUNCATE TABLE brain_ops.silver_identity_link');
+      await db.query('TRUNCATE TABLE ops.silver_identity_link');
     }
 
     const edgeSession = driver.session({ defaultAccessMode: neo4j.session.READ });
@@ -201,17 +223,17 @@ export async function runIdentityExport(): Promise<IdentityExportResult> {
       await edgeSession.close();
     }
 
-    await upsertEdges(sr, edges);
+    await upsertEdges(db, edges);
 
     // Advance the watermark to the MAX created_at we just exported (never regress).
     const maxEdgeCreated = edges.reduce((m, e) => (e.created_at != null && e.created_at > m ? e.created_at : m), linkWatermark);
-    await writeWatermark(sr, SCOPE_LINK, maxEdgeCreated);
+    await writeWatermark(db, SCOPE_LINK, maxEdgeCreated);
     log.info(`[identity-export] ${mode}: upserted ${edges.length} identity edges → silver_identity_link (watermark=${maxEdgeCreated})`);
 
     // ── 2. Customer nodes → silver_customer_identity ─────────────────────────────────────────────
-    const customerWatermark = await readWatermark(sr, SCOPE_CUSTOMER);
+    const customerWatermark = await readWatermark(db, SCOPE_CUSTOMER);
     if (FULL_REFRESH) {
-      await sr.query('TRUNCATE TABLE brain_ops.silver_customer_identity');
+      await db.query('TRUNCATE TABLE ops.silver_customer_identity');
     }
 
     const cSession = driver.session({ defaultAccessMode: neo4j.session.READ });
@@ -239,16 +261,16 @@ export async function runIdentityExport(): Promise<IdentityExportResult> {
       await cSession.close();
     }
 
-    await upsertCustomers(sr, customers);
+    await upsertCustomers(db, customers);
 
     const maxCustomerCreated = customers.reduce((m, c) => (c.minted_at != null && c.minted_at > m ? c.minted_at : m), customerWatermark);
-    await writeWatermark(sr, SCOPE_CUSTOMER, maxCustomerCreated);
+    await writeWatermark(db, SCOPE_CUSTOMER, maxCustomerCreated);
     log.info(`[identity-export] ${mode}: upserted ${customers.length} customers → silver_customer_identity (watermark=${maxCustomerCreated})`);
 
     return { edges: edges.length, customers: customers.length, mode };
   } finally {
     await driver.close();
-    await sr.end();
+    await db.end();
   }
 }
 

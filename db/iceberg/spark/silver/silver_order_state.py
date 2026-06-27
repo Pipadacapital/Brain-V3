@@ -24,10 +24,10 @@ IDEMPOTENT / REPLAY-SAFE: MERGE on (brand_id, order_id) — re-run yields byte-i
 
 SOURCES it cannot get from Iceberg (read via JDBC, exactly as dbt does cross-catalog):
   - brand prepaid recognition horizon  → PG tenancy.brand (the brand_horizons_src shim columns)
-  - hashed-email → brain_id            → StarRocks brain_ops.silver_identity_link (the Neo4j export)
+  - hashed-email → brain_id            → PG ops.silver_identity_link (the Neo4j export, PG operational store)
 Both are small dimension reads; the order/recognition logic itself is pure over Iceberg Bronze.
 
-Run via run-silver-orders.sh (mirrors run-bronze-parity.sh — Iceberg + PG + MySQL JDBC packages).
+Run via run-silver-orders.sh (mirrors run-bronze-parity.sh — Iceberg + PG JDBC package).
 """
 from __future__ import annotations  # Python 3.8 on the Spark image.
 
@@ -49,13 +49,11 @@ BRONZE_NAMESPACE = os.environ.get("BRONZE_NAMESPACE", "brain_bronze")
 BRONZE_TABLE = f"{CATALOG}.{os.environ.get('SILVER_NAMESPACE', 'brain_silver')}.silver_collector_event"  # ADR-0006 P3: gated source (R2/R3 now in Silver)
 TABLE_NAME = "silver_order_state"
 
-# CURRENT-side dimension reads (same JDBC posture dbt uses cross-catalog; superuser RLS-bypass ETL read).
+# CURRENT-side dimension reads — all over PG JDBC now (brain_ops moved to PG schema `ops`; PG is the
+# operational-only store). Superuser RLS-bypass ETL read; same JDBC posture for every dimension.
 PG_JDBC_URL = os.environ.get("SILVER_PG_JDBC_URL", "jdbc:postgresql://postgres:5432/brain")
 PG_USER = os.environ.get("SILVER_PG_USER", "brain")
 PG_PASSWORD = os.environ.get("SILVER_PG_PASSWORD", "brain")
-SR_JDBC_URL = os.environ.get("SILVER_SR_JDBC_URL", "jdbc:mysql://starrocks:9030")
-SR_USER = os.environ.get("SILVER_SR_USER", "root")
-SR_PASSWORD = os.environ.get("SILVER_SR_PASSWORD", "")
 
 # Mirrors silver_order_state.sql column order/types (StarRocks: varchar/bigint/boolean/datetime).
 _COLUMNS = """
@@ -96,26 +94,26 @@ def _read_horizons(spark: SparkSession):
 
 
 def _read_identity_link(spark: SparkSession):
-    """hashed-email → brain_id from the identity export (StarRocks brain_ops.silver_identity_link).
+    """hashed-email → brain_id from the identity export (PG ops.silver_identity_link).
 
-    silver_order_recognition resolves brain_id from brain_ops.silver_identity_link where
+    silver_order_recognition resolves brain_id from ops.silver_identity_link where
     identifier_type='pre_hashed_email' and is_active and brain_id is not null, min(brain_id) per
-    (brand_id, identifier_value). We read that StarRocks app-written table over the MySQL wire and
-    aggregate identically. (Net-new dual-run reads the SAME identity SoR the dbt path reads — no second source.)
+    (brand_id, identifier_value). brain_ops moved to the PG `ops` schema (PG operational-only store), so
+    we read it over the SAME PG JDBC connection as the other dimensions and aggregate identically.
     """
     query = (
         "(SELECT brand_id, identifier_value AS hashed_customer_email, MIN(brain_id) AS brain_id "
-        "FROM brain_ops.silver_identity_link "
+        "FROM ops.silver_identity_link "
         "WHERE identifier_type = 'pre_hashed_email' AND is_active = true AND brain_id IS NOT NULL "
         "GROUP BY brand_id, identifier_value) b"
     )
     try:
         return (
             spark.read.format("jdbc")
-            .option("url", SR_JDBC_URL)
-            .option("user", SR_USER)
-            .option("password", SR_PASSWORD)
-            .option("driver", "com.mysql.cj.jdbc.Driver")
+            .option("url", PG_JDBC_URL)
+            .option("user", PG_USER)
+            .option("password", PG_PASSWORD)
+            .option("driver", "org.postgresql.Driver")
             .option("dbtable", query)
             .load()
         )

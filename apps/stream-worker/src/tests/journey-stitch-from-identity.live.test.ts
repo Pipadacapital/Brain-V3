@@ -2,11 +2,12 @@
  * journey-stitch-from-identity.live.test.ts — GAP-1 stitch-derivation proof (live PG brand + connector
  * stitch map; lakehouse reads mocked).
  *
- * MEDALLION REALIGNMENT (Epic 3 / ADR-0004): the job now reads anons from silver_touchpoint, anon→brain_id
- * from silver_identity_link (Neo4j→StarRocks export), and order→brain_id from gold_revenue_ledger — all
- * via the StarRocks pool (no PG identity / no PG realized_revenue_ledger). It writes the stitch row to
- * connectors.connector_journey_stitch_map (PG, kept). This test mocks the three lakehouse reads and
- * asserts: (1) a 1:1 anon↔customer stitches; (2) an AMBIGUOUS customer (2 anons) is SKIPPED; (3) idempotent.
+ * MEDALLION REALIGNMENT (Epic 3 / ADR-0004) + V4 (StarRocks REMOVAL, migration 0116): the job reads
+ * anons from silver_touchpoint and order→brain_id from gold_revenue_ledger via the StarRocks pool, and
+ * anon→brain_id from PG ops.silver_identity_link (brain_ops moved to the PG `ops` schema). It writes the
+ * stitch row to connectors.connector_journey_stitch_map (PG, kept). This test mocks the two StarRocks
+ * reads, seeds the real PG ops.silver_identity_link, and asserts: (1) a 1:1 anon↔customer stitches;
+ * (2) an AMBIGUOUS customer (2 anons) is SKIPPED; (3) idempotent.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'node:crypto';
@@ -49,6 +50,24 @@ beforeAll(async () => {
        ON CONFLICT (id) DO UPDATE SET status='active'`,
       [BRAND, orgId],
     );
+
+    // V4 (migration 0116): ops.silver_identity_link is a PG table — seed the anon→brain_id edges the
+    // job now reads from PG (not the StarRocks fake). 1:1 anon for brainOk; 2 anons for brainAmbig.
+    await superPool.query(`DELETE FROM ops.silver_identity_link WHERE brand_id=$1`, [BRAND]);
+    for (const [raw, brainId] of [
+      [anonOk, brainOk],
+      [anonAmbig1, brainAmbig],
+      [anonAmbig2, brainAmbig],
+    ] as const) {
+      await superPool.query(
+        `INSERT INTO ops.silver_identity_link
+           (brand_id, identifier_type, identifier_value, brain_id, tier, is_active, updated_at)
+         VALUES ($1, 'anon_id', $2, $3, 'strong', true, NOW())
+         ON CONFLICT (brand_id, identifier_type, identifier_value) DO UPDATE SET
+           brain_id = EXCLUDED.brain_id, is_active = true`,
+        [BRAND, anonHash(raw), brainId],
+      );
+    }
     available = true;
   } catch {
     available = false;
@@ -58,6 +77,7 @@ beforeAll(async () => {
 afterAll(async () => {
   if (superPool) {
     await superPool.query(`DELETE FROM connectors.connector_journey_stitch_map WHERE brand_id=$1`, [BRAND]).catch(() => {});
+    await superPool.query(`DELETE FROM ops.silver_identity_link WHERE brand_id=$1`, [BRAND]).catch(() => {});
     await superPool.query(`DELETE FROM tenancy.brand WHERE id=$1`, [BRAND]).catch(() => {});
     await superPool.end().catch(() => {});
   }
@@ -70,8 +90,9 @@ function anonHash(rawAnon: string): string {
 }
 
 /**
- * Fake StarRocks pool serving the job's THREE lakehouse reads by SQL shape:
- *   silver_touchpoint → the raw anons; silver_identity_link → anon-hash→brain_id; gold ledger → order→brain_id.
+ * Fake StarRocks pool serving the job's TWO StarRocks reads by SQL shape:
+ *   silver_touchpoint → the raw anons; gold ledger → order→brain_id.
+ * (anon→brain_id now comes from PG ops.silver_identity_link, seeded in beforeAll — not this fake.)
  */
 function fakeSilver() {
   return {
@@ -79,13 +100,6 @@ function fakeSilver() {
       const text = String(sql);
       if (text.includes('silver_touchpoint')) {
         return [[{ brain_anon_id: anonOk }, { brain_anon_id: anonAmbig1 }, { brain_anon_id: anonAmbig2 }], null];
-      }
-      if (text.includes('silver_identity_link')) {
-        return [[
-          { identifier_value: anonHash(anonOk), brain_id: brainOk },
-          { identifier_value: anonHash(anonAmbig1), brain_id: brainAmbig },
-          { identifier_value: anonHash(anonAmbig2), brain_id: brainAmbig },
-        ], null];
       }
       if (text.includes('gold_revenue_ledger')) {
         return [[

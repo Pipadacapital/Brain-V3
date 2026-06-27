@@ -54,8 +54,8 @@ const MAX_RETRY = 5;
 // ── Ports (injected at construction — testable without real infrastructure) ────
 
 /**
- * IScopedRecomputeRepository — the port for writing ScopedRecompute requests to brain_ops.
- * Concrete implementation: StarRocksScopedRecomputeRepository (infrastructure/starrocks/).
+ * IScopedRecomputeRepository — the port for writing ScopedRecompute requests to ops.scoped_recompute_request.
+ * Concrete implementation: PgScopedRecomputeRepository (infrastructure/pg/).
  */
 export interface IScopedRecomputeRepository {
   upsert(recompute: ScopedRecompute): Promise<void>;

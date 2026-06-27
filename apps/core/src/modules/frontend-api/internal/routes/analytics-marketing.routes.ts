@@ -271,14 +271,14 @@ export function registerAnalyticsMarketingRoutes(fastify: FastifyInstance, deps:
    * GET /api/v1/data-quality/serving-freshness  (V4-pipeline observability)
    *
    * Returns the V4 SERVING-TIER freshness + per-mart row counts: for each brain_serving.mv_* the row
-   * count, last-refresh timestamp + age, refresh state, and a text freshness verdict
-   * (fresh|stale|failed|never), plus a worst-of surface status. The data-health surface reads this to
-   * answer "is the analytics serving tier fresh, and which marts have data".
+   * count, last-refresh timestamp + age, and a text freshness verdict (fresh|stale|never), plus a
+   * worst-of surface status. The data-health surface reads this to answer "is the analytics serving tier
+   * fresh, and which marts have data".
    *
-   * BRAND-AGNOSTIC by design: this is cross-brand PIPELINE health read from StarRocks information_schema
-   * metadata — there is NO tenant row to scope (no business rows, no brand_id column), so it is gated on
-   * a valid session (bffProtectedPreHandler) but NOT brand-scoped. See the query header.
-   * Honest no_data (D-2): state='no_data' when StarRocks is down or brain_serving has no MVs.
+   * BRAND-AGNOSTIC by design: this is cross-brand PIPELINE health read from TRINO over Iceberg
+   * (max(updated_at) + count(*) per brain_serving.mv_* view) — there is no tenant row to scope, so it is
+   * gated on a valid session (bffProtectedPreHandler) but NOT brand-scoped. See the query header.
+   * Honest no_data (D-2): state='no_data' when Trino is down or brain_serving has no freshness-bearing views.
    */
   fastify.get(
     '/api/v1/data-quality/serving-freshness',

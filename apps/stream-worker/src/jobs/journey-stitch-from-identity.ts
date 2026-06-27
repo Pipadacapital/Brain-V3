@@ -12,6 +12,10 @@
  * links and writes the stitch:  raw anon (silver) --hash--> identity_link(anon_id)→brain_id --∩-->
  * gold_revenue_ledger(order→brain_id, Bronze-sourced)  ⇒  (order_id, stitched_anon_id, brain_id).
  *
+ * STORE SPLIT (V4 StarRocks REMOVAL, migration 0116): the anon source (silver_touchpoint) + the
+ * order→brain_id ledger are read from StarRocks (srPool); the anon→brain_id identity link projection
+ * (ops.silver_identity_link) is read from PG (pool) — brain_ops moved to the PG `ops` schema.
+ *
  * DETERMINISTIC, NEVER GUESSED (Brain rule: journey-before-attribution, never guess attribution):
  *   - The anon↔customer link comes ONLY from identity resolution (a real `identify`/order signal),
  *     never from time-proximity heuristics.
@@ -120,19 +124,21 @@ export async function runJourneyStitchFromIdentity(deps?: {
 
         // 3. anon hash → brain_id via the identity graph projection (active anon_id links only).
         // MEDALLION REALIGNMENT (Epic 3 / ADR-0004): identity is the Neo4j SoR; the active hash→brain_id
-        // edges are materialized into brain_ops.silver_identity_link (StarRocks) by the identity-export
-        // job — read it via srPool instead of the dropped PG identity_link.
+        // edges are materialized into ops.silver_identity_link by the identity-export job. V4 (StarRocks
+        // REMOVAL, migration 0116) moved that projection into the PG `ops` schema — read it from the PG
+        // pool (not srPool). The anon source (silver_touchpoint) + ledger reads stay on StarRocks.
         const anonHashes = [...hashToRaw.keys()];
         let linkRows: Array<{ identifier_value: string; brain_id: string }> = [];
         if (anonHashes.length > 0) {
-          const [rows] = await srPool.query(
-            `SELECT identifier_value, brain_id
-               FROM brain_ops.silver_identity_link
-              WHERE brand_id = ? AND identifier_type = 'anon_id' AND is_active = true
-                AND brain_id IS NOT NULL AND identifier_value IN (${anonHashes.map(() => '?').join(',')})`,
+          const placeholders = anonHashes.map((_, i) => `$${i + 2}`).join(',');
+          const res = await pool.query<{ identifier_value: string; brain_id: string }>(
+            `SELECT identifier_value, brain_id::text AS brain_id
+               FROM ops.silver_identity_link
+              WHERE brand_id = $1 AND identifier_type = 'anon_id' AND is_active = true
+                AND brain_id IS NOT NULL AND identifier_value IN (${placeholders})`,
             [brand.id, ...anonHashes],
           );
-          linkRows = rows as Array<{ identifier_value: string; brain_id: string }>;
+          linkRows = res.rows;
         }
 
         // 4. brain_id → anon(s). UNAMBIGUOUS-ONLY: keep brain_ids that map to exactly one anon.

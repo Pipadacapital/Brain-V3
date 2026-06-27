@@ -348,9 +348,55 @@ def build_writer(spark: SparkSession):
     )
 
 
+def repair_incomplete_checkpoint(spark: SparkSession) -> None:
+    """Self-heal a checkpoint left half-written by an unclean kill (the 'Incomplete log file' crash).
+
+    Structured Streaming commits a batch by writing offsets/<id> then commits/<id>. If the container is
+    killed mid-write the trailing offsets/<id> file can be EMPTY (zero-length) — on restart Spark's
+    HDFSMetadataLog reads it, finds no version line, and throws 'Incomplete log file …', crash-looping
+    the sink forever (it can never get past that batch). Without this, recovery needs a human to delete
+    the file by hand — a production-fragility (the checkpoint is a durable volume / s3a path, so a plain
+    restart re-reads the same corrupt file).
+
+    Fix: on startup, remove EMPTY trailing files from offsets/ and commits/ so Spark resumes from the
+    last fully-committed batch. Safe because (a) an empty metadata file carries no committed offset, and
+    (b) re-reading the prior batch's Kafka offsets is idempotent — the Bronze MERGE is the dedup SoR, so
+    a replayed batch never double-writes (the documented replay invariant). Path-agnostic via the Hadoop
+    FileSystem API: works for the local file:// dev checkpoint AND a prod s3a:// checkpoint. Best-effort —
+    any repair error is logged and swallowed so it can never itself block startup.
+    """
+    try:
+        jvm = spark._jvm
+        hconf = spark._jsc.hadoopConfiguration()
+        Path = jvm.org.apache.hadoop.fs.Path
+        for sub in ("offsets", "commits"):
+            d = Path(CHECKPOINT + "/" + sub)
+            fs = d.getFileSystem(hconf)
+            if not fs.exists(d):
+                continue
+            # Numeric-named batch files only (skip .crc, .tmp, metadata, dirs).
+            batches = []
+            for st in fs.listStatus(d):
+                name = st.getPath().getName()
+                if name.isdigit():
+                    batches.append((int(name), st))
+            batches.sort(key=lambda b: b[0])
+            # Delete EMPTY trailing files (the incomplete-write signature), newest-first, stopping at the
+            # first complete one — older committed batches are never touched.
+            for batch, st in reversed(batches):
+                if st.getLen() == 0:
+                    fs.delete(st.getPath(), False)
+                    print(f"[bronze-sink] checkpoint repair: removed empty {sub}/{batch}", flush=True)
+                else:
+                    break
+    except Exception as exc:  # noqa: BLE001 — never let a repair attempt block startup
+        print(f"[bronze-sink] checkpoint repair skipped (non-fatal): {exc}", flush=True)
+
+
 def main() -> None:
     spark = build_spark()
     spark.sparkContext.setLogLevel("WARN")
+    repair_incomplete_checkpoint(spark)
     ensure_table(spark)
 
     if TRIGGER_MODE == "continuous":

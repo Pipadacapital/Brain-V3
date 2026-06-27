@@ -1,0 +1,30 @@
+-- ============================================================
+-- Brain V4 — Trino serving VIEW: mv_snap_order_state
+--
+-- Brain V4 serving runs over TRINO (Iceberg). This view is the Trino
+-- analogue of the (removed) StarRocks ASYNC MV db/starrocks/mv/mv_snap_order_state.sql:
+-- a THIN projection over the pre-materialized Iceberg mart that Spark builds
+-- (iceberg.brain_silver.snap_order_state). Serving is fast because Gold/Silver are already
+-- materialized by Spark; the view is a column projection only (no compute).
+-- Redis fronts hot reads (analytics-cache.ts; wired in phase 2).
+--
+-- Order-state daily SNAPSHOT (SILVER namespace). Money: order_value_minor bigint MINOR units + currency_code, never blended. Key (brand_id, order_id, snapshot_date).
+--
+-- The metric-engine reads this as the two-part name brain_serving.mv_snap_order_state;
+-- with the Trino default catalog = iceberg that resolves to
+-- iceberg.brain_serving.mv_snap_order_state. brand_id is the tenant key; the
+-- ${BRAND_PREDICATE} seam injects brand_id = ? at read time.
+-- ============================================================
+CREATE OR REPLACE VIEW iceberg.brain_serving.mv_snap_order_state AS
+SELECT
+  brand_id,
+  order_id,
+  snapshot_date,
+  brain_id,
+  lifecycle_state,
+  is_terminal,
+  order_value_minor,
+  currency_code,
+  state_effective_at,
+  computed_at
+FROM iceberg.brain_silver.snap_order_state;

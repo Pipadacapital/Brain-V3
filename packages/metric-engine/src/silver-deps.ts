@@ -1,107 +1,126 @@
 /**
- * @brain/metric-engine — Silver read seam (StarRocks) + withSilverBrand helper.
+ * @brain/metric-engine — Silver/Gold read seam + withSilverBrand helper.
  *
- * This is the StarRocks analogue of deps.ts/withBrandTxn. It is the ONE place
- * the engine issues SQL against the Silver tier (silver.order_state in StarRocks
- * brain_silver), reached over the MySQL wire protocol (mysql2) as the SELECT-only
- * `brain_analytics` user. Per ADR-002 / I-ST01 the metric-engine is the SOLE
- * Silver reader — the UI never queries StarRocks; it reaches Silver only through
- * the BFF → analytics use-case → this seam.
+ * ── BRAIN V4: this seam now runs over TRINO (Iceberg), not StarRocks ───────────
+ * Brain V4 removes StarRocks as the serving engine. The medallion (Bronze/Silver/
+ * Gold) is Iceberg; serving reads go through TRINO over the SAME Iceberg catalog
+ * that Spark writes. This file is kept as the STABLE seam the ~49 metric-engine
+ * callers program against — `withSilverBrand(deps.srPool, brandId, fn)` and the
+ * `${BRAND_PREDICATE}` sentinel — so the swap of the underlying engine from
+ * StarRocks to Trino is TRANSPARENT to every caller (zero caller-SQL churn).
  *
- * ── PER-BRAND ISOLATION (the honest M1 mechanism) ──────────────────────────────
- * StarRocks `CREATE ROW POLICY` is an enterprise/managed-only feature; the dev
- * `starrocks/allin1-ubuntu:3.3.2` image does NOT support it (verified in
- * db/starrocks/bootstrap.sql + tools/isolation-fuzz/src/starrocks.test.ts). So in
- * M1 the brand predicate is injected HERE — at the single seam — never per-call:
+ * Concretely:
+ *   • SilverPool  is now an alias of TrinoPool  (the driver-agnostic Trino PORT).
+ *   • SilverScope is now an alias of TrinoScope (runScoped is structurally identical).
+ *   • withSilverBrand delegates to withTrinoBrand (same signature, same brand-
+ *     predicate isolation, same __unsafeDisableBrandPredicate mutation seam).
+ *   • BRAND_PREDICATE is re-exported from trino-deps (the single shared sentinel).
+ *   • The composition root injects a Trino adapter (createTrinoPool) as `srPool`.
  *
- *   1. `SET @brain_current_brand_id = '<brandId>'` (session var, matching the
- *      row_policy_template convention so the prod row-policy is a drop-in swap), and
- *   2. the seam runs `runScoped(sql, params)` which ALWAYS appends
- *      `AND brand_id = ?` (parameterized to brandId) to the caller's WHERE.
+ * The metric SQL strings are UNCHANGED — they read `FROM brain_serving.mv_*`. In
+ * Brain V4 those `mv_*` are thin Trino VIEWS over Iceberg Gold/Silver (see
+ * db/trino/views/*.sql); the Trino default catalog is `iceberg`, so the 2-part
+ * name `brain_serving.mv_x` resolves to `iceberg.brain_serving.mv_x`.
  *
- * Because every Silver read goes through `runScoped`, a caller cannot forget the
- * predicate. The non-inert proof lives in tools/isolation-fuzz/src/silver-order-state.test.ts:
- * disabling the seam's predicate injection (the `__unsafeDisableBrandPredicate` test flag)
- * MUST leak brand-B rows — if it doesn't, the guard was inert and the test fails loud.
+ * ── PER-BRAND ISOLATION (unchanged contract) ───────────────────────────────────
+ *   1. The caller's WHERE clause MUST end with the `${BRAND_PREDICATE}` sentinel.
+ *   2. runScoped replaces the sentinel with `brand_id = ?` (parameterized to brandId).
+ *   3. A missing sentinel THROWS (fail-closed) — never runs an un-scoped (cross-brand)
+ *      query. The `__unsafeDisableBrandPredicate` test flag strips the predicate to
+ *      `1 = 1` for the isolation-fuzz mutation proof. Never set in application code.
+ *   4. HONEST-EMPTY degradation: a Trino "table/schema does not exist" error (a
+ *      fresh/dev env where the Iceberg Gold/Silver marts or the brain_serving views
+ *      are not yet provisioned) degrades the read to `[]` with a WARN, so the
+ *      dashboard renders its no_data state instead of a 500. Only the
+ *      table/schema-not-found class is swallowed; any real query error propagates.
  *
- * PROD GRADUATION: on a managed/enterprise StarRocks cluster, apply
- * db/starrocks/row_policy_template.sql; the engine then enforces the same
- * @brain_current_brand_id predicate at the engine layer and this seam's app-level
- * predicate becomes defense-in-depth.
+ * Unlike StarRocks there is no session-variable row policy over Trino's REST API;
+ * the SQL predicate injection IS the load-bearing isolation (proven by the
+ * isolation-fuzz mutation test).
  *
- * @see packages/metric-engine/src/deps.ts — the Postgres sibling (withBrandTxn)
- * @see 05-architecture.md §4 (isolation) + §5 (Silver seam)
+ * @see packages/metric-engine/src/trino-deps.ts    — the Trino seam this delegates to
+ * @see packages/metric-engine/src/trino-adapter.ts — the concrete HTTP adapter (createTrinoPool)
+ * @see packages/metric-engine/src/deps.ts          — the Postgres sibling (withBrandTxn)
+ * @see db/trino/views/*.sql                         — the brain_serving.mv_* Trino views over Iceberg
  */
+
+import {
+  BRAND_PREDICATE,
+  withTrinoBrand,
+  type TrinoPool,
+  type TrinoScope,
+  type WithTrinoBrandOptions,
+} from './trino-deps.js';
+
+// Re-export the ONE shared sentinel so the ~41 caller files that import it from
+// './silver-deps.js' stay UNCHANGED (the sentinel is owned by trino-deps now).
+export { BRAND_PREDICATE };
 
 /**
- * Minimal structural type for a mysql2/promise pool. We type it structurally
- * (rather than importing mysql2 types into the engine's public surface) so the
- * engine depends only on the shape it uses — the concrete pool is injected by
- * the composition root (apps/core/src/main.ts).
+ * The Silver/Gold read pool. In Brain V4 this IS the Trino query PORT — the
+ * composition root injects a Trino adapter (createTrinoPool). Kept as a named
+ * alias so the ~49 callers' `SilverPool` / `SilverDeps.srPool` types are unchanged.
  */
-export interface SilverPool {
-  /** mysql2/promise pool.query — returns [rows, fields]. */
-  query(sql: string, params?: unknown[]): Promise<[unknown, unknown]>;
-  /** Acquire a dedicated connection so the session var + read share one session. */
-  getConnection(): Promise<SilverConnection>;
-}
+export type SilverPool = TrinoPool;
 
+/**
+ * @deprecated Legacy StarRocks-era per-connection type. Brain V4 serving runs over
+ * Trino's stateless REST API — there is no dedicated connection / session var. This
+ * alias is retained only so the public `SilverConnection` export keeps resolving for
+ * any external importer; nothing in the seam uses it anymore.
+ */
 export interface SilverConnection {
-  query(sql: string, params?: unknown[]): Promise<[unknown, unknown]>;
-  release(): void;
+  query(sql: string, params?: unknown[]): Promise<unknown[]>;
 }
 
 export interface SilverDeps {
-  /** The StarRocks pool (mysql2) as brain_analytics (SELECT-only). */
+  /** The Silver/Gold serving pool — a Trino adapter (createTrinoPool) in Brain V4. */
   readonly srPool: SilverPool;
 }
 
-/** A scoped reader passed to the seam callback. The ONLY way to read Silver. */
-export interface SilverScope {
-  /**
-   * Run a SELECT against Silver with the brand predicate injected.
-   *
-   * The caller supplies a query whose WHERE clause ends with a placeholder
-   * sentinel `${BRAND_PREDICATE}` — the seam replaces it with `brand_id = ?`
-   * (parameterized) so the predicate is added by the SEAM, not the caller.
-   * Returns the row array.
-   */
-  runScoped<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]>;
-}
+/**
+ * A scoped reader passed to the seam callback. The ONLY way to read Silver/Gold.
+ * Structurally identical to TrinoScope (runScoped with the brand predicate injected).
+ */
+export type SilverScope = TrinoScope;
 
-/** The sentinel the seam substitutes with the brand predicate. */
-export const BRAND_PREDICATE = '${BRAND_PREDICATE}';
+/** Options for withSilverBrand (test-only predicate-disable mutation seam). */
+export type WithSilverBrandOptions = WithTrinoBrandOptions;
 
 function silverErrMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
 /**
- * True when an error means the Silver tier itself is not available — the brain_silver schema or a
- * silver table doesn't exist (fresh/dev env not yet provisioned), or the database is unknown.
- * runScoped only ever issues Silver queries, so an "unknown table/database" here is always Silver.
+ * True when an error means the Silver/Gold serving tier is not available — the
+ * Iceberg schema or a serving view/table doesn't exist (fresh/dev env not yet
+ * provisioned), or a transient outage surfaced as not-found. runScoped only ever
+ * issues serving queries, so a "does not exist / not found" here is always the tier.
+ *
+ * Ported to TRINO error strings (Trino phrases missing relations as
+ * "Table 'iceberg.brain_serving.mv_x' does not exist" / "Schema 'brain_serving'
+ * does not exist"). The legacy StarRocks phrases ("unknown table/database") are
+ * retained so any mixed-engine transition window still degrades gracefully.
  */
 function isSilverUnavailable(err: unknown): boolean {
   const msg = silverErrMessage(err).toLowerCase();
-  return msg.includes('unknown table') || msg.includes('unknown database');
-}
-
-export interface WithSilverBrandOptions {
-  /**
-   * TEST-ONLY: when true, the seam does NOT inject `brand_id = ?` and does NOT
-   * set the session var. Used SOLELY by the isolation-fuzz mutation test to prove
-   * the predicate is doing the work (disabling it MUST leak brand-B rows). Never
-   * set in application code.
-   */
-  readonly __unsafeDisableBrandPredicate?: boolean;
+  return (
+    msg.includes('does not exist') || // Trino: table/schema does not exist
+    msg.includes('not found') || // Trino/Iceberg: schema/namespace not found
+    msg.includes('unknown table') || // legacy StarRocks
+    msg.includes('unknown database') // legacy StarRocks
+  );
 }
 
 /**
- * withSilverBrand — runs `fn` with a brand-scoped Silver reader on a dedicated
- * StarRocks connection. Sets the @brain_current_brand_id session var, then hands
- * `fn` a SilverScope whose `runScoped` injects `brand_id = ?` at the seam.
+ * withSilverBrand — runs `fn` with a brand-scoped Silver/Gold reader over TRINO.
  *
- * @param srPool  - The StarRocks mysql2 pool (brain_analytics).
+ * Delegates to withTrinoBrand (same brand-predicate isolation + fail-closed throw +
+ * __unsafeDisableBrandPredicate mutation seam), then wraps the scope's `runScoped`
+ * with the HONEST-EMPTY degradation: a "table/schema does not exist" error becomes
+ * `[]` (+ WARN) so a fresh/dev env returns no_data instead of a 500.
+ *
+ * @param srPool  - The Trino serving pool (createTrinoPool), injected at the root.
  * @param brandId - The brand UUID (from session — D-1; NEVER request body).
  * @param fn      - Async fn receiving the brand-scoped reader.
  * @param opts    - Test-only options (predicate-disable for the mutation proof).
@@ -112,64 +131,31 @@ export async function withSilverBrand<T>(
   fn: (scope: SilverScope) => Promise<T>,
   opts: WithSilverBrandOptions = {},
 ): Promise<T> {
-  const disable = opts.__unsafeDisableBrandPredicate === true;
-  const conn = await srPool.getConnection();
-  try {
-    if (!disable) {
-      // Session var — matches the prod row_policy_template convention so the
-      // engine row-policy (managed StarRocks) is a drop-in swap. mysql2 escapes
-      // via the param; StarRocks SET does not take placeholders for the value, so
-      // we escape the UUID ourselves (it is a session-provided UUID, validated
-      // upstream; defensively we strip anything but UUID chars).
-      const safeBrand = brandId.replace(/[^0-9a-fA-F-]/g, '');
-      await conn.query(`SET @brain_current_brand_id = '${safeBrand}'`);
-    }
-
-    const scope: SilverScope = {
-      async runScoped<R = Record<string, unknown>>(sql: string, params: unknown[] = []): Promise<R[]> {
-        let finalSql: string;
-        let finalParams: unknown[];
-        // DB-AUDIT M1 — fail CLOSED: String.replace silently no-ops if the sentinel is absent, which
-        // would run a query cross-brand with no error (a latent P0 tenant leak). Require the sentinel
-        // unless explicitly disabled (the mutation/negative-control proof). One forgotten ${BRAND_
-        // PREDICATE} now throws at the seam instead of leaking.
-        if (!disable && !sql.includes(BRAND_PREDICATE)) {
-          throw new Error(
-            'silver runScoped: query is missing the ${BRAND_PREDICATE} sentinel — refusing to run ' +
-              'un-scoped (would be cross-brand). Add `WHERE ... ${BRAND_PREDICATE}` to the query.',
-          );
-        }
-        if (disable) {
-          // Mutation/negative-control path: strip the predicate entirely → cross-brand.
-          finalSql = sql.replace(BRAND_PREDICATE, '1 = 1');
-          finalParams = params;
-        } else {
-          // The seam injects the parameterized brand predicate.
-          finalSql = sql.replace(BRAND_PREDICATE, 'brand_id = ?');
-          finalParams = [...params, brandId];
-        }
-        try {
-          const [rows] = await conn.query(finalSql, finalParams);
-          return (rows as R[]) ?? [];
-        } catch (err) {
-          // Silver tier unavailable (brain_silver schema/tables not provisioned in a fresh/dev
-          // env, or a transient StarRocks outage) → degrade to an honest empty result so the read
-          // returns its no_data state instead of crashing the dashboard with a 500. ONLY the
-          // "unknown table/database" class is swallowed; real query errors still propagate. A WARN
-          // is emitted so the missing tier is observable/alertable — never silently hidden.
-          if (isSilverUnavailable(err)) {
-            console.warn(
-              `[metric-engine] Silver read degraded to empty — silver tier unavailable: ${silverErrMessage(err)}`,
-            );
-            return [] as R[];
+  return withTrinoBrand(
+    srPool,
+    brandId,
+    (trinoScope) => {
+      // Wrap runScoped to add the StarRocks-era honest-empty degradation. The
+      // fail-closed sentinel check + brand-predicate injection happen INSIDE
+      // trinoScope.runScoped (in withTrinoBrand) — a missing-sentinel throw is NOT
+      // a tier-unavailable error, so it still propagates (fail-closed preserved).
+      const scope: SilverScope = {
+        async runScoped<R = Record<string, unknown>>(sql: string, params: unknown[] = []): Promise<R[]> {
+          try {
+            return await trinoScope.runScoped<R>(sql, params);
+          } catch (err) {
+            if (isSilverUnavailable(err)) {
+              console.warn(
+                `[metric-engine] Silver/Gold read degraded to empty — serving tier unavailable: ${silverErrMessage(err)}`,
+              );
+              return [] as R[];
+            }
+            throw err;
           }
-          throw err;
-        }
-      },
-    };
-
-    return await fn(scope);
-  } finally {
-    conn.release();
-  }
+        },
+      };
+      return fn(scope);
+    },
+    opts,
+  );
 }

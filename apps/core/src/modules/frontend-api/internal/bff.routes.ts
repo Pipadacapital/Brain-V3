@@ -44,7 +44,7 @@ import { getDataHealth, freshnessFromIngest, type FoundationSignals } from '../.
 import { getMetricTrust } from '../../data-quality/index.js';
 import { CONNECTOR_CATALOG } from '../../connector/catalog/registry.js';
 import type { IdentityReader, ContactPiiVaultService } from '../../identity/index.js';
-import type { SilverPool } from '@brain/metric-engine';
+import type { SilverPool, ServingCacheReader } from '@brain/metric-engine';
 
 import {
   type BffDeps,
@@ -82,6 +82,8 @@ export function registerBffRoutes(
   identityReader?: IdentityReader,
   /** Per-brand salt resolver (brandSaltSource) for Customer-360 search hashing. Trailing-optional. */
   getCoreSaltHex?: (brandId: string) => Promise<string>,
+  /** Brain V4 serving cache (Redis-fronted hot serving reads over the Trino seam). Trailing-optional. */
+  servingCache?: ServingCacheReader,
 ): void {
   const sessionPreHandler = validateSessionPreHandler(authService);
 
@@ -212,6 +214,7 @@ export function registerBffRoutes(
     rawPool,
     onboardingService,
     srPool,
+    servingCache,
     vaultService,
     identityReader,
     getCoreSaltHex,

@@ -115,14 +115,15 @@ export async function getServingFreshness(
   let raw: RawMvRow[];
   try {
     // Plain pool query — operational metadata, no tenant predicate (see file header).
-    const [rows] = await deps.srPool.query(
+    // Brain V4: srPool is the Trino query PORT — query() returns the row array directly.
+    const rows = await deps.srPool.query(
       `SELECT TABLE_NAME, TABLE_ROWS, LAST_REFRESH_FINISHED_TIME, LAST_REFRESH_STATE
          FROM information_schema.materialized_views
         WHERE TABLE_SCHEMA = ?
         ORDER BY TABLE_NAME ASC`,
       [SERVING_DB],
     );
-    raw = (rows as RawMvRow[]) ?? [];
+    raw = (rows as unknown as RawMvRow[]) ?? [];
   } catch {
     // StarRocks down / information_schema unavailable → honest no_data (never a 500).
     return { state: 'no_data' };

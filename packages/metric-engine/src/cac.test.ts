@@ -1,20 +1,17 @@
 import { describe, it, expect } from 'vitest';
 import { computeCac } from './cac.js';
-import type { SilverPool, SilverConnection } from './silver-deps.js';
+import type { SilverPool } from './silver-deps.js';
 
 const BRAND = '22222222-2222-4222-8222-222222222222';
 const WINDOW = { fromDate: new Date('2026-05-01T00:00:00Z'), toDate: new Date('2026-05-31T00:00:00Z') };
 
-/** Fake StarRocks pool: SET succeeds; the gold_cac SELECT returns `rows`. */
+/** Fake Trino serving pool: every query returns `rows`. */
 function fakePool(rows: Array<Record<string, unknown>>): SilverPool {
-  const conn: SilverConnection = {
-    async query(sql: string): Promise<[unknown, unknown]> {
-      if (/^\s*SET\b/i.test(sql)) return [[], []];
-      return [rows, []];
+  return {
+    async query<T = Record<string, unknown>>(): Promise<T[]> {
+      return rows as T[];
     },
-    release() {},
   };
-  return { async query() { return [[], []]; }, async getConnection() { return conn; } };
 }
 
 describe('computeCac — CAC = spend ÷ new customers (honest, exact)', () => {

@@ -268,7 +268,9 @@ export class AttributionCreditWriter {
     orderId: string,
     model: AttributionModelId,
   ): Promise<SavedCreditRow[]> {
-    const [rows] = await this.srPool.query(
+    // Brain V4: srPool is the Trino query PORT — query() returns the row array directly
+    // (no mysql2 [rows, fields] tuple to destructure).
+    const rows = await this.srPool.query(
       `SELECT credit_id, brand_id, order_id, brain_anon_id, touch_seq, channel,
               campaign_id, model_id, weight_fraction, credited_revenue_minor,
               currency_code, realized_revenue_minor, confidence_grade, attribution_confidence
@@ -313,7 +315,8 @@ export class AttributionCreditWriter {
     orderId: string,
     model: AttributionModelId,
   ): Promise<bigint> {
-    const [rows] = await this.srPool.query(
+    // Brain V4: srPool is the Trino query PORT — query() returns the row array directly.
+    const rows = await this.srPool.query(
       `SELECT COALESCE(SUM(credited_revenue_minor), 0) AS total
          FROM ${GOLD_READ_VIEW}
         WHERE brand_id = ? AND order_id = ? AND model_id = ? AND row_kind = 'clawback'`,

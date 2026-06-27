@@ -23,7 +23,7 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { withSilverBrand, type SilverPool, type SilverConnection } from '@brain/metric-engine';
+import { withSilverBrand, type SilverPool } from '@brain/metric-engine';
 
 // Throwaway brand ids unique to this test (avoid colliding with real Silver rows).
 const BRAND_A = 'aaaa3333-0000-4000-8000-aaaaaaaaaaaa';
@@ -40,15 +40,19 @@ let rawConn: RawConn | null = null;
 let srAvailable = false;
 let martAvailable = false;
 
-/** Adapt a single mysql2 connection into the structural SilverPool the seam expects. */
+/**
+ * Adapt a single mysql2 connection into the structural SilverPool the seam expects.
+ * Brain V4: SilverPool is the Trino query PORT (query returns the row array directly),
+ * so we unwrap mysql2's [rows, fields] tuple here. The seam under test (the
+ * ${BRAND_PREDICATE} → brand_id = ? injection + the __unsafeDisableBrandPredicate
+ * mutation) is engine-agnostic; this fixture still drives the live StarRocks store.
+ */
 function poolFromConn(conn: RawConn): SilverPool {
-  const silverConn: SilverConnection = {
-    query: (sql, params) => conn.query(sql, params),
-    release: () => { /* single shared connection — no-op release */ },
-  };
   return {
-    query: (sql, params) => conn.query(sql, params),
-    getConnection: async () => silverConn,
+    async query<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]> {
+      const [rows] = await conn.query(sql, params);
+      return rows as T[];
+    },
   };
 }
 

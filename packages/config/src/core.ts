@@ -83,6 +83,26 @@ export const CoreEnvSchema = CommonEnvSchema.extend({
   TRINO_PORT: z.coerce.number().default(8090),
   /** Enable result caching for Trino ad-hoc queries (default off; exploration only). */
   TRINO_ADHOC_CACHE_ENABLED: strictTrueBool,
+
+  // ── Brain V4 SERVING cache (Redis-fronted hot metric reads over the Trino seam) ──
+  // Distinct from TRINO_ADHOC_CACHE_ENABLED (ad-hoc exploration). This fronts the
+  // KNOWN-metric serving reads (brain_serving.mv_* over Trino) with the analytics cache.
+  /**
+   * Tri-state: 'true' / 'false' explicit; UNSET → defaults ON in production, OFF in dev
+   * (the default is resolved at the composition root from NODE_ENV — see main.ts). Kept as
+   * an optional enum so an operator can force it either way; absent means "use the prod default".
+   */
+  TRINO_SERVING_CACHE_ENABLED: z.enum(['true', 'false']).optional(),
+  /**
+   * TTL (ms) for a cached serving read. Short by default — the AnalyticsCacheInvalidateConsumer
+   * busts brand-leading keys on each Spark recompute, so TTL is just the staleness safety-net.
+   */
+  TRINO_SERVING_CACHE_TTL_MS: z.coerce.number().int().positive().default(30_000),
+  /**
+   * Serving materialization version — the trailing cache-key segment. Bumping it on a
+   * serving-view rebuild invalidates every cached read without flushing Redis.
+   */
+  SERVING_VERSION: z.string().default('v1'),
 });
 
 export type CoreEnv = z.infer<typeof CoreEnvSchema>;

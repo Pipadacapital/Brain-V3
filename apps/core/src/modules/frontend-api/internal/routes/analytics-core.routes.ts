@@ -28,7 +28,20 @@ import type { TimeGrain } from '@brain/metric-engine';
 import type { BffDeps } from './_shared.js';
 
 export function registerAnalyticsCoreRoutes(fastify: FastifyInstance, deps: BffDeps): void {
-  const { bffProtectedPreHandler, pool, srPool } = deps;
+  const { bffProtectedPreHandler, pool, srPool, servingCache } = deps;
+
+  // ── Serving-cache chokepoint (Brain V4) ─────────────────────────────────────
+  // Front the KNOWN-metric serving reads (brain_serving.mv_* over Trino) with the Redis
+  // analytics cache: a repeat (brand, metric, params, serving-version) read is served from
+  // cache instead of re-hitting Trino. brand_id-leading keys; per-brand invalidation handled
+  // by the stream-worker AnalyticsCacheInvalidateConsumer. Safe-OFF fallback (cache absent OR
+  // flag off) = read Trino directly. The metric compute fns + withSilverBrand seam are unchanged.
+  const cachedRead = <T>(
+    brandId: string,
+    metricId: string,
+    params: unknown,
+    compute: () => Promise<T>,
+  ): Promise<T> => (servingCache ? servingCache.read(brandId, metricId, params, compute) : compute());
 
   // ── Analytics endpoints (Phase 1) ─────────────────────────────────────────
   // ADR-002 sole-read-path: all routes call analytics query wrappers which call the metric engine.
@@ -83,10 +96,17 @@ export function registerAnalyticsCoreRoutes(fastify: FastifyInstance, deps: BffD
       const grain: TimeGrain = (query.grain === 'week' ? 'week' : 'day') as TimeGrain;
 
       // Epic 1: revenue timeseries now reads the lakehouse (gold_revenue_ledger), not the PG ledger.
-      const result = await getRevenueTimeseries(
-        auth.brandId,
-        { fromDate: new Date(`${fromStr}T00:00:00Z`), toDate: new Date(`${toStr}T00:00:00Z`), grain },
-        { srPool },
+      const brandId = auth.brandId; // narrowed string (guarded above) — stable inside the cache closure
+      const result = await cachedRead(
+        brandId,
+        'revenue_timeseries',
+        { fromStr, toStr, grain },
+        () =>
+          getRevenueTimeseries(
+            brandId,
+            { fromDate: new Date(`${fromStr}T00:00:00Z`), toDate: new Date(`${toStr}T00:00:00Z`), grain },
+            { srPool },
+          ),
       );
 
       return reply.send({ request_id: requestId, data: result });
@@ -136,7 +156,13 @@ export function registerAnalyticsCoreRoutes(fastify: FastifyInstance, deps: BffD
       const asOf = new Date(`${asOfStr}T00:00:00Z`);
 
       // Epic 1: KPI summary now reads the lakehouse (gold_revenue_ledger), not the PG ledger.
-      const result: ContractKpiSummary = await getKpiSummary(auth.brandId, asOf, { srPool });
+      const brandId = auth.brandId; // narrowed string (guarded above) — stable inside the cache closure
+      const result: ContractKpiSummary = await cachedRead(
+        brandId,
+        'kpi_summary',
+        { asOfStr },
+        () => getKpiSummary(brandId, asOf, { srPool }),
+      );
 
       return reply.send({ request_id: requestId, data: result });
     },
@@ -182,10 +208,17 @@ export function registerAnalyticsCoreRoutes(fastify: FastifyInstance, deps: BffD
       const toStr = query.to ?? today;
       const fromStr = query.from ?? (new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0] as string);
 
-      const result = await getExecutiveMetrics(
-        auth.brandId,
-        { fromDate: new Date(`${fromStr}T00:00:00Z`), toDate: new Date(`${toStr}T00:00:00Z`) },
-        { srPool },
+      const brandId = auth.brandId; // narrowed string (guarded above) — stable inside the cache closure
+      const result = await cachedRead(
+        brandId,
+        'executive_metrics',
+        { fromStr, toStr },
+        () =>
+          getExecutiveMetrics(
+            brandId,
+            { fromDate: new Date(`${fromStr}T00:00:00Z`), toDate: new Date(`${toStr}T00:00:00Z`) },
+            { srPool },
+          ),
       );
       return reply.send({ request_id: requestId, data: result });
     },
@@ -208,7 +241,10 @@ export function registerAnalyticsCoreRoutes(fastify: FastifyInstance, deps: BffD
       if (!srPool) {
         return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (StarRocks) not available' } });
       }
-      const result = await getCohortRetention(auth.brandId, { srPool });
+      const brandId = auth.brandId; // narrowed string (guarded above) — stable inside the cache closure
+      const result = await cachedRead(brandId, 'cohort_retention', {}, () =>
+        getCohortRetention(brandId, { srPool }),
+      );
       return reply.send({ request_id: requestId, data: result });
     },
   );
@@ -300,7 +336,13 @@ export function registerAnalyticsCoreRoutes(fastify: FastifyInstance, deps: BffD
       const asOf = new Date(`${asOfStr}T00:00:00Z`);
 
       // Epic 1: recognition breakdown now reads the lakehouse (gold_revenue_ledger), not the PG ledger.
-      const result = await getRecognitionBreakdown(auth.brandId, asOf, { srPool });
+      const brandId = auth.brandId; // narrowed string (guarded above) — stable inside the cache closure
+      const result = await cachedRead(
+        brandId,
+        'recognition_breakdown',
+        { asOfStr },
+        () => getRecognitionBreakdown(brandId, asOf, { srPool }),
+      );
 
       return reply.send({ request_id: requestId, data: result });
     },
@@ -326,7 +368,10 @@ export function registerAnalyticsCoreRoutes(fastify: FastifyInstance, deps: BffD
         return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (StarRocks) not available' } });
       }
 
-      const result = await getRevenueMonthly(auth.brandId, { srPool });
+      const brandId = auth.brandId; // narrowed string (guarded above) — stable inside the cache closure
+      const result = await cachedRead(brandId, 'revenue_monthly', {}, () =>
+        getRevenueMonthly(brandId, { srPool }),
+      );
       return reply.send({ request_id: requestId, data: result });
     },
   );
@@ -424,10 +469,17 @@ export function registerAnalyticsCoreRoutes(fastify: FastifyInstance, deps: BffD
       const grain: TimeGrain = (query.grain === 'week' ? 'week' : 'day') as TimeGrain;
 
       // Epic 1: orders timeseries now reads the lakehouse (gold_revenue_ledger), not the PG ledger.
-      const result = await getOrdersTimeseries(
-        auth.brandId,
-        { fromDate: new Date(`${fromStr}T00:00:00Z`), toDate: new Date(`${toStr}T00:00:00Z`), grain },
-        { srPool },
+      const brandId = auth.brandId; // narrowed string (guarded above) — stable inside the cache closure
+      const result = await cachedRead(
+        brandId,
+        'orders_timeseries',
+        { fromStr, toStr, grain },
+        () =>
+          getOrdersTimeseries(
+            brandId,
+            { fromDate: new Date(`${fromStr}T00:00:00Z`), toDate: new Date(`${toStr}T00:00:00Z`), grain },
+            { srPool },
+          ),
       );
 
       return reply.send({ request_id: requestId, data: result });
@@ -477,7 +529,13 @@ export function registerAnalyticsCoreRoutes(fastify: FastifyInstance, deps: BffD
       const asOf = new Date(`${asOfStr}T00:00:00Z`);
 
       // Epic 1: order stats now read the lakehouse (gold_revenue_ledger), not the PG ledger.
-      const result = await getOrderStats(auth.brandId, asOf, { srPool });
+      const brandId = auth.brandId; // narrowed string (guarded above) — stable inside the cache closure
+      const result = await cachedRead(
+        brandId,
+        'order_stats',
+        { asOfStr },
+        () => getOrderStats(brandId, asOf, { srPool }),
+      );
 
       return reply.send({ request_id: requestId, data: result });
     },

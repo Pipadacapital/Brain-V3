@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { computeInsights } from './insights.js';
-import type { SilverPool, SilverConnection } from './silver-deps.js';
+import type { SilverPool } from './silver-deps.js';
 
 const BRAND = '33333333-3333-4333-8333-333333333333';
 
@@ -16,25 +16,22 @@ interface FakeTables {
   orderline?: Array<Record<string, unknown>>;
 }
 
-/** Fake StarRocks pool that routes each gold-mart query to the configured rows. */
+/** Fake Trino serving pool that routes each gold-mart query to the configured rows. */
 function fakePool(t: FakeTables): SilverPool {
-  const conn: SilverConnection = {
-    async query(sql: string): Promise<[unknown, unknown]> {
-      if (/^\s*SET\b/i.test(sql)) return [[], []];
-      if (sql.includes('gold_revenue_ledger') && sql.includes('GROUP BY event_type')) return [t.driver ?? [], []];
-      if (sql.includes('gold_revenue_ledger')) return [t.revenue ?? [], []];
-      if (sql.includes('gold_executive_metrics')) return [t.exec ?? [], []];
-      if (sql.includes("churn_risk = 'high'")) return [t.churn ?? [], []];
-      if (sql.includes('monetary_score = 5')) return [t.vip ?? [], []];
-      if (sql.includes('gold_cac')) return [t.cac ?? [], []];
-      if (sql.includes('silver_marketing_spend')) return [t.spend ?? [], []];
-      if (sql.includes('silver_order_line')) return [t.orderline ?? [], []];
-      if (sql.includes('silver_touchpoint')) return [t.funnel ?? [], []]; // computeStorefrontFunnel
-      return [[], []];
+  return {
+    async query<T = Record<string, unknown>>(sql: string): Promise<T[]> {
+      if (sql.includes('gold_revenue_ledger') && sql.includes('GROUP BY event_type')) return (t.driver ?? []) as T[];
+      if (sql.includes('gold_revenue_ledger')) return (t.revenue ?? []) as T[];
+      if (sql.includes('gold_executive_metrics')) return (t.exec ?? []) as T[];
+      if (sql.includes("churn_risk = 'high'")) return (t.churn ?? []) as T[];
+      if (sql.includes('monetary_score = 5')) return (t.vip ?? []) as T[];
+      if (sql.includes('gold_cac')) return (t.cac ?? []) as T[];
+      if (sql.includes('silver_marketing_spend')) return (t.spend ?? []) as T[];
+      if (sql.includes('silver_order_line')) return (t.orderline ?? []) as T[];
+      if (sql.includes('silver_touchpoint')) return (t.funnel ?? []) as T[]; // computeStorefrontFunnel
+      return [] as T[];
     },
-    release() {},
   };
-  return { async query() { return [[], []]; }, async getConnection() { return conn; } };
 }
 
 describe('computeInsights — deterministic Insight + Opportunity Engine', () => {

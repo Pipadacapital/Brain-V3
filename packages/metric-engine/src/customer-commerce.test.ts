@@ -1,19 +1,17 @@
 import { describe, it, expect } from 'vitest';
 import { getCustomerCommerce } from './customer-commerce.js';
-import type { SilverPool, SilverConnection } from './silver-deps.js';
+import type { SilverPool } from './silver-deps.js';
 
 const BRAND = '33333333-3333-4333-8333-333333333333';
 const BRAIN = '44444444-4444-4444-8444-444444444444';
 
+/** Fake Trino serving pool: every query returns `rows`. */
 function fakePool(rows: Array<Record<string, unknown>>): SilverPool {
-  const conn: SilverConnection = {
-    async query(sql: string): Promise<[unknown, unknown]> {
-      if (/^\s*SET\b/i.test(sql)) return [[], []];
-      return [rows, []];
+  return {
+    async query<T = Record<string, unknown>>(): Promise<T[]> {
+      return rows as T[];
     },
-    release() {},
   };
-  return { async query() { return [[], []]; }, async getConnection() { return conn; } };
 }
 
 describe('getCustomerCommerce — per-customer Customer-360 commerce profile (H7)', () => {

@@ -29,10 +29,23 @@ import type { TrinoPool } from './trino-deps.js';
 export interface TrinoAdapterConfig {
   /** Base URL of the Trino coordinator, e.g. 'http://trino:8080'. */
   readonly baseUrl: string;
-  /** Trino catalog to set via X-Trino-Catalog header, e.g. 'iceberg'. */
-  readonly catalog: string;
-  /** Trino schema to set via X-Trino-Schema header, e.g. 'brain_bronze'. */
-  readonly schema: string;
+  /**
+   * Trino catalog to set via X-Trino-Catalog header. Defaults to 'iceberg'.
+   *
+   * BRAIN V4 SERVING RESOLUTION: the metric SQL reads two-part names like
+   * `FROM brain_serving.mv_gold_revenue_ledger`. Trino resolves a two-part
+   * `<schema>.<table>` against the DEFAULT CATALOG — so with catalog='iceberg'
+   * the name resolves to `iceberg.brain_serving.mv_gold_revenue_ledger` (the
+   * Trino views in db/trino/views/*.sql). Keep this 'iceberg' for serving.
+   */
+  readonly catalog?: string;
+  /**
+   * Trino schema to set via X-Trino-Schema header. Defaults to 'brain_serving'.
+   * Only affects ONE-part (bare table) names; the serving SQL is two-part
+   * (`brain_serving.mv_*`) so the catalog default above is what matters for
+   * serving. Set to 'brain_bronze'/'brain_silver'/'brain_gold' for ad-hoc reads.
+   */
+  readonly schema?: string;
   /** Trino user to present via X-Trino-User (not authentication; cluster auth is separate). */
   readonly user: string;
   /** Max poll iterations before aborting a long-running query (default 120). */
@@ -115,7 +128,16 @@ function substituteParams(sql: string, params: unknown[]): string {
  * @throws if global fetch is unavailable (requires Node.js >= 18).
  */
 export function createTrinoPool(config: TrinoAdapterConfig): TrinoPool {
-  const { baseUrl, catalog, schema, user, maxPolls = 120, pollIntervalMs = 500 } = config;
+  // Brain V4 serving defaults: catalog='iceberg' makes two-part `brain_serving.mv_*`
+  // names resolve to `iceberg.brain_serving.mv_*` (the Trino views over Iceberg Gold/Silver).
+  const {
+    baseUrl,
+    catalog = 'iceberg',
+    schema = 'brain_serving',
+    user,
+    maxPolls = 120,
+    pollIntervalMs = 500,
+  } = config;
 
   // Validate global fetch at pool-creation time (fail loud, not at first query).
   const globalFetch = (globalThis as { fetch?: MinimalFetch }).fetch;

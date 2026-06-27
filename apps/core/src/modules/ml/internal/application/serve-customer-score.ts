@@ -175,7 +175,8 @@ export async function serveCustomerScore(
     scoredOn: served.scored_on,
   });
 
-  const [existRows] = await deps.srPool.query(
+  // Brain V4: srPool query() returns the row array directly (Trino PORT contract).
+  const existRows = await deps.srPool.query(
     `SELECT prediction_id FROM ${PREDICTION_LOG_TABLE} WHERE brand_id = ? AND prediction_id = ? LIMIT 1`,
     [brandId, predictionId],
   );

@@ -33,7 +33,7 @@ import type {
 import type { BffDeps } from './_shared.js';
 
 export function registerAnalyticsJourneyRoutes(fastify: FastifyInstance, deps: BffDeps): void {
-  const { bffProtectedPreHandler, srPool } = deps;
+  const { bffProtectedPreHandler, srPool, rawPool } = deps;
 
   // ── Journey endpoints (Phase 4 — feat-journey-touchpoint) ─────────────────
   // Silver reads over silver.touchpoint through the metric-engine seam (withSilverBrand,
@@ -525,7 +525,9 @@ export function registerAnalyticsJourneyRoutes(fastify: FastifyInstance, deps: B
 
       const result: ContractJourneyTimeline = await getJourneyTimeline(
         auth.brandId,
-        { srPool },
+        // rawPool (PG) resolves an order → its stitched anon(s) from the PG-native stitch map; srPool
+        // (Trino) reads the touches. The anonId selector path needs no PG pool.
+        { srPool, pool: rawPool },
         { selector, dataSource: 'synthetic' },
       );
 

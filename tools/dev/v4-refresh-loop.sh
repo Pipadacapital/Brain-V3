@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 #
-# v4-refresh-loop.sh — keep the local-prod V4 analytics layer (Iceberg Silver/Gold + StarRocks serving)
+# v4-refresh-loop.sh — keep the local-prod V4 analytics layer (Iceberg Silver/Gold + Trino serving)
 # live, IN THE CORRECT DEPENDENCY ORDER so the derived (customer + attribution) marts actually POPULATE.
 # This is the V4 REPLACEMENT for the retired dbt-refresh-loop.sh (Phase 6b).
 #
 # THE PROBLEM this solves: under Brain V4 the transform is Spark-on-Iceberg, NOT dbt. Dashboards read the
-# brain_serving mv_* materialized views (Phase 4). Those MVs sit on top of the EXTERNAL Iceberg catalogs
-# (brain_silver_local / brain_gold_local), materialized FROM raw Iceberg Bronze by the Spark Silver + Gold
-# jobs. In dev nothing auto-runs those jobs, so after a connector sync lands new orders in Bronze the
-# Silver/Gold (and the mv_* serving views) stay stale → "connected but no data".
+# brain_serving mv_* VIEWS served by Trino-over-Iceberg (StarRocks is REMOVED). Those views are thin
+# projections over the EXTERNAL Iceberg catalogs (brain_silver_local / brain_gold_local), materialized
+# FROM raw Iceberg Bronze by the Spark Silver + Gold jobs. In dev nothing auto-runs those jobs, so after a
+# connector sync lands new orders in Bronze the Silver/Gold (and thus the mv_* views) stay stale →
+# "connected but no data". Trino views are always-fresh (no async refresh) — they reflect the latest
+# Iceberg snapshot the instant Spark commits it; we only (idempotently) ensure the views EXIST.
 #
 # But running "all silver, then all gold, then refresh" (the previous shape of this loop) is NOT enough:
 # the CUSTOMER and ATTRIBUTION marts came out 0 because their inputs are produced by jobs that LIVE OUTSIDE
@@ -21,7 +23,8 @@
 #   1. silver_order_state         resolves brain_id (reads silver_identity_link) — the spine the rest of
 #                                 Silver + all of Gold depend on. Runs before the rest of Silver.
 #   2. the rest of Silver         every other silver_* mart (incl. an initial silver_touchpoint pass).
-#   3a. gold_revenue_ledger       + SYNC-refresh mv_gold_revenue_ledger and mv_silver_touchpoint, because…
+#   3a. gold_revenue_ledger       + ensure the mv_gold_revenue_ledger and mv_silver_touchpoint Trino views
+#                                 exist, because…
 #   3b. journey-stitch            journey-stitch-from-identity reads mv_silver_touchpoint (journey anons) ∩
 #                                 silver_identity_link (anon→brain_id) ∩ mv_gold_revenue_ledger (order→
 #                                 brain_id) → writes the deterministic, UNAMBIGUOUS-ONLY stitch to PG
@@ -32,15 +35,16 @@
 #                                 columns are populated for the attribution read.
 #   5. the rest of Gold           gold_revenue_* then gold_attribution_* (reads the stitched silver_touchpoint
 #                                 + gold_revenue_ledger basis) then customer + gap + executive marts.
-#   6. mv_* SYNC refresh          deterministic REFRESH MATERIALIZED VIEW … WITH SYNC MODE for every
-#                                 brain_serving mv_* so the serving tier tracks the freshly-materialized
-#                                 Iceberg immediately (rather than each MV's async EVERY-15-MINUTE refresh).
+#   6. mv_* views (ensure)        idempotent CREATE OR REPLACE of every brain_serving mv_* Trino view via
+#                                 db/trino/views/run-trino-views.sh. Trino views need NO refresh — they
+#                                 read the latest Iceberg snapshot directly — so this only guarantees a
+#                                 from-zero stack has all serving views present.
 #
 # It touches NO Spark job and NO Iceberg catalog destructively — it only INVOKES the existing run scripts +
-# the existing stream-worker jobs (identity-export / journey-stitch) and issues additive SYNC refreshes
-# against the brain_serving MVs. Tenant isolation + money discipline live inside the jobs/MV definitions;
-# this loop is pure orchestration. Every Spark MERGE + every job is idempotent → a retried/missed run is
-# safe, so the loop wraps each step in a BOUNDED retry and surfaces a clear per-step failure.
+# the existing stream-worker jobs (identity-export / journey-stitch) and (idempotently) applies the Trino
+# serving views. Tenant isolation + money discipline live inside the jobs/view definitions; this loop is
+# pure orchestration. Every Spark MERGE + every job is idempotent → a retried/missed run is safe, so the
+# loop wraps each step in a BOUNDED retry and surfaces a clear per-step failure.
 #
 # Usage:  pnpm dev:v4-refresh                 # every 300s (default)
 #         REFRESH_INTERVAL_SECONDS=120 pnpm dev:v4-refresh
@@ -54,8 +58,8 @@ INTERVAL="${REFRESH_INTERVAL_SECONDS:-300}"
 SPARK_ROOT="$ROOT/db/iceberg/spark"
 SILVER_DIR="$SPARK_ROOT/silver"
 GOLD_DIR="$SPARK_ROOT/gold"
-SR_CONTAINER="${STARROCKS_CONTAINER:-brainv3-starrocks-1}"
-SERVING_DB="${SERVING_DB:-brain_serving}"
+# Trino serving views (db/trino/views) — the V4 replacement for the StarRocks brain_serving MVs.
+TRINO_VIEWS_RUNNER="$ROOT/db/trino/views/run-trino-views.sh"
 APP_ENV="${APP_ENV:-local-prod}"
 ENV_FILE="$ROOT/.env.${APP_ENV}"
 # Bounded retry: total attempts = MAX_RETRIES + 1 (so MAX_RETRIES=1 ⇒ one retry ⇒ 2 attempts).
@@ -177,7 +181,7 @@ run_spark_tier() {  # $1=tier-label  $2..=scripts ; returns # of failed scripts
 
 # ── stream-worker / core job runner (tsx with the env file, mirroring the dlq:redrive script) ──────────
 # Jobs (identity-export, journey-stitch-*) are TS entrypoints; in dev we run them with tsx + --env-file so
-# they pick up STARROCKS_*/NEO4J_*/BRAIN_APP_DATABASE_URL exactly like the deployed `node dist/...` cron.
+# they pick up TRINO_*/NEO4J_*/BRAIN_APP_DATABASE_URL exactly like the deployed `node dist/...` cron.
 run_node_job() {  # $1=label  $2=package-filter  $3=tsx-relative-path
   local label="$1" pkg="$2" rel="$3" logf="/tmp/v4-refresh-${1}.log"
   if [ ! -f "$ENV_FILE" ]; then
@@ -196,65 +200,48 @@ run_node_job() {  # $1=label  $2=package-filter  $3=tsx-relative-path
   return "$rc"
 }
 
-# MV definitions (db/starrocks/mv/mv_*.sql) — applied idempotently so a from-zero cluster's first cycle
-# MATERIALIZES the serving tier. Each file is CREATE MATERIALIZED VIEW IF NOT EXISTS … AS SELECT FROM the
-# Iceberg Gold/Silver table, so this is the create-half of run_mvs.sh; the loop keeps its own refresh
-# (which also REFRESH EXTERNAL TABLE-invalidates the Iceberg metadata cache — run_mvs.sh does not).
-MV_DIR="$ROOT/db/starrocks/mv"
-
-# ensure_mv <mv_name>: apply MV_DIR/<mv_name>.sql (CREATE … IF NOT EXISTS). Idempotent + non-fatal — if the
-# MV's source Iceberg table isn't built yet the CREATE fails and is swallowed; the NEXT cycle (after the
-# Spark job builds it) creates it. The serving catalogs (brain_{gold,silver}_local) are registered at
-# starrocks-init, so they always exist here.
-ensure_mv() {
-  local f="$MV_DIR/${1}.sql"
-  [ -f "$f" ] || return 0
-  docker exec -i "$SR_CONTAINER" mysql -h127.0.0.1 -P9030 -uroot < "$f" >/dev/null 2>&1 || true
-}
-
+# Trino serving views (db/trino/views/mv_*.sql) — applied idempotently (CREATE OR REPLACE VIEW) so a
+# from-zero stack's first cycle creates the whole serving tier. Trino views are thin projections over the
+# Iceberg Gold/Silver marts: there is NO async refresh and NO metadata-cache to invalidate — a view always
+# reflects the latest Iceberg snapshot. So the StarRocks "REFRESH MATERIALIZED VIEW … WITH SYNC MODE" step
+# collapses into "make sure the views EXIST". Delegates to db/trino/views/run-trino-views.sh.
+#
+# refresh_serving_mvs <optional space-separated mv list> :
+#   - with an explicit list  → apply just those view files (VIEW_GLOB per name) — used on cold start when a
+#                              downstream node job (journey-stitch) needs a specific view present NOW.
+#   - with no args           → apply ALL mv_*.sql (the default VIEW_GLOB).
+# Non-fatal: if a view's source Iceberg table isn't built yet the CREATE fails and is logged; the NEXT
+# cycle (after the Spark job builds it) creates it. The runner is idempotent every cycle after.
 refresh_serving_mvs() {  # $1 (optional) = explicit space-separated mv list; default = ALL mv_*
-  local explicit="${1:-}" mvs f
-  if [ -n "$explicit" ]; then
-    # CREATE-IF-MISSING the named MVs before refreshing (cold start: they don't exist yet).
-    for m in $explicit; do ensure_mv "$m"; done
-    mvs="$(printf '%s\n' $explicit)"
-  else
-    # COLD-START SELF-BOOTSTRAP: apply EVERY mv_*.sql (CREATE … IF NOT EXISTS) so a from-zero cluster
-    # materializes all serving MVs on the first cycle — the loop previously only REFRESHed pre-existing
-    # MVs, so a fresh stack served 0 rows until run_mvs.sh was run by hand. Idempotent every cycle after.
-    for f in "$MV_DIR"/mv_*.sql; do
-      [ -e "$f" ] || continue
-      docker exec -i "$SR_CONTAINER" mysql -h127.0.0.1 -P9030 -uroot < "$f" >/dev/null 2>&1 || true
-    done
-    mvs="$(docker exec "$SR_CONTAINER" mysql -h127.0.0.1 -P9030 -uroot -N \
-      -e "SELECT TABLE_NAME FROM information_schema.materialized_views WHERE TABLE_SCHEMA='${SERVING_DB}' AND TABLE_NAME LIKE 'mv\_%' ORDER BY TABLE_NAME;" 2>/dev/null)" \
-      || { echo "[$(ts)] ⚠ could not list ${SERVING_DB} MVs (is StarRocks up?)"; return 1; }
+  local explicit="${1:-}" rc=0
+  if [ ! -x "$TRINO_VIEWS_RUNNER" ]; then
+    echo "[$(ts)] ⚠ Trino views runner not executable: $TRINO_VIEWS_RUNNER — skipping serving views"
+    jlog v4_mv_refresh refreshed=0 failed=0 status=skipped
+    return 1
   fi
-  [ -n "$mvs" ] || { echo "[$(ts)] ⚠ no mv_* to refresh"; return 1; }
-  local n=0 failed=0
-  while IFS= read -r mv; do
-    [ -n "$mv" ] || continue
-    # ICEBERG METADATA-CACHE INVALIDATION (the fix for "mart populated in Iceberg but mv=0"): StarRocks
-    # caches external-Iceberg snapshot metadata, so an mv refresh issued right after the Spark write reads
-    # the STALE pre-write snapshot → the mv lands 0 rows until the ~60s background refresh. Mirror the
-    # established run-mv.sh pattern: REFRESH EXTERNAL TABLE on the mv's Iceberg source FIRST. The mv name is
-    # mv_<X>; its source is brain_gold_local.brain_gold.<X> OR brain_silver_local.brain_silver.<X> — refresh
-    # BOTH candidates (the wrong one silently no-ops). Additive + metadata-only (never alters the catalog).
-    local src="${mv#mv_}"
-    docker exec "$SR_CONTAINER" mysql -h127.0.0.1 -P9030 -uroot -N \
-      -e "REFRESH EXTERNAL TABLE brain_gold_local.brain_gold.${src};" >/dev/null 2>&1 || true
-    docker exec "$SR_CONTAINER" mysql -h127.0.0.1 -P9030 -uroot -N \
-      -e "REFRESH EXTERNAL TABLE brain_silver_local.brain_silver.${src};" >/dev/null 2>&1 || true
-    # WITH SYNC MODE blocks until the refresh completes → deterministic Gold for the next dashboard read.
-    if docker exec "$SR_CONTAINER" mysql -h127.0.0.1 -P9030 -uroot -N \
-      -e "REFRESH MATERIALIZED VIEW ${SERVING_DB}.${mv} WITH SYNC MODE;" >/dev/null 2>&1; then
-      n=$((n+1))
-    else
-      failed=$((failed+1)); echo "[$(ts)] ⚠ refresh ${SERVING_DB}.${mv} failed"
-    fi
-  done <<< "$mvs"
-  echo "[$(ts)] ✓ refreshed ${n} serving MV(s) WITH SYNC MODE"
-  jlog v4_mv_refresh refreshed="$n" failed="$failed"
+  if [ -n "$explicit" ]; then
+    local applied=0 failed=0 mv
+    for mv in $explicit; do
+      if VIEW_GLOB="${mv}.sql" "$TRINO_VIEWS_RUNNER" >/dev/null 2>&1; then
+        applied=$((applied+1))
+      else
+        failed=$((failed+1)); echo "[$(ts)] ⚠ apply Trino view ${mv} failed"
+      fi
+    done
+    echo "[$(ts)] ✓ applied ${applied} serving view(s) (scoped)"
+    jlog v4_mv_refresh refreshed="$applied" failed="$failed"
+    [ "$failed" -eq 0 ]; return $?
+  fi
+  # Default: apply every mv_*.sql view (CREATE OR REPLACE — cold-start self-bootstrap + idempotent).
+  if "$TRINO_VIEWS_RUNNER" >/dev/null 2>&1; then
+    echo "[$(ts)] ✓ applied all serving Trino views (db/trino/views)"
+    jlog v4_mv_refresh refreshed=all failed=0
+  else
+    rc=$?
+    echo "[$(ts)] ⚠ applying serving Trino views failed (rc=${rc}) — see Trino logs"
+    jlog v4_mv_refresh refreshed=0 failed=1
+  fi
+  return "$rc"
 }
 
 run_once() {
@@ -262,7 +249,7 @@ run_once() {
   # New correlation_id per cycle, EXPORTED so every Spark job (job_log.py) + node job echoes it.
   export V4_CORRELATION_ID="$(new_correlation_id)"
   cycle_start=$(now_ms)
-  echo "[$(ts)] ── V4 refresh: identity → silver_order_state → silver → stitch → gold → mv SYNC ──"
+  echo "[$(ts)] ── V4 refresh: identity → silver_order_state → silver → stitch → gold → mv views ──"
   jlog v4_cycle phase=start
 
   # 0. IDENTITY EXPORT — Neo4j → brain_ops.silver_identity_link (resolves order brain_id downstream).
@@ -286,8 +273,9 @@ run_once() {
   #    the bulk glob, which is a harmless idempotent no-op (already current from step 1).
   run_spark_tier silver "${SILVER_REST[@]}"; failures=$((failures+$?))
 
-  # 3a. GOLD REVENUE LEDGER + refresh the two MVs the stitch job reads (mv_silver_touchpoint journey anons,
-  #     mv_gold_revenue_ledger order→brain_id). These must be fresh BEFORE journey-stitch runs.
+  # 3a. GOLD REVENUE LEDGER + ensure the two Trino views the stitch job reads EXIST (mv_silver_touchpoint
+  #     journey anons, mv_gold_revenue_ledger order→brain_id). As Trino views they are always-fresh over
+  #     Iceberg — we just guarantee they're created BEFORE journey-stitch reads them on a cold stack.
   run_spark_script gold-revenue-ledger "$SPARK_ROOT/run-gold-revenue.sh" || failures=$((failures+1))
   refresh_serving_mvs "mv_silver_touchpoint mv_gold_revenue_ledger"
 
@@ -307,85 +295,15 @@ run_once() {
   #    basis), customer, gap, executive marts. gold_revenue is re-run here via the glob (idempotent).
   run_spark_tier gold "${GOLD_SCRIPTS[@]}"; failures=$((failures+$?))
 
-  # 5b. SCOPED RECOMPUTE (optional — gated by SCOPED_RECOMPUTE=1) ─────────────────────────────────
-  # Drains pending brain_ops.scoped_recompute_request rows written by IdentityChangeRecomputeConsumer
-  # (identity.merged + identity.suppressed events → upsert → this drain step picks them up).
-  # For each pending request this step:
-  #   (a) Logs the affected brand_ids + brain_id counts so the cycle log shows which tenants were
-  #       impacted (observability — the correlation_id ties this to the Kafka consumer's log lines).
-  #   (b) Issues SYNC refresh for ONLY the customer-grained mv_* (the serving MVs whose rows are
-  #       keyed on brain_id). This is faster than the full mv_* refresh (step 6) when only a few
-  #       brain_ids changed — step 6 still runs as the safety net.
-  #   (c) Marks all processed rows: UPDATE SET processed_at = NOW() WHERE processed_at IS NULL.
-  #       StarRocks PRIMARY KEY UPDATE is idempotent (same row written again = no-op next cycle).
-  #
-  # PURE ORCHESTRATION: touches NO Spark jobs, NO Iceberg catalogs destructively. Only issues
-  # StarRocks SQL (SELECT + UPDATE + REFRESH MATERIALIZED VIEW). Every op is idempotent.
-  # GATE: SCOPED_RECOMPUTE=1 must be set explicitly — default behavior is unchanged (step 6 still
-  # runs a full mv_* refresh covering the same customer-grained MVs).
-  #
-  # Customer-grained MVs (match CUSTOMER_GRAINED_MARTS + MART_TO_MV in ScopedRecompute.ts):
-  SCOPED_MVS="mv_gold_customer_360 mv_gold_customer_scores mv_gold_customer_segments mv_gold_cohorts mv_gold_customer_health mv_gold_journey mv_gold_recommendation_features mv_gold_ai_features mv_gold_attribution_credit mv_gold_attribution_paths mv_gold_marketing_attribution"
+  # 5b. SCOPED RECOMPUTE — REMOVED with StarRocks. Its sole job was a TARGETED "REFRESH MATERIALIZED VIEW
+  #     … WITH SYNC MODE" for the customer-grained brain_serving MVs after an identity merge/suppress, to
+  #     avoid waiting for the full async refresh. Under V4-final the serving tier is Trino VIEWS over
+  #     Iceberg — always-fresh, no refresh to schedule — so per-brand targeted refresh is moot. Draining
+  #     the scoped_recompute_request queue (now the PG ops schema, migration 0116) is owned by the app/
+  #     consumer side, not this Spark-orchestration loop.
 
-  if [ "${SCOPED_RECOMPUTE:-0}" = "1" ]; then
-    scoped_start=$(now_ms)
-    echo "[$(ts)] ── V4 scoped recompute: draining brain_ops.scoped_recompute_request ──"
-
-    # Count pending rows.
-    pending=$(docker exec "$SR_CONTAINER" mysql -h127.0.0.1 -P9030 -uroot -N \
-      -e "SELECT COUNT(*) FROM brain_ops.scoped_recompute_request WHERE processed_at IS NULL;" 2>/dev/null) || pending=0
-
-    if [ "${pending:-0}" -gt 0 ] 2>/dev/null; then
-      echo "[$(ts)] scoped-recompute: ${pending} pending request(s)"
-      jlog v4_scoped_recompute phase=drain pending="$pending"
-
-      # Log affected brands + request counts (observability — ties to consumer correlation_id chain).
-      docker exec "$SR_CONTAINER" mysql -h127.0.0.1 -P9030 -uroot \
-        -e "SELECT brand_id, COUNT(*) AS req_count, MIN(requested_at) AS oldest_at
-            FROM brain_ops.scoped_recompute_request
-            WHERE processed_at IS NULL
-            GROUP BY brand_id
-            ORDER BY brand_id;" 2>/dev/null || true
-
-      # Issue SYNC refresh for the customer-grained MVs only.
-      # ensure_mv + REFRESH EXTERNAL TABLE + REFRESH MATERIALIZED VIEW WITH SYNC MODE
-      # — mirrors refresh_serving_mvs() but scoped to SCOPED_MVS (not all brain_serving MVs).
-      echo "[$(ts)] scoped-recompute: refreshing customer-grained MVs (scoped)"
-      scoped_ok=0; scoped_fail=0
-      for mv in $SCOPED_MVS; do
-        ensure_mv "$mv"
-        local_src="${mv#mv_}"
-        docker exec "$SR_CONTAINER" mysql -h127.0.0.1 -P9030 -uroot -N \
-          -e "REFRESH EXTERNAL TABLE brain_gold_local.brain_gold.${local_src};" >/dev/null 2>&1 || true
-        docker exec "$SR_CONTAINER" mysql -h127.0.0.1 -P9030 -uroot -N \
-          -e "REFRESH EXTERNAL TABLE brain_silver_local.brain_silver.${local_src};" >/dev/null 2>&1 || true
-        if docker exec "$SR_CONTAINER" mysql -h127.0.0.1 -P9030 -uroot -N \
-          -e "REFRESH MATERIALIZED VIEW ${SERVING_DB}.${mv} WITH SYNC MODE;" >/dev/null 2>&1; then
-          scoped_ok=$((scoped_ok+1))
-        else
-          scoped_fail=$((scoped_fail+1))
-          echo "[$(ts)] ⚠ scoped-recompute: refresh ${SERVING_DB}.${mv} failed"
-        fi
-      done
-      echo "[$(ts)] scoped-recompute: ${scoped_ok} MVs refreshed, ${scoped_fail} failed"
-
-      # Mark all pending rows as processed (UPDATE idempotent — re-UPDATE on retry = no-op next cycle).
-      docker exec "$SR_CONTAINER" mysql -h127.0.0.1 -P9030 -uroot -N \
-        -e "UPDATE brain_ops.scoped_recompute_request SET processed_at = NOW() WHERE processed_at IS NULL;" \
-        >/dev/null 2>&1 \
-        && echo "[$(ts)] scoped-recompute: ${pending} request(s) marked processed" \
-        || { echo "[$(ts)] ⚠ scoped-recompute: failed to mark rows processed (will retry next cycle)"; failures=$((failures+1)); }
-
-      scoped_end=$(now_ms)
-      jlog v4_scoped_recompute phase=done pending="$pending" \
-        mvs_ok="$scoped_ok" mvs_fail="$scoped_fail" duration_ms=$(( scoped_end - scoped_start ))
-    else
-      echo "[$(ts)] scoped-recompute: no pending requests — skipping targeted refresh"
-      jlog v4_scoped_recompute phase=noop pending=0 duration_ms=0
-    fi
-  fi
-
-  # 6. mv_* SYNC refresh — every brain_serving mv_* so the serving tier reflects the fresh Iceberg Gold.
+  # 6. mv_* views (ensure) — idempotent CREATE OR REPLACE of every brain_serving Trino view so the serving
+  #    tier exposes the fresh Iceberg Gold. Views always reflect the latest snapshot; no refresh needed.
   refresh_serving_mvs
 
   cycle_end=$(now_ms)

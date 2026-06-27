@@ -56,8 +56,10 @@ function touch(seq: number, channel: string, extra: Partial<FakeTouch> = {}): Fa
 }
 
 /**
- * A fake SilverPool. `touches` are returned by the silver_touchpoint read (via getConnection); the
- * read-back queries (saved credits / clawed-back total) are served from the serving MV by SQL marker.
+ * A fake SilverPool. Brain V4: SilverPool is the Trino query PORT — a single stateless
+ * `query` that returns the row array directly (no getConnection / session var). The
+ * silver_touchpoint read and the serving-MV read-backs (saved credits / clawed-back
+ * total) are all served from `query` by SQL marker.
  * RETIRED-CONTRACT GUARD: an INSERT is a hard test failure (the write path must stay retired).
  */
 class FakePool {
@@ -70,39 +72,26 @@ class FakePool {
     this.touches = t;
   }
 
-  // srPool.query — the serving-MV read-backs ONLY; an INSERT must never happen (retired write path).
-  async query(sql: string): Promise<[unknown, unknown]> {
+  // srPool.query (Trino) — silver_touchpoint read + serving-MV read-backs. An INSERT must
+  // never happen (retired write path — Spark is the sole producer).
+  async query<T = Record<string, unknown>>(sql: string): Promise<T[]> {
     if (sql.trimStart().toUpperCase().startsWith('INSERT')) {
       this.insertAttempts += 1;
       throw new Error('RETIRED: AttributionCreditWriter must NOT issue an INSERT (Spark is the sole producer)');
     }
-    // readSavedCredits — SELECT ... row_kind = 'credit'  (now from brain_serving.mv_gold_attribution_credit)
+    // silver_touchpoint — the journey read the writer folds attribution from.
+    if (sql.includes('silver_touchpoint')) {
+      return this.touches as unknown as T[];
+    }
+    // readSavedCredits — SELECT ... row_kind = 'credit'  (from brain_serving.mv_gold_attribution_credit)
     if (sql.includes("row_kind = 'credit'")) {
-      return [this.savedCredits.map(savedToStoreRow), undefined];
+      return this.savedCredits.map(savedToStoreRow) as T[];
     }
     // readClawedBackTotal — SUM(...) ... row_kind = 'clawback'  (store holds it negative)
     if (sql.includes("row_kind = 'clawback'")) {
-      return [[{ total: (-this.clawedBackTotalMinor).toString() }], undefined];
+      return [{ total: (-this.clawedBackTotalMinor).toString() }] as T[];
     }
     throw new Error(`FakePool.query: unhandled SQL: ${sql.slice(0, 80)}`);
-  }
-
-  // srPool.getConnection — used by withSilverBrand (SET session var + silver_touchpoint read).
-  async getConnection(): Promise<{
-    query(sql: string, params?: unknown[]): Promise<[unknown, unknown]>;
-    release(): void;
-  }> {
-    const self = this;
-    return {
-      async query(sql: string): Promise<[unknown, unknown]> {
-        if (sql.startsWith('SET ')) return [{}, undefined];
-        if (sql.includes('silver_touchpoint')) return [self.touches, undefined];
-        throw new Error(`FakeConn.query: unhandled SQL: ${sql.slice(0, 80)}`);
-      },
-      release() {
-        /* no-op */
-      },
-    };
   }
 }
 

@@ -10,8 +10,8 @@
 #
 # Each job is an idempotent MERGE on its model PK (replay-safe). Requires the compose `lakehouse` profile
 # (iceberg-rest + minio) up; Bronze (rest.brain_bronze.collector_events) populated by the Bronze sink.
-# silver_touchpoint also reads the StarRocks brain_ops.silver_journey_stitch export over the MySQL wire
-# (the same cross-catalog stitch SoR the dbt model reads) → the MySQL JDBC driver is on the classpath.
+# silver_touchpoint also reads the PG ops.silver_journey_stitch export over PG JDBC (brain_ops now lives
+# in PG schema `ops`, PG operational-only store) → the PostgreSQL JDBC driver is on the classpath.
 #
 # Usage:  db/iceberg/spark/silver/run-silver-touchpoint-sessions.sh
 #         MODEL=silver_touchpoint db/iceberg/spark/silver/run-silver-touchpoint-sessions.sh   # one model
@@ -20,19 +20,19 @@ set -euo pipefail
 
 SPARK_IMAGE="${SPARK_IMAGE:-apache/spark:3.5.3}"
 ICEBERG_VERSION="${ICEBERG_VERSION:-1.9.2}"
-# StarRocks speaks the MySQL wire protocol — the MySQL Connector/J driver reads silver_journey_stitch.
-MYSQL_JDBC_VERSION="${MYSQL_JDBC_VERSION:-8.4.0}"
+# The PostgreSQL JDBC driver reads ops.silver_journey_stitch (brain_ops moved to PG schema `ops`).
+PG_JDBC_VERSION="${PG_JDBC_VERSION:-42.7.4}"
 SCALA="2.12"
-# Join Redpanda's network namespace so service-name DNS (iceberg-rest, minio, starrocks) resolves — the
+# Join Redpanda's network namespace so service-name DNS (iceberg-rest, minio, postgres) resolves — the
 # same netns trick the other Spark run scripts use.
 REDPANDA_CONTAINER="${REDPANDA_CONTAINER:-brainv3-redpanda-1}"
 SILVER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SPARK_DIR="$(cd "${SILVER_DIR}/.." && pwd)"   # holds iceberg_base.py (shared --py-files)
 
-# Iceberg runtime + AWS bundle + MySQL JDBC (the cross-catalog stitch read).
+# Iceberg runtime + AWS bundle + PostgreSQL JDBC (the PG ops.silver_journey_stitch stitch read).
 PACKAGES="org.apache.iceberg:iceberg-spark-runtime-3.5_${SCALA}:${ICEBERG_VERSION}"
 PACKAGES="${PACKAGES},org.apache.iceberg:iceberg-aws-bundle:${ICEBERG_VERSION}"
-PACKAGES="${PACKAGES},com.mysql:mysql-connector-j:${MYSQL_JDBC_VERSION}"
+PACKAGES="${PACKAGES},org.postgresql:postgresql:${PG_JDBC_VERSION}"
 
 # Default: both in dependency order. Override with MODEL=<one> to run a single job.
 MODELS="${MODEL:-silver_touchpoint silver_sessions}"
@@ -54,9 +54,9 @@ for model in ${MODELS}; do
     -e ICEBERG_WAREHOUSE="${ICEBERG_WAREHOUSE:-s3://brain-bronze/}" \
     -e BRONZE_NAMESPACE="${BRONZE_NAMESPACE:-brain_bronze}" \
     -e SILVER_NAMESPACE="${SILVER_NAMESPACE:-brain_silver}" \
-    -e SILVER_SR_JDBC_URL="${SILVER_SR_JDBC_URL:-jdbc:mysql://starrocks:9030}" \
-    -e SILVER_SR_USER="${SILVER_SR_USER:-root}" \
-    -e SILVER_SR_PASSWORD="${SILVER_SR_PASSWORD:-}" \
+    -e SILVER_PG_JDBC_URL="${SILVER_PG_JDBC_URL:-jdbc:postgresql://postgres:5432/brain}" \
+    -e SILVER_PG_USER="${SILVER_PG_USER:-brain}" \
+    -e SILVER_PG_PASSWORD="${SILVER_PG_PASSWORD:-brain}" \
     -e MURMUR_HASH3_SEED="${MURMUR_HASH3_SEED:-104729}" \
     -e S3_ENDPOINT="${S3_ENDPOINT:-http://minio:9000}" \
     -e AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:-brain}" \

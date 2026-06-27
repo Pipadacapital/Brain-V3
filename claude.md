@@ -19,14 +19,14 @@ Registration -> Verification -> Organization -> Brand -> Region -> Team -> Shopi
 - Confidence before decisions.
 
 ## Data platform (Brain V4 — OFFICIAL)
-- Compute is Spark-on-Iceberg, and Spark is the SOLE compute. dbt is REMOVED — never invoke `dbt`, and the dbt-internal StarRocks DBs `brain_gold` / `brain_silver` are RETIRED (dropped: `db/starrocks/teardown/drop_dbt_internal_dbs.sql`).
+- Compute is Spark-on-Iceberg, and Spark is the SOLE compute. dbt is REMOVED — never invoke `dbt`; StarRocks is also REMOVED (serving moved to Trino). The dbt-internal DBs `brain_gold` / `brain_silver` are RETIRED (dropped: `db/starrocks/teardown/drop_dbt_internal_dbs.sql`).
 - The medallion is Iceberg: Bronze/Silver/Gold live in the external Iceberg catalogs `brain_{bronze,silver,gold}_local` (rest catalog + MinIO/S3). Iceberg is the system of record.
-- Serving is StarRocks async materialized views: the app/BFF/metric-engine read ONLY `brain_serving.mv_*` (over Iceberg) — never a bare `brain_gold.`/`brain_silver.` DB. Spark jobs may read the rest-Iceberg catalogs directly.
-- `brain_ops` holds StarRocks-native operational state (identity/journey export, ML inference log, stitch shim, isolation-fuzz fixture). PG is operational-only.
+- Serving is Trino-over-Iceberg fronted by a Redis analytics cache: the app/BFF/metric-engine read ONLY the Trino views `brain_serving.mv_*` (which resolve to `iceberg.brain_serving.*` — thin projections over the Iceberg Gold/Silver marts) — never StarRocks, never a bare `brain_gold.`/`brain_silver.` DB. Spark jobs may read the rest-Iceberg catalogs directly.
+- Operational state is PostgreSQL — the `ops` schema (former `brain_ops`; `brain_ops`-on-StarRocks is GONE): identity/journey export, ML inference log, stitch shim, isolation-fuzz fixture. PG is operational-only.
 - Features are RUNTIME — there is NO permanent feature-precompute table (no `feature_customer_daily`, no `brain_feature`; the latter is dead, torn down via `db/starrocks/teardown/drop_dead_feature_db.sql`). Fold features from the Silver spine at run time.
-- Money is bigint minor units + a sibling `currency_code` (never blended, never a float). Tenant isolation is `brand_id`-first on every row/event/key, plus the StarRocks `${BRAND_PREDICATE}` seam.
+- Money is bigint minor units + a sibling `currency_code` (never blended, never a float). Tenant isolation is `brand_id`-first on every row/event/key, plus the `${BRAND_PREDICATE}` seam — which now injects the brand predicate (`brand_id = ?`) into every Trino serving read.
 - Refresh the medallion with `tools/dev/v4-refresh-loop.sh` (Spark Silver→Gold→mv SYNC refresh). The Spark jobs are `db/iceberg/spark/{silver,gold}/*.py` + their run scripts.
-- These naming/architecture invariants are CI-enforced by `tools/lint/v4-naming-guard.sh` (blocking gate in `.github/workflows/pr.yml`): it fails on retired-DB refs, any dbt invocation, feature precompute, and non-`mv_*`/non-Iceberg Gold/Silver reads.
+- These naming/architecture invariants are CI-enforced by `tools/lint/v4-naming-guard.sh` (blocking gate in `.github/workflows/pr.yml`): it forbids retired-DB refs, any dbt invocation, feature precompute, and NEW StarRocks coupling in serving app code (mysql2 / `:9030` / `STARROCKS_*`), while ALLOWING Trino serving over the iceberg catalog (`iceberg.brain_{gold,silver,serving}.*`).
 
 ## Operating standards
 - Prefer small, reversible, auditable changes.

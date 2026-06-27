@@ -2,7 +2,7 @@
 silver_touchpoint.py — Brain V4 Phase 1 (Spark Silver, dual-run). GROUP=touchpoint+sessions.
 
 Reimplements the dbt model db/dbt/models/marts/silver_touchpoint.sql as a Spark job that READS
-Iceberg Bronze (rest.brain_bronze.collector_events) + the StarRocks brain_ops.silver_journey_stitch
+Iceberg Bronze (rest.brain_bronze.collector_events) + the PG ops.silver_journey_stitch
 export, and WRITES Iceberg brain_silver.silver_touchpoint, reproducing the dbt SQL transform EXACTLY.
 This runs BESIDE the live dbt→StarRocks brain_silver (dual-run, NON-BREAKING). It repoints no reader,
 changes no dbt model, changes no app code.
@@ -34,10 +34,10 @@ PARITY-CRITICAL DETAIL — session_key:
   seed 104729). Spark's built-in hash()/xxhash64 do NOT match it, so we register a UDF that computes the
   exact same algorithm + seed and returns a signed 32-bit int → byte-identical session_key to the dbt SoR.
 
-The cart-stitch map (silver_journey_stitch) is read from the SAME StarRocks export the dbt model reads,
-over the MySQL wire (cross-catalog read, the same posture dbt uses) — not a second source.
+The cart-stitch map (silver_journey_stitch) is read from PG ops.silver_journey_stitch (brain_ops moved
+to the PG `ops` schema — PG is the operational-only store) over PG JDBC — not a second source.
 
-Run via run-silver-touchpoint.sh (Iceberg + MySQL JDBC packages).
+Run via run-silver-touchpoint-sessions.sh (Iceberg + PG JDBC packages).
 """
 from __future__ import annotations  # Python 3.8 on the Spark image.
 
@@ -65,10 +65,11 @@ _SILVER_NS = os.environ.get("SILVER_NAMESPACE", "brain_silver")
 BRONZE_TABLE = f"{CATALOG}.{_SILVER_NS}.silver_collector_event"
 TABLE_NAME = "silver_touchpoint"
 
-# CURRENT-side cart-stitch read (same JDBC posture dbt uses cross-catalog; superuser RLS-bypass ETL read).
-SR_JDBC_URL = os.environ.get("SILVER_SR_JDBC_URL", "jdbc:mysql://starrocks:9030")
-SR_USER = os.environ.get("SILVER_SR_USER", "root")
-SR_PASSWORD = os.environ.get("SILVER_SR_PASSWORD", "")
+# CURRENT-side cart-stitch read — over PG JDBC now (brain_ops moved to PG schema `ops`; PG is the
+# operational-only store). Superuser RLS-bypass ETL read.
+PG_JDBC_URL = os.environ.get("SILVER_PG_JDBC_URL", "jdbc:postgresql://postgres:5432/brain")
+PG_USER = os.environ.get("SILVER_PG_USER", "brain")
+PG_PASSWORD = os.environ.get("SILVER_PG_PASSWORD", "brain")
 
 # The exact journey/behavioral event set stg_touchpoint_events.sql admits from Bronze (verbatim).
 TOUCHPOINT_EVENT_TYPES = (
@@ -176,24 +177,23 @@ def _register_murmur_udf(spark: SparkSession) -> None:
 
 
 def _read_stitch(spark: SparkSession):
-    """Deterministic cart-stitch map from the StarRocks export (brain_ops.silver_journey_stitch).
+    """Deterministic cart-stitch map from the PG export (ops.silver_journey_stitch).
 
-    silver_touchpoint.sql LEFT JOINs brain_ops.silver_journey_stitch (the journey-stitch export from
-    PG, read as the StarRocks projection — the lakehouse no longer reaches into PG for the journey mart).
-    We read the SAME StarRocks table over the MySQL wire so the dual-run join is against the identical
-    stitch SoR. Returns None when the export table is absent/empty-catalog (→ all stitch NULL, dbt parity
-    when the stitch map has 0 rows, which is the current local state)."""
+    silver_touchpoint.sql LEFT JOINs the journey-stitch export. brain_ops moved to the PG `ops` schema
+    (PG operational-only store), so we read ops.silver_journey_stitch directly over PG JDBC — the join is
+    against the identical stitch SoR. Returns None when the export table is absent/empty (→ all stitch
+    NULL, dbt parity when the stitch map has 0 rows, which is the current local state)."""
     query = (
         "(SELECT brand_id, stitched_anon_id, order_id, brain_id AS stitched_brain_id, created_at "
-        "FROM brain_ops.silver_journey_stitch) s"
+        "FROM ops.silver_journey_stitch) s"
     )
     try:
         return (
             spark.read.format("jdbc")
-            .option("url", SR_JDBC_URL)
-            .option("user", SR_USER)
-            .option("password", SR_PASSWORD)
-            .option("driver", "com.mysql.cj.jdbc.Driver")
+            .option("url", PG_JDBC_URL)
+            .option("user", PG_USER)
+            .option("password", PG_PASSWORD)
+            .option("driver", "org.postgresql.Driver")
             .option("dbtable", query)
             .load()
         )

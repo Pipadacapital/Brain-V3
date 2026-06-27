@@ -14,7 +14,7 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import type { DbPool } from '@brain/db';
 import type { Pool as PgPool } from 'pg';
-import type { SilverPool } from '@brain/metric-engine';
+import type { SilverPool, ServingCacheReader } from '@brain/metric-engine';
 import type {
   AuthService,
   OnboardingService,
@@ -61,6 +61,12 @@ export interface BffDeps {
   rawPool?: PgPool;
   onboardingService?: OnboardingService;
   srPool?: SilverPool;
+  /**
+   * Brain V4 serving cache (Redis-fronted hot serving reads over the Trino seam). Optional:
+   * when absent, the metric routes read Trino directly (the safe-OFF fallback). Wraps a
+   * known-metric read as getOrSet(buildCacheKey(brandId, metricId, paramsHash, servingVersion)).
+   */
+  servingCache?: ServingCacheReader;
   vaultService?: ContactPiiVaultService;
   identityReader?: IdentityReader;
   /**

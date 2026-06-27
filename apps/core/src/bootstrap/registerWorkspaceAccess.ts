@@ -10,7 +10,7 @@
 import { type FastifyInstance } from 'fastify';
 import type { DbPool } from '@brain/db';
 import type pg from 'pg';
-import type { SilverPool } from '@brain/metric-engine';
+import type { SilverPool, ServingCacheReader } from '@brain/metric-engine';
 import type { AuditWriter } from '@brain/audit';
 
 import type { AuthService } from '../modules/workspace-access/internal/application/auth.service.js';
@@ -36,6 +36,8 @@ export interface RegisterWorkspaceAccessDeps {
   pool: DbPool;
   rawPgPool: pg.Pool;
   srPool: SilverPool;
+  /** Brain V4 serving cache (Redis-fronted hot serving reads over the Trino seam). */
+  servingCache: ServingCacheReader;
   rateLimiter: RateLimiter;
   auditWriter: AuditWriter;
   authService: AuthService;
@@ -56,6 +58,7 @@ export function registerWorkspaceAccess(app: FastifyInstance, deps: RegisterWork
     pool,
     rawPgPool,
     srPool,
+    servingCache,
     rateLimiter,
     auditWriter,
     authService,
@@ -73,7 +76,7 @@ export function registerWorkspaceAccess(app: FastifyInstance, deps: RegisterWork
   registerWorkspaceRoutes(app, authService, workspaceService);
   registerBrandRoutes(app, authService, brandService);
   registerMemberRoutes(app, authService, inviteService, rawPgPool);
-  registerBffRoutes(app, authService, pool, cookieSecret, rateLimiter, rawPgPool, onboardingService, srPool, piiVaultService, identityReader, getCoreSaltHex);
+  registerBffRoutes(app, authService, pool, cookieSecret, rateLimiter, rawPgPool, onboardingService, srPool, piiVaultService, identityReader, getCoreSaltHex, servingCache);
 
   // D13: consent write + can_contact() gate-probe routes (brand-scoped, session-guarded).
   registerConsentRoutes(app, {

@@ -30,9 +30,15 @@
  * @see packages/metric-engine/src/query-route.ts — routing rules (known metrics → StarRocks)
  */
 
-// Re-export the ONE shared sentinel so callers import from one place.
-export { BRAND_PREDICATE } from './silver-deps.js';
-import { BRAND_PREDICATE } from './silver-deps.js';
+/**
+ * The ONE shared sentinel the seam substitutes with the brand predicate.
+ *
+ * Brain V4 serving runs over TRINO (Iceberg), so this sentinel now LIVES here —
+ * the Trino seam is the canonical owner. silver-deps.ts re-exports it so the ~41
+ * caller files that `import { BRAND_PREDICATE } from './silver-deps.js'` are
+ * unchanged. Both seams (withSilverBrand, withTrinoBrand) substitute it identically.
+ */
+export const BRAND_PREDICATE = '${BRAND_PREDICATE}';
 
 // ── Structural interfaces (driver-agnostic PORT) ──────────────────────────────
 

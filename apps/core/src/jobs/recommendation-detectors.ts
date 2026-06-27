@@ -12,10 +12,9 @@
  * (doc 06 §"Argo jobs → Core"). NOT a long-running service.
  */
 import { randomUUID } from 'node:crypto';
-import mysql from 'mysql2/promise';
 import { createPool, type DbPool, type QueryContext } from '@brain/db';
 import { loadCoreConfig } from '@brain/config';
-import type { SilverPool } from '@brain/metric-engine';
+import { createTrinoPool, type SilverPool } from '@brain/metric-engine';
 import { createLogger } from '@brain/observability';
 import { generateRecommendations, measureRecommendationOutcomes } from '../modules/recommendation/index.js';
 
@@ -26,16 +25,20 @@ const DB_URL =
   process.env['DATABASE_URL'] ??
   'postgres://brain_app:brain_app@localhost:5432/brain';
 
-/** StarRocks Silver/Gold pool — detector REVENUE signals read the lakehouse ledger (Epic 1 / B). */
+/**
+ * Silver/Gold SERVING pool — Brain V4 reads the lakehouse over TRINO (Iceberg); the detector
+ * REVENUE signals read the brain_serving.mv_* views (Epic 1 / B). createTrinoPool is the
+ * stateless HTTP adapter — catalog='iceberg' makes the two-part `brain_serving.mv_*` names
+ * resolve to the Trino serving views over Iceberg Gold/Silver. No connection pool to tear down.
+ */
 function createSrPool(): SilverPool {
   const cfg = loadCoreConfig();
-  return mysql.createPool({
-    host: cfg.STARROCKS_HOST,
-    port: cfg.STARROCKS_PORT,
-    user: cfg.STARROCKS_ANALYTICS_USER,
-    password: cfg.STARROCKS_ANALYTICS_PASSWORD,
-    connectionLimit: 3,
-  }) as unknown as SilverPool;
+  return createTrinoPool({
+    baseUrl: `http://${cfg.TRINO_HOST}:${cfg.TRINO_PORT}`,
+    catalog: 'iceberg',
+    schema: 'brain_serving',
+    user: 'brain_core',
+  });
 }
 
 export interface RecommendationJobResult {
@@ -50,7 +53,6 @@ export async function runRecommendationDetectors(deps?: { pool?: DbPool; srPool?
   const pool = deps?.pool ?? (await createPool({ connectionString: DB_URL }));
   const ownsPool = !deps?.pool;
   const srPool = deps?.srPool ?? createSrPool();
-  const ownsSrPool = !deps?.srPool;
   let brands = 0;
   let raised = 0;
   let expired = 0;
@@ -92,11 +94,7 @@ export async function runRecommendationDetectors(deps?: { pool?: DbPool; srPool?
     return { brands, raised, expired, measured, errors };
   } finally {
     if (ownsPool) await pool.end();
-    if (ownsSrPool)
-      await (srPool as unknown as mysql.Pool)
-        .end()
-        // Best-effort pool teardown — log at debug rather than swallow silently. // intentional
-        .catch((err) => log.debug('recommendation-detectors: StarRocks pool end failed', { err }));
+    // srPool is the stateless Trino HTTP adapter (createTrinoPool) — no connection pool to tear down.
   }
 }
 

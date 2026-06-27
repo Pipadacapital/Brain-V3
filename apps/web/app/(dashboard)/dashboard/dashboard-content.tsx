@@ -16,12 +16,10 @@
  * Honest empty: skeleton → empty-state → data. Never fabricated 0.
  */
 
-import { BrandSummaryCard } from '@/components/dashboard/brand-summary-card';
 import { FoundationHealthCard } from '@/components/dashboard/foundation-health-card';
 import { TopActionsCard } from '@/components/dashboard/top-actions-card';
 import { ConnectionStatusCard } from '@/components/dashboard/connection-status-card';
 import { LiveIndicator } from '@/components/dashboard/live-indicator';
-import { OnboardingProgressCard } from '@/components/dashboard/onboarding-progress-card';
 import { KpiTile } from '@/components/analytics/kpi-tile';
 import { TrendChart } from '@/components/analytics/trend-chart';
 import { RecognitionDonut } from '@/components/analytics/recognition-donut';
@@ -258,11 +256,6 @@ export function DashboardContent() {
       <ExecutiveMetricsRow />
       <TrendSection />
       <ActivitySection />
-
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        <BrandSummaryCard />
-        <OnboardingProgressCard />
-      </div>
     </div>
   );
 }

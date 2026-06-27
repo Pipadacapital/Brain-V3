@@ -12,6 +12,11 @@
  * links and writes the stitch:  raw anon (silver) --hash--> identity_link(anon_id)→brain_id --∩-->
  * gold_revenue_ledger(order→brain_id, Bronze-sourced)  ⇒  (order_id, stitched_anon_id, brain_id).
  *
+ * STORE SPLIT (V4 StarRocks REMOVAL, migration 0116): the anon source (mv_silver_touchpoint) + the
+ * order→brain_id ledger (mv_gold_revenue_ledger) are read from the SERVING tier over TRINO (srPool);
+ * the anon→brain_id identity link projection (ops.silver_identity_link) is read from PG (pool) — the
+ * operational state moved to the PG `ops` schema.
+ *
  * DETERMINISTIC, NEVER GUESSED (Brain rule: journey-before-attribution, never guess attribution):
  *   - The anon↔customer link comes ONLY from identity resolution (a real `identify`/order signal),
  *     never from time-proximity heuristics.
@@ -26,7 +31,7 @@
  * Usage: node dist/jobs/journey-stitch-from-identity.js  (Argo cron, after identity + finalization).
  */
 import { Pool } from 'pg';
-import mysql from 'mysql2/promise';
+import { createTrinoPool } from '@brain/metric-engine';
 import { hashIdentifier, normalizeIdentifier } from '@brain/identity-core';
 import { createSaltProvider, type SaltProvider } from '../infrastructure/secrets/SaltProvider.js';
 import { StitchMapWriter } from '../infrastructure/pg/StitchMapWriter.js';
@@ -48,44 +53,31 @@ interface SilverPoolLike {
   end: () => Promise<void>;
 }
 
-/** Brand-scoped PG read: BEGIN → set brand GUC (RLS) → query → COMMIT. */
-async function readScoped<T>(pool: Pool, brandId: string, sql: string, params: unknown[]): Promise<T[]> {
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    await client.query("SELECT set_config('app.current_brand_id', $1, true)", [brandId]);
-    const res = await client.query(sql, params);
-    await client.query('COMMIT');
-    return res.rows as T[];
-  } catch (err) {
-    await client.query('ROLLBACK').catch(() => undefined);
-    throw err;
-  } finally {
-    client.release();
-  }
-}
 
 export async function runJourneyStitchFromIdentity(deps?: {
   pool?: Pool;
   srPool?: SilverPoolLike;
   saltProvider?: SaltProvider;
 }): Promise<StitchFromIdentityResult> {
-  const srHost = cfg.STARROCKS_HOST;
+  const srHost = cfg.TRINO_HOST;
   if (!deps?.srPool && srHost === undefined) {
-    log.warn('journey-stitch-from-identity skipped — STARROCKS_HOST unset (no Silver tier to read anons)');
+    log.warn('journey-stitch-from-identity skipped — TRINO_HOST unset (no serving tier to read anons)');
     return { brands: 0, stitched: 0, ambiguousSkipped: 0, errors: 0 };
   }
 
   const pool = deps?.pool ?? new Pool({ connectionString: DB_URL, max: 3 });
+  // Serving reads over TRINO (Brain V4 — StarRocks removed). The Trino HTTP adapter exposes only
+  // .query(sql, params) → rows[]; wrap it to the legacy [rows, fields] tuple shape so the call sites
+  // (and any injected srPool mock) stay unchanged. Stateless REST → end() is a no-op.
   const srPool =
     deps?.srPool ??
-    (mysql.createPool({
-      host: srHost,
-      port: cfg.STARROCKS_PORT,
-      user: cfg.STARROCKS_ANALYTICS_USER,
-      password: cfg.STARROCKS_ANALYTICS_PASSWORD,
-      connectionLimit: 3,
-    }) as unknown as SilverPoolLike);
+    ((): SilverPoolLike => {
+      const trino = createTrinoPool({ baseUrl: `http://${srHost}:${cfg.TRINO_PORT}`, catalog: 'iceberg', schema: 'brain_serving', user: 'brain_core' });
+      return {
+        query: async (sql, params) => [await trino.query(sql, params), undefined],
+        end: async () => undefined,
+      };
+    })();
   const saltProvider = deps?.saltProvider ?? createSaltProvider(DB_URL);
   const stitchWriter = new StitchMapWriter(pool);
   const ownsPool = !deps?.pool;
@@ -102,7 +94,7 @@ export async function runJourneyStitchFromIdentity(deps?: {
       try {
         const saltHex = await saltProvider.saltHexForBrand(brand.id);
 
-        // 1. Distinct raw journey anons from Silver (brand-filtered; StarRocks).
+        // 1. Distinct raw journey anons from the Silver serving view (brand-filtered; Trino/Iceberg).
         const [anonRows] = await srPool.query(
           `SELECT DISTINCT brain_anon_id FROM brain_serving.mv_silver_touchpoint
             WHERE brand_id = ? AND brain_anon_id IS NOT NULL AND brain_anon_id <> ''`,
@@ -120,19 +112,21 @@ export async function runJourneyStitchFromIdentity(deps?: {
 
         // 3. anon hash → brain_id via the identity graph projection (active anon_id links only).
         // MEDALLION REALIGNMENT (Epic 3 / ADR-0004): identity is the Neo4j SoR; the active hash→brain_id
-        // edges are materialized into brain_ops.silver_identity_link (StarRocks) by the identity-export
-        // job — read it via srPool instead of the dropped PG identity_link.
+        // edges are materialized into ops.silver_identity_link by the identity-export job. V4 (StarRocks
+        // REMOVAL, migration 0116) moved that projection into the PG `ops` schema — read it from the PG
+        // pool (not srPool). The anon source (silver_touchpoint) + ledger reads stay on StarRocks.
         const anonHashes = [...hashToRaw.keys()];
         let linkRows: Array<{ identifier_value: string; brain_id: string }> = [];
         if (anonHashes.length > 0) {
-          const [rows] = await srPool.query(
-            `SELECT identifier_value, brain_id
-               FROM brain_ops.silver_identity_link
-              WHERE brand_id = ? AND identifier_type = 'anon_id' AND is_active = true
-                AND brain_id IS NOT NULL AND identifier_value IN (${anonHashes.map(() => '?').join(',')})`,
+          const placeholders = anonHashes.map((_, i) => `$${i + 2}`).join(',');
+          const res = await pool.query<{ identifier_value: string; brain_id: string }>(
+            `SELECT identifier_value, brain_id::text AS brain_id
+               FROM ops.silver_identity_link
+              WHERE brand_id = $1 AND identifier_type = 'anon_id' AND is_active = true
+                AND brain_id IS NOT NULL AND identifier_value IN (${placeholders})`,
             [brand.id, ...anonHashes],
           );
-          linkRows = rows as Array<{ identifier_value: string; brain_id: string }>;
+          linkRows = res.rows;
         }
 
         // 4. brain_id → anon(s). UNAMBIGUOUS-ONLY: keep brain_ids that map to exactly one anon.
@@ -150,8 +144,8 @@ export async function runJourneyStitchFromIdentity(deps?: {
         if (brainToAnon.size === 0) continue;
 
         // 5. brain_id → orders, then upsert the stitch (order_id, raw anon, brain_id).
-        // MEDALLION REALIGNMENT (Epic 1): read orders from the lakehouse (brain_gold.gold_revenue_ledger,
-        // Bronze-sourced) via the StarRocks pool — NOT the PG ledger.
+        // MEDALLION REALIGNMENT (Epic 1): read orders from the lakehouse Gold ledger
+        // (brain_serving.mv_gold_revenue_ledger, Bronze-sourced) via the Trino serving pool — NOT the PG ledger.
         const brainIds = [...brainToAnon.keys()];
         const inPlaceholders = brainIds.map(() => '?').join(',');
         const [orderRowsRaw] = await srPool.query(
@@ -199,7 +193,7 @@ export async function runJourneyStitchFromIdentity(deps?: {
 
 /**
  * Process exit code for a completed run. Non-zero ONLY on a SYSTEMIC failure — every attempted brand
- * failed (errors === brands, brands > 0), signalling an infra problem (KMS/StarRocks/DB down) rather
+ * failed (errors === brands, brands > 0), signalling an infra problem (KMS/Trino/DB down) rather
  * than isolated per-tenant data states. A single brand with unprovisioned/stale crypto must NOT fail
  * the whole cross-brand batch (the poison-pill that used to fail the v4-refresh step). Pure + exported
  * so the policy is unit-tested without spawning a process.

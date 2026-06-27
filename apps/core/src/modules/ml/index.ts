@@ -9,8 +9,9 @@
  *                       model of the same (brand,name) in ONE txn (partial-unique invariant).
  *   - serveCustomerScore — read the deterministic RFM/churn score from Gold, resolve the production
  *                       model (ml.model_registry, PG), append the served inference to the OPERATIONAL log
- *                       (StarRocks brain_ops.ops_ml_prediction_log — MV-2/DB-2 → V4 Phase 5; the PG
- *                       ml.prediction_log was dropped in 0103), return {model, score}.
+ *                       (PG ops.ops_ml_prediction_log — V4 StarRocks REMOVAL relocated brain_ops → the PG
+ *                       `ops` schema in migration 0116; the old ml.prediction_log was dropped in 0103),
+ *                       return {model, score}.
  */
 export { listModels } from './internal/application/queries/list-models.js';
 export type { ModelDto, ListModelsDeps } from './internal/application/queries/list-models.js';

@@ -17,7 +17,6 @@
  */
 import { Kafka } from 'kafkajs';
 import { Pool, Pool as PgPool } from 'pg';
-import mysql from 'mysql2/promise';
 import { assertRoleEnforcesRls } from '@brain/db';
 import { DbAuditWriter, type AuditDbClient } from '@brain/audit';
 import {
@@ -32,13 +31,13 @@ import { Neo4jIdentityRepository } from './infrastructure/neo4j/Neo4jIdentityRep
 import { createIdempotentProducer } from './infrastructure/kafka/idempotent-producer.js';
 import { KafkaIdentityEventPublisher } from './infrastructure/kafka/KafkaIdentityEventPublisher.js';
 import { IdentityChangeRecomputeConsumer } from './interfaces/consumers/IdentityChangeRecomputeConsumer.js';
-import { StarRocksScopedRecomputeRepository } from './infrastructure/starrocks/ScopedRecomputeRepository.js';
+import { PgScopedRecomputeRepository } from './infrastructure/pg/ScopedRecomputeRepository.js';
 import { CacheInvalidatePublisher } from './infrastructure/kafka/CacheInvalidatePublisher.js';
 import { AnalyticsCacheInvalidateConsumer } from './interfaces/consumers/AnalyticsCacheInvalidateConsumer.js';
 import { Redis } from 'ioredis';
 import { createSaltProvider } from './infrastructure/secrets/SaltProvider.js';
 import { initObservability, initSentry, createLogger } from '@brain/observability';
-import { requireEnvInProd, loadStreamWorkerConfig } from '@brain/config';
+import { loadStreamWorkerConfig } from '@brain/config';
 
 /** Structured logger for stream-worker lifecycle/error logs. */
 const log = createLogger({ serviceName: 'stream-worker' });
@@ -266,8 +265,8 @@ export async function main(): Promise<void> {
   // ── Identity-change → scoped-Gold-recompute consumer (V4 / §H) ──────────────
   // Listens to identity.{merged,suppressed}.v1 — the topics KafkaIdentityEventPublisher
   // emits to. On merge/suppress:
-  //   (a) FAIL-CLOSED: upserts a ScopedRecompute row to brain_ops.scoped_recompute_request
-  //       (StarRocks PRIMARY KEY table — idempotent on retry via same request_id).
+  //   (a) FAIL-CLOSED: upserts a ScopedRecompute row to ops.scoped_recompute_request
+  //       (PG ops schema — idempotent on retry via ON CONFLICT (brand_id, request_id) DO UPDATE).
   //   (b) FAIL-OPEN: publishes cache.invalidate.v1 per affected customer-grained Gold mart
   //       so the serving layer can bust its Redis cache immediately.
   // The v4-refresh-loop.sh SCOPED_RECOMPUTE=1 step drains these rows + issues targeted MV
@@ -276,18 +275,12 @@ export async function main(): Promise<void> {
   // Shares the SAME identityEventEnvPrefix + identityEventProducer as KafkaIdentityEventPublisher
   // so the consume topics EXACTLY match the produce topics (NODE_ENV-driven prefix).
   //
-  // brain_ops pool: mysql2/promise, StarRocks mysql-protocol port 9030 (root user, same creds
-  // as identity-export/run.ts). Defaults to 127.0.0.1 when STARROCKS_HOST is absent (dev without
-  // StarRocks — the upsert will fail → consumer retries → DLQ after 5 = correct fail-closed).
+  // ops pool: pg, the worker's brain_app dbUrl (V4 StarRocks REMOVAL — ops moved to the PG
+  // `ops` schema, migration 0116). If PG is unreachable the upsert fails → consumer retries → DLQ
+  // after 5 = correct fail-closed.
   const identityRecomputeGroupId = cfg.IDENTITY_CHANGE_RECOMPUTE_CONSUMER_GROUP_ID;
-  const srOpsPool = mysql.createPool({
-    host:            cfg.STARROCKS_HOST ?? '127.0.0.1',
-    port:            cfg.STARROCKS_QUERY_PORT,
-    user:            cfg.STARROCKS_ROOT_USER,
-    password:        cfg.STARROCKS_ROOT_PASSWORD,
-    connectionLimit: 3,
-  });
-  const scopedRecomputeRepo = new StarRocksScopedRecomputeRepository(srOpsPool);
+  const opsPool = new PgPool({ connectionString: dbUrl, max: 3 });
+  const scopedRecomputeRepo = new PgScopedRecomputeRepository(opsPool);
   // CacheInvalidatePublisher reuses identityEventProducer (already connected, idempotent EoS).
   const cacheInvalidatePublisher = new CacheInvalidatePublisher(
     identityEventProducer, identityEventEnvPrefix, log,
@@ -429,21 +422,19 @@ export async function main(): Promise<void> {
   // brain_app + per-brand GUC → append one dq_check_result row per (brand, category, target)
   // with a FROZEN letter grade. The freshness executor is the LIVE freshness-SLA monitor
   // (Phase-7 acceptance). schema_validity REUSES the existing DLQ/quarantine signal;
-  // reconciliation reads Bronze↔StarRocks(silver_order_state) deltas. MUST use brain_app
+  // reconciliation reads Bronze↔Trino(mv_silver_order_state) deltas. MUST use brain_app
   // (RLS enforced) — never superuser 'brain'. WIRED HERE: do not remove without updating
   // dq-checks.e2e.test.ts. Tier-0 deterministic (no model; $0/mo).
   const dqPool = new PgPool({ connectionString: dbUrl, max: 3 });
   const dqIntervalMs = cfg.DQ_CHECK_INTERVAL_MS;
-  // Silver (StarRocks) config — when absent, the Silver-tier checks emit an honest D row
-  // (never a false A+). Reuses the same brain_analytics SELECT-only credentials as core.
-  const dqSilverHost = cfg.STARROCKS_HOST;
+  // Silver/Gold serving config over TRINO (Brain V4 — StarRocks removed) — when TRINO_HOST is absent,
+  // the Silver-tier checks emit an honest D row (never a false A+).
+  const dqTrinoHost = cfg.TRINO_HOST;
   const dqSilver =
-    dqSilverHost !== undefined
+    dqTrinoHost !== undefined
       ? {
-          host: dqSilverHost,
-          port: cfg.STARROCKS_PORT,
-          user: cfg.STARROCKS_ANALYTICS_USER,
-          password: requireEnvInProd('STARROCKS_ANALYTICS_PASSWORD', 'brain_analytics_dev'),
+          baseUrl: `http://${dqTrinoHost}:${cfg.TRINO_PORT}`,
+          user: 'brain_core',
         }
       : undefined;
   const dqChecker = startDqChecks(dqPool, { intervalMs: dqIntervalMs, silver: dqSilver });
@@ -511,7 +502,7 @@ export async function main(): Promise<void> {
     await auditPool.end();
     await identityEventProducer.disconnect().catch(() => undefined);
     await cacheEvictionRedis.quit().catch(() => undefined);
-    await srOpsPool.end().catch(() => undefined);
+    await opsPool.end().catch(() => undefined);
     await identityRepo.end();
     await healthServer.close();
     // Flush buffered telemetry LAST so shutdown spans/metrics are exported (C1).
@@ -536,7 +527,7 @@ export async function main(): Promise<void> {
   // Subscribes to the SAME topics KafkaIdentityEventPublisher emits to (same env prefix).
   // Must start AFTER identityEventProducer is connected (it shares the producer for
   // cache.invalidate.v1 publishes). WIRED HERE: do NOT remove without verifying the
-  // scoped-recompute-loop integration test and the brain_ops.scoped_recompute_request drain.
+  // scoped-recompute-loop integration test and the ops.scoped_recompute_request drain.
   log.info(`starting identity-recompute consumer — topics=${identityRecomputeTopics.join(',')} group=${identityRecomputeGroupId}`);
   await identityRecomputeConsumer.start();
 

@@ -20,7 +20,7 @@ describe('requireEnvInProd', () => {
   });
 
   it('FAILS CLOSED in production when unset or empty — never the weak default', () => {
-    expect(() => requireEnvInProd('STARROCKS_ANALYTICS_PASSWORD', 'brain_analytics_dev', { NODE_ENV: 'production' }))
+    expect(() => requireEnvInProd('BRAIN_APP_DATABASE_URL', 'postgres://brain_app:brain_app@localhost:5432/brain', { NODE_ENV: 'production' }))
       .toThrow(/must be set in production/);
     expect(() => requireEnvInProd('X', 'devpw', { NODE_ENV: 'production', X: '' }))
       .toThrow(/must be set in production/);

@@ -159,10 +159,23 @@ export { credentialFieldsFor } from './credential-fields';
 
 const credentialFieldsFor = _credentialFieldsFor;
 
+// 1 brand = 1 storefront: pure helpers that mirror the backend exclusivity rule so the UI can
+// disable the other storefront tiles instead of letting the user hit a 409 STOREFRONT_ALREADY_CONNECTED.
+import { findConnectedStorefront, storefrontLockReason } from './storefront-exclusivity';
+
 /** Soft-gate reason copy for connecting a real store before email is verified. */
 const VERIFY_TO_CONNECT = 'Verify your email to connect a store';
 
-function ConnectorTile({ tile, readinessLock }: { tile: MarketplaceTile; readinessLock?: string | null }) {
+function ConnectorTile({
+  tile,
+  readinessLock,
+  connectedStorefront,
+}: {
+  tile: MarketplaceTile;
+  readinessLock?: string | null;
+  /** The brand's already-connected storefront tile (if any) — drives the 1-storefront lock. */
+  connectedStorefront?: MarketplaceTile | null;
+}) {
   const { mutate: connect, isPending: isConnecting } = useConnectConnector();
   const { mutate: disconnect, isPending: isDisconnecting } = useDisconnectConnector();
   const { mutate: activateAccount, isPending: isActivating } = useActivateAdAccount();
@@ -179,6 +192,11 @@ function ConnectorTile({ tile, readinessLock }: { tile: MarketplaceTile; readine
   const isConnected = activeInstances.length > 0;
   const firstInstance = activeInstances[0] ?? null;
   const isComingSoon = !tile.available;
+
+  // 1 brand = 1 storefront: a DIFFERENT storefront is locked once the brand already has one
+  // connected (non-null reason ⇒ render disabled with the helper copy). Null for the connected
+  // storefront itself and for every non-storefront tile.
+  const storefrontLock = storefrontLockReason(tile, connectedStorefront ?? null);
   const isCredential = tile.connect_method === 'credential';
   const isOauth = tile.connect_method === 'oauth';
 
@@ -488,6 +506,25 @@ function ConnectorTile({ tile, readinessLock }: { tile: MarketplaceTile; readine
               <SyncNowControl connectorId={activeOrFirst.id} className="border-t border-border pt-3" />
             )}
           </div>
+        ) : storefrontLock ? (
+          /* 1 brand = 1 storefront: another storefront is already connected — disable, don't dead-end. */
+          <div className="space-y-2" data-testid={`connector-tile-${tile.id}-storefront-locked`}>
+            <Button
+              variant="outline"
+              disabled
+              aria-disabled="true"
+              className="w-full cursor-not-allowed"
+              title={storefrontLock}
+              aria-label={`${tile.display_name} — unavailable. ${storefrontLock}`}
+              data-testid={`connector-tile-${tile.id}-connect`}
+            >
+              <Ban className="mr-2 h-4 w-4" aria-hidden="true" />
+              One storefront per brand
+            </Button>
+            <p className="text-xs text-muted-foreground" role="note">
+              {storefrontLock}
+            </p>
+          </div>
         ) : readinessLock ? (
           /* Progressive unlock (P2): category not ready yet — explain, don't offer Connect. */
           <div className="space-y-2" data-testid={`connector-tile-${tile.id}-locked`}>
@@ -590,10 +627,12 @@ function CategorySection({
   category,
   tiles,
   readinessLock,
+  connectedStorefront,
 }: {
   category: ConnectorCategory;
   tiles: MarketplaceTile[];
   readinessLock?: string | null;
+  connectedStorefront?: MarketplaceTile | null;
 }) {
   const connectedCount = tiles.filter((t) => (t.instances?.length ?? 0) > 0 || t.instance).length;
 
@@ -621,7 +660,12 @@ function CategorySection({
     >
       <div className="grid gap-4 sm:grid-cols-1 lg:grid-cols-2">
         {tiles.map((tile) => (
-          <ConnectorTile key={tile.id} tile={tile} readinessLock={readinessLock} />
+          <ConnectorTile
+            key={tile.id}
+            tile={tile}
+            readinessLock={readinessLock}
+            connectedStorefront={connectedStorefront}
+          />
         ))}
       </div>
     </SectionCard>
@@ -724,6 +768,10 @@ export function MarketplaceView() {
 
   const connectedTotal = (tiles ?? []).filter((t) => (t.instances?.length ?? 0) > 0 || t.instance).length;
 
+  // 1 brand = 1 storefront: find the brand's connected storefront (if any) once, then disable the
+  // other storefront tiles below (the backend would otherwise 409 STOREFRONT_ALREADY_CONNECTED).
+  const connectedStorefront = findConnectedStorefront(tiles ?? []);
+
   return (
     <div className="space-y-6">
       {connectedTotal === 0 && (
@@ -742,7 +790,15 @@ export function MarketplaceView() {
       {CATEGORY_ORDER.map((cat) => {
         const catTiles = byCategory.get(cat) ?? [];
         if (catTiles.length === 0) return null;
-        return <CategorySection key={cat} category={cat} tiles={catTiles} readinessLock={categoryLock(cat)} />;
+        return (
+          <CategorySection
+            key={cat}
+            category={cat}
+            tiles={catTiles}
+            readinessLock={categoryLock(cat)}
+            connectedStorefront={connectedStorefront}
+          />
+        );
       })}
     </div>
   );

@@ -6,21 +6,26 @@
  *   2. promoteModel staging→production ARCHIVES the prior production model of the same (brand,name)
  *      and leaves EXACTLY ONE production row (the partial-unique invariant model_registry_one_production).
  *   3. promoteModel rejects an unknown model (ModelNotFoundError) and an unknown stage.
- *   4. serveCustomerScore writes EXACTLY ONE inference row to the OPERATIONAL log (StarRocks
- *      brain_ops.ops_ml_prediction_log — MV-2/DB-2 → V4 Phase 5; the PG ml.prediction_log was dropped in 0103) and
- *      is cross-brand isolated — another brand sees neither the score nor the logged prediction. When the
- *      brand has a Gold score row it returns has_data; otherwise the honest no_data path.
+ *   4. serveCustomerScore writes EXACTLY ONE inference row to the OPERATIONAL log (PG
+ *      ops.ops_ml_prediction_log — V4 StarRocks REMOVAL, migration 0116; PG is the SOLE operational store)
+ *      and is cross-brand isolated — another brand sees neither the score nor the logged prediction. When
+ *      the brand has a Gold score row it returns has_data; otherwise the honest no_data path.
  *   5. [EVAL GATE] promoteModel to production blocks a sklearn model with sub-baseline AUC (0.01)
  *      via EvalGateError — the historical gap where any metrics could ship is closed.
  *
- * REQUIRES: Postgres (migration 0083 applied; 0103 drops ml.prediction_log) + StarRocks :9030 with
- * brain_gold.gold_customer_scores + brain_ops.ops_ml_prediction_log.
- * StarRocks-dependent assertions degrade to the honest no_data path if no score row exists.
+ * BRAIN V4: StarRocks is REMOVED. The Gold customer-score read runs over TRINO (the brain_serving Trino
+ * view mv_gold_customer_scores over iceberg.brain_gold.gold_customer_scores) through the metric-engine
+ * seam; srPool is a Trino pool (createTrinoPool). The inference-log write goes to PG
+ * ops.ops_ml_prediction_log. Trino-dependent assertions degrade to the honest no_data path when the
+ * serving tier is unavailable / has no score row — never a hard suite failure on a missing engine.
+ *
+ * REQUIRES: Postgres (migrations 0083 + 0116 applied). The Gold score read additionally needs Trino on
+ * :8090 with the brain_serving views over Iceberg; absent Trino → the score read returns no_data (PENDING).
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import pg from 'pg';
-import mysql from 'mysql2/promise';
 import { createPool, type DbPool } from '@brain/db';
+import { createTrinoPool, type SilverPool } from '@brain/metric-engine';
 import {
   listModels,
   promoteModel,
@@ -33,8 +38,10 @@ import {
 const SUPERUSER_URL = process.env['DATABASE_URL'] ?? 'postgres://brain:brain@localhost:5432/brain';
 const APP_URL =
   process.env['BRAIN_APP_DATABASE_URL'] ?? 'postgres://brain_app:brain_app@localhost:5432/brain';
-const SR_HOST = process.env['STARROCKS_HOST'] ?? '127.0.0.1';
-const SR_PORT = Number(process.env['STARROCKS_QUERY_PORT'] ?? 9030);
+const TRINO_URL =
+  process.env['TRINO_URL'] ??
+  `http://${process.env['TRINO_HOST'] ?? '127.0.0.1'}:${process.env['TRINO_PORT'] ?? '8090'}`;
+const TRINO_USER = process.env['TRINO_USER'] ?? 'brain';
 
 const BRAND_A = 'c5111111-0a1a-4a1a-8a1a-000000000001';
 const BRAND_B = 'c5111111-0a1a-4a1a-8a1a-000000000002';
@@ -46,8 +53,9 @@ const CORR = 'ml-platform-live-test';
 let superPool: pg.Pool;
 let rawPool: pg.Pool;
 let dbPool: DbPool;
-let srPool: mysql.Pool;
+let srPool: SilverPool; // Brain V4: a Trino pool (createTrinoPool) — the serving read port.
 let pgAvailable = false;
+let trinoUp = false;
 let prodModelA = '';
 let stagingModelA = '';
 /** A sklearn staging model with auc=0.01 — should be blocked by the eval gate. */
@@ -96,10 +104,11 @@ async function seed(): Promise<void> {
 
 async function cleanup(): Promise<void> {
   for (const b of [BRAND_A, BRAND_B]) {
-    // MV-2/DB-2 → V4 Phase 5: the inference log lives in the operational StarRocks DB
-    // (brain_ops.ops_ml_prediction_log; the PG ml.prediction_log was dropped in 0103). DELETE so re-runs start clean.
-    await srPool
-      .query(`DELETE FROM brain_ops.ops_ml_prediction_log WHERE brand_id = ?`, [b])
+    // V4 (migration 0116): the inference log lives in PG ops.ops_ml_prediction_log (PG is the SOLE
+    // operational store; StarRocks removed). DELETE via superuser so re-runs start clean (the table is
+    // append-only for brain_app, but the superuser test pool may DELETE).
+    await superPool
+      .query(`DELETE FROM ops.ops_ml_prediction_log WHERE brand_id = $1`, [b])
       .catch(() => {});
     await superPool.query(`DELETE FROM ml.model_registry WHERE brand_id = $1`, [b]).catch(() => {});
   }
@@ -114,22 +123,23 @@ beforeAll(async () => {
     await superPool.query('SELECT 1');
     rawPool = new pg.Pool({ connectionString: APP_URL, connectionTimeoutMillis: 4000 });
     dbPool = await createPool({ connectionString: APP_URL });
-    srPool = mysql.createPool({ host: SR_HOST, port: SR_PORT, user: 'root', password: '', connectionLimit: 2 });
-    // The operational inference log (MV-2/DB-2 → V4 Phase 5) — idempotent (mirrors
-    // db/starrocks/ops/ops_ml_prediction_log.sql, dev rewrite: replication_num=1, no dynamic_partition).
-    // serveCustomerScore appends here.
-    await srPool.query(`CREATE DATABASE IF NOT EXISTS brain_ops`);
-    await srPool.query(`CREATE TABLE IF NOT EXISTS brain_ops.ops_ml_prediction_log (
-        brand_id varchar(64) NOT NULL, created_at datetime NOT NULL, prediction_id varchar(128) NOT NULL,
-        model_id varchar(128) NULL, subject_type varchar(64) NOT NULL, subject_key varchar(128) NOT NULL,
-        prediction varchar(65533) NULL, score double NULL
-      ) DUPLICATE KEY(brand_id, created_at, prediction_id)
-        DISTRIBUTED BY HASH(brand_id) BUCKETS 1 PROPERTIES ("replication_num" = "1")`);
+    // Brain V4 serving: a Trino pool (createTrinoPool) — used ONLY for the Gold score read via the
+    // metric-engine seam (brain_serving.mv_gold_customer_scores over Iceberg). The inference-log write
+    // targets PG ops.ops_ml_prediction_log (migration 0116, created by migrate). StarRocks is removed.
+    srPool = createTrinoPool({ baseUrl: TRINO_URL, user: TRINO_USER, catalog: 'iceberg' });
     await cleanup();
     await seed();
     pgAvailable = true;
   } catch {
     pgAvailable = false;
+  }
+
+  // Probe Trino independently — the Gold score read PENDINGs (no_data) when the serving tier is down.
+  try {
+    await srPool.query('SELECT 1');
+    trinoUp = true;
+  } catch {
+    trinoUp = false;
   }
 });
 
@@ -138,7 +148,7 @@ afterAll(async () => {
   if (dbPool) await dbPool.end();
   if (rawPool) await rawPool.end();
   if (superPool) await superPool.end();
-  if (srPool) await srPool.end();
+  // The Trino pool is a stateless HTTP adapter — no connection to close.
 });
 
 async function productionCount(brand: string): Promise<number> {
@@ -150,17 +160,19 @@ async function productionCount(brand: string): Promise<number> {
 }
 
 async function predictionCount(brand: string): Promise<number> {
-  // MV-2/DB-2 → V4 Phase 5: inference log is the operational table brain_ops.ops_ml_prediction_log (StarRocks).
-  const [rows] = await srPool.query(
-    `SELECT count(*) AS n FROM brain_ops.ops_ml_prediction_log WHERE brand_id = ?`,
+  // V4 (migration 0116): inference log is the operational PG table ops.ops_ml_prediction_log.
+  const r = await superPool.query<{ n: number }>(
+    `SELECT count(*)::int AS n FROM ops.ops_ml_prediction_log WHERE brand_id = $1`,
     [brand],
   );
-  return Number((rows as Array<{ n: string | number }>)[0]?.n ?? 0);
+  return r.rows[0]?.n ?? 0;
 }
 
 describe('ml platform (live)', () => {
   it('SKIP_IF_NO_PG', () => {
     if (!pgAvailable) console.warn('[ml-platform] Postgres unavailable — PENDING.');
+    if (!trinoUp)
+      console.warn('[ml-platform] Trino serving tier unavailable — Gold score read PENDING (no_data path).');
     expect(true).toBe(true);
   });
 
@@ -213,25 +225,23 @@ describe('ml platform (live)', () => {
 
   it('4. serveCustomerScore writes exactly one lakehouse prediction row + is cross-brand isolated', async () => {
     if (!pgAvailable) return;
-    // Find a brain_id with a Gold score for SOME brand. If StarRocks is down or empty, assert no_data.
+    // Find a brain_id with a Gold score for SOME brand via the Trino serving view. If Trino is down or
+    // the view is empty, assert the honest no_data path (nothing logged).
     let scoredBrand: string | null = null;
     let scoredBrainId: string | null = null;
-    try {
-      const conn = await srPool.getConnection();
+    if (trinoUp) {
       try {
-        const [rows] = await conn.query(
-          `SELECT brand_id, brain_id FROM brain_gold.gold_customer_scores LIMIT 1`,
+        const rows = await srPool.query<{ brand_id: string; brain_id: string }>(
+          `SELECT brand_id, brain_id FROM brain_serving.mv_gold_customer_scores LIMIT 1`,
         );
-        const r = (rows as Array<{ brand_id: string; brain_id: string }>)[0];
+        const r = rows[0];
         if (r) {
           scoredBrand = r.brand_id;
           scoredBrainId = r.brain_id;
         }
-      } finally {
-        conn.release();
+      } catch {
+        scoredBrand = null;
       }
-    } catch {
-      scoredBrand = null;
     }
 
     if (!scoredBrand || !scoredBrainId) {

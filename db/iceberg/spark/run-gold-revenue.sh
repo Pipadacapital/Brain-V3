@@ -5,16 +5,16 @@
 # brain_gold (dual-run / NON-BREAKING — touches no reader, no dbt model, no app code):
 #   gold_revenue_ledger    — the realized-revenue RECOGNITION ledger. Folds the silver_order_recognition
 #                            chain from Iceberg Bronze (the view has no Iceberg table) + the same small
-#                            PG/StarRocks dimension reads (brand horizons, identity link).
+#                            PG dimension reads (brand horizons, identity link — brain_ops now in PG `ops`).
 #   gold_revenue_analytics — per-month × lifecycle × currency rollup over Iceberg brain_silver.silver_order_state.
 #
 # Dependency order: gold_revenue_analytics reads the Phase-1 Iceberg silver_order_state (must already be
 # built by run-silver-orders.sh); gold_revenue_ledger is independent (folds Bronze). Order here is
 # ledger then analytics for readability; either order is fine.
 #
-# Requires the lakehouse profile up (iceberg-rest + minio) AND postgres + starrocks + redpanda.
-# Joins Redpanda's netns so iceberg-rest / minio / postgres / starrocks service DNS resolves.
-# Mirrors run-silver-orders.sh exactly (Iceberg + PG + MySQL JDBC packages, shared ivy volume).
+# Requires the lakehouse profile up (iceberg-rest + minio) AND postgres + redpanda.
+# Joins Redpanda's netns so iceberg-rest / minio / postgres service DNS resolves.
+# Mirrors run-silver-orders.sh exactly (Iceberg + PG JDBC package, shared ivy volume).
 #
 # Usage:  db/iceberg/spark/run-gold-revenue.sh [ledger|analytics|all]   (default: all)
 set -euo pipefail
@@ -22,7 +22,6 @@ set -euo pipefail
 SPARK_IMAGE="${SPARK_IMAGE:-apache/spark:3.5.3}"
 ICEBERG_VERSION="${ICEBERG_VERSION:-1.9.2}"
 PG_JDBC_VERSION="${PG_JDBC_VERSION:-42.7.4}"
-MYSQL_JDBC_VERSION="${MYSQL_JDBC_VERSION:-8.0.33}"
 SCALA="2.12"
 REDPANDA_CONTAINER="${REDPANDA_CONTAINER:-brainv3-redpanda-1}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -34,7 +33,6 @@ source "${SCRIPT_DIR}/_retry.sh"
 PACKAGES="org.apache.iceberg:iceberg-spark-runtime-3.5_${SCALA}:${ICEBERG_VERSION}"
 PACKAGES="${PACKAGES},org.apache.iceberg:iceberg-aws-bundle:${ICEBERG_VERSION}"
 PACKAGES="${PACKAGES},org.postgresql:postgresql:${PG_JDBC_VERSION}"
-PACKAGES="${PACKAGES},com.mysql:mysql-connector-j:${MYSQL_JDBC_VERSION}"
 
 docker volume create brain-spark-ivy >/dev/null
 
@@ -61,9 +59,6 @@ run_job() {
     -e GOLD_PG_JDBC_URL="${GOLD_PG_JDBC_URL:-jdbc:postgresql://postgres:5432/brain}" \
     -e GOLD_PG_USER="${GOLD_PG_USER:-brain}" \
     -e GOLD_PG_PASSWORD="${GOLD_PG_PASSWORD:-brain}" \
-    -e GOLD_SR_JDBC_URL="${GOLD_SR_JDBC_URL:-jdbc:mysql://starrocks:9030}" \
-    -e GOLD_SR_USER="${GOLD_SR_USER:-root}" \
-    -e GOLD_SR_PASSWORD="${GOLD_SR_PASSWORD:-}" \
     "${SPARK_IMAGE}" \
     /opt/spark/bin/spark-submit \
       --master "local[2]" \

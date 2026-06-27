@@ -1,27 +1,20 @@
 /**
- * journey-stitch-export — materialize the PG cart-stitch → StarRocks brain_ops.silver_journey_stitch.
+ * journey-stitch-export — materialize the PG cart-stitch → ops.silver_journey_stitch (PG `ops` schema).
  *
  * MEDALLION REALIGNMENT (Epic 4): connectors.connector_journey_stitch_map is the transactional capture
- * (anon read BACK from the order's note_attributes + the cron-resolved brain_id). dbt/StarRocks can't
- * read it analytically without a PG JDBC shim — the last "PG as analytical read source" deviation. This
- * job full-refreshes the StarRocks projection silver_touchpoint reads. Runs before the journey marts.
+ * (anon read BACK from the order's note_attributes + the cron-resolved brain_id). The journey marts read
+ * the ops.silver_journey_stitch projection. V4 (StarRocks REMOVAL, migration 0116) moved that projection
+ * into the PG `ops` schema — PG is the SOLE operational store — so this job now reads AND writes PG on a
+ * single pool. Full-refresh (TRUNCATE + reload); ON CONFLICT keeps mid-batch replays idempotent.
  *
  * Invoked by the worker job entrypoint: `node dist/jobs/journey-stitch-export/run.js`.
  */
 import pg from 'pg';
-import mysql from 'mysql2/promise';
-import { loadStreamWorkerConfig } from '@brain/config';
 import { log } from '../../log.js';
 
-const cfg = loadStreamWorkerConfig();
 // intentional raw: distinct DATABASE_URL fallback + a different (superuser 'brain') default
 // than the worker brain_app default centralized in config — preserve the exact chain here.
 const PG_URL = process.env['BRAIN_APP_DATABASE_URL'] ?? process.env['DATABASE_URL'] ?? 'postgres://brain:brain@localhost:5432/brain';
-const SR_HOST = cfg.STARROCKS_HOST ?? '127.0.0.1';
-// intentional raw: two-var fallback chain (STARROCKS_QUERY_PORT ?? STARROCKS_PORT) — preserve exactly.
-const SR_PORT = Number(process.env['STARROCKS_QUERY_PORT'] ?? process.env['STARROCKS_PORT'] ?? '9030');
-const SR_USER = cfg.STARROCKS_ROOT_USER;
-const SR_PASSWORD = cfg.STARROCKS_ROOT_PASSWORD;
 const BATCH = 1000;
 
 export interface StitchExportResult {
@@ -30,9 +23,8 @@ export interface StitchExportResult {
 
 export async function runJourneyStitchExport(): Promise<StitchExportResult> {
   const pgPool = new pg.Pool({ connectionString: PG_URL, max: 3 });
-  const sr = mysql.createPool({ host: SR_HOST, port: SR_PORT, user: SR_USER, password: SR_PASSWORD, connectionLimit: 4 });
   try {
-    // Read the full stitch (superuser/brain_app — cross-brand ETL; isolation at the read seam).
+    // Read the full stitch (brain_app — cross-brand ETL; isolation at the read seam).
     const rows = (
       await pgPool.query<{ brand_id: string; order_id: string; stitched_anon_id: string | null; brain_id: string | null; created_at: Date | null }>(
         `SELECT brand_id::text, order_id, stitched_anon_id, brain_id::text AS brain_id, created_at
@@ -40,25 +32,33 @@ export async function runJourneyStitchExport(): Promise<StitchExportResult> {
       )
     ).rows;
 
-    await sr.query('TRUNCATE TABLE brain_ops.silver_journey_stitch');
-    const dt = (d: Date | null): string | null => (d ? d.toISOString().slice(0, 19).replace('T', ' ') : null);
+    await pgPool.query('TRUNCATE TABLE ops.silver_journey_stitch');
     for (let i = 0; i < rows.length; i += BATCH) {
       const chunk = rows.slice(i, i + BATCH);
-      const tuples = chunk.map(() => '(?,?,?,?,?,NOW())').join(',');
       const params: unknown[] = [];
-      for (const r of chunk) params.push(r.brand_id, r.order_id, r.stitched_anon_id, r.brain_id, dt(r.created_at));
-      await sr.query(
-        `INSERT INTO brain_ops.silver_journey_stitch
+      const tuples = chunk
+        .map((r, j) => {
+          const b = j * 5;
+          params.push(r.brand_id, r.order_id, r.stitched_anon_id, r.brain_id, r.created_at);
+          return `($${b + 1},$${b + 2},$${b + 3},$${b + 4},$${b + 5},NOW())`;
+        })
+        .join(',');
+      await pgPool.query(
+        `INSERT INTO ops.silver_journey_stitch
            (brand_id, order_id, stitched_anon_id, brain_id, created_at, updated_at)
-         VALUES ${tuples}`,
+         VALUES ${tuples}
+         ON CONFLICT (brand_id, order_id) DO UPDATE SET
+           stitched_anon_id = EXCLUDED.stitched_anon_id,
+           brain_id         = EXCLUDED.brain_id,
+           created_at       = EXCLUDED.created_at,
+           updated_at       = NOW()`,
         params,
       );
     }
-    log.info(`[journey-stitch-export] materialized ${rows.length} stitch rows → silver_journey_stitch`);
+    log.info(`[journey-stitch-export] materialized ${rows.length} stitch rows → ops.silver_journey_stitch`);
     return { rows: rows.length };
   } finally {
     await pgPool.end();
-    await sr.end();
   }
 }
 

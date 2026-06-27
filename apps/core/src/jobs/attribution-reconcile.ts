@@ -6,16 +6,15 @@
  * mirrors reversals. Idempotent per brand. One brand failing does not abort the run; the job exits
  * non-zero only if ANY brand errored.
  *
- * Reads the Postgres Gold ledger (as brain_app) + the StarRocks Silver touch tier (mysql2). When
- * STARROCKS_HOST is unset the job logs and exits 0 (no Silver → nothing to attribute) rather than
- * crash. Invoked by the core image's job entrypoint (CLI): `node dist/jobs/attribution-reconcile.js`.
+ * Reads the Postgres Gold ledger (as brain_app) + the Silver/Gold SERVING tier over TRINO (Iceberg).
+ * When TRINO_HOST is unset the job logs and exits 0 (no serving tier → nothing to attribute) rather
+ * than crash. Invoked by the core image's job entrypoint (CLI): `node dist/jobs/attribution-reconcile.js`.
  */
 import { randomUUID } from 'node:crypto';
 import pg from 'pg';
-import mysql from 'mysql2/promise';
-import type { SilverPool } from '@brain/metric-engine';
+import { createTrinoPool, type SilverPool } from '@brain/metric-engine';
 import { createLogger } from '@brain/observability';
-import { requireEnvInProd, loadCoreConfig } from '@brain/config';
+import { loadCoreConfig } from '@brain/config';
 import { reconcileAttribution, reconcileDataDrivenAttribution } from '../modules/attribution/index.js';
 
 const log = createLogger({ serviceName: 'job:attribution-reconcile' });
@@ -37,24 +36,26 @@ export async function runAttributionReconcile(deps?: {
   pool?: pg.Pool;
   srPool?: SilverPool;
 }): Promise<AttributionJobResult> {
-  const srHost = process.env['STARROCKS_HOST'];
+  // Skip-when-unavailable: gate on TRINO_HOST (the V4 serving tier). Unset → no serving tier to
+  // attribute over → log + exit 0 rather than crash.
+  const srHost = process.env['TRINO_HOST'];
   if (!deps?.srPool && srHost === undefined) {
-    log.warn('attribution-reconcile skipped — STARROCKS_HOST unset (no Silver tier to attribute over)');
+    log.warn('attribution-reconcile skipped — TRINO_HOST unset (no serving tier to attribute over)');
     return { brands: 0, credited: 0, clawed_back: 0, unattributed: 0, errors: 0 };
   }
 
   const pool = deps?.pool ?? new pg.Pool({ connectionString: DB_URL, max: 3 });
-  const srPool =
+  // Trino HTTP adapter — catalog='iceberg' resolves the two-part `brain_serving.mv_*` names to the
+  // Trino serving views over Iceberg Gold/Silver. Stateless REST — no connection pool to tear down.
+  const srPool: SilverPool =
     deps?.srPool ??
-    (mysql.createPool({
-      host: srHost,
-      port: loadCoreConfig().STARROCKS_PORT,
-      user: loadCoreConfig().STARROCKS_ANALYTICS_USER,
-      password: requireEnvInProd('STARROCKS_ANALYTICS_PASSWORD', 'brain_analytics_dev'),
-      connectionLimit: 3,
-    }) as unknown as SilverPool);
+    createTrinoPool({
+      baseUrl: `http://${srHost}:${loadCoreConfig().TRINO_PORT}`,
+      catalog: 'iceberg',
+      schema: 'brain_serving',
+      user: 'brain_core',
+    });
   const ownsPool = !deps?.pool;
-  const ownsSr = !deps?.srPool;
 
   const result: AttributionJobResult = { brands: 0, credited: 0, clawed_back: 0, unattributed: 0, errors: 0 };
   try {
@@ -82,7 +83,7 @@ export async function runAttributionReconcile(deps?: {
     return result;
   } finally {
     if (ownsPool) await pool.end();
-    if (ownsSr) await (srPool as unknown as mysql.Pool).end();
+    // srPool is the stateless Trino HTTP adapter (createTrinoPool) — no connection pool to tear down.
   }
 }
 

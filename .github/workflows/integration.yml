@@ -1,13 +1,16 @@
 # integration.yml — real-engine integration suite (C5 / R-48).
 #
 # The PR workflow (pr.yml) runs unit/contract/isolation/parity against a Postgres service container
-# ONLY — the `.live.test.ts` suites (real StarRocks Silver, real Redpanda) and the Playwright e2e are
-# NOT exercised in CI, so a cross-tenant StarRocks leak or a broken live pipeline could merge green.
+# ONLY — the `.live.test.ts` suites (real Trino-over-Iceberg serving, real Redpanda) and the Playwright
+# e2e are NOT exercised in CI, so a cross-tenant serving leak or a broken live pipeline could merge green.
 # This workflow closes that: it stands up the REAL engines (the repo's docker-compose stack) and runs
 # the live + e2e suites against them.
 #
+# BRAIN V4: StarRocks is REMOVED. Serving is Trino-over-Iceberg (fronted by Redis). This workflow brings
+# up Trino (not StarRocks) and provisions the brain_serving Trino VIEWS via db/trino/views/run-trino-views.sh.
+#
 # ⚠️ INTRODUCED NON-BLOCKING ON PURPOSE: it runs on a schedule, on master pushes, and on demand — NOT
-# on pull_request — so it can stabilize (StarRocks cold-start timing, Playwright full-stack wiring)
+# on pull_request — so it can stabilize (engine cold-start timing, Playwright full-stack wiring)
 # WITHOUT blocking PR merges while it's being proven. PROMOTE TO A PR GATE once it's reliably green:
 # add `pull_request:` to the triggers below and mark it a required check.
 
@@ -39,17 +42,18 @@ env:
   REDIS_URL: redis://localhost:6379
   KAFKA_BROKERS: localhost:19092
   REDPANDA_BROKERS: localhost:19092
-  STARROCKS_HOST: localhost
-  STARROCKS_PORT: '9030'
-  STARROCKS_ANALYTICS_USER: brain_analytics
-  STARROCKS_ANALYTICS_PASSWORD: brain_analytics_dev
+  # Brain V4 serving engine: Trino-over-Iceberg (StarRocks removed). The metric-engine/core read the
+  # brain_serving Trino views; createTrinoPool targets TRINO_URL (host:port = TRINO_HOST:TRINO_PORT).
+  TRINO_HOST: localhost
+  TRINO_PORT: '8090'
+  TRINO_URL: http://localhost:8090
 
 jobs:
   # ───────────────────────────────────────────────────────────────────────────
-  # Real-engine isolation + parity + live suites (StarRocks Silver, Redpanda).
+  # Real-engine isolation + parity + live suites (Trino-over-Iceberg serving, Redpanda).
   # ───────────────────────────────────────────────────────────────────────────
   real-engine-tests:
-    name: Live suites on real engines (StarRocks + Redpanda)
+    name: Live suites on real engines (Trino + Redpanda)
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
@@ -63,12 +67,12 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
 
-      - name: Bring up real engines (Postgres + StarRocks + Redpanda + Redis + MinIO + Iceberg REST + Spark)
+      - name: Bring up real engines (Postgres + Trino + Redpanda + Redis + MinIO + Iceberg REST + Spark)
         run: |
-          # --wait blocks until every service's compose healthcheck is healthy (StarRocks FE has a
-          # 30s+ cold start; the compose healthcheck + start_period already accounts for it).
-          # lakehouse (minio + iceberg-rest + Spark Bronze sink) is needed for the V4 Spark Silver/Gold
-          # refresh that REPLACED dbt — the live suites read the brain_serving mv_* serving tier it feeds.
+          # --wait blocks until every service's compose healthcheck is healthy (Trino + the iceberg-rest
+          # fixture both have a cold start; their healthchecks + start_period account for it).
+          # lakehouse (minio + iceberg-rest + Trino + Spark Bronze sink) is needed for the V4 Spark
+          # Silver/Gold refresh that REPLACED dbt — the live suites read the brain_serving Trino views it feeds.
           docker compose --profile core --profile ingest --profile lakehouse up -d --wait
 
       - name: Provision brain_app login role + apply migrations
@@ -86,37 +90,36 @@ jobs:
           "
           pnpm migrate:up
 
-      # ── V4 transform: Spark Silver → Spark Gold → brain_serving mv_* (REPLACES dbt) ─────────────
-      # Brain V4 removed dbt (Phase 6b). The analytics transform is now Spark-on-Iceberg: the Spark
-      # Silver/Gold jobs materialize the EXTERNAL Iceberg catalogs from raw Bronze, and the brain_serving
-      # mv_* materialized views serve them (Phase 4 reads). This step provisions the serving MVs +
-      # external catalogs, then runs the V4 oneshot refresh so the *.live suites below read a real,
-      # freshly-materialized serving tier (the same tier the dashboards read) — the V4 equivalent of the
-      # old "dbt build Silver" step.
-      - name: Provision StarRocks serving MVs + external Iceberg catalogs
+      # ── V4 transform: Spark Silver → Spark Gold → Iceberg, served by Trino views (REPLACES dbt+StarRocks) ──
+      # Brain V4 removed dbt (Phase 6b) AND StarRocks (serving → Trino). The analytics transform is
+      # Spark-on-Iceberg: the Spark Silver/Gold jobs materialize the EXTERNAL Iceberg catalogs from raw
+      # Bronze. This step runs the V4 oneshot refresh (so the Iceberg Gold/Silver marts exist), then
+      # provisions the brain_serving Trino VIEWS over them — thin projections, no async refresh. The
+      # *.live suites below read the same Trino serving tier the dashboards read.
+      - name: V4 refresh — Spark Silver/Gold materialize Iceberg (oneshot)
         run: |
-          docker exec -i brainv3-starrocks-1 mysql -h127.0.0.1 -P9030 -uroot < db/starrocks/external_iceberg_catalog.sql || true
-          docker exec -i brainv3-starrocks-1 mysql -h127.0.0.1 -P9030 -uroot < db/starrocks/external_iceberg_silver_gold_catalog.sql || true
-          bash db/starrocks/mv/run_mvs.sh || true
-
-      - name: V4 refresh — Spark Silver/Gold materialize + brain_serving mv_* SYNC (oneshot)
-        env:
-          STARROCKS_CONTAINER: brainv3-starrocks-1
-        run: |
-          # ONESHOT runs every Spark Silver job, then every Spark Gold job, then SYNC-refreshes the
-          # brain_serving mv_* — deterministic Gold for the live suites. The Spark run scripts join
-          # redpanda's netns for service DNS (iceberg-rest/minio/starrocks), same as the parity oracle.
+          # ONESHOT runs every Spark Silver job, then every Spark Gold job → deterministic Iceberg
+          # Gold/Silver for the live suites. The Spark run scripts join redpanda's netns for service DNS
+          # (iceberg-rest/minio/trino), same as the parity oracle. No StarRocks MV SYNC — Trino views are live.
           ONESHOT=1 bash tools/dev/v4-refresh-loop.sh
 
-      # Isolation fuzz + parity oracle — now against REAL StarRocks (the PR run has no Silver tier,
-      # so the StarRocks cross-tenant negative-control only truly fires here).
+      - name: Provision Trino serving views (iceberg.brain_serving.mv_*)
+        env:
+          TRINO_URL: http://localhost:8090
+        run: |
+          # Create iceberg.brain_serving + every brain_serving.mv_* Trino VIEW over the Iceberg Gold/Silver
+          # marts Spark just materialized. CREATE OR REPLACE VIEW — idempotent; no async refresh to wait on.
+          bash db/trino/views/run-trino-views.sh
+
+      # Isolation fuzz + parity oracle — now against the REAL Trino serving tier (the PR run has no Silver
+      # tier, so the cross-tenant negative-control on the ${BRAND_PREDICATE} seam only truly fires here).
       - name: Isolation fuzz (real engines)
         run: pnpm turbo run test:isolation
       - name: Parity oracle (real engines)
         run: pnpm turbo run test:parity
 
-      # The *.live.test.ts suites (credit writer, reconcile, analytics, dq) read real StarRocks Silver.
-      - name: Core live suites (StarRocks Silver)
+      # The *.live.test.ts suites (credit writer, reconcile, analytics, dq) read the real Trino serving tier.
+      - name: Core live suites (Trino-over-Iceberg serving)
         run: pnpm --filter @brain/core exec vitest run --no-file-parallelism live
       - name: Stream-worker e2e (Redpanda + Bronze)
         run: pnpm --filter @brain/stream-worker test:e2e
@@ -173,10 +176,9 @@ jobs:
           REDIS_URL=redis://localhost:6379
           KAFKA_BROKERS=localhost:19092
           REDPANDA_BROKERS=localhost:19092
-          STARROCKS_HOST=localhost
-          STARROCKS_PORT=9030
-          STARROCKS_ANALYTICS_USER=brain_analytics
-          STARROCKS_ANALYTICS_PASSWORD=brain_analytics_dev
+          TRINO_HOST=localhost
+          TRINO_PORT=8090
+          TRINO_URL=http://localhost:8090
           ENV
 
       - name: Start the app stack (core + web + collector + stream-worker)

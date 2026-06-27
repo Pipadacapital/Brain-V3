@@ -40,11 +40,11 @@ MONEY: amount_minor / fee_minor are signed BIGINT minor units paired with curren
 never blended. brand_id is the tenant key, FIRST column. PII is hashed-only upstream (brain_id resolved).
 IDEMPOTENT / REPLAY-SAFE: MERGE on (brand_id, ledger_event_id) — re-run yields byte-identical rows.
 
-CURRENT-SIDE DIMENSION READS (same JDBC posture as silver_order_state.py / dbt cross-catalog):
+CURRENT-SIDE DIMENSION READS (all over PG JDBC, same posture as silver_order_state.py):
   - brand prepaid recognition horizon  → PG tenancy.brand (brand_horizons_src shim columns)
-  - hashed-email → brain_id            → StarRocks brain_ops.silver_identity_link (the Neo4j export)
+  - hashed-email → brain_id            → PG ops.silver_identity_link (the Neo4j export, PG op-only store)
 
-Run via run-gold-revenue.sh (mirrors run-silver-orders.sh — Iceberg + PG + MySQL JDBC packages).
+Run via run-gold-revenue.sh (mirrors run-silver-orders.sh — Iceberg + PG JDBC package).
 """
 from __future__ import annotations  # Python 3.8 on the Spark image.
 
@@ -66,13 +66,11 @@ BRONZE_NAMESPACE = os.environ.get("BRONZE_NAMESPACE", "brain_bronze")
 BRONZE_TABLE = f"{CATALOG}.{os.environ.get('SILVER_NAMESPACE', 'brain_silver')}.silver_collector_event"  # ADR-0006 P3: gated source (R2/R3 now in Silver)
 TABLE_NAME = "gold_revenue_ledger"
 
-# CURRENT-side dimension reads (same JDBC posture dbt uses cross-catalog; superuser RLS-bypass ETL read).
+# CURRENT-side dimension reads — all over PG JDBC now (brain_ops moved to PG schema `ops`; PG is the
+# operational-only store). Superuser RLS-bypass ETL read; same JDBC posture for every dimension.
 PG_JDBC_URL = os.environ.get("GOLD_PG_JDBC_URL", os.environ.get("SILVER_PG_JDBC_URL", "jdbc:postgresql://postgres:5432/brain"))
 PG_USER = os.environ.get("GOLD_PG_USER", os.environ.get("SILVER_PG_USER", "brain"))
 PG_PASSWORD = os.environ.get("GOLD_PG_PASSWORD", os.environ.get("SILVER_PG_PASSWORD", "brain"))
-SR_JDBC_URL = os.environ.get("GOLD_SR_JDBC_URL", os.environ.get("SILVER_SR_JDBC_URL", "jdbc:mysql://starrocks:9030"))
-SR_USER = os.environ.get("GOLD_SR_USER", os.environ.get("SILVER_SR_USER", "root"))
-SR_PASSWORD = os.environ.get("GOLD_SR_PASSWORD", os.environ.get("SILVER_SR_PASSWORD", ""))
 
 # Mirrors gold_revenue_ledger.sql column order/types (StarRocks: varchar/bigint/datetime + data_source/updated_at).
 _COLUMNS = """
@@ -117,27 +115,27 @@ def _read_horizons(spark: SparkSession):
 
 
 def _read_identity_link(spark: SparkSession):
-    """hashed-email → brain_id from the identity export (StarRocks brain_ops.silver_identity_link).
+    """hashed-email → brain_id from the identity export (PG ops.silver_identity_link).
 
-    silver_order_recognition resolves brain_id from brain_ops.silver_identity_link where
+    silver_order_recognition resolves brain_id from ops.silver_identity_link where
     identifier_type='pre_hashed_email' and is_active and brain_id is not null, min(brain_id) per
-    (brand_id, identifier_value). Read that StarRocks app-written table over the MySQL wire and aggregate
-    identically — the SAME identity SoR the dbt path reads (no second source). IDENTICAL to
-    silver_order_state.py so the brain_id column matches byte-for-byte.
+    (brand_id, identifier_value). brain_ops moved to the PG `ops` schema (PG operational-only store), so
+    we read it over the SAME PG JDBC connection as the horizons dimension and aggregate identically —
+    IDENTICAL to silver_order_state.py so the brain_id column matches byte-for-byte.
     """
     query = (
         "(SELECT brand_id, identifier_value AS hashed_customer_email, MIN(brain_id) AS brain_id "
-        "FROM brain_ops.silver_identity_link "
+        "FROM ops.silver_identity_link "
         "WHERE identifier_type = 'pre_hashed_email' AND is_active = true AND brain_id IS NOT NULL "
         "GROUP BY brand_id, identifier_value) b"
     )
     try:
         return (
             spark.read.format("jdbc")
-            .option("url", SR_JDBC_URL)
-            .option("user", SR_USER)
-            .option("password", SR_PASSWORD)
-            .option("driver", "com.mysql.cj.jdbc.Driver")
+            .option("url", PG_JDBC_URL)
+            .option("user", PG_USER)
+            .option("password", PG_PASSWORD)
+            .option("driver", "org.postgresql.Driver")
             .option("dbtable", query)
             .load()
         )

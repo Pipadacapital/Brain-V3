@@ -1,25 +1,23 @@
 /**
- * dq/silver-reader.ts — minimal per-brand Silver (StarRocks) reader for the DQ jobs.
+ * dq/silver-reader.ts — minimal per-brand Silver/Gold serving reader for the DQ jobs.
  *
- * The DQ freshness + reconciliation checks read aggregate signals from the Silver
- * tier (StarRocks brain_serving.mv_silver_order_state) over the MySQL wire protocol
- * (mysql2, :9030) as the SELECT-only brain_analytics user. This mirrors the
- * metric-engine withSilverBrand seam (packages/metric-engine/src/silver-deps.ts):
- * the brand predicate is injected HERE (the dev allin1 StarRocks image has no
- * engine row-policy), so a DQ check is always brand-scoped — never cross-brand.
+ * Brain V4 (StarRocks removed): the DQ freshness + reconciliation checks read aggregate signals
+ * from the serving tier over TRINO (brain_serving.mv_silver_order_state — a Trino view over Iceberg
+ * Silver) via the Trino HTTP adapter. This mirrors the metric-engine withSilverBrand seam
+ * (packages/metric-engine/src/silver-deps.ts): the brand predicate is injected HERE (Trino's REST
+ * API has no engine row-policy), so a DQ check is always brand-scoped — never cross-brand.
  *
  * NOT a new deployable / topic / envelope — a library helper used by the DQ
  * interval loops inside the existing stream-worker process.
  */
 
-import mysql from 'mysql2/promise';
-import { loadStreamWorkerConfig } from '@brain/config';
+import { createTrinoPool } from '@brain/metric-engine';
 
 export interface SilverReaderConfig {
-  readonly host: string;
-  readonly port: number;
+  /** Trino coordinator base URL, e.g. 'http://localhost:8090'. */
+  readonly baseUrl: string;
+  /** Trino user presented via X-Trino-User (not authentication). */
   readonly user: string;
-  readonly password: string;
 }
 
 export interface SilverReader {
@@ -40,25 +38,21 @@ export interface SilverReader {
 export const BRAND_PREDICATE = '${BRAND_PREDICATE}';
 
 /**
- * The Iceberg Bronze event table in the StarRocks external catalog (same instance the SilverReader
- * connects to). DB-AUDIT C4: the DQ checks read Bronze from the lakehouse (the Bronze SoR), NOT the
- * retired PG data_plane.bronze_events. Catalog name is env-overridable so prod can point at the Glue
- * catalog without code change (mirrors analytics _bronze-source.ts ICEBERG_BRONZE).
+ * The Iceberg Bronze event table over Trino. DB-AUDIT C4: the DQ checks read Bronze from the
+ * lakehouse (the Bronze SoR), NOT the retired PG data_plane.bronze_events. Trino's default catalog
+ * is 'iceberg', so the explicit `iceberg.brain_bronze.collector_events` resolves the Iceberg Bronze
+ * namespace directly (mirrors analytics _bronze-source.ts ICEBERG_BRONZE).
  */
-export const ICEBERG_BRONZE = `${loadStreamWorkerConfig().STARROCKS_BRONZE_CATALOG}.brain_bronze.collector_events`;
+export const ICEBERG_BRONZE = 'iceberg.brain_bronze.collector_events';
 
 export function createSilverReader(config: SilverReaderConfig): SilverReader {
-  const pool = mysql.createPool({
-    host: config.host,
-    port: config.port,
+  // Trino HTTP adapter — catalog='iceberg', schema='brain_serving' so two-part `brain_serving.mv_*`
+  // names resolve to the Trino serving views over Iceberg Silver. Stateless REST (no connection pool).
+  const pool = createTrinoPool({
+    baseUrl: config.baseUrl,
+    catalog: 'iceberg',
+    schema: 'brain_serving',
     user: config.user,
-    password: config.password,
-    connectionLimit: 3,
-    connectTimeout: 5000,
-    // StarRocks DATETIMEs are UTC; tell mysql2 so it builds JS Dates as UTC (not the worker's local
-    // tz). Without this, a non-UTC worker mis-reads silver MAX(updated_at) as hours-stale → false
-    // freshness/silver.order_state D (the DQ "silver freshness" gate).
-    timezone: 'Z',
   });
 
   return {
@@ -67,30 +61,20 @@ export function createSilverReader(config: SilverReaderConfig): SilverReader {
       sql: string,
       params: unknown[] = [],
     ): Promise<T[]> {
-      const conn = await pool.getConnection();
-      try {
-        // Session var matches the prod row_policy_template convention (drop-in swap on
-        // managed StarRocks). Strip to UUID chars (defense-in-depth; brandId is a
-        // server-trusted UUID from list_active_brand_ids()).
-        const safeBrand = brandId.replace(/[^0-9a-fA-F-]/g, '');
-        await conn.query(`SET @brain_current_brand_id = '${safeBrand}'`);
-        // DB-AUDIT M1 — fail CLOSED: a query missing the sentinel would run cross-brand (String.replace
-        // no-ops). Refuse rather than leak.
-        if (!sql.includes(BRAND_PREDICATE)) {
-          throw new Error(
-            'SilverReader.scopedQuery: query missing the ${BRAND_PREDICATE} sentinel — refusing to run un-scoped.',
-          );
-        }
-        const finalSql = sql.replace(BRAND_PREDICATE, 'brand_id = ?');
-        const finalParams = [...params, brandId];
-        const [rows] = await conn.query(finalSql, finalParams);
-        return (rows as T[]) ?? [];
-      } finally {
-        conn.release();
+      // DB-AUDIT M1 — fail CLOSED: a query missing the sentinel would run cross-brand (String.replace
+      // no-ops). Refuse rather than leak. Trino has no session-var row policy — the parameterized
+      // brand predicate injected HERE IS the load-bearing isolation (same as the metric-engine seam).
+      if (!sql.includes(BRAND_PREDICATE)) {
+        throw new Error(
+          'SilverReader.scopedQuery: query missing the ${BRAND_PREDICATE} sentinel — refusing to run un-scoped.',
+        );
       }
+      const finalSql = sql.replace(BRAND_PREDICATE, 'brand_id = ?');
+      const finalParams = [...params, brandId];
+      return pool.query<T>(finalSql, finalParams);
     },
     async end(): Promise<void> {
-      await pool.end();
+      // Stateless Trino HTTP adapter — no connection pool to tear down.
     },
   };
 }

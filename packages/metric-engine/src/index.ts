@@ -283,6 +283,10 @@ export type { TrinoAdapterConfig } from './trino-adapter.js';
 export { buildCacheKey, IoredisCacheAdapter } from './analytics-cache.js';
 export type { AnalyticsCachePort, RedisCacheClient } from './analytics-cache.js';
 
+// ── Serving cache reader (Redis-fronted hot serving reads over the Trino seam) ──
+export { createServingCacheReader, hashParams } from './serving-cache.js';
+export type { ServingCacheReader, ServingCacheReaderConfig } from './serving-cache.js';
+
 // ── Query routing (known metrics → StarRocks; AI-Trino DISABLED) ──────────────
 export {
   QueryRoute,

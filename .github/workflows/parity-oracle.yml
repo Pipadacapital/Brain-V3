@@ -1,83 +1,41 @@
-# parity-oracle.yml — Brain V4: the Spark-Iceberg-Gold ⇄ serving parity gate.
+# parity-oracle.yml — RETIRED in Brain V4 (StarRocks removal wave).
 #
-# Stands up the REAL lakehouse engines (compose: iceberg-rest + minio + starrocks + redpanda + postgres)
-# and runs db/iceberg/spark/parity/run-parity.sh — the reusable oracle that, for every Silver/Gold mart,
-# proves the Spark→Iceberg table EQUALS the brain_serving mv_* it feeds (row-identity keyed by the mart
-# PK + per-currency minor-unit Σ for money columns), or SKIPs gracefully when the mart doesn't exist yet.
+# WHAT THIS GATE USED TO DO: it stood up StarRocks + the lakehouse and, for every Silver/Gold mart,
+# proved the Spark→Iceberg table EQUALS the StarRocks `brain_serving.mv_*` ASYNC materialized view it fed
+# (row-identity + per-currency minor-unit Σ). The reconciliation existed because the StarRocks MV was an
+# ASYNC COPY of the Iceberg mart and could DRIFT (stale/partial refresh) — so parity had to be proven.
 #
-# NOTE: dbt was removed in Brain V4 (Phase 6b). This oracle no longer compares against the retired
-# dbt/StarRocks brain_gold/brain_silver marts — it does NOT run dbt (no build/run/seed); it only invokes
-# run-parity.sh against the Iceberg lakehouse + serving tier.
+# WHY IT IS RETIRED: Brain V4 removes StarRocks. Serving is now Trino-over-Iceberg: the `brain_serving.mv_*`
+# objects are thin Trino VIEWS (db/trino/views/*.sql) defined as `SELECT <cols> FROM iceberg.brain_<gold|silver>.<mart>`.
+# A view is NOT a copy — it reads the live Iceberg snapshot on every query. There is no async materialization,
+# hence NOTHING to reconcile: serving == Iceberg Gold/Silver by construction (the comparison is tautological).
+# (dbt was already removed in Phase 6b, so the dbt/StarRocks-mart comparison was gone too.)
 #
-# ⚠️ INTRODUCED NON-BLOCKING ON PURPOSE (mirrors integration.yml's doctrine): in Phase 0 NO Spark→Iceberg
-# Silver/Gold mart exists yet, so every mart SKIPs (status=SKIP reason=new-mart-absent) and the harness
-# exits 0 — this is the intended green "stub" state that proves the gate is WIRED before any phase relies
-# on it. As Phases 1-2 build real Iceberg marts this gate begins doing real comparisons. PROMOTE TO A
-# BLOCKING required check once the first Spark mart lands and its parity is reliably green (add it to
-# branch protection — a repo-admin setting, not expressible here).
+# WHERE THE COVERAGE LIVES NOW: integration.yml stands up the real Trino serving tier (provisions the
+# brain_serving Trino views over the Spark-materialized Iceberg marts) and runs the isolation-fuzz +
+# *.live suites against it end-to-end — that is the V4 serving correctness gate. Redis-vs-Iceberg
+# freshness (the analytics cache) is a TTL concern, not a parity concern, and is owned by the cache layer.
 #
-# Same OIDC-free, compose-up, path-filtered shape as integration.yml; it does NOT touch any read path
-# or app code (additive parity check only).
+# This file is kept (not deleted) as a documented tombstone so the retirement rationale survives in-tree
+# and the historical workflow name does not silently vanish. It does NO engine bring-up and is
+# manual-dispatch only; it does not gate any PR (pr.yml is unaffected).
 
-name: parity-oracle
+name: parity-oracle (retired)
 on:
-  workflow_dispatch:
-    inputs:
-      mart:
-        description: 'Mart to check (default: all). e.g. gold_attribution_credit'
-        required: false
-        default: 'all'
-  schedule:
-    - cron: '30 2 * * *' # nightly 02:30 UTC (after integration's 02:00)
-  push:
-    branches: [master]
-    paths:
-      - 'db/iceberg/spark/parity/**'
-      - 'db/iceberg/spark/**'
-      - '.github/workflows/parity-oracle.yml'
-  pull_request:
-    paths:
-      - 'db/iceberg/spark/parity/**'
-      - '.github/workflows/parity-oracle.yml'
+  workflow_dispatch: {}
 
 permissions:
   contents: read
 
 jobs:
-  parity-oracle:
-    name: Spark Iceberg-Gold ⇄ serving parity oracle
+  retired:
+    name: parity-oracle — retired (StarRocks removed; Trino views are tautological over Iceberg)
     runs-on: ubuntu-latest
-    timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-
-      - name: Bring up real engines (Postgres + StarRocks + Redpanda + MinIO + Iceberg REST + Spark sink)
+      - name: Explain retirement
         run: |
-          # --wait blocks until every service's compose healthcheck is healthy (StarRocks FE + the
-          # iceberg-rest fixture both have a cold start; their healthchecks + start_period account for it).
-          # core = postgres + starrocks(+init); ingest = redpanda; lakehouse = minio + iceberg-rest +
-          # the continuous Spark Bronze sink (the parity container joins redpanda's netns, exactly like
-          # the Bronze parity oracle, so iceberg-rest/starrocks/postgres/minio service DNS resolves).
-          docker compose --profile core --profile ingest --profile lakehouse up -d --wait
-
-      - name: Run the parity oracle (all marts; SKIPs absent Iceberg marts in Phase 0)
-        env:
-          # REDPANDA_CONTAINER is the netns the one-shot Spark container joins (matches run-parity.sh default,
-          # but pin it from the actual compose project name so a renamed project still resolves).
-          PARITY_MART: ${{ github.event.inputs.mart || 'all' }}
-        run: |
-          # Resolve the running redpanda container name (compose project prefix can vary in CI).
-          RP=$(docker ps --filter "name=redpanda" --format '{{.Names}}' | head -n1)
-          echo "redpanda container = ${RP:-<none>}"
-          REDPANDA_CONTAINER="${RP:-brainv3-redpanda-1}" \
-            db/iceberg/spark/parity/run-parity.sh
-
-      - name: Dump engine logs on failure
-        if: failure()
-        run: docker compose --profile core --profile ingest --profile lakehouse logs --tail 200
-
-      - name: Tear down
-        if: always()
-        run: docker compose --profile core --profile ingest --profile lakehouse down -v
+          echo "parity-oracle is RETIRED in Brain V4."
+          echo "StarRocks is removed; serving is Trino VIEWS over the Iceberg Gold/Silver marts."
+          echo "A view reads the live Iceberg snapshot — there is no async copy to reconcile."
+          echo "Serving correctness is now covered by integration.yml (Trino live suites + isolation fuzz)."
+          exit 0

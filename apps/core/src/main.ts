@@ -23,8 +23,17 @@ import { Kafka } from 'kafkajs';
 
 import { createPool } from '@brain/db';
 import pg from 'pg';
-import mysql from 'mysql2/promise';
-import type { SilverPool } from '@brain/metric-engine';
+// Brain V4: serving runs over TRINO (Iceberg), not StarRocks — the srPool below is a Trino
+// adapter (createTrinoPool). mysql2 is no longer used in this composition root (the StarRocks
+// pool is gone); the background-job entrypoints that still read StarRocks keep their own mysql2
+// (Wave B repoints those to PG). The serving reads are fronted by the Redis analytics cache.
+import {
+  createTrinoPool,
+  IoredisCacheAdapter,
+  createServingCacheReader,
+  type SilverPool,
+  type ServingCacheReader,
+} from '@brain/metric-engine';
 import { DbAuditWriter } from '@brain/audit';
 
 import { assertArgon2Params, AuthService } from './modules/workspace-access/internal/application/auth.service.js';
@@ -205,17 +214,8 @@ export async function main(): Promise<void> {
     kafkaEnv: process.env['NODE_ENV'] === 'production' ? 'prod' : 'dev',
     // Webhook registration callback base URL (B2 / ADR-LV-5 — public URL in prod)
     webhookCallbackBaseUrl: getEnv('WEBHOOK_CALLBACK_BASE_URL', 'http://localhost:3001'),
-    // Silver tier (StarRocks) read pool — feat-silver-tier-order-state. The metric-engine
-    // Silver seam reads silver.order_state as the SELECT-only brain_analytics user (NOT root).
-    // Optional: when absent the order-status-mix route returns an honest 503.
-    starrocksHost: getEnv('STARROCKS_HOST', 'localhost'),
-    starrocksPort: parseInt(getEnv('STARROCKS_PORT', '9030'), 10),
-    starrocksUser: getEnv('STARROCKS_ANALYTICS_USER', 'brain_analytics'),
-    // Dev default MUST match db/starrocks/bootstrap.sql, which creates brain_analytics
-    // IDENTIFIED BY 'brain_analytics_dev'. An empty default caused every Silver-read route
-    // (order-status-mix, journey, attribution-via-Silver) to 500 with ER_ACCESS_DENIED on a
-    // fresh `pnpm dev`. Prod FAILS CLOSED if unset (never reuse the known weak dev password).
-    starrocksPassword: requireEnvInProd('STARROCKS_ANALYTICS_PASSWORD', 'brain_analytics_dev'),
+    // Brain V4: the Silver/Gold SERVING pool is the Trino HTTP adapter (createTrinoPool) built below
+    // from cfg.TRINO_HOST/TRINO_PORT — StarRocks is removed. No starrocks* fields here.
   };
 
   // Typed config single-source-of-record (parsed once, frozen). Loaded AFTER the META/GOOGLE
@@ -407,23 +407,40 @@ export async function main(): Promise<void> {
     }
   });
 
-  // Silver tier (StarRocks) read pool — feat-silver-tier-order-state. mysql2 speaks the
-  // StarRocks MySQL wire protocol (:9030). Connects as brain_analytics (SELECT-only — NOT
-  // root): reading Silver as a non-DDL user is part of the isolation posture even though
-  // engine-level row policy is unavailable on the dev allin1 image (the brand predicate is
-  // injected at the withSilverBrand seam; see packages/metric-engine/src/silver-deps.ts).
-  // The pool's structural shape satisfies @brain/metric-engine SilverPool.
-  const srPool: SilverPool = mysql.createPool({
-    host: config.starrocksHost,
-    port: config.starrocksPort,
-    user: config.starrocksUser,
-    password: config.starrocksPassword,
-    connectionLimit: 5,
-    connectTimeout: 5000,
-    // StarRocks DATETIMEs are UTC; tell mysql2 so it builds JS Dates as UTC (not the process-local
-    // tz). Without this a non-UTC core pod mis-reads Iceberg/Silver timestamps by the tz offset.
-    timezone: 'Z',
-  }) as unknown as SilverPool;
+  // Silver/Gold SERVING pool — Brain V4 removes StarRocks; serving runs over TRINO (Iceberg).
+  // createTrinoPool is the stateless HTTP adapter over /v1/statement; catalog='iceberg' makes the
+  // metric SQL's two-part `brain_serving.mv_*` names resolve to the Trino serving views over Iceberg
+  // Gold/Silver. The ${BRAND_PREDICATE} injection at the withSilverBrand seam is the load-bearing
+  // per-brand isolation (Trino has no native row policy — proven non-inert by the isolation-fuzz test).
+  // The adapter satisfies @brain/metric-engine SilverPool (now an alias of the Trino query PORT).
+  const srPool: SilverPool = createTrinoPool({
+    baseUrl: `http://${cfg.TRINO_HOST}:${cfg.TRINO_PORT}`,
+    catalog: 'iceberg',
+    schema: 'brain_serving',
+    user: 'brain_core',
+  });
+
+  // ── Brain V4 serving cache (Redis-fronted hot serving reads) ─────────────────
+  // Front the KNOWN-metric serving reads with the analytics cache (brand_id-leading keys,
+  // stampede-guarded). Reuses the SINGLE shared ioredis client above — no second connection.
+  // Flag-gated: TRINO_SERVING_CACHE_ENABLED ('true'/'false') wins; UNSET defaults ON in prod,
+  // OFF in dev. Safe-OFF fallback = read Trino directly. Per-brand invalidation is handled by
+  // the stream-worker AnalyticsCacheInvalidateConsumer (cache.invalidate.v1) on each recompute.
+  const servingCacheEnabled =
+    cfg.TRINO_SERVING_CACHE_ENABLED !== undefined
+      ? cfg.TRINO_SERVING_CACHE_ENABLED === 'true'
+      : isProduction;
+  const servingCache: ServingCacheReader = createServingCacheReader({
+    // ioredis.Redis satisfies the RedisCacheClient structural port at runtime (get/set 'PX'/del),
+    // but its overloaded `set` signature doesn't structurally unify with the minimal port — cast.
+    cache: new IoredisCacheAdapter(redis as unknown as ConstructorParameters<typeof IoredisCacheAdapter>[0]),
+    servingVersion: cfg.SERVING_VERSION,
+    ttlMs: cfg.TRINO_SERVING_CACHE_TTL_MS,
+    enabled: servingCacheEnabled,
+  });
+  log.info(
+    `[core] serving cache ${servingCacheEnabled ? 'ENABLED' : 'disabled'} (Trino serving reads, ttl=${cfg.TRINO_SERVING_CACHE_TTL_MS}ms, version=${cfg.SERVING_VERSION})`,
+  );
 
   // Create DB pool (3-GUC middleware — NN-1). assertRlsEnforcingRole (P2.3): refuse to start if
   // DATABASE_URL points at an RLS-bypassing role (the superuser footgun) — raw queries would
@@ -770,6 +787,7 @@ export async function main(): Promise<void> {
     pool,
     rawPgPool,
     srPool,
+    servingCache,
     rateLimiter,
     auditWriter,
     authService,
@@ -822,7 +840,8 @@ export async function main(): Promise<void> {
     await webhookProducer.disconnect().catch(() => { /* ignore */ });
     await pool.end();
     await rawPgPool.end().catch(() => { /* ignore */ });
-    await (srPool as unknown as { end: () => Promise<void> }).end().catch(() => { /* ignore */ });
+    // srPool is the Trino HTTP adapter (createTrinoPool) — stateless REST, no persistent
+    // sockets, so there is nothing to .end() (unlike the former mysql2 StarRocks pool).
     await redis.quit().catch(() => { /* ignore */ });
     // Flush buffered telemetry LAST so shutdown logs/spans are exported (C1).
     await shutdownObservability().catch(() => { /* ignore */ });

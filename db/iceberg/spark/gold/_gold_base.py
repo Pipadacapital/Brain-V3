@@ -59,6 +59,7 @@ SILVER_NS = os.environ.get("SILVER_NAMESPACE", SILVER_NAMESPACE)
 __all__ = [
     "CATALOG", "GOLD_NAMESPACE", "SILVER_NAMESPACE", "SILVER_NS",
     "silver", "silver_exists", "ensure_gold_table", "merge_on_pk", "run_job",
+    "emit_cache_event",
 ]
 
 
@@ -112,6 +113,90 @@ def merge_on_pk(spark: SparkSession, fqtn: str, staged: DataFrame, pk: list[str]
         WHEN NOT MATCHED THEN INSERT *
         """
     )
+
+
+def emit_cache_event(
+    app_name: str,
+    brand_ids: list[str] | None,
+    reason: str,
+    *,
+    fqtn: str | None = None,
+    rows_written: int | None = None,
+) -> None:
+    """Emit a structured gold.rewritten fact as a JSON log line (NO-OP-safe, opt-in).
+
+    MECHANISM: prints ONE JSON line per brand_id to stdout — the SAME channel as
+    emit_job_log (job_log.py). NO Kafka producer is introduced into the Spark job;
+    no new dependency is added. The v4-refresh-loop (or any log shipper watching
+    stdout) can pick this up and forward it to the BFF/Redis cache layer as a
+    cache.invalidate.v1 event.
+
+    The emitted line mirrors the gold.rewritten.v1 event contract:
+      packages/contracts/src/events/cache.invalidate.v1.ts GoldRewrittenPayloadSchema.
+
+    TENANT ISOLATION: one log line per brand_id. When brand_ids is None/empty (the
+    brand-agnostic Spark job mode), a single line with brand_id=null is emitted — the
+    downstream consumer MUST scope evictions to its own brand_id before touching Redis.
+    A null brand_id in the log line is NOT a cross-tenant invalidation: it is an
+    advisory log that the gateway interprets as "bust the whole product for any brand
+    you hold a lock on" — never a global Redis FLUSHDB.
+
+    NO-OP-safe: any exception inside this function is silenced — observability must
+    NEVER break a job. Default off: existing run_job callers are NOT changed (default
+    behavior is unchanged). Callers opt in by calling this after build_fn returns.
+
+    CORRELATION: reuses V4_CORRELATION_ID from the environment (the same env var
+    emit_job_log reads) so the cache event shares the refresh cycle's correlation id.
+
+    Example (opt-in after build):
+        def build(spark):
+            fqtn, n = _my_build(spark)
+            emit_cache_event("gold-funnel", brand_ids=None, reason="gold_rewritten", fqtn=fqtn)
+            return fqtn, n
+    """
+    import json  # local import — json is stdlib, lightweight; keeps module-level imports minimal
+    from datetime import datetime, timezone
+
+    try:
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        correlation_id = os.environ.get("V4_CORRELATION_ID") or None
+
+        # Derive gold_product from the FQTN (strip catalog + namespace prefix), fall back to
+        # app_name. Mirrors the job_log._split_fqtn pattern (avoids importing job_log here).
+        gold_product: str = app_name
+        if fqtn and isinstance(fqtn, str) and "." in fqtn:
+            gold_product = fqtn.rsplit(".", 1)[-1]
+
+        _rows = int(rows_written) if rows_written is not None else None
+
+        def _make_line(bid: str | None) -> str:
+            return json.dumps(
+                {
+                    "evt": "gold.rewritten",
+                    "job": app_name,
+                    "gold_product": gold_product,
+                    "brand_id": bid,
+                    "layer": "gold",
+                    "rows_written": _rows,
+                    # affected_scope: all=true is the safe default for a full Gold rewrite.
+                    "affected_scope": {"all": True, "keys": [], "key_prefixes": []},
+                    "reason": reason,
+                    "correlation_id": correlation_id,
+                    "ts": ts,
+                },
+                default=str,
+            )
+
+        if brand_ids:
+            for bid in brand_ids:
+                print(_make_line(bid), flush=True)
+        else:
+            # brand-agnostic advisory: brand_id=null. The downstream cache consumer MUST
+            # scope any Redis eviction to brand-owned keys before acting on this line.
+            print(_make_line(None), flush=True)
+
+    except Exception:  # noqa: BLE001 — observability must never break the job
+        pass
 
 
 def run_job(app_name: str, build_fn) -> None:

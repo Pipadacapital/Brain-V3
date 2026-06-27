@@ -22,6 +22,13 @@ PII     : hashed-only — pixel rows carry brain_anon_id (a pseudonymous id, not
           payment_id_hash (raw DROPPED at the mapper boundary). NO raw financial/contact identifier here.
 ISOLATION: brand_id first column + bucket() partition anchor.
 
+STAGE-1 GATE (Brain V4 two-stage): this job now runs the Stage-2 BUSINESS-validation gate
+  _silver_technical.validate_payment_amount over the staged rows BEFORE the canonical MERGE: a
+  MONEY-BEARING payment (the connector lane — authorized/paid; source<>'pixel') with a negative/zero/
+  non-integer amount_minor is diverted to brain_silver.silver_quarantine (stage='business') and NEVER
+  written to silver_payment. Behavioral pixel markers carry no authoritative money (amount NULL) → they
+  are untouched. Good rows are byte-identical to before (parity-faithful); Bronze keeps the original.
+
 DATA AVAILABILITY (this session): current Bronze has ZERO payment.* and ZERO settlement.live.v1 rows, so
 this writes a correct EMPTY table over current Bronze. Schema is the deliverable; populates with no code
 change once a pixel payment marker or a Razorpay pre-settlement event lands in Bronze. Parity status=NEW.
@@ -29,7 +36,8 @@ change once a pixel payment marker or a Razorpay pre-settlement event lands in B
 from __future__ import annotations
 
 from _silver_base import ensure_silver_table, merge_on_pk, prop, read_bronze_events, run_job
-from pyspark.sql.functions import col, lit, when
+from _silver_technical import payment_amount_violations_udf, write_quarantine
+from pyspark.sql.functions import array_join, col, lit, size, when
 
 TABLE = "silver_payment"
 
@@ -80,6 +88,7 @@ def build(spark):
         prop("pj", "currency_code").alias("currency_code"),
         col("occurred_at"),
         col("ingested_at"),
+        col("pj").alias("_payload"),
     )
 
     # ── Lane 2: deterministic razorpay pre-settlement payment events (subset of settlement.live.v1) ─
@@ -99,11 +108,32 @@ def build(spark):
             prop("pj", "currency_code").alias("currency_code"),
             col("occurred_at"),
             col("ingested_at"),
+            col("pj").alias("_payload"),
         )
     )
 
-    staged = pixel.unionByName(conn).where(col("event_id").isNotNull() & col("brand_id").isNotNull())
-    merge_on_pk(spark, fqtn, staged, ["brand_id", "event_id"], order_by_desc=["ingested_at", "occurred_at"])
+    unioned = pixel.unionByName(conn).where(col("event_id").isNotNull() & col("brand_id").isNotNull())
+
+    # ── Stage-2 BUSINESS gate: a money-bearing payment must be positive integer minor units ──────────
+    # is_money_bearing := the deterministic connector lane (source<>'pixel'); pixel markers carry no money.
+    gate = unioned.withColumn(
+        "_violations",
+        payment_amount_violations_udf()(col("amount_minor"), (col("source") != lit("pixel"))),
+    )
+    bad = gate.where(size(col("_violations")) > 0)
+    good = gate.where(size(col("_violations")) == 0).drop("_violations", "_payload")
+
+    rejects = bad.select(
+        col("brand_id"),
+        col("source"),
+        col("event_id").alias("bronze_event_id"),
+        lit(TABLE).alias("canonical_target"),
+        array_join(col("_violations"), ",").alias("reason"),
+        col("_payload").alias("payload"),
+    )
+    write_quarantine(spark, rejects, stage="business")
+
+    merge_on_pk(spark, fqtn, good, ["brand_id", "event_id"], order_by_desc=["ingested_at", "occurred_at"])
     return fqtn, spark.table(fqtn).count()
 
 

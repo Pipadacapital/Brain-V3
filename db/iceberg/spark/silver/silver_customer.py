@@ -35,6 +35,17 @@ SOURCES (mirrors the dbt ref() graph onto the Spark→Iceberg dual-run):
 MONEY (I-S07): lifetime_value_minor is bigint minor units paired with currency_code. brand_id is the
   first column / tenant key. No raw PII (the customer entity is keyed by the brain_id surrogate only).
 
+STAGE-1 GATE (Brain V4 two-stage): this is a PII-FREE aggregate — the canonical customer entity carries
+  NO raw display/name field (names live HASHED on the silver_identity_link edges, never here), so
+  _silver_technical.clean_name has no applicable column in this job (the hash-only PII path is upstream;
+  documented per the Stage-1 contract). The Stage-1 reject path that DOES apply is the DQ currency gate:
+  a rolled-up customer whose aggregate currency_code is not ISO-4217 alpha-3 is diverted to
+  brain_silver.silver_quarantine (stage='dq') and NOT written to silver_customer. (Only currency is gated
+  — a customer's lifetime_value_minor can be legitimately net-NEGATIVE when refunds exceed orders, so the
+  amount-sign DQ rule is intentionally NOT applied at this aggregate grain.) The (brand_id, brain_id)
+  schema invariants are enforced structurally (NOT NULL + the brain_id-not-null filter = the schema gate).
+  Good rows are byte-identical to before (parity-faithful).
+
 PARITY: current side = StarRocks brain_silver.silver_customer (dbt). PK (brand_id, brain_id); money
   column lifetime_value_minor (per-(brand,currency) exact Σ).
 
@@ -46,12 +57,14 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from pyspark.sql import SparkSession  # noqa: E402
 from pyspark.sql import functions as F  # noqa: E402
 from pyspark.sql.utils import AnalysisException  # noqa: E402
 
 from iceberg_base import CATALOG, SILVER_NAMESPACE, build_spark, create_iceberg_table  # noqa: E402
+from _silver_technical import dq_violations_udf, write_quarantine  # noqa: E402
 
 TABLE_NAME = "silver_customer"
 
@@ -151,8 +164,26 @@ def materialize(spark: SparkSession) -> str:
         )
     )
 
-    n = result.count()
-    result.createOrReplaceTempView("sc_src")
+    # ── Stage-1 DQ gate (currency only — see module docstring): non-ISO-4217 currency → quarantine ────
+    gated = result.withColumn(
+        "_dq", dq_violations_udf()(F.lit(None).cast("bigint"), F.col("currency_code"), F.lit(None).cast("string"))
+    )
+    write_quarantine(
+        spark,
+        gated.where(F.size(F.col("_dq")) > 0).select(
+            F.col("brand_id"),
+            F.lit("silver_order_state").alias("source"),
+            F.col("brain_id").alias("bronze_event_id"),
+            F.lit(TABLE_NAME).alias("canonical_target"),
+            F.array_join(F.col("_dq"), ",").alias("reason"),
+            F.to_json(F.struct("brand_id", "brain_id", "currency_code", "lifetime_value_minor")).alias("payload"),
+        ),
+        stage="dq",
+    )
+    good = gated.where(F.size(F.col("_dq")) == 0).drop("_dq")
+
+    n = good.count()
+    good.createOrReplaceTempView("sc_src")
 
     # Idempotent MERGE on the PK. WHEN MATCHED THEN UPDATE — a customer's lifetime totals RESTATE when a
     # new order lands (the dbt incremental re-fold semantic); WHEN NOT MATCHED THEN INSERT for new ones.

@@ -22,6 +22,15 @@ MONEY: order_value_minor is signed BIGINT minor units (Σ of recognized rows, ex
        with currency_code. brand_id is the tenant key, first column. PII is hashed-only upstream.
 IDEMPOTENT / REPLAY-SAFE: MERGE on (brand_id, order_id) — re-run yields byte-identical rows.
 
+STAGE-1 GATE (Brain V4 two-stage): BEFORE the recognition fold, each staged order is run through the
+  Stage-1 DQ gate _silver_technical.dq_check (negative amount_minor, non-ISO-4217 currency_code, future
+  occurred_at). A failing order is diverted to brain_silver.silver_quarantine (stage='dq') and EXCLUDED
+  from recognition — it never reaches silver_order_state; Bronze keeps the original (replay-safe: fix +
+  re-run re-admits it). And the lifecycle events are EVENT-ORDERED via _silver_technical.event_order_key
+  (added as the lowest-priority, replay-stable final tiebreaker in the terminal-wins fold — it does NOT
+  change the winner for well-formed data, only makes exact ties totally ordered). Good orders are
+  byte-identical to before (parity-faithful).
+
 SOURCES it cannot get from Iceberg (read via JDBC, exactly as dbt does cross-catalog):
   - brand prepaid recognition horizon  → PG tenancy.brand (the brand_horizons_src shim columns)
   - hashed-email → brain_id            → PG ops.silver_identity_link (the Neo4j export, PG operational store)
@@ -35,8 +44,11 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from pyspark.sql import SparkSession
+from pyspark.sql.functions import array_join, col, lit, size  # noqa: E402
+from pyspark.sql.types import StringType  # noqa: E402
 
 from iceberg_base import (  # noqa: E402 — sys.path tweak above
     CATALOG,
@@ -44,6 +56,7 @@ from iceberg_base import (  # noqa: E402 — sys.path tweak above
     build_spark,
     create_iceberg_table,
 )
+from _silver_technical import dq_violations_udf, event_order_key_str, write_quarantine  # noqa: E402
 
 BRONZE_NAMESPACE = os.environ.get("BRONZE_NAMESPACE", "brain_bronze")
 BRONZE_TABLE = f"{CATALOG}.{os.environ.get('SILVER_NAMESPACE', 'brain_silver')}.silver_collector_event"  # ADR-0006 P3: gated source (R2/R3 now in Silver)
@@ -155,7 +168,7 @@ def build(spark: SparkSession) -> str:
         ),
         typed as (
             select
-                brand_id, event_id, occurred_at,
+                brand_id, event_id, occurred_at, pj,
                 get_json_object(pj, '$.properties.order_id')                          as order_id,
                 cast(get_json_object(pj, '$.properties.amount_minor') as bigint)      as amount_minor,
                 get_json_object(pj, '$.properties.currency_code')                     as currency_code,
@@ -176,7 +189,7 @@ def build(spark: SparkSession) -> str:
             where order_id is not null and order_id <> ''
         )
         select
-            brand_id, order_id, amount_minor, currency_code,
+            brand_id, event_id, pj as payload, order_id, amount_minor, currency_code,
             case when payment_method_raw = 'cod' then 'cod' else 'prepaid' end as payment_method,
             financial_status, cancelled_at, hashed_customer_email,
             occurred_at,
@@ -185,7 +198,35 @@ def build(spark: SparkSession) -> str:
         from deduped
         where _dedup_rn = 1
     """
-    spark.sql(stg_order_events).createOrReplaceTempView("stg_order_events_bronze")
+    # ── Stage-1 DQ gate over the staged orders: negative amount / bad currency / future occurred_at ───
+    stg_df = spark.sql(stg_order_events).withColumn(
+        "_dq",
+        dq_violations_udf()(col("amount_minor"), col("currency_code"), col("occurred_at").cast("string")),
+    )
+    bad_orders = stg_df.where(size(col("_dq")) > 0)
+    write_quarantine(
+        spark,
+        bad_orders.select(
+            col("brand_id"),
+            lit("order.live.v1").alias("source"),
+            col("event_id").alias("bronze_event_id"),
+            lit(TABLE).alias("canonical_target"),
+            array_join(col("_dq"), ",").alias("reason"),
+            col("payload"),
+        ),
+        stage="dq",
+    )
+    stg_df.where(size(col("_dq")) == 0).drop("_dq", "payload").createOrReplaceTempView("stg_order_events_bronze")
+
+    # Event-ordering port (registered for the SQL fold): event_order_key as a sortable string key. Used as
+    # the additive, lowest-priority final tiebreaker in the terminal-wins window (replay-stable total order).
+    spark.udf.register(
+        "event_order_key_str_sql",
+        lambda occurred_at, source_ts, sequence: event_order_key_str(
+            {"occurred_at": occurred_at, "source_ts": source_ts, "sequence": sequence}
+        ),
+        StringType(),
+    )
 
     # ── latest AWB terminal_class per order (COD recognition signal; absent in this Bronze → no COD rows) ──
     spark.sql(
@@ -265,6 +306,7 @@ def build(spark: SparkSession) -> str:
         select
             brand_id, order_id, brain_id, amount_minor, currency_code,
             occurred_at, economic_effective_at, ingested_at, event_type,
+            event_order_key_str_sql(cast(occurred_at as string), cast(ingested_at as string), cast(null as int)) as event_order_key,
             case event_type
                 when 'provisional_recognition'   then 'placed'
                 when 'finalization'              then 'confirmed'
@@ -307,7 +349,8 @@ def build(spark: SparkSession) -> str:
                 occurred_at, economic_effective_at,
                 row_number() over (
                     partition by brand_id, order_id
-                    order by is_terminal desc, economic_effective_at desc, state_rank desc, occurred_at desc
+                    order by is_terminal desc, economic_effective_at desc, state_rank desc, occurred_at desc,
+                             event_order_key desc
                 ) as _win_rn
             from lifecycle
         ),

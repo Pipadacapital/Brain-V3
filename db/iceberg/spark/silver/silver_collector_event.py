@@ -30,6 +30,22 @@ GATE (faithful port of gate_and_map — Iceberg parity with the PG/Spark admissi
     the de-dup the Spark MERGE used to do now lives here (replay/​redelivery-safe).
 
 IDEMPOTENT: MERGE on (brand_id, event_id). Re-running over the same raw Bronze yields identical rows.
+
+STAGE-1 GATE (Brain V4 two-stage): this admission gate used to SILENTLY DROP every rejected row (malformed
+envelope, R3 consent-missing, R2 tenant-unresolved, R2 brand-mismatch). Each silent drop is now ROUTED
+through _silver_technical.write_quarantine to brain_silver.silver_quarantine — observable + replayable —
+with the SAME admission set (good rows byte-identical / parity-faithful), Bronze keeping the untouched
+original:
+  - malformed envelope (event_id / brand_id / occurred_at NULL = a MISSING required structural field) →
+    stage='schema' (empty_identifier:* / unparseable_timestamp).
+  - R3 consent_flags absent on a pixel event → stage='dq' (reason='consent_missing').
+  - R2 install_token resolves to no tenant (was an INNER-join drop → now a LEFT join + capture) →
+    stage='dq' (reason='tenant_unresolved').
+  - R2 claimed brand_id ≠ install-derived brand_id → stage='dq' (reason='brand_mismatch').
+LEDGER_ONLY (settlement.live.v1) is an INTENTIONAL routing exclusion (consumed by the ledger bridge, never a
+Bronze/Silver collector row) — NOT a data-quality reject — so it is excluded as before and NOT quarantined.
+The reconstructed `payload` envelope is already hashed-PII-safe (the collector boundary hashes identifiers),
+so it is threaded into the quarantine row for replay — no raw PII crosses this gate.
 """
 from __future__ import annotations
 
@@ -40,12 +56,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pyspark.sql import DataFrame, SparkSession  # noqa: E402
 from pyspark.sql.functions import (  # noqa: E402
-    coalesce, col, concat, current_timestamp, lit, row_number, struct, to_json, to_timestamp,
+    coalesce, col, concat, concat_ws, current_timestamp, lit, row_number, struct, to_json, to_timestamp, when,
 )
 from pyspark.sql.window import Window  # noqa: E402
 
 from iceberg_base import CATALOG, SILVER_NAMESPACE, build_spark, create_iceberg_table  # noqa: E402
 from job_log import emit_job_log  # noqa: E402
+from _silver_technical import write_quarantine  # noqa: E402
 
 BRONZE_NAMESPACE = os.environ.get("BRONZE_NAMESPACE", "brain_bronze")
 RAW_TABLE = f"{CATALOG}.{BRONZE_NAMESPACE}.collector_events_raw"
@@ -104,31 +121,97 @@ def build(spark: SparkSession):
     # payload-is-the-full-envelope contract the downstream get_json_object readers depend on.
     payload = to_json(struct(*[col(c) for c in raw.columns]))
 
-    base = (
-        raw.select(
-            col("event_id").cast("string").alias("event_id"),
-            col("brand_id").cast("string").alias("claimed_brand_id"),
-            col("event_name").cast("string").alias("event_type"),
-            to_timestamp(col("occurred_at")).alias("occurred_at"),
-            coalesce(to_timestamp(col("_received_at")), current_timestamp()).alias("ingested_at"),
-            col("correlation_id").cast("string").alias("correlation_id"),
-            col("properties.install_token").cast("string").alias("install_token"),
-            col("consent_flags").alias("consent_flags_raw"),  # R3 signal: PRESENT (struct non-null)
-            payload.alias("payload"),
-        )
-        .where(col("event_id").isNotNull() & col("claimed_brand_id").isNotNull() & col("occurred_at").isNotNull())
-        .where(~col("event_type").isin(*LEDGER_ONLY))
+    selected = raw.select(
+        col("event_id").cast("string").alias("event_id"),
+        col("brand_id").cast("string").alias("claimed_brand_id"),
+        col("event_name").cast("string").alias("event_type"),
+        to_timestamp(col("occurred_at")).alias("occurred_at"),
+        coalesce(to_timestamp(col("_received_at")), current_timestamp()).alias("ingested_at"),
+        col("correlation_id").cast("string").alias("correlation_id"),
+        col("properties.install_token").cast("string").alias("install_token"),
+        col("consent_flags").alias("consent_flags_raw"),  # R3 signal: PRESENT (struct non-null)
+        payload.alias("payload"),
     )
+
+    _qsource = coalesce(col("event_type"), lit("collector"))
+    _qtarget = lit("silver_collector_event")
+
+    # ── Stage-1 SCHEMA gate: a malformed envelope (missing required event_id / brand_id / occurred_at) →
+    #    quarantine (stage='schema') instead of the old silent drop. Same admission set.
+    _wellformed = col("event_id").isNotNull() & col("claimed_brand_id").isNotNull() & col("occurred_at").isNotNull()
+    write_quarantine(
+        spark,
+        selected.where(~_wellformed).select(
+            col("claimed_brand_id").alias("brand_id"),
+            _qsource.alias("source"),
+            col("event_id").alias("bronze_event_id"),
+            _qtarget.alias("canonical_target"),
+            concat_ws(
+                ",",
+                when(col("event_id").isNull(), lit("empty_identifier:event_id")),
+                when(col("claimed_brand_id").isNull(), lit("empty_identifier:brand_id")),
+                when(col("occurred_at").isNull(), lit("unparseable_timestamp")),
+            ).alias("reason"),
+            col("payload"),
+        ),
+        stage="schema",
+    )
+
+    # LEDGER_ONLY is an INTENTIONAL routing exclusion (ledger bridge), NOT a reject — excluded, never quarantined.
+    base = selected.where(_wellformed).where(~col("event_type").isin(*LEDGER_ONLY))
 
     server = base.where(col("event_type").isin(*SERVER_TRUSTED)).withColumn("brand_id", col("claimed_brand_id"))
 
     installs = _load_installs(spark)
     from pyspark.sql.functions import broadcast  # local import keeps the module import surface minimal
+
+    pixel_candidates = base.where(~col("event_type").isin(*SERVER_TRUSTED))
+
+    # ── Stage-1 DQ gate (R3 consent): a pixel event with no consent_flags → quarantine (stage='dq'). ──────
+    write_quarantine(
+        spark,
+        pixel_candidates.where(col("consent_flags_raw").isNull()).select(
+            col("claimed_brand_id").alias("brand_id"),
+            _qsource.alias("source"),
+            col("event_id").alias("bronze_event_id"),
+            _qtarget.alias("canonical_target"),
+            lit("consent_missing").alias("reason"),
+            col("payload"),
+        ),
+        stage="dq",
+    )
+    consent_ok = pixel_candidates.where(col("consent_flags_raw").isNotNull())  # R3
+
+    # ── Stage-1 DQ gate (R2 tenant resolution): LEFT join so an unresolved install_token is CAPTURED (the
+    #    old INNER join silently dropped it), then brand_mismatch — both → quarantine (stage='dq'). ─────────
+    resolved = consent_ok.join(broadcast(installs), "install_token", "left")
+    write_quarantine(
+        spark,
+        resolved.where(col("derived_brand_id").isNull()).select(
+            col("claimed_brand_id").alias("brand_id"),
+            _qsource.alias("source"),
+            col("event_id").alias("bronze_event_id"),
+            _qtarget.alias("canonical_target"),
+            lit("tenant_unresolved").alias("reason"),
+            col("payload"),
+        ),
+        stage="dq",
+    )
+    matched = resolved.where(col("derived_brand_id").isNotNull())
+    write_quarantine(
+        spark,
+        matched.where(col("claimed_brand_id") != col("derived_brand_id")).select(
+            col("claimed_brand_id").alias("brand_id"),
+            _qsource.alias("source"),
+            col("event_id").alias("bronze_event_id"),
+            _qtarget.alias("canonical_target"),
+            lit("brand_mismatch").alias("reason"),
+            col("payload"),
+        ),
+        stage="dq",
+    )
     pixel = (
-        base.where(~col("event_type").isin(*SERVER_TRUSTED))
-        .where(col("consent_flags_raw").isNotNull())            # R3
-        .join(broadcast(installs), "install_token", "inner")    # R2: resolve (drop tenant_unresolved)
-        .where(col("claimed_brand_id") == col("derived_brand_id"))  # R2: drop brand_mismatch
+        matched.where(col("claimed_brand_id") == col("derived_brand_id"))  # R2: admit only claimed==derived
         .withColumn("brand_id", col("derived_brand_id"))
     )
 

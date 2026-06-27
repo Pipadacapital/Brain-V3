@@ -26,6 +26,12 @@ PII     : hashed-only. awb_number is hashed at the GoKwik boundary (awb_number_h
           non-PII ledger spine. This job NEVER sees or stores a raw AWB or contact identifier.
 ISOLATION: brand_id is the first column + the bucket() partition anchor (tenant key on every row).
 
+STAGE-1 GATE (Brain V4 two-stage): this job now runs the Stage-1 DQ gate _silver_technical.dq_check over
+  the reconciled COD row BEFORE the canonical MERGE: a row whose cod_amount_minor is negative/non-integer,
+  whose currency_code is not ISO-4217 alpha-3, or whose COD order time (occurred_at) is future/unparseable
+  is diverted to brain_silver.silver_quarantine (stage='dq') and NEVER written to silver_cod_rto; Bronze
+  keeps the original (replay-safe: fix + re-run re-admits). Good rows are byte-identical (parity-faithful).
+
 DATA AVAILABILITY (this session): current Bronze HAS COD order.live.v1 rows (~494) and a handful of
 gokwik.rto_predict.v1 rows, but ZERO gokwik.awb_status.v1 (no AWB lifecycle has synced), so the `actual`
 outcome columns populate NULL for now while cod_amount + predicted-risk populate from live data. The
@@ -35,6 +41,7 @@ gokwik.awb_status.v1 lands. Parity status=NEW.
 from __future__ import annotations
 
 from _silver_base import BRONZE_TABLE, ensure_silver_table, merge_on_pk, prop, read_bronze_events, run_job
+from _silver_technical import dq_violations_udf, write_quarantine
 from pyspark.sql import functions as F
 from pyspark.sql.functions import coalesce, col, lit, lower, when
 from pyspark.sql.window import Window
@@ -188,7 +195,30 @@ def build(spark):
         ).alias("ingested_at"),
     ).where(col("order_id").isNotNull() & col("brand_id").isNotNull())
 
-    merge_on_pk(spark, fqtn, staged, ["brand_id", "order_id"], order_by_desc=["ingested_at", "occurred_at"])
+    # ── Stage-1 DQ gate: COD money (cod_amount_minor + currency) + the COD order timestamp. Negative/non-int
+    # amount, non-ISO-4217 currency, or a future/unparseable order time → silver_quarantine (stage='dq'),
+    # NEVER silver_cod_rto; Bronze keeps the original (replay-safe). order_id is the non-PII grain spine.
+    gated = staged.withColumn(
+        "_dq",
+        dq_violations_udf()(col("cod_amount_minor"), col("currency_code"), col("occurred_at").cast("string")),
+    )
+    write_quarantine(
+        spark,
+        gated.where(F.size(col("_dq")) > 0).select(
+            col("brand_id"),
+            lit(ORDER_EVENT).alias("source"),
+            col("order_id").alias("bronze_event_id"),
+            lit(TABLE).alias("canonical_target"),
+            F.array_join(col("_dq"), ",").alias("reason"),
+            F.to_json(
+                F.struct("brand_id", "order_id", "cod_amount_minor", "currency_code", "financial_status")
+            ).alias("payload"),
+        ),
+        stage="dq",
+    )
+    good = gated.where(F.size(col("_dq")) == 0).drop("_dq")
+
+    merge_on_pk(spark, fqtn, good, ["brand_id", "order_id"], order_by_desc=["ingested_at", "occurred_at"])
     return fqtn, spark.table(fqtn).count()
 
 

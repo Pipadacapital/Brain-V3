@@ -32,6 +32,16 @@ MONEY   : messaging carries a per-message provider COST (e.g. the WhatsApp per-m
           discipline as every other Silver mart (I-S07) — defaulting to 0 / 'INR' when absent.
 ISOLATION: brand_id is the FIRST column + the bucket() partition anchor (tenant key on every row).
 
+STAGE-1 GATE (Brain V4 two-stage): a message_send carries provider cost (cost_minor + currency_code) and a
+  timestamp, so the applicable Stage-1 DQ rules are the MONEY gate over (cost_minor, currency_code)
+  (negative_amount / non_integer_amount / invalid_currency / missing_currency) and the TIMESTAMP gate over
+  occurred_at (future_occurred_at / unparseable_timestamp) — _silver_technical.dq_check. A message with a
+  negative/non-integer cost, a non-ISO-4217 currency, or a future/unparseable occurred_at is diverted to
+  brain_silver.silver_quarantine (stage='dq') and NEVER written to silver_message_send; Bronze keeps the
+  original (replay-safe). recipient_hash stays on the existing hash-only path (the gate never touches it);
+  template is an opaque type name (not a human display name), so clean_name/clean_string do NOT apply. Good
+  rows are byte-identical to before (parity-faithful).
+
 DATA AVAILABILITY (this session): current Bronze has ZERO message.* rows — the WhatsApp connector is
 `coming_soon` (registry.ts) and no outbound connector streams send/delivery/read events into Bronze yet.
 This job therefore writes a correct EMPTY table over current Bronze (0 rows is the expected, honest
@@ -47,7 +57,8 @@ from _silver_base import (
     read_bronze_events,
     run_job,
 )
-from pyspark.sql.functions import coalesce, col, get_json_object, lit, to_timestamp
+from _silver_technical import dq_violations_udf, write_quarantine
+from pyspark.sql.functions import array_join, coalesce, col, get_json_object, lit, size, to_timestamp
 
 TABLE = "silver_message_send"
 
@@ -116,6 +127,8 @@ def build(spark):
             to_timestamp(prop("pj", "read_at")).alias("read_at"),
             col("occurred_at"),
             col("ingested_at"),
+            # Carry the raw payload so a quarantined reject is replayable from the quarantine row alone.
+            col("pj").alias("_payload"),
         )
         .where(col("brand_id").isNotNull() & col("message_id").isNotNull())
     )
@@ -138,11 +151,34 @@ def build(spark):
         ),
     ).drop("_status_raw", "event_type")
 
+    # ── Stage-1 DQ gate: money (cost_minor + currency_code) + timestamp validity ──────────────────────
+    gated = staged.withColumn(
+        "_dq",
+        dq_violations_udf()(
+            col("cost_minor"),
+            col("currency_code"),
+            col("occurred_at").cast("string"),
+        ),
+    )
+    write_quarantine(
+        spark,
+        gated.where(size(col("_dq")) > 0).select(
+            col("brand_id"),
+            col("source"),
+            col("message_id").alias("bronze_event_id"),
+            lit(TABLE).alias("canonical_target"),
+            array_join(col("_dq"), ",").alias("reason"),
+            col("_payload").alias("payload"),
+        ),
+        stage="dq",
+    )
+    good = gated.where(size(col("_dq")) == 0).drop("_dq", "_payload")
+
     # Latest-ingested-wins on the message grain → send→delivery→read collapse to the most-recent status.
     merge_on_pk(
         spark,
         fqtn,
-        staged,
+        good,
         ["brand_id", "message_id"],
         order_by_desc=["ingested_at", "occurred_at"],
     )

@@ -35,6 +35,14 @@ DUAL-RUN (P4): writes to a SHADOW table by default (TARGET_TABLE override) so pa
 the live canonical silver_collector_event order rows before the connector cutover. Money is bigint MINOR
 units + a sibling currency_code (never blended, never float). PII is hashed-only; raw identifiers never
 stored. brand_id is the tenant key, first column, taken ONLY from the server-trusted envelope (MT-1).
+
+STAGE-1 GATE (Brain V4 two-stage): mirrors the Shopify exemplar — the inline drop gate
+(`.where(event_id & amount_minor & occurred_at_iso isNotNull)`) is now ROUTED through
+_silver_technical.write_quarantine (stage='dq') to brain_silver.silver_quarantine: un-seedable event_id →
+empty_identifier:event_id, malformed money → non_integer_amount, un-derivable occurred_at →
+unparseable_timestamp. The admitted set is IDENTICAL (good rows byte-identical / parity-faithful); the
+quarantine payload carries only NON-PII source fields (raw email/phone never threaded — PII stays
+hash-only), and Bronze keeps the untouched original (replay-safe).
 """
 from __future__ import annotations
 
@@ -45,11 +53,12 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pyspark.sql import SparkSession  # noqa: E402
-from pyspark.sql.functions import col, lit, lower, to_json, struct, udf, when  # noqa: E402
+from pyspark.sql.functions import col, concat_ws, lit, lower, to_json, struct, udf, when  # noqa: E402
 from pyspark.sql.types import LongType, StringType  # noqa: E402
 
 from iceberg_base import CATALOG, SILVER_NAMESPACE, build_spark, create_iceberg_table  # noqa: E402
 from job_log import emit_job_log  # noqa: E402
+from _silver_technical import write_quarantine  # noqa: E402
 import _raw_normalize as rn
 from _raw_normalize import iso_ms_assume_utc as woo_to_utc_iso  # consolidated primitives (ADR-0006)  # noqa: E402
 
@@ -151,8 +160,34 @@ def build(spark: SparkSession):
         # Woo has no separate cancelled ts; a 'cancelled' status AT occurred_at drives the rto_reversal.
         .withColumn("cancelled_at_iso", when(col("status_lc") == "cancelled", col("occurred_at_iso")).otherwise(lit(None).cast("string")))
         .withColumn("event_id", u_eid(col("brand_id"), col("order_id"), col("occurred_ms")))
-        .where(col("event_id").isNotNull() & col("amount_minor").isNotNull() & col("occurred_at_iso").isNotNull())
     )
+
+    # ── Stage-1 DQ gate: route the inline drops to brain_silver.silver_quarantine (stage='dq') instead of
+    #    silently dropping. Same admission set; good rows byte-identical; NON-PII diagnostic payload only.
+    _ok = col("event_id").isNotNull() & col("amount_minor").isNotNull() & col("occurred_at_iso").isNotNull()
+    _reason = concat_ws(
+        ",",
+        when(col("event_id").isNull(), lit("empty_identifier:event_id")),
+        when(col("amount_minor").isNull(), lit("non_integer_amount")),
+        when(col("occurred_at_iso").isNull(), lit("unparseable_timestamp")),
+    )
+    write_quarantine(
+        spark,
+        canon.where(~_ok).select(
+            col("brand_id"),
+            lit("woocommerce").alias("source"),
+            col("event_id").alias("bronze_event_id"),
+            lit(TARGET.rsplit(".", 1)[1]).alias("canonical_target"),
+            _reason.alias("reason"),
+            to_json(struct(
+                col("order_id"), col("status"), col("currency_raw"), col("price_str"),
+                col("payment_method"), col("payment_method_title"), col("date_modified_gmt"),
+                col("date_created_gmt"), col("customer_id"),
+            )).alias("payload"),
+        ),
+        stage="dq",
+    )
+    canon = canon.where(_ok)
 
     # Reconstruct the canonical order.live.v1 envelope as the `payload` JSON the order marts get_json_object.
     # Mirrors the Shopify exemplar's scalar payload; source='woocommerce' for multi-source scoping.

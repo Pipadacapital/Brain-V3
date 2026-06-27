@@ -37,6 +37,14 @@ tenant key, first column, taken ONLY from the server-trusted envelope (MT-1) —
 
 DUAL-RUN (P4): writes to a SHADOW table by default (TARGET_TABLE override) so parity can be checked against
 the live canonical silver_collector_event GoKwik rows before the connector cutover.
+
+STAGE-1 GATE (Brain V4 two-stage): both seams used to SILENTLY DROP a record whose order_id was empty (the
+mapper THROWS), whose event_id could not be seeded, or whose timestamp was unparseable. Those inline drops
+(`_build_awb` / `_build_rto` where-gates) are now ROUTED through _silver_technical.write_quarantine
+(stage='dq') to brain_silver.silver_quarantine: empty order_id → empty_identifier:order_id, un-seedable
+event_id → empty_identifier:event_id, unparseable status/occurred ts → unparseable_timestamp. The admitted
+set is IDENTICAL per seam (good rows byte-identical / parity-faithful); the diagnostic payload carries only
+NON-PII fields (the raw AWB is the hash input — NEVER threaded), and Bronze keeps the untouched original.
 """
 from __future__ import annotations
 
@@ -47,11 +55,12 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pyspark.sql import SparkSession  # noqa: E402
-from pyspark.sql.functions import coalesce, col, get_json_object, lit, to_json, struct, udf  # noqa: E402
+from pyspark.sql.functions import coalesce, col, concat_ws, get_json_object, lit, to_json, struct, udf, when  # noqa: E402
 from pyspark.sql.types import BooleanType, StringType  # noqa: E402
 
 from iceberg_base import CATALOG, SILVER_NAMESPACE, build_spark, create_iceberg_table  # noqa: E402
 from job_log import emit_job_log  # noqa: E402
+from _silver_technical import write_quarantine  # noqa: E402
 import _raw_normalize as rn
 from _raw_normalize import classify_terminal_class as _classify_shipment_status, normalize_status as _normalize_status  # consolidated primitives (ADR-0006)  # noqa: E402
 
@@ -225,9 +234,33 @@ def _build_awb(spark: SparkSession, base, salts):
         .withColumn("pincode", rn_trim_null_udf(col("pincode_raw")))
         .withColumn("order_id", rn_trim_udf(col("order_id")))
         .withColumn("event_id", u_eid_awb(col("brand_id"), col("raw_awb"), col("raw_status"), col("status_changed_at_iso")))
-        # mapper THROWS on a missing order_id → quarantine (drop) here so the batch never crashes.
-        .where((col("order_id") != lit("")) & col("event_id").isNotNull() & col("status_changed_at_iso").isNotNull())
     )
+
+    # ── Stage-1 DQ gate: the mapper THROWS on a missing order_id; route that + un-seedable id / unparseable
+    #    ts to brain_silver.silver_quarantine (stage='dq') instead of silently dropping. Same admission set.
+    _ok = (col("order_id") != lit("")) & col("event_id").isNotNull() & col("status_changed_at_iso").isNotNull()
+    _reason = concat_ws(
+        ",",
+        when(col("order_id") == lit(""), lit("empty_identifier:order_id")),
+        when(col("event_id").isNull(), lit("empty_identifier:event_id")),
+        when(col("status_changed_at_iso").isNull(), lit("unparseable_timestamp")),
+    )
+    write_quarantine(
+        spark,
+        canon.where(~_ok).select(
+            col("brand_id"),
+            lit("gokwik").alias("source"),
+            col("event_id").alias("bronze_event_id"),
+            lit(TARGET.rsplit(".", 1)[1]).alias("canonical_target"),
+            _reason.alias("reason"),
+            to_json(struct(
+                col("data_source"), col("order_id"), col("prop_status"), col("terminal_class"),
+                col("payment_method"), col("pincode"), col("status_changed_at_iso"),
+            )).alias("payload"),
+        ),
+        stage="dq",
+    )
+    canon = canon.where(_ok)
 
     props = struct(
         lit("gokwik").alias("source"),
@@ -265,8 +298,33 @@ def _build_rto(spark: SparkSession, base):
         .withColumn("occurred_at_iso", u_iso1(col("occurred_at_in")))
         # event_id seed uses the raw (untrimmed) order_id/request_id, as the command does.
         .withColumn("event_id", u_eid_rto(col("brand_id"), coalesce(col("raw_order_id"), lit("")), coalesce(col("raw_request_id"), lit(""))))
-        .where((col("order_id") != lit("")) & col("event_id").isNotNull() & col("occurred_at_iso").isNotNull())
     )
+
+    # ── Stage-1 DQ gate: route empty order_id / un-seedable id / unparseable occurred_at to
+    #    brain_silver.silver_quarantine (stage='dq') instead of silently dropping. Same admission set.
+    _ok = (col("order_id") != lit("")) & col("event_id").isNotNull() & col("occurred_at_iso").isNotNull()
+    _reason = concat_ws(
+        ",",
+        when(col("order_id") == lit(""), lit("empty_identifier:order_id")),
+        when(col("event_id").isNull(), lit("empty_identifier:event_id")),
+        when(col("occurred_at_iso").isNull(), lit("unparseable_timestamp")),
+    )
+    write_quarantine(
+        spark,
+        canon.where(~_ok).select(
+            col("brand_id"),
+            lit("gokwik").alias("source"),
+            col("event_id").alias("bronze_event_id"),
+            lit(TARGET.rsplit(".", 1)[1]).alias("canonical_target"),
+            _reason.alias("reason"),
+            to_json(struct(
+                col("data_source"), col("order_id"), col("request_id"), col("risk_flag"),
+                col("risk_flag_raw"), col("risk_reason"), col("occurred_at_iso"),
+            )).alias("payload"),
+        ),
+        stage="dq",
+    )
+    canon = canon.where(_ok)
 
     props = struct(
         lit("gokwik").alias("source"),

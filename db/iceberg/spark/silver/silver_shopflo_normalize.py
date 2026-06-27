@@ -32,6 +32,17 @@ primitives preserves the exact provider structure (null keys, number forms) and 
 DUAL-RUN (P4): writes to a SHADOW table by default (TARGET_TABLE override) so parity can be checked against the
 live canonical silver_collector_event shopflo rows before the connector cutover. MONEY: bigint MINOR units,
 never float, paired with currency_code, never blended. PII: hashed-only (email/phone) — raw never stored.
+
+STAGE-1 GATE (Brain V4 two-stage): build_shopflo_canonical RETURNS (None, None, None) on any mapper-throw
+(empty checkout_id, un-parseable money, or no resolvable timestamp), which the inline
+`.where(c.event_id & c.payload & c.occurred_at isNotNull)` gate then SILENTLY DROPPED. Those drops are now
+ROUTED through _silver_technical.write_quarantine (stage='dq') to brain_silver.silver_quarantine. The build
+port collapses the three sub-causes into one all-or-nothing reject, so the reason names the collapsed rule
+(missing_checkout_id | non_integer_amount | unparseable_timestamp). The admitted set is IDENTICAL (good rows
+byte-identical / parity-faithful). CRITICAL: the verbatim Shopflo webhook body holds RAW email/phone, so it
+is NEVER threaded into the quarantine payload (PII stays hash-only) — the diagnostic payload carries only the
+NON-PII checkout_id / cart_token / occurred_at / currency keys; the untouched original lives in Bronze
+(brain_bronze.shopflo_checkout_raw) for replay.
 """
 from __future__ import annotations
 
@@ -44,11 +55,12 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pyspark.sql import SparkSession  # noqa: E402
-from pyspark.sql.functions import coalesce, col, current_timestamp, lit, udf  # noqa: E402
+from pyspark.sql.functions import coalesce, col, current_timestamp, get_json_object, lit, to_json, struct, udf  # noqa: E402
 from pyspark.sql.types import StringType, StructField, StructType  # noqa: E402
 
 from iceberg_base import CATALOG, SILVER_NAMESPACE, build_spark, create_iceberg_table  # noqa: E402
 from job_log import emit_job_log  # noqa: E402
+from _silver_technical import write_quarantine  # noqa: E402
 import _raw_normalize as rn
 from _raw_normalize import money_to_minor_string  # consolidated primitives (ADR-0006)  # noqa: E402
 
@@ -240,7 +252,29 @@ def build(spark: SparkSession):
     df = df.join(salts.hint("broadcast"), "brand_id", "left")
 
     built = df.withColumn("c", u_build(col("payload_raw"), col("brand_id"), col("salt_hex")))
-    canon = built.where(col("c.event_id").isNotNull() & col("c.payload").isNotNull() & col("c.occurred_at").isNotNull())
+
+    # ── Stage-1 DQ gate: route the inline drops to brain_silver.silver_quarantine (stage='dq') instead of
+    #    silently dropping. Same admission set; good rows byte-identical. The raw webhook body holds RAW PII
+    #    → NEVER threaded; only the NON-PII checkout keys are diagnosed (replay from Bronze).
+    _ok = col("c.event_id").isNotNull() & col("c.payload").isNotNull() & col("c.occurred_at").isNotNull()
+    write_quarantine(
+        spark,
+        built.where(~_ok).select(
+            col("brand_id"),
+            lit("shopflo").alias("source"),
+            col("c.event_id").alias("bronze_event_id"),
+            lit(TARGET.rsplit(".", 1)[1]).alias("canonical_target"),
+            lit("normalize_rejected:missing_checkout_id|non_integer_amount|unparseable_timestamp").alias("reason"),
+            to_json(struct(
+                get_json_object(col("payload_raw"), "$.checkout_id").alias("checkout_id"),
+                get_json_object(col("payload_raw"), "$.cart_token").alias("cart_token"),
+                get_json_object(col("payload_raw"), "$.occurred_at").alias("occurred_at"),
+                get_json_object(col("payload_raw"), "$.currency").alias("currency"),
+            )).alias("payload"),
+        ),
+        stage="dq",
+    )
+    canon = built.where(_ok)
 
     out = canon.select(
         col("c.event_id").alias("event_id"),

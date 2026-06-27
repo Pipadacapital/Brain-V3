@@ -25,6 +25,21 @@ PII     : hashed/anon-only — brain_anon_id (opaque pixel id), session_id (per-
           product-catalog id (not PII); coupon_code is a discount code (not PII). No raw contact identifier.
 ISOLATION: brand_id first column + bucket(256, brand_id) + days(occurred_at) partition.
 
+STAGE-1 GATE (Brain V4 two-stage, _silver_technical): a cart event is anon-keyed, TIMESTAMPED, and OPTIONALLY
+  money-bearing (value_minor + currency_code) with a line quantity — so several Stage-1 rules apply, all
+  → stage='dq':
+    - empty_identifier:brain_anon_id — the silent no-anon drop (cannot tie to a journey) is REPLACED by a
+      routed write_quarantine (same admitted set, now observable + replayable).
+    - money gate (negative_amount / non_integer_amount / invalid_currency / missing_currency) — run on
+      value_minor + currency_code. value_minor is NULL for storefronts that carry no cart price → the gate
+      OMITS the money fields for those rows (no false missing_currency); a row that DOES carry value_minor
+      must carry a sibling ISO-4217 currency_code (HARD RULE — money never blended/assumed).
+    - impossible_quantity — on the cart line `quantity` (negative or absurd ceiling).
+    - future/unparseable timestamp — on occurred_at.
+  N/A: clean_name/clean_string — product_handle/variant_id are catalog ids, coupon_code is a CASE-SENSITIVE
+  discount code (never lowercased/cleaned), path/referrer are URLs. Bronze keeps every original; good rows
+  are byte-identical to before (parity-faithful).
+
 DATA AVAILABILITY (this session): current Bronze has cart.item_added (42) + cart.viewed (2) +
 cart.updated (1) → populated; value_minor is NULL (Shopify cart XHR carries no price), coupon.applied is 0
 (none captured yet) — the schema + transform are the deliverable, both populate with no code change once a
@@ -33,7 +48,8 @@ storefront emits cart value / a coupon form is submitted. Parity status=NEW (no 
 from __future__ import annotations
 
 from _silver_base import ensure_silver_table, merge_on_pk, prop, read_bronze_events, run_job
-from pyspark.sql.functions import coalesce, col, lit, when
+from _silver_technical import dq_violations_udf, write_quarantine
+from pyspark.sql.functions import array_join, coalesce, col, lit, size, when
 
 TABLE = "silver_cart_event"
 
@@ -95,6 +111,9 @@ def build(spark):
         prop("pj", "device.ua_class").alias("device_class"),
         col("occurred_at"),
         col("ingested_at"),
+        # Transient Stage-1 carriers (dropped before MERGE): source event_name + raw payload (replayable).
+        col("event_type").alias("_source_event"),
+        col("pj").alias("_payload"),
     )
 
     # ── Lane 2: coupon.applied folded in as a cart action (carries the discount `code`, NOT PII) ─────
@@ -116,11 +135,51 @@ def build(spark):
         prop("pj", "device.ua_class").alias("device_class"),
         col("occurred_at"),
         col("ingested_at"),
+        col("event_type").alias("_source_event"),
+        col("pj").alias("_payload"),
     )
 
-    staged = cart.unionByName(coupon).where(
-        col("event_id").isNotNull() & col("brand_id").isNotNull() & col("brain_anon_id").isNotNull()
+    # Structural PK guard (brand_id/event_id anchor the quarantine row + tenant partition).
+    typed = cart.unionByName(coupon).where(col("event_id").isNotNull() & col("brand_id").isNotNull())
+
+    # ── Stage-1 empty_identifier: REPLACE the silent no-anon drop with a routed quarantine (observable) ──
+    anon_missing = typed.where(col("brain_anon_id").isNull() | (col("brain_anon_id") == lit("")))
+    write_quarantine(
+        spark,
+        anon_missing.select(
+            col("brand_id"),
+            col("_source_event").alias("source"),
+            col("event_id").alias("bronze_event_id"),
+            lit(TABLE).alias("canonical_target"),
+            lit("empty_identifier:brain_anon_id").alias("reason"),
+            col("_payload").alias("payload"),
+        ),
+        stage="dq",
     )
+    keyed = typed.where(col("brain_anon_id").isNotNull() & (col("brain_anon_id") != lit("")))
+
+    # ── Stage-1 DQ gate: cart money (value_minor + currency) + line quantity + occurred_at → stage='dq' ──
+    gated = keyed.withColumn(
+        "_dq",
+        dq_violations_udf()(
+            col("value_minor"), col("currency_code"),
+            col("occurred_at").cast("string"), col("quantity"),
+        ),
+    )
+    write_quarantine(
+        spark,
+        gated.where(size(col("_dq")) > 0).select(
+            col("brand_id"),
+            col("_source_event").alias("source"),
+            col("event_id").alias("bronze_event_id"),
+            lit(TABLE).alias("canonical_target"),
+            array_join(col("_dq"), ",").alias("reason"),
+            col("_payload").alias("payload"),
+        ),
+        stage="dq",
+    )
+    staged = gated.where(size(col("_dq")) == 0).drop("_dq", "_payload", "_source_event")
+
     merge_on_pk(spark, fqtn, staged, ["brand_id", "event_id"], order_by_desc=["ingested_at", "occurred_at"])
     return fqtn, spark.table(fqtn).count()
 

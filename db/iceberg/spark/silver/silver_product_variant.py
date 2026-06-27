@@ -27,6 +27,18 @@ DATA AVAILABILITY (this session): current Bronze has ZERO product.upsert.v1 rows
 unsynced; orders carry inline line_items but not the catalogue), so this writes a correct EMPTY table over
 current Bronze. Schema + transform are the deliverable; a Shopify/Woo product repull populates it with no
 code change. Parity status=NEW (no dbt/StarRocks product_variant baseline).
+
+STAGE-1 GATE (Brain V4 two-stage): after typing each variant but BEFORE the canonical MERGE, every variant
+  is run through the Stage-1 DQ gate _silver_technical.dq_check (via dq_violations_udf) on its occurred_at
+  (future / unparseable timestamp). A variant whose occurred_at is unparseable or implausibly future is
+  diverted to brain_silver.silver_quarantine (stage='dq', threading the source event_id + a JSON of the
+  variant identity for a replayable quarantine row) and EXCLUDED from silver_product_variant; Bronze keeps
+  the original (replay-safe). The OTHER dq rules are N/A here, by design: price_minor carries NO sibling
+  currency_code (catalogue price is in the store's currency, currency_code is honest-NULL and resolved
+  downstream) so the money/currency gate would false-positive on every well-formed row; inventory_quantity
+  can be legitimately NEGATIVE (oversold/backorder) so impossible_quantity must not divert it; and
+  product_id/variant_id are structurally non-null (latest_product filters product_id, variant_id coalesces
+  to product_id) so empty_identifier is enforced structurally. Good rows are byte-identical to before.
 """
 from __future__ import annotations
 
@@ -34,6 +46,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from pyspark.sql import SparkSession  # noqa: E402
 
@@ -43,6 +56,8 @@ from iceberg_base import (  # noqa: E402
     build_spark,
     create_iceberg_table,
 )
+from pyspark.sql.functions import array_join, col, lit, size, struct, to_json  # noqa: E402
+from _silver_technical import dq_violations_udf, write_quarantine  # noqa: E402
 
 BRONZE_NAMESPACE = os.environ.get("BRONZE_NAMESPACE", "brain_bronze")
 BRONZE_TABLE = f"{CATALOG}.{os.environ.get('SILVER_NAMESPACE', 'brain_silver')}.silver_collector_event"  # ADR-0006 P3: gated source (R2/R3 now in Silver)
@@ -104,14 +119,14 @@ def build(spark: SparkSession) -> tuple:
     shopify_variants = """
         with exploded as (
             select
-                p.brand_id, p.source, p.product_id, p.occurred_at, p.ingested_at, item
+                p.brand_id, p.event_id, p.source, p.product_id, p.occurred_at, p.ingested_at, item
             from latest_product p
             lateral view explode(
                 from_json(coalesce(p.variants_json, '[]'), 'array<string>')
             ) e as item
         )
         select
-            brand_id, product_id,
+            brand_id, event_id, product_id,
             coalesce(get_json_object(item, '$.variant_id'), product_id)     as variant_id,
             source,
             get_json_object(item, '$.sku')                                  as sku,
@@ -127,7 +142,7 @@ def build(spark: SparkSession) -> tuple:
     # variant_id := product_id (one variant per product). Guard: only products WITHOUT a variants array. ──
     woo_flat = """
         select
-            brand_id, product_id,
+            brand_id, event_id, product_id,
             product_id                                                      as variant_id,
             source,
             flat_sku                                                        as sku,
@@ -151,7 +166,7 @@ def build(spark: SparkSession) -> tuple:
         ),
         typed as (
             select
-                brand_id, product_id, variant_id, source, sku, title,
+                brand_id, event_id, product_id, variant_id, source, sku, title,
                 case when price_minor_raw        rlike '^-?[0-9]+$' then cast(price_minor_raw as bigint)        else null end as price_minor,
                 case when inventory_quantity_raw rlike '^-?[0-9]+$' then cast(inventory_quantity_raw as bigint) else null end as inventory_quantity,
                 cast(null as string)            as currency_code,
@@ -168,11 +183,30 @@ def build(spark: SparkSession) -> tuple:
             from typed
         )
         select brand_id, product_id, variant_id, source, sku, title,
-               price_minor, inventory_quantity, currency_code, occurred_at, ingested_at
+               price_minor, inventory_quantity, currency_code, occurred_at, ingested_at, event_id
         from deduped
         where _rn = 1
     """
-    spark.sql(typed_sql).createOrReplaceTempView("silver_product_variant_new")
+    # ── Stage-1 DQ gate: occurred_at validity (future / unparseable) — see module docstring ───────────
+    typed_df = spark.sql(typed_sql).withColumn(
+        "_dq",
+        dq_violations_udf()(lit(None).cast("bigint"), lit(None).cast("string"), col("occurred_at").cast("string")),
+    )
+    write_quarantine(
+        spark,
+        typed_df.where(size(col("_dq")) > 0).select(
+            col("brand_id"),
+            lit("product.upsert.v1").alias("source"),
+            col("event_id").alias("bronze_event_id"),
+            lit(TABLE_NAME).alias("canonical_target"),
+            array_join(col("_dq"), ",").alias("reason"),
+            to_json(struct("brand_id", "product_id", "variant_id", "sku", "price_minor", "inventory_quantity")).alias("payload"),
+        ),
+        stage="dq",
+    )
+    typed_df.where(size(col("_dq")) == 0).drop("_dq", "event_id").createOrReplaceTempView(
+        "silver_product_variant_new"
+    )
 
     spark.sql(
         f"""

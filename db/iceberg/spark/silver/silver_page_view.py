@@ -30,13 +30,27 @@ CHANNEL: the deterministic channel ladder is reproduced verbatim from silver_tou
          (fbclid→paid_meta, gclid/gbraid/wbraid/dclid→paid_google, utm_medium ladder, referrer→referral,
          else direct) so behavior-side channel attribution matches the journey-side touchpoint channel.
 
+STAGE-1 GATE (Brain V4 two-stage, _silver_technical): a page-view is a TIMESTAMPED, anon-keyed behavioral
+  event with NO money, so two Stage-1 rules apply, both → stage='dq':
+    - empty_identifier:brain_anon_id — page_view ALREADY drops no-anon rows inline (cannot tie to a journey,
+      mirroring stg_touchpoint_events). That silent drop is REPLACED by a routed write_quarantine (same
+      admission set, now observable + replayable) — the canonical table is unchanged; the diverted rows are
+      now visible.
+    - future/unparseable timestamp — each kept page-view runs through dq_check (occurred_at only); a
+      future-dated/unparseable occurred_at is diverted to silver_quarantine, never written to silver_page_view.
+  N/A: money/currency (no money column), impossible_quantity (no quantity field), clean_name/clean_string
+  (path/referrer are URLs, page_type a fixed enum, product_handle/collection_handle are storefront slugs —
+  machine values, never titlecased; cleaning would perturb them). Bronze keeps every original (replay-safe).
+  Good rows are byte-identical to before (parity-faithful).
+
 DATA AVAILABILITY (this session): current Bronze has page.viewed (613) + product.viewed (429) +
 collection.viewed (114) rows → this writes a populated table. Parity status=NEW (no dbt baseline).
 """
 from __future__ import annotations
 
 from _silver_base import ensure_silver_table, merge_on_pk, prop, read_bronze_events, run_job
-from pyspark.sql.functions import col, lit, lower, regexp_replace, when
+from _silver_technical import dq_violations_udf, write_quarantine
+from pyspark.sql.functions import array_join, col, lit, lower, regexp_replace, size, when
 
 TABLE = "silver_page_view"
 
@@ -136,9 +150,12 @@ def build(spark):
         prop("pj", "device.viewport").alias("viewport"),
         col("occurred_at"),
         col("ingested_at"),
+        # Transient Stage-1 carriers (dropped before MERGE): source event_name + raw payload (replayable).
+        col("event_type").alias("_source_event"),
+        col("pj").alias("_payload"),
     )
 
-    staged = (
+    typed = (
         raw.withColumn("page_event", _page_event(col("event_type")))
         .withColumn(
             "referrer_host",
@@ -153,11 +170,50 @@ def build(spark):
             "path", "referrer", "referrer_host", "channel", "utm_source", "utm_medium",
             "utm_campaign", "utm_term", "utm_content", "fbclid", "gclid", "ttclid", "msclkid",
             "gbraid", "wbraid", "dclid", "product_handle", "collection_handle", "device_class",
-            "viewport", "occurred_at", "ingested_at",
+            "viewport", "occurred_at", "ingested_at", "_source_event", "_payload",
         )
-        # DROP page-views with no anon id — cannot tie to a journey (mirrors stg_touchpoint_events).
-        .where(col("event_id").isNotNull() & col("brand_id").isNotNull() & col("brain_anon_id").isNotNull())
+        # Structural PK guard (brand_id/event_id are the quarantine tenant + row id; a row without them
+        # cannot be a record at all).
+        .where(col("event_id").isNotNull() & col("brand_id").isNotNull())
     )
+
+    # ── Stage-1 empty_identifier: REPLACE the silent no-anon drop with a routed quarantine (observable) ──
+    anon_missing = typed.where(col("brain_anon_id").isNull() | (col("brain_anon_id") == lit("")))
+    write_quarantine(
+        spark,
+        anon_missing.select(
+            col("brand_id"),
+            col("_source_event").alias("source"),
+            col("event_id").alias("bronze_event_id"),
+            lit(TABLE).alias("canonical_target"),
+            lit("empty_identifier:brain_anon_id").alias("reason"),
+            col("_payload").alias("payload"),
+        ),
+        stage="dq",
+    )
+    keyed = typed.where(col("brain_anon_id").isNotNull() & (col("brain_anon_id") != lit("")))
+
+    # ── Stage-1 DQ gate: timestamped page-view → future/unparseable occurred_at → quarantine(stage='dq') ──
+    gated = keyed.withColumn(
+        "_dq",
+        dq_violations_udf()(
+            lit(None).cast("bigint"), lit(None).cast("string"),
+            col("occurred_at").cast("string"), lit(None).cast("bigint"),
+        ),
+    )
+    write_quarantine(
+        spark,
+        gated.where(size(col("_dq")) > 0).select(
+            col("brand_id"),
+            col("_source_event").alias("source"),
+            col("event_id").alias("bronze_event_id"),
+            lit(TABLE).alias("canonical_target"),
+            array_join(col("_dq"), ",").alias("reason"),
+            col("_payload").alias("payload"),
+        ),
+        stage="dq",
+    )
+    staged = gated.where(size(col("_dq")) == 0).drop("_dq", "_payload", "_source_event")
 
     merge_on_pk(spark, fqtn, staged, ["brand_id", "event_id"], order_by_desc=["ingested_at", "occurred_at"])
     return fqtn, spark.table(fqtn).count()

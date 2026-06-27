@@ -28,6 +28,17 @@ prefix (lpad(touch_seq,10,'0') || '|' || value) so min()/max() over the encoded 
 FIRST/LAST touch deterministically by ORDER, not by value; substring_index(...,'|',-1) then peels the
 value back off. Spark has lpad / substring_index with identical semantics, so the encoding is reproduced
 verbatim → byte-identical entry/exit values.
+
+STAGE-1 GATE (Brain V4 two-stage, _silver_technical): silver_sessions is a derived ROLLUP of the
+  already-gated sibling Silver mart silver_touchpoint (not raw Bronze), so — exactly like silver_customer
+  rolls up silver_order_state — the ONLY Stage-1 rule with a target here is the timestamp gate. A session's
+  session_start_at (= min touch occurred_at) is run through dq_check (occurred_at only); a session whose
+  start is future-dated/unparseable is diverted to brain_silver.silver_quarantine (stage='dq') with a
+  reconstructable JSON payload (the session identity), and is NOT written to silver_sessions. N/A: money/
+  currency (sessions carry NO money — no money column), impossible_quantity (touch_count/pageview_count are
+  aggregate counts, not a per-record quantity), empty_identifier (the (brand_id, brain_anon_id, session_key)
+  PK is structurally derived/NOT NULL), clean_name/clean_string (channel/page_type are enums, not display
+  names). Good rows are byte-identical to before (parity-faithful).
 """
 from __future__ import annotations  # Python 3.8 on the Spark image.
 
@@ -35,8 +46,18 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from pyspark.sql import SparkSession
+from pyspark.sql.functions import (  # noqa: E402
+    array_join,
+    col,
+    concat_ws,
+    lit,
+    size,
+    struct,
+    to_json,
+)
 
 from iceberg_base import (  # noqa: E402 — sys.path tweak above
     CATALOG,
@@ -44,6 +65,7 @@ from iceberg_base import (  # noqa: E402 — sys.path tweak above
     build_spark,
     create_iceberg_table,
 )
+from _silver_technical import dq_violations_udf, write_quarantine  # noqa: E402
 
 SILVER_TOUCHPOINT_TABLE = f"{CATALOG}.{SILVER_NAMESPACE}.silver_touchpoint"
 TABLE_NAME = "silver_sessions"
@@ -119,7 +141,31 @@ def build(spark: SparkSession) -> str:
         from touches
         group by brand_id, brain_anon_id, session_key
     """
-    spark.sql(session_sql).createOrReplaceTempView("silver_sessions_new")
+    # ── Stage-1 DQ gate: future/unparseable session_start_at → quarantine(stage='dq') (see module docstring) ──
+    gated = spark.sql(session_sql).withColumn(
+        "_dq",
+        dq_violations_udf()(
+            lit(None).cast("bigint"), lit(None).cast("string"),
+            col("session_start_at").cast("string"), lit(None).cast("bigint"),
+        ),
+    )
+    write_quarantine(
+        spark,
+        gated.where(size(col("_dq")) > 0).select(
+            col("brand_id"),
+            lit("silver_touchpoint").alias("source"),
+            concat_ws("|", col("brand_id"), col("brain_anon_id"), col("session_key").cast("string")).alias(
+                "bronze_event_id"
+            ),
+            lit(TABLE_NAME).alias("canonical_target"),
+            array_join(col("_dq"), ",").alias("reason"),
+            to_json(
+                struct("brand_id", "brain_anon_id", "session_key", "session_start_at", "session_end_at")
+            ).alias("payload"),
+        ),
+        stage="dq",
+    )
+    gated.where(size(col("_dq")) == 0).drop("_dq").createOrReplaceTempView("silver_sessions_new")
 
     # Idempotent MERGE on the (brand_id, brain_anon_id, session_key) PK — replay-safe upsert.
     spark.sql(

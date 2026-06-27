@@ -35,11 +35,22 @@ DATA AVAILABILITY (this session): current Bronze has ZERO settlement.live.v1 and
 rows (no Razorpay payments connector has emitted a dispute webhook yet), so this job writes a correct
 EMPTY table over current Bronze. The schema + transform are the deliverable; the moment a Razorpay
 dispute lands in Bronze, a re-run populates it with no code change. Parity status=NEW.
+
+STAGE-1 GATE (Brain V4 two-stage): this job runs the Stage-1 DQ gate _silver_technical.dq_check (via
+  dq_violations_udf) over each staged dispute BEFORE the canonical MERGE, on its amount_minor (the chargeback
+  amount is stored POSITIVE by convention — the sign lives in dispute_direction — so a NEGATIVE stored
+  amount_minor is a defect → negative_amount), its currency_code (invalid ISO-4217 alpha-3), and its
+  occurred_at (future / unparseable timestamp). A row that fails is diverted to brain_silver.silver_quarantine
+  (stage='dq', carrying the original Bronze payload for a replayable quarantine row) and NEVER written to
+  silver_dispute; Bronze keeps the original (replay-safe). amount_minor is defaulted 0 and currency_code
+  defaulted INR when the payload omits them (so missing_currency cannot fire on a well-formed dispute), and
+  amount stays bigint MINOR units paired with currency_code. Good rows are byte-identical to before.
 """
 from __future__ import annotations
 
 from _silver_base import ensure_silver_table, merge_on_pk, prop, read_bronze_events, run_job
-from pyspark.sql.functions import coalesce, col, lit, lower, to_timestamp, when
+from _silver_technical import dq_violations_udf, write_quarantine
+from pyspark.sql.functions import array_join, coalesce, col, lit, lower, size, to_timestamp, when
 
 TABLE = "silver_dispute"
 
@@ -109,6 +120,7 @@ def build(spark):
             to_timestamp(prop("pj", "respond_by")).alias("respond_by"),
             col("occurred_at"),
             col("ingested_at"),
+            col("pj").alias("_payload"),
         )
     )
 
@@ -134,13 +146,33 @@ def build(spark):
         to_timestamp(prop("pj", "respond_by")).alias("respond_by"),
         col("occurred_at"),
         col("ingested_at"),
+        col("pj").alias("_payload"),
     )
 
     staged = folded.unionByName(standalone).where(
         col("event_id").isNotNull() & col("brand_id").isNotNull()
     )
 
-    merge_on_pk(spark, fqtn, staged, ["brand_id", "event_id"], order_by_desc=["ingested_at", "occurred_at"])
+    # ── Stage-1 DQ gate: amount sign (stored positive) + currency + occurred_at — see module docstring ─
+    gated = staged.withColumn(
+        "_dq",
+        dq_violations_udf()(col("amount_minor"), col("currency_code"), col("occurred_at").cast("string")),
+    )
+    write_quarantine(
+        spark,
+        gated.where(size(col("_dq")) > 0).select(
+            col("brand_id"),
+            col("source"),
+            col("event_id").alias("bronze_event_id"),
+            lit(TABLE).alias("canonical_target"),
+            array_join(col("_dq"), ",").alias("reason"),
+            col("_payload").alias("payload"),
+        ),
+        stage="dq",
+    )
+    good = gated.where(size(col("_dq")) == 0).drop("_dq", "_payload")
+
+    merge_on_pk(spark, fqtn, good, ["brand_id", "event_id"], order_by_desc=["ingested_at", "occurred_at"])
     return fqtn, spark.table(fqtn).count()
 
 

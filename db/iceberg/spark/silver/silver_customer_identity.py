@@ -35,6 +35,19 @@ PII / ISOLATION (this is the PII-SENSITIVE group):
     upstream by the edge tombstone removing all identifiers, leaving the customer node un-joinable to
     any order). This job preserves that contract; it does not weaken it.
 
+STAGE-1 GATE (Brain V4 two-stage, _silver_technical.py): N/A — this job is a TRUSTED PROJECTION of the
+  Neo4j identity SoR (ADR-0004), NOT a Bronze-derived business record, so no Stage-1 reject rule genuinely
+  applies and none is FORCED (per the V4 gate rule: do not invent checks for a pure identity/graph
+  projection). Concretely: zero money columns (no negative/non-integer/currency DQ gate), zero quantity
+  field (no impossible-quantity gate), and NO non-PII display/name field to clean — brain_id / merged_into
+  are UUID identity surrogates that must NEVER be cleaned/lowercased (clean_name/clean_string are for non-PII
+  display text only, and this projection touches zero PII at all). minted_at / first_identified_at are
+  SoR-surrogate node timestamps (Neo4j created/first-identified epochs), not event occurred_at subject to
+  future/unparseable-timestamp validation. The (brand_id, brain_id) PK invariants are enforced structurally
+  (Cypher `brain_id IS NOT NULL` + the isNotNull where-filter + Iceberg NOT NULL columns = the schema gate);
+  brain_id is never minted or guessed here. Nothing diverts to brain_silver.silver_quarantine; good rows
+  remain byte-identical (parity-faithful).
+
 PARITY: the dbt-side current table is brain_silver.silver_customer_identity in StarRocks (populated by
   the TS identity-export job). The parity oracle compares this Iceberg table vs that StarRocks one on
   PK (brand_id, brain_id). No money columns (identity carries none).

@@ -37,6 +37,19 @@ PARITY-CRITICAL DETAIL — session_key:
 The cart-stitch map (silver_journey_stitch) is read from PG ops.silver_journey_stitch (brain_ops moved
 to the PG `ops` schema — PG is the operational-only store) over PG JDBC — not a second source.
 
+STAGE-1 GATE (Brain V4 two-stage, _silver_technical): the gate runs over the TYPED source rows BEFORE the
+  sessionization/dedup fold (so a bad touch never gets a touch_seq), routing rejects → stage='dq'. NO money
+  on this mart, so two rules apply:
+    - empty_identifier:brain_anon_id — stg_touchpoint_events ALREADY drops no-anon rows (cannot sessionize,
+      the exact dbt stg logic). That silent drop is REPLACED by a routed write_quarantine — the admitted set
+      (and dbt parity) is unchanged; the diverted rows are now observable + replayable.
+    - future/unparseable timestamp — each kept touch runs through dq_check (occurred_at only); a bad-timestamp
+      touch is diverted to silver_quarantine instead of being session-keyed and folded.
+  N/A: money/currency (no money column), impossible_quantity (no quantity field), clean_name/clean_string
+  (utm/page_type/search_query/landing_path are campaign metadata/URLs/enums — cleaning would perturb the
+  dbt-parity values). Bronze keeps every original (replay-safe); surviving touches are byte-identical
+  (parity-faithful).
+
 Run via run-silver-touchpoint-sessions.sh (Iceberg + PG JDBC packages).
 """
 from __future__ import annotations  # Python 3.8 on the Spark image.
@@ -45,8 +58,10 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # silver/ — for _silver_technical
 
 from pyspark.sql import SparkSession
+from pyspark.sql.functions import array_join, col, lit, size
 from pyspark.sql.types import IntegerType
 
 from iceberg_base import (  # noqa: E402 — sys.path tweak above
@@ -55,6 +70,7 @@ from iceberg_base import (  # noqa: E402 — sys.path tweak above
     build_spark,
     create_iceberg_table,
 )
+from _silver_technical import dq_violations_udf, write_quarantine  # noqa: E402
 
 BRONZE_NAMESPACE = os.environ.get("BRONZE_NAMESPACE", "brain_bronze")
 # ADR-0006 P3: read the GATED collector source (brain_silver.silver_collector_event) — the R2/R3
@@ -213,62 +229,100 @@ def build(spark: SparkSession) -> str:
     _register_murmur_udf(spark)
     spark.read.table(BRONZE_TABLE).createOrReplaceTempView("bronze_events")
 
-    # ── stg_touchpoint_events: type payload.properties.*, drop no-anon rows, dedup (brand_id,event_id) ──
-    stg_sql = f"""
+    # ── stg_touchpoint_events: type payload.properties.* (carrying pj for replay), Stage-1 gate, dedup ──
+    # The typed `source` projection — carries pj so the Stage-1 gate can quarantine a replayable original.
+    source_sql = f"""
         with raw as (
             select brand_id, event_id, event_type, occurred_at, payload as pj
             from bronze_events
             where event_type in ({TOUCHPOINT_EVENT_TYPES})
-        ),
-        source as (
-            select
-                brand_id, event_id, event_type, occurred_at,
-                get_json_object(pj, '$.properties.brain_anon_id')       as brain_anon_id,
-                get_json_object(pj, '$.properties.session_id')          as session_id_raw,
-                get_json_object(pj, '$.properties.utm.source')          as utm_source,
-                get_json_object(pj, '$.properties.utm.medium')          as utm_medium,
-                get_json_object(pj, '$.properties.utm.campaign')        as utm_campaign,
-                get_json_object(pj, '$.properties.utm.term')            as utm_term,
-                get_json_object(pj, '$.properties.utm.content')         as utm_content,
-                get_json_object(pj, '$.properties.click_ids.fbclid')    as fbclid,
-                get_json_object(pj, '$.properties.click_ids.gclid')     as gclid,
-                get_json_object(pj, '$.properties.click_ids.ttclid')    as ttclid,
-                get_json_object(pj, '$.properties.click_ids.msclkid')   as msclkid,
-                get_json_object(pj, '$.properties.click_ids.gbraid')    as gbraid,
-                get_json_object(pj, '$.properties.click_ids.wbraid')    as wbraid,
-                get_json_object(pj, '$.properties.click_ids.dclid')     as dclid,
-                get_json_object(pj, '$.properties.referrer')            as referrer,
-                get_json_object(pj, '$.properties.landing_path')        as landing_path,
-                get_json_object(pj, '$.properties.page_type')           as page_type,
-                get_json_object(pj, '$.properties.product_handle')      as product_handle,
-                get_json_object(pj, '$.properties.collection_handle')   as collection_handle,
-                get_json_object(pj, '$.properties.query')               as search_query,
-                case when get_json_object(pj, '$.properties._synthetic') = 'true'
-                     then true else false end                           as is_synthetic
-            from raw
-        ),
-        keyed as (
-            select * from source
-            where brain_anon_id is not null and brain_anon_id <> ''
-        ),
-        deduped as (
-            select *,
-                row_number() over (
-                    partition by brand_id, event_id
-                    order by occurred_at asc
-                ) as _dedup_rn
-            from keyed
         )
+        select
+            brand_id, event_id, event_type, occurred_at, pj,
+            get_json_object(pj, '$.properties.brain_anon_id')       as brain_anon_id,
+            get_json_object(pj, '$.properties.session_id')          as session_id_raw,
+            get_json_object(pj, '$.properties.utm.source')          as utm_source,
+            get_json_object(pj, '$.properties.utm.medium')          as utm_medium,
+            get_json_object(pj, '$.properties.utm.campaign')        as utm_campaign,
+            get_json_object(pj, '$.properties.utm.term')            as utm_term,
+            get_json_object(pj, '$.properties.utm.content')         as utm_content,
+            get_json_object(pj, '$.properties.click_ids.fbclid')    as fbclid,
+            get_json_object(pj, '$.properties.click_ids.gclid')     as gclid,
+            get_json_object(pj, '$.properties.click_ids.ttclid')    as ttclid,
+            get_json_object(pj, '$.properties.click_ids.msclkid')   as msclkid,
+            get_json_object(pj, '$.properties.click_ids.gbraid')    as gbraid,
+            get_json_object(pj, '$.properties.click_ids.wbraid')    as wbraid,
+            get_json_object(pj, '$.properties.click_ids.dclid')     as dclid,
+            get_json_object(pj, '$.properties.referrer')            as referrer,
+            get_json_object(pj, '$.properties.landing_path')        as landing_path,
+            get_json_object(pj, '$.properties.page_type')           as page_type,
+            get_json_object(pj, '$.properties.product_handle')      as product_handle,
+            get_json_object(pj, '$.properties.collection_handle')   as collection_handle,
+            get_json_object(pj, '$.properties.query')               as search_query,
+            case when get_json_object(pj, '$.properties._synthetic') = 'true'
+                 then true else false end                           as is_synthetic
+        from raw
+    """
+    src = spark.sql(source_sql).where(col("brand_id").isNotNull() & col("event_id").isNotNull())
+
+    # ── Stage-1 empty_identifier: REPLACE the silent no-anon drop with a routed quarantine (observable) ──
+    anon_missing = src.where(col("brain_anon_id").isNull() | (col("brain_anon_id") == lit("")))
+    write_quarantine(
+        spark,
+        anon_missing.select(
+            col("brand_id"),
+            col("event_type").alias("source"),
+            col("event_id").alias("bronze_event_id"),
+            lit(TABLE_NAME).alias("canonical_target"),
+            lit("empty_identifier:brain_anon_id").alias("reason"),
+            col("pj").alias("payload"),
+        ),
+        stage="dq",
+    )
+    keyed = src.where(col("brain_anon_id").isNotNull() & (col("brain_anon_id") != lit("")))
+
+    # ── Stage-1 DQ gate (per touch): future/unparseable occurred_at → quarantine(stage='dq') ──
+    gated = keyed.withColumn(
+        "_dq",
+        dq_violations_udf()(
+            lit(None).cast("bigint"), lit(None).cast("string"),
+            col("occurred_at").cast("string"), lit(None).cast("bigint"),
+        ),
+    )
+    write_quarantine(
+        spark,
+        gated.where(size(col("_dq")) > 0).select(
+            col("brand_id"),
+            col("event_type").alias("source"),
+            col("event_id").alias("bronze_event_id"),
+            lit(TABLE_NAME).alias("canonical_target"),
+            array_join(col("_dq"), ",").alias("reason"),
+            col("pj").alias("payload"),
+        ),
+        stage="dq",
+    )
+    gated.where(size(col("_dq")) == 0).drop("_dq", "pj").createOrReplaceTempView("stg_touchpoint_events_gated")
+
+    # Dedup the Bronze idempotency key (brand_id, event_id) over the gated rows — the exact dbt stg dedup.
+    spark.sql(
+        """
         select
             brand_id, event_id, event_type, occurred_at, brain_anon_id, session_id_raw,
             utm_source, utm_medium, utm_campaign, utm_term, utm_content,
             fbclid, gclid, ttclid, msclkid, gbraid, wbraid, dclid,
             referrer, landing_path, page_type, product_handle, collection_handle,
             search_query, is_synthetic
-        from deduped
+        from (
+            select *,
+                row_number() over (
+                    partition by brand_id, event_id
+                    order by occurred_at asc
+                ) as _dedup_rn
+            from stg_touchpoint_events_gated
+        )
         where _dedup_rn = 1
-    """
-    spark.sql(stg_sql).createOrReplaceTempView("stg_touchpoint_events")
+        """
+    ).createOrReplaceTempView("stg_touchpoint_events")
 
     # ── int_touchpoint_sessionized: 30-min sessionization + channel ladder + first/last + referrer_host ──
     sessionized_sql = """

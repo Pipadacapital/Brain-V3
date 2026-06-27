@@ -21,6 +21,17 @@ IDEMPOTENT: MERGE on the (brand_id, product_key, currency_code) PK.
 DUAL-RUN SOURCE NOTE: dbt's silver_product reads ref('silver_order_line') = the StarRocks dbt copy;
 this Spark job reads the ICEBERG silver_order_line it builds, so the whole Spark Silver lane is
 self-consistent (Iceberg → Iceberg). Both lanes derive from the SAME Bronze, so parity holds.
+
+STAGE-1 GATE (Brain V4 two-stage): this is a per-(brand, product_key, currency) AGGREGATE, so it runs
+  the same currency-only DQ gate as the silver_customer aggregate: a rolled-up product row whose
+  currency_code is not ISO-4217 alpha-3 is diverted to brain_silver.silver_quarantine (stage='dq') and
+  NOT written to silver_product. The amount-sign DQ rule is intentionally NOT applied at this grain — a
+  product's gross_revenue_minor / discount_minor are sums that can be legitimately net-negative once
+  returns/refund-adjusted line items net out; and units_sold is a sum that can legitimately exceed the
+  per-record absurd-quantity ceiling, so impossible_quantity is N/A here too. clean_string is NOT applied
+  to sku/title — they are parity-faithful max() passthroughs (mutating them would break dbt parity).
+  Good rows are byte-identical to before (parity-faithful); the upstream line-grain DQ already gated the
+  per-line money/quantity that feed these sums.
 """
 from __future__ import annotations
 
@@ -28,6 +39,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from pyspark.sql import SparkSession
 
@@ -37,6 +49,8 @@ from iceberg_base import (  # noqa: E402
     build_spark,
     create_iceberg_table,
 )
+from pyspark.sql.functions import array_join, col, lit, size, struct, to_json  # noqa: E402
+from _silver_technical import dq_violations_udf, write_quarantine  # noqa: E402
 
 ORDER_LINE_TABLE = f"{CATALOG}.{SILVER_NAMESPACE}.silver_order_line"
 TABLE_NAME = "silver_product"
@@ -92,7 +106,24 @@ def build(spark: SparkSession) -> str:
         from lines
         group by brand_id, product_key, currency_code
     """
-    spark.sql(agg_sql).createOrReplaceTempView("silver_product_new")
+    # ── Stage-1 DQ gate (currency only — see module docstring): non-ISO-4217 currency → quarantine ────
+    gated = spark.sql(agg_sql).withColumn(
+        "_dq",
+        dq_violations_udf()(lit(None).cast("bigint"), col("currency_code"), lit(None).cast("string")),
+    )
+    write_quarantine(
+        spark,
+        gated.where(size(col("_dq")) > 0).select(
+            col("brand_id"),
+            lit("silver_order_line").alias("source"),
+            col("product_key").alias("bronze_event_id"),
+            lit(TABLE_NAME).alias("canonical_target"),
+            array_join(col("_dq"), ",").alias("reason"),
+            to_json(struct("brand_id", "product_key", "currency_code", "gross_revenue_minor")).alias("payload"),
+        ),
+        stage="dq",
+    )
+    gated.where(size(col("_dq")) == 0).drop("_dq").createOrReplaceTempView("silver_product_new")
 
     spark.sql(
         f"""

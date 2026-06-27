@@ -22,6 +22,19 @@ PII     : identifier_value is a 64-hex HASH only (the resolver hashes raw identi
           this job NEVER reads or writes a raw email/phone. HARD RULE honored.
 MONEY   : none (an identity mapping carries no money).
 ISOLATION: brand_id first column + bucket() partition anchor.
+STAGE-1 GATE (Brain V4 two-stage, _silver_technical.py): N/A — this is a TRUSTED PROJECTION of the Neo4j
+          identity SoR (ADR-0004), not a Bronze-derived business record, so no Stage-1 reject rule genuinely
+          applies and none is FORCED (per the V4 gate rule: do not invent checks for a pure identity/graph
+          projection). Zero money (no negative/non-integer/currency DQ gate), zero quantity (no impossible-
+          quantity gate), and NO non-PII display/name to clean: identifier_value is a 64-hex HASH and
+          identifier_type / tier are enum tokens — running clean_name/clean_string on the hash would VIOLATE
+          the hash-only PII rule (ids/hashes are never cleaned or lowercased), and brain_id is a UUID
+          surrogate, not display text. created_at is a SoR-surrogate edge timestamp (Neo4j epoch), not an
+          event occurred_at subject to future/unparseable validation. The (brand_id, identifier_type,
+          identifier_value) PK + brain_id resolution come straight from the Neo4j edge (never minted here);
+          their non-null invariants are enforced structurally (Cypher `c.brain_id IS NOT NULL` + the
+          isNotNull where-filter + Iceberg NOT NULL columns = the schema gate). Nothing diverts to
+          brain_silver.silver_quarantine; good rows stay byte-identical.
 
 DATA AVAILABILITY (this session): Neo4j is empty in this dev run (StarRocks silver_identity_link = 0 rows),
 and NEO4J_URI is intentionally NOT supplied to this batch container, so the job writes a correct EMPTY

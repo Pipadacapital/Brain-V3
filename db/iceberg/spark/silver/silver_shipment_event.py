@@ -28,6 +28,14 @@ PII: none raw — awb_number_hash is already hashed; no raw AWB / PII.
 MONEY: none (this mart carries no money column).
 IDEMPOTENT: MERGE WHEN MATCHED UPDATE / WHEN NOT MATCHED INSERT on (brand_id,event_id) — replay-safe.
 
+STAGE-1 GATE (Brain V4 two-stage): this is a timestamped transition log with NO money / NO quantity, so the
+  applicable Stage-1 DQ rule is the TIMESTAMP gate — _silver_technical.dq_check over occurred_at
+  (future_occurred_at / unparseable_timestamp). A transition whose occurred_at is unparseable or in the
+  future is diverted to brain_silver.silver_quarantine (stage='dq') and NEVER written to
+  silver_shipment_event; Bronze keeps the original (replay-safe). status / terminal_class come from the
+  @brain/logistics-status authority (status enums, not human display names), so clean_name/clean_string do
+  NOT apply. Good rows are byte-identical to before (parity-faithful).
+
 Run via spark-submit inside the Spark+Iceberg image (see run-silver-checkout-shipment.sh).
 """
 from __future__ import annotations
@@ -36,8 +44,10 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from pyspark.sql import SparkSession  # noqa: E402
+from pyspark.sql.functions import array_join, col, lit, size  # noqa: E402
 
 from iceberg_base import (  # noqa: E402
     CATALOG,
@@ -45,6 +55,7 @@ from iceberg_base import (  # noqa: E402
     build_spark,
     create_iceberg_table,
 )
+from _silver_technical import dq_violations_udf, write_quarantine  # noqa: E402
 
 BRONZE_NAMESPACE = os.environ.get("BRONZE_NAMESPACE", "brain_bronze")
 BRONZE_TABLE = f"{CATALOG}.{os.environ.get('SILVER_NAMESPACE', 'brain_silver')}.silver_collector_event"  # ADR-0006 P3: gated source (R2/R3 now in Silver)
@@ -87,6 +98,7 @@ def _build_event_df(spark: SparkSession):
                 event_id,
                 event_type,
                 occurred_at,
+                payload,
                 get_json_object(payload, '$.properties.source')           AS source,
                 get_json_object(payload, '$.properties.order_id')          AS order_id,
                 get_json_object(payload, '$.properties.awb_number_hash')   AS awb_number_hash,
@@ -127,7 +139,8 @@ def _build_event_df(spark: SparkSession):
             coalesce(status_changed_at, cast(occurred_at AS string)) AS status_changed_at,
             occurred_at,
             is_synthetic,
-            current_timestamp() AS updated_at
+            current_timestamp() AS updated_at,
+            payload AS _payload
         FROM deduped
         WHERE _dedup_rn = 1
         """
@@ -144,7 +157,26 @@ def run(spark: SparkSession) -> None:
     )
 
     df = _build_event_df(spark)
-    df.createOrReplaceTempView("silver_shipment_event_batch")
+
+    # ── Stage-1 DQ gate: timestamp validity only (no money / no quantity on a shipment transition) ─────
+    gated = df.withColumn(
+        "_dq",
+        dq_violations_udf()(lit(None).cast("bigint"), lit(None).cast("string"), col("occurred_at").cast("string")),
+    )
+    write_quarantine(
+        spark,
+        gated.where(size(col("_dq")) > 0).select(
+            col("brand_id"),
+            col("source"),
+            col("event_id").alias("bronze_event_id"),
+            lit("silver_shipment_event").alias("canonical_target"),
+            array_join(col("_dq"), ",").alias("reason"),
+            col("_payload").alias("payload"),
+        ),
+        stage="dq",
+    )
+    good = gated.where(size(col("_dq")) == 0).drop("_dq", "_payload")
+    good.createOrReplaceTempView("silver_shipment_event_batch")
 
     spark.sql(
         f"""

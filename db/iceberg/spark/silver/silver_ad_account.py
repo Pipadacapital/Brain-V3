@@ -20,6 +20,14 @@ MONEY   : lifetime_spend_minor is bigint MINOR units (integer paisa, I-S07) + cu
 PII     : none — platform/account/campaign ids are operational refs (I-S02), not person-linkable.
 ISOLATION: brand_id is the first column + the bucket() partition anchor (tenant key on every row).
 
+STAGE-1 GATE (Brain V4 two-stage): this job now runs the Stage-1 DQ gate _silver_technical.dq_check over
+  the rolled-up account dimension BEFORE the canonical MERGE: an account whose lifetime_spend_minor is
+  negative/non-integer, or whose currency_code is not ISO-4217 alpha-3 (UPPERCASE), is diverted to
+  brain_silver.silver_quarantine (stage='dq') and NEVER written to silver_ad_account; Bronze keeps the
+  original (replay-safe: fix + re-run re-admits). Only money+currency are gated — last_seen_at is an
+  AGGREGATE max (not a raw event ts), so the timestamp rule is intentionally not applied at this grain
+  (mirrors silver_customer's aggregate currency gate). Good rows are byte-identical (parity-faithful).
+
 ACCOUNT-ID RESOLUTION: the ad-account id is read from the spend payload's `ad_account_id` (preferred) or
 `account_id` property. Today the @brain/ad-spend-mapper does NOT yet stamp the activated account id onto
 each spend.live.v1 row (the spend hierarchy in Bronze is campaign→adset→ad, with campaign-level
@@ -37,8 +45,9 @@ add), so the MERGE UPDATE is the authoritative latest rollup — never double-co
 from __future__ import annotations
 
 from _silver_base import ensure_silver_table, merge_on_pk, prop, read_bronze_events, run_job
+from _silver_technical import dq_violations_udf, write_quarantine
 from pyspark.sql import functions as F
-from pyspark.sql.functions import coalesce, col, lit
+from pyspark.sql.functions import array_join, coalesce, col, lit, size, struct, to_json
 from pyspark.sql.window import Window
 
 TABLE = "silver_ad_account"
@@ -125,8 +134,32 @@ def build(spark):
         )
     )
 
+    # ── Stage-1 DQ gate: the account money rollup must be a non-negative integer minor amount in a valid
+    # ISO-4217 currency. Violations → silver_quarantine (stage='dq'), NEVER silver_ad_account. occurred_at
+    # is omitted (last_seen_at is an aggregate, not a raw event ts). brand_id-first; payload carries the
+    # rolled-up grain so the quarantine row is self-describing/replayable.
+    gated = staged.withColumn(
+        "_dq",
+        dq_violations_udf()(col("lifetime_spend_minor"), col("currency_code"), lit(None).cast("string")),
+    )
+    write_quarantine(
+        spark,
+        gated.where(size(col("_dq")) > 0).select(
+            col("brand_id"),
+            lit(SPEND_EVENT).alias("source"),
+            col("ad_account_id").alias("bronze_event_id"),
+            lit(TABLE).alias("canonical_target"),
+            array_join(col("_dq"), ",").alias("reason"),
+            to_json(
+                struct("brand_id", "platform", "ad_account_id", "lifetime_spend_minor", "currency_code")
+            ).alias("payload"),
+        ),
+        stage="dq",
+    )
+    good = gated.where(size(col("_dq")) == 0).drop("_dq")
+
     merge_on_pk(
-        spark, fqtn, staged,
+        spark, fqtn, good,
         ["brand_id", "platform", "ad_account_id"],
         order_by_desc=["last_seen_at"],
     )

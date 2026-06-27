@@ -18,6 +18,15 @@ old canonical Silver on money (bigint minor + currency), hashed-PII, and the uui
 DUAL-RUN (P4): writes to a SHADOW table by default (TARGET_TABLE override) so parity can be checked against
 the live canonical silver_collector_event order rows before the connector cutover. brand_id is the tenant
 key, first column, taken ONLY from the server-trusted envelope (MT-1) — never the provider body.
+
+STAGE-1 GATE (Brain V4 two-stage): this normalizer used to SILENTLY DROP rows whose canonical money /
+timestamp / event_id could not be derived (the `.where(event_id & amount_minor & occurred_at_iso
+isNotNull)` admission gate). Those same drops are now ROUTED through _silver_technical.write_quarantine
+(stage='dq') to brain_silver.silver_quarantine — observable + replayable — instead of vanishing:
+malformed money → non_integer_amount, un-derivable occurred_at → unparseable_timestamp, un-seedable
+event_id → empty_identifier:event_id. The ADMITTED set is IDENTICAL (same predicate), so good rows stay
+byte-identical (parity-faithful); the quarantine payload carries only NON-PII source fields (raw
+email/phone are never threaded — PII stays hash-only), and Bronze keeps the untouched original.
 """
 from __future__ import annotations
 
@@ -28,11 +37,12 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pyspark.sql import SparkSession  # noqa: E402
-from pyspark.sql.functions import col, lit, to_json, struct, udf  # noqa: E402
+from pyspark.sql.functions import col, concat_ws, lit, to_json, struct, udf, when  # noqa: E402
 from pyspark.sql.types import LongType, StringType  # noqa: E402
 
 from iceberg_base import CATALOG, SILVER_NAMESPACE, build_spark, create_iceberg_table  # noqa: E402
 from job_log import emit_job_log  # noqa: E402
+from _silver_technical import write_quarantine  # noqa: E402
 import _raw_normalize as rn  # noqa: E402
 
 BRONZE_NAMESPACE = os.environ.get("BRONZE_NAMESPACE", "brain_bronze")
@@ -95,7 +105,7 @@ def build(spark: SparkSession):
     salts = _load_salts(spark)
     df = df.join(salts.hint("broadcast"), "brand_id", "left")
 
-    canon = (
+    gated = (
         df.withColumn("occurred_at_iso", u_iso(col("updated_at"), col("processed_at"), col("created_at")))
         .withColumn("amount_minor", u_minor(col("price_str")))
         .withColumn("payment_method", u_classify(col("gateway"), col("gateway_names"), col("financial_status")))
@@ -103,8 +113,35 @@ def build(spark: SparkSession):
         .withColumn("hashed_customer_phone", u_hash_phone(col("cust_phone"), col("salt_hex")))
         .withColumn("cancelled_at_iso", u_iso1(col("cancelled_at")))
         .withColumn("event_id", u_eid(col("brand_id"), col("order_id"), u_epoch(col("updated_at"))))
-        .where(col("event_id").isNotNull() & col("amount_minor").isNotNull() & col("occurred_at_iso").isNotNull())
     )
+
+    # ── Stage-1 DQ gate: route the inline drops (un-seedable id / malformed money / unparseable ts) to
+    #    brain_silver.silver_quarantine (stage='dq') instead of silently dropping. Same admission set; good
+    #    rows byte-identical. Payload carries NON-PII source fields only; Bronze keeps the original.
+    _ok = col("event_id").isNotNull() & col("amount_minor").isNotNull() & col("occurred_at_iso").isNotNull()
+    _reason = concat_ws(
+        ",",
+        when(col("event_id").isNull(), lit("empty_identifier:event_id")),
+        when(col("amount_minor").isNull(), lit("non_integer_amount")),
+        when(col("occurred_at_iso").isNull(), lit("unparseable_timestamp")),
+    )
+    write_quarantine(
+        spark,
+        gated.where(~_ok).select(
+            col("brand_id"),
+            lit("shopify").alias("source"),
+            col("event_id").alias("bronze_event_id"),
+            lit(TARGET.rsplit(".", 1)[1]).alias("canonical_target"),
+            _reason.alias("reason"),
+            to_json(struct(
+                col("order_id"), col("currency_code"), col("price_str"), col("financial_status"),
+                col("fulfillment_status"), col("updated_at"), col("processed_at"), col("created_at"),
+                col("cancelled_at"),
+            )).alias("payload"),
+        ),
+        stage="dq",
+    )
+    canon = gated.where(_ok)
 
     # Reconstruct the canonical order.live.v1 envelope as the `payload` JSON the order marts get_json_object.
     props = struct(

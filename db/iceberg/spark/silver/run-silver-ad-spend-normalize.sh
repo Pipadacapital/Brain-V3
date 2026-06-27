@@ -42,7 +42,7 @@ docker run --rm \
     --master "local[2]" \
     --packages "${PACKAGES}" \
     --conf spark.jars.ivy=/root/.ivy2 \
-    --py-files /opt/spark-src/iceberg_base.py,/opt/spark-src/job_log.py,/opt/spark-src/silver/_raw_normalize.py \
+    --py-files /opt/spark-src/iceberg_base.py,/opt/spark-src/job_log.py,/opt/spark-src/silver/_raw_normalize.py,/opt/spark-src/silver/_silver_technical.py \
     "/opt/spark-src/silver/silver_ad_spend_normalize.py"
 
 echo ""

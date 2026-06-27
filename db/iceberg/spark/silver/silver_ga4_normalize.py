@@ -33,6 +33,15 @@ the GA4 row body; property_id + currency_code come from the connector record (MT
 
 DUAL-RUN (P4): writes to a SHADOW table by default (TARGET_TABLE override) so parity can be checked
 against the live canonical silver_collector_event ga4 rows before the connector cutover.
+
+STAGE-1 GATE (Brain V4 two-stage): GA4's normalizers RETURN None for a malformed revenue decimal or an
+empty report date (the TS THROWS), which the inline `.where(event_id & revenue_minor & occurred_at_iso
+isNotNull)` gate then SILENTLY DROPPED. Those drops are now ROUTED through
+_silver_technical.write_quarantine (stage='dq') to brain_silver.silver_quarantine: malformed revenue →
+non_integer_amount, empty/absent date → unparseable_timestamp, un-seedable event_id →
+empty_identifier:event_id. The admitted set is IDENTICAL (good rows byte-identical / parity-faithful).
+GA4 runReport rows carry NO PII, so the diagnostic payload is the verbatim dimension/metric tuple; Bronze
+keeps the untouched original (replay-safe).
 """
 from __future__ import annotations
 
@@ -42,11 +51,12 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pyspark.sql import SparkSession  # noqa: E402
-from pyspark.sql.functions import col, lit, to_json, struct, udf, upper, trim  # noqa: E402
+from pyspark.sql.functions import col, concat_ws, lit, to_json, struct, udf, upper, trim, when  # noqa: E402
 from pyspark.sql.types import LongType, StringType, BooleanType  # noqa: E402
 
 from iceberg_base import CATALOG, SILVER_NAMESPACE, build_spark, create_iceberg_table  # noqa: E402
 from job_log import emit_job_log  # noqa: E402
+from _silver_technical import write_quarantine  # noqa: E402
 import _raw_normalize as rn  # noqa: E402
 
 BRONZE_NAMESPACE = os.environ.get("BRONZE_NAMESPACE", "brain_bronze")
@@ -215,9 +225,35 @@ def build(spark: SparkSession):
             col("brand_id"), col("property_id"), col("date_t"),
             col("session_source"), col("session_medium"), col("session_campaign_name"),
             col("session_default_channel_group"), col("device_category"), col("country")))
-        .where(col("event_id").isNotNull() & col("revenue_minor").isNotNull()
-               & col("occurred_at_iso").isNotNull())
     )
+
+    # ── Stage-1 DQ gate: route the inline drops to brain_silver.silver_quarantine (stage='dq') instead of
+    #    silently dropping. Same admission set; good rows byte-identical; GA4 is PII-free → verbatim payload.
+    _ok = col("event_id").isNotNull() & col("revenue_minor").isNotNull() & col("occurred_at_iso").isNotNull()
+    _reason = concat_ws(
+        ",",
+        when(col("event_id").isNull(), lit("empty_identifier:event_id")),
+        when(col("revenue_minor").isNull(), lit("non_integer_amount")),
+        when(col("occurred_at_iso").isNull(), lit("unparseable_timestamp")),
+    )
+    write_quarantine(
+        spark,
+        canon.where(~_ok).select(
+            col("brand_id"),
+            lit("ga4").alias("source"),
+            col("event_id").alias("bronze_event_id"),
+            lit(TARGET.rsplit(".", 1)[1]).alias("canonical_target"),
+            _reason.alias("reason"),
+            to_json(struct(
+                col("property_id"), col("date"), col("session_source"), col("session_medium"),
+                col("session_campaign_name"), col("session_default_channel_group"),
+                col("device_category"), col("country"), col("sessions"), col("total_revenue"),
+                col("currency_code_raw"),
+            )).alias("payload"),
+        ),
+        stage="dq",
+    )
+    canon = canon.where(_ok)
 
     # Reconstruct the canonical ga4.session.v1 envelope as the `payload` JSON the traffic marts read.
     props = struct(

@@ -21,6 +21,17 @@ DATA AVAILABILITY (this session): current Bronze has ZERO settlement.live.v1 row
 connector has synced live), so this job writes a correct EMPTY table over current Bronze. The schema is the
 deliverable; the moment a Razorpay settlement repull lands settlement.live.v1 in Bronze, a re-run populates
 it with no code change. Parity status=NEW (no dbt/StarRocks settlement table to compare against).
+
+STAGE-1 GATE (Brain V4 two-stage): this job runs the Stage-1 DQ gate _silver_technical.dq_check (via
+  dq_violations_udf) over each staged settlement BEFORE the canonical MERGE, on its currency_code (invalid
+  ISO-4217 alpha-3) and its occurred_at (future / unparseable timestamp). A row that fails is diverted to
+  brain_silver.silver_quarantine (stage='dq', carrying the original Bronze payload for a replayable
+  quarantine row) and NEVER written to silver_settlement; Bronze keeps the original (replay-safe). The
+  amount-sign DQ rule is intentionally NOT applied: settlement.live.v1 carries BOTH credit and debit
+  variants (a refund/clawback settlement line legitimately carries a negative amount_minor), so gating
+  negative money here would false-quarantine valid refund settlements — money sign is a settlement reality,
+  not a defect. amount_minor stays bigint MINOR units paired with currency_code (defaulted INR when the
+  payload omits it, so missing_currency cannot fire). Good rows are byte-identical to before.
 """
 from __future__ import annotations
 
@@ -33,7 +44,8 @@ from _silver_base import (
     read_bronze_events,
     run_job,
 )
-from pyspark.sql.functions import coalesce, col, lit, to_timestamp
+from _silver_technical import dq_violations_udf, write_quarantine
+from pyspark.sql.functions import array_join, coalesce, col, lit, size, to_timestamp
 
 TABLE = "silver_settlement"
 
@@ -91,11 +103,31 @@ def build(spark):
             to_timestamp(prop("pj", "settlement_at")).alias("settlement_at"),
             col("occurred_at"),
             col("ingested_at"),
+            col("pj").alias("_payload"),
         )
         .where(col("event_id").isNotNull() & col("brand_id").isNotNull())
     )
 
-    merge_on_pk(spark, fqtn, staged, ["brand_id", "event_id"], order_by_desc=["ingested_at", "occurred_at"])
+    # ── Stage-1 DQ gate: currency (invalid ISO-4217) + occurred_at validity — see module docstring ────
+    gated = staged.withColumn(
+        "_dq",
+        dq_violations_udf()(lit(None).cast("bigint"), col("currency_code"), col("occurred_at").cast("string")),
+    )
+    write_quarantine(
+        spark,
+        gated.where(size(col("_dq")) > 0).select(
+            col("brand_id"),
+            col("source"),
+            col("event_id").alias("bronze_event_id"),
+            lit(TABLE).alias("canonical_target"),
+            array_join(col("_dq"), ",").alias("reason"),
+            col("_payload").alias("payload"),
+        ),
+        stage="dq",
+    )
+    good = gated.where(size(col("_dq")) == 0).drop("_dq", "_payload")
+
+    merge_on_pk(spark, fqtn, good, ["brand_id", "event_id"], order_by_desc=["ingested_at", "occurred_at"])
     return fqtn, spark.table(fqtn).count()
 
 

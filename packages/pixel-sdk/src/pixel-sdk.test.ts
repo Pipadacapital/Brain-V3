@@ -11,10 +11,26 @@
  *  - client-side anon-id + 30-min rolling session persistence.
  *  - NO raw PII / NO salt on the wire (ADR-2).
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { CollectorEventV1Schema } from '@brain/contracts';
 import { createPixel } from './capture.js';
-import type { BrowserEnv, MinimalStorage } from './types.js';
+import { Transport } from './transport.js';
+import { uuidV7 } from './uuid.js';
+import { FIRST_TOUCH_KEY } from './attribution.js';
+import type { BrowserEnv, CollectorEventV1, MinimalStorage } from './types.js';
+
+/** Matches the v4 envelope (correlation_id) and v7 (event_id) shapes. */
+const V4_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const V7_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+/** The event_names of every POSTed body, in order. */
+function eventNames(sent: string[]): string[] {
+  return sent.map((b) => JSON.parse(b).event_name);
+}
+/** The LAST POSTed body parsed (the triggering event — session.* lifecycle is emitted before it). */
+function lastEvent(sent: string[]): any {
+  return JSON.parse(sent[sent.length - 1]!);
+}
 
 const TOKEN = 'a11a0011-0a11-4a11-8a11-000000000011';
 const BRAND = 'a11a0001-0a00-4a00-8a00-000000000001';
@@ -36,6 +52,8 @@ interface FakeEnvOpts {
   failFirst?: number;
   /** Cookie jar (name → value) for click-id cookie capture. */
   cookies?: Record<string, string>;
+  /** Initial now() epoch-ms (advanceable via setNow — drives session expiry). */
+  now?: number;
 }
 
 /** A fake BrowserEnv that records each POST body (one per send). */
@@ -44,18 +62,28 @@ function fakeEnv(opts: FakeEnvOpts = {}): {
   sent: string[];
   flushTriggers: Array<() => void>;
   getWindowConsent: () => unknown;
+  setNow: (n: number) => void;
 } {
   const sent: string[] = [];
   const flushTriggers: Array<() => void> = [];
   let uuidSeq = 0;
+  let v7Seq = 0;
+  let nowMs = opts.now ?? 1_000_000;
   let failRemaining = opts.failFirst ?? 0;
   const storage = memStorage();
   const env: BrowserEnv = {
     bootstrap: { install_token: TOKEN, brand_id: BRAND, ingest_base_url: 'https://collect.example.com' },
     storage,
-    now: () => 1_000_000,
+    now: () => nowMs,
     nowIso: () => '2026-06-18T12:00:00.000Z',
     uuid: () => `00000000-0000-4000-8000-${String(++uuidSeq).padStart(12, '0')}`,
+    // Deterministic-but-unique v7 (real generator): varying random bytes per call → distinct ids.
+    uuidv7: () => {
+      v7Seq += 1;
+      const rnd = new Uint8Array(10);
+      for (let i = 0; i < 10; i++) rnd[i] = (v7Seq * 7 + i) & 0xff;
+      return uuidV7(nowMs, rnd);
+    },
     href: () => opts.href ?? 'https://shop.example.com/products/widget',
     referrer: () => 'https://google.com/',
     pathname: () => '/products/widget',
@@ -73,7 +101,15 @@ function fakeEnv(opts: FakeEnvOpts = {}): {
     },
     onFlushTrigger: (cb) => flushTriggers.push(cb),
   };
-  return { env, sent, flushTriggers, getWindowConsent: () => opts.windowConsent };
+  return {
+    env,
+    sent,
+    flushTriggers,
+    getWindowConsent: () => opts.windowConsent,
+    setNow: (n: number) => {
+      nowMs = n;
+    },
+  };
 }
 
 describe('pixel-sdk — shape-(a) envelope conformance (ADR-1)', () => {
@@ -82,10 +118,13 @@ describe('pixel-sdk — shape-(a) envelope conformance (ADR-1)', () => {
     const pixel = createPixel(env, { getWindowConsent: () => undefined });
     await pixel.page();
 
-    expect(sent.length).toBe(1);
-    const obj = JSON.parse(sent[0]!);
+    // The first event of a session is preceded by session.started; the page.viewed is the LAST POST.
+    expect(eventNames(sent)).toEqual(['session.started', 'page.viewed']);
+    const obj = lastEvent(sent);
     const parsed = CollectorEventV1Schema.safeParse(obj);
     expect(parsed.success, parsed.success ? '' : JSON.stringify(parsed.error?.issues)).toBe(true);
+    // session.started conforms too.
+    expect(CollectorEventV1Schema.safeParse(JSON.parse(sent[0]!)).success).toBe(true);
 
     expect(obj.event_name).toBe('page.viewed');
     expect(obj.occurred_at).toBe('2026-06-18T12:00:00.000Z');
@@ -98,14 +137,13 @@ describe('pixel-sdk — shape-(a) envelope conformance (ADR-1)', () => {
     const pixel = createPixel(env, { getWindowConsent: () => undefined });
     await pixel.cartItemAdded({ sku: 'WIDGET-1', qty: 2 });
     await pixel.cartViewed();
-    expect(sent.length).toBe(2);
+    // session.started leads the first emit.
+    expect(eventNames(sent)).toEqual(['session.started', 'cart.item_added', 'cart.viewed']);
     for (const body of sent) {
       const parsed = CollectorEventV1Schema.safeParse(JSON.parse(body));
       expect(parsed.success).toBe(true);
     }
-    expect(JSON.parse(sent[0]!).event_name).toBe('cart.item_added');
-    expect(JSON.parse(sent[0]!).properties.sku).toBe('WIDGET-1');
-    expect(JSON.parse(sent[1]!).event_name).toBe('cart.viewed');
+    expect(JSON.parse(sent[1]!).properties.sku).toBe('WIDGET-1');
   });
 });
 
@@ -115,7 +153,7 @@ describe('pixel-sdk — ONE event per POST (REC-5)', () => {
     const pixel = createPixel(env, { getWindowConsent: () => undefined });
     await pixel.page();
     await pixel.cartViewed();
-    expect(sent.length).toBe(2);
+    expect(sent.length).toBe(3); // session.started + page.viewed + cart.viewed
     for (const body of sent) {
       const parsed = JSON.parse(body);
       expect(Array.isArray(parsed)).toBe(false); // NOT a batch
@@ -126,33 +164,36 @@ describe('pixel-sdk — ONE event per POST (REC-5)', () => {
 
 describe('pixel-sdk — event_id reuse-on-retry / fresh-on-new (R4)', () => {
   it('a retried event keeps its event_id (Bronze PK dedups it exactly-once)', async () => {
-    // First send fails → event stays queued (with its original event_id).
-    const { env, sent, flushTriggers } = fakeEnv({ failFirst: 1 });
+    // Both the auto session.started AND page.viewed fail their first send → 0 delivered, queued with
+    // their original event_ids.
+    const { env, sent, flushTriggers } = fakeEnv({ failFirst: 2 });
     const pixel = createPixel(env, { getWindowConsent: () => undefined });
-    await pixel.page(); // enqueue + immediate flush FAILS (failFirst=1) → 0 sent
+    await pixel.page(); // session.started + page.viewed both fail first send → 0 sent
     expect(sent.length).toBe(0);
 
     // A flush trigger (pagehide/visibilitychange) IS registered (durable retry path).
     expect(flushTriggers.length).toBeGreaterThan(0);
 
-    // Retry → the event is delivered exactly once, carrying the SAME event_id minted at enqueue
-    // (the queued event is reused verbatim; no fresh uuid is minted on the retry path — R4).
+    // Retry → both events delivered exactly once, each carrying the SAME id minted at enqueue (the
+    // queued events are reused verbatim; no fresh uuid is minted on the retry path — R4).
     await pixel.flush();
-    expect(sent.length).toBe(1);
-    const obj = JSON.parse(sent[0]!);
-    expect(obj.event_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+    expect(eventNames(sent)).toEqual(['session.started', 'page.viewed']);
+    const obj = lastEvent(sent);
+    expect(obj.event_id).toMatch(V7_RE); // event_id is UUIDv7 now
+    expect(obj.correlation_id).toMatch(V4_RE); // correlation_id stays v4
     // A second flush after success is a no-op (queue drained) — no duplicate id re-sent.
     await pixel.flush();
-    expect(sent.length).toBe(1);
+    expect(sent.length).toBe(2);
   });
 
   it('a new event gets a FRESH event_id', async () => {
     const { env, sent } = fakeEnv();
     const pixel = createPixel(env, { getWindowConsent: () => undefined });
-    await pixel.page();
-    await pixel.page();
-    const id1 = JSON.parse(sent[0]!).event_id;
-    const id2 = JSON.parse(sent[1]!).event_id;
+    await pixel.page(); // session.started + page.viewed
+    await pixel.page(); // page.viewed (session already started)
+    // The two page.viewed events (last of each emit) have distinct event_ids.
+    const id1 = JSON.parse(sent[1]!).event_id;
+    const id2 = JSON.parse(sent[2]!).event_id;
     expect(id1).not.toBe(id2);
   });
 });
@@ -247,9 +288,9 @@ describe('pixel-sdk — behavioral events (M14 / H6) parse as shape (a)', () => 
     await pixel.checkoutStep({ step: 'shipping' });
     await pixel.login();
     await pixel.signup();
-    expect(sent.length).toBe(5);
-    const names = sent.map((b) => JSON.parse(b).event_name);
-    expect(names).toEqual([
+    // session.started leads the first emit.
+    expect(eventNames(sent)).toEqual([
+      'session.started',
       'cart.item_removed', 'cart.updated', 'checkout.step_viewed', 'user.logged_in', 'user.signed_up',
     ]);
     for (const body of sent) {
@@ -294,5 +335,191 @@ describe('pixel-sdk — no raw PII / no salt on the wire (ADR-2)', () => {
     const { env } = fakeEnv();
     const broken: BrowserEnv = { ...env, bootstrap: { install_token: '', brand_id: BRAND } };
     expect(() => createPixel(broken)).toThrow(/install_token/);
+  });
+});
+
+describe('pixel-sdk — first-touch persistence (attribution gap)', () => {
+  it('captures + persists first_touch on the first event and attaches it to every event', async () => {
+    const { env, sent } = fakeEnv({
+      href: 'https://shop.example.com/landing?utm_source=google&utm_medium=cpc&gclid=G1',
+    });
+    const pixel = createPixel(env, { getWindowConsent: () => undefined });
+    await pixel.page();
+    await pixel.cartViewed();
+
+    const ft = lastEvent(sent).properties.first_touch;
+    expect(ft.utm).toEqual({ source: 'google', medium: 'cpc' });
+    expect(ft.click_ids).toEqual({ gclid: 'G1' });
+    expect(ft.landing_path).toBe('/products/widget'); // env.pathname()
+    expect(ft.referrer).toBe('https://google.com/');
+    expect(typeof ft.ts).toBe('string');
+
+    // Persisted to localStorage AND identical across every emitted event (incl. session.started).
+    expect(env.storage.getItem(FIRST_TOUCH_KEY)).toBeTruthy();
+    const allFt = sent.map((b) => JSON.stringify(JSON.parse(b).properties.first_touch));
+    expect(new Set(allFt).size).toBe(1);
+  });
+
+  it('does NOT overwrite an existing __brain_first_touch', async () => {
+    const { env, sent } = fakeEnv();
+    // Pre-seed a prior first touch (a real returning visitor's landing).
+    env.storage.setItem(
+      FIRST_TOUCH_KEY,
+      JSON.stringify({ ts: 'ORIGINAL', landing_path: '/first-ever', utm: { source: 'newsletter' } }),
+    );
+    const pixel = createPixel(env, { getWindowConsent: () => undefined });
+    await pixel.page();
+    const ft = lastEvent(sent).properties.first_touch;
+    expect(ft.ts).toBe('ORIGINAL'); // untouched
+    expect(ft.landing_path).toBe('/first-ever');
+    expect(ft.utm).toEqual({ source: 'newsletter' });
+  });
+});
+
+describe('pixel-sdk — event_id is UUIDv7 (time-ordered)', () => {
+  it('uuidV7 has version-7 nibble + RFC-4122 variant + the ms timestamp as the 48-bit prefix', () => {
+    const rnd = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    const id = uuidV7(0x017f22e279b0, rnd); // a known 48-bit ms value
+    expect(id).toMatch(V7_RE);
+    // First 48 bits (12 hex chars) == the big-endian timestamp.
+    expect(id.replace(/-/g, '').slice(0, 12)).toBe('017f22e279b0');
+  });
+
+  it('emitted event_id matches the v7 shape while correlation_id stays v4', async () => {
+    const { env, sent } = fakeEnv();
+    const pixel = createPixel(env, { getWindowConsent: () => undefined });
+    await pixel.page();
+    const obj = lastEvent(sent);
+    expect(obj.event_id).toMatch(V7_RE);
+    expect(obj.correlation_id).toMatch(V4_RE);
+  });
+});
+
+describe('pixel-sdk — session lifecycle events (session.started / session.ended)', () => {
+  it('emits session.started once at the first event of a new session', async () => {
+    const { env, sent } = fakeEnv();
+    const pixel = createPixel(env, { getWindowConsent: () => undefined });
+    await pixel.page();
+    await pixel.page();
+    // session.started fires ONLY on the first event of the session, not again within the window.
+    expect(eventNames(sent)).toEqual(['session.started', 'page.viewed', 'page.viewed']);
+    expect(CollectorEventV1Schema.safeParse(JSON.parse(sent[0]!)).success).toBe(true);
+  });
+
+  it('emits session.ended with session_duration_ms on expiry, then starts a fresh session', async () => {
+    const t0 = 1_000_000;
+    const { env, sent, setNow } = fakeEnv({ now: t0 });
+    const pixel = createPixel(env, { getWindowConsent: () => undefined });
+    await pixel.page(); // session A starts at t0
+    setNow(t0 + 600_000); // +10 min — still inside the 30-min window (extends last-activity)
+    await pixel.page();
+    setNow(t0 + 600_000 + 1_800_001); // >30 min idle → session A expired
+    await pixel.page();
+
+    expect(eventNames(sent)).toEqual([
+      'session.started', // A
+      'page.viewed',
+      'page.viewed',
+      'session.ended', // A ended (duration = last − start = 600_000 ms)
+      'session.started', // B
+      'page.viewed',
+    ]);
+    const ended = JSON.parse(sent[3]!);
+    expect(ended.event_name).toBe('session.ended');
+    expect(ended.properties.session_duration_ms).toBe(600_000);
+    expect(CollectorEventV1Schema.safeParse(ended).success).toBe(true);
+    // A and B carry DIFFERENT session ids.
+    expect(JSON.parse(sent[1]!).properties.session_id).not.toBe(
+      JSON.parse(sent[5]!).properties.session_id,
+    );
+  });
+
+  it('endSession() (pagehide) emits a terminal session.ended and clears the session', async () => {
+    const { env, sent } = fakeEnv();
+    const pixel = createPixel(env, { getWindowConsent: () => undefined });
+    await pixel.page(); // session started
+    await pixel.endSession();
+    const last = lastEvent(sent);
+    expect(last.event_name).toBe('session.ended');
+    expect(typeof last.properties.session_duration_ms).toBe('number');
+    // Session cleared → the next event re-mints + re-emits session.started.
+    await pixel.page();
+    expect(JSON.parse(sent[sent.length - 2]!).event_name).toBe('session.started');
+    // A second endSession with no live session is a no-op (no duplicate terminal event).
+    const before = sent.length;
+    await pixel.endSession();
+    await pixel.endSession();
+    expect(sent.length).toBe(before + 1); // only the first cleared a live session
+  });
+});
+
+describe('pixel-sdk — new behavioural events parse as shape (a)', () => {
+  it('download / video / share / exit_intent emit a conformant envelope via track()', async () => {
+    const { env, sent } = fakeEnv();
+    const pixel = createPixel(env, { getWindowConsent: () => undefined });
+    await pixel.track('download', { href: '/files/report.pdf', file_ext: 'pdf' });
+    await pixel.track('video', { action: 'play', src: '/media/promo.mp4', position_seconds: 0 });
+    await pixel.track('share', { method: 'web_share_api' });
+    await pixel.track('exit_intent', {});
+    // session.started leads; the four new events follow.
+    expect(eventNames(sent)).toEqual([
+      'session.started', 'download', 'video', 'share', 'exit_intent',
+    ]);
+    for (const body of sent) {
+      expect(CollectorEventV1Schema.safeParse(JSON.parse(body)).success).toBe(true);
+    }
+    const dl = JSON.parse(sent[1]!);
+    expect(dl.properties.file_ext).toBe('pdf');
+    expect(dl.properties.href).toBe('/files/report.pdf');
+  });
+});
+
+// Minimal CollectorEventV1 for transport-level queue tests (the transport stores/reads opaquely).
+function ev(name: string, id: string): CollectorEventV1 {
+  return {
+    schema_version: '1',
+    event_id: id,
+    brand_id: BRAND,
+    event_name: name,
+    occurred_at: '2026-06-18T12:00:00.000Z',
+    properties: { install_token: TOKEN },
+  } as unknown as CollectorEventV1;
+}
+
+describe('transport — keep-critical eviction (G1, No-event-loss)', () => {
+  it('evicts non-critical before a queued order.placed under overflow', async () => {
+    // All sends fail → the queue accumulates past MAX_QUEUE (200) so eviction runs.
+    const { env } = fakeEnv({ failFirst: 1_000_000 });
+    const t = new Transport(env, 'https://collect.example.com/v1/events');
+    await t.enqueue(ev('order.placed', 'crit-1')); // critical, oldest
+    for (let i = 0; i < 260; i++) await t.enqueue(ev('scroll.depth', `s-${i}`));
+    const q = JSON.parse(env.storage.getItem('__brain_queue')!) as CollectorEventV1[];
+    expect(q.length).toBeLessThanOrEqual(200);
+    expect(q.some((e) => e.event_name === 'order.placed')).toBe(true); // critical survived the flood
+    expect(t.consumeDroppedCount()).toBeGreaterThan(0); // and the drops were counted
+  });
+
+  it('consumeDroppedCount resets after read', async () => {
+    const { env } = fakeEnv({ failFirst: 1_000_000 });
+    const t = new Transport(env, 'https://collect.example.com/v1/events');
+    for (let i = 0; i < 230; i++) await t.enqueue(ev('rage.click', `r-${i}`));
+    expect(t.consumeDroppedCount()).toBeGreaterThan(0);
+    expect(t.consumeDroppedCount()).toBe(0);
+  });
+});
+
+describe('transport — exponential-backoff retry (G2)', () => {
+  it('retries a failed flush on a backoff timer instead of stranding the queue', async () => {
+    vi.useFakeTimers();
+    try {
+      const { env, sent } = fakeEnv({ failFirst: 1 }); // first send fails, then succeeds
+      const t = new Transport(env, 'https://collect.example.com/v1/events');
+      await t.enqueue(ev('page.viewed', 'p-1'));
+      expect(sent.length).toBe(0); // first attempt failed; queued for backoff retry
+      await vi.advanceTimersByTimeAsync(1000); // 1s backoff fires
+      expect(sent.length).toBe(1); // retry delivered it — not stranded until the next page event
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

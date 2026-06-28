@@ -3,7 +3,10 @@
  *
  * These are opaque attribution signals modeled downstream. NO PII, NO salt (ADR-2).
  */
-import type { BrowserEnv, ClickIds, Utm } from './types.js';
+import type { BrowserEnv, ClickIds, FirstTouch, Utm } from './types.js';
+
+/** localStorage key for the persisted first-touch snapshot (never overwritten once set). */
+export const FIRST_TOUCH_KEY = '__brain_first_touch';
 
 /** Parse the query string from a URL href into a flat map. */
 export function parseQuery(href: string): Record<string, string> {
@@ -95,4 +98,38 @@ export function captureUtm(env: BrowserEnv): Utm | undefined {
     if (v) utm[k] = v;
   }
   return Object.keys(utm).length > 0 ? utm : undefined;
+}
+
+/**
+ * Get-or-capture the persisted FIRST-TOUCH snapshot (real attribution gap fix).
+ *
+ * On the FIRST event ever (no prior `__brain_first_touch`) we snapshot the LANDING utm / click_ids /
+ * path / referrer / ts and PERSIST it; every subsequent event re-reads and re-attaches the SAME
+ * object so first-touch attribution survives past the landing page. An existing snapshot is NEVER
+ * overwritten (the first touch is, by definition, immutable).
+ */
+export function getOrCreateFirstTouch(
+  env: BrowserEnv,
+  options: ClickIdCaptureOptions = {},
+): FirstTouch {
+  const raw = env.storage.getItem(FIRST_TOUCH_KEY);
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as FirstTouch;
+      if (parsed && typeof parsed === 'object') return parsed; // NEVER overwrite the first touch
+    } catch {
+      // corrupt value — fall through and re-capture
+    }
+  }
+  const ft: FirstTouch = { ts: env.nowIso() };
+  const landing = env.pathname();
+  if (landing) ft.landing_path = landing;
+  const referrer = env.referrer();
+  if (referrer) ft.referrer = referrer;
+  const utm = captureUtm(env);
+  if (utm) ft.utm = utm;
+  const clickIds = captureClickIds(env, options);
+  if (clickIds) ft.click_ids = clickIds;
+  env.storage.setItem(FIRST_TOUCH_KEY, JSON.stringify(ft));
+  return ft;
 }

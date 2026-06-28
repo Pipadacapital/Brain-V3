@@ -56,7 +56,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pyspark.sql import DataFrame, SparkSession  # noqa: E402
 from pyspark.sql.functions import (  # noqa: E402
-    coalesce, col, concat, concat_ws, current_timestamp, lit, row_number, struct, to_json, to_timestamp, when,
+    coalesce, col, concat, concat_ws, current_timestamp, get_json_object, lit, row_number, struct, to_json, to_timestamp, when,
 )
 from pyspark.sql.window import Window  # noqa: E402
 
@@ -65,7 +65,11 @@ from job_log import emit_job_log  # noqa: E402
 from _silver_technical import write_quarantine  # noqa: E402
 
 BRONZE_NAMESPACE = os.environ.get("BRONZE_NAMESPACE", "brain_bronze")
-RAW_TABLE = f"{CATALOG}.{BRONZE_NAMESPACE}.collector_events_raw"
+# V4 REPOINT: the Kafka-Connect Iceberg sink that wrote `collector_events_raw` was RETIRED (Spark-SS is
+# the sole Bronze landing). The live collector lane now lands in `collector_events` (bronze_materialize.py),
+# whose `payload` column already IS the full envelope JSON. Reading the retired `_raw` table froze the
+# entire Silver tier at the Kafka-Connect cut-over date (new orders/pixels/spend never reached Silver).
+RAW_TABLE = f"{CATALOG}.{BRONZE_NAMESPACE}.{os.environ.get('COLLECTOR_BRONZE_TABLE', 'collector_events')}"
 TARGET = f"{CATALOG}.{SILVER_NAMESPACE}.silver_collector_event"
 
 # Lane policy — MUST stay in lockstep with bronze_materialize.py (the same constants, same meaning).
@@ -117,20 +121,21 @@ def build(spark: SparkSession):
     )
 
     raw = spark.table(RAW_TABLE)
-    # Reconstruct the full envelope JSON from the exploded struct columns → restores the
-    # payload-is-the-full-envelope contract the downstream get_json_object readers depend on.
-    payload = to_json(struct(*[col(c) for c in raw.columns]))
-
+    # bronze_materialize's `collector_events.payload` IS the verbatim full envelope JSON, so the
+    # downstream get_json_object('$.properties.X') readers work unchanged — no struct reconstruction.
+    # The flat envelope fields come straight off the materialized columns; install_token + the R3
+    # consent signal are parsed out of the payload (collector_events has no struct properties/consent cols).
     selected = raw.select(
         col("event_id").cast("string").alias("event_id"),
         col("brand_id").cast("string").alias("claimed_brand_id"),
-        col("event_name").cast("string").alias("event_type"),
-        to_timestamp(col("occurred_at")).alias("occurred_at"),
-        coalesce(to_timestamp(col("_received_at")), current_timestamp()).alias("ingested_at"),
+        col("event_type").cast("string").alias("event_type"),
+        col("occurred_at").alias("occurred_at"),
+        coalesce(col("ingested_at"), col("received_at"), current_timestamp()).alias("ingested_at"),
         col("correlation_id").cast("string").alias("correlation_id"),
-        col("properties.install_token").cast("string").alias("install_token"),
-        col("consent_flags").alias("consent_flags_raw"),  # R3 signal: PRESENT (struct non-null)
-        payload.alias("payload"),
+        get_json_object(col("payload"), "$.properties.install_token").alias("install_token"),
+        # R3 signal: the consent_flags object PRESENT in the envelope (non-null string) vs absent (null).
+        get_json_object(col("payload"), "$.consent_flags").alias("consent_flags_raw"),
+        col("payload").cast("string").alias("payload"),
     )
 
     _qsource = coalesce(col("event_type"), lit("collector"))

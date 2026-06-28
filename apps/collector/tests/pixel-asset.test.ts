@@ -16,8 +16,9 @@ const BRAND = 'a11a0001-0a00-4a00-8a00-000000000001';
 
 interface Harness {
   sent: string[];
-  listeners: Record<string, Array<() => void>>;
+  listeners: Record<string, Array<(e?: unknown) => void>>;
   win: Record<string, unknown>;
+  nav: Record<string, unknown>;
 }
 
 /** Build a minimal fake-DOM sandbox + eval the asset in it. Returns captured POST bodies. */
@@ -27,10 +28,12 @@ function runAsset(opts: {
   fetchOk?: boolean;
   cookie?: string;
   pathname?: string;
+  userAgent?: string;
+  withShare?: boolean;
 } = {}): Harness {
   const sent: string[] = [];
   const store = new Map<string, string>();
-  const listeners: Record<string, Array<() => void>> = {};
+  const listeners: Record<string, Array<(e?: unknown) => void>> = {};
 
   const location = {
     protocol: 'https:',
@@ -47,7 +50,15 @@ function runAsset(opts: {
   const win: Record<string, unknown> = {
     __brain: { install_token: TOKEN, brand_id: BRAND },
     __brainConsent: opts.consent,
-    crypto: { randomUUID: () => randUuid() },
+    crypto: {
+      randomUUID: () => randUuid(),
+      // Real getRandomValues so the asset's UUIDv7 path is exercised (not the v4 fallback).
+      getRandomValues: (arr: Uint8Array) => {
+        for (let i = 0; i < arr.length; i++) arr[i] = Math.floor(Math.random() * 256);
+        return arr;
+      },
+    },
+    Uint8Array,
     localStorage: {
       getItem: (k: string) => store.get(k) ?? null,
       setItem: (k: string, v: string) => void store.set(k, v),
@@ -56,7 +67,7 @@ function runAsset(opts: {
     location,
     innerWidth: 1920,
     innerHeight: 1080,
-    addEventListener: (ev: string, cb: () => void) => {
+    addEventListener: (ev: string, cb: (e?: unknown) => void) => {
       (listeners[ev] ??= []).push(cb);
     },
     fetch: fakeFetch,
@@ -66,13 +77,16 @@ function runAsset(opts: {
     console: { warn: () => undefined },
   };
   // sendBeacon intentionally absent → forces the fetch path (deterministic capture).
-  const navigator = { userAgent: 'Mozilla/5.0 (Macintosh)', /* no sendBeacon */ };
+  const navigator: Record<string, unknown> = {
+    userAgent: opts.userAgent ?? 'Mozilla/5.0 (Macintosh)', /* no sendBeacon */
+  };
+  if (opts.withShare) navigator.share = () => Promise.resolve();
   const document = {
     referrer: 'https://google.com/',
     cookie: opts.cookie ?? '',
     visibilityState: 'visible',
     addEventListener: (ev: string, cb: (e?: unknown) => void) => {
-      (listeners[ev] ??= []).push(cb as () => void);
+      (listeners[ev] ??= []).push(cb);
     },
   };
 
@@ -98,12 +112,13 @@ function runAsset(opts: {
     JSON,
     Object,
     setTimeout,
+    Uint8Array,
   };
   win.fetch = fakeFetch;
   win.XMLHttpRequest = FakeXHR;
   vm.createContext(sandbox);
   vm.runInContext(PIXEL_JS, sandbox);
-  return { sent, listeners, win };
+  return { sent, listeners, win, nav: navigator };
 }
 
 /** Let the asset's promise-chained flush (sendOne → .then → step) drain queued events. */
@@ -257,5 +272,166 @@ describe('served /pixel.js — shape-(a) parity (ADR-1)', () => {
     for (const banned of ['email', 'phone', 'salt', '"name"', 'first_name']) {
       expect(raw.includes(banned), `wire body must not contain '${banned}'`).toBe(false);
     }
+  });
+
+  // ── event_id = UUIDv7 ────────────────────────────────────────────────────────
+  const UUID_V7_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+  it('mints event_id as a UUIDv7 (version 7 + RFC-4122 variant) that PARSES against the schema', () => {
+    const { sent } = runAsset();
+    const obj = JSON.parse(sent[0]!);
+    expect(obj.event_id, `event_id ${obj.event_id} should be UUIDv7`).toMatch(UUID_V7_RE);
+    // correlation_id stays a v4 (version nibble 4).
+    expect(obj.correlation_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+    expect(CollectorEventV1Schema.safeParse(obj).success).toBe(true);
+  });
+
+  it('UUIDv7 event_ids embed a non-decreasing 48-bit ms timestamp (time-ordered)', async () => {
+    const { win, sent } = runAsset();
+    (win.brain as Record<string, () => void>).flush!();
+    await drain();
+    // First 12 hex chars (48 bits) = the big-endian Unix-ms timestamp. Date.now() is monotonic
+    // non-decreasing, so the prefix is non-decreasing across mints (random bits order within a ms).
+    const tsOf = (id: string): number => parseInt(id.replace(/-/g, '').slice(0, 12), 16);
+    const ids = sent.map((b) => JSON.parse(b).event_id as string);
+    expect(ids.length).toBeGreaterThan(1);
+    for (const id of ids) expect(id).toMatch(UUID_V7_RE);
+    const stamps = ids.map(tsOf);
+    for (let i = 1; i < stamps.length; i++) expect(stamps[i]! >= stamps[i - 1]!).toBe(true);
+    // The embedded timestamp tracks real wall-clock ms (within a generous skew window).
+    expect(Math.abs(stamps[0]! - Date.now())).toBeLessThan(60000);
+  });
+
+  // ── first-touch persistence ──────────────────────────────────────────────────
+  it('captures + persists first_touch on the first event and attaches it to every event', async () => {
+    const { win, sent } = runAsset({ search: '?utm_source=google&utm_campaign=spring&gclid=G1' });
+    const first = JSON.parse(sent[0]!).properties.first_touch;
+    expect(first.landing_path).toBe('/products/widget');
+    expect(first.referrer).toBe('https://google.com/');
+    expect(typeof first.ts).toBe('string');
+    expect(first.utm).toEqual({ source: 'google', campaign: 'spring' });
+    expect(first.click_ids).toEqual({ gclid: 'G1' });
+    // A later event carries the SAME persisted first-touch object (survives past the landing page).
+    (win.brain as Record<string, (x?: unknown) => void>).page!({});
+    await drain();
+    (win.brain as Record<string, () => void>).flush!();
+    await drain();
+    for (const body of sent) {
+      expect(JSON.parse(body).properties.first_touch).toEqual(first);
+      expect(CollectorEventV1Schema.safeParse(JSON.parse(body)).success).toBe(true);
+    }
+  });
+
+  it('does NOT overwrite an existing first_touch (first acquisition wins)', async () => {
+    // Pre-seed a first-touch as if a PRIOR landing on another page already happened.
+    const { win, sent } = runAsset({ search: '?utm_source=newsletter' });
+    const ft = JSON.parse(sent[0]!).properties.first_touch;
+    expect(ft.utm).toEqual({ source: 'newsletter' });
+    (win.brain as Record<string, (x?: unknown) => void>).track!('custom.event', {});
+    await drain();
+    (win.brain as Record<string, () => void>).flush!();
+    await drain();
+    for (const body of sent) expect(JSON.parse(body).properties.first_touch.utm).toEqual({ source: 'newsletter' });
+  });
+
+  // ── session lifecycle ────────────────────────────────────────────────────────
+  it('fires session.started exactly once at the first event of a new session', async () => {
+    const { win, sent } = runAsset();
+    await drain();
+    (win.brain as Record<string, () => void>).flush!();
+    await drain();
+    const events = sent.map((b) => JSON.parse(b));
+    const started = events.filter((e) => e.event_name === 'session.started');
+    expect(started.length).toBe(1);
+    expect(typeof started[0].properties.session_id).toBe('string');
+    for (const e of events) expect(CollectorEventV1Schema.safeParse(e).success).toBe(true);
+  });
+
+  it('fires session.ended with a numeric session_duration_ms on pagehide', async () => {
+    const { listeners, sent } = runAsset();
+    await drain();
+    listeners['pagehide']!.forEach((cb) => cb());
+    await drain();
+    const ended = sent.map((b) => JSON.parse(b)).find((e) => e.event_name === 'session.ended');
+    expect(ended, 'session.ended should fire on pagehide').toBeTruthy();
+    expect(typeof ended.properties.session_duration_ms).toBe('number');
+    expect(CollectorEventV1Schema.safeParse(ended).success).toBe(true);
+  });
+
+  // ── exit intent (desktop only) ───────────────────────────────────────────────
+  it('fires exit_intent when the cursor leaves through the top of the viewport (desktop)', async () => {
+    const { listeners, sent } = runAsset();
+    await drain();
+    expect((listeners['mouseout']?.length ?? 0)).toBeGreaterThan(0);
+    listeners['mouseout']![0]!({ clientY: 0, relatedTarget: null });
+    await drain();
+    const exit = sent.map((b) => JSON.parse(b)).find((e) => e.event_name === 'exit_intent');
+    expect(exit, 'exit_intent should fire on top-edge mouseout').toBeTruthy();
+    expect(CollectorEventV1Schema.safeParse(exit).success).toBe(true);
+  });
+
+  it('does NOT register the exit_intent listener on mobile', () => {
+    const { listeners } = runAsset({ userAgent: 'Mozilla/5.0 (iPhone)' });
+    expect(listeners['mouseout']?.length ?? 0).toBe(0);
+  });
+
+  // ── file download ────────────────────────────────────────────────────────────
+  it('fires a download event on a click of a link to a downloadable asset', async () => {
+    const { listeners, sent } = runAsset();
+    await drain();
+    const anchor: Record<string, unknown> = {
+      tagName: 'A', id: 'dl', textContent: 'Get the report',
+      getAttribute: (k: string) => (k === 'href' ? '/files/report.pdf?v=2' : null),
+    };
+    anchor.closest = () => anchor;
+    listeners['click']![0]!({ target: anchor, clientX: 5, clientY: 5 });
+    await drain();
+    const dl = sent.map((b) => JSON.parse(b)).find((e) => e.event_name === 'download');
+    expect(dl, 'download should fire').toBeTruthy();
+    expect(dl.properties.file_ext).toBe('pdf');
+    expect(dl.properties.href).toBe('/files/report.pdf?v=2');
+    expect(CollectorEventV1Schema.safeParse(dl).success).toBe(true);
+  });
+
+  // ── native media ─────────────────────────────────────────────────────────────
+  it('fires a video event with action/src/position_seconds on media play', async () => {
+    const { listeners, sent } = runAsset();
+    await drain();
+    expect((listeners['play']?.length ?? 0)).toBeGreaterThan(0);
+    listeners['play']![0]!({ target: { tagName: 'VIDEO', currentSrc: 'https://cdn.example.com/v.mp4', currentTime: 12.7 } });
+    await drain();
+    const vid = sent.map((b) => JSON.parse(b)).find((e) => e.event_name === 'video');
+    expect(vid, 'video should fire on play').toBeTruthy();
+    expect(vid.properties.action).toBe('play');
+    expect(vid.properties.src).toBe('https://cdn.example.com/v.mp4');
+    expect(vid.properties.position_seconds).toBe(13);
+    expect(CollectorEventV1Schema.safeParse(vid).success).toBe(true);
+  });
+
+  // ── social share ─────────────────────────────────────────────────────────────
+  it('fires a share event on a click of a known social-share link', async () => {
+    const { listeners, sent } = runAsset();
+    await drain();
+    const anchor: Record<string, unknown> = {
+      tagName: 'A', id: 'fb', textContent: 'Share',
+      getAttribute: (k: string) => (k === 'href' ? 'https://www.facebook.com/sharer/sharer.php?u=x' : null),
+    };
+    anchor.closest = () => anchor;
+    listeners['click']![0]!({ target: anchor, clientX: 5, clientY: 5 });
+    await drain();
+    const sh = sent.map((b) => JSON.parse(b)).find((e) => e.event_name === 'share');
+    expect(sh, 'share should fire on a sharer link').toBeTruthy();
+    expect(sh.properties.method).toBe('facebook');
+    expect(CollectorEventV1Schema.safeParse(sh).success).toBe(true);
+  });
+
+  it('fires a share event (method=web_share) when navigator.share() is invoked', async () => {
+    const { nav, sent } = runAsset({ withShare: true });
+    await drain();
+    await (nav.share as () => Promise<void>)();
+    await drain();
+    const sh = sent.map((b) => JSON.parse(b)).find((e) => e.event_name === 'share' && e.properties.method === 'web_share');
+    expect(sh, 'web-share monkey-patch should emit share').toBeTruthy();
+    expect(CollectorEventV1Schema.safeParse(sh).success).toBe(true);
   });
 });

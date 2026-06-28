@@ -27,6 +27,7 @@ function hasData(
     totalEvents: '5',
     consentGrantedCount: '3',
     consentTotalCount: '4',
+    clientDroppedCount: '0',
     ...overrides,
   };
 }

@@ -81,6 +81,18 @@ export function TrackingHealthPanel() {
   const consentTotal = hasData ? health.consentTotalCount : '0';
   const volume = hasData ? health.eventVolume : [];
 
+  // Client-side delivery reliability — the pixel.dropped sum (events the browser pixel
+  // had to evict under queue overflow). This is the ONE honest client-loss signal the
+  // BFF provides. 0 ⇒ everything reached Brain; >0 ⇒ N events were dropped client-side.
+  const clientDroppedRaw = hasData ? health.clientDroppedCount : '0';
+  let clientDropped = 0n;
+  try {
+    clientDropped = BigInt(clientDroppedRaw ?? '0');
+  } catch {
+    clientDropped = 0n;
+  }
+  const hasClientLoss = clientDropped > 0n;
+
   const lastTs = lastEventAt ? new Date(lastEventAt).getTime() : NaN;
   const lastStale = !Number.isNaN(lastTs) && Date.now() - lastTs > STALE_THRESHOLD_MS;
 
@@ -149,6 +161,36 @@ export function TrackingHealthPanel() {
         data-testid="tracking-health-volume"
       >
         <DataHealthVolumeChart data={volume} isLoading={false} />
+      </SectionCard>
+
+      {/* Delivery reliability — honest CLIENT-SIDE drop signal (pixel.dropped sum). Shows
+          "Events delivered reliably" at 0, or "N events dropped client-side (queue overflow)"
+          when >0. Never a fabricated 0 chart — it's a single honest tile. */}
+      <SectionCard
+        title="Delivery reliability"
+        meta={
+          <StatusBadge
+            tone={hasClientLoss ? 'warning' : 'success'}
+            data-testid="tracking-health-delivery-status"
+          >
+            {hasClientLoss ? 'Client-side drops' : 'Reliable'}
+          </StatusBadge>
+        }
+        data-testid="tracking-health-delivery"
+      >
+        <div data-testid="kpi-client-dropped">
+          <MetricCard
+            label="Client-side delivery"
+            value={
+              hasData
+                ? hasClientLoss
+                  ? `${clientDropped.toLocaleString()} events dropped client-side (queue overflow)`
+                  : 'Events delivered reliably'
+                : undefined
+            }
+            unit={hasClientLoss ? undefined : 'no client-side loss'}
+          />
+        </div>
       </SectionCard>
     </div>
   );

@@ -172,7 +172,22 @@ function ExecKpiRow() {
     <SectionCard
       title="Headline economics"
       description="Your business at a glance, in the order currency."
-      meta={<FreshnessBadge timestamp={asOf} prefix="As of" />}
+      meta={
+        /* kpi-summary.as_of is the as-of DATE (the query window end), NOT a generation timestamp —
+           feeding it to FreshnessBadge rendered a misleading relative "X hours ago" (midnight today).
+           Show the as-of date plainly so it reads as the figures' as-of date, not a staleness stamp. */
+        asOf ? (
+          <span className="text-xs text-muted-foreground">
+            As of{' '}
+            {new Date(`${asOf}T00:00:00Z`).toLocaleDateString('en-GB', {
+              day: 'numeric',
+              month: 'short',
+              year: 'numeric',
+              timeZone: 'UTC',
+            })}
+          </span>
+        ) : undefined
+      }
     >
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
         <KpiTile

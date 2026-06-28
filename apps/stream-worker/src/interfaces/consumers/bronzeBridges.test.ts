@@ -29,7 +29,6 @@ describe('BRONZE_BRIDGES registry (wired-to-nothing guard)', () => {
     const eventNames = BRONZE_BRIDGES.map((b) => b.eventName).sort();
     expect(eventNames).toEqual(
       [
-        'gokwik.awb_status.v1',
         'gokwik.rto_predict.v1',
         'order.live.v1',
         'shiprocket.shipment_status.v1',

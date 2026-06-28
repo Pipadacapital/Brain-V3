@@ -117,11 +117,10 @@ export async function main(): Promise<void> {
   // Filters settlement.live.v1 events; does TWO-HOP JOIN → net-of-fees finalization writes.
   // WIRED HERE (MB-4 NON-NEGOTIABLE) — unwiring triggers durable-rule proposal (occurrence #3).
   const settlementLedgerGroupId = cfg.SETTLEMENT_LEDGER_CONSUMER_GROUP_ID;
-  // GoKwik AWB ledger bridge (feat-gokwik-shopflo-connectors / 0030): separate consumer group on
-  // the live topic. Filters gokwik.awb_status.v1; terminal RTO → cod_rto_clawback (signed-negative),
-  // terminal Delivered → cod_delivery_confirmed. WIRED HERE (NON-NEGOTIABLE) — unwiring is the
-  // wired-to-nothing anti-pattern (gokwik-awb-ledger-wiring.e2e.test.ts catches it).
-  const gokwikAwbLedgerGroupId = cfg.GOKWIK_AWB_LEDGER_CONSUMER_GROUP_ID;
+  // RETIRED (0117): the GoKwik AWB ledger bridge group. GoKwik is webhook-first payments/checkout
+  // with no AWB-read API — the synthetic logistics model (gokwik.awb_status.v1 → cod_rto_clawback)
+  // was removed. Logistics truth is Shiprocket. The ledger consumer itself was already removed in the
+  // Medallion realignment (recognition is built from Bronze); this drops the now-dead config read.
   // Backfill lane (ADR-BF-7 / D-3): separate topic + group → zero live-lane lag impact.
   // BACKFILL_TOPIC default derives from NODE_ENV inside the config loader.
   const backfillTopic = cfg.BACKFILL_TOPIC;
@@ -200,7 +199,7 @@ export async function main(): Promise<void> {
     dedup, bronze, undefined, /* enforceTenantDerivation */ false, pgWriteEnabled,
   );
   // Registry-driven Bronze bridges (re-platform Phase B). One EventBronzeBridgeConsumer per entry in
-  // BRONZE_BRIDGES (shopflo checkout, gokwik rto-predict, gokwik awb-status, shiprocket shipment,
+  // BRONZE_BRIDGES (shopflo checkout, gokwik rto-predict, shiprocket shipment,
   // order.live) — each lands a server-trusted event_name into Bronze on its own consumer group
   // (enforceTenantDerivation=false). Built, started, and stopped as ONE array below, so a new
   // connector's Bronze landing is a single registry entry, never three hand-edits (kills the

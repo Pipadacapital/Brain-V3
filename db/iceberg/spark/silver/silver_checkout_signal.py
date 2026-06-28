@@ -106,7 +106,12 @@ def _build_signal_df(spark: SparkSession):
         WITH raw AS (
             SELECT brand_id, event_id, event_type, occurred_at, payload
             FROM {BRONZE_TABLE}
-            WHERE event_type IN ('gokwik.rto_predict.v1', 'shopflo.checkout_abandoned.v1')
+            WHERE event_type IN (
+                'gokwik.rto_predict.v1', 'shopflo.checkout_abandoned.v1',
+                -- GoKwik webhook-first checkout funnel (source='gokwik'): source-neutral abandoned +
+                -- the started/step funnel markers. See docs/architecture/gokwik-connector-reimplementation.md.
+                'checkout.abandoned.v1', 'gokwik.checkout_started.v1', 'gokwik.checkout_step.v1'
+            )
         ),
         typed AS (
             SELECT
@@ -118,10 +123,16 @@ def _build_signal_df(spark: SparkSession):
                 CASE event_type
                     WHEN 'gokwik.rto_predict.v1'         THEN 'rto_predict'
                     WHEN 'shopflo.checkout_abandoned.v1' THEN 'checkout_abandoned'
+                    WHEN 'checkout.abandoned.v1'         THEN 'checkout_abandoned'
+                    WHEN 'gokwik.checkout_started.v1'    THEN 'checkout_started'
+                    WHEN 'gokwik.checkout_step.v1'       THEN 'checkout_step'
                 END                                                        AS signal_type,
                 CASE event_type
                     WHEN 'gokwik.rto_predict.v1'         THEN 'gokwik'
                     WHEN 'shopflo.checkout_abandoned.v1' THEN 'shopflo'
+                    WHEN 'checkout.abandoned.v1'         THEN 'gokwik'
+                    WHEN 'gokwik.checkout_started.v1'    THEN 'gokwik'
+                    WHEN 'gokwik.checkout_step.v1'       THEN 'gokwik'
                 END                                                        AS source,
                 get_json_object(payload, '$.properties.order_id')          AS order_id,
                 get_json_object(payload, '$.properties.risk_flag')         AS risk_flag,

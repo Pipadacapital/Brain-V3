@@ -569,9 +569,12 @@ importers:
       '@brain/connector-core':
         specifier: workspace:*
         version: link:../connector-core
-      '@brain/logistics-status':
+      '@brain/identity-core':
         specifier: workspace:*
-        version: link:../logistics-status
+        version: link:../identity-core
+      '@brain/shopify-mapper':
+        specifier: workspace:*
+        version: link:../shopify-mapper
     devDependencies:
       '@types/node':
         specifier: ^20.0.0

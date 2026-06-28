@@ -308,7 +308,7 @@ async function setSyncState(
   try {
     await client.query('BEGIN');
     await client.query(`SELECT set_config('app.current_brand_id', $1, true)`, [brandId]);
-    // UPSERT, not UPDATE (matches gokwik-awb-repull): if the connect-time connector_sync_status row
+    // UPSERT, not UPDATE (matches the shared connector re-pull pattern): if the connect-time connector_sync_status row
     // is missing for any reason, an UPDATE-only write is a silent no-op and the marketplace tile +
     // dashboard Connection Status widget are stuck on "Not synced yet" forever even though data is
     // flowing. INSERT ... ON CONFLICT guarantees the row exists after the first repull.

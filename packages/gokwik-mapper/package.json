@@ -13,7 +13,8 @@
   },
   "dependencies": {
     "@brain/connector-core": "workspace:*",
-    "@brain/logistics-status": "workspace:*"
+    "@brain/identity-core": "workspace:*",
+    "@brain/shopify-mapper": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

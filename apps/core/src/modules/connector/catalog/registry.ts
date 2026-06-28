@@ -199,7 +199,7 @@ export const CONNECTOR_CATALOG: readonly ConnectorDefinition[] = [
     displayName: 'GoKwik',
     connectMethod: 'credential',
     availability: 'available',
-    description: 'CoD verification + RTO (return-to-origin) outcome & checkout risk signal.',
+    description: 'CoD + checkout conversion, abandoned-cart recovery & RTO-risk checkout signal (webhook-first).',
     authFields: [
       { key: 'appid', label: 'App ID', type: 'text', secret: false },
       { key: 'appsecret', label: 'App Secret', type: 'password', secret: true },
@@ -208,7 +208,8 @@ export const CONNECTOR_CATALOG: readonly ConnectorDefinition[] = [
     credentialConnect: {
       accountKeyField: 'appid',
       instanceColumn: 'gokwik_appid',
-      // appid is the routing id AND part of the AWB API auth set (repull reads it from the bundle).
+      // appid is the webhook routing id (resolve_gokwik_connector_by_merchant). Kept in the secret
+      // bundle alongside {appsecret, webhook_secret} so the webhook receiver can verify the HMAC.
       bundleNonSecretFields: ['appid'],
     },
   },

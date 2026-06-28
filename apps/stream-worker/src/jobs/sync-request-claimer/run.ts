@@ -53,7 +53,8 @@ const REPULL_DISPATCH: Readonly<Record<string, () => Promise<RepullRun>>> = {
   // The ad-spend repull enumerates both meta + google_ads; run(ciId) targets one.
   meta: async () => (await import('../meta-spend-repull/run.js')).run,
   google_ads: async () => (await import('../google-ads-spend-repull/run.js')).run,
-  gokwik: async () => (await import('../gokwik-awb-repull/run.js')).run,
+  // GoKwik is webhook-first (payments/checkout) — NO scheduled re-pull (mirrors shopflo). Its real-time
+  // seam is the inbound webhook; the retired synthetic logistics re-pull model was removed in 0117.
   shiprocket: async () => (await import('../shiprocket-shipment-repull/run.js')).run,
   woocommerce: async () => (await import('../woocommerce-orders-repull/run.js')).run,
   // GA4: polling re-pull (runReport). No inbound webhooks.

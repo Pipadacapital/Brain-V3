@@ -76,7 +76,8 @@ export const StreamWorkerEnvSchema = CommonEnvSchema.extend({
     .default('stream-worker-erasure-orchestrator'),
   LIVE_LEDGER_CONSUMER_GROUP_ID: z.string().default('live-ledger-bridge'),
   SETTLEMENT_LEDGER_CONSUMER_GROUP_ID: z.string().default('settlement-ledger-bridge'),
-  GOKWIK_AWB_LEDGER_CONSUMER_GROUP_ID: z.string().default('gokwik-awb-ledger-bridge'),
+  // RETIRED (0117): GOKWIK_AWB_LEDGER_CONSUMER_GROUP_ID — the GoKwik AWB logistics model is gone
+  // (webhook-first payments/checkout; logistics truth is Shiprocket).
   /** Consumer group for identity-change → scoped-Gold-recompute pipeline (V4). */
   IDENTITY_CHANGE_RECOMPUTE_CONSUMER_GROUP_ID: z
     .string()

@@ -43,12 +43,8 @@ export const BRONZE_BRIDGES: readonly BronzeBridgeDef[] = [
     eventName: 'gokwik.rto_predict.v1',
     metricName: 'gokwik_rto_predict_bronze_write_total',
   },
-  {
-    groupIdEnv: 'GOKWIK_AWB_STATUS_BRONZE_CONSUMER_GROUP_ID',
-    defaultGroupId: 'gokwik-awb-status-bronze-bridge',
-    eventName: 'gokwik.awb_status.v1',
-    metricName: 'gokwik_awb_status_bronze_write_total',
-  },
+  // RETIRED (0117 — GoKwik AWB model): gokwik.awb_status.v1 was a synthetic logistics model.
+  // GoKwik is webhook-first payments/checkout; logistics truth is Shiprocket. No AWB bridge.
   {
     groupIdEnv: 'SHIPROCKET_SHIPMENT_BRONZE_CONSUMER_GROUP_ID',
     defaultGroupId: 'shiprocket-shipment-bronze-bridge',

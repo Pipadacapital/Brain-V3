@@ -11,7 +11,7 @@
  *     merchant_ids → the fn returns each brand's OWN row, never the other's.
  * I2: an UNKNOWN merchant_id resolves to ZERO rows → the webhook handler would 401 (no write).
  *     A merchant_id whose connector is NOT 'connected' also resolves to zero rows.
- * I3: list_gokwik_connectors_for_awb_repull() enumerates connected gokwik connectors with NO GUC
+ * I3: list_gokwik_connectors() enumerates connected gokwik connectors with NO GUC
  *     set (SECURITY DEFINER bypasses FORCE RLS) — the durable enumeration seam.
  * I4: connector_instance is FORCE-RLS — under brain_app WITHOUT a GUC, a direct SELECT returns
  *     ZERO rows (fail-closed), proving the SECURITY DEFINER fn is the ONLY enumeration path.
@@ -127,11 +127,11 @@ describe('I2: unknown / disconnected merchant_id → zero rows (handler would 40
 });
 
 describe('I3/I4: enumeration seam + FORCE-RLS fail-closed', () => {
-  it('list_gokwik_connectors_for_awb_repull() enumerates connected gokwik connectors (no GUC)', async () => {
+  it('list_gokwik_connectors() enumerates connected gokwik connectors (no GUC)', async () => {
     if (!infraAvailable) return;
     await assertBrainApp(appPool);
     const r = await appPool.query<{ brand_id: string; gokwik_appid: string }>(
-      `SELECT brand_id, gokwik_appid FROM list_gokwik_connectors_for_awb_repull() WHERE brand_id = $1`, [BRAND_X],
+      `SELECT brand_id, gokwik_appid FROM list_gokwik_connectors() WHERE brand_id = $1`, [BRAND_X],
     );
     expect(r.rowCount).toBe(1);
     expect(r.rows[0]!.brand_id).toBe(BRAND_X);

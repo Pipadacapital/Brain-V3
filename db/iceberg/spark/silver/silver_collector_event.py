@@ -75,7 +75,13 @@ TARGET = f"{CATALOG}.{SILVER_NAMESPACE}.silver_collector_event"
 # Lane policy — MUST stay in lockstep with bronze_materialize.py (the same constants, same meaning).
 SERVER_TRUSTED = {
     "order.live.v1", "order.backfill.v1", "spend.live.v1", "shopflo.checkout_abandoned.v1",
-    "gokwik.rto_predict.v1", "gokwik.awb_status.v1", "gokwik.webhook.v1", "shiprocket.shipment_status.v1",
+    "gokwik.rto_predict.v1", "shiprocket.shipment_status.v1",
+    # GoKwik webhook-first canonical events (brand server-derived from gokwik_appid via the
+    # webhook pipeline — no install_token/consent, so they MUST take the server-trusted lane, not the
+    # PIXEL lane that would quarantine them). RETIRED: gokwik.awb_status.v1 + gokwik.webhook.v1 (the
+    # wrong AWB/opaque-envelope model — see docs/architecture/gokwik-connector-reimplementation.md).
+    "checkout.abandoned.v1", "gokwik.checkout_started.v1", "gokwik.checkout_step.v1",
+    "payment.attempted.v1", "payment.authorized.v1",
 }
 LEDGER_ONLY = {"settlement.live.v1"}
 

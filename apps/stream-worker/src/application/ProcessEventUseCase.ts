@@ -48,7 +48,8 @@ export const SERVER_TRUSTED_EVENT_NAMES: ReadonlySet<string> = new Set([
   'settlement.live.v1',
   'shopflo.checkout_abandoned.v1',
   'gokwik.rto_predict.v1',
-  'gokwik.awb_status.v1',
+  // RETIRED (0117): gokwik.awb_status.v1 — GoKwik's synthetic AWB logistics model is gone
+  // (webhook-first payments/checkout; logistics truth is Shiprocket).
   'shiprocket.shipment_status.v1',
 ]);
 

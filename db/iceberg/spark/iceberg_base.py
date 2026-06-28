@@ -49,8 +49,15 @@ def build_spark(app_name: str = "brain-iceberg") -> SparkSession:
 
     All wiring is env-overridable; dev defaults target the compose service names (iceberg-rest:8181,
     minio:9000). Pass a job-specific app_name for log/UI attribution.
+
+    NOTE on helper-module distribution: jobs do `sys.path.insert(...)` so the shared helpers import on
+    the DRIVER, but that does NOT reach Spark's Python WORKERS (separate executor processes). A job that
+    uses a helper INSIDE a UDF — e.g. silver_order_state's `dq_violations_udf` from `_silver_technical`
+    (the Stage-1 DQ gate) — then dies on the executor with `ModuleNotFoundError: No module named
+    '_silver_technical'`. So after the session exists we `addPyFile` every shared helper, which ships it
+    to the workers AND puts it on their PYTHONPATH. Idempotent + harmless for jobs that don't use them.
     """
-    return (
+    spark = (
         SparkSession.builder.appName(app_name)
         # Match the Bronze session: consumer-based offset fetching (harmless for pure-batch jobs;
         # keeps a future Kafka-reading Silver job behaving exactly like the proven Bronze sink).
@@ -69,6 +76,22 @@ def build_spark(app_name: str = "brain-iceberg") -> SparkSession:
         .config(f"spark.sql.catalog.{CATALOG}.s3.secret-access-key", os.environ.get("AWS_SECRET_ACCESS_KEY", "brainbrain"))
         .getOrCreate()
     )
+    # Ship the shared Python helpers to executors so UDF closures can import them on the workers
+    # (see the docstring). _base = db/iceberg/spark; the silver/ helpers live one level down.
+    _base = os.path.dirname(os.path.abspath(__file__))
+    _helpers = [
+        os.path.join(_base, "iceberg_base.py"),
+        os.path.join(_base, "silver", "_silver_technical.py"),
+        os.path.join(_base, "silver", "_silver_base.py"),
+        os.path.join(_base, "silver", "_raw_normalize.py"),
+    ]
+    for _h in _helpers:
+        if os.path.exists(_h):
+            try:
+                spark.sparkContext.addPyFile(_h)
+            except Exception:  # noqa: BLE001 — re-adding the same file across getOrCreate reuse is non-fatal
+                pass
+    return spark
 
 
 def ensure_namespace(spark: SparkSession, namespace: str, catalog: str = CATALOG) -> str:

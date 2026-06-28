@@ -147,4 +147,6 @@ def build(spark):
 
 
 if __name__ == "__main__":
-    run_job("silver-engagement-signal", build)
+    # INCREMENTAL + ADAPTIVE: target_table opts this job into watermark-windowed batching (build()
+    # unchanged). Idempotent MERGE + FULL_REFRESH=1 escape hatch keep it production-safe.
+    run_job("silver-engagement-signal", build, target_table="silver_engagement_signal")

@@ -129,4 +129,4 @@ def build(spark):
 
 
 if __name__ == "__main__":
-    run_job("silver-search", build)
+    run_job("silver-search", build, target_table="silver_search")

@@ -59,9 +59,15 @@ for job in "${JOBS[@]}"; do
     -e AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY:-brainbrain}" \
     -e AWS_REGION="${AWS_REGION:-us-east-1}" \
     -e V4_CORRELATION_ID="${V4_CORRELATION_ID:-}" \
+  -e SPARK_DRIVER_MEMORY="${SPARK_DRIVER_MEMORY:-4g}" \
+  -e FULL_REFRESH="${FULL_REFRESH:-}" \
+  -e SILVER_INCREMENTAL_OVERLAP_HOURS="${SILVER_INCREMENTAL_OVERLAP_HOURS:-2}" \
+  -e SILVER_BATCH_TARGET_ROWS="${SILVER_BATCH_TARGET_ROWS:-500000}" \
+  -e SILVER_MAX_CHUNKS="${SILVER_MAX_CHUNKS:-48}" \
     "${SPARK_IMAGE}" \
     /opt/spark/bin/spark-submit \
       --master "local[2]" \
+    --driver-memory "${SPARK_DRIVER_MEMORY:-4g}" \
       --packages "${PACKAGES}" \
       --conf spark.jars.ivy=/root/.ivy2 \
       /opt/spark-src/silver/"${job}"

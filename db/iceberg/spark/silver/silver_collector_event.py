@@ -49,8 +49,10 @@ so it is threaded into the quarantine row for replay — no raw PII crosses this
 """
 from __future__ import annotations
 
+import math
 import os
 import sys
+from datetime import timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -151,13 +153,13 @@ def _load_installs(spark: SparkSession) -> DataFrame:
     )
 
 
-def build(spark: SparkSession):
-    create_iceberg_table(
-        spark, SILVER_NAMESPACE, "silver_collector_event", COLUMNS_SQL,
-        partitioned_by="bucket(256, brand_id), days(occurred_at)",
-    )
+def _process_window(spark: SparkSession, raw: DataFrame, installs: DataFrame) -> None:
+    """Run the full Stage-1 gate (schema → consent → tenant) + dedup + MERGE for ONE bounded slice of
+    raw Bronze (the adaptive-batch unit). Idempotent: MERGE on (brand_id, event_id) with a
+    newer-ingested-wins guard, so batch boundaries / overlaps / re-runs never corrupt or double-count.
+    `installs` is loaded once by the caller and broadcast here (it's small + constant across batches)."""
+    from pyspark.sql.functions import broadcast  # local import keeps the module import surface minimal
 
-    raw = spark.table(RAW_TABLE)
     # bronze_materialize's `collector_events.payload` IS the verbatim full envelope JSON, so the
     # downstream get_json_object('$.properties.X') readers work unchanged — no struct reconstruction.
     # The flat envelope fields come straight off the materialized columns; install_token + the R3
@@ -203,9 +205,6 @@ def build(spark: SparkSession):
     base = selected.where(_wellformed).where(~col("event_type").isin(*LEDGER_ONLY))
 
     server = base.where(col("event_type").isin(*SERVER_TRUSTED)).withColumn("brand_id", col("claimed_brand_id"))
-
-    installs = _load_installs(spark)
-    from pyspark.sql.functions import broadcast  # local import keeps the module import surface minimal
 
     pixel_candidates = base.where(~col("event_type").isin(*SERVER_TRUSTED))
 
@@ -272,15 +271,97 @@ def build(spark: SparkSession):
     deduped = gated.withColumn("_rn", row_number().over(w)).where(col("_rn") == 1).drop("_rn")
 
     deduped.createOrReplaceTempView("_gated_collector")
+    # Newer-ingested-wins guard makes the MERGE order-independent: when the same (brand_id,event_id)
+    # appears across adaptive batches (or a watermark overlap), the latest-ingested copy always wins,
+    # never an older one — so batching/replay can't regress a row.
     spark.sql(
         f"""
         MERGE INTO {TARGET} t
         USING _gated_collector s
         ON t.brand_id = s.brand_id AND t.event_id = s.event_id
-        WHEN MATCHED THEN UPDATE SET *
+        WHEN MATCHED AND s.ingested_at >= t.ingested_at THEN UPDATE SET *
         WHEN NOT MATCHED THEN INSERT *
         """
     )
+
+
+def build(spark: SparkSession):
+    """Bronze→Silver collector-event gate, processed INCREMENTALLY in ADAPTIVE bounded batches so peak
+    memory is O(new data) — not O(all-time history) — and a backlog (e.g. a fresh backfill) drains in
+    bounded chunks instead of one giant OOM-prone job. Scales by SIZE here; scale by VELOCITY (a huge
+    brand) by pointing the same job at a Spark cluster with more executors — the code is unchanged and
+    the table is already brand_id-partitioned. See docs/ops/local-memory-budget.md.
+
+    Knobs (env): FULL_REFRESH=1 (ignore watermark — backfills/schema changes);
+    SILVER_INCREMENTAL_OVERLAP_HOURS (re-scan window, MERGE dedups; default 2);
+    SILVER_BATCH_TARGET_ROWS (rows per adaptive batch; default 500k); SILVER_MAX_CHUNKS (cap; default 48)."""
+    create_iceberg_table(
+        spark, SILVER_NAMESPACE, "silver_collector_event", COLUMNS_SQL,
+        partitioned_by="bucket(256, brand_id), days(occurred_at)",
+    )
+
+    # AQE: let Spark coalesce shuffle partitions + split skew at RUNTIME (adaptive WITHIN each batch),
+    # and cap input split size so even a full reprocess streams in small tasks rather than few huge ones.
+    for _k, _v in {
+        "spark.sql.adaptive.enabled": "true",
+        "spark.sql.adaptive.coalescePartitions.enabled": "true",
+        "spark.sql.adaptive.skewJoin.enabled": "true",
+        "spark.sql.files.maxPartitionBytes": str(128 * 1024 * 1024),
+    }.items():
+        spark.conf.set(_k, _v)
+
+    raw_all = spark.table(RAW_TABLE)
+
+    # ── INCREMENTAL WATERMARK ───────────────────────────────────────────────────────────────────────
+    # Process only Bronze rows newer than what Silver already has (minus a small overlap; the MERGE
+    # dedups). FULL_REFRESH=1 ignores it; an empty target (first run) → full scan.
+    full_refresh = os.environ.get("FULL_REFRESH", "").lower() in ("1", "true", "yes")
+    overlap_hours = int(os.environ.get("SILVER_INCREMENTAL_OVERLAP_HOURS", "2"))
+    wm = None
+    if not full_refresh:
+        try:
+            wm = spark.sql(f"SELECT max(ingested_at) AS wm FROM {TARGET}").collect()[0]["wm"]
+        except Exception:
+            wm = None  # target absent/empty → full scan
+    src = raw_all
+    if wm is not None:
+        src = raw_all.where(col("ingested_at") >= lit(wm - timedelta(hours=overlap_hours)))
+
+    installs = _load_installs(spark)  # small + constant — load once, broadcast per batch
+
+    # ── ADAPTIVE BATCHING ───────────────────────────────────────────────────────────────────────────
+    # Size the number of batches to the ACTUAL delta: ~SILVER_BATCH_TARGET_ROWS per batch. Steady state
+    # → 1 small batch; a large backlog → many bounded batches (time-windowed, processed oldest-first so
+    # the newer-ingested-wins MERGE stays correct). The delta is watermark-bounded, so count() is cheap.
+    rng = src.selectExpr("min(ingested_at) AS lo", "max(ingested_at) AS hi").collect()[0]
+    lo_ts, hi_ts = rng["lo"], rng["hi"]
+    if lo_ts is None:  # nothing new since the watermark
+        n = spark.sql(f"SELECT COUNT(*) AS n FROM {TARGET}").collect()[0]["n"]
+        return TARGET, n
+
+    target_rows = max(1, int(os.environ.get("SILVER_BATCH_TARGET_ROWS", "500000")))
+    max_chunks = max(1, int(os.environ.get("SILVER_MAX_CHUNKS", "48")))
+    total = src.count()
+    n_chunks = max(1, min(max_chunks, math.ceil(total / target_rows)))
+
+    _mode = "FULL_REFRESH" if full_refresh else ("INCREMENTAL" if wm is not None else "FIRST_FULL")
+    print(
+        f"[silver-collector-event] {_mode}: delta={total} rows over [{lo_ts} .. {hi_ts}] "
+        f"→ {n_chunks} adaptive batch(es) (~{target_rows} rows/batch, driver heap {os.environ.get('SPARK_DRIVER_MEMORY', '4g')})",
+        flush=True,
+    )
+
+    if n_chunks == 1 or hi_ts == lo_ts:
+        _process_window(spark, src, installs)
+    else:
+        span = (hi_ts - lo_ts) / n_chunks  # timedelta per batch
+        for i in range(n_chunks):
+            start = lo_ts + span * i
+            window = src.where(col("ingested_at") >= lit(start))
+            if i < n_chunks - 1:  # last batch has no upper bound → catches hi_ts exactly
+                window = window.where(col("ingested_at") < lit(lo_ts + span * (i + 1)))
+            _process_window(spark, window, installs)
+
     n = spark.sql(f"SELECT COUNT(*) AS n FROM {TARGET}").collect()[0]["n"]
     return TARGET, n
 

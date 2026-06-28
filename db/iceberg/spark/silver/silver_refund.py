@@ -156,4 +156,4 @@ def _read_order_times(spark):
 
 
 if __name__ == "__main__":
-    run_job("silver-refund", build)
+    run_job("silver-refund", build, target_table="silver_refund")

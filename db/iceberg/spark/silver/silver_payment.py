@@ -194,4 +194,4 @@ def build(spark):
 
 
 if __name__ == "__main__":
-    run_job("silver-payment", build)
+    run_job("silver-payment", build, target_table="silver_payment")

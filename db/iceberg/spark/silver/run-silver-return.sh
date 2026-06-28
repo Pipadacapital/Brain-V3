@@ -50,9 +50,15 @@ docker run --rm \
   -e BRONZE_PG_USER="${BRONZE_PG_USER:-brain}" \
   -e BRONZE_PG_PASSWORD="${BRONZE_PG_PASSWORD:-brain}" \
   -e V4_CORRELATION_ID="${V4_CORRELATION_ID:-}" \
+  -e SPARK_DRIVER_MEMORY="${SPARK_DRIVER_MEMORY:-4g}" \
+  -e FULL_REFRESH="${FULL_REFRESH:-}" \
+  -e SILVER_INCREMENTAL_OVERLAP_HOURS="${SILVER_INCREMENTAL_OVERLAP_HOURS:-2}" \
+  -e SILVER_BATCH_TARGET_ROWS="${SILVER_BATCH_TARGET_ROWS:-500000}" \
+  -e SILVER_MAX_CHUNKS="${SILVER_MAX_CHUNKS:-48}" \
   "${SPARK_IMAGE}" \
   /opt/spark/bin/spark-submit \
     --master "local[2]" \
+    --driver-memory "${SPARK_DRIVER_MEMORY:-4g}" \
     --packages "${PACKAGES}" \
     --conf spark.jars.ivy=/root/.ivy2 \
     --py-files /opt/spark-src/iceberg_base.py,/opt/spark-src/silver/_silver_technical.py \

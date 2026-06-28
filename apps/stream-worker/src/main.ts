@@ -75,6 +75,7 @@ import { BRONZE_BRIDGES, buildBronzeBridges } from './interfaces/consumers/bronz
 import { startHealthServer } from './infrastructure/health/HealthServer.js';
 import { startSyncRequestClaimer, enumerateConnectedConnectors } from './jobs/sync-request-claimer/run.js';
 import { run as runShopifyBackfill } from './jobs/shopify-backfill/run.js';
+import { PgBackfillJobRepository } from './infrastructure/pg/BackfillJobRepository.js';
 import { startDqChecks } from './jobs/dq/run.js';
 import { startIngestScheduler } from './jobs/ingest-scheduler/run.js';
 import { ConnectorRateLimiter } from './infrastructure/redis/ConnectorRateLimiter.js';
@@ -581,10 +582,22 @@ export async function main(): Promise<void> {
   // connector; the loop never dies (startPeriodicJob swallows throws).
   const backfillClaimerPool = new PgPool({ connectionString: dbUrl, max: 2 });
   const backfillClaimerIntervalMs = cfg.BACKFILL_CLAIMER_INTERVAL_MS;
+  // Self-heal orphaned 'running' jobs: an in-process backfill that dies mid-run (dev tsx-watch reload,
+  // crashed worker/cron pod) leaves the job 'running' with no finalize, and claimQueued only claims
+  // 'queued' → stuck forever. Requeue any 'running' job older than this threshold before dispatching.
+  // Comfortably longer than a real backfill run so a genuinely-active job is never requeued under itself.
+  const backfillStaleRequeueMs = 10 * 60 * 1000;
+  const backfillJobRepo = new PgBackfillJobRepository(dbUrl);
   const runBackfillClaim = async (): Promise<void> => {
     const connectors = await enumerateConnectedConnectors(backfillClaimerPool);
     for (const c of connectors.filter((x) => x.provider === 'shopify')) {
       try {
+        const requeued = await backfillJobRepo.requeueStaleRunning(
+          c.connector_instance_id, c.brand_id, backfillStaleRequeueMs,
+        );
+        if (requeued > 0) {
+          log.warn(`[periodic:backfill-claimer] requeued ${requeued} stale 'running' job(s) for connector=${c.connector_instance_id}`);
+        }
         await runShopifyBackfill(c.connector_instance_id);
       } catch (err) {
         log.error(`[periodic:backfill-claimer] connector=${c.connector_instance_id} failed (non-fatal)`, { err });

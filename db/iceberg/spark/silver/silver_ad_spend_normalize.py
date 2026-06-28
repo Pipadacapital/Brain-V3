@@ -191,7 +191,12 @@ u_eid = udf(
 # Stage-1 admission gate (was the inline `.where(...)` silent drop): a canonical spend row needs a seeded
 # event_id, a normalized minor amount, and a parseable stat_date-derived occurred_at. The COMPLEMENT is now
 # routed to silver_quarantine instead of being dropped — same admission set, observable + replayable.
-_SPEND_ADMIT = col("event_id").isNotNull() & col("spend_minor").isNotNull() & col("occurred_at_iso").isNotNull()
+def _spend_admit():
+    """Stage-1 admission predicate, built LAZILY. `col()` needs an active Spark context, so it must NOT
+    run at module-import time (the file is exec'd by spark-submit BEFORE main() creates the session) —
+    a module-level `col(...)` raised AssertionError at import and never reached build(). Call this inside
+    build()/helpers, where the session exists."""
+    return col("event_id").isNotNull() & col("spend_minor").isNotNull() & col("occurred_at_iso").isNotNull()
 
 
 def _spend_reject_reason():
@@ -207,7 +212,7 @@ def _spend_reject_reason():
 def _spend_rejects(canon: DataFrame, platform: str, payload_col) -> DataFrame:
     """The quarantine projection for rows that FAIL _SPEND_ADMIT (brand_id, source, bronze_event_id,
     canonical_target, reason, payload). payload = the reconstructed canonical envelope (replayable)."""
-    return canon.where(~_SPEND_ADMIT).select(
+    return canon.where(~_spend_admit()).select(
         col("brand_id"),
         lit(platform).alias("source"),
         col("event_id").alias("bronze_event_id"),
@@ -300,7 +305,7 @@ def build_meta(spark: SparkSession):
         )
     )
     # Stage-1: admit good rows; route the (formerly silently-dropped) complement to quarantine.
-    good = _collector_event_select(canon.where(_SPEND_ADMIT), payload)
+    good = _collector_event_select(canon.where(_spend_admit()), payload)
     rejects = _spend_rejects(canon, "meta", payload)
     return good, rejects
 
@@ -380,7 +385,7 @@ def build_google(spark: SparkSession):
         )
     )
     # Stage-1: admit good rows; route the (formerly silently-dropped) complement to quarantine.
-    good = _collector_event_select(canon.where(_SPEND_ADMIT), payload)
+    good = _collector_event_select(canon.where(_spend_admit()), payload)
     rejects = _spend_rejects(canon, "google_ads", payload)
     return good, rejects
 

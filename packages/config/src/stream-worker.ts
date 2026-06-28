@@ -118,6 +118,9 @@ export const StreamWorkerEnvSchema = CommonEnvSchema.extend({
   DQ_CHECK_INTERVAL_MS: z.coerce.number().int().default(300000),
   SYNC_SCHEDULER_INTERVAL_MS: z.coerce.number().int().default(45000),
   REPULL_CLAIM_BATCH: z.coerce.number().int().default(100),
+  // In-worker drainer for queued jobs.backfill_job rows (the UI "Backfill" button enqueues them).
+  // Mirrors the sync-request-claimer: without it, dev backfills sit 'queued' forever (prod runs a cron).
+  BACKFILL_CLAIMER_INTERVAL_MS: z.coerce.number().int().default(60000),
 
   // ── Trino serving (Silver/Gold) readers — Brain V4 (StarRocks removed) ───────
   /**

@@ -73,7 +73,8 @@ import { BackfillOrderConsumer } from './interfaces/consumers/BackfillOrderConsu
 // event_id MERGE in Bronze — no PG/Bronze count drift). PostgreSQL holds operational state only.
 import { BRONZE_BRIDGES, buildBronzeBridges } from './interfaces/consumers/bronzeBridges.js';
 import { startHealthServer } from './infrastructure/health/HealthServer.js';
-import { startSyncRequestClaimer } from './jobs/sync-request-claimer/run.js';
+import { startSyncRequestClaimer, enumerateConnectedConnectors } from './jobs/sync-request-claimer/run.js';
+import { run as runShopifyBackfill } from './jobs/shopify-backfill/run.js';
 import { startDqChecks } from './jobs/dq/run.js';
 import { startIngestScheduler } from './jobs/ingest-scheduler/run.js';
 import { ConnectorRateLimiter } from './infrastructure/redis/ConnectorRateLimiter.js';
@@ -570,6 +571,29 @@ export async function main(): Promise<void> {
       }
     }
   };
+  // ── Backfill claimer ───────────────────────────────────────────────────────────────────────────
+  // Drains queued jobs.backfill_job rows (the UI "Backfill" button enqueues them). Mirrors the
+  // sync-request-claimer: enumerate CONNECTED connectors (SECURITY DEFINER, GUC-less), then for each
+  // SHOPIFY connector dispatch shopify-backfill run(ci) — which claimQueued()s (FOR UPDATE SKIP LOCKED,
+  // idempotent so it's safe alongside a prod cron) and runs the resumable page loop. Scoped to shopify
+  // (the queue-integrated resumable runner) so it never mis-claims a non-shopify connector's job.
+  // Without this, dev backfills sit 'queued' forever (the runner was cron-only). Fail-isolated per
+  // connector; the loop never dies (startPeriodicJob swallows throws).
+  const backfillClaimerPool = new PgPool({ connectionString: dbUrl, max: 2 });
+  const backfillClaimerIntervalMs = cfg.BACKFILL_CLAIMER_INTERVAL_MS;
+  const runBackfillClaim = async (): Promise<void> => {
+    const connectors = await enumerateConnectedConnectors(backfillClaimerPool);
+    for (const c of connectors.filter((x) => x.provider === 'shopify')) {
+      try {
+        await runShopifyBackfill(c.connector_instance_id);
+      } catch (err) {
+        log.error(`[periodic:backfill-claimer] connector=${c.connector_instance_id} failed (non-fatal)`, { err });
+      }
+    }
+  };
+  const backfillClaimerJob = startPeriodicJob('backfill-claimer', backfillClaimerIntervalMs, runBackfillClaim);
+  log.info(`backfill claimer running — interval=${backfillClaimerIntervalMs}ms (drains queued jobs.backfill_job for shopify)`);
+
   const metaEntitySyncJob = startPeriodicJob('meta-entity-sync', adEntitySyncIntervalMs, () => runMetaEntitySync());
   const googleEntitySyncJob = startPeriodicJob('google-entity-sync', adEntitySyncIntervalMs, () => runGoogleEntitySync());
   const metaSpendBackfillJob = startPeriodicJob('meta-spend-backfill', adSpendBackfillIntervalMs, () => runMetaSpendBackfill());
@@ -594,6 +618,7 @@ export async function main(): Promise<void> {
       // All registry-driven Bronze bridges (incl. live-order, which was previously missing a stop).
       ...bronzeBridgeConsumers.map((c) => c.stop()),
       syncRequestClaimer.stop(),
+      backfillClaimerJob.stop(),
       dqChecker.stop(),
       ingestScheduler.stop(),
       // A2/A3 ad-connector schedulers (entity-sync + 2-year spend backfill, meta + google).

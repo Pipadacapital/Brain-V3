@@ -437,6 +437,31 @@ importers:
         specifier: workspace:*
         version: link:../metric-engine
 
+  packages/analytics-gateway:
+    dependencies:
+      '@brain/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@brain/metric-engine':
+        specifier: workspace:*
+        version: link:../metric-engine
+      '@brain/money':
+        specifier: workspace:*
+        version: link:../money
+    devDependencies:
+      '@types/pg':
+        specifier: ^8.11.0
+        version: 8.20.0
+      pg:
+        specifier: ^8.21.0
+        version: 8.21.0
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.0
+        version: 2.1.9(@types/node@25.9.3)
+
   packages/attribution-writer:
     dependencies:
       '@brain/metric-engine':

@@ -8,9 +8,9 @@ the structure here matches **doc 05 §2–§3**.
 ## Layout
 - `apps/` — `collector` · `stream-worker` · `core` (13 modules) · `web`
 - `packages/` — shared libs: contracts (Zod = source of truth), metric-engine, money,
-  feature-flags, tenant-context, identity-core, audit, db, events, observability,
-  ai-gateway-client, config, ui
-- `db/` — migrations · starrocks (serving MVs + ops + teardown) · iceberg (Spark medallion)   ·   `infra/` — terraform · helm · argocd  _(Brain V4: dbt removed — Spark is sole compute)_
+  tenant-context, identity-core, audit, db, events, observability,
+  ai-gateway-client, config
+- `db/` — migrations · trino/views (serving views) · iceberg (Spark medallion) · starrocks/teardown (retired-DB drops)   ·   `infra/` — terraform · helm · argocd  _(Brain V4: dbt + StarRocks removed — Spark is sole compute, Trino is sole serving)_
 - `tools/` — parity-oracle · eval · isolation-fuzz · seed · lint (v4-naming-guard)   ·   `docs/` — adr · runbooks · playbooks · architecture
 
 ## The two rules that keep it a *modular* monolith
@@ -18,13 +18,18 @@ the structure here matches **doc 05 §2–§3**.
 2. Inside `core/`, modules talk only through each other's `index.ts` (or an event) —
    reaching into another module's `internal/` fails the ESLint boundary rule.
 
-## Getting started
+## Getting started — one command
 ```bash
 pnpm install
-cp .env.example .env.local
-pnpm dev          # control-plane + serving profile + core + web
-pnpm dev:ingest   # the strict-SLA event path (collector + stream-worker)
-pnpm test:isolation && pnpm test:parity   # the non-negotiable Phase-1a gates
+cp .env.local-prod.example .env.local-prod   # then fill in OAuth app IDs/secrets (placeholders)
+pnpm dev:up                                   # infra (--wait) → migrate → bootstrap → refresh → all 4 apps
+```
+`pnpm dev:up` is the single from-zero command: it brings the full Docker substrate up *healthy*,
+applies migrations, seeds LocalStack Secrets Manager + KMS, runs a one-shot Silver→Gold→Trino-view
+refresh, then starts core + web + collector + stream-worker. Re-runnable and idempotent.
+
+```bash
+pnpm test:isolation && pnpm test:parity        # the non-negotiable Phase-1a gates
 ```
 Tooling: Turborepo + pnpm + TypeScript (build-tooling choices — doc 05 §16; swappable).
 
@@ -35,46 +40,24 @@ run locally against Docker + LocalStack (`NODE_ENV=production` code paths: AWS S
 Manager/KMS, KMS PII-vault DEK). Use this after `docker compose down -v` (disposable dev data).
 
 ```bash
-cd "/Users/rishabhporwal/Desktop/Brain V3"
-
-# 0. CLEAN SLATE — remove containers + volumes (all infra state)
+# 0. CLEAN SLATE — remove containers + volumes (all infra state, disposable dev data)
 docker compose --profile core --profile ingest --profile lakehouse --profile observe down -v
 
-# 1. INFRA up (Postgres, Redpanda, StarRocks, Iceberg-REST, MinIO, Spark sink, LocalStack, Redis, litellm)
-docker compose --profile core --profile ingest --profile lakehouse up -d
-docker compose ps            # wait until postgres/starrocks/localstack/iceberg-rest = healthy
-
-# 2. MIGRATE Postgres schema (0001 → latest), as superuser `brain`
-pnpm migrate
-
-# 3. PROVISION brain_app LOGIN  ← REQUIRED, and NOT in migrations by design
-#    (0001 creates `brain_app` NOLOGIN; the LOGIN+password step is a provisioning concern.
-#     Password MUST match BRAIN_APP_DATABASE_URL in .env.local-prod — default brain_app:brain_app.
-#     NOTE: db/init/00_provision_brain_app_role.sql auto-provisions this on a fresh volume; this
-#     manual step is only needed if the role somehow lacks LOGIN.)
-docker exec -i brainv3-postgres-1 psql -U brain -d brain \
-  -c "ALTER ROLE brain_app WITH LOGIN PASSWORD 'brain_app';"
-
-# 4. Secrets/KMS into LocalStack (jwt + cookie + shopify/meta/google secrets, KMS CMK, brand keyring)
-pnpm bootstrap
-
-# 5. MATERIALIZE the V4 analytics layer (ONE command). Brain V4 removed dbt: the transform is
-#    Spark-on-Iceberg. `pnpm dev:v4-refresh` (ONESHOT=1 for one pass) runs every Spark Silver job
-#    (Bronze → Iceberg brain_silver), then every Spark Gold job (Silver → Iceberg brain_gold), then
-#    SYNC-refreshes the brain_serving mv_* materialized views the dashboards read. Needs the lakehouse
-#    profile up (minio + iceberg-rest) — `pnpm dev:full` brings it up.
-ONESHOT=1 pnpm dev:v4-refresh
-
-# 6. START all 4 apps (local-prod = NODE_ENV=production vs LocalStack; loads .env.local-prod)
-pnpm dev
+# 1. ONE COMMAND — infra (up --wait → HEALTHY) → migrate → bootstrap (LocalStack SM/KMS)
+#    → one-shot Spark Silver→Gold + Trino serving views → start all 4 apps.
+pnpm dev:up
 ```
+`pnpm dev:up` runs the production-faithful sequence end to end (`NODE_ENV=production` against Docker +
+LocalStack: AWS Secrets Manager/KMS, KMS PII-vault DEK). `brain_app` LOGIN is auto-provisioned on a
+fresh volume (`db/init/00_provision_brain_app_role.sql`) — no manual `ALTER ROLE`. The medallion
+transform is Spark-on-Iceberg (dbt removed); serving is Trino views over Iceberg (StarRocks removed).
 
 Then open **http://localhost:3000** → register → onboard a brand → connect Shopify → **Sync now**.
-Real events flow **Collector → Redpanda → Spark sink → Iceberg Bronze → Spark Silver/Gold → StarRocks
-serving mv_***; re-run step 5 (`ONESHOT=1 pnpm dev:v4-refresh`) to repopulate Gold and the
-dashboards/`/insights` light up. Or run `pnpm dev:v4-refresh` (no ONESHOT) to keep it fresh on a loop.
+Real events flow **Collector → Kafka (KRaft) → Spark sink → Iceberg Bronze → Spark Silver/Gold → Trino
+`brain_serving.mv_*`**; re-run `ONESHOT=1 pnpm dev:v4-refresh` to repopulate Gold and the
+dashboards/`/insights` light up, or run `pnpm dev:v4-refresh` (no ONESHOT) to keep it fresh on a loop.
 
-**Plain dev mode** (not prod-faithful): skip steps **4 & 6**, run `pnpm dev` instead — all else identical.
+**Already up?** Skip the bring-up and just (re)materialize analytics with `ONESHOT=1 pnpm dev:v4-refresh`.
 
 ### Gotchas (all expected, not bugs)
 - **Marts/dashboards are empty until real data flows** — the honest-empty state by design.

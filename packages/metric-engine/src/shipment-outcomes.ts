@@ -128,8 +128,8 @@ export async function computeShipmentOutcomes(
           COALESCE(SUM(CASE WHEN terminal_class = 'other'     THEN 1 ELSE 0 END), 0) AS other,
           COALESCE(SUM(CASE WHEN terminal_class = 'none'      THEN 1 ELSE 0 END), 0) AS in_transit
         FROM brain_serving.mv_silver_shipment
-        WHERE last_status_at >= ?
-          AND last_status_at <= ?
+        WHERE CAST(last_status_at AS timestamp(6) with time zone) >= ?
+          AND CAST(last_status_at AS timestamp(6) with time zone) <= ?
           AND ${BRAND_PREDICATE}`,
       [fromTs, toTs],
     );
@@ -152,8 +152,8 @@ export async function computeShipmentOutcomes(
               COALESCE(SUM(CASE WHEN terminal_class = 'delivered' THEN 1 ELSE 0 END), 0) AS delivered,
               COALESCE(SUM(CASE WHEN terminal_class = 'rto'       THEN 1 ELSE 0 END), 0) AS rto
         FROM brain_serving.mv_silver_shipment
-        WHERE last_status_at >= ?
-          AND last_status_at <= ?
+        WHERE CAST(last_status_at AS timestamp(6) with time zone) >= ?
+          AND CAST(last_status_at AS timestamp(6) with time zone) <= ?
           AND courier IS NOT NULL AND courier <> ''
           AND ${BRAND_PREDICATE}
         GROUP BY courier
@@ -166,8 +166,8 @@ export async function computeShipmentOutcomes(
               COALESCE(SUM(CASE WHEN terminal_class = 'delivered' THEN 1 ELSE 0 END), 0) AS delivered,
               COALESCE(SUM(CASE WHEN terminal_class = 'rto'       THEN 1 ELSE 0 END), 0) AS rto
         FROM brain_serving.mv_silver_shipment
-        WHERE last_status_at >= ?
-          AND last_status_at <= ?
+        WHERE CAST(last_status_at AS timestamp(6) with time zone) >= ?
+          AND CAST(last_status_at AS timestamp(6) with time zone) <= ?
           AND pincode IS NOT NULL AND pincode <> ''
           AND ${BRAND_PREDICATE}
         GROUP BY pincode

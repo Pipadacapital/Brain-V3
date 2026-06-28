@@ -1,15 +1,11 @@
 /**
- * Engagement page — server component shell (Silver tier).
- *
- * Stakeholder-visible storefront-engagement surface powered by the Silver tier (StarRocks
- * silver_touchpoint). Reads engaged (multi-touch) vs bounce sessions + avg touches via the BFF →
- * metric-engine storefront-engagement seam (I-ST01 — the UI NEVER queries StarRocks directly). Part of
- * Phase H (Universal Pixel).
+ * /analytics/engagement — permanent redirect to /behaviour?tab=engagement.
+ * Engagement was consolidated into the Behaviour tab.
  */
-import { EngagementContent } from './engagement-content';
+import { redirect } from 'next/navigation';
 
 export const metadata = { title: 'Engagement — Brain' };
 
 export default function EngagementPage() {
-  return <EngagementContent />;
+  redirect('/behaviour?tab=engagement');
 }

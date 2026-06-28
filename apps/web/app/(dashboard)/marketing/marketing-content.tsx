@@ -1,0 +1,193 @@
+'use client';
+
+/**
+ * MarketingContent — Tab #4 "Which campaigns/channels work?".
+ *
+ * IA-redesign tab that folds the three former, scattered marketing surfaces into ONE
+ * goal-oriented tab with sub-sections (no new analytics — pure reorganization + explainer
+ * + honest empty states + freshness):
+ *   - Attribution  → reuses analytics/attribution/attribution-content.tsx
+ *                    (AttributionModelSelector + AttributedChannelChart + ChannelRoasTable
+ *                     + ReconciliationResidualCard — model-switchable channel credit & ROAS).
+ *   - Spend        → reuses analytics/spend/spend-content.tsx
+ *                    (blended ROAS + per-platform spend + spend-over-time + ROAS detail).
+ *   - Conversion feedback → reuses analytics/conversion-feedback/conversion-feedback-content.tsx
+ *                    (Meta CAPI passback summary / events / deletions).
+ *
+ * Sub-tab routing is URL-driven via the page's `?tab=` query (initialTab), so the old
+ * redirects (/analytics/spend → /marketing?tab=spend,
+ * /analytics/conversion-feedback → /marketing?tab=conversion-feedback) deep-link correctly.
+ *
+ * Each reused content component keeps its OWN honest empty states, ErrorCards, and money
+ * formatting. The Marketing shell adds: the permanent "?" ExplainerPanel (explaining every
+ * attribution model + ROAS + CAPI), and a per-section FreshnessBadge. The marketing BFF
+ * endpoints don't expose a served-at timestamp today, so freshness honestly renders
+ * tone='unknown' (never a fabricated "just now"); the explainer states the refresh cadence.
+ *
+ * GAP (flagged, not faked): attribution is CHANNEL-level. A per-CAMPAIGN breakdown
+ * (campaign rows under each channel) is not exposed by getAttributionByChannel today — it
+ * needs a backend granularity param. Tracked as an openItem for a follow-up; we do not
+ * fabricate campaign rows.
+ */
+
+import { useState } from 'react';
+import { Megaphone, Target, BarChart3, Send } from 'lucide-react';
+import { TabShell } from '@/components/ui/tab-shell';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
+import { FreshnessBadge } from '@/components/ui/freshness-badge';
+import { AttributionContent } from '../analytics/attribution/attribution-content';
+import { SpendContent } from '../analytics/spend/spend-content';
+import { ConversionFeedbackContent } from '../analytics/conversion-feedback/conversion-feedback-content';
+
+type MarketingTab = 'attribution' | 'spend' | 'conversion-feedback';
+
+const TABS: { value: MarketingTab; label: string; icon: typeof Target }[] = [
+  { value: 'attribution', label: 'Attribution', icon: Target },
+  { value: 'spend', label: 'Spend & ROAS', icon: BarChart3 },
+  { value: 'conversion-feedback', label: 'Conversion feedback', icon: Send },
+];
+
+/** Map the raw ?tab= value to a known sub-tab; default to attribution. */
+function normalizeTab(raw: string | undefined): MarketingTab {
+  if (raw === 'spend' || raw === 'conversion-feedback') return raw;
+  return 'attribution';
+}
+
+/** A thin freshness row above each reused surface (honest 'unknown' — no served-at exposed). */
+function SectionFreshness({ label }: { label: string }) {
+  return (
+    <div className="flex items-center justify-end">
+      <FreshnessBadge timestamp={null} prefix={`${label} ·`} />
+    </div>
+  );
+}
+
+export function MarketingContent({ initialTab }: { initialTab?: string }) {
+  const [tab, setTab] = useState<MarketingTab>(() => normalizeTab(initialTab));
+
+  return (
+    <TabShell
+      title="Marketing"
+      description="Which campaigns and channels actually work?"
+      eyebrow={
+        <span className="inline-flex items-center gap-1.5">
+          <Megaphone className="size-3.5" aria-hidden="true" />
+          Marketing
+        </span>
+      }
+      explainer={{
+        title: 'Marketing — Which campaigns/channels work?',
+        description:
+          'Attribution by channel under the model you choose, ad spend and ROAS, and conversion-feedback (CAPI) delivery — in one place.',
+        sections: [
+          {
+            heading: 'Attribution models',
+            body: (
+              <ul className="list-inside list-disc space-y-1">
+                <li>
+                  <span className="font-medium text-foreground">First-touch</span> — all credit to
+                  the first channel a customer touched.
+                </li>
+                <li>
+                  <span className="font-medium text-foreground">Last-touch</span> — all credit to the
+                  last channel before the purchase.
+                </li>
+                <li>
+                  <span className="font-medium text-foreground">Linear</span> — credit split evenly
+                  across every touch in the journey.
+                </li>
+                <li>
+                  <span className="font-medium text-foreground">Position-based</span> — weights the
+                  first and last touches more heavily than the middle.
+                </li>
+                <li>
+                  <span className="font-medium text-foreground">Data-driven (Markov)</span> — learns
+                  each channel&apos;s removal-effect weight from your own corpus.
+                </li>
+                <li>
+                  Switch models with the selector — totals always reconcile to realized revenue
+                  (attributed + unattributed = realized; the residual is shown, never hidden).
+                </li>
+              </ul>
+            ),
+          },
+          {
+            heading: 'How to read this tab',
+            body:
+              'Attribution answers which channels earned the revenue. Spend & ROAS shows what you paid and the return. Conversion feedback proves which conversions were passed back to Meta (behind the consent gate).',
+          },
+          {
+            heading: 'Granularity',
+            body:
+              'Attribution and ROAS are CHANNEL-level today. A per-campaign breakdown is a planned follow-up and is intentionally not shown rather than guessed.',
+          },
+        ],
+        metrics: [
+          {
+            name: 'Attributed revenue',
+            definition: 'Revenue credited to each channel under the selected attribution model.',
+            howComputed:
+              'Gold attribution credit ledger over Silver touchpoints; deterministic, switchable model (first / last / linear / position / data-driven).',
+          },
+          {
+            name: 'Reconciliation residual',
+            definition: 'Attributed + unattributed always equals realized revenue.',
+            howComputed:
+              'Closed-sum parity oracle: realized − attributed = unattributed; the residual is rendered, never hidden.',
+          },
+          {
+            name: 'Channel ROAS',
+            definition: 'Return on ad spend per channel, and blended.',
+            howComputed:
+              'Attributed (or realized) revenue ÷ ad spend, same-currency only; honest n/a when spend = 0. Money in bigint minor units.',
+          },
+          {
+            name: 'Ad spend',
+            definition: 'Spend pulled from connected ad platforms for the active ad account.',
+            howComputed: 'Connector spend → Gold ad-spend timeseries (Meta / Google).',
+          },
+          {
+            name: 'Conversion feedback',
+            definition: 'Realized conversions passed back to Meta (CAPI), blocks, and deletions.',
+            howComputed:
+              'CAPI passback log via the BFF; every passback clears the default-closed can_contact() advertising-consent gate.',
+          },
+        ],
+        refreshCadence:
+          'Attribution and ad-spend marts refresh on the Gold loop; CAPI conversion feedback is read live from the passback log.',
+        sources: [
+          'Gold attribution credit ledger',
+          'Gold ad-spend timeseries',
+          'Realized-revenue ledger',
+          'Meta CAPI passback log',
+        ],
+      }}
+    >
+      <Tabs value={tab} onValueChange={(v) => setTab(v as MarketingTab)}>
+        <TabsList aria-label="Marketing sections">
+          {TABS.map(({ value, label, icon: Icon }) => (
+            <TabsTrigger key={value} value={value}>
+              <Icon className="size-3.5" aria-hidden="true" />
+              {label}
+            </TabsTrigger>
+          ))}
+        </TabsList>
+
+        <TabsContent value="attribution" className="space-y-3">
+          <SectionFreshness label="Attribution & channel ROAS" />
+          <AttributionContent />
+        </TabsContent>
+
+        <TabsContent value="spend" className="space-y-3">
+          <SectionFreshness label="Ad spend & ROAS" />
+          <SpendContent />
+        </TabsContent>
+
+        <TabsContent value="conversion-feedback" className="space-y-3">
+          <SectionFreshness label="Conversion feedback" />
+          <ConversionFeedbackContent />
+        </TabsContent>
+      </Tabs>
+    </TabShell>
+  );
+}

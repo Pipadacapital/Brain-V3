@@ -1,11 +1,11 @@
 /**
- * Dashboard page — server component shell (Next.js App Router).
- * Client data-fetching is delegated to DashboardContent (use client).
+ * /dashboard — permanent redirect to /home.
+ * The dashboard was renamed "Home" in the redesigned IA. dashboard-content.tsx is reused there.
  */
-import { DashboardContent } from './dashboard-content';
+import { redirect } from 'next/navigation';
 
-export const metadata = { title: 'Dashboard — Brain' };
+export const metadata = { title: 'Home — Brain' };
 
 export default function DashboardPage() {
-  return <DashboardContent />;
+  redirect('/home');
 }

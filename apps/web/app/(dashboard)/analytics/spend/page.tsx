@@ -1,10 +1,11 @@
 /**
- * Ad Spend / ROAS Analytics page — server component shell (Slice 1 Track 4).
+ * /analytics/spend — permanent redirect to /marketing?tab=spend.
+ * Ad spend / ROAS was folded into the Marketing tab.
  */
-import { SpendContent } from './spend-content';
+import { redirect } from 'next/navigation';
 
 export const metadata = { title: 'Ad Spend & ROAS — Brain' };
 
 export default function SpendPage() {
-  return <SpendContent />;
+  redirect('/marketing?tab=spend');
 }

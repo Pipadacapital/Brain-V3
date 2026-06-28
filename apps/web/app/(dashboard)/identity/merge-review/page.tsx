@@ -1,11 +1,11 @@
 /**
- * Merge Review page — server-component shell (identity control-plane, P0-C).
- * BFF-only (I-ST01): reads /api/v1/identity/merge-reviews; acts via /resolve.
+ * /identity/merge-review — permanent redirect to /identity?tab=merge-review.
+ * Merge review became a sub-tab of the consolidated Identity tab.
  */
-import { MergeReviewContent } from './merge-review-content';
+import { redirect } from 'next/navigation';
 
 export const metadata = { title: 'Merge Review — Brain Identity' };
 
 export default function MergeReviewPage() {
-  return <MergeReviewContent />;
+  redirect('/identity?tab=merge-review');
 }

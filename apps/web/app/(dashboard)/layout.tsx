@@ -1,12 +1,12 @@
 /**
  * Dashboard shell layout — sidebar navigation + main content area.
- * Routes: /dashboard, /analytics/*, /settings/*
  *
- * Sidebar sections (Phase 1):
- *   OVERVIEW  → Dashboard
- *   ANALYTICS → Revenue, Orders (soon), Settlements (soon)
- *   DATA      → Connectors, Brain Pixel, Data Health, Data Quality
- *   SETTINGS  → Members, Consent, Archived Brands, Settings
+ * Redesigned IA: a FLAT sidebar of 8 user-goal tabs (Home, Customers, Marketing,
+ * Behaviour, Journeys, Retention, Identity, Settings), each answering ONE business
+ * question. Customer Profile is a sub-route of Customers (customers/[id]), not a nav item.
+ * Deep tools (insights, recommendations, ml, ask, billing, revenue, orders, finance &
+ * fulfilment analytics, data health/quality) stay as working routes linked from within
+ * these tabs — removed from the nav, never lost.
  *
  * feat-multi-brand (B4): BrandSwitcher is mounted in the sidebar below the logo,
  * above the nav links. It is always rendered even for single-brand users (MA-15).
@@ -21,34 +21,15 @@ import * as React from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
-  ChevronDown,
   LayoutDashboard,
-  TrendingUp,
-  ShoppingCart,
-  Megaphone,
-  Receipt,
-  Truck,
-  Footprints,
-  MousePointerClick,
-  Filter,
-  Target,
-  Send,
-  Plug,
-  Activity,
-  Zap,
   Users,
-  Settings,
-  ShieldCheck,
-  Gauge,
-  BrainCircuit,
+  Megaphone,
+  MousePointerClick,
+  Footprints,
+  Repeat,
   Fingerprint,
+  Settings,
   Lock,
-  GitMerge,
-  CreditCard,
-  Lightbulb,
-  Boxes,
-  Sparkles,
-  Archive,
 } from 'lucide-react';
 import { UserMenu } from '@/components/dashboard/user-menu';
 import { RequireSession } from '@/components/dashboard/require-session';
@@ -72,73 +53,25 @@ interface NavItem {
   centerKey?: string;
 }
 
-interface NavSection {
-  title: string;
-  items: NavItem[];
-}
-
-const NAV_SECTIONS: NavSection[] = [
-  {
-    title: 'OVERVIEW',
-    items: [
-      { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
-      { href: '/insights', label: 'Insights & Copilot', icon: Sparkles },
-      { href: '/recommendations', label: 'Recommendations', icon: Lightbulb, centerKey: 'decision' },
-      { href: '/ml', label: 'Models', icon: Boxes },
-      { href: '/ask', label: 'Ask Brain', icon: BrainCircuit },
-    ],
-  },
-  {
-    title: 'ANALYTICS',
-    items: [
-      { href: '/analytics/revenue', label: 'Revenue', icon: TrendingUp },
-      { href: '/analytics/orders', label: 'Orders', icon: ShoppingCart },
-      { href: '/analytics/spend', label: 'Ad Spend', icon: Megaphone },
-      { href: '/analytics/settlements', label: 'Settlements', icon: Receipt },
-      { href: '/analytics/cod-rto', label: 'CoD / RTO', icon: Truck },
-      { href: '/analytics/logistics', label: 'Logistics', icon: Truck },
-      { href: '/analytics/behavior', label: 'Behavior', icon: MousePointerClick },
-      { href: '/analytics/funnel', label: 'Funnel', icon: Filter },
-      { href: '/analytics/abandoned-cart', label: 'Abandoned Cart', icon: ShoppingCart },
-      { href: '/analytics/engagement', label: 'Engagement', icon: Activity },
-      { href: '/analytics/journey', label: 'Journey', icon: Footprints, centerKey: 'journey' },
-      { href: '/analytics/attribution', label: 'Attribution', icon: Target, centerKey: 'attribution' },
-      { href: '/analytics/conversion-feedback', label: 'Conversion Feedback', icon: Send },
-    ],
-  },
-  {
-    title: 'IDENTITY',
-    items: [
-      { href: '/identity/customers', label: 'Customers', icon: Users, centerKey: 'identity' },
-      { href: '/identity/customer-360', label: 'Customer 360', icon: Fingerprint, centerKey: 'identity' },
-      { href: '/identity/merge-review', label: 'Merge Review', icon: GitMerge, centerKey: 'identity' },
-      { href: '/identity/pii-vault', label: 'PII Vault', icon: Lock, centerKey: 'identity' },
-    ],
-  },
-  {
-    title: 'BILLING',
-    items: [
-      { href: '/billing', label: 'Billing', icon: CreditCard },
-    ],
-  },
-  {
-    title: 'DATA',
-    items: [
-      { href: '/settings/connectors', label: 'Connectors', icon: Plug },
-      { href: '/settings/pixel', label: 'Brain Pixel', icon: Zap },
-      { href: '/data/health', label: 'Data Health', icon: Activity },
-      { href: '/data/quality', label: 'Data Quality', icon: Gauge },
-    ],
-  },
-  {
-    title: 'SETTINGS',
-    items: [
-      { href: '/settings/members', label: 'Members', icon: Users },
-      { href: '/settings/consent', label: 'Consent & Compliance', icon: ShieldCheck },
-      { href: '/settings/archived-brands', label: 'Archived Brands', icon: Archive },
-      { href: '/settings', label: 'Settings', icon: Settings },
-    ],
-  },
+/**
+ * Redesigned IA — EIGHT user-goal top-level tabs, each answering ONE business question
+ * (Customer Profile is a sub-route of Customers, not a nav item). Ordered by usage.
+ *
+ * Progressive-unlock gating is PRESERVED via item.centerKey: a gated tab locks (never
+ * navigates into an empty/not-ready center) until the brand's data foundation supports it.
+ * The deep tools that left the nav (insights, recommendations, ml, ask, billing, revenue,
+ * orders, settlements, cod-rto, logistics, margin, data health/quality) stay reachable as
+ * working routes linked from inside these tabs — nothing was lost.
+ */
+const NAV_ITEMS: NavItem[] = [
+  { href: '/home', label: 'Home', icon: LayoutDashboard },
+  { href: '/customers', label: 'Customers', icon: Users, centerKey: 'identity' },
+  { href: '/marketing', label: 'Marketing', icon: Megaphone, centerKey: 'attribution' },
+  { href: '/behaviour', label: 'Behaviour', icon: MousePointerClick },
+  { href: '/journeys', label: 'Journeys', icon: Footprints, centerKey: 'journey' },
+  { href: '/retention', label: 'Retention', icon: Repeat },
+  { href: '/identity', label: 'Identity', icon: Fingerprint, centerKey: 'identity' },
+  { href: '/settings', label: 'Settings', icon: Settings },
 ];
 
 const NAV_LINK_BASE =
@@ -152,11 +85,9 @@ function NavLink({ item }: { item: NavItem }) {
   const ent = item.centerKey ? centerEntitlement(entitlements?.centers, item.centerKey) : null;
   const locked = ent !== null && !ent.eligible;
 
-  const isActive = item.href ? (
-    item.href === '/dashboard'
-      ? pathname === '/dashboard'
-      : pathname.startsWith(item.href)
-  ) : false;
+  const isActive = item.href
+    ? pathname === item.href || pathname.startsWith(`${item.href}/`)
+    : false;
 
   // Locked-by-readiness: render disabled with a lock + the unlock hint (never navigate into an
   // empty/not-ready center — "the user should never reach empty or misleading experiences").
@@ -221,52 +152,6 @@ function NavLink({ item }: { item: NavItem }) {
   );
 }
 
-/**
- * A collapsible nav section — open by default ONLY when it contains the active route, so the
- * sidebar stays short instead of showing every item at once. The active section re-opens
- * automatically when you navigate into it; you can toggle any section by clicking its header.
- */
-function NavSectionGroup({ section }: { section: NavSection }) {
-  const pathname = usePathname();
-  const containsActive = section.items.some(
-    (it) =>
-      it.href &&
-      (it.href === '/dashboard' ? pathname === '/dashboard' : pathname.startsWith(it.href)),
-  );
-  const [open, setOpen] = React.useState(containsActive);
-  React.useEffect(() => {
-    if (containsActive) setOpen(true);
-  }, [containsActive]);
-
-  const contentId = `nav-section-${section.title.toLowerCase().replace(/\s+/g, '-')}`;
-  return (
-    <li>
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        className="mb-1.5 flex w-full items-center justify-between rounded-md px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        aria-expanded={open}
-        aria-controls={contentId}
-      >
-        <span>{section.title}</span>
-        <ChevronDown
-          className={cn('size-3 shrink-0 transition-transform duration-150', open ? '' : '-rotate-90')}
-          aria-hidden="true"
-        />
-      </button>
-      {open && (
-        <ul id={contentId} className="space-y-0.5" role="list">
-          {section.items.map((item) => (
-            <li key={item.label}>
-              <NavLink item={item} />
-            </li>
-          ))}
-        </ul>
-      )}
-    </li>
-  );
-}
-
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex min-h-screen bg-background">
@@ -289,9 +174,11 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         <BrandSwitcher />
 
         <nav className="flex-1 overflow-y-auto px-3 py-4" aria-label="Navigation links">
-          <ul className="space-y-2" role="list">
-            {NAV_SECTIONS.map((section) => (
-              <NavSectionGroup key={section.title} section={section} />
+          <ul className="space-y-0.5" role="list">
+            {NAV_ITEMS.map((item) => (
+              <li key={item.label}>
+                <NavLink item={item} />
+              </li>
             ))}
           </ul>
         </nav>

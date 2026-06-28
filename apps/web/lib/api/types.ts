@@ -872,6 +872,24 @@ export type AnalyticsCheckoutFunnelResponse =
       data_source: DataSource;
     };
 
+// ── Cohort retention (H9/H11 — acquisition-cohort curve from gold_cohorts) ──
+// Mirrors apps/core get-cohort-retention.ts (CohortRetentionDto, /v1/analytics/cohort-retention).
+// One row per acquisition cohort-month: size, lifetime orders + realized value, and orders-per-
+// customer (the repeat signal). Money + counts are bigint strings; orders_per_customer is an exact
+// decimal string from the engine, or null when the cohort is empty (never a fabricated 0).
+export interface AnalyticsCohortRetentionRow {
+  cohort_month: string;                // 'YYYY-MM'
+  currency_code: string;
+  cohort_size: string;                 // bigint string — new customers acquired that month
+  cohort_orders: string;               // bigint string — lifetime orders by that cohort
+  cohort_value_minor: string;          // bigint string — lifetime realized value (minor units)
+  orders_per_customer: string | null;  // exact decimal string; null when size = 0
+}
+
+export type AnalyticsCohortRetentionResponse =
+  | { state: 'no_data' }
+  | { state: 'has_data'; cohorts: AnalyticsCohortRetentionRow[] };
+
 // ── RTO-risk distribution (GoKwik RTO-Predict — gokwik.rto_predict.v1 Bronze) ──
 // Per-order RTO risk, counted by each order's LATEST prediction over 30d. Categorical
 // risk_flag buckets (VERBATIM — never a fabricated score). Honest no_data; synthetic badge

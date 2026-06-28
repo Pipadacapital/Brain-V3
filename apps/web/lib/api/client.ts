@@ -131,6 +131,7 @@ import type {
   AnalyticsCodRtoRatesResponse,
   AnalyticsCodMixResponse,
   AnalyticsCheckoutFunnelResponse,
+  AnalyticsCohortRetentionResponse,
   AnalyticsRtoRiskResponse,
   AnalyticsOrderStatusMixResponse,
   AnalyticsContributionMarginResponse,
@@ -1453,6 +1454,18 @@ export const analyticsApi = {
   getCodMix: async (): Promise<AnalyticsCodMixResponse> => {
     const { data } = await bffFetch<BffEnvelope<AnalyticsCodMixResponse>>(
       `/v1/analytics/cod-mix`,
+    );
+    return data;
+  },
+
+  /**
+   * GET /api/v1/analytics/cohort-retention
+   * H9/H11 acquisition-cohort curve (size, lifetime orders/value, orders-per-customer) over the
+   * order spine, from gold_cohorts via the metric registry. Honest no_data on zero cohorts.
+   */
+  getCohortRetention: async (): Promise<AnalyticsCohortRetentionResponse> => {
+    const { data } = await bffFetch<BffEnvelope<AnalyticsCohortRetentionResponse>>(
+      `/v1/analytics/cohort-retention`,
     );
     return data;
   },

@@ -76,6 +76,20 @@ export function useExecutiveMetrics(params?: { from?: string; to?: string }) {
 }
 
 /**
+ * useCohortRetention — H9/H11 acquisition-cohort curve (size, lifetime orders/value,
+ * orders-per-customer) from gold_cohorts via /v1/analytics/cohort-retention. Powers the
+ * Retention tab. No params (whole-history cohorts); honest no_data when the brand has none.
+ */
+export function useCohortRetention() {
+  return useQuery({
+    queryKey: [...ANALYTICS_QUERY_KEY, 'cohort-retention'],
+    queryFn: () => analyticsApi.getCohortRetention(),
+    staleTime: 5 * 60_000,
+    refetchInterval: 60_000,
+  });
+}
+
+/**
  * useRecognitionBreakdown — fetches recognition state distribution.
  * @param asOf - YYYY-MM-DD date (optional; server defaults to today).
  */

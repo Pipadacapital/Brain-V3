@@ -1,19 +1,22 @@
 /**
- * Customer 360 page — server-component shell (identity control-plane, P0-C slice 1).
- * BFF-only (I-ST01): every figure is read via /api/v1/identity/customer.
+ * /identity/customer-360 — permanent redirect to the new Customer Profile route.
  *
- * Accepts an optional ?brain_id= so the Customers browse list can deep-link straight into a
- * resolved profile (the row "Open" action) with the lookup prefilled and auto-run.
+ * The brain_id LOOKUP form was replaced by clicking a row in Customers. We preserve the
+ * old deep-link contract: /identity/customer-360?brain_id=X → /customers/X. With no
+ * brain_id we land on the Customers list so the user can pick one.
  */
-import { Customer360Content } from './customer-360-content';
+import { redirect } from 'next/navigation';
 
-export const metadata = { title: 'Customer 360 — Brain Identity' };
+export const metadata = { title: 'Customer Profile — Brain' };
 
-export default async function Customer360Page({
+export default async function Customer360RedirectPage({
   searchParams,
 }: {
   searchParams: Promise<{ brain_id?: string }>;
 }) {
   const { brain_id } = await searchParams;
-  return <Customer360Content initialBrainId={typeof brain_id === 'string' ? brain_id : ''} />;
+  if (typeof brain_id === 'string' && brain_id.length > 0) {
+    redirect(`/customers/${encodeURIComponent(brain_id)}`);
+  }
+  redirect('/customers');
 }

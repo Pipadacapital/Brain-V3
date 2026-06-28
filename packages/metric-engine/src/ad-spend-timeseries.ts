@@ -76,8 +76,8 @@ export async function computeAdSpendTimeseries(
         WHERE stat_date BETWEEN DATE '${fromStr}' AND DATE '${toStr}'
           ${platformPredicate}
           AND ${BRAND_PREDICATE}
-        GROUP BY bucket, platform, currency_code
-        ORDER BY bucket ASC, platform ASC, currency_code ASC`,
+        GROUP BY 1, platform, currency_code
+        ORDER BY 1 ASC, platform ASC, currency_code ASC`,
       [],
     );
 

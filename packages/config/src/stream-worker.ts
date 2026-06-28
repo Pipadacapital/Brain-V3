@@ -101,7 +101,9 @@ export const StreamWorkerEnvSchema = CommonEnvSchema.extend({
   BACKFILL_CONSUMER_GROUP_ID: z.string().default('stream-worker-backfill'),
 
   // ── Health / probes (main.ts) ────────────────────────────────────────────────
-  HEALTH_PORT: z.coerce.number().int().default(8090),
+  // 8091 (NOT 8090): Trino maps host 8090 in docker-compose, so a local stream-worker health
+  // server on 8090 collides (EADDRINUSE). k8s separates them, but keep dev clean too.
+  HEALTH_PORT: z.coerce.number().int().default(8091),
 
   // ── Bronze write switch (main.ts) ────────────────────────────────────────────
   /** PG bronze_events write — RETIRED, default OFF (===' true' semantics). */

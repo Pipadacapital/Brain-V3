@@ -135,11 +135,11 @@ export async function computeInsights(
       prior_minor: string | number;
     }>(
       `SELECT currency_code,
-              SUM(CASE WHEN occurred_at >= '${window.current.from} 00:00:00' THEN amount_minor ELSE 0 END) AS cur_minor,
-              SUM(CASE WHEN occurred_at >= '${window.prior.from} 00:00:00'
-                        AND occurred_at <  '${window.current.from} 00:00:00' THEN amount_minor ELSE 0 END) AS prior_minor
+              SUM(CASE WHEN occurred_at >= CAST('${window.current.from} 00:00:00' AS timestamp(6) with time zone) THEN amount_minor ELSE 0 END) AS cur_minor,
+              SUM(CASE WHEN occurred_at >= CAST('${window.prior.from} 00:00:00' AS timestamp(6) with time zone)
+                        AND occurred_at <  CAST('${window.current.from} 00:00:00' AS timestamp(6) with time zone) THEN amount_minor ELSE 0 END) AS prior_minor
          FROM brain_serving.mv_gold_revenue_ledger
-        WHERE occurred_at >= '${window.prior.from} 00:00:00'
+        WHERE occurred_at >= CAST('${window.prior.from} 00:00:00' AS timestamp(6) with time zone)
           AND ${BRAND_PREDICATE}
         GROUP BY currency_code`,
       [],
@@ -165,11 +165,11 @@ export async function computeInsights(
         prior_minor: string | number;
       }>(
         `SELECT event_type,
-                SUM(CASE WHEN occurred_at >= '${window.current.from} 00:00:00' THEN amount_minor ELSE 0 END) AS cur_minor,
-                SUM(CASE WHEN occurred_at >= '${window.prior.from} 00:00:00'
-                          AND occurred_at <  '${window.current.from} 00:00:00' THEN amount_minor ELSE 0 END) AS prior_minor
+                SUM(CASE WHEN occurred_at >= CAST('${window.current.from} 00:00:00' AS timestamp(6) with time zone) THEN amount_minor ELSE 0 END) AS cur_minor,
+                SUM(CASE WHEN occurred_at >= CAST('${window.prior.from} 00:00:00' AS timestamp(6) with time zone)
+                          AND occurred_at <  CAST('${window.current.from} 00:00:00' AS timestamp(6) with time zone) THEN amount_minor ELSE 0 END) AS prior_minor
            FROM brain_serving.mv_gold_revenue_ledger
-          WHERE occurred_at >= '${window.prior.from} 00:00:00'
+          WHERE occurred_at >= CAST('${window.prior.from} 00:00:00' AS timestamp(6) with time zone)
             AND currency_code = ?
             AND ${BRAND_PREDICATE}
           GROUP BY event_type`,
@@ -434,7 +434,7 @@ export async function computeInsights(
     const spendRows = await scope.runScoped<{ currency_code: string; spend_minor: string | number }>(
       `SELECT currency_code, COALESCE(SUM(spend_minor), 0) AS spend_minor
          FROM brain_serving.mv_silver_marketing_spend
-        WHERE stat_date >= '${window.current.from}' AND stat_date <= '${window.current.to}'
+        WHERE stat_date >= DATE '${window.current.from}' AND stat_date <= DATE '${window.current.to}'
           AND ${BRAND_PREDICATE}
         GROUP BY currency_code`,
       [],

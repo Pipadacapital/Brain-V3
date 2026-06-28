@@ -48,7 +48,7 @@ export async function computeRealizedGmvCompositionForPeriod(
           AND event_type <> 'provisional_recognition'
           AND ${BRAND_PREDICATE}
         GROUP BY event_type, currency_code
-        ORDER BY SUM(amount_minor) DESC`,
+        ORDER BY amount_minor DESC`,
       [period],
     );
     return rows.map((r) => ({

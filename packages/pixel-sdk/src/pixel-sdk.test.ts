@@ -11,10 +11,11 @@
  *  - client-side anon-id + 30-min rolling session persistence.
  *  - NO raw PII / NO salt on the wire (ADR-2).
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { CollectorEventV1Schema } from '@brain/contracts';
 import { createPixel } from './capture.js';
-import type { BrowserEnv, MinimalStorage } from './types.js';
+import { Transport } from './transport.js';
+import type { BrowserEnv, CollectorEventV1, MinimalStorage } from './types.js';
 
 const TOKEN = 'a11a0011-0a11-4a11-8a11-000000000011';
 const BRAND = 'a11a0001-0a00-4a00-8a00-000000000001';
@@ -294,5 +295,55 @@ describe('pixel-sdk — no raw PII / no salt on the wire (ADR-2)', () => {
     const { env } = fakeEnv();
     const broken: BrowserEnv = { ...env, bootstrap: { install_token: '', brand_id: BRAND } };
     expect(() => createPixel(broken)).toThrow(/install_token/);
+  });
+});
+
+// Minimal CollectorEventV1 for transport-level queue tests (the transport stores/reads opaquely).
+function ev(name: string, id: string): CollectorEventV1 {
+  return {
+    schema_version: '1',
+    event_id: id,
+    brand_id: BRAND,
+    event_name: name,
+    occurred_at: '2026-06-18T12:00:00.000Z',
+    properties: { install_token: TOKEN },
+  } as unknown as CollectorEventV1;
+}
+
+describe('transport — keep-critical eviction (G1, No-event-loss)', () => {
+  it('evicts non-critical before a queued order.placed under overflow', async () => {
+    // All sends fail → the queue accumulates past MAX_QUEUE (200) so eviction runs.
+    const { env } = fakeEnv({ failFirst: 1_000_000 });
+    const t = new Transport(env, 'https://collect.example.com/v1/events');
+    await t.enqueue(ev('order.placed', 'crit-1')); // critical, oldest
+    for (let i = 0; i < 260; i++) await t.enqueue(ev('scroll.depth', `s-${i}`));
+    const q = JSON.parse(env.storage.getItem('__brain_queue')!) as CollectorEventV1[];
+    expect(q.length).toBeLessThanOrEqual(200);
+    expect(q.some((e) => e.event_name === 'order.placed')).toBe(true); // critical survived the flood
+    expect(t.consumeDroppedCount()).toBeGreaterThan(0); // and the drops were counted
+  });
+
+  it('consumeDroppedCount resets after read', async () => {
+    const { env } = fakeEnv({ failFirst: 1_000_000 });
+    const t = new Transport(env, 'https://collect.example.com/v1/events');
+    for (let i = 0; i < 230; i++) await t.enqueue(ev('rage.click', `r-${i}`));
+    expect(t.consumeDroppedCount()).toBeGreaterThan(0);
+    expect(t.consumeDroppedCount()).toBe(0);
+  });
+});
+
+describe('transport — exponential-backoff retry (G2)', () => {
+  it('retries a failed flush on a backoff timer instead of stranding the queue', async () => {
+    vi.useFakeTimers();
+    try {
+      const { env, sent } = fakeEnv({ failFirst: 1 }); // first send fails, then succeeds
+      const t = new Transport(env, 'https://collect.example.com/v1/events');
+      await t.enqueue(ev('page.viewed', 'p-1'));
+      expect(sent.length).toBe(0); // first attempt failed; queued for backoff retry
+      await vi.advanceTimersByTimeAsync(1000); // 1s backoff fires
+      expect(sent.length).toBe(1); // retry delivered it — not stranded until the next page event
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

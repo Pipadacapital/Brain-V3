@@ -44,6 +44,16 @@ export const PIXEL_JS = `(function(){
   var ANON_KEY = "__brain_anon_id", SESSION_KEY = "__brain_session", QUEUE_KEY = "__brain_queue";
   var SESSION_TTL = 1800000, MAX_QUEUE = 200;
 
+  // ── No-event-loss queue policy ──────────────────────────────────────────────
+  // CRITICAL families are conversion / money / identity / our own loss-signal — they must NEVER be
+  // evicted to make room for high-volume behavioural noise (scroll.depth / *.click / page.viewed).
+  // On overflow we drop the OLDEST NON-critical first; critical events are only dropped if the queue is
+  // entirely critical AND still over cap (pathological). Mirrors packages/pixel-sdk transport policy.
+  var CRITICAL_RE = /^(order\.|payment\.|checkout\.|cart\.|purchase|identify|pixel\.dropped)/;
+  function isCritical(ev){ return !!(ev && ev.event_name && CRITICAL_RE.test(ev.event_name)); }
+  var _droppedSinceReport = 0;            // client-side drops not yet reported to the collector
+  var _retryAttempt = 0, _retryTimer = null;  // exp-backoff flush retry state
+
   function get(k){ try { return LS ? LS.getItem(k) : null; } catch(e){ return null; } }
   function set(k,v){ try { if (LS) LS.setItem(k,v); } catch(e){} }
   function uuid(){
@@ -115,7 +125,22 @@ export const PIXEL_JS = `(function(){
   }
 
   function readQ(){ var raw = get(QUEUE_KEY); if(!raw) return []; try{ var a=JSON.parse(raw); return Array.isArray(a)?a:[]; }catch(e){ return []; } }
-  function writeQ(q){ if (q.length > MAX_QUEUE) q = q.slice(q.length - MAX_QUEUE); set(QUEUE_KEY, JSON.stringify(q)); }
+  // Keep-critical eviction (G1). The old policy 'q.slice(q.length - MAX_QUEUE)' blindly dropped the OLDEST
+  // events — a flood of scroll.depth/rage.click could evict a queued order.placed/payment.* (the one true
+  // event-loss hole). Now: walk oldest→newest, drop oldest NON-critical first until within cap; only if the
+  // queue is still over (all-critical) drop oldest critical as a last resort. Count drops for pixel.dropped.
+  function writeQ(q){
+    if (q.length > MAX_QUEUE){
+      var over = q.length - MAX_QUEUE, kept = [], i;
+      for (i = 0; i < q.length; i++){
+        if (over > 0 && !isCritical(q[i])){ over--; _droppedSinceReport++; continue; }
+        kept.push(q[i]);
+      }
+      if (kept.length > MAX_QUEUE){ var extra = kept.length - MAX_QUEUE; _droppedSinceReport += extra; kept = kept.slice(extra); }
+      q = kept;
+    }
+    set(QUEUE_KEY, JSON.stringify(q));
+  }
 
   function sendOne(body, done){
     // sendBeacon (survives unload) → fetch(keepalive) fallback. ONE object per POST, NO credentials.
@@ -130,6 +155,17 @@ export const PIXEL_JS = `(function(){
     } catch(e){ done(false); }
   }
 
+  // Exponential-backoff retry (G2). 1s → 2 → 4 → 8 → 16 → 30s (cap), then idle until the next page event.
+  // Without this a single failed flush stranded the whole queue until some later trigger fired — on a
+  // one-page session (the common abandoned-cart case) the queued events were simply lost.
+  var RETRY_DELAYS = [1000, 2000, 4000, 8000, 16000, 30000];
+  function scheduleRetry(){
+    if (_retryTimer || _retryAttempt >= RETRY_DELAYS.length) return;
+    var d = RETRY_DELAYS[_retryAttempt]; _retryAttempt++;
+    try { _retryTimer = W.setTimeout(function(){ _retryTimer = null; flush(); }, d); } catch(e){}
+  }
+  function resetRetry(){ _retryAttempt = 0; if (_retryTimer){ try { W.clearTimeout(_retryTimer); } catch(e){} _retryTimer = null; } }
+
   var flushing = false;
   function flush(){
     if (flushing) return; flushing = true;
@@ -138,10 +174,11 @@ export const PIXEL_JS = `(function(){
     // to back) are not clobbered by a stale in-memory slice. Send the head, then persist the tail.
     function step(){
       var q = readQ();
-      if (q.length === 0){ flushing = false; return; }
+      if (q.length === 0){ flushing = false; resetRetry(); return; }
       var body = JSON.stringify(q[0]); // ONE object — never an array (REC-5)
       sendOne(body, function(ok){
-        if (!ok){ flushing = false; return; } // leave the queue intact for the next trigger
+        if (!ok){ flushing = false; scheduleRetry(); return; } // keep the queue; retry with backoff
+        resetRetry();             // a good send means we're online again — clear the backoff
         writeQ(readQ().slice(1)); // drop ONLY the head we just sent; keep anything appended meanwhile
         step();
       });
@@ -149,7 +186,17 @@ export const PIXEL_JS = `(function(){
     step();
   }
 
-  function emit(name, extra){ var q = readQ(); q.push(build(name, extra)); writeQ(q); flush(); }
+  function emit(name, extra){
+    var q = readQ();
+    q.push(build(name, extra));
+    // Piggyback a CRITICAL pixel.dropped marker so the collector learns about any client-side loss
+    // (No-event-loss observability). Done HERE (not inside writeQ) so eviction never re-enters emit.
+    if (_droppedSinceReport > 0 && name !== "pixel.dropped"){
+      var n = _droppedSinceReport; _droppedSinceReport = 0;
+      q.push(build("pixel.dropped", { dropped_count: n, reason: "queue_overflow" }));
+    }
+    writeQ(q); flush();
+  }
 
   // ── Identity capture (the anon→customer BRIDGE) ────────────────────────────
   // PRIVACY (ADR-2: NO raw PII / NO salt on the wire): the email is hashed CLIENT-SIDE with plain,

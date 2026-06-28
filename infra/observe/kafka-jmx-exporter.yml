@@ -1,0 +1,56 @@
+# kafka-jmx-exporter.yml — prometheus/jmx_exporter Java-agent config for the Apache Kafka (KRaft) broker.
+#
+# Why this exists: the Redpanda → Apache Kafka (KRaft) swap removed Redpanda's native Prometheus
+# endpoint (redpanda:9644/public_metrics → redpanda_kafka_*). apache/kafka emits ONLY JMX, so the
+# broker is run with the prometheus/jmx_exporter agent attached:
+#
+#   KAFKA_OPTS="-javaagent:/opt/jmx_exporter/jmx_prometheus_javaagent.jar=9404:/etc/jmx-exporter/kafka-jmx-exporter.yml"
+#
+# The agent maps the Kafka MBeans below to kafka_* Prometheus metrics on :9404, which Prometheus
+# scrapes via the 'kafka-jmx-exporter' job (see prometheus.yml). brain-slo.rules.yml's DLQ-growth,
+# ingest-freshness and under-replicated alerts read these names.
+#
+# NOTE — consumer-group LAG is intentionally NOT here: per-group lag is not a broker JMX metric.
+# It is sourced from the danielqsj/kafka_exporter companion (kafka_consumergroup_lag), scraped via
+# the separate 'kafka-exporter' job. See BrainConsumerLagHigh in brain-slo.rules.yml.
+
+lowercaseOutputName: true
+lowercaseOutputLabelNames: true
+
+# Drop the high-cardinality per-request-version label noise; keep the SLO-relevant series.
+rules:
+  # Log end offset (high watermark) per topic-partition.
+  # Replaces redpanda_kafka_max_offset — drives BrainDlqGrowing + BrainIngestStale.
+  - pattern: 'kafka.log<type=Log, name=LogEndOffset, topic=(.+), partition=(.+)><>Value'
+    name: kafka_log_log_logendoffset
+    type: GAUGE
+    labels:
+      topic: "$1"
+      partition: "$2"
+
+  # Under-replicated partitions — broker replication health.
+  - pattern: 'kafka.server<type=ReplicaManager, name=UnderReplicatedPartitions><>Value'
+    name: kafka_server_replicamanager_underreplicatedpartitions
+    type: GAUGE
+
+  # Offline partitions — controller-level availability.
+  - pattern: 'kafka.controller<type=KafkaController, name=OfflinePartitionsCount><>Value'
+    name: kafka_controller_kafkacontroller_offlinepartitionscount
+    type: GAUGE
+
+  # Active controller count (KRaft) — should be exactly 1 cluster-wide.
+  - pattern: 'kafka.controller<type=KafkaController, name=ActiveControllerCount><>Value'
+    name: kafka_controller_kafkacontroller_activecontrollercount
+    type: GAUGE
+
+  # Request rate per request type (Produce / FetchConsumer / ...) — broker request-rate signal.
+  - pattern: 'kafka.network<type=RequestMetrics, name=RequestsPerSec, request=(.+), version=(.+)><>OneMinuteRate'
+    name: kafka_network_requestmetrics_requestspersec
+    type: GAUGE
+    labels:
+      request: "$1"
+
+  # Messages produced into the broker (throughput).
+  - pattern: 'kafka.server<type=BrokerTopicMetrics, name=MessagesInPerSec><>OneMinuteRate'
+    name: kafka_server_brokertopicmetrics_messagesinpersec
+    type: GAUGE

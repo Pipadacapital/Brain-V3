@@ -10,69 +10,63 @@ run never double-applies and never piles up. Schedules are IST (`Asia/Kolkata`).
 | Job | Schedule (IST) | Image | Purpose |
 |---|---|---|---|
 | recommendation-detectors | `0 6 * * *` daily 06:00 | core | Morning Brief detectors |
-| revenue-finalization | `0 * * * *` hourly :00 | stream-worker | Attribution chain ① — horizon-based revenue realization |
-| journey-stitch-from-identity | `15 * * * *` hourly :15 | stream-worker | Attribution chain ② — identity-graph stitch (GAP-1) |
-| attribution-reconcile | `30 * * * *` hourly :30 | core | Attribution chain ③ — credit recognized orders (5 models incl. data_driven) + clawbacks |
-| feature-materialization | `40 * * * *` hourly :40 | stream-worker | Gold features → Redis online store |
+| identity-export | `2 * * * *` hourly :02 | stream-worker | Attribution chain — materialize the Neo4j identity graph |
+| journey-stitch-from-identity | `15 * * * *` hourly :15 | stream-worker | Attribution chain — identity-graph stitch (GAP-1) |
+| attribution-reconcile | `30 * * * *` hourly :30 | core | Attribution chain — credit recognized orders (5 models incl. data_driven) + clawbacks |
 | meta-token-refresh | `0 3 * * *` daily 03:00 | stream-worker | Re-exchange Meta long-lived tokens |
+| shopify-token-refresh | `30 3 * * *` daily 03:30 | stream-worker | Re-exchange Shopify offline tokens |
 | audit-checkpoint | `15 * * * *` hourly :15 | core | WORM-anchor audit hash-chain head to S3 |
 | **partition-maintenance** | `30 2 * * *` daily 02:30 | stream-worker | **Create-ahead + drop-old RANGE partitions (C4)** |
 
-### The attribution chain (① → ② → ③ → gold rebuild)
+### The attribution chain (Brain V4)
 
 Ordered by **staggered schedule + idempotency**, not an Argo DAG (matching this chart's
 one-container-per-CronWorkflow convention). The time gaps sequence the steps; each is idempotent so a
-missed/retried run is safe (`concurrencyPolicy: Forbid` + `startingDeadlineSeconds`):
+missed/retried run is safe (`concurrencyPolicy: Forbid` + `startingDeadlineSeconds`). Under Brain V4 the
+recognition + attribution-gold rebuilds are **Spark** jobs (the `v4-silver`/`v4-gold` CronWorkflows
+below), not dbt — dbt and StarRocks are removed:
 
-1. **revenue-finalization** (:00) — prepaid recognized after the return/cancel horizon → `finalization`
-   rows (COD recognizes separately via `cod_delivery_confirmed`; never double-finalized).
-2. **journey-stitch-from-identity** (:15) — `silver_touchpoint` anon → `identity_link(anon_id)`→brain_id
-   ∩ `realized_revenue_ledger(order→brain_id)`, unambiguous-only → `connector_journey_stitch_map`.
-3. **attribution-reconcile** (:30) — credit recognized orders (`finalization ∪ cod_delivery_confirmed`)
+1. **identity-export** (:02) — Neo4j identity graph → `silver_identity_link`, so the Spark Silver order
+   spine resolves order `brain_id`. Runs BEFORE `v4-silver`.
+2. **v4-silver** (:05, Spark) — Bronze → `silver_order_state` (recognition incl. prepaid finalization
+   after horizon + COD delivery/RTO) + the rest of Silver.
+3. **journey-stitch-from-identity** (:15) — `silver_touchpoint` anon → `identity_link(anon_id)`→brain_id
+   ∩ the recognized order ledger, unambiguous-only → `connector_journey_stitch_map`.
+4. **v4-gold** (:25, Spark) — `gold_revenue_ledger` → `gold_attribution_credit` →
+   `gold_marketing_attribution` (incl. the data_driven model) + customer/gap/executive marts, served by
+   the `brain_serving.mv_*` Trino views over Iceberg.
+5. **attribution-reconcile** (:30) — credit recognized orders (`finalization ∪ cod_delivery_confirmed`)
    to their journeys under all 4 per-journey models + the global data-driven (Markov) model; clawbacks.
-4. **attribution-gold-refresh** (:45) — dbt rebuild of the credit ledger →
-   `brain_gold.gold_marketing_attribution` (incl. the data_driven model), which the dashboard
-   Attribution surface serves. Runs on the **dbt-runner image** (`db/dbt/Dockerfile`) — Node images
-   can't run dbt. **Shipped `enabled: false`**: flip `jobs[attribution-gold-refresh].enabled: true`
-   per env once CI publishes + pins `dbtRunnerImage.digest` (the template fail-closes on a missing
-   digest, so a disabled job is simply skipped). Until enabled, the marts refresh on the nightly dbt
-   build — one cycle behind the ledger. Mirrors `make attribution-gold-refresh`.
 
-## Brain V4 Spark Silver/Gold + mv refresh (`templates/spark-v4.yaml`)
+## Brain V4 Spark Silver/Gold (`templates/spark-v4.yaml`)
 
 Under **Brain V4** Spark is the sole compute and dbt is gone: the Iceberg medallion
-(`brain_bronze`/`brain_silver`/`brain_gold`) is built by Spark jobs and StarRocks `brain_serving.mv_*`
-serve. These three CronWorkflows are the V4 replacement for the dbt recognition/attribution crons above —
-they `spark-submit` the mart jobs the Spark image now **carries** (`db/iceberg/spark/{silver,gold}/*.py`,
-COPYed into `/opt/brain` by the Dockerfile) and then SYNC-refresh the serving MVs. They mirror the
+(`brain_bronze`/`brain_silver`/`brain_gold`) is built by Spark jobs and is the system of record; the
+`brain_serving.mv_*` Trino views are thin projections straight over the Iceberg Gold/Silver marts
+(StarRocks is removed). These CronWorkflows `spark-submit` the mart jobs the Spark image now **carries**
+(`db/iceberg/spark/{silver,gold}/*.py`, COPYed into `/opt/brain` by the Dockerfile). They mirror the
 `spark-bronze.yaml` pattern (one `spark-submit --master local[*]` pod, no Spark Operator/cluster).
 
 | Job | Schedule (IST) | Image | Purpose |
 |---|---|---|---|
 | v4-silver | `5 * * * *` hourly :05 | spark-v4 | `silver_order_state` (brain_id spine) + the rest of Silver |
 | v4-gold | `25 * * * *` hourly :25 | spark-v4 | `gold_revenue_ledger` → attribution → customer/gap/executive marts |
-| v4-mv-refresh | `40 * * * *` hourly :40 | mysql-client | `REFRESH MATERIALIZED VIEW brain_serving.mv_* WITH SYNC MODE` |
+
+There is **no `v4-mv-refresh` leg**: once a Spark job commits the new Iceberg snapshot, the Trino `mv_*`
+views resolve it directly (no StarRocks `REFRESH MATERIALIZED VIEW` / mysql-client step). The dev mirror
+that runs the same Silver→Gold→mv SYNC sequence is `tools/dev/v4-refresh-loop.sh` (`pnpm dev:v4-refresh`).
 
 **Dependency order** is enforced by staggered schedule + idempotency (not an Argo DAG), and interleaves
 with the node `.Values.jobs`: `identity-export` (:02) → **v4-silver** (:05) → `journey-stitch-from-identity`
-+ `journey-stitch-export` (:15/:16) → **v4-gold** (:25) → **v4-mv-refresh** (:40). That is the full V4
-attribution chain — identity → order-state → silver → stitch → gold → mv refresh — so the customer +
-attribution marts populate instead of computing 0. The dev mirror of this exact chain is
-`tools/dev/v4-refresh-loop.sh` (`pnpm dev:v4-refresh`).
++ `journey-stitch-export` (:15/:16) → **v4-gold** (:25). That is the full V4 attribution chain — identity
+→ order-state → silver → stitch → gold — so the customer + attribution marts populate instead of
+computing 0.
 
-**GATED OFF by default** (`sparkV4.enabled: false`): the same external gate as `sparkBronze` — flip
-`sparkV4.enabled: true` per env once CI publishes + digest-pins the V4 spark image (the template
-fail-closes on a missing digest, B3) and a cluster is ready. Each `spark-submit` runs an idempotent
-Iceberg MERGE wrapped in a bounded in-pod retry (`SPARK_MAX_RETRIES`, via `_retry.sh`) on top of the
-Argo `backoffLimit` — a transient blip is safe to re-run.
-
-### The dbt-runner image (`db/dbt/Dockerfile`)
-
-The runtime for scheduled dbt rebuilds (Node job images have no dbt/StarRocks-catalog runtime). Bundles
-the dbt project + `dbt-starrocks` + the catalog-bootstrap SQL; parameterized via env (`DBT_SELECT`,
-`DBT_VARS`, `DBT_FULL_REFRESH`, `DBT_THREADS`, `DBT_BOOTSTRAP_CATALOG`). Build:
-`docker build -f db/dbt/Dockerfile -t brain-dbt-runner db`. Also serves Silver intraday rebuilds (set
-`DBT_SELECT` accordingly) — closing the Silver-freshness follow-up in `brain-slo.rules.yml`.
+**ENABLED** (`sparkV4.enabled: true`): the V4 Spark crons run the medallion refresh. They share the same
+external gate as `sparkBronze` — the CI-built, digest-pinned V4 spark image (the template fail-closes on a
+missing digest, B3) and a cluster. Each `spark-submit` runs an idempotent Iceberg MERGE wrapped in a
+bounded in-pod retry (`SPARK_MAX_RETRIES`, via `_retry.sh`) on top of the Argo `backoffLimit` — a
+transient blip is safe to re-run.
 
 ## C4 — partition maintenance (CRITICAL)
 

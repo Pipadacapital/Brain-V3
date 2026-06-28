@@ -25,11 +25,16 @@ scrape_configs:
     static_configs:
       - targets: ['host.docker.internal:9092']  # stream-worker metrics endpoint (local dev)
 
-  # Broker metrics — DISABLED after the Redpanda → Apache Kafka (KRaft) swap.
-  # Redpanda exposed a Prometheus endpoint at redpanda:9644/public_metrics (redpanda_kafka_*);
-  # Apache Kafka only emits JMX, so there is no scrape target until a JMX-exporter sidecar is
-  # added. Re-enable with a kafka-jmx-exporter job (and update brain-slo.rules.yml) when wired.
-  # - job_name: 'redpanda'
-  #   metrics_path: '/public_metrics'
-  #   static_configs:
-  #     - targets: ['redpanda:9644']
+  # Broker metrics — repointed from the retired Redpanda /public_metrics (redpanda_kafka_*) to the
+  # Apache Kafka (KRaft) broker, which emits ONLY JMX. The broker runs the prometheus/jmx_exporter
+  # Java agent (config: kafka-jmx-exporter.yml) exposing kafka_* metrics on :9404. brain-slo.rules.yml
+  # reads kafka_log_log_logendoffset (DLQ growth / ingest freshness) + under-replicated from here.
+  - job_name: 'kafka-jmx-exporter'
+    static_configs:
+      - targets: ['host.docker.internal:9404']  # Kafka broker JMX-exporter agent (local dev)
+
+  # Consumer-group LAG is not a broker JMX metric — sourced from the danielqsj/kafka_exporter
+  # companion, which exposes kafka_consumergroup_lag / kafka_topic_*. Drives BrainConsumerLagHigh.
+  - job_name: 'kafka-exporter'
+    static_configs:
+      - targets: ['host.docker.internal:9308']  # kafka_exporter (local dev)

@@ -14,7 +14,7 @@ metadata:
     service: collector
     environment: prod
   annotations:
-    argocd.argoproj.io/manifest-generate-paths: /infra/k8s/collector/
+    argocd.argoproj.io/manifest-generate-paths: infra/helm/collector
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:
@@ -23,9 +23,10 @@ spec:
   source:
     repoURL: https://github.com/brain-platform/brain
     targetRevision: HEAD
-    path: infra/k8s/collector/overlays/production
-    kustomize:
-      images: []  # Populated by CI prod-promote job (same digest as staging)
+    path: infra/helm/collector
+    helm:
+      valueFiles:
+        - values-prod.yaml
 
   destination:
     server: https://kubernetes.default.svc

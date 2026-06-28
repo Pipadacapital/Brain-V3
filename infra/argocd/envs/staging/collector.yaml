@@ -14,7 +14,7 @@ metadata:
     environment: staging
   annotations:
     # Only reconcile when this service's manifests change (selective deploy)
-    argocd.argoproj.io/manifest-generate-paths: /infra/k8s/collector/
+    argocd.argoproj.io/manifest-generate-paths: infra/helm/collector
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:
@@ -23,9 +23,10 @@ spec:
   source:
     repoURL: https://github.com/brain-platform/brain
     targetRevision: HEAD
-    path: infra/k8s/collector/overlays/staging
-    kustomize:
-      images: []  # Populated by CI manifest bump
+    path: infra/helm/collector
+    helm:
+      valueFiles:
+        - values-staging.yaml
 
   destination:
     server: https://kubernetes.default.svc

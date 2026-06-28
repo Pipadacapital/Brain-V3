@@ -9,7 +9,7 @@ on:
       - "policy/**"
       - ".checkov.yaml"
   push:
-    branches: [main]
+    branches: [master]   # default branch — the infra TF lane fires on real merges to master
     paths:
       - "infra/**"
       - ".github/policy/**"

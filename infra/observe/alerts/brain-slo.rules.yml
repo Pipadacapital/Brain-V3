@@ -11,7 +11,10 @@
 #   • collector_spool_full_total      — counter; +1 per 503 SPOOL_FULL shed (back-pressure, C4).
 #   • collector_dedup_conflict_total  — counter; +1 per pk_conflict/dedup_hit (R4).
 #   • bronze_write_total              — counter; +1 per durable Bronze write (stream-worker).
-#   • redpanda_kafka_*                — Redpanda native /public_metrics (scrape job 'redpanda').
+#   • kafka_log_log_logendoffset      — Kafka (KRaft) broker JMX via jmx_exporter (job 'kafka-jmx-exporter');
+#                                       log end offset / high-watermark per topic-partition.
+#   • kafka_consumergroup_lag         — danielqsj/kafka_exporter (job 'kafka-exporter'); per-group lag
+#                                       (NOT a broker JMX metric, hence the companion exporter).
 #
 # Collector ingest SLO = 99.95% accept+ack (matches the bake-window rule in main.yml).
 #
@@ -22,7 +25,7 @@ groups:
   - name: brain-liveness
     rules:
       - alert: BrainTargetDown
-        expr: up{job=~"brain-.*|redpanda"} == 0
+        expr: up{job=~"brain-.*|kafka-jmx-exporter|kafka-exporter"} == 0
         for: 2m
         labels:
           severity: critical
@@ -73,7 +76,7 @@ groups:
           description: "Shed ratio exceeds 6× the 0.05% budget over 30m AND 6h."
 
       - alert: BrainCollectorSheddingNow
-        # Any sustained back-pressure shedding — the drainer (→ Redpanda) is behind RIGHT NOW.
+        # Any sustained back-pressure shedding — the drainer (→ Kafka) is behind RIGHT NOW.
         expr: sum(rate(collector_spool_full_total[5m])) > 0
         for: 2m
         labels:
@@ -86,34 +89,35 @@ groups:
   - name: brain-stream-worker
     rules:
       - alert: BrainDlqGrowing
-        # DLQ is a topic; a still-advancing high-watermark on a .dlq topic = terminal failures.
+        # DLQ is a topic; a still-advancing high-watermark (log end offset) on a .dlq topic = terminal failures.
         expr: |
-          sum by (redpanda_topic) (
-            rate(redpanda_kafka_max_offset{redpanda_topic=~".*\\.dlq"}[15m])
+          sum by (topic) (
+            rate(kafka_log_log_logendoffset{topic=~".*\\.dlq"}[15m])
           ) > 0
         for: 10m
         labels:
           severity: critical
         annotations:
-          summary: "DLQ topic {{ $labels.redpanda_topic }} is growing"
+          summary: "DLQ topic {{ $labels.topic }} is growing"
           description: "Events are landing in the DLQ (offset advancing for 10m) — terminal processing failures after MAX_RETRY."
 
       - alert: BrainConsumerLagHigh
+        # kafka_consumergroup_lag (kafka_exporter): summed lag across all topic-partitions of a group.
         expr: |
-          sum by (redpanda_group) (
-            redpanda_kafka_consumer_group_lag_sum{redpanda_group=~"stream-worker-.*|.*-bridge"}
+          sum by (consumergroup) (
+            kafka_consumergroup_lag{consumergroup=~"stream-worker-.*|.*-bridge"}
           ) > 50000
         for: 10m
         labels:
           severity: warning
         annotations:
-          summary: "Consumer group {{ $labels.redpanda_group }} lag > 50k"
+          summary: "Consumer group {{ $labels.consumergroup }} lag > 50k"
           description: "The consumer group is >50,000 messages behind for 10m — projection is falling behind production rate."
 
       - alert: BrainIngestStale
         # Freshness: collector topic advancing but ZERO Bronze writes for 10m → the spine stalled.
         expr: |
-          (sum(rate(redpanda_kafka_max_offset{redpanda_topic=~".*\\.collector\\.event\\.v1"}[10m])) > 0)
+          (sum(rate(kafka_log_log_logendoffset{topic=~".*\\.collector\\.event\\.v1"}[10m])) > 0)
           and
           (sum(increase(bronze_write_total[10m])) == 0)
         for: 10m
@@ -253,12 +257,12 @@ groups:
     rules:
       - alert: BrainWebhookProduceFailing
         # collector_webhook_produce_error_total: collector counter (+1 per message the collector
-        # failed to produce to Redpanda after exhausting retries). A non-zero rate means EVENTS
+        # failed to produce to Kafka after exhausting retries). A non-zero rate means EVENTS
         # ARE BEING DROPPED at the ingest spine entry — the no-event-loss guarantee (CLAUDE.md) is
         # being violated. Immediate investigation required.
         #
         # Metric source: @brain/observability incrementCounter in the collector's Kafka producer
-        # retry wrapper. Set to 0 when the topic is healthy; any increment = a drop in the live lane.
+        # retry wrapper. Zero when the topic is healthy; any increment = a drop in the live lane.
         #
         # Two-window guard: 1m fast burn (drops right now) + 5m sustained (not a single-blip spike).
         expr: |
@@ -270,4 +274,4 @@ groups:
           severity: critical
         annotations:
           summary: "Collector webhook produce failing — events are being dropped"
-          description: "The collector cannot produce events to Redpanda after retries (brain_collector_webhook_produce_error_total is advancing). The no-event-loss guarantee is violated. Check broker health, topic availability, and producer credentials."
+          description: "The collector cannot produce events to Kafka after retries (brain_collector_webhook_produce_error_total is advancing). The no-event-loss guarantee is violated. Check broker health, topic availability, and producer credentials."

@@ -83,6 +83,7 @@ for model in ${MODELS}; do
     "${SPARK_IMAGE}" \
     /opt/spark/bin/spark-submit \
       --master "local[2]" \
+    --driver-memory "${SPARK_DRIVER_MEMORY:-4g}" \
       --packages "${PACKAGES}" \
       --conf spark.jars.ivy=/root/.ivy2 \
       --py-files /opt/spark-src/iceberg_base.py,/opt/spark-src/gold/_attribution_math.py \

@@ -73,6 +73,7 @@ services:
   neo4j:
     image: neo4j:5.21-community
     profiles: ["core"]
+    mem_limit: 1500m   # heap 512m + pagecache 256m + JVM overhead (see budget: docs/ops/local-memory-budget.md)
     environment:
       NEO4J_AUTH: neo4j/brain_neo4j
       NEO4J_server_memory_pagecache_size: 256M
@@ -102,9 +103,11 @@ services:
     # existing core/lakehouse invocations, so no profile flow regresses.
     image: minio/minio:RELEASE.2024-04-06T05-26-02Z
     command: server /data --console-address ":9001"
+    mem_limit: 5g      # S3 warehouse backend; caps page-cache growth (see budget: docs/ops/local-memory-budget.md)
     environment:
       MINIO_ROOT_USER: brain
       MINIO_ROOT_PASSWORD: brainbrain
+      GOMEMLIMIT: "4500MiB"   # soft Go heap ceiling under the 5g hard cap → GC before OOM-kill
     ports: ["9000:9000", "9001:9001"]
     # NOTE: the minio image ships no curl/wget; it does include bash. Use bash's
     # /dev/tcp to probe the API port (a port-open check is sufficient for local dev).
@@ -189,6 +192,7 @@ services:
   redpanda:
     image: apache/kafka:3.8.1
     profiles: ["ingest"]
+    mem_limit: 2500m   # Kafka KRaft broker (see budget: docs/ops/local-memory-budget.md)
     environment:
       KAFKA_NODE_ID: "1"
       KAFKA_PROCESS_ROLES: "broker,controller"
@@ -366,6 +370,7 @@ services:
   spark-bronze-sink:
     image: apache/spark:3.5.3
     profiles: ["lakehouse"]
+    mem_limit: 7g      # 4g driver heap + Iceberg/Kafka/MERGE off-heap overhead (see budget: docs/ops/local-memory-budget.md)
     # Share the Kafka broker's network namespace so its PLAINTEXT advertised listener (localhost:9092)
     # resolves; service DNS (iceberg-rest, minio, postgres) still resolves because the broker is on the
     # compose network. K1: broker is Apache Kafka KRaft (Redpanda removed); the service / DNS name is
@@ -438,6 +443,7 @@ services:
   spark-bronze-raw-sink:
     image: apache/spark:3.5.3
     profiles: ["lakehouse"]
+    mem_limit: 6g      # 4g driver heap + off-heap overhead (see budget: docs/ops/local-memory-budget.md)
     network_mode: "service:redpanda"
     user: root
     depends_on:

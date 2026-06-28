@@ -95,6 +95,12 @@ SERVER_TRUSTED = {
     # SAME lane as order.live.v1 (server-derived, no pixel signal). Kept BYTE-IDENTICAL with
     # bronze_materialize.SERVER_TRUSTED_BRONZE.
     "product.upsert.v1", "customer.upsert.v1", "refund.recorded.v1", "fulfillment.recorded.v1",
+    # WOO-3: coupon.upsert.v1 is the NEW canonical coupon grain (no Shopify peer). The WooCommerce
+    # connector emits it server-derived (brand_id from the resolved connector row, MT-1 — NEVER the API
+    # response) with NO install_token / consent signal, so — exactly like the CRIT-4 resource events — it
+    # MUST take the server-trusted lane or the PIXEL-lane R2 install_token join would SILENTLY DROP it and
+    # starve silver_coupon. Kept BYTE-IDENTICAL with bronze_materialize.SERVER_TRUSTED_BRONZE.
+    "coupon.upsert.v1",
 }
 LEDGER_ONLY = {"settlement.live.v1"}
 

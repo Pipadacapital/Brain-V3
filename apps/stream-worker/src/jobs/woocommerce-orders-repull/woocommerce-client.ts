@@ -192,6 +192,54 @@ export class WooCommerceClient {
     throw lastErr;
   }
 
+  /**
+   * Resolve the store's ISO-4217 currency — the single sibling every catalogue/customer/coupon money
+   * field is denominated in (MONEY FIX: never hardcoded, never an INR default).
+   *
+   *   - LIVE: GET {site_url}/wp-json/wc/v3/settings/general → the `woocommerce_currency` setting's
+   *     value (e.g. "INR" / "JPY" / "KWD"). A 401/403 throws WOOCOMMERCE_AUTH_ERROR (reconnect
+   *     signal); any other failure returns null (the caller fails closed — money degrades to null,
+   *     never blends).
+   *   - DEV: derive from the synthetic orders fixture's first order currency (the store currency the
+   *     fixture transacts in), so the dev path is currency-honest without a separate config key.
+   *
+   * Returns an UPPERCASE ISO code, or null when it cannot be resolved.
+   */
+  async fetchStoreCurrency(): Promise<string | null> {
+    if (!this.live) {
+      const order = this.loadFixture().find((o) => (o.currency ?? '').trim() !== '');
+      const code = (order?.currency ?? '').trim().toUpperCase();
+      return code || null;
+    }
+    if (!this.baseUrl) return null;
+    const url = `${this.baseUrl}/wp-json/wc/v3/settings/general`;
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: 'GET',
+        headers: { Authorization: this.authHeader, Accept: 'application/json' },
+      });
+    } catch (err) {
+      log.warn(`[woocommerce-client] store-currency request failed: ${String(err)}`);
+      return null;
+    }
+    if (res.status === 401 || res.status === 403) {
+      throw new Error(`${WOOCOMMERCE_AUTH_ERROR}: settings rejected (${res.status})`);
+    }
+    if (!res.ok) {
+      log.warn(`[woocommerce-client] store-currency fetch failed (${res.status})`);
+      return null;
+    }
+    try {
+      const settings = (await res.json()) as Array<{ id?: string; value?: unknown }>;
+      const row = Array.isArray(settings) ? settings.find((s) => s.id === 'woocommerce_currency') : undefined;
+      const code = typeof row?.value === 'string' ? row.value.trim().toUpperCase() : '';
+      return code || null;
+    } catch {
+      return null;
+    }
+  }
+
   // ── DEV: synthetic fixture ────────────────────────────────────────────────
   private loadFixture(): WooOrderShape[] {
     if (this.fixtureOrders !== null) return this.fixtureOrders;

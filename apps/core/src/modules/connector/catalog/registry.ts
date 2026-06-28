@@ -164,6 +164,12 @@ export const CONNECTOR_CATALOG: readonly ConnectorDefinition[] = [
       // site_url is non-secret but the WooCommerce repull client + pixel-install read the store
       // base URL from the bundle (woocommerce-client throws when it is absent), so it rides along.
       bundleNonSecretFields: ['site_url'],
+      // webhook_secret is the per-connector HMAC signing key the WooCommerceWebhookStrategy verifies
+      // against (base64 HMAC-SHA256). Brain MINTS it at connect-time (the merchant does not enter it)
+      // and sets it on each WC webhook registration, so the inbound webhook lane is signed end-to-end.
+      // (Closes the ULenin "bundle had no webhook_secret → webhook lane dead" gap — provisioned on the
+      // generic credential-connect path via provisionGeneratedSecrets, same mechanism as Shiprocket.)
+      generatedSecretFields: ['webhook_secret'],
     },
   },
   // ── ads ───────────────────────────────────────────────────────────────────────

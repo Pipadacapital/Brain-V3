@@ -48,6 +48,7 @@ import { createSaltProvider, type SaltProvider } from '../../infrastructure/secr
 import { log } from '../../log.js';
 import { acquireCursorLock, getCursorValue, upsertCursorValue } from '../../infrastructure/pg/CursorRepository.js';
 import { SyncRunRepository } from '../../infrastructure/pg/SyncRunRepository.js';
+import { driveResourceBackfillsForConnector } from '../ingestion-backfill/run.js';
 
 const cfg = loadStreamWorkerConfig();
 const DB_URL = cfg.BRAIN_APP_DATABASE_URL;
@@ -60,12 +61,23 @@ const REGION_CODE = cfg.BRAIN_REGION_CODE;
 
 const ORDERS_CURSOR_RESOURCE = 'orders.repull' as const;
 
+/** Default initial-backfill depth: a true 2-YEAR window (730 days) — the storefront-history target. */
+const DEFAULT_BACKFILL_DAYS = 730;
+
 /**
  * Backfill depth: configurable via WOOCOMMERCE_BACKFILL_DAYS env var (integer days).
- * Defaults to 90 days. Accepts 1–730 (clamped). Example: WOOCOMMERCE_BACKFILL_DAYS=180.
+ * Defaults to 730 days (2 years) — the INITIAL backfill must reach the full storefront history, not a
+ * 90-day trailing slice (the order audit flagged the 90-day default as unable to reach older orders).
+ * Accepts 1–730 (clamped). After the first run the per-connector high-water cursor makes subsequent
+ * runs incremental (fromMs = max(highWater, windowStart)), so the 2-year window only bites on the
+ * very first pull. Example: WOOCOMMERCE_BACKFILL_DAYS=180.
  */
 function resolveBackfillDepthMs(): number {
-  const envDays = cfg.WOOCOMMERCE_BACKFILL_DAYS;
+  // intentional raw: read the override LIVE from process.env (not the memoized config). The config
+  // snapshots process.env at module-import time, so a value set after import (and, more importantly,
+  // a deterministic per-run override) would be missed; a live read also makes the unit override robust
+  // to module load order.
+  const envDays = process.env['WOOCOMMERCE_BACKFILL_DAYS'] ?? cfg.WOOCOMMERCE_BACKFILL_DAYS;
   if (envDays) {
     const parsed = parseInt(envDays, 10);
     if (Number.isFinite(parsed) && parsed > 0) {
@@ -73,7 +85,7 @@ function resolveBackfillDepthMs(): number {
       return clamped * 24 * 60 * 60 * 1000;
     }
   }
-  return 90 * 24 * 60 * 60 * 1000; // default: 90-day trailing window (storefront backfill)
+  return DEFAULT_BACKFILL_DAYS * 24 * 60 * 60 * 1000; // default: 2-year initial window
 }
 
 const ORDERS_WINDOW_MS = resolveBackfillDepthMs();
@@ -202,6 +214,24 @@ async function repullConnector(params: RepullParams): Promise<void> {
   await setSyncState(pool, brandId, ciId, 'connected', null);
   await syncRunRepo.closeRun({ runId, brandId, startedAt, status: 'succeeded', rowsIngested: emitted });
   log.info(`connector=${ciId} COMPLETED emitted=${emitted}`);
+
+  // ── Non-order resource backfills (products / customers / coupons / refunds) ───────────────────
+  // The scheduling seam (the order audit's "products fetcher exists but NEVER runs"): every connected
+  // tick + every sync-now ALSO advances a bounded chunk of each non-order resource's resumable 2-year
+  // backfill onto the framework (BACKFILL lane). Fully fail-isolated — it can never fail the order
+  // re-pull above (which has already been committed as succeeded). Orders are excluded (they flow on
+  // the live lane via this very job; driving them through the framework too would double-count).
+  try {
+    const outcomes = await driveResourceBackfillsForConnector({
+      pool, producer, provider: 'woocommerce', connectorInstanceId: ciId, brandId, saltHex,
+    });
+    const progressed = outcomes.filter((o) => o.recordsThisRun > 0 || o.stopReason !== 'completed');
+    if (progressed.length > 0) {
+      log.info(`connector=${ciId} resource-backfills: ${outcomes.map((o) => `${o.resource}=${o.stopReason}(+${o.recordsThisRun})`).join(' ')}`);
+    }
+  } catch (err) {
+    log.error(`connector=${ciId} resource-backfill driver error (isolated)`, { err });
+  }
 }
 
 interface CursorRepullParams {
@@ -391,7 +421,9 @@ async function resolveWooCredentials(
   }
 }
 
-if (process.argv[1]?.endsWith('run.ts') || process.argv[1]?.endsWith('run.js')) {
+// Path-specific entrypoint guard (this job now imports ingestion-backfill/run, whose entry path also
+// ends with "run.js") — match the directory-qualified path so only a direct invocation runs the CLI.
+if (process.argv[1]?.endsWith('woocommerce-orders-repull/run.ts') || process.argv[1]?.endsWith('woocommerce-orders-repull/run.js')) {
   const ciArg = process.argv[2];
   run(ciArg).catch((err) => {
     log.error('fatal', { err });

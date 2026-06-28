@@ -28,7 +28,7 @@
  */
 
 import { Pool } from 'pg';
-import { Kafka } from 'kafkajs';
+import { Kafka, type Producer } from 'kafkajs';
 import {
   runResumableBackfill,
   getResource,
@@ -52,7 +52,14 @@ import {
   ShopifyRefundsFetcher,
   ShopifyFulfillmentsFetcher,
 } from './shopify-resource-fetchers.js';
-import { WooOrdersFetcher, WooProductsFetcher } from './woocommerce-resource-fetchers.js';
+import {
+  WooOrdersFetcher,
+  WooProductsFetcher,
+  WooCustomersFetcher,
+  WooCouponsFetcher,
+  WooRefundsFetcher,
+} from './woocommerce-resource-fetchers.js';
+import { WooCommerceClient } from '../woocommerce-orders-repull/woocommerce-client.js';
 import { resolveWooCredentialsForConnector } from './woocommerce-creds.js';
 import { log } from '../../log.js';
 
@@ -179,8 +186,26 @@ async function buildFetcher(args: {
   switch (resource) {
     case 'orders':
       return new WooOrdersFetcher(creds, brandId, saltHex, REGION_CODE);
+    case 'refunds':
+      // Refunds are nested under orders (no top-level list) → currency comes from each order.
+      return new WooRefundsFetcher(creds, brandId);
     case 'products':
-      return new WooProductsFetcher(creds, brandId);
+    case 'customers':
+    case 'coupons': {
+      // MONEY FIX: resolve the store currency ONCE (settings/general live; fixture-order currency in
+      // dev) and pass it into the currency-aware mappers — never a hardcoded x100 / INR default. An
+      // unresolvable currency degrades to '' → null minor amounts (the page fetch surfaces any real
+      // auth error, which the driver handles by preserving the cursor).
+      let currency = '';
+      try {
+        currency = (await new WooCommerceClient(creds).fetchStoreCurrency()) ?? '';
+      } catch (err) {
+        log.warn(`[ingestion-backfill] woo store-currency unresolved for ${resource} — degrading to null money`, { err });
+      }
+      if (resource === 'products') return new WooProductsFetcher(creds, brandId, currency);
+      if (resource === 'customers') return new WooCustomersFetcher(creds, brandId, saltHex, REGION_CODE, currency);
+      return new WooCouponsFetcher(creds, brandId, currency);
+    }
     default:
       throw new Error(`[ingestion-backfill] woocommerce resource "${resource}" has no fetcher here`);
   }
@@ -267,7 +292,101 @@ export async function run(
   }
 }
 
-if (process.argv[1]?.endsWith('run.ts') || process.argv[1]?.endsWith('run.js')) {
+/**
+ * The non-order WooCommerce resources the scheduler drives onto the resumable framework every
+ * connected tick. Orders are DELIBERATELY excluded — they flow on the live lane via the legacy
+ * woocommerce-orders-repull (uuidV5FromOrderLive event_id); driving them here too would mint a
+ * DIFFERENT deterministic event_id and double-count the order in Bronze.
+ */
+export const WOOCOMMERCE_SCHEDULED_BACKFILL_RESOURCES: readonly string[] = [
+  'products',
+  'customers',
+  'coupons',
+  'refunds',
+];
+
+/** Default per-resource page budget per scheduled tick (keeps a tick within the dispatch deadline;
+ *  the resumable cursor carries the rest forward to the next tick). Override via
+ *  WOOCOMMERCE_RESOURCE_BACKFILL_CHUNKS (clamped 1..50). */
+function resolveResourceChunkBudget(): number {
+  // intentional raw: optional per-tick page budget; not in the typed config schema.
+  const raw = process.env['WOOCOMMERCE_RESOURCE_BACKFILL_CHUNKS'];
+  const parsed = raw ? parseInt(raw, 10) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? Math.min(Math.max(parsed, 1), 50) : 5;
+}
+
+/**
+ * driveResourceBackfillsForConnector — the SCHEDULING SEAM for the non-order WooCommerce resources.
+ *
+ * Called per-connector from the woocommerce-orders-repull run() (which the ingest-scheduler dispatches
+ * every connected tick AND the sync-now claimer dispatches on demand). For each resource it composes
+ * the SAME generic `runResumableBackfill` driver the CLI path uses — initial 2-year window (the
+ * manifest's maxBackfillWindowMs = TWO_YEARS_MS), cursor-paginated, RESUMABLE/chunked (a bounded page
+ * budget per tick), strictly DEDUPED + NO-LOSS, emitting to the BACKFILL lane (gate-off; Bronze
+ * server-trusts the brand_id). A 'completed' resource is an instant no-op on later ticks.
+ *
+ * Fully FAIL-ISOLATED: a per-resource error (auth, fetch, salt) is logged and never propagates, so a
+ * resource backfill failure can NEVER fail the order re-pull that hosts it. Reuses the caller's pool +
+ * producer (no new Kafka/PG connections). brand_id is the connector row's (MT-1) — never a payload.
+ */
+export async function driveResourceBackfillsForConnector(args: {
+  pool: Pool;
+  producer: Producer;
+  provider: SupportedProvider;
+  connectorInstanceId: string;
+  brandId: string;
+  saltHex: string;
+  resources?: readonly string[];
+  maxChunksPerResource?: number;
+}): Promise<{ resource: string; stopReason: string; recordsThisRun: number }[]> {
+  const { pool, producer, provider, connectorInstanceId, brandId, saltHex } = args;
+  const resources = args.resources ?? WOOCOMMERCE_SCHEDULED_BACKFILL_RESOURCES;
+  const maxChunks = args.maxChunksPerResource ?? resolveResourceChunkBudget();
+  const manifest = manifestFor(provider);
+  const stateRepo = new PgResourceBackfillStateRepository(pool);
+  const dlqRepo = new DlqRecordRepository(pool);
+  const dlq = new PgDeadLetterSink(dlqRepo, ENV);
+  const outcomes: { resource: string; stopReason: string; recordsThisRun: number }[] = [];
+
+  for (const resourceName of resources) {
+    try {
+      const resource = getResource(manifest, resourceName); // throws on a typo (fail loud)
+      const fetcher = await buildFetcher({ pool, provider, connectorInstanceId, resource: resourceName, brandId, saltHex });
+      if (!fetcher) {
+        log.warn(`[ingestion-backfill] resource=${resourceName} connector=${connectorInstanceId} — no fetcher (RECONNECT_REQUIRED), skipping`);
+        continue;
+      }
+      const sink = new KafkaEventSink(producer, BACKFILL_TOPIC, `ingest:${provider}:${resourceName}:${connectorInstanceId}`);
+      const result = await runResumableBackfill({
+        brandId,
+        connectorInstanceId,
+        provider,
+        resource,
+        fetcher,
+        sink,
+        dlq,
+        stateRepo,
+        maxChunksThisRun: maxChunks,
+      });
+      outcomes.push({ resource: resourceName, stopReason: result.stopReason, recordsThisRun: result.recordsThisRun });
+      log.info(
+        `[ingestion-backfill] resource=${resourceName} connector=${connectorInstanceId} ` +
+          `stop=${result.stopReason} recordsThisRun=${result.recordsThisRun} lifetime=${result.state.recordsProcessed}`,
+      );
+    } catch (err) {
+      // Fail-isolated: never let a resource backfill fail the hosting order re-pull.
+      log.error(`[ingestion-backfill] resource=${resourceName} connector=${connectorInstanceId} failed (isolated)`, { err });
+      outcomes.push({ resource: resourceName, stopReason: 'failed', recordsThisRun: 0 });
+    }
+  }
+  return outcomes;
+}
+
+// Path-specific entrypoint guard: this module is now ALSO imported by woocommerce-orders-repull/run
+// (whose entry path also ends with "run.js"), so a bare endsWith('run.js') would fire BOTH CLI blocks
+// when that job runs. Match the full directory-qualified module path so only a direct invocation of
+// THIS file runs the CLI.
+if (process.argv[1]?.endsWith('ingestion-backfill/run.ts') || process.argv[1]?.endsWith('ingestion-backfill/run.js')) {
   const [, , p, ci, res, chunksArg] = process.argv;
   const chunks = chunksArg ? parseInt(chunksArg, 10) : undefined;
   run(p, ci, res, Number.isFinite(chunks as number) ? chunks : undefined).catch((err) => {

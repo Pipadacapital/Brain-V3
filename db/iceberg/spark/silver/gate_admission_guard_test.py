@@ -71,6 +71,9 @@ REQUIRED_SERVER_TRUSTED = frozenset(
         "customer.upsert.v1",       # admitted now (no consumer yet — safe: admitted-but-unconsumed != starved)
         "refund.recorded.v1",       # silver_refund
         "fulfillment.recorded.v1",  # silver_fulfillment
+        # WOO-3 — the NEW canonical coupon grain (no Shopify peer), emitted server-derived by the
+        # WooCommerce connector; without server-trust the pixel-lane R2 join drops it and starves silver_coupon:
+        "coupon.upsert.v1",         # silver_coupon
     }
 )
 

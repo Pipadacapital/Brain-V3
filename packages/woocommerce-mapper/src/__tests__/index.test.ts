@@ -87,14 +87,60 @@ describe('mapWooOrderToEvent', () => {
   it('throws on missing id', () => {
     expect(() => mapWooOrderToEvent({ id: '' } as WooOrderShape, BRAND, SALT, 'IN')).toThrow(/missing id/);
   });
+
+  it('MONEY FIX: 0dp currency (JPY) total is NOT x100-inflated', () => {
+    const ev = mapWooOrderToEvent(
+      { id: 9, status: 'completed', currency: 'JPY', total: '12500', date_created_gmt: '2026-06-01T00:00:00' },
+      BRAND,
+      SALT,
+      'JP',
+    );
+    expect(ev.properties.amount_minor).toBe('12500'); // not '1250000'
+    expect(ev.properties.currency_code).toBe('JPY');
+  });
+
+  it('MONEY FIX: 3dp currency (KWD) total is NOT under-scaled', () => {
+    const ev = mapWooOrderToEvent(
+      { id: 10, status: 'completed', currency: 'kwd', total: '12.500', date_created_gmt: '2026-06-01T00:00:00' },
+      BRAND,
+      SALT,
+      'KW',
+    );
+    expect(ev.properties.amount_minor).toBe('12500'); // 12.500 KWD → 12500 fils (not 1250)
+    expect(ev.properties.currency_code).toBe('KWD');
+  });
+
+  it('MONEY FIX: fail closed on a missing currency (NO INR default)', () => {
+    expect(() =>
+      mapWooOrderToEvent(
+        { id: 11, status: 'completed', total: '100.00', date_created_gmt: '2026-06-01T00:00:00' } as WooOrderShape,
+        BRAND,
+        SALT,
+        'IN',
+      ),
+    ).toThrow(/missing currency/);
+  });
 });
 
-describe('decimalStringToMinor', () => {
-  it('integer-only conversion', () => {
-    expect(decimalStringToMinor('1250.00')).toBe(125000n);
-    expect(decimalStringToMinor('15.5')).toBe(1550n);
-    expect(decimalStringToMinor('0')).toBe(0n);
-    expect(() => decimalStringToMinor('1.234')).toThrow();
+describe('decimalStringToMinor (CURRENCY-AWARE — no hardcoded x100)', () => {
+  it('2dp currency (INR): integer-only conversion', () => {
+    expect(decimalStringToMinor('1250.00', 'INR')).toBe(125000n);
+    expect(decimalStringToMinor('15.5', 'INR')).toBe(1550n);
+    expect(decimalStringToMinor('0', 'INR')).toBe(0n);
+    expect(() => decimalStringToMinor('1.234', 'INR')).toThrow();
+  });
+
+  it('0dp currency (JPY): NO x100 — 1000 yen → 1000 minor (not 100000)', () => {
+    expect(decimalStringToMinor('1000', 'JPY')).toBe(1000n);
+    expect(decimalStringToMinor('1250', 'JPY')).toBe(1250n);
+    // a fractional JPY amount is invalid (0 decimals) — refuse to silently round money
+    expect(() => decimalStringToMinor('1000.50', 'JPY')).toThrow();
+  });
+
+  it('3dp currency (KWD): NO under-scale — 1.500 KWD → 1500 minor (not 150)', () => {
+    expect(decimalStringToMinor('1.500', 'KWD')).toBe(1500n);
+    expect(decimalStringToMinor('10', 'KWD')).toBe(10000n);
+    expect(decimalStringToMinor('-0.500', 'KWD')).toBe(-500n);
   });
 });
 

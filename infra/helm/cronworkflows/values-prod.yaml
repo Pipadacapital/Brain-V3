@@ -8,13 +8,8 @@ streamWorkerImage:
   tag: ""              # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
   digest: ""
 
-# dbt-runner image — runs the scheduled mart rebuilds. CI promotes the staging digest (build-once).
-dbtRunnerImage:
-  repository: REPLACE_WITH_ECR_REGISTRY/brain-dbt-runner-prod
-  tag: ""
-  digest: ""
-
-# spark-bronze image — Iceberg Bronze sink + maintenance crons.
+# spark-bronze image — Iceberg Bronze sink + maintenance crons. Also reused by the V4 Spark
+# silver/gold/mv-refresh crons (.sparkV4.image — CI promotes both digests build-once from staging).
 sparkBronze:
   image:
     repository: REPLACE_WITH_ECR_REGISTRY/brain-spark-bronze-prod

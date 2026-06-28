@@ -64,8 +64,8 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum by (redpanda_group) (redpanda_kafka_consumer_group_lag_sum{redpanda_group=~\"stream-worker-.*|.*-bridge\"})",
-          "legendFormat": "{{ redpanda_group }}"
+          "expr": "sum by (consumergroup) (kafka_consumergroup_lag{consumergroup=~\"stream-worker-.*|.*-bridge\"})",
+          "legendFormat": "{{ consumergroup }}"
         }
       ],
       "fieldConfig": {
@@ -80,8 +80,8 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum by (redpanda_topic) (rate(redpanda_kafka_max_offset{redpanda_topic=~\".*\\.dlq\"}[5m]))",
-          "legendFormat": "{{ redpanda_topic }}"
+          "expr": "sum by (topic) (rate(kafka_log_log_logendoffset{topic=~\".*\\.dlq\"}[5m]))",
+          "legendFormat": "{{ topic }}"
         }
       ],
       "fieldConfig": {

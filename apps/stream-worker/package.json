@@ -24,7 +24,6 @@
     "@brain/contracts": "workspace:*",
     "@brain/db": "workspace:*",
     "@brain/events": "workspace:*",
-    "@brain/feature-store": "workspace:*",
     "@brain/gokwik-mapper": "workspace:*",
     "@brain/identity-core": "workspace:*",
     "@brain/metric-engine": "workspace:*",

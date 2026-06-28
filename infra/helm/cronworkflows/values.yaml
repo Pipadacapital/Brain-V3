@@ -18,18 +18,8 @@ streamWorkerImage:
   digest: ""
   pullPolicy: IfNotPresent
 
-# dbt-runner image (db/dbt/Dockerfile) — the runtime for scheduled dbt mart rebuilds (the attribution
-# gold refresh = chain step 4, and Silver intraday rebuilds). Node images can't run dbt. Jobs that use
-# it set `useDbtRunnerImage: true`. Those jobs ship `enabled: false` until CI publishes + pins this
-# image's digest (the template fail-closes on a missing digest) — flip the job's `enabled: true` per env.
-dbtRunnerImage:
-  repository: REPLACE_WITH_ECR_REGISTRY/brain-dbt-runner
-  tag: ""              # B3: digest preferred; CI populates at deploy (fail-closed in the template)
-  digest: ""
-  pullPolicy: IfNotPresent
-
 # Secret (External Secrets ← AWS Secrets Manager): DATABASE_URL, BRAIN_APP_DATABASE_URL,
-# STARROCKS_HOST/PORT/credentials, etc. Empty in defaults (set per env).
+# ICEBERG/Trino credentials, etc. Empty in defaults (set per env).
 envSecretName: ""
 
 # IST — schedules below are written in Asia/Kolkata (the brands' operating timezone).
@@ -94,30 +84,28 @@ sparkBronze:
     requests: { cpu: "1", memory: 2Gi }
     limits: { cpu: "2", memory: 4Gi }
 
-# Brain V4 Spark Silver/Gold transform + StarRocks mv_* refresh (templates/spark-v4.yaml). The V4
-# replacement for the dbt recognition/attribution crons below: Spark is sole compute, dbt is gone. Three
-# staggered CronWorkflows — v4-silver (:05) → v4-gold (:25) → v4-mv-refresh (:40) — that spark-submit the
-# mart jobs the spark image now CARRIES (db/iceberg/spark/{silver,gold}/*.py via the Dockerfile) and then
-# SYNC-refresh the serving MVs. The identity-export + journey-stitch node jobs (.Values.jobs) sequence
-# around them by schedule to complete the attribution chain (identity → order-state → silver → stitch →
-# gold → mv). GATED OFF by default — enabling needs the CI-built+digest-pinned V4 spark image (B3
-# fail-closed) + a cluster, the same external gate as sparkBronze. Flip enabled:true per env.
+# Brain V4 Spark Silver/Gold transform (templates/spark-v4.yaml). Spark is the SOLE compute, dbt is gone.
+# Two staggered CronWorkflows — v4-silver (:05) → v4-gold (:25) — that spark-submit the mart jobs the
+# spark image now CARRIES (db/iceberg/spark/{silver,gold}/*.py via the Dockerfile). The serving mv_*
+# Trino views resolve straight over the Iceberg Gold/Silver marts (thin projections) and are SYNC-refreshed
+# by the Spark v4-refresh path — there is NO separate mysql REFRESH leg (StarRocks is removed). The
+# identity-export + journey-stitch node jobs (.Values.jobs) sequence around them by schedule to complete
+# the attribution chain (identity → order-state → silver → stitch → gold). ENABLED: the V4 Spark crons
+# run the medallion refresh. Requires the CI-built+digest-pinned V4 spark image (B3 fail-closed) + a
+# cluster, the same external gate as sparkBronze.
 sparkV4:
-  enabled: false
+  enabled: true
   image:
     repository: REPLACE_WITH_ECR_REGISTRY/brain-spark-bronze   # same image — Dockerfile now carries the V4 marts
     tag: ""            # B3: digest preferred; CI populates at deploy (fail-closed in the template)
     digest: ""
     pullPolicy: IfNotPresent
-  # Small mysql client used ONLY by v4-mv-refresh to issue StarRocks REFRESH over the MySQL wire.
-  mysqlImage: "mysql:8.0"
   silverSchedule: "5 * * * *"     # hourly :05 — order_state spine + the rest of Silver (after identity :02)
   goldSchedule: "25 * * * *"      # hourly :25 — revenue → attribution → customer/gap/exec (after stitch :15/:16)
-  mvRefreshSchedule: "40 * * * *" # hourly :40 — SYNC-refresh every brain_serving mv_*
   activeDeadlineSeconds: 2400     # 40 min per Silver/Gold build
   driverMemory: "3g"              # < resources.limits.memory (non-heap overhead margin) — same as sparkBronze
   sparkMaxRetries: "1"            # bounded in-pod retry per spark-submit (idempotent MERGE); + Argo backoffLimit
-  # Non-secret config. Secrets (ICEBERG_REST_URI/Glue, AWS_*, STARROCKS_*, NEO4J_*) come from envSecretName.
+  # Non-secret config. Secrets (ICEBERG_REST_URI/Glue, AWS_*, NEO4J_*) come from envSecretName.
   env:
     - { name: ICEBERG_CATALOG, value: "rest" }
   resources:
@@ -129,22 +117,21 @@ sparkV4:
 # ── THE ATTRIBUTION CHAIN (post-medallion) — ordered by staggered schedule + idempotency (NOT an
 #    Argo DAG; matches this chart's one-container-per-CronWorkflow convention). Each step is
 #    idempotent, so the time gaps sequence them and a missed/retried run is safe (Forbid +
-#    startingDeadline). MEDALLION REALIGNMENT: there is NO PG `revenue-finalization` cron and NO PG
-#    provisional ledger — recognition (incl. prepaid finalization after horizon + COD delivery/RTO)
-#    is now a dbt build FROM Bronze (silver_order_recognition → gold_revenue_ledger). payment_method
-#    drives the COD-vs-prepaid recognition branch entirely inside that dbt path (stg_order_events_
-#    bronze → silver_order_recognition), so the obsolete "persist payment_method on provisional"
-#    concern no longer exists. The live, scheduled chain is:
-#      :02  identity-export                Neo4j identity graph → silver_identity_link (StarRocks) so
-#                                          recognition resolves order brain_id. Runs BEFORE recognition.
-#      :05  recognition-refresh (dbt)      Bronze → silver_order_recognition → gold_revenue_ledger
-#                                          (the "finalization" step now). dbtRunnerImage.
+#    startingDeadline). MEDALLION REALIGNMENT (Brain V4): there is NO PG `revenue-finalization` cron and
+#    NO PG provisional ledger, and dbt is GONE — recognition (incl. prepaid finalization after horizon +
+#    COD delivery/RTO) and the attribution gold mart are now Spark-on-Iceberg builds (the v4-silver /
+#    v4-gold CronWorkflows in templates/spark-v4.yaml). payment_method drives the COD-vs-prepaid
+#    recognition branch entirely inside the Spark Silver path (Bronze → silver_order_state →
+#    gold_revenue_ledger), so the obsolete "persist payment_method on provisional" concern no longer
+#    exists. The live, scheduled chain interleaves these node jobs with the Spark crons:
+#      :02  identity-export                Neo4j identity graph → silver_identity_link so the Silver
+#                                          order spine resolves order brain_id. Runs BEFORE v4-silver.
+#      :05  v4-silver (Spark)              Bronze → silver_order_state + the rest of Silver.
 #      :15  journey-stitch-from-identity   identity links → connector_journey_stitch_map (the stitch)
+#      :25  v4-gold (Spark)                gold_revenue_ledger (recognition) → gold_attribution_credit →
+#                                          gold_marketing_attribution + customer/gap/exec marts.
 #      :30  attribution-reconcile          credit recognized orders to journeys (ALL 5 models incl.
-#                                          data_driven) + clawbacks
-#      :45  attribution-gold-refresh (dbt) materializes the credit ledger →
-#                                          brain_gold.gold_marketing_attribution that the dashboard
-#                                          serves. dbtRunnerImage (intraday cron, no longer a TODO).
+#                                          data_driven) + clawbacks.
 jobs:
   - name: recommendation-detectors
     schedule: "0 6 * * *"          # daily 06:00 IST — the Morning Brief
@@ -158,83 +145,35 @@ jobs:
     command: ["node", "dist/jobs/journey-stitch-export/run.js"]
     useStreamWorkerImage: true
     # MEDALLION REALIGNMENT (Epic 4): connectors.connector_journey_stitch_map (PG capture) →
-    # brain_ops.silver_journey_stitch (StarRocks), so silver_touchpoint reads the lakehouse, not a
-    # PG JDBC shim. Needs STARROCKS_* + BRAIN_APP_DATABASE_URL.
-    # MEDALLION REALIGNMENT (Epic 3 / ADR-0004): Neo4j is the identity SoR; dbt/StarRocks can't read it.
-    # This materializes the active hash→brain_id edges from Neo4j → brain_ops.silver_identity_link
-    # (StarRocks) so recognition-refresh (:05) resolves order brain_id + the customer marts populate.
-    # Runs BEFORE recognition-refresh. Needs NEO4J_* + STARROCKS_* env. (The one-time PG→Neo4j identity
-    # seed has been executed and removed — PG identity is dropped, so there is nothing left to backfill.)
-  - name: recognition-refresh
-    enabled: true                  # ENABLED — CI now builds + digest-pins dbtRunnerImage (build-data-images)
-    schedule: "5 * * * *"          # hourly at :05 — ATTRIBUTION CHAIN step 0: rebuild the gold ledger
-    command: ["/opt/brain/dbt/docker-entrypoint.sh"]
-    useDbtRunnerImage: true
-    # MEDALLION REALIGNMENT (Epic 1/2, decision B). The Bronze-sourced REPLACEMENT for the PG
-    # realized_revenue_ledger write path (LedgerWriter + revenue-finalization). dbt rebuilds the
-    # revenue recognition ledger from Bronze: stg_order_events_bronze (order.live.v1) →
-    # silver_order_recognition (the 6 recognition event types incl. finalization after horizon, COD
-    # delivery/RTO) → brain_gold.gold_revenue_ledger, which billing + attribution + dashboards all
-    # read. Mirrors `make recognition-refresh`. Runs BEFORE journey-stitch (:15) + reconcile (:30) so
-    # they see the fresh ledger. Idempotent (table rebuild). Once green per env, revenue-finalization
-    # (the PG writer below) is retired.
-    env:
-      - { name: DBT_SELECT, value: "+gold_revenue_ledger" }
-      - { name: DBT_THREADS, value: "1" }
-      # CATALOG SELF-BOOTSTRAP: the FIRST dbt step of the hourly chain (re)registers the brain_oltp_pg
-      # JDBC catalog + the PG read-shim (db/starrocks/oltp_jdbc_catalog.sql + oltp_pg_read_shim.sql) via
-      # the entrypoint, idempotently (CREATE IF NOT EXISTS). So a fresh cluster — or one whose external
-      # catalog was dropped on a StarRocks restart — self-heals without a manual step. Needs core-env to
-      # provide BOOTSTRAP_DATABASE_URL (superuser PG DSN for the read-shim DDL) + STARROCKS_HOST/PORT/
-      # USER/PASSWORD. (attribution-gold-refresh does NOT bootstrap — it assumes the catalog exists.)
-      - { name: DBT_BOOTSTRAP_CATALOG, value: "true" }
-  # MEDALLION REALIGNMENT (Epic 1 / decision B): the `revenue-finalization` cron was REMOVED — its job
-  # (dist/jobs/revenue-finalization.js) is deleted and realized_revenue_ledger is dropped. Recognition
-  # (incl. finalization after horizon) is now a dbt build from Bronze — see `recognition-refresh` above.
+    # silver_journey_stitch (lakehouse Silver), so silver_touchpoint reads the lakehouse, not a
+    # PG JDBC shim. Needs BRAIN_APP_DATABASE_URL + the lakehouse (Iceberg) connection env.
+    # MEDALLION REALIGNMENT (Epic 3 / ADR-0004): Neo4j is the identity SoR. This materializes the active
+    # hash→brain_id edges from Neo4j → silver_identity_link (lakehouse Silver) so the Spark v4-silver
+    # build (:05) resolves order brain_id + the customer marts populate. Runs BEFORE v4-silver. Needs
+    # NEO4J_* + the lakehouse connection env. (The one-time PG→Neo4j identity seed has been executed and
+    # removed — PG identity is dropped, so there is nothing left to backfill.)
+  # MEDALLION REALIGNMENT (Brain V4): recognition (Bronze → silver_order_state → gold_revenue_ledger,
+  # incl. prepaid finalization after horizon + COD delivery/RTO) is now the Spark v4-silver/v4-gold
+  # CronWorkflows (templates/spark-v4.yaml) at :05/:25 — there is no dbt `recognition-refresh` cron and
+  # no PG `revenue-finalization` writer. The Spark Gold ledger is what billing + attribution + dashboards
+  # read, served by the brain_serving mv_* Trino views over Iceberg.
   - name: journey-stitch-from-identity
     schedule: "15 * * * *"         # hourly at :15 — ATTRIBUTION CHAIN step 2: derive the stitch map
     command: ["node", "dist/jobs/journey-stitch-from-identity.js"]
     useStreamWorkerImage: true
     # Deterministic identity-graph stitch (GAP-1): silver_touchpoint anon → identity_link(anon_id)→
     # brain_id ∩ realized_revenue_ledger(order→brain_id), UNAMBIGUOUS-ONLY (skips multi-anon customers,
-    # never guesses). Salt via SaltProvider→resolveSaltHex (prod KMS). Needs STARROCKS_* +
-    # BRAIN_APP_DATABASE_URL (envSecretName). Without it, repulled orders never stitch → attribution
+    # never guesses). Salt via SaltProvider→resolveSaltHex (prod KMS). Needs the lakehouse (Iceberg)
+    # connection env + BRAIN_APP_DATABASE_URL (envSecretName). Without it, repulled orders never stitch → attribution
     # has no journeys to credit.
   - name: attribution-reconcile
     schedule: "30 * * * *"         # hourly at :30 — ATTRIBUTION CHAIN step 3: credit + clawback
     command: ["node", "dist/jobs/attribution-reconcile.js"]
     # Per brand: the 4 per-journey models (reconcileAttribution) + the GLOBAL data-driven Markov model
     # (reconcileDataDrivenAttribution). Credit basis = finalization ∪ cod_delivery_confirmed (COD-inclusive).
-  - name: attribution-gold-refresh
-    enabled: true                  # ENABLED — CI now builds + digest-pins dbtRunnerImage (build-data-images)
-    schedule: "45 * * * *"         # hourly at :45 — ATTRIBUTION CHAIN step 4: materialize gold mart
-    command: ["/opt/brain/dbt/docker-entrypoint.sh"]
-    useDbtRunnerImage: true
-    # dbt rebuild of the attribution serving marts from the reconcile-written PG credit ledger
-    # (ledger_source=pg) → brain_gold.gold_marketing_attribution that the dashboard Attribution surface
-    # serves (incl. the data_driven model). Mirrors `make attribution-gold-refresh`. Idempotent (table
-    # CTAS). DBT_BOOTSTRAP_CATALOG=false → assumes the brain_oltp_pg JDBC catalog is already provisioned.
-    env:
-      - { name: DBT_SELECT, value: "gold_marketing_attribution gold_attribution_paths" }
-      - { name: DBT_VARS, value: "{ledger_source: pg}" }
-      - { name: DBT_THREADS, value: "1" }
-  - name: feature-materialization
-    schedule: "40 * * * *"         # hourly at :40 — materialize Gold customer features → Redis online store
-    command: ["node", "dist/jobs/feature-materialization/run.js"]
-    useStreamWorkerImage: true
-  - name: feature-freshness-check
-    schedule: "55 * * * *"         # hourly at :55 — 15 min AFTER materialization; alarms on stale features
-    # Reads the per-brand freshness sentinel from Redis. Exits non-zero (Argo job fails, alert fires) if
-    # ANY brand's sentinel is absent (TTL expired = materialization missed) or the materialization lag
-    # exceeds FEATURE_FRESHNESS_SLO_SECONDS (26 h). Closes the silent-stale-feature gap.
-    # Idempotent: read-only (does NOT write). concurrencyPolicy=Forbid is sufficient; any overlap
-    # means a prior run is still checking → the current run is skipped, not doubled.
-    command: ["node", "dist/jobs/feature-freshness-check/run.js"]
-    useStreamWorkerImage: true
-    env:
-      # Override the freshness SLO window here if the materialization cadence changes.
-      # Must be >= the materialization interval; default matches FEATURE_FRESHNESS_SLO_SECONDS (26 h).
-      - { name: FEATURE_FRESHNESS_SLO_SECONDS, value: "93600" }
+    # MEDALLION REALIGNMENT (Brain V4): the attribution serving marts (gold_marketing_attribution /
+    # gold_attribution_paths) are materialized by the Spark v4-gold CronWorkflow (templates/spark-v4.yaml,
+    # :25), not a dbt `attribution-gold-refresh` cron — Spark is the sole compute, dbt is gone.
   - name: meta-token-refresh
     schedule: "0 3 * * *"          # daily 03:00 — proactively re-exchange Meta long-lived tokens
     command: ["node", "dist/jobs/meta-token-refresh/run.js"]

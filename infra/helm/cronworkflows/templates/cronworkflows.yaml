@@ -8,9 +8,9 @@ mean a missed or retried run never double-applies and never piles up.
 {{- /* Per-job opt-out: a job with `enabled: false` (e.g. one needing an image not yet published)
        is skipped entirely — so its fail-closed digest check never trips. Default true. */ -}}
 {{- if ne (default true .enabled) false }}
-{{- /* Image selection: dbt-runner > stream-worker > core (default). */ -}}
+{{- /* Image selection: stream-worker > core (default). */ -}}
 {{- $image := $root.Values.image -}}
-{{- if .useDbtRunnerImage }}{{- $image = $root.Values.dbtRunnerImage -}}{{- else if .useStreamWorkerImage }}{{- $image = $root.Values.streamWorkerImage -}}{{- end }}
+{{- if .useStreamWorkerImage }}{{- $image = $root.Values.streamWorkerImage -}}{{- end }}
 ---
 apiVersion: argoproj.io/v1alpha1
 kind: CronWorkflow

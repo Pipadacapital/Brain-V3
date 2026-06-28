@@ -19,8 +19,50 @@ FROM base AS deps
 # argon2 (core's password hasher) compiles via node-gyp.
 RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ \
     && rm -rf /var/lib/apt/lists/*
-COPY . .
+# ── Cache the install layer on manifests only ──────────────────────────────────
+# Copy the lockfile + EVERY workspace package.json FIRST, then install. Docker reuses
+# this layer on any build that doesn't change a manifest, so editing source no longer
+# busts the install — avoiding a full reinstall + argon2 node-gyp recompile every time.
+# Adding a new workspace package? Add its package.json to the list below.
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
+COPY apps/collector/package.json apps/collector/package.json
+COPY apps/core/package.json apps/core/package.json
+COPY apps/stream-worker/package.json apps/stream-worker/package.json
+COPY apps/web/package.json apps/web/package.json
+COPY packages/ad-spend-mapper/package.json packages/ad-spend-mapper/package.json
+COPY packages/ai-gateway-client/package.json packages/ai-gateway-client/package.json
+COPY packages/attribution-writer/package.json packages/attribution-writer/package.json
+COPY packages/audit/package.json packages/audit/package.json
+COPY packages/config/package.json packages/config/package.json
+COPY packages/connector-core/package.json packages/connector-core/package.json
+COPY packages/connector-secrets/package.json packages/connector-secrets/package.json
+COPY packages/contracts/package.json packages/contracts/package.json
+COPY packages/db/package.json packages/db/package.json
+COPY packages/events/package.json packages/events/package.json
+COPY packages/ga4-mapper/package.json packages/ga4-mapper/package.json
+COPY packages/gokwik-mapper/package.json packages/gokwik-mapper/package.json
+COPY packages/identity-core/package.json packages/identity-core/package.json
+COPY packages/logistics-status/package.json packages/logistics-status/package.json
+COPY packages/metric-engine/package.json packages/metric-engine/package.json
+COPY packages/money/package.json packages/money/package.json
+COPY packages/observability/package.json packages/observability/package.json
+COPY packages/pii-vault/package.json packages/pii-vault/package.json
+COPY packages/pixel-sdk/package.json packages/pixel-sdk/package.json
+COPY packages/razorpay-mapper/package.json packages/razorpay-mapper/package.json
+COPY packages/shiprocket-mapper/package.json packages/shiprocket-mapper/package.json
+COPY packages/shopflo-mapper/package.json packages/shopflo-mapper/package.json
+COPY packages/shopify-mapper/package.json packages/shopify-mapper/package.json
+COPY packages/tenant-context/package.json packages/tenant-context/package.json
+COPY packages/woocommerce-mapper/package.json packages/woocommerce-mapper/package.json
+COPY tools/data-quality/package.json tools/data-quality/package.json
+COPY tools/isolation-fuzz/package.json tools/isolation-fuzz/package.json
+COPY tools/parity-oracle/package.json tools/parity-oracle/package.json
+COPY tools/pixel-fixture/package.json tools/pixel-fixture/package.json
+COPY tools/seed/package.json tools/seed/package.json
 RUN pnpm install --frozen-lockfile --prod=false
+
+# Bring in the full source — the install layer above stays cached.
+COPY . .
 
 # ── Runtime ───────────────────────────────────────────────────────────────────
 FROM base AS runtime

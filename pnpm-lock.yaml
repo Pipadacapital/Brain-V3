@@ -235,9 +235,6 @@ importers:
       '@brain/events':
         specifier: workspace:*
         version: link:../../packages/events
-      '@brain/feature-store':
-        specifier: workspace:*
-        version: link:../../packages/feature-store
       '@brain/ga4-mapper':
         specifier: workspace:*
         version: link:../../packages/ga4-mapper
@@ -431,31 +428,6 @@ importers:
         specifier: workspace:*
         version: link:../metric-engine
 
-  packages/analytics-gateway:
-    dependencies:
-      '@brain/contracts':
-        specifier: workspace:*
-        version: link:../contracts
-      '@brain/metric-engine':
-        specifier: workspace:*
-        version: link:../metric-engine
-      '@brain/money':
-        specifier: workspace:*
-        version: link:../money
-    devDependencies:
-      '@types/pg':
-        specifier: ^8.11.0
-        version: 8.20.0
-      pg:
-        specifier: ^8.21.0
-        version: 8.21.0
-      typescript:
-        specifier: ^5.6.0
-        version: 5.9.3
-      vitest:
-        specifier: ^2.1.0
-        version: 2.1.9(@types/node@25.9.3)
-
   packages/attribution-writer:
     dependencies:
       '@brain/metric-engine':
@@ -551,21 +523,6 @@ importers:
       '@types/node':
         specifier: 25.9.3
         version: 25.9.3
-
-  packages/feature-flags: {}
-
-  packages/feature-store:
-    dependencies:
-      ioredis:
-        specifier: ^5.4.1
-        version: 5.11.1
-    devDependencies:
-      '@types/node':
-        specifier: ^25.9.3
-        version: 25.9.3
-      mysql2:
-        specifier: ^3.11.0
-        version: 3.22.5(@types/node@25.9.3)
 
   packages/ga4-mapper:
     dependencies:
@@ -834,9 +791,6 @@ importers:
       '@types/pg':
         specifier: ^8.11.10
         version: 8.20.0
-      mysql2:
-        specifier: ^3.11.5
-        version: 3.22.5(@types/node@25.9.3)
       pg:
         specifier: ^8.13.1
         version: 8.21.0

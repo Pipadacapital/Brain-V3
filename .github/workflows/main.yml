@@ -1,7 +1,7 @@
 name: main
 on:
   push:
-    branches: [main]
+    branches: [master]   # default branch — CD/gitops/prod-promote fire on real merges to master
 
 permissions:
   contents: write       # bump Helm values + gitops commit
@@ -270,6 +270,10 @@ jobs:
           bump core          .image
           bump stream-worker .streamWorkerImage
           bump spark-bronze  .sparkBronze.image
+          # sparkV4 (silver/gold/mv-refresh CronWorkflows) reuses the SAME brain-spark-bronze image
+          # (its Dockerfile carries the V4 marts) — pin .sparkV4.image with the spark-bronze digest so
+          # the now-enabled V4 crons deploy (an empty .sparkV4.image.digest fail-closes the template).
+          bump spark-bronze  .sparkV4.image
 
       - name: Commit + push staging values bump
         run: |
@@ -347,6 +351,7 @@ jobs:
           promote .image
           promote .streamWorkerImage
           promote .sparkBronze.image
+          promote .sparkV4.image
 
       - name: Commit prod values promotion
         run: |

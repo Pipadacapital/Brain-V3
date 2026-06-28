@@ -75,7 +75,7 @@ export async function computeCampaignRoas(
          FROM brain_serving.mv_gold_marketing_attribution
         WHERE model_id = '${model}'
           AND campaign_id IS NOT NULL
-          AND CAST(economic_effective_at AS DATE) BETWEEN '${fromStr}' AND '${toStr}'
+          AND CAST(economic_effective_at AS DATE) BETWEEN DATE '${fromStr}' AND DATE '${toStr}'
           AND ${BRAND_PREDICATE}
         GROUP BY campaign_id, currency_code`,
       [],
@@ -85,7 +85,7 @@ export async function computeCampaignRoas(
       `SELECT campaign_id, MAX(campaign_name) AS campaign_name, currency_code, SUM(spend_minor) AS spend_minor
          FROM brain_serving.mv_silver_marketing_spend
         WHERE campaign_id IS NOT NULL
-          AND stat_date BETWEEN '${fromStr}' AND '${toStr}'
+          AND stat_date BETWEEN DATE '${fromStr}' AND DATE '${toStr}'
           AND ${BRAND_PREDICATE}
         GROUP BY campaign_id, currency_code`,
       [],

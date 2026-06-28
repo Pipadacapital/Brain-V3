@@ -94,7 +94,7 @@ export async function computeChannelRoas(
       `SELECT channel, currency_code, COALESCE(SUM(credited_revenue_minor), 0) AS contribution_minor
          FROM brain_serving.mv_gold_marketing_attribution
         WHERE model_id = '${model}'
-          AND CAST(economic_effective_at AS DATE) BETWEEN '${fromStr}' AND '${toStr}'
+          AND CAST(economic_effective_at AS DATE) BETWEEN DATE '${fromStr}' AND DATE '${toStr}'
           AND ${BRAND_PREDICATE}
         GROUP BY channel, currency_code`,
       [],
@@ -103,7 +103,7 @@ export async function computeChannelRoas(
     const spendRows = await scope.runScoped<SpendRow>(
       `SELECT platform, currency_code, SUM(spend_minor) AS spend_minor
          FROM brain_serving.mv_silver_marketing_spend
-        WHERE stat_date BETWEEN '${fromStr}' AND '${toStr}'
+        WHERE stat_date BETWEEN DATE '${fromStr}' AND DATE '${toStr}'
           AND ${BRAND_PREDICATE}
         GROUP BY platform, currency_code`,
       [],

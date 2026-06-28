@@ -149,7 +149,7 @@ export async function computeAttributionReconciliationRate(
     const realizedRows = await scope.runScoped<{ v: string | number; currency_code: string | null }>(
       `SELECT COALESCE(SUM(amount_minor), 0) AS v, MAX(currency_code) AS currency_code
          FROM brain_serving.mv_gold_revenue_ledger
-        WHERE CAST(economic_effective_at AS DATE) BETWEEN '${fromStr}' AND '${toStr}'
+        WHERE CAST(economic_effective_at AS DATE) BETWEEN DATE '${fromStr}' AND DATE '${toStr}'
           AND event_type <> 'provisional_recognition'
           AND ${BRAND_PREDICATE}`,
       [],
@@ -161,7 +161,7 @@ export async function computeAttributionReconciliationRate(
       `SELECT channel, currency_code, COALESCE(SUM(credited_revenue_minor), 0) AS contribution_minor
          FROM brain_serving.mv_gold_marketing_attribution
         WHERE model_id = '${model}'
-          AND CAST(economic_effective_at AS DATE) BETWEEN '${fromStr}' AND '${toStr}'
+          AND CAST(economic_effective_at AS DATE) BETWEEN DATE '${fromStr}' AND DATE '${toStr}'
           AND ${BRAND_PREDICATE}
         GROUP BY channel, currency_code`,
       [],

@@ -25,6 +25,8 @@ export const IDENTITY_QUERY_KEY = ['identity'] as const;
 export function useCustomers(params: {
   lifecycle?: string;
   search?: string;
+  /** Business (RFM/lifecycle) segment filter — VIP/loyal/at_risk/churned/first_time_buyer/window_shopper. */
+  segment?: string;
   limit?: number;
   offset?: number;
 }) {
@@ -34,6 +36,7 @@ export function useCustomers(params: {
       'customers',
       params.lifecycle ?? '',
       params.search?.trim() ?? '',
+      params.segment ?? '',
       params.limit ?? 25,
       params.offset ?? 0,
     ],

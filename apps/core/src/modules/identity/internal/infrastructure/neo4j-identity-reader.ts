@@ -53,7 +53,19 @@ export interface IdentityReader {
   getCustomer360(brandId: string, brainId: string): Promise<Customer360Row>;
   listCustomers(
     brandId: string,
-    opts: { lifecycle: string | null; identifierHashes: string[]; limit: number; offset: number },
+    opts: {
+      lifecycle: string | null;
+      identifierHashes: string[];
+      limit: number;
+      offset: number;
+      /**
+       * Optional brain_id allowlist (the business-SEGMENT filter, resolved upstream from
+       * gold_customer_scores). null = no segment filter; a non-null array restricts the browse to those
+       * brain_ids (an empty array therefore yields zero results — the segment has no members). Pagination,
+       * search, lifecycle filter and total all apply WITHIN the allowlist (no cross-store paging hazard).
+       */
+      brainIdFilter?: string[] | null;
+    },
   ): Promise<{ items: CustomerListRow[]; total: number }>;
   listMergeReviews(
     brandId: string,
@@ -144,22 +156,42 @@ export class Neo4jIdentityReader implements IdentityReader {
   /** Customer browse: filter by lifecycle + optional identifier-hash search; paginated with total. */
   async listCustomers(
     brandId: string,
-    opts: { lifecycle: string | null; identifierHashes: string[]; limit: number; offset: number },
+    opts: {
+      lifecycle: string | null;
+      identifierHashes: string[];
+      limit: number;
+      offset: number;
+      brainIdFilter?: string[] | null;
+    },
   ): Promise<{ items: CustomerListRow[]; total: number }> {
+    // Segment filter resolved to an EMPTY allowlist → zero members; short-circuit (no graph query).
+    const brainIdFilter = opts.brainIdFilter ?? null;
+    if (brainIdFilter !== null && brainIdFilter.length === 0) {
+      return { items: [], total: 0 };
+    }
     const s = this.driver.session({ defaultAccessMode: neo4j.session.READ });
     try {
-      // Base match: customers for the brand, optional lifecycle filter, optional identifier-hash search.
+      // Base match: customers for the brand, optional lifecycle filter, optional brain_id (segment)
+      // allowlist, optional identifier-hash search.
       const lifeFilter = opts.lifecycle ? 'AND c.lifecycle_state = $lifecycle' : '';
+      const segFilter = brainIdFilter !== null ? 'AND c.brain_id IN $brainIdFilter' : '';
       const searchMatch = opts.identifierHashes.length > 0
         ? `MATCH (si:Identifier {brand_id:$b})-[:IDENTIFIES]->(c)
            WHERE si.hash IN $hashes WITH DISTINCT c`
         : '';
       const base = `
         MATCH (c:Customer {brand_id:$b})
-        WHERE 1=1 ${lifeFilter}
+        WHERE 1=1 ${lifeFilter} ${segFilter}
         ${searchMatch ? 'WITH c ' + searchMatch : ''}
       `;
-      const params = { b: brandId, lifecycle: opts.lifecycle, hashes: opts.identifierHashes, limit: neo4j.int(opts.limit), offset: neo4j.int(opts.offset) };
+      const params = {
+        b: brandId,
+        lifecycle: opts.lifecycle,
+        hashes: opts.identifierHashes,
+        brainIdFilter: brainIdFilter ?? [],
+        limit: neo4j.int(opts.limit),
+        offset: neo4j.int(opts.offset),
+      };
 
       const totalRes = await s.run(`${base} RETURN count(c) AS total`, params);
       const total = toNum(totalRes.records[0]?.get('total') ?? 0);

@@ -7,6 +7,7 @@
  *   - request offline access (Google) so a refresh token is issued.
  */
 import { describe, it, expect, beforeEach } from 'vitest';
+import { resetAllConfigCaches } from '@brain/config';
 import { InitiateMetaOAuthCommand, META_GRAPH_API_VERSION } from '../application/commands/InitiateMetaOAuthCommand.js';
 import { InitiateGoogleAdsOAuthCommand } from '../../google/application/commands/InitiateGoogleAdsOAuthCommand.js';
 import { InProcessOAuthStateStore } from '../../../storefront/shopify/infrastructure/state/InProcessOAuthStateStore.js';
@@ -17,6 +18,9 @@ const GOOGLE_CALLBACK = 'https://app.example.com/api/v1/connectors/google_ads/ca
 
 describe('InitiateMetaOAuthCommand', () => {
   beforeEach(() => {
+    // loadCoreConfig memoizes+freezes on first call; reset so this case re-parses the
+    // process.env we set/delete below instead of an earlier test's frozen snapshot.
+    resetAllConfigCaches();
     process.env['META_APP_ID'] = 'test-meta-app-id';
   });
 
@@ -53,6 +57,9 @@ describe('InitiateMetaOAuthCommand', () => {
 
 describe('InitiateGoogleAdsOAuthCommand', () => {
   beforeEach(() => {
+    // Reset the memoized config so GOOGLE_ADS_CLIENT_ID set below is re-parsed (a prior
+    // suite may have frozen a snapshot where it was unset).
+    resetAllConfigCaches();
     process.env['GOOGLE_ADS_CLIENT_ID'] = 'test-google-client-id';
   });
 

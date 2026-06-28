@@ -12,13 +12,10 @@
  * PII, not even hashed identifier values. Search is hashed server-side; the box accepts a full
  * email/phone to find a match.
  *
- * GENUINE GAP (flagged, never faked): the list endpoint filters only by IDENTITY lifecycle
- * (anonymous|active|merged|split|erased) and each row carries NO business-segment / LTV /
- * order_count / confidence field. So the requested RFM segment chips (VIP / Loyal / At-Risk /
- * Churned / One-time / Window-shoppers) and the LTV/segment/confidence columns cannot be
- * populated without a BFF change (segment field + ?segment= param sourced from
- * gold_customer_scores). The chips are rendered as a disabled PREVIEW with an honest explainer;
- * the working filter remains identity lifecycle. See the openItems in the slice summary.
+ * SEGMENT/LTV/ORDERS (live): each row now carries a business RFM/lifecycle segment, lifetime value
+ * (bigint MINOR + currency) and order count, folded server-side from gold_customer_scores. The chips
+ * (VIP / Loyal / At-Risk / Churned / One-time / Window-shoppers) drive the ?segment= filter. Rows with
+ * no score row yet show "—" (honest-empty per row, never a fabricated segment).
  *
  * A11y: labelled search + filter controls; the result region is aria-live; lifecycle is text+icon.
  */
@@ -34,7 +31,6 @@ import {
   ChevronRight,
   ArrowRight,
   CircleSlash,
-  Lock,
 } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -58,15 +54,30 @@ const PAGE_SIZE = 25;
 
 const LIFECYCLES = ['', 'anonymous', 'active', 'merged', 'split', 'erased'] as const;
 
-/** The business (RFM) segments the IA targets — pending a BFF row field (gold_customer_scores). */
+/**
+ * The business (RFM/lifecycle) segment chips → the canonical ?segment= value the BFF derives from
+ * gold_customer_scores (db/iceberg/spark/gold/_segment_rules.py). label = chip text, value = filter param.
+ */
 const BUSINESS_SEGMENTS = [
-  'VIP',
-  'Loyal',
-  'At-Risk',
-  'Churned',
-  'One-time',
-  'Window-shoppers',
+  { label: 'VIP', value: 'VIP' },
+  { label: 'Loyal', value: 'loyal' },
+  { label: 'At-Risk', value: 'at_risk' },
+  { label: 'Churned', value: 'churned' },
+  { label: 'One-time', value: 'first_time_buyer' },
+  { label: 'Window-shoppers', value: 'window_shopper' },
 ] as const;
+
+/** Human label for a segment value returned on a row (reverse of BUSINESS_SEGMENTS + the unchipped two). */
+const SEGMENT_LABEL: Record<string, string> = {
+  VIP: 'VIP',
+  loyal: 'Loyal',
+  at_risk: 'At-Risk',
+  churned: 'Churned',
+  first_time_buyer: 'One-time',
+  window_shopper: 'Window-shopper',
+  high_value: 'High-value',
+  cart_abandoner: 'Cart-abandoner',
+};
 
 function LifecycleBadge({ state }: { state: string }) {
   const tone =
@@ -96,11 +107,13 @@ export function CustomersContent() {
   const [searchInput, setSearchInput] = React.useState('');
   const [search, setSearch] = React.useState('');
   const [lifecycle, setLifecycle] = React.useState('');
+  const [segment, setSegment] = React.useState('');
   const [offset, setOffset] = React.useState(0);
 
   const { data, isLoading, isFetching, error, refetch, dataUpdatedAt } = useCustomers({
     lifecycle: lifecycle || undefined,
     search: search || undefined,
+    segment: segment || undefined,
     limit: PAGE_SIZE,
     offset,
   });
@@ -119,6 +132,12 @@ export function CustomersContent() {
   function onLifecycle(next: string) {
     setOffset(0);
     setLifecycle(next);
+  }
+
+  function onSegment(next: string) {
+    setOffset(0);
+    // Toggle: clicking the active chip clears the filter.
+    setSegment((cur) => (cur === next ? '' : next));
   }
 
   const items = data?.items ?? [];
@@ -166,16 +185,16 @@ export function CustomersContent() {
         ],
         sections: [
           {
-            heading: 'Business segments (preview)',
-            body: 'VIP / Loyal / At-Risk / Churned / One-time / Window-shoppers are RFM-based. The list endpoint today carries only identity lifecycle on each row — not an RFM segment, LTV or order count. So the segment chips are shown DISABLED until the BFF surfaces a per-row segment field (+ ?segment= param) from gold_customer_scores. We never fake a segment. Per-customer RFM/churn IS available today on a customer’s profile — open any customer and see the Segments tab.',
+            heading: 'Business segments',
+            body: 'VIP / Loyal / At-Risk / Churned / One-time / Window-shoppers are RFM/lifecycle segments folded server-side from gold_customer_scores (the deterministic recency/frequency/monetary ladder). Click a chip to filter the list to that segment; each row also shows its segment, lifetime value and order count. A customer with no score row yet shows "—" — never a fabricated segment.',
           },
           {
             heading: 'Privacy',
             body: 'Brand-scoped (RLS). Counts + lifecycle/consent only — raw email/phone never leave the vault. Search hashes the term server-side.',
           },
         ],
-        refreshCadence: 'The customer list is read live from the BFF on each query (no mart cadence). Headline LTV/repeat-rate refresh on the Gold loop.',
-        sources: ['BFF /v1/identity/customers', 'Gold executive marts (headline KPIs)', 'gold_customer_scores (segments — pending)'],
+        refreshCadence: 'The customer list is read live from the BFF on each query (no mart cadence). Segment/LTV/order-count and headline LTV/repeat-rate refresh on the Gold loop.',
+        sources: ['BFF /v1/identity/customers', 'Gold executive marts (headline KPIs)', 'gold_customer_scores (per-row segment / LTV / orders)'],
       }}
     >
       {/* Headline — only when the Gold marts have data (no fake zeros). */}
@@ -204,30 +223,32 @@ export function CustomersContent() {
         </div>
       ) : null}
 
-      {/* Business-segment chips — disabled PREVIEW (genuine BFF gap; never faked). */}
+      {/* Business-segment chips — LIVE filter (?segment=, folded from gold_customer_scores). */}
       <SectionCard
         title="Segments"
-        description="Filter by business segment — unlocks when RFM scores are surfaced on the customer list."
+        description="Filter the list by business (RFM/lifecycle) segment. Click a chip to toggle it."
       >
-        <div className="flex flex-wrap items-center gap-2">
-          {BUSINESS_SEGMENTS.map((seg) => (
-            <Button
-              key={seg}
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled
-              title="Business segments require a per-row RFM field from gold_customer_scores (coming soon). Open a customer to see their RFM/churn segment today."
-              aria-disabled="true"
-            >
-              <Lock className="mr-1.5 h-3 w-3" aria-hidden="true" />
-              {seg}
+        <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Filter by business segment">
+          {BUSINESS_SEGMENTS.map((seg) => {
+            const active = segment === seg.value;
+            return (
+              <Button
+                key={seg.value}
+                type="button"
+                variant={active ? 'default' : 'outline'}
+                size="sm"
+                onClick={() => onSegment(seg.value)}
+                aria-pressed={active}
+              >
+                {seg.label}
+              </Button>
+            );
+          })}
+          {segment ? (
+            <Button type="button" variant="ghost" size="sm" onClick={() => onSegment(segment)}>
+              Clear segment
             </Button>
-          ))}
-          <span className="ml-1 text-xs text-muted-foreground">
-            RFM segments are available per-customer today (open any profile → Segments). List-wide
-            filtering is pending a BFF field — see the “?” panel.
-          </span>
+          ) : null}
         </div>
       </SectionCard>
 
@@ -312,6 +333,9 @@ export function CustomersContent() {
                 <thead>
                   <tr className="border-b text-left text-muted-foreground">
                     <th scope="col" className="px-4 py-2.5 font-medium">Brain ID</th>
+                    <th scope="col" className="px-4 py-2.5 font-medium">Segment</th>
+                    <th scope="col" className="px-4 py-2.5 font-medium text-right">Lifetime value</th>
+                    <th scope="col" className="px-4 py-2.5 font-medium text-right">Orders</th>
                     <th scope="col" className="px-4 py-2.5 font-medium">Lifecycle</th>
                     <th scope="col" className="px-4 py-2.5 font-medium">Identifiers</th>
                     <th scope="col" className="px-4 py-2.5 font-medium">Consent</th>
@@ -332,6 +356,23 @@ export function CustomersContent() {
                         {c.merged_into ? (
                           <span className="ml-2 text-[10px] text-warning">→ merged</span>
                         ) : null}
+                      </td>
+                      <td className="px-4 py-2.5">
+                        {c.segment ? (
+                          <StatusBadge tone="neutral" hideDot>
+                            {SEGMENT_LABEL[c.segment] ?? humanize(c.segment)}
+                          </StatusBadge>
+                        ) : (
+                          <span className="text-muted-foreground">—</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-2.5 text-right tabular-nums">
+                        {c.ltv_minor != null && c.currency_code
+                          ? formatMoneyDisplay(c.ltv_minor, c.currency_code as CurrencyCode)
+                          : <span className="text-muted-foreground">—</span>}
+                      </td>
+                      <td className="px-4 py-2.5 text-right tabular-nums">
+                        {c.order_count != null ? c.order_count : <span className="text-muted-foreground">—</span>}
                       </td>
                       <td className="px-4 py-2.5">
                         <LifecycleBadge state={c.lifecycle_state} />

@@ -116,34 +116,171 @@ export async function computeInsights(
     prior: { from: isoDate(priorFrom), to: isoDate(curFrom) },
   };
 
-  // Storefront conversion funnel (current 30d) — computed via the canonical funnel emitter (own seam);
-  // reused below for the funnel-drop-off insight. Best-effort: a failure degrades to "no funnel insight".
-  const funnel = await computeStorefrontFunnel(brandId, deps, { from: curFrom, to: now }).catch(() => ({
-    hasData: false,
-    stages: [] as { key: string; sessions: bigint; conversionPct: string | null; stepPct: string | null }[],
-  }));
+  // ── PARALLEL Silver/Gold reads ─────────────────────────────────────────────
+  // Every read below is INDEPENDENT, so each runs in its OWN withSilverBrand scope
+  // (each scope = its own Trino connection) inside a single Promise.all — instead of
+  // ~9 SERIAL round-trips on one shared connection. We NEVER Promise.all *within* a
+  // single scope (that trips pg's "client already executing a query"); the fan-out is
+  // strictly ACROSS scopes. The revenue swing + its top-driver breakdown — previously
+  // two DEPENDENT round-trips (the driver query needed the primary currency derived
+  // from the first) — are folded into ONE `GROUP BY currency_code, event_type` read;
+  // per-currency totals and the per-currency driver are then derived in-memory (SUM is
+  // exact + associative, so the figures are byte-identical and deterministic).
+  const tsCurFrom = `${window.current.from} 00:00:00`;
+  const tsPriorFrom = `${window.prior.from} 00:00:00`;
 
-  return withSilverBrand(deps.srPool, brandId, async (scope) => {
+  const [revDriverRows, execRows, churnRows, vipRows, cacRows, spendRows, prodRows, funnel] =
+    await Promise.all([
+      // 1. Revenue swing + per-event driver (folds the old revRows + per-currency drv query).
+      withSilverBrand(deps.srPool, brandId, (scope) =>
+        scope.runScoped<{
+          currency_code: string;
+          event_type: string;
+          cur_minor: string | number;
+          prior_minor: string | number;
+        }>(
+          `SELECT currency_code, event_type,
+                  SUM(CASE WHEN occurred_at >= CAST('${tsCurFrom}' AS timestamp(6) with time zone) THEN amount_minor ELSE 0 END) AS cur_minor,
+                  SUM(CASE WHEN occurred_at >= CAST('${tsPriorFrom}' AS timestamp(6) with time zone)
+                            AND occurred_at <  CAST('${tsCurFrom}' AS timestamp(6) with time zone) THEN amount_minor ELSE 0 END) AS prior_minor
+             FROM brain_serving.mv_gold_revenue_ledger
+            WHERE occurred_at >= CAST('${tsPriorFrom}' AS timestamp(6) with time zone)
+              AND ${BRAND_PREDICATE}
+            GROUP BY currency_code, event_type`,
+          [],
+        ),
+      ),
+      // 2. RTO leakage ← gold_executive_metrics.
+      withSilverBrand(deps.srPool, brandId, (scope) =>
+        scope.runScoped<{
+          currency_code: string;
+          realized_value_minor: string | number;
+          total_orders: string | number;
+          terminal_orders: string | number;
+          rto_orders: string | number;
+        }>(
+          `SELECT currency_code,
+                  COALESCE(SUM(realized_value_minor), 0) AS realized_value_minor,
+                  COALESCE(SUM(total_orders), 0)         AS total_orders,
+                  COALESCE(SUM(terminal_orders), 0)      AS terminal_orders,
+                  COALESCE(SUM(rto_orders), 0)           AS rto_orders
+             FROM brain_serving.mv_gold_executive_metrics
+            WHERE ${BRAND_PREDICATE}
+            GROUP BY currency_code`,
+          [],
+        ),
+      ),
+      // 3. Churn LTV-at-risk ← gold_customer_scores.
+      withSilverBrand(deps.srPool, brandId, (scope) =>
+        scope.runScoped<{
+          currency_code: string;
+          high_risk_customers: string | number;
+          ltv_at_risk_minor: string | number;
+        }>(
+          `SELECT currency_code,
+                  COUNT(*)                       AS high_risk_customers,
+                  COALESCE(SUM(lifetime_value_minor), 0) AS ltv_at_risk_minor
+             FROM brain_serving.mv_gold_customer_scores
+            WHERE churn_risk = 'high'
+              AND ${BRAND_PREDICATE}
+            GROUP BY currency_code`,
+          [],
+        ),
+      ),
+      // 4. VIP concentration ← gold_customer_scores (monetary_score=5).
+      withSilverBrand(deps.srPool, brandId, (scope) =>
+        scope.runScoped<{
+          currency_code: string;
+          vip_customers: string | number;
+          vip_ltv_minor: string | number;
+        }>(
+          `SELECT currency_code,
+                  COUNT(*)                               AS vip_customers,
+                  COALESCE(SUM(lifetime_value_minor), 0) AS vip_ltv_minor
+             FROM brain_serving.mv_gold_customer_scores
+            WHERE monetary_score = 5
+              AND ${BRAND_PREDICATE}
+            GROUP BY currency_code`,
+          [],
+        ),
+      ),
+      // 5. CAC trend ← gold_cac.
+      withSilverBrand(deps.srPool, brandId, (scope) =>
+        scope.runScoped<{
+          currency_code: string;
+          acquisition_month: string;
+          spend_minor: string | number;
+          new_customers: string | number;
+        }>(
+          `SELECT currency_code, acquisition_month,
+                  COALESCE(SUM(acquisition_spend_minor), 0) AS spend_minor,
+                  COALESCE(SUM(new_customers), 0)           AS new_customers
+             FROM brain_serving.mv_gold_cac
+            WHERE ${BRAND_PREDICATE}
+            GROUP BY currency_code, acquisition_month
+            ORDER BY acquisition_month DESC`,
+          [],
+        ),
+      ),
+      // 6. Blended ROAS ← silver_marketing_spend (joined to rev in-memory below).
+      withSilverBrand(deps.srPool, brandId, (scope) =>
+        scope.runScoped<{ currency_code: string; spend_minor: string | number }>(
+          `SELECT currency_code, COALESCE(SUM(spend_minor), 0) AS spend_minor
+             FROM brain_serving.mv_silver_marketing_spend
+            WHERE stat_date >= DATE '${window.current.from}' AND stat_date <= DATE '${window.current.to}'
+              AND ${BRAND_PREDICATE}
+            GROUP BY currency_code`,
+          [],
+        ),
+      ),
+      // 8. Top product / revenue concentration ← silver_order_line.
+      withSilverBrand(deps.srPool, brandId, (scope) =>
+        scope.runScoped<{
+          currency_code: string;
+          title: string;
+          prod_minor: string | number;
+        }>(
+          `SELECT currency_code, COALESCE(title, '(untitled)') AS title,
+                  COALESCE(SUM(line_total_minor), 0) AS prod_minor
+             FROM brain_serving.mv_silver_order_line
+            WHERE ${BRAND_PREDICATE} AND line_total_minor IS NOT NULL
+            GROUP BY currency_code, title`,
+          [],
+        ),
+      ),
+      // 7. Storefront conversion funnel (current 30d) — own seam/scope; best-effort.
+      computeStorefrontFunnel(brandId, deps, { from: curFrom, to: now }).catch(() => ({
+        hasData: false,
+        stages: [] as { key: string; sessions: bigint; conversionPct: string | null; stepPct: string | null }[],
+      })),
+    ]);
+
+  {
     const insights: Insight[] = [];
     // Current-window net realized per currency (reused by the ROAS detector below).
     const revCurByCcy = new Map<string, bigint>();
 
     // ── 1. Revenue swing (current 30d vs prior 30d) + biggest driver event_type ──
-    const revRows = await scope.runScoped<{
-      currency_code: string;
-      cur_minor: string | number;
-      prior_minor: string | number;
-    }>(
-      `SELECT currency_code,
-              SUM(CASE WHEN occurred_at >= CAST('${window.current.from} 00:00:00' AS timestamp(6) with time zone) THEN amount_minor ELSE 0 END) AS cur_minor,
-              SUM(CASE WHEN occurred_at >= CAST('${window.prior.from} 00:00:00' AS timestamp(6) with time zone)
-                        AND occurred_at <  CAST('${window.current.from} 00:00:00' AS timestamp(6) with time zone) THEN amount_minor ELSE 0 END) AS prior_minor
-         FROM brain_serving.mv_gold_revenue_ledger
-        WHERE occurred_at >= CAST('${window.prior.from} 00:00:00' AS timestamp(6) with time zone)
-          AND ${BRAND_PREDICATE}
-        GROUP BY currency_code`,
-      [],
-    );
+    // Re-aggregate the per-(currency, event_type) rows into per-currency totals (revRows
+    // shape, unchanged downstream) and a per-currency event-delta map for the driver pick.
+    const revAgg = new Map<string, { cur: bigint; prior: bigint }>();
+    const driverByCcy = new Map<string, Map<string, bigint>>();
+    for (const row of revDriverRows) {
+      const cur = bi(row.cur_minor);
+      const prior = bi(row.prior_minor);
+      const a = revAgg.get(row.currency_code) ?? { cur: 0n, prior: 0n };
+      a.cur += cur;
+      a.prior += prior;
+      revAgg.set(row.currency_code, a);
+      const dm = driverByCcy.get(row.currency_code) ?? new Map<string, bigint>();
+      dm.set(row.event_type, (dm.get(row.event_type) ?? 0n) + (cur - prior));
+      driverByCcy.set(row.currency_code, dm);
+    }
+    const revRows = [...revAgg.entries()].map(([currency_code, v]) => ({
+      currency_code,
+      cur_minor: v.cur.toString(),
+      prior_minor: v.prior.toString(),
+    }));
 
     // Pick the primary currency = largest current-window realized revenue.
     let primaryCurrency: string | null = null;
@@ -159,26 +296,12 @@ export async function computeInsights(
     // Driver breakdown by event_type for the primary currency (which event moved revenue most).
     let topDriver: { eventType: string; delta: bigint } | null = null;
     if (primaryCurrency) {
-      const drv = await scope.runScoped<{
-        event_type: string;
-        cur_minor: string | number;
-        prior_minor: string | number;
-      }>(
-        `SELECT event_type,
-                SUM(CASE WHEN occurred_at >= CAST('${window.current.from} 00:00:00' AS timestamp(6) with time zone) THEN amount_minor ELSE 0 END) AS cur_minor,
-                SUM(CASE WHEN occurred_at >= CAST('${window.prior.from} 00:00:00' AS timestamp(6) with time zone)
-                          AND occurred_at <  CAST('${window.current.from} 00:00:00' AS timestamp(6) with time zone) THEN amount_minor ELSE 0 END) AS prior_minor
-           FROM brain_serving.mv_gold_revenue_ledger
-          WHERE occurred_at >= CAST('${window.prior.from} 00:00:00' AS timestamp(6) with time zone)
-            AND currency_code = ?
-            AND ${BRAND_PREDICATE}
-          GROUP BY event_type`,
-        [primaryCurrency],
-      );
-      for (const d of drv) {
-        const delta = bi(d.cur_minor) - bi(d.prior_minor);
-        if (!topDriver || abs(delta) > abs(topDriver.delta)) {
-          topDriver = { eventType: d.event_type, delta };
+      const dm = driverByCcy.get(primaryCurrency);
+      if (dm) {
+        for (const [eventType, delta] of dm) {
+          if (!topDriver || abs(delta) > abs(topDriver.delta)) {
+            topDriver = { eventType, delta };
+          }
         }
       }
     }
@@ -229,24 +352,7 @@ export async function computeInsights(
       });
     }
 
-    // ── 2. RTO leakage (risk) ← gold_executive_metrics ──
-    const execRows = await scope.runScoped<{
-      currency_code: string;
-      realized_value_minor: string | number;
-      total_orders: string | number;
-      terminal_orders: string | number;
-      rto_orders: string | number;
-    }>(
-      `SELECT currency_code,
-              COALESCE(SUM(realized_value_minor), 0) AS realized_value_minor,
-              COALESCE(SUM(total_orders), 0)         AS total_orders,
-              COALESCE(SUM(terminal_orders), 0)      AS terminal_orders,
-              COALESCE(SUM(rto_orders), 0)           AS rto_orders
-         FROM brain_serving.mv_gold_executive_metrics
-        WHERE ${BRAND_PREDICATE}
-        GROUP BY currency_code`,
-      [],
-    );
+    // ── 2. RTO leakage (risk) ← gold_executive_metrics (execRows fetched in parallel above) ──
     for (const r of execRows) {
       const realized = bi(r.realized_value_minor);
       const orders = bi(r.total_orders);
@@ -287,21 +393,7 @@ export async function computeInsights(
       });
     }
 
-    // ── 3. Churn LTV-at-risk (opportunity) ← gold_customer_scores ──
-    const churnRows = await scope.runScoped<{
-      currency_code: string;
-      high_risk_customers: string | number;
-      ltv_at_risk_minor: string | number;
-    }>(
-      `SELECT currency_code,
-              COUNT(*)                       AS high_risk_customers,
-              COALESCE(SUM(lifetime_value_minor), 0) AS ltv_at_risk_minor
-         FROM brain_serving.mv_gold_customer_scores
-        WHERE churn_risk = 'high'
-          AND ${BRAND_PREDICATE}
-        GROUP BY currency_code`,
-      [],
-    );
+    // ── 3. Churn LTV-at-risk (opportunity) ← gold_customer_scores (churnRows fetched above) ──
     for (const r of churnRows) {
       const count = bi(r.high_risk_customers);
       const ltv = bi(r.ltv_at_risk_minor);
@@ -326,21 +418,7 @@ export async function computeInsights(
       });
     }
 
-    // ── 4. VIP concentration (opportunity) ← gold_customer_scores (monetary_score=5) ──
-    const vipRows = await scope.runScoped<{
-      currency_code: string;
-      vip_customers: string | number;
-      vip_ltv_minor: string | number;
-    }>(
-      `SELECT currency_code,
-              COUNT(*)                               AS vip_customers,
-              COALESCE(SUM(lifetime_value_minor), 0) AS vip_ltv_minor
-         FROM brain_serving.mv_gold_customer_scores
-        WHERE monetary_score = 5
-          AND ${BRAND_PREDICATE}
-        GROUP BY currency_code`,
-      [],
-    );
+    // ── 4. VIP concentration (opportunity) ← gold_customer_scores (vipRows fetched above) ──
     for (const r of vipRows) {
       const count = bi(r.vip_customers);
       const ltv = bi(r.vip_ltv_minor);
@@ -365,22 +443,7 @@ export async function computeInsights(
       });
     }
 
-    // ── 5. CAC trend (latest acquisition_month vs prior) ← gold_cac ──
-    const cacRows = await scope.runScoped<{
-      currency_code: string;
-      acquisition_month: string;
-      spend_minor: string | number;
-      new_customers: string | number;
-    }>(
-      `SELECT currency_code, acquisition_month,
-              COALESCE(SUM(acquisition_spend_minor), 0) AS spend_minor,
-              COALESCE(SUM(new_customers), 0)           AS new_customers
-         FROM brain_serving.mv_gold_cac
-        WHERE ${BRAND_PREDICATE}
-        GROUP BY currency_code, acquisition_month
-        ORDER BY acquisition_month DESC`,
-      [],
-    );
+    // ── 5. CAC trend (latest acquisition_month vs prior) ← gold_cac (cacRows fetched above) ──
     // Group the two most-recent months per currency.
     const cacByCcy = new Map<string, Array<{ month: string; spend: bigint; cust: bigint }>>();
     for (const r of cacRows) {
@@ -431,14 +494,7 @@ export async function computeInsights(
     // ── 6. Blended ROAS (current 30d) ← ad spend (silver_marketing_spend) vs realized revenue ──
     // Blended (not attributed): realized revenue ÷ ad spend in the window. Fires only when there IS
     // ad spend (the ad-connector signal). ROAS<1 = losing money on ads (high); <2 = thin (medium).
-    const spendRows = await scope.runScoped<{ currency_code: string; spend_minor: string | number }>(
-      `SELECT currency_code, COALESCE(SUM(spend_minor), 0) AS spend_minor
-         FROM brain_serving.mv_silver_marketing_spend
-        WHERE stat_date >= DATE '${window.current.from}' AND stat_date <= DATE '${window.current.to}'
-          AND ${BRAND_PREDICATE}
-        GROUP BY currency_code`,
-      [],
-    );
+    // spendRows fetched in parallel above; joined to revCurByCcy (computed in the rev loop) in-memory.
     for (const r of spendRows) {
       const spend = bi(r.spend_minor);
       if (spend === 0n) continue; // no ad spend → no ROAS insight
@@ -539,18 +595,7 @@ export async function computeInsights(
     // ── 8. Top product / revenue concentration (opportunity) ← silver_order_line ──
     // The hero SKU is a lever (scale via lookalikes/bundles); over-concentration in one SKU is also a
     // risk (supply / margin single-point-of-failure). One insight per currency, off real line-items.
-    const prodRows = await scope.runScoped<{
-      currency_code: string;
-      title: string;
-      prod_minor: string | number;
-    }>(
-      `SELECT currency_code, COALESCE(title, '(untitled)') AS title,
-              COALESCE(SUM(line_total_minor), 0) AS prod_minor
-         FROM brain_serving.mv_silver_order_line
-        WHERE ${BRAND_PREDICATE} AND line_total_minor IS NOT NULL
-        GROUP BY currency_code, title`,
-      [],
-    );
+    // prodRows fetched in parallel above.
     const byCcyProducts = new Map<string, { total: bigint; top: bigint; topTitle: string; count: number }>();
     for (const r of prodRows) {
       const minor = bi(r.prod_minor);
@@ -610,5 +655,5 @@ export async function computeInsights(
     });
 
     return { hasData: true, primaryCurrency, window, insights };
-  });
+  }
 }

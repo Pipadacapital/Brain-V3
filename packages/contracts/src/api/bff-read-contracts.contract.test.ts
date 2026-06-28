@@ -754,6 +754,17 @@ describe('Customer360 (#I1 — identity resolution)', () => {
         committed_at: '2026-06-19T00:00:00.000Z',
       },
     ],
+    orders: [
+      {
+        order_id: 'ord_1001',
+        lifecycle_state: 'delivered',
+        is_terminal: true,
+        order_value_minor: '123450',
+        currency_code: 'INR',
+        first_event_at: '2026-06-18T00:00:00.000Z',
+        state_effective_at: '2026-06-19T00:00:00.000Z',
+      },
+    ],
   };
   it('round-trips found + not_found', () => {
     expect(Customer360Schema.parse(found)).toEqual(found);

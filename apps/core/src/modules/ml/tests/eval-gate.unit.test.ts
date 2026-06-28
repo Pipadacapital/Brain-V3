@@ -14,7 +14,8 @@
  *  10. EvalGateError exposes the failures array with the actual + baseline values.
  */
 
-import { describe, it, expect, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { resetAllConfigCaches } from '@brain/config';
 import {
   runEvalGate,
   EvalGateError,
@@ -33,6 +34,15 @@ const GOOD_METRICS = {
   f1: 0.71,
   accuracy: 0.80,
 };
+
+/**
+ * runEvalGate reads its per-name overrides from loadCoreConfig().EVAL_GATE_BASELINES_JSON,
+ * which memoizes+freezes on first call. Reset the cache before each case so the env var
+ * a case sets below is actually re-parsed (not read from an earlier test's frozen snapshot).
+ */
+beforeEach(() => {
+  resetAllConfigCaches();
+});
 
 /** Wipe the env var after each test that sets it. */
 afterEach(() => {

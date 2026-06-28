@@ -887,8 +887,8 @@ export interface AnalyticsCohortRetentionRow {
 }
 
 export type AnalyticsCohortRetentionResponse =
-  | { state: 'no_data' }
-  | { state: 'has_data'; cohorts: AnalyticsCohortRetentionRow[] };
+  | { state: 'no_data'; generated_at?: string }
+  | { state: 'has_data'; cohorts: AnalyticsCohortRetentionRow[]; generated_at?: string };
 
 // ── RTO-risk distribution (GoKwik RTO-Predict — gokwik.rto_predict.v1 Bronze) ──
 // Per-order RTO risk, counted by each order's LATEST prediction over 30d. Categorical
@@ -1364,8 +1364,8 @@ export interface ExecutiveMetricDto {
 }
 
 export type AnalyticsExecutiveMetricsResponse =
-  | { state: 'no_data' }
-  | { state: 'has_data'; metrics: ExecutiveMetricDto[] };
+  | { state: 'no_data'; generated_at?: string }
+  | { state: 'has_data'; metrics: ExecutiveMetricDto[]; generated_at?: string };
 
 // ── Insight + Opportunity Engine + AI Copilot briefing ──────────────────────
 // Mirrors apps/core analytics get-insights-briefing.ts (InsightDto / BriefingDto). Money stays a

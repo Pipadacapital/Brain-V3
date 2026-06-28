@@ -109,6 +109,13 @@ export const CustomerListItemSchema = z.object({
   identifier_count: z.number().int().nonnegative(),
   last_identifier_at: z.string().nullable(), // ISO-8601 of most recent active link, or null
   created_at: z.string(), // ISO-8601 (first seen)
+  // Business (RFM/lifecycle) signals folded from gold_customer_scores at read time. Honest-null per row
+  // when the customer has no score row yet (never a fabricated segment). Money is bigint MINOR units
+  // as a string (I-S07; BigInt-safe over JSON) paired with its sibling currency_code — never a float.
+  segment: z.string().nullable(),
+  ltv_minor: z.string().regex(/^-?\d+$/).nullable(),
+  currency_code: z.string().nullable(),
+  order_count: z.number().int().nonnegative().nullable(),
 });
 export type CustomerListItem = z.infer<typeof CustomerListItemSchema>;
 
@@ -123,6 +130,21 @@ export const CustomerListSchema = z.object({
 });
 export type CustomerList = z.infer<typeof CustomerListSchema>;
 
+/**
+ * One order on a customer's profile (the Orders sub-tab — formerly count-only). Money is bigint MINOR
+ * units as a string (I-S07; BigInt-safe over JSON) paired with its sibling currency_code — never a float.
+ */
+export const Customer360OrderSchema = z.object({
+  order_id: z.string(),
+  lifecycle_state: z.string(),
+  is_terminal: z.boolean(),
+  order_value_minor: z.string().regex(/^-?\d+$/),
+  currency_code: z.string().nullable(),
+  first_event_at: z.string().nullable(),
+  state_effective_at: z.string().nullable(),
+});
+export type Customer360Order = z.infer<typeof Customer360OrderSchema>;
+
 export const Customer360Schema = z.discriminatedUnion('state', [
   z.object({
     state: z.literal('not_found'),
@@ -133,6 +155,7 @@ export const Customer360Schema = z.discriminatedUnion('state', [
     customer: Customer360ProfileSchema,
     identifiers: z.array(Customer360IdentifierSchema),
     merges: z.array(Customer360MergeSchema),
+    orders: z.array(Customer360OrderSchema),
   }),
 ]);
 export type Customer360 = z.infer<typeof Customer360Schema>;

@@ -23,6 +23,7 @@ export { listCustomers } from './internal/application/queries/list-customers.js'
 export type {
   CustomerList,
   CustomerListItem,
+  CustomerScoreEnrichment,
   ListCustomersParams,
   ListCustomersDeps,
 } from './internal/application/queries/list-customers.js';
@@ -45,6 +46,7 @@ export type {
   Customer360Profile,
   Customer360Identifier,
   Customer360Merge,
+  Customer360Order,
   Customer360Deps,
 } from './internal/application/queries/get-customer-360.js';
 

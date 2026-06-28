@@ -61,8 +61,14 @@ SPEND_EVENT_TYPE = os.environ.get("SPEND_EVENT_TYPE", "spend.live.v1")
 # ── Silver (target) table — same name as the dbt model (the Spark mart mirrors the dbt model name) ─
 TABLE_NAME = "silver_marketing_spend"
 
-# Column contract — byte-for-byte the dbt mart's output projection (verified against the live StarRocks
-# DESC brain_silver.silver_marketing_spend). brand_id tenant key first; money = bigint minor + currency.
+# Column contract — the dbt mart's output projection (verified against the live StarRocks
+# DESC brain_silver.silver_marketing_spend), PLUS an ADDITIVE enriched-advertising block that surfaces the
+# platform insight measures already carried in payload.properties.* (conversions / all_conversions /
+# conv_value_minor / view_through_conversions / cpc_minor / cpm_minor / ctr / advertising_channel_type).
+# The create_iceberg_table reconciler ALTER-ADDs any of these missing from a pre-existing table (additive,
+# non-breaking). brand_id tenant key first; money = bigint minor + currency. conv_value_minor / cpc_minor /
+# cpm_minor are bigint MINOR units that SHARE the row's currency_code (per-currency, never blended/float);
+# count measures are bigint; ctr is a unit-ratio double (NOT money).
 _COLUMNS_SQL = """
           brand_id          string    NOT NULL,
           spend_event_id    string    NOT NULL,
@@ -77,6 +83,14 @@ _COLUMNS_SQL = """
           currency_code     string,
           impressions       bigint,
           clicks            bigint,
+          conversions               bigint,
+          all_conversions           bigint,
+          conv_value_minor          bigint,
+          view_through_conversions  bigint,
+          cpc_minor                 bigint,
+          cpm_minor                 bigint,
+          ctr                       double,
+          advertising_channel_type  string,
           account_timezone  string,
           occurred_at       timestamp,
           updated_at        timestamp NOT NULL
@@ -137,6 +151,19 @@ def build_marketing_spend(spark: SparkSession) -> DataFrame:
             _prop(payload, "currency_code").alias("currency_code"),
             _prop(payload, "impressions").cast("bigint").alias("impressions"),
             _prop(payload, "clicks").cast("bigint").alias("clicks"),
+            # ── ADDITIVE enriched advertising insight set (payload.properties.*) ───────────────────────
+            # Older Bronze spend rows lack these props → get_json_object returns NULL → cast yields NULL
+            # (null-guarded by construction; absence stays NULL, never fabricated as 0). conv_value_minor /
+            # cpc_minor / cpm_minor are bigint MINOR units sharing currency_code (never blended/float);
+            # ctr is a unit-ratio double; advertising_channel_type is a passthrough string (Google-only).
+            _prop(payload, "conversions").cast("bigint").alias("conversions"),
+            _prop(payload, "all_conversions").cast("bigint").alias("all_conversions"),
+            _prop(payload, "conv_value_minor").cast("bigint").alias("conv_value_minor"),
+            _prop(payload, "view_through_conversions").cast("bigint").alias("view_through_conversions"),
+            _prop(payload, "cpc_minor").cast("bigint").alias("cpc_minor"),
+            _prop(payload, "cpm_minor").cast("bigint").alias("cpm_minor"),
+            _prop(payload, "ctr").cast("double").alias("ctr"),
+            _prop(payload, "advertising_channel_type").alias("advertising_channel_type"),
             _prop(payload, "account_timezone").alias("account_timezone"),
             F.col("occurred_at"),
             F.col("ingested_at"),
@@ -176,6 +203,16 @@ def build_marketing_spend(spark: SparkSession) -> DataFrame:
         F.col("currency_code"),
         F.coalesce(F.col("impressions"), F.lit(0)).cast("bigint").alias("impressions"),
         F.coalesce(F.col("clicks"), F.lit(0)).cast("bigint").alias("clicks"),
+        # ── ADDITIVE enriched advertising insight set — preserve NULL (absence ≠ 0; older rows lack props).
+        # Money cols stay bigint MINOR (share currency_code, never blended/float); ctr is a unit-ratio double.
+        F.col("conversions").cast("bigint").alias("conversions"),
+        F.col("all_conversions").cast("bigint").alias("all_conversions"),
+        F.col("conv_value_minor").cast("bigint").alias("conv_value_minor"),
+        F.col("view_through_conversions").cast("bigint").alias("view_through_conversions"),
+        F.col("cpc_minor").cast("bigint").alias("cpc_minor"),
+        F.col("cpm_minor").cast("bigint").alias("cpm_minor"),
+        F.col("ctr").cast("double").alias("ctr"),
+        F.col("advertising_channel_type"),
         F.col("account_timezone"),
         F.col("occurred_at"),
         F.current_timestamp().alias("updated_at"),

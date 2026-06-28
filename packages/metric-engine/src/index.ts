@@ -82,6 +82,18 @@ export type { CustomerJourneySummary, CustomerJourneyRow } from './customer-jour
 // Single-customer RFM/churn score (Gold) — DB-AUDIT C5 ML serving
 export { getCustomerScore } from './customer-score.js';
 export type { CustomerScoreRow } from './customer-score.js';
+// Customer-list BATCH enrichment (segment + LTV + order_count) + segment-membership filter (Gold scores).
+export {
+  getCustomerScoresForBrainIds,
+  getCustomerSegmentMembers,
+  deriveLifecycleSegment,
+  isLifecycleSegment,
+  LIFECYCLE_SEGMENTS,
+} from './customer-scores-batch.js';
+export type { CustomerScoreEnrichment } from './customer-scores-batch.js';
+// Per-customer order list (Silver order-state fold) — backs the Customer 360 "Orders" sub-tab.
+export { getCustomerOrders } from './customer-orders.js';
+export type { CustomerOrderRow } from './customer-orders.js';
 // AI/ML input feature vector (Gold ai_features serving mart) — V4 runtime Silver fold, not a precompute table.
 export { getAiFeatures } from './ai-features.js';
 export type { AiFeaturesResult, AiFeatureRow, AiFeaturesOptions } from './ai-features.js';

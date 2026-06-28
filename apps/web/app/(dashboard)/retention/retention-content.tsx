@@ -19,9 +19,9 @@
  *
  * Honesty: money is bigint minor units + currency_code, formatted ONLY via formatMoneyDisplay; ratios
  * (orders_per_customer, repeat_rate_pct) come straight from the engine — never re-divided with floats
- * in the client; counts summed across cohorts use BigInt. FreshnessBadge reads 'unknown' because the
- * cohort/exec endpoints expose no served-at timestamp (never a fabricated "just now"). EmptyState on
- * no_data — never a fake zero.
+ * in the client; counts summed across cohorts use BigInt. FreshnessBadge now reads a REAL relative time
+ * from the served_at (generated_at) the cohort/exec endpoints return — never a fabricated "just now".
+ * EmptyState on no_data — never a fake zero.
  */
 
 import Link from 'next/link';
@@ -89,7 +89,7 @@ const EXPLAINER = {
     },
   ],
   refreshCadence:
-    'The cohort mart refreshes on the Silver→Gold loop. These endpoints expose no served-at timestamp, so freshness reads “unknown” rather than a fabricated time.',
+    'The cohort mart refreshes on the Silver→Gold loop. Each read returns a served-at timestamp, so freshness shows the real time the BFF served it.',
   sources: ['gold_cohorts / mv_gold_cohorts', 'gold_executive_metrics (repeat_rate_pct)'],
 };
 
@@ -117,12 +117,17 @@ export function RetentionContent() {
   const cohortsTracked = cohortRows.length;
   const newCustomersTracked = cohortRows.length ? sumBig(cohortRows, (r) => r.cohort_size) : 0n;
 
+  // served_at: the BFF now returns generated_at on the cohort + executive reads, so the FreshnessBadge
+  // shows a REAL relative time (honest server compute time) instead of "unknown".
+  const cohortServedAt = cohort?.generated_at ?? null;
+  const execServedAt = exec?.generated_at ?? null;
+
   return (
     <TabShell
       title="Retention"
       description="Do customers come back?"
       explainer={EXPLAINER}
-      freshness={<FreshnessBadge timestamp={undefined} />}
+      freshness={<FreshnessBadge timestamp={cohortServedAt ?? execServedAt} prefix="Served" />}
     >
       {/* ── Headline KPIs ── */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
@@ -132,7 +137,7 @@ export function RetentionContent() {
           unit={repeatPct != null ? 'of customers' : undefined}
           icon={<Repeat />}
           loading={execQ.isLoading}
-          freshness={<FreshnessBadge timestamp={undefined} />}
+          freshness={<FreshnessBadge timestamp={execServedAt} prefix="Served" />}
         />
         <MetricCard
           label="Cohorts tracked"
@@ -140,7 +145,7 @@ export function RetentionContent() {
           unit={cohortsTracked ? 'acquisition months' : undefined}
           icon={<Layers />}
           loading={cohortQ.isLoading}
-          freshness={<FreshnessBadge timestamp={undefined} />}
+          freshness={<FreshnessBadge timestamp={cohortServedAt} prefix="Served" />}
         />
         <MetricCard
           label="Customers tracked"
@@ -148,7 +153,7 @@ export function RetentionContent() {
           unit={cohortsTracked ? 'across all cohorts' : undefined}
           icon={<Users />}
           loading={cohortQ.isLoading}
-          freshness={<FreshnessBadge timestamp={undefined} />}
+          freshness={<FreshnessBadge timestamp={cohortServedAt} prefix="Served" />}
         />
       </div>
 

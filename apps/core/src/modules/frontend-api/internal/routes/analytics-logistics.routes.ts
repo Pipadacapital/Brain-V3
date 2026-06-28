@@ -37,7 +37,16 @@ import type {
 import type { BffDeps } from './_shared.js';
 
 export function registerAnalyticsLogisticsRoutes(fastify: FastifyInstance, deps: BffDeps): void {
-  const { bffProtectedPreHandler, rawPool, srPool } = deps;
+  const { bffProtectedPreHandler, rawPool, srPool, servingCache } = deps;
+
+  // Redis serving-cache wrapper (same shape as analytics-core.routes.ts) — wraps a Trino read so
+  // repeated loads hit Redis (5-min TTL) instead of re-querying Trino. No-op when cache is absent.
+  const cachedRead = <T>(
+    brandId: string,
+    metricId: string,
+    params: Record<string, unknown>,
+    compute: () => Promise<T>,
+  ): Promise<T> => (servingCache ? servingCache.read(brandId, metricId, params, compute) : compute());
 
   // ── CoD / RTO endpoints (GoKwik + Shopflo Track C) ────────────────────────
   // Three reads for the CoD/RTO analytics surface, all via the metric-engine sole
@@ -427,7 +436,15 @@ export function registerAnalyticsLogisticsRoutes(fastify: FastifyInstance, deps:
         return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Bronze read pool not available' } });
       }
 
-      const result: ContractOrdersList = await getOrdersList(auth.brandId, { page, pageSize }, { pool: rawPool, srPool });
+      // Cache the page read (keyed by brand + page + size) behind Redis (5-min TTL); the FX
+      // enrichment below stays per-request on the (fresh-parsed) cached result.
+      const brandId = auth.brandId; // narrowed (guarded above) — stable inside the cache closure
+      const result: ContractOrdersList = await cachedRead(
+        brandId,
+        'orders_list',
+        { page, pageSize },
+        () => getOrdersList(brandId, { page, pageSize }, { pool: rawPool, srPool }),
+      );
 
       // FX convenience view (display-only): enrich each order with its amount in the brand's PRIMARY
       // currency at the latest rate. Native amount/currency stay authoritative (revenue truth). Best-

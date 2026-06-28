@@ -67,15 +67,29 @@ trino_exec "CREATE SCHEMA IF NOT EXISTS iceberg.brain_serving"
 
 shopt -s nullglob
 count=0
+skipped=0
+skipped_list=""
 for f in "$DIR"/$VIEW_GLOB; do
   base="$(basename "$f" .sql)"
   echo "==> Applying view $base"
   # Strip leading comments/blank lines and the trailing ';' (the REST API takes one
   # bare statement), then apply.
   sql="$(sed -e 's/^[[:space:]]*--.*$//' "$f" | grep -v '^[[:space:]]*$' | sed 's/;[[:space:]]*$//')"
-  trino_exec "$sql"
-  count=$((count + 1))
+  # CONTINUE-ON-ERROR: a view over a Gold mart that has not been built yet (e.g. a fresh
+  # boot where the refresh has not reached that mart) must NOT abort the whole serving layer —
+  # every view whose dependencies DO exist should still be created. We tolerate a per-view
+  # failure (commonly "Table … does not exist"), tally it, and surface the list at the end so
+  # a re-run after the next refresh cycle completes the set. `set -e` would otherwise kill the
+  # loop on the first missing mart, which is exactly the bug that left only the first view applied.
+  if trino_exec "$sql"; then
+    count=$((count + 1))
+  else
+    skipped=$((skipped + 1))
+    skipped_list="${skipped_list} ${base}"
+    echo "    -- skipped $base (dependency not ready); will apply on a later run" >&2
+  fi
 done
 
-echo "==> Done. Applied $count Trino view(s). Listing iceberg.brain_serving:"
+echo "==> Done. Applied $count Trino view(s); skipped $skipped.${skipped_list:+ Skipped:${skipped_list}}"
+echo "==> Listing iceberg.brain_serving:"
 trino_exec "SHOW TABLES FROM iceberg.brain_serving" || true

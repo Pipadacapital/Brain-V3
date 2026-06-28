@@ -297,7 +297,12 @@ export function registerAnalyticsCoreRoutes(fastify: FastifyInstance, deps: BffD
       if (!srPool) {
         return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (StarRocks) not available' } });
       }
-      const result = await getInsightsBriefing(auth.brandId, { srPool });
+      // Cache ONLY the expensive Trino fan-out (getInsightsBriefing reads multiple Gold marts); the
+      // recommendation materialization below stays per-request so Accept/Dismiss status is always fresh.
+      const brandId = auth.brandId; // narrowed (guarded above) — stable inside the cache closure
+      const result = await cachedRead(brandId, 'insights_briefing', {}, () =>
+        getInsightsBriefing(brandId, { srPool }),
+      );
       // Converge insights into the audited decision loop: persist each as a recommendation (idempotent
       // read-through) so Accept/Dismiss/Snooze write to the recommendation_action ledger and outcomes
       // are measurable (RGUD). Merge the recommendation_id/status back onto each insight for the UI.

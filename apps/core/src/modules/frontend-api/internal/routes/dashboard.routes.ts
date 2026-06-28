@@ -44,7 +44,17 @@ import {
 } from './dashboard.queries.js';
 
 export function registerDashboardRoutes(fastify: FastifyInstance, deps: BffDeps): void {
-  const { bffProtectedPreHandler, pool, rawPool, srPool, gatherFoundationSignals } = deps;
+  const { bffProtectedPreHandler, pool, rawPool, srPool, servingCache, gatherFoundationSignals } = deps;
+
+  // Redis serving-cache wrapper (same closure shape as analytics-core.routes.ts): wraps a Trino
+  // read so repeated dashboard loads hit Redis (5-min TTL) instead of re-querying Trino every time.
+  // No-op passthrough when the cache is disabled/absent.
+  const cachedRead = <T>(
+    brandId: string,
+    metricId: string,
+    params: Record<string, unknown>,
+    compute: () => Promise<T>,
+  ): Promise<T> => (servingCache ? servingCache.read(brandId, metricId, params, compute) : compute());
 
   // ── Dashboard BFF endpoints (MED-BFF-DASH-01) ─────────────────────────────
   // All reads are Postgres-only (ZERO StarRocks/OLAP — ADR-002).
@@ -601,8 +611,15 @@ export function registerDashboardRoutes(fastify: FastifyInstance, deps: BffDeps)
       const asOfStr = query.as_of ?? (new Date().toISOString().split('T')[0] as string);
       const asOf = new Date(`${asOfStr}T00:00:00Z`);
 
-      // Call the analytics use-case — the SOLE read path (ADR-002, D-3)
-      const snapshot: ContractRevenueSnapshot = await getRevenueMetrics(auth.brandId, asOf, { srPool });
+      // Call the analytics use-case — the SOLE read path (ADR-002, D-3), behind the Redis serving
+      // cache (keyed by brand + as_of) so the headline dashboard metric isn't re-queried every load.
+      const brandId = auth.brandId; // narrowed (guarded above) — stable inside the cache closure
+      const snapshot: ContractRevenueSnapshot = await cachedRead(
+        brandId,
+        'realized_revenue',
+        { asOfStr },
+        () => getRevenueMetrics(brandId, asOf, { srPool }),
+      );
 
       // FX convenience view (display-only): roll the per-currency realized/provisional maps up to the
       // brand's PRIMARY currency at the latest rate. Best-effort — native maps stay authoritative.

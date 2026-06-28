@@ -114,6 +114,7 @@ export class BrandRepository {
       currencyCode?: CurrencyCode;
       timezone?: BrandTimezone;
       revenueDefinition?: RevenueDefinition;
+      regionCode?: string;
     },
     ctx: QueryContext,
   ): Promise<Brand | null> {
@@ -131,8 +132,9 @@ export class BrandRepository {
          currency_code = COALESCE($5, currency_code),
          timezone = COALESCE($6, timezone),
          revenue_definition = COALESCE($7, revenue_definition),
+         region_code = COALESCE($8, region_code),
          updated_at = NOW()
-       WHERE id = $8
+       WHERE id = $9
        RETURNING id, organization_id, display_name, domain, status, region_code, currency_code, timezone, revenue_definition, created_at, updated_at`,
       [
         data.displayName ?? null,
@@ -142,6 +144,7 @@ export class BrandRepository {
         data.currencyCode ?? null,
         data.timezone ?? null,
         data.revenueDefinition ?? null,
+        data.regionCode ?? null,
         id,
       ],
     );

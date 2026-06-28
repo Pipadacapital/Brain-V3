@@ -19,7 +19,8 @@
 
 import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { Building2, Trash2 } from 'lucide-react';
+import { Building2, Trash2, Pencil } from 'lucide-react';
+import { EditBrandDialog } from '@/components/dashboard/edit-brand-dialog';
 import { PageHeader } from '@/components/ui/page-header';
 import { SectionCard } from '@/components/ui/section-card';
 import { Button } from '@/components/ui/button';
@@ -45,6 +46,7 @@ export function BrandsClient() {
   const { data, isLoading, error, refetch } = useBrandSummary();
   const [confirmId, setConfirmId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [editBrand, setEditBrand] = useState<{ id: string; display_name: string } | null>(null);
 
   const brands = data?.brands ?? [];
   const activeBrandId = data?.active_brand_id ?? null;
@@ -76,12 +78,12 @@ export function BrandsClient() {
       <PageHeader
         eyebrow="Settings"
         title="Brands"
-        description="All the brands in your workspace. Delete (archive) a brand to remove it from the switcher and stop its ingestion — it stays recoverable from Archived Brands."
+        description="All the brands in your workspace. Edit a brand's profile, or delete (archive) one to remove it from the switcher and stop its ingestion — archived brands stay recoverable from Archived Brands."
       />
 
       <SectionCard
         title="Your brands"
-        description="Deleting archives the brand (reversible). You can't delete the brand you're currently in — switch to another first."
+        description="Edit updates the brand profile (name, website, timezone, region). Deleting archives the brand (reversible) — you can't delete the brand you're currently in, switch away first."
         flush
       >
         {error ? (
@@ -129,9 +131,7 @@ export function BrandsClient() {
                       <StatusBadge tone="success">Active</StatusBadge>
                     </TableCell>
                     <TableCell className="text-right">
-                      {isActive ? (
-                        <span className="text-xs text-muted-foreground">Switch away to delete</span>
-                      ) : isConfirming ? (
+                      {isConfirming ? (
                         <span className="inline-flex items-center gap-2">
                           <span className="text-xs text-muted-foreground">Delete?</span>
                           <Button
@@ -156,17 +156,36 @@ export function BrandsClient() {
                           </Button>
                         </span>
                       ) : (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => setConfirmId(brand.id)}
-                          disabled={deletingId !== null}
-                          aria-label={`Delete brand ${brand.display_name}`}
-                          data-testid={`btn-delete-brand-${brand.id}`}
-                        >
-                          <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
-                          Delete
-                        </Button>
+                        <span className="inline-flex items-center justify-end gap-2">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() =>
+                              setEditBrand({ id: brand.id, display_name: brand.display_name })
+                            }
+                            disabled={deletingId !== null}
+                            aria-label={`Edit brand ${brand.display_name}`}
+                            data-testid={`btn-edit-brand-${brand.id}`}
+                          >
+                            <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
+                            Edit
+                          </Button>
+                          {isActive ? (
+                            <span className="text-xs text-muted-foreground">Switch away to delete</span>
+                          ) : (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => setConfirmId(brand.id)}
+                              disabled={deletingId !== null}
+                              aria-label={`Delete brand ${brand.display_name}`}
+                              data-testid={`btn-delete-brand-${brand.id}`}
+                            >
+                              <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                              Delete
+                            </Button>
+                          )}
+                        </span>
                       )}
                     </TableCell>
                   </TableRow>
@@ -176,6 +195,14 @@ export function BrandsClient() {
           </Table>
         )}
       </SectionCard>
+
+      <EditBrandDialog
+        brand={editBrand}
+        open={editBrand !== null}
+        onOpenChange={(o) => {
+          if (!o) setEditBrand(null);
+        }}
+      />
     </div>
   );
 }

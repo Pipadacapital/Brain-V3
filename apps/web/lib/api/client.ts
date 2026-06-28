@@ -568,6 +568,21 @@ export const brandApi = {
       idempotencyKey: generateRequestId(),
     }),
 
+  // Edit the brand profile (safe fields only — display_name/domain/timezone/region_code). PATCH
+  // /api/v1/brands/:id; the server enforces owner/brand_admin + currency immutability. Returns the
+  // updated flat BrandResponse (unwrapped from { request_id, brand }).
+  update: async (
+    id: string,
+    body: Partial<Pick<BrandResponse, 'display_name' | 'domain' | 'timezone' | 'region_code'>>,
+  ): Promise<BrandResponse> => {
+    const res = await bffFetch<{ request_id: string; brand: BrandResponse }>(`/v1/brands/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+      idempotencyKey: generateRequestId(),
+    });
+    return res.brand;
+  },
+
   // Archive (soft-delete) a brand created by mistake → DELETE /api/v1/brands/:id. The brand drops
   // out of lists and its ingest stops; reversible server-side. Owner / brand_admin only.
   remove: (id: string) =>

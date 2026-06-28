@@ -293,6 +293,7 @@ export class BrandService {
       currencyCode?: CurrencyCode;
       timezone?: BrandTimezone;
       revenueDefinition?: RevenueDefinition;
+      regionCode?: string;
     },
     requestingUserId: string,
     organizationId: string,
@@ -361,6 +362,7 @@ export class BrandService {
           currency_code: data.currencyCode,
           timezone: data.timezone,
           revenue_definition: data.revenueDefinition,
+          region_code: data.regionCode,
         },
       });
 

@@ -87,6 +87,7 @@ export const UpdateBrandRequestSchema = z.object({
   currency_code: CurrencyCodeSchema.optional(),    // MA-11: immutability enforced in service
   timezone: BrandTimezoneSchema.optional(),
   revenue_definition: RevenueDefinitionSchema.optional(),
+  region_code: z.string().length(2).optional(),    // ISO-3166-1 alpha-2; safe profile edit (no revenue recompute)
 });
 export type UpdateBrandRequest = z.infer<typeof UpdateBrandRequestSchema>;
 

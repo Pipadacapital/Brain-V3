@@ -492,6 +492,15 @@ services:
   # Apicurio's 8080:8080 mapping when the ingest profile runs simultaneously.
   trino:
     image: trinodb/trino:455
+    # Auto-recover: Trino is the SOLE serving engine — if it ever dies (OOM, crash) every BFF
+    # analytics read 500s with "fetch failed". restart:unless-stopped means a crash self-heals
+    # instead of staying down until someone notices and runs `docker compose up -d trino`.
+    restart: unless-stopped
+    # Bound the footprint so Trino can't size its heap to the whole Docker VM and get OOM-killed
+    # under refresh-time query load (the cause of the serving-tier outage). jvm.config caps the
+    # heap at 70% of this; the remainder is non-heap headroom. See db/trino/jvm.config.
+    mem_limit: 7g
+    mem_reservation: 3g
     depends_on:
       iceberg-rest:
         condition: service_healthy
@@ -501,6 +510,7 @@ services:
       - "8090:8080"   # Trino HTTP UI + JDBC (host 8090 → container 8080)
     volumes:
       - ./db/trino/catalog:/etc/trino/catalog:ro
+      - ./db/trino/jvm.config:/etc/trino/jvm.config:ro   # bounded heap (prevents OOM-kill of the serving tier)
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/v1/info"]
       interval: 15s

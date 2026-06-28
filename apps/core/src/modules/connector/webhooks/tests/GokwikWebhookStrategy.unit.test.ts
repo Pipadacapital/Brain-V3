@@ -1,9 +1,14 @@
 /**
- * GokwikWebhookStrategy unit tests — HMAC gate (fail-closed) + I-S02-safe lossless mapping.
+ * GokwikWebhookStrategy unit tests — HMAC gate (fail-closed) + discriminated canonical-event mapping.
+ *
+ * The strategy DISCRIMINATES on the GoKwik event type and emits exactly ONE canonical Brain event
+ * (order.live.v1 / checkout.abandoned.v1 / gokwik.checkout_started|step.v1 / payment.attempted|
+ * authorized.v1 / gokwik.rto_predict.v1). Money is bigint minor units; raw PII is hashed at the
+ * boundary; unknown types fast-ack (skip:true). The opaque gokwik.webhook.v1 envelope is RETIRED.
  */
 import { describe, it, expect } from 'vitest';
 import { createHmac } from 'node:crypto';
-import { GokwikWebhookStrategy, GOKWIK_WEBHOOK_EVENT_NAME } from '../strategies/GokwikWebhookStrategy.js';
+import { GokwikWebhookStrategy } from '../strategies/GokwikWebhookStrategy.js';
 import type { WebhookStrategyContext } from '../platform/IWebhookStrategy.js';
 
 const APPID = '2ed4ab74a5b14a3382ba14b01ecfa6f6';
@@ -70,34 +75,80 @@ describe('GokwikWebhookStrategy.signatureVerify', () => {
   });
 });
 
-describe('GokwikWebhookStrategy.payloadMap', () => {
+describe('GokwikWebhookStrategy.payloadMap — discriminated canonical emit', () => {
   const s = new GokwikWebhookStrategy();
 
-  it('maps safe fields, hashes PII (no raw email/phone), emits gokwik.webhook.v1', async () => {
+  it('order.* → order.live.v1 (minor-units money, hashed PII, no raw email/phone)', async () => {
     const body = {
-      appid: APPID, event: 'order.delivered', order_id: 'OID42', payment_status: 'paid',
-      currency: 'INR', amount: 1299, email: 'buyer@example.com', phone: '+919876543210',
-      address: '12 MG Road', customer_name: 'Asha',
+      appid: APPID, event: 'order.created', moid: 'OID42', total: '1299.00',
+      currency: 'INR', payment_method: 'cod', email: 'buyer@example.com', phone: '+919876543210',
+      updated_at: '2026-05-05T16:00:00Z',
     };
     const res = await s.payloadMap(ctx(body));
-
-    expect(res.eventName).toBe(GOKWIK_WEBHOOK_EVENT_NAME);
     expect(res.skip).toBe(false);
+    expect(res.eventName).toBe('order.live.v1');
     expect(res.properties['order_id']).toBe('OID42');
-    expect(res.properties['payment_status']).toBe('paid');
-    expect(res.properties['amount_raw']).toBe('1299');
-    // PII: hashed, never raw; raw PII + non-allowlisted fields absent.
-    expect(res.properties['email_hash']).toMatch(/^[0-9a-f]{64}$/);
-    expect(res.properties['phone_hash']).toMatch(/^[0-9a-f]{64}$/);
+    expect(res.properties['amount_minor']).toBe('129900');
+    expect(res.properties['currency_code']).toBe('INR');
+    expect(res.properties['payment_method']).toBe('cod');
+    expect(res.eventId).toMatch(/^[0-9a-f-]{36}$/);
     const serialized = JSON.stringify(res.properties);
     expect(serialized).not.toContain('buyer@example.com');
     expect(serialized).not.toContain('9876543210');
-    expect(serialized).not.toContain('MG Road');
-    expect(res.properties['customer_name']).toBeUndefined();
   });
 
-  it('produces a deterministic eventId for the same (brand, event, order)', async () => {
-    const body = { appid: APPID, event: 'order.shipped', order_id: 'OID7' };
+  it('order.failed → order.live.v1 financial_status=voided', async () => {
+    const body = { appid: APPID, event: 'order.failed', moid: 'OID9', total: '500', currency: 'INR' };
+    const res = await s.payloadMap(ctx(body));
+    expect(res.eventName).toBe('order.live.v1');
+    expect(res.properties['financial_status']).toBe('voided');
+  });
+
+  it('checkout.abandoned → checkout.abandoned.v1', async () => {
+    const body = { appid: APPID, event: 'checkout.abandoned', checkout_id: 'CHK1', total: '999.00', currency: 'INR', pincode: '110001' };
+    const res = await s.payloadMap(ctx(body));
+    expect(res.skip).toBe(false);
+    expect(res.eventName).toBe('checkout.abandoned.v1');
+    expect(res.properties['total_price_minor']).toBe('99900');
+    expect(res.properties['has_address']).toBe(true);
+  });
+
+  it('checkout.started / checkout.step_completed → gokwik.checkout_started|step.v1', async () => {
+    const started = await s.payloadMap(ctx({ appid: APPID, event: 'checkout.started', checkout_id: 'CHK2' }));
+    expect(started.eventName).toBe('gokwik.checkout_started.v1');
+    const step = await s.payloadMap(ctx({ appid: APPID, event: 'checkout.step_completed', checkout_id: 'CHK3', step: 'address' }));
+    expect(step.eventName).toBe('gokwik.checkout_step.v1');
+    expect(step.properties['step_name']).toBe('address');
+  });
+
+  it('payment.attempted / payment.authorized → payment.*.v1 (payment_id hashed, raw dropped)', async () => {
+    const attempted = await s.payloadMap(ctx({ appid: APPID, event: 'payment.attempted', order_id: 'OID42', payment_id: 'pay_xyz', amount: '1299.00', currency: 'INR' }));
+    expect(attempted.eventName).toBe('payment.attempted.v1');
+    expect(attempted.properties['payment_status']).toBe('initiated');
+    expect(JSON.stringify(attempted.properties)).not.toContain('pay_xyz');
+    expect(attempted.properties['payment_id_hash']).toMatch(/^[0-9a-f]{64}$/);
+
+    const authorized = await s.payloadMap(ctx({ appid: APPID, event: 'payment.authorized', order_id: 'OID42', payment_id: 'pay_xyz', amount: '1299.00', currency: 'INR' }));
+    expect(authorized.eventName).toBe('payment.authorized.v1');
+    expect(authorized.properties['payment_status']).toBe('authorized');
+  });
+
+  it('risk.scored → gokwik.rto_predict.v1 (categorical, verbatim risk_flag_raw)', async () => {
+    const body = { appid: APPID, event: 'risk.scored', order_id: 'OID42', request_id: 'req_1', risk_flag: 'High Risk' };
+    const res = await s.payloadMap(ctx(body));
+    expect(res.eventName).toBe('gokwik.rto_predict.v1');
+    expect(res.properties['risk_flag']).toBe('high');
+    expect(res.properties['risk_flag_raw']).toBe('High Risk');
+    expect(JSON.stringify(res.properties)).not.toMatch(/"(score|probability|risk_score)"\s*:/);
+  });
+
+  it('unknown event type → skip (fast-ack, no produce)', async () => {
+    const res = await s.payloadMap(ctx({ appid: APPID, event: 'wishlist.added', order_id: 'X' }));
+    expect(res.skip).toBe(true);
+  });
+
+  it('same order state replay → deterministic eventId', async () => {
+    const body = { appid: APPID, event: 'order.updated', moid: 'OID7', total: '10', currency: 'INR', updated_at: '2026-05-05T16:00:00Z' };
     const a = await s.payloadMap(ctx(body));
     const b = await s.payloadMap(ctx(body));
     expect(a.eventId).toBe(b.eventId);

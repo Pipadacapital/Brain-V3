@@ -14,6 +14,10 @@ import {
   RTO_TERMINAL_STATES,
   DELIVERED_TERMINAL_STATES,
   OTHER_TERMINAL_STATES,
+  classifyReturnStatus,
+  isReturnComplete,
+  classifyException,
+  isExceptionStatus,
 } from '../index.js';
 
 describe('classifyShipmentStatus — GoKwik vocabulary (must be byte-identical to pre-extraction)', () => {
@@ -96,5 +100,73 @@ describe('normalizeStatus', () => {
     expect(normalizeStatus('  RTO_Out-For   Delivery ')).toBe('rto out for delivery');
     expect(normalizeStatus(null)).toBe('');
     expect(normalizeStatus(undefined)).toBe('');
+  });
+});
+
+// ── SR-4: RETURN family (the revenue-truth correctness fix) ───────────────────────────────────────
+describe('classifyReturnStatus — returns are NEVER a forward DELIVERED', () => {
+  it('classifies the four return stages from bare body statuses', () => {
+    expect(classifyReturnStatus('created')).toBe('return_initiated');
+    expect(classifyReturnStatus('Picked Up')).toBe('return_in_transit');
+    expect(classifyReturnStatus('delivered')).toBe('return_delivered');
+    expect(classifyReturnStatus('completed')).toBe('return_completed');
+  });
+
+  it('classifies return TOPIC strings (dotted form) too', () => {
+    expect(classifyReturnStatus('return.created')).toBe('return_initiated');
+    expect(classifyReturnStatus('return.picked_up')).toBe('return_in_transit');
+    expect(classifyReturnStatus('return.delivered')).toBe('return_delivered');
+    expect(classifyReturnStatus('return.completed')).toBe('return_completed');
+    expect(classifyReturnStatus('return.refunded')).toBe('return_completed');
+  });
+
+  it('CRITICAL: return.completed / return.delivered NEVER classify to the forward DELIVERED class', () => {
+    // The bug SR-4 fixes: a return whose status is "completed"/"delivered" must NOT be a forward delivery.
+    // The forward classifier WOULD map them to 'delivered' — the return classifier maps them to a RETURN_* class.
+    expect(classifyShipmentStatus('completed')).toBe('delivered'); // forward authority unchanged (byte-identical)
+    expect(classifyShipmentStatus('delivered')).toBe('delivered');
+    expect(classifyReturnStatus('completed')).toBe('return_completed'); // return lane keeps them distinct
+    expect(classifyReturnStatus('delivered')).toBe('return_delivered');
+    expect(classifyReturnStatus('completed')).not.toBe('delivered');
+  });
+
+  it('isReturnComplete only on the terminal return state', () => {
+    expect(isReturnComplete('completed')).toBe(true);
+    expect(isReturnComplete('return.refunded')).toBe(true);
+    expect(isReturnComplete('picked up')).toBe(false);
+    expect(isReturnComplete('unknown')).toBe(false);
+  });
+
+  it('unknown return status → none', () => {
+    expect(classifyReturnStatus('something weird')).toBe('none');
+    expect(classifyReturnStatus(null)).toBe('none');
+  });
+});
+
+// ── SR-5: non-terminal EXCEPTION / NDR sub-class ──────────────────────────────────────────────────
+describe('classifyException — NON-terminal delay/NDR, does NOT alter terminal_class', () => {
+  it('maps delayed → delayed and NDR-family → ndr', () => {
+    expect(classifyException('Delayed')).toBe('delayed');
+    expect(classifyException('NDR')).toBe('ndr');
+    expect(classifyException('exception')).toBe('ndr');
+    expect(classifyException('Undelivered')).toBe('ndr');
+    expect(classifyException('Customer Unavailable')).toBe('ndr');
+  });
+
+  it('returns null for non-exception statuses', () => {
+    expect(classifyException('In-Transit')).toBeNull();
+    expect(classifyException('Delivered')).toBeNull();
+    expect(classifyException(null)).toBeNull();
+    expect(isExceptionStatus('Delayed')).toBe(true);
+    expect(isExceptionStatus('Delivered')).toBe(false);
+  });
+
+  it('EXCEPTION is a SEPARATE dimension — classifyShipmentStatus stays byte-identical (none, not terminal)', () => {
+    // delayed/exception/ndr/undelivered remain 'none' in the FROZEN forward authority (GoKwik parity),
+    // so is_terminal stays false; the exception signal is carried alongside, never via terminal_class.
+    expect(classifyShipmentStatus('Delayed')).toBe('none');
+    expect(classifyShipmentStatus('NDR')).toBe('none');
+    expect(classifyShipmentStatus('Undelivered')).toBe('none');
+    expect(isTerminalStatus('Delayed')).toBe(false);
   });
 });

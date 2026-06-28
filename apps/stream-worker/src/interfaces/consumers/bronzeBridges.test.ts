@@ -29,11 +29,22 @@ describe('BRONZE_BRIDGES registry (wired-to-nothing guard)', () => {
     const eventNames = BRONZE_BRIDGES.map((b) => b.eventName).sort();
     expect(eventNames).toEqual(
       [
-        'gokwik.awb_status.v1',
         'gokwik.rto_predict.v1',
         'order.live.v1',
         'shiprocket.shipment_status.v1',
         'shopflo.checkout_abandoned.v1',
+        // CRIT-4 / WOO-3 resource events (Shopify + WooCommerce) — server-trusted, no install_token.
+        'product.upsert.v1',
+        'customer.upsert.v1',
+        'refund.recorded.v1',
+        'coupon.upsert.v1',
+        'fulfillment.recorded.v1',
+        // AD-1 shared Meta+Google entity-metadata feed.
+        'ad.entity.updated',
+        // Shopflo checkout-funnel lifecycle.
+        'shopflo.checkout_started.v1',
+        'shopflo.checkout_step.v1',
+        'shopflo.checkout_completed.v1',
       ].sort(),
     );
   });

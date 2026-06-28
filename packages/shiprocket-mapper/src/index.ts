@@ -22,14 +22,21 @@
 
 import { createHash } from 'node:crypto';
 import { hashToUuidShaped } from '@brain/connector-core';
+import { hashIdentifier, normalizePhone } from '@brain/identity-core';
 import {
   classifyShipmentStatus,
+  classifyReturnStatus,
+  classifyException,
   type TerminalClass,
+  type ReturnClass,
+  type ExceptionClass,
 } from '@brain/logistics-status';
 
-// ── Event name constant ───────────────────────────────────────────────────────
+// ── Event name constants ──────────────────────────────────────────────────────
 
 export const SHIPROCKET_SHIPMENT_STATUS_V1_EVENT_NAME = 'shiprocket.shipment_status.v1' as const;
+/** SR-4: the NEW canonical RETURN event — a SEPARATE lane from the forward shipment status. */
+export const SHIPROCKET_RETURN_STATUS_V1_EVENT_NAME = 'shiprocket.return_status.v1' as const;
 
 // ── data_source provenance (DEV-HONESTY) ──────────────────────────────────────
 
@@ -49,6 +56,8 @@ export interface ShiprocketShipmentRecord {
   payment_method?: string | null;    // 'cod' | 'prepaid' (if provided)
   pincode?: string | null;           // destination pincode (RTO%-by-pincode)
   courier?: string | null;           // courier_name (carrier dimension)
+  customer_phone?: string | null;    // SR-6 — hashed at the boundary (raw DROPPED), links to customer 360
+  customer_email?: string | null;    // SR-6 — hashed at the boundary (raw DROPPED), links to customer 360
   [key: string]: unknown;
 }
 
@@ -62,11 +71,14 @@ export interface ShiprocketShipmentProperties {
   status: string;                    // raw status string (verbatim)
   terminal_class: TerminalClass;     // 'rto' | 'delivered' | 'other' | 'none' (shared authority)
   is_terminal: boolean;
+  exception_class: ExceptionClass | null; // SR-5 — 'delayed' | 'ndr' | null (NON-terminal in-flight signal)
   payment_method: 'cod' | 'prepaid' | null;
   pincode: string | null;
   courier: string | null;            // carrier name (new vs GoKwik — courier performance)
   status_changed_at: string;         // ISO-8601
   occurred_at: string;               // ISO-8601 (= status_changed_at)
+  hashed_customer_email?: string;    // SR-6 — sha256(salt || normalized email); raw DROPPED, absent when unknown
+  hashed_customer_phone?: string;    // SR-6 — sha256(salt || E.164 phone); raw DROPPED, absent when unknown
 }
 
 export interface MappedShiprocketShipmentEvent {
@@ -114,6 +126,36 @@ function resolvePaymentMethod(raw: string | null | undefined): 'cod' | 'prepaid'
   return null;
 }
 
+// ── SR-6 — customer identity hashing at the boundary ─────────────────────────────
+// Same salt regime + algorithm as @brain/gokwik-mapper (hashIdentifier/normalizePhone from
+// @brain/identity-core), so a customer carried by both feeds hashes IDENTICALLY per brand
+// (cross-source identity equality holds). The raw phone/email exist only in-memory here and are
+// DROPPED — only the hash survives. Returns undefined when the field is absent, so it is omitted
+// from the canonical envelope entirely (never an empty/placeholder hash).
+
+const EMAIL_KEYS = ['customer_email', 'email', 'user_email'] as const;
+const PHONE_KEYS = ['customer_phone', 'phone', 'mobile', 'contact', 'user_phone'] as const;
+
+function firstField(rec: Record<string, unknown>, keys: readonly string[]): string | undefined {
+  for (const k of keys) {
+    const v = rec[k];
+    if (v != null && String(v).trim().length > 0) return String(v).trim();
+  }
+  return undefined;
+}
+
+function hashCustomerEmail(rec: Record<string, unknown>, saltHex: string, regionCode: string): string | undefined {
+  const email = firstField(rec, EMAIL_KEYS);
+  return email ? hashIdentifier(email, 'email', saltHex, regionCode) : undefined;
+}
+
+function hashCustomerPhone(rec: Record<string, unknown>, saltHex: string, regionCode: string): string | undefined {
+  const phone = firstField(rec, PHONE_KEYS);
+  if (!phone) return undefined;
+  const { normalized } = normalizePhone(phone, regionCode);
+  return hashIdentifier(normalized, 'phone', saltHex, regionCode);
+}
+
 // ── Shipment mapper ─────────────────────────────────────────────────────────────
 
 /**
@@ -121,14 +163,16 @@ function resolvePaymentMethod(raw: string | null | undefined): 'cod' | 'prepaid'
  *
  * @param record      Raw shipment record (awb, order_id, status, status_changed_at, courier, …)
  * @param brandId     Brand UUID (from connector enumeration — MT-1, never from payload)
- * @param saltHex     Per-brand 64-char hex salt for AWB hashing
+ * @param saltHex     Per-brand 64-char hex salt for AWB + identity hashing
  * @param dataSource  'real' shape; in dev the SOURCE is synthetic → 'synthetic' (DEV-HONESTY)
+ * @param regionCode  Brand region code (E.164 phone normalization — SR-6); defaults 'IN'
  */
 export function mapShiprocketShipment(
   record: ShiprocketShipmentRecord,
   brandId: string,
   saltHex: string,
   dataSource: DataSource = 'real',
+  regionCode = 'IN',
 ): MappedShiprocketShipmentEvent {
   const orderId = String(record.order_id ?? '').trim();
   if (!orderId) {
@@ -145,6 +189,9 @@ export function mapShiprocketShipment(
   // rawAwb dropped here — never leaves this scope.
 
   const terminalClass = classifyShipmentStatus(rawStatus);
+  // SR-6: hash phone/email at the boundary; raw PII never leaves this scope.
+  const hashedEmail = hashCustomerEmail(record, saltHex, regionCode);
+  const hashedPhone = hashCustomerPhone(record, saltHex, regionCode);
 
   const properties: ShiprocketShipmentProperties = {
     source: 'shiprocket',
@@ -154,15 +201,118 @@ export function mapShiprocketShipment(
     status: rawStatus,
     terminal_class: terminalClass,
     is_terminal: terminalClass !== 'none',
+    // SR-5: non-terminal exception/NDR signal — does NOT alter terminal_class / is_terminal.
+    exception_class: classifyException(rawStatus),
     payment_method: resolvePaymentMethod(record.payment_method),
     pincode: record.pincode != null ? String(record.pincode).trim() : null,
     courier: record.courier != null ? String(record.courier).trim() || null : null,
     status_changed_at: statusChangedAt,
     occurred_at: statusChangedAt,
+    ...(hashedEmail !== undefined ? { hashed_customer_email: hashedEmail } : {}),
+    ...(hashedPhone !== undefined ? { hashed_customer_phone: hashedPhone } : {}),
   };
 
   return {
     event_name: SHIPROCKET_SHIPMENT_STATUS_V1_EVENT_NAME,
+    occurred_at: statusChangedAt,
+    properties,
+  };
+}
+
+// ── SR-4 — Return mapper (a SEPARATE canonical lane: shiprocket.return_status.v1) ──────────────────
+// A return is mapped to its OWN canonical event with its OWN classifier (classifyReturnStatus) — it
+// NEVER goes through classifyShipmentStatus, so a return whose status is "delivered"/"completed" can
+// never be mis-classified as a forward DELIVERED (the false-delivery / revenue-truth bug SR-4 fixes).
+
+export interface ShiprocketReturnProperties {
+  source: 'shiprocket';
+  data_source: DataSource;
+  awb_number_hash: string | null;    // sha256(salt || normalized AWB) — raw DROPPED
+  order_id: string;                  // ledger spine key (NOT PII) — links the return to the order/shipment
+  status: string;                    // raw return status string (verbatim)
+  return_class: ReturnClass;         // 'return_initiated' | 'return_in_transit' | 'return_delivered' | 'return_completed' | 'none'
+  is_return_complete: boolean;       // return_class === 'return_completed' (the terminal return state)
+  payment_method: 'cod' | 'prepaid' | null;
+  pincode: string | null;
+  courier: string | null;
+  status_changed_at: string;         // ISO-8601
+  occurred_at: string;               // ISO-8601 (= status_changed_at)
+  hashed_customer_email?: string;    // SR-6 — absent when unknown
+  hashed_customer_phone?: string;    // SR-6 — absent when unknown
+}
+
+export interface MappedShiprocketReturnEvent {
+  event_name: typeof SHIPROCKET_RETURN_STATUS_V1_EVENT_NAME;
+  occurred_at: string;
+  properties: ShiprocketReturnProperties;
+}
+
+/**
+ * Deterministic event_id for a Shiprocket RETURN status transition. Seed mirrors the shipment seed
+ * but is namespaced by the return event name, so a return transition and a shipment transition with
+ * the same (awb, status, status_changed_at) get DISTINCT ids (no cross-lane collision):
+ *   sha256(`${brandId}:${awb}:${status}:${statusChangedAt}:shiprocket.return_status.v1`)
+ */
+export function uuidV5FromReturn(
+  brandId: string,
+  awb: string,
+  status: string,
+  statusChangedAt: string,
+): string {
+  return hashToUuidShaped(
+    `${brandId}:${awb}:${status}:${statusChangedAt}:shiprocket.return_status.v1`,
+  );
+}
+
+/**
+ * Map a raw Shiprocket return record to the canonical shiprocket.return_status.v1 event.
+ * Identical boundary discipline to mapShiprocketShipment (AWB + phone/email hashed, raw dropped,
+ * order_id required) — but classified by classifyReturnStatus, NEVER classifyShipmentStatus.
+ */
+export function mapShiprocketReturn(
+  record: ShiprocketShipmentRecord,
+  brandId: string,
+  saltHex: string,
+  dataSource: DataSource = 'real',
+  regionCode = 'IN',
+): MappedShiprocketReturnEvent {
+  const orderId = String(record.order_id ?? '').trim();
+  if (!orderId) {
+    throw new Error('[shiprocket-mapper] return record missing order_id (ledger spine key)');
+  }
+
+  const rawStatus = String(record.status ?? '').trim();
+  const statusChangedAt = new Date(
+    record.status_changed_at ?? new Date().toISOString(),
+  ).toISOString();
+
+  const rawAwb = record.awb != null ? String(record.awb).trim() : '';
+  const awbHash = rawAwb ? hashAwbNumber(rawAwb, saltHex) : null;
+  // rawAwb dropped here — never leaves this scope.
+
+  const returnClass = classifyReturnStatus(rawStatus);
+  const hashedEmail = hashCustomerEmail(record, saltHex, regionCode);
+  const hashedPhone = hashCustomerPhone(record, saltHex, regionCode);
+
+  const properties: ShiprocketReturnProperties = {
+    source: 'shiprocket',
+    data_source: dataSource,
+    awb_number_hash: awbHash,
+    order_id: orderId,
+    status: rawStatus,
+    return_class: returnClass,
+    is_return_complete: returnClass === 'return_completed',
+    payment_method: resolvePaymentMethod(record.payment_method),
+    pincode: record.pincode != null ? String(record.pincode).trim() : null,
+    courier: record.courier != null ? String(record.courier).trim() || null : null,
+    status_changed_at: statusChangedAt,
+    occurred_at: statusChangedAt,
+    ...(hashedEmail !== undefined ? { hashed_customer_email: hashedEmail } : {}),
+    ...(hashedPhone !== undefined ? { hashed_customer_phone: hashedPhone } : {}),
+  };
+
+  return {
+    event_name: SHIPROCKET_RETURN_STATUS_V1_EVENT_NAME,
     occurred_at: statusChangedAt,
     properties,
   };

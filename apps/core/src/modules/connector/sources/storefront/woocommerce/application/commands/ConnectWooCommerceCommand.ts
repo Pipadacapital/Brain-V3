@@ -16,9 +16,10 @@
  *      connector.connected.
  *
  * Webhook auto-registration:
- *   POST /wp-json/wc/v3/webhooks for each order topic (order.created, order.updated) that is not
- *   already registered. The delivery URL is constructed from BRAIN_WEBHOOK_BASE_URL env var
- *   (falls back to a hard-coded default for local dev).
+ *   POST /wp-json/wc/v3/webhooks for each topic in WC_WEBHOOK_TOPICS — the FULL resource set
+ *   (order.*, customer.*, product.*, coupon.* created/updated/deleted) so the store is subscribed to
+ *   send every resource, not just orders (closes the orders-only gap). Idempotent: topics already
+ *   pointing at our delivery URL are skipped. The delivery URL is constructed from BRAIN_WEBHOOK_BASE_URL.
  *
  * Invariants:
  *   - consumer_key + consumer_secret + webhook_secret are NEVER logged (I-S09).
@@ -34,11 +35,11 @@ import type { ISecretsManager } from '@brain/connector-secrets';
 import type { IConnectorInstanceRepository, IConnectorSyncStatusRepository } from '@brain/connector-core';
 import { ConnectorInstance, ConnectorSyncStatus } from '@brain/connector-core';
 import { assertSingleStorefront } from '../../../storefront-exclusivity.js';
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import type pg from 'pg';
 import { log } from '../../../../../../../log.js';
 import { getDefinition } from '../../../../../catalog/index.js';
-import { planCredentialConnect } from '../../../../../credential-schema.js';
+import { planCredentialConnect, provisionGeneratedSecrets } from '../../../../../credential-schema.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -72,8 +73,29 @@ export interface ConnectWooCommerceResult {
 }
 
 // ── Webhook topics to auto-register ──────────────────────────────────────────
-
-const WC_WEBHOOK_TOPICS = ['order.created', 'order.updated'] as const;
+//
+// FULL resource coverage (was orders-only — the direct cause of "orders show, nothing else"): the
+// WooCommerceWebhookStrategy maps customer.* → customer.upsert.v1, product.* → product.upsert.v1,
+// coupon.* → coupon.upsert.v1, order.* → order.live.v1, so the store must be SUBSCRIBED to send them.
+// These are all native wc/v3 webhook topics (resource.event). `*.deleted` are subscribed for
+// forward-compatibility (the strategy fast-acks them today — no canonical hard-delete grain yet).
+// `order.refunded` is NOT a native Woo topic, so it is NOT auto-registered here (registering an
+// unknown topic 400s); the strategy still HANDLES it if a merchant adds a custom action topic, and
+// real-time refunds otherwise ride order.updated → order.live.v1 + the /orders/<id>/refunds backfill.
+const WC_WEBHOOK_TOPICS = [
+  'order.created',
+  'order.updated',
+  'order.deleted',
+  'customer.created',
+  'customer.updated',
+  'customer.deleted',
+  'product.created',
+  'product.updated',
+  'product.deleted',
+  'coupon.created',
+  'coupon.updated',
+  'coupon.deleted',
+] as const;
 
 // Delivery URL for WooCommerce outbound webhooks.
 function webhookDeliveryUrl(): string {
@@ -236,23 +258,25 @@ export class ConnectWooCommerceCommand {
     // Normalise the site URL (strip trailing slash — it becomes the webhook lookup key).
     const normalizedSiteUrl = siteUrl.replace(/\/+$/, '');
 
-    // Generate the per-connector webhook signing secret (used by the webhook handler HMAC check).
-    // I-S09: this value is stored in the bundle and set on WC during webhook registration;
-    // it is NEVER logged at any level.
-    const webhookSecret = randomUUID().replace(/-/g, '') + randomUUID().replace(/-/g, '');
-
     // Derive the secret bundle from the declarative catalog (single SoR for the secret/non-secret
     // split — see credential-schema.ts). For woocommerce the plan yields
-    // { consumer_key, consumer_secret, webhook_secret, site_url }: site_url is a non-secret
-    // bundleNonSecretField the repull client + pixel-install read the store base URL from the bundle.
-    // webhookSecret is generated here (not merchant-entered) and threaded through the value map.
+    // { consumer_key, consumer_secret, site_url }: site_url is a non-secret bundleNonSecretField the
+    // repull client + pixel-install read the store base URL from. The per-connector webhook signing
+    // secret is then MINTED via provisionGeneratedSecrets (catalog generatedSecretFields: webhook_secret)
+    // — the SAME generalized mechanism the Shiprocket/GoKwik connect uses, instead of bespoke code.
+    // I-S09: webhook_secret is stored in the bundle + set on WC during webhook registration; NEVER logged.
     const def = getDefinition('woocommerce')!;
-    const { secretBundle } = planCredentialConnect(def.authFields!, def.credentialConnect!, {
+    const { secretBundle: planBundle } = planCredentialConnect(def.authFields!, def.credentialConnect!, {
       site_url: normalizedSiteUrl,
       consumer_key: consumerKey,
       consumer_secret: consumerSecret,
-      webhook_secret: webhookSecret,
     });
+    const { bundle: secretBundle } = provisionGeneratedSecrets(
+      planBundle,
+      def.credentialConnect!,
+      () => randomBytes(24).toString('hex'),
+    );
+    const webhookSecret = secretBundle['webhook_secret']!;
 
     // Store composite credential bundle as ONE secret (single secret_ref per connector).
     // subKey = normalizedSiteUrl (non-secret store identifier, URL-safe).

@@ -8,7 +8,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { getDefinition } from './catalog/index.js';
-import { planCredentialConnect, splitConnectorCredentials } from './credential-schema.js';
+import { planCredentialConnect, splitConnectorCredentials, provisionGeneratedSecrets } from './credential-schema.js';
 
 function planFor(type: string, values: Record<string, string | undefined>) {
   const def = getDefinition(type)!;
@@ -163,6 +163,82 @@ describe('bespoke-command bundle parity (storeSecret payload === plan.secretBund
       appid: 'app_1',
       appsecret: 'sec',
     });
+  });
+});
+
+/**
+ * SR-2: provisionGeneratedSecrets mints connect-time secrets (Shiprocket's webhook_secret) onto the
+ * plan bundle. planCredentialConnect stays PURE (the shiprocket bundle above is still {email,password});
+ * generation is layered on top and returns the minted values for the connect response.
+ */
+describe('provisionGeneratedSecrets — connect-time minted secrets (SR-2)', () => {
+  const def = getDefinition('shiprocket')!;
+  const spec = def.credentialConnect!;
+  let counter = 0;
+  const gen = () => `minted-${++counter}`;
+
+  it('shiprocket spec declares webhook_secret as a generated field + the webhook routing header', () => {
+    expect(spec.generatedSecretFields).toEqual(['webhook_secret']);
+    expect(spec.webhookRoutingHeader).toBe('x-shiprocket-channel-id');
+  });
+
+  it('mints webhook_secret into the bundle and returns it (it is NOT a planCredentialConnect field)', () => {
+    counter = 0;
+    const plan = planCredentialConnect(def.authFields!, spec, { email: 'a@b.co', password: 'pw', channel_id: 'ch_1' });
+    expect(plan.secretBundle).toEqual({ email: 'a@b.co', password: 'pw' }); // pure plan unchanged
+    const { bundle, generated } = provisionGeneratedSecrets(plan.secretBundle, spec, gen);
+    expect(generated).toEqual({ webhook_secret: 'minted-1' });
+    expect(bundle).toEqual({ email: 'a@b.co', password: 'pw', webhook_secret: 'minted-1' });
+  });
+
+  it('never regenerates a user-supplied value (already present in the bundle)', () => {
+    const { bundle, generated } = provisionGeneratedSecrets(
+      { email: 'a@b.co', webhook_secret: 'user-set' },
+      spec,
+      gen,
+    );
+    expect(generated).toEqual({}); // nothing minted
+    expect(bundle['webhook_secret']).toBe('user-set');
+  });
+
+  it('no-ops for a spec without generatedSecretFields (razorpay)', () => {
+    const rzp = getDefinition('razorpay')!.credentialConnect!;
+    const { bundle, generated } = provisionGeneratedSecrets({ key_id: 'k' }, rzp, gen);
+    expect(generated).toEqual({});
+    expect(bundle).toEqual({ key_id: 'k' });
+  });
+});
+
+/**
+ * #17: the SR-2 minting mechanism is GENERALIZED to GoKwik — its webhook lane is HMAC-gated and was
+ * failing closed because the bundle held only {appid,appsecret} (no webhook_secret). GoKwik now mints
+ * a webhook_secret at connect when the merchant leaves the optional form field blank.
+ */
+describe('provisionGeneratedSecrets — GoKwik webhook_secret minting (#17)', () => {
+  const def = getDefinition('gokwik')!;
+  const spec = def.credentialConnect!;
+  let counter = 0;
+  const gen = () => `gk-minted-${++counter}`;
+
+  it('gokwik spec declares webhook_secret as a generated field + the appid routing header', () => {
+    expect(spec.generatedSecretFields).toEqual(['webhook_secret']);
+    expect(spec.webhookRoutingHeader).toBe('x-gokwik-appid');
+  });
+
+  it('mints webhook_secret when the merchant did not supply one (bundle had only appid/appsecret)', () => {
+    counter = 0;
+    const plan = planCredentialConnect(def.authFields!, spec, { appid: 'app_1', appsecret: 'sec' });
+    expect(plan.secretBundle).toEqual({ appid: 'app_1', appsecret: 'sec' }); // pure plan: no webhook_secret yet
+    const { bundle, generated } = provisionGeneratedSecrets(plan.secretBundle, spec, gen);
+    expect(generated).toEqual({ webhook_secret: 'gk-minted-1' });
+    expect(bundle).toEqual({ appid: 'app_1', appsecret: 'sec', webhook_secret: 'gk-minted-1' });
+  });
+
+  it('honours a merchant-supplied webhook_secret (never regenerated)', () => {
+    const plan = planCredentialConnect(def.authFields!, spec, { appid: 'app_1', appsecret: 'sec', webhook_secret: 'gk-user' });
+    const { bundle, generated } = provisionGeneratedSecrets(plan.secretBundle, spec, gen);
+    expect(generated).toEqual({});
+    expect(bundle['webhook_secret']).toBe('gk-user');
   });
 });
 

@@ -26,6 +26,7 @@ import {
   ChannelRoasSchema,
   JourneyFirstTouchMixSchema,
   ShipmentOutcomesSchema,
+  ReturnFunnelSchema,
   BehaviorOverviewSchema,
   FunnelAnalyticsSchema,
   AbandonedCartSchema,
@@ -130,6 +131,7 @@ import type {
   AnalyticsCodRtoRatesResponse,
   AnalyticsCodMixResponse,
   AnalyticsCheckoutFunnelResponse,
+  AnalyticsCohortRetentionResponse,
   AnalyticsRtoRiskResponse,
   AnalyticsOrderStatusMixResponse,
   AnalyticsContributionMarginResponse,
@@ -140,6 +142,7 @@ import type {
   AnalyticsOrderDetailResponse,
   AnalyticsJourneyFirstTouchMixResponse,
   AnalyticsShipmentOutcomesResponse,
+  AnalyticsReturnFunnelResponse,
   AnalyticsBehaviorOverviewResponse,
   AnalyticsFunnelResponse,
   AnalyticsAbandonedCartResponse,
@@ -564,6 +567,21 @@ export const brandApi = {
       body: JSON.stringify({ brand_id: id }),
       idempotencyKey: generateRequestId(),
     }),
+
+  // Edit the brand profile (safe fields only — display_name/domain/timezone/region_code). PATCH
+  // /api/v1/brands/:id; the server enforces owner/brand_admin + currency immutability. Returns the
+  // updated flat BrandResponse (unwrapped from { request_id, brand }).
+  update: async (
+    id: string,
+    body: Partial<Pick<BrandResponse, 'display_name' | 'domain' | 'timezone' | 'region_code'>>,
+  ): Promise<BrandResponse> => {
+    const res = await bffFetch<{ request_id: string; brand: BrandResponse }>(`/v1/brands/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+      idempotencyKey: generateRequestId(),
+    });
+    return res.brand;
+  },
 
   // Archive (soft-delete) a brand created by mistake → DELETE /api/v1/brands/:id. The brand drops
   // out of lists and its ingest stops; reversible server-side. Owner / brand_admin only.
@@ -1455,6 +1473,18 @@ export const analyticsApi = {
     return data;
   },
 
+  /**
+   * GET /api/v1/analytics/cohort-retention
+   * H9/H11 acquisition-cohort curve (size, lifetime orders/value, orders-per-customer) over the
+   * order spine, from gold_cohorts via the metric registry. Honest no_data on zero cohorts.
+   */
+  getCohortRetention: async (): Promise<AnalyticsCohortRetentionResponse> => {
+    const { data } = await bffFetch<BffEnvelope<AnalyticsCohortRetentionResponse>>(
+      `/v1/analytics/cohort-retention`,
+    );
+    return data;
+  },
+
   /** GET /api/v1/analytics/checkout-funnel — abandoned-checkout funnel (Shopflo, REAL). */
   getCheckoutFunnel: async (): Promise<AnalyticsCheckoutFunnelResponse> => {
     const { data } = await bffFetch<BffEnvelope<AnalyticsCheckoutFunnelResponse>>(
@@ -1600,6 +1630,21 @@ export const analyticsApi = {
       `/v1/analytics/logistics/shipment-outcomes${qsStr ? `?${qsStr}` : ''}`,
     );
     return parseData(ShipmentOutcomesSchema, env);
+  },
+
+  /** GET /api/v1/analytics/logistics/return-funnel — return_class breakdown + completion% (SR-10). */
+  getReturnFunnel: async (params?: {
+    from?: string;
+    to?: string;
+  }): Promise<AnalyticsReturnFunnelResponse> => {
+    const qs = new URLSearchParams();
+    if (params?.from) qs.set('from', params.from);
+    if (params?.to) qs.set('to', params.to);
+    const qsStr = qs.toString();
+    const env = await bffFetch<BffEnvelope<unknown>>(
+      `/v1/analytics/logistics/return-funnel${qsStr ? `?${qsStr}` : ''}`,
+    );
+    return parseData(ReturnFunnelSchema, env);
   },
 
   /** GET /api/v1/analytics/behavior/overview — storefront browse/search/view over a range. */

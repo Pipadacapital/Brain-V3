@@ -28,6 +28,9 @@ export type {
   ShipmentOutcomes as AnalyticsShipmentOutcomesResponse,
   CourierOutcomeDto as ShipmentCourierRow,
   PincodeOutcomeDto as ShipmentPincodeRow,
+  ReturnFunnel as AnalyticsReturnFunnelResponse,
+  ReturnClassBucketDto as ReturnClassRow,
+  ReturnCourierBucketDto as ReturnCourierRow,
   BehaviorOverview as AnalyticsBehaviorOverviewResponse,
   PageTypeBucketDto as BehaviorPageTypeRow,
   BrowsedItemDto as BehaviorBrowsedItemRow,
@@ -116,6 +119,7 @@ export {
   JourneyTimelineSchema,
   JourneyStitchRateSchema,
   ShipmentOutcomesSchema,
+  ReturnFunnelSchema,
   BehaviorOverviewSchema,
   OrderStatusMixSchema,
   DataQualitySummarySchema,
@@ -463,10 +467,27 @@ export interface MarketplaceTile {
   instances: MarketplaceTileInstance[];
 }
 
+/**
+ * Per-tenant inbound-webhook setup returned ONCE on a credential connect when Brain minted the
+ * webhook token (SR-2 — Shiprocket). The merchant pastes `url`, the routing header, and `api_key`
+ * into their provider dashboard. `api_key` is shown once (write-only in the secret bundle after).
+ */
+export interface ConnectWebhookSetup {
+  url: string;
+  api_key: string | null;
+  routing_header: { name: string; value: string } | null;
+}
+
 /** Connect response discriminated union — oauth gets oauth_url, credential gets connected:true. */
 export type ConnectResponseData =
   | { kind: 'oauth'; oauth_url: string }
-  | { kind: 'credential'; connected: true };
+  | {
+      kind: 'credential';
+      connected: true;
+      connector_instance_id?: string;
+      /** Present only when the connector minted a webhook token at connect-time (SR-2). */
+      webhook?: ConnectWebhookSetup;
+    };
 
 export interface ShopifyInstallUrlResponse {
   install_url: string;
@@ -850,6 +871,24 @@ export type AnalyticsCheckoutFunnelResponse =
       abandoned_value_minor: string;  // bigint string (minor units)
       data_source: DataSource;
     };
+
+// ── Cohort retention (H9/H11 — acquisition-cohort curve from gold_cohorts) ──
+// Mirrors apps/core get-cohort-retention.ts (CohortRetentionDto, /v1/analytics/cohort-retention).
+// One row per acquisition cohort-month: size, lifetime orders + realized value, and orders-per-
+// customer (the repeat signal). Money + counts are bigint strings; orders_per_customer is an exact
+// decimal string from the engine, or null when the cohort is empty (never a fabricated 0).
+export interface AnalyticsCohortRetentionRow {
+  cohort_month: string;                // 'YYYY-MM'
+  currency_code: string;
+  cohort_size: string;                 // bigint string — new customers acquired that month
+  cohort_orders: string;               // bigint string — lifetime orders by that cohort
+  cohort_value_minor: string;          // bigint string — lifetime realized value (minor units)
+  orders_per_customer: string | null;  // exact decimal string; null when size = 0
+}
+
+export type AnalyticsCohortRetentionResponse =
+  | { state: 'no_data' }
+  | { state: 'has_data'; cohorts: AnalyticsCohortRetentionRow[] };
 
 // ── RTO-risk distribution (GoKwik RTO-Predict — gokwik.rto_predict.v1 Bronze) ──
 // Per-order RTO risk, counted by each order's LATEST prediction over 30d. Categorical

@@ -48,8 +48,28 @@ export const SERVER_TRUSTED_EVENT_NAMES: ReadonlySet<string> = new Set([
   'settlement.live.v1',
   'shopflo.checkout_abandoned.v1',
   'gokwik.rto_predict.v1',
-  'gokwik.awb_status.v1',
+  // RETIRED (0117): gokwik.awb_status.v1 — GoKwik's synthetic AWB logistics model is gone
+  // (webhook-first payments/checkout; logistics truth is Shiprocket).
   'shiprocket.shipment_status.v1',
+  // CRIT-4 / WOO-3 resource events: the Shopify + WooCommerce CONNECTOR-derived RESOURCE canonicals,
+  // emitted by the backfill/repull/webhook path with a server-derived brand_id (MT-1, from the resolved
+  // connector row — NEVER the API response) and NO install_token / consent signal. On the LIVE collector
+  // lane they previously fell to the pixel R2 gate and were quarantined as `tenant_unresolved`; they must
+  // SKIP the gate (their own server-trusted bronze bridge lands them). Mirrors the Spark gate.
+  'product.upsert.v1',
+  'customer.upsert.v1',
+  'refund.recorded.v1',
+  'coupon.upsert.v1',
+  'fulfillment.recorded.v1',
+  // AD-1: the SHARED Meta+Google entity-metadata feed (campaign/adset/ad name/status/objective), emitted
+  // by meta-entity-sync / google-entity-sync on the live collector lane — connector-derived, server-trusted
+  // brand_id, NO install_token / consent. Must skip the pixel gate or it quarantines tenant_unresolved.
+  'ad.entity.updated',
+  // SHOPFLO lifecycle: the NEW Shopflo checkout-funnel canonicals (webhook-first; brand_id server-derived
+  // from the resolved connector row via the webhook pipeline — MT-1; NO install_token / consent).
+  'shopflo.checkout_started.v1',
+  'shopflo.checkout_step.v1',
+  'shopflo.checkout_completed.v1',
 ]);
 
 export interface ProcessResult {

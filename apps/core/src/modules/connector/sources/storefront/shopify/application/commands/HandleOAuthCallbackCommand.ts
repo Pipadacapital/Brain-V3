@@ -29,6 +29,8 @@ import {
 import type { ISecretsManager } from '@brain/connector-secrets';
 import type { IOAuthStateStore } from '../../infrastructure/state/IOAuthStateStore.js';
 import { resolveBrandOAuthAppCreds } from '../../../../../oauth-app-creds.js';
+import { RegisterWebhooksCommand } from './RegisterWebhooksCommand.js';
+import { log } from '../../../../../../../log.js';
 
 export interface OAuthCallbackInput {
   /** All query parameters from the Shopify callback URL. */
@@ -49,6 +51,23 @@ export interface OAuthCallbackResult {
   // MED-01: secretRef (ARN) removed — caller does not need it; ARN is persisted
   // to connector_instance.secret_ref by connectorRepo.save(instance) internally.
   status: 'connected';
+}
+
+/**
+ * Best-effort public webhook-callback origin for RegisterWebhooksCommand when the caller does not inject
+ * one: the SHOPIFY_CALLBACK_URL origin (the public host that receives OAuth callbacks) → the configured
+ * BRAIN_WEBHOOK_BASE_URL → '' (registration becomes a fail-safe no-op rather than building a bad URL).
+ */
+function defaultWebhookCallbackBaseUrl(): string {
+  const callbackUrl = process.env['SHOPIFY_CALLBACK_URL'];
+  if (callbackUrl) {
+    try {
+      return new URL(callbackUrl).origin;
+    } catch {
+      /* fall through */
+    }
+  }
+  return process.env['BRAIN_WEBHOOK_BASE_URL'] ?? '';
 }
 
 export class HmacValidationError extends Error {
@@ -79,6 +98,15 @@ export class HandleOAuthCallbackCommand {
     private readonly connectorRepo: IConnectorInstanceRepository,
     private readonly syncStatusRepo: IConnectorSyncStatusRepository,
     private readonly emitEvent: (eventName: string, payload: Record<string, unknown>) => Promise<void>,
+    /**
+     * CRIT-3 wiring (both OPTIONAL — defaults keep the existing 5-arg construction + unit tests working):
+     *   - appEnv: gates RegisterWebhooksCommand's dev no-op (non-'production' → stubbed, no Shopify call).
+     *   - webhookCallbackBaseUrl: the PUBLIC core API origin Shopify delivers webhooks to (the same host
+     *     that receives the OAuth callbacks). Falls back to env when omitted.
+     */
+    private readonly appEnv: string =
+      process.env['APP_ENV'] ?? process.env['NODE_ENV'] ?? 'development',
+    private readonly webhookCallbackBaseUrl: string = defaultWebhookCallbackBaseUrl(),
   ) {}
 
   async execute(input: OAuthCallbackInput): Promise<OAuthCallbackResult> {
@@ -172,6 +200,30 @@ export class HandleOAuthCallbackCommand {
       providerConfig: { shop_domain: shopDomain },
     });
     const savedInstance = await this.connectorRepo.save(instance);
+
+    // ── Step 6.5: Register live webhook subscriptions (CRIT-3) ────────────────
+    // Previously dead code — Shopify never delivered live order/compliance events, so any state change
+    // after the connect-time backfill (cancel/refund/COD delivery/RTO) never reached Brain. We now call
+    // it post-instance-save with the public callback origin. It is IDEMPOTENT (GETs existing subs /
+    // treats 422 as success) and dev-gated (no-op when APP_ENV != production). Registration MUST NOT fail
+    // the connect — the token + instance are already persisted — so any error is logged and swallowed;
+    // a reconnect (idempotent) or reaper can retry. Includes the Shopify-mandatory compliance topics.
+    try {
+      const registrar = new RegisterWebhooksCommand(this.secretsManager, this.appEnv);
+      const result = await registrar.execute({
+        shopDomain,
+        secretRef,
+        callbackBaseUrl: this.webhookCallbackBaseUrl,
+      });
+      log.info(
+        `[HandleOAuthCallbackCommand] webhook registration: registered=${result.registered} topics=${result.topicCount} shop=${shopDomain}`,
+      );
+    } catch (err) {
+      // Fail-safe: never block a successful connect on webhook registration.
+      log.warn(
+        `[HandleOAuthCallbackCommand] webhook registration failed (connect still succeeds) shop=${shopDomain}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
 
     // ── Step 7: Write connector_sync_status ───────────────────────────────────
     const syncStatus = ConnectorSyncStatus.create({

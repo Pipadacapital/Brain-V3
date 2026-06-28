@@ -49,6 +49,7 @@ import { setSyncState } from '../meta-spend-repull/run.js';
 import {
   acquireCursorLock,
   upsertCursorValue,
+  getCursorValue,
 } from '../../infrastructure/pg/CursorRepository.js';
 import { log } from "../../log.js";
 
@@ -226,6 +227,151 @@ async function repullConnector(params: RepullParams): Promise<void> {
   log.info(`connector=${ciId} COMPLETED totalEmitted=${totalEmitted}`);
 }
 
+// ── 2-year historical backfill (ADR-AD: idempotent on the deterministic event_id) ───────────────
+//
+// Walks GAQL day-granular spend in 30-day chunks from `to` back to `from` (default 730 days). It
+// reuses streamLevel + the SAME deterministic event_id as the trailing-window repull, so backfill ↔
+// trailing overlap dedups automatically in the Bronze MERGE (no double-count). Resumable: a per-
+// (connector) cursor `google_ads.spend.backfill` records the oldest chunk-floor already completed,
+// so a crash/pause resumes further back instead of restarting (chunked by month → stays under the
+// Google daily ops-quota). RateLimited mid-backfill = STOP cleanly + keep the cursor → next run
+// continues. brand_id is server-trusted from the connector row (MT-1), never the API.
+const BACKFILL_CURSOR_RESOURCE = 'google_ads.spend.backfill' as const;
+const BACKFILL_DEFAULT_DAYS = 730;
+const BACKFILL_CHUNK_DAYS = 30;
+
+export interface GoogleBackfillOptions {
+  /** ISO YYYY-MM-DD floor; defaults to 730 days before today. */
+  fromDate?: string;
+  /** ISO YYYY-MM-DD anchor (newest); defaults to today. */
+  toDate?: string;
+}
+
+export async function runBackfill(
+  targetConnectorInstanceId: string,
+  opts: GoogleBackfillOptions = {},
+): Promise<void> {
+  const pool = new Pool({ connectionString: DB_URL, max: 5 });
+  const kafka = new Kafka({ clientId: 'google-ads-spend-backfill', brokers: BROKERS, retry: { retries: 5 } });
+  const producer = createIdempotentProducer(kafka);
+
+  try {
+    await producer.connect();
+    const connectors = await enumerateGoogleConnectors(pool, targetConnectorInstanceId);
+    if (connectors.length === 0) {
+      log.info('backfill: no connected/activated google_ads connector — exiting');
+      return;
+    }
+    for (const connector of connectors) {
+      await backfillConnector({ connector, pool, producer, opts });
+    }
+  } finally {
+    await producer.disconnect();
+    await pool.end();
+  }
+}
+
+async function backfillConnector(params: {
+  connector: AdConnectorRow;
+  pool: Pool;
+  producer: Producer;
+  opts: GoogleBackfillOptions;
+}): Promise<void> {
+  const { connector, pool, producer, opts } = params;
+  const { connector_instance_id: ciId, brand_id: brandId, secret_ref: secretRef } = connector;
+
+  const creds = await resolveGoogleCredentials(secretRef, connector.ad_account_id);
+  if (!creds) {
+    log.error(`backfill connector=${ciId} — credentials missing (RECONNECT_REQUIRED)`);
+    recordConnectorAuthRejected('google_ads');
+    await setSyncState(pool, brandId, ciId, 'error', 'google credentials missing — RECONNECT_REQUIRED');
+    return;
+  }
+
+  const lockAcquired = await acquireCursorLock(pool, brandId, ciId, BACKFILL_CURSOR_RESOURCE);
+  if (!lockAcquired) {
+    log.info(`backfill connector=${ciId} — cursor locked, skipping`);
+    return;
+  }
+
+  const client = new GoogleAdsSearchStreamClient(creds);
+  try {
+    await client.authenticate();
+  } catch (err) {
+    if (String(err).includes(GOOGLE_AUTH_ERROR)) {
+      recordConnectorAuthRejected('google_ads');
+      await setSyncState(pool, brandId, ciId, 'error', 'google auth error — RECONNECT_REQUIRED');
+      await updateConnectorInstanceHealth(pool, brandId, ciId, 'token_expired');
+      return;
+    }
+    log.error(`backfill connector=${ciId} auth failed`, { err });
+    await setSyncState(pool, brandId, ciId, 'error', 'auth failed');
+    return;
+  }
+
+  const floor = opts.fromDate ?? isoDate(addDays(new Date(), -BACKFILL_DEFAULT_DAYS));
+  // Resume: if a cursor exists it is the oldest floor already completed → continue OLDER than it.
+  const savedFloor = await getCursorValue(pool, brandId, ciId, BACKFILL_CURSOR_RESOURCE);
+  let anchorTo = opts.toDate ?? isoDate(new Date());
+  if (savedFloor) {
+    if (savedFloor <= floor) {
+      log.info(`backfill connector=${ciId} — already reached floor ${savedFloor} <= ${floor}, done`);
+      await setSyncState(pool, brandId, ciId, 'connected', null);
+      return;
+    }
+    anchorTo = isoDate(addDays(new Date(`${savedFloor}T00:00:00Z`), -1));
+  }
+
+  await setSyncState(pool, brandId, ciId, 'syncing', null);
+  let totalEmitted = 0;
+
+  let chunkTo = anchorTo;
+  while (chunkTo >= floor) {
+    const chunkFrom = maxDate(isoDate(addDays(new Date(`${chunkTo}T00:00:00Z`), -(BACKFILL_CHUNK_DAYS - 1))), floor);
+    for (const level of GOOGLE_LEVELS) {
+      let rows;
+      try {
+        rows = await client.streamLevel(level, chunkFrom, chunkTo);
+      } catch (err) {
+        const s = String(err);
+        if (s.includes(GOOGLE_RESOURCE_EXHAUSTED) || s.includes(GOOGLE_RESOURCE_TEMPORARILY_EXHAUSTED)) {
+          // Daily quota hit mid-backfill → STOP cleanly, keep the cursor, resume next run.
+          log.info(`backfill connector=${ciId} RateLimited at chunk ${chunkFrom}..${chunkTo} — pausing (resume next run)`);
+          await setSyncState(pool, brandId, ciId, 'error', 'RateLimited — backfill paused, resumes next run');
+          await updateConnectorInstanceHealth(pool, brandId, ciId, 'rate_limited');
+          return;
+        }
+        if (s.includes(GOOGLE_AUTH_ERROR)) {
+          recordConnectorAuthRejected('google_ads');
+          await setSyncState(pool, brandId, ciId, 'error', 'google auth error — RECONNECT_REQUIRED');
+          await updateConnectorInstanceHealth(pool, brandId, ciId, 'token_expired');
+          return;
+        }
+        if (s.includes(GOOGLE_ACCOUNT_DISABLED)) {
+          await setSyncState(pool, brandId, ciId, 'error', 'ad account disabled — re-enable or reconnect');
+          await updateConnectorInstanceHealth(pool, brandId, ciId, 'account_disabled');
+          return;
+        }
+        log.error(`backfill connector=${ciId} level=${level} chunk=${chunkFrom}..${chunkTo} stream error`, { err });
+        continue; // non-fatal per level
+      }
+      const { emitted } = await emitRows({ rows, brandId, ciId, producer });
+      totalEmitted += emitted;
+    }
+    // Chunk complete → record the chunk floor (oldest fully-processed date) for resumability.
+    await upsertCursorValue(pool, brandId, ciId, BACKFILL_CURSOR_RESOURCE, chunkFrom);
+    if (chunkFrom <= floor) break;
+    chunkTo = isoDate(addDays(new Date(`${chunkFrom}T00:00:00Z`), -1));
+  }
+
+  await setSyncState(pool, brandId, ciId, 'connected', null);
+  log.info(`backfill connector=${ciId} COMPLETED totalEmitted=${totalEmitted} floor=${floor}`);
+}
+
+function maxDate(a: string, b: string): string {
+  return a >= b ? a : b;
+}
+
 interface EmitParams {
   rows: Array<Record<string, unknown>>;
   brandId: string;
@@ -314,6 +460,10 @@ export async function resolveGoogleCredentials(
     clientSecret,
     developerToken,
     customerId,
+    // MCC FIX: login_customer_id is now persisted PER-ACCOUNT in the bundle by the OAuth callback
+    // (the manager CID the leaf must be queried through). The env var is a last-resort single-MCC
+    // fallback only. A wrong/missing login CID otherwise mis-maps to USER_PERMISSION_DENIED →
+    // ACCOUNT_DISABLED → the connector wrongly Disabled.
     loginCustomerId: bundle.login_customer_id ?? process.env['GOOGLE_ADS_LOGIN_CUSTOMER_ID'],
   };
 }
@@ -362,9 +512,22 @@ function addDays(d: Date, days: number): Date {
 }
 
 if (process.argv[1]?.endsWith('run.ts') || process.argv[1]?.endsWith('run.js')) {
-  const ciArg = process.argv[2];
-  run(ciArg).catch((err) => {
-    log.error('fatal', { err: err });
-    process.exit(1);
-  });
+  // CLI: `run.js <ciId?>` = trailing-window repull; `run.js backfill <ciId> [from] [to]` = 2-year backfill.
+  if (process.argv[2] === 'backfill') {
+    const ciArg = process.argv[3];
+    if (!ciArg) {
+      log.error('backfill requires a connector_instance_id: run.js backfill <ciId> [fromDate] [toDate]');
+      process.exit(1);
+    }
+    runBackfill(ciArg, { fromDate: process.argv[4], toDate: process.argv[5] }).catch((err) => {
+      log.error('fatal', { err });
+      process.exit(1);
+    });
+  } else {
+    const ciArg = process.argv[2];
+    run(ciArg).catch((err) => {
+      log.error('fatal', { err: err });
+      process.exit(1);
+    });
+  }
 }

@@ -500,6 +500,50 @@ export const ShipmentOutcomesSchema = z.discriminatedUnion('state', [
 ]);
 export type ShipmentOutcomes = z.infer<typeof ShipmentOutcomesSchema>;
 
+// ── Logistics return funnel (SR-10) — per-return_class breakdown + completion% ────────────────
+// @see apps/core/.../analytics/.../get-return-funnel.ts (silver_return mart, SR-4). Counts use
+// MinorUnitsSchema (bigint-as-string, identical serialization); completion_pct is a 2dp string.
+// SEPARATE from shipment outcomes: returns carry NO terminal_class (never a false forward DELIVERED).
+
+export const ReturnClassSchema = z.enum([
+  'return_initiated',
+  'return_in_transit',
+  'return_delivered',
+  'return_completed',
+  'none',
+]);
+export type ReturnClass = z.infer<typeof ReturnClassSchema>;
+
+export const ReturnClassBucketDtoSchema = z.object({
+  return_class: ReturnClassSchema,
+  count: MinorUnitsSchema,
+});
+export type ReturnClassBucketDto = z.infer<typeof ReturnClassBucketDtoSchema>;
+
+export const ReturnCourierBucketDtoSchema = z.object({
+  courier: z.string(),
+  total: MinorUnitsSchema,
+  completed: MinorUnitsSchema,
+});
+export type ReturnCourierBucketDto = z.infer<typeof ReturnCourierBucketDtoSchema>;
+
+export const ReturnFunnelSchema = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('no_data') }),
+  z.object({
+    state: z.literal('has_data'),
+    from: z.string(),
+    to: z.string(),
+    total: MinorUnitsSchema,
+    completed: MinorUnitsSchema,
+    in_progress: MinorUnitsSchema,
+    completion_pct: z.string().nullable(),
+    by_class: z.array(ReturnClassBucketDtoSchema),
+    by_courier: z.array(ReturnCourierBucketDtoSchema),
+    data_source: DataSourceSchema,
+  }),
+]);
+export type ReturnFunnel = z.infer<typeof ReturnFunnelSchema>;
+
 // ── Storefront behavior (pixel browse/search/view) — from silver_touchpoint ──────────────────
 // @see apps/core/.../analytics/.../get-behavior-overview.ts. Counts use MinorUnitsSchema
 // (bigint-as-string, identical serialization); share_pct is a 2dp string.

@@ -74,10 +74,15 @@ async function readBronzeIceberg(
 ): Promise<{ exists: boolean; volume: DataHealthVolumeBucket[]; lastIngestAt: string | null }> {
   return withSilverBrand(srPool, brandId, async (scope) => {
    try {
-    const existsRows = await scope.runScoped<{ n: number | string }>(
-      `SELECT COUNT(*) AS n FROM ${ICEBERG_BRONZE} WHERE ${BRAND_PREDICATE}`,
+    // PERF: fold the existence COUNT and MAX(ingested_at) into ONE full-table aggregate scan
+    // (both share the same predicate) — one Trino round-trip instead of two. Queries inside a
+    // single withSilverBrand scope run on one connection and MUST stay serial (no Promise.all
+    // here — that would trip pg's "client already executing a query"); the parallelism win is
+    // hoisted to getDataHealth, which runs this Trino read alongside the PG sync read.
+    const headRows = await scope.runScoped<{ n: number | string; last_ingest_at: Date | string | null }>(
+      `SELECT COUNT(*) AS n, MAX(ingested_at) AS last_ingest_at FROM ${ICEBERG_BRONZE} WHERE ${BRAND_PREDICATE}`,
     );
-    if (Number(existsRows[0]?.n ?? 0) === 0) {
+    if (Number(headRows[0]?.n ?? 0) === 0) {
       return { exists: false, volume: [], lastIngestAt: null };
     }
     // Per-day volume over the bounded window. Trino date_trunc + interval math; the brand predicate
@@ -88,9 +93,6 @@ async function readBronzeIceberg(
         WHERE occurred_at >= (now() - INTERVAL '${VOLUME_WINDOW_DAYS}' DAY) AND ${BRAND_PREDICATE}
         GROUP BY 1 ORDER BY 1 ASC`,
     );
-    const ingestRows = await scope.runScoped<{ last_ingest_at: Date | string | null }>(
-      `SELECT MAX(ingested_at) AS last_ingest_at FROM ${ICEBERG_BRONZE} WHERE ${BRAND_PREDICATE}`,
-    );
     const toIso = (v: Date | string | null | undefined): string | null =>
       v == null ? null : (v instanceof Date ? v : new Date(v)).toISOString();
     return {
@@ -99,7 +101,7 @@ async function readBronzeIceberg(
         bucket: (toIso(r.bucket) ?? '').split('T')[0] as string,
         count: String(r.count),
       })),
-      lastIngestAt: toIso(ingestRows[0]?.last_ingest_at),
+      lastIngestAt: toIso(headRows[0]?.last_ingest_at),
     };
    } catch (err) {
      // The Iceberg Bronze catalog isn't materialized/reachable yet (fresh env, or a transient
@@ -128,9 +130,14 @@ export async function getDataHealth(
   if (!hasSilver(deps)) return { state: 'no_data' };
 
   // ── Iceberg Bronze source — brand-isolated via the withSilverBrand seam ────────────
-  const bronze = await readBronzeIceberg(deps.srPool, brandId);
+  // PERF: the Trino Bronze read (srPool) and the PG sync-status read (deps.pool) hit DIFFERENT
+  // pools, so run them concurrently — the slow Trino scan no longer waits on the PG round-trip.
+  // sync is discarded when Bronze is empty; computing it eagerly is a cheap PG query.
+  const [bronze, sync] = await Promise.all([
+    readBronzeIceberg(deps.srPool, brandId),
+    readSyncStatus(deps, brandId),
+  ]);
   if (!bronze.exists) return { state: 'no_data' };
-  const sync = await readSyncStatus(deps, brandId);
   return {
     state: 'has_data',
     eventVolume: bronze.volume,

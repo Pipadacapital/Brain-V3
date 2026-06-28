@@ -80,10 +80,12 @@ export async function schemaValidityCheck(
   try {
     const accepted = await silver.scopedQuery<{ n: string | number }>(
       brandId,
+      // Trino dialect: now() - INTERVAL 'N' HOUR (NOT StarRocks date_sub(now(), INTERVAL N HOUR) —
+      // Trino rejects date_sub + the unquoted-N interval, which silently became bronze_unreachable/D).
       `SELECT COUNT(*) AS n
          FROM ${ICEBERG_BRONZE}
         WHERE ${BRAND_PREDICATE}
-          AND ingested_at >= date_sub(now(), INTERVAL ${VALIDITY_WINDOW_HOURS} HOUR)`,
+          AND ingested_at >= now() - INTERVAL '${VALIDITY_WINDOW_HOURS}' HOUR`,
     );
     acceptedCount = Number(accepted[0]?.n ?? 0);
   } catch (err) {

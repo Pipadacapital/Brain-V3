@@ -76,7 +76,8 @@ export const StreamWorkerEnvSchema = CommonEnvSchema.extend({
     .default('stream-worker-erasure-orchestrator'),
   LIVE_LEDGER_CONSUMER_GROUP_ID: z.string().default('live-ledger-bridge'),
   SETTLEMENT_LEDGER_CONSUMER_GROUP_ID: z.string().default('settlement-ledger-bridge'),
-  GOKWIK_AWB_LEDGER_CONSUMER_GROUP_ID: z.string().default('gokwik-awb-ledger-bridge'),
+  // RETIRED (0117): GOKWIK_AWB_LEDGER_CONSUMER_GROUP_ID — the GoKwik AWB logistics model is gone
+  // (webhook-first payments/checkout; logistics truth is Shiprocket).
   /** Consumer group for identity-change → scoped-Gold-recompute pipeline (V4). */
   IDENTITY_CHANGE_RECOMPUTE_CONSUMER_GROUP_ID: z
     .string()
@@ -122,9 +123,12 @@ export const StreamWorkerEnvSchema = CommonEnvSchema.extend({
   /**
    * Optional — when absent, the Silver-tier DQ checks + the journey-stitch / feature
    * materialization jobs degrade to honest no_data (the serving tier is the SOLE source).
-   * Optional-absence semantics carried over from the removed StarRocks host field.
+   * Defaults to 'localhost' to MATCH the core config (packages/config/src/core.ts) — without a
+   * default the journey-stitch-from-identity job (reads mv_silver_touchpoint over Trino) silently
+   * SKIPPED when TRINO_HOST was absent from the env file, starving stitches → attribution. The
+   * serving tier is always present in dev/prod, so localhost is the correct default; override per env.
    */
-  TRINO_HOST: z.string().optional(),
+  TRINO_HOST: z.string().default('localhost'),
   /** Trino HTTP/JDBC port (container: 8080, host: 8090 in docker-compose). */
   TRINO_PORT: z.coerce.number().int().default(8090),
 
@@ -171,6 +175,12 @@ export const StreamWorkerEnvSchema = CommonEnvSchema.extend({
   SHIPROCKET_BASE_URL: z.string().default('https://apiv2.shiprocket.in'),
   SHIPROCKET_SHIPMENTS_PATH: z.string().default('/v1/external/orders'),
   SHIPROCKET_SHIPMENTS_KEY: z.string().default('data'),
+  /**
+   * SR-7: per-AWB Shipment Tracking endpoint (DOCUMENTED, unlike the list path). Used for HISTORICAL
+   * backfill of a single AWB's lifecycle when the list-window doesn't cover it. `{awb}` is substituted.
+   * Default per Shiprocket docs: GET /v1/external/courier/track/awb/{awb}.
+   */
+  SHIPROCKET_TRACK_PATH: z.string().default('/v1/external/courier/track/awb/{awb}'),
   /** GoKwik AWB fixture path (dev). Optional — client defaults. */
   GOKWIK_AWB_FIXTURE_PATH: z.string().optional(),
 

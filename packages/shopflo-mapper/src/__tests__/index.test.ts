@@ -14,8 +14,20 @@ import { describe, it, expect } from 'vitest';
 import {
   moneyToMinorString,
   mapShopfloCheckoutAbandoned,
+  mapShopfloOrder,
+  mapShopfloRefund,
+  mapShopfloPayment,
+  mapShopfloCheckout,
   uuidV5FromShopfloCheckout,
   SHOPFLO_CHECKOUT_ABANDONED_V1_EVENT_NAME,
+  ORDER_LIVE_V1_EVENT_NAME,
+  REFUND_RECORDED_V1_EVENT_NAME,
+  PAYMENT_ATTEMPTED_V1_EVENT_NAME,
+  PAYMENT_AUTHORIZED_V1_EVENT_NAME,
+  CHECKOUT_ABANDONED_V1_EVENT_NAME,
+  SHOPFLO_CHECKOUT_STARTED_V1_EVENT_NAME,
+  SHOPFLO_CHECKOUT_STEP_V1_EVENT_NAME,
+  SHOPFLO_CHECKOUT_COMPLETED_V1_EVENT_NAME,
   type ShopfloCheckoutAbandonedPayload,
 } from '../index.js';
 
@@ -120,5 +132,113 @@ describe('UT-6/UT-7: money minor units, data_source, event shape', () => {
   it('data_source defaults real; synthetic when requested (DEV-HONESTY)', () => {
     expect(mapShopfloCheckoutAbandoned(PAYLOAD, BRAND_A, SALT_A).properties.data_source).toBe('real');
     expect(mapShopfloCheckoutAbandoned(PAYLOAD, BRAND_A, SALT_A, 'IN', 'synthetic').properties.data_source).toBe('synthetic');
+  });
+});
+
+// ─── SLICE B — full reimplementation: order / payment / refund / checkout-funnel ──────────────────────
+
+describe('UT-8: mapShopfloOrder → order.live.v1 (THE order-source fix)', () => {
+  const ORDER = {
+    event_name: 'order.paid',
+    order_id: 'SF-1001',
+    total_price: 1299,
+    total_tax: 99,
+    total_discount: 100,
+    currency: 'INR',
+    payment_method: 'prepaid',
+    updated_at: '2026-06-10T12:00:00Z',
+    customer: { uid: 'cust_9', email: 'Buyer@Example.com', phone: '+917777777777' },
+    line_items: [{ sku: 'TEE', title: 'Tee', quantity: 2, price: 650 }],
+    utm_params: { utm_source: 'meta', utm_campaign: 'spring' },
+    discount_code: 'SPRING10',
+  };
+
+  it('emits canonical order.live.v1 with bigint-minor money + currency', () => {
+    const ev = mapShopfloOrder(ORDER, BRAND_A, SALT_A);
+    expect(ev.event_name).toBe(ORDER_LIVE_V1_EVENT_NAME);
+    expect(ev.properties.source).toBe('shopflo');
+    expect(ev.properties.order_id).toBe('SF-1001');
+    expect(ev.properties.amount_minor).toBe('129900');
+    expect(ev.properties.currency_code).toBe('INR');
+    expect(ev.properties.financial_status).toBe('paid');
+    expect(ev.properties.tax_total_minor).toBe('9900');
+    expect(ev.properties.discount_total_minor).toBe('10000');
+    expect(ev.properties.line_items?.[0]!.unit_price_minor).toBe('65000');
+  });
+
+  it('event_id is deterministic + replay-stable (same as Shopify/GoKwik order lane)', () => {
+    const a = mapShopfloOrder(ORDER, BRAND_A, SALT_A);
+    const b = mapShopfloOrder(ORDER, BRAND_A, SALT_A);
+    expect(a.event_id).toBe(b.event_id);
+    expect(a.event_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  });
+
+  it('threads non-PII journey context; hashes email/phone; raw never present', () => {
+    const ev = mapShopfloOrder(ORDER, BRAND_A, SALT_A);
+    const json = JSON.stringify(ev);
+    expect(json).not.toContain('Buyer@Example.com');
+    expect(json).not.toContain('+917777777777');
+    expect(ev.properties.hashed_customer_email).toMatch(/^[0-9a-f]{64}$/);
+    expect(ev.properties.utm_params).toEqual({ utm_source: 'meta', utm_campaign: 'spring' });
+    expect(ev.properties.discount_code).toBe('SPRING10');
+  });
+
+  it('normalizes lifecycle subtypes to recognition-gate statuses', () => {
+    expect(mapShopfloOrder({ ...ORDER, event_name: 'order.failed' }, BRAND_A, SALT_A).properties.financial_status).toBe('voided');
+    expect(mapShopfloOrder({ ...ORDER, event_name: 'order.cancelled' }, BRAND_A, SALT_A).properties.financial_status).toBe('cancelled');
+    expect(mapShopfloOrder({ ...ORDER, event_name: 'order.refunded' }, BRAND_A, SALT_A).properties.financial_status).toBe('refunded');
+  });
+
+  it('throws when order_id missing (no phantom spine key)', () => {
+    expect(() => mapShopfloOrder({ event_name: 'order.paid', total_price: 1 }, BRAND_A, SALT_A)).toThrow(/order_id/);
+  });
+});
+
+describe('UT-9: mapShopfloRefund → refund.recorded.v1', () => {
+  it('maps a standalone refund with bigint-minor amount + stable id', () => {
+    const ev = mapShopfloRefund({ refund_id: 'RF-7', order_id: 'SF-1001', amount: 500, currency: 'inr', occurred_at: '2026-06-11T00:00:00Z' }, BRAND_A, SALT_A);
+    expect(ev.event_name).toBe(REFUND_RECORDED_V1_EVENT_NAME);
+    expect(ev.properties.amount_minor).toBe('50000');
+    expect(ev.properties.currency_code).toBe('INR');
+    expect(ev.properties.order_id).toBe('SF-1001');
+    expect(ev.event_id).toBe(mapShopfloRefund({ refund_id: 'RF-7' }, BRAND_A, SALT_A).event_id);
+  });
+});
+
+describe('UT-10: mapShopfloPayment → payment.attempted/authorized.v1', () => {
+  it('authorized → payment.authorized.v1 with hashed payment id', () => {
+    const ev = mapShopfloPayment({ order_id: 'SF-1', payment_id: 'pay_abc', amount: 1299, currency: 'INR' }, BRAND_A, SALT_A, 'IN', 'authorized');
+    expect(ev.event_name).toBe(PAYMENT_AUTHORIZED_V1_EVENT_NAME);
+    expect(ev.properties.payment_status).toBe('authorized');
+    expect(ev.properties.payment_id_hash).toMatch(/^[0-9a-f]{64}$/);
+    expect(JSON.stringify(ev)).not.toContain('pay_abc');
+    expect(ev.properties.amount_minor).toBe('129900');
+  });
+  it('attempted failure status → failed; else initiated', () => {
+    expect(mapShopfloPayment({ order_id: 'SF-1', status: 'declined' }, BRAND_A, SALT_A, 'IN', 'attempted').properties.payment_status).toBe('failed');
+    expect(mapShopfloPayment({ order_id: 'SF-1', status: 'pending' }, BRAND_A, SALT_A, 'IN', 'attempted').properties.payment_status).toBe('initiated');
+    expect(mapShopfloPayment({ order_id: 'SF-1' }, BRAND_A, SALT_A, 'IN', 'attempted').event_name).toBe(PAYMENT_ATTEMPTED_V1_EVENT_NAME);
+  });
+});
+
+describe('UT-11: mapShopfloCheckout(kind) → funnel canon', () => {
+  const CK = { checkout_id: 'chk_77', total_price: 65, currency: 'INR', occurred_at: '2026-06-10T12:00:00Z', step: 'address' };
+  it('routes each kind to the right canonical event name', () => {
+    expect(mapShopfloCheckout(CK, BRAND_A, SALT_A, 'IN', 'abandoned').event_name).toBe(CHECKOUT_ABANDONED_V1_EVENT_NAME);
+    expect(mapShopfloCheckout(CK, BRAND_A, SALT_A, 'IN', 'started').event_name).toBe(SHOPFLO_CHECKOUT_STARTED_V1_EVENT_NAME);
+    expect(mapShopfloCheckout(CK, BRAND_A, SALT_A, 'IN', 'step').event_name).toBe(SHOPFLO_CHECKOUT_STEP_V1_EVENT_NAME);
+    expect(mapShopfloCheckout(CK, BRAND_A, SALT_A, 'IN', 'completed').event_name).toBe(SHOPFLO_CHECKOUT_COMPLETED_V1_EVENT_NAME);
+  });
+  it('stamps source=shopflo, bigint-minor money, step_name only on step', () => {
+    const step = mapShopfloCheckout(CK, BRAND_A, SALT_A, 'IN', 'step');
+    expect(step.properties.source).toBe('shopflo');
+    expect(step.properties.total_price_minor).toBe('6500');
+    expect(step.properties.step_name).toBe('address');
+    expect(mapShopfloCheckout(CK, BRAND_A, SALT_A, 'IN', 'started').properties.step_name).toBeUndefined();
+  });
+  it('distinct event_id per (kind, checkout)', () => {
+    const started = mapShopfloCheckout(CK, BRAND_A, SALT_A, 'IN', 'started');
+    const completed = mapShopfloCheckout(CK, BRAND_A, SALT_A, 'IN', 'completed');
+    expect(started.event_id).not.toBe(completed.event_id);
   });
 });

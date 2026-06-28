@@ -21,7 +21,13 @@ import {
 
 // Event names from the LEAF module (cycle-safe) — used at module-evaluation top-level
 // in ResourceDescriptor `emits` arrays, so must NOT come from index.ts/resources.ts.
-import { ORDER_LIVE_V1_EVENT_NAME, PRODUCT_UPSERT_V1_EVENT_NAME } from './event-names.js';
+import {
+  ORDER_LIVE_V1_EVENT_NAME,
+  PRODUCT_UPSERT_V1_EVENT_NAME,
+  CUSTOMER_UPSERT_V1_EVENT_NAME,
+  COUPON_UPSERT_V1_EVENT_NAME,
+  REFUND_RECORDED_V1_EVENT_NAME,
+} from './event-names.js';
 
 /** Provider id — matches CONNECTOR_CATALOG + IConnector.provider + the ConnectorFactory key. */
 export const WOOCOMMERCE_PROVIDER = 'woocommerce' as const;
@@ -60,8 +66,66 @@ export const WOOCOMMERCE_PRODUCTS_RESOURCE: ResourceDescriptor = {
   description: 'WooCommerce wc/v3 /products — catalogue (variations, sku, price).',
 };
 
+/**
+ * Customers — WooCommerce wc/v3 /customers (hashed PII only — D-10 / I-S02). Identity is the
+ * customer id; per-state via date_modified so a profile change restates idempotently. Closes the
+ * customer-DIRECTORY gap (customers who never ordered were invisible — the order-derived projection
+ * only ever sees buyers).
+ */
+export const WOOCOMMERCE_CUSTOMERS_RESOURCE: ResourceDescriptor = {
+  name: 'customers',
+  kind: 'rest',
+  emits: [CUSTOMER_UPSERT_V1_EVENT_NAME],
+  backfillSupported: true,
+  maxBackfillWindowMs: TWO_YEARS_MS,
+  cursorStrategy: 'page_number',
+  dedupKeyStrategy: 'provider_id+kind',
+  pageSize: 100,
+  description: 'WooCommerce wc/v3 /customers — hashed customer directory (no raw PII).',
+};
+
+/**
+ * Coupons — WooCommerce wc/v3 /coupons (NEW canonical grain coupon.upsert.v1). Identity is the
+ * coupon id; per-state via date_modified. Coupons previously survived ONLY as order-nested
+ * discount_codes[] — they now have a first-class resource.
+ */
+export const WOOCOMMERCE_COUPONS_RESOURCE: ResourceDescriptor = {
+  name: 'coupons',
+  kind: 'rest',
+  emits: [COUPON_UPSERT_V1_EVENT_NAME],
+  backfillSupported: true,
+  maxBackfillWindowMs: TWO_YEARS_MS,
+  cursorStrategy: 'page_number',
+  dedupKeyStrategy: 'provider_id+kind',
+  pageSize: 100,
+  description: 'WooCommerce wc/v3 /coupons — discount catalogue (code, type, amount).',
+};
+
+/**
+ * Refunds — read via /orders/<id>/refunds (and the order.refunded webhook). A Woo refund id is
+ * globally unique → plain provider_id dedup (one refund → one refund.recorded.v1). Makes refunds a
+ * first-class revenue-reversal grain instead of an order-payload fold.
+ */
+export const WOOCOMMERCE_REFUNDS_RESOURCE: ResourceDescriptor = {
+  name: 'refunds',
+  kind: 'rest',
+  emits: [REFUND_RECORDED_V1_EVENT_NAME],
+  backfillSupported: true,
+  maxBackfillWindowMs: TWO_YEARS_MS,
+  cursorStrategy: 'page_number',
+  dedupKeyStrategy: 'provider_id',
+  pageSize: 100,
+  description: 'WooCommerce refunds (read via /orders refunds[]) — revenue reversals.',
+};
+
 /** The complete WooCommerce ingestion manifest. Validate with assertManifestValid() at startup. */
 export const WOOCOMMERCE_MANIFEST: IngestionManifest = {
   provider: WOOCOMMERCE_PROVIDER,
-  resources: [WOOCOMMERCE_ORDERS_RESOURCE, WOOCOMMERCE_PRODUCTS_RESOURCE],
+  resources: [
+    WOOCOMMERCE_ORDERS_RESOURCE,
+    WOOCOMMERCE_PRODUCTS_RESOURCE,
+    WOOCOMMERCE_CUSTOMERS_RESOURCE,
+    WOOCOMMERCE_COUPONS_RESOURCE,
+    WOOCOMMERCE_REFUNDS_RESOURCE,
+  ],
 };

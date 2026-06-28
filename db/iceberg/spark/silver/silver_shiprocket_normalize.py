@@ -1,6 +1,29 @@
 """
 silver_shiprocket_normalize.py — ADR-0006 P4: normalize RAW Shiprocket shipment-tracking rows in Spark Silver.
 
+══════════════════════════════════════════════════════════════════════════════════════════════════════
+SR-8 DECISION (Brain V4, finalized) — KEEP AS A DUAL-RUN PARITY SHADOW; NOT ON THE LIVE PATH.
+──────────────────────────────────────────────────────────────────────────────────────────────────────
+This job stays a SHADOW: by default it writes to silver_collector_event_shiprocket_shadow (TARGET_TABLE
+override) and is GUARDED to skip when its raw lane (brain_bronze.shiprocket_shipments_raw) is empty — which it is
+today, because the LIVE boundary is the TS mapper (@brain/shiprocket-mapper), which emits the canonical
+`shiprocket.shipment_status.v1` directly onto the collector lane. We do NOT cut this onto the live path now; we
+keep it as the ADR-0006 verbatim→canonical parity oracle so a future connector-emits-verbatim cutover can be
+proven byte-identical before flipping. RETIREMENT is deferred, not chosen.
+
+LOCKSTEP OBLIGATION (why this file is in Slice 3's lane): its LOCAL port of the @brain/logistics-status authority
+MUST track the TS authority. As of SR-5 it carries _EXCEPTION + _classify_exception + the additive
+`exception_class` field — kept byte-aligned with packages/logistics-status/src/index.ts (EXCEPTION_STATES /
+classifyException) and with silver_shipment_event.py's exception_class projection. The 3 FROZEN terminal sets
+(_RTO_TERMINAL / _DELIVERED_TERMINAL / _OTHER_TERMINAL) are UNCHANGED (GoKwik parity).
+
+RETURNS (SR-4) ARE OUT OF SCOPE HERE — BY DESIGN. This shadow reads only the FORWARD shipment raw lane
+(shiprocket_shipments_raw → ShiprocketShipmentProperties). The RETURN family flows on the DISJOINT canonical
+event `shiprocket.return_status.v1` (classifyReturnStatus, never classifyShipmentStatus) into the dedicated
+silver_return mart. There is therefore NO RETURN_* class to port into this forward-only normalizer; adding one
+here would be wrong (it would risk a return re-entering the forward terminal_class authority).
+══════════════════════════════════════════════════════════════════════════════════════════════════════
+
 Reads the RAW Shiprocket shipment Bronze (brain_bronze.shiprocket_shipments_raw, written by the Kafka
 Connect Iceberg sink from {env}.shiprocket.shipments.raw.v1) and produces the canonical
 shiprocket.shipment_status.v1 rows the shipment marts consume — replacing the TS
@@ -88,6 +111,22 @@ _DELIVERED_TERMINAL = {"delivered", "completed"}
 _OTHER_TERMINAL = {
     "cancelled", "lost", "damaged", "returned", "canceled", "destroyed", "disposed", "disposed of",
 }
+# SR-5: NON-TERMINAL exception/NDR sub-class — kept in lockstep with @brain/logistics-status
+# (EXCEPTION_STATES + classifyException). 'delayed' → 'delayed'; NDR / undelivered / delivery
+# exception → 'ndr'; else null. A SEPARATE dimension — it does NOT alter terminal_class.
+_EXCEPTION = {
+    "delayed", "exception", "ndr", "undelivered",
+    "address issue", "customer unavailable", "failed delivery attempt",
+}
+
+
+def _classify_exception(raw):
+    s = _normalize_status(raw)
+    if s == "delayed":
+        return "delayed"
+    if s in _EXCEPTION:
+        return "ndr"
+    return None
 
 
 
@@ -116,6 +155,7 @@ u_iso = udf(lambda a: rn.iso_ms(a) if a else None, StringType())
 u_awb_hash = udf(lambda v, salt: rn.hash_salted_bytes(v, salt) if v else None, StringType())
 u_classify = udf(lambda s: _classify_shipment_status(s), StringType())
 u_is_terminal = udf(lambda s: _classify_shipment_status(s) != "none", BooleanType())
+u_exception = udf(lambda s: _classify_exception(s), StringType())
 u_payment = udf(lambda s: _resolve_payment_method(s), StringType())
 u_eid = udf(
     lambda brand, awb, status, sca: _event_id_shipment(brand, awb, status, sca)
@@ -169,6 +209,7 @@ def build(spark: SparkSession):
         .withColumn("status_norm", trim(col("status")))
         .withColumn("terminal_class", u_classify(col("status")))
         .withColumn("is_terminal", u_is_terminal(col("status")))
+        .withColumn("exception_class", u_exception(col("status")))
         .withColumn("payment_method_norm", u_payment(col("payment_method")))
         .withColumn("awb_number_hash", u_awb_hash(trim(col("awb")), col("salt_hex")))
         .withColumn("pincode_norm", trim(col("pincode")))
@@ -218,6 +259,7 @@ def build(spark: SparkSession):
         col("status_norm").alias("status"),
         col("terminal_class").alias("terminal_class"),
         col("is_terminal").alias("is_terminal"),
+        col("exception_class").alias("exception_class"),  # SR-5 — non-terminal NDR/delay signal (additive)
         col("payment_method_norm").alias("payment_method"),
         col("pincode_norm").alias("pincode"),
         col("courier_norm").alias("courier"),

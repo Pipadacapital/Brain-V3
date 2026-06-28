@@ -14,6 +14,14 @@ SOURCES (multi-source by design):
   - razorpay (settlement.live.v1, pre-settlement variants): entity_type='payment_authorized' | 'order_paid'
              (the @brain/razorpay-mapper pre-settlement signals — carry authoritative amount_minor + currency,
               hashed payment_id only.)
+  - webhook connectors (gokwik | shopflo) : 'payment.attempted.v1' | 'payment.authorized.v1'
+             (the source-neutral webhook-first canonical payment events — server-trusted, brand derived
+              from the connector row. payment.attempted → 'initiated' (or 'failed' on a failure status),
+              payment.authorized → 'authorized'. Carry authoritative amount_minor + currency_code and a
+              hashed payment_id only — raw DROPPED at the strategy boundary. SOURCE DISCRIMINANT: the
+              generic payment.*.v1 names cannot carry the source via event_type alone, so `source` is read
+              from payload.properties.source (mapper-stamped 'gokwik' | 'shopflo'), defaulting to 'gokwik'
+              for back-compat. See docs/architecture/{gokwik,shopflo}-connector-*.md.)
 
 GRAIN   : 1 row per (brand_id, event_id) — the Bronze idempotency key. payment_status is the normalized
           discriminant (initiated|succeeded|failed|authorized|paid).
@@ -37,13 +45,19 @@ from __future__ import annotations
 
 from _silver_base import ensure_silver_table, merge_on_pk, prop, read_bronze_events, run_job
 from _silver_technical import payment_amount_violations_udf, write_quarantine
-from pyspark.sql.functions import array_join, col, lit, size, when
+from pyspark.sql.functions import array_join, coalesce, col, lit, lower, size, when
 
 TABLE = "silver_payment"
 
 PIXEL_EVENTS = ["payment.initiated", "payment.succeeded", "payment.failed"]
 # Pre-settlement razorpay variants ride settlement.live.v1; we keep only the payment-lifecycle entity_types.
 CONNECTOR_EVENT = "settlement.live.v1"
+# Source-neutral webhook-first canonical payment events (server-trusted) — money-bearing. Emitted by BOTH
+# the gokwik and shopflo webhook strategies; the `source` is read from payload.properties.source (not the
+# event_type, which is identical for both), defaulting to 'gokwik' for back-compat.
+WEBHOOK_PAYMENT_EVENTS = ["payment.attempted.v1", "payment.authorized.v1"]
+# Raw attempt-status tokens that mean the payment.attempted.v1 attempt FAILED (else it is 'initiated').
+_GOKWIK_FAILED_STATES = ["failed", "failure", "declined", "error"]
 
 COLUMNS_SQL = """
           brand_id        string    NOT NULL,
@@ -66,6 +80,23 @@ def _normalize_status_pixel(event_type_col):
         when(event_type_col == "payment.initiated", lit("initiated"))
         .when(event_type_col == "payment.succeeded", lit("succeeded"))
         .when(event_type_col == "payment.failed", lit("failed"))
+        .otherwise(lit("unknown"))
+    )
+
+
+def _normalize_status_gokwik(event_type_col, status_col):
+    """GoKwik canonical payment events → the normalized payment_status discriminant.
+
+    payment.authorized.v1 → 'authorized'. payment.attempted.v1 → 'failed' when the attempt's raw status
+    is a failure token, else 'initiated' (the attempt was made; outcome ok/pending).
+    """
+    return (
+        when(event_type_col == "payment.authorized.v1", lit("authorized"))
+        .when(
+            (event_type_col == "payment.attempted.v1") & lower(status_col).isin(*_GOKWIK_FAILED_STATES),
+            lit("failed"),
+        )
+        .when(event_type_col == "payment.attempted.v1", lit("initiated"))
         .otherwise(lit("unknown"))
     )
 
@@ -112,7 +143,32 @@ def build(spark):
         )
     )
 
-    unioned = pixel.unionByName(conn).where(col("event_id").isNotNull() & col("brand_id").isNotNull())
+    # ── Lane 3: webhook-first canonical payment events (gokwik | shopflo, server-trusted) ────────────
+    # Money-bearing (authoritative amount_minor + currency_code), hashed payment_id only — never raw.
+    # SOURCE DISCRIMINANT: payload.properties.source (mapper-stamped), default 'gokwik' for back-compat —
+    # so shopflo payments are labeled 'shopflo' while existing gokwik rows stay byte-identical.
+    webhook = read_bronze_events(spark, WEBHOOK_PAYMENT_EVENTS).select(
+        col("brand_id"),
+        col("event_id"),
+        coalesce(prop("pj", "source"), lit("gokwik")).alias("source"),
+        _normalize_status_gokwik(
+            col("event_type"), coalesce(prop("pj", "payment_status"), prop("pj", "status"))
+        ).alias("payment_status"),
+        prop("pj", "order_id").alias("order_id"),
+        prop("pj", "payment_id_hash").alias("payment_id_hash"),
+        lit(None).cast("string").alias("brain_anon_id"),
+        lit(None).cast("string").alias("session_id"),
+        prop("pj", "amount_minor").cast("bigint").alias("amount_minor"),
+        prop("pj", "currency_code").alias("currency_code"),
+        col("occurred_at"),
+        col("ingested_at"),
+        col("pj").alias("_payload"),
+    )
+
+    unioned = (
+        pixel.unionByName(conn).unionByName(webhook)
+        .where(col("event_id").isNotNull() & col("brand_id").isNotNull())
+    )
 
     # ── Stage-2 BUSINESS gate: a money-bearing payment must be positive integer minor units ──────────
     # is_money_bearing := the deterministic connector lane (source<>'pixel'); pixel markers carry no money.

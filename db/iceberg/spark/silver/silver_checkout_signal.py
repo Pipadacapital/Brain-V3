@@ -106,7 +106,16 @@ def _build_signal_df(spark: SparkSession):
         WITH raw AS (
             SELECT brand_id, event_id, event_type, occurred_at, payload
             FROM {BRONZE_TABLE}
-            WHERE event_type IN ('gokwik.rto_predict.v1', 'shopflo.checkout_abandoned.v1')
+            WHERE event_type IN (
+                'gokwik.rto_predict.v1', 'shopflo.checkout_abandoned.v1',
+                -- GoKwik webhook-first checkout funnel (source='gokwik'): source-neutral abandoned +
+                -- the started/step funnel markers. See docs/architecture/gokwik-connector-reimplementation.md.
+                'checkout.abandoned.v1', 'gokwik.checkout_started.v1', 'gokwik.checkout_step.v1',
+                -- Shopflo webhook-first checkout funnel (source='shopflo'): started / step / completed
+                -- (abandoned rides the source-neutral checkout.abandoned.v1 OR the namespaced
+                -- shopflo.checkout_abandoned.v1). See docs/architecture/shopflo-connector-verification.md.
+                'shopflo.checkout_started.v1', 'shopflo.checkout_step.v1', 'shopflo.checkout_completed.v1'
+            )
         ),
         typed AS (
             SELECT
@@ -116,13 +125,32 @@ def _build_signal_df(spark: SparkSession):
                 occurred_at,
                 payload AS _payload,  -- Stage-1: replayable quarantine payload (dropped before the MERGE).
                 CASE event_type
-                    WHEN 'gokwik.rto_predict.v1'         THEN 'rto_predict'
-                    WHEN 'shopflo.checkout_abandoned.v1' THEN 'checkout_abandoned'
+                    WHEN 'gokwik.rto_predict.v1'          THEN 'rto_predict'
+                    WHEN 'shopflo.checkout_abandoned.v1'  THEN 'checkout_abandoned'
+                    WHEN 'checkout.abandoned.v1'          THEN 'checkout_abandoned'
+                    WHEN 'gokwik.checkout_started.v1'     THEN 'checkout_started'
+                    WHEN 'gokwik.checkout_step.v1'        THEN 'checkout_step'
+                    WHEN 'shopflo.checkout_started.v1'    THEN 'checkout_started'
+                    WHEN 'shopflo.checkout_step.v1'       THEN 'checkout_step'
+                    WHEN 'shopflo.checkout_completed.v1'  THEN 'checkout_completed'
                 END                                                        AS signal_type,
-                CASE event_type
-                    WHEN 'gokwik.rto_predict.v1'         THEN 'gokwik'
-                    WHEN 'shopflo.checkout_abandoned.v1' THEN 'shopflo'
-                END                                                        AS source,
+                -- SOURCE DISCRIMINANT (SHARED fix): the source-neutral canon (checkout.abandoned.v1) cannot
+                -- carry the source via event_type alone, so prefer the mapper-stamped payload.properties.source
+                -- (gokwik | shopflo); fall back to the event_type map for the namespaced events. GoKwik rows
+                -- stay byte-identical (their mapper already stamps properties.source='gokwik').
+                COALESCE(
+                    get_json_object(payload, '$.properties.source'),
+                    CASE event_type
+                        WHEN 'gokwik.rto_predict.v1'          THEN 'gokwik'
+                        WHEN 'shopflo.checkout_abandoned.v1'  THEN 'shopflo'
+                        WHEN 'checkout.abandoned.v1'          THEN 'gokwik'
+                        WHEN 'gokwik.checkout_started.v1'     THEN 'gokwik'
+                        WHEN 'gokwik.checkout_step.v1'        THEN 'gokwik'
+                        WHEN 'shopflo.checkout_started.v1'    THEN 'shopflo'
+                        WHEN 'shopflo.checkout_step.v1'       THEN 'shopflo'
+                        WHEN 'shopflo.checkout_completed.v1'  THEN 'shopflo'
+                    END
+                )                                                          AS source,
                 get_json_object(payload, '$.properties.order_id')          AS order_id,
                 get_json_object(payload, '$.properties.risk_flag')         AS risk_flag,
                 CAST(get_json_object(payload, '$.properties.total_price_minor')    AS bigint) AS total_price_minor,

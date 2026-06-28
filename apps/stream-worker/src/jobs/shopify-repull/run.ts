@@ -386,7 +386,7 @@ async function setSyncState(
       `SELECT set_config('app.current_brand_id', $1, true)`,
       [brandId],
     );
-    // UPSERT, not UPDATE (matches gokwik-awb-repull): a missing connect-time row would make an
+    // UPSERT, not UPDATE (matches the shared connector re-pull pattern): a missing connect-time row would make an
     // UPDATE-only write a silent no-op → UI stuck on "Not synced yet". (brand_id, connector_instance_id) UNIQUE.
     if (state === 'connected') {
       await client.query(
@@ -427,6 +427,16 @@ async function setSyncState(
  * skips — closing the double-API-call window. The connector_sync_status row carries a UNIQUE
  * (brand_id, connector_instance_id) (migration 0025) which is the conflict arbiter.
  *
+ * CRIT-1 (stale-lease self-heal): 'syncing' is set at claim and only cleared (→ 'connected'/'error')
+ * when the repull finishes. If the worker CRASHES mid-repull the row is stranded in 'syncing' forever
+ * and — with the old `state <> 'syncing'` CAS — EVERY future repull's claim returns 0 rows and skips,
+ * freezing live ingestion permanently (observed: Bodd Active frozen 13.5h). So the CAS ALSO wins when
+ * the existing 'syncing' lease is STALE — updated_at < now() - INTERVAL '15 minutes' — treating a
+ * long-stale lease as abandoned and re-claiming it. The 15-min window is comfortably above the
+ * scheduler's 5-min dispatch deadline (DISPATCH_DEADLINE_MS), so it can never reclaim a legitimately
+ * in-flight repull; the 0119 scheduler reaper independently surfaces the same stale lease. A genuinely
+ * concurrent fresh 'syncing' (updated_at recent) is still rejected → no double API calls.
+ *
  * Returns true iff THIS worker won the claim.
  */
 async function claimSyncingState(
@@ -445,6 +455,7 @@ async function claimSyncingState(
        ON CONFLICT (brand_id, connector_instance_id)
        DO UPDATE SET state = 'syncing', last_error = NULL, updated_at = NOW()
        WHERE connector_sync_status.state <> 'syncing'
+          OR connector_sync_status.updated_at < now() - INTERVAL '15 minutes'
        RETURNING id`,
       [brandId, connectorInstanceId],
     );

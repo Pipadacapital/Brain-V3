@@ -81,6 +81,23 @@ export interface CredentialConnectSpec {
   shopDomainField?: string;
   /** NON-secret authField keys that must ALSO ride in the Secrets Manager bundle (provider auth set). */
   bundleNonSecretFields?: string[];
+  /**
+   * Secret-bundle keys that Brain MINTS at connect-time (cryptographically random) when the merchant
+   * did NOT supply them. Unlike `bundleNonSecretFields` (copied from the form), these have no form
+   * input — Brain generates the value and surfaces it back ONCE so the merchant can paste it into the
+   * provider dashboard. Used for Shiprocket's `webhook_secret`: Shiprocket's tracking webhook sends a
+   * static X-Api-Key, and the merchant configures that key in their dashboard — so Brain generates the
+   * token, stores it as `webhook_secret`, and the connect response returns it for the merchant to copy.
+   * (See credential-schema.ts → provisionGeneratedSecrets.)
+   */
+  generatedSecretFields?: string[];
+  /**
+   * The inbound-webhook routing header the provider must send so the WebhookPipeline can resolve this
+   * tenant (e.g. Shiprocket's `x-shiprocket-channel-id`). Surfaced in the connect response next to the
+   * webhook URL + generated token so the connect UI can tell the merchant exactly what to configure.
+   * Its VALUE is the connector's accountKey (channel_id, else the email fallback).
+   */
+  webhookRoutingHeader?: string;
 }
 
 export interface ConnectorDefinition {
@@ -147,6 +164,12 @@ export const CONNECTOR_CATALOG: readonly ConnectorDefinition[] = [
       // site_url is non-secret but the WooCommerce repull client + pixel-install read the store
       // base URL from the bundle (woocommerce-client throws when it is absent), so it rides along.
       bundleNonSecretFields: ['site_url'],
+      // webhook_secret is the per-connector HMAC signing key the WooCommerceWebhookStrategy verifies
+      // against (base64 HMAC-SHA256). Brain MINTS it at connect-time (the merchant does not enter it)
+      // and sets it on each WC webhook registration, so the inbound webhook lane is signed end-to-end.
+      // (Closes the ULenin "bundle had no webhook_secret → webhook lane dead" gap — provisioned on the
+      // generic credential-connect path via provisionGeneratedSecrets, same mechanism as Shiprocket.)
+      generatedSecretFields: ['webhook_secret'],
     },
   },
   // ── ads ───────────────────────────────────────────────────────────────────────
@@ -199,7 +222,7 @@ export const CONNECTOR_CATALOG: readonly ConnectorDefinition[] = [
     displayName: 'GoKwik',
     connectMethod: 'credential',
     availability: 'available',
-    description: 'CoD verification + RTO (return-to-origin) outcome & checkout risk signal.',
+    description: 'CoD + checkout conversion, abandoned-cart recovery & RTO-risk checkout signal (webhook-first).',
     authFields: [
       { key: 'appid', label: 'App ID', type: 'text', secret: false },
       { key: 'appsecret', label: 'App Secret', type: 'password', secret: true },
@@ -208,8 +231,19 @@ export const CONNECTOR_CATALOG: readonly ConnectorDefinition[] = [
     credentialConnect: {
       accountKeyField: 'appid',
       instanceColumn: 'gokwik_appid',
-      // appid is the routing id AND part of the AWB API auth set (repull reads it from the bundle).
+      // appid is the webhook routing id (resolve_gokwik_connector_by_merchant). Kept in the secret
+      // bundle alongside {appsecret, webhook_secret} so the webhook receiver can verify the HMAC.
       bundleNonSecretFields: ['appid'],
+      // #17: GENERALIZED webhook_secret provisioning (same SR-2 mechanism as Shiprocket). GoKwik's
+      // webhook lane is HMAC-gated, fail-closed (GokwikWebhookStrategy reads webhook_secret from this
+      // bundle). The merchant MAY paste their own GoKwik-configured secret via the optional webhook_secret
+      // form field; when they leave it blank, Brain MINTS a high-entropy webhook_secret at connect so the
+      // webhook receiver is never left without a key (previously the bundle held only {appid,appsecret}
+      // → every GoKwik webhook 401'd). provisionGeneratedSecrets never overwrites a user-supplied value.
+      generatedSecretFields: ['webhook_secret'],
+      // The header GoKwik must send so the webhook resolves this tenant (resolve_gokwik_connector_by_
+      // merchant). Its value is the accountKey = appid. Surfaced in the connect response next to the URL.
+      webhookRoutingHeader: 'x-gokwik-appid',
     },
   },
   {
@@ -222,12 +256,17 @@ export const CONNECTOR_CATALOG: readonly ConnectorDefinition[] = [
     authFields: [
       { key: 'api_token', label: 'API Access Token', type: 'password', secret: true },
       { key: 'merchant_id', label: 'Merchant ID', type: 'text', secret: false },
-      { key: 'webhook_secret', label: 'Webhook Secret', type: 'password', secret: true },
+      { key: 'webhook_secret', label: 'Webhook Secret', type: 'password', secret: true, optional: true },
     ],
     credentialConnect: {
       // merchant_id is routing-only — webhook lookup reads it from the column, never the bundle.
       accountKeyField: 'merchant_id',
       instanceColumn: 'shopflo_merchant_id',
+      // webhook_secret is the per-connector HMAC signing key ShopfloWebhookStrategy verifies (fail-closed).
+      // GENERALIZED provisioning (same SR-2 mechanism as GoKwik/Shiprocket): the merchant MAY paste their
+      // own Shopflo-configured secret via the optional webhook_secret field; when blank, Brain MINTS a
+      // high-entropy webhook_secret at connect so the HMAC lane is NEVER dead (no fail-closed gap).
+      generatedSecretFields: ['webhook_secret'],
     },
   },
   // ── logistics ────────────────────────────────────────────────────────────────
@@ -250,6 +289,14 @@ export const CONNECTOR_CATALOG: readonly ConnectorDefinition[] = [
       instanceColumn: 'shiprocket_channel_id',
       // email is non-secret but the token provider mints the JWT from {email,password} in the bundle.
       bundleNonSecretFields: ['email'],
+      // webhook_secret is NOT a form field — Shiprocket's tracking webhook sends a static X-Api-Key the
+      // merchant configures in their dashboard. Brain MINTS it at connect-time, stores it in the bundle
+      // (where ShiprocketWebhookStrategy timingSafe-verifies the X-Api-Key against it, fail-closed), and
+      // returns it ONCE so the connect UI can show the merchant the URL + token to paste (SR-2).
+      generatedSecretFields: ['webhook_secret'],
+      // The header Shiprocket must send so the webhook resolves this tenant (resolve_shiprocket_connector
+      // _by_channel). Its value is the accountKey = channel_id, else the email fallback.
+      webhookRoutingHeader: 'x-shiprocket-channel-id',
     },
   },
   // ── messaging ────────────────────────────────────────────────────────────────

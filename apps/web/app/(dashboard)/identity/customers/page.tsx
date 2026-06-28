@@ -1,11 +1,12 @@
 /**
- * Customers page — server-component shell for the identity control-plane browse surface.
- * BFF-only (I-ST01): every row is read via /api/v1/identity/customers.
+ * /identity/customers — permanent redirect to /customers.
+ * The customer browse list moved out of Identity into its own top-level Customers tab.
+ * (customers-content.tsx alongside this file is the source the Customers slice re-homes.)
  */
-import { CustomersContent } from './customers-content';
+import { redirect } from 'next/navigation';
 
-export const metadata = { title: 'Customers — Brain Identity' };
+export const metadata = { title: 'Customers — Brain' };
 
-export default function CustomersPage() {
-  return <CustomersContent />;
+export default function CustomersRedirectPage() {
+  redirect('/customers');
 }

@@ -12,10 +12,31 @@
  *   Disconnected). Non-handled topics fast-ack (skip=true). Hashes PII at boundary (I-S02).
  *   Includes cart-stitch side effect (fire-and-forget — D-5).
  *
- * SHOPIFY-SPECIFIC FIX (drift correction):
- *   Shopify previously lacked the 5-min replay-window age gate that Razorpay/Shopflo have.
- *   The pipeline applies a unified age gate. For Shopify, ageCheckTimestampSeconds is derived
- *   from order.updated_at/processed_at/created_at — consistent with the event_id derivation.
+ * CRIT-2 (HMAC keys off the REAL secret):
+ *   Shopify signs webhooks with the app (BYO-or-Brain) `client_secret` — NOT a per-connector
+ *   `webhook_secret` that the OAuth connect flow never stored. signatureVerify therefore takes the
+ *   secret in this priority order, fail-closed:
+ *     1. The connector secret bundle's `webhook_secret` (the pipeline's getSecret) — honoured FIRST so
+ *        a future/explicitly-provisioned bundle key wins (forward-compatible, uniform with Shiprocket).
+ *     2. The injected `resolveHmacSecret(shopDomain)` → the brand's Shopify app `client_secret`
+ *        (BYO app secret, else Brain's app secret via getShopifyClientSecret). This is the real signing
+ *        key for live deployments where the bundle holds only the access token.
+ *   An empty/absent secret → HMAC_INVALID (no spoofed events). The resolver is OPTIONAL so the existing
+ *   pure unit tests (which exercise payloadMap only) construct the strategy with no args unchanged.
+ *
+ * HIGH (no-event-loss — order-webhook replay gate REMOVED):
+ *   Order webhooks return ageCheckTimestampSeconds=null. The pipeline's 5-min transport replay gate was
+ *   being fed the BUSINESS order.updated_at, so any Shopify retry/delay >5min (Shopify retries up to
+ *   ~48h) was permanently REJECTED = event loss, violating the no-event-loss invariant. Idempotency is
+ *   instead guaranteed by the deterministic uuidV5(brand,orderId,updated_at) event_id + Bronze MERGE,
+ *   so a replayed/late delivery is safely deduped rather than dropped.
+ *
+ * TOPIC ENCODING (registrar↔matcher alignment):
+ *   The authoritative topic is Shopify's `X-Shopify-Topic` header (slash form, e.g. 'orders/create').
+ *   The route also injects the URL `:topic` segment as `x-wh-topic`; the registrar encodes the slash as
+ *   '_' in that path segment, so when X-Shopify-Topic is absent we reverse-map the underscore form
+ *   against the known topic set (lossless over the closed set — 'customers_data_request' →
+ *   'customers/data_request'). This makes the registrar and the matcher agree on one canonical form.
  *
  * GDPR TOPICS (shopify-compliance-token-lifecycle):
  *   customers/data_request — fast-ack (Shopify acknowledges; no PII lookup here).
@@ -52,8 +73,44 @@ const ORDER_TOPICS = new Set([
 /** app/uninstalled: invalidate secret + mark ConnectorInstance Disconnected. */
 const UNINSTALL_TOPIC = 'app/uninstalled' as const;
 
+/** The full canonical (slash-form) topic set the strategy handles — used for underscore reverse-mapping. */
+const ALL_HANDLED_TOPICS: readonly string[] = [
+  ...ORDER_TOPICS,
+  'customers/data_request',
+  'customers/redact',
+  'shop/redact',
+  UNINSTALL_TOPIC,
+];
+
+/**
+ * Resolve the canonical (slash-form) Shopify topic from request headers.
+ *   1. `X-Shopify-Topic` — Shopify's own header, always slash form. Authoritative when present.
+ *   2. `x-wh-topic` — the route's injected URL `:topic` segment. If it already contains '/', use it;
+ *      otherwise it is the registrar's underscore-encoded form, reverse-mapped against the known set
+ *      (lossless over the closed set: 'customers_data_request' → 'customers/data_request').
+ */
+function resolveTopic(headers: FastifyRequest['headers']): string {
+  const shopifyTopic = (headers['x-shopify-topic'] as string | undefined)?.trim();
+  if (shopifyTopic) return shopifyTopic;
+  const injected = ((headers['x-wh-topic'] as string | undefined) ?? '').trim();
+  if (!injected || injected.includes('/')) return injected;
+  for (const t of ALL_HANDLED_TOPICS) {
+    if (t.replace(/\//g, '_') === injected) return t;
+  }
+  return injected;
+}
+
 export class ShopifyWebhookStrategy implements IWebhookStrategy {
   readonly provider = 'shopify';
+
+  /**
+   * @param resolveHmacSecret OPTIONAL — resolves the brand's Shopify app `client_secret` for `shopDomain`
+   *   (the real webhook signing key; CRIT-2). Injected by the composition root (registerWebhookRoutes)
+   *   with access to the connector resolver + Secrets Manager. Omitted by the pure payloadMap unit tests.
+   */
+  constructor(
+    private readonly resolveHmacSecret?: (shopDomain: string) => Promise<string>,
+  ) {}
 
   async signatureVerify(
     rawBody: Buffer,
@@ -68,9 +125,20 @@ export class ShopifyWebhookStrategy implements IWebhookStrategy {
     }
 
     const hmacHeader = (headers[SHOPIFY_HMAC_CONFIG.header] as string | undefined) ?? '';
-    const { webhookSecret } = await getSecret(shopDomain);
 
-    if (!webhookSecret || !SHOPIFY_HMAC_CONFIG.validateWebhook(rawBody, hmacHeader, webhookSecret)) {
+    // CRIT-2: prefer an explicitly-provisioned bundle webhook_secret (forward-compatible), else fall
+    // back to the brand's Shopify app client_secret — the key Shopify actually signs with. Fail-closed.
+    const { webhookSecret } = await getSecret(shopDomain);
+    let secret = webhookSecret;
+    if (!secret && this.resolveHmacSecret) {
+      try {
+        secret = await this.resolveHmacSecret(shopDomain);
+      } catch {
+        secret = ''; // resolver failure → fail-closed (never crash the webhook into a 500)
+      }
+    }
+
+    if (!secret || !SHOPIFY_HMAC_CONFIG.validateWebhook(rawBody, hmacHeader, secret)) {
       const err = new Error('HMAC validation failed');
       (err as NodeJS.ErrnoException & { code: string }).code = 'HMAC_INVALID';
       throw err;
@@ -82,18 +150,9 @@ export class ShopifyWebhookStrategy implements IWebhookStrategy {
   async payloadMap(ctx: WebhookStrategyContext): Promise<PayloadMapResult> {
     const { rawBody, headers, brandId, saltHex, correlationId, requestId } = ctx;
 
-    // Shopify sends the topic in the URL param (:topic). The strategy receives it
-    // via the request headers workaround — the route registers with :topic param and
-    // the pipeline calls us with the full request headers.
-    // We parse topic from the rawBody's Content-Type — no, the topic is a URL param.
-    // The pipeline passes the parsed request query/params via a header convention;
-    // we use a dedicated approach: parse the body first, then read topic from the
-    // Fastify request's path which was injected into a custom header by the pipeline.
-    // Actually: the topic is in the request via the x-webhook-topic header we inject
-    // at registration time, OR we read from the raw body.
-    // CLEAN APPROACH: we read the topic from headers['x-wh-topic'] which the
-    // route registration sets (see ShopifyWebhookRouteConfig).
-    const topic = (headers['x-wh-topic'] as string | undefined) ?? '';
+    // Canonical (slash-form) topic: Shopify's authoritative X-Shopify-Topic header when present, else the
+    // route's injected x-wh-topic URL segment (underscore form reverse-mapped). See resolveTopic.
+    const topic = resolveTopic(headers);
 
     // ── GDPR: customers/data_request — acknowledge only ───────────────────────
     // Shopify requires a 200 ack within 48h. No PII lookup; data export is an
@@ -276,9 +335,12 @@ export class ShopifyWebhookStrategy implements IWebhookStrategy {
     const eventId = uuidV5FromOrderLive(brandId, orderId, updatedAtUtcMs);
     const mapped = mapOrderToEvent(order, saltHex, 'IN', ORDER_LIVE_V1_EVENT_NAME);
 
-    // Age check timestamp — derived from the order's updated_at (Unix seconds).
-    // This closes the Shopify replay-window drift that Razorpay/Shopflo already had.
-    const ageCheckTimestampSeconds = Math.floor(updatedAtUtcMs / 1000);
+    // HIGH (no-event-loss): NO transport replay-age gate for order webhooks. Feeding the business
+    // order.updated_at into the pipeline's 5-min window rejected every Shopify retry/delay >5min
+    // (Shopify retries ~48h) → permanent event loss. We return null and rely on the deterministic
+    // uuidV5(brand,orderId,updated_at) event_id + Bronze MERGE for idempotency, so a late/replayed
+    // delivery is deduped, never dropped.
+    const ageCheckTimestampSeconds = null;
 
     // Cart-stitch side-effect (D-5): fire-and-forget.
     const stitch = projectOrderStitch(order);

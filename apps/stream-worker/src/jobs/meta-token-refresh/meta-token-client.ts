@@ -107,3 +107,36 @@ export function isTokenRefreshDue(
   if (ageMs < 0) return true; // future timestamp (clock skew / bad data) → refresh
   return ageMs >= thresholdDays * 24 * 60 * 60 * 1000;
 }
+
+/**
+ * PURE expiry-decision: is this token expiring within `marginDays` of `nowMs`?
+ *
+ * Closes the "short-lived token looks fresh" silent-death class (the review's HIGH token finding):
+ * a short-lived token stamped `issued_at=now` at callback passes `isTokenRefreshDue` for 30 days,
+ * yet may die in ~2h. When a real `expires_at` is known, this fires the moment the token enters the
+ * refresh margin — independent of issued_at — so the refresh cron re-exchanges it BEFORE it dies.
+ *
+ * Returns false when the expiry is UNKNOWN/malformed (no false-positive storm on legacy bundles that
+ * never recorded an expiry — the issued-at age path in isTokenRefreshDue still governs those).
+ * An ALREADY-past expiry returns true (best-effort one last exchange attempt; a truly dead token then
+ * surfaces as RECONNECT_REQUIRED via the exchange failure — never a silent skip).
+ */
+export function isTokenExpiringSoon(
+  expiresAtIso: string | null | undefined,
+  nowMs: number,
+  marginDays: number = DEFAULT_REFRESH_AGE_DAYS,
+): boolean {
+  if (!expiresAtIso) return false; // unknown expiry → defer to the issued-at age path
+  const expMs = Date.parse(expiresAtIso);
+  if (!Number.isFinite(expMs)) return false; // malformed → defer to issued-at age path
+  return expMs - nowMs <= marginDays * 24 * 60 * 60 * 1000;
+}
+
+/** Derive an ISO expiry from a Graph `expires_in` (seconds), or null when Graph omits it. */
+export function expiresAtFromSeconds(
+  expiresInSeconds: number | null,
+  nowMs: number,
+): string | null {
+  if (expiresInSeconds === null || !Number.isFinite(expiresInSeconds)) return null;
+  return new Date(nowMs + expiresInSeconds * 1000).toISOString();
+}

@@ -63,7 +63,12 @@ export interface MetaInsightsRawRow {
   impressions?: string | null;
   clicks?: string | null;
   date_start?: string | null;  // YYYY-MM-DD
-  actions?: unknown;
+  actions?: unknown;           // conversion COUNT array (ADR-AD-8)
+  action_values?: unknown;     // conversion REVENUE array — MAJOR-unit per action_type (A2)
+  cost_per_action_type?: unknown; // per-action CPA (spec-listed; passthrough — derivable downstream)
+  ctr?: string | null;         // click-through ratio (string)
+  cpc?: string | null;         // MAJOR-unit decimal cost-per-click (account currency)
+  cpm?: string | null;         // MAJOR-unit decimal cost-per-mille (account currency)
   [key: string]: unknown;
 }
 
@@ -99,8 +104,22 @@ const INSIGHTS_FIELDS = [
   'spend',
   'impressions',
   'clicks',
-  'actions',
+  'ctr',                  // A2: click-through ratio (spec-listed)
+  'cpc',                  // A2: MAJOR-unit cost-per-click  → cpc_minor (mapper)
+  'cpm',                  // A2: MAJOR-unit cost-per-mille   → cpm_minor (mapper)
+  'actions',              // conversion COUNT array (ADR-AD-8)
+  'action_values',        // A2: conversion REVENUE array → conv_value_minor (mapper) → platform ROAS
+  'cost_per_action_type', // A2: per-action CPA (passthrough; spec-listed, derivable downstream)
 ].join(',');
+
+/**
+ * A2: request Meta-attributed action counts/values under EXPLICIT attribution windows
+ * (`7d_click` + `1d_view`) rather than the account default — so the conversion counts and
+ * revenue (action_values) can be reconciled against Meta's own canonical windows. Pre-encoded
+ * once (a constant JSON array) and appended to every insights URL (sync + async). Money stays
+ * out of this — it only scopes WHICH attributed actions Meta returns.
+ */
+const ACTION_ATTRIBUTION_WINDOWS = encodeURIComponent(JSON.stringify(['7d_click', '1d_view']));
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -259,7 +278,7 @@ export class MetaInsightsClient {
     const url =
       `${GRAPH_API_BASE}/${this.actId}/insights` +
       `?level=${level}&time_increment=1&time_range=${timeRange}` +
-      `&fields=${INSIGHTS_FIELDS}&limit=500`;
+      `&fields=${INSIGHTS_FIELDS}&action_attribution_windows=${ACTION_ATTRIBUTION_WINDOWS}&limit=500`;
     return this.fetchInsightsByUrl(url, level);
   }
 
@@ -280,7 +299,7 @@ export class MetaInsightsClient {
     const postUrl =
       `${GRAPH_API_BASE}/${this.actId}/insights` +
       `?level=${level}&time_increment=1&time_range=${timeRange}` +
-      `&fields=${INSIGHTS_FIELDS}&limit=500`;
+      `&fields=${INSIGHTS_FIELDS}&action_attribution_windows=${ACTION_ATTRIBUTION_WINDOWS}&limit=500`;
 
     // Step 1: create the async job
     const jobBody = (await this.postJson(postUrl)) as { report_run_id?: string | number };

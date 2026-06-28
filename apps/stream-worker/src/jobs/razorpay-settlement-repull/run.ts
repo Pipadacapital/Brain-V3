@@ -372,7 +372,7 @@ async function setSyncState(
       `SELECT set_config('app.current_brand_id', $1, true)`,
       [brandId],
     );
-    // UPSERT, not UPDATE (matches gokwik-awb-repull): a missing connect-time row would make an
+    // UPSERT, not UPDATE (matches the shared connector re-pull pattern): a missing connect-time row would make an
     // UPDATE-only write a silent no-op → UI stuck on "Not synced yet". (brand_id, connector_instance_id) UNIQUE.
     if (state === 'connected') {
       await client.query(

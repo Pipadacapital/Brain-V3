@@ -96,13 +96,27 @@ export class RegisterWebhooksCommand {
     }
 
     const callbackUrl = `${input.callbackBaseUrl}/api/v1/webhooks/shopify`;
+    const webhooksUrl = `https://${input.shopDomain}/admin/api/${SHOPIFY_API_VERSION}/webhooks.json`;
+
+    // ── Idempotency: read the shop's existing subscriptions first ──────────────
+    // Treat a (topic → already pointed at our callback host) as already-registered and skip the POST,
+    // so reconnect / re-run never throws on Shopify 422 "address ... has already been taken". Best
+    // effort: if the GET fails we proceed to POST and rely on the per-topic 422-as-success guard below.
+    const existingTopics = await this.fetchExistingTopics(webhooksUrl, callbackUrl, accessToken);
+
     let registered = 0;
-
     for (const topic of ALL_WEBHOOK_TOPICS) {
-      const url = `https://${input.shopDomain}/admin/api/${SHOPIFY_API_VERSION}/webhooks.json`;
-      const topicPath = topic.replace('/', '_'); // e.g. 'orders_create'
+      if (existingTopics.has(topic)) {
+        registered += 1; // already subscribed for this topic at our callback host
+        continue;
+      }
 
-      const response = await fetch(url, {
+      // Canonical encoding (matcher↔registrar alignment): the body `topic` is the slash form Shopify
+      // echoes back in X-Shopify-Topic (authoritative for the matcher). The address path segment encodes
+      // the slash as '_' so it is a single valid URL segment for Brain's `/shopify/:topic` route.
+      const topicPath = topic.replace(/\//g, '_'); // e.g. 'orders/create' → 'orders_create'
+
+      const response = await fetch(webhooksUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -119,17 +133,63 @@ export class RegisterWebhooksCommand {
         signal: AbortSignal.timeout(15_000), // T2-9: bound the Shopify call so registration can't hang.
       });
 
-      if (!response.ok) {
+      if (response.ok) {
+        registered += 1;
+        log.info(`registered webhook topic=${topic} for shop=${input.shopDomain}`);
+        continue;
+      }
+
+      // 422 "address ... has already been taken" → the subscription already exists. Idempotent success.
+      if (response.status === 422) {
         const body = await response.text().catch(() => '');
+        if (/already been taken|has already|taken/i.test(body)) {
+          registered += 1;
+          log.info(`webhook topic=${topic} already registered for shop=${input.shopDomain} (422 treated as success)`);
+          continue;
+        }
         throw new Error(
-          `[RegisterWebhooksCommand] failed to register topic=${topic} status=${response.status}: ${body.slice(0, 200)}`,
+          `[RegisterWebhooksCommand] failed to register topic=${topic} status=422: ${body.slice(0, 200)}`,
         );
       }
 
-      registered += 1;
-      log.info(`registered webhook topic=${topic} for shop=${input.shopDomain}`);
+      const body = await response.text().catch(() => '');
+      throw new Error(
+        `[RegisterWebhooksCommand] failed to register topic=${topic} status=${response.status}: ${body.slice(0, 200)}`,
+      );
     }
 
     return { registered: true, topicCount: registered };
+  }
+
+  /**
+   * GET the shop's existing webhook subscriptions and return the set of topics already pointed at our
+   * callback host. Best-effort: any error (network/parse) yields an empty set so the caller falls back
+   * to POST + the 422-as-success guard. The access token is used here and NEVER logged (I-S09).
+   */
+  private async fetchExistingTopics(
+    webhooksUrl: string,
+    callbackUrl: string,
+    accessToken: string,
+  ): Promise<Set<string>> {
+    const out = new Set<string>();
+    try {
+      const response = await fetch(webhooksUrl, {
+        method: 'GET',
+        headers: { 'X-Shopify-Access-Token': accessToken },
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (!response.ok) return out;
+      const data = (await response.json()) as { webhooks?: Array<{ topic?: string; address?: string }> };
+      for (const w of data.webhooks ?? []) {
+        // Only treat as "already registered" when it points at OUR callback host — a subscription to a
+        // different address must be (re)created so live delivery reaches Brain.
+        if (w.topic && typeof w.address === 'string' && w.address.startsWith(callbackUrl)) {
+          out.add(w.topic);
+        }
+      }
+    } catch {
+      // best-effort — fall through to POST + 422-as-success
+    }
+    return out;
   }
 }

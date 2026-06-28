@@ -306,6 +306,69 @@ describe('PM: ShiprocketWebhookStrategy — payloadMap', () => {
     expect(props['courier']).toBe('BlueDart');
   });
 
+  // SR-3: widened forward-lifecycle + RTO topic allowlist → mapped (skip=false). Previously these
+  // dedicated pushes fell through to fast-ack skip=true and were silently dropped.
+  it.each([
+    'shipment.created',
+    'shipment.picked_up',
+    'shipment.in_transit',
+    'shipment.delayed',
+    'shipment.exception',
+    'shipment.ndr',
+    'shipment.lost',
+    'shipment.destroyed',
+    'shipment.rto_in_transit',
+    'shipment.rto_undelivered',
+    'shipment.rto_ndr',
+    'shipment.rto_disposed',
+  ])('PM-10: widened topic %s → mapped (skip=false)', async (topic) => {
+    const body = {
+      event: topic,
+      awb: 'SR8888888888',
+      order_id: 'ORD-WIDE-001',
+      current_status: 'In-Transit',
+      status_date: '2026-06-22T10:00:00.000Z',
+    };
+    const result = await strategy.payloadMap(makeCtx(body));
+    expect(result.skip).toBe(false);
+    expect(result.eventName).toBe('shiprocket.shipment_status.v1');
+  });
+
+  // SR-4: return.* topics now map to the SEPARATE canonical shiprocket.return_status.v1 event (NOT the
+  // shipment lane). A return is NEVER routed through mapShiprocketShipment, so return.completed can never
+  // mis-classify to a forward DELIVERED (the false-delivery / revenue-truth bug SR-4 fixes).
+  it.each([
+    ['return.created', 'return_initiated'],
+    ['return.picked_up', 'return_in_transit'],
+    ['return.delivered', 'return_delivered'],
+    ['return.completed', 'return_completed'],
+  ])('PM-11: return topic %s → mapped to shiprocket.return_status.v1 (class %s)', async (topic, expectedClass) => {
+    // No explicit body status → the strategy derives the return stage from the topic suffix.
+    const body = { event: topic, awb: 'SR9999999999', order_id: 'ORD-RET-001', status_date: '2026-06-22T10:00:00.000Z' };
+    const result = await strategy.payloadMap(makeCtx(body));
+    expect(result.skip).toBe(false);
+    expect(result.eventName).toBe('shiprocket.return_status.v1');
+    const props = result.properties as Record<string, unknown>;
+    expect(props['return_class']).toBe(expectedClass);
+    // CRITICAL: never a forward shipment terminal_class on the return lane.
+    expect(props['terminal_class']).toBeUndefined();
+  });
+
+  // SR-4: an explicit body return-status still classifies on the return lane, NEVER as a forward delivery.
+  it('PM-11b: return.completed with body status "completed" → return_completed, NOT a forward DELIVERED', async () => {
+    const body = { event: 'return.completed', awb: 'SRRET2', order_id: 'ORD-RET-002', current_status: 'completed', status_date: '2026-06-22T10:00:00.000Z' };
+    const result = await strategy.payloadMap(makeCtx(body));
+    expect(result.eventName).toBe('shiprocket.return_status.v1');
+    expect((result.properties as Record<string, unknown>)['return_class']).toBe('return_completed');
+  });
+
+  // A genuinely unknown topic (neither shipment nor return) still fast-acks skip=true — no event loss.
+  it('PM-11c: unknown topic → fast-ack skip=true', async () => {
+    const body = { event: 'wallet.credited', order_id: 'ORD-X', status_date: '2026-06-22T10:00:00.000Z' };
+    const result = await strategy.payloadMap(makeCtx(body));
+    expect(result.skip).toBe(true);
+  });
+
   it('PM-9: body without nested key (flat envelope) parsed correctly', async () => {
     const body = {
       event: 'shipment.delivered',

@@ -43,12 +43,8 @@ export const BRONZE_BRIDGES: readonly BronzeBridgeDef[] = [
     eventName: 'gokwik.rto_predict.v1',
     metricName: 'gokwik_rto_predict_bronze_write_total',
   },
-  {
-    groupIdEnv: 'GOKWIK_AWB_STATUS_BRONZE_CONSUMER_GROUP_ID',
-    defaultGroupId: 'gokwik-awb-status-bronze-bridge',
-    eventName: 'gokwik.awb_status.v1',
-    metricName: 'gokwik_awb_status_bronze_write_total',
-  },
+  // RETIRED (0117 — GoKwik AWB model): gokwik.awb_status.v1 was a synthetic logistics model.
+  // GoKwik is webhook-first payments/checkout; logistics truth is Shiprocket. No AWB bridge.
   {
     groupIdEnv: 'SHIPROCKET_SHIPMENT_BRONZE_CONSUMER_GROUP_ID',
     defaultGroupId: 'shiprocket-shipment-bronze-bridge',
@@ -60,6 +56,66 @@ export const BRONZE_BRIDGES: readonly BronzeBridgeDef[] = [
     defaultGroupId: 'live-order-bronze-bridge',
     eventName: 'order.live.v1',
     metricName: 'live_order_bronze_write_total',
+  },
+  // CRIT-4 / WOO-3 resource events (Shopify + WooCommerce): server-derived brand_id, NO install_token —
+  // the live pixel gate quarantined them, so each lands in Bronze via its own server-trusted bridge.
+  {
+    groupIdEnv: 'PRODUCT_UPSERT_BRONZE_CONSUMER_GROUP_ID',
+    defaultGroupId: 'product-upsert-bronze-bridge',
+    eventName: 'product.upsert.v1',
+    metricName: 'product_upsert_bronze_write_total',
+  },
+  {
+    groupIdEnv: 'CUSTOMER_UPSERT_BRONZE_CONSUMER_GROUP_ID',
+    defaultGroupId: 'customer-upsert-bronze-bridge',
+    eventName: 'customer.upsert.v1',
+    metricName: 'customer_upsert_bronze_write_total',
+  },
+  {
+    groupIdEnv: 'REFUND_RECORDED_BRONZE_CONSUMER_GROUP_ID',
+    defaultGroupId: 'refund-recorded-bronze-bridge',
+    eventName: 'refund.recorded.v1',
+    metricName: 'refund_recorded_bronze_write_total',
+  },
+  {
+    groupIdEnv: 'COUPON_UPSERT_BRONZE_CONSUMER_GROUP_ID',
+    defaultGroupId: 'coupon-upsert-bronze-bridge',
+    eventName: 'coupon.upsert.v1',
+    metricName: 'coupon_upsert_bronze_write_total',
+  },
+  {
+    groupIdEnv: 'FULFILLMENT_RECORDED_BRONZE_CONSUMER_GROUP_ID',
+    defaultGroupId: 'fulfillment-recorded-bronze-bridge',
+    eventName: 'fulfillment.recorded.v1',
+    metricName: 'fulfillment_recorded_bronze_write_total',
+  },
+  // AD-1: the SHARED Meta+Google entity-metadata feed (ad.entity.updated) — connector-derived,
+  // server-trusted brand_id, no install_token. Lands in Bronze for silver_campaign's authoritative dim.
+  {
+    groupIdEnv: 'AD_ENTITY_UPDATED_BRONZE_CONSUMER_GROUP_ID',
+    defaultGroupId: 'ad-entity-updated-bronze-bridge',
+    eventName: 'ad.entity.updated',
+    metricName: 'ad_entity_updated_bronze_write_total',
+  },
+  // SHOPFLO lifecycle: the NEW Shopflo checkout-funnel canonicals (webhook-first, server-derived
+  // brand_id, no install_token). Each lands in Bronze for silver_checkout_signal.
+  {
+    groupIdEnv: 'SHOPFLO_CHECKOUT_STARTED_BRONZE_CONSUMER_GROUP_ID',
+    defaultGroupId: 'shopflo-checkout-started-bronze-bridge',
+    eventName: 'shopflo.checkout_started.v1',
+    metricName: 'shopflo_checkout_started_bronze_write_total',
+  },
+  {
+    groupIdEnv: 'SHOPFLO_CHECKOUT_STEP_BRONZE_CONSUMER_GROUP_ID',
+    defaultGroupId: 'shopflo-checkout-step-bronze-bridge',
+    eventName: 'shopflo.checkout_step.v1',
+    metricName: 'shopflo_checkout_step_bronze_write_total',
+  },
+  {
+    groupIdEnv: 'SHOPFLO_CHECKOUT_COMPLETED_BRONZE_CONSUMER_GROUP_ID',
+    defaultGroupId: 'shopflo-checkout-completed-bronze-bridge',
+    eventName: 'shopflo.checkout_completed.v1',
+    metricName: 'shopflo_checkout_completed_bronze_write_total',
   },
 ];
 

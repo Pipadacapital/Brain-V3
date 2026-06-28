@@ -9,10 +9,22 @@ the model PK (brand_id, event_id). It runs BESIDE the existing dbt→StarRocks
 brain_silver.silver_shipment_event (the parity oracle compares the two). It repoints NO reader, changes
 NO dbt model or app code.
 
+SR-9 (V4 cleanup): the source filter was `event_type IN ('gokwik.awb_status.v1','shiprocket.shipment_status.v1')`,
+but migration 0117 RETIRED `gokwik.awb_status.v1` (GoKwik is now webhook-first on checkout.*/payment.* and no
+longer emits an AWB-status canonical) — leaving a DEAD source predicate. The filter is now
+`event_type = 'shiprocket.shipment_status.v1'` (the ONLY live forward-shipment lane). RETURNS deliberately do
+NOT fold here: they flow on the disjoint `shiprocket.return_status.v1` lane into the dedicated brain_silver.silver_return
+mart (SR-4) so a return "delivered"/"completed" can never leak a false forward DELIVERED into this transition log.
+
+SR-5 (V4): the additive, NON-TERMINAL `exception_class` (∈ {delayed, ndr, null}) emitted by the mapper now
+projects through to this LIVE transition mart, so NDR / delivery-delay signal is queryable here (high-signal for
+RTO prediction) instead of being lumped into 'none'/in-flight. It is a SEPARATE dimension — terminal_class /
+is_terminal are UNCHANGED (byte-identical), so GoKwik/forward-delivery parity is intact.
+
 FOLDED dbt LOGIC (exactly reproduced — see the two dbt files for the canonical spec):
   stg_shipment_events (view):
-    - source: bronze_iceberg.collector_events, event_type IN
-      ('gokwik.awb_status.v1','shiprocket.shipment_status.v1')
+    - source: bronze_iceberg.collector_events, event_type = 'shiprocket.shipment_status.v1'
+      (SR-9: dropped the retired 'gokwik.awb_status.v1' — 0117 — from the IN list)
     - typed projection from payload.properties.* (StarRocks get_json_string(parse_json(payload),'$.x')
       == Spark get_json_object(payload,'$.x')).
     - keyed: order_id IS NOT NULL AND order_id <> '' (drop un-keyed transitions).
@@ -72,6 +84,7 @@ _COLUMNS = """
           status             string,
           terminal_class     string,
           is_terminal        boolean,
+          exception_class    string,
           payment_method     string,
           pincode            string,
           courier            string,
@@ -90,7 +103,7 @@ def _build_event_df(spark: SparkSession):
         WITH raw AS (
             SELECT brand_id, event_id, event_type, occurred_at, payload
             FROM {BRONZE_TABLE}
-            WHERE event_type IN ('gokwik.awb_status.v1', 'shiprocket.shipment_status.v1')
+            WHERE event_type = 'shiprocket.shipment_status.v1'
         ),
         src AS (
             SELECT
@@ -104,6 +117,7 @@ def _build_event_df(spark: SparkSession):
                 get_json_object(payload, '$.properties.awb_number_hash')   AS awb_number_hash,
                 get_json_object(payload, '$.properties.status')            AS status,
                 get_json_object(payload, '$.properties.terminal_class')    AS terminal_class,
+                get_json_object(payload, '$.properties.exception_class')    AS exception_class,
                 get_json_object(payload, '$.properties.payment_method')    AS payment_method,
                 get_json_object(payload, '$.properties.pincode')           AS pincode,
                 get_json_object(payload, '$.properties.courier')           AS courier,
@@ -133,6 +147,7 @@ def _build_event_df(spark: SparkSession):
             status,
             coalesce(terminal_class, 'none')                          AS terminal_class,
             (coalesce(terminal_class, 'none') <> 'none')             AS is_terminal,
+            exception_class,
             payment_method,
             pincode,
             courier,
@@ -196,6 +211,7 @@ def run(spark: SparkSession) -> None:
             t.status = s.status,
             t.terminal_class = s.terminal_class,
             t.is_terminal = s.is_terminal,
+            t.exception_class = s.exception_class,
             t.payment_method = s.payment_method,
             t.pincode = s.pincode,
             t.courier = s.courier,
@@ -205,11 +221,11 @@ def run(spark: SparkSession) -> None:
             t.updated_at = s.updated_at
         WHEN NOT MATCHED THEN INSERT (
             brand_id, event_id, order_id, source, awb_number_hash, status, terminal_class,
-            is_terminal, payment_method, pincode, courier, status_changed_at, occurred_at,
+            is_terminal, exception_class, payment_method, pincode, courier, status_changed_at, occurred_at,
             is_synthetic, updated_at
         ) VALUES (
             s.brand_id, s.event_id, s.order_id, s.source, s.awb_number_hash, s.status, s.terminal_class,
-            s.is_terminal, s.payment_method, s.pincode, s.courier, s.status_changed_at, s.occurred_at,
+            s.is_terminal, s.exception_class, s.payment_method, s.pincode, s.courier, s.status_changed_at, s.occurred_at,
             s.is_synthetic, s.updated_at
         )
         """

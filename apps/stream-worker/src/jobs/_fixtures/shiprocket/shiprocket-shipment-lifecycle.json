@@ -91,6 +91,53 @@
       "payment_method": "prepaid",
       "pincode": "400001",
       "courier": "BlueDart"
+    },
+    {
+      "_note": "SR-5/SR-7: NDR lifecycle — a 'Delayed' then 'Undelivered' (NDR) shipment that later recovers to Delivered. exception_class = delayed → ndr, while terminal_class stays 'none' until the terminal Delivered. Exercises the non-terminal NDR/delay dimension that now projects to silver_shipment_event.",
+      "awb": "SR-SYNTH-NDR-0004",
+      "order_id": "sr_ord_ndr_4",
+      "status": "Delayed",
+      "status_changed_at": "2026-06-09T09:00:00Z",
+      "payment_method": "cod",
+      "pincode": "700001",
+      "courier": "Ecom Express"
+    },
+    {
+      "awb": "SR-SYNTH-NDR-0004",
+      "order_id": "sr_ord_ndr_4",
+      "status": "Undelivered",
+      "status_changed_at": "2026-06-10T18:30:00Z",
+      "payment_method": "cod",
+      "pincode": "700001",
+      "courier": "Ecom Express"
+    },
+    {
+      "awb": "SR-SYNTH-NDR-0004",
+      "order_id": "sr_ord_ndr_4",
+      "status": "Delivered",
+      "status_changed_at": "2026-06-12T11:20:00Z",
+      "payment_method": "cod",
+      "pincode": "700001",
+      "courier": "Ecom Express"
+    },
+    {
+      "_note": "SR-7: a 'Lost' shipment — terminal_class = other (OTHER_TERMINAL). Confirms the lost/destroyed lane folds (these arrive as dedicated webhook pushes too, SR-3).",
+      "awb": "SR-SYNTH-LOST-0005",
+      "order_id": "sr_ord_lost_5",
+      "status": "In-Transit",
+      "status_changed_at": "2026-06-07T10:00:00Z",
+      "payment_method": "prepaid",
+      "pincode": "600001",
+      "courier": "Delhivery"
+    },
+    {
+      "awb": "SR-SYNTH-LOST-0005",
+      "order_id": "sr_ord_lost_5",
+      "status": "Lost",
+      "status_changed_at": "2026-06-09T15:00:00Z",
+      "payment_method": "prepaid",
+      "pincode": "600001",
+      "courier": "Delhivery"
     }
   ]
 }

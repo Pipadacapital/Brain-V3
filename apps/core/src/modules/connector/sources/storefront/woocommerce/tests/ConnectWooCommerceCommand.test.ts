@@ -16,6 +16,16 @@
  */
 
 import { describe, it, expect, vi, afterEach } from 'vitest';
+
+// webhookDeliveryUrl() reads loadCoreConfig().BRAIN_WEBHOOK_BASE_URL; the full config schema is not
+// available in this infra-free unit env (loadCoreConfig would throw), which would silently no-op the
+// webhook-registration POSTs. Stub just the delivery base so the registration loop actually POSTs and
+// the topic-coverage assertions exercise the real loop. (Closes 2 pre-existing env-only reds.)
+vi.mock('@brain/config', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@brain/config')>();
+  return { ...actual, loadCoreConfig: () => ({ BRAIN_WEBHOOK_BASE_URL: 'https://api.brain.ai' }) };
+});
+
 import { ConnectWooCommerceCommand } from '../application/commands/ConnectWooCommerceCommand.js';
 
 // ── Shared test stub factory ───────────────────────────────────────────────────
@@ -241,10 +251,16 @@ describe('ConnectWooCommerceCommand.execute', () => {
       brandId: BRAND_ID, siteUrl: SITE_URL, consumerKey: CONSUMER_KEY, consumerSecret: CONSUMER_SECRET, idempotencyKey: 'idem-5',
     });
 
-    // Both order.created and order.updated should have been registered.
-    expect(postCalls).toContain('order.created');
-    expect(postCalls).toContain('order.updated');
-    expect(result.webhooksRegistered).toHaveLength(2);
+    // FULL resource coverage: orders + customers + products + coupons (created/updated/deleted) — the
+    // store must be subscribed to send every resource, not just orders (closes the orders-only gap).
+    const EXPECTED_TOPICS = [
+      'order.created', 'order.updated', 'order.deleted',
+      'customer.created', 'customer.updated', 'customer.deleted',
+      'product.created', 'product.updated', 'product.deleted',
+      'coupon.created', 'coupon.updated', 'coupon.deleted',
+    ];
+    for (const t of EXPECTED_TOPICS) expect(postCalls).toContain(t);
+    expect(result.webhooksRegistered).toHaveLength(EXPECTED_TOPICS.length);
     expect(result.webhookRegistrationErrors).toHaveLength(0);
   });
 
@@ -279,10 +295,13 @@ describe('ConnectWooCommerceCommand.execute', () => {
       brandId: BRAND_ID, siteUrl: SITE_URL, consumerKey: CONSUMER_KEY, consumerSecret: CONSUMER_SECRET, idempotencyKey: 'idem-6',
     });
 
-    // Only order.updated should have triggered a POST (order.created was already there).
+    // order.created was already present → skipped (no POST); every OTHER topic is registered.
     expect(postCalls).not.toContain('order.created');
     expect(postCalls).toContain('order.updated');
-    expect(result.webhooksRegistered).toHaveLength(2); // order.created (skipped) + order.updated (registered)
+    expect(postCalls).toContain('customer.created');
+    expect(postCalls).toContain('product.updated');
+    expect(postCalls).toContain('coupon.deleted');
+    expect(result.webhooksRegistered).toHaveLength(12); // 1 skipped (already there) + 11 registered
     expect(result.webhookRegistrationErrors).toHaveLength(0);
   });
 

@@ -1,0 +1,246 @@
+/**
+ * google-entity-sync/run.ts — Google Ads ENTITY-METADATA sync (A3, SHARED ad.entity.updated lane).
+ *
+ * The spend re-pull carries only campaign.name piggybacked on the spend query — ad-group/ad names
+ * surface as raw IDs and any campaign without recent spend goes stale. This job is the AUTHORITATIVE
+ * metadata feed: a no-metrics GAQL pass over campaign / ad_group / ad_group_ad reads the latest
+ * name / status / advertising_channel_type / bidding_strategy DECOUPLED from spend volume, and emits
+ * the canonical `ad.entity.updated` event that silver_campaign (and the future silver_ad_group /
+ * silver_ad dims) fold into the dimension.
+ *
+ * Lane / isolation (IDENTICAL to spend.live.v1):
+ *   - Enumerate via list_ad_connectors_for_spend_repull() (SECURITY DEFINER, NO GUC at enumerate),
+ *     filtered to provider='google_ads'. brand_id is server-trusted from the fn result (MT-1),
+ *     NEVER from the API. (Reuses enumerateGoogleConnectors + resolveGoogleCredentials.)
+ *   - Emits on the SAME collector.event.v1 live lane (NO new topic/envelope). ad.entity.updated is
+ *     connector-derived (no install_token / no consent) → it MUST ride the SERVER_TRUSTED lane,
+ *     exactly like spend.live.v1, or the pixel-lane install_token join silently drops it.
+ *     >>> Admission slice must add the literal "ad.entity.updated" to the SERVER_TRUSTED sets in
+ *         bronze_materialize.py + silver_collector_event.py (byte-identical). <<<
+ *
+ * Idempotency (deterministic event_id): uuid5(brandId:platform:level:entityId:syncDate:ad.entity.updated).
+ *   - The syncDate (UTC day) bucket means intra-day re-runs DEDUP in the Bronze MERGE (idempotent),
+ *     while a NEW day produces a fresh row → silver_campaign's latest-by-occurred_at picks up status/
+ *     name changes (a constant per-grain id would let MERGE drop every update — wrong for an SCD).
+ *   - occurred_at = entity_updated_at = the sync timestamp.
+ *   - This event_id scheme + payload shape MUST MATCH Meta's entity-sync (the shared lane).
+ *
+ * Tokens NEVER logged (I-S09). Throttle reuses the client's ADR-AD-7 two-error branch.
+ */
+
+import { Pool } from 'pg';
+import { Kafka, type Producer } from 'kafkajs';
+import { hashToUuidShaped } from '@brain/connector-core';
+import { buildPartitionKey } from '@brain/events';
+import { injectKafkaTraceContext } from '@brain/observability';
+import { CollectorEventV1Schema, COLLECTOR_EVENT_V1_TOPIC_SUFFIX } from '@brain/contracts';
+import { loadStreamWorkerConfig } from '@brain/config';
+import { createIdempotentProducer } from '../../infrastructure/kafka/idempotent-producer.js';
+import { recordConnectorAuthRejected } from '../../infrastructure/observability/connector-auth-health.js';
+import { updateConnectorInstanceHealth } from '../../infrastructure/pg/ConnectorInstanceHealthRepository.js';
+import {
+  GoogleAdsSearchStreamClient,
+  GOOGLE_AUTH_ERROR,
+  GOOGLE_ACCOUNT_DISABLED,
+  GOOGLE_RESOURCE_EXHAUSTED,
+  GOOGLE_RESOURCE_TEMPORARILY_EXHAUSTED,
+  type GoogleAdsEntityRow,
+} from '../google-ads-spend-repull/google-ads-searchstream-client.js';
+import {
+  enumerateGoogleConnectors,
+  resolveGoogleCredentials,
+} from '../google-ads-spend-repull/run.js';
+import { log } from '../../log.js';
+
+const cfg = loadStreamWorkerConfig();
+const DB_URL = cfg.BRAIN_APP_DATABASE_URL;
+const BROKERS = cfg.KAFKA_BROKERS.split(',');
+// intentional raw: NODE_ENV-derived Kafka topic-prefix selection (must precede config load).
+const ENV = process.env['NODE_ENV'] === 'production' ? 'prod' : 'dev';
+const LIVE_TOPIC = `${ENV}.${COLLECTOR_EVENT_V1_TOPIC_SUFFIX}`;
+
+/** Canonical SHARED entity-metadata event (Meta + Google). Admission must admit this literal. */
+export const AD_ENTITY_UPDATED_EVENT_NAME = 'ad.entity.updated' as const;
+const PLATFORM = 'google_ads' as const;
+const ENTITY_LEVELS: Array<'campaign' | 'adset' | 'ad'> = ['campaign', 'adset', 'ad'];
+
+export async function run(targetConnectorInstanceId?: string): Promise<void> {
+  const pool = new Pool({ connectionString: DB_URL, max: 5 });
+  const kafka = new Kafka({ clientId: 'google-entity-sync', brokers: BROKERS, retry: { retries: 5 } });
+  const producer = createIdempotentProducer(kafka);
+
+  try {
+    await producer.connect();
+    log.info(`starting — topic=${LIVE_TOPIC} brokers=${BROKERS.join(',')}`);
+
+    const connectors = await enumerateGoogleConnectors(pool, targetConnectorInstanceId);
+    if (connectors.length === 0) {
+      log.info('no connected/activated google_ads connectors — exiting');
+      return;
+    }
+    log.info(`found ${connectors.length} connector(s) for entity sync`);
+
+    for (const connector of connectors) {
+      await syncConnector({ connector, pool, producer });
+    }
+  } finally {
+    await producer.disconnect();
+    await pool.end();
+  }
+}
+
+interface SyncParams {
+  connector: {
+    connector_instance_id: string;
+    brand_id: string;
+    secret_ref: string;
+    ad_account_id: string | null;
+  };
+  pool: Pool;
+  producer: Producer;
+}
+
+async function syncConnector(params: SyncParams): Promise<void> {
+  const { connector, pool, producer } = params;
+  const { connector_instance_id: ciId, brand_id: brandId, secret_ref: secretRef } = connector;
+
+  log.info(`entity-sync connector=${ciId} brand=${brandId}`);
+
+  const creds = await resolveGoogleCredentials(secretRef, connector.ad_account_id);
+  if (!creds) {
+    log.error(`entity-sync connector=${ciId} — credentials missing (RECONNECT_REQUIRED)`);
+    recordConnectorAuthRejected('google_ads');
+    return;
+  }
+
+  const client = new GoogleAdsSearchStreamClient(creds);
+  try {
+    await client.authenticate();
+  } catch (err) {
+    if (String(err).includes(GOOGLE_AUTH_ERROR)) {
+      recordConnectorAuthRejected('google_ads');
+      await updateConnectorInstanceHealth(pool, brandId, ciId, 'token_expired');
+      return;
+    }
+    log.error(`entity-sync connector=${ciId} auth failed`, { err });
+    return;
+  }
+
+  // syncDate bucket → daily idempotency (intra-day re-runs dedup; a new day re-states the dim).
+  const now = new Date();
+  const syncIso = now.toISOString();
+  const syncDate = syncIso.slice(0, 10);
+
+  let totalEmitted = 0;
+
+  for (const level of ENTITY_LEVELS) {
+    let rows: GoogleAdsEntityRow[];
+    try {
+      rows = await client.streamEntities(level);
+    } catch (err) {
+      const s = String(err);
+      if (s.includes(GOOGLE_RESOURCE_EXHAUSTED) || s.includes(GOOGLE_RESOURCE_TEMPORARILY_EXHAUSTED)) {
+        log.info(`entity-sync connector=${ciId} RateLimited — aborting (retry next run)`);
+        await updateConnectorInstanceHealth(pool, brandId, ciId, 'rate_limited');
+        return;
+      }
+      if (s.includes(GOOGLE_AUTH_ERROR)) {
+        recordConnectorAuthRejected('google_ads');
+        await updateConnectorInstanceHealth(pool, brandId, ciId, 'token_expired');
+        return;
+      }
+      if (s.includes(GOOGLE_ACCOUNT_DISABLED)) {
+        await updateConnectorInstanceHealth(pool, brandId, ciId, 'account_disabled');
+        return;
+      }
+      log.error(`entity-sync connector=${ciId} level=${level} stream error`, { err });
+      continue; // non-fatal per level
+    }
+
+    totalEmitted += await emitEntities({ rows, brandId, ciId, producer, syncIso, syncDate });
+  }
+
+  // entity sync is a metadata feed — it deliberately does NOT touch connector_sync_status (the spend
+  // re-pull owns that tile); stomping it here could mask a real spend error with a stale 'connected'.
+  log.info(`entity-sync connector=${ciId} COMPLETED totalEmitted=${totalEmitted}`);
+}
+
+interface EmitEntityParams {
+  rows: GoogleAdsEntityRow[];
+  brandId: string;
+  ciId: string;
+  producer: Producer;
+  syncIso: string;
+  syncDate: string;
+}
+
+async function emitEntities(p: EmitEntityParams): Promise<number> {
+  if (p.rows.length === 0) return 0;
+
+  const messages = [];
+  for (const row of p.rows) {
+    if (!row.entity_id) continue;
+
+    const eventId = entityEventId(p.brandId, row.level, row.entity_id, p.syncDate);
+
+    // Payload shape MUST MATCH Meta's entity-sync (the shared ad.entity.updated lane). silver_campaign
+    // reads: platform, level, entity_id, campaign_id, parent_id, name, status, advertising_channel_type
+    // (Google) / objective (Meta), plus entity_updated_at.
+    const properties: Record<string, unknown> = {
+      platform: PLATFORM,
+      level: row.level,
+      entity_id: row.entity_id,
+      campaign_id: row.campaign_id,
+      parent_id: row.parent_id,
+      name: row.name,
+      status: row.status,
+      objective: null, // Meta-only attribute; null for Google
+      advertising_channel_type: row.advertising_channel_type,
+      bidding_strategy: row.bidding_strategy,
+      entity_updated_at: p.syncIso,
+    };
+
+    const envelope = CollectorEventV1Schema.parse({
+      schema_version: '1',
+      event_id: eventId,
+      brand_id: p.brandId, // MT-1 — never from API response
+      correlation_id: `google-entity-sync:${p.ciId}:${eventId}`,
+      event_name: AD_ENTITY_UPDATED_EVENT_NAME,
+      occurred_at: p.syncIso,
+      ingested_at: new Date().toISOString(),
+      properties,
+    });
+
+    messages.push({ key: buildPartitionKey(p.brandId, eventId), value: Buffer.from(JSON.stringify(envelope)) });
+  }
+
+  if (messages.length > 0) {
+    const traceHeaders: Record<string, Buffer | string> = {};
+    injectKafkaTraceContext(traceHeaders);
+    await p.producer.send({ topic: LIVE_TOPIC, messages: messages.map((m) => ({ ...m, headers: traceHeaders })) });
+    log.info(`entity-sync connector=${p.ciId} emitted=${messages.length}`);
+  }
+  return messages.length;
+}
+
+/**
+ * Deterministic ad.entity.updated event_id (A3). Daily bucket → intra-day idempotency in the MERGE,
+ * fresh row per day so silver picks up metadata changes. Provably non-colliding with spend.live.v1
+ * (':ad.entity.updated' discriminator appears in no spend seed). MUST MATCH Meta's scheme.
+ */
+export function entityEventId(
+  brandId: string,
+  level: 'campaign' | 'adset' | 'ad',
+  entityId: string,
+  syncDate: string,
+): string {
+  return hashToUuidShaped(`${brandId}:${PLATFORM}:${level}:${entityId}:${syncDate}:ad.entity.updated`);
+}
+
+if (process.argv[1]?.endsWith('run.ts') || process.argv[1]?.endsWith('run.js')) {
+  const ciArg = process.argv[2];
+  run(ciArg).catch((err) => {
+    log.error('fatal', { err });
+    process.exit(1);
+  });
+}

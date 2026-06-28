@@ -57,7 +57,9 @@ export async function reconciliationCheck(
   try {
     const br = await silver.scopedQuery<{ n: string | number }>(
       brandId,
-      `SELECT COUNT(DISTINCT COALESCE(get_json_string(payload, '$.properties.order_id'), get_json_string(payload, '$.order_id'))) AS n
+      // Trino dialect: json_extract_scalar (NOT StarRocks get_json_string, which Trino has no function
+      // for → it threw and silently became bronze_unreachable/D in the reconciliation check).
+      `SELECT COUNT(DISTINCT COALESCE(json_extract_scalar(payload, '$.properties.order_id'), json_extract_scalar(payload, '$.order_id'))) AS n
          FROM ${ICEBERG_BRONZE}
         WHERE ${BRAND_PREDICATE}
           AND event_type LIKE 'order.%'`,

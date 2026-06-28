@@ -46,7 +46,7 @@ import {
   type MetaApiCredentials,
 } from './meta-insights-client.js';
 import { log } from "../../log.js";
-import { acquireCursorLock, upsertCursorValue } from '../../infrastructure/pg/CursorRepository.js';
+import { acquireCursorLock, getCursorValue, upsertCursorValue } from '../../infrastructure/pg/CursorRepository.js';
 
 const cfg = loadStreamWorkerConfig();
 const DB_URL = cfg.BRAIN_APP_DATABASE_URL;
@@ -58,6 +58,33 @@ const LIVE_TOPIC = `${ENV}.${COLLECTOR_EVENT_V1_TOPIC_SUFFIX}`;
 /** Single cursor resource (ADR-AD-3): meta.insights, 28d trailing window. */
 const CURSOR_RESOURCE = 'meta.insights' as const;
 const WINDOW_DAYS = 28;
+
+/**
+ * A2 — 2-year historical backfill lane (the review's HIGH "no 730-day history" finding).
+ *
+ * A SEPARATE cursor resource (`meta.insights.backfill`) walking BACKWARD from today in bounded
+ * monthly chunks to 730 days, RESUMABLE across runs (mirrors the ingestion-backfill framework's
+ * resumable/chunked/bounded-per-run contract) and DEDUPED against the 28-day trailing repull —
+ * both lanes reuse the SAME mapper + the SAME deterministic uuidV5FromSpendRow event_id, so an
+ * overlapping day MERGE-dedups in Bronze (no double-count). The async ad_report_run path is forced
+ * (large historical pulls). Steady-state polling keeps WINDOW_DAYS=28 unchanged.
+ *
+ * Cursor semantics: stores the EARLIEST stat_date already covered (the `since` floor reached so far).
+ * Absent → start at today. Each run processes up to BACKFILL_MAX_CHUNKS_PER_RUN monthly chunks then
+ * checkpoints; the next run resumes from the persisted floor. Reaching the 730-day floor = completed
+ * (later runs are an instant no-op).
+ */
+const BACKFILL_CURSOR_RESOURCE = 'meta.insights.backfill' as const;
+const BACKFILL_TOTAL_DAYS = 730;
+const BACKFILL_CHUNK_DAYS = 30;
+/** Per-run monthly-chunk budget (keeps a run bounded; the resumable cursor carries the rest forward).
+ *  Override via META_BACKFILL_CHUNKS_PER_RUN (clamped 1..24). Default 3 ≈ 90 days per run. */
+function backfillChunksPerRun(): number {
+  // intentional raw: optional per-run chunk budget; not in the typed config schema.
+  const raw = process.env['META_BACKFILL_CHUNKS_PER_RUN'];
+  const parsed = raw ? parseInt(raw, 10) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? Math.min(Math.max(parsed, 1), 24) : 3;
+}
 
 /** The hierarchy levels to pull (Meta Insights level param). */
 const META_LEVELS: Array<'campaign' | 'adset' | 'ad'> = ['campaign', 'adset', 'ad'];
@@ -288,6 +315,138 @@ async function emitPage(p: EmitPageParams): Promise<{ emitted: number; maxDate: 
   return { emitted: messages.length, maxDate };
 }
 
+// ── A2: 2-year historical backfill lane (resumable, chunked, async, dedup-by-event_id) ──
+
+/**
+ * Run one bounded slice of the Meta 2-year backfill across all (or one) connected Meta connector(s).
+ *
+ * RESUMABLE: progress is the per-connector `meta.insights.backfill` cursor (the earliest stat_date
+ * floor reached so far). Each invocation walks at most backfillChunksPerRun() monthly chunks further
+ * back, checkpointing after each chunk, then returns — the next invocation resumes from the floor.
+ * Reaching BACKFILL_TOTAL_DAYS = completed (instant no-op thereafter).
+ *
+ * DEDUP: identical mapper + uuidV5FromSpendRow → Bronze MERGE drops any day overlapping the trailing
+ * repull. No new event_name/lane: it emits spend.live.v1 on the SAME live collector lane.
+ */
+export async function runBackfill(targetConnectorInstanceId?: string): Promise<void> {
+  const pool = new Pool({ connectionString: DB_URL, max: 5 });
+  const kafka = new Kafka({ clientId: 'meta-spend-backfill', brokers: BROKERS, retry: { retries: 5 } });
+  const producer = createIdempotentProducer(kafka);
+
+  try {
+    await producer.connect();
+    log.info(`[meta-backfill] starting — topic=${LIVE_TOPIC} totalDays=${BACKFILL_TOTAL_DAYS} chunkDays=${BACKFILL_CHUNK_DAYS}`);
+
+    const connectors = await enumerateConnectors(pool, targetConnectorInstanceId);
+    if (connectors.length === 0) {
+      log.info('[meta-backfill] no connected meta connectors found — exiting');
+      return;
+    }
+
+    for (const connector of connectors) {
+      await backfillConnector({ connector, pool, producer });
+    }
+  } finally {
+    await producer.disconnect();
+    await pool.end();
+  }
+}
+
+async function backfillConnector(params: RepullParams): Promise<void> {
+  const { connector, pool, producer } = params;
+  const { connector_instance_id: ciId, brand_id: brandId, secret_ref: secretRef } = connector;
+
+  const creds = await resolveMetaCredentials(secretRef, connector.ad_account_id);
+  if (!creds) {
+    log.error(`[meta-backfill] connector=${ciId} — credentials not found (RECONNECT_REQUIRED), skipping`);
+    recordConnectorAuthRejected('meta');
+    return;
+  }
+
+  // Overlap-lock on the BACKFILL cursor resource (distinct from the trailing-repull lock → the two
+  // lanes never block each other, and two backfill runs cannot double-process the same connector).
+  const lockAcquired = await acquireCursorLock(pool, brandId, ciId, BACKFILL_CURSOR_RESOURCE);
+  if (!lockAcquired) {
+    log.info(`[meta-backfill] connector=${ciId} — backfill cursor locked by another worker, skipping`);
+    return;
+  }
+
+  const today = isoDate(new Date());
+  const floor = isoDate(addDays(new Date(), -BACKFILL_TOTAL_DAYS));
+
+  // Earliest stat_date already covered (the `since` floor reached so far). Absent → start at today.
+  let reached = (await getCursorValue(pool, brandId, ciId, BACKFILL_CURSOR_RESOURCE)) ?? today;
+  if (reached <= floor) {
+    log.info(`[meta-backfill] connector=${ciId} — backfill COMPLETE (reached=${reached} floor=${floor})`);
+    return;
+  }
+
+  const client = new MetaInsightsClient(creds);
+  let accountMeta;
+  try {
+    accountMeta = await client.fetchAccountMeta();
+  } catch (err) {
+    log.error(`[meta-backfill] connector=${ciId} account meta fetch failed — retry next run`, { err });
+    return;
+  }
+
+  const maxChunks = backfillChunksPerRun();
+  let chunksDone = 0;
+  let totalEmitted = 0;
+
+  for (let i = 0; i < maxChunks && reached > floor; i++) {
+    const chunkUntil = reached;
+    const candidateSince = isoDate(addDays(new Date(`${chunkUntil}T00:00:00.000Z`), -BACKFILL_CHUNK_DAYS));
+    const chunkSince = candidateSince < floor ? floor : candidateSince;
+
+    try {
+      for (const level of META_LEVELS) {
+        const canonicalLevel: AdSpendLevel = level === 'adset' ? 'adset' : (level as AdSpendLevel);
+        // Force the async ad_report_run path — historical month-wide pulls are large.
+        let page = await client.fetchInsightsFirstPage(level, chunkSince, chunkUntil, { asyncMode: true });
+        while (true) {
+          const { emitted } = await emitPage({
+            rows: page.rows,
+            brandId,
+            ciId,
+            canonicalLevel,
+            accountCurrency: accountMeta.currencyCode,
+            accountTz: accountMeta.timezoneName,
+            producer,
+          });
+          totalEmitted += emitted;
+          if (!page.nextUrl) break;
+          page = await client.fetchInsightsByUrl(page.nextUrl, level);
+        }
+      }
+    } catch (err) {
+      if (String(err).includes(META_RATE_LIMITED)) {
+        log.error(`[meta-backfill] connector=${ciId} RateLimited — checkpoint + retry next run (reached=${reached})`);
+        return; // cursor already checkpointed at the last completed chunk; resume next run
+      }
+      if (String(err).includes(META_AUTH_ERROR)) {
+        recordConnectorAuthRejected('meta');
+        log.error(`[meta-backfill] connector=${ciId} auth error — RECONNECT_REQUIRED`);
+        return;
+      }
+      log.error(`[meta-backfill] connector=${ciId} chunk [${chunkSince},${chunkUntil}] error — retry next run`, { err });
+      return;
+    }
+
+    // Chunk complete → advance the floor and checkpoint (resumable).
+    reached = chunkSince;
+    await upsertCursorValue(pool, brandId, ciId, BACKFILL_CURSOR_RESOURCE, reached);
+    chunksDone += 1;
+    log.info(`[meta-backfill] connector=${ciId} chunk done [${chunkSince},${chunkUntil}] emitted-so-far=${totalEmitted}`);
+  }
+
+  const done = reached <= floor;
+  log.info(
+    `[meta-backfill] connector=${ciId} pass done chunks=${chunksDone} emitted=${totalEmitted} ` +
+      `reached=${reached} floor=${floor} complete=${done}`,
+  );
+}
+
 // ── Cursor + sync helpers (mirror razorpay-settlement-repull exactly) ────────
 
 export async function setSyncState(
@@ -298,7 +457,7 @@ export async function setSyncState(
   try {
     await client.query('BEGIN');
     await client.query(`SELECT set_config('app.current_brand_id', $1, true)`, [brandId]);
-    // UPSERT, not UPDATE (matches gokwik-awb-repull): a missing connect-time row would make an
+    // UPSERT, not UPDATE (matches the shared connector re-pull pattern): a missing connect-time row would make an
     // UPDATE-only write a silent no-op → UI stuck on "Not synced yet". (brand_id, connector_instance_id) UNIQUE.
     if (state === 'connected') {
       await client.query(
@@ -329,7 +488,7 @@ export async function setSyncState(
 
 // ── Credentials resolver (dev: dev_secret JSON bundle; never logged — I-S09) ──
 
-async function resolveMetaCredentials(
+export async function resolveMetaCredentials(
   secretRef: string, adAccountIdCol: string | null,
 ): Promise<MetaApiCredentials | null> {
   // PROD / local-prod: the token bundle is stored in AWS Secrets Manager at connect time (core's
@@ -398,9 +557,16 @@ function addDays(d: Date, days: number): Date {
 
 // ── Entrypoint (dev trigger) ──────────────────────────────────────────────────
 
-if (process.argv[1]?.endsWith('run.ts') || process.argv[1]?.endsWith('run.js')) {
-  const ciArg = process.argv[2];
-  run(ciArg).catch((err) => {
+// Path-specific entrypoint guard: meta-token-refresh/run.ts IMPORTS from this module, and its own
+// entry path also endsWith('run.js') — a bare endsWith('run.js') would CROSS-FIRE this CLI block when
+// the token-refresh job loads this module. Match the full directory-qualified path so only a direct
+// invocation of THIS file runs the CLI (mirrors ingestion-backfill/run.ts).
+if (process.argv[1]?.endsWith('meta-spend-repull/run.ts') || process.argv[1]?.endsWith('meta-spend-repull/run.js')) {
+  const args = process.argv.slice(2);
+  const isBackfill = args.includes('--backfill');           // 2-year historical lane (A2)
+  const ciArg = args.find((a) => !a.startsWith('--'));      // optional single-connector target
+  const entry = isBackfill ? runBackfill(ciArg) : run(ciArg);
+  entry.catch((err) => {
     log.error('fatal', { err: err });
     process.exit(1);
   });

@@ -15,6 +15,7 @@ import {
   getJourneyStitchRate,
   getJourneyTimeline,
   getShipmentOutcomes,
+  getReturnFunnel,
   getBehaviorOverview,
   getFunnelAnalytics,
   getAbandonedCart,
@@ -23,6 +24,7 @@ import {
 import type {
   JourneyFirstTouchMix as ContractJourneyFirstTouchMix,
   ShipmentOutcomes as ContractShipmentOutcomes,
+  ReturnFunnel as ContractReturnFunnel,
   BehaviorOverview as ContractBehaviorOverview,
   FunnelAnalytics as ContractFunnelAnalytics,
   AbandonedCart as ContractAbandonedCart,
@@ -158,6 +160,69 @@ export function registerAnalyticsJourneyRoutes(fastify: FastifyInstance, deps: B
           fromStr,
           toStr,
           // Dev: shipment lifecycle is fixture-sourced (real shape, synthetic source).
+          dataSource: 'synthetic',
+        },
+      );
+
+      return reply.send({ request_id: requestId, data: result });
+    },
+  );
+
+  /**
+   * GET /api/v1/analytics/logistics/return-funnel?from=YYYY-MM-DD&to=YYYY-MM-DD
+   * Return-lifecycle breakdown (per return_class + completion% + by courier) over a window, from the
+   * silver_return mart (SR-4). A SEPARATE dimension from shipment-outcomes — returns NEVER carry
+   * terminal_class, so this can never present a return as a forward DELIVERED. SR-10.
+   */
+  fastify.get(
+    '/api/v1/analytics/logistics/return-funnel',
+    {
+      preHandler: [bffProtectedPreHandler],
+      schema: {
+        querystring: {
+          type: 'object',
+          properties: {
+            from: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
+            to:   { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
+          },
+          additionalProperties: false,
+        },
+      },
+      attachValidation: true,
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const validationError = (request as FastifyRequest & { validationError?: Error }).validationError;
+      if (validationError) {
+        return reply.code(400).send({
+          request_id: requestId,
+          error: { code: 'INVALID_PARAMS', message: 'from/to must be YYYY-MM-DD.' },
+        });
+      }
+
+      const auth = (request as AuthenticatedRequest).auth;
+      if (!auth.brandId) {
+        return reply.send({ request_id: requestId, data: { state: 'no_data' } });
+      }
+      if (!srPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (Trino) not available' } });
+      }
+
+      const query = request.query as { from?: string; to?: string };
+      const today = new Date().toISOString().split('T')[0] as string;
+      const toStr = query.to ?? today;
+      const defaultFrom = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString().split('T')[0] as string;
+      const fromStr = query.from ?? defaultFrom;
+
+      const result: ContractReturnFunnel = await getReturnFunnel(
+        auth.brandId,
+        { srPool },
+        {
+          from: new Date(`${fromStr}T00:00:00Z`),
+          to: new Date(`${toStr}T23:59:59Z`),
+          fromStr,
+          toStr,
+          // Dev: return lifecycle is fixture-sourced (real shape, synthetic source).
           dataSource: 'synthetic',
         },
       );

@@ -80,10 +80,11 @@ PIXEL_INSTALL_REFRESH_TTL_SECONDS = int(os.environ.get("PIXEL_INSTALL_REFRESH_TT
 #   - SERVER_TRUSTED_BRONZE: written with brand_id as-is (the enforce=false bronze bridges).
 #   - LEDGER_ONLY: consumed by the ledger bridges, NEVER written to PG bronze → EXCLUDE from Iceberg.
 #   - everything else = the PIXEL lane → R2 (install_token→brand) + R3 (consent_flags present).
-# gokwik.awb_status.v1 + shiprocket.shipment_status.v1 are server-trusted AND ledger-fed (the
-# order.live.v1 precedent): the ShipmentLedgerConsumer consumes them for cod_rto_clawback/
-# cod_delivery_confirmed AND they are landed in Bronze so the rich shipment detail (status,
-# terminal_class, pincode, courier) is preserved for silver_shipment (Slice 2, multi-source).
+# shiprocket.shipment_status.v1 is server-trusted AND ledger-fed (the order.live.v1 precedent): the
+# ShipmentLedgerConsumer consumes it for cod_rto_clawback/cod_delivery_confirmed AND it is landed in
+# Bronze so the rich shipment detail (status, terminal_class, pincode, courier) is preserved for
+# silver_shipment (Slice 2, multi-source). (gokwik.awb_status.v1 was the WRONG AWB model — RETIRED;
+# logistics truth is Shiprocket, not GoKwik. See docs/architecture/gokwik-connector-reimplementation.md.)
 # order.backfill.v1 is server-trusted too — the (retired) BackfillOrderConsumer wrote it with
 # enforceTenantDerivation=false (server-derived brand_id, no install_token); keep that parity here.
 #
@@ -96,7 +97,39 @@ PIXEL_INSTALL_REFRESH_TTL_SECONDS = int(os.environ.get("PIXEL_INSTALL_REFRESH_TT
 # (ad_spend_ledger remains the WRITE SoR) — Bronze is purely the analytical source.
 #   settlement.live.v1 stays LEDGER_ONLY: it has no Silver-from-Bronze consumer yet (silver_settlement
 #   is still deferred — see [[payments-checkout-silver]]); promoting it now would land un-modeled rows.
-SERVER_TRUSTED_BRONZE = {"order.live.v1", "order.backfill.v1", "spend.live.v1", "shopflo.checkout_abandoned.v1", "gokwik.rto_predict.v1", "gokwik.awb_status.v1", "gokwik.webhook.v1", "shiprocket.shipment_status.v1"}
+# GoKwik webhook-first canonical events (checkout.abandoned.v1 / gokwik.checkout_started.v1 /
+# gokwik.checkout_step.v1 / payment.attempted.v1 / payment.authorized.v1) are server-trusted: the webhook
+# pipeline derives brand_id from gokwik_appid (MT-1), so they carry no install_token/consent and MUST land
+# server-trusted (else the PIXEL lane quarantines them for a missing install_token). RETIRED here:
+# gokwik.awb_status.v1 + gokwik.webhook.v1 (wrong AWB / opaque-envelope model — logistics truth is
+# Shiprocket; see docs/architecture/gokwik-connector-reimplementation.md).
+# SR-4: shiprocket.return_status.v1 is server-trusted (brand server-derived via the webhook pipeline from
+# the resolved connector row — MT-1; no install_token/consent, so it MUST take the server-trusted lane,
+# not the PIXEL lane that would quarantine it). It is the SEPARATE return canonical (NOT the shipment
+# lane) so a return is never folded as a forward shipment status (the false-delivery bug SR-4 fixes).
+# CRIT-4 (Shopify resource events): product.upsert.v1 / customer.upsert.v1 / refund.recorded.v1 /
+# fulfillment.recorded.v1 are CONNECTOR-derived canonical RESOURCE events — emitted by the Shopify
+# backfill/repull/webhook path with a server-derived brand_id (MT-1, from the resolved connector row,
+# NEVER the API response) and NO install_token / consent signal. Without server-trust they fell to the
+# PIXEL lane and were SILENTLY DROPPED by the R2 inner-join on a null install_token — starving
+# silver_refund / silver_fulfillment / silver_product_variant / silver_inventory_level. They take the
+# SAME lane as order.live.v1 (server-derived, no pixel signal). MUST stay byte-identical with
+# silver_collector_event.SERVER_TRUSTED (the gate moved to Silver under ADR-0006 P3).
+# WOO-3: coupon.upsert.v1 — the NEW canonical coupon grain (no Shopify peer), emitted by the WooCommerce
+# connector server-derived (brand_id from the resolved connector row, MT-1 — NEVER the API response) with
+# NO install_token / consent signal. Like the CRIT-4 resource events it MUST be server-trusted or the
+# PIXEL-lane R2 join drops it and starves silver_coupon. Kept byte-identical with the silver gate set.
+# AD-1 (advertising metadata feed): ad.entity.updated is the SHARED Meta+Google entity-sync canonical
+# (campaign/adset/ad name/status/objective/channel-type), emitted by meta-entity-sync / google-entity-sync
+# on the SAME live collector lane as spend.live.v1 — connector-derived (brand_id server-derived from the
+# resolved connector row, MT-1; NO install_token / consent). Without server-trust the PIXEL-lane R2 join
+# SILENTLY DROPS it (quarantines tenant_unresolved) and starves silver_campaign's authoritative dim.
+# SHOPFLO lifecycle: shopflo.checkout_started.v1 / shopflo.checkout_step.v1 / shopflo.checkout_completed.v1
+# are the NEW Shopflo checkout-funnel canonicals (webhook-first; brand_id server-derived from the resolved
+# connector row via the webhook pipeline — MT-1; NO install_token / consent). Like checkout.abandoned.v1
+# they MUST be server-trusted or the PIXEL-lane R2 join drops them and starves silver_checkout_signal.
+# ALL kept byte-identical with silver_collector_event.SERVER_TRUSTED.
+SERVER_TRUSTED_BRONZE = {"order.live.v1", "order.backfill.v1", "spend.live.v1", "shopflo.checkout_abandoned.v1", "gokwik.rto_predict.v1", "shiprocket.shipment_status.v1", "shiprocket.return_status.v1", "checkout.abandoned.v1", "gokwik.checkout_started.v1", "gokwik.checkout_step.v1", "payment.attempted.v1", "payment.authorized.v1", "product.upsert.v1", "customer.upsert.v1", "refund.recorded.v1", "fulfillment.recorded.v1", "coupon.upsert.v1", "ad.entity.updated", "shopflo.checkout_started.v1", "shopflo.checkout_step.v1", "shopflo.checkout_completed.v1"}
 LEDGER_ONLY = {"settlement.live.v1"}
 
 # Postgres (for R2 install_token→brand resolution via pixel_installation). Read as the superuser

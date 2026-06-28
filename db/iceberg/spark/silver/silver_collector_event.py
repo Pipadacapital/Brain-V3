@@ -75,7 +75,44 @@ TARGET = f"{CATALOG}.{SILVER_NAMESPACE}.silver_collector_event"
 # Lane policy — MUST stay in lockstep with bronze_materialize.py (the same constants, same meaning).
 SERVER_TRUSTED = {
     "order.live.v1", "order.backfill.v1", "spend.live.v1", "shopflo.checkout_abandoned.v1",
-    "gokwik.rto_predict.v1", "gokwik.awb_status.v1", "gokwik.webhook.v1", "shiprocket.shipment_status.v1",
+    "gokwik.rto_predict.v1", "shiprocket.shipment_status.v1",
+    # SR-4: shiprocket.return_status.v1 is the SEPARATE return canonical (brand server-derived via the
+    # webhook pipeline — MT-1; no install_token/consent → server-trusted lane). Kept BYTE-IDENTICAL with
+    # bronze_materialize.SERVER_TRUSTED_BRONZE. It is NOT the shipment lane, so a return is never folded
+    # as a forward shipment status (the false-delivery bug SR-4 fixes).
+    "shiprocket.return_status.v1",
+    # GoKwik webhook-first canonical events (brand server-derived from gokwik_appid via the
+    # webhook pipeline — no install_token/consent, so they MUST take the server-trusted lane, not the
+    # PIXEL lane that would quarantine them). RETIRED: gokwik.awb_status.v1 + gokwik.webhook.v1 (the
+    # wrong AWB/opaque-envelope model — see docs/architecture/gokwik-connector-reimplementation.md).
+    "checkout.abandoned.v1", "gokwik.checkout_started.v1", "gokwik.checkout_step.v1",
+    "payment.attempted.v1", "payment.authorized.v1",
+    # CRIT-4: the Shopify CONNECTOR-derived RESOURCE events. Emitted by the Shopify backfill/repull/webhook
+    # path with a server-derived brand_id (MT-1, from the resolved connector row — NEVER the API response)
+    # and NO install_token / consent signal. Without server-trust they fell to the PIXEL lane and were
+    # SILENTLY DROPPED by the R2 join on a null install_token, starving silver_refund / silver_fulfillment /
+    # silver_product_variant / silver_inventory_level (all of which read THIS gated keystone). They take the
+    # SAME lane as order.live.v1 (server-derived, no pixel signal). Kept BYTE-IDENTICAL with
+    # bronze_materialize.SERVER_TRUSTED_BRONZE.
+    "product.upsert.v1", "customer.upsert.v1", "refund.recorded.v1", "fulfillment.recorded.v1",
+    # WOO-3: coupon.upsert.v1 is the NEW canonical coupon grain (no Shopify peer). The WooCommerce
+    # connector emits it server-derived (brand_id from the resolved connector row, MT-1 — NEVER the API
+    # response) with NO install_token / consent signal, so — exactly like the CRIT-4 resource events — it
+    # MUST take the server-trusted lane or the PIXEL-lane R2 install_token join would SILENTLY DROP it and
+    # starve silver_coupon. Kept BYTE-IDENTICAL with bronze_materialize.SERVER_TRUSTED_BRONZE.
+    "coupon.upsert.v1",
+    # AD-1: ad.entity.updated is the SHARED Meta+Google entity-metadata canonical (campaign/adset/ad
+    # name/status/objective/advertising_channel_type), emitted by meta-entity-sync / google-entity-sync on
+    # the SAME live collector lane as spend.live.v1 — connector-derived (brand_id server-derived from the
+    # resolved connector row, MT-1; NO install_token / consent). Without server-trust the PIXEL-lane R2 join
+    # SILENTLY DROPS it (tenant_unresolved) and starves silver_campaign's authoritative dim. BYTE-IDENTICAL
+    # with bronze_materialize.SERVER_TRUSTED_BRONZE.
+    "ad.entity.updated",
+    # SHOPFLO lifecycle: the NEW Shopflo checkout-funnel canonicals (webhook-first; brand_id server-derived
+    # from the resolved connector row via the webhook pipeline — MT-1; NO install_token / consent). Like
+    # checkout.abandoned.v1 they MUST take the server-trusted lane or the PIXEL-lane R2 join would drop them
+    # and starve silver_checkout_signal. Kept BYTE-IDENTICAL with bronze_materialize.SERVER_TRUSTED_BRONZE.
+    "shopflo.checkout_started.v1", "shopflo.checkout_step.v1", "shopflo.checkout_completed.v1",
 }
 LEDGER_ONLY = {"settlement.live.v1"}
 

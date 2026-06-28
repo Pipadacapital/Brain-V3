@@ -228,6 +228,7 @@ export function registerBrandRoutes(
             currencyCode: parsed.data.currency_code,
             timezone: parsed.data.timezone,
             revenueDefinition: parsed.data.revenue_definition,
+            regionCode: parsed.data.region_code,
           },
           auth.userId,
           workspaceId,

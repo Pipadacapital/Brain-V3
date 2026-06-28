@@ -20,6 +20,7 @@ import type { ISecretsManager } from '@brain/connector-secrets';
 import { WebhookPipeline, type WebhookPipelineDeps } from './WebhookPipeline.js';
 import type { WebhookIdentityReader } from './IWebhookStrategy.js';
 import { ShopifyWebhookStrategy } from '../strategies/ShopifyWebhookStrategy.js';
+import { resolveBrandOAuthAppCreds } from '../../oauth-app-creds.js';
 import { RazorpayWebhookStrategy } from '../strategies/RazorpayWebhookStrategy.js';
 import { ShopfloWebhookStrategy } from '../strategies/ShopfloWebhookStrategy.js';
 import { WooCommerceWebhookStrategy } from '../strategies/WooCommerceWebhookStrategy.js';
@@ -36,6 +37,12 @@ export interface WebhookRegistrationDeps {
   regionCode?: string;
   /** MEDALLION REALIGNMENT (Epic 3 / ADR-0004): Neo4j identity reader for GDPR redact side-effects. */
   identityReader?: WebhookIdentityReader;
+  /**
+   * CRIT-2 OVERRIDE (optional): resolve the Shopify webhook HMAC signing key (the brand's app
+   * `client_secret`) for a shop domain. When omitted, a default resolver is built from
+   * secretsManager + rawPgPool below. Injectable so tests can stub it.
+   */
+  shopifyHmacSecretResolver?: (shopDomain: string) => Promise<string>;
 }
 
 export function registerAllWebhookRoutes(
@@ -53,11 +60,46 @@ export function registerAllWebhookRoutes(
     identityReader: deps.identityReader,
   };
 
+  // ── Shopify HMAC secret resolver (CRIT-2) ─────────────────────────────────
+  // Shopify signs webhooks with the app `client_secret` (BYO per-brand app → Brain's app fallback),
+  // NOT a per-connector webhook_secret the OAuth connect flow never stored. Resolve the brand from the
+  // shop domain (SECURITY DEFINER resolver, RLS-bypassing — brand unknown pre-auth), then the brand's
+  // app client_secret. Fail-closed: any miss returns '' → HMAC_INVALID (no spoofed events).
+  const shopifyHmacSecretResolver =
+    deps.shopifyHmacSecretResolver ??
+    (async (shopDomain: string): Promise<string> => {
+      const sd = shopDomain.trim();
+      if (!sd) return '';
+      let brandId = '';
+      try {
+        const r = await deps.rawPgPool.query<{ brand_id: string }>(
+          `SELECT brand_id FROM resolve_connector_by_shop_domain($1)`,
+          [sd],
+        );
+        brandId = r.rows[0]?.brand_id ?? '';
+      } catch {
+        return '';
+      }
+      if (!brandId) return '';
+      let envClientSecret = '';
+      try {
+        // Brain's app secret (env in dev; ARN-resolved value in prod). May be unset for pure-BYO setups.
+        envClientSecret = await deps.secretsManager.getShopifyClientSecret();
+      } catch {
+        /* no Brain app secret configured — rely on the brand's own stored app creds below */
+      }
+      const creds = await resolveBrandOAuthAppCreds(deps.secretsManager, 'shopify', brandId, {
+        clientId: process.env['SHOPIFY_CLIENT_ID'] ?? '',
+        clientSecret: envClientSecret,
+      });
+      return creds?.clientSecret ?? '';
+    });
+
   // ── Shopify: POST /api/v1/webhooks/shopify/:topic ─────────────────────────
   // Topic param injected as x-wh-topic header for the Strategy.
   {
     const pipeline = new WebhookPipeline(
-      new ShopifyWebhookStrategy(),
+      new ShopifyWebhookStrategy(shopifyHmacSecretResolver),
       {
         path: '/api/v1/webhooks/shopify/:topic', // used only as config label here
         resolverFn: 'resolve_connector_by_shop_domain',

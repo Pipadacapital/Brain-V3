@@ -29,9 +29,16 @@ keys — a per-column struct reconstruction would lose those (Spark to_json drop
 the verbatim webhook body as a JSON STRING and folding it in ONE port that internally calls the shared rn.*
 primitives preserves the exact provider structure (null keys, number forms) and keeps the parity loop intact.
 
-DUAL-RUN (P4): writes to a SHADOW table by default (TARGET_TABLE override) so parity can be checked against the
-live canonical silver_collector_event shopflo rows before the connector cutover. MONEY: bigint MINOR units,
-never float, paired with currency_code, never blended. PII: hashed-only (email/phone) — raw never stored.
+SHADOW-ONLY BOUNDARY (SLICE B Phase-0 decision): the LIVE Shopflo normalization boundary is now WEBHOOK-TIME
+TS MAPPING — ShopfloWebhookStrategy → @brain/shopflo-mapper emits the canonical events (order.live.v1,
+payment.*.v1, refund.recorded.v1, checkout.abandoned.v1 / shopflo.checkout_{abandoned,started,step,completed}.v1)
+straight onto the COLLECTOR lane → silver_collector_event. This Spark raw-normalize job is therefore a
+SHADOW-ONLY parity tool for the ADR-0006 P4 raw-landing program: it writes the SHADOW target by default and
+MUST NOT be cut to the live silver_collector_event (TARGET_TABLE override), or it would DOUBLE-WRITE the same
+abandoned rows the TS lane already produces (same (brand_id, event_id) deterministic key, different reconstruction
+path → parity drift / churn). It is intentionally ABSENT from tools/dev/v4-refresh-loop.sh. Keep it as the
+parity oracle only; the live lane is the TS webhook mapper. MONEY: bigint MINOR units, never float, paired with
+currency_code, never blended. PII: hashed-only (email/phone) — raw never stored.
 
 STAGE-1 GATE (Brain V4 two-stage): build_shopflo_canonical RETURNS (None, None, None) on any mapper-throw
 (empty checkout_id, un-parseable money, or no resolvable timestamp), which the inline

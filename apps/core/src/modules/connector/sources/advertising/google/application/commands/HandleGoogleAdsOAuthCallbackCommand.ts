@@ -91,36 +91,50 @@ export class HandleGoogleAdsOAuthCallbackCommand {
     }
     const { refreshToken, accessToken } = await this.exchangeCodeForTokens(code, brandId);
 
-    // ── Step 3: Resolve ALL customer ids (Gap B) — best-effort; empty → __default__ ──
-    const adAccountIds = await this.resolveAllCustomerIds(accessToken);
+    // ── Step 3: Resolve ALL LEAF customer ids + their required manager login-CID (Gap B + MCC) ──
+    // listAccessibleCustomers returns whatever the OAuth user can reach — for an agency/MCC login
+    // that's the MANAGER CID, NOT the spend-carrying leaf clients. We expand each accessible CID via
+    // `customer_client` to enumerate the real leaf accounts and capture the manager CID each leaf must
+    // be queried THROUGH (login-customer-id). Without this, an MCC login offers only the manager (no
+    // spend) → permanent zero spend, the prod symptom.
+    const leaves = await this.resolveLeafCustomers(accessToken);
+    const adAccountIds = leaves.map((l) => l.customerId);
     const adAccountId = adAccountIds[0] ?? null;
 
-    // ── Step 4: Store the bundle in Secrets Manager → ARN (NN-2 / I-S09) ───────
-    const bundle: Record<string, string> = { refresh_token: refreshToken };
-    if (adAccountId) bundle['ad_account_id'] = adAccountId;
-    const { arn: secretRef } = await this.secretsManager.storeSecret(
-      brandId,
-      { connectorType: 'google_ads', subKey: adAccountId ?? undefined },
-      bundle,
-    );
-    // refreshToken + accessToken are now discarded — only secretRef proceeds.
-
-    // ── Step 5: Write one ConnectorInstance per customer (Gap B) ─────────────
-    const accountsToCreate: Array<string | null> = adAccountIds.length > 0
-      ? adAccountIds
-      : [null];
-
+    // ── Step 4: one ConnectorInstance per LEAF, each with its OWN per-account secret bundle ──
+    // The bundle carries the per-account login_customer_id so the repull resolver reads the correct
+    // manager CID PER CONNECTOR (no global env fallback for MCC accounts). refresh_token is shared.
     const now = new Date();
     let firstInstanceId = '';
 
     // 0106 ad-account activation: an MCC login exposes every accessible customer id (often other
     // brands'). Don't ingest any until the user picks ONE. EXCEPTION: a single account is
     // auto-activated (nothing to choose). Multiple → all NULL → the UI prompts for a selection.
+    const accountsToCreate: Array<{ customerId: string; loginCustomerId: string | null } | null> =
+      leaves.length > 0 ? leaves : [null];
     const autoActivate = accountsToCreate.length === 1;
 
-    for (const accountId of accountsToCreate) {
+    for (const account of accountsToCreate) {
+      const accountId = account?.customerId ?? null;
+      const loginCustomerId = account?.loginCustomerId ?? null;
+
+      // Per-account bundle → ARN (NN-2 / I-S09). __default__ (no account) keeps a single
+      // refresh-token-only bundle so a credentials-only connect still has a resolvable secret.
+      const bundle: Record<string, string> = { refresh_token: refreshToken };
+      if (accountId) bundle['ad_account_id'] = accountId;
+      if (loginCustomerId) bundle['login_customer_id'] = loginCustomerId;
+      const { arn: secretRef } = await this.secretsManager.storeSecret(
+        brandId,
+        { connectorType: 'google_ads', subKey: accountId ?? undefined },
+        bundle,
+      );
+
       const instanceId = randomUUID();
       if (!firstInstanceId) firstInstanceId = instanceId;
+
+      const providerConfig: Record<string, string> = {};
+      if (accountId) providerConfig['google_ads_customer_id'] = accountId;
+      if (loginCustomerId) providerConfig['google_ads_login_customer_id'] = loginCustomerId;
 
       const instance = ConnectorInstance.create({
         id: instanceId,
@@ -136,7 +150,7 @@ export class HandleGoogleAdsOAuthCallbackCommand {
         createdAt: now,
         updatedAt: now,
         accountKey: accountId ?? DEFAULT_ACCOUNT_KEY,
-        providerConfig: accountId ? { google_ads_customer_id: accountId } : {},
+        providerConfig,
         // 0106: auto-activate only when there's a single account; otherwise wait for selection.
         activatedAt: autoActivate ? now : null,
       });
@@ -253,4 +267,91 @@ export class HandleGoogleAdsOAuthCallbackCommand {
       return [];
     }
   }
+
+  /**
+   * Resolve the real LEAF (spend-carrying) customers + the manager CID each must be queried
+   * through (MCC fix). For every accessible CID we run a `customer_client` GAQL pass:
+   *   - a direct (non-manager) account returns just itself → leaf with loginCustomerId=null.
+   *   - a manager returns itself + descendants → each non-manager descendant is a leaf whose
+   *     loginCustomerId is the manager CID we queried through.
+   * Best-effort & fail-soft: if the expansion call fails, the accessible CID is kept as a direct
+   * leaf (preserves the pre-MCC behaviour; never collapses to zero accounts). De-duped by leaf CID.
+   */
+  private async resolveLeafCustomers(
+    accessToken: string,
+  ): Promise<Array<{ customerId: string; loginCustomerId: string | null }>> {
+    const accessibleCids = await this.resolveAllCustomerIds(accessToken);
+    const byLeaf = new Map<string, { customerId: string; loginCustomerId: string | null }>();
+
+    for (const cid of accessibleCids) {
+      const expanded = await this.expandCustomerClients(accessToken, cid);
+      if (expanded === null) {
+        // Expansion failed — keep the accessible CID itself as a direct leaf (fail-soft).
+        if (!byLeaf.has(cid)) byLeaf.set(cid, { customerId: cid, loginCustomerId: null });
+        continue;
+      }
+      for (const leaf of expanded) {
+        if (!byLeaf.has(leaf.customerId)) byLeaf.set(leaf.customerId, leaf);
+      }
+    }
+    return [...byLeaf.values()];
+  }
+
+  /**
+   * Enumerate the leaf (non-manager) clients reachable from a single accessible CID via the
+   * `customer_client` resource (manager CID = login-customer-id). Returns null on any failure so the
+   * caller can fail-soft. A leaf's loginCustomerId is the manager CID only when it differs from the
+   * leaf itself (a directly-accessible non-manager account needs no login-customer-id header).
+   */
+  private async expandCustomerClients(
+    accessToken: string,
+    managerCid: string,
+  ): Promise<Array<{ customerId: string; loginCustomerId: string | null }> | null> {
+    const devToken = process.env['GOOGLE_ADS_DEVELOPER_TOKEN'];
+    if (!accessToken || !devToken) return null;
+    const query =
+      'SELECT customer_client.id, customer_client.manager, customer_client.level, ' +
+      "customer_client.status FROM customer_client WHERE customer_client.status = 'ENABLED'";
+    try {
+      const response = await fetch(
+        `https://googleads.googleapis.com/v24/customers/${managerCid}/googleAds:searchStream`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'developer-token': devToken,
+            'login-customer-id': managerCid,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ query }),
+          signal: AbortSignal.timeout(15_000),
+        },
+      );
+      if (!response.ok) return null;
+      const batches = (await response.json()) as
+        | Array<{ results?: CustomerClientResult[] }>
+        | { results?: CustomerClientResult[] };
+      const arr = Array.isArray(batches) ? batches : [batches];
+      const leaves: Array<{ customerId: string; loginCustomerId: string | null }> = [];
+      for (const batch of arr) {
+        for (const r of batch.results ?? []) {
+          const id = r.customerClient?.id;
+          if (!id) continue;
+          const isManager = r.customerClient?.manager === true;
+          if (isManager) continue; // managers don't carry spend; only leaves ingest
+          // login-customer-id is required only when the leaf is reached THROUGH a different manager.
+          leaves.push({ customerId: id, loginCustomerId: id === managerCid ? null : managerCid });
+        }
+      }
+      // A non-manager accessible account returns a single self row → that's a direct leaf.
+      return leaves;
+    } catch {
+      return null;
+    }
+  }
+}
+
+/** A single `customer_client` GAQL result (subset). */
+interface CustomerClientResult {
+  customerClient?: { id?: string; manager?: boolean; level?: string; status?: string };
 }

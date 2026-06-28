@@ -37,7 +37,7 @@ import {
 import { WOOCOMMERCE_MANIFEST } from '@brain/woocommerce-mapper';
 import { ORDER_BACKFILL_V1_TOPIC_SUFFIX, COLLECTOR_EVENT_V1_TOPIC_SUFFIX } from '@brain/contracts';
 import { KafkaEventSink, PgDeadLetterSink, frameworkDlqTopic } from './sinks.js';
-import { BACKFILL_TOPIC } from './run.js';
+import { BACKFILL_TOPIC, WOOCOMMERCE_SCHEDULED_BACKFILL_RESOURCES } from './run.js';
 
 const BRAND = '11111111-1111-1111-1111-111111111111';
 const CONNECTOR = '99999999-9999-9999-9999-999999999999';
@@ -160,6 +160,21 @@ describe('ingestion framework — multi-resource onboarding via the generic driv
     expect(() => getResource(WOOCOMMERCE_MANIFEST, 'products')).not.toThrow();
     // a typo fails loud (not a silent no-op)
     expect(() => getResource(WOOCOMMERCE_MANIFEST, 'nope')).toThrow();
+  });
+
+  it('declares ALL backfillable WooCommerce resources (products + customers + coupons + refunds)', () => {
+    for (const r of ['products', 'customers', 'coupons', 'refunds']) {
+      expect(() => getResource(WOOCOMMERCE_MANIFEST, r)).not.toThrow();
+    }
+  });
+
+  it('the scheduled resource set drives the 4 non-order resources and EXCLUDES orders (no double-count)', () => {
+    expect([...WOOCOMMERCE_SCHEDULED_BACKFILL_RESOURCES].sort()).toEqual(
+      ['coupons', 'customers', 'products', 'refunds'],
+    );
+    // Orders flow on the live lane via woocommerce-orders-repull (uuidV5FromOrderLive event_id);
+    // driving them through the framework too would mint a different id → duplicate Bronze rows.
+    expect(WOOCOMMERCE_SCHEDULED_BACKFILL_RESOURCES).not.toContain('orders');
   });
 });
 

@@ -123,6 +123,63 @@ describe('mapMetaInsightToEvent', () => {
     expect(ev.occurred_at).toBe('2026-06-10T00:00:00.000Z');
   });
 
+  it('carries the full insight set: purchase count/revenue (minor, no float), ctr, cpc/cpm minor', () => {
+    const ev = mapMetaInsightToEvent(
+      {
+        level: 'campaign',
+        campaign_id: 'c_99',
+        spend: '100.00',
+        impressions: '5000',
+        clicks: '120',
+        date_start: '2026-06-15',
+        actions: [
+          { action_type: 'add_to_cart', value: '40' },
+          { action_type: 'purchase', value: '7' },
+        ],
+        action_values: [
+          { action_type: 'add_to_cart', value: '1000.00' },
+          { action_type: 'purchase', value: '2500.50' },
+        ],
+        ctr: '2.4',
+        cpc: '0.83',
+        cpm: '20.00',
+      },
+      'usd',
+    );
+    // count from actions[] purchase; revenue from action_values[] purchase → MINOR units (250050), no float.
+    expect(ev.properties.conversions).toBe('7');
+    expect(ev.properties.conv_value_minor).toBe('250050');
+    expect(ev.properties.currency_code).toBe('USD'); // conv_value shares the spend currency (never blended)
+    expect(ev.properties.ctr).toBe('2.4');
+    expect(ev.properties.cpc_minor).toBe('83');
+    expect(ev.properties.cpm_minor).toBe('2000');
+    expect(ev.properties.all_conversions).toBeNull();
+    expect(ev.properties.advertising_channel_type).toBeNull();
+    // raw arrays preserved (ADR-AD-8)
+    expect(ev.properties.conversions_raw).toEqual({
+      actions: [
+        { action_type: 'add_to_cart', value: '40' },
+        { action_type: 'purchase', value: '7' },
+      ],
+      action_values: [
+        { action_type: 'add_to_cart', value: '1000.00' },
+        { action_type: 'purchase', value: '2500.50' },
+      ],
+    });
+  });
+
+  it('leaves enriched fields null when the insight set is absent (legacy spend rows unchanged)', () => {
+    const ev = mapMetaInsightToEvent(
+      { level: 'campaign', campaign_id: 'c1', spend: '5.00', date_start: '2026-06-01' },
+      'inr',
+    );
+    expect(ev.properties.conversions).toBeNull();
+    expect(ev.properties.conv_value_minor).toBeNull();
+    expect(ev.properties.ctr).toBeNull();
+    expect(ev.properties.cpc_minor).toBeNull();
+    expect(ev.properties.conversions_raw).toBeNull();
+  });
+
   it('resolves adset hierarchy parent_id', () => {
     const ev = mapMetaInsightToEvent(
       { level: 'adset', campaign_id: 'c1', adset_id: 'as1', spend: '1.00', date_start: '2026-06-01' },
@@ -162,5 +219,38 @@ describe('mapGoogleRowToEvent', () => {
     expect(ev.properties.currency_code).toBe('USD');
     expect(ev.properties.conversions_raw).toEqual({ conversions: '2.5', all_conversions: '4.0' });
     expect(ev.properties.stat_date).toBe('2026-06-09');
+  });
+
+  it('carries conversion revenue (double major → minor), counts, view-through, cpc/cpm micros→minor, channel', () => {
+    const ev = mapGoogleRowToEvent(
+      {
+        level: 'campaign',
+        campaign_id: 'gc9',
+        campaign_name: 'Search Brand',
+        cost_micros: '12340000',
+        impressions: '900',
+        clicks: '30',
+        conversions: '5',
+        all_conversions: '6',
+        conversions_value: '1234.56',         // MAJOR-unit double (account currency)
+        view_through_conversions: '2',
+        ctr: '0.0333',
+        average_cpc: '410000',                 // micros → 41 minor
+        average_cpm: '13700000',               // micros → 1370 minor
+        advertising_channel_type: 'SEARCH',
+        segments_date: '2026-06-09',
+        currency_code: 'usd',
+      },
+      'USD',
+    );
+    expect(ev.properties.conversions).toBe('5');
+    expect(ev.properties.all_conversions).toBe('6');
+    expect(ev.properties.conv_value_minor).toBe('123456'); // 1234.56 → minor, no float
+    expect(ev.properties.view_through_conversions).toBe('2');
+    expect(ev.properties.ctr).toBe('0.0333');
+    expect(ev.properties.cpc_minor).toBe('41');
+    expect(ev.properties.cpm_minor).toBe('1370');
+    expect(ev.properties.advertising_channel_type).toBe('SEARCH');
+    expect(ev.properties.currency_code).toBe('USD');
   });
 });

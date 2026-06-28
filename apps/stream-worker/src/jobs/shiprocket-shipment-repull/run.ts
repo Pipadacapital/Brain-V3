@@ -1,12 +1,12 @@
 /**
  * shiprocket-shipment-repull/run.ts — Shiprocket shipment-lifecycle trailing-window re-pull.
  *
- * A near-verbatim clone of gokwik-awb-repull/run.ts. Shiprocket is the SECOND logistics source
- * feeding Brain's shared logistics canonical surface. Shipment outcomes (RTO/Delivered) are a
- * LATE-CHANGING lifecycle (terminal states arrive days/weeks after dispatch), so this job re-reads
- * a 45-day trailing window every run and RESTATES terminal states idempotently.
+ * Shiprocket is Brain's logistics source of truth (GoKwik is webhook-first payments/checkout and
+ * has no AWB-read API — its synthetic logistics re-pull was retired in 0117). Shipment outcomes
+ * (RTO/Delivered) are a LATE-CHANGING lifecycle (terminal states arrive days/weeks after dispatch),
+ * so this job re-reads a 45-day trailing window every run and RESTATES terminal states idempotently.
  *
- * Architecture (mirrors gokwik-awb-repull exactly):
+ * Architecture:
  *   1. Enumerate via list_shiprocket_connectors_for_repull() — SECURITY DEFINER, NO GUC at
  *      enumerate time (durable rule: system-job-force-rls-enumeration).
  *   2. GUC set AFTER enumerate, before any brand-scoped read/write (MT-1).
@@ -18,8 +18,8 @@
  *   6. Emit shiprocket.shipment_status.v1 to the live lane → cursor high-water advance → sync_status.
  *
  * The re-pull does NOT do the ledger join — it lands events on the live lane. ShipmentLedgerConsumer
- * turns terminal RTO/Delivered into cod_rto_clawback / cod_delivery_confirmed (shared with GoKwik;
- * the ledger UNIQUE(brand,order,type,date) key prevents the two sources double-booking the same RTO).
+ * turns terminal RTO/Delivered into the recognition ledger intent. Shiprocket is the sole logistics
+ * source (GoKwik is webhook-first payments/checkout with no logistics-read API — retired in 0117).
  *
  * DEV-HONESTY: the read source is a labelled SYNTHETIC fixture (ShiprocketShipmentClient) — every
  * event carries data_source='synthetic' + processing_flags._synthetic=true. NEVER presented as live.
@@ -315,7 +315,7 @@ async function repullShipmentCursor(params: CursorRepullParams): Promise<number>
   return recordsProcessed;
 }
 
-// ── Sync status (mirrors gokwik-awb-repull setSyncState exactly) ──────────────
+// ── Sync status (connector re-pull setSyncState pattern) ──────────────
 
 async function setSyncState(
   pool: Pool,
@@ -328,7 +328,7 @@ async function setSyncState(
   try {
     await client.query('BEGIN');
     await client.query(`SELECT set_config('app.current_brand_id', $1, true)`, [brandId]);
-    // UPSERT, not UPDATE (matches gokwik-awb-repull): a missing connect-time row would make an
+    // UPSERT, not UPDATE (connector re-pull pattern): a missing connect-time row would make an
     // UPDATE-only write a silent no-op → UI stuck on "Not synced yet". (brand_id, connector_instance_id) UNIQUE.
     if (state === 'connected') {
       await client.query(

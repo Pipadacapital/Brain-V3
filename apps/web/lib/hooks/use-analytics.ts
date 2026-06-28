@@ -76,6 +76,20 @@ export function useExecutiveMetrics(params?: { from?: string; to?: string }) {
 }
 
 /**
+ * useCohortRetention — H9/H11 acquisition-cohort curve (size, lifetime orders/value,
+ * orders-per-customer) from gold_cohorts via /v1/analytics/cohort-retention. Powers the
+ * Retention tab. No params (whole-history cohorts); honest no_data when the brand has none.
+ */
+export function useCohortRetention() {
+  return useQuery({
+    queryKey: [...ANALYTICS_QUERY_KEY, 'cohort-retention'],
+    queryFn: () => analyticsApi.getCohortRetention(),
+    staleTime: 5 * 60_000,
+    refetchInterval: 60_000,
+  });
+}
+
+/**
  * useRecognitionBreakdown — fetches recognition state distribution.
  * @param asOf - YYYY-MM-DD date (optional; server defaults to today).
  */
@@ -407,6 +421,18 @@ export function useShipmentOutcomes(params?: { from?: string; to?: string }) {
   return useQuery({
     queryKey: [...ANALYTICS_QUERY_KEY, 'shipment-outcomes', params?.from, params?.to],
     queryFn: () => analyticsApi.getShipmentOutcomes(params),
+    staleTime: 5 * 60_000,
+  });
+}
+
+/**
+ * useReturnFunnel — return_class breakdown + completion% over a range, from the silver_return mart
+ * (SR-4). A SEPARATE dimension from shipment outcomes — returns never carry terminal_class. SR-10.
+ */
+export function useReturnFunnel(params?: { from?: string; to?: string }) {
+  return useQuery({
+    queryKey: [...ANALYTICS_QUERY_KEY, 'return-funnel', params?.from, params?.to],
+    queryFn: () => analyticsApi.getReturnFunnel(params),
     staleTime: 5 * 60_000,
   });
 }

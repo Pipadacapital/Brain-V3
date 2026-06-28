@@ -79,8 +79,12 @@ export type FreshnessSlaStatus = 'green' | 'at_risk' | 'breached';
  * freshness writes 'silver.order_state'). A mismatch silently drops a cost grade.
  */
 const COST_RELEVANT: ReadonlyArray<{ category: DqCategory; target: string }> = [
-  { category: 'completeness', target: 'ad_spend_ledger' },
-  { category: 'completeness', target: 'realized_revenue_ledger' },
+  // CONTRACT-DRIFT FIX: the PG ad_spend_ledger + realized_revenue_ledger completeness checks were
+  // RETIRED when those PG ledgers were dropped (analytical spend/revenue moved to the Bronze-sourced
+  // silver_marketing_spend / gold_revenue_ledger — see completeness-check.ts). The executors no longer
+  // emit those two targets, so leaving them here floored cost_confidence on PERMANENTLY-MISSING grades
+  // (→ D) and pinned coverage at 6/9. Cost is now floored over the grades the executors actually emit:
+  // the Bronze↔Silver order reconciliation + the Silver order-state freshness that underpins it.
   { category: 'reconciliation', target: 'bronze_vs_silver.order_state' },
   { category: 'freshness', target: 'silver.order_state' },
 ] as const;
@@ -95,17 +99,16 @@ const COST_RELEVANT: ReadonlyArray<{ category: DqCategory; target: string }> = [
  * mis-reports the success metric.
  */
 const EXPECTED_COVERAGE: ReadonlyArray<{ category: DqCategory; target: string }> = [
+  // Mirrors EXACTLY the (category, target) rows the stream-worker DQ executors emit today. The
+  // ad_spend_ledger / realized_revenue_ledger completeness + bronze_vs_gold.realized_revenue
+  // reconciliation targets were RETIRED with their PG ledgers (now Bronze-sourced) — listing them
+  // here pinned coverage at 6/9 for grades that can never arrive. Removed to report honest coverage.
   { category: 'freshness', target: 'bronze_events' },
   { category: 'freshness', target: 'connector_sync_status' },
   { category: 'freshness', target: 'silver.order_state' },
   { category: 'completeness', target: 'bronze_events' },
-  { category: 'completeness', target: 'ad_spend_ledger' },
-  { category: 'completeness', target: 'realized_revenue_ledger' },
   { category: 'schema_validity', target: 'collector.event' },
   { category: 'reconciliation', target: 'bronze_vs_silver.order_state' },
-  // P2.4: Bronze→Gold rebuildability — ledger order_ids must trace to a Bronze order event
-  // (mirrors bronzeLedgerProvenanceCheck in apps/stream-worker/src/jobs/dq).
-  { category: 'reconciliation', target: 'bronze_vs_gold.realized_revenue' },
 ] as const;
 
 /** One latest grade row per (category, target) the UI renders in the grade matrix. */

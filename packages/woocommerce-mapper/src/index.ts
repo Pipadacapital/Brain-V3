@@ -27,6 +27,7 @@
 
 import { hashToUuidShaped } from '@brain/connector-core';
 import { hashIdentifier, normalizePhone } from '@brain/identity-core';
+import { minorUnitDigits } from '@brain/money';
 
 // ── Canonical event name (MUST equal shopify-mapper's — the shared contract) ──
 // Defined in the leaf ./event-names.ts to stay out of the index <-> manifest <->
@@ -164,20 +165,41 @@ export interface MappedOrderEvent {
   properties: OrderProperties;
 }
 
-// ── Money helpers (I-S07 — integer arithmetic only; mirror shopify-mapper) ────
+// ── Money helpers (I-S07 — integer arithmetic only; CURRENCY-AWARE via @brain/money) ────
+//
+// MONEY FIX (HIGH, was index.ts:170-182): the prior helper HARDCODED 2-decimal scaling (×100,
+// slice(0,2)) on EVERY amount — under-scaling 3dp currencies (KWD/BHD/OMR) by 10× and over-scaling
+// 0dp currencies (JPY/KRW) by 100×. Every money conversion is now keyed on the order/store currency
+// via @brain/money's per-currency exponent (minorUnitDigits) — the single source of truth for the
+// ISO-4217 minor-unit table. No hardcoded x100; no INR default (see mapWooOrderToEvent).
 
-/** Strict: decimal string → BIGINT minor units (≤2 dp). Throws on invalid (core amount path). */
-export function decimalStringToMinor(value: string): bigint {
-  const s = value.trim();
-  if (!/^-?\d+(\.\d{1,2})?$/.test(s)) {
+/**
+ * Strict: decimal string → BIGINT minor units, scaled by the currency's exponent (0/2/3/4 dp).
+ * Integer arithmetic only — no parseFloat (I-S07). Throws on an invalid value OR on more fractional
+ * digits than the currency supports (e.g. "10.50" for JPY) — we never silently round money.
+ *
+ * @param value         decimal money string (e.g. "1250.00", "999", "15.5", "-500.000")
+ * @param currencyCode  ISO-4217 code driving the exponent (e.g. 'INR'→2, 'JPY'→0, 'KWD'→3)
+ */
+export function decimalStringToMinor(value: string, currencyCode: string): bigint {
+  const s = String(value).trim();
+  if (!/^-?\d+(\.\d+)?$/.test(s)) {
     throw new Error(`[woocommerce-mapper] invalid money string: ${value}`);
   }
+  const digits = minorUnitDigits(currencyCode);
   const neg = s.startsWith('-');
-  const parts = (neg ? s.slice(1) : s).split('.');
-  const whole = parts[0] ?? '0';
-  const frac = parts[1] ?? '';
-  const fracPadded = (frac + '00').slice(0, 2);
-  const minor = BigInt(whole) * 100n + BigInt(fracPadded);
+  const unsigned = neg ? s.slice(1) : s;
+  const [wholeRaw, fracRaw = ''] = unsigned.split('.');
+  if (fracRaw.length > digits) {
+    throw new Error(
+      `[woocommerce-mapper] money "${value}" has ${fracRaw.length} decimals but ${currencyCode.toUpperCase()} ` +
+        `supports ${digits} (refusing to silently round money)`,
+    );
+  }
+  const whole = wholeRaw || '0';
+  const scale = 10n ** BigInt(digits);
+  const fracMinor = digits > 0 ? BigInt((fracRaw + '0'.repeat(digits)).slice(0, digits)) : 0n;
+  const minor = BigInt(whole) * scale + fracMinor;
   return neg ? -minor : minor;
 }
 
@@ -192,11 +214,17 @@ function toUtcIso(value: string | null | undefined, fallbackIso: string): string
   return new Date(hasTz ? raw : `${raw}Z`).toISOString();
 }
 
-/** Resilient: returns null instead of throwing — for OPTIONAL depth fields (one bad price ≠ failed order). */
-export function tryDecimalToMinor(value: string | number | null | undefined): bigint | null {
+/**
+ * Resilient variant — returns null instead of throwing for OPTIONAL depth fields (one bad price ≠
+ * a failed order). Still currency-aware: scaling is keyed on `currencyCode`.
+ */
+export function tryDecimalToMinor(
+  value: string | number | null | undefined,
+  currencyCode: string,
+): bigint | null {
   if (value === null || value === undefined) return null;
   try {
-    return decimalStringToMinor(String(value));
+    return decimalStringToMinor(String(value), currencyCode);
   } catch {
     return null;
   }
@@ -259,8 +287,15 @@ export function mapWooOrderToEvent(
     throw new Error('[woocommerce-mapper] order missing id');
   }
 
+  // MONEY FIX: read the order's own currency — NO INR default (the prior code blended every
+  // currency-less order into INR). Fail closed: a money amount without a currency is unsafe to scale.
+  const currencyCode = (order.currency ?? '').trim().toUpperCase();
+  if (!currencyCode) {
+    throw new Error(`[woocommerce-mapper] order ${orderId} missing currency (refusing to default to INR)`);
+  }
+
   const totalRaw = order.total ?? '0';
-  const amountMinor = decimalStringToMinor(String(totalRaw));
+  const amountMinor = decimalStringToMinor(String(totalRaw), currencyCode);
   if (amountMinor < 0n) {
     throw new Error(`[woocommerce-mapper] negative order total for order ${orderId}`);
   }
@@ -296,10 +331,10 @@ export function mapWooOrderToEvent(
   // ── Line items (optional depth — resilient money) ──
   const lineItems: OrderLineItem[] = (order.line_items ?? []).map((li) => {
     const qty = typeof li.quantity === 'number' ? li.quantity : Number(li.quantity ?? 0);
-    const lineTotal = tryDecimalToMinor(li.total ?? null) ?? 0n;
-    const lineSubtotal = tryDecimalToMinor(li.subtotal ?? null);
+    const lineTotal = tryDecimalToMinor(li.total ?? null, currencyCode) ?? 0n;
+    const lineSubtotal = tryDecimalToMinor(li.subtotal ?? null, currencyCode);
     const lineDiscount = lineSubtotal !== null ? lineSubtotal - lineTotal : 0n;
-    const unitPrice = tryDecimalToMinor(li.price ?? null) ?? (qty > 0 ? lineTotal / BigInt(qty) : 0n);
+    const unitPrice = tryDecimalToMinor(li.price ?? null, currencyCode) ?? (qty > 0 ? lineTotal / BigInt(qty) : 0n);
     return {
       sku: str(li.sku),
       title: str(li.name),
@@ -315,19 +350,19 @@ export function mapWooOrderToEvent(
   const taxLines: OrderTaxLine[] = (order.tax_lines ?? []).map((t) => ({
     title: str(t.label),
     rate: typeof t.rate_percent === 'number' ? t.rate_percent / 100 : null,
-    amount_minor: (tryDecimalToMinor(t.tax_total ?? null) ?? 0n).toString(),
+    amount_minor: (tryDecimalToMinor(t.tax_total ?? null, currencyCode) ?? 0n).toString(),
   }));
 
   const discountCodes: OrderDiscountCode[] = (order.coupon_lines ?? []).map((c) => ({
     code: str(c.code),
-    amount_minor: (tryDecimalToMinor(c.discount ?? null) ?? 0n).toString(),
+    amount_minor: (tryDecimalToMinor(c.discount ?? null, currencyCode) ?? 0n).toString(),
     type: str(c.discount_type),
   }));
 
   // ── Refunds: Woo refund.total is NEGATIVE → store ABS minor, one row per refund_id ──
   let refundTotal = 0n;
   const refunds: OrderRefund[] = (order.refunds ?? []).map((r) => {
-    const signed = tryDecimalToMinor(r.total ?? null) ?? 0n;
+    const signed = tryDecimalToMinor(r.total ?? null, currencyCode) ?? 0n;
     const abs = signed < 0n ? -signed : signed;
     refundTotal += abs;
     return {
@@ -343,7 +378,7 @@ export function mapWooOrderToEvent(
     woocommerce_order_id: orderId,
     order_id: orderId,
     amount_minor: amountMinor.toString(),
-    currency_code: (order.currency ?? 'INR').toUpperCase(),
+    currency_code: currencyCode,
     payment_method: classifyPaymentMethod(order),
     data_source: dataSource,
     financial_status: status || undefined,
@@ -353,10 +388,10 @@ export function mapWooOrderToEvent(
     ...(hashedPhone ? { hashed_customer_phone: hashedPhone } : {}),
     ...(storefrontCustomerId ? { storefront_customer_id: storefrontCustomerId } : {}),
     ...(lineItems.length ? { line_items: lineItems } : {}),
-    ...(order.total_tax ? { tax_total_minor: (tryDecimalToMinor(order.total_tax) ?? 0n).toString() } : {}),
+    ...(order.total_tax ? { tax_total_minor: (tryDecimalToMinor(order.total_tax, currencyCode) ?? 0n).toString() } : {}),
     ...(taxLines.length ? { tax_lines: taxLines } : {}),
-    ...(order.shipping_total ? { shipping_total_minor: (tryDecimalToMinor(order.shipping_total) ?? 0n).toString() } : {}),
-    ...(order.discount_total ? { discount_total_minor: (tryDecimalToMinor(order.discount_total) ?? 0n).toString() } : {}),
+    ...(order.shipping_total ? { shipping_total_minor: (tryDecimalToMinor(order.shipping_total, currencyCode) ?? 0n).toString() } : {}),
+    ...(order.discount_total ? { discount_total_minor: (tryDecimalToMinor(order.discount_total, currencyCode) ?? 0n).toString() } : {}),
     ...(discountCodes.length ? { discount_codes: discountCodes } : {}),
     ...(refunds.length ? { refunds, refund_total_minor: refundTotal.toString() } : {}),
   };
@@ -377,12 +412,22 @@ export {
   WOOCOMMERCE_MANIFEST,
   WOOCOMMERCE_ORDERS_RESOURCE,
   WOOCOMMERCE_PRODUCTS_RESOURCE,
+  WOOCOMMERCE_CUSTOMERS_RESOURCE,
+  WOOCOMMERCE_COUPONS_RESOURCE,
+  WOOCOMMERCE_REFUNDS_RESOURCE,
 } from './manifest.js';
 
 export {
   PRODUCT_UPSERT_V1_EVENT_NAME,
+  CUSTOMER_UPSERT_V1_EVENT_NAME,
+  COUPON_UPSERT_V1_EVENT_NAME,
+  REFUND_RECORDED_V1_EVENT_NAME,
   mapWooProductToDraft,
   mapWooOrderToDraft,
+  mapWooCustomerToDraft,
+  mapWooCouponToDraft,
+  mapWooRefundToDraft,
+  mapWooOrderRefundsToDrafts,
 } from './resources.js';
 
 export type {
@@ -390,4 +435,10 @@ export type {
   WooProductShape,
   WooProductVariation,
   WooProductUpsertProperties,
+  WooCustomerShape,
+  WooCustomerUpsertProperties,
+  WooCouponShape,
+  WooCouponUpsertProperties,
+  WooRefundShape,
+  WooRefundRecordedProperties,
 } from './resources.js';

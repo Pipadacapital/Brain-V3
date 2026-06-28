@@ -43,6 +43,9 @@ import {
   AlertTriangle,
   Lock,
   PlugZap,
+  Copy,
+  Check,
+  Webhook,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -61,7 +64,7 @@ import { useEntitlements } from '@/lib/hooks/use-entitlements';
 import { useEmailVerified } from '@/lib/hooks/use-auth';
 import { BffApiError, userFacingMessage } from '@/lib/api/client';
 import { toast } from '@/components/ui/toaster';
-import type { MarketplaceTile, MarketplaceTileInstance, ConnectorCategory, HealthState, SafetyRating } from '@/lib/api/types';
+import type { MarketplaceTile, MarketplaceTileInstance, ConnectorCategory, HealthState, SafetyRating, ConnectWebhookSetup } from '@/lib/api/types';
 import { cn } from '@/lib/utils';
 
 // ── Health state display config (icon + tone + label — never colour-only, a11y) ──────
@@ -167,6 +170,92 @@ import { findConnectedStorefront, storefrontLockReason } from './storefront-excl
 /** Soft-gate reason copy for connecting a real store before email is verified. */
 const VERIFY_TO_CONNECT = 'Verify your email to connect a store';
 
+// ── Webhook setup panel (SR-2) ────────────────────────────────────────────────
+// After a credential connect that minted a webhook token (Shiprocket), show the merchant the exact
+// URL + routing header + token to paste into their provider dashboard. The token is returned ONCE
+// (write-only in the secret bundle thereafter), so this panel persists until dismissed.
+
+/** A single copyable label/value row with a copy-to-clipboard affordance. */
+function CopyRow({ tileId, fieldKey, label, value, secret }: { tileId: string; fieldKey: string; label: string; value: string; secret?: boolean }) {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      toast({ title: 'Copy failed', description: 'Select the value and copy it manually.', variant: 'destructive' });
+    }
+  };
+  return (
+    <div className="space-y-1">
+      <Label className="text-[11px] uppercase tracking-wide text-muted-foreground">{label}</Label>
+      <div className="flex items-center gap-2">
+        <code
+          className="min-w-0 flex-1 truncate rounded bg-muted px-2 py-1.5 font-mono text-xs text-foreground"
+          data-testid={`webhook-${tileId}-${fieldKey}-value`}
+          title={value}
+        >
+          {secret ? value.replace(/.(?=.{6})/g, '•') : value}
+        </code>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={copy}
+          aria-label={`Copy ${label}`}
+          data-testid={`webhook-${tileId}-${fieldKey}-copy`}
+        >
+          {copied ? <Check className="h-3.5 w-3.5" aria-hidden="true" /> : <Copy className="h-3.5 w-3.5" aria-hidden="true" />}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function WebhookSetupPanel({ tileId, displayName, setup, onDismiss }: { tileId: string; displayName: string; setup: ConnectWebhookSetup; onDismiss: () => void }) {
+  return (
+    <div
+      className="mb-4 space-y-3 rounded-md border border-primary/30 bg-primary/5 p-4"
+      role="region"
+      aria-label={`${displayName} webhook setup`}
+      data-testid={`webhook-setup-${tileId}`}
+    >
+      <div className="flex items-start gap-2">
+        <Webhook className="mt-0.5 h-4 w-4 shrink-0 text-primary" aria-hidden="true" />
+        <div className="min-w-0">
+          <p className="text-sm font-medium text-foreground">Finish in your {displayName} dashboard</p>
+          <p className="text-xs text-muted-foreground">
+            Add this webhook so shipment updates reach Brain in real time. Copy the API key now — it is shown only once.
+          </p>
+        </div>
+      </div>
+      <CopyRow tileId={tileId} fieldKey="url" label="Webhook URL" value={setup.url} />
+      {setup.routing_header && (
+        <CopyRow
+          tileId={tileId}
+          fieldKey="header"
+          label={`Header: ${setup.routing_header.name}`}
+          value={setup.routing_header.value}
+        />
+      )}
+      {setup.api_key && (
+        <CopyRow tileId={tileId} fieldKey="apikey" label="X-Api-Key" value={setup.api_key} secret />
+      )}
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        onClick={onDismiss}
+        className="text-xs"
+        data-testid={`webhook-setup-${tileId}-done`}
+      >
+        I&apos;ve added the webhook
+      </Button>
+    </div>
+  );
+}
+
 function ConnectorTile({
   tile,
   readinessLock,
@@ -183,6 +272,8 @@ function ConnectorTile({
   const { emailVerified } = useEmailVerified();
   const [shopDomain, setShopDomain] = useState('');
   const [creds, setCreds] = useState<Record<string, string>>({});
+  // SR-2: webhook setup returned ONCE on connect (Shiprocket) — persists until the merchant dismisses it.
+  const [webhookSetup, setWebhookSetup] = useState<ConnectWebhookSetup | null>(null);
   // OAuth tiles hide the optional "bring your own app" fields behind a disclosure to keep the tile calm.
   const [showAdvanced, setShowAdvanced] = useState(false);
 
@@ -253,13 +344,16 @@ function ConnectorTile({
           onSuccess: (data) => {
             if (data.kind === 'credential') {
               setCreds({});
-              toast({
-                title: `${tile.display_name} connected`,
-                description:
-                  tile.id === 'gokwik' || tile.id === 'shopflo'
-                    ? 'Data will appear here as it syncs. CoD/RTO uses synthetic dev data until a partner sandbox is available.'
-                    : 'Settlement data will appear once Razorpay sends settlements.',
-              });
+              // SR-2: surface the per-tenant webhook URL + token the merchant must paste into their
+              // provider dashboard (Shiprocket). Returned once — persist it on the tile.
+              if (data.webhook) setWebhookSetup(data.webhook);
+              const description =
+                tile.id === 'gokwik' || tile.id === 'shopflo'
+                  ? 'Data will appear here as it syncs. CoD/RTO uses synthetic dev data until a partner sandbox is available.'
+                  : tile.id === 'shiprocket'
+                    ? 'Shipment data syncs automatically. Finish the webhook setup below to get real-time delivery & RTO updates.'
+                    : 'Settlement data will appear once Razorpay sends settlements.';
+              toast({ title: `${tile.display_name} connected`, description });
             }
           },
           onError: (err) => {
@@ -414,6 +508,15 @@ function ConnectorTile({
 
       {/* Action region */}
       <div className="mt-4">
+        {/* SR-2: webhook setup (Shiprocket) — shown after connect, persists across the connected flip. */}
+        {webhookSetup && (
+          <WebhookSetupPanel
+            tileId={tile.id}
+            displayName={tile.display_name}
+            setup={webhookSetup}
+            onDismiss={() => setWebhookSetup(null)}
+          />
+        )}
         {isComingSoon ? (
           <Button
             variant="outline"

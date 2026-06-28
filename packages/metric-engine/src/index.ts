@@ -115,6 +115,15 @@ export type {
 // from the multi-source silver_shipment mart (GoKwik AWB + Shiprocket).
 export { computeShipmentOutcomes } from './shipment-outcomes.js';
 export type { ShipmentOutcomesResult, CourierOutcome, PincodeOutcome } from './shipment-outcomes.js';
+// Logistics RETURN funnel (SR-10) — per-return_class breakdown + completion% from silver_return (SR-4).
+// SEPARATE from shipment outcomes: returns NEVER carry terminal_class (no false-delivery leak).
+export { computeReturnFunnel } from './return-funnel.js';
+export type {
+  ReturnFunnelResult,
+  ReturnClass,
+  ReturnClassBucket,
+  ReturnCourierBucket,
+} from './return-funnel.js';
 // Storefront behavior — what shoppers browse/search/view, from silver_touchpoint (pixel auto-instr).
 export { computeStorefrontBehavior } from './storefront-behavior.js';
 export type { StorefrontBehaviorResult, PageTypeBucket, BrowsedItem } from './storefront-behavior.js';

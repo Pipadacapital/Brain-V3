@@ -5,7 +5,7 @@ const nextConfig = {
   // `next build` (webpack) fails to resolve those `.js` specifiers (notably @brain/pixel-sdk's
   // barrel). `next dev` tolerated it; the production build did not. transpilePackages
   // transpiles the source; extensionAlias maps `.js` → the `.ts` source.
-  transpilePackages: ['@brain/pixel-sdk', '@brain/money', '@brain/ui', '@brain/contracts'],
+  transpilePackages: ['@brain/pixel-sdk', '@brain/money', '@brain/contracts'],
   webpack: (config, { dev }) => {
     config.resolve.extensionAlias = {
       ...(config.resolve.extensionAlias ?? {}),

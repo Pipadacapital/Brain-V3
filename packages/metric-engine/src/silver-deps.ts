@@ -63,16 +63,6 @@ export { BRAND_PREDICATE };
  */
 export type SilverPool = TrinoPool;
 
-/**
- * @deprecated Legacy StarRocks-era per-connection type. Brain V4 serving runs over
- * Trino's stateless REST API — there is no dedicated connection / session var. This
- * alias is retained only so the public `SilverConnection` export keeps resolving for
- * any external importer; nothing in the seam uses it anymore.
- */
-export interface SilverConnection {
-  query(sql: string, params?: unknown[]): Promise<unknown[]>;
-}
-
 export interface SilverDeps {
   /** The Silver/Gold serving pool — a Trino adapter (createTrinoPool) in Brain V4. */
   readonly srPool: SilverPool;

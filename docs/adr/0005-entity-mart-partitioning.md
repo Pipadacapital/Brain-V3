@@ -1,6 +1,9 @@
 # ADR-0005 — StarRocks entity-mart partitioning policy
 
-Status: Accepted (2026-06-24)
+> **SUPERSEDED (2026-06-28, Brain V4) — StarRocks is REMOVED; this policy no longer applies.**
+> The entire decision below is framed around StarRocks PRIMARY/UNIQUE-key tables and `dynamic_partition`. Under Brain V4 **StarRocks is gone**: Silver/Gold marts are **Apache Iceberg** tables materialized by Spark (`db/iceberg/spark/{silver,gold}/*.py`), and serving is **Trino-over-Iceberg** (`brain_serving.mv_*` Trino views — [ADR-0007](0007-analytics-gateway.md)). Partitioning/TTL is now an **Iceberg partition-spec + table-property** concern owned by the Spark mart jobs, not a StarRocks DDL concern. The PK-vs-partition-column tension and the `dynamic_partition`/CTAS deadlock described here are StarRocks-specific and no longer relevant. Retained append-only for history (audit finding PF-1 rationale).
+
+Status: ~~Accepted (2026-06-24)~~ **SUPERSEDED by Brain V4 (StarRocks removed → Iceberg/Trino); see banner.**
 Supersedes the partial/parse-only attempt in the architecture-compliance Wave-1 (which used
 `dynamic_partition` and did not build).
 

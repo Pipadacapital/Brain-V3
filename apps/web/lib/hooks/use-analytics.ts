@@ -90,6 +90,20 @@ export function useCohortRetention() {
 }
 
 /**
+ * useRepeatLatency — time-to-2nd-purchase median + 6-bucket histogram (#32b) from gold_repeat_latency
+ * via /v1/analytics/retention/repeat-latency. Powers the Retention tab "Time to 2nd purchase" panel.
+ * Honest no_data when the brand has no customers; median null when no repeat customers.
+ */
+export function useRepeatLatency() {
+  return useQuery({
+    queryKey: [...ANALYTICS_QUERY_KEY, 'repeat-latency'],
+    queryFn: () => analyticsApi.getRepeatLatency(),
+    staleTime: 5 * 60_000,
+    refetchInterval: 60_000,
+  });
+}
+
+/**
  * useRecognitionBreakdown — fetches recognition state distribution.
  * @param asOf - YYYY-MM-DD date (optional; server defaults to today).
  */
@@ -400,6 +414,20 @@ export function useJourneyStitchRate(params?: { from?: string; to?: string }) {
 }
 
 /**
+ * useJourneyPaths — aggregate journey-path Sankey (#32a): the top-N most-common ordered channel
+ * paths + the channel→channel edges + per-path drop-off, from gold_journey_paths. Powers the
+ * Journeys tab path-flow. Shares the 'analytics' prefix → auto-invalidates on brand switch.
+ * @param params - Optional top-N limit (1..50; server defaults to 25).
+ */
+export function useJourneyPaths(params?: { limit?: number }) {
+  return useQuery({
+    queryKey: [...ANALYTICS_QUERY_KEY, 'journey-paths', params?.limit ?? null],
+    queryFn: () => analyticsApi.getJourneyPaths(params),
+    staleTime: 5 * 60_000,
+  });
+}
+
+/**
  * useJourneyTimeline — ordered touchpoints for one selected order.
  * Disabled until an orderId is provided (no fabricated empty query).
  * @param orderId - The order to resolve a journey timeline for (or null/undefined to skip).
@@ -554,6 +582,20 @@ export function useChannelRoas(params: {
       params.to,
     ],
     queryFn: () => analyticsApi.getChannelRoas(params),
+    staleTime: 5 * 60_000,
+  });
+}
+
+/**
+ * useCampaignAttribution — per-campaign attributed revenue + spend + ROAS (#32c) under the selected
+ * attribution model, from gold_campaign_attribution via /v1/analytics/attribution/campaign-attribution.
+ * Powers the Marketing tab per-campaign table. Switchable model; honest no_data on no rows.
+ * @param params - Attribution model (required).
+ */
+export function useCampaignAttribution(params: { model: AttributionModel }) {
+  return useQuery({
+    queryKey: [...ANALYTICS_QUERY_KEY, 'campaign-attribution', params.model],
+    queryFn: () => analyticsApi.getCampaignAttribution(params),
     staleTime: 5 * 60_000,
   });
 }

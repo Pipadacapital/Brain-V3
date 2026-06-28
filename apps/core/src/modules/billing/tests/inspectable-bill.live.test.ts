@@ -15,14 +15,18 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import pg from 'pg';
-import mysql from 'mysql2/promise';
 import { createPool, type DbPool } from '@brain/db';
-import type { SilverPool } from '@brain/metric-engine';
+import { createTrinoPool, type SilverPool } from '@brain/metric-engine';
 import { sealBillingPeriod, getInspectableBill, DEFAULT_RATE_BPS } from '../index.js';
 
 const SUPERUSER_URL = process.env['DATABASE_URL'] ?? 'postgres://brain:brain@localhost:5432/brain';
-const SR_HOST = process.env['STARROCKS_HOST'] ?? '127.0.0.1';
-const SR_PORT = Number(process.env['STARROCKS_QUERY_PORT'] ?? '9030');
+// BRAIN V4: StarRocks is REMOVED. The billing meter reads the gold ledger over TRINO (createTrinoPool) —
+// the same Trino-over-Iceberg serving path the app uses in production. Seeds INSERT the base Iceberg
+// table; the meter reads through the brain_serving.mv_* view via the metric-engine seam.
+const TRINO_URL =
+  process.env['TRINO_URL'] ??
+  `http://${process.env['TRINO_HOST'] ?? '127.0.0.1'}:${process.env['TRINO_PORT'] ?? '8090'}`;
+const TRINO_USER = process.env['TRINO_USER'] ?? 'brain';
 
 const BRAND_A = 'b222222a-0a1a-4a1a-8a1a-000000000001';
 const ORG_ID = '0222222a-0a1a-4a1a-8a1a-000000000001';
@@ -43,24 +47,17 @@ let seq = 0;
 async function insertLedgerRow(eventType: string, amountMinor: number, effectiveAt: string): Promise<void> {
   seq += 1;
   const recognitionLabel = eventType === 'provisional_recognition' ? 'provisional' : 'finalized';
+  // Iceberg ts columns are `timestamp` (no zone) → inline the test-controlled effectiveAt as a no-zone
+  // TIMESTAMP literal (the Trino adapter renders a ts-shaped `?` param as a ZONED literal that would not
+  // insert into a no-zone column). data_source is NOT NULL → seed 'live'.
+  const ts = effectiveAt.replace('T', ' ').replace(/Z$/i, '').slice(0, 19);
   await srPool.query(
     `INSERT INTO brain_gold.gold_revenue_ledger
        (brand_id, ledger_event_id, order_id, brain_id, event_type, amount_minor, currency_code,
         fee_minor, occurred_at, economic_effective_at, recognition_label, billing_posted_period,
-        ingested_at, updated_at)
-     VALUES (?, ?, ?, NULL, ?, ?, 'INR', 0, ?, ?, ?, '2099-03', ?, ?)`,
-    [
-      BRAND_A,
-      `bill-evt-${seq}`,
-      `order-${seq}`,
-      eventType,
-      amountMinor,
-      effectiveAt,
-      effectiveAt,
-      recognitionLabel,
-      effectiveAt,
-      effectiveAt,
-    ],
+        ingested_at, data_source, updated_at)
+     VALUES (?, ?, ?, NULL, ?, ?, 'INR', 0, TIMESTAMP '${ts}', TIMESTAMP '${ts}', ?, '2099-03', TIMESTAMP '${ts}', 'live', TIMESTAMP '${ts}')`,
+    [BRAND_A, `bill-evt-${seq}`, `order-${seq}`, eventType, amountMinor, recognitionLabel],
   );
 }
 
@@ -98,13 +95,7 @@ beforeAll(async () => {
     superPool = new pg.Pool({ connectionString: SUPERUSER_URL, connectionTimeoutMillis: 4000 });
     await superPool.query('SELECT 1');
     dbPool = await createPool({ connectionString: SUPERUSER_URL });
-    srPool = mysql.createPool({
-      host: SR_HOST,
-      port: SR_PORT,
-      user: 'root',
-      password: '',
-      connectionLimit: 2,
-    }) as unknown as SilverPool;
+    srPool = createTrinoPool({ baseUrl: TRINO_URL, user: TRINO_USER, catalog: 'iceberg' });
     await srPool.query('SELECT 1');
     await cleanup();
     await seedBrand();
@@ -122,7 +113,7 @@ beforeAll(async () => {
 afterAll(async () => {
   if (pgAvailable) await cleanup();
   if (dbPool) await dbPool.end();
-  if (srPool) await (srPool as unknown as mysql.Pool).end().catch(() => {});
+  // The Trino pool is a stateless HTTP adapter — no connection to close.
   if (superPool) await superPool.end();
 });
 

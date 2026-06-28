@@ -15,26 +15,30 @@
  *   5. as_of filtering: rows after as_of are excluded from realized (existence still → has_data).
  *   6. structural: no ad-hoc SUM(amount_minor) in the analytics module (D-3).
  *
- * REQUIRES: StarRocks on :9030 with brain_gold.gold_revenue_ledger. Lakehouse sections SKIP if down.
+ * REQUIRES: Trino-over-Iceberg on :8090 with brain_gold.gold_revenue_ledger. Lakehouse sections SKIP if down.
+ *
+ * BRAIN V4: StarRocks is REMOVED. The revenue snapshot reads the gold ledger over TRINO (createTrinoPool)
+ * — the same Trino-over-Iceberg serving path the app uses in production. Seeds INSERT the base Iceberg
+ * table; the reader reads through the brain_serving.mv_* view via the metric-engine seam.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import mysql from 'mysql2/promise';
-import { computeRealizedRevenue } from '@brain/metric-engine';
-import type { SilverPool } from '@brain/metric-engine';
+import { computeRealizedRevenue, createTrinoPool, type SilverPool } from '@brain/metric-engine';
 import { getRevenueMetrics } from '../index.js';
 
-const SR_HOST = process.env['STARROCKS_HOST'] ?? '127.0.0.1';
-const SR_PORT = Number(process.env['STARROCKS_QUERY_PORT'] ?? 9030);
+const TRINO_URL =
+  process.env['TRINO_URL'] ??
+  `http://${process.env['TRINO_HOST'] ?? '127.0.0.1'}:${process.env['TRINO_PORT'] ?? '8090'}`;
+const TRINO_USER = process.env['TRINO_USER'] ?? 'brain';
 
 // Deterministic test brand UUIDs (analytics-specific; aa10 prefix avoids collision with other suites).
 const BRAND_A = 'aa100a1a-0a1a-0a1a-0a1a-000000000001';
 const BRAND_B = 'aa100a1a-0a1a-0a1a-0a1a-000000000002';
 
-let srPool: mysql.Pool;
+let srPool: SilverPool;
 let srUp = false;
-const deps = () => ({ srPool: srPool as unknown as SilverPool });
+const deps = () => ({ srPool });
 
 // ── Helpers — seed the lakehouse gold ledger directly ───────────────────────────
 
@@ -42,33 +46,37 @@ async function clearGold(brandId: string): Promise<void> {
   if (srUp) await srPool.query(`DELETE FROM brain_gold.gold_revenue_ledger WHERE brand_id = ?`, [brandId]);
 }
 
-/** Seed a finalized (realized) row into the gold ledger, economic_effective_at = NOW(). */
+// Iceberg gold_revenue_ledger: occurred_at/economic_effective_at/updated_at are `timestamp` (no zone) →
+// `localtimestamp` (Trino's no-zone now; `now()`/current_timestamp are zoned and would not coerce).
+// data_source is NOT NULL → seed 'live' explicitly (StarRocks defaulted it; Iceberg-via-Trino enforces it).
+
+/** Seed a finalized (realized) row into the gold ledger, economic_effective_at = localtimestamp. */
 async function seedFinalizedRow(brandId: string, amountMinor: bigint): Promise<void> {
   if (!srUp) return;
   await srPool.query(
     `INSERT INTO brain_gold.gold_revenue_ledger
        (brand_id, ledger_event_id, order_id, brain_id, event_type, amount_minor, currency_code,
-        fee_minor, occurred_at, economic_effective_at, recognition_label, billing_posted_period, updated_at)
-     VALUES (?, ?, ?, NULL, 'finalization', ?, 'INR', 0, NOW(), NOW(), 'finalized', '2026-06', NOW())`,
-    [brandId, randomUUID(), `order-${randomUUID()}`, String(amountMinor)],
+        fee_minor, occurred_at, economic_effective_at, recognition_label, billing_posted_period, data_source, updated_at)
+     VALUES (?, ?, ?, NULL, 'finalization', ?, 'INR', 0, localtimestamp, localtimestamp, 'finalized', '2026-06', 'live', localtimestamp)`,
+    [brandId, randomUUID(), `order-${randomUUID()}`, amountMinor],
   );
 }
 
-/** Seed a provisional row into the gold ledger, economic_effective_at = NOW(). */
+/** Seed a provisional row into the gold ledger, economic_effective_at = localtimestamp. */
 async function seedProvisionalRow(brandId: string, amountMinor: bigint): Promise<void> {
   if (!srUp) return;
   await srPool.query(
     `INSERT INTO brain_gold.gold_revenue_ledger
        (brand_id, ledger_event_id, order_id, brain_id, event_type, amount_minor, currency_code,
-        fee_minor, occurred_at, economic_effective_at, recognition_label, billing_posted_period, updated_at)
-     VALUES (?, ?, ?, NULL, 'provisional_recognition', ?, 'INR', 0, NOW(), NOW(), 'provisional', '2026-06', NOW())`,
-    [brandId, randomUUID(), `order-prov-${randomUUID()}`, String(amountMinor)],
+        fee_minor, occurred_at, economic_effective_at, recognition_label, billing_posted_period, data_source, updated_at)
+     VALUES (?, ?, ?, NULL, 'provisional_recognition', ?, 'INR', 0, localtimestamp, localtimestamp, 'provisional', '2026-06', 'live', localtimestamp)`,
+    [brandId, randomUUID(), `order-prov-${randomUUID()}`, amountMinor],
   );
 }
 
 beforeAll(async () => {
   try {
-    srPool = mysql.createPool({ host: SR_HOST, port: SR_PORT, user: 'root', password: '', connectionLimit: 3 });
+    srPool = createTrinoPool({ baseUrl: TRINO_URL, user: TRINO_USER, catalog: 'iceberg' });
     await srPool.query('SELECT 1');
     srUp = true;
   } catch {
@@ -81,7 +89,7 @@ beforeAll(async () => {
 afterAll(async () => {
   await clearGold(BRAND_A);
   await clearGold(BRAND_B);
-  if (srPool) await srPool.end().catch(() => {});
+  // The Trino pool is a stateless HTTP adapter — no connection to close.
 });
 
 // ── 1. engine==use-case exact-bigint (sole-read-path, D-3) ──────────────────────

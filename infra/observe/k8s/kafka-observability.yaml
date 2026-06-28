@@ -1,0 +1,192 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Kafka observability for Kubernetes — the deploy-side companion to the
+# docker-compose `observe` profile, so the Kafka-repointed SLOs fire in-cluster too.
+#
+# What this provides:
+#   1. ConfigMap `kafka-jmx-exporter-config` — the prometheus jmx_exporter rules
+#      (mirror of infra/observe/kafka-jmx-exporter.yml). The Kafka broker StatefulSet
+#      mounts this and runs the javaagent on :9404 (see the broker patch at the bottom).
+#   2. Service `kafka-jmx-exporter` — exposes the broker's :9404 with prometheus
+#      scrape annotations so kafka_log_log_logendoffset / under-replicated are scraped.
+#   3. Deployment + Service `kafka-exporter` — danielqsj/kafka_exporter on :9308 for
+#      per-consumer-group lag (kafka_consumergroup_lag), driving BrainConsumerLagHigh.
+#
+# These names match the Prometheus scrape jobs (`kafka-jmx-exporter` / `kafka-exporter`
+# in infra/observe/prometheus.yml) and the series read by
+# infra/observe/alerts/brain-slo.rules.yml (BrainDlqGrowing / BrainIngestStale /
+# BrainConsumerLagHigh). Annotation-based discovery is used (no Prometheus-Operator
+# CRD dependency); if you run kube-prometheus-stack, swap to the ServiceMonitor at the
+# bottom of this file instead.
+#
+# Namespace: set to wherever the Kafka broker + Prometheus live (default: brain-observe).
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kafka-jmx-exporter-config
+  namespace: brain-observe
+  labels:
+    app.kubernetes.io/part-of: brain-observability
+    app.kubernetes.io/component: kafka-jmx-exporter
+data:
+  # Keep in sync with infra/observe/kafka-jmx-exporter.yml.
+  kafka-jmx-exporter.yml: |
+    lowercaseOutputName: true
+    lowercaseOutputLabelNames: true
+    rules:
+      - pattern: 'kafka.log<type=Log, name=LogEndOffset, topic=(.+), partition=(.+)><>Value'
+        name: kafka_log_log_logendoffset
+        type: GAUGE
+        labels:
+          topic: "$1"
+          partition: "$2"
+      - pattern: 'kafka.server<type=ReplicaManager, name=UnderReplicatedPartitions><>Value'
+        name: kafka_server_replicamanager_underreplicatedpartitions
+        type: GAUGE
+      - pattern: 'kafka.controller<type=KafkaController, name=OfflinePartitionsCount><>Value'
+        name: kafka_controller_kafkacontroller_offlinepartitionscount
+        type: GAUGE
+      - pattern: 'kafka.controller<type=KafkaController, name=ActiveControllerCount><>Value'
+        name: kafka_controller_kafkacontroller_activecontrollercount
+        type: GAUGE
+      - pattern: 'kafka.network<type=RequestMetrics, name=RequestsPerSec, request=(.+), version=(.+)><>OneMinuteRate'
+        name: kafka_network_requestmetrics_requestspersec
+        type: GAUGE
+        labels:
+          request: "$1"
+      - pattern: 'kafka.server<type=BrokerTopicMetrics, name=MessagesInPerSec><>OneMinuteRate'
+        name: kafka_server_brokertopicmetrics_messagesinpersec
+        type: GAUGE
+---
+# Exposes the broker's javaagent metrics port for Prometheus annotation-based discovery.
+# `selector` must match the Kafka broker pod labels (adjust to your broker chart/Strimzi).
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-jmx-exporter
+  namespace: brain-observe
+  labels:
+    app.kubernetes.io/part-of: brain-observability
+    app.kubernetes.io/component: kafka-jmx-exporter
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9404"
+    prometheus.io/path: "/metrics"
+spec:
+  clusterIP: None  # headless — scrape each broker pod
+  selector:
+    app.kubernetes.io/name: kafka   # ← adjust to your broker pod labels
+  ports:
+    - name: jmx-metrics
+      port: 9404
+      targetPort: 9404
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kafka-exporter
+  namespace: brain-observe
+  labels:
+    app.kubernetes.io/part-of: brain-observability
+    app.kubernetes.io/component: kafka-exporter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: kafka-exporter
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: brain-observability
+        app.kubernetes.io/component: kafka-exporter
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9308"
+        prometheus.io/path: "/metrics"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+      containers:
+        - name: kafka-exporter
+          image: danielqsj/kafka-exporter:v1.7.0
+          args:
+            - "--kafka.server=kafka-bootstrap:9092"   # ← adjust to your broker Service
+            - "--web.listen-address=:9308"
+          ports:
+            - name: metrics
+              containerPort: 9308
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-exporter
+  namespace: brain-observe
+  labels:
+    app.kubernetes.io/part-of: brain-observability
+    app.kubernetes.io/component: kafka-exporter
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9308"
+    prometheus.io/path: "/metrics"
+spec:
+  selector:
+    app.kubernetes.io/component: kafka-exporter
+  ports:
+    - name: metrics
+      port: 9308
+      targetPort: 9308
+# ─────────────────────────────────────────────────────────────────────────────
+# BROKER-SIDE PATCH (apply to the Kafka broker StatefulSet — Strimzi/Bitnami/raw).
+# The jmx_exporter is an in-process javaagent, so it must run ON the broker JVM:
+#
+#   spec.template.spec:
+#     initContainers:
+#       - name: fetch-jmx-agent
+#         image: curlimages/curl:8.8.0
+#         command: ["/bin/sh","-c"]
+#         args:
+#           - >-
+#             curl -fsSL -o /opt/jmx_exporter/jmx_prometheus_javaagent.jar
+#             https://repo1.maven.org/maven2/io/prometheus/jmx/jmx_prometheus_javaagent/1.0.1/jmx_prometheus_javaagent-1.0.1.jar
+#         volumeMounts:
+#           - { name: jmx-agent, mountPath: /opt/jmx_exporter }
+#     containers:
+#       - name: kafka
+#         env:
+#           - name: KAFKA_OPTS
+#             value: "-javaagent:/opt/jmx_exporter/jmx_prometheus_javaagent.jar=9404:/etc/jmx-exporter/kafka-jmx-exporter.yml"
+#         ports:
+#           - { name: jmx-metrics, containerPort: 9404 }
+#         volumeMounts:
+#           - { name: jmx-agent, mountPath: /opt/jmx_exporter }
+#           - { name: jmx-config, mountPath: /etc/jmx-exporter }
+#     volumes:
+#       - { name: jmx-agent, emptyDir: {} }
+#       - { name: jmx-config, configMap: { name: kafka-jmx-exporter-config } }
+#
+# (Strimzi: prefer .spec.kafka.jmxOptions + .spec.kafka.metricsConfig with the same rules
+# instead of the manual javaagent — it wires :9404 + the ConfigMap for you.)
+#
+# If you run kube-prometheus-stack, replace the annotation-based Services above with:
+#   apiVersion: monitoring.coreos.com/v1
+#   kind: ServiceMonitor
+#   metadata: { name: kafka-observability, namespace: brain-observe }
+#   spec:
+#     selector: { matchLabels: { app.kubernetes.io/part-of: brain-observability } }
+#     endpoints:
+#       - { port: jmx-metrics, interval: 15s }
+#       - { port: metrics, interval: 15s }
+# ─────────────────────────────────────────────────────────────────────────────

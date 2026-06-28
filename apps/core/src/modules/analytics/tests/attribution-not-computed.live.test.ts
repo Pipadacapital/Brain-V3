@@ -11,24 +11,27 @@
  *
  * PHASE G: getAttributionByChannel / getAttributionReconciliation now read the LAKEHOUSE
  * (brain_gold.gold_revenue_ledger for realized, brain_gold.gold_marketing_attribution for credit)
- * via withSilverBrand — so this test seeds StarRocks and passes { srPool }. The exists-check and the
- * compute read the SAME store (no PG-data-hidden-by-empty-mart skew). SKIPS if StarRocks is down.
+ * via withSilverBrand. BRAIN V4: StarRocks is REMOVED — those reads run over TRINO (createTrinoPool),
+ * the same Trino-over-Iceberg serving path the app uses in production. This test seeds the base Iceberg
+ * tables and passes { srPool }; the exists-check and the compute read the SAME store (via the
+ * brain_serving.mv_* views). SKIPS if Trino is down.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import mysql from 'mysql2/promise';
-import type { SilverPool } from '@brain/metric-engine';
+import { createTrinoPool, type SilverPool } from '@brain/metric-engine';
 import { getAttributionByChannel, getAttributionReconciliation } from '../index.js';
 
-const SR_HOST = process.env['STARROCKS_HOST'] ?? '127.0.0.1';
-const SR_PORT = Number(process.env['STARROCKS_QUERY_PORT'] ?? 9030);
+const TRINO_URL =
+  process.env['TRINO_URL'] ??
+  `http://${process.env['TRINO_HOST'] ?? '127.0.0.1'}:${process.env['TRINO_PORT'] ?? '8090'}`;
+const TRINO_USER = process.env['TRINO_USER'] ?? 'brain';
 
 const BRAND_EMPTY = 'a1000a1a-0a1a-4a1a-8a1a-000000000001'; // no revenue → no_data
 const BRAND_NOCREDIT = 'a1000a1a-0a1a-4a1a-8a1a-000000000002'; // revenue, no credit → not_computed
 const BRAND_CREDIT = 'a1000a1a-0a1a-4a1a-8a1a-000000000003'; // revenue + credit → has_data
 
-let srPool: mysql.Pool;
+let srPool: SilverPool;
 let srUp = false;
-const sr = (): SilverPool => srPool as unknown as SilverPool;
+const sr = (): SilverPool => srPool;
 
 const params = (model = 'last_touch' as const) => ({
   model,
@@ -39,24 +42,28 @@ const params = (model = 'last_touch' as const) => ({
   dataSource: 'live' as const,
 });
 
+// Iceberg ts columns (occurred_at/economic_effective_at/updated_at) are `timestamp` (no zone) → typed
+// no-zone TIMESTAMP literals + localtimestamp. data_source on the ledger is NOT NULL → 'live'.
 async function seedRealized(brandId: string) {
   await srPool.query(
     `INSERT INTO brain_gold.gold_revenue_ledger
        (brand_id, ledger_event_id, order_id, brain_id, event_type, amount_minor, currency_code,
-        fee_minor, occurred_at, economic_effective_at, recognition_label, billing_posted_period, updated_at)
-     VALUES (?, ?, ?, NULL, 'finalization', 100000, 'INR', 0, '2026-06-15 00:00:00', '2026-06-15 00:00:00', 'finalized', '2026-06', NOW())`,
+        fee_minor, occurred_at, economic_effective_at, recognition_label, billing_posted_period, data_source, updated_at)
+     VALUES (?, ?, ?, NULL, 'finalization', 100000, 'INR', 0, TIMESTAMP '2026-06-15 00:00:00', TIMESTAMP '2026-06-15 00:00:00', 'finalized', '2026-06', 'live', localtimestamp)`,
     [brandId, `fin-${brandId}`, `order-${brandId}`],
   );
 }
 
 async function seedCredit(brandId: string) {
+  // attribution_confidence is a STRING column (kept as the numeric string) → quote '1.000' (a bare
+  // decimal literal would not coerce double→varchar on insert in Trino).
   await srPool.query(
     `INSERT INTO brain_gold.gold_marketing_attribution
        (brand_id, credit_id, order_id, brain_anon_id, touch_seq, channel, campaign_id, model_id, row_kind,
         credited_revenue_minor, currency_code, realized_revenue_minor, reversed_of_credit_id,
         confidence_grade, attribution_confidence, model_version, occurred_at, economic_effective_at, billing_posted_period, updated_at)
      VALUES (?, ?, ?, 'anon-1', 1, 'google', NULL, 'last_touch', 'credit', 100000, 'INR', 100000, NULL,
-             'A', 1.000, 'v1', '2026-06-15 00:00:00', '2026-06-15 00:00:00', '2026-06', NOW())`,
+             'A', '1.000', 'v1', TIMESTAMP '2026-06-15 00:00:00', TIMESTAMP '2026-06-15 00:00:00', '2026-06', localtimestamp)`,
     [brandId, `credit-${brandId}`, `order-${brandId}`],
   );
 }
@@ -71,7 +78,7 @@ async function cleanup() {
 
 beforeAll(async () => {
   try {
-    srPool = mysql.createPool({ host: SR_HOST, port: SR_PORT, user: 'root', password: '', connectionLimit: 2 });
+    srPool = createTrinoPool({ baseUrl: TRINO_URL, user: TRINO_USER, catalog: 'iceberg' });
     await srPool.query('SELECT 1');
     srUp = true;
     await cleanup();
@@ -85,12 +92,12 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (srUp) await cleanup();
-  if (srPool) await srPool.end().catch(() => {});
+  // The Trino pool is a stateless HTTP adapter — no connection to close.
 });
 
 describe('attribution honest states (live lakehouse)', () => {
-  it('SKIP_IF_NO_STARROCKS', () => {
-    if (!srUp) console.warn('[attribution-not-computed] StarRocks unavailable — PENDING.');
+  it('SKIP_IF_NO_TRINO', () => {
+    if (!srUp) console.warn('[attribution-not-computed] Trino unavailable — PENDING.');
     expect(true).toBe(true);
   });
 

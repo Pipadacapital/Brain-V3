@@ -84,7 +84,7 @@ def test_expected_counts() -> None:
     """Verify the expected enabled (28) + disabled (2) counts."""
     n_enabled = len(list(enabled_marts()))
     n_disabled = len(list(disabled_marts()))
-    EXPECTED_ENABLED = 29   # 26 gold_* + 3 snap_* (Silver-snapshot)
+    EXPECTED_ENABLED = 32   # 29 gold_* (+gold_journey_paths/repeat_latency/campaign_attribution, IA #32) + 3 snap_* (Silver-snapshot)
     EXPECTED_DISABLED = 2   # predictive_ltv + predictive_health
 
     if n_enabled != EXPECTED_ENABLED:

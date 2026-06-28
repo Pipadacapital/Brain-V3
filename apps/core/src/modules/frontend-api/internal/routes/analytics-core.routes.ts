@@ -20,10 +20,14 @@ import {
   getOrderStats,
   getExecutiveMetrics,
   getCohortRetention,
+  getRepeatLatency,
   getInsightsBriefing,
 } from '../../../analytics/index.js';
 import { materializeInsightsAsRecommendations } from '../../../recommendation/index.js';
-import type { KpiSummary as ContractKpiSummary } from '@brain/contracts';
+import type {
+  KpiSummary as ContractKpiSummary,
+  RepeatLatency as ContractRepeatLatency,
+} from '@brain/contracts';
 import type { TimeGrain } from '@brain/metric-engine';
 import type { BffDeps } from './_shared.js';
 
@@ -244,6 +248,32 @@ export function registerAnalyticsCoreRoutes(fastify: FastifyInstance, deps: BffD
       const brandId = auth.brandId; // narrowed string (guarded above) — stable inside the cache closure
       const result = await cachedRead(brandId, 'cohort_retention', {}, () =>
         getCohortRetention(brandId, { srPool }),
+      );
+      return reply.send({ request_id: requestId, data: result });
+    },
+  );
+
+  /**
+   * GET /api/v1/analytics/retention/repeat-latency
+   * #32b — time-to-2nd-purchase: the brand median days between a customer's 1st and 2nd order plus
+   * the fixed six-bucket latency histogram, from gold_repeat_latency. Integer day math, NO money.
+   * Honest no_data when the brand has no customers; median is null when there are no repeat customers.
+   */
+  fastify.get(
+    '/api/v1/analytics/retention/repeat-latency',
+    { preHandler: [bffProtectedPreHandler] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const auth = (request as AuthenticatedRequest).auth;
+      if (!auth.brandId) {
+        return reply.send({ request_id: requestId, data: { state: 'no_data', generated_at: new Date().toISOString() } });
+      }
+      if (!srPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (Trino) not available' } });
+      }
+      const brandId = auth.brandId; // narrowed string — stable inside the cache closure
+      const result: ContractRepeatLatency = await cachedRead(brandId, 'repeat_latency', {}, () =>
+        getRepeatLatency(brandId, { srPool }),
       );
       return reply.send({ request_id: requestId, data: result });
     },

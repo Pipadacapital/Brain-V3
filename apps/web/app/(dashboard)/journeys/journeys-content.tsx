@@ -3,33 +3,32 @@
 /**
  * JourneysContent — Tab #6 "How do customers move from first visit to purchase?".
  *
- * Re-homes the existing analytics/journey surface (first-touch channel mix + deterministic
- * cart-stitch rate + per-order touchpoint timeline — all read via the BFF metric-engine journey
- * seam over silver_touchpoint, never StarRocks directly) into the redesigned IA's TabShell frame,
- * and adds an honest visit→purchase STAGE drop-off (the storefront funnel) as the closest available
- * stand-in for an aggregate path flow.
+ * Composes the BFF metric-engine journey surface (all read over silver_touchpoint via the Trino
+ * serving seam, never the lakehouse directly) into the redesigned IA's TabShell frame:
+ *   - a REAL aggregate visit→purchase PATH FLOW (the #32a gold_journey_paths Sankey: the top ordered
+ *     channel paths with per-path converted-vs-dropped drop-off + the aggregated channel transitions),
+ *   - the first-touch channel mix + deterministic cart-stitch rate,
+ *   - the per-order touchpoint timeline.
  *
  * REUSE, don't rebuild: the leaf components (FirstTouchMixChart, StitchRateCard, TouchpointTimeline,
- * SyntheticBadge) + the hooks (useJourneyFirstTouchMix, useJourneyStitchRate, useFunnelAnalytics)
- * are the existing, wired pieces — this file only composes + frames them.
+ * SyntheticBadge, channelMeta) + the hooks (useJourneyPaths, useJourneyFirstTouchMix,
+ * useJourneyStitchRate) are wired pieces — this file composes + frames them.
  *
- * GENUINE GAP (flagged as an openItem, NOT faked): there is no aggregate multi-step visit→purchase
- * Sankey / path-edge drop-off endpoint today — only first-touch mix, stitch rate, and a single-order
- * timeline. A true Sankey needs a NEW BFF aggregate over silver_touchpoint (path edges + drop-off)
- * plus a Sankey viz. Until then the storefront funnel (sessions→product→cart→purchase) carries the
- * stage drop-off, clearly labelled as a stage funnel rather than a path flow.
+ * The #32a path flow REPLACES the earlier interim storefront-funnel stand-in: it is now a true
+ * aggregate path Sankey (ordered channel paths + edges + per-path drop-off), not a stage funnel.
  *
- * "Pick customer or cohort": the date range scopes the cohort window for the aggregate sections; the
- * touchpoint timeline picks a single order/customer (its own order search) for the per-journey trace.
+ * The path flow is a brand-wide aggregate (no date range); the date range scopes the first-touch mix
+ * and cart-stitch sections; the touchpoint timeline picks a single order for the per-journey trace.
  *
  * Honesty: SyntheticBadge stays visible whenever the BFF returns data_source='synthetic'; FreshnessBadge
- * renders tone='unknown' because the journey/funnel endpoints expose no served-at timestamp (never a
- * fabricated "just now"); empty states explain WHY they're empty + link pixel setup (never a fake zero).
+ * renders tone='unknown' because the journey/path endpoints expose no served-at timestamp (never a
+ * fabricated "just now"); per-path conversion % is the engine's exact integer-basis-point string (never
+ * re-divided in the client); empty states explain WHY they're empty + link pixel setup (never a fake zero).
  */
 
 import { useState } from 'react';
 import Link from 'next/link';
-import { Footprints, GitBranch, ArrowRight, Layers } from 'lucide-react';
+import { Footprints, GitBranch, ArrowRight, Layers, ChevronRight } from 'lucide-react';
 import { TabShell } from '@/components/ui/tab-shell';
 import { SectionCard } from '@/components/ui/section-card';
 import { EmptyState } from '@/components/ui/empty-state';
@@ -42,6 +41,7 @@ import { SyntheticBadge } from '@/components/analytics/synthetic-badge';
 import { FirstTouchMixChart } from '@/components/analytics/first-touch-mix-chart';
 import { StitchRateCard } from '@/components/analytics/stitch-rate-card';
 import { TouchpointTimeline } from '@/components/analytics/touchpoint-timeline';
+import { channelMeta } from '@/components/analytics/channel-meta';
 import {
   DateRangeFilter,
   initialRange,
@@ -51,17 +51,17 @@ import {
 import {
   useJourneyFirstTouchMix,
   useJourneyStitchRate,
-  useFunnelAnalytics,
+  useJourneyPaths,
 } from '@/lib/hooks/use-analytics';
 import type {
   AnalyticsJourneyFirstTouchMixResponse,
   AnalyticsJourneyStitchRateResponse,
-  AnalyticsFunnelResponse,
+  AnalyticsJourneyPathsResponse,
 } from '@/lib/api/types';
 
 type FirstTouchHasData = Extract<AnalyticsJourneyFirstTouchMixResponse, { state: 'has_data' }>;
 type StitchHasData = Extract<AnalyticsJourneyStitchRateResponse, { state: 'has_data' }>;
-type FunnelHasData = Extract<AnalyticsFunnelResponse, { state: 'has_data' }>;
+type PathsHasData = Extract<AnalyticsJourneyPathsResponse, { state: 'has_data' }>;
 
 /** Longer windows than the default 7/30/90 — journeys accrue over months. */
 const JOURNEY_PRESETS: readonly RangePreset[] = [
@@ -70,14 +70,6 @@ const JOURNEY_PRESETS: readonly RangePreset[] = [
   { key: '180', label: 'Last 180 days', days: 180 },
 ];
 
-/** Friendly labels for the four storefront-funnel stage keys emitted by the engine. */
-const STAGE_LABELS: Record<string, string> = {
-  sessions: 'Sessions',
-  product_viewed: 'Viewed a product',
-  cart_added: 'Added to cart',
-  purchased: 'Purchased',
-};
-
 function num(s: string): string {
   return Number(s).toLocaleString('en-IN');
 }
@@ -85,12 +77,17 @@ function num(s: string): string {
 const EXPLAINER = {
   title: 'Journeys — visit → purchase',
   description:
-    'How customers travel from their first touch to a purchase: stage drop-off, first-touch channel mix, the deterministic cart-stitch rate, and per-order touchpoint timelines.',
+    'How customers travel from their first touch to a purchase: the most common channel PATHS (with per-path drop-off), the first-touch channel mix, the deterministic cart-stitch rate, and per-order touchpoint timelines.',
   metrics: [
     {
-      name: 'Stage drop-off (funnel)',
-      definition: 'Share of storefront sessions that reach each stage: session → product view → cart → purchase.',
-      howComputed: 'Sessions stitched to events over silver_touchpoint (useFunnelAnalytics). Conversion % is vs the funnel top; step % is vs the previous stage — both 2dp from the engine.',
+      name: 'Path flow (Sankey)',
+      definition: 'The most-common ordered channel paths customers take to a purchase, ranked by journey count.',
+      howComputed: 'silver_touchpoint pre-aggregated into the gold_journey_paths mart (top paths per brand) via useJourneyPaths. Per-path conversion % is exact integer basis points from the engine — never re-divided in the client.',
+    },
+    {
+      name: 'Per-path drop-off',
+      definition: 'Of the journeys that took a path, how many converted versus dropped before an order.',
+      howComputed: 'journey_count − converted_count per path (both exact integer counts from the mart). Aggregated channel→channel edges show where journey volume concentrates.',
     },
     {
       name: 'First-touch mix',
@@ -110,12 +107,12 @@ const EXPLAINER = {
   ],
   sections: [
     {
-      heading: 'Stage funnel vs aggregate path Sankey',
-      body: 'The stage funnel below is a STAGE drop-off (how far sessions get), not a full path flow. A true visit→purchase Sankey (path edges + per-path drop-off across every route customers take) needs a new backend aggregate over silver_touchpoint — flagged as a follow-up, never faked here.',
+      heading: 'Reading the path flow',
+      body: 'Each row is one ordered channel path (e.g. Paid · Meta → Email → Direct), ranked by how many journeys took it. The split bar shows converted vs dropped journeys on that path — the per-path drop-off. The path flow is a brand-wide aggregate; it does not use the date range.',
     },
     {
       heading: 'Pick a window or an order',
-      body: 'The date range scopes the cohort window for the aggregate sections. To trace one journey, search an order in the Touchpoint timeline — it resolves that order’s stitched anonymous session into its ordered touches.',
+      body: 'The date range scopes the first-touch mix and cart-stitch sections. To trace one journey, search an order in the Touchpoint timeline — it resolves that order’s stitched anonymous session into its ordered touches.',
     },
     {
       heading: 'Live vs synthetic',
@@ -123,11 +120,11 @@ const EXPLAINER = {
     },
   ],
   refreshCadence:
-    'Journey + funnel marts refresh on the Silver→Gold loop. These endpoints expose no served-at timestamp, so freshness reads “unknown” rather than a fabricated time.',
+    'Journey + path marts refresh on the Silver→Gold loop. These endpoints expose no served-at timestamp, so freshness reads “unknown” rather than a fabricated time.',
   sources: [
     'silver_touchpoint',
+    'gold_journey_paths / mv_gold_journey_paths (path flow)',
     'Journey first-touch / stitch marts',
-    'Storefront funnel (metric-engine seam)',
   ],
 };
 
@@ -153,17 +150,19 @@ function EmptyPixel({ message }: { message: string }) {
 export function JourneysContent() {
   const [range, setRange] = useState<DateRange>(() => initialRange(JOURNEY_PRESETS, '90'));
 
-  const funnelQ = useFunnelAnalytics({ from: range.from, to: range.to });
+  // The path flow is a brand-wide aggregate (gold_journey_paths) — it does NOT use the date range.
+  const pathsQ = useJourneyPaths({ limit: 12 });
   const mixQ = useJourneyFirstTouchMix({ from: range.from, to: range.to });
   const stitchQ = useJourneyStitchRate({ from: range.from, to: range.to });
 
   const mix = mixQ.data;
   const stitch = stitchQ.data;
-  const funnel = funnelQ.data;
+  const paths = pathsQ.data;
 
   const synthetic =
     (mix?.state === 'has_data' && mix.data_source === 'synthetic') ||
-    (stitch?.state === 'has_data' && stitch.data_source === 'synthetic');
+    (stitch?.state === 'has_data' && stitch.data_source === 'synthetic') ||
+    (paths?.state === 'has_data' && paths.data_source === 'synthetic');
 
   return (
     <TabShell
@@ -179,26 +178,34 @@ export function JourneysContent() {
         />
       }
     >
-      {/* ── Visit → purchase stage drop-off (funnel stand-in for the path Sankey) ── */}
+      {/* ── Visit → purchase PATH flow (real Sankey/path-flow + per-path drop-off) ── */}
       <SectionCard
         title={
           <span className="inline-flex items-center gap-2">
             <GitBranch className="size-4 text-muted-foreground" aria-hidden="true" />
-            Visit → purchase flow
+            Visit → purchase paths
           </span>
         }
-        description="How far storefront sessions get on the way to a purchase. This is a stage drop-off — a full aggregate path Sankey is a flagged follow-up."
+        description="The most common ordered channel paths customers take to a purchase, ranked by journeys — with the converted-vs-dropped split per path. Brand-wide aggregate over gold_journey_paths."
+        actions={
+          synthetic ? (
+            <SyntheticBadge
+              data-testid="journey-paths-synthetic-badge"
+              reason="Real page-view coverage is thin, so path data is enriched with clearly-labelled synthetic journey fixtures (real shape, synthetic source). Never presented as live."
+            />
+          ) : undefined
+        }
         meta={<FreshnessBadge timestamp={undefined} />}
       >
-        {funnelQ.isLoading && <FunnelSkeleton />}
-        {!funnelQ.isLoading && funnelQ.error && (
-          <ErrorCard error={funnelQ.error} retry={funnelQ.refetch} />
+        {pathsQ.isLoading && <PathsSkeleton />}
+        {!pathsQ.isLoading && pathsQ.error && (
+          <ErrorCard error={pathsQ.error} retry={pathsQ.refetch} />
         )}
-        {!funnelQ.isLoading && !funnelQ.error && funnel?.state === 'no_data' && (
-          <EmptyPixel message="The visit→purchase funnel appears once the Brain Pixel captures sessions, product views and cart adds — and orders are stitched back to those sessions." />
+        {!pathsQ.isLoading && !pathsQ.error && paths?.state === 'no_data' && (
+          <EmptyPixel message="The path flow appears once the Brain Pixel captures multi-touch journeys over silver_touchpoint and those journeys are aggregated into the gold_journey_paths mart." />
         )}
-        {!funnelQ.isLoading && !funnelQ.error && funnel?.state === 'has_data' && (
-          <FunnelFlow data={funnel} />
+        {!pathsQ.isLoading && !pathsQ.error && paths?.state === 'has_data' && (
+          <PathFlow data={paths} />
         )}
       </SectionCard>
 
@@ -248,57 +255,124 @@ export function JourneysContent() {
   );
 }
 
-/** Visit→purchase stage bars (reuses the storefront funnel shape; integer counts, engine 2dp %). */
-function FunnelFlow({ data }: { data: FunnelHasData }) {
-  const byKey = (k: string) => data.stages.find((s) => s.key === k);
-  const sessions = byKey('sessions');
-  const cart = byKey('cart_added');
-  const purchased = byKey('purchased');
+/** A compact ordered channel-path chip row: Paid · Meta → Email → Direct (icon + label per node). */
+function PathChips({ channels }: { channels: string[] }) {
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      {channels.map((ch, i) => {
+        const m = channelMeta(ch);
+        const Icon = m.icon;
+        return (
+          <span key={`${ch}-${i}`} className="inline-flex items-center gap-1.5">
+            <span className="inline-flex items-center gap-1 rounded-md border border-border bg-muted px-1.5 py-0.5 text-xs font-medium text-foreground">
+              <Icon className="size-3 text-muted-foreground" aria-hidden="true" />
+              {m.label}
+            </span>
+            {i < channels.length - 1 && (
+              <ChevronRight className="size-3 text-muted-foreground" aria-hidden="true" />
+            )}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+/**
+ * The aggregate journey-path flow: KPI headline + the top ordered channel paths, each with its
+ * journey count, conversion %, and a converted-vs-dropped split bar (the per-path drop-off).
+ * Integer counts; conversion % is the engine's exact 2dp string (never re-divided in the client).
+ */
+function PathFlow({ data }: { data: PathsHasData }) {
+  // Scale path bars by the busiest path's journey count (visual geometry only; counts are exact).
+  const maxJourneys = data.paths.reduce((m, p) => {
+    const v = Number(BigInt(p.journey_count));
+    return v > m ? v : m;
+  }, 0);
+  const scale = maxJourneys || 1;
 
   return (
     <div className="space-y-5">
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <KpiTile
-          label="Sessions"
-          value={sessions ? num(sessions.sessions) : '0'}
-          sublabel={`${data.from} → ${data.to}`}
+          label="Distinct paths"
+          value={data.total_paths.toLocaleString('en-IN')}
+          sublabel="unique channel routes"
+          data-testid="journey-paths-kpi-paths"
         />
         <KpiTile
-          label="Cart-add rate"
-          value={cart?.conversion_pct != null ? `${cart.conversion_pct}%` : '—'}
-          sublabel="sessions that added to cart"
+          label="Journeys"
+          value={num(data.total_journeys)}
+          sublabel="across all paths"
+          data-testid="journey-paths-kpi-journeys"
         />
         <KpiTile
-          label="Purchase rate"
-          value={purchased?.conversion_pct != null ? `${purchased.conversion_pct}%` : '—'}
-          sublabel="sessions that converted"
+          label="Overall conversion"
+          value={data.overall_conversion_pct != null ? `${data.overall_conversion_pct}%` : '—'}
+          sublabel="journeys that converted"
+          data-testid="journey-paths-kpi-conversion"
         />
       </div>
 
-      <ul className="space-y-3" aria-label="Visit → purchase stages">
-        {data.stages.map((s, i) => {
-          const widthPct = Math.min(100, Number(s.conversion_pct ?? 0));
+      <ul className="space-y-4" aria-label="Top visit → purchase channel paths">
+        {data.paths.map((p) => {
+          const journeys = Number(BigInt(p.journey_count));
+          const converted = Number(BigInt(p.converted_count));
+          const dropped = Number(BigInt(p.dropped_count));
+          const widthPct = Math.max(journeys > 0 ? 6 : 0, Math.min(100, (journeys / scale) * 100));
+          // Converted share of the journey bar (visual split only; the counts beside it are exact).
+          const convFillPct = journeys > 0 ? Math.min(100, (converted / journeys) * 100) : 0;
           return (
-            <li key={s.key}>
-              <div className="mb-1 flex items-center justify-between text-sm">
-                <span className="text-foreground">{STAGE_LABELS[s.key] ?? s.key}</span>
-                <span className="tabular-nums text-muted-foreground">
-                  {num(s.sessions)}
-                  {s.conversion_pct !== null && (
-                    <span className="ml-2 text-foreground">{s.conversion_pct}%</span>
-                  )}
-                  {i > 0 && s.step_pct !== null && (
-                    <span className="ml-2 text-xs">({s.step_pct}% of prev)</span>
+            <li key={p.path_signature} className="space-y-1.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <PathChips channels={p.channels} />
+                <span className="tabular-nums text-sm text-muted-foreground">
+                  {journeys.toLocaleString('en-IN')} journeys
+                  {p.conversion_pct != null && (
+                    <span className="ml-2 text-foreground">{p.conversion_pct}% conv.</span>
                   )}
                 </span>
               </div>
-              <div className="h-3 overflow-hidden rounded bg-muted" aria-hidden="true">
-                <div className="h-full bg-foreground/70" style={{ width: `${widthPct}%` }} />
+              {/* Journey-volume bar with a converted (solid) vs dropped (muted) split. */}
+              <div
+                className="h-3 overflow-hidden rounded bg-muted"
+                style={{ width: `${widthPct}%` }}
+                aria-hidden="true"
+              >
+                <div className="h-full bg-foreground/70" style={{ width: `${convFillPct}%` }} />
               </div>
+              <p className="text-xs text-muted-foreground">
+                <span className="text-foreground">{converted.toLocaleString('en-IN')}</span> converted
+                {' · '}
+                <span className="text-foreground">{dropped.toLocaleString('en-IN')}</span> dropped
+              </p>
             </li>
           );
         })}
       </ul>
+
+      {data.links.length > 0 && (
+        <div>
+          <p className="mb-2 text-sm font-medium text-muted-foreground">
+            Where journeys flow (channel transitions)
+          </p>
+          <ul className="space-y-1.5" aria-label="Aggregated channel transitions">
+            {data.links.slice(0, 8).map((l, i) => (
+              <li
+                key={`${l.step}-${l.from_channel}-${l.to_channel}-${i}`}
+                className="flex items-center justify-between gap-2 text-sm"
+              >
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="text-foreground">{channelMeta(l.from_channel).label}</span>
+                  <ChevronRight className="size-3 text-muted-foreground" aria-hidden="true" />
+                  <span className="text-foreground">{channelMeta(l.to_channel).label}</span>
+                </span>
+                <span className="tabular-nums text-muted-foreground">{num(l.journeys)} journeys</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   );
 }
@@ -347,9 +421,9 @@ function JourneyMix({ mix, stitch }: { mix: FirstTouchHasData; stitch: StitchHas
   );
 }
 
-function FunnelSkeleton() {
+function PathsSkeleton() {
   return (
-    <div className="space-y-3" aria-busy="true" aria-label="Loading visit → purchase flow…">
+    <div className="space-y-3" aria-busy="true" aria-label="Loading visit → purchase paths…">
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <Skeleton className="h-24 w-full" />
         <Skeleton className="h-24 w-full" />

@@ -24,10 +24,10 @@
  * endpoints don't expose a served-at timestamp today, so freshness honestly renders
  * tone='unknown' (never a fabricated "just now"); the explainer states the refresh cadence.
  *
- * GAP (flagged, not faked): attribution is CHANNEL-level. A per-CAMPAIGN breakdown
- * (campaign rows under each channel) is not exposed by getAttributionByChannel today — it
- * needs a backend granularity param. Tracked as an openItem for a follow-up; we do not
- * fabricate campaign rows.
+ * Granularity: attribution credit + ROAS are shown BOTH channel-level (AttributedChannelChart +
+ * ChannelRoasTable) AND per-CAMPAIGN (#32c — the CampaignAttributionTable in AttributionContent reads
+ * gold_campaign_attribution under the same model selector). Honest n/a ROAS when a campaign has no
+ * spend; per-currency money, never blended; we do not fabricate campaign rows.
  */
 
 import { useState } from 'react';
@@ -119,7 +119,7 @@ export function MarketingContent({ initialTab }: { initialTab?: string }) {
           {
             heading: 'Granularity',
             body:
-              'Attribution and ROAS are CHANNEL-level today. A per-campaign breakdown is a planned follow-up and is intentionally not shown rather than guessed.',
+              'Attribution and ROAS are shown both channel-level and per-campaign (attributed revenue, spend, orders and ROAS for each campaign under the selected model). ROAS reads n/a when a campaign has no spend; nothing is fabricated.',
           },
         ],
         metrics: [

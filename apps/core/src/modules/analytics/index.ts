@@ -126,6 +126,15 @@ export { getJourneyStitchRate } from './internal/application/queries/get-journey
 export type { JourneyStitchRateResult, JourneyStitchRateParams } from './internal/application/queries/get-journey-stitch-rate.js';
 export { getJourneyTimeline } from './internal/application/queries/get-journey-timeline.js';
 export type { JourneyTimelineResult, TimelineTouchDto, JourneyTimelineParams } from './internal/application/queries/get-journey-timeline.js';
+// #32a — aggregate journey-path Sankey (top-N ordered channel paths + edges + drop-off) over
+// gold_journey_paths via the metric-engine seam. NO money (paths are behavioral).
+export { getJourneyPaths } from './internal/application/queries/get-journey-paths.js';
+export type {
+  JourneyPathsResult,
+  JourneyPathRowDto,
+  JourneyPathLinkDto,
+  JourneyPathsParams,
+} from './internal/application/queries/get-journey-paths.js';
 
 // D13 Consent / Compliance surface (feat-d13-consent-cancontact Track C) — the four
 // brand-scoped reads behind /settings/consent. Counts + hashes only (NO raw PII);
@@ -203,6 +212,19 @@ export type {
   CohortRetentionResult,
   CohortRetentionDto,
 } from './internal/application/queries/get-cohort-retention.js';
+// #32b — time-to-2nd-purchase retention LATENCY (median + 6-bucket histogram) over gold_repeat_latency.
+export { getRepeatLatency } from './internal/application/queries/get-repeat-latency.js';
+export type {
+  RepeatLatencyResult,
+  RepeatLatencyBucketDto,
+} from './internal/application/queries/get-repeat-latency.js';
+// #32c — per-campaign attributed revenue + ROAS (model-switchable) over gold_campaign_attribution.
+export { getCampaignAttribution } from './internal/application/queries/get-campaign-attribution.js';
+export type {
+  CampaignAttributionResult,
+  CampaignAttributionRowDto,
+  CampaignAttributionParams,
+} from './internal/application/queries/get-campaign-attribution.js';
 
 // Insight + Opportunity Engine + AI Copilot briefing — deterministic insights over the Gold marts
 // (gold_revenue_ledger / gold_executive_metrics / gold_customer_scores / gold_cac). Numbers come from

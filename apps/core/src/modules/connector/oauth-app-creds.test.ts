@@ -4,7 +4,8 @@
  * Proves the resolution order (brand-stored Secrets Manager → env fallback → null/undefined) and
  * that storing writes the <provider>_app secret bundle. No AWS — a mock ISecretsManager.
  */
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { resetAllConfigCaches } from '@brain/config';
 import type { ISecretsManager } from '@brain/connector-secrets';
 import {
   storeBrandOAuthAppCreds,
@@ -61,6 +62,16 @@ describe('resolveBrandOAuthAppCreds', () => {
 });
 
 describe('resolveBrandOAuthClientId', () => {
+  beforeEach(() => {
+    // envClientId() → loadCoreConfig(), which memoizes+freezes the parsed env on first call. Reset so
+    // each case re-parses the env we set below instead of an earlier suite's frozen snapshot (the
+    // staleness that left this case reading config without META_APP_ID). CoreEnvSchema requires
+    // DATABASE_URL — provide a deterministic value so the parse succeeds in the unit context (no DB is
+    // opened here; only envClientId is exercised). `??=` never clobbers a real ambient value.
+    process.env['DATABASE_URL'] ??= 'postgres://brain:brain@localhost:5432/brain';
+    resetAllConfigCaches();
+  });
+
   it('prefers the brand-stored client_id', async () => {
     const sm = mockSecrets({ client_id: 'brand-id', client_secret: 's' });
     expect(await resolveBrandOAuthClientId(sm, 'shopify', BRAND)).toBe('brand-id');

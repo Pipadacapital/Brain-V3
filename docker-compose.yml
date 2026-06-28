@@ -204,9 +204,32 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
       CLUSTER_ID: "brain-kafka-kraft-0"
+      # Prometheus JMX exporter Java-agent — apache/kafka emits ONLY JMX (Redpanda's native
+      # /public_metrics is gone). The agent maps the Kafka MBeans declared in
+      # infra/observe/kafka-jmx-exporter.yml to kafka_* metrics on :9404, scraped by the
+      # 'kafka-jmx-exporter' job in infra/observe/prometheus.yml. brain-slo.rules.yml's
+      # DLQ-growth / ingest-freshness / under-replicated alerts read these series. The jar is
+      # provisioned into the shared `jmx-agent` volume by `jmx-exporter-init` (below).
+      KAFKA_OPTS: "-javaagent:/opt/jmx_exporter/jmx_prometheus_javaagent.jar=9404:/etc/jmx-exporter/kafka-jmx-exporter.yml"
+    depends_on:
+      # Block broker start until the javaagent jar is on the shared volume, otherwise the JVM
+      # aborts with "Error opening zip file or JAR manifest missing" and the broker crash-loops.
+      jmx-exporter-init:
+        condition: service_completed_successfully
+    volumes:
+      - jmx-agent:/opt/jmx_exporter:ro
+      - ./infra/observe/kafka-jmx-exporter.yml:/etc/jmx-exporter/kafka-jmx-exporter.yml:ro
+    networks:
+      default:
+        # The EXTERNAL listener advertises `brain-kafka-ext:19092`; alias the broker to that
+        # name on the compose network so in-network clients (the kafka-exporter sidecar) can
+        # bootstrap the EXTERNAL listener and have the advertised host resolve.
+        aliases:
+          - brain-kafka-ext
     ports:
       - "9092:9092"   # Kafka API (PLAINTEXT listener)
       - "19092:19092" # Kafka API (EXTERNAL listener — for kind/k8s pods)
+      - "9404:9404"   # Prometheus JMX exporter (kafka_* broker metrics; scraped by prometheus)
     healthcheck:
       # No Redpanda admin API (9644) on Kafka; probe the broker via the Kafka CLI.
       test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1 || exit 1"]
@@ -571,6 +594,53 @@ services:
       timeout: 5s
       retries: 15
 
+  # ────────────────────────────────────────────────────────────────────────────
+  # KAFKA OBSERVABILITY — make the Kafka-repointed SLOs actually fire.
+  #
+  #  • The broker emits kafka_* JMX metrics on :9404 via the prometheus jmx_exporter
+  #    javaagent (attached on the `redpanda` service above; jar from `jmx-exporter-init`).
+  #  • kafka-exporter (below) emits per-consumer-group LAG on :9308 — NOT a broker JMX
+  #    metric — driving BrainConsumerLagHigh.
+  #  Both targets are scraped by infra/observe/prometheus.yml (jobs kafka-jmx-exporter /
+  #  kafka-exporter) and read by infra/observe/alerts/brain-slo.rules.yml.
+  # ────────────────────────────────────────────────────────────────────────────
+
+  # One-shot: download the prometheus jmx_exporter javaagent jar into the shared `jmx-agent`
+  # volume so the broker JVM can `-javaagent:` it. Idempotent (skips if already present),
+  # pinned + checksum-free fetch from Maven Central. In BOTH ingest+observe profiles so the
+  # broker (ingest) always finds the jar, and an observe-only `up` still primes it.
+  jmx-exporter-init:
+    image: curlimages/curl:8.8.0
+    profiles: ["ingest", "observe"]
+    volumes:
+      - jmx-agent:/opt/jmx_exporter
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        JAR=/opt/jmx_exporter/jmx_prometheus_javaagent.jar
+        if [ -f "$$JAR" ]; then echo "jmx_exporter agent already present"; exit 0; fi
+        echo "downloading jmx_prometheus_javaagent 1.0.1 ..."
+        curl -fsSL -o "$$JAR" \
+          https://repo1.maven.org/maven2/io/prometheus/jmx/jmx_prometheus_javaagent/1.0.1/jmx_prometheus_javaagent-1.0.1.jar
+        echo "ok"
+
+  # Consumer-group lag exporter (per-group lag is not a broker JMX metric). Connects to the
+  # broker's EXTERNAL advertised listener via the `brain-kafka-ext` network alias and exposes
+  # kafka_consumergroup_lag / kafka_topic_* on :9308.
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:v1.7.0
+    profiles: ["observe"]
+    command:
+      - "--kafka.server=brain-kafka-ext:19092"
+      - "--web.listen-address=:9308"
+    ports:
+      - "9308:9308"
+    restart: unless-stopped
+
 volumes:
   brain-spark-checkpoint:
   brain-spark-ivy:
+  # Holds the prometheus jmx_exporter javaagent jar shared between jmx-exporter-init and the broker.
+  jmx-agent:

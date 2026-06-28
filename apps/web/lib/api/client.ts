@@ -33,6 +33,9 @@ import {
   EngagementSchema,
   JourneyTimelineSchema,
   JourneyStitchRateSchema,
+  JourneyPathsSchema,
+  RepeatLatencySchema,
+  CampaignAttributionSchema,
   OrderStatusMixSchema,
   TopProductsSchema,
   OrdersListSchema,
@@ -149,6 +152,9 @@ import type {
   AnalyticsEngagementResponse,
   AnalyticsJourneyStitchRateResponse,
   AnalyticsJourneyTimelineResponse,
+  AnalyticsJourneyPathsResponse,
+  AnalyticsRepeatLatencyResponse,
+  AnalyticsCampaignAttributionResponse,
   ConsentCoverageResponse,
   ConsentSuppressionSummaryResponse,
   ConsentGateActivityResponse,
@@ -1485,6 +1491,12 @@ export const analyticsApi = {
     return data;
   },
 
+  /** GET /api/v1/analytics/retention/repeat-latency — time-to-2nd-purchase median + histogram (#32b). */
+  getRepeatLatency: async (): Promise<AnalyticsRepeatLatencyResponse> => {
+    const env = await bffFetch<BffEnvelope<unknown>>(`/v1/analytics/retention/repeat-latency`);
+    return parseData(RepeatLatencySchema, env);
+  },
+
   /** GET /api/v1/analytics/checkout-funnel — abandoned-checkout funnel (Shopflo, REAL). */
   getCheckoutFunnel: async (): Promise<AnalyticsCheckoutFunnelResponse> => {
     const { data } = await bffFetch<BffEnvelope<AnalyticsCheckoutFunnelResponse>>(
@@ -1615,6 +1627,19 @@ export const analyticsApi = {
       `/v1/analytics/journey/first-touch-mix${qsStr ? `?${qsStr}` : ''}`,
     );
     return parseData(JourneyFirstTouchMixSchema, env);
+  },
+
+  /** GET /api/v1/analytics/journey/paths — aggregate journey-path Sankey (#32a): top-N channel paths + edges. */
+  getJourneyPaths: async (params?: {
+    limit?: number;
+  }): Promise<AnalyticsJourneyPathsResponse> => {
+    const qs = new URLSearchParams();
+    if (params?.limit != null) qs.set('limit', String(params.limit));
+    const qsStr = qs.toString();
+    const env = await bffFetch<BffEnvelope<unknown>>(
+      `/v1/analytics/journey/paths${qsStr ? `?${qsStr}` : ''}`,
+    );
+    return parseData(JourneyPathsSchema, env);
   },
 
   /** GET /api/v1/analytics/logistics/shipment-outcomes — delivered/RTO + RTO% by courier/pincode. */
@@ -1787,6 +1812,18 @@ export const analyticsApi = {
       `/v1/analytics/attribution/channel-roas?${qs.toString()}`,
     );
     return parseData(ChannelRoasSchema, env);
+  },
+
+  /** GET /api/v1/analytics/attribution/campaign-attribution — per-campaign attributed revenue + ROAS (#32c). */
+  getCampaignAttribution: async (params: {
+    model: AttributionModel;
+  }): Promise<AnalyticsCampaignAttributionResponse> => {
+    const qs = new URLSearchParams();
+    qs.set('model', params.model);
+    const env = await bffFetch<BffEnvelope<unknown>>(
+      `/v1/analytics/attribution/campaign-attribution?${qs.toString()}`,
+    );
+    return parseData(CampaignAttributionSchema, env);
   },
 };
 

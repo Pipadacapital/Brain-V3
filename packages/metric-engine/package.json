@@ -9,7 +9,8 @@
     "build": "tsc -b",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "test:unit": "vitest run"
+    "test:unit": "vitest run --exclude '**/*.live.test.ts' --exclude '**/*.e2e.test.ts'",
+    "test:live": "vitest run .live"
   },
   "dependencies": {
     "@brain/money": "workspace:*",

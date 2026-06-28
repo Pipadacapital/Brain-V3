@@ -41,6 +41,9 @@ import {
   JourneyFirstTouchMixSchema,
   JourneyTimelineSchema,
   JourneyStitchRateSchema,
+  JourneyPathsSchema,
+  RepeatLatencySchema,
+  CampaignAttributionSchema,
   OrderStatusMixSchema,
   DataQualitySummarySchema,
   AskBrainResultSchema,
@@ -212,6 +215,119 @@ describe('ChannelRoas (#5)', () => {
   };
   it('round-trips (incl. honest null roas_ratio when spend=0)', () => {
     expect(ChannelRoasSchema.parse(hasData)).toEqual(hasData);
+  });
+});
+
+// ── #32a JourneyPaths (aggregate path Sankey) ───────────────────────────────────────
+
+describe('JourneyPaths (#32a)', () => {
+  const hasData = {
+    state: 'has_data',
+    total_paths: 12,
+    total_journeys: '480',
+    total_converted: '120',
+    overall_conversion_pct: '25.00',
+    paths: [
+      {
+        path_signature: 'paid_meta>email>direct',
+        path_length: 3,
+        channels: ['paid_meta', 'email', 'direct'],
+        first_touch_channel: 'paid_meta',
+        last_touch_channel: 'direct',
+        journey_count: '200',
+        converted_count: '60',
+        dropped_count: '140',
+        conversion_pct: '30.00',
+        path_rank: 1,
+      },
+    ],
+    links: [{ step: 0, from_channel: 'paid_meta', to_channel: 'email', journeys: '200' }],
+    data_source: 'synthetic',
+  };
+  it('round-trips has_data + no_data', () => {
+    expect(JourneyPathsSchema.parse(hasData)).toEqual(hasData);
+    expect(JourneyPathsSchema.parse({ state: 'no_data' })).toEqual({ state: 'no_data' });
+  });
+  it('rejects a non-string-array channels drift (the crash class)', () => {
+    const drifted = { ...hasData, paths: [{ ...hasData.paths[0], channels: 'paid_meta' }] };
+    const res = JourneyPathsSchema.safeParse(drifted);
+    expect(res.success).toBe(false);
+    if (!res.success) expect(firstIssuePath(res)).toContain('channels');
+  });
+});
+
+// ── #32b RepeatLatency (time-to-2nd-purchase) ───────────────────────────────────────
+
+describe('RepeatLatency (#32b)', () => {
+  const hasData = {
+    state: 'has_data',
+    median_days_to_second_purchase: '21',
+    second_order_customers: '340',
+    single_order_customers: '610',
+    total_customers: '950',
+    buckets: [
+      { bucket_key: '0-7', bucket_order: 1, bucket_lo_days: 0, bucket_hi_days: 7, customers: '90' },
+      { bucket_key: '90+', bucket_order: 6, bucket_lo_days: 91, bucket_hi_days: null, customers: '40' },
+    ],
+    generated_at: '2026-06-28T00:00:00.000Z',
+  };
+  it('round-trips has_data (incl. null median + null open bucket hi) + no_data', () => {
+    expect(RepeatLatencySchema.parse(hasData)).toEqual(hasData);
+    const nullMedian = { ...hasData, median_days_to_second_purchase: null };
+    expect(RepeatLatencySchema.parse(nullMedian)).toEqual(nullMedian);
+    expect(RepeatLatencySchema.parse({ state: 'no_data' })).toEqual({ state: 'no_data' });
+  });
+  it('rejects a float median drift (money/day values are bigint strings, never floats)', () => {
+    const drifted = { ...hasData, median_days_to_second_purchase: 21.5 };
+    const res = RepeatLatencySchema.safeParse(drifted);
+    expect(res.success).toBe(false);
+    if (!res.success) expect(firstIssuePath(res)).toContain('median_days_to_second_purchase');
+  });
+});
+
+// ── #32c CampaignAttribution (per-campaign attributed revenue + ROAS) ───────────────
+
+describe('CampaignAttribution (#32c)', () => {
+  const hasData = {
+    state: 'has_data',
+    model: 'position_based',
+    rows: [
+      {
+        platform: 'meta',
+        campaign_id: 'cmp_1',
+        campaign_name: 'Summer Sale',
+        currency_code: 'INR',
+        attributed_revenue_minor: '500000',
+        spend_minor: '200000',
+        attributed_order_count: '42',
+        roas_bps: '25000',
+        roas_ratio: '2.5000',
+      },
+      {
+        platform: 'meta',
+        campaign_id: 'cmp_2',
+        campaign_name: null,
+        currency_code: 'INR',
+        attributed_revenue_minor: '100000',
+        spend_minor: '0',
+        attributed_order_count: '5',
+        roas_bps: null,
+        roas_ratio: null,
+      },
+    ],
+  };
+  it('round-trips has_data (incl. honest null roas when spend=0) + no_data', () => {
+    expect(CampaignAttributionSchema.parse(hasData)).toEqual(hasData);
+    expect(CampaignAttributionSchema.parse({ state: 'no_data', model: 'position_based' })).toEqual({
+      state: 'no_data',
+      model: 'position_based',
+    });
+  });
+  it('rejects a money-as-number drift (money is bigint minor strings, never floats)', () => {
+    const drifted = { ...hasData, rows: [{ ...hasData.rows[0], attributed_revenue_minor: 5000 }] };
+    const res = CampaignAttributionSchema.safeParse(drifted);
+    expect(res.success).toBe(false);
+    if (!res.success) expect(firstIssuePath(res)).toContain('attributed_revenue_minor');
   });
 });
 

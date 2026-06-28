@@ -1,6 +1,9 @@
 # ADR-0002 — Bronze system-of-record on Apache Iceberg, written by Spark Structured Streaming
 
-Status: **Accepted** (2026-06-21)
+> **SUPERSEDED-IN-PART (2026-06-28, Brain V4) — the serving pipeline below is obsolete; the Iceberg-Bronze core principle stands.**
+> This ADR's load-bearing decision ("Bronze = Apache Iceberg, system of record") is **still in force**. What is obsolete is the downstream shape its Context names as the target: **`Iceberg → dbt → StarRocks → Analytics API`**. Under Brain V4 **dbt and StarRocks are REMOVED**: Spark-on-Iceberg is the **sole** compute (Silver/Gold are Spark marts in `brain_{silver,gold}_local`), and serving is **Trino-over-Iceberg fronted by Redis** (`brain_serving.mv_*` are Trino views — see [ADR-0007](0007-analytics-gateway.md)). The Bronze **writer** mechanism evolved per [ADR-0006](0006-redpanda-native-bronze-kafka-connect-iceberg.md) (currently Spark-SS again after the K2b revert). Read the Context's `dbt`/`StarRocks` references as historical target-state, not live architecture.
+
+Status: **Accepted** (2026-06-21) — serving pipeline (dbt/StarRocks) superseded by Brain V4 (Spark sole compute + Trino serving); see banner.
 Supersedes the M1 D-4 fallback recorded in `db/migrations/0016_bronze_events.sql` and resolves audit finding C1 in `docs/audit/05-data-platform.md`.
 
 ## Context

@@ -391,6 +391,13 @@ export {
   FunnelAnalyticsSchema,
   AbandonedCartSchema,
   EngagementSchema,
+  JourneyPathRowDtoSchema,
+  JourneyPathLinkDtoSchema,
+  JourneyPathsSchema,
+  RepeatLatencyBucketDtoSchema,
+  RepeatLatencySchema,
+  CampaignAttributionRowDtoSchema,
+  CampaignAttributionSchema,
 } from './api/analytics.api.v1.js';
 export type {
   RevenueSnapshot,
@@ -437,6 +444,13 @@ export type {
   FunnelAnalytics,
   AbandonedCart,
   Engagement,
+  JourneyPathRowDto,
+  JourneyPathLinkDto,
+  JourneyPaths,
+  RepeatLatencyBucketDto,
+  RepeatLatency,
+  CampaignAttributionRowDto,
+  CampaignAttribution,
 } from './api/analytics.api.v1.js';
 
 export {

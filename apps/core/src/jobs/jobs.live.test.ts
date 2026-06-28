@@ -4,19 +4,24 @@
  * the orchestration: enumeration works, every brand is processed, one brand's failure is isolated,
  * and the run is idempotent (safe to re-run on a schedule).
  *
- * REQUIRES Postgres (+ StarRocks for the attribution job). Both jobs are idempotent, so running
- * them against the dev DB is safe.
+ * REQUIRES Postgres (+ Trino-over-Iceberg for the attribution job). Both jobs are idempotent, so
+ * running them against the dev lakehouse is safe.
+ *
+ * BRAIN V4: StarRocks is REMOVED. The Gold serving read runs over TRINO (createTrinoPool) — the same
+ * Trino-over-Iceberg serving path the app uses in production. srPool is a stateless Trino HTTP pool.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import pg from 'pg';
-import mysql from 'mysql2/promise';
 import { createPool, type DbPool } from '@brain/db';
-import type { SilverPool } from '@brain/metric-engine';
+import { createTrinoPool, type SilverPool } from '@brain/metric-engine';
 import { runRecommendationDetectors } from './recommendation-detectors.js';
 import { runAttributionReconcile } from './attribution-reconcile.js';
 
 const PG_URL = process.env['DATABASE_URL'] ?? 'postgres://brain:brain@localhost:5432/brain';
-const SR_HOST = process.env['STARROCKS_HOST'] ?? '127.0.0.1';
+const TRINO_URL =
+  process.env['TRINO_URL'] ??
+  `http://${process.env['TRINO_HOST'] ?? '127.0.0.1'}:${process.env['TRINO_PORT'] ?? '8090'}`;
+const TRINO_USER = process.env['TRINO_USER'] ?? 'brain';
 
 let dbPool: DbPool;
 let pgPool: pg.Pool;
@@ -28,7 +33,7 @@ beforeAll(async () => {
     pgPool = new pg.Pool({ connectionString: PG_URL, connectionTimeoutMillis: 4000 });
     await pgPool.query('SELECT 1');
     dbPool = await createPool({ connectionString: PG_URL });
-    srPool = mysql.createPool({ host: SR_HOST, port: 9030, user: 'root', password: '', connectionLimit: 2 }) as unknown as SilverPool;
+    srPool = createTrinoPool({ baseUrl: TRINO_URL, user: TRINO_USER, catalog: 'iceberg' });
     available = true;
   } catch {
     available = false;
@@ -38,7 +43,7 @@ beforeAll(async () => {
 afterAll(async () => {
   if (dbPool) await dbPool.end();
   if (pgPool) await pgPool.end();
-  if (srPool) await (srPool as unknown as mysql.Pool).end();
+  // The Trino pool is a stateless HTTP adapter — no connection to close.
 });
 
 describe('scheduled job entrypoints (live)', () => {

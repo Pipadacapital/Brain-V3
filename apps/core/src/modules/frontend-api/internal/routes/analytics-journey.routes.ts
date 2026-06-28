@@ -14,6 +14,7 @@ import {
   getJourneyFirstTouchMix,
   getJourneyStitchRate,
   getJourneyTimeline,
+  getJourneyPaths,
   getShipmentOutcomes,
   getReturnFunnel,
   getBehaviorOverview,
@@ -23,6 +24,7 @@ import {
 } from '../../../analytics/index.js';
 import type {
   JourneyFirstTouchMix as ContractJourneyFirstTouchMix,
+  JourneyPaths as ContractJourneyPaths,
   ShipmentOutcomes as ContractShipmentOutcomes,
   ReturnFunnel as ContractReturnFunnel,
   BehaviorOverview as ContractBehaviorOverview,
@@ -97,6 +99,62 @@ export function registerAnalyticsJourneyRoutes(fastify: FastifyInstance, deps: B
           fromStr,
           toStr,
           // Dev: journey demo is enriched with clearly-labelled synthetic fixtures.
+          dataSource: 'synthetic',
+        },
+      );
+
+      return reply.send({ request_id: requestId, data: result });
+    },
+  );
+
+  /**
+   * GET /api/v1/analytics/journey/paths?limit=N
+   * #32a — the aggregate journey-path Sankey: the top-N most-common ordered CHANNEL paths over
+   * silver_touchpoint (pre-aggregated into the gold_journey_paths mart), each with its journey
+   * count, conversion count, and drop-off, PLUS the aggregated channel→channel edges the path-flow
+   * draws. No date window — the mart is a brand-wide path roll-up. NO money (paths are behavioral).
+   */
+  fastify.get(
+    '/api/v1/analytics/journey/paths',
+    {
+      preHandler: [bffProtectedPreHandler],
+      schema: {
+        querystring: {
+          type: 'object',
+          properties: {
+            limit: { type: 'integer', minimum: 1, maximum: 50 },
+          },
+          additionalProperties: false,
+        },
+      },
+      attachValidation: true,
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const validationError = (request as FastifyRequest & { validationError?: Error }).validationError;
+      if (validationError) {
+        return reply.code(400).send({
+          request_id: requestId,
+          error: { code: 'INVALID_PARAMS', message: 'limit must be an integer 1..50.' },
+        });
+      }
+
+      const auth = (request as AuthenticatedRequest).auth;
+      if (!auth.brandId) {
+        return reply.send({ request_id: requestId, data: { state: 'no_data' } });
+      }
+      if (!srPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (Trino) not available' } });
+      }
+
+      const query = request.query as { limit?: number };
+
+      const result: ContractJourneyPaths = await getJourneyPaths(
+        auth.brandId,
+        { srPool },
+        {
+          limit: query.limit,
+          // Dev: journey data is enriched with clearly-labelled synthetic fixtures (real shape).
           dataSource: 'synthetic',
         },
       );

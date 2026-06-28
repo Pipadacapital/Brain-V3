@@ -19,16 +19,19 @@
  *   5. ISOLATION (I-ST01): the Silver read seam (BRAND_PREDICATE → brand_id = ?) scopes BRAND_A's
  *      spend out for BRAND_B.
  *
- * REQUIRES: Postgres on localhost:5432 (brand fixtures) + StarRocks on :9030 with
- * brain_silver.silver_marketing_spend + brain_gold.gold_revenue_ledger (dbt-built). The lakehouse
- * sections SKIP if StarRocks is down.
+ * REQUIRES: Postgres on localhost:5432 (brand fixtures) + Trino on :8090 over Iceberg with
+ * brain_silver.silver_marketing_spend + brain_gold.gold_revenue_ledger (Spark-built). The lakehouse
+ * sections SKIP if Trino is down.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import pg from 'pg';
-import mysql from 'mysql2/promise';
-import { computeAdSpendTimeseries, computeBlendedRoas } from '@brain/metric-engine';
-import type { SilverPool } from '@brain/metric-engine';
+import {
+  computeAdSpendTimeseries,
+  computeBlendedRoas,
+  createTrinoPool,
+  type SilverPool,
+} from '@brain/metric-engine';
 import { getAdSpendTimeseries, getBlendedRoas } from '../index.js';
 // MEDALLION REALIGNMENT (Epic 1): the measurement module was deleted with the PG ledger write path;
 // billing_posted_period is a trivial 'YYYY-MM' derivation, inlined here.
@@ -38,15 +41,20 @@ function toBillingPostedPeriod(date: Date): string {
 
 const SUPERUSER_URL =
   process.env['DATABASE_URL'] ?? 'postgres://brain:brain@localhost:5432/brain';
-const SR_HOST = process.env['STARROCKS_HOST'] ?? '127.0.0.1';
-const SR_PORT = Number(process.env['STARROCKS_QUERY_PORT'] ?? 9030);
+// BRAIN V4: StarRocks is REMOVED. The spend/ROAS reads run over TRINO (createTrinoPool) — the same
+// Trino-over-Iceberg serving path the app uses in production. Seeds INSERT the base Iceberg tables;
+// reads go through the brain_serving.mv_* views via the metric-engine seam.
+const TRINO_URL =
+  process.env['TRINO_URL'] ??
+  `http://${process.env['TRINO_HOST'] ?? '127.0.0.1'}:${process.env['TRINO_PORT'] ?? '8090'}`;
+const TRINO_USER = process.env['TRINO_USER'] ?? 'brain';
 
 // Distinct UUID prefix (ad3) to avoid collision with other analytics test brands.
 const BRAND_A = 'ad300a1a-0a1a-0a1a-0a1a-000000000001';
 const BRAND_B = 'ad300a1a-0a1a-0a1a-0a1a-000000000002';
 
 let superPool: pg.Pool;
-let srPool: mysql.Pool;
+let srPool: SilverPool;
 let srUp = false;
 
 function todayStr(): string {
@@ -70,11 +78,14 @@ async function seedSpendSilver(
   opts: { platform: 'meta' | 'google_ads'; levelId: string; statDate: string; spendMinor: bigint; currency: string },
 ): Promise<void> {
   if (!srUp) return;
+  // Iceberg silver_marketing_spend: stat_date is `date` (the date-only `?` param renders as DATE '…');
+  // occurred_at/updated_at are `timestamp` (no zone) → localtimestamp; spend_minor is bigint → pass the
+  // bigint (a String() param would render as a quoted varchar that will not insert into a bigint column).
   await srPool.query(
     `INSERT INTO brain_silver.silver_marketing_spend
        (brand_id, spend_event_id, platform, level, level_id, parent_id, campaign_id, campaign_name,
         stat_date, spend_minor, currency_code, impressions, clicks, account_timezone, occurred_at, updated_at)
-     VALUES (?, ?, ?, 'campaign', ?, NULL, ?, 'Test Campaign', ?, ?, ?, 1000, 50, 'Asia/Kolkata', NOW(), NOW())`,
+     VALUES (?, ?, ?, 'campaign', ?, NULL, ?, 'Test Campaign', ?, ?, ?, 1000, 50, 'Asia/Kolkata', localtimestamp, localtimestamp)`,
     [
       brandId,
       `${brandId}:${opts.platform}:${opts.levelId}:${opts.statDate}`,
@@ -82,7 +93,7 @@ async function seedSpendSilver(
       opts.levelId,
       opts.levelId,
       opts.statDate,
-      String(opts.spendMinor),
+      opts.spendMinor,
       opts.currency,
     ],
   );
@@ -91,12 +102,14 @@ async function seedSpendSilver(
 /** Seed a finalized realized row into the lakehouse ledger (blended-roas numerator source). */
 async function seedRealizedSilver(brandId: string, amountMinor: bigint, currency: string): Promise<void> {
   if (!srUp) return;
+  // amount_minor is bigint → pass the bigint (not String()); occurred_at/economic_effective_at/updated_at
+  // are no-zone `timestamp` → localtimestamp; data_source is NOT NULL → 'live'.
   await srPool.query(
     `INSERT INTO brain_gold.gold_revenue_ledger
        (brand_id, ledger_event_id, order_id, brain_id, event_type, amount_minor, currency_code,
         fee_minor, occurred_at, economic_effective_at, recognition_label, billing_posted_period, data_source, updated_at)
-     VALUES (?, ?, ?, NULL, 'finalization', ?, ?, 0, NOW(), NOW(), 'finalized', ?, 'live', NOW())`,
-    [brandId, `${brandId}:fin:${String(amountMinor)}:${currency}`, `order-${currency}`, String(amountMinor), currency, toBillingPostedPeriod(new Date())],
+     VALUES (?, ?, ?, NULL, 'finalization', ?, ?, 0, localtimestamp, localtimestamp, 'finalized', ?, 'live', localtimestamp)`,
+    [brandId, `${brandId}:fin:${String(amountMinor)}:${currency}`, `order-${currency}`, amountMinor, currency, toBillingPostedPeriod(new Date())],
   );
 }
 async function clearRealizedSilver(brandId: string): Promise<void> {
@@ -108,7 +121,7 @@ beforeAll(async () => {
   await superPool.query('SELECT 1');
 
   try {
-    srPool = mysql.createPool({ host: SR_HOST, port: SR_PORT, user: 'root', password: '', connectionLimit: 2 });
+    srPool = createTrinoPool({ baseUrl: TRINO_URL, user: TRINO_USER, catalog: 'iceberg' });
     await srPool.query('SELECT 1');
     srUp = true;
   } catch {
@@ -139,7 +152,7 @@ afterAll(async () => {
   await clearSpendSilver(BRAND_B);
   await superPool.query(`DELETE FROM brand WHERE id IN ($1, $2)`, [BRAND_A, BRAND_B]).catch(() => {});
   await superPool.end().catch(() => {});
-  if (srPool) await srPool.end().catch(() => {});
+  // The Trino pool is a stateless HTTP adapter — no connection to close.
 });
 
 // ── 1. LAKEHOUSE TOTAL — engine SUM is exact bigint + platform filter (D-3) ──

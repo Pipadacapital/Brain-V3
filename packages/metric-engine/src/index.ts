@@ -65,6 +65,9 @@ export type {
 // B7 — repeat-purchase / returning-customer retention by acquisition cohort over the gold_retention mart.
 export { computeRetention } from './retention.js';
 export type { RetentionResult, RetentionCohortRow } from './retention.js';
+// #32b — time-to-2nd-purchase retention LATENCY (median + 6-bucket histogram) over gold_repeat_latency.
+export { computeRepeatLatency } from './repeat-latency.js';
+export type { RepeatLatencyResult, RepeatLatencyBucket } from './repeat-latency.js';
 export { getCustomerCommerce } from './customer-commerce.js';
 export type { CustomerCommerceProfile } from './customer-commerce.js';
 export type { CacRow } from './cac.js';
@@ -187,6 +190,11 @@ export type {
   TimelineSelector,
 } from './journey-mix.js';
 
+// #32a — aggregate journey-path Sankey (top-N ordered channel paths + edges + drop-off) over
+// gold_journey_paths. NO money; the path-flow sibling of the per-touch journey-mix seam.
+export { computeJourneyPaths } from './journey-paths.js';
+export type { JourneyPathsResult, JourneyPathRow, JourneyPathLink } from './journey-paths.js';
+
 // Phase 5 Attribution (feat-attribution-ledger) — the credit-ledger WRITER + readers.
 // All Tier-0 deterministic (no model/prompt/dbt macro — I-E03/E04). Money signed BIGINT.
 export {
@@ -288,6 +296,11 @@ export type { ChannelRoasRow } from './attribution-channel-roas.js';
 // H8 — campaign/ad-level ROAS (the granular sibling of channel ROAS; joins on campaign_id).
 export { computeCampaignRoas } from './attribution-campaign-roas.js';
 export type { CampaignRoasRow } from './attribution-campaign-roas.js';
+
+// #32c — per-campaign attributed revenue + spend + ROAS over the gold_campaign_attribution mart
+// (model-switchable; pre-rolled to campaign grain — the served sibling of computeCampaignRoas).
+export { computeCampaignAttribution } from './campaign-attribution.js';
+export type { CampaignAttributionResult, CampaignAttributionRow } from './campaign-attribution.js';
 
 // Phase 7 Data Quality (feat-data-quality-engine) — cost_confidence + effective_confidence.
 // effective_confidence = min(cost_confidence, attribution_confidence). FROZEN grade lookups

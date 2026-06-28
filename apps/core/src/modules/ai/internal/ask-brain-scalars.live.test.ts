@@ -7,21 +7,24 @@
  * resolver supplies the binding (no model call); the engine pool reads real seeded ledgers.
  *
  * PHASE G: ad_spend + blended_roas now read the LAKEHOUSE (silver_marketing_spend +
- * gold_revenue_ledger) via withSilverBrand — so this test ALSO seeds StarRocks and passes srPool.
- * cod_rto_rate / order_status_mix stay on PG. The lakehouse cases SKIP if StarRocks is down.
+ * gold_revenue_ledger) via withSilverBrand. BRAIN V4: StarRocks is REMOVED — those reads run over TRINO
+ * (createTrinoPool), the same Trino-over-Iceberg serving path the app uses in production. This test seeds
+ * the base Iceberg tables and passes srPool. cod_rto_rate / order_status_mix stay on PG. The lakehouse
+ * cases SKIP if Trino is down.
  *
- * REQUIRES: Postgres on localhost:5432 (ledgers + ai_provenance) + StarRocks on :9030 (Phase-G marts).
+ * REQUIRES: Postgres on localhost:5432 (ledgers + ai_provenance) + Trino on :8090 (Phase-G Iceberg marts).
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import pg from 'pg';
-import mysql from 'mysql2/promise';
 import type { ResolverClient } from '@brain/ai-gateway-client';
-import type { SilverPool } from '@brain/metric-engine';
+import { createTrinoPool, type SilverPool } from '@brain/metric-engine';
 import { askBrain, reproduceAnswer } from './ask-brain.js';
 
 const SUPER = process.env['DATABASE_URL'] ?? 'postgres://brain:brain@localhost:5432/brain';
-const SR_HOST = process.env['STARROCKS_HOST'] ?? '127.0.0.1';
-const SR_PORT = Number(process.env['STARROCKS_QUERY_PORT'] ?? 9030);
+const TRINO_URL =
+  process.env['TRINO_URL'] ??
+  `http://${process.env['TRINO_HOST'] ?? '127.0.0.1'}:${process.env['TRINO_PORT'] ?? '8090'}`;
+const TRINO_USER = process.env['TRINO_USER'] ?? 'brain';
 
 const BRAND = 'a5ca1a01-0a11-4a11-8a11-00000000aa01';
 const ORG = 'a5ca1a01-0a11-4a11-8a11-00000000ff01';
@@ -30,9 +33,9 @@ const AS_OF = '2026-06-18';
 
 let pool: pg.Pool;
 let pgAvailable = false;
-let srPool: mysql.Pool;
+let srPool: SilverPool;
 let srUp = false;
-const sr = (): SilverPool => srPool as unknown as SilverPool;
+const sr = (): SilverPool => srPool;
 
 /** A stub resolver that returns a fixed binding for `metricId` (no model call). */
 function stubResolver(metricId: string): ResolverClient {
@@ -82,7 +85,7 @@ beforeAll(async () => {
 
   // ── Phase G: seed the LAKEHOUSE equivalents (ad_spend + blended_roas read here now) ──
   try {
-    srPool = mysql.createPool({ host: SR_HOST, port: SR_PORT, user: 'root', password: '', connectionLimit: 2 });
+    srPool = createTrinoPool({ baseUrl: TRINO_URL, user: TRINO_USER, catalog: 'iceberg' });
     await srPool.query('SELECT 1');
     srUp = true;
   } catch {
@@ -91,26 +94,28 @@ beforeAll(async () => {
   if (srUp && pgAvailable) {
     await cleanupSilver();
     // gold_revenue_ledger: 100 finalizations (100000) + 10 rto_reversals (-100000) → net 9,000,000.
-    // ONE batched multi-row INSERT (per-row StarRocks INSERTs are slow → would time the hook out).
+    // ONE batched multi-row INSERT. Iceberg ts columns are `timestamp` (no zone) → typed TIMESTAMP
+    // literals + localtimestamp; data_source is NOT NULL → inline 'live'.
     const tuples: string[] = [];
     const params: unknown[] = [];
     for (let i = 1; i <= 100; i++) {
-      tuples.push(`(?,?,?,NULL,'finalization',100000,'INR',0,'2026-06-10 10:00:00','2026-06-10 10:00:00','finalized','2026-06',NOW())`);
+      tuples.push(`(?,?,?,NULL,'finalization',100000,'INR',0,TIMESTAMP '2026-06-10 10:00:00',TIMESTAMP '2026-06-10 10:00:00','finalized','2026-06','live',localtimestamp)`);
       params.push(BRAND, `ab-fin-${i}`, `ab-order-${i}`);
     }
     for (let i = 1; i <= 10; i++) {
-      tuples.push(`(?,?,?,NULL,'rto_reversal',-100000,'INR',0,'2026-06-11 10:00:00','2026-06-11 10:00:00','finalized','2026-06',NOW())`);
+      tuples.push(`(?,?,?,NULL,'rto_reversal',-100000,'INR',0,TIMESTAMP '2026-06-11 10:00:00',TIMESTAMP '2026-06-11 10:00:00','finalized','2026-06','live',localtimestamp)`);
       params.push(BRAND, `ab-rto-${i}`, `ab-order-${i}`);
     }
     await srPool.query(
-      `INSERT INTO brain_gold.gold_revenue_ledger (brand_id, ledger_event_id, order_id, brain_id, event_type, amount_minor, currency_code, fee_minor, occurred_at, economic_effective_at, recognition_label, billing_posted_period, updated_at)
+      `INSERT INTO brain_gold.gold_revenue_ledger (brand_id, ledger_event_id, order_id, brain_id, event_type, amount_minor, currency_code, fee_minor, occurred_at, economic_effective_at, recognition_label, billing_posted_period, data_source, updated_at)
        VALUES ${tuples.join(',')}`,
       params,
     );
-    // silver_marketing_spend: 2,000.00 INR on meta.
+    // silver_marketing_spend: 2,000.00 INR on meta. stat_date is `date`; occurred_at/updated_at are
+    // `timestamp` (no zone) → DATE/TIMESTAMP literals + localtimestamp.
     await srPool.query(
       `INSERT INTO brain_silver.silver_marketing_spend (brand_id, spend_event_id, platform, level, level_id, parent_id, campaign_id, campaign_name, stat_date, spend_minor, currency_code, impressions, clicks, account_timezone, occurred_at, updated_at)
-       VALUES (?, 'ab-spend-1','meta','campaign','c1',NULL,'c1','AB','2026-06-12',200000,'INR',1000,50,'Asia/Kolkata','2026-06-12 00:00:00',NOW())`,
+       VALUES (?, 'ab-spend-1','meta','campaign','c1',NULL,'c1','AB',DATE '2026-06-12',200000,'INR',1000,50,'Asia/Kolkata',TIMESTAMP '2026-06-12 00:00:00',localtimestamp)`,
       [BRAND],
     );
   }
@@ -119,7 +124,7 @@ beforeAll(async () => {
 afterAll(async () => {
   if (pgAvailable) await cleanup();
   await pool?.end?.().catch(() => {});
-  if (srPool) await srPool.end().catch(() => {});
+  // The Trino pool is a stateless HTTP adapter — no connection to close.
 });
 
 describe('askBrain — newly-wired scalar bindings (live Postgres)', () => {

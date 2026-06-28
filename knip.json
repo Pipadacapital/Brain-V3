@@ -1,0 +1,25 @@
+{
+  "$schema": "https://unpkg.com/knip@5/schema.json",
+  "//": "Dead-code report for the Brain monorepo (pnpm workspaces). NON-BLOCKING — surfaced by .github/workflows/knip.yml so unused files / exports / deps are caught going forward without gating merges. Knip auto-discovers the apps/* packages/* tools/* workspaces from pnpm-workspace.yaml; per-workspace overrides below name each runtime entrypoint so legit roots are not flagged as dead.",
+  "ignoreBinaries": ["docker", "docker compose", "trino", "spark-submit"],
+  "ignoreDependencies": ["@brain/.*"],
+  "ignore": [
+    "**/dist/**",
+    "**/.next/**",
+    "**/.turbo/**",
+    "**/coverage/**",
+    "db/**",
+    "tools/seed/**"
+  ],
+  "workspaces": {
+    "apps/core": { "entry": ["src/main.ts", "src/index.ts"] },
+    "apps/collector": { "entry": ["src/main.ts", "src/index.ts"] },
+    "apps/stream-worker": { "entry": ["src/main.ts", "src/index.ts"] },
+    "apps/web": {
+      "entry": ["src/app/**/{page,layout,loading,error,not-found,route,template,default}.tsx", "next.config.{js,mjs,ts}", "middleware.ts"],
+      "ignore": ["src/components/ui/**"]
+    },
+    "packages/*": { "entry": ["src/index.ts"] },
+    "tools/*": { "entry": ["src/index.ts", "src/main.ts", "*.config.ts"] }
+  }
+}

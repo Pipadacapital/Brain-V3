@@ -16,12 +16,14 @@ import {
   getAttributionReconciliation,
   getChannelRoas,
   getCampaignRoas,
+  getCampaignAttribution,
 } from '../../../analytics/index.js';
 import type { AttributionModelId } from '@brain/metric-engine';
 import type {
   AttributionByChannel as ContractAttributionByChannel,
   AttributionReconciliation as ContractAttributionReconciliation,
   ChannelRoas as ContractChannelRoas,
+  CampaignAttribution as ContractCampaignAttribution,
   AttributionReconcileResult as ContractAttributionReconcileResult,
 } from '@brain/contracts';
 import type { BffDeps } from './_shared.js';
@@ -252,6 +254,53 @@ export function registerAttributionRoutes(fastify: FastifyInstance, deps: BffDep
           fromStr,
           toStr,
         },
+        { srPool },
+      );
+      return reply.send({ request_id: requestId, data: result });
+    },
+  );
+
+  /**
+   * GET /api/v1/analytics/attribution/campaign-attribution?model=
+   * #32c — PER-CAMPAIGN attributed revenue + spend + ROAS under the selected attribution model, from
+   * the pre-rolled gold_campaign_attribution mart (grain platform/campaign/model/currency). The
+   * served sibling of campaign-roas: one view, model-switchable, money bigint minor + currency_code.
+   * No date window — the mart is a full per-campaign roll-up; the model selector drives the read.
+   */
+  fastify.get(
+    '/api/v1/analytics/attribution/campaign-attribution',
+    {
+      preHandler: [bffProtectedPreHandler],
+      schema: {
+        querystring: {
+          type: 'object',
+          properties: {
+            model: { type: 'string', enum: ['first_touch', 'last_touch', 'linear', 'position_based', 'time_decay', 'data_driven'] },
+          },
+          additionalProperties: false,
+        },
+      },
+      attachValidation: true,
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const validationError = (request as FastifyRequest & { validationError?: Error }).validationError;
+      const query = request.query as { model?: string };
+      const model = parseModel(query.model);
+      if (validationError) {
+        return reply.code(400).send({ request_id: requestId, error: { code: 'INVALID_PARAMS', message: 'model must be a valid model id.' } });
+      }
+      const auth = (request as AuthenticatedRequest).auth;
+      if (!auth.brandId) {
+        return reply.send({ request_id: requestId, data: { state: 'no_data', model } });
+      }
+      if (!srPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (Trino) not available' } });
+      }
+
+      const result: ContractCampaignAttribution = await getCampaignAttribution(
+        auth.brandId,
+        { model },
         { srPool },
       );
       return reply.send({ request_id: requestId, data: result });

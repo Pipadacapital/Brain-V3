@@ -16,13 +16,22 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import pg from 'pg';
-import mysql from 'mysql2/promise';
-import { computeCm2RevenueSignal, computeCm2MarketingSignal, type SilverPool } from '@brain/metric-engine';
+import {
+  computeCm2RevenueSignal,
+  computeCm2MarketingSignal,
+  createTrinoPool,
+  type SilverPool,
+} from '@brain/metric-engine';
 
 const SUPER = process.env['DATABASE_URL'] ?? 'postgres://brain:brain@localhost:5432/brain';
 const APP = process.env['BRAIN_APP_DATABASE_URL'] ?? 'postgres://brain_app:brain_app@localhost:5432/brain';
-const SR_HOST = process.env['STARROCKS_HOST'] ?? '127.0.0.1';
-const SR_PORT = Number(process.env['STARROCKS_QUERY_PORT'] ?? '9030');
+// BRAIN V4: StarRocks is REMOVED. The Gold/Silver seam runs over TRINO (createTrinoPool) — the same
+// Trino-over-Iceberg serving path the app uses in production. Seeds INSERT the base Iceberg tables;
+// reads go through the brain_serving.mv_* views via the metric-engine seam.
+const TRINO_URL =
+  process.env['TRINO_URL'] ??
+  `http://${process.env['TRINO_HOST'] ?? '127.0.0.1'}:${process.env['TRINO_PORT'] ?? '8090'}`;
+const TRINO_USER = process.env['TRINO_USER'] ?? 'brain';
 
 const BRAND = 'd1517a01-0a11-4a11-8a11-00000000aa01';
 const ORG = 'd1517a01-0a11-4a11-8a11-00000000ff01';
@@ -37,8 +46,8 @@ let pgAvailable = false;
 async function cleanup() {
   await superPool.query(`DELETE FROM cost_input WHERE brand_id=$1`, [BRAND]).catch(() => {});
   if (srPool) {
-    await (srPool as unknown as mysql.Pool).query(`DELETE FROM brain_gold.gold_revenue_ledger WHERE brand_id=?`, [BRAND]).catch(() => {});
-    await (srPool as unknown as mysql.Pool).query(`DELETE FROM brain_silver.silver_marketing_spend WHERE brand_id=?`, [BRAND]).catch(() => {});
+    await srPool.query(`DELETE FROM brain_gold.gold_revenue_ledger WHERE brand_id=?`, [BRAND]).catch(() => {});
+    await srPool.query(`DELETE FROM brain_silver.silver_marketing_spend WHERE brand_id=?`, [BRAND]).catch(() => {});
   }
   await superPool.query(`DELETE FROM brand WHERE id=$1`, [BRAND]).catch(() => {});
   await superPool.query(`DELETE FROM organization WHERE id=$1`, [ORG]).catch(() => {});
@@ -50,28 +59,30 @@ beforeAll(async () => {
     superPool = new pg.Pool({ connectionString: SUPER, connectionTimeoutMillis: 4000, max: 3 });
     await superPool.query('SELECT 1');
     appPool = new pg.Pool({ connectionString: APP, max: 3 });
-    srPool = mysql.createPool({ host: SR_HOST, port: SR_PORT, user: 'root', password: '', connectionLimit: 2 }) as unknown as SilverPool;
+    srPool = createTrinoPool({ baseUrl: TRINO_URL, user: TRINO_USER, catalog: 'iceberg' });
     await srPool.query('SELECT 1');
     await cleanup();
     await superPool.query(`INSERT INTO app_user (id,email,email_normalized,password_hash) VALUES ($1,$2,$3,'x')`, [USER, `${USER}@x.invalid`, `${USER}@x.invalid`]);
     await superPool.query(`INSERT INTO organization (id,name,slug,owner_user_id) VALUES ($1,'CS',$2,$3)`, [ORG, `cs-${ORG.slice(-6)}`, USER]);
     await superPool.query(`INSERT INTO brand (id,organization_id,display_name,currency_code,status) VALUES ($1,$2,'CS','INR','active')`, [BRAND, ORG]);
-    // REVENUE half → lakehouse gold ledger (one finalized order @ 1,000.00 INR).
-    await (srPool as unknown as mysql.Pool).query(
+    // REVENUE half → lakehouse gold ledger (one finalized order @ 1,000.00 INR). Iceberg ts columns are
+    // `timestamp` (no zone) → TYPED `TIMESTAMP '...'` literals (Trino will not coerce a bare varchar).
+    await srPool.query(
       `INSERT INTO brain_gold.gold_revenue_ledger
          (brand_id, ledger_event_id, order_id, brain_id, event_type, amount_minor, currency_code,
           fee_minor, occurred_at, economic_effective_at, recognition_label, billing_posted_period, ingested_at, data_source, updated_at)
-       VALUES (?,'cs-fin-1','cs-order-1',NULL,'finalization',100000,'INR',0,'2026-06-10 10:00:00','2026-06-10 10:00:00','finalized','2026-06','2026-06-10 10:00:00','live','2026-06-10 10:00:00')`,
+       VALUES (?,'cs-fin-1','cs-order-1',NULL,'finalization',100000,'INR',0,TIMESTAMP '2026-06-10 10:00:00',TIMESTAMP '2026-06-10 10:00:00','finalized','2026-06',TIMESTAMP '2026-06-10 10:00:00','live',TIMESTAMP '2026-06-10 10:00:00')`,
       [BRAND],
     );
     // MARKETING half → lakehouse Silver entity silver_marketing_spend (2,000.00 INR), Bronze-sourced
     // shape. This is the read source the registry's computeCm2MarketingSignal consumes (Phase G).
-    await (srPool as unknown as mysql.Pool).query(
+    // stat_date is `date`; occurred_at/updated_at are `timestamp` (no zone) → typed literals + localtimestamp.
+    await srPool.query(
       `INSERT INTO brain_silver.silver_marketing_spend
          (brand_id, spend_event_id, platform, level, level_id, parent_id, campaign_id, campaign_name,
           stat_date, spend_minor, currency_code, impressions, clicks, account_timezone, occurred_at, updated_at)
        VALUES (?, 'cs-spend-1', 'meta', 'campaign', 'c1', NULL, 'c1', 'CS Campaign',
-               '2026-06-12', 20000, 'INR', 1000, 50, 'Asia/Kolkata', '2026-06-12 00:00:00', NOW())`,
+               DATE '2026-06-12', 20000, 'INR', 1000, 50, 'Asia/Kolkata', TIMESTAMP '2026-06-12 00:00:00', localtimestamp)`,
       [BRAND],
     );
     // COST half → PG cost_input. COGS 40% (Trusted) + shipping 10% (Estimated) → floor Estimated (rank 1).
@@ -91,7 +102,7 @@ beforeAll(async () => {
 afterAll(async () => {
   if (pgAvailable) await cleanup();
   await appPool?.end?.().catch(() => {});
-  if (srPool) await (srPool as unknown as mysql.Pool).end().catch(() => {});
+  // The Trino pool is a stateless HTTP adapter — no connection to close.
   await superPool?.end?.().catch(() => {});
 });
 

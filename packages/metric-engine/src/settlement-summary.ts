@@ -114,7 +114,7 @@ export async function computeSettlementSummary(
               MAX(currency_code)             AS currency_code
          FROM brain_serving.mv_gold_revenue_ledger
         WHERE event_type IN (${eventTypeList})
-          AND CAST(economic_effective_at AS DATE) <= '${asOfStr}'
+          AND CAST(economic_effective_at AS DATE) <= DATE '${asOfStr}'
           AND ${BRAND_PREDICATE}
         GROUP BY event_type`,
       [],

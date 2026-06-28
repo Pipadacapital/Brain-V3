@@ -239,7 +239,7 @@ export async function computeFirstTouchMix(
       `SELECT channel,
               COUNT(DISTINCT brain_anon_id) AS cnt
          FROM brain_serving.mv_silver_touchpoint
-        WHERE is_first_touch = 1
+        WHERE is_first_touch
           AND occurred_at >= ?
           AND occurred_at <= ?
           AND ${BRAND_PREDICATE}

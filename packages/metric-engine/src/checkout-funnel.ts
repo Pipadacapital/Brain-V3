@@ -85,7 +85,7 @@ export async function computeCheckoutFunnel(
           MAX(currency_code)                                                    AS currency_code
         FROM brain_serving.mv_silver_checkout_signal
         WHERE signal_type = 'checkout_abandoned'
-          AND occurred_at >= DATE_SUB(NOW(), INTERVAL ${FUNNEL_WINDOW_DAYS} DAY)
+          AND occurred_at >= (NOW() - INTERVAL '${FUNNEL_WINDOW_DAYS}' DAY)
           AND ${BRAND_PREDICATE}`,
       [],
     ),

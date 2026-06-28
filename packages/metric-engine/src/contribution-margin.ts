@@ -111,7 +111,7 @@ export async function computeContributionMargin(
     const realizedRows = await scope.runScoped<{ v: string | number }>(
       `SELECT COALESCE(SUM(amount_minor), 0) AS v
          FROM brain_serving.mv_gold_revenue_ledger
-        WHERE CAST(economic_effective_at AS DATE) <= '${asOfStr}'
+        WHERE CAST(economic_effective_at AS DATE) <= DATE '${asOfStr}'
           AND event_type <> 'provisional_recognition'
           AND ${BRAND_PREDICATE}`,
       [],
@@ -123,7 +123,7 @@ export async function computeContributionMargin(
     const spendRows = await scope.runScoped<{ currency_code: string; spend_minor: string | number }>(
       `SELECT currency_code, SUM(spend_minor) AS spend_minor
          FROM brain_serving.mv_silver_marketing_spend
-        WHERE stat_date <= '${asOfStr}'
+        WHERE stat_date <= DATE '${asOfStr}'
           AND ${BRAND_PREDICATE}
         GROUP BY currency_code`,
       [],

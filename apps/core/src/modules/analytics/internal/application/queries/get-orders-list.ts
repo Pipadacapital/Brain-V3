@@ -80,7 +80,7 @@ export async function getOrdersList(
   // ── Iceberg Bronze source — brand-isolated via the withSilverBrand seam ──────────
   {
     // order_id = COALESCE(nested, legacy top-level) — matches the detail read + reconciliation.
-    const ORDER_ID = "COALESCE(get_json_object(payload, '$.properties.order_id'), get_json_object(payload, '$.order_id'))";
+    const ORDER_ID = "COALESCE(json_extract_scalar(payload, '$.properties.order_id'), json_extract_scalar(payload, '$.order_id'))";
     const result = await withSilverBrand(deps.srPool, brandId, async (scope) => {
       const totalRows = await scope.runScoped<{ n: number | string }>(
         `SELECT COUNT(DISTINCT ${ORDER_ID}) AS n FROM ${ICEBERG_BRONZE}
@@ -92,18 +92,18 @@ export async function getOrdersList(
       const rows = await scope.runScoped<ListRow>(
         `SELECT order_id, occurred_at, amount_minor, currency_code, payment_method, financial_status, fulfillment_status, has_depth FROM (
            SELECT ${ORDER_ID} AS order_id, occurred_at,
-                  get_json_object(payload, '$.properties.amount_minor')       AS amount_minor,
-                  get_json_object(payload, '$.properties.currency_code')      AS currency_code,
-                  get_json_object(payload, '$.properties.payment_method')     AS payment_method,
-                  get_json_object(payload, '$.properties.financial_status')   AS financial_status,
-                  get_json_object(payload, '$.properties.fulfillment_status') AS fulfillment_status,
-                  CASE WHEN get_json_object(payload, '$.properties.line_items') IS NOT NULL THEN true ELSE false END AS has_depth,
+                  json_extract_scalar(payload, '$.properties.amount_minor')       AS amount_minor,
+                  json_extract_scalar(payload, '$.properties.currency_code')      AS currency_code,
+                  json_extract_scalar(payload, '$.properties.payment_method')     AS payment_method,
+                  json_extract_scalar(payload, '$.properties.financial_status')   AS financial_status,
+                  json_extract_scalar(payload, '$.properties.fulfillment_status') AS fulfillment_status,
+                  CASE WHEN json_extract(payload, '$.properties.line_items') IS NOT NULL THEN true ELSE false END AS has_depth,
                   row_number() OVER (PARTITION BY ${ORDER_ID} ORDER BY occurred_at DESC) AS rn
              FROM ${ICEBERG_BRONZE}
             WHERE event_type LIKE 'order.%' AND ${ORDER_ID} IS NOT NULL AND ${BRAND_PREDICATE}
          ) t WHERE rn = 1
           ORDER BY occurred_at DESC, order_id ASC
-          LIMIT ${pageSize} OFFSET ${offset}`,
+          OFFSET ${offset} LIMIT ${pageSize}`,
       );
       return { total, rows };
     });

@@ -157,10 +157,10 @@ export async function getOrderDetail(
   const fetchIceberg = async (
     deps2: BronzeReadDeps & { srPool: NonNullable<BronzeReadDeps['srPool']> },
   ): Promise<{ occurred_at: Date; props: RawProps | null } | null> => {
-    const ORDER_ID = "COALESCE(get_json_object(payload, '$.properties.order_id'), get_json_object(payload, '$.order_id'))";
+    const ORDER_ID = "COALESCE(json_extract_scalar(payload, '$.properties.order_id'), json_extract_scalar(payload, '$.order_id'))";
     const r = await withSilverBrand(deps2.srPool, brandId, async (scope) => {
       const rs = await scope.runScoped<{ occurred_at: Date | string; props: string | null }>(
-        `SELECT occurred_at, get_json_object(payload, '$.properties') AS props
+        `SELECT occurred_at, json_extract(payload, '$.properties') AS props
            FROM ${ICEBERG_BRONZE}
           WHERE event_type LIKE 'order.%' AND ${ORDER_ID} = ? AND ${BRAND_PREDICATE}
           ORDER BY occurred_at DESC LIMIT 1`,

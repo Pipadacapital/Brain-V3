@@ -28,6 +28,27 @@
  * without flushing all keys.
  */
 
+// ── BigInt-safe JSON (the serving DTOs carry bigint money/counts) ───────────────
+// JSON.stringify THROWS on bigint and JSON.parse can't restore it, so the cache must encode bigints as
+// a tagged token on write and reconstruct them on read — keeping the round-trip type-preserving.
+const BIGINT_TAG = '__brain_bigint__';
+
+export function bigintReplacer(_key: string, value: unknown): unknown {
+  return typeof value === 'bigint' ? { [BIGINT_TAG]: value.toString() } : value;
+}
+
+export function bigintReviver(_key: string, value: unknown): unknown {
+  if (
+    value !== null &&
+    typeof value === 'object' &&
+    BIGINT_TAG in (value as Record<string, unknown>) &&
+    typeof (value as Record<string, unknown>)[BIGINT_TAG] === 'string'
+  ) {
+    return BigInt((value as Record<string, string>)[BIGINT_TAG]!);
+  }
+  return value;
+}
+
 // ── Key builder ───────────────────────────────────────────────────────────────
 
 /**
@@ -105,7 +126,7 @@ export class IoredisCacheAdapter implements AnalyticsCachePort {
     const raw = await this.redis.get(key);
     if (raw === null) return null;
     try {
-      return JSON.parse(raw) as T;
+      return JSON.parse(raw, bigintReviver) as T;
     } catch {
       // Malformed cache entry — treat as miss (will be overwritten on next set).
       return null;
@@ -113,7 +134,11 @@ export class IoredisCacheAdapter implements AnalyticsCachePort {
   }
 
   async set<T = unknown>(key: string, value: T, ttlMs: number): Promise<void> {
-    await this.redis.set(key, JSON.stringify(value), 'PX', ttlMs);
+    // BigInt-safe: Brain money/counts are bigint (amount_minor, lifetime_value_minor, …) and a plain
+    // JSON.stringify THROWS on bigint ("Do not know how to serialize a BigInt"). bigintReplacer encodes
+    // them as a tagged token; bigintReviver (in get) reconstructs the bigint on read — so the cache
+    // round-trip is type-preserving, not lossy.
+    await this.redis.set(key, JSON.stringify(value, bigintReplacer), 'PX', ttlMs);
   }
 
   async invalidate(key: string): Promise<void> {
@@ -123,23 +148,35 @@ export class IoredisCacheAdapter implements AnalyticsCachePort {
   }
 
   async getOrSet<T = unknown>(key: string, compute: () => Promise<T>, ttlMs: number): Promise<T> {
-    // Fast path: serve from Redis.
-    const cached = await this.get<T>(key);
-    if (cached !== null) return cached;
+    // Fast path: serve from Redis. The cache is an OPTIMIZATION, never a correctness dependency — a
+    // cache READ fault (Redis down, malformed entry) must degrade to a direct compute, not a 500.
+    try {
+      const cached = await this.get<T>(key);
+      if (cached !== null) return cached;
+    } catch {
+      // cache read failed — fall through and compute directly.
+    }
 
     // Stampede guard: if another call is already computing this key, join it.
     const existing = this.inFlight.get(key) as Promise<T> | undefined;
     if (existing !== undefined) return existing;
 
-    // This call wins the race — compute, store, and broadcast to all waiters.
+    // This call wins the race — compute, then BEST-EFFORT store. A cache WRITE fault (Redis error,
+    // serialization edge) must return the freshly-computed value, NEVER fail the request. Before the
+    // BigInt-safe serializer + this guard, a bigint result threw in set() and 500'd every cached
+    // analytics endpoint (revenue, orders, customer marts) — the cache write took down the read.
     const promise: Promise<T> = compute()
       .then(async (value) => {
-        await this.set(key, value, ttlMs);
         this.inFlight.delete(key);
+        try {
+          await this.set(key, value, ttlMs);
+        } catch {
+          // best-effort cache write — value is still returned below.
+        }
         return value;
       })
       .catch((err: unknown) => {
-        // Always clean up the in-flight entry on error so a retry can proceed.
+        // A genuine COMPUTE error (bad query) still propagates; just clean up the in-flight entry.
         this.inFlight.delete(key);
         throw err;
       });

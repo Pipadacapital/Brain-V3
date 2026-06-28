@@ -112,6 +112,21 @@ function substituteParams(sql: string, params: unknown[]): string {
     }
     if (typeof p === 'boolean') return p ? 'TRUE' : 'FALSE';
     if (typeof p === 'string') {
+      // Trino is STRICTLY typed: comparing a date/timestamp column to a quoted varchar fails with
+      // "Cannot apply operator: date <= varchar". StarRocks/MySQL coerced varchar→date implicitly;
+      // Trino does not. The metric queries bind date windows as strings (asOf/from/to), so emit a
+      // TYPED literal for date- and timestamp-shaped strings — column comparisons then type-check.
+      // Anything else (UUIDs, statuses, …) doesn't match these exact patterns → stays a varchar literal.
+      if (/^\d{4}-\d{2}-\d{2}$/.test(p)) return `DATE '${p}'`;
+      if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}/.test(p)) {
+        // TIMESTAMP param → a `timestamp(6) WITH TIME ZONE` literal. The Iceberg Gold/Silver marts store
+        // occurred_at / last_status_at / state_effective_at / economic_effective_at as
+        // `timestamp(6) with time zone`, and Trino will NOT compare those to a plain `timestamp` (no
+        // zone) or a varchar — the literal MUST carry a zone. Normalize to 'YYYY-MM-DD HH:MM:SS' (drop
+        // 'T', any fractional seconds, any trailing Z) then CAST using the session zone.
+        const norm = p.replace('T', ' ').replace(/\.\d+/, '').replace(/Z$/i, '').trim().slice(0, 19);
+        return `CAST('${norm}' AS timestamp(6) with time zone)`;
+      }
       // Escape single quotes by doubling — standard SQL escaping, safe for UUIDs.
       return `'${p.replace(/'/g, "''")}'`;
     }

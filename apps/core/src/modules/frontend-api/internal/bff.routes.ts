@@ -97,7 +97,7 @@ export function registerBffRoutes(
   // RateLimited added: a rate-limited connector cannot serve data and must not be reported healthy.
   // NOTE: 'Delayed' is NOT included — data is still flowing, just behind schedule.
   const UNHEALTHY_CONNECTOR_STATES = new Set(['Failed', 'Disconnected', 'TokenExpired', 'RateLimited', 'Disabled']);
-  const gatherFoundationSignals = async (
+  const gatherFoundationSignalsUncached = async (
     brandId: string,
     requestId: string,
   ): Promise<FoundationSignals> => {
@@ -133,8 +133,12 @@ export function registerBffRoutes(
     } finally {
       client.release();
     }
-    const dataHealth = await getDataHealth(brandId, { pool: rawPool!, srPool });
-    const trust = await getMetricTrust(brandId, { pool: rawPool! });
+    // PERF: getDataHealth (Trino Bronze + PG sync) and getMetricTrust (PG DQ) are independent —
+    // run them concurrently instead of back-to-back. Each opens its own pooled connection.
+    const [dataHealth, trust] = await Promise.all([
+      getDataHealth(brandId, { pool: rawPool!, srPool }),
+      getMetricTrust(brandId, { pool: rawPool! }),
+    ]);
     const hasData = dataHealth.state === 'has_data';
     return {
       pixelInstalled,
@@ -145,6 +149,23 @@ export function registerBffRoutes(
       freshness: freshnessFromIngest(hasData ? dataHealth.lastIngestAt : null, Date.now()),
       dqTier: trust.tier,
     };
+  };
+
+  // PERF: the foundation signals are Trino-heavy (~several seconds cold) and are read by BOTH
+  // the entitlements and data-foundation-health routes on every dashboard load. Cache them per
+  // brand through the serving cache so the two routes (and repeat loads within the TTL) share a
+  // SINGLE compute instead of each re-running the same reads. Params are empty — signals are
+  // purely per-brand. Safe-OFF: no cache wired → compute directly. Per-brand invalidation on new
+  // data is handled by the same AnalyticsCacheInvalidateConsumer that fronts the metric reads.
+  const gatherFoundationSignals = async (
+    brandId: string,
+    requestId: string,
+  ): Promise<FoundationSignals> => {
+    const compute = (): Promise<FoundationSignals> =>
+      gatherFoundationSignalsUncached(brandId, requestId);
+    return servingCache
+      ? servingCache.read(brandId, 'foundation_signals', {}, compute)
+      : compute();
   };
 
   // ── CSRF token endpoint ────────────────────────────────────────────────────

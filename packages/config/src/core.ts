@@ -86,10 +86,13 @@ export const CoreEnvSchema = CommonEnvSchema.extend({
    */
   TRINO_SERVING_CACHE_ENABLED: z.enum(['true', 'false']).optional(),
   /**
-   * TTL (ms) for a cached serving read. Short by default — the AnalyticsCacheInvalidateConsumer
-   * busts brand-leading keys on each Spark recompute, so TTL is just the staleness safety-net.
+   * TTL (ms) for a cached serving read. The AnalyticsCacheInvalidateConsumer busts brand-leading
+   * keys on each Spark recompute, so TTL is only the staleness safety-net — NOT the freshness
+   * mechanism. Kept generous (5 min) so repeat dashboard navigation within a refresh cycle is
+   * served from Redis instead of re-paying the multi-second Trino round-trip; new data still
+   * invalidates immediately via the consumer. (Was 30s, which forced needless cold re-misses.)
    */
-  TRINO_SERVING_CACHE_TTL_MS: z.coerce.number().int().positive().default(30_000),
+  TRINO_SERVING_CACHE_TTL_MS: z.coerce.number().int().positive().default(300_000),
   /**
    * Serving materialization version — the trailing cache-key segment. Bumping it on a
    * serving-view rebuild invalidates every cached read without flushing Redis.

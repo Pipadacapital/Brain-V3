@@ -48,9 +48,16 @@ export interface TrinoAdapterConfig {
   readonly schema?: string;
   /** Trino user to present via X-Trino-User (not authentication; cluster auth is separate). */
   readonly user: string;
-  /** Max poll iterations before aborting a long-running query (default 120). */
+  /** Max poll iterations before aborting a long-running query (default 600). */
   readonly maxPolls?: number;
-  /** Milliseconds between polls (default 500). */
+  /**
+   * Client-side delay (ms) between result polls (default 25). Trino's `GET nextUri` ALREADY
+   * long-polls server-side (the coordinator holds the request up to ~1s until the query state
+   * advances), so a large client sleep is pure ADDITIVE latency — a query Trino runs in ~100ms
+   * still takes (hops × pollIntervalMs) wall-clock. Was 500ms, which added 2.5–5s to every read
+   * (QUEUED→PLANNING→RUNNING→FINISHED is several hops). Keep this small; the server long-poll
+   * provides the real pacing so we do not hot-loop.
+   */
   readonly pollIntervalMs?: number;
 }
 
@@ -150,8 +157,8 @@ export function createTrinoPool(config: TrinoAdapterConfig): TrinoPool {
     catalog = 'iceberg',
     schema = 'brain_serving',
     user,
-    maxPolls = 120,
-    pollIntervalMs = 500,
+    maxPolls = 600,
+    pollIntervalMs = 25,
   } = config;
 
   // Validate global fetch at pool-creation time (fail loud, not at first query).
@@ -193,10 +200,12 @@ export function createTrinoPool(config: TrinoAdapterConfig): TrinoPool {
       let columns: TrinoColumn[] | undefined = resp.columns;
       const allData: Array<Array<unknown>> = resp.data ? [...resp.data] : [];
 
-      // Poll nextUri until exhausted or error
+      // Poll nextUri until exhausted or error. Poll IMMEDIATELY — Trino's GET nextUri long-polls
+      // server-side (holds ~1s until the query state advances), so we must NOT sleep before the
+      // first/each poll (that was the 2.5–5s latency tax). Only yield a tiny amount AFTER a poll
+      // that still has more work, to avoid a hot loop if the server ever returns instantly.
       let polls = 0;
       while (resp.nextUri && polls < maxPolls) {
-        await new Promise<void>((resolve) => setTimeout(resolve, pollIntervalMs));
         const pollRes = await doFetch(resp.nextUri);
         if (!pollRes.ok) {
           throw new Error(
@@ -208,6 +217,7 @@ export function createTrinoPool(config: TrinoAdapterConfig): TrinoPool {
         if (resp.columns && !columns) columns = resp.columns;
         if (resp.data) allData.push(...resp.data);
         polls++;
+        if (resp.nextUri) await new Promise<void>((resolve) => setTimeout(resolve, pollIntervalMs));
       }
 
       if (resp.error) {

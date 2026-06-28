@@ -20,17 +20,20 @@ export interface CohortRetentionDto {
 }
 
 export type CohortRetentionResult =
-  | { state: 'no_data' }
-  | { state: 'has_data'; cohorts: CohortRetentionDto[] };
+  | { state: 'no_data'; generated_at: string }
+  | { state: 'has_data'; cohorts: CohortRetentionDto[]; generated_at: string };
 
 export async function getCohortRetention(
   brandId: string,
   deps: { srPool: SilverPool },
 ): Promise<CohortRetentionResult> {
+  // served_at: honest server compute time for this read (the FreshnessBadge shows a real relative time).
+  const generatedAt = new Date().toISOString();
   const res = await computeCohortRetention(brandId, deps);
-  if (!res.hasData) return { state: 'no_data' };
+  if (!res.hasData) return { state: 'no_data', generated_at: generatedAt };
   return {
     state: 'has_data',
+    generated_at: generatedAt,
     cohorts: res.rows.map((r) => ({
       cohort_month: r.cohortMonth,
       currency_code: r.currencyCode,

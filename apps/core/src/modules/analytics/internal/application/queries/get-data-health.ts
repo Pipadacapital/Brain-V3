@@ -72,27 +72,35 @@ async function readBronzeIceberg(
   srPool: SilverPool,
   brandId: string,
 ): Promise<{ exists: boolean; volume: DataHealthVolumeBucket[]; lastIngestAt: string | null }> {
-  return withSilverBrand(srPool, brandId, async (scope) => {
-   try {
-    // PERF: fold the existence COUNT and MAX(ingested_at) into ONE full-table aggregate scan
-    // (both share the same predicate) — one Trino round-trip instead of two. Queries inside a
-    // single withSilverBrand scope run on one connection and MUST stay serial (no Promise.all
-    // here — that would trip pg's "client already executing a query"); the parallelism win is
-    // hoisted to getDataHealth, which runs this Trino read alongside the PG sync read.
-    const headRows = await scope.runScoped<{ n: number | string; last_ingest_at: Date | string | null }>(
-      `SELECT COUNT(*) AS n, MAX(ingested_at) AS last_ingest_at FROM ${ICEBERG_BRONZE} WHERE ${BRAND_PREDICATE}`,
-    );
+  try {
+    // PERF: the existence/MAX-ingest HEAD read and the per-day VOLUME histogram hit DIFFERENT
+    // connections via TWO withSilverBrand scopes run concurrently under Promise.all — cold
+    // data-health no longer pays head-latency THEN volume-latency serially; it pays max(of the
+    // two). Each scope keeps its single query serial (we NEVER Promise.all *within* one scope —
+    // that trips pg's "client already executing a query"); the fan-out is strictly ACROSS scopes.
+    // The volume scan runs even when the brand has zero Bronze rows (the early-empty case below
+    // discards it), which is the cheap, rare branch — the common has-data path is the one halved.
+    const [headRows, volumeRows] = await Promise.all([
+      withSilverBrand(srPool, brandId, (scope) =>
+        scope.runScoped<{ n: number | string; last_ingest_at: Date | string | null }>(
+          `SELECT COUNT(*) AS n, MAX(ingested_at) AS last_ingest_at FROM ${ICEBERG_BRONZE} WHERE ${BRAND_PREDICATE}`,
+        ),
+      ),
+      // Per-day volume over the bounded window. Trino date_trunc + interval math; the brand predicate
+      // is appended by the seam. VOLUME_WINDOW_DAYS is a constant, never user-interpolated.
+      withSilverBrand(srPool, brandId, (scope) =>
+        scope.runScoped<{ bucket: Date | string; count: number | string }>(
+          `SELECT date_trunc('day', occurred_at) AS bucket, COUNT(*) AS count
+             FROM ${ICEBERG_BRONZE}
+            WHERE occurred_at >= (now() - INTERVAL '${VOLUME_WINDOW_DAYS}' DAY) AND ${BRAND_PREDICATE}
+            GROUP BY 1 ORDER BY 1 ASC`,
+        ),
+      ),
+    ]);
+    // Early-empty semantics preserved: no Bronze rows → honest no-data (volume discarded).
     if (Number(headRows[0]?.n ?? 0) === 0) {
       return { exists: false, volume: [], lastIngestAt: null };
     }
-    // Per-day volume over the bounded window. Trino date_trunc + interval math; the brand predicate
-    // is appended by the seam. VOLUME_WINDOW_DAYS is a constant, never user-interpolated.
-    const volumeRows = await scope.runScoped<{ bucket: Date | string; count: number | string }>(
-      `SELECT date_trunc('day', occurred_at) AS bucket, COUNT(*) AS count
-         FROM ${ICEBERG_BRONZE}
-        WHERE occurred_at >= (now() - INTERVAL '${VOLUME_WINDOW_DAYS}' DAY) AND ${BRAND_PREDICATE}
-        GROUP BY 1 ORDER BY 1 ASC`,
-    );
     const toIso = (v: Date | string | null | undefined): string | null =>
       v == null ? null : (v instanceof Date ? v : new Date(v)).toISOString();
     return {
@@ -103,17 +111,16 @@ async function readBronzeIceberg(
       })),
       lastIngestAt: toIso(headRows[0]?.last_ingest_at),
     };
-   } catch (err) {
-     // The Iceberg Bronze catalog isn't materialized/reachable yet (fresh env, or a transient
-     // external-catalog error that isn't the 'unknown table' the seam already swallows). Degrade to
-     // honest no-data so the dashboard's foundation signals stay up instead of 500-ing. Observable.
-     log.warn('get-data-health: Iceberg Bronze read degraded to empty — catalog unavailable', {
-       brand_id: brandId,
-       err,
-     });
-     return { exists: false, volume: [], lastIngestAt: null };
-   }
-  });
+  } catch (err) {
+    // The Iceberg Bronze catalog isn't materialized/reachable yet (fresh env, or a transient
+    // external-catalog error that isn't the 'unknown table' the seam already swallows). Degrade to
+    // honest no-data so the dashboard's foundation signals stay up instead of 500-ing. Observable.
+    log.warn('get-data-health: Iceberg Bronze read degraded to empty — catalog unavailable', {
+      brand_id: brandId,
+      err,
+    });
+    return { exists: false, volume: [], lastIngestAt: null };
+  }
 }
 
 /**

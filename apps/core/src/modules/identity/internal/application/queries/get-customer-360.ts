@@ -52,6 +52,21 @@ export interface Customer360Merge {
   committed_at: string;
 }
 
+/**
+ * One order on a customer's profile (the Orders sub-tab, formerly count-only). Folded from the
+ * Silver order-state mart (injected; identity stays store-agnostic). Money = SIGNED bigint MINOR
+ * units as a string (I-S07) paired with currency_code — never a float, never blended.
+ */
+export interface Customer360Order {
+  order_id: string;
+  lifecycle_state: string;
+  is_terminal: boolean;
+  order_value_minor: string;
+  currency_code: string | null;
+  first_event_at: string | null;
+  state_effective_at: string | null;
+}
+
 export type Customer360 =
   | { state: 'not_found'; brain_id: string }
   | {
@@ -59,11 +74,18 @@ export type Customer360 =
       customer: Customer360Profile;
       identifiers: Customer360Identifier[];
       merges: Customer360Merge[];
+      /** The customer's orders (latest state each, newest-first). Empty = no orders (or scores tier absent). */
+      orders: Customer360Order[];
     };
 
 export interface Customer360Deps {
   /** MEDALLION REALIGNMENT (Epic 3 / ADR-0004): identity is the Neo4j SoR (DIP — IdentityReader port). */
   reader: IdentityReader;
+  /**
+   * Per-customer order list resolver (injected; folds brain_serving.mv_silver_order_state). Absent →
+   * orders is [] (honest-empty; the profile still resolves). Fail-soft on a serving hiccup.
+   */
+  ordersReader?: (brandId: string, brainId: string) => Promise<Customer360Order[]>;
 }
 
 export async function getCustomer360(
@@ -83,8 +105,14 @@ export async function getCustomer360(
   }
   const c = r.customer;
 
+  // Per-customer order list (Orders sub-tab). Fail-soft: a serving hiccup degrades to [] — never a 500.
+  const orders = deps.ordersReader
+    ? await deps.ordersReader(brandId, brainId).catch(() => [] as Customer360Order[])
+    : [];
+
   return {
     state: 'found',
+    orders,
     customer: {
       brain_id: c.brain_id,
       anonymous_id: c.anonymous_id,

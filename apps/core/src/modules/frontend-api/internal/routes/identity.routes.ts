@@ -27,6 +27,12 @@ import type {
   MergeResolveResult as ContractMergeResolveResult,
   UnmergeResult as ContractUnmergeResult,
 } from '@brain/contracts';
+import {
+  getCustomerScoresForBrainIds,
+  getCustomerSegmentMembers,
+  getCustomerOrders,
+  isLifecycleSegment,
+} from '@brain/metric-engine';
 import type { BffDeps } from './_shared.js';
 
 export function registerIdentityRoutes(fastify: FastifyInstance, deps: BffDeps): void {
@@ -54,6 +60,9 @@ export function registerIdentityRoutes(fastify: FastifyInstance, deps: BffDeps):
           properties: {
             lifecycle: { type: 'string', enum: ['anonymous', 'active', 'merged', 'split', 'erased'] },
             search: { type: 'string', maxLength: 320 },
+            // Business-SEGMENT filter (RFM/lifecycle, sourced from gold_customer_scores). Validated
+            // against the canonical lifecycle-segment set in the handler (isLifecycleSegment).
+            segment: { type: 'string', maxLength: 32 },
             limit: { type: 'integer', minimum: 1, maximum: 100 },
             offset: { type: 'integer', minimum: 0 },
           },
@@ -64,10 +73,12 @@ export function registerIdentityRoutes(fastify: FastifyInstance, deps: BffDeps):
     async (request: FastifyRequest, reply: FastifyReply) => {
       const requestId = randomUUID();
       const auth = (request as AuthenticatedRequest).auth;
-      const q = request.query as { lifecycle?: string; search?: string; limit?: number; offset?: number };
+      const q = request.query as { lifecycle?: string; search?: string; segment?: string; limit?: number; offset?: number };
 
       const limit = q.limit ?? 25;
       const offset = q.offset ?? 0;
+      // A segment value not in the canonical set is ignored (treated as no filter) rather than 400ing a browse.
+      const segment = q.segment && isLifecycleSegment(q.segment) ? q.segment : null;
       const empty: ContractCustomerList = {
         items: [],
         total: 0,
@@ -81,11 +92,22 @@ export function registerIdentityRoutes(fastify: FastifyInstance, deps: BffDeps):
         return reply.send({ request_id: requestId, data: empty });
       }
 
+      // Wire the Gold-scores enrichment + segment-membership resolvers only when the serving pool is
+      // present (dev/fresh env without Trino → null enrichment + segment no-op; the working list stays).
+      const srPool = deps.srPool;
+      const enrichScores = srPool
+        ? (brandId: string, brainIds: string[]) => getCustomerScoresForBrainIds(brandId, brainIds, { srPool })
+        : undefined;
+      const segmentMembers = srPool
+        ? (brandId: string, seg: string) =>
+            isLifecycleSegment(seg) ? getCustomerSegmentMembers(brandId, seg, { srPool }) : Promise.resolve([])
+        : undefined;
+
       const result: ContractCustomerList = await listCustomers(
         auth.brandId,
-        { lifecycle: q.lifecycle ?? null, search: q.search ?? null, limit, offset },
+        { lifecycle: q.lifecycle ?? null, search: q.search ?? null, segment, limit, offset },
         requestId,
-        { reader: identityReader, saltFn: deps.getCoreSaltHex },
+        { reader: identityReader, saltFn: deps.getCoreSaltHex, enrichScores, segmentMembers },
       );
       return reply.send({ request_id: requestId, data: result });
     },
@@ -149,10 +171,27 @@ export function registerIdentityRoutes(fastify: FastifyInstance, deps: BffDeps):
         });
       }
 
+      const srPool360 = deps.srPool;
+      const ordersReader = srPool360
+        ? async (brandId: string, brainId: string) => {
+            const rows = await getCustomerOrders(brandId, brainId, { srPool: srPool360 });
+            return rows.map((o) => ({
+              order_id: o.orderId,
+              lifecycle_state: o.lifecycleState,
+              is_terminal: o.isTerminal,
+              order_value_minor: o.orderValueMinor,
+              currency_code: o.currencyCode,
+              first_event_at: o.firstEventAt,
+              state_effective_at: o.stateEffectiveAt,
+            }));
+          }
+        : undefined;
+
       let result: ContractCustomer360;
       try {
         result = await getCustomer360(auth.brandId, brain_id, requestId, {
           reader: identityReader,
+          ordersReader,
         });
       } catch {
         return reply.code(503).send({

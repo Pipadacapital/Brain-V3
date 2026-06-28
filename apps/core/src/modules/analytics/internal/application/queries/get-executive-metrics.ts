@@ -28,8 +28,8 @@ export interface ExecutiveMetricDto {
 }
 
 export type ExecutiveMetricsResult =
-  | { state: 'no_data' }
-  | { state: 'has_data'; metrics: ExecutiveMetricDto[] };
+  | { state: 'no_data'; generated_at: string }
+  | { state: 'has_data'; metrics: ExecutiveMetricDto[]; generated_at: string };
 
 export interface ExecutiveMetricsParams {
   /** Inclusive window for CAC + ROAS (the headline ratios are point-in-time over the order spine). */
@@ -44,9 +44,13 @@ export async function getExecutiveMetrics(
   params: ExecutiveMetricsParams,
   deps: { srPool: SilverPool },
 ): Promise<ExecutiveMetricsResult> {
+  // served_at: the server compute time for this read — an HONEST "as of" the FreshnessBadge can show as
+  // a real relative time (the Gold marts carry no per-read watermark of their own at this grain).
+  const generatedAt = new Date().toISOString();
+
   const exec = await computeExecutiveMetrics(brandId, deps);
   if (!exec.hasData) {
-    return { state: 'no_data' };
+    return { state: 'no_data', generated_at: generatedAt };
   }
 
   // CAC (per currency) + blended ROAS (per currency) over the window — both lakehouse reads.
@@ -61,6 +65,7 @@ export async function getExecutiveMetrics(
 
   return {
     state: 'has_data',
+    generated_at: generatedAt,
     metrics: exec.rows.map((r) => ({
       currency_code: r.currencyCode,
       realized_minor: String(r.realizedValueMinor),

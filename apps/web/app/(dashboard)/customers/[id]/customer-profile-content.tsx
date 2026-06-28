@@ -19,11 +19,11 @@
  * discipline (I-S02): identifiers shown by TYPE + TIER + HASH PREFIX only — raw email/phone never
  * cross the BFF. Money is bigint minor + currency via formatMoneyDisplay (no /100, no float).
  *
- * GENUINE GAP (flagged, never faked): getCustomer360 does NOT return this customer's ORDER LIST —
- * only identity links + merges. The Orders sub-tab therefore shows the order COUNT (from the served
- * RFM score) plus an honest EmptyState + a journey trace, and notes the BFF order-list as an
- * openItem. The Journey sub-tab is per-ORDER (the only journey grain that exists today) — there is
- * no per-customer aggregate path yet.
+ * ORDERS (live): getCustomer360 now returns this customer's ORDER LIST (latest state each, from the
+ * Silver order-state fold) alongside identity links + merges. The Orders sub-tab shows the served RFM
+ * headline (count + lifetime value) plus the itemised per-order table; honest EmptyState when there are
+ * no orders. The Journey sub-tab is per-ORDER (the only journey grain that exists today) — there is no
+ * per-customer aggregate path yet.
  */
 
 import * as React from 'react';
@@ -135,7 +135,7 @@ export function CustomerProfileContent({ brainId }: { brainId: string }) {
         sections: [
           {
             heading: 'What’s shown vs pending',
-            body: 'Overview, Identity timeline, Journey (per order) and Segments are live. The Orders tab shows the order COUNT from the RFM score plus a journey trace — a per-customer ORDER LIST is not yet returned by the profile endpoint (flagged, never faked).',
+            body: 'Overview, Identity timeline, Orders (served RFM headline + the itemised per-order list), Journey (per order) and Segments are all live.',
           },
           {
             heading: 'Privacy',
@@ -372,19 +372,50 @@ export function CustomerProfileContent({ brainId }: { brainId: string }) {
               ) : null}
 
               <SectionCard
-                title="Per-order list"
-                description="The itemised order history for this customer."
+                title={`Per-order list${found.orders.length > 0 ? ` (${found.orders.length})` : ''}`}
+                description="This customer's orders (latest state each, newest first), from the Silver order-state fold."
               >
-                <EmptyState
-                  icon={<ShoppingBag className="h-6 w-6" aria-hidden="true" />}
-                  title="Order list not yet on the profile endpoint"
-                  description="The customer profile returns identity links + merges, not this customer’s itemised orders. Order COUNT + lifetime value above come from the served RFM score. Trace any single order in the Journey tab. (Surfacing a per-customer order list is an open BFF item.)"
-                  action={
-                    <Button asChild variant="outline" size="sm">
-                      <Link href="/journeys">Open Journeys</Link>
-                    </Button>
-                  }
-                />
+                {found.orders.length === 0 ? (
+                  <EmptyState
+                    icon={<ShoppingBag className="h-6 w-6" aria-hidden="true" />}
+                    title="No orders for this customer yet"
+                    description="As this customer's orders flow through to the Silver order-state mart they appear here. Trace any single order's visit→purchase path in the Journey tab."
+                    action={
+                      <Button asChild variant="outline" size="sm">
+                        <Link href="/journeys">Open Journeys</Link>
+                      </Button>
+                    }
+                  />
+                ) : (
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b text-left text-muted-foreground">
+                        <th scope="col" className="px-3 py-2 font-medium">Order</th>
+                        <th scope="col" className="px-3 py-2 font-medium">State</th>
+                        <th scope="col" className="px-3 py-2 font-medium text-right">Value</th>
+                        <th scope="col" className="px-3 py-2 font-medium">Placed</th>
+                        <th scope="col" className="px-3 py-2 font-medium">Updated</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {found.orders.map((o) => (
+                        <tr key={o.order_id} className="border-b last:border-0 hover:bg-muted/40">
+                          <td className="px-3 py-2 font-mono text-xs">{o.order_id}</td>
+                          <td className="px-3 py-2">{humanize(o.lifecycle_state)}</td>
+                          <td className="px-3 py-2 text-right tabular-nums">
+                            {formatMoneyDisplay(o.order_value_minor, (o.currency_code ?? currency) as CurrencyCode)}
+                          </td>
+                          <td className="px-3 py-2 text-muted-foreground">
+                            {o.first_event_at ? new Date(o.first_event_at).toLocaleDateString() : '—'}
+                          </td>
+                          <td className="px-3 py-2 text-muted-foreground">
+                            {o.state_effective_at ? new Date(o.state_effective_at).toLocaleDateString() : '—'}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
               </SectionCard>
             </TabsContent>
 

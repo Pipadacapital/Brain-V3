@@ -28,6 +28,26 @@ export interface CustomerListItem {
   identifier_count: number;
   last_identifier_at: string | null;
   created_at: string;
+  /**
+   * Business (RFM/lifecycle) SEGMENT folded from gold_customer_scores at read time (VIP / loyal /
+   * at_risk / churned / first_time_buyer / window_shopper / high_value / cart_abandoner). Null when the
+   * customer has no score row yet — honest-empty per row, never a fabricated segment.
+   */
+  segment: string | null;
+  /** Lifetime realized value in bigint MINOR units (string, BigInt-safe); paired with currency_code. Null = no money signal. */
+  ltv_minor: string | null;
+  /** Sibling currency for ltv_minor — never blended. Null when ltv_minor is null. */
+  currency_code: string | null;
+  /** Realized lifetime order count. Null when the customer has no score row yet. */
+  order_count: number | null;
+}
+
+/** Per-row business-signal enrichment from the Gold scores mart (injected; store-agnostic). */
+export interface CustomerScoreEnrichment {
+  segment: string;
+  ltvMinor: string;
+  currencyCode: string | null;
+  orderCount: number;
 }
 
 export interface CustomerList {
@@ -42,6 +62,13 @@ export interface ListCustomersParams {
   lifecycle?: string | null;
   /** Raw operator search term (email or phone). Hashed server-side; never stored. */
   search?: string | null;
+  /**
+   * Business-SEGMENT filter (a valid lifecycle segment value, e.g. 'VIP' / 'loyal' / 'at_risk' /
+   * 'churned' / 'first_time_buyer' / 'window_shopper'). When set, the browse is restricted to the
+   * brain_ids whose derived segment matches (resolved upstream from gold_customer_scores). null = no
+   * segment filter.
+   */
+  segment?: string | null;
   limit?: number;
   offset?: number;
 }
@@ -56,6 +83,17 @@ export interface ListCustomersDeps {
    * env). Optional: absent (older callers / tests) → falls back to the dev resolveSaltHex.
    */
   saltFn?: (brandId: string) => Promise<string>;
+  /**
+   * Page enrichment: brain_ids → { segment, ltvMinor, currencyCode, orderCount } from gold_customer_scores
+   * (injected; the use-case stays store-agnostic). Absent → rows carry null segment/LTV/order_count
+   * (honest-empty; the working list is unchanged).
+   */
+  enrichScores?: (brandId: string, brainIds: string[]) => Promise<Map<string, CustomerScoreEnrichment>>;
+  /**
+   * Segment-membership resolver: the brain_ids whose derived lifecycle segment === `segment`. Absent →
+   * the segment filter is ignored (the param is a no-op, never a hard-fail of a browse).
+   */
+  segmentMembers?: (brandId: string, segment: string) => Promise<string[]>;
 }
 
 function toIso(v: unknown): string | null {
@@ -97,6 +135,16 @@ export async function listCustomers(
   const offset = Math.max(params.offset ?? 0, 0);
   const lifecycle = params.lifecycle && params.lifecycle.trim().length > 0 ? params.lifecycle.trim() : null;
 
+  const segment = params.segment && params.segment.trim().length > 0 ? params.segment.trim() : null;
+
+  // SEGMENT FILTER (resolved at the Gold mart, applied as a brain_id allowlist in the graph). When a
+  // segment is requested and a resolver is wired, fetch its members; an EMPTY member set (segment has no
+  // customers) means the page is honestly empty. No resolver wired → the param is a no-op (null filter).
+  let brainIdFilter: string[] | null = null;
+  if (segment && deps.segmentMembers) {
+    brainIdFilter = await deps.segmentMembers(brandId, segment).catch(() => []);
+  }
+
   const term = params.search?.trim() ?? '';
   let identifierHashes: string[] | null = null;
   if (term.length > 0) {
@@ -115,19 +163,37 @@ export async function listCustomers(
     identifierHashes: identifierHashes ?? [],
     limit,
     offset,
+    brainIdFilter,
   });
+
+  // Page enrichment: fold segment + LTV + order_count onto exactly the brain_ids on THIS page (a cheap
+  // brain_id IN (...) read). Fail-soft — a scores-tier hiccup degrades to null enrichment, never a 500.
+  let enrich = new Map<string, CustomerScoreEnrichment>();
+  if (deps.enrichScores && items.length > 0) {
+    enrich = await deps
+      .enrichScores(brandId, items.map((r) => r.brain_id))
+      .catch(() => new Map<string, CustomerScoreEnrichment>());
+  }
+
   return {
-    items: items.map((r) => ({
-      brain_id: r.brain_id,
-      anonymous_id: r.anonymous_id,
-      lifecycle_state: r.lifecycle_state,
-      merged_into: r.merged_into,
-      ai_processing_consent: r.ai_processing_consent,
-      resolution_consent: r.resolution_consent,
-      identifier_count: r.identifier_count,
-      last_identifier_at: toIso(r.last_identifier_at),
-      created_at: toIso(r.created_at) ?? '',
-    })),
+    items: items.map((r) => {
+      const e = enrich.get(r.brain_id);
+      return {
+        brain_id: r.brain_id,
+        anonymous_id: r.anonymous_id,
+        lifecycle_state: r.lifecycle_state,
+        merged_into: r.merged_into,
+        ai_processing_consent: r.ai_processing_consent,
+        resolution_consent: r.resolution_consent,
+        identifier_count: r.identifier_count,
+        last_identifier_at: toIso(r.last_identifier_at),
+        created_at: toIso(r.created_at) ?? '',
+        segment: e?.segment ?? null,
+        ltv_minor: e?.ltvMinor ?? null,
+        currency_code: e?.currencyCode ?? null,
+        order_count: e?.orderCount ?? null,
+      };
+    }),
     total,
     limit,
     offset,

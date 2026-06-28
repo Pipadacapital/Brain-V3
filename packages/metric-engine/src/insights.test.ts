@@ -5,8 +5,10 @@ import type { SilverPool } from './silver-deps.js';
 const BRAND = '33333333-3333-4333-8333-333333333333';
 
 interface FakeTables {
+  // Revenue rows are now per (currency_code, event_type): the revenue swing + its top-driver
+  // breakdown are read in ONE folded `GROUP BY currency_code, event_type` query (perf — no separate
+  // dependent driver round-trip), and per-currency totals are re-aggregated in-memory.
   revenue?: Array<Record<string, unknown>>;
-  driver?: Array<Record<string, unknown>>;
   exec?: Array<Record<string, unknown>>;
   churn?: Array<Record<string, unknown>>;
   vip?: Array<Record<string, unknown>>;
@@ -20,7 +22,6 @@ interface FakeTables {
 function fakePool(t: FakeTables): SilverPool {
   return {
     async query<T = Record<string, unknown>>(sql: string): Promise<T[]> {
-      if (sql.includes('gold_revenue_ledger') && sql.includes('GROUP BY event_type')) return (t.driver ?? []) as T[];
       if (sql.includes('gold_revenue_ledger')) return (t.revenue ?? []) as T[];
       if (sql.includes('gold_executive_metrics')) return (t.exec ?? []) as T[];
       if (sql.includes("churn_risk = 'high'")) return (t.churn ?? []) as T[];
@@ -37,8 +38,12 @@ function fakePool(t: FakeTables): SilverPool {
 describe('computeInsights — deterministic Insight + Opportunity Engine', () => {
   it('detects a revenue drop with driver, RTO leakage, and churn opportunity; ranks by severity then $', async () => {
     const pool = fakePool({
-      revenue: [{ currency_code: 'INR', cur_minor: '82000', prior_minor: '100000' }],
-      driver: [{ event_type: 'rto_reversal', cur_minor: '-5000', prior_minor: '0' }],
+      // Per (currency, event_type); sums to cur 82000 / prior 100000 (−18%). rto_reversal carries the
+      // largest |delta| (−18000), so it is the top driver — same assertions, folded single read.
+      revenue: [
+        { currency_code: 'INR', event_type: 'order_paid', cur_minor: '100000', prior_minor: '100000' },
+        { currency_code: 'INR', event_type: 'rto_reversal', cur_minor: '-18000', prior_minor: '0' },
+      ],
       exec: [{ currency_code: 'INR', realized_value_minor: '1000000', total_orders: '100', terminal_orders: '90', rto_orders: '18' }],
       churn: [{ currency_code: 'INR', high_risk_customers: '12', ltv_at_risk_minor: '870000' }],
     });
@@ -78,7 +83,7 @@ describe('computeInsights — deterministic Insight + Opportunity Engine', () =>
     // Real-data edge case (brand "Bodd Active"): realized_value_minor < 0 → AOV is meaningless, so the
     // RTO RATE leads but impact_minor is null; and a non-positive prior base yields no % (direction only).
     const pool = fakePool({
-      revenue: [{ currency_code: 'INR', cur_minor: '5000', prior_minor: '0' }],
+      revenue: [{ currency_code: 'INR', event_type: 'order_paid', cur_minor: '5000', prior_minor: '0' }],
       exec: [{ currency_code: 'INR', realized_value_minor: '-17107056', total_orders: '917', terminal_orders: '274', rto_orders: '103' }],
     });
     const res = await computeInsights(BRAND, { srPool: pool });
@@ -112,7 +117,7 @@ describe('computeInsights — deterministic Insight + Opportunity Engine', () =>
     // realized cur 150000 (from revenue row), spend 100000 → ROAS 1.50x → thin margins (medium, risk).
     const withSpend = await computeInsights(BRAND, {
       srPool: fakePool({
-        revenue: [{ currency_code: 'INR', cur_minor: '150000', prior_minor: '120000' }],
+        revenue: [{ currency_code: 'INR', event_type: 'order_paid', cur_minor: '150000', prior_minor: '120000' }],
         spend: [{ currency_code: 'INR', spend_minor: '100000' }],
       }),
     });
@@ -124,7 +129,7 @@ describe('computeInsights — deterministic Insight + Opportunity Engine', () =>
 
     // No spend → no ROAS insight (the ad-connector signal is absent).
     const noSpend = await computeInsights(BRAND, {
-      srPool: fakePool({ revenue: [{ currency_code: 'INR', cur_minor: '200000', prior_minor: '150000' }] }),
+      srPool: fakePool({ revenue: [{ currency_code: 'INR', event_type: 'order_paid', cur_minor: '200000', prior_minor: '150000' }] }),
     });
     expect(noSpend.insights.find((i) => i.detector === 'blended_roas')).toBeUndefined();
   });

@@ -94,12 +94,41 @@ export function parseEnv<T extends z.ZodType>(
 // ── Memoized loader factory ───────────────────────────────────────────────────
 
 /**
+ * A memoized config loader: call it to get the (parsed once, frozen) config.
+ *
+ * The extra {@link ConfigLoader.reset} method is a TEST-ONLY seam — it clears the
+ * memoized snapshot so the NEXT call re-parses the (possibly mutated) environment.
+ * Production code never calls it; the hot path is the plain `loader()` call, which
+ * is unchanged (a single `??=` read after first parse).
+ */
+export interface ConfigLoader<T> {
+  (): T;
+  /**
+   * TEST-ONLY: drop the memoized snapshot so the next `loader()` re-parses `env`.
+   *
+   * Production reads config once at boot, so this is inert in prod (nothing calls it).
+   * It exists purely so per-case unit tests that mutate `process.env` between cases
+   * are not pinned to a stale frozen snapshot captured by the first test to load config.
+   */
+  reset(): void;
+}
+
+/**
+ * Registry of every loader built by {@link defineConfig}, so tests can reset them
+ * all at once via {@link resetAllConfigCaches} without importing each loader.
+ */
+const configLoaderRegistry = new Set<ConfigLoader<unknown>>();
+
+/**
  * Build a memoized, frozen config loader for a given schema.
  *
  * The returned function parses `env` exactly ONCE per process (via {@link parseEnv},
  * preserving the validate-or-crash contract), freezes the result, and returns the
  * same cached object on every subsequent call. This gives each service a single
  * source of record for its config that is parsed lazily on first access.
+ *
+ * The loader also exposes {@link ConfigLoader.reset} (test-only; see that doc) and is
+ * registered for {@link resetAllConfigCaches}. Neither affects the prod fast path.
  *
  * @example
  *   export const loadCoreConfig = defineConfig(CoreEnvSchema);
@@ -111,7 +140,25 @@ export function parseEnv<T extends z.ZodType>(
 export function defineConfig<T extends z.ZodType>(
   schema: T,
   env: Record<string, string | undefined> = process.env,
-): () => z.infer<T> {
+): ConfigLoader<z.infer<T>> {
   let cached: z.infer<T> | undefined;
-  return () => (cached ??= Object.freeze(parseEnv(schema, env)));
+  const loader = (() => (cached ??= Object.freeze(parseEnv(schema, env)))) as ConfigLoader<
+    z.infer<T>
+  >;
+  loader.reset = () => {
+    cached = undefined;
+  };
+  configLoaderRegistry.add(loader as ConfigLoader<unknown>);
+  return loader;
+}
+
+/**
+ * TEST-ONLY: reset every memoized config loader so the next call to each re-parses
+ * the current environment. Call this in a `beforeEach` of any suite that mutates
+ * `process.env` per-case, so cases don't read a snapshot frozen by an earlier test.
+ *
+ * Inert/harmless in production (production reads config once and never calls this).
+ */
+export function resetAllConfigCaches(): void {
+  for (const loader of configLoaderRegistry) loader.reset();
 }

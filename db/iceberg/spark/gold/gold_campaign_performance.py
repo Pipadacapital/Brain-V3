@@ -20,6 +20,14 @@ Money math (mirrors the TS exactly, integer minor units, per-currency — NEVER 
   ctr_bps           = clicks * 10000 / impressions (integer bps; NULL when impressions=0).
   cpc_minor         = spend_minor / clicks (integer minor units; NULL when clicks=0).
 
+Platform-reported VALIDATION measures (side-by-side with the Brain-attributed signal above — the platform's
+own conversion value is a validation/reconciliation aid, NEVER a replacement for Brain attribution):
+  platform_conv_value_minor = Σ conv_value_minor (bigint MINOR, shares currency_code, never blended) from
+                      silver_marketing_spend — the platform-reported attributed REVENUE. NULL when no spend
+                      row carries it (older rows lack the prop; absence stays NULL, never fabricated 0).
+  platform_roas     = platform_conv_value_minor / spend_minor (double ratio; NULL when spend_minor=0 OR
+                      platform_conv_value_minor is NULL — honest, never a fabricated ∞ / divide-by-zero).
+
 GRAIN   : 1 row per (brand_id, platform, campaign_id, currency_code). brand_id first column + partition anchor.
 REPLAY-SAFE: full recompute from Silver(+optional Gold credit), MERGE-UPDATE'd on the PK.
 
@@ -52,6 +60,8 @@ COLUMNS_SQL = """
           ctr_bps           bigint,
           cpc_minor         bigint,
           roas_bps          bigint,
+          platform_conv_value_minor bigint,
+          platform_roas             double,
           updated_at        timestamp NOT NULL
 """.strip("\n")
 
@@ -104,7 +114,10 @@ def build(spark):
                 MAX(campaign_name)                         AS spend_campaign_name,
                 COALESCE(SUM(COALESCE(spend_minor, 0)), 0) AS spend_minor,
                 COALESCE(SUM(COALESCE(impressions, 0)), 0) AS impressions,
-                COALESCE(SUM(COALESCE(clicks, 0)), 0)      AS clicks
+                COALESCE(SUM(COALESCE(clicks, 0)), 0)      AS clicks,
+                -- Platform-reported attributed revenue (bigint MINOR, shares currency_code). NOT coalesced:
+                -- SUM over all-NULL stays NULL so platform_roas honestly reports "no platform value", not 0.
+                SUM(conv_value_minor)                      AS platform_conv_value_minor
             FROM {silver('silver_marketing_spend')}
             WHERE brand_id IS NOT NULL AND campaign_id IS NOT NULL AND campaign_id <> ''
             GROUP BY brand_id, COALESCE(platform, 'unknown'), campaign_id, COALESCE(currency_code, 'INR')
@@ -134,6 +147,14 @@ def build(spark):
             CASE WHEN spend.spend_minor > 0
                  THEN COALESCE(attr.attributed_minor, 0) * 10000 / spend.spend_minor
                  ELSE NULL END                                       AS roas_bps,
+            -- Platform-reported VALIDATION measures, side-by-side with the Brain-attributed roas_bps above
+            -- (validation/reconciliation aid, NEVER a replacement for Brain attribution). conv value is
+            -- bigint MINOR sharing currency_code (never blended); platform_roas is a double ratio, NULL when
+            -- spend=0 or the platform reported no conv value (honest — never a fabricated ∞).
+            spend.platform_conv_value_minor                          AS platform_conv_value_minor,
+            CASE WHEN spend.spend_minor > 0 AND spend.platform_conv_value_minor IS NOT NULL
+                 THEN CAST(spend.platform_conv_value_minor AS double) / CAST(spend.spend_minor AS double)
+                 ELSE NULL END                                       AS platform_roas,
             current_timestamp()                                      AS updated_at
         FROM spend
         LEFT JOIN dim  ON spend.brand_id = dim.brand_id

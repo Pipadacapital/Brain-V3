@@ -2046,12 +2046,15 @@ export const identityApi = {
   listCustomers: async (params: {
     lifecycle?: string;
     search?: string;
+    /** Business (RFM/lifecycle) segment filter — VIP/loyal/at_risk/churned/first_time_buyer/window_shopper/… */
+    segment?: string;
     limit?: number;
     offset?: number;
   }): Promise<CustomerListResponse> => {
     const qs = new URLSearchParams();
     if (params.lifecycle) qs.set('lifecycle', params.lifecycle);
     if (params.search && params.search.trim().length > 0) qs.set('search', params.search.trim());
+    if (params.segment && params.segment.trim().length > 0) qs.set('segment', params.segment.trim());
     if (params.limit != null) qs.set('limit', String(params.limit));
     if (params.offset != null) qs.set('offset', String(params.offset));
     const q = qs.toString();

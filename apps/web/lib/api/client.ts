@@ -26,6 +26,7 @@ import {
   ChannelRoasSchema,
   JourneyFirstTouchMixSchema,
   ShipmentOutcomesSchema,
+  ReturnFunnelSchema,
   BehaviorOverviewSchema,
   FunnelAnalyticsSchema,
   AbandonedCartSchema,
@@ -140,6 +141,7 @@ import type {
   AnalyticsOrderDetailResponse,
   AnalyticsJourneyFirstTouchMixResponse,
   AnalyticsShipmentOutcomesResponse,
+  AnalyticsReturnFunnelResponse,
   AnalyticsBehaviorOverviewResponse,
   AnalyticsFunnelResponse,
   AnalyticsAbandonedCartResponse,
@@ -1600,6 +1602,21 @@ export const analyticsApi = {
       `/v1/analytics/logistics/shipment-outcomes${qsStr ? `?${qsStr}` : ''}`,
     );
     return parseData(ShipmentOutcomesSchema, env);
+  },
+
+  /** GET /api/v1/analytics/logistics/return-funnel — return_class breakdown + completion% (SR-10). */
+  getReturnFunnel: async (params?: {
+    from?: string;
+    to?: string;
+  }): Promise<AnalyticsReturnFunnelResponse> => {
+    const qs = new URLSearchParams();
+    if (params?.from) qs.set('from', params.from);
+    if (params?.to) qs.set('to', params.to);
+    const qsStr = qs.toString();
+    const env = await bffFetch<BffEnvelope<unknown>>(
+      `/v1/analytics/logistics/return-funnel${qsStr ? `?${qsStr}` : ''}`,
+    );
+    return parseData(ReturnFunnelSchema, env);
   },
 
   /** GET /api/v1/analytics/behavior/overview — storefront browse/search/view over a range. */

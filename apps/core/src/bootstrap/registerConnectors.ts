@@ -16,7 +16,7 @@
  */
 
 import { type FastifyRequest, type FastifyInstance } from 'fastify';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, randomBytes } from 'node:crypto';
 import type { Producer } from 'kafkajs';
 import { beginRlsTxn } from '@brain/db';
 import type { DbPool } from '@brain/db';
@@ -39,7 +39,7 @@ import { ShopifyPixelInstaller } from '../modules/connector/sources/storefront/s
 import { WooCommercePixelInstaller } from '../modules/connector/sources/storefront/woocommerce/application/install/WooCommercePixelInstaller.js';
 import { InstallWooCommercePixelCommand } from '../modules/connector/sources/storefront/woocommerce/application/commands/InstallWooCommercePixelCommand.js';
 import { getDefinition, isConnectable, CONNECTOR_CATALOG } from '../modules/connector/catalog/index.js';
-import { planCredentialConnect } from '../modules/connector/credential-schema.js';
+import { planCredentialConnect, provisionGeneratedSecrets } from '../modules/connector/credential-schema.js';
 import { registerOAuthDispatch, getOAuthDispatch } from '../modules/connector/catalog/dispatch.js';
 import {
   storeBrandOAuthAppCreds,
@@ -565,12 +565,22 @@ export function registerConnectors(app: FastifyInstance, deps: RegisterConnector
           });
         }
 
+        // SR-2: mint any connect-time generated secrets (e.g. Shiprocket's webhook_secret — the
+        // X-Api-Key the merchant pastes into their dashboard). Brain generates it, stores it in the
+        // bundle (where the webhook strategy verifies against it), and returns it ONCE below. Pure
+        // planCredentialConnect stays deterministic; generation is layered on here.
+        const { bundle: secretBundle, generated } = provisionGeneratedSecrets(
+          plan.secretBundle,
+          spec,
+          () => randomBytes(24).toString('hex'),
+        );
+
         let arn: string;
         try {
           ({ arn } = await connectorSecretsManager.storeSecret(
             brandId,
             { connectorType, subKey: plan.accountKey },
-            plan.secretBundle,
+            secretBundle,
           ));
         } catch {
           return reply.code(503).send({ request_id: requestId, error: { code: 'SECRETS_UNAVAILABLE', message: 'Could not securely store credentials right now — please retry.' } });
@@ -623,11 +633,43 @@ export function registerConnectors(app: FastifyInstance, deps: RegisterConnector
           action: 'connector.connected',
           entity_type: 'connector_instance',
           entity_id: connectorInstanceId,
-          payload: { connector_type: connectorType },
+          // NEVER log the minted secret — only that one was provisioned (key names, not values).
+          payload: { connector_type: connectorType, generated_secret_fields: Object.keys(generated) },
         });
+
+        // SR-2: when a webhook token was minted, surface the per-tenant webhook URL + the token + the
+        // routing header so the connect UI can show the merchant exactly what to paste into the provider
+        // dashboard. The token is returned ONCE (it is write-only in the bundle thereafter). The webhook
+        // origin is the public core API host (same host that receives the OAuth callbacks).
+        let webhook: {
+          url: string;
+          api_key: string | null;
+          routing_header: { name: string; value: string } | null;
+        } | null = null;
+        if (generated['webhook_secret']) {
+          let origin = config.appBaseUrl;
+          try {
+            origin = new URL(config.shopifyCallbackUrl).origin;
+          } catch {
+            /* fall back to appBaseUrl */
+          }
+          webhook = {
+            url: `${origin}/api/v1/webhooks/${connectorType}`,
+            api_key: generated['webhook_secret'],
+            routing_header: spec.webhookRoutingHeader
+              ? { name: spec.webhookRoutingHeader, value: plan.accountKey }
+              : null,
+          };
+        }
+
         return reply.code(200).send({
           request_id: requestId,
-          data: { kind: 'credential', connected: true, connector_instance_id: connectorInstanceId },
+          data: {
+            kind: 'credential',
+            connected: true,
+            connector_instance_id: connectorInstanceId,
+            ...(webhook ? { webhook } : {}),
+          },
         });
       }
 

@@ -78,3 +78,59 @@ describe('ShiprocketShipmentClient — dev fixture mode (default)', () => {
     expect(page.items.length).toBeGreaterThan(0);
   });
 });
+
+// SR-7 — per-AWB DOCUMENTED tracking endpoint, used for historical backfill.
+describe('ShiprocketShipmentClient — fetchShipmentByAwb (SR-7 backfill)', () => {
+  it('fixture mode: returns every scan recorded for the AWB', async () => {
+    const client = new ShiprocketShipmentClient(CREDS);
+    const scans = await client.fetchShipmentByAwb('SR-SYNTH-DELIVERED-0001');
+    expect(scans.length).toBeGreaterThan(0);
+    expect(scans.every((s) => s.awb === 'SR-SYNTH-DELIVERED-0001')).toBe(true);
+    // the full lifecycle is present (e.g. the terminal Delivered scan)
+    expect(scans.some((s) => s.status === 'Delivered')).toBe(true);
+  });
+
+  it('live mode: maps tracking_data.shipment_track_activities[] → one record per scan with Bearer auth', async () => {
+    process.env['SHIPROCKET_LIVE'] = '1';
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init: { headers: Record<string, string> }) => {
+      if (url.includes('/v1/external/auth/login')) {
+        return { ok: true, status: 200, json: async () => ({ token: 'jwt-trk' }) } as unknown as Response;
+      }
+      expect(url).toContain('/v1/external/courier/track/awb/AWB-9');
+      expect(init.headers['Authorization']).toBe('Bearer jwt-trk');
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          tracking_data: {
+            shipment_track: [
+              { channel_order_id: 'ORD-9', courier_name: 'BlueDart', destination_pin: '560001' },
+            ],
+            shipment_track_activities: [
+              { date: '2026-06-05 08:00:00', activity: 'Pickup Scheduled' },
+              { date: '2026-06-07 14:00:00', status: 'Delivered' },
+            ],
+          },
+        }),
+      } as unknown as Response;
+    }));
+
+    const client = new ShiprocketShipmentClient(CREDS);
+    const scans = await client.fetchShipmentByAwb('AWB-9');
+    expect(scans).toHaveLength(2);
+    expect(scans[0]).toMatchObject({ awb: 'AWB-9', order_id: 'ORD-9', status: 'Pickup Scheduled', courier: 'BlueDart', pincode: '560001' });
+    expect(scans[1]).toMatchObject({ awb: 'AWB-9', status: 'Delivered' });
+  });
+
+  it('live mode: throws SHIPROCKET_AUTH_ERROR on a 403 tracking response', async () => {
+    process.env['SHIPROCKET_LIVE'] = '1';
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.includes('/v1/external/auth/login')) {
+        return { ok: true, status: 200, json: async () => ({ token: 'jwt-trk' }) } as unknown as Response;
+      }
+      return { ok: false, status: 403, json: async () => ({}) } as unknown as Response;
+    }));
+    const client = new ShiprocketShipmentClient(CREDS);
+    await expect(client.fetchShipmentByAwb('AWB-X')).rejects.toThrow(SHIPROCKET_AUTH_ERROR);
+  });
+});

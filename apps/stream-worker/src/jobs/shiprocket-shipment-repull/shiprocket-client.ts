@@ -11,15 +11,34 @@
  *
  * ⚠️ CONFIRM-AGAINST-A-REAL-ACCOUNT (partner-gated — verified research open-question):
  *   Shiprocket's AUTH (login → JWT) and per-AWB tracking (GET /v1/external/courier/track/awb/{awb})
- *   are documented, but the SHIPMENT-LIST endpoint used to enumerate shipments by date, its
- *   pagination params, and the exact RESPONSE FIELD NAMES are NOT in public docs. The live path
- *   below is production-SHAPED but those specifics are env-configurable + defensively mapped and
- *   MUST be confirmed against a real Shiprocket account before production use:
+ *   are documented; the SHIPMENT-LIST endpoint used to enumerate shipments by date, its pagination
+ *   params, and the exact RESPONSE FIELD NAMES are NOT in public docs. The live LIST path below is
+ *   production-SHAPED but those specifics are env-configurable + defensively mapped and MUST be
+ *   confirmed against a real Shiprocket account before production use:
  *     SHIPROCKET_BASE_URL          (default https://apiv2.shiprocket.in)
  *     SHIPROCKET_SHIPMENTS_PATH    (default /v1/external/orders — the list/enumeration endpoint)
  *     SHIPROCKET_SHIPMENTS_KEY     (default 'data' — the array key in the response body)
- *   Field mapping to ShiprocketShipmentRecord tries common Shiprocket names (awb/awb_code,
- *   channel_order_id/order_id, current_status/status, …) — reconcile when a real payload lands.
+ *     SHIPROCKET_TRACK_PATH        (default /v1/external/courier/track/awb/{awb} — the DOCUMENTED
+ *                                   per-AWB tracking endpoint, used by fetchShipmentByAwb for backfill)
+ *
+ *   FIELD-MAP ANNOTATION (list payload → ShiprocketShipmentRecord) — common Shiprocket order/shipment
+ *   names, ranked most→least likely; reconcile when a real payload lands:
+ *     awb               ← awb | awb_code
+ *     order_id          ← channel_order_id | order_id | id   (merchant order id preferred over SR id)
+ *     status            ← current_status | status | shipment_status
+ *     status_changed_at ← status_changed_at | updated_at | last_update_at
+ *     payment_method    ← payment_method | payment_type      (cod | prepaid normalized in the mapper)
+ *     pincode           ← pincode | customer_pincode | delivery_pincode
+ *     courier           ← courier | courier_name
+ *     customer_phone    ← customer_phone | phone | mobile | customer_mobile | contact  (hashed in mapper)
+ *     customer_email    ← customer_email | email | customer_email_id                  (hashed in mapper)
+ *
+ * SR-7 — TWO live read modes:
+ *   1. fetchShipmentPage(from,to,skip)  — date-windowed LIST enumeration (scheduled / on-demand repull).
+ *   2. fetchShipmentByAwb(awb)          — per-AWB DOCUMENTED tracking endpoint, for HISTORICAL backfill
+ *      of a single AWB whose lifecycle predates / falls outside the list window. Maps the documented
+ *      `tracking_data.shipment_track_activities[]` (date+activity/status) into one record per scan, so
+ *      the full transition history folds through the SAME canonical mapper + idempotent UUIDv5 dedup.
  *
  * NEVER logs email / password / token (I-S09) or raw AWB numbers (boundary-hashed in the mapper).
  */
@@ -79,6 +98,7 @@ export class ShiprocketShipmentClient {
   private readonly baseUrl = loadStreamWorkerConfig().SHIPROCKET_BASE_URL.replace(/\/+$/, '');
   private readonly shipmentsPath = loadStreamWorkerConfig().SHIPROCKET_SHIPMENTS_PATH;
   private readonly shipmentsKey = loadStreamWorkerConfig().SHIPROCKET_SHIPMENTS_KEY;
+  private readonly trackPath = loadStreamWorkerConfig().SHIPROCKET_TRACK_PATH;
 
   constructor(credentials: ShiprocketApiCredentials) {
     this.live = isLiveMode();
@@ -131,11 +151,86 @@ export class ShiprocketShipmentClient {
         payment_method: pick(o, ['payment_method', 'payment_type']),
         pincode: pick(o, ['pincode', 'customer_pincode', 'delivery_pincode']),
         courier: pick(o, ['courier', 'courier_name']),
+        // SR-6: capture raw phone/email so the mapper can hash them at the boundary (raw DROPPED there);
+        // links the shipment to the customer 360 / journey. NEVER logged (boundary-hashed downstream).
+        customer_phone: pick(o, ['customer_phone', 'phone', 'mobile', 'customer_mobile', 'contact']),
+        customer_email: pick(o, ['customer_email', 'email', 'customer_email_id']),
       };
     });
 
     log.info(`[shiprocket-client] live page=${page} items=${items.length} (field map: confirm-at-real-account)`);
     return { items, hasMore: items.length === PAGE_SIZE, dataSource: 'real' };
+  }
+
+  /**
+   * SR-7 — HISTORICAL BACKFILL via the DOCUMENTED per-AWB tracking endpoint.
+   *
+   * GET {base}{SHIPROCKET_TRACK_PATH with {awb} substituted}. Unlike the date-windowed list path, this
+   * endpoint is publicly documented, so it is the reliable way to recover a single shipment's FULL
+   * lifecycle history (e.g. when re-onboarding a brand whose shipments predate the repull window).
+   *
+   * Maps the documented `tracking_data.shipment_track_activities[]` (each a {date, activity/status, …}
+   * scan) into one ShiprocketShipmentRecord per scan — so every transition folds through the SAME
+   * canonical mapper + idempotent UUIDv5 dedup as the list path (replay-safe, no double-count). The
+   * top-level `tracking_data.shipment_track[0]` carries the AWB / courier / order context.
+   *
+   * In DEV (fixture mode) this returns the fixture records for the AWB (history already enumerated),
+   * keeping cursor/restatement semantics identical. NEVER logs the raw AWB.
+   */
+  async fetchShipmentByAwb(awb: string): Promise<ShiprocketShipmentRecord[]> {
+    if (!this.live) {
+      // Dev: the lifecycle fixture already enumerates every scan for an AWB.
+      return this.loadFixture().filter((r) => r.awb === awb);
+    }
+    return this.breaker.fire(() => this.fetchShipmentByAwbLive(awb));
+  }
+
+  private async fetchShipmentByAwbLive(awb: string): Promise<ShiprocketShipmentRecord[]> {
+    const token = await this.tokenProvider.getToken();
+    const url = `${this.baseUrl}${this.trackPath.replace('{awb}', encodeURIComponent(awb))}`;
+
+    let res: Response;
+    try {
+      res = await fetch(url, { method: 'GET', headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } });
+    } catch (err) {
+      throw new Error(`${SHIPROCKET_AUTH_ERROR}: tracking request failed: ${String(err)}`);
+    }
+    if (res.status === 401 || res.status === 403) {
+      this.tokenProvider.invalidate();
+      throw new Error(`${SHIPROCKET_AUTH_ERROR}: tracking rejected (${res.status})`);
+    }
+    if (!res.ok) {
+      throw new Error(`shiprocket tracking fetch failed (${res.status})`);
+    }
+
+    const body = (await res.json()) as Record<string, unknown>;
+    // Documented shape: { tracking_data: { shipment_track: [ {…} ], shipment_track_activities: [ {…} ] } }
+    const td = (body['tracking_data'] as Record<string, unknown> | undefined) ?? {};
+    const trackArr = (td['shipment_track'] as Record<string, unknown>[] | undefined) ?? [];
+    const head = trackArr[0] ?? {};
+    const activities = (td['shipment_track_activities'] as Record<string, unknown>[] | undefined) ?? [];
+
+    // Order/courier/payment context from the track head; status + timestamp from each activity scan.
+    const orderId = pick(head, ['channel_order_id', 'order_id', 'id']);
+    const courier = pick(head, ['courier_name', 'courier']);
+    const pincode = pick(head, ['destination_pin', 'pincode', 'delivery_pincode']);
+    const payment = pick(head, ['payment_method', 'payment_type']);
+
+    const items: ShiprocketShipmentRecord[] = activities.map((a) => ({
+      awb,
+      order_id: orderId,
+      // ⚠️ activity scans carry status under 'activity'/'status'/'sr-status-label' — confirm at real account.
+      status: pick(a, ['status', 'activity', 'sr-status-label', 'sr-status']),
+      status_changed_at: pick(a, ['date', 'updated_at', 'status_changed_at']),
+      payment_method: payment,
+      pincode,
+      courier,
+      customer_phone: pick(head, ['customer_phone', 'phone', 'mobile', 'contact']),
+      customer_email: pick(head, ['customer_email', 'email']),
+    }));
+
+    log.info(`[shiprocket-client] live tracking scans=${items.length} (field map: confirm-at-real-account)`);
+    return items;
   }
 
   // ── DEV: synthetic fixture ────────────────────────────────────────────────

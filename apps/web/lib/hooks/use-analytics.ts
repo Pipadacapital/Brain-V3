@@ -412,6 +412,18 @@ export function useShipmentOutcomes(params?: { from?: string; to?: string }) {
 }
 
 /**
+ * useReturnFunnel — return_class breakdown + completion% over a range, from the silver_return mart
+ * (SR-4). A SEPARATE dimension from shipment outcomes — returns never carry terminal_class. SR-10.
+ */
+export function useReturnFunnel(params?: { from?: string; to?: string }) {
+  return useQuery({
+    queryKey: [...ANALYTICS_QUERY_KEY, 'return-funnel', params?.from, params?.to],
+    queryFn: () => analyticsApi.getReturnFunnel(params),
+    staleTime: 5 * 60_000,
+  });
+}
+
+/**
  * useBehaviorOverview — storefront browse/search/view (sessions/journeys/touches + page-type mix +
  * top viewed products + top searches) over a range, from silver_touchpoint (pixel auto-instr).
  */

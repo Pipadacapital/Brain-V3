@@ -103,7 +103,11 @@ PIXEL_INSTALL_REFRESH_TTL_SECONDS = int(os.environ.get("PIXEL_INSTALL_REFRESH_TT
 # server-trusted (else the PIXEL lane quarantines them for a missing install_token). RETIRED here:
 # gokwik.awb_status.v1 + gokwik.webhook.v1 (wrong AWB / opaque-envelope model — logistics truth is
 # Shiprocket; see docs/architecture/gokwik-connector-reimplementation.md).
-SERVER_TRUSTED_BRONZE = {"order.live.v1", "order.backfill.v1", "spend.live.v1", "shopflo.checkout_abandoned.v1", "gokwik.rto_predict.v1", "shiprocket.shipment_status.v1", "checkout.abandoned.v1", "gokwik.checkout_started.v1", "gokwik.checkout_step.v1", "payment.attempted.v1", "payment.authorized.v1"}
+# SR-4: shiprocket.return_status.v1 is server-trusted (brand server-derived via the webhook pipeline from
+# the resolved connector row — MT-1; no install_token/consent, so it MUST take the server-trusted lane,
+# not the PIXEL lane that would quarantine it). It is the SEPARATE return canonical (NOT the shipment
+# lane) so a return is never folded as a forward shipment status (the false-delivery bug SR-4 fixes).
+SERVER_TRUSTED_BRONZE = {"order.live.v1", "order.backfill.v1", "spend.live.v1", "shopflo.checkout_abandoned.v1", "gokwik.rto_predict.v1", "shiprocket.shipment_status.v1", "shiprocket.return_status.v1", "checkout.abandoned.v1", "gokwik.checkout_started.v1", "gokwik.checkout_step.v1", "payment.attempted.v1", "payment.authorized.v1"}
 LEDGER_ONLY = {"settlement.live.v1"}
 
 # Postgres (for R2 install_token→brand resolution via pixel_installation). Read as the superuser

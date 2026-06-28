@@ -17,7 +17,7 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
-import { Truck, ArrowRight } from 'lucide-react';
+import { Truck, ArrowRight, RotateCcw } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { PageHeader } from '@/components/ui/page-header';
 import { Button } from '@/components/ui/button';
@@ -27,10 +27,23 @@ import { DateRangeFilter, type DateRange, initialRange } from '@/components/ui/d
 import { TableSearch, matchesQuery } from '@/components/ui/table-search';
 import { KpiTile } from '@/components/analytics/kpi-tile';
 import { SyntheticBadge } from '@/components/analytics/synthetic-badge';
-import { useShipmentOutcomes } from '@/lib/hooks/use-analytics';
-import type { AnalyticsShipmentOutcomesResponse } from '@/lib/api/types';
+import { useShipmentOutcomes, useReturnFunnel } from '@/lib/hooks/use-analytics';
+import type {
+  AnalyticsShipmentOutcomesResponse,
+  AnalyticsReturnFunnelResponse,
+} from '@/lib/api/types';
 
 type ShipmentHasData = Extract<AnalyticsShipmentOutcomesResponse, { state: 'has_data' }>;
+type ReturnHasData = Extract<AnalyticsReturnFunnelResponse, { state: 'has_data' }>;
+
+/** return_class enum → human label (kept in sync with @brain/logistics-status classifyReturnStatus). */
+const RETURN_CLASS_LABEL: Record<string, string> = {
+  return_initiated: 'Initiated',
+  return_in_transit: 'In transit',
+  return_delivered: 'Delivered to origin',
+  return_completed: 'Completed / refunded',
+  none: 'Unclassified',
+};
 
 const LOGISTICS_RANGE_PRESETS = [
   { key: '30', label: 'Last 30 days', days: 30 },
@@ -161,8 +174,12 @@ export function LogisticsContent() {
   );
 
   const q = useShipmentOutcomes({ from: range.from, to: range.to });
+  const rq = useReturnFunnel({ from: range.from, to: range.to });
   const data = q.data;
-  const synthetic = data?.state === 'has_data' && data.data_source === 'synthetic';
+  const returnData = rq.data;
+  const synthetic =
+    (data?.state === 'has_data' && data.data_source === 'synthetic') ||
+    (returnData?.state === 'has_data' && returnData.data_source === 'synthetic');
 
   return (
     <div className="space-y-8">
@@ -201,6 +218,134 @@ export function LogisticsContent() {
         {!q.isLoading && !q.error && data?.state === 'no_data' && <EmptyCard />}
         {!q.isLoading && !q.error && data?.state === 'has_data' && <OutcomesData data={data} />}
       </section>
+
+      <section aria-label="Return lifecycle">
+        <div className="mb-3 flex items-center gap-2">
+          <RotateCcw className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+          <h2 className="text-lg font-semibold text-foreground">Return lifecycle</h2>
+        </div>
+        <p className="mb-3 max-w-2xl text-sm text-muted-foreground">
+          Returns are a <span className="font-medium text-foreground">separate</span> lifecycle from
+          forward delivery — a return that is &ldquo;delivered&rdquo; or &ldquo;completed&rdquo; means
+          delivered <em>back</em> to origin / refund closed, and is never counted as a sale. Folded
+          from <code className="text-xs">shiprocket.return_status.v1</code> into the dedicated
+          return mart.
+        </p>
+
+        {rq.isLoading && <Loading />}
+        {!rq.isLoading && rq.error && <ErrorCard error={rq.error} retry={rq.refetch} />}
+        {!rq.isLoading && !rq.error && returnData?.state === 'no_data' && <ReturnsEmptyCard />}
+        {!rq.isLoading && !rq.error && returnData?.state === 'has_data' && (
+          <ReturnsData data={returnData} />
+        )}
+      </section>
+    </div>
+  );
+}
+
+function ReturnsEmptyCard() {
+  return (
+    <Card data-testid="returns-empty">
+      <CardContent className="flex flex-col items-center gap-2 py-8 text-center">
+        <div className="text-muted-foreground" aria-hidden="true">
+          <RotateCcw className="h-7 w-7" />
+        </div>
+        <p className="font-medium text-foreground">No returns in this window</p>
+        <p className="max-w-md text-sm text-muted-foreground">
+          Return-lifecycle events (initiated → in transit → delivered to origin → completed) appear
+          here once Shiprocket sends <code className="text-xs">return.*</code> webhooks. None recorded
+          for the selected range — which is the honest state, not a fabricated zero.
+        </p>
+      </CardContent>
+    </Card>
+  );
+}
+
+function ReturnsData({ data }: { data: ReturnHasData }) {
+  const maxCount = data.by_class.reduce((m, b) => Math.max(m, Number(b.count)), 0);
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <KpiTile label="Total returns" value={num(data.total)} sublabel={`${data.from} → ${data.to}`} />
+        <KpiTile label="Completed" value={num(data.completed)} sublabel="returned / refunded" />
+        <KpiTile label="In progress" value={num(data.in_progress)} sublabel="not yet closed" />
+        <KpiTile
+          label="Completion rate"
+          value={data.completion_pct === null ? '—' : `${data.completion_pct}%`}
+          sublabel="completed ÷ total"
+        />
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <Card data-testid="returns-by-class">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">
+              Returns by stage
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {data.by_class.length === 0 ? (
+              <p className="py-4 text-sm text-muted-foreground">No return stages in this window.</p>
+            ) : (
+              <ul className="space-y-2">
+                {data.by_class.map((b) => {
+                  const pct = maxCount > 0 ? (Number(b.count) / maxCount) * 100 : 0;
+                  return (
+                    <li key={b.return_class} className="space-y-1">
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="text-foreground">
+                          {RETURN_CLASS_LABEL[b.return_class] ?? b.return_class}
+                        </span>
+                        <span className="tabular-nums font-medium text-foreground">{num(b.count)}</span>
+                      </div>
+                      <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
+                        <div
+                          className="h-full rounded-full bg-primary/70"
+                          style={{ width: `${Math.max(pct, 2)}%` }}
+                          aria-hidden="true"
+                        />
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card data-testid="returns-by-courier">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">
+              Returns by courier
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {data.by_courier.length === 0 ? (
+              <p className="py-4 text-sm text-muted-foreground">No courier breakdown in this window.</p>
+            ) : (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-border text-left text-muted-foreground">
+                    <th className="py-1.5 font-medium">Courier</th>
+                    <th className="py-1.5 text-right font-medium">Returns</th>
+                    <th className="py-1.5 text-right font-medium">Completed</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.by_courier.map((c) => (
+                    <tr key={c.courier} className="border-b border-border/50 last:border-0">
+                      <td className="py-1.5 text-foreground">{c.courier}</td>
+                      <td className="py-1.5 text-right tabular-nums">{num(c.total)}</td>
+                      <td className="py-1.5 text-right tabular-nums font-medium">{num(c.completed)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </CardContent>
+        </Card>
+      </div>
     </div>
   );
 }

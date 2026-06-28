@@ -172,6 +172,12 @@ export const StreamWorkerEnvSchema = CommonEnvSchema.extend({
   SHIPROCKET_BASE_URL: z.string().default('https://apiv2.shiprocket.in'),
   SHIPROCKET_SHIPMENTS_PATH: z.string().default('/v1/external/orders'),
   SHIPROCKET_SHIPMENTS_KEY: z.string().default('data'),
+  /**
+   * SR-7: per-AWB Shipment Tracking endpoint (DOCUMENTED, unlike the list path). Used for HISTORICAL
+   * backfill of a single AWB's lifecycle when the list-window doesn't cover it. `{awb}` is substituted.
+   * Default per Shiprocket docs: GET /v1/external/courier/track/awb/{awb}.
+   */
+  SHIPROCKET_TRACK_PATH: z.string().default('/v1/external/courier/track/awb/{awb}'),
   /** GoKwik AWB fixture path (dev). Optional — client defaults. */
   GOKWIK_AWB_FIXTURE_PATH: z.string().optional(),
 

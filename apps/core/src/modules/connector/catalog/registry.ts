@@ -81,6 +81,23 @@ export interface CredentialConnectSpec {
   shopDomainField?: string;
   /** NON-secret authField keys that must ALSO ride in the Secrets Manager bundle (provider auth set). */
   bundleNonSecretFields?: string[];
+  /**
+   * Secret-bundle keys that Brain MINTS at connect-time (cryptographically random) when the merchant
+   * did NOT supply them. Unlike `bundleNonSecretFields` (copied from the form), these have no form
+   * input — Brain generates the value and surfaces it back ONCE so the merchant can paste it into the
+   * provider dashboard. Used for Shiprocket's `webhook_secret`: Shiprocket's tracking webhook sends a
+   * static X-Api-Key, and the merchant configures that key in their dashboard — so Brain generates the
+   * token, stores it as `webhook_secret`, and the connect response returns it for the merchant to copy.
+   * (See credential-schema.ts → provisionGeneratedSecrets.)
+   */
+  generatedSecretFields?: string[];
+  /**
+   * The inbound-webhook routing header the provider must send so the WebhookPipeline can resolve this
+   * tenant (e.g. Shiprocket's `x-shiprocket-channel-id`). Surfaced in the connect response next to the
+   * webhook URL + generated token so the connect UI can tell the merchant exactly what to configure.
+   * Its VALUE is the connector's accountKey (channel_id, else the email fallback).
+   */
+  webhookRoutingHeader?: string;
 }
 
 export interface ConnectorDefinition {
@@ -251,6 +268,14 @@ export const CONNECTOR_CATALOG: readonly ConnectorDefinition[] = [
       instanceColumn: 'shiprocket_channel_id',
       // email is non-secret but the token provider mints the JWT from {email,password} in the bundle.
       bundleNonSecretFields: ['email'],
+      // webhook_secret is NOT a form field — Shiprocket's tracking webhook sends a static X-Api-Key the
+      // merchant configures in their dashboard. Brain MINTS it at connect-time, stores it in the bundle
+      // (where ShiprocketWebhookStrategy timingSafe-verifies the X-Api-Key against it, fail-closed), and
+      // returns it ONCE so the connect UI can show the merchant the URL + token to paste (SR-2).
+      generatedSecretFields: ['webhook_secret'],
+      // The header Shiprocket must send so the webhook resolves this tenant (resolve_shiprocket_connector
+      // _by_channel). Its value is the accountKey = channel_id, else the email fallback.
+      webhookRoutingHeader: 'x-shiprocket-channel-id',
     },
   },
   // ── messaging ────────────────────────────────────────────────────────────────

@@ -122,3 +122,42 @@ export function planCredentialConnect(
 
   return { secretBundle, accountKey, providerConfig, shopDomain, instanceColumnUpdate, missingRequired };
 }
+
+/** Result of minting the spec's generated secrets onto a connect plan's bundle. */
+export interface GeneratedSecretsResult {
+  /** The secret bundle with newly-minted values merged in (generated keys added when absent). */
+  bundle: Record<string, string>;
+  /** The newly minted key→value pairs — surfaced ONCE to the merchant (e.g. the webhook token). */
+  generated: Record<string, string>;
+}
+
+/**
+ * Mint cryptographically-random values for the spec's `generatedSecretFields` that the merchant did
+ * NOT supply, merging them into the secret bundle. This is the connect-time provisioning step for
+ * connectors where Brain MINTS the webhook token rather than the merchant entering it (Shiprocket:
+ * Brain generates the X-Api-Key, the merchant pastes it into their Shiprocket dashboard — so
+ * `webhook_secret` is generated here, not a form input).
+ *
+ * Impure-by-design (calls `generate`), so it is SEPARATE from the pure planCredentialConnect — the
+ * plan's bundle shape stays deterministic + unit-pinned, and generation is layered on top by the
+ * connect handler. A key already present in the bundle (user-supplied) is left untouched (never
+ * regenerated), and only the freshly minted keys are returned in `generated` for the connect response.
+ *
+ * `generate` MUST return a high-entropy secret (e.g. randomBytes(24).toString('hex')); the value is
+ * stored in the Secrets Manager bundle and NEVER logged.
+ */
+export function provisionGeneratedSecrets(
+  bundle: Record<string, string>,
+  spec: CredentialConnectSpec,
+  generate: () => string,
+): GeneratedSecretsResult {
+  const out: Record<string, string> = { ...bundle };
+  const generated: Record<string, string> = {};
+  for (const key of spec.generatedSecretFields ?? []) {
+    if ((out[key] ?? '').trim().length > 0) continue; // user-supplied wins — never regenerate
+    const value = generate();
+    out[key] = value;
+    generated[key] = value;
+  }
+  return { bundle: out, generated };
+}

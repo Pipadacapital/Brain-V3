@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@brain/connector-core": "workspace:*",
+    "@brain/identity-core": "workspace:*",
     "@brain/logistics-status": "workspace:*"
   },
   "devDependencies": {

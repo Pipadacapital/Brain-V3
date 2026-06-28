@@ -76,6 +76,11 @@ TARGET = f"{CATALOG}.{SILVER_NAMESPACE}.silver_collector_event"
 SERVER_TRUSTED = {
     "order.live.v1", "order.backfill.v1", "spend.live.v1", "shopflo.checkout_abandoned.v1",
     "gokwik.rto_predict.v1", "shiprocket.shipment_status.v1",
+    # SR-4: shiprocket.return_status.v1 is the SEPARATE return canonical (brand server-derived via the
+    # webhook pipeline — MT-1; no install_token/consent → server-trusted lane). Kept BYTE-IDENTICAL with
+    # bronze_materialize.SERVER_TRUSTED_BRONZE. It is NOT the shipment lane, so a return is never folded
+    # as a forward shipment status (the false-delivery bug SR-4 fixes).
+    "shiprocket.return_status.v1",
     # GoKwik webhook-first canonical events (brand server-derived from gokwik_appid via the
     # webhook pipeline — no install_token/consent, so they MUST take the server-trusted lane, not the
     # PIXEL lane that would quarantine them). RETIRED: gokwik.awb_status.v1 + gokwik.webhook.v1 (the

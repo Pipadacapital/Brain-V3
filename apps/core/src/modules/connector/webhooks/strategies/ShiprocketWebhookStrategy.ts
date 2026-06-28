@@ -41,27 +41,94 @@ import type {
 } from '../platform/IWebhookStrategy.js';
 import {
   mapShiprocketShipment,
+  mapShiprocketReturn,
   uuidV5FromShipment,
+  uuidV5FromReturn,
   SHIPROCKET_SHIPMENT_STATUS_V1_EVENT_NAME,
+  SHIPROCKET_RETURN_STATUS_V1_EVENT_NAME,
   type ShiprocketShipmentRecord,
 } from '@brain/shiprocket-mapper';
 
 // ── Topic constants ───────────────────────────────────────────────────────────
 
 /**
- * Shiprocket webhook topic strings that carry shipment-status updates.
- * NOTE: The exact topic names must be confirmed against a live Shiprocket account
- * (EXTERNAL BLOCKER — see module-level doc). These are the documented values from
- * Shiprocket's developer guide (2024). Adjust on first live delivery.
+ * Shiprocket webhook topic strings that carry FORWARD shipment-status updates (SR-3).
+ *
+ * Widened from the original 7 to the full spec forward + RTO lifecycle. Previously everything
+ * outside the narrow set was fast-acked `skip=true` (silently dropped) — so dedicated pushes for
+ * `delayed`/`exception`/`lost`/`destroyed` and most RTO sub-states were lost (only repull caught
+ * them via the trailing window). These are now ADMITTED and mapped to the canonical
+ * `shiprocket.shipment_status.v1` event; the status string is classified downstream by the shared
+ * @brain/logistics-status authority (this allowlist gates topic→map, NOT terminal classification).
+ *
+ * RETURN family (`return.*`) is DELIBERATELY NOT here — returns are a SEPARATE canonical event
+ * (`shiprocket.return_status.v1` + a new RETURN_* class) owned by Slice 2 (SR-4). Until that lands,
+ * a `return.*` topic is NOT in this set, so it falls through to fast-ack `skip=true` (no event loss,
+ * but also NOT yet mapped). Slice 2 must add a dedicated RETURN_TOPICS allowlist + return mapper and
+ * must NOT route returns through SHIPMENT_TOPICS (a `return.completed` mapped as a shipment status
+ * would mis-classify to DELIVERED — the false-delivery bug SR-4 fixes).
+ *
+ * NOTE: exact topic names must be confirmed against a live Shiprocket account (EXTERNAL BLOCKER,
+ * SR-7). These are the documented Shiprocket developer-guide values + the `shipment.<state>` and
+ * `tracking.update` conventions already in use. Matched case-insensitively (lower-cased before test).
  */
 const SHIPMENT_TOPICS = new Set([
+  // Generic / catch-all status pushes
   'shipment.update',
-  'shipment.delivered',
-  'shipment.rto_initiated',
-  'shipment.rto_delivered',
-  'shipment.cancelled',
+  'tracking.update',
+  // Forward lifecycle
+  'shipment.created',
+  'shipment.pickup',
+  'shipment.pickup_scheduled',
+  'shipment.pickup_generated',
+  'shipment.picked_up',
+  'shipment.in_transit',
   'shipment.out_for_delivery',
-  'tracking.update',   // alternative key used by some webhook configs
+  'shipment.delayed',
+  'shipment.exception',
+  'shipment.ndr',
+  'shipment.lost',
+  'shipment.destroyed',
+  'shipment.delivered',
+  'shipment.cancelled',
+  'shipment.canceled',
+  // RTO family (forward-RTO lifecycle — terminal class resolved by @brain/logistics-status)
+  'shipment.rto',
+  'shipment.rto_initiated',
+  'shipment.rto_in_transit',
+  'shipment.rto_out_for_delivery',
+  'shipment.rto_ofd',
+  'shipment.rto_undelivered',
+  'shipment.rto_acknowledged',
+  'shipment.rto_rejected',
+  'shipment.rto_ndr',
+  'shipment.rto_disposed',
+  'shipment.rto_delivered',
+]);
+
+/**
+ * SR-4: Shiprocket RETURN topics. These map to the SEPARATE canonical `shiprocket.return_status.v1`
+ * event (NOT the shipment lane) via mapShiprocketReturn → classifyReturnStatus. Routing a return
+ * through SHIPMENT_TOPICS would mis-classify `return.completed`/`return.delivered` as a forward
+ * DELIVERED (the false-delivery / revenue-truth bug SR-4 fixes), so the two allowlists are disjoint
+ * and a return topic NEVER reaches mapShiprocketShipment. Topic names are confirm-at-real-account
+ * (EXTERNAL BLOCKER SR-7); matched case-insensitively.
+ */
+const RETURN_TOPICS = new Set([
+  'return.created',
+  'return.initiated',
+  'return.requested',
+  'return.approved',
+  'return.picked_up',
+  'return.pickup',
+  'return.in_transit',
+  'return.out_for_pickup',
+  'return.delivered',
+  'return.received',
+  'return.completed',
+  'return.closed',
+  'return.refunded',
+  'return.update',
 ]);
 
 // ── Token-compare helper (replaces HMAC for this provider) ───────────────────
@@ -156,7 +223,7 @@ export class ShiprocketWebhookStrategy implements IWebhookStrategy {
    * AWB is hashed at the boundary (I-S02). order_id is NOT PII and passes through.
    */
   async payloadMap(ctx: WebhookStrategyContext): Promise<PayloadMapResult> {
-    const { parsedBody, brandId, saltHex } = ctx;
+    const { parsedBody, brandId, saltHex, regionCode } = ctx;
 
     const body = parsedBody as Record<string, unknown> | null;
     if (!body || typeof body !== 'object') {
@@ -171,9 +238,12 @@ export class ShiprocketWebhookStrategy implements IWebhookStrategy {
       (body['topic'] as string | undefined) ??
       (body['webhook_type'] as string | undefined) ??
       '';
+    const lowerTopic = topic.toLowerCase();
+    const isReturn = RETURN_TOPICS.has(lowerTopic);
+    const isShipment = SHIPMENT_TOPICS.has(lowerTopic);
 
-    // Fast-ack non-shipment topics — no event loss.
-    if (topic && !SHIPMENT_TOPICS.has(topic.toLowerCase())) {
+    // Fast-ack any topic that is neither a known shipment NOR a known return topic — no event loss.
+    if (topic && !isShipment && !isReturn) {
       return {
         eventId: '',
         eventName: '',
@@ -185,11 +255,16 @@ export class ShiprocketWebhookStrategy implements IWebhookStrategy {
       };
     }
 
-    // Extract the shipment data — Shiprocket may nest it under 'shipment' or 'data'.
+    // Extract the shipment/return data — Shiprocket may nest it under 'shipment', 'return' or 'data'.
     const shipmentData: Record<string, unknown> =
+      (body['return'] as Record<string, unknown> | undefined) ??
       (body['shipment'] as Record<string, unknown> | undefined) ??
       (body['data'] as Record<string, unknown> | undefined) ??
       body;
+
+    // For a return push, the body may carry no explicit status — derive it from the topic suffix
+    // (e.g. 'return.picked_up' → 'picked_up') so classifyReturnStatus can still resolve the stage.
+    const returnTopicStatus = isReturn ? lowerTopic.replace(/^return\./, '') : null;
 
     const record: ShiprocketShipmentRecord = {
       awb: (shipmentData['awb'] as string | null | undefined) ??
@@ -200,6 +275,7 @@ export class ShiprocketWebhookStrategy implements IWebhookStrategy {
                 null,
       status: (shipmentData['current_status'] as string | null | undefined) ??
               (shipmentData['status'] as string | null | undefined) ??
+              returnTopicStatus ??
               null,
       status_changed_at: (shipmentData['status_date'] as string | null | undefined) ??
                          (shipmentData['status_changed_at'] as string | null | undefined) ??
@@ -211,6 +287,11 @@ export class ShiprocketWebhookStrategy implements IWebhookStrategy {
       courier: (shipmentData['courier_name'] as string | null | undefined) ??
                (shipmentData['courier'] as string | null | undefined) ??
                null,
+      // SR-6: raw phone/email captured here → hashed at the mapper boundary, raw DROPPED.
+      customer_phone: (shipmentData['customer_phone'] as string | null | undefined) ??
+                      (shipmentData['phone'] as string | null | undefined) ?? null,
+      customer_email: (shipmentData['customer_email'] as string | null | undefined) ??
+                      (shipmentData['email'] as string | null | undefined) ?? null,
     };
 
     // Require order_id — it is the ledger spine key.
@@ -220,10 +301,27 @@ export class ShiprocketWebhookStrategy implements IWebhookStrategy {
       throw err;
     }
 
-    // Map to canonical shipment event (AWB hashed at boundary — I-S02).
-    const mapped = mapShiprocketShipment(record, brandId, saltHex, 'real');
-
     const awb = String(record.awb ?? '').trim() || 'unknown';
+
+    // ── SR-4 RETURN lane: map to the SEPARATE canonical shiprocket.return_status.v1 event. ──────────
+    if (isReturn) {
+      const mappedReturn = mapShiprocketReturn(record, brandId, saltHex, 'real', regionCode);
+      const status = mappedReturn.properties.status;
+      const statusChangedAt = mappedReturn.properties.status_changed_at;
+      const eventId = uuidV5FromReturn(brandId, awb, status, statusChangedAt);
+      return {
+        eventId,
+        eventName: SHIPROCKET_RETURN_STATUS_V1_EVENT_NAME,
+        occurredAt: mappedReturn.occurred_at,
+        properties: mappedReturn.properties as unknown as Record<string, unknown>,
+        ageCheckTimestampSeconds: Math.floor(new Date(statusChangedAt).getTime() / 1000),
+        dedupKey: eventId,
+        skip: false,
+      };
+    }
+
+    // ── Forward shipment lane: canonical shiprocket.shipment_status.v1 (AWB hashed — I-S02). ────────
+    const mapped = mapShiprocketShipment(record, brandId, saltHex, 'real', regionCode);
     const status = mapped.properties.status;
     const statusChangedAt = mapped.properties.status_changed_at;
 

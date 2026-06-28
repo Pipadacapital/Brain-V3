@@ -171,6 +171,41 @@ export class PgBackfillJobRepository {
   }
 
   /**
+   * Requeue jobs stuck in 'running' past staleThresholdMs (started_at older than the threshold) back
+   * to 'queued' so the claimer re-attempts them. A 'running' job is orphaned when its in-process runner
+   * dies mid-run (e.g. a dev tsx-watch reload, or a crashed worker/cron pod) — there's no finalize, and
+   * claimQueued only claims 'queued', so without this the job is stuck forever. The threshold must be
+   * comfortably longer than a real backfill run so a genuinely-active job is never requeued underneath
+   * itself. Returns the number of jobs requeued. Idempotent + brand-scoped (RLS GUC).
+   */
+  async requeueStaleRunning(
+    connectorInstanceId: string,
+    brandId: string,
+    staleThresholdMs: number,
+  ): Promise<number> {
+    const client: PoolClient = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query("SELECT set_config('app.current_brand_id', $1, true)", [brandId]);
+      const res = await client.query(
+        `UPDATE backfill_job
+            SET status = 'queued', started_at = NULL, updated_at = NOW()
+          WHERE connector_instance_id = $1
+            AND status = 'running'
+            AND started_at < NOW() - make_interval(secs => $2)`,
+        [connectorInstanceId, staleThresholdMs / 1000],
+      );
+      await client.query('COMMIT');
+      return res.rowCount ?? 0;
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
    * Update progress after processing a page of orders (D-14).
    * Sets records_processed, estimated_total (if resolved), cursor_value,
    * cursor_date (oldest processed_at seen). Called after EVERY page.

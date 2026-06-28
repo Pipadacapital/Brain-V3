@@ -211,7 +211,9 @@ export async function runIdentityExport(): Promise<IdentityExportResult> {
     // ── 1. IDENTIFIES edges → silver_identity_link ───────────────────────────────────────────────
     const linkWatermark = await readWatermark(db, SCOPE_LINK);
     if (FULL_REFRESH) {
-      await db.query('TRUNCATE TABLE ops.silver_identity_link');
+      // DELETE not TRUNCATE — brain_app has DELETE but not TRUNCATE by design (migration 0116, least
+      // privilege). TRUNCATE raised "permission denied". Full-table DELETE matches the reload design.
+      await db.query('DELETE FROM ops.silver_identity_link');
     }
 
     const edgeSession = driver.session({ defaultAccessMode: neo4j.session.READ });
@@ -255,7 +257,8 @@ export async function runIdentityExport(): Promise<IdentityExportResult> {
     // ── 2. Customer nodes → silver_customer_identity ─────────────────────────────────────────────
     const customerWatermark = await readWatermark(db, SCOPE_CUSTOMER);
     if (FULL_REFRESH) {
-      await db.query('TRUNCATE TABLE ops.silver_customer_identity');
+      // DELETE not TRUNCATE — see above (migration 0116 least-privilege grant; TRUNCATE → permission denied).
+      await db.query('DELETE FROM ops.silver_customer_identity');
     }
 
     const cSession = driver.session({ defaultAccessMode: neo4j.session.READ });

@@ -112,6 +112,13 @@ function substituteParams(sql: string, params: unknown[]): string {
     }
     if (typeof p === 'boolean') return p ? 'TRUE' : 'FALSE';
     if (typeof p === 'string') {
+      // Trino is STRICTLY typed: comparing a date/timestamp column to a quoted varchar fails with
+      // "Cannot apply operator: date <= varchar". StarRocks/MySQL coerced varchar→date implicitly;
+      // Trino does not. The metric queries bind date windows as strings (asOf/from/to), so emit a
+      // TYPED literal for date- and timestamp-shaped strings — column comparisons then type-check.
+      // Anything else (UUIDs, statuses, …) doesn't match these exact patterns → stays a varchar literal.
+      if (/^\d{4}-\d{2}-\d{2}$/.test(p)) return `DATE '${p}'`;
+      if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(p)) return `TIMESTAMP '${p}'`;
       // Escape single quotes by doubling — standard SQL escaping, safe for UUIDs.
       return `'${p.replace(/'/g, "''")}'`;
     }

@@ -80,7 +80,7 @@ export async function computeBlendedRoas(
     const realizedRows = await scope.runScoped<{ v: string | number; currency_code: string | null }>(
       `SELECT COALESCE(SUM(amount_minor), 0) AS v, MAX(currency_code) AS currency_code
          FROM brain_serving.mv_gold_revenue_ledger
-        WHERE CAST(economic_effective_at AS DATE) BETWEEN '${fromStr}' AND '${toStr}'
+        WHERE CAST(economic_effective_at AS DATE) BETWEEN DATE '${fromStr}' AND DATE '${toStr}'
           AND event_type <> 'provisional_recognition'
           AND ${BRAND_PREDICATE}`,
       [],
@@ -98,7 +98,7 @@ export async function computeBlendedRoas(
     }>(
       `SELECT platform, currency_code, SUM(spend_minor) AS spend_minor
          FROM brain_serving.mv_silver_marketing_spend
-        WHERE stat_date BETWEEN '${fromStr}' AND '${toStr}'
+        WHERE stat_date BETWEEN DATE '${fromStr}' AND DATE '${toStr}'
           AND ${BRAND_PREDICATE}
         GROUP BY platform, currency_code`,
       [],

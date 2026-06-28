@@ -45,7 +45,7 @@ export async function computeRealizedRevenue(
     const rows = await scope.runScoped<{ v: string | number; currency_code: string | null }>(
       `SELECT
          COALESCE(SUM(CASE
-           WHEN CAST(economic_effective_at AS DATE) <= '${asOfStr}'
+           WHEN CAST(economic_effective_at AS DATE) <= DATE '${asOfStr}'
             AND event_type <> 'provisional_recognition'
            THEN amount_minor ELSE 0 END), 0) AS v,
          MAX(currency_code) AS currency_code

@@ -167,4 +167,4 @@ def build(spark):
 
 
 if __name__ == "__main__":
-    run_job("silver-ad-account", build, target_table="silver_ad_account")
+    run_job("silver-ad-account", build)

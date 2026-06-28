@@ -186,4 +186,4 @@ def build(spark):
 
 
 if __name__ == "__main__":
-    run_job("silver-message-send", build, target_table="silver_message_send")
+    run_job("silver-message-send", build)

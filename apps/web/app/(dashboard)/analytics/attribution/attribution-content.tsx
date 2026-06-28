@@ -38,8 +38,16 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
-import { Layers, ArrowRight, Target, TrendingUp } from 'lucide-react';
+import { Layers, ArrowRight, Target, TrendingUp, Megaphone } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import {
+  Table,
+  TableHeader,
+  TableBody,
+  TableHead,
+  TableRow,
+  TableCell,
+} from '@/components/ui/table';
 import { PageHeader } from '@/components/ui/page-header';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -51,11 +59,13 @@ import { AttributedChannelChart } from '@/components/analytics/attributed-channe
 import { ConfidenceGradeBadge } from '@/components/analytics/confidence-grade-badge';
 import { ChannelRoasTable } from '@/components/analytics/channel-roas-table';
 import { ReconciliationResidualCard } from '@/components/analytics/reconciliation-residual-card';
+import { channelMeta } from '@/components/analytics/channel-meta';
 import { DateRangeFilter, initialRange, type DateRange, type RangePreset } from '@/components/ui/date-range-filter';
 import {
   useAttributionByChannel,
   useAttributionReconciliation,
   useChannelRoas,
+  useCampaignAttribution,
 } from '@/lib/hooks/use-analytics';
 import { formatMoneyDisplay } from '@/lib/format/money-display';
 import type { CurrencyCode } from '@brain/money';
@@ -63,11 +73,13 @@ import type {
   AttributionModel,
   AnalyticsAttributionByChannelResponse,
   AnalyticsAttributionReconciliationResponse,
+  AnalyticsCampaignAttributionResponse,
   AttributionConfidenceGrade,
 } from '@/lib/api/types';
 
 type ByChannelHasData = Extract<AnalyticsAttributionByChannelResponse, { state: 'has_data' }>;
 type ReconHasData = Extract<AnalyticsAttributionReconciliationResponse, { state: 'has_data' }>;
+type CampaignAttrHasData = Extract<AnalyticsCampaignAttributionResponse, { state: 'has_data' }>;
 
 /** Date-range presets for attribution — longer windows than the default 7/30/90. */
 const ATTRIBUTION_PRESETS: readonly RangePreset[] = [
@@ -123,6 +135,8 @@ export function AttributionContent() {
   const byChannelQ = useAttributionByChannel({ model, from: range.from, to: range.to });
   const reconQ = useAttributionReconciliation({ model, from: range.from, to: range.to });
   const roasQ = useChannelRoas({ model, from: range.from, to: range.to });
+  // Per-campaign attributed revenue + ROAS (#32c) — brand-wide roll-up under the same model selector.
+  const campaignQ = useCampaignAttribution({ model });
 
   const isLoading = byChannelQ.isLoading;
   const error = byChannelQ.error;
@@ -240,7 +254,97 @@ export function AttributionContent() {
           </CardContent>
         </Card>
       </section>
+
+      {/* ── Per-campaign attribution & ROAS (#32c — the granular per-campaign unit economics) ── */}
+      <section aria-label="Per-campaign attribution and ROAS" data-testid="attribution-campaign-section">
+        <div className="mb-3">
+          <h2 className="text-lg font-semibold text-foreground flex items-center gap-2">
+            <Megaphone className="h-4 w-4" aria-hidden="true" />
+            Per-campaign attribution &amp; ROAS
+          </h2>
+          <p className="text-sm text-muted-foreground mt-0.5">
+            Attributed revenue, ad spend, and ROAS for each campaign under the selected model — the
+            level marketers actually optimize. Money is per-currency (never blended); ROAS is honest
+            n/a when there is no spend. Brand-wide roll-up (not scoped by the date range).
+          </p>
+        </div>
+        <Card>
+          <CardContent className="pt-6">
+            {campaignQ.isLoading ? (
+              <div className="space-y-2" aria-busy="true" aria-label="Loading per-campaign attribution">
+                {[1, 2, 3, 4].map((i) => (
+                  <div key={i} className="h-8 bg-muted animate-pulse rounded" />
+                ))}
+              </div>
+            ) : campaignQ.error ? (
+              <ErrorCard error={campaignQ.error} retry={campaignQ.refetch} />
+            ) : campaignQ.data?.state === 'has_data' && campaignQ.data.rows.length > 0 ? (
+              <CampaignAttributionTable data={campaignQ.data} />
+            ) : (
+              <p className="text-sm text-muted-foreground italic" role="status">
+                No per-campaign attribution yet — campaign-level credit appears once journeys carry a
+                campaign (utm_campaign) and the attribution credit ledger is populated for this model.
+                We don&apos;t fabricate campaign rows.
+              </p>
+            )}
+          </CardContent>
+        </Card>
+      </section>
     </div>
+  );
+}
+
+/**
+ * CampaignAttributionTable — per-campaign attributed revenue + spend + ROAS (#32c).
+ * Money via formatMoneyDisplay (bigint minor + per-row currency_code, never blended); ROAS is the
+ * engine's exact ratio string (roas_bps/10000) — n/a when spend = 0. Counts are exact integers.
+ */
+function CampaignAttributionTable({ data }: { data: CampaignAttrHasData }) {
+  return (
+    <Table className="w-full text-sm">
+      <TableHeader>
+        <TableRow>
+          <TableHead>Campaign</TableHead>
+          <TableHead>Platform</TableHead>
+          <TableHead className="text-right">Attributed</TableHead>
+          <TableHead className="text-right">Spend</TableHead>
+          <TableHead className="text-right">Orders</TableHead>
+          <TableHead className="text-right">ROAS</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {data.rows.map((r) => {
+          const ccy = r.currency_code as CurrencyCode;
+          const platformLabel = channelMeta(r.platform).label;
+          return (
+            <TableRow key={`${r.platform}␟${r.campaign_id}␟${r.currency_code}`}>
+              <TableCell className="font-medium text-foreground">
+                {r.campaign_name ?? r.campaign_id}
+              </TableCell>
+              <TableCell className="text-muted-foreground">{platformLabel}</TableCell>
+              <TableCell className="text-right tabular-nums">
+                {formatMoneyDisplay(r.attributed_revenue_minor, ccy)}
+              </TableCell>
+              <TableCell className="text-right tabular-nums">
+                {formatMoneyDisplay(r.spend_minor, ccy)}
+              </TableCell>
+              <TableCell className="text-right tabular-nums">
+                {Number(BigInt(r.attributed_order_count)).toLocaleString('en-IN')}
+              </TableCell>
+              <TableCell className="text-right tabular-nums">
+                {r.roas_ratio != null ? (
+                  <span className="text-foreground">{r.roas_ratio}×</span>
+                ) : (
+                  <span className="text-muted-foreground italic" title="No ad spend — ROAS is undefined">
+                    n/a
+                  </span>
+                )}
+              </TableCell>
+            </TableRow>
+          );
+        })}
+      </TableBody>
+    </Table>
   );
 }
 

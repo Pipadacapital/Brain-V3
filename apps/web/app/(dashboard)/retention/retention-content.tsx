@@ -44,13 +44,15 @@ import {
   TableCell,
 } from '@/components/ui/table';
 import { formatMoneyDisplay } from '@/lib/format/money-display';
-import { useCohortRetention, useExecutiveMetrics } from '@/lib/hooks/use-analytics';
+import { useCohortRetention, useExecutiveMetrics, useRepeatLatency } from '@/lib/hooks/use-analytics';
 import type {
   AnalyticsCohortRetentionResponse,
   AnalyticsCohortRetentionRow,
+  AnalyticsRepeatLatencyResponse,
 } from '@/lib/api/types';
 
 type CohortHasData = Extract<AnalyticsCohortRetentionResponse, { state: 'has_data' }>;
+type RepeatLatencyHasData = Extract<AnalyticsRepeatLatencyResponse, { state: 'has_data' }>;
 
 const EXPLAINER = {
   title: 'Retention — Do customers come back?',
@@ -85,12 +87,16 @@ const EXPLAINER = {
     },
     {
       heading: 'Time-to-2nd-purchase',
-      body: 'The median days between a customer’s 1st and 2nd order is genuinely new — no endpoint exposes it yet, so it is shown as a flagged placeholder, not a fabricated histogram.',
+      body: 'The median days between a customer’s 1st and 2nd order, plus a six-bucket latency histogram (0-7 / 8-14 / 15-30 / 31-60 / 61-90 / 90+ days), from gold_repeat_latency over the order spine. Integer day math only — single-order customers are excluded from the median. The median is shown as “—” when a brand has no repeat customers yet (never a fabricated number).',
     },
   ],
   refreshCadence:
-    'The cohort mart refreshes on the Silver→Gold loop. Each read returns a served-at timestamp, so freshness shows the real time the BFF served it.',
-  sources: ['gold_cohorts / mv_gold_cohorts', 'gold_executive_metrics (repeat_rate_pct)'],
+    'The cohort + repeat-latency marts refresh on the Silver→Gold loop. Each read returns a served-at timestamp, so freshness shows the real time the BFF served it.',
+  sources: [
+    'gold_cohorts / mv_gold_cohorts',
+    'gold_executive_metrics (repeat_rate_pct)',
+    'gold_repeat_latency / mv_gold_repeat_latency (time-to-2nd-purchase)',
+  ],
 };
 
 /** Sum a bigint-string column across cohorts (integer-safe; never a float). */
@@ -101,9 +107,11 @@ function sumBig(rows: AnalyticsCohortRetentionRow[], pick: (r: AnalyticsCohortRe
 export function RetentionContent() {
   const cohortQ = useCohortRetention();
   const execQ = useExecutiveMetrics();
+  const latencyQ = useRepeatLatency();
 
   const cohort = cohortQ.data;
   const exec = execQ.data;
+  const latency = latencyQ.data;
 
   // Repeat rate is a customer-level metric; the executive endpoint returns one row per currency.
   // Use the row with the most customers as the representative headline (single-currency brands → row 0).
@@ -197,7 +205,7 @@ export function RetentionContent() {
         )}
       </SectionCard>
 
-      {/* ── Time-to-2nd-purchase (flagged gap — never faked) ── */}
+      {/* ── Time-to-2nd-purchase — median + latency histogram (gold_repeat_latency) ── */}
       <SectionCard
         title={
           <span className="inline-flex items-center gap-2">
@@ -205,16 +213,111 @@ export function RetentionContent() {
             Time to 2nd purchase
           </span>
         }
-        description="How long customers take to come back for their second order."
+        description="How long customers take to come back for their second order — the median days, and the distribution across day bands."
+        meta={<FreshnessBadge timestamp={latency?.generated_at} prefix="Served" />}
       >
-        <EmptyState
-          compact
-          icon={<Hourglass />}
-          title="Not available yet"
-          description="The median days between a customer’s 1st and 2nd order needs a new backend aggregate over the order spine — no endpoint exposes it today. We’re flagging it rather than showing a fabricated histogram."
-        />
+        {latencyQ.isLoading && <LatencySkeleton />}
+        {!latencyQ.isLoading && latencyQ.error && (
+          <ErrorCard error={latencyQ.error} retry={latencyQ.refetch} />
+        )}
+        {!latencyQ.isLoading && !latencyQ.error && latency?.state === 'no_data' && (
+          <EmptyState
+            compact
+            icon={<Hourglass />}
+            title="No repeat-purchase timing yet"
+            description="The time between a customer’s 1st and 2nd order appears once your order history syncs and customers start coming back. Single-order customers are excluded from the median."
+          />
+        )}
+        {!latencyQ.isLoading && !latencyQ.error && latency?.state === 'has_data' && (
+          <RepeatLatencyPanel data={latency} />
+        )}
       </SectionCard>
     </TabShell>
+  );
+}
+
+/** Median tile + the six-bucket time-to-2nd-purchase histogram (integer day math; never faked). */
+function RepeatLatencyPanel({ data }: { data: RepeatLatencyHasData }) {
+  const median = data.median_days_to_second_purchase;
+  const secondOrderCustomers = Number(BigInt(data.second_order_customers));
+  const totalCustomers = Number(BigInt(data.total_customers));
+  // Scale the bars by the busiest bucket (integer counts; 1 floor avoids divide-by-zero).
+  const maxCustomers = data.buckets.reduce((m, b) => {
+    const v = Number(BigInt(b.customers));
+    return v > m ? v : m;
+  }, 0);
+  const scale = maxCustomers || 1;
+
+  return (
+    <div className="space-y-5">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <MetricCard
+          label="Median days to 2nd order"
+          value={median != null ? Number(BigInt(median)).toLocaleString('en-IN') : undefined}
+          unit={median != null ? 'days' : undefined}
+          icon={<Hourglass />}
+        />
+        <MetricCard
+          label="Repeat customers"
+          value={secondOrderCustomers.toLocaleString('en-IN')}
+          unit="placed a 2nd order"
+          icon={<Repeat />}
+        />
+        <MetricCard
+          label="Customers tracked"
+          value={totalCustomers.toLocaleString('en-IN')}
+          unit="with ≥ 1 order"
+          icon={<Users />}
+        />
+      </div>
+
+      {median == null && (
+        <p className="text-sm text-muted-foreground" role="status">
+          No customers have placed a second order yet, so there is no median to report. The histogram
+          fills in as repeat purchases land.
+        </p>
+      )}
+
+      <div>
+        <p className="mb-2 text-sm font-medium text-muted-foreground">
+          Days between 1st and 2nd order
+        </p>
+        <ul className="space-y-3" aria-label="Time-to-2nd-purchase histogram">
+          {data.buckets.map((b) => {
+            const customers = Number(BigInt(b.customers));
+            // Bar width is visual geometry only (not a reported figure); counts are the exact integers.
+            const widthPct = Math.max(customers > 0 ? 4 : 0, Math.min(100, (customers / scale) * 100));
+            return (
+              <li key={b.bucket_key}>
+                <div className="mb-1 flex items-center justify-between text-sm">
+                  <span className="text-foreground">{b.bucket_key} days</span>
+                  <span className="tabular-nums text-muted-foreground">
+                    {customers.toLocaleString('en-IN')}
+                    <span className="ml-1">{customers === 1 ? 'customer' : 'customers'}</span>
+                  </span>
+                </div>
+                <div className="h-3 overflow-hidden rounded bg-muted" aria-hidden="true">
+                  <div className="h-full bg-foreground/70" style={{ width: `${widthPct}%` }} />
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
+function LatencySkeleton() {
+  return (
+    <div className="space-y-3" aria-busy="true" aria-label="Loading time-to-2nd-purchase…">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <Skeleton className="h-24 w-full" />
+        <Skeleton className="h-24 w-full" />
+        <Skeleton className="h-24 w-full" />
+      </div>
+      <Skeleton className="h-48 w-full" />
+    </div>
   );
 }
 

@@ -14,14 +14,18 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import pg from 'pg';
-import mysql from 'mysql2/promise';
 import { createPool, type DbPool } from '@brain/db';
-import type { SilverPool } from '@brain/metric-engine';
+import { createTrinoPool, type SilverPool } from '@brain/metric-engine';
 import { generateRecommendations, getRecommendations } from '../index.js';
 
 const SUPERUSER_URL = process.env['DATABASE_URL'] ?? 'postgres://brain:brain@localhost:5432/brain';
-const SR_HOST = process.env['STARROCKS_HOST'] ?? '127.0.0.1';
-const SR_PORT = Number(process.env['STARROCKS_QUERY_PORT'] ?? '9030');
+// BRAIN V4: StarRocks is REMOVED. The detector revenue signals read the gold ledger over TRINO
+// (createTrinoPool) — the same Trino-over-Iceberg serving path the app uses in production. Seeds INSERT
+// the base Iceberg table; the detector reads through the brain_serving.mv_* view via the metric-engine seam.
+const TRINO_URL =
+  process.env['TRINO_URL'] ??
+  `http://${process.env['TRINO_HOST'] ?? '127.0.0.1'}:${process.env['TRINO_PORT'] ?? '8090'}`;
+const TRINO_USER = process.env['TRINO_USER'] ?? 'brain';
 
 const BRAND_A = 'b444444a-0a1a-4a1a-8a1a-000000000001';
 const BRAND_B = 'b444444a-0a1a-4a1a-8a1a-000000000002';
@@ -43,7 +47,8 @@ let pgAvailable = false;
 // (brain_gold.gold_revenue_ledger). RTO in gold = 'cod_rto_clawback' (the Bronze gokwik terminal-RTO
 // event), not the PG 'rto_reversal'. Seed gold via srPool.
 let seq = 0;
-/** ONE batched multi-row INSERT — per-row StarRocks INSERTs are slow + would time the hook out. */
+// ONE batched multi-row INSERT — per-row INSERTs are slow + would time the hook out. Iceberg ts columns
+// are `timestamp` (no zone) → no-zone TIMESTAMP literals; data_source is NOT NULL → inline 'live'.
 async function seedGoldRows(eventType: string, n: number, amountMinor: number, orderPrefix = 'rto-order'): Promise<void> {
   const label = eventType === 'provisional_recognition' ? 'provisional' : 'finalized';
   const tuples: string[] = [];
@@ -51,15 +56,15 @@ async function seedGoldRows(eventType: string, n: number, amountMinor: number, o
   for (let i = 0; i < n; i++) {
     seq += 1;
     tuples.push(
-      `(?,?,?,NULL,?,?,'INR',0,'2026-06-01 00:00:00','2026-06-01 00:00:00',?,'2026-06','2026-06-01 00:00:00','2026-06-01 00:00:00')`,
+      `(?,?,?,NULL,?,?,'INR',0,TIMESTAMP '2026-06-01 00:00:00',TIMESTAMP '2026-06-01 00:00:00',?,'2026-06',TIMESTAMP '2026-06-01 00:00:00','live',TIMESTAMP '2026-06-01 00:00:00')`,
     );
     params.push(BRAND_A, `rto-evt-${seq}`, `${orderPrefix}-${seq}`, eventType, amountMinor, label);
   }
-  await (srPool as unknown as mysql.Pool).query(
+  await srPool.query(
     `INSERT INTO brain_gold.gold_revenue_ledger
        (brand_id, ledger_event_id, order_id, brain_id, event_type, amount_minor, currency_code,
         fee_minor, occurred_at, economic_effective_at, recognition_label, billing_posted_period,
-        ingested_at, updated_at)
+        ingested_at, data_source, updated_at)
      VALUES ${tuples.join(',')}`,
     params,
   );
@@ -88,7 +93,7 @@ async function cleanup(): Promise<void> {
   for (const b of [BRAND_A, BRAND_B]) {
     await superPool.query(`DELETE FROM decision_log WHERE brand_id = $1`, [b]).catch(() => {});
     await superPool.query(`DELETE FROM recommendation WHERE brand_id = $1`, [b]).catch(() => {});
-    if (srPool) await (srPool as unknown as mysql.Pool).query(`DELETE FROM brain_gold.gold_revenue_ledger WHERE brand_id = ?`, [b]).catch(() => {});
+    if (srPool) await srPool.query(`DELETE FROM brain_gold.gold_revenue_ledger WHERE brand_id = ?`, [b]).catch(() => {});
   }
   await superPool.query(`DELETE FROM brand WHERE id = $1`, [BRAND_A]).catch(() => {});
   await superPool.query(`DELETE FROM organization WHERE id = $1`, [ORG_ID]).catch(() => {});
@@ -100,7 +105,7 @@ beforeAll(async () => {
     superPool = new pg.Pool({ connectionString: SUPERUSER_URL, connectionTimeoutMillis: 4000 });
     await superPool.query('SELECT 1');
     dbPool = await createPool({ connectionString: SUPERUSER_URL });
-    srPool = mysql.createPool({ host: SR_HOST, port: SR_PORT, user: 'root', password: '', connectionLimit: 2 }) as unknown as SilverPool;
+    srPool = createTrinoPool({ baseUrl: TRINO_URL, user: TRINO_USER, catalog: 'iceberg' });
     await srPool.query('SELECT 1');
     await cleanup();
     await seedBrand();
@@ -115,15 +120,15 @@ beforeAll(async () => {
       const params: unknown[] = [];
       for (let i = 1; i <= 200; i++) {
         tuples.push(
-          `(?,?,?,NULL,'finalization',50000,'INR',0,'2026-06-01 00:00:00','2026-06-01 00:00:00','finalized','2026-06','2026-06-01 00:00:00','2026-06-01 00:00:00')`,
+          `(?,?,?,NULL,'finalization',50000,'INR',0,TIMESTAMP '2026-06-01 00:00:00',TIMESTAMP '2026-06-01 00:00:00','finalized','2026-06',TIMESTAMP '2026-06-01 00:00:00','live',TIMESTAMP '2026-06-01 00:00:00')`,
         );
         params.push(BRAND_A, `rto-fin-${i}`, `rto-order-${i}`);
       }
-      await (srPool as unknown as mysql.Pool).query(
+      await srPool.query(
         `INSERT INTO brain_gold.gold_revenue_ledger
            (brand_id, ledger_event_id, order_id, brain_id, event_type, amount_minor, currency_code,
             fee_minor, occurred_at, economic_effective_at, recognition_label, billing_posted_period,
-            ingested_at, updated_at)
+            ingested_at, data_source, updated_at)
          VALUES ${tuples.join(',')}`,
         params,
       );
@@ -137,7 +142,7 @@ beforeAll(async () => {
 afterAll(async () => {
   if (pgAvailable) await cleanup();
   if (dbPool) await dbPool.end();
-  if (srPool) await (srPool as unknown as mysql.Pool).end().catch(() => {});
+  // The Trino pool is a stateless HTTP adapter — no connection to close.
   if (superPool) await superPool.end();
 });
 
@@ -208,7 +213,7 @@ describe('RTO-risk detector (live Postgres)', () => {
   it('4. expiry — RTO drops below threshold → open rec expired + logged', async () => {
     if (!pgAvailable) return;
     // Remove the COD-RTO clawbacks → 0% RTO → detector no longer fires.
-    await (srPool as unknown as mysql.Pool).query(
+    await srPool.query(
       `DELETE FROM brain_gold.gold_revenue_ledger WHERE brand_id = ? AND event_type = 'cod_rto_clawback'`,
       [BRAND_A],
     );

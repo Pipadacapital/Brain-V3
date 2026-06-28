@@ -23,9 +23,14 @@ interface ScriptedRow {
 }
 
 /**
- * A fake pool that returns scripted dq_check_result rows (PG) + a fake StarRocks srPool that returns the
- * attribution confidence grades from brain_gold.gold_attribution_credit (MEDALLION REALIGNMENT Epic 2:
- * the credit ledger moved to the lakehouse; fetchAttributionLetter reads it via withSilverBrand).
+ * A fake pool that returns scripted dq_check_result rows (PG) + a fake Trino srPool that returns the
+ * attribution confidence grades from brain_serving.mv_gold_attribution_credit (MEDALLION REALIGNMENT
+ * Epic 2: the credit ledger moved to the lakehouse; fetchAttributionLetter reads it via withSilverBrand).
+ *
+ * BRAIN V4: StarRocks is REMOVED. The serving seam is now Trino — SilverPool aliases the Trino query
+ * PORT, whose `query()` returns the ROW ARRAY directly (T[]), NOT the mysql2 `[rows, fields]` tuple.
+ * The fake mirrors that contract (the prior mysql2-shape fake made fetchAttributionLetter read `.rows`
+ * off the wrong index → 0 grades → fail-closed 'D', masking the real 'A'/'C' derivation).
  */
 function fakePool(opts: {
   dqRows?: ScriptedRow[] | 'undefined_table';
@@ -48,24 +53,17 @@ function fakePool(opts: {
   const client = { query, release: () => undefined };
   const pool = { connect: async () => client } as unknown as EngineDeps['pool'];
 
-  // Fake StarRocks srPool (mysql2 shape) serving the gold_attribution_credit confidence grades.
-  const srConn = {
-    async query(sql: string): Promise<[unknown[], unknown]> {
+  // Fake Trino srPool (TrinoPool shape: query() returns the row array directly) serving the
+  // mv_gold_attribution_credit confidence grades. runScoped injects `brand_id = ?` then calls query().
+  const srPool = {
+    async query<T = Record<string, unknown>>(sql: string): Promise<T[]> {
       const text = String(sql);
-      if (text.startsWith('SET ')) return [[], undefined];
       if (text.includes('gold_attribution_credit')) {
         if (opts.attributionGrades === 'undefined_table') throw new Error('unknown table');
-        return [(opts.attributionGrades ?? []).map((g) => ({ confidence_grade: g })), undefined];
+        return (opts.attributionGrades ?? []).map((g) => ({ confidence_grade: g })) as T[];
       }
-      return [[], undefined];
+      return [] as T[];
     },
-    release() {
-      /* no-op */
-    },
-  };
-  const srPool = {
-    getConnection: async () => srConn,
-    query: async (sql: string) => srConn.query(sql),
   } as unknown as SilverPool;
 
   return { pool, srPool };

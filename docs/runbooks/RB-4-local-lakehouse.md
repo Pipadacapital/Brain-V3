@@ -1,5 +1,16 @@
 # RB-4 — Local lakehouse (Iceberg REST catalog + MinIO)
 
+> **HISTORICAL FRAMING (pre-Brain-V4).** This runbook was written during the Iceberg-Bronze flip and
+> describes the **then-live** local stack: `StarRocks` (serving), `dbt` (Silver/Gold compute),
+> `Redpanda` (broker), with Bronze still on Postgres. **None of those are live under Brain V4:**
+> StarRocks and dbt are **REMOVED** (serving is **Trino-over-Iceberg** + Redis via `brain_serving.mv_*`
+> Trino views; Spark-on-Iceberg is the **sole** compute), and Redpanda was replaced by **Apache Kafka
+> (KRaft)** (the compose DNS name `redpanda` was kept). The Iceberg REST catalog + MinIO substrate
+> below is still accurate and Bronze is now Iceberg sole-SoR. To stand up + refresh the local medallion
+> today use `pnpm dev:up` + `tools/dev/v4-refresh-loop.sh` (Spark Silver→Gold→`mv` SYNC refresh) — **not**
+> the `dbt` / `StarRocks` steps in the Slice sections below. Read those sections for catalog/object-store
+> wiring only.
+
 The local stand-in for the production Bronze substrate (AWS Glue + S3). Used to develop and
 verify the Iceberg Bronze flip (ADR-0002) without AWS. **Optional infra** — not part of the
 default `pnpm dev` loop, because the live ingest path still writes Bronze to Postgres until the

@@ -166,6 +166,18 @@ _GOLD_MARTS: List[GoldMartSpec] = [
         grain="brand_converted_journey",
     ),
     GoldMartSpec(
+        name="gold_journey_paths",
+        phase="bi",
+        module="gold_journey_paths.py",
+        # IA #32: journey-sankey — top-50 channel paths per brand. One row per (brand, path).
+        pk=["brand_id", "path_signature"],
+        mv_name="brain_serving.mv_gold_journey_paths",
+        reads_from=["silver_touchpoint"],
+        money_columns=[],  # path/edge grain is channel-flow counts — no money
+        enabled=True,
+        grain="brand_channel_path",
+    ),
+    GoldMartSpec(
         name="gold_marketing_attribution",
         phase="bi",
         module="gold_marketing_attribution.py",
@@ -178,6 +190,23 @@ _GOLD_MARTS: List[GoldMartSpec] = [
         ],
         enabled=True,
         grain="brand_credit_row",
+    ),
+    GoldMartSpec(
+        name="gold_campaign_attribution",
+        phase="bi",
+        module="gold_campaign_attribution.py",
+        # Per-campaign attribution surface. model_id + currency_code are REQUIRED grain extensions
+        # (same revenue is apportioned under every model; money is never blended across currencies).
+        pk=["brand_id", "platform", "campaign_id", "model_id", "currency_code"],
+        mv_name="brain_serving.mv_gold_campaign_attribution",
+        # Gold→Gold: credit ledger ⋈ campaign_performance (with silver_marketing_spend spend fallback).
+        reads_from=["gold_attribution_credit", "gold_campaign_performance"],
+        money_columns=[
+            MoneyColumn("attributed_revenue_minor"),   # Σ signed credited_revenue_minor (net of clawback)
+            MoneyColumn("spend_minor"),                # campaign spend (0 when no currency-matched spend)
+        ],
+        enabled=True,
+        grain="brand_campaign_model_currency",
     ),
 
     # ── GROUP: revenue ─────────────────────────────────────────────────────────
@@ -209,6 +238,18 @@ _GOLD_MARTS: List[GoldMartSpec] = [
         ],
         enabled=True,
         grain="brand_month_lifecycle_currency",
+    ),
+    GoldMartSpec(
+        name="gold_repeat_latency",
+        phase="bi",
+        module="gold_repeat_latency.py",
+        # IA #32: time-to-2nd-purchase — median days + 6-bucket histogram. One row per (brand, bucket).
+        pk=["brand_id", "bucket_key"],
+        mv_name="brain_serving.mv_gold_repeat_latency",
+        reads_from=["silver_order_state"],
+        money_columns=[],  # retention-latency grain is day-counts + customer counts — no money
+        enabled=True,
+        grain="brand_latency_bucket",
     ),
 
     # ── GROUP: executive + cac ─────────────────────────────────────────────────
@@ -323,7 +364,7 @@ _GOLD_MARTS: List[GoldMartSpec] = [
         phase="bi",
         module="gold_contribution_margin.py",
         pk=["brand_id", "currency_code"],
-        mv_name="brain_serving.mv_gold_contribution_margin",
+        mv_name=None,  # cleanup #33: unused serving view pruned (0 readers, report §12); mart still built in Iceberg, not currently served
         reads_from=["silver_order_state", "silver_marketing_spend"],
         money_columns=[
             MoneyColumn("net_revenue_minor"),
@@ -341,7 +382,7 @@ _GOLD_MARTS: List[GoldMartSpec] = [
         phase="bi",
         module="gold_logistics_performance.py",
         pk=["brand_id", "courier"],
-        mv_name="brain_serving.mv_gold_logistics_performance",
+        mv_name=None,  # cleanup #33: unused serving view pruned (0 readers, report §12); mart still built in Iceberg, not currently served
         reads_from=["silver_shipment"],
         money_columns=[],  # delivery counts + integer-bps rates — no money
         enabled=True,
@@ -365,7 +406,7 @@ _GOLD_MARTS: List[GoldMartSpec] = [
         phase="bi",
         module="gold_settlement_summary.py",
         pk=["brand_id", "currency_code"],
-        mv_name="brain_serving.mv_gold_settlement_summary",
+        mv_name=None,  # cleanup #33: unused serving view pruned (0 readers, report §12); mart still built in Iceberg, not currently served
         reads_from=["silver_settlement"],
         money_columns=[
             MoneyColumn("gross_minor"),
@@ -394,7 +435,7 @@ _GOLD_MARTS: List[GoldMartSpec] = [
         phase="bi",
         module="gold_abandoned_cart.py",
         pk=["brand_id", "cart_date", "currency_code"],
-        mv_name="brain_serving.mv_gold_abandoned_cart",
+        mv_name=None,  # cleanup #33: unused serving view pruned (0 readers, report §12); mart still built in Iceberg, not currently served
         reads_from=["silver_cart_event", "silver_checkout_signal"],
         money_columns=[
             MoneyColumn("abandoned_value_minor"),
@@ -407,7 +448,7 @@ _GOLD_MARTS: List[GoldMartSpec] = [
         phase="bi",
         module="gold_engagement.py",
         pk=["brand_id", "engagement_date", "signal_type"],
-        mv_name="brain_serving.mv_gold_engagement",
+        mv_name=None,  # cleanup #33: unused serving view pruned (0 readers, report §12); mart still built in Iceberg, not currently served
         reads_from=["silver_engagement_signal"],
         money_columns=[],  # UX-quality signal counts — no money
         enabled=True,
@@ -418,7 +459,7 @@ _GOLD_MARTS: List[GoldMartSpec] = [
         phase="bi",
         module="gold_behavior.py",
         pk=["brand_id", "behavior_date", "page_type"],
-        mv_name="brain_serving.mv_gold_behavior",
+        mv_name=None,  # cleanup #33: unused serving view pruned (0 readers, report §12); mart still built in Iceberg, not currently served
         reads_from=["silver_page_view"],
         money_columns=[],  # page-view impression counts — no money
         enabled=True,
@@ -429,7 +470,7 @@ _GOLD_MARTS: List[GoldMartSpec] = [
         phase="bi",
         module="gold_conversion_feedback.py",
         pk=["brand_id", "feedback_date", "form_id"],
-        mv_name="brain_serving.mv_gold_conversion_feedback",
+        mv_name=None,  # cleanup #33: unused serving view pruned (0 readers, report §12); mart still built in Iceberg, not currently served
         reads_from=["silver_form_submission", "silver_payment"],
         money_columns=[],  # lead + payment-reach counts — no money (PII-safe: no field values)
         enabled=True,
@@ -535,7 +576,7 @@ _GOLD_MARTS: List[GoldMartSpec] = [
         phase="bi",
         module="snap_order_state.py",
         pk=["brand_id", "order_id", "snapshot_date"],
-        mv_name="brain_serving.mv_snap_order_state",
+        mv_name=None,  # cleanup #33: unused serving view pruned (0 readers, report §12); snap table still built in Iceberg, not currently served
         reads_from=["silver_order_state"],
         money_columns=[
             MoneyColumn("order_value_minor"),
@@ -549,7 +590,7 @@ _GOLD_MARTS: List[GoldMartSpec] = [
         phase="bi",
         module="snap_attribution_credit.py",
         pk=["brand_id", "credit_id", "snapshot_date"],
-        mv_name="brain_serving.mv_snap_attribution_credit",
+        mv_name=None,  # cleanup #33: unused serving view pruned (0 readers, report §12); snap table still built in Iceberg, not currently served
         reads_from=["gold_marketing_attribution"],
         money_columns=[
             MoneyColumn("credited_revenue_minor"),
@@ -564,7 +605,7 @@ _GOLD_MARTS: List[GoldMartSpec] = [
         module="snap_identity_link.py",
         # Snapshot PK incl. snapshot_date — the AS-OF (point-in-time) identity-link history.
         pk=["brand_id", "identifier_type", "identifier_value", "snapshot_date"],
-        mv_name="brain_serving.mv_snap_identity_link",
+        mv_name=None,  # cleanup #33: unused serving view pruned (0 readers, report §12); snap table still built in Iceberg, not currently served
         # Pure Spark Iceberg read of the Neo4j-derived identity-link projection (sibling of the
         # StarRocks-native brain_ops.silver_identity_link). Neo4j stays the identity SoR (ADR-0004).
         reads_from=["silver_identity_alias"],

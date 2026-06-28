@@ -697,3 +697,98 @@ export const EngagementSchema = z.discriminatedUnion('state', [
   }),
 ]);
 export type Engagement = z.infer<typeof EngagementSchema>;
+
+// ── #32a GET /v1/analytics/journey/paths — aggregate journey-path Sankey + drop-off ──
+// @see apps/core/.../analytics/.../get-journey-paths.ts (NO money — paths are behavioral).
+// One row per ordered channel PATH (top-N by journey_count) + the aggregated Sankey edges.
+
+export const JourneyPathRowDtoSchema = z.object({
+  path_signature: z.string(),
+  path_length: z.number(),
+  channels: z.array(z.string()), // ordered channel node sequence
+  first_touch_channel: z.string(),
+  last_touch_channel: z.string(),
+  journey_count: MinorUnitsSchema, // bigint → string
+  converted_count: MinorUnitsSchema, // bigint → string
+  dropped_count: MinorUnitsSchema, // bigint → string (journey_count − converted_count)
+  conversion_pct: z.string().nullable(), // 2dp string; null when journey_count = 0
+  path_rank: z.number(),
+});
+export type JourneyPathRowDto = z.infer<typeof JourneyPathRowDtoSchema>;
+
+export const JourneyPathLinkDtoSchema = z.object({
+  step: z.number(), // 0-based transition index along the path
+  from_channel: z.string(),
+  to_channel: z.string(),
+  journeys: MinorUnitsSchema, // bigint → string (Σ journey_count over paths with this edge)
+});
+export type JourneyPathLinkDto = z.infer<typeof JourneyPathLinkDtoSchema>;
+
+export const JourneyPathsSchema = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('no_data') }),
+  z.object({
+    state: z.literal('has_data'),
+    total_paths: z.number(),
+    total_journeys: MinorUnitsSchema, // bigint → string
+    total_converted: MinorUnitsSchema, // bigint → string
+    overall_conversion_pct: z.string().nullable(), // 2dp string; null when no journeys
+    paths: z.array(JourneyPathRowDtoSchema),
+    links: z.array(JourneyPathLinkDtoSchema),
+    data_source: DataSourceSchema,
+  }),
+]);
+export type JourneyPaths = z.infer<typeof JourneyPathsSchema>;
+
+// ── #32b GET /v1/analytics/retention/repeat-latency — time-to-2nd-purchase median + histogram ──
+// @see apps/core/.../analytics/.../get-repeat-latency.ts (NO money — integer day math only).
+// Exactly six fixed, non-overlapping latency buckets per brand; brand scalars denormalized.
+
+export const RepeatLatencyBucketDtoSchema = z.object({
+  bucket_key: z.string(), // '0-7' | '8-14' | '15-30' | '31-60' | '61-90' | '90+'
+  bucket_order: z.number(), // 1..6 (x-axis order)
+  bucket_lo_days: z.number(), // inclusive lower day bound
+  bucket_hi_days: z.number().nullable(), // inclusive upper bound; null for '90+'
+  customers: MinorUnitsSchema, // bigint → string (histogram bar height)
+});
+export type RepeatLatencyBucketDto = z.infer<typeof RepeatLatencyBucketDtoSchema>;
+
+export const RepeatLatencySchema = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('no_data'), generated_at: z.string().optional() }),
+  z.object({
+    state: z.literal('has_data'),
+    median_days_to_second_purchase: MinorUnitsSchema.nullable(), // bigint day count; null when no repeat customers
+    second_order_customers: MinorUnitsSchema, // bigint → string (median denominator)
+    single_order_customers: MinorUnitsSchema, // bigint → string
+    total_customers: MinorUnitsSchema, // bigint → string
+    buckets: z.array(RepeatLatencyBucketDtoSchema),
+    generated_at: z.string().optional(),
+  }),
+]);
+export type RepeatLatency = z.infer<typeof RepeatLatencySchema>;
+
+// ── #32c GET /v1/analytics/attribution/campaign-attribution — per-campaign attributed revenue + ROAS ──
+// @see apps/core/.../analytics/.../get-campaign-attribution.ts (money = bigint minor + currency_code).
+// One row per (platform, campaign, currency) under the selected attribution model.
+
+export const CampaignAttributionRowDtoSchema = z.object({
+  platform: z.string(),
+  campaign_id: z.string(),
+  campaign_name: z.string().nullable(),
+  currency_code: z.string(),
+  attributed_revenue_minor: MinorUnitsSchema, // bigint minor (signed, net of clawback)
+  spend_minor: MinorUnitsSchema, // bigint minor
+  attributed_order_count: MinorUnitsSchema, // bigint → string
+  roas_bps: MinorUnitsSchema.nullable(), // integer basis points; null when spend = 0
+  roas_ratio: z.string().nullable(), // roas_bps/10000 as a 4dp string; null when spend = 0
+});
+export type CampaignAttributionRowDto = z.infer<typeof CampaignAttributionRowDtoSchema>;
+
+export const CampaignAttributionSchema = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('no_data'), model: AttributionModelIdSchema }),
+  z.object({
+    state: z.literal('has_data'),
+    model: AttributionModelIdSchema,
+    rows: z.array(CampaignAttributionRowDtoSchema),
+  }),
+]);
+export type CampaignAttribution = z.infer<typeof CampaignAttributionSchema>;

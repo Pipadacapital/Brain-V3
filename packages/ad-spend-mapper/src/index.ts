@@ -63,9 +63,34 @@ export const AD_SPEND_FIELD_ALLOWLIST = new Set([
   'currency_code',
   'impressions',
   'clicks',
+  // ── A1: full insight set (additive, money-safe). conversion COUNT + conversion REVENUE +
+  //    derived per-row cost measures. conv_value_minor is bigint MINOR units in the SAME
+  //    account currency_code as spend_minor (per-currency, NEVER blended) — it is a SIBLING
+  //    measure to spend_minor, never folded into it. ROAS is derived downstream (read-time
+  //    ratio = conv_value_minor / spend_minor), never precomputed here.
+  'conversions',                 // BIGINT-as-string count (purchase conversions)
+  'all_conversions',             // BIGINT-as-string count (incl. cross-account/all)
+  'conv_value_minor',            // BIGINT-as-string MINOR units — platform-attributed REVENUE (currency = currency_code)
+  'view_through_conversions',    // BIGINT-as-string count
+  'ctr',                         // ratio (NOT money) — string
+  'cpc_minor',                   // BIGINT-as-string MINOR units (cost-per-click)
+  'cpm_minor',                   // BIGINT-as-string MINOR units (cost-per-mille)
+  'advertising_channel_type',    // Google channel type (SEARCH/DISPLAY/…); null for Meta
   'conversions_raw',
   'account_timezone',
 ] as const);
+
+/**
+ * Meta `actions[]` / `action_values[]` action_type tokens that represent a PURCHASE conversion,
+ * in resolution priority order. The first matching entry's `value` is taken as the canonical
+ * purchase count (actions) / purchase revenue (action_values). Meta's default omni purchase row
+ * (`omni_purchase`) and the pixel purchase event are accepted as fallbacks.
+ */
+export const META_PURCHASE_ACTION_TYPES = [
+  'purchase',
+  'omni_purchase',
+  'offsite_conversion.fb_pixel_purchase',
+] as const;
 
 // ── Output types ─────────────────────────────────────────────────────────────
 
@@ -84,9 +109,21 @@ export interface SpendEventProperties {
   campaign_name: string | null;     // display only (not PII)
   stat_date: string;                // YYYY-MM-DD — click-date anchored (canonical, ADR-AD-8)
   spend_minor: string;              // BIGINT-as-string, minor units (I-S07)
-  currency_code: string;
+  currency_code: string;            // account currency — also the currency of conv_value_minor/cpc_minor/cpm_minor
   impressions: string | null;       // BIGINT-as-string
   clicks: string | null;            // BIGINT-as-string
+  // ── A1 enriched insight set (additive). All money fields are BIGINT-as-string MINOR units in
+  //    `currency_code` (per-currency, NEVER blended, NEVER float). conv_value_minor is the
+  //    platform-attributed conversion REVENUE — a SIBLING measure to spend_minor (enables platform
+  //    ROAS = conv_value_minor / spend_minor, derived at read time, never precomputed here).
+  conversions: string | null;               // BIGINT-as-string count (purchase conversions)
+  all_conversions: string | null;           // BIGINT-as-string count (all conversions)
+  conv_value_minor: string | null;          // BIGINT-as-string MINOR units — platform-attributed REVENUE
+  view_through_conversions: string | null;  // BIGINT-as-string count
+  ctr: string | null;                        // ratio (NOT money) — string passthrough
+  cpc_minor: string | null;                  // BIGINT-as-string MINOR units (cost-per-click)
+  cpm_minor: string | null;                  // BIGINT-as-string MINOR units (cost-per-mille)
+  advertising_channel_type: string | null;   // Google channel type; null for Meta
   conversions_raw: Record<string, unknown> | null;  // RAW (ADR-AD-8)
   account_timezone: string | null;
   occurred_at: string;              // ISO-8601 — economic_effective_at
@@ -115,7 +152,11 @@ export interface MetaInsightRow {
   impressions?: string | number | null;
   clicks?: string | number | null;
   date_start?: string | null;       // stat date (YYYY-MM-DD)
-  actions?: unknown;                // raw conversion actions (ADR-AD-8)
+  actions?: unknown;                // raw conversion COUNT actions[] (ADR-AD-8)
+  action_values?: unknown;          // raw conversion REVENUE action_values[] (MAJOR-unit decimal per action_type)
+  ctr?: string | number | null;     // click-through ratio (percentage), Meta returns as a string
+  cpc?: string | number | null;     // MAJOR-unit decimal cost-per-click (account currency)
+  cpm?: string | number | null;     // MAJOR-unit decimal cost-per-mille (account currency)
   [key: string]: unknown;
 }
 
@@ -133,8 +174,14 @@ export interface GoogleAdsRow {
   cost_micros?: string | number | null;   // integer micros
   impressions?: string | number | null;
   clicks?: string | number | null;
-  conversions?: string | number | null;       // RAW (ADR-AD-8)
-  all_conversions?: string | number | null;    // RAW (ADR-AD-8)
+  conversions?: string | number | null;       // RAW (ADR-AD-8) — count (double)
+  all_conversions?: string | number | null;    // RAW (ADR-AD-8) — count (double)
+  conversions_value?: string | number | null;  // platform-attributed REVENUE — MAJOR-unit double (account currency)
+  view_through_conversions?: string | number | null;  // count (double)
+  ctr?: string | number | null;                 // click-through ratio (double)
+  average_cpc?: string | number | null;         // integer MICROS cost-per-click
+  average_cpm?: string | number | null;         // integer MICROS cost-per-mille
+  advertising_channel_type?: string | null;     // SEARCH | DISPLAY | VIDEO | …
   segments_date?: string | null;   // stat date (YYYY-MM-DD)
   currency_code?: string | null;
   [key: string]: unknown;
@@ -239,6 +286,32 @@ function toCountString(value: number | string | null | undefined): string | null
   return m[1]!;
 }
 
+/**
+ * Look up the canonical PURCHASE value from a Meta `actions[]` (counts) or `action_values[]`
+ * (revenue) array. Returns the first entry's `value` (as a string) matching the highest-priority
+ * action_type in `actionTypes` (purchase → omni_purchase → pixel purchase), or null when absent.
+ *
+ * Used to lift a single canonical purchase COUNT (from actions[]) and purchase REVENUE
+ * (from action_values[], a MAJOR-unit decimal in the account currency) out of Meta's nested arrays.
+ * The full raw arrays are still preserved in conversions_raw (ADR-AD-8).
+ */
+function metaActionValue(raw: unknown, actionTypes: readonly string[]): string | null {
+  if (!Array.isArray(raw)) return null;
+  for (const t of actionTypes) {
+    for (const entry of raw) {
+      if (
+        entry != null &&
+        typeof entry === 'object' &&
+        (entry as Record<string, unknown>).action_type === t
+      ) {
+        const v = (entry as Record<string, unknown>).value;
+        if (v != null) return String(v);
+      }
+    }
+  }
+  return null;
+}
+
 // ── Allowlist filter ──────────────────────────────────────────────────────────
 
 /**
@@ -335,8 +408,19 @@ export function mapMetaInsightToEvent(
   const spendMinor = majorDecimalToMinorString(row.spend ?? '0');
   const occurredAt = statDate ? statDateToIso(statDate) : new Date().toISOString();
 
-  const conversionsRaw: Record<string, unknown> | null =
-    row.actions != null ? { actions: row.actions } : null;
+  // RAW conversion arrays (ADR-AD-8): keep actions[] (counts) AND action_values[] (revenue) verbatim,
+  // each only when present (so a no-action row stays { actions } — unchanged shape).
+  let conversionsRaw: Record<string, unknown> | null = null;
+  if (row.actions != null || row.action_values != null) {
+    conversionsRaw = {};
+    if (row.actions != null) conversionsRaw.actions = row.actions;
+    if (row.action_values != null) conversionsRaw.action_values = row.action_values;
+  }
+
+  // Canonical purchase COUNT (actions[]) and purchase REVENUE (action_values[], MAJOR-unit decimal in
+  // the account currency → MINOR units, no float). conv_value_minor shares currency_code (never blended).
+  const purchaseCount = metaActionValue(row.actions, META_PURCHASE_ACTION_TYPES);
+  const purchaseValue = metaActionValue(row.action_values, META_PURCHASE_ACTION_TYPES);
 
   const props: SpendEventProperties = {
     source: 'meta',
@@ -351,6 +435,14 @@ export function mapMetaInsightToEvent(
     currency_code: accountCurrency.trim().toUpperCase(),
     impressions: toCountString(row.impressions),
     clicks: toCountString(row.clicks),
+    conversions: toCountString(purchaseCount),
+    all_conversions: null, // Meta has no distinct all_conversions metric — only platform-attributed actions
+    conv_value_minor: purchaseValue != null ? majorDecimalToMinorString(purchaseValue) : null,
+    view_through_conversions: null, // not in the surviving Meta attribution set
+    ctr: row.ctr != null ? String(row.ctr) : null,
+    cpc_minor: row.cpc != null ? majorDecimalToMinorString(row.cpc) : null,
+    cpm_minor: row.cpm != null ? majorDecimalToMinorString(row.cpm) : null,
+    advertising_channel_type: null, // Google-only concept
     conversions_raw: conversionsRaw,
     account_timezone: accountTz,
     occurred_at: occurredAt,
@@ -420,6 +512,19 @@ export function mapGoogleRowToEvent(
     currency_code: (row.currency_code ?? accountCurrency).trim().toUpperCase(),
     impressions: toCountString(row.impressions),
     clicks: toCountString(row.clicks),
+    // conversions/all_conversions: lift the RAW counts to first-class count columns (still preserved
+    // raw in conversions_raw). conversions_value is a MAJOR-unit double (account currency) → MINOR
+    // units via the integer major-decimal path (no float). average_cpc/cpm are MICROS → MINOR units.
+    conversions: toCountString(row.conversions),
+    all_conversions: toCountString(row.all_conversions),
+    conv_value_minor:
+      row.conversions_value != null ? majorDecimalToMinorString(String(row.conversions_value)) : null,
+    view_through_conversions: toCountString(row.view_through_conversions),
+    ctr: row.ctr != null ? String(row.ctr) : null,
+    cpc_minor: row.average_cpc != null ? microsToMinorString(row.average_cpc) : null,
+    cpm_minor: row.average_cpm != null ? microsToMinorString(row.average_cpm) : null,
+    advertising_channel_type:
+      row.advertising_channel_type != null ? String(row.advertising_channel_type) : null,
     conversions_raw: conversionsRaw,
     account_timezone: accountTz,
     occurred_at: occurredAt,

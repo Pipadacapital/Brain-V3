@@ -6,6 +6,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   isTokenRefreshDue,
+  isTokenExpiringSoon,
+  expiresAtFromSeconds,
   exchangeLongLivedToken,
   META_APP_CREDS_MISSING,
   META_TOKEN_EXCHANGE_FAILED,
@@ -14,6 +16,7 @@ import {
 
 const NOW = Date.parse('2026-06-20T00:00:00Z');
 const daysAgo = (n: number) => new Date(NOW - n * 86400000).toISOString();
+const daysAhead = (n: number) => new Date(NOW + n * 86400000).toISOString();
 
 describe('isTokenRefreshDue', () => {
   it('absent / malformed / future issued_at → due (fail toward freshness)', () => {
@@ -32,6 +35,38 @@ describe('isTokenRefreshDue', () => {
   it('honours a custom threshold', () => {
     expect(isTokenRefreshDue(daysAgo(10), NOW, 7)).toBe(true);
     expect(isTokenRefreshDue(daysAgo(5), NOW, 7)).toBe(false);
+  });
+});
+
+describe('isTokenExpiringSoon (A2 expiry hardening)', () => {
+  it('fires when a known expiry is within the refresh margin (short-lived "looks fresh" case)', () => {
+    // expires in ~2h → due regardless of issued_at being recent
+    expect(isTokenExpiringSoon(new Date(NOW + 2 * 3600_000).toISOString(), NOW)).toBe(true);
+    expect(isTokenExpiringSoon(daysAhead(DEFAULT_REFRESH_AGE_DAYS - 1), NOW)).toBe(true);
+  });
+
+  it('does NOT fire for a comfortably-distant expiry', () => {
+    expect(isTokenExpiringSoon(daysAhead(DEFAULT_REFRESH_AGE_DAYS + 5), NOW)).toBe(false);
+    expect(isTokenExpiringSoon(daysAhead(59), NOW)).toBe(false);
+  });
+
+  it('an already-past expiry is "soon" (best-effort last exchange, never a silent skip)', () => {
+    expect(isTokenExpiringSoon(daysAgo(1), NOW)).toBe(true);
+  });
+
+  it('unknown / malformed expiry defers to the issued-at age path (returns false, no false-positive storm)', () => {
+    expect(isTokenExpiringSoon(undefined, NOW)).toBe(false);
+    expect(isTokenExpiringSoon(null, NOW)).toBe(false);
+    expect(isTokenExpiringSoon('not-a-date', NOW)).toBe(false);
+  });
+});
+
+describe('expiresAtFromSeconds', () => {
+  it('derives an ISO expiry from Graph expires_in seconds', () => {
+    expect(expiresAtFromSeconds(5184000, NOW)).toBe(new Date(NOW + 5184000 * 1000).toISOString());
+  });
+  it('returns null when expires_in is absent (Graph omitted it)', () => {
+    expect(expiresAtFromSeconds(null, NOW)).toBeNull();
   });
 });
 

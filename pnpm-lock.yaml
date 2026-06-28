@@ -724,6 +724,9 @@ importers:
       '@brain/identity-core':
         specifier: workspace:*
         version: link:../identity-core
+      '@brain/shopify-mapper':
+        specifier: workspace:*
+        version: link:../shopify-mapper
     devDependencies:
       '@types/node':
         specifier: ^20.0.0

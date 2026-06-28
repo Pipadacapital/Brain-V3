@@ -74,6 +74,14 @@ REQUIRED_SERVER_TRUSTED = frozenset(
         # WOO-3 — the NEW canonical coupon grain (no Shopify peer), emitted server-derived by the
         # WooCommerce connector; without server-trust the pixel-lane R2 join drops it and starves silver_coupon:
         "coupon.upsert.v1",         # silver_coupon
+        # AD-1 — the SHARED Meta+Google entity-metadata feed, emitted server-derived by meta-entity-sync /
+        # google-entity-sync on the live collector lane; silver_campaign folds it into the authoritative dim:
+        "ad.entity.updated",        # silver_campaign
+        # SHOPFLO lifecycle — the NEW Shopflo checkout-funnel canonicals, emitted server-derived (webhook-first);
+        # silver_checkout_signal consumes them. Without server-trust the pixel-lane R2 join would drop them:
+        "shopflo.checkout_started.v1",    # silver_checkout_signal
+        "shopflo.checkout_step.v1",       # silver_checkout_signal
+        "shopflo.checkout_completed.v1",  # silver_checkout_signal
     }
 )
 

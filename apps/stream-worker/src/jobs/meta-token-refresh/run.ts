@@ -24,6 +24,8 @@ import { recordConnectorAuthRejected } from '../../infrastructure/observability/
 import {
   exchangeLongLivedToken,
   isTokenRefreshDue,
+  isTokenExpiringSoon,
+  expiresAtFromSeconds,
   DEFAULT_REFRESH_AGE_DAYS,
   META_APP_CREDS_MISSING,
 } from './meta-token-client.js';
@@ -34,7 +36,8 @@ import type { ISecretsManager } from '@brain/connector-secrets';
 interface MetaSecretBundle {
   access_token: string; // NEVER logged (I-S09)
   ad_account_id?: string;
-  access_token_issued_at?: string; // ISO-8601; absent on legacy tokens → treated as due
+  access_token_issued_at?: string;  // ISO-8601; absent on legacy tokens → treated as due
+  access_token_expires_at?: string; // ISO-8601; stamped from the exchange's expires_in (A2 expiry hardening)
 }
 
 export interface MetaTokenRefreshReport {
@@ -45,8 +48,28 @@ export interface MetaTokenRefreshReport {
   errors: number;
 }
 
-/** Read a meta connector's dev_secret bundle (mirrors resolveMetaCredentials). */
-async function readBundle(pool: Pool, secretRef: string): Promise<MetaSecretBundle | null> {
+/**
+ * Read a meta connector's stored token bundle.
+ *
+ * PROD seam (the review's HIGH "readBundle has no prod seam → silent ~60-day death" finding):
+ *   when a secretsManager is provided (prod), the bundle is read from AWS Secrets Manager via
+ *   getSecret(secretRef) — the SAME ARN the spend repull's resolveMetaCredentials reads. Without
+ *   this, in prod the refresh job read dev_secret (which does not exist in prod) → ALWAYS null →
+ *   every token counted as reconnectRequired and NEVER refreshed → token silently dies at ~60 days.
+ * DEV fallback (no secretsManager): read dev_secret (cross-process durable; the repull writes here).
+ *
+ * I-S09: bundle values are NEVER logged.
+ */
+async function readBundle(
+  pool: Pool,
+  secretRef: string,
+  secretsManager?: ISecretsManager,
+): Promise<MetaSecretBundle | null> {
+  if (secretsManager) {
+    const sec = await secretsManager.getSecret(secretRef); // GetSecretValue → parsed JSON (honors AWS_ENDPOINT_URL)
+    if (!sec || typeof sec['access_token'] !== 'string') return null;
+    return sec as unknown as MetaSecretBundle;
+  }
   const name = secretRef.split(':secret:')[1] ?? secretRef;
   const res = await pool.query<{ secret_value: string }>(
     `SELECT secret_value FROM dev_secret WHERE name = $1`,
@@ -124,30 +147,35 @@ export async function runMetaTokenRefresh(
     report.scanned += 1;
     const { connector_instance_id: ciId, brand_id: brandId, secret_ref: secretRef } = c;
     try {
-      const bundle = await readBundle(pool, secretRef);
+      const bundle = await readBundle(pool, secretRef, secretsManager);
       if (!bundle?.access_token) {
         // No token to exchange → already needs a reconnect; nothing to refresh.
         report.reconnectRequired += 1;
         continue;
       }
-      if (!isTokenRefreshDue(bundle.access_token_issued_at, nowMs, thresholdDays)) {
+      // DUE when the issued-at age crosses the threshold OR a KNOWN expiry is within the refresh margin
+      // (the short-lived "looks fresh but dies in ~2h" case the issued-at clock alone cannot catch).
+      const due =
+        isTokenRefreshDue(bundle.access_token_issued_at, nowMs, thresholdDays) ||
+        isTokenExpiringSoon(bundle.access_token_expires_at, nowMs, thresholdDays);
+      if (!due) {
         report.skippedNotDue += 1;
         incrementCounter('meta_token_refresh_skipped_total', { reason: 'not_due' });
         continue;
       }
 
       try {
-        const { accessToken } = await exchangeLongLivedToken(bundle.access_token, fetchImpl);
-        await writeBundle(
-          pool,
-          secretRef,
-          {
-            ...bundle,
-            access_token: accessToken,
-            access_token_issued_at: new Date(nowMs).toISOString(),
-          },
-          secretsManager,
-        );
+        const { accessToken, expiresInSeconds } = await exchangeLongLivedToken(bundle.access_token, fetchImpl);
+        // Stamp BOTH the issued-at clock and a real expires_at (from Graph's expires_in) so the next
+        // pass can fire on imminent expiry, not just on age — closes the silent ~60-day death window.
+        const refreshed: MetaSecretBundle = {
+          ...bundle,
+          access_token: accessToken,
+          access_token_issued_at: new Date(nowMs).toISOString(),
+        };
+        const expiresAt = expiresAtFromSeconds(expiresInSeconds, nowMs);
+        if (expiresAt) refreshed.access_token_expires_at = expiresAt;
+        await writeBundle(pool, secretRef, refreshed, secretsManager);
         report.refreshed += 1;
         incrementCounter('meta_token_refresh_total', { provider: 'meta' });
         log.info(`[meta-token-refresh] refreshed connector=${ciId} brand=${brandId}`);
@@ -186,21 +214,26 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const dbUrl = process.env['BRAIN_APP_DATABASE_URL'] ?? process.env['DATABASE_URL'] ?? 'postgres://brain_app:brain_app@localhost:5432/brain';
   const pool = new Pool({ connectionString: dbUrl, max: 2 });
 
-  // PROD write-back seam (sub-fix 4): wire AwsSecretsManager so refreshed tokens are written
-  // to Secrets Manager (not just dev_secret). Requires CONNECTOR_SECRETS_KMS_KEY_ID in prod.
-  // In dev SHOPIFY_CLIENT_SECRET is absent → secretsMgr is undefined → dev_secret path.
+  // PROD Secrets-Manager seam: wire AwsSecretsManager so the refresh job READS the stored token
+  // (the prod read-seam fix) AND writes the refreshed token back to the SAME ARN — not just dev_secret.
+  //
+  // Connector-neutral (the review's MED "Meta refresh FATAL-exits on Shopify env state" finding):
+  // the former code keyed prod activation on SHOPIFY_CLIENT_SECRET, so a Meta-only tenant with no
+  // Shopify connector FATAL-exited the Meta refresh. AwsSecretsManager's clientSecretArn is only used
+  // by the Shopify-specific getShopifyClientSecret() path — never by getSecret/putSecretValue — so we
+  // pass '' and gate solely on the KMS key (mirrors meta-spend-repull/resolveMetaCredentials).
+  // In dev (NODE_ENV != production) secretsMgr stays undefined → dev_secret read/write path.
   let secretsMgr: ISecretsManager | undefined;
   const isProductionEnv = process.env['NODE_ENV'] === 'production';
   if (isProductionEnv) {
     const { AwsSecretsManager } = await import('@brain/connector-secrets');
-    const region = process.env['AWS_REGION'] ?? 'us-east-1';
-    const clientSecretArn = process.env['SHOPIFY_CLIENT_SECRET'] ?? '';
-    const kmsKeyId = process.env['CONNECTOR_SECRETS_KMS_KEY_ID'] ?? '';
-    if (!clientSecretArn || !kmsKeyId) {
-      log.error('[meta-token-refresh] FATAL: SHOPIFY_CLIENT_SECRET + CONNECTOR_SECRETS_KMS_KEY_ID required in prod for Secrets Manager write-back');
+    const region = process.env['BRAIN_AWS_REGION'] ?? process.env['AWS_REGION'] ?? 'us-east-1';
+    const kmsKeyId = process.env['CONNECTOR_SECRETS_KMS_KEY_ID'] ?? process.env['KMS_KEY_ID'] ?? '';
+    if (!kmsKeyId) {
+      log.error('[meta-token-refresh] FATAL: CONNECTOR_SECRETS_KMS_KEY_ID required in prod for Secrets Manager read/write-back');
       process.exit(1);
     }
-    secretsMgr = new AwsSecretsManager(region, clientSecretArn, kmsKeyId);
+    secretsMgr = new AwsSecretsManager(region, '', kmsKeyId);
   }
 
   runMetaTokenRefresh(pool, Date.now(), DEFAULT_REFRESH_AGE_DAYS, fetch, secretsMgr)

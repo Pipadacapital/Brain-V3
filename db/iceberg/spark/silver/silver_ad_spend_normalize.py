@@ -172,9 +172,32 @@ def event_id_spend_live(brand_id, platform, stat_date, level, level_id):
     return rn.uuid_shaped(f"{brand_id}:{platform}:{stat_date}:{level}:{level_id}:spend.live.v1")
 
 
+# ── A1: Meta purchase action lookup (byte-port of @brain/ad-spend-mapper metaActionValue) ──────────────
+# The first matching action_type's `value` (priority: purchase → omni_purchase → pixel purchase) lifted out
+# of Meta's nested actions[] (counts) / action_values[] (revenue) arrays. Full arrays stay in conversions_raw.
+_META_PURCHASE_TYPES = ("purchase", "omni_purchase", "offsite_conversion.fb_pixel_purchase")
+
+
+def meta_action_value(arr):
+    if not arr:
+        return None
+    for t in _META_PURCHASE_TYPES:
+        for a in arr:
+            at = a["action_type"] if isinstance(a, dict) else getattr(a, "action_type", None)
+            if at == t:
+                v = a["value"] if isinstance(a, dict) else getattr(a, "value", None)
+                if v is not None:
+                    return str(v)
+    return None
+
+
 # ── UDFs over the verified ports (Spark output == verified python == TS) ───────────────────────────────
 u_minor_major = udf(lambda v: major_decimal_to_minor(v), StringType())
 u_minor_micros = udf(lambda v: micros_to_minor(v), StringType())
+# Null-guarded money ports (A1): absent insight field → null (mapper emits null, not "0", when absent).
+u_minor_major_opt = udf(lambda v: major_decimal_to_minor(v) if v is not None else None, StringType())
+u_minor_micros_opt = udf(lambda v: micros_to_minor(v) if v is not None else None, StringType())
+u_meta_action = udf(lambda a: meta_action_value(a), StringType())
 u_count = udf(lambda v: to_count_string(v), StringType())
 u_level = udf(lambda r: resolve_level(r, "campaign"), StringType())
 u_level_id = udf(lambda lvl, c, a, ad: resolve_level_id(lvl, c, a, ad), StringType())
@@ -257,6 +280,10 @@ def build_meta(spark: SparkSession):
         col(f"{r}.clicks").cast("string").alias("clicks_raw"),
         col(f"{r}.date_start").cast("string").alias("stat_date_raw"),
         col(f"{r}.actions").alias("actions"),
+        col(f"{r}.action_values").alias("action_values"),  # A1: conversion REVENUE arrays
+        col(f"{r}.ctr").cast("string").alias("ctr_raw"),
+        col(f"{r}.cpc").cast("string").alias("cpc_raw"),  # MAJOR-unit decimal cost-per-click
+        col(f"{r}.cpm").cast("string").alias("cpm_raw"),  # MAJOR-unit decimal cost-per-mille
     )
 
     canon = (
@@ -269,6 +296,15 @@ def build_meta(spark: SparkSession):
         .withColumn("currency_code", _upper_trim(col("account_currency")))
         .withColumn("impressions", u_count(col("impressions_raw")))
         .withColumn("clicks", u_count(col("clicks_raw")))
+        # A1 insight set: purchase COUNT (actions[]) + purchase REVENUE (action_values[] → MINOR, no float).
+        .withColumn("conversions", u_count(u_meta_action(col("actions"))))
+        .withColumn("all_conversions", lit(None).cast("string"))  # Meta has no distinct all_conversions
+        .withColumn("conv_value_minor", u_minor_major_opt(u_meta_action(col("action_values"))))
+        .withColumn("view_through_conversions", lit(None).cast("string"))
+        .withColumn("ctr", col("ctr_raw"))
+        .withColumn("cpc_minor", u_minor_major_opt(col("cpc_raw")))
+        .withColumn("cpm_minor", u_minor_major_opt(col("cpm_raw")))
+        .withColumn("advertising_channel_type", lit(None).cast("string"))  # Google-only
         .withColumn("occurred_at_iso", u_stat_iso(col("stat_date")))
         .withColumn(
             "event_id",
@@ -276,9 +312,12 @@ def build_meta(spark: SparkSession):
         )
     )
 
-    # conversions_raw (ADR-AD-8): Meta → { actions } when present, else null. Native nested struct so the
-    # single to_json on the envelope emits proper nested JSON (raw passthrough — not a normalized port).
-    conversions_raw = when(col("actions").isNotNull(), struct(col("actions").alias("actions")))
+    # conversions_raw (ADR-AD-8): Meta → { actions, action_values } when EITHER present, else null. Native
+    # nested struct so the single to_json on the envelope emits proper nested JSON (raw passthrough).
+    conversions_raw = when(
+        col("actions").isNotNull() | col("action_values").isNotNull(),
+        struct(col("actions").alias("actions"), col("action_values").alias("action_values")),
+    )
 
     props = struct(
         lit("meta").alias("source"),
@@ -293,6 +332,15 @@ def build_meta(spark: SparkSession):
         col("currency_code").alias("currency_code"),
         col("impressions").alias("impressions"),
         col("clicks").alias("clicks"),
+        # A1 enriched insight set (sibling measures; conv_value_minor shares currency_code, never blended).
+        col("conversions").alias("conversions"),
+        col("all_conversions").alias("all_conversions"),
+        col("conv_value_minor").alias("conv_value_minor"),
+        col("view_through_conversions").alias("view_through_conversions"),
+        col("ctr").alias("ctr"),
+        col("cpc_minor").alias("cpc_minor"),
+        col("cpm_minor").alias("cpm_minor"),
+        col("advertising_channel_type").alias("advertising_channel_type"),
         conversions_raw.alias("conversions_raw"),
         col("account_timezone").alias("account_timezone"),
         col("occurred_at_iso").alias("occurred_at"),
@@ -326,8 +374,14 @@ def build_google(spark: SparkSession):
         col(f"{r}.cost_micros").cast("string").alias("cost_micros_raw"),
         col(f"{r}.impressions").cast("string").alias("impressions_raw"),
         col(f"{r}.clicks").cast("string").alias("clicks_raw"),
-        col(f"{r}.conversions").cast("string").alias("conversions"),
-        col(f"{r}.all_conversions").cast("string").alias("all_conversions"),
+        col(f"{r}.conversions").cast("string").alias("conversions_raw_count"),
+        col(f"{r}.all_conversions").cast("string").alias("all_conversions_raw_count"),
+        col(f"{r}.conversions_value").cast("string").alias("conv_value_raw"),  # MAJOR-unit double (acct ccy)
+        col(f"{r}.view_through_conversions").cast("string").alias("view_through_raw"),
+        col(f"{r}.ctr").cast("string").alias("ctr_raw"),
+        col(f"{r}.average_cpc").cast("string").alias("avg_cpc_raw"),  # integer MICROS
+        col(f"{r}.average_cpm").cast("string").alias("avg_cpm_raw"),  # integer MICROS
+        col(f"{r}.advertising_channel_type").cast("string").alias("adv_channel_raw"),
         col(f"{r}.segments_date").cast("string").alias("stat_date_raw"),
         col(f"{r}.currency_code").cast("string").alias("row_currency_code"),
     )
@@ -347,6 +401,16 @@ def build_google(spark: SparkSession):
         )
         .withColumn("impressions", u_count(col("impressions_raw")))
         .withColumn("clicks", u_count(col("clicks_raw")))
+        # A1 insight set: counts lifted first-class; conversions_value (MAJOR double → MINOR, no float);
+        # average_cpc/cpm MICROS → MINOR units. conv_value_minor shares currency_code (never blended).
+        .withColumn("conversions", u_count(col("conversions_raw_count")))
+        .withColumn("all_conversions", u_count(col("all_conversions_raw_count")))
+        .withColumn("conv_value_minor", u_minor_major_opt(col("conv_value_raw")))
+        .withColumn("view_through_conversions", u_count(col("view_through_raw")))
+        .withColumn("ctr", col("ctr_raw"))
+        .withColumn("cpc_minor", u_minor_micros_opt(col("avg_cpc_raw")))
+        .withColumn("cpm_minor", u_minor_micros_opt(col("avg_cpm_raw")))
+        .withColumn("advertising_channel_type", col("adv_channel_raw"))
         .withColumn("occurred_at_iso", u_stat_iso(col("stat_date")))
         .withColumn(
             "event_id",
@@ -354,10 +418,11 @@ def build_google(spark: SparkSession):
         )
     )
 
-    # conversions_raw (ADR-AD-8): Google → BOTH conversions + all_conversions RAW (null-preserving).
+    # conversions_raw (ADR-AD-8): Google → BOTH conversions + all_conversions RAW (verbatim doubles,
+    # null-preserving) — distinct from the integer-floored `conversions` count column below.
     conversions_raw = struct(
-        col("conversions").alias("conversions"),
-        col("all_conversions").alias("all_conversions"),
+        col("conversions_raw_count").alias("conversions"),
+        col("all_conversions_raw_count").alias("all_conversions"),
     )
 
     props = struct(
@@ -373,6 +438,15 @@ def build_google(spark: SparkSession):
         col("currency_code").alias("currency_code"),
         col("impressions").alias("impressions"),
         col("clicks").alias("clicks"),
+        # A1 enriched insight set (sibling measures; conv_value_minor shares currency_code, never blended).
+        col("conversions").alias("conversions"),
+        col("all_conversions").alias("all_conversions"),
+        col("conv_value_minor").alias("conv_value_minor"),
+        col("view_through_conversions").alias("view_through_conversions"),
+        col("ctr").alias("ctr"),
+        col("cpc_minor").alias("cpc_minor"),
+        col("cpm_minor").alias("cpm_minor"),
+        col("advertising_channel_type").alias("advertising_channel_type"),
         conversions_raw.alias("conversions_raw"),
         col("account_timezone").alias("account_timezone"),
         col("occurred_at_iso").alias("occurred_at"),

@@ -292,6 +292,29 @@ describe('MetaInsightsClient async path (fetchInsightsFirstPage asyncMode=true)'
   });
 });
 
+// ── 4b. A2: insights request carries action_values + attribution windows ──────
+
+describe('MetaInsightsClient A2 insights request fields', () => {
+  it('sync insights URL requests action_values + action_attribution_windows([7d_click,1d_view]) + cpc/cpm/ctr', async () => {
+    let seenUrl = '';
+    const fetchStub: FetchStub = async (input) => {
+      seenUrl = typeof input === 'string' ? input : (input as Request).url;
+      return makeResponse(200, { data: [], paging: {} });
+    };
+    const client = makeClient(fetchStub, { asyncMode: false });
+    await client.fetchInsightsFirstPage('campaign', '2026-06-01', '2026-06-21');
+
+    expect(seenUrl).toContain('action_values');
+    expect(seenUrl).toContain('cost_per_action_type');
+    expect(seenUrl).toContain('cpc');
+    expect(seenUrl).toContain('cpm');
+    expect(seenUrl).toContain('ctr');
+    // attribution windows are URL-encoded JSON: ["7d_click","1d_view"]
+    const decoded = decodeURIComponent(seenUrl);
+    expect(decoded).toContain('action_attribution_windows=["7d_click","1d_view"]');
+  });
+});
+
 // ── 5. Throttle code 80000 triggers backoff ───────────────────────────────────
 
 describe('MetaInsightsClient throttle code 80000 backoff', () => {

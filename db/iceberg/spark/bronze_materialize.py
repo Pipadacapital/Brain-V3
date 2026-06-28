@@ -119,7 +119,17 @@ PIXEL_INSTALL_REFRESH_TTL_SECONDS = int(os.environ.get("PIXEL_INSTALL_REFRESH_TT
 # connector server-derived (brand_id from the resolved connector row, MT-1 — NEVER the API response) with
 # NO install_token / consent signal. Like the CRIT-4 resource events it MUST be server-trusted or the
 # PIXEL-lane R2 join drops it and starves silver_coupon. Kept byte-identical with the silver gate set.
-SERVER_TRUSTED_BRONZE = {"order.live.v1", "order.backfill.v1", "spend.live.v1", "shopflo.checkout_abandoned.v1", "gokwik.rto_predict.v1", "shiprocket.shipment_status.v1", "shiprocket.return_status.v1", "checkout.abandoned.v1", "gokwik.checkout_started.v1", "gokwik.checkout_step.v1", "payment.attempted.v1", "payment.authorized.v1", "product.upsert.v1", "customer.upsert.v1", "refund.recorded.v1", "fulfillment.recorded.v1", "coupon.upsert.v1"}
+# AD-1 (advertising metadata feed): ad.entity.updated is the SHARED Meta+Google entity-sync canonical
+# (campaign/adset/ad name/status/objective/channel-type), emitted by meta-entity-sync / google-entity-sync
+# on the SAME live collector lane as spend.live.v1 — connector-derived (brand_id server-derived from the
+# resolved connector row, MT-1; NO install_token / consent). Without server-trust the PIXEL-lane R2 join
+# SILENTLY DROPS it (quarantines tenant_unresolved) and starves silver_campaign's authoritative dim.
+# SHOPFLO lifecycle: shopflo.checkout_started.v1 / shopflo.checkout_step.v1 / shopflo.checkout_completed.v1
+# are the NEW Shopflo checkout-funnel canonicals (webhook-first; brand_id server-derived from the resolved
+# connector row via the webhook pipeline — MT-1; NO install_token / consent). Like checkout.abandoned.v1
+# they MUST be server-trusted or the PIXEL-lane R2 join drops them and starves silver_checkout_signal.
+# ALL kept byte-identical with silver_collector_event.SERVER_TRUSTED.
+SERVER_TRUSTED_BRONZE = {"order.live.v1", "order.backfill.v1", "spend.live.v1", "shopflo.checkout_abandoned.v1", "gokwik.rto_predict.v1", "shiprocket.shipment_status.v1", "shiprocket.return_status.v1", "checkout.abandoned.v1", "gokwik.checkout_started.v1", "gokwik.checkout_step.v1", "payment.attempted.v1", "payment.authorized.v1", "product.upsert.v1", "customer.upsert.v1", "refund.recorded.v1", "fulfillment.recorded.v1", "coupon.upsert.v1", "ad.entity.updated", "shopflo.checkout_started.v1", "shopflo.checkout_step.v1", "shopflo.checkout_completed.v1"}
 LEDGER_ONLY = {"settlement.live.v1"}
 
 # Postgres (for R2 install_token→brand resolution via pixel_installation). Read as the superuser

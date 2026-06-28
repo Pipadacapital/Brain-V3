@@ -256,12 +256,17 @@ export const CONNECTOR_CATALOG: readonly ConnectorDefinition[] = [
     authFields: [
       { key: 'api_token', label: 'API Access Token', type: 'password', secret: true },
       { key: 'merchant_id', label: 'Merchant ID', type: 'text', secret: false },
-      { key: 'webhook_secret', label: 'Webhook Secret', type: 'password', secret: true },
+      { key: 'webhook_secret', label: 'Webhook Secret', type: 'password', secret: true, optional: true },
     ],
     credentialConnect: {
       // merchant_id is routing-only — webhook lookup reads it from the column, never the bundle.
       accountKeyField: 'merchant_id',
       instanceColumn: 'shopflo_merchant_id',
+      // webhook_secret is the per-connector HMAC signing key ShopfloWebhookStrategy verifies (fail-closed).
+      // GENERALIZED provisioning (same SR-2 mechanism as GoKwik/Shiprocket): the merchant MAY paste their
+      // own Shopflo-configured secret via the optional webhook_secret field; when blank, Brain MINTS a
+      // high-entropy webhook_secret at connect so the HMAC lane is NEVER dead (no fail-closed gap).
+      generatedSecretFields: ['webhook_secret'],
     },
   },
   // ── logistics ────────────────────────────────────────────────────────────────

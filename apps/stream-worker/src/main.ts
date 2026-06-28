@@ -77,6 +77,59 @@ import { startSyncRequestClaimer } from './jobs/sync-request-claimer/run.js';
 import { startDqChecks } from './jobs/dq/run.js';
 import { startIngestScheduler } from './jobs/ingest-scheduler/run.js';
 import { ConnectorRateLimiter } from './infrastructure/redis/ConnectorRateLimiter.js';
+// Advertising metadata + 2-year backfill jobs (A2/A3 Transport handoffs). meta-entity-sync /
+// google-entity-sync emit the SHARED ad.entity.updated feed (~6h cadence); the spend-repull
+// runBackfill() lanes walk back 730 days resumably (safe to re-trigger; instant no-op at the floor).
+import { run as runMetaEntitySync } from './jobs/meta-entity-sync/run.js';
+import { run as runGoogleEntitySync } from './jobs/google-entity-sync/run.js';
+import { runBackfill as runMetaSpendBackfill } from './jobs/meta-spend-repull/run.js';
+import {
+  runBackfill as runGoogleSpendBackfill,
+  enumerateGoogleConnectors,
+} from './jobs/google-ads-spend-repull/run.js';
+
+interface PeriodicJobHandle {
+  stop(): Promise<void>;
+}
+
+/**
+ * Generic in-process periodic runner (A2/A3 ad-connector metadata + backfill jobs). Fires runFn() once
+ * at startup then every intervalMs, with an inFlight guard (a slow run never re-enters) and full error
+ * isolation (a throw is logged + swallowed so the loop never dies) — the SAME loop shape as
+ * startIngestScheduler. Each scheduled job self-enumerates its connectors and owns its own Pool +
+ * idempotent producer, so this helper only handles cadence; it holds no brand context (MT-1 preserved).
+ */
+function startPeriodicJob(
+  name: string,
+  intervalMs: number,
+  runFn: () => Promise<void>,
+): PeriodicJobHandle {
+  let running = true;
+  let inFlight = false;
+  const tickOnce = async (): Promise<void> => {
+    if (inFlight) return; // a still-running tick never re-enters
+    inFlight = true;
+    try {
+      await runFn();
+    } catch (err) {
+      log.error(`[periodic:${name}] run failed (non-fatal)`, { err });
+    } finally {
+      inFlight = false;
+    }
+  };
+  const loop = async (): Promise<void> => {
+    while (running) {
+      await tickOnce();
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
+  };
+  void loop();
+  return {
+    stop: async (): Promise<void> => {
+      running = false;
+    },
+  };
+}
 
 export async function main(): Promise<void> {
   // Real OpenTelemetry export (ADR-009) — gated by OTEL_EXPORTER_OTLP_ENDPOINT (no-op in dev).
@@ -491,6 +544,38 @@ export async function main(): Promise<void> {
   log.info(`ingest scheduler running — interval=${ingestSchedulerIntervalMs}ms batch=${ingestSchedulerBatch} (work-queue + per-provider rate limit)`,
   );
 
+  // ── Advertising metadata + 2-year backfill schedulers (A2/A3 Transport handoffs) ─────────────
+  // In-process periodic loops (same shape as the ingest scheduler). meta-entity-sync / google-entity-sync
+  // emit the SHARED `ad.entity.updated` feed (now admitted to SERVER_TRUSTED above) on the live collector
+  // lane → silver_campaign's authoritative dim; the spend-repull backfill lanes walk back 730 days
+  // resumably (reusing the spend.live.v1 event_id so they MERGE-dedup against the trailing 28-day repull —
+  // no double-count) and are an instant no-op once the floor is reached. Each job self-enumerates its
+  // activated ad connectors via the SECURITY-DEFINER enumerate fns and derives brand_id server-side (MT-1);
+  // these schedulers hold NO brand context. Cadences are env-tunable — defaults: entity-sync ~6h, spend
+  // backfill daily (the backfill is safe to re-trigger more often; each run does a bounded resumable slice).
+  const adEntitySyncIntervalMs = Number(process.env['AD_ENTITY_SYNC_INTERVAL_MS'] ?? 6 * 60 * 60 * 1000);
+  const adSpendBackfillIntervalMs = Number(process.env['AD_SPEND_BACKFILL_INTERVAL_MS'] ?? 24 * 60 * 60 * 1000);
+  // Google spend backfill is per-connector (no self-enumerating overload like Meta's): enumerate the
+  // activated google_ads connectors under brain_app (RLS FORCE — never superuser 'brain'), then runBackfill()
+  // each one fail-isolated. The pool sets NO GUC (enumerate is GUC-less SECURITY DEFINER; each runBackfill
+  // sets its own brand GUC internally — MT-1).
+  const googleBackfillPool = new PgPool({ connectionString: dbUrl, max: 2 });
+  const runGoogleSpendBackfillAll = async (): Promise<void> => {
+    const connectors = await enumerateGoogleConnectors(googleBackfillPool);
+    for (const c of connectors) {
+      try {
+        await runGoogleSpendBackfill(c.connector_instance_id);
+      } catch (err) {
+        log.error(`[periodic:google-spend-backfill] connector=${c.connector_instance_id} failed (non-fatal)`, { err });
+      }
+    }
+  };
+  const metaEntitySyncJob = startPeriodicJob('meta-entity-sync', adEntitySyncIntervalMs, () => runMetaEntitySync());
+  const googleEntitySyncJob = startPeriodicJob('google-entity-sync', adEntitySyncIntervalMs, () => runGoogleEntitySync());
+  const metaSpendBackfillJob = startPeriodicJob('meta-spend-backfill', adSpendBackfillIntervalMs, () => runMetaSpendBackfill());
+  const googleSpendBackfillJob = startPeriodicJob('google-spend-backfill', adSpendBackfillIntervalMs, runGoogleSpendBackfillAll);
+  log.info(`ad-connector schedulers running — entity-sync interval=${adEntitySyncIntervalMs}ms spend-backfill interval=${adSpendBackfillIntervalMs}ms (meta+google)`);
+
   // Graceful shutdown
   const shutdown = async (signal: string): Promise<void> => {
     log.info(`${signal} received — draining consumers...`);
@@ -511,10 +596,16 @@ export async function main(): Promise<void> {
       syncRequestClaimer.stop(),
       dqChecker.stop(),
       ingestScheduler.stop(),
+      // A2/A3 ad-connector schedulers (entity-sync + 2-year spend backfill, meta + google).
+      metaEntitySyncJob.stop(),
+      googleEntitySyncJob.stop(),
+      metaSpendBackfillJob.stop(),
+      googleSpendBackfillJob.stop(),
     ]);
     await syncClaimerPool.end();
     await dqPool.end();
     await ingestSchedulerPool.end();
+    await googleBackfillPool.end().catch(() => undefined);
     await connectorRateLimiter.quit().catch(() => undefined);
     await consentRepo.end();
     await capiDeletionRepo.end();

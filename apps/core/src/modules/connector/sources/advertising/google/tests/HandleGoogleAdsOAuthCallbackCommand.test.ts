@@ -215,6 +215,82 @@ describe('HandleGoogleAdsOAuthCallbackCommand', () => {
     expect(connectorRepo.save).not.toHaveBeenCalled();
   });
 
+  it('MCC: expands a manager login to its LEAF clients + captures per-account login_customer_id', async () => {
+    const MANAGER_CID = '7000000000';
+    const LEAF_A = '8000000001';
+    const LEAF_B = '8000000002';
+    // listAccessibleCustomers returns the MANAGER; customer_client expands to two leaves under it.
+    vi.stubGlobal('fetch', async (url: string | URL, init?: RequestInit) => {
+      const u = typeof url === 'string' ? url : url.toString();
+      if (u.includes('oauth2.googleapis.com/token')) {
+        return new Response(JSON.stringify({ access_token: ACCESS_TOKEN, refresh_token: REFRESH_TOKEN }), { status: 200 });
+      }
+      if (u.includes('listAccessibleCustomers')) {
+        return new Response(JSON.stringify({ resourceNames: [`customers/${MANAGER_CID}`] }), { status: 200 });
+      }
+      if (u.includes('googleAds:searchStream')) {
+        // login-customer-id header MUST be the manager CID we query through.
+        expect((init?.headers as Record<string, string>)['login-customer-id']).toBe(MANAGER_CID);
+        return new Response(
+          JSON.stringify([
+            {
+              results: [
+                { customerClient: { id: MANAGER_CID, manager: true, level: '0', status: 'ENABLED' } },
+                { customerClient: { id: LEAF_A, manager: false, level: '1', status: 'ENABLED' } },
+                { customerClient: { id: LEAF_B, manager: false, level: '1', status: 'ENABLED' } },
+              ],
+            },
+          ]),
+          { status: 200 },
+        );
+      }
+      throw new Error(`[google test] unexpected fetch: ${u}`);
+    });
+
+    const stateStore = new InProcessOAuthStateStore();
+    const secretsMgr = new LocalSecretsManager();
+    const storeSpy = vi.spyOn(secretsMgr, 'storeSecret');
+    const connectorRepo = makeConnectorRepo(REAL_BRAND_ID);
+    const syncStatusRepo = makeSyncStatusRepo();
+    const emitEvent = vi.fn().mockResolvedValue(undefined);
+
+    const cmd = new HandleGoogleAdsOAuthCallbackCommand(
+      secretsMgr,
+      stateStore,
+      connectorRepo,
+      syncStatusRepo,
+      emitEvent,
+    );
+
+    const stateNonce = 'google-state-mcc';
+    await stateStore.set(REAL_BRAND_ID, stateNonce, 900);
+    const result = await cmd.execute({
+      query: { code: 'auth_code_g', state: stateNonce },
+      idempotencyKey: 'idem-mcc',
+    });
+
+    // Two LEAF accounts offered (NOT the manager) — manager carries no spend.
+    expect(result.adAccountIds.sort()).toEqual([LEAF_A, LEAF_B]);
+    expect(result.adAccountIds).not.toContain(MANAGER_CID);
+
+    // Each leaf bundle carries its required manager login_customer_id (per-account, not a global env).
+    expect(storeSpy).toHaveBeenCalledWith(
+      REAL_BRAND_ID,
+      expect.objectContaining({ connectorType: 'google_ads', subKey: LEAF_A }),
+      expect.objectContaining({ refresh_token: REFRESH_TOKEN, ad_account_id: LEAF_A, login_customer_id: MANAGER_CID }),
+    );
+
+    // Multiple accounts → NONE auto-activated (0106: user must pick one); login CID on providerConfig.
+    const savedInstances = (connectorRepo.save as ReturnType<typeof vi.fn>).mock.calls.map(
+      (c) => c[0] as ConnectorInstance,
+    );
+    expect(savedInstances).toHaveLength(2);
+    for (const inst of savedInstances) {
+      expect(inst.activatedAt).toBeNull();
+      expect(inst.providerConfig['google_ads_login_customer_id']).toBe(MANAGER_CID);
+    }
+  });
+
   it('state nonce is single-use (NN-4)', async () => {
     const stateStore = new InProcessOAuthStateStore();
     const secretsMgr = new LocalSecretsManager();

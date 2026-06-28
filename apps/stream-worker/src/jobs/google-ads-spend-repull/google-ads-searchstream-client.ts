@@ -9,8 +9,19 @@ import { CircuitBreaker } from '@brain/observability';
  *     developer-token header. Tokens NEVER logged (I-S09).
  *   - Google Ads API pinned to v24 (verified current base-URL May/Jun-2026).
  *   - GoogleAdsService.SearchStream: 1 query = 1 op. GAQL over campaign / ad_group /
- *     ad_group_ad with metrics.cost_micros, metrics.conversions, metrics.all_conversions,
- *     segments.date (ADR-AD-8).
+ *     ad_group_ad with the FULL insight set (A3): metrics.cost_micros, metrics.impressions,
+ *     metrics.clicks, metrics.conversions, metrics.all_conversions, metrics.conversions_value
+ *     (platform-attributed REVENUE — major-unit double → minor in the mapper),
+ *     metrics.view_through_conversions, metrics.ctr, metrics.average_cpc, metrics.average_cpm
+ *     (micros), campaign.advertising_channel_type, segments.date (ADR-AD-8).
+ *     NOTE: segments.device / segments.ad_network_type are DELIBERATELY NOT selected — they
+ *     would split each (campaign, date) row into N device/network rows that all collapse onto
+ *     the SAME deterministic event_id (the A1 dedup grain has no segment component) → silent
+ *     spend overwrite under the Bronze MERGE. Adding them requires widening uuidV5FromSpendRow
+ *     in lockstep (A1/Admission-owned). Deferred to preserve "no event loss".
+ *   - ENTITY METADATA (A3): a SEPARATE no-metrics GAQL pass (streamEntities) over campaign /
+ *     ad_group / ad_group_ad reads .name/.status/.advertising_channel_type/.bidding_strategy_type
+ *     for the entity-sync job → ad.entity.updated. Decoupled from spend volume.
  *   - THROTTLE BRANCH (ADR-AD-7, the two-error policy):
  *       RESOURCE_EXHAUSTED            (daily ops-quota) → throw GOOGLE_RESOURCE_EXHAUSTED;
  *                                       caller marks RateLimited + ABORTS the run (no in-run
@@ -55,7 +66,7 @@ export interface GoogleAdsCredentials {
   loginCustomerId?: string; // MCC login CID (optional)
 }
 
-/** Flattened Google Ads row (the mapper maps to canonical). */
+/** Flattened Google Ads row (the mapper maps to canonical). Field names match @brain/ad-spend-mapper GoogleAdsRow. */
 export interface GoogleAdsRawRow {
   level?: string | null;
   campaign_id?: string | null;
@@ -67,35 +78,88 @@ export interface GoogleAdsRawRow {
   clicks?: string | null;
   conversions?: string | null;       // RAW (ADR-AD-8)
   all_conversions?: string | null;    // RAW (ADR-AD-8)
+  // ── A3 full insight set (additive; the mapper folds these). conversions_value is a MAJOR-unit
+  //    double (account currency) → minor in the mapper; average_cpc/cpm are integer MICROS → minor.
+  conversions_value?: string | null;       // platform-attributed REVENUE (major-unit double)
+  view_through_conversions?: string | null; // count
+  ctr?: string | null;                       // click-through ratio (double)
+  average_cpc?: string | null;               // integer MICROS cost-per-click
+  average_cpm?: string | null;               // integer MICROS cost-per-mille
+  advertising_channel_type?: string | null;  // SEARCH | DISPLAY | VIDEO | …
   segments_date?: string | null;
   currency_code?: string | null;
   [key: string]: unknown;
+}
+
+/**
+ * Flattened Google Ads ENTITY-metadata row (A3 entity-sync). NO money/metrics — authoritative
+ * latest name/status/channel/bidding, decoupled from spend volume. The job maps this to the
+ * canonical `ad.entity.updated` payload (shape MUST match Meta's entity-sync output).
+ */
+export interface GoogleAdsEntityRow {
+  level: 'campaign' | 'adset' | 'ad';
+  entity_id: string | null;
+  campaign_id: string | null;
+  parent_id: string | null;
+  name: string | null;
+  status: string | null;
+  advertising_channel_type: string | null; // campaign only
+  bidding_strategy: string | null;          // campaign only (bidding_strategy_type)
 }
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** Map the canonical level to the GAQL FROM resource + the id field projections. */
+/**
+ * Map the canonical level to the GAQL FROM resource + the id field projections.
+ * A3: widened to the full grain-SAFE insight set (conversions_value/view_through/ctr/average_cpc/
+ * average_cpm/advertising_channel_type). segments.device/ad_network_type are intentionally absent —
+ * they would split rows under the unchanged dedup grain (see the file header / no-event-loss).
+ */
+const SPEND_METRICS = `metrics.cost_micros, metrics.impressions, metrics.clicks,
+           metrics.conversions, metrics.all_conversions, metrics.conversions_value,
+           metrics.view_through_conversions, metrics.ctr, metrics.average_cpc, metrics.average_cpm`;
 const LEVEL_QUERIES: Record<'campaign' | 'adset' | 'ad', string> = {
   campaign: `
-    SELECT campaign.id, campaign.name, metrics.cost_micros, metrics.impressions,
-           metrics.clicks, metrics.conversions, metrics.all_conversions,
+    SELECT campaign.id, campaign.name, campaign.advertising_channel_type, ${SPEND_METRICS},
            segments.date, customer.currency_code
     FROM campaign
     WHERE segments.date BETWEEN '{FROM}' AND '{TO}'`,
   adset: `
-    SELECT campaign.id, campaign.name, ad_group.id, metrics.cost_micros, metrics.impressions,
-           metrics.clicks, metrics.conversions, metrics.all_conversions,
+    SELECT campaign.id, campaign.name, campaign.advertising_channel_type, ad_group.id, ${SPEND_METRICS},
            segments.date, customer.currency_code
     FROM ad_group
     WHERE segments.date BETWEEN '{FROM}' AND '{TO}'`,
   ad: `
-    SELECT campaign.id, campaign.name, ad_group.id, ad_group_ad.ad.id, metrics.cost_micros,
-           metrics.impressions, metrics.clicks, metrics.conversions, metrics.all_conversions,
+    SELECT campaign.id, campaign.name, campaign.advertising_channel_type, ad_group.id,
+           ad_group_ad.ad.id, ${SPEND_METRICS},
            segments.date, customer.currency_code
     FROM ad_group_ad
     WHERE segments.date BETWEEN '{FROM}' AND '{TO}'`,
+};
+
+/**
+ * Entity-metadata GAQL (A3 entity-sync) — NO metrics, NO date segment (it's a slowly-changing
+ * dimension, not a time series). Authoritative latest name/status/channel/bidding per entity.
+ * status filters exclude REMOVED so dead entities don't churn the dim every cycle, but the
+ * Spark dim still derives is_active from whatever status DOES arrive.
+ */
+const ENTITY_QUERIES: Record<'campaign' | 'adset' | 'ad', string> = {
+  campaign: `
+    SELECT campaign.id, campaign.name, campaign.status,
+           campaign.advertising_channel_type, campaign.bidding_strategy_type
+    FROM campaign
+    WHERE campaign.status != 'REMOVED'`,
+  adset: `
+    SELECT campaign.id, ad_group.id, ad_group.name, ad_group.status
+    FROM ad_group
+    WHERE ad_group.status != 'REMOVED'`,
+  ad: `
+    SELECT campaign.id, ad_group.id, ad_group_ad.ad.id,
+           ad_group_ad.ad.name, ad_group_ad.status
+    FROM ad_group_ad
+    WHERE ad_group_ad.status != 'REMOVED'`,
 };
 
 /** Minimal token-bucket QPS limiter (ADR-AD-7 self-imposed cap). */
@@ -192,6 +256,27 @@ export class GoogleAdsSearchStreamClient {
     for (const batch of batches) {
       for (const r of batch.results ?? []) {
         rows.push(flattenGoogleRow(r, level));
+      }
+    }
+    return rows;
+  }
+
+  /**
+   * Stream ENTITY-metadata rows for a level (A3 entity-sync). NO metrics / NO date window —
+   * the latest name/status/channel/bidding for each campaign / ad_group / ad. 1 query = 1 op,
+   * same QPS bucket + two-error throttle branch as spend.
+   */
+  async streamEntities(level: 'campaign' | 'adset' | 'ad'): Promise<GoogleAdsEntityRow[]> {
+    if (!this.accessToken) {
+      throw new Error('[google-ads-client] not authenticated — call authenticate() first');
+    }
+    const query = ENTITY_QUERIES[level];
+    const url = `${GOOGLE_ADS_API_BASE}/customers/${this.creds.customerId}/googleAds:searchStream`;
+    const batches = await this.postWithThrottle(url, JSON.stringify({ query }));
+    const rows: GoogleAdsEntityRow[] = [];
+    for (const batch of batches) {
+      for (const r of batch.results ?? []) {
+        rows.push(flattenEntityRow(r, level));
       }
     }
     return rows;
@@ -367,15 +452,20 @@ export function classifyGoogleError(
 // ── Row flattening ────────────────────────────────────────────────────────────
 
 interface GoogleRawResult {
-  campaign?: { id?: string; name?: string };
-  adGroup?: { id?: string };
-  adGroupAd?: { ad?: { id?: string } };
+  campaign?: { id?: string; name?: string; advertisingChannelType?: string; status?: string; biddingStrategyType?: string };
+  adGroup?: { id?: string; name?: string; status?: string };
+  adGroupAd?: { ad?: { id?: string; name?: string }; status?: string };
   metrics?: {
     costMicros?: string;
     impressions?: string;
     clicks?: string;
     conversions?: number | string;
     allConversions?: number | string;
+    conversionsValue?: number | string;
+    viewThroughConversions?: number | string;
+    ctr?: number | string;
+    averageCpc?: number | string;
+    averageCpm?: number | string;
   };
   segments?: { date?: string };
   customer?: { currencyCode?: string };
@@ -385,18 +475,68 @@ function flattenGoogleRow(
   r: GoogleRawResult,
   level: 'campaign' | 'adset' | 'ad',
 ): GoogleAdsRawRow {
+  const m = r.metrics;
   return {
     level: level === 'adset' ? 'ad_group' : level,
     campaign_id: r.campaign?.id ?? null,
     campaign_name: r.campaign?.name ?? null,
     ad_group_id: r.adGroup?.id ?? null,
     ad_id: r.adGroupAd?.ad?.id ?? null,
-    cost_micros: r.metrics?.costMicros != null ? String(r.metrics.costMicros) : null,
-    impressions: r.metrics?.impressions != null ? String(r.metrics.impressions) : null,
-    clicks: r.metrics?.clicks != null ? String(r.metrics.clicks) : null,
-    conversions: r.metrics?.conversions != null ? String(r.metrics.conversions) : null,
-    all_conversions: r.metrics?.allConversions != null ? String(r.metrics.allConversions) : null,
+    cost_micros: m?.costMicros != null ? String(m.costMicros) : null,
+    impressions: m?.impressions != null ? String(m.impressions) : null,
+    clicks: m?.clicks != null ? String(m.clicks) : null,
+    conversions: m?.conversions != null ? String(m.conversions) : null,
+    all_conversions: m?.allConversions != null ? String(m.allConversions) : null,
+    // A3 enriched: major-unit double revenue + counts + ratios + micros — the mapper folds them.
+    conversions_value: m?.conversionsValue != null ? String(m.conversionsValue) : null,
+    view_through_conversions: m?.viewThroughConversions != null ? String(m.viewThroughConversions) : null,
+    ctr: m?.ctr != null ? String(m.ctr) : null,
+    average_cpc: m?.averageCpc != null ? String(m.averageCpc) : null,
+    average_cpm: m?.averageCpm != null ? String(m.averageCpm) : null,
+    advertising_channel_type: r.campaign?.advertisingChannelType ?? null,
     segments_date: r.segments?.date ?? null,
     currency_code: r.customer?.currencyCode ?? null,
+  };
+}
+
+/** Flatten an entity-metadata GAQL result row → GoogleAdsEntityRow (A3 entity-sync). */
+function flattenEntityRow(
+  r: GoogleRawResult,
+  level: 'campaign' | 'adset' | 'ad',
+): GoogleAdsEntityRow {
+  const campaignId = r.campaign?.id ?? null;
+  if (level === 'campaign') {
+    return {
+      level,
+      entity_id: campaignId,
+      campaign_id: campaignId,
+      parent_id: null, // a campaign is its own root
+      name: r.campaign?.name ?? null,
+      status: r.campaign?.status ?? null,
+      advertising_channel_type: r.campaign?.advertisingChannelType ?? null,
+      bidding_strategy: r.campaign?.biddingStrategyType ?? null,
+    };
+  }
+  if (level === 'adset') {
+    return {
+      level,
+      entity_id: r.adGroup?.id ?? null,
+      campaign_id: campaignId,
+      parent_id: campaignId, // ad_group → parent campaign
+      name: r.adGroup?.name ?? null,
+      status: r.adGroup?.status ?? null,
+      advertising_channel_type: null,
+      bidding_strategy: null,
+    };
+  }
+  return {
+    level,
+    entity_id: r.adGroupAd?.ad?.id ?? null,
+    campaign_id: campaignId,
+    parent_id: r.adGroup?.id ?? null, // ad → parent ad_group
+    name: r.adGroupAd?.ad?.name ?? null,
+    status: r.adGroupAd?.status ?? null,
+    advertising_channel_type: null,
+    bidding_strategy: null,
   };
 }

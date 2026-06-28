@@ -101,6 +101,18 @@ SERVER_TRUSTED = {
     # MUST take the server-trusted lane or the PIXEL-lane R2 install_token join would SILENTLY DROP it and
     # starve silver_coupon. Kept BYTE-IDENTICAL with bronze_materialize.SERVER_TRUSTED_BRONZE.
     "coupon.upsert.v1",
+    # AD-1: ad.entity.updated is the SHARED Meta+Google entity-metadata canonical (campaign/adset/ad
+    # name/status/objective/advertising_channel_type), emitted by meta-entity-sync / google-entity-sync on
+    # the SAME live collector lane as spend.live.v1 — connector-derived (brand_id server-derived from the
+    # resolved connector row, MT-1; NO install_token / consent). Without server-trust the PIXEL-lane R2 join
+    # SILENTLY DROPS it (tenant_unresolved) and starves silver_campaign's authoritative dim. BYTE-IDENTICAL
+    # with bronze_materialize.SERVER_TRUSTED_BRONZE.
+    "ad.entity.updated",
+    # SHOPFLO lifecycle: the NEW Shopflo checkout-funnel canonicals (webhook-first; brand_id server-derived
+    # from the resolved connector row via the webhook pipeline — MT-1; NO install_token / consent). Like
+    # checkout.abandoned.v1 they MUST take the server-trusted lane or the PIXEL-lane R2 join would drop them
+    # and starve silver_checkout_signal. Kept BYTE-IDENTICAL with bronze_materialize.SERVER_TRUSTED_BRONZE.
+    "shopflo.checkout_started.v1", "shopflo.checkout_step.v1", "shopflo.checkout_completed.v1",
 }
 LEDGER_ONLY = {"settlement.live.v1"}
 

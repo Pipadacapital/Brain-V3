@@ -64,13 +64,17 @@ export class InitiateOAuthCommand {
     // Store server-side with TTL (NN-4: brand-bound, single-use, ≤15-min)
     await this.stateStore.set(brandId, nonce.value, OAuthStateNonce.TTL_SECONDS);
 
-    // Build Shopify install URL
+    // Build Shopify install URL.
+    // NO grant_options[]=per-user: that requests an ONLINE access token (user-bound, ~24h expiry).
+    // Brain's background workers (repull/backfill/webhook delivery) run with NO user session, so they
+    // need the DEFAULT OFFLINE token — long-lived, app-scoped, no refresh dance. Requesting the online
+    // token but storing it as permanent (the callback ignores expires_in/associated_user) made every
+    // background read 401 ~24h after connect. Omitting grant_options[] = offline token (HIGH fix).
     const params = new URLSearchParams({
       client_id: clientId,
       scope: SHOPIFY_SCOPES,
       redirect_uri: callbackUrl,
       state: nonce.value,
-      'grant_options[]': 'per-user',
     });
 
     const installUrl = `https://${shopDomain}/admin/oauth/authorize?${params.toString()}`;

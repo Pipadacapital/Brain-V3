@@ -51,7 +51,7 @@ import {
   cleanupConnectorFixtures,
   assertBrainApp,
 } from './helpers/connector-lifecycle-fixtures.js';
-import { acquireRepullLock, upsertRepullCursor } from '../jobs/shopify-repull/run.js';
+import { acquireRepullLock, upsertRepullCursor, claimSyncingState } from '../jobs/shopify-repull/run.js';
 
 // ── Config ─────────────────────────────────────────────────────────────────────
 
@@ -444,6 +444,9 @@ describe('T6: Overlap-lock — FOR UPDATE SKIP LOCKED prevents double re-pull', 
         .query(`DELETE FROM connector_cursor WHERE connector_instance_id = $1`, [lockCiId])
         .catch(() => undefined);
       await superPool
+        .query(`DELETE FROM connector_sync_status WHERE connector_instance_id = $1`, [lockCiId])
+        .catch(() => undefined);
+      await superPool
         .query(`DELETE FROM connector_instance WHERE id = $1`, [lockCiId])
         .catch(() => undefined);
     }
@@ -541,4 +544,50 @@ describe('T8: Cross-brand read-seam isolation — Brand B-scoped read cannot see
     const b = await pollIcebergBronzeCount(sr, { brandId: BRAND_B, eventId }, { min: 1, timeoutMs: 3_000 });
     expect(b).toBe(0);
   }, 75_000);
+});
+
+// ── T9: Stale-'syncing' lease self-heal (CRIT-1) ───────────────────────────────
+// claimSyncingState must RE-CLAIM a 'syncing' row whose lease is stale (a crashed/evicted
+// worker never cleared it), so a future repull self-heals instead of skipping forever.
+// A FRESH 'syncing' lease (a genuinely concurrent repull) must still be rejected — no double pull.
+
+describe('T9: claimSyncingState — stale syncing lease is re-claimed; fresh syncing lease is rejected', () => {
+  const STALE_CI = 'c07ec7c1-0c00-4c00-8c00-0000000000a9';
+
+  it('a >15-min-stale syncing row is re-claimed (true); a fresh syncing row is rejected (false)', async () => {
+    await assertBrainApp(appPool);
+
+    // Seed a dedicated BRAND_B connector + sync_status (BRAND_A/CI_ID is used by other tests).
+    await seedConnectorInstance(superPool, {
+      brandId: BRAND_B,
+      ciId: STALE_CI,
+      status: 'connected',
+      shopDomain: 'stale-lease.myshopify.com',
+    });
+    await seedSyncStatus(superPool, { brandId: BRAND_B, ciId: STALE_CI, state: 'connected' });
+
+    try {
+      // ── Case 1: STALE lease — force state='syncing' with updated_at 20 min in the past.
+      await superPool.query(
+        `UPDATE connector_sync_status
+            SET state = 'syncing', updated_at = now() - INTERVAL '20 minutes'
+          WHERE brand_id = $1 AND connector_instance_id = $2`,
+        [BRAND_B, STALE_CI],
+      );
+      const reclaimed = await claimSyncingState(appPool, BRAND_B, STALE_CI);
+      expect(reclaimed).toBe(true); // stale lease → re-claimed (CRIT-1 self-heal)
+
+      // The winning claim re-stamped updated_at to ~now → state is a FRESH 'syncing' lease.
+      // ── Case 2: FRESH lease — a second concurrent claim must be rejected (no double API calls).
+      const blocked = await claimSyncingState(appPool, BRAND_B, STALE_CI);
+      expect(blocked).toBe(false);
+    } finally {
+      await superPool
+        .query(`DELETE FROM connector_sync_status WHERE connector_instance_id = $1`, [STALE_CI])
+        .catch(() => undefined);
+      await superPool
+        .query(`DELETE FROM connector_instance WHERE id = $1`, [STALE_CI])
+        .catch(() => undefined);
+    }
+  });
 });

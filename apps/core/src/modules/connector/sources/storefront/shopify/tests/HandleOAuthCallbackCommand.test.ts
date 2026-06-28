@@ -316,4 +316,96 @@ describe('HandleOAuthCallbackCommand', () => {
     // Result is valid (happy path still works)
     expect(result.status).toBe('connected');
   });
+
+  // ── CRIT-3: connect wires live webhook registration ───────────────────────
+  it('CRIT-3: registers the live webhook subscriptions on connect (full slash-form topic set)', async () => {
+    const stateStore = new InProcessOAuthStateStore();
+    const secretsMgr = new LocalSecretsManager();
+    const connectorRepo = makeConnectorRepo();
+    const syncStatusRepo = makeSyncStatusRepo();
+    const emitEvent = vi.fn().mockResolvedValue(undefined);
+
+    const postedTopics: string[] = [];
+    global.fetch = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes('/admin/oauth/access_token')) {
+        return { ok: true, status: 200, json: async () => ({ access_token: 'shpat_live_token' }), text: async () => '' } as Response;
+      }
+      if (u.includes('/webhooks.json')) {
+        if (!init || init.method === 'GET') {
+          return { ok: true, status: 200, json: async () => ({ webhooks: [] }), text: async () => '' } as Response;
+        }
+        const parsed = JSON.parse(init.body as string) as { webhook: { topic: string } };
+        postedTopics.push(parsed.webhook.topic);
+        return { ok: true, status: 201, json: async () => ({ webhook: { id: 1 } }), text: async () => '' } as Response;
+      }
+      throw new Error(`unexpected fetch ${u}`);
+    }) as unknown as typeof global.fetch;
+
+    // appEnv='production' un-stubs RegisterWebhooksCommand; webhookCallbackBaseUrl is injected.
+    const cmd = new HandleOAuthCallbackCommand(
+      secretsMgr,
+      stateStore,
+      connectorRepo,
+      syncStatusRepo,
+      emitEvent,
+      'production',
+      'https://api.brain.ai',
+    );
+
+    const stateNonce = 'state-webhook-register';
+    await stateStore.set(BRAND_ID, stateNonce, 900);
+    const query = buildValidQuery(stateNonce);
+
+    const result = await cmd.execute({ query, idempotencyKey: 'idem-wh' });
+
+    expect(result.status).toBe('connected');
+    expect([...postedTopics].sort()).toEqual(
+      [
+        'app/uninstalled',
+        'customers/data_request',
+        'customers/redact',
+        'orders/cancelled',
+        'orders/create',
+        'orders/fulfilled',
+        'orders/paid',
+        'orders/updated',
+        'shop/redact',
+      ].sort(),
+    );
+  });
+
+  it('CRIT-3: webhook registration failure does NOT fail the connect (fail-safe)', async () => {
+    const stateStore = new InProcessOAuthStateStore();
+    const secretsMgr = new LocalSecretsManager();
+    const connectorRepo = makeConnectorRepo();
+    const syncStatusRepo = makeSyncStatusRepo();
+    const emitEvent = vi.fn().mockResolvedValue(undefined);
+
+    global.fetch = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes('/admin/oauth/access_token')) {
+        return { ok: true, status: 200, json: async () => ({ access_token: 'shpat_live_token' }), text: async () => '' } as Response;
+      }
+      if (u.includes('/webhooks.json')) {
+        // GET ok, POST hard-fails (500) → command must swallow and still return connected.
+        if (!init || init.method === 'GET') {
+          return { ok: true, status: 200, json: async () => ({ webhooks: [] }), text: async () => '' } as Response;
+        }
+        return { ok: false, status: 500, json: async () => ({}), text: async () => 'boom' } as Response;
+      }
+      throw new Error(`unexpected fetch ${u}`);
+    }) as unknown as typeof global.fetch;
+
+    const cmd = new HandleOAuthCallbackCommand(
+      secretsMgr, stateStore, connectorRepo, syncStatusRepo, emitEvent, 'production', 'https://api.brain.ai',
+    );
+    const stateNonce = 'state-webhook-register-fail';
+    await stateStore.set(BRAND_ID, stateNonce, 900);
+    const result = await cmd.execute({ query: buildValidQuery(stateNonce), idempotencyKey: 'idem-wh-fail' });
+
+    expect(result.status).toBe('connected');
+    expect(connectorRepo.save).toHaveBeenCalledOnce();
+    expect(emitEvent).toHaveBeenCalled();
+  });
 });

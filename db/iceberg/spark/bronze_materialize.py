@@ -107,7 +107,15 @@ PIXEL_INSTALL_REFRESH_TTL_SECONDS = int(os.environ.get("PIXEL_INSTALL_REFRESH_TT
 # the resolved connector row — MT-1; no install_token/consent, so it MUST take the server-trusted lane,
 # not the PIXEL lane that would quarantine it). It is the SEPARATE return canonical (NOT the shipment
 # lane) so a return is never folded as a forward shipment status (the false-delivery bug SR-4 fixes).
-SERVER_TRUSTED_BRONZE = {"order.live.v1", "order.backfill.v1", "spend.live.v1", "shopflo.checkout_abandoned.v1", "gokwik.rto_predict.v1", "shiprocket.shipment_status.v1", "shiprocket.return_status.v1", "checkout.abandoned.v1", "gokwik.checkout_started.v1", "gokwik.checkout_step.v1", "payment.attempted.v1", "payment.authorized.v1"}
+# CRIT-4 (Shopify resource events): product.upsert.v1 / customer.upsert.v1 / refund.recorded.v1 /
+# fulfillment.recorded.v1 are CONNECTOR-derived canonical RESOURCE events — emitted by the Shopify
+# backfill/repull/webhook path with a server-derived brand_id (MT-1, from the resolved connector row,
+# NEVER the API response) and NO install_token / consent signal. Without server-trust they fell to the
+# PIXEL lane and were SILENTLY DROPPED by the R2 inner-join on a null install_token — starving
+# silver_refund / silver_fulfillment / silver_product_variant / silver_inventory_level. They take the
+# SAME lane as order.live.v1 (server-derived, no pixel signal). MUST stay byte-identical with
+# silver_collector_event.SERVER_TRUSTED (the gate moved to Silver under ADR-0006 P3).
+SERVER_TRUSTED_BRONZE = {"order.live.v1", "order.backfill.v1", "spend.live.v1", "shopflo.checkout_abandoned.v1", "gokwik.rto_predict.v1", "shiprocket.shipment_status.v1", "shiprocket.return_status.v1", "checkout.abandoned.v1", "gokwik.checkout_started.v1", "gokwik.checkout_step.v1", "payment.attempted.v1", "payment.authorized.v1", "product.upsert.v1", "customer.upsert.v1", "refund.recorded.v1", "fulfillment.recorded.v1"}
 LEDGER_ONLY = {"settlement.live.v1"}
 
 # Postgres (for R2 install_token→brand resolution via pixel_installation). Read as the superuser

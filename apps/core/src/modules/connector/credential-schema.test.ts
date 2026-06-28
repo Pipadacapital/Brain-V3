@@ -209,6 +209,39 @@ describe('provisionGeneratedSecrets — connect-time minted secrets (SR-2)', () 
   });
 });
 
+/**
+ * #17: the SR-2 minting mechanism is GENERALIZED to GoKwik — its webhook lane is HMAC-gated and was
+ * failing closed because the bundle held only {appid,appsecret} (no webhook_secret). GoKwik now mints
+ * a webhook_secret at connect when the merchant leaves the optional form field blank.
+ */
+describe('provisionGeneratedSecrets — GoKwik webhook_secret minting (#17)', () => {
+  const def = getDefinition('gokwik')!;
+  const spec = def.credentialConnect!;
+  let counter = 0;
+  const gen = () => `gk-minted-${++counter}`;
+
+  it('gokwik spec declares webhook_secret as a generated field + the appid routing header', () => {
+    expect(spec.generatedSecretFields).toEqual(['webhook_secret']);
+    expect(spec.webhookRoutingHeader).toBe('x-gokwik-appid');
+  });
+
+  it('mints webhook_secret when the merchant did not supply one (bundle had only appid/appsecret)', () => {
+    counter = 0;
+    const plan = planCredentialConnect(def.authFields!, spec, { appid: 'app_1', appsecret: 'sec' });
+    expect(plan.secretBundle).toEqual({ appid: 'app_1', appsecret: 'sec' }); // pure plan: no webhook_secret yet
+    const { bundle, generated } = provisionGeneratedSecrets(plan.secretBundle, spec, gen);
+    expect(generated).toEqual({ webhook_secret: 'gk-minted-1' });
+    expect(bundle).toEqual({ appid: 'app_1', appsecret: 'sec', webhook_secret: 'gk-minted-1' });
+  });
+
+  it('honours a merchant-supplied webhook_secret (never regenerated)', () => {
+    const plan = planCredentialConnect(def.authFields!, spec, { appid: 'app_1', appsecret: 'sec', webhook_secret: 'gk-user' });
+    const { bundle, generated } = provisionGeneratedSecrets(plan.secretBundle, spec, gen);
+    expect(generated).toEqual({});
+    expect(bundle['webhook_secret']).toBe('gk-user');
+  });
+});
+
 describe('splitConnectorCredentials — trims + drops blanks, schema is authoritative', () => {
   it('ignores unknown keys and blank values', () => {
     const fields = [

@@ -12,7 +12,8 @@ THE FOLDED TRANSFORM CHAIN (dbt → Spark, inlined here so this one job reproduc
   silver_order_recognition.sql  — emit the recognition ledger events (provisional / finalization /
                                   cod_delivery_confirmed / cod_rto_clawback / cancellation / refund),
                                   signed minor-unit money, brain_id from silver_identity_link, COD from
-                                  gokwik.awb_status.v1 terminal_class, prepaid horizon from brand horizons.
+                                  shiprocket.shipment_status.v1 terminal_class (the LIVE logistics lane;
+                                  the retired gokwik.awb_status.v1 is gone), prepaid horizon from horizons.
   int_order_lifecycle.sql       — normalize each ledger event_type → canonical lifecycle_state +
                                   is_terminal + state_rank.
   silver_order_state.sql        — the deterministic terminal-wins FOLD: 1 row per (brand_id, order_id).
@@ -244,7 +245,17 @@ def build(spark: SparkSession) -> str:
         StringType(),
     )
 
-    # ── latest AWB terminal_class per order (COD recognition signal; absent in this Bronze → no COD rows) ──
+    # ── latest logistics terminal_class per order (COD recognition signal) ──
+    # HIGH COD fix: this CTE used to key on the RETIRED `gokwik.awb_status.v1` (migration 0117 — the wrong
+    # AWB model, emitted by NOTHING now), so cod_delivery_confirmed / cod_rto_clawback never fired and
+    # delivered COD orders were stranded at lifecycle_state='placed' with order_value_minor=0 (COD revenue
+    # understated for a COD-heavy IN store). REPOINTED to `shiprocket.shipment_status.v1` — the LIVE forward
+    # logistics lane (SERVER_TRUSTED, already in Bronze). Its `properties.terminal_class` is the SAME
+    # deterministic class as before, computed at the mapper boundary by the SHARED @brain/logistics-status
+    # authority: delivered -> cod_delivery_confirmed, rto -> cod_rto_clawback (other/none never fire).
+    # IMPORTANT: read ONLY the forward shipment lane here — the RETURN lane (`shiprocket.return_status.v1`)
+    # is DELIBERATELY excluded (it carries return_class, not terminal_class; folding a return whose status
+    # is "delivered" as a forward DELIVERED is the SR-4 false-delivery bug). Returns flow to silver_return.
     spark.sql(
         """
         with awb_raw as (
@@ -254,7 +265,7 @@ def build(spark: SparkSession) -> str:
                 get_json_object(payload, '$.properties.terminal_class') as terminal_class,
                 occurred_at
             from bronze_events
-            where event_type = 'gokwik.awb_status.v1'
+            where event_type = 'shiprocket.shipment_status.v1'
         ),
         awb_latest as (
             select brand_id, order_id, terminal_class, occurred_at,

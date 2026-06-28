@@ -87,6 +87,14 @@ SERVER_TRUSTED = {
     # wrong AWB/opaque-envelope model — see docs/architecture/gokwik-connector-reimplementation.md).
     "checkout.abandoned.v1", "gokwik.checkout_started.v1", "gokwik.checkout_step.v1",
     "payment.attempted.v1", "payment.authorized.v1",
+    # CRIT-4: the Shopify CONNECTOR-derived RESOURCE events. Emitted by the Shopify backfill/repull/webhook
+    # path with a server-derived brand_id (MT-1, from the resolved connector row — NEVER the API response)
+    # and NO install_token / consent signal. Without server-trust they fell to the PIXEL lane and were
+    # SILENTLY DROPPED by the R2 join on a null install_token, starving silver_refund / silver_fulfillment /
+    # silver_product_variant / silver_inventory_level (all of which read THIS gated keystone). They take the
+    # SAME lane as order.live.v1 (server-derived, no pixel signal). Kept BYTE-IDENTICAL with
+    # bronze_materialize.SERVER_TRUSTED_BRONZE.
+    "product.upsert.v1", "customer.upsert.v1", "refund.recorded.v1", "fulfillment.recorded.v1",
 }
 LEDGER_ONLY = {"settlement.live.v1"}
 

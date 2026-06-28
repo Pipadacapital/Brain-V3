@@ -228,6 +228,16 @@ export const CONNECTOR_CATALOG: readonly ConnectorDefinition[] = [
       // appid is the webhook routing id (resolve_gokwik_connector_by_merchant). Kept in the secret
       // bundle alongside {appsecret, webhook_secret} so the webhook receiver can verify the HMAC.
       bundleNonSecretFields: ['appid'],
+      // #17: GENERALIZED webhook_secret provisioning (same SR-2 mechanism as Shiprocket). GoKwik's
+      // webhook lane is HMAC-gated, fail-closed (GokwikWebhookStrategy reads webhook_secret from this
+      // bundle). The merchant MAY paste their own GoKwik-configured secret via the optional webhook_secret
+      // form field; when they leave it blank, Brain MINTS a high-entropy webhook_secret at connect so the
+      // webhook receiver is never left without a key (previously the bundle held only {appid,appsecret}
+      // → every GoKwik webhook 401'd). provisionGeneratedSecrets never overwrites a user-supplied value.
+      generatedSecretFields: ['webhook_secret'],
+      // The header GoKwik must send so the webhook resolves this tenant (resolve_gokwik_connector_by_
+      // merchant). Its value is the accountKey = appid. Surfaced in the connect response next to the URL.
+      webhookRoutingHeader: 'x-gokwik-appid',
     },
   },
   {

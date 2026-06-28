@@ -68,12 +68,12 @@ export async function computeAdSpendTimeseries(
       currency_code: string;
       spend_minor: string | number;
     }>(
-      `SELECT date_format(date_trunc('${grainUnit}', CAST(stat_date AS DATETIME)), '%Y-%m-%d') AS bucket,
+      `SELECT date_format(date_trunc('${grainUnit}', CAST(stat_date AS TIMESTAMP)), '%Y-%m-%d') AS bucket,
               platform,
               currency_code,
               SUM(spend_minor) AS spend_minor
          FROM brain_serving.mv_silver_marketing_spend
-        WHERE stat_date BETWEEN '${fromStr}' AND '${toStr}'
+        WHERE stat_date BETWEEN DATE '${fromStr}' AND DATE '${toStr}'
           ${platformPredicate}
           AND ${BRAND_PREDICATE}
         GROUP BY bucket, platform, currency_code

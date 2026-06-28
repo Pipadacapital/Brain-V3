@@ -40,8 +40,8 @@ export type DataHealthResult =
 /** Bounded window for the event-volume histogram. */
 const VOLUME_WINDOW_DAYS = 30;
 
-/** The Iceberg Bronze table in the StarRocks external catalog (db/starrocks/external_iceberg_catalog.sql). */
-const ICEBERG_BRONZE = 'brain_bronze_local.brain_bronze.collector_events';
+/** The Iceberg Bronze table over Trino (Brain V4 — StarRocks removed); Trino's default catalog is `iceberg`. */
+const ICEBERG_BRONZE = 'iceberg.brain_bronze.collector_events';
 
 export interface DataHealthDeps extends EngineDeps {
   /** StarRocks pool — required to read the Iceberg Bronze catalog. Absent → honest no_data. */
@@ -80,12 +80,12 @@ async function readBronzeIceberg(
     if (Number(existsRows[0]?.n ?? 0) === 0) {
       return { exists: false, volume: [], lastIngestAt: null };
     }
-    // Per-day volume over the bounded window. StarRocks date_trunc + date_sub; the brand predicate
+    // Per-day volume over the bounded window. Trino date_trunc + interval math; the brand predicate
     // is appended by the seam. VOLUME_WINDOW_DAYS is a constant, never user-interpolated.
     const volumeRows = await scope.runScoped<{ bucket: Date | string; count: number | string }>(
       `SELECT date_trunc('day', occurred_at) AS bucket, COUNT(*) AS count
          FROM ${ICEBERG_BRONZE}
-        WHERE occurred_at >= date_sub(now(), INTERVAL ${VOLUME_WINDOW_DAYS} DAY) AND ${BRAND_PREDICATE}
+        WHERE occurred_at >= (now() - INTERVAL '${VOLUME_WINDOW_DAYS}' DAY) AND ${BRAND_PREDICATE}
         GROUP BY 1 ORDER BY 1 ASC`,
     );
     const ingestRows = await scope.runScoped<{ last_ingest_at: Date | string | null }>(

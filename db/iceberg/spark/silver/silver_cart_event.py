@@ -185,4 +185,4 @@ def build(spark):
 
 
 if __name__ == "__main__":
-    run_job("silver-cart-event", build)
+    run_job("silver-cart-event", build, target_table="silver_cart_event")

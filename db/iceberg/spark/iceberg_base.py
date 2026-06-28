@@ -62,6 +62,17 @@ def build_spark(app_name: str = "brain-iceberg") -> SparkSession:
         # Match the Bronze session: consumer-based offset fetching (harmless for pure-batch jobs;
         # keeps a future Kafka-reading Silver job behaving exactly like the proven Bronze sink).
         .config("spark.sql.streaming.kafka.useDeprecatedOffsetFetching", "true")
+        # ── AQE everywhere (correctness-neutral; only changes the RUNTIME execution plan) ──────────────
+        # Every Spark job in Brain (Silver/Gold transforms + the Bronze sinks) builds its session here, so
+        # enabling Adaptive Query Execution at the source gives the WHOLE fleet runtime adaptivity for free:
+        # coalesce small shuffle partitions, split skewed ones, and right-size joins based on ACTUAL data —
+        # so a job handles a 10x data spike without a code change or a bigger heap. maxPartitionBytes caps
+        # input split size so even a full scan streams in small tasks rather than a few giant ones (the
+        # write-buffer OOM we hit). All env-overridable; results are identical with or without AQE.
+        .config("spark.sql.adaptive.enabled", os.environ.get("SPARK_AQE_ENABLED", "true"))
+        .config("spark.sql.adaptive.coalescePartitions.enabled", "true")
+        .config("spark.sql.adaptive.skewJoin.enabled", "true")
+        .config("spark.sql.files.maxPartitionBytes", os.environ.get("SPARK_MAX_PARTITION_BYTES", str(128 * 1024 * 1024)))
         .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
         .config(f"spark.sql.catalog.{CATALOG}", "org.apache.iceberg.spark.SparkCatalog")
         .config(f"spark.sql.catalog.{CATALOG}.type", "rest")

@@ -220,4 +220,4 @@ def build(spark):
 
 
 if __name__ == "__main__":
-    run_job("silver-page-view", build)
+    run_job("silver-page-view", build, target_table="silver_page_view")

@@ -177,4 +177,4 @@ def build(spark):
 
 
 if __name__ == "__main__":
-    run_job("silver-dispute", build)
+    run_job("silver-dispute", build, target_table="silver_dispute")

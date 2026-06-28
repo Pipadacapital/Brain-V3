@@ -223,4 +223,4 @@ def build(spark):
 
 
 if __name__ == "__main__":
-    run_job("silver-cod-rto", build)
+    run_job("silver-cod-rto", build, target_table="silver_cod_rto")

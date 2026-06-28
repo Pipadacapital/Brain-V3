@@ -51,6 +51,21 @@ export interface Utm {
   content?: string;
 }
 
+/**
+ * FIRST-TOUCH snapshot (real attribution gap fix). Captured ONCE on the first event ever, persisted
+ * to localStorage (`__brain_first_touch`), and attached to `properties.first_touch` on EVERY event
+ * thereafter — so first-touch attribution survives past the landing page (utm/click_ids are re-read
+ * from the current URL each event and otherwise lost after the landing hit). NEVER overwritten.
+ */
+export interface FirstTouch {
+  utm?: Utm;
+  click_ids?: ClickIds;
+  landing_path?: string;
+  referrer?: string;
+  /** ISO-8601 UTC time of the first event ever. */
+  ts: string;
+}
+
 /** RAW-ONLY signals (RO1) that ride properties — opaque at the edge, modeled downstream. */
 export interface EventProperties {
   /** REQUIRED — the server's tenant-key derivation input (R2). */
@@ -59,6 +74,8 @@ export interface EventProperties {
   session_id: string;
   click_ids?: ClickIds;
   utm?: Utm;
+  /** Persisted first-touch snapshot — attached to every event (see FirstTouch). */
+  first_touch?: FirstTouch;
   referrer?: string;
   landing_path?: string;
   device?: { ua_class: 'mobile' | 'desktop'; viewport: string };
@@ -100,7 +117,10 @@ export interface BrowserEnv {
   now(): number;
   /** ISO-8601 now (UTC, 'Z'). */
   nowIso(): string;
+  /** A v4 uuid — used for correlation_id (and as the v7 fallback when crypto is unavailable). */
   uuid(): string;
+  /** A UUIDv7 (48-bit ms timestamp + 74 random bits) — used for the time-ordered event_id. */
+  uuidv7(): string;
   /** Current URL (href). */
   href(): string;
   /** document.referrer. */

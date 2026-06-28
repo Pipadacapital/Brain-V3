@@ -979,6 +979,7 @@ export type AnalyticsTrackingHealthResponse =
       totalEvents: string;          // bigint string
       consentGrantedCount: string;  // bigint string
       consentTotalCount: string;    // bigint string
+      clientDroppedCount: string;   // bigint string — pixel.dropped sum (client-side queue-overflow loss); 0 = none
     };
 
 export interface AnalyticsRecentEventRow {

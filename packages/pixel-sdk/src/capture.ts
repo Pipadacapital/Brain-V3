@@ -13,8 +13,13 @@ import type {
   CollectorEventV1,
   EventProperties,
 } from './types.js';
-import { getOrCreateAnonId, getOrRollSession } from './identity.js';
-import { captureClickIds, captureUtm, type ClickIdCaptureOptions } from './attribution.js';
+import { getOrCreateAnonId, rollSession, endSessionRecord } from './identity.js';
+import {
+  captureClickIds,
+  captureUtm,
+  getOrCreateFirstTouch,
+  type ClickIdCaptureOptions,
+} from './attribution.js';
 import { resolveConsent, defaultConsentReader, type ConsentReader } from './consent.js';
 import { Transport } from './transport.js';
 
@@ -30,6 +35,15 @@ import { Transport } from './transport.js';
 //   - checkout.step_viewed (checkout_steps)  — per-step funnel granularity (step in props)
 //   - user.logged_in     (login)             — account page-type / returning-customer signal
 //   - user.signed_up     (signup)            — new-account signal
+// Behavioural events shared LOCK-STEP with the served pixel (apps/collector pixel-asset.route.ts):
+//   - session.started  → once, at the first event of a new 30-min session            → { }
+//   - session.ended    → on session expiry (next event after >30min) or pagehide       → { session_duration_ms }
+//   - exit_intent      → desktop mouseout leaving through the TOP of the viewport       → { }
+//   - download         → click on an <a> whose href ends in a downloadable extension    → { href, file_ext }
+//   - video            → native <video>/<audio> play|pause|ended                        → { action, src, position_seconds }
+//   - share            → navigator.share() OR a click on a social-share link            → { method }
+// (The DOM auto-instrumentation that DETECTS these lives in browser-entry.ts — the env-injected core
+//  stays unit-testable; it emits them via track()/the session lifecycle.)
 export type EventName =
   | 'page.viewed'
   | 'product.viewed'
@@ -41,7 +55,13 @@ export type EventName =
   | 'checkout.started'
   | 'checkout.step_viewed'
   | 'user.logged_in'
-  | 'user.signed_up';
+  | 'user.signed_up'
+  | 'session.started'
+  | 'session.ended'
+  | 'exit_intent'
+  | 'download'
+  | 'video'
+  | 'share';
 
 export interface PixelOptions {
   /** Override the CMP reader (default reads window.__brainConsent). */
@@ -75,6 +95,8 @@ export interface Pixel {
   signup(extra?: Record<string, unknown>): Promise<void>;
   /** Emit an arbitrary (bounded) event_name. */
   track(name: EventName, extra?: Record<string, unknown>): Promise<void>;
+  /** End the active session NOW (pagehide) → emits session.ended { session_duration_ms } if one exists. */
+  endSession(): Promise<void>;
   /** Re-attempt delivery of any queued events. */
   flush(): Promise<void>;
 }
@@ -91,13 +113,20 @@ export function createPixel(env: BrowserEnv, options: PixelOptions = {}): Pixel 
   const consentReader =
     options.consentReader ?? defaultConsentReader(options.getWindowConsent ?? (() => undefined));
 
-  function buildEvent(name: EventName, extra?: Record<string, unknown>): CollectorEventV1 {
+  // buildEvent takes a RESOLVED sessionId (the session is rolled ONCE per emit, by emit()) so the
+  // session.started / session.ended lifecycle events and the triggering event share a coherent view.
+  function buildEvent(
+    name: EventName,
+    extra: Record<string, unknown> | undefined,
+    sessionId: string,
+  ): CollectorEventV1 {
     const anonId = getOrCreateAnonId(env);
-    const sessionId = getOrRollSession(env);
     const properties: EventProperties = {
       install_token,
       brain_anon_id: anonId,
       session_id: sessionId,
+      // First-touch snapshot persists past the landing page and rides EVERY event (attribution gap).
+      first_touch: getOrCreateFirstTouch(env, options.clickIds),
       referrer: env.referrer() || undefined,
       landing_path: env.pathname(),
       device: { ua_class: env.uaClass(), viewport: env.viewport() },
@@ -112,9 +141,9 @@ export function createPixel(env: BrowserEnv, options: PixelOptions = {}): Pixel 
 
     const event: CollectorEventV1 = {
       schema_version: '1',
-      event_id: env.uuid(), // minted ONCE — Transport reuses on retry (R4)
+      event_id: env.uuidv7(), // UUIDv7, minted ONCE — Transport reuses on retry (R4)
       brand_id, // PARTITIONING ONLY — server derives the authoritative brand from install_token
-      correlation_id: env.uuid(),
+      correlation_id: env.uuid(), // correlation_id stays v4
       event_name: name,
       occurred_at: env.nowIso(),
       properties,
@@ -124,7 +153,27 @@ export function createPixel(env: BrowserEnv, options: PixelOptions = {}): Pixel 
   }
 
   async function emit(name: EventName, extra?: Record<string, unknown>): Promise<void> {
-    await transport.enqueue(buildEvent(name, extra));
+    // Roll the session ONCE; emit any lifecycle events around the triggering event (session.ended for
+    // an expired session FIRST, then session.started for the fresh one, then the actual event).
+    const roll = rollSession(env);
+    if (roll.ended) {
+      await transport.enqueue(
+        buildEvent('session.ended', { session_duration_ms: roll.ended.durationMs }, roll.ended.id),
+      );
+    }
+    if (roll.isNew) {
+      await transport.enqueue(buildEvent('session.started', {}, roll.id));
+    }
+    await transport.enqueue(buildEvent(name, extra, roll.id));
+  }
+
+  async function endSession(): Promise<void> {
+    const ended = endSessionRecord(env);
+    if (ended) {
+      await transport.enqueue(
+        buildEvent('session.ended', { session_duration_ms: ended.durationMs }, ended.id),
+      );
+    }
   }
 
   return {
@@ -138,6 +187,7 @@ export function createPixel(env: BrowserEnv, options: PixelOptions = {}): Pixel 
     login: (extra) => emit('user.logged_in', extra),
     signup: (extra) => emit('user.signed_up', extra),
     track: (name, extra) => emit(name, extra),
+    endSession: () => endSession(),
     flush: () => transport.flush(),
   };
 }

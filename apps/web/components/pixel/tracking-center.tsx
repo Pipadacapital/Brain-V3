@@ -36,6 +36,18 @@ function useHeaderStatus(): { tone: StatusTone; label: string; pulse: boolean } 
   const { data: tracking } = useTrackingHealth({ livePoll: false });
 
   if (tracking?.state === 'has_data') {
+    // Roll-up the honest client-side delivery signal: if the pixel dropped any events
+    // client-side (pixel.dropped sum > 0), surface it as a warning rather than a flat
+    // green — never hide real client-side loss behind "Receiving events".
+    let clientDropped = 0n;
+    try {
+      clientDropped = BigInt(tracking.clientDroppedCount ?? '0');
+    } catch {
+      clientDropped = 0n;
+    }
+    if (clientDropped > 0n) {
+      return { tone: 'warning', label: 'Receiving — some client-side drops', pulse: false };
+    }
     return { tone: 'success', label: 'Receiving events', pulse: false };
   }
   switch (pixelHealth?.state) {

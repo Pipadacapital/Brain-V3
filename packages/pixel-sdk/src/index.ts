@@ -13,13 +13,17 @@
 export { createPixel, originOf } from './capture.js';
 export type { Pixel, PixelOptions, EventName } from './capture.js';
 export { normalizeBrandHost } from './normalize-host.js';
-export { getOrCreateAnonId, getOrRollSession } from './identity.js';
+export { uuidV7 } from './uuid.js';
+export { getOrCreateAnonId, getOrRollSession, rollSession, endSessionRecord } from './identity.js';
+export type { SessionRoll } from './identity.js';
 export {
   captureClickIds,
   captureUtm,
+  getOrCreateFirstTouch,
   parseQuery,
   CLICK_ID_URL_KEYS,
   CLICK_ID_COOKIE_KEYS,
+  FIRST_TOUCH_KEY,
 } from './attribution.js';
 export type { ClickIdCaptureOptions } from './attribution.js';
 export { resolveConsent, defaultConsentReader } from './consent.js';
@@ -31,6 +35,7 @@ export type {
   ConsentFlags,
   ClickIds,
   Utm,
+  FirstTouch,
   EventProperties,
   BrowserEnv,
   BrainBootstrap,

@@ -10,7 +10,9 @@
  * the wire (ADR-2).
  *
  * It additionally carries zero-merchant-code auto-instrumentation (SPA nav, cart-add/remove/update,
- * checkout step, login/signup, clicks, scroll-depth) that the injectable SDK core deliberately does
+ * checkout step, login/signup, clicks, scroll-depth, session start/end, exit-intent, file download,
+ * native video/audio, social share) + persisted first-touch attribution that the injectable SDK core
+ * deliberately does
  * NOT (the core is env-injected + unit-testable). Click-id + behavioral-event COVERAGE is kept in
  * lock-step between the two: URL ids (fbclid/gclid/ttclid/msclkid/gbraid/wbraid/dclid) + cookie ids
  * (_fbc/_fbp DISTINCT, li_fat_id, _epik→epik), and the cart/checkout/account event set.
@@ -41,7 +43,7 @@ export const PIXEL_JS = `(function(){
   var INGEST = (boot.ingest_base_url || (location.protocol + "//" + location.host)).replace(/\\/$/, "");
   var COLLECT_URL = INGEST + "/collect";
   var VERSION = ${JSON.stringify(PIXEL_VERSION)};
-  var ANON_KEY = "__brain_anon_id", SESSION_KEY = "__brain_session", QUEUE_KEY = "__brain_queue";
+  var ANON_KEY = "__brain_anon_id", SESSION_KEY = "__brain_session", QUEUE_KEY = "__brain_queue", FT_KEY = "__brain_first_touch";
   var SESSION_TTL = 1800000, MAX_QUEUE = 200;
 
   // ── No-event-loss queue policy ──────────────────────────────────────────────
@@ -60,11 +62,63 @@ export const PIXEL_JS = `(function(){
     if (W.crypto && typeof W.crypto.randomUUID === "function") return W.crypto.randomUUID();
     return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, function(c){ var r=Math.random()*16|0, v=c==="x"?r:(r&0x3)|0x8; return v.toString(16); });
   }
+  // UUIDv7 (RFC 9562): 48-bit big-endian Unix-ms timestamp + 74 random bits, version nibble 0x7, RFC-4122
+  // variant. Time-ordered ids keep event_id monotonic-ish (better Bronze locality + dedup) while staying a
+  // valid uuid for CollectorEventV1Schema. event_id is minted ONCE per event in build() and reused on retry
+  // (the queued object is resent unchanged, R4). Falls back to the v4 uuid() ONLY when crypto is unavailable.
+  function uuidv7(){
+    try {
+      if (!(W.crypto && typeof W.crypto.getRandomValues === "function")) return uuid();
+      var rnd = new W.Uint8Array(16); W.crypto.getRandomValues(rnd);
+      var ms = Date.now(), b = new Array(16);
+      // 48-bit ms timestamp, big-endian (use division/modulo — bitwise ops truncate to 32 bits in JS).
+      b[0] = Math.floor(ms / 0x10000000000) % 256;
+      b[1] = Math.floor(ms / 0x100000000) % 256;
+      b[2] = Math.floor(ms / 0x1000000) % 256;
+      b[3] = Math.floor(ms / 0x10000) % 256;
+      b[4] = Math.floor(ms / 0x100) % 256;
+      b[5] = ms % 256;
+      for (var i = 6; i < 16; i++) b[i] = rnd[i];
+      b[6] = (b[6] & 0x0f) | 0x70; // version 7
+      b[8] = (b[8] & 0x3f) | 0x80; // RFC-4122 variant (10xxxxxx)
+      var h = []; for (var j = 0; j < 16; j++) h.push(("0" + (b[j] & 0xff).toString(16)).slice(-2));
+      return h.slice(0,4).join("") + "-" + h.slice(4,6).join("") + "-" + h.slice(6,8).join("") + "-" + h.slice(8,10).join("") + "-" + h.slice(10,16).join("");
+    } catch(e){ return uuid(); }
+  }
   function anonId(){ var a = get(ANON_KEY); if (a) return a; a = uuid(); set(ANON_KEY, a); return a; }
   function sessionId(){
     var now = Date.now(), raw = get(SESSION_KEY);
-    if (raw){ try { var s = JSON.parse(raw); if (s && s.id && typeof s.last==="number" && (now - s.last) < SESSION_TTL){ set(SESSION_KEY, JSON.stringify({id:s.id,last:now})); return s.id; } } catch(e){} }
-    var id = uuid(); set(SESSION_KEY, JSON.stringify({id:id,last:now})); return id;
+    if (raw){ try { var s = JSON.parse(raw); if (s && s.id && typeof s.last==="number" && (now - s.last) < SESSION_TTL){ set(SESSION_KEY, JSON.stringify({id:s.id,last:now,started:s.started||s.last})); return s.id; } } catch(e){} }
+    var id = uuid(); set(SESSION_KEY, JSON.stringify({id:id,last:now,started:now})); return id;
+  }
+  // Session lifecycle detection — computed BEFORE build() rotates the session (read-only here). Returns the
+  // session.started / session.ended events that should accompany the triggering event:
+  //   - no stored session            → { started:true }                       (brand-new session begins)
+  //   - stored session idle > 30 min → { ended:{ms}, started:true }           (old session ends, new begins)
+  //   - active session               → null                                   (nothing to emit)
+  function sessionLifecycle(){
+    var now = Date.now(), raw = get(SESSION_KEY);
+    if (!raw) return { started: true };
+    try { var s = JSON.parse(raw);
+      if (s && s.id && typeof s.last === "number"){
+        if ((now - s.last) >= SESSION_TTL) return { ended: { id: s.id, ms: (s.last - (s.started || s.last)) }, started: true };
+        return null;
+      }
+    } catch(e){}
+    return { started: true };
+  }
+  // First-touch persistence (real attribution gap): capture the VERY FIRST landing context once and pin it to
+  // localStorage, then ride properties.first_touch on EVERY event thereafter. Today utm/click_ids are re-read
+  // from the CURRENT url each event and are gone the moment the visitor leaves the landing page — so post-
+  // landing events lose their acquisition source. NEVER overwrite an existing first-touch (first wins).
+  function firstTouch(q){
+    var raw = get(FT_KEY);
+    if (raw){ try { var f = JSON.parse(raw); if (f && typeof f === "object") return f; } catch(e){} }
+    var ft = { landing_path: location.pathname, referrer: D.referrer || undefined, ts: new Date().toISOString() };
+    var ci = clickIds(q); if (ci) ft.click_ids = ci;
+    var um = utm(q); if (um) ft.utm = um;
+    set(FT_KEY, JSON.stringify(ft));
+    return ft;
   }
   function parseQuery(){
     var out = {}, q = location.search.replace(/^\\?/, "");
@@ -110,15 +164,17 @@ export const PIXEL_JS = `(function(){
   }
   function uaClass(){ return /Mobi|Android|iPhone|iPad/i.test(NS.userAgent) ? "mobile" : "desktop"; }
 
-  function build(name, extra){
+  function build(name, extra, sessOverride){
     var q = parseQuery();
-    var props = { install_token: INSTALL_TOKEN, brain_anon_id: anonId(), session_id: sessionId(),
+    var props = { install_token: INSTALL_TOKEN, brain_anon_id: anonId(), session_id: sessOverride || sessionId(),
       referrer: D.referrer || undefined, landing_path: location.pathname,
       device: { ua_class: uaClass(), viewport: (W.innerWidth + "x" + W.innerHeight) }, collector_version: VERSION };
+    props.first_touch = firstTouch(q); // pinned acquisition context, survives past the landing page
     var ci = clickIds(q); if (ci) props.click_ids = ci;
     var um = utm(q); if (um) props.utm = um;
     if (extra) for (var key in extra){ if (Object.prototype.hasOwnProperty.call(extra,key)) props[key]=extra[key]; }
-    var ev = { schema_version: "1", event_id: uuid(), brand_id: BRAND_ID, correlation_id: uuid(),
+    // event_id = UUIDv7 (time-ordered, was v4); correlation_id stays v4. Minted ONCE here, reused on retry (R4).
+    var ev = { schema_version: "1", event_id: uuidv7(), brand_id: BRAND_ID, correlation_id: uuid(),
       event_name: name, occurred_at: new Date().toISOString(), properties: props };
     var cf = consent(); if (cf) ev.consent_flags = cf;
     return ev;
@@ -186,9 +242,9 @@ export const PIXEL_JS = `(function(){
     step();
   }
 
-  function emit(name, extra){
+  function emitRaw(name, extra, sessOverride){
     var q = readQ();
-    q.push(build(name, extra));
+    q.push(build(name, extra, sessOverride));
     // Piggyback a CRITICAL pixel.dropped marker so the collector learns about any client-side loss
     // (No-event-loss observability). Done HERE (not inside writeQ) so eviction never re-enters emit.
     if (_droppedSinceReport > 0 && name !== "pixel.dropped"){
@@ -196,6 +252,18 @@ export const PIXEL_JS = `(function(){
       q.push(build("pixel.dropped", { dropped_count: n, reason: "queue_overflow" }));
     }
     writeQ(q); flush();
+  }
+  // Public emit. Session lifecycle is detected BEFORE build() rotates the session, but the session.started /
+  // session.ended markers are queued AFTER the triggering event — so the first synchronous POST stays the
+  // triggering event (REC-5: still ONE event per POST). session.ended carries the EXPIRED session's id +
+  // duration; session.started carries the freshly-minted session id. session.* events skip re-detection.
+  function emit(name, extra){
+    var lc = (name.indexOf("session.") !== 0) ? sessionLifecycle() : null;
+    emitRaw(name, extra);
+    if (lc){
+      if (lc.ended) emitRaw("session.ended", { session_duration_ms: lc.ended.ms }, lc.ended.id);
+      if (lc.started) emitRaw("session.started", {});
+    }
   }
 
   // ── Identity capture (the anon→customer BRIDGE) ────────────────────────────
@@ -343,6 +411,64 @@ export const PIXEL_JS = `(function(){
     if (em && em.value) identify({ email: em.value });
   } catch(e){} }, true);
 
+  // ── Content-engagement helpers (download / share classification) ───────────
+  // A link whose href resolves to a downloadable asset → file_ext. mp4 is treated as a FILE download here
+  // (a direct media link), distinct from an in-page <video> element (handled by the media listeners below).
+  var DL_EXT = ["pdf","zip","dmg","exe","csv","xlsx","doc","docx","ppt","pptx","rar","7z","pkg","mp3","mp4"];
+  function downloadExt(href){
+    if (!href) return null;
+    var clean = ("" + href).split("?")[0].split("#")[0];
+    var dot = clean.lastIndexOf("."); if (dot < 0) return null;
+    var e = clean.slice(dot + 1).toLowerCase();
+    for (var i = 0; i < DL_EXT.length; i++){ if (DL_EXT[i] === e) return e; }
+    return null;
+  }
+  // Known social-share sharer URLs → the share method/network. navigator.share() is handled separately.
+  function shareMethod(href){
+    if (!href) return null;
+    var h = ("" + href).toLowerCase();
+    if (h.indexOf("facebook.com/sharer") >= 0 || h.indexOf("facebook.com/share.php") >= 0) return "facebook";
+    if (h.indexOf("twitter.com/intent") >= 0 || h.indexOf("x.com/intent") >= 0) return "twitter";
+    if (h.indexOf("linkedin.com/sharing") >= 0 || h.indexOf("linkedin.com/sharearticle") >= 0) return "linkedin";
+    if (h.indexOf("api.whatsapp.com/send") >= 0 || h.indexOf("wa.me/") >= 0) return "whatsapp";
+    if (h.indexOf("t.me/share") >= 0 || h.indexOf("telegram.me/share") >= 0) return "telegram";
+    return null;
+  }
+
+  // Web Share API — monkey-patch navigator.share so a native share invocation is captured (method=web_share).
+  try {
+    if (NS.share && !NS.__brainShareWrapped){
+      var _origShare = NS.share; NS.__brainShareWrapped = 1;
+      NS.share = function(){ try { emit("share", { method: "web_share" }); } catch(e){} return _origShare.apply(NS, arguments); };
+    }
+  } catch(e){}
+
+  // Exit intent (DESKTOP only) — the cursor leaves through the TOP edge of the viewport (clientY<=0) with no
+  // relatedTarget (it left the document). A strong "about to bounce" signal for exit-offer / abandonment logic.
+  // Throttled to avoid spamming when the user repeatedly grazes the top chrome.
+  if (uaClass() === "desktop"){
+    var _lastExit = 0;
+    D.addEventListener("mouseout", function(ev){ try {
+      var y = (ev && ev.clientY != null) ? ev.clientY : 1;
+      if (y <= 0 && !(ev && ev.relatedTarget)){ var now = Date.now(); if ((now - _lastExit) > 3000){ _lastExit = now; emit("exit_intent", {}); } }
+    } catch(e){} }, true);
+  }
+
+  // Native media engagement — <video>/<audio> play/pause/ended. Media events do NOT bubble, so we listen in the
+  // CAPTURE phase on the document (where they DO pass). position_seconds = the playhead at the moment.
+  function mediaListener(action){
+    return function(ev){ try {
+      var el = ev && ev.target; if (!el) return; var tn = ("" + (el.tagName || "")).toLowerCase();
+      if (tn !== "video" && tn !== "audio") return;
+      emit("video", { action: action, src: el.currentSrc || el.src || undefined, position_seconds: typeof el.currentTime === "number" ? Math.round(el.currentTime) : undefined });
+    } catch(e){} };
+  }
+  try {
+    D.addEventListener("play", mediaListener("play"), true);
+    D.addEventListener("pause", mediaListener("pause"), true);
+    D.addEventListener("ended", mediaListener("ended"), true);
+  } catch(e){}
+
   // Click tracking + frustration signals — links/buttons (element.clicked), plus rage clicks and
   // dead clicks. The latter two are UX-friction signals that power "checkout bottleneck" /
   // "conversion drop" insights. No PII.
@@ -357,7 +483,13 @@ export const PIXEL_JS = `(function(){
     var a = el.closest ? el.closest("a,button,input,select,textarea,label,[role=button],[onclick],[data-brain-track],[contenteditable]") : null;
     if (a){
       var txt = (a.textContent || "").replace(/\\s+/g, " ").trim().slice(0, 80);
-      emit("element.clicked", { element: (a.tagName || "").toLowerCase(), text: txt || undefined, href: (a.getAttribute && a.getAttribute("href")) || undefined, el_id: a.id || undefined });
+      var hrefV = (a.getAttribute && a.getAttribute("href")) || undefined;
+      emit("element.clicked", { element: (a.tagName || "").toLowerCase(), text: txt || undefined, href: hrefV, el_id: a.id || undefined });
+      // File download — a link to a downloadable asset (pdf/zip/csv/…); the click is the only signal we get
+      // (the actual GET is a browser navigation we never see). Behavioral content-engagement, no PII.
+      var dext = downloadExt(hrefV); if (dext) emit("download", { href: hrefV, file_ext: dext });
+      // Social share via a known sharer link (the Web Share API path is monkey-patched separately).
+      var smeth = shareMethod(hrefV); if (smeth) emit("share", { method: smeth });
     } else {
       // Dead click: the element LOOKS clickable (cursor:pointer) but resolves to NO interactive
       // ancestor — the user expected something to happen and nothing did. Precise (not every stray click).
@@ -371,8 +503,18 @@ export const PIXEL_JS = `(function(){
   var sm = {};
   W.addEventListener("scroll", function(){ try { var h = D.documentElement; var pct = Math.round((((W.scrollY || h.scrollTop) + W.innerHeight) / (h.scrollHeight || 1)) * 100); var ms = [25,50,75,100]; for (var k = 0; k < ms.length; k++){ if (pct >= ms[k] && !sm[ms[k]]){ sm[ms[k]] = 1; emit("scroll.depth", { percent: ms[k] }); } } } catch(e){} }, { passive: true });
 
+  // session.ended on unload — when a session exists, close it out with its elapsed duration. Guarded to fire
+  // at most once per page load (a pagehide can fire more than once across bfcache transitions). Carries the
+  // current session id so the ended marker is attributed to the right session.
+  var _endedOnUnload = false;
+  function endSessionOnUnload(){
+    if (_endedOnUnload) return;
+    var raw = get(SESSION_KEY); if (!raw) return;
+    try { var s = JSON.parse(raw); if (s && s.id){ _endedOnUnload = true; emitRaw("session.ended", { session_duration_ms: Date.now() - (s.started || s.last || Date.now()) }, s.id); } } catch(e){}
+  }
+
   // Durable retry triggers (NO Set-Cookie — stateless edge, REC-4).
-  W.addEventListener("pagehide", flush);
+  W.addEventListener("pagehide", function(){ endSessionOnUnload(); flush(); });
   D.addEventListener("visibilitychange", function(){ if (D.visibilityState === "hidden") flush(); });
 
   // Auto-fire the initial page + typed view.

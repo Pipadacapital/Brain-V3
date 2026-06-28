@@ -414,6 +414,15 @@ def build(spark: SparkSession):
         partitioned_by="bucket(256, brand_id), days(occurred_at)",
     )
 
+    # Skip-guard: the meta/google spend raw lanes are EMPTY until an ad connector syncs + the V4 raw-lane
+    # producer (G1) lands payload-schema records. With no source rows in EITHER lane there is nothing to
+    # normalize; return cleanly instead of failing on the legacy struct columns build_meta/build_google
+    # still read. Full payload-JSON normalize is tracked as connector-platform G1.
+    if (spark.table(RAW_META_TABLE).limit(1).count() == 0
+            and spark.table(RAW_GOOGLE_TABLE).limit(1).count() == 0):
+        print(f"[silver-ad-spend-normalize] {RAW_META_TABLE} + {RAW_GOOGLE_TABLE} both empty — skipping (awaiting ad-connector data / G1)", flush=True)
+        return TARGET, 0
+
     meta_good, meta_rejects = build_meta(spark)
     google_good, google_rejects = build_google(spark)
     union = meta_good.unionByName(google_good)

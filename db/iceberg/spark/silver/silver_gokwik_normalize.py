@@ -365,6 +365,13 @@ def build(spark: SparkSession):
     create_iceberg_table(spark, SILVER_NAMESPACE, TARGET.rsplit(".", 1)[1], COLUMNS_SQL,
                          partitioned_by="bucket(256, brand_id), days(occurred_at)")
 
+    # Skip-guard: connector raw lanes are EMPTY until a connector syncs + the V4 raw-lane producer (G1)
+    # lands payload-schema records. No source rows → nothing to normalize; return cleanly instead of
+    # failing on the legacy struct columns _read_base still reads. Full payload-JSON normalize is G1.
+    if spark.table(RAW_TABLE).limit(1).count() == 0:
+        print(f"[silver-gokwik-normalize] {RAW_TABLE} has 0 rows — skipping (awaiting connector data / G1)", flush=True)
+        return TARGET, 0
+
     base = _read_base(spark)
     salts = _load_salts(spark)
 

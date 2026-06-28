@@ -157,6 +157,12 @@ def build(spark: SparkSession):
                          partitioned_by="bucket(256, brand_id), days(occurred_at)")
 
     raw = spark.table(RAW_TABLE)
+    # Skip-guard: connector raw lanes are EMPTY until a connector syncs + the V4 raw-lane producer (G1)
+    # lands payload-schema records. No source rows → nothing to normalize; return cleanly instead of
+    # failing on the legacy struct columns this job still reads. Full payload-JSON normalize is G1.
+    if raw.limit(1).count() == 0:
+        print(f"[silver-razorpay-normalize] {RAW_TABLE} has 0 rows — skipping (awaiting connector data / G1)", flush=True)
+        return TARGET, 0
     s = NEST  # the verbatim Razorpay recon item is nested under `settlement` in the envelope
 
     # C4: only the allowlisted recon-item fields are selected; card.* is NEVER read → PCI boundary held.

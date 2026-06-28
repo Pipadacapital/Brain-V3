@@ -49,8 +49,15 @@ def build_spark(app_name: str = "brain-iceberg") -> SparkSession:
 
     All wiring is env-overridable; dev defaults target the compose service names (iceberg-rest:8181,
     minio:9000). Pass a job-specific app_name for log/UI attribution.
+
+    NOTE on helper-module distribution: jobs do `sys.path.insert(...)` so the shared helpers import on
+    the DRIVER, but that does NOT reach Spark's Python WORKERS (separate executor processes). A job that
+    uses a helper INSIDE a UDF — e.g. silver_order_state's `dq_violations_udf` from `_silver_technical`
+    (the Stage-1 DQ gate) — then dies on the executor with `ModuleNotFoundError: No module named
+    '_silver_technical'`. So after the session exists we `addPyFile` every shared helper, which ships it
+    to the workers AND puts it on their PYTHONPATH. Idempotent + harmless for jobs that don't use them.
     """
-    return (
+    spark = (
         SparkSession.builder.appName(app_name)
         # Match the Bronze session: consumer-based offset fetching (harmless for pure-batch jobs;
         # keeps a future Kafka-reading Silver job behaving exactly like the proven Bronze sink).
@@ -69,6 +76,28 @@ def build_spark(app_name: str = "brain-iceberg") -> SparkSession:
         .config(f"spark.sql.catalog.{CATALOG}.s3.secret-access-key", os.environ.get("AWS_SECRET_ACCESS_KEY", "brainbrain"))
         .getOrCreate()
     )
+    # Ship the shared Python helpers to executors so UDF closures can import them on the workers
+    # (see the docstring). _base = db/iceberg/spark. We ship iceberg_base itself plus EVERY underscore-
+    # prefixed shared module under silver/ and gold/ (e.g. _silver_technical, _raw_normalize,
+    # _customer_360_enrich) — generic so a new helper used inside a UDF never re-triggers
+    # ModuleNotFoundError on the workers. Per-file add is idempotent + best-effort.
+    _base = os.path.dirname(os.path.abspath(__file__))
+    _helpers = [os.path.join(_base, "iceberg_base.py")]
+    for _sub in ("silver", "gold"):
+        _dir = os.path.join(_base, _sub)
+        if os.path.isdir(_dir):
+            for _f in sorted(os.listdir(_dir)):
+                # `_*.py` = shared helper modules (not the `silver_*`/`gold_*` job entrypoints, which are
+                # spark-submitted directly and never imported by a UDF).
+                if _f.startswith("_") and _f.endswith(".py") and not _f.endswith("_test.py"):
+                    _helpers.append(os.path.join(_dir, _f))
+    for _h in _helpers:
+        if os.path.exists(_h):
+            try:
+                spark.sparkContext.addPyFile(_h)
+            except Exception:  # noqa: BLE001 — re-adding the same file across getOrCreate reuse is non-fatal
+                pass
+    return spark
 
 
 def ensure_namespace(spark: SparkSession, namespace: str, catalog: str = CATALOG) -> str:
@@ -130,4 +159,53 @@ def create_iceberg_table(
         )
         """
     )
+
+    # Additive schema reconciliation. CREATE TABLE IF NOT EXISTS is a NO-OP against a pre-existing table,
+    # so when a mart's column contract grows in a new release (e.g. PR #288 added aov_minor + the
+    # Customer360 enrichment columns to gold_customer_360), the old table keeps its old shape and the
+    # job's MERGE then dies with `UNRESOLVED_COLUMN: t.<new_col>`. Iceberg supports schema evolution, so
+    # we diff the desired columns against the live table and ALTER TABLE ADD COLUMN the missing ones
+    # (always nullable — you cannot add a NOT NULL column to a populated table without a default). This
+    # makes EVERY Silver/Gold mart resilient to additive evolution instead of failing on drift. Existing
+    # rows get NULL for the new column until the next refresh repopulates them — correct for a rebuildable
+    # derived mart. Non-additive changes (type change, drop, rename) are intentionally NOT auto-applied.
+    _reconcile_additive_columns(spark, fqtn, columns_sql)
     return fqtn
+
+
+def _parse_column_defs(columns_sql: str) -> list[tuple[str, str]]:
+    """Parse a CREATE-TABLE column list into [(name, type), …]. One column per line; the first token is
+    the name, the rest (minus a trailing comma and any NOT NULL) is the Iceberg type. Types may contain
+    commas (decimal(38,9)) so we split on NEWLINES, never commas. Pure/testable."""
+    out: list[tuple[str, str]] = []
+    for raw in columns_sql.splitlines():
+        line = raw.strip().rstrip(",").strip()
+        if not line:
+            continue
+        parts = line.split(None, 1)
+        if len(parts) != 2:
+            continue
+        name, rest = parts[0], parts[1]
+        col_type = rest.upper().replace("NOT NULL", "").strip().rstrip(",").strip()
+        if name and col_type:
+            out.append((name, col_type))
+    return out
+
+
+def _reconcile_additive_columns(spark: SparkSession, fqtn: str, columns_sql: str) -> None:
+    """ALTER TABLE ADD COLUMN for every desired column absent from the live table (additive-only)."""
+    desired = _parse_column_defs(columns_sql)
+    if not desired:
+        return
+    try:
+        existing = {f.name.lower() for f in spark.table(fqtn).schema.fields}
+    except Exception:  # noqa: BLE001 — table just created/empty; nothing to reconcile
+        return
+    for name, col_type in desired:
+        if name.lower() in existing:
+            continue
+        try:
+            spark.sql(f"ALTER TABLE {fqtn} ADD COLUMN {name} {col_type}")
+            print(f"[iceberg] reconciled {fqtn}: ADD COLUMN {name} {col_type}", flush=True)
+        except Exception as exc:  # noqa: BLE001 — one bad column must not block the others / the job
+            print(f"[iceberg] WARN could not add {name} {col_type} to {fqtn}: {exc}", flush=True)

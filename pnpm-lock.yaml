@@ -123,9 +123,6 @@ importers:
       '@brain/events':
         specifier: workspace:*
         version: link:../../packages/events
-      '@brain/feature-flags':
-        specifier: workspace:*
-        version: link:../../packages/feature-flags
       '@brain/gokwik-mapper':
         specifier: workspace:*
         version: link:../../packages/gokwik-mapper
@@ -323,9 +320,6 @@ importers:
       '@brain/pixel-sdk':
         specifier: workspace:*
         version: link:../../packages/pixel-sdk
-      '@brain/ui':
-        specifier: workspace:*
-        version: link:../../packages/ui
       '@hookform/resolvers':
         specifier: ^3.9.0
         version: 3.10.0(react-hook-form@7.79.0(react@18.3.1))
@@ -755,8 +749,6 @@ importers:
         version: 2.1.9(@types/node@20.19.43)
 
   packages/tenant-context: {}
-
-  packages/ui: {}
 
   packages/woocommerce-mapper:
     dependencies:

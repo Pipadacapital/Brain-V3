@@ -52,6 +52,7 @@ import { StatusBadge, type StatusTone } from '@/components/ui/status-badge';
 import { SectionCard } from '@/components/ui/section-card';
 import { EmptyState } from '@/components/ui/empty-state';
 import { SyncNowControl } from '@/components/connectors/sync-now-control';
+import { BackfillControl } from '@/components/connectors/backfill-control';
 import { ConnectorLogo } from '@/components/connectors/connector-logo';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
@@ -504,6 +505,12 @@ function ConnectorTile({
             })}
             {activeOrFirst?.id && !noneActive && (
               <SyncNowControl connectorId={activeOrFirst.id} className="border-t border-border pt-3" />
+            )}
+            {/* G6: historical backfill trigger + live progress. The component was fully built and tested
+                but never imported — mounting it here turns on history-import + an "Importing history…"
+                progress bar on every connected tile, next to the incremental Sync-now control. */}
+            {activeOrFirst?.id && !noneActive && (
+              <BackfillControl connectorId={activeOrFirst.id} className="border-t border-border pt-3" />
             )}
           </div>
         ) : storefrontLock ? (

@@ -32,7 +32,11 @@ export async function runJourneyStitchExport(): Promise<StitchExportResult> {
       )
     ).rows;
 
-    await pgPool.query('TRUNCATE TABLE ops.silver_journey_stitch');
+    // Full-table reload via DELETE (NOT TRUNCATE): migration 0116 deliberately grants brain_app
+    // SELECT/INSERT/UPDATE/DELETE but NOT TRUNCATE (least privilege — TRUNCATE needs table ownership
+    // or the TRUNCATE grant). TRUNCATE here raised "permission denied for table silver_journey_stitch".
+    // DELETE with no WHERE matches the documented reload design (0116 line 54).
+    await pgPool.query('DELETE FROM ops.silver_journey_stitch');
     for (let i = 0; i < rows.length; i += BATCH) {
       const chunk = rows.slice(i, i + BATCH);
       const params: unknown[] = [];

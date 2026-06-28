@@ -26,7 +26,6 @@
     "@brain/contracts": "workspace:*",
     "@brain/db": "workspace:*",
     "@brain/events": "workspace:*",
-    "@brain/feature-flags": "workspace:*",
     "@brain/identity-core": "workspace:*",
     "@brain/metric-engine": "workspace:*",
     "@brain/money": "workspace:*",

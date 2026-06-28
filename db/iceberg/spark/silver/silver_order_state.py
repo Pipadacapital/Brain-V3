@@ -226,7 +226,7 @@ def build(spark: SparkSession) -> str:
             col("brand_id"),
             lit("order.live.v1").alias("source"),
             col("event_id").alias("bronze_event_id"),
-            lit(TABLE).alias("canonical_target"),
+            lit(TABLE_NAME).alias("canonical_target"),
             array_join(col("_dq"), ",").alias("reason"),
             col("payload"),
         ),

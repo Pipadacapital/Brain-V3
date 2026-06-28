@@ -160,6 +160,23 @@ def ensure_table(spark, table_fqtn: str) -> None:
         )
         """
     )
+    # Schema-drift guard. CREATE IF NOT EXISTS is a NO-OP against a pre-existing table, so a table left
+    # over from an older landing implementation (e.g. the retired Kafka-Connect Iceberg sink, whose raw
+    # schema was [connector_instance_id, fetched_at, order, …] with NO Kafka-coordinate columns) keeps
+    # its legacy shape — and the foreachBatch MERGE then dies MID-STREAM with a cryptic
+    # `UNRESOLVED_COLUMN: topic`. Detect that drift HERE, at startup, and fail loudly with the table name
+    # and the remedy. Non-destructive by design: a streaming job must never silently drop a table that may
+    # hold data — migration/drop is an explicit operator action.
+    required = {"topic", "kafka_partition", "kafka_offset", "payload"}
+    existing = {f.name for f in spark.table(table_fqtn).schema.fields}
+    missing = required - existing
+    if missing:
+        raise RuntimeError(
+            f"[bronze-raw] {table_fqtn} has a legacy/incompatible schema "
+            f"(missing {sorted(missing)}; present {sorted(existing)}). It predates the canonical "
+            f"Spark-SS raw envelope. Drop it (`DROP TABLE {table_fqtn}`) so it is recreated with the "
+            f"correct schema, or migrate it, then restart the landing job."
+        )
 
 
 def project_raw(batch_df):
@@ -271,10 +288,29 @@ def main() -> None:
         # Two-phase startup (the cold-start fix) — see bronze_materialize.py. Phase 1 drains the backlog
         # in bounded chunks (Trigger.AvailableNow) then terminates; phase 2 resumes the SAME checkpoint
         # as a live processingTime stream that only ever sees small steady-state batches.
+        #
+        # Phase 1 is BEST-EFFORT. Unlike the collector lane (always has a backlog), the connector raw
+        # lanes are routinely EMPTY on a cold start (a brand that hasn't synced any connector yet) or
+        # have data on only some of the nine topics. Trigger.AvailableNow over a mix of empty + freshly
+        # created Kafka topics trips a known Spark bug — the prefetch enumerates all partitions but
+        # latestOffset returns only the partitions that have data, so the sets disagree and the query
+        # dies with "should provide the same topic partitions in pre-fetched offset to end offset". That
+        # would crash-loop this sink in prod for any not-yet-synced brand. So: try the drain, and on ANY
+        # failure fall through to phase 2. It is SAFE — phase 2 shares the SAME checkpoint and offsets
+        # commit only after the durable Iceberg append, so a failed/partial phase 1 loses nothing; the
+        # continuous stream re-evaluates partitions each micro-batch and processes the backlog in bounded
+        # (maxOffsetsPerTrigger) steady-state batches.
         print("[bronze-raw] phase 1/2 — draining backlog (availableNow, chunked)…", flush=True)
-        drain = build_writer(spark, topics, routing).trigger(availableNow=True).start()
-        drain.awaitTermination()
-        print("[bronze-raw] phase 1/2 done — starting continuous stream", flush=True)
+        try:
+            drain = build_writer(spark, topics, routing).trigger(availableNow=True).start()
+            drain.awaitTermination()
+            print("[bronze-raw] phase 1/2 done — starting continuous stream", flush=True)
+        except Exception as e:  # noqa: BLE001 — degrade to continuous; phase 2 drains via shared checkpoint
+            print(
+                f"[bronze-raw] phase 1/2 drain skipped ({type(e).__name__}: {e}); "
+                "continuous stream will drain the backlog in bounded batches",
+                flush=True,
+            )
 
         print(f"[bronze-raw] phase 2/2 — continuous stream (every {PROCESSING_TIME})…", flush=True)
         live = build_writer(spark, topics, routing).trigger(processingTime=PROCESSING_TIME).start()

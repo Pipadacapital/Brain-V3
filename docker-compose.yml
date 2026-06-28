@@ -217,9 +217,18 @@ services:
 
   # Kafka topic bootstrap (idempotent). Ported from `rpk` to the Kafka CLI
   # (kafka-topics.sh) using the same apache/kafka image. Shares the broker's network
-  # namespace (like spark-bronze-sink) so the PLAINTEXT advertised
-  # listener `localhost:9092` resolves to the broker. Same topic set + partitions
-  # + retention as before; `--if-not-exists` keeps it idempotent across restarts.
+  # namespace (like spark-bronze-sink) so the PLAINTEXT advertised listener
+  # `localhost:9092` resolves to the broker. `--if-not-exists` keeps it idempotent.
+  #
+  # NOTE: uses LIST-form entrypoint with a `|` literal block — NOT `entrypoint: >`.
+  # The folded scalar (`>`) silently kept the more-indented `--topic/--partitions/--config`
+  # continuation lines as separate literal lines, so the shell ran `--topic` as a command
+  # (`/bin/sh: --topic: not found`) and NO topics were created. The literal block + `\`
+  # line-continuations below pass each kafka-topics.sh call as one shell command.
+  #
+  # Creates BOTH `dev.*` and `prod.*` prefixes: NODE_ENV picks the live prefix
+  # (prod.* under APP_ENV=local-prod, dev.* otherwise) so both boots find their topics.
+  # `$$` survives compose interpolation → literal `$` for the shell.
   redpanda-init:
     image: apache/kafka:3.8.1
     profiles: ["ingest"]
@@ -227,28 +236,41 @@ services:
     depends_on:
       redpanda:
         condition: service_healthy
-    entrypoint: >
-      /bin/sh -c "
-        KT=/opt/kafka/bin/kafka-topics.sh &&
-        $$KT --bootstrap-server localhost:9092 --create --if-not-exists
-          --topic dev.collector.event.v1 --partitions 12 --replication-factor 1
-          --config retention.ms=604800000 &&
-        $$KT --bootstrap-server localhost:9092 --create --if-not-exists
-          --topic dev.collector.order.backfill.v1 --partitions 12 --replication-factor 1
-          --config retention.ms=2592000000 &&
-        $$KT --bootstrap-server localhost:9092 --create --if-not-exists
-          --topic dev.collector.event.v1.dlq --partitions 12 --replication-factor 1
-          --config retention.ms=2592000000 &&
-        $$KT --bootstrap-server localhost:9092 --create --if-not-exists
-          --topic dev.collector.event.v1.quarantine --partitions 12 --replication-factor 1
-          --config retention.ms=2592000000 &&
-        for e in orders customers shipments payments sessions ads; do
-          $$KT --bootstrap-server localhost:9092 --create --if-not-exists
-            --topic dev.brain.$$e --partitions 12 --replication-factor 1
-            --config retention.ms=604800000;
-        done &&
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        KT=/opt/kafka/bin/kafka-topics.sh
+        mk() {
+          "$$KT" --bootstrap-server localhost:9092 --create --if-not-exists \
+            --topic "$$1" --partitions "$$2" --replication-factor 1 \
+            --config retention.ms="$$3"
+        }
+        for PFX in dev prod; do
+          # Collector lane (+ DLQ / quarantine / order-backfill)
+          mk "$$PFX.collector.event.v1"            12 604800000
+          mk "$$PFX.collector.order.backfill.v1"   12 2592000000
+          mk "$$PFX.collector.event.v1.dlq"        12 2592000000
+          mk "$$PFX.collector.event.v1.quarantine" 12 2592000000
+          # 9 connector raw lanes (Spark-SS Bronze landing — bronze_raw_landing.py)
+          for LANE in shopify.orders woocommerce.orders meta.spend google.spend \
+                      ga4.rows shiprocket.shipments gokwik.events shopflo.checkout \
+                      razorpay.settlement; do
+            mk "$$PFX.$$LANE.raw.v1" 12 604800000
+          done
+          # Identity + intelligence control/event topics
+          for T in intelligence.cache.invalidate.v1 intelligence.customer360.recomputed.v1 \
+                   intelligence.gold.rewritten.v1 identity.merged.v1 identity.suppressed.v1 \
+                   identity.minted.v1 identity.linked.v1 identity.review_queued.v1; do
+            mk "$$PFX.$$T" 12 604800000
+          done
+          # Internal canonical fan-out lanes
+          for E in orders customers shipments payments sessions ads; do
+            mk "$$PFX.brain.$$E" 12 604800000
+          done
+        done
         echo 'Kafka topics ready'
-      "
     restart: "no"
 
   # Apicurio — FULL_TRANSITIVE compatibility enforced globally

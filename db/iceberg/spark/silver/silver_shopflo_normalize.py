@@ -241,6 +241,12 @@ def build(spark: SparkSession):
                          partitioned_by="bucket(256, brand_id), days(occurred_at)")
 
     raw = spark.table(RAW_TABLE)
+    # Skip-guard: connector raw lanes are EMPTY until a connector syncs + the V4 raw-lane producer (G1)
+    # lands payload-schema records. No source rows → nothing to normalize; return cleanly instead of
+    # failing on the legacy ingest-clock column (fetched_at) this job still reads. Full normalize is G1.
+    if raw.limit(1).count() == 0:
+        print(f"[silver-shopflo-normalize] {RAW_TABLE} has 0 rows — skipping (awaiting connector data / G1)", flush=True)
+        return TARGET, 0
     df = raw.select(
         col(BRAND_COL).cast("string").alias("brand_id"),                 # MT-1: server-trusted envelope ONLY
         col(INGESTED_COL).cast("timestamp").alias("ingested_at_raw"),

@@ -80,6 +80,13 @@ def build(spark: SparkSession):
                          partitioned_by="bucket(256, brand_id), days(occurred_at)")
 
     raw = spark.table(RAW_TABLE)
+    # Skip-guard: the connector raw lanes are EMPTY until a connector syncs and the V4 raw-lane producer
+    # (connector-platform gap G1) lands payload-schema records. With no source rows there is nothing to
+    # normalize, so return cleanly (target already ensured above) instead of failing on the legacy struct
+    # columns this job still reads. Full payload-JSON normalize is tracked as G1.
+    if raw.limit(1).count() == 0:
+        print(f"[silver-shopify-order-normalize] {RAW_TABLE} has 0 rows — skipping (awaiting connector data / G1)", flush=True)
+        return TARGET, 0
     o = "order"  # the verbatim Shopify order is nested under `order` in the envelope (the connector wraps it)
 
     # Pull the fields the order marts need straight off the nested struct (or get_json_object if stored as JSON).

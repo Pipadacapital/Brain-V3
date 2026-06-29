@@ -41,12 +41,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pyspark.sql import SparkSession  # noqa: E402
 
+from pyspark.sql.functions import col, lit  # noqa: E402
+
 from iceberg_base import (  # noqa: E402 — sys.path tweak above
     CATALOG,
     GOLD_NAMESPACE,
     SILVER_NAMESPACE,
     build_spark,
     create_iceberg_table,
+    run_entity_incremental,
 )
 
 SILVER_ORDER_STATE = f"{CATALOG}.{SILVER_NAMESPACE}.silver_order_state"
@@ -65,17 +68,10 @@ _COLUMNS = """
 """.strip("\n")
 
 
-def build(spark: SparkSession) -> str:
-    fqtn = create_iceberg_table(
-        spark,
-        GOLD_NAMESPACE,
-        TABLE_NAME,
-        _COLUMNS,
-        partitioned_by="bucket(256, brand_id)",
-    )
-
-    spark.read.table(SILVER_ORDER_STATE).createOrReplaceTempView("silver_order_state")
-
+def _fold_and_merge(spark: SparkSession, fqtn: str) -> None:
+    """Run the month×lifecycle×currency rollup + MERGE over the CURRENTLY registered `silver_order_state`
+    view (one partition-incremental bucket of brands carrying their FULL order history — so each brand's
+    aggregate is complete). The driver hash-buckets by brand_id."""
     # ── gold_revenue_analytics: month × lifecycle × currency additive rollup (EXACT to the dbt SQL) ──
     rollup_sql = """
         with orders as (
@@ -113,6 +109,27 @@ def build(spark: SparkSession) -> str:
         WHEN MATCHED THEN UPDATE SET *
         WHEN NOT MATCHED THEN INSERT *
         """
+    )
+
+
+def build(spark: SparkSession) -> str:
+    """PARTITION-INCREMENTAL (partition = brand_id): recompute only the brands whose silver_order_state
+    rows changed since the watermark (order_state stamps updated_at when it re-folds → chains the
+    incrementality), each over the brand's FULL order history, adaptively hash-bucketed by brand_id.
+    Unaffected brands' aggregate rows are untouched (same UPDATE/INSERT MERGE as the full job → parity).
+    FULL_REFRESH=1 recomputes all brands. See docs/ops/local-memory-budget.md."""
+    fqtn = create_iceberg_table(
+        spark, GOLD_NAMESPACE, TABLE_NAME, _COLUMNS, partitioned_by="bucket(256, brand_id)",
+    )
+    run_entity_incremental(
+        spark,
+        table_name=TABLE_NAME,
+        source_fqtn=SILVER_ORDER_STATE,
+        event_filter=lit(True),
+        entity_expr=col("brand_id"),
+        fold_fn=lambda: _fold_and_merge(spark, fqtn),
+        view_name="silver_order_state",
+        time_col="updated_at",
     )
     n = spark.table(fqtn).count()
     print(f"[gold_revenue_analytics] MERGE complete → {fqtn} has {n} rows", flush=True)

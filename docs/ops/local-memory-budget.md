@@ -51,6 +51,27 @@ misc 2g ≈ **20.5 GB**. During a refresh one transform job adds ~5 GB → **~25
 leaving ~6.5 GB headroom on a 32 GB VM. The sinks' 4g heaps were sized for cold-start
 backlog drain; if you ever need to claw back room, drop them to 2g in steady state.
 
+## Incremental processing — the grain-safety rule (correctness, not just memory)
+
+Watermark + adaptive batching (`run_job(..., target_table=)`) is applied **only to per-event-grain
+jobs** — where the MERGE pk includes `event_id`, so each output row derives from a single source event.
+For those it's provably correct (parity-tested: `silver_collector_event` 28,627, `silver_engagement_signal`
+1,742, `silver_page_view` 1,875 — incremental == full-refresh).
+
+It is **deliberately NOT applied** to jobs that aggregate/fold across multiple events per key:
+- **entity-grain folds** — `silver_order_state` / `silver_order_line` (min/max/latest over an order's
+  events), `silver_journey` (folds a visitor's touchpoints), `silver_campaign` / `silver_ad_account`
+  (entity dimensions).
+- **sessionization** — `silver_touchpoint` / `silver_sessions` (30-min-gap sessions can span a batch).
+
+A time-window slice would regress those aggregates. They stay **full-refresh + AQE** (Tier 1 — safe,
+and AQE + bounded partitions already prevents the write-buffer OOM). The correct scaling pattern for them
+is **entity-incremental**: find the entities (orders / anons) with new events since the watermark, then
+reprocess each entity's FULL history. That's a separate, careful enhancement — tracked, not rushed.
+
+**Coverage today:** Tier 1 (AQE + bounded partitions) = every Spark job. Tier 2 (watermark + adaptive)
+= the 10 per-event-grain Silver jobs. Lane 1 (Kafka→Bronze) = native streaming incrementality.
+
 ## If an OOM recurs
 
 1. `docker inspect <ctr> --format '{{.State.OOMKilled}} {{.State.ExitCode}}'` →

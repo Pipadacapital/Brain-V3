@@ -60,8 +60,12 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # silver/ — for _silver_technical
 
+from datetime import timedelta
+
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import array_join, col, lit, size
+from pyspark.sql.functions import (
+    abs as abs_, array_join, col, get_json_object, hash as hash_, lit, size,
+)
 from pyspark.sql.types import IntegerType
 
 from iceberg_base import (  # noqa: E402 — sys.path tweak above
@@ -69,6 +73,8 @@ from iceberg_base import (  # noqa: E402 — sys.path tweak above
     SILVER_NAMESPACE,
     build_spark,
     create_iceberg_table,
+    read_job_watermark,
+    write_job_watermark,
 )
 from _silver_technical import dq_violations_udf, write_quarantine  # noqa: E402
 
@@ -96,6 +102,10 @@ TOUCHPOINT_EVENT_TYPES = (
     "'user.logged_in', 'user.signed_up', 'identify', 'scroll.depth', 'element.clicked', "
     "'rage.click', 'dead.click'"
 )
+
+# Python list form of TOUCHPOINT_EVENT_TYPES (for the entity-incremental affected-visitor discovery +
+# bucket filter via DataFrame .isin()). Parsed from the same SQL-literal constant → always in sync.
+_TP_TYPES = [t.strip().strip("'") for t in TOUCHPOINT_EVENT_TYPES.replace("\n", " ").split(",") if t.strip()]
 
 # StarRocks murmur_hash3_32 seed (verified: see module docstring). MurmurHash3 x86 32-bit over UTF-8 bytes.
 MURMUR_SEED = int(os.environ.get("MURMUR_HASH3_SEED", "104729"))
@@ -218,17 +228,12 @@ def _read_stitch(spark: SparkSession):
         return None
 
 
-def build(spark: SparkSession) -> str:
-    fqtn = create_iceberg_table(
-        spark,
-        SILVER_NAMESPACE,
-        TABLE_NAME,
-        _COLUMNS,
-        partitioned_by="bucket(256, brand_id), days(occurred_at)",
-    )
-    _register_murmur_udf(spark)
-    spark.read.table(BRONZE_TABLE).createOrReplaceTempView("bronze_events")
-
+def _fold_and_merge(spark: SparkSession, fqtn: str, stitch_join: str, stitched_order: str, stitched_brain: str) -> None:
+    """Run the touchpoint sessionization fold + idempotent MERGE over whatever `bronze_events` view is
+    CURRENTLY registered. For ENTITY-INCREMENTAL the caller registers it as one hash-bucket of the
+    visitors (brand_id, brain_anon_id) that have NEW touchpoint events, carrying each visitor's FULL
+    history — so sessionization (session_seq / touch_seq / first-last) is complete and never mis-split.
+    The murmur UDF + the stitch_one view are registered ONCE by build() (bucket-independent)."""
     # ── stg_touchpoint_events: type payload.properties.* (carrying pj for replay), Stage-1 gate, dedup ──
     # The typed `source` projection — carries pj so the Stage-1 gate can quarantine a replayable original.
     source_sql = f"""
@@ -401,35 +406,7 @@ def build(spark: SparkSession) -> str:
     """
     spark.sql(sessionized_sql).createOrReplaceTempView("int_touchpoint_sessionized")
 
-    # ── stitch lookup (deterministic earliest per (brand_id, stitched_anon_id) — D-5 read-back) ──
-    stitch = _read_stitch(spark)
-    if stitch is not None:
-        stitch.createOrReplaceTempView("silver_journey_stitch")
-        spark.sql(
-            """
-            with stitch as (
-                select brand_id, stitched_anon_id, order_id, stitched_brain_id,
-                    row_number() over (
-                        partition by brand_id, stitched_anon_id
-                        order by created_at asc, order_id asc
-                    ) as _stitch_rn
-                from silver_journey_stitch
-            )
-            select brand_id, stitched_anon_id, order_id, stitched_brain_id
-            from stitch where _stitch_rn = 1
-            """
-        ).createOrReplaceTempView("stitch_one")
-        stitch_join = (
-            "left join stitch_one s "
-            "on t.brand_id = s.brand_id and t.brain_anon_id = s.stitched_anon_id"
-        )
-        stitched_order = "s.order_id"
-        stitched_brain = "s.stitched_brain_id"
-    else:
-        stitch_join = ""
-        stitched_order = "cast(null as string)"
-        stitched_brain = "cast(null as string)"
-
+    # stitch_one is registered ONCE by build() (bucket-independent); stitch_join/stitched_* are params.
     # ── silver_touchpoint: the stitch join + the 400-day TTL/partition-window guard ──
     final_sql = f"""
         select
@@ -450,7 +427,9 @@ def build(spark: SparkSession) -> str:
     """
     spark.sql(final_sql).createOrReplaceTempView("silver_touchpoint_new")
 
-    # Idempotent MERGE on the (brand_id, brain_anon_id, touch_seq) PK — replay-safe upsert.
+    # Idempotent MERGE on the (brand_id, brain_anon_id, touch_seq) PK — replay-safe upsert. touch_seq is
+    # monotonic (touches are append-only), so re-folding a visitor's FULL history only updates existing
+    # touch_seqs + inserts new ones — never orphans a row.
     spark.sql(
         f"""
         MERGE INTO {fqtn} t
@@ -460,6 +439,96 @@ def build(spark: SparkSession) -> str:
         WHEN NOT MATCHED THEN INSERT *
         """
     )
+
+
+def build(spark: SparkSession) -> str:
+    """ENTITY-INCREMENTAL touchpoint sessionization. The fold is per-VISITOR (brand_id, brain_anon_id) —
+    session_seq / touch_seq depend on a visitor's full ordered touchpoints — so a time slice would mis-split
+    sessions. Instead: (1) find visitors with NEW touchpoint events since the watermark, (2) adaptively
+    hash-bucket them (all of a visitor's events land in ONE bucket), (3) re-sessionize each bucket reading
+    those visitors' FULL history. Idempotent MERGE; touch_seq only grows so no orphans. FULL_REFRESH=1 (or
+    no watermark) re-folds ALL visitors, still bucketed. See docs/ops/local-memory-budget.md.
+
+    Watermark lives in the shared silver_job_watermark side-table (this target carries no ingested_at).
+    Knobs: FULL_REFRESH, SILVER_INCREMENTAL_OVERLAP_HOURS (default 2), SILVER_BATCH_TARGET_ROWS
+    (visitors/bucket; default 500000), SILVER_MAX_CHUNKS (default 48)."""
+    import math
+
+    fqtn = create_iceberg_table(
+        spark, SILVER_NAMESPACE, TABLE_NAME, _COLUMNS,
+        partitioned_by="bucket(256, brand_id), days(occurred_at)",
+    )
+    _register_murmur_udf(spark)
+
+    # Stitch map (bucket-independent) → register stitch_one ONCE + derive the join clause.
+    stitch = _read_stitch(spark)
+    if stitch is not None:
+        stitch.createOrReplaceTempView("silver_journey_stitch")
+        spark.sql(
+            """
+            with stitch as (
+                select brand_id, stitched_anon_id, order_id, stitched_brain_id,
+                    row_number() over (
+                        partition by brand_id, stitched_anon_id order by created_at asc, order_id asc
+                    ) as _stitch_rn
+                from silver_journey_stitch
+            )
+            select brand_id, stitched_anon_id, order_id, stitched_brain_id from stitch where _stitch_rn = 1
+            """
+        ).createOrReplaceTempView("stitch_one")
+        stitch_join = "left join stitch_one s on t.brand_id = s.brand_id and t.brain_anon_id = s.stitched_anon_id"
+        stitched_order, stitched_brain = "s.order_id", "s.stitched_brain_id"
+    else:
+        stitch_join, stitched_order, stitched_brain = "", "cast(null as string)", "cast(null as string)"
+
+    bronze_all = spark.read.table(BRONZE_TABLE)
+    tp_evt = col("event_type").isin(*_TP_TYPES)
+    anon = get_json_object(col("payload"), "$.properties.brain_anon_id")
+
+    # ── Which visitors to re-fold? (watermark on the SOURCE ingested_at via the side-table) ───────────
+    full_refresh = os.environ.get("FULL_REFRESH", "").lower() in ("1", "true", "yes")
+    overlap_hours = int(os.environ.get("SILVER_INCREMENTAL_OVERLAP_HOURS", "2"))
+    wm = None if full_refresh else read_job_watermark(spark, TABLE_NAME)
+
+    src = bronze_all.where(tp_evt)
+    new_wm = src.selectExpr("max(ingested_at) AS m").collect()[0]["m"]  # advance the watermark to here after success
+    affected = src
+    if wm is not None:
+        affected = affected.where(col("ingested_at") >= lit(wm - timedelta(hours=overlap_hours)))
+    affected_anons = (
+        affected.select(anon.alias("anon")).where(col("anon").isNotNull() & (col("anon") != "")).distinct()
+    )
+    affected_anons.persist()
+    n_anons = affected_anons.count()
+    if n_anons == 0:
+        affected_anons.unpersist()
+        n = spark.table(fqtn).count()
+        print(f"[silver_touchpoint] ENTITY-INCREMENTAL: no visitors with new touchpoints — 0 buckets ({n} rows)", flush=True)
+        write_job_watermark(spark, TABLE_NAME, new_wm)
+        return fqtn
+
+    target_per_bucket = max(1, int(os.environ.get("SILVER_BATCH_TARGET_ROWS", "500000")))
+    max_chunks = max(1, int(os.environ.get("SILVER_MAX_CHUNKS", "48")))
+    n_buckets = max(1, min(max_chunks, math.ceil(n_anons / target_per_bucket)))
+    print(
+        f"[silver_touchpoint] ENTITY-INCREMENTAL ({'FULL' if (full_refresh or wm is None) else 'delta'}): "
+        f"{n_anons} affected visitor(s) → {n_buckets} adaptive bucket(s)",
+        flush=True,
+    )
+
+    bronze_anon = bronze_all.withColumn("_anon", anon)
+    bronze_affected = bronze_anon.join(
+        affected_anons.withColumnRenamed("anon", "_aanon"), bronze_anon["_anon"] == col("_aanon"), "left_semi",
+    )
+    for b in range(n_buckets):
+        bucket = bronze_affected if n_buckets == 1 else bronze_affected.where(
+            (abs_(hash_(col("_anon"))) % lit(n_buckets)) == lit(b)
+        )
+        bucket.drop("_anon").createOrReplaceTempView("bronze_events")
+        _fold_and_merge(spark, fqtn, stitch_join, stitched_order, stitched_brain)
+
+    affected_anons.unpersist()
+    write_job_watermark(spark, TABLE_NAME, new_wm)  # advance ONLY after all buckets merged
     n = spark.table(fqtn).count()
     print(f"[silver_touchpoint] MERGE complete → {fqtn} has {n} rows", flush=True)
     return fqtn

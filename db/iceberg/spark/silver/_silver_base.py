@@ -207,6 +207,15 @@ def run_job(app_name: str, build_fn, *, target_table: "str | None" = None) -> No
     (read_bronze_events filters each batch to that window). Omit it (or set FULL_REFRESH=1) and build_fn
     runs exactly once over the full source — byte-for-byte the legacy path. Idempotent MERGE
     (latest-ingested-wins) makes the windowed runs replay-safe.
+
+    ⚠ GRAIN SAFETY RULE — only pass target_table for PER-EVENT-GRAIN jobs (the MERGE pk includes
+    `event_id`, i.e. one output row per source event). Time-window incremental is CORRECT for those:
+    new events add rows, untouched keys are preserved. It is NOT safe for jobs that AGGREGATE/FOLD across
+    multiple events per key (entity-grain pk like campaign_id / brain_anon_id / order_id, e.g. a journey
+    that folds a visitor's touchpoints, or order_state that mins/maxes an order's events) — a partial
+    window would regress the aggregate. Those jobs must stay full-refresh (+ AQE) until they adopt an
+    ENTITY-incremental pattern (reprocess every entity that has new events, reading its FULL history).
+    See docs/ops/local-memory-budget.md.
     """
     global _ACTIVE_METRICS, _CURRENT_WINDOW
     import time

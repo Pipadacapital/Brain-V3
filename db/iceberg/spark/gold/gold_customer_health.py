@@ -128,4 +128,6 @@ def build(spark):
 
 
 if __name__ == "__main__":
-    run_job("gold-customer-health", build)
+    run_job("gold-customer-health", build, entity_incremental={
+        "table_name": "gold_customer_health", "source_tables": ["silver_order_state", "silver_customer"],
+    })

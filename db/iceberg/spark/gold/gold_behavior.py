@@ -57,4 +57,6 @@ def build(spark):
 
 
 if __name__ == "__main__":
-    run_job("gold-behavior", build)
+    run_job("gold-behavior", build, entity_incremental={
+        "table_name": "gold_behavior", "source_tables": ["silver_page_view"],
+    })

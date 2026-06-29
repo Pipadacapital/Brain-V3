@@ -222,4 +222,6 @@ def build(spark):
 
 
 if __name__ == "__main__":
-    run_job("gold-contribution-margin", build)
+    run_job("gold-contribution-margin", build, entity_incremental={
+        "table_name": "gold_contribution_margin", "source_tables": ["silver_order_state", "silver_marketing_spend"],
+    })

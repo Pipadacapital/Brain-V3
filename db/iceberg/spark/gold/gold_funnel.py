@@ -110,4 +110,6 @@ def build(spark):
 
 
 if __name__ == "__main__":
-    run_job("gold-funnel", build)
+    run_job("gold-funnel", build, entity_incremental={
+        "table_name": "gold_funnel", "source_tables": ["silver_page_view", "silver_cart_event", "silver_checkout_signal"],
+    })

@@ -197,14 +197,20 @@ retry() {
 
 run_spark_script() {  # $1=tier-label  $2=script-path
   local label="$1" s="$2"
-  [ -x "$s" ] || {
-    echo "[$(ts)] ⚠ ${label}: $(basename "$s") not executable — skipping"
-    jlog v4_job job="$label" script="$(basename "$s")" status=skipped duration_ms=0
-    return 0
-  }
+  # A genuinely MISSING script is a hard FAILURE (return 1), never a silent skip — a skip counted as
+  # "ok" once masked a whole no-op FULL_REFRESH cycle as success (fail-safely, no false success).
+  if [ ! -f "$s" ]; then
+    echo "[$(ts)] ✗ ${label}: $(basename "$s") missing — FAILING"
+    jlog v4_job job="$label" script="$(basename "$s")" status=fail duration_ms=0
+    return 1
+  fi
+  # The run-*.sh entrypoints are tracked non-executable (mode 644) in several checkouts; invoke via
+  # `bash` when the +x bit is absent rather than skipping. (Their shebang makes `bash <script>` exact.)
+  local -a cmd=("$s")
+  [ -x "$s" ] || cmd=(bash "$s")
   local start end rc
   start=$(now_ms)
-  retry "${label}: $(basename "$s")" "/tmp/v4-refresh-${label}.log" -- "$s"; rc=$?
+  retry "${label}: $(basename "$s")" "/tmp/v4-refresh-${label}.log" -- "${cmd[@]}"; rc=$?
   end=$(now_ms)
   jlog v4_job job="$label" script="$(basename "$s")" \
     status="$([ "$rc" -eq 0 ] && echo ok || echo fail)" duration_ms=$(( end - start ))

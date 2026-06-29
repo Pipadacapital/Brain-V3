@@ -236,7 +236,10 @@ services:
       - "9404:9404"   # Prometheus JMX exporter (kafka_* broker metrics; scraped by prometheus)
     healthcheck:
       # No Redpanda admin API (9644) on Kafka; probe the broker via the Kafka CLI.
-      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1 || exit 1"]
+      # KAFKA_OPTS= clears the broker's -javaagent JMX exporter for the probe — otherwise the CLI's
+      # JVM tries to re-bind the agent on 9404 (already held by the broker) → BindException aborts the
+      # JVM → the probe exits non-zero forever → the broker never reports healthy though it serves fine.
+      test: ["CMD-SHELL", "KAFKA_OPTS= /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1 || exit 1"]
       interval: 10s
       timeout: 10s
       retries: 20
@@ -340,16 +343,19 @@ services:
       AWS_ACCESS_KEY_ID: brain
       AWS_SECRET_ACCESS_KEY: brainbrain
       AWS_REGION: us-east-1
-      # The fixture defaults the JDBC catalog to `jdbc:sqlite::memory:` — a SEPARATE in-memory DB
-      # per connection, so concurrent catalog clients (StarRocks + Spark) see inconsistent state
-      # ("iceberg_tables doesn't exist" → ServiceFailureException, crashing the Spark sink). Use a
-      # SHARED-CACHE in-memory DB: ONE in-memory database shared across all connections (consistent),
-      # with no file/volume/permission needed. (Resets on container restart — the catalog rebuilds
-      # from the topic; the data files live in MinIO. A bind-mounted file DB would add durability.)
+      # FILE-BACKED shared-cache SQLite on a named volume — DURABLE across container restarts.
+      # (Was `jdbc:sqlite:file::memory:?cache=shared`: a shared-cache IN-MEMORY DB — consistent across
+      # concurrent connections, but WIPED on every iceberg-rest restart. That wipe orphaned brain_silver/
+      # brain_gold from the catalog on any crash/restart while their parquet still lived in MinIO, taking
+      # the whole serving tier down until a full Spark rebuild. The file lives on the `iceberg-catalog`
+      # volume so the namespace→table pointers survive restarts; `?cache=shared` keeps the multi-connection
+      # consistency the in-memory variant gave StarRocks+Spark. Data files remain in MinIO as before.)
       CATALOG_CATALOG__IMPL: org.apache.iceberg.jdbc.JdbcCatalog
-      CATALOG_URI: "jdbc:sqlite:file::memory:?cache=shared"
+      CATALOG_URI: "jdbc:sqlite:file:/catalog/brain-iceberg-catalog.db?cache=shared"
       CATALOG_JDBC_USER: user
       CATALOG_JDBC_PASSWORD: password
+    volumes:
+      - iceberg-catalog:/catalog
     ports: ["8181:8181"]
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8181/v1/config"]
@@ -628,6 +634,10 @@ services:
   jmx-exporter-init:
     image: curlimages/curl:8.8.0
     profiles: ["ingest", "observe"]
+    # Run as root: curlimages/curl defaults to uid 100, which CANNOT write the root-owned `jmx-agent`
+    # volume → curl exits 23 ("ERROR on write"), the init fails, and (being a depends_on of redpanda)
+    # it aborts the whole `up --wait` chain before the broker starts. As root the download succeeds.
+    user: "0:0"
     volumes:
       - jmx-agent:/opt/jmx_exporter
     entrypoint:
@@ -660,3 +670,6 @@ volumes:
   brain-spark-ivy:
   # Holds the prometheus jmx_exporter javaagent jar shared between jmx-exporter-init and the broker.
   jmx-agent:
+  # Persists the Iceberg REST JDBC (SQLite) catalog — namespace→table pointers — across iceberg-rest
+  # restarts so a crash/restart never wipes brain_silver/brain_gold from the catalog (data is in MinIO).
+  iceberg-catalog:

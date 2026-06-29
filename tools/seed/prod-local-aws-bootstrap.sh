@@ -76,6 +76,14 @@ const r = await c.send(new EncryptCommand({ KeyId: '$KEY_ARN', Plaintext: dek })
 process.stdout.write(Buffer.from(r.CiphertextBlob).toString('base64'));
 EOF
 AWS_ENDPOINT_URL=http://localhost:4566 AWS_REGION=us-east-1 AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test node_modules/.bin/tsx ._wrap.mjs; rm -f ._wrap.mjs)
+# Guard: an empty WRAPPED means the KMS-wrap helper failed (e.g. @aws-sdk/client-kms not
+# resolvable from apps/core). Inserting an empty wrapped_dek_b64 silently corrupts the keyring
+# and breaks the PII vault at runtime — fail loudly here instead.
+if [ -z "$WRAPPED" ]; then
+  echo "[prod-local]   ✗ KMS DEK wrap produced no output — refusing to insert an empty keyring." >&2
+  echo "[prod-local]     Ensure @aws-sdk/client-kms is a dependency of apps/core (pnpm install)." >&2
+  exit 1
+fi
 psql "INSERT INTO brand_keyring (brand_id, kms_key_id, wrapped_dek_b64, key_version, is_active)
       VALUES ('$BRAND','$KEY_ARN','$WRAPPED',1,true)
       ON CONFLICT (brand_id) DO UPDATE SET kms_key_id=EXCLUDED.kms_key_id,

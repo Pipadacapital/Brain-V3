@@ -267,7 +267,7 @@ def write_job_watermark(spark: "SparkSession", job_name: str, ts) -> None:
 
 
 def run_entity_incremental(spark, *, table_name, source_fqtn, event_filter, entity_expr, fold_fn,
-                           after_buckets_fn=None):
+                           after_buckets_fn=None, view_name="bronze_events", time_col="ingested_at"):
     """Generic ENTITY-INCREMENTAL driver (the proven pattern from silver_order_state / silver_touchpoint).
 
     For jobs that FOLD/AGGREGATE many source events per entity (order_id, visitor, …) — where a time-window
@@ -293,8 +293,8 @@ def run_entity_incremental(spark, *, table_name, source_fqtn, event_filter, enti
 
     bronze_all = spark.table(source_fqtn)
     src = bronze_all.where(event_filter)
-    new_wm = src.selectExpr("max(ingested_at) AS m").collect()[0]["m"]  # advance to here after success
-    affected = src if wm is None else src.where(col("ingested_at") >= lit(wm - timedelta(hours=overlap_hours)))
+    new_wm = src.selectExpr(f"max({time_col}) AS m").collect()[0]["m"]  # advance to here after success
+    affected = src if wm is None else src.where(col(time_col) >= lit(wm - timedelta(hours=overlap_hours)))
     ents = affected.select(entity_expr.alias("_e")).where(col("_e").isNotNull() & (col("_e") != "")).distinct()
     ents.persist()
     n = ents.count()
@@ -318,7 +318,7 @@ def run_entity_incremental(spark, *, table_name, source_fqtn, event_filter, enti
     bucketed = be.join(ents.withColumnRenamed("_e", "_ae"), be["_e"] == col("_ae"), "left_semi")
     for b in range(n_buckets):
         one = bucketed if n_buckets == 1 else bucketed.where((abs_(hash_(col("_e"))) % lit(n_buckets)) == lit(b))
-        one.drop("_e").createOrReplaceTempView("bronze_events")
+        one.drop("_e").createOrReplaceTempView(view_name)
         fold_fn()
     ents.unpersist()
     write_job_watermark(spark, table_name, new_wm)

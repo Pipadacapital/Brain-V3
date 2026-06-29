@@ -64,6 +64,7 @@ from iceberg_base import (  # noqa: E402 — sys.path tweak above
     SILVER_NAMESPACE,
     build_spark,
     create_iceberg_table,
+    run_entity_incremental,
 )
 from _silver_technical import dq_violations_udf, write_quarantine  # noqa: E402
 
@@ -91,17 +92,11 @@ _COLUMNS = """
 """.strip("\n")
 
 
-def build(spark: SparkSession) -> str:
-    fqtn = create_iceberg_table(
-        spark,
-        SILVER_NAMESPACE,
-        TABLE_NAME,
-        _COLUMNS,
-        partitioned_by="bucket(256, brand_id)",
-    )
-
-    spark.read.table(SILVER_TOUCHPOINT_TABLE).createOrReplaceTempView("silver_touchpoint")
-
+def _fold_and_merge(spark: SparkSession, fqtn: str) -> None:
+    """Roll the touch grain up to the session grain + MERGE, over the CURRENTLY registered
+    `silver_touchpoint` view (one entity-incremental bucket of visitors carrying their full touch
+    history — so the per-session group-by is complete). Sessions aggregate a visitor's touches, so the
+    driver hash-buckets by brain_anon_id to keep a visitor's touches together."""
     # ── silver_sessions: roll the touch grain up to the session grain (verbatim dbt fold) ──
     session_sql = """
         with touches as (
@@ -176,6 +171,27 @@ def build(spark: SparkSession) -> str:
         WHEN MATCHED THEN UPDATE SET *
         WHEN NOT MATCHED THEN INSERT *
         """
+    )
+
+
+def build(spark: SparkSession) -> str:
+    """ENTITY-INCREMENTAL (entity = visitor brain_anon_id): sessions aggregate a visitor's touches, so
+    reprocess only visitors whose silver_touchpoint rows changed since the watermark (touchpoint stamps
+    updated_at when it re-folds a visitor → chains the incrementality), each over their FULL touch
+    history, hash-bucketed. FULL_REFRESH=1 re-folds all. Source = silver_touchpoint (no ingested_at →
+    watermark on updated_at via the side-table)."""
+    fqtn = create_iceberg_table(
+        spark, SILVER_NAMESPACE, TABLE_NAME, _COLUMNS, partitioned_by="bucket(256, brand_id)",
+    )
+    run_entity_incremental(
+        spark,
+        table_name=TABLE_NAME,
+        source_fqtn=SILVER_TOUCHPOINT_TABLE,
+        event_filter=lit(True),
+        entity_expr=col("brain_anon_id"),
+        fold_fn=lambda: _fold_and_merge(spark, fqtn),
+        view_name="silver_touchpoint",
+        time_col="updated_at",
     )
     n = spark.table(fqtn).count()
     print(f"[silver_sessions] MERGE complete → {fqtn} has {n} rows", flush=True)

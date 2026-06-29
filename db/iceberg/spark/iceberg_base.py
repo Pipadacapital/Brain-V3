@@ -220,3 +220,44 @@ def _reconcile_additive_columns(spark: SparkSession, fqtn: str, columns_sql: str
             print(f"[iceberg] reconciled {fqtn}: ADD COLUMN {name} {col_type}", flush=True)
         except Exception as exc:  # noqa: BLE001 — one bad column must not block the others / the job
             print(f"[iceberg] WARN could not add {name} {col_type} to {fqtn}: {exc}", flush=True)
+
+
+# ── Entity-incremental watermark side-table ──────────────────────────────────────────────────────────
+# A tiny shared table so entity-incremental jobs whose TARGET carries no ingested_at column (e.g.
+# silver_touchpoint) can still watermark: it records the max SOURCE ingested_at each job has processed.
+# One row per job_name. Generic + reusable across every fold/sessionization job.
+_WATERMARK_TABLE = f"{CATALOG}.{os.environ.get('SILVER_NAMESPACE', 'brain_silver')}.silver_job_watermark"
+
+
+def read_job_watermark(spark: "SparkSession", job_name: str):
+    """The last SOURCE ingested_at this job processed, or None (first run / table absent → full pass)."""
+    try:
+        rows = spark.sql(
+            f"SELECT last_ingested_at FROM {_WATERMARK_TABLE} WHERE job_name = '{job_name}'"
+        ).collect()
+        return rows[0]["last_ingested_at"] if rows else None
+    except Exception:  # noqa: BLE001 — table not created yet → first run
+        return None
+
+
+def write_job_watermark(spark: "SparkSession", job_name: str, ts) -> None:
+    """Upsert the job's watermark (max source ingested_at it processed). No-op when ts is None.
+    Written AFTER a successful run so a crash mid-run never advances the watermark past unprocessed data."""
+    if ts is None:
+        return
+    create_iceberg_table(
+        spark, os.environ.get("SILVER_NAMESPACE", "brain_silver"), "silver_job_watermark",
+        "job_name string NOT NULL, last_ingested_at timestamp, updated_at timestamp",
+        partitioned_by=None,
+    )
+    ts_str = ts.strftime("%Y-%m-%d %H:%M:%S.%f")
+    spark.sql(
+        f"""
+        MERGE INTO {_WATERMARK_TABLE} t
+        USING (SELECT '{job_name}' AS job_name, TIMESTAMP '{ts_str}' AS last_ingested_at,
+                      current_timestamp() AS updated_at) s
+        ON t.job_name = s.job_name
+        WHEN MATCHED THEN UPDATE SET *
+        WHEN NOT MATCHED THEN INSERT *
+        """
+    )

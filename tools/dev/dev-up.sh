@@ -100,11 +100,14 @@ step "5/7 bootstrap — seed LocalStack Secrets Manager + KMS"
 pnpm bootstrap
 
 # ── 6. one-shot medallion refresh (creates the Trino serving views) ─────────
-# Same subshell-scoping as migrate: the identity-export step is a Node process that reads
-# BRAIN_APP_DATABASE_URL / TRINO_* / NEO4J_* from the env, so source .env.local-prod — but
-# keep NODE_ENV=production out of the apps step's shell (see step 3).
+# Do NOT source .env.local-prod here: the refresh's Node steps (identity-export, journey-stitch)
+# already self-load it via `tsx --env-file` (see run_node_job in v4-refresh-loop.sh), and the
+# Spark steps run in CONTAINERS on the compose network. Sourcing would export the host-oriented
+# S3_ENDPOINT=http://localhost:9000 into those containers, where MinIO is reachable only as
+# `minio:9000` — breaking every Iceberg write with "Connect to localhost:9000: refused" and
+# leaving Silver/Gold empty. Unset, the run-*.sh scripts fall back to their correct minio:9000.
 step "6/7 refresh — one-shot Silver→Gold→Trino serving views"
-( set -a; . "$ENV_FILE"; set +a; ONESHOT=1 APP_ENV=local-prod pnpm dev:v4-refresh ) || \
+ONESHOT=1 APP_ENV=local-prod pnpm dev:v4-refresh || \
   echo "  ⚠ refresh reported issues (often just an empty cold DB) — continuing; re-run 'pnpm dev:v4-refresh' anytime."
 
 # ── 7. apps ─────────────────────────────────────────────────────────────────

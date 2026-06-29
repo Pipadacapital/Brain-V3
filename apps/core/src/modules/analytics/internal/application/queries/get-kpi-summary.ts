@@ -19,7 +19,18 @@ export interface KpiSummaryDto {
 
 export type KpiSummaryResult =
   | { state: 'no_data'; as_of: string }
-  | { state: 'has_data'; as_of: string; kpis: KpiSummaryDto[] };
+  // coverage_start/coverage_end bound the data window these (cumulative, all-time) KPIs are
+  // computed over — the earliest and latest recognised order date for the brand. The UI shows
+  // them as the metric's timeframe ("All-time · <start> – <end>") so a brand can verify exactly
+  // what period a number reflects (Brain rule: confidence + freshness measurable). ISO date,
+  // null only if the ledger somehow has no dated rows.
+  | {
+      state: 'has_data';
+      as_of: string;
+      coverage_start: string | null;
+      coverage_end: string | null;
+      kpis: KpiSummaryDto[];
+    };
 
 /**
  * getKpiSummary — returns brand KPI snapshot as of a date.
@@ -35,16 +46,25 @@ export async function getKpiSummary(
 ): Promise<KpiSummaryResult> {
   const asOfStr = asOf.toISOString().split('T')[0] as string;
 
-  // EXISTS check (D-2) — now over the lakehouse ledger (Epic 1).
-  const hasData = await withSilverBrand(deps.srPool, brandId, async (scope) => {
-    const r = await scope.runScoped<{ n: string | number }>(
-      `SELECT COUNT(*) AS n FROM brain_serving.mv_gold_revenue_ledger WHERE ${BRAND_PREDICATE}`,
+  // EXISTS check (D-2) + data-coverage window in one scoped read over the lakehouse ledger
+  // (Epic 1). min/max(occurred_at) is the honest timeframe the all-time KPIs span; the UI
+  // surfaces it so a brand can verify what period each number reflects.
+  const coverage = await withSilverBrand(deps.srPool, brandId, async (scope) => {
+    const r = await scope.runScoped<{ n: string | number; cov_start: string | null; cov_end: string | null }>(
+      `SELECT COUNT(*) AS n,
+              CAST(min(occurred_at) AS varchar) AS cov_start,
+              CAST(max(occurred_at) AS varchar) AS cov_end
+         FROM brain_serving.mv_gold_revenue_ledger WHERE ${BRAND_PREDICATE}`,
       [],
     );
-    return Number(r[0]?.n ?? 0) > 0;
+    return {
+      hasData: Number(r[0]?.n ?? 0) > 0,
+      start: r[0]?.cov_start ?? null,
+      end: r[0]?.cov_end ?? null,
+    };
   });
 
-  if (!hasData) {
+  if (!coverage.hasData) {
     return { state: 'no_data', as_of: asOfStr };
   }
 
@@ -53,6 +73,8 @@ export async function getKpiSummary(
   return {
     state: 'has_data',
     as_of: asOfStr,
+    coverage_start: coverage.start,
+    coverage_end: coverage.end,
     kpis: kpis.map((k) => ({
       currency_code: k.currency_code,
       realized_minor: String(k.realizedMinor),

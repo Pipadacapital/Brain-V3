@@ -27,6 +27,7 @@ import type { ExplainerPanelProps } from '@/components/ui/explainer-panel';
 import { SectionCard } from '@/components/ui/section-card';
 import { EmptyState } from '@/components/ui/empty-state';
 import { FreshnessBadge } from '@/components/ui/freshness-badge';
+import { TimeframeBadge } from '@/components/ui/timeframe-badge';
 import { Button } from '@/components/ui/button';
 import { Alert } from '@/components/ui/alert';
 
@@ -151,6 +152,10 @@ function ExecKpiRow() {
   const kpi = kpiData?.state === 'has_data' ? kpiData.kpis[0] : null;
   const exec = execData?.state === 'has_data' ? execData.metrics[0] : null;
   const asOf = kpiData && 'as_of' in kpiData ? kpiData.as_of : undefined;
+  // Data-coverage window these cumulative KPIs span — shown as the timeframe so the brand can
+  // verify exactly what period each figure reflects (truth before performance).
+  const coverageStart = kpiData?.state === 'has_data' ? kpiData.coverage_start ?? null : null;
+  const coverageEnd = kpiData?.state === 'has_data' ? kpiData.coverage_end ?? null : null;
 
   const ccy = (kpi?.currency_code ?? exec?.currency_code ?? 'INR') as CurrencyCode;
 
@@ -173,20 +178,23 @@ function ExecKpiRow() {
       title="Headline economics"
       description="Your business at a glance, in the order currency."
       meta={
-        /* kpi-summary.as_of is the as-of DATE (the query window end), NOT a generation timestamp —
-           feeding it to FreshnessBadge rendered a misleading relative "X hours ago" (midnight today).
-           Show the as-of date plainly so it reads as the figures' as-of date, not a staleness stamp. */
-        asOf ? (
-          <span className="text-xs text-muted-foreground">
-            As of{' '}
-            {new Date(`${asOf}T00:00:00Z`).toLocaleDateString('en-GB', {
-              day: 'numeric',
-              month: 'short',
-              year: 'numeric',
-              timeZone: 'UTC',
-            })}
-          </span>
-        ) : undefined
+        /* Two trust signals: the TIMEFRAME (what window these figures cover — cumulative/all-time
+           over the data-coverage span) and the AS-OF date (the figures' as-of, not a staleness
+           stamp — kpi-summary.as_of is a date, so a relative "X hours ago" would mislead). */
+        <div className="flex flex-wrap items-center gap-2">
+          <TimeframeBadge start={coverageStart} end={coverageEnd} data-testid="home-kpi-timeframe" />
+          {asOf ? (
+            <span className="text-xs text-muted-foreground">
+              As of{' '}
+              {new Date(`${asOf}T00:00:00Z`).toLocaleDateString('en-GB', {
+                day: 'numeric',
+                month: 'short',
+                year: 'numeric',
+                timeZone: 'UTC',
+              })}
+            </span>
+          ) : null}
+        </div>
       }
     >
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">

@@ -72,6 +72,11 @@ export const KpiSummarySchema = z.discriminatedUnion('state', [
   z.object({
     state: z.literal('has_data'),
     as_of: z.string(),
+    // Data-coverage window the (cumulative) KPIs span — earliest/latest recognised order date.
+    // Surfaced in the UI as the metric's timeframe so a brand can verify the period. ISO date,
+    // nullable + optional (older cached payloads / empty-ledger edge may omit it).
+    coverage_start: z.string().nullable().optional(),
+    coverage_end: z.string().nullable().optional(),
     kpis: z.array(KpiSummaryDtoSchema),
   }),
 ]);

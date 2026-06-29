@@ -41,12 +41,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pyspark.sql import SparkSession  # noqa: E402
 
+from pyspark.sql.functions import col, lit  # noqa: E402
+
 from iceberg_base import (  # noqa: E402 — sys.path tweak above
     CATALOG,
     GOLD_NAMESPACE,
     SILVER_NAMESPACE,
     build_spark,
     create_iceberg_table,
+    run_entity_incremental,
 )
 
 TABLE_NAME = "gold_executive_metrics"
@@ -72,18 +75,9 @@ _COLUMNS = """
 """.strip("\n")
 
 
-def build(spark: SparkSession) -> str:
-    fqtn = create_iceberg_table(
-        spark,
-        GOLD_NAMESPACE,
-        TABLE_NAME,
-        _COLUMNS,
-        # brand-first tenant partitioning + per-currency bucketing (the mart's distribution key is brand).
-        partitioned_by="bucket(4, brand_id)",
-    )
-
-    spark.read.table(SILVER_ORDER_STATE).createOrReplaceTempView("silver_order_state")
-
+def _fold_and_merge(spark: SparkSession, fqtn: str) -> None:
+    """Run the per-(brand, currency) executive rollup + MERGE over the CURRENTLY registered
+    `silver_order_state` view (one partition-incremental bucket of brands, full history each)."""
     # ── the dbt aggregation, reproduced verbatim (additive components only, per (brand, currency)) ──
     rollup_sql = """
         select
@@ -115,6 +109,27 @@ def build(spark: SparkSession) -> str:
         WHEN MATCHED THEN UPDATE SET *
         WHEN NOT MATCHED THEN INSERT *
         """
+    )
+
+
+def build(spark: SparkSession) -> str:
+    """PARTITION-INCREMENTAL (partition = brand_id): recompute only brands whose silver_order_state
+    changed since the watermark, each over their full history, hash-bucketed. FULL_REFRESH=1 recomputes
+    all. Same UPDATE/INSERT MERGE as the full job → parity. See docs/ops/local-memory-budget.md."""
+    fqtn = create_iceberg_table(
+        spark, GOLD_NAMESPACE, TABLE_NAME, _COLUMNS,
+        # brand-first tenant partitioning + per-currency bucketing (the mart's distribution key is brand).
+        partitioned_by="bucket(4, brand_id)",
+    )
+    run_entity_incremental(
+        spark,
+        table_name=TABLE_NAME,
+        source_fqtn=SILVER_ORDER_STATE,
+        event_filter=lit(True),
+        entity_expr=col("brand_id"),
+        fold_fn=lambda: _fold_and_merge(spark, fqtn),
+        view_name="silver_order_state",
+        time_col="updated_at",
     )
     n = spark.table(fqtn).count()
     print(f"[gold_executive_metrics] MERGE complete → {fqtn} has {n} rows", flush=True)

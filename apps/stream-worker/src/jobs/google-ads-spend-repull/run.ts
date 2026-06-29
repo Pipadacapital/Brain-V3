@@ -25,7 +25,7 @@
 
 import { Pool } from 'pg';
 import { recordConnectorAuthRejected } from '../../infrastructure/observability/connector-auth-health.js';
-import { updateConnectorInstanceHealth } from '../../infrastructure/pg/ConnectorInstanceHealthRepository.js';
+import { updateConnectorInstanceHealth, recoverConnectorInstanceHealth } from '../../infrastructure/pg/ConnectorInstanceHealthRepository.js';
 import { Kafka, type Producer } from 'kafkajs';
 import { createIdempotentProducer } from '../../infrastructure/kafka/idempotent-producer.js';
 import { buildPartitionKey } from '@brain/events';
@@ -224,6 +224,8 @@ async function repullConnector(params: RepullParams): Promise<void> {
   }
 
   await setSyncState(pool, brandId, ciId, 'connected', null);
+  // Recovery edge: self-heal a prior TokenExpired/RateLimited badge on success (no-op otherwise).
+  await recoverConnectorInstanceHealth(pool, brandId, ciId);
   log.info(`connector=${ciId} COMPLETED totalEmitted=${totalEmitted}`);
 }
 
@@ -317,6 +319,8 @@ async function backfillConnector(params: {
     if (savedFloor <= floor) {
       log.info(`backfill connector=${ciId} — already reached floor ${savedFloor} <= ${floor}, done`);
       await setSyncState(pool, brandId, ciId, 'connected', null);
+      // Recovery edge: self-heal a prior TokenExpired/RateLimited badge on success (no-op otherwise).
+      await recoverConnectorInstanceHealth(pool, brandId, ciId);
       return;
     }
     anchorTo = isoDate(addDays(new Date(`${savedFloor}T00:00:00Z`), -1));
@@ -365,6 +369,8 @@ async function backfillConnector(params: {
   }
 
   await setSyncState(pool, brandId, ciId, 'connected', null);
+  // Recovery edge: self-heal a prior TokenExpired/RateLimited badge on success (no-op otherwise).
+  await recoverConnectorInstanceHealth(pool, brandId, ciId);
   log.info(`backfill connector=${ciId} COMPLETED totalEmitted=${totalEmitted} floor=${floor}`);
 }
 

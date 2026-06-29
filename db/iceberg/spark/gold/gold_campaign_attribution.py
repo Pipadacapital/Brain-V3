@@ -189,4 +189,10 @@ def build(spark):
 
 
 if __name__ == "__main__":
-    run_job("gold-campaign-attribution", build)
+    # PARTITION-INCREMENTAL (partition = brand_id): recompute brands changed in any source (the credit
+    # ledger / campaign performance / marketing spend). silver_marketing_spend reads are brand-filtered;
+    # the recompute keeps parity. build() unchanged.
+    run_job("gold-campaign-attribution", build, entity_incremental={
+        "table_name": "gold_campaign_attribution",
+        "source_tables": ["gold_attribution_credit", "gold_campaign_performance", "silver_marketing_spend"],
+    })

@@ -26,6 +26,9 @@ export type {
 export { AD_PLATFORM_PROVIDERS, isAdPlatformProvider } from './domain/ad-platform.js';
 export type { AdPlatformProvider } from './domain/ad-platform.js';
 
+export { BACKFILL_QUEUE_PROVIDERS, supportsBackfillQueue } from './domain/backfill-providers.js';
+export type { BackfillQueueProvider } from './domain/backfill-providers.js';
+
 export { ConnectorSyncStatus } from './domain/entities/ConnectorSyncStatus.js';
 export type {
   ConnectorSyncStatusProps,

@@ -35,7 +35,7 @@
 
 import { Pool } from 'pg';
 import { recordConnectorAuthRejected } from '../../infrastructure/observability/connector-auth-health.js';
-import { updateConnectorInstanceHealth } from '../../infrastructure/pg/ConnectorInstanceHealthRepository.js';
+import { updateConnectorInstanceHealth, recoverConnectorInstanceHealth } from '../../infrastructure/pg/ConnectorInstanceHealthRepository.js';
 import { Kafka, Producer } from 'kafkajs';
 import { createIdempotentProducer } from '../../infrastructure/kafka/idempotent-producer.js';
 import { buildPartitionKey } from '@brain/events';
@@ -502,6 +502,10 @@ async function runBackfillLoop(params: BackfillLoopParams): Promise<void> {
         sc.release();
       }
     }
+
+    // Recovery edge: a completed backfill proves auth succeeded — self-heal a prior
+    // TokenExpired/RateLimited badge back to Healthy/safe (no-op if already Healthy or sticky).
+    await recoverConnectorInstanceHealth(pool, brandId, params.connectorInstanceId);
 
     log.info(`job=${jobId} COMPLETED records=${recordsProcessed} depth="${depthLabel}"`);
   } catch (err) {

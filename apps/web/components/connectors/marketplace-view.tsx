@@ -165,7 +165,7 @@ const credentialFieldsFor = _credentialFieldsFor;
 
 // 1 brand = 1 storefront: pure helpers that mirror the backend exclusivity rule so the UI can
 // disable the other storefront tiles instead of letting the user hit a 409 STOREFRONT_ALREADY_CONNECTED.
-import { findConnectedStorefront, storefrontLockReason } from './storefront-exclusivity';
+import { findConnectedStorefront, storefrontLockReason, supportsHistoricalBackfill } from './storefront-exclusivity';
 
 /** Soft-gate reason copy for connecting a real store before email is verified. */
 const VERIFY_TO_CONNECT = 'Verify your email to connect a store';
@@ -609,10 +609,11 @@ function ConnectorTile({
             {activeOrFirst?.id && !noneActive && (
               <SyncNowControl connectorId={activeOrFirst.id} className="border-t border-border pt-3" />
             )}
-            {/* G6: historical backfill trigger + live progress. The component was fully built and tested
-                but never imported — mounting it here turns on history-import + an "Importing history…"
-                progress bar on every connected tile, next to the incremental Sync-now control. */}
-            {activeOrFirst?.id && !noneActive && (
+            {/* G6: historical backfill trigger + live progress. Only render for providers with an
+                actual jobs.backfill_job queue runner (supportsHistoricalBackfill — currently Shopify).
+                Ads/payments/logistics/WooCommerce have no claimer for the backfill queue, so showing
+                the control there would enqueue an orphan job that sits 'queued' forever. */}
+            {activeOrFirst?.id && !noneActive && supportsHistoricalBackfill(tile) && (
               <BackfillControl connectorId={activeOrFirst.id} className="border-t border-border pt-3" />
             )}
           </div>

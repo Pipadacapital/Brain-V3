@@ -80,6 +80,8 @@ from pyspark.sql.utils import AnalysisException  # noqa: E402
 from pyspark.sql.window import Window  # noqa: E402
 
 from iceberg_base import CATALOG, GOLD_NAMESPACE, SILVER_NAMESPACE, build_spark, create_iceberg_table  # noqa: E402
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # gold/ — for _gold_base
+from _gold_base import gold_partition_filter  # noqa: E402
 
 # B2 enrichment scalars live PURE (no Spark) in _customer_360_enrich so they are unit-tested without a
 # Spark session; we wrap them as UDFs here so the EXECUTED churn/lifecycle logic IS the tested logic.
@@ -257,6 +259,9 @@ def materialize(spark: SparkSession) -> str:
     )
 
     customers = _read_silver(spark, "silver_customer")
+    customers, _commit_wm = gold_partition_filter(
+        spark, customers, table_name=TABLE_NAME, source_tables=["silver_customer", "silver_order_state", "silver_touchpoint"],
+    )
 
     # lifecycle — per-customer rollup of silver_order_state lifecycle_state (dbt CASE buckets, verbatim).
     osd = _read_silver(spark, "silver_order_state", optional=True)
@@ -431,6 +436,7 @@ def materialize(spark: SparkSession) -> str:
     )
     total = spark.table(fqtn).count()
     print(f"[gold_customer_360] MERGEd {n} customer-360 rows → {fqtn} (table now {total} rows)", flush=True)
+    _commit_wm()
     return fqtn
 
 

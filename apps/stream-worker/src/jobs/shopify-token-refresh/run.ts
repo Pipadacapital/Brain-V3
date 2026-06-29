@@ -30,7 +30,7 @@
 import { Pool } from 'pg';
 import { incrementCounter } from '@brain/observability';
 import { recordConnectorAuthRejected } from '../../infrastructure/observability/connector-auth-health.js';
-import { updateConnectorInstanceHealth } from '../../infrastructure/pg/ConnectorInstanceHealthRepository.js';
+import { updateConnectorInstanceHealth, recoverConnectorInstanceHealth } from '../../infrastructure/pg/ConnectorInstanceHealthRepository.js';
 import {
   exchangeShopifyToken,
   isShopifyTokenRefreshDue,
@@ -226,6 +226,9 @@ export async function runShopifyTokenRefresh(
           secretsManager,
         );
         report.refreshed += 1;
+        // Recovery edge: a successful token exchange is the definitive cure for a TokenExpired badge —
+        // self-heal back to Healthy/safe now (no-op if already Healthy or in a sticky state).
+        await recoverConnectorInstanceHealth(pool, brandId, ciId).catch(() => undefined);
         incrementCounter('shopify_token_refresh_total', { provider: 'shopify' });
         log.info(`[shopify-token-refresh] refreshed connector=${ciId} brand=${brandId}`);
       } catch (err) {

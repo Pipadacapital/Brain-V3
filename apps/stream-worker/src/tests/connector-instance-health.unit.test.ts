@@ -9,7 +9,11 @@
  */
 
 import { describe, it, expect, vi, type Mock } from 'vitest';
-import { updateConnectorInstanceHealth } from '../infrastructure/pg/ConnectorInstanceHealthRepository.js';
+import {
+  updateConnectorInstanceHealth,
+  recoverConnectorInstanceHealth,
+  RECOVERABLE_HEALTH_STATES,
+} from '../infrastructure/pg/ConnectorInstanceHealthRepository.js';
 
 // ── Minimal mock Pool factory ──────────────────────────────────────────────────
 
@@ -102,6 +106,85 @@ describe('updateConnectorInstanceHealth', () => {
       'ci-uuid-4',
       'rate_limited',
     );
+    expect(pool._client.release).toHaveBeenCalled();
+  });
+});
+
+// ── recoverConnectorInstanceHealth unit tests (the SUCCESS recovery edge) ─────
+
+describe('recoverConnectorInstanceHealth', () => {
+  it('resets health_state=Healthy + safety_rating=safe on a successful sync', async () => {
+    // rowCount=1 → a real recovery happened (was TokenExpired/RateLimited).
+    const pool = makeMockPool(async () => ({ rowCount: 1, rows: [] }));
+    await recoverConnectorInstanceHealth(
+      pool as unknown as import('pg').Pool,
+      'brand-uuid-1',
+      'ci-uuid-1',
+    );
+
+    const calls = pool._queries;
+    expect(calls.some((c) => c.sql === 'BEGIN')).toBe(true);
+    expect(calls.some((c) => c.sql.includes('set_config') && c.params?.[0] === 'brand-uuid-1')).toBe(true);
+    const updateCall = calls.find((c) => c.sql.includes('UPDATE connector_instance'));
+    expect(updateCall).toBeDefined();
+    expect(updateCall!.params).toContain('Healthy');
+    expect(updateCall!.params).toContain('safe');
+    expect(updateCall!.params).toContain('ci-uuid-1');
+    expect(calls.some((c) => c.sql === 'COMMIT')).toBe(true);
+    expect(pool._client.release).toHaveBeenCalled();
+  });
+
+  it('guards the UPDATE so ONLY recoverable states (TokenExpired/RateLimited) are cleared', async () => {
+    const pool = makeMockPool();
+    await recoverConnectorInstanceHealth(
+      pool as unknown as import('pg').Pool,
+      'brand-uuid-2',
+      'ci-uuid-2',
+    );
+
+    const updateCall = pool._queries.find((c) => c.sql.includes('UPDATE connector_instance'));
+    expect(updateCall).toBeDefined();
+    // The recovery is constrained in SQL: WHERE ... health_state = ANY($5::text[]).
+    expect(updateCall!.sql).toContain('health_state = ANY');
+    // The bound recoverable-states array is exactly {TokenExpired, RateLimited} …
+    const recoverableParam = updateCall!.params?.find(
+      (p): p is readonly string[] => Array.isArray(p),
+    );
+    expect(recoverableParam).toEqual(['TokenExpired', 'RateLimited']);
+    // … and crucially does NOT include the sticky terminal states, so a stray success
+    // can never silently un-stick a Disabled/Disconnected/Failed connector.
+    expect(RECOVERABLE_HEALTH_STATES).not.toContain('Disabled');
+    expect(RECOVERABLE_HEALTH_STATES).not.toContain('Disconnected');
+    expect(RECOVERABLE_HEALTH_STATES).not.toContain('Failed');
+  });
+
+  it('is a no-op (no throw) when already Healthy / sticky — UPDATE matches 0 rows', async () => {
+    // rowCount=0 simulates the DB guard rejecting the update (state not recoverable).
+    const pool = makeMockPool(async () => ({ rowCount: 0, rows: [] }));
+    await expect(
+      recoverConnectorInstanceHealth(
+        pool as unknown as import('pg').Pool,
+        'brand-uuid-3',
+        'ci-uuid-3',
+      ),
+    ).resolves.toBeUndefined();
+    // It still COMMITs cleanly and releases — 0 rows is an intentional no-op, not an error.
+    expect(pool._queries.some((c) => c.sql === 'COMMIT')).toBe(true);
+    expect(pool._client.release).toHaveBeenCalled();
+  });
+
+  it('is non-fatal on DB error — does not throw and releases the client', async () => {
+    const pool = makeMockPool(async (sql) => {
+      if (sql.includes('UPDATE connector_instance')) throw new Error('simulated DB failure');
+      return { rowCount: 0, rows: [] };
+    });
+    await expect(
+      recoverConnectorInstanceHealth(
+        pool as unknown as import('pg').Pool,
+        'brand-uuid-4',
+        'ci-uuid-4',
+      ),
+    ).resolves.toBeUndefined();
     expect(pool._client.release).toHaveBeenCalled();
   });
 });

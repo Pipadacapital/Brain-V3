@@ -106,3 +106,89 @@ export async function updateConnectorInstanceHealth(
     client.release();
   }
 }
+
+/**
+ * The set of health_states this module RECOVERS from on a successful sync.
+ *
+ * These are the transient/operational error states that `updateConnectorInstanceHealth` itself
+ * sets (TokenExpired ← token_expired, RateLimited ← rate_limited). A successful sync is positive
+ * proof those conditions cleared: the connector just authenticated and was not throttled.
+ *
+ * EXCLUDED on purpose (must stay STICKY until an explicit lifecycle event):
+ *   - 'Disabled'      — account-level rejection (account_disabled); terminal until the account is
+ *                       re-enabled AND reconnected (the repull backs off, so a stray success should
+ *                       not silently un-disable it).
+ *   - 'Disconnected'  — user/lifecycle disconnect, not an operational error.
+ *   - 'Failed' / 'Delayed' — set by other (non-operational) subsystems with their own clear paths.
+ * Restricting recovery to the two states THIS module sets keeps the state machine's ownership
+ * clean: we only reverse the edges we created.
+ */
+export const RECOVERABLE_HEALTH_STATES: readonly HealthState[] = ['TokenExpired', 'RateLimited'];
+
+/**
+ * Recover a connector's health back to Healthy/safe on a SUCCESSFUL sync/repull.
+ *
+ * This is the recovery edge of the operational state machine — the missing counterpart to
+ * `updateConnectorInstanceHealth`. Without it, a connector that once hit a 401/429 stayed pinned
+ * to TokenExpired/RateLimited forever (sticky "connector failing" badge) even though every
+ * subsequent repull succeeded — because the success path only wrote connector_sync_status and
+ * never reset connector_instance.health_state. Wire this into each repull/backfill SUCCESS path
+ * (right after the `connected` sync-state write) so EVERY connector self-heals platform-wide.
+ *
+ * Atomic + non-clobbering: the UPDATE is guarded by `health_state IN (RECOVERABLE_HEALTH_STATES)`
+ * in SQL, so it is a no-op (0 rows) when the connector is already Healthy or in a sticky state
+ * (Disabled/Disconnected/Failed/Delayed). This is race-safe: a concurrent real-failure write to a
+ * sticky state cannot be reverted by a late-arriving success.
+ *
+ * Non-fatal: errors are logged and swallowed — like its error-path sibling, the health signal is
+ * secondary to the event pipeline + cursor watermark.
+ *
+ * @param pool                  brand_app pg pool (FORCE RLS; GUC will be set inside the txn)
+ * @param brandId               from enumeration fn (MT-1) — GUC authority
+ * @param connectorInstanceId   connector_instance.id
+ */
+export async function recoverConnectorInstanceHealth(
+  pool: Pool,
+  brandId: string,
+  connectorInstanceId: string,
+): Promise<void> {
+  const recoveredState: HealthState = 'Healthy';
+  const recoveredRating: SafetyRating = 'safe';
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    // NN-1 / ADR-LV-7: GUC BEFORE brand-scoped write — connector_instance has FORCE RLS.
+    await client.query(
+      `SELECT set_config('app.current_brand_id', $1, true)`,
+      [brandId],
+    );
+    const result = await client.query(
+      `UPDATE connector_instance
+          SET health_state  = $3,
+              safety_rating = $4,
+              updated_at    = NOW()
+        WHERE id = $2 AND brand_id = $1
+          AND health_state = ANY($5::text[])`,
+      [brandId, connectorInstanceId, recoveredState, recoveredRating, RECOVERABLE_HEALTH_STATES],
+    );
+    await client.query('COMMIT');
+    if ((result.rowCount ?? 0) > 0) {
+      // Only logs when an actual recovery happened (was TokenExpired/RateLimited → now Healthy).
+      log.info(
+        `[connector-health] connector=${connectorInstanceId} brand=${brandId} ` +
+        `RECOVERED health_state=${recoveredState} safety_rating=${recoveredRating}`,
+      );
+    }
+    // 0 rows → already Healthy or in a sticky state: intentional no-op, no log noise.
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    // Non-fatal: health-state is a secondary signal; never abort the pipeline over it.
+    log.error(
+      `[connector-health] health recovery update failed (non-fatal) ` +
+      `connector=${connectorInstanceId} brand=${brandId}`,
+      { err },
+    );
+  } finally {
+    client.release();
+  }
+}

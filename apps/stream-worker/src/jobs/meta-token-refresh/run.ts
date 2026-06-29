@@ -20,6 +20,7 @@
 import { Pool } from 'pg';
 import { incrementCounter } from '@brain/observability';
 import { enumerateConnectors, setSyncState } from '../meta-spend-repull/run.js';
+import { recoverConnectorInstanceHealth } from '../../infrastructure/pg/ConnectorInstanceHealthRepository.js';
 import { recordConnectorAuthRejected } from '../../infrastructure/observability/connector-auth-health.js';
 import {
   exchangeLongLivedToken,
@@ -177,6 +178,9 @@ export async function runMetaTokenRefresh(
         if (expiresAt) refreshed.access_token_expires_at = expiresAt;
         await writeBundle(pool, secretRef, refreshed, secretsManager);
         report.refreshed += 1;
+        // Recovery edge: a successful token exchange cures a TokenExpired badge — self-heal back to
+        // Healthy/safe now (no-op if already Healthy or in a sticky state).
+        await recoverConnectorInstanceHealth(pool, brandId, ciId).catch(() => undefined);
         incrementCounter('meta_token_refresh_total', { provider: 'meta' });
         log.info(`[meta-token-refresh] refreshed connector=${ciId} brand=${brandId}`);
       } catch (err) {

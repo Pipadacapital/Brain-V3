@@ -65,6 +65,8 @@ from pyspark.sql import SparkSession  # noqa: E402
 from pyspark.sql.utils import AnalysisException  # noqa: E402
 
 from iceberg_base import CATALOG, GOLD_NAMESPACE, SILVER_NAMESPACE, build_spark, create_iceberg_table  # noqa: E402
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # gold/ — for _gold_base
+from _gold_base import gold_partition_filter  # noqa: E402
 import _attribution_math as M  # noqa: E402
 
 TABLE_NAME = "gold_attribution_credit"
@@ -255,12 +257,16 @@ def materialize(spark: SparkSession) -> str:
     )
 
     tp = _read_silver_touchpoint(spark)
+    tp, _commit_wm = gold_partition_filter(
+        spark, tp, table_name=TABLE_NAME, source_tables=["silver_touchpoint", "gold_revenue_ledger"],
+    )
     basis_df = _read_recognized_basis(spark)
 
     if basis_df is None:
         print("[gold_attribution_credit] no recognized basis → 0 credit rows (no-op MERGE)", flush=True)
         total = spark.table(fqtn).count()
         print(f"[gold_attribution_credit] table now {total} rows", flush=True)
+        _commit_wm()
         return fqtn
 
     # Collect to the driver — the journey grain is tiny (touches + recognized orders per brand). The
@@ -327,6 +333,7 @@ def materialize(spark: SparkSession) -> str:
         print("[gold_attribution_credit] 0 credit rows (no stitched journeys for recognized orders) — no-op", flush=True)
         total = spark.table(fqtn).count()
         print(f"[gold_attribution_credit] table now {total} rows", flush=True)
+        _commit_wm()
         return fqtn
 
     src = spark.createDataFrame(all_rows, schema=_ROW_SCHEMA)
@@ -356,6 +363,7 @@ def materialize(spark: SparkSession) -> str:
     )
     total = spark.table(fqtn).count()
     print(f"[gold_attribution_credit] MERGE complete → {fqtn} has {total} rows", flush=True)
+    _commit_wm()
     return fqtn
 
 

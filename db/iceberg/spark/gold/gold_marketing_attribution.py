@@ -35,6 +35,8 @@ from pyspark.sql import functions as F  # noqa: E402
 from pyspark.sql.utils import AnalysisException  # noqa: E402
 
 from iceberg_base import CATALOG, GOLD_NAMESPACE, build_spark, create_iceberg_table  # noqa: E402
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # gold/ — for _gold_base
+from _gold_base import gold_partition_filter  # noqa: E402
 
 TABLE_NAME = "gold_marketing_attribution"
 SRC_TABLE = "gold_attribution_credit"
@@ -85,6 +87,9 @@ def materialize(spark: SparkSession) -> str:
         spark, GOLD_NAMESPACE, TABLE_NAME, _COLUMNS, partitioned_by="bucket(8, brand_id)"
     )
     credit = _read_credit_ledger(spark)
+    credit, _commit_wm = gold_partition_filter(
+        spark, credit, table_name=TABLE_NAME, source_tables=["gold_attribution_credit"],
+    )
 
     # The dbt VIEW projection (same columns, same casts, credit_id IS NOT NULL filter).
     result = (
@@ -126,6 +131,7 @@ def materialize(spark: SparkSession) -> str:
     )
     total = spark.table(fqtn).count()
     print(f"[gold_marketing_attribution] MERGEd {n} rows → {fqtn} (table now {total} rows)", flush=True)
+    _commit_wm()
     return fqtn
 
 

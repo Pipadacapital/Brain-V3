@@ -98,4 +98,6 @@ def build(spark):
 
 
 if __name__ == "__main__":
-    run_job("gold-abandoned-cart", build)
+    run_job("gold-abandoned-cart", build, entity_incremental={
+        "table_name": "gold_abandoned_cart", "source_tables": ["silver_cart_event", "silver_checkout_signal"],
+    })

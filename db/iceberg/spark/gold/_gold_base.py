@@ -36,6 +36,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pyspark.sql import DataFrame, SparkSession  # noqa: E402
+from pyspark.sql.functions import abs as abs_, col, hash as hash_, lit  # noqa: E402
 
 from iceberg_base import (  # noqa: E402
     CATALOG,
@@ -43,6 +44,8 @@ from iceberg_base import (  # noqa: E402
     SILVER_NAMESPACE,
     build_spark,
     create_iceberg_table,
+    read_job_watermark,
+    write_job_watermark,
 )
 from job_log import JobMetrics, emit_job_log  # noqa: E402
 
@@ -63,16 +66,35 @@ __all__ = [
 ]
 
 
+# PARTITION-INCREMENTAL state (set by run_job's entity_incremental loop). When active, silver() returns a
+# brand-FILTERED temp view of the requested Silver table (restricted to the current bucket's affected
+# brands) instead of the raw FQTN — so EVERY Silver read in a mart's SQL is brand-scoped with no SQL
+# change. None (default) → silver() returns the raw FQTN, byte-for-byte the legacy path.
+_SPARK: "SparkSession | None" = None
+_BRAND_BUCKET_VIEW: "str | None" = None
+
+
 def silver(table: str) -> str:
-    """Fully-qualified Iceberg Silver table identifier: rest.brain_silver.<table>."""
-    return f"{CATALOG}.{SILVER_NS}.{table}"
+    """Iceberg Silver source for a mart's SQL. Normally the FQTN rest.brain_silver.<table>. Under
+    partition-incremental it returns a brand-filtered temp view (this bucket's affected brands only),
+    registered on demand — so `FROM {silver('silver_x')}` becomes a bounded read with no mart change."""
+    fqtn = f"{CATALOG}.{SILVER_NS}.{table}"
+    if _BRAND_BUCKET_VIEW is None or _SPARK is None:
+        return fqtn
+    view = f"_inc_{table}"
+    _SPARK.sql(
+        f"CREATE OR REPLACE TEMPORARY VIEW {view} AS "
+        f"SELECT * FROM {fqtn} WHERE brand_id IN (SELECT brand_id FROM {_BRAND_BUCKET_VIEW})"
+    )
+    return view
 
 
 def silver_exists(spark: SparkSession, table: str) -> bool:
     """True iff the Silver source table exists (a job over an absent/empty Silver still writes an empty
-    Gold mart — but a TOTALLY absent upstream table would raise; we probe so the job degrades gracefully)."""
+    Gold mart — but a TOTALLY absent upstream table would raise; we probe so the job degrades gracefully).
+    Probes the RAW table (not the filtered view) so it works before any bucket view is registered."""
     try:
-        spark.table(silver(table)).schema
+        spark.table(f"{CATALOG}.{SILVER_NS}.{table}").schema
         return True
     except Exception:  # noqa: BLE001 — absent table → False (job writes an empty Gold mart, parity SKIPs)
         return False
@@ -199,12 +221,87 @@ def emit_cache_event(
         pass
 
 
-def run_job(app_name: str, build_fn) -> None:
+def _gold_entity_incremental(spark: SparkSession, app_name: str, build_fn, cfg: dict):
+    """PARTITION-INCREMENTAL driver for Gold marts (partition = brand_id). cfg = {table_name,
+    source_tables:[silver tables whose change makes a brand 'affected']}. Recompute only brands changed
+    in ANY source since the watermark → adaptively hash-bucket brands → per bucket register `_brand_bucket`
+    + activate silver() filtering → build_fn (its UNCHANGED rollup + merge_on_pk, now brand-scoped via
+    silver()). Watermark (side-table) advanced after all buckets. Same MERGE as the full job → parity."""
+    global _SPARK, _BRAND_BUCKET_VIEW
+    import math
+    from datetime import timedelta
+    from functools import reduce
+
+    table_name, sources = cfg["table_name"], cfg["source_tables"]
+    target_fqtn = f"{CATALOG}.{GOLD_NAMESPACE}.{table_name}"
+    full_refresh = os.environ.get("FULL_REFRESH", "").lower() in ("1", "true", "yes")
+    overlap_hours = int(os.environ.get("SILVER_INCREMENTAL_OVERLAP_HOURS", "2"))
+    wm = None if full_refresh else read_job_watermark(spark, table_name)
+
+    # affected brands = union over every source of brand_id changed since (wm − overlap); watermark = max
+    # source updated_at across all sources (advance only after success).
+    brand_dfs, max_wms = [], []
+    for st in sources:
+        if not silver_exists(spark, st):
+            continue
+        s = spark.table(f"{CATALOG}.{SILVER_NS}.{st}")
+        try:
+            max_wms.append(s.selectExpr("max(updated_at) AS m").collect()[0]["m"])
+        except Exception:  # noqa: BLE001 — source without updated_at can't watermark → treat as full
+            max_wms.append(None)
+        a = s if (wm is None or max_wms[-1] is None) else s.where(col("updated_at") >= lit(wm - timedelta(hours=overlap_hours)))
+        brand_dfs.append(a.select("brand_id"))
+    new_wm = max([w for w in max_wms if w is not None], default=None)
+
+    if not brand_dfs:
+        return target_fqtn, 0
+    brands = reduce(lambda a, b: a.unionByName(b), brand_dfs).where(col("brand_id").isNotNull()).distinct()
+    brands.persist()
+    n_brands = brands.count()
+    if n_brands == 0:
+        brands.unpersist()
+        write_job_watermark(spark, table_name, new_wm)
+        try:
+            n = spark.sql(f"SELECT COUNT(*) AS n FROM {target_fqtn}").collect()[0]["n"]
+        except Exception:  # noqa: BLE001
+            n = 0
+        print(f"[{app_name}] PARTITION-INCREMENTAL: no brands changed — 0 buckets", flush=True)
+        return target_fqtn, n
+
+    target_per = max(1, int(os.environ.get("SILVER_BATCH_TARGET_ROWS", "500000")))
+    max_chunks = max(1, int(os.environ.get("SILVER_MAX_CHUNKS", "48")))
+    n_buckets = max(1, min(max_chunks, math.ceil(n_brands / target_per)))
+    print(
+        f"[{app_name}] PARTITION-INCREMENTAL ({'FULL' if (full_refresh or wm is None) else 'delta'}): "
+        f"{n_brands} brand(s) -> {n_buckets} adaptive bucket(s)",
+        flush=True,
+    )
+    _SPARK = spark
+    fqtn, n = target_fqtn, 0
+    try:
+        for b in range(n_buckets):
+            bucket = brands if n_buckets == 1 else brands.where((abs_(hash_(col("brand_id"))) % lit(n_buckets)) == lit(b))
+            bucket.createOrReplaceTempView("_brand_bucket")
+            _BRAND_BUCKET_VIEW = "_brand_bucket"
+            fqtn, n = build_fn(spark)
+    finally:
+        _BRAND_BUCKET_VIEW = None
+        _SPARK = None
+    brands.unpersist()
+    write_job_watermark(spark, table_name, new_wm)
+    return fqtn, n
+
+
+def run_job(app_name: str, build_fn, *, entity_incremental: "dict | None" = None) -> None:
     """Standard entrypoint: build a Spark session, run build_fn(spark), emit ONE structured job line.
 
     build_fn keeps its existing `(fqtn, rows_out) = build(spark)` contract — merge_upserted/rows_in are
     captured transparently by merge_on_pk writing into the module-level _ACTIVE_METRICS bag set here.
     ADDITIVE: the legacy "[job] DONE — N rows" line is still printed.
+
+    PARTITION-INCREMENTAL (opt-in): pass entity_incremental={table_name, source_tables:[...]} to recompute
+    only the brands whose source Silver changed (build()/SQL unchanged — silver() brand-filters every read).
+    Omit it (or FULL_REFRESH=1) → full recompute, the legacy path.
     """
     global _ACTIVE_METRICS
     import time
@@ -214,7 +311,10 @@ def run_job(app_name: str, build_fn) -> None:
     _ACTIVE_METRICS = JobMetrics()
     started = time.monotonic()
     try:
-        fqtn, n = build_fn(spark)
+        if entity_incremental is not None:
+            fqtn, n = _gold_entity_incremental(spark, app_name, build_fn, entity_incremental)
+        else:
+            fqtn, n = build_fn(spark)
         duration_ms = int((time.monotonic() - started) * 1000)
         emit_job_log(app_name, status="ok", rows_out=n, metrics=_ACTIVE_METRICS, fqtn=fqtn, duration_ms=duration_ms)
         print(f"[{app_name}] DONE — {fqtn} now has {n} rows", flush=True)

@@ -105,4 +105,6 @@ def build(spark):
 
 
 if __name__ == "__main__":
-    run_job("gold-retention", build)
+    run_job("gold-retention", build, entity_incremental={
+        "table_name": "gold_retention", "source_tables": ["silver_customer"],
+    })

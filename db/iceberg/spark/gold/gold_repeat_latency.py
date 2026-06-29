@@ -183,4 +183,6 @@ def build(spark):
 
 
 if __name__ == "__main__":
-    run_job("gold-repeat-latency", build)
+    run_job("gold-repeat-latency", build, entity_incremental={
+        "table_name": "gold_repeat_latency", "source_tables": ["silver_order_state"],
+    })

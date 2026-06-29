@@ -378,4 +378,6 @@ def build(spark):
 
 
 if __name__ == "__main__":
-    run_job("gold-recommendation-features", build)
+    run_job("gold-recommendation-features", build, entity_incremental={
+        "table_name": "gold_recommendation_features", "source_tables": ["silver_customer", "silver_order_state", "silver_order_line", "silver_touchpoint", "silver_page_view"],
+    })

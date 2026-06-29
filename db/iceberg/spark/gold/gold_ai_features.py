@@ -156,4 +156,6 @@ def build(spark):
 
 
 if __name__ == "__main__":
-    run_job("gold-ai-features", build)
+    run_job("gold-ai-features", build, entity_incremental={
+        "table_name": "gold_ai_features", "source_tables": ["silver_customer", "silver_order_state", "silver_touchpoint", "silver_journey"],
+    })

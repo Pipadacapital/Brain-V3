@@ -84,4 +84,6 @@ def build(spark):
 
 
 if __name__ == "__main__":
-    run_job("gold-conversion-feedback", build)
+    run_job("gold-conversion-feedback", build, entity_incremental={
+        "table_name": "gold_conversion_feedback", "source_tables": ["silver_form_submission", "silver_payment"],
+    })

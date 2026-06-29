@@ -96,4 +96,6 @@ def build(spark):
 
 
 if __name__ == "__main__":
-    run_job("gold-cod-rto", build)
+    run_job("gold-cod-rto", build, entity_incremental={
+        "table_name": "gold_cod_rto", "source_tables": ["silver_cod_rto"],
+    })

@@ -30,9 +30,12 @@ from __future__ import annotations  # PEP 563: the Spark image ships Python 3.8 
 # evaluation so `str | None`, `list[str]`, `dict[str, str]` parse on 3.8 (they'd otherwise TypeError
 # at import time). Pure type-hint sugar; no runtime behaviour change.
 
+import math
 import os
+from datetime import timedelta
 
 from pyspark.sql import SparkSession
+from pyspark.sql.functions import abs as abs_, col, hash as hash_, lit
 
 # The single REST catalog the local lakehouse exposes (compose `iceberg-rest`). Same catalog handle
 # Bronze uses — namespaces (brain_bronze / brain_silver / brain_gold) live side-by-side inside it.
@@ -261,3 +264,63 @@ def write_job_watermark(spark: "SparkSession", job_name: str, ts) -> None:
         WHEN NOT MATCHED THEN INSERT *
         """
     )
+
+
+def run_entity_incremental(spark, *, table_name, source_fqtn, event_filter, entity_expr, fold_fn,
+                           after_buckets_fn=None):
+    """Generic ENTITY-INCREMENTAL driver (the proven pattern from silver_order_state / silver_touchpoint).
+
+    For jobs that FOLD/AGGREGATE many source events per entity (order_id, visitor, …) — where a time-window
+    slice would regress the aggregate. It:
+      1. reads the watermark (silver_job_watermark side-table) — the max SOURCE ingested_at last processed;
+      2. finds the entities with NEW events since (watermark − overlap), or ALL for FULL_REFRESH/first run;
+      3. adaptively HASH-BUCKETS them by entity (every event of an entity lands in ONE bucket — no driver
+         collect), N adapting to the affected count;
+      4. for each bucket: registers `bronze_events` = that bucket's entities' FULL event history, then calls
+         fold_fn() (the job's unchanged fold + idempotent MERGE);
+      5. advances the watermark ONLY after every bucket merged (a crash never skips data).
+
+    Args (Columns are pyspark.sql Columns over the source):
+      event_filter — bool Column selecting this job's source events (e.g. col('event_type').like('order.%')).
+      entity_expr  — Column giving the entity id from the event (e.g. get_json_object(col('payload'), '$.properties.order_id')).
+      fold_fn      — () -> None: the job's fold over the registered `bronze_events` view + its MERGE.
+      after_buckets_fn — optional () -> None run once after all buckets (e.g. a dependent rebuild).
+    Knobs (env): FULL_REFRESH, SILVER_INCREMENTAL_OVERLAP_HOURS (2), SILVER_BATCH_TARGET_ROWS (500000),
+    SILVER_MAX_CHUNKS (48)."""
+    full_refresh = os.environ.get("FULL_REFRESH", "").lower() in ("1", "true", "yes")
+    overlap_hours = int(os.environ.get("SILVER_INCREMENTAL_OVERLAP_HOURS", "2"))
+    wm = None if full_refresh else read_job_watermark(spark, table_name)
+
+    bronze_all = spark.table(source_fqtn)
+    src = bronze_all.where(event_filter)
+    new_wm = src.selectExpr("max(ingested_at) AS m").collect()[0]["m"]  # advance to here after success
+    affected = src if wm is None else src.where(col("ingested_at") >= lit(wm - timedelta(hours=overlap_hours)))
+    ents = affected.select(entity_expr.alias("_e")).where(col("_e").isNotNull() & (col("_e") != "")).distinct()
+    ents.persist()
+    n = ents.count()
+    if n == 0:
+        ents.unpersist()
+        write_job_watermark(spark, table_name, new_wm)
+        print(f"[{table_name}] ENTITY-INCREMENTAL: no entities with new events — 0 buckets", flush=True)
+        if after_buckets_fn:
+            after_buckets_fn()
+        return
+
+    target_per_bucket = max(1, int(os.environ.get("SILVER_BATCH_TARGET_ROWS", "500000")))
+    max_chunks = max(1, int(os.environ.get("SILVER_MAX_CHUNKS", "48")))
+    n_buckets = max(1, min(max_chunks, math.ceil(n / target_per_bucket)))
+    print(
+        f"[{table_name}] ENTITY-INCREMENTAL ({'FULL' if (full_refresh or wm is None) else 'delta'}): "
+        f"{n} affected entit(y/ies) -> {n_buckets} adaptive bucket(s)",
+        flush=True,
+    )
+    be = bronze_all.withColumn("_e", entity_expr)
+    bucketed = be.join(ents.withColumnRenamed("_e", "_ae"), be["_e"] == col("_ae"), "left_semi")
+    for b in range(n_buckets):
+        one = bucketed if n_buckets == 1 else bucketed.where((abs_(hash_(col("_e"))) % lit(n_buckets)) == lit(b))
+        one.drop("_e").createOrReplaceTempView("bronze_events")
+        fold_fn()
+    ents.unpersist()
+    write_job_watermark(spark, table_name, new_wm)
+    if after_buckets_fn:
+        after_buckets_fn()

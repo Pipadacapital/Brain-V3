@@ -24,7 +24,7 @@
  */
 
 import { Pool } from 'pg';
-import { updateConnectorInstanceHealth } from '../../infrastructure/pg/ConnectorInstanceHealthRepository.js';
+import { updateConnectorInstanceHealth, recoverConnectorInstanceHealth } from '../../infrastructure/pg/ConnectorInstanceHealthRepository.js';
 import { Kafka, type Producer } from 'kafkajs';
 import { createIdempotentProducer } from '../../infrastructure/kafka/idempotent-producer.js';
 import { buildPartitionKey } from '@brain/events';
@@ -212,6 +212,8 @@ async function repullConnector(params: RepullParams): Promise<void> {
   }
 
   await setSyncState(pool, brandId, ciId, 'connected', null);
+  // Recovery edge: self-heal a prior TokenExpired/RateLimited badge on success (no-op otherwise).
+  await recoverConnectorInstanceHealth(pool, brandId, ciId);
   await syncRunRepo.closeRun({ runId, brandId, startedAt, status: 'succeeded', rowsIngested: emitted });
   log.info(`connector=${ciId} COMPLETED emitted=${emitted}`);
 

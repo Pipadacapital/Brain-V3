@@ -15,6 +15,23 @@ import type { MarketplaceTile } from '@/lib/api/types';
 /** Storefront providers that are mutually exclusive per brand (mirrors apps/core STOREFRONT_PROVIDERS). */
 export const STOREFRONT_PROVIDERS = ['shopify', 'woocommerce'] as const;
 
+/**
+ * Providers whose "Import history" / backfill control should render — i.e. those with an actual
+ * jobs.backfill_job queue runner. UI mirror of @brain/connector-core BACKFILL_QUEUE_PROVIDERS
+ * (shared with the stream-worker claimer + the server reject in RequestConnectorBackfillCommand).
+ *
+ * Narrower than STOREFRONT_PROVIDERS on purpose: WooCommerce re-pulls history through the SYNC lane
+ * (the Sync-now control), NOT the backfill queue, so it has no claimer for a backfill_job row. Ads /
+ * payments / logistics have none either. Showing the button for them enqueues an orphan job that
+ * sits `queued` forever and looks broken. Keep in lock-step with the backend SoT + the claimer.
+ */
+export const BACKFILL_PROVIDERS = ['shopify'] as const;
+
+/** A tile whose provider has a historical-backfill queue runner (the "Import history" control). */
+export function supportsHistoricalBackfill(tile: Pick<MarketplaceTile, 'id'>): boolean {
+  return (BACKFILL_PROVIDERS as readonly string[]).includes(tile.id);
+}
+
 type StorefrontTile = Pick<MarketplaceTile, 'id' | 'category' | 'display_name' | 'instance' | 'instances'>;
 
 /** A tile belongs to the storefront category (or is a known storefront provider). */

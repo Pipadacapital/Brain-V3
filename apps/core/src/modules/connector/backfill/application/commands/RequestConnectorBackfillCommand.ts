@@ -22,11 +22,13 @@
 
 import type { AuditWriter } from '@brain/audit';
 import type { IConnectorInstanceRepository } from '@brain/connector-core';
+import { supportsBackfillQueue } from '@brain/connector-core';
 import type { ISecretsManager } from '@brain/connector-secrets';
 import { PgBackfillJobRepository } from '../../infrastructure/PgBackfillJobRepository.js';
 
 export type BackfillRequestErrorCode =
   | 'CONNECTOR_NOT_FOUND'
+  | 'BACKFILL_NOT_SUPPORTED'
   | 'RECONNECT_REQUIRED'
   | 'BACKFILL_ALREADY_RUNNING';
 
@@ -71,6 +73,19 @@ export class RequestConnectorBackfillCommand {
         ok: false,
         code: 'CONNECTOR_NOT_FOUND',
         message: 'Connector not found for this brand.',
+      };
+    }
+
+    // Step 1.5: reject providers with NO backfill-queue runner (single source of truth:
+    // @brain/connector-core supportsBackfillQueue, shared with the stream-worker claimer). Ads
+    // (meta/google_ads), payments (gokwik/razorpay) and logistics (shiprocket) have no claimer for
+    // jobs.backfill_job — enqueuing one would orphan it as `queued` forever. Fail fast & clearly
+    // instead of silently inserting an un-drainable row.
+    if (!supportsBackfillQueue(connectorInstance.provider)) {
+      return {
+        ok: false,
+        code: 'BACKFILL_NOT_SUPPORTED',
+        message: `Historical backfill is not supported for ${connectorInstance.provider} connectors.`,
       };
     }
 

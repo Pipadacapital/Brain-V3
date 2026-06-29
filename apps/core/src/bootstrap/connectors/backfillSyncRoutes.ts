@@ -140,7 +140,12 @@ export function registerConnectorBackfillSyncRoutes(app: FastifyInstance, deps: 
       });
 
       if (!result.ok) {
-        const httpCode = result.code === 'CONNECTOR_NOT_FOUND' ? 404 : 409;
+        const httpCode =
+          result.code === 'CONNECTOR_NOT_FOUND'
+            ? 404
+            : result.code === 'BACKFILL_NOT_SUPPORTED'
+              ? 400
+              : 409;
         return reply.code(httpCode).send({
           request_id: requestId,
           error: { code: result.code, message: result.message },

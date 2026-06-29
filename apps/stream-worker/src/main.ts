@@ -75,6 +75,7 @@ import { BRONZE_BRIDGES, buildBronzeBridges } from './interfaces/consumers/bronz
 import { startHealthServer } from './infrastructure/health/HealthServer.js';
 import { startSyncRequestClaimer, enumerateConnectedConnectors } from './jobs/sync-request-claimer/run.js';
 import { run as runShopifyBackfill } from './jobs/shopify-backfill/run.js';
+import { supportsBackfillQueue } from '@brain/connector-core';
 import { PgBackfillJobRepository } from './infrastructure/pg/BackfillJobRepository.js';
 import { startDqChecks } from './jobs/dq/run.js';
 import { startIngestScheduler } from './jobs/ingest-scheduler/run.js';
@@ -590,7 +591,10 @@ export async function main(): Promise<void> {
   const backfillJobRepo = new PgBackfillJobRepository(dbUrl);
   const runBackfillClaim = async (): Promise<void> => {
     const connectors = await enumerateConnectedConnectors(backfillClaimerPool);
-    for (const c of connectors.filter((x) => x.provider === 'shopify')) {
+    // Drain only providers with a backfill-queue runner (single source of truth shared with the
+    // RequestConnectorBackfillCommand reject guard: @brain/connector-core supportsBackfillQueue —
+    // currently shopify). Never mis-claims a non-backfillable connector's job.
+    for (const c of connectors.filter((x) => supportsBackfillQueue(x.provider))) {
       try {
         const requeued = await backfillJobRepo.requeueStaleRunning(
           c.connector_instance_id, c.brand_id, backfillStaleRequeueMs,

@@ -39,6 +39,8 @@ from pyspark.sql import functions as F  # noqa: E402
 from pyspark.sql.utils import AnalysisException  # noqa: E402
 
 from iceberg_base import CATALOG, GOLD_NAMESPACE, SILVER_NAMESPACE, build_spark, create_iceberg_table  # noqa: E402
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # gold/ — for _gold_base
+from _gold_base import gold_partition_filter  # noqa: E402
 
 TABLE_NAME = "gold_cohorts"
 
@@ -72,6 +74,9 @@ def materialize(spark: SparkSession) -> str:
     )
 
     customers = _read_silver_customer(spark).where(F.col("first_seen_at").isNotNull())
+    customers, _commit_wm = gold_partition_filter(
+        spark, customers, table_name=TABLE_NAME, source_tables=["silver_customer"],
+    )
 
     result = (
         customers.withColumn("cohort_month", F.date_format(F.col("first_seen_at"), "yyyy-MM"))
@@ -109,6 +114,7 @@ def materialize(spark: SparkSession) -> str:
     )
     total = spark.table(fqtn).count()
     print(f"[gold_cohorts] MERGEd {n} cohort rows → {fqtn} (table now {total} rows)", flush=True)
+    _commit_wm()  # advance watermark after the MERGE succeeded
     return fqtn
 
 

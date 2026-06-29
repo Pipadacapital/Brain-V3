@@ -47,6 +47,8 @@ from pyspark.sql import functions as F  # noqa: E402
 from pyspark.sql.utils import AnalysisException  # noqa: E402
 
 from iceberg_base import CATALOG, GOLD_NAMESPACE, SILVER_NAMESPACE, build_spark, create_iceberg_table  # noqa: E402
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # gold/ — for _gold_base
+from _gold_base import gold_partition_filter  # noqa: E402
 
 TABLE_NAME = "gold_customer_scores"
 
@@ -112,6 +114,9 @@ def materialize(spark: SparkSession) -> str:
     # V4: the sole feature source is the runtime fold from the Iceberg silver_customer spine.
     print("[gold_customer_scores] feature source = Iceberg silver_customer (runtime feature fold)", flush=True)
     latest = _latest_feature_from_silver(spark)
+    latest, _commit_wm = gold_partition_filter(
+        spark, latest, table_name=TABLE_NAME, source_tables=["silver_customer"],
+    )
 
     d = F.col("days_since_last_order")
     lo = F.col("lifetime_orders")
@@ -183,6 +188,7 @@ def materialize(spark: SparkSession) -> str:
     )
     total = spark.table(fqtn).count()
     print(f"[gold_customer_scores] MERGEd {n} score rows → {fqtn} (table now {total} rows)", flush=True)
+    _commit_wm()  # advance watermark after the MERGE succeeded
     return fqtn
 
 

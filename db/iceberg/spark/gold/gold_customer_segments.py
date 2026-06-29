@@ -53,6 +53,7 @@ from pyspark.sql import SparkSession  # noqa: E402
 from pyspark.sql.utils import AnalysisException  # noqa: E402
 
 from iceberg_base import CATALOG, GOLD_NAMESPACE, SILVER_NAMESPACE, build_spark, create_iceberg_table  # noqa: E402
+from _gold_base import gold_partition_filter  # noqa: E402
 from _segment_rules import (  # noqa: E402
     SEGMENT_TYPE_LIFECYCLE,
     SEGMENT_TYPE_VALUE_TIER,
@@ -104,6 +105,9 @@ def materialize(spark: SparkSession) -> str:
     _evolve_schema(spark, fqtn)
 
     customers = _read_silver_customer(spark)
+    customers, _commit_wm = gold_partition_filter(
+        spark, customers, table_name=TABLE_NAME, source_tables=["silver_customer"],
+    )
     customers.createOrReplaceTempView("silver_customer_src")
 
     # The three base signals per customer (V4 runtime feature fold — identical thresholds to
@@ -181,6 +185,7 @@ def materialize(spark: SparkSession) -> str:
         f"(table now {total} rows)",
         flush=True,
     )
+    _commit_wm()  # advance watermark after the MERGE succeeded
     return fqtn
 
 

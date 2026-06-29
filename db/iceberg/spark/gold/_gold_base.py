@@ -62,7 +62,7 @@ SILVER_NS = os.environ.get("SILVER_NAMESPACE", SILVER_NAMESPACE)
 __all__ = [
     "CATALOG", "GOLD_NAMESPACE", "SILVER_NAMESPACE", "SILVER_NS",
     "silver", "silver_exists", "ensure_gold_table", "merge_on_pk", "run_job",
-    "emit_cache_event",
+    "emit_cache_event", "gold_partition_filter",
 ]
 
 
@@ -290,6 +290,47 @@ def _gold_entity_incremental(spark: SparkSession, app_name: str, build_fn, cfg: 
     brands.unpersist()
     write_job_watermark(spark, table_name, new_wm)
     return fqtn, n
+
+
+def gold_partition_filter(spark: SparkSession, df: DataFrame, *, table_name: str, source_tables: list,
+                          brand_col: str = "brand_id"):
+    """PARTITION-INCREMENTAL for DataFrame-API Gold marts (that can't use the silver()-view path).
+    Restricts `df` to the brands changed in ANY source_table since the watermark (union; side-table
+    watermark on updated_at; FULL_REFRESH/first-run → df unchanged). Returns (filtered_df, commit_fn) —
+    call commit_fn() AFTER the MERGE succeeds so a mid-run crash never advances past unprocessed data.
+    source_tables may be silver_* or gold_* (resolved to the right namespace)."""
+    from datetime import timedelta
+    from functools import reduce
+
+    full_refresh = os.environ.get("FULL_REFRESH", "").lower() in ("1", "true", "yes")
+    overlap_hours = int(os.environ.get("SILVER_INCREMENTAL_OVERLAP_HOURS", "2"))
+    wm = None if full_refresh else read_job_watermark(spark, table_name)
+
+    brand_dfs, max_wms = [], []
+    for st in source_tables:
+        ns = GOLD_NAMESPACE if st.startswith("gold_") else SILVER_NS
+        try:
+            s = spark.table(f"{CATALOG}.{ns}.{st}")
+        except Exception:  # noqa: BLE001 — absent source contributes nothing
+            continue
+        try:
+            max_wms.append(s.selectExpr("max(updated_at) AS m").collect()[0]["m"])
+        except Exception:  # noqa: BLE001 — no updated_at → treat as full (all brands)
+            max_wms.append(None)
+        a = s if (wm is None or max_wms[-1] is None) else s.where(col("updated_at") >= lit(wm - timedelta(hours=overlap_hours)))
+        brand_dfs.append(a.select(col("brand_id").alias("_pb")))
+    new_wm = max([w for w in max_wms if w is not None], default=None)
+
+    def commit() -> None:
+        write_job_watermark(spark, table_name, new_wm)
+
+    if wm is None or not brand_dfs:
+        print(f"[{table_name}] PARTITION-INCREMENTAL: FULL (all brands)", flush=True)
+        return df, commit
+    brands = reduce(lambda a, b: a.unionByName(b), brand_dfs).where(col("_pb").isNotNull()).distinct()
+    print(f"[{table_name}] PARTITION-INCREMENTAL: {brands.count()} changed brand(s)", flush=True)
+    filtered = df.join(brands, df[brand_col] == brands["_pb"], "left_semi")
+    return filtered, commit
 
 
 def run_job(app_name: str, build_fn, *, entity_incremental: "dict | None" = None) -> None:

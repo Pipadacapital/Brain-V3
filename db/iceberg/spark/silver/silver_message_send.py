@@ -186,4 +186,6 @@ def build(spark):
 
 
 if __name__ == "__main__":
-    run_job("silver-message-send", build)
+    run_job("silver-message-send", build, entity_incremental={
+        "table_name": "silver_message_send", "event_types": EVENT_TYPES, "entity_path": "$.properties.message_id",
+    })

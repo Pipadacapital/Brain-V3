@@ -33,9 +33,12 @@ from datetime import timedelta
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pyspark.sql import DataFrame, SparkSession  # noqa: E402
-from pyspark.sql.functions import col, get_json_object, lit  # noqa: E402
+from pyspark.sql.functions import abs as abs_, col, get_json_object, hash as hash_, lit  # noqa: E402
 
-from iceberg_base import CATALOG, SILVER_NAMESPACE, build_spark, create_iceberg_table  # noqa: E402
+from iceberg_base import (  # noqa: E402
+    CATALOG, SILVER_NAMESPACE, build_spark, create_iceberg_table,
+    read_job_watermark, write_job_watermark,
+)
 from job_log import JobMetrics, emit_job_log  # noqa: E402
 
 # The metrics bag for the job currently running through run_job(). merge_on_pk + read_bronze_events
@@ -47,6 +50,12 @@ _ACTIVE_METRICS: JobMetrics | None = None
 # Set by run_job's incremental/adaptive loop to the current batch's [lo, hi) ingested_at window;
 # read_bronze_events filters its read to it. None (default) → full read (legacy behavior, unchanged).
 _CURRENT_WINDOW: "tuple | None" = None
+
+# Set by run_job's ENTITY-incremental loop: the payload JSON path of the entity id (e.g.
+# '$.properties.campaign_id'). When set, read_bronze_events restricts its read to events whose entity is
+# in the temp view `_entity_bucket` (the current hash-bucket of entities with new events) — so each
+# entity is re-folded over its FULL history within one bucket. None (default) → no entity filter.
+_ENTITY_PATH: "str | None" = None
 
 # Bronze source (NEW-side read) — the raw Iceberg Bronze the operational reads use (Iceberg-sole SoR).
 BRONZE_NAMESPACE = os.environ.get("BRONZE_NAMESPACE", "brain_bronze")
@@ -79,6 +88,13 @@ def read_bronze_events(spark: SparkSession, event_types: list[str]) -> DataFrame
             df = df.where(col("ingested_at") >= lit(_lo))
         if _hi is not None:
             df = df.where(col("ingested_at") < lit(_hi))
+    # ENTITY-INCREMENTAL: restrict to this hash-bucket's entities — but each carries its FULL history (NO
+    # ingested_at filter on the read), so a fold/aggregate over the entity's events is complete + correct.
+    # The driver registers `_entity_bucket(entity)`; we semi-join the source's entity to it.
+    if _ENTITY_PATH is not None:
+        df = df.withColumn("_e", get_json_object(col("pj"), _ENTITY_PATH))
+        _bucket = spark.table("_entity_bucket")
+        df = df.join(_bucket.withColumnRenamed("entity", "_be"), df["_e"] == col("_be"), "left_semi").drop("_e")
     # Best-effort, brand-AGNOSTIC source-row signal for the structured job line. Cached so the count
     # does not re-scan Bronze when the build then consumes the same DataFrame.
     if _ACTIVE_METRICS is not None:
@@ -195,7 +211,65 @@ def _incremental_windows(spark: SparkSession, target_fqtn: str):
     return windows
 
 
-def run_job(app_name: str, build_fn, *, target_table: "str | None" = None) -> None:
+def _run_entity_incremental(spark: SparkSession, app_name: str, build_fn, cfg: dict):
+    """ENTITY-incremental driver for the _silver_base fold consumers (entity-grain MERGE, e.g. campaign_id
+    / brain_anon_id / order_id). cfg = {table_name, event_types:[...], entity_path:'$.properties.X'}.
+    Finds entities with NEW events → hash-buckets them → per bucket sets _ENTITY_PATH + registers
+    `_entity_bucket` so read_bronze_events restricts to that bucket's entities (FULL history each) → runs
+    build_fn (its unchanged transform + merge_on_pk). Advances the side-table watermark after all buckets."""
+    global _ENTITY_PATH
+    import math
+    from datetime import timedelta
+
+    table_name, event_types, entity_path = cfg["table_name"], cfg["event_types"], cfg["entity_path"]
+    target_fqtn = f"{CATALOG}.{SILVER_NAMESPACE}.{table_name}"
+    full_refresh = os.environ.get("FULL_REFRESH", "").lower() in ("1", "true", "yes")
+    overlap_hours = int(os.environ.get("SILVER_INCREMENTAL_OVERLAP_HOURS", "2"))
+    wm = None if full_refresh else read_job_watermark(spark, table_name)
+
+    in_list = ", ".join(f"'{e}'" for e in event_types)
+    src = spark.sql(
+        f"SELECT ingested_at, get_json_object(payload, '{entity_path}') AS entity "
+        f"FROM {BRONZE_TABLE} WHERE event_type IN ({in_list})"
+    )
+    new_wm = src.selectExpr("max(ingested_at) AS m").collect()[0]["m"]
+    affected = src if wm is None else src.where(col("ingested_at") >= lit(wm - timedelta(hours=overlap_hours)))
+    ents = affected.select("entity").where(col("entity").isNotNull() & (col("entity") != "")).distinct()
+    ents.persist()
+    n_e = ents.count()
+    if n_e == 0:
+        ents.unpersist()
+        write_job_watermark(spark, table_name, new_wm)
+        try:
+            n = spark.sql(f"SELECT COUNT(*) AS n FROM {target_fqtn}").collect()[0]["n"]
+        except Exception:  # noqa: BLE001
+            n = 0
+        print(f"[{app_name}] ENTITY-INCREMENTAL: no entities with new events — 0 buckets", flush=True)
+        return target_fqtn, n
+
+    target_per = max(1, int(os.environ.get("SILVER_BATCH_TARGET_ROWS", "500000")))
+    max_chunks = max(1, int(os.environ.get("SILVER_MAX_CHUNKS", "48")))
+    n_buckets = max(1, min(max_chunks, math.ceil(n_e / target_per)))
+    print(
+        f"[{app_name}] ENTITY-INCREMENTAL ({'FULL' if (full_refresh or wm is None) else 'delta'}): "
+        f"{n_e} entit(y/ies) -> {n_buckets} adaptive bucket(s)",
+        flush=True,
+    )
+    _ENTITY_PATH = entity_path
+    fqtn, n = target_fqtn, 0
+    try:
+        for b in range(n_buckets):
+            bucket = ents if n_buckets == 1 else ents.where((abs_(hash_(col("entity"))) % lit(n_buckets)) == lit(b))
+            bucket.createOrReplaceTempView("_entity_bucket")
+            fqtn, n = build_fn(spark)
+    finally:
+        _ENTITY_PATH = None
+    ents.unpersist()
+    write_job_watermark(spark, table_name, new_wm)
+    return fqtn, n
+
+
+def run_job(app_name: str, build_fn, *, target_table: "str | None" = None, entity_incremental: "dict | None" = None) -> None:
     """Standard entrypoint: build a Spark session, run build_fn(spark), emit ONE structured job line.
 
     build_fn keeps its existing `(fqtn, rows_out) = build(spark)` contract — the rows_in + merge_upserted
@@ -226,6 +300,15 @@ def run_job(app_name: str, build_fn, *, target_table: "str | None" = None) -> No
     started = time.monotonic()
     target_fqtn = f"{CATALOG}.{SILVER_NAMESPACE}.{target_table}" if target_table else None
     try:
+        if entity_incremental is not None:
+            # ENTITY-incremental: fold-grain jobs (campaign_id / brain_anon_id / order_id) — reprocess only
+            # entities with new events, each over its FULL history, hash-bucketed. build_fn is UNCHANGED.
+            fqtn, n = _run_entity_incremental(spark, app_name, build_fn, entity_incremental)
+            duration_ms = int((time.monotonic() - started) * 1000)
+            emit_job_log(app_name, status="ok", rows_out=n, metrics=_ACTIVE_METRICS, fqtn=fqtn, duration_ms=duration_ms)
+            print(f"[{app_name}] DONE — {fqtn} now has {n} rows", flush=True)
+            return
+
         windows = _incremental_windows(spark, target_fqtn) if target_fqtn else None
 
         if not windows and target_fqtn:

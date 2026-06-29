@@ -223,4 +223,6 @@ def build(spark):
 
 
 if __name__ == "__main__":
-    run_job("silver-cod-rto", build)
+    run_job("silver-cod-rto", build, entity_incremental={
+        "table_name": "silver_cod_rto", "event_types": [ORDER_EVENT], "entity_path": "$.properties.order_id",
+    })

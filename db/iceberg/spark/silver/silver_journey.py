@@ -224,4 +224,8 @@ def build(spark):
 
 
 if __name__ == "__main__":
-    run_job("silver-journey", build)
+    # ENTITY-INCREMENTAL (entity = visitor brain_anon_id): a journey folds a visitor's touchpoints, so
+    # reprocess only visitors with new events, each over their full history (build() unchanged).
+    run_job("silver-journey", build, entity_incremental={
+        "table_name": "silver_journey", "event_types": JOURNEY_EVENTS, "entity_path": "$.properties.brain_anon_id",
+    })

@@ -47,8 +47,12 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from datetime import timedelta
+
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import array_join, col, lit, size  # noqa: E402
+from pyspark.sql.functions import (  # noqa: E402
+    abs as abs_, array_join, col, get_json_object, hash as hash_, lit, size,
+)
 from pyspark.sql.types import StringType  # noqa: E402
 
 from iceberg_base import (  # noqa: E402 — sys.path tweak above
@@ -152,30 +156,11 @@ def _read_identity_link(spark: SparkSession):
         return None
 
 
-def build(spark: SparkSession) -> str:
-    fqtn = create_iceberg_table(
-        spark,
-        SILVER_NAMESPACE,
-        TABLE_NAME,
-        _COLUMNS,
-        partitioned_by="bucket(256, brand_id)",
-    )
-
-    spark.read.table(BRONZE_TABLE).createOrReplaceTempView("bronze_events")
-    _read_horizons(spark).createOrReplaceTempView("brand_horizons")
-
-    ident = _read_identity_link(spark)
-    if ident is not None:
-        ident.createOrReplaceTempView("identity_link")
-        identity_join = (
-            "left join identity_link b "
-            "on b.brand_id = o.brand_id and b.hashed_customer_email = o.hashed_customer_email"
-        )
-        brain_col = "b.brain_id"
-    else:
-        identity_join = ""
-        brain_col = "cast(null as string)"
-
+def _fold_and_merge(spark: SparkSession, fqtn: str, identity_join: str, brain_col: str) -> None:
+    """Run the order-state fold + idempotent MERGE over whatever `bronze_events` temp view is CURRENTLY
+    registered. The caller (build) registers bronze_events as either the full table (legacy/full-refresh)
+    or — for ENTITY-INCREMENTAL — one hash-bucket of the orders that have NEW events, carrying each such
+    order's FULL event history (so the per-order fold is complete and the aggregates never regress)."""
     # ── stg_order_events_bronze: type + dedup order.live.v1 to (brand_id, order_id) latest-ingested ──
     stg_order_events = """
         with raw as (
@@ -234,16 +219,7 @@ def build(spark: SparkSession) -> str:
         stage="dq",
     )
     stg_df.where(size(col("_dq")) == 0).drop("_dq", "payload").createOrReplaceTempView("stg_order_events_bronze")
-
-    # Event-ordering port (registered for the SQL fold): event_order_key as a sortable string key. Used as
-    # the additive, lowest-priority final tiebreaker in the terminal-wins window (replay-stable total order).
-    spark.udf.register(
-        "event_order_key_str_sql",
-        lambda occurred_at, source_ts, sequence: event_order_key_str(
-            {"occurred_at": occurred_at, "source_ts": source_ts, "sequence": sequence}
-        ),
-        StringType(),
-    )
+    # NOTE: the event_order_key_str_sql UDF is registered ONCE in build() (bucket-independent), not here.
 
     # ── latest logistics terminal_class per order (COD recognition signal) ──
     # HIGH COD fix: this CTE used to key on the RETIRED `gokwik.awb_status.v1` (migration 0117 — the wrong
@@ -423,6 +399,105 @@ def build(spark: SparkSession) -> str:
         WHEN NOT MATCHED THEN INSERT *
         """
     )
+
+
+# Event types whose payload carries a properties.order_id that this fold keys on. Used to discover which
+# orders have NEW events (entity-incremental) and to bucket them. Keep in sync with the fold's reads.
+_ORDER_EVENT_TYPES = ("order.live.v1", "shiprocket.shipment_status.v1")
+
+
+def build(spark: SparkSession) -> str:
+    """ENTITY-INCREMENTAL order-state fold. order_state AGGREGATES an order's full event history (terminal-
+    wins state, Σ recognition amounts, min/max times), so a time-window slice would regress it. Instead we
+    (1) find the orders with NEW events since the target watermark, (2) hash-bucket them into adaptive
+    batches, and (3) re-fold each bucket reading those orders' FULL history — complete + correct, bounded
+    memory, idempotent MERGE. FULL_REFRESH=1 (or empty target) re-folds ALL orders, still hash-bucketed so
+    even a full rebuild streams in bounded batches. See docs/ops/local-memory-budget.md (entity-incremental).
+
+    Knobs (env): FULL_REFRESH, SILVER_INCREMENTAL_OVERLAP_HOURS (default 2),
+    SILVER_BATCH_TARGET_ROWS (orders/bucket; default 500000), SILVER_MAX_CHUNKS (bucket cap; default 48)."""
+    import math
+
+    fqtn = create_iceberg_table(
+        spark, SILVER_NAMESPACE, TABLE_NAME, _COLUMNS, partitioned_by="bucket(256, brand_id)",
+    )
+
+    # Dimensions + UDF are bucket-independent → register ONCE (re-used across every bucket's fold).
+    _read_horizons(spark).createOrReplaceTempView("brand_horizons")
+    ident = _read_identity_link(spark)
+    if ident is not None:
+        ident.createOrReplaceTempView("identity_link")
+        identity_join = (
+            "left join identity_link b "
+            "on b.brand_id = o.brand_id and b.hashed_customer_email = o.hashed_customer_email"
+        )
+        brain_col = "b.brain_id"
+    else:
+        identity_join = ""
+        brain_col = "cast(null as string)"
+    spark.udf.register(
+        "event_order_key_str_sql",
+        lambda occurred_at, source_ts, sequence: event_order_key_str(
+            {"occurred_at": occurred_at, "source_ts": source_ts, "sequence": sequence}
+        ),
+        StringType(),
+    )
+
+    bronze_all = spark.read.table(BRONZE_TABLE)
+    order_evt = col("event_type").isin(*_ORDER_EVENT_TYPES)
+    oid = get_json_object(col("payload"), "$.properties.order_id")
+
+    # ── Which orders to re-fold? ────────────────────────────────────────────────────────────────────
+    full_refresh = os.environ.get("FULL_REFRESH", "").lower() in ("1", "true", "yes")
+    overlap_hours = int(os.environ.get("SILVER_INCREMENTAL_OVERLAP_HOURS", "2"))
+    wm = None
+    if not full_refresh:
+        try:
+            wm = spark.sql(f"SELECT max(max_ingested_at) AS wm FROM {fqtn}").collect()[0]["wm"]
+        except Exception:  # noqa: BLE001 — empty/absent target → full fold
+            wm = None
+
+    # Orders that have a new event since the watermark (or ALL orders for full/first run). Reading by the
+    # Bronze `ingested_at` COLUMN (the landing watermark) with a generous overlap → no order is missed.
+    affected = bronze_all.where(order_evt)
+    if wm is not None:
+        affected = affected.where(col("ingested_at") >= lit(wm - timedelta(hours=overlap_hours)))
+    affected_orders = (
+        affected.select(oid.alias("order_id")).where(col("order_id").isNotNull() & (col("order_id") != "")).distinct()
+    )
+    affected_orders.persist()
+    n_orders = affected_orders.count()
+    if n_orders == 0:
+        affected_orders.unpersist()
+        n = spark.table(fqtn).count()
+        print(f"[silver_order_state] ENTITY-INCREMENTAL: no orders with new events — 0 buckets ({n} rows)", flush=True)
+        return fqtn
+
+    # ── Adaptive hash-bucketing: N adapts to the affected-order count; each bucket re-folds its orders'
+    #    FULL history. No giant driver collect (we bucket by hash(order_id), not a Python list). ─────────
+    target_per_bucket = max(1, int(os.environ.get("SILVER_BATCH_TARGET_ROWS", "500000")))
+    max_chunks = max(1, int(os.environ.get("SILVER_MAX_CHUNKS", "48")))
+    n_buckets = max(1, min(max_chunks, math.ceil(n_orders / target_per_bucket)))
+    print(
+        f"[silver_order_state] ENTITY-INCREMENTAL ({'FULL' if (full_refresh or wm is None) else 'delta'}): "
+        f"{n_orders} affected order(s) → {n_buckets} adaptive bucket(s)",
+        flush=True,
+    )
+
+    # bronze rows for affected orders only (left-semi join), carrying each order's FULL history.
+    bronze_oid = bronze_all.withColumn("_oid", oid)
+    bronze_affected = bronze_oid.join(
+        affected_orders.withColumnRenamed("order_id", "_aoid"),
+        bronze_oid["_oid"] == col("_aoid"), "left_semi",
+    )
+    for b in range(n_buckets):
+        bucket = bronze_affected if n_buckets == 1 else bronze_affected.where(
+            (abs_(hash_(col("_oid"))) % lit(n_buckets)) == lit(b)
+        )
+        bucket.drop("_oid").createOrReplaceTempView("bronze_events")
+        _fold_and_merge(spark, fqtn, identity_join, brain_col)
+
+    affected_orders.unpersist()
     n = spark.table(fqtn).count()
     print(f"[silver_order_state] MERGE complete → {fqtn} has {n} rows", flush=True)
     return fqtn

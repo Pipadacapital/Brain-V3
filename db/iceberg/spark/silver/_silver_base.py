@@ -260,7 +260,7 @@ def _run_entity_incremental(spark: SparkSession, app_name: str, build_fn, cfg: d
     try:
         for b in range(n_buckets):
             bucket = ents if n_buckets == 1 else ents.where((abs_(hash_(col("entity"))) % lit(n_buckets)) == lit(b))
-            bucket.createOrReplaceTempView("_entity_bucket")
+            bucket.createOrReplaceTempView("_entity_bucket")    
             fqtn, n = build_fn(spark)
     finally:
         _ENTITY_PATH = None

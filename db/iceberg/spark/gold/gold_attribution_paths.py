@@ -49,6 +49,8 @@ from pyspark.sql import SparkSession  # noqa: E402
 from pyspark.sql.utils import AnalysisException  # noqa: E402
 
 from iceberg_base import CATALOG, GOLD_NAMESPACE, SILVER_NAMESPACE, build_spark, create_iceberg_table  # noqa: E402
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # gold/ — for _gold_base
+from _gold_base import gold_partition_filter  # noqa: E402
 
 TABLE_NAME = "gold_attribution_paths"
 
@@ -89,7 +91,11 @@ def materialize(spark: SparkSession) -> str:
     fqtn = create_iceberg_table(
         spark, GOLD_NAMESPACE, TABLE_NAME, _COLUMNS, partitioned_by="bucket(8, brand_id)"
     )
-    _read_silver_touchpoint(spark).createOrReplaceTempView("silver_touchpoint")
+    _tp = _read_silver_touchpoint(spark)
+    _tp, _commit_wm = gold_partition_filter(
+        spark, _tp, table_name=TABLE_NAME, source_tables=["silver_touchpoint"],
+    )
+    _tp.createOrReplaceTempView("silver_touchpoint")
 
     # The dbt transform, folded into one Spark SQL. Spark's concat_ws(...,collect_list over a window) is
     # NOT order-stable; instead use array_join(sort_array(collect_list(struct(...))) ...) to order by
@@ -160,6 +166,7 @@ def materialize(spark: SparkSession) -> str:
     )
     total = spark.table(fqtn).count()
     print(f"[gold_attribution_paths] MERGEd {n} converted-path rows → {fqtn} (table now {total} rows)", flush=True)
+    _commit_wm()  # advance watermark after the write succeeded
     return fqtn
 
 

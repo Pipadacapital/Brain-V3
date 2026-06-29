@@ -55,7 +55,9 @@ docker volume create brain-spark-ivy >/dev/null
 # Skip when the caller asked for a single non-credit MODEL (those marts don't read the revenue ledger).
 if [ -z "${SKIP_REVENUE_LEDGER:-}" ] && printf '%s' " ${MODELS} " | grep -q ' gold_attribution_credit '; then
   echo "[gold-attribution] ensuring Iceberg gold_revenue_ledger (recognized basis) is materialized first"
-  "${SPARK_DIR}/run-gold-revenue.sh" ledger
+  # Invoke via `bash` (not as an executable) — the run-*.sh scripts are tracked non-executable (mode 644),
+  # so a direct exec fails "Permission denied". This mirrors how v4-refresh-loop.sh invokes every run script.
+  bash "${SPARK_DIR}/run-gold-revenue.sh" ledger
 fi
 
 for model in ${MODELS}; do

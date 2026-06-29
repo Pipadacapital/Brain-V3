@@ -114,4 +114,6 @@ def build(spark):
 
 
 if __name__ == "__main__":
-    run_job("silver-fulfillment", build)
+    run_job("silver-fulfillment", build, entity_incremental={
+        "table_name": "silver_fulfillment", "event_types": ["fulfillment.recorded.v1"], "entity_path": "$.properties.fulfillment_id",
+    })

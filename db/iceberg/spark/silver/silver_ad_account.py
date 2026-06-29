@@ -167,4 +167,6 @@ def build(spark):
 
 
 if __name__ == "__main__":
-    run_job("silver-ad-account", build)
+    run_job("silver-ad-account", build, entity_incremental={
+        "table_name": "silver_ad_account", "event_types": [SPEND_EVENT], "entity_path": "$.properties.ad_account_id",
+    })

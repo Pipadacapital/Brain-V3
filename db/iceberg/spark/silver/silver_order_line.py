@@ -52,8 +52,9 @@ from iceberg_base import (  # noqa: E402
     SILVER_NAMESPACE,
     build_spark,
     create_iceberg_table,
+    run_entity_incremental,
 )
-from pyspark.sql.functions import array_join, col, lit, size  # noqa: E402
+from pyspark.sql.functions import array_join, coalesce, col, get_json_object, lit, size  # noqa: E402
 from _silver_technical import dq_violations_udf, write_quarantine  # noqa: E402
 
 BRONZE_NAMESPACE = os.environ.get("BRONZE_NAMESPACE", "brain_bronze")
@@ -77,17 +78,11 @@ _COLUMNS = """
 """.strip("\n")
 
 
-def build(spark: SparkSession) -> str:
-    fqtn = create_iceberg_table(
-        spark,
-        SILVER_NAMESPACE,
-        TABLE_NAME,
-        _COLUMNS,
-        partitioned_by="bucket(256, brand_id)",
-    )
-
-    spark.read.table(BRONZE_TABLE).createOrReplaceTempView("bronze_events")
-
+def _fold_and_merge(spark: SparkSession, fqtn: str) -> None:
+    """Run the order-line unnest fold + idempotent MERGE over the CURRENTLY registered `bronze_events`
+    view (one entity-incremental bucket of order_ids carrying their full history). The line grain derives
+    from the LATEST order event per order, so an order's events must stay together — guaranteed by the
+    hash-bucket-by-order_id in the driver."""
     # ── latest order.* event per (brand_id, order_id) with a non-empty line_items array ──
     latest_order = """
         select brand_id, event_id, event_type, occurred_at, order_id, currency_code, line_items_json
@@ -208,6 +203,27 @@ def build(spark: SparkSession) -> str:
         WHEN MATCHED THEN UPDATE SET *
         WHEN NOT MATCHED THEN INSERT *
         """
+    )
+
+
+def build(spark: SparkSession) -> str:
+    """ENTITY-INCREMENTAL (entity = order_id): re-fold only the orders with NEW events, each reading the
+    order's FULL history, adaptively hash-bucketed by order_id (an order's events stay in one bucket so
+    the latest-event pick + line grain are complete). FULL_REFRESH=1 re-folds all orders, still bucketed.
+    See docs/ops/local-memory-budget.md."""
+    fqtn = create_iceberg_table(
+        spark, SILVER_NAMESPACE, TABLE_NAME, _COLUMNS, partitioned_by="bucket(256, brand_id)",
+    )
+    run_entity_incremental(
+        spark,
+        table_name=TABLE_NAME,
+        source_fqtn=BRONZE_TABLE,
+        event_filter=col("event_type").like("order.%"),
+        entity_expr=coalesce(
+            get_json_object(col("payload"), "$.properties.order_id"),
+            get_json_object(col("payload"), "$.order_id"),
+        ),
+        fold_fn=lambda: _fold_and_merge(spark, fqtn),
     )
     n = spark.table(fqtn).count()
     print(f"[silver_order_line] MERGE complete → {fqtn} has {n} rows", flush=True)

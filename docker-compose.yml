@@ -550,7 +550,9 @@ services:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: brain
       GF_USERS_ALLOW_SIGN_UP: "false"
-    ports: ["3000:3000"]
+    # Host 3004 → Grafana's internal 3000. Host 3000 is reserved for the Brain web app (next dev);
+    # mapping Grafana to host 3000 shadowed the product (localhost:3000 opened Grafana). Grafana → :3004.
+    ports: ["3004:3000"]
     volumes:
       - ./infra/observe/grafana/provisioning:/etc/grafana/provisioning:ro
     healthcheck:

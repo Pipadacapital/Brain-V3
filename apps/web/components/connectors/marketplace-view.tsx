@@ -610,9 +610,10 @@ function ConnectorTile({
               <SyncNowControl connectorId={activeOrFirst.id} className="border-t border-border pt-3" />
             )}
             {/* G6: historical backfill trigger + live progress. Only render for providers with an
-                actual jobs.backfill_job queue runner (supportsHistoricalBackfill — currently Shopify).
-                Ads/payments/logistics/WooCommerce have no claimer for the backfill queue, so showing
-                the control there would enqueue an orphan job that sits 'queued' forever. */}
+                actual backfill runner (supportsHistoricalBackfill — shopify via the bespoke queue
+                runner, plus meta/google_ads/razorpay/shiprocket/ga4 via the generic ingestion
+                framework). GoKwik (webhook-first) and WooCommerce (history via the SYNC lane) have no
+                backfill-queue claimer, so showing the control there would orphan a 'queued' job. */}
             {activeOrFirst?.id && !noneActive && supportsHistoricalBackfill(tile) && (
               <BackfillControl connectorId={activeOrFirst.id} className="border-t border-border pt-3" />
             )}

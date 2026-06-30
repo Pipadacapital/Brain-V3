@@ -4,8 +4,11 @@
  * with BACKFILL_NOT_SUPPORTED *before* any secret read / DB insert / audit write, so it can never
  * orphan a `jobs.backfill_job` row that nothing claims.
  *
- * Single source of truth = @brain/connector-core supportsBackfillQueue (BACKFILL_QUEUE_PROVIDERS),
- * shared with the stream-worker claimer (apps/stream-worker/src/main.ts) — currently `shopify` only.
+ * Single source of truth = @brain/connector-core supportsHistoricalBackfill — the union of
+ * BACKFILL_QUEUE_PROVIDERS (bespoke shopify runner) + INGESTION_BACKFILL_PROVIDERS (the generic
+ * ingestion framework: meta/google_ads/razorpay/shiprocket/ga4) — shared with the stream-worker
+ * claimer (apps/stream-worker/src/main.ts). Only providers in NEITHER set are rejected (gokwik —
+ * webhook-first; woocommerce — re-pulls via the SYNC lane, not the backfill queue).
  *
  * Pure unit test (no DB): the only collaborator exercised is connectorRepo.findById; the secrets
  * manager / job repo / audit writer are stubs that MUST NOT be called on the reject path.
@@ -56,8 +59,9 @@ const INPUT = {
 };
 
 describe('RequestConnectorBackfillCommand — BACKFILL_NOT_SUPPORTED guard', () => {
-  // Every provider that has NO jobs.backfill_job claimer must be rejected, never enqueued.
-  it.each(['meta', 'google_ads', 'gokwik', 'razorpay', 'shiprocket', 'woocommerce'])(
+  // Only providers with NO jobs.backfill_job claimer must be rejected, never enqueued: gokwik
+  // (webhook-first, no REST backfill) and woocommerce (history via the SYNC lane, not the queue).
+  it.each(['gokwik', 'woocommerce', 'unknown_provider'])(
     'rejects %s with BACKFILL_NOT_SUPPORTED before touching secrets/DB/audit',
     async (provider) => {
       const { command, getSecret, checkActiveJob, insertQueued, append } = makeCommand(provider);
@@ -74,14 +78,19 @@ describe('RequestConnectorBackfillCommand — BACKFILL_NOT_SUPPORTED guard', () 
     },
   );
 
-  it('lets shopify (the one provider with a claimer) PAST the guard into Step 2', async () => {
-    const { command, getSecret } = makeCommand('shopify');
+  // Every provider with a backfill runner (bespoke shopify OR generic ingestion framework) must pass
+  // the guard into Step 2 (the secret read) rather than being rejected.
+  it.each(['shopify', 'meta', 'google_ads', 'razorpay', 'shiprocket', 'ga4'])(
+    'lets %s (a provider with a backfill runner) PAST the guard into Step 2',
+    async (provider) => {
+      const { command, getSecret } = makeCommand(provider);
 
-    await command.execute(INPUT);
+      await command.execute(INPUT);
 
-    // The guard did not reject shopify — execution advanced to the secret read (Step 2).
-    expect(getSecret).toHaveBeenCalledTimes(1);
-  });
+      // The guard did not reject the provider — execution advanced to the secret read (Step 2).
+      expect(getSecret).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it('still returns CONNECTOR_NOT_FOUND when the instance is absent (guard is after Step 1)', async () => {
     const { command, getSecret } = makeCommand(null);

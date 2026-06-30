@@ -153,8 +153,37 @@ ENVELOPE = StructType([
 ])
 
 
+# Production-grade local-mode perf tuning, DUPLICATED from iceberg_base.spark_perf_configs() — this
+# module is the canonical Bronze factory and (by design) imports NOTHING from iceberg_base so a change
+# there can never break the proven Bronze sink. Keep this dict IN SYNC with iceberg_base. See that
+# function's docstring for the rationale (Kryo, AQE sizing, shuffle, stability, S3A; off-heap env-gated;
+# no cluster-only knobs since Brain runs --master local[*]).
+def _bronze_perf_configs() -> "dict[str, str]":
+    cfg = {
+        "spark.serializer": "org.apache.spark.serializer.KryoSerializer",
+        "spark.kryoserializer.buffer.max": os.environ.get("SPARK_KRYO_BUFFER_MAX", "256m"),
+        "spark.sql.adaptive.enabled": os.environ.get("SPARK_AQE_ENABLED", "true"),
+        "spark.sql.adaptive.coalescePartitions.enabled": "true",
+        "spark.sql.adaptive.skewJoin.enabled": "true",
+        "spark.sql.adaptive.advisoryPartitionSizeInBytes": os.environ.get("SPARK_AQE_ADVISORY_BYTES", str(64 * 1024 * 1024)),
+        "spark.sql.shuffle.partitions": os.environ.get("SPARK_SHUFFLE_PARTITIONS", "64"),
+        "spark.shuffle.compress": "true",
+        "spark.shuffle.spill.compress": "true",
+        "spark.shuffle.file.buffer": os.environ.get("SPARK_SHUFFLE_FILE_BUFFER", "1m"),
+        "spark.network.timeout": os.environ.get("SPARK_NETWORK_TIMEOUT", "300s"),
+        "spark.executor.heartbeatInterval": os.environ.get("SPARK_HEARTBEAT_INTERVAL", "30s"),
+        "spark.hadoop.fs.s3a.connection.maximum": os.environ.get("SPARK_S3A_CONN_MAX", "64"),
+        "spark.hadoop.fs.s3a.fast.upload": "true",
+    }
+    _off = os.environ.get("SPARK_OFFHEAP_SIZE", "").strip()
+    if _off:
+        cfg["spark.memory.offHeap.enabled"] = "true"
+        cfg["spark.memory.offHeap.size"] = _off
+    return cfg
+
+
 def build_spark() -> SparkSession:
-    return (
+    builder = (
         SparkSession.builder.appName("bronze-materialize-spike")
         # Use consumer-based offset fetching (not the AdminClient describeTopics path, which times
         # out against Redpanda's single advertised listener) — the same consumer path the
@@ -170,8 +199,10 @@ def build_spark() -> SparkSession:
         .config(f"spark.sql.catalog.{CATALOG}.s3.path-style-access", "true")
         .config(f"spark.sql.catalog.{CATALOG}.s3.access-key-id", os.environ.get("AWS_ACCESS_KEY_ID", "brain"))
         .config(f"spark.sql.catalog.{CATALOG}.s3.secret-access-key", os.environ.get("AWS_SECRET_ACCESS_KEY", "brainbrain"))
-        .getOrCreate()
     )
+    for _k, _v in _bronze_perf_configs().items():
+        builder = builder.config(_k, _v)
+    return builder.getOrCreate()
 
 
 # ── Ingestion metadata (TASK K2a) — Kafka source lineage landed alongside the RAW envelope ──

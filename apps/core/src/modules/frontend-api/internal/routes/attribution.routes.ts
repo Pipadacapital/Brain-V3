@@ -18,6 +18,7 @@ import {
   getCampaignRoas,
   getCampaignAttribution,
   getCampaignTimeseries,
+  getAttributedRevenueTimeseries,
 } from '../../../analytics/index.js';
 import type { AttributionModelId, TimeGrain } from '@brain/metric-engine';
 import type {
@@ -26,6 +27,7 @@ import type {
   ChannelRoas as ContractChannelRoas,
   CampaignAttribution as ContractCampaignAttribution,
   CampaignTimeseries as ContractCampaignTimeseries,
+  AttributedRevenueTimeseries as ContractAttributedRevenueTimeseries,
   AttributionReconcileResult as ContractAttributionReconcileResult,
 } from '@brain/contracts';
 import type { BffDeps } from './_shared.js';
@@ -356,6 +358,61 @@ export function registerAttributionRoutes(fastify: FastifyInstance, deps: BffDep
       }
 
       const result: ContractCampaignTimeseries = await getCampaignTimeseries(
+        auth.brandId,
+        { model, fromDate: new Date(`${fromStr}T00:00:00Z`), toDate: new Date(`${toStr}T00:00:00Z`), grain },
+        { srPool },
+      );
+      return reply.send({ request_id: requestId, data: result });
+    },
+  );
+
+  /**
+   * GET /api/v1/analytics/attribution/revenue-timeseries?model=&date_start=&date_end=
+   * P3 — DATE × CHANNEL attributed revenue over the window, under the selected attribution model. Reads
+   * the FULL attribution CREDIT LEDGER serving view (mv_gold_attribution_credit) via the metric-engine —
+   * the channel-grain sibling of campaign-timeseries (it includes EVERY credited channel, not only
+   * campaign-bearing touches). Money bigint minor + currency_code; honest no_data when the brand has no
+   * attribution-credit rows. Brand from session (D-1), never body.
+   */
+  fastify.get(
+    '/api/v1/analytics/attribution/revenue-timeseries',
+    {
+      preHandler: [bffProtectedPreHandler],
+      schema: {
+        querystring: {
+          type: 'object',
+          properties: {
+            model: { type: 'string', enum: ['first_touch', 'last_touch', 'linear', 'position_based', 'time_decay', 'data_driven'] },
+            date_start: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
+            date_end: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
+          },
+          additionalProperties: false,
+        },
+      },
+      attachValidation: true,
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const validationError = (request as FastifyRequest & { validationError?: Error }).validationError;
+      const query = request.query as { model?: string; date_start?: string; date_end?: string };
+      const model = parseModel(query.model);
+      // 'day' grain — the credit-ledger series is charted per day (the spec exposes no grain selector).
+      const grain: TimeGrain = 'day';
+      if (validationError) {
+        return reply.code(400).send({ request_id: requestId, error: { code: 'INVALID_PARAMS', message: 'date_start/date_end must be YYYY-MM-DD; model must be a valid model id.' } });
+      }
+      const auth = (request as AuthenticatedRequest).auth;
+      const today = new Date().toISOString().split('T')[0] as string;
+      const toStr = query.date_end ?? today;
+      const fromStr = query.date_start ?? (new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString().split('T')[0] as string);
+      if (!auth.brandId) {
+        return reply.send({ request_id: requestId, data: { state: 'no_data', from: fromStr, to: toStr, grain, model } });
+      }
+      if (!srPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (Trino) not available' } });
+      }
+
+      const result: ContractAttributedRevenueTimeseries = await getAttributedRevenueTimeseries(
         auth.brandId,
         { model, fromDate: new Date(`${fromStr}T00:00:00Z`), toDate: new Date(`${toStr}T00:00:00Z`), grain },
         { srPool },

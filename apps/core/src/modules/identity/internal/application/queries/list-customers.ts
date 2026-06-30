@@ -69,6 +69,14 @@ export interface ListCustomersParams {
    * segment filter.
    */
   segment?: string | null;
+  /**
+   * Acquisition-SOURCE drilldown filter (P3): a first-touch acquisition source (the
+   * gold_customer_360.acquisition_source channel, e.g. 'google' / 'meta' / 'direct'). When set, the
+   * browse is restricted to the brain_ids acquired via that source (resolved upstream from
+   * gold_customer_360). Lets the UTM-source matrix link straight into the customers it acquired. null =
+   * no acquisition-source filter.
+   */
+  acquisitionSource?: string | null;
   limit?: number;
   offset?: number;
 }
@@ -94,6 +102,13 @@ export interface ListCustomersDeps {
    * the segment filter is ignored (the param is a no-op, never a hard-fail of a browse).
    */
   segmentMembers?: (brandId: string, segment: string) => Promise<string[]>;
+  /**
+   * Acquisition-source-membership resolver (P3 drilldown): the brain_ids whose
+   * gold_customer_360.acquisition_source === `acquisitionSource`. Absent → the acquisition-source filter
+   * is a no-op (never a hard-fail of a browse). When both this and segmentMembers resolve, the browse is
+   * the INTERSECTION (the customers who match both the segment and the acquisition source).
+   */
+  acquisitionSourceMembers?: (brandId: string, acquisitionSource: string) => Promise<string[]>;
 }
 
 function toIso(v: unknown): string | null {
@@ -136,13 +151,26 @@ export async function listCustomers(
   const lifecycle = params.lifecycle && params.lifecycle.trim().length > 0 ? params.lifecycle.trim() : null;
 
   const segment = params.segment && params.segment.trim().length > 0 ? params.segment.trim() : null;
+  const acquisitionSource =
+    params.acquisitionSource && params.acquisitionSource.trim().length > 0 ? params.acquisitionSource.trim() : null;
 
-  // SEGMENT FILTER (resolved at the Gold mart, applied as a brain_id allowlist in the graph). When a
-  // segment is requested and a resolver is wired, fetch its members; an EMPTY member set (segment has no
-  // customers) means the page is honestly empty. No resolver wired → the param is a no-op (null filter).
+  // GOLD-MART FILTERS (resolved at the Gold marts, applied as a brain_id allowlist in the graph). When a
+  // filter is requested and its resolver is wired, fetch its members; an EMPTY member set (the filter has
+  // no customers) means the page is honestly empty. No resolver wired → that param is a no-op (no filter).
+  // Both segment + acquisition_source set → the browse is the INTERSECTION of the two allowlists.
   let brainIdFilter: string[] | null = null;
   if (segment && deps.segmentMembers) {
     brainIdFilter = await deps.segmentMembers(brandId, segment).catch(() => []);
+  }
+  if (acquisitionSource && deps.acquisitionSourceMembers) {
+    const acqMembers = await deps.acquisitionSourceMembers(brandId, acquisitionSource).catch(() => []);
+    if (brainIdFilter === null) {
+      brainIdFilter = acqMembers;
+    } else {
+      // Intersect with the already-resolved segment allowlist (customers who match BOTH).
+      const acqSet = new Set(acqMembers);
+      brainIdFilter = brainIdFilter.filter((id) => acqSet.has(id));
+    }
   }
 
   const term = params.search?.trim() ?? '';

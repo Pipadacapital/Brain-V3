@@ -466,6 +466,76 @@ export const OrderDetailSchema = z.discriminatedUnion('state', [
 ]);
 export type OrderDetail = z.infer<typeof OrderDetailSchema>;
 
+// ── #N GET /v1/analytics/products/:productId ──────────────────────────────────
+// Per-PRODUCT performance from the Gold mart gold_product_detail (views→atc→purchases→revenue +
+// returns + conversion rates). @see apps/core/.../analytics/.../get-product-detail.ts
+// Counts use MinorUnitsSchema (bigint-as-string, identical serialization); rates are 2dp strings;
+// currency_code is nullable (null when 0 purchases); return_rate is nullable (null when 0 purchases).
+
+export const ProductDetailDtoSchema = z.object({
+  product_id: z.string(),
+  product_title: z.string().nullable(),
+  views: MinorUnitsSchema,
+  add_to_cart: MinorUnitsSchema,
+  purchases: MinorUnitsSchema,
+  revenue_minor: MinorUnitsSchema,
+  currency_code: z.string().nullable(),
+  return_count: MinorUnitsSchema,
+  add_to_cart_rate: z.string(),
+  purchase_rate: z.string(),
+  return_rate: z.string().nullable(),
+  updated_at: z.string(),
+});
+export type ProductDetailDto = z.infer<typeof ProductDetailDtoSchema>;
+
+export const ProductDetailSchema = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('not_found'), product_id: z.string() }),
+  z.object({ state: z.literal('has_data'), product_id: z.string(), detail: ProductDetailDtoSchema }),
+]);
+export type ProductDetail = z.infer<typeof ProductDetailSchema>;
+
+// ── #N GET /v1/analytics/products/:productId/affinity ─────────────────────────
+// Frequently-bought-together partners from gold_product_affinity. NO money — counts + 2dp ratio.
+// @see apps/core/.../analytics/.../get-product-affinity.ts
+
+export const ProductAffinityPairDtoSchema = z.object({
+  product_b: z.string(),
+  co_purchase_count: MinorUnitsSchema,
+  support_pct: z.string(),
+});
+export type ProductAffinityPairDto = z.infer<typeof ProductAffinityPairDtoSchema>;
+
+export const ProductAffinitySchema = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('no_data'), product_id: z.string() }),
+  z.object({
+    state: z.literal('has_data'),
+    product_id: z.string(),
+    pairs: z.array(ProductAffinityPairDtoSchema),
+  }),
+]);
+export type ProductAffinity = z.infer<typeof ProductAffinitySchema>;
+
+// ── #N GET /v1/analytics/products/categories ──────────────────────────────────
+// Product revenue treemap (leaf = product, size = revenue_minor) from gold_product_detail. There is
+// no category dimension on the marts yet, so the rollup is at the product granularity (honest).
+// @see apps/core/.../analytics/.../get-product-categories.ts
+
+export const ProductCategoryNodeDtoSchema = z.object({
+  product_id: z.string(),
+  product_title: z.string().nullable(),
+  revenue_minor: MinorUnitsSchema,
+  currency_code: z.string().nullable(),
+  purchases: MinorUnitsSchema,
+  return_count: MinorUnitsSchema,
+});
+export type ProductCategoryNodeDto = z.infer<typeof ProductCategoryNodeDtoSchema>;
+
+export const ProductCategoriesSchema = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('no_data') }),
+  z.object({ state: z.literal('has_data'), nodes: z.array(ProductCategoryNodeDtoSchema) }),
+]);
+export type ProductCategories = z.infer<typeof ProductCategoriesSchema>;
+
 // ── Logistics shipment outcomes (Slice 2) — delivered/RTO + RTO% by courier/pincode ──────────
 // @see apps/core/.../analytics/.../get-shipment-outcomes.ts (multi-source silver_shipment mart).
 // Counts use MinorUnitsSchema (bigint-as-string, identical serialization); rto_pct is a 2dp string.
@@ -834,6 +904,64 @@ export const RepeatLatencySchema = z.discriminatedUnion('state', [
 ]);
 export type RepeatLatency = z.infer<typeof RepeatLatencySchema>;
 
+// ── P3 GET /v1/analytics/operations/delivery-time — per-courier avg delivery days + day histogram ──
+// @see apps/core/.../analytics/.../get-delivery-time.ts (NO money — integer day math; avg is a behavioral double).
+// Per courier: exactly five fixed, non-overlapping day buckets (0-1/2-3/4-5/6-7/8+), zero-count
+// buckets included so the histogram never has holes; per-courier scalars denormalized off the mart.
+
+export const DeliveryTimeBucketDtoSchema = z.object({
+  bucket: z.string(), // '0-1' | '2-3' | '4-5' | '6-7' | '8+'
+  bucket_order: z.number(), // 1..5 (x-axis order)
+  bucket_lo_days: z.number(), // inclusive lower day bound
+  bucket_hi_days: z.number().nullable(), // inclusive upper bound; null for '8+'
+  shipment_count: MinorUnitsSchema, // bigint → string (histogram bar height)
+});
+export type DeliveryTimeBucketDto = z.infer<typeof DeliveryTimeBucketDtoSchema>;
+
+export const DeliveryTimeCourierDtoSchema = z.object({
+  courier: z.string(),
+  avg_delivery_days: z.number().nullable(), // behavioral mean delivery days (double; NOT money)
+  courier_shipment_count: MinorUnitsSchema, // bigint → string (Σ shipment_count across buckets)
+  buckets: z.array(DeliveryTimeBucketDtoSchema),
+});
+export type DeliveryTimeCourierDto = z.infer<typeof DeliveryTimeCourierDtoSchema>;
+
+export const DeliveryTimeSchema = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('no_data'), generated_at: z.string().optional() }),
+  z.object({
+    state: z.literal('has_data'),
+    by_courier: z.array(DeliveryTimeCourierDtoSchema),
+    generated_at: z.string().optional(),
+  }),
+]);
+export type DeliveryTime = z.infer<typeof DeliveryTimeSchema>;
+
+// ── P3 GET /v1/analytics/utm-source — the UTM / acquisition-SOURCE matrix ──────────────────────
+// @see apps/core/.../analytics/.../get-utm-source.ts (money = bigint minor + sibling currency_code).
+// One row per first-touch (source, medium): visitors / conversions / revenue / avg_ltv / repeat_rate.
+
+export const UtmSourceRowDtoSchema = z.object({
+  source: z.string(), // first-touch utm_source ('unknown' for an honest-empty dim)
+  medium: z.string(), // first-touch utm_medium ('unknown' for an honest-empty dim)
+  visitors: MinorUnitsSchema, // bigint → string (distinct first-touch visitors)
+  conversions: MinorUnitsSchema, // bigint → string (distinct attributed orders)
+  revenue_minor: MinorUnitsSchema, // bigint MINOR units (paired with currency_code; never blended)
+  avg_ltv_minor: MinorUnitsSchema, // bigint MINOR units (same currency_code)
+  repeat_rate_pct: z.number(), // integer 0-100 (NON-money)
+  currency_code: z.string().nullable(), // dominant currency for the money cols; null = no money signal
+});
+export type UtmSourceRowDto = z.infer<typeof UtmSourceRowDtoSchema>;
+
+export const UtmSourceSchema = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('no_data'), generated_at: z.string().optional() }),
+  z.object({
+    state: z.literal('has_data'),
+    rows: z.array(UtmSourceRowDtoSchema),
+    generated_at: z.string().optional(),
+  }),
+]);
+export type UtmSource = z.infer<typeof UtmSourceSchema>;
+
 // ── #32c GET /v1/analytics/attribution/campaign-attribution — per-campaign attributed revenue + ROAS ──
 // @see apps/core/.../analytics/.../get-campaign-attribution.ts (money = bigint minor + currency_code).
 // One row per (platform, campaign, currency) under the selected attribution model.
@@ -892,3 +1020,36 @@ export const CampaignTimeseriesSchema = z.discriminatedUnion('state', [
   }),
 ]);
 export type CampaignTimeseries = z.infer<typeof CampaignTimeseriesSchema>;
+
+// ── P3 GET /v1/analytics/attribution/revenue-timeseries — date × channel attributed revenue ──
+// @see apps/core/.../analytics/.../get-attributed-revenue-timeseries.ts (money = bigint minor + currency_code).
+// One row per (bucket, channel, currency) over the FULL credit ledger (mv_gold_attribution_credit) under
+// the selected attribution model + window. The channel-grain sibling of campaign-timeseries (includes
+// every credited channel, not only campaign-bearing touches).
+
+export const AttributedRevenueTimeseriesBucketDtoSchema = z.object({
+  bucket: z.string(), // 'YYYY-MM-DD'
+  channel: z.string(),
+  currency_code: z.string(),
+  attributed_revenue_minor: MinorUnitsSchema, // bigint minor (signed, net of clawback)
+});
+export type AttributedRevenueTimeseriesBucketDto = z.infer<typeof AttributedRevenueTimeseriesBucketDtoSchema>;
+
+export const AttributedRevenueTimeseriesSchema = z.discriminatedUnion('state', [
+  z.object({
+    state: z.literal('no_data'),
+    from: z.string(),
+    to: z.string(),
+    grain: z.string(),
+    model: AttributionModelIdSchema,
+  }),
+  z.object({
+    state: z.literal('has_data'),
+    from: z.string(),
+    to: z.string(),
+    grain: z.string(),
+    model: AttributionModelIdSchema,
+    buckets: z.array(AttributedRevenueTimeseriesBucketDtoSchema),
+  }),
+]);
+export type AttributedRevenueTimeseries = z.infer<typeof AttributedRevenueTimeseriesSchema>;

@@ -27,6 +27,8 @@ export function useCustomers(params: {
   search?: string;
   /** Business (RFM/lifecycle) segment filter — VIP/loyal/at_risk/churned/first_time_buyer/window_shopper. */
   segment?: string;
+  /** Acquisition-SOURCE drilldown (P3) — first-touch source from gold_customer_360 (the UTM-matrix drilldown). */
+  acquisitionSource?: string;
   limit?: number;
   offset?: number;
 }) {
@@ -37,6 +39,7 @@ export function useCustomers(params: {
       params.lifecycle ?? '',
       params.search?.trim() ?? '',
       params.segment ?? '',
+      params.acquisitionSource ?? '',
       params.limit ?? 25,
       params.offset ?? 0,
     ],

@@ -10,10 +10,13 @@
  *   • Return funnel     → useReturnFunnel (silver_return, SR-10) — a SEPARATE lifecycle from
  *                         forward delivery; a "completed" return is delivered BACK to origin.
  *
+ *   • Delivery time     → useDeliveryTime (gold_delivery_time, P3) — per-courier avg delivery
+ *                         days + the fixed five-bucket day histogram (dispatch → delivered).
+ *
  * Honesty rules (Brain): counts are bigint-as-string → Number(...).toLocaleString (NOT money,
- * never /100); every panel renders an honest EmptyState / em-dash, never a fabricated zero;
- * SyntheticBadge shows whenever the source reports data_source='synthetic'. A delivery-time
- * histogram has NO mart today → omitted entirely rather than fabricated.
+ * never /100); avg_delivery_days is a behavioral double (NOT money — no /100); every panel
+ * renders an honest EmptyState / em-dash, never a fabricated zero; SyntheticBadge shows
+ * whenever the source reports data_source='synthetic'.
  *
  * Freshness: the page-level FreshnessBadge uses the briefing's gold-mart build time (as_of) —
  * the most honest shared "data as of" anchor; per-section reads share the same medallion.
@@ -28,6 +31,7 @@ import {
   ArrowRight,
   AlertTriangle,
   ShieldCheck,
+  Timer,
 } from 'lucide-react';
 
 import { TabShell } from '@/components/ui/tab-shell';
@@ -50,11 +54,13 @@ import {
   useShipmentOutcomes,
   useReturnFunnel,
   useInsightsBriefing,
+  useDeliveryTime,
 } from '@/lib/hooks/use-analytics';
 import type {
   AnalyticsShipmentOutcomesResponse,
   AnalyticsReturnFunnelResponse,
   CodRtoCohort,
+  DeliveryTimeCourier,
   InsightDto,
   InsightSeverity,
 } from '@/lib/api/types';
@@ -434,6 +440,105 @@ function ReturnSection({ range }: { range: DateRange }) {
   );
 }
 
+// ── Delivery-time histogram (delivery-time — gold_delivery_time, P3) ────────────
+
+function DeliveryEmpty() {
+  return (
+    <EmptyState
+      icon={<Timer className="h-8 w-8" />}
+      title="No delivery-time data yet"
+      description="Per-courier delivery speed (dispatch → delivered, in whole days) appears once a logistics connector (GoKwik or Shiprocket) syncs delivered AWB events into the Silver tier. None yet — the honest state, not a fabricated zero."
+      action={
+        <Button asChild size="sm" variant="outline">
+          <Link href="/settings/connectors">
+            Connect a logistics source
+            <ArrowRight className="ml-2 h-4 w-4" aria-hidden="true" />
+          </Link>
+        </Button>
+      }
+    />
+  );
+}
+
+/**
+ * One courier's delivery-time profile: avg days + total delivered + the fixed five-bucket
+ * day histogram. Buckets are ALWAYS five (zero-count included) so the histogram never has
+ * holes; ordered by bucket_order. Bars are horizontal (count = bar length), each carrying an
+ * explicit "{bucket} days · count" label so the value reads WITHOUT colour.
+ */
+function CourierDeliveryCard({ courier }: { courier: DeliveryTimeCourier }) {
+  const buckets = [...courier.buckets].sort((a, b) => a.bucket_order - b.bucket_order);
+  const maxCount = buckets.reduce((m, b) => Math.max(m, Number(b.shipment_count)), 0);
+
+  return (
+    <div className="rounded-lg border border-border p-4">
+      <div className="mb-3 flex items-baseline justify-between gap-3">
+        <span className="truncate font-medium text-foreground">{courier.courier}</span>
+        <span className="shrink-0 text-sm text-muted-foreground">
+          <span className="font-medium tabular-nums text-foreground">
+            {courier.avg_delivery_days === null
+              ? '—'
+              : `${courier.avg_delivery_days.toFixed(1)} days`}
+          </span>{' '}
+          avg · {num(courier.courier_shipment_count)} delivered
+        </span>
+      </div>
+      <ul className="space-y-2">
+        {buckets.map((b) => {
+          const count = Number(b.shipment_count);
+          const pct = maxCount > 0 ? (count / maxCount) * 100 : 0;
+          return (
+            <li key={b.bucket} className="space-y-1">
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-muted-foreground">{b.bucket} days</span>
+                <span className="font-medium tabular-nums text-foreground">
+                  {num(b.shipment_count)}
+                </span>
+              </div>
+              <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
+                <div
+                  className="h-full rounded-full bg-primary/70"
+                  style={{ width: `${count > 0 ? Math.max(pct, 2) : 0}%` }}
+                  aria-hidden="true"
+                />
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+function DeliverySection() {
+  const { data, isLoading, error, refetch } = useDeliveryTime();
+  const hasData = data && data.state === 'has_data' ? data : null;
+
+  return (
+    <SectionCard
+      title={
+        <span className="inline-flex items-center gap-2">
+          <Timer className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+          Delivery time by courier
+        </span>
+      }
+      description="Days from dispatch to delivered, per courier — the speed distribution behind your fulfillment promise. Integer-day buckets; averages are behavioral days, never money."
+    >
+      {isLoading && <Skeleton className="h-48 w-full" />}
+      {!isLoading && error && <ErrorCard error={error} retry={refetch} />}
+      {!isLoading && !error && data?.state === 'no_data' && <DeliveryEmpty />}
+      {!isLoading && !error && hasData && hasData.by_courier.length === 0 && <DeliveryEmpty />}
+      {!isLoading && !error && hasData && hasData.by_courier.length > 0 && (
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          {hasData.by_courier.map((c) => (
+            <CourierDeliveryCard key={c.courier} courier={c} />
+          ))}
+        </div>
+      )}
+    </SectionCard>
+  );
+}
+
 // ── Page ───────────────────────────────────────────────────────────────────────
 
 export function OperationsContent() {
@@ -461,6 +566,7 @@ export function OperationsContent() {
     >
       <AlertsStrip />
       <ShipmentSection range={range} />
+      <DeliverySection />
       <ReturnSection range={range} />
     </TabShell>
   );

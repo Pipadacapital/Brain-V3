@@ -30,6 +30,7 @@ import type {
 import {
   getCustomerScoresForBrainIds,
   getCustomerSegmentMembers,
+  getCustomerAcquisitionSourceMembers,
   getCustomerOrders,
   isLifecycleSegment,
 } from '@brain/metric-engine';
@@ -63,6 +64,9 @@ export function registerIdentityRoutes(fastify: FastifyInstance, deps: BffDeps):
             // Business-SEGMENT filter (RFM/lifecycle, sourced from gold_customer_scores). Validated
             // against the canonical lifecycle-segment set in the handler (isLifecycleSegment).
             segment: { type: 'string', maxLength: 32 },
+            // Acquisition-SOURCE drilldown (P3): first-touch channel from gold_customer_360.acquisition_source
+            // (e.g. 'google' / 'meta' / 'direct') — the UTM-source matrix links into the customers it acquired.
+            acquisition_source: { type: 'string', maxLength: 128 },
             limit: { type: 'integer', minimum: 1, maximum: 100 },
             offset: { type: 'integer', minimum: 0 },
           },
@@ -73,12 +77,13 @@ export function registerIdentityRoutes(fastify: FastifyInstance, deps: BffDeps):
     async (request: FastifyRequest, reply: FastifyReply) => {
       const requestId = randomUUID();
       const auth = (request as AuthenticatedRequest).auth;
-      const q = request.query as { lifecycle?: string; search?: string; segment?: string; limit?: number; offset?: number };
+      const q = request.query as { lifecycle?: string; search?: string; segment?: string; acquisition_source?: string; limit?: number; offset?: number };
 
       const limit = q.limit ?? 25;
       const offset = q.offset ?? 0;
       // A segment value not in the canonical set is ignored (treated as no filter) rather than 400ing a browse.
       const segment = q.segment && isLifecycleSegment(q.segment) ? q.segment : null;
+      const acquisitionSource = q.acquisition_source && q.acquisition_source.trim().length > 0 ? q.acquisition_source.trim() : null;
       const empty: ContractCustomerList = {
         items: [],
         total: 0,
@@ -102,12 +107,16 @@ export function registerIdentityRoutes(fastify: FastifyInstance, deps: BffDeps):
         ? (brandId: string, seg: string) =>
             isLifecycleSegment(seg) ? getCustomerSegmentMembers(brandId, seg, { srPool }) : Promise.resolve([])
         : undefined;
+      // P3 acquisition-source drilldown: resolve the acquired brain_ids from gold_customer_360 (Trino).
+      const acquisitionSourceMembers = srPool
+        ? (brandId: string, src: string) => getCustomerAcquisitionSourceMembers(brandId, src, { srPool })
+        : undefined;
 
       const result: ContractCustomerList = await listCustomers(
         auth.brandId,
-        { lifecycle: q.lifecycle ?? null, search: q.search ?? null, segment, limit, offset },
+        { lifecycle: q.lifecycle ?? null, search: q.search ?? null, segment, acquisitionSource, limit, offset },
         requestId,
-        { reader: identityReader, saltFn: deps.getCoreSaltHex, enrichScores, segmentMembers },
+        { reader: identityReader, saltFn: deps.getCoreSaltHex, enrichScores, segmentMembers, acquisitionSourceMembers },
       );
       return reply.send({ request_id: requestId, data: result });
     },

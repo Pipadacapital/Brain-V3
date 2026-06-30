@@ -37,8 +37,11 @@ import {
   JourneyStitchRateSchema,
   JourneyPathsSchema,
   RepeatLatencySchema,
+  DeliveryTimeSchema,
+  UtmSourceSchema,
   CampaignAttributionSchema,
   CampaignTimeseriesSchema,
+  AttributedRevenueTimeseriesSchema,
   OrderStatusMixSchema,
   TopProductsSchema,
   OrdersListSchema,
@@ -48,6 +51,9 @@ import {
   SavedSegmentDtoSchema,
   SegmentPreviewResultSchema,
   OrderDetailSchema,
+  ProductDetailSchema,
+  ProductAffinitySchema,
+  ProductCategoriesSchema,
   DataQualitySummarySchema,
   AskBrainResultSchema,
   Customer360Schema,
@@ -149,6 +155,9 @@ import type {
   AnalyticsTopProductsResponse,
   AnalyticsOrdersListResponse,
   AnalyticsOrderDetailResponse,
+  AnalyticsProductDetailResponse,
+  AnalyticsProductAffinityResponse,
+  AnalyticsProductCategoriesResponse,
   AnalyticsJourneyFirstTouchMixResponse,
   AnalyticsShipmentOutcomesResponse,
   AnalyticsReturnFunnelResponse,
@@ -162,8 +171,11 @@ import type {
   AnalyticsJourneyTimelineResponse,
   AnalyticsJourneyPathsResponse,
   AnalyticsRepeatLatencyResponse,
+  AnalyticsDeliveryTimeResponse,
+  AnalyticsUtmSourceResponse,
   AnalyticsCampaignAttributionResponse,
   AnalyticsCampaignTimeseriesResponse,
+  AnalyticsAttributedRevenueTimeseriesResponse,
   ConsentCoverageResponse,
   ConsentSuppressionSummaryResponse,
   ConsentGateActivityResponse,
@@ -1506,6 +1518,18 @@ export const analyticsApi = {
     return parseData(RepeatLatencySchema, env);
   },
 
+  /** GET /api/v1/analytics/operations/delivery-time — per-courier avg delivery days + day histogram (P3). */
+  getDeliveryTime: async (): Promise<AnalyticsDeliveryTimeResponse> => {
+    const env = await bffFetch<BffEnvelope<unknown>>(`/v1/analytics/operations/delivery-time`);
+    return parseData(DeliveryTimeSchema, env);
+  },
+
+  /** GET /api/v1/analytics/utm-source — the UTM / acquisition-source matrix (visitors/conv/revenue/ltv/repeat) (P3). */
+  getUtmSource: async (): Promise<AnalyticsUtmSourceResponse> => {
+    const env = await bffFetch<BffEnvelope<unknown>>(`/v1/analytics/utm-source`);
+    return parseData(UtmSourceSchema, env);
+  },
+
   /** GET /api/v1/analytics/checkout-funnel — abandoned-checkout funnel (Shopflo, REAL). */
   getCheckoutFunnel: async (): Promise<AnalyticsCheckoutFunnelResponse> => {
     const { data } = await bffFetch<BffEnvelope<AnalyticsCheckoutFunnelResponse>>(
@@ -1615,6 +1639,43 @@ export const analyticsApi = {
       `/v1/analytics/order-detail?order_id=${encodeURIComponent(orderId)}`,
     );
     return parseData(OrderDetailSchema, env);
+  },
+
+  /**
+   * GET /api/v1/analytics/products/:productId
+   * A single product's storefront funnel (views→atc→purchases→revenue) + returns + conversion rates
+   * from gold_product_detail (P3). Parsed at the seam; state:'not_found' preserved.
+   */
+  getProductDetail: async (productId: string): Promise<AnalyticsProductDetailResponse> => {
+    const env = await bffFetch<BffEnvelope<unknown>>(
+      `/v1/analytics/products/${encodeURIComponent(productId)}`,
+    );
+    return parseData(ProductDetailSchema, env);
+  },
+
+  /**
+   * GET /api/v1/analytics/products/:productId/affinity?limit=N
+   * Frequently-bought-together partners for a product from gold_product_affinity (P3). NO money.
+   */
+  getProductAffinity: async (
+    productId: string,
+    params?: { limit?: number },
+  ): Promise<AnalyticsProductAffinityResponse> => {
+    const qs = params?.limit ? `?limit=${params.limit}` : '';
+    const env = await bffFetch<BffEnvelope<unknown>>(
+      `/v1/analytics/products/${encodeURIComponent(productId)}/affinity${qs}`,
+    );
+    return parseData(ProductAffinitySchema, env);
+  },
+
+  /**
+   * GET /api/v1/analytics/products/categories?limit=N
+   * Product revenue treemap (leaf = product, size = revenue_minor) from gold_product_detail (P3).
+   */
+  getProductCategories: async (params?: { limit?: number }): Promise<AnalyticsProductCategoriesResponse> => {
+    const qs = params?.limit ? `?limit=${params.limit}` : '';
+    const env = await bffFetch<BffEnvelope<unknown>>(`/v1/analytics/products/categories${qs}`);
+    return parseData(ProductCategoriesSchema, env);
   },
 
   // ── Journey / first-touch (Silver tier — feat-journey-touchpoint) ─────────────
@@ -1879,6 +1940,22 @@ export const analyticsApi = {
       `/v1/analytics/attribution/campaign-timeseries?${qs.toString()}`,
     );
     return parseData(CampaignTimeseriesSchema, env);
+  },
+
+  /** GET /api/v1/analytics/attribution/revenue-timeseries — date × channel attributed revenue (P3). */
+  getAttributedRevenueTimeseries: async (params: {
+    model: AttributionModel;
+    date_start?: string;
+    date_end?: string;
+  }): Promise<AnalyticsAttributedRevenueTimeseriesResponse> => {
+    const qs = new URLSearchParams();
+    qs.set('model', params.model);
+    if (params.date_start) qs.set('date_start', params.date_start);
+    if (params.date_end) qs.set('date_end', params.date_end);
+    const env = await bffFetch<BffEnvelope<unknown>>(
+      `/v1/analytics/attribution/revenue-timeseries?${qs.toString()}`,
+    );
+    return parseData(AttributedRevenueTimeseriesSchema, env);
   },
 };
 
@@ -2190,6 +2267,8 @@ export const identityApi = {
     search?: string;
     /** Business (RFM/lifecycle) segment filter — VIP/loyal/at_risk/churned/first_time_buyer/window_shopper/… */
     segment?: string;
+    /** Acquisition-SOURCE drilldown (P3) — first-touch source from gold_customer_360 (e.g. 'google'/'meta'/'direct'). */
+    acquisitionSource?: string;
     limit?: number;
     offset?: number;
   }): Promise<CustomerListResponse> => {
@@ -2197,6 +2276,8 @@ export const identityApi = {
     if (params.lifecycle) qs.set('lifecycle', params.lifecycle);
     if (params.search && params.search.trim().length > 0) qs.set('search', params.search.trim());
     if (params.segment && params.segment.trim().length > 0) qs.set('segment', params.segment.trim());
+    if (params.acquisitionSource && params.acquisitionSource.trim().length > 0)
+      qs.set('acquisition_source', params.acquisitionSource.trim());
     if (params.limit != null) qs.set('limit', String(params.limit));
     if (params.offset != null) qs.set('offset', String(params.offset));
     const q = qs.toString();

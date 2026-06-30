@@ -43,6 +43,7 @@ import {
   JourneyStitchRateSchema,
   JourneyPathsSchema,
   RepeatLatencySchema,
+  UtmSourceSchema,
   CampaignAttributionSchema,
   CampaignTimeseriesSchema,
   OrderStatusMixSchema,
@@ -283,6 +284,47 @@ describe('RepeatLatency (#32b)', () => {
     const res = RepeatLatencySchema.safeParse(drifted);
     expect(res.success).toBe(false);
     if (!res.success) expect(firstIssuePath(res)).toContain('median_days_to_second_purchase');
+  });
+});
+
+// ── P3 UtmSource (the UTM / acquisition-source matrix) ──────────────────────────────
+
+describe('UtmSource (P3)', () => {
+  const hasData = {
+    state: 'has_data',
+    rows: [
+      {
+        source: 'google',
+        medium: 'cpc',
+        visitors: '1200',
+        conversions: '85',
+        revenue_minor: '4250000',
+        avg_ltv_minor: '90000',
+        repeat_rate_pct: 32,
+        currency_code: 'INR',
+      },
+      {
+        source: 'unknown',
+        medium: 'unknown',
+        visitors: '300',
+        conversions: '0',
+        revenue_minor: '0',
+        avg_ltv_minor: '0',
+        repeat_rate_pct: 0,
+        currency_code: null,
+      },
+    ],
+    generated_at: '2026-06-30T00:00:00.000Z',
+  };
+  it('round-trips has_data (incl. null currency on a zero-money row) + no_data', () => {
+    expect(UtmSourceSchema.parse(hasData)).toEqual(hasData);
+    expect(UtmSourceSchema.parse({ state: 'no_data' })).toEqual({ state: 'no_data' });
+  });
+  it('rejects a float revenue drift (money values are bigint strings, never floats)', () => {
+    const drifted = { ...hasData, rows: [{ ...hasData.rows[0], revenue_minor: 4250.5 }] };
+    const res = UtmSourceSchema.safeParse(drifted);
+    expect(res.success).toBe(false);
+    if (!res.success) expect(firstIssuePath(res)).toContain('revenue_minor');
   });
 });
 

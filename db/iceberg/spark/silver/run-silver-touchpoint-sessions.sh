@@ -25,7 +25,7 @@ PG_JDBC_VERSION="${PG_JDBC_VERSION:-42.7.4}"
 SCALA="2.12"
 # Join Redpanda's network namespace so service-name DNS (iceberg-rest, minio, postgres) resolves — the
 # same netns trick the other Spark run scripts use.
-REDPANDA_CONTAINER="${REDPANDA_CONTAINER:-brainv3-redpanda-1}"
+REDPANDA_CONTAINER="${REDPANDA_CONTAINER:-brainv3-kafka-1}"
 SILVER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SPARK_DIR="$(cd "${SILVER_DIR}/.." && pwd)"   # holds iceberg_base.py (shared --py-files)
 

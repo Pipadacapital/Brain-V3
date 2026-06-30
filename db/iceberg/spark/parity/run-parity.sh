@@ -28,7 +28,7 @@ PG_JDBC_VERSION="${PG_JDBC_VERSION:-42.7.4}"
 # StarRocks speaks the MySQL wire protocol — the MySQL Connector/J driver reads its base tables over JDBC.
 MYSQL_JDBC_VERSION="${MYSQL_JDBC_VERSION:-8.4.0}"
 SCALA="2.12"
-REDPANDA_CONTAINER="${REDPANDA_CONTAINER:-brainv3-redpanda-1}"
+REDPANDA_CONTAINER="${REDPANDA_CONTAINER:-brainv3-kafka-1}"
 PARITY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 PACKAGES="org.apache.iceberg:iceberg-spark-runtime-3.5_${SCALA}:${ICEBERG_VERSION}"

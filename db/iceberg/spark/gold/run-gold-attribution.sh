@@ -30,7 +30,7 @@ MYSQL_JDBC_VERSION="${MYSQL_JDBC_VERSION:-8.4.0}"
 SCALA="2.12"
 # Join Redpanda's network namespace so service-name DNS (iceberg-rest, minio, starrocks) resolves — the
 # same netns trick the other Spark run scripts use.
-REDPANDA_CONTAINER="${REDPANDA_CONTAINER:-brainv3-redpanda-1}"
+REDPANDA_CONTAINER="${REDPANDA_CONTAINER:-brainv3-kafka-1}"
 GOLD_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SPARK_DIR="$(cd "${GOLD_DIR}/.." && pwd)"   # holds iceberg_base.py (shared --py-files)
 

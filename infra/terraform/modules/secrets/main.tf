@@ -45,10 +45,10 @@ resource "aws_secretsmanager_secret" "db_app" {
   }
 }
 
-resource "aws_secretsmanager_secret" "redpanda" {
-  name                    = "${var.project}/${var.environment}/redpanda/credentials"
+resource "aws_secretsmanager_secret" "kafka" {
+  name                    = "${var.project}/${var.environment}/kafka/credentials"
   kms_key_id              = var.kms_key_arn
-  description             = "Redpanda Cloud API key + bootstrap servers"
+  description             = "Kafka bootstrap servers + SASL credentials (self-hosted Strimzi)"
   recovery_window_in_days = 30
 
   tags = {
@@ -97,7 +97,7 @@ data "aws_iam_policy_document" "collector_secrets_read" {
       "secretsmanager:DescribeSecret",
     ]
     resources = [
-      aws_secretsmanager_secret.redpanda.arn,
+      aws_secretsmanager_secret.kafka.arn,
       aws_secretsmanager_secret.apicurio.arn,
     ]
   }
@@ -111,7 +111,7 @@ data "aws_iam_policy_document" "collector_secrets_read" {
 
 resource "aws_iam_policy" "collector_secrets_read" {
   name        = "${var.project}-${var.environment}-collector-secrets"
-  description = "collector: read Redpanda + Apicurio secrets only"
+  description = "collector: read Kafka + Apicurio secrets only"
   policy      = data.aws_iam_policy_document.collector_secrets_read.json
 }
 
@@ -124,7 +124,7 @@ data "aws_iam_policy_document" "stream_worker_secrets_read" {
       "secretsmanager:DescribeSecret",
     ]
     resources = [
-      aws_secretsmanager_secret.redpanda.arn,
+      aws_secretsmanager_secret.kafka.arn,
       aws_secretsmanager_secret.apicurio.arn,
     ]
   }
@@ -138,7 +138,7 @@ data "aws_iam_policy_document" "stream_worker_secrets_read" {
 
 resource "aws_iam_policy" "stream_worker_secrets_read" {
   name        = "${var.project}-${var.environment}-stream-worker-secrets"
-  description = "stream-worker: read Redpanda + Apicurio secrets only"
+  description = "stream-worker: read Kafka + Apicurio secrets only"
   policy      = data.aws_iam_policy_document.stream_worker_secrets_read.json
 }
 
@@ -152,7 +152,7 @@ data "aws_iam_policy_document" "core_secrets_read" {
     ]
     resources = [
       aws_secretsmanager_secret.db_app.arn,
-      aws_secretsmanager_secret.redpanda.arn,
+      aws_secretsmanager_secret.kafka.arn,
     ]
   }
   statement {
@@ -165,7 +165,7 @@ data "aws_iam_policy_document" "core_secrets_read" {
 
 resource "aws_iam_policy" "core_secrets_read" {
   name        = "${var.project}-${var.environment}-core-secrets"
-  description = "core: read db + redpanda secrets only"
+  description = "core: read db + kafka secrets only"
   policy      = data.aws_iam_policy_document.core_secrets_read.json
 }
 
@@ -202,8 +202,8 @@ output "db_app_secret_arn" {
   value = aws_secretsmanager_secret.db_app.arn
 }
 
-output "redpanda_secret_arn" {
-  value = aws_secretsmanager_secret.redpanda.arn
+output "kafka_secret_arn" {
+  value = aws_secretsmanager_secret.kafka.arn
 }
 
 output "grafana_secret_arn" {

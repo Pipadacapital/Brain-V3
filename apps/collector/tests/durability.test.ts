@@ -1,7 +1,7 @@
 /**
  * Durability + Edge acceptance tests (Slice 3 — Track B)
  *
- * REQUIRES: live Postgres on DATABASE_URL + live Redpanda on REDPANDA_BROKERS.
+ * REQUIRES: live Postgres on DATABASE_URL + live Redpanda on KAFKA_BROKERS.
  * Run with: pnpm --filter @brain/collector test:unit (or vitest run tests/)
  *
  * These tests prove the two core Track B invariants:
@@ -39,8 +39,8 @@ const { Pool } = pg;
 const DATABASE_URL =
   process.env['DATABASE_URL'] ?? 'postgresql://brain:brain@localhost:5432/brain';
 
-const REDPANDA_BROKERS =
-  process.env['REDPANDA_BROKERS'] ?? 'localhost:9092';
+const KAFKA_BROKERS =
+  process.env['KAFKA_BROKERS'] ?? 'localhost:9092';
 
 const DEAD_BROKER = 'localhost:19999'; // guaranteed-unreachable broker
 
@@ -192,7 +192,7 @@ describe('Track B — Accept-before-validate + Durability', () => {
 
       // Step 4: "Recover" Redpanda — drain with the real broker.
       const liveProducer = new CollectorKafkaProducer({
-        brokers: REDPANDA_BROKERS.split(',').map((b) => b.trim()),
+        brokers: KAFKA_BROKERS.split(',').map((b) => b.trim()),
         clientId: 'test-live-producer',
         topic: TOPIC,
       });

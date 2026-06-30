@@ -9,10 +9,10 @@
  * which is codegen'd to an Avro .avsc file. This package consumes the .avsc.
  *
  * Until packages/contracts codegen is complete, this stubs against the
- * documented envelope shape (infra/redpanda/schemas/collector.event.v1.avsc).
+ * documented envelope shape (infra/kafka/schemas/collector.event.v1.avsc).
  *
- * @see infra/redpanda/schemas/collector.event.v1.avsc — canonical Avro schema
- * @see infra/redpanda/README.md — FULL_TRANSITIVE policy
+ * @see infra/kafka/schemas/collector.event.v1.avsc — canonical Avro schema
+ * @see infra/kafka/README.md — FULL_TRANSITIVE policy
  * @see STACK.md EventAdapter (ADR-003)
  */
 
@@ -138,7 +138,7 @@ export async function validateSchemaCompatibility(
 }
 
 /**
- * Build the Redpanda partition key from envelope fields.
+ * Build the Kafka partition key from envelope fields.
  * Partition key = brand_id + ":" + event_id (brand-prefixed composite).
  */
 export function buildPartitionKey(brandId: string, eventId: string): string {

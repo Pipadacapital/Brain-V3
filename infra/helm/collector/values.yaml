@@ -20,7 +20,7 @@ probes:
   readinessPath: /readyz  # readiness (gated on dependencies)
 
 # Name of a pre-provisioned Secret (External Secrets ← AWS Secrets Manager) holding
-# DATABASE_URL, REDIS_URL, REDPANDA_BROKERS, etc. Empty in defaults; set per env.
+# DATABASE_URL, REDIS_URL, KAFKA_BROKERS, etc. Empty in defaults; set per env.
 envSecretName: ""
 
 # Literal, non-secret env. Secrets come via envSecretName.

@@ -1,6 +1,6 @@
-# Redpanda topic declarations — source of truth for topic provisioning.
-# Applied by infra/terraform/modules/redpanda (production) and
-# docker-compose redpanda-init service (local dev).
+# Kafka topic declarations — source of truth for topic provisioning.
+# Applied by infra/helm/strimzi-kafka (production) and
+# docker-compose kafka-init service (local dev).
 #
 # Naming: {env}.{domain}.{event}.v{n}
 # Partition key: brand_id + ":" + event_id  (brand-prefixed composite)
@@ -117,5 +117,5 @@ schema_registry:
   artifact_group: brain
   schemas:
     - artifact_id: "collector.event.v1"
-      file: "infra/redpanda/schemas/collector.event.v1.avsc"
+      file: "infra/kafka/schemas/collector.event.v1.avsc"
       description: "Canonical event envelope — all collector events"

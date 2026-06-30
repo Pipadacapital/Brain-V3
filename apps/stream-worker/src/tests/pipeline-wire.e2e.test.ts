@@ -36,9 +36,9 @@ import { makeStarrocksPool, icebergBronzeAvailable, pollIcebergBronzeCount } fro
 const DATABASE_URL =
   process.env['DATABASE_URL'] ?? 'postgresql://brain:brain@localhost:5432/brain';
 
-const REDPANDA_BROKERS_STR =
-  process.env['KAFKA_BROKERS'] ?? process.env['REDPANDA_BROKERS'] ?? 'localhost:9092';
-const REDPANDA_BROKERS = REDPANDA_BROKERS_STR.split(',').map((b) => b.trim());
+const KAFKA_BROKERS_STR =
+  process.env['KAFKA_BROKERS'] ?? process.env['KAFKA_BROKERS'] ?? 'localhost:9092';
+const KAFKA_BROKERS = KAFKA_BROKERS_STR.split(',').map((b) => b.trim());
 
 // Test brand UUIDs (valid UUIDv4)
 const BRAND_A = 'aaaa1111-aaaa-4aaa-8aaa-111111111111';
@@ -158,7 +158,7 @@ describe('Full-wire pipeline E2E (F-QA-01): POST /collect → spool → Redpanda
 
   beforeAll(async () => {
     // Collector deps (Redpanda + PG) must be up, plus the lakehouse read path (StarRocks/Iceberg).
-    const [broker] = REDPANDA_BROKERS;
+    const [broker] = KAFKA_BROKERS;
     const [rpHost, rpPortStr] = (broker ?? 'localhost:9092').split(':');
     const rpOk = await tcpReachable(rpHost ?? 'localhost', Number(rpPortStr ?? 9092));
     const pgOk = await tcpReachable('127.0.0.1', 5432);
@@ -183,7 +183,7 @@ describe('Full-wire pipeline E2E (F-QA-01): POST /collect → spool → Redpanda
           PORT: String(collectorPort),
           NODE_ENV: 'development',
           DATABASE_URL,
-          REDPANDA_BROKERS: REDPANDA_BROKERS_STR,
+          KAFKA_BROKERS: KAFKA_BROKERS_STR,
           DRAIN_POLL_INTERVAL_MS: '200',
           // Point Apicurio at a connection-refused port so the backoff exhausts quickly and the
           // collector degrades gracefully to spool-only mode (D-10) — avoids the ~30s CI wait.

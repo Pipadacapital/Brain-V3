@@ -114,7 +114,7 @@ emits a per-partition row gauge. Until then, the daily run logs
 
 The live collector topic partition count is the hard ceiling on stream-worker
 consumer parallelism. Prod is now **96 partitions**
-(`infra/terraform/modules/redpanda → live_topic_partition_count`); the worker HPA
+(`infra/helm/strimzi-kafka → live_topic_partition_count`); the worker HPA
 `maxReplicas` is decoupled from the old hard 12 (prod `maxReplicas: 48`, still
 `<= 96`). A *real* repartition that wants per-brand ordering must FIRST change the
 producer key from the brand-prefixed composite to `brand_id` alone — owned by the

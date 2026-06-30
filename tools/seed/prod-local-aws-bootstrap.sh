@@ -102,6 +102,20 @@ psql "SELECT name || E'\t' || secret_value FROM dev_secret" | while IFS=$'\t' re
   awsl secretsmanager create-secret --name "$name" --secret-string "$val" >/dev/null 2>&1 \
     || awsl secretsmanager put-secret-value --secret-id "$name" --secret-string "$val" >/dev/null 2>&1
   echo "[prod-local]   secret $name"
+  # Re-point connector_instance.secret_ref to the freshly-created ARN. LocalStack appends a NEW random
+  # 6-char suffix on every create-secret, and getShopifyToken/etc. fetch by the FULL ARN — so the stale
+  # ARN in secret_ref (captured before the restart) would 404 (verified: GetSecretValue by old ARN →
+  # ResourceNotFound). Match the row by the suffix-stripped NAME and rebind to the new ARN so a restored
+  # token actually resolves — this is what makes `dev:secrets-snapshot` durable across Docker restarts.
+  case "$name" in
+    brain/connector/*)
+      newarn="$(awsl secretsmanager describe-secret --secret-id "$name" --query ARN --output text 2>/dev/null | tr -d '\r')"
+      if [ -n "$newarn" ] && [ "$newarn" != "None" ]; then
+        psql "UPDATE connectors.connector_instance SET secret_ref='$newarn', updated_at=now()
+              WHERE secret_ref LIKE '%:secret:${name}-%' OR secret_ref='$name';" >/dev/null 2>&1 || true
+      fi
+      ;;
+  esac
 done
 
 echo "[prod-local] seed per-brand identity salts → .env.local-prod (prod has no dev-salt fallback)"

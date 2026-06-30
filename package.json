@@ -26,6 +26,7 @@
     "dev:pixel-ngrok-tunnel": "bash tools/dev/pixel-ngrok-tunnel.sh",
     "dev:pixel-named-tunnel": "bash tools/dev/pixel-named-tunnel.sh",
     "dev:tunnels": "bash tools/dev/tunnels.sh",
+    "dev:secrets-snapshot": "bash tools/dev/secrets-snapshot.sh",
     "dev:v4-refresh": "bash tools/dev/v4-refresh-loop.sh",
     "down": "docker compose down",
     "migrate": "node scripts/migrate.mjs up",

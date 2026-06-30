@@ -165,6 +165,11 @@ services:
     profiles: ["core"]
     environment:
       SERVICES: "s3,secretsmanager,kms,ses,events"
+      # NOTE: LocalStack *community* does NOT persist Secrets Manager / KMS across restarts
+      # (PERSISTENCE is Pro-only and silently ignored here — verified). So a Docker restart
+      # wipes all secrets + connector OAuth tokens. Durability is instead handled by mirroring
+      # connector tokens into PG `dev_secret` (persistent) via `pnpm dev:secrets-snapshot`;
+      # `pnpm bootstrap` restores dev_secret → Secrets Manager on every run. See that script.
     ports: ["4566:4566"]
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]

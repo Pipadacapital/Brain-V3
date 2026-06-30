@@ -28,6 +28,8 @@ import {
   Footprints,
   Repeat,
   Fingerprint,
+  Package,
+  Activity,
   Settings,
   Lock,
 } from 'lucide-react';
@@ -67,10 +69,12 @@ const NAV_ITEMS: NavItem[] = [
   { href: '/home', label: 'Home', icon: LayoutDashboard },
   { href: '/customers', label: 'Customers', icon: Users, centerKey: 'identity' },
   { href: '/marketing', label: 'Marketing', icon: Megaphone, centerKey: 'attribution' },
+  { href: '/analytics/products', label: 'Products', icon: Package },
   { href: '/behaviour', label: 'Behaviour', icon: MousePointerClick },
   { href: '/journeys', label: 'Journeys', icon: Footprints, centerKey: 'journey' },
   { href: '/retention', label: 'Retention', icon: Repeat },
   { href: '/identity', label: 'Identity', icon: Fingerprint, centerKey: 'identity' },
+  { href: '/operations', label: 'Operations', icon: Activity },
   { href: '/settings', label: 'Settings', icon: Settings },
 ];
 

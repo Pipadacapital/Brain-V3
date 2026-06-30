@@ -52,7 +52,7 @@ module "oidc_github" {
   project          = local.project
   github_org       = "brain-platform"
   github_repo      = "brain"
-  allowed_branches = ["main"]
+  allowed_branches = ["master"] # repo default branch (workflow_dispatch runs here) — was "main" (mismatch)
 }
 
 ###############################################################################

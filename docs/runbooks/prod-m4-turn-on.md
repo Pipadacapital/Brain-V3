@@ -40,23 +40,23 @@ This is the only locally-bootstrapped step; it's what makes `envs/prod` usable.
 
 ---
 
-## 2. Phase 1 — Provision AWS (uncomment + apply the M4 modules)
+## 2. Phase 1 — Provision AWS (CI OIDC `workflow_dispatch` — no static creds)
 
-In `infra/terraform/envs/prod/bootstrap.tf`, **uncomment the M4 module blocks** (they're authored + the inputs verified): `network` (with `enable_nat_gateway = false`), `nat_instance`, `vpc_endpoints`, `eks`, `aurora`, `s3_iceberg`, `s3_audit`, `s3_iceberg_silver`, `s3_iceberg_gold`, `irsa_*` — plus the prereq additions from §0.
+First **uncomment the M4 module blocks** in `infra/terraform/envs/prod/bootstrap.tf` (authored + inputs verified): `secrets`, `network` (`enable_nat_gateway = false`), `nat_instance`, `vpc_endpoints`, `eks`, `aurora`, `s3_iceberg`, `s3_audit`, `s3_iceberg_silver`, `s3_iceberg_gold`, `irsa_collector`/`irsa_core`/`irsa_stream_worker`/`irsa_spark_jobs`, `elasticache`. Commit to `master`.
 
-```bash
-cd infra/terraform/envs/prod
-terraform init
-terraform plan -out m4.plan          # REVIEW — expect: VPC + fck-nat instance + VPC endpoints,
-                                     # EKS + node groups, Aurora cluster, 4 S3 buckets, IRSA roles.
-terraform apply m4.plan
-```
-Terraform's dependency graph orders this correctly (EKS waits on network, Aurora on network, etc.). **If you prefer staged caution**, apply foundational first:
-```bash
-terraform apply -target=module.network -target=module.nat_instance -target=module.vpc_endpoints
-terraform apply -target=module.eks
-terraform apply                       # the rest (Aurora, S3, IRSA)
-```
+**One-time CI prerequisites** (the apply runs as `.github/workflows/prod-apply.yml`):
+- `infra/terraform/bootstrap` applied (state bucket + lock + OIDC provider + apply role).
+- Repo **variable `AWS_PROD_APPLY_ROLE_ARN`** = the `oidc_github` apply-role ARN.
+- `oidc_github` `github_org`/`github_repo` MUST match this repo, and `allowed_branches` MUST include the dispatch branch (set to `["master"]`). **Re-apply `oidc_github`** if you changed these.
+- GitHub **Settings → Environments → `production`** → add **required reviewers** (the human approval gate).
+
+**Then trigger it** (Actions → "prod-apply (M4 turn-on)" → Run workflow):
+- `confirm = apply-prod` (required), `target` blank for full apply (or e.g. `module.network` for staged).
+- The job pauses at the `production` environment gate → a reviewer approves → it runs `terraform init → validate → plan → apply` against the real prod backend via OIDC.
+
+**Staged caution:** dispatch with `target=module.network` then `target=module.eks` then a blank-target run for the rest. Terraform's graph also orders a single full apply correctly (EKS/Aurora wait on network).
+
+**Local fallback** (if you'd rather not use CI): `cd infra/terraform/envs/prod && terraform init && terraform plan -out m4.plan && terraform apply m4.plan` with an assumed apply role.
 
 **Sanity:** `terraform output` → note `eks` cluster name, `aurora` endpoint, the S3 bucket names, IRSA role ARNs (feed these into the ArgoCD/Helm placeholders if not already).
 

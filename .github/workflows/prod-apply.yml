@@ -1,0 +1,78 @@
+name: prod-apply (M4 turn-on)
+
+# MANUAL prod Terraform apply via GitHub OIDC — no static AWS creds. Spins REAL billable
+# resources (~$240–320/mo). Two safety gates: (1) you must type the confirm phrase, and
+# (2) the `production` GitHub Environment (set required reviewers in repo Settings →
+# Environments → production) pauses the job for human approval before apply.
+#
+# PREREQUISITES (set once, before the first dispatch — see docs/runbooks/prod-m4-turn-on.md):
+#   - infra/terraform/bootstrap applied (state bucket + lock table + OIDC provider + apply role).
+#   - Repo variable AWS_PROD_APPLY_ROLE_ARN = the oidc_github apply-role ARN (output of bootstrap).
+#   - prod oidc_github github_org/github_repo MUST match THIS repo, and allowed_branches MUST
+#     include the dispatch branch (this file fixes it to ["master"]). Re-apply oidc_github if changed.
+#   - Placeholders filled: <PROD_ACCOUNT_ID> (backend.tf/bootstrap.tf), IRSA ARNs, Aurora endpoint
+#     in infra/helm/iceberg-rest/values-prod.yaml — and the envs/prod M4 module blocks UNCOMMENTED.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "apply-prod" to confirm a real prod apply'
+        required: true
+        type: string
+      target:
+        description: 'Optional terraform -target (staged apply, e.g. module.network). Blank = full apply.'
+        required: false
+        type: string
+
+permissions:
+  id-token: write   # OIDC → assume the prod apply role
+  contents: read
+
+concurrency:
+  group: prod-apply           # never two prod applies at once (state lock + safety)
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    environment: production    # ← human approval gate (configure required reviewers)
+    defaults:
+      run:
+        working-directory: infra/terraform/envs/prod
+    steps:
+      - name: Confirm gate
+        if: ${{ inputs.confirm != 'apply-prod' }}
+        run: |
+          echo "::error::confirm input was '${{ inputs.confirm }}', expected 'apply-prod' — aborting."
+          exit 1
+
+      - uses: actions/checkout@v6
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_PROD_APPLY_ROLE_ARN }}
+          aws-region: ap-south-1
+          role-session-name: GitHubActions-ProdApply-${{ github.run_id }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.9"
+
+      - name: terraform init (real prod state backend)
+        run: terraform init
+
+      - name: terraform validate
+        run: terraform validate
+
+      - name: terraform plan
+        run: |
+          terraform plan -input=false -out=prod.plan \
+            ${{ inputs.target != '' && format('-target={0}', inputs.target) || '' }}
+
+      - name: terraform apply
+        run: terraform apply -input=false prod.plan
+
+      - name: outputs
+        run: terraform output || true

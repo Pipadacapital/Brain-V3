@@ -376,6 +376,25 @@ run_phase() {
   return "$failures"
 }
 
+# ── secrets durability auto-snapshot (prod-local) ───────────────────────────────────────────────────────
+# In prod-local mode connector OAuth tokens live in LocalStack Secrets Manager, which does NOT persist
+# across Docker restarts; `pnpm bootstrap` restores them from PG dev_secret on startup, but ONLY if they
+# were snapshotted there first. Mirror SM → dev_secret once per cycle so any connector you (re)connect is
+# captured within one cycle — ZERO manual `pnpm dev:secrets-snapshot`. Best-effort: a snapshot failure
+# (e.g. LocalStack momentarily unreachable) NEVER breaks the refresh loop and is not counted as a failure.
+snapshot_secrets_best_effort() {
+  [ "$APP_ENV" = "local-prod" ] || return 0
+  [ -f "$ROOT/tools/dev/secrets-snapshot.sh" ] || return 0
+  local out n
+  if out="$(bash "$ROOT/tools/dev/secrets-snapshot.sh" 2>&1)"; then
+    n="$(printf '%s\n' "$out" | grep -c '✓ ')"
+    echo "[$(ts)] ✓ secrets auto-snapshot: ${n} secret(s) mirrored → dev_secret (durable across restarts)"
+  else
+    echo "[$(ts)] ⚠ secrets auto-snapshot skipped (best-effort): $(printf '%s' "$out" | tail -1 | cut -c1-100)"
+  fi
+  return 0
+}
+
 run_once() {
   local failures=0 cycle_start cycle_end
   # New correlation_id per cycle, EXPORTED so every Spark job (job_log.py) + node job echoes it.
@@ -383,6 +402,9 @@ run_once() {
   cycle_start=$(now_ms)
   echo "[$(ts)] ── V4 refresh (phase=${PHASE}): [1] identity→Customer360  →  [2] BI gold→mv views ──"
   jlog v4_cycle phase=start pipeline_phase="$PHASE"
+
+  # Auto-capture any (re)connected connector tokens into durable storage (best-effort; never fails the cycle).
+  snapshot_secrets_best_effort
 
   # Two-phase pipeline (F2). Phase 2 runs strictly AFTER Phase 1 so the BI marts always consume a fresh,
   # identity-resolved Customer360. Default --phase=both runs both in order (the pre-F2 sequence).

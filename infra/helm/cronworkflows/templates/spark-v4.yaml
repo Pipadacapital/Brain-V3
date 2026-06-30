@@ -40,6 +40,18 @@ Image MUST be pinned by digest (B3) — same fail-closed rule as the generic + B
 {{- $sa := .Values.serviceAccount.name -}}
 {{- $tz := .Values.timezone -}}
 {{- $dm := .Values.sparkV4.driverMemory -}}
+{{/* ── Execution-mode submit flags (local[*] vs Spark-on-K8s cluster). See docs/ops/spark-on-k8s-migration.md.
+     $submitFlags is interpolated at every spark-submit site; $lp is the in-image path scheme ("" for local;
+     "local://" for cluster mode, where the driver pod reads the app + --py-files from the SAME image, no upload). */}}
+{{- $mode := .Values.sparkV4.executionMode | default "local" -}}
+{{- $lp := "" -}}
+{{- $submitFlags := printf "--master local[*] --driver-memory %s" $dm -}}
+{{- if eq $mode "k8s" -}}
+  {{- $k := .Values.sparkV4.k8s -}}
+  {{- $ns := $k.namespace | default .Release.Namespace -}}
+  {{- $lp = "local://" -}}
+  {{- $submitFlags = printf "--master %s --deploy-mode cluster --conf spark.kubernetes.container.image=%s --conf spark.kubernetes.namespace=%s --conf spark.kubernetes.authenticate.driver.serviceAccountName=%s --conf spark.driver.memory=%s --conf spark.executor.instances=%s --conf spark.executor.cores=%s --conf spark.executor.memory=%s --conf spark.dynamicAllocation.enabled=true --conf spark.dynamicAllocation.shuffleTracking.enabled=true --conf spark.dynamicAllocation.minExecutors=%s --conf spark.dynamicAllocation.maxExecutors=%s" $k.apiServer $ref $ns $k.serviceAccountName $dm $k.executor.instances $k.executor.cores $k.executor.memory $k.executor.minExecutors $k.executor.maxExecutors -}}
+{{- end -}}
 ---
 apiVersion: argoproj.io/v1alpha1
 kind: CronWorkflow
@@ -78,15 +90,20 @@ spec:
             - |
               set -euo pipefail
               source /opt/brain/_retry.sh
-              submit() { spark_retry "v4-silver/$1" /opt/spark/bin/spark-submit --master "local[*]" --driver-memory {{ $dm | quote }} --py-files /opt/brain/iceberg_base.py "/opt/brain/silver/$1"; }
+              PFX="{{ $lp }}"   # "" (local[*]) or "local://" (k8s cluster — driver reads app + py-files from the image, no upload)
+              pyf() { if [ -n "$PFX" ]; then echo "$1" | sed "s#[^,][^,]*#${PFX}&#g"; else echo "$1"; fi; }  # local://-prefix each comma element in k8s mode; no-op in local
+              submit() { spark_retry "v4-silver/$1" /opt/spark/bin/spark-submit {{ $submitFlags }} --py-files "$(pyf /opt/brain/iceberg_base.py)" "${PFX}/opt/brain/silver/$1"; }
               submit silver_order_state.py        # spine — resolves brain_id from brain_ops.silver_identity_link
               for j in /opt/brain/silver/silver_*.py; do
                 b="$(basename "$j")"; [ "$b" = "silver_order_state.py" ] && continue
-                spark_retry "v4-silver/$b" /opt/spark/bin/spark-submit --master "local[*]" --driver-memory {{ $dm | quote }} --py-files /opt/brain/iceberg_base.py "$j"
+                spark_retry "v4-silver/$b" /opt/spark/bin/spark-submit {{ $submitFlags }} --py-files "$(pyf /opt/brain/iceberg_base.py)" "${PFX}$j"
               done
           env:
             - { name: SPARK_MAX_RETRIES, value: {{ .Values.sparkV4.sparkMaxRetries | quote }} }
             {{- toYaml .Values.sparkV4.env | nindent 12 }}
+            {{- if eq $mode "k8s" }}
+            {{- toYaml .Values.sparkV4.k8s.env | nindent 12 }}  {{/* cluster-scale tuning knobs (spark_perf_configs reads these) */}}
+            {{- end }}
           {{- if $envFrom }}
           envFrom:
             - secretRef:
@@ -131,7 +148,9 @@ spec:
             - |
               set -euo pipefail
               source /opt/brain/_retry.sh
-              submit() { spark_retry "v4-gold/$1" /opt/spark/bin/spark-submit --master "local[*]" --driver-memory {{ $dm | quote }} --py-files "$2" "/opt/brain/gold/$1"; }
+              PFX="{{ $lp }}"   # "" (local[*]) or "local://" (k8s cluster — driver reads app + py-files from the image, no upload)
+              pyf() { if [ -n "$PFX" ]; then echo "$1" | sed "s#[^,][^,]*#${PFX}&#g"; else echo "$1"; fi; }  # local://-prefix each comma element in k8s mode; no-op in local
+              submit() { spark_retry "v4-gold/$1" /opt/spark/bin/spark-submit {{ $submitFlags }} --py-files "$(pyf "$2")" "${PFX}/opt/brain/gold/$1"; }
               submit gold_revenue_ledger.py        /opt/brain/iceberg_base.py
               submit gold_attribution_credit.py    /opt/brain/iceberg_base.py,/opt/brain/gold/_attribution_math.py
               submit gold_marketing_attribution.py /opt/brain/iceberg_base.py,/opt/brain/gold/_attribution_math.py
@@ -140,11 +159,14 @@ spec:
                 b="$(basename "$j")"
                 case "$b" in gold_revenue_ledger.py|gold_attribution_credit.py|gold_marketing_attribution.py|gold_attribution_paths.py) continue;; esac
                 case "$b" in _*) continue;; esac
-                spark_retry "v4-gold/$b" /opt/spark/bin/spark-submit --master "local[*]" --driver-memory {{ $dm | quote }} --py-files /opt/brain/iceberg_base.py "$j"
+                spark_retry "v4-gold/$b" /opt/spark/bin/spark-submit {{ $submitFlags }} --py-files "$(pyf /opt/brain/iceberg_base.py)" "${PFX}$j"
               done
           env:
             - { name: SPARK_MAX_RETRIES, value: {{ .Values.sparkV4.sparkMaxRetries | quote }} }
             {{- toYaml .Values.sparkV4.env | nindent 12 }}
+            {{- if eq $mode "k8s" }}
+            {{- toYaml .Values.sparkV4.k8s.env | nindent 12 }}  {{/* cluster-scale tuning knobs (spark_perf_configs reads these) */}}
+            {{- end }}
           {{- if $envFrom }}
           envFrom:
             - secretRef:

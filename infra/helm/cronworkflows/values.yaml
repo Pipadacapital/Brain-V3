@@ -111,6 +111,31 @@ sparkV4:
   resources:
     requests: { cpu: "1", memory: 2Gi }
     limits: { cpu: "2", memory: 4Gi }
+  # ── Execution mode (see docs/ops/spark-on-k8s-migration.md) ────────────────────────────────────
+  # "local" = the current, proven single-JVM `spark-submit --master local[*]` (driver==executor in the
+  # cron pod). "k8s" = Spark-on-Kubernetes CLUSTER mode: spark-submit launches real executor pods, the
+  # SAME image/catalog/code, gated entirely by this flag. DEFAULT local → zero change to today's crons;
+  # flip to k8s ONLY after the migration plan's parity gate. Rollback = flip back to local (one line).
+  executionMode: local
+  k8s:
+    # In-cluster API server (the `k8s://` master). Override only for an out-of-cluster submit.
+    apiServer: "k8s://https://kubernetes.default.svc"
+    namespace: ""                       # "" → the release namespace (where executor pods launch)
+    serviceAccountName: spark           # the driver SA — RBAC templated in spark-k8s-rbac.yaml (k8s mode only)
+    # Executor fleet (values are strings — interpolated verbatim into --conf). Dynamic allocation with
+    # shuffle tracking (no external shuffle service needed on Spark 3.x/K8s). Tune from the Spark UI.
+    executor:
+      instances: "4"
+      cores: "4"
+      memory: "6g"
+      minExecutors: "2"
+      maxExecutors: "12"
+    # Cluster-scale tuning knobs, ACTIVE ONLY in k8s mode. iceberg_base.spark_perf_configs() reads these
+    # from env — they are no-ops in local mode and become meaningful with real executors (#312 seam).
+    env:
+      - { name: SPARK_SHUFFLE_PARTITIONS, value: "256" }
+      - { name: SPARK_OFFHEAP_SIZE, value: "2g" }
+      - { name: SPARK_AQE_ADVISORY_BYTES, value: "134217728" }   # 128MB
 
 # The scheduled jobs. `image` omitted → the default (core) image.
 #

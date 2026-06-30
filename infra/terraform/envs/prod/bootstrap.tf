@@ -56,14 +56,38 @@ module "oidc_github" {
 }
 
 ###############################################################################
-# Network — DECLARED only; plan passes; apply deferred to M4
-# Uncomment module call to apply at M4.
+# Network + egress — DECLARED only; plan passes; apply deferred to M4.
+# ADR-0009: prod egress = fck-nat (cost-optimised starter), NOT per-AZ managed NAT Gateway.
+# enable_nat_gateway=false → modules/network creates routeless private RTs; nat-instance adds the
+# default route. Switch back to HA managed NAT = set enable_nat_gateway=true + drop the two modules below.
 ###############################################################################
 # module "network" {
 #   source             = "../../modules/network"
 #   environment        = local.environment
 #   project            = local.project
-#   single_nat_gateway = false  # HA for prod: one NAT per AZ
+#   single_nat_gateway = true    # moot when enable_nat_gateway=false (fck-nat is single-instance anyway)
+#   enable_nat_gateway = false   # ADR-0009: fck-nat owns egress
+# }
+#
+# module "nat_instance" {
+#   source                  = "../../modules/nat-instance"
+#   environment             = local.environment
+#   project                 = local.project
+#   vpc_id                  = module.network.vpc_id
+#   public_subnet_id        = module.network.public_subnet_ids[0]
+#   vpc_cidr                = "10.0.0.0/16"
+#   private_route_table_ids = module.network.private_route_table_ids
+# }
+#
+# module "vpc_endpoints" {
+#   source                  = "../../modules/vpc-endpoints"
+#   environment             = local.environment
+#   project                 = local.project
+#   vpc_id                  = module.network.vpc_id
+#   vpc_cidr                = "10.0.0.0/16"
+#   region                  = "ap-south-1"
+#   private_subnet_ids      = module.network.private_subnet_ids
+#   private_route_table_ids = module.network.private_route_table_ids
 # }
 
 ###############################################################################
@@ -84,12 +108,20 @@ module "oidc_github" {
 # }
 
 ###############################################################################
-# RDS — DECLARED; apply deferred to M4
+# Operational DB — DECLARED; apply deferred to M4.
+# ADR-0009: prod DB = Aurora Serverless v2 (0.5–2 ACU, burst-elastic, managed HA), NOT plain RDS.
+# (PG is operational-only here; the workload is spiky, so serverless auto-scaling fits.)
 ###############################################################################
-# module "rds" {
-#   source      = "../../modules/rds"
-#   environment = local.environment
-#   ...
+# module "aurora" {
+#   source                     = "../../modules/aurora"
+#   environment                = local.environment
+#   project                    = local.project
+#   vpc_id                     = module.network.vpc_id
+#   subnet_ids                 = module.network.private_subnet_ids
+#   ingress_security_group_ids = [module.network.rds_sg_id]
+#   kms_key_arn                = module.kms.root_kms_key_arn
+#   min_capacity               = 0.5
+#   max_capacity               = 2
 # }
 
 ###############################################################################

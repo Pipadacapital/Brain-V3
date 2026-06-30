@@ -42,6 +42,17 @@ variable "single_nat_gateway" {
   default     = true
 }
 
+variable "enable_nat_gateway" {
+  description = <<-EOT
+    Create managed NAT Gateway(s) + their default route. Default true (HA managed egress).
+    Set FALSE to adopt the cost-optimised fck-nat instance (modules/nat-instance): private route
+    tables are still created (and exported via private_route_table_ids) but get NO 0.0.0.0/0 route
+    here — the nat-instance module adds it. See ADR-0008. (Conscious HA->cost tradeoff.)
+  EOT
+  type        = bool
+  default     = true
+}
+
 ###############################################################################
 # VPC
 ###############################################################################
@@ -114,7 +125,10 @@ resource "aws_subnet" "private" {
 # NAT Gateway + EIPs
 ###############################################################################
 locals {
-  nat_count = var.single_nat_gateway ? 1 : length(var.availability_zones)
+  # Private route tables ALWAYS exist (so subnets route + fck-nat can attach a default route);
+  # NAT Gateways (+ their route) are gated by enable_nat_gateway.
+  private_rt_count = var.single_nat_gateway ? 1 : length(var.availability_zones)
+  nat_count        = var.enable_nat_gateway ? local.private_rt_count : 0
 }
 
 resource "aws_eip" "nat" {
@@ -161,16 +175,24 @@ resource "aws_route_table_association" "public" {
 }
 
 resource "aws_route_table" "private" {
-  count  = local.nat_count
+  count  = local.private_rt_count
   vpc_id = aws_vpc.main.id
-  route {
-    cidr_block     = "0.0.0.0/0"
-    nat_gateway_id = aws_nat_gateway.main[count.index].id
-  }
+  # NOTE: the default 0.0.0.0/0 route is a SEPARATE resource (aws_route.private_nat) gated by
+  # enable_nat_gateway — so when fck-nat is adopted (enable_nat_gateway=false) these tables exist
+  # routeless and modules/nat-instance adds the default route. Do NOT inline the route here.
   tags = {
     Name        = "${var.project}-${var.environment}-private-rt-${count.index + 1}"
     environment = var.environment
   }
+}
+
+# Managed NAT-Gateway default route — only when enable_nat_gateway = true. With fck-nat it is omitted
+# and modules/nat-instance owns the private 0.0.0.0/0 route instead.
+resource "aws_route" "private_nat" {
+  count                  = local.nat_count
+  route_table_id         = aws_route_table.private[count.index].id
+  destination_cidr_block = "0.0.0.0/0"
+  nat_gateway_id         = aws_nat_gateway.main[count.index].id
 }
 
 resource "aws_route_table_association" "private" {
@@ -308,6 +330,12 @@ output "public_subnet_ids" {
 
 output "private_subnet_ids" {
   value = aws_subnet.private[*].id
+}
+
+# Private route-table IDs — consumed by modules/nat-instance (private_route_table_ids) to add the
+# default route when enable_nat_gateway = false (fck-nat egress). See ADR-0008.
+output "private_route_table_ids" {
+  value = aws_route_table.private[*].id
 }
 
 output "eks_cluster_sg_id" {

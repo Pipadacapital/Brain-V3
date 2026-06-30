@@ -58,6 +58,7 @@ echo "[combined-bronze] heap STARTING POINT (UNVERIFIED): driver=${SPARK_DRIVER_
 docker volume create brain-spark-ivy >/dev/null
 
 exec docker run --rm \
+  --name "${SINK_CONTAINER_NAME:-brain-bronze-sink}" \
   --network "container:${KAFKA_CONTAINER}" \
   --user root \
   -v "${SPARK_SRC_DIR}":/opt/spike:ro \

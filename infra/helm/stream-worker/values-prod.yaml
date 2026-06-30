@@ -21,11 +21,11 @@ resources:
 
 # P2.5: HPA on in prod. The live-topic partition count is the HARD ceiling on useful replicas
 # (a replica beyond the partition count owns no partition → idle). The prod live topic is now 96
-# partitions (infra/terraform/modules/redpanda → live_topic_partition_count, H5 audit), so the
+# partitions (infra/helm/strimzi-kafka → live_topic_partition_count, H5 audit), so the
 # worker is no longer pinned at the old hard 12. maxReplicas=48 gives generous headroom while
 # staying well under 96. Raise toward 96 if sustained lag warrants; never exceed the partition
 # count. A *real* repartition (per-brand key) is gated on the producer key change (analytics/identity
-# stream) — see the redpanda module header.
+# stream) — see the kafka module header.
 autoscaling:
   enabled: true
   minReplicas: 3

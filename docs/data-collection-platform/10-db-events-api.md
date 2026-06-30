@@ -4,7 +4,7 @@
 **Status:** Design (alignment-against-existing). **Date:** 2026-06-18.
 **Author posture:** Architect / skeptical review board. Every line is classified against the shipped repo. **No new deployables, no new topics, no new envelope, no new RLS pattern, no new secrets store.** Additions are proposed ONLY where a canon-mandated capability has zero code and an existing seam can carry it.
 
-**Source-of-truth read before asserting:** `db/migrations/0001–0027`, `.engineering-os/knowledge-base/{INVARIANTS,COMPLIANCE,METRICS,HLD}.md`, `docs/requirements/{06,07,08}`, `packages/contracts/src/**`, `infra/redpanda/schemas/collector.event.v1.avsc`, `apps/collector/src/interfaces/rest/collect.route.ts`, `apps/core/src/modules/connector/pixel/interfaces/http/pixelRoutes.ts`, `apps/core/src/modules/frontend-api/internal/bff.routes.ts`.
+**Source-of-truth read before asserting:** `db/migrations/0001–0027`, `.engineering-os/knowledge-base/{INVARIANTS,COMPLIANCE,METRICS,HLD}.md`, `docs/requirements/{06,07,08}`, `packages/contracts/src/**`, `infra/kafka/schemas/collector.event.v1.avsc`, `apps/collector/src/interfaces/rest/collect.route.ts`, `apps/core/src/modules/connector/pixel/interfaces/http/pixelRoutes.ts`, `apps/core/src/modules/frontend-api/internal/bff.routes.ts`.
 
 **Legend:** **Present** = shipped, cite file. **Equivalent** = a seam exists that must be reused/extended (not duplicated). **Missing** = canon-mandated, zero code, build by extending a named seam. **Raw-Only** = lands raw in Bronze by design, do not model at the edge. **Reject** = would drift/duplicate; do not build.
 
@@ -15,7 +15,7 @@
 There are **two coexisting collector envelope shapes** and they must be **reconciled, never forked** (this is the highest-risk decision in the cluster — see §Summary):
 
 - **Shape (a) — Zod `CollectorEventV1Schema`** (`packages/contracts/src/events/sample.collector.event.v1.ts`): `event_name` + ISO-8601 string `occurred_at`/`ingested_at` + `schema_version: '1'`. This is the **field-level source of truth** for naming/typing.
-- **Shape (b) — Avro `collector.event.v1.avsc` + `bronze_events` + the fixture** (`infra/redpanda/schemas/collector.event.v1.avsc`, `db/migrations/0016_bronze_events.sql`, `tools/pixel-fixture/send-event.mjs`): `event_type` + `timestamp-millis long` `occurred_at`/`ingested_at` + `schema_name`/`schema_version int` + `payload` as a **JSON string**. This is the **on-the-wire shape** that the BronzeRepository already consumes.
+- **Shape (b) — Avro `collector.event.v1.avsc` + `bronze_events` + the fixture** (`infra/kafka/schemas/collector.event.v1.avsc`, `db/migrations/0016_bronze_events.sql`, `tools/pixel-fixture/send-event.mjs`): `event_type` + `timestamp-millis long` `occurred_at`/`ingested_at` + `schema_name`/`schema_version int` + `payload` as a **JSON string**. This is the **on-the-wire shape** that the BronzeRepository already consumes.
 
 **Ruling (binds D11 + the SDK):** the SDK and every new event ride **shape (b) on the wire** (it is what Bronze parses today); the Zod schema in shape (a) stays the field-name/type authority and must be brought into byte-alignment with the Avro on the next additive contract change (rename Zod `event_name`→add `event_type`, `occurred_at` string→accept millis at the SDK boundary). Forking a second envelope to "fix" this is a **Reject** (I-E01, single-source contract, doc-07 §4). This reconciliation is additive-optional (FULL_TRANSITIVE) and is the only contract change the SDK strictly requires.
 
@@ -94,7 +94,7 @@ Every item below is a **new additive migration** (never a destructive change to 
 
 ## D11.1 The envelope (Present) — reuse, do not re-spec
 
-`infra/redpanda/schemas/collector.event.v1.avsc` carries `event_id`, `brand_id` (tenant key, I-S01), `occurred_at`/`ingested_at` (millis), `schema_name`/`schema_version`, `partition_key=brand_id:event_id`, `correlation_id`, `event_type` (router discriminator), `payload` (opaque JSON string, no raw PII I-S02), `collector_version` (additive-optional). Registered on collector startup with backoff (`packages/events` `registerSchema`, FULL_TRANSITIVE). **Partition key = `brand_id:event_id`** (`buildPartitionKey`). This is the only wire envelope; everything below is a new `event_type` value inside it.
+`infra/kafka/schemas/collector.event.v1.avsc` carries `event_id`, `brand_id` (tenant key, I-S01), `occurred_at`/`ingested_at` (millis), `schema_name`/`schema_version`, `partition_key=brand_id:event_id`, `correlation_id`, `event_type` (router discriminator), `payload` (opaque JSON string, no raw PII I-S02), `collector_version` (additive-optional). Registered on collector startup with backoff (`packages/events` `registerSchema`, FULL_TRANSITIVE). **Partition key = `brand_id:event_id`** (`buildPartitionKey`). This is the only wire envelope; everything below is a new `event_type` value inside it.
 
 ## D11.2 Event family classification
 

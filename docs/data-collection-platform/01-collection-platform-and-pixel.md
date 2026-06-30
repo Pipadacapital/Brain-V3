@@ -46,7 +46,7 @@ Brain is an **AI-Native Commerce OS**, not a dashboard/CDP/BI/attribution tool. 
 | C2 | Durable spool (no-loss) | **Present** | `db/migrations/0015_collector_spool.sql`; `I-ST02` |
 | C3 | Drainer + back-pressure | **Present** | `apps/collector/src/application/drain-events.usecase.ts` (F-3) |
 | C4 | Bronze sink (tenant-isolated, append-only, idempotent PK) | **Present** | `db/migrations/0016_bronze_events.sql` (RLS FORCE NN-1, `(brand_id,event_id)` PK) |
-| C5 | Wire envelope (Avro) | **Present** | `infra/redpanda/schemas/collector.event.v1.avsc` |
+| C5 | Wire envelope (Avro) | **Present** | `infra/kafka/schemas/collector.event.v1.avsc` |
 | C6 | Field-level contract (Zod SoR) | **Present** | `packages/contracts/src/events/sample.collector.event.v1.ts` |
 | C7 | Pixel install/verify/health control-plane | **Present** | `apps/core/src/modules/connector/pixel/interfaces/http/pixelRoutes.ts`; `db/migrations/0007_pixel.sql` |
 | C8 | Install snippet + `install_token` (public id) | **Present** | `pixelRoutes.buildDefaultSnippet` (line 129) |

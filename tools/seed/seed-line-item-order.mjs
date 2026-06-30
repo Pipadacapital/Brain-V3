@@ -25,7 +25,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(path.resolve(here, '../../apps/stream-worker/package.json'));
 const { Kafka } = require('kafkajs');
 
-const BROKERS = (process.env.REDPANDA_BROKERS ?? 'localhost:9092').split(',');
+const BROKERS = (process.env.KAFKA_BROKERS ?? 'localhost:9092').split(',');
 const TOPIC = process.env.COLLECTOR_TOPIC ?? 'dev.collector.event.v1';
 const BRAND = process.env.BRAND_ID ?? '124e6af5-e6c5-4b85-bf43-7b36fa528101';
 const ORDER_ID = process.env.SEED_ORDER_ID ?? 'LINE-TEST-0001';

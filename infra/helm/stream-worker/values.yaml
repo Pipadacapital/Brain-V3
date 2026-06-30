@@ -1,5 +1,5 @@
 # Default values for the stream-worker chart. Overridden by values-staging.yaml / values-prod.yaml.
-# Headless Kafka/Redpanda consumer: NO Service (it serves no traffic), but it DOES expose a
+# Headless Kafka/Kafka consumer: NO Service (it serves no traffic), but it DOES expose a
 # health port for liveness/readiness probes (T2-10 — apps/stream-worker/src/.../HealthServer.ts).
 # /healthz = liveness (process up), /readyz = readiness (consumers started + Postgres reachable).
 replicaCount: 2
@@ -46,7 +46,7 @@ resources:
 # consumer-group members bound to the collector topic's partitions — scaling BEYOND the partition
 # count yields IDLE consumers (no partition to own), so maxReplicas must stay <= the live-topic
 # partition count. That count is now ENV-SPECIFIC (H5): prod live topic = 96 partitions, dev/staging
-# = 12 (infra/terraform/modules/redpanda → live_topic_partition_count). maxReplicas is therefore set
+# = 12 (infra/helm/strimzi-kafka → live_topic_partition_count). maxReplicas is therefore set
 # PER ENV in values-{staging,prod}.yaml to match — this default (12) is the dev/non-prod ceiling.
 # The P1.2 due-time work-queue (claim_due_repull_connectors, SKIP LOCKED) lets the ingest scheduler
 # parallelise across these replicas without ordinals. CPU target is conservative (consumers are

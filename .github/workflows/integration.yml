@@ -1,7 +1,7 @@
 # integration.yml — real-engine integration suite (C5 / R-48).
 #
 # The PR workflow (pr.yml) runs unit/contract/isolation/parity against a Postgres service container
-# ONLY — the `.live.test.ts` suites (real Trino-over-Iceberg serving, real Redpanda) and the Playwright
+# ONLY — the `.live.test.ts` suites (real Trino-over-Iceberg serving, real Kafka) and the Playwright
 # e2e are NOT exercised in CI, so a cross-tenant serving leak or a broken live pipeline could merge green.
 # This workflow closes that: it stands up the REAL engines (the repo's docker-compose stack) and runs
 # the live + e2e suites against them.
@@ -41,7 +41,7 @@ env:
   BRAIN_APP_DATABASE_URL: postgres://brain_app:brain_app@localhost:5432/brain
   REDIS_URL: redis://localhost:6379
   KAFKA_BROKERS: localhost:19092
-  REDPANDA_BROKERS: localhost:19092
+  KAFKA_BROKERS: localhost:19092
   # Brain V4 serving engine: Trino-over-Iceberg (StarRocks removed). The metric-engine/core read the
   # brain_serving Trino views; createTrinoPool targets TRINO_URL (host:port = TRINO_HOST:TRINO_PORT).
   TRINO_HOST: localhost
@@ -50,10 +50,10 @@ env:
 
 jobs:
   # ───────────────────────────────────────────────────────────────────────────
-  # Real-engine isolation + parity + live suites (Trino-over-Iceberg serving, Redpanda).
+  # Real-engine isolation + parity + live suites (Trino-over-Iceberg serving, Kafka).
   # ───────────────────────────────────────────────────────────────────────────
   real-engine-tests:
-    name: Live suites on real engines (Trino + Redpanda)
+    name: Live suites on real engines (Trino + Kafka)
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
@@ -67,7 +67,7 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
 
-      - name: Bring up real engines (Postgres + Trino + Redpanda + Redis + MinIO + Iceberg REST + Spark)
+      - name: Bring up real engines (Postgres + Trino + Kafka + Redis + MinIO + Iceberg REST + Spark)
         run: |
           # --wait blocks until every service's compose healthcheck is healthy (Trino + the iceberg-rest
           # fixture both have a cold start; their healthchecks + start_period account for it).
@@ -99,7 +99,7 @@ jobs:
       - name: V4 refresh — Spark Silver/Gold materialize Iceberg (oneshot)
         run: |
           # ONESHOT runs every Spark Silver job, then every Spark Gold job → deterministic Iceberg
-          # Gold/Silver for the live suites. The Spark run scripts join redpanda's netns for service DNS
+          # Gold/Silver for the live suites. The Spark run scripts join kafka's netns for service DNS
           # (iceberg-rest/minio/trino), same as the parity oracle. No StarRocks MV SYNC — Trino views are live.
           ONESHOT=1 bash tools/dev/v4-refresh-loop.sh
 
@@ -121,7 +121,7 @@ jobs:
       # The *.live.test.ts suites (credit writer, reconcile, analytics, dq) read the real Trino serving tier.
       - name: Core live suites (Trino-over-Iceberg serving)
         run: pnpm --filter @brain/core exec vitest run --no-file-parallelism live
-      - name: Stream-worker e2e (Redpanda + Bronze)
+      - name: Stream-worker e2e (Kafka + Bronze)
         run: pnpm --filter @brain/stream-worker test:e2e
 
       - name: Dump engine logs on failure
@@ -175,7 +175,7 @@ jobs:
           BRAIN_APP_DATABASE_URL=postgres://brain_app:brain_app@localhost:5432/brain
           REDIS_URL=redis://localhost:6379
           KAFKA_BROKERS=localhost:19092
-          REDPANDA_BROKERS=localhost:19092
+          KAFKA_BROKERS=localhost:19092
           TRINO_HOST=localhost
           TRINO_PORT=8090
           TRINO_URL=http://localhost:8090

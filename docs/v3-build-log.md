@@ -533,6 +533,6 @@ TWO SEPARATE BOUNDED CONTEXTS sharing ONLY brain_id as the join key — never me
 - `Codegen + Apicurio FULL_TRANSITIVE regen` (extend, parallel=False) — After all new schemas land, extend codegen.ts to emit Avro .avsc for the new identity/cache events + run it, committing generated artifacts (I-E01 contract-first gate). Must keep FULL_TRANSITIVE compatibility (additive-only). FINAL serialized unit.
     - packages/contracts/scripts/codegen.ts
     - packages/contracts/generated/avro/
-    - infra/redpanda/schemas/
+    - infra/kafka/schemas/
 
 **Conventions to match:** ["Contract file layout: one file per event/API family under packages/contracts/src/{events,api,...}, each exporting <Name>Schema + z.infer type + <NAME>_TOPIC_SUFFIX/_EVENT_NAME/_AVRO_SUBJECT consts + a <GROUP>_SCHEMAS codegen map; ALL re-exported from src/index.ts (schema + type blocks). New subdirs (identity/, gold/, intelligence/) follow the same shape.", "Envelope extension: events EXTEND EventEnvelopeBaseSchema via .extend({ event_name: z.literal(...), payload: ... }); topics built via buildTopic(env, suffix) => {env}.{suffix}; dedup/idempotency key = (brand_id, event_id); partition key =

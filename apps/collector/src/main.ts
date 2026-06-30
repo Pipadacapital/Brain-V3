@@ -3,10 +3,10 @@
  *
  * D-1 ORDERING (immutable invariant):
  *   HTTP body → INSERT collector_spool → HTTP 200 ACK
- *   ← async, separate loop → drainer → Redpanda.produce()
+ *   ← async, separate loop → drainer → Kafka.produce()
  *
  * The 99.95% durability guarantee lives in collector_spool, NOT in the Kafka client.
- * Even with Redpanda completely down, every event is ACK'd and spooled.
+ * Even with Kafka completely down, every event is ACK'd and spooled.
  *
  * Startup sequence (D-10):
  *   1. Parse + validate config (exit 1 on invalid env).
@@ -100,19 +100,19 @@ export async function main(): Promise<void> {
   // ── 1. Infrastructure wiring ─────────────────────────────────────────────────
   const spoolRepo = new PgSpoolRepository(cfg.DATABASE_URL);
 
-  const brokers = cfg.REDPANDA_BROKERS.split(',').map((b) => b.trim());
+  const brokers = cfg.KAFKA_BROKERS.split(',').map((b) => b.trim());
   const topic = `${cfg.NODE_ENV === 'production' ? 'prod' : 'dev'}.collector.event.v1`;
 
   const kafkaProducer = new CollectorKafkaProducer({
     brokers,
     clientId: 'collector-drainer',
     topic,
-    ...(cfg.REDPANDA_SASL_USERNAME && cfg.REDPANDA_SASL_PASSWORD
+    ...(cfg.KAFKA_SASL_USERNAME && cfg.KAFKA_SASL_PASSWORD
       ? {
           sasl: {
             mechanism: 'plain' as const,
-            username: cfg.REDPANDA_SASL_USERNAME,
-            password: cfg.REDPANDA_SASL_PASSWORD,
+            username: cfg.KAFKA_SASL_USERNAME,
+            password: cfg.KAFKA_SASL_PASSWORD,
           },
         }
       : {}),

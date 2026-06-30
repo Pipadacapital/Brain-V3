@@ -1,6 +1,6 @@
 {{- /*
 KafkaTopic CRs — every topic the platform uses, declared because auto-create is OFF.
-Ported 1:1 from the docker-compose redpanda-init bootstrap (prod-prefix lane). The Strimzi Topic
+Ported 1:1 from the docker-compose kafka-init bootstrap (prod-prefix lane). The Strimzi Topic
 Operator reconciles these into real Kafka topics on the brain-<env>-kafka cluster.
 
 Topic NAME (spec.topicName) keeps the dotted Kafka name (e.g. prod.collector.event.v1); the CR

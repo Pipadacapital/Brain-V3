@@ -30,7 +30,7 @@
 There is exactly **one** ingress for first-party signal: the accept-before-validate `/collect` edge →
 `collector_spool.raw_body` → `dev.collector.event.v1` → `bronze_events.payload` (JSON string). Every D3
 input below rides the **existing** `CollectorEventV1` envelope's `event_type` + `payload` fields
-(`infra/redpanda/schemas/collector.event.v1.avsc`) — additive-optional, FULL_TRANSITIVE. **No envelope or
+(`infra/kafka/schemas/collector.event.v1.avsc`) — additive-optional, FULL_TRANSITIVE. **No envelope or
 topic change is required or permitted** for any new identity input.
 
 > **Wire-shape pin (load-bearing).** The SDK and all downstream consumers MUST emit the **Avro/Bronze**

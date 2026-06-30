@@ -1,4 +1,4 @@
-# Redpanda — Topic Strategy, Retention, Replay, and Isolation
+# Kafka — Topic Strategy, Retention, Replay, and Isolation
 
 ## Topic naming convention
 
@@ -46,8 +46,8 @@ Live and backfill lanes are **separate consumer groups** — replay never distur
 
 ## Replay strategy
 
-Bronze (Iceberg on S3 + Glue) is the **replay system of record** (I-E02). Redpanda topics are a
-transport layer, not the SoR. Replay from Redpanda is a convenience for the 7-day live window.
+Bronze (Iceberg on S3 + Glue) is the **replay system of record** (I-E02). Kafka topics are a
+transport layer, not the SoR. Replay from Kafka is a convenience for the 7-day live window.
 For replays beyond 7 days or for partial-partition re-runs, re-read from Iceberg Bronze directly
 and produce to the backfill lane. The stream-worker processes both lanes identically — same code
 path, no separate backfill codebase.
@@ -75,20 +75,20 @@ All Avro schemas are registered in Apicurio with `FULL_TRANSITIVE` compatibility
 # Start ingest profile
 docker compose --profile ingest up -d
 
-# List topics (already created by redpanda-init). Apache Kafka KRaft broker; the
-# compose service/DNS name stays `redpanda` but the image is apache/kafka.
-docker compose exec redpanda /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list
+# List topics (already created by kafka-init). Apache Kafka KRaft broker; the
+# compose service/DNS name stays `kafka` but the image is apache/kafka.
+docker compose exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list
 
 # Register a schema in Apicurio
 curl -X POST http://localhost:8080/apis/registry/v2/groups/brain/artifacts \
   -H "Content-Type: application/json; artifactType=AVRO" \
   -H "X-Registry-ArtifactId: collector.event.v1" \
-  -d @infra/redpanda/schemas/collector.event.v1.avsc
+  -d @infra/kafka/schemas/collector.event.v1.avsc
 ```
 
-## Production (Redpanda Cloud)
+## Production (self-hosted Strimzi Kafka on EKS)
 
-Production topics are provisioned by Track C (`infra/terraform/modules/redpanda`).
+Production topics are provisioned by Track C (`infra/helm/strimzi-kafka`).
 Topic names follow the same `{env}.{domain}.{event}.v{n}` convention.
 Credentials are injected at runtime via AWS Secrets Manager + IRSA (ADR-007).
 The stream-worker reads the bootstrap URL and SASL credentials from the secret reference —

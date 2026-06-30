@@ -14,9 +14,9 @@ export const CollectorEnvSchema = CommonEnvSchema.extend({
   PORT: z.coerce.number().int().min(1024).max(65535).default(3001),
   DATABASE_URL: z.string().url(),
   REDIS_URL: z.string().url().default('redis://localhost:6379'),
-  REDPANDA_BROKERS: z.string().min(1),
-  REDPANDA_SASL_USERNAME: z.string().optional(),
-  REDPANDA_SASL_PASSWORD: z.string().optional(),
+  KAFKA_BROKERS: z.string().min(1),
+  KAFKA_SASL_USERNAME: z.string().optional(),
+  KAFKA_SASL_PASSWORD: z.string().optional(),
   APICURIO_REGISTRY_URL: z.string().url().optional(),
   /** Rate limit: max events per brand per minute. */
   RATE_LIMIT_EVENTS_PER_MINUTE: z.coerce.number().int().min(1).default(10_000),

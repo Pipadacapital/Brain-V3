@@ -1,4 +1,4 @@
-# Terraform — AWS (VPC, EKS, RDS, S3/Glue, KMS, Redpanda Cloud, ...). doc 04 §J/§K.
+# Terraform — AWS (VPC, EKS, RDS, S3/Glue, KMS, self-hosted Kafka (Strimzi), ...). doc 04 §J/§K.
 
 ## Brain V4 PHASE 0 — Iceberg Silver + Gold (additive, non-breaking)
 

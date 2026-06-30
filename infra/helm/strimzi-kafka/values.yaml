@@ -82,7 +82,7 @@ entityOperator:
 
 # ── Topics ───────────────────────────────────────────────────────────────────────────────────
 # Auto-create is OFF, so every topic the platform uses is declared here as a KafkaTopic. These are
-# the prod-prefix topics ported 1:1 from the docker-compose redpanda-init bootstrap.
+# the prod-prefix topics ported 1:1 from the docker-compose kafka-init bootstrap.
 topics:
   # Topic name prefix. Prod cluster carries the prod.* lane (compose seeds both dev.* and prod.*).
   prefix: prod

@@ -1,0 +1,30 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: iceberg-rest-prod
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/manifest-generate-paths: infra/helm/iceberg-rest
+  labels:
+    project: brain
+    environment: prod
+    service: iceberg-rest
+spec:
+  project: brain-prod
+  source:
+    repoURL: https://github.com/brain-platform/brain
+    targetRevision: main
+    path: infra/helm/iceberg-rest
+    helm:
+      valueFiles:
+        - values-prod.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: iceberg-rest
+  # NO automated sync for prod — manual promotion gate. The catalog is the namespace→table SoR
+  # fronting Trino + the Spark medallion jobs; sync it BEFORE trino + cronworkflows.
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+  revisionHistoryLimit: 10

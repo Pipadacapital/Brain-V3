@@ -1,0 +1,17 @@
+# Prod overrides. Fill the Aurora endpoint + IRSA role ARN at M4 turn-on (from terraform output).
+catalog:
+  warehouse: "s3://brain-prod-bronze/"   # medallion warehouse root (Silver/Gold namespaces under the same catalog)
+  jdbcHost: "REPLACE_WITH_AURORA_ENDPOINT"   # module.aurora.endpoint
+  jdbcPort: 5432
+  jdbcDatabase: iceberg_catalog
+  s3Region: ap-south-1
+
+serviceAccount:
+  roleArn: "arn:aws:iam::ACCOUNT_ID:role/brain-iceberg-rest-prod"   # IRSA: S3 RW on the medallion buckets
+
+resources:
+  requests:
+    cpu: 500m
+    memory: 1Gi
+  limits:
+    memory: 2Gi

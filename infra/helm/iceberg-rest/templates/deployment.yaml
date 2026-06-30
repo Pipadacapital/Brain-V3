@@ -1,0 +1,61 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "iceberg-rest.name" . }}
+  labels:
+    {{- include "iceberg-rest.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "iceberg-rest.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "iceberg-rest.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ .Values.serviceAccount.name }}
+      containers:
+        - name: iceberg-rest
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: rest
+              containerPort: 8181
+          env:
+            # JdbcCatalog over Aurora Postgres (durable, multi-writer — unlike the local SQLite).
+            - name: CATALOG_CATALOG__IMPL
+              value: org.apache.iceberg.jdbc.JdbcCatalog
+            - name: CATALOG_URI
+              value: "jdbc:postgresql://{{ .Values.catalog.jdbcHost }}:{{ .Values.catalog.jdbcPort }}/{{ .Values.catalog.jdbcDatabase }}"
+            - name: CATALOG_JDBC_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secret.name }}
+                  key: {{ .Values.secret.jdbcUserKey }}
+            - name: CATALOG_JDBC_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secret.name }}
+                  key: {{ .Values.secret.jdbcPasswordKey }}
+            # DATA files in S3 via S3FileIO; credentials from the pod IRSA role (NO static keys).
+            - name: CATALOG_WAREHOUSE
+              value: "{{ .Values.catalog.warehouse }}"
+            - name: CATALOG_IO__IMPL
+              value: org.apache.iceberg.aws.s3.S3FileIO
+            - name: AWS_REGION
+              value: "{{ .Values.catalog.s3Region }}"
+          readinessProbe:
+            httpGet:
+              path: /v1/config
+              port: rest
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /v1/config
+              port: rest
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}

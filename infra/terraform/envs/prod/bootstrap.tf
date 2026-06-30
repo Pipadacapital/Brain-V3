@@ -128,8 +128,82 @@ module "oidc_github" {
 # S3 Iceberg + Audit — DECLARED; NN-4 COMPLIANCE+7yr at creation
 # Apply S3 buckets before any data pipeline (before M1 for staging-prod parity)
 ###############################################################################
-# module "s3_iceberg" { ... }
-# module "s3_audit"   { ... }
+# module "secrets" {
+#   source      = "../../modules/secrets"
+#   environment = local.environment
+#   project     = local.project
+#   kms_key_arn = module.kms.root_kms_key_arn
+# }
+#
+# module "s3_iceberg" {
+#   source                 = "../../modules/s3-iceberg"
+#   environment            = local.environment
+#   project                = local.project
+#   kms_key_arn            = module.kms.root_kms_key_arn
+#   stream_worker_role_arn = module.irsa_stream_worker.role_arn
+#   analytics_role_arn     = module.irsa_core.role_arn
+# }
+#
+# module "s3_audit" {
+#   source      = "../../modules/s3-audit"
+#   environment = local.environment
+#   project     = local.project
+#   kms_key_arn = module.kms.audit_kms_key_arn
+# }
+#
+# # App IRSA roles (workload identity → Secrets Manager + S3). Mirror of envs/dev.
+# module "irsa_collector" {
+#   source               = "../../modules/irsa"
+#   role_name            = "collector"
+#   oidc_provider_arn    = module.eks.oidc_provider_arn
+#   oidc_provider_url    = module.eks.oidc_provider_url
+#   namespace            = "collector"
+#   service_account_name = "collector"
+#   environment          = local.environment
+#   project              = local.project
+#   policy_arns          = [module.secrets.collector_secrets_policy_arn]
+# }
+#
+# module "irsa_stream_worker" {
+#   source               = "../../modules/irsa"
+#   role_name            = "stream-worker"
+#   oidc_provider_arn    = module.eks.oidc_provider_arn
+#   oidc_provider_url    = module.eks.oidc_provider_url
+#   namespace            = "stream-worker"
+#   service_account_name = "stream-worker"
+#   environment          = local.environment
+#   project              = local.project
+#   policy_arns = [
+#     module.secrets.stream_worker_secrets_policy_arn,
+#     module.s3_iceberg.stream_worker_s3_policy_arn,
+#   ]
+# }
+#
+# module "irsa_core" {
+#   source               = "../../modules/irsa"
+#   role_name            = "core"
+#   oidc_provider_arn    = module.eks.oidc_provider_arn
+#   oidc_provider_url    = module.eks.oidc_provider_url
+#   namespace            = "core"
+#   service_account_name = "core"
+#   environment          = local.environment
+#   project              = local.project
+#   policy_arns = [
+#     module.secrets.core_secrets_policy_arn,
+#     module.s3_iceberg.analytics_s3_policy_arn,
+#   ]
+# }
+#
+# # Redis serving cache (ADR-0009 sizing: cache.t4g.micro — set in the module/tfvars).
+# module "elasticache" {
+#   source      = "../../modules/elasticache"
+#   environment = local.environment
+#   project     = local.project
+#   subnet_ids  = module.network.private_subnet_ids
+#   redis_sg_id = module.network.elasticache_sg_id
+#   kms_key_arn = module.kms.root_kms_key_arn
+#   create      = true
+# }
 
 ###############################################################################
 # Brain V4 PHASE 0 — Iceberg MEDALLION (Silver + Gold) + Spark jobs IRSA.

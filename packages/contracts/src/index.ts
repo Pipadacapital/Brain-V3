@@ -391,6 +391,11 @@ export {
   FunnelAnalyticsSchema,
   AbandonedCartSchema,
   EngagementSchema,
+  SearchDayBucketDtoSchema,
+  SearchBehaviorSchema,
+  FormBucketDtoSchema,
+  FormDayBucketDtoSchema,
+  FormConversionSchema,
   JourneyPathRowDtoSchema,
   JourneyPathLinkDtoSchema,
   JourneyPathsSchema,
@@ -398,6 +403,8 @@ export {
   RepeatLatencySchema,
   CampaignAttributionRowDtoSchema,
   CampaignAttributionSchema,
+  CampaignTimeseriesBucketDtoSchema,
+  CampaignTimeseriesSchema,
 } from './api/analytics.api.v1.js';
 export type {
   RevenueSnapshot,
@@ -444,6 +451,11 @@ export type {
   FunnelAnalytics,
   AbandonedCart,
   Engagement,
+  SearchDayBucketDto,
+  SearchBehavior,
+  FormBucketDto,
+  FormDayBucketDto,
+  FormConversion,
   JourneyPathRowDto,
   JourneyPathLinkDto,
   JourneyPaths,
@@ -451,7 +463,29 @@ export type {
   RepeatLatency,
   CampaignAttributionRowDto,
   CampaignAttribution,
+  CampaignTimeseriesBucketDto,
+  CampaignTimeseries,
 } from './api/analytics.api.v1.js';
+
+// ── Saved segments (P2) — CRUD + preview over ops.saved_segment (operational state) ──
+export {
+  SegmentDefinitionSchema,
+  SavedSegmentDtoSchema,
+  SavedSegmentListSchema,
+  CreateSegmentRequestSchema,
+  UpdateSegmentRequestSchema,
+  SegmentPreviewRequestSchema,
+  SegmentPreviewResultSchema,
+} from './api/segment.api.v1.js';
+export type {
+  SegmentDefinition,
+  SavedSegmentDto,
+  SavedSegmentList,
+  CreateSegmentRequest,
+  UpdateSegmentRequest,
+  SegmentPreviewRequest,
+  SegmentPreviewResult,
+} from './api/segment.api.v1.js';
 
 export {
   DqCategorySchema,

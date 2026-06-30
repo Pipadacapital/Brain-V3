@@ -31,16 +31,22 @@ import {
   FunnelAnalyticsSchema,
   AbandonedCartSchema,
   EngagementSchema,
+  SearchBehaviorSchema,
+  FormConversionSchema,
   JourneyTimelineSchema,
   JourneyStitchRateSchema,
   JourneyPathsSchema,
   RepeatLatencySchema,
   CampaignAttributionSchema,
+  CampaignTimeseriesSchema,
   OrderStatusMixSchema,
   TopProductsSchema,
   OrdersListSchema,
   ContributionMarginSchema,
   CostInputsListSchema,
+  SavedSegmentListSchema,
+  SavedSegmentDtoSchema,
+  SegmentPreviewResultSchema,
   OrderDetailSchema,
   DataQualitySummarySchema,
   AskBrainResultSchema,
@@ -150,11 +156,14 @@ import type {
   AnalyticsFunnelResponse,
   AnalyticsAbandonedCartResponse,
   AnalyticsEngagementResponse,
+  AnalyticsSearchBehaviorResponse,
+  AnalyticsFormConversionResponse,
   AnalyticsJourneyStitchRateResponse,
   AnalyticsJourneyTimelineResponse,
   AnalyticsJourneyPathsResponse,
   AnalyticsRepeatLatencyResponse,
   AnalyticsCampaignAttributionResponse,
+  AnalyticsCampaignTimeseriesResponse,
   ConsentCoverageResponse,
   ConsentSuppressionSummaryResponse,
   ConsentGateActivityResponse,
@@ -1732,6 +1741,36 @@ export const analyticsApi = {
     return parseData(EngagementSchema, env);
   },
 
+  /** GET /api/v1/analytics/search — on-site search volume + reach (page_type='search' of gold_behavior). */
+  getSearchBehavior: async (params?: {
+    from?: string;
+    to?: string;
+  }): Promise<AnalyticsSearchBehaviorResponse> => {
+    const qs = new URLSearchParams();
+    if (params?.from) qs.set('from', params.from);
+    if (params?.to) qs.set('to', params.to);
+    const qsStr = qs.toString();
+    const env = await bffFetch<BffEnvelope<unknown>>(
+      `/v1/analytics/search${qsStr ? `?${qsStr}` : ''}`,
+    );
+    return parseData(SearchBehaviorSchema, env);
+  },
+
+  /** GET /api/v1/analytics/forms — lead-form submission counts/rates (gold_conversion_feedback). */
+  getFormConversion: async (params?: {
+    from?: string;
+    to?: string;
+  }): Promise<AnalyticsFormConversionResponse> => {
+    const qs = new URLSearchParams();
+    if (params?.from) qs.set('from', params.from);
+    if (params?.to) qs.set('to', params.to);
+    const qsStr = qs.toString();
+    const env = await bffFetch<BffEnvelope<unknown>>(
+      `/v1/analytics/forms${qsStr ? `?${qsStr}` : ''}`,
+    );
+    return parseData(FormConversionSchema, env);
+  },
+
   /** GET /api/v1/analytics/journey/stitch-rate — deterministic cart-stitch hit-rate. */
   getJourneyStitchRate: async (params?: {
     from?: string;
@@ -1825,6 +1864,22 @@ export const analyticsApi = {
     );
     return parseData(CampaignAttributionSchema, env);
   },
+
+  /** GET /api/v1/analytics/attribution/campaign-timeseries — date-bucketed per-campaign/channel attributed revenue (#32c-ts). */
+  getCampaignTimeseries: async (params: {
+    model: AttributionModel;
+    date_start?: string;
+    date_end?: string;
+  }): Promise<AnalyticsCampaignTimeseriesResponse> => {
+    const qs = new URLSearchParams();
+    qs.set('model', params.model);
+    if (params.date_start) qs.set('date_start', params.date_start);
+    if (params.date_end) qs.set('date_end', params.date_end);
+    const env = await bffFetch<BffEnvelope<unknown>>(
+      `/v1/analytics/attribution/campaign-timeseries?${qs.toString()}`,
+    );
+    return parseData(CampaignTimeseriesSchema, env);
+  },
 };
 
 // ── Insight + Opportunity Engine + AI Copilot ────────────────────────────────
@@ -1838,6 +1893,56 @@ export const insightsApi = {
       '/v1/insights/briefing',
     );
     return data;
+  },
+};
+
+// ── Saved segments (P2) — CRUD + preview over ops.saved_segment ──────────────
+// BFF-only, session-authed. Brand + actor from session (D-1) — NEVER in the body. The segment
+// `definition` is an opaque JSON rule tree (validated shape only). Responses parsed at the seam.
+export const segmentsApi = {
+  /** GET /v1/segments — the brand's saved segments (newest first). Honest-empty = []. */
+  list: async (): Promise<z.infer<typeof SavedSegmentListSchema>> => {
+    const env = await bffFetch<BffEnvelope<unknown>>('/v1/segments');
+    return parseData(SavedSegmentListSchema, env);
+  },
+
+  /** POST /v1/segments — create one segment. */
+  create: async (body: {
+    name: string;
+    definition: Record<string, unknown>;
+  }): Promise<z.infer<typeof SavedSegmentDtoSchema>> => {
+    const env = await bffFetch<BffEnvelope<unknown>>('/v1/segments', {
+      method: 'POST',
+      body: JSON.stringify(body),
+      idempotencyKey: generateRequestId(),
+    });
+    return parseData(SavedSegmentDtoSchema, env);
+  },
+
+  /** PUT /v1/segments/:id — rename and/or edit the rule tree. */
+  update: async (
+    id: string,
+    body: { name?: string; definition?: Record<string, unknown> },
+  ): Promise<z.infer<typeof SavedSegmentDtoSchema>> => {
+    const env = await bffFetch<BffEnvelope<unknown>>(`/v1/segments/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    });
+    return parseData(SavedSegmentDtoSchema, env);
+  },
+
+  /** DELETE /v1/segments/:id — remove a segment (204 No Content). */
+  remove: async (id: string): Promise<void> => {
+    await bffFetch<void>(`/v1/segments/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  },
+
+  /** POST /v1/segments/preview — count matching customers WITHOUT persisting. */
+  preview: async (definition: Record<string, unknown>): Promise<z.infer<typeof SegmentPreviewResultSchema>> => {
+    const env = await bffFetch<BffEnvelope<unknown>>('/v1/segments/preview', {
+      method: 'POST',
+      body: JSON.stringify({ definition }),
+    });
+    return parseData(SegmentPreviewResultSchema, env);
   },
 };
 

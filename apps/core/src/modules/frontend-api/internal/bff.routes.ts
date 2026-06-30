@@ -67,6 +67,7 @@ import { registerAnalyticsJourneyRoutes } from './routes/analytics-journey.route
 import { registerTrackingRoutes } from './routes/tracking.routes.js';
 import { registerConsentRoutes } from './routes/consent.routes.js';
 import { registerFeedbackRoutes } from './routes/feedback.routes.js';
+import { registerSegmentsRoutes } from './routes/segments.routes.js';
 
 export function registerBffRoutes(
   fastify: FastifyInstance,
@@ -268,4 +269,5 @@ export function registerBffRoutes(
   registerTrackingRoutes(fastify, deps);
   registerConsentRoutes(fastify, deps);
   registerFeedbackRoutes(fastify, deps);
+  registerSegmentsRoutes(fastify, deps);
 }

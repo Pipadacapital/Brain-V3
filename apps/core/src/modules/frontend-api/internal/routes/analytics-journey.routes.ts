@@ -21,6 +21,8 @@ import {
   getFunnelAnalytics,
   getAbandonedCart,
   getEngagement,
+  getSearchBehavior,
+  getFormConversion,
 } from '../../../analytics/index.js';
 import type {
   JourneyFirstTouchMix as ContractJourneyFirstTouchMix,
@@ -31,6 +33,8 @@ import type {
   FunnelAnalytics as ContractFunnelAnalytics,
   AbandonedCart as ContractAbandonedCart,
   Engagement as ContractEngagement,
+  SearchBehavior as ContractSearchBehavior,
+  FormConversion as ContractFormConversion,
   JourneyTimeline as ContractJourneyTimeline,
   JourneyStitchRate as ContractJourneyStitchRate,
 } from '@brain/contracts';
@@ -414,8 +418,8 @@ export function registerAnalyticsJourneyRoutes(fastify: FastifyInstance, deps: B
 
   /**
    * GET /api/v1/analytics/abandoned-cart?from=YYYY-MM-DD&to=YYYY-MM-DD
-   * Cart-recovery rollup — of sessions that added to cart, how many converted (stitched to an order)
-   * vs abandoned, from silver_touchpoint (Phase H pixel).
+   * Cart-recovery rollup — of sessions that added to cart, how many converted (recovered) vs
+   * abandoned, from the Gold mart gold_abandoned_cart via brain_serving.mv_gold_abandoned_cart.
    */
   fastify.get(
     '/api/v1/analytics/abandoned-cart',
@@ -528,6 +532,119 @@ export function registerAnalyticsJourneyRoutes(fastify: FastifyInstance, deps: B
           toStr,
           dataSource: 'live',
         },
+      );
+
+      return reply.send({ request_id: requestId, data: result });
+    },
+  );
+
+  /**
+   * GET /api/v1/analytics/search?from=YYYY-MM-DD&to=YYYY-MM-DD
+   * On-site search rollup — search-page view volume + session/journey reach + a per-day series,
+   * from the page_type='search' slice of gold_behavior (mv_gold_behavior). NO money. Honest
+   * no_data when the brand has no search rows in the window.
+   */
+  fastify.get(
+    '/api/v1/analytics/search',
+    {
+      preHandler: [bffProtectedPreHandler],
+      schema: {
+        querystring: {
+          type: 'object',
+          properties: {
+            from: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
+            to:   { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
+          },
+          additionalProperties: false,
+        },
+      },
+      attachValidation: true,
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const validationError = (request as FastifyRequest & { validationError?: Error }).validationError;
+      if (validationError) {
+        return reply.code(400).send({
+          request_id: requestId,
+          error: { code: 'INVALID_PARAMS', message: 'from/to must be YYYY-MM-DD.' },
+        });
+      }
+
+      const auth = (request as AuthenticatedRequest).auth;
+      if (!auth.brandId) {
+        return reply.send({ request_id: requestId, data: { state: 'no_data' } });
+      }
+      if (!srPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Serving tier (Trino) not available' } });
+      }
+
+      const query = request.query as { from?: string; to?: string };
+      const today = new Date().toISOString().split('T')[0] as string;
+      const toStr = query.to ?? today;
+      const defaultFrom = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0] as string;
+      const fromStr = query.from ?? defaultFrom;
+
+      const result: ContractSearchBehavior = await getSearchBehavior(
+        auth.brandId,
+        { srPool },
+        { fromStr, toStr, dataSource: 'live' },
+      );
+
+      return reply.send({ request_id: requestId, data: result });
+    },
+  );
+
+  /**
+   * GET /api/v1/analytics/forms?from=YYYY-MM-DD&to=YYYY-MM-DD
+   * Lead-form submission rollup — per-form submission counts/rates (submissions ÷ sessions) + the
+   * brand day-level payment.succeeded reach + a per-day series, from gold_conversion_feedback
+   * (mv_gold_conversion_feedback). NO money; PII-safe (structural form_id + counts only). Honest
+   * no_data when the brand has no form rows in the window.
+   */
+  fastify.get(
+    '/api/v1/analytics/forms',
+    {
+      preHandler: [bffProtectedPreHandler],
+      schema: {
+        querystring: {
+          type: 'object',
+          properties: {
+            from: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
+            to:   { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
+          },
+          additionalProperties: false,
+        },
+      },
+      attachValidation: true,
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const validationError = (request as FastifyRequest & { validationError?: Error }).validationError;
+      if (validationError) {
+        return reply.code(400).send({
+          request_id: requestId,
+          error: { code: 'INVALID_PARAMS', message: 'from/to must be YYYY-MM-DD.' },
+        });
+      }
+
+      const auth = (request as AuthenticatedRequest).auth;
+      if (!auth.brandId) {
+        return reply.send({ request_id: requestId, data: { state: 'no_data' } });
+      }
+      if (!srPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Serving tier (Trino) not available' } });
+      }
+
+      const query = request.query as { from?: string; to?: string };
+      const today = new Date().toISOString().split('T')[0] as string;
+      const toStr = query.to ?? today;
+      const defaultFrom = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0] as string;
+      const fromStr = query.from ?? defaultFrom;
+
+      const result: ContractFormConversion = await getFormConversion(
+        auth.brandId,
+        { srPool },
+        { fromStr, toStr, dataSource: 'live' },
       );
 
       return reply.send({ request_id: requestId, data: result });

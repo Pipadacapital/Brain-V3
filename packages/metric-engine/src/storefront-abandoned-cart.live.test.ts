@@ -1,4 +1,9 @@
 /**
+ * ⚠️ SUPERSEDED (Brain V4 repoint): computeAbandonedCart now reads the Gold mart gold_abandoned_cart
+ * via brain_serving.mv_gold_abandoned_cart (Trino), NOT silver_touchpoint over StarRocks. StarRocks is
+ * removed in V4, so every assertion below self-skips (srUp=false). The repointed behavior is covered by
+ * storefront-abandoned-cart.test.ts (mocked seam, no DB). Kept dormant pending a Trino live harness.
+ *
  * storefront-abandoned-cart.live.test.ts — computeAbandonedCart against live StarRocks (Phase H pixel).
  *
  * Proves the cart-recovery rollup over brain_silver.silver_touchpoint via the withSilverBrand seam:

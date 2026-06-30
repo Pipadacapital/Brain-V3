@@ -57,7 +57,6 @@ import { SyntheticBadge } from '@/components/analytics/synthetic-badge';
 import { AttributionModelSelector } from '@/components/analytics/attribution-model-selector';
 import { AttributedChannelChart } from '@/components/analytics/attributed-channel-chart';
 import { ConfidenceGradeBadge } from '@/components/analytics/confidence-grade-badge';
-import { ChannelRoasTable } from '@/components/analytics/channel-roas-table';
 import { ReconciliationResidualCard } from '@/components/analytics/reconciliation-residual-card';
 import { channelMeta } from '@/components/analytics/channel-meta';
 import { DateRangeFilter, initialRange, type DateRange, type RangePreset } from '@/components/ui/date-range-filter';
@@ -75,6 +74,7 @@ import type {
   AnalyticsAttributionReconciliationResponse,
   AnalyticsCampaignAttributionResponse,
   AttributionConfidenceGrade,
+  ChannelRoasRow,
 } from '@/lib/api/types';
 
 type ByChannelHasData = Extract<AnalyticsAttributionByChannelResponse, { state: 'has_data' }>;
@@ -217,22 +217,24 @@ export function AttributionContent() {
         )}
       </section>
 
-      {/* ── Channel ROAS (the per-channel unit economics) ── */}
-      <section aria-label="Channel ROAS" data-testid="attribution-roas-section">
+      {/* ── Channel performance (the per-channel unit economics) ── */}
+      <section aria-label="Channel performance" data-testid="attribution-roas-section">
         <div className="mb-3">
           <h2 className="text-lg font-semibold text-foreground flex items-center gap-2">
             <TrendingUp className="h-4 w-4" aria-hidden="true" />
-            Channel ROAS
+            Channel performance
           </h2>
           <p className="text-sm text-muted-foreground mt-0.5">
-            Attributed revenue ÷ ad spend, per channel — the real per-channel return on ad spend.
-            Same-currency only; honest n/a when there is no spend.
+            Ad spend, attributed revenue and ROAS per channel — the real per-channel return on ad
+            spend. Same-currency only; honest n/a when there is no spend. Conversions, CPA,
+            impressions and clicks are shown as &ldquo;—&rdquo; because the per-channel feed
+            (gold_campaign_performance) is spend-only — we never fabricate a count we did not measure.
           </p>
         </div>
         <Card>
           <CardContent className="pt-6">
             {roasQ.isLoading ? (
-              <div className="space-y-2" aria-busy="true" aria-label="Loading channel ROAS">
+              <div className="space-y-2" aria-busy="true" aria-label="Loading channel performance">
                 {[1, 2, 3].map((i) => (
                   <div key={i} className="h-8 bg-muted animate-pulse rounded" />
                 ))}
@@ -240,7 +242,7 @@ export function AttributionContent() {
             ) : roasQ.error ? (
               <ErrorCard error={roasQ.error} retry={roasQ.refetch} />
             ) : roas?.state === 'has_data' ? (
-              <ChannelRoasTable rows={roas.rows} className="w-full text-sm" />
+              <ChannelPerformanceTable rows={roas.rows} />
             ) : roas?.state === 'not_computed' ? (
               <p className="text-sm text-muted-foreground italic" role="status">
                 Channel ROAS not computed yet — ad spend exists, but attribution credit has not been
@@ -339,6 +341,118 @@ function CampaignAttributionTable({ data }: { data: CampaignAttrHasData }) {
                     n/a
                   </span>
                 )}
+              </TableCell>
+            </TableRow>
+          );
+        })}
+      </TableBody>
+    </Table>
+  );
+}
+
+/**
+ * NotMeasured — the honest-empty cell. The channel-roas feed (gold_campaign_performance) is
+ * spend-only, so conversions / CPA / impressions / clicks have no measured value at the channel
+ * grain. We render an em-dash (NEVER a fabricated 0) with an SR-only reason, per Brain's
+ * honest-empty rule ("No empty charts / fabricated zeros as a success state").
+ */
+function NotMeasured() {
+  return (
+    <span className="text-muted-foreground" aria-label="Not measured — the per-channel feed is spend-only">
+      <span aria-hidden="true">—</span>
+    </span>
+  );
+}
+
+/**
+ * ChannelPerformanceTable — per-channel unit economics over the EXISTING channel-roas hook
+ * (useChannelRoas → /v1/analytics/attribution/channel-roas, the metric-engine sole read path).
+ *
+ * Columns: Channel · Spend · Attributed revenue · ROAS · Conversions · CPA · Impressions · Clicks.
+ * Spend / Attributed are bigint minor-unit strings → formatMoneyDisplay (per-row currency_code,
+ * never /100, never blended). ROAS is the engine's EXACT decimal string — rendered directly, never
+ * re-divided with floats; honest n/a when spend = 0. Conversions, CPA, impressions and clicks are
+ * NOT in the channel-roas contract (gold_campaign_performance is spend-only) → honest em-dash.
+ *
+ * Page-local (not the shared ChannelRoasTable, which is fixed at 4 columns and reused by
+ * /marketing). Reuses channelMeta for the icon+label (channel meaning is icon + text, never
+ * colour-only) and the same paid→owned→referral→direct ordering.
+ */
+function ChannelPerformanceTable({ rows }: { rows: ChannelRoasRow[] }) {
+  const ordered = [...rows].sort(
+    (a, b) => channelMeta(a.channel).order - channelMeta(b.channel).order,
+  );
+
+  if (ordered.length === 0) {
+    return (
+      <p
+        className="text-sm text-muted-foreground italic"
+        role="status"
+        data-testid="channel-performance-empty"
+      >
+        No channel performance yet — attribution or ad spend has no rows in this window.
+      </p>
+    );
+  }
+
+  return (
+    <Table className="w-full text-sm" data-testid="channel-performance-table">
+      <TableHeader>
+        <TableRow>
+          <TableHead>Channel</TableHead>
+          <TableHead className="text-right">Spend</TableHead>
+          <TableHead className="text-right">Attributed</TableHead>
+          <TableHead className="text-right">ROAS</TableHead>
+          <TableHead className="text-right">Conversions</TableHead>
+          <TableHead className="text-right">CPA</TableHead>
+          <TableHead className="text-right">Impressions</TableHead>
+          <TableHead className="text-right">Clicks</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {ordered.map((row) => {
+          const meta = channelMeta(row.channel);
+          const Icon = meta.icon;
+          const ccy = row.currency_code as CurrencyCode;
+          const ratioLabel =
+            row.roas_ratio != null ? `${row.roas_ratio}x ROAS` : 'ROAS not available — no ad spend';
+          return (
+            <TableRow key={row.channel}>
+              <TableCell className="font-medium text-foreground">
+                <span className="inline-flex items-center gap-1.5">
+                  <Icon className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
+                  {meta.label}
+                </span>
+              </TableCell>
+              <TableCell className="text-right tabular-nums">
+                {formatMoneyDisplay(row.spend_minor, ccy)}
+              </TableCell>
+              <TableCell className="text-right tabular-nums">
+                {formatMoneyDisplay(row.attributed_minor, ccy)}
+              </TableCell>
+              <TableCell className="text-right tabular-nums font-medium" aria-label={ratioLabel}>
+                {row.roas_ratio != null ? (
+                  <span className="inline-flex items-center justify-end gap-1">
+                    <TrendingUp className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
+                    {row.roas_ratio}x
+                  </span>
+                ) : (
+                  <span className="text-muted-foreground italic" title="No ad spend — ROAS is undefined">
+                    n/a
+                  </span>
+                )}
+              </TableCell>
+              <TableCell className="text-right tabular-nums">
+                <NotMeasured />
+              </TableCell>
+              <TableCell className="text-right tabular-nums">
+                <NotMeasured />
+              </TableCell>
+              <TableCell className="text-right tabular-nums">
+                <NotMeasured />
+              </TableCell>
+              <TableCell className="text-right tabular-nums">
+                <NotMeasured />
               </TableCell>
             </TableRow>
           );

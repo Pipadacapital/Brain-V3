@@ -1,0 +1,622 @@
+'use client';
+
+/**
+ * ChurnContent — Retention sub-tab "Who is about to leave, and what do I do?".
+ *
+ * Pure REUSE of existing surfaces (no new backend — web-only slice):
+ *   - useCustomers({ segment }) — the SAME customer browse the /customers tab uses, filtered
+ *     server-side (RLS, brand from session) to the at-risk / churned RFM band folded from
+ *     gold_customer_scores. Each row already carries segment, lifetime value (bigint MINOR +
+ *     currency), order count and last_identifier_at (last-active) — no per-row PII.
+ *   - useCustomerScore(brain_id) — the deterministic RFM/churn served score per customer. This
+ *     SERVES on demand and logs a prediction_log row, so we DO NOT auto-fire it for the whole
+ *     page: the "Load churn scores" toggle gates it (default off). When on, each visible row
+ *     reveals its churn-risk band + days-since-last-order.
+ *   - useSavedSegments / usePreviewSegment / useCreateSegment — the P2 saved-segments surface.
+ *     "Create win-back" opens a dialog PRE-FILLED with a win-back segment definition for the
+ *     active band, previews the matched customer count (no persistence), then persists it as a
+ *     saved segment (the durable, replayable RULE — Brain has no member-list precompute).
+ *
+ * Honesty: money is bigint minor units + currency_code, formatted ONLY via formatMoneyDisplay and
+ * NEVER summed across rows (mixed currencies must not blend). "Churn risk" is the deterministic RFM
+ * band (a risk band, never a fabricated float probability). Empty band → EmptyState; a missing
+ * per-row signal → an em-dash, never a fake 0.
+ *
+ * WIN-BACK STUB: this view creates the win-back SEGMENT (the durable artifact). Actually executing
+ * the win-back (a recommendation-action ledger entry / campaign send) is the next step and is NOT
+ * wired here — doing so needs a recommendation row + backend action, out of scope for this web-only
+ * slice. The saved segment is the honest, reversible stub the operator acts on.
+ */
+
+import * as React from 'react';
+import Link from 'next/link';
+import {
+  HeartCrack,
+  AlertTriangle,
+  UserMinus,
+  Sparkles,
+  ArrowRight,
+  ArrowLeft,
+  ChevronLeft,
+  ChevronRight,
+  Loader2,
+  Bookmark,
+} from 'lucide-react';
+import type { CurrencyCode } from '@brain/money';
+import { TabShell } from '@/components/ui/tab-shell';
+import { SectionCard } from '@/components/ui/section-card';
+import { MetricCard } from '@/components/ui/metric-card';
+import { EmptyState } from '@/components/ui/empty-state';
+import { ErrorCard } from '@/components/ui/error-card';
+import { FreshnessBadge } from '@/components/ui/freshness-badge';
+import { StatusBadge, type StatusTone } from '@/components/ui/status-badge';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Skeleton } from '@/components/ui/skeleton';
+import { Card, CardContent } from '@/components/ui/card';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from '@/components/ui/dialog';
+import { toast } from '@/components/ui/toaster';
+import { humanize } from '@/lib/format/humanize';
+import { formatMoneyDisplay } from '@/lib/format/money-display';
+import { relativeTime } from '@/lib/format/relative-time';
+import { useCustomers } from '@/lib/hooks/use-identity';
+import { useCustomerScore } from '@/lib/hooks/use-ml';
+import {
+  useSavedSegments,
+  usePreviewSegment,
+  useCreateSegment,
+} from '@/lib/hooks/use-segments';
+import type { CustomerListItem } from '@/lib/api/types';
+
+const PAGE_SIZE = 20;
+
+/** The two churn-facing RFM bands the deterministic ladder folds into gold_customer_scores. */
+const BANDS = [
+  {
+    value: 'at_risk',
+    label: 'At-Risk',
+    description: 'Recency slipping — still saveable. Win them back before they lapse.',
+    tone: 'warning' as StatusTone,
+    icon: AlertTriangle,
+  },
+  {
+    value: 'churned',
+    label: 'Churned',
+    description: 'Past the churn threshold. Reactivation is the play.',
+    tone: 'destructive' as StatusTone,
+    icon: HeartCrack,
+  },
+] as const;
+
+type BandValue = (typeof BANDS)[number]['value'];
+
+const EXPLAINER = {
+  title: 'Churn risk — Who is about to leave, and what do I do?',
+  description:
+    'The customer list filtered to the at-risk and churned RFM bands, with each customer’s churn-risk signal, lifetime value and last-active time — plus a one-click win-back segment so you can act on the cohort.',
+  metrics: [
+    {
+      name: 'Band (At-Risk / Churned)',
+      definition:
+        'The deterministic recency/frequency/monetary lifecycle band. At-Risk = recency slipping but saveable; Churned = past the churn threshold.',
+      howComputed:
+        'Folded server-side from gold_customer_scores (the deterministic RFM ladder); the list endpoint filters by ?segment=at_risk|churned. Brand-scoped (RLS).',
+    },
+    {
+      name: 'Churn risk',
+      definition:
+        'The per-customer deterministic churn-risk band (a RISK band, never a fabricated probability), with days since last order.',
+      howComputed:
+        'Served on demand from gold_customer_scores via useCustomerScore — it logs a prediction, so it is revealed only when you turn on “Load churn scores”.',
+    },
+    {
+      name: 'Lifetime value',
+      definition: 'Total realized value from this customer to date.',
+      howComputed:
+        'gold_customer_scores, bigint minor units + currency_code, formatted via formatMoneyDisplay. Never summed across customers (currencies must not blend).',
+    },
+    {
+      name: 'Last active',
+      definition: 'When the customer most recently linked an identifier (order/session/contact).',
+      howComputed: 'last_identifier_at from the identity graph, shown as a relative time; em-dash when unknown.',
+    },
+  ],
+  sections: [
+    {
+      heading: 'Create win-back',
+      body: 'Pre-fills a saved segment for the active band (e.g. “Win-back — At-Risk”). The dialog previews how many customers match WITHOUT persisting, then saves it as a reusable RULE (Brain stores segments as their definition, never a frozen member list). Executing the win-back — a campaign send / recommendation-action ledger entry — is the next step and is intentionally not wired here.',
+    },
+    {
+      heading: 'Privacy',
+      body: 'Brand-scoped (RLS). Rows show counts + segment/value/last-active only — raw email/phone never leave the vault. Click a Brain ID to open the full Customer Profile.',
+    },
+  ],
+  refreshCadence:
+    'The band membership, value and per-row churn score refresh on the Silver→Gold loop. The list itself is read live from the BFF on each query.',
+  sources: [
+    'BFF /v1/identity/customers (?segment=at_risk|churned)',
+    'gold_customer_scores (segment / LTV / churn band)',
+    'BFF /v1/ml/customer-score (per-row churn risk)',
+    'ops.saved_segment via /v1/segments (win-back)',
+  ],
+};
+
+/** Map a churn-risk band string → a status tone (high→destructive, medium→warning, low→success). */
+function riskTone(risk: string): StatusTone {
+  const r = risk.toLowerCase();
+  if (r.includes('high') || r === 'churned') return 'destructive';
+  if (r.includes('medium') || r.includes('elev') || r === 'at_risk') return 'warning';
+  if (r.includes('low') || r.includes('healthy')) return 'success';
+  return 'neutral';
+}
+
+export function ChurnContent() {
+  const [band, setBand] = React.useState<BandValue>('at_risk');
+  const [offset, setOffset] = React.useState(0);
+  const [showScores, setShowScores] = React.useState(false);
+  const [winBackOpen, setWinBackOpen] = React.useState(false);
+
+  const activeBand = BANDS.find((b) => b.value === band) ?? BANDS[0];
+
+  const { data, isLoading, isFetching, error, refetch, dataUpdatedAt } = useCustomers({
+    segment: band,
+    limit: PAGE_SIZE,
+    offset,
+  });
+
+  const savedQ = useSavedSegments();
+  // Saved segments this view authored (definition.kind === 'churn_winback').
+  const winBackSegments = React.useMemo(
+    () =>
+      (savedQ.data?.segments ?? []).filter(
+        (s) => (s.definition as Record<string, unknown> | undefined)?.kind === 'churn_winback',
+      ),
+    [savedQ.data],
+  );
+
+  function onBand(next: BandValue) {
+    setOffset(0);
+    setBand(next);
+  }
+
+  const items = data?.items ?? [];
+  const total = data?.total ?? 0;
+  const from = total === 0 ? 0 : offset + 1;
+  const to = Math.min(offset + PAGE_SIZE, total);
+  const canPrev = offset > 0;
+  const canNext = offset + PAGE_SIZE < total;
+
+  // No generated_at on the list read — the react-query fetch time is an honest "read live at".
+  const listFetchedIso = dataUpdatedAt ? new Date(dataUpdatedAt).toISOString() : null;
+
+  return (
+    <TabShell
+      title="Churn risk"
+      description="Who is about to leave, and what do I do?"
+      eyebrow={
+        <Link
+          href="/retention"
+          className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
+        >
+          <ArrowLeft className="h-3.5 w-3.5" aria-hidden="true" /> Retention
+        </Link>
+      }
+      explainer={EXPLAINER}
+      freshness={<FreshnessBadge timestamp={listFetchedIso} prefix="Read" />}
+      actions={
+        <Button onClick={() => setWinBackOpen(true)} disabled={total === 0}>
+          <Sparkles className="mr-2 h-4 w-4" aria-hidden="true" />
+          Create win-back
+        </Button>
+      }
+    >
+      {/* ── Headline (honest counts only — never a blended-currency value sum) ── */}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <MetricCard
+          label={`${activeBand.label} customers`}
+          value={isLoading ? undefined : total.toLocaleString('en-IN')}
+          unit={total ? 'in this band' : undefined}
+          icon={<activeBand.icon />}
+          loading={isLoading}
+          freshness={<FreshnessBadge timestamp={listFetchedIso} prefix="Read" />}
+        />
+        <MetricCard
+          label="Showing"
+          value={isLoading ? undefined : items.length.toLocaleString('en-IN')}
+          unit={items.length ? 'on this page' : undefined}
+          icon={<UserMinus />}
+          loading={isLoading}
+        />
+        <MetricCard
+          label="Win-back segments"
+          value={savedQ.isLoading ? undefined : winBackSegments.length.toLocaleString('en-IN')}
+          unit={winBackSegments.length ? 'saved' : undefined}
+          icon={<Bookmark />}
+          loading={savedQ.isLoading}
+        />
+      </div>
+
+      {/* ── Band selector ── */}
+      <SectionCard
+        title="Risk band"
+        description="Switch between customers slipping toward churn and those who have already lapsed."
+      >
+        <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Filter by churn band">
+          {BANDS.map((b) => {
+            const active = b.value === band;
+            return (
+              <Button
+                key={b.value}
+                type="button"
+                variant={active ? 'default' : 'outline'}
+                size="sm"
+                aria-pressed={active}
+                onClick={() => onBand(b.value)}
+              >
+                <b.icon className="mr-2 h-4 w-4" aria-hidden="true" />
+                {b.label}
+              </Button>
+            );
+          })}
+          <span className="ml-1 text-sm text-muted-foreground">{activeBand.description}</span>
+        </div>
+      </SectionCard>
+
+      {/* ── At-risk / churned customer list ── */}
+      <SectionCard
+        title={`${activeBand.label} customers`}
+        description="Click a Brain ID to open the full Customer Profile. Turn on churn scores to reveal each customer’s deterministic risk band (logs a prediction)."
+        meta={
+          <label className="inline-flex items-center gap-2 text-xs text-muted-foreground">
+            <input
+              type="checkbox"
+              className="h-3.5 w-3.5 rounded border-input"
+              checked={showScores}
+              onChange={(e) => setShowScores(e.target.checked)}
+            />
+            Load churn scores
+          </label>
+        }
+        flush
+      >
+        <div aria-live="polite" aria-busy={isLoading || isFetching}>
+          {isLoading ? (
+            <div className="space-y-2 p-5" aria-hidden="true">
+              {Array.from({ length: 6 }).map((_, i) => (
+                <Skeleton key={i} className="h-12 w-full" />
+              ))}
+            </div>
+          ) : error ? (
+            <div className="p-5">
+              <ErrorCard error={error} retry={refetch} />
+            </div>
+          ) : items.length === 0 ? (
+            <div className="p-5">
+              <EmptyState
+                icon={<activeBand.icon />}
+                title={`No ${activeBand.label.toLowerCase()} customers`}
+                description={
+                  band === 'at_risk'
+                    ? 'No customers are slipping toward churn right now. As recency on your order history shifts, at-risk customers surface here.'
+                    : 'No customers have lapsed past the churn threshold yet. Churned customers appear here once their recency crosses the threshold.'
+                }
+                action={
+                  <Link href="/retention">
+                    <Button variant="outline" size="sm">
+                      Back to Retention
+                      <ArrowRight className="ml-2 h-4 w-4" aria-hidden="true" />
+                    </Button>
+                  </Link>
+                }
+              />
+            </div>
+          ) : (
+            <Card className="rounded-none border-0 shadow-none">
+              <CardContent className="p-0">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b text-left text-muted-foreground">
+                      <th scope="col" className="px-4 py-2.5 font-medium">Brain ID</th>
+                      <th scope="col" className="px-4 py-2.5 font-medium">Band</th>
+                      <th scope="col" className="px-4 py-2.5 font-medium">Churn risk</th>
+                      <th scope="col" className="px-4 py-2.5 font-medium text-right">Lifetime value</th>
+                      <th scope="col" className="px-4 py-2.5 font-medium text-right">Orders</th>
+                      <th scope="col" className="px-4 py-2.5 font-medium">Last active</th>
+                      <th scope="col" className="px-4 py-2.5 font-medium text-right sr-only">Open</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {items.map((c: CustomerListItem) => (
+                      <ChurnRow key={c.brain_id} c={c} showScore={showScores} />
+                    ))}
+                  </tbody>
+                </table>
+              </CardContent>
+            </Card>
+          )}
+        </div>
+
+        {/* Pagination */}
+        {!isLoading && !error && total > 0 ? (
+          <div className="flex items-center justify-between border-t px-4 py-3 text-sm text-muted-foreground">
+            <span>
+              Showing <strong className="text-foreground">{from}</strong>–
+              <strong className="text-foreground">{to}</strong> of{' '}
+              <strong className="text-foreground">{total}</strong>
+            </span>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={!canPrev || isFetching}
+                onClick={() => setOffset(Math.max(offset - PAGE_SIZE, 0))}
+              >
+                <ChevronLeft className="mr-1 h-4 w-4" aria-hidden="true" /> Prev
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={!canNext || isFetching}
+                onClick={() => setOffset(offset + PAGE_SIZE)}
+              >
+                Next <ChevronRight className="ml-1 h-4 w-4" aria-hidden="true" />
+              </Button>
+            </div>
+          </div>
+        ) : null}
+      </SectionCard>
+
+      {/* ── Saved win-back segments (so the action isn't fire-and-forget) ── */}
+      {winBackSegments.length > 0 ? (
+        <SectionCard
+          title="Win-back segments"
+          description="Saved win-back rules created from this view. Each persists as a reusable definition, not a frozen list."
+        >
+          <ul className="divide-y">
+            {winBackSegments.map((s) => (
+              <li key={s.id} className="flex items-center justify-between py-2.5 text-sm">
+                <span className="inline-flex items-center gap-2">
+                  <Bookmark className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
+                  <span className="font-medium text-foreground">{s.name}</span>
+                </span>
+                <span className="text-xs text-muted-foreground">
+                  Saved {relativeTime(s.created_at).label}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </SectionCard>
+      ) : null}
+
+      <WinBackDialog
+        open={winBackOpen}
+        onOpenChange={setWinBackOpen}
+        band={band}
+        bandLabel={activeBand.label}
+      />
+    </TabShell>
+  );
+}
+
+/**
+ * One customer row. The churn-risk cell lazily serves useCustomerScore ONLY when the page-level
+ * "Load churn scores" toggle is on (it logs a prediction), passing null otherwise to keep the hook idle.
+ */
+function ChurnRow({ c, showScore }: { c: CustomerListItem; showScore: boolean }) {
+  const scoreQ = useCustomerScore(showScore ? c.brain_id : null);
+  const last = relativeTime(c.last_identifier_at);
+
+  let riskCell: React.ReactNode = <span className="text-muted-foreground">—</span>;
+  if (showScore) {
+    if (scoreQ.isLoading) {
+      riskCell = <Skeleton className="h-4 w-20" />;
+    } else if (scoreQ.error) {
+      riskCell = (
+        <span className="text-muted-foreground" title="Score unavailable">
+          —
+        </span>
+      );
+    } else if (scoreQ.data?.state === 'has_data') {
+      const score = scoreQ.data.score;
+      riskCell = (
+        <span className="inline-flex items-center gap-2">
+          <StatusBadge tone={riskTone(score.churn_risk)} hideDot>
+            {humanize(score.churn_risk)}
+          </StatusBadge>
+          {score.days_since_last_order != null ? (
+            <span className="text-xs text-muted-foreground tabular-nums">
+              {score.days_since_last_order}d idle
+            </span>
+          ) : null}
+        </span>
+      );
+    }
+  }
+
+  return (
+    <tr className="border-b last:border-0 hover:bg-muted/40">
+      <td className="px-4 py-2.5">
+        <Link
+          href={`/customers/${encodeURIComponent(c.brain_id)}`}
+          className="font-mono text-xs hover:underline"
+        >
+          {c.brain_id}
+        </Link>
+      </td>
+      <td className="px-4 py-2.5">
+        {c.segment ? (
+          <StatusBadge tone={c.segment === 'churned' ? 'destructive' : 'warning'} hideDot>
+            {humanize(c.segment)}
+          </StatusBadge>
+        ) : (
+          <span className="text-muted-foreground">—</span>
+        )}
+      </td>
+      <td className="px-4 py-2.5">{riskCell}</td>
+      <td className="px-4 py-2.5 text-right tabular-nums">
+        {c.ltv_minor != null && c.currency_code ? (
+          formatMoneyDisplay(c.ltv_minor, c.currency_code as CurrencyCode)
+        ) : (
+          <span className="text-muted-foreground">—</span>
+        )}
+      </td>
+      <td className="px-4 py-2.5 text-right tabular-nums">
+        {c.order_count != null ? c.order_count : <span className="text-muted-foreground">—</span>}
+      </td>
+      <td className="px-4 py-2.5 text-muted-foreground" title={last.absolute ?? undefined}>
+        {c.last_identifier_at ? last.label : '—'}
+      </td>
+      <td className="px-4 py-2.5 text-right">
+        <Link
+          href={`/customers/${encodeURIComponent(c.brain_id)}`}
+          className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+          aria-label={`Open the profile for ${c.brain_id}`}
+        >
+          Open <ArrowRight className="h-3 w-3" aria-hidden="true" />
+        </Link>
+      </td>
+    </tr>
+  );
+}
+
+/**
+ * WinBackDialog — pre-fills a win-back segment for the active band, previews the matched count
+ * (usePreviewSegment, no persistence), then persists it as a saved segment (useCreateSegment).
+ */
+function WinBackDialog({
+  open,
+  onOpenChange,
+  band,
+  bandLabel,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  band: BandValue;
+  bandLabel: string;
+}) {
+  const [name, setName] = React.useState('');
+  const preview = usePreviewSegment();
+  const create = useCreateSegment();
+
+  // The pre-filled, opaque win-back rule tree (run-time evaluated against the serving spine).
+  const definition = React.useMemo(
+    () => ({
+      kind: 'churn_winback',
+      segment: band,
+      intent: 'win_back',
+      source: 'retention/churn',
+    }),
+    [band],
+  );
+
+  // Reset the pre-filled name + clear any prior preview whenever the dialog opens or the band changes.
+  React.useEffect(() => {
+    if (open) {
+      setName(`Win-back — ${bandLabel}`);
+      preview.reset();
+    }
+    // Intentionally deps-narrowed: only re-run when the dialog opens or the band changes.
+  }, [open, bandLabel]);
+
+  const previewData = preview.data;
+  const matched =
+    previewData?.state === 'has_data' ? Number(BigInt(previewData.matched_customers)) : null;
+
+  async function onCreate() {
+    try {
+      await create.mutateAsync({ name: name.trim() || `Win-back — ${bandLabel}`, definition });
+      toast({
+        title: 'Win-back segment created',
+        description: `"${name.trim() || `Win-back — ${bandLabel}`}" is saved as a reusable rule. Launch the win-back from your messaging tool — campaign execution is a follow-up step.`,
+      });
+      onOpenChange(false);
+    } catch (err) {
+      toast({
+        title: 'Could not create the segment',
+        description: err instanceof Error ? err.message : 'Please try again.',
+        variant: 'destructive',
+      });
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Create win-back segment</DialogTitle>
+          <DialogDescription>
+            Pre-filled for the <strong>{bandLabel}</strong> band. Preview how many customers match,
+            then save it as a reusable rule you can act on.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-4">
+          <div className="space-y-1.5">
+            <Label htmlFor="winback-name">Segment name</Label>
+            <Input
+              id="winback-name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder={`Win-back — ${bandLabel}`}
+              maxLength={200}
+            />
+          </div>
+
+          <div className="rounded-md border bg-muted/30 p-3 text-xs">
+            <p className="mb-1 font-medium text-muted-foreground">Rule (pre-filled)</p>
+            <pre className="overflow-x-auto whitespace-pre-wrap font-mono text-[11px] text-foreground">
+              {JSON.stringify(definition, null, 2)}
+            </pre>
+          </div>
+
+          <div className="flex items-center justify-between rounded-md border p-3 text-sm">
+            <span className="text-muted-foreground">
+              {matched != null ? (
+                <>
+                  <strong className="text-foreground">{matched.toLocaleString('en-IN')}</strong>{' '}
+                  customers match this rule.
+                </>
+              ) : (
+                'Preview the addressable count before saving.'
+              )}
+            </span>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={preview.isPending}
+              onClick={() => preview.mutate(definition)}
+            >
+              {preview.isPending ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
+              ) : null}
+              Preview match
+            </Button>
+          </div>
+        </div>
+
+        <DialogFooter>
+          <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button type="button" onClick={onCreate} disabled={create.isPending}>
+            {create.isPending ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
+            ) : (
+              <Sparkles className="mr-2 h-4 w-4" aria-hidden="true" />
+            )}
+            Create segment
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}

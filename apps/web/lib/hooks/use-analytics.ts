@@ -478,6 +478,32 @@ export function useBehaviorOverview(params?: { from?: string; to?: string }) {
 }
 
 /**
+ * useSearchBehavior — on-site search volume + session/journey reach + per-day series over a range,
+ * from the page_type='search' slice of gold_behavior (P2 /v1/analytics/search). Honest no_data when
+ * the brand has no search rows. Shares the 'analytics' prefix → auto-invalidates on brand switch.
+ */
+export function useSearchBehavior(params?: { from?: string; to?: string }) {
+  return useQuery({
+    queryKey: [...ANALYTICS_QUERY_KEY, 'search', params?.from, params?.to],
+    queryFn: () => analyticsApi.getSearchBehavior(params),
+    staleTime: 5 * 60_000,
+  });
+}
+
+/**
+ * useFormConversion — lead-form submission counts/rates + day-level payment reach + per-day series
+ * over a range, from gold_conversion_feedback (P2 /v1/analytics/forms). PII-safe (structural form_id
+ * + counts). Honest no_data when the brand has no form rows.
+ */
+export function useFormConversion(params?: { from?: string; to?: string }) {
+  return useQuery({
+    queryKey: [...ANALYTICS_QUERY_KEY, 'forms', params?.from, params?.to],
+    queryFn: () => analyticsApi.getFormConversion(params),
+    staleTime: 5 * 60_000,
+  });
+}
+
+/**
  * useFunnelAnalytics — storefront conversion funnel (sessions → product views → cart adds →
  * purchases) over a range, from silver_touchpoint (Phase H pixel). Shares the 'analytics' prefix →
  * auto-invalidates on brand switch.
@@ -596,6 +622,25 @@ export function useCampaignAttribution(params: { model: AttributionModel }) {
   return useQuery({
     queryKey: [...ANALYTICS_QUERY_KEY, 'campaign-attribution', params.model],
     queryFn: () => analyticsApi.getCampaignAttribution(params),
+    staleTime: 5 * 60_000,
+  });
+}
+
+/**
+ * useCampaignTimeseries — date-bucketed per-campaign/channel attributed revenue (#32c-ts) under the
+ * selected attribution model + window, from /v1/analytics/attribution/campaign-timeseries (the
+ * date-bearing attribution serving view gold_campaign_attribution rolls up from). The time-grain
+ * sibling of useCampaignAttribution; Sparkline-ready. Switchable model; honest no_data on no rows.
+ * @param params - Attribution model (required) + optional date_start/date_end (YYYY-MM-DD).
+ */
+export function useCampaignTimeseries(params: {
+  model: AttributionModel;
+  date_start?: string;
+  date_end?: string;
+}) {
+  return useQuery({
+    queryKey: [...ANALYTICS_QUERY_KEY, 'campaign-timeseries', params.model, params.date_start, params.date_end],
+    queryFn: () => analyticsApi.getCampaignTimeseries(params),
     staleTime: 5 * 60_000,
   });
 }

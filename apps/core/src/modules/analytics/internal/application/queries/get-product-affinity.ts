@@ -49,7 +49,7 @@ export async function getProductAffinity(
     return scope.runScoped<{
       product_b: string;
       co_purchase_count: string | number;
-      support_pct: string;
+      support_pct: string | number;
     }>(
       `SELECT CASE WHEN product_a = ? THEN product_b ELSE product_a END AS product_b,
               co_purchase_count,
@@ -72,7 +72,13 @@ export async function getProductAffinity(
     pairs: rows.map((r) => ({
       product_b: r.product_b,
       co_purchase_count: String(r.co_purchase_count ?? '0').split('.')[0] || '0',
-      support_pct: r.support_pct,
+      // The mart stores support_pct as a ROUND(...,2) double; Trino returns it as a JS number, but the
+      // contract (z.string) + UI (`${rate}%`) expect a 2dp string. Coerce here (the StarRocks driver used
+      // to stringify decimals; Trino does not) — same number→string fix as the sibling count above.
+      support_pct:
+        typeof r.support_pct === 'number'
+          ? r.support_pct.toFixed(2)
+          : String(r.support_pct ?? '0'),
     })),
   };
 }

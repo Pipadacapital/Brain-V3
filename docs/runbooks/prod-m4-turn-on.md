@@ -19,11 +19,13 @@
 - `infra/argocd/envs/prod/{karpenter,collector}.yaml` — `ACCOUNT_ID` (IRSA role ARNs)
 - `infra/helm/trino/values-prod.yaml` — IRSA role ARN + `restUri`
 
-**Close these prereq gaps in `envs/prod/bootstrap.tf` (mirror `envs/dev/main.tf`) — they're not yet in the prod env:**
-1. **App IRSA roles** — prod only has `irsa_spark_jobs` (commented); add `irsa_collector`, `irsa_core`, `irsa_stream_worker` (dev has all 4). Apps can't read Secrets Manager without them.
-2. **`module "secrets"`** — the Secrets Manager module (now `kafka/credentials` per ADR-0009 + app secrets). Not yet in prod env.
-3. **`module "elasticache"`** — Redis serving cache. Not yet in prod env.
-4. **Iceberg REST catalog for prod** — there is **no** iceberg-rest Helm chart yet. Trino + Spark need a catalog. Per the gap-closure recommendation, back it with **Aurora Postgres** (NOT the local SQLite — it doesn't scale; see the `iceberg-catalog-sqlite-lock` learnings). **Author this chart before Phase 3.**
+**Prereq gaps — now CLOSED in-repo (this PR):**
+1. ✅ **App IRSA roles** — `irsa_collector` / `irsa_core` / `irsa_stream_worker` added to `envs/prod/bootstrap.tf` (commented M4 set, mirrors dev).
+2. ✅ **`module "secrets"`** — added to the prod M4 set (Secrets Manager; `kafka/credentials` per ADR-0009 + app secrets).
+3. ✅ **`module "elasticache"`** — Redis serving cache added to the prod M4 set.
+4. ✅ **Iceberg REST catalog chart** — `infra/helm/iceberg-rest/` authored, **Aurora-Postgres-backed** JdbcCatalog (NOT SQLite — see `iceberg-catalog-sqlite-lock`) + real S3 via IRSA, with `infra/argocd/envs/prod/iceberg-rest.yaml`. Verified: dev-env `terraform validate` (graph incl. the IRSA↔s3_iceberg interdependency) + `helm lint`/`template` green.
+
+So Phase 1 IS now uncomment-and-apply. The **only remaining manual prep** is filling the placeholders below + wiring the values pulled from `terraform output` (Aurora endpoint → `values-prod.yaml` `catalog.jdbcHost`; IRSA ARNs → ArgoCD/Helm).
 
 ---
 
@@ -85,8 +87,12 @@ kubectl apply -f infra/argocd/envs/prod/strimzi-kafka.yaml      # Strimzi operat
 argocd app sync keda karpenter strimzi-kafka
 kubectl -n kafka wait --for=condition=Ready kafka/brain-prod-kafka --timeout=600s
 
-# 4c. Iceberg REST catalog (the chart you authored in §0.4, Aurora-backed) + Trino
-#     (Trino's iceberg.properties restUri must point at it.)
+# 4c. Iceberg REST catalog (infra/helm/iceberg-rest, Aurora-backed) + Trino.
+#     First create the iceberg_catalog DB in Aurora + the iceberg-rest-catalog-db k8s secret
+#     (jdbc-user/jdbc-password); set values-prod.yaml catalog.jdbcHost = Aurora endpoint.
+kubectl apply -f infra/argocd/envs/prod/iceberg-rest.yaml
+argocd app sync iceberg-rest
+# Trino's iceberg.properties restUri → http://brain-prod-iceberg-rest.iceberg-rest:8181
 argocd app sync trino    # after the catalog is up
 
 # 4d. App tier

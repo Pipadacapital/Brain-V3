@@ -1,0 +1,40 @@
+# iceberg-rest — defaults. Prod overrides in values-prod.yaml.
+environment: prod
+
+image:
+  repository: apache/iceberg-rest-fixture
+  tag: "1.9.2"
+  pullPolicy: IfNotPresent
+
+replicaCount: 1
+
+# Iceberg JdbcCatalog over Postgres (Aurora in prod). The catalog tables (iceberg_tables,
+# iceberg_namespace_properties, iceberg_views) live in this DB; Iceberg DATA files live in S3.
+catalog:
+  warehouse: ""              # e.g. s3://brain-prod-bronze/  (must match the Spark job warehouse roots)
+  jdbcHost: ""               # Aurora writer endpoint (module.aurora.endpoint)
+  jdbcPort: 5432
+  jdbcDatabase: iceberg_catalog
+  s3Region: ap-south-1
+  # JDBC user/password come from a k8s Secret (synced from AWS Secrets Manager). See secret.* below.
+
+# k8s Secret holding the catalog DB credentials (keys: jdbc-user, jdbc-password).
+secret:
+  name: iceberg-rest-catalog-db
+  jdbcUserKey: jdbc-user
+  jdbcPasswordKey: jdbc-password
+
+serviceAccount:
+  create: true
+  name: iceberg-rest
+  roleArn: ""                # IRSA role with S3 access to the medallion buckets (no static keys)
+
+service:
+  port: 8181
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    memory: 1Gi

@@ -1,0 +1,172 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Data-freshness SLA exporter for Kubernetes — the deploy-side companion to the
+# docker-compose `observe` profile, so the Gold-mart freshness SLOs fire in-cluster too.
+#
+# What this provides:
+#   1. ConfigMap `freshness-exporter-code` — the standalone stdlib exporter
+#      (tools/observability/freshness-exporter/freshness_exporter.py). No image build /
+#      Dockerfile required: it runs on the stock `python:3.13-slim` with the script mounted.
+#   2. Deployment + Service `freshness-exporter` — exposes /metrics on :9095 with
+#      prometheus.io scrape annotations (same annotation-based discovery as
+#      kafka-observability.yaml — no Prometheus-Operator CRD dependency).
+#
+# It queries Trino (the sole serving engine) for each mart's latest Iceberg snapshot and
+# emits brain_data_freshness_seconds{mart,schema,sla_class}, read by
+# infra/observe/alerts/freshness.rules.yml (BrainExecutiveMartStale / BrainSegmentMartStale).
+#
+# Namespace: wherever Trino + Prometheus live (default: brain-observe). The exporter needs
+# network reach to the Trino coordinator Service (default URL http://trino:8080).
+#
+# NOTE — keep the embedded script in sync with the source of truth at
+# tools/observability/freshness-exporter/freshness_exporter.py. For a real deploy, prefer
+# baking the script into an image or mounting it from a Git-sync sidecar instead of pasting it;
+# this ConfigMap stub keeps the artifact self-contained for kind/dev clusters.
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: freshness-exporter-code
+  namespace: brain-observe
+  labels:
+    app.kubernetes.io/part-of: brain-observability
+    app.kubernetes.io/component: freshness-exporter
+data:
+  # Placeholder — populate from the source of truth at apply time, e.g.:
+  #   kubectl -n brain-observe create configmap freshness-exporter-code \
+  #     --from-file=freshness_exporter.py=tools/observability/freshness-exporter/freshness_exporter.py \
+  #     --dry-run=client -o yaml | kubectl apply -f -
+  freshness_exporter.py: |
+    # See tools/observability/freshness-exporter/freshness_exporter.py — inject at apply time.
+    raise SystemExit("freshness_exporter.py not injected — see ConfigMap apply note above")
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: freshness-exporter
+  namespace: brain-observe
+  labels:
+    app.kubernetes.io/part-of: brain-observability
+    app.kubernetes.io/component: freshness-exporter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: freshness-exporter
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: brain-observability
+        app.kubernetes.io/component: freshness-exporter
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9095"
+        prometheus.io/path: "/metrics"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+      containers:
+        - name: freshness-exporter
+          image: python:3.13-slim
+          command: ["python3", "/app/freshness_exporter.py"]
+          env:
+            - name: FRESHNESS_TRINO_URL
+              value: "http://trino:8080"   # ← adjust to your Trino coordinator Service
+            - name: FRESHNESS_TRINO_USER
+              value: "brain"
+            - name: FRESHNESS_TRINO_CATALOG
+              value: "iceberg"
+            - name: FRESHNESS_GOLD_SCHEMA
+              value: "brain_gold"
+            - name: FRESHNESS_LISTEN_PORT
+              value: "9095"
+            - name: FRESHNESS_REFRESH_SEC
+              value: "60"
+          ports:
+            - name: metrics
+              containerPort: 9095
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 9095
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 9095
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: code
+              mountPath: /app
+              readOnly: true
+      volumes:
+        - name: code
+          configMap:
+            name: freshness-exporter-code
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: freshness-exporter
+  namespace: brain-observe
+  labels:
+    app.kubernetes.io/part-of: brain-observability
+    app.kubernetes.io/component: freshness-exporter
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9095"
+    prometheus.io/path: "/metrics"
+spec:
+  selector:
+    app.kubernetes.io/component: freshness-exporter
+  ports:
+    - name: metrics
+      port: 9095
+      targetPort: 9095
+# ─────────────────────────────────────────────────────────────────────────────
+# ALTERNATIVE — CronJob + Pushgateway (use INSTEAD of the Deployment+Service above if you
+# prefer a periodic push over a long-lived scrape target). The exporter would need a
+# `--push` mode; the simplest no-code-change path is to run the Deployment and scrape it.
+# Stub kept here for the periodic-push topology:
+#
+#   apiVersion: batch/v1
+#   kind: CronJob
+#   metadata: { name: freshness-exporter-push, namespace: brain-observe }
+#   spec:
+#     schedule: "*/5 * * * *"          # every 5m — well under the 15m executive SLA window
+#     concurrencyPolicy: Forbid
+#     jobTemplate:
+#       spec:
+#         template:
+#           spec:
+#             restartPolicy: Never
+#             containers:
+#               - name: freshness-push
+#                 image: python:3.13-slim
+#                 command: ["/bin/sh","-c"]
+#                 args:
+#                   - >-
+#                     python3 /app/freshness_exporter.py --once
+#                     | curl -s --data-binary @-
+#                     http://pushgateway:9091/metrics/job/brain-freshness-exporter
+#                 volumeMounts: [{ name: code, mountPath: /app, readOnly: true }]
+#             volumes:
+#               - { name: code, configMap: { name: freshness-exporter-code } }
+#
+# (A --once one-shot mode that prints render_metrics() to stdout and exits would back this;
+# the long-lived Deployment above is the recommended default and needs no extra code.)
+# ─────────────────────────────────────────────────────────────────────────────

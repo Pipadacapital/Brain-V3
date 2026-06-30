@@ -1,0 +1,45 @@
+################################################################################
+# Brain – ArgoCD Application: KEDA (prod)
+# Installs the UPSTREAM KEDA operator (kedacore/keda) into the `keda` namespace.
+# REQUIRED for the Trino chart's worker ScaledObject
+# (infra/helm/trino/templates/worker-scaledobject.yaml, keda.sh/v1alpha1) and for future
+# lag-based stream-worker backfill scaling (blueprint K.2).
+#
+# Multi-source: the upstream chart + Brain's values-prod.yaml ($values ref) from this repo.
+# MANUAL promotion gate (matches trino/karpenter prod) — no automated sync.
+################################################################################
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: keda-prod
+  namespace: argocd
+  labels:
+    project: brain
+    environment: prod
+    service: keda
+spec:
+  project: brain-prod
+  sources:
+    - repoURL: https://kedacore.github.io/charts
+      chart: keda
+      targetRevision: 2.15.1
+      helm:
+        valueFiles:
+          - $values/infra/helm/keda/values-prod.yaml
+    - repoURL: https://github.com/brain-platform/brain
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: keda
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      limit: 2
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 5m
+  revisionHistoryLimit: 10

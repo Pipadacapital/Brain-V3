@@ -1,0 +1,43 @@
+# Values for the UPSTREAM KEDA operator chart (kedacore/keda), consumed by
+# infra/argocd/envs/prod/keda.yaml via an ArgoCD multi-source $values ref.
+#
+# Why KEDA exists in Brain: the Trino chart already emits a ScaledObject
+# (infra/helm/trino/templates/worker-scaledobject.yaml, apiVersion keda.sh/v1alpha1) that owns
+# Trino worker scaling when workers.autoscaling.enabled=true. That CRD/controller is provided ONLY
+# by installing KEDA. KEDA is also the lag-based scaler for stream-worker backfill (blueprint K.2).
+#
+# This installs the operator + metrics-apiserver into the `keda` namespace. No application
+# ScaledObjects live here — those ship with each workload's own chart.
+
+# The KEDA operator + its add-ons run on the fixed ON-DEMAND system node group (kube-system/system),
+# NOT on Karpenter Spot capacity — the autoscaler control plane must be stable.
+operator:
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+
+metricsServer:
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+
+# Brain runs single-region (ap-south-1); HA pairs are deferred until backfill KEDA scaling lands.
+podSecurityContext:
+  runAsNonRoot: true
+
+# IRSA: NOT required for the current Trino CPU ScaledObject (CPU trigger reads metrics-server, no
+# AWS calls). Leave empty. Add a role-arn here ONLY when an AWS-backed scaler is introduced
+# (e.g. SQS/CloudWatch/MSK-IAM lag) — see README.md "IRSA the operator must add".
+serviceAccount:
+  operator:
+    annotations: {}

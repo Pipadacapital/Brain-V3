@@ -1,0 +1,60 @@
+# Prod overrides for the strimzi-kafka CR chart. Cluster name resolves to brain-prod-kafka.
+environment: prod
+clusterName: ""   # -> brain-prod-kafka
+
+kafka:
+  version: "3.8.1"
+  metadataVersion: "3.8-IV0"
+
+  nodePool:
+    name: combined
+    replicas: 3
+    roles:
+      - controller
+      - broker
+    storage:
+      size: 50Gi
+      class: gp3
+      deleteClaim: false
+    resources:
+      requests:
+        cpu: "2"
+        memory: 6Gi
+      limits:
+        cpu: "4"
+        memory: 8Gi
+    jvm:
+      xms: 4096m
+      xmx: 4096m
+
+  listeners:
+    plain:
+      enabled: true
+      port: 9092
+    tls:
+      enabled: true
+      port: 9093
+
+  config:
+    autoCreateTopics: false
+    defaultReplicationFactor: 3
+    minInsyncReplicas: 2
+    offsetsTopicReplicationFactor: 3
+    transactionStateLogReplicationFactor: 3
+    transactionStateLogMinIsr: 2
+    logRetentionMs: 604800000
+
+entityOperator:
+  topicOperator:
+    enabled: true
+  userOperator:
+    enabled: true
+
+topics:
+  prefix: prod
+  # Tenant-keyed (brand_id) partition count; 12 mirrors the local compose num.partitions.
+  partitions: 12
+  replicas: 3
+  retention:
+    standardMs: 604800000   # 7 days
+    longMs: 2592000000      # 30 days

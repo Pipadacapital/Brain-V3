@@ -1,0 +1,50 @@
+# NodePools — one per blueprint node group (streaming / batch / trino). Cluster-scoped.
+# Karpenter v1 API: karpenter.sh/v1. All pools are arm64 + Spot, bounded above by `limits`
+# (no fixed minimum). See values.yaml for the per-pool rationale.
+{{- range $name, $pool := .Values.nodePools }}
+---
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: {{ $name }}
+  labels:
+    project: brain
+    environment: {{ $.Values.tags.environment | default "prod" }}
+    brain.platform/pool: {{ $name }}
+    app.kubernetes.io/managed-by: {{ $.Release.Service }}
+spec:
+  template:
+    metadata:
+      labels:
+        brain.platform/pool: {{ $name }}
+    spec:
+      nodeClassRef:
+        group: karpenter.k8s.aws
+        kind: EC2NodeClass
+        name: {{ $.Values.ec2NodeClass.name }}
+      expireAfter: {{ $pool.expireAfter | default "720h" }}
+      requirements:
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: [{{ $pool.capacityType | quote }}]
+        - key: node.kubernetes.io/instance-type
+          operator: In
+          values: [{{ $pool.instanceType | quote }}]
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["arm64"]
+        - key: kubernetes.io/os
+          operator: In
+          values: ["linux"]
+      {{- with $pool.taints }}
+      taints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  disruption:
+    consolidationPolicy: {{ $pool.consolidationPolicy }}
+    consolidateAfter: {{ $pool.consolidateAfter }}
+  limits:
+    cpu: {{ $pool.limits.cpu | quote }}
+    memory: {{ $pool.limits.memory }}
+  weight: {{ $pool.weight | default 10 }}
+{{- end }}

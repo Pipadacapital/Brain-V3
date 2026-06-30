@@ -1,0 +1,112 @@
+################################################################################
+# Brain — ArgoCD Applications: self-hosted Kafka on EKS via Strimzi (prod)
+#
+# TWO Applications, ordered by sync-wave (app-of-apps ordering):
+#   wave 0  strimzi-operator-prod  — upstream Strimzi operator Helm chart (installs the CRDs +
+#                                    the cluster/topic/user operators) into namespace `kafka`.
+#   wave 1  strimzi-kafka-prod      — this repo's infra/helm/strimzi-kafka chart (the Kafka /
+#                                    KafkaNodePool / KafkaTopic CRs the operator reconciles).
+#
+# BOTH are MANUAL prod sync (no automated sync) — VP Eng / data-team promote via the GitHub
+# Environment 'production' gate, mirroring core.yaml / trino.yaml.
+#
+# ORDERING NOTE: the Kafka CR app needs the Strimzi CRDs the operator installs. Sync the operator
+# app first; the CR app's retry block absorbs the brief window before the CRDs register. (If these
+# are NOT managed by a parent app-of-apps, the sync-wave annotations are inert — sync the operator
+# Application manually before the CR Application.)
+################################################################################
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: strimzi-operator-prod
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+  labels:
+    project: brain
+    environment: prod
+    service: strimzi-operator
+spec:
+  project: brain-prod
+  source:
+    # Upstream Strimzi operator Helm chart (NOT a path in this repo).
+    repoURL: https://strimzi.io/charts/
+    chart: strimzi-kafka-operator
+    # Pin the operator release; keep in lockstep with the Kafka broker version (3.8.1). Verify the
+    # exact tag that ships Kafka 3.8.1 before promote (`helm search repo strimzi/strimzi-kafka-operator`).
+    targetRevision: 0.45.0
+    helm:
+      releaseName: strimzi-operator
+      values: |
+        # Watch ONLY the kafka namespace (the operator + the Kafka CRs both live there).
+        watchNamespaces:
+          - kafka
+        watchAnyNamespace: false
+        # Operator pod footprint (modest — it only reconciles CRs, not data-plane).
+        resources:
+          requests:
+            cpu: 200m
+            memory: 384Mi
+          limits:
+            cpu: "1"
+            memory: 512Mi
+        # Brain MANDATORY tags surfaced as labels on operator-managed objects.
+        labels:
+          Environment: prod
+          Service: kafka
+          Owner: data-team
+          CostCenter: brain-platform
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kafka
+  # NO automated sync for prod — manual promotion gate required.
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      limit: 3
+      backoff:
+        duration: 15s
+        factor: 2
+        maxDuration: 5m
+  revisionHistoryLimit: 10
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: strimzi-kafka-prod
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+    # Selective deploy: only syncs when the Kafka CR chart changes.
+    argocd.argoproj.io/manifest-generate-paths: infra/helm/strimzi-kafka
+  labels:
+    project: brain
+    environment: prod
+    service: strimzi-kafka
+spec:
+  project: brain-prod
+  source:
+    repoURL: https://github.com/brain-platform/brain
+    targetRevision: main
+    path: infra/helm/strimzi-kafka
+    helm:
+      valueFiles:
+        - values-prod.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kafka
+  # NO automated sync for prod — manual promotion gate required.
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      # Absorbs the window before the operator's CRDs (Kafka/KafkaNodePool/KafkaTopic) register.
+      limit: 5
+      backoff:
+        duration: 20s
+        factor: 2
+        maxDuration: 5m
+  revisionHistoryLimit: 10

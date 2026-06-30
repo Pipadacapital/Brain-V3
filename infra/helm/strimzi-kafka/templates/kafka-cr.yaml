@@ -1,0 +1,107 @@
+{{- /*
+Kafka custom resources for brain-<env>-kafka in KRaft mode (NO ZooKeeper).
+Reconciled by the Strimzi operator (installed separately — see infra/argocd/envs/prod/strimzi-kafka.yaml).
+
+Shape (modern Strimzi KRaft + KafkaNodePool API):
+  • KafkaNodePool  — owns replicas / roles / storage / resources.
+  • Kafka          — owns version / listeners / broker config; annotated kraft+node-pools enabled.
+*/ -}}
+{{- $cluster := include "strimziKafka.clusterName" . -}}
+{{- $np := .Values.kafka.nodePool -}}
+---
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaNodePool
+metadata:
+  name: {{ $np.name }}
+  labels:
+    strimzi.io/cluster: {{ $cluster }}
+    {{- include "strimziKafka.labels" . | nindent 4 }}
+spec:
+  replicas: {{ $np.replicas }}
+  roles:
+    {{- range $np.roles }}
+    - {{ . }}
+    {{- end }}
+  storage:
+    type: jbod
+    volumes:
+      - id: 0
+        type: persistent-claim
+        size: {{ $np.storage.size }}
+        class: {{ $np.storage.class }}
+        deleteClaim: {{ $np.storage.deleteClaim }}
+        kraftMetadata: shared
+  resources:
+    requests:
+      cpu: {{ $np.resources.requests.cpu | quote }}
+      memory: {{ $np.resources.requests.memory }}
+    limits:
+      cpu: {{ $np.resources.limits.cpu | quote }}
+      memory: {{ $np.resources.limits.memory }}
+  jvmOptions:
+    -Xms: {{ $np.jvm.xms | quote }}
+    -Xmx: {{ $np.jvm.xmx | quote }}
+  template:
+    pod:
+      metadata:
+        labels:
+          {{- include "strimziKafka.labels" . | nindent 10 }}
+    persistentVolumeClaim:
+      metadata:
+        labels:
+          {{- include "strimziKafka.labels" . | nindent 10 }}
+---
+apiVersion: kafka.strimzi.io/v1beta2
+kind: Kafka
+metadata:
+  name: {{ $cluster }}
+  annotations:
+    strimzi.io/node-pools: enabled
+    strimzi.io/kraft: enabled
+  labels:
+    {{- include "strimziKafka.labels" . | nindent 4 }}
+spec:
+  kafka:
+    version: {{ .Values.kafka.version | quote }}
+    metadataVersion: {{ .Values.kafka.metadataVersion | quote }}
+    # INTERNAL listeners only — no external/LoadBalancer exposure (compose parity).
+    listeners:
+      {{- if .Values.kafka.listeners.plain.enabled }}
+      - name: plain
+        port: {{ .Values.kafka.listeners.plain.port }}
+        type: internal
+        tls: false
+      {{- end }}
+      {{- if .Values.kafka.listeners.tls.enabled }}
+      - name: tls
+        port: {{ .Values.kafka.listeners.tls.port }}
+        type: internal
+        tls: true
+      {{- end }}
+    config:
+      # Topic auto-create OFF — every topic is a declared KafkaTopic CR (see kafka-topics.yaml).
+      auto.create.topics.enable: {{ .Values.kafka.config.autoCreateTopics }}
+      default.replication.factor: {{ .Values.kafka.config.defaultReplicationFactor }}
+      min.insync.replicas: {{ .Values.kafka.config.minInsyncReplicas }}
+      offsets.topic.replication.factor: {{ .Values.kafka.config.offsetsTopicReplicationFactor }}
+      transaction.state.log.replication.factor: {{ .Values.kafka.config.transactionStateLogReplicationFactor }}
+      transaction.state.log.min.isr: {{ .Values.kafka.config.transactionStateLogMinIsr }}
+      log.retention.ms: {{ .Values.kafka.config.logRetentionMs | int64 }}
+      num.partitions: {{ .Values.topics.partitions | int }}
+    template:
+      pod:
+        metadata:
+          labels:
+            {{- include "strimziKafka.labels" . | nindent 12 }}
+  entityOperator:
+    {{- if .Values.entityOperator.topicOperator.enabled }}
+    topicOperator: {}
+    {{- end }}
+    {{- if .Values.entityOperator.userOperator.enabled }}
+    userOperator: {}
+    {{- end }}
+    template:
+      pod:
+        metadata:
+          labels:
+            {{- include "strimziKafka.labels" . | nindent 12 }}

@@ -1,0 +1,94 @@
+{{- /*
+KafkaTopic CRs — every topic the platform uses, declared because auto-create is OFF.
+Ported 1:1 from the docker-compose redpanda-init bootstrap (prod-prefix lane). The Strimzi Topic
+Operator reconciles these into real Kafka topics on the brain-<env>-kafka cluster.
+
+Topic NAME (spec.topicName) keeps the dotted Kafka name (e.g. prod.collector.event.v1); the CR
+metadata.name is the RFC-1123 sanitized form (dots/underscores -> dashes) since k8s names can't
+contain dots.
+
+Partitions are TENANT-KEYED (brand_id partition key) and configurable 6..12 — guarded below.
+*/ -}}
+{{- $cluster := include "strimziKafka.clusterName" . -}}
+{{- $t := .Values.topics -}}
+{{- $partitions := int $t.partitions -}}
+{{- if or (lt $partitions 6) (gt $partitions 12) -}}
+{{- fail (printf "topics.partitions must be in the tenant-keyed range 6..12 (got %d)" $partitions) -}}
+{{- end -}}
+{{- $root := . -}}
+
+{{- /* Collector lane (explicit per-topic retention tier). */ -}}
+{{- range $t.collector }}
+{{- $name := printf "%s.%s" $root.Values.topics.prefix .suffix }}
+---
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaTopic
+metadata:
+  name: {{ include "strimziKafka.topicResourceName" $name }}
+  labels:
+    strimzi.io/cluster: {{ $cluster }}
+    {{- include "strimziKafka.labels" $root | nindent 4 }}
+spec:
+  topicName: {{ $name | quote }}
+  partitions: {{ $partitions }}
+  replicas: {{ $t.replicas }}
+  config:
+    retention.ms: "{{ include "strimziKafka.retentionMs" (dict "tier" .retention "root" $root) }}"
+{{- end }}
+
+{{- /* 9 connector raw lanes -> <lane>.raw.v1, standard 7-day retention. */ -}}
+{{- range $t.rawLanes }}
+{{- $name := printf "%s.%s.raw.v1" $root.Values.topics.prefix . }}
+---
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaTopic
+metadata:
+  name: {{ include "strimziKafka.topicResourceName" $name }}
+  labels:
+    strimzi.io/cluster: {{ $cluster }}
+    {{- include "strimziKafka.labels" $root | nindent 4 }}
+spec:
+  topicName: {{ $name | quote }}
+  partitions: {{ $partitions }}
+  replicas: {{ $t.replicas }}
+  config:
+    retention.ms: "{{ $t.retention.standardMs | int64 }}"
+{{- end }}
+
+{{- /* Identity + intelligence control/event topics, standard 7-day retention. */ -}}
+{{- range $t.control }}
+{{- $name := printf "%s.%s" $root.Values.topics.prefix . }}
+---
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaTopic
+metadata:
+  name: {{ include "strimziKafka.topicResourceName" $name }}
+  labels:
+    strimzi.io/cluster: {{ $cluster }}
+    {{- include "strimziKafka.labels" $root | nindent 4 }}
+spec:
+  topicName: {{ $name | quote }}
+  partitions: {{ $partitions }}
+  replicas: {{ $t.replicas }}
+  config:
+    retention.ms: "{{ $t.retention.standardMs | int64 }}"
+{{- end }}
+
+{{- /* Internal canonical fan-out lanes -> brain.<entity>, standard 7-day retention. */ -}}
+{{- range $t.fanout }}
+{{- $name := printf "%s.brain.%s" $root.Values.topics.prefix . }}
+---
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaTopic
+metadata:
+  name: {{ include "strimziKafka.topicResourceName" $name }}
+  labels:
+    strimzi.io/cluster: {{ $cluster }}
+    {{- include "strimziKafka.labels" $root | nindent 4 }}
+spec:
+  topicName: {{ $name | quote }}
+  partitions: {{ $partitions }}
+  replicas: {{ $t.replicas }}
+  config:
+    retention.ms: "{{ $t.retention.standardMs | int64 }}"
+{{- end }}

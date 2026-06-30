@@ -1,0 +1,16 @@
+apiVersion: v2
+name: strimzi-kafka
+description: >-
+  Brain V4 self-hosted Kafka on EKS via Strimzi — the Kafka custom resources
+  (KafkaNodePool + Kafka in KRaft mode + KafkaTopic declarations) for the cluster
+  brain-<env>-kafka. The Strimzi OPERATOR itself is installed separately from the
+  upstream Strimzi Helm chart by the ArgoCD Application in
+  infra/argocd/envs/prod/strimzi-kafka.yaml (this chart only ships the CRs the
+  operator reconciles). Mirrors the local docker-compose apache/kafka:3.8.1 KRaft
+  env: internal listeners, topic auto-create OFF, 7-day retention, tenant-keyed
+  partitions.
+type: application
+version: 0.1.0
+# appVersion pins the Kafka broker line; mirrors the local docker-compose image
+# (apache/kafka:3.8.1) — Strimzi ships this Kafka version in the matching operator release.
+appVersion: "3.8.1"

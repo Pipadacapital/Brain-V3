@@ -1,0 +1,88 @@
+# Default values for the karpenter-nodepools chart. Overridden by values-prod.yaml.
+#
+# This chart declares ONLY Karpenter intent objects (NodePool + EC2NodeClass). The Karpenter
+# controller + CRDs come from the upstream chart wired in infra/argocd/envs/prod/karpenter.yaml.
+#
+# IMPORTANT (do NOT confuse with modules/eks): the EKS `system` managed node group
+# (brain-<env>-system, t4g.medium, ON-DEMAND, fixed min/max) is intentionally left untouched and
+# keeps running the platform add-ons (CoreDNS, kube-proxy, the Karpenter controller itself,
+# ArgoCD, KEDA). Karpenter manages EVERYTHING ELSE via the pools below — see README.md.
+
+# Cluster identity — MUST equal the eks module cluster name "${project}-${environment}"
+# (aws_eks_cluster.main.name → e.g. brain-prod). Drives Karpenter subnet/SG discovery.
+clusterName: brain-prod
+
+# The IAM role Karpenter-launched nodes assume. We REUSE the eks module's node role
+# (aws_iam_role.node → "${project}-${environment}-eks-node") so launched nodes already carry
+# AmazonEKSWorkerNodePolicy / AmazonEKS_CNI_Policy / AmazonEC2ContainerRegistryReadOnly.
+# Karpenter v1 manages the instance profile for this role automatically.
+nodeRole: brain-prod-eks-node
+
+# Value of the `karpenter.sh/discovery` tag that Karpenter matches to find the private subnets
+# and the cluster node security group to launch into. The eks/network modules do NOT set this tag
+# yet — the operator must add `karpenter.sh/discovery=<this value>` to the private subnets and the
+# node SG (see README.md "Wiring the operator must do"). Conventionally equals the cluster name.
+discoveryTag: brain-prod
+
+# AMI selection. t4g.* are Graviton/arm64 → AL2023 arm64. "alias" pins the EKS-optimized AMI family
+# and tracks the latest patched release for the cluster's Kubernetes version.
+amiAlias: al2023@latest
+
+ec2NodeClass:
+  name: brain-default
+  # Root volume for launched nodes (encrypted gp3). Spark/Trino spill + container images need room.
+  rootVolume:
+    deviceName: /dev/xvda
+    sizeGi: 50
+    type: gp3
+    encrypted: true
+
+# Mandatory Brain platform tags propagated onto every Karpenter-launched EC2 instance + volume.
+tags:
+  Environment: prod
+  Service: karpenter-managed
+  Owner: data-team
+  CostCenter: brain-platform
+  project: brain
+  environment: prod
+
+# ── Node pools (match the blueprint node groups) ────────────────────────────────────────────────
+# All pools are arm64 + Spot. Karpenter naturally scales a pool to ZERO when no pod requires it,
+# bounded above by `limits`. "no scale-to-zero" for streaming is achieved by consolidationPolicy:
+# WhenEmpty (only reclaim a node once it is fully empty — never bin-pack live consumers off it) PLUS
+# the streaming workload pinning a warm baseline of replicas (see README). batch/trino use
+# WhenEmptyOrUnderutilized so idle batch/serving capacity is reclaimed all the way to zero.
+nodePools:
+  streaming:
+    instanceType: t4g.large          # 2 vCPU / 8 GiB — collector + live stream-worker consumers
+    capacityType: spot
+    consolidationPolicy: WhenEmpty
+    consolidateAfter: 5m
+    expireAfter: 720h                # 30d node rotation for patching
+    weight: 30                       # prefer the smaller streaming node for general pods
+    limits:                          # upper bound (no fixed minimum → Karpenter has no idle floor)
+      cpu: "20"
+      memory: 80Gi
+    taints: []                       # untainted: existing untainted workloads can land here today
+  batch:
+    instanceType: t4g.xlarge         # 4 vCPU / 16 GiB — Argo/Spark batch jobs, off-peak
+    capacityType: spot
+    consolidationPolicy: WhenEmptyOrUnderutilized
+    consolidateAfter: 30s            # reclaim batch capacity quickly after jobs finish (→ 0 nodes)
+    expireAfter: 720h
+    weight: 10
+    limits:                          # ~0-3 t4g.xlarge nodes (3 × 4 vCPU)
+      cpu: "12"
+      memory: 48Gi
+    taints: []
+  trino:
+    instanceType: t4g.xlarge         # 4 vCPU / 16 GiB — Trino workers (CPU-bound scans)
+    capacityType: spot
+    consolidationPolicy: WhenEmptyOrUnderutilized
+    consolidateAfter: 1m             # gentler than batch — avoid query thrash; KEDA scales workers
+    expireAfter: 720h
+    weight: 10
+    limits:                          # ~0-2 t4g.xlarge nodes (2 × 4 vCPU)
+      cpu: "8"
+      memory: 32Gi
+    taints: []

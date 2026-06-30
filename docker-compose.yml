@@ -1,13 +1,30 @@
-# Local dev — profiles per zone (doc 05 §10).
-# core    = control-plane + serving (default for most feature work)
-# ingest  = strict-SLA event path (Apache Kafka KRaft + Apicurio)
-# observe = Grafana + Loki + Prometheus OTel stack
-# All profiles combined: docker compose --profile core --profile ingest --profile observe up -d
+# Local dev — profiles (blueprint §4.1/§4.2/§4.3 profile model).
+# core      = the default everyday stack: control plane + ingest + serving + base observability.
+#             Members: kafka, postgres (+pgbouncer), neo4j, redis, minio, iceberg-rest, trino,
+#             prometheus, grafana, localstack, apicurio + the kafka/minio/iceberg/jmx init jobs.
+# full-obs  = trace/log pipeline layered on core: tempo, loki, otel-collector.
+# debug     = deep Kafka introspection layered on core: jmx-exporter(-init), kafka-exporter.
+# ai        = the LiteLLM model gateway (opt-in; keeps the base stack lean).
 #
-# Iceberg REST catalog (lakekeeper) is included in the ingest profile — it provides
-# the local equivalent of AWS Glue for Bronze table metadata.
-# MinIO is the local S3 equivalent; it is in core because the stream-worker, seed, and
-# testcontainer harness all need a writable object store.
+# Everyday:        docker compose --profile core up -d
+# With tracing:    docker compose --profile core --profile full-obs up -d
+# With AI gateway: docker compose --profile core --profile ai up -d
+# Kafka debug:     docker compose --profile core --profile debug up -d
+#
+# MIGRATION NOTE (from the old core/ingest/observe/lakehouse model):
+#   • ingest (kafka+apicurio+inits) was FOLDED INTO core — the event path is now part of the
+#     default stack, so `--profile core` alone brings up the broker + schema registry.
+#   • lakehouse (the spark-bronze-sink / spark-bronze-raw-sink containers) was REMOVED — the
+#     combined Bronze sink now runs on the HOST (see db/iceberg/spark), not as a compose service.
+#   • observe was SPLIT: prometheus+grafana → core (base metrics always on); tempo+loki+otel →
+#     full-obs; the jmx/kafka exporters → debug.
+#   • litellm moved core → ai (opt-in).
+#   Unknown --profile names are ignored by compose, so a legacy `--profile core --profile ingest
+#   --profile lakehouse` invocation still brings up the full core stack (ingest/lakehouse = no-ops).
+#
+# Iceberg REST catalog is the local equivalent of AWS Glue for Bronze table metadata.
+# MinIO is the local S3 equivalent; the stream-worker, seed, and testcontainer harness all need a
+# writable object store, and Trino serving resolves its warehouse through it — so both are in core.
 
 services:
   # ────────────────────────────────────────────────────────────────────────────
@@ -16,6 +33,8 @@ services:
   postgres:
     image: postgres:16
     profiles: ["core"]
+    mem_limit: 512m         # blueprint §4.2; budget doc lumps PG in the "small, unbounded" group → applied as-is
+    oom_score_adj: -900     # operational SoR — kernel kills this LAST under VM pressure
     environment:
       POSTGRES_USER: brain
       POSTGRES_PASSWORD: brain
@@ -73,7 +92,11 @@ services:
   neo4j:
     image: neo4j:5.21-community
     profiles: ["core"]
-    mem_limit: 1500m   # heap 512m + pagecache 256m + JVM overhead (see budget: docs/ops/local-memory-budget.md)
+    # CONFLICT REFUSED: blueprint §4.2 says 512m, but that is the JVM HEAP alone — a 512m hard
+    # mem_limit would OOM-kill neo4j on boot. Kept the budget-verified 1500m (heap 512m + pagecache
+    # 256m + JVM overhead — docs/ops/local-memory-budget.md). See structured notes.
+    mem_limit: 1500m
+    oom_score_adj: -500   # identity graph store — protected, but below PG/Kafka/Trino
     environment:
       NEO4J_AUTH: neo4j/brain_neo4j
       NEO4J_server_memory_pagecache_size: 256M
@@ -88,6 +111,8 @@ services:
   redis:
     image: redis:7
     profiles: ["core"]
+    mem_limit: 256m         # blueprint §4.2 (cache; rebuildable)
+    oom_score_adj: -300     # serving-critical cache, but rebuildable → killed before the SoRs
     ports: ["6379:6379"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -96,14 +121,17 @@ services:
       retries: 10
 
   minio:
-    # DEFAULT (always-on): the Iceberg warehouse S3 backend for the Trino serving
-    # engine (now a default service the app reads) + bronze/audit S3 for core. Was
-    # profiles:[core,lakehouse]; promoted to default so trino's serving substrate
-    # resolves without an explicit profile. Always-on services still start under the
-    # existing core/lakehouse invocations, so no profile flow regresses.
+    # core: the Iceberg warehouse S3 backend for the Trino serving engine + bronze/audit S3 for the
+    # app. Previously profile-less ("always-on"); now an explicit core member (blueprint §4.1) — the
+    # everyday `--profile core` invocation brings it (and Trino's warehouse) up.
     image: minio/minio:RELEASE.2024-04-06T05-26-02Z
+    profiles: ["core"]
     command: server /data --console-address ":9001"
-    mem_limit: 5g      # S3 warehouse backend; caps page-cache growth (see budget: docs/ops/local-memory-budget.md)
+    # CONFLICT REFUSED: blueprint §4.2 says 256m, but minio runs with GOMEMLIMIT=4500MiB and serves
+    # the whole Iceberg warehouse — a 256m hard limit would OOM-kill it instantly. Kept the
+    # budget-verified 5g (docs/ops/local-memory-budget.md). See structured notes.
+    mem_limit: 5g
+    oom_score_adj: -500     # object store / warehouse backend — protected
     environment:
       MINIO_ROOT_USER: brain
       MINIO_ROOT_PASSWORD: brainbrain
@@ -122,6 +150,7 @@ services:
   # alongside minio so the Trino serving warehouse buckets exist without a profile.
   minio-init:
     image: minio/mc:latest
+    profiles: ["core"]   # bootstrap for minio (core); runs whenever the warehouse comes up
     depends_on:
       minio:
         condition: service_healthy
@@ -136,7 +165,7 @@ services:
 
   litellm:
     image: ghcr.io/berriai/litellm:main-latest
-    profiles: ["core"]
+    profiles: ["ai"]   # opt-in model gateway (blueprint §4.1) — `--profile ai`; keeps the base stack lean
     ports: ["4000:4000"]
     # Mount the gateway config (per-tenant virtual_key budgets + model aliases + routing policy).
     # Dev-authorable: edit infra/litellm.config.yaml and restart this container — no image rebuild.
@@ -163,6 +192,8 @@ services:
   localstack:
     image: localstack/localstack:3.4
     profiles: ["core"]
+    mem_limit: 512m         # blueprint §4.2 (dev AWS substrate)
+    oom_score_adj: 200      # ephemeral dev substrate — killed before stateful services
     environment:
       SERVICES: "s3,secretsmanager,kms,ses,events"
       # NOTE: LocalStack *community* does NOT persist Secrets Manager / KMS across restarts
@@ -178,26 +209,30 @@ services:
       retries: 20
 
   # ────────────────────────────────────────────────────────────────────────────
-  # INGEST profile — Apache Kafka (KRaft) + Apicurio + Iceberg REST catalog
+  # Apache Kafka (KRaft) — the event backbone, now part of the CORE profile.
   # ────────────────────────────────────────────────────────────────────────────
   # Apache Kafka in KRaft mode (single combined controller+broker, no ZooKeeper).
-  # The service/DNS name stays `redpanda` so every existing reference keeps working
-  # unchanged: depends_on, `network_mode: service:redpanda` (spark-bronze-sink +
-  # spark-bronze-raw-sink share its netns), `--bootstrap-server redpanda:9092`,
-  # and prometheus targets. Only the EXTERNAL host alias was renamed
-  # brain-redpanda-ext → brain-kafka-ext.
+  # RENAMED redpanda → kafka (blueprint §4.3): the service key, its DNS name, and every in-compose
+  # reference (depends_on, `network_mode: service:kafka`, the kafka-init topic bootstrap) now say
+  # `kafka`. The EXTERNAL advertised host alias is `brain-kafka-ext`. NOTE: the previous container-side
+  # spark sinks that shared this netns (spark-bronze-sink / spark-bronze-raw-sink) were REMOVED — the
+  # combined Bronze sink now runs on the HOST; only kafka-init still shares this broker's netns.
   #
-  # Dual listeners (preserved 1:1 from the Redpanda setup):
-  #   • PLAINTEXT 9092  advertised localhost:9092       — host + same-netns clients
+  # Dual listeners:
+  #   • PLAINTEXT 9092  advertised localhost:9092       — host + same-netns clients (kafka-init)
   #   • EXTERNAL  19092 advertised brain-kafka-ext:19092 — out-of-network clients
   #     (e.g. a local kind/k8s pod simulating prod, routed to this container's
-  #     brainv3_default IP via a hostAlias for brain-kafka-ext).
+  #     brainv3_default IP via a hostAlias for brain-kafka-ext; the kafka-exporter sidecar).
   # CONTROLLER 9093 is the internal KRaft quorum listener (single self-voter).
-  # Topic auto-create is OFF — topics are created idempotently by `redpanda-init`.
-  redpanda:
+  # Topic auto-create is OFF — topics are created idempotently by `kafka-init`.
+  kafka:
     image: apache/kafka:3.8.1
-    profiles: ["ingest"]
-    mem_limit: 2500m   # Kafka KRaft broker (see budget: docs/ops/local-memory-budget.md)
+    profiles: ["core"]
+    # CONFLICT REFUSED: blueprint §4.2 says 1g, but the budget doc verifies the KRaft broker at 2.5g
+    # steady (docs/ops/local-memory-budget.md). A 1g hard limit risks an OOM-kill of the event
+    # backbone under load. Kept 2500m. See structured notes.
+    mem_limit: 2500m
+    oom_score_adj: -800   # event backbone — protected just below Postgres
     environment:
       KAFKA_NODE_ID: "1"
       KAFKA_PROCESS_ROLES: "broker,controller"
@@ -252,7 +287,7 @@ services:
 
   # Kafka topic bootstrap (idempotent). Ported from `rpk` to the Kafka CLI
   # (kafka-topics.sh) using the same apache/kafka image. Shares the broker's network
-  # namespace (like spark-bronze-sink) so the PLAINTEXT advertised listener
+  # namespace (network_mode: service:kafka) so the PLAINTEXT advertised listener
   # `localhost:9092` resolves to the broker. `--if-not-exists` keeps it idempotent.
   #
   # NOTE: uses LIST-form entrypoint with a `|` literal block — NOT `entrypoint: >`.
@@ -264,12 +299,12 @@ services:
   # Creates BOTH `dev.*` and `prod.*` prefixes: NODE_ENV picks the live prefix
   # (prod.* under APP_ENV=local-prod, dev.* otherwise) so both boots find their topics.
   # `$$` survives compose interpolation → literal `$` for the shell.
-  redpanda-init:
+  kafka-init:
     image: apache/kafka:3.8.1
-    profiles: ["ingest"]
-    network_mode: "service:redpanda"
+    profiles: ["core"]
+    network_mode: "service:kafka"
     depends_on:
-      redpanda:
+      kafka:
         condition: service_healthy
     entrypoint:
       - /bin/sh
@@ -308,10 +343,12 @@ services:
         echo 'Kafka topics ready'
     restart: "no"
 
-  # Apicurio — FULL_TRANSITIVE compatibility enforced globally
+  # Apicurio — schema registry for the event path (FULL_TRANSITIVE compatibility enforced globally).
+  # Folded into core alongside kafka (blueprint §4.1) so the strict-SLA ingest path is part of the
+  # default stack (the collector/stream-worker validate schemas against it).
   apicurio:
     image: apicurio/apicurio-registry-mem:2.6.3.Final
-    profiles: ["ingest"]
+    profiles: ["core"]
     environment:
       REGISTRY_APIS_V2_DATE_FORMAT: "yyyy-MM-dd'T'HH:mm:ss'Z'"
       # FULL_TRANSITIVE: every version must be compatible with ALL prior versions
@@ -331,17 +368,16 @@ services:
   # a pinned, pullable image. Spark Structured Streaming (the Bronze writer, ADR-0002) and
   # Trino (the serving engine) read Iceberg through this catalog.
   #
-  # DEFAULT (always-on): the Trino serving engine (a default service the app reads) resolves
-  # the Iceberg medallion through this catalog, so it must be present without a profile. Was
-  # profiles:[lakehouse]; promoted to default. Spark Bronze sink / Gold jobs (lakehouse profile)
-  # still reach it because always-on services run under every invocation.
+  # core member: the Trino serving engine resolves the Iceberg medallion through this catalog, and the
+  # host-run Spark Bronze/Silver/Gold jobs write through it — so it belongs to the default core stack.
   # One-shot: make the `iceberg-catalog` volume writable by the iceberg-rest fixture's runtime user
   # (uid 1000 `iceberg`). A freshly-created named Docker volume is root-owned, so on first boot the
   # file-backed SQLite catalog would fail to open (SQLITE_CANTOPEN: "unable to open database file").
-  # Idempotent — a no-op once ownership is already correct. DEFAULT (no profile), like iceberg-rest,
-  # so it runs under every invocation that brings the catalog up.
+  # Idempotent — a no-op once ownership is already correct. In the core profile, like iceberg-rest,
+  # so it runs whenever the catalog comes up.
   iceberg-catalog-init:
     image: alpine:latest
+    profiles: ["core"]
     user: "0:0"
     volumes:
       - iceberg-catalog:/catalog
@@ -353,6 +389,12 @@ services:
 
   iceberg-rest:
     image: apache/iceberg-rest-fixture:1.9.2
+    profiles: ["core"]   # Iceberg catalog (Glue-equivalent) — core member; Trino + host Spark resolve through it
+    # CONFLICT REFUSED: blueprint §4.2 says 128m, but iceberg-rest-fixture is a JVM (Jetty) — a 128m
+    # hard limit would OOM-kill the JVM on startup. The budget doc lumps it as "small/unbounded".
+    # Applied a SAFE bounded 512m (defense-in-depth without being OOM-prone). See structured notes.
+    mem_limit: 512m
+    oom_score_adj: -700   # catalog namespace→table pointer SoR — critical, protected
     depends_on:
       minio:
         condition: service_healthy
@@ -402,138 +444,16 @@ services:
       start_period: 15s
 
   # ────────────────────────────────────────────────────────────────────────────
-  # The Bronze WRITER — Spark Structured Streaming: collector.event.v1 → Iceberg Bronze.
-  # The architecture's sole Bronze sink for ALL ingested events (pixel + connectors): the same
-  # ingestion platform end-to-end (Collector → Kafka → Bronze). Runs CONTINUOUSLY (a long-lived
-  # streaming query), the same shape we run in production. Shares Redpanda's network namespace so the
-  # advertised listener (localhost:9092) resolves; service-name DNS (iceberg-rest, minio, postgres)
-  # still resolves because Redpanda is on the compose network. Jars are baked into the image (no
-  # Maven at runtime). Reads start from earliest on a fresh checkpoint; the MERGE is idempotent.
+  # NOTE: the container-side Bronze sinks (spark-bronze-sink + spark-bronze-raw-sink) were REMOVED
+  # here (blueprint §4.3 / Deliverable B). Their combined replacement — the continuous Spark
+  # Structured Streaming Bronze landing (collector.event.v1 + the nine connector *.raw.v1 lanes →
+  # Iceberg Bronze) — now runs on the HOST via spark-submit (see db/iceberg/spark). It bootstraps to
+  # the broker over the host-mapped PLAINTEXT listener (localhost:9092) instead of sharing the
+  # broker's container netns. The now-orphaned `brain-spark-ivy` / `brain-spark-checkpoint` named
+  # volumes were dropped from the `volumes:` block below.
   # ────────────────────────────────────────────────────────────────────────────
-  spark-bronze-sink:
-    image: apache/spark:3.5.3
-    profiles: ["lakehouse"]
-    mem_limit: 7g      # 4g driver heap + Iceberg/Kafka/MERGE off-heap overhead (see budget: docs/ops/local-memory-budget.md)
-    # Share the Kafka broker's network namespace so its PLAINTEXT advertised listener (localhost:9092)
-    # resolves; service DNS (iceberg-rest, minio, postgres) still resolves because the broker is on the
-    # compose network. K1: broker is Apache Kafka KRaft (Redpanda removed); the service / DNS name is
-    # preserved as `redpanda`, so KAFKA_BROKERS=localhost:9092 via this netns is unchanged + correct.
-    network_mode: "service:redpanda"
-    user: root
-    depends_on:
-      redpanda:
-        condition: service_healthy
-      iceberg-rest:
-        condition: service_healthy
-      minio:
-        condition: service_healthy
-    environment:
-      # Same-netns bootstrap to the Apache Kafka KRaft broker's PLAINTEXT advertised listener (K1).
-      KAFKA_BROKERS: "localhost:9092"
-      # Topic prefix MUST match the app's NODE_ENV-derived prefix. local-prod runs NODE_ENV=production,
-      # so core/collector/stream-worker produce to prod.* — the sink must consume prod.* or it sees no
-      # real data and Bronze never fills (the same break would hit prod if these were left as dev.*).
-      COLLECTOR_TOPIC: "prod.collector.event.v1"
-      BACKFILL_TOPIC: "prod.collector.order.backfill.v1"
-      STARTING_OFFSETS: "earliest"
-      TRIGGER_MODE: "continuous"
-      PROCESSING_TIME: "10 seconds"
-      ICEBERG_CATALOG: "rest"
-      ICEBERG_REST_URI: "http://iceberg-rest:8181"
-      BRONZE_NAMESPACE: "brain_bronze"
-      BRONZE_WAREHOUSE: "s3://brain-bronze/"
-      S3_ENDPOINT: "http://minio:9000"
-      AWS_ACCESS_KEY_ID: "brain"
-      AWS_SECRET_ACCESS_KEY: "brainbrain"
-      AWS_REGION: "us-east-1"
-      BRONZE_PG_JDBC_URL: "jdbc:postgresql://postgres:5432/brain"
-      BRONZE_PG_USER: "brain"
-      BRONZE_PG_PASSWORD: "brain"
-      CHECKPOINT_LOCATION: "file:///opt/checkpoint/bronze"
-    volumes:
-      - ./db/iceberg/spark:/opt/spike:ro
-      - brain-spark-ivy:/root/.ivy2
-      - brain-spark-checkpoint:/opt/checkpoint
-    # Runtime jar resolution (cached in the ivy volume after first start) — mirrors run-bronze-spike.sh,
-    # which is the verified-working path (the build-time bake is unreliable behind Maven).
-    command:
-      - /opt/spark/bin/spark-submit
-      - --master
-      - "local[2]"
-      # Local-sink heap: the default 1g driver (driver==executor under local[*]) OOMs the
-      # Iceberg+Kafka+MERGE machinery when draining a large cold-start backlog. The host has ample
-      # RAM; pin 4g so the phase-1 backlog drain + continuous MERGE batches stay within heap.
-      - --driver-memory
-      - "4g"
-      - --packages
-      - "org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.9.2,org.apache.iceberg:iceberg-aws-bundle:1.9.2,org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.3,org.postgresql:postgresql:42.7.4"
-      - --conf
-      - spark.jars.ivy=/root/.ivy2
-      - /opt/spike/bronze_materialize.py
-    restart: unless-stopped
 
-  # ── Bronze writer (ADR-0006, Spark-SS landing REVERT): generic RAW landing for the connector lanes ──
-  # Lands the nine connector *.raw.v1 lanes (shopify/woocommerce/meta/google/ga4/shiprocket/gokwik/
-  # shopflo/razorpay) VERBATIM into brain_bronze.<lane>_raw — RAW, append-only, NO business logic before
-  # Bronze. This REPLACES the retired Kafka Connect Iceberg sinks (kafka-connect + kafka-connect-init +
-  # infra/kafka-connect/iceberg-bronze-*.json) so Spark is the SOLE landing compute. One streaming query
-  # subscribes to all nine topics and routes each record to its table by Kafka topic (single checkpoint).
-  # Offsets commit ONLY after the durable Iceberg append (no data loss); the append is an idempotent MERGE
-  # on the Kafka coordinate (topic,partition,offset) so replays never double-write. Shares the KRaft
-  # broker's network namespace (localhost:9092 resolves, like spark-bronze-sink); iceberg-rest + minio
-  # still resolve over compose DNS because the broker is on the compose network. Jars resolved at runtime
-  # (cached in the ivy volume). The collector/pixel lane keeps its OWN gated sink (spark-bronze-sink).
-  spark-bronze-raw-sink:
-    image: apache/spark:3.5.3
-    profiles: ["lakehouse"]
-    mem_limit: 6g      # 4g driver heap + off-heap overhead (see budget: docs/ops/local-memory-budget.md)
-    network_mode: "service:redpanda"
-    user: root
-    depends_on:
-      redpanda:
-        condition: service_healthy
-      iceberg-rest:
-        condition: service_healthy
-      minio:
-        condition: service_healthy
-    environment:
-      KAFKA_BROKERS: "localhost:9092"
-      # Topic prefix MUST match the app's NODE_ENV-derived prefix. local-prod runs NODE_ENV=production,
-      # so the connectors produce to prod.* — land prod.* or no raw data flows (same break would hit prod).
-      TOPIC_ENV_PREFIX: "prod"
-      LANE: ""                       # empty → all nine lanes in one stream (set a LANES key for one lane)
-      STARTING_OFFSETS: "earliest"
-      TRIGGER_MODE: "continuous"
-      PROCESSING_TIME: "10 seconds"
-      ICEBERG_CATALOG: "rest"
-      ICEBERG_REST_URI: "http://iceberg-rest:8181"
-      BRONZE_NAMESPACE: "brain_bronze"
-      BRONZE_WAREHOUSE: "s3://brain-bronze/"
-      S3_ENDPOINT: "http://minio:9000"
-      AWS_ACCESS_KEY_ID: "brain"
-      AWS_SECRET_ACCESS_KEY: "brainbrain"
-      AWS_REGION: "us-east-1"
-      CHECKPOINT_LOCATION: "file:///opt/checkpoint/bronze-raw"
-    volumes:
-      - ./db/iceberg/spark:/opt/spike:ro
-      - brain-spark-ivy:/root/.ivy2
-      - brain-spark-checkpoint:/opt/checkpoint
-    command:
-      - /opt/spark/bin/spark-submit
-      - --master
-      - "local[2]"
-      # 4g driver (driver==executor under local[*]) so the cold-start backlog drain + the per-lane MERGE
-      # machinery stay within heap — mirrors spark-bronze-sink.
-      - --driver-memory
-      - "4g"
-      - --packages
-      - "org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.9.2,org.apache.iceberg:iceberg-aws-bundle:1.9.2,org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.3"
-      - --conf
-      - spark.jars.ivy=/root/.ivy2
-      - /opt/spike/bronze_raw_landing.py
-    restart: unless-stopped
-
-  # ── Trino — serving query engine over Iceberg (DEFAULT profile) ──
+  # ── Trino — serving query engine over Iceberg (core profile) ──
   # Read-only query layer over the SAME Iceberg REST catalog + MinIO that Spark
   # uses. This is now the app serving path: App / BFF / metric-engine read the
   # Trino `mv_*` views (db/trino/views) over Iceberg + a Redis cache. StarRocks
@@ -541,15 +461,17 @@ services:
   # Apicurio's 8080:8080 mapping when the ingest profile runs simultaneously.
   trino:
     image: trinodb/trino:455
+    profiles: ["core"]   # sole serving engine — core member; app/BFF/metric-engine read its mv_* views
     # Auto-recover: Trino is the SOLE serving engine — if it ever dies (OOM, crash) every BFF
     # analytics read 500s with "fetch failed". restart:unless-stopped means a crash self-heals
     # instead of staying down until someone notices and runs `docker compose up -d trino`.
     restart: unless-stopped
-    # Bound the footprint so Trino can't size its heap to the whole Docker VM and get OOM-killed
-    # under refresh-time query load (the cause of the serving-tier outage). jvm.config caps the
-    # heap at 70% of this; the remainder is non-heap headroom. See db/trino/jvm.config.
+    # CONFLICT REFUSED: blueprint §4.2 says 1g, but the budget doc verifies Trino needs 7g
+    # (jvm.config MaxRAMPercentage=70 → ~4.9g heap + non-heap headroom). A 1g limit reproduces the
+    # serving-tier OOM-kill outage. Kept 7g (docs/ops/local-memory-budget.md). See structured notes.
     mem_limit: 7g
     mem_reservation: 3g
+    oom_score_adj: -700   # sole serving engine — protected (a kill 500s every analytics read)
     depends_on:
       iceberg-rest:
         condition: service_healthy
@@ -568,11 +490,15 @@ services:
       start_period: 30s
 
   # ────────────────────────────────────────────────────────────────────────────
-  # OBSERVE profile — Grafana + Loki + Prometheus + OTel Collector
+  # Observability (blueprint §4.1 split):
+  #   • prometheus + grafana → CORE   (base metrics dashboards always available)
+  #   • tempo + loki + otel-collector → FULL-OBS (trace/log pipeline, layered on core)
   # ────────────────────────────────────────────────────────────────────────────
   prometheus:
     image: prom/prometheus:v2.52.0
-    profiles: ["observe"]
+    profiles: ["core"]
+    mem_limit: 256m         # blueprint §4.2
+    oom_score_adj: 300      # observability — disposable, killed before stateful services
     ports: ["9090:9090"]
     volumes:
       - ./infra/observe/prometheus.yml:/etc/prometheus/prometheus.yml:ro
@@ -584,7 +510,7 @@ services:
 
   loki:
     image: grafana/loki:3.0.0
-    profiles: ["observe"]
+    profiles: ["full-obs"]
     ports: ["3100:3100"]
     command: ["-config.file=/etc/loki/local-config.yaml"]
     healthcheck:
@@ -595,7 +521,7 @@ services:
 
   tempo:
     image: grafana/tempo:2.5.0
-    profiles: ["observe"]
+    profiles: ["full-obs"]
     command: ["-config.file=/etc/tempo.yaml"]
     volumes:
       - ./infra/observe/tempo.yml:/etc/tempo.yaml:ro
@@ -610,13 +536,15 @@ services:
 
   grafana:
     image: grafana/grafana:10.4.2
-    profiles: ["observe"]
+    profiles: ["core"]
+    mem_limit: 256m         # blueprint §4.2
+    oom_score_adj: 500      # observability UI — most disposable, killed first under VM pressure
+    # Grafana is core but its Loki/Tempo datasources live in full-obs. depends_on is reduced to
+    # prometheus (same core profile) ONLY — a hard depends_on loki/tempo would make a core-only
+    # `up` fail (cross-profile dependency). Grafana boots fine without them; the provisioned
+    # Loki/Tempo datasources simply show "down" until `--profile full-obs` is also active.
     depends_on:
-      loki:
-        condition: service_healthy
       prometheus:
-        condition: service_healthy
-      tempo:
         condition: service_healthy
     environment:
       GF_SECURITY_ADMIN_USER: admin
@@ -633,10 +561,11 @@ services:
 
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.102.0
-    profiles: ["observe"]
+    profiles: ["full-obs"]
+    # Prometheus (core) SCRAPES this collector at :8889 (pull) — so the collector does NOT need
+    # prometheus up to start, and a hard cross-profile depends_on prometheus is dropped. It exports
+    # logs→loki and traces→tempo (both same full-obs profile), kept as hard deps.
     depends_on:
-      prometheus:
-        condition: service_healthy
       loki:
         condition: service_healthy
       tempo:
@@ -657,7 +586,7 @@ services:
   # KAFKA OBSERVABILITY — make the Kafka-repointed SLOs actually fire.
   #
   #  • The broker emits kafka_* JMX metrics on :9404 via the prometheus jmx_exporter
-  #    javaagent (attached on the `redpanda` service above; jar from `jmx-exporter-init`).
+  #    javaagent (attached on the `kafka` service above; jar from `jmx-exporter-init`).
   #  • kafka-exporter (below) emits per-consumer-group LAG on :9308 — NOT a broker JMX
   #    metric — driving BrainConsumerLagHigh.
   #  Both targets are scraped by infra/observe/prometheus.yml (jobs kafka-jmx-exporter /
@@ -666,13 +595,14 @@ services:
 
   # One-shot: download the prometheus jmx_exporter javaagent jar into the shared `jmx-agent`
   # volume so the broker JVM can `-javaagent:` it. Idempotent (skips if already present),
-  # pinned + checksum-free fetch from Maven Central. In BOTH ingest+observe profiles so the
-  # broker (ingest) always finds the jar, and an observe-only `up` still primes it.
+  # pinned + checksum-free fetch from Maven Central. In BOTH core+debug profiles: the kafka broker
+  # (core) HARD-depends on this init for its javaagent jar, so it must run with core; it is also
+  # tagged debug so it appears in the blueprint's debug-tooling group.
   jmx-exporter-init:
     image: curlimages/curl:8.8.0
-    profiles: ["ingest", "observe"]
+    profiles: ["core", "debug"]
     # Run as root: curlimages/curl defaults to uid 100, which CANNOT write the root-owned `jmx-agent`
-    # volume → curl exits 23 ("ERROR on write"), the init fails, and (being a depends_on of redpanda)
+    # volume → curl exits 23 ("ERROR on write"), the init fails, and (being a depends_on of kafka)
     # it aborts the whole `up --wait` chain before the broker starts. As root the download succeeds.
     user: "0:0"
     volumes:
@@ -694,7 +624,7 @@ services:
   # kafka_consumergroup_lag / kafka_topic_* on :9308.
   kafka-exporter:
     image: danielqsj/kafka-exporter:v1.7.0
-    profiles: ["observe"]
+    profiles: ["debug"]
     command:
       - "--kafka.server=brain-kafka-ext:19092"
       - "--web.listen-address=:9308"
@@ -703,8 +633,9 @@ services:
     restart: unless-stopped
 
 volumes:
-  brain-spark-checkpoint:
-  brain-spark-ivy:
+  # NOTE: brain-spark-checkpoint / brain-spark-ivy were REMOVED with the spark-bronze-sink /
+  # spark-bronze-raw-sink services — the host-run Spark Bronze landing owns its own checkpoint/ivy
+  # dirs on the host, not these compose-named volumes.
   # Holds the prometheus jmx_exporter javaagent jar shared between jmx-exporter-init and the broker.
   jmx-agent:
   # Persists the Iceberg REST JDBC (SQLite) catalog — namespace→table pointers — across iceberg-rest

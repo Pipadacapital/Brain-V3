@@ -1,0 +1,13 @@
+# Prod overrides for the karpenter-nodepools chart.
+# Cluster identity matches the eks module: aws_eks_cluster.main.name = "${project}-${environment}".
+clusterName: brain-prod
+nodeRole: brain-prod-eks-node
+discoveryTag: brain-prod
+
+tags:
+  Environment: prod
+  Service: karpenter-managed
+  Owner: data-team
+  CostCenter: brain-platform
+  project: brain
+  environment: prod

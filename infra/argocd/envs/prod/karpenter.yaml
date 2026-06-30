@@ -1,0 +1,125 @@
+################################################################################
+# Brain – ArgoCD Applications: Karpenter (prod)
+# Node autoscaling + Spot for the brain-prod EKS cluster. THREE ordered Applications:
+#   1. karpenter-crd-prod      (sync-wave -2) — upstream CRDs (NodePool/EC2NodeClass/NodeClaim)
+#   2. karpenter-prod          (sync-wave -1) — upstream controller (kube-system, IRSA)
+#   3. karpenter-nodepools-prod(sync-wave  0) — Brain NodePools + EC2NodeClass (local chart)
+#
+# Karpenter manages ALL non-system capacity. The eks module `system` managed node group
+# (brain-prod-system, t4g.medium, ON-DEMAND, fixed) is UNCHANGED and runs the Karpenter controller,
+# CoreDNS, ArgoCD and KEDA. See infra/helm/karpenter/README.md.
+#
+# MANUAL promotion gate (matches trino-prod) — Karpenter is critical infra; no automated sync.
+################################################################################
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: karpenter-crd-prod
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+  labels:
+    project: brain
+    environment: prod
+    service: karpenter
+spec:
+  project: brain-prod
+  source:
+    # OCI registry — pin the chart version (== controller appVersion).
+    repoURL: public.ecr.aws/karpenter
+    chart: karpenter-crd
+    targetRevision: 1.0.8
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kube-system
+  syncPolicy:
+    syncOptions:
+      - ServerSideApply=true
+  revisionHistoryLimit: 10
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: karpenter-prod
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+  labels:
+    project: brain
+    environment: prod
+    service: karpenter
+spec:
+  project: brain-prod
+  source:
+    repoURL: public.ecr.aws/karpenter
+    chart: karpenter
+    targetRevision: 1.0.8
+    helm:
+      valuesObject:
+        replicas: 2
+        # Controller IRSA — role created in modules/eks/irsa (see README "IRSA the operator must add").
+        serviceAccount:
+          name: karpenter
+          annotations:
+            eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/brain-prod-karpenter-controller
+        settings:
+          # MUST equal aws_eks_cluster.main.name (project-environment).
+          clusterName: brain-prod
+          # SQS interruption queue (Spot rebalance/termination + scheduled-change drain).
+          # Created in modules/eks/irsa alongside the controller role; name == cluster name.
+          interruptionQueue: brain-prod
+        controller:
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+        # Pin the controller to the fixed ON-DEMAND system node group (never self-host on Spot
+        # capacity it manages). The eks module labels that group role=system.
+        nodeSelector:
+          role: system
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kube-system
+  syncPolicy:
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: 2
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 5m
+  revisionHistoryLimit: 10
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: karpenter-nodepools-prod
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+    # Only reconcile when the NodePool intent changes.
+    argocd.argoproj.io/manifest-generate-paths: infra/helm/karpenter
+  labels:
+    project: brain
+    environment: prod
+    service: karpenter
+spec:
+  project: brain-prod
+  source:
+    repoURL: https://github.com/brain-platform/brain
+    targetRevision: main
+    path: infra/helm/karpenter
+    helm:
+      valueFiles:
+        - values-prod.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kube-system
+  syncPolicy:
+    syncOptions:
+      - ServerSideApply=true
+  revisionHistoryLimit: 10

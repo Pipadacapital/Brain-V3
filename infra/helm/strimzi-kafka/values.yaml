@@ -1,0 +1,137 @@
+# Default values for the strimzi-kafka chart (the Kafka CUSTOM RESOURCES only — the operator is
+# installed separately, see infra/argocd/envs/prod/strimzi-kafka.yaml). Overridden per env in
+# values-<env>.yaml. This mirrors the local docker-compose apache/kafka:3.8.1 KRaft single-broker
+# env, scaled to a 3-node production KRaft cluster.
+#
+# Resource naming: brain-<environment>-kafka  →  Strimzi bootstrap Service
+#   brain-<env>-kafka-kafka-bootstrap.<namespace>.svc:9092  (the app's KAFKA_BROKERS target).
+
+# Environment name → resource naming brain-<environment>-kafka. Set per-env in values-<env>.yaml.
+environment: prod
+
+# Override the full cluster name; empty → brain-<environment>-kafka (the convention).
+clusterName: ""
+
+kafka:
+  # Broker version — mirrors the local docker-compose image apache/kafka:3.8.1. Strimzi ships this
+  # Kafka line in the matching operator release; keep operator + this version in lockstep.
+  version: "3.8.1"
+  # KRaft metadata version for Kafka 3.8.x. Bump ONLY after the operator + broker upgrade lands.
+  metadataVersion: "3.8-IV0"
+
+  # ── KRaft node pool ─────────────────────────────────────────────────────────────────────────
+  # ONE combined node pool (controller + broker roles) → 3 nodes form the KRaft quorum AND serve
+  # as the 3 brokers. This matches the local compose single-node combined-role broker, scaled to a
+  # production 3-node quorum. Split controllers from brokers later by adding a second node pool.
+  nodePool:
+    name: combined
+    replicas: 3
+    roles:
+      - controller
+      - broker
+    storage:
+      # 50Gi gp3 EBS per broker (JBOD single volume). The gp3 StorageClass must exist in-cluster
+      # (EBS CSI driver); deleteClaim=false keeps data on CR delete.
+      size: 50Gi
+      class: gp3
+      deleteClaim: false
+    resources:
+      requests:
+        cpu: "1"
+        memory: 4Gi
+      limits:
+        cpu: "2"
+        memory: 6Gi
+    # JVM heap bounded below the memory limit (leave headroom for page cache / direct buffers).
+    jvm:
+      xms: 3072m
+      xmx: 3072m
+
+  # ── Listeners (INTERNAL only — no external/LoadBalancer exposure) ────────────────────────────
+  # plain :9092 and tls :9093, both type=internal. The app/BFF/collector/stream-worker + Spark all
+  # run in-cluster, so they reach the bootstrap Service directly. Mirrors the compose PLAINTEXT 9092
+  # (no public listener). TLS is the recommended in-cluster transport once mTLS clients are wired.
+  listeners:
+    plain:
+      enabled: true
+      port: 9092
+    tls:
+      enabled: true
+      port: 9093
+
+  # Broker config. auto.create.topics.enable is OFF (compose parity) — every topic is declared as a
+  # KafkaTopic CR below. Replication factors assume the 3-broker pool above.
+  config:
+    autoCreateTopics: false
+    defaultReplicationFactor: 3
+    minInsyncReplicas: 2
+    offsetsTopicReplicationFactor: 3
+    transactionStateLogReplicationFactor: 3
+    transactionStateLogMinIsr: 2
+    # Default broker-side retention = 7 days (matches the per-topic retention below + compose).
+    logRetentionMs: 604800000
+
+# ── Strimzi Entity Operator ────────────────────────────────────────────────────────────────────
+# The Topic Operator reconciles the KafkaTopic CRs below into real Kafka topics; the User Operator
+# manages KafkaUser CRs (mTLS/ACLs) when clients adopt TLS auth.
+entityOperator:
+  topicOperator:
+    enabled: true
+  userOperator:
+    enabled: true
+
+# ── Topics ───────────────────────────────────────────────────────────────────────────────────
+# Auto-create is OFF, so every topic the platform uses is declared here as a KafkaTopic. These are
+# the prod-prefix topics ported 1:1 from the docker-compose redpanda-init bootstrap.
+topics:
+  # Topic name prefix. Prod cluster carries the prod.* lane (compose seeds both dev.* and prod.*).
+  prefix: prod
+
+  # Partitions per topic — TENANT-KEYED (brand_id is the partition key on every event), so a tenant's
+  # ordered stream stays on one partition. Configurable 6..12; the chart fails outside that band.
+  # Default 12 mirrors the compose num.partitions.
+  partitions: 12
+  replicas: 3
+
+  retention:
+    standardMs: 604800000   # 7 days  — event + canonical + control lanes
+    longMs: 2592000000      # 30 days — DLQ / quarantine / order-backfill (replay window)
+
+  # Collector lane (+ DLQ / quarantine / order-backfill). retention: standard | long.
+  collector:
+    - { suffix: "collector.event.v1",            retention: "standard" }
+    - { suffix: "collector.order.backfill.v1",   retention: "long" }
+    - { suffix: "collector.event.v1.dlq",        retention: "long" }
+    - { suffix: "collector.event.v1.quarantine", retention: "long" }
+
+  # 9 connector raw lanes (Spark-SS Bronze landing — bronze_raw_landing.py). Suffix -> <lane>.raw.v1
+  rawLanes:
+    - shopify.orders
+    - woocommerce.orders
+    - meta.spend
+    - google.spend
+    - ga4.rows
+    - shiprocket.shipments
+    - gokwik.events
+    - shopflo.checkout
+    - razorpay.settlement
+
+  # Identity + intelligence control/event topics.
+  control:
+    - intelligence.cache.invalidate.v1
+    - intelligence.customer360.recomputed.v1
+    - intelligence.gold.rewritten.v1
+    - identity.merged.v1
+    - identity.suppressed.v1
+    - identity.minted.v1
+    - identity.linked.v1
+    - identity.review_queued.v1
+
+  # Internal canonical fan-out lanes -> brain.<entity>
+  fanout:
+    - orders
+    - customers
+    - shipments
+    - payments
+    - sessions
+    - ads

@@ -1,0 +1,38 @@
+# EC2NodeClass — the AWS-specific launch template Karpenter uses for all Brain NodePools.
+# Cluster-scoped (no namespace). Karpenter v1 API: karpenter.k8s.aws/v1.
+apiVersion: karpenter.k8s.aws/v1
+kind: EC2NodeClass
+metadata:
+  name: {{ .Values.ec2NodeClass.name }}
+  labels:
+    project: brain
+    environment: {{ .Values.tags.environment | default "prod" }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  # EKS-optimized AL2023 arm64 AMI (Graviton t4g.*), tracked at the cluster's k8s version.
+  amiSelectorTerms:
+    - alias: {{ .Values.amiAlias }}
+  # REUSE the eks module node role (instance profile is auto-managed by Karpenter v1).
+  role: {{ .Values.nodeRole }}
+  # Discover the private subnets + node SG by the karpenter.sh/discovery tag (operator must tag them).
+  subnetSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: {{ .Values.discoveryTag }}
+  securityGroupSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: {{ .Values.discoveryTag }}
+  # IMDSv2-only (httpTokens required) — restricted Pod Security baseline.
+  metadataOptions:
+    httpEndpoint: enabled
+    httpProtocolIPv6: disabled
+    httpPutResponseHopLimit: 1
+    httpTokens: required
+  blockDeviceMappings:
+    - deviceName: {{ .Values.ec2NodeClass.rootVolume.deviceName }}
+      ebs:
+        volumeSize: {{ .Values.ec2NodeClass.rootVolume.sizeGi }}Gi
+        volumeType: {{ .Values.ec2NodeClass.rootVolume.type }}
+        encrypted: {{ .Values.ec2NodeClass.rootVolume.encrypted }}
+        deleteOnTermination: true
+  tags:
+    {{- toYaml .Values.tags | nindent 4 }}

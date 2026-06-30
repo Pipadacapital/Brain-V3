@@ -74,10 +74,18 @@ export interface CollectorEnvelope {
   [k: string]: unknown;
 }
 
-/** Produce a raw-JSON collector envelope to the Bronze-bound Kafka topic (keyed by brand_id). */
-export async function produceCollectorEvent(producer: Producer, env: CollectorEnvelope): Promise<void> {
+/**
+ * Produce a raw-JSON collector envelope to the Bronze-bound Kafka topic (keyed by brand_id).
+ * `topic` defaults to the helper's COLLECTOR_TOPIC; callers in a prod-prefixed stack (local-prod)
+ * pass the matching topic explicitly so the running Spark sink actually consumes it.
+ */
+export async function produceCollectorEvent(
+  producer: Producer,
+  env: CollectorEnvelope,
+  topic: string = COLLECTOR_TOPIC,
+): Promise<void> {
   await producer.send({
-    topic: COLLECTOR_TOPIC,
+    topic,
     messages: [
       {
         key: env.brand_id,

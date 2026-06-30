@@ -1,0 +1,43 @@
+environment: prod
+
+image:
+  repository: trinodb/trino
+  tag: "455"
+
+coordinator:
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: "2"
+      memory: 6Gi
+    limits:
+      cpu: "4"
+      memory: 7Gi
+
+workers:
+  replicaCount: 3
+  resources:
+    requests:
+      cpu: "2"
+      memory: 6Gi
+    limits:
+      cpu: "4"
+      memory: 7Gi
+  # KEDA worker autoscaling stays OFF until KEDA is installed + a scale baseline is measured in prod.
+  autoscaling:
+    enabled: false
+    minReplicas: 3
+    maxReplicas: 8
+
+# Real AWS S3 Iceberg buckets reached via the pod IRSA role — no static keys, no MinIO endpoint.
+iceberg:
+  restUri: "http://iceberg-rest.iceberg.svc.cluster.local:8181"
+  s3:
+    region: us-east-1
+    endpoint: ""
+    pathStyleAccess: false
+  s3SecretName: ""
+
+serviceAccount:
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/brain-trino-prod

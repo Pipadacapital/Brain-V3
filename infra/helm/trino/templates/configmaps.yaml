@@ -1,0 +1,76 @@
+{{/*
+Trino server config (config.properties + jvm.config + node.properties) and the Iceberg catalog
+(catalog/iceberg.properties). Coordinator and workers share jvm.config / node.properties / the
+catalog, but get different config.properties (coordinator vs worker role), so they are separate keys
+mounted via subPath into /etc/trino so the image's other defaults are preserved.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "trino.fullname" . }}-config
+  labels:
+    {{- include "trino.labels" . | nindent 4 }}
+data:
+  coordinator-config.properties: |
+    coordinator=true
+    # The coordinator never runs splits — workers do all the scan work.
+    node-scheduler.include-coordinator=false
+    http-server.http.port={{ .Values.httpPort }}
+    # Discovery + the BFF/JDBC endpoint resolve to the coordinator ClusterIP Service.
+    discovery.uri=http://{{ include "trino.fullname" . }}:{{ .Values.service.port }}
+    query.max-memory={{ .Values.query.maxMemory }}
+    query.max-memory-per-node={{ .Values.query.maxMemoryPerNode }}
+
+  worker-config.properties: |
+    coordinator=false
+    http-server.http.port={{ .Values.httpPort }}
+    discovery.uri=http://{{ include "trino.fullname" . }}:{{ .Values.service.port }}
+    query.max-memory={{ .Values.query.maxMemory }}
+    query.max-memory-per-node={{ .Values.query.maxMemoryPerNode }}
+
+  node.properties: |
+    node.environment={{ .Values.environment }}
+    node.data-dir=/data/trino
+    # node.id is auto-generated + persisted per pod when omitted.
+
+  jvm.config: |
+    -server
+    # BOUNDED HEAP — mirrors db/trino/jvm.config. The container's memory LIMIT bounds the heap at 70%
+    # so Trino can't size to the whole node and get OOM-killed under serving load (the outage cause).
+    -XX:InitialRAMPercentage=35
+    -XX:MaxRAMPercentage=70
+    -XX:G1HeapRegionSize=32M
+    -XX:+ExplicitGCInvokesConcurrent
+    -XX:+HeapDumpOnOutOfMemoryError
+    -XX:+ExitOnOutOfMemoryError
+    -XX:-OmitStackTraceInFastThrow
+    -XX:ReservedCodeCacheSize=256M
+    -XX:PerMethodRecompilationCutoff=10000
+    -XX:PerBytecodeRecompilationCutoff=10000
+    -Djdk.attach.allowAttachSelf=true
+    -Djdk.nio.maxCachedBufferSize=2000000
+    -XX:+EnableDynamicAgentLoading
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "trino.fullname" . }}-catalog
+  labels:
+    {{- include "trino.labels" . | nindent 4 }}
+data:
+  iceberg.properties: |
+    # Iceberg connector → the SAME Iceberg REST catalog + S3 object store Spark writes Bronze/Silver/Gold to.
+    # This catalog backs the brain_serving.mv_* views the BFF reads — Trino is the SOLE serving engine.
+    connector.name=iceberg
+    iceberg.catalog.type=rest
+    iceberg.rest-catalog.uri={{ .Values.iceberg.restUri }}
+    fs.native-s3.enabled=true
+    s3.region={{ .Values.iceberg.s3.region }}
+    {{- if .Values.iceberg.s3.endpoint }}
+    s3.endpoint={{ .Values.iceberg.s3.endpoint }}
+    {{- end }}
+    s3.path-style-access={{ .Values.iceberg.s3.pathStyleAccess }}
+    {{- if .Values.iceberg.s3SecretName }}
+    s3.aws-access-key=${ENV:TRINO_S3_ACCESS_KEY}
+    s3.aws-secret-key=${ENV:TRINO_S3_SECRET_KEY}
+    {{- end }}

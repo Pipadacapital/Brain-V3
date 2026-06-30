@@ -1,0 +1,86 @@
+# Default values for the trino chart. Overridden by values-prod.yaml.
+#
+# Trino is the Brain V4 SOLE serving engine: app / BFF / metric-engine read the Trino
+# brain_serving.mv_* views (resolving to iceberg.brain_{gold,silver,serving}.*). This chart is a
+# thin, correct coordinator + worker deployment mirroring the local docker-compose Trino bounds
+# (trinodb/trino:455, bounded heap MaxRAMPercentage=70, ~7Gi footprint, Iceberg REST + S3 catalog).
+
+# Environment name → resource naming brain-<environment>-trino (e.g. brain-prod-trino) and
+# Trino node.environment. Set per-env in values-<env>.yaml.
+environment: prod
+
+image:
+  repository: trinodb/trino
+  tag: "455"          # pinned to the local-prod image; no mutable :latest in the serving tier
+  pullPolicy: IfNotPresent
+
+# Coordinator — exactly one. It also serves the discovery service and the HTTP/JDBC endpoint the
+# BFF connects to (the brain-<env>-trino ClusterIP Service). Never a worker (include-coordinator=false).
+coordinator:
+  replicaCount: 1
+  resources:
+    # Mirrors the local mem_limit 7g; jvm.config caps the heap at 70% of the memory LIMIT (~4.9Gi),
+    # leaving headroom for non-heap (code cache / metaspace / direct buffers).
+    requests:
+      cpu: "1"
+      memory: 4Gi
+    limits:
+      cpu: "2"
+      memory: 7Gi
+
+# Workers — stateless query executors. Scale these horizontally for serving throughput.
+workers:
+  replicaCount: 2
+  resources:
+    requests:
+      cpu: "1"
+      memory: 4Gi
+    limits:
+      cpu: "2"
+      memory: 7Gi
+  # ── KEDA CPU-scaler stub (off by default) ───────────────────────────────────────────────────
+  # Workers are CPU-bound during scans → CPU is the right scale signal. Enable by installing KEDA
+  # in the cluster and flipping autoscaling.enabled; the ScaledObject targets the worker Deployment.
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 8
+    # cpuTargetUtilization: 70   # KEDA cpu trigger: scale out above 70% average CPU
+    # cooldownPeriod: 300        # 5m cooldown before scaling workers back down (avoid query thrash)
+
+service:
+  type: ClusterIP
+  port: 8080          # BFF / JDBC connect to brain-<env>-trino:8080
+  targetPort: 8080
+
+# Trino HTTP port inside the container/pod (config.properties http-server.http.port).
+httpPort: 8080
+
+# Cluster-wide query memory limits (config.properties). Brain's serving data is small and queries
+# finish sub-second, so these are generous-but-bounded ceilings that match the modest heap.
+query:
+  maxMemory: "4GB"          # whole-cluster ceiling for a single distributed query
+  maxMemoryPerNode: "2GB"   # per-node ceiling; must be < the JVM heap (~4.9Gi)
+
+# Iceberg connector → the SAME Iceberg REST catalog + S3 object store Spark writes. In prod this is
+# the in-cluster iceberg-rest Service and real AWS S3 buckets (Bronze/Silver/Gold), reached via the
+# pod IRSA role (serviceAccount.annotations) — NO static S3 keys. For non-AWS/MinIO, set s3.endpoint
+# + s3.pathStyleAccess and provide keys through s3SecretName.
+iceberg:
+  restUri: "http://iceberg-rest:8181"
+  s3:
+    region: "us-east-1"
+    endpoint: ""            # empty → native AWS S3 (prod). Set to a MinIO URL for non-AWS object stores.
+    pathStyleAccess: false  # true only for MinIO / path-style stores
+  # Optional Secret (External Secrets ← AWS Secrets Manager) with TRINO_S3_ACCESS_KEY /
+  # TRINO_S3_SECRET_KEY. Leave empty in prod to use the pod IRSA role's credentials.
+  s3SecretName: ""
+
+# IRSA role for S3 (Iceberg data buckets) read access. Set per-env in values-<env>.yaml.
+serviceAccount:
+  annotations: {}
+
+probes:
+  enabled: true
+  # Trino readiness/liveness endpoint (same as the local healthcheck: /v1/info).
+  path: /v1/info

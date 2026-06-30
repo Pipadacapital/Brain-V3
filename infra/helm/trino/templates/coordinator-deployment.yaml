@@ -1,0 +1,92 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "trino.coordinator.fullname" . }}
+  labels:
+    {{- include "trino.labels" . | nindent 4 }}
+    app.kubernetes.io/component: coordinator
+spec:
+  replicas: {{ .Values.coordinator.replicaCount }}   # exactly one coordinator
+  selector:
+    matchLabels:
+      {{- include "trino.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: coordinator
+  template:
+    metadata:
+      labels:
+        {{- include "trino.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: coordinator
+      annotations:
+        # Roll the pods when server config / catalog changes.
+        checksum/config: {{ include (print $.Template.BasePath "/configmaps.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "trino.fullname" . }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000        # trinodb/trino runs as uid 1000 ("trino")
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: trino-coordinator
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: {{ .Values.httpPort }}
+              protocol: TCP
+          {{- if .Values.iceberg.s3SecretName }}
+          envFrom:
+            - secretRef:
+                name: {{ .Values.iceberg.s3SecretName }}
+          {{- end }}
+          {{- if .Values.probes.enabled }}
+          startupProbe:
+            httpGet:
+              path: {{ .Values.probes.path }}
+              port: http
+            failureThreshold: 30
+            periodSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.probes.path }}
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.probes.path }}
+              port: http
+            periodSeconds: 15
+            failureThreshold: 3
+          {{- end }}
+          resources:
+            {{- toYaml .Values.coordinator.resources | nindent 12 }}
+          volumeMounts:
+            - name: server-config
+              mountPath: /etc/trino/config.properties
+              subPath: coordinator-config.properties
+            - name: server-config
+              mountPath: /etc/trino/jvm.config
+              subPath: jvm.config
+            - name: server-config
+              mountPath: /etc/trino/node.properties
+              subPath: node.properties
+            - name: catalog
+              mountPath: /etc/trino/catalog/iceberg.properties
+              subPath: iceberg.properties
+            - name: data
+              mountPath: /data/trino
+      volumes:
+        - name: server-config
+          configMap:
+            name: {{ include "trino.fullname" . }}-config
+        - name: catalog
+          configMap:
+            name: {{ include "trino.fullname" . }}-catalog
+        - name: data
+          emptyDir: {}

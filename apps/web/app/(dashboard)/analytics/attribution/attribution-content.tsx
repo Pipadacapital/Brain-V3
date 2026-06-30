@@ -36,9 +36,9 @@
  * selector is a keyboard-reachable radio group.
  */
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import Link from 'next/link';
-import { Layers, ArrowRight, Target, TrendingUp, Megaphone } from 'lucide-react';
+import { Layers, ArrowRight, Target, TrendingUp, Megaphone, Workflow, Activity } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import {
   Table,
@@ -58,6 +58,8 @@ import { AttributionModelSelector } from '@/components/analytics/attribution-mod
 import { AttributedChannelChart } from '@/components/analytics/attributed-channel-chart';
 import { ConfidenceGradeBadge } from '@/components/analytics/confidence-grade-badge';
 import { ReconciliationResidualCard } from '@/components/analytics/reconciliation-residual-card';
+import { Sankey, type SankeyNode, type SankeyLink } from '@/components/analytics/sankey';
+import { TrendChart } from '@/components/analytics/trend-chart';
 import { channelMeta } from '@/components/analytics/channel-meta';
 import { DateRangeFilter, initialRange, type DateRange, type RangePreset } from '@/components/ui/date-range-filter';
 import {
@@ -65,6 +67,8 @@ import {
   useAttributionReconciliation,
   useChannelRoas,
   useCampaignAttribution,
+  useJourneyPaths,
+  useAttributedRevenueTimeseries,
 } from '@/lib/hooks/use-analytics';
 import { formatMoneyDisplay } from '@/lib/format/money-display';
 import type { CurrencyCode } from '@brain/money';
@@ -73,6 +77,9 @@ import type {
   AnalyticsAttributionByChannelResponse,
   AnalyticsAttributionReconciliationResponse,
   AnalyticsCampaignAttributionResponse,
+  AnalyticsJourneyPathsResponse,
+  AnalyticsAttributedRevenueTimeseriesResponse,
+  AnalyticsTimeseriesResponse,
   AttributionConfidenceGrade,
   ChannelRoasRow,
 } from '@/lib/api/types';
@@ -128,6 +135,119 @@ function EmptyAttributionCard() {
   );
 }
 
+/** A stable terminal-node id for the channel → revenue Sankey (never a real channel name). */
+const REVENUE_NODE_ID = '__attributed_revenue__';
+
+/**
+ * Format a pre-divided MAJOR-unit chart magnitude (number) as locale currency for the Sankey
+ * band/node labels. The exact money stays minor-unit-safe upstream (by_channel.contribution_minor);
+ * only this already-divided display magnitude is rendered here (Sankey contract), so no float money
+ * math drives a real figure. 0 fraction digits — it's a chart label, not an exact ledger amount.
+ */
+function makeMoneyMajorFormat(currency: CurrencyCode): (v: number) => string {
+  return (v: number) => {
+    try {
+      return new Intl.NumberFormat(undefined, {
+        style: 'currency',
+        currency,
+        maximumFractionDigits: 0,
+      }).format(v);
+    } catch {
+      return `${currency} ${v.toLocaleString()}`;
+    }
+  };
+}
+
+/**
+ * Roll the date × channel attributed-revenue timeseries up into the shared TrendChart's
+ * realized/provisional shape: aggregate attributed revenue per bucket for the single primary
+ * currency (NEVER blend currencies). `provisional` is left at 0 — this series is ATTRIBUTED
+ * revenue (net of clawback), not the realized/provisional recognition ledger; the card title
+ * frames it honestly. Mirrors the marketing-campaigns rollup so the chart shape stays identical.
+ */
+function rollupAttributedRevenueToTrend(
+  ts: AnalyticsAttributedRevenueTimeseriesResponse | undefined,
+): AnalyticsTimeseriesResponse | undefined {
+  if (!ts) return undefined;
+  if (ts.state === 'no_data' || ts.buckets.length === 0) {
+    return { state: 'no_data', from: ts.from, to: ts.to, grain: ts.grain };
+  }
+  // Primary currency = the one with the most buckets (we never blend currencies in one chart).
+  const ccyCount = new Map<string, number>();
+  for (const b of ts.buckets) ccyCount.set(b.currency_code, (ccyCount.get(b.currency_code) ?? 0) + 1);
+  const primary = [...ccyCount.entries()].sort((a, b) => b[1] - a[1])[0]![0];
+
+  const perBucket = new Map<string, bigint>();
+  for (const b of ts.buckets) {
+    if (b.currency_code !== primary) continue;
+    perBucket.set(b.bucket, (perBucket.get(b.bucket) ?? 0n) + BigInt(b.attributed_revenue_minor));
+  }
+  const buckets = [...perBucket.entries()]
+    .sort((a, b) => (a[0] < b[0] ? -1 : 1))
+    .map(([bucket, sum]) => ({
+      bucket,
+      currency_code: primary,
+      realized_minor: sum.toString(),
+      provisional_minor: '0',
+    }));
+  return { state: 'has_data', from: ts.from, to: ts.to, grain: ts.grain, buckets };
+}
+
+/**
+ * Build the channel → revenue Sankey graph from BOTH journey-path structure and by-channel money.
+ *
+ * Bands (the only magnitude-bearing flow) are sized PURELY by by_channel attributed revenue —
+ * each credited channel → a single "Revenue" terminal, in pre-divided MAJOR units. The UI never
+ * re-apportions weights (page invariant), so the journey-path edges (which are in JOURNEY counts,
+ * a different unit) are NOT drawn as bands — instead they ORDER the channel nodes by journey
+ * prominence so the flow reads in the same order as the journeys that produced it, and supply the
+ * honest journeys-observed context. Single unit on the canvas = money. Honest empty falls through
+ * to the Sankey's own EmptyState when no channel has positive attributed revenue.
+ */
+function buildChannelRevenueSankey(
+  byChannel: ByChannelHasData,
+  paths: AnalyticsJourneyPathsResponse | undefined,
+): { nodes: SankeyNode[]; links: SankeyLink[] } {
+  // Journey prominence per channel — Σ journeys touching the channel across the top path edges.
+  const journeysByChannel = new Map<string, bigint>();
+  if (paths?.state === 'has_data') {
+    for (const l of paths.links) {
+      const j = BigInt(l.journeys);
+      journeysByChannel.set(l.from_channel, (journeysByChannel.get(l.from_channel) ?? 0n) + j);
+      journeysByChannel.set(l.to_channel, (journeysByChannel.get(l.to_channel) ?? 0n) + j);
+    }
+  }
+
+  // channel → Revenue, band = attributed revenue in MAJOR units (chart magnitude; minor upstream).
+  const links: SankeyLink[] = byChannel.by_channel
+    .map((c) => ({
+      source: c.channel,
+      target: REVENUE_NODE_ID,
+      value: Number(BigInt(c.contribution_minor) / 100n),
+      label: channelMeta(c.channel).label,
+    }))
+    .filter((l) => l.value > 0);
+
+  // Order channel nodes by journey prominence (path data), then the canonical channel order.
+  const channelIds = [...new Set(links.map((l) => l.source))].sort((a, b) => {
+    const ja = journeysByChannel.get(a) ?? 0n;
+    const jb = journeysByChannel.get(b) ?? 0n;
+    if (ja !== jb) return ja > jb ? -1 : 1;
+    return channelMeta(a).order - channelMeta(b).order;
+  });
+
+  const nodes: SankeyNode[] = [
+    ...channelIds.map((id) => ({
+      id,
+      label: channelMeta(id).label,
+      color: channelMeta(id).chartVar,
+    })),
+    { id: REVENUE_NODE_ID, label: 'Revenue', color: 'hsl(var(--chart-1))' },
+  ];
+
+  return { nodes, links };
+}
+
 export function AttributionContent() {
   const [model, setModel] = useState<AttributionModel>('position_based');
   const [range, setRange] = useState<DateRange>(() => initialRange(ATTRIBUTION_PRESETS, '90'));
@@ -137,6 +257,15 @@ export function AttributionContent() {
   const roasQ = useChannelRoas({ model, from: range.from, to: range.to });
   // Per-campaign attributed revenue + ROAS (#32c) — brand-wide roll-up under the same model selector.
   const campaignQ = useCampaignAttribution({ model });
+  // Channel → revenue Sankey: journey-path structure (ordering/context) + by-channel money (bands).
+  const pathsQ = useJourneyPaths({ limit: 25 });
+  // Attributed-revenue-over-time (P3) — model-selector + date-range driven; rolled to the TrendChart.
+  const tsQ = useAttributedRevenueTimeseries({
+    model,
+    date_start: range.from,
+    date_end: range.to,
+  });
+  const tsTrend = useMemo(() => rollupAttributedRevenueToTrend(tsQ.data), [tsQ.data]);
 
   const isLoading = byChannelQ.isLoading;
   const error = byChannelQ.error;
@@ -215,6 +344,79 @@ export function AttributionContent() {
             recon={recon?.state === 'has_data' ? recon : null}
           />
         )}
+      </section>
+
+      {/* ── Channel → revenue flow (the Sankey: which channels feed the attributed revenue) ── */}
+      <section aria-label="Channel to revenue flow" data-testid="attribution-sankey-section">
+        <div className="mb-3">
+          <h2 className="text-lg font-semibold text-foreground flex items-center gap-2">
+            <Workflow className="h-4 w-4" aria-hidden="true" />
+            Channel → revenue flow
+          </h2>
+          <p className="text-sm text-muted-foreground mt-0.5">
+            Each band&apos;s thickness is the attributed revenue that channel earns under the{' '}
+            {model.replace('_', '-')} model, flowing into total realized revenue. Bands are sized by
+            money only (we never re-apportion credit in the browser); channels are ordered by how
+            many of your journeys touched them
+            {pathsQ.data?.state === 'has_data'
+              ? ` (${Number(BigInt(pathsQ.data.total_journeys)).toLocaleString('en-IN')} journeys across ${pathsQ.data.total_paths.toLocaleString('en-IN')} paths)`
+              : ''}
+            .
+          </p>
+        </div>
+        <Card>
+          <CardContent className="pt-6">
+            {isLoading ? (
+              <Skeleton className="h-72 w-full rounded-lg" />
+            ) : error ? (
+              <ErrorCard error={error} retry={byChannelQ.refetch} />
+            ) : byChannel?.state === 'has_data' ? (
+              (() => {
+                const { nodes, links } = buildChannelRevenueSankey(byChannel, pathsQ.data);
+                return (
+                  <Sankey
+                    nodes={nodes}
+                    links={links}
+                    height={Math.max(280, Math.min(520, links.length * 56 + 80))}
+                    valueFormat={makeMoneyMajorFormat((byChannel.currency_code ?? 'INR') as CurrencyCode)}
+                    caption="Attributed revenue by channel, flowing into total realized revenue"
+                    data-testid="attribution-channel-sankey"
+                  />
+                );
+              })()
+            ) : (
+              <p className="text-sm text-muted-foreground italic" role="status">
+                No channel → revenue flow yet — attribution credit has no rows for this model and
+                window. The flow appears once journeys are credited with revenue.
+              </p>
+            )}
+          </CardContent>
+        </Card>
+      </section>
+
+      {/* ── Attributed revenue over time (P3 — the date-grain credit ledger as a trend) ── */}
+      <section aria-label="Attributed revenue over time" data-testid="attribution-timeseries-section">
+        <div className="mb-3">
+          <h2 className="text-lg font-semibold text-foreground flex items-center gap-2">
+            <Activity className="h-4 w-4" aria-hidden="true" />
+            Attributed revenue over time
+          </h2>
+          <p className="text-sm text-muted-foreground mt-0.5">
+            Daily attributed revenue (net of clawback) for the {model.replace('_', '-')} model over
+            the selected window, summed across every credited channel — including organic and direct,
+            not only campaign-bearing touches. Single currency per chart (never blended); this is
+            attributed credit, not the realized/provisional recognition ledger.
+          </p>
+        </div>
+        <Card>
+          <CardContent className="pt-6">
+            {tsQ.error ? (
+              <ErrorCard error={tsQ.error} retry={tsQ.refetch} />
+            ) : (
+              <TrendChart data={tsTrend} isLoading={tsQ.isLoading} />
+            )}
+          </CardContent>
+        </Card>
       </section>
 
       {/* ── Channel performance (the per-channel unit economics) ── */}

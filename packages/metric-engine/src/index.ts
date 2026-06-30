@@ -68,6 +68,9 @@ export type { RetentionResult, RetentionCohortRow } from './retention.js';
 // #32b — time-to-2nd-purchase retention LATENCY (median + 6-bucket histogram) over gold_repeat_latency.
 export { computeRepeatLatency } from './repeat-latency.js';
 export type { RepeatLatencyResult, RepeatLatencyBucket } from './repeat-latency.js';
+// P3 — the UTM / acquisition-SOURCE matrix over gold_utm_source + the acquisition-source drilldown resolver.
+export { computeUtmSource, getCustomerAcquisitionSourceMembers } from './utm-source.js';
+export type { UtmSourceResult, UtmSourceRow } from './utm-source.js';
 export { getCustomerCommerce } from './customer-commerce.js';
 export type { CustomerCommerceProfile } from './customer-commerce.js';
 export type { CacRow } from './cac.js';
@@ -130,6 +133,10 @@ export type {
 // from the multi-source silver_shipment mart (GoKwik AWB + Shiprocket).
 export { computeShipmentOutcomes } from './shipment-outcomes.js';
 export type { ShipmentOutcomesResult, CourierOutcome, PincodeOutcome } from './shipment-outcomes.js';
+// Operations delivery-time (P3) — per-courier avg delivery days + 5-bucket day histogram, from the
+// gold_delivery_time mart (folded from silver_shipment dispatched→delivered terminal timestamps).
+export { computeDeliveryTime } from './delivery-time.js';
+export type { DeliveryTimeResult, CourierDeliveryTime, DeliveryTimeBucket } from './delivery-time.js';
 // Logistics RETURN funnel (SR-10) — per-return_class breakdown + completion% from silver_return (SR-4).
 // SEPARATE from shipment outcomes: returns NEVER carry terminal_class (no false-delivery leak).
 export { computeReturnFunnel } from './return-funnel.js';
@@ -312,6 +319,11 @@ export type { CampaignAttributionResult, CampaignAttributionRow } from './campai
 // computeCampaignAttribution; reads the date-bearing mv_gold_marketing_attribution it rolls up from).
 export { computeCampaignTimeseries } from './campaign-timeseries.js';
 export type { CampaignTimeseriesBucket } from './campaign-timeseries.js';
+
+// P3 — date × channel attributed revenue over the FULL credit ledger serving view
+// (mv_gold_attribution_credit). The channel-grain sibling of computeCampaignTimeseries.
+export { computeAttributedRevenueTimeseries } from './attributed-revenue-timeseries.js';
+export type { AttributedRevenueTimeseriesBucket } from './attributed-revenue-timeseries.js';
 
 // Phase 7 Data Quality (feat-data-quality-engine) — cost_confidence + effective_confidence.
 // effective_confidence = min(cost_confidence, attribution_confidence). FROZEN grade lookups

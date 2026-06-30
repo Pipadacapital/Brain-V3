@@ -104,6 +104,37 @@ export function useRepeatLatency() {
 }
 
 /**
+ * useDeliveryTime — per-courier average delivery days + the fixed five-bucket day histogram (P3) from
+ * gold_delivery_time via /v1/analytics/operations/delivery-time. Powers the Operations tab
+ * "Delivery time by courier" panel. Integer day math, NO money; honest no_data when the brand has no
+ * delivered shipments.
+ */
+export function useDeliveryTime() {
+  return useQuery({
+    queryKey: [...ANALYTICS_QUERY_KEY, 'delivery-time'],
+    queryFn: () => analyticsApi.getDeliveryTime(),
+    staleTime: 5 * 60_000,
+    refetchInterval: 60_000,
+  });
+}
+
+/**
+ * useUtmSource — the UTM / acquisition-SOURCE matrix (P3) from gold_utm_source via /v1/analytics/utm-source.
+ * One row per first-touch (source, medium): visitors / conversions / revenue / avg_ltv / repeat_rate.
+ * Powers the Acquisition tab "Source matrix" panel; drill into a source's customers via useCustomers
+ * ({ acquisitionSource }). Money = bigint minor + currency_code; honest no_data when the brand has no
+ * acquisition rows.
+ */
+export function useUtmSource() {
+  return useQuery({
+    queryKey: [...ANALYTICS_QUERY_KEY, 'utm-source'],
+    queryFn: () => analyticsApi.getUtmSource(),
+    staleTime: 5 * 60_000,
+    refetchInterval: 60_000,
+  });
+}
+
+/**
  * useRecognitionBreakdown — fetches recognition state distribution.
  * @param asOf - YYYY-MM-DD date (optional; server defaults to today).
  */
@@ -246,6 +277,43 @@ export function useOrderDetail(orderId: string | null | undefined) {
     queryFn: () => analyticsApi.getOrderDetail(orderId as string),
     enabled: !!orderId,
     staleTime: 60_000,
+  });
+}
+
+/**
+ * useProductDetail — one product's storefront funnel + returns + conversion rates from
+ * gold_product_detail (P3). Disabled when productId is falsy.
+ */
+export function useProductDetail(productId: string | null | undefined) {
+  return useQuery({
+    queryKey: [...ANALYTICS_QUERY_KEY, 'product-detail', productId ?? ''],
+    queryFn: () => analyticsApi.getProductDetail(productId as string),
+    enabled: !!productId,
+    staleTime: 5 * 60_000,
+  });
+}
+
+/**
+ * useProductAffinity — a product's frequently-bought-together partners from gold_product_affinity (P3).
+ * Disabled when productId is falsy.
+ */
+export function useProductAffinity(productId: string | null | undefined, params?: { limit?: number }) {
+  return useQuery({
+    queryKey: [...ANALYTICS_QUERY_KEY, 'product-affinity', productId ?? '', params?.limit ?? 10],
+    queryFn: () => analyticsApi.getProductAffinity(productId as string, params),
+    enabled: !!productId,
+    staleTime: 5 * 60_000,
+  });
+}
+
+/**
+ * useProductCategories — the product revenue treemap (leaf = product) from gold_product_detail (P3).
+ */
+export function useProductCategories(params?: { limit?: number }) {
+  return useQuery({
+    queryKey: [...ANALYTICS_QUERY_KEY, 'product-categories', params?.limit ?? 50],
+    queryFn: () => analyticsApi.getProductCategories(params),
+    staleTime: 5 * 60_000,
   });
 }
 
@@ -641,6 +709,26 @@ export function useCampaignTimeseries(params: {
   return useQuery({
     queryKey: [...ANALYTICS_QUERY_KEY, 'campaign-timeseries', params.model, params.date_start, params.date_end],
     queryFn: () => analyticsApi.getCampaignTimeseries(params),
+    staleTime: 5 * 60_000,
+  });
+}
+
+/**
+ * useAttributedRevenueTimeseries — date × channel attributed revenue (P3) under the selected
+ * attribution model + window, from /v1/analytics/attribution/revenue-timeseries (the FULL credit
+ * ledger serving view mv_gold_attribution_credit). The channel-grain sibling of useCampaignTimeseries:
+ * it includes EVERY credited channel (organic/direct/etc.), not only campaign-bearing touches.
+ * Switchable model; honest no_data on no attribution-credit rows.
+ * @param params - Attribution model (required) + optional date_start/date_end (YYYY-MM-DD).
+ */
+export function useAttributedRevenueTimeseries(params: {
+  model: AttributionModel;
+  date_start?: string;
+  date_end?: string;
+}) {
+  return useQuery({
+    queryKey: [...ANALYTICS_QUERY_KEY, 'attributed-revenue-timeseries', params.model, params.date_start, params.date_end],
+    queryFn: () => analyticsApi.getAttributedRevenueTimeseries(params),
     staleTime: 5 * 60_000,
   });
 }

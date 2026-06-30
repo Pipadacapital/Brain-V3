@@ -16,6 +16,7 @@ import {
   getCodMix,
   getCheckoutFunnel,
   getRtoRiskDistribution,
+  getDeliveryTime,
   getOrderStatusMix,
   getTopProducts,
   getOrdersList,
@@ -33,6 +34,7 @@ import type {
   ContributionMargin as ContractContributionMargin,
   CostInputsList as ContractCostInputsList,
   OrderDetail as ContractOrderDetail,
+  DeliveryTime as ContractDeliveryTime,
 } from '@brain/contracts';
 import type { BffDeps } from './_shared.js';
 
@@ -163,6 +165,33 @@ export function registerAnalyticsLogisticsRoutes(fastify: FastifyInstance, deps:
         return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (StarRocks) not available' } });
       }
       const result = await getRtoRiskDistribution(auth.brandId, { srPool });
+      return reply.send({ request_id: requestId, data: result });
+    },
+  );
+
+  /**
+   * GET /api/v1/analytics/operations/delivery-time
+   * P3 — per-courier delivery-time profile: average delivery days + the fixed five-bucket day
+   * histogram (0-1 / 2-3 / 4-5 / 6-7 / 8+), from gold_delivery_time (folded from the silver_shipment
+   * dispatched→delivered terminal timestamps). Integer day math, NO money (avg is a behavioral
+   * double). Honest no_data when the brand has no delivered shipments. Brand from session (D-1).
+   */
+  fastify.get(
+    '/api/v1/analytics/operations/delivery-time',
+    { preHandler: [bffProtectedPreHandler] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const auth = (request as AuthenticatedRequest).auth;
+      if (!auth.brandId) {
+        return reply.send({ request_id: requestId, data: { state: 'no_data', generated_at: new Date().toISOString() } });
+      }
+      if (!srPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (Trino) not available' } });
+      }
+      const brandId = auth.brandId; // narrowed string — stable inside the cache closure
+      const result: ContractDeliveryTime = await cachedRead(brandId, 'delivery_time', {}, () =>
+        getDeliveryTime(brandId, { srPool }),
+      );
       return reply.send({ request_id: requestId, data: result });
     },
   );

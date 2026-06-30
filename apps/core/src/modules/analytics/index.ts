@@ -84,6 +84,13 @@ export type {
   OrderDiscountCodeDto,
   OrderRefundDto,
 } from './internal/application/queries/get-order-detail.js';
+// Product detail / affinity / treemap (P3) — per-product Gold marts over Trino serving views.
+export { getProductDetail } from './internal/application/queries/get-product-detail.js';
+export type { ProductDetailResult, ProductDetailDto } from './internal/application/queries/get-product-detail.js';
+export { getProductAffinity } from './internal/application/queries/get-product-affinity.js';
+export type { ProductAffinityResult, ProductAffinityPairDto } from './internal/application/queries/get-product-affinity.js';
+export { getProductCategories } from './internal/application/queries/get-product-categories.js';
+export type { ProductCategoriesResult, ProductCategoryNodeDto } from './internal/application/queries/get-product-categories.js';
 
 // GoKwik + Shopflo CoD/RTO surface (Track C) — RTO rates, CoD mix/CM2, checkout funnel
 export { getCodRtoRates } from './internal/application/queries/get-cod-rto-rates.js';
@@ -106,6 +113,9 @@ export type {
 // Logistics shipment outcomes (Slice 2) — delivered/RTO + RTO% by courier/pincode from silver_shipment.
 export { getShipmentOutcomes } from './internal/application/queries/get-shipment-outcomes.js';
 export type { ShipmentOutcomesResult, CourierOutcomeDto, PincodeOutcomeDto } from './internal/application/queries/get-shipment-outcomes.js';
+// Operations delivery-time (P3) — per-courier avg delivery days + 5-bucket day histogram from gold_delivery_time.
+export { getDeliveryTime } from './internal/application/queries/get-delivery-time.js';
+export type { DeliveryTimeResult, DeliveryTimeCourierDto, DeliveryTimeBucketDto } from './internal/application/queries/get-delivery-time.js';
 // Logistics return funnel (SR-10) — per-return_class breakdown + completion% from silver_return (SR-4).
 export { getReturnFunnel } from './internal/application/queries/get-return-funnel.js';
 export type { ReturnFunnelResult, ReturnClassBucketDto, ReturnCourierBucketDto } from './internal/application/queries/get-return-funnel.js';
@@ -238,6 +248,12 @@ export type {
   RepeatLatencyResult,
   RepeatLatencyBucketDto,
 } from './internal/application/queries/get-repeat-latency.js';
+// P3 — the UTM / acquisition-SOURCE matrix (visitors/conversions/revenue/avg_ltv/repeat) over gold_utm_source.
+export { getUtmSource } from './internal/application/queries/get-utm-source.js';
+export type {
+  UtmSourceResult,
+  UtmSourceRowDto,
+} from './internal/application/queries/get-utm-source.js';
 // #32c — per-campaign attributed revenue + ROAS (model-switchable) over gold_campaign_attribution.
 export { getCampaignAttribution } from './internal/application/queries/get-campaign-attribution.js';
 export type {
@@ -252,6 +268,13 @@ export type {
   CampaignTimeseriesBucketDto,
   CampaignTimeseriesParams,
 } from './internal/application/queries/get-campaign-timeseries.js';
+// P3 — date × channel attributed revenue over the FULL credit ledger (mv_gold_attribution_credit).
+export { getAttributedRevenueTimeseries } from './internal/application/queries/get-attributed-revenue-timeseries.js';
+export type {
+  AttributedRevenueTimeseriesResult,
+  AttributedRevenueTimeseriesBucketDto,
+  AttributedRevenueTimeseriesParams,
+} from './internal/application/queries/get-attributed-revenue-timeseries.js';
 
 // Insight + Opportunity Engine + AI Copilot briefing — deterministic insights over the Gold marts
 // (gold_revenue_ledger / gold_executive_metrics / gold_customer_scores / gold_cac). Numbers come from

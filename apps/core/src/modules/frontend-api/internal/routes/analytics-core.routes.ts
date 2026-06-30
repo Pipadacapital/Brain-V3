@@ -21,7 +21,11 @@ import {
   getExecutiveMetrics,
   getCohortRetention,
   getRepeatLatency,
+  getUtmSource,
   getInsightsBriefing,
+  getProductDetail,
+  getProductAffinity,
+  getProductCategories,
 } from '../../../analytics/index.js';
 import { materializeInsightsAsRecommendations } from '../../../recommendation/index.js';
 import type {
@@ -274,6 +278,33 @@ export function registerAnalyticsCoreRoutes(fastify: FastifyInstance, deps: BffD
       const brandId = auth.brandId; // narrowed string — stable inside the cache closure
       const result: ContractRepeatLatency = await cachedRead(brandId, 'repeat_latency', {}, () =>
         getRepeatLatency(brandId, { srPool }),
+      );
+      return reply.send({ request_id: requestId, data: result });
+    },
+  );
+
+  /**
+   * GET /api/v1/analytics/utm-source
+   * P3 — the UTM / acquisition-SOURCE matrix from gold_utm_source via the metric registry. One row per
+   * first-touch (source, medium): visitors, conversions, revenue_minor, avg_ltv_minor, repeat_rate_pct,
+   * currency_code. Money = bigint MINOR units + sibling currency_code (per-row dominant currency; never
+   * blended). Honest no_data when the brand has no acquisition rows.
+   */
+  fastify.get(
+    '/api/v1/analytics/utm-source',
+    { preHandler: [bffProtectedPreHandler] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const auth = (request as AuthenticatedRequest).auth;
+      if (!auth.brandId) {
+        return reply.send({ request_id: requestId, data: { state: 'no_data', generated_at: new Date().toISOString() } });
+      }
+      if (!srPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (Trino) not available' } });
+      }
+      const brandId = auth.brandId; // narrowed string — stable inside the cache closure
+      const result = await cachedRead(brandId, 'utm_source', {}, () =>
+        getUtmSource(brandId, { srPool }),
       );
       return reply.send({ request_id: requestId, data: result });
     },
@@ -572,6 +603,142 @@ export function registerAnalyticsCoreRoutes(fastify: FastifyInstance, deps: BffD
         () => getOrderStats(brandId, asOf, { srPool }),
       );
 
+      return reply.send({ request_id: requestId, data: result });
+    },
+  );
+
+  // ── Product analytics (P3) ────────────────────────────────────────────────
+  // Per-product performance + frequently-bought-together + the revenue treemap, served from the
+  // Gold marts gold_product_detail / gold_product_affinity over the Trino views (via withSilverBrand).
+  // Brand from session (D-1); honest no_data / not_found. Money = bigint minor units + currency_code.
+  // NOTE: the STATIC /products/categories route is declared before the PARAMETRIC /products/:productId
+  // so the treemap path is never captured as a productId (fastify prefers static, but order is explicit).
+
+  /**
+   * GET /api/v1/analytics/products/categories?limit=N
+   * Product revenue treemap (leaf = product, size = revenue_minor) from gold_product_detail.
+   * No category dimension exists on the marts yet → honest product-granularity rollup.
+   */
+  fastify.get(
+    '/api/v1/analytics/products/categories',
+    {
+      preHandler: [bffProtectedPreHandler],
+      schema: {
+        querystring: {
+          type: 'object',
+          properties: { limit: { type: 'string', pattern: '^\\d+$' } },
+          additionalProperties: false,
+        },
+      },
+      attachValidation: true,
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const validationError = (request as FastifyRequest & { validationError?: Error }).validationError;
+      if (validationError) {
+        return reply.code(400).send({ request_id: requestId, error: { code: 'INVALID_PARAMS', message: 'limit must be a positive integer.' } });
+      }
+      const auth = (request as AuthenticatedRequest).auth;
+      if (!auth.brandId) {
+        return reply.send({ request_id: requestId, data: { state: 'no_data' } });
+      }
+      if (!srPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Serving tier (Trino) not available' } });
+      }
+      const query = request.query as { limit?: string };
+      const limit = query.limit ? parseInt(query.limit, 10) : 50;
+      const brandId = auth.brandId; // narrowed (guarded above) — stable inside the cache closure
+      const result = await cachedRead(brandId, 'product_categories', { limit }, () =>
+        getProductCategories(brandId, limit, { srPool }),
+      );
+      return reply.send({ request_id: requestId, data: result });
+    },
+  );
+
+  /**
+   * GET /api/v1/analytics/products/:productId/affinity?limit=N
+   * Frequently-bought-together partners for a product from gold_product_affinity. NO money.
+   */
+  fastify.get(
+    '/api/v1/analytics/products/:productId/affinity',
+    {
+      preHandler: [bffProtectedPreHandler],
+      schema: {
+        params: {
+          type: 'object',
+          required: ['productId'],
+          properties: { productId: { type: 'string', minLength: 1 } },
+          additionalProperties: false,
+        },
+        querystring: {
+          type: 'object',
+          properties: { limit: { type: 'string', pattern: '^\\d+$' } },
+          additionalProperties: false,
+        },
+      },
+      attachValidation: true,
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const validationError = (request as FastifyRequest & { validationError?: Error }).validationError;
+      if (validationError) {
+        return reply.code(400).send({ request_id: requestId, error: { code: 'INVALID_PARAMS', message: 'productId is required; limit must be a positive integer.' } });
+      }
+      const { productId } = request.params as { productId: string };
+      const auth = (request as AuthenticatedRequest).auth;
+      if (!auth.brandId) {
+        return reply.send({ request_id: requestId, data: { state: 'no_data', product_id: productId } });
+      }
+      if (!srPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Serving tier (Trino) not available' } });
+      }
+      const query = request.query as { limit?: string };
+      const limit = query.limit ? parseInt(query.limit, 10) : 10;
+      const brandId = auth.brandId; // narrowed (guarded above) — stable inside the cache closure
+      const result = await cachedRead(brandId, 'product_affinity', { productId, limit }, () =>
+        getProductAffinity(brandId, productId, limit, { srPool }),
+      );
+      return reply.send({ request_id: requestId, data: result });
+    },
+  );
+
+  /**
+   * GET /api/v1/analytics/products/:productId
+   * A single product's storefront funnel (views→atc→purchases→revenue) + returns + conversion rates
+   * from gold_product_detail. Honest not_found when the brand has no row for that product.
+   */
+  fastify.get(
+    '/api/v1/analytics/products/:productId',
+    {
+      preHandler: [bffProtectedPreHandler],
+      schema: {
+        params: {
+          type: 'object',
+          required: ['productId'],
+          properties: { productId: { type: 'string', minLength: 1 } },
+          additionalProperties: false,
+        },
+      },
+      attachValidation: true,
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const validationError = (request as FastifyRequest & { validationError?: Error }).validationError;
+      if (validationError) {
+        return reply.code(400).send({ request_id: requestId, error: { code: 'INVALID_PARAMS', message: 'productId is required.' } });
+      }
+      const { productId } = request.params as { productId: string };
+      const auth = (request as AuthenticatedRequest).auth;
+      if (!auth.brandId) {
+        return reply.send({ request_id: requestId, data: { state: 'not_found', product_id: productId } });
+      }
+      if (!srPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Serving tier (Trino) not available' } });
+      }
+      const brandId = auth.brandId; // narrowed (guarded above) — stable inside the cache closure
+      const result = await cachedRead(brandId, 'product_detail', { productId }, () =>
+        getProductDetail(brandId, productId, { srPool }),
+      );
       return reply.send({ request_id: requestId, data: result });
     },
   );

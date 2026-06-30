@@ -46,6 +46,55 @@ SILVER_NAMESPACE = os.environ.get("SILVER_NAMESPACE", "brain_silver")
 GOLD_NAMESPACE = os.environ.get("GOLD_NAMESPACE", "brain_gold")
 
 
+def spark_perf_configs() -> "dict[str, str]":
+    """Production-grade, LOCAL-MODE Spark tuning shared by EVERY Brain session — the Silver/Gold batch
+    jobs (via build_spark below) and the two Bronze streaming sinks (which duplicate this dict, for the
+    Bronze-path isolation this module guarantees; keep them in sync).
+
+    These all take effect in-session via SparkSession.builder.config(). Driver-JVM GC is deliberately
+    NOT set here: in local mode the driver JVM is already running by the time Python builds the session,
+    and Spark 3.5.3 ships JDK 17 whose default collector is already G1GC — so forcing -XX:+UseG1GC would
+    be a no-op needing spark-submit-launch wiring for zero gain.
+
+    Deliberately OMITS cluster-only knobs (spark.executor.*, dynamicAllocation, external shuffle service,
+    YARN/K8s queues): Brain runs `--master local[*]`, so the driver IS the executor and those are no-ops
+    — adding them would be dead config. Everything here is env-overridable; defaults stay within the
+    documented container memory budget (docs/ops/local-memory-budget.md). Off-heap is env-GATED (default
+    off) so the tuned budget is preserved; set SPARK_OFFHEAP_SIZE under a larger prod mem_limit to move
+    shuffle/Iceberg buffers off the GC heap.
+    """
+    cfg: "dict[str, str]" = {
+        # Kryo — faster + far less GC garbage than Java serialization (closures/broadcast/shuffle).
+        # registrationRequired defaults false, so unregistered classes still serialize (correct, slightly
+        # slower) — safe to enable fleet-wide.
+        "spark.serializer": "org.apache.spark.serializer.KryoSerializer",
+        "spark.kryoserializer.buffer.max": os.environ.get("SPARK_KRYO_BUFFER_MAX", "256m"),
+        # AQE sizing: aim coalesced shuffle partitions at ~64MB (avoids both tiny-task overhead AND the
+        # few-giant-partition write OOM); coalesce + skewJoin are enabled in build_spark. Cap the pre-AQE
+        # shuffle count — 200 is wasteful for local single-JVM data; AQE coalesces anyway, this trims
+        # scheduler overhead. Env-overridable for a real (clustered) prod with big shuffles.
+        "spark.sql.adaptive.advisoryPartitionSizeInBytes": os.environ.get("SPARK_AQE_ADVISORY_BYTES", str(64 * 1024 * 1024)),
+        "spark.sql.shuffle.partitions": os.environ.get("SPARK_SHUFFLE_PARTITIONS", "64"),
+        # Shuffle I/O — compress spills + a larger write buffer cut syscalls on the spill path.
+        "spark.shuffle.compress": "true",
+        "spark.shuffle.spill.compress": "true",
+        "spark.shuffle.file.buffer": os.environ.get("SPARK_SHUFFLE_FILE_BUFFER", "1m"),
+        # Stability — bump the 120s default so a long GC pause or a slow Iceberg commit doesn't drop the
+        # (local) executor or the Kafka consumer ("consumer poll timeout has expired" warnings on the sinks).
+        # heartbeatInterval MUST stay < network.timeout.
+        "spark.network.timeout": os.environ.get("SPARK_NETWORK_TIMEOUT", "300s"),
+        "spark.executor.heartbeatInterval": os.environ.get("SPARK_HEARTBEAT_INTERVAL", "30s"),
+        # S3A throughput to MinIO/S3 — Iceberg uses S3FileIO, but S3A still backs some Hadoop readers.
+        "spark.hadoop.fs.s3a.connection.maximum": os.environ.get("SPARK_S3A_CONN_MAX", "64"),
+        "spark.hadoop.fs.s3a.fast.upload": "true",
+    }
+    _off = os.environ.get("SPARK_OFFHEAP_SIZE", "").strip()
+    if _off:
+        cfg["spark.memory.offHeap.enabled"] = "true"
+        cfg["spark.memory.offHeap.size"] = _off
+    return cfg
+
+
 def build_spark(app_name: str = "brain-iceberg") -> SparkSession:
     """A SparkSession wired to the local Iceberg REST catalog over MinIO — the SAME catalog config
     as bronze_materialize.build_spark, factored out so Silver/Gold jobs share one definition.
@@ -88,8 +137,11 @@ def build_spark(app_name: str = "brain-iceberg") -> SparkSession:
         .config(f"spark.sql.catalog.{CATALOG}.s3.path-style-access", "true")
         .config(f"spark.sql.catalog.{CATALOG}.s3.access-key-id", os.environ.get("AWS_ACCESS_KEY_ID", "brain"))
         .config(f"spark.sql.catalog.{CATALOG}.s3.secret-access-key", os.environ.get("AWS_SECRET_ACCESS_KEY", "brainbrain"))
-        .getOrCreate()
     )
+    # Apply the shared production-grade perf tuning (Kryo / AQE sizing / shuffle / stability / S3A).
+    for _k, _v in spark_perf_configs().items():
+        spark = spark.config(_k, _v)
+    spark = spark.getOrCreate()
     # Ship the shared Python helpers to executors so UDF closures can import them on the workers
     # (see the docstring). _base = db/iceberg/spark. We ship iceberg_base itself plus EVERY underscore-
     # prefixed shared module under silver/ and gold/ (e.g. _silver_technical, _raw_normalize,

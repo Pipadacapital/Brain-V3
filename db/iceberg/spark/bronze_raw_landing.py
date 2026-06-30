@@ -110,7 +110,7 @@ def topic_to_table(lanes: dict) -> dict:
 def build_spark():
     from pyspark.sql import SparkSession  # noqa: E402 — lazy (keeps pure helpers Spark-free)
 
-    return (
+    builder = (
         SparkSession.builder.appName("bronze-raw-landing")
         # Consumer-based offset fetching (not AdminClient describeTopics, which times out against a
         # single advertised listener) — the same path the app's kafkajs clients + the Spark sink use.
@@ -125,8 +125,33 @@ def build_spark():
         .config(f"spark.sql.catalog.{CATALOG}.s3.path-style-access", "true")
         .config(f"spark.sql.catalog.{CATALOG}.s3.access-key-id", os.environ.get("AWS_ACCESS_KEY_ID", "brain"))
         .config(f"spark.sql.catalog.{CATALOG}.s3.secret-access-key", os.environ.get("AWS_SECRET_ACCESS_KEY", "brainbrain"))
-        .getOrCreate()
     )
+    # Shared production-grade local-mode perf tuning (Kryo / AQE sizing / shuffle / stability / S3A).
+    # Duplicated from iceberg_base.spark_perf_configs() to keep this sink import-free of iceberg_base
+    # (Bronze-path isolation). Keep IN SYNC with iceberg_base.
+    _perf = {
+        "spark.serializer": "org.apache.spark.serializer.KryoSerializer",
+        "spark.kryoserializer.buffer.max": os.environ.get("SPARK_KRYO_BUFFER_MAX", "256m"),
+        "spark.sql.adaptive.enabled": os.environ.get("SPARK_AQE_ENABLED", "true"),
+        "spark.sql.adaptive.coalescePartitions.enabled": "true",
+        "spark.sql.adaptive.skewJoin.enabled": "true",
+        "spark.sql.adaptive.advisoryPartitionSizeInBytes": os.environ.get("SPARK_AQE_ADVISORY_BYTES", str(64 * 1024 * 1024)),
+        "spark.sql.shuffle.partitions": os.environ.get("SPARK_SHUFFLE_PARTITIONS", "64"),
+        "spark.shuffle.compress": "true",
+        "spark.shuffle.spill.compress": "true",
+        "spark.shuffle.file.buffer": os.environ.get("SPARK_SHUFFLE_FILE_BUFFER", "1m"),
+        "spark.network.timeout": os.environ.get("SPARK_NETWORK_TIMEOUT", "300s"),
+        "spark.executor.heartbeatInterval": os.environ.get("SPARK_HEARTBEAT_INTERVAL", "30s"),
+        "spark.hadoop.fs.s3a.connection.maximum": os.environ.get("SPARK_S3A_CONN_MAX", "64"),
+        "spark.hadoop.fs.s3a.fast.upload": "true",
+    }
+    _off = os.environ.get("SPARK_OFFHEAP_SIZE", "").strip()
+    if _off:
+        _perf["spark.memory.offHeap.enabled"] = "true"
+        _perf["spark.memory.offHeap.size"] = _off
+    for _k, _v in _perf.items():
+        builder = builder.config(_k, _v)
+    return builder.getOrCreate()
 
 
 def ensure_table(spark, table_fqtn: str) -> None:

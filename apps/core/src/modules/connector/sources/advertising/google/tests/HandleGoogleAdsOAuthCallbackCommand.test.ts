@@ -235,9 +235,9 @@ describe('HandleGoogleAdsOAuthCallbackCommand', () => {
           JSON.stringify([
             {
               results: [
-                { customerClient: { id: MANAGER_CID, manager: true, level: '0', status: 'ENABLED' } },
-                { customerClient: { id: LEAF_A, manager: false, level: '1', status: 'ENABLED' } },
-                { customerClient: { id: LEAF_B, manager: false, level: '1', status: 'ENABLED' } },
+                { customerClient: { id: MANAGER_CID, manager: true, level: '0', status: 'ENABLED', descriptiveName: 'Acme MCC' } },
+                { customerClient: { id: LEAF_A, manager: false, level: '1', status: 'ENABLED', descriptiveName: 'Acme Store' } },
+                { customerClient: { id: LEAF_B, manager: false, level: '1', status: 'ENABLED', descriptiveName: 'Beta Brand' } },
               ],
             },
           ]),
@@ -285,9 +285,13 @@ describe('HandleGoogleAdsOAuthCallbackCommand', () => {
       (c) => c[0] as ConnectorInstance,
     );
     expect(savedInstances).toHaveLength(2);
+    // The human account NAME (customer_client.descriptive_name) is captured into provider_config so the
+    // UI shows the name, not just the raw customer id (readRoutes derives account_label from it).
+    const nameByLeaf: Record<string, string> = { [LEAF_A]: 'Acme Store', [LEAF_B]: 'Beta Brand' };
     for (const inst of savedInstances) {
       expect(inst.activatedAt).toBeNull();
       expect(inst.providerConfig['google_ads_login_customer_id']).toBe(MANAGER_CID);
+      expect(inst.providerConfig['ad_account_name']).toBe(nameByLeaf[inst.accountKey]);
     }
   });
 

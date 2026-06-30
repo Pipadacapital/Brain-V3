@@ -110,7 +110,7 @@ export class HandleGoogleAdsOAuthCallbackCommand {
     // 0106 ad-account activation: an MCC login exposes every accessible customer id (often other
     // brands'). Don't ingest any until the user picks ONE. EXCEPTION: a single account is
     // auto-activated (nothing to choose). Multiple → all NULL → the UI prompts for a selection.
-    const accountsToCreate: Array<{ customerId: string; loginCustomerId: string | null } | null> =
+    const accountsToCreate: Array<GoogleAdsLeaf | null> =
       leaves.length > 0 ? leaves : [null];
     const autoActivate = accountsToCreate.length === 1;
 
@@ -135,6 +135,9 @@ export class HandleGoogleAdsOAuthCallbackCommand {
       const providerConfig: Record<string, string> = {};
       if (accountId) providerConfig['google_ads_customer_id'] = accountId;
       if (loginCustomerId) providerConfig['google_ads_login_customer_id'] = loginCustomerId;
+      // ad_account_name = the human label the UI shows for this account's sub-card (Google Ads
+      // descriptive_name from customer_client). readRoutes derives account_label from it — mirrors Meta.
+      if (account?.name) providerConfig['ad_account_name'] = account.name;
 
       const instance = ConnectorInstance.create({
         id: instanceId,
@@ -279,15 +282,15 @@ export class HandleGoogleAdsOAuthCallbackCommand {
    */
   private async resolveLeafCustomers(
     accessToken: string,
-  ): Promise<Array<{ customerId: string; loginCustomerId: string | null }>> {
+  ): Promise<GoogleAdsLeaf[]> {
     const accessibleCids = await this.resolveAllCustomerIds(accessToken);
-    const byLeaf = new Map<string, { customerId: string; loginCustomerId: string | null }>();
+    const byLeaf = new Map<string, GoogleAdsLeaf>();
 
     for (const cid of accessibleCids) {
       const expanded = await this.expandCustomerClients(accessToken, cid);
       if (expanded === null) {
-        // Expansion failed — keep the accessible CID itself as a direct leaf (fail-soft).
-        if (!byLeaf.has(cid)) byLeaf.set(cid, { customerId: cid, loginCustomerId: null });
+        // Expansion failed — keep the accessible CID itself as a direct leaf (fail-soft; no name).
+        if (!byLeaf.has(cid)) byLeaf.set(cid, { customerId: cid, loginCustomerId: null, name: null });
         continue;
       }
       for (const leaf of expanded) {
@@ -306,12 +309,12 @@ export class HandleGoogleAdsOAuthCallbackCommand {
   private async expandCustomerClients(
     accessToken: string,
     managerCid: string,
-  ): Promise<Array<{ customerId: string; loginCustomerId: string | null }> | null> {
+  ): Promise<GoogleAdsLeaf[] | null> {
     const devToken = process.env['GOOGLE_ADS_DEVELOPER_TOKEN'];
     if (!accessToken || !devToken) return null;
     const query =
-      'SELECT customer_client.id, customer_client.manager, customer_client.level, ' +
-      "customer_client.status FROM customer_client WHERE customer_client.status = 'ENABLED'";
+      'SELECT customer_client.id, customer_client.descriptive_name, customer_client.manager, ' +
+      "customer_client.level, customer_client.status FROM customer_client WHERE customer_client.status = 'ENABLED'";
     try {
       const response = await fetch(
         `https://googleads.googleapis.com/v24/customers/${managerCid}/googleAds:searchStream`,
@@ -332,7 +335,7 @@ export class HandleGoogleAdsOAuthCallbackCommand {
         | Array<{ results?: CustomerClientResult[] }>
         | { results?: CustomerClientResult[] };
       const arr = Array.isArray(batches) ? batches : [batches];
-      const leaves: Array<{ customerId: string; loginCustomerId: string | null }> = [];
+      const leaves: GoogleAdsLeaf[] = [];
       for (const batch of arr) {
         for (const r of batch.results ?? []) {
           const id = r.customerClient?.id;
@@ -340,7 +343,11 @@ export class HandleGoogleAdsOAuthCallbackCommand {
           const isManager = r.customerClient?.manager === true;
           if (isManager) continue; // managers don't carry spend; only leaves ingest
           // login-customer-id is required only when the leaf is reached THROUGH a different manager.
-          leaves.push({ customerId: id, loginCustomerId: id === managerCid ? null : managerCid });
+          leaves.push({
+            customerId: id,
+            loginCustomerId: id === managerCid ? null : managerCid,
+            name: r.customerClient?.descriptiveName ?? null,  // human account name for the UI sub-card
+          });
         }
       }
       // A non-manager accessible account returns a single self row → that's a direct leaf.
@@ -353,5 +360,10 @@ export class HandleGoogleAdsOAuthCallbackCommand {
 
 /** A single `customer_client` GAQL result (subset). */
 interface CustomerClientResult {
-  customerClient?: { id?: string; manager?: boolean; level?: string; status?: string };
+  customerClient?: { id?: string; manager?: boolean; level?: string; status?: string; descriptiveName?: string };
 }
+
+/** A resolved leaf (spend-carrying) Google Ads account + the manager CID it's queried through.
+ * `name` = customer_client.descriptive_name (the human account name shown in the UI), null when
+ * Google omits it (unnamed account) or the metadata pass failed (fail-soft). */
+type GoogleAdsLeaf = { customerId: string; loginCustomerId: string | null; name: string | null };

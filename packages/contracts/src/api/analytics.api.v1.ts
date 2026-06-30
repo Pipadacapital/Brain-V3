@@ -675,6 +675,38 @@ export const FunnelAnalyticsSchema = z.discriminatedUnion('state', [
 ]);
 export type FunnelAnalytics = z.infer<typeof FunnelAnalyticsSchema>;
 
+// ── Funnel users — paginated visitors who DROPPED at a funnel step (gold_funnel_user) ──
+// @see apps/core/.../analytics/.../get-funnel-users.ts. NO money — a step label + a timestamp.
+// "Dropped at <step>" = furthest_step = '<step>' over the per-visitor mart; window on last_seen_at.
+export const FunnelStepSchema = z.enum(['session', 'product_view', 'cart', 'checkout', 'purchase']);
+export type FunnelStep = z.infer<typeof FunnelStepSchema>;
+
+export const FunnelUserDtoSchema = z.object({
+  visitor_id: z.string(),
+  furthest_step: FunnelStepSchema,
+  last_seen_at: z.string().nullable(), // ISO-8601; null when the mart has no timestamp
+});
+export type FunnelUserDto = z.infer<typeof FunnelUserDtoSchema>;
+
+export const FunnelUsersSchema = z.discriminatedUnion('state', [
+  z.object({
+    state: z.literal('no_data'),
+    step: FunnelStepSchema,
+    page: z.number(),
+    page_size: z.number(),
+    total: MinorUnitsSchema, // bigint → string (a count)
+  }),
+  z.object({
+    state: z.literal('has_data'),
+    step: FunnelStepSchema,
+    page: z.number(),
+    page_size: z.number(),
+    total: MinorUnitsSchema, // bigint → string (a count)
+    visitors: z.array(FunnelUserDtoSchema),
+  }),
+]);
+export type FunnelUsers = z.infer<typeof FunnelUsersSchema>;
+
 // ── Abandoned cart — cart sessions converted vs abandoned (Phase H pixel) ──
 export const AbandonedCartSchema = z.discriminatedUnion('state', [
   z.object({ state: z.literal('no_data') }),
@@ -903,6 +935,46 @@ export const RepeatLatencySchema = z.discriminatedUnion('state', [
   }),
 ]);
 export type RepeatLatency = z.infer<typeof RepeatLatencySchema>;
+
+// ── GET /v1/analytics/retention/cohort-users?cohort_month=YYYY-MM&period=N — cohort-cell drill-down ──
+// @see apps/core/.../analytics/.../get-cohort-users.ts (paginated; money = bigint minor + currency_code).
+// One row per customer inside ONE cohort cell (acquisition month × months-since) over
+// mv_gold_cohort_member, LTV-enriched from mv_gold_customer_360 WHERE available (nulls on cold cycles).
+
+export const CohortUserDtoSchema = z.object({
+  customer_key: z.string(), // canonical brain_id
+  order_count_in_period: MinorUnitsSchema, // bigint → string
+  active: z.boolean(),
+  name: z.string().nullable(), // honest reserved null — 360 mart carries no raw PII name
+  lifetime_value_minor: MinorUnitsSchema.nullable(), // bigint minor; null when no 360 row
+  lifetime_orders: MinorUnitsSchema.nullable(), // bigint; null when no 360 row
+  currency_code: z.string().nullable(), // null when no 360 row
+  lifecycle_stage: z.string().nullable(), // B2 lifecycle stage; null when no 360 row
+});
+export type CohortUserDto = z.infer<typeof CohortUserDtoSchema>;
+
+export const CohortUsersSchema = z.discriminatedUnion('state', [
+  z.object({
+    state: z.literal('no_data'),
+    cohort_month: z.string(),
+    period: z.number(),
+    page: z.number(),
+    page_size: z.number(),
+    total: MinorUnitsSchema,
+    generated_at: z.string().optional(),
+  }),
+  z.object({
+    state: z.literal('has_data'),
+    cohort_month: z.string(),
+    period: z.number(),
+    page: z.number(),
+    page_size: z.number(),
+    total: MinorUnitsSchema, // bigint → string (total members in the cell)
+    users: z.array(CohortUserDtoSchema),
+    generated_at: z.string().optional(),
+  }),
+]);
+export type CohortUsers = z.infer<typeof CohortUsersSchema>;
 
 // ── P3 GET /v1/analytics/operations/delivery-time — per-courier avg delivery days + day histogram ──
 // @see apps/core/.../analytics/.../get-delivery-time.ts (NO money — integer day math; avg is a behavioral double).

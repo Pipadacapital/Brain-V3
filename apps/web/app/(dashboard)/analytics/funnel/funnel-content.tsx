@@ -15,16 +15,25 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
-import { Filter, ArrowRight } from 'lucide-react';
+import { Filter, ArrowRight, Users, ChevronRight } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { PageHeader } from '@/components/ui/page-header';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
+import { EmptyState } from '@/components/ui/empty-state';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from '@/components/ui/dialog';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { KpiTile } from '@/components/analytics/kpi-tile';
 import { DateRangeFilter, initialRange, type DateRange } from '@/components/ui/date-range-filter';
-import { useFunnelAnalytics } from '@/lib/hooks/use-analytics';
-import type { AnalyticsFunnelResponse } from '@/lib/api/types';
+import { useFunnelAnalytics, useFunnelUsers } from '@/lib/hooks/use-analytics';
+import type { AnalyticsFunnelResponse, FunnelStep } from '@/lib/api/types';
 
 type FunnelHasData = Extract<AnalyticsFunnelResponse, { state: 'has_data' }>;
 
@@ -35,6 +44,42 @@ const STAGE_LABELS: Record<string, string> = {
   cart_added: 'Added to cart',
   purchased: 'Purchased',
 };
+
+/**
+ * Maps the storefront-funnel stage key (engine vocabulary) to the per-visitor mart's furthest_step
+ * enum (gold_funnel_user vocabulary). A stage is drillable iff it has a mapping — clicking it opens
+ * the "who dropped here" panel for visitors whose furthest_step is exactly that step.
+ */
+const STAGE_TO_STEP: Record<string, FunnelStep> = {
+  sessions: 'session',
+  product_viewed: 'product_view',
+  cart_added: 'cart',
+  purchased: 'purchase',
+};
+
+// Friendly labels for the per-visitor furthest_step enum (drill-down title + table cell).
+const STEP_LABELS: Record<FunnelStep, string> = {
+  session: 'Session',
+  product_view: 'Viewed a product',
+  cart: 'Added to cart',
+  checkout: 'Reached checkout',
+  purchase: 'Purchased',
+};
+
+const DRILLDOWN_PAGE_SIZE = 20;
+
+function fmtLastSeen(iso: string | null): string {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '—';
+  return d.toLocaleString('en-IN', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
 
 function num(s: string): string {
   return Number(s).toLocaleString('en-IN');
@@ -80,7 +125,13 @@ function EmptyCard() {
   );
 }
 
-function FunnelBars({ stages }: { stages: FunnelHasData['stages'] }) {
+function FunnelBars({
+  stages,
+  onSelectStep,
+}: {
+  stages: FunnelHasData['stages'];
+  onSelectStep: (step: FunnelStep) => void;
+}) {
   return (
     <Card>
       <CardHeader className="pb-2">
@@ -92,10 +143,20 @@ function FunnelBars({ stages }: { stages: FunnelHasData['stages'] }) {
         <ul className="space-y-3" aria-label="Conversion funnel stages">
           {stages.map((s, i) => {
             const widthPct = Math.min(100, Number(s.conversion_pct ?? 0));
-            return (
-              <li key={s.key}>
+            const step = STAGE_TO_STEP[s.key];
+            const label = STAGE_LABELS[s.key] ?? s.key;
+            const bar = (
+              <>
                 <div className="flex items-center justify-between text-sm mb-1">
-                  <span className="text-foreground">{STAGE_LABELS[s.key] ?? s.key}</span>
+                  <span className="text-foreground inline-flex items-center gap-1">
+                    {label}
+                    {step && (
+                      <ChevronRight
+                        className="h-3.5 w-3.5 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100"
+                        aria-hidden="true"
+                      />
+                    )}
+                  </span>
                   <span className="text-muted-foreground tabular-nums">
                     {num(s.sessions)}
                     {s.conversion_pct !== null && (
@@ -109,12 +170,155 @@ function FunnelBars({ stages }: { stages: FunnelHasData['stages'] }) {
                 <div className="h-3 rounded bg-muted overflow-hidden" aria-hidden="true">
                   <div className="h-full bg-foreground/70" style={{ width: `${widthPct}%` }} />
                 </div>
+              </>
+            );
+            return (
+              <li key={s.key}>
+                {step ? (
+                  <button
+                    type="button"
+                    onClick={() => onSelectStep(step)}
+                    className="group w-full rounded-md px-2 py-1 -mx-2 text-left transition-colors hover:bg-muted/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    aria-label={`See the visitors who dropped at "${label}"`}
+                    data-testid={`funnel-step-${step}`}
+                  >
+                    {bar}
+                  </button>
+                ) : (
+                  <div className="px-2 py-1 -mx-2">{bar}</div>
+                )}
               </li>
             );
           })}
         </ul>
+        <p className="mt-3 text-xs text-muted-foreground">
+          Tip: click any stage to see the visitors who dropped at that step.
+        </p>
       </CardContent>
     </Card>
+  );
+}
+
+/**
+ * FunnelStepDrilldown — the per-step "who dropped here" panel. Lists the visitors whose furthest
+ * reached step is exactly `step` within the page's window (gold_funnel_user via useFunnelUsers),
+ * in a small paginated table. Honest EmptyState when the step/window has nobody.
+ */
+function FunnelStepDrilldown({
+  step,
+  range,
+  onClose,
+}: {
+  step: FunnelStep | null;
+  range: DateRange;
+  onClose: () => void;
+}) {
+  const [page, setPage] = useState(1);
+  // Reset to page 1 whenever the selected step changes.
+  const [lastStep, setLastStep] = useState<FunnelStep | null>(step);
+  if (step !== lastStep) {
+    setLastStep(step);
+    setPage(1);
+  }
+
+  const q = useFunnelUsers({
+    step: step ?? undefined,
+    date_start: range.from,
+    date_end: range.to,
+    page,
+    page_size: DRILLDOWN_PAGE_SIZE,
+  });
+  const data = q.data;
+  const open = step !== null;
+
+  const total = data ? Number(data.total ?? 0) : 0;
+  const totalPages = Math.max(1, Math.ceil(total / DRILLDOWN_PAGE_SIZE));
+  const visitors = data?.state === 'has_data' ? data.visitors : [];
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>
+            Dropped at “{step ? STEP_LABELS[step] : ''}”
+          </DialogTitle>
+          <DialogDescription>
+            Visitors whose furthest reached step was this one, between {range.from} and {range.to}.
+            {total > 0 && ` ${total.toLocaleString('en-IN')} visitor${total === 1 ? '' : 's'}.`}
+          </DialogDescription>
+        </DialogHeader>
+
+        {q.isLoading && (
+          <div className="space-y-2" aria-busy="true" aria-label="Loading visitors…">
+            <Skeleton className="h-8 w-full" />
+            <Skeleton className="h-8 w-full" />
+            <Skeleton className="h-8 w-full" />
+          </div>
+        )}
+
+        {!q.isLoading && q.error && <ErrorCard error={q.error} retry={q.refetch} />}
+
+        {!q.isLoading && !q.error && data?.state === 'no_data' && (
+          <EmptyState
+            compact
+            icon={<Users />}
+            title="No visitors dropped here"
+            description="No visitor's journey ended at this step in the selected window — try a wider date range, or check that the Brain Pixel is capturing sessions."
+          />
+        )}
+
+        {!q.isLoading && !q.error && data?.state === 'has_data' && (
+          <>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Visitor</TableHead>
+                  <TableHead>Furthest step</TableHead>
+                  <TableHead>Last seen</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {visitors.map((v) => (
+                  <TableRow key={v.visitor_id}>
+                    <TableCell className="font-mono text-xs">{v.visitor_id}</TableCell>
+                    <TableCell>{STEP_LABELS[v.furthest_step] ?? v.furthest_step}</TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {fmtLastSeen(v.last_seen_at)}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+
+            {totalPages > 1 && (
+              <div className="flex items-center justify-between pt-2">
+                <span className="text-xs text-muted-foreground tabular-nums">
+                  Page {page} of {totalPages}
+                </span>
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={page <= 1 || q.isFetching}
+                    onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  >
+                    Previous
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={page >= totalPages || q.isFetching}
+                    onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                  >
+                    Next
+                  </Button>
+                </div>
+              </div>
+            )}
+          </>
+        )}
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -149,13 +353,16 @@ export function FunnelContent() {
         {q.isLoading && <Loading />}
         {!q.isLoading && q.error && <ErrorCard error={q.error} retry={q.refetch} />}
         {!q.isLoading && !q.error && data?.state === 'no_data' && <EmptyCard />}
-        {!q.isLoading && !q.error && data?.state === 'has_data' && <FunnelData data={data} />}
+        {!q.isLoading && !q.error && data?.state === 'has_data' && (
+          <FunnelData data={data} range={range} />
+        )}
       </section>
     </div>
   );
 }
 
-function FunnelData({ data }: { data: FunnelHasData }) {
+function FunnelData({ data, range }: { data: FunnelHasData; range: DateRange }) {
+  const [selectedStep, setSelectedStep] = useState<FunnelStep | null>(null);
   const byKey = (k: string) => data.stages.find((s) => s.key === k);
   const sessions = byKey('sessions');
   const purchased = byKey('purchased');
@@ -181,7 +388,13 @@ function FunnelData({ data }: { data: FunnelHasData }) {
         />
       </div>
 
-      <FunnelBars stages={data.stages} />
+      <FunnelBars stages={data.stages} onSelectStep={setSelectedStep} />
+
+      <FunnelStepDrilldown
+        step={selectedStep}
+        range={range}
+        onClose={() => setSelectedStep(null)}
+      />
     </div>
   );
 }

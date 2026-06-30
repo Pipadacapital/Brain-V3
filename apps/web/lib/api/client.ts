@@ -29,6 +29,7 @@ import {
   ReturnFunnelSchema,
   BehaviorOverviewSchema,
   FunnelAnalyticsSchema,
+  FunnelUsersSchema,
   AbandonedCartSchema,
   EngagementSchema,
   SearchBehaviorSchema,
@@ -37,6 +38,7 @@ import {
   JourneyStitchRateSchema,
   JourneyPathsSchema,
   RepeatLatencySchema,
+  CohortUsersSchema,
   DeliveryTimeSchema,
   UtmSourceSchema,
   CampaignAttributionSchema,
@@ -163,6 +165,7 @@ import type {
   AnalyticsReturnFunnelResponse,
   AnalyticsBehaviorOverviewResponse,
   AnalyticsFunnelResponse,
+  AnalyticsFunnelUsersResponse,
   AnalyticsAbandonedCartResponse,
   AnalyticsEngagementResponse,
   AnalyticsSearchBehaviorResponse,
@@ -171,6 +174,7 @@ import type {
   AnalyticsJourneyTimelineResponse,
   AnalyticsJourneyPathsResponse,
   AnalyticsRepeatLatencyResponse,
+  AnalyticsCohortUsersResponse,
   AnalyticsDeliveryTimeResponse,
   AnalyticsUtmSourceResponse,
   AnalyticsCampaignAttributionResponse,
@@ -1518,6 +1522,25 @@ export const analyticsApi = {
     return parseData(RepeatLatencySchema, env);
   },
 
+  /**
+   * GET /api/v1/analytics/retention/cohort-users — paginated customers inside one cohort cell
+   * (cohort_month × period), LTV-enriched from gold_customer_360 where available. Parsed at the seam.
+   */
+  getCohortUsers: async (params: {
+    cohortMonth: string;
+    period: number;
+    page?: number;
+    pageSize?: number;
+  }): Promise<AnalyticsCohortUsersResponse> => {
+    const qs = new URLSearchParams();
+    qs.set('cohort_month', params.cohortMonth);
+    qs.set('period', String(params.period));
+    if (params.page) qs.set('page', String(params.page));
+    if (params.pageSize) qs.set('page_size', String(params.pageSize));
+    const env = await bffFetch<BffEnvelope<unknown>>(`/v1/analytics/retention/cohort-users?${qs.toString()}`);
+    return parseData(CohortUsersSchema, env);
+  },
+
   /** GET /api/v1/analytics/operations/delivery-time — per-courier avg delivery days + day histogram (P3). */
   getDeliveryTime: async (): Promise<AnalyticsDeliveryTimeResponse> => {
     const env = await bffFetch<BffEnvelope<unknown>>(`/v1/analytics/operations/delivery-time`);
@@ -1770,6 +1793,26 @@ export const analyticsApi = {
       `/v1/analytics/funnel${qsStr ? `?${qsStr}` : ''}`,
     );
     return parseData(FunnelAnalyticsSchema, env);
+  },
+
+  /** GET /api/v1/analytics/funnel/users — paginated visitors who DROPPED at a funnel step (gold_funnel_user). */
+  getFunnelUsers: async (params: {
+    step: 'session' | 'product_view' | 'cart' | 'checkout' | 'purchase';
+    date_start?: string;
+    date_end?: string;
+    page?: number;
+    page_size?: number;
+  }): Promise<AnalyticsFunnelUsersResponse> => {
+    const qs = new URLSearchParams();
+    qs.set('step', params.step);
+    if (params.date_start) qs.set('date_start', params.date_start);
+    if (params.date_end) qs.set('date_end', params.date_end);
+    if (params.page != null) qs.set('page', String(params.page));
+    if (params.page_size != null) qs.set('page_size', String(params.page_size));
+    const env = await bffFetch<BffEnvelope<unknown>>(
+      `/v1/analytics/funnel/users?${qs.toString()}`,
+    );
+    return parseData(FunnelUsersSchema, env);
   },
 
   /** GET /api/v1/analytics/abandoned-cart — cart sessions converted vs abandoned + recovery rate. */

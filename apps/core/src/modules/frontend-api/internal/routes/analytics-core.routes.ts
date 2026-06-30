@@ -21,6 +21,7 @@ import {
   getExecutiveMetrics,
   getCohortRetention,
   getRepeatLatency,
+  getCohortUsers,
   getUtmSource,
   getInsightsBriefing,
   getProductDetail,
@@ -31,6 +32,7 @@ import { materializeInsightsAsRecommendations } from '../../../recommendation/in
 import type {
   KpiSummary as ContractKpiSummary,
   RepeatLatency as ContractRepeatLatency,
+  CohortUsers as ContractCohortUsers,
 } from '@brain/contracts';
 import type { TimeGrain } from '@brain/metric-engine';
 import type { BffDeps } from './_shared.js';
@@ -278,6 +280,65 @@ export function registerAnalyticsCoreRoutes(fastify: FastifyInstance, deps: BffD
       const brandId = auth.brandId; // narrowed string — stable inside the cache closure
       const result: ContractRepeatLatency = await cachedRead(brandId, 'repeat_latency', {}, () =>
         getRepeatLatency(brandId, { srPool }),
+      );
+      return reply.send({ request_id: requestId, data: result });
+    },
+  );
+
+  /**
+   * GET /api/v1/analytics/retention/cohort-users?cohort_month=YYYY-MM&period=N&page=&page_size=
+   * Cohort-cell drill-down — the paginated customers inside ONE cohort cell (acquisition month ×
+   * months-since) over gold_cohort_member, LTV-enriched from gold_customer_360 where available.
+   * Brand from session (D-1, NEVER body). Honest no_data (D-2) on an empty/invalid cell. Money =
+   * bigint minor-unit strings (I-S07).
+   */
+  fastify.get(
+    '/api/v1/analytics/retention/cohort-users',
+    {
+      preHandler: [bffProtectedPreHandler],
+      schema: {
+        querystring: {
+          type: 'object',
+          properties: {
+            cohort_month: { type: 'string', pattern: '^\\d{4}-\\d{2}$' },
+            period:       { type: 'integer', minimum: 0 },
+            page:         { type: 'integer', minimum: 1 },
+            page_size:    { type: 'integer', minimum: 1, maximum: 100 },
+          },
+          required: ['cohort_month', 'period'],
+          additionalProperties: false,
+        },
+      },
+      attachValidation: true,
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const validationError = (request as FastifyRequest & { validationError?: Error }).validationError;
+      if (validationError) {
+        return reply.code(400).send({
+          request_id: requestId,
+          error: { code: 'INVALID_PARAMS', message: 'cohort_month must be YYYY-MM; period ≥ 0; page ≥ 1; page_size 1–100.' },
+        });
+      }
+      const query = request.query as { cohort_month: string; period: number; page?: number; page_size?: number };
+      const page = query.page ?? 1;
+      const pageSize = query.page_size ?? 20;
+      const auth = (request as AuthenticatedRequest).auth;
+      if (!auth.brandId) {
+        return reply.send({
+          request_id: requestId,
+          data: { state: 'no_data', cohort_month: query.cohort_month, period: query.period, page, page_size: pageSize, total: '0' },
+        });
+      }
+      if (!srPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (Trino) not available' } });
+      }
+      const brandId = auth.brandId; // narrowed string — stable inside the cache closure
+      const result: ContractCohortUsers = await cachedRead(
+        brandId,
+        'cohort_users',
+        { cohortMonth: query.cohort_month, period: query.period, page, pageSize },
+        () => getCohortUsers(brandId, { cohortMonth: query.cohort_month, period: query.period, page, pageSize }, { srPool }),
       );
       return reply.send({ request_id: requestId, data: result });
     },

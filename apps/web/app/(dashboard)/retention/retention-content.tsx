@@ -26,7 +26,7 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
-import { Repeat, Users, Layers, Hourglass, ArrowRight, History } from 'lucide-react';
+import { Repeat, Users, Layers, Hourglass, ArrowRight, History, X, ChevronLeft, ChevronRight } from 'lucide-react';
 import type { CurrencyCode } from '@brain/money';
 import { CohortHeatmap, type CohortHeatmapRow } from '@/components/analytics/cohort-heatmap';
 import { TabShell } from '@/components/ui/tab-shell';
@@ -46,10 +46,12 @@ import {
   TableCell,
 } from '@/components/ui/table';
 import { formatMoneyDisplay } from '@/lib/format/money-display';
-import { useCohortRetention, useExecutiveMetrics, useRepeatLatency } from '@/lib/hooks/use-analytics';
+import { useCohortRetention, useCohortUsers, useExecutiveMetrics, useRepeatLatency } from '@/lib/hooks/use-analytics';
 import type {
   AnalyticsCohortRetentionResponse,
   AnalyticsCohortRetentionRow,
+  AnalyticsCohortUsersResponse,
+  CohortUserRow,
   AnalyticsRepeatLatencyResponse,
 } from '@/lib/api/types';
 
@@ -401,6 +403,10 @@ function CohortRetentionPanel({ data }: { data: CohortHasData }) {
   const [metricKey, setMetricKey] = useState<CohortMetricKey>('repeat_order_share');
   const metric = COHORT_METRICS.find((m) => m.key === metricKey) ?? COHORT_METRICS[0];
 
+  // Cell drill-down: which (cohort_month × period) cell the operator clicked, if any. Clicking a
+  // cell loads the customers INSIDE that cohort cell via useCohortUsers; clicking it again closes it.
+  const [selectedCell, setSelectedCell] = useState<{ label: string; period: number } | null>(null);
+
   // Newest cohort first — matches the exact-figures table ordering below.
   const rows = [...data.cohorts].sort((a, b) => (a.cohort_month < b.cohort_month ? 1 : -1));
   const totalValueMinor = sumBig(rows, (r) => r.cohort_value_minor);
@@ -410,6 +416,12 @@ function CohortRetentionPanel({ data }: { data: CohortHasData }) {
     size: Number(BigInt(r.cohort_size || '0')),
     cells: [{ period: 0, value: cohortMetricValue(metric.key, r, totalValueMinor) }],
   }));
+
+  const handleCellClick = (cohortMonth: string, period: number) => {
+    setSelectedCell((prev) =>
+      prev && prev.label === cohortMonth && prev.period === period ? null : { label: cohortMonth, period },
+    );
+  };
 
   return (
     <div className="space-y-5">
@@ -438,13 +450,169 @@ function CohortRetentionPanel({ data }: { data: CohortHasData }) {
         cohortHeader="Cohort"
         sizeHeader="New customers"
         caption={metric.caption}
+        onCellClick={handleCellClick}
+        selectedCell={selectedCell}
         data-testid="cohort-retention-heatmap"
       />
+      <p className="text-xs text-muted-foreground">
+        Tip: click a cohort cell to see the customers inside it.
+      </p>
+
+      {selectedCell && (
+        <CohortCellDrilldown
+          key={`${selectedCell.label}:${selectedCell.period}`}
+          cohortMonth={selectedCell.label}
+          period={selectedCell.period}
+          onClose={() => setSelectedCell(null)}
+        />
+      )}
 
       <div className="space-y-2">
         <p className="text-sm font-medium text-muted-foreground">Exact figures</p>
         <CohortTable data={data} />
       </div>
+    </div>
+  );
+}
+
+// ── Cohort-cell drill-down ─────────────────────────────────────────────────────
+// The customers INSIDE one (cohort_month × period) cell, from gold_cohort_member via
+// /v1/analytics/retention/cohort-users (useCohortUsers), LTV-enriched from gold_customer_360.
+// Money is bigint minor units + currency_code (formatMoneyDisplay; never blended, never a float).
+// Honest EmptyState on no_data; client-side pagination over the server-paged endpoint.
+const DRILLDOWN_PAGE_SIZE = 10;
+
+/** A short, non-PII customer label — the 360 mart carries no raw name, so fall back to the brain_id. */
+function customerLabel(u: CohortUserRow): string {
+  if (u.name && u.name.trim().length > 0) return u.name;
+  const key = u.customer_key ?? '';
+  return key.length > 12 ? `${key.slice(0, 8)}…${key.slice(-4)}` : key || '—';
+}
+
+function CohortCellDrilldown({
+  cohortMonth,
+  period,
+  onClose,
+}: {
+  cohortMonth: string;
+  period: number;
+  onClose: () => void;
+}) {
+  // Reset to page 1 whenever the selected cell changes (the key on this component handles remount).
+  const [page, setPage] = useState(1);
+  const usersQ = useCohortUsers({ cohortMonth, period, page, pageSize: DRILLDOWN_PAGE_SIZE });
+  const users = usersQ.data;
+
+  const total = users ? Number(BigInt(users.total || '0')) : 0;
+  const pageCount = Math.max(1, Math.ceil(total / DRILLDOWN_PAGE_SIZE));
+
+  return (
+    <SectionCard
+      title={
+        <span className="inline-flex items-center gap-2">
+          <Users className="size-4 text-muted-foreground" aria-hidden="true" />
+          Customers in {cohortMonth}
+        </span>
+      }
+      description={`The customers acquired in ${cohortMonth} behind this cohort cell, with their lifetime value and orders.`}
+      meta={
+        <Button type="button" variant="ghost" size="sm" onClick={onClose} aria-label="Close cohort drill-down">
+          <X className="size-4" aria-hidden="true" />
+          Close
+        </Button>
+      }
+      flush
+    >
+      <div className="p-5">
+        {usersQ.isLoading && <DrilldownSkeleton />}
+        {!usersQ.isLoading && usersQ.error && (
+          <ErrorCard error={usersQ.error} retry={usersQ.refetch} />
+        )}
+        {!usersQ.isLoading && !usersQ.error && users?.state === 'no_data' && (
+          <EmptyState
+            compact
+            icon={<Users />}
+            title="No customers in this cell"
+            description={`No customers from the ${cohortMonth} cohort fall into this period. As more orders sync, the cell fills in.`}
+          />
+        )}
+        {!usersQ.isLoading && !usersQ.error && users?.state === 'has_data' && (
+          <div className="space-y-4">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Customer</TableHead>
+                  <TableHead className="text-right">Lifetime value</TableHead>
+                  <TableHead className="text-right">Orders</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {users.users.map((u) => (
+                  <TableRow key={u.customer_key}>
+                    <TableCell className="font-medium text-foreground">
+                      <span className="font-mono text-xs">{customerLabel(u)}</span>
+                      {u.lifecycle_stage && (
+                        <span className="ml-2 text-xs text-muted-foreground">{u.lifecycle_stage}</span>
+                      )}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {u.lifetime_value_minor != null
+                        ? formatMoneyDisplay(u.lifetime_value_minor, (u.currency_code ?? 'INR') as CurrencyCode)
+                        : '—'}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {u.lifetime_orders != null
+                        ? Number(BigInt(u.lifetime_orders)).toLocaleString('en-IN')
+                        : Number(BigInt(u.order_count_in_period || '0')).toLocaleString('en-IN')}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+
+            {/* Pagination over the server-paged endpoint. */}
+            <div className="flex items-center justify-between">
+              <p className="text-xs text-muted-foreground tabular-nums">
+                {total.toLocaleString('en-IN')} {total === 1 ? 'customer' : 'customers'} · page {page} of {pageCount}
+              </p>
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={page <= 1}
+                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  aria-label="Previous page"
+                >
+                  <ChevronLeft className="size-4" aria-hidden="true" />
+                  Prev
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={page >= pageCount}
+                  onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
+                  aria-label="Next page"
+                >
+                  Next
+                  <ChevronRight className="size-4" aria-hidden="true" />
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </SectionCard>
+  );
+}
+
+function DrilldownSkeleton() {
+  return (
+    <div className="space-y-2" aria-busy="true" aria-label="Loading cohort customers…">
+      <Skeleton className="h-8 w-full" />
+      <Skeleton className="h-8 w-full" />
+      <Skeleton className="h-8 w-full" />
     </div>
   );
 }

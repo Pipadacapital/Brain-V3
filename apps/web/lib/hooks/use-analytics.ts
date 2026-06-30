@@ -104,6 +104,34 @@ export function useRepeatLatency() {
 }
 
 /**
+ * useCohortUsers — cohort-cell drill-down: the paginated customers inside ONE cohort cell
+ * (cohort_month × period) from gold_cohort_member via /v1/analytics/retention/cohort-users,
+ * LTV-enriched from gold_customer_360 where available. Powers the Retention-tab cohort-cell
+ * customer list. Enabled only once a cell is selected; honest no_data on an empty cell.
+ *
+ * @param params - cohort_month 'YYYY-MM', period (months-since), 1-based page + size. Null/undefined
+ *                 cohortMonth disables the query (no cell selected yet).
+ */
+export function useCohortUsers(params?: {
+  cohortMonth?: string;
+  period?: number;
+  page?: number;
+  pageSize?: number;
+}) {
+  const cohortMonth = params?.cohortMonth;
+  const period = params?.period;
+  const page = params?.page ?? 1;
+  const pageSize = params?.pageSize ?? 20;
+  return useQuery({
+    queryKey: [...ANALYTICS_QUERY_KEY, 'cohort-users', cohortMonth, period, page, pageSize],
+    queryFn: () => analyticsApi.getCohortUsers({ cohortMonth: cohortMonth as string, period: period as number, page, pageSize }),
+    enabled: typeof cohortMonth === 'string' && cohortMonth.length > 0 && typeof period === 'number' && period >= 0,
+    staleTime: 5 * 60_000,
+    refetchInterval: 60_000,
+  });
+}
+
+/**
  * useDeliveryTime — per-courier average delivery days + the fixed five-bucket day histogram (P3) from
  * gold_delivery_time via /v1/analytics/operations/delivery-time. Powers the Operations tab
  * "Delivery time by courier" panel. Integer day math, NO money; honest no_data when the brand has no
@@ -581,6 +609,32 @@ export function useFunnelAnalytics(params?: { from?: string; to?: string }) {
     queryKey: [...ANALYTICS_QUERY_KEY, 'funnel', params?.from, params?.to],
     queryFn: () => analyticsApi.getFunnelAnalytics(params),
     staleTime: 5 * 60_000,
+  });
+}
+
+/**
+ * useFunnelUsers — the funnel STEP drill-down: a paginated list of the VISITORS who DROPPED at
+ * `step` (reached it but not the next) within the window, from gold_funnel_user via
+ * /v1/analytics/funnel/users. Powers a funnel-step "see who dropped here" panel. Keeps the previous
+ * page while the next loads (flicker-free pagination); disabled until a step is provided. Shares the
+ * 'analytics' prefix → auto-invalidates on brand switch.
+ * @param params - step (required) + optional date_start/date_end (YYYY-MM-DD) + page/page_size.
+ */
+export function useFunnelUsers(params: {
+  step?: 'session' | 'product_view' | 'cart' | 'checkout' | 'purchase';
+  date_start?: string;
+  date_end?: string;
+  page?: number;
+  page_size?: number;
+}) {
+  const { step, date_start, date_end, page = 1, page_size = 20 } = params;
+  return useQuery({
+    queryKey: [...ANALYTICS_QUERY_KEY, 'funnel-users', step, date_start, date_end, page, page_size],
+    queryFn: () =>
+      analyticsApi.getFunnelUsers({ step: step as NonNullable<typeof step>, date_start, date_end, page, page_size }),
+    enabled: Boolean(step),
+    staleTime: 5 * 60_000,
+    placeholderData: (prev) => prev,
   });
 }
 

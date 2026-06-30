@@ -19,6 +19,7 @@ import {
   getReturnFunnel,
   getBehaviorOverview,
   getFunnelAnalytics,
+  getFunnelUsers,
   getAbandonedCart,
   getEngagement,
   getSearchBehavior,
@@ -31,6 +32,8 @@ import type {
   ReturnFunnel as ContractReturnFunnel,
   BehaviorOverview as ContractBehaviorOverview,
   FunnelAnalytics as ContractFunnelAnalytics,
+  FunnelUsers as ContractFunnelUsers,
+  FunnelStep as ContractFunnelStep,
   AbandonedCart as ContractAbandonedCart,
   Engagement as ContractEngagement,
   SearchBehavior as ContractSearchBehavior,
@@ -410,6 +413,72 @@ export function registerAnalyticsJourneyRoutes(fastify: FastifyInstance, deps: B
           toStr,
           dataSource: 'live',
         },
+      );
+
+      return reply.send({ request_id: requestId, data: result });
+    },
+  );
+
+  /**
+   * GET /api/v1/analytics/funnel/users?step=<session|product_view|cart|checkout|purchase>&date_start=&date_end=
+   * The funnel STEP drill-down — a paginated list of the VISITORS who DROPPED at `step` (reached it
+   * but not the next) within the window, from the per-visitor Gold mart gold_funnel_user via
+   * brain_serving.mv_gold_funnel_user. "Dropped at <step>" = furthest_step = '<step>'; the window is
+   * applied on last_seen_at. NO money. Brand from session (D-1); honest no_data; paginated.
+   */
+  fastify.get(
+    '/api/v1/analytics/funnel/users',
+    {
+      preHandler: [bffProtectedPreHandler],
+      schema: {
+        querystring: {
+          type: 'object',
+          required: ['step'],
+          properties: {
+            step: { type: 'string', enum: ['session', 'product_view', 'cart', 'checkout', 'purchase'] },
+            date_start: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
+            date_end:   { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
+            page:      { type: 'string', pattern: '^\\d+$' },
+            page_size: { type: 'string', pattern: '^\\d+$' },
+          },
+          additionalProperties: false,
+        },
+      },
+      attachValidation: true,
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const validationError = (request as FastifyRequest & { validationError?: Error }).validationError;
+      const query = request.query as {
+        step?: string; date_start?: string; date_end?: string; page?: string; page_size?: string;
+      };
+      const page = query.page ? Math.max(1, parseInt(query.page, 10)) : 1;
+      const pageSize = query.page_size ? parseInt(query.page_size, 10) : 20;
+      if (validationError) {
+        return reply.code(400).send({
+          request_id: requestId,
+          error: { code: 'INVALID_PARAMS', message: 'step must be one of session|product_view|cart|checkout|purchase; date_start/date_end must be YYYY-MM-DD.' },
+        });
+      }
+
+      const step = query.step as ContractFunnelStep;
+      const auth = (request as AuthenticatedRequest).auth;
+      if (!auth.brandId) {
+        return reply.send({ request_id: requestId, data: { state: 'no_data', step, page, page_size: pageSize, total: '0' } });
+      }
+      if (!srPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Serving tier (Trino) not available' } });
+      }
+
+      const today = new Date().toISOString().split('T')[0] as string;
+      const toStr = query.date_end ?? today;
+      const defaultFrom = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0] as string;
+      const fromStr = query.date_start ?? defaultFrom;
+
+      const result: ContractFunnelUsers = await getFunnelUsers(
+        auth.brandId,
+        { srPool },
+        { step, fromStr, toStr, page, pageSize },
       );
 
       return reply.send({ request_id: requestId, data: result });

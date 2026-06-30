@@ -125,6 +125,9 @@ export type { BehaviorOverviewResult, PageTypeBucketDto, BrowsedItemDto } from '
 // Storefront conversion funnel — sessions → product views → cart adds → purchases (Phase H pixel).
 export { getFunnelAnalytics } from './internal/application/queries/get-funnel-analytics.js';
 export type { FunnelAnalyticsResult, FunnelStageDto } from './internal/application/queries/get-funnel-analytics.js';
+// Funnel STEP drill-down — paginated visitors who DROPPED at a step, over gold_funnel_user.
+export { getFunnelUsers } from './internal/application/queries/get-funnel-users.js';
+export type { FunnelUsersResult, FunnelUserDto, FunnelUsersParams, FunnelStep } from './internal/application/queries/get-funnel-users.js';
 // Abandoned cart — cart sessions converted vs abandoned (Phase H pixel).
 export { getAbandonedCart } from './internal/application/queries/get-abandoned-cart.js';
 export type { AbandonedCartResult } from './internal/application/queries/get-abandoned-cart.js';
@@ -242,6 +245,13 @@ export type {
   CohortRetentionResult,
   CohortRetentionDto,
 } from './internal/application/queries/get-cohort-retention.js';
+// Cohort-cell drill-down — paginated customers inside one (cohort_month × period) cell over
+// gold_cohort_member, LTV-enriched from gold_customer_360 where available.
+export { getCohortUsers } from './internal/application/queries/get-cohort-users.js';
+export type {
+  CohortUsersResult,
+  CohortUserDto,
+} from './internal/application/queries/get-cohort-users.js';
 // #32b — time-to-2nd-purchase retention LATENCY (median + 6-bucket histogram) over gold_repeat_latency.
 export { getRepeatLatency } from './internal/application/queries/get-repeat-latency.js';
 export type {

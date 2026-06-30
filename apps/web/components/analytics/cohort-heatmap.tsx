@@ -57,6 +57,15 @@ export interface CohortHeatmapProps {
   isLoading?: boolean;
   /** Caption read by screen readers (also the EmptyState/aria context). */
   caption?: string;
+  /**
+   * Optional cell drill-down. When provided, every (non-empty) cell becomes an
+   * activatable button that calls back with the cohort label + period index, so a
+   * caller can open a per-cell drill-down (e.g. the customers inside that cohort cell).
+   * Omitted → cells render as plain text exactly as before (back-compat).
+   */
+  onCellClick?: (cohortMonth: string, period: number) => void;
+  /** The currently-selected cell (highlighted), as {label, period}. Drill-down only. */
+  selectedCell?: { label: string; period: number } | null;
   className?: string;
   'data-testid'?: string;
 }
@@ -89,6 +98,8 @@ export function CohortHeatmap({
   sizeHeader = 'Size',
   isLoading = false,
   caption = 'Cohort retention heatmap',
+  onCellClick,
+  selectedCell = null,
   className,
   'data-testid': testId,
 }: CohortHeatmapProps) {
@@ -162,15 +173,38 @@ export function CohortHeatmap({
                   </td>
                 )}
                 {periods.map((p) => {
-                  const value = byPeriod.has(p) ? (byPeriod.get(p) as number | null) : null;
+                  const has = byPeriod.has(p);
+                  const value = has ? (byPeriod.get(p) as number | null) : null;
+                  const cellLabel = `${row.label}, ${labelFor(p)}: ${fmtPct(value)}`;
+                  // Drill-down: a present cell becomes a button when onCellClick is wired.
+                  const clickable = !!onCellClick && has;
+                  const isSelected =
+                    selectedCell != null && selectedCell.label === row.label && selectedCell.period === p;
                   return (
                     <td
                       key={p}
-                      className="rounded px-2 py-1 text-center font-medium tabular-nums"
-                      style={cellStyle(value)}
-                      aria-label={`${row.label}, ${labelFor(p)}: ${fmtPct(value)}`}
+                      className={cn(
+                        'rounded px-2 py-1 text-center font-medium tabular-nums',
+                        clickable && 'p-0',
+                        isSelected && 'ring-2 ring-ring ring-offset-1 ring-offset-background',
+                      )}
+                      style={clickable ? undefined : cellStyle(value)}
+                      aria-label={clickable ? undefined : cellLabel}
                     >
-                      {fmtPct(value)}
+                      {clickable ? (
+                        <button
+                          type="button"
+                          onClick={() => onCellClick?.(row.label, p)}
+                          aria-label={`${cellLabel} — view customers`}
+                          aria-pressed={isSelected}
+                          className="w-full rounded px-2 py-1 text-center font-medium tabular-nums transition-[filter] hover:brightness-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                          style={cellStyle(value)}
+                        >
+                          {fmtPct(value)}
+                        </button>
+                      ) : (
+                        fmtPct(value)
+                      )}
                     </td>
                   );
                 })}

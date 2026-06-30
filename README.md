@@ -41,7 +41,7 @@ Manager/KMS, KMS PII-vault DEK). Use this after `docker compose down -v` (dispos
 
 ```bash
 # 0. CLEAN SLATE — remove containers + volumes (all infra state, disposable dev data)
-docker compose --profile core --profile ingest --profile lakehouse --profile observe down -v
+docker compose --profile core --profile full-obs --profile debug --profile ai down -v
 
 # 1. ONE COMMAND — infra (up --wait → HEALTHY) → migrate → bootstrap (LocalStack SM/KMS)
 #    → one-shot Spark Silver→Gold + Trino serving views → start all 4 apps.

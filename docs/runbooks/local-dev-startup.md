@@ -23,26 +23,28 @@ pnpm down -v         # also wipe volumes for a true cold start
 
 ---
 
-## What `pnpm dev:up` does (7 ordered steps)
+## What `pnpm dev:up` does (8 ordered steps)
 
 Source of truth: `tools/dev/dev-up.sh`. Compose profiles used:
-`--profile core --profile ingest --profile lakehouse`.
+`--profile core --profile ai`. (`core` folds in the former `ingest` + `lakehouse`
+infra; the two Bronze Spark sinks are no longer containers — they run as one host
+process started in step 5.)
 
 | # | Step | What | Why ordered here |
 | --- | --- | --- | --- |
 | 1 | preflight | ensure `.env.local-prod` exists (copy from `.env.local-prod.example` if missing) | apps + migrate read it |
-| 2 | db | `docker compose ... up -d --wait postgres` (Postgres only) | migrations must run **before** any Spark sink reads PG |
+| 2 | db | `docker compose ... up -d --wait postgres` (Postgres only) | migrations must run **before** the Bronze sink reads PG |
 | 3 | migrate | `( set -a; . .env.local-prod; set +a; APP_ENV=local-prod pnpm migrate )` | sourced in a **subshell** so `NODE_ENV=production` does not leak into `next dev` |
-| 4 | infra | bring up the rest (core + ingest + lakehouse) and **poll health** (`compose_up_healthy`) | does NOT use `up --wait` — one-shot init containers exit 0 mid-wait and would abort it |
-| 5 | bootstrap | `pnpm bootstrap` → seed LocalStack Secrets Manager + KMS (per-brand keyring/secrets) | apps need the keyring/DEK to start |
-| 6 | refresh | `ONESHOT=1 APP_ENV=local-prod pnpm dev:v4-refresh` → one-shot Silver→Gold→Trino serving views | dashboards render honest-empty, not 500, on a cold DB |
-| 7 | apps | `turbo run dev` for `@brain/core`, `@brain/web`, `@brain/collector`, `@brain/stream-worker` | the app tier |
+| 4 | infra | bring up the rest (core + ai) and **poll health** (`compose_up_healthy`) | does NOT use `up --wait` — one-shot init containers exit 0 mid-wait and would abort it |
+| 5 | bronze | start the host combined Bronze sink (`tools/dev/dev-bronze-streaming.sh`), backgrounded → `/tmp/bronze-sink.log` | replaces the two removed `spark-bronze-sink` containers |
+| 6 | bootstrap | `pnpm bootstrap` → seed LocalStack Secrets Manager + KMS (per-brand keyring/secrets) | apps need the keyring/DEK to start |
+| 7 | refresh | `ONESHOT=1 APP_ENV=local-prod pnpm dev:v4-refresh` → one-shot Silver→Gold→Trino serving views | dashboards render honest-empty, not 500, on a cold DB |
+| 8 | apps | `turbo run dev` for `@brain/core`, `@brain/web`, `@brain/collector`, `@brain/stream-worker` | the app tier |
 
-> **Why db→migrate→infra (not infra→migrate):** the Spark Bronze materializer
-> (`spark-bronze-sink`) JDBC-reads PG tables (e.g. `pixel.pixel_installation`) at
-> startup. On a cold, un-migrated DB those relations don't exist, the sink
-> crash-loops, and a single whole-stack `up --wait` never converges. Migrating
-> first makes the cold start deterministic.
+> **Why db→migrate→bronze (not bronze→migrate):** the combined Bronze sink's
+> collector lane JDBC-reads PG (e.g. `pixel.pixel_installation`) for the R2
+> install_token→brand lookup. On a cold, un-migrated DB that relation doesn't exist
+> and the lane errors. Migrating first makes the cold start deterministic.
 
 ---
 
@@ -50,47 +52,46 @@ Source of truth: `tools/dev/dev-up.sh`. Compose profiles used:
 
 | Script | Profiles | Brings up |
 | --- | --- | --- |
-| `pnpm dev:up` | core + ingest + lakehouse | full stack, ordered (recommended) |
-| `pnpm dev` | core + ingest + lakehouse | full stack, single `up --wait` (no migrate-ordering safety) |
-| `pnpm dev:core` | core | Postgres, MinIO, Trino, web/core deps |
-| `pnpm dev:ingest` | ingest | Kafka (`redpanda` service name, KRaft), collector, stream-worker |
-| `pnpm dev:lakehouse` | lakehouse | Spark Bronze sinks + Gold/Silver job runners |
-| `pnpm dev:full` | core + ingest + lakehouse | infra only, no apps |
+| `pnpm dev:up` | core + ai | full stack, ordered + host Bronze sink (recommended) |
+| `pnpm dev` | core + ai | full stack + host Bronze sink, single `up --wait` (no migrate-ordering safety) |
+| `pnpm dev:core` | core | infra (Postgres, Kafka, MinIO, Iceberg-REST, Trino, …) + web/core deps |
+| `pnpm dev:ingest` | core | infra + collector + stream-worker apps |
+| `pnpm dev:bronze-sink` | — | the host combined Bronze sink only (`dev-bronze-streaming.sh`) |
+| `pnpm dev:full` | core + full-obs + debug + ai | all infra incl. tracing/exporters, no apps |
 
-> Trino and MinIO are promoted to **always-on default** services (no profile)
-> so the serving substrate resolves without an explicit profile.
+> Profiles: **core** (default infra: kafka, postgres, neo4j, redis, minio,
+> iceberg-rest, trino, prometheus, grafana, localstack, apicurio, pgbouncer),
+> **full-obs** (tempo, loki, otel-collector), **debug** (kafka-exporter), **ai** (litellm).
 
 ---
 
-## Bronze streaming (the combined Bronze landing)
+## Bronze streaming (the combined host Bronze landing)
 
 Spark Structured Streaming is the **sole** Bronze landing compute (Kafka Connect
-is retired). Under the `lakehouse` profile two compose services run the combined
-Bronze landing, both sharing the broker's network namespace
-(`network_mode: "service:redpanda"`) so the `localhost:9092` advertised listener
-resolves:
+is retired). The two previously-separate compose sinks were **fused into one host
+process** (`tools/dev/dev-bronze-streaming.sh` → `db/iceberg/spark/combined_bronze_sinks.py`):
+ONE `docker run apache/spark` SparkSession sharing the Kafka container's netns
+(`--network container:brainv3-kafka-1`, so the `localhost:9092` advertised listener
+resolves), running BOTH streaming queries via `spark.streams.awaitAnyTermination()`.
 
-| Compose service | Job | Lands into |
+| Lane (in `combined_bronze_sinks.py`) | Job module | Lands into |
 | --- | --- | --- |
-| `spark-bronze-sink` | `bronze_materialize.py` | collector/pixel lane → `brain_bronze.*` (gated, dedup MERGE) |
-| `spark-bronze-raw-sink` | `bronze_raw_landing.py` | the 9 connector raw lanes → `brain_bronze.{lane}_raw` (append-only, idempotent on topic/partition/offset) |
+| collector/pixel | `bronze_materialize.py` | `brain_bronze.collector_events` (gated, dedup MERGE on `(brand_id,event_id)`) |
+| 9 connector raw lanes | `bronze_raw_landing.py` | `brain_bronze.{lane}_raw` (append-only, idempotent on topic/partition/offset) |
 
-These start automatically as part of `pnpm dev:up` (step 4) and
-`pnpm dev:lakehouse`. To restart just the Bronze landing:
+It starts automatically as part of `pnpm dev:up` (step 5, backgrounded). To run or
+restart just the Bronze landing:
 
 ```sh
-docker compose --profile lakehouse up -d spark-bronze-sink spark-bronze-raw-sink
-docker compose logs -f spark-bronze-sink spark-bronze-raw-sink
+pnpm dev:bronze-sink            # = bash tools/dev/dev-bronze-streaming.sh
+tail -f /tmp/bronze-sink.log    # when started by dev:up
 ```
 
-> ⚠️ **Naming note / to-be-created:** the deliverable brief refers to a host
-> combined-bronze script `tools/dev/dev-bronze-streaming.sh`. **That script does
-> not exist in the repo today.** The combined Bronze landing is currently the two
-> compose services above, not a host script. If a single host-side wrapper is
-> wanted, create `tools/dev/dev-bronze-streaming.sh` that runs the two
-> `docker compose ... up -d` lines above (and optionally tails their logs). This
-> runbook documents the real mechanism; treat the named script as a future
-> convenience wrapper.
+> **Memory:** the launcher's heap defaults (driver 1g + executor 1g + offHeap 256m
+> ≈ ~2 GB; live-verified peak ~2.1 GiB on a backlog drain) are a STARTING POINT —
+> raise `SPARK_DRIVER_MEMORY` / `SPARK_EXECUTOR_MEMORY` if it OOMs or lags under a
+> large cold-start backlog. Override the broker container via `KAFKA_CONTAINER` and
+> the topics via `COLLECTOR_TOPIC` (defaults to the local-prod `prod.`-prefixed topic).
 
 ---
 
@@ -140,7 +141,7 @@ APP_ENV=local-prod pnpm dev:v4-refresh             # continuous loop
 ## Verify the stack is up
 
 ```sh
-docker compose --profile core --profile ingest --profile lakehouse ps -a
+docker compose --profile core --profile full-obs --profile debug --profile ai ps -a
 # expect: running+healthy, or exited 0 for one-shot init containers
 ```
 

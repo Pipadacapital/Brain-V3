@@ -7,8 +7,11 @@ and deletes its own EXECUTOR pods (+ the per-app configmap/service). This grants
 to the release namespace (least privilege — no cluster-wide rights). In "local" mode (default) the
 crons are single-JVM, no executor pods are launched, and none of this renders.
 */}}
-{{- if eq (.Values.sparkV4.executionMode | default "local") "k8s" -}}
-{{- $k := .Values.sparkV4.k8s -}}
+{{- $v4k8s := eq (.Values.sparkV4.executionMode | default "local") "k8s" -}}
+{{- $brk8s := eq (.Values.sparkBronze.executionMode | default "local") "k8s" -}}
+{{- if or $v4k8s $brk8s -}}
+{{/* sparkV4 + sparkBronze share the same driver SA ("spark"); render its RBAC if EITHER is in k8s mode. */}}
+{{- $k := ternary .Values.sparkV4.k8s .Values.sparkBronze.k8s $v4k8s -}}
 {{- $ns := $k.namespace | default .Release.Namespace -}}
 apiVersion: v1
 kind: ServiceAccount

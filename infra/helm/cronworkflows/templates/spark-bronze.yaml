@@ -31,6 +31,19 @@ Image MUST be pinned by digest (B3) — same fail-closed rule as the generic tem
 {{- $envFrom := .Values.envSecretName -}}
 {{- $sa := .Values.serviceAccount.name -}}
 {{- $tz := .Values.timezone -}}
+{{- $dm := .Values.sparkBronze.driverMemory -}}
+{{/* ── Execution-mode submit flags (local[*] vs Spark-on-K8s cluster) — mirrors spark-v4.yaml.
+     See docs/ops/spark-on-k8s-migration.md §7 (Bronze is the lighter, separate-from-batch decision).
+     $lp = in-image path scheme ("" local; "local://" cluster — driver reads the app from the SAME image). */}}
+{{- $mode := .Values.sparkBronze.executionMode | default "local" -}}
+{{- $lp := "" -}}
+{{- $submitFlags := printf "--master local[*] --driver-memory %s" $dm -}}
+{{- if eq $mode "k8s" -}}
+  {{- $k := .Values.sparkBronze.k8s -}}
+  {{- $ns := $k.namespace | default .Release.Namespace -}}
+  {{- $lp = "local://" -}}
+  {{- $submitFlags = printf "--master %s --deploy-mode cluster --conf spark.kubernetes.container.image=%s --conf spark.kubernetes.namespace=%s --conf spark.kubernetes.authenticate.driver.serviceAccountName=%s --conf spark.driver.memory=%s --conf spark.executor.instances=%s --conf spark.executor.cores=%s --conf spark.executor.memory=%s --conf spark.dynamicAllocation.enabled=true --conf spark.dynamicAllocation.shuffleTracking.enabled=true --conf spark.dynamicAllocation.minExecutors=%s --conf spark.dynamicAllocation.maxExecutors=%s" $k.apiServer $ref $ns $k.serviceAccountName $dm $k.executor.instances $k.executor.cores $k.executor.memory $k.executor.minExecutors $k.executor.maxExecutors -}}
+{{- end -}}
 ---
 apiVersion: argoproj.io/v1alpha1
 kind: CronWorkflow
@@ -60,7 +73,12 @@ spec:
         container:
           image: {{ $ref | quote }}
           imagePullPolicy: {{ $img.pullPolicy }}
-          command: ["/opt/spark/bin/spark-submit", "--master", "local[*]", "--driver-memory", {{ .Values.sparkBronze.driverMemory | quote }}, "/opt/brain/bronze_materialize.py"]
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              PFX="{{ $lp }}"   # "" (local[*]) or "local://" (k8s cluster — driver reads the app from the SAME image)
+              exec /opt/spark/bin/spark-submit {{ $submitFlags }} "${PFX}/opt/brain/bronze_materialize.py"
           env:
             - { name: TRIGGER_MODE, value: "availableNow" }
             {{- toYaml .Values.sparkBronze.env | nindent 12 }}
@@ -103,7 +121,12 @@ spec:
         container:
           image: {{ $ref | quote }}
           imagePullPolicy: {{ $img.pullPolicy }}
-          command: ["/opt/spark/bin/spark-submit", "--master", "local[*]", "--driver-memory", {{ .Values.sparkBronze.driverMemory | quote }}, "/opt/brain/bronze_maintenance.py"]
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              PFX="{{ $lp }}"   # "" (local[*]) or "local://" (k8s cluster — driver reads the app from the SAME image)
+              exec /opt/spark/bin/spark-submit {{ $submitFlags }} "${PFX}/opt/brain/bronze_maintenance.py"
           env:
             - { name: MODE, value: "maintain" }
             {{- toYaml .Values.sparkBronze.env | nindent 12 }}

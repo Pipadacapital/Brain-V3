@@ -83,6 +83,22 @@ sparkBronze:
   resources:
     requests: { cpu: "1", memory: 2Gi }
     limits: { cpu: "2", memory: 4Gi }
+  # ── Execution mode (see docs/ops/spark-on-k8s-migration.md §7) ─────────────────────────────────
+  # "local" (default) = the proven single-JVM `spark-submit --master local[*]` in the cron pod. "k8s" =
+  # Spark-on-Kubernetes cluster mode (real executor pods, same image/catalog/code). Bronze is the lighter,
+  # SEPARATE-from-batch decision — migrate only when Bronze itself shows lag (Kafka partitions + executors),
+  # NOT coupled to the sparkV4 cutover. DEFAULT local → zero change to today's crons; rollback = flip back.
+  executionMode: local
+  k8s:
+    apiServer: "k8s://https://kubernetes.default.svc"
+    namespace: ""                       # "" → the release namespace
+    serviceAccountName: spark           # shared with sparkV4; RBAC in spark-k8s-rbac.yaml renders if EITHER is k8s
+    executor:
+      instances: "3"
+      cores: "4"
+      memory: "6g"
+      minExecutors: "1"
+      maxExecutors: "8"
 
 # Brain V4 Spark Silver/Gold transform (templates/spark-v4.yaml). Spark is the SOLE compute, dbt is gone.
 # Two staggered CronWorkflows — v4-silver (:05) → v4-gold (:25) — that spark-submit the mart jobs the

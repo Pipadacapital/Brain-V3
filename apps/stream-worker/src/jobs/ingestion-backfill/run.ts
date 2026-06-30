@@ -32,8 +32,21 @@ import { Kafka, type Producer } from 'kafkajs';
 import {
   runResumableBackfill,
   getResource,
+  backfillableResources,
   type IResourcePageFetcher,
   type IngestionManifest,
+  // Phase 2 will add these manifest files (packages/connector-core/src/manifests/<provider>.manifest.ts)
+  // and re-export them from the connector-core index per the naming contract. Until then this module
+  // intentionally does not typecheck (the manifest consts are unresolved) — that is expected.
+  META_INGESTION_MANIFEST,
+  GOOGLE_ADS_INGESTION_MANIFEST,
+  RAZORPAY_INGESTION_MANIFEST,
+  SHIPROCKET_INGESTION_MANIFEST,
+  GA4_INGESTION_MANIFEST,
+  // Cross-lane id-parity seam: a passthrough deriver that stamps the fetcher's PRECOMPUTED live
+  // event_id (FetchedRecord.providerId) verbatim, so generic-ingestion backfill ids == live ids
+  // by construction (no DeterministicDedup namespace divergence → Bronze dedups → no double-count).
+  precomputedEventIdDeriver,
 } from '@brain/connector-core';
 import { SHOPIFY_MANIFEST } from '@brain/shopify-mapper';
 import { WOOCOMMERCE_MANIFEST } from '@brain/woocommerce-mapper';
@@ -43,6 +56,7 @@ import { createIdempotentProducer } from '../../infrastructure/kafka/idempotent-
 import { createSaltProvider } from '../../infrastructure/secrets/SaltProvider.js';
 import { recordConnectorAuthRejected } from '../../infrastructure/observability/connector-auth-health.js';
 import { DlqRecordRepository } from '../../infrastructure/pg/DlqRecordRepository.js';
+import { PgBackfillJobRepository } from '../../infrastructure/pg/BackfillJobRepository.js';
 import { buildWorkerSecretsManager } from '../shopify-backfill/worker-secrets.js';
 import { PgResourceBackfillStateRepository } from './PgResourceBackfillStateRepository.js';
 import { KafkaEventSink, PgDeadLetterSink } from './sinks.js';
@@ -61,6 +75,21 @@ import {
 } from './woocommerce-resource-fetchers.js';
 import { WooCommerceClient } from '../woocommerce-orders-repull/woocommerce-client.js';
 import { resolveWooCredentialsForConnector } from './woocommerce-creds.js';
+// Per-connector credential resolvers — REUSE each connector's existing repull resolver (prod AWS
+// Secrets Manager / dev secret bundle), so the backfill lane resolves secrets IDENTICALLY to the
+// live re-pull. Tokens are NEVER logged (I-S09); a null resolution ⇒ RECONNECT_REQUIRED.
+import { resolveMetaCredentials } from '../meta-spend-repull/run.js';
+import { resolveGoogleCredentials } from '../google-ads-spend-repull/run.js';
+import { resolveRazorpayCredentials } from '../razorpay-settlement-repull/run.js';
+import { resolveShiprocketCredentials } from '../shiprocket-shipment-repull/run.js';
+import { resolveGa4Credentials } from '../ga4-repull/run.js';
+// Phase 2 will add these per-connector fetcher-builder files following the NAMING CONTRACT
+// (build<ProviderPascal>ResourceFetcher). Until then this module intentionally does not typecheck.
+import { buildMetaResourceFetcher } from './meta-resource-fetchers.js';
+import { buildGoogleAdsResourceFetcher } from './google-ads-resource-fetchers.js';
+import { buildRazorpayResourceFetcher } from './razorpay-resource-fetchers.js';
+import { buildShiprocketResourceFetcher } from './shiprocket-resource-fetchers.js';
+import { buildGa4ResourceFetcher } from './ga4-resource-fetchers.js';
 import { log } from '../../log.js';
 
 const cfg = loadStreamWorkerConfig();
@@ -76,10 +105,40 @@ const REGION_CODE = cfg.BRAIN_REGION_CODE;
 
 const NIL_UUID = '00000000-0000-0000-0000-000000000000';
 
-export type SupportedProvider = 'shopify' | 'woocommerce';
+export type SupportedProvider =
+  | 'shopify'
+  | 'woocommerce'
+  | 'meta'
+  | 'google_ads'
+  | 'razorpay'
+  | 'shiprocket'
+  | 'ga4';
+
+const MANIFESTS: Readonly<Record<SupportedProvider, IngestionManifest>> = {
+  shopify: SHOPIFY_MANIFEST,
+  woocommerce: WOOCOMMERCE_MANIFEST,
+  meta: META_INGESTION_MANIFEST,
+  google_ads: GOOGLE_ADS_INGESTION_MANIFEST,
+  razorpay: RAZORPAY_INGESTION_MANIFEST,
+  shiprocket: SHIPROCKET_INGESTION_MANIFEST,
+  ga4: GA4_INGESTION_MANIFEST,
+};
 
 function manifestFor(provider: SupportedProvider): IngestionManifest {
-  return provider === 'shopify' ? SHOPIFY_MANIFEST : WOOCOMMERCE_MANIFEST;
+  return MANIFESTS[provider];
+}
+
+/** True for the providers drained by the GENERIC ingestion framework (not the bespoke shopify queue). */
+function isIngestionProvider(
+  provider: SupportedProvider,
+): provider is 'meta' | 'google_ads' | 'razorpay' | 'shiprocket' | 'ga4' {
+  return (
+    provider === 'meta' ||
+    provider === 'google_ads' ||
+    provider === 'razorpay' ||
+    provider === 'shiprocket' ||
+    provider === 'ga4'
+  );
 }
 
 interface ShopifyConnectorRow {
@@ -95,6 +154,20 @@ interface WooConnectorRow {
 }
 
 /**
+ * Generic connector row for the ingestion-framework providers (meta / google_ads / razorpay /
+ * shiprocket / ga4). The optional discriminator columns:
+ *   - ad_account_id          — meta/google_ads ad account; for ga4 this column stores the property id
+ *                              (generic repull contract — see ga4-repull/run.ts).
+ *   - shiprocket_channel_id  — shiprocket channel scope.
+ */
+interface IngestionConnectorRow {
+  brand_id: string;
+  secret_ref: string;
+  ad_account_id: string | null;
+  shiprocket_channel_id: string | null;
+}
+
+/**
  * Load a connector instance under the brand GUC (FORCE RLS). The brand is provided by the caller
  * (INGEST_BACKFILL_BRAND_ID — the dev trigger's known brand); brand_id is NEVER inferred from a
  * payload (MT-1). connector_instance has FORCE RLS, so the brand GUC is set first; the all-zero
@@ -105,7 +178,7 @@ async function loadConnector(
   connectorInstanceId: string,
   provider: SupportedProvider,
   brandId: string,
-): Promise<ShopifyConnectorRow | WooConnectorRow | null> {
+): Promise<ShopifyConnectorRow | WooConnectorRow | IngestionConnectorRow | null> {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -124,8 +197,20 @@ async function loadConnector(
       await client.query('COMMIT');
       return res.rows[0] ?? null;
     }
-    const res = await client.query<WooConnectorRow>(
-      `SELECT brand_id, secret_ref, woocommerce_site_url
+    if (provider === 'woocommerce') {
+      const res = await client.query<WooConnectorRow>(
+        `SELECT brand_id, secret_ref, woocommerce_site_url
+           FROM connector_instance WHERE id = $1 AND brand_id = $2`,
+        [connectorInstanceId, brandId],
+      );
+      await client.query('COMMIT');
+      return res.rows[0] ?? null;
+    }
+    // Generic ingestion-framework providers (meta/google_ads/razorpay/shiprocket/ga4): the secret_ref
+    // + the per-provider discriminator columns the credential resolvers need (ad_account_id /
+    // shiprocket_channel_id). brand_id is the caller's (MT-1) — never inferred from an API response.
+    const res = await client.query<IngestionConnectorRow>(
+      `SELECT brand_id, secret_ref, ad_account_id, shiprocket_channel_id
          FROM connector_instance WHERE id = $1 AND brand_id = $2`,
       [connectorInstanceId, brandId],
     );
@@ -175,6 +260,57 @@ async function buildFetcher(args: {
     }
   }
 
+  // ── Generic ingestion-framework providers ───────────────────────────────────────────────────────
+  // Each resolves its connector row + secrets via the SAME resolver its live re-pull uses (prod AWS
+  // Secrets Manager / dev bundle), then hands a typed `secrets` bundle to the Phase-2 fetcher builder.
+  // The builder args mirror the shopify/woo shape: { pool, connectorInstanceId, resource, brandId,
+  // saltHex, secrets }. A null credential resolution ⇒ RECONNECT_REQUIRED (auth-rejected, null return
+  // → the driver preserves the cursor). brand_id is the connector row's (MT-1) — never an API payload.
+  if (isIngestionProvider(provider)) {
+    const row = (await loadConnector(pool, connectorInstanceId, provider, brandId)) as IngestionConnectorRow | null;
+    if (!row) return null;
+
+    if (provider === 'meta') {
+      const secrets = await resolveMetaCredentials(row.secret_ref, row.ad_account_id);
+      if (!secrets) {
+        recordConnectorAuthRejected('meta');
+        return null;
+      }
+      return buildMetaResourceFetcher({ pool, connectorInstanceId, resource, brandId, saltHex, secrets });
+    }
+    if (provider === 'google_ads') {
+      const secrets = await resolveGoogleCredentials(row.secret_ref, row.ad_account_id);
+      if (!secrets) {
+        recordConnectorAuthRejected('google_ads');
+        return null;
+      }
+      return buildGoogleAdsResourceFetcher({ pool, connectorInstanceId, resource, brandId, saltHex, secrets });
+    }
+    if (provider === 'razorpay') {
+      const secrets = await resolveRazorpayCredentials(row.secret_ref);
+      if (!secrets) {
+        recordConnectorAuthRejected('razorpay');
+        return null;
+      }
+      return buildRazorpayResourceFetcher({ pool, connectorInstanceId, resource, brandId, saltHex, secrets });
+    }
+    if (provider === 'shiprocket') {
+      const secrets = await resolveShiprocketCredentials(row.secret_ref);
+      if (!secrets) {
+        recordConnectorAuthRejected('shiprocket');
+        return null;
+      }
+      return buildShiprocketResourceFetcher({ pool, connectorInstanceId, resource, brandId, saltHex, secrets });
+    }
+    // ga4
+    const secrets = await resolveGa4Credentials(row.secret_ref, row.ad_account_id);
+    if (!secrets) {
+      recordConnectorAuthRejected('ga4');
+      return null;
+    }
+    return buildGa4ResourceFetcher({ pool, connectorInstanceId, resource, brandId, saltHex, secrets });
+  }
+
   // woocommerce
   const row = (await loadConnector(pool, connectorInstanceId, 'woocommerce', brandId)) as WooConnectorRow | null;
   if (!row) return null;
@@ -217,8 +353,10 @@ export async function run(
   resourceName?: string,
   maxChunks?: number,
 ): Promise<void> {
-  if (provider !== 'shopify' && provider !== 'woocommerce') {
-    throw new Error(`[ingestion-backfill] provider must be 'shopify' | 'woocommerce' (got ${provider})`);
+  if (!provider || !(provider in MANIFESTS)) {
+    throw new Error(
+      `[ingestion-backfill] provider must be one of ${Object.keys(MANIFESTS).join(' | ')} (got ${provider})`,
+    );
   }
   if (!connectorInstanceId) throw new Error('[ingestion-backfill] connector_instance_id required');
   if (!resourceName) throw new Error('[ingestion-backfill] resource required');
@@ -277,6 +415,10 @@ export async function run(
       sink,
       dlq,
       stateRepo,
+      // Generic-ingestion providers (meta/google_ads/razorpay/shiprocket/ga4) carry a precomputed
+      // live event_id on each FetchedRecord.providerId → stamp it through unchanged so backfill ids
+      // match the live/repull lane. Shopify/woocommerce KEEP the default DeterministicDedup deriver.
+      ...(isIngestionProvider(typedProvider) ? { dedup: precomputedEventIdDeriver } : {}),
       ...(maxChunks !== undefined ? { maxChunksThisRun: maxChunks } : {}),
     });
 
@@ -366,6 +508,10 @@ export async function driveResourceBackfillsForConnector(args: {
         sink,
         dlq,
         stateRepo,
+        // Generic-ingestion providers (meta/google_ads/razorpay/shiprocket/ga4) carry a precomputed
+        // live event_id on each FetchedRecord.providerId → stamp it through unchanged so backfill ids
+        // match the live/repull lane. Shopify/woocommerce KEEP the default DeterministicDedup deriver.
+        ...(isIngestionProvider(provider) ? { dedup: precomputedEventIdDeriver } : {}),
         maxChunksThisRun: maxChunks,
       });
       outcomes.push({ resource: resourceName, stopReason: result.stopReason, recordsThisRun: result.recordsThisRun });
@@ -380,6 +526,168 @@ export async function driveResourceBackfillsForConnector(args: {
     }
   }
   return outcomes;
+}
+
+/** Per-run page budget per resource for a CLAIMED `jobs.backfill_job` (the "Import history" button).
+ *  Keeps a single claim bounded; the resumable cursor in jobs.resource_backfill_state carries the
+ *  rest forward to the next claimer tick (the stale-running requeue re-drains until completed).
+ *  Override via INGESTION_BACKFILL_CHUNKS_PER_RUN (clamped 1..50). */
+function resolveIngestionBackfillChunkBudget(): number {
+  // intentional raw: optional per-run page budget; not in the typed config schema.
+  const raw = process.env['INGESTION_BACKFILL_CHUNKS_PER_RUN'];
+  const parsed = raw ? parseInt(raw, 10) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? Math.min(Math.max(parsed, 1), 50) : 5;
+}
+
+/**
+ * runIngestionBackfillFromQueue — the CLAIMER seam that connects the `jobs.backfill_job` queue (the
+ * "Import history" button → RequestConnectorBackfillCommand → a queued row) to the GENERIC resumable
+ * framework, for the INGESTION_BACKFILL_PROVIDERS (meta/google_ads/razorpay/shiprocket/ga4).
+ *
+ * Mirrors the shopify-backfill claim lifecycle but drives the generic driver instead of the bespoke
+ * order loop:
+ *   1. claimQueued(connectorInstanceId, brandId) — queued → running, FOR UPDATE SKIP LOCKED (D-9),
+ *      idempotent so it is safe alongside a prod cron + a second claimer tick.
+ *   2. resolve the per-brand salt (PII hashing); a salt failure finalizes the job 'failed' + preserves
+ *      the cursor for resume.
+ *   3. driveResourceBackfillsForConnector over EVERY backfill-supported resource the provider's
+ *      manifest declares, BOUNDED to a per-run page budget (INGESTION_BACKFILL_CHUNKS_PER_RUN);
+ *      fail-isolated per resource; resumable/chunked/dedup/no-loss; BACKFILL lane.
+ *   4. terminal disposition of the backfill_job:
+ *        - any resource errored        → finalize 'failed' (RESOURCE_BACKFILL_FAILED).
+ *        - every resource completed     → finalize 'completed'.
+ *        - otherwise (some PAUSED)      → requeueForResume → next claimer tick continues from the
+ *          persisted per-resource cursors (jobs.resource_backfill_state) until every resource's floor
+ *          is reached. This mirrors the bounded-per-tick + resume-across-ticks woo scheduled lane.
+ *
+ * brand_id is the caller's (from the connector enumeration / job row) — NEVER an API payload (MT-1).
+ * Tokens/secrets are NEVER logged (I-S09). Self-contained pool + producer (own connections), released
+ * in finally. A no-queued-job is a clean no-op (returns without side effects).
+ */
+export async function runIngestionBackfillFromQueue(
+  connectorInstanceId: string,
+  provider: SupportedProvider,
+  brandId: string,
+): Promise<void> {
+  if (!isIngestionProvider(provider)) {
+    throw new Error(`[ingestion-backfill] runIngestionBackfillFromQueue: provider "${provider}" is not an ingestion-framework provider`);
+  }
+  const jobRepo = new PgBackfillJobRepository(DB_URL);
+  const pool = new Pool({ connectionString: DB_URL, max: 4 });
+  const kafka = new Kafka({ clientId: 'ingestion-backfill-claimer', brokers: BROKERS, retry: { retries: 5 } });
+  const producer = createIdempotentProducer(kafka);
+  const saltProvider = createSaltProvider(DB_URL);
+
+  try {
+    // Claim a queued job for this connector (idempotent; null ⇒ nothing queued / already claimed).
+    const claimed = await jobRepo.claimQueued(connectorInstanceId, brandId);
+    if (!claimed) return;
+
+    await producer.connect();
+
+    let saltHex: string;
+    try {
+      saltHex = await saltProvider.saltHexForBrand(brandId);
+    } catch (e) {
+      await jobRepo.finalize({
+        jobId: claimed.id,
+        brandId,
+        status: 'failed',
+        achievedDepthLabel: null,
+        failureReason: `SALT_FETCH_FAILED: ${String(e).slice(0, 200)}`,
+        recordsProcessed: 0n,
+        cursorValue: claimed.cursor_value,
+      });
+      log.error(`[ingestion-backfill] salt fetch failed for brand=${brandId} job=${claimed.id}`, { detail: e });
+      return;
+    }
+
+    // Drive every backfill-supported (rest) resource the manifest declares.
+    const manifest = manifestFor(provider);
+    const resources = backfillableResources(manifest).map((r) => r.name);
+    if (resources.length === 0) {
+      // Misconfiguration guard: a provider with NO backfill-supported resources would otherwise
+      // requeue forever. Finalize 'completed' (nothing to do) so the job terminates loudly.
+      await jobRepo.finalize({
+        jobId: claimed.id,
+        brandId,
+        status: 'completed',
+        achievedDepthLabel: null,
+        failureReason: null,
+        recordsProcessed: BigInt(claimed.records_processed ?? '0'),
+        cursorValue: claimed.cursor_value,
+      });
+      log.warn(`[ingestion-backfill] queue job=${claimed.id} provider=${provider} has NO backfill-supported resources — finalized completed (no-op)`);
+      return;
+    }
+    const outcomes = await driveResourceBackfillsForConnector({
+      pool,
+      producer,
+      provider,
+      connectorInstanceId,
+      brandId,
+      saltHex,
+      resources,
+      maxChunksPerResource: resolveIngestionBackfillChunkBudget(),
+    });
+
+    const anyFailed = outcomes.some((o) => o.stopReason === 'failed');
+    const allCompleted = outcomes.length > 0 && outcomes.every((o) => o.stopReason === 'completed');
+    const recordsThisRun = outcomes.reduce((n, o) => n + o.recordsThisRun, 0);
+    // Records accumulated across ticks (this run's delta + what prior ticks already recorded). The
+    // backfill_job.records_processed is the UI's running total; per-resource lifetime totals live in
+    // jobs.resource_backfill_state.
+    const priorRecords = BigInt(claimed.records_processed ?? '0');
+    const cumulativeRecords = priorRecords + BigInt(recordsThisRun);
+
+    if (anyFailed) {
+      await jobRepo.finalize({
+        jobId: claimed.id,
+        brandId,
+        status: 'failed',
+        achievedDepthLabel: null,
+        failureReason: 'RESOURCE_BACKFILL_FAILED',
+        recordsProcessed: cumulativeRecords,
+        // Per-resource cursors live in jobs.resource_backfill_state; the backfill_job cursor_value is
+        // the bespoke-shopify since_id, unused for the generic lane.
+        cursorValue: claimed.cursor_value,
+      });
+      log.warn(
+        `[ingestion-backfill] queue job=${claimed.id} provider=${provider} connector=${connectorInstanceId} ` +
+          `status=failed resources=${outcomes.length} recordsThisRun=${recordsThisRun}`,
+      );
+      return;
+    }
+
+    if (allCompleted) {
+      await jobRepo.finalize({
+        jobId: claimed.id,
+        brandId,
+        status: 'completed',
+        achievedDepthLabel: null,
+        failureReason: null,
+        recordsProcessed: cumulativeRecords,
+        cursorValue: claimed.cursor_value,
+      });
+      log.info(
+        `[ingestion-backfill] queue job=${claimed.id} provider=${provider} connector=${connectorInstanceId} ` +
+          `status=completed resources=${outcomes.length} recordsTotal=${cumulativeRecords}`,
+      );
+      return;
+    }
+
+    // Some resources merely PAUSED (more pages remain) — requeue so the next claimer tick resumes
+    // from the persisted per-resource cursors until every resource reaches its floor.
+    await jobRepo.requeueForResume(claimed.id, brandId, cumulativeRecords);
+    log.info(
+      `[ingestion-backfill] queue job=${claimed.id} provider=${provider} connector=${connectorInstanceId} ` +
+        `status=paused→requeued resources=${outcomes.length} recordsThisRun=${recordsThisRun} recordsTotal=${cumulativeRecords}`,
+    );
+  } finally {
+    await producer.disconnect().catch(() => undefined);
+    await pool.end();
+    await jobRepo.end();
+  }
 }
 
 // Path-specific entrypoint guard: this module is now ALSO imported by woocommerce-orders-repull/run

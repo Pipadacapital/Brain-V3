@@ -363,7 +363,7 @@ async function setSyncState(
 
 // ── Credentials resolver (prod: AWS Secrets Manager; dev: dev_secret bundle; NEVER log — I-S09) ──
 
-async function resolveShiprocketCredentials(secretRef: string): Promise<ShiprocketApiCredentials | null> {
+export async function resolveShiprocketCredentials(secretRef: string): Promise<ShiprocketApiCredentials | null> {
   if (process.env['NODE_ENV'] === 'production') {
     try {
       const { AwsSecretsManager } = await import('@brain/connector-secrets');

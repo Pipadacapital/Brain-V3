@@ -26,8 +26,17 @@ export type {
 export { AD_PLATFORM_PROVIDERS, isAdPlatformProvider } from './domain/ad-platform.js';
 export type { AdPlatformProvider } from './domain/ad-platform.js';
 
-export { BACKFILL_QUEUE_PROVIDERS, supportsBackfillQueue } from './domain/backfill-providers.js';
-export type { BackfillQueueProvider } from './domain/backfill-providers.js';
+export {
+  BACKFILL_QUEUE_PROVIDERS,
+  supportsBackfillQueue,
+  INGESTION_BACKFILL_PROVIDERS,
+  supportsIngestionBackfill,
+  supportsHistoricalBackfill,
+} from './domain/backfill-providers.js';
+export type {
+  BackfillQueueProvider,
+  IngestionBackfillProvider,
+} from './domain/backfill-providers.js';
 
 export { ConnectorSyncStatus } from './domain/entities/ConnectorSyncStatus.js';
 export type {
@@ -94,6 +103,8 @@ export type {
 export {
   DeterministicDedupKeyDeriver,
   deterministicDedupKeyDeriver,
+  PrecomputedEventIdDeriver,
+  precomputedEventIdDeriver,
   buildDedupNamespace,
 } from './contracts/Dedup.js';
 export type { IDedupKeyDeriver, DedupKeyInput } from './contracts/Dedup.js';
@@ -123,6 +134,27 @@ export type {
   BackfillRunResult,
   BackfillStopReason,
 } from './contracts/Backfill.js';
+
+// ── Ingestion framework: per-connector manifests (resource registries) ───────────
+export {
+  SHIPROCKET_PROVIDER,
+  SHIPROCKET_SHIPMENT_LIFECYCLE_RESOURCE,
+  SHIPROCKET_INGESTION_MANIFEST,
+} from './manifests/shiprocket.manifest.js';
+export { GA4_INGESTION_MANIFEST } from './manifests/ga4.manifest.js';
+export { GOOGLE_ADS_INGESTION_MANIFEST } from './manifests/google_ads.manifest.js';
+export {
+  META_PROVIDER,
+  META_INSIGHTS_RESOURCE,
+  META_INGESTION_MANIFEST,
+} from './manifests/meta.manifest.js';
+export {
+  RAZORPAY_PROVIDER,
+  RAZORPAY_SETTLEMENTS_PAYMENTS_RESOURCE,
+  RAZORPAY_SETTLEMENTS_RESERVES_RESOURCE,
+  RAZORPAY_SETTLEMENTS_ADJUSTMENTS_RESOURCE,
+  RAZORPAY_INGESTION_MANIFEST,
+} from './manifests/razorpay.manifest.js';
 
 // ── Shared utils ───────────────────────────────────────────────────────────────
 export { hashToUuidShaped } from './util/hash-to-uuid-shaped.js';

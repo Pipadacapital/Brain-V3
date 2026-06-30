@@ -75,7 +75,8 @@ import { BRONZE_BRIDGES, buildBronzeBridges } from './interfaces/consumers/bronz
 import { startHealthServer } from './infrastructure/health/HealthServer.js';
 import { startSyncRequestClaimer, enumerateConnectedConnectors } from './jobs/sync-request-claimer/run.js';
 import { run as runShopifyBackfill } from './jobs/shopify-backfill/run.js';
-import { supportsBackfillQueue } from '@brain/connector-core';
+import { runIngestionBackfillFromQueue, type SupportedProvider } from './jobs/ingestion-backfill/run.js';
+import { supportsBackfillQueue, supportsIngestionBackfill } from '@brain/connector-core';
 import { PgBackfillJobRepository } from './infrastructure/pg/BackfillJobRepository.js';
 import { startDqChecks } from './jobs/dq/run.js';
 import { startIngestScheduler } from './jobs/ingest-scheduler/run.js';
@@ -591,10 +592,15 @@ export async function main(): Promise<void> {
   const backfillJobRepo = new PgBackfillJobRepository(dbUrl);
   const runBackfillClaim = async (): Promise<void> => {
     const connectors = await enumerateConnectedConnectors(backfillClaimerPool);
-    // Drain only providers with a backfill-queue runner (single source of truth shared with the
-    // RequestConnectorBackfillCommand reject guard: @brain/connector-core supportsBackfillQueue —
-    // currently shopify). Never mis-claims a non-backfillable connector's job.
-    for (const c of connectors.filter((x) => supportsBackfillQueue(x.provider))) {
+    // Drain only providers with a backfill runner (single source of truth shared with the
+    // RequestConnectorBackfillCommand reject guard: @brain/connector-core). Two lanes:
+    //   - supportsBackfillQueue (shopify) → the BESPOKE shopify paged-backfill runner.
+    //   - supportsIngestionBackfill (meta/google_ads/razorpay/shiprocket/ga4) → the GENERIC resumable
+    //     ingestion framework (claim + drive every manifest resource + finalize the backfill_job).
+    // A connector in neither lane is never claimed (no orphan job mis-claim).
+    for (const c of connectors.filter(
+      (x) => supportsBackfillQueue(x.provider) || supportsIngestionBackfill(x.provider),
+    )) {
       try {
         const requeued = await backfillJobRepo.requeueStaleRunning(
           c.connector_instance_id, c.brand_id, backfillStaleRequeueMs,
@@ -602,14 +608,22 @@ export async function main(): Promise<void> {
         if (requeued > 0) {
           log.warn(`[periodic:backfill-claimer] requeued ${requeued} stale 'running' job(s) for connector=${c.connector_instance_id}`);
         }
-        await runShopifyBackfill(c.connector_instance_id);
+        if (supportsBackfillQueue(c.provider)) {
+          await runShopifyBackfill(c.connector_instance_id);
+        } else {
+          await runIngestionBackfillFromQueue(
+            c.connector_instance_id,
+            c.provider as SupportedProvider,
+            c.brand_id,
+          );
+        }
       } catch (err) {
         log.error(`[periodic:backfill-claimer] connector=${c.connector_instance_id} failed (non-fatal)`, { err });
       }
     }
   };
   const backfillClaimerJob = startPeriodicJob('backfill-claimer', backfillClaimerIntervalMs, runBackfillClaim);
-  log.info(`backfill claimer running — interval=${backfillClaimerIntervalMs}ms (drains queued jobs.backfill_job for shopify)`);
+  log.info(`backfill claimer running — interval=${backfillClaimerIntervalMs}ms (drains queued jobs.backfill_job: shopify bespoke + meta/google_ads/razorpay/shiprocket/ga4 generic)`);
 
   const metaEntitySyncJob = startPeriodicJob('meta-entity-sync', adEntitySyncIntervalMs, () => runMetaEntitySync());
   const googleEntitySyncJob = startPeriodicJob('google-entity-sync', adEntitySyncIntervalMs, () => runGoogleEntitySync());

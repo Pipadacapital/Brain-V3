@@ -206,6 +206,45 @@ export class PgBackfillJobRepository {
   }
 
   /**
+   * Requeue a 'running' job back to 'queued' so the NEXT claimer tick resumes it (immediate, not
+   * gated on the stale-running threshold). Used by the GENERIC ingestion-backfill claim lane
+   * (runIngestionBackfillFromQueue): a single claim drains a BOUNDED per-run page budget across every
+   * manifest resource, then — if any resource merely PAUSED (more pages remain, none failed) — the
+   * job is requeued here so the resumable per-resource cursors (jobs.resource_backfill_state) carry
+   * forward on the next tick until every resource reaches its floor. Idempotent + brand-scoped (RLS
+   * GUC). Returns true if a 'running' row for this job was requeued. Accumulates progress so the UI
+   * keeps showing records-so-far across ticks (records_processed is set, not reset).
+   */
+  async requeueForResume(
+    jobId: string,
+    brandId: string,
+    recordsProcessed: bigint,
+  ): Promise<boolean> {
+    const client: PoolClient = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query("SELECT set_config('app.current_brand_id', $1, true)", [brandId]);
+      const res = await client.query(
+        `UPDATE backfill_job
+            SET status            = 'queued',
+                started_at        = NULL,
+                records_processed = $2,
+                updated_at        = NOW()
+          WHERE id = $1
+            AND status = 'running'`,
+        [jobId, recordsProcessed.toString()],
+      );
+      await client.query('COMMIT');
+      return (res.rowCount ?? 0) > 0;
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
    * Update progress after processing a page of orders (D-14).
    * Sets records_processed, estimated_total (if resolved), cursor_value,
    * cursor_date (oldest processed_at seen). Called after EVERY page.

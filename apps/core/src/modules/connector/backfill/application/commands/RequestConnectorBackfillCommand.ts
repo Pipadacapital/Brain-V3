@@ -22,7 +22,7 @@
 
 import type { AuditWriter } from '@brain/audit';
 import type { IConnectorInstanceRepository } from '@brain/connector-core';
-import { supportsBackfillQueue } from '@brain/connector-core';
+import { supportsHistoricalBackfill } from '@brain/connector-core';
 import type { ISecretsManager } from '@brain/connector-secrets';
 import { PgBackfillJobRepository } from '../../infrastructure/PgBackfillJobRepository.js';
 
@@ -76,12 +76,14 @@ export class RequestConnectorBackfillCommand {
       };
     }
 
-    // Step 1.5: reject providers with NO backfill-queue runner (single source of truth:
-    // @brain/connector-core supportsBackfillQueue, shared with the stream-worker claimer). Ads
-    // (meta/google_ads), payments (gokwik/razorpay) and logistics (shiprocket) have no claimer for
+    // Step 1.5: reject providers with NO backfill runner (single source of truth:
+    // @brain/connector-core supportsHistoricalBackfill, shared with the stream-worker claimer). A
+    // provider is accepted iff it is drained by EITHER the bespoke shopify queue runner
+    // (BACKFILL_QUEUE_PROVIDERS) OR the generic ingestion framework (INGESTION_BACKFILL_PROVIDERS:
+    // meta/google_ads/razorpay/shiprocket/ga4). GoKwik (webhook-first) has no claimer for
     // jobs.backfill_job — enqueuing one would orphan it as `queued` forever. Fail fast & clearly
     // instead of silently inserting an un-drainable row.
-    if (!supportsBackfillQueue(connectorInstance.provider)) {
+    if (!supportsHistoricalBackfill(connectorInstance.provider)) {
       return {
         ok: false,
         code: 'BACKFILL_NOT_SUPPORTED',
@@ -97,7 +99,7 @@ export class RequestConnectorBackfillCommand {
         ok: false,
         code: 'RECONNECT_REQUIRED',
         message:
-          'Your Shopify connection has expired. Please reconnect the store before backfilling.',
+          `Your ${connectorInstance.provider} connection has expired. Please reconnect before backfilling.`,
       };
     }
 

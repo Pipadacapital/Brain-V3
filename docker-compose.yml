@@ -367,15 +367,28 @@ services:
       AWS_ACCESS_KEY_ID: brain
       AWS_SECRET_ACCESS_KEY: brainbrain
       AWS_REGION: us-east-1
-      # FILE-BACKED shared-cache SQLite on a named volume — DURABLE across container restarts.
-      # (Was `jdbc:sqlite:file::memory:?cache=shared`: a shared-cache IN-MEMORY DB — consistent across
-      # concurrent connections, but WIPED on every iceberg-rest restart. That wipe orphaned brain_silver/
-      # brain_gold from the catalog on any crash/restart while their parquet still lived in MinIO, taking
-      # the whole serving tier down until a full Spark rebuild. The file lives on the `iceberg-catalog`
-      # volume so the namespace→table pointers survive restarts; `?cache=shared` keeps the multi-connection
-      # consistency the in-memory variant gave StarRocks+Spark. Data files remain in MinIO as before.)
+      # FILE-BACKED SQLite on a named volume — DURABLE across container restarts. The file lives on the
+      # `iceberg-catalog` volume so the namespace→table pointers survive restarts (data files are in MinIO).
+      #
+      # CONCURRENCY (the durable lock fix): the catalog is written CONCURRENTLY by the continuous Bronze
+      # streaming sinks, the Silver/Gold batch loop, and serving DDL. The previous `?cache=shared` put all
+      # in-process connections on one shared cache, so any table-level write surfaced contention as
+      # SQLITE_LOCKED_SHAREDCACHE — an IMMEDIATE error that busy_timeout cannot rescue (it only retries the
+      # file-level SQLITE_BUSY). That intermittently failed CREATE VIEW / mart commits ("UncheckedSQLException:
+      # database table is locked: iceberg_tables"). Shared-cache was only needed when the DB was `:memory:`
+      # (per-connection unless shared); for a FILE-backed DB the file IS the shared state, so we DROP it and
+      # instead use WAL (readers never block the writer) + busy_timeout (a contending writer WAITS up to 30s
+      # for the file lock instead of erroring). synchronous=NORMAL is safe under WAL. This serializes writers
+      # gracefully under concurrent Spark commits rather than failing them.
       CATALOG_CATALOG__IMPL: org.apache.iceberg.jdbc.JdbcCatalog
-      CATALOG_URI: "jdbc:sqlite:file:/catalog/brain-iceberg-catalog.db?cache=shared"
+      CATALOG_URI: "jdbc:sqlite:file:/catalog/brain-iceberg-catalog.db?journal_mode=WAL&busy_timeout=30000&synchronous=NORMAL"
+      # SQLite has exactly ONE writer; iceberg's JdbcClientPool defaults to 2 connections, so two pooled
+      # connections contend on `iceberg_tables` and surface SQLITE_LOCKED/BUSY as UncheckedSQLException —
+      # intermittently failing CREATE VIEW / mart commits under concurrent Bronze-sink + batch-loop writes.
+      # Pin the pool to a SINGLE connection so every catalog op serializes through it (no inter-connection
+      # lock is even possible); WAL + busy_timeout above remain as defense-in-depth. Catalog writes are tiny
+      # metadata ops, so single-connection serialization is not a throughput concern for this lakehouse.
+      CATALOG_CLIENTS: "1"
       CATALOG_JDBC_USER: user
       CATALOG_JDBC_PASSWORD: password
     volumes:

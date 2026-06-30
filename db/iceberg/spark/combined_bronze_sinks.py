@@ -129,6 +129,12 @@ def main() -> None:
         _drain_collector(spark)
         _drain_raw(spark, raw_topics, routing)
 
+        # CRITICAL: the phase-1 availableNow drains above TERMINATE (complete). Without resetting, the
+        # phase-2 spark.streams.awaitAnyTermination() returns IMMEDIATELY (it counts ANY query that has
+        # terminated since the last reset) → the process exits the instant both continuous streams start.
+        # resetTerminated() clears that memory so the await blocks on the CONTINUOUS queries only.
+        spark.streams.resetTerminated()
+
         print(
             f"[combined-bronze] phase 2 — starting BOTH continuous streams "
             f"(collector every {collector.PROCESSING_TIME}, raw every {raw.PROCESSING_TIME})…",

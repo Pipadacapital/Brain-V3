@@ -23,7 +23,7 @@ SPARK_KAFKA="3.5.3"
 # set for host/same-netns clients) is reachable; service-name DNS (iceberg-rest, minio) still resolves
 # because the broker is on the compose network. K1: broker is Apache Kafka KRaft, but the compose
 # service / container name is preserved as `redpanda` so this default container name still matches.
-REDPANDA_CONTAINER="${REDPANDA_CONTAINER:-brainv3-redpanda-1}"
+REDPANDA_CONTAINER="${REDPANDA_CONTAINER:-brainv3-kafka-1}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 PACKAGES="org.apache.iceberg:iceberg-spark-runtime-3.5_${SCALA}:${ICEBERG_VERSION}"

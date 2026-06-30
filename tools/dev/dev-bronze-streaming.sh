@@ -83,7 +83,7 @@ exec docker run --rm \
   -e RAW_CHECKPOINT_LOCATION="${RAW_CHECKPOINT_LOCATION:-file:///tmp/bronze-raw-landing-checkpoint}" \
   "${SPARK_IMAGE}" \
   /opt/spark/bin/spark-submit \
-    --master "local[2]" \
+    --master "${SPARK_MASTER:-local[*]}" \
     --driver-memory "${SPARK_DRIVER_MEMORY:-1g}" \
     --executor-memory "${SPARK_EXECUTOR_MEMORY:-1g}" \
     --packages "${PACKAGES}" \

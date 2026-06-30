@@ -17,7 +17,7 @@ deadlock) then a processingTime stream resuming the SAME checkpoint (steady-stat
 
 Run via spark-submit inside a Spark+Iceberg+Kafka image on the compose network — see
 db/iceberg/spark/run-bronze-spike.sh and RB-4. All wiring is env-overridable; dev defaults
-target the compose service names (iceberg-rest:8181, minio:9000, redpanda:9092 — K1: the broker is
+target the compose service names (iceberg-rest:8181, minio:9000, kafka:9092 — K1: the broker is
 now Apache Kafka KRaft, but the compose service / DNS name is preserved as `redpanda`).
 
 K2a — RAW + INGESTION METADATA, no-data-loss offsets: Bronze stays RAW/append-only/immutable (no
@@ -49,7 +49,7 @@ TABLE = f"{CATALOG}.{NAMESPACE}.collector_events"
 # service:redpanda, --bootstrap-server — keeps working unchanged), so this default still resolves.
 # Same-netns clients reach the PLAINTEXT advertised listener at localhost:9092; the compose service
 # and run-bronze-spike.sh both override KAFKA_BROKERS accordingly.
-KAFKA_BROKERS = os.environ.get("KAFKA_BROKERS", "redpanda:9092")
+KAFKA_BROKERS = os.environ.get("KAFKA_BROKERS", "kafka:9092")
 TOPIC = os.environ.get("COLLECTOR_TOPIC", "dev.collector.event.v1")
 # Backfill orders ride a SEPARATE topic + consumer group (lane isolation, ADR-BF-7) so they can never
 # lag the live collector lane. The Spark Bronze sink consumes BOTH so historical/backfilled orders

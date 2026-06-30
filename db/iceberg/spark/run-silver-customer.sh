@@ -29,7 +29,7 @@ NEO4J_CONNECTOR_VERSION="${NEO4J_CONNECTOR_VERSION:-5.3.1_for_spark_3}"
 # MySQL Connector/J — StarRocks speaks the MySQL wire protocol (silver_customer order-state fallback).
 MYSQL_JDBC_VERSION="${MYSQL_JDBC_VERSION:-8.0.33}"
 SCALA="2.12"
-REDPANDA_CONTAINER="${REDPANDA_CONTAINER:-brainv3-redpanda-1}"
+REDPANDA_CONTAINER="${REDPANDA_CONTAINER:-brainv3-kafka-1}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STAGE="${STAGE:-both}"
 

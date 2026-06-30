@@ -21,7 +21,7 @@ WHICH="${1:-all}"
 SPARK_IMAGE="${SPARK_IMAGE:-apache/spark:3.5.3}"
 ICEBERG_VERSION="${ICEBERG_VERSION:-1.9.2}"
 SCALA="2.12"
-REDPANDA_CONTAINER="${REDPANDA_CONTAINER:-brainv3-redpanda-1}"
+REDPANDA_CONTAINER="${REDPANDA_CONTAINER:-brainv3-kafka-1}"
 SILVER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SPARK_ROOT="$(cd "${SILVER_DIR}/.." && pwd)"   # holds iceberg_base.py + _silver_base.py (mounted src)
 

@@ -19,7 +19,7 @@ SPARK_KAFKA="3.5.3"
 # Join the broker's network namespace so its advertised listener (localhost:9092, for host clients) is
 # reachable; service-name DNS (iceberg-rest, minio) still resolves because the broker is on the compose
 # network. The compose service is still named `redpanda` (now an apache/kafka KRaft broker — K1).
-KAFKA_CONTAINER="${KAFKA_CONTAINER:-brainv3-redpanda-1}"
+KAFKA_CONTAINER="${KAFKA_CONTAINER:-brainv3-kafka-1}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 PACKAGES="org.apache.iceberg:iceberg-spark-runtime-3.5_${SCALA}:${ICEBERG_VERSION}"

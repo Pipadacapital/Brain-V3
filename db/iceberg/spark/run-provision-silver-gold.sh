@@ -22,7 +22,7 @@ SCALA="2.12"
 # Join Redpanda's network namespace so service-name DNS (iceberg-rest, minio) resolves — the same
 # netns trick run-bronze-spike.sh uses (no broker traffic is needed here, but it puts us on the
 # compose network with the right DNS without a dedicated --network flag).
-REDPANDA_CONTAINER="${REDPANDA_CONTAINER:-brainv3-redpanda-1}"
+REDPANDA_CONTAINER="${REDPANDA_CONTAINER:-brainv3-kafka-1}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Only the Iceberg runtime + AWS bundle are needed (no Kafka / no PG JDBC — this is a pure catalog job).

@@ -148,6 +148,12 @@ export { computeAbandonedCart } from './storefront-abandoned-cart.js';
 export type { AbandonedCartResult, AbandonedCartRange } from './storefront-abandoned-cart.js';
 export { computeStorefrontEngagement } from './storefront-engagement.js';
 export type { StorefrontEngagementResult, EngagementRange } from './storefront-engagement.js';
+// On-site search rollup — the page_type='search' slice of gold_behavior (P2 search-form endpoint).
+export { computeSearchBehavior } from './search-behavior.js';
+export type { SearchBehaviorResult, SearchBehaviorRange, SearchDayBucket } from './search-behavior.js';
+// Lead-form submission rollup — gold_conversion_feedback (P2 search-form endpoint).
+export { computeFormConversion } from './form-conversion.js';
+export type { FormConversionResult, FormConversionRange, FormBucket, FormDayBucket } from './form-conversion.js';
 export { computeCodMix } from './cod-mix.js';
 export type { CodMixResult } from './cod-mix.js';
 export { computeCheckoutFunnel } from './checkout-funnel.js';
@@ -301,6 +307,11 @@ export type { CampaignRoasRow } from './attribution-campaign-roas.js';
 // (model-switchable; pre-rolled to campaign grain — the served sibling of computeCampaignRoas).
 export { computeCampaignAttribution } from './campaign-attribution.js';
 export type { CampaignAttributionResult, CampaignAttributionRow } from './campaign-attribution.js';
+
+// #32c-ts — date-bucketed per-campaign/channel attributed revenue (the time-grain sibling of
+// computeCampaignAttribution; reads the date-bearing mv_gold_marketing_attribution it rolls up from).
+export { computeCampaignTimeseries } from './campaign-timeseries.js';
+export type { CampaignTimeseriesBucket } from './campaign-timeseries.js';
 
 // Phase 7 Data Quality (feat-data-quality-engine) — cost_confidence + effective_confidence.
 // effective_confidence = min(cost_confidence, attribution_confidence). FROZEN grade lookups

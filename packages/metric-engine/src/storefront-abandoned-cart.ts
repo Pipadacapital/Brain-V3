@@ -1,22 +1,34 @@
 /**
- * @brain/metric-engine — computeAbandonedCart (Silver touchpoint cart-recovery rollup, Tier-0).
+ * @brain/metric-engine — computeAbandonedCart (Gold abandoned-cart recovery rollup, Tier-0).
  *
- * The SOLE emitter of the abandoned-cart signal (Phase H pixel): of the sessions that added to cart,
- * how many converted (stitched back to an order, D-5) vs abandoned, over a date window — read from
- * silver_touchpoint (StarRocks brain_silver) via the withSilverBrand seam.
+ * The SOLE reader of the abandoned-cart recovery signal, REPOINTED in Brain V4 to read the
+ * pre-materialized Gold mart `gold_abandoned_cart` through the Trino serving view
+ * `brain_serving.mv_gold_abandoned_cart` via the withSilverBrand seam — instead of recomputing the
+ * rollup ad-hoc over `mv_silver_touchpoint` at request time. This closes the "Trino-sole serving"
+ * consistency gap: the cart-recovery surface now serves the SAME pre-aggregated daily mart the rest
+ * of the platform reads (Spark builds it: db/iceberg/spark/gold/gold_abandoned_cart.py), rather than
+ * a bespoke session-grain query. The PUBLIC shape (AbandonedCartResult) is UNCHANGED — the use-case
+ * (get-abandoned-cart.ts), route, contract (AbandonedCart), and web hook are all untouched.
  *
- * DEFINITIONS (session grain):
- *   cart session      — a session_key with ≥1 cart.item_added touch in the window.
- *   converted session — a cart session whose anon was stitched to an order (stitched_order_id present).
- *   abandoned session — a cart session with NO stitched order.
- *   abandonment_rate  — abandoned ÷ cart sessions; recovery_rate — converted ÷ cart sessions.
+ * MART GRAIN (db/trino/views/mv_gold_abandoned_cart.sql) — 1 row per (brand_id, cart_date,
+ * currency_code), per UTC day:
+ *   cart_sessions   — distinct sessions with ≥1 cart.item_added that day (silver_cart_event).
+ *   abandoned_carts — distinct orders that hit a shopflo checkout_abandoned signal that day
+ *                     (silver_checkout_signal) — Brain's authoritative abandonment signal.
+ *   recovered_carts — the recovered/converted carts; a placeholder 0 in the mart until the
+ *                     cart→order stitch column lands on Silver (fills with NO schema change). Until
+ *                     then recovery_rate is an honest 0 from this serving path — never fabricated.
+ * We aggregate the per-(day,currency) rows into a brand-window total. NO money is surfaced here
+ * (abandoned_value_minor stays in the mart; the contract carries counts + rates only).
  *
- * ── WHY HERE, NOT dbt (ADR-004): silver_touchpoint is the additive per-touch projection; this is a
- *    NON-additive aggregation (COUNT DISTINCT / rate) → metric-engine, never a dbt mart.
+ * ── WHY HERE, NOT a new mart: gold_abandoned_cart is the additive per-day projection; the window
+ *    SUM + rate shaping are NON-additive cross-day rollups → metric-engine, never a new mart.
  * ── INTEGER-ONLY rate (no float). Honest no_data: hasData=false when zero cart sessions in the window.
- * ── ISOLATION: every read via withSilverBrand (brand predicate at the seam). brandId from session.
+ * ── ISOLATION: every read via withSilverBrand (brand predicate LAST in the WHERE). brandId from
+ *    session (D-1; NEVER request body).
  *
- * @see packages/metric-engine/src/storefront-funnel.ts (sibling silver_touchpoint reader)
+ * @see db/iceberg/spark/gold/gold_abandoned_cart.py + db/trino/views/mv_gold_abandoned_cart.sql
+ * @see packages/metric-engine/src/search-behavior.ts — the sibling gold_behavior serving reader
  */
 
 import type { SilverPool } from './silver-deps.js';
@@ -50,48 +62,50 @@ function ratePct(numerator: bigint, denominator: bigint): string | null {
   return `${whole}.${String(absFrac).padStart(2, '0')}`;
 }
 
-function toStarRocksTs(d: Date): string {
-  return d.toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, '');
+/** UTC date (YYYY-MM-DD) for the cart_date BETWEEN bound — the route already pins UTC boundaries. */
+function toDateStr(d: Date): string {
+  return d.toISOString().split('T')[0] as string;
 }
 
 function bi(v: unknown): bigint {
-  return BigInt(String(v ?? '0'));
+  return BigInt(String(v ?? '0').split('.')[0] || '0');
 }
 
-interface CartRow { cart_sessions: string | number; converted_sessions: string | number }
+interface CartRow {
+  cart_sessions: string | number;
+  converted_sessions: string | number;
+  abandoned_sessions: string | number;
+}
 
 /**
- * computeAbandonedCart — cart-recovery rollup over [from,to] from silver_touchpoint.
+ * computeAbandonedCart — cart-recovery rollup over [from,to] from the Gold mart gold_abandoned_cart
+ * (served via brain_serving.mv_gold_abandoned_cart). Sums the per-(day,currency) rows into a brand
+ * window total; counts NEVER blend money, so the per-currency rows aggregate cleanly into counts.
  *
  * @param brandId - Brand UUID (from session — D-1; NEVER request body).
- * @param deps    - SilverDeps with the StarRocks mysql2 pool.
- * @param range   - The occurred_at window [from, to] (inclusive).
+ * @param deps    - The Gold serving pool (Trino adapter injected at the root).
+ * @param range   - The cart_date window [from, to] (inclusive, UTC).
  */
 export async function computeAbandonedCart(
   brandId: string,
   deps: { srPool: SilverPool },
   range: AbandonedCartRange,
 ): Promise<AbandonedCartResult> {
-  const fromTs = toStarRocksTs(range.from);
-  const toTs = toStarRocksTs(range.to);
+  const fromStr = toDateStr(range.from);
+  const toStr = toDateStr(range.to);
 
   return withSilverBrand(deps.srPool, brandId, async (scope) => {
-    // Per-session roll-up first (did it add to cart? did it convert?), then count cart sessions.
+    // The date window + ${BRAND_PREDICATE} (LAST → binds positionally to its single `?`) are
+    // parameterized; counts sum cleanly across the per-currency rows (no money blended).
     const rows = await scope.runScoped<CartRow>(
       `SELECT
-         COUNT(*) AS cart_sessions,
-         SUM(converted) AS converted_sessions
-       FROM (
-         SELECT session_key,
-                MAX(CASE WHEN stitched_order_id IS NOT NULL THEN 1 ELSE 0 END) AS converted,
-                MAX(CASE WHEN event_type = 'cart.item_added' THEN 1 ELSE 0 END) AS has_cart
-           FROM brain_serving.mv_silver_touchpoint
-          WHERE occurred_at >= ? AND occurred_at <= ?
-            AND ${BRAND_PREDICATE}
-          GROUP BY session_key
-       ) s
-       WHERE s.has_cart = 1`,
-      [fromTs, toTs],
+         COALESCE(SUM(cart_sessions), 0)   AS cart_sessions,
+         COALESCE(SUM(recovered_carts), 0) AS converted_sessions,
+         COALESCE(SUM(abandoned_carts), 0) AS abandoned_sessions
+       FROM brain_serving.mv_gold_abandoned_cart
+       WHERE cart_date BETWEEN ? AND ?
+         AND ${BRAND_PREDICATE}`,
+      [fromStr, toStr],
     );
 
     const r = rows[0];
@@ -108,7 +122,7 @@ export async function computeAbandonedCart(
     }
 
     const convertedSessions = r ? bi(r.converted_sessions) : 0n;
-    const abandonedSessions = cartSessions - convertedSessions;
+    const abandonedSessions = r ? bi(r.abandoned_sessions) : 0n;
 
     return {
       hasData: true,

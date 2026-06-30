@@ -703,6 +703,69 @@ export const EngagementSchema = z.discriminatedUnion('state', [
 ]);
 export type Engagement = z.infer<typeof EngagementSchema>;
 
+// ── P2 GET /v1/analytics/search — on-site search volume + reach (page_type='search' of gold_behavior) ──
+// @see apps/core/.../analytics/.../get-search-behavior.ts. NO money — search is impression counting;
+// every count is a bigint-as-string (MinorUnitsSchema, identical serialization).
+export const SearchDayBucketDtoSchema = z.object({
+  date: z.string(), // YYYY-MM-DD
+  searches: MinorUnitsSchema,
+  sessions: MinorUnitsSchema,
+  journeys: MinorUnitsSchema,
+});
+export type SearchDayBucketDto = z.infer<typeof SearchDayBucketDtoSchema>;
+
+export const SearchBehaviorSchema = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('no_data') }),
+  z.object({
+    state: z.literal('has_data'),
+    from: z.string(),
+    to: z.string(),
+    searches: MinorUnitsSchema,
+    sessions: MinorUnitsSchema,
+    journeys: MinorUnitsSchema,
+    days: z.array(SearchDayBucketDtoSchema), // per-day series (Sparkline)
+    data_source: DataSourceSchema,
+  }),
+]);
+export type SearchBehavior = z.infer<typeof SearchBehaviorSchema>;
+
+// ── P2 GET /v1/analytics/forms — lead-form submission counts/rates (gold_conversion_feedback) ──
+// @see apps/core/.../analytics/.../get-form-conversion.ts. NO money — lead/intent + payment-reach
+// counters (bigint-as-string). PII-SAFE: structural form_id + counts only. Rates are nullable 2dp
+// strings (null when the denominator is 0 — honest, never 0/∞).
+export const FormBucketDtoSchema = z.object({
+  form_id: z.string(),
+  submissions: MinorUnitsSchema,
+  sessions: MinorUnitsSchema,
+  journeys: MinorUnitsSchema,
+  submission_rate_pct: z.string().nullable(),
+});
+export type FormBucketDto = z.infer<typeof FormBucketDtoSchema>;
+
+export const FormDayBucketDtoSchema = z.object({
+  date: z.string(), // YYYY-MM-DD
+  submissions: MinorUnitsSchema,
+  payments_succeeded: MinorUnitsSchema,
+});
+export type FormDayBucketDto = z.infer<typeof FormDayBucketDtoSchema>;
+
+export const FormConversionSchema = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('no_data') }),
+  z.object({
+    state: z.literal('has_data'),
+    from: z.string(),
+    to: z.string(),
+    submissions: MinorUnitsSchema,
+    sessions: MinorUnitsSchema,
+    payments_succeeded: MinorUnitsSchema,
+    submission_rate_pct: z.string().nullable(),
+    forms: z.array(FormBucketDtoSchema),
+    days: z.array(FormDayBucketDtoSchema), // per-day series (Sparkline)
+    data_source: DataSourceSchema,
+  }),
+]);
+export type FormConversion = z.infer<typeof FormConversionSchema>;
+
 // ── #32a GET /v1/analytics/journey/paths — aggregate journey-path Sankey + drop-off ──
 // @see apps/core/.../analytics/.../get-journey-paths.ts (NO money — paths are behavioral).
 // One row per ordered channel PATH (top-N by journey_count) + the aggregated Sankey edges.
@@ -797,3 +860,35 @@ export const CampaignAttributionSchema = z.discriminatedUnion('state', [
   }),
 ]);
 export type CampaignAttribution = z.infer<typeof CampaignAttributionSchema>;
+
+// ── #32c-ts GET /v1/analytics/attribution/campaign-timeseries — date-bucketed per-campaign/channel ──
+// @see apps/core/.../analytics/.../get-campaign-timeseries.ts (money = bigint minor + currency_code).
+// One row per (bucket, campaign, channel, currency) under the selected attribution model + window.
+
+export const CampaignTimeseriesBucketDtoSchema = z.object({
+  bucket: z.string(), // 'YYYY-MM-DD'
+  campaign_id: z.string(),
+  channel: z.string(),
+  currency_code: z.string(),
+  attributed_revenue_minor: MinorUnitsSchema, // bigint minor (signed, net of clawback)
+});
+export type CampaignTimeseriesBucketDto = z.infer<typeof CampaignTimeseriesBucketDtoSchema>;
+
+export const CampaignTimeseriesSchema = z.discriminatedUnion('state', [
+  z.object({
+    state: z.literal('no_data'),
+    from: z.string(),
+    to: z.string(),
+    grain: z.string(),
+    model: AttributionModelIdSchema,
+  }),
+  z.object({
+    state: z.literal('has_data'),
+    from: z.string(),
+    to: z.string(),
+    grain: z.string(),
+    model: AttributionModelIdSchema,
+    buckets: z.array(CampaignTimeseriesBucketDtoSchema),
+  }),
+]);
+export type CampaignTimeseries = z.infer<typeof CampaignTimeseriesSchema>;

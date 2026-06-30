@@ -89,6 +89,20 @@ export type {
 export { getCodRtoRates } from './internal/application/queries/get-cod-rto-rates.js';
 export { getCustomerBaseSummary } from './internal/application/queries/get-customer-360.js';
 export type { CodRtoRatesResult, CodRtoCohortDto } from './internal/application/queries/get-cod-rto-rates.js';
+// Saved segments (P2) — CRUD + preview over ops.saved_segment (operational state, PG ops schema).
+export {
+  listSavedSegments,
+  createSavedSegment,
+  updateSavedSegment,
+  deleteSavedSegment,
+  previewSegment,
+} from './internal/application/queries/saved-segments.js';
+export type {
+  SavedSegmentDto,
+  CreateSavedSegmentInput,
+  UpdateSavedSegmentInput,
+  SegmentPreviewResult,
+} from './internal/application/queries/saved-segments.js';
 // Logistics shipment outcomes (Slice 2) — delivered/RTO + RTO% by courier/pincode from silver_shipment.
 export { getShipmentOutcomes } from './internal/application/queries/get-shipment-outcomes.js';
 export type { ShipmentOutcomesResult, CourierOutcomeDto, PincodeOutcomeDto } from './internal/application/queries/get-shipment-outcomes.js';
@@ -107,6 +121,12 @@ export type { AbandonedCartResult } from './internal/application/queries/get-aba
 // Engagement — engaged (multi-touch) vs bounce sessions + avg touches (Phase H pixel).
 export { getEngagement } from './internal/application/queries/get-engagement.js';
 export type { EngagementResult } from './internal/application/queries/get-engagement.js';
+// On-site search — page_type='search' slice of gold_behavior (P2 search-form endpoint).
+export { getSearchBehavior } from './internal/application/queries/get-search-behavior.js';
+export type { SearchBehaviorResult, SearchDayBucketDto } from './internal/application/queries/get-search-behavior.js';
+// Lead-form submissions — gold_conversion_feedback (P2 search-form endpoint).
+export { getFormConversion } from './internal/application/queries/get-form-conversion.js';
+export type { FormConversionResult, FormBucketDto, FormDayBucketDto } from './internal/application/queries/get-form-conversion.js';
 export { getCodMix } from './internal/application/queries/get-cod-mix.js';
 export type { CodMixResult } from './internal/application/queries/get-cod-mix.js';
 export { getCheckoutFunnel } from './internal/application/queries/get-checkout-funnel.js';
@@ -225,6 +245,13 @@ export type {
   CampaignAttributionRowDto,
   CampaignAttributionParams,
 } from './internal/application/queries/get-campaign-attribution.js';
+// #32c-ts — date-bucketed per-campaign/channel attributed revenue (time-grain sibling of campaign-attribution).
+export { getCampaignTimeseries } from './internal/application/queries/get-campaign-timeseries.js';
+export type {
+  CampaignTimeseriesResult,
+  CampaignTimeseriesBucketDto,
+  CampaignTimeseriesParams,
+} from './internal/application/queries/get-campaign-timeseries.js';
 
 // Insight + Opportunity Engine + AI Copilot briefing — deterministic insights over the Gold marts
 // (gold_revenue_ledger / gold_executive_metrics / gold_customer_scores / gold_cac). Numbers come from

@@ -44,6 +44,7 @@ import {
   JourneyPathsSchema,
   RepeatLatencySchema,
   CampaignAttributionSchema,
+  CampaignTimeseriesSchema,
   OrderStatusMixSchema,
   DataQualitySummarySchema,
   AskBrainResultSchema,
@@ -326,6 +327,45 @@ describe('CampaignAttribution (#32c)', () => {
   it('rejects a money-as-number drift (money is bigint minor strings, never floats)', () => {
     const drifted = { ...hasData, rows: [{ ...hasData.rows[0], attributed_revenue_minor: 5000 }] };
     const res = CampaignAttributionSchema.safeParse(drifted);
+    expect(res.success).toBe(false);
+    if (!res.success) expect(firstIssuePath(res)).toContain('attributed_revenue_minor');
+  });
+});
+
+// ── #32c-ts CampaignTimeseries (date-bucketed per-campaign/channel attributed revenue) ───────────────
+
+describe('CampaignTimeseries (#32c-ts)', () => {
+  const hasData = {
+    state: 'has_data',
+    from: '2026-04-01',
+    to: '2026-06-30',
+    grain: 'day',
+    model: 'position_based',
+    buckets: [
+      {
+        bucket: '2026-04-01',
+        campaign_id: 'cmp_1',
+        channel: 'meta',
+        currency_code: 'INR',
+        attributed_revenue_minor: '500000',
+      },
+      {
+        bucket: '2026-04-02',
+        campaign_id: 'cmp_1',
+        channel: 'meta',
+        currency_code: 'INR',
+        attributed_revenue_minor: '-12000', // signed: a clawback bucket nets negative (honest)
+      },
+    ],
+  };
+  it('round-trips has_data + no_data', () => {
+    expect(CampaignTimeseriesSchema.parse(hasData)).toEqual(hasData);
+    const noData = { state: 'no_data', from: '2026-04-01', to: '2026-06-30', grain: 'day', model: 'position_based' };
+    expect(CampaignTimeseriesSchema.parse(noData)).toEqual(noData);
+  });
+  it('rejects a money-as-number drift (money is bigint minor strings, never floats)', () => {
+    const drifted = { ...hasData, buckets: [{ ...hasData.buckets[0], attributed_revenue_minor: 5000 }] };
+    const res = CampaignTimeseriesSchema.safeParse(drifted);
     expect(res.success).toBe(false);
     if (!res.success) expect(firstIssuePath(res)).toContain('attributed_revenue_minor');
   });

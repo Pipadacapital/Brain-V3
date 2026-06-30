@@ -3,12 +3,14 @@
  *
  * @effort deterministic
  *
- * Thin wrapper around computeAbandonedCart (metric engine) — a read from silver_touchpoint via the
- * withSilverBrand seam. NO ad-hoc COUNT here (D-3). Serializes bigint → string (D-1), echoes the
- * range, shapes the honest no_data discriminant.
+ * Thin wrapper around computeAbandonedCart (metric engine) — REPOINTED in Brain V4 to read the
+ * pre-materialized Gold mart gold_abandoned_cart through the Trino serving view
+ * brain_serving.mv_gold_abandoned_cart (via withSilverBrand), instead of recomputing over
+ * silver_touchpoint at request time. NO ad-hoc COUNT here (D-3). Serializes bigint → string (D-1),
+ * echoes the range, shapes the honest no_data discriminant. The response shape is UNCHANGED.
  *
- * I-ST01: metric-engine is the SOLE Silver reader; the UI reaches Silver only through BFF → this
- * use-case → withSilverBrand. brandId is from session (D-1; NEVER body).
+ * I-ST01: metric-engine is the SOLE serving reader; the UI reaches the Gold mart only through
+ * BFF → this use-case → withSilverBrand. brandId is from session (D-1; NEVER body).
  *
  * @see packages/metric-engine/src/storefront-abandoned-cart.ts
  */

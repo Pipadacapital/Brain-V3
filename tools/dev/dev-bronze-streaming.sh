@@ -7,11 +7,11 @@
 # streaming queries by REUSING the proven modules' build_writer functions, and runs them together via
 # spark.streams.awaitAnyTermination() — separate checkpoints, idempotent MERGE, offset-after-commit.
 #
-# Prereqs: the compose `lakehouse` profile must be up (iceberg-rest + minio + the Kafka KRaft broker)
-# AND Postgres up (the collector lane's R2 install_token→brand JDBC lookup reads pixel.pixel_installation).
+# Prereqs: the compose `core` profile must be up (iceberg-rest + minio + the Kafka KRaft broker + Postgres
+# — the collector lane's R2 install_token→brand JDBC lookup reads pixel.pixel_installation).
 #
-# K1: the broker is Apache Kafka in KRaft mode; the compose service / container name is DELIBERATELY
-# preserved as `redpanda`, so this script joins that container's netns and bootstraps localhost:9092.
+# K1: the broker is Apache Kafka in KRaft mode; the compose service was renamed redpanda→kafka, so this
+# script joins the `brainv3-kafka-1` container's netns and bootstraps localhost:9092 (its advertised PLAINTEXT).
 #
 # ────────────────────────────────────────────────────────────────────────────────────────────────────
 # ⚠️  MEMORY IS UNVERIFIED — the 2g combined target has NOT been live-validated.  ⚠️
@@ -36,9 +36,9 @@ SCALA="2.12"
 SPARK_KAFKA="3.5.3"
 # Join the broker's network namespace so its PLAINTEXT advertised listener (localhost:9092, for
 # host/same-netns clients) is reachable; service-name DNS (iceberg-rest, minio, postgres) still resolves
-# because the broker is on the compose network. The compose service / container name is preserved as
-# `redpanda` (now an apache/kafka KRaft broker — K1), so this default container name still matches.
-REDPANDA_CONTAINER="${REDPANDA_CONTAINER:-brainv3-redpanda-1}"
+# because the broker is on the compose network. The compose service was renamed redpanda→kafka, so the
+# broker container is now `brainv3-kafka-1`; REDPANDA_CONTAINER is still honored as a legacy override.
+KAFKA_CONTAINER="${KAFKA_CONTAINER:-${REDPANDA_CONTAINER:-brainv3-kafka-1}}"
 # This launcher lives in tools/dev; the Spark modules live in db/iceberg/spark. Mount THAT dir so
 # combined_bronze_sinks.py can import its sibling modules (bronze_materialize, bronze_raw_landing).
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -51,20 +51,20 @@ PACKAGES="${PACKAGES},org.apache.iceberg:iceberg-aws-bundle:${ICEBERG_VERSION}"
 PACKAGES="${PACKAGES},org.apache.spark:spark-sql-kafka-0-10_${SCALA}:${SPARK_KAFKA}"
 PACKAGES="${PACKAGES},org.postgresql:postgresql:${PG_JDBC_VERSION}"
 
-echo "[combined-bronze] image=${SPARK_IMAGE} netns=container:${REDPANDA_CONTAINER} packages=${PACKAGES}"
+echo "[combined-bronze] image=${SPARK_IMAGE} netns=container:${KAFKA_CONTAINER} packages=${PACKAGES}"
 echo "[combined-bronze] heap STARTING POINT (UNVERIFIED): driver=${SPARK_DRIVER_MEMORY:-1g} executor=${SPARK_EXECUTOR_MEMORY:-1g} offHeap=${SPARK_OFFHEAP_SIZE:-256m} — tune UP if it OOMs/lags"
 
 # An ivy cache volume so re-runs don't re-download the jars (shared with the per-lane run scripts).
 docker volume create brain-spark-ivy >/dev/null
 
 exec docker run --rm \
-  --network "container:${REDPANDA_CONTAINER}" \
+  --network "container:${KAFKA_CONTAINER}" \
   --user root \
   -v "${SPARK_SRC_DIR}":/opt/spike:ro \
   -v brain-spark-ivy:/root/.ivy2 \
   -e KAFKA_BROKERS="${KAFKA_BROKERS:-localhost:9092}" \
-  -e COLLECTOR_TOPIC="${COLLECTOR_TOPIC:-dev.collector.event.v1}" \
-  -e BACKFILL_TOPIC="${BACKFILL_TOPIC:-dev.collector.order.backfill.v1}" \
+  -e COLLECTOR_TOPIC="${COLLECTOR_TOPIC:-prod.collector.event.v1}" \
+  -e BACKFILL_TOPIC="${BACKFILL_TOPIC:-prod.collector.order.backfill.v1}" \
   -e TOPIC_ENV_PREFIX="${TOPIC_ENV_PREFIX:-prod}" \
   -e LANE="${LANE:-}" \
   -e ICEBERG_REST_URI="${ICEBERG_REST_URI:-http://iceberg-rest:8181}" \

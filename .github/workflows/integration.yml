@@ -41,7 +41,6 @@ env:
   BRAIN_APP_DATABASE_URL: postgres://brain_app:brain_app@localhost:5432/brain
   REDIS_URL: redis://localhost:6379
   KAFKA_BROKERS: localhost:19092
-  KAFKA_BROKERS: localhost:19092
   # Brain V4 serving engine: Trino-over-Iceberg (StarRocks removed). The metric-engine/core read the
   # brain_serving Trino views; createTrinoPool targets TRINO_URL (host:port = TRINO_HOST:TRINO_PORT).
   TRINO_HOST: localhost

@@ -52,7 +52,6 @@ import {
   SavedSegmentListSchema,
   SavedSegmentDtoSchema,
   SegmentPreviewResultSchema,
-  OrderDetailSchema,
   ProductDetailSchema,
   ProductAffinitySchema,
   ProductCategoriesSchema,
@@ -156,7 +155,6 @@ import type {
   CostInputDto,
   AnalyticsTopProductsResponse,
   AnalyticsOrdersListResponse,
-  AnalyticsOrderDetailResponse,
   AnalyticsProductDetailResponse,
   AnalyticsProductAffinityResponse,
   AnalyticsProductCategoriesResponse,
@@ -1652,18 +1650,6 @@ export const analyticsApi = {
       idempotencyKey: generateRequestId(),
     });
     return data;
-  },
-
-  /**
-   * GET /api/v1/analytics/order-detail?order_id=<id>
-   * A single order's economic breakdown (line items / tax / shipping / discounts / refunds) read
-   * from Bronze (feat-shopify-order-depth). Parsed at the seam; state:'not_found' preserved.
-   */
-  getOrderDetail: async (orderId: string): Promise<AnalyticsOrderDetailResponse> => {
-    const env = await bffFetch<BffEnvelope<unknown>>(
-      `/v1/analytics/order-detail?order_id=${encodeURIComponent(orderId)}`,
-    );
-    return parseData(OrderDetailSchema, env);
   },
 
   /**

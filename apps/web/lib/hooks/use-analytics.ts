@@ -296,19 +296,6 @@ export function useTopProducts(params?: { from?: string; to?: string; limit?: nu
 }
 
 /**
- * useOrderDetail — a single order's economic breakdown from Bronze (feat-shopify-order-depth).
- * @param orderId - the order natural key; the query is disabled when falsy.
- */
-export function useOrderDetail(orderId: string | null | undefined) {
-  return useQuery({
-    queryKey: [...ANALYTICS_QUERY_KEY, 'order-detail', orderId ?? ''],
-    queryFn: () => analyticsApi.getOrderDetail(orderId as string),
-    enabled: !!orderId,
-    staleTime: 60_000,
-  });
-}
-
-/**
  * useProductDetail — one product's storefront funnel + returns + conversion rates from
  * gold_product_detail (P3). Disabled when productId is falsy.
  */

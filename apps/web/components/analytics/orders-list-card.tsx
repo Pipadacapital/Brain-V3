@@ -1,17 +1,18 @@
 'use client';
 
 /**
- * OrdersListCard — paginated list of latest-state orders (feat-shopify-order-depth).
+ * OrdersListCard — paginated list of latest canonical-state orders.
  *
- * Reads Bronze (the captured order feed) via useOrdersList; each row links to the order-detail
- * drill-down. Offset pagination with flicker-free prev/next (placeholderData keeps the prior page).
+ * Reads the Silver order spine (mv_silver_order_state, gross value from mv_silver_order_line) via
+ * useOrdersList — the SAME canonical records the Data browser shows, so the two agree. The per-order
+ * drill-down was removed (it read Bronze); order_id is plain text. Offset pagination with flicker-free
+ * prev/next (placeholderData keeps the prior page).
  *
  * DISCIPLINE:
  *   - amount is a bigint minor-unit string → formatMoneyDisplay(minorStr, ccy). Never /100.
  *   - Honest states: loading → skeleton; error → ErrorCard; 'no_data' → EmptyState; never a fake 0.
  */
 import { useState } from 'react';
-import Link from 'next/link';
 import { ShoppingCart, ChevronLeft, ChevronRight } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -76,9 +77,8 @@ export function OrdersListCard() {
                   {data.orders.map((o) => (
                     <tr key={o.order_id} className="border-b last:border-0 hover:bg-accent/50">
                       <td className="px-4 py-2">
-                        <Link href={`/analytics/orders/${encodeURIComponent(o.order_id)}`} className="font-medium text-primary hover:underline">
-                          {o.order_id}
-                        </Link>
+                        {/* Per-order drill-down removed — the Data page shows the full record + detail modal. */}
+                        <span className="font-mono text-xs font-medium">{o.order_id}</span>
                         {o.has_depth && <Badge variant="outline" className="ml-2 text-[10px]">depth</Badge>}
                       </td>
                       <td className="px-4 py-2 text-muted-foreground">{new Date(o.occurred_at).toLocaleDateString('en-IN')}</td>

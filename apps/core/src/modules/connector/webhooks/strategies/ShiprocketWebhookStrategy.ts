@@ -270,8 +270,11 @@ export class ShiprocketWebhookStrategy implements IWebhookStrategy {
       awb: (shipmentData['awb'] as string | null | undefined) ??
            (shipmentData['awb_code'] as string | null | undefined) ??
            null,
-      order_id: (shipmentData['order_id'] as string | null | undefined) ??
-                (shipmentData['channel_order_id'] as string | null | undefined) ??
+      // channel_order_id FIRST — the merchant/channel (Shopify) order id joins to the order/revenue marts;
+      // Shiprocket's own order_id ("SLW…") is an internal ref that joins to nothing. Preferring order_id
+      // stranded shipment outcomes off the order spine. Matches the repull client field-map fix + line-27 contract.
+      order_id: (shipmentData['channel_order_id'] as string | null | undefined) ??
+                (shipmentData['order_id'] as string | null | undefined) ??
                 null,
       status: (shipmentData['current_status'] as string | null | undefined) ??
               (shipmentData['status'] as string | null | undefined) ??

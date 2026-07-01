@@ -10,8 +10,9 @@ cod-rto dashboard, the RTO-risk recommender, and the cod_rto_clawback ledger all
   2. the PREDICTED RTO risk (GoKwik RTO-Predict) — a CATEGORICAL flag (high|medium|low|control), NOT a
      numeric score (GoKwik exposes no number — @brain/gokwik-mapper records the categorical verbatim and
      NEVER fabricates one), from gokwik.rto_predict.v1;
-  3. the ACTUAL outcome (GoKwik AWB terminal status) — did it deliver, RTO, or cancel — from
-     gokwik.awb_status.v1, collapsed to its latest terminal_class.
+  3. the ACTUAL outcome (forward shipment terminal status) — did it deliver, RTO, or cancel — from
+     shiprocket.shipment_status.v1 (the RETIRED gokwik.awb_status.v1 was repointed here — 0117),
+     collapsed to its latest terminal_class.
 
 GRAIN   : exactly 1 row per (brand_id, order_id). order_id is the spine key shared by all three sources
           (the ledger spine — NOT PII). A LEFT-join keeps every COD order even before a prediction or an
@@ -32,11 +33,11 @@ STAGE-1 GATE (Brain V4 two-stage): this job now runs the Stage-1 DQ gate _silver
   is diverted to brain_silver.silver_quarantine (stage='dq') and NEVER written to silver_cod_rto; Bronze
   keeps the original (replay-safe: fix + re-run re-admits). Good rows are byte-identical (parity-faithful).
 
-DATA AVAILABILITY (this session): current Bronze HAS COD order.live.v1 rows (~494) and a handful of
-gokwik.rto_predict.v1 rows, but ZERO gokwik.awb_status.v1 (no AWB lifecycle has synced), so the `actual`
-outcome columns populate NULL for now while cod_amount + predicted-risk populate from live data. The
-schema + 3-way reconciliation are the deliverable; AWB outcomes fill in with no code change once
-gokwik.awb_status.v1 lands. Parity status=NEW.
+DATA AVAILABILITY: Bronze HAS COD order.{live,backfill}.v1 rows, gokwik.rto_predict.v1 rows, AND
+shiprocket.shipment_status.v1 rows carrying terminal_class (delivered/rto/other/none), so the `actual`
+outcome columns now POPULATE (they were permanently NULL while this job read the retired
+gokwik.awb_status.v1 — emitted by nothing). cod_amount + predicted-risk populate from live COD orders +
+GoKwik predictions. Parity status=NEW.
 """
 from __future__ import annotations
 
@@ -48,9 +49,17 @@ from pyspark.sql.window import Window
 
 TABLE = "silver_cod_rto"
 
-ORDER_EVENT = "order.live.v1"
+# COD orders: BOTH lanes — order.live.v1 (webhook) AND order.backfill.v1 (historical connector backfill),
+# so a backfilled COD order is in the cod_rto spine too (matches silver_order_state / gold_revenue_ledger).
+ORDER_EVENTS = ["order.live.v1", "order.backfill.v1"]
 RTO_PREDICT_EVENT = "gokwik.rto_predict.v1"
-AWB_EVENT = "gokwik.awb_status.v1"
+# ACTUAL outcome: the RETIRED gokwik.awb_status.v1 (migration 0117 — emitted by NOTHING) is replaced by the
+# LIVE forward-shipment lane shiprocket.shipment_status.v1 (properties.terminal_class is the SAME
+# deterministic class from @brain/logistics-status: delivered / rto / other / none). Read ONLY the forward
+# lane — the return lane (shiprocket.return_status.v1) carries return_class, and folding a returned item's
+# "delivered" as a forward delivery is the SR-4 false-delivery bug. Same repoint as silver_order_state /
+# gold_revenue_ledger, which had drifted; without it actual_rto/actual_delivered NEVER populate.
+AWB_EVENT = "shiprocket.shipment_status.v1"
 
 # brand_id-first; money = bigint minor + currency_code; hashed-PII only. occurred_at (= COD order time
 # when present, else the latest signal time) drives days() partitioning.
@@ -93,7 +102,7 @@ def build(spark):
     )
 
     # ── Source 1: COD orders (the spine) — only payment_method='cod' rows ───────────────────────────
-    orders_raw = read_bronze_events(spark, [ORDER_EVENT])
+    orders_raw = read_bronze_events(spark, ORDER_EVENTS)
     cod_orders = (
         orders_raw.select(
             col("brand_id"),
@@ -206,7 +215,7 @@ def build(spark):
         spark,
         gated.where(F.size(col("_dq")) > 0).select(
             col("brand_id"),
-            lit(ORDER_EVENT).alias("source"),
+            lit(ORDER_EVENTS[0]).alias("source"),
             col("order_id").alias("bronze_event_id"),
             lit(TABLE).alias("canonical_target"),
             F.array_join(col("_dq"), ",").alias("reason"),
@@ -223,6 +232,12 @@ def build(spark):
 
 
 if __name__ == "__main__":
+    # Watermark on ALL THREE sources that change a cod_rto row: the COD order (both lanes), the GoKwik
+    # prediction, AND the shiprocket shipment outcome — so a newly-arrived RTO/delivered terminal_class
+    # re-folds its order and refreshes actual_rto/actual_delivered (previously only order events triggered
+    # a re-fold, so outcomes that landed after the order would never update — a latent staleness bug).
     run_job("silver-cod-rto", build, entity_incremental={
-        "table_name": "silver_cod_rto", "event_types": [ORDER_EVENT], "entity_path": "$.properties.order_id",
+        "table_name": "silver_cod_rto",
+        "event_types": ORDER_EVENTS + [RTO_PREDICT_EVENT, AWB_EVENT],
+        "entity_path": "$.properties.order_id",
     })

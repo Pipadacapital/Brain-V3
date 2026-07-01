@@ -59,7 +59,18 @@ echo "[combined-bronze] heap: driver=${SPARK_DRIVER_MEMORY:-4g} (local[*] → th
 # An ivy cache volume so re-runs don't re-download the jars (shared with the per-lane run scripts).
 docker volume create brain-spark-ivy >/dev/null
 
-exec docker run --rm \
+# ── Supervisor loop — auto-restart the sink on ANY exit (crash OR OOM) ───────────────────────────────
+# `docker run --rm` has no restart policy, so a transient Spark fault (executor RPC-endpoint loss /
+# iceberg-catalog SQLite-lock contention during a concurrent medallion refresh) OR a heap OOM left Bronze
+# FROZEN until someone noticed and restarted by hand — Kafka kept filling while nothing landed. Wrap the
+# run in a bounded auto-restart loop: on exit, recreate from the DURABLE checkpoint (the idempotent MERGE
+# on (brand_id,event_id) makes replay a no-op → zero data loss, no double-write). Kept FOREGROUND (not
+# `docker run -d --restart`) so `pgrep -f combined_bronze_sinks.py` and the /tmp/bronze-sink.log capture
+# both keep working for dev-up's liveness poll. Ctrl-C stops the loop AND the container.
+trap 'echo "[combined-bronze] stopping…"; docker rm -f "${SINK_CONTAINER_NAME:-brain-bronze-sink}" >/dev/null 2>&1 || true; exit 0' INT TERM
+while :; do
+  docker rm -f "${SINK_CONTAINER_NAME:-brain-bronze-sink}" >/dev/null 2>&1 || true
+  docker run --rm \
   --name "${SINK_CONTAINER_NAME:-brain-bronze-sink}" \
   --network "container:${KAFKA_CONTAINER}" \
   --user root \
@@ -92,4 +103,7 @@ exec docker run --rm \
     --packages "${PACKAGES}" \
     --conf spark.jars.ivy=/root/.ivy2 \
     --conf "spark.sql.streaming.minBatchesToRetain=${SPARK_MIN_BATCHES_TO_RETAIN:-10}" \
-    /opt/spike/combined_bronze_sinks.py
+    /opt/spike/combined_bronze_sinks.py && code=0 || code=$?
+  echo "[combined-bronze] sink exited (code ${code}) — auto-restarting from checkpoint in ${SINK_RESTART_DELAY:-5}s…"
+  sleep "${SINK_RESTART_DELAY:-5}"
+done

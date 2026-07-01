@@ -15,7 +15,7 @@
 import type { Pool } from 'pg';
 import { gradeBadnessRatio } from './grade.js';
 import type { DqCheckRow } from './writer.js';
-import { BRAND_PREDICATE, ICEBERG_BRONZE, type SilverReader } from './silver-reader.js';
+import { BRAND_PREDICATE, BRONZE_COLLECTOR_PREDICATE, ICEBERG_BRONZE, type SilverReader } from './silver-reader.js';
 import { log } from '../../log.js';
 
 const NIL_UUID = '00000000-0000-0000-0000-000000000000';
@@ -45,7 +45,7 @@ async function bronzeCompleteness(silver: SilverReader, brandId: string): Promis
     `SELECT COUNT(*) AS total,
             COUNT(CASE WHEN ${nullPredicate} THEN 1 END) AS bad
        FROM ${ICEBERG_BRONZE}
-      WHERE ${BRAND_PREDICATE}`,
+      WHERE ${BRONZE_COLLECTOR_PREDICATE} AND ${BRAND_PREDICATE}`,
   );
   const total = Number(r[0]?.total ?? 0);
   const bad = Number(r[0]?.bad ?? 0);

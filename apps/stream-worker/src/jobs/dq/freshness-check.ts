@@ -17,7 +17,7 @@
 import type { Pool } from 'pg';
 import { gradeFreshness } from './grade.js';
 import type { DqCheckRow } from './writer.js';
-import { BRAND_PREDICATE, ICEBERG_BRONZE, type SilverReader } from './silver-reader.js';
+import { BRAND_PREDICATE, BRONZE_COLLECTOR_PREDICATE, ICEBERG_BRONZE, type SilverReader } from './silver-reader.js';
 import { log } from "../../log.js";
 
 const NIL_UUID = '00000000-0000-0000-0000-000000000000';
@@ -113,7 +113,7 @@ export async function freshnessCheck(
     try {
       const br = await silver.scopedQuery<{ latest: string | null }>(
         brandId,
-        `SELECT MAX(ingested_at) AS latest FROM ${ICEBERG_BRONZE} WHERE ${BRAND_PREDICATE}`,
+        `SELECT MAX(ingested_at) AS latest FROM ${ICEBERG_BRONZE} WHERE ${BRONZE_COLLECTOR_PREDICATE} AND ${BRAND_PREDICATE}`,
       );
       const raw = br[0]?.latest ?? null;
       rows.push(toRow(brandId, 'bronze_events', raw ? new Date(raw) : null, now));
@@ -128,7 +128,7 @@ export async function freshnessCheck(
     try {
       const sr = await silver.scopedQuery<{ latest: string | null }>(
         brandId,
-        `SELECT MAX(updated_at) AS latest FROM brain_serving.mv_silver_order_state WHERE ${BRAND_PREDICATE}`,
+        `SELECT MAX(updated_at) AS latest FROM brain_serving.mv_silver_order_state WHERE ${BRONZE_COLLECTOR_PREDICATE} AND ${BRAND_PREDICATE}`,
       );
       const raw = sr[0]?.latest ?? null;
       // raw is a JS Date (mysql2 parses DATETIME) built using the pool's UTC timezone (see

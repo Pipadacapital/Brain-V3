@@ -22,7 +22,7 @@ import type { Pool } from 'pg';
 import { incrementCounter } from '@brain/observability';
 import { gradeReconciliation } from './grade.js';
 import type { DqCheckRow } from './writer.js';
-import { BRAND_PREDICATE, ICEBERG_BRONZE, type SilverReader } from './silver-reader.js';
+import { BRAND_PREDICATE, BRONZE_COLLECTOR_PREDICATE, ICEBERG_BRONZE, type SilverReader } from './silver-reader.js';
 import { log } from "../../log.js";
 
 /** Frozen reconciliation tolerance: max tolerated |bronze - silver| order-count delta. */
@@ -61,7 +61,7 @@ export async function reconciliationCheck(
       // for → it threw and silently became bronze_unreachable/D in the reconciliation check).
       `SELECT COUNT(DISTINCT COALESCE(json_extract_scalar(payload, '$.properties.order_id'), json_extract_scalar(payload, '$.order_id'))) AS n
          FROM ${ICEBERG_BRONZE}
-        WHERE ${BRAND_PREDICATE}
+        WHERE ${BRONZE_COLLECTOR_PREDICATE} AND ${BRAND_PREDICATE}
           AND event_type LIKE 'order.%'`,
     );
     bronzeOrders = Number(br[0]?.n ?? 0);
@@ -89,7 +89,7 @@ export async function reconciliationCheck(
       brandId,
       `SELECT COUNT(DISTINCT order_id) AS n
          FROM brain_serving.mv_silver_order_state
-        WHERE ${BRAND_PREDICATE}`,
+        WHERE ${BRONZE_COLLECTOR_PREDICATE} AND ${BRAND_PREDICATE}`,
     );
     silverOrders = Number(sr[0]?.n ?? 0);
   } catch (err) {

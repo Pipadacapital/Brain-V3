@@ -34,6 +34,37 @@ import { GRAPH_API_BASE } from '../meta-constants.js';
 const REQUEST_TIMEOUT_MS = 30_000;
 
 /**
+ * Meta Graph error code 2637 = "Please reduce the amount of data you're asking for, then retry your
+ * request." Returned when a single insights request (even async) spans too many rows for the account.
+ * NOT a throttle — a smaller window is the remedy, so callers halve the date window and retry.
+ */
+const META_REDUCE_DATA_CODE = 2637;
+
+/** UTC day (YYYY-MM-DD) for a Date. */
+function isoDay(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
+/** The day AFTER an ISO date (YYYY-MM-DD), in UTC. */
+function isoNextDay(iso: string): string {
+  const d = new Date(`${iso}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + 1);
+  return isoDay(d);
+}
+
+/**
+ * The floor midpoint day of the inclusive window [since, until] (both YYYY-MM-DD). Used to split a
+ * too-large window into [since, mid] + [mid+1, until]. For an adjacent 2-day window it returns `since`,
+ * so the two halves are [since, since] and [until, until] — both strictly smaller, guaranteeing the
+ * recursion in fetchInsightsForWindow makes progress and terminates at the 1-day floor.
+ */
+function isoMidpoint(since: string, until: string): string {
+  const s = new Date(`${since}T00:00:00Z`).getTime();
+  const u = new Date(`${until}T00:00:00Z`).getTime();
+  return isoDay(new Date(s + Math.floor((u - s) / 2)));
+}
+
+/**
  * Maximum number of poll attempts when waiting for an async ad_report_run to complete.
  * Each poll cycle waits ASYNC_POLL_INTERVAL_MS before the next check.
  */
@@ -46,6 +77,12 @@ export const META_AUTH_ERROR = 'META_AUTH_ERROR';
 export const META_RATE_LIMITED = 'META_RATE_LIMITED';
 /** Thrown when an async ad_report_run does not complete within ASYNC_POLL_MAX_ATTEMPTS. */
 export const META_ASYNC_TIMEOUT = 'META_ASYNC_TIMEOUT';
+/**
+ * Thrown when Meta returns code 2637 ("reduce the amount of data"). A callable signal (detected via
+ * String(err).includes(...), the same convention as the other META_* sentinels) so the window walker
+ * can halve the date window and retry instead of failing the whole run.
+ */
+export const META_TOO_MUCH_DATA = 'META_TOO_MUCH_DATA';
 
 export interface MetaApiCredentials {
   accessToken: string;   // NEVER logged (I-S09)
@@ -313,10 +350,13 @@ export class MetaInsightsClient {
     // Step 2: poll until complete
     await this.pollAsyncJob(reportRunId);
 
-    // Step 3: fetch the first page of results
+    // Step 3: fetch the first page of results. Do NOT re-specify fields= here — the async report
+    // already has its field set baked in from the POST above; re-passing the full field list on the
+    // result read makes Meta re-evaluate the projection and can itself trip code 2637 ("reduce the
+    // amount of data"). The report is read by its run id; limit paginates the cursor.
     const resultsUrl =
       `${GRAPH_API_BASE}/${reportRunId}/insights` +
-      `?fields=${INSIGHTS_FIELDS}&limit=500`;
+      `?limit=500`;
     return this.fetchInsightsByUrl(resultsUrl, level);
   }
 
@@ -372,6 +412,48 @@ export class MetaInsightsClient {
     };
     const rows = (body.data ?? []).map((r) => ({ ...r, level }));
     return { rows, nextUrl: body.paging?.next ?? null };
+  }
+
+  /**
+   * Fetch EVERY daily-insight row for [since, until] at a level, following Graph cursor paging to the
+   * end. Adaptive to account size: if Meta rejects the window with code 2637 ("reduce the amount of
+   * data" — surfaced as META_TOO_MUCH_DATA), the window is split in half and each half fetched
+   * recursively and concatenated, down to a single-day floor. A 1-day window that still 2637s is a
+   * genuine hard error and is re-thrown. This lets the historical backfill drain large accounts without
+   * the caller having to guess a safe fixed WINDOW_DAYS; throttle/auth errors propagate unchanged so
+   * the driver's cursor-preserving resume still applies.
+   */
+  async fetchInsightsForWindow(
+    level: 'campaign' | 'adset' | 'ad',
+    since: string,
+    until: string,
+  ): Promise<MetaInsightsRawRow[]> {
+    try {
+      const rows: MetaInsightsRawRow[] = [];
+      // Historical windows are large → force the async ad_report_run path.
+      let page = await this.fetchInsightsFirstPage(level, since, until, { asyncMode: true });
+      rows.push(...page.rows);
+      while (page.nextUrl) {
+        page = await this.fetchInsightsByUrl(page.nextUrl, level);
+        rows.push(...page.rows);
+      }
+      return rows;
+    } catch (err) {
+      // Only split on the "too much data" signal, and only while the window is still splittable
+      // (> 1 day). A single-day window that 2637s cannot shrink further → re-throw. Every other error
+      // (throttle, auth, async-timeout) propagates unchanged.
+      if (!String(err).includes(META_TOO_MUCH_DATA) || since >= until) {
+        throw err;
+      }
+      const mid = isoMidpoint(since, until);
+      log.info(
+        `[meta-insights-client] window ${since}..${until} too large (code ${META_REDUCE_DATA_CODE}) ` +
+        `— splitting at ${mid} and retrying each half (level=${level})`,
+      );
+      const left = await this.fetchInsightsForWindow(level, since, mid);
+      const right = await this.fetchInsightsForWindow(level, isoNextDay(mid), until);
+      return [...left, ...right];
+    }
   }
 
   // ── HTTP helpers ────────────────────────────────────────────────────────────
@@ -520,6 +602,11 @@ export class MetaInsightsClient {
         );
         await sleep(backoffMs);
         return 'retry';
+      }
+      // "reduce the amount of data" (2637) → a callable signal so the window walker halves + retries
+      // rather than failing the run. Still non-retryable AT THIS request size (the window must shrink).
+      if (code === META_REDUCE_DATA_CODE) {
+        throw new Error(`${META_TOO_MUCH_DATA}: HTTP 400 code=${code} (reduce the amount of data) from Meta Insights ${method}`);
       }
       // non-throttle 400 → hard error (no body logged — C5)
       throw new Error(`[meta-insights-client] HTTP 400 (non-throttle code=${code}) from Meta Insights ${method}`);

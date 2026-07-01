@@ -35,20 +35,17 @@ const RAW_ROW: Record<string, unknown> = {
 };
 
 /**
- * Stub the MetaInsightsClient: return account meta once, ONE first page carrying RAW_ROW for the
- * 'campaign' level and EMPTY pages for the other levels, never a nextUrl (single-page window). No
- * network. We override the fetcher's private client field after construction.
+ * Stub the MetaInsightsClient: return account meta once, and the whole-window fetch yields RAW_ROW for
+ * the 'campaign' level and EMPTY for the other levels. No network. We override the fetcher's private
+ * client field after construction.
  */
 function stubClientOnto(fetcher: MetaInsightsFetcher): void {
   const fakeClient = {
     async fetchAccountMeta() {
       return { currencyCode: ACCOUNT_CURRENCY, timezoneName: ACCOUNT_TZ };
     },
-    async fetchInsightsFirstPage(level: 'campaign' | 'adset' | 'ad') {
-      return { rows: level === 'campaign' ? [RAW_ROW] : [], nextUrl: null };
-    },
-    async fetchInsightsByUrl() {
-      return { rows: [], nextUrl: null };
+    async fetchInsightsForWindow(level: 'campaign' | 'adset' | 'ad') {
+      return level === 'campaign' ? [RAW_ROW] : [];
     },
   };
   // The fetcher holds the client on a private field; replace it for the test (no network).

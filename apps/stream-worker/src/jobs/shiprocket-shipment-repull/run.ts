@@ -48,7 +48,7 @@ import {
   ShiprocketShipmentClient,
   SHIPROCKET_SHIPMENT_PAGE_SIZE,
 } from './shiprocket-client.js';
-import { SHIPROCKET_AUTH_ERROR, type ShiprocketApiCredentials } from './shiprocket-token-provider.js';
+import { SHIPROCKET_AUTH_ERROR, SHIPROCKET_NETWORK_ERROR, type ShiprocketApiCredentials } from './shiprocket-token-provider.js';
 import { recordConnectorAuthRejected } from '../../infrastructure/observability/connector-auth-health.js';
 import { createSaltProvider, type SaltProvider } from '../../infrastructure/secrets/SaltProvider.js';
 import { log } from '../../log.js';
@@ -195,6 +195,16 @@ async function repullConnector(params: RepullParams): Promise<void> {
       await setSyncState(pool, brandId, ciId, 'error', 'shiprocket auth error — RECONNECT_REQUIRED');
       await updateConnectorInstanceHealth(pool, brandId, ciId, 'token_expired');
       await syncRunRepo.closeRun({ runId, brandId, startedAt, status: 'failed', errorClass: 'AUTH_ERROR', errorDetail: 'shiprocket auth error — RECONNECT_REQUIRED' });
+      return;
+    }
+    // Transient network / timeout reaching Shiprocket → retryable next run. Crucially NOT an auth
+    // failure: do NOT recordConnectorAuthRejected, do NOT stamp token_expired, do NOT signal
+    // RECONNECT_REQUIRED — the token/secret are valid, so a passing blip must not tell the user to
+    // reconnect. The ingest-scheduler retries on its next tick.
+    if (String(err).includes(SHIPROCKET_NETWORK_ERROR)) {
+      log.warn(`connector=${ciId} — shiprocket temporarily unreachable (transient, will retry next run)`, { err });
+      await setSyncState(pool, brandId, ciId, 'error', 'shiprocket temporarily unreachable — will retry');
+      await syncRunRepo.closeRun({ runId, brandId, startedAt, status: 'failed', errorClass: 'NETWORK_ERROR', errorDetail: String(err) });
       return;
     }
     log.error(`connector=${ciId} cursor=${SHIPMENT_CURSOR_RESOURCE} error`, { err });

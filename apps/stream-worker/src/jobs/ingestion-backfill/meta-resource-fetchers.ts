@@ -122,35 +122,33 @@ export class MetaInsightsFetcher implements IResourcePageFetcher {
     const records: FetchedRecord[] = [];
 
     for (const level of META_LEVELS) {
-      // Force the async ad_report_run path — historical month-wide pulls are large. A throttle /
-      // auth error THROWS and is propagated (the driver preserves the cursor).
-      let page = await this.client.fetchInsightsFirstPage(level, sinceIso, untilIso, { asyncMode: true });
-      while (true) {
-        for (const raw of page.rows) {
-          const mapped = mapMetaInsightToEvent(raw, currencyCode, timezoneName);
-          const props = mapped.properties;
-          // Skip rows missing the dedup grain (stat_date / level_id) — same guard as the live lane.
-          if (!props.stat_date || !props.level_id) continue;
+      // Fetch the WHOLE window for this level. The client forces the async ad_report_run path (historical
+      // month-wide pulls are large) and ADAPTIVELY halves the window on Meta code 2637 ("reduce the amount
+      // of data") down to a single day — so a large historical account drains instead of hard-failing the
+      // run. A throttle / auth error still THROWS and is propagated (the driver preserves the cursor).
+      const rawRows = await this.client.fetchInsightsForWindow(level, sinceIso, untilIso);
+      for (const raw of rawRows) {
+        const mapped = mapMetaInsightToEvent(raw, currencyCode, timezoneName);
+        const props = mapped.properties;
+        // Skip rows missing the dedup grain (stat_date / level_id) — same guard as the live lane.
+        if (!props.stat_date || !props.level_id) continue;
 
-          const draft: CanonicalEventDraft = {
-            event_name: mapped.event_name,
-            occurred_at: mapped.occurred_at,
-            provenance: { brand_id: this.brandId, source: META_SOURCE }, // brand_id from connector row (MT-1)
-            properties: props as unknown as Record<string, unknown>,
-          };
-          // CROSS-LANE ID PARITY: compute the event_id by calling the SAME mapper id fn the live
-          // meta-spend-repull lane uses — uuidV5FromSpendRow(brandId, 'meta', stat_date, level, level_id)
-          // (meta-spend-repull/run.ts emitPage). Carry it as providerId so the passthrough deriver
-          // (precomputedEventIdDeriver) returns it verbatim as the Bronze event_id → backfilled rows
-          // share the live id byte-for-byte → Bronze MERGE dedups, no double-count. We CALL the mapper
-          // fn (never re-implement the seed) so the two lanes can never drift.
-          const providerId = uuidV5FromSpendRow(
-            this.brandId, META_SOURCE, props.stat_date, props.level, props.level_id,
-          );
-          records.push({ providerId, events: [draft] });
-        }
-        if (!page.nextUrl) break;
-        page = await this.client.fetchInsightsByUrl(page.nextUrl, level);
+        const draft: CanonicalEventDraft = {
+          event_name: mapped.event_name,
+          occurred_at: mapped.occurred_at,
+          provenance: { brand_id: this.brandId, source: META_SOURCE }, // brand_id from connector row (MT-1)
+          properties: props as unknown as Record<string, unknown>,
+        };
+        // CROSS-LANE ID PARITY: compute the event_id by calling the SAME mapper id fn the live
+        // meta-spend-repull lane uses — uuidV5FromSpendRow(brandId, 'meta', stat_date, level, level_id)
+        // (meta-spend-repull/run.ts emitPage). Carry it as providerId so the passthrough deriver
+        // (precomputedEventIdDeriver) returns it verbatim as the Bronze event_id → backfilled rows
+        // share the live id byte-for-byte → Bronze MERGE dedups, no double-count. We CALL the mapper
+        // fn (never re-implement the seed) so the two lanes can never drift.
+        const providerId = uuidV5FromSpendRow(
+          this.brandId, META_SOURCE, props.stat_date, props.level, props.level_id,
+        );
+        records.push({ providerId, events: [draft] });
       }
     }
 

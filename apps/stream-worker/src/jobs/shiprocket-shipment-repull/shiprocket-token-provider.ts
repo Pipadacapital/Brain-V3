@@ -17,7 +17,21 @@
 import { loadStreamWorkerConfig } from '@brain/config';
 import { log } from '../../log.js';
 
+/** Reserved for a genuine auth rejection (401/403) — the ONLY signal that warrants RECONNECT_REQUIRED. */
 export const SHIPROCKET_AUTH_ERROR = 'SHIPROCKET_AUTH_ERROR';
+/**
+ * A TRANSIENT network / timeout / connection failure reaching Shiprocket (undici "fetch failed", an
+ * AbortSignal timeout, DNS, etc.). NOT an auth problem — the caller must retry next run and must NOT
+ * flag RECONNECT_REQUIRED, otherwise a passing blip stamps a false "TokenExpired" badge on a valid token.
+ */
+export const SHIPROCKET_NETWORK_ERROR = 'SHIPROCKET_NETWORK_ERROR';
+
+/**
+ * Per-request timeout (mirrors the Meta client's REQUEST_TIMEOUT_MS). Without it a hung Shiprocket
+ * socket stalls until the ingest-scheduler's multi-minute dispatch deadline aborts the whole run —
+ * surfacing as an opaque "fetch failed". Bounding each request fails fast and retryably instead.
+ */
+export const SHIPROCKET_REQUEST_TIMEOUT_MS = 30_000;
 
 export interface ShiprocketApiCredentials {
   email: string;     // NEVER logged (I-S09)
@@ -66,10 +80,12 @@ export class ShiprocketTokenProvider {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: this.creds.email, password: this.creds.password }),
+        signal: AbortSignal.timeout(SHIPROCKET_REQUEST_TIMEOUT_MS),
       });
     } catch (err) {
-      // network failure — never include credentials in the message (I-S09)
-      throw new Error(`${SHIPROCKET_AUTH_ERROR}: login request failed: ${String(err)}`);
+      // TRANSIENT network / timeout — NOT an auth failure. Never include credentials in the message
+      // (I-S09). Classifying this as SHIPROCKET_NETWORK_ERROR keeps a blip from forcing a reconnect.
+      throw new Error(`${SHIPROCKET_NETWORK_ERROR}: login request failed: ${String(err)}`);
     }
     if (res.status === 401 || res.status === 403) {
       throw new Error(`${SHIPROCKET_AUTH_ERROR}: login rejected (${res.status})`);

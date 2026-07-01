@@ -53,6 +53,8 @@ import { CircuitBreaker } from '@brain/observability';
 import {
   ShiprocketTokenProvider,
   SHIPROCKET_AUTH_ERROR,
+  SHIPROCKET_NETWORK_ERROR,
+  SHIPROCKET_REQUEST_TIMEOUT_MS,
   type ShiprocketApiCredentials,
 } from './shiprocket-token-provider.js';
 
@@ -126,9 +128,15 @@ export class ShiprocketShipmentClient {
 
     let res: Response;
     try {
-      res = await fetch(url, { method: 'GET', headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } });
+      res = await fetch(url, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+        signal: AbortSignal.timeout(SHIPROCKET_REQUEST_TIMEOUT_MS),
+      });
     } catch (err) {
-      throw new Error(`${SHIPROCKET_AUTH_ERROR}: shipments request failed: ${String(err)}`);
+      // TRANSIENT network / timeout (undici "fetch failed", AbortSignal timeout) — NOT an auth failure.
+      // Retryable next run; must not force RECONNECT_REQUIRED (the token/secret are valid).
+      throw new Error(`${SHIPROCKET_NETWORK_ERROR}: shipments request failed: ${String(err)}`);
     }
     if (res.status === 401 || res.status === 403) {
       this.tokenProvider.invalidate(); // stale token → next call re-logs-in
@@ -191,9 +199,14 @@ export class ShiprocketShipmentClient {
 
     let res: Response;
     try {
-      res = await fetch(url, { method: 'GET', headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } });
+      res = await fetch(url, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+        signal: AbortSignal.timeout(SHIPROCKET_REQUEST_TIMEOUT_MS),
+      });
     } catch (err) {
-      throw new Error(`${SHIPROCKET_AUTH_ERROR}: tracking request failed: ${String(err)}`);
+      // TRANSIENT network / timeout — NOT an auth failure (retryable, no reconnect signal).
+      throw new Error(`${SHIPROCKET_NETWORK_ERROR}: tracking request failed: ${String(err)}`);
     }
     if (res.status === 401 || res.status === 403) {
       this.tokenProvider.invalidate();

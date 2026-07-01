@@ -8,7 +8,7 @@
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { ShiprocketShipmentClient, SHIPROCKET_SHIPMENT_PAGE_SIZE } from '../jobs/shiprocket-shipment-repull/shiprocket-client.js';
-import { SHIPROCKET_AUTH_ERROR } from '../jobs/shiprocket-shipment-repull/shiprocket-token-provider.js';
+import { SHIPROCKET_AUTH_ERROR, SHIPROCKET_NETWORK_ERROR } from '../jobs/shiprocket-shipment-repull/shiprocket-token-provider.js';
 
 const CREDS = { email: 'api@store.example', password: 'secret' };
 const FROM = Math.floor(Date.parse('2026-06-01T00:00:00Z') / 1000);
@@ -65,6 +65,56 @@ describe('ShiprocketShipmentClient — live HTTP mode', () => {
 
     const client = new ShiprocketShipmentClient(CREDS);
     await expect(client.fetchShipmentPage(FROM, TO, 0)).rejects.toThrow(SHIPROCKET_AUTH_ERROR);
+  });
+
+  // ── Network / timeout classification (the shiprocket-repull "fetch failed" fix) ──
+  //
+  // A transient network failure (undici "fetch failed", an AbortSignal timeout, DNS) must surface as
+  // SHIPROCKET_NETWORK_ERROR — NOT SHIPROCKET_AUTH_ERROR — so the caller retries instead of stamping a
+  // false RECONNECT_REQUIRED / TokenExpired on a connector whose token + secret are perfectly valid.
+
+  it('throws SHIPROCKET_NETWORK_ERROR (NOT auth) when the shipments fetch fails at the network layer', async () => {
+    process.env['SHIPROCKET_LIVE'] = '1';
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.includes('/v1/external/auth/login')) {
+        return { ok: true, status: 200, json: async () => ({ token: 'jwt-abc' }) } as unknown as Response;
+      }
+      throw new TypeError('fetch failed'); // undici network-layer failure (or an abort timeout)
+    }));
+
+    const client = new ShiprocketShipmentClient(CREDS);
+    const p = client.fetchShipmentPage(FROM, TO, 0);
+    await expect(p).rejects.toThrow(SHIPROCKET_NETWORK_ERROR);
+    await expect(p).rejects.not.toThrow(SHIPROCKET_AUTH_ERROR);
+  });
+
+  it('throws SHIPROCKET_NETWORK_ERROR when the login mint fails at the network layer', async () => {
+    process.env['SHIPROCKET_LIVE'] = '1';
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      throw new TypeError('fetch failed');
+    }));
+
+    const client = new ShiprocketShipmentClient(CREDS);
+    await expect(client.fetchShipmentPage(FROM, TO, 0)).rejects.toThrow(SHIPROCKET_NETWORK_ERROR);
+  });
+
+  it('bounds every request with an AbortSignal timeout (no unbounded hang → no 5-min deadline stall)', async () => {
+    process.env['SHIPROCKET_LIVE'] = '1';
+    const signals: (AbortSignal | undefined)[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init: { signal?: AbortSignal }) => {
+      signals.push(init?.signal);
+      if (url.includes('/v1/external/auth/login')) {
+        return { ok: true, status: 200, json: async () => ({ token: 'jwt-abc' }) } as unknown as Response;
+      }
+      return { ok: true, status: 200, json: async () => ({ data: [] }) } as unknown as Response;
+    }));
+
+    const client = new ShiprocketShipmentClient(CREDS);
+    await client.fetchShipmentPage(FROM, TO, 0);
+
+    // Both the login mint and the shipments read must carry an abort signal (bounded request).
+    expect(signals.length).toBeGreaterThanOrEqual(2);
+    expect(signals.every((s) => s instanceof AbortSignal)).toBe(true);
   });
 });
 

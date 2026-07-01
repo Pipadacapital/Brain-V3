@@ -16,7 +16,7 @@ WHY THIS JOB FOLDS THE RECOGNITION CHAIN FROM BRONZE (and does not read an Icebe
 silver_order_recognition.sql is a dbt **VIEW** (materialized='view'), so it is NEVER written to the
 StarRocks brain_silver layer and there is NO Iceberg brain_silver.silver_order_recognition table to read.
 The recognition events are the canonical revenue business-logic, computed deterministically FROM raw
-Bronze (order.live.v1 + gokwik.awb_status.v1) plus two small dimension reads (brand horizons, identity
+Bronze (order.{live,backfill}.v1 + shiprocket.shipment_status.v1) plus two small dimension reads (brand horizons, identity
 link). The proven Phase-1 silver_order_state.py ALREADY folds this exact recognition chain from Iceberg
 Bronze; this job reuses that IDENTICAL fold and stops at the recognition-event grain (it does not collapse
 to one row per order). So the "Iceberg Silver" this Gold job reads is the recognition transform applied
@@ -183,13 +183,17 @@ def build(spark: SparkSession) -> str:
         identity_join = ""
         brain_col = "cast(null as string)"
 
-    # ── stg_order_events_bronze: type + dedup order.live.v1 to (brand_id, order_id) latest-ingested ──
+    # ── stg_order_events_bronze: type + dedup order.{live,backfill}.v1 to (brand_id, order_id) latest ──
     # IDENTICAL to silver_order_state.py / stg_order_events_bronze.sql so the enriched order matches.
+    # BOTH lanes: order.live.v1 (webhook) AND order.backfill.v1 (historical connector backfill) — same
+    # canonical payload, so a backfilled order IS a real order and must produce recognition events here
+    # too, else the revenue ledger UNDERCOUNTS (backfilled revenue stranded). The (brand_id, order_id)
+    # latest-ingested dedup collapses any live↔backfill overlap to one winner (no double recognition).
     stg_order_events = """
         with raw as (
             select brand_id, event_id, occurred_at, payload as pj
             from bronze_events
-            where event_type = 'order.live.v1'
+            where event_type in ('order.live.v1', 'order.backfill.v1')
         ),
         typed as (
             select
@@ -224,7 +228,12 @@ def build(spark: SparkSession) -> str:
     """
     spark.sql(stg_order_events).createOrReplaceTempView("stg_order_events_bronze")
 
-    # ── latest AWB terminal_class per order (COD recognition signal) — IDENTICAL to silver_order_state.py ──
+    # ── latest terminal_class per order (COD recognition signal) — IDENTICAL to silver_order_state.py ──
+    # HIGH COD fix parity: the RETIRED `gokwik.awb_status.v1` (emitted by nothing) is replaced by the LIVE
+    # forward logistics lane `shiprocket.shipment_status.v1` (server-trusted; properties.terminal_class is
+    # the SAME deterministic class from @brain/logistics-status). silver_order_state.py was already
+    # repointed; this file had drifted, so COD delivery/RTO recognition never fired in the gold ledger.
+    # Read ONLY the forward shipment lane (the return lane carries return_class → the SR-4 false-delivery bug).
     spark.sql(
         """
         with awb_raw as (
@@ -234,7 +243,7 @@ def build(spark: SparkSession) -> str:
                 get_json_object(payload, '$.properties.terminal_class') as terminal_class,
                 occurred_at
             from bronze_events
-            where event_type = 'gokwik.awb_status.v1'
+            where event_type = 'shiprocket.shipment_status.v1'
         ),
         awb_latest as (
             select brand_id, order_id, terminal_class, occurred_at,
@@ -350,16 +359,17 @@ def build(spark: SparkSession) -> str:
     result = spark.sql(ledger_sql)
     result.createOrReplaceTempView("gold_revenue_ledger_new")
 
-    # Idempotent MERGE on the (brand_id, ledger_event_id) PK — replay-safe append-on-no-match upsert.
-    spark.sql(
-        f"""
-        MERGE INTO {fqtn} t
-        USING gold_revenue_ledger_new s
-        ON t.brand_id = s.brand_id AND t.ledger_event_id = s.ledger_event_id
-        WHEN MATCHED THEN UPDATE SET *
-        WHEN NOT MATCHED THEN INSERT *
-        """
-    )
+    # WRITE MODE — atomic partition overwrite, NOT a MERGE upsert. This job is a COMPLETE full fold of ALL
+    # brands from Bronze every run (no watermark, no brand filter), so gold_revenue_ledger_new IS the entire
+    # current ledger. A MERGE on ledger_event_id could NOT remove orphans: when a re-fold changes an order's
+    # winning event — e.g. a backfilled order.backfill.v1 out-ingests the original order.live.v1, so the
+    # deduped economic_effective_at (hence the sha2 ledger_event_id) changes — MERGE inserts the new
+    # recognition row but LEAVES the stale one, double-counting revenue (verified: 777 overlap orders →
+    # +₹0.98Cr). overwritePartitions() atomically REPLACES every brand-bucket partition present in the fresh
+    # fold, so the ledger exactly matches the current Bronze recognition set — orphan-free and idempotent
+    # (re-running yields the identical table). Byte-identical recognition to silver_order_state.py, so the
+    # ledger's non-provisional Σ reconciles with silver_order_state.order_value_minor.
+    result.writeTo(fqtn).overwritePartitions()
     n = spark.table(fqtn).count()
     print(f"[gold_revenue_ledger] MERGE complete → {fqtn} has {n} rows", flush=True)
     return fqtn

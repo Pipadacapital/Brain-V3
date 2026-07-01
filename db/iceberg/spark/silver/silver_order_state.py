@@ -161,12 +161,18 @@ def _fold_and_merge(spark: SparkSession, fqtn: str, identity_join: str, brain_co
     registered. The caller (build) registers bronze_events as either the full table (legacy/full-refresh)
     or — for ENTITY-INCREMENTAL — one hash-bucket of the orders that have NEW events, carrying each such
     order's FULL event history (so the per-order fold is complete and the aggregates never regress)."""
-    # ── stg_order_events_bronze: type + dedup order.live.v1 to (brand_id, order_id) latest-ingested ──
+    # ── stg_order_events_bronze: type + dedup order.{live,backfill}.v1 to (brand_id, order_id) latest-ingested ──
+    # BOTH lanes: order.live.v1 (real-time webhook) AND order.backfill.v1 (historical connector backfill).
+    # They share the SAME canonical payload (properties.order_id / amount_minor / line_items), so a
+    # backfilled order IS a real order and must enter the canonical order spine — otherwise Silver/Gold and
+    # every downstream mart UNDERCOUNT (backfilled orders stranded in Bronze). silver_order_line already
+    # reads `order.%`, so this brings order_state into line. The (brand_id, order_id) latest-ingested dedup
+    # below collapses any live↔backfill overlap to one winner (no double-count).
     stg_order_events = """
         with raw as (
             select brand_id, event_id, occurred_at, payload as pj
             from bronze_events
-            where event_type = 'order.live.v1'
+            where event_type in ('order.live.v1', 'order.backfill.v1')
         ),
         typed as (
             select
@@ -268,6 +274,12 @@ def _fold_and_merge(spark: SparkSession, fqtn: str, identity_join: str, brain_co
     """
     spark.sql(enriched_sql).createOrReplaceTempView("enriched")
 
+    # FINALIZATION arithmetic: `occurred_at + make_dt_interval(N,0,0,0)` (N×24h, time-of-day preserved),
+    # NOT Spark `date_add` (which returns a DATE at midnight, finalizing an order placed at 08:42 ~8h early).
+    # This makes the finalization event_time/threshold BYTE-IDENTICAL to gold_revenue_ledger.py, so
+    # silver_order_state.order_value_minor reconciles EXACTLY with the ledger's non-provisional Σ (the old
+    # date_add divergence left 3 boundary orders / ₹18,730 unreconciled). The dbt/StarRocks parity that once
+    # motivated date_add here is obsolete — both are removed; the two Spark recognition chains must agree.
     recognition_sql = """
         select brand_id, order_id, brain_id, 'provisional_recognition' as event_type,
                amount_minor, currency_code, occurred_at, occurred_at as economic_effective_at, ingested_at
@@ -275,10 +287,10 @@ def _fold_and_merge(spark: SparkSession, fqtn: str, identity_join: str, brain_co
         union all
         select brand_id, order_id, brain_id, 'finalization' as event_type,
                amount_minor, currency_code, occurred_at,
-               date_add(occurred_at, prepaid_horizon) as economic_effective_at, ingested_at
+               occurred_at + make_dt_interval(prepaid_horizon, 0, 0, 0) as economic_effective_at, ingested_at
         from enriched
         where payment_method = 'prepaid'
-          and date_add(occurred_at, coalesce(prepaid_horizon, 7)) < current_timestamp()
+          and occurred_at + make_dt_interval(coalesce(prepaid_horizon, 7), 0, 0, 0) < current_timestamp()
           and cancelled_at is null
           and coalesce(financial_status, '') not in ('refunded', 'voided', 'cancelled')
         union all
@@ -403,7 +415,7 @@ def _fold_and_merge(spark: SparkSession, fqtn: str, identity_join: str, brain_co
 
 # Event types whose payload carries a properties.order_id that this fold keys on. Used to discover which
 # orders have NEW events (entity-incremental) and to bucket them. Keep in sync with the fold's reads.
-_ORDER_EVENT_TYPES = ("order.live.v1", "shiprocket.shipment_status.v1")
+_ORDER_EVENT_TYPES = ("order.live.v1", "order.backfill.v1", "shiprocket.shipment_status.v1")
 
 
 def build(spark: SparkSession) -> str:

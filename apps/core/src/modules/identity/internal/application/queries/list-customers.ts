@@ -63,6 +63,50 @@ export interface CustomerList {
   limit: number;
   offset: number;
   searched: boolean;
+  /**
+   * Opaque KEYSET cursor for the next page (Gap 4): base64url of the last row's
+   * (created_at ms, brain_id) under the stable (created_at DESC, brain_id ASC) sort. Null when
+   * this page is the last (or its last row has no sortable created_at). Offset paging is unchanged.
+   */
+  next_cursor: string | null;
+}
+
+// ── Opaque keyset cursor (Gap 4) ───────────────────────────────────────────────
+// The cursor is a POSITION, not a secret: base64url-encoded JSON {v, ca, id}. Encoding keeps it
+// opaque (clients must not construct/inspect it) and URL-safe. An invalid/foreign cursor decodes
+// to null and the browse falls back to offset paging — a browse must never hard-fail on a cursor.
+
+interface CustomerListCursor {
+  v: 1;
+  /** Last row's created_at, epoch ms (the primary DESC sort key). */
+  ca: number;
+  /** Last row's brain_id (the unique ASC tiebreak). */
+  id: string;
+}
+
+export function encodeCustomerListCursor(createdAtMs: number, brainId: string): string {
+  const payload: CustomerListCursor = { v: 1, ca: createdAtMs, id: brainId };
+  return Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
+}
+
+export function decodeCustomerListCursor(cursor: string): CustomerListCursor | null {
+  try {
+    const parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as unknown;
+    if (
+      parsed !== null &&
+      typeof parsed === 'object' &&
+      (parsed as CustomerListCursor).v === 1 &&
+      typeof (parsed as CustomerListCursor).ca === 'number' &&
+      Number.isFinite((parsed as CustomerListCursor).ca) &&
+      typeof (parsed as CustomerListCursor).id === 'string' &&
+      (parsed as CustomerListCursor).id.length > 0
+    ) {
+      return parsed as CustomerListCursor;
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 export interface ListCustomersParams {
@@ -86,6 +130,12 @@ export interface ListCustomersParams {
   acquisitionSource?: string | null;
   limit?: number;
   offset?: number;
+  /**
+   * Opaque keyset cursor from a previous page's next_cursor (Gap 4). When present it WINS over
+   * offset (the keyset is the position). An unparseable cursor is treated as absent (offset
+   * paging) — a browse never hard-fails on a bad cursor.
+   */
+  cursor?: string | null;
 }
 
 export interface ListCustomersDeps {
@@ -193,12 +243,17 @@ export async function listCustomers(
     identifierHashes = salt && salt.length === 64 ? searchHashes(term, salt) : [];
   }
 
+  // Keyset continuation (Gap 4): a valid cursor wins over offset; an invalid one degrades to
+  // offset paging (never a hard-fail).
+  const decodedCursor = params.cursor ? decodeCustomerListCursor(params.cursor) : null;
+
   const { items, total } = await deps.reader.listCustomers(brandId, {
     lifecycle,
     identifierHashes: identifierHashes ?? [],
     limit,
     offset,
     brainIdFilter,
+    after: decodedCursor ? { createdAtMs: decodedCursor.ca, brainId: decodedCursor.id } : null,
   });
 
   // Page enrichment: fold segment + LTV + order_count onto exactly the brain_ids on THIS page (a cheap
@@ -234,5 +289,20 @@ export async function listCustomers(
     limit,
     offset,
     searched: term.length > 0,
+    next_cursor: nextCursor(items, limit),
   };
+}
+
+/**
+ * Compute the next-page keyset cursor from the page's LAST row. Null when the page is short
+ * (nothing after it) or the last row lacks a sortable created_at (cannot keyset past it).
+ */
+function nextCursor(
+  items: Array<{ brain_id: string; created_at: Date | null }>,
+  limit: number,
+): string | null {
+  if (items.length < limit) return null;
+  const last = items[items.length - 1];
+  if (!last || last.created_at === null) return null;
+  return encodeCustomerListCursor(last.created_at.getTime(), last.brain_id);
 }

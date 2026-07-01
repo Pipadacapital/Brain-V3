@@ -8,13 +8,19 @@
  * is a prefix scan (`SCAN 0 MATCH ${brandId}:*`) and any accidental cross-brand
  * leak is detectable from the key alone. Use buildCacheKey() to construct keys.
  *
- * ── STAMPEDE GUARD ────────────────────────────────────────────────────────────
- * IoredisCacheAdapter.getOrSet coalesces concurrent cache misses on the same key
- * via an in-process Promise map: only the FIRST caller computes the value and
- * writes it to Redis; subsequent concurrent callers await the same promise. This
- * eliminates the thundering-herd on hot metrics at the cost of per-instance scope
- * (sufficient for single-instance deployments; distributed guard can be layered on
- * with Redis SETNX if multi-instance stampede protection is needed later).
+ * ── STAMPEDE GUARD (two layers) ───────────────────────────────────────────────
+ * IoredisCacheAdapter.getOrSet coalesces concurrent cache misses on the same key:
+ *   1. IN-PROCESS: a Promise map — only the FIRST caller in this process computes;
+ *      concurrent callers await the same promise.
+ *   2. DISTRIBUTED (multi-instance): a best-effort Redis SET-NX lock on
+ *      `${key}:lock` — across instances only the lock WINNER recomputes a missed
+ *      key; losers briefly poll the value key and serve the winner's write, falling
+ *      back to a direct compute if it doesn't land in time. The lock is an
+ *      OPTIMIZATION, never a correctness dependency: any lock-op failure degrades
+ *      to the pre-lock behavior (compute directly), and a lost/expired lock at
+ *      worst costs one duplicate compute. Reads are never blocked on the lock.
+ *      The lock key stays brand_id-LEADING (it extends the value key), so the
+ *      isolation-by-prefix property and the invalidation SCAN both still hold.
  *
  * ── DRIVER-AGNOSTIC PORT ─────────────────────────────────────────────────────
  * AnalyticsCachePort is a pure interface with no ioredis import. The concrete
@@ -106,6 +112,33 @@ export interface RedisCacheClient {
   del(key: string): Promise<number>;
 }
 
+// ── Distributed-lock options (stampede guard layer 2) ─────────────────────────
+
+/**
+ * Tuning for the cross-instance SET-NX rebuild lock. All timings are milliseconds.
+ * Defaults suit interactive serving reads (a Trino metric read is typically < 5s).
+ */
+export interface DistributedLockOptions {
+  /** Master switch — false restores the pure in-process behavior. Default true. */
+  readonly enabled: boolean;
+  /** Lock lifetime (PX on the SET-NX). Must exceed the slowest expected compute. Default 15s. */
+  readonly lockTtlMs: number;
+  /** How often a lock LOSER polls the value key for the winner's write. Default 100ms. */
+  readonly pollIntervalMs: number;
+  /** How long a loser polls before giving up and computing directly. Default 3s. */
+  readonly maxPollMs: number;
+}
+
+const DEFAULT_LOCK_OPTIONS: DistributedLockOptions = {
+  enabled: true,
+  lockTtlMs: 15_000,
+  pollIntervalMs: 100,
+  maxPollMs: 3_000,
+};
+
+/** Suffix appended to the VALUE key to form the lock key — keeps brand_id leading. */
+const LOCK_SUFFIX = ':lock';
+
 // ── Concrete adapter ───────────────────────────────────────────────────────────
 
 /**
@@ -120,7 +153,19 @@ export class IoredisCacheAdapter implements AnalyticsCachePort {
    */
   private readonly inFlight = new Map<string, Promise<unknown>>();
 
-  constructor(private readonly redis: RedisCacheClient) {}
+  private readonly lockOptions: DistributedLockOptions;
+  /** Injectable for tests (fake timers without real waiting). */
+  private readonly sleep: (ms: number) => Promise<void>;
+  private lockSeq = 0;
+
+  constructor(
+    private readonly redis: RedisCacheClient,
+    lockOptions?: Partial<DistributedLockOptions>,
+    sleep?: (ms: number) => Promise<void>,
+  ) {
+    this.lockOptions = { ...DEFAULT_LOCK_OPTIONS, ...lockOptions };
+    this.sleep = sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+  }
 
   async get<T = unknown>(key: string): Promise<T | null> {
     const raw = await this.redis.get(key);
@@ -157,22 +202,13 @@ export class IoredisCacheAdapter implements AnalyticsCachePort {
       // cache read failed — fall through and compute directly.
     }
 
-    // Stampede guard: if another call is already computing this key, join it.
+    // In-process stampede guard: if another call in THIS process is already computing, join it.
     const existing = this.inFlight.get(key) as Promise<T> | undefined;
     if (existing !== undefined) return existing;
 
-    // This call wins the race — compute, then BEST-EFFORT store. A cache WRITE fault (Redis error,
-    // serialization edge) must return the freshly-computed value, NEVER fail the request. Before the
-    // BigInt-safe serializer + this guard, a bigint result threw in set() and 500'd every cached
-    // analytics endpoint (revenue, orders, customer marts) — the cache write took down the read.
-    const promise: Promise<T> = compute()
-      .then(async (value) => {
+    const promise: Promise<T> = this.computeWithDistributedLock(key, compute, ttlMs)
+      .then((value) => {
         this.inFlight.delete(key);
-        try {
-          await this.set(key, value, ttlMs);
-        } catch {
-          // best-effort cache write — value is still returned below.
-        }
         return value;
       })
       .catch((err: unknown) => {
@@ -183,5 +219,96 @@ export class IoredisCacheAdapter implements AnalyticsCachePort {
 
     this.inFlight.set(key, promise as Promise<unknown>);
     return promise;
+  }
+
+  /**
+   * DISTRIBUTED stampede guard (layer 2): a best-effort SET-NX lock on `${key}:lock` so that
+   * across INSTANCES only one rebuilds a missed key.
+   *   - lock ACQUIRED → compute + store, then release the lock (check-token-then-DEL, best-effort).
+   *   - lock LOST     → another instance is computing: poll the value key briefly and serve its
+   *                     write; if it doesn't land within maxPollMs, compute directly (a read is
+   *                     NEVER blocked indefinitely on the lock).
+   *   - lock ERROR    → degrade to the pre-lock behavior (compute directly).
+   */
+  private async computeWithDistributedLock<T>(
+    key: string,
+    compute: () => Promise<T>,
+    ttlMs: number,
+  ): Promise<T> {
+    if (!this.lockOptions.enabled) return this.computeAndStore(key, compute, ttlMs);
+
+    const lockKey = `${key}${LOCK_SUFFIX}`;
+    // Owner token: releasing checks it so an expired lock's successor isn't unlocked by us.
+    const token = `${Date.now().toString(36)}-${(this.lockSeq++).toString(36)}-${Math.random().toString(36).slice(2)}`;
+
+    let acquired: boolean;
+    try {
+      acquired =
+        (await this.redis.set(lockKey, token, 'PX', this.lockOptions.lockTtlMs, 'NX')) === 'OK';
+    } catch {
+      // Lock layer unavailable — never block/fail a read because of the guard.
+      return this.computeAndStore(key, compute, ttlMs);
+    }
+
+    if (acquired) {
+      try {
+        return await this.computeAndStore(key, compute, ttlMs);
+      } finally {
+        await this.releaseLock(lockKey, token);
+      }
+    }
+
+    // Lock lost to another INSTANCE — wait briefly for its value write, then fall back.
+    const settled = await this.pollForValue<T>(key);
+    if (settled !== null) return settled;
+    return this.computeAndStore(key, compute, ttlMs);
+  }
+
+  /**
+   * Compute, then BEST-EFFORT store. A cache WRITE fault (Redis error, serialization edge) must
+   * return the freshly-computed value, NEVER fail the request. Before the BigInt-safe serializer
+   * + this guard, a bigint result threw in set() and 500'd every cached analytics endpoint
+   * (revenue, orders, customer marts) — the cache write took down the read.
+   */
+  private async computeAndStore<T>(key: string, compute: () => Promise<T>, ttlMs: number): Promise<T> {
+    const value = await compute();
+    try {
+      await this.set(key, value, ttlMs);
+    } catch {
+      // best-effort cache write — value is still returned.
+    }
+    return value;
+  }
+
+  /**
+   * Best-effort lock release: DEL only when the lock still holds OUR token. The check-then-delete
+   * pair is not atomic (RedisCacheClient has no EVAL) — acceptable because the lock is an
+   * optimization: the worst race (deleting a successor's lock) costs one duplicate compute.
+   */
+  private async releaseLock(lockKey: string, token: string): Promise<void> {
+    try {
+      if ((await this.redis.get(lockKey)) === token) {
+        await this.redis.del(lockKey);
+      }
+    } catch {
+      // Leave the lock to its PX expiry.
+    }
+  }
+
+  /** Poll the value key for the lock winner's write. Null → give up (caller computes directly). */
+  private async pollForValue<T>(key: string): Promise<T | null> {
+    const { pollIntervalMs, maxPollMs } = this.lockOptions;
+    const attempts = Math.max(1, Math.floor(maxPollMs / Math.max(1, pollIntervalMs)));
+    for (let i = 0; i < attempts; i++) {
+      await this.sleep(pollIntervalMs);
+      try {
+        const value = await this.get<T>(key);
+        if (value !== null) return value;
+      } catch {
+        // Cache read failing while we wait → stop polling, compute directly.
+        return null;
+      }
+    }
+    return null;
   }
 }

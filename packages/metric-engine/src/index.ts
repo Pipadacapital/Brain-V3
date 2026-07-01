@@ -355,11 +355,15 @@ export type { TrinoAdapterConfig } from './trino-adapter.js';
 
 // ── Analytics cache PORT (brand_id-leading composite keys + stampede guard) ──
 export { buildCacheKey, IoredisCacheAdapter } from './analytics-cache.js';
-export type { AnalyticsCachePort, RedisCacheClient } from './analytics-cache.js';
+export type { AnalyticsCachePort, RedisCacheClient, DistributedLockOptions } from './analytics-cache.js';
 
 // ── Serving cache reader (Redis-fronted hot serving reads over the Trino seam) ──
 export { createServingCacheReader, hashParams } from './serving-cache.js';
 export type { ServingCacheReader, ServingCacheReaderConfig } from './serving-cache.js';
+
+// ── Per-dataset serving TTLs (freshness tiers; unmapped metric → the global default) ──
+export { resolveServingTtlMs, SERVING_TTL_TIER_MS, METRIC_TTL_TIER } from './serving-ttl.js';
+export type { ServingTtlTier } from './serving-ttl.js';
 
 // ── Query routing (known metrics → StarRocks; AI-Trino DISABLED) ──────────────
 export {

@@ -50,4 +50,28 @@ describe('brainRef — public customer_ref', () => {
     expect(ref.length).toBe(REF_PREFIX.length + 26);
     expect(brainRef('not-a-uuid')).toBe(ref);
   });
+
+  it('pure-TS sha256 fallback is byte-identical to node:crypto (Python hashlib parity)', async () => {
+    // brain-ref.ts is ISOMORPHIC (bundled into the web client) so it carries its own sha256 instead
+    // of importing node:crypto. This locks that implementation to the platform one — and therefore to
+    // Python hashlib.sha256 in _identity_ref.py — for the non-UUID fallback path.
+    const { createHash } = await import('node:crypto');
+    const CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+    const expectRef = (input: string): string => {
+      const digest = Uint8Array.from(createHash('sha256').update(input.trim(), 'utf8').digest()).subarray(0, 16);
+      let bits = 0, nbits = 0, out = '';
+      for (const byte of digest) {
+        bits = (bits << 8) | byte;
+        nbits += 8;
+        while (nbits >= 5) { nbits -= 5; out += CROCKFORD[(bits >>> nbits) & 0x1f]; }
+      }
+      if (nbits > 0) out += CROCKFORD[(bits << (5 - nbits)) & 0x1f];
+      return REF_PREFIX + out;
+    };
+    // Cover short, multi-block (>64 bytes triggers a second sha256 block), and non-ASCII inputs.
+    const inputs = ['not-a-uuid', 'x', 'a'.repeat(63), 'b'.repeat(64), 'c'.repeat(200), 'héllo-wörld-👋'];
+    for (const input of inputs) {
+      expect(brainRef(input), `input=${JSON.stringify(input)}`).toBe(expectRef(input));
+    }
+  });
 });

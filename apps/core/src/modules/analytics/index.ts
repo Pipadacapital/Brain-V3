@@ -74,16 +74,9 @@ export type { CostInputDto, UpsertCostInputInput, CostScope, CostType } from './
 // Top products — per-SKU rollup over Silver order-line (feat-shopify-order-depth).
 export { getTopProducts } from './internal/application/queries/get-top-products.js';
 export type { TopProductsResult, TopProductDto } from './internal/application/queries/get-top-products.js';
-// Order detail — single order's economic breakdown from Bronze (feat-shopify-order-depth).
-export { getOrderDetail } from './internal/application/queries/get-order-detail.js';
-export type {
-  OrderDetailResult,
-  OrderDetailDto,
-  OrderLineItemDto,
-  OrderTaxLineDto,
-  OrderDiscountCodeDto,
-  OrderRefundDto,
-} from './internal/application/queries/get-order-detail.js';
+// Order-detail drill-down REMOVED: the per-order economic breakdown read Bronze directly (never-read-
+// Bronze rule); the canonical order records + a per-record detail modal now live on the Data browser
+// (mv_silver_order_state / mv_silver_order_line via queryConnectorRecords). No dashboard Bronze read remains.
 // Product detail / affinity / treemap (P3) — per-product Gold marts over Trino serving views.
 export { getProductDetail } from './internal/application/queries/get-product-detail.js';
 export type { ProductDetailResult, ProductDetailDto } from './internal/application/queries/get-product-detail.js';

@@ -369,3 +369,5 @@ export {
   NotImplementedYet,
 } from './query-route.js';
 export type { KnownMetricRoute } from './query-route.js';
+export { queryConnectorRecords, CONNECTOR_RECORDS_PAGE_SIZE, CONNECTOR_RECORD_ENTITIES } from './connector-records.js';
+export type { RecordEntity, RecordColumn, ConnectorRecordsResult, ConnectorRecordsParams } from './connector-records.js';

@@ -401,70 +401,10 @@ export const TopProductsSchema = z.discriminatedUnion('state', [
 ]);
 export type TopProducts = z.infer<typeof TopProductsSchema>;
 
-// ── #N GET /v1/analytics/order-detail ─────────────────────────────────────────
-// A single order's economic breakdown, read from Bronze (feat-shopify-order-depth).
-// @see apps/core/.../analytics/.../get-order-detail.ts (OrderDetailResult / OrderDetailDto)
-
-export const OrderLineItemDtoSchema = z.object({
-  sku: z.string().nullable(),
-  title: z.string().nullable(),
-  quantity: z.number(),
-  unit_price_minor: MinorUnitsSchema,
-  line_total_minor: MinorUnitsSchema,
-  line_discount_minor: MinorUnitsSchema,
-  product_id: z.string().nullable(),
-  variant_id: z.string().nullable(),
-});
-export type OrderLineItemDto = z.infer<typeof OrderLineItemDtoSchema>;
-
-export const OrderTaxLineDtoSchema = z.object({
-  title: z.string().nullable(),
-  rate: z.number().nullable(),
-  amount_minor: MinorUnitsSchema,
-});
-export type OrderTaxLineDto = z.infer<typeof OrderTaxLineDtoSchema>;
-
-export const OrderDiscountCodeDtoSchema = z.object({
-  code: z.string().nullable(),
-  amount_minor: MinorUnitsSchema,
-  type: z.string().nullable(),
-});
-export type OrderDiscountCodeDto = z.infer<typeof OrderDiscountCodeDtoSchema>;
-
-export const OrderRefundDtoSchema = z.object({
-  refund_id: z.string().nullable(),
-  processed_at: z.string().nullable(),
-  amount_minor: MinorUnitsSchema,
-  reason: z.string().nullable(),
-});
-export type OrderRefundDto = z.infer<typeof OrderRefundDtoSchema>;
-
-export const OrderDetailDtoSchema = z.object({
-  order_id: z.string(),
-  occurred_at: z.string(),
-  currency_code: z.string(),
-  amount_minor: MinorUnitsSchema,
-  payment_method: z.string().nullable(),
-  financial_status: z.string().nullable(),
-  fulfillment_status: z.string().nullable(),
-  cancelled_at: z.string().nullable(),
-  has_depth: z.boolean(),
-  line_items: z.array(OrderLineItemDtoSchema),
-  tax_lines: z.array(OrderTaxLineDtoSchema),
-  tax_total_minor: MinorUnitsSchema.nullable(),
-  shipping_total_minor: MinorUnitsSchema.nullable(),
-  discount_codes: z.array(OrderDiscountCodeDtoSchema),
-  discount_total_minor: MinorUnitsSchema.nullable(),
-  refunds: z.array(OrderRefundDtoSchema),
-  refund_total_minor: MinorUnitsSchema.nullable(),
-});
-export type OrderDetailDto = z.infer<typeof OrderDetailDtoSchema>;
-
-export const OrderDetailSchema = z.discriminatedUnion('state', [
-  z.object({ state: z.literal('not_found'), order_id: z.string() }),
-  z.object({ state: z.literal('has_data'), order_id: z.string(), detail: OrderDetailDtoSchema }),
-]);
-export type OrderDetail = z.infer<typeof OrderDetailSchema>;
+// ── GET /v1/analytics/order-detail REMOVED ────────────────────────────────────
+// The per-order economic-breakdown drill-down read Bronze directly (never-read-Bronze rule) and is
+// removed. Canonical order records + a per-record detail modal now live on the Data browser
+// (GET /v1/analytics/records/orders → mv_silver_order_state / mv_silver_order_line).
 
 // ── #N GET /v1/analytics/products/:productId ──────────────────────────────────
 // Per-PRODUCT performance from the Gold mart gold_product_detail (views→atc→purchases→revenue +

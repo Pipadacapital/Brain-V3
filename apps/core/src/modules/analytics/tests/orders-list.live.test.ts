@@ -1,11 +1,11 @@
 /**
- * orders-list.live.test.ts — getOrdersList (paginated latest-state orders from Bronze), live PG.
+ * orders-list.live.test.ts — getOrdersList (paginated latest canonical-state orders from SILVER), live PG.
  *
- * Bronze is now Iceberg-only (PG bronze_events retired, dropped in db/migrations/0070). This reader
- * sources orders SOLELY from the StarRocks external Iceberg catalog via the withSilverBrand seam.
- * When StarRocks is NOT wired (srPool absent), the reader returns the honest no_data contract —
- * it NEVER falls back to (or queries) a PG bronze table. These tests assert that honest-empty
- * contract under the real RLS harness; they do not seed or select bronze_events.
+ * The reader now sources orders from the Silver serving mart (mv_silver_order_state, gross value from
+ * mv_silver_order_line) via the withSilverBrand seam — NEVER Bronze (never-read-Bronze rule). When the
+ * Silver serving pool is NOT wired (srPool absent), the reader returns the honest no_data contract — it
+ * NEVER falls back to a PG table. These tests assert that honest-empty contract under the real RLS
+ * harness; they do not seed or select any raw table.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import pg from 'pg';
@@ -53,7 +53,7 @@ afterAll(async () => {
   await superPool?.end?.().catch(() => {});
 });
 
-describe('getOrdersList (Iceberg-only Bronze, honest no_data without StarRocks)', () => {
+describe('getOrdersList (Silver serving, honest no_data without the Silver pool)', () => {
   it('SKIP_IF_NO_PG', () => {
     if (!pgAvailable) console.warn('[orders-list] Postgres unavailable — PENDING.');
     expect(true).toBe(true);

@@ -23,8 +23,8 @@
  */
 
 import { useState } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
-import { ShoppingCart, TrendingDown, Search, Layers, ArrowRight, PackageSearch } from 'lucide-react';
+import { useSearchParams } from 'next/navigation';
+import { ShoppingCart, TrendingDown, Layers, ArrowRight, PackageSearch } from 'lucide-react';
 import Link from 'next/link';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { PageHeader } from '@/components/ui/page-header';
@@ -110,41 +110,6 @@ function GrainToggle({ grain, onChange }: { grain: Grain; onChange: (g: Grain) =
         </label>
       ))}
     </fieldset>
-  );
-}
-
-/** Look up one order's captured economic breakdown by id (feat-shopify-order-depth). */
-function OrderLookup() {
-  const router = useRouter();
-  const [orderId, setOrderId] = useState('');
-  return (
-    <form
-      className="flex items-center gap-2"
-      onSubmit={(e) => {
-        e.preventDefault();
-        const id = orderId.trim();
-        if (id) router.push(`/analytics/orders/${encodeURIComponent(id)}`);
-      }}
-    >
-      <div className="relative">
-        <Search className="pointer-events-none absolute left-2 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-        <input
-          type="text"
-          value={orderId}
-          onChange={(e) => setOrderId(e.target.value)}
-          placeholder="Look up order id…"
-          aria-label="Order id"
-          className="h-9 rounded-md border bg-card pl-8 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-        />
-      </div>
-      <button
-        type="submit"
-        className="h-9 rounded-md border bg-secondary px-3 text-sm font-medium text-secondary-foreground hover:bg-secondary/80 disabled:opacity-50"
-        disabled={!orderId.trim()}
-      >
-        View
-      </button>
-    </form>
   );
 }
 
@@ -475,7 +440,6 @@ export function OrdersContent() {
             Powered by the Silver tier
           </span>
         }
-        actions={<OrderLookup />}
       />
 
       <Tabs value={tab} onValueChange={(v) => setTab(v as TabValue)}>

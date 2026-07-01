@@ -12,7 +12,7 @@
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { analyticsApi, insightsApi } from '@/lib/api/client';
-import type { AttributionModel } from '@/lib/api/types';
+import type { AttributionModel, RecordEntity } from '@/lib/api/types';
 
 export const ANALYTICS_QUERY_KEY = ['analytics'] as const;
 
@@ -292,19 +292,6 @@ export function useTopProducts(params?: { from?: string; to?: string; limit?: nu
     queryKey: [...ANALYTICS_QUERY_KEY, 'top-products', params?.from, params?.to, params?.limit ?? 10],
     queryFn: () => analyticsApi.getTopProducts(params),
     staleTime: 5 * 60_000,
-  });
-}
-
-/**
- * useOrderDetail — a single order's economic breakdown from Bronze (feat-shopify-order-depth).
- * @param orderId - the order natural key; the query is disabled when falsy.
- */
-export function useOrderDetail(orderId: string | null | undefined) {
-  return useQuery({
-    queryKey: [...ANALYTICS_QUERY_KEY, 'order-detail', orderId ?? ''],
-    queryFn: () => analyticsApi.getOrderDetail(orderId as string),
-    enabled: !!orderId,
-    staleTime: 60_000,
   });
 }
 
@@ -784,5 +771,22 @@ export function useAttributedRevenueTimeseries(params: {
     queryKey: [...ANALYTICS_QUERY_KEY, 'attributed-revenue-timeseries', params.model, params.date_start, params.date_end],
     queryFn: () => analyticsApi.getAttributedRevenueTimeseries(params),
     staleTime: 5 * 60_000,
+  });
+}
+
+/**
+ * useConnectorRecords — one page (20, newest-first) of canonical connector records for an entity
+ * (orders | shipments | ad_spend), with date-range + free-text search + pagination. Keeps the
+ * previous page visible while the next loads (placeholderData) for smooth paging.
+ */
+export function useConnectorRecords(
+  entity: RecordEntity,
+  params?: { from?: string; to?: string; search?: string; page?: number },
+) {
+  return useQuery({
+    queryKey: [...ANALYTICS_QUERY_KEY, 'records', entity, params?.from, params?.to, params?.search, params?.page],
+    queryFn: () => analyticsApi.getRecords(entity, params),
+    staleTime: 60_000,
+    placeholderData: (prev) => prev,
   });
 }

@@ -14,13 +14,14 @@
  * generically. Money is rendered from bigint minor-unit strings via formatMoneyDisplay (I-S07 — no float).
  */
 
-import { useState } from 'react';
-import { Package, Truck, Megaphone, Search as SearchIcon } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { Package, Truck, Megaphone, Search as SearchIcon, X } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { PageHeader } from '@/components/ui/page-header';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { useConnectorRecords } from '@/lib/hooks/use-analytics';
 import { formatMoneyDisplay } from '@/lib/format/money-display';
 import type { CurrencyCode } from '@brain/money';
@@ -69,14 +70,29 @@ export function DataContent() {
   const [from, setFrom] = useState<string>(isoDaysAgo(90));
   const [to, setTo] = useState<string>(isoToday());
   const [searchInput, setSearchInput] = useState<string>('');
-  const [search, setSearch] = useState<string>(''); // applied (on submit)
+  const [search, setSearch] = useState<string>(''); // applied (debounced)
   const [page, setPage] = useState<number>(1);
+  const [selectedRow, setSelectedRow] = useState<Record<string, string | null> | null>(null);
+
+  // LIVE search — debounce the input (400ms) into the applied `search` so results filter as you type
+  // (no Enter needed). Reset to page 1 on a new term.
+  useEffect(() => {
+    const id = setTimeout(() => {
+      setSearch((prev) => {
+        const next = searchInput.trim();
+        if (next !== prev) setPage(1);
+        return next;
+      });
+    }, 400);
+    return () => clearTimeout(id);
+  }, [searchInput]);
 
   const { data, isLoading, isFetching, error } = useConnectorRecords(entity, { from, to, search, page });
 
   const total = data?.total ?? 0;
   const limit = data?.limit ?? 20;
   const columns = data?.columns ?? [];
+  const detailColumns = data?.detailColumns ?? [];
   const rows = data?.rows ?? [];
   const totalPages = Math.max(1, Math.ceil(total / limit));
   const startRow = total === 0 ? 0 : (page - 1) * limit + 1;
@@ -87,10 +103,6 @@ export function DataContent() {
     setPage(1);
     setSearch('');
     setSearchInput('');
-  }
-  function applySearch() {
-    setSearch(searchInput.trim());
-    setPage(1);
   }
   function onFilterChange(setter: (v: string) => void, v: string) {
     setter(v);
@@ -138,22 +150,29 @@ export function DataContent() {
           To
           <Input type="date" value={to} min={from} max={isoToday()} onChange={(e) => onFilterChange(setTo, e.target.value)} className="h-9 w-[9.5rem]" />
         </label>
-        <div className="flex flex-1 items-end gap-2 min-w-[16rem]">
-          <label className="flex flex-1 flex-col gap-1 text-xs text-muted-foreground">
-            Search
+        <label className="flex flex-1 flex-col gap-1 text-xs text-muted-foreground min-w-[16rem]">
+          Search
+          <div className="relative">
+            <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
-              type="search"
-              placeholder="order id, campaign, courier, status…"
+              type="text"
+              placeholder="order id, campaign, courier, status, pincode…"
               value={searchInput}
               onChange={(e) => setSearchInput(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') applySearch(); }}
-              className="h-9"
+              className="h-9 pl-8 pr-8"
             />
-          </label>
-          <Button variant="secondary" onClick={applySearch} className="h-9">
-            <SearchIcon className="mr-1.5 h-4 w-4" /> Search
-          </Button>
-        </div>
+            {searchInput && (
+              <button
+                type="button"
+                aria-label="Clear search"
+                onClick={() => setSearchInput('')}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            )}
+          </div>
+        </label>
       </div>
 
       {/* Table */}
@@ -189,7 +208,12 @@ export function DataContent() {
                 </thead>
                 <tbody>
                   {rows.map((row, ri) => (
-                    <tr key={ri} className="border-b last:border-0 hover:bg-muted/30">
+                    <tr
+                      key={ri}
+                      onClick={() => setSelectedRow(row)}
+                      className="cursor-pointer border-b last:border-0 hover:bg-muted/40"
+                      title="Click for full details"
+                    >
                       {columns.map((c) => (
                         <td
                           key={c.key}
@@ -227,6 +251,34 @@ export function DataContent() {
           </div>
         </div>
       )}
+
+      {/* Detail modal — the FULL field set for the clicked record (detailColumns), same format hints. */}
+      <Dialog open={selectedRow !== null} onOpenChange={(o) => { if (!o) setSelectedRow(null); }}>
+        <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{TABS.find((t) => t.key === entity)?.label} record</DialogTitle>
+            <DialogDescription>Full details for this record.</DialogDescription>
+          </DialogHeader>
+          {selectedRow && (
+            <dl className="divide-y">
+              {detailColumns.map((c) => (
+                <div key={c.key} className="flex items-start justify-between gap-4 py-2">
+                  <dt className="shrink-0 text-sm text-muted-foreground">{c.label}</dt>
+                  <dd
+                    className={cn(
+                      'min-w-0 break-words text-right text-sm text-foreground',
+                      (c.type === 'money' || c.type === 'number') && 'tabular-nums',
+                      c.type === 'text' && 'font-mono text-xs',
+                    )}
+                  >
+                    {formatCell(selectedRow[c.key], c, selectedRow)}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -1463,5 +1463,6 @@ export interface AnalyticsRecordsResponse {
   limit: number;
   total: number;
   columns: AnalyticsRecordColumn[];
+  detailColumns: AnalyticsRecordColumn[];
   rows: Array<Record<string, string | null>>;
 }

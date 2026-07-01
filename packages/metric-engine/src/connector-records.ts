@@ -46,9 +46,11 @@ export interface ConnectorRecordsResult {
   limit: number;
   /** Total rows matching the filters (for pagination), brand-scoped. */
   total: number;
-  /** Column metadata for the table header + per-cell formatting. */
+  /** Column metadata for the TABLE header + per-cell formatting (a curated subset). */
   columns: RecordColumn[];
-  /** The page of rows — every value stringified (money = bigint minor string; date = ISO). */
+  /** Column metadata for the DETAIL modal — the FULL field set (superset of columns), same format hints. */
+  detailColumns: RecordColumn[];
+  /** The page of rows — every SELECTed field stringified (money = bigint minor string; date = ISO). */
   rows: Array<Record<string, string | null>>;
 }
 
@@ -73,9 +75,12 @@ interface EntityConfig {
   dateCol: string;
   /** Columns the free-text search matches (case-insensitive LIKE). */
   searchCols: readonly string[];
-  /** SELECT list entries — plain columns OR expressions aliased to a column key (superset of columns[].key + currency siblings). */
+  /** SELECT list entries — plain columns OR expressions aliased to a column key (covers every detailColumns key + currency siblings). */
   selectCols: readonly string[];
+  /** Curated columns for the TABLE. */
   columns: RecordColumn[];
+  /** FULL field set for the DETAIL modal (superset of columns). */
+  detailColumns: RecordColumn[];
 }
 
 /**
@@ -96,8 +101,16 @@ const ENTITIES: Record<RecordEntity, EntityConfig> = {
       // "0 for every recent order" in a browser. COALESCE→0 when an order has no lines yet.
       'COALESCE((SELECT SUM(ol.line_total_minor) FROM brain_serving.mv_silver_order_line ol '
         + 'WHERE ol.brand_id = os.brand_id AND ol.order_id = os.order_id), 0) AS order_value_minor',
+      // RECOGNISED revenue (net of cancellation/RTO) — the honest realised value, shown alongside gross.
+      'os.order_value_minor AS recognised_revenue_minor',
+      // Line count for the order (context in the detail modal).
+      '(SELECT count(*) FROM brain_serving.mv_silver_order_line ol WHERE ol.brand_id = os.brand_id AND ol.order_id = os.order_id) AS line_count',
       'currency_code',
+      'brain_id',
+      'is_terminal',
       'first_event_at',
+      'state_effective_at',
+      'updated_at',
     ],
     columns: [
       { key: 'first_event_at', label: 'Placed', type: 'date' },
@@ -105,12 +118,29 @@ const ENTITIES: Record<RecordEntity, EntityConfig> = {
       { key: 'lifecycle_state', label: 'Status', type: 'text' },
       { key: 'order_value_minor', label: 'Value', type: 'money', currencyKey: 'currency_code' },
     ],
+    detailColumns: [
+      { key: 'order_id', label: 'Order ID', type: 'text' },
+      { key: 'lifecycle_state', label: 'Status', type: 'text' },
+      { key: 'order_value_minor', label: 'Gross value', type: 'money', currencyKey: 'currency_code' },
+      { key: 'recognised_revenue_minor', label: 'Recognised revenue', type: 'money', currencyKey: 'currency_code' },
+      { key: 'line_count', label: 'Line items', type: 'number' },
+      { key: 'currency_code', label: 'Currency', type: 'text' },
+      { key: 'is_terminal', label: 'Terminal?', type: 'text' },
+      { key: 'brain_id', label: 'Customer (brain_id)', type: 'text' },
+      { key: 'first_event_at', label: 'Placed at', type: 'date' },
+      { key: 'state_effective_at', label: 'Status effective', type: 'date' },
+      { key: 'updated_at', label: 'Updated', type: 'date' },
+    ],
   },
   shipments: {
     from: 'brain_serving.mv_silver_shipment',
     dateCol: 'first_event_at',
     searchCols: ['order_id', 'courier', 'current_status', 'pincode'],
-    selectCols: ['order_id', 'courier', 'current_status', 'pincode', 'payment_method', 'source', 'first_event_at'],
+    selectCols: [
+      'order_id', 'source', 'courier', 'current_status', 'terminal_class', 'is_terminal', 'is_rto',
+      'is_delivered', 'payment_method', 'pincode', 'awb_number_hash', 'first_event_at', 'last_status_at',
+      'is_synthetic', 'updated_at',
+    ],
     columns: [
       { key: 'first_event_at', label: 'First event', type: 'date' },
       { key: 'order_id', label: 'Order', type: 'text' },
@@ -120,12 +150,32 @@ const ENTITIES: Record<RecordEntity, EntityConfig> = {
       { key: 'payment_method', label: 'Payment', type: 'text' },
       { key: 'source', label: 'Source', type: 'text' },
     ],
+    detailColumns: [
+      { key: 'order_id', label: 'Order ID', type: 'text' },
+      { key: 'source', label: 'Source', type: 'text' },
+      { key: 'courier', label: 'Courier', type: 'text' },
+      { key: 'current_status', label: 'Current status', type: 'text' },
+      { key: 'terminal_class', label: 'Terminal class', type: 'text' },
+      { key: 'is_terminal', label: 'Terminal?', type: 'text' },
+      { key: 'is_delivered', label: 'Delivered?', type: 'text' },
+      { key: 'is_rto', label: 'RTO?', type: 'text' },
+      { key: 'payment_method', label: 'Payment method', type: 'text' },
+      { key: 'pincode', label: 'Pincode', type: 'text' },
+      { key: 'awb_number_hash', label: 'AWB (hashed)', type: 'text' },
+      { key: 'is_synthetic', label: 'Synthetic?', type: 'text' },
+      { key: 'first_event_at', label: 'First event', type: 'date' },
+      { key: 'last_status_at', label: 'Last status at', type: 'text' },
+      { key: 'updated_at', label: 'Updated', type: 'date' },
+    ],
   },
   ad_spend: {
     from: 'brain_serving.mv_silver_marketing_spend',
     dateCol: 'stat_date',
     searchCols: ['campaign_name', 'platform', 'level'],
-    selectCols: ['stat_date', 'platform', 'campaign_name', 'level', 'spend_minor', 'currency_code', 'impressions', 'clicks'],
+    selectCols: [
+      'stat_date', 'platform', 'level', 'level_id', 'parent_id', 'campaign_id', 'campaign_name',
+      'spend_minor', 'currency_code', 'impressions', 'clicks', 'account_timezone', 'occurred_at',
+    ],
     columns: [
       { key: 'stat_date', label: 'Date', type: 'date' },
       { key: 'platform', label: 'Platform', type: 'text' },
@@ -134,6 +184,21 @@ const ENTITIES: Record<RecordEntity, EntityConfig> = {
       { key: 'spend_minor', label: 'Spend', type: 'money', currencyKey: 'currency_code' },
       { key: 'impressions', label: 'Impressions', type: 'number' },
       { key: 'clicks', label: 'Clicks', type: 'number' },
+    ],
+    detailColumns: [
+      { key: 'stat_date', label: 'Date', type: 'date' },
+      { key: 'platform', label: 'Platform', type: 'text' },
+      { key: 'level', label: 'Level', type: 'text' },
+      { key: 'campaign_name', label: 'Campaign', type: 'text' },
+      { key: 'campaign_id', label: 'Campaign ID', type: 'text' },
+      { key: 'level_id', label: 'Level ID', type: 'text' },
+      { key: 'parent_id', label: 'Parent ID', type: 'text' },
+      { key: 'spend_minor', label: 'Spend', type: 'money', currencyKey: 'currency_code' },
+      { key: 'currency_code', label: 'Currency', type: 'text' },
+      { key: 'impressions', label: 'Impressions', type: 'number' },
+      { key: 'clicks', label: 'Clicks', type: 'number' },
+      { key: 'account_timezone', label: 'Account timezone', type: 'text' },
+      { key: 'occurred_at', label: 'Occurred at', type: 'date' },
     ],
   },
 };
@@ -217,6 +282,7 @@ export async function queryConnectorRecords(
       limit,
       total,
       columns: cfg.columns,
+      detailColumns: cfg.detailColumns,
       // Stringify every value: money → the BIGINT minor-unit string (no float), date → ISO, null preserved.
       rows: rows.map((r) => {
         const out: Record<string, string | null> = {};

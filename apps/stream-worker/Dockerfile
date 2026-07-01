@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 #
-# @brain/stream-worker — Kafka/Redpanda consumer pipeline (headless worker, no HTTP port).
+# @brain/stream-worker — Kafka consumer pipeline (headless worker, no HTTP port).
 # Build context MUST be the repo root:  docker build -f apps/stream-worker/Dockerfile .
 #
 # Runtime note: the @brain/* workspace packages ship TypeScript source

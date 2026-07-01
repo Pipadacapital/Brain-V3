@@ -332,7 +332,7 @@ export function CustomersContent() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b text-left text-muted-foreground">
-                    <th scope="col" className="px-4 py-2.5 font-medium">Brain ID</th>
+                    <th scope="col" className="px-4 py-2.5 font-medium">Customer (BRN)</th>
                     <th scope="col" className="px-4 py-2.5 font-medium">Segment</th>
                     <th scope="col" className="px-4 py-2.5 font-medium text-right">Lifetime value</th>
                     <th scope="col" className="px-4 py-2.5 font-medium text-right">Orders</th>
@@ -350,8 +350,9 @@ export function CustomersContent() {
                         <Link
                           href={`/customers/${encodeURIComponent(c.brain_id)}`}
                           className="font-mono text-xs hover:underline"
+                          title={c.brain_id}
                         >
-                          {c.brain_id}
+                          {c.customer_ref ?? c.brain_id}
                         </Link>
                         {c.merged_into ? (
                           <span className="ml-2 text-[10px] text-warning">→ merged</span>

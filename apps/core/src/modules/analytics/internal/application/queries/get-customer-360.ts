@@ -14,6 +14,8 @@ import { getCustomer360Summary } from '@brain/metric-engine';
 
 export interface Customer360RowDto {
   brain_id: string;
+  /** Public 'BRN-…' reference derived from brain_id — surfaced to the UI instead of the raw UUID. */
+  customer_ref: string | null;
   lifetime_orders: string;
   lifetime_value_minor: string;
   delivered_orders: string;
@@ -47,6 +49,7 @@ export async function getCustomerBaseSummary(
     currency_code: r.currencyCode,
     top_customers: r.topCustomers.map((c) => ({
       brain_id: c.brainId,
+      customer_ref: c.customerRef,
       lifetime_orders: String(c.lifetimeOrders),
       lifetime_value_minor: String(c.lifetimeValueMinor),
       delivered_orders: String(c.deliveredOrders),

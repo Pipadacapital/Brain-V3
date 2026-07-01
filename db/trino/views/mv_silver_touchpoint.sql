@@ -48,6 +48,7 @@ SELECT
   stitched_order_id,
   stitched_brain_id,
   is_synthetic,
+  is_composite,
   session_id_raw,
   updated_at
 FROM iceberg.brain_silver.silver_touchpoint;

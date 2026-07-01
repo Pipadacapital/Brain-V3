@@ -143,6 +143,7 @@ _COLUMNS = """
           stitched_order_id string,
           stitched_brain_id string,
           is_synthetic      boolean,
+          is_composite      boolean,
           session_id_raw    string,
           updated_at        timestamp NOT NULL
 """.strip("\n")
@@ -387,7 +388,21 @@ def _fold_and_merge(spark: SparkSession, fqtn: str, stitch_join: str, stitched_o
                 utm_source, utm_medium, utm_campaign, utm_term, utm_content,
                 fbclid, gclid, ttclid, msclkid, gbraid, wbraid, dclid,
                 referrer, landing_path, page_type, product_handle, collection_handle,
-                search_query, is_synthetic
+                search_query, is_synthetic,
+                -- COMPOSITE DEDUP (additive flag, no row removal / no touch_seq change): a transaction-type
+                -- touchpoint that fires within 60s AFTER an earlier SAME-type touchpoint for the same visitor
+                -- is a near-duplicate (SPA re-render / retry / pixel double-fire) — mark it collapsible.
+                -- Consumers can filter is_composite; existing columns stay byte-identical (parity-neutral).
+                case
+                    when lower(coalesce(event_type, '')) rlike '(^order[._]|order_placed|purchase|checkout.completed|payment.(succeeded|captured))'
+                     and lag(occurred_at) over (
+                           partition by brand_id, brain_anon_id, event_type order by occurred_at asc, event_id asc
+                         ) is not null
+                     and (unix_timestamp(occurred_at) - unix_timestamp(lag(occurred_at) over (
+                           partition by brand_id, brain_anon_id, event_type order by occurred_at asc, event_id asc
+                         ))) <= 60
+                    then true else false
+                end as is_composite
             from sessionized
         )
         select
@@ -401,7 +416,8 @@ def _fold_and_merge(spark: SparkSession, fqtn: str, stitch_join: str, stitched_o
                 when referrer is null or referrer = '' then null
                 else regexp_replace(referrer, '^[a-zA-Z]+://([^/]+).*$', '$1')
             end as referrer_host,
-            landing_path, page_type, product_handle, collection_handle, search_query, is_synthetic
+            landing_path, page_type, product_handle, collection_handle, search_query, is_synthetic,
+            is_composite
         from ordered
     """
     spark.sql(sessionized_sql).createOrReplaceTempView("int_touchpoint_sessionized")
@@ -418,7 +434,7 @@ def _fold_and_merge(spark: SparkSession, fqtn: str, stitch_join: str, stitched_o
             t.search_query,
             {stitched_order} as stitched_order_id,
             {stitched_brain} as stitched_brain_id,
-            t.is_synthetic, t.session_id_raw,
+            t.is_synthetic, t.is_composite, t.session_id_raw,
             current_timestamp() as updated_at
         from int_touchpoint_sessionized t
         {stitch_join}

@@ -64,7 +64,7 @@ from pyspark.sql.window import Window  # noqa: E402
 
 from iceberg_base import CATALOG, SILVER_NAMESPACE, build_spark, create_iceberg_table  # noqa: E402
 from job_log import emit_job_log  # noqa: E402
-from _silver_technical import write_quarantine  # noqa: E402
+from _silver_technical import write_quarantine, write_consent_rejected, event_category_udf  # noqa: E402
 
 BRONZE_NAMESPACE = os.environ.get("BRONZE_NAMESPACE", "brain_bronze")
 # V4 REPOINT: the Kafka-Connect Iceberg sink that wrote `collector_events_raw` was RETIRED (Spark-SS is
@@ -143,8 +143,12 @@ COLUMNS_SQL = """
   schema_name       string  NOT NULL,
   schema_version    int     NOT NULL,
   event_type        string  NOT NULL,
+  event_category    string,
   correlation_id    string,
   partition_key     string  NOT NULL,
+  anonymous_id      string,
+  device_id         string,
+  silver_version    int,
   payload           string  NOT NULL
 """
 
@@ -185,6 +189,10 @@ def _process_window(spark: SparkSession, raw: DataFrame, installs: DataFrame) ->
         get_json_object(col("payload"), "$.properties.install_token").alias("install_token"),
         # R3 signal: the consent_flags object PRESENT in the envelope (non-null string) vs absent (null).
         get_json_object(col("payload"), "$.consent_flags").alias("consent_flags_raw"),
+        # Promote the anonymous / device identifiers to named columns (they otherwise live only inside the
+        # payload JSON). anon-id is the client-side pre-identity key; device_id fingerprints the device.
+        get_json_object(col("payload"), "$.properties.brain_anon_id").alias("anonymous_id"),
+        get_json_object(col("payload"), "$.properties.device_id").alias("device_id"),
         col("payload").cast("string").alias("payload"),
     )
 
@@ -219,18 +227,20 @@ def _process_window(spark: SparkSession, raw: DataFrame, installs: DataFrame) ->
 
     pixel_candidates = base.where(~col("event_type").isin(*SERVER_TRUSTED))
 
-    # ── Stage-1 DQ gate (R3 consent): a pixel event with no consent_flags → quarantine (stage='dq'). ──────
-    write_quarantine(
+    # ── Stage-1 CONSENT gate (R3): a pixel event with no consent_flags is a PRIVACY reject, not a
+    #    data-quality defect — so it lands in the dedicated silver_consent_rejected ledger (Gap B), NOT
+    #    silver_quarantine. brand_id here is the CLAIMED envelope brand: R3 runs BEFORE the R2
+    #    install_token→brand resolution below, so the derived brand isn't known yet. ────────────────────────
+    write_consent_rejected(
         spark,
         pixel_candidates.where(col("consent_flags_raw").isNull()).select(
             col("claimed_brand_id").alias("brand_id"),
-            _qsource.alias("source"),
-            col("event_id").alias("bronze_event_id"),
-            _qtarget.alias("canonical_target"),
+            col("event_id"),
+            col("occurred_at"),
+            col("anonymous_id"),
             lit("consent_missing").alias("reason"),
             col("payload"),
         ),
-        stage="dq",
     )
     consent_ok = pixel_candidates.where(col("consent_flags_raw").isNotNull())  # R3
 
@@ -267,12 +277,18 @@ def _process_window(spark: SparkSession, raw: DataFrame, installs: DataFrame) ->
         .withColumn("brand_id", col("derived_brand_id"))
     )
 
+    _event_category = event_category_udf()
+
     def project(df):
         return df.select(
             col("event_id"), col("brand_id"), col("occurred_at"), col("ingested_at"),
             lit("brain.collector.event.v1").alias("schema_name"), lit(1).alias("schema_version"),
-            col("event_type"), col("correlation_id"),
+            col("event_type"),
+            _event_category(col("event_type")).alias("event_category"),   # Gap A: coarse category
+            col("correlation_id"),
             concat(col("brand_id"), lit(":"), col("event_id")).alias("partition_key"),
+            col("anonymous_id"), col("device_id"),                        # Gap D: promoted identifiers
+            lit(1).alias("silver_version"),                               # Gap C: seed; bumped on MERGE-update
             col("payload"),
         )
 
@@ -290,7 +306,21 @@ def _process_window(spark: SparkSession, raw: DataFrame, installs: DataFrame) ->
         MERGE INTO {TARGET} t
         USING _gated_collector s
         ON t.brand_id = s.brand_id AND t.event_id = s.event_id
-        WHEN MATCHED AND s.ingested_at >= t.ingested_at THEN UPDATE SET *
+        -- Gap C idempotency: only overwrite when the row genuinely CHANGED (payload differs). The
+        -- incremental loop re-scans a SILVER_INCREMENTAL_OVERLAP_HOURS window (and FULL_REFRESH re-reads
+        -- everything), so an identical re-processed row must be a MERGE no-op — otherwise silver_version
+        -- would count reprocessing passes, not real revisions. payload is the verbatim envelope and every
+        -- projected column derives from it, so `payload distinct` is the complete change predicate.
+        WHEN MATCHED AND s.ingested_at >= t.ingested_at AND s.payload <> t.payload THEN UPDATE SET
+          occurred_at = s.occurred_at, ingested_at = s.ingested_at,
+          schema_name = s.schema_name, schema_version = s.schema_version,
+          event_type = s.event_type, event_category = s.event_category,
+          correlation_id = s.correlation_id, partition_key = s.partition_key,
+          anonymous_id = s.anonymous_id, device_id = s.device_id,
+          payload = s.payload,
+          -- monotonic revision counter — bump on every REAL overwrite (coalesce so ALTER-ADDed pre-existing
+          -- rows and shadow writers that omit the column start from 1, never NULL+1=NULL).
+          silver_version = coalesce(t.silver_version, 1) + 1
         WHEN NOT MATCHED THEN INSERT *
         """
     )

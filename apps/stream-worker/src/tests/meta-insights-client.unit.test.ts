@@ -17,6 +17,8 @@ import {
   META_AUTH_ERROR,
   META_RATE_LIMITED,
   META_ASYNC_TIMEOUT,
+  META_TOO_MUCH_DATA,
+  META_ACCESS_FORBIDDEN,
   type MetaApiCredentials,
 } from '../jobs/meta-spend-repull/meta-insights-client.js';
 
@@ -315,6 +317,87 @@ describe('MetaInsightsClient A2 insights request fields', () => {
   });
 });
 
+// ── 4c. Adaptive window-halving on code 2637 (fetchInsightsForWindow) ─────────
+//
+// Locks down the meta-backfill fix: Meta code 2637 ("reduce the amount of data") on a too-large
+// window must NOT fail the run. fetchInsightsForWindow uses the SYNC GET path (client default — the
+// same proven path the live spend-repull lane uses; the async ad_report_run result-read 2637s on some
+// accounts even for a 1-day report) and, if a window still 2637s, halves it and retries each half
+// recursively down to a single-day floor.
+
+/** Inclusive day span between two YYYY-MM-DD dates. */
+function daySpanInclusive(since: string, until: string): number {
+  return Math.round((Date.parse(`${until}T00:00:00Z`) - Date.parse(`${since}T00:00:00Z`)) / 86_400_000) + 1;
+}
+
+/**
+ * A window-aware SYNC-GET fetch stub. Parses [since, until] from the insights GET's `time_range` query
+ * param: a window spanning MORE than `maxDays` returns Meta code 2637; anything ≤ maxDays returns one
+ * row tagged with the window (single page, no nextUrl). Records every GET URL for assertions.
+ */
+function windowAwareFetch(maxDays: number, seenUrls?: string[]): FetchStub {
+  return async (input: unknown) => {
+    const url = typeof input === 'string' ? input : (input as Request).url;
+    const m = /time_range=([^&]+)/.exec(url);
+    if (url.includes('/insights') && m) {
+      seenUrls?.push(url);
+      const { since, until } = JSON.parse(decodeURIComponent(m[1]!)) as { since: string; until: string };
+      if (daySpanInclusive(since, until) > maxDays) {
+        return makeResponse(400, { error: { code: 2637, message: 'Please reduce the amount of data you are asking for' } });
+      }
+      return makeResponse(200, {
+        data: [{ campaign_id: `c_${since}_${until}`, spend: '1.00', date_start: since }],
+        paging: {},
+      });
+    }
+    return makeResponse(200, {});
+  };
+}
+
+describe('MetaInsightsClient.fetchInsightsForWindow — adaptive halving on code 2637', () => {
+  it('halves a too-large window and returns rows from every in-limit sub-window', async () => {
+    const seenUrls: string[] = [];
+    // Account tolerates ≤15-day windows; a 30-day pull trips 2637 and must be split. asyncMode:false =
+    // the SYNC GET path the backfill now follows.
+    const client = makeClient(windowAwareFetch(15, seenUrls), { asyncMode: false, maxRetries: 2 });
+
+    const rows = await client.fetchInsightsForWindow('campaign', '2026-06-01', '2026-06-30');
+
+    // 30d → 2637 → split into [06-01..06-15] + [06-16..06-30], each 15d and in-limit → one row each.
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r) => r.campaign_id).sort()).toEqual(
+      ['c_2026-06-01_2026-06-15', 'c_2026-06-16_2026-06-30'],
+    );
+    // The first (30d) GET 2637s; the two 15d GETs succeed → 3 insights GETs total.
+    expect(seenUrls).toHaveLength(3);
+  });
+
+  it('re-throws META_TOO_MUCH_DATA at the single-day floor (no infinite recursion)', async () => {
+    // Every window — even one day — 2637s. The walk must split down to a day, then re-throw (not loop).
+    const client = makeClient(windowAwareFetch(0), { asyncMode: false, maxRetries: 2 });
+
+    await expect(
+      client.fetchInsightsForWindow('ad', '2026-06-01', '2026-06-02'),
+    ).rejects.toThrow(META_TOO_MUCH_DATA);
+  });
+
+  it('does not split on a non-2637 error — a hard 400 propagates unchanged', async () => {
+    // A different non-throttle 400 (code 100) must NOT trigger window-splitting; it fails fast.
+    const fetchStub: FetchStub = async (input: unknown) => {
+      const url = typeof input === 'string' ? input : (input as Request).url;
+      if (url.includes('/insights')) {
+        return makeResponse(400, { error: { code: 100, message: 'bad field' } });
+      }
+      return makeResponse(200, {});
+    };
+    const client = makeClient(fetchStub, { asyncMode: false, maxRetries: 2 });
+
+    const p = client.fetchInsightsForWindow('campaign', '2026-06-01', '2026-06-30');
+    await expect(p).rejects.toThrow('code=100');
+    await expect(p).rejects.not.toThrow(META_TOO_MUCH_DATA);
+  });
+});
+
 // ── 5. Throttle code 80000 triggers backoff ───────────────────────────────────
 
 describe('MetaInsightsClient throttle code 80000 backoff', () => {
@@ -409,5 +492,15 @@ describe('MetaInsightsClient throttle code 80000 backoff', () => {
 
     const client = makeClient(fetchStub);
     await expect(client.fetchAccountMeta()).rejects.toThrow(META_AUTH_ERROR);
+  });
+
+  it('throws META_ACCESS_FORBIDDEN (not auth, not generic) on 403 — the accessible-history boundary', async () => {
+    const fetchStub: FetchStub = async () =>
+      makeResponse(403, { error: { code: 200, message: 'Permissions error' } });
+
+    const client = makeClient(fetchStub);
+    const p = client.fetchAccountMeta();
+    await expect(p).rejects.toThrow(META_ACCESS_FORBIDDEN);
+    await expect(p).rejects.not.toThrow(META_AUTH_ERROR);
   });
 });

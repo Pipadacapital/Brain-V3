@@ -555,8 +555,11 @@ services:
     ports: ["3004:3000"]
     volumes:
       - ./infra/observe/grafana/provisioning:/etc/grafana/provisioning:ro
+    # Healthcheck runs INSIDE the container, where Grafana listens on its internal 3000 —
+    # NOT the host-published 3004 (that mapping only exists on the host). Curling 3004 here
+    # always failed (curl exit 7), which kept the container "unhealthy" and aborted dev-up.
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3004/api/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
       interval: 10s
       timeout: 5s
       retries: 20

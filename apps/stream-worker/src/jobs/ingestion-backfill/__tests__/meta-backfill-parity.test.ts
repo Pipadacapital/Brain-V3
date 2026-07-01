@@ -16,7 +16,7 @@
 import { describe, it, expect } from 'vitest';
 import { mapMetaInsightToEvent, uuidV5FromSpendRow } from '@brain/ad-spend-mapper';
 import { MetaInsightsFetcher } from '../meta-resource-fetchers.js';
-import type { MetaApiCredentials } from '../../meta-spend-repull/meta-insights-client.js';
+import { META_ACCESS_FORBIDDEN, type MetaApiCredentials } from '../../meta-spend-repull/meta-insights-client.js';
 
 const BRAND_ID = '11111111-1111-4111-8111-111111111111';
 const ACCOUNT_CURRENCY = 'INR';
@@ -35,20 +35,17 @@ const RAW_ROW: Record<string, unknown> = {
 };
 
 /**
- * Stub the MetaInsightsClient: return account meta once, ONE first page carrying RAW_ROW for the
- * 'campaign' level and EMPTY pages for the other levels, never a nextUrl (single-page window). No
- * network. We override the fetcher's private client field after construction.
+ * Stub the MetaInsightsClient: return account meta once, and the whole-window fetch yields RAW_ROW for
+ * the 'campaign' level and EMPTY for the other levels. No network. We override the fetcher's private
+ * client field after construction.
  */
 function stubClientOnto(fetcher: MetaInsightsFetcher): void {
   const fakeClient = {
     async fetchAccountMeta() {
       return { currencyCode: ACCOUNT_CURRENCY, timezoneName: ACCOUNT_TZ };
     },
-    async fetchInsightsFirstPage(level: 'campaign' | 'adset' | 'ad') {
-      return { rows: level === 'campaign' ? [RAW_ROW] : [], nextUrl: null };
-    },
-    async fetchInsightsByUrl() {
-      return { rows: [], nextUrl: null };
+    async fetchInsightsForWindow(level: 'campaign' | 'adset' | 'ad') {
+      return level === 'campaign' ? [RAW_ROW] : [];
     },
   };
   // The fetcher holds the client on a private field; replace it for the test (no network).
@@ -83,5 +80,31 @@ describe('meta backfill → live event_id parity (revenue-truth dedup)', () => {
     expect(record.providerId).toBe(expectedLiveId);
     // And it no longer relies on the framework composite tuple for identity.
     expect(record.compositeValues).toBeUndefined();
+  });
+
+  it('a Meta 403 (accessible-history boundary) completes GRACEFULLY — null cursor, no throw', async () => {
+    const creds: MetaApiCredentials = { accessToken: 'unused', adAccountId: 'act_1' };
+    const fetcher = new MetaInsightsFetcher(creds, BRAND_ID);
+    // Client resolves account meta, then 403s on the (older) insights window — the boundary signal.
+    const forbiddenClient = {
+      async fetchAccountMeta() {
+        return { currencyCode: ACCOUNT_CURRENCY, timezoneName: ACCOUNT_TZ };
+      },
+      async fetchInsightsForWindow() {
+        throw new Error(`${META_ACCESS_FORBIDDEN}: 403 Forbidden from Meta Insights`);
+      },
+    };
+    (fetcher as unknown as { client: typeof forbiddenClient }).client = forbiddenClient;
+
+    const page = await fetcher.fetchPage({
+      resource: { name: 'insights' } as never,
+      cursor: '2025-09-04',
+      floorAt: new Date('2024-06-30T00:00:00Z'),
+    });
+
+    // GRACEFUL boundary: no throw, no records this window, and a null cursor so the resumable driver
+    // marks the resource COMPLETED at the achieved depth (not RESOURCE_BACKFILL_FAILED).
+    expect(page.nextCursor).toBeNull();
+    expect(page.records).toHaveLength(0);
   });
 });

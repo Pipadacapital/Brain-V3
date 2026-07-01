@@ -98,6 +98,7 @@ _lifecycle_stage_udf = F.udf(lifecycle_stage, StringType())
 _COLUMNS = """
           brand_id             string    NOT NULL,
           brain_id             string    NOT NULL,
+          customer_ref         string,
           lifetime_orders      bigint,
           lifetime_value_minor bigint,
           aov_minor            bigint,
@@ -117,6 +118,7 @@ _COLUMNS = """
           health_band          string,
           churn_score          int,
           lifecycle_stage      string,
+          journey_summary      string,
           customer_watermark   timestamp,
           updated_at           timestamp
 """.strip("\n")
@@ -249,7 +251,81 @@ def _build_category_enrich(spark: SparkSession):
     return _mode_per_customer(joined, "brain_id", "title", "top_category")
 
 
+def _build_journey_summary(spark: SparkSession, limit: int = 200):
+    """journey_summary = the last `limit` touchpoints of each resolved customer as a JSON array string,
+    denormalized onto Customer360 for fast UI retrieval (no join needed to render a customer's timeline).
+
+    Built from silver_touchpoint (resolved via stitched_brain_id): rank touchpoints most-recent-first, keep
+    the top `limit`, and emit `[{seq, ts, event_type, channel, page_type, product_handle, order_id,
+    is_first_touch}, …]` ordered by seq (1 = most recent). NO money here — touchpoints carry no revenue by
+    design (revenue lives on the order spine / gold_revenue_ledger); order_id is a REFERENCE only. Optional:
+    absent silver_touchpoint → None → journey_summary NULL (honest-empty)."""
+    tp = _read_silver(spark, "silver_touchpoint", optional=True)
+    if tp is None:
+        print("[gold_customer_360] silver_touchpoint absent → journey_summary NULL", flush=True)
+        return None
+    resolved = tp.where(F.col("stitched_brain_id").isNotNull())
+    w = Window.partitionBy("brand_id", "stitched_brain_id").orderBy(
+        F.col("occurred_at").desc_nulls_last(), F.col("touch_seq").desc_nulls_last()
+    )
+    ranked = resolved.withColumn("_seq", F.row_number().over(w)).where(F.col("_seq") <= F.lit(limit))
+    # Struct with `seq` FIRST so sort_array orders the JSON deterministically (seq asc → most-recent first).
+    entry = F.struct(
+        F.col("_seq").alias("seq"),
+        F.date_format(F.col("occurred_at"), "yyyy-MM-dd'T'HH:mm:ss'Z'").alias("ts"),
+        F.col("event_type").alias("event_type"),
+        F.col("channel").alias("channel"),
+        F.col("page_type").alias("page_type"),
+        F.col("product_handle").alias("product_handle"),
+        F.col("stitched_order_id").alias("order_id"),
+        F.col("is_first_touch").alias("is_first_touch"),
+    )
+    return (
+        ranked.withColumn("_e", entry)
+        .groupBy("brand_id", F.col("stitched_brain_id").alias("brain_id"))
+        .agg(F.to_json(F.sort_array(F.collect_list("_e"))).alias("journey_summary"))
+    )
+
+
+def _reconcile_merged_away(spark: SparkSession, fqtn: str) -> None:
+    """MERGE RE-VERSIONING (aggregate grain): when Neo4j merges two brain_ids, the dead brain_id's
+    Customer360 row would LINGER (MERGE only upserts, never deletes) even though its value has re-folded onto
+    the survivor via the identity link. Read silver_identity_map for brain_ids that are FULLY superseded (no
+    is_current=true interval anywhere) and DELETE their Customer360 rows, so a merged customer collapses onto
+    the survivor. History is preserved in identity_map (the merge intervals); only the derived aggregate is
+    reconciled. Optional: absent/empty identity_map → no-op (nothing to reconcile)."""
+    im = _read_silver(spark, "silver_identity_map", optional=True)
+    if im is None:
+        return
+    dead = (
+        im.groupBy("brand_id", "brain_id")
+        .agg(F.max(F.col("is_current").cast("int")).alias("_any_current"))
+        .where(F.col("_any_current") == 0)
+        .select("brand_id", "brain_id")
+    )
+    if dead.head(1) == []:
+        return
+    dead.createOrReplaceTempView("_c360_merged_away")
+    spark.sql(
+        f"""
+        MERGE INTO {fqtn} t
+        USING _c360_merged_away d
+        ON t.brand_id = d.brand_id AND t.brain_id = d.brain_id
+        WHEN MATCHED THEN DELETE
+        """
+    )
+    print("[gold_customer_360] merge re-versioning: deleted superseded brain_id rows (folded onto survivors)", flush=True)
+
+
 def materialize(spark: SparkSession) -> str:
+    # Ship the pure brain_ref module to workers so the customer_ref UDF resolves (belt-and-suspenders for
+    # cluster mode; local[*] resolves via the mounted source tree). See _identity_ref.py.
+    _ref_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "_identity_ref.py")
+    if os.path.exists(_ref_path):
+        spark.sparkContext.addPyFile(_ref_path)
+    from _identity_ref import brain_ref_udf  # noqa: E402 — after addPyFile
+    _customer_ref_udf = brain_ref_udf()
+
     fqtn = create_iceberg_table(
         spark,
         GOLD_NAMESPACE,
@@ -288,6 +364,7 @@ def materialize(spark: SparkSession) -> str:
     preferred_channel, acquisition, last_activity, bridge = _build_touchpoint_enrich(spark)
     preferred_device = _build_device_enrich(spark, bridge)
     top_category = _build_category_enrich(spark)
+    journey_summary = _build_journey_summary(spark)             # last-200 touchpoints JSON (denormalized)
     health = _read_gold(spark, "gold_customer_health")          # health_band fold
     scores = _read_gold(spark, "gold_customer_scores")          # churn_risk fold
     if health is None:
@@ -330,6 +407,7 @@ def materialize(spark: SparkSession) -> str:
     enriched = _left(preferred_channel, enriched)
     enriched = _left(preferred_device, enriched)
     enriched = _left(top_category, enriched)
+    enriched = _left(journey_summary, enriched)
     enriched = _left(acquisition, enriched)
     enriched = _left(last_activity, enriched)
     # health_band fold (optional) — select only the band, aliased to avoid colliding with the spine.
@@ -356,6 +434,8 @@ def materialize(spark: SparkSession) -> str:
     result = enriched.select(
         F.col("brand_id"),
         F.col("brain_id"),
+        # customer_ref = the public BRN- surrogate derived deterministically from brain_id (1:1, no lookup).
+        _customer_ref_udf(F.col("brain_id")).alias("customer_ref"),
         F.col("lifetime_orders"),
         F.col("lifetime_value_minor"),
         # aov_minor = EXACT integer minor-unit division (Spark `div`), nullsafe when orders<=0. Per the
@@ -381,6 +461,7 @@ def materialize(spark: SparkSession) -> str:
         health_band_col.alias("health_band"),
         _churn_score_udf(churn_risk_col).alias("churn_score"),
         _lifecycle_stage_udf(health_band_col, F.col("lifetime_orders")).alias("lifecycle_stage"),
+        _col_or_null("journey_summary", "string").alias("journey_summary"),
         F.col("customer_watermark"),
         F.current_timestamp().alias("updated_at"),
     )
@@ -396,6 +477,7 @@ def materialize(spark: SparkSession) -> str:
         USING c360_src s
         ON t.brand_id = s.brand_id AND t.brain_id = s.brain_id
         WHEN MATCHED THEN UPDATE SET
+          t.customer_ref         = s.customer_ref,
           t.lifetime_orders      = s.lifetime_orders,
           t.lifetime_value_minor = s.lifetime_value_minor,
           t.aov_minor            = s.aov_minor,
@@ -415,25 +497,28 @@ def materialize(spark: SparkSession) -> str:
           t.health_band          = s.health_band,
           t.churn_score          = s.churn_score,
           t.lifecycle_stage      = s.lifecycle_stage,
+          t.journey_summary      = s.journey_summary,
           t.customer_watermark   = s.customer_watermark,
           t.updated_at           = s.updated_at
         WHEN NOT MATCHED THEN INSERT (
-          brand_id, brain_id, lifetime_orders, lifetime_value_minor, aov_minor, currency_code,
+          brand_id, brain_id, customer_ref, lifetime_orders, lifetime_value_minor, aov_minor, currency_code,
           first_seen_at, first_identified_at, last_seen_at, last_activity_at,
           delivered_orders, rto_orders, cancelled_orders, refunded_orders,
           preferred_channel, preferred_device, top_category, acquisition_source,
-          health_band, churn_score, lifecycle_stage,
+          health_band, churn_score, lifecycle_stage, journey_summary,
           customer_watermark, updated_at
         ) VALUES (
-          s.brand_id, s.brain_id, s.lifetime_orders, s.lifetime_value_minor, s.aov_minor, s.currency_code,
+          s.brand_id, s.brain_id, s.customer_ref, s.lifetime_orders, s.lifetime_value_minor, s.aov_minor, s.currency_code,
           s.first_seen_at, s.first_identified_at, s.last_seen_at, s.last_activity_at,
           s.delivered_orders, s.rto_orders, s.cancelled_orders, s.refunded_orders,
           s.preferred_channel, s.preferred_device, s.top_category, s.acquisition_source,
-          s.health_band, s.churn_score, s.lifecycle_stage,
+          s.health_band, s.churn_score, s.lifecycle_stage, s.journey_summary,
           s.customer_watermark, s.updated_at
         )
         """
     )
+    # MERGE RE-VERSIONING: collapse any brain_id that Neo4j has fully merged away onto its survivor.
+    _reconcile_merged_away(spark, fqtn)
     total = spark.table(fqtn).count()
     print(f"[gold_customer_360] MERGEd {n} customer-360 rows → {fqtn} (table now {total} rows)", flush=True)
     _commit_wm()

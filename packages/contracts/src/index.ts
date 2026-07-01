@@ -634,6 +634,8 @@ export {
   NotImplementedYet,
   DisabledMatcher,
   IDENTITY_MATCHER_REGISTRY,
+  REF_PREFIX,
+  brainRef,
 } from './identity/index.js';
 export type {
   IdentifierType,

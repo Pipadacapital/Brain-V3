@@ -83,6 +83,9 @@ export type {
   MatcherDescriptor,
 } from './matcher.js';
 
+// ── Public customer reference (BRN-…) derived deterministically from brain_id ──
+export { REF_PREFIX, brainRef } from './brain-ref.js';
+
 // ── IdentityGraphRepository port (Neo4j SoR) ──────────────────────────────────
 export type {
   IdentityGraphReadState,

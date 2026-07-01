@@ -21,6 +21,7 @@ import {
 const VALID_360 = {
   brand_id: '22222222-2222-4222-8222-222222222222',
   brain_id: 'brn_abc123',
+  customer_ref: 'BRN-KWP1MKKV6D69N3H1PKBZ188000',
   lifetime_value_minor: '123450',
   aov_minor: '41150',
   currency_code: 'INR',
@@ -37,6 +38,7 @@ const VALID_360 = {
   preferred_device: 'mobile',
   top_category: 'Sneakers',
   lifecycle_stage: 'active',
+  journey_summary: '[{"seq":1,"ts":"2026-06-20T10:00:00Z","event_type":"page.viewed","channel":"paid_meta"}]',
 };
 
 describe('GOLD_DATA_PRODUCT_REGISTRY', () => {

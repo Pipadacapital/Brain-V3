@@ -36,9 +36,11 @@ case "${ENTITY}" in
   journey)        JOBS=("silver_journey.py") ;;
   identity_alias) JOBS=("silver_identity_alias.py")
                   PACKAGES="${PACKAGES},org.neo4j:neo4j-connector-apache-spark_${SCALA}:5.3.1_for_spark_3" ;;
-  all)            JOBS=("silver_settlement.py" "silver_payment.py" "silver_campaign.py" "silver_journey.py" "silver_identity_alias.py")
+  identity_map)   JOBS=("silver_identity_map.py")
                   PACKAGES="${PACKAGES},org.neo4j:neo4j-connector-apache-spark_${SCALA}:5.3.1_for_spark_3" ;;
-  *) echo "[silver-entities] unknown entity '${ENTITY}'. Use: settlement|payment|campaign|journey|identity_alias|all" >&2; exit 2 ;;
+  all)            JOBS=("silver_settlement.py" "silver_payment.py" "silver_campaign.py" "silver_journey.py" "silver_identity_alias.py" "silver_identity_map.py")
+                  PACKAGES="${PACKAGES},org.neo4j:neo4j-connector-apache-spark_${SCALA}:5.3.1_for_spark_3" ;;
+  *) echo "[silver-entities] unknown entity '${ENTITY}'. Use: settlement|payment|campaign|journey|identity_alias|identity_map|all" >&2; exit 2 ;;
 esac
 
 echo "[silver-entities] entity=${ENTITY} image=${SPARK_IMAGE} netns=container:${REDPANDA_CONTAINER}"

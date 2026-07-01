@@ -23,6 +23,7 @@ CREATE OR REPLACE VIEW iceberg.brain_serving.mv_gold_customer_360 AS
 SELECT
   brand_id,
   brain_id,
+  customer_ref,
   lifetime_orders,
   lifetime_value_minor,
   aov_minor,
@@ -42,6 +43,7 @@ SELECT
   health_band,
   churn_score,
   lifecycle_stage,
+  journey_summary,
   customer_watermark,
   updated_at
 FROM iceberg.brain_gold.gold_customer_360;

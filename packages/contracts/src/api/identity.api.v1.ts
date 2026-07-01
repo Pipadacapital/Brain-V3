@@ -101,6 +101,12 @@ export type VaultCoverage = z.infer<typeof VaultCoverageSchema>;
  */
 export const CustomerListItemSchema = z.object({
   brain_id: z.string(),
+  /**
+   * Public 'BRN-…' reference derived deterministically from brain_id (contracts brainRef, 1:1 with the
+   * UUID, golden-vector-locked to the Spark _identity_ref.py that writes gold_customer_360.customer_ref).
+   * The UI shows THIS instead of the raw UUID. Nullable only defensively (a missing brain_id).
+   */
+  customer_ref: z.string().nullable(),
   anonymous_id: z.string().nullable(),
   lifecycle_state: z.string(),
   merged_into: z.string().nullable(),

@@ -13,6 +13,8 @@ import { withSilverBrand, BRAND_PREDICATE } from './silver-deps.js';
 
 export interface Customer360Row {
   brainId: string;
+  /** Public 'BRN-…' reference derived from brainId (deterministic, 1:1). What the UI shows instead of the UUID. */
+  customerRef: string | null;
   lifetimeOrders: bigint;
   lifetimeValueMinor: bigint;
   /** B2: average order value in bigint MINOR units (same currencyCode), exact integer division. Null = 0 orders. */
@@ -81,6 +83,7 @@ export async function getCustomer360Summary(
 
     const topRows = await scope.runScoped<{
       brain_id: string;
+      customer_ref: string | null;
       lifetime_orders: string | number;
       lifetime_value_minor: string | number;
       aov_minor: string | number | null;
@@ -96,7 +99,7 @@ export async function getCustomer360Summary(
       lifecycle_stage: string | null;
       last_activity_at: string | null;
     }>(
-      `SELECT brain_id, lifetime_orders, lifetime_value_minor, aov_minor, delivered_orders, rto_orders,
+      `SELECT brain_id, customer_ref, lifetime_orders, lifetime_value_minor, aov_minor, delivered_orders, rto_orders,
               first_identified_at, preferred_channel, preferred_device, top_category, acquisition_source,
               health_band, churn_score, lifecycle_stage, last_activity_at
          FROM brain_serving.mv_gold_customer_360
@@ -114,6 +117,7 @@ export async function getCustomer360Summary(
       currencyCode: s?.currency_code ?? null,
       topCustomers: topRows.map((r) => ({
         brainId: r.brain_id,
+        customerRef: r.customer_ref ?? null,
         lifetimeOrders: BigInt(String(r.lifetime_orders)),
         lifetimeValueMinor: BigInt(String(r.lifetime_value_minor)),
         // aov_minor: bigint minor units (drop any decimal tail — it is an exact integer in the mart).

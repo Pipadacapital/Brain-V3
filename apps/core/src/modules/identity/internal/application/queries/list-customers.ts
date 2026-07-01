@@ -12,6 +12,7 @@
  * in-process and never persisted or logged, and never reaches Postgres.
  */
 
+import { brainRef } from '@brain/contracts';
 import { hashIdentifier, resolveSaltHex } from '@brain/identity-core';
 import type { IdentityReader } from '../../infrastructure/neo4j-identity-reader.js';
 
@@ -20,6 +21,12 @@ const DEFAULT_LIMIT = 25;
 
 export interface CustomerListItem {
   brain_id: string;
+  /**
+   * Public 'BRN-…' reference derived deterministically from brain_id (packages/contracts brainRef, 1:1,
+   * golden-vector-locked to the Spark _identity_ref.py that writes gold_customer_360.customer_ref). The UI
+   * shows THIS instead of the raw UUID. Computed here — no lookup, always consistent with the mart value.
+   */
+  customer_ref: string | null;
   anonymous_id: string | null;
   lifecycle_state: string;
   merged_into: string | null;
@@ -208,6 +215,7 @@ export async function listCustomers(
       const e = enrich.get(r.brain_id);
       return {
         brain_id: r.brain_id,
+        customer_ref: brainRef(r.brain_id),
         anonymous_id: r.anonymous_id,
         lifecycle_state: r.lifecycle_state,
         merged_into: r.merged_into,

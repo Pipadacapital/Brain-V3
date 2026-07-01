@@ -285,7 +285,7 @@ export const GOLD_DATA_PRODUCT_REGISTRY: GoldDataProducts = GoldDataProductsSche
     money_columns: ['lifetime_value_minor'],
     tenant_column: 'brand_id',
     currency_column: 'currency_code',
-    reads_from: ['silver_customer', 'silver_order_state'],
+    reads_from: ['silver_customer', 'silver_order_state', 'silver_touchpoint', 'silver_identity_map'],
     // V4 serving is a Trino view (db/trino/views/mv_gold_customer_360.sql) — the app reads the product
     // THROUGH this two-part name, never the Iceberg table directly.
     serving_mv: 'brain_serving.mv_gold_customer_360',
@@ -351,6 +351,13 @@ export const Customer360ContractSchema = z.object({
   brand_id: z.string().min(1),
   /** The resolved Phase-1 identity key (Neo4j SoR, ADR-0004). Phase-2 takes this as given. */
   brain_id: z.string().min(1),
+  /**
+   * Public customer reference — the human-readable 'BRN-' + Crockford-base32(brain_id) surrogate the UI
+   * and APIs surface INSTEAD of the raw brain_id UUID. Deterministic + 1:1 with brain_id (see
+   * packages/contracts/src/identity/brain-ref.ts, byte-identical to the Spark _identity_ref.py that writes
+   * it). Nullable only for a cold row minted before the ref backfilled.
+   */
+  customer_ref: z.string().min(1).nullable(),
   /** Lifetime realized value in bigint MINOR units (string) — denominated by currency_code, never blended. */
   lifetime_value_minor: MinorUnitsSchema,
   /** Average order value in bigint MINOR units (string) — same currency_code as lifetime_value_minor. */
@@ -382,5 +389,13 @@ export const Customer360ContractSchema = z.object({
   top_category: z.string().min(1).nullable(),
   /** Customer lifecycle stage — closed set, folded from health_band + order count. Null ⇔ no health row. */
   lifecycle_stage: LifecycleStageSchema.nullable(),
+  /**
+   * Denormalized journey timeline — the customer's last 200 touchpoints as a JSON array string
+   * `[{seq, ts, event_type, channel, page_type, product_handle, order_id, is_first_touch}, …]` (seq=1 most
+   * recent), folded onto gold_customer_360 from silver_touchpoint for fast UI retrieval (no join to render
+   * a timeline). NO money — touchpoints carry no revenue by design; order_id is a REFERENCE only. Null ⇔
+   * no journey yet for this customer.
+   */
+  journey_summary: z.string().nullable(),
 });
 export type Customer360Contract = z.infer<typeof Customer360ContractSchema>;

@@ -163,31 +163,37 @@ services:
       "
     restart: "no"
 
-  litellm:
-    image: ghcr.io/berriai/litellm:main-latest
-    profiles: ["ai"]   # opt-in model gateway (blueprint §4.1) — `--profile ai`; keeps the base stack lean
-    ports: ["4000:4000"]
-    # Mount the gateway config (per-tenant virtual_key budgets + model aliases + routing policy).
-    # Dev-authorable: edit infra/litellm.config.yaml and restart this container — no image rebuild.
-    # Production: the same file is rendered from Helm values and mounted via a ConfigMap volume.
-    volumes:
-      - ./infra/litellm.config.yaml:/app/config.yaml:ro
-    command: ["--config", "/app/config.yaml", "--port", "4000"]
-    environment:
-      # Provider API keys — set in .env.local-prod / .env.production (never committed).
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      # Gateway master key — gates the admin UI + virtual-key provisioning API.
-      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-brain-dev-master}
-      # OTel trace export (ai-observability-tracing; Tempo at :4317 in the observe profile).
-      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://tempo:4317}
-    healthcheck:
-      # The litellm image ships no `curl`, and /health requires the master key (401). Use the
-      # bundled python against the unauthenticated lightweight liveliness probe instead.
-      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:4000/health/liveliness').status==200 else 1)"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
+  # ────────────────────────────────────────────────────────────────────────────────────────────────
+  # litellm — DISABLED (commented out) 2026-07-02: the AI/NLQ features (Ask-Brain, MCP) that use this
+  # model gateway are not active yet, so we don't run the container. The app-side seam
+  # (@brain/ai-gateway-client → LITELLM_BASE_URL) is UNCHANGED — re-enable by uncommenting this whole
+  # block (it stays in the opt-in `ai` profile, started via `--profile ai`) when the AI features go live.
+  # ────────────────────────────────────────────────────────────────────────────────────────────────
+  # litellm:
+  #   image: ghcr.io/berriai/litellm:main-latest
+  #   profiles: ["ai"]   # opt-in model gateway (blueprint §4.1) — `--profile ai`; keeps the base stack lean
+  #   ports: ["4000:4000"]
+  #   # Mount the gateway config (per-tenant virtual_key budgets + model aliases + routing policy).
+  #   # Dev-authorable: edit infra/litellm.config.yaml and restart this container — no image rebuild.
+  #   # Production: the same file is rendered from Helm values and mounted via a ConfigMap volume.
+  #   volumes:
+  #     - ./infra/litellm.config.yaml:/app/config.yaml:ro
+  #   command: ["--config", "/app/config.yaml", "--port", "4000"]
+  #   environment:
+  #     # Provider API keys — set in .env.local-prod / .env.production (never committed).
+  #     ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  #     OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  #     # Gateway master key — gates the admin UI + virtual-key provisioning API.
+  #     LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-brain-dev-master}
+  #     # OTel trace export (ai-observability-tracing; Tempo at :4317 in the observe profile).
+  #     OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://tempo:4317}
+  #   healthcheck:
+  #     # The litellm image ships no `curl`, and /health requires the master key (401). Use the
+  #     # bundled python against the unauthenticated lightweight liveliness probe instead.
+  #     test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:4000/health/liveliness').status==200 else 1)"]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 5
 
   localstack:
     image: localstack/localstack:3.4
@@ -494,19 +500,25 @@ services:
   #   • prometheus + grafana → CORE   (base metrics dashboards always available)
   #   • tempo + loki + otel-collector → FULL-OBS (trace/log pipeline, layered on core)
   # ────────────────────────────────────────────────────────────────────────────
-  prometheus:
-    image: prom/prometheus:v2.52.0
-    profiles: ["core"]
-    mem_limit: 256m         # blueprint §4.2
-    oom_score_adj: 300      # observability — disposable, killed before stateful services
-    ports: ["9090:9090"]
-    volumes:
-      - ./infra/observe/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-    healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9090/-/ready"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
+  # ────────────────────────────────────────────────────────────────────────────────────────────────
+  # prometheus — DISABLED (commented out) 2026-07-02: its only consumer (grafana) is disabled, so the
+  # metrics scraper has no dashboard/alert consumer right now. Nothing active depends_on it (the kafka
+  # JMX exporter + otel-collector are SCRAPED BY it, not the reverse), so they run fine without it.
+  # Re-enable alongside grafana by uncommenting this block.
+  # ────────────────────────────────────────────────────────────────────────────────────────────────
+  # prometheus:
+  #   image: prom/prometheus:v2.52.0
+  #   profiles: ["core"]
+  #   mem_limit: 256m         # blueprint §4.2
+  #   oom_score_adj: 300      # observability — disposable, killed before stateful services
+  #   ports: ["9090:9090"]
+  #   volumes:
+  #     - ./infra/observe/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+  #   healthcheck:
+  #     test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9090/-/ready"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 10
 
   loki:
     image: grafana/loki:3.0.0
@@ -534,35 +546,40 @@ services:
       timeout: 5s
       retries: 20
 
-  grafana:
-    image: grafana/grafana:10.4.2
-    profiles: ["core"]
-    mem_limit: 256m         # blueprint §4.2
-    oom_score_adj: 500      # observability UI — most disposable, killed first under VM pressure
-    # Grafana is core but its Loki/Tempo datasources live in full-obs. depends_on is reduced to
-    # prometheus (same core profile) ONLY — a hard depends_on loki/tempo would make a core-only
-    # `up` fail (cross-profile dependency). Grafana boots fine without them; the provisioned
-    # Loki/Tempo datasources simply show "down" until `--profile full-obs` is also active.
-    depends_on:
-      prometheus:
-        condition: service_healthy
-    environment:
-      GF_SECURITY_ADMIN_USER: admin
-      GF_SECURITY_ADMIN_PASSWORD: brain
-      GF_USERS_ALLOW_SIGN_UP: "false"
-    # Host 3004 → Grafana's internal 3000. Host 3000 is reserved for the Brain web app (next dev);
-    # mapping Grafana to host 3000 shadowed the product (localhost:3000 opened Grafana). Grafana → :3004.
-    ports: ["3004:3000"]
-    volumes:
-      - ./infra/observe/grafana/provisioning:/etc/grafana/provisioning:ro
-    # Healthcheck runs INSIDE the container, where Grafana listens on its internal 3000 —
-    # NOT the host-published 3004 (that mapping only exists on the host). Curling 3004 here
-    # always failed (curl exit 7), which kept the container "unhealthy" and aborted dev-up.
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 20
+  # ────────────────────────────────────────────────────────────────────────────────────────────────
+  # grafana — DISABLED (commented out) 2026-07-02: the metrics dashboards aren't in active use, so we
+  # don't run the UI. Nothing depends_on grafana, and prometheus (its data source) still runs standalone
+  # and keeps scraping — so re-enabling is just uncommenting this block (dashboards come back at :3004).
+  # ────────────────────────────────────────────────────────────────────────────────────────────────
+  # grafana:
+  #   image: grafana/grafana:10.4.2
+  #   profiles: ["core"]
+  #   mem_limit: 256m         # blueprint §4.2
+  #   oom_score_adj: 500      # observability UI — most disposable, killed first under VM pressure
+  #   # Grafana is core but its Loki/Tempo datasources live in full-obs. depends_on is reduced to
+  #   # prometheus (same core profile) ONLY — a hard depends_on loki/tempo would make a core-only
+  #   # `up` fail (cross-profile dependency). Grafana boots fine without them; the provisioned
+  #   # Loki/Tempo datasources simply show "down" until `--profile full-obs` is also active.
+  #   depends_on:
+  #     prometheus:
+  #       condition: service_healthy
+  #   environment:
+  #     GF_SECURITY_ADMIN_USER: admin
+  #     GF_SECURITY_ADMIN_PASSWORD: brain
+  #     GF_USERS_ALLOW_SIGN_UP: "false"
+  #   # Host 3004 → Grafana's internal 3000. Host 3000 is reserved for the Brain web app (next dev);
+  #   # mapping Grafana to host 3000 shadowed the product (localhost:3000 opened Grafana). Grafana → :3004.
+  #   ports: ["3004:3000"]
+  #   volumes:
+  #     - ./infra/observe/grafana/provisioning:/etc/grafana/provisioning:ro
+  #   # Healthcheck runs INSIDE the container, where Grafana listens on its internal 3000 —
+  #   # NOT the host-published 3004 (that mapping only exists on the host). Curling 3004 here
+  #   # always failed (curl exit 7), which kept the container "unhealthy" and aborted dev-up.
+  #   healthcheck:
+  #     test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 20
 
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.102.0

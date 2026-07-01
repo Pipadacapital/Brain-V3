@@ -14,14 +14,16 @@
 # script joins the `brainv3-kafka-1` container's netns and bootstraps localhost:9092 (its advertised PLAINTEXT).
 #
 # ────────────────────────────────────────────────────────────────────────────────────────────────────
-# ⚠️  MEMORY IS UNVERIFIED — the 2g combined target has NOT been live-validated.  ⚠️
-# docs/ops/local-memory-budget.md sizes the two SEPARATE sinks at ~7g + ~6g mem_limit (4g driver heap
-# each), tuned for cold-start backlog drain. The STARTING-POINT flags below — driver 1g + executor 1g +
-# offHeap 256m (≈ a ~2g combined target) — are an ASPIRATION, not a proven number. Fusing two JVMs into
-# one does NOT halve the heap each lane needs; the collector lane alone OOMed at the default 1g during
-# the 9,916-order Shopify backlog drain. LIVE-RUN THIS and tune the heap UP via SPARK_DRIVER_MEMORY /
-# SPARK_EXECUTOR_MEMORY (and raise SPARK_OFFHEAP_SIZE) if it OOMs (`Java heap space`) or lags. Do not
-# assume 2g works.
+# MEMORY — driver 4g default (raised from the earlier UNVERIFIED 1g, which OOMed).
+# In `local[*]` the driver JVM IS the executor, so `--driver-memory` is the ONLY heap that matters
+# (`--executor-memory` is ignored). The 1g starting point died with `java.lang.OutOfMemoryError: Java
+# heap space` mid-drain of a large backlog (a shuffle-write OOM after ~73k tasks): 1g cannot hold the
+# per-batch shuffle + the growing Iceberg MERGE target scan + accumulated streaming metadata across a
+# long catch-up. docs/ops/local-memory-budget.md sized each SEPARATE lane at a 4g driver heap; the
+# batches are already bounded (maxOffsetsPerTrigger 2000/5000) + AQE-coalesced, and the two lanes' peaks
+# are staggered, so ONE 4g heap comfortably covers the fused sink. Defensively we also cap retained
+# streaming batch metadata (spark.sql.streaming.minBatchesToRetain=10) so a long drain doesn't creep up.
+# Tune further via SPARK_DRIVER_MEMORY / SPARK_OFFHEAP_SIZE if a very large backlog still lags/OOMs.
 # ────────────────────────────────────────────────────────────────────────────────────────────────────
 #
 # Usage:  tools/dev/dev-bronze-streaming.sh
@@ -52,7 +54,7 @@ PACKAGES="${PACKAGES},org.apache.spark:spark-sql-kafka-0-10_${SCALA}:${SPARK_KAF
 PACKAGES="${PACKAGES},org.postgresql:postgresql:${PG_JDBC_VERSION}"
 
 echo "[combined-bronze] image=${SPARK_IMAGE} netns=container:${KAFKA_CONTAINER} packages=${PACKAGES}"
-echo "[combined-bronze] heap STARTING POINT (UNVERIFIED): driver=${SPARK_DRIVER_MEMORY:-1g} executor=${SPARK_EXECUTOR_MEMORY:-1g} offHeap=${SPARK_OFFHEAP_SIZE:-256m} — tune UP if it OOMs/lags"
+echo "[combined-bronze] heap: driver=${SPARK_DRIVER_MEMORY:-4g} (local[*] → the only heap that matters) offHeap=${SPARK_OFFHEAP_SIZE:-512m} — tune UP via SPARK_DRIVER_MEMORY if a very large backlog lags/OOMs"
 
 # An ivy cache volume so re-runs don't re-download the jars (shared with the per-lane run scripts).
 docker volume create brain-spark-ivy >/dev/null
@@ -79,14 +81,15 @@ exec docker run --rm \
   -e BRONZE_PG_USER="${BRONZE_PG_USER:-brain}" \
   -e BRONZE_PG_PASSWORD="${BRONZE_PG_PASSWORD:-brain}" \
   -e TRIGGER_MODE="${TRIGGER_MODE:-continuous}" \
-  -e SPARK_OFFHEAP_SIZE="${SPARK_OFFHEAP_SIZE:-256m}" \
+  -e SPARK_OFFHEAP_SIZE="${SPARK_OFFHEAP_SIZE:-512m}" \
   -e COLLECTOR_CHECKPOINT_LOCATION="${COLLECTOR_CHECKPOINT_LOCATION:-file:///tmp/bronze-spike-checkpoint}" \
   -e RAW_CHECKPOINT_LOCATION="${RAW_CHECKPOINT_LOCATION:-file:///tmp/bronze-raw-landing-checkpoint}" \
   "${SPARK_IMAGE}" \
   /opt/spark/bin/spark-submit \
     --master "${SPARK_MASTER:-local[*]}" \
-    --driver-memory "${SPARK_DRIVER_MEMORY:-1g}" \
-    --executor-memory "${SPARK_EXECUTOR_MEMORY:-1g}" \
+    --driver-memory "${SPARK_DRIVER_MEMORY:-4g}" \
+    --executor-memory "${SPARK_EXECUTOR_MEMORY:-4g}" \
     --packages "${PACKAGES}" \
     --conf spark.jars.ivy=/root/.ivy2 \
+    --conf "spark.sql.streaming.minBatchesToRetain=${SPARK_MIN_BATCHES_TO_RETAIN:-10}" \
     /opt/spike/combined_bronze_sinks.py

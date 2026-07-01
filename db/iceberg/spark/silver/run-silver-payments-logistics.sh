@@ -5,7 +5,7 @@
 # NO dbt model (Phase 1b is non-breaking dual-run).
 #
 #   1. silver_dispute.py    (settlement.live.v1 entity_type='dispute' + standalone dispute.* → chargebacks)
-#   2. silver_cod_rto.py    (cod order.live.v1 ⨝ gokwik.rto_predict.v1 ⨝ gokwik.awb_status.v1 → COD/RTO)
+#   2. silver_cod_rto.py    (cod order.{live,backfill}.v1 ⨝ gokwik.rto_predict.v1 ⨝ shiprocket.shipment_status.v1 → COD/RTO)
 #   3. silver_ad_account.py (spend.live.v1 → ad-account dimension, lifetime rollup per account)
 #
 # Mirrors run-silver-marketing-spend.sh: one-shot Spark containers in Redpanda's network namespace so

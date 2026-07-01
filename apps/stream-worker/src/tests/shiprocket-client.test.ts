@@ -54,6 +54,36 @@ describe('ShiprocketShipmentClient — live HTTP mode', () => {
     expect(shipmentsCall.url).toContain('per_page=' + SHIPROCKET_SHIPMENT_PAGE_SIZE);
   });
 
+  it('prefers channel_order_id (Shopify id) over Shiprocket order_id/id when BOTH are present', async () => {
+    // Regression lock: real Shiprocket payloads carry BOTH the SR-internal ref (order_id/id, "SLW…") AND
+    // the channel/Shopify id (channel_order_id). The ledger spine joins on the channel id; picking the
+    // SR-internal ref stranded every shipment outcome off the order spine (COD/RTO actuals never populated).
+    process.env['SHIPROCKET_LIVE'] = '1';
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.includes('/v1/external/auth/login')) {
+        return { ok: true, status: 200, json: async () => ({ token: 'jwt-abc' }) } as unknown as Response;
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          data: [
+            // BOTH present: SR-internal order_id="SLW67226" + channel_order_id="7730585075943" (Shopify).
+            { awb_code: 'SR9', order_id: 'SLW67226', id: 999, channel_order_id: '7730585075943', current_status: 'Delivered', updated_at: '2026-06-12T10:00:00' },
+          ],
+        }),
+      } as unknown as Response;
+    }));
+
+    const client = new ShiprocketShipmentClient(CREDS);
+    const page = await client.fetchShipmentPage(FROM, TO, 0);
+
+    expect(page.items).toHaveLength(1);
+    // channel_order_id (Shopify) must win — NOT the SR-internal "SLW…" ref.
+    expect(page.items[0]!.order_id).toBe('7730585075943');
+    expect(page.items[0]!.order_id).not.toBe('SLW67226');
+  });
+
   it('throws SHIPROCKET_AUTH_ERROR on a 401 shipments response', async () => {
     process.env['SHIPROCKET_LIVE'] = '1';
     vi.stubGlobal('fetch', vi.fn(async (url: string) => {

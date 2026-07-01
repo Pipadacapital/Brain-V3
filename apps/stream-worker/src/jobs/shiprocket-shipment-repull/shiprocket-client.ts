@@ -153,7 +153,11 @@ export class ShiprocketShipmentClient {
       // ⚠️ Defensive field map — confirm exact names against a real Shiprocket payload.
       return {
         awb: pick(o, ['awb', 'awb_code']),
-        order_id: pick(o, ['order_id', 'channel_order_id', 'id']),
+        // channel_order_id FIRST — the merchant/channel (e.g. Shopify) order id is the ledger spine key that
+        // joins to the order/revenue marts; Shiprocket's OWN order_id/id ("SLW…") is an internal ref that
+        // joins to NOTHING. Preferring order_id stranded every shipment outcome (0 join to the order spine →
+        // COD/RTO actual outcomes never populated). Matches the doc contract (line 27) + the track path (~L227).
+        order_id: pick(o, ['channel_order_id', 'order_id', 'id']),
         status: pick(o, ['current_status', 'status', 'shipment_status']),
         status_changed_at: pick(o, ['status_changed_at', 'updated_at', 'last_update_at']),
         payment_method: pick(o, ['payment_method', 'payment_type']),

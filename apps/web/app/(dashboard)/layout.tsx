@@ -30,6 +30,7 @@ import {
   Search,
   Footprints,
   SlidersHorizontal,
+  Database,
   Repeat,
   HeartCrack,
   Fingerprint,
@@ -89,6 +90,7 @@ const NAV_ITEMS: NavItem[] = [
   { href: '/retention/churn', label: 'Churn risk', icon: HeartCrack, centerKey: 'identity' },
   { href: '/identity', label: 'Identity', icon: Fingerprint, centerKey: 'identity' },
   { href: '/operations', label: 'Operations', icon: Activity },
+  { href: '/data', label: 'Data', icon: Database },
   { href: '/settings', label: 'Settings', icon: Settings },
 ];
 

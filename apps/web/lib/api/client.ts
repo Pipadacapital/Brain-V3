@@ -162,6 +162,8 @@ import type {
   AnalyticsProductCategoriesResponse,
   AnalyticsJourneyFirstTouchMixResponse,
   AnalyticsShipmentOutcomesResponse,
+  AnalyticsRecordsResponse,
+  RecordEntity,
   AnalyticsReturnFunnelResponse,
   AnalyticsBehaviorOverviewResponse,
   AnalyticsFunnelResponse,
@@ -1873,6 +1875,27 @@ export const analyticsApi = {
       `/v1/analytics/forms${qsStr ? `?${qsStr}` : ''}`,
     );
     return parseData(FormConversionSchema, env);
+  },
+
+  /**
+   * GET /api/v1/analytics/records/:entity — one page (20, newest-first) of canonical connector
+   * records (orders | shipments | ad_spend), with date-range + free-text search. Returns column
+   * metadata + stringified rows + total (for pagination).
+   */
+  getRecords: async (
+    entity: RecordEntity,
+    params?: { from?: string; to?: string; search?: string; page?: number },
+  ): Promise<AnalyticsRecordsResponse> => {
+    const qs = new URLSearchParams();
+    if (params?.from) qs.set('from', params.from);
+    if (params?.to) qs.set('to', params.to);
+    if (params?.search) qs.set('search', params.search);
+    if (params?.page && params.page > 1) qs.set('page', String(params.page));
+    const qsStr = qs.toString();
+    const { data } = await bffFetch<BffEnvelope<AnalyticsRecordsResponse>>(
+      `/v1/analytics/records/${entity}${qsStr ? `?${qsStr}` : ''}`,
+    );
+    return data;
   },
 
   /** GET /api/v1/analytics/journey/stitch-rate — deterministic cart-stitch hit-rate. */

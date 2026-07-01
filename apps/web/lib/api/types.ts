@@ -1448,3 +1448,20 @@ export interface BriefingDto {
 export type AnalyticsInsightsBriefingResponse =
   | { state: 'no_data' }
   | { state: 'has_data'; briefing: BriefingDto; insights: InsightDto[] };
+
+// ── Connector records browser (canonical business records: orders / shipments / ad-spend) ──
+export type RecordEntity = 'orders' | 'shipments' | 'ad_spend';
+export interface AnalyticsRecordColumn {
+  key: string;
+  label: string;
+  type: 'text' | 'date' | 'money' | 'number';
+  currencyKey?: string;
+}
+export interface AnalyticsRecordsResponse {
+  entity: RecordEntity;
+  page: number;
+  limit: number;
+  total: number;
+  columns: AnalyticsRecordColumn[];
+  rows: Array<Record<string, string | null>>;
+}

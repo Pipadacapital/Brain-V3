@@ -42,9 +42,81 @@ import type {
   JourneyStitchRate as ContractJourneyStitchRate,
 } from '@brain/contracts';
 import type { BffDeps } from './_shared.js';
+// Records browser — the generic paginated canonical-records reader lives IN the metric engine
+// (queryConnectorRecords), so the route is a thin brand-scoped pass-through (no core use-case needed).
+import { queryConnectorRecords, CONNECTOR_RECORD_ENTITIES } from '@brain/metric-engine';
 
 export function registerAnalyticsJourneyRoutes(fastify: FastifyInstance, deps: BffDeps): void {
   const { bffProtectedPreHandler, srPool, rawPool } = deps;
+
+  // ── Records browser — paginated canonical connector records (orders/shipments/ad-spend) ──────
+  // GET /api/v1/analytics/records/:entity?from&to&search&page — newest-first, 20/page. Thin brand-
+  // scoped pass-through to the metric-engine reader (queryConnectorRecords → withSilverBrand,
+  // BRAND_PREDICATE). entity is enum-validated against the allowlist; from/to are YYYY-MM-DD; page is
+  // a positive int; search is free text (parameterized LIKE downstream). Brand from session (D-1).
+  fastify.get(
+    '/api/v1/analytics/records/:entity',
+    {
+      preHandler: [bffProtectedPreHandler],
+      schema: {
+        params: {
+          type: 'object',
+          properties: { entity: { type: 'string', enum: CONNECTOR_RECORD_ENTITIES } },
+          required: ['entity'],
+        },
+        querystring: {
+          type: 'object',
+          properties: {
+            from:   { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
+            to:     { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
+            search: { type: 'string', maxLength: 100 },
+            page:   { type: 'string', pattern: '^\\d{1,6}$' },
+          },
+          additionalProperties: false,
+        },
+      },
+      attachValidation: true,
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const validationError = (request as FastifyRequest & { validationError?: Error }).validationError;
+      if (validationError) {
+        return reply.code(400).send({
+          request_id: requestId,
+          error: { code: 'INVALID_PARAMS', message: 'entity must be orders|shipments|ad_spend; from/to YYYY-MM-DD; page a number.' },
+        });
+      }
+
+      const auth = (request as AuthenticatedRequest).auth;
+      const { entity } = request.params as { entity: string };
+      if (!auth.brandId) {
+        return reply.send({
+          request_id: requestId,
+          data: { entity, page: 1, limit: 20, total: 0, columns: [], rows: [] },
+        });
+      }
+      if (!srPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Serving tier (Trino) not available' } });
+      }
+
+      const query = request.query as { from?: string; to?: string; search?: string; page?: string };
+      const today = new Date().toISOString().split('T')[0] as string;
+      const toStr = query.to ?? today;
+      // Default window: last 90 days (wider than the 30d analytics default — a records browser is a
+      // lookup surface, not a trend chart; the user narrows with the date filter).
+      const defaultFrom = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString().split('T')[0] as string;
+      const fromStr = query.from ?? defaultFrom;
+      const page = query.page ? Number(query.page) : 1;
+
+      const result = await queryConnectorRecords(
+        auth.brandId,
+        { srPool },
+        { entity, fromStr, toStr, search: query.search, page },
+      );
+
+      return reply.send({ request_id: requestId, data: result });
+    },
+  );
 
   // ── Journey endpoints (Phase 4 — feat-journey-touchpoint) ─────────────────
   // Silver reads over silver.touchpoint through the metric-engine seam (withSilverBrand,

@@ -203,6 +203,34 @@ function mapCustomer(rec: neo4j.Record): CustomerRow {
   };
 }
 
+/**
+ * Collapse rows sharing an UPSERT conflict key to ONE. A single `INSERT ... ON CONFLICT DO UPDATE`
+ * cannot touch the same target row twice ("ON CONFLICT DO UPDATE command cannot affect row a second
+ * time"). Neo4j LEGITIMATELY returns two rows for one key: an Identifier with multiple IDENTIFIES edges,
+ * or several nodes whose ALIAS_OF chains resolve to the SAME canonical brain_id after a merge (exactly
+ * what a fresh anon→customer merge produces). Keep the winner per key so the batch upsert is well-formed.
+ */
+export function dedupeByKey<T>(rows: T[], keyOf: (r: T) => string, better: (a: T, b: T) => T): T[] {
+  const m = new Map<string, T>();
+  for (const r of rows) {
+    const k = keyOf(r);
+    const prev = m.get(k);
+    m.set(k, prev === undefined ? r : better(prev, r));
+  }
+  return [...m.values()];
+}
+
+const NUL = ' ';
+/** Prefer the ACTIVE edge over a tombstone for the same key, then the newest created_at. */
+export function betterEdge(a: EdgeRow, b: EdgeRow): EdgeRow {
+  if (a.is_active !== b.is_active) return a.is_active ? a : b;
+  return (b.created_at ?? 0) > (a.created_at ?? 0) ? b : a;
+}
+/** Prefer the newest customer projection for the same brain_id (created_at/minted_at). */
+function betterCustomer(a: CustomerRow, b: CustomerRow): CustomerRow {
+  return (b.minted_at ?? 0) > (a.minted_at ?? 0) ? b : a;
+}
+
 export async function runIdentityExport(): Promise<IdentityExportResult> {
   const driver = neo4j.driver(NEO4J_URI, neo4j.auth.basic(NEO4J_USER, NEO4J_PASSWORD));
   const db = new pg.Pool({ connectionString: PG_URL, max: 4 });
@@ -247,6 +275,10 @@ export async function runIdentityExport(): Promise<IdentityExportResult> {
       await edgeSession.close();
     }
 
+    // Collapse duplicate conflict keys BEFORE the batch upsert — a fresh anon→customer merge makes the
+    // ALIAS_OF resolution emit the same (brand_id, type, hash) twice, which PG's ON CONFLICT rejects.
+    edges = dedupeByKey(edges, (e) => `${e.brand_id}${NUL}${e.identifier_type}${NUL}${e.identifier_value}`, betterEdge);
+
     await upsertEdges(db, edges);
 
     // Advance the watermark to the MAX created_at we just exported (never regress).
@@ -285,6 +317,9 @@ export async function runIdentityExport(): Promise<IdentityExportResult> {
     } finally {
       await cSession.close();
     }
+
+    // Same conflict-key collapse for the customer projection (PK = (brand_id, brain_id)).
+    customers = dedupeByKey(customers, (c) => `${c.brand_id}${NUL}${c.brain_id}`, betterCustomer);
 
     await upsertCustomers(db, customers);
 

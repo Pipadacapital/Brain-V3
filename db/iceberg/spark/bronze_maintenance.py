@@ -28,10 +28,15 @@ from datetime import datetime, timedelta, timezone
 
 from pyspark.sql import SparkSession
 
-from bronze_materialize import CATALOG, NAMESPACE, build_spark
+# UNIFIED-BRONZE: the split sinks are replaced by bronze_landing.py → ONE table brain_bronze.events.
+# Maintain that unified table (compaction + snapshot-expiry over the single Bronze table). Import the
+# shared factory from bronze_landing (bronze_materialize is retired). Env BRONZE_TABLE overrides for a
+# one-off against a legacy table during the bake. Rollback: BRONZE_TABLE=collector_events.
+from bronze_landing import CATALOG, NAMESPACE, build_spark
 
-TABLE = f"{CATALOG}.{NAMESPACE}.collector_events"
-QUALIFIED = f"{NAMESPACE}.collector_events"  # what the system procedures expect (within the catalog)
+_TABLE_NAME = os.environ.get("BRONZE_TABLE", "events")
+TABLE = f"{CATALOG}.{NAMESPACE}.{_TABLE_NAME}"
+QUALIFIED = f"{NAMESPACE}.{_TABLE_NAME}"  # what the system procedures expect (within the catalog)
 MODE = os.environ.get("MODE", "maintain")
 # 24-month retention (ms) — matches db/iceberg/bronze_table.sql history.expire.max-snapshot-age-ms.
 RETAIN_MS = int(os.environ.get("RETENTION_MS", str(63_072_000_000)))

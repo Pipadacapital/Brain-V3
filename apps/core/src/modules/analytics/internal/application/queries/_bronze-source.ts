@@ -19,11 +19,24 @@ export interface BronzeReadDeps extends EngineDeps {
 }
 
 /**
- * The fully-qualified Iceberg Bronze table over Trino (Brain V4 — StarRocks removed). Trino's
- * default catalog is 'iceberg', so the explicit `iceberg.brain_bronze.collector_events` resolves the
- * Iceberg Bronze namespace directly (mirrors stream-worker dq/silver-reader.ts ICEBERG_BRONZE).
+ * The fully-qualified Iceberg Bronze table over Trino (Brain V4 — StarRocks removed). Trino's default
+ * catalog is 'iceberg'.
+ *
+ * UNIFIED-BRONZE cutover (bronze_landing.py): the split Bronze tables are unified into one
+ * `brain_bronze.events` (a `connector` discriminator + verbatim payload). ONE env flips this reader:
+ *   BRONZE_SOURCE=legacy (default) → iceberg.brain_bronze.collector_events (current behavior).
+ *   BRONZE_SOURCE=events           → iceberg.brain_bronze.events, filtered to the collector lane.
+ * Default legacy so nothing changes until the sink is switched to bronze_landing. Rollback = legacy.
  */
-export const ICEBERG_BRONZE = 'iceberg.brain_bronze.collector_events';
+const BRONZE_SOURCE = (process.env['BRONZE_SOURCE'] ?? 'legacy').toLowerCase();
+export const ICEBERG_BRONZE =
+  BRONZE_SOURCE === 'events' ? 'iceberg.brain_bronze.events' : 'iceberg.brain_bronze.collector_events';
+/**
+ * Predicate that keeps ONLY the collector lane when reading the unified events table (which co-locates
+ * the raw connector lanes); a no-op (`TRUE`) against the legacy single-lane collector_events. Append to
+ * a Bronze WHERE as `AND ${BRONZE_COLLECTOR_PREDICATE}`.
+ */
+export const BRONZE_COLLECTOR_PREDICATE = BRONZE_SOURCE === 'events' ? "connector = 'collector'" : 'TRUE';
 
 /**
  * True when the Trino serving pool is wired (the only Bronze source now). Guards srPool presence so

@@ -72,6 +72,17 @@ BRONZE_NAMESPACE = os.environ.get("BRONZE_NAMESPACE", "brain_bronze")
 # whose `payload` column already IS the full envelope JSON. Reading the retired `_raw` table froze the
 # entire Silver tier at the Kafka-Connect cut-over date (new orders/pixels/spend never reached Silver).
 RAW_TABLE = f"{CATALOG}.{BRONZE_NAMESPACE}.{os.environ.get('COLLECTOR_BRONZE_TABLE', 'collector_events')}"
+# UNIFIED-BRONZE CUTOVER (bronze_landing.py): the two split sinks are being unified into ONE raw table
+# brain_bronze.events. This job IS the R2/R3 gate — under the "pure-raw Bronze" decision the gate lives
+# HERE (not in landing), so it reads the UNGATED collector rows and admits exactly the set it always did.
+# ONE env flips every Bronze reader (see _raw_normalize.bronze_source_table):
+#   BRONZE_SOURCE=legacy (default) → read the legacy single-lane collector_events (current behavior).
+#   BRONZE_SOURCE=events           → read brain_bronze.events WHERE connector='collector'.
+# Default is legacy so the running pipeline is unaffected until the sink itself is switched to
+# bronze_landing (dev/prod wiring). Rollback = set BRONZE_SOURCE=legacy.
+BRONZE_SOURCE = os.environ.get("BRONZE_SOURCE", "legacy").lower()
+EVENTS_TABLE = f"{CATALOG}.{BRONZE_NAMESPACE}.events"
+COLLECTOR_CONNECTOR = "collector"
 TARGET = f"{CATALOG}.{SILVER_NAMESPACE}.silver_collector_event"
 
 # Lane policy — MUST stay in lockstep with bronze_materialize.py (the same constants, same meaning).
@@ -310,7 +321,14 @@ def build(spark: SparkSession):
     }.items():
         spark.conf.set(_k, _v)
 
-    raw_all = spark.table(RAW_TABLE)
+    # UNIFIED-BRONZE: read the unified brain_bronze.events (collector lane ONLY — the raw connector lanes
+    # carry provider-API payloads with no envelope, which the gate/parse below can't map) under
+    # BRONZE_SOURCE=events, else the legacy single-lane collector_events. The gate + envelope-parse
+    # downstream is byte-identical either way.
+    if BRONZE_SOURCE == "events":
+        raw_all = spark.table(EVENTS_TABLE).where(col("connector") == lit(COLLECTOR_CONNECTOR))
+    else:
+        raw_all = spark.table(RAW_TABLE)
 
     # ── INCREMENTAL WATERMARK ───────────────────────────────────────────────────────────────────────
     # Process only Bronze rows newer than what Silver already has (minus a small overlap; the MERGE

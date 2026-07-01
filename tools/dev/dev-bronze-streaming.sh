@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# dev-bronze-streaming.sh — run BOTH local Bronze streaming sinks in ONE Spark driver.
+# dev-bronze-streaming.sh — run the UNIFIED Bronze streaming sink (db/iceberg/spark/bronze_landing.py).
 #
-# Fuses the two previously-separate compose sinks (spark-bronze-sink = the gated collector/pixel lane,
-# and spark-bronze-raw-sink = the 9-lane connector raw landing) into a SINGLE spark-submit of
-# db/iceberg/spark/combined_bronze_sinks.py. That module builds ONE SparkSession, constructs BOTH
-# streaming queries by REUSING the proven modules' build_writer functions, and runs them together via
-# spark.streams.awaitAnyTermination() — separate checkpoints, idempotent MERGE, offset-after-commit.
+# ONE Spark driver, ONE streaming query, ONE table: bronze_landing subscribes to ALL Bronze topics (the
+# collector + backfill lanes AND the 9 connector *.raw.v1 lanes) and appends every record RAW into
+# brain_bronze.events (a `connector` discriminator + verbatim payload), with per-lane dedup + one
+# checkpoint. It replaces the old two-sink combined_bronze_sinks.py (collector_events + 9 *_raw tables).
+# PURE RAW — no R2/R3 pixel gate here (that moved to Silver/silver_collector_event), so no Postgres.
 #
-# Prereqs: the compose `core` profile must be up (iceberg-rest + minio + the Kafka KRaft broker + Postgres
-# — the collector lane's R2 install_token→brand JDBC lookup reads pixel.pixel_installation).
+# Prereqs: the compose `core` profile must be up (iceberg-rest + minio + the Kafka KRaft broker). No
+# Postgres needed by the sink anymore (the gate + its install_token JDBC lookup live in Silver now).
 #
 # K1: the broker is Apache Kafka in KRaft mode; the compose service was renamed redpanda→kafka, so this
 # script joins the `brainv3-kafka-1` container's netns and bootstraps localhost:9092 (its advertised PLAINTEXT).
@@ -46,12 +46,12 @@ KAFKA_CONTAINER="${KAFKA_CONTAINER:-${REDPANDA_CONTAINER:-brainv3-kafka-1}}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SPARK_SRC_DIR="$(cd "${SCRIPT_DIR}/../../db/iceberg/spark" && pwd)"
 
-# Union of BOTH sinks' jar dependencies: Iceberg runtime + AWS bundle (S3FileIO→MinIO), Spark-Kafka
-# (both lanes read Kafka), and the Postgres JDBC driver (collector lane's R2 install_token→brand lookup).
+# Jar dependencies: Iceberg runtime + AWS bundle (S3FileIO→MinIO) + Spark-Kafka. NO Postgres JDBC — the
+# unified bronze_landing is PURE RAW (no R2 install_token→brand gate; that moved to Silver), so it never
+# touches PG. (PG_JDBC_VERSION is kept above only for backward-compat env parity.)
 PACKAGES="org.apache.iceberg:iceberg-spark-runtime-3.5_${SCALA}:${ICEBERG_VERSION}"
 PACKAGES="${PACKAGES},org.apache.iceberg:iceberg-aws-bundle:${ICEBERG_VERSION}"
 PACKAGES="${PACKAGES},org.apache.spark:spark-sql-kafka-0-10_${SCALA}:${SPARK_KAFKA}"
-PACKAGES="${PACKAGES},org.postgresql:postgresql:${PG_JDBC_VERSION}"
 
 echo "[combined-bronze] image=${SPARK_IMAGE} netns=container:${KAFKA_CONTAINER} packages=${PACKAGES}"
 echo "[combined-bronze] heap: driver=${SPARK_DRIVER_MEMORY:-4g} (local[*] → the only heap that matters) offHeap=${SPARK_OFFHEAP_SIZE:-512m} — tune UP via SPARK_DRIVER_MEMORY if a very large backlog lags/OOMs"
@@ -65,7 +65,7 @@ docker volume create brain-spark-ivy >/dev/null
 # FROZEN until someone noticed and restarted by hand — Kafka kept filling while nothing landed. Wrap the
 # run in a bounded auto-restart loop: on exit, recreate from the DURABLE checkpoint (the idempotent MERGE
 # on (brand_id,event_id) makes replay a no-op → zero data loss, no double-write). Kept FOREGROUND (not
-# `docker run -d --restart`) so `pgrep -f combined_bronze_sinks.py` and the /tmp/bronze-sink.log capture
+# `docker run -d --restart`) so `pgrep -f bronze_landing.py` and the /tmp/bronze-sink.log capture
 # both keep working for dev-up's liveness poll. Ctrl-C stops the loop AND the container.
 trap 'echo "[combined-bronze] stopping…"; docker rm -f "${SINK_CONTAINER_NAME:-brain-bronze-sink}" >/dev/null 2>&1 || true; exit 0' INT TERM
 while :; do
@@ -88,13 +88,9 @@ while :; do
   -e AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:-brain}" \
   -e AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY:-brainbrain}" \
   -e AWS_REGION="${AWS_REGION:-us-east-1}" \
-  -e BRONZE_PG_JDBC_URL="${BRONZE_PG_JDBC_URL:-jdbc:postgresql://postgres:5432/brain}" \
-  -e BRONZE_PG_USER="${BRONZE_PG_USER:-brain}" \
-  -e BRONZE_PG_PASSWORD="${BRONZE_PG_PASSWORD:-brain}" \
   -e TRIGGER_MODE="${TRIGGER_MODE:-continuous}" \
   -e SPARK_OFFHEAP_SIZE="${SPARK_OFFHEAP_SIZE:-512m}" \
-  -e COLLECTOR_CHECKPOINT_LOCATION="${COLLECTOR_CHECKPOINT_LOCATION:-file:///tmp/bronze-spike-checkpoint}" \
-  -e RAW_CHECKPOINT_LOCATION="${RAW_CHECKPOINT_LOCATION:-file:///tmp/bronze-raw-landing-checkpoint}" \
+  -e CHECKPOINT_LOCATION="${CHECKPOINT_LOCATION:-file:///tmp/bronze-landing-checkpoint}" \
   "${SPARK_IMAGE}" \
   /opt/spark/bin/spark-submit \
     --master "${SPARK_MASTER:-local[*]}" \
@@ -103,7 +99,7 @@ while :; do
     --packages "${PACKAGES}" \
     --conf spark.jars.ivy=/root/.ivy2 \
     --conf "spark.sql.streaming.minBatchesToRetain=${SPARK_MIN_BATCHES_TO_RETAIN:-10}" \
-    /opt/spike/combined_bronze_sinks.py && code=0 || code=$?
+    /opt/spike/bronze_landing.py && code=0 || code=$?
   echo "[combined-bronze] sink exited (code ${code}) — auto-restarting from checkpoint in ${SINK_RESTART_DELAY:-5}s…"
   sleep "${SINK_RESTART_DELAY:-5}"
 done

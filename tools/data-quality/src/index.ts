@@ -16,6 +16,10 @@
 
 import { z } from 'zod';
 
+// UNIFIED-BRONZE cutover: table name flips with BRONZE_SOURCE (scaffold config; no live queries yet).
+const BRONZE_SOURCE = (process.env['BRONZE_SOURCE'] ?? 'legacy').toLowerCase();
+const BRONZE_TABLE = BRONZE_SOURCE === 'events' ? 'brain_bronze.events' : BRONZE_TABLE;
+
 // ---------------------------------------------------------------------------
 // DQ Category declarations (Zod schema — single source of truth)
 // These declarations drive both the dbt test stubs AND the CI DQ gate.
@@ -80,7 +84,7 @@ export const DQ_CHECKS: DQCheck[] = [
   // Freshness: Bronze collector_events must have events < 2h old during business hours
   {
     category: 'freshness',
-    tableName: 'brain_bronze.collector_events',
+    tableName: BRONZE_TABLE,
     columnName: 'occurred_at',
     maxAgeHours: 2,
     severity: 'error',  // freshness breach = metric marked "estimated"
@@ -89,7 +93,7 @@ export const DQ_CHECKS: DQCheck[] = [
   // Completeness: brand_id must never be null on any Bronze event
   {
     category: 'completeness',
-    tableName: 'brain_bronze.collector_events',
+    tableName: BRONZE_TABLE,
     columnName: 'brand_id',
     maxNullRatePct: 0,  // zero tolerance
     severity: 'error',
@@ -98,7 +102,7 @@ export const DQ_CHECKS: DQCheck[] = [
   // Completeness: event_id must never be null (idempotency key)
   {
     category: 'completeness',
-    tableName: 'brain_bronze.collector_events',
+    tableName: BRONZE_TABLE,
     columnName: 'event_id',
     maxNullRatePct: 0,
     severity: 'error',
@@ -115,7 +119,7 @@ export const DQ_CHECKS: DQCheck[] = [
   // Reconciliation: Bronze row count vs Redpanda committed offset (≤ 100 event lag)
   {
     category: 'reconciliation',
-    bronzeTableName: 'brain_bronze.collector_events',
+    bronzeTableName: BRONZE_TABLE,
     redpandaTopic: 'dev.collector.event.v1',
     maxRowCountDelta: 100,
     severity: 'warn',  // reconciliation lag → warn (not error — expected under high load)

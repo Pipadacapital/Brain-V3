@@ -78,6 +78,10 @@ GOLD_DIR="$SPARK_ROOT/gold"
 TRINO_VIEWS_RUNNER="$ROOT/db/trino/views/run-trino-views.sh"
 APP_ENV="${APP_ENV:-local-prod}"
 ENV_FILE="$ROOT/.env.${APP_ENV}"
+# UNIFIED-BRONZE cutover (bronze_landing.py): export the Bronze-source switch so every silver run script
+# this loop invokes reads the unified brain_bronze.events (default) instead of the split legacy tables.
+# The dev sink (dev-bronze-streaming.sh) writes brain_bronze.events. Rollback = BRONZE_SOURCE=legacy.
+export BRONZE_SOURCE="${BRONZE_SOURCE:-events}"
 # Bounded retry: total attempts = MAX_RETRIES + 1 (so MAX_RETRIES=1 ⇒ one retry ⇒ 2 attempts).
 MAX_RETRIES="${MAX_RETRIES:-1}"
 RETRY_SLEEP_SECONDS="${RETRY_SLEEP_SECONDS:-10}"

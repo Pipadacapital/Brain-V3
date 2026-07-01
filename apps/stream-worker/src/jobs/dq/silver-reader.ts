@@ -43,7 +43,15 @@ export const BRAND_PREDICATE = '${BRAND_PREDICATE}';
  * is 'iceberg', so the explicit `iceberg.brain_bronze.collector_events` resolves the Iceberg Bronze
  * namespace directly (mirrors analytics _bronze-source.ts ICEBERG_BRONZE).
  */
-export const ICEBERG_BRONZE = 'iceberg.brain_bronze.collector_events';
+// UNIFIED-BRONZE cutover (bronze_landing.py): one env flips the Bronze source (mirrors analytics
+// _bronze-source.ts). BRONZE_SOURCE=events → the unified brain_bronze.events (collector lane); else the
+// legacy collector_events. Default legacy until the sink is switched to bronze_landing. Rollback = legacy.
+const BRONZE_SOURCE = (process.env['BRONZE_SOURCE'] ?? 'legacy').toLowerCase();
+export const ICEBERG_BRONZE =
+  BRONZE_SOURCE === 'events' ? 'iceberg.brain_bronze.events' : 'iceberg.brain_bronze.collector_events';
+/** Keep ONLY the collector lane when reading the unified events table; a no-op on legacy. Append as
+ * `AND ${BRONZE_COLLECTOR_PREDICATE}`. */
+export const BRONZE_COLLECTOR_PREDICATE = BRONZE_SOURCE === 'events' ? "connector = 'collector'" : 'TRUE';
 
 export function createSilverReader(config: SilverReaderConfig): SilverReader {
   // Trino HTTP adapter — catalog='iceberg', schema='brain_serving' so two-part `brain_serving.mv_*`

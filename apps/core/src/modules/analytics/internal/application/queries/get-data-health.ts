@@ -19,6 +19,7 @@
 
 import type { EngineDeps, SilverPool } from '@brain/metric-engine';
 import { withBrandTxn, withSilverBrand, BRAND_PREDICATE } from '@brain/metric-engine';
+import { ICEBERG_BRONZE, BRONZE_COLLECTOR_PREDICATE } from './_bronze-source.js';
 import { hasSilver } from './_bronze-source.js';
 import { log } from '../../../../../log.js';
 
@@ -41,7 +42,7 @@ export type DataHealthResult =
 const VOLUME_WINDOW_DAYS = 30;
 
 /** The Iceberg Bronze table over Trino (Brain V4 — StarRocks removed); Trino's default catalog is `iceberg`. */
-const ICEBERG_BRONZE = 'iceberg.brain_bronze.collector_events';
+// ICEBERG_BRONZE + the collector predicate come from the shared _bronze-source (UNIFIED-BRONZE switch).
 
 export interface DataHealthDeps extends EngineDeps {
   /** StarRocks pool — required to read the Iceberg Bronze catalog. Absent → honest no_data. */
@@ -83,7 +84,7 @@ async function readBronzeIceberg(
     const [headRows, volumeRows] = await Promise.all([
       withSilverBrand(srPool, brandId, (scope) =>
         scope.runScoped<{ n: number | string; last_ingest_at: Date | string | null }>(
-          `SELECT COUNT(*) AS n, MAX(ingested_at) AS last_ingest_at FROM ${ICEBERG_BRONZE} WHERE ${BRAND_PREDICATE}`,
+          `SELECT COUNT(*) AS n, MAX(ingested_at) AS last_ingest_at FROM ${ICEBERG_BRONZE} WHERE ${BRONZE_COLLECTOR_PREDICATE} AND ${BRAND_PREDICATE}`,
         ),
       ),
       // Per-day volume over the bounded window. Trino date_trunc + interval math; the brand predicate
@@ -92,7 +93,7 @@ async function readBronzeIceberg(
         scope.runScoped<{ bucket: Date | string; count: number | string }>(
           `SELECT date_trunc('day', occurred_at) AS bucket, COUNT(*) AS count
              FROM ${ICEBERG_BRONZE}
-            WHERE occurred_at >= (now() - INTERVAL '${VOLUME_WINDOW_DAYS}' DAY) AND ${BRAND_PREDICATE}
+            WHERE occurred_at >= (now() - INTERVAL '${VOLUME_WINDOW_DAYS}' DAY) AND ${BRONZE_COLLECTOR_PREDICATE} AND ${BRAND_PREDICATE}
             GROUP BY 1 ORDER BY 1 ASC`,
         ),
       ),

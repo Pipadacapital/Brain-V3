@@ -66,18 +66,21 @@ sparkBronze:
     tag: ""            # B3: digest preferred; CI populates at deploy (fail-closed in the template)
     digest: ""
     pullPolicy: IfNotPresent
-  materializeSchedule: "*/15 * * * *"   # drain BOTH lanes → Iceberg every 15 min (availableNow)
+  landingSchedule: "*/15 * * * *"       # bronze_landing drains ALL topics → brain_bronze.events every 15m (availableNow)
   maintenanceSchedule: "0 3 * * *"      # daily 03:00 IST — compaction + 24-mo snapshot-expiry (Slice 7)
   activeDeadlineSeconds: 1800
   # Spark driver heap (driver==executor under local[*]). Pinned < resources.limits.memory so the JVM +
   # PySpark + Iceberg/Kafka machinery don't OOM on a backlog drain (the default 1g OOMs — same lesson
   # as the local docker sink). Keep a margin below the pod memory limit for non-heap overhead.
   driverMemory: "3g"
-  # Non-secret config. Secrets come from envSecretName and MUST include: KAFKA_BROKERS, ICEBERG/Glue,
-  # CHECKPOINT_LOCATION (s3a://), AWS_*, and BOTH Bronze lane topics — COLLECTOR_TOPIC (live) AND
-  # BACKFILL_TOPIC (historical/backfill orders). The sink consumes both: omitting BACKFILL_TOPIC →
-  # backfilled orders silently never reach Bronze (they ride a separate topic, lane isolation ADR-BF-7).
-  # STARTING_OFFSETS=latest in steady state (earliest only for a one-off backfill).
+  # Non-secret config. Secrets (envSecretName) MUST include: KAFKA_BROKERS, ICEBERG/Glue, AWS_*, a
+  # DURABLE s3a:// CHECKPOINT_LOCATION, and the topic wiring. bronze_landing subscribes to ALL Bronze
+  # topics: COLLECTOR_TOPIC + BACKFILL_TOPIC + the nine connector *.raw.v1 lanes (derived from
+  # TOPIC_ENV_PREFIX, e.g. `prod`) — so the secret must carry COLLECTOR_TOPIC, BACKFILL_TOPIC AND
+  # TOPIC_ENV_PREFIX. This cron NEWLY lands the 9 raw lanes in prod (there was no bronze_raw_landing cron).
+  # CUTOVER: CHECKPOINT_LOCATION MUST be a FRESH s3a path (a new query plan + topic set + consumer group —
+  # the old bronze_materialize checkpoint can't be reused). Do a ONE-OFF STARTING_OFFSETS=earliest run to
+  # backfill brain_bronze.events (idempotent via dedup_key), then leave STARTING_OFFSETS=latest steady-state.
   env:
     - { name: STARTING_OFFSETS, value: "latest" }
   resources:

@@ -20,7 +20,7 @@
 import type { Pool } from 'pg';
 import { gradeBadnessRatio } from './grade.js';
 import type { DqCheckRow } from './writer.js';
-import { BRAND_PREDICATE, ICEBERG_BRONZE, type SilverReader } from './silver-reader.js';
+import { BRAND_PREDICATE, BRONZE_COLLECTOR_PREDICATE, ICEBERG_BRONZE, type SilverReader } from './silver-reader.js';
 import { log } from '../../log.js';
 
 const NIL_UUID = '00000000-0000-0000-0000-000000000000';
@@ -84,7 +84,7 @@ export async function schemaValidityCheck(
       // Trino rejects date_sub + the unquoted-N interval, which silently became bronze_unreachable/D).
       `SELECT COUNT(*) AS n
          FROM ${ICEBERG_BRONZE}
-        WHERE ${BRAND_PREDICATE}
+        WHERE ${BRONZE_COLLECTOR_PREDICATE} AND ${BRAND_PREDICATE}
           AND ingested_at >= now() - INTERVAL '${VALIDITY_WINDOW_HOURS}' HOUR`,
     );
     acceptedCount = Number(accepted[0]?.n ?? 0);

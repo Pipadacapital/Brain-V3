@@ -104,7 +104,7 @@ compose_up_healthy
 # (docker-run apache/spark, sharing the kafka container's netns). Start it backgrounded so ingestion
 # lands collector + connector events into Iceberg Bronze while the rest of bring-up continues.
 step "5/8 bronze — start host combined Bronze streaming sink (backgrounded)"
-if pgrep -f "combined_bronze_sinks.py" >/dev/null 2>&1; then
+if pgrep -f "bronze_landing.py" >/dev/null 2>&1; then
   echo "  combined Bronze sink already running — leaving it."
 else
   nohup bash "$ROOT/tools/dev/dev-bronze-streaming.sh" > /tmp/bronze-sink.log 2>&1 &

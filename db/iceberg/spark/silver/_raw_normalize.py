@@ -24,8 +24,36 @@ PII: hashed-only; raw identifiers never stored. brand_id is server-trusted (MT-1
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 from datetime import datetime, timezone
+
+
+# ── UNIFIED-BRONZE cutover switch (bronze_landing.py) ────────────────────────────────────────────────
+# The nine per-provider *_raw Bronze tables are being unified into ONE raw table brain_bronze.events
+# (a `connector` discriminator + verbatim payload). ONE env flips every raw-normalize reader:
+#   BRONZE_SOURCE=legacy (default) → read the legacy per-provider *_raw table (current behavior).
+#   BRONZE_SOURCE=events           → read brain_bronze.events filtered to this connector.
+# Default is legacy so nothing changes until the sink itself is switched to bronze_landing (dev/prod
+# wiring). Rollback = set BRONZE_SOURCE=legacy. The unified events table carries the SAME raw
+# payload/coords the *_raw tables did, plus the `connector` column used for the filter.
+def bronze_source_table(catalog, namespace, legacy_table):
+    """FQTN of the raw source — brain_bronze.events under BRONZE_SOURCE=events, else the legacy *_raw."""
+    if os.environ.get("BRONZE_SOURCE", "legacy").lower() == "events":
+        return f"{catalog}.{namespace}.events"
+    return f"{catalog}.{namespace}.{legacy_table}"
+
+
+def read_bronze(spark, catalog, namespace, legacy_table, connector):
+    """Read a connector's raw Bronze — the unified events table (filtered to `connector`) under
+    BRONZE_SOURCE=events, else the legacy per-provider *_raw table. The unified events table has a
+    `connector` column (the legacy *_raw tables don't), so the filter is applied only there."""
+    from pyspark.sql.functions import col  # noqa: E402 — lazy (keeps pure ports Spark-free)
+    df = spark.table(bronze_source_table(catalog, namespace, legacy_table))
+    if "connector" in df.columns:
+        df = df.where(col("connector") == connector)
+    return df
+
 
 # ── Money (I-S07, integer-only, never float) ─────────────────────────────────────────────────────────
 _DECIMAL_RE = re.compile(r"^\d+(\.\d{1,2})?$")

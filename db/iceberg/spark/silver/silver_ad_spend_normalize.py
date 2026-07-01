@@ -265,7 +265,7 @@ def _collector_event_select(canon: DataFrame, payload_col) -> DataFrame:
 def build_meta(spark: SparkSession):
     """RAW Meta Insights rows → (good canonical spend.live.v1 collector_event rows, Stage-1 quarantine rejects)."""
     r = META_ROW
-    df = spark.table(RAW_META_TABLE).select(
+    df = rn.read_bronze(spark, CATALOG, BRONZE_NAMESPACE, "meta_spend_raw", "meta").select(
         col("brand_id").cast("string").alias("brand_id"),  # MT-1: server-trusted envelope ONLY
         col("fetched_at").cast("string").alias("fetched_at"),
         col("account_currency").cast("string").alias("account_currency"),
@@ -361,7 +361,7 @@ def build_meta(spark: SparkSession):
 def build_google(spark: SparkSession):
     """RAW Google Ads SearchStream rows → (good canonical spend.live.v1 collector_event rows, Stage-1 rejects)."""
     r = GOOGLE_ROW
-    df = spark.table(RAW_GOOGLE_TABLE).select(
+    df = rn.read_bronze(spark, CATALOG, BRONZE_NAMESPACE, "google_spend_raw", "google").select(
         col("brand_id").cast("string").alias("brand_id"),  # MT-1
         col("fetched_at").cast("string").alias("fetched_at"),
         col("account_currency").cast("string").alias("account_currency"),
@@ -497,8 +497,8 @@ def build(spark: SparkSession):
     # producer (G1) lands payload-schema records. With no source rows in EITHER lane there is nothing to
     # normalize; return cleanly instead of failing on the legacy struct columns build_meta/build_google
     # still read. Full payload-JSON normalize is tracked as connector-platform G1.
-    if (spark.table(RAW_META_TABLE).limit(1).count() == 0
-            and spark.table(RAW_GOOGLE_TABLE).limit(1).count() == 0):
+    if (rn.read_bronze(spark, CATALOG, BRONZE_NAMESPACE, "meta_spend_raw", "meta").limit(1).count() == 0
+            and rn.read_bronze(spark, CATALOG, BRONZE_NAMESPACE, "google_spend_raw", "google").limit(1).count() == 0):
         print(f"[silver-ad-spend-normalize] {RAW_META_TABLE} + {RAW_GOOGLE_TABLE} both empty — skipping (awaiting ad-connector data / G1)", flush=True)
         return TARGET, 0
 

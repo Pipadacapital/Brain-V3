@@ -36,6 +36,7 @@ docker run --rm \
   -e ICEBERG_REST_URI="${ICEBERG_REST_URI:-http://iceberg-rest:8181}" \
   -e ICEBERG_WAREHOUSE="${ICEBERG_WAREHOUSE:-s3://brain-bronze/}" \
   -e BRONZE_NAMESPACE="${BRONZE_NAMESPACE:-brain_bronze}" \
+  -e BRONZE_SOURCE="${BRONZE_SOURCE:-legacy}" \
   -e SILVER_NAMESPACE="${SILVER_NAMESPACE:-brain_silver}" \
   -e BRONZE_PG_JDBC_URL="${BRONZE_PG_JDBC_URL:-jdbc:postgresql://postgres:5432/brain}" \
   -e BRONZE_PG_USER="${BRONZE_PG_USER:-brain}" \

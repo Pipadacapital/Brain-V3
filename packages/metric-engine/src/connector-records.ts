@@ -67,12 +67,13 @@ export interface ConnectorRecordsParams {
 export const CONNECTOR_RECORDS_PAGE_SIZE = 20;
 
 interface EntityConfig {
-  table: string;
-  /** Column the window filters + newest-first ORDER BY use. */
+  /** FROM clause — a table, optionally ALIASED so a SELECT column can carry a correlated sub-select. */
+  from: string;
+  /** Column the window filters + newest-first ORDER BY use (unqualified → resolves to the FROM table). */
   dateCol: string;
   /** Columns the free-text search matches (case-insensitive LIKE). */
   searchCols: readonly string[];
-  /** Columns to SELECT (superset of columns[].key + any currency siblings). */
+  /** SELECT list entries — plain columns OR expressions aliased to a column key (superset of columns[].key + currency siblings). */
   selectCols: readonly string[];
   columns: RecordColumn[];
 }
@@ -83,10 +84,21 @@ interface EntityConfig {
  */
 const ENTITIES: Record<RecordEntity, EntityConfig> = {
   orders: {
-    table: 'brain_serving.mv_silver_order_state',
+    // Aliased `os` so the Value column can pull the GROSS order total via a correlated sub-select.
+    from: 'brain_serving.mv_silver_order_state os',
     dateCol: 'first_event_at',
     searchCols: ['order_id', 'lifecycle_state'],
-    selectCols: ['order_id', 'lifecycle_state', 'order_value_minor', 'currency_code', 'first_event_at'],
+    selectCols: [
+      'order_id',
+      'lifecycle_state',
+      // Value = GROSS order total (Σ line totals), populated for ALL orders including `placed`. The mart's
+      // own order_value_minor is RECOGNISED revenue (0 until confirmed — "revenue truth"), which reads as
+      // "0 for every recent order" in a browser. COALESCE→0 when an order has no lines yet.
+      'COALESCE((SELECT SUM(ol.line_total_minor) FROM brain_serving.mv_silver_order_line ol '
+        + 'WHERE ol.brand_id = os.brand_id AND ol.order_id = os.order_id), 0) AS order_value_minor',
+      'currency_code',
+      'first_event_at',
+    ],
     columns: [
       { key: 'first_event_at', label: 'Placed', type: 'date' },
       { key: 'order_id', label: 'Order', type: 'text' },
@@ -95,7 +107,7 @@ const ENTITIES: Record<RecordEntity, EntityConfig> = {
     ],
   },
   shipments: {
-    table: 'brain_serving.mv_silver_shipment',
+    from: 'brain_serving.mv_silver_shipment',
     dateCol: 'first_event_at',
     searchCols: ['order_id', 'courier', 'current_status', 'pincode'],
     selectCols: ['order_id', 'courier', 'current_status', 'pincode', 'payment_method', 'source', 'first_event_at'],
@@ -110,7 +122,7 @@ const ENTITIES: Record<RecordEntity, EntityConfig> = {
     ],
   },
   ad_spend: {
-    table: 'brain_serving.mv_silver_marketing_spend',
+    from: 'brain_serving.mv_silver_marketing_spend',
     dateCol: 'stat_date',
     searchCols: ['campaign_name', 'platform', 'level'],
     selectCols: ['stat_date', 'platform', 'campaign_name', 'level', 'spend_minor', 'currency_code', 'impressions', 'clicks'],
@@ -176,7 +188,7 @@ export async function queryConnectorRecords(
     // (1) total for pagination — same filters. BRAND_PREDICATE LAST → the seam binds brand after searchParams.
     const countRows = await scope.runScoped<{ n: string | number }>(
       `SELECT count(*) AS n
-         FROM ${cfg.table}
+         FROM ${cfg.from}
         WHERE ${dateFilter}
           ${searchFilter}
           AND ${BRAND_PREDICATE}`,
@@ -190,7 +202,7 @@ export async function queryConnectorRecords(
         ? []
         : await scope.runScoped<Record<string, string | number | null>>(
             `SELECT ${cfg.selectCols.join(', ')}
-               FROM ${cfg.table}
+               FROM ${cfg.from}
               WHERE ${dateFilter}
                 ${searchFilter}
                 AND ${BRAND_PREDICATE}

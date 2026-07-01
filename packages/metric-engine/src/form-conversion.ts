@@ -125,7 +125,11 @@ export async function computeFormConversion(
         WHERE feedback_date BETWEEN ? AND ?
           AND ${BRAND_PREDICATE}
         GROUP BY form_id
-        ORDER BY SUM(submissions) DESC`,
+        -- ORDER BY the OUTPUT ALIAS submissions (== SUM(submissions)), NOT a re-wrapped SUM(submissions):
+        -- Trino resolves submissions inside ORDER BY to the output projection (already an aggregate), so
+        -- ORDER BY SUM(submissions) becomes a nested aggregate -> "Invalid reference to output projection
+        -- attribute from ORDER BY aggregation" (code 47). StarRocks bound it to the base column; Trino does not.
+        ORDER BY submissions DESC`,
       [range.fromStr, range.toStr],
     );
 

@@ -44,6 +44,7 @@ echo ""
 echo "================ BUILD gold mart: ${MODEL} ================"
 spark_retry "gold-journey-paths/${MODEL}" \
 docker run --rm \
+  --memory "${SPARK_CONTAINER_MEMORY:-7g}" \
   --network "container:${REDPANDA_CONTAINER}" \
   --user root \
   -v "${SPARK_DIR}":/opt/spark-src:ro \

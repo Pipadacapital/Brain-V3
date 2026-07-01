@@ -50,6 +50,7 @@ docker volume create brain-spark-ivy >/dev/null
 for job in "${JOBS[@]}"; do
   echo "[silver-entities] ── running ${job} ──────────────────────────────────────────"
   docker run --rm \
+    --memory "${SPARK_CONTAINER_MEMORY:-7g}" \
     --network "container:${REDPANDA_CONTAINER}" \
     --user root \
     -v "${SPARK_ROOT}":/opt/spark-src:ro \

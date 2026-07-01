@@ -100,6 +100,8 @@ spec:
               done
           env:
             - { name: SPARK_MAX_RETRIES, value: {{ .Values.sparkV4.sparkMaxRetries | quote }} }
+            # UNIFIED-BRONZE: silver jobs read the unified brain_bronze.events (bronze_landing). Rollback = legacy.
+            - { name: BRONZE_SOURCE, value: {{ .Values.sparkV4.bronzeSource | default "events" | quote }} }
             {{- toYaml .Values.sparkV4.env | nindent 12 }}
             {{- if eq $mode "k8s" }}
             {{- toYaml .Values.sparkV4.k8s.env | nindent 12 }}  {{/* cluster-scale tuning knobs (spark_perf_configs reads these) */}}
@@ -163,6 +165,8 @@ spec:
               done
           env:
             - { name: SPARK_MAX_RETRIES, value: {{ .Values.sparkV4.sparkMaxRetries | quote }} }
+            # UNIFIED-BRONZE: silver jobs read the unified brain_bronze.events (bronze_landing). Rollback = legacy.
+            - { name: BRONZE_SOURCE, value: {{ .Values.sparkV4.bronzeSource | default "events" | quote }} }
             {{- toYaml .Values.sparkV4.env | nindent 12 }}
             {{- if eq $mode "k8s" }}
             {{- toYaml .Values.sparkV4.k8s.env | nindent 12 }}  {{/* cluster-scale tuning knobs (spark_perf_configs reads these) */}}

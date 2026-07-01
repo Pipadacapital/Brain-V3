@@ -6,11 +6,15 @@ flip is complete, so the former dual-sink + PG⇄Iceberg parity oracle (bronze-p
 are RETIRED (there is no PG side left to reconcile). The Spark sink is the only Bronze writer.
 
 Two CronWorkflows (Spark image, spark-submit), distinct from the generic node-image .Values.jobs loop:
-  - bronze-materialize: TRIGGER_MODE=availableNow drains the collector lane AND the backfill lane
-    (COLLECTOR_TOPIC + BACKFILL_TOPIC, both from the env secret) → Iceberg MERGE WHEN NOT MATCHED
-    (idempotent on (brand_id, event_id), I-E02). availableNow drains the current backlog then exits —
-    a missed/retried run is safe (Forbid + idempotent MERGE). (A long-lived TRIGGER_MODE=continuous
-    Deployment is the alternative real-time shape; this chart schedules the periodic-drain cron.)
+  - bronze-landing (bronze_landing.py — the UNIFIED sink): TRIGGER_MODE=availableNow drains ALL Bronze
+    topics — the collector + backfill lanes AND the nine connector *.raw.v1 lanes (COLLECTOR_TOPIC +
+    BACKFILL_TOPIC + TOPIC_ENV_PREFIX, from the env secret) → ONE raw table brain_bronze.events, MERGE
+    WHEN NOT MATCHED on a per-lane dedup_key (idempotent, I-E02). Replaces the old two sinks
+    (bronze_materialize → collector_events + the unscheduled bronze_raw_landing → 9 *_raw tables); this
+    cron NEWLY lands the 9 raw lanes in prod. availableNow drains then exits (Forbid + idempotent = a
+    missed/retried run is safe). A long-lived TRIGGER_MODE=continuous Deployment is the real-time
+    alternative. NOTE: use a FRESH s3a CHECKPOINT_LOCATION (new query plan/topics/group) + a one-off
+    STARTING_OFFSETS=earliest to backfill events, then latest steady-state.
   - bronze-maintenance: small-file compaction + 24-month snapshot-expiry TTL (Slice 7).
 
 GATED OFF by default (.Values.sparkBronze.enabled=false): flipping it on needs the CI-built Spark image
@@ -48,14 +52,14 @@ Image MUST be pinned by digest (B3) — same fail-closed rule as the generic tem
 apiVersion: argoproj.io/v1alpha1
 kind: CronWorkflow
 metadata:
-  name: bronze-materialize
+  name: bronze-landing
   labels:
     {{- include "brain.labels" . | nindent 4 }}
-    brain.io/job: bronze-materialize
+    brain.io/job: bronze-landing
 spec:
-  schedule: {{ .Values.sparkBronze.materializeSchedule | quote }}
+  schedule: {{ .Values.sparkBronze.landingSchedule | quote }}
   timezone: {{ $tz | quote }}
-  concurrencyPolicy: Forbid            # never overlap a materialize run with itself (offset safety)
+  concurrencyPolicy: Forbid            # never overlap a landing run with itself (offset safety)
   startingDeadlineSeconds: {{ .Values.defaults.startingDeadlineSeconds }}
   successfulJobsHistoryLimit: {{ .Values.defaults.successfulJobsHistoryLimit }}
   failedJobsHistoryLimit: {{ .Values.defaults.failedJobsHistoryLimit }}
@@ -78,7 +82,7 @@ spec:
             - |
               set -euo pipefail
               PFX="{{ $lp }}"   # "" (local[*]) or "local://" (k8s cluster — driver reads the app from the SAME image)
-              exec /opt/spark/bin/spark-submit {{ $submitFlags }} "${PFX}/opt/brain/bronze_materialize.py"
+              exec /opt/spark/bin/spark-submit {{ $submitFlags }} "${PFX}/opt/brain/bronze_landing.py"
           env:
             - { name: TRIGGER_MODE, value: "availableNow" }
             {{- toYaml .Values.sparkBronze.env | nindent 12 }}

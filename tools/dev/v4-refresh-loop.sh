@@ -323,7 +323,24 @@ run_phase() {
       # 2. THE REST OF SILVER — every other silver_* mart (incl. an initial silver_touchpoint pass so the
       #    stitch job has a journey corpus to read in step 3b). run-silver-orders.sh is re-run here as part of
       #    the bulk glob, which is a harmless idempotent no-op (already current from step 1).
-      run_spark_tier silver "${SILVER_REST[@]}"; failures=$((failures+$?))
+      #
+      #    NEO4J wiring (silver_identity_alias.py): this tier includes run-silver-entities.sh, whose
+      #    identity_alias job reads the Neo4j identity SoR via the Spark connector and projects the
+      #    IDENTIFIES edges into brain_silver.silver_identity_alias (the Iceberg-native sibling of the node
+      #    identity-export's brain_ops.silver_identity_link). These Spark jobs run in CONTAINERS on the
+      #    compose network, so Neo4j is `neo4j:7687` — NOT the host `localhost:7687` that the HOST node
+      #    identity-export (run_node_job, step 0) needs. So we SCOPE the container-correct NEO4J_* to just
+      #    this subshell → it never leaks to the node jobs (journey-stitch-export runs after, on the host).
+      #    SKIP_IDENTITY=1 (Neo4j down / CI) leaves NEO4J_URI unset → silver_identity_alias takes its
+      #    documented data-thin skip (empty table, no read). SPARK_NEO4J_URI overrides the default if needed.
+      (
+        if [ "${SKIP_IDENTITY:-0}" != "1" ]; then
+          export NEO4J_URI="${SPARK_NEO4J_URI:-bolt://neo4j:7687}"
+          export NEO4J_USER="${NEO4J_USER:-neo4j}"
+          export NEO4J_PASSWORD="${NEO4J_PASSWORD:-brain_neo4j}"
+        fi
+        run_spark_tier silver "${SILVER_REST[@]}"
+      ); failures=$((failures+$?))
 
       # 3a. GOLD REVENUE LEDGER + ensure the two Trino views the stitch job reads EXIST (mv_silver_touchpoint
       #     journey anons, mv_gold_revenue_ledger order→brain_id). As Trino views they are always-fresh over

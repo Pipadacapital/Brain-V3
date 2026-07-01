@@ -374,6 +374,38 @@ def inactive_campaign_conversion_flag(is_active, conversions):
 
 
 # ======================================================================================================
+# EVENT CATEGORY  — pure port: canonical event_type → a coarse category for downstream routing/analytics.
+# ======================================================================================================
+def event_category(event_type):
+    """Map a CANONICAL event_type → one of {transaction, behaviour, fulfillment, support, marketing, other}.
+
+    Pure/testable (no Spark). Prefix-first so new `.v1` events fall into the right bucket without an edit;
+    unknown/empty → 'other'. Order matters: resource upserts + money/logistics/marketing are decided before
+    the broad behaviour bucket so e.g. `payment.*` stays transaction and `product.upsert.v1` stays other
+    (vs `product.viewed` → behaviour)."""
+    et = (event_type or "").strip().lower()
+    if not et:
+        return "other"
+    if et.endswith(".upsert.v1"):                                              # product/customer/coupon dims
+        return "other"
+    if et.startswith(("order.", "refund.", "payment.", "settlement.")):        # money-moving
+        return "transaction"
+    if et.startswith(("spend.", "ad.")):                                       # ad spend + ad-entity metadata
+        return "marketing"
+    if et.startswith(("shiprocket.", "fulfillment.")) or et == "gokwik.rto_predict.v1":  # logistics / RTO
+        return "fulfillment"
+    if et.startswith(("ticket.", "call.", "support.")):                        # reserved (none today)
+        return "support"
+    _behaviour_prefixes = ("page.", "product.", "collection.", "cart.", "session.", "scroll.",
+                           "element.", "search.", "form.", "user.")   # user.* = pixel account funnel (login/signup)
+    _behaviour_exact = {"dead.click", "rage.click", "exit_intent", "video", "identify",
+                        "coupon.applied", "download", "share"}         # pixel singletons (coupon.upsert.v1 → other above)
+    if et in _behaviour_exact or et.startswith(_behaviour_prefixes) or "checkout" in et:
+        return "behaviour"                                                     # browser + checkout-funnel signals
+    return "other"
+
+
+# ======================================================================================================
 # QUARANTINE SINK  — Spark-side (pyspark imported lazily so the pure ports above test without Spark).
 # ======================================================================================================
 # stage ∈ {schema, dq, business}: WHERE in the 2-stage pipeline the record was diverted.
@@ -452,6 +484,13 @@ def clean_string_udf():
     return udf(clean_string, StringType())
 
 
+def event_category_udf():
+    """Spark UDF(event_type) → coarse event_category (event_category port). Non-PII, deterministic."""
+    from pyspark.sql.functions import udf
+    from pyspark.sql.types import StringType
+    return udf(event_category, StringType())
+
+
 def dq_violations_udf(*, now_ms=None, max_skew_ms=DEFAULT_SKEW_MS, required_ids=None, absurd_qty=DEFAULT_ABSURD_QTY):
     """Spark UDF(amount_minor, currency_code, occurred_at, quantity) → array<string> of dq_check codes.
 
@@ -522,3 +561,59 @@ def event_order_key_str_udf():
         return event_order_key_str({"occurred_at": occurred_at, "source_ts": source_ts, "sequence": sequence})
 
     return udf(_f, StringType())
+
+
+# ======================================================================================================
+# CONSENT-REJECTED SINK  — the GDPR consent-reject ledger, SEPARATE from silver_quarantine.
+# ======================================================================================================
+# A pixel event that fails the R3 consent gate is a PRIVACY decision (no marketing/analytics consent), not
+# a data-quality defect — so it lands here, not in silver_quarantine (which is for schema/dq/business
+# rejects). Keeps the two concerns auditable independently. brand_id is the CLAIMED envelope brand: R3 runs
+# BEFORE the R2 install_token→brand resolution, so the derived brand isn't known yet.
+CONSENT_REJECTED_TABLE = "silver_consent_rejected"
+CONSENT_REJECTED_COLUMNS_SQL = """
+          brand_id      STRING,
+          event_id      STRING,
+          occurred_at   TIMESTAMP,
+          anonymous_id  STRING,
+          reason        STRING,
+          payload       STRING,
+          rejected_at   TIMESTAMP
+""".strip("\n")
+CONSENT_REJECTED_PARTITION = "bucket(256, brand_id), days(rejected_at)"
+
+
+def ensure_consent_rejected_table(spark):
+    """Idempotently create brain_silver.silver_consent_rejected (Iceberg). brand_id-first, partitioned by
+    bucket(brand_id)+days(rejected_at). Returns the FQTN."""
+    import os
+    import sys
+
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from iceberg_base import SILVER_NAMESPACE, create_iceberg_table  # noqa: E402
+
+    return create_iceberg_table(
+        spark, SILVER_NAMESPACE, CONSENT_REJECTED_TABLE, CONSENT_REJECTED_COLUMNS_SQL,
+        partitioned_by=CONSENT_REJECTED_PARTITION,
+    )
+
+
+def write_consent_rejected(spark, df_of_rejects):
+    """Append no-consent pixel rows to silver_consent_rejected, stamping rejected_at. The caller supplies a
+    DataFrame carrying at least (brand_id, event_id, occurred_at, anonymous_id, reason, payload).
+
+    Append-only DIAGNOSTIC ledger — the SAME append-only, non-deduped semantics as silver_quarantine: the
+    incremental gate re-scans a SILVER_INCREMENTAL_OVERLAP_HOURS window (and FULL_REFRESH re-reads all), so
+    a reject inside that overlap can be appended more than once across runs. Consumers should read it as an
+    observability signal (dedup on (brand_id, event_id, occurred_at) if an exact count is needed), NOT as a
+    unique-per-event table."""
+    from pyspark.sql.functions import current_timestamp  # noqa: E402
+
+    fqtn = ensure_consent_rejected_table(spark)
+    out = (
+        df_of_rejects
+        .withColumn("rejected_at", current_timestamp())
+        .select("brand_id", "event_id", "occurred_at", "anonymous_id", "reason", "payload", "rejected_at")
+    )
+    out.writeTo(fqtn).append()
+    return fqtn

@@ -13,7 +13,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _silver_technical import (  # noqa: E402
     ACTION_ACCEPT, ACTION_QUARANTINE, SCHEMA_MISSING, SCHEMA_OK, SCHEMA_UNKNOWN, SCHEMA_WRONG_TYPE,
-    clean_name, clean_string, dq_check, event_order_key, event_order_key_str,
+    clean_name, clean_string, dq_check, event_category, event_order_key, event_order_key_str,
     inactive_campaign_conversion_flag, schema_policy, validate_payment_amount, validate_refund_timing,
     validate_schema,
 )
@@ -193,6 +193,43 @@ def test_inactive_campaign_conversion_flag():
     assert inactive_campaign_conversion_flag(True, 9) is False       # active → never flagged
     assert inactive_campaign_conversion_flag(None, 9) is False       # unknown status → row unchanged
     assert inactive_campaign_conversion_flag(False, "2") is True     # int-coerced conversions
+
+
+def test_event_category_maps_canonical_types():
+    # transaction — money-moving
+    assert event_category("order.placed.v1") == "transaction"
+    assert event_category("refund.issued.v1") == "transaction"
+    assert event_category("payment.captured.v1") == "transaction"
+    assert event_category("settlement.live.v1") == "transaction"
+    # marketing — ad spend + ad-entity metadata
+    assert event_category("spend.live.v1") == "marketing"
+    assert event_category("ad.entity.updated") == "marketing"
+    # fulfillment — logistics / RTO
+    assert event_category("shiprocket.shipment.v1") == "fulfillment"
+    assert event_category("fulfillment.recorded.v1") == "fulfillment"
+    assert event_category("gokwik.rto_predict.v1") == "fulfillment"
+    # behaviour — browser + checkout-funnel signals
+    assert event_category("page.viewed") == "behaviour"
+    assert event_category("product.viewed") == "behaviour"
+    assert event_category("cart.updated") == "behaviour"
+    assert event_category("rage.click") == "behaviour"
+    assert event_category("exit_intent") == "behaviour"
+    assert event_category("identify") == "behaviour"
+    assert event_category("checkout.abandoned.v1") == "behaviour"   # "checkout" substring
+    # pixel account-funnel + engagement singletons (collector-emitted) → behaviour, NOT other
+    assert event_category("user.logged_in") == "behaviour"
+    assert event_category("user.signed_up") == "behaviour"
+    assert event_category("coupon.applied") == "behaviour"
+    assert event_category("download") == "behaviour"
+    assert event_category("share") == "behaviour"
+    # resource dims + unknowns/empty → other (and precedence: upsert beats the behaviour prefixes)
+    assert event_category("product.upsert.v1") == "other"
+    assert event_category("customer.upsert.v1") == "other"
+    assert event_category("") == "other"
+    assert event_category(None) == "other"
+    assert event_category("totally.unknown.v1") == "other"
+    # case/whitespace-insensitive
+    assert event_category("  ORDER.Placed.v1  ") == "transaction"
 
 
 def _run_all():

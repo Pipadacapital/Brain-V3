@@ -83,6 +83,14 @@ export const META_ASYNC_TIMEOUT = 'META_ASYNC_TIMEOUT';
  * can halve the date window and retry instead of failing the whole run.
  */
 export const META_TOO_MUCH_DATA = 'META_TOO_MUCH_DATA';
+/**
+ * Thrown on an HTTP 403 from Meta Insights. On a backfill walking OLDER windows this is the
+ * accessible-history boundary (Meta forbids insights before a point — the current token reads recent
+ * data fine, proven by the live spend lane). The backfill caller treats this as a graceful stop at the
+ * achieved depth (complete, cursor preserved) rather than a hard failure. Distinct from 401
+ * (token expired → reconnect) and from throttle 400s (backoff).
+ */
+export const META_ACCESS_FORBIDDEN = 'META_ACCESS_FORBIDDEN';
 
 export interface MetaApiCredentials {
   accessToken: string;   // NEVER logged (I-S09)
@@ -419,9 +427,17 @@ export class MetaInsightsClient {
    * end. Adaptive to account size: if Meta rejects the window with code 2637 ("reduce the amount of
    * data" — surfaced as META_TOO_MUCH_DATA), the window is split in half and each half fetched
    * recursively and concatenated, down to a single-day floor. A 1-day window that still 2637s is a
-   * genuine hard error and is re-thrown. This lets the historical backfill drain large accounts without
-   * the caller having to guess a safe fixed WINDOW_DAYS; throttle/auth errors propagate unchanged so
-   * the driver's cursor-preserving resume still applies.
+   * genuine hard error and is re-thrown; throttle/auth errors propagate unchanged so the driver's
+   * cursor-preserving resume still applies.
+   *
+   * MODE: follows the client's default (META_INSIGHTS_ASYNC_MODE, default false = SYNC GET) — the SAME
+   * path the live meta-spend-repull lane uses and which is proven to pull 28-day windows on real
+   * accounts. We do NOT force the async ad_report_run path here: on some accounts Meta's async RESULT
+   * read (GET /{report_run_id}/insights) returns 2637 even for a completed SINGLE-DAY, CAMPAIGN-level
+   * report (a handful of rows) — i.e. the failure is the async result endpoint, not data volume — which
+   * made the window-halving recurse to the 1-day floor and still fail. The sync GET paginates via
+   * `nextUrl` (limit=500/page), so large windows are handled by cursor paging; window-halving remains a
+   * defensive fallback for a window that genuinely 2637s on the sync path.
    */
   async fetchInsightsForWindow(
     level: 'campaign' | 'adset' | 'ad',
@@ -430,8 +446,8 @@ export class MetaInsightsClient {
   ): Promise<MetaInsightsRawRow[]> {
     try {
       const rows: MetaInsightsRawRow[] = [];
-      // Historical windows are large → force the async ad_report_run path.
-      let page = await this.fetchInsightsFirstPage(level, since, until, { asyncMode: true });
+      // Sync GET + cursor paging (client default) — the proven-working path; see MODE note above.
+      let page = await this.fetchInsightsFirstPage(level, since, until);
       rows.push(...page.rows);
       while (page.nextUrl) {
         page = await this.fetchInsightsByUrl(page.nextUrl, level);
@@ -513,6 +529,12 @@ export class MetaInsightsClient {
         // 401/190 → token expired/revoked → non-retryable auth error.
         if (res.status === 401) {
           throw new Error(`${META_AUTH_ERROR}: 401 Unauthorized from Meta Insights`);
+        }
+        // 403 → Meta forbids this window. On a backfill walking older windows this is the
+        // accessible-history boundary, not a token problem (the live lane reads recent data fine) →
+        // a distinct signal so the caller stops gracefully at the achieved depth instead of failing.
+        if (res.status === 403) {
+          throw new Error(`${META_ACCESS_FORBIDDEN}: 403 Forbidden from Meta Insights (accessible-history boundary or missing scope)`);
         }
 
         const throttled = await this.handleThrottleResponse(res, attempt, 'GET');

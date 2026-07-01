@@ -48,9 +48,11 @@ import type {
 import { mapMetaInsightToEvent, uuidV5FromSpendRow } from '@brain/ad-spend-mapper';
 import {
   MetaInsightsClient,
+  META_ACCESS_FORBIDDEN,
   type MetaApiCredentials,
   type MetaAccountMeta,
 } from '../meta-spend-repull/meta-insights-client.js';
+import { log } from '../../log.js';
 
 /** Default date-window span (days) per framework page. Mirrors the bespoke meta backfill chunk. */
 const WINDOW_DAYS = 30;
@@ -121,35 +123,49 @@ export class MetaInsightsFetcher implements IResourcePageFetcher {
 
     const records: FetchedRecord[] = [];
 
-    for (const level of META_LEVELS) {
-      // Fetch the WHOLE window for this level. The client forces the async ad_report_run path (historical
-      // month-wide pulls are large) and ADAPTIVELY halves the window on Meta code 2637 ("reduce the amount
-      // of data") down to a single day — so a large historical account drains instead of hard-failing the
-      // run. A throttle / auth error still THROWS and is propagated (the driver preserves the cursor).
-      const rawRows = await this.client.fetchInsightsForWindow(level, sinceIso, untilIso);
-      for (const raw of rawRows) {
-        const mapped = mapMetaInsightToEvent(raw, currencyCode, timezoneName);
-        const props = mapped.properties;
-        // Skip rows missing the dedup grain (stat_date / level_id) — same guard as the live lane.
-        if (!props.stat_date || !props.level_id) continue;
+    try {
+      for (const level of META_LEVELS) {
+        // Fetch the WHOLE window for this level. The client uses the SYNC insights GET (cursor-paged)
+        // and ADAPTIVELY halves the window on Meta code 2637 ("reduce the amount of data"). A throttle /
+        // auth error still THROWS and is propagated (the driver preserves the cursor for resume).
+        const rawRows = await this.client.fetchInsightsForWindow(level, sinceIso, untilIso);
+        for (const raw of rawRows) {
+          const mapped = mapMetaInsightToEvent(raw, currencyCode, timezoneName);
+          const props = mapped.properties;
+          // Skip rows missing the dedup grain (stat_date / level_id) — same guard as the live lane.
+          if (!props.stat_date || !props.level_id) continue;
 
-        const draft: CanonicalEventDraft = {
-          event_name: mapped.event_name,
-          occurred_at: mapped.occurred_at,
-          provenance: { brand_id: this.brandId, source: META_SOURCE }, // brand_id from connector row (MT-1)
-          properties: props as unknown as Record<string, unknown>,
-        };
-        // CROSS-LANE ID PARITY: compute the event_id by calling the SAME mapper id fn the live
-        // meta-spend-repull lane uses — uuidV5FromSpendRow(brandId, 'meta', stat_date, level, level_id)
-        // (meta-spend-repull/run.ts emitPage). Carry it as providerId so the passthrough deriver
-        // (precomputedEventIdDeriver) returns it verbatim as the Bronze event_id → backfilled rows
-        // share the live id byte-for-byte → Bronze MERGE dedups, no double-count. We CALL the mapper
-        // fn (never re-implement the seed) so the two lanes can never drift.
-        const providerId = uuidV5FromSpendRow(
-          this.brandId, META_SOURCE, props.stat_date, props.level, props.level_id,
-        );
-        records.push({ providerId, events: [draft] });
+          const draft: CanonicalEventDraft = {
+            event_name: mapped.event_name,
+            occurred_at: mapped.occurred_at,
+            provenance: { brand_id: this.brandId, source: META_SOURCE }, // brand_id from connector row (MT-1)
+            properties: props as unknown as Record<string, unknown>,
+          };
+          // CROSS-LANE ID PARITY: compute the event_id by calling the SAME mapper id fn the live
+          // meta-spend-repull lane uses — uuidV5FromSpendRow(brandId, 'meta', stat_date, level, level_id)
+          // (meta-spend-repull/run.ts emitPage). Carry it as providerId so the passthrough deriver
+          // (precomputedEventIdDeriver) returns it verbatim as the Bronze event_id → backfilled rows
+          // share the live id byte-for-byte → Bronze MERGE dedups, no double-count. We CALL the mapper
+          // fn (never re-implement the seed) so the two lanes can never drift.
+          const providerId = uuidV5FromSpendRow(
+            this.brandId, META_SOURCE, props.stat_date, props.level, props.level_id,
+          );
+          records.push({ providerId, events: [draft] });
+        }
       }
+    } catch (err) {
+      // Meta 403 while walking OLDER windows = the accessible-history boundary (the live lane reads
+      // recent data fine, so it is NOT a token problem). Stop the walk GRACEFULLY at the achieved depth:
+      // return whatever this window yielded before the 403 with a null cursor so the resumable driver
+      // marks the resource COMPLETED (not FAILED). Every other error propagates (cursor-preserving resume).
+      if (String(err).includes(META_ACCESS_FORBIDDEN)) {
+        log.info(
+          `[meta-backfill] Meta 403 at window ${sinceIso}..${untilIso} — accessible-history boundary; ` +
+          `completing backfill at achieved depth (${records.length} record(s) this window)`,
+        );
+        return { records, nextCursor: null, oldestOccurredAt: parseIsoDate(sinceIso) };
+      }
+      throw err;
     }
 
     // Next (older) window's `until` edge is the day before this window's `since` (no overlap, no gap).

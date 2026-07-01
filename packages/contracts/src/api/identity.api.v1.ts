@@ -133,6 +133,15 @@ export const CustomerListSchema = z.object({
   offset: z.number().int().nonnegative(),
   /** Echoes whether a search term was applied (so the UI can show "results for …" honestly). */
   searched: z.boolean(),
+  /**
+   * Opaque KEYSET cursor for the next page (serving-layer Gap 4). Pass it back as `?cursor=` to
+   * continue from exactly after this page's last row — stable under concurrent inserts, no
+   * OFFSET re-scan on deep pages. Sort is (created_at DESC, brain_id ASC). Null = no further page.
+   * `cursor` and `offset` are alternatives: when both are sent, cursor wins and offset is ignored.
+   * The existing offset paging is unchanged (the web UI's prev/next + "x–y of total" range stays
+   * offset-based; the cursor serves API consumers and deep-page reads).
+   */
+  next_cursor: z.string().nullable(),
 });
 export type CustomerList = z.infer<typeof CustomerListSchema>;
 

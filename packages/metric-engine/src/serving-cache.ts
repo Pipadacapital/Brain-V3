@@ -32,6 +32,7 @@
 
 import { createHash } from 'node:crypto';
 import { type AnalyticsCachePort, buildCacheKey } from './analytics-cache.js';
+import { resolveServingTtlMs } from './serving-ttl.js';
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
@@ -40,7 +41,11 @@ export interface ServingCacheReaderConfig {
   readonly cache: AnalyticsCachePort;
   /** Serving materialization version — the trailing cache-key segment (e.g. 'v1'). */
   readonly servingVersion: string;
-  /** TTL (ms) applied to each cached serving read. */
+  /**
+   * DEFAULT TTL (ms) for cached serving reads. A metric mapped to a freshness tier in
+   * METRIC_TTL_TIER uses its tier TTL instead (resolveServingTtlMs); unmapped metrics
+   * use this value — the historical single-global-TTL behavior.
+   */
   readonly ttlMs: number;
   /** Flag gate. false → pass-through (compute() directly; no cache touched). */
   readonly enabled: boolean;
@@ -122,7 +127,7 @@ export function createServingCacheReader(config: ServingCacheReaderConfig): Serv
       };
 
       try {
-        return await cache.getOrSet<T>(key, guardedCompute, ttlMs);
+        return await cache.getOrSet<T>(key, guardedCompute, resolveServingTtlMs(metricId, ttlMs));
       } catch (err) {
         if (state.outcome === 'failed') {
           // The Trino read itself failed — surface it (do NOT retry; honest error).

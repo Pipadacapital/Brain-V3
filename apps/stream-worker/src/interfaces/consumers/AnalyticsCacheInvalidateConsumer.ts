@@ -1,12 +1,15 @@
 /**
- * AnalyticsCacheInvalidateConsumer — consumes cache.invalidate.v1 events and evicts
- * the brand_id-leading Redis keys from the Analytics serving cache.
+ * AnalyticsCacheInvalidateConsumer — consumes cache.invalidate.v1 AND gold.rewritten.v1
+ * events and evicts the brand_id-leading Redis keys from the Analytics serving cache.
  *
  * ── FLOW ─────────────────────────────────────────────────────────────────────
  * IdentityChangeRecomputeConsumer
  *   → publishes cache.invalidate.v1 (CacheInvalidatePublisher, FAIL-OPEN)
- * THIS consumer
- *   → parses the event envelope (CacheInvalidateEventSchema)
+ * v4-refresh-loop Phase 2 (Gold-batch completion)
+ *   → publishes gold.rewritten.v1 (gold-rewritten-publish job, FAIL-OPEN)
+ * THIS consumer (both intelligence.* lanes, one consumer group)
+ *   → parses the event envelope (CacheInvalidateEventSchema | GoldRewrittenEventSchema —
+ *     discriminated by event_name; gold.rewritten carries its scope as payload.affected_scope)
  *   → evicts brand_id-leading Redis keys per the CacheScopeSchema:
  *       scope.all=true       → SCAN `${brandId}:*`  → DEL all matches
  *       scope.key_prefixes   → SCAN `${brandId}:${prefix}*` → DEL for each prefix
@@ -44,7 +47,11 @@ import { context } from '@opentelemetry/api';
 import {
   CacheInvalidateEventSchema,
   CACHE_INVALIDATE_V1_TOPIC_SUFFIX,
+  GoldRewrittenEventSchema,
+  GOLD_REWRITTEN_V1_TOPIC_SUFFIX,
+  GOLD_REWRITTEN_V1_EVENT_NAME,
   buildTopic,
+  type CacheScope,
 } from '@brain/contracts';
 import { log } from '../../log.js';
 
@@ -80,7 +87,7 @@ export type CacheInvalidateProcessResult =
 
 export class AnalyticsCacheInvalidateConsumer {
   private readonly consumer: Consumer;
-  private readonly topic: string;
+  private readonly topics: string[];
 
   constructor(
     private readonly kafka: Kafka,
@@ -89,7 +96,12 @@ export class AnalyticsCacheInvalidateConsumer {
     private readonly env: string,
     private readonly groupId: string,
   ) {
-    this.topic = buildTopic(this.env, CACHE_INVALIDATE_V1_TOPIC_SUFFIX);
+    // Both intelligence lanes bust the same brand-scoped serving cache: the explicit
+    // cache.invalidate command AND the Gold-batch-completion gold.rewritten signal.
+    this.topics = [
+      buildTopic(this.env, CACHE_INVALIDATE_V1_TOPIC_SUFFIX),
+      buildTopic(this.env, GOLD_REWRITTEN_V1_TOPIC_SUFFIX),
+    ];
     this.consumer = kafka.consumer({ groupId });
   }
 
@@ -121,13 +133,30 @@ export class AnalyticsCacheInvalidateConsumer {
       return { outcome: 'invalid', reason: 'json_parse_error' };
     }
 
-    const parsed = CacheInvalidateEventSchema.safeParse(raw);
-    if (!parsed.success) {
-      return { outcome: 'invalid', reason: 'schema_validation_failed' };
+    // Discriminate by event_name: gold.rewritten.v1 carries its eviction scope as
+    // payload.affected_scope; cache.invalidate.v1 as payload.scope. Both normalize to
+    // the same (brandId, goldProduct, scope) eviction inputs.
+    let brandId: string;
+    let goldProduct: string;
+    let scope: CacheScope;
+    const eventName = (raw as { event_name?: unknown } | null)?.event_name;
+    if (eventName === GOLD_REWRITTEN_V1_EVENT_NAME) {
+      const parsed = GoldRewrittenEventSchema.safeParse(raw);
+      if (!parsed.success) {
+        return { outcome: 'invalid', reason: 'schema_validation_failed' };
+      }
+      brandId = parsed.data.brand_id;
+      goldProduct = parsed.data.payload.gold_product;
+      scope = parsed.data.payload.affected_scope;
+    } else {
+      const parsed = CacheInvalidateEventSchema.safeParse(raw);
+      if (!parsed.success) {
+        return { outcome: 'invalid', reason: 'schema_validation_failed' };
+      }
+      brandId = parsed.data.brand_id;
+      goldProduct = parsed.data.payload.gold_product;
+      scope = parsed.data.payload.scope;
     }
-
-    const { brand_id: brandId, payload } = parsed.data;
-    const { gold_product: goldProduct, scope } = payload;
 
     // Tenant isolation guard: brand_id must be a non-empty string.
     if (!brandId || typeof brandId !== 'string' || brandId.trim().length === 0) {
@@ -229,7 +258,7 @@ export class AnalyticsCacheInvalidateConsumer {
 
   async start(): Promise<void> {
     await this.consumer.connect();
-    await this.consumer.subscribe({ topic: this.topic, fromBeginning: false });
+    await this.consumer.subscribe({ topics: this.topics, fromBeginning: false });
 
     await this.consumer.run({
       // autoCommit: false — we commit manually AFTER each message is processed.

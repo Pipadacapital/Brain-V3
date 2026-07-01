@@ -389,6 +389,14 @@ run_phase() {
       # 6. mv_* views (ensure) — idempotent CREATE OR REPLACE of every brain_serving Trino view so the serving
       #    tier exposes the fresh Iceberg Gold. Views always reflect the latest snapshot; no refresh needed.
       refresh_serving_mvs
+
+      # 7. GOLD.REWRITTEN cache-bust — publish gold.rewritten.v1 per active brand so the
+      #    AnalyticsCacheInvalidateConsumer evicts the brand's stale serving-cache Redis keys NOW
+      #    instead of waiting out the per-metric TTL. BEST-EFFORT (fail-open): cache busting is an
+      #    optimization — a Kafka/PG blip here must never mark the refresh cycle degraded; the
+      #    per-metric TTL remains the correctness safety net. (Same rationale as the secrets snapshot.)
+      run_node_job gold-rewritten-publish @brain/stream-worker src/jobs/gold-rewritten-publish/run.ts \
+        || echo "[$(ts)] ⚠ gold.rewritten publish failed (best-effort — serving cache expires via TTL)"
       jlog v4_phase phase=2 name=business_intelligence status=end failures="$failures"
       ;;
     *)

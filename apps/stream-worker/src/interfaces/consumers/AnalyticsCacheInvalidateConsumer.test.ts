@@ -72,6 +72,38 @@ function buildCacheInvalidateBuffer(opts: {
   );
 }
 
+/** gold.rewritten.v1 sibling builder — scope lives at payload.affected_scope. */
+function buildGoldRewrittenBuffer(opts: {
+  brand_id?: string;
+  gold_product?: string;
+  scope?: ScopeOverride;
+}): Buffer {
+  const brandId = opts.brand_id ?? BRAND_A;
+  const scope = {
+    all: opts.scope?.all ?? false,
+    keys: opts.scope?.keys ?? [],
+    key_prefixes: opts.scope?.key_prefixes ?? [],
+  };
+  return Buffer.from(
+    JSON.stringify({
+      schema_version: '1',
+      event_id: randomUUID(),
+      brand_id: brandId,
+      correlation_id: 'test-corr',
+      event_name: 'gold.rewritten',
+      occurred_at: OCCURRED_AT,
+      payload: {
+        gold_product: opts.gold_product ?? 'gold_bi_batch',
+        layer: 'gold',
+        snapshot_id: null,
+        rows_written: null,
+        affected_scope: scope,
+      },
+    }),
+    'utf8',
+  );
+}
+
 // ── Fake Redis client ──────────────────────────────────────────────────────────
 
 /** Fake ICacheEvictionClient that tracks calls and can simulate errors. */
@@ -277,6 +309,65 @@ describe('AnalyticsCacheInvalidateConsumer.processMessage — invalid inputs', (
     const { client, deletedKeys } = makeFakeRedis();
     const result = await buildConsumer(client).processMessage(
       Buffer.from(JSON.stringify({ event_name: 'cache.invalidate', brand_id: BRAND_A }), 'utf8'),
+    );
+    expect(result.outcome).toBe('invalid');
+    expect(deletedKeys()).toHaveLength(0);
+  });
+});
+
+describe('AnalyticsCacheInvalidateConsumer.processMessage — gold.rewritten.v1', () => {
+  it('evicts ALL brand keys on gold.rewritten with affected_scope.all=true', async () => {
+    const { client, deletedKeys, remainingKeys } = makeFakeRedis([
+      `${BRAND_A}:realized_revenue:abc:v1`,
+      `${BRAND_A}:cohort_retention:def:v1`,
+      `${BRAND_B}:realized_revenue:abc:v1`, // must NOT be deleted
+    ]);
+    const result = (await buildConsumer(client).processMessage(
+      buildGoldRewrittenBuffer({ scope: { all: true } }),
+    )) as Extract<CacheInvalidateProcessResult, { outcome: 'evicted' }>;
+    expect(result.outcome).toBe('evicted');
+    expect(result.goldProduct).toBe('gold_bi_batch');
+    expect(result.keysDeleted).toBe(2);
+    expect(deletedKeys()).toContain(`${BRAND_A}:realized_revenue:abc:v1`);
+    expect(remainingKeys()).toContain(`${BRAND_B}:realized_revenue:abc:v1`);
+  });
+
+  it('honors affected_scope.key_prefixes on gold.rewritten (brand-scoped SCAN)', async () => {
+    const { client, deletedKeys } = makeFakeRedis([
+      `${BRAND_A}:ltv:h1:v1`,
+      `${BRAND_A}:aov:h1:v1`,
+      `${BRAND_B}:ltv:h1:v1`,
+    ]);
+    const result = await buildConsumer(client).processMessage(
+      buildGoldRewrittenBuffer({ scope: { key_prefixes: ['ltv'] } }),
+    );
+    expect(result.outcome).toBe('evicted');
+    expect(deletedKeys()).toEqual([`${BRAND_A}:ltv:h1:v1`]);
+  });
+
+  it('empty affected_scope on gold.rewritten → skipped', async () => {
+    const { client } = makeFakeRedis([`${BRAND_A}:key:h:v1`]);
+    const result = await buildConsumer(client).processMessage(
+      buildGoldRewrittenBuffer({ scope: { all: false } }),
+    );
+    expect(result.outcome).toBe('skipped');
+  });
+
+  it('malformed gold.rewritten (missing payload.gold_product) → invalid', async () => {
+    const { client, deletedKeys } = makeFakeRedis([`${BRAND_A}:key:h:v1`]);
+    const result = await buildConsumer(client).processMessage(
+      Buffer.from(
+        JSON.stringify({
+          schema_version: '1',
+          event_id: randomUUID(),
+          brand_id: BRAND_A,
+          correlation_id: 'test-corr',
+          event_name: 'gold.rewritten',
+          occurred_at: OCCURRED_AT,
+          payload: { layer: 'gold', affected_scope: { all: true, keys: [], key_prefixes: [] } },
+        }),
+        'utf8',
+      ),
     );
     expect(result.outcome).toBe('invalid');
     expect(deletedKeys()).toHaveLength(0);

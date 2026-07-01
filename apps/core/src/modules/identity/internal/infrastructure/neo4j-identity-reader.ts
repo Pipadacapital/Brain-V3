@@ -65,6 +65,13 @@ export interface IdentityReader {
        * search, lifecycle filter and total all apply WITHIN the allowlist (no cross-store paging hazard).
        */
       brainIdFilter?: string[] | null;
+      /**
+       * KEYSET continuation (serving-layer Gap 4): resume strictly AFTER the row with this
+       * (created_at epoch-ms, brain_id) under the stable (created_at DESC, brain_id ASC) sort.
+       * When set, `offset` is ignored (SKIP 0) — the keyset IS the position. `total` stays the full
+       * pre-pagination count for the current filter (the count query never applies the keyset).
+       */
+      after?: { createdAtMs: number; brainId: string } | null;
     },
   ): Promise<{ items: CustomerListRow[]; total: number }>;
   listMergeReviews(
@@ -162,6 +169,7 @@ export class Neo4jIdentityReader implements IdentityReader {
       limit: number;
       offset: number;
       brainIdFilter?: string[] | null;
+      after?: { createdAtMs: number; brainId: string } | null;
     },
   ): Promise<{ items: CustomerListRow[]; total: number }> {
     // Segment filter resolved to an EMPTY allowlist → zero members; short-circuit (no graph query).
@@ -184,13 +192,22 @@ export class Neo4jIdentityReader implements IdentityReader {
         WHERE 1=1 ${lifeFilter} ${segFilter}
         ${searchMatch ? 'WITH c ' + searchMatch : ''}
       `;
+      // KEYSET continuation (Gap 4): resume strictly AFTER (created_at, brain_id) under the stable
+      // (created_at DESC, brain_id ASC) sort. Applied ONLY to the rows query — `total` stays the full
+      // pre-pagination count. With a cursor, offset is ignored (the keyset IS the position).
+      const after = opts.after ?? null;
+      const keysetFilter = after
+        ? 'WITH c WHERE c.created_at < $afterCa OR (c.created_at = $afterCa AND c.brain_id > $afterId)'
+        : '';
       const params = {
         b: brandId,
         lifecycle: opts.lifecycle,
         hashes: opts.identifierHashes,
         brainIdFilter: brainIdFilter ?? [],
         limit: neo4j.int(opts.limit),
-        offset: neo4j.int(opts.offset),
+        offset: neo4j.int(after ? 0 : opts.offset),
+        afterCa: after ? neo4j.int(after.createdAtMs) : null,
+        afterId: after ? after.brainId : null,
       };
 
       const totalRes = await s.run(`${base} RETURN count(c) AS total`, params);
@@ -198,12 +215,13 @@ export class Neo4jIdentityReader implements IdentityReader {
 
       const rowsRes = await s.run(
         `${base}
+         ${keysetFilter}
          OPTIONAL MATCH (i:Identifier {brand_id:$b})-[r:IDENTIFIES]->(c) WHERE r.is_active = true
          WITH c, count(r) AS id_count, max(r.created_at) AS last_id_at
          RETURN c.brain_id AS brain_id, c.anonymous_id AS anonymous_id, c.lifecycle_state AS lifecycle_state,
                 c.merged_into AS merged_into, coalesce(c.ai_processing_consent,false) AS ai,
                 coalesce(c.resolution_consent,false) AS res, id_count, last_id_at, c.created_at AS created_at
-         ORDER BY c.created_at DESC
+         ORDER BY c.created_at DESC, c.brain_id ASC
          SKIP $offset LIMIT $limit`,
         params,
       );

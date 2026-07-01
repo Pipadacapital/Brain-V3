@@ -102,9 +102,9 @@ export async function getCustomer360Summary(
       `SELECT brain_id, customer_ref, lifetime_orders, lifetime_value_minor, aov_minor, delivered_orders, rto_orders,
               first_identified_at, preferred_channel, preferred_device, top_category, acquisition_source,
               health_band, churn_score, lifecycle_stage, last_activity_at
-         FROM brain_serving.mv_gold_customer_360
+         FROM brain_serving.mv_gold_customer_list
         WHERE ${BRAND_PREDICATE}
-        ORDER BY lifetime_value_minor DESC
+        ORDER BY lifetime_value_minor DESC, brain_id ASC
         LIMIT ${TOP_N}`,
       [],
     );

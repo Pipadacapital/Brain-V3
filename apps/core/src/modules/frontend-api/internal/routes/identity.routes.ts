@@ -69,6 +69,9 @@ export function registerIdentityRoutes(fastify: FastifyInstance, deps: BffDeps):
             acquisition_source: { type: 'string', maxLength: 128 },
             limit: { type: 'integer', minimum: 1, maximum: 100 },
             offset: { type: 'integer', minimum: 0 },
+            // Opaque keyset cursor from a previous page's next_cursor (Gap 4). Wins over offset
+            // when both are sent; an unparseable value degrades to offset paging (never a 400).
+            cursor: { type: 'string', maxLength: 512 },
           },
           additionalProperties: false,
         },
@@ -77,7 +80,7 @@ export function registerIdentityRoutes(fastify: FastifyInstance, deps: BffDeps):
     async (request: FastifyRequest, reply: FastifyReply) => {
       const requestId = randomUUID();
       const auth = (request as AuthenticatedRequest).auth;
-      const q = request.query as { lifecycle?: string; search?: string; segment?: string; acquisition_source?: string; limit?: number; offset?: number };
+      const q = request.query as { lifecycle?: string; search?: string; segment?: string; acquisition_source?: string; limit?: number; offset?: number; cursor?: string };
 
       const limit = q.limit ?? 25;
       const offset = q.offset ?? 0;
@@ -90,6 +93,7 @@ export function registerIdentityRoutes(fastify: FastifyInstance, deps: BffDeps):
         limit,
         offset,
         searched: Boolean(q.search && q.search.trim().length > 0),
+        next_cursor: null,
       };
 
       // Honest empty: no active brand / identity graph → no scope to browse.
@@ -114,7 +118,7 @@ export function registerIdentityRoutes(fastify: FastifyInstance, deps: BffDeps):
 
       const result: ContractCustomerList = await listCustomers(
         auth.brandId,
-        { lifecycle: q.lifecycle ?? null, search: q.search ?? null, segment, acquisitionSource, limit, offset },
+        { lifecycle: q.lifecycle ?? null, search: q.search ?? null, segment, acquisitionSource, limit, offset, cursor: q.cursor ?? null },
         requestId,
         { reader: identityReader, saltFn: deps.getCoreSaltHex, enrichScores, segmentMembers, acquisitionSourceMembers },
       );

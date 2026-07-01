@@ -372,7 +372,7 @@ export async function computeTouchpointTimeline(
                 occurred_at, channel, utm_source, utm_medium, utm_campaign,
                 utm_term, utm_content, fbclid, gclid, ttclid,
                 referrer_host, landing_path, stitched_brain_id, event_type
-           FROM brain_serving.mv_silver_touchpoint
+           FROM brain_serving.mv_gold_journey_timeline
           WHERE brain_anon_id IN (${placeholders})
             AND ${BRAND_PREDICATE}
           ORDER BY touch_seq ASC`,
@@ -385,7 +385,7 @@ export async function computeTouchpointTimeline(
               occurred_at, channel, utm_source, utm_medium, utm_campaign,
               utm_term, utm_content, fbclid, gclid, ttclid,
               referrer_host, landing_path, stitched_brain_id, event_type
-         FROM brain_serving.mv_silver_touchpoint
+         FROM brain_serving.mv_gold_journey_timeline
         WHERE brain_anon_id = ?
           AND ${BRAND_PREDICATE}
         ORDER BY touch_seq ASC`,

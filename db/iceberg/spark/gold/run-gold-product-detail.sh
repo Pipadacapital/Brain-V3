@@ -34,6 +34,7 @@ docker volume create brain-spark-ivy >/dev/null
 
 echo "[gold-product-detail] >>> spark-submit gold_product_detail.py"
 docker run --rm \
+  --memory "${SPARK_CONTAINER_MEMORY:-7g}" \
   --network "container:${REDPANDA_CONTAINER}" \
   --user root \
   -v "${SPARK_DIR}":/opt/spark-src:ro \

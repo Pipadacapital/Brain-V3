@@ -33,6 +33,7 @@ docker volume create brain-spark-ivy >/dev/null
 echo ""
 echo "================ BUILD silver mart: silver_return ================"
 docker run --rm \
+  --memory "${SPARK_CONTAINER_MEMORY:-7g}" \
   --network "container:${REDPANDA_CONTAINER}" \
   --user root \
   -v "${SPARK_DIR}":/opt/spark-src:ro \

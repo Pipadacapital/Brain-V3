@@ -19,6 +19,7 @@ echo "[bronze-maintenance] MODE=${MODE:-maintain} image=${SPARK_IMAGE}"
 docker volume create brain-spark-ivy >/dev/null
 
 exec docker run --rm \
+  --memory "${SPARK_CONTAINER_MEMORY:-7g}" \
   --network "container:${REDPANDA_CONTAINER}" \
   --user root \
   -v "${SCRIPT_DIR}":/opt/spike:ro \

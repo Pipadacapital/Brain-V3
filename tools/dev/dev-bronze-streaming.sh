@@ -71,6 +71,7 @@ trap 'echo "[combined-bronze] stopping…"; docker rm -f "${SINK_CONTAINER_NAME:
 while :; do
   docker rm -f "${SINK_CONTAINER_NAME:-brain-bronze-sink}" >/dev/null 2>&1 || true
   docker run --rm \
+  --memory "${SPARK_CONTAINER_MEMORY:-7g}" \
   --name "${SINK_CONTAINER_NAME:-brain-bronze-sink}" \
   --network "container:${KAFKA_CONTAINER}" \
   --user root \

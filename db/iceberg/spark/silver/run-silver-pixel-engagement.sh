@@ -44,6 +44,7 @@ for job in "${JOBS[@]}"; do
   echo ""
   echo "================ BUILD silver mart: ${job} ================"
   docker run --rm \
+    --memory "${SPARK_CONTAINER_MEMORY:-7g}" \
     --network "container:${REDPANDA_CONTAINER}" \
     --user root \
     -v "${SPARK_ROOT}":/opt/spark-src:ro \

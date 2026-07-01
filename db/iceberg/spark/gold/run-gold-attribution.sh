@@ -65,6 +65,7 @@ for model in ${MODELS}; do
   echo "================ BUILD gold mart: ${model} ================"
   spark_retry "gold-attribution/${model}" \
   docker run --rm \
+    --memory "${SPARK_CONTAINER_MEMORY:-7g}" \
     --network "container:${REDPANDA_CONTAINER}" \
     --user root \
     -v "${SPARK_DIR}":/opt/spark-src:ro \

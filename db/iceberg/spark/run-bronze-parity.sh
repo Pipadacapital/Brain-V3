@@ -24,6 +24,7 @@ echo "[bronze-parity] image=${SPARK_IMAGE} netns=container:${REDPANDA_CONTAINER}
 docker volume create brain-spark-ivy >/dev/null
 
 exec docker run --rm \
+  --memory "${SPARK_CONTAINER_MEMORY:-7g}" \
   --network "container:${REDPANDA_CONTAINER}" \
   --user root \
   -v "${SCRIPT_DIR}":/opt/spike:ro \

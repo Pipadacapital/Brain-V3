@@ -40,6 +40,7 @@ for model in ${MODELS}; do
   echo ""
   echo "================ BUILD silver mart: ${model} ================"
   docker run --rm \
+    --memory "${SPARK_CONTAINER_MEMORY:-7g}" \
     --network "container:${REDPANDA_CONTAINER}" \
     --user root \
     -v "${SPARK_DIR}":/opt/spark-src:ro \

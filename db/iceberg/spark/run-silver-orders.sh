@@ -33,6 +33,7 @@ run_job() {
   local script="$1"
   echo "[silver-orders] >>> ${script}"
   docker run --rm \
+    --memory "${SPARK_CONTAINER_MEMORY:-7g}" \
     --network "container:${REDPANDA_CONTAINER}" \
     --user root \
     -v "${SCRIPT_DIR}":/opt/spike:ro \

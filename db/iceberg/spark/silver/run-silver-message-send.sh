@@ -33,6 +33,7 @@ echo "[silver-message-send] image=${SPARK_IMAGE} netns=container:${REDPANDA_CONT
 docker volume create brain-spark-ivy >/dev/null
 
 exec docker run --rm \
+  --memory "${SPARK_CONTAINER_MEMORY:-7g}" \
   --network "container:${REDPANDA_CONTAINER}" \
   --user root \
   -v "${SPARK_DIR}":/opt/spark-src:ro \

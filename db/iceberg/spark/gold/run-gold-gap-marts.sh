@@ -50,6 +50,7 @@ run_job() {
   local script="$1"
   echo "[gold-gap-marts] >>> spark-submit ${script}"
   docker run --rm \
+    --memory "${SPARK_CONTAINER_MEMORY:-7g}" \
     --network "container:${REDPANDA_CONTAINER}" \
     --user root \
     -v "${SPARK_DIR}":/opt/spark-src:ro \

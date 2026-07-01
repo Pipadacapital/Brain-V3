@@ -41,6 +41,7 @@ run_job() {
   local script="$1"
   echo "[silver-payments-logistics] >>> spark-submit ${script}"
   docker run --rm \
+    --memory "${SPARK_CONTAINER_MEMORY:-7g}" \
     --network "container:${REDPANDA_CONTAINER}" \
     --user root \
     -v "${SPARK_DIR}":/opt/spark-src:ro \

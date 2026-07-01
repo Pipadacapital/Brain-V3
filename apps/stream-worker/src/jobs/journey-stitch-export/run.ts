@@ -24,13 +24,33 @@ export interface StitchExportResult {
 export async function runJourneyStitchExport(): Promise<StitchExportResult> {
   const pgPool = new pg.Pool({ connectionString: PG_URL, max: 3 });
   try {
-    // Read the full stitch (brain_app — cross-brand ETL; isolation at the read seam).
-    const rows = (
-      await pgPool.query<{ brand_id: string; order_id: string; stitched_anon_id: string | null; brain_id: string | null; created_at: Date | null }>(
-        `SELECT brand_id::text, order_id, stitched_anon_id, brain_id::text AS brain_id, created_at
-           FROM connectors.connector_journey_stitch_map`,
-      )
-    ).rows;
+    // Read the stitch PER-BRAND under the brand GUC. connectors.connector_journey_stitch_map is FORCE RLS
+    // (isolation = brand_id = current_setting('app.current_brand_id')), so a GUC-LESS cross-brand read as
+    // brain_app silently returns 0 rows — the whole journey-stitch export was materializing nothing. Loop
+    // the active brands, set the GUC transaction-locally per read (auto-reset on COMMIT — no pool leak), and
+    // accumulate. (ops.silver_journey_stitch is NOT RLS, so the reload write below stays a single cross-brand
+    // DELETE + INSERT.)
+    type StitchRow = { brand_id: string; order_id: string; stitched_anon_id: string | null; brain_id: string | null; created_at: Date | null };
+    const rows: StitchRow[] = [];
+    const brandRes = await pgPool.query<{ id: string }>('SELECT id FROM list_active_brand_ids()');
+    for (const { id: brandId } of brandRes.rows) {
+      const c = await pgPool.connect();
+      try {
+        await c.query('BEGIN');
+        await c.query("SELECT set_config('app.current_brand_id', $1, true)", [brandId]); // txn-local GUC
+        const r = await c.query<StitchRow>(
+          `SELECT brand_id::text, order_id, stitched_anon_id, brain_id::text AS brain_id, created_at
+             FROM connectors.connector_journey_stitch_map`,
+        );
+        await c.query('COMMIT');
+        rows.push(...r.rows);
+      } catch (err) {
+        await c.query('ROLLBACK').catch(() => {});
+        throw err;
+      } finally {
+        c.release();
+      }
+    }
 
     // Full-table reload via DELETE (NOT TRUNCATE): migration 0116 deliberately grants brain_app
     // SELECT/INSERT/UPDATE/DELETE but NOT TRUNCATE (least privilege — TRUNCATE needs table ownership

@@ -75,10 +75,14 @@ RAW_TABLE = f"{CATALOG}.{BRONZE_NAMESPACE}.{os.environ.get('COLLECTOR_BRONZE_TAB
 # UNIFIED-BRONZE CUTOVER (bronze_landing.py): the two split sinks are being unified into ONE raw table
 # brain_bronze.events. This job IS the R2/R3 gate — under the "pure-raw Bronze" decision the gate lives
 # HERE (not in landing), so it reads the UNGATED collector rows and admits exactly the set it always did.
-# To cut over, run with `COLLECTOR_BRONZE_TABLE=events COLLECTOR_CONNECTOR_FILTER=collector` (the unified
-# table + the lane discriminator). Default stays `collector_events` / no filter so the running pipeline is
-# unaffected until the sink itself is switched to bronze_landing (dev/prod wiring). Rollback = unset both.
-COLLECTOR_CONNECTOR_FILTER = os.environ.get("COLLECTOR_CONNECTOR_FILTER", "").strip()
+# ONE env flips every Bronze reader (see _raw_normalize.bronze_source_table):
+#   BRONZE_SOURCE=legacy (default) → read the legacy single-lane collector_events (current behavior).
+#   BRONZE_SOURCE=events           → read brain_bronze.events WHERE connector='collector'.
+# Default is legacy so the running pipeline is unaffected until the sink itself is switched to
+# bronze_landing (dev/prod wiring). Rollback = set BRONZE_SOURCE=legacy.
+BRONZE_SOURCE = os.environ.get("BRONZE_SOURCE", "legacy").lower()
+EVENTS_TABLE = f"{CATALOG}.{BRONZE_NAMESPACE}.events"
+COLLECTOR_CONNECTOR = "collector"
 TARGET = f"{CATALOG}.{SILVER_NAMESPACE}.silver_collector_event"
 
 # Lane policy — MUST stay in lockstep with bronze_materialize.py (the same constants, same meaning).
@@ -317,13 +321,14 @@ def build(spark: SparkSession):
     }.items():
         spark.conf.set(_k, _v)
 
-    raw_all = spark.table(RAW_TABLE)
-    # UNIFIED-BRONZE: when reading the unified brain_bronze.events, keep ONLY the collector lane (the raw
-    # connector lanes carry provider-API payloads with no envelope, which the gate/parse below can't map).
-    # Empty filter (default / rollback against the legacy single-lane collector_events, which has no
-    # `connector` column) → no-op. The gate + envelope-parse downstream is byte-identical either way.
-    if COLLECTOR_CONNECTOR_FILTER:
-        raw_all = raw_all.where(col("connector") == lit(COLLECTOR_CONNECTOR_FILTER))
+    # UNIFIED-BRONZE: read the unified brain_bronze.events (collector lane ONLY — the raw connector lanes
+    # carry provider-API payloads with no envelope, which the gate/parse below can't map) under
+    # BRONZE_SOURCE=events, else the legacy single-lane collector_events. The gate + envelope-parse
+    # downstream is byte-identical either way.
+    if BRONZE_SOURCE == "events":
+        raw_all = spark.table(EVENTS_TABLE).where(col("connector") == lit(COLLECTOR_CONNECTOR))
+    else:
+        raw_all = spark.table(RAW_TABLE)
 
     # ── INCREMENTAL WATERMARK ───────────────────────────────────────────────────────────────────────
     # Process only Bronze rows newer than what Silver already has (minus a small overlap; the MERGE

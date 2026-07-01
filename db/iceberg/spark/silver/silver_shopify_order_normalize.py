@@ -79,7 +79,7 @@ def build(spark: SparkSession):
     create_iceberg_table(spark, SILVER_NAMESPACE, TARGET.rsplit(".", 1)[1], COLUMNS_SQL,
                          partitioned_by="bucket(256, brand_id), days(occurred_at)")
 
-    raw = spark.table(RAW_TABLE)
+    raw = rn.read_bronze(spark, CATALOG, BRONZE_NAMESPACE, "shopify_orders_raw", "shopify")
     # Skip-guard: the connector raw lanes are EMPTY until a connector syncs and the V4 raw-lane producer
     # (connector-platform gap G1) lands payload-schema records. With no source rows there is nothing to
     # normalize, so return cleanly (target already ensured above) instead of failing on the legacy struct

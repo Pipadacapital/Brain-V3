@@ -170,7 +170,7 @@ def build(spark: SparkSession):
         partitioned_by="bucket(256, brand_id), days(occurred_at)",
     )
 
-    raw = spark.table(RAW_TABLE)
+    raw = rn.read_bronze(spark, CATALOG, BRONZE_NAMESPACE, "shiprocket_shipments_raw", "shiprocket")
     # Skip-guard: connector raw lanes are EMPTY until a connector syncs + the V4 raw-lane producer (G1)
     # lands payload-schema records. No source rows → nothing to normalize; return cleanly instead of
     # failing on the legacy struct columns this job still reads. Full payload-JSON normalize is G1.

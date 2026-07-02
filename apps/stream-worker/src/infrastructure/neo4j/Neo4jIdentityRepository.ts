@@ -95,7 +95,7 @@ export class Neo4jIdentityRepository {
     });
   }
 
-  /** Idempotent schema: per-brand-unique Identifier + Customer keys. Run once at startup. */
+  /** Idempotent schema: per-brand-unique Identifier + Customer keys + hot-lookup indexes. Run once at startup. */
   async bootstrap(): Promise<void> {
     const session = this.driver.session();
     try {
@@ -110,6 +110,28 @@ export class Neo4jIdentityRepository {
       );
       await session.run(
         'CREATE CONSTRAINT identity_sharedutil_key IF NOT EXISTS FOR (s:SharedUtility) REQUIRE (s.brand_id, s.identifier_type, s.identifier_value) IS UNIQUE',
+      );
+      // Hot-lookup indexes (AUD-PERF-017) — without these every 5-min identity-export incremental cycle
+      // scans ALL :IDENTIFIES edges (its watermark filters on r.created_at / r.is_active — relationship
+      // properties the uniqueness constraints above cannot serve), and the core reader label-scans
+      // MergeEvent / MergeReview by brand-scoped properties. All additive + idempotent.
+      await session.run(
+        'CREATE INDEX identity_identifies_created_at IF NOT EXISTS FOR ()-[r:IDENTIFIES]-() ON (r.created_at)',
+      );
+      await session.run(
+        'CREATE INDEX identity_identifies_is_active IF NOT EXISTS FOR ()-[r:IDENTIFIES]-() ON (r.is_active)',
+      );
+      await session.run(
+        'CREATE INDEX identity_mergeevent_brand_canonical IF NOT EXISTS FOR (m:MergeEvent) ON (m.brand_id, m.canonical_brain_id)',
+      );
+      await session.run(
+        'CREATE INDEX identity_mergeevent_brand_merged IF NOT EXISTS FOR (m:MergeEvent) ON (m.brand_id, m.merged_brain_id)',
+      );
+      await session.run(
+        'CREATE INDEX identity_mergereview_brand_status IF NOT EXISTS FOR (mr:MergeReview) ON (mr.brand_id, mr.status)',
+      );
+      await session.run(
+        'CREATE INDEX identity_customer_lifecycle IF NOT EXISTS FOR (c:Customer) ON (c.lifecycle_state)',
       );
     } finally {
       await session.close();

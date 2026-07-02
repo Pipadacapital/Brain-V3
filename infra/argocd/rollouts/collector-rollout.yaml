@@ -45,7 +45,7 @@ spec:
               - templateName: ingest-freshness
             args:
               - name: prometheus-address
-                value: REPLACE_WITH_PROMETHEUS_ADDRESS
+                value: http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090
         - setWeight: 50
         - pause: { duration: 5m }
         - setWeight: 100
@@ -56,4 +56,4 @@ spec:
         startingStep: 2
         args:
           - name: prometheus-address
-            value: REPLACE_WITH_PROMETHEUS_ADDRESS
+            value: http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090

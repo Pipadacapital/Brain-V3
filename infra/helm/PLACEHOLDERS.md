@@ -45,7 +45,11 @@ ECR repo names are already aligned with terraform
 | `REPLACE_WITH_CORE_HOSTNAME` | `core/values-prod.yaml` | e.g. `api.<apex-domain>` |
 | `REPLACE_WITH_ACM_CERT_ARN` | the three values-prod above | ACM cert (ap-south-1) covering those hosts |
 | `REPLACE_WITH_APEX_DOMAIN` | `argocd/envs/prod/external-dns.yaml` | the Route53 hosted zone external-dns may manage. Manual-DNS alternative: skip the external-dns app and CNAME each hostname to the shared ALB |
-| `REPLACE_WITH_PROMETHEUS_ADDRESS` | `argocd/rollouts/*.yaml` | the Prometheus endpoint (observability stack) |
+
+`REPLACE_WITH_PROMETHEUS_ADDRESS` is GONE (AUD-PROD-002): the rollouts
+manifests now carry the in-cluster kube-prometheus-stack Prometheus address
+(`http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090`
+— the `kube-prometheus-stack-prod` app, ns `monitoring`) — nothing to fill.
 
 ## 4. IRSA role convention + terraform coverage
 

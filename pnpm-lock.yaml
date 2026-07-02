@@ -573,9 +573,6 @@ importers:
       '@brain/money':
         specifier: workspace:*
         version: link:../money
-      mysql2:
-        specifier: ^3.22.5
-        version: 3.22.5(@types/node@25.9.3)
     devDependencies:
       '@types/pg':
         specifier: ^8.11.0

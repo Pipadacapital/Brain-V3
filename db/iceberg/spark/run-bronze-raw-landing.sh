@@ -12,6 +12,13 @@
 # Env:    SPARK_IMAGE, ICEBERG_VERSION, KAFKA_CONTAINER, LANE, TRIGGER_MODE, TOPIC_ENV_PREFIX overridable.
 set -euo pipefail
 
+# AUD-INFRA-006: batch-Spark admission lock — but ONLY for the bounded availableNow drain. A continuous
+# sink never exits, so holding the batch lock would starve every batch job (same reason
+# tools/dev/dev-bronze-streaming.sh does not take it).
+if [ "${TRIGGER_MODE:-availableNow}" != "continuous" ]; then
+  . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_spark_lock.sh"
+fi
+
 SPARK_IMAGE="${SPARK_IMAGE:-apache/spark:3.5.3}"
 ICEBERG_VERSION="${ICEBERG_VERSION:-1.9.2}"
 SCALA="2.12"

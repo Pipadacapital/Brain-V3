@@ -495,6 +495,18 @@ if [ "${ONESHOT:-0}" = "1" ]; then
   exit $?
 fi
 
+# ── single-loop guard (AUD-INFRA-006): a second CONTINUOUS loop exits with a clear message instead of
+# doubling every Spark step. ONESHOT=1 runs (dev-up) stay allowed — they QUEUE behind the running loop's
+# current job via the per-script batch-Spark admission lock (db/iceberg/spark/_spark_lock.sh).
+LOOP_PIDFILE="${LOOP_PIDFILE:-${TMPDIR:-/tmp}/brain-v4-refresh-loop.pid}"
+if [ -f "$LOOP_PIDFILE" ] && kill -0 "$(cat "$LOOP_PIDFILE" 2>/dev/null)" 2>/dev/null; then
+  echo "✗ another V4 refresh loop is already running (pid $(cat "$LOOP_PIDFILE")) — not starting a second one." >&2
+  echo "  (ONESHOT=1 single cycles remain allowed; they queue via the Spark batch lock.)" >&2
+  exit 1
+fi
+echo "$$" > "$LOOP_PIDFILE"
+trap 'rm -f "$LOOP_PIDFILE"' EXIT
+
 echo "▶ V4 refresh loop — phase=${PHASE}, every ${INTERVAL}s (Ctrl-C to stop)"
 while true; do
   run_once || true   # a failed cycle is logged; the loop keeps the analytics layer converging next pass

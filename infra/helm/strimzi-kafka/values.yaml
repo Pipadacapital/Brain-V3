@@ -76,6 +76,34 @@ kafka:
     # Default broker-side retention = 7 days (matches the per-topic retention below + compose).
     logRetentionMs: 604800000
 
+# ── Prometheus metrics (AUD-LOCAL-016-FUP1) ─────────────────────────────────────────────────────
+# The prod kube-prometheus-stack previously saw NO kafka metrics, so the brain-slo DLQ-growth /
+# ingest-freshness / consumer-lag rules were vacuously silent. When enabled this renders, via the
+# Strimzi-documented pattern:
+#   • spec.kafka.metricsConfig (type jmxPrometheusExporter) ← a ConfigMap whose rules are a
+#     VERBATIM copy of infra/observe/kafka-jmx-exporter.yml (the local compose broker agent
+#     config) — SAME jmx_exporter, SAME mapping rules ⇒ SAME metric names as local
+#     (kafka_log_log_logendoffset, …); no rename delta. KEEP THE TWO IN LOCKSTEP.
+#   • spec.kafkaExporter — Strimzi's packaging of danielqsj/kafka_exporter (the exact companion
+#     the local compose runs) for kafka_consumergroup_lag; metric names identical.
+#   • two PodMonitors relabelling job → "kafka-jmx-exporter" / "kafka-exporter" — the exact job
+#     names the local compose Prometheus uses and the brain-slo rules match
+#     (up{job=~"…|kafka-jmx-exporter|kafka-exporter"}).
+# Off by default (local/kind rendering unchanged; no Prometheus Operator CRDs there);
+# values-prod enables it.
+metrics:
+  enabled: false
+  kafkaExporter:
+    topicRegex: ".*"
+    groupRegex: ".*"
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+
 # ── Strimzi Entity Operator ────────────────────────────────────────────────────────────────────
 # The Topic Operator reconciles the KafkaTopic CRs below into real Kafka topics; the User Operator
 # manages KafkaUser CRs (mTLS/ACLs) when clients adopt TLS auth.

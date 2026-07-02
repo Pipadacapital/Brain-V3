@@ -62,6 +62,19 @@ prometheus:
   prometheusSpec:
     nodeSelector:
       role: system
+    # ── AUD-LOCAL-016-FUP1: SELECT the app/kafka monitors ───────────────────
+    # The chart default (…NilUsesHelmValues: true) makes Prometheus select ONLY
+    # monitors labelled release=kube-prometheus-stack — i.e. the stack's own.
+    # The Brain monitors live in their OWNING charts' namespaces (collector
+    # ServiceMonitor, stream-worker PodMonitor, strimzi-kafka PodMonitors ×2)
+    # and are NOT release-labelled. false ⇒ the rendered Prometheus CR gets
+    # serviceMonitorSelector/podMonitorSelector {} (select all), and the chart
+    # already renders *NamespaceSelector {} (all namespaces) — verified against
+    # the pulled 65.1.1 chart. Rules are unaffected: additionalPrometheusRulesMap
+    # PrometheusRules carry the release label and keep matching the default
+    # ruleSelector.
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
     # Thanos owns long-term retention (S3, AUD-PROD-012) — keep the local TSDB
     # short + size-bounded so Prometheus fits the t4g.medium system nodes.
     retention: 2d
@@ -189,13 +202,13 @@ additionalPrometheusRulesMap:
           - alert: BrainCollectorErrorBudgetFastBurn
             expr: |
               (
-                sum(rate(collector_spool_full_total[5m]))
-                  / (sum(rate(collector_accept_total[5m])) + sum(rate(collector_spool_full_total[5m]))) > (14.4 * 0.0005)
+                sum(rate(brain_collector_spool_full_total[5m]))
+                  / (sum(rate(brain_collector_accept_total[5m])) + sum(rate(brain_collector_spool_full_total[5m]))) > (14.4 * 0.0005)
               )
               and
               (
-                sum(rate(collector_spool_full_total[1h]))
-                  / (sum(rate(collector_accept_total[1h])) + sum(rate(collector_spool_full_total[1h]))) > (14.4 * 0.0005)
+                sum(rate(brain_collector_spool_full_total[1h]))
+                  / (sum(rate(brain_collector_accept_total[1h])) + sum(rate(brain_collector_spool_full_total[1h]))) > (14.4 * 0.0005)
               )
             for: 2m
             labels:
@@ -207,13 +220,13 @@ additionalPrometheusRulesMap:
           - alert: BrainCollectorErrorBudgetSlowBurn
             expr: |
               (
-                sum(rate(collector_spool_full_total[30m]))
-                  / (sum(rate(collector_accept_total[30m])) + sum(rate(collector_spool_full_total[30m]))) > (6 * 0.0005)
+                sum(rate(brain_collector_spool_full_total[30m]))
+                  / (sum(rate(brain_collector_accept_total[30m])) + sum(rate(brain_collector_spool_full_total[30m]))) > (6 * 0.0005)
               )
               and
               (
-                sum(rate(collector_spool_full_total[6h]))
-                  / (sum(rate(collector_accept_total[6h])) + sum(rate(collector_spool_full_total[6h]))) > (6 * 0.0005)
+                sum(rate(brain_collector_spool_full_total[6h]))
+                  / (sum(rate(brain_collector_accept_total[6h])) + sum(rate(brain_collector_spool_full_total[6h]))) > (6 * 0.0005)
               )
             for: 15m
             labels:
@@ -224,7 +237,7 @@ additionalPrometheusRulesMap:
 
           - alert: BrainCollectorSheddingNow
             # Any sustained back-pressure shedding — the drainer (→ Kafka) is behind RIGHT NOW.
-            expr: sum(rate(collector_spool_full_total[5m])) > 0
+            expr: sum(rate(brain_collector_spool_full_total[5m])) > 0
             for: 2m
             labels:
               severity: critical
@@ -266,7 +279,7 @@ additionalPrometheusRulesMap:
             expr: |
               (sum(rate(kafka_log_log_logendoffset{topic=~".*\\.collector\\.event\\.v1"}[10m])) > 0)
               and
-              (sum(increase(bronze_write_total[10m])) == 0)
+              (sum(increase(brain_bronze_write_total[10m])) == 0)
             for: 10m
             labels:
               severity: critical
@@ -279,7 +292,7 @@ additionalPrometheusRulesMap:
           - alert: BrainIngestSchedulerOverrun
             # The sequential scheduler tick can no longer finish within its interval → connector freshness
             # silently slips into minutes. The first symptom of "too many brands per replica" (shard/scale).
-            expr: sum(increase(ingest_scheduler_tick_overrun_total[15m])) > 0
+            expr: sum(increase(brain_ingest_scheduler_tick_overrun_total[15m])) > 0
             for: 15m
             labels:
               severity: warning
@@ -291,8 +304,8 @@ additionalPrometheusRulesMap:
             # A provider's repulls are failing on dispatch (rate limit / credential / API) — stale data for
             # that connector with NO other signal today (per-connector observability was missing).
             expr: |
-              sum by (provider) (rate(ingest_scheduler_dispatch_error_total[10m]))
-                / clamp_min(sum by (provider) (rate(ingest_scheduler_dispatch_total[10m]) + rate(ingest_scheduler_dispatch_error_total[10m])), 1) > 0.25
+              sum by (provider) (rate(brain_ingest_scheduler_dispatch_error_total[10m]))
+                / clamp_min(sum by (provider) (rate(brain_ingest_scheduler_dispatch_total[10m]) + rate(brain_ingest_scheduler_dispatch_error_total[10m])), 1) > 0.25
             for: 15m
             labels:
               severity: warning
@@ -303,7 +316,7 @@ additionalPrometheusRulesMap:
           - alert: BrainConnectorRateLimited
             # The global per-provider rate limiter is throttling dispatches sustainedly → that provider's
             # shared app quota is the bottleneck at the current brand count. Raise the cap or add capacity.
-            expr: sum by (provider) (rate(ingest_scheduler_rate_limited_total[15m])) > 0.1
+            expr: sum by (provider) (rate(brain_ingest_scheduler_rate_limited_total[15m])) > 0.1
             for: 30m
             labels:
               severity: warning
@@ -316,9 +329,9 @@ additionalPrometheusRulesMap:
           # poison left parked. A non-zero exhausted rate means human investigation is needed — the
           # DLQ is no longer self-healing for those messages.
           - alert: BrainDlqRedriveExhausted
-            # dlq_redrive_exhausted_total: stream-worker counter (P2.2). A redrive pass left messages
+            # brain_dlq_redrive_exhausted_total: stream-worker counter (P2.2). A redrive pass left messages
             # parked because they hit the max-redrive ceiling — they keep failing on replay.
-            expr: sum by (target_topic) (increase(dlq_redrive_exhausted_total[1h])) > 0
+            expr: sum by (target_topic) (increase(brain_dlq_redrive_exhausted_total[1h])) > 0
             for: 5m
             labels:
               severity: warning
@@ -327,9 +340,9 @@ additionalPrometheusRulesMap:
               description: "A redrive pass exhausted the loop guard for messages targeting {{ $labels.target_topic }} — they fail every replay. Investigate the payload/schema; they will not self-heal."
 
           - alert: BrainDlqRedriveErrors
-            # dlq_redrive_error_total: republish to the source topic failed during a redrive (broker
+            # brain_dlq_redrive_error_total: republish to the source topic failed during a redrive (broker
             # issue) — the operator's drain is not making progress.
-            expr: sum by (target_topic) (increase(dlq_redrive_error_total[15m])) > 0
+            expr: sum by (target_topic) (increase(brain_dlq_redrive_error_total[15m])) > 0
             for: 5m
             labels:
               severity: warning
@@ -342,9 +355,9 @@ additionalPrometheusRulesMap:
           # so the scheduler sees success and that connector's data (spend/settlement/orders) silently
           # goes stale until an operator reconnects. This makes that path loud.
           - alert: BrainConnectorAuthRejected
-            # connector_auth_rejected_total: stream-worker counter (P2.6). Non-zero ⇒ a connector needs
+            # brain_connector_auth_rejected_total: stream-worker counter (P2.6). Non-zero ⇒ a connector needs
             # reconnecting RIGHT NOW and its data is going stale.
-            expr: sum by (provider) (increase(connector_auth_rejected_total[15m])) > 0
+            expr: sum by (provider) (increase(brain_connector_auth_rejected_total[15m])) > 0
             for: 5m
             labels:
               severity: warning
@@ -356,9 +369,9 @@ additionalPrometheusRulesMap:
           # means tokens are NOT being refreshed (app creds missing, or tokens already dead) → spend
           # ingestion will silently stale as those tokens hit their ~60-day expiry.
           - alert: BrainMetaTokenRefreshFailing
-            # meta_token_refresh_error_total: stream-worker counter (the daily cron job). Non-zero ⇒
+            # brain_meta_token_refresh_error_total: stream-worker counter (the daily cron job). Non-zero ⇒
             # tokens are not being kept fresh — investigate app creds / reconnect the flagged connectors.
-            expr: sum by (reason) (increase(meta_token_refresh_error_total[2h])) > 0
+            expr: sum by (reason) (increase(brain_meta_token_refresh_error_total[2h])) > 0
             for: 10m
             labels:
               severity: warning
@@ -374,9 +387,9 @@ additionalPrometheusRulesMap:
           # order counts; a sustained breach = Silver is stale or unreachable. The continuous
           # Silver-freshness signal.
           - alert: BrainSilverLag
-            # dq_silver_lag_breach_total: stream-worker DQ counter. Sustained increase ⇒ Silver is
+            # brain_dq_silver_lag_breach_total: stream-worker DQ counter. Sustained increase ⇒ Silver is
             # lagging Bronze (or StarRocks is down) — analytics reads are stale.
-            expr: sum by (reason) (increase(dq_silver_lag_breach_total[1h])) > 0
+            expr: sum by (reason) (increase(brain_dq_silver_lag_breach_total[1h])) > 0
             for: 30m
             labels:
               severity: warning
@@ -388,10 +401,10 @@ additionalPrometheusRulesMap:
       - name: brain-revenue-integrity
         rules:
           - alert: BrainRevenueOverReversal
-            # revenue_over_reversal_total: stream-worker counter (F2). Cumulative reversals exceeded the
+            # brain_revenue_over_reversal_total: stream-worker counter (F2). Cumulative reversals exceeded the
             # recognized sale for an order → realized revenue for that order went negative. Usually a
             # duplicate refund or a refund+chargeback on one order — needs reconciliation, not silence.
-            expr: sum(increase(revenue_over_reversal_total[15m])) > 0
+            expr: sum(increase(brain_revenue_over_reversal_total[15m])) > 0
             for: 5m
             labels:
               severity: warning
@@ -422,3 +435,73 @@ additionalPrometheusRulesMap:
             annotations:
               summary: "Collector webhook produce failing — events are being dropped"
               description: "The collector cannot produce events to Kafka after retries (brain_collector_webhook_produce_error_total is advancing). The no-event-loss guarantee is violated. Check broker health, topic availability, and producer credentials."
+
+  ##############################################################################
+  # Brain data-freshness rules (AUD-PROD-B8-FUP2 — prod evaluator for the Gold
+  # serving-mart freshness SLAs). VERBATIM conversion of
+  # infra/observe/alerts/freshness.rules.yml — that file stays the canonical,
+  # promtool-checkable source (the local compose Prometheus mounts it directly);
+  # KEEP THE TWO IN LOCKSTEP when a rule changes (same doctrine as brain-slo
+  # above; python-verified identical at commit time).
+  #
+  # HONESTY NOTE: the brain_data_freshness_* series come from the freshness
+  # exporter (tools/observability/freshness-exporter — Prometheus job
+  # 'brain-freshness-exporter'), which is NOT yet deployed on the prod cluster.
+  # Until it ships, three of these rules are loaded-but-quiet BY DESIGN (their
+  # series simply don't exist yet) — the deliberate exception is
+  # BrainFreshnessExporterDown, whose absent(brain_data_freshness_up) clause
+  # DOES fire without the exporter: the freshness SLO reads as honestly
+  # "unverified" rather than silently green (the C2 anti-false-safety doctrine).
+  # This is now consistent with local, where the compose Prometheus loads the
+  # same canonical file.
+  ##############################################################################
+  freshness:
+    groups:
+      # ── Gold serving-mart freshness SLA ─────────────────────────────────────────
+      - name: brain-data-freshness
+        rules:
+          - alert: BrainExecutiveMartStale
+            # Executive dashboard marts (revenue ledger, CAC, executive_metrics, …) must be ≤15m fresh.
+            expr: brain_data_freshness_seconds{sla_class="executive"} > 900
+            for: 10m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Executive mart {{ $labels.mart }} stale (> 15m)"
+              description: "iceberg.{{ $labels.schema }}.{{ $labels.mart }} has not committed a successful Gold snapshot for {{ $value | humanizeDuration }} (SLA 15m). The executive dashboard is serving stale data — check the Spark Silver→Gold refresh (tools/dev/v4-refresh-loop.sh) and the Gold CronWorkflows."
+
+          - alert: BrainSegmentMartStale
+            # Customer-segment marts (segments, scores, health, cohorts, retention) must be ≤1h fresh.
+            expr: brain_data_freshness_seconds{sla_class="segment"} > 3600
+            for: 15m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Customer-segment mart {{ $labels.mart }} stale (> 1h)"
+              description: "iceberg.{{ $labels.schema }}.{{ $labels.mart }} has not committed a successful Gold snapshot for {{ $value | humanizeDuration }} (SLA 1h). Segment/audience surfaces are stale — check the Gold customer-segment Spark jobs and their CronWorkflows."
+
+          - alert: BrainMartSnapshotMissing
+            # The exporter reached Trino but a registered mart returned NO snapshot (table missing or never
+            # written). Without this, a never-built mart would emit no freshness series and silently dodge
+            # the staleness alerts above — the exact false-safety the C2 doctrine forbids.
+            expr: brain_data_freshness_query_success == 0
+            for: 30m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Mart {{ $labels.mart }} has no Gold snapshot"
+              description: "The freshness exporter could not read a snapshot for iceberg.{{ $labels.schema }}.{{ $labels.mart }} for 30m (table missing or never written). It cannot be evaluated against its SLA — verify the Spark Gold job for this mart has ever run."
+
+          - alert: BrainFreshnessExporterDown
+            # The exporter cannot reach Trino at all (or is not scraped). If this fires, the staleness
+            # alerts above are blind — treat the freshness SLO as unverified until it recovers.
+            expr: |
+              (brain_data_freshness_up == 0)
+              or
+              (absent(brain_data_freshness_up) == 1)
+            for: 10m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Data-freshness exporter cannot reach Trino"
+              description: "brain_data_freshness_up is 0 or absent for 10m — the freshness exporter is down or cannot query Trino (the sole serving engine). All freshness SLAs are unverified until it recovers; check the trino service and the brain-freshness-exporter target."

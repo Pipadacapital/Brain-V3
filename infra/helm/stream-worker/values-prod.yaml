@@ -7,6 +7,12 @@ image:
 
 envSecretName: stream-worker-env
 
+# AUD-LOCAL-016-FUP1: prod kube-prometheus-stack scrapes the worker's /metrics (HealthServer
+# containerPort — headless, so a PodMonitor) as job "brain-stream-worker" (up{job=~"brain-.*"}).
+metrics:
+  podMonitor:
+    enabled: true
+
 serviceAccount:
   annotations:
     eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/brain-prod-stream-worker

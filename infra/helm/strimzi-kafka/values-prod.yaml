@@ -56,6 +56,13 @@ kafka:
     transactionStateLogMinIsr: 2
     logRetentionMs: 604800000
 
+# AUD-LOCAL-016-FUP1: broker JMX exporter (metricsConfig ← verbatim copy of
+# infra/observe/kafka-jmx-exporter.yml — same metric names as local) + Strimzi
+# kafkaExporter (consumer-group lag) + PodMonitors with the SLO rules' job names
+# (kafka-jmx-exporter / kafka-exporter).
+metrics:
+  enabled: true
+
 entityOperator:
   topicOperator:
     enabled: true

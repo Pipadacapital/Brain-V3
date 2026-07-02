@@ -99,11 +99,33 @@ spec:
       transaction.state.log.min.isr: {{ .Values.kafka.config.transactionStateLogMinIsr }}
       log.retention.ms: {{ .Values.kafka.config.logRetentionMs | int64 }}
       num.partitions: {{ .Values.topics.partitions | int }}
+    {{- if .Values.metrics.enabled }}
+    # AUD-LOCAL-016-FUP1: broker JMX → Prometheus via the Strimzi-documented jmxPrometheusExporter
+    # (pod port tcp-prometheus :9404). Rules ConfigMap = VERBATIM infra/observe/kafka-jmx-exporter.yml
+    # ⇒ metric names identical to local (kafka_log_log_logendoffset, …) — what brain-slo.rules.yml reads.
+    metricsConfig:
+      type: jmxPrometheusExporter
+      valueFrom:
+        configMapKeyRef:
+          name: {{ $cluster }}-kafka-metrics
+          key: kafka-metrics-config.yml
+    {{- end }}
     template:
       pod:
         metadata:
           labels:
             {{- include "strimziKafka.labels" . | nindent 12 }}
+  {{- if .Values.metrics.enabled }}
+  # AUD-LOCAL-016-FUP1: consumer-group lag is NOT a broker JMX metric (see the canonical
+  # kafka-jmx-exporter.yml note) — Strimzi's kafkaExporter is its packaging of the SAME
+  # danielqsj/kafka_exporter the local compose runs, emitting kafka_consumergroup_lag
+  # (BrainConsumerLagHigh) under the kafka-exporter job (PodMonitor relabel).
+  kafkaExporter:
+    topicRegex: {{ .Values.metrics.kafkaExporter.topicRegex | quote }}
+    groupRegex: {{ .Values.metrics.kafkaExporter.groupRegex | quote }}
+    resources:
+      {{- toYaml .Values.metrics.kafkaExporter.resources | nindent 6 }}
+  {{- end }}
   entityOperator:
     {{- if .Values.entityOperator.topicOperator.enabled }}
     topicOperator: {}

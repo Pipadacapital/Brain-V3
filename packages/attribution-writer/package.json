@@ -12,11 +12,9 @@
     "test:unit": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@brain/metric-engine": "workspace:*",
-    "pg": "^8.21.0"
+    "@brain/metric-engine": "workspace:*"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
-    "@types/pg": "^8.11.0"
+    "@types/node": "^22.0.0"
   }
 }

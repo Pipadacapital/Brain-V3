@@ -183,9 +183,6 @@ importers:
       kafkajs:
         specifier: ^2.2.4
         version: 2.2.4
-      mysql2:
-        specifier: ^3.22.5
-        version: 3.22.5(@types/node@25.9.3)
       neo4j-driver:
         specifier: ^5.21.0
         version: 5.28.3
@@ -193,9 +190,6 @@ importers:
         specifier: ^8.21.0
         version: 8.21.0
     devDependencies:
-      '@types/argon2':
-        specifier: ^0.15.3
-        version: 0.15.4
       '@types/pg':
         specifier: ^8.11.6
         version: 8.20.0
@@ -433,16 +427,10 @@ importers:
       '@brain/metric-engine':
         specifier: workspace:*
         version: link:../metric-engine
-      pg:
-        specifier: ^8.21.0
-        version: 8.21.0
     devDependencies:
       '@types/node':
         specifier: ^22.0.0
         version: 22.19.21
-      '@types/pg':
-        specifier: ^8.11.0
-        version: 8.20.0
 
   packages/audit:
     dependencies:
@@ -2739,10 +2727,6 @@ packages:
 
   '@tybys/wasm-util@0.10.2':
     resolution: {integrity: sha512-RoBvJ2X0wuKlWFIjrwffGw1IqZHKQqzIchKaadZZfnNpsAYp2mM0h36JtPCjNDAHGgYez/15uMBpfGwchhiMgg==}
-
-  '@types/argon2@0.15.4':
-    resolution: {integrity: sha512-fZPJNvZTvoyt/okKhbyj99UsDOwqzEXYPvKqfK26mViH9JB/hOwzUwDUn5qbwq9XJkLw0kDcFNu6+bnb3u5a0A==}
-    deprecated: This is a stub types definition. argon2 provides its own type definitions, so you do not need this installed.
 
   '@types/connect@3.4.36':
     resolution: {integrity: sha512-P63Zd/JUGq+PdrM1lv0Wv5SBYeA2+CORvbrXbngriYY0jzLUWfQMQQxOhjONEz/wlHOAxOdY7CY65rgQdTjq2w==}
@@ -6839,10 +6823,6 @@ snapshots:
     dependencies:
       tslib: 2.8.1
     optional: true
-
-  '@types/argon2@0.15.4':
-    dependencies:
-      argon2: 0.44.0
 
   '@types/connect@3.4.36':
     dependencies:

@@ -45,6 +45,10 @@ services:
     # See db/init/00_provision_brain_app_role.sql. Local substrate only; no effect on real prod.
     volumes:
       - ./db/init:/docker-entrypoint-initdb.d:ro
+      # AUD-INFRA-011: NAMED volume — an anonymous volume here meant every `compose down`+`up`
+      # silently recreated PGDATA empty (brands/connectors/dev_secret gone). Applies to all
+      # stateful services below (kafka/neo4j/redis/minio/localstack).
+      - pg-data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U brain -d brain"]
       interval: 5s
@@ -103,6 +107,8 @@ services:
       NEO4J_server_memory_pagecache_size: 256M
       NEO4J_server_memory_heap_max__size: 512M
     ports: ["7474:7474", "7687:7687"]
+    volumes:
+      - neo4j-data:/data   # AUD-INFRA-011: identity graph survives compose down/up
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:7474 >/dev/null 2>&1 || exit 1"]
       interval: 5s
@@ -123,6 +129,8 @@ services:
     # INCR+EXPIRE, rate limiters INCR+PEXPIRE) so everything is evictable, and any FUTURE key
     # written without a TTL stays unevictable rather than being silently LRU-dropped.
     command: ["redis-server", "--maxmemory", "192mb", "--maxmemory-policy", "volatile-lru"]
+    volumes:
+      - redis-data:/data   # AUD-INFRA-011 (cache is rebuildable, but keeps RDB across restarts)
     ports: ["6379:6379"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -147,6 +155,10 @@ services:
       MINIO_ROOT_PASSWORD: brainbrain
       GOMEMLIMIT: "4500MiB"   # soft Go heap ceiling under the 5g hard cap → GC before OOM-kill
     ports: ["9000:9000", "9001:9001"]
+    volumes:
+      - minio-data:/data   # AUD-INFRA-011: the Iceberg WAREHOUSE — anonymous volume here caused
+                           # catalog↔storage divergence on every compose down/up (catalog kept
+                           # table pointers, MinIO came back empty → NotFoundException on refresh)
     # NOTE: the minio image ships no curl/wget; it does include bash. Use bash's
     # /dev/tcp to probe the API port (a port-open check is sufficient for local dev).
     healthcheck:
@@ -218,6 +230,9 @@ services:
       # connector tokens into PG `dev_secret` (persistent) via `pnpm dev:secrets-snapshot`;
       # `pnpm bootstrap` restores dev_secret → Secrets Manager on every run. See that script.
     ports: ["4566:4566"]
+    volumes:
+      - localstack-data:/var/lib/localstack   # AUD-INFRA-011 (KMS keys/secret ARNs still reset on
+                                              # restart in community edition; bootstrap re-wraps)
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
       interval: 10s
@@ -283,6 +298,7 @@ services:
     volumes:
       - jmx-agent:/opt/jmx_exporter:ro
       - ./infra/observe/kafka-jmx-exporter.yml:/etc/jmx-exporter/kafka-jmx-exporter.yml:ro
+      - kafka-data:/var/lib/kafka/data   # AUD-INFRA-011: topic log survives compose down/up
     networks:
       default:
         # The EXTERNAL listener advertises `brain-kafka-ext:19092`; alias the broker to that
@@ -688,3 +704,13 @@ volumes:
   # Persists the Iceberg REST JDBC (SQLite) catalog — namespace→table pointers — across iceberg-rest
   # restarts so a crash/restart never wipes brain_silver/brain_gold from the catalog (data is in MinIO).
   iceberg-catalog:
+  # AUD-INFRA-011: named volumes for ALL stateful services. Previously these were anonymous
+  # volumes — `compose down` orphaned them and `up` started empty, silently wiping the warehouse
+  # (MinIO), PG, Neo4j, Kafka. The catalog volume above survived while MinIO didn't, producing
+  # "Location does not exist" on every Iceberg read. Wipe deliberately with `docker compose down -v`.
+  pg-data:
+  kafka-data:
+  neo4j-data:
+  redis-data:
+  minio-data:
+  localstack-data:

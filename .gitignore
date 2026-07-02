@@ -37,3 +37,8 @@ test-results/
 # Python bytecode (Spark/Iceberg helper scripts)
 __pycache__/
 db/iceberg/spark/gold/__pycache__/
+
+# terraform local state (bootstrap layer keeps local state per runbook) + saved plans
+infra/terraform/bootstrap/terraform.tfstate*
+infra/terraform/bootstrap/*.plan
+infra/terraform/envs/*/*.plan

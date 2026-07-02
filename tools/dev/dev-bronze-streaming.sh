@@ -24,6 +24,13 @@
 # are staggered, so ONE 4g heap comfortably covers the fused sink. Defensively we also cap retained
 # streaming batch metadata (spark.sql.streaming.minBatchesToRetain=10) so a long drain doesn't creep up.
 # Tune further via SPARK_DRIVER_MEMORY / SPARK_OFFHEAP_SIZE if a very large backlog still lags/OOMs.
+#
+# OOM ORDERING (AUD-LOCAL-003): `docker run` defaults to oom_score_adj 0, so under VM pressure the
+# kernel killed this SOLE Bronze landing path BEFORE the protected compose tier (redis -300, the SoRs
+# -500..-900). Pin -600 (SINK_OOM_SCORE_ADJ) — ingest-critical, protected alongside apicurio (-600);
+# the durable checkpoint mitigates data loss but not ingest freezes. The ephemeral transform jobs
+# (db/iceberg/spark run-*.sh) deliberately run at +100 instead: they're retried by the refresh loop,
+# so they die FIRST — the ordering is explicit rather than accidental.
 # ────────────────────────────────────────────────────────────────────────────────────────────────────
 #
 # Usage:  tools/dev/dev-bronze-streaming.sh
@@ -81,6 +88,7 @@ while :; do
   docker rm -f "${SINK_CONTAINER_NAME:-brain-bronze-sink}" >/dev/null 2>&1 || true
   docker run --rm \
   --memory "${SPARK_CONTAINER_MEMORY:-7g}" \
+  --oom-score-adj "${SINK_OOM_SCORE_ADJ:--600}" \
   --name "${SINK_CONTAINER_NAME:-brain-bronze-sink}" \
   --network "container:${KAFKA_CONTAINER}" \
   --user root \

@@ -30,8 +30,8 @@ unbounded anymore.
 | Service | Cap | Internal heap |
 |---|---|---|
 | trino | 7g | jvm.config `MaxRAMPercentage=70` → ~4.9g |
-| bronze sink (host `docker run` via `tools/dev/dev-bronze-streaming.sh` → `bronze_landing.py`, the ONE unified landing — the old spark-bronze-sink / spark-bronze-raw-sink compose services are REMOVED) | 7g (`SPARK_CONTAINER_MEMORY`) | `--driver-memory 4g` + offHeap 512m |
-| Spark transform jobs (ephemeral `docker run` via `db/iceberg/spark/run-*.sh`) | 7g (`SPARK_CONTAINER_MEMORY`) | `--driver-memory 4g` |
+| bronze sink (host `docker run` via `tools/dev/dev-bronze-streaming.sh` → `bronze_landing.py`, the ONE unified landing — the old spark-bronze-sink / spark-bronze-raw-sink compose services are REMOVED) | 7g (`SPARK_CONTAINER_MEMORY`) | `--driver-memory 4g` + offHeap 512m; `--oom-score-adj -600` (`SINK_OOM_SCORE_ADJ`) — ingest-critical, protected (AUD-LOCAL-003) |
+| Spark transform jobs (ephemeral `docker run` via `db/iceberg/spark/run-*.sh`) | 7g (`SPARK_CONTAINER_MEMORY`) | `--driver-memory 4g`; `--oom-score-adj +100` (`SPARK_CONTAINER_OOM_SCORE_ADJ`) — retried by the loop, deliberately die FIRST (AUD-LOCAL-003) |
 | minio | 5g | `GOMEMLIMIT=4500MiB` (soft GC ceiling) |
 | kafka (KRaft) | 2.5g | `KAFKA_HEAP_OPTS -Xmx1G -Xms1G` (pinned; == image default — pairs 1G heap with the 2.5g limit) |
 | neo4j | 1.5g | heap 512m + pagecache 256m |

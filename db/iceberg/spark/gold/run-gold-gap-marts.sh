@@ -55,6 +55,7 @@ run_job() {
   echo "[gold-gap-marts] >>> spark-submit ${script}"
   docker run --rm \
     --memory "${SPARK_CONTAINER_MEMORY:-7g}" \
+    --oom-score-adj "${SPARK_CONTAINER_OOM_SCORE_ADJ:-100}" \
     --network "container:${REDPANDA_CONTAINER}" \
     --user root \
     -v "${SPARK_DIR}":/opt/spark-src:ro \

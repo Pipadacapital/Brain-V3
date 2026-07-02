@@ -40,6 +40,7 @@ docker volume create brain-spark-ivy >/dev/null
 
 exec docker run --rm \
   --memory "${SPARK_CONTAINER_MEMORY:-7g}" \
+  --oom-score-adj "${SPARK_CONTAINER_OOM_SCORE_ADJ:-100}" \
   --network "container:${KAFKA_CONTAINER}" \
   --user root \
   -v "${SCRIPT_DIR}":/opt/spike:ro \

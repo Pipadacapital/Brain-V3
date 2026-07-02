@@ -1,8 +1,12 @@
 /**
- * ShopifyHmac — value object that validates Shopify HMAC signatures.
+ * ShopifyHmac — value object that validates the Shopify OAuth-callback HMAC.
  *
  * NN-4: HMAC validation MUST be the first operation in the OAuth callback
  * handler. Any failure returns HTTP 401 with no further processing.
+ *
+ * Webhook-body HMAC validation lives in webhooks/platform/HmacConfig.ts
+ * (SHOPIFY_HMAC_CONFIG) — this VO only covers the query-param OAuth scheme,
+ * which is a genuinely different algorithm.
  *
  * Algorithm (per Shopify OAuth docs):
  *   1. Remove `hmac` from the query parameters.
@@ -49,38 +53,6 @@ export class ShopifyHmac {
     try {
       const computedBuf = Buffer.from(computed, 'hex');
       const receivedBuf = Buffer.from(receivedHmac, 'hex');
-      if (computedBuf.length !== receivedBuf.length) {
-        return false;
-      }
-      return timingSafeEqual(computedBuf, receivedBuf);
-    } catch {
-      return false;
-    }
-  }
-
-  /**
-   * Validate the HMAC header on Shopify webhook payloads.
-   *
-   * NN-4: Webhook callbacks must also HMAC-validate before any processing.
-   *
-   * @param rawBody       Raw request body bytes.
-   * @param hmacHeader    Value of X-Shopify-Hmac-Sha256 header (base64).
-   * @param clientSecret  Shopify app client secret (from Secrets Manager).
-   */
-  static validateWebhook(
-    rawBody: Buffer,
-    hmacHeader: string,
-    clientSecret: string,
-  ): boolean {
-    if (!hmacHeader) {
-      return false;
-    }
-
-    const computed = createHmac('sha256', clientSecret).update(rawBody).digest('base64');
-
-    try {
-      const computedBuf = Buffer.from(computed, 'base64');
-      const receivedBuf = Buffer.from(hmacHeader, 'base64');
       if (computedBuf.length !== receivedBuf.length) {
         return false;
       }

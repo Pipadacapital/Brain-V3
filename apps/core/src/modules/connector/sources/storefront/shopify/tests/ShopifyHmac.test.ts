@@ -5,7 +5,9 @@
  *   - A tampered HMAC MUST reject.
  *   - A missing HMAC MUST reject.
  *   - A correct HMAC MUST accept.
- *   - Webhook HMAC: tampered body MUST reject.
+ *
+ * Webhook-body HMAC coverage lives in webhooks/tests/HmacConfig.test.ts
+ * (ShopifyHmac.validateWebhook was superseded by SHOPIFY_HMAC_CONFIG).
  *
  * These tests verify the NN-4 security invariant without a live Shopify connection.
  */
@@ -85,34 +87,5 @@ describe('ShopifyHmac.validateOAuthCallback', () => {
     // Modify a param after signing — HMAC must not match
     const tamperedQuery = { ...query, shop: 'evil.myshopify.com' };
     expect(ShopifyHmac.validateOAuthCallback(tamperedQuery, CLIENT_SECRET)).toBe(false);
-  });
-});
-
-// ── Webhook HMAC tests ────────────────────────────────────────────────────────
-
-describe('ShopifyHmac.validateWebhook', () => {
-  it('accepts a valid webhook HMAC (positive control)', () => {
-    const body = Buffer.from(JSON.stringify({ order_id: 'gid://shopify/Order/12345' }));
-    const hmac = createHmac('sha256', CLIENT_SECRET).update(body).digest('base64');
-    expect(ShopifyHmac.validateWebhook(body, hmac, CLIENT_SECRET)).toBe(true);
-  });
-
-  it('rejects a tampered webhook body (negative control — NN-4)', () => {
-    const originalBody = Buffer.from(JSON.stringify({ order_id: 'gid://shopify/Order/12345' }));
-    const hmac = createHmac('sha256', CLIENT_SECRET).update(originalBody).digest('base64');
-    // Tampered body
-    const tamperedBody = Buffer.from(JSON.stringify({ order_id: 'gid://shopify/Order/99999' }));
-    expect(ShopifyHmac.validateWebhook(tamperedBody, hmac, CLIENT_SECRET)).toBe(false);
-  });
-
-  it('rejects a missing webhook HMAC (negative control)', () => {
-    const body = Buffer.from('{}');
-    expect(ShopifyHmac.validateWebhook(body, '', CLIENT_SECRET)).toBe(false);
-  });
-
-  it('rejects a webhook HMAC signed with a wrong secret (negative control)', () => {
-    const body = Buffer.from(JSON.stringify({ order_id: 'gid://shopify/Order/12345' }));
-    const hmac = createHmac('sha256', 'wrong-secret').update(body).digest('base64');
-    expect(ShopifyHmac.validateWebhook(body, hmac, CLIENT_SECRET)).toBe(false);
   });
 });

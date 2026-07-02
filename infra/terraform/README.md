@@ -110,15 +110,19 @@ terraform apply
 cd infra/terraform/envs/staging
 terraform init && terraform plan && terraform apply
 
-# prod: DECLARED but commented (bootstrap-only). Uncomment the
-# s3_iceberg_silver / s3_iceberg_gold / irsa_spark_jobs blocks in
-# envs/prod/bootstrap.tf alongside the s3_iceberg apply at M1/M4, then plan/apply.
+# prod: UN-GATED (AUD-COST-001) and SINGLE-WAREHOUSE (AUD-COST-016): there are
+# NO s3_iceberg_silver/s3_iceberg_gold blocks in envs/prod/bootstrap.tf — the
+# one warehouse bucket (module s3_iceberg) holds brain_{bronze,silver,gold} as
+# Iceberg namespaces, exactly like local. irsa_spark_jobs carries the single
+# medallion RW policy. Plain plan/apply.
 ```
 
-After apply, point the Spark jobs at the new warehouse roots (per env outputs):
+After apply, point the Spark jobs at the warehouse (per env outputs):
 
-- `silver_bucket_name` / `gold_bucket_name` → Spark `warehouse` =
-  `s3://<bucket>/silver/` and `s3://<bucket>/gold/`.
+- prod (AUD-COST-016): `warehouse_bucket_name` → ONE warehouse root
+  `s3://<warehouse_bucket_name>/`; the layers are Iceberg NAMESPACES inside it.
+  dev/staging still output `silver_bucket_name`/`gold_bucket_name` (pre-V4
+  per-layer layout, never applied — align with prod before applying them).
 - Catalog: point Spark/Trino at the REST catalog (iceberg-rest chart, backed by
   the `iceberg_catalog` DB on Aurora — "Prod go-live" step 2). No Glue DBs.
 - `spark_jobs_role_arn` → annotate the `brain-jobs` Kubernetes service account

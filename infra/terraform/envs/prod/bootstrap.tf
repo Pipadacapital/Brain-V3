@@ -164,7 +164,12 @@ module "aurora" {
 }
 
 ###############################################################################
-# Secrets Manager + S3 Iceberg (Bronze, NN-4 COMPLIANCE+7yr) + S3 Audit
+# Secrets Manager + S3 Iceberg medallion WAREHOUSE + S3 Audit (WORM).
+# AUD-COST-016: ONE warehouse bucket, NO Object Lock. The local lakehouse runs
+# ONE iceberg-rest server with ONE warehouse root and the medallion layers as
+# Iceberg NAMESPACES (brain_bronze/brain_silver/brain_gold) — prod mirrors that
+# exactly (modules/s3-iceberg header has the full rationale). WORM retention
+# lives on the audit bucket only (modules/s3-audit).
 ###############################################################################
 module "secrets" {
   source      = "../../modules/secrets"
@@ -249,26 +254,13 @@ module "elasticache" {
 }
 
 ###############################################################################
-# Brain V4 — Iceberg MEDALLION (Silver + Gold) + Spark jobs IRSA
+# Brain V4 — Spark jobs IRSA. AUD-COST-016: the former per-layer
+# s3-iceberg-medallion buckets (brain-{silver,gold}-prod) are GONE — the single
+# REST catalog has ONE warehouse root, so Silver/Gold live as namespaces in the
+# warehouse bucket above (exactly like local). The Spark data plane (Bronze
+# landing + Silver/Gold transforms + maintenance + erasure) gets ONE medallion
+# RW policy scoped to the namespace prefixes.
 ###############################################################################
-module "s3_iceberg_silver" {
-  source             = "../../modules/s3-iceberg-medallion"
-  layer              = "silver"
-  environment        = local.environment
-  project            = local.project
-  kms_key_arn        = module.kms.root_kms_key_arn
-  analytics_role_arn = module.irsa_core.role_arn
-}
-
-module "s3_iceberg_gold" {
-  source             = "../../modules/s3-iceberg-medallion"
-  layer              = "gold"
-  environment        = local.environment
-  project            = local.project
-  kms_key_arn        = module.kms.root_kms_key_arn
-  analytics_role_arn = module.irsa_core.role_arn
-}
-
 module "irsa_spark_jobs" {
   source               = "../../modules/irsa"
   role_name            = "jobs"
@@ -279,9 +271,7 @@ module "irsa_spark_jobs" {
   environment          = local.environment
   project              = local.project
   policy_arns = [
-    module.s3_iceberg.stream_worker_s3_policy_arn,
-    module.s3_iceberg_silver.spark_write_policy_arn,
-    module.s3_iceberg_gold.spark_write_policy_arn,
+    module.s3_iceberg.spark_medallion_rw_policy_arn,
   ]
 }
 
@@ -306,9 +296,10 @@ output "aurora_endpoint" { value = module.aurora.endpoint }
 output "aurora_reader_endpoint" { value = module.aurora.reader_endpoint }
 output "redis_endpoint" { value = module.elasticache.redis_primary_endpoint }
 
-output "bronze_bucket_name" { value = module.s3_iceberg.bronze_bucket_name }
-output "silver_bucket_name" { value = module.s3_iceberg_silver.bucket_name }
-output "gold_bucket_name" { value = module.s3_iceberg_gold.bucket_name }
+# AUD-COST-016: ONE medallion warehouse bucket (Bronze/Silver/Gold are Iceberg
+# NAMESPACES inside it). Fill iceberg-rest/values-prod.yaml catalog.warehouse
+# with s3://<warehouse_bucket_name>/.
+output "warehouse_bucket_name" { value = module.s3_iceberg.warehouse_bucket_name }
 output "audit_bucket_name" { value = module.s3_audit.audit_bucket_name }
 
 output "collector_role_arn" { value = module.irsa_collector.role_arn }

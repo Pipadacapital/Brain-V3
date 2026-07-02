@@ -13,6 +13,13 @@
 # read path, dbt model, or app code. It is parameterized over a single
 # `layer` ("silver" | "gold") and instantiated twice by the env roots.
 #
+# PROD NO LONGER USES THIS MODULE (AUD-COST-016): the single Iceberg REST
+# catalog has ONE warehouse root, so prod's Silver/Gold live as NAMESPACES in
+# the modules/s3-iceberg warehouse bucket (mirroring local exactly) — per-layer
+# buckets under a REST/Jdbc catalog would need per-namespace location overrides
+# that local never exercises. dev/staging roots still instantiate it (pre-V4
+# layout, never applied); align them with prod before any apply.
+#
 # MIRRORS modules/s3-iceberg (Bronze) conventions:
 #   - SSE-KMS (aws:kms) with the root CMK, bucket_key_enabled.
 #   - Versioning enabled; full public-access block.

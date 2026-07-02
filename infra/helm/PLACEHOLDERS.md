@@ -26,6 +26,7 @@ interpolate).
 | `REPLACE_WITH_ECR_REGISTRY` | all chart `values*.yaml` image repos | `<ACCOUNT_ID>.dkr.ecr.ap-south-1.amazonaws.com` (= prefix of `ecr_repository_urls`) |
 | `REPLACE_WITH_DIGEST` | `infra/argocd/rollouts/collector-rollout.yaml` | CI fills app-chart digests (prod-promote); the rollouts files are NOT CD-touched — fill manually |
 | `REPLACE_WITH_AURORA_ENDPOINT` | `iceberg-rest/values-prod.yaml` | `aurora_endpoint` |
+| warehouse `s3://brain-bronze-prod-ACCOUNT_ID/` | `iceberg-rest/values-prod.yaml` | `warehouse_bucket_name` (AUD-COST-016: ONE warehouse bucket; Bronze/Silver/Gold are Iceberg namespaces inside it — no per-layer buckets) |
 | `REPLACE_WITH_PROD_POSTGRES_HOST` | `pgbouncer/values-prod.yaml` | `aurora_endpoint` (pgbouncer fronts Aurora) |
 | `REPLACE_WITH_STAGING_POSTGRES_HOST` | `pgbouncer/values-staging.yaml` | staging `aurora_endpoint` |
 | `REPLACE_WITH_VPC_ID` | `argocd/envs/prod/aws-load-balancer-controller.yaml` | `vpc_id` |

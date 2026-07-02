@@ -102,9 +102,10 @@ human gate for `prod-apply.yml` and `prod-promote`; the apply role's OIDC trust
 is bound to this Environment's sub claim). All later applies go through
 **Actions → "prod-apply (M4 turn-on)"** with `confirm = apply-prod`.
 
-**Rollback:** `terraform destroy` in `envs/prod` (Bronze S3 carries WORM
-retention — those objects resist deletion by design). Cost while up:
-≈$240–320/mo; pause = scale node groups + Aurora min ACU down.
+**Rollback:** `terraform destroy` in `envs/prod` (the AUDIT bucket carries WORM
+retention — those objects resist deletion by design; the medallion warehouse
+bucket has NO Object Lock since AUD-COST-016 — erasure/compaction need deletes).
+Cost while up: ≈$240–320/mo; pause = scale node groups + Aurora min ACU down.
 
 ## 4. Placeholder fill pass (AUD-COST-007) + missing IRSA roles
 
@@ -212,6 +213,11 @@ Wiring facts you need for the JSON values:
 `KAFKA_BROKERS=brain-prod-kafka-kafka-bootstrap.kafka.svc.cluster.local:9092`
 (after step 10), `NEO4J_URI=bolt://neo4j.neo4j.svc.cluster.local:7687`,
 `ICEBERG_REST_URI=http://brain-prod-iceberg-rest.iceberg-rest:8181`,
+`ICEBERG_WAREHOUSE=s3://$(terraform output -raw warehouse_bucket_name)/`
+(AUD-COST-016: the ONE warehouse root; Bronze/Silver/Gold are namespaces),
+`CHECKPOINT_LOCATION=s3a://<warehouse_bucket_name>/_checkpoints` (the Spark
+jobs IRSA policy covers the `_checkpoints/` prefix), leave `S3_ENDPOINT` UNSET
+(real S3 + IRSA — a set value means MinIO-style static-key addressing),
 `BRONZE_SOURCE` is already `events` in the chart values (see step 12).
 
 **Iceberg catalog DB (AUD-COST-012 — REST/JDBC on Aurora, NOT Glue):** Aurora is

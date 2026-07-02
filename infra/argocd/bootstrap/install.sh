@@ -44,6 +44,13 @@ helm upgrade --install argocd argo/argo-cd \
 echo "[bootstrap] AppProjects (brain / brain-prod / brain-staging)"
 kubectl apply -f "${SCRIPT_DIR}/appprojects.yaml"
 
+# AUD-COST-018: the gp3 StorageClass every PVC-bearing chart names (Neo4j —
+# the identity SoR — binds its data PVC through it). The EBS CSI driver add-on
+# itself is terraform (modules/eks aws_eks_addon.ebs_csi); a StorageClass is
+# cluster-bootstrap state like the AppProjects, so it is applied here.
+echo "[bootstrap] gp3 StorageClass (EBS CSI)"
+kubectl apply -f "${SCRIPT_DIR}/gp3-storageclass.yaml"
+
 if [ "${ENVIRONMENT}" = "prod" ]; then
   echo "[bootstrap] root app-of-apps (prod)"
   kubectl apply -f "${SCRIPT_DIR}/../app-of-apps.yaml"

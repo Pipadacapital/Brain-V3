@@ -10,11 +10,12 @@
 # needed, switch to Neo4j AuraDB Professional (check ap-south-1 availability) and
 # point NEO4J_URI at it instead — no chart needed.
 #
-# CAPACITY NOTE: all Karpenter pools are Spot (infra/helm/karpenter/values.yaml).
-# A Spot interruption bounces the single Neo4j pod (PVC reattaches on the
-# replacement node; identity writes are retried by consumers). If that bounce
-# budget is unacceptable, add a small ON-DEMAND NodePool and pin via podSpec
-# nodeSelector before go-live.
+# CAPACITY (AUD-COST-018): Neo4j is PINNED to the dedicated ON-DEMAND Karpenter
+# pool (infra/helm/karpenter/values.yaml `ondemand`, tainted
+# brain.platform/pool=ondemand:NoSchedule) via podSpec nodeSelector+toleration
+# below — the single-instance identity SoR must not ride Spot. Remaining bounce
+# budget = the pool's PLANNED 720h node rotation (PVC reattaches via the EBS
+# CSI driver; identity writes are retried by consumers).
 
 # REQUIRED under ArgoCD: the chart's template-time `lookup` of the
 # passwordFromSecret Secret always fails in the repo-server (helm template has
@@ -37,12 +38,25 @@ neo4j:
     cpu: "2"
     memory: 4Gi
 
+podSpec:
+  # AUD-COST-018: pin the identity SoR to the ON-DEMAND Karpenter pool. The
+  # pool is tainted, so BOTH the selector (land there) and the toleration
+  # (be allowed there) are required.
+  nodeSelector:
+    brain.platform/pool: ondemand
+  tolerations:
+    - key: brain.platform/pool
+      operator: Equal
+      value: ondemand
+      effect: NoSchedule
+
 volumes:
   data:
     mode: dynamic
     dynamic:
-      # gp3 via the EBS CSI driver (PREREQUISITE: aws-ebs-csi-driver addon +
-      # a gp3 StorageClass — see infra/helm/PLACEHOLDERS.md).
+      # gp3 via the EBS CSI driver — provided since AUD-COST-018: the addon +
+      # its IRSA role are terraform (modules/eks aws_eks_addon.ebs_csi) and the
+      # gp3 StorageClass is applied by infra/argocd/bootstrap/install.sh.
       storageClassName: gp3
       accessModes:
         - ReadWriteOnce

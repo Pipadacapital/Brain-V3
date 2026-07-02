@@ -243,6 +243,81 @@ resource "aws_eks_node_group" "system" {
 }
 
 ###############################################################################
+# EBS CSI driver add-on + IRSA (AUD-COST-018)
+# Without it NO PersistentVolumeClaim can bind (EKS >=1.23 has no in-tree EBS
+# provisioner) — Neo4j (the identity SoR, ADR-0004) mounts a PVC via the `gp3`
+# StorageClass (applied by infra/argocd/bootstrap/install.sh). The controller
+# authenticates via IRSA (NN-3 StringEquals on the addon's fixed SA
+# ebs-csi-controller-sa @ kube-system) with the AWS-managed driver policy.
+# Volumes are encrypted with the default aws/ebs key (the gp3 StorageClass sets
+# encrypted:"true" without kmsKeyId); switching to the root CMK would
+# additionally need kms:CreateGrant/Decrypt/GenerateDataKey* on that key here.
+###############################################################################
+data "aws_iam_policy_document" "ebs_csi_trust" {
+  statement {
+    sid     = "EKSOIDCTrustEbsCsi"
+    effect  = "Allow"
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+
+    principals {
+      type        = "Federated"
+      identifiers = [aws_iam_openid_connect_provider.eks.arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${replace(aws_eks_cluster.main.identity[0].oidc[0].issuer, "https://", "")}:sub"
+      values   = ["system:serviceaccount:kube-system:ebs-csi-controller-sa"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${replace(aws_eks_cluster.main.identity[0].oidc[0].issuer, "https://", "")}:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "ebs_csi" {
+  name               = "${var.project}-${var.environment}-ebs-csi-driver"
+  assume_role_policy = data.aws_iam_policy_document.ebs_csi_trust.json
+
+  tags = {
+    project     = var.project
+    environment = var.environment
+    workload    = "ebs-csi-driver"
+  }
+}
+
+resource "aws_iam_role_policy_attachment" "ebs_csi_AmazonEBSCSIDriverPolicy" {
+  role       = aws_iam_role.ebs_csi.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
+}
+
+data "aws_eks_addon_version" "ebs_csi" {
+  addon_name         = "aws-ebs-csi-driver"
+  kubernetes_version = aws_eks_cluster.main.version
+  most_recent        = true
+}
+
+resource "aws_eks_addon" "ebs_csi" {
+  cluster_name                = aws_eks_cluster.main.name
+  addon_name                  = "aws-ebs-csi-driver"
+  addon_version               = data.aws_eks_addon_version.ebs_csi.version
+  service_account_role_arn    = aws_iam_role.ebs_csi.arn
+  resolve_conflicts_on_create = "OVERWRITE"
+  resolve_conflicts_on_update = "OVERWRITE"
+
+  # The controller pods need somewhere to run — create after the system group.
+  depends_on = [aws_eks_node_group.system]
+
+  tags = {
+    project     = var.project
+    environment = var.environment
+  }
+}
+
+###############################################################################
 # ECR Repositories — per service, immutable tags
 ###############################################################################
 locals {
@@ -326,4 +401,9 @@ output "ecr_repository_urls" {
   value = {
     for k, v in aws_ecr_repository.services : k => v.repository_url
   }
+}
+
+output "ebs_csi_role_arn" {
+  description = "IRSA role of the aws-ebs-csi-driver addon controller (AUD-COST-018)"
+  value       = aws_iam_role.ebs_csi.arn
 }

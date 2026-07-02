@@ -176,6 +176,7 @@ After go-live, set it back to `[]` (private-only) via prod-apply.
 ```bash
 infra/argocd/bootstrap/install.sh prod
 # = pinned argo-cd helm install → AppProjects (brain/brain-prod/brain-staging)
+#   → gp3 StorageClass (EBS CSI — AUD-COST-018; the addon itself is terraform)
 #   → root app-of-apps (envs/prod). Prints how to read the initial admin password.
 argocd login <argocd-server> --username admin   # port-forward svc/argocd-server if no ingress yet
 ```
@@ -262,7 +263,9 @@ kubectl -n kafka wait --for=condition=Ready kafka/brain-prod-kafka --timeout=600
 # pgbouncer: NO ArgoCD Application exists — install manually (or author one first):
 helm upgrade --install pgbouncer infra/helm/pgbouncer -n pgbouncer --create-namespace -f infra/helm/pgbouncer/values-prod.yaml
 
-argocd app sync neo4j-prod                     # identity SoR (ADR-0004); auth from neo4j-auth
+argocd app sync neo4j-prod                     # identity SoR (ADR-0004); auth from neo4j-auth.
+                                               # Pinned to the ON-DEMAND Karpenter pool (AUD-COST-018 —
+                                               # sync karpenter-nodepools first); PVC binds via gp3/EBS CSI
 argocd app sync iceberg-rest-prod              # JdbcCatalog on Aurora (step 8 DB + secret first)
 argocd app sync trino-prod                     # serving engine; iceberg.s3.region=ap-south-1 (AUD-COST-008)
 ```

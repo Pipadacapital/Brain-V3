@@ -30,6 +30,13 @@ operator. An autoscaler must not run on the Spot capacity it manages, so:
 | `streaming` | `t4g.large` | spot | **no** (warm) | cpu 20 / 80Gi | `WhenEmpty` |
 | `batch` | `t4g.xlarge` | spot | **yes** (0→3) | cpu 12 / 48Gi | `WhenEmptyOrUnderutilized` |
 | `trino` | `t4g.xlarge` | spot | **yes** (0→2) | cpu 8 / 32Gi | `WhenEmptyOrUnderutilized` |
+| `ondemand` | `t4g.xlarge` | **on-demand** | **yes** (0→2) | cpu 8 / 32Gi | `WhenEmpty` |
+
+**`ondemand` (AUD-COST-018)** is the tainted (`brain.platform/pool=ondemand:NoSchedule`)
+home for single-instance stateful SoRs — Neo4j (identity SoR, Community = no HA) pins here via
+`podSpec.nodeSelector`+toleration in `infra/helm/neo4j/values-prod.yaml`, so a Spot reclaim can
+never bounce the only replica. Nothing else lands on paid on-demand capacity unless it explicitly
+tolerates the taint; the pool scales to zero when unused.
 
 Karpenter has **no fixed minimum** — a pool scales to zero when no pod requires it, bounded above by
 `limits`. The bounds above approximate "0-3" / "0-2" nodes (limit ÷ instance vCPU).

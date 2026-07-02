@@ -64,8 +64,11 @@ beforeAll(async () => {
     await superPool.query(`INSERT INTO app_user (id,email,email_normalized,password_hash) VALUES ($1,$2,$3,'x')`, [USER, `${USER}@x.invalid`, `${USER}@x.invalid`]);
     await superPool.query(`INSERT INTO organization (id,name,slug,owner_user_id) VALUES ($1,'TR',$2,$3)`, [ORG, `tr-${ORG.slice(-6)}`, USER]);
     await superPool.query(`INSERT INTO brand (id,organization_id,display_name,currency_code,status) VALUES ($1,$2,'TR','INR','active')`, [BRAND, ORG]);
+    // activated_at set: the 0106 activation gate means list_ad_connectors_for_spend_repull()
+    // (the job's enumeration fn) only returns ACTIVATED ad accounts — an un-activated fixture
+    // is invisible to the job and every assertion below would starve.
     await superPool.query(
-      `INSERT INTO connector_instance (id,brand_id,provider,status,shop_domain,secret_ref,ad_account_id) VALUES ($1,$2,'meta','connected','',$3,'act_tr')`,
+      `INSERT INTO connector_instance (id,brand_id,provider,status,shop_domain,secret_ref,ad_account_id,activated_at) VALUES ($1,$2,'meta','connected','',$3,'act_tr',NOW())`,
       [CI, BRAND, SECRET_NAME],
     );
     // The connect flow seeds a sync_status row; setSyncState is UPDATE-only, so seed it here.
@@ -101,7 +104,10 @@ describe('runMetaTokenRefresh (live Postgres)', () => {
   it('MT1: re-exchanges a DUE token and writes the new token + issued_at back', async () => {
     if (!pgAvailable) return;
     await setBundle(daysAgo(45)); // older than the 30d threshold → due
-    const report = await runMetaTokenRefresh(appPool, NOW, 30, okFetch('FRESH-TOKEN'));
+    // Scoped to the fixture connector (last arg): a dirty dev DB has REAL activated meta
+    // connectors — an unscoped pass would fold them into the report counts (assertion noise)
+    // AND mutate their sync state / secrets. Invariants asserted are unchanged.
+    const report = await runMetaTokenRefresh(appPool, NOW, 30, okFetch('FRESH-TOKEN'), undefined, CI);
     expect(report.refreshed).toBeGreaterThanOrEqual(1);
     const b = await getBundle();
     expect(b.access_token).toBe('FRESH-TOKEN');
@@ -113,7 +119,7 @@ describe('runMetaTokenRefresh (live Postgres)', () => {
     await setBundle(daysAgo(2)); // newer than threshold → not due
     let called = false;
     const spyFetch: typeof fetch = (async () => { called = true; return new Response('{}', { status: 200 }); }) as unknown as typeof fetch;
-    const report = await runMetaTokenRefresh(appPool, NOW, 30, spyFetch);
+    const report = await runMetaTokenRefresh(appPool, NOW, 30, spyFetch, undefined, CI);
     expect(report.skippedNotDue).toBeGreaterThanOrEqual(1);
     expect(called).toBe(false);
     expect((await getBundle()).access_token).toBe('OLD-TOKEN'); // unchanged
@@ -123,7 +129,7 @@ describe('runMetaTokenRefresh (live Postgres)', () => {
     if (!pgAvailable) return;
     await setBundle(daysAgo(45));
     await superPool.query(`UPDATE connector_sync_status SET state='connected' WHERE connector_instance_id=$1`, [CI]).catch(() => {});
-    const report = await runMetaTokenRefresh(appPool, NOW, 30, deadFetch);
+    const report = await runMetaTokenRefresh(appPool, NOW, 30, deadFetch, undefined, CI);
     expect(report.reconnectRequired).toBeGreaterThanOrEqual(1);
     expect(await syncState()).toBe('error');
     expect((await getBundle()).access_token).toBe('OLD-TOKEN'); // NOT overwritten on failure

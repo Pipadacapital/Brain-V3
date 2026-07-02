@@ -126,6 +126,11 @@ async function writeBundle(
  * @param secretsManager optional ISecretsManager for prod write-back. When provided (prod),
  *                       the refreshed bundle is written to AWS Secrets Manager via putSecretValue.
  *                       When absent (dev), the bundle is written to dev_secret as before.
+ * @param targetConnectorInstanceId optional scoping seam: refresh ONLY this meta connector
+ *                       (same optional-target contract enumerateConnectors already exposes for
+ *                       the spend repull). Default undefined = all activated meta connectors —
+ *                       behaviour unchanged for the cron entrypoint. Used by the live test so a
+ *                       shared/dirty dev DB's real connectors are never touched by a test pass.
  */
 export async function runMetaTokenRefresh(
   pool: Pool,
@@ -133,6 +138,7 @@ export async function runMetaTokenRefresh(
   thresholdDays: number = DEFAULT_REFRESH_AGE_DAYS,
   fetchImpl: typeof fetch = fetch,
   secretsManager?: ISecretsManager,
+  targetConnectorInstanceId?: string,
 ): Promise<MetaTokenRefreshReport> {
   const report: MetaTokenRefreshReport = {
     scanned: 0,
@@ -142,7 +148,9 @@ export async function runMetaTokenRefresh(
     errors: 0,
   };
 
-  const connectors = (await enumerateConnectors(pool)).filter((c) => c.provider === 'meta');
+  const connectors = (await enumerateConnectors(pool, targetConnectorInstanceId)).filter(
+    (c) => c.provider === 'meta',
+  );
 
   for (const c of connectors) {
     report.scanned += 1;

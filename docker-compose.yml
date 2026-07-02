@@ -61,6 +61,7 @@ services:
   pgbouncer:
     image: edoburu/pgbouncer:v1.23.1-p3
     profiles: ["core"]
+    mem_limit: 128m         # blueprint §4.2 bound-everything rule — small C daemon, ~6MiB measured
     environment:
       DB_HOST: postgres
       DB_PORT: "5432"
@@ -355,7 +356,16 @@ services:
   apicurio:
     image: apicurio/apicurio-registry-mem:2.6.3.Final
     profiles: ["core"]
+    # Bound the JVM: without a cap the Quarkus runtime claims MaxHeap = 25% of the whole Docker VM
+    # (~7.8GiB measured). 768m ≈ 2x measured steady RSS (~380MiB); heap pinned to 512m (67% of the
+    # limit) via JAVA_OPTS_APPEND — the image's run-java.sh appends it AFTER the computed defaults,
+    # so the explicit -Xmx wins over MaxRAMPercentage. Do NOT set JAVA_OPTIONS here: that would
+    # clobber the image's own quarkus.http.host/log-manager flags.
+    mem_limit: 768m
+    oom_score_adj: -600     # ingest-path schema validation (collector/stream-worker) — in-memory
+                            # registry loses ALL schemas on a kill, so protect it above the caches
     environment:
+      JAVA_OPTS_APPEND: "-Xmx512m"
       REGISTRY_APIS_V2_DATE_FORMAT: "yyyy-MM-dd'T'HH:mm:ss'Z'"
       # FULL_TRANSITIVE: every version must be compatible with ALL prior versions
       REGISTRY_COMPAT_DEFAULT_RULE: "FULL_TRANSITIVE"

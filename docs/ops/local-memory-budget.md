@@ -32,7 +32,9 @@ runaway, they don't throttle normal operation):
 | minio | 5g | `GOMEMLIMIT=4500MiB` (soft GC ceiling) |
 | redpanda (Kafka KRaft) | 2.5g | default |
 | neo4j | 1.5g | heap 512m + pagecache 256m |
-| postgres / redis / pgbouncer / apicurio / litellm / localstack / iceberg-rest | unbounded (small, ~3g combined) | — |
+| apicurio | 768m | `JAVA_OPTS_APPEND -Xmx512m` (67% of limit) |
+| pgbouncer | 128m | — (small C daemon) |
+| postgres / redis / litellm / localstack / iceberg-rest | unbounded (small, ~3g combined) | — |
 
 ## Lever 3 — transient Spark transform jobs (fixes JVM heap OOM)
 

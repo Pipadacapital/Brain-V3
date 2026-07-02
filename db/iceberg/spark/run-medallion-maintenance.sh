@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # run-medallion-maintenance.sh — Brain V4 Phase 0 (Area B / PR-0.2): Iceberg Silver + Gold maintenance.
-#   Periodic:  db/iceberg/spark/run-medallion-maintenance.sh                  (MODE=maintain — compact + 24mo TTL)
+#   Periodic:  db/iceberg/spark/run-medallion-maintenance.sh    (MODE=maintain — compact + 7d snapshot TTL + orphan sweep)
 #   Erasure:   MODE=erase ERASE_BRAND_ID=<uuid> db/iceberg/spark/run-medallion-maintenance.sh
 #
 # The Silver/Gold companion to run-bronze-maintenance.sh — same image, same operations, extended to
@@ -41,7 +41,7 @@ exec docker run --rm \
   -e AWS_REGION="${AWS_REGION:-us-east-1}" \
   -e MODE="${MODE:-maintain}" \
   -e ERASE_BRAND_ID="${ERASE_BRAND_ID:-}" \
-  -e RETENTION_MS="${RETENTION_MS:-63072000000}" \
+  -e SNAPSHOT_TTL_MS="${SNAPSHOT_TTL_MS:-604800000}" \
   -e ORPHAN_FILES="${ORPHAN_FILES:-1}" \
   -e ORPHAN_OLDER_THAN_DAYS="${ORPHAN_OLDER_THAN_DAYS:-3}" \
   "${SPARK_IMAGE}" \

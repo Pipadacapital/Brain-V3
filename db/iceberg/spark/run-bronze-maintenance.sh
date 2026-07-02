@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 # run-bronze-maintenance.sh — ADR-0002 Slice 7: Iceberg Bronze maintenance.
-#   Periodic:  db/iceberg/spark/run-bronze-maintenance.sh                  (MODE=maintain — compact + 24mo TTL)
+#   Periodic:  db/iceberg/spark/run-bronze-maintenance.sh                  (MODE=maintain — compact + 7d snapshot TTL)
 #   Erasure:   MODE=erase ERASE_BRAND_ID=<uuid> db/iceberg/spark/run-bronze-maintenance.sh
 #
 # Requires the lakehouse profile up (iceberg-rest + minio). Joins Redpanda's netns only for service DNS.
 set -euo pipefail
+
+# AUD-INFRA-006: host-global batch-Spark admission lock — overlapping refresh loops / manual runs QUEUE
+# behind the one running batch container instead of stacking 7g-cap JVMs. Streaming sinks excluded.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_spark_lock.sh"
 
 SPARK_IMAGE="${SPARK_IMAGE:-apache/spark:3.5.3}"
 ICEBERG_VERSION="${ICEBERG_VERSION:-1.9.2}"
@@ -32,7 +36,7 @@ exec docker run --rm \
   -e AWS_REGION="${AWS_REGION:-us-east-1}" \
   -e MODE="${MODE:-maintain}" \
   -e ERASE_BRAND_ID="${ERASE_BRAND_ID:-}" \
-  -e RETENTION_MS="${RETENTION_MS:-63072000000}" \
+  -e SNAPSHOT_TTL_MS="${SNAPSHOT_TTL_MS:-604800000}" \
   "${SPARK_IMAGE}" \
   /opt/spark/bin/spark-submit \
     --master "local[2]" \

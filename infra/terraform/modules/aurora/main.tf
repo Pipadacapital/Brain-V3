@@ -37,7 +37,7 @@ variable "vpc_id" {
 
 variable "subnet_ids" {
   type        = list(string)
-  description = "PRIVATE subnet ids only — Aurora is never publicly accessible."
+  description = "PRIVATE subnet ids only - Aurora is never publicly accessible."
 }
 
 variable "ingress_security_group_ids" {
@@ -106,7 +106,7 @@ resource "aws_db_subnet_group" "main" {
   count       = var.create ? 1 : 0
   name        = "${var.project}-${var.environment}-aurora"
   subnet_ids  = var.subnet_ids
-  description = "Brain Aurora PostgreSQL subnet group (${var.environment}) — private subnets only"
+  description = "Brain Aurora PostgreSQL subnet group (${var.environment}) - private subnets only"
 
   tags = merge(local.common_tags, {
     Name = "${var.project}-${var.environment}-aurora-subnet-group"
@@ -119,7 +119,7 @@ resource "aws_db_subnet_group" "main" {
 resource "aws_security_group" "aurora" {
   count       = var.create ? 1 : 0
   name        = "${var.project}-${var.environment}-aurora"
-  description = "Brain Aurora PostgreSQL security group — approved source SGs only"
+  description = "Brain Aurora PostgreSQL security group - approved source SGs only"
   vpc_id      = var.vpc_id
 
   dynamic "ingress" {

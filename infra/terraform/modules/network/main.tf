@@ -270,7 +270,7 @@ resource "aws_security_group" "eks_nodes" {
 # RDS SG – only accepts connections from EKS nodes
 resource "aws_security_group" "rds" {
   name        = "${var.project}-${var.environment}-rds"
-  description = "RDS PostgreSQL security group – EKS nodes only"
+  description = "RDS PostgreSQL security group - EKS nodes only"
   vpc_id      = aws_vpc.main.id
 
   ingress {
@@ -298,7 +298,7 @@ resource "aws_security_group" "rds" {
 # ElastiCache SG – only accepts connections from EKS nodes
 resource "aws_security_group" "elasticache" {
   name        = "${var.project}-${var.environment}-elasticache"
-  description = "ElastiCache Redis security group – EKS nodes only"
+  description = "ElastiCache Redis security group - EKS nodes only"
   vpc_id      = aws_vpc.main.id
 
   ingress {

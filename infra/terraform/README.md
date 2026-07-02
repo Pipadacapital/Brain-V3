@@ -60,9 +60,9 @@ and set `catalog.jdbcHost` in `infra/helm/iceberg-rest/values-prod.yaml` — see
 ## Brain V4 PHASE 0 — Iceberg Silver + Gold (additive, non-breaking)
 
 `modules/s3-iceberg-medallion` provisions the Iceberg **Silver** and **Gold**
-storage layers (S3 bucket + Glue catalog database + Spark **write** IAM policy +
-analytics **read** IAM policy) so Spark can `CREATE` and `MERGE` Iceberg tables
-in the `brain_silver` / `brain_gold` namespaces. It is the cloud mirror of the
+storage layers (S3 bucket + Spark **write** IAM policy + analytics **read**
+IAM policy) so Spark can `CREATE` and `MERGE` Iceberg tables in the
+`brain_silver` / `brain_gold` namespaces. It is the cloud mirror of the
 Bronze module (`modules/s3-iceberg`) and is the Terraform half of
 `14-implementation-plan.md` PHASE 0 / PR-0.1 (the provisioning blocker called
 out in `08-spark-ownership-report.md §4` and `09-starrocks-report.md §6`).
@@ -78,11 +78,13 @@ this directory is cloud IaC only and is **not applied** in local-prod.
   **No** Object Lock: Silver/Gold are derived, rebuildable layers; MERGE,
   compaction, snapshot-expiry and crypto-shred must be able to delete files.
   (Bronze keeps the COMPLIANCE+7yr WORM retention as the source of truth.)
-- `brain_<layer>_<env>` Glue Data Catalog database for Iceberg metadata.
+- **No Glue catalog database** (AUD-COST-012): the runtime Iceberg catalog is
+  the REST/JDBC catalog on Aurora (see "Prod go-live" step 2 above); the Glue
+  IAM grants in the write/read policies are a dormant fallback only.
 - `brain-<env>-spark-<layer>-write` IAM policy — Get/Put/Delete on the
-  `<layer>/*` prefix only, KMS wrap/unwrap, and Glue table writes scoped to the
-  layer DB. Mirrors Bronze NN-5 per-prefix scoping with an explicit DENY on
-  bucket root.
+  `<layer>/*` prefix only, KMS wrap/unwrap, and (dormant) Glue table writes
+  scoped to the layer DB name. Mirrors Bronze NN-5 per-prefix scoping with an
+  explicit DENY on bucket root.
 - `brain-<env>-analytics-<layer>-read` IAM policy — GetObject on the layer
   prefix only (StarRocks `mv_*` external-catalog reads, Phase 3).
 
@@ -117,8 +119,8 @@ After apply, point the Spark jobs at the new warehouse roots (per env outputs):
 
 - `silver_bucket_name` / `gold_bucket_name` → Spark `warehouse` =
   `s3://<bucket>/silver/` and `s3://<bucket>/gold/`.
-- `silver_glue_database_name` / `gold_glue_database_name` → the
-  `brain_silver` / `brain_gold` Glue databases backing the Iceberg catalog.
+- Catalog: point Spark/Trino at the REST catalog (iceberg-rest chart, backed by
+  the `iceberg_catalog` DB on Aurora — "Prod go-live" step 2). No Glue DBs.
 - `spark_jobs_role_arn` → annotate the `brain-jobs` Kubernetes service account
   (`eks.amazonaws.com/role-arn`) in `infra/helm/cronworkflows/values-*.yaml`.
 

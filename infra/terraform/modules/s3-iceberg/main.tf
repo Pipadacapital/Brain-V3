@@ -116,12 +116,14 @@ resource "aws_s3_bucket_lifecycle_configuration" "bronze" {
 }
 
 ###############################################################################
-# Glue Data Catalog database for Iceberg metadata
+# Iceberg catalog: NO Glue database here (AUD-COST-012). The runtime catalog is
+# the REST/JDBC catalog (infra/helm/iceberg-rest → JdbcCatalog on Aurora, per
+# the Brain V4 data platform: rest catalogs brain_{bronze,silver,gold}); the
+# former aws_glue_catalog_database was paid-for dead metadata nothing read.
+# The catalog DB bootstrap SQL is documented in infra/terraform/README.md
+# ("Prod go-live" step 2). Glue IAM grants below are retained as a dormant
+# fallback path only.
 ###############################################################################
-resource "aws_glue_catalog_database" "bronze" {
-  name        = "${var.project}_bronze_${var.environment}"
-  description = "Brain Bronze layer Iceberg catalog (${var.environment})"
-}
 
 ###############################################################################
 # NN-5: stream-worker IAM policy — PutObject ONLY on bronze/brand_id=*/* prefix
@@ -229,6 +231,9 @@ data "aws_iam_policy_document" "analytics_s3" {
     resources = [var.kms_key_arn]
   }
 
+  # Dormant fallback only (AUD-COST-012): runtime catalog is REST/JDBC, no Glue
+  # DB is provisioned. Read-only + harmless; kept so a Glue fallback needs no
+  # IAM change.
   statement {
     sid    = "AllowGlueCatalogRead"
     effect = "Allow"
@@ -303,10 +308,6 @@ output "bronze_bucket_name" {
 
 output "bronze_bucket_arn" {
   value = aws_s3_bucket.bronze.arn
-}
-
-output "glue_database_name" {
-  value = aws_glue_catalog_database.bronze.name
 }
 
 output "stream_worker_s3_policy_arn" {

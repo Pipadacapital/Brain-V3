@@ -114,11 +114,12 @@ export function registerCollectRoute(
   /**
    * POST /batch — accept-before-validate batch ingest (Phase H pixel). Body: { events: [...] }.
    *
-   * Same D-1 ordering as /collect, per event: spool INSERT (durable commit) BEFORE the ACK; NO event
+   * Same D-1 ordering as /collect: spool INSERT (durable commit) BEFORE the ACK; NO event
    * validation / Apicurio / Kafka here (the drainer does that). The ONLY structural guard is transport-
    * level — events must be a non-empty array within MAX_BATCH (caps payload vs the 1 MiB body limit);
-   * that is an envelope shape check, not event validation. Each event is spooled independently so one
-   * malformed event never blocks the rest (it lands in the drainer's quarantine downstream).
+   * that is an envelope shape check, not event validation. The batch spools via ONE multi-row INSERT
+   * (AUD-PERF-007); events are never validated here, so a malformed event still spools as-received
+   * and lands in the drainer's quarantine downstream.
    */
   app.post('/batch', async (req: FastifyRequest, reply: FastifyReply) => {
     const correlationId = extractCorrelationId(
@@ -142,16 +143,15 @@ export function registerCollectRoute(
       });
     }
 
-    // Spool each event durably (D-1) — independent inserts; ACK reflects the spool commit.
-    const spoolIds: string[] = [];
-    let receivedAt = '';
-    for (const ev of events) {
-      const rawEvent = (ev ?? {}) as Record<string, unknown>;
-      const result = await acceptUseCase.execute(rawEvent);
-      incrementCounter('collector_accept_total');
-      spoolIds.push(result.spoolId.toString());
-      receivedAt = result.receivedAt;
-    }
+    // Spool the whole batch durably in ONE multi-row INSERT (D-1: the single commit still
+    // precedes the ACK; AUD-PERF-007 — no more N sequential PG round-trips holding a pool
+    // connection for the whole loop). Atomic: the batch spools entirely or 500s entirely
+    // (the client retry contract re-sends it).
+    const rawEvents = events.map((ev) => (ev ?? {}) as Record<string, unknown>);
+    const result = await acceptUseCase.executeMany(rawEvents);
+    incrementCounter('collector_accept_total', {}, rawEvents.length);
+    const spoolIds = result.spoolIds.map((id) => id.toString());
+    const receivedAt = result.receivedAt;
 
     rlog.debug('batch accepted + spooled', { accepted: spoolIds.length });
     reply

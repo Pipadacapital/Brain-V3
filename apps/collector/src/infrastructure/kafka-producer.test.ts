@@ -29,7 +29,7 @@ vi.mock('kafkajs', () => ({
       return fakeProducer;
     }
   },
-  CompressionTypes: { None: 0 },
+  CompressionTypes: { None: 0, GZIP: 1 },
 }));
 
 // Keep trace-context injection a no-op (not under test here).
@@ -112,5 +112,39 @@ describe('CollectorKafkaProducer partition key', () => {
       /producer not connected/,
     );
     expect(sentMessages).toHaveLength(0);
+  });
+});
+
+describe('CollectorKafkaProducer.produceBatch (AUD-PERF-002)', () => {
+  beforeEach(() => {
+    sentMessages.length = 0;
+    fakeProducer.send.mockClear();
+  });
+
+  it('sends a whole batch in ONE producer.send with per-message keys + correlation headers', async () => {
+    const p = newProducer();
+    await p.connect();
+    await p.produceBatch([
+      { rawBody: { brand_id: 'b1', event_id: 'e1' }, correlationId: 'c1' },
+      { rawBody: { brand_id: 'b2', event_id: 'e2' }, correlationId: 'c2' },
+      { rawBody: { brand_id: 'b1', event_id: 'e3' }, correlationId: 'c3' },
+    ]);
+    expect(fakeProducer.send).toHaveBeenCalledTimes(1); // one broker round-trip per drain batch
+    expect(sentMessages.map((m) => m.key)).toEqual(['b1:e1', 'b2:e2', 'b1:e3']);
+    expect(sentMessages.map((m) => m.headers['correlation_id'])).toEqual(['c1', 'c2', 'c3']);
+  });
+
+  it('an empty batch is a no-op (no send)', async () => {
+    const p = newProducer();
+    await p.connect();
+    await p.produceBatch([]);
+    expect(fakeProducer.send).not.toHaveBeenCalled();
+  });
+
+  it('throws when the producer is not connected (whole batch stays pending)', async () => {
+    const p = newProducer();
+    await expect(
+      p.produceBatch([{ rawBody: { brand_id: 'b', event_id: 'e' }, correlationId: 'c' }]),
+    ).rejects.toThrow(/producer not connected/);
   });
 });

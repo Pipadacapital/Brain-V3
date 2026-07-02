@@ -130,6 +130,33 @@ describe('Track B — Accept-before-validate + Durability', () => {
       expect(row!.raw_body['brand_id']).toBe(event.brand_id);
     });
 
+    it('POST /batch spools every event via ONE multi-row INSERT, ids in event order', async () => {
+      const eventA = makeSyntheticEvent();
+      const eventB = makeSyntheticEvent();
+      const eventC = makeSyntheticEvent();
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/batch',
+        headers: { 'content-type': 'application/json' },
+        payload: { events: [eventA, eventB, eventC] },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json<{ accepted: number; spool_ids: string[] }>();
+      expect(body.accepted).toBe(3);
+      expect(body.spool_ids).toHaveLength(3);
+
+      // Each returned spool id maps to the event at the same index (RETURNING order), pending.
+      const events = [eventA, eventB, eventC];
+      for (let i = 0; i < 3; i++) {
+        const row = await getSpoolRow(rawPool, body.spool_ids[i]!);
+        expect(row).not.toBeNull();
+        expect(row!.status).toBe('pending');
+        expect(row!.raw_body['event_id']).toBe(events[i]!.event_id);
+      }
+    });
+
     it('POST /v1/events returns HTTP 202 and row is in spool', async () => {
       const event = makeSyntheticEvent();
 

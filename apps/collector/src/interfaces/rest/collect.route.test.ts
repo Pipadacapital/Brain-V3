@@ -13,14 +13,31 @@ import type { AcceptEventUseCase } from '../../application/accept-event.usecase.
 vi.mock('@brain/observability', () => ({
   extractCorrelationId: () => 'test-corr',
   incrementCounter: () => undefined,
+  // src/log.ts (imported by the route module) builds a logger at module scope.
+  createLogger: () => ({
+    debug: () => undefined,
+    info: () => undefined,
+    warn: () => undefined,
+    error: () => undefined,
+    child: function () { return this; },
+  }),
 }));
 
-function buildApp(): { app: ReturnType<typeof Fastify>; execute: ReturnType<typeof vi.fn> } {
+function buildApp(): {
+  app: ReturnType<typeof Fastify>;
+  execute: ReturnType<typeof vi.fn>;
+  executeMany: ReturnType<typeof vi.fn>;
+} {
   const app = Fastify();
   let n = 0;
   const execute = vi.fn(async () => ({ spoolId: BigInt(++n), receivedAt: '2026-06-22T00:00:00.000Z' }));
-  registerCollectRoute(app, { execute } as unknown as AcceptEventUseCase);
-  return { app, execute };
+  // Batch accept (AUD-PERF-007): ONE call spools the whole batch — ids stay per-event.
+  const executeMany = vi.fn(async (rawBodies: Record<string, unknown>[]) => ({
+    spoolIds: rawBodies.map(() => BigInt(++n)),
+    receivedAt: '2026-06-22T00:00:00.000Z',
+  }));
+  registerCollectRoute(app, { execute, executeMany } as unknown as AcceptEventUseCase);
+  return { app, execute, executeMany };
 }
 
 describe('collector ingest routes', () => {
@@ -31,8 +48,8 @@ describe('collector ingest routes', () => {
     expect(res.json()).toMatchObject({ accepted: true });
   });
 
-  it('POST /batch → 200 with one spool id per event, executed once each', async () => {
-    const { app, execute } = buildApp();
+  it('POST /batch → 200 with one spool id per event, spooled in ONE batch insert', async () => {
+    const { app, execute, executeMany } = buildApp();
     const res = await app.inject({
       method: 'POST',
       url: '/batch',
@@ -42,15 +59,18 @@ describe('collector ingest routes', () => {
     const body = res.json();
     expect(body.accepted).toBe(3);
     expect(body.spool_ids).toEqual(['1', '2', '3']);
-    expect(execute).toHaveBeenCalledTimes(3);
+    // AUD-PERF-007: one multi-row INSERT for the whole batch — never N per-event round-trips.
+    expect(executeMany).toHaveBeenCalledTimes(1);
+    expect(executeMany.mock.calls[0]![0]).toHaveLength(3);
+    expect(execute).not.toHaveBeenCalled();
   });
 
   it('POST /batch with empty array → 400 (envelope guard, not event validation)', async () => {
-    const { app, execute } = buildApp();
+    const { app, executeMany } = buildApp();
     const res = await app.inject({ method: 'POST', url: '/batch', payload: { events: [] } });
     expect(res.statusCode).toBe(400);
     expect(res.json().accepted).toBe(0);
-    expect(execute).not.toHaveBeenCalled();
+    expect(executeMany).not.toHaveBeenCalled();
   });
 
   it('POST /batch with a non-array events → 400', async () => {
@@ -60,10 +80,10 @@ describe('collector ingest routes', () => {
   });
 
   it('POST /batch over the 50-event cap → 400', async () => {
-    const { app, execute } = buildApp();
+    const { app, executeMany } = buildApp();
     const events = Array.from({ length: 51 }, () => ({ event: 'page.viewed' }));
     const res = await app.inject({ method: 'POST', url: '/batch', payload: { events } });
     expect(res.statusCode).toBe(400);
-    expect(execute).not.toHaveBeenCalled();
+    expect(executeMany).not.toHaveBeenCalled();
   });
 });

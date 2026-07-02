@@ -20,6 +20,7 @@ const CFG = {
 function fakeRepo(countImpl: (cap: number) => Promise<number>): SpoolRepository {
   return {
     insert: async () => 1n,
+    insertMany: async (envelopes) => envelopes.map((_, i) => BigInt(i + 1)),
     claimPending: async () => ({
       entries: [],
       markDrained: async () => {},

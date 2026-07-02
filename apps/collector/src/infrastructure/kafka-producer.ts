@@ -5,9 +5,15 @@
  * The drainer calls produce(); on Redpanda-down it throws and the drainer
  * leaves spool rows as 'pending' (back-pressure hold — no event is dropped).
  */
-import { Kafka, type Producer, type KafkaConfig, CompressionTypes } from 'kafkajs';
+import { Kafka, type Producer, type KafkaConfig, type Message, CompressionTypes } from 'kafkajs';
 import { buildPartitionKey } from '@brain/events';
 import { injectKafkaTraceContext } from '@brain/observability';
+
+/** One spool entry headed for the collector topic (built by the drainer). */
+export interface DrainMessage {
+  rawBody: Record<string, unknown>;
+  correlationId: string;
+}
 
 export interface KafkaProducerConfig {
   brokers: string[];
@@ -73,35 +79,49 @@ export class CollectorKafkaProducer {
    * On failure throws so the drainer leaves the spool row as 'pending'.
    */
   async produce(rawBody: Record<string, unknown>, correlationId: string): Promise<void> {
+    await this.produceBatch([{ rawBody, correlationId }]);
+  }
+
+  /**
+   * Produce a whole claimed batch in ONE producer.send (AUD-PERF-002) — kafkajs groups the
+   * messages per partition natively, so a 100-row drain tick is one broker round-trip instead
+   * of 100. GZIP is codec-transparent to every consumer (broker + kafkajs + Spark decode it).
+   * Failure granularity is the batch: on throw the drainer leaves ALL claimed rows 'pending'
+   * (at-least-once; downstream event_id dedup absorbs any partial-produce replay).
+   */
+  async produceBatch(batch: DrainMessage[]): Promise<void> {
     if (!this.producer) {
       throw new Error('[kafka] producer not connected');
     }
+    if (batch.length === 0) return;
 
-    // Extract brand_id and event_id for partition key — these may not exist (pre-validation).
-    // Fallback: use the raw body's best-effort values; stream-worker validates them.
-    const brandId = typeof rawBody['brand_id'] === 'string' ? rawBody['brand_id'] : 'unknown';
-    const eventId = typeof rawBody['event_id'] === 'string' ? rawBody['event_id'] : 'unknown';
-    const partitionKey = buildPartitionKey(brandId, eventId);
+    const messages: Message[] = batch.map(({ rawBody, correlationId }) => {
+      // Extract brand_id and event_id for partition key — these may not exist (pre-validation).
+      // Fallback: use the raw body's best-effort values; stream-worker validates them.
+      const brandId = typeof rawBody['brand_id'] === 'string' ? rawBody['brand_id'] : 'unknown';
+      const eventId = typeof rawBody['event_id'] === 'string' ? rawBody['event_id'] : 'unknown';
+      const partitionKey = buildPartitionKey(brandId, eventId);
 
-    // OTel W3C trace-context propagation across the Kafka boundary (OBS-1/OBS-2):
-    // inject traceparent/tracestate so the stream-worker consumer resumes this trace
-    // instead of starting an orphan root span. Carried alongside correlation_id.
-    const headers: Record<string, string> = {
-      correlation_id: correlationId,
-      source: 'collector-drainer',
-    };
-    injectKafkaTraceContext(headers);
+      // OTel W3C trace-context propagation across the Kafka boundary (OBS-1/OBS-2):
+      // inject traceparent/tracestate so the stream-worker consumer resumes this trace
+      // instead of starting an orphan root span. Carried alongside correlation_id.
+      const headers: Record<string, string> = {
+        correlation_id: correlationId,
+        source: 'collector-drainer',
+      };
+      injectKafkaTraceContext(headers);
+
+      return {
+        key: partitionKey,
+        value: JSON.stringify(rawBody),
+        headers,
+      };
+    });
 
     await this.producer.send({
       topic: this.topic,
-      compression: CompressionTypes.None,
-      messages: [
-        {
-          key: partitionKey,
-          value: JSON.stringify(rawBody),
-          headers,
-        },
-      ],
+      compression: CompressionTypes.GZIP,
+      messages,
     });
   }
 

@@ -48,6 +48,31 @@ export class PgSpoolRepository implements SpoolRepository {
     return BigInt(row.id);
   }
 
+  async insertMany(envelopes: IngestEnvelope[]): Promise<bigint[]> {
+    if (envelopes.length === 0) return [];
+
+    // Same payload shape as insert(): the received_at stamp rides on the body too.
+    const bodies = envelopes.map((e) => JSON.stringify({ ...e.rawBody, _received_at: e.receivedAt }));
+    const receivedAts = envelopes.map((e) => e.receivedAt);
+
+    // ONE multi-row INSERT (AUD-PERF-007): a /batch of 50 events is a single PG round-trip +
+    // commit instead of 50 sequential ones, and holds a pool connection for one statement only.
+    const result = await this.pool.query<{ id: string }>(
+      `INSERT INTO collector_spool (raw_body, received_at, status)
+       SELECT body::jsonb, received_at, 'pending'
+       FROM unnest($1::text[], $2::timestamptz[]) AS t(body, received_at)
+       RETURNING id::text`,
+      [bodies, receivedAts],
+    );
+
+    if (result.rows.length !== envelopes.length) {
+      throw new Error(
+        `[spool] batch INSERT returned ${result.rows.length} rows for ${envelopes.length} envelopes`,
+      );
+    }
+    return result.rows.map((row) => BigInt(row.id));
+  }
+
   /**
    * Claim up to `limit` pending rows inside a transaction held on a dedicated pool client
    * (AUD-PERF-006). FOR UPDATE SKIP LOCKED makes concurrent claimers — an overlapping tick or a

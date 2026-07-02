@@ -32,47 +32,43 @@ export class DrainEventsUseCase {
       return 0;
     }
 
-    let drained = 0;
+    const batch = claim.entries.map((entry) => ({
+      rawBody: entry.rawBody,
+      correlationId:
+        typeof entry.rawBody['correlation_id'] === 'string'
+          ? entry.rawBody['correlation_id']
+          : `spool-${entry.id.toString()}`,
+    }));
 
     try {
-      for (const entry of claim.entries) {
-        const correlationId =
-          typeof entry.rawBody['correlation_id'] === 'string'
-            ? entry.rawBody['correlation_id']
-            : `spool-${entry.id.toString()}`;
-        // Per-message child logger: bind correlation_id + brand_id (tenant key, a UUID — not PII)
-        // so every drain line for this event is correlatable end-to-end with the downstream
-        // stream-worker consumer (which extracts the same correlation_id off the Kafka headers).
-        const brandId =
-          typeof entry.rawBody['brand_id'] === 'string' ? entry.rawBody['brand_id'] : undefined;
-        const mlog = log.child({ correlation_id: correlationId, brand_id: brandId, spool_id: entry.id.toString() });
-        try {
-          await this.kafka.produce(entry.rawBody, correlationId);
-          await claim.markDrained([entry.id]);
-          drained++;
-        } catch (err) {
-          // F-3 back-pressure: leave this row 'pending'. Redpanda may be down.
-          // Log the error but do NOT throw — the drainer loop must continue to next tick.
-          // Pass the Error in fields.err so Sentry + stack handling fires (not a stringified message).
-          mlog.error('produce failed — leaving spool row pending (back-pressure)', { err });
-          // Stop processing this batch on first failure — producer reconnect may be needed.
-          // Next tick the drainer will retry from the oldest pending row.
-          break;
-        }
-      }
+      // ONE producer.send for the whole claimed batch (AUD-PERF-002) — kafkajs batches the
+      // messages natively; per-message correlation_id/trace headers are built by the producer.
+      await this.kafka.produceBatch(batch);
+    } catch (err) {
+      // F-3 back-pressure: leave the WHOLE batch 'pending'. Redpanda may be down.
+      // Log the error but do NOT throw — the drainer loop must continue to next tick.
+      // Pass the Error in fields.err so Sentry + stack handling fires (not a stringified message).
+      log.error('batch produce failed — leaving spool batch pending (back-pressure)', {
+        err,
+        batch_size: claim.entries.length,
+        first_spool_id: claim.entries[0]?.id.toString(),
+      });
+      await claim.rollback().catch(() => undefined);
+      return 0;
+    }
 
-      if (drained > 0) {
-        await claim.commit(); // drained marks become durable, locks release
-      } else {
-        await claim.rollback(); // whole batch stays pending (back-pressure hold)
-      }
+    try {
+      // ONE UPDATE … WHERE id = ANY($1) for the produced batch (AUD-PERF-002), then commit
+      // the claim so the drained marks become durable and the row locks release.
+      await claim.markDrained(claim.entries.map((entry) => entry.id));
+      await claim.commit();
     } catch (err) {
       // Claim-settle / markDrained infrastructure error: release the claim so every row stays
-      // 'pending' (no event loss; a re-produce next tick is absorbed by downstream event_id dedup).
+      // 'pending' (no event loss; the re-produce next tick is absorbed by downstream event_id dedup).
       await claim.rollback().catch(() => undefined);
       throw err;
     }
 
-    return drained;
+    return claim.entries.length;
   }
 }

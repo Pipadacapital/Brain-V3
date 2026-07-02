@@ -39,6 +39,14 @@ export interface SpoolRepository {
   insert(envelope: IngestEnvelope): Promise<bigint>;
 
   /**
+   * Write a batch of raw envelopes in ONE multi-row INSERT (AUD-PERF-007) — a single durable
+   * commit that still precedes the /batch ACK (D-1), instead of N sequential round-trips.
+   * Returns the new row ids in input order. Atomic: the whole batch spools or none does
+   * (the 500-retry client contract then re-sends the batch).
+   */
+  insertMany(envelopes: IngestEnvelope[]): Promise<bigint[]>;
+
+  /**
    * Atomically claim up to `limit` pending rows, ordered by id (oldest first), row-locking them
    * against concurrent drain passes (FOR UPDATE SKIP LOCKED). Used by the drainer loop.
    */

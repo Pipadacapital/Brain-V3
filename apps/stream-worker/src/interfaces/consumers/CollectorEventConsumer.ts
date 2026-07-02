@@ -9,6 +9,11 @@
  *                                  persistent write errors)
  *   Committing before write = silent data loss. Never commit on write error.
  *
+ *   AUD-PERF-009: commits are BATCHED (OffsetCommitBatcher, every N msgs / T ms) — the offset is
+ *   recorded as committable only AFTER the write confirms, so D-7 holds at batch granularity. A
+ *   crash inside a window redelivers already-written messages; Bronze dedup (Redis NX + PK
+ *   backstop) absorbs the replay. DLQ/quarantine paths flush immediately (rare, keeps promptness).
+ *
  * Retry policy (D-7 / T2-8):
  *   Per (groupId, topic, partition, offset) DURABLE (Redis) retry counter — survives restarts.
  *   On ProcessEventUseCase throw: increment retry counter, do NOT commit offset.
@@ -22,6 +27,7 @@ import { context } from '@opentelemetry/api';
 import { ProcessEventUseCase, ProcessResult } from '../../application/ProcessEventUseCase.js';
 import { DlqProducer } from '../../infrastructure/kafka/DlqProducer.js';
 import type { IRetryCounter } from '../../infrastructure/redis/RetryCounterAdapter.js';
+import { OffsetCommitBatcher } from './OffsetCommitBatcher.js';
 import { log } from "../../log.js";
 
 /** Maximum per-(partition, offset) retry count before DLQ routing. */
@@ -32,6 +38,14 @@ export class CollectorEventConsumer {
   private readonly dlqProducer: DlqProducer;
   /** Durable retry-counter scope (T2-8): `{groupId}:{topic}` — isolates same-topic groups. */
   private readonly retryScope: string;
+  /** Batched offset commits (AUD-PERF-009) — D-7 preserved at batch granularity. */
+  private readonly commitBatcher: OffsetCommitBatcher;
+  /**
+   * Offsets that FAILED at least once (`{partition}:{offset}`), populated only in the catch
+   * path (AUD-PERF-009). The durable Redis retry counter only exists after a failure, so
+   * retryCounter.reset (an unconditional Redis DEL) is skipped for the never-failed 99%+.
+   */
+  private readonly failedOffsets = new Set<string>();
 
   constructor(
     private readonly kafka: Kafka,
@@ -44,12 +58,23 @@ export class CollectorEventConsumer {
     this.consumer = kafka.consumer({ groupId });
     this.dlqProducer = new DlqProducer(kafka);
     this.retryScope = `${groupId}:${topic}`;
+    this.commitBatcher = new OffsetCommitBatcher(topic, (entries) =>
+      this.consumer.commitOffsets(entries),
+    );
+  }
+
+  /** Reset the durable retry counter ONLY when this offset actually failed before (T2-8 kept). */
+  private async resetIfFailed(partition: number, offset: string): Promise<void> {
+    if (this.failedOffsets.delete(`${partition}:${offset}`)) {
+      await this.retryCounter.reset(this.retryScope, partition, offset);
+    }
   }
 
   async start(): Promise<void> {
     await this.dlqProducer.connect();
     await this.consumer.connect();
     await this.consumer.subscribe({ topic: this.topic, fromBeginning: false });
+    this.commitBatcher.start();
 
     await this.consumer.run({
       // autoCommit=false: we commit manually ONLY after confirmed write (D-7).
@@ -86,11 +111,10 @@ export class CollectorEventConsumer {
               message.value,
               result.reason ?? 'validation_error',
             );
-            // Commit offset AFTER DLQ produce confirmed (D-7).
-            await this.consumer.commitOffsets([
-              { topic, partition, offset: String(Number(offset) + 1) },
-            ]);
-            await this.retryCounter.reset(this.retryScope, partition, offset);
+            // Commit AFTER DLQ produce confirmed (D-7) — immediate flush (rare path).
+            await this.commitBatcher.record(partition, offset);
+            await this.commitBatcher.flush();
+            await this.resetIfFailed(partition, offset);
             msgLog.info(`DLQ (invalid) partition=${partition} offset=${offset} reason=${result.reason}`);
             return;
           }
@@ -106,10 +130,9 @@ export class CollectorEventConsumer {
               message.value,
               result.reason ?? 'quarantined',
             );
-            await this.consumer.commitOffsets([
-              { topic, partition, offset: String(Number(offset) + 1) },
-            ]);
-            await this.retryCounter.reset(this.retryScope, partition, offset);
+            await this.commitBatcher.record(partition, offset);
+            await this.commitBatcher.flush();
+            await this.resetIfFailed(partition, offset);
             msgLog.info(`QUARANTINE partition=${partition} offset=${offset} reason=${result.reason} brand=${result.brandId ?? 'unresolved'}`);
             return;
           }
@@ -131,15 +154,15 @@ export class CollectorEventConsumer {
             incrementCounter('bronze_write_total', { brand_id: result.brandId ?? 'unknown' });
           }
 
-          // written | dedup_hit | pk_conflict → commit offset (D-7).
-          await this.consumer.commitOffsets([
-            { topic, partition, offset: String(Number(offset) + 1) },
-          ]);
-          await this.retryCounter.reset(this.retryScope, partition, offset);
-          msgLog.info(`${result.outcome} brand=${result.brandId} event=${result.eventId} partition=${partition} offset=${offset}`);
+          // written | dedup_hit | pk_conflict → record committable AFTER confirmed write (D-7,
+          // batched per AUD-PERF-009). Success log at debug — per-event info drowned the lane.
+          await this.commitBatcher.record(partition, offset);
+          await this.resetIfFailed(partition, offset);
+          msgLog.debug(`${result.outcome} brand=${result.brandId} event=${result.eventId} partition=${partition} offset=${offset}`);
         } catch (err) {
           // Write error — do NOT commit offset (D-7). Increment retry counter.
           const current = await this.retryCounter.increment(this.retryScope, partition, offset);
+          this.failedOffsets.add(`${partition}:${offset}`);
 
           msgLog.error(`write error (attempt ${current}/${MAX_RETRY}) partition=${partition} offset=${offset}`, { err: err });
 
@@ -152,10 +175,9 @@ export class CollectorEventConsumer {
                 message.value,
                 `max_retry_exceeded: ${String(err)}`,
               );
-              await this.consumer.commitOffsets([
-                { topic, partition, offset: String(Number(offset) + 1) },
-              ]);
-              await this.retryCounter.reset(this.retryScope, partition, offset);
+              await this.commitBatcher.record(partition, offset);
+              await this.commitBatcher.flush();
+              await this.resetIfFailed(partition, offset);
               msgLog.warn(`DLQ (max retry) partition=${partition} offset=${offset}`);
             } catch (dlqErr) {
               msgLog.error('DLQ produce failed — not committing offset', { err: dlqErr });
@@ -176,6 +198,9 @@ export class CollectorEventConsumer {
 
   async stop(): Promise<void> {
     await this.consumer.stop();
+    // Final flush AFTER the run loop stops (in-flight eachMessage drained) and BEFORE
+    // disconnect (group membership still valid for the commit request).
+    await this.commitBatcher.stop();
     await this.consumer.disconnect();
     await this.dlqProducer.disconnect();
   }

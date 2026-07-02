@@ -11,6 +11,10 @@
  *
  * One instance per (event_name, consumer group). Manual at-least-once commit ONLY after the Bronze
  * write / dedup-hit confirms (D-7); durable Redis retry counter (T2-8) → DLQ after MAX_RETRY.
+ * AUD-PERF-009: commits are BATCHED (OffsetCommitBatcher) — offsets are recorded committable only
+ * after the write/skip is confirmed, so D-7 holds at batch granularity; window replay after a
+ * crash is absorbed by Bronze dedup. Skipped (not-our-event) messages — the overwhelming majority
+ * for each bridge — no longer pay a per-message broker commit.
  *
  * WIRED in main.ts — do NOT remove without updating the corresponding *-bronze-wiring.e2e.test.ts.
  */
@@ -20,6 +24,7 @@ import { context } from '@opentelemetry/api';
 import { ProcessEventUseCase, ProcessResult } from '../../application/ProcessEventUseCase.js';
 import { DlqProducer } from '../../infrastructure/kafka/DlqProducer.js';
 import type { IRetryCounter } from '../../infrastructure/redis/RetryCounterAdapter.js';
+import { OffsetCommitBatcher } from './OffsetCommitBatcher.js';
 import { log } from '../../log.js';
 
 /** Maximum per-(partition, offset) retry count before DLQ routing. */
@@ -30,6 +35,10 @@ export class EventBronzeBridgeConsumer {
   private readonly dlqProducer: DlqProducer;
   /** Durable retry-counter scope (T2-8): `{groupId}:{topic}` — isolates same-topic groups. */
   private readonly retryScope: string;
+  /** Batched offset commits (AUD-PERF-009) — D-7 preserved at batch granularity. */
+  private readonly commitBatcher: OffsetCommitBatcher;
+  /** Offsets that failed at least once (catch path only) — gates retryCounter.reset (AUD-PERF-009). */
+  private readonly failedOffsets = new Set<string>();
 
   constructor(
     kafka: Kafka,
@@ -46,20 +55,31 @@ export class EventBronzeBridgeConsumer {
     this.consumer = kafka.consumer({ groupId });
     this.dlqProducer = new DlqProducer(kafka);
     this.retryScope = `${groupId}:${topic}`;
+    this.commitBatcher = new OffsetCommitBatcher(topic, (entries) =>
+      this.consumer.commitOffsets(entries),
+    );
+  }
+
+  /** Reset the durable retry counter ONLY when this offset actually failed before (T2-8 kept). */
+  private async resetIfFailed(partition: number, offset: string): Promise<void> {
+    if (this.failedOffsets.delete(`${partition}:${offset}`)) {
+      await this.retryCounter.reset(this.retryScope, partition, offset);
+    }
   }
 
   async start(): Promise<void> {
     await this.dlqProducer.connect();
     await this.consumer.connect();
     await this.consumer.subscribe({ topic: this.topic, fromBeginning: false });
+    this.commitBatcher.start();
 
     await this.consumer.run({
       autoCommit: false,
       eachMessage: async (payload: EachMessagePayload) => {
         const { topic, partition, message } = payload;
         const offset = message.offset;
-        const commitNext = () =>
-          this.consumer.commitOffsets([{ topic, partition, offset: String(Number(offset) + 1) }]);
+        // Batched (AUD-PERF-009): record committable; flush happens every N msgs / T ms.
+        const commitNext = () => this.commitBatcher.record(partition, offset);
 
         // Resume producer trace context across the Kafka boundary (observability skill).
         const traceCtx = extractKafkaTraceContext(
@@ -101,7 +121,8 @@ export class EventBronzeBridgeConsumer {
               result.reason ?? 'validation_error',
             );
             await commitNext();
-            await this.retryCounter.reset(this.retryScope, partition, offset);
+            await this.commitBatcher.flush(); // rare path — keep DLQ commits prompt
+            await this.resetIfFailed(partition, offset);
             msgLog.info(`[bronze-bridge:${this.eventName}] DLQ (invalid) partition=${partition} offset=${offset} reason=${result.reason}`);
             return;
           }
@@ -111,10 +132,12 @@ export class EventBronzeBridgeConsumer {
             incrementCounter(this.writeCounter, { brand_id: result.brandId ?? 'unknown' });
           }
           await commitNext();
-          await this.retryCounter.reset(this.retryScope, partition, offset);
-          msgLog.info(`[bronze-bridge:${this.eventName}] ${result.outcome} brand=${result.brandId} event=${result.eventId} partition=${partition} offset=${offset}`);
+          await this.resetIfFailed(partition, offset);
+          // Success log at debug (AUD-PERF-009) — per-event info drowned the lane ×13 bridges.
+          msgLog.debug(`[bronze-bridge:${this.eventName}] ${result.outcome} brand=${result.brandId} event=${result.eventId} partition=${partition} offset=${offset}`);
         } catch (err) {
           const current = await this.retryCounter.increment(this.retryScope, partition, offset);
+          this.failedOffsets.add(`${partition}:${offset}`);
           msgLog.error(`[bronze-bridge:${this.eventName}] write error (attempt ${current}/${MAX_RETRY}) partition=${partition} offset=${offset}`, { err });
 
           if (current >= MAX_RETRY) {
@@ -126,7 +149,8 @@ export class EventBronzeBridgeConsumer {
                 `max_retry_exceeded: ${String(err)}`,
               );
               await commitNext();
-              await this.retryCounter.reset(this.retryScope, partition, offset);
+              await this.commitBatcher.flush(); // rare path — keep DLQ commits prompt
+              await this.resetIfFailed(partition, offset);
               msgLog.warn(`[bronze-bridge:${this.eventName}] DLQ (max retry) partition=${partition} offset=${offset}`);
             } catch (dlqErr) {
               msgLog.error(`[bronze-bridge:${this.eventName}] DLQ produce failed — not committing offset`, { err: dlqErr });
@@ -142,6 +166,8 @@ export class EventBronzeBridgeConsumer {
 
   async stop(): Promise<void> {
     await this.consumer.stop();
+    // Final flush AFTER the run loop stops and BEFORE disconnect (membership still valid).
+    await this.commitBatcher.stop();
     await this.consumer.disconnect();
     await this.dlqProducer.disconnect();
   }

@@ -387,7 +387,13 @@ module "elasticache" {
   redis_sg_id = module.network.elasticache_sg_id
   kms_key_arn = module.kms.root_kms_key_arn
   node_type   = "cache.t4g.micro"
-  create      = true
+  # AUD-PROD-008: single node per the ADR-0009 starter sizing — the module
+  # default (2) silently provisioned a 2-node multi-AZ auto-failover group
+  # (double cache spend). The module degrades automatic_failover/multi_az to
+  # false when count is 1. Redis here is a rebuildable serving CACHE (Trino
+  # is the SoT), so single-AZ is acceptable at this stage.
+  num_cache_nodes = 1
+  create          = true
 }
 
 ###############################################################################

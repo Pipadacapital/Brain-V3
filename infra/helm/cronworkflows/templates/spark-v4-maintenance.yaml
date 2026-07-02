@@ -7,7 +7,7 @@ growth on the medallion.
 
 Weekly spark-submit of db/iceberg/spark/medallion_maintenance.py (carried in
 the same image at /opt/brain): rewrite_data_files + expire_snapshots (7d TTL)
-+ a GUARDED remove_orphan_files pass over brain_silver + brain_gold.
++ a GUARDED remove_orphan_files pass over the brain_silver + brain_gold namespaces.
 
 Orphan-sweep guardrails (per the audit risk note):
   - older_than is clamped >= 3 days IN the job; we pin 7d here so a file can

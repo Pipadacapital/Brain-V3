@@ -741,6 +741,22 @@ services:
       - "9308:9308"
     restart: unless-stopped
 
+  # kafka-ui — browse topics/messages/consumer groups (the "what events is Brain getting" view).
+  # Debug profile: `docker compose --profile debug up -d kafka-ui` → http://localhost:8085.
+  # Read-only from the UI's perspective (DYNAMIC_CONFIG stays off — no topic edit/delete).
+  kafka-ui:
+    image: provectuslabs/kafka-ui:v0.7.2
+    profiles: ["debug"]
+    mem_limit: 512m         # JVM app; bound-everything rule (spec §A2)
+    oom_score_adj: 500      # debug tooling — most disposable
+    environment:
+      KAFKA_CLUSTERS_0_NAME: brain-local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: brain-kafka-ext:19092
+      JAVA_OPTS: -Xmx384m
+    ports:
+      - "8085:8080"
+    restart: unless-stopped
+
 volumes:
   # NOTE: brain-spark-checkpoint / brain-spark-ivy were REMOVED with the spark-bronze-sink /
   # spark-bronze-raw-sink services — the host-run Spark Bronze landing owns its own checkpoint/ivy

@@ -62,6 +62,19 @@ prometheus:
   prometheusSpec:
     nodeSelector:
       role: system
+    # ── AUD-LOCAL-016-FUP1: SELECT the app/kafka monitors ───────────────────
+    # The chart default (…NilUsesHelmValues: true) makes Prometheus select ONLY
+    # monitors labelled release=kube-prometheus-stack — i.e. the stack's own.
+    # The Brain monitors live in their OWNING charts' namespaces (collector
+    # ServiceMonitor, stream-worker PodMonitor, strimzi-kafka PodMonitors ×2)
+    # and are NOT release-labelled. false ⇒ the rendered Prometheus CR gets
+    # serviceMonitorSelector/podMonitorSelector {} (select all), and the chart
+    # already renders *NamespaceSelector {} (all namespaces) — verified against
+    # the pulled 65.1.1 chart. Rules are unaffected: additionalPrometheusRulesMap
+    # PrometheusRules carry the release label and keep matching the default
+    # ruleSelector.
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
     # Thanos owns long-term retention (S3, AUD-PROD-012) — keep the local TSDB
     # short + size-bounded so Prometheus fits the t4g.medium system nodes.
     retention: 2d

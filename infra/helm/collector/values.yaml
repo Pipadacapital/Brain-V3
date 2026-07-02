@@ -14,6 +14,19 @@ service:
   port: 80
   targetPort: 3001
 
+# Prometheus scrape (AUD-LOCAL-016-FUP1). The collector serves /metrics on its MAIN Fastify
+# port (a1965e28 — same port as /collect and the probes: :8787 in local dev, service.targetPort
+# in-cluster), so the existing `http` Service port already reaches it and NO extra port is
+# needed. The ServiceMonitor relabels job → "brain-collector" — the exact job name the local
+# compose Prometheus uses (infra/observe/prometheus.yml) and the brain-slo rules match
+# (up{job=~"brain-.*"}). Off by default (kind/staging have no Prometheus Operator CRDs);
+# values-prod enables it for the prod kube-prometheus-stack.
+metrics:
+  serviceMonitor:
+    enabled: false
+    jobLabel: brain-collector
+    interval: 15s
+
 # Public edge (AUD-COST-003): shared Brain ALB (aws-load-balancer-controller),
 # host-routed, ACM TLS. Off by default; enabled per env in values-prod.yaml.
 ingress:

@@ -1,0 +1,34 @@
+{{- /*
+PodMonitor (AUD-LOCAL-016-FUP1): the prod kube-prometheus-stack previously scraped NO app metrics,
+so every brain-slo rule over the worker counters (bronze_write / ingest_scheduler_* / dlq_redrive_*
+/ connector_auth_rejected / dq_silver_lag) was vacuously silent. The worker is headless — no
+Service fronts it (values.yaml header) — so this is a PodMonitor against the named `http`
+containerPort (the T2-10 HealthServer port, which also serves /metrics). The job relabel pins the
+exact job name the SLO rules and the local compose Prometheus use ("brain-stream-worker") —
+without it the job label would default to "<namespace>/<podmonitor-name>" and
+up{job=~"brain-.*"} would not match.
+
+Selected by the monitoring Prometheus via podMonitorSelector {} + namespaceSelector {}
+(kube-prometheus-stack values-prod sets podMonitorSelectorNilUsesHelmValues: false), so the
+monitor lives HERE, in the app's own namespace/chart — the team that owns the port owns the scrape.
+*/ -}}
+{{- if .Values.metrics.podMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: {{ include "brain.fullname" . }}
+  labels:
+    {{- include "brain.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "brain.selectorLabels" . | nindent 6 }}
+  podMetricsEndpoints:
+    - port: http
+      path: /metrics
+      interval: {{ .Values.metrics.podMonitor.interval }}
+      relabelings:
+        - action: replace
+          targetLabel: job
+          replacement: {{ .Values.metrics.podMonitor.jobLabel }}
+{{- end }}

@@ -1,0 +1,32 @@
+{{- /*
+ServiceMonitor (AUD-LOCAL-016-FUP1): the prod kube-prometheus-stack previously scraped NO app
+metrics, so every brain-slo rule over the collector counters was vacuously silent. The collector
+serves /metrics on its MAIN port (the `http` Service port — see values.yaml metrics block), so
+this monitor rides the existing Service. The job relabel pins the exact job name the SLO rules
+and the local compose Prometheus use ("brain-collector") — without it the job label would be the
+Service name ("collector") and up{job=~"brain-.*"} would not match.
+
+Selected by the monitoring Prometheus via serviceMonitorSelector {} + namespaceSelector {}
+(kube-prometheus-stack values-prod sets serviceMonitorSelectorNilUsesHelmValues: false), so the
+monitor lives HERE, in the app's own namespace/chart — the team that owns the port owns the scrape.
+*/ -}}
+{{- if .Values.metrics.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "brain.fullname" . }}
+  labels:
+    {{- include "brain.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "brain.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ .Values.metrics.serviceMonitor.interval }}
+      relabelings:
+        - action: replace
+          targetLabel: job
+          replacement: {{ .Values.metrics.serviceMonitor.jobLabel }}
+{{- end }}

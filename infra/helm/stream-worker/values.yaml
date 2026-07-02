@@ -20,6 +20,20 @@ probes:
   path: /healthz        # liveness: process is up
   readinessPath: /readyz # readiness: consumers started AND Postgres reachable
 
+# Prometheus scrape (AUD-LOCAL-016-FUP1). The worker's HealthServer also serves /metrics
+# (a1965e28 — same port as /healthz: HEALTH_PORT, i.e. the named `http` containerPort above;
+# :8091 in local dev only to dodge the Kafka host-port collision). The worker is deliberately
+# headless (no Service), so this is a PodMonitor against the containerPort — no Service is
+# introduced just to scrape it. The job relabel pins "brain-stream-worker" — the exact job name
+# the local compose Prometheus uses (infra/observe/prometheus.yml) and the brain-slo rules match
+# (up{job=~"brain-.*"}). Off by default (kind/staging have no Prometheus Operator CRDs);
+# values-prod enables it for the prod kube-prometheus-stack.
+metrics:
+  podMonitor:
+    enabled: false
+    jobLabel: brain-stream-worker
+    interval: 15s
+
 # Secret (External Secrets ← AWS Secrets Manager). MUST contain a brain_app (NOT superuser)
 # DATABASE_URL so RLS is enforced (see apps/stream-worker/src/main.ts).
 envSecretName: ""

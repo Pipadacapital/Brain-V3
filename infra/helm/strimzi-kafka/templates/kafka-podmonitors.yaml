@@ -1,0 +1,59 @@
+{{- /*
+PodMonitors for the Kafka metrics endpoints (AUD-LOCAL-016-FUP1), Strimzi-documented pattern
+(strimzi examples/metrics/prometheus-install/strimzi-pod-monitor.yaml): Strimzi exposes every
+metrics endpoint it manages on the pod port named `tcp-prometheus` (:9404) — the broker pods when
+spec.kafka.metricsConfig is set, and the kafkaExporter deployment.
+
+TWO monitors (not the single kind-selector one from the Strimzi example) because the brain-slo
+rules distinguish the sources by JOB NAME — up{job=~"…|kafka-jmx-exporter|kafka-exporter"},
+kafka_log_log_logendoffset ← job kafka-jmx-exporter, kafka_consumergroup_lag ← job kafka-exporter
+(same names as the local compose scrape config, infra/observe/prometheus.yml). Without the job
+relabel a PodMonitor's job label defaults to "<namespace>/<name>" and the rules go silent.
+
+Pod selection uses the labels Strimzi itself stamps on the pods it creates:
+  broker/controller pods (node pools included):  strimzi.io/name: <cluster>-kafka
+  kafkaExporter pods:                            strimzi.io/name: <cluster>-kafka-exporter
+
+Selected by the monitoring Prometheus via podMonitorSelector {} + namespaceSelector {}
+(kube-prometheus-stack values-prod sets podMonitorSelectorNilUsesHelmValues: false).
+*/ -}}
+{{- if .Values.metrics.enabled }}
+{{- $cluster := include "strimziKafka.clusterName" . }}
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: {{ $cluster }}-jmx
+  labels:
+    {{- include "strimziKafka.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      strimzi.io/cluster: {{ $cluster }}
+      strimzi.io/name: {{ $cluster }}-kafka
+  podMetricsEndpoints:
+    - port: tcp-prometheus
+      path: /metrics
+      relabelings:
+        - action: replace
+          targetLabel: job
+          replacement: kafka-jmx-exporter
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: {{ $cluster }}-exporter
+  labels:
+    {{- include "strimziKafka.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      strimzi.io/cluster: {{ $cluster }}
+      strimzi.io/name: {{ $cluster }}-kafka-exporter
+  podMetricsEndpoints:
+    - port: tcp-prometheus
+      path: /metrics
+      relabelings:
+        - action: replace
+          targetLabel: job
+          replacement: kafka-exporter
+{{- end }}

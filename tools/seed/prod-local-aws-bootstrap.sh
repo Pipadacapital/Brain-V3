@@ -19,7 +19,11 @@ PG=brainv3-postgres-1
 BRAND="${BRAND_ID:-124e6af5-e6c5-4b85-bf43-7b36fa528101}"
 ALIAS="alias/brain-connector-secrets"
 PW="$(grep -E '^DATABASE_URL=' .env.local-prod | sed -E 's#^.*://[^:]+:([^@]+)@.*#\1#')"
-psql() { docker exec -i -e PGPASSWORD="$PW" "$PG" psql -U brain -d brain -tAc "$1"; }
+# NO -i: SQL always arrives as $1, never via stdin — and `docker exec -i` inside a
+# `... | while read` loop SWALLOWS the loop's remaining stdin (the dev_secret migration
+# below silently stopped after the first repointed connector secret; RECONNECT_REQUIRED
+# for every connector after it on each restart).
+psql() { docker exec -e PGPASSWORD="$PW" "$PG" psql -U brain -d brain -tAc "$1"; }
 awsl() { docker exec "$LS" awslocal "$@"; }
 
 echo "[prod-local] ensure LocalStack is up (core profile)"
@@ -146,9 +150,12 @@ echo "[prod-local] migrate connector secrets dev_secret → Secrets Manager (pro
 # The in-loop empty-name guard below already skips blank lines.
 psql "SELECT name || E'\t' || secret_value FROM dev_secret" | while IFS=$'\t' read -r name val; do
   [ -z "$name" ] && continue
-  awsl secretsmanager create-secret --name "$name" --secret-string "$val" >/dev/null 2>&1 \
-    || awsl secretsmanager put-secret-value --secret-id "$name" --secret-string "$val" >/dev/null 2>&1
-  echo "[prod-local]   secret $name"
+  if awsl secretsmanager create-secret --name "$name" --secret-string "$val" >/dev/null 2>&1 \
+    || awsl secretsmanager put-secret-value --secret-id "$name" --secret-string "$val" >/dev/null 2>&1; then
+    echo "[prod-local]   secret $name"
+  else
+    echo "[prod-local]   WARN: secret $name failed create AND put — token will 404 (reconnect required)"
+  fi
   # Re-point connector_instance.secret_ref to the freshly-created ARN. LocalStack appends a NEW random
   # 6-char suffix on every create-secret, and getShopifyToken/etc. fetch by the FULL ARN — so the stale
   # ARN in secret_ref (captured before the restart) would 404 (verified: GetSecretValue by old ARN →

@@ -216,6 +216,33 @@ module "s3_audit" {
 }
 
 ###############################################################################
+# Thanos long-term metrics (AUD-PROD-012) — objstore bucket + IRSA role for
+# the Thanos sidecar inside the kube-prometheus-stack Prometheus pods
+# (observability stack: ArgoCD app in ns `monitoring`). NN-3 trust is pinned
+# to the SA kube-prometheus-stack creates for Prometheus (shared by the
+# sidecar container): monitoring/kube-prometheus-stack-prometheus — a rename
+# on the chart side is a deterministic STS AccessDenied, keep them in lockstep.
+###############################################################################
+module "s3_metrics" {
+  source      = "../../modules/s3-metrics"
+  environment = local.environment
+  project     = local.project
+  kms_key_arn = module.kms.root_kms_key_arn
+}
+
+module "irsa_thanos" {
+  source               = "../../modules/irsa"
+  role_name            = "thanos"
+  oidc_provider_arn    = module.eks.oidc_provider_arn
+  oidc_provider_url    = module.eks.oidc_provider_url
+  namespace            = "monitoring"
+  service_account_name = "kube-prometheus-stack-prometheus"
+  environment          = local.environment
+  project              = local.project
+  policy_arns          = [module.s3_metrics.thanos_objstore_policy_arn]
+}
+
+###############################################################################
 # App IRSA roles (workload identity → Secrets Manager + S3). Mirror of envs/dev.
 ###############################################################################
 module "irsa_collector" {
@@ -473,6 +500,11 @@ output "app_boot_secret_arns" { value = module.secrets.app_boot_secret_arns }
 # with s3://<warehouse_bucket_name>/.
 output "warehouse_bucket_name" { value = module.s3_iceberg.warehouse_bucket_name }
 output "audit_bucket_name" { value = module.s3_audit.audit_bucket_name }
+
+# AUD-PROD-012: fill the Thanos objstore.yml bucket + the prometheus
+# serviceAccount role-arn annotation in the kube-prometheus-stack values.
+output "metrics_bucket_name" { value = module.s3_metrics.metrics_bucket_name }
+output "thanos_role_arn" { value = module.irsa_thanos.role_arn }
 
 output "collector_role_arn" { value = module.irsa_collector.role_arn }
 output "stream_worker_role_arn" { value = module.irsa_stream_worker.role_arn }

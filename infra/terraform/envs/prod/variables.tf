@@ -39,6 +39,16 @@ variable "system_node_max" {
   default = 6
 }
 
+# AUD-COST-017: hosted zone id(s) external-dns may manage (e.g. ["Z0123456789ABC"]).
+# Empty = the role's ChangeResourceRecordSets falls back to hostedzone/* so the
+# first apply works before the zone exists — set the real id(s) once step 9 of
+# GO-LIVE creates/identifies the zone, then re-apply.
+variable "external_dns_zone_ids" {
+  description = "Route53 hosted zone IDs external-dns is allowed to change. Empty = all zones (bootstrap fallback; tighten ASAP)."
+  type        = list(string)
+  default     = []
+}
+
 # ADR-0009: Aurora Serverless v2, 0.5–2 ACU burst-elastic starter sizing.
 variable "aurora_min_capacity" {
   description = "Aurora Serverless v2 minimum capacity (ACU)."

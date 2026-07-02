@@ -240,6 +240,135 @@ module "irsa_core" {
 }
 
 ###############################################################################
+# Platform-controller + serving IRSA roles (AUD-COST-017) — the six roles the
+# helm/ArgoCD manifests reference (infra/helm/PLACEHOLDERS.md §4) that nothing
+# created. Namespaces + ServiceAccount names MUST match the charts exactly
+# (NN-3 StringEquals trust): a mismatch is a deterministic STS AccessDenied at
+# pod start.
+###############################################################################
+
+# web — chart SA `web` (brain.fullname = chart name). No AWS access needed
+# today; the role exists so the values-prod IRSA annotation resolves.
+module "irsa_web" {
+  source               = "../../modules/irsa"
+  role_name            = "web"
+  oidc_provider_arn    = module.eks.oidc_provider_arn
+  oidc_provider_url    = module.eks.oidc_provider_url
+  namespace            = "web"
+  service_account_name = "web"
+  environment          = local.environment
+  project              = local.project
+  policy_arns          = []
+}
+
+# trino — serving engine, read-only over the medallion warehouse namespaces
+# (AUD-COST-016 layout). SA name = trino.fullname = brain-prod-trino.
+module "irsa_trino" {
+  source               = "../../modules/irsa"
+  role_name            = "trino"
+  oidc_provider_arn    = module.eks.oidc_provider_arn
+  oidc_provider_url    = module.eks.oidc_provider_url
+  namespace            = "trino"
+  service_account_name = "brain-${local.environment}-trino"
+  environment          = local.environment
+  project              = local.project
+  policy_arns          = [module.s3_iceberg.analytics_s3_policy_arn]
+}
+
+# iceberg-rest — the JdbcCatalog server writes table METADATA files itself
+# (create/commit land server-side), so it needs the same medallion RW grant as
+# the Spark data plane. SA name = `iceberg-rest` (chart serviceAccount.name).
+module "irsa_iceberg_rest" {
+  source               = "../../modules/irsa"
+  role_name            = "iceberg-rest"
+  oidc_provider_arn    = module.eks.oidc_provider_arn
+  oidc_provider_url    = module.eks.oidc_provider_url
+  namespace            = "iceberg-rest"
+  service_account_name = "iceberg-rest"
+  environment          = local.environment
+  project              = local.project
+  policy_arns          = [module.s3_iceberg.spark_medallion_rw_policy_arn]
+}
+
+# external-secrets — ESO controller; reads ONLY brain/prod/k8s/* (shells now
+# created by modules/secrets). SA name pinned to `external-secrets` in
+# infra/argocd/envs/prod/external-secrets.yaml (upstream fullname would drift).
+module "irsa_external_secrets" {
+  source               = "../../modules/irsa"
+  role_name            = "external-secrets"
+  oidc_provider_arn    = module.eks.oidc_provider_arn
+  oidc_provider_url    = module.eks.oidc_provider_url
+  namespace            = "external-secrets"
+  service_account_name = "external-secrets"
+  environment          = local.environment
+  project              = local.project
+  policy_arns          = [module.secrets.eso_k8s_secrets_read_policy_arn]
+}
+
+# aws-load-balancer-controller — the UPSTREAM controller IAM policy, vendored
+# verbatim from kubernetes-sigs/aws-load-balancer-controller v2.10.1 (matches
+# the pinned chart 1.10.1) at policies/aws-load-balancer-controller-iam-policy.json.
+# Do not hand-edit the JSON — re-vendor when the chart is bumped.
+resource "aws_iam_policy" "alb_controller" {
+  name        = "${local.project}-${local.environment}-aws-load-balancer-controller"
+  description = "Upstream AWS Load Balancer Controller IAM policy (v2.10.1, vendored)"
+  policy      = file("${path.module}/policies/aws-load-balancer-controller-iam-policy.json")
+}
+
+module "irsa_alb_controller" {
+  source               = "../../modules/irsa"
+  role_name            = "aws-load-balancer-controller"
+  oidc_provider_arn    = module.eks.oidc_provider_arn
+  oidc_provider_url    = module.eks.oidc_provider_url
+  namespace            = "kube-system"
+  service_account_name = "aws-load-balancer-controller"
+  environment          = local.environment
+  project              = local.project
+  policy_arns          = [aws_iam_policy.alb_controller.arn]
+}
+
+# external-dns — Route53 record management. Scope ChangeResourceRecordSets to
+# the Brain hosted zone(s) via var.external_dns_zone_ids (tfvars, from step 9
+# of GO-LIVE); the [] default falls back to hostedzone/* so the FIRST apply
+# (before the zone exists) still works — tighten it once the zone id is known.
+data "aws_iam_policy_document" "external_dns" {
+  statement {
+    sid       = "ChangeZoneRecords"
+    effect    = "Allow"
+    actions   = ["route53:ChangeResourceRecordSets"]
+    resources = length(var.external_dns_zone_ids) > 0 ? [for z in var.external_dns_zone_ids : "arn:aws:route53:::hostedzone/${z}"] : ["arn:aws:route53:::hostedzone/*"]
+  }
+  statement {
+    sid    = "ListZones"
+    effect = "Allow"
+    actions = [
+      "route53:ListHostedZones",
+      "route53:ListResourceRecordSets",
+      "route53:ListTagsForResource",
+    ]
+    resources = ["*"]
+  }
+}
+
+resource "aws_iam_policy" "external_dns" {
+  name        = "${local.project}-${local.environment}-external-dns"
+  description = "external-dns: Route53 record management on the Brain zone(s)"
+  policy      = data.aws_iam_policy_document.external_dns.json
+}
+
+module "irsa_external_dns" {
+  source               = "../../modules/irsa"
+  role_name            = "external-dns"
+  oidc_provider_arn    = module.eks.oidc_provider_arn
+  oidc_provider_url    = module.eks.oidc_provider_url
+  namespace            = "external-dns"
+  service_account_name = "external-dns"
+  environment          = local.environment
+  project              = local.project
+  policy_arns          = [aws_iam_policy.external_dns.arn]
+}
+
+###############################################################################
 # Redis serving cache (ADR-0009 sizing: cache.t4g.micro starter)
 ###############################################################################
 module "elasticache" {
@@ -306,6 +435,14 @@ output "collector_role_arn" { value = module.irsa_collector.role_arn }
 output "stream_worker_role_arn" { value = module.irsa_stream_worker.role_arn }
 output "core_role_arn" { value = module.irsa_core.role_arn }
 output "spark_jobs_role_arn" { value = module.irsa_spark_jobs.role_arn }
+
+# AUD-COST-017: the six platform/serving roles the manifests reference.
+output "web_role_arn" { value = module.irsa_web.role_arn }
+output "trino_role_arn" { value = module.irsa_trino.role_arn }
+output "iceberg_rest_role_arn" { value = module.irsa_iceberg_rest.role_arn }
+output "external_secrets_role_arn" { value = module.irsa_external_secrets.role_arn }
+output "alb_controller_role_arn" { value = module.irsa_alb_controller.role_arn }
+output "external_dns_role_arn" { value = module.irsa_external_dns.role_arn }
 
 # Fill into infra/argocd/envs/prod/karpenter.yaml (ACCOUNT_ID role ARN +
 # settings.interruptionQueue — the queue name already matches brain-prod).

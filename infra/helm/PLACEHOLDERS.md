@@ -56,23 +56,28 @@ deterministic STS AccessDenied at pod start.
 `brain-prod-collector`, `brain-prod-stream-worker`, `brain-prod-core`,
 `brain-prod-jobs` (SA `brain-jobs` @ ns `argo`),
 `brain-prod-karpenter-controller`, plus the CI roles (github-plan /
-github-ecr-push / github-apply).
+github-ecr-push / github-apply) — **and, since AUD-COST-017, all six
+platform/serving roles** the manifests reference:
 
-**Referenced by manifests but NOT yet in terraform** (each needs a
-`modules/irsa` instance + policy before its app can start):
-
-| Role | Consumer | Policy sketch |
+| Role | Consumer (SA @ ns) | Policy |
 | --- | --- | --- |
-| `brain-prod-web` | `web/values-prod.yaml` | none needed today (drop the annotation or create an empty role) |
-| `brain-prod-trino` | `trino/values-prod.yaml` (ns `trino`, SA per chart) | read S3 medallion buckets (analytics policy) |
-| `brain-prod-iceberg-rest` | `iceberg-rest/values-prod.yaml` (ns `iceberg-rest`) | S3 RW on the medallion buckets |
-| `brain-prod-external-secrets` | `argocd/envs/prod/external-secrets.yaml` (ns `external-secrets`) | `secretsmanager:GetSecretValue/DescribeSecret` on `brain/prod/k8s/*` |
-| `brain-prod-aws-load-balancer-controller` | `argocd/envs/prod/aws-load-balancer-controller.yaml` (ns `kube-system`) | upstream ALB controller IAM policy |
-| `brain-prod-external-dns` | `argocd/envs/prod/external-dns.yaml` (ns `external-dns`) | `route53:ChangeResourceRecordSets` on the zone + `route53:List*` |
+| `brain-prod-web` | `web` @ `web` (`web/values-prod.yaml`) | none (empty role so the annotation resolves) |
+| `brain-prod-trino` | `brain-prod-trino` @ `trino` | medallion warehouse read-only (`analytics_s3_policy_arn`, AUD-COST-016 layout) |
+| `brain-prod-iceberg-rest` | `iceberg-rest` @ `iceberg-rest` | medallion warehouse RW (`spark_medallion_rw_policy_arn` — the catalog server writes table metadata) |
+| `brain-prod-external-secrets` | `external-secrets` @ `external-secrets` (name PINNED in the ArgoCD app) | `secretsmanager:GetSecretValue/DescribeSecret` on `brain/prod/k8s/*` (`eso_k8s_secrets_read_policy_arn`) |
+| `brain-prod-aws-load-balancer-controller` | `aws-load-balancer-controller` @ `kube-system` | upstream v2.10.1 policy, vendored at `envs/prod/policies/aws-load-balancer-controller-iam-policy.json` |
+| `brain-prod-external-dns` | `external-dns` @ `external-dns` | `route53:ChangeResourceRecordSets` on `var.external_dns_zone_ids` (default `hostedzone/*` until the zone id is set) + `route53:List*` |
+
+Nothing referenced by a manifest is missing from terraform anymore; a new role
+belongs in `envs/prod/bootstrap.tf` as a `modules/irsa` instance in the same
+PR that adds its annotation.
 
 ## 5. Secrets Manager entries (values, never in TF state)
 
 `brain/prod/k8s/{core-env, web-env, collector-env, stream-worker-env,
 pgbouncer-env, iceberg-rest-catalog-db, neo4j-auth}` — contents and key
 contracts documented in `infra/helm/external-secrets-config/README.md`.
-The terraform `secrets` module must grow these shells + the ESO read policy.
+The terraform `secrets` module creates these SHELLS + the ESO read policy
+(AUD-COST-017), so the go-live fill is a value update:
+`aws secretsmanager put-secret-value --secret-id brain/prod/k8s/<name> --secret-string file://<name>.json`
+— values are seeded by the operator and never enter TF state.

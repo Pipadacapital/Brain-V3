@@ -28,11 +28,13 @@ key becomes a Secret key (= env var for `envFrom` consumers).
 | `brain/prod/k8s/iceberg-rest-catalog-db` | `iceberg-rest-catalog-db` (ns `iceberg-rest`) | exactly `jdbc-user`, `jdbc-password` (the iceberg-rest chart reads these two keys) |
 | `brain/prod/k8s/neo4j-auth` | `neo4j-auth` (ns `neo4j`) | exactly `NEO4J_AUTH` = `neo4j/<password>` (official neo4j chart `passwordFromSecret` contract, AUD-COST-006); the same password backs `NEO4J_PASSWORD` in `core-env` / `stream-worker-env`, with `NEO4J_URI=bolt://neo4j.neo4j.svc.cluster.local:7687`, `NEO4J_USER=neo4j` |
 
-The terraform `secrets` module currently creates only the four
-`brain/prod/{db,kafka,grafana,apicurio}/...` shells — the `brain/prod/k8s/*`
-entries above must be added there (shell + IRSA read policy for the ESO
-controller role `brain-prod-external-secrets`); values are filled by the
-operator, never stored in TF state.
+The terraform `secrets` module creates ALL of these as SHELLS (the seven
+`brain/prod/k8s/*` entries above plus the four legacy
+`brain/prod/{db,kafka,grafana,apicurio}/...` ones) together with the ESO read
+policy attached to the controller role `brain-prod-external-secrets`
+(AUD-COST-017). Seeding is therefore a VALUE update
+(`aws secretsmanager put-secret-value`), never resource creation; values are
+filled by the operator and never stored in TF state.
 
 ## Rotation
 

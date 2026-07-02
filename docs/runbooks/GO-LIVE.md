@@ -17,8 +17,8 @@ in this runbook; nothing does them for you):
 | 2 | `terraform.tfvars` + `<PROD_ACCOUNT_ID>` in `backend.tf` | 2 |
 | 3 | GitHub repo variables/secrets + `production` Environment reviewers | 3 |
 | 4 | The placeholder fill pass (ACCOUNT_ID, hostnames, ACM cert, VPC id, Aurora endpoint) — CI *guards* it (AUD-COST-007) but does not *do* it | 4 |
-| 5 | Six IRSA roles referenced by manifests but not yet in terraform (PLACEHOLDERS.md §4: web, trino, iceberg-rest, external-secrets, alb-controller, external-dns) | 4 |
-| 6 | Seeding every `brain/prod/k8s/*` Secrets Manager entry (values never live in TF state) | 8 |
+| 5 | ~~Six IRSA roles referenced by manifests but not yet in terraform~~ — CLOSED (AUD-COST-017): all six are `modules/irsa` instances in `envs/prod/bootstrap.tf`, created by the step-3 apply | 4 |
+| 6 | Seeding the VALUES of every `brain/prod/k8s/*` Secrets Manager entry (the SHELLS are terraform-created since AUD-COST-017; values never live in TF state) | 8 |
 | 7 | `iceberg_catalog` DB bootstrap SQL on Aurora (private-only — run from inside the VPC) | 8 |
 | 8 | ACM certificate request + DNS validation; Route53 zone / registrar delegation | 9 |
 | 9 | pgbouncer has a chart + values-prod but **no ArgoCD Application** — install by hand (`helm upgrade --install`) or author `infra/argocd/envs/prod/pgbouncer.yaml` first | 10 |
@@ -130,12 +130,14 @@ Commit the fill to `master`. **CI enforcement:** the PR job
 tokens) and a `--strict` gate in `main.yml prod-promote` that refuses to commit
 a prod promotion while ANY placeholder remains (`tools/lint/prod-placeholder-guard.sh`).
 
-**Also here (manual, PLACEHOLDERS.md §4):** create the six IRSA roles the
-manifests reference but terraform does not yet define — `brain-prod-web`,
-`brain-prod-trino`, `brain-prod-iceberg-rest`, `brain-prod-external-secrets`,
-`brain-prod-aws-load-balancer-controller`, `brain-prod-external-dns` — as
-`modules/irsa` instances (preferred; then re-run prod-apply) or by hand. An
-app whose role is missing fails at pod start with an STS `AccessDenied`.
+**IRSA roles (AUD-COST-017 — nothing to do):** all six roles the manifests
+reference — `brain-prod-web`, `brain-prod-trino`, `brain-prod-iceberg-rest`,
+`brain-prod-external-secrets`, `brain-prod-aws-load-balancer-controller`,
+`brain-prod-external-dns` — are `modules/irsa` instances in
+`envs/prod/bootstrap.tf` and were created by the step-3 apply (policies per
+PLACEHOLDERS.md §4). Once the Route53 zone exists (step 9), set
+`external_dns_zone_ids` in terraform.tfvars and re-apply to scope external-dns
+down from the `hostedzone/*` bootstrap fallback.
 
 **Rollback:** git revert of the fill commit.
 
@@ -205,9 +207,10 @@ brain/prod/k8s/iceberg-rest-catalog-db  # exactly: jdbc-user, jdbc-password
 brain/prod/k8s/neo4j-auth               # exactly: NEO4J_AUTH = neo4j/<password>
 ```
 
-`aws secretsmanager create-secret --region ap-south-1 --name brain/prod/k8s/core-env --secret-string file://core-env.json`
-(the terraform `secrets` module does not yet create these shells — tracked
-follow-up; creating them by CLI is fine, values must never enter TF state).
+`aws secretsmanager put-secret-value --region ap-south-1 --secret-id brain/prod/k8s/core-env --secret-string file://core-env.json`
+(the terraform `secrets` module creates all seven SHELLS + the ESO read policy
+since AUD-COST-017 — seeding is a value update, never a resource creation, and
+values must never enter TF state).
 
 Wiring facts you need for the JSON values:
 `KAFKA_BROKERS=brain-prod-kafka-kafka-bootstrap.kafka.svc.cluster.local:9092`
@@ -342,9 +345,9 @@ In order — each proves the layer below it:
 ## 14. Post-launch hardening (same week)
 
 - `eks_public_access_cidrs = []` (AUD-COST-009) once a bastion/VPN exists.
-- Add the six PLACEHOLDERS.md §4 IRSA roles + the `brain/prod/k8s/*` SM shells
-  to terraform (so drift is plan-visible), and an `infra/argocd/envs/prod/pgbouncer.yaml`
-  Application for the hand-installed pgbouncer.
+- ~~Add the six PLACEHOLDERS.md §4 IRSA roles + the `brain/prod/k8s/*` SM
+  shells to terraform~~ — DONE (AUD-COST-017); scope `external_dns_zone_ids`
+  down from the `hostedzone/*` bootstrap fallback if not already done in step 4.
 - Scope the `brain-prod-github-apply` role down from AdministratorAccess.
 - Verify `v4-maintenance` ran its first weekly cycle (Iceberg compaction +
   snapshot expiry — AUD-COST-013) and `bronze-maintenance` likewise.

@@ -6,6 +6,20 @@ image:
 
 coordinator:
   replicaCount: 1
+  # AUD-PROD-006/-011: the single coordinator (discovery + the BFF's HTTP/JDBC endpoint —
+  # the SOLE serving entry) must not ride Spot. NOT `role: system` despite the spec: the
+  # system MNG is t4g.medium (4 GiB) and the coordinator's RATIFIED memory bound below
+  # (6Gi request / 7Gi limit, measured OOM evidence) can never schedule there — so it pins
+  # to the tainted ON-DEMAND Karpenter pool (t4g.xlarge, AUD-COST-018 — same on-demand
+  # stability guarantee, fits the bound; Neo4j precedent). Selector + toleration both
+  # required (the pool is tainted).
+  nodeSelector:
+    brain.platform/pool: ondemand
+  tolerations:
+    - key: brain.platform/pool
+      operator: Equal
+      value: ondemand
+      effect: NoSchedule
   resources:
     requests:
       cpu: "2"
@@ -16,6 +30,11 @@ coordinator:
 
 workers:
   replicaCount: 3
+  # AUD-PROD-006/-011: workers pin to the dedicated `trino` Karpenter pool (t4g.xlarge
+  # Spot, infra/helm/karpenter/values.yaml) via Karpenter's automatic nodepool label —
+  # without this, pool weights preferred the streaming pool for worker pods.
+  nodeSelector:
+    karpenter.sh/nodepool: trino
   resources:
     requests:
       cpu: "2"
@@ -23,11 +42,18 @@ workers:
     limits:
       cpu: "4"
       memory: 7Gi
-  # KEDA worker autoscaling stays OFF until KEDA is installed + a scale baseline is measured in prod.
+  # KEDA worker autoscaling ON (AUD-PROD-007/-010): the operator is installed via
+  # infra/argocd/envs/prod/keda.yaml (2.15.1) — the old "until KEDA is installed"
+  # gate is satisfied. When enabled, the worker Deployment omits static replicas
+  # (worker-deployment.yaml) so KEDA solely owns scaling; replicaCount above
+  # becomes the rollback value for enabled:false. 1..3 per the ratified decision
+  # (min 1, not the spec's scale-to-zero — the SOLE serving engine keeps one warm
+  # worker so first queries never wait on a node claim); CPU trigger 70% (chart
+  # default), 5m cooldown.
   autoscaling:
-    enabled: false
-    minReplicas: 3
-    maxReplicas: 8
+    enabled: true
+    minReplicas: 1
+    maxReplicas: 3
 
 # Real AWS S3 Iceberg buckets reached via the pod IRSA role — no static keys, no MinIO endpoint.
 iceberg:

@@ -1,6 +1,6 @@
 # analysis-templates.yaml — Argo Rollouts auto-rollback criteria as code (B6 / R-06).
 #
-# Encodes the bake-window rollback signals documented in .github/workflows/main.yml + PLAYBOOK-deploy.md
+# Encodes the bake-window rollback signals documented in .github/workflows/deploy.yml + PLAYBOOK-deploy.md
 # as Argo Rollouts AnalysisTemplates. During a canary/bake step a Rollout runs these against Prometheus;
 # a failed metric automatically aborts the rollout → Argo rolls back to the last stable ReplicaSet. This
 # turns the currently-MANUAL bake watch ("echo the criteria, watch a dashboard") into automation.
@@ -11,8 +11,9 @@
 # C1 follow-up; their template is included DISABLED below so it can't fire a fantasy (never-true) check.
 #
 # ⚠️ Requires the Argo Rollouts controller in-cluster. Attach via a Rollout's `strategy.canary.steps`
-# (see collector-rollout.yaml). PROMETHEUS_ADDRESS is injected per-env (in-cluster Prometheus or the
-# Grafana Cloud Mimir query endpoint).
+# (see collector-rollout.yaml). prometheus-address defaults to the in-cluster kube-prometheus-stack
+# Prometheus (infra/argocd/envs/prod/kube-prometheus-stack.yaml, ns monitoring — AUD-PROD-002);
+# override the arg per-env if a different query endpoint fronts the metrics.
 ---
 apiVersion: argoproj.io/v1alpha1
 kind: AnalysisTemplate
@@ -22,7 +23,7 @@ metadata:
 spec:
   args:
     - name: prometheus-address
-      value: REPLACE_WITH_PROMETHEUS_ADDRESS
+      value: http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090
   metrics:
     - name: accept-ack-success-rate
       # availability = accepted / (accepted + shed). SLO ≥ 99.95% (matches the bake-window rule).
@@ -46,7 +47,7 @@ metadata:
 spec:
   args:
     - name: prometheus-address
-      value: REPLACE_WITH_PROMETHEUS_ADDRESS
+      value: http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090
   metrics:
     - name: bronze-writes-flowing
       # During a bake the spine must keep writing Bronze. Zero writes over the window = stalled spine.
@@ -68,7 +69,7 @@ spec:
 # spec:
 #   args:
 #     - name: prometheus-address
-#       value: REPLACE_WITH_PROMETHEUS_ADDRESS
+#       value: http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090
 #   metrics:
 #     - name: error-rate
 #       interval: 1m

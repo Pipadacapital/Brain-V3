@@ -30,8 +30,8 @@ unbounded anymore.
 | Service | Cap | Internal heap |
 |---|---|---|
 | trino | 7g | jvm.config `MaxRAMPercentage=70` → ~4.9g |
-| bronze sink (host `docker run` via `tools/dev/dev-bronze-streaming.sh` → `bronze_landing.py`, the ONE unified landing — the old spark-bronze-sink / spark-bronze-raw-sink compose services are REMOVED) | 7g (`SPARK_CONTAINER_MEMORY`) | `--driver-memory 4g` + offHeap 512m |
-| Spark transform jobs (ephemeral `docker run` via `db/iceberg/spark/run-*.sh`) | 7g (`SPARK_CONTAINER_MEMORY`) | `--driver-memory 4g` |
+| bronze sink (host `docker run` via `tools/dev/dev-bronze-streaming.sh` → `bronze_landing.py`, the ONE unified landing — the old spark-bronze-sink / spark-bronze-raw-sink compose services are REMOVED) | 7g (`SPARK_CONTAINER_MEMORY`) | `--driver-memory 4g` + offHeap 512m; `--oom-score-adj -600` (`SINK_OOM_SCORE_ADJ`) — ingest-critical, protected (AUD-LOCAL-003) |
+| Spark transform jobs (ephemeral `docker run` via `db/iceberg/spark/run-*.sh`) | 7g (`SPARK_CONTAINER_MEMORY`) | `--driver-memory 4g`; `--oom-score-adj +100` (`SPARK_CONTAINER_OOM_SCORE_ADJ`) — retried by the loop, deliberately die FIRST (AUD-LOCAL-003) |
 | minio | 5g | `GOMEMLIMIT=4500MiB` (soft GC ceiling) |
 | kafka (KRaft) | 2.5g | `KAFKA_HEAP_OPTS -Xmx1G -Xms1G` (pinned; == image default — pairs 1G heap with the 2.5g limit) |
 | neo4j | 1.5g | heap 512m + pagecache 256m |
@@ -40,10 +40,18 @@ unbounded anymore.
 | localstack | 512m | — |
 | iceberg-rest | 512m | — |
 | redis | 256m | `maxmemory 192mb` + `volatile-lru` (evict, don't OOM-kill) |
+| prometheus | 256m | — (re-enabled 2026-07-02, AUD-LOCAL-001; loads `infra/observe/alerts/*.rules.yml`) |
+| grafana | 256m | — (re-enabled 2026-07-02, AUD-LOCAL-001; dashboards at :3004) |
+| alertmanager | 256m | — (added 2026-07-02, AUD-LOCAL-001; local no-op receiver, UI at :9093) |
 | pgbouncer | 128m | — (small C daemon) |
+| loki / tempo (`full-obs` profile) | 512m each | — (AUD-LOCAL-004) |
+| otel-collector (`full-obs`) | 256m | — (AUD-LOCAL-004) |
+| kafka-exporter (`debug`) | 128m | — (AUD-LOCAL-004) |
+| one-shot inits (minio-init / iceberg-catalog-init / jmx-exporter-init) | 128m | — (AUD-LOCAL-004) |
+| kafka-init | 512m | each `kafka-topics.sh` call is a JVM (256M default CLI heap) — 128m would OOM-kill the init and fail `up --wait` |
 
 Not running (commented out in compose, re-enable by uncommenting): **litellm**
-(`ai` profile — AI/NLQ features not active yet), **prometheus + grafana**.
+(`ai` profile — AI/NLQ features not active yet).
 
 ## Lever 3 — transient Spark transform jobs (fixes JVM heap OOM)
 

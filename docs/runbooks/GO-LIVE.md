@@ -127,7 +127,7 @@ grep -rEn "REPLACE_WITH_[A-Z0-9_]+|ACCOUNT_ID" infra/helm infra/argocd --include
 
 Commit the fill to `master`. **CI enforcement:** the PR job
 `prod-placeholder-guard` (renders all prod charts; fails on undocumented
-tokens) and a `--strict` gate in `main.yml prod-promote` that refuses to commit
+tokens) and a `--strict` gate in `deploy.yml prod-promote` that refuses to commit
 a prod promotion while ANY placeholder remains (`tools/lint/prod-placeholder-guard.sh`).
 
 **IRSA roles (AUD-COST-017 — nothing to do):** all six roles the manifests
@@ -143,7 +143,7 @@ down from the `hostedzone/*` bootstrap fallback.
 
 ## 5. ECR image push (AUD-COST-002 CD lane)
 
-Merging to `master` fires `.github/workflows/main.yml`: build → push (immutable
+Merging to `master` fires `.github/workflows/deploy.yml`: build → push (immutable
 digest) → cosign sign for `collector`, `stream-worker`, `core`, `web`
 (turbo-affected) and `spark-bronze` (path-based, `db/iceberg/spark/**`) into the
 `brain-<name>-prod` repos, then the gitops jobs pin the digests into the chart
@@ -257,6 +257,12 @@ stops at the edge, nothing internal changes.
 ```bash
 argocd app sync argo-workflows-prod            # wave -2: CronWorkflow CRDs (Spark crons need this)
 argocd app sync karpenter-crd-prod karpenter-prod karpenter-nodepools-prod keda-prod   # autoscalers
+argocd app sync kube-prometheus-stack-prod     # monitoring (ns monitoring, AUD-PROD-001/-002): Prometheus +
+                                               # Grafana + Alertmanager on the system MNG; loads the brain-slo
+                                               # rules; Thanos sidecar → metrics bucket via IRSA (AUD-PROD-012 —
+                                               # bucket/role from `terraform output metrics_bucket_name` /
+                                               # `thanos_role_arn`, filled in step 4). Sync BEFORE the workload
+                                               # apps so the rollout bake analyses have an evaluator.
 argocd app sync strimzi-operator-prod strimzi-kafka-prod   # operator, then the 3-broker KRaft Kafka CR
 kubectl -n kafka wait --for=condition=Ready kafka/brain-prod-kafka --timeout=600s
 
@@ -302,7 +308,7 @@ never remove the explicit env or reads split-brain).
 
 ```bash
 argocd app sync core-prod                       # runs the migration PreSync Job first (step 11)
-argocd app sync web-prod brain-collector-prod stream-worker-prod
+argocd app sync web-prod collector-prod stream-worker-prod
 argocd app sync cronworkflows-prod              # CronWorkflows: bronze-landing (*/15), bronze-maintenance,
                                                 # v4-silver, v4-gold, v4-maintenance (weekly, AUD-COST-013), connector crons
 # Seed the medallion once instead of waiting for the schedules:

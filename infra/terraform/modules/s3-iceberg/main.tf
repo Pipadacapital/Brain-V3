@@ -146,6 +146,30 @@ resource "aws_s3_bucket_lifecycle_configuration" "bronze" {
       days_after_initiation = 7
     }
   }
+
+  # AUD-PROD-019: S3 Intelligent-Tiering on the whole warehouse (all medallion
+  # namespaces + checkpoints). Implemented as a day-0 TRANSITION to the
+  # INTELLIGENT_TIERING storage class — that is the mechanism that activates
+  # the automatic frequent↔infrequent tiering (no retrieval fee, no latency
+  # change, objects never move/expire behind the catalog's back, so it cannot
+  # corrupt catalog-referenced files). Deliberately NOT
+  # aws_s3_bucket_intelligent_tiering_configuration: that resource only
+  # enables the OPT-IN ARCHIVE_ACCESS/DEEP_ARCHIVE_ACCESS tiers, whose
+  # asynchronous restore makes cold-but-still-referenced Iceberg data files
+  # fail reads (InvalidObjectState) — unacceptable for the sole serving path.
+  # Objects <128KB (most Iceberg metadata/manifests) are not auto-tiered and
+  # carry no monitoring fee.
+  rule {
+    id     = "warehouse-intelligent-tiering"
+    status = "Enabled"
+    filter {
+      prefix = ""
+    }
+    transition {
+      days          = 0
+      storage_class = "INTELLIGENT_TIERING"
+    }
+  }
 }
 
 ###############################################################################

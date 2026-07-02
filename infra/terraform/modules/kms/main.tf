@@ -69,6 +69,37 @@ resource "aws_kms_alias" "audit" {
 }
 
 ###############################################################################
+# Connector-secrets CMK (AUD-PROD-004) — encrypts the runtime-created
+# brain/connector/<provider>/<brandId> Secrets Manager entries (OAuth tokens,
+# packages/connector-secrets AwsSecretsManager passes this key as KmsKeyId) and
+# wraps the per-brand PII-vault DEKs/identity salts (KmsVaultKeyProvider).
+# Prod equivalent of the LocalStack alias/brain-connector-secrets provisioned
+# by tools/seed/prod-local-aws-bootstrap.sh; alias follows the applied
+# alias/brain-<resource>-<env> convention. Fill CONNECTOR_SECRETS_KMS_KEY_ID
+# (core-env) and KMS_KEY_ID (stream-worker-env) with this key's ARN.
+# Access model matches the root/audit CMKs: account-root key policy delegates
+# to IAM — the encrypt/decrypt grants live in modules/secrets and attach to
+# the core / stream-worker IRSA roles.
+###############################################################################
+resource "aws_kms_key" "connector" {
+  description             = "Brain connector-secrets CMK (${var.environment}) — brain/connector/* SM entries + PII-vault DEK wrapping"
+  deletion_window_in_days = 30
+  enable_key_rotation     = true
+  policy                  = data.aws_iam_policy_document.root_kms_policy.json
+
+  tags = {
+    project     = var.project
+    environment = var.environment
+    purpose     = "connector-secrets-cmk"
+  }
+}
+
+resource "aws_kms_alias" "connector" {
+  name          = "alias/${var.project}-connector-secrets-${var.environment}"
+  target_key_id = aws_kms_key.connector.key_id
+}
+
+###############################################################################
 # KMS key policy — allow account root
 ###############################################################################
 data "aws_iam_policy_document" "root_kms_policy" {
@@ -105,6 +136,18 @@ output "audit_kms_key_id" {
 
 output "root_kms_alias" {
   value = aws_kms_alias.root.name
+}
+
+output "connector_kms_key_arn" {
+  value = aws_kms_key.connector.arn
+}
+
+output "connector_kms_key_id" {
+  value = aws_kms_key.connector.key_id
+}
+
+output "connector_kms_alias" {
+  value = aws_kms_alias.connector.name
 }
 
 output "audit_kms_alias" {

@@ -3,7 +3,7 @@
 This wires the medallion refresh + Bronze sink + catalog registration into CI/CD so the **Insight/
 Copilot pipeline runs on fresh real data in production** (not a stale snapshot). The insight detectors
 read the gold marts; this keeps those marts rebuilt and provenance-fresh. See
-`infra/helm/cronworkflows/` + `.github/workflows/main.yml`.
+`infra/helm/cronworkflows/` + `.github/workflows/deploy.yml`.
 
 ## What this PR automated (no manual step)
 

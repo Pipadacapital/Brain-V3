@@ -11,6 +11,12 @@ serviceAccount:
   annotations:
     eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/brain-prod-stream-worker
 
+# AUD-PROD-006: the live Kafka consumers ride the streaming pool (t4g.large Spot,
+# WhenEmpty consolidation — never bin-packs live consumers off a node; the HPA
+# replica floor keeps the warm baseline the karpenter README relies on).
+nodeSelector:
+  brain.platform/pool: streaming
+
 resources:
   requests:
     cpu: 500m

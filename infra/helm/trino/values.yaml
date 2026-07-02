@@ -18,6 +18,10 @@ image:
 # BFF connects to (the brain-<env>-trino ClusterIP Service). Never a worker (include-coordinator=false).
 coordinator:
   replicaCount: 1
+  # Node placement (AUD-PROD-006/-011). Empty by default (local/dev/kind render unchanged);
+  # values-prod.yaml pins the coordinator to stable on-demand capacity.
+  nodeSelector: {}
+  tolerations: []
   resources:
     # Mirrors the local mem_limit 7g; jvm.config caps the heap at 70% of the memory LIMIT (~4.9Gi),
     # leaving headroom for non-heap (code cache / metaspace / direct buffers).
@@ -31,6 +35,10 @@ coordinator:
 # Workers — stateless query executors. Scale these horizontally for serving throughput.
 workers:
   replicaCount: 2
+  # Node placement (AUD-PROD-006/-011). Empty by default; values-prod.yaml pins workers to the
+  # dedicated `trino` Karpenter pool.
+  nodeSelector: {}
+  tolerations: []
   resources:
     requests:
       cpu: "1"

@@ -28,6 +28,19 @@ variable "kms_key_arn" {
   description = "Root CMK ARN for secrets encryption"
 }
 
+# AUD-PROD-004: connector-secrets CMK ARN (modules/kms `connector` key). When
+# set, the brain/connector/* runtime-secret IAM policies below are created for
+# the core (create/put/read) and stream-worker (read) IRSA roles. Default null
+# keeps envs that have not wired the connector platform unchanged.
+variable "connector_kms_key_arn" {
+  type        = string
+  default     = null
+  description = "Connector-secrets CMK ARN; enables the brain/connector/* IAM policies (AUD-PROD-004)."
+}
+
+data "aws_caller_identity" "current" {}
+data "aws_region" "current" {}
+
 ###############################################################################
 # Secret shells — values populated at runtime (never in TF state)
 ###############################################################################
@@ -81,6 +94,44 @@ resource "aws_secretsmanager_secret" "apicurio" {
     project     = var.project
     environment = var.environment
     purpose     = "schema-registry-credentials"
+  }
+}
+
+###############################################################################
+# App BOOT secret shells (AUD-PROD-003) — the four secrets core FAIL-CLOSES on
+# at startup in production. apps/core/src/main.ts treats the env values of
+# JWT_SIGNING_SECRET / COOKIE_SECRET / META_APP_SECRET / GOOGLE_ADS_CLIENT_SECRET
+# as Secrets Manager names/ARNs and resolves them via AwsSecretsProvider
+# (fail-closed: unresolvable secret → startup aborts). Creating the SHELLS here
+# makes the go-live fill a VALUE update (aws secretsmanager put-secret-value)
+# and the core_secrets_read grant below prevents the deterministic
+# AccessDenied → CrashLoop. The brain/<env>/k8s/core-env blob must set those
+# four env vars to these secret NAMES (or ARNs) — key contract documented in
+# infra/helm/external-secrets-config/README.md.
+# Local counterpart: tools/seed/prod-local-aws-bootstrap.sh seeds the same
+# four (flat brain/<name> naming, no env segment — see AUD-PROD-014).
+###############################################################################
+
+locals {
+  app_boot_secrets = {
+    "jwt-signing-secret"       = "core JWT signing secret (HIGH-SECRETS-01 fail-closed boot secret)"
+    "cookie-secret"            = "core cookie/session secret (HIGH-SECRETS-01 fail-closed boot secret)"
+    "meta-app-secret"          = "Meta app secret (OAuth callback + meta-token-refresh; prod boot fail-closed)"
+    "google-ads-client-secret" = "Google Ads OAuth client secret (OAuth callback; prod boot fail-closed)"
+  }
+}
+
+resource "aws_secretsmanager_secret" "app_boot" {
+  for_each                = local.app_boot_secrets
+  name                    = "${var.project}/${var.environment}/app/${each.key}"
+  kms_key_id              = var.kms_key_arn
+  description             = "Brain core boot secret shell (value filled at go-live, never in TF state): ${each.value}"
+  recovery_window_in_days = 30
+
+  tags = {
+    project     = var.project
+    environment = var.environment
+    purpose     = "app-boot-secret"
   }
 }
 
@@ -213,10 +264,16 @@ data "aws_iam_policy_document" "core_secrets_read" {
       "secretsmanager:GetSecretValue",
       "secretsmanager:DescribeSecret",
     ]
-    resources = [
-      aws_secretsmanager_secret.db_app.arn,
-      aws_secretsmanager_secret.kafka.arn,
-    ]
+    # AUD-PROD-003: the four brain/<env>/app/* boot shells are read by core at
+    # startup (main.ts AwsSecretsProvider, fail-closed) — without this grant a
+    # perfect go-live fill pass still ends in AccessDenied → CrashLoop.
+    resources = concat(
+      [
+        aws_secretsmanager_secret.db_app.arn,
+        aws_secretsmanager_secret.kafka.arn,
+      ],
+      [for s in aws_secretsmanager_secret.app_boot : s.arn],
+    )
   }
   statement {
     sid       = "AllowKMSDecrypt"
@@ -228,8 +285,93 @@ data "aws_iam_policy_document" "core_secrets_read" {
 
 resource "aws_iam_policy" "core_secrets_read" {
   name        = "${var.project}-${var.environment}-core-secrets"
-  description = "core: read db + kafka secrets only"
+  description = "core: read db + kafka + app-boot secrets only"
   policy      = data.aws_iam_policy_document.core_secrets_read.json
+}
+
+###############################################################################
+# Connector runtime secrets (AUD-PROD-004) — brain/connector/<provider>/<brandId>
+# entries are created AT RUNTIME by core (packages/connector-secrets
+# AwsSecretsManager: CreateSecret w/ KmsKeyId+Tags, PutSecretValue fallback,
+# GetSecretValue, DeleteSecret on disconnect/erasure) and READ by stream-worker
+# (backfill/repull token resolution, worker-secrets.ts). No shells exist by
+# design — names are per-brand and dynamic — so the grants are ARN-pattern
+# scoped. The CMK grants below are also what KmsVaultKeyProvider needs for
+# per-brand DEK wrap/unwrap (core) and salt unwrap (both).
+###############################################################################
+
+locals {
+  # Secrets Manager appends a random 6-char suffix to secret ARNs — the
+  # trailing * covers it. Never widen past the brain/connector/ prefix.
+  connector_secret_arn_pattern = "arn:aws:secretsmanager:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:secret:${var.project}/connector/*"
+}
+
+data "aws_iam_policy_document" "core_connector_secrets_rw" {
+  count = var.connector_kms_key_arn != null ? 1 : 0
+
+  statement {
+    sid    = "ManageConnectorSecrets"
+    effect = "Allow"
+    actions = [
+      "secretsmanager:CreateSecret",
+      "secretsmanager:PutSecretValue",
+      "secretsmanager:GetSecretValue",
+      "secretsmanager:DescribeSecret",
+      "secretsmanager:DeleteSecret",
+      "secretsmanager:TagResource", # CreateSecret passes brand_id/connector_type Tags (D-7 audit attribution)
+    ]
+    resources = [local.connector_secret_arn_pattern]
+  }
+
+  statement {
+    sid    = "ConnectorCmkUse"
+    effect = "Allow"
+    actions = [
+      "kms:Encrypt",
+      "kms:Decrypt",
+      "kms:GenerateDataKey",
+      "kms:DescribeKey",
+    ]
+    resources = [var.connector_kms_key_arn]
+  }
+}
+
+resource "aws_iam_policy" "core_connector_secrets_rw" {
+  count       = var.connector_kms_key_arn != null ? 1 : 0
+  name        = "${var.project}-${var.environment}-core-connector-secrets"
+  description = "core: create/put/read/delete brain/connector/* runtime secrets + connector CMK encrypt/decrypt (AUD-PROD-004)"
+  policy      = data.aws_iam_policy_document.core_connector_secrets_rw[0].json
+}
+
+data "aws_iam_policy_document" "stream_worker_connector_secrets_read" {
+  count = var.connector_kms_key_arn != null ? 1 : 0
+
+  statement {
+    sid    = "ReadConnectorSecrets"
+    effect = "Allow"
+    actions = [
+      "secretsmanager:GetSecretValue",
+      "secretsmanager:DescribeSecret",
+    ]
+    resources = [local.connector_secret_arn_pattern]
+  }
+
+  statement {
+    sid    = "ConnectorCmkDecrypt"
+    effect = "Allow"
+    actions = [
+      "kms:Decrypt",
+      "kms:DescribeKey",
+    ]
+    resources = [var.connector_kms_key_arn]
+  }
+}
+
+resource "aws_iam_policy" "stream_worker_connector_secrets_read" {
+  count       = var.connector_kms_key_arn != null ? 1 : 0
+  name        = "${var.project}-${var.environment}-stream-worker-connector-secrets"
+  description = "stream-worker: read brain/connector/* runtime secrets + connector CMK decrypt (AUD-PROD-004)"
+  policy      = data.aws_iam_policy_document.stream_worker_connector_secrets_read[0].json
 }
 
 data "aws_iam_policy_document" "otel_collector_secrets_read" {
@@ -293,6 +435,11 @@ output "otel_collector_secrets_policy_arn" {
   value = aws_iam_policy.otel_collector_secrets_read.arn
 }
 
+output "app_boot_secret_arns" {
+  description = "Map of the brain/<env>/app/* core boot-secret shell ARNs (AUD-PROD-003). Fill JWT_SIGNING_SECRET / COOKIE_SECRET / META_APP_SECRET / GOOGLE_ADS_CLIENT_SECRET in the core-env blob with these."
+  value       = { for k, s in aws_secretsmanager_secret.app_boot : k => s.arn }
+}
+
 output "k8s_env_secret_arns" {
   description = "Map of the brain/<env>/k8s/* env-secret shell ARNs (AUD-COST-017)"
   value       = { for k, s in aws_secretsmanager_secret.k8s_env : k => s.arn }
@@ -300,4 +447,14 @@ output "k8s_env_secret_arns" {
 
 output "eso_k8s_secrets_read_policy_arn" {
   value = aws_iam_policy.eso_k8s_secrets_read.arn
+}
+
+output "core_connector_secrets_rw_policy_arn" {
+  description = "core brain/connector/* RW policy ARN (null unless connector_kms_key_arn is set — AUD-PROD-004)"
+  value       = var.connector_kms_key_arn != null ? aws_iam_policy.core_connector_secrets_rw[0].arn : null
+}
+
+output "stream_worker_connector_secrets_read_policy_arn" {
+  description = "stream-worker brain/connector/* read policy ARN (null unless connector_kms_key_arn is set — AUD-PROD-004)"
+  value       = var.connector_kms_key_arn != null ? aws_iam_policy.stream_worker_connector_secrets_read[0].arn : null
 }

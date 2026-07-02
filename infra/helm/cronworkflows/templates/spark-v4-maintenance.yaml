@@ -7,7 +7,7 @@ growth on the medallion.
 
 Weekly spark-submit of db/iceberg/spark/medallion_maintenance.py (carried in
 the same image at /opt/brain): rewrite_data_files + expire_snapshots (7d TTL)
-+ a GUARDED remove_orphan_files pass over brain_silver + brain_gold.
++ a GUARDED remove_orphan_files pass over the brain_silver + brain_gold namespaces.
 
 Orphan-sweep guardrails (per the audit risk note):
   - older_than is clamped >= 3 days IN the job; we pin 7d here so a file can
@@ -54,6 +54,15 @@ spec:
   workflowSpec:
     serviceAccountName: {{ .Values.serviceAccount.name }}   # IRSA: S3 (medallion buckets) + REST catalog
     entrypoint: run
+    {{- /* AUD-PROD-006: pin the Spark cron pods to the batch pool (values-prod). */}}
+    {{- with .Values.sparkV4.nodeSelector }}
+    nodeSelector:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+    {{- with .Values.sparkV4.tolerations }}
+    tolerations:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
     activeDeadlineSeconds: {{ $m.activeDeadlineSeconds }}
     podGC:
       strategy: OnWorkflowSuccess

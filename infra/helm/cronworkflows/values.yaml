@@ -83,6 +83,10 @@ sparkBronze:
   # backfill brain_bronze.events (idempotent via dedup_key), then leave STARTING_OFFSETS=latest steady-state.
   env:
     - { name: STARTING_OFFSETS, value: "latest" }
+  # Workflow-pod placement (AUD-PROD-006). Empty by default (staging/kind unchanged);
+  # values-prod pins the Spark cron pods to the batch pool.
+  nodeSelector: {}
+  tolerations: []
   resources:
     requests: { cpu: "1", memory: 2Gi }
     limits: { cpu: "2", memory: 4Gi }
@@ -127,6 +131,10 @@ sparkV4:
   # Non-secret config. Secrets (ICEBERG_REST_URI/Glue, AWS_*, NEO4J_*) come from envSecretName.
   env:
     - { name: ICEBERG_CATALOG, value: "rest" }
+  # Workflow-pod placement (AUD-PROD-006) — shared by v4-silver / v4-gold /
+  # v4-maintenance. Empty by default; values-prod pins to the batch pool.
+  nodeSelector: {}
+  tolerations: []
   resources:
     requests: { cpu: "1", memory: 2Gi }
     limits: { cpu: "2", memory: 4Gi }

@@ -15,6 +15,12 @@ sparkBronze:
     repository: REPLACE_WITH_ECR_REGISTRY/brain-spark-bronze-prod
     tag: ""
     digest: ""
+  # AUD-PROD-006: Spark cron pods → the batch Karpenter pool (t4g.xlarge Spot).
+  # A Spot/consolidation bounce mid-run is replay-safe: Forbid + Argo retry +
+  # idempotent MERGE (per-lane dedup_key) — the next run re-drains from the
+  # committed Kafka offsets, no event loss.
+  nodeSelector:
+    brain.platform/pool: batch
 
 # spark V4 Silver/Gold transform + mv refresh crons — same image as sparkBronze (the Dockerfile carries the
 # V4 marts). Flip enabled:true once the prod V4 cluster + digest are ready (gated off by default).
@@ -23,6 +29,10 @@ sparkV4:
     repository: REPLACE_WITH_ECR_REGISTRY/brain-spark-bronze-prod
     tag: ""
     digest: ""
+  # AUD-PROD-006: v4-silver / v4-gold / v4-maintenance pods → the batch pool.
+  # Every Silver/Gold MERGE is idempotent — a consolidation bounce is retry-safe.
+  nodeSelector:
+    brain.platform/pool: batch
 
 envSecretName: core-env
 

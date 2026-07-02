@@ -30,18 +30,36 @@ provider "aws" {
   region = "ap-south-1"
   # assume_role { role_arn = "arn:aws:iam::<PROD_ACCOUNT_ID>:role/TerraformApply" }
 
+  # AUD-NAME-001: mandatory PascalCase tag set (Environment/Service/Owner/
+  # CostCenter + Project/ManagedBy) from modules/_shared, MERGED over the
+  # legacy lowercase keys so already-applied resources see tag ADDITIONS only
+  # (in-place update, no replacement). Per-module `Service` overrides win on
+  # collision (default_tags + resource tags merge, resource value wins).
+  # Follow-up per docs/infra/naming-and-tagging.md §6: strip the lowercase
+  # duplicates once nothing keys on them.
   default_tags {
-    tags = {
-      project     = local.project
-      environment = local.environment
-      managed_by  = "terraform"
-    }
+    tags = merge(
+      {
+        project     = local.project
+        environment = local.environment
+        managed_by  = "terraform"
+      },
+      module.tags.common_tags,
+    )
   }
 }
 
 locals {
   project     = "brain"
   environment = "prod"
+}
+
+# Zero-resource tag standard module (safe in the provider block — it creates
+# nothing and depends on no provider).
+module "tags" {
+  source      = "../../modules/_shared"
+  environment = local.environment
+  project     = local.project
 }
 
 ###############################################################################
@@ -66,7 +84,7 @@ module "oidc_github" {
   github_repo      = "Brain-V4"
   allowed_branches = ["master"] # repo default branch (workflow_dispatch runs here) — was "main" (mismatch)
 
-  # ECR-push + terraform-apply CI roles (main.yml / prod-apply.yml). After apply,
+  # ECR-push + terraform-apply CI roles (deploy.yml / prod-apply.yml). After apply,
   # set repo variables AWS_ECR_PUSH_ROLE_ARN / AWS_PROD_APPLY_ROLE_ARN from the
   # outputs below.
   create_cicd_roles = true
@@ -176,6 +194,9 @@ module "secrets" {
   environment = local.environment
   project     = local.project
   kms_key_arn = module.kms.root_kms_key_arn
+  # AUD-PROD-004: enables the brain/connector/* runtime-secret IAM policies
+  # (attached to irsa_core / irsa_stream_worker below).
+  connector_kms_key_arn = module.kms.connector_kms_key_arn
 }
 
 module "s3_iceberg" {
@@ -192,6 +213,33 @@ module "s3_audit" {
   environment = local.environment
   project     = local.project
   kms_key_arn = module.kms.audit_kms_key_arn
+}
+
+###############################################################################
+# Thanos long-term metrics (AUD-PROD-012) — objstore bucket + IRSA role for
+# the Thanos sidecar inside the kube-prometheus-stack Prometheus pods
+# (observability stack: ArgoCD app in ns `monitoring`). NN-3 trust is pinned
+# to the SA kube-prometheus-stack creates for Prometheus (shared by the
+# sidecar container): monitoring/kube-prometheus-stack-prometheus — a rename
+# on the chart side is a deterministic STS AccessDenied, keep them in lockstep.
+###############################################################################
+module "s3_metrics" {
+  source      = "../../modules/s3-metrics"
+  environment = local.environment
+  project     = local.project
+  kms_key_arn = module.kms.root_kms_key_arn
+}
+
+module "irsa_thanos" {
+  source               = "../../modules/irsa"
+  role_name            = "thanos"
+  oidc_provider_arn    = module.eks.oidc_provider_arn
+  oidc_provider_url    = module.eks.oidc_provider_url
+  namespace            = "monitoring"
+  service_account_name = "kube-prometheus-stack-prometheus"
+  environment          = local.environment
+  project              = local.project
+  policy_arns          = [module.s3_metrics.thanos_objstore_policy_arn]
 }
 
 ###############################################################################
@@ -221,6 +269,8 @@ module "irsa_stream_worker" {
   policy_arns = [
     module.secrets.stream_worker_secrets_policy_arn,
     module.s3_iceberg.stream_worker_s3_policy_arn,
+    # AUD-PROD-004: read brain/connector/* tokens (backfill/repull) + CMK decrypt.
+    module.secrets.stream_worker_connector_secrets_read_policy_arn,
   ]
 }
 
@@ -236,6 +286,9 @@ module "irsa_core" {
   policy_arns = [
     module.secrets.core_secrets_policy_arn,
     module.s3_iceberg.analytics_s3_policy_arn,
+    # AUD-PROD-004: create/put/read/delete brain/connector/* runtime secrets +
+    # connector CMK encrypt/decrypt (OAuth tokens, PII-vault DEK wrapping).
+    module.secrets.core_connector_secrets_rw_policy_arn,
   ]
 }
 
@@ -379,7 +432,13 @@ module "elasticache" {
   redis_sg_id = module.network.elasticache_sg_id
   kms_key_arn = module.kms.root_kms_key_arn
   node_type   = "cache.t4g.micro"
-  create      = true
+  # AUD-PROD-008: single node per the ADR-0009 starter sizing — the module
+  # default (2) silently provisioned a 2-node multi-AZ auto-failover group
+  # (double cache spend). The module degrades automatic_failover/multi_az to
+  # false when count is 1. Redis here is a rebuildable serving CACHE (Trino
+  # is the SoT), so single-AZ is acceptable at this stage.
+  num_cache_nodes = 1
+  create          = true
 }
 
 ###############################################################################
@@ -414,6 +473,11 @@ output "github_apply_role_arn" { value = module.oidc_github.github_apply_role_ar
 output "root_kms_key_arn" { value = module.kms.root_kms_key_arn }
 output "audit_kms_key_arn" { value = module.kms.audit_kms_key_arn }
 
+# AUD-PROD-004: fill CONNECTOR_SECRETS_KMS_KEY_ID (core-env) and KMS_KEY_ID
+# (stream-worker-env) in the brain/prod/k8s/* blobs with this key ARN.
+output "connector_kms_key_arn" { value = module.kms.connector_kms_key_arn }
+output "connector_kms_alias" { value = module.kms.connector_kms_alias }
+
 output "vpc_id" { value = module.network.vpc_id }
 output "nat_instance_public_ip" { value = module.nat_instance.public_ip }
 
@@ -425,11 +489,22 @@ output "aurora_endpoint" { value = module.aurora.endpoint }
 output "aurora_reader_endpoint" { value = module.aurora.reader_endpoint }
 output "redis_endpoint" { value = module.elasticache.redis_primary_endpoint }
 
+# AUD-PROD-003: the four core boot-secret shells (brain/prod/app/*). The fill
+# pass puts real values here AND sets JWT_SIGNING_SECRET / COOKIE_SECRET /
+# META_APP_SECRET / GOOGLE_ADS_CLIENT_SECRET in brain/prod/k8s/core-env to
+# these secret NAMES (or ARNs) — core resolves them via AwsSecretsProvider.
+output "app_boot_secret_arns" { value = module.secrets.app_boot_secret_arns }
+
 # AUD-COST-016: ONE medallion warehouse bucket (Bronze/Silver/Gold are Iceberg
 # NAMESPACES inside it). Fill iceberg-rest/values-prod.yaml catalog.warehouse
 # with s3://<warehouse_bucket_name>/.
 output "warehouse_bucket_name" { value = module.s3_iceberg.warehouse_bucket_name }
 output "audit_bucket_name" { value = module.s3_audit.audit_bucket_name }
+
+# AUD-PROD-012: fill the Thanos objstore.yml bucket + the prometheus
+# serviceAccount role-arn annotation in the kube-prometheus-stack values.
+output "metrics_bucket_name" { value = module.s3_metrics.metrics_bucket_name }
+output "thanos_role_arn" { value = module.irsa_thanos.role_arn }
 
 output "collector_role_arn" { value = module.irsa_collector.role_arn }
 output "stream_worker_role_arn" { value = module.irsa_stream_worker.role_arn }

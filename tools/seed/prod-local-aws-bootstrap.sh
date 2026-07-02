@@ -70,6 +70,67 @@ for pair in "brain/meta-app-secret:SEED_META_APP_SECRET" "brain/google-ads-clien
   echo "[prod-local]   secret $name"
 done
 
+echo "[prod-local] Secrets Manager: prod ESO env-blob SHAPES (brain/prod/k8s/*) — AUD-PROD-014"
+# Prod delivers every workload's env via External Secrets Operator from 7 flat-JSON blobs under
+# brain/prod/k8s/* (key contract: infra/helm/external-secrets-config/README.md). Seed the SAME 7
+# names into LocalStack so prod-on-local rehearses the exact ESO secret-shape contract (the
+# go-live fill pass can be dry-run locally against real names). Values = the LOCAL substrate
+# equivalents from .env.local-prod — SHAPE parity, not value parity (cluster DNS differs).
+# ADDITIVE: the flat legacy names above (brain/jwt-signing-secret, brain/cookie-secret, ...)
+# REMAIN the refs the running app resolves (.env.local-prod is unchanged) — nothing is repointed.
+getv() { grep -E "^$1=" .env.local-prod | head -1 | cut -d= -f2- || true; }
+# json-escape via python3 (values can carry &, ?, #, quotes — never hand-assemble JSON).
+mkjson() { python3 -c 'import json,sys; a=sys.argv[1:]; print(json.dumps({a[i]: a[i+1] for i in range(0, len(a), 2)}))' "$@"; }
+seed_json_secret() {
+  local name="$1" json="$2"
+  awsl secretsmanager create-secret --name "$name" --secret-string "$json" >/dev/null 2>&1 \
+    || awsl secretsmanager put-secret-value --secret-id "$name" --secret-string "$json" >/dev/null
+  echo "[prod-local]   secret $name"
+}
+DB_URL="$(getv DATABASE_URL)"; DB_USER_LOCAL="$(printf '%s' "$DB_URL" | sed -E 's#^.*://([^:]+):.*#\1#')"
+seed_json_secret brain/prod/k8s/core-env "$(mkjson \
+  DATABASE_URL "$DB_URL" \
+  BRAIN_APP_DATABASE_URL "$(getv BRAIN_APP_DATABASE_URL)" \
+  DATABASE_URL_DIRECT "$DB_URL" \
+  REDIS_URL "$(getv REDIS_URL)" \
+  KAFKA_BROKERS "$(getv KAFKA_BROKERS)" \
+  TRINO_HOST "$(getv TRINO_HOST)" \
+  ICEBERG_REST_URI "http://localhost:8181" \
+  AWS_REGION "$(getv AWS_REGION)" \
+  ICEBERG_WAREHOUSE "s3://brain-bronze/" \
+  CHECKPOINT_LOCATION "file:///checkpoint/bronze-landing" \
+  COLLECTOR_TOPIC "$(getv COLLECTOR_TOPIC)" \
+  BACKFILL_TOPIC "prod.collector.order.backfill.v1" \
+  TOPIC_ENV_PREFIX "prod" \
+  NEO4J_URI "$(getv NEO4J_URI)" \
+  NEO4J_USER "$(getv NEO4J_USER)" \
+  NEO4J_PASSWORD "$(getv NEO4J_PASSWORD)" \
+  AUDIT_CHECKPOINT_BUCKET "brain-audit")"
+seed_json_secret brain/prod/k8s/web-env "$(mkjson \
+  BFF_BASE_URL "$(getv NEXT_PUBLIC_API_BASE_URL)" \
+  CORE_API_URL "$(getv NEXT_PUBLIC_API_BASE_URL)")"
+seed_json_secret brain/prod/k8s/collector-env "$(mkjson \
+  DATABASE_URL "$DB_URL" \
+  REDIS_URL "$(getv REDIS_URL)" \
+  KAFKA_BROKERS "$(getv KAFKA_BROKERS)" \
+  PIXEL_CONSENT_DEFAULT "$(getv PIXEL_CONSENT_DEFAULT)")"
+seed_json_secret brain/prod/k8s/stream-worker-env "$(mkjson \
+  DATABASE_URL "$DB_URL" \
+  KAFKA_BROKERS "$(getv KAFKA_BROKERS)" \
+  TRINO_HOST "$(getv TRINO_HOST)" \
+  NEO4J_URI "$(getv NEO4J_URI)" \
+  NEO4J_USER "$(getv NEO4J_USER)" \
+  NEO4J_PASSWORD "$(getv NEO4J_PASSWORD)" \
+  META_APP_ID "$(getv META_APP_ID)" \
+  META_APP_SECRET "$(getv META_APP_SECRET)")"
+seed_json_secret brain/prod/k8s/pgbouncer-env "$(mkjson \
+  DB_USER "$DB_USER_LOCAL" \
+  DB_PASSWORD "$PW")"
+# iceberg-rest chart contract: EXACTLY jdbc-user / jdbc-password (compose parity values).
+seed_json_secret brain/prod/k8s/iceberg-rest-catalog-db "$(mkjson jdbc-user user jdbc-password password)"
+# neo4j chart contract: EXACTLY NEO4J_AUTH = neo4j/<password>.
+seed_json_secret brain/prod/k8s/neo4j-auth "$(mkjson NEO4J_AUTH "neo4j/$(getv NEO4J_PASSWORD)")"
+
 # Keyrings for ALL brands, not just the seed dev brand. Every Docker restart mints a NEW CMK
 # behind the alias, so every wrapped_dek_b64 encrypted by the OLD CMK fails KMS Decrypt with
 # IncorrectKeyException — which broke the per-brand salt fetch (identity-bridge D-2 fail-closed)

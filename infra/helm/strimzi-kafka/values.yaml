@@ -46,6 +46,11 @@ kafka:
     jvm:
       xms: 3072m
       xmx: 3072m
+    # Broker pod placement (AUD-PROD-006) — Strimzi PodTemplate affinity/tolerations.
+    # Empty by default (local/kind rendering unchanged); values-prod pins the brokers
+    # to the streaming node pool.
+    affinity: {}
+    tolerations: []
 
   # ── Listeners (INTERNAL only — no external/LoadBalancer exposure) ────────────────────────────
   # plain :9092 and tls :9093, both type=internal. The app/BFF/collector/stream-worker + Spark all

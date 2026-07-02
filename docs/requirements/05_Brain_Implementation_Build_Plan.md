@@ -394,7 +394,7 @@ Tests live **next to the code** (`*.test.ts`) plus three cross-cutting harnesses
 .github/workflows/
 ├── pr.yml         # on PR: turbo --affected → lint · typecheck · unit · contract · isolation · parity · purity
 │                  #        → docker build (affected apps) → trivy scan → smoke
-├── main.yml       # on merge: build+sign(cosign) → push ECR (immutable digest)
+├── deploy.yml       # on merge: build+sign(cosign) → push ECR (immutable digest)
 │                  #        → bump Helm values (digest pin) → commit to gitops repo
 └── eval.yml       # on prompt/model/registry change: NLQ resolution + injection + faithfulness gates
 ```

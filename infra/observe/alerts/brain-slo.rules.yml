@@ -16,7 +16,7 @@
 #   • kafka_consumergroup_lag         — danielqsj/kafka_exporter (job 'kafka-exporter'); per-group lag
 #                                       (NOT a broker JMX metric, hence the companion exporter).
 #
-# Collector ingest SLO = 99.95% accept+ack (matches the bake-window rule in main.yml).
+# Collector ingest SLO = 99.95% accept+ack (matches the bake-window rule in deploy.yml).
 #
 # Validate: promtool check rules infra/observe/alerts/brain-slo.rules.yml
 

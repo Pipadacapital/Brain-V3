@@ -28,6 +28,7 @@ import { DrainEventsUseCase } from './application/drain-events.usecase.js';
 import { Drainer } from './interfaces/jobs/drainer.js';
 import { registerCollectRoute } from './interfaces/rest/collect.route.js';
 import { registerHealthRoutes } from './interfaces/rest/health.route.js';
+import { registerMetricsRoute } from './interfaces/rest/metrics.route.js';
 import { registerPixelAssetRoute } from './interfaces/rest/pixel-asset.route.js';
 import { EdgeRateLimiter, registerEdgeGuard } from './interfaces/rest/edge-guard.js';
 import { SpoolBackpressure, registerSpoolBackpressure } from './interfaces/rest/spool-backpressure.js';
@@ -182,6 +183,7 @@ export async function main(): Promise<void> {
 
   // Register routes
   registerHealthRoutes(app, spoolRepo, backpressure);
+  registerMetricsRoute(app); // GET /metrics — Prometheus exposition (AUD-LOCAL-016); ungated (guards match POST ingest routes only)
   registerPixelAssetRoute(app); // GET /pixel.js — the served brain.js asset (Track B)
   registerCollectRoute(app, acceptUseCase);
 

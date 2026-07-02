@@ -20,18 +20,30 @@ provider "aws" {
   region = "ap-south-1"
   # assume_role { role_arn = "arn:aws:iam::<STAGING_ACCOUNT_ID>:role/TerraformApply" }
 
+  # AUD-NAME-001: mandatory PascalCase tag set from modules/_shared merged
+  # over the legacy lowercase keys (tag additions only — in-place update on
+  # applied resources). See envs/prod/bootstrap.tf for the full rationale.
   default_tags {
-    tags = {
-      project     = local.project
-      environment = local.environment
-      managed_by  = "terraform"
-    }
+    tags = merge(
+      {
+        project     = local.project
+        environment = local.environment
+        managed_by  = "terraform"
+      },
+      module.tags.common_tags,
+    )
   }
 }
 
 locals {
   project     = "brain"
   environment = "staging"
+}
+
+module "tags" {
+  source      = "../../modules/_shared"
+  environment = local.environment
+  project     = local.project
 }
 
 ###############################################################################

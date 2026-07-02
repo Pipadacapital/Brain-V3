@@ -1,0 +1,35 @@
+# alertmanager-local.yml — LOCAL compose Alertmanager config (AUD-LOCAL-001).
+#
+# The prod-shaped alertmanager.yml next to this file carries ${SLACK_WEBHOOK_URL} /
+# ${PAGERDUTY_ROUTING_KEY} placeholders that are substituted at DEPLOY time. Alertmanager itself
+# does NO env substitution, and a literal '${SLACK_WEBHOOK_URL}' is an invalid slack_api_url →
+# the config fails validation and the container crash-loops. Locally we therefore route every
+# alert to a no-op receiver: alerts still GROUP and are VISIBLE in the Alertmanager UI (:9093)
+# and via `amtool alert` — they just aren't delivered anywhere. To test real delivery locally,
+# copy a receiver block from alertmanager.yml and paste a dev webhook here (never commit it).
+#
+# Routing/grouping mirrors alertmanager.yml so the local pipeline rehearses the same grouping
+# and inhibition behavior the prod lane ships.
+
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: 'local-noop'
+  group_by: ['alertname', 'severity']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+
+receivers:
+  # Receiver with no notifier integrations — valid config; alerts terminate here (UI-only).
+  - name: 'local-noop'
+
+# Same suppression as prod: a dead scrape target shouldn't also fire every metric-absence
+# rule for that target.
+inhibit_rules:
+  - source_matchers:
+      - alertname = "BrainTargetDown"
+    target_matchers:
+      - severity =~ "warning|critical"
+    equal: ['job']

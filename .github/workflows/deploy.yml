@@ -1,7 +1,9 @@
-name: main
+name: deploy
 on:
   push:
     branches: [master]   # default branch — CD/gitops/prod-promote fire on real merges to master
+                         # (AUD-PROD-022: file renamed main.yml → deploy.yml for spec alignment;
+                         # trigger stays [master] — the repo default branch. Do NOT flip to [main].)
 
 # CI/CD identity (AUD-COST-002) — repo variables ↔ terraform (envs/prod, module
 # oidc_github with create_cicd_roles = true; first apply is LOCAL — see

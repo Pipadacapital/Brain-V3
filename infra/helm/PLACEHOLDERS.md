@@ -30,6 +30,7 @@ interpolate).
 | `REPLACE_WITH_PROD_POSTGRES_HOST` | `pgbouncer/values-prod.yaml` | `aurora_endpoint` (pgbouncer fronts Aurora) |
 | `REPLACE_WITH_STAGING_POSTGRES_HOST` | `pgbouncer/values-staging.yaml` | staging `aurora_endpoint` |
 | `REPLACE_WITH_VPC_ID` | `argocd/envs/prod/aws-load-balancer-controller.yaml` | `vpc_id` |
+| metrics bucket `brain-metrics-prod-ACCOUNT_ID` | `kube-prometheus-stack/values-prod.yaml` (Thanos sidecar objstore, AUD-PROD-012) | `metrics_bucket_name` (`modules/s3-metrics`; IRSA-native — no static keys, the `brain-prod-thanos` role carries the objstore policy) |
 | `AUDIT_CHECKPOINT_BUCKET` (key in the `core-env` secret, §5) | consumed by `apps/core/src/jobs/audit-checkpoint.ts` (hourly `audit-checkpoint` CronWorkflow — the WORM anchor for the audit hash-chain) | `audit_bucket_name` (`modules/s3-audit`, wired in every env root). NOTE: this is the audit bucket's OWN S3 Object-Lock COMPLIANCE bucket, **not** the medallion warehouse or its `_checkpoints/` prefix; no new terraform needed — the `brain-<env>-jobs` IRSA role already grants Put/Get/List on `checkpoints/*`. Left unset, the job safely no-ops (dev behavior) |
 
 ECR repo names are already aligned with terraform
@@ -44,7 +45,11 @@ ECR repo names are already aligned with terraform
 | `REPLACE_WITH_CORE_HOSTNAME` | `core/values-prod.yaml` | e.g. `api.<apex-domain>` |
 | `REPLACE_WITH_ACM_CERT_ARN` | the three values-prod above | ACM cert (ap-south-1) covering those hosts |
 | `REPLACE_WITH_APEX_DOMAIN` | `argocd/envs/prod/external-dns.yaml` | the Route53 hosted zone external-dns may manage. Manual-DNS alternative: skip the external-dns app and CNAME each hostname to the shared ALB |
-| `REPLACE_WITH_PROMETHEUS_ADDRESS` | `argocd/rollouts/*.yaml` | the Prometheus endpoint (observability stack) |
+
+`REPLACE_WITH_PROMETHEUS_ADDRESS` is GONE (AUD-PROD-002): the rollouts
+manifests now carry the in-cluster kube-prometheus-stack Prometheus address
+(`http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090`
+— the `kube-prometheus-stack-prod` app, ns `monitoring`) — nothing to fill.
 
 ## 4. IRSA role convention + terraform coverage
 
@@ -68,6 +73,7 @@ platform/serving roles** the manifests reference:
 | `brain-prod-external-secrets` | `external-secrets` @ `external-secrets` (name PINNED in the ArgoCD app) | `secretsmanager:GetSecretValue/DescribeSecret` on `brain/prod/k8s/*` (`eso_k8s_secrets_read_policy_arn`) |
 | `brain-prod-aws-load-balancer-controller` | `aws-load-balancer-controller` @ `kube-system` | upstream v2.10.1 policy, vendored at `envs/prod/policies/aws-load-balancer-controller-iam-policy.json` |
 | `brain-prod-external-dns` | `external-dns` @ `external-dns` | `route53:ChangeResourceRecordSets` on `var.external_dns_zone_ids` (default `hostedzone/*` until the zone id is set) + `route53:List*` |
+| `brain-prod-thanos` (AUD-PROD-012) | `kube-prometheus-stack-prometheus` @ `monitoring` (name PINNED — the chart's Prometheus SA, shared by the Thanos sidecar) | `thanos_objstore_policy_arn` (`modules/s3-metrics` — Get/Put/Delete/List on the metrics bucket + KMS GenerateDataKey/Decrypt) |
 
 Nothing referenced by a manifest is missing from terraform anymore; a new role
 belongs in `envs/prod/bootstrap.tf` as a `modules/irsa` instance in the same

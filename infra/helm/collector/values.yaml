@@ -43,6 +43,11 @@ env:
 serviceAccount:
   annotations: {}   # set eks.amazonaws.com/role-arn per env (IRSA)
 
+# Node placement (AUD-PROD-006). Empty by default (staging/kind unchanged);
+# values-prod pins the ingest front to the streaming pool.
+nodeSelector: {}
+tolerations: []
+
 resources:
   requests:
     cpu: 100m

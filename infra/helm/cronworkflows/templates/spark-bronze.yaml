@@ -66,6 +66,15 @@ spec:
   workflowSpec:
     serviceAccountName: {{ $sa }}      # IRSA: S3 (per-brand bronze prefix) + Glue catalog access (NN-5)
     entrypoint: run
+    {{- /* AUD-PROD-006: pin the Spark cron pods to the batch pool (values-prod). */}}
+    {{- with .Values.sparkBronze.nodeSelector }}
+    nodeSelector:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+    {{- with .Values.sparkBronze.tolerations }}
+    tolerations:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
     activeDeadlineSeconds: {{ .Values.sparkBronze.activeDeadlineSeconds }}
     podGC:
       strategy: OnWorkflowSuccess
@@ -114,6 +123,15 @@ spec:
   workflowSpec:
     serviceAccountName: {{ $sa }}
     entrypoint: run
+    {{- /* AUD-PROD-006: pin the Spark cron pods to the batch pool (values-prod). */}}
+    {{- with .Values.sparkBronze.nodeSelector }}
+    nodeSelector:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+    {{- with .Values.sparkBronze.tolerations }}
+    tolerations:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
     activeDeadlineSeconds: {{ .Values.sparkBronze.activeDeadlineSeconds }}
     podGC:
       strategy: OnWorkflowSuccess

@@ -46,6 +46,17 @@ spec:
       metadata:
         labels:
           {{- include "strimziKafka.labels" . | nindent 10 }}
+      {{- /* Node placement (AUD-PROD-006). Strimzi's PodTemplate contract exposes
+             affinity + tolerations (NOT nodeSelector) — values-prod pins the broker
+             pods to the streaming pool via required nodeAffinity. */}}
+      {{- with $np.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $np.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
     persistentVolumeClaim:
       metadata:
         labels:

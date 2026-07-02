@@ -59,7 +59,7 @@ with operator credentials. Staged alternative: `-target=module.network`, then
 
 **One-time CI prerequisites** (for every SUBSEQUENT apply via `.github/workflows/prod-apply.yml`):
 - Repo **variable `AWS_PROD_APPLY_ROLE_ARN`** = `terraform output github_apply_role_arn` (envs/prod).
-- Repo **variable `AWS_ECR_PUSH_ROLE_ARN`** = `terraform output github_ecr_push_role_arn` and **`ENVIRONMENT`** = `prod` (main.yml CD lane — the push role is scoped to the `brain-*-prod` ECR repos).
+- Repo **variable `AWS_ECR_PUSH_ROLE_ARN`** = `terraform output github_ecr_push_role_arn` and **`ENVIRONMENT`** = `prod` (deploy.yml CD lane — the push role is scoped to the `brain-*-prod` ECR repos).
 - `oidc_github` `github_org`/`github_repo` = `Rishabhporwal`/`Brain-V4` (MUST match this repo), `allowed_branches` `["master"]`. **Re-apply `oidc_github`** if you changed these.
 - GitHub **Settings → Environments → `production`** → add **required reviewers** (the human approval gate; the apply role's OIDC trust is bound to this Environment's sub claim).
 

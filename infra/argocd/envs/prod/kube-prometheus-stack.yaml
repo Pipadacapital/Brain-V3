@@ -1,0 +1,66 @@
+################################################################################
+# Brain – ArgoCD Application: kube-prometheus-stack (prod) — AUD-PROD-001/-002
+# Installs the UPSTREAM prometheus-community kube-prometheus-stack (Prometheus
+# Operator + Prometheus + Alertmanager + Grafana + kube-state-metrics +
+# node-exporter) into the `monitoring` namespace. This is the prod evaluator
+# for the brain-slo alert rules (loaded via additionalPrometheusRulesMap in
+# the values file), the Argo Rollouts AnalysisTemplates
+# (infra/argocd/rollouts/* → http://kube-prometheus-stack-prometheus
+# .monitoring.svc.cluster.local:9090) and the CD bake-window auto-rollback
+# signals. The Thanos sidecar ships long-term metrics to the terraform
+# metrics bucket via IRSA (AUD-PROD-012 — modules/s3-metrics + irsa_thanos).
+#
+# Every long-running component is pinned to the ON-DEMAND system node group
+# (role: system) — see infra/helm/kube-prometheus-stack/values-prod.yaml.
+#
+# sync-wave -1: platform tier, alongside pgbouncer/neo4j/karpenter-controller —
+# after ESO (-3/-2, no dependency) and before the workload apps, so the bake
+# analyses have an evaluator by the time anything canaries.
+#
+# Multi-source: the upstream chart + Brain's values-prod.yaml ($values ref).
+# helm.releaseName is PINNED to `kube-prometheus-stack`: the chart derives the
+# Prometheus ServiceAccount name from it, and the terraform IRSA trust
+# (brain-prod-thanos) is StringEquals on
+# monitoring/kube-prometheus-stack-prometheus (NN-3).
+# MANUAL promotion gate (matches keda/trino/karpenter prod) — no automated sync.
+################################################################################
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kube-prometheus-stack-prod
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+  labels:
+    project: brain
+    environment: prod
+    service: monitoring
+spec:
+  project: brain-prod
+  sources:
+    - repoURL: https://prometheus-community.github.io/helm-charts
+      chart: kube-prometheus-stack
+      targetRevision: 65.1.1
+      helm:
+        releaseName: kube-prometheus-stack
+        valueFiles:
+          - $values/infra/helm/kube-prometheus-stack/values-prod.yaml
+    - repoURL: https://github.com/Rishabhporwal/Brain-V4.git
+      targetRevision: master
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true
+      # SSA is REQUIRED here: the prometheuses/thanosrulers CRDs exceed the
+      # 262KB client-side-apply annotation limit.
+      - ServerSideApply=true
+    retry:
+      limit: 2
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 5m
+  revisionHistoryLimit: 10

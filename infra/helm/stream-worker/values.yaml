@@ -39,6 +39,11 @@ env:
 serviceAccount:
   annotations: {}
 
+# Node placement (AUD-PROD-006). Empty by default (staging/kind unchanged);
+# values-prod pins the live consumers to the streaming pool.
+nodeSelector: {}
+tolerations: []
+
 resources:
   requests:
     cpu: 250m

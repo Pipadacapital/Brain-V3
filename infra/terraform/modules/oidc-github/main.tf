@@ -45,7 +45,7 @@ variable "allowed_branches" {
 }
 
 # AUD-COST-002: the CI/CD identity roles the GitHub workflows assume.
-# main.yml (push to master) → vars.AWS_ECR_PUSH_ROLE_ARN (image build/push/sign);
+# deploy.yml (push to master) → vars.AWS_ECR_PUSH_ROLE_ARN (image build/push/sign);
 # prod-apply.yml (workflow_dispatch + `production` Environment) → vars.AWS_PROD_APPLY_ROLE_ARN.
 # Off by default so dev/staging keep the plan-only posture; enable in envs/prod.
 variable "create_cicd_roles" {
@@ -191,7 +191,7 @@ resource "aws_iam_role_policy" "github_plan" {
 }
 
 ###############################################################################
-# ECR PUSH role (AUD-COST-002) — assumed by .github/workflows/main.yml on push
+# ECR PUSH role (AUD-COST-002) — assumed by .github/workflows/deploy.yml on push
 # to the default branch to build/push/cosign-sign the service images. Scoped to
 # the ${project}-*-${environment} repositories created in modules/eks.
 ###############################################################################

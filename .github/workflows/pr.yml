@@ -130,7 +130,7 @@ jobs:
   # (allowlist: tools/lint/prod-placeholder-allowlist.txt ⇄ infra/helm/
   # PLACEHOLDERS.md). Documented fill-at-apply placeholders are allowed here —
   # they cannot exist before terraform apply. The STRICT gate (fail while ANY
-  # placeholder remains) runs in main.yml prod-promote before a prod commit.
+  # placeholder remains) runs in deploy.yml prod-promote before a prod commit.
   # ─────────────────────────────────────────────────────────────────────────
   prod-placeholder-guard:
     name: Prod Placeholder Guard (rendered values)

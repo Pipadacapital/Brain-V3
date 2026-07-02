@@ -38,6 +38,7 @@ run_job() {
   echo "[silver-orders] >>> ${script}"
   docker run --rm \
     --memory "${SPARK_CONTAINER_MEMORY:-7g}" \
+    --oom-score-adj "${SPARK_CONTAINER_OOM_SCORE_ADJ:-100}" \
     --network "container:${REDPANDA_CONTAINER}" \
     --user root \
     -v "${SCRIPT_DIR}":/opt/spike:ro \

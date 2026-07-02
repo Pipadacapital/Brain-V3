@@ -17,6 +17,14 @@ spec:
         {{- include "brain.selectorLabels" . | nindent 8 }}
     spec:
       serviceAccountName: {{ include "brain.fullname" . }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       securityContext:
         runAsNonRoot: true
         seccompProfile:

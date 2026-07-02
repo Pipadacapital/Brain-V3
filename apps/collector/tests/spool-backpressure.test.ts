@@ -20,8 +20,12 @@ const CFG = {
 function fakeRepo(countImpl: (cap: number) => Promise<number>): SpoolRepository {
   return {
     insert: async () => 1n,
-    pollPending: async () => [],
-    markDrained: async () => {},
+    claimPending: async () => ({
+      entries: [],
+      markDrained: async () => {},
+      commit: async () => {},
+      rollback: async () => {},
+    }),
     countPendingBounded: countImpl,
     reapDrained: async () => 0,
     ping: async () => true,

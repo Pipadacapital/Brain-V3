@@ -5,6 +5,32 @@
 import type { IngestEnvelope } from '../value-objects/envelope.js';
 import type { PendingSpoolEntry } from '../entities/spool-entry.js';
 
+/**
+ * A transactional claim over a batch of pending spool rows (AUD-PERF-006).
+ *
+ * The claimed rows are ROW-LOCKED (FOR UPDATE SKIP LOCKED) for the lifetime of the claim, so a
+ * concurrent drain pass — an overlapping tick or a second collector replica — skips them instead
+ * of double-producing. Exactly one of commit()/rollback() must settle the claim; both are
+ * idempotent. A process crash mid-claim releases the locks automatically (the transaction
+ * aborts server-side) and every row stays 'pending' — the no-event-loss invariant holds.
+ */
+export interface SpoolClaim {
+  /** Rows claimed by this drain pass, ordered by id (oldest first). */
+  readonly entries: PendingSpoolEntry[];
+
+  /**
+   * Mark claimed rows as drained (status='drained', drained_at=now()) INSIDE the claim
+   * transaction. The marks become durable only at commit().
+   */
+  markDrained(ids: bigint[]): Promise<void>;
+
+  /** Commit the claim — drained marks become durable, row locks release. Idempotent. */
+  commit(): Promise<void>;
+
+  /** Abort the claim — every row stays 'pending', row locks release. Idempotent. */
+  rollback(): Promise<void>;
+}
+
 export interface SpoolRepository {
   /**
    * Write a raw envelope to the spool. Returns the new row id.
@@ -13,16 +39,10 @@ export interface SpoolRepository {
   insert(envelope: IngestEnvelope): Promise<bigint>;
 
   /**
-   * Poll up to `limit` pending rows, ordered by id (oldest first).
-   * Used by the drainer loop.
+   * Atomically claim up to `limit` pending rows, ordered by id (oldest first), row-locking them
+   * against concurrent drain passes (FOR UPDATE SKIP LOCKED). Used by the drainer loop.
    */
-  pollPending(limit: number): Promise<PendingSpoolEntry[]>;
-
-  /**
-   * Mark a spool row as drained after confirmed Kafka produce.
-   * Sets status='drained', drained_at=now().
-   */
-  markDrained(id: bigint): Promise<void>;
+  claimPending(limit: number): Promise<SpoolClaim>;
 
   /**
    * Count pending rows, but stop scanning once `cap` is reached (a BOUNDED count).

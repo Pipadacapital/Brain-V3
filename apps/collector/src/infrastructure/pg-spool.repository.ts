@@ -11,7 +11,7 @@
  * to simulate the production role boundary.
  */
 import pg from 'pg';
-import type { SpoolRepository } from '../domain/ingest/repositories/spool.repository.js';
+import type { SpoolClaim, SpoolRepository } from '../domain/ingest/repositories/spool.repository.js';
 import type { IngestEnvelope } from '../domain/ingest/value-objects/envelope.js';
 import type { PendingSpoolEntry } from '../domain/ingest/entities/spool-entry.js';
 import { log } from '../log.js';
@@ -48,20 +48,62 @@ export class PgSpoolRepository implements SpoolRepository {
     return BigInt(row.id);
   }
 
-  async pollPending(limit: number): Promise<PendingSpoolEntry[]> {
-    const result = await this.pool.query<{ id: string; raw_body: Record<string, unknown> }>(
-      `SELECT id::text, raw_body
-       FROM collector_spool
-       WHERE status = 'pending'
-       ORDER BY id
-       LIMIT $1`,
-      [limit],
-    );
+  /**
+   * Claim up to `limit` pending rows inside a transaction held on a dedicated pool client
+   * (AUD-PERF-006). FOR UPDATE SKIP LOCKED makes concurrent claimers — an overlapping tick or a
+   * second collector replica — skip already-claimed rows instead of double-producing them; the
+   * standard PG queue pattern. No schema change: the row lock IS the claim (status stays
+   * 'pending' until markDrained + commit), and a crash releases it server-side automatically.
+   */
+  async claimPending(limit: number): Promise<SpoolClaim> {
+    const client = await this.pool.connect();
+    let settled = false;
+    const settle = async (verb: 'COMMIT' | 'ROLLBACK'): Promise<void> => {
+      if (settled) return;
+      settled = true;
+      try {
+        await client.query(verb);
+      } finally {
+        client.release();
+      }
+    };
 
-    return result.rows.map((row) => ({
-      id: BigInt(row.id),
-      rawBody: row.raw_body,
-    }));
+    try {
+      await client.query('BEGIN');
+      const result = await client.query<{ id: string; raw_body: Record<string, unknown> }>(
+        `SELECT id::text, raw_body
+         FROM collector_spool
+         WHERE status = 'pending'
+         ORDER BY id
+         LIMIT $1
+         FOR UPDATE SKIP LOCKED`,
+        [limit],
+      );
+
+      const entries: PendingSpoolEntry[] = result.rows.map((row) => ({
+        id: BigInt(row.id),
+        rawBody: row.raw_body,
+      }));
+
+      return {
+        entries,
+        markDrained: async (ids: bigint[]): Promise<void> => {
+          if (ids.length === 0) return;
+          await client.query(
+            `UPDATE collector_spool
+             SET status = 'drained', drained_at = now()
+             WHERE id = ANY($1::bigint[])`,
+            [ids.map((id) => id.toString())],
+          );
+        },
+        commit: () => settle('COMMIT'),
+        rollback: () => settle('ROLLBACK'),
+      };
+    } catch (err) {
+      // BEGIN/SELECT failed — release the client (rollback is best-effort on a broken conn).
+      await settle('ROLLBACK').catch(() => undefined);
+      throw err;
+    }
   }
 
   async countPendingBounded(cap: number): Promise<number> {
@@ -75,15 +117,6 @@ export class PgSpoolRepository implements SpoolRepository {
       [cap],
     );
     return Number(result.rows[0]?.n ?? '0');
-  }
-
-  async markDrained(id: bigint): Promise<void> {
-    await this.pool.query(
-      `UPDATE collector_spool
-       SET status = 'drained', drained_at = now()
-       WHERE id = $1`,
-      [id.toString()],
-    );
   }
 
   async reapDrained(olderThanSeconds: number): Promise<number> {

@@ -215,6 +215,48 @@ describe('Track B — Accept-before-validate + Durability', () => {
     });
   });
 
+  // ── TEST 2b: Row-claim isolation (AUD-PERF-006) ──────────────────────────────
+  describe('claimPending row-claim (FOR UPDATE SKIP LOCKED)', () => {
+    it('two concurrent claims never see the same spool row; rollback leaves rows pending', async () => {
+      // Spool 4 events directly (same path as the HTTP handler).
+      const acceptUseCase = new AcceptEventUseCase(spool);
+      const ourIds: bigint[] = [];
+      for (let i = 0; i < 4; i++) {
+        const { spoolId } = await acceptUseCase.execute(makeSyntheticEvent());
+        ourIds.push(spoolId);
+      }
+
+      // Claim concurrently — the second claim must SKIP the first claim's locked rows.
+      const claimA = await spool.claimPending(2);
+      const claimB = await spool.claimPending(10_000);
+      try {
+        const idsA = new Set(claimA.entries.map((e) => e.id.toString()));
+        const idsB = new Set(claimB.entries.map((e) => e.id.toString()));
+        for (const id of idsA) expect(idsB.has(id)).toBe(false); // disjoint — no double-produce
+        // Every one of our rows is visible to exactly one claimer (none lost, none duplicated).
+        for (const id of ourIds) {
+          const inA = idsA.has(id.toString());
+          const inB = idsB.has(id.toString());
+          expect(inA !== inB).toBe(true);
+        }
+      } finally {
+        await claimA.rollback();
+        await claimB.rollback();
+      }
+
+      // Rollback released the claims without touching status — all rows still pending.
+      for (const id of ourIds) {
+        const row = await getSpoolRow(rawPool, id.toString());
+        expect(row!.status).toBe('pending');
+      }
+
+      // Cleanup: drain our synthetic rows out of the pending set (mark drained + commit).
+      const cleanup = await spool.claimPending(10_000);
+      await cleanup.markDrained(cleanup.entries.map((e) => e.id));
+      await cleanup.commit();
+    });
+  });
+
   // ── TEST 3: Health endpoint ──────────────────────────────────────────────────
   describe('Health endpoints', () => {
     it('GET /healthz returns 200 alive', async () => {

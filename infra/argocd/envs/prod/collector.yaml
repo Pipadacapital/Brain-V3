@@ -7,7 +7,12 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: brain-collector-prod
+  # AUD-NAME-002: {service}-prod under AppProject brain-prod, matching the other
+  # 17 prod apps (docs/infra/naming-and-tagging.md §3). An Application rename is
+  # a delete+recreate of the Application CR ONLY — do it with the finalizer
+  # removed (or `argocd app` move procedure) so the underlying helm release /
+  # collector namespace is untouched.
+  name: collector-prod
   namespace: argocd
   labels:
     project: brain
@@ -18,7 +23,7 @@ metadata:
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:
-  project: brain
+  project: brain-prod
 
   source:
     repoURL: https://github.com/Rishabhporwal/Brain-V4.git
@@ -53,6 +58,6 @@ spec:
       jsonPointers:
         - /spec/replicas
 
-  # Rollback: argocd app rollback brain-collector-prod --revision <N>
+  # Rollback: argocd app rollback collector-prod --revision <N>
   # Feature flag kill-switch: packages/feature-flags sets collector.enabled=false
   # Both within 60s of trigger (PLAYBOOK-deploy §Rollback mechanism)

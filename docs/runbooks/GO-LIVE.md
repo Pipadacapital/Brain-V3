@@ -308,7 +308,7 @@ never remove the explicit env or reads split-brain).
 
 ```bash
 argocd app sync core-prod                       # runs the migration PreSync Job first (step 11)
-argocd app sync web-prod brain-collector-prod stream-worker-prod
+argocd app sync web-prod collector-prod stream-worker-prod
 argocd app sync cronworkflows-prod              # CronWorkflows: bronze-landing (*/15), bronze-maintenance,
                                                 # v4-silver, v4-gold, v4-maintenance (weekly, AUD-COST-013), connector crons
 # Seed the medallion once instead of waiting for the schedules:

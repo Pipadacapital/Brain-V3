@@ -202,13 +202,13 @@ additionalPrometheusRulesMap:
           - alert: BrainCollectorErrorBudgetFastBurn
             expr: |
               (
-                sum(rate(collector_spool_full_total[5m]))
-                  / (sum(rate(collector_accept_total[5m])) + sum(rate(collector_spool_full_total[5m]))) > (14.4 * 0.0005)
+                sum(rate(brain_collector_spool_full_total[5m]))
+                  / (sum(rate(brain_collector_accept_total[5m])) + sum(rate(brain_collector_spool_full_total[5m]))) > (14.4 * 0.0005)
               )
               and
               (
-                sum(rate(collector_spool_full_total[1h]))
-                  / (sum(rate(collector_accept_total[1h])) + sum(rate(collector_spool_full_total[1h]))) > (14.4 * 0.0005)
+                sum(rate(brain_collector_spool_full_total[1h]))
+                  / (sum(rate(brain_collector_accept_total[1h])) + sum(rate(brain_collector_spool_full_total[1h]))) > (14.4 * 0.0005)
               )
             for: 2m
             labels:
@@ -220,13 +220,13 @@ additionalPrometheusRulesMap:
           - alert: BrainCollectorErrorBudgetSlowBurn
             expr: |
               (
-                sum(rate(collector_spool_full_total[30m]))
-                  / (sum(rate(collector_accept_total[30m])) + sum(rate(collector_spool_full_total[30m]))) > (6 * 0.0005)
+                sum(rate(brain_collector_spool_full_total[30m]))
+                  / (sum(rate(brain_collector_accept_total[30m])) + sum(rate(brain_collector_spool_full_total[30m]))) > (6 * 0.0005)
               )
               and
               (
-                sum(rate(collector_spool_full_total[6h]))
-                  / (sum(rate(collector_accept_total[6h])) + sum(rate(collector_spool_full_total[6h]))) > (6 * 0.0005)
+                sum(rate(brain_collector_spool_full_total[6h]))
+                  / (sum(rate(brain_collector_accept_total[6h])) + sum(rate(brain_collector_spool_full_total[6h]))) > (6 * 0.0005)
               )
             for: 15m
             labels:
@@ -237,7 +237,7 @@ additionalPrometheusRulesMap:
 
           - alert: BrainCollectorSheddingNow
             # Any sustained back-pressure shedding — the drainer (→ Kafka) is behind RIGHT NOW.
-            expr: sum(rate(collector_spool_full_total[5m])) > 0
+            expr: sum(rate(brain_collector_spool_full_total[5m])) > 0
             for: 2m
             labels:
               severity: critical
@@ -279,7 +279,7 @@ additionalPrometheusRulesMap:
             expr: |
               (sum(rate(kafka_log_log_logendoffset{topic=~".*\\.collector\\.event\\.v1"}[10m])) > 0)
               and
-              (sum(increase(bronze_write_total[10m])) == 0)
+              (sum(increase(brain_bronze_write_total[10m])) == 0)
             for: 10m
             labels:
               severity: critical
@@ -292,7 +292,7 @@ additionalPrometheusRulesMap:
           - alert: BrainIngestSchedulerOverrun
             # The sequential scheduler tick can no longer finish within its interval → connector freshness
             # silently slips into minutes. The first symptom of "too many brands per replica" (shard/scale).
-            expr: sum(increase(ingest_scheduler_tick_overrun_total[15m])) > 0
+            expr: sum(increase(brain_ingest_scheduler_tick_overrun_total[15m])) > 0
             for: 15m
             labels:
               severity: warning
@@ -304,8 +304,8 @@ additionalPrometheusRulesMap:
             # A provider's repulls are failing on dispatch (rate limit / credential / API) — stale data for
             # that connector with NO other signal today (per-connector observability was missing).
             expr: |
-              sum by (provider) (rate(ingest_scheduler_dispatch_error_total[10m]))
-                / clamp_min(sum by (provider) (rate(ingest_scheduler_dispatch_total[10m]) + rate(ingest_scheduler_dispatch_error_total[10m])), 1) > 0.25
+              sum by (provider) (rate(brain_ingest_scheduler_dispatch_error_total[10m]))
+                / clamp_min(sum by (provider) (rate(brain_ingest_scheduler_dispatch_total[10m]) + rate(brain_ingest_scheduler_dispatch_error_total[10m])), 1) > 0.25
             for: 15m
             labels:
               severity: warning
@@ -316,7 +316,7 @@ additionalPrometheusRulesMap:
           - alert: BrainConnectorRateLimited
             # The global per-provider rate limiter is throttling dispatches sustainedly → that provider's
             # shared app quota is the bottleneck at the current brand count. Raise the cap or add capacity.
-            expr: sum by (provider) (rate(ingest_scheduler_rate_limited_total[15m])) > 0.1
+            expr: sum by (provider) (rate(brain_ingest_scheduler_rate_limited_total[15m])) > 0.1
             for: 30m
             labels:
               severity: warning
@@ -329,9 +329,9 @@ additionalPrometheusRulesMap:
           # poison left parked. A non-zero exhausted rate means human investigation is needed — the
           # DLQ is no longer self-healing for those messages.
           - alert: BrainDlqRedriveExhausted
-            # dlq_redrive_exhausted_total: stream-worker counter (P2.2). A redrive pass left messages
+            # brain_dlq_redrive_exhausted_total: stream-worker counter (P2.2). A redrive pass left messages
             # parked because they hit the max-redrive ceiling — they keep failing on replay.
-            expr: sum by (target_topic) (increase(dlq_redrive_exhausted_total[1h])) > 0
+            expr: sum by (target_topic) (increase(brain_dlq_redrive_exhausted_total[1h])) > 0
             for: 5m
             labels:
               severity: warning
@@ -340,9 +340,9 @@ additionalPrometheusRulesMap:
               description: "A redrive pass exhausted the loop guard for messages targeting {{ $labels.target_topic }} — they fail every replay. Investigate the payload/schema; they will not self-heal."
 
           - alert: BrainDlqRedriveErrors
-            # dlq_redrive_error_total: republish to the source topic failed during a redrive (broker
+            # brain_dlq_redrive_error_total: republish to the source topic failed during a redrive (broker
             # issue) — the operator's drain is not making progress.
-            expr: sum by (target_topic) (increase(dlq_redrive_error_total[15m])) > 0
+            expr: sum by (target_topic) (increase(brain_dlq_redrive_error_total[15m])) > 0
             for: 5m
             labels:
               severity: warning
@@ -355,9 +355,9 @@ additionalPrometheusRulesMap:
           # so the scheduler sees success and that connector's data (spend/settlement/orders) silently
           # goes stale until an operator reconnects. This makes that path loud.
           - alert: BrainConnectorAuthRejected
-            # connector_auth_rejected_total: stream-worker counter (P2.6). Non-zero ⇒ a connector needs
+            # brain_connector_auth_rejected_total: stream-worker counter (P2.6). Non-zero ⇒ a connector needs
             # reconnecting RIGHT NOW and its data is going stale.
-            expr: sum by (provider) (increase(connector_auth_rejected_total[15m])) > 0
+            expr: sum by (provider) (increase(brain_connector_auth_rejected_total[15m])) > 0
             for: 5m
             labels:
               severity: warning
@@ -369,9 +369,9 @@ additionalPrometheusRulesMap:
           # means tokens are NOT being refreshed (app creds missing, or tokens already dead) → spend
           # ingestion will silently stale as those tokens hit their ~60-day expiry.
           - alert: BrainMetaTokenRefreshFailing
-            # meta_token_refresh_error_total: stream-worker counter (the daily cron job). Non-zero ⇒
+            # brain_meta_token_refresh_error_total: stream-worker counter (the daily cron job). Non-zero ⇒
             # tokens are not being kept fresh — investigate app creds / reconnect the flagged connectors.
-            expr: sum by (reason) (increase(meta_token_refresh_error_total[2h])) > 0
+            expr: sum by (reason) (increase(brain_meta_token_refresh_error_total[2h])) > 0
             for: 10m
             labels:
               severity: warning
@@ -387,9 +387,9 @@ additionalPrometheusRulesMap:
           # order counts; a sustained breach = Silver is stale or unreachable. The continuous
           # Silver-freshness signal.
           - alert: BrainSilverLag
-            # dq_silver_lag_breach_total: stream-worker DQ counter. Sustained increase ⇒ Silver is
+            # brain_dq_silver_lag_breach_total: stream-worker DQ counter. Sustained increase ⇒ Silver is
             # lagging Bronze (or StarRocks is down) — analytics reads are stale.
-            expr: sum by (reason) (increase(dq_silver_lag_breach_total[1h])) > 0
+            expr: sum by (reason) (increase(brain_dq_silver_lag_breach_total[1h])) > 0
             for: 30m
             labels:
               severity: warning
@@ -401,10 +401,10 @@ additionalPrometheusRulesMap:
       - name: brain-revenue-integrity
         rules:
           - alert: BrainRevenueOverReversal
-            # revenue_over_reversal_total: stream-worker counter (F2). Cumulative reversals exceeded the
+            # brain_revenue_over_reversal_total: stream-worker counter (F2). Cumulative reversals exceeded the
             # recognized sale for an order → realized revenue for that order went negative. Usually a
             # duplicate refund or a refund+chargeback on one order — needs reconciliation, not silence.
-            expr: sum(increase(revenue_over_reversal_total[15m])) > 0
+            expr: sum(increase(brain_revenue_over_reversal_total[15m])) > 0
             for: 5m
             labels:
               severity: warning
@@ -455,7 +455,7 @@ additionalPrometheusRulesMap:
   # This is now consistent with local, where the compose Prometheus loads the
   # same canonical file.
   ##############################################################################
-  brain-freshness:
+  freshness:
     groups:
       # ── Gold serving-mart freshness SLA ─────────────────────────────────────────
       - name: brain-data-freshness

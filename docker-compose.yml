@@ -66,6 +66,9 @@ services:
     image: edoburu/pgbouncer:v1.23.1-p3
     profiles: ["core"]
     mem_limit: 128m         # blueprint §4.2 bound-everything rule — small C daemon, ~6MiB measured
+    oom_score_adj: -850     # EVERY core-app DB read goes through this pooler (see comment above) —
+                            # at the default 0 it was killed before redis (-300) and every SoR,
+                            # severing the whole app→PG path. Between postgres (-900) and kafka (-800).
     environment:
       DB_HOST: postgres
       DB_PORT: "5432"

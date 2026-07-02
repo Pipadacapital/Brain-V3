@@ -28,6 +28,19 @@ variable "kms_key_arn" {
   description = "Root CMK ARN for secrets encryption"
 }
 
+# AUD-PROD-004: connector-secrets CMK ARN (modules/kms `connector` key). When
+# set, the brain/connector/* runtime-secret IAM policies below are created for
+# the core (create/put/read) and stream-worker (read) IRSA roles. Default null
+# keeps envs that have not wired the connector platform unchanged.
+variable "connector_kms_key_arn" {
+  type        = string
+  default     = null
+  description = "Connector-secrets CMK ARN; enables the brain/connector/* IAM policies (AUD-PROD-004)."
+}
+
+data "aws_caller_identity" "current" {}
+data "aws_region" "current" {}
+
 ###############################################################################
 # Secret shells — values populated at runtime (never in TF state)
 ###############################################################################
@@ -276,6 +289,91 @@ resource "aws_iam_policy" "core_secrets_read" {
   policy      = data.aws_iam_policy_document.core_secrets_read.json
 }
 
+###############################################################################
+# Connector runtime secrets (AUD-PROD-004) — brain/connector/<provider>/<brandId>
+# entries are created AT RUNTIME by core (packages/connector-secrets
+# AwsSecretsManager: CreateSecret w/ KmsKeyId+Tags, PutSecretValue fallback,
+# GetSecretValue, DeleteSecret on disconnect/erasure) and READ by stream-worker
+# (backfill/repull token resolution, worker-secrets.ts). No shells exist by
+# design — names are per-brand and dynamic — so the grants are ARN-pattern
+# scoped. The CMK grants below are also what KmsVaultKeyProvider needs for
+# per-brand DEK wrap/unwrap (core) and salt unwrap (both).
+###############################################################################
+
+locals {
+  # Secrets Manager appends a random 6-char suffix to secret ARNs — the
+  # trailing * covers it. Never widen past the brain/connector/ prefix.
+  connector_secret_arn_pattern = "arn:aws:secretsmanager:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:secret:${var.project}/connector/*"
+}
+
+data "aws_iam_policy_document" "core_connector_secrets_rw" {
+  count = var.connector_kms_key_arn != null ? 1 : 0
+
+  statement {
+    sid    = "ManageConnectorSecrets"
+    effect = "Allow"
+    actions = [
+      "secretsmanager:CreateSecret",
+      "secretsmanager:PutSecretValue",
+      "secretsmanager:GetSecretValue",
+      "secretsmanager:DescribeSecret",
+      "secretsmanager:DeleteSecret",
+      "secretsmanager:TagResource", # CreateSecret passes brand_id/connector_type Tags (D-7 audit attribution)
+    ]
+    resources = [local.connector_secret_arn_pattern]
+  }
+
+  statement {
+    sid    = "ConnectorCmkUse"
+    effect = "Allow"
+    actions = [
+      "kms:Encrypt",
+      "kms:Decrypt",
+      "kms:GenerateDataKey",
+      "kms:DescribeKey",
+    ]
+    resources = [var.connector_kms_key_arn]
+  }
+}
+
+resource "aws_iam_policy" "core_connector_secrets_rw" {
+  count       = var.connector_kms_key_arn != null ? 1 : 0
+  name        = "${var.project}-${var.environment}-core-connector-secrets"
+  description = "core: create/put/read/delete brain/connector/* runtime secrets + connector CMK encrypt/decrypt (AUD-PROD-004)"
+  policy      = data.aws_iam_policy_document.core_connector_secrets_rw[0].json
+}
+
+data "aws_iam_policy_document" "stream_worker_connector_secrets_read" {
+  count = var.connector_kms_key_arn != null ? 1 : 0
+
+  statement {
+    sid    = "ReadConnectorSecrets"
+    effect = "Allow"
+    actions = [
+      "secretsmanager:GetSecretValue",
+      "secretsmanager:DescribeSecret",
+    ]
+    resources = [local.connector_secret_arn_pattern]
+  }
+
+  statement {
+    sid    = "ConnectorCmkDecrypt"
+    effect = "Allow"
+    actions = [
+      "kms:Decrypt",
+      "kms:DescribeKey",
+    ]
+    resources = [var.connector_kms_key_arn]
+  }
+}
+
+resource "aws_iam_policy" "stream_worker_connector_secrets_read" {
+  count       = var.connector_kms_key_arn != null ? 1 : 0
+  name        = "${var.project}-${var.environment}-stream-worker-connector-secrets"
+  description = "stream-worker: read brain/connector/* runtime secrets + connector CMK decrypt (AUD-PROD-004)"
+  policy      = data.aws_iam_policy_document.stream_worker_connector_secrets_read[0].json
+}
+
 data "aws_iam_policy_document" "otel_collector_secrets_read" {
   statement {
     sid    = "ReadOtelSecrets"
@@ -349,4 +447,14 @@ output "k8s_env_secret_arns" {
 
 output "eso_k8s_secrets_read_policy_arn" {
   value = aws_iam_policy.eso_k8s_secrets_read.arn
+}
+
+output "core_connector_secrets_rw_policy_arn" {
+  description = "core brain/connector/* RW policy ARN (null unless connector_kms_key_arn is set — AUD-PROD-004)"
+  value       = var.connector_kms_key_arn != null ? aws_iam_policy.core_connector_secrets_rw[0].arn : null
+}
+
+output "stream_worker_connector_secrets_read_policy_arn" {
+  description = "stream-worker brain/connector/* read policy ARN (null unless connector_kms_key_arn is set — AUD-PROD-004)"
+  value       = var.connector_kms_key_arn != null ? aws_iam_policy.stream_worker_connector_secrets_read[0].arn : null
 }

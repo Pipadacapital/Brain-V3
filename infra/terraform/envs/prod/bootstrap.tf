@@ -176,6 +176,9 @@ module "secrets" {
   environment = local.environment
   project     = local.project
   kms_key_arn = module.kms.root_kms_key_arn
+  # AUD-PROD-004: enables the brain/connector/* runtime-secret IAM policies
+  # (attached to irsa_core / irsa_stream_worker below).
+  connector_kms_key_arn = module.kms.connector_kms_key_arn
 }
 
 module "s3_iceberg" {
@@ -221,6 +224,8 @@ module "irsa_stream_worker" {
   policy_arns = [
     module.secrets.stream_worker_secrets_policy_arn,
     module.s3_iceberg.stream_worker_s3_policy_arn,
+    # AUD-PROD-004: read brain/connector/* tokens (backfill/repull) + CMK decrypt.
+    module.secrets.stream_worker_connector_secrets_read_policy_arn,
   ]
 }
 
@@ -236,6 +241,9 @@ module "irsa_core" {
   policy_arns = [
     module.secrets.core_secrets_policy_arn,
     module.s3_iceberg.analytics_s3_policy_arn,
+    # AUD-PROD-004: create/put/read/delete brain/connector/* runtime secrets +
+    # connector CMK encrypt/decrypt (OAuth tokens, PII-vault DEK wrapping).
+    module.secrets.core_connector_secrets_rw_policy_arn,
   ]
 }
 
@@ -413,6 +421,11 @@ output "github_ecr_push_role_arn" { value = module.oidc_github.github_ecr_push_r
 output "github_apply_role_arn" { value = module.oidc_github.github_apply_role_arn }
 output "root_kms_key_arn" { value = module.kms.root_kms_key_arn }
 output "audit_kms_key_arn" { value = module.kms.audit_kms_key_arn }
+
+# AUD-PROD-004: fill CONNECTOR_SECRETS_KMS_KEY_ID (core-env) and KMS_KEY_ID
+# (stream-worker-env) in the brain/prod/k8s/* blobs with this key ARN.
+output "connector_kms_key_arn" { value = module.kms.connector_kms_key_arn }
+output "connector_kms_alias" { value = module.kms.connector_kms_alias }
 
 output "vpc_id" { value = module.network.vpc_id }
 output "nat_instance_public_ip" { value = module.nat_instance.public_ip }

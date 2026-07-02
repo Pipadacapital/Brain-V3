@@ -17,13 +17,13 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { Kafka, type Producer } from 'kafkajs';
-import type mysql from 'mysql2/promise';
 import {
-  makeStarrocksPool,
+  makeBronzeTrinoPool,
   icebergBronzeAvailable,
   produceCollectorEvent,
   pollIcebergBronzeCount,
   KAFKA_BROKERS,
+  type BronzePool,
   type CollectorEnvelope,
 } from './helpers/iceberg-bronze.js';
 
@@ -31,7 +31,7 @@ const EVENT_NAME = 'order.live.v1';
 const BRAND = 'b9f10030-0030-4030-8030-0000000000b2';
 
 let producer: Producer;
-let sr: mysql.Pool;
+let sr: BronzePool;
 let infraUp = false;
 
 /** Realistic post-mapper Shopify live/re-pull order (the shape the re-pull produces to the live lane). */
@@ -63,7 +63,7 @@ function liveOrderEnvelope(): CollectorEnvelope {
 
 beforeAll(async () => {
   try {
-    sr = makeStarrocksPool();
+    sr = makeBronzeTrinoPool();
     if (!(await icebergBronzeAvailable(sr))) {
       infraUp = false;
       return;

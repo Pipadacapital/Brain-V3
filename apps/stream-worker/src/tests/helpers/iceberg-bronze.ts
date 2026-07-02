@@ -3,55 +3,73 @@
  *
  * MEDALLION / Iceberg-Bronze: the stream-worker no longer writes Bronze to PostgreSQL (the PG
  * data_plane.bronze_events table was dropped — migration 0070; ProcessEventUseCase's PG write is a
- * no-op by default). The SOLE Bronze system-of-record is now the Spark Structured-Streaming sink
- * (db/iceberg/spark/bronze_materialize.py): it consumes the collector topic, applies the SAME R2/R3
- * admission gates as the app, and MERGEs into the Iceberg table `brain_bronze.collector_events`
- * (idempotent on (brand_id, event_id)). The lakehouse Bronze is read through the StarRocks external
- * catalog `brain_bronze_local`.
+ * no-op by default). The SOLE Bronze system-of-record is the Spark Structured-Streaming sink: the
+ * unified landing job (db/iceberg/spark/bronze_landing.py) consumes the collector + backfill + raw
+ * connector topics and MERGEs into the Iceberg table `brain_bronze.events` (idempotent on dedup_key
+ * = evt:{brand_id}:{event_id} for collector rows). The legacy split sinks wrote
+ * `brain_bronze.collector_events` — selectable via BRONZE_SOURCE until Phase-8 decommission.
  *
- * So the "does an event land in Bronze?" e2e tests now: PRODUCE a raw-JSON collector envelope to the
- * Bronze-bound Kafka topic → the running Spark sink lands it in Iceberg → READ it back via StarRocks.
+ * So the "does an event land in Bronze?" e2e tests: PRODUCE a raw-JSON collector envelope to the
+ * Bronze-bound Kafka topic → the running Spark sink lands it in Iceberg → READ it back over TRINO
+ * (BRAIN V4: StarRocks is REMOVED; Trino-over-Iceberg is the sole serving engine — this helper
+ * reads the three-part `iceberg.brain_bronze.*` name through the same Trino REST adapter the app
+ * uses). Trino reads Iceberg snapshots directly, so unlike the old StarRocks reader there is NO
+ * external-table metadata cache to bust (no REFRESH EXTERNAL TABLE) — a freshly MERGEd row is
+ * visible on the next snapshot.
  *
- * Two gotchas this helper encapsulates:
- *   1. StarRocks caches Iceberg snapshot metadata (~60s background refresh). A just-sunk row is not
- *      visible until the cache refreshes — so every poll issues `REFRESH EXTERNAL TABLE` first to bust
- *      the cache (a freshly produced event then becomes readable in ~8s instead of up to ~60s).
- *   2. Tenant isolation in the lakehouse is PREDICATE-BASED at the read seam (every read filters
- *      `brand_id = ?`, mirroring metric-engine withSilverBrand / dq silver-reader), NOT PG RLS. A
- *      brand-scoped query therefore returns 0 rows for another brand's event BY CONSTRUCTION.
+ * Tenant isolation in the lakehouse is PREDICATE-BASED at the read seam (every read filters
+ * `brand_id = ?`, mirroring metric-engine withTrinoBrand / dq silver-reader), NOT PG RLS. A
+ * brand-scoped query therefore returns 0 rows for another brand's event BY CONSTRUCTION.
  *
- * REQUIRES the `lakehouse` docker profile (Redpanda + Spark sink + Iceberg REST + MinIO + StarRocks).
+ * REQUIRES the `lakehouse` docker profile (Kafka + Spark sink + Iceberg REST + MinIO + Trino).
  * Suites self-skip via `icebergBronzeAvailable()` when it is not up.
  */
-import mysql from 'mysql2/promise';
+import { createTrinoPool } from '@brain/metric-engine';
 import type { Producer } from 'kafkajs';
 
-const SR_HOST = process.env['STARROCKS_HOST'] ?? '127.0.0.1';
-const SR_PORT = Number(process.env['STARROCKS_QUERY_PORT'] ?? process.env['STARROCKS_PORT'] ?? '9030');
-const SR_USER = process.env['STARROCKS_ROOT_USER'] ?? 'root';
-const SR_PASSWORD = process.env['STARROCKS_ROOT_PASSWORD'] ?? '';
+const TRINO_URL =
+  process.env['TRINO_URL'] ??
+  `http://${process.env['TRINO_HOST'] ?? '127.0.0.1'}:${process.env['TRINO_PORT'] ?? '8090'}`;
+const TRINO_USER = process.env['TRINO_USER'] ?? 'brain';
 
-const BRONZE_CATALOG = process.env['STARROCKS_BRONZE_CATALOG'] ?? 'brain_bronze_local';
-export const BRONZE_TABLE = `${BRONZE_CATALOG}.brain_bronze.collector_events`;
+/**
+ * BRONZE_SOURCE cutover seam (unified-bronze-landing): 'events' = the unified
+ * brain_bronze.events table written by bronze_landing.py (the DEPLOYED default);
+ * 'legacy' = the pre-unified brain_bronze.collector_events written by the split sinks.
+ * Three-part names resolve the raw Bronze tables directly through the iceberg catalog.
+ */
+const BRONZE_SOURCE = process.env['BRONZE_SOURCE'] ?? 'events';
+export const BRONZE_TABLE =
+  BRONZE_SOURCE === 'legacy'
+    ? 'iceberg.brain_bronze.collector_events'
+    : 'iceberg.brain_bronze.events';
 
-export const COLLECTOR_TOPIC = process.env['COLLECTOR_TOPIC'] ?? 'dev.collector.event.v1';
+// The running Spark sink consumes the env-PREFIXED topic; the local-prod stack uses `prod.`
+// (verified: brain-bronze-sink COLLECTOR_TOPIC=prod.collector.event.v1). Default to that so the
+// suites exercise the LIVE sink without a manual override; set COLLECTOR_TOPIC for other envs.
+export const COLLECTOR_TOPIC = process.env['COLLECTOR_TOPIC'] ?? 'prod.collector.event.v1';
 export const KAFKA_BROKERS = (process.env['KAFKA_BROKERS'] ?? 'localhost:9092').split(',');
 
-/** A mysql2 pool against StarRocks (the Iceberg external catalog is queried over the MySQL protocol). */
-export function makeStarrocksPool(): mysql.Pool {
-  return mysql.createPool({
-    host: SR_HOST,
-    port: SR_PORT,
-    user: SR_USER,
-    password: SR_PASSWORD,
-    connectionLimit: 2,
-    // StarRocks speaks the MySQL protocol but is not MySQL — keep the handshake minimal.
-    enableKeepAlive: true,
-  });
+/**
+ * The Bronze read-back seam: a thin pool over the Trino REST adapter. `end()` is a no-op
+ * (stateless HTTP — kept so suites' afterAll teardown stays uniform with real pools).
+ */
+export interface BronzePool {
+  query<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]>;
+  end(): Promise<void>;
+}
+
+/** A Trino pool against the iceberg catalog (Bronze is read over Trino — StarRocks is gone). */
+export function makeBronzeTrinoPool(): BronzePool {
+  const trino = createTrinoPool({ baseUrl: TRINO_URL, user: TRINO_USER, catalog: 'iceberg' });
+  return {
+    query: (sql, params) => trino.query(sql, params),
+    end: async () => undefined,
+  };
 }
 
 /** Is the lakehouse Bronze read path reachable? Suites SKIP_IF_NO_LAKEHOUSE when this is false. */
-export async function icebergBronzeAvailable(pool: mysql.Pool): Promise<boolean> {
+export async function icebergBronzeAvailable(pool: BronzePool): Promise<boolean> {
   try {
     await pool.query(`SELECT 1 FROM ${BRONZE_TABLE} LIMIT 1`);
     return true;
@@ -76,7 +94,7 @@ export interface CollectorEnvelope {
 
 /**
  * Produce a raw-JSON collector envelope to the Bronze-bound Kafka topic (keyed by brand_id).
- * `topic` defaults to the helper's COLLECTOR_TOPIC; callers in a prod-prefixed stack (local-prod)
+ * `topic` defaults to the helper's COLLECTOR_TOPIC; callers in a differently-prefixed stack
  * pass the matching topic explicitly so the running Spark sink actually consumes it.
  */
 export async function produceCollectorEvent(
@@ -106,13 +124,14 @@ export interface BronzeMatch {
 }
 
 /**
- * Poll Iceberg Bronze (via the StarRocks external catalog) until at least `min` rows match, forcing a
- * metadata refresh each poll so a just-sunk row is visible promptly. Returns the matching row count
- * (>= min on success, or the last count seen at timeout). A brand-scoped query returns 0 for another
- * brand's event by construction (read-seam isolation) — use that for the negative/isolation controls.
+ * Poll Iceberg Bronze (over Trino) until at least `min` rows match. Trino reads Iceberg snapshots
+ * directly — no metadata cache-bust needed; a just-MERGEd row is visible on the next poll. Returns
+ * the matching row count (>= min on success, or the last count seen at timeout). A brand-scoped
+ * query returns 0 for another brand's event by construction (read-seam isolation) — use that for
+ * the negative/isolation controls.
  */
 export async function pollIcebergBronzeCount(
-  pool: mysql.Pool,
+  pool: BronzePool,
   match: BronzeMatch,
   opts: { min?: number; timeoutMs?: number; intervalMs?: number } = {},
 ): Promise<number> {
@@ -139,9 +158,8 @@ export async function pollIcebergBronzeCount(
   let last = 0;
   // First iteration runs immediately; loop until the deadline.
   for (;;) {
-    await pool.query(`REFRESH EXTERNAL TABLE ${BRONZE_TABLE}`).catch(() => undefined);
-    const [rows] = await pool.query(sql, params);
-    last = Number((rows as Array<{ c: number | string }>)[0]?.c ?? 0);
+    const rows = await pool.query<{ c: number | string }>(sql, params);
+    last = Number(rows[0]?.c ?? 0);
     if (last >= min) return last;
     if (Date.now() >= deadline) return last;
     await new Promise((r) => setTimeout(r, interval));
@@ -153,7 +171,7 @@ export async function pollIcebergBronzeCount(
  * Use for "this exact event reached Bronze" assertions (dedup-safe: Spark MERGE collapses re-delivery).
  */
 export async function waitForBronzeEvent(
-  pool: mysql.Pool,
+  pool: BronzePool,
   brandId: string,
   eventId: string,
   timeoutMs = 45_000,

@@ -23,13 +23,13 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { Kafka, type Producer } from 'kafkajs';
-import type mysql from 'mysql2/promise';
 import {
-  makeStarrocksPool,
+  makeBronzeTrinoPool,
   icebergBronzeAvailable,
   produceCollectorEvent,
   pollIcebergBronzeCount,
   KAFKA_BROKERS,
+  type BronzePool,
   type CollectorEnvelope,
 } from './helpers/iceberg-bronze.js';
 
@@ -38,7 +38,7 @@ const BRAND_A = '11111111-1111-4111-8111-111111111111';
 const BRAND_B = '22222222-2222-4222-8222-222222222222';
 
 let producer: Producer;
-let sr: mysql.Pool;
+let sr: BronzePool;
 let infraUp = false;
 
 function makeEnvelope(eventId: string, brandId: string): CollectorEnvelope {
@@ -57,7 +57,7 @@ function makeEnvelope(eventId: string, brandId: string): CollectorEnvelope {
 
 beforeAll(async () => {
   try {
-    sr = makeStarrocksPool();
+    sr = makeBronzeTrinoPool();
     if (!(await icebergBronzeAvailable(sr))) {
       infraUp = false;
       return;

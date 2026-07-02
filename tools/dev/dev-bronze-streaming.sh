@@ -58,6 +58,15 @@ echo "[combined-bronze] heap: driver=${SPARK_DRIVER_MEMORY:-4g} (local[*] → th
 
 # An ivy cache volume so re-runs don't re-download the jars (shared with the per-lane run scripts).
 docker volume create brain-spark-ivy >/dev/null
+# DURABLE checkpoint volume (AUD-INFRA-004): the checkpoint used to live in the container's /tmp
+# under `docker run --rm`, so EVERY crash/OOM restart destroyed it and re-drained ALL 11 topic lanes
+# from STARTING_OFFSETS=earliest (full 7/30-day retention) — the exact large-backlog profile that
+# historically OOMed the sink, i.e. an OOM→restart→re-drain amplification loop. Persist it on a
+# named volume so restarts resume from the committed offsets; earliest stays the cold-start fallback.
+# NOTE: a persisted checkpoint must be WIPED when the subscribed topic set / streaming query plan
+# changes (Spark refuses or misbehaves on an incompatible checkpoint):
+#   docker volume rm brain-bronze-checkpoint   (with the sink stopped)
+docker volume create brain-bronze-checkpoint >/dev/null
 
 # ── Supervisor loop — auto-restart the sink on ANY exit (crash OR OOM) ───────────────────────────────
 # `docker run --rm` has no restart policy, so a transient Spark fault (executor RPC-endpoint loss /
@@ -77,6 +86,7 @@ while :; do
   --user root \
   -v "${SPARK_SRC_DIR}":/opt/spike:ro \
   -v brain-spark-ivy:/root/.ivy2 \
+  -v brain-bronze-checkpoint:/checkpoint \
   -e KAFKA_BROKERS="${KAFKA_BROKERS:-localhost:9092}" \
   -e COLLECTOR_TOPIC="${COLLECTOR_TOPIC:-prod.collector.event.v1}" \
   -e BACKFILL_TOPIC="${BACKFILL_TOPIC:-prod.collector.order.backfill.v1}" \
@@ -91,7 +101,7 @@ while :; do
   -e AWS_REGION="${AWS_REGION:-us-east-1}" \
   -e TRIGGER_MODE="${TRIGGER_MODE:-continuous}" \
   -e SPARK_OFFHEAP_SIZE="${SPARK_OFFHEAP_SIZE:-512m}" \
-  -e CHECKPOINT_LOCATION="${CHECKPOINT_LOCATION:-file:///tmp/bronze-landing-checkpoint}" \
+  -e CHECKPOINT_LOCATION="${CHECKPOINT_LOCATION:-file:///checkpoint/bronze-landing}" \
   "${SPARK_IMAGE}" \
   /opt/spark/bin/spark-submit \
     --master "${SPARK_MASTER:-local[*]}" \

@@ -1,6 +1,6 @@
 # Argo Rollouts — automated bake-window auto-rollback (B6 / R-06)
 
-Today the prod bake window is **manual**: `main.yml` echoes the rollback criteria and a human watches a
+Today the prod bake window is **manual**: `deploy.yml` echoes the rollback criteria and a human watches a
 Grafana dashboard for 30 min (2h for billing/ledger changes). This directory makes the rollback
 **automatic** via [Argo Rollouts](https://argoproj.github.io/rollouts/) analysis.
 

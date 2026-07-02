@@ -1,6 +1,6 @@
 # analysis-templates.yaml — Argo Rollouts auto-rollback criteria as code (B6 / R-06).
 #
-# Encodes the bake-window rollback signals documented in .github/workflows/main.yml + PLAYBOOK-deploy.md
+# Encodes the bake-window rollback signals documented in .github/workflows/deploy.yml + PLAYBOOK-deploy.md
 # as Argo Rollouts AnalysisTemplates. During a canary/bake step a Rollout runs these against Prometheus;
 # a failed metric automatically aborts the rollout → Argo rolls back to the last stable ReplicaSet. This
 # turns the currently-MANUAL bake watch ("echo the criteria, watch a dashboard") into automation.

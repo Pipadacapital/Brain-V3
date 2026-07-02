@@ -16,7 +16,7 @@
 #                  placeholders are ALLOWED — pre-apply they genuinely cannot
 #                  be filled, so PRs must stay green.
 #   --strict       FAIL while ANY placeholder remains in the rendered prod
-#                  output. Wired as a gate in main.yml prod-promote: a prod
+#                  output. Wired as a gate in deploy.yml prod-promote: a prod
 #                  promotion can never be committed while rendered prod values
 #                  still carry REPLACE_WITH_*/ACCOUNT_ID.
 #   --selftest     Prove the pattern + allowlist logic catch violations.
@@ -29,7 +29,7 @@
 # never deployed — see AUD-COST-007 verifier note).
 #
 # The B3 digest fail-closed template guards are satisfied with a dummy digest:
-# image digests are CD-filled at deploy time (main.yml gitops/prod-promote) and
+# image digests are CD-filled at deploy time (deploy.yml gitops/prod-promote) and
 # explicitly NOT part of the placeholder gap.
 ################################################################################
 set -euo pipefail

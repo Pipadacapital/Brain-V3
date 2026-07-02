@@ -127,7 +127,7 @@ grep -rEn "REPLACE_WITH_[A-Z0-9_]+|ACCOUNT_ID" infra/helm infra/argocd --include
 
 Commit the fill to `master`. **CI enforcement:** the PR job
 `prod-placeholder-guard` (renders all prod charts; fails on undocumented
-tokens) and a `--strict` gate in `main.yml prod-promote` that refuses to commit
+tokens) and a `--strict` gate in `deploy.yml prod-promote` that refuses to commit
 a prod promotion while ANY placeholder remains (`tools/lint/prod-placeholder-guard.sh`).
 
 **IRSA roles (AUD-COST-017 — nothing to do):** all six roles the manifests
@@ -143,7 +143,7 @@ down from the `hostedzone/*` bootstrap fallback.
 
 ## 5. ECR image push (AUD-COST-002 CD lane)
 
-Merging to `master` fires `.github/workflows/main.yml`: build → push (immutable
+Merging to `master` fires `.github/workflows/deploy.yml`: build → push (immutable
 digest) → cosign sign for `collector`, `stream-worker`, `core`, `web`
 (turbo-affected) and `spark-bronze` (path-based, `db/iceberg/spark/**`) into the
 `brain-<name>-prod` repos, then the gitops jobs pin the digests into the chart

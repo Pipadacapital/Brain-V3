@@ -84,7 +84,7 @@ module "oidc_github" {
   github_repo      = "Brain-V4"
   allowed_branches = ["master"] # repo default branch (workflow_dispatch runs here) — was "main" (mismatch)
 
-  # ECR-push + terraform-apply CI roles (main.yml / prod-apply.yml). After apply,
+  # ECR-push + terraform-apply CI roles (deploy.yml / prod-apply.yml). After apply,
   # set repo variables AWS_ECR_PUSH_ROLE_ARN / AWS_PROD_APPLY_ROLE_ARN from the
   # outputs below.
   create_cicd_roles = true

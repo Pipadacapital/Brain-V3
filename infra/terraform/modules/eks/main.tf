@@ -324,7 +324,7 @@ locals {
   # The 4 app deployables + the spark-bronze data-plane job image (the Iceberg Bronze sink; the same
   # image also carries the V4 Silver/Gold marts for the sparkV4 crons). All get an IMMUTABLE,
   # KMS-encrypted, scan-on-push ECR repo + lifecycle policy. The cronworkflows chart (sparkBronze.image /
-  # sparkV4.image) pulls it; CI builds + digest-pins it (see .github/workflows/main.yml build-data-images).
+  # sparkV4.image) pulls it; CI builds + digest-pins it (see .github/workflows/deploy.yml build-data-images).
   # dbt-runner is RETIRED — dbt is removed under Brain V4 (Spark is the sole compute).
   services = ["collector", "stream-worker", "core", "web", "spark-bronze"]
 }

@@ -121,11 +121,19 @@ def build_spark():
         .config(f"spark.sql.catalog.{CATALOG}.uri", os.environ.get("ICEBERG_REST_URI", "http://iceberg-rest:8181"))
         .config(f"spark.sql.catalog.{CATALOG}.warehouse", os.environ.get("BRONZE_WAREHOUSE", "s3://brain-bronze/"))
         .config(f"spark.sql.catalog.{CATALOG}.io-impl", "org.apache.iceberg.aws.s3.S3FileIO")
-        .config(f"spark.sql.catalog.{CATALOG}.s3.endpoint", os.environ.get("S3_ENDPOINT", "http://minio:9000"))
-        .config(f"spark.sql.catalog.{CATALOG}.s3.path-style-access", "true")
-        .config(f"spark.sql.catalog.{CATALOG}.s3.access-key-id", os.environ.get("AWS_ACCESS_KEY_ID", "brain"))
-        .config(f"spark.sql.catalog.{CATALOG}.s3.secret-access-key", os.environ.get("AWS_SECRET_ACCESS_KEY", "brainbrain"))
     )
+    # AUD-COST-022: S3FileIO endpoint/creds CONDITIONAL on S3_ENDPOINT (same as medallion_maintenance
+    # f0c8c3a8; duplicated in iceberg_base.build_spark — Bronze-path isolation, keep IN SYNC).
+    # Set + non-empty (local MinIO) → old behavior verbatim; unset/empty (prod) → no endpoint, no
+    # static keys, so S3FileIO uses the default AWS credential chain (WebIdentity/IRSA).
+    _s3_endpoint = (os.environ.get("S3_ENDPOINT") or "").strip()
+    if _s3_endpoint:
+        builder = (
+            builder.config(f"spark.sql.catalog.{CATALOG}.s3.endpoint", _s3_endpoint)
+            .config(f"spark.sql.catalog.{CATALOG}.s3.path-style-access", "true")
+            .config(f"spark.sql.catalog.{CATALOG}.s3.access-key-id", os.environ.get("AWS_ACCESS_KEY_ID", "brain"))
+            .config(f"spark.sql.catalog.{CATALOG}.s3.secret-access-key", os.environ.get("AWS_SECRET_ACCESS_KEY", "brainbrain"))
+        )
     # Shared production-grade local-mode perf tuning (Kryo / AQE sizing / shuffle / stability / S3A).
     # Duplicated from iceberg_base.spark_perf_configs() to keep this sink import-free of iceberg_base
     # (Bronze-path isolation). Keep IN SYNC with iceberg_base.

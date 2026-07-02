@@ -30,6 +30,7 @@ interpolate).
 | `REPLACE_WITH_PROD_POSTGRES_HOST` | `pgbouncer/values-prod.yaml` | `aurora_endpoint` (pgbouncer fronts Aurora) |
 | `REPLACE_WITH_STAGING_POSTGRES_HOST` | `pgbouncer/values-staging.yaml` | staging `aurora_endpoint` |
 | `REPLACE_WITH_VPC_ID` | `argocd/envs/prod/aws-load-balancer-controller.yaml` | `vpc_id` |
+| `AUDIT_CHECKPOINT_BUCKET` (key in the `core-env` secret, §5) | consumed by `apps/core/src/jobs/audit-checkpoint.ts` (hourly `audit-checkpoint` CronWorkflow — the WORM anchor for the audit hash-chain) | `audit_bucket_name` (`modules/s3-audit`, wired in every env root). NOTE: this is the audit bucket's OWN S3 Object-Lock COMPLIANCE bucket, **not** the medallion warehouse or its `_checkpoints/` prefix; no new terraform needed — the `brain-<env>-jobs` IRSA role already grants Put/Get/List on `checkpoints/*`. Left unset, the job safely no-ops (dev behavior) |
 
 ECR repo names are already aligned with terraform
 (`brain-<service>-<env>`, e.g. `brain-core-prod` — `modules/eks` `local.services`).

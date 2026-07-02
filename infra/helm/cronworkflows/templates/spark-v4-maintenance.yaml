@@ -54,6 +54,15 @@ spec:
   workflowSpec:
     serviceAccountName: {{ .Values.serviceAccount.name }}   # IRSA: S3 (medallion buckets) + REST catalog
     entrypoint: run
+    {{- /* AUD-PROD-006: pin the Spark cron pods to the batch pool (values-prod). */}}
+    {{- with .Values.sparkV4.nodeSelector }}
+    nodeSelector:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+    {{- with .Values.sparkV4.tolerations }}
+    tolerations:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
     activeDeadlineSeconds: {{ $m.activeDeadlineSeconds }}
     podGC:
       strategy: OnWorkflowSuccess

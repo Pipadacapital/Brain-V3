@@ -6,6 +6,20 @@ image:
 
 coordinator:
   replicaCount: 1
+  # AUD-PROD-006/-011: the single coordinator (discovery + the BFF's HTTP/JDBC endpoint —
+  # the SOLE serving entry) must not ride Spot. NOT `role: system` despite the spec: the
+  # system MNG is t4g.medium (4 GiB) and the coordinator's RATIFIED memory bound below
+  # (6Gi request / 7Gi limit, measured OOM evidence) can never schedule there — so it pins
+  # to the tainted ON-DEMAND Karpenter pool (t4g.xlarge, AUD-COST-018 — same on-demand
+  # stability guarantee, fits the bound; Neo4j precedent). Selector + toleration both
+  # required (the pool is tainted).
+  nodeSelector:
+    brain.platform/pool: ondemand
+  tolerations:
+    - key: brain.platform/pool
+      operator: Equal
+      value: ondemand
+      effect: NoSchedule
   resources:
     requests:
       cpu: "2"
@@ -16,6 +30,11 @@ coordinator:
 
 workers:
   replicaCount: 3
+  # AUD-PROD-006/-011: workers pin to the dedicated `trino` Karpenter pool (t4g.xlarge
+  # Spot, infra/helm/karpenter/values.yaml) via Karpenter's automatic nodepool label —
+  # without this, pool weights preferred the streaming pool for worker pods.
+  nodeSelector:
+    karpenter.sh/nodepool: trino
   resources:
     requests:
       cpu: "2"

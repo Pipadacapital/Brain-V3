@@ -26,6 +26,18 @@ kafka:
     jvm:
       xms: 4096m
       xmx: 4096m
+    # AUD-PROD-006: pin the KRaft broker pods (stateful, 'no event loss') to the
+    # streaming Karpenter pool — its WhenEmpty consolidation NEVER bin-packs live
+    # brokers off a node, unlike the batch/trino pools' WhenEmptyOrUnderutilized.
+    # Strimzi PodTemplate has no nodeSelector — required nodeAffinity is the contract.
+    affinity:
+      nodeAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          nodeSelectorTerms:
+            - matchExpressions:
+                - key: brain.platform/pool
+                  operator: In
+                  values: ["streaming"]
 
   listeners:
     plain:

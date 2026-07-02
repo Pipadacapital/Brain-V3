@@ -19,6 +19,12 @@ serviceAccount:
   annotations:
     eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/brain-prod-collector
 
+# AUD-PROD-006: the 99.95%-SLA ingest front rides the streaming pool (t4g.large
+# Spot, WhenEmpty consolidation — live pods are never bin-packed off a node; the
+# HPA replica floor keeps a warm baseline). Label = the pool's node template label.
+nodeSelector:
+  brain.platform/pool: streaming
+
 resources:
   requests:
     cpu: 250m

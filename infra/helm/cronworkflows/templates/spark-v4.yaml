@@ -70,6 +70,15 @@ spec:
   workflowSpec:
     serviceAccountName: {{ $sa }}      # IRSA: S3 (Iceberg warehouse) + Glue/REST catalog access
     entrypoint: run
+    {{- /* AUD-PROD-006: pin the Spark cron pods to the batch pool (values-prod). */}}
+    {{- with .Values.sparkV4.nodeSelector }}
+    nodeSelector:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+    {{- with .Values.sparkV4.tolerations }}
+    tolerations:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
     activeDeadlineSeconds: {{ .Values.sparkV4.activeDeadlineSeconds }}
     podGC:
       strategy: OnWorkflowSuccess
@@ -131,6 +140,15 @@ spec:
   workflowSpec:
     serviceAccountName: {{ $sa }}
     entrypoint: run
+    {{- /* AUD-PROD-006: pin the Spark cron pods to the batch pool (values-prod). */}}
+    {{- with .Values.sparkV4.nodeSelector }}
+    nodeSelector:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+    {{- with .Values.sparkV4.tolerations }}
+    tolerations:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
     activeDeadlineSeconds: {{ .Values.sparkV4.activeDeadlineSeconds }}
     podGC:
       strategy: OnWorkflowSuccess

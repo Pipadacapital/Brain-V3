@@ -118,6 +118,9 @@ resource "aws_subnet" "private" {
     # Required for EKS internal load balancer auto-discovery
     "kubernetes.io/role/internal-elb"                         = "1"
     "kubernetes.io/cluster/${var.project}-${var.environment}" = "shared"
+    # AUD-COST-010: Karpenter EC2NodeClass subnetSelectorTerms match this tag
+    # (infra/helm/karpenter values `discoveryTag`, conventionally the cluster name).
+    "karpenter.sh/discovery" = "${var.project}-${var.environment}"
   }
 }
 
@@ -258,6 +261,9 @@ resource "aws_security_group" "eks_nodes" {
   tags = {
     Name        = "${var.project}-${var.environment}-eks-nodes-sg"
     environment = var.environment
+    # AUD-COST-010: Karpenter EC2NodeClass securityGroupSelectorTerms match this
+    # tag — launched nodes join the same SG as the managed node group.
+    "karpenter.sh/discovery" = "${var.project}-${var.environment}"
   }
 }
 

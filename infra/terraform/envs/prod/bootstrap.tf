@@ -132,6 +132,22 @@ module "eks" {
 }
 
 ###############################################################################
+# Karpenter (AUD-COST-010) — controller IRSA role + SQS interruption queue +
+# EventBridge rules. All non-system capacity (Spark batch / Trino / streaming)
+# is Karpenter Spot; without this the helm/ArgoCD intent can launch nothing.
+# Discovery tags (karpenter.sh/discovery = brain-prod) are set by modules/network.
+###############################################################################
+module "karpenter" {
+  source            = "../../modules/karpenter"
+  environment       = local.environment
+  project           = local.project
+  cluster_name      = module.eks.cluster_name
+  oidc_provider_arn = module.eks.oidc_provider_arn
+  oidc_provider_url = module.eks.oidc_provider_url
+  node_role_arn     = module.eks.node_role_arn
+}
+
+###############################################################################
 # Operational DB — ADR-0009: Aurora Serverless v2 (0.5–2 ACU, burst-elastic,
 # managed HA), NOT plain RDS. PG is operational-only; the workload is spiky.
 ###############################################################################
@@ -299,3 +315,8 @@ output "collector_role_arn" { value = module.irsa_collector.role_arn }
 output "stream_worker_role_arn" { value = module.irsa_stream_worker.role_arn }
 output "core_role_arn" { value = module.irsa_core.role_arn }
 output "spark_jobs_role_arn" { value = module.irsa_spark_jobs.role_arn }
+
+# Fill into infra/argocd/envs/prod/karpenter.yaml (ACCOUNT_ID role ARN +
+# settings.interruptionQueue — the queue name already matches brain-prod).
+output "karpenter_controller_role_arn" { value = module.karpenter.controller_role_arn }
+output "karpenter_interruption_queue" { value = module.karpenter.interruption_queue_name }

@@ -130,6 +130,33 @@ describe('Track B — Accept-before-validate + Durability', () => {
       expect(row!.raw_body['brand_id']).toBe(event.brand_id);
     });
 
+    it('POST /batch spools every event via ONE multi-row INSERT, ids in event order', async () => {
+      const eventA = makeSyntheticEvent();
+      const eventB = makeSyntheticEvent();
+      const eventC = makeSyntheticEvent();
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/batch',
+        headers: { 'content-type': 'application/json' },
+        payload: { events: [eventA, eventB, eventC] },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json<{ accepted: number; spool_ids: string[] }>();
+      expect(body.accepted).toBe(3);
+      expect(body.spool_ids).toHaveLength(3);
+
+      // Each returned spool id maps to the event at the same index (RETURNING order), pending.
+      const events = [eventA, eventB, eventC];
+      for (let i = 0; i < 3; i++) {
+        const row = await getSpoolRow(rawPool, body.spool_ids[i]!);
+        expect(row).not.toBeNull();
+        expect(row!.status).toBe('pending');
+        expect(row!.raw_body['event_id']).toBe(events[i]!.event_id);
+      }
+    });
+
     it('POST /v1/events returns HTTP 202 and row is in spool', async () => {
       const event = makeSyntheticEvent();
 
@@ -212,6 +239,48 @@ describe('Track B — Accept-before-validate + Durability', () => {
       } finally {
         await liveProducer.disconnect();
       }
+    });
+  });
+
+  // ── TEST 2b: Row-claim isolation (AUD-PERF-006) ──────────────────────────────
+  describe('claimPending row-claim (FOR UPDATE SKIP LOCKED)', () => {
+    it('two concurrent claims never see the same spool row; rollback leaves rows pending', async () => {
+      // Spool 4 events directly (same path as the HTTP handler).
+      const acceptUseCase = new AcceptEventUseCase(spool);
+      const ourIds: bigint[] = [];
+      for (let i = 0; i < 4; i++) {
+        const { spoolId } = await acceptUseCase.execute(makeSyntheticEvent());
+        ourIds.push(spoolId);
+      }
+
+      // Claim concurrently — the second claim must SKIP the first claim's locked rows.
+      const claimA = await spool.claimPending(2);
+      const claimB = await spool.claimPending(10_000);
+      try {
+        const idsA = new Set(claimA.entries.map((e) => e.id.toString()));
+        const idsB = new Set(claimB.entries.map((e) => e.id.toString()));
+        for (const id of idsA) expect(idsB.has(id)).toBe(false); // disjoint — no double-produce
+        // Every one of our rows is visible to exactly one claimer (none lost, none duplicated).
+        for (const id of ourIds) {
+          const inA = idsA.has(id.toString());
+          const inB = idsB.has(id.toString());
+          expect(inA !== inB).toBe(true);
+        }
+      } finally {
+        await claimA.rollback();
+        await claimB.rollback();
+      }
+
+      // Rollback released the claims without touching status — all rows still pending.
+      for (const id of ourIds) {
+        const row = await getSpoolRow(rawPool, id.toString());
+        expect(row!.status).toBe('pending');
+      }
+
+      // Cleanup: drain our synthetic rows out of the pending set (mark drained + commit).
+      const cleanup = await spool.claimPending(10_000);
+      await cleanup.markDrained(cleanup.entries.map((e) => e.id));
+      await cleanup.commit();
     });
   });
 

@@ -13,6 +13,16 @@ service:
   port: 80
   targetPort: 3001
 
+# Public edge (AUD-COST-003): shared Brain ALB (aws-load-balancer-controller),
+# host-routed, ACM TLS. Off by default; enabled per env in values-prod.yaml.
+ingress:
+  enabled: false
+  className: alb
+  host: ""            # e.g. api.<domain> — BFF/API + connector webhooks
+  groupName: brain    # all Brain Ingresses share ONE ALB via this group
+  certificateArn: ""  # ACM cert covering the host (TLS terminates at the ALB)
+  annotations: {}
+
 probes:
   enabled: true
   path: /health           # core exposes a single /health endpoint
@@ -33,9 +43,28 @@ env:
     value: core
   - name: PORT
     value: "3001"
+  # UNIFIED-BRONZE: app Bronze reads target brain_bronze.events — what the deployed sink
+  # (bronze_landing, prod Argo Bronze cron) writes. The code default is 'legacy' (frozen
+  # pre-cutover tables, rollback-only), so set it explicitly or reads silently split-brain.
+  - name: BRONZE_SOURCE
+    value: events
 
 serviceAccount:
   annotations: {}   # IRSA role for AWS Secrets Manager access (set per env)
+
+# DB migration runner (AUD-COST-011): pre-install/pre-upgrade + ArgoCD PreSync
+# hook Job that runs `pnpm migrate:up` (db/migrations, node-pg-migrate) from the
+# core image against DATABASE_URL — MUST succeed before core/stream-worker roll.
+# Off by default (dev/CI migrate out-of-band); enabled per env.
+migrations:
+  enabled: false
+  appEnv: prod              # PGOPTIONS app.env stamp — dev-only migrations RAISE on 'production'
+  # core-env key holding the DIRECT Aurora URL (node-pg-migrate's session
+  # advisory lock breaks through pgbouncer transaction pooling). Empty → use
+  # the secret's DATABASE_URL as-is.
+  databaseUrlFromKey: ""
+  backoffLimit: 1
+  activeDeadlineSeconds: 900
 
 resources:
   requests:

@@ -24,6 +24,10 @@
 # Usage:  db/iceberg/spark/gold/run-gold-executive-cac.sh [executive|cac|snap|snap-identity|all]   (default: all)
 set -euo pipefail
 
+# AUD-INFRA-006: host-global batch-Spark admission lock — overlapping refresh loops / manual runs QUEUE
+# behind the one running batch container instead of stacking 7g-cap JVMs. Streaming sinks excluded.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/_spark_lock.sh"
+
 SPARK_IMAGE="${SPARK_IMAGE:-apache/spark:3.5.3}"
 ICEBERG_VERSION="${ICEBERG_VERSION:-1.9.2}"
 SCALA="2.12"

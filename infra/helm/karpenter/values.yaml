@@ -86,3 +86,24 @@ nodePools:
       cpu: "8"
       memory: 32Gi
     taints: []
+  # AUD-COST-018: ON-DEMAND home for single-instance stateful SoRs. Neo4j (the
+  # identity SYSTEM OF RECORD, ADR-0004, Community = no HA) must not ride Spot —
+  # a reclaim bounces the only replica. TAINTED so nothing lands on paid
+  # on-demand capacity unless it explicitly tolerates it (Neo4j pins here via
+  # podSpec nodeSelector+toleration in infra/helm/neo4j/values-prod.yaml).
+  # expireAfter stays 720h: one PLANNED monthly bounce for node patching (PVC
+  # reattaches via the EBS CSI driver) beats an unpatched pet node.
+  ondemand:
+    instanceType: t4g.xlarge         # 4 vCPU / 16 GiB — fits the 2cpu/4Gi Neo4j pod + daemonsets
+    capacityType: on-demand
+    consolidationPolicy: WhenEmpty   # never bin-pack the stateful pod off a live node
+    consolidateAfter: 5m
+    expireAfter: 720h
+    weight: 5                        # last resort for the scheduler — Spot pools win general pods
+    limits:                          # ~0-2 nodes; scales to zero when nothing tolerates the taint
+      cpu: "8"
+      memory: 32Gi
+    taints:
+      - key: brain.platform/pool
+        value: ondemand
+        effect: NoSchedule

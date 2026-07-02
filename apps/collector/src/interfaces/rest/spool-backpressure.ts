@@ -30,6 +30,7 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { incrementCounter } from '@brain/observability';
 import type { SpoolRepository } from '../../domain/ingest/repositories/spool.repository.js';
+import { GUARDED_INGEST_ROUTES } from './edge-guard.js';
 
 export interface SpoolBackpressureConfig {
   /** High-water mark: at or above this pending depth, TRIP back-pressure (start rejecting). */
@@ -128,7 +129,9 @@ export class SpoolBackpressure {
  */
 export function registerSpoolBackpressure(app: FastifyInstance, gate: SpoolBackpressure): void {
   app.addHook('preHandler', async (req: FastifyRequest, reply: FastifyReply) => {
-    if (req.url !== '/collect' && req.url !== '/v1/events') return;
+    // Route-PATTERN match (query-string-free) over the full ingest set incl. /batch — raw req.url
+    // equality would let `/collect?x=1` or a /batch POST bypass the gate (AUD-PERF-001).
+    if (req.method !== 'POST' || !GUARDED_INGEST_ROUTES.has(req.routeOptions.url ?? '')) return;
     if (gate.admit()) return;
 
     // Shed counter backs the collector SLO burn-rate + back-pressure alerts (C2 / R-05).

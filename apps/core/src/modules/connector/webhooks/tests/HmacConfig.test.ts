@@ -1,12 +1,12 @@
 /**
- * HmacConfig.test.ts — byte-compatibility verification for HmacConfig.
+ * HmacConfig.test.ts — byte-compatibility regression pins for HmacConfig.
  *
- * Proves that HmacConfig is byte-identical to each legacy *Hmac value-object.
- * This is the CUTOVER SAFETY CHECK: a bug here would mean the pipeline rejects
- * valid webhooks that the legacy handlers would accept (or vice versa).
- *
- * Strategy: sign test bodies with both the old VO and the new HmacConfig; both
- * must accept the same signature string and reject tampered strings.
+ * Originally proved HmacConfig byte-identical to the four legacy *Hmac
+ * value-objects (deleted after consolidation — AUD-CODE-006). The proof is
+ * preserved as GOLDEN DIGEST pins: the fixed digests below were produced by
+ * the legacy VOs' algorithm (HMAC-SHA256 over TEST_BODY with TEST_SECRET) and
+ * must verify forever. A change here means the pipeline would reject webhooks
+ * the legacy handlers accepted (or vice versa) — the cutover safety check.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -19,15 +19,14 @@ import {
 } from '../platform/HmacConfig.js';
 import { ProviderRedisDedupAdapter } from '../infrastructure/ProviderRedisDedupAdapter.js';
 
-// ── Legacy VO imports (directly from source to verify byte-compatibility) ──
-
-import { ShopifyHmac } from '../../sources/storefront/shopify/domain/value-objects/ShopifyHmac.js';
-import { RazorpayHmac } from '../../sources/payment/razorpay/domain/value-objects/RazorpayHmac.js';
-import { WooCommerceHmac } from '../../sources/storefront/woocommerce/domain/value-objects/WooCommerceHmac.js';
-import { ShopfloHmac } from '../../sources/checkout/shopflo/domain/value-objects/ShopfloHmac.js';
-
 const TEST_BODY = Buffer.from('{"test":"payload","amount":1500}');
 const TEST_SECRET = 'test-webhook-secret-for-hmac-compat';
+
+// ── Golden digests (computed by the deleted legacy VOs; DO NOT regenerate) ──
+// base64(HMAC-SHA256(TEST_BODY, TEST_SECRET)) — Shopify + WooCommerce scheme
+const GOLDEN_BASE64_SIG = 'Ds4NUA0lc3U7S4GJb9uWUvlQrErlTy5fHrQsoJsnM1Y=';
+// hex(HMAC-SHA256(TEST_BODY, TEST_SECRET)) — Razorpay + Shopflo scheme
+const GOLDEN_HEX_SIG = '0ece0d500d2573753b4b81896fdb9652f950ac4ae54f2e5f1eb42ca09b273356';
 
 function shopifySign(body: Buffer, secret: string): string {
   return createHmac('sha256', secret).update(body).digest('base64');
@@ -42,63 +41,66 @@ function shopfloSign(body: Buffer, secret: string): string {
   return createHmac('sha256', secret).update(body).digest('hex');
 }
 
-describe('HmacConfig — byte-compatibility with legacy *Hmac VOs', () => {
-  it('SHOPIFY_HMAC_CONFIG accepts same base64 HMAC-SHA256 as ShopifyHmac.validateWebhook()', () => {
+describe('HmacConfig — byte-compatibility golden pins (legacy *Hmac VO algorithm)', () => {
+  it('SHOPIFY_HMAC_CONFIG accepts the golden base64 digest ShopifyHmac.validateWebhook() produced', () => {
     const sig = shopifySign(TEST_BODY, TEST_SECRET);
 
-    // Legacy VO
-    expect(ShopifyHmac.validateWebhook(TEST_BODY, sig, TEST_SECRET)).toBe(true);
-    // New HmacConfig
-    expect(SHOPIFY_HMAC_CONFIG.validateWebhook(TEST_BODY, sig, TEST_SECRET)).toBe(true);
+    // The freshly-computed sig must equal the legacy VO's pinned golden digest
+    expect(sig).toBe(GOLDEN_BASE64_SIG);
+    expect(SHOPIFY_HMAC_CONFIG.validateWebhook(TEST_BODY, GOLDEN_BASE64_SIG, TEST_SECRET)).toBe(
+      true,
+    );
 
-    // Both must reject tampered body
+    // Must reject tampered body
     const tamperedBody = Buffer.from('{"test":"tampered"}');
-    expect(ShopifyHmac.validateWebhook(tamperedBody, sig, TEST_SECRET)).toBe(false);
-    expect(SHOPIFY_HMAC_CONFIG.validateWebhook(tamperedBody, sig, TEST_SECRET)).toBe(false);
+    expect(SHOPIFY_HMAC_CONFIG.validateWebhook(tamperedBody, GOLDEN_BASE64_SIG, TEST_SECRET)).toBe(
+      false,
+    );
 
-    // Both must reject wrong encoding (hex instead of base64)
-    const hexSig = createHmac('sha256', TEST_SECRET).update(TEST_BODY).digest('hex');
-    expect(ShopifyHmac.validateWebhook(TEST_BODY, hexSig, TEST_SECRET)).toBe(false);
-    expect(SHOPIFY_HMAC_CONFIG.validateWebhook(TEST_BODY, hexSig, TEST_SECRET)).toBe(false);
+    // Must reject wrong encoding (hex instead of base64)
+    expect(SHOPIFY_HMAC_CONFIG.validateWebhook(TEST_BODY, GOLDEN_HEX_SIG, TEST_SECRET)).toBe(false);
   });
 
-  it('RAZORPAY_HMAC_CONFIG accepts same hex HMAC-SHA256 as RazorpayHmac.validateWebhook()', () => {
+  it('RAZORPAY_HMAC_CONFIG accepts the golden hex digest RazorpayHmac.validateWebhook() produced', () => {
     const sig = razorpaySign(TEST_BODY, TEST_SECRET);
 
-    expect(RazorpayHmac.validateWebhook(TEST_BODY, sig, TEST_SECRET)).toBe(true);
-    expect(RAZORPAY_HMAC_CONFIG.validateWebhook(TEST_BODY, sig, TEST_SECRET)).toBe(true);
+    expect(sig).toBe(GOLDEN_HEX_SIG);
+    expect(RAZORPAY_HMAC_CONFIG.validateWebhook(TEST_BODY, GOLDEN_HEX_SIG, TEST_SECRET)).toBe(true);
 
     const tamperedBody = Buffer.from('{"test":"tampered"}');
-    expect(RazorpayHmac.validateWebhook(tamperedBody, sig, TEST_SECRET)).toBe(false);
-    expect(RAZORPAY_HMAC_CONFIG.validateWebhook(tamperedBody, sig, TEST_SECRET)).toBe(false);
+    expect(RAZORPAY_HMAC_CONFIG.validateWebhook(tamperedBody, GOLDEN_HEX_SIG, TEST_SECRET)).toBe(
+      false,
+    );
 
     // Razorpay uses hex — base64 sig must be rejected
-    const base64Sig = createHmac('sha256', TEST_SECRET).update(TEST_BODY).digest('base64');
-    expect(RazorpayHmac.validateWebhook(TEST_BODY, base64Sig, TEST_SECRET)).toBe(false);
-    expect(RAZORPAY_HMAC_CONFIG.validateWebhook(TEST_BODY, base64Sig, TEST_SECRET)).toBe(false);
+    expect(RAZORPAY_HMAC_CONFIG.validateWebhook(TEST_BODY, GOLDEN_BASE64_SIG, TEST_SECRET)).toBe(
+      false,
+    );
   });
 
-  it('WOOCOMMERCE_HMAC_CONFIG accepts same base64 HMAC-SHA256 as WooCommerceHmac.validateWebhook()', () => {
+  it('WOOCOMMERCE_HMAC_CONFIG accepts the golden base64 digest WooCommerceHmac.validateWebhook() produced', () => {
     const sig = wooSign(TEST_BODY, TEST_SECRET);
 
-    expect(WooCommerceHmac.validateWebhook(TEST_BODY, sig, TEST_SECRET)).toBe(true);
-    expect(WOOCOMMERCE_HMAC_CONFIG.validateWebhook(TEST_BODY, sig, TEST_SECRET)).toBe(true);
+    expect(sig).toBe(GOLDEN_BASE64_SIG);
+    expect(WOOCOMMERCE_HMAC_CONFIG.validateWebhook(TEST_BODY, GOLDEN_BASE64_SIG, TEST_SECRET)).toBe(
+      true,
+    );
 
     const tamperedBody = Buffer.from('{"amount":9999}');
-    expect(WooCommerceHmac.validateWebhook(tamperedBody, sig, TEST_SECRET)).toBe(false);
-    expect(WOOCOMMERCE_HMAC_CONFIG.validateWebhook(tamperedBody, sig, TEST_SECRET)).toBe(false);
+    expect(
+      WOOCOMMERCE_HMAC_CONFIG.validateWebhook(tamperedBody, GOLDEN_BASE64_SIG, TEST_SECRET),
+    ).toBe(false);
   });
 
-  it('buildShopfloHmacConfig() accepts same hex HMAC-SHA256 as ShopfloHmac.validateWebhook()', () => {
+  it('buildShopfloHmacConfig() accepts the golden hex digest ShopfloHmac.validateWebhook() produced', () => {
     const sig = shopfloSign(TEST_BODY, TEST_SECRET);
     const config = buildShopfloHmacConfig();
 
-    expect(ShopfloHmac.validateWebhook(TEST_BODY, sig, TEST_SECRET)).toBe(true);
-    expect(config.validateWebhook(TEST_BODY, sig, TEST_SECRET)).toBe(true);
+    expect(sig).toBe(GOLDEN_HEX_SIG);
+    expect(config.validateWebhook(TEST_BODY, GOLDEN_HEX_SIG, TEST_SECRET)).toBe(true);
 
     const tamperedBody = Buffer.from('{"checkout_id":"tampered"}');
-    expect(ShopfloHmac.validateWebhook(tamperedBody, sig, TEST_SECRET)).toBe(false);
-    expect(config.validateWebhook(tamperedBody, sig, TEST_SECRET)).toBe(false);
+    expect(config.validateWebhook(tamperedBody, GOLDEN_HEX_SIG, TEST_SECRET)).toBe(false);
   });
 
   it('all configs reject empty signature header', () => {

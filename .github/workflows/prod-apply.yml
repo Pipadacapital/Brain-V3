@@ -5,13 +5,21 @@ name: prod-apply (M4 turn-on)
 # (2) the `production` GitHub Environment (set required reviewers in repo Settings →
 # Environments → production) pauses the job for human approval before apply.
 #
-# PREREQUISITES (set once, before the first dispatch — see docs/runbooks/prod-m4-turn-on.md):
-#   - infra/terraform/bootstrap applied (state bucket + lock table + OIDC provider + apply role).
-#   - Repo variable AWS_PROD_APPLY_ROLE_ARN = the oidc_github apply-role ARN (output of bootstrap).
-#   - prod oidc_github github_org/github_repo MUST match THIS repo, and allowed_branches MUST
-#     include the dispatch branch (this file fixes it to ["master"]). Re-apply oidc_github if changed.
-#   - Placeholders filled: <PROD_ACCOUNT_ID> (backend.tf/bootstrap.tf), IRSA ARNs, Aurora endpoint
-#     in infra/helm/iceberg-rest/values-prod.yaml — and the envs/prod M4 module blocks UNCOMMENTED.
+# PREREQUISITES (set once, before the first dispatch — AUD-COST-002; full path:
+# docs/runbooks/GO-LIVE.md + infra/terraform/README.md "Prod go-live"):
+#   - infra/terraform/bootstrap applied with LOCAL operator credentials — it creates the state
+#     bucket + lock table + state KMS ONLY (no IAM role, no OIDC provider).
+#   - The FIRST envs/prod apply is ALSO local (chicken-and-egg: the OIDC provider and the CI
+#     apply role are created by envs/prod itself — module oidc_github, create_cicd_roles = true).
+#     This workflow serves every SUBSEQUENT apply.
+#   - Repo variable AWS_PROD_APPLY_ROLE_ARN = `terraform output github_apply_role_arn` from
+#     envs/prod (role brain-prod-github-apply; OIDC trust = the `production` GitHub Environment
+#     sub, not a branch ref — this job binds to that Environment below).
+#   - prod oidc_github github_org/github_repo = Rishabhporwal/Brain-V4 (must match THIS repo)
+#     with allowed_branches ["master"]. Re-apply oidc_github if the repo ever moves.
+#   - <PROD_ACCOUNT_ID> filled in envs/prod/backend.tf + terraform.tfvars created from the
+#     example (the M4 module set is UN-GATED since AUD-COST-001 — nothing to uncomment). Helm/
+#     ArgoCD placeholders (infra/helm/PLACEHOLDERS.md) are filled AFTER this apply's outputs.
 
 on:
   workflow_dispatch:

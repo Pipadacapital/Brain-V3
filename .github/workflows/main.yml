@@ -3,6 +3,28 @@ on:
   push:
     branches: [master]   # default branch — CD/gitops/prod-promote fire on real merges to master
 
+# CI/CD identity (AUD-COST-002) — repo variables ↔ terraform (envs/prod, module
+# oidc_github with create_cicd_roles = true; first apply is LOCAL — see
+# infra/terraform/README.md "Prod go-live" + docs/runbooks/GO-LIVE.md):
+#   vars.AWS_ECR_PUSH_ROLE_ARN  = `terraform output github_ecr_push_role_arn`
+#                                 (role brain-prod-github-ecr-push; OIDC trust =
+#                                 push to master on Rishabhporwal/Brain-V4).
+#   vars.ENVIRONMENT            = prod — MUST be "prod": the push role is scoped
+#                                 to the brain-*-prod ECR repositories (modules/
+#                                 eks creates brain-{collector,stream-worker,core,
+#                                 web,spark-bronze}-prod). Single-account posture:
+#                                 staging values reference the same immutable
+#                                 digest in the -prod repos (build once, promote
+#                                 the same artifact).
+#   secrets.GITOPS_TOKEN        = PAT with contents:write (the gitops values-bump
+#                                 commits; the default GITHUB_TOKEN would not
+#                                 retrigger ArgoCD-relevant workflows).
+#   vars.AWS_STAGING_PLAN_ROLE_ARN / vars.AWS_PROD_PLAN_ROLE_ARN — OPTIONAL
+#                                 (`github_plan_role_arn` output of envs/staging /
+#                                 envs/prod). The gitops jobs below run no AWS
+#                                 call today, so cred configuration is skipped
+#                                 while these are unset.
+
 permissions:
   contents: write       # bump Helm values + gitops commit
   id-token: write       # OIDC for AWS ECR push
@@ -107,9 +129,14 @@ jobs:
 
       - name: cosign sign image (keyless OIDC)
         if: steps.affected.outputs.skip == 'false'
+        # Digest comes from the imgref file the push step wrote (same pattern as
+        # build-data-images). The previous `steps.push.outputs[...]` was never set
+        # by the push step → cosign got "<repo>@" and failed every affected leg.
         run: |
-          cosign sign --yes \
-            ${{ steps.login-ecr.outputs.registry }}/brain-${{ matrix.app }}-${{ vars.ENVIRONMENT }}@${{ steps.push.outputs[format('{0}_digest', matrix.app)] }}
+          set -euo pipefail
+          REPO="${{ steps.login-ecr.outputs.registry }}/brain-${{ matrix.app }}-${{ vars.ENVIRONMENT }}"
+          DIGEST=$(cut -d@ -f2 < "/tmp/imgref/${{ matrix.app }}")
+          cosign sign --yes "${REPO}@${DIGEST}"
 
   # ─────────────────────────────────────────────────────────────────────────
   # 1b. Build + push the DATA-PLANE job images (spark-bronze)
@@ -224,7 +251,11 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITOPS_TOKEN }}
 
+      # No AWS call happens in this job today (pure sed/yq + git push) — skip
+      # cleanly while the staging env root (and its github_plan role) is unapplied,
+      # instead of hard-failing configure-aws-credentials on an empty ARN.
       - name: Configure AWS credentials (OIDC) for staging
+        if: ${{ vars.AWS_STAGING_PLAN_ROLE_ARN != '' }}
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_STAGING_PLAN_ROLE_ARN }}
@@ -309,7 +340,10 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITOPS_TOKEN }}
 
+      # Same as gitops-staging: no AWS call in this job — skip while unset.
+      # (`github_plan_role_arn` output of envs/prod = brain-prod-github-plan.)
       - name: Configure AWS credentials (OIDC) for prod
+        if: ${{ vars.AWS_PROD_PLAN_ROLE_ARN != '' }}
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_PROD_PLAN_ROLE_ARN }}
@@ -352,6 +386,15 @@ jobs:
           promote .streamWorkerImage
           promote .sparkBronze.image
           promote .sparkV4.image
+
+      # AUD-COST-007 STRICT gate: a prod promotion must never be committed while
+      # rendered prod values / deployed ArgoCD prod manifests still carry
+      # REPLACE_WITH_*/ACCOUNT_ID placeholders. Fill pass: docs/runbooks/GO-LIVE.md
+      # step 3 (canonical list: infra/helm/PLACEHOLDERS.md). Runs AFTER the digest
+      # promotion above (CD-filled digests are not placeholders) and BEFORE the
+      # commit, so a failure leaves nothing for ArgoCD to sync.
+      - name: Placeholder guard — refuse to promote unfilled prod values (strict)
+        run: tools/lint/prod-placeholder-guard.sh --strict
 
       - name: Commit prod values promotion
         run: |

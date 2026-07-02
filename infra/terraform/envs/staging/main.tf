@@ -57,12 +57,13 @@ module "network" {
 # GitHub OIDC
 ###############################################################################
 module "oidc_github" {
-  source           = "../../modules/oidc-github"
-  environment      = local.environment
-  project          = local.project
-  github_org       = "brain-platform"
-  github_repo      = "brain"
-  allowed_branches = ["main"]
+  source      = "../../modules/oidc-github"
+  environment = local.environment
+  project     = local.project
+  # AUD-COST-002: real remote + real default branch (was brain-platform/brain@main)
+  github_org       = "Rishabhporwal"
+  github_repo      = "Brain-V4"
+  allowed_branches = ["master"]
 }
 
 ###############################################################################
@@ -255,13 +256,11 @@ module "observability" {
 ###############################################################################
 output "bronze_bucket_name" { value = module.s3_iceberg.bronze_bucket_name }
 output "audit_bucket_name" { value = module.s3_audit.audit_bucket_name }
-output "glue_database_name" { value = module.s3_iceberg.glue_database_name }
 
-# Brain V4 PHASE 0 — Iceberg Silver/Gold
+# Brain V4 PHASE 0 — Iceberg Silver/Gold. Glue DB outputs removed with the
+# Glue catalog databases (AUD-COST-012 — runtime catalog is REST/JDBC).
 output "silver_bucket_name" { value = module.s3_iceberg_silver.bucket_name }
 output "gold_bucket_name" { value = module.s3_iceberg_gold.bucket_name }
-output "silver_glue_database_name" { value = module.s3_iceberg_silver.glue_database_name }
-output "gold_glue_database_name" { value = module.s3_iceberg_gold.glue_database_name }
 output "spark_jobs_role_arn" { value = module.irsa_spark_jobs.role_arn }
 output "eks_cluster_name" { value = module.eks.cluster_name }
 output "root_kms_key_arn" { value = module.kms.root_kms_key_arn }

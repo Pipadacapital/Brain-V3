@@ -30,6 +30,8 @@ export interface DrainerConfig {
 export class Drainer {
   private timer: ReturnType<typeof setInterval> | null = null;
   private running = false;
+  /** In-flight guard (AUD-PERF-006): a tick slower than pollIntervalMs must NOT overlap the next. */
+  private inTick = false;
 
   constructor(
     private readonly drainUseCase: DrainEventsUseCase,
@@ -62,7 +64,11 @@ export class Drainer {
   }
 
   private async tick(): Promise<void> {
-    if (!this.running) return;
+    // Skip when the previous tick is still draining (AUD-PERF-006): setInterval keeps firing while
+    // a slow drain (Kafka stall, big batch) is in flight; without this guard two ticks would poll
+    // the same pending rows and double-produce them.
+    if (!this.running || this.inTick) return;
+    this.inTick = true;
     try {
       const count = await this.drainUseCase.execute();
       if (count > 0) {
@@ -72,6 +78,8 @@ export class Drainer {
       // Unexpected drainer error — log but do not crash the loop.
       // Pass the Error in fields.err so Sentry + stack handling fires.
       log.error('tick error', { err });
+    } finally {
+      this.inTick = false;
     }
   }
 

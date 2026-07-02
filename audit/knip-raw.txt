@@ -1,0 +1,1127 @@
+Unused files (46)
+.eos-workflows/assemble-blueprint.mjs                                                                       
+.eos-workflows/brain-growth-os.mjs                                                                          
+apps/core/src/modules/connector/index.ts                                                                    
+apps/core/src/modules/connector/sources/payment/razorpay/application/commands/ConnectRazorpayCommand.ts     
+apps/core/src/modules/connector/sources/storefront/shopify/domain/entities/ConnectorCursor.ts               
+apps/core/src/modules/connector/sources/storefront/shopify/domain/repositories/IConnectorCursorRepository.ts
+apps/core/src/modules/connector/sources/storefront/shopify/interfaces/http/shopifyConnectorRoutes.ts        
+apps/core/src/modules/frontend-api/index.ts                                                                 
+apps/core/src/modules/job-orchestration/index.ts                                                            
+apps/core/src/modules/notification/index.ts                                                                 
+apps/core/src/modules/notification/internal/compliance/index.ts                                             
+apps/core/src/modules/notification/internal/pending-window.handler.ts                                       
+apps/stream-worker/scripts/seed-silver-dev.mjs                                                              
+apps/stream-worker/src/application/AssembleIdentityTimelineUseCase.ts                                       
+apps/stream-worker/src/application/ExplainIdentityDecisionUseCase.ts                                        
+apps/stream-worker/src/domain/identity/decisions/index.ts                                                   
+apps/stream-worker/src/domain/identity/extract-identifiers.ts                                               
+apps/stream-worker/src/domain/identity/matchers/index.ts                                                    
+apps/stream-worker/src/infrastructure/pg/PgIdentityTimelineRepository.ts                                    
+apps/stream-worker/src/jobs/gold-rewritten-publish/run.ts                                                   
+apps/stream-worker/src/jobs/identity/replay-identity.ts                                                     
+apps/stream-worker/src/jobs/journey-stitch-export/run.ts                                                    
+apps/stream-worker/src/jobs/partition-maintenance.ts                                                        
+apps/web/app/(dashboard)/analytics/journey/journey-content.tsx                                              
+apps/web/app/(dashboard)/dashboard/dashboard-content.tsx                                                    
+apps/web/app/(dashboard)/identity/customer-360/customer-360-content.tsx                                     
+apps/web/app/(dashboard)/identity/customers/customers-content.tsx                                           
+apps/web/app/(dashboard)/identity/merge-review/merge-review-content.tsx                                     
+apps/web/app/(dashboard)/identity/pii-vault/pii-vault-content.tsx                                           
+apps/web/components/analytics/recent-activity.tsx                                                           
+apps/web/components/dashboard/brand-summary-card.tsx                                                        
+apps/web/components/dashboard/connection-status-card.tsx                                                    
+apps/web/components/dashboard/onboarding-progress-card.tsx                                                  
+apps/web/components/dashboard/realized-revenue-card.tsx                                                     
+apps/web/components/onboarding/create-brand-form.tsx                                                        
+apps/web/components/onboarding/create-workspace-form.tsx                                                    
+apps/web/components/ui/confidence-meter.tsx                                                                 
+apps/web/components/ui/separator.tsx                                                                        
+extensions/brain-web-pixel/src/index.js                                                                     
+packages/contracts/generated/types/index.d.ts                                                               
+tools/dev/e2e-gate.wf.js                                                                                    
+tools/eslint-rules/fixtures/bad-float-money.ts                                                              
+tools/eslint-rules/fixtures/bad-redis-key.ts                                                                
+tools/load-test/ingest.js                                                                                   
+tools/load-test/serving.js                                                                                  
+tools/pixel-fixture/seed-touchpoints.mjs                                                                    
+Unused dependencies (5)
+@aws-sdk/client-kms        apps/core/package.json:18:6                  
+@aws-sdk/client-ses        apps/core/package.json:21:6                  
+mysql2                     apps/core/package.json:51:6                  
+@radix-ui/react-separator  apps/web/package.json:22:6                   
+pg                         packages/attribution-writer/package.json:16:6
+Unused devDependencies (4)
+@types/argon2  apps/core/package.json:56:6                  
+prettier       package.json:48:6                            
+tsx            package.json:49:6                            
+@types/pg      packages/attribution-writer/package.json:20:6
+Unlisted binaries (1)
+cloudflared  package.json
+Unused exports (224)
+readAuditHead                  function  apps/core/src/jobs/audit-checkpoint.ts:54:23                                   
+createS3CheckpointSink         function  apps/core/src/jobs/audit-checkpoint.ts:112:17                                  
+resolveQuestion                          apps/core/src/modules/ai/index.ts:13:10                                        
+buildResolverSystemPrompt                apps/core/src/modules/ai/index.ts:21:10                                        
+RESOLVER_PROMPT_VERSION                  apps/core/src/modules/ai/index.ts:21:37                                        
+reproduceAnswer                          apps/core/src/modules/ai/index.ts:26:20                                        
+redactQuestion                           apps/core/src/modules/ai/index.ts:36:10                                        
+encodeSnapshot                           apps/core/src/modules/ai/index.ts:37:10                                        
+decodeSnapshot                           apps/core/src/modules/ai/index.ts:37:26                                        
+PgAiProvenanceRepository                 apps/core/src/modules/ai/index.ts:38:10                                        
+MCP_TOOLS                                apps/core/src/modules/ai/index.ts:48:10                                        
+writeToolCount                           apps/core/src/modules/ai/index.ts:48:21                                        
+listMetricIds                            apps/core/src/modules/ai/index.ts:48:37                                        
+FORBIDDEN_TOOL_NAME_SUBSTRIN…            apps/core/src/modules/ai/index.ts:48:52                                        
+MCP_TOOLS                                apps/core/src/modules/ai/mcp/tools.ts:16:3                                     
+writeToolCount                           apps/core/src/modules/ai/mcp/tools.ts:17:3                                     
+listMetricIds                            apps/core/src/modules/ai/mcp/tools.ts:18:3                                     
+FORBIDDEN_TOOL_NAME_SUBSTRIN…            apps/core/src/modules/ai/mcp/tools.ts:19:3                                     
+RESOLVER_PROMPT_VERSION                  apps/core/src/modules/ai/prompt-registry/resolver-prompt.ts:16:14              
+createFxRateService                      apps/core/src/modules/analytics/index.ts:66:25                                 
+PIXEL_EVENT_TYPES                        …core/src/modules/analytics/internal/application/queries/_pixel-events.ts:13:14
+describeTouchpointLayer                  apps/core/src/modules/attribution/index.ts:33:3                                
+TOUCHPOINT_LAYER                         apps/core/src/modules/attribution/index.ts:34:3                                
+AttributionCreditWriter                  apps/core/src/modules/attribution/index.ts:46:10                               
+journeyReads                             apps/core/src/modules/attribution/index.ts:67:14                               
+mapHealthToSafety                        apps/core/src/modules/connector/catalog/index.ts:18:10                         
+HEALTH_TO_SAFETY                         apps/core/src/modules/connector/catalog/index.ts:18:29                         
+envClientId                    function  apps/core/src/modules/connector/oauth-app-creds.ts:42:17                       
+hasBrandOAuthAppCreds          function  apps/core/src/modules/connector/oauth-app-creds.ts:91:23                       
+registerPixelRoutes            function  apps/core/src/modules/connector/pixel/interfaces/http/pixelRoutes.ts:48:17     
+DEFAULT_SHOPFLO_SIG_HEADER               …s/connector/sources/checkout/shopflo/domain/value-objects/ShopfloHmac.ts:22:14
+REPLAY_WINDOW_SECONDS                    …s/connector/sources/payment/razorpay/infrastructure/RedisDedupAdapter.ts:23:14
+DEDUP_TTL_SECONDS                        …s/connector/sources/payment/razorpay/infrastructure/RedisDedupAdapter.ts:24:14
+STOREFRONT_PROVIDERS                     …/core/src/modules/connector/sources/storefront/storefront-exclusivity.ts:19:14
+PROVIDER_REPULL_RESOURCE                 …dules/connector/sync/application/commands/RequestConnectorSyncCommand.ts:28:14
+REPLAY_WINDOW_SECONDS                    …c/modules/connector/webhooks/infrastructure/ProviderRedisDedupAdapter.ts:16:14
+DEDUP_TTL_SECONDS                        …c/modules/connector/webhooks/infrastructure/ProviderRedisDedupAdapter.ts:17:14
+CSRF_HEADER_NAME                         apps/core/src/modules/frontend-api/internal/routes/_shared.ts:47:14            
+UnwiredProdVaultKeyProvider              apps/core/src/modules/identity/index.ts:70:3                                   
+MODEL_STAGES                             apps/core/src/modules/ml/index.ts:22:3                                         
+runEvalGate                              apps/core/src/modules/ml/index.ts:26:3                                         
+DEFAULT_EVAL_BASELINES                   apps/core/src/modules/ml/index.ts:27:3                                         
+EVAL_GATE_METRIC_FLOORS                  apps/core/src/modules/ml/index.ts:28:3                                         
+MODEL_STAGES                             apps/core/src/modules/ml/internal/application/promote-model.ts:24:14           
+MetaCapiAdapter                class     apps/core/src/modules/notification/internal/capi-adapter.ts:129:14             
+capiEventId                    function  apps/core/src/modules/notification/internal/capi-source.query.ts:68:17         
+DevCapiCredsPort               class     …/core/src/modules/notification/internal/compliance/capi-creds.adapter.ts:25:14
+GATING_CATEGORY                          apps/core/src/modules/notification/internal/compliance/contact-types.ts:103:14 
+EnvSaltPort                    class     apps/core/src/modules/notification/internal/compliance/salt.adapter.ts:14:14   
+DevEmailAdapter                class     apps/core/src/modules/notification/internal/ses-adapter.ts:26:14               
+SesEmailAdapter                class     apps/core/src/modules/notification/internal/ses-adapter.ts:45:14               
+RECOMMENDATION_ACTIONS                   apps/core/src/modules/recommendation/index.ts:33:3                             
+RECOMMENDATION_ACTIONS                   …ules/recommendation/internal/application/record-recommendation-action.ts:27:14
+assertArgon2Params                       apps/core/src/modules/workspace-access/index.ts:10:34                          
+WorkspaceService                         apps/core/src/modules/workspace-access/index.ts:11:10                          
+WorkspaceError                           apps/core/src/modules/workspace-access/index.ts:11:28                          
+BrandService                             apps/core/src/modules/workspace-access/index.ts:12:10                          
+BrandError                               apps/core/src/modules/workspace-access/index.ts:12:24                          
+InviteService                            apps/core/src/modules/workspace-access/index.ts:13:10                          
+InviteError                              apps/core/src/modules/workspace-access/index.ts:13:25                          
+registerAuthRoutes                       apps/core/src/modules/workspace-access/index.ts:16:10                          
+registerWorkspaceRoutes                  apps/core/src/modules/workspace-access/index.ts:17:10                          
+registerBrandRoutes                      apps/core/src/modules/workspace-access/index.ts:18:10                          
+registerMemberRoutes                     apps/core/src/modules/workspace-access/index.ts:19:10                          
+slugSuffix                     function  apps/core/src/modules/workspace-access/internal/application/slugify.ts:28:17   
+hasMinimumRole                 function  …core/src/modules/workspace-access/internal/domain/membership/entities.ts:37:17
+canManageMembers               function  …core/src/modules/workspace-access/internal/domain/membership/entities.ts:45:17
+ROLE_LABELS                              …core/src/modules/workspace-access/internal/domain/membership/entities.ts:52:14
+assertWorkspaceMembership      function  apps/core/src/modules/workspace-access/internal/security/rbac.ts:61:17         
+RbacError                      class     apps/core/src/modules/workspace-access/internal/security/rbac.ts:70:14         
+DEFAULT_CONFIDENCE_CONFIG                apps/stream-worker/src/domain/identity/confidence/index.ts:15:3                
+DeterministicMergeHook                   apps/stream-worker/src/domain/identity/confidence/index.ts:27:3                
+DeterministicSplitHook                   apps/stream-worker/src/domain/identity/confidence/index.ts:28:3                
+DeterministicCrossDeviceHook             apps/stream-worker/src/domain/identity/confidence/index.ts:29:3                
+DisabledStrategyHook                     apps/stream-worker/src/domain/identity/confidence/index.ts:30:3                
+IDENTITY_STRATEGY_HOOK_REGIS…            apps/stream-worker/src/domain/identity/confidence/index.ts:31:3                
+createDefaultStrategyHooks               apps/stream-worker/src/domain/identity/confidence/index.ts:32:3                
+evidenceFromResolver                     apps/stream-worker/src/domain/identity/confidence/index.ts:43:3                
+INVERSE_KIND                             apps/stream-worker/src/domain/identity/decisions/DecisionEngine.ts:50:14       
+DETERMINISTIC_SCORE                      apps/stream-worker/src/domain/identity/IdentityEventPublisher.ts:48:14         
+DETERMINISTIC_BAND                       apps/stream-worker/src/domain/identity/IdentityEventPublisher.ts:49:14         
+batchStrongSignature           function  apps/stream-worker/src/domain/identity/IdentityReplayEngine.ts:113:17          
+PROBABILISTIC_RULE_VERSION               apps/stream-worker/src/domain/identity/matchers/ProbabilisticMatcher.ts:36:14  
+WEAK_SIGNAL_TYPES                        apps/stream-worker/src/domain/identity/matchers/ProbabilisticMatcher.ts:42:14  
+LEADER_LOCK_INGEST_SCHEDULER             apps/stream-worker/src/infrastructure/pg/LeaderLock.ts:23:14                   
+DEFAULT_PROVIDER_LIMITS                  apps/stream-worker/src/infrastructure/redis/ConnectorRateLimiter.ts:22:14      
+DbSaltSecretsProvider          class     apps/stream-worker/src/infrastructure/secrets/SaltProvider.ts:54:14            
+COMPLETENESS_TARGETS                     apps/stream-worker/src/jobs/dq/completeness-check.ts:35:14                     
+FRESHNESS_SLA_MINUTES                    apps/stream-worker/src/jobs/dq/freshness-check.ts:26:14                        
+MAX_ROW_DELTA                            apps/stream-worker/src/jobs/dq/reconciliation-check.ts:29:14                   
+tick                           function  apps/stream-worker/src/jobs/dq/run.ts:86:23                                    
+MAX_VALIDITY_FAILURE_RATE                apps/stream-worker/src/jobs/dq/schema-validity-check.ts:32:14                  
+VALIDITY_WINDOW_HOURS                    apps/stream-worker/src/jobs/dq/schema-validity-check.ts:35:14                  
+DISPATCH_DEADLINE_MS                     apps/stream-worker/src/jobs/ingest-scheduler/run.ts:58:14                      
+DEFAULT_CLAIM_BATCH                      apps/stream-worker/src/jobs/ingest-scheduler/run.ts:67:14                      
+DEFAULT_DISPATCH_CONCURRENCY             apps/stream-worker/src/jobs/ingest-scheduler/run.ts:77:14                      
+resolveDispatchConcurrency     function  apps/stream-worker/src/jobs/ingest-scheduler/run.ts:80:17                      
+GoogleAdsSpendFetcher          class     …tream-worker/src/jobs/ingestion-backfill/google-ads-resource-fetchers.ts:86:14
+RESOURCE_BACKFILL_NIL_UUID               …worker/src/jobs/ingestion-backfill/PgResourceBackfillStateRepository.ts:195:22
+run                            function  apps/stream-worker/src/jobs/ingestion-backfill/run.ts:350:23                   
+ShiprocketShipmentLifecycleF…            …ream-worker/src/jobs/ingestion-backfill/shiprocket-resource-fetchers.ts:203:10
+parseCursor                              …ream-worker/src/jobs/ingestion-backfill/shiprocket-resource-fetchers.ts:203:46
+buildCursor                              …ream-worker/src/jobs/ingestion-backfill/shiprocket-resource-fetchers.ts:203:59
+SHOPIFY_AUTH_ERROR                       …s/stream-worker/src/jobs/ingestion-backfill/shopify-resource-fetchers.ts:44:14
+GRAPH_API_VERSION                        apps/stream-worker/src/jobs/meta-constants.ts:11:14                            
+enumerateConnectors                      apps/stream-worker/src/jobs/razorpay-settlement-repull/run.ts:482:3            
+setSyncState                             apps/stream-worker/src/jobs/razorpay-settlement-repull/run.ts:483:3            
+CURSOR_CONFIGS                           apps/stream-worker/src/jobs/razorpay-settlement-repull/run.ts:484:3            
+enumerateConnectors                      apps/stream-worker/src/jobs/shiprocket-shipment-repull/run.ts:437:3            
+setSyncState                             apps/stream-worker/src/jobs/shiprocket-shipment-repull/run.ts:438:3            
+SHIPMENT_CURSOR_RESOURCE                 apps/stream-worker/src/jobs/shiprocket-shipment-repull/run.ts:439:3            
+SHIPMENT_WINDOW_MS                       apps/stream-worker/src/jobs/shiprocket-shipment-repull/run.ts:440:3            
+ORDER_BACKFILL_V1_EVENT_NAME             apps/stream-worker/src/jobs/shopify-backfill/order-mapper.ts:23:3              
+ORDER_LIVE_V1_EVENT_NAME                 apps/stream-worker/src/jobs/shopify-backfill/order-mapper.ts:24:3              
+runBackfillLoop                          apps/stream-worker/src/jobs/shopify-backfill/run.ts:570:10                     
+upsertConnectorCursor                    apps/stream-worker/src/jobs/shopify-backfill/run.ts:570:42                     
+enumerateConnectors                      apps/stream-worker/src/jobs/shopify-repull/run.ts:489:10                       
+setSyncState                             apps/stream-worker/src/jobs/shopify-repull/run.ts:489:70                       
+tick                           function  apps/stream-worker/src/jobs/sync-request-claimer/run.ts:188:23                 
+enumerateConnectors                      apps/stream-worker/src/jobs/woocommerce-orders-repull/run.ts:436:10            
+setSyncState                             apps/stream-worker/src/jobs/woocommerce-orders-repull/run.ts:436:31            
+ORDERS_CURSOR_RESOURCE                   apps/stream-worker/src/jobs/woocommerce-orders-repull/run.ts:436:45            
+ORDERS_WINDOW_MS                         apps/stream-worker/src/jobs/woocommerce-orders-repull/run.ts:436:69            
+BRONZE_TABLE                             apps/stream-worker/src/tests/helpers/iceberg-bronze.ts:35:14                   
+COLLECTOR_TOPIC                          apps/stream-worker/src/tests/helpers/iceberg-bronze.ts:37:14                   
+waitForBronzeEvent             function  apps/stream-worker/src/tests/helpers/iceberg-bronze.ts:155:23                  
+authFieldToCredentialField     function  apps/web/components/connectors/credential-fields.ts:49:17                      
+credentialFieldsFor                      apps/web/components/connectors/marketplace-view.tsx:162:10                     
+BACKFILL_PROVIDERS                       apps/web/components/connectors/storefront-exclusivity.ts:30:14                 
+ONBOARDING_STEPS                         apps/web/components/onboarding/wizard-steps.tsx:16:14                          
+badgeVariants                            apps/web/components/ui/badge.tsx:41:17                                         
+buttonVariants                           apps/web/components/ui/button.tsx:81:18                                        
+CardFooter                               apps/web/components/ui/card.tsx:63:28                                          
+chartColor                     function  apps/web/components/ui/chart.tsx:45:17                                         
+ChartTooltip                             apps/web/components/ui/chart.tsx:95:21                                         
+DEFAULT_RANGE_PRESETS                    apps/web/components/ui/date-range-filter.tsx:44:14                             
+rangeForDays                   function  apps/web/components/ui/date-range-filter.tsx:56:17                             
+DialogPortal                             apps/web/components/ui/dialog.tsx:91:3                                         
+DialogOverlay                            apps/web/components/ui/dialog.tsx:92:3                                         
+DialogClose                              apps/web/components/ui/dialog.tsx:93:3                                         
+SelectGroup                              apps/web/components/ui/select.tsx:140:3                                        
+SelectLabel                              apps/web/components/ui/select.tsx:144:3                                        
+SelectSeparator                          apps/web/components/ui/select.tsx:146:3                                        
+SelectScrollUpButton                     apps/web/components/ui/select.tsx:147:3                                        
+SelectScrollDownButton                   apps/web/components/ui/select.tsx:148:3                                        
+SkeletonText                             apps/web/components/ui/skeleton.tsx:45:20                                      
+TableFooter                              apps/web/components/ui/table.tsx:114:3                                         
+TableCaption                             apps/web/components/ui/table.tsx:118:3                                         
+TooltipProvider                          apps/web/components/ui/tooltip.tsx:57:19                                       
+TooltipRoot                              apps/web/components/ui/tooltip.tsx:57:36                                       
+TooltipTrigger                           apps/web/components/ui/tooltip.tsx:57:49                                       
+TooltipContent                           apps/web/components/ui/tooltip.tsx:57:65                                       
+createWorkspaceSchema                    apps/web/lib/api/schemas.ts:52:14                                              
+updateRoleSchema                         apps/web/lib/api/schemas.ts:173:14                                             
+RevenueSnapshotSchema                    apps/web/lib/api/types.ts:139:3                                                
+KpiSummarySchema                         apps/web/lib/api/types.ts:140:3                                                
+AttributionByChannelSchema               apps/web/lib/api/types.ts:141:3                                                
+AttributionReconciliationSch…            apps/web/lib/api/types.ts:142:3                                                
+ChannelRoasSchema                        apps/web/lib/api/types.ts:143:3                                                
+JourneyFirstTouchMixSchema               apps/web/lib/api/types.ts:144:3                                                
+JourneyTimelineSchema                    apps/web/lib/api/types.ts:145:3                                                
+JourneyStitchRateSchema                  apps/web/lib/api/types.ts:146:3                                                
+JourneyPathsSchema                       apps/web/lib/api/types.ts:147:3                                                
+RepeatLatencySchema                      apps/web/lib/api/types.ts:148:3                                                
+DeliveryTimeSchema                       apps/web/lib/api/types.ts:149:3                                                
+CampaignAttributionSchema                apps/web/lib/api/types.ts:150:3                                                
+ShipmentOutcomesSchema                   apps/web/lib/api/types.ts:151:3                                                
+ReturnFunnelSchema                       apps/web/lib/api/types.ts:152:3                                                
+BehaviorOverviewSchema                   apps/web/lib/api/types.ts:153:3                                                
+OrderStatusMixSchema                     apps/web/lib/api/types.ts:154:3                                                
+DataQualitySummarySchema                 apps/web/lib/api/types.ts:155:3                                                
+AskBrainResultSchema                     apps/web/lib/api/types.ts:156:3                                                
+useRecentActivity              function  apps/web/lib/hooks/use-analytics.ts:194:17                                     
+backfillProgressKey            function  apps/web/lib/hooks/use-backfill.ts:27:17                                       
+BILLING_QUERY_KEY                        apps/web/lib/hooks/use-billing.ts:14:14                                        
+CONNECTORS_QUERY_KEY                     apps/web/lib/hooks/use-connectors.ts:6:14                                      
+MARKETPLACE_QUERY_KEY                    apps/web/lib/hooks/use-connectors.ts:7:14                                      
+useConnectorStatus             function  apps/web/lib/hooks/use-connectors.ts:28:17                                     
+useDataStatus                  function  apps/web/lib/hooks/use-dashboard.ts:33:17                                      
+useOnboardingProgress          function  apps/web/lib/hooks/use-dashboard.ts:42:17                                      
+ENTITLEMENTS_QUERY_KEY                   apps/web/lib/hooks/use-entitlements.ts:15:14                                   
+FOUNDATION_HEALTH_QUERY_KEY              apps/web/lib/hooks/use-foundation-health.ts:15:14                              
+IDENTITY_QUERY_KEY                       apps/web/lib/hooks/use-identity.ts:17:14                                       
+MEMBERS_QUERY_KEY                        apps/web/lib/hooks/use-members.ts:7:14                                         
+PENDING_INVITES_QUERY_KEY                apps/web/lib/hooks/use-members.ts:8:14                                         
+ML_QUERY_KEY                             apps/web/lib/hooks/use-ml.ts:14:14                                             
+PIXEL_QUERY_KEY                          apps/web/lib/hooks/use-pixel.ts:6:14                                           
+useInstallPixelShopify         function  apps/web/lib/hooks/use-pixel.ts:63:17                                          
+useUninstallPixelShopify       function  apps/web/lib/hooks/use-pixel.ts:77:17                                          
+RECOMMENDATIONS_QUERY_KEY                apps/web/lib/hooks/use-recommendations.ts:14:14                                
+SEGMENTS_QUERY_KEY                       apps/web/lib/hooks/use-segments.ts:15:14                                       
+useUpdateSegment               function  apps/web/lib/hooks/use-segments.ts:39:17                                       
+useSessionUserId               function  apps/web/lib/hooks/use-session-role.ts:45:17                                   
+syncStatusKey                  function  apps/web/lib/hooks/use-sync-now.ts:32:17                                       
+WORKSPACE_QUERY_KEY                      apps/web/lib/hooks/use-workspace.ts:11:14                                      
+BRAND_QUERY_KEY                          apps/web/lib/hooks/use-workspace.ts:12:14                                      
+useWorkspace                   function  apps/web/lib/hooks/use-workspace.ts:21:17                                      
+useCreateWorkspace             function  apps/web/lib/hooks/use-workspace.ts:29:17                                      
+useBrand                       function  apps/web/lib/hooks/use-workspace.ts:46:17                                      
+useCreateBrand                 function  apps/web/lib/hooks/use-workspace.ts:54:17                                      
+ONBOARDING_START                         apps/web/lib/onboarding-route.ts:29:14                                         
+InsightKindSchema                        packages/contracts/src/api/analytics.api.v1.ts:673:14                          
+InsightSeveritySchema                    packages/contracts/src/api/analytics.api.v1.ts:674:14                          
+InsightConfidenceSchema                  packages/contracts/src/api/analytics.api.v1.ts:675:14                          
+InsightDtoSchema                         packages/contracts/src/api/analytics.api.v1.ts:677:14                          
+BriefingDtoSchema                        packages/contracts/src/api/analytics.api.v1.ts:697:14                          
+InsightsBriefingSchema                   packages/contracts/src/api/analytics.api.v1.ts:719:14                          
+ConnectorSyncStatusSchema                packages/contracts/src/api/connector.api.v1.ts:97:14                           
+Customer360OrderSchema                   packages/contracts/src/api/identity.api.v1.ts:152:14                           
+UserRegisteredPayloadSchema              packages/contracts/src/events/m1.events.v1.ts:113:14                           
+UserLoggedInPayloadSchema                packages/contracts/src/events/m1.events.v1.ts:131:14                           
+WorkspaceCreatedPayloadSchema            packages/contracts/src/events/m1.events.v1.ts:150:14                           
+BrandCreatedPayloadSchema                packages/contracts/src/events/m1.events.v1.ts:169:14                           
+UserInvitedPayloadSchema                 packages/contracts/src/events/m1.events.v1.ts:187:14                           
+ConnectorConnectedPayloadSch…            packages/contracts/src/events/m1.events.v1.ts:209:14                           
+ConnectorSyncStartedPayloadS…            packages/contracts/src/events/m1.events.v1.ts:228:14                           
+PixelInstalledPayloadSchema              packages/contracts/src/events/m1.events.v1.ts:245:14                           
+PixelVerifiedPayloadSchema               packages/contracts/src/events/m1.events.v1.ts:262:14                           
+bigintReplacer                 function  packages/metric-engine/src/analytics-cache.ts:42:17                            
+bigintReviver                  function  packages/metric-engine/src/analytics-cache.ts:46:17                            
+DEFAULT_APP_ROLE                         packages/metric-engine/src/deps.ts:32:14                                       
+boot                           function  packages/pixel-sdk/src/browser-entry.ts:238:17                                 
+decimalStringToMinor                     packages/shopify-mapper/src/resources.ts:393:10                                
+decimalStringToMinor                     packages/woocommerce-mapper/src/resources.ts:593:10                            
+Unused exported types (836)
+AcceptResult                 interface  apps/collector/src/application/accept-event.usecase.ts:15:18                    
+SpoolEntry                   interface  apps/collector/src/domain/ingest/entities/spool-entry.ts:5:18                   
+KafkaProducerConfig          interface  apps/collector/src/infrastructure/kafka-producer.ts:12:18                       
+DrainerConfig                interface  apps/collector/src/interfaces/jobs/drainer.ts:23:18                             
+EdgeGuardConfig              interface  apps/collector/src/interfaces/rest/edge-guard.ts:20:18                          
+SpoolBackpressureConfig      interface  apps/collector/src/interfaces/rest/spool-backpressure.ts:34:18                  
+SpoolBackpressureSnapshot    interface  apps/collector/src/interfaces/rest/spool-backpressure.ts:45:18                  
+RegisterConnectorBackfillS…  interface  apps/core/src/bootstrap/connectors/backfillSyncRoutes.ts:25:18                  
+RegisterConnectorOAuthRout…  interface  apps/core/src/bootstrap/connectors/oauthRoutes.ts:25:18                         
+RegisterConnectorPixelRout…  interface  apps/core/src/bootstrap/connectors/pixelRoutes.ts:31:18                         
+RegisterConnectorReadRoute…  interface  apps/core/src/bootstrap/connectors/readRoutes.ts:21:18                          
+RegisterConnectorWriteRout…  interface  apps/core/src/bootstrap/connectors/writeRoutes.ts:36:18                         
+ConnectorContextConfig       type       apps/core/src/bootstrap/registerConnectors.ts:54:15                             
+RegisterConnectorsDeps       interface  apps/core/src/bootstrap/registerConnectors.ts:56:18                             
+RegisterWorkspaceAccessDeps  interface  apps/core/src/bootstrap/registerWorkspaceAccess.ts:33:18                        
+EventPublisherLog            interface  apps/core/src/infrastructure/events/M1EventPublisher.ts:40:18                   
+M1EventPublisherDeps         interface  apps/core/src/infrastructure/events/M1EventPublisher.ts:63:18                   
+AttributionJobResult         interface  apps/core/src/jobs/attribution-reconcile.ts:27:18                               
+AuditCheckpointResult        interface  apps/core/src/jobs/audit-checkpoint.ts:41:18                                    
+RecommendationJobResult      interface  apps/core/src/jobs/recommendation-detectors.ts:44:18                            
+ResolveOutcome               type       apps/core/src/modules/ai/index.ts:15:3                                          
+ValidatedBinding             type       apps/core/src/modules/ai/index.ts:16:3                                          
+ResolverRefusal              type       apps/core/src/modules/ai/index.ts:17:3                                          
+AskBrainResult               type       apps/core/src/modules/ai/index.ts:28:3                                          
+AskBrainBinding              type       apps/core/src/modules/ai/index.ts:29:3                                          
+AskBrainDeps                 type       apps/core/src/modules/ai/index.ts:30:3                                          
+ComputedNumber               type       apps/core/src/modules/ai/index.ts:31:3                                          
+MoneyRecord                  type       apps/core/src/modules/ai/index.ts:32:3                                          
+AiProvenanceInsert           type       apps/core/src/modules/ai/index.ts:40:3                                          
+AiProvenanceRow              type       apps/core/src/modules/ai/index.ts:41:3                                          
+ConfidenceGrade              type       apps/core/src/modules/ai/index.ts:42:3                                          
+TrustTier                    type       apps/core/src/modules/ai/index.ts:43:3                                          
+ProvenanceResolvedParams     type       apps/core/src/modules/ai/index.ts:44:21                                         
+McpToolSpec                  type       apps/core/src/modules/ai/index.ts:49:15                                         
+McpToolAccess                type       apps/core/src/modules/ai/index.ts:49:28                                         
+McpMountDeps                 type       apps/core/src/modules/ai/index.ts:53:15                                         
+McpIdentitySeams             type       apps/core/src/modules/ai/index.ts:53:29                                         
+MoneyRecord                  type       apps/core/src/modules/ai/internal/ask-brain.ts:38:13                            
+ComputedScalar               interface  apps/core/src/modules/ai/internal/ask-brain.ts:46:18                            
+ComputedNumber               interface  apps/core/src/modules/ai/internal/ask-brain.ts:59:18                            
+AskBrainBinding              interface  apps/core/src/modules/ai/internal/ask-brain.ts:76:18                            
+AskBrainResult               type       apps/core/src/modules/ai/internal/ask-brain.ts:84:13                            
+AskBrainDeps                 interface  apps/core/src/modules/ai/internal/ask-brain.ts:98:18                            
+McpIdentitySeams             interface  apps/core/src/modules/ai/mcp/dispatch-wiring.ts:49:18                           
+McpMountDeps                 interface  apps/core/src/modules/ai/mcp/dispatch-wiring.ts:54:18                           
+McpToolSpec                  type       apps/core/src/modules/ai/mcp/tools.ts:20:8                                      
+McpToolAccess                type       apps/core/src/modules/ai/mcp/tools.ts:21:8                                      
+McpMountDeps                 type       apps/core/src/modules/ai/mcp/tools.ts:28:8                                      
+McpIdentitySeams             type       apps/core/src/modules/ai/mcp/tools.ts:29:8                                      
+RevenueSnapshot              type       apps/core/src/modules/analytics/index.ts:12:15                                  
+RevenueTimeseriesResult      type       apps/core/src/modules/analytics/index.ts:16:15                                  
+TimeseriesBucketDto          type       apps/core/src/modules/analytics/index.ts:16:40                                  
+KpiSummaryResult             type       apps/core/src/modules/analytics/index.ts:18:15                                  
+KpiSummaryDto                type       apps/core/src/modules/analytics/index.ts:18:33                                  
+RecognitionBreakdownResult   type       apps/core/src/modules/analytics/index.ts:20:15                                  
+RecognitionBreakdownDto      type       apps/core/src/modules/analytics/index.ts:20:43                                  
+RevenueMonthlyResult         type       apps/core/src/modules/analytics/index.ts:22:15                                  
+RevenueMonthlyRowDto         type       apps/core/src/modules/analytics/index.ts:22:37                                  
+RecentActivityResult         type       apps/core/src/modules/analytics/index.ts:24:15                                  
+RecentActivityRow            type       apps/core/src/modules/analytics/index.ts:24:37                                  
+OrdersTimeseriesResult       type       apps/core/src/modules/analytics/index.ts:28:15                                  
+OrdersTimeseriesBucketDto    type       apps/core/src/modules/analytics/index.ts:28:39                                  
+OrderStatsResult             type       apps/core/src/modules/analytics/index.ts:30:15                                  
+OrderStatsDto                type       apps/core/src/modules/analytics/index.ts:30:33                                  
+DataHealthResult             type       apps/core/src/modules/analytics/index.ts:32:15                                  
+DataHealthVolumeBucket       type       apps/core/src/modules/analytics/index.ts:32:33                                  
+FoundationHealth             type       apps/core/src/modules/analytics/index.ts:36:3                                   
+FoundationTier               type       apps/core/src/modules/analytics/index.ts:38:3                                   
+FoundationStep               type       apps/core/src/modules/analytics/index.ts:39:3                                   
+FoundationDqTier             type       apps/core/src/modules/analytics/index.ts:40:3                                   
+FoundationFreshness          type       apps/core/src/modules/analytics/index.ts:41:16                                  
+Entitlements                 type       apps/core/src/modules/analytics/index.ts:45:15                                  
+EntitlementEntry             type       apps/core/src/modules/analytics/index.ts:45:29                                  
+EntitlementInput             type       apps/core/src/modules/analytics/index.ts:45:47                                  
+SettlementSummaryResult      type       apps/core/src/modules/analytics/index.ts:49:15                                  
+SettlementFeeDto             type       apps/core/src/modules/analytics/index.ts:49:40                                  
+AdSpendTimeseriesResult      type       apps/core/src/modules/analytics/index.ts:53:15                                  
+AdSpendTimeseriesBucketDto   type       apps/core/src/modules/analytics/index.ts:53:40                                  
+BlendedRoasResult            type       apps/core/src/modules/analytics/index.ts:55:15                                  
+BlendedRoasDto               type       apps/core/src/modules/analytics/index.ts:55:34                                  
+TrackingHealthResult         type       apps/core/src/modules/analytics/index.ts:59:15                                  
+TrackingHealthVolumeBucket   type       apps/core/src/modules/analytics/index.ts:59:37                                  
+RecentEventsResult           type       apps/core/src/modules/analytics/index.ts:61:15                                  
+RecentEventRow               type       apps/core/src/modules/analytics/index.ts:61:35                                  
+OrdersListResult             type       apps/core/src/modules/analytics/index.ts:64:15                                  
+OrderListItemDto             type       apps/core/src/modules/analytics/index.ts:64:33                                  
+FxRateService                type       apps/core/src/modules/analytics/index.ts:67:15                                  
+ContributionMarginResult     type       apps/core/src/modules/analytics/index.ts:71:15                                  
+ContributionMarginDto        type       apps/core/src/modules/analytics/index.ts:71:41                                  
+CostInputDto                 type       apps/core/src/modules/analytics/index.ts:73:15                                  
+UpsertCostInputInput         type       apps/core/src/modules/analytics/index.ts:73:29                                  
+CostScope                    type       apps/core/src/modules/analytics/index.ts:73:51                                  
+CostType                     type       apps/core/src/modules/analytics/index.ts:73:62                                  
+TopProductsResult            type       apps/core/src/modules/analytics/index.ts:76:15                                  
+TopProductDto                type       apps/core/src/modules/analytics/index.ts:76:34                                  
+ProductDetailResult          type       apps/core/src/modules/analytics/index.ts:82:15                                  
+ProductDetailDto             type       apps/core/src/modules/analytics/index.ts:82:36                                  
+ProductAffinityResult        type       apps/core/src/modules/analytics/index.ts:84:15                                  
+ProductAffinityPairDto       type       apps/core/src/modules/analytics/index.ts:84:38                                  
+ProductCategoriesResult      type       apps/core/src/modules/analytics/index.ts:86:15                                  
+ProductCategoryNodeDto       type       apps/core/src/modules/analytics/index.ts:86:40                                  
+CodRtoRatesResult            type       apps/core/src/modules/analytics/index.ts:91:15                                  
+CodRtoCohortDto              type       apps/core/src/modules/analytics/index.ts:91:34                                  
+SavedSegmentDto              type       apps/core/src/modules/analytics/index.ts:101:3                                  
+CreateSavedSegmentInput      type       apps/core/src/modules/analytics/index.ts:102:3                                  
+UpdateSavedSegmentInput      type       apps/core/src/modules/analytics/index.ts:103:3                                  
+SegmentPreviewResult         type       apps/core/src/modules/analytics/index.ts:104:3                                  
+ShipmentOutcomesResult       type       apps/core/src/modules/analytics/index.ts:108:15                                 
+CourierOutcomeDto            type       apps/core/src/modules/analytics/index.ts:108:39                                 
+PincodeOutcomeDto            type       apps/core/src/modules/analytics/index.ts:108:58                                 
+DeliveryTimeResult           type       apps/core/src/modules/analytics/index.ts:111:15                                 
+DeliveryTimeCourierDto       type       apps/core/src/modules/analytics/index.ts:111:35                                 
+DeliveryTimeBucketDto        type       apps/core/src/modules/analytics/index.ts:111:59                                 
+ReturnFunnelResult           type       apps/core/src/modules/analytics/index.ts:114:15                                 
+ReturnClassBucketDto         type       apps/core/src/modules/analytics/index.ts:114:35                                 
+ReturnCourierBucketDto       type       apps/core/src/modules/analytics/index.ts:114:57                                 
+BehaviorOverviewResult       type       apps/core/src/modules/analytics/index.ts:117:15                                 
+PageTypeBucketDto            type       apps/core/src/modules/analytics/index.ts:117:39                                 
+BrowsedItemDto               type       apps/core/src/modules/analytics/index.ts:117:58                                 
+FunnelAnalyticsResult        type       apps/core/src/modules/analytics/index.ts:120:15                                 
+FunnelStageDto               type       apps/core/src/modules/analytics/index.ts:120:38                                 
+FunnelUsersResult            type       apps/core/src/modules/analytics/index.ts:123:15                                 
+FunnelUserDto                type       apps/core/src/modules/analytics/index.ts:123:34                                 
+FunnelUsersParams            type       apps/core/src/modules/analytics/index.ts:123:49                                 
+FunnelStep                   type       apps/core/src/modules/analytics/index.ts:123:68                                 
+AbandonedCartResult          type       apps/core/src/modules/analytics/index.ts:126:15                                 
+EngagementResult             type       apps/core/src/modules/analytics/index.ts:129:15                                 
+SearchBehaviorResult         type       apps/core/src/modules/analytics/index.ts:132:15                                 
+SearchDayBucketDto           type       apps/core/src/modules/analytics/index.ts:132:37                                 
+FormConversionResult         type       apps/core/src/modules/analytics/index.ts:135:15                                 
+FormBucketDto                type       apps/core/src/modules/analytics/index.ts:135:37                                 
+FormDayBucketDto             type       apps/core/src/modules/analytics/index.ts:135:52                                 
+CodMixResult                 type       apps/core/src/modules/analytics/index.ts:137:15                                 
+CheckoutFunnelResult         type       apps/core/src/modules/analytics/index.ts:139:15                                 
+RtoRiskDistributionResult    type       apps/core/src/modules/analytics/index.ts:141:15                                 
+OrderStatusMixResult         type       apps/core/src/modules/analytics/index.ts:145:15                                 
+OrderStatusMixRowDto         type       apps/core/src/modules/analytics/index.ts:145:37                                 
+OrderStatusMixParams         type       apps/core/src/modules/analytics/index.ts:145:59                                 
+FirstTouchMixRowDto          type       apps/core/src/modules/analytics/index.ts:150:43                                 
+JourneyFirstTouchMixParams   type       apps/core/src/modules/analytics/index.ts:150:64                                 
+JourneyStitchRateParams      type       apps/core/src/modules/analytics/index.ts:152:40                                 
+TimelineTouchDto             type       apps/core/src/modules/analytics/index.ts:154:38                                 
+JourneyTimelineParams        type       apps/core/src/modules/analytics/index.ts:154:56                                 
+JourneyPathsResult           type       apps/core/src/modules/analytics/index.ts:159:3                                  
+JourneyPathRowDto            type       apps/core/src/modules/analytics/index.ts:160:3                                  
+JourneyPathLinkDto           type       apps/core/src/modules/analytics/index.ts:161:3                                  
+JourneyPathsParams           type       apps/core/src/modules/analytics/index.ts:162:3                                  
+ConsentCoverageResult        type       apps/core/src/modules/analytics/index.ts:175:3                                  
+ConsentCoverageRow           type       apps/core/src/modules/analytics/index.ts:176:3                                  
+ConsentSuppressionSummaryR…  type       apps/core/src/modules/analytics/index.ts:177:3                                  
+ConsentGateActivityResult    type       apps/core/src/modules/analytics/index.ts:178:3                                  
+GateActivityRow              type       apps/core/src/modules/analytics/index.ts:179:3                                  
+GateDecision                 type       apps/core/src/modules/analytics/index.ts:180:3                                  
+ConsentWindowConfigResult    type       apps/core/src/modules/analytics/index.ts:181:3                                  
+CapiFeedbackSummaryResult    type       apps/core/src/modules/analytics/index.ts:196:3                                  
+CapiFeedbackEventsResult     type       apps/core/src/modules/analytics/index.ts:197:3                                  
+CapiFeedbackEventRow         type       apps/core/src/modules/analytics/index.ts:198:3                                  
+CapiFeedbackDeletionsResult  type       apps/core/src/modules/analytics/index.ts:199:3                                  
+CapiFeedbackDeletionRow      type       apps/core/src/modules/analytics/index.ts:200:3                                  
+CapiPassbackStatus           type       apps/core/src/modules/analytics/index.ts:201:3                                  
+CapiDeletionStatus           type       apps/core/src/modules/analytics/index.ts:202:3                                  
+AttributionByChannelResult   type       apps/core/src/modules/analytics/index.ts:209:3                                  
+ChannelContributionDto       type       apps/core/src/modules/analytics/index.ts:210:3                                  
+AttributionByChannelParams   type       apps/core/src/modules/analytics/index.ts:211:3                                  
+AttributionReconciliationR…  type       apps/core/src/modules/analytics/index.ts:215:3                                  
+AttributionReconciliationP…  type       apps/core/src/modules/analytics/index.ts:216:3                                  
+ChannelRoasResult            type       apps/core/src/modules/analytics/index.ts:220:3                                  
+ChannelRoasDto               type       apps/core/src/modules/analytics/index.ts:221:3                                  
+ChannelRoasParams            type       apps/core/src/modules/analytics/index.ts:222:3                                  
+CampaignRoasResult           type       apps/core/src/modules/analytics/index.ts:226:3                                  
+CampaignRoasDto              type       apps/core/src/modules/analytics/index.ts:227:3                                  
+CampaignRoasParams           type       apps/core/src/modules/analytics/index.ts:228:3                                  
+ExecutiveMetricsResult       type       apps/core/src/modules/analytics/index.ts:232:3                                  
+ExecutiveMetricDto           type       apps/core/src/modules/analytics/index.ts:233:3                                  
+ExecutiveMetricsParams       type       apps/core/src/modules/analytics/index.ts:234:3                                  
+CohortRetentionResult        type       apps/core/src/modules/analytics/index.ts:238:3                                  
+CohortRetentionDto           type       apps/core/src/modules/analytics/index.ts:239:3                                  
+CohortUsersResult            type       apps/core/src/modules/analytics/index.ts:245:3                                  
+CohortUserDto                type       apps/core/src/modules/analytics/index.ts:246:3                                  
+RepeatLatencyResult          type       apps/core/src/modules/analytics/index.ts:251:3                                  
+RepeatLatencyBucketDto       type       apps/core/src/modules/analytics/index.ts:252:3                                  
+UtmSourceResult              type       apps/core/src/modules/analytics/index.ts:257:3                                  
+UtmSourceRowDto              type       apps/core/src/modules/analytics/index.ts:258:3                                  
+CampaignAttributionResult    type       apps/core/src/modules/analytics/index.ts:263:3                                  
+CampaignAttributionRowDto    type       apps/core/src/modules/analytics/index.ts:264:3                                  
+CampaignAttributionParams    type       apps/core/src/modules/analytics/index.ts:265:3                                  
+CampaignTimeseriesResult     type       apps/core/src/modules/analytics/index.ts:270:3                                  
+CampaignTimeseriesBucketDto  type       apps/core/src/modules/analytics/index.ts:271:3                                  
+CampaignTimeseriesParams     type       apps/core/src/modules/analytics/index.ts:272:3                                  
+AttributedRevenueTimeserie…  type       apps/core/src/modules/analytics/index.ts:277:3                                  
+AttributedRevenueTimeserie…  type       apps/core/src/modules/analytics/index.ts:278:3                                  
+AttributedRevenueTimeserie…  type       apps/core/src/modules/analytics/index.ts:279:3                                  
+InsightsBriefingResult       type       apps/core/src/modules/analytics/index.ts:287:3                                  
+BriefingDto                  type       apps/core/src/modules/analytics/index.ts:288:3                                  
+InsightDto                   type       apps/core/src/modules/analytics/index.ts:289:3                                  
+EntitlementEntry             interface  apps/core/src/modules/analytics/internal/application/entitlements.ts:20:18      
+Entitlements                 interface  apps/core/src/modules/analytics/internal/application/entitlements.ts:31:18      
+FoundationStep               interface  apps/core/src/modules/analytics/internal/application/foundation-health.ts:41:18 
+NextAction                   interface  apps/core/src/modules/analytics/internal/application/foundation-health.ts:47:18 
+FoundationHealth             interface  apps/core/src/modules/analytics/internal/application/foundation-health.ts:52:18 
+CostScope                    type       …ps/core/src/modules/analytics/internal/application/queries/cost-inputs.ts:14:13
+CostType                     type       …ps/core/src/modules/analytics/internal/application/queries/cost-inputs.ts:15:13
+CostConfidence               type       …ps/core/src/modules/analytics/internal/application/queries/cost-inputs.ts:16:13
+CostInputDto                 interface  …ps/core/src/modules/analytics/internal/application/queries/cost-inputs.ts:18:18
+UpsertCostInputInput         interface  …ps/core/src/modules/analytics/internal/application/queries/cost-inputs.ts:29:18
+AbandonedCartResult          type       …/src/modules/analytics/internal/application/queries/get-abandoned-cart.ts:21:13
+AbandonedCartParams          interface  …/src/modules/analytics/internal/application/queries/get-abandoned-cart.ts:35:18
+AdSpendTimeseriesBucketDto   interface  …modules/analytics/internal/application/queries/get-ad-spend-timeseries.ts:20:18
+AdSpendTimeseriesResult      type       …modules/analytics/internal/application/queries/get-ad-spend-timeseries.ts:27:13
+AttributedRevenueTimeserie…  interface  …alytics/internal/application/queries/get-attributed-revenue-timeseries.ts:25:18
+AttributedRevenueTimeserie…  type       …alytics/internal/application/queries/get-attributed-revenue-timeseries.ts:32:13
+AttributedRevenueTimeserie…  interface  …alytics/internal/application/queries/get-attributed-revenue-timeseries.ts:43:18
+ChannelContributionDto       interface  …ules/analytics/internal/application/queries/get-attribution-by-channel.ts:20:18
+AttributionByChannelResult   type       …ules/analytics/internal/application/queries/get-attribution-by-channel.ts:26:13
+AttributionByChannelParams   interface  …ules/analytics/internal/application/queries/get-attribution-by-channel.ts:43:18
+AttributionReconciliationR…  type       …/analytics/internal/application/queries/get-attribution-reconciliation.ts:17:13
+AttributionReconciliationP…  interface  …/analytics/internal/application/queries/get-attribution-reconciliation.ts:33:18
+PageTypeBucketDto            interface  …c/modules/analytics/internal/application/queries/get-behavior-overview.ts:19:18
+BrowsedItemDto               interface  …c/modules/analytics/internal/application/queries/get-behavior-overview.ts:25:18
+BehaviorOverviewResult       type       …c/modules/analytics/internal/application/queries/get-behavior-overview.ts:31:13
+BehaviorOverviewParams       interface  …c/modules/analytics/internal/application/queries/get-behavior-overview.ts:46:18
+BlendedRoasDto               interface  …re/src/modules/analytics/internal/application/queries/get-blended-roas.ts:23:18
+BlendedRoasResult            type       …re/src/modules/analytics/internal/application/queries/get-blended-roas.ts:30:13
+CampaignAttributionRowDto    interface  …odules/analytics/internal/application/queries/get-campaign-attribution.ts:22:18
+CampaignAttributionResult    type       …odules/analytics/internal/application/queries/get-campaign-attribution.ts:34:13
+CampaignAttributionParams    interface  …odules/analytics/internal/application/queries/get-campaign-attribution.ts:42:18
+CampaignRoasDto              interface  …e/src/modules/analytics/internal/application/queries/get-campaign-roas.ts:17:18
+CampaignRoasResult           type       …e/src/modules/analytics/internal/application/queries/get-campaign-roas.ts:26:13
+CampaignRoasParams           interface  …e/src/modules/analytics/internal/application/queries/get-campaign-roas.ts:37:18
+CampaignTimeseriesBucketDto  interface  …modules/analytics/internal/application/queries/get-campaign-timeseries.ts:23:18
+CampaignTimeseriesResult     type       …modules/analytics/internal/application/queries/get-campaign-timeseries.ts:31:13
+CampaignTimeseriesParams     interface  …modules/analytics/internal/application/queries/get-campaign-timeseries.ts:42:18
+CapiPassbackStatus           type       …e/src/modules/analytics/internal/application/queries/get-capi-feedback.ts:63:13
+CapiDeletionStatus           type       …e/src/modules/analytics/internal/application/queries/get-capi-feedback.ts:71:13
+CapiFeedbackSummaryResult    type       …e/src/modules/analytics/internal/application/queries/get-capi-feedback.ts:75:13
+CapiFeedbackEventRow         interface  …/src/modules/analytics/internal/application/queries/get-capi-feedback.ts:193:18
+CapiFeedbackEventsResult     type       …/src/modules/analytics/internal/application/queries/get-capi-feedback.ts:207:13
+CapiFeedbackDeletionRow      interface  …/src/modules/analytics/internal/application/queries/get-capi-feedback.ts:269:18
+CapiFeedbackDeletionsResult  type       …/src/modules/analytics/internal/application/queries/get-capi-feedback.ts:279:13
+ChannelRoasDto               interface  …re/src/modules/analytics/internal/application/queries/get-channel-roas.ts:22:18
+ChannelRoasResult            type       …re/src/modules/analytics/internal/application/queries/get-channel-roas.ts:30:13
+ChannelRoasParams            interface  …re/src/modules/analytics/internal/application/queries/get-channel-roas.ts:42:18
+CheckoutFunnelResult         type       …src/modules/analytics/internal/application/queries/get-checkout-funnel.ts:21:13
+CodMixResult                 type       …ps/core/src/modules/analytics/internal/application/queries/get-cod-mix.ts:26:13
+CodRtoCohortDto              interface  …e/src/modules/analytics/internal/application/queries/get-cod-rto-rates.ts:26:18
+CodRtoRatesResult            type       …e/src/modules/analytics/internal/application/queries/get-cod-rto-rates.ts:33:13
+CohortRetentionDto           interface  …rc/modules/analytics/internal/application/queries/get-cohort-retention.ts:13:18
+CohortRetentionResult        type       …rc/modules/analytics/internal/application/queries/get-cohort-retention.ts:22:13
+CohortUserDto                interface  …re/src/modules/analytics/internal/application/queries/get-cohort-users.ts:26:18
+CohortUsersResult            type       …re/src/modules/analytics/internal/application/queries/get-cohort-users.ts:49:13
+ConsentCoverageRow           interface  …/modules/analytics/internal/application/queries/get-consent-compliance.ts:57:18
+ConsentCoverageResult        type       …/modules/analytics/internal/application/queries/get-consent-compliance.ts:63:13
+ConsentSuppressionSummaryR…  type       …modules/analytics/internal/application/queries/get-consent-compliance.ts:162:13
+GateDecision                 type       …modules/analytics/internal/application/queries/get-consent-compliance.ts:242:13
+GateActivityRow              interface  …modules/analytics/internal/application/queries/get-consent-compliance.ts:244:18
+ConsentGateActivityResult    type       …modules/analytics/internal/application/queries/get-consent-compliance.ts:252:13
+ConsentWindowConfigResult    interface  …modules/analytics/internal/application/queries/get-consent-compliance.ts:341:18
+ContributionMarginDto        interface  …modules/analytics/internal/application/queries/get-contribution-margin.ts:11:18
+ContributionMarginResult     type       …modules/analytics/internal/application/queries/get-contribution-margin.ts:22:13
+Customer360RowDto            interface  …re/src/modules/analytics/internal/application/queries/get-customer-360.ts:15:18
+Customer360Result            type       …re/src/modules/analytics/internal/application/queries/get-customer-360.ts:27:13
+DataHealthVolumeBucket       interface  …ore/src/modules/analytics/internal/application/queries/get-data-health.ts:26:18
+DataHealthResult             type       …ore/src/modules/analytics/internal/application/queries/get-data-health.ts:31:13
+DataHealthDeps               interface  …ore/src/modules/analytics/internal/application/queries/get-data-health.ts:47:18
+DeliveryTimeBucketDto        interface  …e/src/modules/analytics/internal/application/queries/get-delivery-time.ts:20:18
+DeliveryTimeCourierDto       interface  …e/src/modules/analytics/internal/application/queries/get-delivery-time.ts:28:18
+DeliveryTimeResult           type       …e/src/modules/analytics/internal/application/queries/get-delivery-time.ts:35:13
+EngagementResult             type       …core/src/modules/analytics/internal/application/queries/get-engagement.ts:19:13
+EngagementParams             interface  …core/src/modules/analytics/internal/application/queries/get-engagement.ts:35:18
+ExecutiveMetricDto           interface  …c/modules/analytics/internal/application/queries/get-executive-metrics.ts:18:18
+ExecutiveMetricsResult       type       …c/modules/analytics/internal/application/queries/get-executive-metrics.ts:30:13
+ExecutiveMetricsParams       interface  …c/modules/analytics/internal/application/queries/get-executive-metrics.ts:34:18
+FormBucketDto                interface  …src/modules/analytics/internal/application/queries/get-form-conversion.ts:21:18
+FormDayBucketDto             interface  …src/modules/analytics/internal/application/queries/get-form-conversion.ts:29:18
+FormConversionResult         type       …src/modules/analytics/internal/application/queries/get-form-conversion.ts:35:13
+FormConversionParams         interface  …src/modules/analytics/internal/application/queries/get-form-conversion.ts:50:18
+FunnelStageDto               interface  …rc/modules/analytics/internal/application/queries/get-funnel-analytics.ts:19:18
+FunnelAnalyticsResult        type       …rc/modules/analytics/internal/application/queries/get-funnel-analytics.ts:26:13
+FunnelAnalyticsParams        interface  …rc/modules/analytics/internal/application/queries/get-funnel-analytics.ts:36:18
+FunnelStep                   type       …re/src/modules/analytics/internal/application/queries/get-funnel-users.ts:22:13
+FunnelUserDto                interface  …re/src/modules/analytics/internal/application/queries/get-funnel-users.ts:24:18
+FunnelUsersResult            type       …re/src/modules/analytics/internal/application/queries/get-funnel-users.ts:30:13
+FunnelUsersParams            interface  …re/src/modules/analytics/internal/application/queries/get-funnel-users.ts:41:18
+InsightDto                   interface  …c/modules/analytics/internal/application/queries/get-insights-briefing.ts:32:18
+BriefingDto                  interface  …c/modules/analytics/internal/application/queries/get-insights-briefing.ts:54:18
+InsightsBriefingResult       type       …c/modules/analytics/internal/application/queries/get-insights-briefing.ts:91:13
+JourneyFirstTouchMixParams   interface  …les/analytics/internal/application/queries/get-journey-first-touch-mix.ts:44:18
+JourneyPathRowDto            interface  …e/src/modules/analytics/internal/application/queries/get-journey-paths.ts:19:18
+JourneyPathLinkDto           interface  …e/src/modules/analytics/internal/application/queries/get-journey-paths.ts:32:18
+JourneyPathsResult           type       …e/src/modules/analytics/internal/application/queries/get-journey-paths.ts:39:13
+JourneyPathsParams           interface  …e/src/modules/analytics/internal/application/queries/get-journey-paths.ts:52:18
+JourneyStitchRateParams      interface  …modules/analytics/internal/application/queries/get-journey-stitch-rate.ts:33:18
+JourneyTimelineParams        interface  …rc/modules/analytics/internal/application/queries/get-journey-timeline.ts:50:18
+KpiSummaryDto                interface  …ore/src/modules/analytics/internal/application/queries/get-kpi-summary.ts:11:18
+KpiSummaryResult             type       …ore/src/modules/analytics/internal/application/queries/get-kpi-summary.ts:20:13
+OrderStatsDto                interface  …ore/src/modules/analytics/internal/application/queries/get-order-stats.ts:11:18
+OrderStatsResult             type       …ore/src/modules/analytics/internal/application/queries/get-order-stats.ts:18:13
+OrderStatusMixRowDto         interface  …rc/modules/analytics/internal/application/queries/get-order-status-mix.ts:32:18
+OrderStatusMixResult         type       …rc/modules/analytics/internal/application/queries/get-order-status-mix.ts:39:13
+OrderStatusMixParams         interface  …rc/modules/analytics/internal/application/queries/get-order-status-mix.ts:52:18
+OrderListItemDto             interface  …ore/src/modules/analytics/internal/application/queries/get-orders-list.ts:24:18
+OrdersListResult             type       …ore/src/modules/analytics/internal/application/queries/get-orders-list.ts:36:13
+OrdersTimeseriesBucketDto    interface  …c/modules/analytics/internal/application/queries/get-orders-timeseries.ts:16:18
+OrdersTimeseriesResult       type       …c/modules/analytics/internal/application/queries/get-orders-timeseries.ts:24:13
+ProductAffinityPairDto       interface  …rc/modules/analytics/internal/application/queries/get-product-affinity.ts:22:18
+ProductAffinityResult        type       …rc/modules/analytics/internal/application/queries/get-product-affinity.ts:28:13
+ProductCategoryNodeDto       interface  …/modules/analytics/internal/application/queries/get-product-categories.ts:27:18
+ProductCategoriesResult      type       …/modules/analytics/internal/application/queries/get-product-categories.ts:36:13
+ProductDetailDto             interface  …/src/modules/analytics/internal/application/queries/get-product-detail.ts:24:18
+ProductDetailResult          type       …/src/modules/analytics/internal/application/queries/get-product-detail.ts:39:13
+LedgerEventType              type       …src/modules/analytics/internal/application/queries/get-recent-activity.ts:21:13
+RecentActivityRow            interface  …src/modules/analytics/internal/application/queries/get-recent-activity.ts:33:18
+RecentActivityResult         interface  …src/modules/analytics/internal/application/queries/get-recent-activity.ts:42:18
+RecentEventRow               interface  …e/src/modules/analytics/internal/application/queries/get-recent-events.ts:28:18
+RecentEventsResult           interface  …e/src/modules/analytics/internal/application/queries/get-recent-events.ts:43:18
+RecognitionBreakdownDto      interface  …dules/analytics/internal/application/queries/get-recognition-breakdown.ts:11:18
+RecognitionBreakdownResult   type       …dules/analytics/internal/application/queries/get-recognition-breakdown.ts:18:13
+RepeatLatencyBucketDto       interface  …/src/modules/analytics/internal/application/queries/get-repeat-latency.ts:19:18
+RepeatLatencyResult          type       …/src/modules/analytics/internal/application/queries/get-repeat-latency.ts:27:13
+ReturnClassBucketDto         interface  …e/src/modules/analytics/internal/application/queries/get-return-funnel.ts:22:18
+ReturnCourierBucketDto       interface  …e/src/modules/analytics/internal/application/queries/get-return-funnel.ts:27:18
+ReturnFunnelResult           type       …e/src/modules/analytics/internal/application/queries/get-return-funnel.ts:33:13
+ReturnFunnelParams           interface  …e/src/modules/analytics/internal/application/queries/get-return-funnel.ts:48:18
+RevenueMonthlyRowDto         interface  …src/modules/analytics/internal/application/queries/get-revenue-monthly.ts:17:18
+RevenueMonthlyResult         type       …src/modules/analytics/internal/application/queries/get-revenue-monthly.ts:26:13
+TimeseriesBucketDto          interface  …/modules/analytics/internal/application/queries/get-revenue-timeseries.ts:17:18
+RevenueTimeseriesResult      type       …/modules/analytics/internal/application/queries/get-revenue-timeseries.ts:24:13
+RtoRiskDistributionResult    type       …dules/analytics/internal/application/queries/get-rto-risk-distribution.ts:20:13
+SearchDayBucketDto           interface  …src/modules/analytics/internal/application/queries/get-search-behavior.ts:20:18
+SearchBehaviorResult         type       …src/modules/analytics/internal/application/queries/get-search-behavior.ts:27:13
+SearchBehaviorParams         interface  …src/modules/analytics/internal/application/queries/get-search-behavior.ts:40:18
+SettlementFeeDto             interface  …/modules/analytics/internal/application/queries/get-settlement-summary.ts:26:18
+SettlementSummaryResult      type       …/modules/analytics/internal/application/queries/get-settlement-summary.ts:37:13
+CourierOutcomeDto            interface  …c/modules/analytics/internal/application/queries/get-shipment-outcomes.ts:22:18
+PincodeOutcomeDto            interface  …c/modules/analytics/internal/application/queries/get-shipment-outcomes.ts:29:18
+ShipmentOutcomesResult       type       …c/modules/analytics/internal/application/queries/get-shipment-outcomes.ts:36:13
+ShipmentOutcomesParams       interface  …c/modules/analytics/internal/application/queries/get-shipment-outcomes.ts:53:18
+TopProductDto                interface  …re/src/modules/analytics/internal/application/queries/get-top-products.ts:20:18
+TopProductsResult            type       …re/src/modules/analytics/internal/application/queries/get-top-products.ts:28:13
+TopProductsParams            interface  …re/src/modules/analytics/internal/application/queries/get-top-products.ts:39:18
+TrackingHealthVolumeBucket   interface  …src/modules/analytics/internal/application/queries/get-tracking-health.ts:35:18
+TrackingHealthResult         type       …src/modules/analytics/internal/application/queries/get-tracking-health.ts:40:13
+UtmSourceRowDto              interface  …core/src/modules/analytics/internal/application/queries/get-utm-source.ts:20:18
+UtmSourceResult              type       …core/src/modules/analytics/internal/application/queries/get-utm-source.ts:31:13
+SavedSegmentDto              interface  …core/src/modules/analytics/internal/application/queries/saved-segments.ts:24:18
+CreateSavedSegmentInput      interface  …core/src/modules/analytics/internal/application/queries/saved-segments.ts:33:18
+UpdateSavedSegmentInput      interface  …core/src/modules/analytics/internal/application/queries/saved-segments.ts:38:18
+SegmentPreviewResult         type       …core/src/modules/analytics/internal/application/queries/saved-segments.ts:43:13
+FxRateService                interface  apps/core/src/modules/analytics/internal/infrastructure/fx-rate-service.ts:63:18
+TouchpointLayerDescriptor    type       apps/core/src/modules/attribution/index.ts:36:15                                
+WriteCreditParams            type       apps/core/src/modules/attribution/index.ts:48:3                                 
+WriteClawbackParams          type       apps/core/src/modules/attribution/index.ts:49:3                                 
+WriteResult                  type       apps/core/src/modules/attribution/index.ts:50:3                                 
+ReconcileResult              type       apps/core/src/modules/attribution/index.ts:60:15                                
+ReconcileDeps                type       apps/core/src/modules/attribution/index.ts:60:32                                
+JourneyFirstTouchMixResult   type       apps/core/src/modules/attribution/index.ts:74:3                                 
+JourneyStitchRateResult      type       apps/core/src/modules/attribution/index.ts:75:3                                 
+JourneyTimelineResult        type       apps/core/src/modules/attribution/index.ts:76:3                                 
+ReconcileResult              interface  apps/core/src/modules/attribution/internal/reconcile-attribution.ts:55:18       
+ReconcileDeps                interface  apps/core/src/modules/attribution/internal/reconcile-attribution.ts:64:18       
+TouchpointLayerDescriptor    interface  apps/core/src/modules/attribution/internal/touchpoint-layer.ts:18:18            
+SealResult                   type       apps/core/src/modules/billing/index.ts:12:15                                    
+BillingDeps                  type       apps/core/src/modules/billing/index.ts:12:27                                    
+BillingPeriods               type       apps/core/src/modules/billing/index.ts:15:3                                     
+BillingPeriod                type       apps/core/src/modules/billing/index.ts:16:3                                     
+InspectableBillResult        type       apps/core/src/modules/billing/index.ts:23:3                                     
+InspectableBill              type       apps/core/src/modules/billing/index.ts:24:3                                     
+BillLine                     type       apps/core/src/modules/billing/index.ts:25:3                                     
+IssueInvoiceResult           type       apps/core/src/modules/billing/index.ts:28:15                                    
+IssueCreditNoteResult        type       apps/core/src/modules/billing/index.ts:30:15                                    
+InvoiceResult                type       apps/core/src/modules/billing/index.ts:32:15                                    
+Invoice                      type       apps/core/src/modules/billing/index.ts:32:30                                    
+InvoiceLine                  type       apps/core/src/modules/billing/index.ts:32:39                                    
+CreditNote                   type       apps/core/src/modules/billing/index.ts:32:52                                    
+GstRegime                    type       apps/core/src/modules/billing/internal/application/gst.ts:14:13                 
+GstBreakdown                 interface  apps/core/src/modules/billing/internal/application/gst.ts:16:18                 
+IssueCreditNoteResult        type       apps/core/src/modules/billing/internal/application/issue-credit-note.ts:19:13   
+IssueCreditNoteDeps          interface  apps/core/src/modules/billing/internal/application/issue-credit-note.ts:31:18   
+IssueInvoiceResult           type       apps/core/src/modules/billing/internal/application/issue-invoice.ts:20:13       
+IssueInvoiceDeps             interface  apps/core/src/modules/billing/internal/application/issue-invoice.ts:35:18       
+BillingPeriod                interface  …e/src/modules/billing/internal/application/queries/get-billing-periods.ts:19:18
+BillingPeriods               type       …e/src/modules/billing/internal/application/queries/get-billing-periods.ts:33:13
+BillingReadDeps              interface  …e/src/modules/billing/internal/application/queries/get-billing-periods.ts:37:18
+BillLine                     interface  …/src/modules/billing/internal/application/queries/get-inspectable-bill.ts:37:18
+InspectableBill              interface  …/src/modules/billing/internal/application/queries/get-inspectable-bill.ts:43:18
+InspectableBillResult        type       …/src/modules/billing/internal/application/queries/get-inspectable-bill.ts:72:13
+BillDeps                     interface  …/src/modules/billing/internal/application/queries/get-inspectable-bill.ts:76:18
+InvoiceLine                  interface  apps/core/src/modules/billing/internal/application/queries/get-invoice.ts:18:18 
+Invoice                      interface  apps/core/src/modules/billing/internal/application/queries/get-invoice.ts:33:18 
+CreditNote                   interface  apps/core/src/modules/billing/internal/application/queries/get-invoice.ts:63:18 
+InvoiceResult                type       apps/core/src/modules/billing/internal/application/queries/get-invoice.ts:77:13 
+InvoiceReadDeps              interface  apps/core/src/modules/billing/internal/application/queries/get-invoice.ts:81:18 
+SealResult                   interface  apps/core/src/modules/billing/internal/application/seal-billing-period.ts:26:18 
+BillingDeps                  interface  apps/core/src/modules/billing/internal/application/seal-billing-period.ts:38:18 
+BackfillRequestErrorCode     type       …onnector/backfill/application/commands/RequestConnectorBackfillCommand.ts:29:13
+BackfillRequestSuccess       interface  …onnector/backfill/application/commands/RequestConnectorBackfillCommand.ts:35:18
+BackfillRequestFailure       interface  …onnector/backfill/application/commands/RequestConnectorBackfillCommand.ts:41:18
+BackfillRequestResult        type       …onnector/backfill/application/commands/RequestConnectorBackfillCommand.ts:47:13
+RequestConnectorBackfillIn…  interface  …onnector/backfill/application/commands/RequestConnectorBackfillCommand.ts:49:18
+BackfillJobRow               interface  …/src/modules/connector/backfill/infrastructure/PgBackfillJobRepository.ts:22:18
+OAuthDispatch                interface  apps/core/src/modules/connector/catalog/dispatch.ts:11:18                       
+HealthState                  type       apps/core/src/modules/connector/catalog/healthSafety.ts:15:13                   
+SafetyRating                 type       apps/core/src/modules/connector/catalog/healthSafety.ts:24:13                   
+ConnectorDefinition          type       apps/core/src/modules/connector/catalog/index.ts:17:15                          
+ConnectorCategory            type       apps/core/src/modules/connector/catalog/index.ts:17:36                          
+ConnectMethod                type       apps/core/src/modules/connector/catalog/index.ts:17:55                          
+HealthState                  type       apps/core/src/modules/connector/catalog/index.ts:19:15                          
+SafetyRating                 type       apps/core/src/modules/connector/catalog/index.ts:19:28                          
+SplitCredentials             interface  apps/core/src/modules/connector/credential-schema.ts:22:18                      
+CredentialConnectPlan        interface  apps/core/src/modules/connector/credential-schema.ts:60:18                      
+GeneratedSecretsResult       interface  apps/core/src/modules/connector/credential-schema.ts:127:18                     
+OAuthAppCreds                interface  apps/core/src/modules/connector/oauth-app-creds.ts:26:18                        
+GetOrCreateInstallationInp…  interface  …nnector/pixel/application/commands/GetOrCreatePixelInstallationCommand.ts:13:18
+GetOrCreateInstallationRes…  interface  …nnector/pixel/application/commands/GetOrCreatePixelInstallationCommand.ts:20:18
+VerifyPixelInput             interface  …re/src/modules/connector/pixel/application/commands/VerifyPixelCommand.ts:17:18
+VerifyPixelResult            interface  …re/src/modules/connector/pixel/application/commands/VerifyPixelCommand.ts:22:18
+AutoInstallPixelChecker      type       …re/src/modules/connector/pixel/application/commands/VerifyPixelCommand.ts:42:13
+PixelInstallerDescriptor     interface  …ps/core/src/modules/connector/pixel/application/install/PixelInstaller.ts:70:18
+PixelHealthView              interface  …re/src/modules/connector/pixel/application/queries/GetPixelHealthQuery.ts:10:18
+PixelInstallationProps       interface  apps/core/src/modules/connector/pixel/domain/entities/PixelInstallation.ts:14:18
+PixelStatusProps             interface  apps/core/src/modules/connector/pixel/domain/entities/PixelStatus.ts:10:18      
+PixelRouteDeps               interface  apps/core/src/modules/connector/pixel/interfaces/http/pixelRoutes.ts:35:18      
+ShopifyAuthParams            interface  apps/core/src/modules/connector/platform/ShopifyConnectorAdapter.ts:28:18       
+ActivateAdAccountErrorCode   type       …ctor/sources/advertising/application/commands/ActivateAdAccountCommand.ts:25:13
+ActivateAdAccountSuccess     interface  …ctor/sources/advertising/application/commands/ActivateAdAccountCommand.ts:30:18
+ActivateAdAccountFailure     interface  …ctor/sources/advertising/application/commands/ActivateAdAccountCommand.ts:38:18
+ActivateAdAccountResult      type       …ctor/sources/advertising/application/commands/ActivateAdAccountCommand.ts:44:13
+ActivateAdAccountInput       interface  …ctor/sources/advertising/application/commands/ActivateAdAccountCommand.ts:46:18
+GoogleAdsOAuthCallbackInput  interface  …tising/google/application/commands/HandleGoogleAdsOAuthCallbackCommand.ts:34:18
+GoogleAdsOAuthCallbackResu…  interface  …tising/google/application/commands/HandleGoogleAdsOAuthCallbackCommand.ts:39:18
+InitiateGoogleAdsOAuthInput  interface  …/advertising/google/application/commands/InitiateGoogleAdsOAuthCommand.ts:17:18
+InitiateGoogleAdsOAuthResu…  interface  …/advertising/google/application/commands/InitiateGoogleAdsOAuthCommand.ts:25:18
+GoogleAdsConnectorRouteDeps  interface  …or/sources/advertising/google/interfaces/http/googleAdsConnectorRoutes.ts:20:18
+MetaOAuthCallbackInput       interface  …s/advertising/meta/application/commands/HandleMetaOAuthCallbackCommand.ts:39:18
+MetaOAuthCallbackResult      interface  …s/advertising/meta/application/commands/HandleMetaOAuthCallbackCommand.ts:49:18
+InitiateMetaOAuthInput       interface  …sources/advertising/meta/application/commands/InitiateMetaOAuthCommand.ts:20:18
+InitiateMetaOAuthResult      interface  …sources/advertising/meta/application/commands/InitiateMetaOAuthCommand.ts:28:18
+MetaConnectorRouteDeps       interface  …connector/sources/advertising/meta/interfaces/http/metaConnectorRoutes.ts:23:18
+Ga4OAuthParams               interface  …s/core/src/modules/connector/sources/analytics/ga4/Ga4ConnectorAdapter.ts:39:18
+Ga4ServiceAccountParams      interface  …s/core/src/modules/connector/sources/analytics/ga4/Ga4ConnectorAdapter.ts:49:18
+Ga4AuthParams                type       …s/core/src/modules/connector/sources/analytics/ga4/Ga4ConnectorAdapter.ts:56:13
+Ga4SyncParams                interface  …s/core/src/modules/connector/sources/analytics/ga4/Ga4ConnectorAdapter.ts:59:18
+CaptureRtoPredictInput       interface  …/sources/checkout/gokwik/application/commands/CaptureRtoPredictCommand.ts:33:18
+CaptureRtoPredictResult      type       …/sources/checkout/gokwik/application/commands/CaptureRtoPredictCommand.ts:50:13
+ConnectShopfloInput          interface  …or/sources/checkout/shopflo/application/commands/ConnectShopfloCommand.ts:34:18
+ConnectShopfloResult         interface  …or/sources/checkout/shopflo/application/commands/ConnectShopfloCommand.ts:49:18
+RotateWebhookSecretInput     interface  …urces/payment/razorpay/application/commands/RotateWebhookSecretCommand.ts:26:18
+OrderMapRowInput             interface  …ment/razorpay/infrastructure/repositories/PgRazorpayOrderMapRepository.ts:26:18
+RazorpayConnectorRouteDeps   interface  …ector/sources/payment/razorpay/interfaces/http/razorpayConnectorRoutes.ts:23:18
+RazorpayWebhookHandlerDeps   interface  …or/sources/payment/razorpay/interfaces/webhooks/razorpayWebhookHandler.ts:52:18
+DisconnectInput              interface  …ctor/sources/storefront/shopify/application/commands/DisconnectCommand.ts:16:18
+OAuthCallbackInput           interface  …ces/storefront/shopify/application/commands/HandleOAuthCallbackCommand.ts:35:18
+OAuthCallbackResult          interface  …ces/storefront/shopify/application/commands/HandleOAuthCallbackCommand.ts:46:18
+InitiateOAuthInput           interface  …r/sources/storefront/shopify/application/commands/InitiateOAuthCommand.ts:14:18
+InitiateOAuthResult          interface  …r/sources/storefront/shopify/application/commands/InitiateOAuthCommand.ts:25:18
+InstallPixelErrorCode        type       …or/sources/storefront/shopify/application/commands/InstallPixelCommand.ts:23:13
+InstallPixelInput            interface  …or/sources/storefront/shopify/application/commands/InstallPixelCommand.ts:43:18
+InstallPixelResult           interface  …or/sources/storefront/shopify/application/commands/InstallPixelCommand.ts:48:18
+RegisterWebhooksInput        interface  …ources/storefront/shopify/application/commands/RegisterWebhooksCommand.ts:49:18
+RegisterWebhooksResult       interface  …ources/storefront/shopify/application/commands/RegisterWebhooksCommand.ts:58:18
+UninstallPixelErrorCode      type       …/sources/storefront/shopify/application/commands/UninstallPixelCommand.ts:16:13
+UninstallPixelInput          interface  …/sources/storefront/shopify/application/commands/UninstallPixelCommand.ts:28:18
+UninstallPixelResult         interface  …/sources/storefront/shopify/application/commands/UninstallPixelCommand.ts:32:18
+ConnectorStatusView          interface  …sources/storefront/shopify/application/queries/GetConnectorStatusQuery.ts:10:18
+ConnectorSyncStatusView      interface  …sources/storefront/shopify/application/queries/GetConnectorStatusQuery.ts:30:18
+ConnectorStatus              type       …/connector/sources/storefront/shopify/domain/entities/ConnectorInstance.ts:19:3
+HostValidator                type       …/connector/sources/storefront/shopify/domain/entities/ConnectorInstance.ts:22:3
+ConnectorSyncStatusProps     type       …onnector/sources/storefront/shopify/domain/entities/ConnectorSyncStatus.ts:6:15
+ShopifyShopInfo              interface  …ector/sources/storefront/shopify/infrastructure/api/ShopifyAdminClient.ts:22:18
+WebhookHandlerDeps           interface  …r/sources/storefront/shopify/interfaces/webhooks/shopifyWebhookHandler.ts:48:18
+StorefrontProvider           type       …s/core/src/modules/connector/sources/storefront/storefront-exclusivity.ts:20:13
+ConnectWooCommerceInput      interface  …/storefront/woocommerce/application/commands/ConnectWooCommerceCommand.ts:46:18
+ValidateWooCommerceInput     interface  …/storefront/woocommerce/application/commands/ConnectWooCommerceCommand.ts:57:18
+ValidateWooCommerceResult    interface  …/storefront/woocommerce/application/commands/ConnectWooCommerceCommand.ts:63:18
+ConnectWooCommerceResult     interface  …/storefront/woocommerce/application/commands/ConnectWooCommerceCommand.ts:68:18
+InstallWooCommercePixelErr…  type       …efront/woocommerce/application/commands/InstallWooCommercePixelCommand.ts:30:13
+InstallWooCommercePixelInp…  interface  …efront/woocommerce/application/commands/InstallWooCommercePixelCommand.ts:46:18
+InstallWooCommercePixelRes…  interface  …efront/woocommerce/application/commands/InstallWooCommercePixelCommand.ts:51:18
+SyncRequestErrorCode         type       …odules/connector/sync/application/commands/RequestConnectorSyncCommand.ts:38:13
+SyncRequestSuccess           interface  …odules/connector/sync/application/commands/RequestConnectorSyncCommand.ts:45:18
+SyncRequestFailure           interface  …odules/connector/sync/application/commands/RequestConnectorSyncCommand.ts:52:18
+SyncRequestResult            type       …odules/connector/sync/application/commands/RequestConnectorSyncCommand.ts:58:13
+RequestConnectorSyncInput    interface  …odules/connector/sync/application/commands/RequestConnectorSyncCommand.ts:60:18
+SyncStateValue               type       …core/src/modules/connector/sync/infrastructure/PgSyncRequestRepository.ts:33:13
+SyncStateRow                 interface  …core/src/modules/connector/sync/infrastructure/PgSyncRequestRepository.ts:35:18
+RawArchiveEntry              interface  …ore/src/modules/connector/webhooks/infrastructure/RawArchiveRepository.ts:20:18
+HmacEncoding                 type       apps/core/src/modules/connector/webhooks/platform/HmacConfig.ts:17:13           
+HmacAlgorithm                type       apps/core/src/modules/connector/webhooks/platform/HmacConfig.ts:18:13           
+HmacConfigOptions            interface  apps/core/src/modules/connector/webhooks/platform/HmacConfig.ts:20:18           
+WebhookRegistrationDeps      interface  apps/core/src/modules/connector/webhooks/platform/registerWebhookRoutes.ts:30:18
+ConnectorDispatchRow         interface  apps/core/src/modules/connector/webhooks/platform/WebhookPipeline.ts:84:18      
+WebhookRouteConfig           interface  apps/core/src/modules/connector/webhooks/platform/WebhookPipeline.ts:107:18     
+DataQualitySummaryResult     type       apps/core/src/modules/data-quality/index.ts:19:3                                
+DqGradeRow                   type       apps/core/src/modules/data-quality/index.ts:20:3                                
+DqCoverage                   type       apps/core/src/modules/data-quality/index.ts:21:3                                
+DqCategory                   type       apps/core/src/modules/data-quality/index.ts:22:3                                
+FreshnessSlaStatus           type       apps/core/src/modules/data-quality/index.ts:23:3                                
+MetricTrustResult            type       apps/core/src/modules/data-quality/index.ts:27:15                               
+ServingFreshnessResult       type       apps/core/src/modules/data-quality/index.ts:33:3                                
+ServingMartRow               type       apps/core/src/modules/data-quality/index.ts:34:3                                
+MartFreshness                type       apps/core/src/modules/data-quality/index.ts:35:3                                
+DqCategory                   type       …les/data-quality/internal/application/queries/get-data-quality-summary.ts:64:13
+FreshnessSlaStatus           type       …les/data-quality/internal/application/queries/get-data-quality-summary.ts:67:13
+DqGradeRow                   interface  …es/data-quality/internal/application/queries/get-data-quality-summary.ts:115:18
+DqCoverage                   interface  …es/data-quality/internal/application/queries/get-data-quality-summary.ts:132:18
+DataQualitySummaryResult     type       …es/data-quality/internal/application/queries/get-data-quality-summary.ts:139:13
+MetricTrustResult            interface  …src/modules/data-quality/internal/application/queries/get-metric-trust.ts:18:18
+MartFreshness                type       …odules/data-quality/internal/application/queries/get-serving-freshness.ts:54:13
+ServingMartRow               interface  …odules/data-quality/internal/application/queries/get-serving-freshness.ts:57:18
+ServingFreshnessResult       type       …odules/data-quality/internal/application/queries/get-serving-freshness.ts:75:13
+ServingFreshnessDeps         interface  …odules/data-quality/internal/application/queries/get-serving-freshness.ts:90:18
+BffRoutePlugin               type       apps/core/src/modules/frontend-api/internal/routes/_shared.ts:87:13             
+DbClient                     interface  apps/core/src/modules/frontend-api/internal/routes/dashboard.queries.ts:16:18   
+OrgRow                       interface  apps/core/src/modules/frontend-api/internal/routes/dashboard.queries.ts:22:18   
+BrandRow                     interface  apps/core/src/modules/frontend-api/internal/routes/dashboard.queries.ts:23:18   
+PixelStatusRow               interface  apps/core/src/modules/frontend-api/internal/routes/dashboard.queries.ts:111:18  
+IdentityTimelineEntry        type       apps/core/src/modules/identity/index.ts:13:3                                    
+IdentityTimelineResult       type       apps/core/src/modules/identity/index.ts:14:3                                    
+IdentityTimelineDeps         type       apps/core/src/modules/identity/index.ts:15:3                                    
+IdentityTimelineReader       type       apps/core/src/modules/identity/index.ts:19:3                                    
+IdentityTimelineEventRow     type       apps/core/src/modules/identity/index.ts:20:3                                    
+CustomerList                 type       apps/core/src/modules/identity/index.ts:24:3                                    
+CustomerListItem             type       apps/core/src/modules/identity/index.ts:25:3                                    
+CustomerScoreEnrichment      type       apps/core/src/modules/identity/index.ts:26:3                                    
+ListCustomersParams          type       apps/core/src/modules/identity/index.ts:27:3                                    
+ListCustomersDeps            type       apps/core/src/modules/identity/index.ts:28:3                                    
+ErasureResult                type       apps/core/src/modules/identity/index.ts:31:15                                   
+MergeReview                  type       apps/core/src/modules/identity/index.ts:38:3                                    
+MergeReviewList              type       apps/core/src/modules/identity/index.ts:39:3                                    
+MergeDecision                type       apps/core/src/modules/identity/index.ts:40:3                                    
+MergeResolveResult           type       apps/core/src/modules/identity/index.ts:41:3                                    
+UnmergeResult                type       apps/core/src/modules/identity/index.ts:42:3                                    
+Customer360                  type       apps/core/src/modules/identity/index.ts:45:3                                    
+Customer360Profile           type       apps/core/src/modules/identity/index.ts:46:3                                    
+Customer360Identifier        type       apps/core/src/modules/identity/index.ts:47:3                                    
+Customer360Merge             type       apps/core/src/modules/identity/index.ts:48:3                                    
+Customer360Order             type       apps/core/src/modules/identity/index.ts:49:3                                    
+Customer360Deps              type       apps/core/src/modules/identity/index.ts:50:3                                    
+VaultPiiType                 type       apps/core/src/modules/identity/index.ts:60:15                                   
+VaultMatchPii                type       apps/core/src/modules/identity/index.ts:63:3                                    
+VaultCoverage                type       apps/core/src/modules/identity/index.ts:64:3                                    
+VaultKeyProvider             type       apps/core/src/modules/identity/index.ts:78:15                                   
+KmsDecryptPort               type       apps/core/src/modules/identity/index.ts:78:33                                   
+KmsEncryptPort               type       apps/core/src/modules/identity/index.ts:78:49                                   
+VaultMatchPii                interface  …re/src/modules/identity/internal/application/contact-pii-vault.service.ts:22:18
+VaultCoverage                interface  …re/src/modules/identity/internal/application/contact-pii-vault.service.ts:28:18
+ErasureResult                interface  apps/core/src/modules/identity/internal/application/erase-customer.ts:16:18     
+MergeReview                  interface  apps/core/src/modules/identity/internal/application/merge-admin.ts:17:18        
+MergeReviewList              interface  apps/core/src/modules/identity/internal/application/merge-admin.ts:25:18        
+MergeDecision                type       apps/core/src/modules/identity/internal/application/merge-admin.ts:29:13        
+MergeResolveResult           interface  apps/core/src/modules/identity/internal/application/merge-admin.ts:31:18        
+UnmergeResult                interface  apps/core/src/modules/identity/internal/application/merge-admin.ts:39:18        
+Customer360Profile           interface  …ore/src/modules/identity/internal/application/queries/get-customer-360.ts:26:18
+Customer360Identifier        interface  …ore/src/modules/identity/internal/application/queries/get-customer-360.ts:36:18
+Customer360Merge             interface  …ore/src/modules/identity/internal/application/queries/get-customer-360.ts:45:18
+Customer360Order             interface  …ore/src/modules/identity/internal/application/queries/get-customer-360.ts:60:18
+Customer360                  type       …ore/src/modules/identity/internal/application/queries/get-customer-360.ts:70:13
+Customer360Deps              interface  …ore/src/modules/identity/internal/application/queries/get-customer-360.ts:81:18
+IdentityTimelineEntry        interface  …rc/modules/identity/internal/application/queries/get-identity-timeline.ts:18:18
+IdentityTimelineResult       type       …rc/modules/identity/internal/application/queries/get-identity-timeline.ts:35:13
+IdentityTimelineDeps         interface  …rc/modules/identity/internal/application/queries/get-identity-timeline.ts:39:18
+CustomerListItem             interface  …/core/src/modules/identity/internal/application/queries/list-customers.ts:22:18
+CustomerScoreEnrichment      interface  …/core/src/modules/identity/internal/application/queries/list-customers.ts:53:18
+CustomerList                 interface  …/core/src/modules/identity/internal/application/queries/list-customers.ts:60:18
+ListCustomersParams          interface  …core/src/modules/identity/internal/application/queries/list-customers.ts:112:18
+ListCustomersDeps            interface  …core/src/modules/identity/internal/application/queries/list-customers.ts:141:18
+VaultEnvelopeRow             interface  …/modules/identity/internal/infrastructure/contact-pii-vault.repository.ts:23:18
+ModelDto                     type       apps/core/src/modules/ml/index.ts:17:15                                         
+ListModelsDeps               type       apps/core/src/modules/ml/index.ts:17:25                                         
+ModelStage                   type       apps/core/src/modules/ml/index.ts:31:3                                          
+PromoteModelInput            type       apps/core/src/modules/ml/index.ts:32:3                                          
+PromoteModelDeps             type       apps/core/src/modules/ml/index.ts:33:3                                          
+ServeCustomerScoreResult     type       apps/core/src/modules/ml/index.ts:38:3                                          
+ServeCustomerScoreDeps       type       apps/core/src/modules/ml/index.ts:39:3                                          
+ServedScore                  type       apps/core/src/modules/ml/index.ts:40:3                                          
+ServingModel                 type       apps/core/src/modules/ml/index.ts:41:3                                          
+ModelStage                   type       apps/core/src/modules/ml/internal/application/promote-model.ts:25:13            
+PromoteModelInput            interface  apps/core/src/modules/ml/internal/application/promote-model.ts:177:18           
+PromoteModelDeps             interface  apps/core/src/modules/ml/internal/application/promote-model.ts:182:18           
+ListModelsDeps               interface  apps/core/src/modules/ml/internal/application/queries/list-models.ts:48:18      
+ServedScore                  interface  apps/core/src/modules/ml/internal/application/serve-customer-score.ts:69:18     
+ServingModel                 interface  apps/core/src/modules/ml/internal/application/serve-customer-score.ts:84:18     
+ServeCustomerScoreResult     type       apps/core/src/modules/ml/internal/application/serve-customer-score.ts:92:13     
+ServeCustomerScoreDeps       interface  apps/core/src/modules/ml/internal/application/serve-customer-score.ts:96:18     
+CapiPassbackOrchestratorDe…  interface  apps/core/src/modules/notification/internal/capi-passback.orchestrator.ts:21:18 
+CapiPassbackTickResult       interface  apps/core/src/modules/notification/internal/capi-passback.orchestrator.ts:58:18 
+CapiPassbackHandle           interface  apps/core/src/modules/notification/internal/capi-passback.orchestrator.ts:97:18 
+CapiPassbackStatus           type       apps/core/src/modules/notification/internal/capi-passback.service.ts:79:13      
+CapiPassbackOutcome          interface  apps/core/src/modules/notification/internal/capi-passback.service.ts:86:18      
+CapiPassbackDeps             interface  apps/core/src/modules/notification/internal/capi-passback.service.ts:95:18      
+CanContactDeps               interface  …s/core/src/modules/notification/internal/compliance/can-contact.engine.ts:44:18
+CanContactInput              interface  …s/core/src/modules/notification/internal/compliance/can-contact.engine.ts:53:18
+CanContactDecision           interface  …s/core/src/modules/notification/internal/compliance/can-contact.engine.ts:76:18
+ConsentSource                type       apps/core/src/modules/notification/internal/compliance/consent-write.ts:26:13   
+WithdrawReason               type       apps/core/src/modules/notification/internal/compliance/consent-write.ts:27:13   
+ConsentWriteDeps             interface  apps/core/src/modules/notification/internal/compliance/consent-write.ts:29:18   
+GrantConsentInput            interface  apps/core/src/modules/notification/internal/compliance/consent-write.ts:35:18   
+WithdrawConsentInput         interface  apps/core/src/modules/notification/internal/compliance/consent-write.ts:51:18   
+ConsentRoutesDeps            interface  apps/core/src/modules/notification/internal/compliance/consent.routes.ts:66:18  
+ConsentOutcome               type       …e/src/modules/notification/internal/compliance/policies/consent.policy.ts:11:13
+DltOutcome                   type       …s/core/src/modules/notification/internal/compliance/policies/dlt.policy.ts:9:13
+NcprOutcome                  type       …core/src/modules/notification/internal/compliance/policies/ncpr.policy.ts:12:13
+WindowDecision               interface  …c/modules/notification/internal/compliance/policies/send-window.policy.ts:22:18
+ConsentCategory              type       apps/core/src/modules/notification/internal/compliance/ports.ts:17:33           
+DevLinkType                  type       apps/core/src/modules/notification/internal/dev-link-capture.ts:22:13           
+CapturedDevLink              interface  apps/core/src/modules/notification/internal/dev-link-capture.ts:24:18           
+CanContactGateDeps           interface  apps/core/src/modules/notification/internal/notification.service.impl.ts:22:18  
+SendLogStatus                type       apps/core/src/modules/notification/internal/send-log.ts:21:13                   
+SendLogEntry                 interface  apps/core/src/modules/notification/internal/send-log.ts:28:18                   
+GenerateResult               type       apps/core/src/modules/recommendation/index.ts:12:15                             
+InsightForRecommendation     type       apps/core/src/modules/recommendation/index.ts:17:3                              
+MaterializedInsight          type       apps/core/src/modules/recommendation/index.ts:18:3                              
+MaterializeInsightsDeps      type       apps/core/src/modules/recommendation/index.ts:19:3                              
+MeasureResult                type       apps/core/src/modules/recommendation/index.ts:22:15                             
+Recommendations              type       apps/core/src/modules/recommendation/index.ts:25:3                              
+Recommendation               type       apps/core/src/modules/recommendation/index.ts:26:3                              
+RecommendationEvidence       type       apps/core/src/modules/recommendation/index.ts:27:3                              
+RecommendationOutcome        type       apps/core/src/modules/recommendation/index.ts:28:3                              
+RecommendationAction         type       apps/core/src/modules/recommendation/index.ts:38:3                              
+RecommendationActionKind     type       apps/core/src/modules/recommendation/index.ts:39:3                              
+RecordRecommendationAction…  type       apps/core/src/modules/recommendation/index.ts:40:3                              
+GenerateResult               interface  …c/modules/recommendation/internal/application/generate-recommendations.ts:26:18
+GenerateDeps                 interface  …c/modules/recommendation/internal/application/generate-recommendations.ts:38:18
+MaterializedInsight          interface  …e/src/modules/recommendation/internal/application/materialize-insights.ts:40:18
+MaterializeInsightsDeps      interface  …e/src/modules/recommendation/internal/application/materialize-insights.ts:46:18
+MeasureResult                interface  …es/recommendation/internal/application/measure-recommendation-outcomes.ts:22:18
+MeasureDeps                  interface  …es/recommendation/internal/application/measure-recommendation-outcomes.ts:27:18
+RecommendationEvidence       type       …odules/recommendation/internal/application/queries/get-recommendations.ts:17:13
+RecommendationOutcome        interface  …odules/recommendation/internal/application/queries/get-recommendations.ts:20:18
+Recommendation               interface  …odules/recommendation/internal/application/queries/get-recommendations.ts:28:18
+Recommendations              type       …odules/recommendation/internal/application/queries/get-recommendations.ts:48:13
+RecommendationReadDeps       interface  …odules/recommendation/internal/application/queries/get-recommendations.ts:52:18
+RecommendationActionKind     type       …dules/recommendation/internal/application/record-recommendation-action.ts:34:13
+RecommendationAction         interface  …dules/recommendation/internal/application/record-recommendation-action.ts:41:18
+RecordRecommendationAction…  interface  …dules/recommendation/internal/application/record-recommendation-action.ts:50:18
+RecordActionDeps             interface  …dules/recommendation/internal/application/record-recommendation-action.ts:59:18
+Confidence                   type       apps/core/src/modules/recommendation/internal/domain/confidence-gate.ts:22:13   
+GatedConfidence              interface  apps/core/src/modules/recommendation/internal/domain/confidence-gate.ts:34:18   
+Confidence                   type       …dules/recommendation/internal/domain/detectors/margin-erosion.detector.ts:27:13
+DetectorRecommendation       interface  …dules/recommendation/internal/domain/detectors/margin-erosion.detector.ts:29:18
+Confidence                   type       …ules/recommendation/internal/domain/detectors/realization-gap.detector.ts:12:13
+DetectorRecommendation       interface  …ules/recommendation/internal/domain/detectors/realization-gap.detector.ts:20:18
+Confidence                   type       …src/modules/recommendation/internal/domain/detectors/rto-risk.detector.ts:22:13
+DetectorRecommendation       interface  …src/modules/recommendation/internal/domain/detectors/rto-risk.detector.ts:24:18
+Confidence                   type       …es/recommendation/internal/domain/detectors/scale-opportunity.detector.ts:20:13
+DetectorRecommendation       interface  …es/recommendation/internal/domain/detectors/scale-opportunity.detector.ts:22:18
+RoleCode                     type       apps/core/src/modules/workspace-access/index.ts:34:15                           
+ActiveContext                type       apps/core/src/modules/workspace-access/internal/application/auth.service.ts:53:8
+AuthServiceConfig            type       apps/core/src/modules/workspace-access/internal/application/auth.service.ts:55:8
+ProvisionInput               interface  …e/src/modules/workspace-access/internal/application/onboarding.service.ts:56:18
+ProvisionResult              interface  …e/src/modules/workspace-access/internal/application/onboarding.service.ts:66:18
+RateLimiterResult            interface  …core/src/modules/workspace-access/internal/infrastructure/rate-limiter.ts:10:18
+RedisRateLimitClient         interface  …core/src/modules/workspace-access/internal/infrastructure/rate-limiter.ts:16:18
+PageResult                   interface  …c/modules/workspace-access/internal/infrastructure/repositories/shared.ts:10:18
+RotateRefreshTokenOutcome    type       …ce-access/internal/infrastructure/repositories/user-session.repository.ts:31:13
+EraseSubjectOutcome          type       apps/stream-worker/src/application/EraseSubjectUseCase.ts:126:13                
+EraseSubjectResult           interface  apps/stream-worker/src/application/EraseSubjectUseCase.ts:134:18                
+ProjectConsentOutcome        type       apps/stream-worker/src/application/ProjectConsentUseCase.ts:36:13               
+ProjectConsentResult         interface  apps/stream-worker/src/application/ProjectConsentUseCase.ts:42:18               
+RequestCapiDeletionOutcome   type       apps/stream-worker/src/application/RequestCapiDeletionUseCase.ts:44:13          
+RequestCapiDeletionResult    interface  apps/stream-worker/src/application/RequestCapiDeletionUseCase.ts:51:18          
+ConfidenceReviewDeps         interface  apps/stream-worker/src/application/ResolveIdentityUseCase.ts:47:18              
+ResolveOutcomeType           type       apps/stream-worker/src/application/ResolveIdentityUseCase.ts:73:13              
+ResolveResult                interface  apps/stream-worker/src/application/ResolveIdentityUseCase.ts:75:18              
+TenantConfidenceConfig       interface  apps/stream-worker/src/domain/identity/confidence/ConfidenceEngine.ts:71:18     
+ConfidenceEngineOptions      interface  apps/stream-worker/src/domain/identity/confidence/ConfidenceEngine.ts:155:18    
+ConfidenceBandThresholds     type       apps/stream-worker/src/domain/identity/confidence/index.ts:18:3                 
+TenantConfidenceConfig       type       apps/stream-worker/src/domain/identity/confidence/index.ts:19:3                 
+TenantConfidenceOverride     type       apps/stream-worker/src/domain/identity/confidence/index.ts:20:3                 
+IdentifierMatch              type       apps/stream-worker/src/domain/identity/confidence/index.ts:21:3                 
+ConfidenceEvidence           type       apps/stream-worker/src/domain/identity/confidence/index.ts:22:3                 
+ConfidenceEngineOptions      type       apps/stream-worker/src/domain/identity/confidence/index.ts:23:3                 
+StrategyHookKind             type       apps/stream-worker/src/domain/identity/confidence/index.ts:35:3                 
+StrategyEvidence             type       apps/stream-worker/src/domain/identity/confidence/index.ts:36:3                 
+StrategyDetection            type       apps/stream-worker/src/domain/identity/confidence/index.ts:37:3                 
+StrategyHook                 type       apps/stream-worker/src/domain/identity/confidence/index.ts:38:3                 
+StrategyHookDescriptor       type       apps/stream-worker/src/domain/identity/confidence/index.ts:39:3                 
+StrategyHookKind             type       apps/stream-worker/src/domain/identity/confidence/strategyHooks.ts:29:13        
+StrategyDetection            interface  apps/stream-worker/src/domain/identity/confidence/strategyHooks.ts:45:18        
+StrategyHook                 interface  apps/stream-worker/src/domain/identity/confidence/strategyHooks.ts:58:18        
+StrategyHookDescriptor       interface  apps/stream-worker/src/domain/identity/confidence/strategyHooks.ts:168:18       
+UnmergeContext               interface  apps/stream-worker/src/domain/identity/decisions/DecisionEngine.ts:80:18        
+EvidenceOptions              interface  apps/stream-worker/src/domain/identity/decisions/DecisionEngine.ts:91:18        
+ExplanationCitations         interface  apps/stream-worker/src/domain/identity/IdentityExplainability.ts:26:18          
+IdentityExplanation          interface  apps/stream-worker/src/domain/identity/IdentityExplainability.ts:45:18          
+ReplayOptions                interface  apps/stream-worker/src/domain/identity/IdentityReplayEngine.ts:35:18            
+ReplayResult                 interface  apps/stream-worker/src/domain/identity/IdentityReplayEngine.ts:42:18            
+OrderIndependenceReport      interface  apps/stream-worker/src/domain/identity/IdentityReplayEngine.ts:142:18           
+TimelineEntry                interface  apps/stream-worker/src/domain/identity/IdentityTimeline.ts:64:18                
+IdentityTimeline             interface  apps/stream-worker/src/domain/identity/IdentityTimeline.ts:70:18                
+IdentityTimelineSource       interface  apps/stream-worker/src/domain/identity/IdentityTimeline.ts:81:18                
+ProbabilisticWeights         interface  apps/stream-worker/src/domain/identity/matchers/ProbabilisticMatcher.ts:60:18   
+CustomerGrainedMart          type       apps/stream-worker/src/domain/identity/ScopedRecompute.ts:52:13                 
+HealthServerOptions          interface  apps/stream-worker/src/infrastructure/health/HealthServer.ts:22:18              
+AuditAction                  type       apps/stream-worker/src/infrastructure/identity/IdentityAuditDecisionLog.ts:38:13
+CacheInvalidatePublisherLog  interface  apps/stream-worker/src/infrastructure/kafka/CacheInvalidatePublisher.ts:37:18   
+ICacheInvalidatePublisher    interface  apps/stream-worker/src/infrastructure/kafka/CacheInvalidatePublisher.ts:63:18   
+RedriveAction                type       apps/stream-worker/src/infrastructure/kafka/DlqRedriver.ts:43:13                
+RedriveDecision              interface  apps/stream-worker/src/infrastructure/kafka/DlqRedriver.ts:45:18                
+RedriveOptions               interface  apps/stream-worker/src/infrastructure/kafka/DlqRedriver.ts:132:18               
+ConnectorProvider            type       …s/stream-worker/src/infrastructure/observability/connector-auth-health.ts:21:13
+BackfillJobRow               interface  apps/stream-worker/src/infrastructure/pg/BackfillJobRepository.ts:30:18         
+InsertQueuedParams           interface  apps/stream-worker/src/infrastructure/pg/BackfillJobRepository.ts:47:18         
+UpdateProgressParams         interface  apps/stream-worker/src/infrastructure/pg/BackfillJobRepository.ts:52:18         
+FinalizeParams               interface  apps/stream-worker/src/infrastructure/pg/BackfillJobRepository.ts:61:18         
+WriteResult                  interface  apps/stream-worker/src/infrastructure/pg/BronzeRepository.ts:22:18              
+CapiDeletionRow              interface  apps/stream-worker/src/infrastructure/pg/CapiDeletionRepository.ts:36:18        
+CapiDeletionWriteResult      interface  apps/stream-worker/src/infrastructure/pg/CapiDeletionRepository.ts:47:18        
+HealthTransitionKind         type       …/stream-worker/src/infrastructure/pg/ConnectorInstanceHealthRepository.ts:32:13
+DlqRecordWriteResult         interface  apps/stream-worker/src/infrastructure/pg/DlqRecordRepository.ts:73:18           
+LeaderLockOutcome            type       apps/stream-worker/src/infrastructure/pg/LeaderLock.ts:27:13                    
+RunType                      type       apps/stream-worker/src/infrastructure/pg/SyncRunRepository.ts:37:13             
+RunStatus                    type       apps/stream-worker/src/infrastructure/pg/SyncRunRepository.ts:38:13             
+StartRunParams               interface  apps/stream-worker/src/infrastructure/pg/SyncRunRepository.ts:40:18             
+CloseRunParams               interface  apps/stream-worker/src/infrastructure/pg/SyncRunRepository.ts:51:18             
+ProviderLimit                interface  apps/stream-worker/src/infrastructure/redis/ConnectorRateLimiter.ts:16:18       
+DedupResult                  interface  apps/stream-worker/src/infrastructure/redis/RedisDedupAdapter.ts:16:18          
+SecretsProvider              interface  apps/stream-worker/src/infrastructure/secrets/SaltProvider.ts:34:18             
+BronzeBridgeDef              interface  apps/stream-worker/src/interfaces/consumers/bronzeBridges.ts:18:18              
+GradeOutcome                 interface  apps/stream-worker/src/jobs/dq/grade.ts:65:18                                   
+DqChecker                    interface  apps/stream-worker/src/jobs/dq/run.ts:100:18                                    
+StartDqChecksOptions         interface  apps/stream-worker/src/jobs/dq/run.ts:104:18                                    
+Ga4ServiceAccountCredentia…  interface  apps/stream-worker/src/jobs/ga4-repull/ga4-data-client.ts:57:18                 
+Ga4Credentials               type       apps/stream-worker/src/jobs/ga4-repull/ga4-data-client.ts:66:13                 
+GoogleAdsRawRow              interface  …worker/src/jobs/google-ads-spend-repull/google-ads-searchstream-client.ts:70:18
+GoogleBackfillOptions        interface  apps/stream-worker/src/jobs/google-ads-spend-repull/run.ts:245:18               
+IdentityExportResult         interface  apps/stream-worker/src/jobs/identity-export/run.ts:78:18                        
+IngestScheduler              interface  apps/stream-worker/src/jobs/ingest-scheduler/run.ts:193:18                      
+StitchFromIdentityResult     interface  apps/stream-worker/src/jobs/journey-stitch-from-identity.ts:44:18               
+MetaInsightsRawRow           interface  apps/stream-worker/src/jobs/meta-spend-repull/meta-insights-client.ts:101:18    
+MetaInsightsPage             interface  apps/stream-worker/src/jobs/meta-spend-repull/meta-insights-client.ts:120:18    
+MetaUsageThrottleSignal      interface  apps/stream-worker/src/jobs/meta-spend-repull/meta-insights-client.ts:136:18    
+MetaTokenExchangeResult      interface  apps/stream-worker/src/jobs/meta-token-refresh/meta-token-client.ts:31:18       
+MetaTokenRefreshReport       interface  apps/stream-worker/src/jobs/meta-token-refresh/run.ts:44:18                     
+SettlementsPage              interface  …worker/src/jobs/razorpay-settlement-repull/razorpay-settlements-client.ts:49:18
+ShipmentPage                 interface  …ps/stream-worker/src/jobs/shiprocket-shipment-repull/shiprocket-client.ts:61:18
+MappedBackfillEvent          type       apps/stream-worker/src/jobs/shopify-backfill/order-mapper.ts:27:35              
+ShopifyOrderShape            type       apps/stream-worker/src/jobs/shopify-backfill/order-mapper.ts:27:56              
+OrderProperties              type       apps/stream-worker/src/jobs/shopify-backfill/order-mapper.ts:27:75              
+ShopifyBackfillOrder         interface  apps/stream-worker/src/jobs/shopify-backfill/shopify-paged-client.ts:23:18      
+OrdersPage                   interface  apps/stream-worker/src/jobs/shopify-backfill/shopify-paged-client.ts:44:18      
+WorkerSecretsProvider        interface  apps/stream-worker/src/jobs/shopify-backfill/worker-secrets.ts:34:18            
+ShopifyLiveOrder             interface  apps/stream-worker/src/jobs/shopify-repull/shopify-live-client.ts:18:18         
+LiveOrdersPage               interface  apps/stream-worker/src/jobs/shopify-repull/shopify-live-client.ts:39:18         
+ShopifyTokenRefreshReport    interface  apps/stream-worker/src/jobs/shopify-token-refresh/run.ts:151:18                 
+ShopifyTokenExchangeResult   interface  apps/stream-worker/src/jobs/shopify-token-refresh/shopify-token-client.ts:47:18 
+SyncRequestClaimer           interface  apps/stream-worker/src/jobs/sync-request-claimer/run.ts:221:18                  
+WooOrderPage                 interface  …ps/stream-worker/src/jobs/woocommerce-orders-repull/woocommerce-client.ts:40:18
+FakeShopifyOrder             interface  apps/stream-worker/src/tests/helpers/connector-lifecycle-fixtures.ts:36:18      
+BronzeMatch                  interface  apps/stream-worker/src/tests/helpers/iceberg-bronze.ts:99:18                    
+ChannelMeta                  interface  apps/web/components/analytics/channel-meta.ts:26:18                             
+CohortHeatmapProps           interface  apps/web/components/analytics/cohort-heatmap.tsx:48:18                          
+FreshnessVerdict             type       apps/web/components/analytics/data-health-sync-status.tsx:29:13                 
+KpiTileProps                 interface  apps/web/components/analytics/kpi-tile.tsx:22:18                                
+SankeyProps                  interface  apps/web/components/analytics/sankey.tsx:50:18                                  
+SparklineProps               interface  apps/web/components/analytics/sparkline.tsx:24:18                               
+TreemapItem                  interface  apps/web/components/analytics/treemap.tsx:30:18                                 
+TreemapProps                 interface  apps/web/components/analytics/treemap.tsx:41:18                                 
+ConnectorLogoProps           interface  apps/web/components/connectors/connector-logo.tsx:33:18                         
+CredentialField              interface  apps/web/components/connectors/credential-fields.ts:19:18                       
+CredentialField              type       apps/web/components/connectors/marketplace-view.tsx:161:15                      
+TrackingReadyProps           interface  apps/web/components/onboarding/tracking-ready.tsx:39:18                         
+WizardStepsProps             interface  apps/web/components/onboarding/wizard-steps.tsx:18:18                           
+AlertProps                   interface  apps/web/components/ui/alert.tsx:37:18                                          
+BadgeProps                   interface  apps/web/components/ui/badge.tsx:33:18                                          
+ButtonProps                  interface  apps/web/components/ui/button.tsx:44:18                                         
+DateRangeFilterProps         interface  apps/web/components/ui/date-range-filter.tsx:74:18                              
+FreshnessBadgeProps          interface  apps/web/components/ui/freshness-badge.tsx:22:18                                
+FreshnessIndicatorProps      interface  apps/web/components/ui/freshness-indicator.tsx:26:18                            
+InputProps                   interface  apps/web/components/ui/input.tsx:4:18                                           
+MetricCardProps              interface  apps/web/components/ui/metric-card.tsx:18:18                                    
+StatusBadgeProps             interface  apps/web/components/ui/status-badge.tsx:29:18                                   
+TabShellProps                interface  apps/web/components/ui/tab-shell.tsx:17:18                                      
+TableSearchProps             interface  apps/web/components/ui/table-search.tsx:20:18                                   
+TabsProps                    interface  apps/web/components/ui/tabs.tsx:26:18                                           
+TabsTriggerProps             interface  apps/web/components/ui/tabs.tsx:73:18                                           
+TabsContentProps             interface  apps/web/components/ui/tabs.tsx:133:18                                          
+TimeframeBadgeProps          interface  apps/web/components/ui/timeframe-badge.tsx:19:18                                
+A11yOptions                  type       apps/web/e2e/demo/helpers/demo.ts:40:39                                         
+A11yOptions                  interface  apps/web/e2e/helpers/a11y.ts:20:18                                              
+BackfillTriggerResponse      type       apps/web/lib/api/client.ts:1109:15                                              
+BackfillJobProgress          type       apps/web/lib/api/client.ts:1109:40                                              
+SyncTriggerResponse          interface  apps/web/lib/api/client.ts:1194:18                                              
+CreateWorkspaceFormValues    type       apps/web/lib/api/schemas.ts:73:13                                               
+UpdateRoleFormValues         type       apps/web/lib/api/schemas.ts:176:13                                              
+AnalyticsKpiDto              type       apps/web/lib/api/types.ts:18:20                                                 
+ShipmentCourierRow           type       apps/web/lib/api/types.ts:29:24                                                 
+ShipmentPincodeRow           type       apps/web/lib/api/types.ts:30:24                                                 
+ReturnClassRow               type       apps/web/lib/api/types.ts:32:27                                                 
+ReturnCourierRow             type       apps/web/lib/api/types.ts:33:29                                                 
+BehaviorPageTypeRow          type       apps/web/lib/api/types.ts:35:24                                                 
+BehaviorBrowsedItemRow       type       apps/web/lib/api/types.ts:36:21                                                 
+FunnelStageRow               type       apps/web/lib/api/types.ts:38:21                                                 
+FunnelUserRow                type       apps/web/lib/api/types.ts:40:20                                                 
+SearchDayRow                 type       apps/web/lib/api/types.ts:45:25                                                 
+FormRow                      type       apps/web/lib/api/types.ts:47:20                                                 
+FormDayRow                   type       apps/web/lib/api/types.ts:48:23                                                 
+JourneyPathRow               type       apps/web/lib/api/types.ts:50:24                                                 
+JourneyPathLink              type       apps/web/lib/api/types.ts:51:25                                                 
+RepeatLatencyBucket          type       apps/web/lib/api/types.ts:53:29                                                 
+DeliveryTimeBucket           type       apps/web/lib/api/types.ts:58:28                                                 
+CampaignTimeseriesBucket     type       apps/web/lib/api/types.ts:64:34                                                 
+AttributedRevenueTimeserie…  type       apps/web/lib/api/types.ts:66:43                                                 
+TopProductDto                type       apps/web/lib/api/types.ts:70:3                                                  
+OrderListItemDto             type       apps/web/lib/api/types.ts:72:3                                                  
+ContributionMarginDto        type       apps/web/lib/api/types.ts:74:3                                                  
+ProductDetailDto             type       apps/web/lib/api/types.ts:78:3                                                  
+ProductAffinityPairDto       type       apps/web/lib/api/types.ts:80:3                                                  
+ProductCategoryNodeDto       type       apps/web/lib/api/types.ts:82:3                                                  
+Customer360Profile           type       apps/web/lib/api/types.ts:91:3                                                  
+BillingPeriod                type       apps/web/lib/api/types.ts:103:3                                                 
+BillLine                     type       apps/web/lib/api/types.ts:106:3                                                 
+InvoiceLine                  type       apps/web/lib/api/types.ts:108:3                                                 
+CreditNote                   type       apps/web/lib/api/types.ts:109:3                                                 
+MlServedScore                type       apps/web/lib/api/types.ts:121:18                                                
+MlServingModel               type       apps/web/lib/api/types.ts:122:19                                                
+FoundationStep               type       apps/web/lib/api/types.ts:124:3                                                 
+ApiErrorResponse             interface  apps/web/lib/api/types.ts:161:18                                                
+BrandRestoreResponse         interface  apps/web/lib/api/types.ts:334:18                                                
+LedgerEventType              type       apps/web/lib/api/types.ts:652:13                                                
+DqGateDecision               interface  apps/web/lib/api/types.ts:805:18                                                
+DqCoverage                   interface  apps/web/lib/api/types.ts:813:18                                                
+FreshnessTone                type       apps/web/lib/format/relative-time.ts:17:15                                      
+RelativeTime                 interface  apps/web/lib/format/relative-time.ts:19:18                                      
+InsightDto                   type       packages/contracts/src/api/analytics.api.v1.ts:695:13                           
+BriefingDto                  type       packages/contracts/src/api/analytics.api.v1.ts:717:13                           
+InsightsBriefing             type       packages/contracts/src/api/analytics.api.v1.ts:727:13                           
+Customer360Order             type       packages/contracts/src/api/identity.api.v1.ts:161:13                            
+LifecycleSegment             type       packages/metric-engine/src/customer-scores-batch.ts:34:13                       
+ReturnRange                  interface  packages/metric-engine/src/return-funnel.ts:32:18                               
+ShipmentRange                interface  packages/metric-engine/src/shipment-outcomes.ts:34:18                           
+WithSilverBrandOptions       type       packages/metric-engine/src/silver-deps.ts:78:13                                 
+BehaviorRange                interface  packages/metric-engine/src/storefront-behavior.ts:28:18                         
+BrowserEnv                   type       packages/pixel-sdk/src/consent.ts:51:15                                         
+WooProductVariantOut         interface  packages/woocommerce-mapper/src/resources.ts:107:18                             
+GoldQueryable                interface  tools/parity-oracle/src/reference.ts:57:18                                      
+Duplicate exports (3)
+PrincipalScopedInputSchema|Customer360LookupInputSchema|JourneyLookupInputSchema|…  …ges/contracts/src/api/mcp.api.v1.ts
+BrainIdLookupInputSchema|TimelineLookupInputSchema|IdentityExplainabilityLookupIn…  …ges/contracts/src/api/mcp.api.v1.ts
+PER_JOURNEY_MODEL_IDS|ATTRIBUTION_MODEL_IDS                                         …ic-engine/src/attribution-models.ts
+Configuration hints (53)

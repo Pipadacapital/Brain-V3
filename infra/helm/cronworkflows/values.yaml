@@ -130,6 +130,22 @@ sparkV4:
   resources:
     requests: { cpu: "1", memory: 2Gi }
     limits: { cpu: "2", memory: 4Gi }
+  # ── Silver/Gold Iceberg maintenance (AUD-COST-013; templates/spark-v4-maintenance.yaml) ────────
+  # Weekly medallion_maintenance.py: rewrite_data_files + expire_snapshots (7d) + a GUARDED
+  # remove_orphan_files pass — the hourly-rewritten marts otherwise grow S3 unbounded, and no
+  # tier swept orphans from failed/aborted writes. ORPHAN_OLDER_THAN_DAYS=7 (job clamps >=3):
+  # orphans that old can never belong to an in-flight commit, so overlapping the hourly refresh
+  # is safe. remove_orphan_files lists via S3A; since AUD-COST-020 the job's S3A wiring is
+  # conditional — with S3_ENDPOINT unset (real S3) it falls back to the default AWS credential
+  # provider chain (IRSA WebIdentity, zero static keys; hadoop-aws is baked into the image), so
+  # ORPHAN_FILES=1 is safe in prod. ORPHAN_FILES=0 remains the escape hatch (compaction+expiry only).
+  maintenance:
+    enabled: true
+    schedule: "45 4 * * 0"          # weekly Sun 04:45 IST — off the daily 03:00 Bronze maintenance slot
+    activeDeadlineSeconds: 3600     # full two-namespace sweep, table-by-table (failures logged, exit≠0)
+    env:
+      - { name: ORPHAN_FILES, value: "1" }
+      - { name: ORPHAN_OLDER_THAN_DAYS, value: "7" }
   # ── Execution mode (see docs/ops/spark-on-k8s-migration.md) ────────────────────────────────────
   # "local" = the current, proven single-JVM `spark-submit --master local[*]` (driver==executor in the
   # cron pod). "k8s" = Spark-on-Kubernetes CLUSTER mode: spark-submit launches real executor pods, the

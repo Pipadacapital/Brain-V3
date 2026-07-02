@@ -35,12 +35,12 @@ sources are under `infra/terraform/modules/`.
 | --- | --- | --- | --- |
 | 1.1 | `kms`, `oidc_github` | root + audit CMK, GH plan role | already applied (bootstrap) |
 | 1.2 | `network` | VPC `brain-prod`, subnets, NAT (one per AZ → `single_nat_gateway = false`), SGs | foundation |
-| 1.3 | `s3_iceberg`, `s3_audit` | `brain-bronze-prod-{acct}` (Object-Lock WORM 7yr), audit bucket | **before any data pipeline** |
-| 1.4 | `s3_iceberg_silver`, `s3_iceberg_gold` | `brain-silver-prod-{acct}`, `brain-gold-prod-{acct}` + Glue DBs `brain_{silver,gold}_prod` | derived layers; no Object Lock |
+| 1.3 | `s3_iceberg`, `s3_audit` | `brain-bronze-prod-{acct}` = the SINGLE medallion warehouse (NO Object Lock — AUD-COST-016; WORM stays on the audit bucket) | **before any data pipeline** |
+| 1.4 | ~~`s3_iceberg_silver`, `s3_iceberg_gold`~~ | REMOVED (AUD-COST-016): Silver/Gold are Iceberg NAMESPACES in the 1.3 warehouse bucket, mirroring local | — |
 | 1.5 | `eks` | cluster `brain-prod` (private endpoint), node group `brain-prod-system`, ECR repos `brain-{service}-prod` | `public_endpoint = false` (prod is private-only) |
 | 1.6 | `rds` | `brain-prod-postgres` (PG16 Multi-AZ, PITR, deletion protection) | OLTP `ops` schema lives here |
 | 1.7 | `elasticache` | `brain-prod-redis` (Multi-AZ, TLS, at-rest KMS) | analytics serving cache |
-| 1.8 | `irsa_spark_jobs` + per-service IRSA | role for SA `brain-jobs` in ns `argo` | binds S3 write policies from 1.3/1.4 |
+| 1.8 | `irsa_spark_jobs` + per-service IRSA | role for SA `brain-jobs` in ns `argo` | binds the single medallion RW policy from 1.3 (AUD-COST-016) |
 
 ```sh
 cd infra/terraform/envs/prod

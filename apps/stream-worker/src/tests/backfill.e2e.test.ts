@@ -37,9 +37,8 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { Pool } from 'pg';
 import { Kafka, Producer } from 'kafkajs';
-import type mysql from 'mysql2/promise';
 import { PgBackfillJobRepository } from '../infrastructure/pg/BackfillJobRepository.js';
-import { makeStarrocksPool, icebergBronzeAvailable, pollIcebergBronzeCount } from './helpers/iceberg-bronze.js';
+import { makeBronzeTrinoPool, icebergBronzeAvailable, pollIcebergBronzeCount, type BronzePool } from './helpers/iceberg-bronze.js';
 import { uuidV5FromOrderBackfill, decimalStringToMinor } from '@brain/shopify-mapper';
 import { mapOrderToBackfillEvent, computeAchievedDepthLabel } from '../jobs/shopify-backfill/order-mapper.js';
 import { findQueuedJob } from '../jobs/shopify-backfill/run.js';
@@ -56,7 +55,9 @@ const SUPERUSER_DB_URL =
   'postgres://brain:brain@localhost:5432/brain';
 const REDIS_URL = process.env['REDIS_URL'] ?? 'redis://localhost:6379';
 const KAFKA_BROKERS = (process.env['KAFKA_BROKERS'] ?? 'localhost:9092').split(',');
-const ENV = process.env['APP_ENV'] ?? 'dev';
+// The running Spark sink consumes the env-PREFIXED topics; the local-prod stack uses `prod.`
+// (verified: brain-bronze-sink BACKFILL_TOPIC=prod.collector.order.backfill.v1) — default to it.
+const ENV = process.env['APP_ENV'] ?? 'prod';
 const BACKFILL_TOPIC = `${ENV}.${ORDER_BACKFILL_V1_TOPIC_SUFFIX}`;
 const LIVE_TOPIC = process.env['COLLECTOR_TOPIC'] ?? `${ENV}.collector.event.v1`;
 
@@ -76,7 +77,7 @@ let superPool: Pool;       // setup/teardown only (operational PG: backfill_job)
 let appPool: Pool;         // backfill_job RLS assertions (brain_app)
 let kafkaProducer: Producer;
 let jobRepo: PgBackfillJobRepository;
-let sr: mysql.Pool;        // StarRocks — reads Iceberg Bronze (the SoR)
+let sr: BronzePool;        // Trino — reads Iceberg Bronze (the SoR)
 let infraUp = false;       // lakehouse reachable? (gates the Bronze-landing tests)
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -166,8 +167,8 @@ beforeAll(async () => {
 
   // Bronze is the Spark sink → Iceberg (the PG bronze write is retired). The Bronze-landing tests
   // produce order.backfill.v1 to the BACKFILL topic — the Spark sink consumes it and MERGEs into
-  // Iceberg `brain_bronze.collector_events`, which we read via StarRocks. Gated on lakehouse infra.
-  sr = makeStarrocksPool();
+  // the Iceberg Bronze table, which we read over Trino. Gated on lakehouse infra.
+  sr = makeBronzeTrinoPool();
   infraUp = await icebergBronzeAvailable(sr);
 
   // Set up IDENTITY_SALT env var for brand A (used by order-mapper tests)

@@ -9,13 +9,25 @@ import type pg from 'pg';
 import { verifyAuditCheckpoint } from '@brain/audit';
 import { writeAuditCheckpoint, runAuditCheckpoint, type CheckpointSink } from './audit-checkpoint.js';
 
-/** Minimal pg.Pool stand-in: routes the head + count queries to scripted rows. */
+/** Minimal pg.Pool stand-in: routes the head + count queries to scripted rows.
+ *
+ * Since the RLS hardening (2b322aa1, migration 0067 — audit.audit_log FORCEs RLS), readAuditHead
+ * acquires a DEDICATED client via pool.connect() to claim the `SET app.role = 'audit_reader'`
+ * escape for the global chain walk (and RESETs it before release). The fake mirrors that shape:
+ * connect() hands out a client whose query() answers the GUC statements + the head/count reads. */
 function fakePool(head: { id: string; entry_hash: string } | null, count: string): pg.Pool {
-  return {
+  const client = {
     query: async (sql: string) => {
+      if (sql.startsWith('SET ') || sql.startsWith('RESET ')) return { rows: [], rowCount: 0 };
       if (sql.includes('count(*)')) return { rows: [{ n: count }], rowCount: 1 };
       return { rows: head ? [head] : [], rowCount: head ? 1 : 0 };
     },
+    release() {
+      /* no-op */
+    },
+  };
+  return {
+    connect: async () => client,
   } as unknown as pg.Pool;
 }
 

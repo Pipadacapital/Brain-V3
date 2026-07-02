@@ -1,8 +1,14 @@
 ################################################################################
-# Brain – ArgoCD App-of-Apps
-# Root application that manages all per-service ArgoCD Applications.
+# Brain – ArgoCD App-of-Apps (PROD root)
+# Root application that manages all per-service PROD ArgoCD Applications
+# (children in infra/argocd/envs/prod keep their own MANUAL promotion gate —
+# the root only creates/updates the Application CRs, it deploys no workload).
+# Staging clusters use infra/argocd/bootstrap/root-app-staging.yaml instead —
+# each cluster gets ONLY its env's apps (destinations are all in-cluster).
 # revisionHistoryLimit: 10 — keeps 10 rollback entries per PLAYBOOK-deploy.
-# Staging: auto-sync. Prod: manual promotion gate.
+# Applied by infra/argocd/bootstrap/install.sh AFTER the AppProjects
+# (bootstrap/appprojects.yaml) — ArgoCD refuses Applications whose project
+# doesn't exist (AUD-COST-005).
 ################################################################################
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -12,18 +18,18 @@ metadata:
   labels:
     project: brain
     managed-by: argocd
-  annotations:
-    # Webhook-driven sync (not polling) — only reconcile when manifests change
-    argocd.argoproj.io/hook: PostSync
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:
   project: brain
 
   source:
-    repoURL: https://github.com/brain-platform/brain
-    targetRevision: HEAD
-    path: infra/argocd/envs
+    repoURL: https://github.com/Rishabhporwal/Brain-V4.git
+    targetRevision: master
+    # AUD-COST-005: was infra/argocd/envs (a directory of subdirectories —
+    # matched NO manifests without recurse, and with recurse would leak staging
+    # apps onto the prod cluster). Env-scoped instead.
+    path: infra/argocd/envs/prod
 
   destination:
     server: https://kubernetes.default.svc
@@ -36,6 +42,3 @@ spec:
     syncOptions:
       - CreateNamespace=true
       - ServerSideApply=true
-
-  # ApplicationSet generator picks up all env-specific app manifests
-  # Each child Application controls one service in one environment

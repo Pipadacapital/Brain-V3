@@ -1,0 +1,56 @@
+################################################################################
+# Brain – ArgoCD Application: Neo4j (prod) — AUD-COST-006
+# The identity SYSTEM OF RECORD (ADR-0004) finally gets a prod deployment path:
+# the OFFICIAL neo4j helm chart (standalone, Community) + Brain's values
+# ($values multi-source, matches the keda-prod pattern). Without it,
+# identity-export → silver_identity_link → brain_id resolution → attribution
+# all fail at go-live.
+#
+# releaseName is pinned to `neo4j` so the service DNS is stable:
+#   bolt://neo4j.neo4j.svc.cluster.local:7687
+# Consumers (core-env / stream-worker-env / cronworkflows' core-env in ns argo)
+# carry NEO4J_URI/NEO4J_USER/NEO4J_PASSWORD pointing at it — delivered by ESO
+# together with the neo4j-auth Secret this chart reads its password from
+# (sync external-secrets-config BEFORE this app).
+#
+# sync-wave -1: before the workload apps (stream-worker JDBC/bolt-reads at
+# startup). MANUAL promotion gate (prod convention) — no automated sync.
+################################################################################
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: neo4j-prod
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+  labels:
+    project: brain
+    environment: prod
+    service: neo4j
+spec:
+  project: brain-prod
+  sources:
+    - repoURL: https://helm.neo4j.com/neo4j
+      chart: neo4j
+      targetRevision: 5.26.0
+      helm:
+        releaseName: neo4j
+        valueFiles:
+          - $values/infra/helm/neo4j/values-prod.yaml
+    - repoURL: https://github.com/Rishabhporwal/Brain-V4.git
+      targetRevision: master
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: neo4j
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      limit: 2
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 5m
+  revisionHistoryLimit: 10

@@ -24,37 +24,52 @@ export class DrainEventsUseCase {
   ) {}
 
   async execute(): Promise<number> {
-    const pending = await this.spool.pollPending(this.batchSize);
-    if (pending.length === 0) return 0;
-
-    let drained = 0;
-
-    for (const entry of pending) {
-      const correlationId =
-        typeof entry.rawBody['correlation_id'] === 'string'
-          ? entry.rawBody['correlation_id']
-          : `spool-${entry.id.toString()}`;
-      // Per-message child logger: bind correlation_id + brand_id (tenant key, a UUID — not PII)
-      // so every drain line for this event is correlatable end-to-end with the downstream
-      // stream-worker consumer (which extracts the same correlation_id off the Kafka headers).
-      const brandId =
-        typeof entry.rawBody['brand_id'] === 'string' ? entry.rawBody['brand_id'] : undefined;
-      const mlog = log.child({ correlation_id: correlationId, brand_id: brandId, spool_id: entry.id.toString() });
-      try {
-        await this.kafka.produce(entry.rawBody, correlationId);
-        await this.spool.markDrained(entry.id);
-        drained++;
-      } catch (err) {
-        // F-3 back-pressure: leave this row 'pending'. Redpanda may be down.
-        // Log the error but do NOT throw — the drainer loop must continue to next tick.
-        // Pass the Error in fields.err so Sentry + stack handling fires (not a stringified message).
-        mlog.error('produce failed — leaving spool row pending (back-pressure)', { err });
-        // Stop processing this batch on first failure — producer reconnect may be needed.
-        // Next tick the drainer will retry from the oldest pending row.
-        break;
-      }
+    // Row-claim (AUD-PERF-006): the claimed rows are locked (FOR UPDATE SKIP LOCKED) for the
+    // duration of this pass, so an overlapping tick / second replica skips them (no double-produce).
+    const claim = await this.spool.claimPending(this.batchSize);
+    if (claim.entries.length === 0) {
+      await claim.rollback();
+      return 0;
     }
 
-    return drained;
+    // AUD-PERF-012: the body is the CANONICAL jsonb text straight from PG; correlation_id /
+    // brand_id / event_id were projected in SQL — no JSON parse or stringify on this path.
+    const batch = claim.entries.map((entry) => ({
+      valueText: entry.rawBodyText,
+      brandId: entry.brandId,
+      eventId: entry.eventId,
+      correlationId: entry.correlationId ?? `spool-${entry.id.toString()}`,
+    }));
+
+    try {
+      // ONE producer.send for the whole claimed batch (AUD-PERF-002) — kafkajs batches the
+      // messages natively; per-message correlation_id/trace headers are built by the producer.
+      await this.kafka.produceBatch(batch);
+    } catch (err) {
+      // F-3 back-pressure: leave the WHOLE batch 'pending'. Redpanda may be down.
+      // Log the error but do NOT throw — the drainer loop must continue to next tick.
+      // Pass the Error in fields.err so Sentry + stack handling fires (not a stringified message).
+      log.error('batch produce failed — leaving spool batch pending (back-pressure)', {
+        err,
+        batch_size: claim.entries.length,
+        first_spool_id: claim.entries[0]?.id.toString(),
+      });
+      await claim.rollback().catch(() => undefined);
+      return 0;
+    }
+
+    try {
+      // ONE UPDATE … WHERE id = ANY($1) for the produced batch (AUD-PERF-002), then commit
+      // the claim so the drained marks become durable and the row locks release.
+      await claim.markDrained(claim.entries.map((entry) => entry.id));
+      await claim.commit();
+    } catch (err) {
+      // Claim-settle / markDrained infrastructure error: release the claim so every row stays
+      // 'pending' (no event loss; the re-produce next tick is absorbed by downstream event_id dedup).
+      await claim.rollback().catch(() => undefined);
+      throw err;
+    }
+
+    return claim.entries.length;
   }
 }

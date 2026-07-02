@@ -22,7 +22,6 @@
     "gen:contracts":  {
       "outputs": [
         "packages/contracts/generated/**",
-        "packages/contracts/generated/types/**",
         "packages/contracts/generated/openapi/**",
         "packages/contracts/generated/avro/**",
         "packages/contracts/generated/mcp/**"

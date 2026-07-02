@@ -187,21 +187,6 @@ export function useRevenueMonthly() {
   });
 }
 
-/**
- * useRecentActivity — fetches the latest N ledger rows.
- * @param limit - Max rows (default 20).
- */
-export function useRecentActivity(limit = 20) {
-  return useQuery({
-    queryKey: [...ANALYTICS_QUERY_KEY, 'recent-activity', limit],
-    queryFn: () => analyticsApi.getRecentActivity(limit),
-    staleTime: 60_000, // 1 minute — event feed refreshes more often
-    // feat-realtime-ingestion-pipeline (Track C): the activity feed is the most live
-    // surface — tightened to 20s so new ledger rows appear quickly after ingestion.
-    refetchInterval: 20_000,
-  });
-}
-
 // ── Phase 2 ──────────────────────────────────────────────────────────────────
 // Query keys share the 'analytics' prefix → auto-invalidate on brand switch
 // (brand-switcher.tsx invalidates queryKey: ['analytics']).

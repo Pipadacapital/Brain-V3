@@ -9,7 +9,7 @@ envSecretName: stream-worker-env
 
 serviceAccount:
   annotations:
-    eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/brain-stream-worker-prod
+    eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/brain-prod-stream-worker
 
 resources:
   requests:

@@ -17,6 +17,12 @@ export interface AcceptResult {
   receivedAt: string;
 }
 
+export interface AcceptManyResult {
+  /** New spool row ids, in input order. */
+  spoolIds: bigint[];
+  receivedAt: string;
+}
+
 export class AcceptEventUseCase {
   constructor(private readonly spool: SpoolRepository) {}
 
@@ -30,5 +36,16 @@ export class AcceptEventUseCase {
     const spoolId = await this.spool.insert(envelope);
 
     return { spoolId, receivedAt: envelope.receivedAt };
+  }
+
+  /**
+   * Batch accept (/batch, AUD-PERF-007): same D-1 ordering, but ONE multi-row spool INSERT —
+   * a single durable commit before the ACK instead of N sequential round-trips. No validation
+   * here either: each event is spooled as-received and quarantined downstream if malformed.
+   */
+  async executeMany(rawBodies: Record<string, unknown>[]): Promise<AcceptManyResult> {
+    const envelopes = rawBodies.map(stampEnvelope);
+    const spoolIds = await this.spool.insertMany(envelopes);
+    return { spoolIds, receivedAt: envelopes[envelopes.length - 1]?.receivedAt ?? '' };
   }
 }

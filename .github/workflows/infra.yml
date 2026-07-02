@@ -60,7 +60,12 @@ jobs:
       - name: terraform validate (${{ matrix.target }})
         run: terraform -chdir=${{ matrix.target }} validate
 
-  # Also validate each module independently
+  # Also validate each module independently.
+  # AUD-COST-021: this list MUST cover every directory under
+  # infra/terraform/modules — a module missing here ships unvalidated
+  # (karpenter, nat-instance, vpc-endpoints, aurora, s3-iceberg-medallion and
+  # _shared were exactly that gap). Adding a module directory? Add it to this
+  # matrix in the same PR.
   tf-validate-modules:
     name: terraform validate (modules)
     runs-on: ubuntu-latest
@@ -68,17 +73,23 @@ jobs:
     strategy:
       matrix:
         module:
-          - infra/terraform/modules/network
+          - infra/terraform/modules/_shared
+          - infra/terraform/modules/aurora
           - infra/terraform/modules/eks
-          - infra/terraform/modules/irsa
-          - infra/terraform/modules/kms
-          - infra/terraform/modules/rds
           - infra/terraform/modules/elasticache
-          - infra/terraform/modules/s3-iceberg
-          - infra/terraform/modules/s3-audit
-          - infra/terraform/modules/secrets
+          - infra/terraform/modules/irsa
+          - infra/terraform/modules/karpenter
+          - infra/terraform/modules/kms
+          - infra/terraform/modules/nat-instance
+          - infra/terraform/modules/network
           - infra/terraform/modules/observability
           - infra/terraform/modules/oidc-github
+          - infra/terraform/modules/rds
+          - infra/terraform/modules/s3-audit
+          - infra/terraform/modules/s3-iceberg
+          - infra/terraform/modules/s3-iceberg-medallion
+          - infra/terraform/modules/secrets
+          - infra/terraform/modules/vpc-endpoints
     steps:
       - uses: actions/checkout@v6
       - uses: hashicorp/setup-terraform@v3

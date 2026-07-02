@@ -20,13 +20,13 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { Kafka, type Producer } from 'kafkajs';
-import type mysql from 'mysql2/promise';
 import {
-  makeStarrocksPool,
+  makeBronzeTrinoPool,
   icebergBronzeAvailable,
   produceCollectorEvent,
   pollIcebergBronzeCount,
   KAFKA_BROKERS,
+  type BronzePool,
   type CollectorEnvelope,
 } from './helpers/iceberg-bronze.js';
 
@@ -36,7 +36,7 @@ const ORDER_A = 'gid://shopify/Order/9001';
 const ORDER_B = 'gid://shopify/Order/9002';
 
 let producer: Producer;
-let sr: mysql.Pool;
+let sr: BronzePool;
 let infraUp = false;
 
 /** Realistic post-mapper RTO-Predict properties (categorical risk_flag — never a fabricated score). */
@@ -64,7 +64,7 @@ function rtoEnvelope(orderId: string, riskFlag: string, riskRaw: string, occurre
 
 beforeAll(async () => {
   try {
-    sr = makeStarrocksPool();
+    sr = makeBronzeTrinoPool();
     if (!(await icebergBronzeAvailable(sr))) {
       infraUp = false;
       return;

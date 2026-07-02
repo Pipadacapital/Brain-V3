@@ -14,6 +14,11 @@ USER root
 ARG ICEBERG_VERSION=1.9.2
 ARG SPARK_KAFKA_VERSION=3.5.3
 ARG PG_JDBC_VERSION=42.7.4
+# hadoop-aws (S3A) — medallion_maintenance remove_orphan_files lists table locations via the
+# Hadoop FileSystem, not S3FileIO (AUD-COST-020). 3.3.4 matches Spark 3.5.x's bundled Hadoop
+# client libs and transitively pins the matching aws-java-sdk-bundle (v1 SDK — provides
+# DefaultAWSCredentialsProviderChain/WebIdentity for IRSA). Mirrors run-medallion-maintenance.sh.
+ARG HADOOP_AWS_VERSION=3.3.4
 ARG SCALA=2.12
 
 WORKDIR /opt/brain
@@ -38,7 +43,7 @@ COPY gold/   /opt/brain/gold/
 RUN set -eux; \
     printf 'import sys\nsys.exit(0)\n' > /tmp/noop.py; \
     /opt/spark/bin/spark-submit \
-      --packages "org.apache.iceberg:iceberg-spark-runtime-3.5_${SCALA}:${ICEBERG_VERSION},org.apache.iceberg:iceberg-aws-bundle:${ICEBERG_VERSION},org.apache.spark:spark-sql-kafka-0-10_${SCALA}:${SPARK_KAFKA_VERSION},org.postgresql:postgresql:${PG_JDBC_VERSION}" \
+      --packages "org.apache.iceberg:iceberg-spark-runtime-3.5_${SCALA}:${ICEBERG_VERSION},org.apache.iceberg:iceberg-aws-bundle:${ICEBERG_VERSION},org.apache.spark:spark-sql-kafka-0-10_${SCALA}:${SPARK_KAFKA_VERSION},org.postgresql:postgresql:${PG_JDBC_VERSION},org.apache.hadoop:hadoop-aws:${HADOOP_AWS_VERSION}" \
       --conf spark.jars.ivy=/tmp/ivy \
       /tmp/noop.py; \
     find /tmp/ivy -name '*.jar' -exec cp -n {} /opt/spark/jars/ \; ; \

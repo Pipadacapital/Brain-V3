@@ -1,0 +1,10 @@
+apiVersion: v2
+name: external-secrets-config
+description: >-
+  Brain secret delivery (AUD-COST-004) — ClusterSecretStore (AWS Secrets Manager
+  via the ESO controller's IRSA) + the ExternalSecrets that materialize every
+  envSecretName the workload charts consume (core-env, web-env, collector-env,
+  stream-worker-env, pgbouncer-env, iceberg-rest-catalog-db, ...).
+type: application
+version: 0.1.0
+appVersion: "0.0.0"

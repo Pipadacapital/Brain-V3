@@ -1,0 +1,26 @@
+# gp3 StorageClass (AUD-COST-018) — applied by install.sh at GitOps bootstrap.
+#
+# The EBS CSI driver add-on (modules/eks aws_eks_addon.ebs_csi + its IRSA role)
+# provisions the volumes; EKS >=1.23 has NO in-tree EBS provisioner, so without
+# this class + driver no PVC binds — Neo4j (the identity SoR, ADR-0004) mounts
+# its 50Gi data PVC through exactly this class
+# (infra/helm/neo4j/values-prod.yaml volumes.data.dynamic.storageClassName: gp3).
+#
+# Deliberately NOT annotated as the default class: EKS ships a `gp2` class and
+# two defaults make PVC admission ambiguous — every Brain chart names its class
+# explicitly. Encrypted with the account default aws/ebs key (no kmsKeyId);
+# switching to the root CMK also needs the KMS grants noted in modules/eks.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: gp3
+  labels:
+    project: brain
+provisioner: ebs.csi.aws.com
+parameters:
+  type: gp3
+  encrypted: "true"
+  fsType: ext4
+volumeBindingMode: WaitForFirstConsumer   # bind where the pod lands (AZ-correct for single-AZ EBS)
+allowVolumeExpansion: true
+reclaimPolicy: Delete

@@ -38,8 +38,14 @@ _TABLE_NAME = os.environ.get("BRONZE_TABLE", "events")
 TABLE = f"{CATALOG}.{NAMESPACE}.{_TABLE_NAME}"
 QUALIFIED = f"{NAMESPACE}.{_TABLE_NAME}"  # what the system procedures expect (within the catalog)
 MODE = os.environ.get("MODE", "maintain")
-# 24-month retention (ms) — matches db/iceberg/bronze_table.sql history.expire.max-snapshot-age-ms.
-RETAIN_MS = int(os.environ.get("RETENTION_MS", str(63_072_000_000)))
+# SNAPSHOT TTL ≠ DATA RETENTION (AUD-PERF-013). expire_snapshots only drops HISTORY — superseded files
+# + snapshot metadata; it NEVER deletes rows from current table state, so the previous 24-month cutoff
+# (matching bronze_table.sql history.expire.max-snapshot-age-ms, the DATA "retention contract")
+# delivered no data retention while keeping every streaming micro-batch snapshot + its files for 2
+# years. Snapshots need only a short, bounded time-travel window; the 24-month DATA retention is a
+# row/partition DELETE concern (the raw-lane D4 window lives in bronze_raw_retention.py — rows in the
+# durable collector lane are NEVER deleted: no event loss).
+SNAPSHOT_TTL_MS = int(os.environ.get("SNAPSHOT_TTL_MS", str(604_800_000)))  # 7 days
 
 
 def _rewrite(spark: SparkSession) -> None:
@@ -52,9 +58,9 @@ def _rewrite(spark: SparkSession) -> None:
     ).show(truncate=False)
 
 
-def _expire(spark: SparkSession) -> None:
+def _expire(spark: SparkSession, ttl_ms: int = SNAPSHOT_TTL_MS) -> None:
     # The CALL parser wants a TIMESTAMP literal (not a function expression), so compute the cutoff here.
-    cutoff = (datetime.now(timezone.utc) - timedelta(milliseconds=RETAIN_MS)).strftime("%Y-%m-%d %H:%M:%S")
+    cutoff = (datetime.now(timezone.utc) - timedelta(milliseconds=ttl_ms)).strftime("%Y-%m-%d %H:%M:%S")
     print(f"[maintenance] expire_snapshots {TABLE} older_than '{cutoff}' retain_last=1 …", flush=True)
     spark.sql(
         f"CALL {CATALOG}.system.expire_snapshots("
@@ -80,7 +86,9 @@ def erase(spark: SparkSession, brand_id: str) -> None:
     print(f"[erase] brand={safe} rows_before={before}", flush=True)
     spark.sql(f"DELETE FROM {TABLE} WHERE brand_id = '{safe}'")
     _rewrite(spark)   # rewrite affected partitions so live files no longer contain the rows
-    _expire(spark)    # expire pre-deletion snapshots so the old files are purged from S3 (no time-travel back)
+    # ttl_ms=0 → cutoff=now: purge the pre-deletion snapshots immediately (no time-travel back to the
+    # erased rows). With the old 24-month cutoff this step was silently a no-op.
+    _expire(spark, ttl_ms=0)
     after = spark.table(TABLE).where(f"brand_id = '{safe}'").count()
     print(f"[erase] brand={safe} rows_after={after} — {'OK ✓' if after == 0 else 'STILL PRESENT ✗'}", flush=True)
     if after != 0:

@@ -9,7 +9,7 @@ envSecretName: core-env
 
 serviceAccount:
   annotations:
-    eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/brain-core-staging
+    eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/brain-staging-core
 
 resources:
   requests:

@@ -28,8 +28,7 @@ import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { Pool } from 'pg';
-import type mysql from 'mysql2/promise';
-import { makeStarrocksPool, icebergBronzeAvailable, pollIcebergBronzeCount } from './helpers/iceberg-bronze.js';
+import { makeBronzeTrinoPool, icebergBronzeAvailable, pollIcebergBronzeCount, type BronzePool } from './helpers/iceberg-bronze.js';
 
 // ── Test config ────────────────────────────────────────────────────────────────
 
@@ -150,7 +149,7 @@ describe('Full-wire pipeline E2E (F-QA-01): POST /collect → spool → Redpanda
   let collectorProc: ChildProcess | null = null;
   let collectorPort: number;
   let superPool: Pool | null = null;     // collector_spool (operational PG)
-  let sr: mysql.Pool | null = null;      // StarRocks — reads Iceberg Bronze (the SoR)
+  let sr: BronzePool | null = null;      // Trino — reads Iceberg Bronze (the SoR)
   let infraAvailable = false;
 
   // Per-run unique event UUID (Iceberg event_id is a string; UUID is fine).
@@ -162,11 +161,11 @@ describe('Full-wire pipeline E2E (F-QA-01): POST /collect → spool → Redpanda
     const [rpHost, rpPortStr] = (broker ?? 'localhost:9092').split(':');
     const rpOk = await tcpReachable(rpHost ?? 'localhost', Number(rpPortStr ?? 9092));
     const pgOk = await tcpReachable('127.0.0.1', 5432);
-    sr = makeStarrocksPool();
+    sr = makeBronzeTrinoPool();
     const lakehouseOk = await icebergBronzeAvailable(sr);
     infraAvailable = rpOk && pgOk && lakehouseOk;
     if (!infraAvailable) {
-      console.warn('[pipeline-wire.e2e] SKIP — infra not reachable (Redpanda/PG/StarRocks-Iceberg)');
+      console.warn('[pipeline-wire.e2e] SKIP — infra not reachable (Kafka/PG/Trino-Iceberg)');
       return;
     }
 
@@ -181,7 +180,11 @@ describe('Full-wire pipeline E2E (F-QA-01): POST /collect → spool → Redpanda
         env: {
           ...process.env,
           PORT: String(collectorPort),
-          NODE_ENV: 'development',
+          // The collector derives its topic prefix from NODE_ENV (main.ts): production → `prod.`,
+          // which is what the RUNNING Spark Bronze sink consumes in the local-prod stack. NOT
+          // inherited from process.env — vitest sets NODE_ENV=test (→ `dev.` prefix, no sink).
+          // Override via COLLECTOR_NODE_ENV for a dev-prefixed stack.
+          NODE_ENV: process.env['COLLECTOR_NODE_ENV'] ?? 'production',
           DATABASE_URL,
           KAFKA_BROKERS: KAFKA_BROKERS_STR,
           DRAIN_POLL_INTERVAL_MS: '200',

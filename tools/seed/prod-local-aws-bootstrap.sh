@@ -66,29 +66,76 @@ for pair in "brain/meta-app-secret:SEED_META_APP_SECRET" "brain/google-ads-clien
   echo "[prod-local]   secret $name"
 done
 
-echo "[prod-local] brand_keyring for $BRAND (KMS-wrapped dev DEK, for PII continuity)"
-WRAPPED=$(cd apps/core && cat > ._wrap.mjs <<EOF
+# Keyrings for ALL brands, not just the seed dev brand. Every Docker restart mints a NEW CMK
+# behind the alias, so every wrapped_dek_b64 encrypted by the OLD CMK fails KMS Decrypt with
+# IncorrectKeyException — which broke the per-brand salt fetch (identity-bridge D-2 fail-closed)
+# and with it journey-stitch-from-identity for every runtime-created brand. The dev DEK is
+# DETERMINISTIC (deriveDevVaultDek(brand_id)), so re-wrapping with the current CMK is lossless:
+# previously-encrypted PII stays decryptable. Brand list = existing keyring rows ∪ active brands
+# ∪ the seed $BRAND (fresh DB fallback).
+provision_keyring() {
+  local B="$1"
+  local WRAPPED
+  WRAPPED=$(cd apps/core && cat > ._wrap.mjs <<EOF
 import { deriveDevVaultDek } from '@brain/identity-core';
 import { KMSClient, EncryptCommand } from '@aws-sdk/client-kms';
-const dek = Buffer.from(deriveDevVaultDek('$BRAND'));
+const dek = Buffer.from(deriveDevVaultDek('$B'));
 const c = new KMSClient({ region: 'us-east-1' });
 const r = await c.send(new EncryptCommand({ KeyId: '$KEY_ARN', Plaintext: dek }));
 process.stdout.write(Buffer.from(r.CiphertextBlob).toString('base64'));
 EOF
 AWS_ENDPOINT_URL=http://localhost:4566 AWS_REGION=us-east-1 AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test node_modules/.bin/tsx ._wrap.mjs; rm -f ._wrap.mjs)
-# Guard: an empty WRAPPED means the KMS-wrap helper failed (e.g. @aws-sdk/client-kms not
-# resolvable from apps/core). Inserting an empty wrapped_dek_b64 silently corrupts the keyring
-# and breaks the PII vault at runtime — fail loudly here instead.
-if [ -z "$WRAPPED" ]; then
-  echo "[prod-local]   ✗ KMS DEK wrap produced no output — refusing to insert an empty keyring." >&2
-  echo "[prod-local]     Ensure @aws-sdk/client-kms is a dependency of apps/core (pnpm install)." >&2
-  exit 1
-fi
-psql "INSERT INTO brand_keyring (brand_id, kms_key_id, wrapped_dek_b64, key_version, is_active)
-      VALUES ('$BRAND','$KEY_ARN','$WRAPPED',1,true)
-      ON CONFLICT (brand_id) DO UPDATE SET kms_key_id=EXCLUDED.kms_key_id,
-        wrapped_dek_b64=EXCLUDED.wrapped_dek_b64, is_active=true;" >/dev/null
-echo "[prod-local]   keyring provisioned"
+  # Guard: an empty WRAPPED means the KMS-wrap helper failed (e.g. @aws-sdk/client-kms not
+  # resolvable from apps/core). Inserting an empty wrapped_dek_b64 silently corrupts the keyring
+  # and breaks the PII vault at runtime — fail loudly here instead.
+  if [ -z "$WRAPPED" ]; then
+    echo "[prod-local]   ✗ KMS DEK wrap produced no output — refusing to insert an empty keyring." >&2
+    echo "[prod-local]     Ensure @aws-sdk/client-kms is a dependency of apps/core (pnpm install)." >&2
+    exit 1
+  fi
+  psql "INSERT INTO brand_keyring (brand_id, kms_key_id, wrapped_dek_b64, key_version, is_active)
+        VALUES ('$B','$KEY_ARN','$WRAPPED',1,true)
+        ON CONFLICT (brand_id) DO UPDATE SET kms_key_id=EXCLUDED.kms_key_id,
+          wrapped_dek_b64=EXCLUDED.wrapped_dek_b64, is_active=true;" >/dev/null
+  echo "[prod-local]   keyring provisioned for $B"
+}
+
+# Same restart-wipe class for tenancy.brand_identity_salt: the prod-mode SaltProvider
+# (KmsBrandSaltProvider) KMS-unwraps wrapped_salt_b64 — ciphertexts from the OLD CMK fail with
+# IncorrectKeyException and the D-2 guard fail-closes identity hashing (journey-stitch, repulls).
+# The local salt VALUE is the deterministic dev salt (resolveSaltHex, same one this script seeds
+# into .env.local-prod below — hash continuity), so re-wrapping with the current CMK is lossless.
+provision_salt() {
+  local B="$1"
+  local WRAPPED
+  WRAPPED=$(cd apps/core && cat > ._wrapsalt.mjs <<EOF
+import { resolveSaltHex } from '@brain/identity-core';
+import { KMSClient, EncryptCommand } from '@aws-sdk/client-kms';
+const salt = Buffer.from(resolveSaltHex('$B'), 'hex');
+if (salt.length !== 32) { throw new Error('dev salt is not 32 bytes'); }
+const c = new KMSClient({ region: 'us-east-1' });
+const r = await c.send(new EncryptCommand({ KeyId: '$KEY_ARN', Plaintext: salt }));
+process.stdout.write(Buffer.from(r.CiphertextBlob).toString('base64'));
+EOF
+AWS_ENDPOINT_URL=http://localhost:4566 AWS_REGION=us-east-1 AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test NODE_ENV='' node_modules/.bin/tsx ._wrapsalt.mjs; rm -f ._wrapsalt.mjs)
+  if [ -z "$WRAPPED" ]; then
+    echo "[prod-local]   ✗ KMS salt wrap produced no output — refusing to insert an empty salt row." >&2
+    exit 1
+  fi
+  psql "INSERT INTO tenancy.brand_identity_salt (brand_id, kms_key_id, wrapped_salt_b64, key_version, is_active)
+        VALUES ('$B','$KEY_ARN','$WRAPPED',1,true)
+        ON CONFLICT (brand_id) DO UPDATE SET kms_key_id=EXCLUDED.kms_key_id,
+          wrapped_salt_b64=EXCLUDED.wrapped_salt_b64, is_active=true;" >/dev/null
+  echo "[prod-local]   identity salt provisioned for $B"
+}
+
+echo "[prod-local] brand_keyring + brand_identity_salt re-wrap for ALL brands (KMS-wrapped, PII continuity)"
+ALL_BRANDS=$(psql "SELECT brand_id FROM brand_keyring UNION SELECT brand_id FROM tenancy.brand_identity_salt UNION SELECT id FROM list_active_brand_ids() UNION SELECT '$BRAND'::uuid")
+for B in $ALL_BRANDS; do
+  [ -z "$B" ] && continue
+  provision_keyring "$B"
+  provision_salt "$B"
+done
 
 echo "[prod-local] migrate connector secrets dev_secret → Secrets Manager (prod 'reconnect')"
 # In dev the connector tokens live in PG dev_secret (LocalSecretsManager); in prod the worker reads

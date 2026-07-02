@@ -34,29 +34,38 @@ So Phase 1 IS now uncomment-and-apply. The **only remaining manual prep** is fil
 If the state bucket + lock table don't exist yet:
 ```bash
 cd infra/terraform/bootstrap
-terraform init && terraform apply    # creates brain-tfstate-prod-<acct> + brain-tfstate-lock-prod (+ KMS, OIDC)
+terraform init && terraform apply -var environment=prod   # brain-tfstate-prod-<acct> + brain-tfstate-lock-prod + state KMS
 ```
-This is the only locally-bootstrapped step; it's what makes `envs/prod` usable.
+This creates the **state backend only** (bucket + lock table + state KMS — no
+OIDC provider, no IAM roles; those live in `envs/prod` itself). It is NOT the
+only local step: the **first** `envs/prod` apply must also run locally (Phase 1).
 
 ---
 
-## 2. Phase 1 — Provision AWS (CI OIDC `workflow_dispatch` — no static creds)
+## 2. Phase 1 — Provision AWS (first apply LOCAL, then CI OIDC `workflow_dispatch`)
 
-First **uncomment the M4 module blocks** in `infra/terraform/envs/prod/bootstrap.tf` (authored + inputs verified): `secrets`, `network` (`enable_nat_gateway = false`), `nat_instance`, `vpc_endpoints`, `eks`, `aurora`, `s3_iceberg`, `s3_audit`, `s3_iceberg_silver`, `s3_iceberg_gold`, `irsa_collector`/`irsa_core`/`irsa_stream_worker`/`irsa_spark_jobs`, `elasticache`. Commit to `master`.
+The M4 module set in `infra/terraform/envs/prod/bootstrap.tf` is **UN-GATED**
+(AUD-COST-001 — nothing to uncomment): `secrets`, `network` (`enable_nat_gateway = false`),
+`nat_instance`, `vpc_endpoints`, `eks`, `aurora`, `s3_iceberg`, `s3_audit`,
+`s3_iceberg_silver`, `s3_iceberg_gold`, the IRSA roles, `elasticache`, and the
+`oidc_github` CI/CD roles. Create `terraform.tfvars` from the example and commit config changes to `master`.
 
-**One-time CI prerequisites** (the apply runs as `.github/workflows/prod-apply.yml`):
-- `infra/terraform/bootstrap` applied (state bucket + lock + OIDC provider + apply role).
-- Repo **variable `AWS_PROD_APPLY_ROLE_ARN`** = the `oidc_github` apply-role ARN.
-- `oidc_github` `github_org`/`github_repo` MUST match this repo, and `allowed_branches` MUST include the dispatch branch (set to `["master"]`). **Re-apply `oidc_github`** if you changed these.
-- GitHub **Settings → Environments → `production`** → add **required reviewers** (the human approval gate).
+**The FIRST apply must be LOCAL** (chicken-and-egg — AUD-COST-002: the CI apply
+role `brain-prod-github-apply` and the OIDC provider are created by this very
+apply, so `.github/workflows/prod-apply.yml` cannot run yet):
+`cd infra/terraform/envs/prod && terraform init && terraform plan -out m4.plan && terraform apply m4.plan`
+with operator credentials. Staged alternative: `-target=module.network`, then
+`-target=module.eks`, then a blank-target apply (the graph orders the rest).
+
+**One-time CI prerequisites** (for every SUBSEQUENT apply via `.github/workflows/prod-apply.yml`):
+- Repo **variable `AWS_PROD_APPLY_ROLE_ARN`** = `terraform output github_apply_role_arn` (envs/prod).
+- Repo **variable `AWS_ECR_PUSH_ROLE_ARN`** = `terraform output github_ecr_push_role_arn` and **`ENVIRONMENT`** = `prod` (main.yml CD lane — the push role is scoped to the `brain-*-prod` ECR repos).
+- `oidc_github` `github_org`/`github_repo` = `Rishabhporwal`/`Brain-V4` (MUST match this repo), `allowed_branches` `["master"]`. **Re-apply `oidc_github`** if you changed these.
+- GitHub **Settings → Environments → `production`** → add **required reviewers** (the human approval gate; the apply role's OIDC trust is bound to this Environment's sub claim).
 
 **Then trigger it** (Actions → "prod-apply (M4 turn-on)" → Run workflow):
 - `confirm = apply-prod` (required), `target` blank for full apply (or e.g. `module.network` for staged).
 - The job pauses at the `production` environment gate → a reviewer approves → it runs `terraform init → validate → plan → apply` against the real prod backend via OIDC.
-
-**Staged caution:** dispatch with `target=module.network` then `target=module.eks` then a blank-target run for the rest. Terraform's graph also orders a single full apply correctly (EKS/Aurora wait on network).
-
-**Local fallback** (if you'd rather not use CI): `cd infra/terraform/envs/prod && terraform init && terraform plan -out m4.plan && terraform apply m4.plan` with an assumed apply role.
 
 **Sanity:** `terraform output` → note `eks` cluster name, `aurora` endpoint, the S3 bucket names, IRSA role ARNs (feed these into the ArgoCD/Helm placeholders if not already).
 

@@ -11,7 +11,7 @@
  * to simulate the production role boundary.
  */
 import pg from 'pg';
-import type { SpoolRepository } from '../domain/ingest/repositories/spool.repository.js';
+import type { SpoolClaim, SpoolRepository } from '../domain/ingest/repositories/spool.repository.js';
 import type { IngestEnvelope } from '../domain/ingest/value-objects/envelope.js';
 import type { PendingSpoolEntry } from '../domain/ingest/entities/spool-entry.js';
 import { log } from '../log.js';
@@ -48,20 +48,104 @@ export class PgSpoolRepository implements SpoolRepository {
     return BigInt(row.id);
   }
 
-  async pollPending(limit: number): Promise<PendingSpoolEntry[]> {
-    const result = await this.pool.query<{ id: string; raw_body: Record<string, unknown> }>(
-      `SELECT id::text, raw_body
-       FROM collector_spool
-       WHERE status = 'pending'
-       ORDER BY id
-       LIMIT $1`,
-      [limit],
+  async insertMany(envelopes: IngestEnvelope[]): Promise<bigint[]> {
+    if (envelopes.length === 0) return [];
+
+    // Same payload shape as insert(): the received_at stamp rides on the body too.
+    const bodies = envelopes.map((e) => JSON.stringify({ ...e.rawBody, _received_at: e.receivedAt }));
+    const receivedAts = envelopes.map((e) => e.receivedAt);
+
+    // ONE multi-row INSERT (AUD-PERF-007): a /batch of 50 events is a single PG round-trip +
+    // commit instead of 50 sequential ones, and holds a pool connection for one statement only.
+    const result = await this.pool.query<{ id: string }>(
+      `INSERT INTO collector_spool (raw_body, received_at, status)
+       SELECT body::jsonb, received_at, 'pending'
+       FROM unnest($1::text[], $2::timestamptz[]) AS t(body, received_at)
+       RETURNING id::text`,
+      [bodies, receivedAts],
     );
 
-    return result.rows.map((row) => ({
-      id: BigInt(row.id),
-      rawBody: row.raw_body,
-    }));
+    if (result.rows.length !== envelopes.length) {
+      throw new Error(
+        `[spool] batch INSERT returned ${result.rows.length} rows for ${envelopes.length} envelopes`,
+      );
+    }
+    return result.rows.map((row) => BigInt(row.id));
+  }
+
+  /**
+   * Claim up to `limit` pending rows inside a transaction held on a dedicated pool client
+   * (AUD-PERF-006). FOR UPDATE SKIP LOCKED makes concurrent claimers — an overlapping tick or a
+   * second collector replica — skip already-claimed rows instead of double-producing them; the
+   * standard PG queue pattern. No schema change: the row lock IS the claim (status stays
+   * 'pending' until markDrained + commit), and a crash releases it server-side automatically.
+   */
+  async claimPending(limit: number): Promise<SpoolClaim> {
+    const client = await this.pool.connect();
+    let settled = false;
+    const settle = async (verb: 'COMMIT' | 'ROLLBACK'): Promise<void> => {
+      if (settled) return;
+      settled = true;
+      try {
+        await client.query(verb);
+      } finally {
+        client.release();
+      }
+    };
+
+    try {
+      await client.query('BEGIN');
+      // raw_body::text passthrough (AUD-PERF-012): select the CANONICAL jsonb text and project
+      // the only fields the drainer needs in SQL — the driver never parses the body and the
+      // producer never re-stringifies it. jsonb_typeof guards keep the previous TS semantics:
+      // a non-string brand_id/event_id/correlation_id counts as absent (NULL), not stringified.
+      const result = await client.query<{
+        id: string;
+        raw_body_text: string;
+        correlation_id: string | null;
+        brand_id: string | null;
+        event_id: string | null;
+      }>(
+        `SELECT id::text,
+                raw_body::text AS raw_body_text,
+                CASE WHEN jsonb_typeof(raw_body->'correlation_id') = 'string' THEN raw_body->>'correlation_id' END AS correlation_id,
+                CASE WHEN jsonb_typeof(raw_body->'brand_id') = 'string' THEN raw_body->>'brand_id' END AS brand_id,
+                CASE WHEN jsonb_typeof(raw_body->'event_id') = 'string' THEN raw_body->>'event_id' END AS event_id
+         FROM collector_spool
+         WHERE status = 'pending'
+         ORDER BY id
+         LIMIT $1
+         FOR UPDATE SKIP LOCKED`,
+        [limit],
+      );
+
+      const entries: PendingSpoolEntry[] = result.rows.map((row) => ({
+        id: BigInt(row.id),
+        rawBodyText: row.raw_body_text,
+        correlationId: row.correlation_id,
+        brandId: row.brand_id,
+        eventId: row.event_id,
+      }));
+
+      return {
+        entries,
+        markDrained: async (ids: bigint[]): Promise<void> => {
+          if (ids.length === 0) return;
+          await client.query(
+            `UPDATE collector_spool
+             SET status = 'drained', drained_at = now()
+             WHERE id = ANY($1::bigint[])`,
+            [ids.map((id) => id.toString())],
+          );
+        },
+        commit: () => settle('COMMIT'),
+        rollback: () => settle('ROLLBACK'),
+      };
+    } catch (err) {
+      // BEGIN/SELECT failed — release the client (rollback is best-effort on a broken conn).
+      await settle('ROLLBACK').catch(() => undefined);
+      throw err;
+    }
   }
 
   async countPendingBounded(cap: number): Promise<number> {
@@ -75,15 +159,6 @@ export class PgSpoolRepository implements SpoolRepository {
       [cap],
     );
     return Number(result.rows[0]?.n ?? '0');
-  }
-
-  async markDrained(id: bigint): Promise<void> {
-    await this.pool.query(
-      `UPDATE collector_spool
-       SET status = 'drained', drained_at = now()
-       WHERE id = $1`,
-      [id.toString()],
-    );
   }
 
   async reapDrained(olderThanSeconds: number): Promise<number> {

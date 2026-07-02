@@ -5,7 +5,8 @@
  * and the sampler's fail-open behaviour with a fake repo — no HTTP server, no real DB, no clock.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { SpoolBackpressure } from '../src/interfaces/rest/spool-backpressure.js';
+import Fastify from 'fastify';
+import { SpoolBackpressure, registerSpoolBackpressure } from '../src/interfaces/rest/spool-backpressure.js';
 import type { SpoolRepository } from '../src/domain/ingest/repositories/spool.repository.js';
 
 const CFG = {
@@ -19,9 +20,15 @@ const CFG = {
 function fakeRepo(countImpl: (cap: number) => Promise<number>): SpoolRepository {
   return {
     insert: async () => 1n,
-    pollPending: async () => [],
-    markDrained: async () => {},
+    insertMany: async (envelopes) => envelopes.map((_, i) => BigInt(i + 1)),
+    claimPending: async () => ({
+      entries: [],
+      markDrained: async () => {},
+      commit: async () => {},
+      rollback: async () => {},
+    }),
     countPendingBounded: countImpl,
+    reapDrained: async () => 0,
     ping: async () => true,
   };
 }
@@ -110,5 +117,34 @@ describe('SpoolBackpressure — sampler', () => {
     await gate.sampleOnce(); // COUNT throws → keep last state (open), not tripped
     expect(gate.admit()).toBe(true);
     expect(onError).toHaveBeenCalledOnce();
+  });
+});
+
+describe('registerSpoolBackpressure — uniform shed over /collect, /v1/events and /batch (AUD-PERF-001)', () => {
+  async function buildTrippedApp() {
+    const gate = new SpoolBackpressure(fakeRepo(async () => 0), CFG);
+    gate.applySample(CFG.maxPending); // trip
+    const app = Fastify({ logger: false });
+    registerSpoolBackpressure(app, gate);
+    app.post('/collect', async () => ({ accepted: true }));
+    app.post('/v1/events', async () => ({ accepted: true }));
+    app.post('/batch', async () => ({ accepted: true }));
+    await app.ready();
+    return app;
+  }
+
+  it('a tripped gate sheds /batch with 503 SPOOL_FULL (was previously unguarded)', async () => {
+    const app = await buildTrippedApp();
+    const res = await app.inject({ method: 'POST', url: '/batch', payload: { events: [{}] } });
+    expect(res.statusCode).toBe(503);
+    expect(res.headers['retry-after']).toBe(String(CFG.retryAfterSeconds));
+    await app.close();
+  });
+
+  it('a query-string suffix cannot bypass a tripped gate on /collect', async () => {
+    const app = await buildTrippedApp();
+    const res = await app.inject({ method: 'POST', url: '/collect?x=1', payload: {} });
+    expect(res.statusCode).toBe(503);
+    await app.close();
   });
 });

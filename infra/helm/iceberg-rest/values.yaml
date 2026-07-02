@@ -11,7 +11,7 @@ replicaCount: 1
 # Iceberg JdbcCatalog over Postgres (Aurora in prod). The catalog tables (iceberg_tables,
 # iceberg_namespace_properties, iceberg_views) live in this DB; Iceberg DATA files live in S3.
 catalog:
-  warehouse: ""              # e.g. s3://brain-prod-bronze/  (must match the Spark job warehouse roots)
+  warehouse: ""              # e.g. s3://brain-bronze-<env>-<acct>/ — the SINGLE warehouse root; medallion layers are namespaces (AUD-COST-016)
   jdbcHost: ""               # Aurora writer endpoint (module.aurora.endpoint)
   jdbcPort: 5432
   jdbcDatabase: iceberg_catalog

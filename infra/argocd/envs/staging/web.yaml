@@ -12,8 +12,8 @@ metadata:
 spec:
   project: brain-staging
   source:
-    repoURL: https://github.com/brain-platform/brain
-    targetRevision: main
+    repoURL: https://github.com/Rishabhporwal/Brain-V4.git
+    targetRevision: master
     path: infra/helm/web
     helm:
       valueFiles:

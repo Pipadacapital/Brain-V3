@@ -34,14 +34,13 @@ import { Kafka, Consumer } from 'kafkajs';
 import { randomUUID } from 'node:crypto';
 import { DbAuditWriter, type AuditDbClient } from '@brain/audit';
 import type { Producer } from 'kafkajs';
-import type mysql from 'mysql2/promise';
 import { ProcessEventUseCase } from '../application/ProcessEventUseCase.js';
 import { RedisDedupAdapter } from '../infrastructure/redis/RedisDedupAdapter.js';
 import { BronzeRepository } from '../infrastructure/pg/BronzeRepository.js';
 import { CollectorEventConsumer } from '../interfaces/consumers/CollectorEventConsumer.js';
 import { InMemoryRetryCounter } from './support/InMemoryRetryCounter.js';
 import { buildDedupKey } from '../domain/bronze/DedupPolicy.js';
-import { makeStarrocksPool, icebergBronzeAvailable, pollIcebergBronzeCount } from './helpers/iceberg-bronze.js';
+import { makeBronzeTrinoPool, icebergBronzeAvailable, pollIcebergBronzeCount, type BronzePool } from './helpers/iceberg-bronze.js';
 
 // ── Config ──────────────────────────────────────────────────────────────────
 const REDIS_URL = process.env['REDIS_URL'] ?? 'redis://localhost:6379';
@@ -51,7 +50,9 @@ const BRAIN_APP_DB_URL =
 const BRAIN_SUPERUSER_DB_URL =
   process.env['DATABASE_URL'] ?? 'postgres://brain:brain@localhost:5432/brain';
 const KAFKA_BROKERS = (process.env['KAFKA_BROKERS'] ?? 'localhost:9092').split(',');
-const TOPIC = process.env['COLLECTOR_TOPIC'] ?? 'dev.collector.event.v1';
+// The running Spark sink consumes the env-PREFIXED topic; the local-prod stack uses `prod.`
+// (see bronze-dedup-effectively-once.live.test.ts) — default to the LIVE sink's topic.
+const TOPIC = process.env['COLLECTOR_TOPIC'] ?? 'prod.collector.event.v1';
 
 // Test brands — recognisable a11/b22 prefixes, valid UUIDv4, NEVER live brands.
 const BRAND_A = 'a11a0001-0a00-4a00-8a00-000000000001';
@@ -70,7 +71,7 @@ let bronze: BronzeRepository;
 let auditPool: Pool;
 let useCase: ProcessEventUseCase;
 let producer: Producer;          // produce to the collector topic → Spark sink → Iceberg
-let sr: mysql.Pool;              // StarRocks — reads Iceberg Bronze (the SoR)
+let sr: BronzePool;              // Trino — reads Iceberg Bronze (the SoR)
 let lakehouseUp = false;         // can we verify Bronze landing in Iceberg?
 
 const cleanupEventIds: string[] = [];
@@ -200,7 +201,7 @@ beforeAll(async () => {
   const kafkaProd = new Kafka({ clientId: 'ingest-hardening-producer', brokers: KAFKA_BROKERS, logLevel: 0, retry: { retries: 3 } });
   producer = kafkaProd.producer();
   await producer.connect();
-  sr = makeStarrocksPool();
+  sr = makeBronzeTrinoPool();
   lakehouseUp = await icebergBronzeAvailable(sr);
 }, 30_000);
 

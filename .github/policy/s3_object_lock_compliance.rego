@@ -1,5 +1,11 @@
-# NN-4: S3 Object Lock MUST be COMPLIANCE mode + 7-year retention on purpose=audit/bronze buckets.
+# NN-4: S3 Object Lock MUST be COMPLIANCE mode + 7-year retention on purpose=audit buckets.
 # Rejects GOVERNANCE mode and retention periods below 7 years on tagged buckets.
+#
+# AUD-COST-016: "bronze" was REMOVED from the protected set. The bronze bucket
+# is the Iceberg medallion warehouse — Iceberg MERGE/compaction, the raw-PII
+# row-TTL DELETE (AUD-PERF-003) and DPDP/GDPR right-to-erasure all DELETE
+# objects, which COMPLIANCE Object Lock forbids for 7 years. WORM retention is
+# an audit-bucket property only (see the docs/adr/0002 addendum).
 
 package brain.iac.s3_object_lock_compliance
 
@@ -7,9 +13,9 @@ import future.keywords.if
 import future.keywords.in
 
 # Protected purposes that require Object Lock COMPLIANCE + 7yr
-protected_purposes := {"audit", "bronze"}
+protected_purposes := {"audit"}
 
-# Deny: bucket with purpose=audit or purpose=bronze that lacks object_lock_enabled
+# Deny: bucket with purpose=audit that lacks object_lock_enabled
 deny[msg] if {
   resource := input.resource_changes[_]
   resource.type == "aws_s3_bucket"

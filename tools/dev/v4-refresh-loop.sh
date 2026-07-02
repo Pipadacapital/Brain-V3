@@ -221,6 +221,30 @@ run_spark_script() {  # $1=tier-label  $2=script-path
   return "$rc"
 }
 
+# ── daily data-plane maintenance cadence (guard file; AUD-PERF-003) ────────────────────────────────────
+# Retention/compaction must not run per-cycle: they contend with the SQLite-backed REST catalog and are
+# pointless at 5-min granularity. A guard-file mtime gives them a daily cadence INSIDE the loop, at the
+# end of a cycle (quiet window — the cycle's Spark jobs have all finished). The stamp is touched only on
+# SUCCESS, so a failed maintenance run retries next cycle. stat -f = BSD/macOS, stat -c = GNU.
+MAINT_INTERVAL_HOURS="${MAINT_INTERVAL_HOURS:-24}"
+maintenance_due() {  # $1 = guard file → rc 0 when the job should run this cycle
+  [ "${SKIP_MAINTENANCE:-0}" = "1" ] && return 1
+  [ -f "$1" ] || return 0
+  local mtime
+  mtime="$(stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0)"
+  [ $(( $(date +%s) - mtime )) -ge $(( MAINT_INTERVAL_HOURS * 3600 )) ]
+}
+
+run_maintenance_job() {  # $1=label  $2=script — daily-guarded run_spark_script; stamps guard on success
+  local stamp="/tmp/brain-v4-${1}.stamp"
+  maintenance_due "$stamp" || return 0
+  if run_spark_script "$1" "$2"; then
+    touch "$stamp"
+    return 0
+  fi
+  return 1
+}
+
 run_spark_tier() {  # $1=tier-label  $2..=scripts ; returns # of failed scripts
   local label="$1"; shift
   local ok=0 fail=0 s
@@ -444,6 +468,16 @@ run_once() {
     run_phase 2; failures=$((failures+$?))
   fi
 
+  # ── DAILY MAINTENANCE (guard-file cadence; end of cycle = quiet window) ────────────────────────────
+  # ADR-0006 D4 raw-PII short retention (AUD-PERF-003): row-TTL DELETE + snapshot expiry over the raw
+  # Bronze tables, incl. the unified brain_bronze.events connector lanes. Compliance job — a failure
+  # marks the cycle degraded (and retries next cycle: the guard stamp is only touched on success).
+  run_maintenance_job bronze-raw-retention "$SPARK_ROOT/run-bronze-raw-retention.sh" || failures=$((failures+1))
+  # Iceberg Silver+Gold compaction + snapshot expiry + guarded orphan-file sweep (AUD-PERF-004): the
+  # per-cycle MERGEs/overwrites shard the marts into thousands of ~16KB files that nothing ever
+  # coalesced. Runs at the end of the cycle so it never contends with this cycle's mart writes.
+  run_maintenance_job medallion-maintenance "$SPARK_ROOT/run-medallion-maintenance.sh" || failures=$((failures+1))
+
   cycle_end=$(now_ms)
   if [ "$failures" -eq 0 ]; then
     echo "[$(ts)] ✓ V4 refresh cycle complete (0 failures)"
@@ -460,6 +494,18 @@ if [ "${ONESHOT:-0}" = "1" ]; then
   run_once
   exit $?
 fi
+
+# ── single-loop guard (AUD-INFRA-006): a second CONTINUOUS loop exits with a clear message instead of
+# doubling every Spark step. ONESHOT=1 runs (dev-up) stay allowed — they QUEUE behind the running loop's
+# current job via the per-script batch-Spark admission lock (db/iceberg/spark/_spark_lock.sh).
+LOOP_PIDFILE="${LOOP_PIDFILE:-${TMPDIR:-/tmp}/brain-v4-refresh-loop.pid}"
+if [ -f "$LOOP_PIDFILE" ] && kill -0 "$(cat "$LOOP_PIDFILE" 2>/dev/null)" 2>/dev/null; then
+  echo "✗ another V4 refresh loop is already running (pid $(cat "$LOOP_PIDFILE")) — not starting a second one." >&2
+  echo "  (ONESHOT=1 single cycles remain allowed; they queue via the Spark batch lock.)" >&2
+  exit 1
+fi
+echo "$$" > "$LOOP_PIDFILE"
+trap 'rm -f "$LOOP_PIDFILE"' EXIT
 
 echo "▶ V4 refresh loop — phase=${PHASE}, every ${INTERVAL}s (Ctrl-C to stop)"
 while true; do

@@ -33,11 +33,14 @@ workers:
 iceberg:
   restUri: "http://iceberg-rest.iceberg.svc.cluster.local:8181"
   s3:
-    region: us-east-1
+    # AUD-COST-008: MUST be ap-south-1 — every bucket/VPC/endpoint lives there; a SigV4
+    # region mismatch 400s (AuthorizationHeaderMalformed) every S3 read through the sole
+    # serving engine at go-live.
+    region: ap-south-1
     endpoint: ""
     pathStyleAccess: false
   s3SecretName: ""
 
 serviceAccount:
   annotations:
-    eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/brain-trino-prod
+    eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/brain-prod-trino

@@ -1,0 +1,82 @@
+{{- /*
+AUD-COST-011: production DB migration runner. The 120 db/migrations had no
+execution vehicle against Aurora — the first core/stream-worker rollout would
+boot an unmigrated DB and crash-loop (stream-worker JDBC-reads PG at startup).
+
+Runs as BOTH a helm pre-install/pre-upgrade hook and an ArgoCD PreSync hook
+(ArgoCD renders with `helm template`, so the argocd.argoproj.io annotations are
+the operative ones under GitOps): the Job must succeed BEFORE the new
+Deployment syncs. The core image already carries db/migrations +
+scripts/migrate.mjs + node-pg-migrate (Dockerfile COPY . . with devDeps), so
+`pnpm migrate:up` from /repo is the exact local command, PGOPTIONS app.env
+stamping included. Migrations are additive/nullable by repo norm — safe to run
+before the old pods drain.
+
+DATABASE_URL nuance: core-env points DATABASE_URL at pgbouncer (transaction
+pooling), but node-pg-migrate takes a session-scoped advisory lock — route the
+runner DIRECTLY at Aurora via migrations.databaseUrlFromKey (a core-env key
+carrying the direct URL, e.g. DATABASE_URL_DIRECT).
+*/ -}}
+{{- if .Values.migrations.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "brain.fullname" . }}-migrate
+  labels:
+    {{- include "brain.labels" . | nindent 4 }}
+    brain.io/job: db-migrate
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-delete-policy: before-hook-creation
+    helm.sh/hook-weight: "-5"
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: {{ .Values.migrations.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.migrations.activeDeadlineSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "brain.selectorLabels" . | nindent 8 }}
+        brain.io/job: db-migrate
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "brain.fullname" . }}
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          image: "{{ .Values.image.repository }}{{ if .Values.image.digest }}@{{ .Values.image.digest }}{{ else if and .Values.image.tag (ne .Values.image.tag "latest") }}:{{ .Values.image.tag }}{{ else }}{{ fail "image.digest (preferred) or an immutable, non-':latest' image.tag is required (B3) — refusing to deploy an unpinned/mutable image" }}{{ end }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          workingDir: /repo
+          command: ["pnpm", "migrate:up"]
+          envFrom:
+            - secretRef:
+                name: {{ required "envSecretName is required when migrations.enabled=true (DATABASE_URL source)" .Values.envSecretName }}
+          env:
+            # Dev-only migrations RAISE on app.env=production — stamp the real env.
+            - name: APP_ENV
+              value: {{ .Values.migrations.appEnv | quote }}
+            {{- if .Values.migrations.databaseUrlFromKey }}
+            # Direct-to-Aurora override (session advisory lock ≠ pgbouncer
+            # transaction pooling).
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.envSecretName }}
+                  key: {{ .Values.migrations.databaseUrlFromKey }}
+            {{- end }}
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+{{- end }}

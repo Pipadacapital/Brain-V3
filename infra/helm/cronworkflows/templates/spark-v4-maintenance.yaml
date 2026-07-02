@@ -1,0 +1,85 @@
+{{- /*
+AUD-COST-013 (prod counterpart of AUD-PERF-004): Silver/Gold Iceberg maintenance.
+Only Bronze had a maintenance cron; the hourly-rewritten Silver/Gold marts
+accumulated snapshots unbounded and NO tier swept orphan files (failed/aborted
+Spark writes leave data files expire_snapshots never touches) — unbounded S3
+growth on the medallion.
+
+Weekly spark-submit of db/iceberg/spark/medallion_maintenance.py (carried in
+the same image at /opt/brain): rewrite_data_files + expire_snapshots (7d TTL)
++ a GUARDED remove_orphan_files pass over brain_silver + brain_gold.
+
+Orphan-sweep guardrails (per the audit risk note):
+  - older_than is clamped >= 3 days IN the job; we pin 7d here so a file can
+    never belong to an in-flight commit (the marts rewrite hourly — there is no
+    write-silent window to schedule into, the age guard is the safety).
+  - remove_orphan_files lists via the Hadoop FS, not the catalog S3FileIO.
+    AUD-COST-020: with S3_ENDPOINT unset/empty (real S3) the job uses the
+    default AWS credential provider chain — the pod IRSA role, no static keys
+    (hadoop-aws is pre-baked in the spark image); a set S3_ENDPOINT means
+    MinIO-style path-style + static-key addressing (local). ORPHAN_FILES=0
+    stays the escape hatch (compaction+expiry only).
+Mirrors the spark-v4.yaml single-pod local[*] convention (maintenance is
+driver-only Iceberg procedure calls — no executor fleet needed).
+*/ -}}
+{{- if and .Values.sparkV4.enabled .Values.sparkV4.maintenance.enabled }}
+{{- $img := .Values.sparkV4.image -}}
+{{- $ref := "" -}}
+{{- if $img.digest -}}
+  {{- $ref = printf "%s@%s" $img.repository $img.digest -}}
+{{- else if and $img.tag (ne $img.tag "latest") -}}
+  {{- $ref = printf "%s:%s" $img.repository $img.tag -}}
+{{- else -}}
+  {{- fail "sparkV4.image.digest (preferred) or an immutable non-':latest' tag is required (B3) — refusing to deploy an unpinned image" -}}
+{{- end -}}
+{{- $envFrom := .Values.envSecretName -}}
+{{- $m := .Values.sparkV4.maintenance -}}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: CronWorkflow
+metadata:
+  name: v4-maintenance
+  labels:
+    {{- include "brain.labels" . | nindent 4 }}
+    brain.io/job: v4-maintenance
+spec:
+  # NOTE: the ERASURE mode (MODE=erase ERASE_BRAND_ID=…) is NOT this cron — it is
+  # invoked on-demand by the right-to-erasure orchestrator (same as Bronze).
+  schedule: {{ $m.schedule | quote }}
+  timezone: {{ .Values.timezone | quote }}
+  concurrencyPolicy: Forbid            # never overlap a maintenance sweep with itself
+  startingDeadlineSeconds: {{ .Values.defaults.startingDeadlineSeconds }}
+  successfulJobsHistoryLimit: {{ .Values.defaults.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.defaults.failedJobsHistoryLimit }}
+  workflowSpec:
+    serviceAccountName: {{ .Values.serviceAccount.name }}   # IRSA: S3 (medallion buckets) + REST catalog
+    entrypoint: run
+    activeDeadlineSeconds: {{ $m.activeDeadlineSeconds }}
+    podGC:
+      strategy: OnWorkflowSuccess
+    templates:
+      - name: run
+        retryStrategy:
+          limit: {{ .Values.defaults.backoffLimit | quote }}   # idempotent Iceberg procedures — retry-safe
+          retryPolicy: OnError
+        container:
+          image: {{ $ref | quote }}
+          imagePullPolicy: {{ $img.pullPolicy }}
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              exec /opt/spark/bin/spark-submit --master local[*] --driver-memory {{ .Values.sparkV4.driverMemory }} \
+                --py-files /opt/brain/iceberg_base.py \
+                /opt/brain/medallion_maintenance.py
+          env:
+            - { name: MODE, value: "maintain" }
+            {{- toYaml $m.env | nindent 12 }}
+          {{- if $envFrom }}
+          envFrom:
+            - secretRef:
+                name: {{ $envFrom }}    # ICEBERG_REST_URI + AWS_* + S3_ENDPOINT (S3A orphan listing)
+          {{- end }}
+          resources:
+            {{- toYaml .Values.sparkV4.resources | nindent 12 }}
+{{- end }}

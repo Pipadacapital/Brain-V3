@@ -1,0 +1,62 @@
+################################################################################
+# Brain – ArgoCD Application: cert-manager (prod) — AUD-COST-003
+# In-cluster certificate machinery. PUBLIC TLS terminates at the shared ALB
+# with an ACM certificate (alb.ingress.kubernetes.io/certificate-arn on the
+# collector/web/core Ingresses) — cert-manager covers everything ACM cannot:
+# internal/webhook certs and any future non-ALB endpoint. CRDs kept on delete.
+# MANUAL promotion gate (prod convention) — no automated sync.
+################################################################################
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cert-manager-prod
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+  labels:
+    project: brain
+    environment: prod
+    service: cert-manager
+spec:
+  project: brain-prod
+  source:
+    repoURL: https://charts.jetstack.io
+    chart: cert-manager
+    targetRevision: v1.16.2
+    helm:
+      valuesObject:
+        crds:
+          enabled: true
+          keep: true
+        nodeSelector:
+          role: system
+        webhook:
+          nodeSelector:
+            role: system
+        cainjector:
+          nodeSelector:
+            role: system
+        startupapicheck:
+          nodeSelector:
+            role: system
+        resources:
+          requests:
+            cpu: 50m
+            memory: 128Mi
+          limits:
+            cpu: 250m
+            memory: 256Mi
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cert-manager
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      limit: 2
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 5m
+  revisionHistoryLimit: 10

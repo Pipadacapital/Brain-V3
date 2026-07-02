@@ -1,0 +1,55 @@
+################################################################################
+# Brain – ArgoCD Application: PgBouncer (prod) — AUD-COST-019
+# The chart + values-prod existed but NO Application referenced them, while
+# core-env's DATABASE_URL points at pgbouncer:6432 — core would CrashLoop at
+# go-live with nothing serving that DNS. GO-LIVE previously worked around it
+# with a manual `helm upgrade --install`; this makes pgbouncer a first-class
+# GitOps app like its siblings.
+#
+# TRANSACTION-pooling multiplexer in front of Aurora for the CORE request path
+# ONLY. The stream-worker stays DIRECT on the Postgres primary (session
+# advisory leader lock — transaction pooling breaks it), and the migration
+# PreSync Job uses DATABASE_URL_DIRECT for the same reason (AUD-COST-011).
+#
+# sync-wave -1: before the workload apps (core dials pgbouncer at startup).
+# Its `pgbouncer-env` Secret comes from external-secrets-config (wave -2) —
+# sync that first (GO-LIVE step 8). Upstream host REPLACE_WITH_PROD_POSTGRES_HOST
+# is filled from `terraform output aurora_endpoint` (PLACEHOLDERS.md §2).
+# MANUAL promotion gate (prod convention) — no automated sync.
+################################################################################
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: pgbouncer-prod
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+    argocd.argoproj.io/manifest-generate-paths: infra/helm/pgbouncer
+  labels:
+    project: brain
+    environment: prod
+    service: pgbouncer
+spec:
+  project: brain-prod
+  source:
+    repoURL: https://github.com/Rishabhporwal/Brain-V4.git
+    targetRevision: master
+    path: infra/helm/pgbouncer
+    helm:
+      valueFiles:
+        - values-prod.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: pgbouncer
+  # NO automated sync for prod — manual promotion gate required
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      limit: 2
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 5m
+  revisionHistoryLimit: 10

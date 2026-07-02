@@ -1,0 +1,68 @@
+{
+  // Dead-code report for the Brain monorepo (pnpm workspaces). NON-BLOCKING — surfaced by
+  // .github/workflows/knip.yml so unused files / exports / deps are caught going forward
+  // without gating merges. Knip auto-discovers the apps/* packages/* tools/* workspaces from
+  // pnpm-workspace.yaml; per-workspace overrides below name each runtime entrypoint so legit
+  // roots are not flagged as dead.
+  // (jsonc, not json: knip@5 rejects the old "//" comment-key workaround as an unrecognized key.)
+  "$schema": "https://unpkg.com/knip@5/schema.json",
+  "ignoreBinaries": ["docker", "docker compose", "trino", "spark-submit"],
+  "ignoreDependencies": [
+    "@brain/.*",
+    // NEVER remove: loaded via a dynamic import in packages/pii-vault/src/index.ts — removing
+    // it from apps/core reintroduces the empty-keyring-DEK cold-start bug.
+    "@aws-sdk/client-kms",
+    // NEVER remove: hidden dynamic import in apps/core notification/internal/ses-adapter.ts.
+    "@aws-sdk/client-ses",
+    // Load-bearing root devDep: tools/dev/v4-refresh-loop.sh runs `pnpm exec tsx`.
+    "tsx",
+    // Configured via .prettierrc.
+    "prettier",
+    // apps/stream-worker e2e helper still asserts the legacy Bronze table over mysql2;
+    // removable only after the AUD-CODE-002 Trino port lands.
+    "mysql2"
+  ],
+  "ignore": [
+    "**/dist/**",
+    "**/.next/**",
+    "**/.turbo/**",
+    "**/coverage/**",
+    "db/**",
+    "tools/seed/**",
+    // k6 CLI scripts, invoked per docs/runbooks/prod-deploy.md — not part of the import graph.
+    "tools/load-test/**",
+    // Negative-control fixtures for the custom eslint rules — intentionally "dead".
+    "tools/eslint-rules/fixtures/**",
+    // Shopify-CLI-built web pixel extension (shopify.extension.toml owns its entrypoint).
+    "extensions/**"
+  ],
+  "workspaces": {
+    "apps/core": { "entry": ["src/main.ts", "src/index.ts"] },
+    "apps/collector": { "entry": ["src/main.ts", "src/index.ts"] },
+    "apps/stream-worker": {
+      "entry": [
+        "src/main.ts",
+        "src/index.ts",
+        // CLI/cron job entrypoints: invoked by tools/dev/v4-refresh-loop.sh and the Argo
+        // cronworkflows (infra/helm/cronworkflows/values.yaml), not imported from main.ts.
+        "src/jobs/**/run.ts",
+        "src/jobs/*.ts",
+        // Operator CLI.
+        "src/jobs/identity/replay-identity.ts"
+      ]
+    },
+    "apps/web": {
+      // The app lives at apps/web/app + components (no src/ prefix).
+      "entry": [
+        "app/**/{page,layout,loading,error,not-found,route,template,default}.tsx",
+        "middleware.ts",
+        "next.config.{js,mjs,ts}",
+        "playwright.config.ts",
+        "playwright.demo.config.ts"
+      ],
+      "ignore": ["components/ui/**", "e2e/**"]
+    },
+    "packages/*": { "entry": ["src/index.ts"] },
+    "tools/*": { "entry": ["src/index.ts", "src/main.ts", "*.config.ts"] }
+  }
+}

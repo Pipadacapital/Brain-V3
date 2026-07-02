@@ -27,8 +27,8 @@ pnpm down -v         # also wipe volumes for a true cold start
 
 Source of truth: `tools/dev/dev-up.sh`. Compose profiles used:
 `--profile core --profile ai`. (`core` folds in the former `ingest` + `lakehouse`
-infra; the two Bronze Spark sinks are no longer containers — they run as one host
-process started in step 5.)
+infra; Bronze landing is not a compose container — it runs as ONE host-launched
+Spark process started in step 5.)
 
 | # | Step | What | Why ordered here |
 | --- | --- | --- | --- |
@@ -36,15 +36,17 @@ process started in step 5.)
 | 2 | db | `docker compose ... up -d --wait postgres` (Postgres only) | migrations must run **before** the Bronze sink reads PG |
 | 3 | migrate | `( set -a; . .env.local-prod; set +a; APP_ENV=local-prod pnpm migrate )` | sourced in a **subshell** so `NODE_ENV=production` does not leak into `next dev` |
 | 4 | infra | bring up the rest (core + ai) and **poll health** (`compose_up_healthy`) | does NOT use `up --wait` — one-shot init containers exit 0 mid-wait and would abort it |
-| 5 | bronze | start the host combined Bronze sink (`tools/dev/dev-bronze-streaming.sh`), backgrounded → `/tmp/bronze-sink.log` | replaces the two removed `spark-bronze-sink` containers |
+| 5 | bronze | start the host unified Bronze sink (`tools/dev/dev-bronze-streaming.sh` → `bronze_landing.py`), backgrounded → `/tmp/bronze-sink.log` | replaces the two removed `spark-bronze-sink` containers |
 | 6 | bootstrap | `pnpm bootstrap` → seed LocalStack Secrets Manager + KMS (per-brand keyring/secrets) | apps need the keyring/DEK to start |
 | 7 | refresh | `ONESHOT=1 APP_ENV=local-prod pnpm dev:v4-refresh` → one-shot Silver→Gold→Trino serving views | dashboards render honest-empty, not 500, on a cold DB |
 | 8 | apps | `turbo run dev` for `@brain/core`, `@brain/web`, `@brain/collector`, `@brain/stream-worker` | the app tier |
 
-> **Why db→migrate→bronze (not bronze→migrate):** the combined Bronze sink's
-> collector lane JDBC-reads PG (e.g. `pixel.pixel_installation`) for the R2
-> install_token→brand lookup. On a cold, un-migrated DB that relation doesn't exist
-> and the lane errors. Migrating first makes the cold start deterministic.
+> **Why db→migrate→bronze (not bronze→migrate):** historical + defensive. The
+> LEGACY split sinks' collector lane JDBC-read PG (`pixel.pixel_installation`) for
+> the R2 install_token→brand lookup, so an un-migrated DB crashed the sink. The
+> unified `bronze_landing.py` is PURE RAW and never touches PG (the R2/R3 gate
+> moved to Silver), but migrating first is kept — it costs nothing and stays
+> correct under a `BRONZE_SOURCE=legacy` rollback.
 
 ---
 
@@ -56,28 +58,31 @@ process started in step 5.)
 | `pnpm dev` | core + ai | full stack + host Bronze sink, single `up --wait` (no migrate-ordering safety) |
 | `pnpm dev:core` | core | infra (Postgres, Kafka, MinIO, Iceberg-REST, Trino, …) + web/core deps |
 | `pnpm dev:ingest` | core | infra + collector + stream-worker apps |
-| `pnpm dev:bronze-sink` | — | the host combined Bronze sink only (`dev-bronze-streaming.sh`) |
+| `pnpm dev:bronze-sink` | — | the host unified Bronze sink only (`dev-bronze-streaming.sh`) |
 | `pnpm dev:full` | core + full-obs + debug + ai | all infra incl. tracing/exporters, no apps |
 
 > Profiles: **core** (default infra: kafka, postgres, neo4j, redis, minio,
-> iceberg-rest, trino, prometheus, grafana, localstack, apicurio, pgbouncer),
-> **full-obs** (tempo, loki, otel-collector), **debug** (kafka-exporter), **ai** (litellm).
+> iceberg-rest, trino, localstack, apicurio, pgbouncer), **full-obs** (tempo, loki,
+> otel-collector), **debug** (kafka-exporter), **ai** (litellm — currently
+> commented out in compose, as are prometheus + grafana; re-enable by uncommenting).
 
 ---
 
-## Bronze streaming (the combined host Bronze landing)
+## Bronze streaming (the unified host Bronze landing)
 
 Spark Structured Streaming is the **sole** Bronze landing compute (Kafka Connect
-is retired). The two previously-separate compose sinks were **fused into one host
-process** (`tools/dev/dev-bronze-streaming.sh` → `db/iceberg/spark/combined_bronze_sinks.py`):
-ONE `docker run apache/spark` SparkSession sharing the Kafka container's netns
+is retired). The landing is ONE host process
+(`tools/dev/dev-bronze-streaming.sh` → `db/iceberg/spark/bronze_landing.py`):
+a single `docker run apache/spark` SparkSession sharing the Kafka container's netns
 (`--network container:brainv3-kafka-1`, so the `localhost:9092` advertised listener
-resolves), running BOTH streaming queries via `spark.streams.awaitAnyTermination()`.
-
-| Lane (in `combined_bronze_sinks.py`) | Job module | Lands into |
-| --- | --- | --- |
-| collector/pixel | `bronze_materialize.py` | `brain_bronze.collector_events` (gated, dedup MERGE on `(brand_id,event_id)`) |
-| 9 connector raw lanes | `bronze_raw_landing.py` | `brain_bronze.{lane}_raw` (append-only, idempotent on topic/partition/offset) |
+resolves), subscribing to ALL Bronze topics (collector + backfill + the nine
+connector `*.raw.v1` lanes) and landing everything **pure-raw** into ONE Iceberg
+table, `brain_bronze.events` (the R2/R3 pixel admission gate moved to Silver).
+Idempotency is a per-lane `dedup_key` MERGE: `evt:{brand_id}:{event_id}` for
+collector rows, `raw:{topic}:{partition}:{offset}` for raw lanes. The legacy split
+sinks (`bronze_materialize.py` → `collector_events`, `bronze_raw_landing.py` →
+`{lane}_raw`, fused as `combined_bronze_sinks.py`) remain in-tree only as the
+`BRONZE_SOURCE=legacy` rollback until Phase 8 decommission.
 
 It starts automatically as part of `pnpm dev:up` (step 5, backgrounded). To run or
 restart just the Bronze landing:
@@ -87,18 +92,23 @@ pnpm dev:bronze-sink            # = bash tools/dev/dev-bronze-streaming.sh
 tail -f /tmp/bronze-sink.log    # when started by dev:up
 ```
 
-> **Memory:** the launcher's heap defaults (driver 1g + executor 1g + offHeap 256m
-> ≈ ~2 GB; live-verified peak ~2.1 GiB on a backlog drain) are a STARTING POINT —
-> raise `SPARK_DRIVER_MEMORY` / `SPARK_EXECUTOR_MEMORY` if it OOMs or lags under a
-> large cold-start backlog. Override the broker container via `KAFKA_CONTAINER` and
-> the topics via `COLLECTOR_TOPIC` (defaults to the local-prod `prod.`-prefixed topic).
+> **Memory:** the launcher runs the sink with `--driver-memory 4g` + offHeap 512m
+> inside a `--memory 7g` container cap (under `local[*]` the driver JVM is the only
+> heap that matters; `--executor-memory` is a no-op). Sized for cold-start backlog
+> drain per `docs/ops/local-memory-budget.md` — tune via `SPARK_DRIVER_MEMORY` /
+> `SPARK_OFFHEAP_SIZE` / `SPARK_CONTAINER_MEMORY` if a very large backlog lags or
+> OOMs. The launcher is a supervisor loop: on ANY exit it auto-restarts the sink
+> from the DURABLE checkpoint volume `brain-bronze-checkpoint` (wipe that volume,
+> sink stopped, whenever the subscribed topic set / query plan changes). Override
+> the broker container via `KAFKA_CONTAINER` and the topics via `COLLECTOR_TOPIC`
+> (defaults to the local-prod `prod.`-prefixed topics).
 
 ---
 
 ## Medallion refresh loop
 
 `pnpm dev:v4-refresh` → `tools/dev/v4-refresh-loop.sh` runs Spark Silver→Gold and
-SYNC-refreshes the Trino serving views. `ONESHOT=1` runs it once (used by step 6);
+SYNC-refreshes the Trino serving views. `ONESHOT=1` runs it once (used by step 7);
 omit `ONESHOT` to run it as a continuous loop while developing.
 
 ```sh
@@ -134,7 +144,7 @@ APP_ENV=local-prod pnpm dev:v4-refresh             # continuous loop
 - `pnpm dev` (not `dev:up`) starts **all** profiles but skips the migrate-ordering
   safety — prefer `pnpm dev:up` for a true cold start.
 - LocalStack Secrets Manager/KMS are ephemeral; after a volume wipe you re-run
-  `pnpm bootstrap` (step 5 does this for you).
+  `pnpm bootstrap` (step 6 does this for you).
 
 ---
 

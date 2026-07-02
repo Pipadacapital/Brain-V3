@@ -1,0 +1,79 @@
+################################################################################
+# Brain – ArgoCD AppProjects (AUD-COST-005)
+# Every Application in this repo references spec.project brain / brain-prod /
+# brain-staging — ArgoCD REFUSES to sync an Application whose AppProject does
+# not exist, so these MUST be applied before the root app-of-apps
+# (infra/argocd/bootstrap/install.sh does this in order).
+#
+# sourceRepos: the Brain repo + the pinned upstream chart registries used by
+# the env manifests (strimzi / karpenter OCI / keda / argo-workflows / ESO /
+# eks-charts / jetstack / external-dns / neo4j). Additions to envs/* that pull
+# a NEW upstream registry must extend the matching allowlist here.
+################################################################################
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: brain
+  namespace: argocd
+  labels:
+    project: brain
+spec:
+  description: Brain root (app-of-apps) + legacy-labelled apps
+  sourceRepos:
+    - https://github.com/Rishabhporwal/Brain-V4.git
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: "*"
+  clusterResourceWhitelist:
+    - group: "*"
+      kind: "*"
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: brain-prod
+  namespace: argocd
+  labels:
+    project: brain
+    environment: prod
+spec:
+  description: Brain production workloads + platform add-ons (manual promotion gate)
+  sourceRepos:
+    - https://github.com/Rishabhporwal/Brain-V4.git
+    - https://strimzi.io/charts/
+    - public.ecr.aws/karpenter
+    - https://kedacore.github.io/charts
+    - https://argoproj.github.io/argo-helm
+    - https://charts.external-secrets.io
+    - https://aws.github.io/eks-charts
+    - https://charts.jetstack.io
+    - https://kubernetes-sigs.github.io/external-dns
+    - https://helm.neo4j.com/neo4j
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: "*"
+  # Platform charts (Strimzi/Karpenter/KEDA/Argo Workflows/ESO/cert-manager)
+  # install CRDs + cluster roles — cluster-scoped resources must be allowed.
+  clusterResourceWhitelist:
+    - group: "*"
+      kind: "*"
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: brain-staging
+  namespace: argocd
+  labels:
+    project: brain
+    environment: staging
+spec:
+  description: Brain staging workloads (auto-sync)
+  sourceRepos:
+    - https://github.com/Rishabhporwal/Brain-V4.git
+    - https://argoproj.github.io/argo-helm
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: "*"
+  clusterResourceWhitelist:
+    - group: "*"
+      kind: "*"

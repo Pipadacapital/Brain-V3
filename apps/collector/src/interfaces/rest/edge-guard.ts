@@ -38,6 +38,14 @@ interface Bucket {
 const TOKENLESS_KEY = '__tokenless__';
 
 /**
+ * The ingest endpoints every admission gate (rate-limit, origin, body-shape, spool back-pressure)
+ * MUST cover uniformly (AUD-PERF-001). Matched against req.routeOptions.url — the registered route
+ * PATTERN, which is query-string-free — never the raw req.url (for `POST /collect?x=1` req.url is
+ * '/collect?x=1', so strict raw-URL equality lets any query-suffixed request bypass the gates).
+ */
+export const GUARDED_INGEST_ROUTES: ReadonlySet<string> = new Set(['/collect', '/v1/events', '/batch']);
+
+/**
  * Structural body-shape admission (SR-03). A PRESENT body must be a JSON object — an array, a
  * scalar (`42`, `"x"`, `true`), or `null` is rejected BEFORE it reaches the spool. This is D-1-safe:
  * it is a structural admission gate (like the rate-limit / origin / back-pressure gates), NOT schema
@@ -62,8 +70,12 @@ export class EdgeRateLimiter {
     this.maxBuckets = cfg.maxBuckets ?? 50_000;
   }
 
-  /** Returns true when the request is WITHIN the limit (admit), false when OVER (reject). */
-  admit(installToken: string | undefined): boolean {
+  /**
+   * Returns true when the request is WITHIN the limit (admit), false when OVER (reject).
+   * `count` is the number of EVENTS the request carries (a /batch POST counts as N events
+   * against the bucket, not 1 request — AUD-PERF-001).
+   */
+  admit(installToken: string | undefined, count = 1): boolean {
     const key = installToken && installToken.length > 0 ? installToken : TOKENLESS_KEY;
     const now = this.now();
     let bucket = this.buckets.get(key);
@@ -76,7 +88,7 @@ export class EdgeRateLimiter {
       bucket = { windowStart: now, count: 0 };
       this.buckets.set(key, bucket);
     }
-    bucket.count += 1;
+    bucket.count += count;
     return bucket.count <= this.cfg.maxPerWindow;
   }
 
@@ -94,8 +106,10 @@ export function registerEdgeGuard(
   limiter: EdgeRateLimiter,
 ): void {
   app.addHook('preHandler', async (req: FastifyRequest, reply: FastifyReply) => {
-    // Only guard the ingest endpoints.
-    if (req.url !== '/collect' && req.url !== '/v1/events') return;
+    // Only guard the ingest endpoints — matched on the ROUTE PATTERN (query-string-free), never
+    // the raw req.url, so `/collect?x=1` cannot bypass the gates (AUD-PERF-001). An unmatched
+    // request (404) has no routeOptions.url and passes through to Fastify's own 404.
+    if (req.method !== 'POST' || !GUARDED_INGEST_ROUTES.has(req.routeOptions.url ?? '')) return;
 
     // Origin allowlist (reject-before-spool).
     const origin = req.headers['origin'] as string | undefined;
@@ -108,9 +122,22 @@ export function registerEdgeGuard(
     // Per-install_token rate-limit (reject-before-spool). Runs BEFORE the shape check so a flood of
     // malformed bodies (no install_token → tokenless bucket) is still rate-bounded, not just 400'd.
     const body = (req.body ?? {}) as Record<string, unknown>;
-    const props = (typeof body['properties'] === 'object' && body['properties'] !== null ? body['properties'] : {}) as Record<string, unknown>;
+    // A /batch POST carries N events: count them all against the bucket, keyed on the FIRST
+    // event's install_token (a batch spans one storefront — see collect.route.ts). A malformed
+    // `events` field counts as 1 under the tokenless bucket (the route 400s it after admission).
+    let eventCount = 1;
+    let tokenBody = body;
+    if (req.routeOptions.url === '/batch') {
+      const events = body['events'];
+      if (Array.isArray(events) && events.length > 0) {
+        eventCount = events.length;
+        const first = events[0];
+        tokenBody = (typeof first === 'object' && first !== null && !Array.isArray(first) ? first : {}) as Record<string, unknown>;
+      }
+    }
+    const props = (typeof tokenBody['properties'] === 'object' && tokenBody['properties'] !== null ? tokenBody['properties'] : {}) as Record<string, unknown>;
     const installToken = typeof props['install_token'] === 'string' ? props['install_token'] : undefined;
-    if (!limiter.admit(installToken)) {
+    if (!limiter.admit(installToken, eventCount)) {
       await reply
         .code(429)
         .header('Retry-After', '1')

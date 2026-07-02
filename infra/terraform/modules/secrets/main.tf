@@ -85,8 +85,71 @@ resource "aws_secretsmanager_secret" "apicurio" {
 }
 
 ###############################################################################
+# k8s env-Secret shells (AUD-COST-017) — the seven brain/<env>/k8s/* entries
+# the External Secrets Operator chart (infra/helm/external-secrets-config)
+# reads and materializes as the envSecretName Secrets every workload chart
+# consumes. Creating the SHELLS here makes the go-live fill step a VALUE update
+# (aws secretsmanager put-secret-value), not resource creation — and makes
+# drift plan-visible. Values are seeded by the operator and NEVER enter TF
+# state. Key contracts: infra/helm/external-secrets-config/README.md.
+###############################################################################
+
+locals {
+  k8s_env_secrets = {
+    "core-env"                = "core + BFF + cronworkflows env (DATABASE_URL via pgbouncer, DATABASE_URL_DIRECT, REDIS/KAFKA/TRINO/ICEBERG/NEO4J wiring)"
+    "web-env"                 = "web (BFF_BASE_URL / CORE_API_URL)"
+    "collector-env"           = "collector (DATABASE_URL, REDIS_URL, KAFKA_BROKERS, HMAC/pixel config)"
+    "stream-worker-env"       = "stream-worker (DIRECT Aurora DATABASE_URL — leader lock, KAFKA/TRINO/NEO4J, connector app creds)"
+    "pgbouncer-env"           = "pgbouncer upstream admin credentials (DB_USER/DB_PASSWORD)"
+    "iceberg-rest-catalog-db" = "iceberg-rest JdbcCatalog credentials (exactly: jdbc-user, jdbc-password)"
+    "neo4j-auth"              = "official neo4j chart auth (exactly: NEO4J_AUTH = neo4j/<password>)"
+  }
+}
+
+resource "aws_secretsmanager_secret" "k8s_env" {
+  for_each                = local.k8s_env_secrets
+  name                    = "${var.project}/${var.environment}/k8s/${each.key}"
+  kms_key_id              = var.kms_key_arn
+  description             = "Brain k8s env Secret shell (ESO-synced): ${each.value}"
+  recovery_window_in_days = 30
+
+  tags = {
+    project     = var.project
+    environment = var.environment
+    purpose     = "k8s-env-secret"
+  }
+}
+
+###############################################################################
 # IAM policies — scoped read access per workload (consumed via IRSA)
 ###############################################################################
+
+# External Secrets Operator controller (role brain-<env>-external-secrets):
+# read ONLY the brain/<env>/k8s/* shells above + KMS decrypt. Attached via the
+# irsa_external_secrets module in the env root (AUD-COST-017).
+data "aws_iam_policy_document" "eso_k8s_secrets_read" {
+  statement {
+    sid    = "ReadK8sEnvSecrets"
+    effect = "Allow"
+    actions = [
+      "secretsmanager:GetSecretValue",
+      "secretsmanager:DescribeSecret",
+    ]
+    resources = [for s in aws_secretsmanager_secret.k8s_env : s.arn]
+  }
+  statement {
+    sid       = "AllowKMSDecrypt"
+    effect    = "Allow"
+    actions   = ["kms:Decrypt"]
+    resources = [var.kms_key_arn]
+  }
+}
+
+resource "aws_iam_policy" "eso_k8s_secrets_read" {
+  name        = "${var.project}-${var.environment}-eso-k8s-secrets"
+  description = "External Secrets Operator: read the brain/${var.environment}/k8s/* env-secret shells only"
+  policy      = data.aws_iam_policy_document.eso_k8s_secrets_read.json
+}
 
 data "aws_iam_policy_document" "collector_secrets_read" {
   statement {
@@ -228,4 +291,13 @@ output "core_secrets_policy_arn" {
 
 output "otel_collector_secrets_policy_arn" {
   value = aws_iam_policy.otel_collector_secrets_read.arn
+}
+
+output "k8s_env_secret_arns" {
+  description = "Map of the brain/<env>/k8s/* env-secret shell ARNs (AUD-COST-017)"
+  value       = { for k, s in aws_secretsmanager_secret.k8s_env : k => s.arn }
+}
+
+output "eso_k8s_secrets_read_policy_arn" {
+  value = aws_iam_policy.eso_k8s_secrets_read.arn
 }

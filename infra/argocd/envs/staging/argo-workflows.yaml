@@ -1,0 +1,57 @@
+################################################################################
+# Brain – ArgoCD Application: Argo Workflows (staging) — AUD-COST-005
+# Upstream workflow-controller + CronWorkflow CRDs into ns `argo` — required
+# before cronworkflows-staging can sync its CronWorkflow CRs. Auto-sync
+# (staging convention); sync-wave -2 orders it before the cron chart.
+################################################################################
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: argo-workflows-staging
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+  labels:
+    project: brain
+    environment: staging
+    service: argo-workflows
+spec:
+  project: brain-staging
+  source:
+    repoURL: https://argoproj.github.io/argo-helm
+    chart: argo-workflows
+    targetRevision: 0.45.11
+    helm:
+      valuesObject:
+        crds:
+          install: true
+          keep: true
+        server:
+          enabled: false
+        controller:
+          workflowNamespaces:
+            - argo
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argo
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      limit: 2
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 5m
+  revisionHistoryLimit: 10

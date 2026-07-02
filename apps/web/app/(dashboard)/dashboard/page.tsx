@@ -1,6 +1,6 @@
 /**
  * /dashboard — permanent redirect to /home.
- * The dashboard was renamed "Home" in the redesigned IA. dashboard-content.tsx is reused there.
+ * The dashboard was renamed "Home" in the redesigned IA (home has its own home-content.tsx).
  */
 import { redirect } from 'next/navigation';
 

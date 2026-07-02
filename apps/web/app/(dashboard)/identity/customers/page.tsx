@@ -1,7 +1,7 @@
 /**
  * /identity/customers — permanent redirect to /customers.
- * The customer browse list moved out of Identity into its own top-level Customers tab.
- * (customers-content.tsx alongside this file is the source the Customers slice re-homes.)
+ * The customer browse list moved out of Identity into its own top-level Customers tab
+ * (see app/(dashboard)/customers/customers-content.tsx).
  */
 import { redirect } from 'next/navigation';
 

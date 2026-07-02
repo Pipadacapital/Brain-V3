@@ -13,6 +13,13 @@
 # read path, dbt model, or app code. It is parameterized over a single
 # `layer` ("silver" | "gold") and instantiated twice by the env roots.
 #
+# PROD NO LONGER USES THIS MODULE (AUD-COST-016): the single Iceberg REST
+# catalog has ONE warehouse root, so prod's Silver/Gold live as NAMESPACES in
+# the modules/s3-iceberg warehouse bucket (mirroring local exactly) — per-layer
+# buckets under a REST/Jdbc catalog would need per-namespace location overrides
+# that local never exercises. dev/staging roots still instantiate it (pre-V4
+# layout, never applied); align them with prod before any apply.
+#
 # MIRRORS modules/s3-iceberg (Bronze) conventions:
 #   - SSE-KMS (aws:kms) with the root CMK, bucket_key_enabled.
 #   - Versioning enabled; full public-access block.
@@ -79,9 +86,9 @@ locals {
   # brain-silver-<env>-<acct> / brain-gold-<env>-<acct> — mirrors Bronze naming.
   bucket_name = "${var.project}-${var.layer}-${var.environment}-${data.aws_caller_identity.current.account_id}"
 
-  # Glue database mirrors Bronze: brain_silver_<env> / brain_gold_<env>.
-  # The Iceberg namespace seen by Spark/StarRocks is brain_<layer> (the env
-  # suffix scopes the physical Glue DB per account-per-environment isolation).
+  # Glue database NAME (used only by the dormant Glue IAM grants below — the
+  # aws_glue_catalog_database resource itself was removed, AUD-COST-012; the
+  # runtime catalog is REST/JDBC on Aurora).
   glue_db_name = "${var.project}_${var.layer}_${var.environment}"
 
   # Iceberg writes table data + metadata under the warehouse root. Hidden
@@ -160,12 +167,12 @@ resource "aws_s3_bucket_lifecycle_configuration" "this" {
 }
 
 ###############################################################################
-# Glue Data Catalog database for Iceberg metadata (brain_silver / brain_gold)
+# Iceberg catalog: NO Glue database here (AUD-COST-012). The runtime catalog is
+# the REST/JDBC catalog (infra/helm/iceberg-rest → JdbcCatalog on Aurora); the
+# former aws_glue_catalog_database (brain_silver/brain_gold) was paid-for dead
+# metadata nothing read. Catalog DB bootstrap SQL: infra/terraform/README.md
+# ("Prod go-live" step 2). Glue IAM grants below stay as a dormant fallback.
 ###############################################################################
-resource "aws_glue_catalog_database" "this" {
-  name        = local.glue_db_name
-  description = "Brain ${title(var.layer)} layer Iceberg catalog (${var.environment})"
-}
 
 ###############################################################################
 # Spark WRITE IAM policy — Get/Put/Delete on this layer prefix ONLY.
@@ -225,8 +232,9 @@ data "aws_iam_policy_document" "spark_write" {
     resources = [var.kms_key_arn]
   }
 
-  # Glue catalog write: Spark CREATE TABLE / commit Iceberg snapshots updates
-  # Glue table metadata for this layer's database only.
+  # Dormant fallback only (AUD-COST-012): runtime catalog is REST/JDBC, no Glue
+  # DB is provisioned. Scoped to this layer's (nonexistent) DB name — inert but
+  # kept so a Glue fallback needs no IAM change.
   statement {
     sid    = "AllowGlueCatalogWrite"
     effect = "Allow"
@@ -312,6 +320,7 @@ data "aws_iam_policy_document" "analytics_read" {
     resources = [var.kms_key_arn]
   }
 
+  # Dormant fallback only (AUD-COST-012) — see AllowGlueCatalogWrite note above.
   statement {
     sid    = "AllowGlueCatalogRead"
     effect = "Allow"
@@ -387,10 +396,6 @@ output "bucket_name" {
 
 output "bucket_arn" {
   value = aws_s3_bucket.this.arn
-}
-
-output "glue_database_name" {
-  value = aws_glue_catalog_database.this.name
 }
 
 output "spark_write_policy_arn" {

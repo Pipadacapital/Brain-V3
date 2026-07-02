@@ -1,0 +1,68 @@
+################################################################################
+# Brain – ArgoCD Application: Argo Workflows (prod) — AUD-COST-005
+# Installs the UPSTREAM workflow-controller + the argoproj.io/v1alpha1
+# CronWorkflow/Workflow CRDs into namespace `argo`. REQUIRED before the
+# cronworkflows chart can sync: every Spark cron (bronze landing, v4-silver /
+# v4-gold, maintenance) and node job in infra/helm/cronworkflows emits
+# CronWorkflow CRs into ns `argo` — without this controller the sync fails on
+# an unknown CRD and the entire Spark compute tier has no prod execution path.
+#
+# sync-wave -2: lands before strimzi (-… n/a) and before cronworkflows (0) at
+# bring-up. Server (UI) disabled — `argo submit --from cronworkflow/...` talks
+# to the k8s API directly; no extra exposure surface.
+# MANUAL promotion gate (matches trino/karpenter prod) — no automated sync.
+################################################################################
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: argo-workflows-prod
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+  labels:
+    project: brain
+    environment: prod
+    service: argo-workflows
+spec:
+  project: brain-prod
+  source:
+    repoURL: https://argoproj.github.io/argo-helm
+    chart: argo-workflows
+    targetRevision: 0.45.11
+    helm:
+      valuesObject:
+        crds:
+          install: true
+          keep: true          # never let an app delete the CRDs under live CronWorkflows
+        server:
+          enabled: false      # no UI/API server — CLI + controller only
+        controller:
+          # Workflows only ever run in ns argo (the cronworkflows chart's
+          # destination) — scope the controller instead of cluster-wide watch.
+          workflowNamespaces:
+            - argo
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          # Run on the fixed ON-DEMAND system node group (Karpenter capacity may
+          # be scale-to-zero Spot; the cron controller must always be up).
+          nodeSelector:
+            role: system
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argo
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      limit: 2
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 5m
+  revisionHistoryLimit: 10

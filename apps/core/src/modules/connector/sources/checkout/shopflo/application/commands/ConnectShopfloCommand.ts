@@ -1,7 +1,8 @@
 /**
  * ConnectShopfloCommand — wires up a Shopflo credential connector (Track B).
  *
- * Clone of ConnectRazorpayCommand. Stores the Shopflo credentials as ONE composite
+ * (Razorpay connects through the generic planCredentialConnect path — see
+ * credential-schema.ts.) Stores the Shopflo credentials as ONE composite
  * JSON bundle under a single secret_ref per connector_instance:
  *   { api_token, webhook_secret }
  *

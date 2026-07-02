@@ -32,14 +32,14 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { Pool } from 'pg';
 import { Kafka, type Producer } from 'kafkajs';
-import type mysql from 'mysql2/promise';
 import { uuidV5FromOrderBackfill, uuidV5FromOrderLive } from '@brain/shopify-mapper';
 import { CollectorEventV1Schema, COLLECTOR_EVENT_V1_TOPIC_SUFFIX, ORDER_BACKFILL_V1_TOPIC_SUFFIX } from '@brain/contracts';
 import {
-  makeStarrocksPool,
+  makeBronzeTrinoPool,
   icebergBronzeAvailable,
   pollIcebergBronzeCount,
   KAFKA_BROKERS,
+  type BronzePool,
 } from './helpers/iceberg-bronze.js';
 import {
   CONNECTOR_TEST_BRAND_A,
@@ -61,7 +61,9 @@ const BRAIN_APP_DB_URL =
 const SUPERUSER_DB_URL =
   process.env['DATABASE_URL'] ??
   'postgres://brain:brain@localhost:5432/brain';
-const ENV = process.env['APP_ENV'] ?? 'dev';
+// The running Spark sink consumes the env-PREFIXED topics; the local-prod stack uses `prod.` —
+// default to the LIVE sink's prefix so the Bronze-landing assertions exercise the real pipeline.
+const ENV = process.env['APP_ENV'] ?? 'prod';
 const LIVE_TOPIC = `${ENV}.${COLLECTOR_EVENT_V1_TOPIC_SUFFIX}`;
 const BACKFILL_TOPIC = `${ENV}.${ORDER_BACKFILL_V1_TOPIC_SUFFIX}`;
 
@@ -75,7 +77,7 @@ const NIL_UUID = '00000000-0000-0000-0000-000000000000';
 let superPool: Pool;
 let appPool: Pool;
 let producer: Producer;
-let sr: mysql.Pool;        // StarRocks — reads Iceberg Bronze (the SoR)
+let sr: BronzePool;        // Trino — reads Iceberg Bronze (the SoR)
 let infraUp = false;       // lakehouse reachable? (gates the Bronze-landing tests)
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -149,7 +151,7 @@ beforeAll(async () => {
   const kafka = new Kafka({ clientId: 'live-connector-e2e-producer', brokers: KAFKA_BROKERS, retry: { retries: 3 } });
   producer = kafka.producer();
   await producer.connect();
-  sr = makeStarrocksPool();
+  sr = makeBronzeTrinoPool();
   infraUp = await icebergBronzeAvailable(sr);
 
   // Seed test brands + connector (via superPool — NEVER touches 60d543dc)

@@ -133,11 +133,25 @@ def build_spark(app_name: str = "brain-iceberg") -> SparkSession:
         # Overridable so a Glue-backed prod catalog (per-layer buckets) can point elsewhere.
         .config(f"spark.sql.catalog.{CATALOG}.warehouse", os.environ.get("ICEBERG_WAREHOUSE", os.environ.get("BRONZE_WAREHOUSE", "s3://brain-bronze/")))
         .config(f"spark.sql.catalog.{CATALOG}.io-impl", "org.apache.iceberg.aws.s3.S3FileIO")
-        .config(f"spark.sql.catalog.{CATALOG}.s3.endpoint", os.environ.get("S3_ENDPOINT", "http://minio:9000"))
-        .config(f"spark.sql.catalog.{CATALOG}.s3.path-style-access", "true")
-        .config(f"spark.sql.catalog.{CATALOG}.s3.access-key-id", os.environ.get("AWS_ACCESS_KEY_ID", "brain"))
-        .config(f"spark.sql.catalog.{CATALOG}.s3.secret-access-key", os.environ.get("AWS_SECRET_ACCESS_KEY", "brainbrain"))
     )
+    # AUD-COST-022: the catalog's S3FileIO endpoint/credential wiring is CONDITIONAL on S3_ENDPOINT —
+    # the same treatment as medallion_maintenance.py's S3A block (commit f0c8c3a8). Previously the
+    # MinIO endpoint + the 'brain'/'brainbrain' static keys were unconditional DEFAULTS, and an
+    # EMPTY-string S3_ENDPOINT passed straight through as a broken endpoint — under prod IRSA (EKS
+    # CronWorkflows, no static keys) every job would fail, or send the dev MinIO creds to real S3.
+    #   - S3_ENDPOINT set + non-empty (local compose / MinIO): custom endpoint + path-style + the
+    #     static keys with their dev defaults — byte-identical to the old behavior (every local run
+    #     script / compose sink exports S3_ENDPOINT=http://minio:9000).
+    #   - S3_ENDPOINT unset/empty (prod): NO endpoint override and NO static keys, so S3FileIO falls
+    #     back to the default AWS credential chain (WebIdentity/IRSA) against real S3.
+    _s3_endpoint = (os.environ.get("S3_ENDPOINT") or "").strip()
+    if _s3_endpoint:
+        spark = (
+            spark.config(f"spark.sql.catalog.{CATALOG}.s3.endpoint", _s3_endpoint)
+            .config(f"spark.sql.catalog.{CATALOG}.s3.path-style-access", "true")
+            .config(f"spark.sql.catalog.{CATALOG}.s3.access-key-id", os.environ.get("AWS_ACCESS_KEY_ID", "brain"))
+            .config(f"spark.sql.catalog.{CATALOG}.s3.secret-access-key", os.environ.get("AWS_SECRET_ACCESS_KEY", "brainbrain"))
+        )
     # Apply the shared production-grade perf tuning (Kryo / AQE sizing / shuffle / stability / S3A).
     for _k, _v in spark_perf_configs().items():
         spark = spark.config(_k, _v)

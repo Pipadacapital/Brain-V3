@@ -1,6 +1,8 @@
 # Prod overrides — set the real upstream Postgres host + the admin-creds secret.
+# Deployed by the ArgoCD app infra/argocd/envs/prod/pgbouncer.yaml (AUD-COST-019).
 # CORE routes here: its DATABASE_URL / BRAIN_APP_DATABASE_URL host:port must be
-# <release>-pgbouncer:6432 (set in the core-env secret). The STREAM-WORKER stays DIRECT
+# pgbouncer.pgbouncer.svc.cluster.local:6432 (the Service is named by CHART name
+# `pgbouncer` in ns `pgbouncer`; set in the core-env secret). The STREAM-WORKER stays DIRECT
 # on the Postgres primary (session advisory locks — transaction pooling would break the leader lock).
 replicaCount: 2
 upstream:

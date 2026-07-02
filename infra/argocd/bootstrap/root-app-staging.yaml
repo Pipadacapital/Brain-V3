@@ -1,0 +1,36 @@
+################################################################################
+# Brain – ArgoCD App-of-Apps (STAGING root) — AUD-COST-005
+# Staging counterpart of ../app-of-apps.yaml: manages the Application CRs in
+# infra/argocd/envs/staging only (children carry their own auto-sync policy).
+# Applied by bootstrap/install.sh staging.
+################################################################################
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: brain-app-of-apps
+  namespace: argocd
+  labels:
+    project: brain
+    environment: staging
+    managed-by: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: brain
+
+  source:
+    repoURL: https://github.com/Rishabhporwal/Brain-V4.git
+    targetRevision: master
+    path: infra/argocd/envs/staging
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

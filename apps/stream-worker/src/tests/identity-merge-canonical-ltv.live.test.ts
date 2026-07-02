@@ -28,7 +28,13 @@ import pg from 'pg';
 import neo4j, { type Driver } from 'neo4j-driver';
 import { Neo4jIdentityRepository } from '../infrastructure/neo4j/Neo4jIdentityRepository.js';
 import { IdentityResolver, type ExtractedIdentifier } from '../domain/identity/IdentityResolver.js';
-import { runIdentityExport } from '../jobs/identity-export/run.js';
+
+// runIdentityExport is imported DYNAMICALLY in beforeAll (same pattern as phone-guard-reeval):
+// the job module resolves NEO4J_* / BRAIN_APP_DATABASE_URL via the memoized loadStreamWorkerConfig()
+// AT IMPORT TIME, and the config default for NEO4J_PASSWORD ('neo4j') differs from the local stack's
+// ('brain_neo4j', this test's fallback). A static import would freeze the job onto the wrong
+// credentials whenever the env vars are unset → Neo.ClientError.Security.Unauthorized in step 2.
+let runIdentityExport: (typeof import('../jobs/identity-export/run.js'))['runIdentityExport'];
 
 const PG_SUPER = process.env['DATABASE_URL'] ?? 'postgres://brain:brain@localhost:5432/brain';
 const PG_APP = process.env['BRAIN_APP_DATABASE_URL'] ?? 'postgres://brain_app:brain_app@localhost:5432/brain';
@@ -82,6 +88,13 @@ beforeAll(async () => {
     await superPool.query('SELECT 1');
     driver = neo4j.driver(NEO4J_URI, neo4j.auth.basic(NEO4J_USER, NEO4J_PASSWORD));
     await driver.getServerInfo();
+    // The export job reads NEO4J_* / BRAIN_APP_DATABASE_URL at import; set them BEFORE the dynamic
+    // import so the job connects to the SAME graph + PG this test writes its fixture into.
+    process.env['NEO4J_URI'] = NEO4J_URI;
+    process.env['NEO4J_USER'] = NEO4J_USER;
+    process.env['NEO4J_PASSWORD'] = NEO4J_PASSWORD;
+    process.env['BRAIN_APP_DATABASE_URL'] = PG_APP;
+    ({ runIdentityExport } = await import('../jobs/identity-export/run.js'));
     repo = new Neo4jIdentityRepository(NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD, PG_APP);
     await repo.bootstrap();
     await repo.purgeBrand(BRAND);

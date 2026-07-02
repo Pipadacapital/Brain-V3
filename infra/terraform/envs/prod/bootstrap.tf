@@ -57,12 +57,20 @@ module "kms" {
 # GitHub OIDC — APPLIED in bootstrap (needed for CI gate to plan prod)
 ###############################################################################
 module "oidc_github" {
-  source           = "../../modules/oidc-github"
-  environment      = local.environment
-  project          = local.project
-  github_org       = "brain-platform"
-  github_repo      = "brain"
+  source      = "../../modules/oidc-github"
+  environment = local.environment
+  project     = local.project
+  # AUD-COST-002: MUST match the real remote (git remote -v) or every OIDC
+  # role assumption is rejected — was brain-platform/brain (repo doesn't exist).
+  github_org       = "Rishabhporwal"
+  github_repo      = "Brain-V4"
   allowed_branches = ["master"] # repo default branch (workflow_dispatch runs here) — was "main" (mismatch)
+
+  # ECR-push + terraform-apply CI roles (main.yml / prod-apply.yml). After apply,
+  # set repo variables AWS_ECR_PUSH_ROLE_ARN / AWS_PROD_APPLY_ROLE_ARN from the
+  # outputs below.
+  create_cicd_roles = true
+  apply_environment = "production"
 }
 
 ###############################################################################
@@ -261,6 +269,8 @@ module "irsa_spark_jobs" {
 # ArgoCD IRSA annotations, repo variables). See docs/runbooks/prod-m4-turn-on.md.
 ###############################################################################
 output "github_plan_role_arn" { value = module.oidc_github.github_plan_role_arn }
+output "github_ecr_push_role_arn" { value = module.oidc_github.github_ecr_push_role_arn }
+output "github_apply_role_arn" { value = module.oidc_github.github_apply_role_arn }
 output "root_kms_key_arn" { value = module.kms.root_kms_key_arn }
 output "audit_kms_key_arn" { value = module.kms.audit_kms_key_arn }
 

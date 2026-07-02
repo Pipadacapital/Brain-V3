@@ -57,12 +57,13 @@ module "network" {
 # GitHub OIDC
 ###############################################################################
 module "oidc_github" {
-  source           = "../../modules/oidc-github"
-  environment      = local.environment
-  project          = local.project
-  github_org       = "brain-platform"
-  github_repo      = "brain"
-  allowed_branches = ["main"]
+  source      = "../../modules/oidc-github"
+  environment = local.environment
+  project     = local.project
+  # AUD-COST-002: real remote + real default branch (was brain-platform/brain@main)
+  github_org       = "Rishabhporwal"
+  github_repo      = "Brain-V4"
+  allowed_branches = ["master"]
 }
 
 ###############################################################################

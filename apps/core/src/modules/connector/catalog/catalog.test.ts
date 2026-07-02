@@ -9,6 +9,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { CONNECTOR_CATALOG, getDefinition, isConnectable } from './index.js';
+import { SHOPIFY_SCOPES_LIST } from './registry.js';
 
 describe('connector catalog gate (sole provider-validity guard after the CHECK was dropped)', () => {
   it('getDefinition returns null for an unknown provider (→ connect endpoint 400)', () => {
@@ -38,5 +39,43 @@ describe('connector catalog gate (sole provider-validity guard after the CHECK w
   it('catalog ids are unique (the registry key that replaces the provider CHECK enum)', () => {
     const ids = CONNECTOR_CATALOG.map((d) => d.id);
     expect(new Set(ids).size).toBe(ids.length);
+  });
+});
+
+describe('Shopify catalog entry — BYO-app required', () => {
+  const shopify = CONNECTOR_CATALOG.find((c) => c.id === 'shopify');
+
+  it('declares byoAppRequired', () => {
+    expect(shopify?.byoAppRequired).toBe(true);
+  });
+
+  it('declares byoAppSetup with scopes matching SHOPIFY_SCOPES_LIST', () => {
+    expect(shopify?.byoAppSetup).toBeDefined();
+    expect(shopify?.byoAppSetup?.scopes).toEqual(SHOPIFY_SCOPES_LIST);
+  });
+
+  it('marks client_id + client_secret as REQUIRED (not optional)', () => {
+    const cid = shopify?.authFields?.find((f) => f.key === 'client_id');
+    const csec = shopify?.authFields?.find((f) => f.key === 'client_secret');
+    expect(cid).toBeDefined();
+    expect(csec).toBeDefined();
+    expect(cid?.optional).not.toBe(true);
+    expect(csec?.optional).not.toBe(true);
+  });
+});
+
+describe('Meta + Google Ads catalog entries — BYO-app remains OPTIONAL', () => {
+  it('meta.authFields client_id + client_secret stay optional', () => {
+    const meta = CONNECTOR_CATALOG.find((c) => c.id === 'meta');
+    expect(meta?.byoAppRequired).not.toBe(true);
+    expect(meta?.authFields?.find((f) => f.key === 'client_id')?.optional).toBe(true);
+    expect(meta?.authFields?.find((f) => f.key === 'client_secret')?.optional).toBe(true);
+  });
+
+  it('google_ads.authFields client_id + client_secret stay optional', () => {
+    const ga = CONNECTOR_CATALOG.find((c) => c.id === 'google_ads');
+    expect(ga?.byoAppRequired).not.toBe(true);
+    expect(ga?.authFields?.find((f) => f.key === 'client_id')?.optional).toBe(true);
+    expect(ga?.authFields?.find((f) => f.key === 'client_secret')?.optional).toBe(true);
   });
 });

@@ -180,7 +180,18 @@ export const CONNECTOR_CATALOG: readonly ConnectorDefinition[] = [
     connectMethod: 'oauth',
     availability: 'available',
     description: 'Sync orders, products, customers.',
-    authFields: OAUTH_APP_FIELDS,
+    // Shopify Custom Apps are single-store: the workspace user MUST bring their own app's
+    // Client ID / Client Secret. No env fallback (byoAppRequired), so both fields are REQUIRED.
+    authFields: [
+      { key: 'client_id',     label: 'Client ID',     type: 'text',     secret: false, optional: false, hint: 'From your Shopify Custom App API credentials.' },
+      { key: 'client_secret', label: 'Client Secret', type: 'password', secret: true,  optional: false, hint: 'From your Shopify Custom App API credentials.' },
+    ],
+    byoAppRequired: true,
+    byoAppSetup: {
+      // Filled at request-build time from config.shopifyCallbackUrl — see marketplace tile builder.
+      redirectUrl: '',
+      scopes: SHOPIFY_SCOPES_LIST,
+    },
   },
   {
     id: 'woocommerce',

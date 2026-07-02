@@ -21,7 +21,7 @@ in this runbook; nothing does them for you):
 | 6 | Seeding the VALUES of every `brain/prod/k8s/*` Secrets Manager entry (the SHELLS are terraform-created since AUD-COST-017; values never live in TF state) | 8 |
 | 7 | `iceberg_catalog` DB bootstrap SQL on Aurora (private-only — run from inside the VPC) | 8 |
 | 8 | ACM certificate request + DNS validation; Route53 zone / registrar delegation | 9 |
-| 9 | pgbouncer has a chart + values-prod but **no ArgoCD Application** — install by hand (`helm upgrade --install`) or author `infra/argocd/envs/prod/pgbouncer.yaml` first | 10 |
+| 9 | ~~pgbouncer has a chart but no ArgoCD Application~~ — CLOSED (AUD-COST-019): `infra/argocd/envs/prod/pgbouncer.yaml` exists; sync it like every other app | 10 |
 | 10 | Trino serving views (`run-trino-views.sh`) — not part of any sync wave | 11 |
 | 11 | Every prod ArgoCD sync (all prod apps are manual-gate by design) | 10, 12 |
 | 12 | Connector OAuth tokens — minted by reconnecting each connector in the UI post-launch (cannot be seeded) | 13 |
@@ -197,7 +197,7 @@ entries (flat JSON objects; each key becomes an env var — full key contracts i
 `infra/helm/external-secrets-config/README.md`):
 
 ```
-brain/prod/k8s/core-env                 # DATABASE_URL (pgbouncer:6432) + DATABASE_URL_DIRECT (Aurora!),
+brain/prod/k8s/core-env                 # DATABASE_URL (pgbouncer.pgbouncer.svc.cluster.local:6432) + DATABASE_URL_DIRECT (Aurora!),
                                         # REDIS_URL, KAFKA_BROKERS, TRINO_HOST, ICEBERG_REST_URI,
                                         # NEO4J_URI/USER/PASSWORD, CHECKPOINT_LOCATION (s3a://), topics, AWS_REGION
 brain/prod/k8s/web-env                  # BFF_BASE_URL / CORE_API_URL
@@ -260,9 +260,9 @@ argocd app sync karpenter-crd-prod karpenter-prod karpenter-nodepools-prod keda-
 argocd app sync strimzi-operator-prod strimzi-kafka-prod   # operator, then the 3-broker KRaft Kafka CR
 kubectl -n kafka wait --for=condition=Ready kafka/brain-prod-kafka --timeout=600s
 
-# pgbouncer: NO ArgoCD Application exists — install manually (or author one first):
-helm upgrade --install pgbouncer infra/helm/pgbouncer -n pgbouncer --create-namespace -f infra/helm/pgbouncer/values-prod.yaml
-
+argocd app sync pgbouncer-prod                 # AUD-COST-019: GitOps app (wave -1) — core's DATABASE_URL
+                                               # targets pgbouncer.pgbouncer.svc.cluster.local:6432;
+                                               # needs the pgbouncer-env Secret from step 8
 argocd app sync neo4j-prod                     # identity SoR (ADR-0004); auth from neo4j-auth.
                                                # Pinned to the ON-DEMAND Karpenter pool (AUD-COST-018 —
                                                # sync karpenter-nodepools first); PVC binds via gp3/EBS CSI
@@ -351,6 +351,8 @@ In order — each proves the layer below it:
 - ~~Add the six PLACEHOLDERS.md §4 IRSA roles + the `brain/prod/k8s/*` SM
   shells to terraform~~ — DONE (AUD-COST-017); scope `external_dns_zone_ids`
   down from the `hostedzone/*` bootstrap fallback if not already done in step 4.
+  The pgbouncer ArgoCD Application also exists now (AUD-COST-019) — no
+  hand-installed helm release to adopt.
 - Scope the `brain-prod-github-apply` role down from AdministratorAccess.
 - Verify `v4-maintenance` ran its first weekly cycle (Iceberg compaction +
   snapshot expiry — AUD-COST-013) and `bronze-maintenance` likewise.

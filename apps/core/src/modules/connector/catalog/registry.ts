@@ -100,6 +100,36 @@ export interface CredentialConnectSpec {
   webhookRoutingHeader?: string;
 }
 
+/**
+ * ByoAppSetup — declarative setup instructions surfaced to the merchant when a connector
+ * requires its own OAuth app. Rendered by the connect UI as a copy-buttoned panel.
+ *
+ * `redirectUrl` is emitted as '' from the catalog and filled at request time from
+ * config.shopifyCallbackUrl (the public OAuth callback URL), because the catalog is
+ * static-typed compile-time state.
+ */
+export interface ByoAppSetup {
+  /** Public OAuth redirect URL the merchant must paste into their Custom App config. */
+  redirectUrl: string;
+  /** OAuth scope list the merchant must enable — must match the InitiateOAuthCommand scopes. */
+  scopes: readonly string[];
+  /** Optional external docs link. */
+  docsUrl?: string;
+}
+
+/**
+ * Shopify's required OAuth scopes — hoisted here so the catalog can hand them to the connect
+ * UI's setup panel and InitiateOAuthCommand can consume the same list.
+ */
+export const SHOPIFY_SCOPES_LIST = [
+  'read_orders',
+  'read_products',
+  'read_customers',
+  'write_script_tags',
+  'write_pixels',
+  'read_customer_events',
+] as const;
+
 export interface ConnectorDefinition {
   /** Canonical type key — matches provider CHECK in connector_instance where it has a backend. */
   id: string;
@@ -122,6 +152,14 @@ export interface ConnectorDefinition {
    * and coming_soon tiles.
    */
   credentialConnect?: CredentialConnectSpec;
+  /**
+   * OAuth connectors only. When true, the workspace user MUST supply per-brand Client ID /
+   * Client Secret — env fallback (SHOPIFY_CLIENT_ID/SECRET etc.) is refused for this provider.
+   * Requires `byoAppSetup` populated for the connect UI's setup panel.
+   */
+  byoAppRequired?: boolean;
+  /** Declarative setup instructions rendered by the connect UI when `byoAppRequired`. */
+  byoAppSetup?: ByoAppSetup;
 }
 
 /** Shared hint for OAuth "bring your own app" client credentials (all optional). */

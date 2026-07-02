@@ -24,8 +24,23 @@ export interface WriteResult {
   inserted: boolean;
 }
 
+/**
+ * AUD-PERF-010: in-process TTL cache for install_token→brand_id. The mapping only changes on
+ * pixel reinstall, yet the hot pixel lane paid one PG round trip PER EVENT. TTLs are bounded
+ * so staleness is bounded:
+ *   - positive hits: 60s (a revoked/rotated token keeps admitting events ≤60s — accepted risk,
+ *     documented in the audit; the SECURITY DEFINER fn remains the sole derivation source).
+ *   - negative hits: 5s (a NEWLY installed pixel must not be quarantined for a minute).
+ */
+const BRAND_CACHE_POSITIVE_TTL_MS = 60_000;
+const BRAND_CACHE_NEGATIVE_TTL_MS = 5_000;
+/** Hard cap — garbage tokens must not grow the map unbounded (expired sweep on overflow). */
+const BRAND_CACHE_MAX_ENTRIES = 10_000;
+
 export class BronzeRepository {
   private readonly pool: Pool;
+  /** install_token → { brandId (null = unresolved), expiresAt } (AUD-PERF-010). */
+  private readonly brandCache = new Map<string, { brandId: string | null; expiresAt: number }>();
 
   constructor(connectionString: string) {
     // Connect as brain_app (connection string must use brain_app credentials).
@@ -77,16 +92,40 @@ export class BronzeRepository {
       return null;
     }
 
+    // AUD-PERF-010: TTL-bounded in-process cache (positive 60s / negative 5s).
+    const now = Date.now();
+    const cached = this.brandCache.get(installToken);
+    if (cached) {
+      if (cached.expiresAt > now) return cached.brandId;
+      this.brandCache.delete(installToken);
+    }
+
     const client: PoolClient = await this.pool.connect();
+    let brandId: string | null;
     try {
       const result = await client.query<{ brand_id: string }>(
         'SELECT brand_id FROM resolve_brand_by_install_token($1::uuid)',
         [installToken],
       );
-      return result.rows[0]?.brand_id ?? null;
+      brandId = result.rows[0]?.brand_id ?? null;
     } finally {
       client.release();
     }
+
+    if (this.brandCache.size >= BRAND_CACHE_MAX_ENTRIES) {
+      // Sweep expired entries; if the map is genuinely full of live entries, clear it —
+      // correctness is unaffected (cache miss = the PG round trip we did before).
+      for (const [token, entry] of this.brandCache) {
+        if (entry.expiresAt <= now) this.brandCache.delete(token);
+      }
+      if (this.brandCache.size >= BRAND_CACHE_MAX_ENTRIES) this.brandCache.clear();
+    }
+    this.brandCache.set(installToken, {
+      brandId,
+      expiresAt:
+        now + (brandId !== null ? BRAND_CACHE_POSITIVE_TTL_MS : BRAND_CACHE_NEGATIVE_TTL_MS),
+    });
+    return brandId;
   }
 
   async write(row: BronzeRow): Promise<WriteResult> {

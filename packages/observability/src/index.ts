@@ -25,6 +25,11 @@ export type { SentryOptions } from './sentry.js';
 export { CircuitBreaker, CircuitOpenError } from './circuit-breaker.js';
 export type { BreakerState, CircuitBreakerOptions } from './circuit-breaker.js';
 export { extractKafkaTraceContext, injectKafkaTraceContext } from './kafka-trace.js';
+export {
+  renderPrometheusText,
+  resetMetricsRegistry,
+  PROMETHEUS_CONTENT_TYPE,
+} from './prometheus.js';
 
 // ── Span interface (a PII-guarded facade over the real @opentelemetry/api Span) ──
 
@@ -55,6 +60,7 @@ export interface SpanContext {
 import { trace, metrics, SpanStatusCode, type Span as OtelSpan } from '@opentelemetry/api';
 import { redactAttributes, isPiiKey } from './redact.js';
 import type { Attributes } from './redact.js';
+import { recordCounter } from './prometheus.js';
 
 const TRACER_NAME = '@brain/observability';
 
@@ -206,6 +212,9 @@ export function incrementCounter(
   labels: CounterLabels = {},
   value = 1,
 ): void {
+  // ALWAYS feed the in-process Prometheus registry (AUD-LOCAL-016) — the /metrics endpoint
+  // must see every increment regardless of which sink (stdout / OTel meter / test spy) is active.
+  recordCounter(name, labels, value);
   activeCounterSink.add(name, value, labels);
 }
 

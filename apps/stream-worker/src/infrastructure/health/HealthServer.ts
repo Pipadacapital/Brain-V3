@@ -18,6 +18,7 @@
  */
 import http from 'node:http';
 import type { BrainLogger } from '@brain/observability';
+import { renderPrometheusText, PROMETHEUS_CONTENT_TYPE } from '@brain/observability';
 
 export interface HealthServerOptions {
   /** Port to listen on (0.0.0.0). */
@@ -61,6 +62,16 @@ export function startHealthServer(opts: HealthServerOptions): HealthServerHandle
     if (url === '/healthz') {
       // Liveness: the process answers → it's alive. Never gated on dependencies.
       send(200, { status: 'ok', timestamp: new Date().toISOString() });
+      return;
+    }
+
+    if (url === '/metrics') {
+      // Prometheus exposition of the in-process @brain/observability counter registry
+      // (AUD-LOCAL-016). Scraped by infra/observe/prometheus.yml (job: brain-stream-worker);
+      // feeds brain_ingest_scheduler_* / brain_dq_* / brain_ledger_write_total etc. Never gated
+      // on readiness — a wedged worker's counters are exactly what the SLO rules need to see.
+      res.writeHead(200, { 'Content-Type': PROMETHEUS_CONTENT_TYPE });
+      res.end(renderPrometheusText());
       return;
     }
 

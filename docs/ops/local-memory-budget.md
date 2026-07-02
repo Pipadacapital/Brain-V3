@@ -34,7 +34,8 @@ runaway, they don't throttle normal operation):
 | neo4j | 1.5g | heap 512m + pagecache 256m |
 | apicurio | 768m | `JAVA_OPTS_APPEND -Xmx512m` (67% of limit) |
 | pgbouncer | 128m | — (small C daemon) |
-| postgres / redis / litellm / localstack / iceberg-rest | unbounded (small, ~3g combined) | — |
+| redis | 256m | `maxmemory 192mb` + `volatile-lru` (evict, don't OOM-kill) |
+| postgres / litellm / localstack / iceberg-rest | unbounded (small, ~3g combined) | — |
 
 ## Lever 3 — transient Spark transform jobs (fixes JVM heap OOM)
 

@@ -114,6 +114,15 @@ services:
     profiles: ["core"]
     mem_limit: 256m         # blueprint §4.2 (cache; rebuildable)
     oom_score_adj: -300     # serving-critical cache, but rebuildable → killed before the SoRs
+    # Evict instead of OOM-kill: without maxmemory (redis default 0 = unlimited) keyspace growth
+    # past the 256m cgroup limit gets the WHOLE container killed — dropping every cache entry,
+    # dedup slot, retry counter and in-flight stampede lock at once (thundering herd onto Trino).
+    # maxmemory 192mb = 75% of the cgroup limit (headroom for jemalloc overhead + COW on fork).
+    # volatile-lru (not allkeys-lru): every writer today sets a TTL (analytics cache SET PX,
+    # stampede lock SET PX NX, webhook/event dedup SET EX, OAuth state SET EX NX, retry counters
+    # INCR+EXPIRE, rate limiters INCR+PEXPIRE) so everything is evictable, and any FUTURE key
+    # written without a TTL stays unevictable rather than being silently LRU-dropped.
+    command: ["redis-server", "--maxmemory", "192mb", "--maxmemory-policy", "volatile-lru"]
     ports: ["6379:6379"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]

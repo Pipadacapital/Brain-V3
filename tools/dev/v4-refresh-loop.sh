@@ -473,6 +473,10 @@ run_once() {
   # Bronze tables, incl. the unified brain_bronze.events connector lanes. Compliance job — a failure
   # marks the cycle degraded (and retries next cycle: the guard stamp is only touched on success).
   run_maintenance_job bronze-raw-retention "$SPARK_ROOT/run-bronze-raw-retention.sh" || failures=$((failures+1))
+  # Iceberg Silver+Gold compaction + snapshot expiry + guarded orphan-file sweep (AUD-PERF-004): the
+  # per-cycle MERGEs/overwrites shard the marts into thousands of ~16KB files that nothing ever
+  # coalesced. Runs at the end of the cycle so it never contends with this cycle's mart writes.
+  run_maintenance_job medallion-maintenance "$SPARK_ROOT/run-medallion-maintenance.sh" || failures=$((failures+1))
 
   cycle_end=$(now_ms)
   if [ "$failures" -eq 0 ]; then

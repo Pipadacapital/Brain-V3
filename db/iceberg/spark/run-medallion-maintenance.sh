@@ -16,6 +16,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 PACKAGES="org.apache.iceberg:iceberg-spark-runtime-3.5_${SCALA}:${ICEBERG_VERSION}"
 PACKAGES="${PACKAGES},org.apache.iceberg:iceberg-aws-bundle:${ICEBERG_VERSION}"
+# hadoop-aws (S3A): remove_orphan_files lists table locations via the Hadoop FileSystem, not S3FileIO.
+# 3.3.4 matches the Hadoop client libs bundled with Spark 3.5.x.
+PACKAGES="${PACKAGES},org.apache.hadoop:hadoop-aws:${HADOOP_AWS_VERSION:-3.3.4}"
 
 echo "[medallion-maintenance] MODE=${MODE:-maintain} image=${SPARK_IMAGE}"
 docker volume create brain-spark-ivy >/dev/null
@@ -39,6 +42,8 @@ exec docker run --rm \
   -e MODE="${MODE:-maintain}" \
   -e ERASE_BRAND_ID="${ERASE_BRAND_ID:-}" \
   -e RETENTION_MS="${RETENTION_MS:-63072000000}" \
+  -e ORPHAN_FILES="${ORPHAN_FILES:-1}" \
+  -e ORPHAN_OLDER_THAN_DAYS="${ORPHAN_OLDER_THAN_DAYS:-3}" \
   "${SPARK_IMAGE}" \
   /opt/spark/bin/spark-submit \
     --master "local[2]" \

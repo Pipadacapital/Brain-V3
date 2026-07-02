@@ -143,6 +143,23 @@ jobs:
         run: tools/lint/prod-placeholder-guard.sh
 
   # ─────────────────────────────────────────────────────────────────────────
+  # SLO rules parity (AUD-PROD-B8-FUP3) — the alert/SLO rules are dual-copied
+  # by design (infra/observe/alerts/*.rules.yml mounted into local prometheus;
+  # additionalPrometheusRulesMap in infra/helm/kube-prometheus-stack/
+  # values-prod.yaml rendered into the prod PrometheusRule). This gate deep-
+  # compares every canonical rules file that has a copy in the values map and
+  # BLOCKS on drift — otherwise local vs prod alerting silently fork.
+  # Canonical files not yet in the map are warn-only (data-driven).
+  # ─────────────────────────────────────────────────────────────────────────
+  slo-rules-parity:
+    name: SLO Rules Parity (local vs prod dual-copy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Compare canonical alert rules with the prod values copy
+        run: tools/lint/slo-rules-parity.sh
+
+  # ─────────────────────────────────────────────────────────────────────────
   # Secret scan — gitleaks (every PR diff; must never find a secret)
   # ─────────────────────────────────────────────────────────────────────────
   secret-scan:

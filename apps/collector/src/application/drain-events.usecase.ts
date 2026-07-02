@@ -32,12 +32,13 @@ export class DrainEventsUseCase {
       return 0;
     }
 
+    // AUD-PERF-012: the body is the CANONICAL jsonb text straight from PG; correlation_id /
+    // brand_id / event_id were projected in SQL — no JSON parse or stringify on this path.
     const batch = claim.entries.map((entry) => ({
-      rawBody: entry.rawBody,
-      correlationId:
-        typeof entry.rawBody['correlation_id'] === 'string'
-          ? entry.rawBody['correlation_id']
-          : `spool-${entry.id.toString()}`,
+      valueText: entry.rawBodyText,
+      brandId: entry.brandId,
+      eventId: entry.eventId,
+      correlationId: entry.correlationId ?? `spool-${entry.id.toString()}`,
     }));
 
     try {

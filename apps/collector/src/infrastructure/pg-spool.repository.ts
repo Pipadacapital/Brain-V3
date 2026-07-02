@@ -95,8 +95,22 @@ export class PgSpoolRepository implements SpoolRepository {
 
     try {
       await client.query('BEGIN');
-      const result = await client.query<{ id: string; raw_body: Record<string, unknown> }>(
-        `SELECT id::text, raw_body
+      // raw_body::text passthrough (AUD-PERF-012): select the CANONICAL jsonb text and project
+      // the only fields the drainer needs in SQL — the driver never parses the body and the
+      // producer never re-stringifies it. jsonb_typeof guards keep the previous TS semantics:
+      // a non-string brand_id/event_id/correlation_id counts as absent (NULL), not stringified.
+      const result = await client.query<{
+        id: string;
+        raw_body_text: string;
+        correlation_id: string | null;
+        brand_id: string | null;
+        event_id: string | null;
+      }>(
+        `SELECT id::text,
+                raw_body::text AS raw_body_text,
+                CASE WHEN jsonb_typeof(raw_body->'correlation_id') = 'string' THEN raw_body->>'correlation_id' END AS correlation_id,
+                CASE WHEN jsonb_typeof(raw_body->'brand_id') = 'string' THEN raw_body->>'brand_id' END AS brand_id,
+                CASE WHEN jsonb_typeof(raw_body->'event_id') = 'string' THEN raw_body->>'event_id' END AS event_id
          FROM collector_spool
          WHERE status = 'pending'
          ORDER BY id
@@ -107,7 +121,10 @@ export class PgSpoolRepository implements SpoolRepository {
 
       const entries: PendingSpoolEntry[] = result.rows.map((row) => ({
         id: BigInt(row.id),
-        rawBody: row.raw_body,
+        rawBodyText: row.raw_body_text,
+        correlationId: row.correlation_id,
+        brandId: row.brand_id,
+        eventId: row.event_id,
       }));
 
       return {

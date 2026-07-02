@@ -9,9 +9,15 @@ import { Kafka, type Producer, type KafkaConfig, type Message, CompressionTypes 
 import { buildPartitionKey } from '@brain/events';
 import { injectKafkaTraceContext } from '@brain/observability';
 
-/** One spool entry headed for the collector topic (built by the drainer). */
+/**
+ * One spool entry headed for the collector topic (built by the drainer).
+ * The value is the canonical jsonb TEXT straight from the spool (AUD-PERF-012) — sent verbatim,
+ * never re-stringified; brand/event ids arrive as SQL projections (null = absent/non-string).
+ */
 export interface DrainMessage {
-  rawBody: Record<string, unknown>;
+  valueText: string;
+  brandId: string | null;
+  eventId: string | null;
   correlationId: string;
 }
 
@@ -74,15 +80,6 @@ export class CollectorKafkaProducer {
   }
 
   /**
-   * Produce a single spool entry to the collector topic.
-   * key = brand_id:event_id (partition key — brand-routed).
-   * On failure throws so the drainer leaves the spool row as 'pending'.
-   */
-  async produce(rawBody: Record<string, unknown>, correlationId: string): Promise<void> {
-    await this.produceBatch([{ rawBody, correlationId }]);
-  }
-
-  /**
    * Produce a whole claimed batch in ONE producer.send (AUD-PERF-002) — kafkajs groups the
    * messages per partition natively, so a 100-row drain tick is one broker round-trip instead
    * of 100. GZIP is codec-transparent to every consumer (broker + kafkajs + Spark decode it).
@@ -95,12 +92,10 @@ export class CollectorKafkaProducer {
     }
     if (batch.length === 0) return;
 
-    const messages: Message[] = batch.map(({ rawBody, correlationId }) => {
-      // Extract brand_id and event_id for partition key — these may not exist (pre-validation).
-      // Fallback: use the raw body's best-effort values; stream-worker validates them.
-      const brandId = typeof rawBody['brand_id'] === 'string' ? rawBody['brand_id'] : 'unknown';
-      const eventId = typeof rawBody['event_id'] === 'string' ? rawBody['event_id'] : 'unknown';
-      const partitionKey = buildPartitionKey(brandId, eventId);
+    const messages: Message[] = batch.map(({ valueText, brandId, eventId, correlationId }) => {
+      // key = brand_id:event_id (partition key — brand-routed). The ids may not exist yet
+      // (pre-validation): null falls back to 'unknown'; stream-worker validates downstream.
+      const partitionKey = buildPartitionKey(brandId ?? 'unknown', eventId ?? 'unknown');
 
       // OTel W3C trace-context propagation across the Kafka boundary (OBS-1/OBS-2):
       // inject traceparent/tracestate so the stream-worker consumer resumes this trace
@@ -113,7 +108,7 @@ export class CollectorKafkaProducer {
 
       return {
         key: partitionKey,
-        value: JSON.stringify(rawBody),
+        value: valueText, // canonical jsonb text passthrough (AUD-PERF-012) — no re-stringify
         headers,
       };
     });

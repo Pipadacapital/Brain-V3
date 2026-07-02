@@ -1,26 +1,29 @@
 /**
- * kafka-producer.test.ts — focused unit tests for CollectorKafkaProducer partition-key
- * construction (T-2).
+ * kafka-producer.test.ts — focused unit tests for CollectorKafkaProducer batch produce
+ * (AUD-PERF-002) + partition-key construction (T-2).
  *
  * The partition key is `brand_id:event_id` (brand-routed — the tenant key IS the partition key,
- * so a brand's events land on a stable partition and never interleave across tenants). When the
- * raw body has not been validated yet, brand_id/event_id may be absent or non-string; the producer
- * falls back to the literal 'unknown' for each. These cases pin the key shape + the fallback edges.
+ * so a brand's events land on a stable partition and never interleave across tenants). The ids
+ * arrive as SQL projections off the spool (AUD-PERF-012): null means absent-or-non-string in the
+ * raw body, and the producer falls back to the literal 'unknown' for each. The message value is
+ * the canonical jsonb TEXT from the spool, sent verbatim (no re-stringify).
  *
- * kafkajs is mocked so no broker is needed; we capture the `messages[].key` actually sent and the
+ * kafkajs is mocked so no broker is needed; we capture the messages actually sent and the
  * real @brain/events buildPartitionKey runs (the construction under test).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// Capture every send() payload so we can assert the partition key.
-const sentMessages: Array<{ key: string; headers: Record<string, string> }> = [];
+// Capture every send() payload so we can assert keys/values/headers per send.
+const sentMessages: Array<{ key: string; value: string; headers: Record<string, string> }> = [];
 
 const fakeProducer = {
   connect: vi.fn(async () => undefined),
   disconnect: vi.fn(async () => undefined),
-  send: vi.fn(async (args: { messages: Array<{ key: string; headers: Record<string, string> }> }) => {
-    for (const m of args.messages) sentMessages.push({ key: m.key, headers: m.headers });
-  }),
+  send: vi.fn(
+    async (args: { messages: Array<{ key: string; value: string; headers: Record<string, string> }> }) => {
+      for (const m of args.messages) sentMessages.push({ key: m.key, value: m.value, headers: m.headers });
+    },
+  ),
 };
 
 vi.mock('kafkajs', () => ({
@@ -38,7 +41,7 @@ vi.mock('@brain/observability', () => ({
 }));
 
 // NB: @brain/events is NOT mocked — the real buildPartitionKey is the unit under test.
-import { CollectorKafkaProducer } from './kafka-producer.js';
+import { CollectorKafkaProducer, type DrainMessage } from './kafka-producer.js';
 
 function newProducer(): CollectorKafkaProducer {
   return new CollectorKafkaProducer({
@@ -48,74 +51,68 @@ function newProducer(): CollectorKafkaProducer {
   });
 }
 
+function msg(overrides: Partial<DrainMessage> = {}): DrainMessage {
+  return {
+    valueText: '{"event_name":"page.viewed"}',
+    brandId: 'brand-123',
+    eventId: 'evt-abc',
+    correlationId: 'corr-1',
+    ...overrides,
+  };
+}
+
 describe('CollectorKafkaProducer partition key', () => {
   beforeEach(() => {
     sentMessages.length = 0;
     fakeProducer.send.mockClear();
   });
 
-  it('builds key as `brand_id:event_id` from a well-formed body', async () => {
+  it('builds key as `brand_id:event_id` from the projected ids', async () => {
     const p = newProducer();
     await p.connect();
-    await p.produce({ brand_id: 'brand-123', event_id: 'evt-abc' }, 'corr-1');
+    await p.produceBatch([msg()]);
     expect(sentMessages).toHaveLength(1);
     expect(sentMessages[0]!.key).toBe('brand-123:evt-abc');
   });
 
-  it('falls back to "unknown" for a missing brand_id', async () => {
+  it('falls back to "unknown" for a null brand_id (absent/non-string in the raw body)', async () => {
     const p = newProducer();
     await p.connect();
-    await p.produce({ event_id: 'evt-abc' }, 'corr-2');
+    await p.produceBatch([msg({ brandId: null })]);
     expect(sentMessages[0]!.key).toBe('unknown:evt-abc');
   });
 
-  it('falls back to "unknown" for a missing event_id', async () => {
+  it('falls back to "unknown" for a null event_id', async () => {
     const p = newProducer();
     await p.connect();
-    await p.produce({ brand_id: 'brand-123' }, 'corr-3');
+    await p.produceBatch([msg({ eventId: null })]);
     expect(sentMessages[0]!.key).toBe('brand-123:unknown');
   });
 
-  it('falls back to "unknown:unknown" when both are missing', async () => {
+  it('falls back to "unknown:unknown" when both are null', async () => {
     const p = newProducer();
     await p.connect();
-    await p.produce({}, 'corr-4');
+    await p.produceBatch([msg({ brandId: null, eventId: null })]);
     expect(sentMessages[0]!.key).toBe('unknown:unknown');
   });
 
-  it('falls back to "unknown" for non-string brand_id / event_id (pre-validation)', async () => {
+  it('treats an empty-string brand_id as a literal empty segment (string passes through)', async () => {
     const p = newProducer();
     await p.connect();
-    await p.produce({ brand_id: 42, event_id: { nested: true } }, 'corr-5');
-    expect(sentMessages[0]!.key).toBe('unknown:unknown');
-  });
-
-  it('treats an empty-string brand_id as a literal empty segment (string passes the type guard)', async () => {
-    const p = newProducer();
-    await p.connect();
-    // '' is a string → the guard accepts it; key carries the empty segment verbatim.
-    await p.produce({ brand_id: '', event_id: 'evt-x' }, 'corr-6');
+    await p.produceBatch([msg({ brandId: '', eventId: 'evt-x' })]);
     expect(sentMessages[0]!.key).toBe(':evt-x');
   });
 
   it('carries the correlation_id header alongside the partition key', async () => {
     const p = newProducer();
     await p.connect();
-    await p.produce({ brand_id: 'b', event_id: 'e' }, 'corr-7');
+    await p.produceBatch([msg({ correlationId: 'corr-7' })]);
     expect(sentMessages[0]!.headers['correlation_id']).toBe('corr-7');
     expect(sentMessages[0]!.headers['source']).toBe('collector-drainer');
   });
-
-  it('throws (and sends nothing) when the producer is not connected', async () => {
-    const p = newProducer();
-    await expect(p.produce({ brand_id: 'b', event_id: 'e' }, 'corr-8')).rejects.toThrow(
-      /producer not connected/,
-    );
-    expect(sentMessages).toHaveLength(0);
-  });
 });
 
-describe('CollectorKafkaProducer.produceBatch (AUD-PERF-002)', () => {
+describe('CollectorKafkaProducer.produceBatch (AUD-PERF-002 / AUD-PERF-012)', () => {
   beforeEach(() => {
     sentMessages.length = 0;
     fakeProducer.send.mockClear();
@@ -125,13 +122,21 @@ describe('CollectorKafkaProducer.produceBatch (AUD-PERF-002)', () => {
     const p = newProducer();
     await p.connect();
     await p.produceBatch([
-      { rawBody: { brand_id: 'b1', event_id: 'e1' }, correlationId: 'c1' },
-      { rawBody: { brand_id: 'b2', event_id: 'e2' }, correlationId: 'c2' },
-      { rawBody: { brand_id: 'b1', event_id: 'e3' }, correlationId: 'c3' },
+      msg({ brandId: 'b1', eventId: 'e1', correlationId: 'c1' }),
+      msg({ brandId: 'b2', eventId: 'e2', correlationId: 'c2' }),
+      msg({ brandId: 'b1', eventId: 'e3', correlationId: 'c3' }),
     ]);
     expect(fakeProducer.send).toHaveBeenCalledTimes(1); // one broker round-trip per drain batch
     expect(sentMessages.map((m) => m.key)).toEqual(['b1:e1', 'b2:e2', 'b1:e3']);
     expect(sentMessages.map((m) => m.headers['correlation_id'])).toEqual(['c1', 'c2', 'c3']);
+  });
+
+  it('passes the spool jsonb text through as the message value VERBATIM (no re-stringify)', async () => {
+    const p = newProducer();
+    await p.connect();
+    const canonical = '{"brand_id": "b", "event_id": "e", "n": 1}'; // jsonb canonical spacing
+    await p.produceBatch([msg({ valueText: canonical })]);
+    expect(sentMessages[0]!.value).toBe(canonical);
   });
 
   it('an empty batch is a no-op (no send)', async () => {
@@ -141,10 +146,9 @@ describe('CollectorKafkaProducer.produceBatch (AUD-PERF-002)', () => {
     expect(fakeProducer.send).not.toHaveBeenCalled();
   });
 
-  it('throws when the producer is not connected (whole batch stays pending)', async () => {
+  it('throws (and sends nothing) when the producer is not connected (whole batch stays pending)', async () => {
     const p = newProducer();
-    await expect(
-      p.produceBatch([{ rawBody: { brand_id: 'b', event_id: 'e' }, correlationId: 'c' }]),
-    ).rejects.toThrow(/producer not connected/);
+    await expect(p.produceBatch([msg()])).rejects.toThrow(/producer not connected/);
+    expect(sentMessages).toHaveLength(0);
   });
 });

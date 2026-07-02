@@ -163,14 +163,33 @@ def main() -> None:
     spark.sparkContext.setLogLevel("WARN")
     if ORPHAN_FILES:
         # remove_orphan_files lists the table location via the HADOOP FileSystem (NOT the catalog's
-        # S3FileIO) — map the s3:// scheme onto S3A against the same MinIO/S3 endpoint + credentials.
-        # Requires hadoop-aws on the classpath (run-medallion-maintenance.sh adds the package).
+        # S3FileIO) — map the s3:// scheme onto S3A. Requires hadoop-aws on the classpath
+        # (run-medallion-maintenance.sh adds the package; the prod image pre-bakes it).
+        #
+        # AUD-COST-020: the S3A wiring is CONDITIONAL on S3_ENDPOINT. Previously the MinIO
+        # endpoint + the 'brain'/'brainbrain' static keys were unconditional DEFAULTS, which
+        # broke prod (IRSA pods have no static keys and must talk to real S3, not minio:9000).
+        #   - S3_ENDPOINT set (local compose / MinIO): custom endpoint + path-style + the
+        #     static keys IF provided (exactly the old behavior — the run script sets all).
+        #   - S3_ENDPOINT unset/empty (prod): NO endpoint override; credentials resolve via
+        #     com.amazonaws.auth.DefaultAWSCredentialsProviderChain, which includes
+        #     WebIdentityTokenCredentialsProvider — i.e. the pod's IRSA role, zero static keys.
         hconf = spark.sparkContext._jsc.hadoopConfiguration()  # noqa: SLF001
         hconf.set("fs.s3.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
-        hconf.set("fs.s3a.endpoint", os.environ.get("S3_ENDPOINT", "http://minio:9000"))
-        hconf.set("fs.s3a.access.key", os.environ.get("AWS_ACCESS_KEY_ID", "brain"))
-        hconf.set("fs.s3a.secret.key", os.environ.get("AWS_SECRET_ACCESS_KEY", "brainbrain"))
-        hconf.set("fs.s3a.path.style.access", "true")
+        endpoint = (os.environ.get("S3_ENDPOINT") or "").strip()
+        if endpoint:
+            hconf.set("fs.s3a.endpoint", endpoint)
+            hconf.set("fs.s3a.path.style.access", "true")
+            access_key = os.environ.get("AWS_ACCESS_KEY_ID", "")
+            secret_key = os.environ.get("AWS_SECRET_ACCESS_KEY", "")
+            if access_key and secret_key:
+                hconf.set("fs.s3a.access.key", access_key)
+                hconf.set("fs.s3a.secret.key", secret_key)
+        else:
+            hconf.set(
+                "fs.s3a.aws.credentials.provider",
+                "com.amazonaws.auth.DefaultAWSCredentialsProviderChain",
+            )
     if MODE == "erase":
         brand = os.environ.get("ERASE_BRAND_ID", "")
         if not brand:

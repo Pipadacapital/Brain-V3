@@ -13,9 +13,12 @@ Orphan-sweep guardrails (per the audit risk note):
   - older_than is clamped >= 3 days IN the job; we pin 7d here so a file can
     never belong to an in-flight commit (the marts rewrite hourly — there is no
     write-silent window to schedule into, the age guard is the safety).
-  - remove_orphan_files lists via the Hadoop FS, not the catalog S3FileIO: the
-    envSecret must carry S3_ENDPOINT ("" = real S3) + working AWS credentials
-    for S3A, else set ORPHAN_FILES=0 (values) and keep compaction+expiry only.
+  - remove_orphan_files lists via the Hadoop FS, not the catalog S3FileIO.
+    AUD-COST-020: with S3_ENDPOINT unset/empty (real S3) the job uses the
+    default AWS credential provider chain — the pod IRSA role, no static keys
+    (hadoop-aws is pre-baked in the spark image); a set S3_ENDPOINT means
+    MinIO-style path-style + static-key addressing (local). ORPHAN_FILES=0
+    stays the escape hatch (compaction+expiry only).
 Mirrors the spark-v4.yaml single-pod local[*] convention (maintenance is
 driver-only Iceberg procedure calls — no executor fleet needed).
 */ -}}

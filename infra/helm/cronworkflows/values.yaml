@@ -135,8 +135,10 @@ sparkV4:
   # remove_orphan_files pass — the hourly-rewritten marts otherwise grow S3 unbounded, and no
   # tier swept orphans from failed/aborted writes. ORPHAN_OLDER_THAN_DAYS=7 (job clamps >=3):
   # orphans that old can never belong to an in-flight commit, so overlapping the hourly refresh
-  # is safe. remove_orphan_files lists via S3A — envSecretName must carry S3_ENDPOINT + AWS
-  # credentials usable by the Hadoop FS, else flip ORPHAN_FILES to "0" (compaction+expiry only).
+  # is safe. remove_orphan_files lists via S3A; since AUD-COST-020 the job's S3A wiring is
+  # conditional — with S3_ENDPOINT unset (real S3) it falls back to the default AWS credential
+  # provider chain (IRSA WebIdentity, zero static keys; hadoop-aws is baked into the image), so
+  # ORPHAN_FILES=1 is safe in prod. ORPHAN_FILES=0 remains the escape hatch (compaction+expiry only).
   maintenance:
     enabled: true
     schedule: "45 4 * * 0"          # weekly Sun 04:45 IST — off the daily 03:00 Bronze maintenance slot

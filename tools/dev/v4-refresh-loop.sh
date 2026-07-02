@@ -221,6 +221,30 @@ run_spark_script() {  # $1=tier-label  $2=script-path
   return "$rc"
 }
 
+# ── daily data-plane maintenance cadence (guard file; AUD-PERF-003) ────────────────────────────────────
+# Retention/compaction must not run per-cycle: they contend with the SQLite-backed REST catalog and are
+# pointless at 5-min granularity. A guard-file mtime gives them a daily cadence INSIDE the loop, at the
+# end of a cycle (quiet window — the cycle's Spark jobs have all finished). The stamp is touched only on
+# SUCCESS, so a failed maintenance run retries next cycle. stat -f = BSD/macOS, stat -c = GNU.
+MAINT_INTERVAL_HOURS="${MAINT_INTERVAL_HOURS:-24}"
+maintenance_due() {  # $1 = guard file → rc 0 when the job should run this cycle
+  [ "${SKIP_MAINTENANCE:-0}" = "1" ] && return 1
+  [ -f "$1" ] || return 0
+  local mtime
+  mtime="$(stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0)"
+  [ $(( $(date +%s) - mtime )) -ge $(( MAINT_INTERVAL_HOURS * 3600 )) ]
+}
+
+run_maintenance_job() {  # $1=label  $2=script — daily-guarded run_spark_script; stamps guard on success
+  local stamp="/tmp/brain-v4-${1}.stamp"
+  maintenance_due "$stamp" || return 0
+  if run_spark_script "$1" "$2"; then
+    touch "$stamp"
+    return 0
+  fi
+  return 1
+}
+
 run_spark_tier() {  # $1=tier-label  $2..=scripts ; returns # of failed scripts
   local label="$1"; shift
   local ok=0 fail=0 s
@@ -443,6 +467,12 @@ run_once() {
   if [ "$PHASE" = "2" ] || [ "$PHASE" = "both" ]; then
     run_phase 2; failures=$((failures+$?))
   fi
+
+  # ── DAILY MAINTENANCE (guard-file cadence; end of cycle = quiet window) ────────────────────────────
+  # ADR-0006 D4 raw-PII short retention (AUD-PERF-003): row-TTL DELETE + snapshot expiry over the raw
+  # Bronze tables, incl. the unified brain_bronze.events connector lanes. Compliance job — a failure
+  # marks the cycle degraded (and retries next cycle: the guard stamp is only touched on success).
+  run_maintenance_job bronze-raw-retention "$SPARK_ROOT/run-bronze-raw-retention.sh" || failures=$((failures+1))
 
   cycle_end=$(now_ms)
   if [ "$failures" -eq 0 ]; then

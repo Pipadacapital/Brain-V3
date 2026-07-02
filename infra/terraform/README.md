@@ -1,4 +1,61 @@
-# Terraform — AWS (VPC, EKS, RDS, S3/Glue, KMS, self-hosted Kafka (Strimzi), ...). doc 04 §J/§K.
+# Terraform — AWS (VPC, EKS, Aurora, S3 Iceberg, KMS, self-hosted Kafka (Strimzi), ...). doc 04 §J/§K.
+
+## Prod go-live (AUD-COST-001) — envs/prod is UN-GATED
+
+`envs/prod` is now the full apply-ready ADR-0009 module set (network + fck-nat +
+vpc-endpoints, EKS, Aurora Serverless v2, ElastiCache, Secrets Manager, S3
+Iceberg Bronze/Silver/Gold, IRSA, Karpenter, CI/CD OIDC roles). Region:
+**ap-south-1** everywhere. Everything is `terraform validate`-green with
+`-backend=false`; the apply order below is the go-live path.
+
+### Step 0 — remote state bootstrap (one-time, LOCAL credentials)
+
+The `envs/prod` S3 backend needs a state bucket + lock table that must exist
+*before* `terraform init` can run there (chicken-and-egg — this root cannot
+create its own backend):
+
+```bash
+cd infra/terraform/bootstrap
+terraform init
+terraform apply -var environment=prod        # brain-tfstate-prod-<acct> + brain-tfstate-lock-prod + state KMS
+```
+
+This root keeps its own state as a local `terraform.tfstate` file in-dir —
+that is expected; keep it (or migrate it into the bucket it created later).
+
+### Step 1 — fill the account id + apply the prod root
+
+1. Fill `<PROD_ACCOUNT_ID>` in `envs/prod/backend.tf` (the state bucket name
+   from step 0's output).
+2. `cp envs/prod/terraform.tfvars.example envs/prod/terraform.tfvars` and edit
+   (EKS API allowlist CIDR, node/ACU sizing).
+3. First apply is LOCAL (the CI apply role doesn't exist yet):
+   `cd envs/prod && terraform init && terraform plan -out m4.plan && terraform apply m4.plan`.
+   Staged alternative: `-target=module.network`, then `-target=module.eks`,
+   then a blank-target apply (the graph orders the rest).
+4. Set the GitHub repo variables from `terraform output`:
+   `AWS_PROD_APPLY_ROLE_ARN` = `github_apply_role_arn`,
+   `AWS_ECR_PUSH_ROLE_ARN` = `github_ecr_push_role_arn`. Subsequent applies go
+   through `.github/workflows/prod-apply.yml` (OIDC + approval gates).
+
+### Step 2 — Iceberg REST catalog database on Aurora (bootstrap SQL)
+
+The runtime Iceberg catalog is the **REST/JDBC catalog** (iceberg-rest chart →
+JdbcCatalog on Aurora) — NOT Glue (see AUD-COST-012; the former
+`aws_glue_catalog_database` resources were removed). Nothing creates the
+catalog DB automatically (Aurora is private-only, so a terraform `postgresql`
+provider can't reach it from CI). One-time bootstrap SQL, run from inside the
+VPC (e.g. a `kubectl run psql` pod) against the writer endpoint
+(`terraform output aurora_endpoint`) as the master user:
+
+```sql
+CREATE ROLE iceberg_catalog LOGIN PASSWORD '<generated>';
+CREATE DATABASE iceberg_catalog OWNER iceberg_catalog;
+```
+
+Then create the `iceberg-rest-catalog-db` k8s secret (jdbc-user/jdbc-password)
+and set `catalog.jdbcHost` in `infra/helm/iceberg-rest/values-prod.yaml` — see
+`docs/runbooks/prod-m4-turn-on.md` Phase 4c.
 
 ## Brain V4 PHASE 0 — Iceberg Silver + Gold (additive, non-breaking)
 

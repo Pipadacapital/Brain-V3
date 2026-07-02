@@ -542,24 +542,49 @@ services:
   #   • tempo + loki + otel-collector → FULL-OBS (trace/log pipeline, layered on core)
   # ────────────────────────────────────────────────────────────────────────────
   # ────────────────────────────────────────────────────────────────────────────────────────────────
-  # prometheus — DISABLED (commented out) 2026-07-02: its only consumer (grafana) is disabled, so the
-  # metrics scraper has no dashboard/alert consumer right now. Nothing active depends_on it (the kafka
-  # JMX exporter + otel-collector are SCRAPED BY it, not the reverse), so they run fine without it.
-  # Re-enable alongside grafana by uncommenting this block.
+  # prometheus — RE-ENABLED 2026-07-02 (AUD-LOCAL-001): the base metrics/SLO pipeline is a core-profile
+  # member per the blueprint §4.1 header above (which this file contradicted while the block was
+  # commented out). It scrapes the kafka JMX javaagent on :9404 (otherwise burning heap unscraped),
+  # evaluates infra/observe/alerts/*.rules.yml (brain-slo + freshness — DLQ growth / ingest freshness /
+  # consumer lag), and routes fired alerts to the local `alertmanager` service below.
   # ────────────────────────────────────────────────────────────────────────────────────────────────
-  # prometheus:
-  #   image: prom/prometheus:v2.52.0
-  #   profiles: ["core"]
-  #   mem_limit: 256m         # blueprint §4.2
-  #   oom_score_adj: 300      # observability — disposable, killed before stateful services
-  #   ports: ["9090:9090"]
-  #   volumes:
-  #     - ./infra/observe/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-  #   healthcheck:
-  #     test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9090/-/ready"]
-  #     interval: 10s
-  #     timeout: 5s
-  #     retries: 10
+  prometheus:
+    image: prom/prometheus:v2.52.0
+    profiles: ["core"]
+    mem_limit: 256m         # blueprint §4.2
+    oom_score_adj: 300      # observability — disposable, killed before stateful services
+    ports: ["9090:9090"]
+    volumes:
+      - ./infra/observe/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # Rule files: prometheus.yml declares `rule_files: alerts/*.rules.yml` (relative to the config
+      # dir) — without this mount the glob matches NOTHING and brain-slo.rules.yml silently never
+      # loads (the exact false-safety anti-pattern the rules file exists to close). AUD-LOCAL-001.
+      - ./infra/observe/alerts:/etc/prometheus/alerts:ro
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9090/-/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # Alertmanager — the notification/grouping stage of the SLO pipeline (AUD-LOCAL-001). CORE profile:
+  # infra/observe/prometheus.yml's `alerting:` block targets `alertmanager:9093` unconditionally, so
+  # without this service every rule evaluation logs a dead-target error and fired alerts go nowhere.
+  # Uses the LOCAL config (alertmanager-local.yml, no-op receiver — alerts group + show in the UI at
+  # :9093 but aren't delivered): the prod-shaped alertmanager.yml uses ${SLACK_WEBHOOK_URL} deploy-time
+  # placeholders that Alertmanager (no env substitution) rejects as an invalid URL → crash-loop.
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    profiles: ["core"]
+    mem_limit: 256m         # blueprint §4.2 tier as prometheus/grafana (~30MiB measured steady)
+    oom_score_adj: 400      # observability — disposable (between prometheus 300 and grafana 500)
+    ports: ["9093:9093"]    # host 9093 is free (kafka's CONTROLLER 9093 is container-internal only)
+    volumes:
+      - ./infra/observe/alertmanager-local.yml:/etc/alertmanager/alertmanager.yml:ro
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9093/-/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
   loki:
     image: grafana/loki:3.0.0
@@ -588,39 +613,38 @@ services:
       retries: 20
 
   # ────────────────────────────────────────────────────────────────────────────────────────────────
-  # grafana — DISABLED (commented out) 2026-07-02: the metrics dashboards aren't in active use, so we
-  # don't run the UI. Nothing depends_on grafana, and prometheus (its data source) still runs standalone
-  # and keeps scraping — so re-enabling is just uncommenting this block (dashboards come back at :3004).
+  # grafana — RE-ENABLED 2026-07-02 (AUD-LOCAL-001): base metrics dashboards are a core-profile
+  # member per the blueprint §4.1 header (dashboards at :3004; datasource = prometheus above).
   # ────────────────────────────────────────────────────────────────────────────────────────────────
-  # grafana:
-  #   image: grafana/grafana:10.4.2
-  #   profiles: ["core"]
-  #   mem_limit: 256m         # blueprint §4.2
-  #   oom_score_adj: 500      # observability UI — most disposable, killed first under VM pressure
-  #   # Grafana is core but its Loki/Tempo datasources live in full-obs. depends_on is reduced to
-  #   # prometheus (same core profile) ONLY — a hard depends_on loki/tempo would make a core-only
-  #   # `up` fail (cross-profile dependency). Grafana boots fine without them; the provisioned
-  #   # Loki/Tempo datasources simply show "down" until `--profile full-obs` is also active.
-  #   depends_on:
-  #     prometheus:
-  #       condition: service_healthy
-  #   environment:
-  #     GF_SECURITY_ADMIN_USER: admin
-  #     GF_SECURITY_ADMIN_PASSWORD: brain
-  #     GF_USERS_ALLOW_SIGN_UP: "false"
-  #   # Host 3004 → Grafana's internal 3000. Host 3000 is reserved for the Brain web app (next dev);
-  #   # mapping Grafana to host 3000 shadowed the product (localhost:3000 opened Grafana). Grafana → :3004.
-  #   ports: ["3004:3000"]
-  #   volumes:
-  #     - ./infra/observe/grafana/provisioning:/etc/grafana/provisioning:ro
-  #   # Healthcheck runs INSIDE the container, where Grafana listens on its internal 3000 —
-  #   # NOT the host-published 3004 (that mapping only exists on the host). Curling 3004 here
-  #   # always failed (curl exit 7), which kept the container "unhealthy" and aborted dev-up.
-  #   healthcheck:
-  #     test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
-  #     interval: 10s
-  #     timeout: 5s
-  #     retries: 20
+  grafana:
+    image: grafana/grafana:10.4.2
+    profiles: ["core"]
+    mem_limit: 256m         # blueprint §4.2
+    oom_score_adj: 500      # observability UI — most disposable, killed first under VM pressure
+    # Grafana is core but its Loki/Tempo datasources live in full-obs. depends_on is reduced to
+    # prometheus (same core profile) ONLY — a hard depends_on loki/tempo would make a core-only
+    # `up` fail (cross-profile dependency). Grafana boots fine without them; the provisioned
+    # Loki/Tempo datasources simply show "down" until `--profile full-obs` is also active.
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: brain
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    # Host 3004 → Grafana's internal 3000. Host 3000 is reserved for the Brain web app (next dev);
+    # mapping Grafana to host 3000 shadowed the product (localhost:3000 opened Grafana). Grafana → :3004.
+    ports: ["3004:3000"]
+    volumes:
+      - ./infra/observe/grafana/provisioning:/etc/grafana/provisioning:ro
+    # Healthcheck runs INSIDE the container, where Grafana listens on its internal 3000 —
+    # NOT the host-published 3004 (that mapping only exists on the host). Curling 3004 here
+    # always failed (curl exit 7), which kept the container "unhealthy" and aborted dev-up.
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
 
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.102.0

@@ -40,10 +40,13 @@ unbounded anymore.
 | localstack | 512m | — |
 | iceberg-rest | 512m | — |
 | redis | 256m | `maxmemory 192mb` + `volatile-lru` (evict, don't OOM-kill) |
+| prometheus | 256m | — (re-enabled 2026-07-02, AUD-LOCAL-001; loads `infra/observe/alerts/*.rules.yml`) |
+| grafana | 256m | — (re-enabled 2026-07-02, AUD-LOCAL-001; dashboards at :3004) |
+| alertmanager | 256m | — (added 2026-07-02, AUD-LOCAL-001; local no-op receiver, UI at :9093) |
 | pgbouncer | 128m | — (small C daemon) |
 
 Not running (commented out in compose, re-enable by uncommenting): **litellm**
-(`ai` profile — AI/NLQ features not active yet), **prometheus + grafana**.
+(`ai` profile — AI/NLQ features not active yet).
 
 ## Lever 3 — transient Spark transform jobs (fixes JVM heap OOM)
 

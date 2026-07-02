@@ -28,6 +28,7 @@
     "dev:tunnels": "bash tools/dev/tunnels.sh",
     "dev:secrets-snapshot": "bash tools/dev/secrets-snapshot.sh",
     "dev:v4-refresh": "bash tools/dev/v4-refresh-loop.sh",
+    "dev:down": "bash tools/dev/dev-down.sh",
     "down": "docker compose down",
     "migrate": "node scripts/migrate.mjs up",
     "migrate:up": "node scripts/migrate.mjs up",

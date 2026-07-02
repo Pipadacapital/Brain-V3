@@ -54,7 +54,7 @@ export const SchemaValidityCheckSchema = z.object({
 export const ReconciliationCheckSchema = z.object({
   category: z.literal('reconciliation'),
   bronzeTableName: z.string(),
-  redpandaTopic: z.string(),
+  kafkaTopic: z.string(),
   maxRowCountDelta: z.number().int().nonnegative(),
   severity: z.enum(['warn', 'error']),
   brandId: z.string().uuid().optional(),
@@ -116,11 +116,11 @@ export const DQ_CHECKS: DQCheck[] = [
     severity: 'error',
   },
 
-  // Reconciliation: Bronze row count vs Redpanda committed offset (≤ 100 event lag)
+  // Reconciliation: Bronze row count vs Kafka committed offset (≤ 100 event lag)
   {
     category: 'reconciliation',
     bronzeTableName: BRONZE_TABLE,
-    redpandaTopic: 'dev.collector.event.v1',
+    kafkaTopic: 'dev.collector.event.v1',
     maxRowCountDelta: 100,
     severity: 'warn',  // reconciliation lag → warn (not error — expected under high load)
   },

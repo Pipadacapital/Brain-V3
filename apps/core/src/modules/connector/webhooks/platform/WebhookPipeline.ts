@@ -126,9 +126,20 @@ export interface WebhookRouteConfig {
 
 // ── WebhookPipeline ───────────────────────────────────────────────────────────
 
+/**
+ * AUD-PERF-011: TTL for the per-pipeline webhook-secret cache. Production webhook bursts were
+ * 1:1 GetSecretValue API calls (added p95 latency + AWS throttling risk exactly during order
+ * spikes). Only SUCCESSFUL fetches are cached (fail-closed — never negative-cache); worst-case
+ * staleness after a secret rotation on the SAME ARN is one TTL of HMAC failures, after which
+ * the fresh value is fetched.
+ */
+const SECRET_CACHE_TTL_MS = 5 * 60_000;
+
 export class WebhookPipeline {
   private readonly dedupAdapter: ProviderRedisDedupAdapter;
   private readonly archiveRepo: RawArchiveRepository;
+  /** secret_ref → cached creds (AUD-PERF-011). Instance-scoped: one pipeline per provider route. */
+  private readonly secretCache = new Map<string, { creds: Record<string, string>; expiresAt: number }>();
 
   constructor(
     private readonly strategy: IWebhookStrategy,
@@ -157,6 +168,23 @@ export class WebhookPipeline {
    */
   async handleRequest(req: FastifyRequest, reply: FastifyReply): Promise<unknown> {
     return this.handle(req, reply);
+  }
+
+  /**
+   * getSecret with a short-TTL in-memory cache keyed by secret_ref (AUD-PERF-011).
+   * Fail-closed: only successful non-null fetches are cached; errors propagate uncached.
+   */
+  private async getSecretCached(secretRef: string): Promise<Record<string, string> | null> {
+    const hit = this.secretCache.get(secretRef);
+    if (hit) {
+      if (hit.expiresAt > Date.now()) return hit.creds;
+      this.secretCache.delete(secretRef);
+    }
+    const creds = await this.deps.secretsManager.getSecret(secretRef);
+    if (creds) {
+      this.secretCache.set(secretRef, { creds, expiresAt: Date.now() + SECRET_CACHE_TTL_MS });
+    }
+    return creds;
   }
 
   // ── Template Method ─────────────────────────────────────────────────────────
@@ -199,6 +227,11 @@ export class WebhookPipeline {
       }
 
       // ── Step 2: HMAC-first (Strategy) — NN-4 ────────────────────────────────
+      // AUD-PERF-011: connector rows resolved inside the verify closure are captured here
+      // (keyed by lookupKey, null = resolver found nothing) so Step 3 reuses them instead of
+      // re-running the IDENTICAL resolver query per request. Per-request scope — never cached
+      // across requests (reconnect/rotation must be visible immediately).
+      const resolvedRows = new Map<string, ConnectorDispatchRow | null>();
       let verifyResult: Awaited<ReturnType<IWebhookStrategy['signatureVerify']>>;
       try {
         verifyResult = await this.strategy.signatureVerify(
@@ -214,9 +247,11 @@ export class WebhookPipeline {
               [lookupKey],
             );
             const row = result.rows[0] ?? null;
+            resolvedRows.set(lookupKey, row);
             if (!row) return { webhookSecret: '', connectorLookupKey: lookupKey };
             // Fetch webhook_secret from Secrets Manager (I-S09: never logged).
-            const creds = await this.deps.secretsManager.getSecret(row.secret_ref);
+            // TTL-cached per secret_ref (AUD-PERF-011) — fail-closed, positives only.
+            const creds = await this.getSecretCached(row.secret_ref);
             if (!creds || !creds['webhook_secret']) {
               incrementCounter('connector_auth_rejected_total', { provider });
               return { webhookSecret: '', connectorLookupKey: lookupKey };
@@ -240,14 +275,21 @@ export class WebhookPipeline {
       // ── Step 3: Brand resolution from DB (MT-1) ──────────────────────────────
       // Resolve connector row by the provider-specific lookup key.
       // brand_id is authoritative from the DB row — NEVER from header/body (D-4 / MT-1).
+      // AUD-PERF-011: reuse the row already resolved inside the verify closure for the SAME
+      // lookupKey (same SECURITY DEFINER fn, same request). Falls back to the query for
+      // strategies that verified without resolving (or with a different key).
       let connectorRow: ConnectorDispatchRow | null = null;
       try {
-        const result = await this.deps.rawPgPool.query<ConnectorDispatchRow>(
-          `SELECT connector_instance_id, brand_id, secret_ref
-           FROM ${this.routeConfig.resolverFn}($1)`,
-          [verifyResult.lookupKey],
-        );
-        connectorRow = result.rows[0] ?? null;
+        if (resolvedRows.has(verifyResult.lookupKey)) {
+          connectorRow = resolvedRows.get(verifyResult.lookupKey) ?? null;
+        } else {
+          const result = await this.deps.rawPgPool.query<ConnectorDispatchRow>(
+            `SELECT connector_instance_id, brand_id, secret_ref
+             FROM ${this.routeConfig.resolverFn}($1)`,
+            [verifyResult.lookupKey],
+          );
+          connectorRow = result.rows[0] ?? null;
+        }
       } catch (dbErr) {
         req.log?.error({ request_id: requestId, err: dbErr, provider }, '[webhook] connector lookup failed');
         span.recordException(dbErr instanceof Error ? dbErr : new Error(String(dbErr)));

@@ -21,8 +21,8 @@ spec:
   project: brain
 
   source:
-    repoURL: https://github.com/brain-platform/brain
-    targetRevision: HEAD
+    repoURL: https://github.com/Rishabhporwal/Brain-V4.git
+    targetRevision: master
     path: infra/argocd/envs
 
   destination:

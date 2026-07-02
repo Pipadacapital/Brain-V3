@@ -152,3 +152,55 @@ describe('CollectorKafkaProducer.produceBatch (AUD-PERF-002 / AUD-PERF-012)', ()
     expect(sentMessages).toHaveLength(0);
   });
 });
+
+describe('CollectorKafkaProducer event_name / brand_id headers (AUD-PERF-005)', () => {
+  beforeEach(() => {
+    sentMessages.length = 0;
+    fakeProducer.send.mockClear();
+  });
+
+  it('stamps the top-level event_name (and brand_id) as Kafka headers', async () => {
+    const p = newProducer();
+    await p.connect();
+    await p.produceBatch([msg({ valueText: '{"event_name": "page.viewed", "n": 1}' })]);
+    expect(sentMessages[0]!.headers['event_name']).toBe('page.viewed');
+    expect(sentMessages[0]!.headers['brand_id']).toBe('brand-123');
+  });
+
+  it('omits the event_name header when the body is unparseable (bridges fall back to body parse)', async () => {
+    const p = newProducer();
+    await p.connect();
+    await p.produceBatch([msg({ valueText: 'not-json{{' })]);
+    expect(sentMessages[0]!.headers['event_name']).toBeUndefined();
+  });
+
+  it('omits the event_name header when event_name is absent or non-string', async () => {
+    const p = newProducer();
+    await p.connect();
+    await p.produceBatch([
+      msg({ valueText: '{"foo": "bar"}' }),
+      msg({ valueText: '{"event_name": 42}' }),
+      msg({ valueText: '{"event_name": ""}' }),
+    ]);
+    for (const m of sentMessages) expect(m.headers['event_name']).toBeUndefined();
+  });
+
+  it('uses the TOP-LEVEL event_name, never a nested payload key of the same name', async () => {
+    const p = newProducer();
+    await p.connect();
+    // jsonb canonical ordering can place the (shorter-keyed) payload object BEFORE the
+    // top-level event_name — a naive first-match regex would grab the nested value.
+    await p.produceBatch([
+      msg({ valueText: '{"payload": {"event_name": "nested.decoy"}, "event_name": "order.created"}' }),
+    ]);
+    expect(sentMessages[0]!.headers['event_name']).toBe('order.created');
+  });
+
+  it('omits the brand_id header when brand_id is not projected (null)', async () => {
+    const p = newProducer();
+    await p.connect();
+    await p.produceBatch([msg({ brandId: null })]);
+    expect(sentMessages[0]!.headers['brand_id']).toBeUndefined();
+    expect(sentMessages[0]!.headers['event_name']).toBe('page.viewed');
+  });
+});

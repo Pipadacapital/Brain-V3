@@ -32,6 +32,21 @@ export interface KafkaProducerConfig {
   };
 }
 
+/**
+ * Extract the TOP-LEVEL event_name from the spool's canonical jsonb text (AUD-PERF-005).
+ * Returns null when the body is unparseable or event_name is absent/non-string — the
+ * header is then simply omitted (downstream bridges fall back to body parse).
+ */
+function extractTopLevelEventName(valueText: string): string | null {
+  try {
+    const parsed = JSON.parse(valueText) as Record<string, unknown>;
+    const name = parsed?.['event_name'];
+    return typeof name === 'string' && name.length > 0 ? name : null;
+  } catch {
+    return null;
+  }
+}
+
 export class CollectorKafkaProducer {
   private readonly kafka: Kafka;
   private readonly topic: string;
@@ -104,6 +119,17 @@ export class CollectorKafkaProducer {
         correlation_id: correlationId,
         source: 'collector-drainer',
       };
+      // AUD-PERF-005: stamp event_name (and brand_id when projected) as Kafka headers so the
+      // 13 Bronze-bridge consumer groups on this shared topic can skip-fast on the header
+      // instead of JSON.parsing every pixel event 13 times (connector-lane producers already
+      // stamp it). ADDITIVE: absent header (malformed/legacy in-flight messages) keeps the
+      // bridges' full-body-parse fallback. The extraction MUST be exact — a wrong header value
+      // would make a bridge silently skip an event it owns — so we JSON.parse (one parse here
+      // saves 13 downstream); a top-level-only regex over jsonb canonical text is not safe
+      // (a nested payload key named event_name can precede the top-level one).
+      const eventName = extractTopLevelEventName(valueText);
+      if (eventName !== null) headers['event_name'] = eventName;
+      if (brandId !== null) headers['brand_id'] = brandId;
       injectKafkaTraceContext(headers);
 
       return {

@@ -1,0 +1,27 @@
+# Default values for external-secrets-config. Overridden per env (values-prod.yaml).
+#
+# PREREQUISITE: the External Secrets Operator (ArgoCD app external-secrets-<env>,
+# infra/argocd/envs/<env>/external-secrets.yaml) must be synced first — it owns the
+# external-secrets.io CRDs and the controller whose IRSA role reads Secrets Manager.
+
+# AWS region of the Secrets Manager the ClusterSecretStore reads from.
+region: ap-south-1
+
+# Name of the ClusterSecretStore every ExternalSecret below references.
+storeName: aws-secrets-manager
+
+# How often ESO re-reads Secrets Manager (rotation propagation window).
+refreshInterval: 1h
+
+# Create the target namespaces here so the env Secrets exist BEFORE the workload
+# apps first sync (their CreateNamespace=true then shares ownership via SSA).
+createNamespaces: true
+
+# The k8s Secrets to materialize. `key` is the AWS Secrets Manager secret name;
+# its value MUST be a flat JSON object — every JSON key becomes a Secret key
+# (dataFrom.extract), i.e. an env var for envFrom consumers.
+# Empty by default; per-env lists live in values-<env>.yaml.
+secrets: []
+#  - name: core-env            # k8s Secret name (chart envSecretName)
+#    namespace: core           # namespace the consuming chart deploys into
+#    key: brain/prod/k8s/core-env   # AWS Secrets Manager secret name

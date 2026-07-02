@@ -176,6 +176,8 @@ services:
   minio-init:
     image: minio/mc:latest
     profiles: ["core"]   # bootstrap for minio (core); runs whenever the warehouse comes up
+    mem_limit: 128m         # AUD-LOCAL-004: one-shot init — bound-everything rule (spec §A2)
+    oom_score_adj: 500      # disposable one-shot
     depends_on:
       minio:
         condition: service_healthy
@@ -343,6 +345,11 @@ services:
   kafka-init:
     image: apache/kafka:3.8.1
     profiles: ["core"]
+    # AUD-LOCAL-004: bounded, but NOT at the shared 128m init cap — each kafka-topics.sh call boots
+    # a JVM whose kafka-run-class.sh default heap is 256M; a 128m cgroup would OOM-kill the init and
+    # (as a depends_on of nothing but still part of `up --wait`) fail the bring-up. 512m is safe.
+    mem_limit: 512m
+    oom_score_adj: 500      # disposable one-shot
     network_mode: "service:kafka"
     depends_on:
       kafka:
@@ -428,6 +435,8 @@ services:
   iceberg-catalog-init:
     image: alpine:latest
     profiles: ["core"]
+    mem_limit: 128m         # AUD-LOCAL-004: one-shot chown — bound-everything rule (spec §A2)
+    oom_score_adj: 500      # disposable one-shot
     user: "0:0"
     volumes:
       - iceberg-catalog:/catalog
@@ -592,6 +601,8 @@ services:
   loki:
     image: grafana/loki:3.0.0
     profiles: ["full-obs"]
+    mem_limit: 512m         # AUD-LOCAL-004: bound-everything rule (spec §A2) — a runaway log pipe
+    oom_score_adj: 400      # observability — disposable, killed before stateful services
     ports: ["3100:3100"]
     command: ["-config.file=/etc/loki/local-config.yaml"]
     healthcheck:
@@ -603,6 +614,8 @@ services:
   tempo:
     image: grafana/tempo:2.5.0
     profiles: ["full-obs"]
+    mem_limit: 512m         # AUD-LOCAL-004: bound-everything rule (spec §A2)
+    oom_score_adj: 400      # observability — disposable
     command: ["-config.file=/etc/tempo.yaml"]
     volumes:
       - ./infra/observe/tempo.yml:/etc/tempo.yaml:ro
@@ -652,6 +665,8 @@ services:
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.102.0
     profiles: ["full-obs"]
+    mem_limit: 256m         # AUD-LOCAL-004: bound-everything rule (spec §A2)
+    oom_score_adj: 400      # observability — disposable
     # Prometheus (core) SCRAPES this collector at :8889 (pull) — so the collector does NOT need
     # prometheus up to start, and a hard cross-profile depends_on prometheus is dropped. It exports
     # logs→loki and traces→tempo (both same full-obs profile), kept as hard deps.
@@ -691,6 +706,8 @@ services:
   jmx-exporter-init:
     image: curlimages/curl:8.8.0
     profiles: ["core", "debug"]
+    mem_limit: 128m         # AUD-LOCAL-004: one-shot jar download — bound-everything rule (spec §A2)
+    oom_score_adj: 500      # disposable one-shot (kafka waits on completion, retry = re-up)
     # Run as root: curlimages/curl defaults to uid 100, which CANNOT write the root-owned `jmx-agent`
     # volume → curl exits 23 ("ERROR on write"), the init fails, and (being a depends_on of kafka)
     # it aborts the whole `up --wait` chain before the broker starts. As root the download succeeds.
@@ -715,6 +732,8 @@ services:
   kafka-exporter:
     image: danielqsj/kafka-exporter:v1.7.0
     profiles: ["debug"]
+    mem_limit: 128m         # AUD-LOCAL-004: small Go exporter — bound-everything rule (spec §A2)
+    oom_score_adj: 500      # debug tooling — most disposable
     command:
       - "--kafka.server=brain-kafka-ext:19092"
       - "--web.listen-address=:9308"

@@ -44,6 +44,11 @@ unbounded anymore.
 | grafana | 256m | — (re-enabled 2026-07-02, AUD-LOCAL-001; dashboards at :3004) |
 | alertmanager | 256m | — (added 2026-07-02, AUD-LOCAL-001; local no-op receiver, UI at :9093) |
 | pgbouncer | 128m | — (small C daemon) |
+| loki / tempo (`full-obs` profile) | 512m each | — (AUD-LOCAL-004) |
+| otel-collector (`full-obs`) | 256m | — (AUD-LOCAL-004) |
+| kafka-exporter (`debug`) | 128m | — (AUD-LOCAL-004) |
+| one-shot inits (minio-init / iceberg-catalog-init / jmx-exporter-init) | 128m | — (AUD-LOCAL-004) |
+| kafka-init | 512m | each `kafka-topics.sh` call is a JVM (256M default CLI heap) — 128m would OOM-kill the init and fail `up --wait` |
 
 Not running (commented out in compose, re-enable by uncommenting): **litellm**
 (`ai` profile — AI/NLQ features not active yet).

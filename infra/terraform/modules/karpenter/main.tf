@@ -63,9 +63,14 @@ data "aws_caller_identity" "current" {}
 locals {
   name_prefix = "${var.project}-${var.environment}"
 
+  # AUD-NAME-001: the four mandatory PascalCase keys (Environment/Service/
+  # Owner/CostCenter — AWS treats environment/Environment as distinct keys;
+  # Environment was the missing 4th). Lowercase project/environment kept for
+  # continuity with the applied resources until the doc's §6 duplicate-strip.
   common_tags = {
     project     = var.project
     environment = var.environment
+    Environment = var.environment
     Service     = "karpenter"
     Owner       = "data-team"
     CostCenter  = "brain-platform"

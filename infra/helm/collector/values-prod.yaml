@@ -7,6 +7,14 @@ image:
 
 envSecretName: collector-env
 
+# AUD-COST-003: the pixel endpoint — THE 99.95%-SLA public edge. Joins the
+# shared brain-prod ALB (host-routed); TLS = ACM at the ALB.
+ingress:
+  enabled: true
+  host: REPLACE_WITH_COLLECTOR_HOSTNAME   # e.g. px.<apex-domain>
+  groupName: brain-prod
+  certificateArn: REPLACE_WITH_ACM_CERT_ARN
+
 serviceAccount:
   annotations:
     eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/brain-collector-prod

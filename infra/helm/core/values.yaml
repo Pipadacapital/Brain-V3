@@ -13,6 +13,16 @@ service:
   port: 80
   targetPort: 3001
 
+# Public edge (AUD-COST-003): shared Brain ALB (aws-load-balancer-controller),
+# host-routed, ACM TLS. Off by default; enabled per env in values-prod.yaml.
+ingress:
+  enabled: false
+  className: alb
+  host: ""            # e.g. api.<domain> — BFF/API + connector webhooks
+  groupName: brain    # all Brain Ingresses share ONE ALB via this group
+  certificateArn: ""  # ACM cert covering the host (TLS terminates at the ALB)
+  annotations: {}
+
 probes:
   enabled: true
   path: /health           # core exposes a single /health endpoint

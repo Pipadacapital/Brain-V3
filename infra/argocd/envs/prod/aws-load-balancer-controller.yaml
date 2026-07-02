@@ -1,0 +1,67 @@
+################################################################################
+# Brain – ArgoCD Application: AWS Load Balancer Controller (prod) — AUD-COST-003
+# Reconciles the collector/web/core Ingress resources (ingressClassName: alb)
+# into ONE shared internet-facing ALB (alb.ingress.kubernetes.io/group.name:
+# brain-prod, host-based routing, ACM TLS). Without it, every service is
+# ClusterIP-only and zero pixel/app/API traffic can reach prod — event loss by
+# construction (the collector is the 99.95%-SLA pixel edge).
+#
+# IRSA: brain-prod-aws-load-balancer-controller — the upstream controller IAM
+# policy (elasticloadbalancing:*, ec2 ENI/SG discovery, acm:Describe/List,
+# wafv2 optional) scoped per the AWS docs; terraform half tracked in
+# infra/helm/PLACEHOLDERS.md.
+# MANUAL promotion gate (prod convention) — no automated sync.
+################################################################################
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: aws-load-balancer-controller-prod
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+  labels:
+    project: brain
+    environment: prod
+    service: aws-load-balancer-controller
+spec:
+  project: brain-prod
+  source:
+    repoURL: https://aws.github.io/eks-charts
+    chart: aws-load-balancer-controller
+    targetRevision: 1.10.1
+    helm:
+      valuesObject:
+        # MUST equal aws_eks_cluster.main.name (project-environment).
+        clusterName: brain-prod
+        region: ap-south-1
+        # Explicit VPC id (terraform output vpc_id) — avoids IMDS dependence.
+        vpcId: REPLACE_WITH_VPC_ID
+        replicaCount: 2
+        serviceAccount:
+          create: true
+          name: aws-load-balancer-controller
+          annotations:
+            eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/brain-prod-aws-load-balancer-controller
+        # The ingress data path must never sit on Spot capacity it also fronts.
+        nodeSelector:
+          role: system
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kube-system
+  syncPolicy:
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: 2
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 5m
+  revisionHistoryLimit: 10

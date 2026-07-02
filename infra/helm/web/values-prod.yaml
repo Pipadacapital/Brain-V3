@@ -7,6 +7,13 @@ image:
 
 envSecretName: web-env
 
+# AUD-COST-003: the app UI on the shared brain-prod ALB (host-routed, ACM TLS).
+ingress:
+  enabled: true
+  host: REPLACE_WITH_WEB_HOSTNAME   # e.g. app.<apex-domain>
+  groupName: brain-prod
+  certificateArn: REPLACE_WITH_ACM_CERT_ARN
+
 serviceAccount:
   annotations:
     eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/brain-web-prod

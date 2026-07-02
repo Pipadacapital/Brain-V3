@@ -1,0 +1,43 @@
+{{- /*
+AUD-COST-003: public edge for this service via the shared Brain ALB
+(aws-load-balancer-controller reconciles ingressClassName alb; all Brain
+Ingresses join ONE internet-facing ALB via group.name, host-routed, TLS
+terminated with the ACM certificate). DNS: external-dns publishes the host,
+or CNAME it to the ALB manually (infra/helm/PLACEHOLDERS.md).
+*/ -}}
+{{- if .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "brain.fullname" . }}
+  labels:
+    {{- include "brain.labels" . | nindent 4 }}
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/group.name: {{ .Values.ingress.groupName | quote }}
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80},{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: "443"
+    {{- if .Values.ingress.certificateArn }}
+    alb.ingress.kubernetes.io/certificate-arn: {{ .Values.ingress.certificateArn | quote }}
+    {{- end }}
+    {{- if .Values.probes.enabled }}
+    alb.ingress.kubernetes.io/healthcheck-path: {{ .Values.probes.readinessPath | default .Values.probes.path | quote }}
+    {{- end }}
+    {{- with .Values.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  rules:
+    - host: {{ required "ingress.host is required when ingress.enabled=true" .Values.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "brain.fullname" . }}
+                port:
+                  number: {{ .Values.service.port }}
+{{- end }}

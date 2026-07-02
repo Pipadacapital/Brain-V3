@@ -7,8 +7,9 @@
 #
 # sourceRepos: the Brain repo + the pinned upstream chart registries used by
 # the env manifests (strimzi / karpenter OCI / keda / argo-workflows / ESO /
-# eks-charts / jetstack / external-dns / neo4j). Additions to envs/* that pull
-# a NEW upstream registry must extend the matching allowlist here.
+# eks-charts / jetstack / external-dns / neo4j / prometheus-community).
+# Additions to envs/* that pull a NEW upstream registry must extend the
+# matching allowlist here.
 ################################################################################
 apiVersion: argoproj.io/v1alpha1
 kind: AppProject
@@ -49,6 +50,7 @@ spec:
     - https://charts.jetstack.io
     - https://kubernetes-sigs.github.io/external-dns
     - https://helm.neo4j.com/neo4j
+    - https://prometheus-community.github.io/helm-charts
   destinations:
     - server: https://kubernetes.default.svc
       namespace: "*"

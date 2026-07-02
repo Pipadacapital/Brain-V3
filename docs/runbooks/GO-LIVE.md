@@ -257,6 +257,12 @@ stops at the edge, nothing internal changes.
 ```bash
 argocd app sync argo-workflows-prod            # wave -2: CronWorkflow CRDs (Spark crons need this)
 argocd app sync karpenter-crd-prod karpenter-prod karpenter-nodepools-prod keda-prod   # autoscalers
+argocd app sync kube-prometheus-stack-prod     # monitoring (ns monitoring, AUD-PROD-001/-002): Prometheus +
+                                               # Grafana + Alertmanager on the system MNG; loads the brain-slo
+                                               # rules; Thanos sidecar → metrics bucket via IRSA (AUD-PROD-012 —
+                                               # bucket/role from `terraform output metrics_bucket_name` /
+                                               # `thanos_role_arn`, filled in step 4). Sync BEFORE the workload
+                                               # apps so the rollout bake analyses have an evaluator.
 argocd app sync strimzi-operator-prod strimzi-kafka-prod   # operator, then the 3-broker KRaft Kafka CR
 kubectl -n kafka wait --for=condition=Ready kafka/brain-prod-kafka --timeout=600s
 

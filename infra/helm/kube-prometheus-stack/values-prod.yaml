@@ -1,0 +1,424 @@
+################################################################################
+# Brain — prod values for the UPSTREAM kube-prometheus-stack chart
+# (prometheus-community), consumed by
+# infra/argocd/envs/prod/kube-prometheus-stack.yaml via an ArgoCD multi-source
+# $values ref (same pattern as keda/neo4j).
+#
+# Closes AUD-PROD-001/-002: prod previously had NO Prometheus at all — the SLO
+# rules (infra/observe/alerts/brain-slo.rules.yml), the Argo Rollouts analysis
+# templates (infra/argocd/rollouts/*) and the CD bake-window auto-rollback
+# signals had no evaluator. Also carries the chart half of AUD-PROD-012: the
+# Thanos sidecar ships TSDB blocks to the long-term metrics S3 bucket
+# (terraform half: modules/s3-metrics + envs/prod module.irsa_thanos).
+#
+# PLACEMENT: every long-running component is pinned to the fixed ON-DEMAND
+# system node group (role: system) — the metrics/alerting control plane must
+# not ride the Karpenter Spot capacity it observes (same doctrine as
+# keda/karpenter/ESO/ALB-controller). node-exporter is a DaemonSet and runs on
+# every node (it tolerates the tainted ondemand pool so those nodes are
+# scraped too). Resources are sized for t4g.medium (2 vCPU / 4 GiB) system
+# nodes; all images involved are multi-arch (arm64 Graviton).
+################################################################################
+
+## EKS is a MANAGED control plane: controller-manager/scheduler/etcd are not
+## scrapable and kube-proxy binds its metrics to 127.0.0.1. Leaving these on
+## creates permanently-down targets + alerts that can never inform anyone —
+## the exact false-safety anti-pattern the brain-slo rules header forbids.
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeEtcd:
+  enabled: false
+kubeProxy:
+  enabled: false
+
+prometheusOperator:
+  nodeSelector:
+    role: system
+  admissionWebhooks:
+    patch:
+      nodeSelector:
+        role: system
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+prometheus:
+  serviceAccount:
+    create: true
+    # PINNED (NN-3): the IRSA trust in terraform (envs/prod module.irsa_thanos,
+    # role brain-prod-thanos) is StringEquals on
+    # system:serviceaccount:monitoring:kube-prometheus-stack-prometheus — a
+    # rename here (or of the ArgoCD helm releaseName) is a deterministic STS
+    # AccessDenied for the Thanos sidecar's S3 uploads.
+    name: kube-prometheus-stack-prometheus
+    annotations:
+      eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/brain-prod-thanos
+  prometheusSpec:
+    nodeSelector:
+      role: system
+    # Thanos owns long-term retention (S3, AUD-PROD-012) — keep the local TSDB
+    # short + size-bounded so Prometheus fits the t4g.medium system nodes.
+    retention: 2d
+    retentionSize: 8GiB
+    externalLabels:
+      cluster: brain-prod
+      environment: prod
+    resources:
+      requests:
+        cpu: 300m
+        memory: 768Mi
+      limits:
+        cpu: "1"
+        memory: 1536Mi
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          # gp3 via the EBS CSI driver (addon = terraform modules/eks; the
+          # StorageClass is applied by infra/argocd/bootstrap/install.sh).
+          storageClassName: gp3
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 20Gi
+    # ── AUD-PROD-012: Thanos sidecar → S3 long-term metrics ────────────────
+    # The sidecar uploads 2h TSDB blocks to the metrics bucket. IRSA-NATIVE:
+    # no static keys anywhere — the pod's ServiceAccount role
+    # (brain-prod-thanos) carries the thanos_objstore policy and the AWS SDK
+    # default chain picks up the web-identity credentials; SSE-KMS is the
+    # bucket's default encryption. Retention/compaction of uploaded blocks is
+    # Thanos's job (compactor, when one is added), NEVER an S3 lifecycle
+    # expiry (modules/s3-metrics header). Fill the bucket suffix from
+    # `terraform output metrics_bucket_name`.
+    thanos:
+      objectStorageConfig:
+        secret:
+          type: S3
+          config:
+            bucket: brain-metrics-prod-ACCOUNT_ID
+            endpoint: s3.ap-south-1.amazonaws.com
+            region: ap-south-1
+      resources:
+        requests:
+          cpu: 50m
+          memory: 128Mi
+        limits:
+          cpu: 500m
+          memory: 256Mi
+
+alertmanager:
+  alertmanagerSpec:
+    nodeSelector:
+      role: system
+    resources:
+      requests:
+        cpu: 25m
+        memory: 64Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+
+grafana:
+  nodeSelector:
+    role: system
+  resources:
+    requests:
+      cpu: 50m
+      memory: 192Mi
+    limits:
+      cpu: 500m
+      memory: 384Mi
+
+kube-state-metrics:
+  nodeSelector:
+    role: system
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 192Mi
+
+prometheus-node-exporter:
+  resources:
+    requests:
+      cpu: 25m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 64Mi
+  # DaemonSet — must also land on the TAINTED ondemand Karpenter pool
+  # (Neo4j's home, AUD-COST-018) so the identity SoR's node is scraped.
+  tolerations:
+    - operator: Exists
+
+################################################################################
+# Brain SLO alert rules (AUD-PROD-013 prod half). VERBATIM conversion of
+# infra/observe/alerts/brain-slo.rules.yml — that file stays the canonical,
+# promtool-checkable source (the local compose Prometheus mounts it directly);
+# KEEP THE TWO IN LOCKSTEP when a rule changes. Rendered as a PrometheusRule
+# the operator loads via the default release ruleSelector.
+################################################################################
+additionalPrometheusRulesMap:
+  brain-slo:
+    groups:
+      # ── Liveness ────────────────────────────────────────────────────────────────
+      - name: brain-liveness
+        rules:
+          - alert: BrainTargetDown
+            expr: up{job=~"brain-.*|kafka-jmx-exporter|kafka-exporter"} == 0
+            for: 2m
+            labels:
+              severity: critical
+            annotations:
+              summary: "{{ $labels.job }} target down"
+              description: "Prometheus has not scraped {{ $labels.job }} ({{ $labels.instance }}) for 2m."
+
+      # ── Collector ingest SLO / burn-rate (the 99.95% accept+ack durability guarantee) ──
+      # Multi-window burn-rate (Google SRE): availability = accept / (accept + shed).
+      # Error budget = 0.05%. Fast burn = 14.4× over 5m+1h; slow burn = 6× over 30m+6h.
+      # Two windows per alert suppress single-spike flapping.
+      - name: brain-collector-slo
+        rules:
+          - alert: BrainCollectorErrorBudgetFastBurn
+            expr: |
+              (
+                sum(rate(collector_spool_full_total[5m]))
+                  / (sum(rate(collector_accept_total[5m])) + sum(rate(collector_spool_full_total[5m]))) > (14.4 * 0.0005)
+              )
+              and
+              (
+                sum(rate(collector_spool_full_total[1h]))
+                  / (sum(rate(collector_accept_total[1h])) + sum(rate(collector_spool_full_total[1h]))) > (14.4 * 0.0005)
+              )
+            for: 2m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Collector accept+ack error budget burning fast (>14.4×)"
+              description: "Shed ratio exceeds 14.4× the 0.05% budget over 5m AND 1h — the durability SLO is being consumed in hours, not weeks."
+
+          - alert: BrainCollectorErrorBudgetSlowBurn
+            expr: |
+              (
+                sum(rate(collector_spool_full_total[30m]))
+                  / (sum(rate(collector_accept_total[30m])) + sum(rate(collector_spool_full_total[30m]))) > (6 * 0.0005)
+              )
+              and
+              (
+                sum(rate(collector_spool_full_total[6h]))
+                  / (sum(rate(collector_accept_total[6h])) + sum(rate(collector_spool_full_total[6h]))) > (6 * 0.0005)
+              )
+            for: 15m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Collector accept+ack error budget burning slowly (>6×)"
+              description: "Shed ratio exceeds 6× the 0.05% budget over 30m AND 6h."
+
+          - alert: BrainCollectorSheddingNow
+            # Any sustained back-pressure shedding — the drainer (→ Kafka) is behind RIGHT NOW.
+            expr: sum(rate(collector_spool_full_total[5m])) > 0
+            for: 2m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Collector is shedding ingest (503 SPOOL_FULL)"
+              description: "/collect has returned SPOOL_FULL for 2m — the spool backlog crossed the high-water mark and the drainer is behind."
+
+      # ── Stream-worker: DLQ depth + consumer lag + ingest freshness ──────────────
+      - name: brain-stream-worker
+        rules:
+          - alert: BrainDlqGrowing
+            # DLQ is a topic; a still-advancing high-watermark (log end offset) on a .dlq topic = terminal failures.
+            expr: |
+              sum by (topic) (
+                rate(kafka_log_log_logendoffset{topic=~".*\\.dlq"}[15m])
+              ) > 0
+            for: 10m
+            labels:
+              severity: critical
+            annotations:
+              summary: "DLQ topic {{ $labels.topic }} is growing"
+              description: "Events are landing in the DLQ (offset advancing for 10m) — terminal processing failures after MAX_RETRY."
+
+          - alert: BrainConsumerLagHigh
+            # kafka_consumergroup_lag (kafka_exporter): summed lag across all topic-partitions of a group.
+            expr: |
+              sum by (consumergroup) (
+                kafka_consumergroup_lag{consumergroup=~"stream-worker-.*|.*-bridge"}
+              ) > 50000
+            for: 10m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Consumer group {{ $labels.consumergroup }} lag > 50k"
+              description: "The consumer group is >50,000 messages behind for 10m — projection is falling behind production rate."
+
+          - alert: BrainIngestStale
+            # Freshness: collector topic advancing but ZERO Bronze writes for 10m → the spine stalled.
+            expr: |
+              (sum(rate(kafka_log_log_logendoffset{topic=~".*\\.collector\\.event\\.v1"}[10m])) > 0)
+              and
+              (sum(increase(bronze_write_total[10m])) == 0)
+            for: 10m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Ingest stalled — events produced but no Bronze writes in 10m"
+              description: "The collector topic is advancing but the stream-worker wrote zero Bronze rows for 10m. The data spine is stalled."
+
+          # P1 — the scale-limiting tier. BrainIngestStale only fires at TOTAL zero; these catch the
+          # DEGRADATION before it reaches zero (the signals the audit flagged as having no metric).
+          - alert: BrainIngestSchedulerOverrun
+            # The sequential scheduler tick can no longer finish within its interval → connector freshness
+            # silently slips into minutes. The first symptom of "too many brands per replica" (shard/scale).
+            expr: sum(increase(ingest_scheduler_tick_overrun_total[15m])) > 0
+            for: 15m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Ingest scheduler tick overrunning its interval"
+              description: "A scheduler tick took longer than its poll interval — ingest freshness is degrading. Shard brands across replicas or shorten the per-connector work."
+
+          - alert: BrainConnectorDispatchErrors
+            # A provider's repulls are failing on dispatch (rate limit / credential / API) — stale data for
+            # that connector with NO other signal today (per-connector observability was missing).
+            expr: |
+              sum by (provider) (rate(ingest_scheduler_dispatch_error_total[10m]))
+                / clamp_min(sum by (provider) (rate(ingest_scheduler_dispatch_total[10m]) + rate(ingest_scheduler_dispatch_error_total[10m])), 1) > 0.25
+            for: 15m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Connector {{ $labels.provider }} repulls failing > 25%"
+              description: "More than a quarter of {{ $labels.provider }} repull dispatches are failing — likely a rate limit, expired credential, or provider outage. That connector's data is going stale."
+
+          - alert: BrainConnectorRateLimited
+            # The global per-provider rate limiter is throttling dispatches sustainedly → that provider's
+            # shared app quota is the bottleneck at the current brand count. Raise the cap or add capacity.
+            expr: sum by (provider) (rate(ingest_scheduler_rate_limited_total[15m])) > 0.1
+            for: 30m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Connector {{ $labels.provider }} sustainedly rate-limited"
+              description: "Brain is throttling {{ $labels.provider }} repulls to protect its shared app quota — those connectors are re-pulling slower than their interval. Quota is the scaling bottleneck for this provider."
+
+          # P2.2 — DLQ redrive. The redrive tool replays transient-failure messages back to their
+          # source topic; messages that exhaust the loop guard (x-redrive-count ≥ max) are GENUINE
+          # poison left parked. A non-zero exhausted rate means human investigation is needed — the
+          # DLQ is no longer self-healing for those messages.
+          - alert: BrainDlqRedriveExhausted
+            # dlq_redrive_exhausted_total: stream-worker counter (P2.2). A redrive pass left messages
+            # parked because they hit the max-redrive ceiling — they keep failing on replay.
+            expr: sum by (target_topic) (increase(dlq_redrive_exhausted_total[1h])) > 0
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "DLQ redrive left poison parked for {{ $labels.target_topic }}"
+              description: "A redrive pass exhausted the loop guard for messages targeting {{ $labels.target_topic }} — they fail every replay. Investigate the payload/schema; they will not self-heal."
+
+          - alert: BrainDlqRedriveErrors
+            # dlq_redrive_error_total: republish to the source topic failed during a redrive (broker
+            # issue) — the operator's drain is not making progress.
+            expr: sum by (target_topic) (increase(dlq_redrive_error_total[15m])) > 0
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "DLQ redrive republish failing for {{ $labels.target_topic }}"
+              description: "Redrive could not republish to {{ $labels.target_topic }} — the operator drain is stalling. Check broker health."
+
+          # P2.6 — connector auth rejection. A repull whose credential is rejected (Meta/Google token
+          # expired, Shopify/Razorpay 401) writes sync_status='error' and RETURNS — it does NOT throw,
+          # so the scheduler sees success and that connector's data (spend/settlement/orders) silently
+          # goes stale until an operator reconnects. This makes that path loud.
+          - alert: BrainConnectorAuthRejected
+            # connector_auth_rejected_total: stream-worker counter (P2.6). Non-zero ⇒ a connector needs
+            # reconnecting RIGHT NOW and its data is going stale.
+            expr: sum by (provider) (increase(connector_auth_rejected_total[15m])) > 0
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Connector {{ $labels.provider }} credential rejected — reconnect required"
+              description: "A {{ $labels.provider }} repull was rejected on auth (expired token / 401). That connector is no longer ingesting — its spend/settlement/order data is going stale until it is reconnected."
+
+          # feat-meta-token-refresh — the proactive Meta token re-exchange job. A sustained error rate
+          # means tokens are NOT being refreshed (app creds missing, or tokens already dead) → spend
+          # ingestion will silently stale as those tokens hit their ~60-day expiry.
+          - alert: BrainMetaTokenRefreshFailing
+            # meta_token_refresh_error_total: stream-worker counter (the daily cron job). Non-zero ⇒
+            # tokens are not being kept fresh — investigate app creds / reconnect the flagged connectors.
+            expr: sum by (reason) (increase(meta_token_refresh_error_total[2h])) > 0
+            for: 10m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Meta token refresh failing ({{ $labels.reason }})"
+              description: "The proactive Meta token re-exchange job is erroring ({{ $labels.reason }}). If app_creds_missing — set META_APP_ID/META_APP_SECRET; if exchange_failed — those connectors need a reconnect before their tokens expire and spend ingestion stalls."
+
+          # Silver freshness. Silver is built by dbt (CI/nightly; an intraday prod rebuild cron is now
+          # possible via the dbt-runner image — db/dbt/Dockerfile — wired but disabled-by-default in
+          # infra/helm/cronworkflows; enable per env to cut Silver lag), so it can lag Bronze between
+          # builds until that cron is enabled. The DQ
+          # reconciliation executor runs CONTINUOUSLY in the deployed worker and compares Bronze↔Silver
+          # order counts; a sustained breach = Silver is stale or unreachable. The continuous
+          # Silver-freshness signal.
+          - alert: BrainSilverLag
+            # dq_silver_lag_breach_total: stream-worker DQ counter. Sustained increase ⇒ Silver is
+            # lagging Bronze (or StarRocks is down) — analytics reads are stale.
+            expr: sum by (reason) (increase(dq_silver_lag_breach_total[1h])) > 0
+            for: 30m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Silver tier lagging Bronze ({{ $labels.reason }})"
+              description: "The Bronze↔Silver reconciliation has breached for 30m ({{ $labels.reason }}). Silver (silver_order_state) is stale vs Bronze — rebuild Silver via dbt or check StarRocks. Analytics reads over Silver are behind."
+
+      # ── Revenue truth integrity ─────────────────────────────────────────────────
+      - name: brain-revenue-integrity
+        rules:
+          - alert: BrainRevenueOverReversal
+            # revenue_over_reversal_total: stream-worker counter (F2). Cumulative reversals exceeded the
+            # recognized sale for an order → realized revenue for that order went negative. Usually a
+            # duplicate refund or a refund+chargeback on one order — needs reconciliation, not silence.
+            expr: sum(increase(revenue_over_reversal_total[15m])) > 0
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Over-reversal detected in the revenue ledger"
+              description: "An order's cumulative reversals exceeded its recognized sale (realized went negative). Reconcile — likely a duplicate refund or refund+chargeback."
+
+      # ── Webhook produce health ───────────────────────────────────────────────────
+      - name: brain-webhook-health
+        rules:
+          - alert: BrainWebhookProduceFailing
+            # collector_webhook_produce_error_total: collector counter (+1 per message the collector
+            # failed to produce to Kafka after exhausting retries). A non-zero rate means EVENTS
+            # ARE BEING DROPPED at the ingest spine entry — the no-event-loss guarantee (CLAUDE.md) is
+            # being violated. Immediate investigation required.
+            #
+            # Metric source: @brain/observability incrementCounter in the collector's Kafka producer
+            # retry wrapper. Zero when the topic is healthy; any increment = a drop in the live lane.
+            #
+            # Two-window guard: 1m fast burn (drops right now) + 5m sustained (not a single-blip spike).
+            expr: |
+              (sum(rate(brain_collector_webhook_produce_error_total[1m])) > 0)
+              and
+              (sum(increase(brain_collector_webhook_produce_error_total[5m])) > 0)
+            for: 1m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Collector webhook produce failing — events are being dropped"
+              description: "The collector cannot produce events to Kafka after retries (brain_collector_webhook_produce_error_total is advancing). The no-event-loss guarantee is violated. Check broker health, topic availability, and producer credentials."

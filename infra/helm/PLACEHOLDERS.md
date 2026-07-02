@@ -30,6 +30,7 @@ interpolate).
 | `REPLACE_WITH_PROD_POSTGRES_HOST` | `pgbouncer/values-prod.yaml` | `aurora_endpoint` (pgbouncer fronts Aurora) |
 | `REPLACE_WITH_STAGING_POSTGRES_HOST` | `pgbouncer/values-staging.yaml` | staging `aurora_endpoint` |
 | `REPLACE_WITH_VPC_ID` | `argocd/envs/prod/aws-load-balancer-controller.yaml` | `vpc_id` |
+| metrics bucket `brain-metrics-prod-ACCOUNT_ID` | `kube-prometheus-stack/values-prod.yaml` (Thanos sidecar objstore, AUD-PROD-012) | `metrics_bucket_name` (`modules/s3-metrics`; IRSA-native — no static keys, the `brain-prod-thanos` role carries the objstore policy) |
 | `AUDIT_CHECKPOINT_BUCKET` (key in the `core-env` secret, §5) | consumed by `apps/core/src/jobs/audit-checkpoint.ts` (hourly `audit-checkpoint` CronWorkflow — the WORM anchor for the audit hash-chain) | `audit_bucket_name` (`modules/s3-audit`, wired in every env root). NOTE: this is the audit bucket's OWN S3 Object-Lock COMPLIANCE bucket, **not** the medallion warehouse or its `_checkpoints/` prefix; no new terraform needed — the `brain-<env>-jobs` IRSA role already grants Put/Get/List on `checkpoints/*`. Left unset, the job safely no-ops (dev behavior) |
 
 ECR repo names are already aligned with terraform
@@ -68,6 +69,7 @@ platform/serving roles** the manifests reference:
 | `brain-prod-external-secrets` | `external-secrets` @ `external-secrets` (name PINNED in the ArgoCD app) | `secretsmanager:GetSecretValue/DescribeSecret` on `brain/prod/k8s/*` (`eso_k8s_secrets_read_policy_arn`) |
 | `brain-prod-aws-load-balancer-controller` | `aws-load-balancer-controller` @ `kube-system` | upstream v2.10.1 policy, vendored at `envs/prod/policies/aws-load-balancer-controller-iam-policy.json` |
 | `brain-prod-external-dns` | `external-dns` @ `external-dns` | `route53:ChangeResourceRecordSets` on `var.external_dns_zone_ids` (default `hostedzone/*` until the zone id is set) + `route53:List*` |
+| `brain-prod-thanos` (AUD-PROD-012) | `kube-prometheus-stack-prometheus` @ `monitoring` (name PINNED — the chart's Prometheus SA, shared by the Thanos sidecar) | `thanos_objstore_policy_arn` (`modules/s3-metrics` — Get/Put/Delete/List on the metrics bucket + KMS GenerateDataKey/Decrypt) |
 
 Nothing referenced by a manifest is missing from terraform anymore; a new role
 belongs in `envs/prod/bootstrap.tf` as a `modules/irsa` instance in the same

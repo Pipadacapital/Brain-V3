@@ -124,6 +124,11 @@ module "eks" {
   system_node_desired = var.system_node_desired
   system_node_min     = var.system_node_min
   system_node_max     = var.system_node_max
+
+  # AUD-COST-009: private-only endpoint has no access path yet; a non-empty
+  # operator allowlist (tfvars) opens the public endpoint pinned to those CIDRs
+  # for the go-live bootstrap. Empty = private-only.
+  public_access_cidrs = var.eks_public_access_cidrs
 }
 
 ###############################################################################

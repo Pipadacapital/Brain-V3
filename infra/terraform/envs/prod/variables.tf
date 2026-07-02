@@ -10,6 +10,17 @@ variable "vpc_cidr" {
   default     = "10.0.0.0/16"
 }
 
+# AUD-COST-009: go-live cluster access. The EKS endpoint is private-only by
+# default, but nothing (no bastion/VPN/SSM) can reach it — the one-time
+# kubectl/helm/argocd bootstrap needs a path. Set this to your operator IP(s)
+# (e.g. ["203.0.113.7/32"]) for the 2-day go-live window, then flip back to []
+# once an SSM bastion or Client VPN lands (see modules/eks variable docs).
+variable "eks_public_access_cidrs" {
+  description = "CIDR allowlist for the public EKS API endpoint. Empty = private-only."
+  type        = list(string)
+  default     = []
+}
+
 # EKS system node group — the fixed ON-DEMAND group that hosts platform add-ons
 # (CoreDNS, ArgoCD, KEDA, the Karpenter controller). All other capacity is
 # Karpenter-managed (infra/helm/karpenter).

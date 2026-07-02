@@ -8,6 +8,11 @@
 
 vpc_cidr = "10.0.0.0/16"
 
+# GO-LIVE bootstrap access (AUD-COST-009): your operator IP(s). The EKS API
+# endpoint opens publicly ONLY to these CIDRs; [] = private-only. Flip back to
+# [] after an SSM bastion / Client VPN exists.
+eks_public_access_cidrs = [] # e.g. ["203.0.113.7/32"]
+
 # EKS system node group (platform add-ons only; workloads run on Karpenter Spot).
 system_node_desired = 3
 system_node_min     = 2

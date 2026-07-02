@@ -435,3 +435,73 @@ additionalPrometheusRulesMap:
             annotations:
               summary: "Collector webhook produce failing — events are being dropped"
               description: "The collector cannot produce events to Kafka after retries (brain_collector_webhook_produce_error_total is advancing). The no-event-loss guarantee is violated. Check broker health, topic availability, and producer credentials."
+
+  ##############################################################################
+  # Brain data-freshness rules (AUD-PROD-B8-FUP2 — prod evaluator for the Gold
+  # serving-mart freshness SLAs). VERBATIM conversion of
+  # infra/observe/alerts/freshness.rules.yml — that file stays the canonical,
+  # promtool-checkable source (the local compose Prometheus mounts it directly);
+  # KEEP THE TWO IN LOCKSTEP when a rule changes (same doctrine as brain-slo
+  # above; python-verified identical at commit time).
+  #
+  # HONESTY NOTE: the brain_data_freshness_* series come from the freshness
+  # exporter (tools/observability/freshness-exporter — Prometheus job
+  # 'brain-freshness-exporter'), which is NOT yet deployed on the prod cluster.
+  # Until it ships, three of these rules are loaded-but-quiet BY DESIGN (their
+  # series simply don't exist yet) — the deliberate exception is
+  # BrainFreshnessExporterDown, whose absent(brain_data_freshness_up) clause
+  # DOES fire without the exporter: the freshness SLO reads as honestly
+  # "unverified" rather than silently green (the C2 anti-false-safety doctrine).
+  # This is now consistent with local, where the compose Prometheus loads the
+  # same canonical file.
+  ##############################################################################
+  brain-freshness:
+    groups:
+      # ── Gold serving-mart freshness SLA ─────────────────────────────────────────
+      - name: brain-data-freshness
+        rules:
+          - alert: BrainExecutiveMartStale
+            # Executive dashboard marts (revenue ledger, CAC, executive_metrics, …) must be ≤15m fresh.
+            expr: brain_data_freshness_seconds{sla_class="executive"} > 900
+            for: 10m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Executive mart {{ $labels.mart }} stale (> 15m)"
+              description: "iceberg.{{ $labels.schema }}.{{ $labels.mart }} has not committed a successful Gold snapshot for {{ $value | humanizeDuration }} (SLA 15m). The executive dashboard is serving stale data — check the Spark Silver→Gold refresh (tools/dev/v4-refresh-loop.sh) and the Gold CronWorkflows."
+
+          - alert: BrainSegmentMartStale
+            # Customer-segment marts (segments, scores, health, cohorts, retention) must be ≤1h fresh.
+            expr: brain_data_freshness_seconds{sla_class="segment"} > 3600
+            for: 15m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Customer-segment mart {{ $labels.mart }} stale (> 1h)"
+              description: "iceberg.{{ $labels.schema }}.{{ $labels.mart }} has not committed a successful Gold snapshot for {{ $value | humanizeDuration }} (SLA 1h). Segment/audience surfaces are stale — check the Gold customer-segment Spark jobs and their CronWorkflows."
+
+          - alert: BrainMartSnapshotMissing
+            # The exporter reached Trino but a registered mart returned NO snapshot (table missing or never
+            # written). Without this, a never-built mart would emit no freshness series and silently dodge
+            # the staleness alerts above — the exact false-safety the C2 doctrine forbids.
+            expr: brain_data_freshness_query_success == 0
+            for: 30m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Mart {{ $labels.mart }} has no Gold snapshot"
+              description: "The freshness exporter could not read a snapshot for iceberg.{{ $labels.schema }}.{{ $labels.mart }} for 30m (table missing or never written). It cannot be evaluated against its SLA — verify the Spark Gold job for this mart has ever run."
+
+          - alert: BrainFreshnessExporterDown
+            # The exporter cannot reach Trino at all (or is not scraped). If this fires, the staleness
+            # alerts above are blind — treat the freshness SLO as unverified until it recovers.
+            expr: |
+              (brain_data_freshness_up == 0)
+              or
+              (absent(brain_data_freshness_up) == 1)
+            for: 10m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Data-freshness exporter cannot reach Trino"
+              description: "brain_data_freshness_up is 0 or absent for 10m — the freshness exporter is down or cannot query Trino (the sole serving engine). All freshness SLAs are unverified until it recovers; check the trino service and the brain-freshness-exporter target."

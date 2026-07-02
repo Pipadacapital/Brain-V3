@@ -31,7 +31,7 @@
  * Usage: node dist/jobs/journey-stitch-from-identity.js  (Argo cron, after identity + finalization).
  */
 import { Pool } from 'pg';
-import { createTrinoPool } from '@brain/metric-engine';
+import { createTrinoPool, withTrinoBrand, BRAND_PREDICATE, type TrinoPool } from '@brain/metric-engine';
 import { hashIdentifier, normalizeIdentifier } from '@brain/identity-core';
 import { createSaltProvider, type SaltProvider } from '../infrastructure/secrets/SaltProvider.js';
 import { StitchMapWriter } from '../infrastructure/pg/StitchMapWriter.js';
@@ -78,6 +78,15 @@ export async function runJourneyStitchFromIdentity(deps?: {
         end: async () => undefined,
       };
     })();
+  // FAIL-CLOSED BRAND SCOPING (AUD-ARCH-012): every serving read below goes through the
+  // withTrinoBrand seam — the SQL carries the ${BRAND_PREDICATE} sentinel and the seam injects
+  // `brand_id = ?` (throwing if the sentinel is ever dropped), exactly like the metric-engine
+  // and DQ read paths. servingPort adapts the tuple-shaped srPool (kept for injected mocks)
+  // to the seam's TrinoPool port.
+  const servingPort: TrinoPool = {
+    query: async <T = Record<string, unknown>>(sql: string, params: unknown[] = []): Promise<T[]> =>
+      (await srPool.query(sql, params))[0] as T[],
+  };
   const saltProvider = deps?.saltProvider ?? createSaltProvider(DB_URL);
   const stitchWriter = new StitchMapWriter(pool);
   const ownsPool = !deps?.pool;
@@ -94,13 +103,15 @@ export async function runJourneyStitchFromIdentity(deps?: {
       try {
         const saltHex = await saltProvider.saltHexForBrand(brand.id);
 
-        // 1. Distinct raw journey anons from the Silver serving view (brand-filtered; Trino/Iceberg).
-        const [anonRows] = await srPool.query(
-          `SELECT DISTINCT brain_anon_id FROM brain_serving.mv_silver_touchpoint
-            WHERE brand_id = ? AND brain_anon_id IS NOT NULL AND brain_anon_id <> ''`,
-          [brand.id],
+        // 1. Distinct raw journey anons from the Silver serving view (brand-scoped via the
+        // fail-closed seam; sentinel LAST — the seam appends brand.id as the last param).
+        const anonRows = await withTrinoBrand(servingPort, brand.id, (scope) =>
+          scope.runScoped<{ brain_anon_id: string }>(
+            `SELECT DISTINCT brain_anon_id FROM brain_serving.mv_silver_touchpoint
+              WHERE brain_anon_id IS NOT NULL AND brain_anon_id <> '' AND ${BRAND_PREDICATE}`,
+          ),
         );
-        const rawAnons = (anonRows as Array<{ brain_anon_id: string }>).map((r) => r.brain_anon_id);
+        const rawAnons = anonRows.map((r) => r.brain_anon_id);
         if (rawAnons.length === 0) continue;
 
         // 2. Hash each raw anon EXACTLY as the resolver does (anon_id → external_id normalization).
@@ -148,13 +159,16 @@ export async function runJourneyStitchFromIdentity(deps?: {
         // (brain_serving.mv_gold_revenue_ledger, Bronze-sourced) via the Trino serving pool — NOT the PG ledger.
         const brainIds = [...brainToAnon.keys()];
         const inPlaceholders = brainIds.map(() => '?').join(',');
-        const [orderRowsRaw] = await srPool.query(
-          `SELECT DISTINCT order_id, brain_id
-             FROM brain_serving.mv_gold_revenue_ledger
-            WHERE brand_id = ? AND brain_id IN (${inPlaceholders})`,
-          [brand.id, ...brainIds],
+        // Brand-scoped via the seam: IN-list placeholders first, ${BRAND_PREDICATE} LAST so the
+        // seam-appended brand.id binds positionally to the sentinel's `?`.
+        const orderRows = await withTrinoBrand(servingPort, brand.id, (scope) =>
+          scope.runScoped<{ order_id: string; brain_id: string }>(
+            `SELECT DISTINCT order_id, brain_id
+               FROM brain_serving.mv_gold_revenue_ledger
+              WHERE brain_id IN (${inPlaceholders}) AND ${BRAND_PREDICATE}`,
+            brainIds,
+          ),
         );
-        const orderRows = orderRowsRaw as Array<{ order_id: string; brain_id: string }>;
 
         // PERF (PF-4): one txn per brand — collect the brand's stitch rows, then a single
         // multi-row upsert (was a per-order connect→BEGIN→GUC→INSERT→COMMIT loop).

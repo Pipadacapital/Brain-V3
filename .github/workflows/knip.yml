@@ -31,7 +31,7 @@ jobs:
         continue-on-error: true
         run: |
           set -o pipefail
-          # Pinned, no-install-side-effect run via pnpm dlx; reads ./knip.json.
+          # Pinned, no-install-side-effect run via pnpm dlx; reads ./knip.jsonc.
           pnpm dlx knip@5 --no-exit-code --reporter markdown | tee knip-report.md
 
       - name: Publish report to job summary

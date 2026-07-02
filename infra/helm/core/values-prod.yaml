@@ -19,6 +19,14 @@ serviceAccount:
   annotations:
     eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/brain-core-prod
 
+# AUD-COST-011: migrations run as a PreSync hook before every core sync.
+# core-env must carry DATABASE_URL_DIRECT (Aurora endpoint, NOT pgbouncer) —
+# see infra/helm/external-secrets-config/README.md.
+migrations:
+  enabled: true
+  appEnv: prod
+  databaseUrlFromKey: DATABASE_URL_DIRECT
+
 resources:
   requests:
     cpu: 500m

@@ -52,6 +52,20 @@ env:
 serviceAccount:
   annotations: {}   # IRSA role for AWS Secrets Manager access (set per env)
 
+# DB migration runner (AUD-COST-011): pre-install/pre-upgrade + ArgoCD PreSync
+# hook Job that runs `pnpm migrate:up` (db/migrations, node-pg-migrate) from the
+# core image against DATABASE_URL — MUST succeed before core/stream-worker roll.
+# Off by default (dev/CI migrate out-of-band); enabled per env.
+migrations:
+  enabled: false
+  appEnv: prod              # PGOPTIONS app.env stamp — dev-only migrations RAISE on 'production'
+  # core-env key holding the DIRECT Aurora URL (node-pg-migrate's session
+  # advisory lock breaks through pgbouncer transaction pooling). Empty → use
+  # the secret's DATABASE_URL as-is.
+  databaseUrlFromKey: ""
+  backoffLimit: 1
+  activeDeadlineSeconds: 900
+
 resources:
   requests:
     cpu: 250m

@@ -30,23 +30,6 @@ export function useConnectionStatus() {
   });
 }
 
-export function useDataStatus() {
-  return useQuery({
-    queryKey: [...DASHBOARD_QUERY_KEY, 'data-status'],
-    queryFn: () => dashboardApi.getDataStatus(),
-    staleTime: 30_000,
-    refetchInterval: 60_000,
-  });
-}
-
-export function useOnboardingProgress() {
-  return useQuery({
-    queryKey: [...DASHBOARD_QUERY_KEY, 'onboarding-progress'],
-    queryFn: () => dashboardApi.getOnboardingProgress(),
-    staleTime: 30_000,
-  });
-}
-
 /**
  * Realized revenue hook — keyed under DASHBOARD_QUERY_KEY so it auto-invalidates
  * when the brand switcher fires (brand-switcher.tsx:13 invalidates the full prefix).

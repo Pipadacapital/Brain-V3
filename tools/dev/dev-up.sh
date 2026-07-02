@@ -37,31 +37,10 @@ COMPOSE_PROFILES=(--profile core --profile ai)
 step() { printf '\n\033[1;36m▶ %s\033[0m\n' "$1"; }
 
 # compose_up_healthy — bring the stack up and block until it is genuinely healthy.
-#
-# We deliberately do NOT use `docker compose up --wait`: it aborts with a non-zero exit
-# when a one-shot init container (minio-init, iceberg-catalog-init, jmx-exporter-init,
-# kafka-init) exits 0 *during* the wait window — which is exactly what happens on a
-# cold start. Instead we `up -d` and poll health ourselves, which is deterministic and
-# independent of the compose implementation's --wait semantics. A service is "good" when
-# it is running-and-(healthy | has-no-healthcheck) or has exited 0 (a completed one-shot).
+# Shared implementation (also used by .github/workflows/integration.yml, which hit the
+# same `--wait` one-shot-exit gotcha this helper exists for): tools/dev/compose-up-healthy.sh.
 compose_up_healthy() {
-  docker compose "${COMPOSE_PROFILES[@]}" up -d
-  local deadline=$((SECONDS + 360)) bad
-  while :; do
-    bad=$(docker compose "${COMPOSE_PROFILES[@]}" ps -a \
-            --format '{{.Service}}\t{{.State}}\t{{.Health}}\t{{.ExitCode}}' \
-          | awk -F'\t' '
-              $2=="running" && ($3=="" || $3=="healthy") { next }
-              $2=="exited"  && $4=="0"                    { next }
-              { print $1" ("$2" "$3" exit="$4")" }')
-    [ -z "$bad" ] && { echo "  all services healthy."; return 0; }
-    if [ "$SECONDS" -ge "$deadline" ]; then
-      echo "  ✗ services not healthy after 360s:" >&2
-      printf '    %s\n' "$bad" >&2
-      return 1
-    fi
-    sleep 3
-  done
+  bash tools/dev/compose-up-healthy.sh "${COMPOSE_PROFILES[@]}"
 }
 
 # ── 1. preflight ────────────────────────────────────────────────────────────

@@ -68,11 +68,11 @@ jobs:
 
       - name: Bring up real engines (Postgres + Trino + Kafka + Redis + MinIO + Iceberg REST + Spark)
         run: |
-          # --wait blocks until every service's compose healthcheck is healthy (Trino + the iceberg-rest
-          # fixture both have a cold start; their healthchecks + start_period account for it).
-          # lakehouse (minio + iceberg-rest + Trino + Spark Bronze sink) is needed for the V4 Spark
-          # Silver/Gold refresh that REPLACED dbt — the live suites read the brain_serving Trino views it feeds.
-          docker compose --profile core --profile ingest --profile lakehouse up -d --wait
+          # NOT `up --wait`: it exits 1 when a one-shot init container (minio-init, kafka-init,
+          # iceberg-catalog-init) exits 0 DURING the wait window — the exact cold-start behavior
+          # here. The shared helper polls health deterministically instead (same one dev-up uses).
+          # `core` is the whole engine set; the old `ingest`/`lakehouse` profiles no longer exist.
+          bash tools/dev/compose-up-healthy.sh --profile core
 
       - name: Provision brain_app login role + apply migrations
         run: |
@@ -151,7 +151,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       - name: Bring up engines
-        run: docker compose --profile core --profile ingest up -d --wait
+        # shared poll helper — `up --wait` dies on one-shot inits exiting 0 mid-wait
+        run: bash tools/dev/compose-up-healthy.sh --profile core
 
       - name: Provision brain_app + migrate
         run: |

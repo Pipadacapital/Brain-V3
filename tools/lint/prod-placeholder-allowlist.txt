@@ -1,0 +1,16 @@
+# AUD-COST-007 — documented fill-at-apply placeholders allowed to remain in
+# rendered prod values/manifests UNTIL the go-live fill pass (PR mode only;
+# --strict mode ignores this file and fails on ANY placeholder).
+# One token per line. Canonical meaning + fill source: infra/helm/PLACEHOLDERS.md
+# and docs/runbooks/GO-LIVE.md. Adding a token here requires documenting it in
+# PLACEHOLDERS.md first.
+ACCOUNT_ID
+REPLACE_WITH_ECR_REGISTRY
+REPLACE_WITH_AURORA_ENDPOINT
+REPLACE_WITH_PROD_POSTGRES_HOST
+REPLACE_WITH_VPC_ID
+REPLACE_WITH_APEX_DOMAIN
+REPLACE_WITH_COLLECTOR_HOSTNAME
+REPLACE_WITH_WEB_HOSTNAME
+REPLACE_WITH_CORE_HOSTNAME
+REPLACE_WITH_ACM_CERT_ARN

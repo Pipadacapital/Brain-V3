@@ -353,6 +353,15 @@ jobs:
           promote .sparkBronze.image
           promote .sparkV4.image
 
+      # AUD-COST-007 STRICT gate: a prod promotion must never be committed while
+      # rendered prod values / deployed ArgoCD prod manifests still carry
+      # REPLACE_WITH_*/ACCOUNT_ID placeholders. Fill pass: docs/runbooks/GO-LIVE.md
+      # step 3 (canonical list: infra/helm/PLACEHOLDERS.md). Runs AFTER the digest
+      # promotion above (CD-filled digests are not placeholders) and BEFORE the
+      # commit, so a failure leaves nothing for ArgoCD to sync.
+      - name: Placeholder guard — refuse to promote unfilled prod values (strict)
+        run: tools/lint/prod-placeholder-guard.sh --strict
+
       - name: Commit prod values promotion
         run: |
           git config user.name "Brain CI Bot"

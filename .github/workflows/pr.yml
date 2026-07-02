@@ -124,6 +124,25 @@ jobs:
         run: tools/lint/v4-naming-guard.sh
 
   # ─────────────────────────────────────────────────────────────────────────
+  # Prod placeholder guard (AUD-COST-007) — renders every prod chart
+  # (helm template + values-prod) and scans the deployed ArgoCD prod manifests.
+  # PR mode: fails on render breakage or any UNDOCUMENTED placeholder token
+  # (allowlist: tools/lint/prod-placeholder-allowlist.txt ⇄ infra/helm/
+  # PLACEHOLDERS.md). Documented fill-at-apply placeholders are allowed here —
+  # they cannot exist before terraform apply. The STRICT gate (fail while ANY
+  # placeholder remains) runs in main.yml prod-promote before a prod commit.
+  # ─────────────────────────────────────────────────────────────────────────
+  prod-placeholder-guard:
+    name: Prod Placeholder Guard (rendered values)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Self-test the guard (proves pattern + allowlist logic)
+        run: tools/lint/prod-placeholder-guard.sh --selftest
+      - name: Render prod values + scan for undocumented placeholders
+        run: tools/lint/prod-placeholder-guard.sh
+
+  # ─────────────────────────────────────────────────────────────────────────
   # Secret scan — gitleaks (every PR diff; must never find a secret)
   # ─────────────────────────────────────────────────────────────────────────
   secret-scan:

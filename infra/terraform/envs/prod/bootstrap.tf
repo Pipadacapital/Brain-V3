@@ -30,18 +30,36 @@ provider "aws" {
   region = "ap-south-1"
   # assume_role { role_arn = "arn:aws:iam::<PROD_ACCOUNT_ID>:role/TerraformApply" }
 
+  # AUD-NAME-001: mandatory PascalCase tag set (Environment/Service/Owner/
+  # CostCenter + Project/ManagedBy) from modules/_shared, MERGED over the
+  # legacy lowercase keys so already-applied resources see tag ADDITIONS only
+  # (in-place update, no replacement). Per-module `Service` overrides win on
+  # collision (default_tags + resource tags merge, resource value wins).
+  # Follow-up per docs/infra/naming-and-tagging.md §6: strip the lowercase
+  # duplicates once nothing keys on them.
   default_tags {
-    tags = {
-      project     = local.project
-      environment = local.environment
-      managed_by  = "terraform"
-    }
+    tags = merge(
+      {
+        project     = local.project
+        environment = local.environment
+        managed_by  = "terraform"
+      },
+      module.tags.common_tags,
+    )
   }
 }
 
 locals {
   project     = "brain"
   environment = "prod"
+}
+
+# Zero-resource tag standard module (safe in the provider block — it creates
+# nothing and depends on no provider).
+module "tags" {
+  source      = "../../modules/_shared"
+  environment = local.environment
+  project     = local.project
 }
 
 ###############################################################################

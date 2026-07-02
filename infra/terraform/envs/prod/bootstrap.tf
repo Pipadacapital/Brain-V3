@@ -425,6 +425,12 @@ output "aurora_endpoint" { value = module.aurora.endpoint }
 output "aurora_reader_endpoint" { value = module.aurora.reader_endpoint }
 output "redis_endpoint" { value = module.elasticache.redis_primary_endpoint }
 
+# AUD-PROD-003: the four core boot-secret shells (brain/prod/app/*). The fill
+# pass puts real values here AND sets JWT_SIGNING_SECRET / COOKIE_SECRET /
+# META_APP_SECRET / GOOGLE_ADS_CLIENT_SECRET in brain/prod/k8s/core-env to
+# these secret NAMES (or ARNs) — core resolves them via AwsSecretsProvider.
+output "app_boot_secret_arns" { value = module.secrets.app_boot_secret_arns }
+
 # AUD-COST-016: ONE medallion warehouse bucket (Bronze/Silver/Gold are Iceberg
 # NAMESPACES inside it). Fill iceberg-rest/values-prod.yaml catalog.warehouse
 # with s3://<warehouse_bucket_name>/.

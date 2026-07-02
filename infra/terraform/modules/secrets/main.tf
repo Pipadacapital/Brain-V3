@@ -85,6 +85,44 @@ resource "aws_secretsmanager_secret" "apicurio" {
 }
 
 ###############################################################################
+# App BOOT secret shells (AUD-PROD-003) — the four secrets core FAIL-CLOSES on
+# at startup in production. apps/core/src/main.ts treats the env values of
+# JWT_SIGNING_SECRET / COOKIE_SECRET / META_APP_SECRET / GOOGLE_ADS_CLIENT_SECRET
+# as Secrets Manager names/ARNs and resolves them via AwsSecretsProvider
+# (fail-closed: unresolvable secret → startup aborts). Creating the SHELLS here
+# makes the go-live fill a VALUE update (aws secretsmanager put-secret-value)
+# and the core_secrets_read grant below prevents the deterministic
+# AccessDenied → CrashLoop. The brain/<env>/k8s/core-env blob must set those
+# four env vars to these secret NAMES (or ARNs) — key contract documented in
+# infra/helm/external-secrets-config/README.md.
+# Local counterpart: tools/seed/prod-local-aws-bootstrap.sh seeds the same
+# four (flat brain/<name> naming, no env segment — see AUD-PROD-014).
+###############################################################################
+
+locals {
+  app_boot_secrets = {
+    "jwt-signing-secret"       = "core JWT signing secret (HIGH-SECRETS-01 fail-closed boot secret)"
+    "cookie-secret"            = "core cookie/session secret (HIGH-SECRETS-01 fail-closed boot secret)"
+    "meta-app-secret"          = "Meta app secret (OAuth callback + meta-token-refresh; prod boot fail-closed)"
+    "google-ads-client-secret" = "Google Ads OAuth client secret (OAuth callback; prod boot fail-closed)"
+  }
+}
+
+resource "aws_secretsmanager_secret" "app_boot" {
+  for_each                = local.app_boot_secrets
+  name                    = "${var.project}/${var.environment}/app/${each.key}"
+  kms_key_id              = var.kms_key_arn
+  description             = "Brain core boot secret shell (value filled at go-live, never in TF state): ${each.value}"
+  recovery_window_in_days = 30
+
+  tags = {
+    project     = var.project
+    environment = var.environment
+    purpose     = "app-boot-secret"
+  }
+}
+
+###############################################################################
 # k8s env-Secret shells (AUD-COST-017) — the seven brain/<env>/k8s/* entries
 # the External Secrets Operator chart (infra/helm/external-secrets-config)
 # reads and materializes as the envSecretName Secrets every workload chart
@@ -213,10 +251,16 @@ data "aws_iam_policy_document" "core_secrets_read" {
       "secretsmanager:GetSecretValue",
       "secretsmanager:DescribeSecret",
     ]
-    resources = [
-      aws_secretsmanager_secret.db_app.arn,
-      aws_secretsmanager_secret.kafka.arn,
-    ]
+    # AUD-PROD-003: the four brain/<env>/app/* boot shells are read by core at
+    # startup (main.ts AwsSecretsProvider, fail-closed) — without this grant a
+    # perfect go-live fill pass still ends in AccessDenied → CrashLoop.
+    resources = concat(
+      [
+        aws_secretsmanager_secret.db_app.arn,
+        aws_secretsmanager_secret.kafka.arn,
+      ],
+      [for s in aws_secretsmanager_secret.app_boot : s.arn],
+    )
   }
   statement {
     sid       = "AllowKMSDecrypt"
@@ -228,7 +272,7 @@ data "aws_iam_policy_document" "core_secrets_read" {
 
 resource "aws_iam_policy" "core_secrets_read" {
   name        = "${var.project}-${var.environment}-core-secrets"
-  description = "core: read db + kafka secrets only"
+  description = "core: read db + kafka + app-boot secrets only"
   policy      = data.aws_iam_policy_document.core_secrets_read.json
 }
 
@@ -291,6 +335,11 @@ output "core_secrets_policy_arn" {
 
 output "otel_collector_secrets_policy_arn" {
   value = aws_iam_policy.otel_collector_secrets_read.arn
+}
+
+output "app_boot_secret_arns" {
+  description = "Map of the brain/<env>/app/* core boot-secret shell ARNs (AUD-PROD-003). Fill JWT_SIGNING_SECRET / COOKIE_SECRET / META_APP_SECRET / GOOGLE_ADS_CLIENT_SECRET in the core-env blob with these."
+  value       = { for k, s in aws_secretsmanager_secret.app_boot : k => s.arn }
 }
 
 output "k8s_env_secret_arns" {

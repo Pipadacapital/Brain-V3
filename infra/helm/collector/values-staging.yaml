@@ -9,7 +9,7 @@ envSecretName: collector-env
 
 serviceAccount:
   annotations:
-    eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/brain-collector-staging
+    eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/brain-staging-collector
 
 resources:
   requests:

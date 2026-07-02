@@ -7,7 +7,7 @@ catalog:
   s3Region: ap-south-1
 
 serviceAccount:
-  roleArn: "arn:aws:iam::ACCOUNT_ID:role/brain-iceberg-rest-prod"   # IRSA: S3 RW on the medallion buckets
+  roleArn: "arn:aws:iam::ACCOUNT_ID:role/brain-prod-iceberg-rest"   # IRSA: S3 RW on the medallion buckets
 
 resources:
   requests:

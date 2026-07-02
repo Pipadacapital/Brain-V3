@@ -17,7 +17,7 @@ ingress:
 
 serviceAccount:
   annotations:
-    eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/brain-core-prod
+    eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/brain-prod-core
 
 # AUD-COST-011: migrations run as a PreSync hook before every core sync.
 # core-env must carry DATABASE_URL_DIRECT (Aurora endpoint, NOT pgbouncer) —

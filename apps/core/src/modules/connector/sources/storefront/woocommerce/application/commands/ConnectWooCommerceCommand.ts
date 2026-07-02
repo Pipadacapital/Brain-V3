@@ -1,7 +1,8 @@
 /**
  * ConnectWooCommerceCommand — credential-based WooCommerce connector connect + validate lifecycle.
  *
- * Mirrors ConnectShopfloCommand / ConnectRazorpayCommand. Stores three WooCommerce credentials
+ * Mirrors ConnectShopfloCommand (razorpay connects via the generic planCredentialConnect
+ * path — see credential-schema.ts). Stores three WooCommerce credentials
  * as ONE composite JSON bundle under a single secret_ref per connector_instance:
  *   { consumer_key, consumer_secret, webhook_secret }
  *

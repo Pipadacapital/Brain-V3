@@ -21,21 +21,29 @@ transform job (~5 GB) = ~25 GB overflowed the VM and the kernel OOM-killed Trino
 
 ## Lever 2 — per-container caps (defense-in-depth; stop any one runaway)
 
-Hard `mem_limit`s in `docker-compose.yml`, set **above** real steady usage (they cap
-runaway, they don't throttle normal operation):
+Hard caps set **above** real steady usage (they cap runaway, they don't throttle
+normal operation). Compose services use `mem_limit`; the Bronze sink and the
+transient transform jobs are `docker run --memory` (they are host-launched, not
+compose services). **Every running container is bounded** — nothing is left
+unbounded anymore.
 
-| Service | `mem_limit` | Internal heap |
+| Service | Cap | Internal heap |
 |---|---|---|
 | trino | 7g | jvm.config `MaxRAMPercentage=70` → ~4.9g |
-| spark-bronze-sink | 7g | `--driver-memory 4g` |
-| spark-bronze-raw-sink | 6g | `--driver-memory 4g` |
+| bronze sink (host `docker run` via `tools/dev/dev-bronze-streaming.sh` → `bronze_landing.py`, the ONE unified landing — the old spark-bronze-sink / spark-bronze-raw-sink compose services are REMOVED) | 7g (`SPARK_CONTAINER_MEMORY`) | `--driver-memory 4g` + offHeap 512m |
+| Spark transform jobs (ephemeral `docker run` via `db/iceberg/spark/run-*.sh`) | 7g (`SPARK_CONTAINER_MEMORY`) | `--driver-memory 4g` |
 | minio | 5g | `GOMEMLIMIT=4500MiB` (soft GC ceiling) |
 | kafka (KRaft) | 2.5g | `KAFKA_HEAP_OPTS -Xmx1G -Xms1G` (pinned; == image default — pairs 1G heap with the 2.5g limit) |
 | neo4j | 1.5g | heap 512m + pagecache 256m |
 | apicurio | 768m | `JAVA_OPTS_APPEND -Xmx512m` (67% of limit) |
-| pgbouncer | 128m | — (small C daemon) |
+| postgres | 512m | — |
+| localstack | 512m | — |
+| iceberg-rest | 512m | — |
 | redis | 256m | `maxmemory 192mb` + `volatile-lru` (evict, don't OOM-kill) |
-| postgres / litellm / localstack / iceberg-rest | unbounded (small, ~3g combined) | — |
+| pgbouncer | 128m | — (small C daemon) |
+
+Not running (commented out in compose, re-enable by uncommenting): **litellm**
+(`ai` profile — AI/NLQ features not active yet), **prometheus + grafana**.
 
 ## Lever 3 — transient Spark transform jobs (fixes JVM heap OOM)
 
@@ -44,15 +52,25 @@ They previously used Spark's **default 1 GB** driver heap → the 9,916-order Sh
 backfill grew `collector_events` past 1 GB → `silver-collector-event` heap-OOMed.
 
 All 35 transform run scripts now pass `--driver-memory "${SPARK_DRIVER_MEMORY:-4g}"`
-(driver == executor under `local[*]`, so this is the whole heap). Tune for a one-off
-heavy run with `SPARK_DRIVER_MEMORY=6g pnpm dev:v4-refresh`.
+(driver == executor under `local[*]`, so this is the whole heap) inside a
+`--memory "${SPARK_CONTAINER_MEMORY:-7g}"` container cap (PR #342). Tune for a
+one-off heavy run with `SPARK_DRIVER_MEMORY=6g pnpm dev:v4-refresh`.
+
+The Bronze sink additionally persists its streaming checkpoint on the named volume
+`brain-bronze-checkpoint` and auto-restarts on any exit, so an OOM resumes from the
+committed offsets instead of re-draining the full Kafka retention (the old
+OOM→restart→re-drain amplification loop).
 
 ## Peak-load math (32 GB VM)
 
-Steady (no refresh): trino 5g + sinks ~7g + minio 4.4g + kafka 1.1g + neo4j 1g +
-misc 2g ≈ **20.5 GB**. During a refresh one transform job adds ~5 GB → **~25.5 GB**,
-leaving ~6.5 GB headroom on a 32 GB VM. The sinks' 4g heaps were sized for cold-start
-backlog drain; if you ever need to claw back room, drop them to 2g in steady state.
+Steady (no refresh), realistic usage: trino ~5g + bronze sink ~4.5g + minio ~4.4g +
+kafka ~1.1g + neo4j ~1g + small services ~1.5g ≈ **~17.5 GB**. During a refresh the
+loop runs its transforms strictly sequentially, so ONE transform job adds ~5 GB →
+**~22.5 GB**, leaving ~9 GB headroom on a 32 GB VM. Sum of all hard caps (compose
+~18.7g + sink 7g + one transform 7g ≈ 32.7g) intentionally exceeds realistic usage —
+caps exist to kill a single runaway before it creates VM-wide pressure, not to add
+up to the VM size. The sink's 4g heap was sized for cold-start backlog drain; if you
+ever need to claw back room, drop it to 2g in steady state.
 
 ## Incremental processing — the grain-safety rule (correctness, not just memory)
 

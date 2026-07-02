@@ -59,6 +59,13 @@ export interface TrinoAdapterConfig {
    * provides the real pacing so we do not hot-loop.
    */
   readonly pollIntervalMs?: number;
+  /**
+   * Per-HTTP-request timeout (ms) for the initial POST and each nextUri poll (default 30_000).
+   * Trino's server long-poll returns within ~1s, so a request hanging this long means a hung
+   * coordinator — abort instead of pinning the caller (BFF request) forever. On abort the
+   * in-flight query is cancelled via DELETE nextUri so it does not keep a coordinator slot.
+   */
+  readonly fetchTimeoutMs?: number;
 }
 
 // ── Internal types ─────────────────────────────────────────────────────────────
@@ -87,6 +94,8 @@ type MinimalFetch = (
     method?: string;
     headers?: Record<string, string>;
     body?: string;
+    /** AbortSignal — typed as unknown to avoid the DOM lib in this package's tsconfig. */
+    signal?: unknown;
   },
 ) => Promise<{
   ok: boolean;
@@ -159,6 +168,7 @@ export function createTrinoPool(config: TrinoAdapterConfig): TrinoPool {
     user,
     maxPolls = 600,
     pollIntervalMs = 25,
+    fetchTimeoutMs = 30_000,
   } = config;
 
   // Validate global fetch at pool-creation time (fail loud, not at first query).
@@ -169,6 +179,28 @@ export function createTrinoPool(config: TrinoAdapterConfig): TrinoPool {
     );
   }
   const doFetch: MinimalFetch = globalFetch;
+
+  // AbortSignal.timeout via globalThis (structural — no DOM lib). Node >= 18 always has it;
+  // fall back to no timeout rather than failing if a nonstandard runtime lacks it.
+  const abortSignalCtor = (globalThis as { AbortSignal?: { timeout(ms: number): unknown } })
+    .AbortSignal;
+  const timeoutSignal = (): unknown =>
+    abortSignalCtor?.timeout ? abortSignalCtor.timeout(fetchTimeoutMs) : undefined;
+
+  /**
+   * Fire-and-forget query cancellation: Trino cancels a running query when the client issues
+   * DELETE on its current nextUri. Called on every abandon path (poll-budget exhaustion, poll
+   * failure, fetch timeout) so an abandoned query releases its coordinator slot instead of
+   * running on (the same coordinator whose OOM history required the 7g bound).
+   */
+  const cancelQuery = (nextUri: string | undefined): void => {
+    if (!nextUri) return;
+    void doFetch(nextUri, {
+      method: 'DELETE',
+      headers: { 'X-Trino-User': user },
+      signal: timeoutSignal(),
+    }).catch(() => undefined);
+  };
 
   return {
     async query<T = Record<string, unknown>>(sql: string, params: unknown[] = []): Promise<T[]> {
@@ -186,6 +218,7 @@ export function createTrinoPool(config: TrinoAdapterConfig): TrinoPool {
         method: 'POST',
         headers: baseHeaders,
         body: finalSql,
+        signal: timeoutSignal(),
       });
 
       if (!postRes.ok) {
@@ -204,26 +237,45 @@ export function createTrinoPool(config: TrinoAdapterConfig): TrinoPool {
       // server-side (holds ~1s until the query state advances), so we must NOT sleep before the
       // first/each poll (that was the 2.5–5s latency tax). Only yield a tiny amount AFTER a poll
       // that still has more work, to avoid a hot loop if the server ever returns instantly.
+      // Any abandon path (poll failure, timeout, budget exhaustion) CANCELS the query server-side.
       let polls = 0;
-      while (resp.nextUri && polls < maxPolls) {
-        const pollRes = await doFetch(resp.nextUri);
-        if (!pollRes.ok) {
+      try {
+        while (resp.nextUri && polls < maxPolls) {
+          const pollRes = await doFetch(resp.nextUri, { signal: timeoutSignal() });
+          if (!pollRes.ok) {
+            throw new Error(
+              `[trino-adapter] Trino poll failed: HTTP ${pollRes.status} ${pollRes.statusText} — ` +
+                `query id ${resp.id ?? 'unknown'}`,
+            );
+          }
+          resp = (await pollRes.json()) as TrinoResponse;
+          if (resp.columns && !columns) columns = resp.columns;
+          if (resp.data) allData.push(...resp.data);
+          polls++;
+          if (resp.nextUri)
+            await new Promise<void>((resolve) => setTimeout(resolve, pollIntervalMs));
+        }
+
+        if (resp.error) {
           throw new Error(
-            `[trino-adapter] Trino poll failed: HTTP ${pollRes.status} ${pollRes.statusText} — ` +
-              `query id ${resp.id ?? 'unknown'}`,
+            `[trino-adapter] Trino query error (code ${resp.error.errorCode}): ${resp.error.message}`,
           );
         }
-        resp = (await pollRes.json()) as TrinoResponse;
-        if (resp.columns && !columns) columns = resp.columns;
-        if (resp.data) allData.push(...resp.data);
-        polls++;
-        if (resp.nextUri) await new Promise<void>((resolve) => setTimeout(resolve, pollIntervalMs));
-      }
 
-      if (resp.error) {
-        throw new Error(
-          `[trino-adapter] Trino query error (code ${resp.error.errorCode}): ${resp.error.message}`,
-        );
+        // FAIL LOUD ON TRUNCATION: nextUri still set after the loop means the poll budget ran out
+        // mid-result. The accumulated pages are a PARTIAL result set — returning them would render
+        // a plausible-but-wrong number (and the Redis serving cache would pin it for its full TTL).
+        // Revenue-truth doctrine: throw instead; the catch below cancels the server-side query.
+        if (resp.nextUri) {
+          throw new Error(
+            `[trino-adapter] poll budget exhausted after ${maxPolls} polls — query ` +
+              `${resp.id ?? 'unknown'} is incomplete (${allData.length} partial rows); ` +
+              'refusing to return truncated results',
+          );
+        }
+      } catch (err) {
+        cancelQuery(resp.nextUri);
+        throw err;
       }
 
       if (!columns || allData.length === 0) return [] as T[];

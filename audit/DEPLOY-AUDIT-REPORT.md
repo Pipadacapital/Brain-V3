@@ -781,3 +781,7 @@ Follow-ups discovered while remediating — **NOT remediated unless marked FIXED
 - **Tests:** `test:unit` green EXCEPT pre-existing env-state live-test failures in stream-worker (meta-token-refresh / identity-merge / capi-deletion) — verified IDENTICAL at baseline `b0e9fbe6` against the same restored dev DB; they pass in CI's fresh-DB environment; **not a branch regression**.
 
 **STAGE B COMPLETE — 25 commits on `deploy/stage-b-remediation`; Waves 1–3 remediated, Wave 4 ratified; open follow-ups tracked in B.4.**
+
+### Follow-ups closed (2026-07-02, same branch)
+
+All six open Stage-B follow-ups are now CLOSED: prod ServiceMonitors/PodMonitors for collector, stream-worker, Strimzi Kafka JMX + kafka-exporter (94d96966); freshness.rules.yml prod evaluator (4b99a347); slo-rules-parity.sh blocking CI gate, 2/2 files enforced (cd2f27d6); live-test env-state isolation for meta-token-refresh + identity-merge, capi-deletion verified already-isolated (45f31a03, c10ba70b); SLO-rules brain_ prefix drift fixed both copies (see final commit). Remaining known items: prod Kafka topic partitions 12-vs-96 values inconsistency (decision needed), kafka-jmx-exporter config dual-copy (parity-gate extension candidate), NEO4J_PASSWORD schema default vs local stack.

@@ -87,9 +87,10 @@ export async function reconciliationCheck(
   try {
     const sr = await silver.scopedQuery<{ n: string | number }>(
       brandId,
+      // BRONZE_COLLECTOR_PREDICATE is Bronze-only (`connector` column) — not valid on Silver views.
       `SELECT COUNT(DISTINCT order_id) AS n
          FROM brain_serving.mv_silver_order_state
-        WHERE ${BRONZE_COLLECTOR_PREDICATE} AND ${BRAND_PREDICATE}`,
+        WHERE ${BRAND_PREDICATE}`,
     );
     silverOrders = Number(sr[0]?.n ?? 0);
   } catch (err) {

@@ -1,0 +1,70 @@
+# Brain – Neo4j prod values (AUD-COST-006) — consumed by the OFFICIAL neo4j/neo4j
+# helm chart via the multi-source ArgoCD app infra/argocd/envs/prod/neo4j.yaml
+# ($values ref). Neo4j is the identity SYSTEM OF RECORD (ADR-0004): identity
+# resolution + journey stitch (stream-worker), identity-export → silver_identity_link
+# (cronworkflows :02), phone-guard, and the Spark mart dim reads all consume it.
+#
+# Topology: single Community-edition instance (no HA — Community cannot cluster).
+# ACCEPTED with the documented recovery story: the identity graph is REBUILDABLE
+# from Silver + PG audit trails, and the PVC survives pod loss. If stronger HA is
+# needed, switch to Neo4j AuraDB Professional (check ap-south-1 availability) and
+# point NEO4J_URI at it instead — no chart needed.
+#
+# CAPACITY NOTE: all Karpenter pools are Spot (infra/helm/karpenter/values.yaml).
+# A Spot interruption bounces the single Neo4j pod (PVC reattaches on the
+# replacement node; identity writes are retried by consumers). If that bounce
+# budget is unacceptable, add a small ON-DEMAND NodePool and pin via podSpec
+# nodeSelector before go-live.
+
+# REQUIRED under ArgoCD: the chart's template-time `lookup` of the
+# passwordFromSecret Secret always fails in the repo-server (helm template has
+# no cluster access) — this flag is the chart's documented GitOps escape hatch.
+# The Secret is still enforced at pod start (envFrom fails the pod if absent).
+disableLookups: true
+
+neo4j:
+  name: brain-identity
+  edition: community
+  # AUTH (brand-isolation-preserving): NO anonymous access; single strong app
+  # credential delivered by ESO (infra/helm/external-secrets-config) from
+  # AWS Secrets Manager brain/prod/k8s/neo4j-auth. The k8s Secret MUST carry the
+  # key NEO4J_AUTH with value "neo4j/<password>" (official chart contract).
+  # Brand isolation itself is enforced app-side — every identity node/edge is
+  # keyed brand_id-first and every query binds brand_id (ADR-0004); the DB is
+  # never exposed outside the cluster (ClusterIP only, see services below).
+  passwordFromSecret: neo4j-auth
+  resources:
+    cpu: "2"
+    memory: 4Gi
+
+volumes:
+  data:
+    mode: dynamic
+    dynamic:
+      # gp3 via the EBS CSI driver (PREREQUISITE: aws-ebs-csi-driver addon +
+      # a gp3 StorageClass — see infra/helm/PLACEHOLDERS.md).
+      storageClassName: gp3
+      accessModes:
+        - ReadWriteOnce
+      requests:
+        storage: 50Gi
+
+config:
+  # Sized for the 4Gi pod: heap fixed (no resize stalls) + pagecache; ~1g
+  # headroom for query/network buffers.
+  server.memory.heap.initial_size: "2g"
+  server.memory.heap.max_size: "2g"
+  server.memory.pagecache.size: "1g"
+  # Identity SoR is cluster-internal only — bind advertised addresses to the
+  # k8s service DNS, not a public address.
+  server.default_listen_address: "0.0.0.0"
+
+services:
+  # The official chart defaults the `neo4j` service to LoadBalancer — NEVER for
+  # the identity SoR. ClusterIP only; consumers reach it at
+  # bolt://neo4j.neo4j.svc.cluster.local:7687 (NEO4J_URI in core-env /
+  # stream-worker-env, see infra/helm/external-secrets-config/README.md).
+  neo4j:
+    enabled: true
+    spec:
+      type: ClusterIP

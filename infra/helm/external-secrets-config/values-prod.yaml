@@ -34,3 +34,9 @@ secrets:
   - name: iceberg-rest-catalog-db
     namespace: iceberg-rest
     key: brain/prod/k8s/iceberg-rest-catalog-db
+  # Neo4j (identity SoR, AUD-COST-006) — the official chart's passwordFromSecret.
+  # SM JSON MUST be exactly {"NEO4J_AUTH": "neo4j/<password>"}; the SAME password
+  # goes into NEO4J_PASSWORD in core-env + stream-worker-env.
+  - name: neo4j-auth
+    namespace: neo4j
+    key: brain/prod/k8s/neo4j-auth

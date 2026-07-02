@@ -26,6 +26,7 @@ key becomes a Secret key (= env var for `envFrom` consumers).
 | `brain/prod/k8s/stream-worker-env` | `stream-worker-env` (ns `stream-worker`) | `DATABASE_URL` (**direct** Aurora — session advisory leader lock, never pgbouncer), `KAFKA_BROKERS`, `TRINO_HOST`, `NEO4J_*`, connector app creds (`META_APP_ID`/`META_APP_SECRET`, ...) |
 | `brain/prod/k8s/pgbouncer-env` | `pgbouncer-env` (ns `pgbouncer`) | upstream admin credentials (`DB_USER`/`DB_PASSWORD`) |
 | `brain/prod/k8s/iceberg-rest-catalog-db` | `iceberg-rest-catalog-db` (ns `iceberg-rest`) | exactly `jdbc-user`, `jdbc-password` (the iceberg-rest chart reads these two keys) |
+| `brain/prod/k8s/neo4j-auth` | `neo4j-auth` (ns `neo4j`) | exactly `NEO4J_AUTH` = `neo4j/<password>` (official neo4j chart `passwordFromSecret` contract, AUD-COST-006); the same password backs `NEO4J_PASSWORD` in `core-env` / `stream-worker-env`, with `NEO4J_URI=bolt://neo4j.neo4j.svc.cluster.local:7687`, `NEO4J_USER=neo4j` |
 
 The terraform `secrets` module currently creates only the four
 `brain/prod/{db,kafka,grafana,apicurio}/...` shells — the `brain/prod/k8s/*`

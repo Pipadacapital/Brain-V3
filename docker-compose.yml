@@ -250,6 +250,10 @@ services:
     mem_limit: 2500m
     oom_score_adj: -800   # event backbone — protected just below Postgres
     environment:
+      # Pin the broker heap to the apache/kafka:3.8.1 kafka-server-start.sh default (-Xmx1G -Xms1G)
+      # so the 1G-heap / 2.5g-limit pairing (docs/ops/local-memory-budget.md) survives image bumps —
+      # unpinned, a future image's default silently changes the heap under the same mem_limit.
+      KAFKA_HEAP_OPTS: "-Xmx1G -Xms1G"
       KAFKA_NODE_ID: "1"
       KAFKA_PROCESS_ROLES: "broker,controller"
       KAFKA_CONTROLLER_QUORUM_VOTERS: "1@localhost:9093"
@@ -295,7 +299,9 @@ services:
       # KAFKA_OPTS= clears the broker's -javaagent JMX exporter for the probe — otherwise the CLI's
       # JVM tries to re-bind the agent on 9404 (already held by the broker) → BindException aborts the
       # JVM → the probe exits non-zero forever → the broker never reports healthy though it serves fine.
-      test: ["CMD-SHELL", "KAFKA_OPTS= /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1 || exit 1"]
+      # KAFKA_HEAP_OPTS= likewise: the pinned broker heap (-Xmx1G -Xms1G) must not size the probe's
+      # CLI JVM inside the same 2.5g cgroup — cleared, kafka-run-class.sh falls back to its 256M default.
+      test: ["CMD-SHELL", "KAFKA_OPTS= KAFKA_HEAP_OPTS= /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1 || exit 1"]
       interval: 10s
       timeout: 10s
       retries: 20

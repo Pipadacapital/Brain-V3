@@ -30,7 +30,7 @@ runaway, they don't throttle normal operation):
 | spark-bronze-sink | 7g | `--driver-memory 4g` |
 | spark-bronze-raw-sink | 6g | `--driver-memory 4g` |
 | minio | 5g | `GOMEMLIMIT=4500MiB` (soft GC ceiling) |
-| redpanda (Kafka KRaft) | 2.5g | default |
+| kafka (KRaft) | 2.5g | `KAFKA_HEAP_OPTS -Xmx1G -Xms1G` (pinned; == image default — pairs 1G heap with the 2.5g limit) |
 | neo4j | 1.5g | heap 512m + pagecache 256m |
 | apicurio | 768m | `JAVA_OPTS_APPEND -Xmx512m` (67% of limit) |
 | pgbouncer | 128m | — (small C daemon) |

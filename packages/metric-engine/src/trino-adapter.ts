@@ -109,10 +109,17 @@ type MinimalFetch = (
 /**
  * Substitute `?` placeholders in Trino SQL with safely-escaped literal values.
  * Only seam-controlled values (brand_id UUID, numeric args) are expected here.
+ *
+ * GUARDED BOTH DIRECTIONS (AUD-ARCH-013): the brand-isolation seam appends brandId as the
+ * LAST param and relies on the ${BRAND_PREDICATE}-injected `?` being the LAST placeholder.
+ * Any placeholder/param count mismatch means the positional mapping shifted — a data value
+ * could bind into the brand_id slot. Throw loud, never substitute misaligned.
+ *
+ * Exported for unit tests only — production callers go through TrinoPool.query.
  */
-function substituteParams(sql: string, params: unknown[]): string {
+export function substituteParams(sql: string, params: unknown[]): string {
   let i = 0;
-  return sql.replace(/\?/g, () => {
+  const substituted = sql.replace(/\?/g, () => {
     if (i >= params.length) {
       throw new Error(
         `[trino-adapter] not enough params for query placeholders — ` +
@@ -148,6 +155,13 @@ function substituteParams(sql: string, params: unknown[]): string {
     }
     throw new Error(`[trino-adapter] unsupported param type '${typeof p}' at index ${i - 1}`);
   });
+  if (i !== params.length) {
+    throw new Error(
+      `[trino-adapter] placeholder/param count mismatch — SQL has ${i} \`?\` placeholder(s) ` +
+        `but ${params.length} params were provided (positional binding would misalign)`,
+    );
+  }
+  return substituted;
 }
 
 // ── Adapter factory ────────────────────────────────────────────────────────────

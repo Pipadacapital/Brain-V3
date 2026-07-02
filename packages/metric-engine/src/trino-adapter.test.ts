@@ -12,7 +12,7 @@
  * pool-creation time).
  */
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { createTrinoPool } from './trino-adapter.js';
+import { createTrinoPool, substituteParams } from './trino-adapter.js';
 
 interface RecordedCall {
   url: string;
@@ -124,5 +124,30 @@ describe('createTrinoPool — truncation fails loud (AUD-PERF-008)', () => {
     for (const c of calls.filter((c) => c.method !== 'DELETE')) {
       expect(c.signal, `request ${c.url} missing timeout signal`).toBeDefined();
     }
+  });
+});
+
+describe('substituteParams — placeholder/param count guarded BOTH directions (AUD-ARCH-013)', () => {
+  it('substitutes matched placeholders positionally', () => {
+    expect(substituteParams('SELECT * FROM t WHERE a = ? AND brand_id = ?', [7, 'b-1'])).toBe(
+      "SELECT * FROM t WHERE a = 7 AND brand_id = 'b-1'",
+    );
+  });
+
+  it('throws when the SQL has MORE placeholders than params (underflow)', () => {
+    expect(() => substituteParams('SELECT ? , ?', ['only-one'])).toThrow(/not enough params/);
+  });
+
+  it('throws when MORE params than placeholders are provided (overflow — misaligned binding)', () => {
+    // The seam appends brandId LAST — if a placeholder is missing, brandId silently never binds.
+    expect(() => substituteParams('SELECT * FROM t WHERE a = ?', [7, 'brand-uuid'])).toThrow(
+      /placeholder\/param count mismatch/,
+    );
+  });
+
+  it('throws on zero placeholders with params present (the dropped-predicate shape)', () => {
+    expect(() => substituteParams('SELECT * FROM t', ['brand-uuid'])).toThrow(
+      /placeholder\/param count mismatch/,
+    );
   });
 });

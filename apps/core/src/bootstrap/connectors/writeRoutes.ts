@@ -87,6 +87,21 @@ export function registerConnectorWriteRoutes(app: FastifyInstance, deps: Registe
         if (!dispatch) {
           return reply.code(422).send({ request_id: requestId, error: { code: 'CONNECTOR_NOT_AVAILABLE', message: `OAuth not configured for ${connectorType}` } });
         }
+        // BYO-required (Shopify): reject up front if the workspace user did not supply Custom App
+        // credentials. Prevents an initiate against the env app that only works for one store.
+        if (def.byoAppRequired) {
+          const cid = body.credentials?.['client_id']?.trim();
+          const csec = body.credentials?.['client_secret']?.trim();
+          if (!cid || !csec) {
+            return reply.code(400).send({
+              request_id: requestId,
+              error: {
+                code: 'MISSING_APP_CREDENTIALS',
+                message: `${def.displayName} requires your Custom App's Client ID and Client Secret.`,
+              },
+            });
+          }
+        }
         try {
           // Per-brand BYO-app creds (Shopify/Meta/Google): if the connect body carries client_id +
           // client_secret, store them for this brand (Secrets Manager); the client_secret is used at
@@ -100,7 +115,12 @@ export function registerConnectorWriteRoutes(app: FastifyInstance, deps: Registe
               clientSecret: appCreds['client_secret'],
             });
           }
-          const clientId = await resolveBrandOAuthClientId(connectorSecretsManager, provider, brandId);
+          const clientId = await resolveBrandOAuthClientId(
+            connectorSecretsManager,
+            provider,
+            brandId,
+            { requireBrandCreds: def.byoAppRequired ?? false },
+          );
           const { oauth_url } = await dispatch.initiate({
             brandId,
             shopDomain: body.shop_domain,

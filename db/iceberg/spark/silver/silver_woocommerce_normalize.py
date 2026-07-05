@@ -121,11 +121,11 @@ def build(spark: SparkSession):
                          partitioned_by="bucket(256, brand_id), days(occurred_at)")
 
     raw = rn.read_bronze(spark, CATALOG, BRONZE_NAMESPACE, "woocommerce_orders_raw", "woocommerce")
-    # Skip-guard: connector raw lanes are EMPTY until a connector syncs + the V4 raw-lane producer (G1)
-    # lands payload-schema records. No source rows → nothing to normalize; return cleanly instead of
-    # failing on the legacy struct columns this job still reads. Full payload-JSON normalize is G1.
+    # Skip-guard: empty-lane skip — the woocommerce_orders_raw_connect table auto-creates on the
+    # lane's first record (ADR-0010). No source rows → nothing to normalize; return cleanly instead of
+    # failing the struct-column select on the empty placeholder frame.
     if raw.limit(1).count() == 0:
-        print(f"[silver-woocommerce-normalize] {RAW_TABLE} has 0 rows — skipping (awaiting connector data / G1)", flush=True)
+        print(f"[silver-woocommerce-normalize] {rn.connect_source_table(CATALOG, BRONZE_NAMESPACE, 'woocommerce_orders_raw')} has 0 rows — skipping (empty lane; table auto-creates on first record, ADR-0010)", flush=True)
         return TARGET, 0
     o = "order"  # the verbatim Woo order is nested under `order` in the envelope (the connector wraps it)
 

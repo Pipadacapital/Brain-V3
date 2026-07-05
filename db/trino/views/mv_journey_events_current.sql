@@ -41,6 +41,11 @@ SELECT
   product_handles,
   attribution_signals,
   identity_confidence,
+  -- DG-2 POINT-IN-TIME (AS-OF) identity: the brain_id/confidence that owned the identity AT
+  -- occurred_at (bi-temporal silver_identity_map interval covering the event). NULL = the event
+  -- predates the identity, or the row is anonymous_/unmapped (honest as-of resolution).
+  brain_id_asof,
+  identity_confidence_asof,
   is_composite,
   composite_order_key,
   ingested_at,

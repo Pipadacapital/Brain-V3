@@ -136,6 +136,8 @@ def _copies_sql(fqtn: str) -> str:
             a.product_handles,
             a.attribution_signals,
             a.identity_confidence,
+            a.brain_id_asof,               -- DG-2 AS-OF pair carries VERBATIM: point-in-time truth
+            a.identity_confidence_asof,    -- at occurred_at is immutable — a merge never rewrites it
             a.is_composite,
             a.composite_order_key,
             a.ingested_at,

@@ -123,10 +123,12 @@ def check_columns_contract():
     for name, col_type in cols:
         base = col_type.split("(")[0].split("<")[0].strip()
         assert base not in banned, f"column '{name}' uses banned type {col_type} (money rule / no floats)"
-    # double is allowed ONLY for the identity_confidence score (a probability, not money)
-    doubles = [n for n, t in cols if t == "DOUBLE"]
-    assert doubles in ([], ["identity_confidence"]), (
-        f"only identity_confidence may be double (score, not money) — found: {doubles}"
+    # double is allowed ONLY for the identity-confidence scores (probabilities, not money):
+    # identity_confidence (current) + identity_confidence_asof (DG-2 point-in-time)
+    doubles = set(n for n, t in cols if t == "DOUBLE")
+    allowed_doubles = {"identity_confidence", "identity_confidence_asof"}
+    assert doubles <= allowed_doubles, (
+        f"only {sorted(allowed_doubles)} may be double (scores, not money) — found: {sorted(doubles)}"
     )
 
 
@@ -186,10 +188,60 @@ def check_registry_and_artifacts():
     )
 
 
+def check_asof_identity():
+    """DG-2 POINT-IN-TIME (AS-OF) identity resolution — additive columns + the canonical
+    interval-covering predicate (the SAME AS-OF shape _snap_as_of/snap_identity_link prove):
+      effective_from <= occurred_at AND (effective_to IS NULL OR occurred_at < effective_to)
+    A drive-by edit that flips a bound to inclusive/exclusive the wrong way (>= / <=) would
+    silently corrupt every historical resolution, so the predicate shape is pinned here."""
+    # (a) both ADDITIVE columns are in the construction contract, with the right types
+    cols_sql = _extract_str_assign(CONSTRUCTION_FILE, "_COLUMNS")
+    types = dict(_parse_columns(cols_sql))
+    raw = _raw_lines(cols_sql)
+    assert types.get("brain_id_asof") == "STRING", (
+        f"_COLUMNS must carry brain_id_asof string (DG-2), got {types.get('brain_id_asof')}"
+    )
+    assert types.get("identity_confidence_asof") == "DOUBLE", (
+        f"_COLUMNS must carry identity_confidence_asof double (DG-2), got {types.get('identity_confidence_asof')}"
+    )
+    # additive/nullable: neither AS-OF column may be NOT NULL (old rows + anonymous ids stay NULL)
+    for c in ("brain_id_asof", "identity_confidence_asof"):
+        assert "NOT NULL" not in raw[c], f"AS-OF column '{c}' must stay nullable (additive DG-2 contract)"
+
+    # (b) the interval-covering predicate shape in the construction SQL
+    text = CONSTRUCTION_FILE.read_text()
+    flat = re.sub(r"\s+", " ", text).lower()
+    assert re.search(
+        r"m\.effective_from\s*<=\s*e2\.occurred_at\s+and\s+"
+        r"\(\s*m\.effective_to\s+is\s+null\s+or\s+e2\.occurred_at\s*<\s*m\.effective_to\s*\)",
+        flat,
+    ), (
+        "construction must AS-OF join with the canonical interval predicate: "
+        "effective_from <= occurred_at AND (effective_to IS NULL OR occurred_at < effective_to)"
+    )
+    # deterministic tiebreak across multiple covering identifier types
+    assert re.search(r"max\(m\.confidence\)\s+as\s+identity_confidence_asof", flat), (
+        "identity_confidence_asof must be max(confidence) across covering rows (deterministic tiebreak)"
+    )
+
+    # (c) the serving view projects both AS-OF columns
+    view_sql = VIEW_FILE.read_text()
+    for c in ("brain_id_asof", "identity_confidence_asof"):
+        assert re.search(rf"^\s*{c}\s*,", view_sql, re.MULTILINE), (
+            f"serving view mv_journey_events_current must project the DG-2 column '{c}'"
+        )
+
+    # (d) the reversion copies carry the AS-OF pair verbatim (its INSERT column list is explicit)
+    rev = re.sub(r"\s+", " ", REVERSION_FILE.read_text()).lower()
+    for c in ("a.brain_id_asof", "a.identity_confidence_asof"):
+        assert c in rev, f"reversion copies must carry {c} (explicit column list — verbatim on merge)"
+
+
 _CHECKS = [
     ("columns_contract", check_columns_contract),
     ("reversion_semantics", check_reversion_semantics),
     ("registry_and_artifacts", check_registry_and_artifacts),
+    ("asof_identity", check_asof_identity),
 ]
 
 
@@ -204,6 +256,10 @@ def test_reversion_semantics():
 
 def test_registry_and_artifacts():
     check_registry_and_artifacts()
+
+
+def test_asof_identity():
+    check_asof_identity()
 
 
 def main() -> int:

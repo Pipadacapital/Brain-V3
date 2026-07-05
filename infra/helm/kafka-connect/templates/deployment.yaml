@@ -1,0 +1,91 @@
+{{- if .Values.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-kafka-connect
+  labels:
+    app.kubernetes.io/name: kafka-connect
+    app.kubernetes.io/part-of: brain
+spec:
+  replicas: {{ .Values.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kafka-connect
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kafka-connect
+    spec:
+      serviceAccountName: {{ if .Values.serviceAccount.create }}{{ .Values.serviceAccount.name | default (printf "%s-kafka-connect" .Release.Name) }}{{ else }}{{ .Values.serviceAccount.name | default "default" }}{{ end }}
+      containers:
+        - name: connect
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # Same runtime plugin-resolution pattern as the local compose service (ADR-0010): the
+          # Apache Iceberg connect runtime zip is fetched once per pod into the plugins emptyDir.
+          # Bake a custom image instead for air-gapped clusters.
+          command:
+            - bash
+            - -c
+            - |
+              set -e
+              PLUGIN_DIR=/opt/connect-plugins/iceberg-iceberg-kafka-connect-{{ .Values.icebergConnectVersion }}
+              if [ ! -f "$PLUGIN_DIR/manifest.json" ]; then
+                echo "Downloading Apache Iceberg Kafka Connect runtime {{ .Values.icebergConnectVersion }}..."
+                curl -fsSL -o /tmp/iceberg-connect.zip "{{ .Values.pluginZipUrl }}"
+                ( cd /opt/connect-plugins && jar xf /tmp/iceberg-connect.zip ) && rm -f /tmp/iceberg-connect.zip
+              fi
+              exec /etc/confluent/docker/run
+          env:
+            - name: KAFKA_HEAP_OPTS
+              value: {{ .Values.heapOpts | quote }}
+            - name: CONNECT_BOOTSTRAP_SERVERS
+              value: {{ .Values.worker.bootstrapServers | quote }}
+            - name: CONNECT_REST_ADVERTISED_HOST_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: CONNECT_REST_PORT
+              value: "8083"
+            - name: CONNECT_GROUP_ID
+              value: {{ .Values.worker.groupId | quote }}
+            - name: CONNECT_CONFIG_STORAGE_TOPIC
+              value: {{ .Values.worker.configStorageTopic | quote }}
+            - name: CONNECT_OFFSET_STORAGE_TOPIC
+              value: {{ .Values.worker.offsetStorageTopic | quote }}
+            - name: CONNECT_STATUS_STORAGE_TOPIC
+              value: {{ .Values.worker.statusStorageTopic | quote }}
+            - name: CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR
+              value: {{ .Values.worker.storageReplicationFactor | quote }}
+            - name: CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR
+              value: {{ .Values.worker.storageReplicationFactor | quote }}
+            - name: CONNECT_STATUS_STORAGE_REPLICATION_FACTOR
+              value: {{ .Values.worker.storageReplicationFactor | quote }}
+            - name: CONNECT_KEY_CONVERTER
+              value: "org.apache.kafka.connect.storage.StringConverter"
+            - name: CONNECT_VALUE_CONVERTER
+              value: "org.apache.kafka.connect.json.JsonConverter"
+            - name: CONNECT_VALUE_CONVERTER_SCHEMAS_ENABLE
+              value: "false"
+            - name: CONNECT_PLUGIN_PATH
+              value: "/usr/share/java,/usr/share/confluent-hub-components,/opt/connect-plugins"
+          ports:
+            - name: rest
+              containerPort: 8083
+          volumeMounts:
+            - name: plugins
+              mountPath: /opt/connect-plugins
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+          readinessProbe:
+            httpGet: { path: /connectors, port: 8083 }
+            initialDelaySeconds: 60      # first boot downloads the plugin zip
+            periodSeconds: 15
+            failureThreshold: 20
+          livenessProbe:
+            httpGet: { path: /, port: 8083 }
+            initialDelaySeconds: 120
+            periodSeconds: 30
+      volumes:
+        - name: plugins
+          emptyDir: {}
+{{- end }}

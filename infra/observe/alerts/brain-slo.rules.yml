@@ -114,6 +114,32 @@ groups:
           summary: "Consumer group {{ $labels.consumergroup }} lag > 50k"
           description: "The consumer group is >50,000 messages behind for 10m — projection is falling behind production rate."
 
+      - alert: BronzeConnectTaskFailed
+        # ADR-0010: a FAILED Iceberg-sink task stays failed until manually restarted — the lane it
+        # owns stops landing Bronze rows entirely (this is the shape of the ce107294-class silent
+        # freeze). Source: kafka-connect-jmx job / kafka-connect-jmx-exporter.yml mapping.
+        expr: kafka_connect_connector_task_status{status="failed"} == 1
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Bronze Connect task {{ $labels.connector }}/{{ $labels.task }} FAILED"
+          description: "The Iceberg sink task is in FAILED state — its Kafka lane is not landing in Bronze. Restart: curl -X POST localhost:8083/connectors/{{ $labels.connector }}/tasks/{{ $labels.task }}/restart (see docs/runbooks/adr-0010-kafka-connect-bronze.md)."
+
+      - alert: BronzeConnectLagHigh
+        # ADR-0010: the Bronze landing writer itself is falling behind (or the worker is down and
+        # lag is frozen while producers advance). 10k over 10m ≈ well past the 30s commit cadence.
+        expr: |
+          sum by (consumergroup) (
+            kafka_consumergroup_lag{consumergroup=~"connect-iceberg-bronze-.*"}
+          ) > 10000
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Bronze Connect landing lag > 10k ({{ $labels.consumergroup }})"
+          description: "The Iceberg sink consumer group is >10,000 messages behind for 10m — Bronze landing is falling behind ingest (worker down, catalog contention, or throughput ceiling). See docs/runbooks/adr-0010-kafka-connect-bronze.md."
+
       - alert: BrainIngestStale
         # Freshness: collector topic advancing but ZERO Bronze writes for 10m → the spine stalled.
         expr: |

@@ -43,14 +43,19 @@ export const BRAND_PREDICATE = '${BRAND_PREDICATE}';
  * is 'iceberg', so the explicit `iceberg.brain_bronze.collector_events` resolves the Iceberg Bronze
  * namespace directly (mirrors analytics _bronze-source.ts ICEBERG_BRONZE).
  */
-// UNIFIED-BRONZE cutover (bronze_landing.py): one env flips the Bronze source (mirrors analytics
-// _bronze-source.ts). BRONZE_SOURCE=events → the unified brain_bronze.events (collector lane); else the
-// legacy collector_events. Default legacy until the sink is switched to bronze_landing. Rollback = legacy.
+// BRONZE_SOURCE switch (mirrors analytics _bronze-source.ts): `events` → the unified
+// brain_bronze.events (collector lane); `connect` → the ADR-0010 Kafka Connect lift view
+// collector_events_connect_lifted (the Connect table is truly-raw payload+coords; the view lifts the
+// envelope scalars these DQ checks select); else the legacy collector_events. Rollback = set it back.
 const BRONZE_SOURCE = (process.env['BRONZE_SOURCE'] ?? 'legacy').toLowerCase();
 export const ICEBERG_BRONZE =
-  BRONZE_SOURCE === 'events' ? 'iceberg.brain_bronze.events' : 'iceberg.brain_bronze.collector_events';
-/** Keep ONLY the collector lane when reading the unified events table; a no-op on legacy. Append as
- * `AND ${BRONZE_COLLECTOR_PREDICATE}`. */
+  BRONZE_SOURCE === 'events'
+    ? 'iceberg.brain_bronze.events'
+    : BRONZE_SOURCE === 'connect'
+      ? 'iceberg.brain_bronze.collector_events_connect_lifted'
+      : 'iceberg.brain_bronze.collector_events';
+/** Keep ONLY the collector lane when reading the unified events table; a no-op on the single-lane
+ * legacy/connect tables. Append as `AND ${BRONZE_COLLECTOR_PREDICATE}`. */
 export const BRONZE_COLLECTOR_PREDICATE = BRONZE_SOURCE === 'events' ? "connector = 'collector'" : 'TRUE';
 
 export function createSilverReader(config: SilverReaderConfig): SilverReader {

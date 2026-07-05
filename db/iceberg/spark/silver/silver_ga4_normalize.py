@@ -306,6 +306,9 @@ def build(spark: SparkSession):
         envelope.alias("payload"),
     ).withColumn("partition_key", col("brand_id")).drop("_b")
 
+    # ADR-0010: the append-only Connect Bronze can carry redelivered duplicates — collapse to one row
+    # per (brand_id, event_id) or the MERGE below aborts on a source-cardinality violation.
+    out = rn.dedupe_latest(out, ["brand_id", "event_id"], "ingested_at")
     out.createOrReplaceTempView("_ga4_canon")
     spark.sql(
         f"""

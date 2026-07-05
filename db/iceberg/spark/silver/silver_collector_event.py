@@ -83,6 +83,13 @@ RAW_TABLE = f"{CATALOG}.{BRONZE_NAMESPACE}.{os.environ.get('COLLECTOR_BRONZE_TAB
 BRONZE_SOURCE = os.environ.get("BRONZE_SOURCE", "legacy").lower()
 EVENTS_TABLE = f"{CATALOG}.{BRONZE_NAMESPACE}.events"
 COLLECTOR_CONNECTOR = "collector"
+# ADR-0010 (Kafka Connect Iceberg sink REINSTATED as the Bronze landing writer — cost decision): the
+# collector lane lands in `collector_events_connect` as VERBATIM envelope `payload` + kafka
+# coordinates ONLY — no lifted envelope scalars (truly-raw Bronze) and NO Bronze-side dedup (the sink
+# is append-only; the (brand_id, event_id) window+MERGE in _process_window IS the dedup SoR).
+#   BRONZE_SOURCE=connect → read collector_events_connect, lifting the envelope scalars in-Spark
+#                           (see build()) so the gate below stays byte-identical to the other modes.
+CONNECT_TABLE = f"{CATALOG}.{BRONZE_NAMESPACE}.{os.environ.get('COLLECTOR_CONNECT_TABLE', 'collector_events_connect')}"
 TARGET = f"{CATALOG}.{SILVER_NAMESPACE}.silver_collector_event"
 
 # Lane policy — MUST stay in lockstep with bronze_materialize.py (the same constants, same meaning).
@@ -351,12 +358,30 @@ def build(spark: SparkSession):
     }.items():
         spark.conf.set(_k, _v)
 
-    # UNIFIED-BRONZE: read the unified brain_bronze.events (collector lane ONLY — the raw connector lanes
-    # carry provider-API payloads with no envelope, which the gate/parse below can't map) under
-    # BRONZE_SOURCE=events, else the legacy single-lane collector_events. The gate + envelope-parse
-    # downstream is byte-identical either way.
+    # BRONZE SOURCE: `events` = the unified brain_bronze.events (collector lane ONLY — the raw
+    # connector lanes carry provider-API payloads with no envelope, which the gate/parse below can't
+    # map); `connect` = the ADR-0010 Kafka Connect table (below); else the legacy single-lane
+    # collector_events. The gate + envelope-parse downstream is byte-identical in every mode.
     if BRONZE_SOURCE == "events":
         raw_all = spark.table(EVENTS_TABLE).where(col("connector") == lit(COLLECTOR_CONNECTOR))
+    elif BRONZE_SOURCE == "connect":
+        # ADR-0010: the Connect sink lands ONLY {payload, kafka_*} (truly-raw Bronze). Lift the
+        # envelope scalars the gate + incremental watermark need from the payload JSON — the SAME
+        # fields bronze_landing/bronze_materialize lifted at write time, so downstream semantics are
+        # unchanged. received_at has no per-row arrival stamp under this writer; the envelope
+        # ingested_at is the ingest clock (the coalesce in _process_window keeps current_timestamp()
+        # as the last resort for rows missing it).
+        _p = col("payload")
+        raw_all = spark.table(CONNECT_TABLE).select(
+            get_json_object(_p, "$.event_id").alias("event_id"),
+            get_json_object(_p, "$.brand_id").alias("brand_id"),
+            get_json_object(_p, "$.event_name").alias("event_type"),
+            to_timestamp(get_json_object(_p, "$.occurred_at")).alias("occurred_at"),
+            to_timestamp(get_json_object(_p, "$.ingested_at")).alias("ingested_at"),
+            to_timestamp(get_json_object(_p, "$.ingested_at")).alias("received_at"),
+            get_json_object(_p, "$.correlation_id").alias("correlation_id"),
+            _p.cast("string").alias("payload"),
+        )
     else:
         raw_all = spark.table(RAW_TABLE)
 

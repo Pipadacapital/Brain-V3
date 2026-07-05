@@ -16,16 +16,17 @@ import type { PgConnectorInstanceRepository } from '../../modules/connector/sour
 import type { PgConnectorSyncStatusRepository } from '../../modules/connector/sources/storefront/shopify/infrastructure/repositories/PgConnectorSyncStatusRepository.js';
 import { requireRole } from '../../modules/workspace-access/internal/security/rbac.js';
 
-import { getBrandId } from './shared.js';
+import { getBrandId, type ConnectorContextConfig } from './shared.js';
 
 export interface RegisterConnectorReadRoutesDeps {
+  config: ConnectorContextConfig;
   connectorRepo: PgConnectorInstanceRepository;
   syncStatusRepo: PgConnectorSyncStatusRepository;
   sessionPreHandler: preHandlerHookHandler;
 }
 
 export function registerConnectorReadRoutes(app: FastifyInstance, deps: RegisterConnectorReadRoutesDeps): void {
-  const { connectorRepo, syncStatusRepo, sessionPreHandler } = deps;
+  const { config, connectorRepo, syncStatusRepo, sessionPreHandler } = deps;
 
   const getConnectorStatus = new GetConnectorStatusQuery(connectorRepo, syncStatusRepo);
 
@@ -94,6 +95,17 @@ export function registerConnectorReadRoutes(app: FastifyInstance, deps: Register
             optional: f.optional ?? false,
             hint: f.hint ?? null,
           })),
+          // BYO-required (Shopify): the connect UI must collect the brand's own app creds — no env
+          // fallback. redirect_url is filled at request-build time (the catalog stores '') so the
+          // setup panel shows the EXACT callback the user pastes into their Custom App config.
+          byo_app_required: def.byoAppRequired ?? false,
+          byo_app_setup: def.byoAppSetup
+            ? {
+                redirect_url: def.id === 'shopify' ? config.shopifyCallbackUrl : def.byoAppSetup.redirectUrl,
+                scopes: [...def.byoAppSetup.scopes],
+                docs_url: def.byoAppSetup.docsUrl ?? null,
+              }
+            : null,
           instance: firstInstance ? toInstanceShape(firstInstance) : null,
           instances: activeInstances.map(toInstanceShape),
         };

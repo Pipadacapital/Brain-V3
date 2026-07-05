@@ -182,7 +182,7 @@ export function registerConnectors(app: FastifyInstance, deps: RegisterConnector
   });
 
   // ── Connector read routes (analyst+) ────────────────────────────────────────
-  registerConnectorReadRoutes(app, { connectorRepo, syncStatusRepo, sessionPreHandler });
+  registerConnectorReadRoutes(app, { config, connectorRepo, syncStatusRepo, sessionPreHandler });
 
   // ── Connector write routes (manager+) ───────────────────────────────────────
   registerConnectorWriteRoutes(app, {

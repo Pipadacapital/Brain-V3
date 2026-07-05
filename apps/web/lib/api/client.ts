@@ -35,6 +35,7 @@ import {
   SearchBehaviorSchema,
   FormConversionSchema,
   JourneyTimelineSchema,
+  JourneyEventsLedgerSchema,
   JourneyStitchRateSchema,
   JourneyPathsSchema,
   RepeatLatencySchema,
@@ -172,6 +173,7 @@ import type {
   AnalyticsFormConversionResponse,
   AnalyticsJourneyStitchRateResponse,
   AnalyticsJourneyTimelineResponse,
+  AnalyticsJourneyEventsResponse,
   AnalyticsJourneyPathsResponse,
   AnalyticsRepeatLatencyResponse,
   AnalyticsCohortUsersResponse,
@@ -1909,6 +1911,26 @@ export const analyticsApi = {
       `/v1/analytics/journey/timeline?${qs.toString()}`,
     );
     return parseData(JourneyTimelineSchema, env);
+  },
+
+  /**
+   * GET /api/v1/analytics/journey/events?brainId= — the versioned journey LEDGER for one
+   * resolved customer (mv_journey_events_current), newest-first, keyset-paginated
+   * (opaque next_cursor). Money = bigint minor string + sibling currency (composite rows only).
+   */
+  getJourneyEvents: async (params: {
+    brainId: string;
+    cursor?: string | null;
+    limit?: number;
+  }): Promise<AnalyticsJourneyEventsResponse> => {
+    const qs = new URLSearchParams();
+    qs.set('brainId', params.brainId);
+    if (params.cursor) qs.set('cursor', params.cursor);
+    if (params.limit != null) qs.set('limit', String(params.limit));
+    const env = await bffFetch<BffEnvelope<unknown>>(
+      `/v1/analytics/journey/events?${qs.toString()}`,
+    );
+    return parseData(JourneyEventsLedgerSchema, env);
   },
 
   // ── Attribution (Phase 5 — feat-attribution-ledger Track C) ───────────────────

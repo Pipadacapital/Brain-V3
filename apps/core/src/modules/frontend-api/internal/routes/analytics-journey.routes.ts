@@ -14,6 +14,7 @@ import {
   getJourneyFirstTouchMix,
   getJourneyStitchRate,
   getJourneyTimeline,
+  getJourneyEvents,
   getJourneyPaths,
   getShipmentOutcomes,
   getReturnFunnel,
@@ -39,6 +40,7 @@ import type {
   SearchBehavior as ContractSearchBehavior,
   FormConversion as ContractFormConversion,
   JourneyTimeline as ContractJourneyTimeline,
+  JourneyEventsLedger as ContractJourneyEventsLedger,
   JourneyStitchRate as ContractJourneyStitchRate,
 } from '@brain/contracts';
 import type { BffDeps } from './_shared.js';
@@ -910,6 +912,72 @@ export function registerAnalyticsJourneyRoutes(fastify: FastifyInstance, deps: B
         // (Trino) reads the touches. The anonId selector path needs no PG pool.
         { srPool, pool: rawPool },
         { selector, dataSource: 'synthetic' },
+      );
+
+      return reply.send({ request_id: requestId, data: result });
+    },
+  );
+
+  /**
+   * GET /api/v1/analytics/journey/events?brainId=<uuid>&cursor=&limit=
+   * The versioned journey LEDGER for ONE resolved customer — the current (is_current=true)
+   * projection of iceberg.brain_gold.journey_events via brain_serving.mv_journey_events_current.
+   * Keyed by brain_id (the RESOLVED identity, same key as Customer 360 — post-merge canonical),
+   * newest-first, keyset-paginated (opaque next_cursor; an invalid cursor degrades to the first
+   * page). MONEY: revenue_minor bigint-minor-string + sibling currency_code, composite rows only.
+   */
+  fastify.get(
+    '/api/v1/analytics/journey/events',
+    {
+      preHandler: [bffProtectedPreHandler],
+      schema: {
+        querystring: {
+          type: 'object',
+          properties: {
+            brainId: {
+              type: 'string',
+              pattern: '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$',
+            },
+            cursor: { type: 'string', maxLength: 512 },
+            limit:  { type: 'integer', minimum: 1, maximum: 100 },
+          },
+          required: ['brainId'],
+          additionalProperties: false,
+        },
+      },
+      attachValidation: true,
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const validationError = (request as FastifyRequest & { validationError?: Error }).validationError;
+      if (validationError) {
+        return reply.code(400).send({
+          request_id: requestId,
+          error: { code: 'INVALID_PARAMS', message: 'brainId must be a UUID; limit an integer 1..100.' },
+        });
+      }
+
+      const auth = (request as AuthenticatedRequest).auth;
+      if (!auth.brandId) {
+        return reply.send({ request_id: requestId, data: { state: 'no_data' } });
+      }
+      if (!srPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Serving tier (Trino) not available' } });
+      }
+
+      const query = request.query as { brainId: string; cursor?: string; limit?: number };
+
+      const result: ContractJourneyEventsLedger = await getJourneyEvents(
+        auth.brandId,
+        { srPool },
+        {
+          brainId: query.brainId,
+          cursor: query.cursor ?? null,
+          limit: query.limit ?? 50,
+          // The ledger is built from the live journey corpus (Gold journey_events over the real
+          // Silver spine) — no synthetic enrichment on this surface.
+          dataSource: 'live',
+        },
       );
 
       return reply.send({ request_id: requestId, data: result });

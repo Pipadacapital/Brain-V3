@@ -79,12 +79,12 @@ export function CodMixChart({
   const srTable = (
     <table className="sr-only" aria-label="CoD vs prepaid mix data table">
       <caption>
-        Recognized revenue mix — net CoD (after RTO clawback) versus prepaid, and the CoD share
+        Confirmed revenue mix — net cash-on-delivery (after undelivered orders are taken back out) versus prepaid, and the CoD share
       </caption>
       <thead>
         <tr>
           <th scope="col">Channel</th>
-          <th scope="col">Recognized revenue</th>
+          <th scope="col">Confirmed revenue</th>
         </tr>
       </thead>
       <tbody>

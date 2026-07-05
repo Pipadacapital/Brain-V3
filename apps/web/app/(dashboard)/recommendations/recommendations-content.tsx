@@ -116,7 +116,7 @@ function RecommendationCard({ rec }: { rec: Recommendation }) {
         <dl className="flex flex-wrap gap-x-6 gap-y-1 text-xs text-muted-foreground">
           {typeof gmvAtRisk === 'string' && gmvAtRisk !== '0' && (
             <div>
-              <dt className="inline">GMV at risk: </dt>
+              <dt className="inline">Revenue at risk: </dt>
               <dd className="inline font-medium text-foreground tabular-nums">{inr(gmvAtRisk)}</dd>
             </div>
           )}
@@ -227,7 +227,7 @@ export function RecommendationsContent() {
     <div className="space-y-6">
       <PageHeader
         title="Recommendations"
-        description="Deterministic detectors over your certified data — ranked actions with confidence and the evidence behind them. Recommend-only: nothing is changed automatically."
+        description="Ranked risks and opportunities found in your data — each with a confidence level and the evidence behind it. Recommend-only: nothing is changed automatically."
         actions={
           <Button
             variant="outline"
@@ -236,14 +236,14 @@ export function RecommendationsContent() {
             onClick={() => refresh.mutate()}
           >
             <RefreshCw className={`mr-1.5 h-3.5 w-3.5 ${refresh.isPending ? 'animate-spin' : ''}`} aria-hidden="true" />
-            {refresh.isPending ? 'Running…' : 'Run detectors'}
+            {refresh.isPending ? 'Scanning…' : 'Scan for recommendations'}
           </Button>
         }
       />
 
       {refresh.isError && (
         <p className="text-sm text-destructive" role="alert">
-          Could not run the detectors. Please try again.
+          Could not run the scan. Please try again.
         </p>
       )}
 
@@ -258,11 +258,11 @@ export function RecommendationsContent() {
         <EmptyState
           icon={<Lightbulb className="h-6 w-6" aria-hidden="true" />}
           title="No open recommendations"
-          description="Run the detectors to scan your latest data. Recommendations appear here when a detector finds an actionable risk or opportunity it's confident about."
+          description="Scan your latest data to check for new ones. Recommendations appear here when Brain finds an actionable risk or opportunity it's confident about."
           action={
             <Button size="sm" disabled={refresh.isPending} onClick={() => refresh.mutate()}>
               <RefreshCw className={`mr-1.5 h-3.5 w-3.5 ${refresh.isPending ? 'animate-spin' : ''}`} aria-hidden="true" />
-              Run detectors
+              Scan for recommendations
             </Button>
           }
         />

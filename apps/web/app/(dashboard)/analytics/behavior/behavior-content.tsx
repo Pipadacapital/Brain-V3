@@ -18,6 +18,7 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { MousePointerClick, ArrowRight, Eye, Search } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { MetricTitle } from '@/components/ui/metric-title';
 import { PageHeader } from '@/components/ui/page-header';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -77,7 +78,12 @@ function PageTypeMix({ rows }: { rows: BehaviorHasData['page_type_mix'] }) {
   return (
     <Card>
       <CardHeader className="pb-2">
-        <CardTitle className="text-sm font-medium text-muted-foreground">Where shoppers browse (page-type mix)</CardTitle>
+        <CardTitle className="text-sm font-medium text-muted-foreground">
+          <MetricTitle
+            label="Where shoppers browse"
+            help="The share of page views by type of page — home, product, collection, and so on."
+          />
+        </CardTitle>
       </CardHeader>
       <CardContent>
         {rows.length === 0 ? (
@@ -106,6 +112,7 @@ function PageTypeMix({ rows }: { rows: BehaviorHasData['page_type_mix'] }) {
 
 function TopList({
   title,
+  help,
   icon,
   keyLabel,
   rows,
@@ -114,6 +121,8 @@ function TopList({
   emptyMessage,
 }: {
   title: string;
+  /** ONE plain-language sentence for the "?" tooltip (plain-language rule 2). */
+  help: string;
   icon: React.ReactNode;
   keyLabel: string;
   rows: BehaviorHasData['top_products'];
@@ -127,7 +136,7 @@ function TopList({
         <div className="flex flex-wrap items-center justify-between gap-2">
           <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-1.5">
             {icon}
-            {title}
+            <MetricTitle label={title} help={help} />
           </CardTitle>
           {searchSlot}
         </div>
@@ -213,9 +222,24 @@ function BehaviorData({ data }: { data: BehaviorHasData }) {
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-        <KpiTile label="Sessions" value={num(data.sessions)} sublabel={`${data.from} → ${data.to}`} />
-        <KpiTile label="Active journeys" value={num(data.journeys)} sublabel="distinct shoppers" />
-        <KpiTile label="Touches" value={num(data.touches)} sublabel="tracked interactions" />
+        <KpiTile
+          label="Visits"
+          help="A visit is one continuous browsing session on your store."
+          value={num(data.sessions)}
+          sublabel={`${data.from} → ${data.to}`}
+        />
+        <KpiTile
+          label="Shoppers"
+          help="How many distinct people browsed your store in the selected period."
+          value={num(data.journeys)}
+          sublabel="distinct shoppers"
+        />
+        <KpiTile
+          label="Interactions"
+          help="Every tracked action — page views, product views, and searches — added together."
+          value={num(data.touches)}
+          sublabel="tracked actions"
+        />
       </div>
 
       <PageTypeMix rows={data.page_type_mix} />
@@ -223,6 +247,7 @@ function BehaviorData({ data }: { data: BehaviorHasData }) {
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <TopList
           title="Top viewed products"
+          help="The products shoppers looked at most in the selected period."
           icon={<Eye className="h-4 w-4" aria-hidden="true" />}
           keyLabel="Product"
           testid="behavior-top-products"
@@ -239,8 +264,9 @@ function BehaviorData({ data }: { data: BehaviorHasData }) {
         />
         <TopList
           title="Top searches"
+          help="What shoppers typed into your store's search box, most common first."
           icon={<Search className="h-4 w-4" aria-hidden="true" />}
-          keyLabel="Search"
+          keyLabel="Search term"
           testid="behavior-top-searches"
           rows={filteredSearches}
           searchSlot={

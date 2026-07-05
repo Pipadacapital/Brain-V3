@@ -82,8 +82,8 @@ export function CapiEventsTable({
         </CardTitle>
         <p className="text-xs text-muted-foreground">
           The last {events.length} conversion events evaluated for Meta passback — each
-          gated by can_contact(advertising). A blocked row is the proof the gate denied a
-          non-consented passback.
+          checked against the customer&apos;s advertising consent. A blocked row is proof
+          that nothing was shared without consent.
         </p>
       </CardHeader>
       <CardContent>

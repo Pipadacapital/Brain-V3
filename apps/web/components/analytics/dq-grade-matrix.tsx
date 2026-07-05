@@ -13,14 +13,15 @@
 
 import * as React from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { MetricTitle } from '@/components/ui/metric-title';
 import { DqGradeBadge } from '@/components/analytics/dq-status';
 import type { DqGradeCell, DqCheckCategory } from '@/lib/api/types';
 
 const CATEGORY_LABEL: Record<DqCheckCategory, string> = {
   freshness: 'Freshness',
   completeness: 'Completeness',
-  schema_validity: 'Schema validity',
-  reconciliation: 'Reconciliation',
+  schema_validity: 'Format checks',
+  reconciliation: 'Totals match',
 };
 
 const CATEGORY_ORDER: DqCheckCategory[] = [
@@ -61,7 +62,10 @@ export function DqGradeMatrix({ cells }: DqGradeMatrixProps) {
     <Card>
       <CardHeader className="pb-2">
         <CardTitle className="text-sm font-medium text-muted-foreground">
-          Quality grades by table &amp; check
+          <MetricTitle
+            label="Quality grades by table & check"
+            help="The latest grade each data table earned on each quality check — A is best, D is worst."
+          />
         </CardTitle>
       </CardHeader>
       <CardContent>

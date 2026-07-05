@@ -91,10 +91,10 @@ function NoConversionsEmpty({ testId }: { testId: string }) {
         <div>
           <p className="font-medium text-foreground">No conversions matched yet</p>
           <p className="mt-1 max-w-md text-sm text-muted-foreground">
-            Once a realized purchase is finalized for a subject who has granted{' '}
+            Once a confirmed purchase is finalized for a customer who has granted{' '}
             <span className="font-medium text-foreground">advertising</span> consent, it is
-            matched, gated by can_contact(), and recorded here. Conversions for
-            non-consented subjects are <span className="font-medium text-foreground">blocked</span>,
+            matched, checked against that consent, and recorded here. Conversions for
+            customers without consent are <span className="font-medium text-foreground">blocked</span>,
             never passed back.
           </p>
         </div>
@@ -114,15 +114,15 @@ function DevBoundaryBanner() {
   return (
     <Alert
       variant="warning"
-      title="Would-send in dev — no live Meta CAPI credentials"
+      title="Test mode — nothing is actually sent to Meta yet"
       icon={<FlaskConical className="size-4" />}
       aria-label="Development boundary"
       data-testid="capi-dev-boundary-banner"
     >
-      Conversions are matched, hashed, and gated by can_contact() — but the actual Meta
-      send is a default-closed stub in development (no access token / pixel id). These
-      events show <span className="font-medium">would-send</span>; they are never sent and
-      never faked. Live sending is a platform follow-up.
+      Conversions are matched, scrambled (hashed), and checked against consent — but this
+      environment has no live Meta connection, so nothing is actually sent. These events
+      show <span className="font-medium">would-send</span>; they are never sent and never
+      faked. Live sending switches on with a production Meta connection.
     </Alert>
   );
 }
@@ -141,8 +141,9 @@ function SummaryBand({ data }: { data: SummaryHasData }) {
     >
       <KpiTile
         label="Passed back"
+        help="Conversions shared with Meta to improve its ad targeting — only ever with the customer's advertising consent."
         value={passedBack.toLocaleString('en-IN')}
-        sublabel={`${Number(data.sent ?? '0').toLocaleString('en-IN')} sent · ${Number(data.would_send_dev ?? '0').toLocaleString('en-IN')} would-send (dev)`}
+        sublabel={`${Number(data.sent ?? '0').toLocaleString('en-IN')} sent · ${Number(data.would_send_dev ?? '0').toLocaleString('en-IN')} would-send (test mode)`}
         data-testid="capi-kpi-passed-back"
       />
 
@@ -150,24 +151,27 @@ function SummaryBand({ data }: { data: SummaryHasData }) {
           a BLOCK here, never a send. */}
       <KpiTile
         label="Blocked by consent"
+        help="Conversions we refused to share because the customer hadn't given advertising consent — the target is always zero sent without consent."
         value={blocked.toLocaleString('en-IN')}
-        sublabel="non-consented passbacks denied (SLO target: 0 sent)"
+        sublabel="withheld — nothing sent without consent"
         data-testid="capi-kpi-blocked"
       />
 
       <KpiTile
         label="Deletions"
+        help="Requests sent to Meta to delete previously shared conversions after a customer withdrew consent."
         value={deletions.toLocaleString('en-IN')}
-        sublabel="retroactive withdrawal requests"
+        sublabel="after consent withdrawals"
         data-testid="capi-kpi-deletions"
       />
 
       <KpiTile
         label="Match quality"
+        help="How completely Meta can match these conversions to real people — based on how many identifying fields (like email or phone, scrambled) each event carried."
         value={matchPct != null ? `${matchPct.toFixed(1)}%` : null}
         sublabel={
           data.avg_match_keys != null
-            ? `avg ${data.avg_match_keys.toFixed(1)} of 4 Meta keys`
+            ? `avg ${data.avg_match_keys.toFixed(1)} of 4 match fields`
             : 'no events yet'
         }
         data-testid="capi-kpi-match-quality"
@@ -190,20 +194,19 @@ export function ConversionFeedbackContent() {
         title="Conversion Feedback"
         description={
           <>
-            Realized conversions passed back to Meta to improve optimization — every passback
-            first clears the single <span className="font-medium text-foreground">can_contact()</span>{' '}
-            gate on the <span className="font-medium text-foreground">advertising</span> consent
-            category, which is{' '}
-            <span className="font-medium text-foreground">default-closed</span>. No consent →
-            no passback. PII is SHA-256-hashed at the boundary (Meta match spec); raw email and
-            phone are never stored, logged, or sent.
+            Confirmed purchases passed back to Meta to improve its ad targeting — every one
+            first clears a check on the customer&apos;s{' '}
+            <span className="font-medium text-foreground">advertising</span> consent, which is{' '}
+            <span className="font-medium text-foreground">off by default</span>. No consent →
+            no passback. Email and phone are scrambled (hashed) before sending; the raw values
+            are never stored, logged, or sent.
           </>
         }
         meta={
           <span
             data-testid="capi-platform-label"
             className="inline-flex items-center gap-1 rounded-md border border-border bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"
-            title="Realized conversions passed back to Meta via the Conversions API, behind the can_contact() consent gate."
+            title="Confirmed purchases passed back to Meta via its Conversions API, only with the customer's advertising consent."
           >
             <Target className="h-3 w-3" aria-hidden="true" />
             Meta CAPI
@@ -245,9 +248,9 @@ export function ConversionFeedbackContent() {
         {!events.isLoading && !events.error && events.data?.state === 'no_data' && (
           <Card data-testid="capi-events-empty">
             <CardContent className="py-8 text-center text-sm text-muted-foreground">
-              No passback events recorded yet. Once a finalized purchase is evaluated for a
-              consented subject, every can_contact() decision appears here — including the
-              blocks that prove the gate is closed by default.
+              No passback events recorded yet. Once a finalized purchase is evaluated, every
+              consent decision appears here — including the blocks that prove nothing is
+              shared without consent.
             </CardContent>
           </Card>
         )}
@@ -259,7 +262,7 @@ export function ConversionFeedbackContent() {
       {/* 3 — Deletions table (the ≤15-min retroactive-withdrawal path) */}
       <Panel
         title="Retroactive deletions"
-        description="Consent-withdrawal deletion requests — fired within the ≤15-minute SLA when a subject withdraws advertising consent."
+        description="Deletion requests sent to Meta within 15 minutes of a customer withdrawing advertising consent."
         testId="capi-deletions-panel"
       >
         {deletions.isLoading && <PanelSkeleton />}
@@ -273,8 +276,8 @@ export function ConversionFeedbackContent() {
                 <Trash2 className="h-4 w-4" aria-hidden="true" />
                 No consent withdrawals yet.
               </span>{' '}
-              When a subject withdraws advertising consent, a retroactive Meta deletion is
-              requested here within 15 minutes.
+              When a customer withdraws advertising consent, a Meta deletion request appears
+              here within 15 minutes.
             </CardContent>
           </Card>
         )}
@@ -287,8 +290,8 @@ export function ConversionFeedbackContent() {
       <div className="flex items-start gap-2 text-xs text-muted-foreground">
         <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
         <p>
-          Every figure is read via the BFF over the CAPI passback log — never a direct send
-          path. The can_contact() gate is the sole outbound chokepoint; no consent, no
+          Every figure comes from Brain&apos;s own record of what was (and wasn&apos;t) shared
+          with Meta. The consent check is the only way anything leaves — no consent, no
           passback.
         </p>
       </div>

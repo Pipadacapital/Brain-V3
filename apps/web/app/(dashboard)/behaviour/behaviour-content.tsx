@@ -79,14 +79,14 @@ export function BehaviourContent({ initialTab }: { initialTab?: string }) {
         ],
         metrics: [
           {
-            name: 'Sessions / journeys / touches',
-            definition: 'Distinct browsing sessions, distinct shoppers (journeys), and total tracked interactions in the window.',
+            name: 'Visits / shoppers / interactions',
+            definition: 'Distinct browsing visits, distinct shoppers, and total tracked actions in the window.',
             howComputed: 'Aggregated from silver_touchpoint over the selected date range (useBehaviorOverview).',
           },
           {
             name: 'Conversion funnel',
-            definition: 'Session reach at each stage — sessions → viewed a product → added to cart → purchased — with conversion % vs the funnel top and the step-over-previous drop-off.',
-            howComputed: 'Touchpoints stitched to orders in the Silver tier (useFunnelAnalytics). Percentages are 2dp strings from the engine, never re-divided client-side.',
+            definition: 'How many visits reach each step — Visit → Product view → Add to cart → Purchase — with the share that continues at every step and where the biggest drop-off happens.',
+            howComputed: 'Touchpoints matched to orders in the Silver tier (useFunnelAnalytics). Percentages are 2dp strings from the engine, never re-divided client-side.',
           },
           {
             name: 'Abandonment & recovery rate',

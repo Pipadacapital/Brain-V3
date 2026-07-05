@@ -136,39 +136,6 @@ import type {
 } from '@brain/contracts';
 export type { ChannelContributionDto, AttributionModel };
 
-// Re-export the contract Schemas the client boundary parses against.
-export {
-  RevenueSnapshotSchema,
-  KpiSummarySchema,
-  AttributionByChannelSchema,
-  AttributionReconciliationSchema,
-  ChannelRoasSchema,
-  JourneyFirstTouchMixSchema,
-  JourneyTimelineSchema,
-  JourneyStitchRateSchema,
-  JourneyPathsSchema,
-  RepeatLatencySchema,
-  DeliveryTimeSchema,
-  CampaignAttributionSchema,
-  ShipmentOutcomesSchema,
-  ReturnFunnelSchema,
-  BehaviorOverviewSchema,
-  OrderStatusMixSchema,
-  DataQualitySummarySchema,
-  AskBrainResultSchema,
-} from '@brain/contracts';
-
-// ── Error envelope (matches sample.api.v1.ts pattern) ───────────────────────
-
-export interface ApiErrorResponse {
-  request_id: string;
-  error: {
-    code: string;
-    message: string;
-    fields?: Array<{ field: string; message: string }>;
-  };
-}
-
 // ── Auth ─────────────────────────────────────────────────────────────────────
 
 export interface RegisterRequest {
@@ -329,13 +296,6 @@ export interface BrandSummaryEntry {
 /** DELETE /api/v1/brands/:id → soft-delete (archive). Reversible server-side. */
 export interface BrandArchiveResponse {
   id: string;
-  archived: boolean;
-}
-
-/** Restore (un-archive) a previously soft-deleted brand → POST /api/v1/brands/:id/restore. */
-export interface BrandRestoreResponse {
-  id: string;
-  /** false once the brand is active again. */
   archived: boolean;
 }
 
@@ -803,19 +763,6 @@ export type DqTrustTier = 'trusted' | 'estimated' | 'untrusted';
 export type DqFreshnessSlaStatus = 'green' | 'at_risk' | 'breached';
 
 /** DqGradeCell is DERIVED from @brain/contracts DqGradeRow (re-exported at top of file). */
-/** The gate decision the metric-engine computes from effective_confidence. */
-export interface DqGateDecision {
-  tier: DqTrustTier;
-  billingCapApplies: boolean;
-  includedInMmm: boolean;
-  blocksHighRiskRecommendation: boolean;
-}
-
-/** dq_grade coverage — the Phase-7 success metric. */
-export interface DqCoverage {
-  graded: number; // distinct (category,target) with a grade
-  expected: number; // distinct (category,target) expected to be graded
-}
 
 // DataQualitySummaryResponse is DERIVED from @brain/contracts DataQualitySummary
 // (re-exported at top of file). The contract superset adds costConfidence /

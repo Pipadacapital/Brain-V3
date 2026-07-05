@@ -155,7 +155,7 @@ export function ArchivedBrandsClient() {
       <PageHeader
         eyebrow="Settings"
         title="Archived brands"
-        description="Brands you've archived are hidden from the brand switcher and stop ingesting data. Restore one to bring it back and resume its data foundation."
+        description="Brands you've archived are hidden from the brand switcher and stop syncing data. Restore one to bring it back and resume syncing."
       />
 
       <SectionCard

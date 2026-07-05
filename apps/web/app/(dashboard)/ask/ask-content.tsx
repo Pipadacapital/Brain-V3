@@ -55,10 +55,10 @@ function PageHeader() {
       title="Ask Brain"
       description={
         <>
-          Ask a question about your metrics in plain language. Brain resolves it to a{' '}
-          <strong className="font-medium text-foreground">certified metric</strong> and the
-          metric-engine computes the number — it never makes one up. Every answer shows its
-          binding, confidence, and snapshot so you can trace it.{' '}
+          Ask a question about your metrics in plain language. Brain matches it to a{' '}
+          <strong className="font-medium text-foreground">certified metric</strong> and
+          calculates the number from your data — it never makes one up. Every answer shows
+          which metric it used, how confident it is, and the data snapshot behind it.{' '}
           <span className="font-medium text-foreground">Computed, not generated.</span>
         </>
       }
@@ -179,7 +179,7 @@ export function AskBrainContent() {
                   </div>
                   <EmptyState
                     title="No data yet for this metric"
-                    description="Brain resolved your question to a certified metric, but there's no data to compute it for your brand yet. Connect a source or wait for ingestion, then ask again."
+                    description="Brain matched your question to a certified metric, but there's no data to calculate it for your brand yet. Connect a source or wait for your data to sync, then ask again."
                     icon={<Inbox className="h-8 w-8" aria-hidden="true" />}
                   />
                   <AskProvenance
@@ -215,7 +215,7 @@ export function AskBrainContent() {
                     title="No certified metric answers this"
                     description={
                       data.reason ||
-                      "Brain only answers from certified metrics it can compute deterministically. This question doesn't map to one — so no number is shown. Try rephrasing around revenue, spend, ROAS, RTO, orders, journeys, or attribution."
+                      "Brain only answers from certified metrics it can calculate exactly. This question doesn't match one — so no number is shown. Try rephrasing around revenue, spend, ROAS, RTO, orders, journeys, or attribution."
                     }
                     icon={<SearchX className="h-8 w-8" aria-hidden="true" />}
                   />

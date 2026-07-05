@@ -101,12 +101,14 @@ export function MarketingContent({ initialTab }: { initialTab?: string }) {
                   first and last touches more heavily than the middle.
                 </li>
                 <li>
-                  <span className="font-medium text-foreground">Data-driven (Markov)</span> — learns
-                  each channel&apos;s removal-effect weight from your own corpus.
+                  <span className="font-medium text-foreground">Data-driven</span> — learns each
+                  channel&apos;s real influence from your own customer journeys, by measuring how
+                  much revenue would be lost without it.
                 </li>
                 <li>
-                  Switch models with the selector — totals always reconcile to realized revenue
-                  (attributed + unattributed = realized; the residual is shown, never hidden).
+                  Switch models with the selector — totals always add back up to your confirmed
+                  revenue (attributed + unattributed = confirmed; the leftover is shown, never
+                  hidden).
                 </li>
               </ul>
             ),
@@ -114,12 +116,12 @@ export function MarketingContent({ initialTab }: { initialTab?: string }) {
           {
             heading: 'How to read this tab',
             body:
-              'Attribution answers which channels earned the revenue. Spend & ROAS shows what you paid and the return. Conversion feedback proves which conversions were passed back to Meta (behind the consent gate).',
+              'Attribution answers which channels earned the revenue. Spend & ROAS shows what you paid and the return. Conversion feedback proves which purchases were shared back with Meta (only ever with customer consent).',
           },
           {
             heading: 'Granularity',
             body:
-              'Attribution and ROAS are shown both channel-level and per-campaign (attributed revenue, spend, orders and ROAS for each campaign under the selected model). ROAS reads n/a when a campaign has no spend; nothing is fabricated.',
+              'Attribution and ROAS are shown both channel-level and per-campaign (attributed revenue, spend, orders and ROAS for each campaign under the selected model). ROAS shows a dash when a campaign has no spend; nothing is made up.',
           },
         ],
         metrics: [
@@ -127,39 +129,39 @@ export function MarketingContent({ initialTab }: { initialTab?: string }) {
             name: 'Attributed revenue',
             definition: 'Revenue credited to each channel under the selected attribution model.',
             howComputed:
-              'Gold attribution credit ledger over Silver touchpoints; deterministic, switchable model (first / last / linear / position / data-driven).',
+              'Calculated from your customers’ actual journeys — the same journeys always give the same answer, under whichever model you pick.',
           },
           {
             name: 'Reconciliation residual',
-            definition: 'Attributed + unattributed always equals realized revenue.',
+            definition: 'Attributed + unattributed always equals your confirmed revenue.',
             howComputed:
-              'Closed-sum parity oracle: realized − attributed = unattributed; the residual is rendered, never hidden.',
+              'Confirmed revenue − attributed = unattributed; the leftover is always shown, never hidden.',
           },
           {
             name: 'Channel ROAS',
             definition: 'Return on ad spend per channel, and blended.',
             howComputed:
-              'Attributed (or realized) revenue ÷ ad spend, same-currency only; honest n/a when spend = 0. Money in bigint minor units.',
+              'Attributed (or confirmed) revenue ÷ ad spend, within the same currency only; shows a dash when spend is zero.',
           },
           {
             name: 'Ad spend',
             definition: 'Spend pulled from connected ad platforms for the active ad account.',
-            howComputed: 'Connector spend → Gold ad-spend timeseries (Meta / Google).',
+            howComputed: 'Synced daily from your Meta and Google ad accounts.',
           },
           {
             name: 'Conversion feedback',
-            definition: 'Realized conversions passed back to Meta (CAPI), blocks, and deletions.',
+            definition: 'Confirmed purchases passed back to Meta, plus blocks and deletions.',
             howComputed:
-              'CAPI passback log via the BFF; every passback clears the default-closed can_contact() advertising-consent gate.',
+              'From Brain’s record of every share decision — a purchase is only ever shared with the customer’s advertising consent, which is off by default.',
           },
         ],
         refreshCadence:
-          'Attribution and ad-spend marts refresh on the Gold loop; CAPI conversion feedback is read live from the passback log.',
+          'Attribution and ad-spend figures refresh on the regular analytics cycle; conversion feedback is read live.',
         sources: [
-          'Gold attribution credit ledger',
-          'Gold ad-spend timeseries',
-          'Realized-revenue ledger',
-          'Meta CAPI passback log',
+          'Your customer journeys and orders',
+          'Meta and Google ad accounts',
+          'Confirmed revenue records',
+          'Meta conversion-sharing log',
         ],
       }}
     >

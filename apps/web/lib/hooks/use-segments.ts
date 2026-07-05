@@ -12,7 +12,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { segmentsApi } from '@/lib/api/client';
 
-export const SEGMENTS_QUERY_KEY = ['segments'] as const;
+const SEGMENTS_QUERY_KEY = ['segments'] as const;
 
 /** List the brand's saved segments (newest first). Honest-empty = []. */
 export function useSavedSegments() {
@@ -29,24 +29,6 @@ export function useCreateSegment() {
   return useMutation({
     mutationFn: (body: { name: string; definition: Record<string, unknown> }) =>
       segmentsApi.create(body),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: SEGMENTS_QUERY_KEY });
-    },
-  });
-}
-
-/** Rename and/or edit a saved segment's rule tree; refreshes the list on success. */
-export function useUpdateSegment() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({
-      id,
-      ...body
-    }: {
-      id: string;
-      name?: string;
-      definition?: Record<string, unknown>;
-    }) => segmentsApi.update(id, body),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: SEGMENTS_QUERY_KEY });
     },

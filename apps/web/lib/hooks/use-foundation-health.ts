@@ -12,7 +12,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { analyticsApi } from '@/lib/api/client';
 
-export const FOUNDATION_HEALTH_QUERY_KEY = ['foundation-health'] as const;
+const FOUNDATION_HEALTH_QUERY_KEY = ['foundation-health'] as const;
 
 export function useFoundationHealth() {
   return useQuery({

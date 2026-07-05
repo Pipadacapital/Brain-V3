@@ -71,12 +71,12 @@ type ReturnHasData = Extract<AnalyticsReturnFunnelResponse, { state: 'has_data' 
 const OPERATIONS_EXPLAINER: ExplainerPanelProps = {
   title: 'Operations — Where is revenue leaking in delivery?',
   description:
-    'The fulfillment surface: which couriers and regions drive return-to-origin (RTO), how returns move through their own lifecycle, and the open delivery risks worth acting on. Folded deterministically from shipment-lifecycle events (GoKwik AWB, Shiprocket) in the Silver tier.',
+    'The fulfillment surface: which couriers and regions drive return-to-origin (RTO), how returns move through their own journey, and the open delivery risks worth acting on. Counted exactly from the tracking updates your logistics sources send (GoKwik, Shiprocket).',
   sections: [
     {
       heading: 'How to read this page',
       body:
-        'RTO is revenue that shipped but came back — pure leakage. The courier and region tables rank where it concentrates so you can renegotiate or restrict COD. Returns are a SEPARATE lifecycle: a "completed" return is delivered BACK to origin, never a sale. Counts are exact; anything without data shows an honest empty state, never a fabricated zero.',
+        'RTO is revenue that shipped but came back — pure leakage. The courier and region tables rank where it concentrates so you can renegotiate or restrict COD. Returns are a SEPARATE journey: a "completed" return is delivered BACK to you, never a sale. Counts are exact; anything without data shows an honest empty state, never a made-up zero.',
     },
   ],
 };
@@ -127,7 +127,7 @@ function AlertsStrip() {
           <AlertTriangle className="h-4 w-4 text-warning" aria-hidden="true" />
           Open risks
           {briefing?.data_source === 'synthetic' && (
-            <SyntheticBadge reason="Computed from synthetic demo data seeded into the Gold marts — never live data. It disappears once real data flows." />
+            <SyntheticBadge reason="Calculated from sample demo data, not your live sales. It disappears once real data flows." />
           )}
         </span>
       }
@@ -213,7 +213,10 @@ function CourierTable({ rows }: { rows: ShipmentHasData['by_courier'] }) {
               <td className="py-1.5 text-foreground">{c.courier}</td>
               <td className="py-1.5 text-right tabular-nums">{num(c.delivered)}</td>
               <td className="py-1.5 text-right tabular-nums">{num(c.rto)}</td>
-              <td className="py-1.5 text-right font-medium tabular-nums">
+              <td
+                className="py-1.5 text-right font-medium tabular-nums"
+                title={c.rto_pct === null ? 'Not enough data yet' : undefined}
+              >
                 {c.rto_pct === null ? '—' : `${c.rto_pct}%`}
               </td>
             </tr>
@@ -236,7 +239,7 @@ function ShipmentEmpty() {
     <EmptyState
       icon={<Truck className="h-8 w-8" />}
       title="No shipment data yet"
-      description="Delivery vs RTO, courier performance and region leakage appear once a logistics connector (GoKwik or Shiprocket) syncs AWB / tracking lifecycle events into the Silver tier."
+      description="Delivery vs RTO, courier performance and region leakage appear once a logistics connector (GoKwik or Shiprocket) starts sharing tracking updates."
       action={
         <Button asChild size="sm" variant="outline">
           <Link href="/settings/connectors">
@@ -276,14 +279,35 @@ function ShipmentSection({ range }: { range: DateRange }) {
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
           <KpiTile
             label="RTO rate"
+            help="The share of finished shipments that came back undelivered (returned to origin) — lower is better."
             value={hasData.rto_pct === null ? null : `${hasData.rto_pct}%`}
             sublabel="returned ÷ shipments"
             lowerIsBetter
           />
-          <KpiTile label="Delivered" value={num(hasData.delivered)} sublabel="terminal" />
-          <KpiTile label="RTO" value={num(hasData.rto)} sublabel="returned to origin" />
-          <KpiTile label="In transit" value={num(hasData.in_transit)} sublabel="not yet terminal" />
-          <KpiTile label="Total shipments" value={num(hasData.total)} sublabel="in range" />
+          <KpiTile
+            label="Delivered"
+            help="Shipments that reached the customer."
+            value={num(hasData.delivered)}
+            sublabel="reached the customer"
+          />
+          <KpiTile
+            label="RTO"
+            help="Shipments that could not be delivered and came back to you."
+            value={num(hasData.rto)}
+            sublabel="returned to origin"
+          />
+          <KpiTile
+            label="In transit"
+            help="Shipments still on their way — not yet delivered or returned."
+            value={num(hasData.in_transit)}
+            sublabel="still on the way"
+          />
+          <KpiTile
+            label="Total shipments"
+            help="All shipments created in the selected period."
+            value={num(hasData.total)}
+            sublabel="in range"
+          />
         </div>
       )}
 
@@ -293,7 +317,7 @@ function ShipmentSection({ range }: { range: DateRange }) {
           description="Delivery vs RTO by courier — where return-to-origin concentrates."
           actions={
             synthetic ? (
-              <SyntheticBadge reason="Shipment lifecycle is fixture-sourced in dev (real shape, synthetic source) until partner sandbox access. Never presented as live." />
+              <SyntheticBadge reason="These shipment outcomes come from sample data used during setup — they are replaced once live courier tracking connects." />
             ) : undefined
           }
         >
@@ -331,7 +355,7 @@ function ReturnsEmpty() {
     <EmptyState
       icon={<RotateCcw className="h-8 w-8" />}
       title="No returns in this window"
-      description="Return-lifecycle events (initiated → in transit → delivered to origin → completed) appear here once a logistics source sends return webhooks. None recorded for this range — the honest state, not a fabricated zero."
+      description="Return updates (initiated → in transit → delivered back to you → completed) appear here once a logistics source starts sending them. None recorded for this range — the honest state, not a made-up zero."
     />
   );
 }
@@ -342,11 +366,27 @@ function ReturnsData({ data }: { data: ReturnHasData }) {
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <KpiTile label="Total returns" value={num(data.total)} sublabel={`${data.from} → ${data.to}`} />
-        <KpiTile label="Completed" value={num(data.completed)} sublabel="returned / refunded" />
-        <KpiTile label="In progress" value={num(data.in_progress)} sublabel="not yet closed" />
+        <KpiTile
+          label="Total returns"
+          help="How many return journeys started in the selected period."
+          value={num(data.total)}
+          sublabel={`${data.from} → ${data.to}`}
+        />
+        <KpiTile
+          label="Completed"
+          help="Returns that finished — the item came back and any refund was closed."
+          value={num(data.completed)}
+          sublabel="returned / refunded"
+        />
+        <KpiTile
+          label="In progress"
+          help="Returns that have started but have not finished yet."
+          value={num(data.in_progress)}
+          sublabel="not yet closed"
+        />
         <KpiTile
           label="Completion rate"
+          help="The share of returns that have fully finished."
           value={data.completion_pct === null ? null : `${data.completion_pct}%`}
           sublabel="completed ÷ total"
         />
@@ -428,7 +468,7 @@ function ReturnSection({ range }: { range: DateRange }) {
       description="Returns are a separate lifecycle from forward delivery — a completed return is delivered back to origin / refund closed, never counted as a sale."
       actions={
         synthetic ? (
-          <SyntheticBadge reason="Return lifecycle is fixture-sourced in dev (real shape, synthetic source) until partner sandbox access. Never presented as live." />
+          <SyntheticBadge reason="These return figures come from sample data used during setup — they are replaced once live courier tracking connects." />
         ) : undefined
       }
     >
@@ -447,7 +487,7 @@ function DeliveryEmpty() {
     <EmptyState
       icon={<Timer className="h-8 w-8" />}
       title="No delivery-time data yet"
-      description="Per-courier delivery speed (dispatch → delivered, in whole days) appears once a logistics connector (GoKwik or Shiprocket) syncs delivered AWB events into the Silver tier. None yet — the honest state, not a fabricated zero."
+      description="Per-courier delivery speed (dispatch → delivered, in whole days) appears once a logistics connector (GoKwik or Shiprocket) starts sharing delivery confirmations. None yet — the honest state, not a made-up zero."
       action={
         <Button asChild size="sm" variant="outline">
           <Link href="/settings/connectors">
@@ -475,7 +515,10 @@ function CourierDeliveryCard({ courier }: { courier: DeliveryTimeCourier }) {
       <div className="mb-3 flex items-baseline justify-between gap-3">
         <span className="truncate font-medium text-foreground">{courier.courier}</span>
         <span className="shrink-0 text-sm text-muted-foreground">
-          <span className="font-medium tabular-nums text-foreground">
+          <span
+            className="font-medium tabular-nums text-foreground"
+            title={courier.avg_delivery_days === null ? 'Not enough data yet' : undefined}
+          >
             {courier.avg_delivery_days === null
               ? '—'
               : `${courier.avg_delivery_days.toFixed(1)} days`}
@@ -522,7 +565,7 @@ function DeliverySection() {
           Delivery time by courier
         </span>
       }
-      description="Days from dispatch to delivered, per courier — the speed distribution behind your fulfillment promise. Integer-day buckets; averages are behavioral days, never money."
+      description="Days from dispatch to delivered, per courier — how fast each courier really delivers, grouped into whole-day ranges."
     >
       {isLoading && <Skeleton className="h-48 w-full" />}
       {!isLoading && error && <ErrorCard error={error} retry={refetch} />}

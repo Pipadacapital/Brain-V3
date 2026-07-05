@@ -27,7 +27,7 @@ export const STOREFRONT_PROVIDERS = ['shopify', 'woocommerce'] as const;
  * (webhook-first, no REST backfill surface). Showing the button for an unsupported provider would
  * enqueue an orphan job that sits `queued` forever and looks broken.
  */
-export const BACKFILL_PROVIDERS = [
+const BACKFILL_PROVIDERS = [
   'shopify',
   'meta',
   'google_ads',

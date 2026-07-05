@@ -77,7 +77,13 @@ function formatCount(value: string): string {
 
 /** Money cell: honest "—" when there's no currency signal (never a blended/float fallback). */
 function money(minor: string, ccy: string | null): React.ReactNode {
-  if (!ccy) return <span className="text-muted-foreground">—</span>;
+  if (!ccy) {
+    return (
+      <span className="text-muted-foreground" title="No revenue recorded yet">
+        —
+      </span>
+    );
+  }
   return formatMoneyDisplay(minor, ccy as CurrencyCode);
 }
 
@@ -136,27 +142,27 @@ export function UtmContent() {
         metrics: [
           {
             name: 'Visitors',
-            definition: 'Distinct first-touch visitors attributed to the source/medium.',
-            howComputed: 'gold_utm_source — count of distinct first-touch identities per (source, medium).',
+            definition: 'Distinct visitors whose first touch came from this source/medium.',
+            howComputed: 'Counted from the first recorded visit of each person, per source and medium.',
           },
           {
             name: 'Conversions',
-            definition: 'Distinct attributed orders from customers acquired via this source/medium.',
-            howComputed: 'gold_utm_source — distinct converting customers tied to the first-touch dimension.',
+            definition: 'Distinct customers acquired via this source/medium who went on to buy.',
+            howComputed: 'Counted from customers whose first touch was this source and who later placed an order.',
           },
           {
             name: 'Revenue / Avg LTV',
-            definition: 'Attributed revenue and average lifetime value of customers acquired here.',
-            howComputed: 'Folded from the Gold customer marts; bigint MINOR units + currency_code, never blended across currencies.',
+            definition: 'Revenue from customers acquired here, and their average lifetime value.',
+            howComputed: 'Added up from those customers’ orders, always within one currency — never blended.',
           },
           {
             name: 'Repeat-purchase rate',
             definition: 'Share of customers acquired via this source who placed more than one order.',
-            howComputed: 'gold_utm_source — repeat customers ÷ converting customers (0-100%); honest 0 when the denominator is small.',
+            howComputed: 'Repeat customers ÷ converting customers (0–100%).',
           },
         ],
-        refreshCadence: 'The UTM source matrix refreshes on the Gold loop; the drilldown customer list is read live from the identity BFF.',
-        sources: ['gold_utm_source', 'gold_customer_360', 'BFF /v1/analytics/utm-source', 'BFF /v1/identity/customers'],
+        refreshCadence: 'The source matrix refreshes on the regular analytics cycle; the drilldown customer list is read live.',
+        sources: ['First-touch visits recorded by the Brain Pixel', 'Customer 360 profiles'],
       }}
     >
       <SectionCard
@@ -195,8 +201,20 @@ export function UtmContent() {
                   <th scope="col" className="px-4 py-2.5 font-medium text-right">Visitors</th>
                   <th scope="col" className="px-4 py-2.5 font-medium text-right">Conversions</th>
                   <th scope="col" className="px-4 py-2.5 font-medium text-right">Revenue</th>
-                  <th scope="col" className="px-4 py-2.5 font-medium text-right">Avg LTV</th>
-                  <th scope="col" className="px-4 py-2.5 font-medium text-right">Repeat rate</th>
+                  <th
+                    scope="col"
+                    className="px-4 py-2.5 font-medium text-right"
+                    title="Average lifetime value — what a customer from this source spends with you in total, on average."
+                  >
+                    Avg LTV
+                  </th>
+                  <th
+                    scope="col"
+                    className="px-4 py-2.5 font-medium text-right"
+                    title="The share of customers from this source who came back to buy again."
+                  >
+                    Repeat rate
+                  </th>
                   <th scope="col" className="px-4 py-2.5 font-medium sr-only">Drill in</th>
                 </tr>
               </thead>
@@ -364,21 +382,21 @@ function SourceDrilldown({ source, onClose }: { source: string; onClose: () => v
                             {SEGMENT_LABEL[c.segment] ?? humanize(c.segment)}
                           </StatusBadge>
                         ) : (
-                          <span className="text-muted-foreground">—</span>
+                          <span className="text-muted-foreground" title="No segment assigned yet">—</span>
                         )}
                       </td>
                       <td className="px-4 py-2.5 text-right tabular-nums">
                         {c.ltv_minor != null && c.currency_code ? (
                           formatMoneyDisplay(c.ltv_minor, c.currency_code as CurrencyCode)
                         ) : (
-                          <span className="text-muted-foreground">—</span>
+                          <span className="text-muted-foreground" title="No purchases recorded yet">—</span>
                         )}
                       </td>
                       <td className="px-4 py-2.5 text-right tabular-nums">
                         {c.order_count != null ? (
                           c.order_count
                         ) : (
-                          <span className="text-muted-foreground">—</span>
+                          <span className="text-muted-foreground" title="No orders recorded yet">—</span>
                         )}
                       </td>
                       <td className="px-4 py-2.5">

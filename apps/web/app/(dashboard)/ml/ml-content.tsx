@@ -50,7 +50,11 @@ function StageBadge({ stage }: { stage: MlModelStage }) {
 /** Render the small metrics jsonb as a compact key:value strip (loosely typed). */
 function MetricsStrip({ metrics }: { metrics: MlModel['metrics'] }) {
   if (!metrics || Object.keys(metrics).length === 0) {
-    return <span className="text-xs text-muted-foreground">—</span>;
+    return (
+      <span className="text-xs text-muted-foreground" title="No quality metrics recorded for this model yet">
+        —
+      </span>
+    );
   }
   return (
     <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
@@ -88,7 +92,10 @@ function ModelRow({ model }: { model: MlModel }) {
       <td className="py-2.5 pr-4">
         <MetricsStrip metrics={model.metrics} />
       </td>
-      <td className="py-2.5 pr-4 text-xs text-muted-foreground tabular-nums">
+      <td
+        className="py-2.5 pr-4 text-xs text-muted-foreground tabular-nums"
+        title={model.promoted_at ? undefined : 'Not promoted yet'}
+      >
         {model.promoted_at ? new Date(model.promoted_at).toLocaleString() : '—'}
       </td>
       <td className="py-2.5">
@@ -151,15 +158,16 @@ function CustomerScorePanel() {
       </CardHeader>
       <CardContent className="space-y-4">
         <p className="text-sm text-muted-foreground">
-          Serve the deterministic RFM / churn score for a customer by brain_id. Each lookup is recorded
-          in the append-only prediction log.
+          Look up a customer&apos;s buying-behaviour score (how recently, how often, and how much they
+          buy) and their churn risk, using their Brain customer ID. Every lookup is kept in a
+          tamper-proof log.
         </p>
         <form onSubmit={onSubmit} className="flex flex-wrap items-center gap-2">
           <Input
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder="brain_id (UUID)"
-            aria-label="brain_id"
+            placeholder="Brain customer ID"
+            aria-label="Brain customer ID"
             className="max-w-xs font-mono text-sm"
           />
           <Button type="submit" size="sm" disabled={input.trim().length === 0}>
@@ -177,7 +185,7 @@ function CustomerScorePanel() {
             <EmptyState
               icon={<Cpu className="h-6 w-6" aria-hidden="true" />}
               title="No score for this customer"
-              description="This customer has no computed RFM / churn score yet. Scores appear once the customer has enough certified commerce history."
+              description="This customer doesn't have a score yet. Scores appear once they have enough order history."
             />
           ) : (
             <div className="space-y-3 rounded-md border bg-muted/30 p-4">
@@ -186,22 +194,31 @@ function CustomerScorePanel() {
                   <span className="font-medium">Churn risk: </span>
                   <span className="capitalize">{data.score.churn_risk}</span>
                 </div>
-                <div className="text-sm text-muted-foreground">
-                  Composite (R+F+M):{' '}
+                <div
+                  className="text-sm text-muted-foreground"
+                  title="The recency, frequency, and spend scores added together — higher means a more valuable, active customer."
+                >
+                  Overall score:{' '}
                   <span className="font-semibold text-foreground tabular-nums">{data.score.composite_score}</span>
                 </div>
               </div>
               <dl className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm sm:grid-cols-3">
                 <div>
-                  <dt className="text-xs text-muted-foreground">Recency</dt>
+                  <dt className="text-xs text-muted-foreground" title="How recently they last bought — higher is more recent.">
+                    Recency
+                  </dt>
                   <dd className="font-medium tabular-nums">{data.score.recency_score}</dd>
                 </div>
                 <div>
-                  <dt className="text-xs text-muted-foreground">Frequency</dt>
+                  <dt className="text-xs text-muted-foreground" title="How often they buy — higher is more often.">
+                    Frequency
+                  </dt>
                   <dd className="font-medium tabular-nums">{data.score.frequency_score}</dd>
                 </div>
                 <div>
-                  <dt className="text-xs text-muted-foreground">Monetary</dt>
+                  <dt className="text-xs text-muted-foreground" title="How much they spend — higher is more.">
+                    Spend
+                  </dt>
                   <dd className="font-medium tabular-nums">{data.score.monetary_score}</dd>
                 </div>
                 <div>
@@ -214,7 +231,12 @@ function CustomerScorePanel() {
                 </div>
                 <div>
                   <dt className="text-xs text-muted-foreground">Days since last order</dt>
-                  <dd className="font-medium tabular-nums">{data.score.days_since_last_order ?? '—'}</dd>
+                  <dd
+                    className="font-medium tabular-nums"
+                    title={data.score.days_since_last_order == null ? 'No orders recorded yet' : undefined}
+                  >
+                    {data.score.days_since_last_order ?? '—'}
+                  </dd>
                 </div>
               </dl>
               <div className="border-t pt-2 text-xs text-muted-foreground">
@@ -248,7 +270,7 @@ export function MlContent() {
     <div className="space-y-6">
       <PageHeader
         title="Models"
-        description="The model registry and serving layer. Promote a model through its lifecycle — promoting to production automatically archives the prior production model so exactly one stays live."
+        description="The prediction models Brain uses for this brand. Promote a model through its lifecycle — promoting one to production automatically retires the previous production model, so exactly one stays live."
       />
 
       <Card>
@@ -280,7 +302,7 @@ export function MlContent() {
             <EmptyState
               icon={<Boxes className="h-6 w-6" aria-hidden="true" />}
               title="No models registered"
-              description="Models appear here once a brand has a registered scorer. The deterministic RFM / churn model is seeded for every active brand."
+              description="Models appear here once one is registered for this brand. The built-in buying-behaviour / churn model is set up automatically for every active brand."
             />
           ) : filteredModels.length === 0 ? (
             <p className="py-4 text-sm text-muted-foreground" role="status">

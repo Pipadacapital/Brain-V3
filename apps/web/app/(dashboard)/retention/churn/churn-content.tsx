@@ -45,6 +45,7 @@ import {
 import type { CurrencyCode } from '@brain/money';
 import { TabShell } from '@/components/ui/tab-shell';
 import { SectionCard } from '@/components/ui/section-card';
+import { MetricTitle } from '@/components/ui/metric-title';
 import { MetricCard } from '@/components/ui/metric-card';
 import { EmptyState } from '@/components/ui/empty-state';
 import { ErrorCard } from '@/components/ui/error-card';
@@ -106,27 +107,27 @@ const EXPLAINER = {
     {
       name: 'Band (At-Risk / Churned)',
       definition:
-        'The deterministic recency/frequency/monetary lifecycle band. At-Risk = recency slipping but saveable; Churned = past the churn threshold.',
+        'The lifecycle band based on how recently, how often, and how much a customer buys. At-Risk = slipping but saveable; Churned = past the churn threshold.',
       howComputed:
-        'Folded server-side from gold_customer_scores (the deterministic RFM ladder); the list endpoint filters by ?segment=at_risk|churned. Brand-scoped (RLS).',
+        'Assigned by fixed rules from each customer’s own order history — the same history always gives the same band. Only your brand’s customers are ever shown.',
     },
     {
       name: 'Churn risk',
       definition:
-        'The per-customer deterministic churn-risk band (a RISK band, never a fabricated probability), with days since last order.',
+        'The per-customer churn-risk band (a risk BAND, never a made-up probability), with days since last order.',
       howComputed:
-        'Served on demand from gold_customer_scores via useCustomerScore — it logs a prediction, so it is revealed only when you turn on “Load churn scores”.',
+        'Looked up on demand from each customer’s score — every lookup is logged, so it is revealed only when you turn on “Load churn scores”.',
     },
     {
       name: 'Lifetime value',
-      definition: 'Total realized value from this customer to date.',
+      definition: 'Total confirmed revenue from this customer to date.',
       howComputed:
-        'gold_customer_scores, bigint minor units + currency_code, formatted via formatMoneyDisplay. Never summed across customers (currencies must not blend).',
+        'Added up from the customer’s orders, always within one currency — never summed across customers with different currencies.',
     },
     {
       name: 'Last active',
-      definition: 'When the customer most recently linked an identifier (order/session/contact).',
-      howComputed: 'last_identifier_at from the identity graph, shown as a relative time; em-dash when unknown.',
+      definition: 'When the customer was most recently seen — an order, a visit, or a contact detail.',
+      howComputed: 'The latest recorded activity, shown as a relative time; a dash when unknown.',
     },
   ],
   sections: [
@@ -136,16 +137,15 @@ const EXPLAINER = {
     },
     {
       heading: 'Privacy',
-      body: 'Brand-scoped (RLS). Rows show counts + segment/value/last-active only — raw email/phone never leave the vault. Click a Brain ID to open the full Customer Profile.',
+      body: 'Only your brand’s customers are shown. Rows carry counts, segment, value and last-active only — raw email and phone stay locked away. Click a Brain ID to open the full Customer Profile.',
     },
   ],
   refreshCadence:
-    'The band membership, value and per-row churn score refresh on the Silver→Gold loop. The list itself is read live from the BFF on each query.',
+    'Band membership, value and per-row churn scores refresh on the regular analytics cycle. The list itself is read live each time.',
   sources: [
-    'BFF /v1/identity/customers (?segment=at_risk|churned)',
-    'gold_customer_scores (segment / LTV / churn band)',
-    'BFF /v1/ml/customer-score (per-row churn risk)',
-    'ops.saved_segment via /v1/segments (win-back)',
+    'Your customer list, filtered to the at-risk and churned bands',
+    'Customer scores built from order history',
+    'Your saved win-back segments',
   ],
 };
 
@@ -221,7 +221,7 @@ export function ChurnContent() {
       {/* ── Headline (honest counts only — never a blended-currency value sum) ── */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <MetricCard
-          label={`${activeBand.label} customers`}
+          label={<MetricTitle label={`${activeBand.label} customers`} help="How many customers fall into this churn-risk group right now." />}
           value={isLoading ? undefined : total.toLocaleString('en-IN')}
           unit={total ? 'in this band' : undefined}
           icon={<activeBand.icon />}
@@ -229,14 +229,14 @@ export function ChurnContent() {
           freshness={<FreshnessBadge timestamp={listFetchedIso} prefix="Read" />}
         />
         <MetricCard
-          label="Showing"
+          label={<MetricTitle label="Showing" help="How many of those customers are listed on this page." />}
           value={isLoading ? undefined : items.length.toLocaleString('en-IN')}
           unit={items.length ? 'on this page' : undefined}
           icon={<UserMinus />}
           loading={isLoading}
         />
         <MetricCard
-          label="Win-back segments"
+          label={<MetricTitle label="Win-back segments" help="Saved customer groups you can target with a win-back campaign." />}
           value={savedQ.isLoading ? undefined : winBackSegments.length.toLocaleString('en-IN')}
           unit={winBackSegments.length ? 'saved' : undefined}
           icon={<Bookmark />}
@@ -273,7 +273,7 @@ export function ChurnContent() {
       {/* ── At-risk / churned customer list ── */}
       <SectionCard
         title={`${activeBand.label} customers`}
-        description="Click a Brain ID to open the full Customer Profile. Turn on churn scores to reveal each customer’s deterministic risk band (logs a prediction)."
+        description="Click a Brain ID to open the full Customer Profile. Turn on churn scores to reveal each customer’s risk band (each lookup is logged)."
         meta={
           <label className="inline-flex items-center gap-2 text-xs text-muted-foreground">
             <input
@@ -414,7 +414,11 @@ function ChurnRow({ c, showScore }: { c: CustomerListItem; showScore: boolean })
   const scoreQ = useCustomerScore(showScore ? c.brain_id : null);
   const last = relativeTime(c.last_identifier_at);
 
-  let riskCell: React.ReactNode = <span className="text-muted-foreground">—</span>;
+  let riskCell: React.ReactNode = (
+    <span className="text-muted-foreground" title="Turn on “Load churn scores” to reveal">
+      —
+    </span>
+  );
   if (showScore) {
     if (scoreQ.isLoading) {
       riskCell = <Skeleton className="h-4 w-20" />;

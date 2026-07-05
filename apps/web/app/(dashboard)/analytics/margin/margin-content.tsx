@@ -17,6 +17,7 @@ import { EmptyState } from '@/components/ui/empty-state';
 import { Skeleton } from '@/components/ui/skeleton';
 import { TableSearch, matchesQuery } from '@/components/ui/table-search';
 import { useContributionMargin, useCostInputs, useUpsertCostInput } from '@/lib/hooks/use-analytics';
+import { MetricTitle } from '@/components/ui/metric-title';
 import { formatMoneyDisplay } from '@/lib/format/money-display';
 import type { CurrencyCode } from '@brain/money';
 
@@ -64,7 +65,7 @@ export function MarginContent() {
     <div className="space-y-6">
       <PageHeader
         title="Margin & Costs"
-        description="Contribution margin after costs. Enter your cost structure to unlock trusted CM2."
+        description="How much profit is left after costs (contribution margin). Enter your cost rates below to make the numbers trustworthy."
       />
 
       {margin.error && <ErrorCard error={margin.error} />}
@@ -83,21 +84,33 @@ export function MarginContent() {
           </CardHeader>
           <CardContent>
             <dl className="grid grid-cols-2 gap-x-8 gap-y-2 text-sm sm:max-w-md">
-              <dt className="text-muted-foreground">Net revenue</dt>
+              <dt className="text-muted-foreground">
+                <MetricTitle label="Net revenue" help="Money from confirmed orders after refunds and cancellations." />
+              </dt>
               <dd className="text-right">{formatMoneyDisplay(m.net_revenue_minor, ccy)}</dd>
-              <dt className="text-muted-foreground">− COGS</dt>
+              <dt className="text-muted-foreground">
+                <MetricTitle label="− COGS" help="Cost of goods sold — what the products themselves cost you." />
+              </dt>
               <dd className="text-right text-warning">{formatMoneyDisplay(m.cogs_minor, ccy)}</dd>
-              <dt className="text-muted-foreground">− Variable costs</dt>
+              <dt className="text-muted-foreground">
+                <MetricTitle label="− Variable costs" help="Per-order costs like shipping, packaging, and payment fees." />
+              </dt>
               <dd className="text-right text-warning">{formatMoneyDisplay(m.variable_cost_minor, ccy)}</dd>
-              <dt className="border-t pt-2 font-medium">CM1</dt>
+              <dt className="border-t pt-2 font-medium">
+                <MetricTitle label="CM1" help="Profit after product and per-order costs, before marketing." />
+              </dt>
               <dd className="border-t pt-2 text-right font-semibold">{formatMoneyDisplay(m.cm1_minor, ccy)}</dd>
-              <dt className="text-muted-foreground">− Marketing</dt>
+              <dt className="text-muted-foreground">
+                <MetricTitle label="− Marketing" help="What you spent on ads and marketing in the same period." />
+              </dt>
               <dd className="text-right text-warning">{formatMoneyDisplay(m.marketing_minor, ccy)}</dd>
-              <dt className="border-t pt-2 font-medium">CM2</dt>
+              <dt className="border-t pt-2 font-medium">
+                <MetricTitle label="CM2" help="Profit left after product, per-order, and marketing costs." />
+              </dt>
               <dd className="border-t pt-2 text-right text-lg font-bold text-success">{formatMoneyDisplay(m.cm2_minor, ccy)}</dd>
             </dl>
             {m.cost_confidence === 'Insufficient' && (
-              <p className="mt-3 text-xs text-warning">Enter at least a COGS rate below to make CM2 trustworthy (and eligible for the billing cap).</p>
+              <p className="mt-3 text-xs text-warning">Enter at least a COGS rate (what your products cost you, as a % of revenue) below to make CM2 trustworthy — it also caps your bill.</p>
             )}
           </CardContent>
         </Card>

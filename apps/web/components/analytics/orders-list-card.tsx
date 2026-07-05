@@ -20,6 +20,7 @@ import { ErrorCard } from '@/components/ui/error-card';
 import { EmptyState } from '@/components/ui/empty-state';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useOrdersList } from '@/lib/hooks/use-analytics';
+import { humanize } from '@/lib/format/humanize';
 import { formatMoneyDisplay } from '@/lib/format/money-display';
 import type { CurrencyCode } from '@brain/money';
 
@@ -79,13 +80,21 @@ export function OrdersListCard() {
                       <td className="px-4 py-2">
                         {/* Per-order drill-down removed — the Data page shows the full record + detail modal. */}
                         <span className="font-mono text-xs font-medium">{o.order_id}</span>
-                        {o.has_depth && <Badge variant="outline" className="ml-2 text-[10px]">depth</Badge>}
+                        {o.has_depth && (
+                          <Badge
+                            variant="outline"
+                            className="ml-2 text-[10px]"
+                            title="Full order detail (line items, discounts, taxes) was captured for this order"
+                          >
+                            full detail
+                          </Badge>
+                        )}
                       </td>
                       <td className="px-4 py-2 text-muted-foreground">{new Date(o.occurred_at).toLocaleDateString('en-IN')}</td>
                       <td className="px-4 py-2">
                         <div className="flex flex-wrap gap-1">
                           {o.payment_method && <Badge variant="secondary" className="text-[10px]">{o.payment_method.toUpperCase()}</Badge>}
-                          {o.financial_status && <Badge className="text-[10px]">{o.financial_status}</Badge>}
+                          {o.financial_status && <Badge className="text-[10px]">{humanize(o.financial_status)}</Badge>}
                         </div>
                       </td>
                       <td className="px-4 py-2 text-right font-medium">

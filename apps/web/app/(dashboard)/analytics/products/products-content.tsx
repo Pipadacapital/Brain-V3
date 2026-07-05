@@ -40,36 +40,36 @@ const TOP_N = 10;
 const EXPLAINER = {
   title: 'Products — What sells, and how well?',
   description:
-    'The product leaderboard: which SKUs drive units, orders, and line GMV over the recent window.',
+    'The product leaderboard: which products drive units, orders, and sales value over the recent window.',
   sections: [
     {
       heading: 'How to read this page',
-      body: 'Products are ranked by line GMV (the gross value of that SKU’s order lines) over the window. The summary tiles total only the SKUs currently in view (the top ' +
+      body: 'Products are ranked by their sales value (quantity × price across order lines) over the window. The summary tiles total only the products currently in view (the top ' +
         TOP_N +
         '), not the whole catalogue — so they describe the leaderboard, not brand-wide sales.',
     },
     {
       heading: 'Revenue by product + drill-in',
-      body: 'The treemap sizes each product by its share of revenue (gold_product_detail). Click any product to open its detail view — the views → add-to-cart → purchase funnel, conversion and return rates, and frequently-bought-together partners.',
+      body: 'The treemap sizes each product by its share of revenue. Click any product to open its detail view — the views → add-to-cart → purchase funnel, conversion and return rates, and frequently-bought-together partners.',
     },
   ],
   metrics: [
     {
       name: 'Line GMV',
-      definition: 'Gross merchandise value of a SKU’s order lines (quantity × price), in minor currency units.',
-      howComputed: 'Summed per SKU from the Silver order-line mart over the window.',
+      definition: 'The gross sales value of a product across orders (quantity × price), before refunds and costs.',
+      howComputed: 'Summed per product from your order line items over the window.',
     },
     {
       name: 'Units',
-      definition: 'Total quantity of the SKU sold across all orders in the window.',
+      definition: 'Total quantity of the product sold across all orders in the window.',
     },
     {
       name: 'Orders',
-      definition: 'Distinct orders that contained the SKU in the window.',
+      definition: 'Distinct orders that contained the product in the window.',
     },
   ],
-  refreshCadence: 'Recomputed each Silver→Gold refresh (≈ every 15 min).',
-  sources: ['Silver order-line mart (feat-shopify-order-depth)'],
+  refreshCadence: 'Recalculated roughly every 15 minutes.',
+  sources: ['Order line items from your connected store'],
 };
 
 function sumMinor(values: string[]): string {
@@ -181,7 +181,7 @@ export function ProductsContent() {
             {isSynthetic && (
               <SyntheticBadge
                 data-testid="products-synthetic-badge"
-                reason="Product line items are synthetic in dev (real shape, synthetic source) until a live commerce source is connected."
+                reason="These product figures come from sample data used during setup — connect a live store to replace them."
               />
             )}
           </span>
@@ -193,19 +193,22 @@ export function ProductsContent() {
       {hasData && products.length > 0 && (
         <section aria-label="Top products summary" className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <KpiTile
-            label="SKUs in view"
+            label="Products in view"
+            help="How many products the leaderboard below is currently showing."
             value={products.length.toLocaleString('en-IN')}
-            sublabel={`top ${TOP_N} by line GMV`}
+            sublabel={`top ${TOP_N} by sales value`}
             data-testid="products-kpi-skus"
           />
           <KpiTile
             label="Units in view"
+            help="Total items sold across the products shown in the leaderboard."
             value={sumCount(products.map((p) => p.units))}
             sublabel="across the leaderboard"
             data-testid="products-kpi-units"
           />
           <KpiTile
-            label="Line GMV in view"
+            label="Sales value in view"
+            help="The combined sales value (quantity × price, before refunds) of the products shown below."
             value={formatMoneyDisplay(sumMinor(products.map((p) => p.line_gmv_minor)), ccy)}
             sublabel="across the leaderboard"
             data-testid="products-kpi-gmv"

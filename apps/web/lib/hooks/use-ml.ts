@@ -11,7 +11,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { mlApi } from '@/lib/api/client';
 import type { MlModelStage } from '@/lib/api/types';
 
-export const ML_QUERY_KEY = ['ml'] as const;
+const ML_QUERY_KEY = ['ml'] as const;
 
 /** useModels — the active brand's model registry. */
 export function useModels() {

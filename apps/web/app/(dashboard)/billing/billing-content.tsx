@@ -278,7 +278,7 @@ function BillDetail({ period }: { period: string }) {
       {/* Derivation: basis × rate → fee */}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <div className="rounded-lg border p-3">
-          <div className="text-xs uppercase text-muted-foreground">Realized GMV basis</div>
+          <div className="text-xs uppercase text-muted-foreground" title="The realized revenue this period's bill is based on.">Realized revenue basis</div>
           <div className="mt-1 text-lg font-semibold tabular-nums">
             {money(data.basis.metered_gmv_minor, c)}
           </div>
@@ -382,9 +382,9 @@ export function BillingContent() {
         title="Billing"
         description={
           <>
-            Brain bills on a share of <strong className="font-medium text-foreground">realized GMV</strong>. Each billing period is sealed
-            into an immutable snapshot — the figure you&apos;re billed on is reproducible from the
-            ledger and can never silently change.
+            Brain bills on a share of <strong className="font-medium text-foreground">realized revenue</strong> — money actually collected,
+            not just ordered. Each billing period is sealed into a locked snapshot: the figure
+            you&apos;re billed on can be traced entry by entry and can never silently change.
           </>
         }
       />
@@ -427,7 +427,7 @@ export function BillingContent() {
                 <ShieldCheck className="h-4 w-4" aria-hidden="true" />
                 {seal.data.sealed ? 'Sealed' : 'Already sealed'} {seal.data.billing_period}:{' '}
                 <strong>{money(seal.data.metered_gmv_minor, seal.data.currency_code)}</strong>{' '}
-                realized GMV (as of {seal.data.as_of_date}).
+                realized revenue (as of {seal.data.as_of_date}).
               </span>
             )}
           </div>
@@ -465,7 +465,7 @@ export function BillingContent() {
             <EmptyState
               icon={<FileClock className="h-6 w-6" aria-hidden="true" />}
               title="No periods sealed yet"
-              description="Seal a billing period above to meter this brand's realized GMV. Once a period is sealed its figure is immutable."
+              description="Seal a billing period above to lock in this brand's realized revenue for that month. Once sealed, the figure can never change."
             />
           ) : filteredPeriods.length === 0 ? (
             <p className="py-4 text-sm text-muted-foreground" role="status">
@@ -478,9 +478,15 @@ export function BillingContent() {
                 <thead>
                   <tr className="border-b text-left text-muted-foreground">
                     <th scope="col" className="py-2 pr-4 font-medium">Period</th>
-                    <th scope="col" className="py-2 pr-4 font-medium text-right">Realized GMV</th>
+                    <th scope="col" className="py-2 pr-4 font-medium text-right">Realized revenue</th>
                     <th scope="col" className="py-2 pr-4 font-medium">As of</th>
-                    <th scope="col" className="py-2 pr-4 font-medium text-right">Ledger rows</th>
+                    <th
+                      scope="col"
+                      className="py-2 pr-4 font-medium text-right"
+                      title="How many individual revenue entries make up this period's figure."
+                    >
+                      Entries
+                    </th>
                     <th scope="col" className="py-2 pr-4 font-medium">Sealed</th>
                     <th scope="col" className="py-2 font-medium sr-only">Bill</th>
                   </tr>

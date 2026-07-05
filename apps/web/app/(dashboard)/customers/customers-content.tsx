@@ -41,6 +41,7 @@ import { ErrorCard } from '@/components/ui/error-card';
 import { EmptyState } from '@/components/ui/empty-state';
 import { SectionCard } from '@/components/ui/section-card';
 import { MetricCard } from '@/components/ui/metric-card';
+import { MetricTitle } from '@/components/ui/metric-title';
 import { TabShell } from '@/components/ui/tab-shell';
 import { FreshnessBadge } from '@/components/ui/freshness-badge';
 import { humanize } from '@/lib/format/humanize';
@@ -201,18 +202,33 @@ export function CustomersContent() {
       {execRow ? (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           <MetricCard
-            label="Customers (this view)"
+            label={
+              <MetricTitle
+                label="Customers (this view)"
+                help="How many customers match the current search and filters."
+              />
+            }
             value={total.toLocaleString()}
             unit={search ? 'search results' : 'resolved'}
             freshness={<FreshnessBadge timestamp={listFetchedIso} prefix="Read" />}
           />
           <MetricCard
-            label="Repeat-purchase rate"
+            label={
+              <MetricTitle
+                label="Repeat purchase rate"
+                help="Percentage of customers who made more than one purchase."
+              />
+            }
             value={execRow.repeat_rate_pct != null ? `${execRow.repeat_rate_pct}%` : '—'}
             unit="customers with >1 order"
           />
           <MetricCard
-            label="Avg lifetime value"
+            label={
+              <MetricTitle
+                label="Avg lifetime value"
+                help="Average total revenue from a customer."
+              />
+            }
             value={
               execRow.ltv_minor != null
                 ? formatMoneyDisplay(execRow.ltv_minor, execRow.currency_code as CurrencyCode)
@@ -223,33 +239,39 @@ export function CustomersContent() {
         </div>
       ) : null}
 
-      {/* Business-segment chips — LIVE filter (?segment=, folded from gold_customer_scores). */}
+      {/* Business-segment cards — LIVE filter (?segment=, folded from gold_customer_scores) with an
+          honest per-segment count (each card reads the SAME list endpoint with limit=1 for its total). */}
       <SectionCard
-        title="Segments"
-        description="Filter the list by business (RFM/lifecycle) segment. Click a chip to toggle it."
+        title={
+          <MetricTitle
+            label="Segments"
+            help="Groups of customers based on how recently, how often, and how much they buy — click a card to filter the list."
+          />
+        }
+        description="Click a card to show only that group. Click again to clear."
       >
-        <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Filter by business segment">
-          {BUSINESS_SEGMENTS.map((seg) => {
-            const active = segment === seg.value;
-            return (
-              <Button
-                key={seg.value}
-                type="button"
-                variant={active ? 'default' : 'outline'}
-                size="sm"
-                onClick={() => onSegment(seg.value)}
-                aria-pressed={active}
-              >
-                {seg.label}
-              </Button>
-            );
-          })}
-          {segment ? (
-            <Button type="button" variant="ghost" size="sm" onClick={() => onSegment(segment)}>
-              Clear segment
-            </Button>
-          ) : null}
+        <div
+          className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6"
+          role="group"
+          aria-label="Filter by customer segment"
+        >
+          {BUSINESS_SEGMENTS.map((seg) => (
+            <SegmentCountCard
+              key={seg.value}
+              label={seg.label}
+              value={seg.value}
+              active={segment === seg.value}
+              onToggle={() => onSegment(seg.value)}
+            />
+          ))}
         </div>
+        {segment ? (
+          <div className="mt-2">
+            <Button type="button" variant="ghost" size="sm" onClick={() => onSegment(segment)}>
+              Clear segment filter
+            </Button>
+          </div>
+        ) : null}
       </SectionCard>
 
       {/* Working filters: search + identity lifecycle. */}
@@ -332,12 +354,12 @@ export function CustomersContent() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b text-left text-muted-foreground">
-                    <th scope="col" className="px-4 py-2.5 font-medium">Customer (BRN)</th>
+                    <th scope="col" className="px-4 py-2.5 font-medium">Customer ID</th>
                     <th scope="col" className="px-4 py-2.5 font-medium">Segment</th>
                     <th scope="col" className="px-4 py-2.5 font-medium text-right">Lifetime value</th>
                     <th scope="col" className="px-4 py-2.5 font-medium text-right">Orders</th>
-                    <th scope="col" className="px-4 py-2.5 font-medium">Lifecycle</th>
-                    <th scope="col" className="px-4 py-2.5 font-medium">Identifiers</th>
+                    <th scope="col" className="px-4 py-2.5 font-medium">Status</th>
+                    <th scope="col" className="px-4 py-2.5 font-medium">Linked IDs</th>
                     <th scope="col" className="px-4 py-2.5 font-medium">Consent</th>
                     <th scope="col" className="px-4 py-2.5 font-medium">First seen</th>
                     <th scope="col" className="px-4 py-2.5 font-medium sr-only">Open</th>
@@ -355,7 +377,9 @@ export function CustomersContent() {
                           {c.customer_ref ?? c.brain_id}
                         </Link>
                         {c.merged_into ? (
-                          <span className="ml-2 text-[10px] text-warning">→ merged</span>
+                          <span className="ml-2 text-[10px] text-warning" title="This profile was merged into another customer profile.">
+                            Merged into another profile
+                          </span>
                         ) : null}
                       </td>
                       <td className="px-4 py-2.5">
@@ -441,5 +465,50 @@ export function CustomersContent() {
         Brand-scoped (RLS). Counts only — raw email/phone never leave the vault.
       </p>
     </TabShell>
+  );
+}
+
+/**
+ * SegmentCountCard — one clickable segment card with an HONEST live count: it reads the SAME
+ * customers list endpoint filtered to its segment (limit=1 — only `total` is used). While the
+ * count loads it shows a skeleton, and on error an em dash — never a fabricated zero (rule 1).
+ */
+function SegmentCountCard({
+  label,
+  value,
+  active,
+  onToggle,
+}: {
+  label: string;
+  value: string;
+  active: boolean;
+  onToggle: () => void;
+}) {
+  const { data, isLoading, error } = useCustomers({ segment: value, limit: 1, offset: 0 });
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-pressed={active}
+      className={
+        'flex flex-col items-start gap-0.5 rounded-md border px-3 py-2 text-left transition-colors ' +
+        (active
+          ? 'border-primary bg-primary/10 text-primary'
+          : 'border-border text-foreground hover:bg-muted')
+      }
+    >
+      <span className="text-xs font-medium text-muted-foreground">{label}</span>
+      {isLoading ? (
+        <Skeleton className="h-5 w-10" aria-label={`Counting ${label} customers…`} />
+      ) : error ? (
+        <span className="text-sm text-muted-foreground" title="Count unavailable right now">
+          —
+        </span>
+      ) : (
+        <span className="text-lg font-semibold tabular-nums">
+          {(data?.total ?? 0).toLocaleString()}
+        </span>
+      )}
+    </button>
   );
 }

@@ -104,10 +104,10 @@ test.describe('CoD / RTO surface + GoKwik/Shopflo connectors', () => {
     await expect(page.getByTestId('cod-mix-empty')).toBeVisible();
     await expect(page.getByTestId('checkout-funnel-empty')).toBeVisible();
 
-    // ── Synthetic (dev) label present (DEV-HONESTY) ──
+    // ── "Estimated" provenance label present (DEV-HONESTY) ──
     // The CoD-mix section labels its provenance beside the heading regardless of data state.
     await expect(page.getByTestId('cod-mix-synthetic-badge')).toBeVisible();
-    await expect(page.getByTestId('cod-mix-synthetic-badge')).toContainText('Synthetic (dev)');
+    await expect(page.getByTestId('cod-mix-synthetic-badge')).toContainText('Estimated');
 
     // ── No crash ──
     await expect(page.locator('body')).toBeVisible();

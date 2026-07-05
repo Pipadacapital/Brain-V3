@@ -4,8 +4,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { membersApi } from '@/lib/api/client';
 import type { InviteMemberRequest, UpdateMemberRoleRequest, AcceptInviteRequest } from '@/lib/api/types';
 
-export const MEMBERS_QUERY_KEY = ['members'] as const;
-export const PENDING_INVITES_QUERY_KEY = ['members', 'pending-invites'] as const;
+const MEMBERS_QUERY_KEY = ['members'] as const;
+const PENDING_INVITES_QUERY_KEY = ['members', 'pending-invites'] as const;
 
 export function useMemberList() {
   return useQuery({

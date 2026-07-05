@@ -53,8 +53,13 @@ import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
 import { KpiTile } from '@/components/analytics/kpi-tile';
+import { MetricTitle } from '@/components/ui/metric-title';
+import { Tooltip } from '@/components/ui/tooltip';
 import { SyntheticBadge } from '@/components/analytics/synthetic-badge';
-import { AttributionModelSelector } from '@/components/analytics/attribution-model-selector';
+import {
+  AttributionModelSelector,
+  attributionModelLabel,
+} from '@/components/analytics/attribution-model-selector';
 import { AttributedChannelChart } from '@/components/analytics/attributed-channel-chart';
 import { ConfidenceGradeBadge } from '@/components/analytics/confidence-grade-badge';
 import { ReconciliationResidualCard } from '@/components/analytics/reconciliation-residual-card';
@@ -119,9 +124,9 @@ function EmptyAttributionCard() {
         <div>
           <p className="font-medium text-foreground">No attributed revenue yet</p>
           <p className="text-sm text-muted-foreground mt-1 max-w-md">
-            Attribution credits revenue to the journeys that earned it. It needs Brain Pixel
-            touchpoints (the Silver tier) stitched to realized orders. Once journeys and orders
-            land, channel credit and ROAS build here.
+            Attribution credits revenue to the marketing touches that earned it. It needs the
+            Brain Pixel tracking visits on your store, linked to real orders. Once visits and
+            orders start flowing, channel credit and return on ad spend build here.
           </p>
         </div>
         <Link href="/settings/pixel">
@@ -282,15 +287,15 @@ export function AttributionContent() {
     <div className="space-y-8">
       <PageHeader
         title="Attribution"
-        description="Multi-touch attributed revenue by channel, the unattributed residual (the closed sum always adds up), and per-channel ROAS — every figure deterministically credited from your journeys and realized revenue."
+        description="Which marketing channels earn your revenue — revenue credited by channel, the share we couldn't link to marketing (always shown, never hidden), and each channel's return on ad spend."
         meta={
           <span
             data-testid="attribution-silver-label"
             className="inline-flex items-center gap-1 rounded-md border border-border bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"
-            title="Journeys are read from the Silver analytics tier (dbt → StarRocks silver.touchpoint); credit is computed deterministically in the metric engine over the Gold attribution credit ledger."
+            title="These numbers come from linking your customers' tracked visits to the orders they placed — nothing is modelled or guessed unless labelled Estimated."
           >
             <Layers className="h-3 w-3" aria-hidden="true" />
-            Powered by the Silver tier
+            Calculated from your order and marketing data
           </span>
         }
       />
@@ -303,7 +308,7 @@ export function AttributionContent() {
             {synthetic && (
               <SyntheticBadge
                 data-testid="attribution-synthetic-badge"
-                reason="Real journey data is thin (23 real touchpoints), so attribution coverage in this window is mostly synthetic — clearly-labelled journey fixtures (real shape, synthetic source). Never presented as live attribution."
+                reason="Your tracked visit history is still thin, so most of these numbers are built from sample data — they will be replaced as real visits and orders arrive."
               />
             )}
           </div>
@@ -329,9 +334,9 @@ export function AttributionContent() {
           <Card>
             <CardContent className="pt-6">
               <p className="text-sm" role="status">
-                <strong>Attribution not computed yet.</strong> This brand has realized revenue, but the
-                attribution credit ledger is empty — the credit pipeline hasn&apos;t populated it.
-                Per-channel attribution appears here once it runs. We don&apos;t show a 0%/100% figure,
+                <strong>Attribution not calculated yet.</strong> This brand has revenue, but revenue
+                hasn&apos;t been credited to channels yet — that calculation hasn&apos;t run.
+                Per-channel attribution appears here once it does. We don&apos;t show a 0%/100% figure,
                 because that would be a guess, not a measurement.
               </p>
             </CardContent>
@@ -354,10 +359,9 @@ export function AttributionContent() {
             Channel → revenue flow
           </h2>
           <p className="text-sm text-muted-foreground mt-0.5">
-            Each band&apos;s thickness is the attributed revenue that channel earns under the{' '}
-            {model.replace('_', '-')} model, flowing into total realized revenue. Bands are sized by
-            money only (we never re-apportion credit in the browser); channels are ordered by how
-            many of your journeys touched them
+            Each band&apos;s thickness is the revenue that channel earned under the{' '}
+            {attributionModelLabel(model)} model, flowing into your total revenue. Channels are
+            ordered by how many customer journeys touched them
             {pathsQ.data?.state === 'has_data'
               ? ` (${Number(BigInt(pathsQ.data.total_journeys)).toLocaleString('en-IN')} journeys across ${pathsQ.data.total_paths.toLocaleString('en-IN')} paths)`
               : ''}
@@ -379,15 +383,15 @@ export function AttributionContent() {
                     links={links}
                     height={Math.max(280, Math.min(520, links.length * 56 + 80))}
                     valueFormat={makeMoneyMajorFormat((byChannel.currency_code ?? 'INR') as CurrencyCode)}
-                    caption="Attributed revenue by channel, flowing into total realized revenue"
+                    caption="Revenue attributed to each channel, flowing into your total revenue"
                     data-testid="attribution-channel-sankey"
                   />
                 );
               })()
             ) : (
               <p className="text-sm text-muted-foreground italic" role="status">
-                No channel → revenue flow yet — attribution credit has no rows for this model and
-                window. The flow appears once journeys are credited with revenue.
+                No channel → revenue flow yet — no revenue has been credited to channels for this
+                model and time window. The flow appears once customer journeys earn revenue credit.
               </p>
             )}
           </CardContent>
@@ -399,13 +403,12 @@ export function AttributionContent() {
         <div className="mb-3">
           <h2 className="text-lg font-semibold text-foreground flex items-center gap-2">
             <Activity className="h-4 w-4" aria-hidden="true" />
-            Attributed revenue over time
+            Revenue attributed over time
           </h2>
           <p className="text-sm text-muted-foreground mt-0.5">
-            Daily attributed revenue (net of clawback) for the {model.replace('_', '-')} model over
-            the selected window, summed across every credited channel — including organic and direct,
-            not only campaign-bearing touches. Single currency per chart (never blended); this is
-            attributed credit, not the realized/provisional recognition ledger.
+            Daily revenue credited to marketing (after refunds and cancellations are taken back) under
+            the {attributionModelLabel(model)} model, summed across every credited channel — including
+            organic and direct visits, not only paid campaigns. One currency per chart, never mixed.
           </p>
         </div>
         <Card>
@@ -427,10 +430,10 @@ export function AttributionContent() {
             Channel performance
           </h2>
           <p className="text-sm text-muted-foreground mt-0.5">
-            Ad spend, attributed revenue and ROAS per channel — the real per-channel return on ad
-            spend. Same-currency only; honest n/a when there is no spend. Conversions, CPA,
-            impressions and clicks are shown as &ldquo;—&rdquo; because the per-channel feed
-            (gold_campaign_performance) is spend-only — we never fabricate a count we did not measure.
+            Ad spend, revenue attributed and return on ad spend for each channel. ROAS shows
+            &ldquo;n/a&rdquo; when a channel has no ad spend. Conversions, cost per acquisition,
+            impressions and clicks show &ldquo;—&rdquo; because your ad platforms only report spend
+            at the channel level — we never invent a count we did not measure.
           </p>
         </div>
         <Card>
@@ -447,12 +450,12 @@ export function AttributionContent() {
               <ChannelPerformanceTable rows={roas.rows} />
             ) : roas?.state === 'not_computed' ? (
               <p className="text-sm text-muted-foreground italic" role="status">
-                Channel ROAS not computed yet — ad spend exists, but attribution credit has not been
-                populated, so a per-channel return would be a guess, not a measurement.
+                Channel return not calculated yet — you have ad spend, but revenue hasn&apos;t been
+                credited to channels yet, so a per-channel return would be a guess, not a measurement.
               </p>
             ) : (
               <p className="text-sm text-muted-foreground italic" role="status">
-                No channel ROAS yet — attribution or ad spend has no rows in this window.
+                No channel performance yet — there is no attributed revenue or ad spend in this time window.
               </p>
             )}
           </CardContent>
@@ -467,9 +470,10 @@ export function AttributionContent() {
             Per-campaign attribution &amp; ROAS
           </h2>
           <p className="text-sm text-muted-foreground mt-0.5">
-            Attributed revenue, ad spend, and ROAS for each campaign under the selected model — the
-            level marketers actually optimize. Money is per-currency (never blended); ROAS is honest
-            n/a when there is no spend. Brand-wide roll-up (not scoped by the date range).
+            Revenue attributed, ad spend, and return on ad spend for each campaign under the selected
+            model — the level marketers actually optimize. Amounts stay in their own currency (never
+            mixed); ROAS shows &ldquo;n/a&rdquo; when a campaign has no spend. Covers all time, not
+            just the selected date range.
           </p>
         </div>
         <Card>
@@ -486,9 +490,9 @@ export function AttributionContent() {
               <CampaignAttributionTable data={campaignQ.data} />
             ) : (
               <p className="text-sm text-muted-foreground italic" role="status">
-                No per-campaign attribution yet — campaign-level credit appears once journeys carry a
-                campaign (utm_campaign) and the attribution credit ledger is populated for this model.
-                We don&apos;t fabricate campaign rows.
+                No per-campaign attribution yet — campaign rows appear once customer visits carry a
+                campaign tag and revenue has been credited for this model. We don&apos;t make up
+                campaign rows.
               </p>
             )}
           </CardContent>
@@ -510,10 +514,24 @@ function CampaignAttributionTable({ data }: { data: CampaignAttrHasData }) {
         <TableRow>
           <TableHead>Campaign</TableHead>
           <TableHead>Platform</TableHead>
-          <TableHead className="text-right">Attributed</TableHead>
-          <TableHead className="text-right">Spend</TableHead>
-          <TableHead className="text-right">Orders</TableHead>
-          <TableHead className="text-right">ROAS</TableHead>
+          <TableHead className="text-right">
+            <MetricTitle
+              label="Revenue attributed"
+              help="The revenue this campaign earned under the selected attribution model."
+            />
+          </TableHead>
+          <TableHead className="text-right">
+            <MetricTitle label="Ad spend" help="How much you spent on ads for this campaign." />
+          </TableHead>
+          <TableHead className="text-right">
+            <MetricTitle label="Orders" help="How many orders were credited to this campaign." />
+          </TableHead>
+          <TableHead className="text-right">
+            <MetricTitle
+              label="ROAS"
+              help="Return on ad spend — revenue attributed divided by what you spent."
+            />
+          </TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -553,16 +571,21 @@ function CampaignAttributionTable({ data }: { data: CampaignAttrHasData }) {
 }
 
 /**
- * NotMeasured — the honest-empty cell. The channel-roas feed (gold_campaign_performance) is
- * spend-only, so conversions / CPA / impressions / clicks have no measured value at the channel
- * grain. We render an em-dash (NEVER a fabricated 0) with an SR-only reason, per Brain's
- * honest-empty rule ("No empty charts / fabricated zeros as a success state").
+ * NotMeasured — the honest-empty cell. The per-channel ad feed reports spend only, so
+ * conversions / CPA / impressions / clicks have no measured value at the channel level.
+ * We render an em-dash (NEVER a fabricated 0) with a hover/focus tooltip explaining why,
+ * per Brain's honest-empty rule ("No empty charts / fabricated zeros as a success state").
  */
+const NOT_MEASURED_REASON =
+  'Not measured yet — your ad platforms only report spend at the channel level.';
+
 function NotMeasured() {
   return (
-    <span className="text-muted-foreground" aria-label="Not measured — the per-channel feed is spend-only">
-      <span aria-hidden="true">—</span>
-    </span>
+    <Tooltip content={NOT_MEASURED_REASON}>
+      <span tabIndex={0} className="text-muted-foreground" aria-label={NOT_MEASURED_REASON}>
+        <span aria-hidden="true">—</span>
+      </span>
+    </Tooltip>
   );
 }
 
@@ -592,7 +615,7 @@ function ChannelPerformanceTable({ rows }: { rows: ChannelRoasRow[] }) {
         role="status"
         data-testid="channel-performance-empty"
       >
-        No channel performance yet — attribution or ad spend has no rows in this window.
+        No channel performance yet — there is no attributed revenue or ad spend in this time window.
       </p>
     );
   }
@@ -602,13 +625,45 @@ function ChannelPerformanceTable({ rows }: { rows: ChannelRoasRow[] }) {
       <TableHeader>
         <TableRow>
           <TableHead>Channel</TableHead>
-          <TableHead className="text-right">Spend</TableHead>
-          <TableHead className="text-right">Attributed</TableHead>
-          <TableHead className="text-right">ROAS</TableHead>
-          <TableHead className="text-right">Conversions</TableHead>
-          <TableHead className="text-right">CPA</TableHead>
-          <TableHead className="text-right">Impressions</TableHead>
-          <TableHead className="text-right">Clicks</TableHead>
+          <TableHead className="text-right">
+            <MetricTitle label="Ad spend" help="How much you spent on ads in this channel." />
+          </TableHead>
+          <TableHead className="text-right">
+            <MetricTitle
+              label="Revenue attributed"
+              help="The revenue this channel earned under the selected attribution model."
+            />
+          </TableHead>
+          <TableHead className="text-right">
+            <MetricTitle
+              label="ROAS"
+              help="Return on ad spend — revenue attributed divided by what you spent."
+            />
+          </TableHead>
+          <TableHead className="text-right">
+            <MetricTitle
+              label="Conversions"
+              help="How many purchases this channel drove — not measured yet at the channel level."
+            />
+          </TableHead>
+          <TableHead className="text-right">
+            <MetricTitle
+              label="CPA"
+              help="Cost per acquisition — what you paid per purchase; not measured yet at the channel level."
+            />
+          </TableHead>
+          <TableHead className="text-right">
+            <MetricTitle
+              label="Impressions"
+              help="How many times your ads were shown — not measured yet at the channel level."
+            />
+          </TableHead>
+          <TableHead className="text-right">
+            <MetricTitle
+              label="Clicks"
+              help="How many times your ads were clicked — not measured yet at the channel level."
+            />
+          </TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -694,25 +749,28 @@ function AttributionData({
       <div className="space-y-4 lg:col-span-2">
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <KpiTile
-            label="Attributed revenue"
+            label="Revenue attributed"
+            help="The total revenue we could confidently link to a marketing touchpoint in this period."
             value={attributedValue}
             sublabel={`${byChannel.from} → ${byChannel.to}`}
             data-testid="attribution-kpi-attributed"
           />
           <KpiTile
-            label="Reconciliation rate"
+            label="Revenue attributed (%)"
+            help="The portion of total revenue we could confidently link to a marketing touchpoint. The rest is from unknown sources or direct visits without tracking."
             value={
               recon && recon.reconciliation_rate_pct != null
                 ? `${recon.reconciliation_rate_pct}%`
                 : null
             }
-            sublabel="attributed ÷ realized"
+            sublabel="of your total revenue"
             data-testid="attribution-kpi-recon-rate"
           />
           <KpiTile
             label="Channels credited"
+            help="How many marketing channels earned a share of your revenue in this period."
             value={channelCount.toLocaleString('en-IN')}
-            sublabel={`${byChannel.model.replace('_', '-')} model`}
+            sublabel={`${attributionModelLabel(byChannel.model)} model`}
             data-testid="attribution-kpi-channels"
           />
         </div>
@@ -721,14 +779,21 @@ function AttributionData({
           <CardHeader className="pb-2">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <CardTitle className="text-sm font-medium text-muted-foreground">
-                Attributed revenue by channel
+                <MetricTitle
+                  label="Revenue attributed by channel"
+                  help="How much revenue each marketing channel earned under the selected attribution model."
+                />
               </CardTitle>
               {grades.length > 0 && (
                 <div
                   className="flex flex-wrap items-center gap-1.5"
-                  aria-label="Attribution confidence grades present"
+                  aria-label="Data trust levels present"
                   data-testid="attribution-confidence-legend"
                 >
+                  <MetricTitle
+                    label={<span className="text-xs text-muted-foreground">Data trust</span>}
+                    help="How sure we are that each channel's credit is based on fully tracked customer journeys."
+                  />
                   {grades.map((g) => (
                     <ConfidenceGradeBadge key={g} grade={g} data-testid={`confidence-grade-${g}`} />
                   ))}
@@ -759,7 +824,8 @@ function AttributionData({
           <Card>
             <CardContent className="py-8 text-center">
               <p className="text-sm text-muted-foreground italic" role="status">
-                Reconciliation residual unavailable for this window.
+                Not enough data yet to show how much of your revenue was linked to marketing in this
+                time window.
               </p>
             </CardContent>
           </Card>

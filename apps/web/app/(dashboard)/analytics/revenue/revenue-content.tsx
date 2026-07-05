@@ -38,6 +38,7 @@ import {
   TableCell,
 } from '@/components/ui/table';
 import { KpiTile, type DeltaDirection } from '@/components/analytics/kpi-tile';
+import { MetricTitle } from '@/components/ui/metric-title';
 import { TrendChart } from '@/components/analytics/trend-chart';
 import { RecognitionDonut } from '@/components/analytics/recognition-donut';
 import {
@@ -52,6 +53,17 @@ import type { CurrencyCode } from '@brain/money';
 import { cn } from '@/lib/utils';
 
 type Grain = 'day' | 'week';
+
+/** Human display names for the internal revenue-recognition states (display-only). */
+const REVENUE_STATUS_LABELS: Record<string, string> = {
+  provisional: 'Pending',
+  settling: 'Settling',
+  finalized: 'Confirmed',
+};
+
+function revenueStatusLabel(state: string): string {
+  return REVENUE_STATUS_LABELS[state] ?? state.replace(/_/g, ' ').replace(/^\w/, (c) => c.toUpperCase());
+}
 
 function GrainToggle({ grain, onChange }: { grain: Grain; onChange: (g: Grain) => void }) {
   return (
@@ -180,40 +192,64 @@ export function RevenueContent() {
     <div className="space-y-6">
       <PageHeader
         title="Revenue"
-        description="Realized vs provisional revenue, recognition states, and month-over-month growth."
+        description="Confirmed vs pending revenue, where each order stands, and month-over-month growth."
       />
 
       {/* KPI tiles — headline + MoM growth deltas */}
       <section aria-label="Revenue KPIs">
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
           <KpiTile
-            label="Gross Realized"
+            label="Confirmed revenue"
+            help="Money from orders that are final, after subtracting anything taken back for cancellations."
             value={realizedValue}
-            sublabel="finalized − clawback"
+            sublabel="after cancellations"
             delta={fmtPctFromBps(realizedMoMBps)}
             deltaDirection={deltaDir(realizedMoMBps)}
             isLoading={kpiLoading}
             data-testid="rev-kpi-realized"
           />
-          <KpiTile label="Provisional" value={provisionalValue} isLoading={kpiLoading} sublabel="not yet settled" data-testid="rev-kpi-provisional" />
           <KpiTile
-            label="Confirmed Orders"
+            label="Pending revenue"
+            help="Money from recent orders that isn't final yet — it can still change with cancellations or returns."
+            value={provisionalValue}
+            isLoading={kpiLoading}
+            sublabel="not yet settled"
+            data-testid="rev-kpi-provisional"
+          />
+          <KpiTile
+            label="Confirmed orders"
+            help="How many orders were completed and confirmed; the change compares this month with last month."
             value={orderValue}
-            sublabel="MoM"
+            sublabel="vs last month"
             delta={fmtPctFromBps(ordersMoMBps)}
             deltaDirection={deltaDir(ordersMoMBps)}
             isLoading={kpiLoading}
             data-testid="rev-kpi-orders"
           />
-          <KpiTile label="AOV" value={aovValue} isLoading={kpiLoading} sublabel="realized ÷ orders" data-testid="rev-kpi-aov" />
-          <KpiTile label="RTO Rate" value={rtoValue} isLoading={kpiLoading} lowerIsBetter sublabel="returns" data-testid="rev-kpi-rto" />
+          <KpiTile
+            label="Average order value"
+            help="The average amount customers spend per confirmed order."
+            value={aovValue}
+            isLoading={kpiLoading}
+            sublabel="confirmed revenue ÷ orders"
+            data-testid="rev-kpi-aov"
+          />
+          <KpiTile
+            label="RTO rate"
+            help="The share of shipped orders that came back undelivered (returned to origin) — lower is better."
+            value={rtoValue}
+            isLoading={kpiLoading}
+            lowerIsBetter
+            sublabel="undelivered returns"
+            data-testid="rev-kpi-rto"
+          />
         </div>
       </section>
 
       <Tabs defaultValue="trend">
         <TabsList aria-label="Revenue views">
           <TabsTrigger value="trend">Trend</TabsTrigger>
-          <TabsTrigger value="recognition">Recognition</TabsTrigger>
+          <TabsTrigger value="recognition">Revenue status</TabsTrigger>
           <TabsTrigger value="monthly">Monthly</TabsTrigger>
         </TabsList>
 
@@ -224,7 +260,10 @@ export function RevenueContent() {
               <div className="flex flex-wrap items-center justify-between gap-4">
                 <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
                   <TrendingUp className="h-4 w-4" aria-hidden="true" />
-                  Realized vs Provisional
+                  <MetricTitle
+                    label="Confirmed vs pending revenue"
+                    help="Confirmed revenue is final; pending revenue is from recent orders that can still change."
+                  />
                 </CardTitle>
                 <div className="flex flex-wrap items-center gap-2">
                   <DateRangeFilter
@@ -249,7 +288,10 @@ export function RevenueContent() {
               <CardHeader className="pb-2">
                 <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
                   <BarChart3 className="h-4 w-4" aria-hidden="true" />
-                  Recognition States
+                  <MetricTitle
+                    label="Where your revenue stands"
+                    help="How much of your revenue is still pending, being settled, or fully confirmed."
+                  />
                 </CardTitle>
               </CardHeader>
               <CardContent>
@@ -260,7 +302,10 @@ export function RevenueContent() {
             <Card>
               <CardHeader className="pb-2">
                 <CardTitle className="text-sm font-medium text-muted-foreground">
-                  Recognition Detail
+                  <MetricTitle
+                    label="Revenue status detail"
+                    help="The amount and number of orders in each status — pending, settling, or confirmed."
+                  />
                 </CardTitle>
               </CardHeader>
               <CardContent>
@@ -275,10 +320,10 @@ export function RevenueContent() {
                   <p className="text-sm text-muted-foreground italic" role="status">No data yet</p>
                 )}
                 {breakdownData?.state === 'has_data' && (
-                  <Table aria-label="Recognition breakdown detail">
+                  <Table aria-label="Revenue status detail">
                     <TableHeader>
                       <TableRow>
-                        <TableHead>State</TableHead>
+                        <TableHead>Status</TableHead>
                         <TableHead className="text-right">Amount</TableHead>
                         <TableHead className="text-right">Orders</TableHead>
                       </TableRow>
@@ -286,7 +331,7 @@ export function RevenueContent() {
                     <TableBody>
                       {breakdownData.breakdown.map((item) => (
                         <TableRow key={`${item.label}-${item.currency_code}`}>
-                          <TableCell className="capitalize">{item.label}</TableCell>
+                          <TableCell>{revenueStatusLabel(item.label)}</TableCell>
                           <TableCell className="text-right tabular-nums font-medium">
                             {formatMoneyDisplay(item.amount_minor, item.currency_code as CurrencyCode)}
                           </TableCell>
@@ -309,7 +354,10 @@ export function RevenueContent() {
             <CardHeader className="pb-2">
               <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
                 <CalendarRange className="h-4 w-4" aria-hidden="true" />
-                Monthly net realized + MoM growth
+                <MetricTitle
+                  label="Monthly revenue & growth"
+                  help="Each month's confirmed revenue (after cancellations) and how it changed from the month before."
+                />
               </CardTitle>
             </CardHeader>
             <CardContent>
@@ -328,11 +376,36 @@ export function RevenueContent() {
                   <TableHeader>
                     <TableRow>
                       <TableHead>Month</TableHead>
-                      <TableHead className="text-right">Net Realized</TableHead>
-                      <TableHead className="text-right">MoM</TableHead>
-                      <TableHead className="text-right">Confirmed Orders</TableHead>
-                      <TableHead className="text-right">AOV</TableHead>
-                      <TableHead className="text-right">Cancel Rate</TableHead>
+                      <TableHead className="text-right">
+                        <MetricTitle
+                          label="Net revenue"
+                          help="Confirmed revenue for the month, minus money taken back for cancellations."
+                        />
+                      </TableHead>
+                      <TableHead className="text-right">
+                        <MetricTitle
+                          label="Vs last month"
+                          help="How much net revenue grew or fell compared with the previous month."
+                        />
+                      </TableHead>
+                      <TableHead className="text-right">
+                        <MetricTitle
+                          label="Confirmed orders"
+                          help="How many orders were completed and confirmed that month."
+                        />
+                      </TableHead>
+                      <TableHead className="text-right">
+                        <MetricTitle
+                          label="Avg order value"
+                          help="The average amount customers spent per confirmed order that month."
+                        />
+                      </TableHead>
+                      <TableHead className="text-right">
+                        <MetricTitle
+                          label="Cancellation rate"
+                          help="The share of that month's orders that ended cancelled or returned."
+                        />
+                      </TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -388,8 +461,8 @@ export function RevenueContent() {
               )}
               {!monthlyLoading && monthly.length > 0 && (
                 <p className="mt-3 text-xs text-muted-foreground">
-                  Net realized = confirmed revenue minus cancellation clawback, per{' '}
-                  {monthlyCcy}. Money is never blended across currencies.
+                  Net revenue = confirmed revenue minus money taken back for cancellations, shown in{' '}
+                  {monthlyCcy}. Amounts in different currencies are never mixed together.
                 </p>
               )}
             </CardContent>

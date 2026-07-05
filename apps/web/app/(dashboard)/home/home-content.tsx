@@ -43,6 +43,7 @@ import {
 
 import { TabShell } from '@/components/ui/tab-shell';
 import type { ExplainerPanelProps } from '@/components/ui/explainer-panel';
+import { MetricTitle } from '@/components/ui/metric-title';
 import { SectionCard } from '@/components/ui/section-card';
 import { EmptyState } from '@/components/ui/empty-state';
 import { FreshnessBadge } from '@/components/ui/freshness-badge';
@@ -90,7 +91,7 @@ import type {
 const HOME_EXPLAINER: ExplainerPanelProps = {
   title: 'Home — How is my business doing now?',
   description:
-    "Your live executive snapshot: realized revenue, AOV, lifetime value, repeat rate, ROAS, new customers and delivery success — each with a week-over-week trend; the revenue trend at day/week/month grain; your top open opportunities/risks; your top channels by attributed revenue; and the latest orders as they land.",
+    "Your live business snapshot: confirmed revenue, average order value, lifetime value, repeat rate, return on ad spend, new customers and delivery success — each with a week-over-week trend; the revenue trend by day, week or month; your top open opportunities and risks; your top channels by attributed revenue; and the latest orders as they land.",
   sections: [
     {
       heading: 'How to read this page',
@@ -100,59 +101,59 @@ const HOME_EXPLAINER: ExplainerPanelProps = {
   ],
   metrics: [
     {
-      name: 'Realized revenue',
-      definition: 'Recognised revenue from confirmed/finalized orders (ex-fees, in the order currency).',
+      name: 'Confirmed revenue',
+      definition: 'Money from orders that are final (excluding fees, in the order currency).',
       howComputed:
-        'Gold revenue ledger (mv_gold_revenue_ledger), bigint minor units. Can read 0 while reversals settle ahead of their sales.',
+        'Summed from your confirmed order records. Can read 0 while refunds settle ahead of their sales.',
     },
     {
-      name: 'AOV',
-      definition: 'Average order value over the snapshot window.',
-      howComputed: 'KPI summary aov_minor = realized ÷ order count, per currency.',
+      name: 'Avg order value',
+      definition: 'The average amount customers spend per order.',
+      howComputed: 'Confirmed revenue divided by the number of orders, per currency.',
     },
     {
-      name: 'LTV',
-      definition: 'Average realized lifetime value per customer.',
-      howComputed: 'Executive metrics ltv_minor (registry-backed Gold marts). Em-dash when there are no customers yet.',
+      name: 'Customer lifetime value',
+      definition: 'The average confirmed revenue each customer has brought you so far.',
+      howComputed: 'Confirmed revenue divided by customers. Shows a dash when there are no customers yet.',
     },
     {
       name: 'Repeat rate',
       definition: 'Share of customers with 2 or more orders.',
-      howComputed: 'Executive metrics repeat_rate_pct. Em-dash when the denominator is 0.',
+      howComputed: 'Repeat customers divided by all customers. Shows a dash when there are no customers yet.',
     },
     {
       name: 'Blended ROAS',
       definition: 'Return on ad spend across all channels.',
-      howComputed: 'Executive metrics roas_ratio = realized revenue ÷ ad spend. Em-dash when there is no spend.',
+      howComputed: 'Confirmed revenue divided by total ad spend. Shows a dash when there is no spend.',
     },
     {
       name: 'New customers',
       definition: 'Distinct buyers in the last 7 days.',
       howComputed:
-        'Executive metrics distinct_customers over the last-7-day window. Em-dash when there are no orders in the window.',
+        'Counted over the last-7-day window. Shows a dash when there are no orders in the window.',
     },
     {
       name: 'Delivery success rate',
-      definition: 'Share of shipped parcels delivered (vs RTO/other) in the last 7 days.',
+      definition: 'Share of shipped parcels delivered (vs returned or lost) in the last 7 days.',
       howComputed:
-        'Shipment outcomes delivered ÷ total over the last-7-day window (silver_shipment — GoKwik AWB + Shiprocket). Em-dash when nothing shipped.',
+        'Delivered parcels divided by everything shipped in the last 7 days, from your shipping partners (GoKwik, Shiprocket). Shows a dash when nothing shipped.',
     },
     {
       name: 'Week-over-week delta',
       definition: 'Each KPI’s momentum: the last 7 days vs the prior 7 days.',
       howComputed:
-        'Relative % change over the windowed executive-metrics / shipment-outcomes reads. Shown only when the prior window is non-zero (never a fabricated ±∞).',
+        'Relative % change between the two windows. Shown only when the prior week had data (never a made-up ±∞).',
     },
   ],
   refreshCadence:
-    'Gold marts refresh on the Silver→Gold loop (~every 15 min); the KPI/trend tiles re-poll the BFF every 30–60s. Each widget shows its own served-at time, and reads "an unknown time ago" when an endpoint exposes no timestamp.',
+    'Your final metrics refresh about every 15 minutes; the tiles on this page re-check every 30–60 seconds. Each widget shows its own served-at time, and reads "an unknown time ago" when a source exposes no timestamp.',
   sources: [
-    'Gold mv_gold_revenue_ledger (revenue, AOV)',
-    'Executive metrics (LTV, repeat rate, ROAS, new customers)',
-    'Shipment outcomes (delivery success rate)',
-    'Channel ROAS ledger (top channels)',
+    'Confirmed order records (revenue, avg order value)',
+    'Customer metrics (lifetime value, repeat rate, ROAS, new customers)',
+    'Shipping outcomes (delivery success rate)',
+    'Channel return on ad spend (top channels)',
     'Insights briefing (opportunities/risks)',
-    'Bronze order feed (recent orders)',
+    'Raw order feed (recent orders)',
   ],
 };
 
@@ -325,6 +326,7 @@ function KpiCell({
   href,
   moduleLabel,
   label,
+  help,
   value,
   sublabel,
   isLoading,
@@ -335,6 +337,8 @@ function KpiCell({
   href: string;
   moduleLabel: string;
   label: string;
+  /** ONE plain-language sentence for the "?" tooltip next to the label. */
+  help: string;
   value: string | null;
   sublabel: string;
   isLoading: boolean;
@@ -357,6 +361,7 @@ function KpiCell({
     >
       <KpiTile
         label={label}
+        help={help}
         value={value}
         sublabel={sublabel}
         isLoading={isLoading}
@@ -411,7 +416,7 @@ function ExecKpiRow() {
   const realizedMinor = kpi ? BigInt(kpi.realized_minor) : null;
   const realizedNegative = realizedMinor !== null && realizedMinor < 0n;
   const realizedValue = kpi ? formatMoneyDisplay(realizedNegative ? '0' : kpi.realized_minor, ccy) : null;
-  const realizedSublabel = realizedNegative ? 'No realized revenue yet — sales still settling' : 'recognised, ex-fees';
+  const realizedSublabel = realizedNegative ? 'No confirmed revenue yet — sales still settling' : 'final, excluding fees';
 
   const aovValue = kpi ? formatMoneyDisplay(kpi.aov_minor, ccy) : null;
   const ltvValue = exec?.ltv_minor != null ? formatMoneyDisplay(exec.ltv_minor, ccy) : exec ? '—' : null;
@@ -443,8 +448,13 @@ function ExecKpiRow() {
 
   return (
     <SectionCard
-      title="Headline economics"
-      description="Your business at a glance, in the order currency. Deltas compare the last 7 days with the prior 7."
+      title={
+        <MetricTitle
+          label="Headline numbers"
+          help="Your key business figures at a glance — each compares the last 7 days with the 7 before."
+        />
+      }
+      description="Your business at a glance, in the order currency. Changes compare the last 7 days with the prior 7."
       meta={
         <div className="flex flex-wrap items-center gap-2">
           <TimeframeBadge start={coverageStart} end={coverageEnd} data-testid="home-kpi-timeframe" />
@@ -466,7 +476,8 @@ function ExecKpiRow() {
         <KpiCell
           href="/analytics/revenue"
           moduleLabel="Revenue analytics"
-          label="Realized Revenue"
+          label="Confirmed revenue"
+          help="Money from orders that are final — cancellations and refunds already subtracted."
           value={realizedValue}
           sublabel={realizedSublabel}
           isLoading={loading}
@@ -477,9 +488,10 @@ function ExecKpiRow() {
         <KpiCell
           href="/analytics/orders"
           moduleLabel="Orders analytics"
-          label="AOV"
+          label="Avg order value"
+          help="The average amount customers spend per order."
           value={aovValue}
-          sublabel="avg order value"
+          sublabel="per order"
           isLoading={loading}
           delta={aovDelta}
           sparkData={aovSpark}
@@ -488,9 +500,10 @@ function ExecKpiRow() {
         <KpiCell
           href="/retention"
           moduleLabel="Retention"
-          label="LTV"
+          label="Lifetime value"
+          help="The average confirmed revenue each customer has brought you so far."
           value={ltvValue}
-          sublabel="realized value / customer"
+          sublabel="revenue per customer"
           isLoading={loading}
           delta={ltvDelta}
           sparkData={[]}
@@ -499,7 +512,8 @@ function ExecKpiRow() {
         <KpiCell
           href="/retention"
           moduleLabel="Retention"
-          label="Repeat Rate"
+          label="Repeat rate"
+          help="How many of your customers came back to buy a second time or more."
           value={repeatValue}
           sublabel="customers with 2+ orders"
           isLoading={loading}
@@ -511,8 +525,9 @@ function ExecKpiRow() {
           href="/analytics/spend"
           moduleLabel="Ad spend & ROAS"
           label="Blended ROAS"
+          help="Return on ad spend — how much confirmed revenue you earn for every rupee spent on ads, across all channels."
           value={roasValue}
-          sublabel="realized ÷ ad spend"
+          sublabel="revenue ÷ ad spend"
           isLoading={loading}
           delta={roasDelta}
           sparkData={[]}
@@ -522,8 +537,9 @@ function ExecKpiRow() {
           href="/customers"
           moduleLabel="Customers"
           label="New customers"
+          help="How many different people bought from you in the last 7 days."
           value={newCustValue}
-          sublabel="distinct buyers · last 7d"
+          sublabel="distinct buyers · last 7 days"
           isLoading={execCurLoading}
           delta={newCustDelta}
           sparkData={[]}
@@ -533,8 +549,9 @@ function ExecKpiRow() {
           href="/analytics/logistics"
           moduleLabel="Logistics"
           label="Delivery success rate"
+          help="Of everything you shipped in the last 7 days, the share that reached the customer."
           value={deliveryValue}
-          sublabel="delivered ÷ shipped · last 7d"
+          sublabel="delivered ÷ shipped · last 7 days"
           isLoading={shipCurLoading}
           delta={deliveryDelta}
           sparkData={[]}
@@ -613,14 +630,19 @@ function RevenueTrendSection({ asOf }: { asOf?: string | null }) {
 
   const description =
     grain === 'month'
-      ? 'Realized revenue per month, from the Gold monthly mart.'
+      ? 'Confirmed revenue per month.'
       : grain === 'week'
-        ? 'Realized vs provisional revenue over the last 12 weeks.'
-        : 'Realized vs provisional revenue over the last 30 days.';
+        ? 'Confirmed vs pending revenue over the last 12 weeks.'
+        : 'Confirmed vs pending revenue over the last 30 days.';
 
   return (
     <SectionCard
-      title="Revenue trend"
+      title={
+        <MetricTitle
+          label="Revenue trend"
+          help="How your revenue is moving over time — confirmed revenue is final, pending revenue can still change."
+        />
+      }
       description={description}
       actions={<GrainToggle grain={grain} onChange={setGrain} />}
       meta={<FreshnessBadge timestamp={asOf} />}
@@ -667,9 +689,13 @@ function InsightsTeaser() {
     <SectionCard
       title={
         <span className="inline-flex items-center gap-2">
-          <Sparkles className="h-4 w-4 text-primary" aria-hidden="true" /> What needs attention
+          <Sparkles className="h-4 w-4 text-primary" aria-hidden="true" />
+          <MetricTitle
+            label="What needs attention"
+            help="Your top open opportunities and risks, ranked by how much money they could gain or save you."
+          />
           {briefing?.data_source === 'synthetic' && (
-            <SyntheticBadge reason="Computed from synthetic demo data seeded into the Gold marts — never live data. It disappears once real data flows." />
+            <SyntheticBadge reason="Built from sample demo data, not your live numbers — it disappears once real data flows." />
           )}
         </span>
       }
@@ -738,10 +764,14 @@ function TopChannelsCard() {
     <SectionCard
       title={
         <span className="inline-flex items-center gap-2">
-          <Megaphone className="h-4 w-4 text-muted-foreground" aria-hidden="true" /> Top channels
+          <Megaphone className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+          <MetricTitle
+            label="Top channels"
+            help="The five marketing channels that earned you the most revenue, with their ad spend and return."
+          />
         </span>
       }
-      description="Your top 5 channels by attributed revenue, with ad spend and ROAS."
+      description="Your top 5 channels by revenue attributed, with ad spend and return on ad spend."
       meta={<FreshnessBadge timestamp={undefined} />}
       actions={
         <Button asChild size="sm" variant="ghost">
@@ -761,8 +791,8 @@ function TopChannelsCard() {
         <EmptyState
           compact
           icon={<Megaphone className="h-5 w-5" />}
-          title="No channel ROAS yet"
-          description="Channel ROAS appears once attribution credit and ad spend have rows for this brand. Nothing is fabricated until the numbers are real."
+          title="No channel results yet"
+          description="Channel returns appear once revenue has been credited to channels and ad spend is flowing in. Nothing is made up until the numbers are real."
         />
       ) : (
         <ChannelRoasTable rows={top5} className="w-full text-sm" />
@@ -813,7 +843,11 @@ export function HomeContent() {
       <section aria-label="Recent orders" className="space-y-2">
         <div className="flex items-center justify-between gap-2">
           <h2 className="inline-flex items-center gap-2 text-base font-semibold tracking-tight text-foreground">
-            <ShoppingCart className="h-4 w-4" aria-hidden="true" /> Recent orders
+            <ShoppingCart className="h-4 w-4" aria-hidden="true" />
+            <MetricTitle
+              label="Recent orders"
+              help="The latest orders from your store as they arrive in Brain."
+            />
           </h2>
           <FreshnessBadge timestamp={undefined} />
         </div>

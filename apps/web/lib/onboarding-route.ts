@@ -26,7 +26,7 @@
 import type { OnboardingStatus } from '@/lib/api/types';
 
 /** Wizard entry — the merged create step. Used by register/auto-login + login fallback. */
-export const ONBOARDING_START = '/onboarding/start';
+const ONBOARDING_START = '/onboarding/start';
 
 /**
  * Deterministic lookup: onboarding_status → the route the user belongs on.

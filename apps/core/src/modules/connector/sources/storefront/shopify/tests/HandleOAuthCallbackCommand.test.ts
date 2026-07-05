@@ -408,4 +408,41 @@ describe('HandleOAuthCallbackCommand', () => {
     expect(connectorRepo.save).toHaveBeenCalledOnce();
     expect(emitEvent).toHaveBeenCalled();
   });
+
+  // ── BYO-required (shopify-byo-app-required Task 5) ────────────────────────
+  it('when requireBrandCreds=true and brand has no stored app creds → HmacValidationError (env NOT consulted)', async () => {
+    const stateStore = new InProcessOAuthStateStore();
+    const secretsMgr = new LocalSecretsManager();
+    // No brand shopify_app bundle stored → getSecret resolves null for the per-brand name.
+    const getShopifyClientSecretSpy = vi.spyOn(secretsMgr, 'getShopifyClientSecret');
+    const connectorRepo = makeConnectorRepo();
+    const syncStatusRepo = makeSyncStatusRepo();
+    const emitEvent = vi.fn().mockResolvedValue(undefined);
+
+    const cmd = new HandleOAuthCallbackCommand(
+      secretsMgr,
+      stateStore,
+      connectorRepo,
+      syncStatusRepo,
+      emitEvent,
+      'production',             // appEnv
+      'https://brain.example',  // webhookCallbackBaseUrl
+      true,                     // requireBrandCreds ← BYO-required
+    );
+
+    // Prime state store with a valid nonce for BRAND — the rejection must come from the
+    // missing brand app creds, NOT from the state gate.
+    await stateStore.set(BRAND_ID, 'valid-state', 900);
+
+    await expect(
+      cmd.execute({
+        query: { state: 'valid-state', shop: SHOP_DOMAIN, code: 'c', hmac: 'anything' },
+        idempotencyKey: 'idem-byo-required',
+      }),
+    ).rejects.toBeInstanceOf(HmacValidationError);
+
+    // The env secret was NEVER fetched — BYO-required refuses the env app entirely.
+    expect(getShopifyClientSecretSpy).not.toHaveBeenCalled();
+    expect(connectorRepo.save).not.toHaveBeenCalled();
+  });
 });

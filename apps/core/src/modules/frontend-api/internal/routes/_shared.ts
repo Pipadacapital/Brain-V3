@@ -45,7 +45,7 @@ export type CookieReply = FastifyReply & {
 export const COOKIE_NAME = 'brain_session';
 export const CSRF_COOKIE_NAME = 'brain_csrf';
 export const CSRF_HEADER_NAME = 'x-csrf-token';
-export const ACCESS_TOKEN_EXPIRY_SECS = 60 * 60; // 1 hour — matches the session cookie maxAge
+export const ACCESS_TOKEN_EXPIRY_SECS = 7 * 24 * 60 * 60; // 7 days — matches the session cookie maxAge (user decision 2026-07-06; keep in lockstep with auth/shared.ts)
 
 /**
  * The shared dependency bundle handed to every BFF route plugin. It carries the raw

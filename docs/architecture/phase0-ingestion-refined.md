@@ -6,6 +6,12 @@ CARDINAL RULE held throughout: no business logic before Bronze; Bronze is immuta
 
 Status date: 2026-06-28. EXTEND-not-rebuild. No code was edited.
 
+> **WRITER NOTE (2026-07-05, ADR-0010):** the Spark-SS landing this review audited
+> (`bronze_materialize.py` / `bronze_raw_landing.py`) has since been replaced by the Kafka Connect
+> Iceberg sink and REMOVED from the codebase. §6/§7/§11/§13 rows referencing those files describe
+> the then-current writer; the review's findings on them are historical evidence, not current
+> state.
+
 ---
 
 ## 1. Verdict
@@ -44,7 +50,7 @@ Secondary but real: the unified `IConnector`/`ConnectorFactory` seam is proven-b
 | §6 Replication/min-ISR/retention | BUILT (drift) | `main.tf:100-138` | RF=3, minISR=2, 730d; compression disagrees 3 ways; no `unclean.leader.election`; no quotas |
 | §6 `*.raw.v1` topic provisioning | MISSING | `bronze_raw_landing.py:56-66` vs `docker-compose.yml:233-249` | 9 raw lanes subscribed but provisioned nowhere; auto-create OFF |
 | §6 idempotent/acks=all (collector) | DISCREPANCY (by design) | `kafka-producer.ts:50-59` | `idempotent:false`, `retries:0` — spool+deterministic event_id is the idempotency layer; spec language inaccurate |
-| §7 Spark-SS job topology | BUILT | `bronze_materialize.py`, `bronze_raw_landing.py` | Kafka Connect retired; Spark sole landing compute |
+| §7 Spark-SS job topology | BUILT | `bronze_materialize.py`, `bronze_raw_landing.py` | Kafka Connect retired; Spark sole landing compute *(as of 2026-06-28 — since replaced by the Kafka Connect sink, ADR-0010)* |
 | §7 Envelope extract + metadata | BUILT | `_project_bronze`, `project_raw` | Verbatim payload; receipt-lineage only — cardinal rule honored |
 | §7 Exactly-once (offset-after-commit) | BUILT | `bronze_materialize.py:400-489` | Well-reasoned no-loss proof + self-heal of empty-trailing offsets |
 | §7 Checkpoint durability | PARTIAL (infra) | `bronze_materialize.py:62-64` | Defaults to `file:///`; prod needs `s3a://` + hadoop-aws — cluster-gated |

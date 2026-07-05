@@ -86,16 +86,18 @@ alongside the existing `infra/helm/cronworkflows`.
    **parity oracle** (`db/iceberg/spark/parity/`) — byte/sum parity on money columns, row counts, PKs.
 3. **Cut over Gold first** (heaviest, most SLO-pressured): point the real `v4-gold` cron at `--master k8s`.
    Keep local-mode silver. Watch one full day of SLO + cost.
-4. **Cut over Silver**, then **bronze materialize** (or leave bronze on the 15-min local cron — §7).
+4. **Cut over Silver**, then the **bronze-maintenance** cron (Bronze landing is Kafka Connect,
+   not Spark — §7).
 5. **Rollback at any step = flip `--master k8s://` back to `local[*]`** in the cron (the image/code/catalog
    are identical) — instant, no data migration (Iceberg is the shared SoR).
 
-## 7. Streaming (Bronze) — separate, lower priority
-The Bronze sinks (`bronze_materialize.py` / `bronze_raw_landing.py`) are continuous micro-batch and far
-lighter than the Silver/Gold shuffles. Scaling them is mostly **Kafka partition count + a few executors**,
-not the local-JVM ceiling that hits batch. Recommend: keep them as local-mode containers/Deployments
-until Bronze itself shows lag, then move them to K8s cluster-mode streaming with the durable `s3a://`
-checkpoint. Do **not** couple their migration to the batch cutover.
+## 7. Streaming (Bronze) — no longer Spark's problem
+Bronze landing moved OFF Spark entirely: the Kafka Connect Iceberg sink (compose `kafka-connect`
+service / `infra/helm/kafka-connect` chart) is the sole landing writer (ADR-0010, cutover
+2026-07-05 — the Spark-SS sinks `bronze_materialize.py`/`bronze_raw_landing.py` are removed).
+Scaling it is Kafka partition count + Connect tasks, decoupled from this batch migration. Spark
+keeps only the scheduled Bronze maintenance/retention/erasure jobs, which migrate with the batch
+tier.
 
 ## 8. Observability (do this WITH the migration)
 - Enable Spark's PrometheusServlet (`spark.ui.prometheus.enabled=true` + `spark.metrics.conf`) → scrape

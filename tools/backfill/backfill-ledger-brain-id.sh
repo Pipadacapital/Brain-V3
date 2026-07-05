@@ -3,8 +3,12 @@
 # backfill-ledger-brain-id.sh — stamp brain_id onto historical realized_revenue_ledger rows.
 #
 # WHY: migration 0089 backfills from an EMBEDDED Bronze snapshot taken at author-time, so it is a
-# no-op for any data ingested later. This tool reads the LIVE Bronze (StarRocks over the Iceberg
-# collector_events) instead, so it works for whatever orders are actually in the lakehouse now.
+# no-op for any data ingested later. This tool reads the LIVE Bronze over Trino — the ADR-0010 lift
+# view iceberg.brain_bronze.collector_events_connect_lifted (the Kafka Connect sink is the ONLY
+# Bronze writer; the view lifts brand_id/event_type over the truly-raw connect table) — so it works
+# for whatever orders are actually in the lakehouse now. NOTE: rows landed by the RETIRED Spark
+# sinks live in the legacy brain_bronze.events/collector_events tables (data kept, not served) and
+# are NOT visible through this view.
 #
 # HOW (deterministic, no salt needed): connector order events (order.live.v1) carry the upstream-
 # pre-hashed customer email under payload.properties.hashed_customer_email — the SAME 64-hex value the
@@ -20,18 +24,19 @@ set -euo pipefail
 
 BRAND="${1:-}"
 if [[ -z "$BRAND" ]]; then echo "usage: $0 <BRAND_UUID>" >&2; exit 2; fi
-SR="docker exec -i brainv3-starrocks-1 mysql -P9030 -h127.0.0.1 -uroot -N"
+# Trino is the serving engine (StarRocks removed); TSV output = tab-separated, no header.
+TRINO="docker exec -i brainv3-trino-1 trino --output-format=TSV --execute"
 PG="docker exec -i brainv3-postgres-1 psql -U brain -d brain -v ON_ERROR_STOP=1"
 TSV=/tmp/bf-ledger-brainid.tsv
 SQL=/tmp/bf-ledger-brainid.sql
 
-echo ">> Extracting (order_id, hashed_customer_email) from live Bronze for $BRAND ..."
-$SR -e "SELECT get_json_string(payload,'\$.properties.order_id'),
-               get_json_string(payload,'\$.properties.hashed_customer_email')
-        FROM brain_bronze_local.brain_bronze.collector_events
+echo ">> Extracting (order_id, hashed_customer_email) from live Bronze (connect lift view) for $BRAND ..."
+$TRINO "SELECT json_extract_scalar(payload,'\$.properties.order_id'),
+               json_extract_scalar(payload,'\$.properties.hashed_customer_email')
+        FROM iceberg.brain_bronze.collector_events_connect_lifted
         WHERE brand_id='$BRAND' AND event_type='order.live.v1'
-          AND get_json_string(payload,'\$.properties.order_id') IS NOT NULL
-          AND get_json_string(payload,'\$.properties.hashed_customer_email') IS NOT NULL" > "$TSV"
+          AND json_extract_scalar(payload,'\$.properties.order_id') IS NOT NULL
+          AND json_extract_scalar(payload,'\$.properties.hashed_customer_email') IS NOT NULL" > "$TSV"
 echo ">> $(wc -l < "$TSV") order→email tuples."
 
 {

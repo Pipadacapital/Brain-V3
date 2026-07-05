@@ -1,13 +1,15 @@
 /**
  * shopflo-bronze-wiring.e2e.test.ts — P0: shopflo.checkout_abandoned.v1 lands in (Iceberg) Bronze.
  *
- * ICEBERG-BRONZE: Bronze is the Spark sink → Iceberg `brain_bronze.collector_events` (PG bronze_events
- * dropped — migration 0070). shopflo.checkout_abandoned.v1 is a SERVER_TRUSTED lane event (no install
- * token; brand_id is server-derived), so the Spark sink writes it under the claimed brand without an
- * R2/R3 gate. This test produces a realistic Shopflo abandoned-checkout envelope to the collector topic
- * and asserts it lands in Iceberg Bronze (read via the StarRocks external catalog).
+ * ICEBERG-BRONZE (ADR-0010): Bronze is the Kafka Connect Iceberg sink (the compose kafka-connect
+ * service — the SOLE Bronze writer, append-only) → `brain_bronze.collector_events_connect`, read
+ * over Trino via the lift view (PG bronze_events dropped — migration 0070).
+ * shopflo.checkout_abandoned.v1 is a SERVER_TRUSTED lane event (no install token; brand_id is
+ * server-derived), so the Silver admission gate passes it under the claimed brand without an R2/R3
+ * gate. This test produces a realistic Shopflo abandoned-checkout envelope to the collector topic
+ * and asserts it lands in Iceberg Bronze (read over Trino via the lift view).
  *
- * REQUIRES the `lakehouse` docker profile (Redpanda + Spark sink + Iceberg REST + MinIO + StarRocks).
+ * REQUIRES the `lakehouse` docker profile (Kafka + kafka-connect + Iceberg REST + MinIO + Trino).
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'node:crypto';

@@ -78,17 +78,9 @@ GOLD_DIR="$SPARK_ROOT/gold"
 TRINO_VIEWS_RUNNER="$ROOT/db/trino/views/run-trino-views.sh"
 APP_ENV="${APP_ENV:-local-prod}"
 ENV_FILE="$ROOT/.env.${APP_ENV}"
-# BRONZE SOURCE for every silver run script this loop invokes. Follows the ADR-0010 landing-writer
-# switch: under BRONZE_LANDING=connect Silver reads the Kafka Connect tables (collector lane =
-# collector_events_connect; raw lanes = the per-provider *_raw_connect tables); otherwise the
-# unified brain_bronze.events written by the Spark-SS dev sink. Explicit BRONZE_SOURCE always wins.
-# Rollback = BRONZE_SOURCE=legacy (or =events with the Spark sink running).
-# ADR-0010 CUT OVER 2026-07-05: default landing writer is now `connect`.
-if [ "${BRONZE_LANDING:-connect}" = "connect" ]; then
-  export BRONZE_SOURCE="${BRONZE_SOURCE:-connect}"
-else
-  export BRONZE_SOURCE="${BRONZE_SOURCE:-events}"
-fi
+# Bronze source is fixed to the Kafka Connect tables (ADR-0010): the silver run scripts read the
+# collector lane from collector_events_connect and the raw lanes from the per-provider *_raw_connect
+# tables — there is no BRONZE_SOURCE/BRONZE_LANDING switch anymore (rollback = git revert).
 # Bounded retry: total attempts = MAX_RETRIES + 1 (so MAX_RETRIES=1 ⇒ one retry ⇒ 2 attempts).
 MAX_RETRIES="${MAX_RETRIES:-1}"
 RETRY_SLEEP_SECONDS="${RETRY_SLEEP_SECONDS:-10}"
@@ -344,9 +336,9 @@ run_phase() {
         run_node_job identity-export @brain/stream-worker src/jobs/identity-export/run.ts || failures=$((failures+1))
       fi
 
-      # 0b. SILVER COLLECTOR EVENT (ADR-0006 P2) — the R2/R3 admission gate over the RAW Kafka-Connect Bronze
-      #     (brain_bronze.collector_events_raw), materializing brain_silver.silver_collector_event. ALL the
-      #     downstream silver_* jobs that used to read brain_bronze.collector_events now read THIS gated table,
+      # 0b. SILVER COLLECTOR EVENT (ADR-0006 P2) — the R2/R3 admission gate over the RAW Kafka Connect
+      #     Bronze collector table (brain_bronze.collector_events_connect, ADR-0010), materializing
+      #     brain_silver.silver_collector_event. ALL the downstream silver_* jobs read THIS gated table,
       #     so it MUST build before them. Idempotent MERGE; no-op when the raw table is empty.
       if [ "${SKIP_COLLECTOR_GATE:-0}" != "1" ]; then
         run_spark_script silver-collector-event "$SILVER_DIR/run-silver-collector-event.sh" || failures=$((failures+1))
@@ -477,7 +469,7 @@ run_once() {
 
   # ── DAILY MAINTENANCE (guard-file cadence; end of cycle = quiet window) ────────────────────────────
   # ADR-0006 D4 raw-PII short retention (AUD-PERF-003): row-TTL DELETE + snapshot expiry over the raw
-  # Bronze tables, incl. the unified brain_bronze.events connector lanes. Compliance job — a failure
+  # Bronze tables, incl. the Kafka Connect raw-lane tables (ADR-0010). Compliance job — a failure
   # marks the cycle degraded (and retries next cycle: the guard stamp is only touched on success).
   run_maintenance_job bronze-raw-retention "$SPARK_ROOT/run-bronze-raw-retention.sh" || failures=$((failures+1))
   # Iceberg Silver+Gold compaction + snapshot expiry + guarded orphan-file sweep (AUD-PERF-004): the

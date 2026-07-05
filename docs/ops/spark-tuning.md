@@ -8,16 +8,17 @@ now applied in the shared session factories, and the one place a cluster becomes
 
 - **Execution model: `--master local[*]` everywhere.** There is **no Spark cluster, no YARN, no
   Spark Operator, no "two clusters."** The driver JVM *is* the executor.
-  - **Streaming (Bronze):** two long-running docker containers — `spark-bronze-sink`
-    (`bronze_materialize.py`, the consent/install-gated collector→Bronze sink) and
-    `spark-bronze-raw-sink` (`bronze_raw_landing.py`, the 9 connector raw lanes). `apache/spark:3.5.3`.
+  - **Streaming (Bronze): not Spark anymore.** Bronze landing is the Kafka Connect Iceberg sink
+    (compose `kafka-connect` service / `infra/helm/kafka-connect` chart — ADR-0010, cutover
+    2026-07-05; the Spark-SS sinks `bronze_materialize.py`/`bronze_raw_landing.py`/`bronze_landing.py`
+    are removed). Spark keeps only Bronze maintenance/retention/erasure.
   - **Batch (Silver/Gold):** **ephemeral, per-job** `spark-submit` containers — `run-silver-*.sh` /
     `run-gold-*.sh` locally (one `docker run` per mart), and single `spark-submit --master local[*]`
     pods in the Argo `CronWorkflow`s (`infra/helm/cronworkflows/templates/spark-v4.yaml`) in prod.
     Jobs run **sequentially**, so there is no inter-job resource contention to "consolidate."
 - **Spark 3.5.3** (already the latest 3.5.x; JDK 17 → **G1GC is already the default collector**).
-- **One shared config root:** `iceberg_base.build_spark()` (Silver/Gold) and the two Bronze sinks'
-  own `build_spark()` — AQE has been on fleet-wide since #300.
+- **One shared config root:** `iceberg_base.build_spark()` (Silver/Gold) — AQE has been on
+  fleet-wide since #300. (The retired Bronze sinks' own `build_spark()` went with them, ADR-0010.)
 - **Storage:** Iceberg REST catalog (local: `iceberg-rest` + MinIO; prod: Glue + per-layer S3),
   `S3FileIO`, path-style.
 - **Container memory is budgeted**, not ad-hoc — see `docs/ops/local-memory-budget.md`.
@@ -37,9 +38,9 @@ files. So this work is **hardening + standardisation**, not firefighting.
 
 ## 3. Tuning now applied (shared, in-session, local-mode-correct)
 
-Defined once in `iceberg_base.spark_perf_configs()` and applied by every Silver/Gold session; the two
-Bronze sinks duplicate the same dict (they import nothing from `iceberg_base`, by design, so a change
-there can never break the proven Bronze path — keep the three in sync). All env-overridable.
+Defined once in `iceberg_base.spark_perf_configs()` and applied by every Silver/Gold session. (The
+retired Bronze sinks used to duplicate this dict; with the ADR-0010 cutover, Bronze landing is not a
+Spark session at all — there is nothing to keep in sync anymore.) All env-overridable.
 
 | Config | Default | Why |
 |---|---|---|

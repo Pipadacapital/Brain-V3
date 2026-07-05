@@ -24,44 +24,42 @@ PII: hashed-only; raw identifiers never stored. brand_id is server-trusted (MT-1
 from __future__ import annotations
 
 import hashlib
-import os
 import re
 from datetime import datetime, timezone
 
 
-# ── BRONZE-SOURCE switch (bronze_landing.py unification / ADR-0010 Kafka Connect writer) ─────────────
-# ONE env flips every raw-normalize reader:
-#   BRONZE_SOURCE=legacy (default) → read the legacy per-provider *_raw table (current behavior).
-#   BRONZE_SOURCE=events           → read the unified brain_bronze.events filtered to this connector
-#                                    (the bronze_landing.py Spark-SS sink; G1 payload-parse pending).
-#   BRONZE_SOURCE=connect          → the per-provider `<lane>_raw_connect` tables: the ADR-0010 Kafka
-#                                    Connect Iceberg sink writes each raw lane to its OWN FRESH table
-#                                    with the EXPLODED envelope schema (schemaless JsonConverter) these
-#                                    jobs' struct-column reads were originally built against. Fresh
-#                                    tables (not the legacy *_raw) because the Spark-written *_raw
-#                                    schemas carry required (NOT NULL) columns — dedup_key/payload —
-#                                    that an exploded Connect record can't satisfy (verified live: the
-#                                    Parquet writer NPEs on the required-column null).
-# Rollback = set BRONZE_SOURCE back. The unified events table carries the SAME raw payload/coords the
-# *_raw tables did, plus the `connector` column used for the filter.
-def bronze_source_table(catalog, namespace, legacy_table):
-    """FQTN of the raw source — brain_bronze.events under BRONZE_SOURCE=events, the Connect-written
-    `<legacy>_connect` table under BRONZE_SOURCE=connect, else the legacy per-provider *_raw."""
-    mode = os.environ.get("BRONZE_SOURCE", "legacy").lower()
-    if mode == "events":
-        return f"{catalog}.{namespace}.events"
-    if mode == "connect":
-        return f"{catalog}.{namespace}.{legacy_table}_connect"
-    return f"{catalog}.{namespace}.{legacy_table}"
+# ── Raw Bronze source (ADR-0010: the Kafka Connect Iceberg sink is THE writer — no env switch) ───────
+# Each raw lane lands in its OWN per-provider `<lane>_connect` table with the EXPLODED envelope schema
+# (schemaless JsonConverter) these jobs' struct-column reads were originally built against. Fresh tables
+# (not the legacy *_raw) because the retired Spark-written *_raw schemas carry required (NOT NULL)
+# columns — dedup_key/payload — that an exploded Connect record can't satisfy (verified live: the
+# Parquet writer NPEs on the required-column null). The retired Spark-SS landing paths (the legacy
+# *_raw tables and the unified brain_bronze.events) have NO live writer; the tables are retained as
+# history and are NOT read here.
+def connect_source_table(catalog, namespace, lane_table):
+    """FQTN of a lane's raw source: the ADR-0010 Connect-written `<lane>_connect` table."""
+    return f"{catalog}.{namespace}.{lane_table}_connect"
 
 
-def read_bronze(spark, catalog, namespace, legacy_table, connector):
-    """Read a connector's raw Bronze — the unified events table (filtered to `connector`) under
-    BRONZE_SOURCE=events, else the legacy per-provider *_raw table. The unified events table has a
-    `connector` column (the legacy *_raw tables don't), so the filter is applied only there."""
+def read_bronze(spark, catalog, namespace, lane_table, connector=None):
+    """Read a connector's raw Bronze lane — the ADR-0010 Connect-written `<lane>_connect` table.
+
+    The Connect sink AUTO-CREATES each lane's table on the lane's FIRST record, so a lane that has
+    never produced yet has NO table at all. Returning an empty single-column DataFrame lets every
+    caller's existing `raw.limit(1).count() == 0` skip-guard take its clean exit instead of the job
+    dying with TABLE_OR_VIEW_NOT_FOUND (this failed live: woocommerce/shopflo/shiprocket normalize
+    during the first post-cutover refresh). Callers MUST keep guarding emptiness BEFORE selecting
+    struct columns — the placeholder frame has only brand_id.
+
+    `connector` is kept for call-site compatibility; a per-connector filter applies only if the
+    source actually carries a `connector` column (the per-lane connect tables don't need one)."""
     from pyspark.sql.functions import col  # noqa: E402 — lazy (keeps pure ports Spark-free)
-    df = spark.table(bronze_source_table(catalog, namespace, legacy_table))
-    if "connector" in df.columns:
+    fqtn = connect_source_table(catalog, namespace, lane_table)
+    if not spark.catalog.tableExists(fqtn):
+        # lane has not produced its first record yet → empty-lane skip
+        return spark.createDataFrame([], "brand_id string")
+    df = spark.table(fqtn)
+    if connector is not None and "connector" in df.columns:
         df = df.where(col("connector") == connector)
     return df
 
@@ -72,8 +70,7 @@ def dedupe_latest(df, keys, order_col):
     REQUIRED under the ADR-0010 append-only Connect Bronze: the Iceberg sink has no MERGE, so a
     webhook redelivery / provider re-pull / topic replay lands DUPLICATE raw rows, and a Spark MERGE
     whose source carries duplicate join keys aborts with a cardinality violation. Applied to every
-    normalize job's canonical frame just before its MERGE — a no-op when the batch is already unique
-    (the bronze_raw_landing/legacy path), so it is safe under every BRONZE_SOURCE mode."""
+    normalize job's canonical frame just before its MERGE — a no-op when the batch is already unique."""
     from pyspark.sql.functions import col, row_number  # noqa: E402 — lazy (keeps pure ports Spark-free)
     from pyspark.sql.window import Window  # noqa: E402
 

@@ -1,5 +1,9 @@
 # Shopflo Connector — Verification & Reimplementation Plan
 
+> **Writer note (ADR-0010, 2026-07-05):** `bronze_materialize.py` referenced below was removed —
+> Bronze is landed verbatim by the Kafka Connect sink with NO Bronze-side gate; the
+> `SERVER_TRUSTED` admit set now lives only in `silver_collector_event.py` (one edit, not two).
+
 **Reviewer:** Lead connector review (merged from 3 code-audit dimensions + 1 live diagnosis)
 **Date:** 2026-06-27
 **Verdict:** `major_gaps` — production-quality but ~15% spec coverage; checkout-signal-only, not an order source; live on zero brands.

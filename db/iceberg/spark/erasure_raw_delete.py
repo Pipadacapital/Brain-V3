@@ -79,7 +79,29 @@ BRONZE_NAMESPACE = os.environ.get("BRONZE_NAMESPACE", "brain_bronze")
 # erase at the row level; skip silently and note in logs).
 #
 # ADD a new lane here when its Kafka Connect Iceberg sink connector ships.
+#
+# ADR-0010: the live writer is the Kafka Connect Iceberg sink — each raw lane lands in its own
+# `<lane>_raw_connect` table (auto-created on the lane's first record; absent tables are skipped by
+# the _table_exists guard). RTBF covers BOTH generations: the Connect-written *_raw_connect lanes AND
+# the retained legacy *_raw tables (no live writer; kept as history with data still in them). The
+# connect tables carry the exploded raw envelope — an identifier column absent from a lane's connect
+# schema is skipped by the _col_exists guard (and that lane's raw rows still age out within the D4
+# 7-day window via bronze_raw_retention.py). collector_events_connect is NOT listed: it lands the
+# verbatim envelope `payload` JSON + kafka coordinates only (no lifted identifier columns), so a
+# column-equality DELETE cannot target it; its per-subject erasure path is the payload-hashed-PII
+# posture + the brand-level erase in bronze_maintenance.py (MODE=erase, BRONZE_TABLE pinned).
 RAW_TABLE_IDENTIFIER_COLS: dict[str, list[str]] = {
+    # ── ADR-0010 Connect-written lanes (live writers) ──
+    "shopify_orders_raw_connect": ["identifier_hash", "email_hash"],
+    "woocommerce_orders_raw_connect": ["identifier_hash", "email_hash"],
+    "meta_spend_raw_connect": [],    # aggregate spend — no per-subject identifier
+    "google_spend_raw_connect": [],  # aggregate spend — no per-subject identifier
+    "ga4_rows_raw_connect": ["identifier_hash", "client_id"],
+    "shiprocket_shipments_raw_connect": ["identifier_hash"],
+    "gokwik_events_raw_connect": ["identifier_hash"],
+    "shopflo_checkout_raw_connect": ["identifier_hash"],
+    "razorpay_settlement_raw_connect": ["identifier_hash"],
+    # ── retained legacy tables (history; still hold data → RTBF must keep covering them) ──
     "collector_events_raw": ["identifier_hash", "anonymous_id"],
     "shopify_orders_raw": ["identifier_hash", "email_hash"],
     "woocommerce_orders_raw": ["identifier_hash", "email_hash"],

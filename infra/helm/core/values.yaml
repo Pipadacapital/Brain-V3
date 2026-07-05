@@ -43,12 +43,6 @@ env:
     value: core
   - name: PORT
     value: "3001"
-  # ADR-0010 cutover: app Bronze reads target the Kafka Connect collector table via the Trino lift
-  # view collector_events_connect_lifted — what the deployed landing writer (kafka-connect chart)
-  # writes. The code default is 'legacy' (frozen pre-cutover tables, rollback-only), so set it
-  # explicitly or reads silently split-brain. Rollback = events (with sparkBronze re-enabled).
-  - name: BRONZE_SOURCE
-    value: connect
 
 serviceAccount:
   annotations: {}   # IRSA role for AWS Secrets Manager access (set per env)

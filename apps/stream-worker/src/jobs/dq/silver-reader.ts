@@ -38,25 +38,16 @@ export interface SilverReader {
 export const BRAND_PREDICATE = '${BRAND_PREDICATE}';
 
 /**
- * The Iceberg Bronze event table over Trino. DB-AUDIT C4: the DQ checks read Bronze from the
- * lakehouse (the Bronze SoR), NOT the retired PG data_plane.bronze_events. Trino's default catalog
- * is 'iceberg', so the explicit `iceberg.brain_bronze.collector_events` resolves the Iceberg Bronze
- * namespace directly (mirrors analytics _bronze-source.ts ICEBERG_BRONZE).
+ * The Iceberg Bronze collector source over Trino. DB-AUDIT C4: the DQ checks read Bronze from the
+ * lakehouse (the Bronze SoR), NOT the retired PG data_plane.bronze_events. Under ADR-0010 the Kafka
+ * Connect Iceberg sink is the ONLY Bronze writer — this is the Trino LIFT VIEW over the truly-raw
+ * collector_events_connect table (the view lifts the envelope scalars these DQ checks select).
+ * CONSTANT — the legacy BRONZE_SOURCE env switch is REMOVED (mirrors analytics _bronze-source.ts).
  */
-// BRONZE_SOURCE switch (mirrors analytics _bronze-source.ts): `events` → the unified
-// brain_bronze.events (collector lane); `connect` → the ADR-0010 Kafka Connect lift view
-// collector_events_connect_lifted (the Connect table is truly-raw payload+coords; the view lifts the
-// envelope scalars these DQ checks select); else the legacy collector_events. Rollback = set it back.
-const BRONZE_SOURCE = (process.env['BRONZE_SOURCE'] ?? 'legacy').toLowerCase();
-export const ICEBERG_BRONZE =
-  BRONZE_SOURCE === 'events'
-    ? 'iceberg.brain_bronze.events'
-    : BRONZE_SOURCE === 'connect'
-      ? 'iceberg.brain_bronze.collector_events_connect_lifted'
-      : 'iceberg.brain_bronze.collector_events';
-/** Keep ONLY the collector lane when reading the unified events table; a no-op on the single-lane
- * legacy/connect tables. Append as `AND ${BRONZE_COLLECTOR_PREDICATE}`. */
-export const BRONZE_COLLECTOR_PREDICATE = BRONZE_SOURCE === 'events' ? "connector = 'collector'" : 'TRUE';
+export const ICEBERG_BRONZE = 'iceberg.brain_bronze.collector_events_connect_lifted';
+/** Collector-lane predicate — the lift view is SINGLE-LANE, so this is a constant no-op `TRUE`.
+ * Kept exported so callers' `AND ${BRONZE_COLLECTOR_PREDICATE}` SQL shape stays uniform. */
+export const BRONZE_COLLECTOR_PREDICATE = 'TRUE';
 
 export function createSilverReader(config: SilverReaderConfig): SilverReader {
   // Trino HTTP adapter — catalog='iceberg', schema='brain_serving' so two-part `brain_serving.mv_*`

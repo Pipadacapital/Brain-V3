@@ -3,24 +3,24 @@ gate_admission_guard_test.py — Brain V4 CI guard: the COLLECTOR ADMISSION GATE
 starve a Silver consumer (CRIT-4 regression net).
 
 WHY THIS EXISTS
-  The collector lane is gated TWICE, byte-identically, by two SERVER_TRUSTED sets that MUST agree:
-    • db/iceberg/spark/bronze_materialize.py            → SERVER_TRUSTED_BRONZE  (Bronze landing)
-    • db/iceberg/spark/silver/silver_collector_event.py → SERVER_TRUSTED         (ADR-0006 P3 keystone gate)
+  ADR-0010: Bronze landing is the Kafka Connect Iceberg sink (ungated, append-only), so the collector
+  lane is gated EXACTLY ONCE — silver_collector_event.py's SERVER_TRUSTED / LEDGER_ONLY are the SOLE
+  owner of the admission sets. (Historically the retired Spark-SS Bronze sink carried a byte-identical
+  twin, and this guard cross-checked the two files; that file is deleted, so the parity checks are gone
+  and the guard now protects the single remaining gate.)
   An event_type NOT in SERVER_TRUSTED (and not LEDGER_ONLY) falls to the PIXEL lane, where the R2
   install_token join SILENTLY DROPS any server-derived event that carries no install_token. That is
   exactly the CRIT-4 bug: the Shopify resource events product.upsert.v1 / customer.upsert.v1 /
-  refund.recorded.v1 / fulfillment.recorded.v1 were in NEITHER set → routed to the pixel lane → dropped
-  → silver_refund / silver_fulfillment / silver_product_variant / silver_inventory_level were starved.
+  refund.recorded.v1 / fulfillment.recorded.v1 were in NEITHER lane's set → routed to the pixel lane →
+  dropped → silver_refund / silver_fulfillment / silver_product_variant / silver_inventory_level starved.
 
 WHAT THIS GUARD ASSERTS (all static — no Spark/Trino needed, runnable in CI)
-  1. PARITY        — SERVER_TRUSTED_BRONZE (bronze) == SERVER_TRUSTED (silver), byte-for-byte by element.
-  2. LEDGER PARITY — LEDGER_ONLY (bronze) == LEDGER_ONLY (silver).
-  3. DISJOINT      — an event_type can never be BOTH server-trusted AND ledger-only.
-  4. CRIT-4 PIN    — the four Shopify resource events are present in BOTH gate sets (regression pin).
-  5. CONNECTOR ⊆ GATE — every CONNECTOR-derived canonical event a gated-keystone Silver builder consumes
+  1. DISJOINT      — an event_type can never be BOTH server-trusted AND ledger-only.
+  2. CRIT-4 PIN    — the four Shopify resource events are present in the gate set (regression pin).
+  3. CONNECTOR ⊆ GATE — every CONNECTOR-derived canonical event a gated-keystone Silver builder consumes
                         (REQUIRED_SERVER_TRUSTED) IS admitted by the gate. Adding a new connector
                         consumer = add its event here = the assert forces it into SERVER_TRUSTED.
-  6. DISCOVERY     — every event_type literal that ANY Silver builder filters on is ACCOUNTED FOR in one
+  4. DISCOVERY     — every event_type literal that ANY Silver builder filters on is ACCOUNTED FOR in one
                      of the documented lanes below. A brand-new, un-catalogued event_type → FAIL, so a
                      future Silver consumer cannot be added without declaring how it reaches the builder
                      (and, if connector-derived, putting it through the gate).
@@ -36,12 +36,10 @@ import os
 import re
 from pathlib import Path
 
-# ── Locate the gate source files (repo-root-relative, robust to cwd) ──────────────────────────────
+# ── Locate the gate source file (repo-root-relative, robust to cwd) ───────────────────────────────
 _THIS = Path(__file__).resolve()
-SPARK_DIR = _THIS.parent.parent          # db/iceberg/spark
 SILVER_DIR = _THIS.parent                # db/iceberg/spark/silver
-BRONZE_FILE = SPARK_DIR / "bronze_materialize.py"
-KEYSTONE_FILE = SILVER_DIR / "silver_collector_event.py"
+KEYSTONE_FILE = SILVER_DIR / "silver_collector_event.py"  # ADR-0010: the SOLE gate-set owner
 
 # The four Shopify CONNECTOR-derived RESOURCE events (CRIT-4) — server-derived brand_id, NO install_token,
 # so they MUST be server-trusted or the pixel-lane R2 join drops them and starves their Silver consumers.
@@ -151,9 +149,7 @@ def _extract_str_set(path: Path, name: str) -> set:
 
 def _gate_constants():
     return {
-        "bronze_server": _extract_str_set(BRONZE_FILE, "SERVER_TRUSTED_BRONZE"),
         "silver_server": _extract_str_set(KEYSTONE_FILE, "SERVER_TRUSTED"),
-        "bronze_ledger": _extract_str_set(BRONZE_FILE, "LEDGER_ONLY"),
         "silver_ledger": _extract_str_set(KEYSTONE_FILE, "LEDGER_ONLY"),
     }
 
@@ -229,49 +225,29 @@ def discover_event_type_literals() -> dict:
 
 
 # ── The checks ────────────────────────────────────────────────────────────────────────────────────
-def check_server_trusted_byte_identical():
-    c = _gate_constants()
-    assert c["bronze_server"] == c["silver_server"], (
-        "SERVER_TRUSTED parity BROKEN — bronze_materialize.SERVER_TRUSTED_BRONZE and "
-        "silver_collector_event.SERVER_TRUSTED must contain byte-identical event_types.\n"
-        f"  only in bronze: {sorted(c['bronze_server'] - c['silver_server'])}\n"
-        f"  only in silver: {sorted(c['silver_server'] - c['bronze_server'])}"
-    )
-
-
-def check_ledger_only_parity():
-    c = _gate_constants()
-    assert c["bronze_ledger"] == c["silver_ledger"], (
-        "LEDGER_ONLY parity BROKEN between the two gate files.\n"
-        f"  only in bronze: {sorted(c['bronze_ledger'] - c['silver_ledger'])}\n"
-        f"  only in silver: {sorted(c['silver_ledger'] - c['bronze_ledger'])}"
-    )
-
-
 def check_server_and_ledger_disjoint():
     c = _gate_constants()
-    overlap = c["bronze_server"] & c["bronze_ledger"]
+    overlap = c["silver_server"] & c["silver_ledger"]
     assert not overlap, f"an event_type is BOTH server-trusted AND ledger-only (contradictory): {sorted(overlap)}"
 
 
 def check_crit4_resource_events_admitted():
     c = _gate_constants()
-    missing_b = CRIT4_RESOURCE_EVENTS - c["bronze_server"]
-    missing_s = CRIT4_RESOURCE_EVENTS - c["silver_server"]
-    assert not missing_b and not missing_s, (
-        "CRIT-4 REGRESSION — Shopify resource events missing from a gate set (they would fall to the "
+    missing = CRIT4_RESOURCE_EVENTS - c["silver_server"]
+    assert not missing, (
+        "CRIT-4 REGRESSION — Shopify resource events missing from the gate set (they would fall to the "
         "PIXEL lane and be dropped, starving silver_refund/silver_fulfillment/silver_product_variant/"
-        f"silver_inventory_level).\n  missing from bronze: {sorted(missing_b)}\n  missing from silver: {sorted(missing_s)}"
+        f"silver_inventory_level).\n  missing from SERVER_TRUSTED: {sorted(missing)}"
     )
 
 
 def check_required_connector_events_admitted():
     c = _gate_constants()
-    missing = REQUIRED_SERVER_TRUSTED - c["bronze_server"]
+    missing = REQUIRED_SERVER_TRUSTED - c["silver_server"]
     assert not missing, (
         "ANTI-STARVATION — a CONNECTOR-derived event consumed from the gated keystone is NOT admitted by "
         f"the gate (pixel lane would drop it for a null install_token): {sorted(missing)}.\n"
-        "Add it to SERVER_TRUSTED_BRONZE (bronze_materialize.py) AND SERVER_TRUSTED (silver_collector_event.py)."
+        "Add it to SERVER_TRUSTED (silver_collector_event.py — the sole gate set under ADR-0010)."
     )
 
 
@@ -299,8 +275,6 @@ def check_every_builder_event_is_accounted_for():
 
 
 _CHECKS = [
-    ("server_trusted_byte_identical", check_server_trusted_byte_identical),
-    ("ledger_only_parity", check_ledger_only_parity),
     ("server_and_ledger_disjoint", check_server_and_ledger_disjoint),
     ("crit4_resource_events_admitted", check_crit4_resource_events_admitted),
     ("required_connector_events_admitted", check_required_connector_events_admitted),
@@ -309,14 +283,6 @@ _CHECKS = [
 
 
 # pytest entrypoints (one test per check, for granular CI output)
-def test_server_trusted_byte_identical():
-    check_server_trusted_byte_identical()
-
-
-def test_ledger_only_parity():
-    check_ledger_only_parity()
-
-
 def test_server_and_ledger_disjoint():
     check_server_and_ledger_disjoint()
 

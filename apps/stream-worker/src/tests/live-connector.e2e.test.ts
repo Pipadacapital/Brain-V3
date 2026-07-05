@@ -145,9 +145,10 @@ beforeAll(async () => {
   superPool = new Pool({ connectionString: SUPERUSER_DB_URL, max: 3 });
   appPool = new Pool({ connectionString: BRAIN_APP_DB_URL, max: 3 });
 
-  // Bronze is the Spark sink → Iceberg (PG bronze write retired). The Bronze-landing tests produce
-  // order.live.v1 / order.backfill.v1 to their lanes — the Spark sink lands both in Iceberg
-  // `brain_bronze.collector_events`, read via StarRocks. Gated on lakehouse infra.
+  // Bronze is the Kafka Connect Iceberg sink (ADR-0010; PG bronze write retired). The Bronze-landing
+  // tests produce order.live.v1 / order.backfill.v1 to their lanes — the compose kafka-connect
+  // service lands both append-only in `brain_bronze.collector_events_connect`, read over Trino via
+  // the lift view. Gated on lakehouse infra.
   const kafka = new Kafka({ clientId: 'live-connector-e2e-producer', brokers: KAFKA_BROKERS, retry: { retries: 3 } });
   producer = kafka.producer();
   await producer.connect();

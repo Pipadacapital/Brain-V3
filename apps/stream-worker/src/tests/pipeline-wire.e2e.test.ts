@@ -6,19 +6,20 @@
  *
  *   POST /collect (real TCP HTTP, collector on a real OS port)
  *     → collector_spool (INSERT, status=pending)
- *     → drainer produces to Redpanda (real broker, the collector topic)
+ *     → drainer produces to Kafka (real broker, the collector topic)
  *     → collector_spool status=drained
- *     → the Spark Structured-Streaming sink consumes the topic and MERGEs into Iceberg Bronze
- *       (brain_bronze.collector_events) — the SOLE Bronze writer (the PG bronze write is retired)
- *     → the row is readable via the StarRocks external catalog, brand-scoped
+ *     → the Kafka Connect Iceberg sink (the compose kafka-connect service — the SOLE Bronze writer,
+ *       ADR-0010, ~30s commit interval) APPENDS the record into Iceberg Bronze
+ *       (brain_bronze.collector_events_connect; the PG bronze write is retired)
+ *     → the row is readable over Trino via the lift view, brand-scoped
  *     → wrong-brand-scoped read → 0 rows (read-seam tenant isolation)
  *
- * The event is order.live.v1 (SERVER_TRUSTED lane) so it flows through the collector → Spark without
- * the pixel-lane R2/R3 gate (that gate is owned by ingest-hardening.e2e.test.ts) — this suite proves
- * the WIRING from the HTTP edge all the way to Iceberg Bronze.
+ * The event is order.live.v1 (SERVER_TRUSTED lane) so nothing gates it downstream (the pixel-lane
+ * R2/R3 gate lives at Silver admission and is owned by ingest-hardening.e2e.test.ts) — this suite
+ * proves the WIRING from the HTTP edge all the way to Iceberg Bronze.
  *
- * REQUIRES the `lakehouse` docker profile (collector deps: Redpanda + PG; plus Spark sink + Iceberg
- * REST + MinIO + StarRocks). The collector runs as a child process; the Spark sink runs in Docker.
+ * REQUIRES the `lakehouse` docker profile (collector deps: Kafka + PG; plus kafka-connect + Iceberg
+ * REST + MinIO + Trino). The collector runs as a child process; the Connect sink runs in Docker.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';

@@ -1,18 +1,20 @@
 /**
  * live-order-bronze-wiring.e2e.test.ts — P0: order.live.v1 lands in (Iceberg) Bronze.
  *
- * ICEBERG-BRONZE: Bronze is the Spark sink → Iceberg `brain_bronze.collector_events` (the PG
- * data_plane.bronze_events table is dropped — migration 0070). order.live.v1 is a SERVER_TRUSTED lane
- * event — the Spark sink writes it under its claimed (server-derived) brand_id with no token/consent
- * gate. Shopify live + re-pull orders are produced as order.live.v1 carrying NO install_token; the
- * server-trusted lane is exactly what lets them reach Bronze (the historical pixel-lane R2 gate would
- * have quarantined them as tenant_unresolved).
+ * ICEBERG-BRONZE (ADR-0010): Bronze is the Kafka Connect Iceberg sink (the compose kafka-connect
+ * service — the SOLE Bronze writer) → `brain_bronze.collector_events_connect`, read over Trino via
+ * the lift view (the PG data_plane.bronze_events table is dropped — migration 0070). Bronze is
+ * append-only and ungated; order.live.v1 is a SERVER_TRUSTED lane event, so the Silver admission
+ * gate also passes it under its claimed (server-derived) brand_id with no token/consent gate.
+ * Shopify live + re-pull orders are produced as order.live.v1 carrying NO install_token; the
+ * server-trusted lane is exactly what lets them pass Silver admission (the pixel-lane R2 gate
+ * would have quarantined them as tenant_unresolved).
  *
  * This test produces a realistic re-pull order.live.v1 envelope to the collector topic and asserts it
- * lands in Iceberg Bronze (read via the StarRocks external catalog).
+ * lands in Iceberg Bronze (read over Trino via the lift view).
  *
- * UN-WIRE PROOF: if the Spark bronze sink is not running, SKIP_IF_NO_LAKEHOUSE fires (PENDING).
- * REQUIRES the `lakehouse` docker profile (Redpanda + Spark sink + Iceberg REST + MinIO + StarRocks).
+ * UN-WIRE PROOF: if the kafka-connect sink is not running, SKIP_IF_NO_LAKEHOUSE fires (PENDING).
+ * REQUIRES the `lakehouse` docker profile (Kafka + kafka-connect + Iceberg REST + MinIO + Trino).
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'node:crypto';

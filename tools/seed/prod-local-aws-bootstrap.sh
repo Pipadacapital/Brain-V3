@@ -98,7 +98,6 @@ seed_json_secret brain/prod/k8s/core-env "$(mkjson \
   ICEBERG_REST_URI "http://localhost:8181" \
   AWS_REGION "$(getv AWS_REGION)" \
   ICEBERG_WAREHOUSE "s3://brain-bronze/" \
-  CHECKPOINT_LOCATION "file:///checkpoint/bronze-landing" \
   COLLECTOR_TOPIC "$(getv COLLECTOR_TOPIC)" \
   BACKFILL_TOPIC "prod.collector.order.backfill.v1" \
   TOPIC_ENV_PREFIX "prod" \

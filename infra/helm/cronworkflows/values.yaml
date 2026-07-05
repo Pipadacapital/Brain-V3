@@ -47,49 +47,32 @@ defaults:
       cpu: "1"
       memory: 1Gi
 
-# Spark Bronze dual-sink + parity oracle (ADR-0002 Slice 3). GATED OFF by default — enabling it runs
-# the Iceberg Bronze sink IN PARALLEL with the live Postgres write (additive, reversible) plus the
-# PG⇄Iceberg parity oracle. Flip `enabled: true` per env only when ready to start the migration;
-# turn off to instantly stop the dual-sink. See db/iceberg/spark/ + docs/adr/0002-*.
+# Spark Bronze MAINTENANCE cron (templates/spark-bronze.yaml). ADR-0010: Bronze LANDING is the
+# Kafka Connect Iceberg sink — the infra/helm/kafka-connect chart is the SOLE landing writer; the
+# former bronze-landing CronWorkflow (bronze_landing.py, Spark-SS) was REMOVED 2026-07-05 with the
+# whole Spark-SS landing path (rollback = git revert). What remains here is bronze-maintenance:
+# small-file compaction + 24-month snapshot-expiry over the Bronze tables, including the
+# Connect-written collector_events_connect / <lane>_raw_connect tables.
 sparkBronze:
-  # ADR-0010: the Kafka Connect Iceberg sink (infra/helm/kafka-connect) REPLACES this landing
-  # CronWorkflow. Enable EXACTLY ONE of the two — at cutover set enabled:false HERE and
-  # enabled:true in the kafka-connect chart in the SAME release train (rollback = flip both back).
-  # bronze-maintenance (compaction/snapshot-expiry) stays enabled either way — it maintains the
-  # Connect-written tables too. See docs/runbooks/adr-0010-kafka-connect-bronze.md.
-  # CUT OVER 2026-07-05 (ADR-0010): DISABLED — the kafka-connect chart is the Bronze landing writer.
-  # Rollback = enabled:true here + kafka-connect chart enabled:false in the SAME release.
-  # (Historical) CORRECTION: the sink runs spark-submit --master local[*] in a SINGLE Argo Workflow pod
-  # (see templates/spark-bronze.yaml + the Dockerfile ENTRYPOINT) — it needs NO Spark Operator and NO
-  # dedicated cluster, just a pod sized for the driver (resources below give 4Gi; driverMemory 3g). The
-  # image is CI-built + digest-pinned (build-data-images). The remaining PREREQUISITE is operational,
-  # not infra: core-env (envSecretName) MUST carry the sink's config — KAFKA_BROKERS, ICEBERG_REST_URI/
-  # warehouse + AWS creds, CHECKPOINT_LOCATION (a DURABLE s3a:// path), and BOTH lane topics
-  # (COLLECTOR_TOPIC + BACKFILL_TOPIC). Without those the runs fail LOUDLY (visible Argo failures, not
-  # silent). See docs/runbooks/enable-attribution-unlocks.md. Flip back to false to instantly stop it.
-  enabled: false   # ADR-0010 cutover — kafka-connect chart owns Bronze landing now
+  # `enabled` gates the bronze-maintenance CronWorkflow; landing is the kafka-connect chart
+  # (ADR-0010). Maintenance must run regardless of who lands Bronze, so it defaults ON.
+  enabled: true
   image:
     repository: REPLACE_WITH_ECR_REGISTRY/brain-spark-bronze   # built from db/iceberg/spark/Dockerfile
     tag: ""            # B3: digest preferred; CI populates at deploy (fail-closed in the template)
     digest: ""
     pullPolicy: IfNotPresent
-  landingSchedule: "*/15 * * * *"       # bronze_landing drains ALL topics → brain_bronze.events every 15m (availableNow)
   maintenanceSchedule: "0 3 * * *"      # daily 03:00 IST — compaction + 24-mo snapshot-expiry (Slice 7)
   activeDeadlineSeconds: 1800
   # Spark driver heap (driver==executor under local[*]). Pinned < resources.limits.memory so the JVM +
-  # PySpark + Iceberg/Kafka machinery don't OOM on a backlog drain (the default 1g OOMs — same lesson
-  # as the local docker sink). Keep a margin below the pod memory limit for non-heap overhead.
+  # PySpark + Iceberg machinery don't OOM on a big compaction pass. Keep a margin below the pod
+  # memory limit for non-heap overhead.
   driverMemory: "3g"
-  # Non-secret config. Secrets (envSecretName) MUST include: KAFKA_BROKERS, ICEBERG/Glue, AWS_*, a
-  # DURABLE s3a:// CHECKPOINT_LOCATION, and the topic wiring. bronze_landing subscribes to ALL Bronze
-  # topics: COLLECTOR_TOPIC + BACKFILL_TOPIC + the nine connector *.raw.v1 lanes (derived from
-  # TOPIC_ENV_PREFIX, e.g. `prod`) — so the secret must carry COLLECTOR_TOPIC, BACKFILL_TOPIC AND
-  # TOPIC_ENV_PREFIX. This cron NEWLY lands the 9 raw lanes in prod (there was no bronze_raw_landing cron).
-  # CUTOVER: CHECKPOINT_LOCATION MUST be a FRESH s3a path (a new query plan + topic set + consumer group —
-  # the old bronze_materialize checkpoint can't be reused). Do a ONE-OFF STARTING_OFFSETS=earliest run to
-  # backfill brain_bronze.events (idempotent via dedup_key), then leave STARTING_OFFSETS=latest steady-state.
-  env:
-    - { name: STARTING_OFFSETS, value: "latest" }
+  # Non-secret extra env for the maintenance run (none needed by default). Secrets (envSecretName)
+  # MUST include ICEBERG_REST_URI/Glue + AWS_*. There is NO CHECKPOINT_LOCATION / STARTING_OFFSETS
+  # anymore — those belonged to the removed Spark-SS landing; Kafka Connect keeps its offsets in the
+  # Iceberg snapshots + its own topics.
+  env: []
   # Workflow-pod placement (AUD-PROD-006). Empty by default (staging/kind unchanged);
   # values-prod pins the Spark cron pods to the batch pool.
   nodeSelector: {}
@@ -125,9 +108,9 @@ sparkBronze:
 # cluster, the same external gate as sparkBronze.
 sparkV4:
   enabled: true
-  # ADR-0010 cutover: the v4-silver/v4-gold crons read the Kafka Connect Bronze tables
-  # (collector_events_connect + <lane>_raw_connect). Rollback = events (with sparkBronze re-enabled).
-  bronzeSource: connect
+  # ADR-0010: the v4-silver/v4-gold crons read the Kafka Connect Bronze tables
+  # (collector_events_connect + <lane>_raw_connect) — fixed in the jobs, no BRONZE_SOURCE
+  # switch (rollback = git revert).
   image:
     repository: REPLACE_WITH_ECR_REGISTRY/brain-spark-bronze   # same image — Dockerfile now carries the V4 marts
     tag: ""            # B3: digest preferred; CI populates at deploy (fail-closed in the template)

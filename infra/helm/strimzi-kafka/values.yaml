@@ -137,7 +137,7 @@ topics:
     - { suffix: "collector.event.v1.dlq",        retention: "long" }
     - { suffix: "collector.event.v1.quarantine", retention: "long" }
 
-  # 9 connector raw lanes (Spark-SS Bronze landing — bronze_raw_landing.py). Suffix -> <lane>.raw.v1
+  # 9 connector raw lanes (Kafka Connect Iceberg sink — ADR-0010). Suffix -> <lane>.raw.v1
   rawLanes:
     - shopify.orders
     - woocommerce.orders

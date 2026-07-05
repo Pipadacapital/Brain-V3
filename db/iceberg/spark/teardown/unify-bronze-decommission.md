@@ -1,3 +1,12 @@
+> **SUPERSEDED by the ADR-0010 decommission (2026-07-05).** Bronze landing was cut over to the Kafka
+> Connect Iceberg sink (`collector_events_connect` + the per-lane `*_raw_connect` tables) and the
+> Spark-SS landing path this document decommissions was removed AT THE CODE LEVEL (bronze_landing /
+> bronze_raw_landing / bronze_materialize / combined_bronze_sinks + their run scripts, tests, and the
+> PG⇄Iceberg parity oracle are deleted; `BRONZE_SOURCE` no longer exists). The legacy Iceberg tables
+> (`brain_bronze.events`, `collector_events`, the per-connector `*_raw`) are **RETAINED as history**
+> until a separate data-retirement decision — nothing below should be executed as written. Kept only
+> as the historical record of the (never-run) unified-events decommission plan.
+
 # Phase 8 — Unified-Bronze decommission (RUN AFTER BAKE, NOT before)
 
 Prereq: the unified `bronze_landing.py` sink is live (dev: `pnpm dev:up`; prod: the `bronze-landing`

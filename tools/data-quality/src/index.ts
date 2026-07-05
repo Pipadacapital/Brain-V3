@@ -16,15 +16,9 @@
 
 import { z } from 'zod';
 
-// Bronze source flips with BRONZE_SOURCE (scaffold config; no live queries yet): `events` = the
-// unified Spark-SS table; `connect` = the ADR-0010 Kafka Connect lift view; else legacy.
-const BRONZE_SOURCE = (process.env['BRONZE_SOURCE'] ?? 'legacy').toLowerCase();
-const BRONZE_TABLE =
-  BRONZE_SOURCE === 'events'
-    ? 'brain_bronze.events'
-    : BRONZE_SOURCE === 'connect'
-      ? 'brain_bronze.collector_events_connect_lifted'
-      : 'brain_bronze.collector_events';
+// Bronze source (scaffold config; no live queries yet): the ADR-0010 Kafka Connect lift view.
+// CONSTANT — the legacy BRONZE_SOURCE env switch is removed (connect is the only Bronze writer).
+const BRONZE_TABLE = 'brain_bronze.collector_events_connect_lifted';
 
 // ---------------------------------------------------------------------------
 // DQ Category declarations (Zod schema — single source of truth)
@@ -87,7 +81,7 @@ export type DQCheck = z.infer<typeof DQCheckSchema>;
 // ---------------------------------------------------------------------------
 
 export const DQ_CHECKS: DQCheck[] = [
-  // Freshness: Bronze collector_events must have events < 2h old during business hours
+  // Freshness: Bronze (the ADR-0010 connect lift view) must have events < 2h old during business hours
   {
     category: 'freshness',
     tableName: BRONZE_TABLE,

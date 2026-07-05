@@ -106,8 +106,8 @@ export async function freshnessCheck(
     client.release();
   }
 
-  // ── Lakehouse targets (StarRocks: Iceberg Bronze + Silver, brand-scoped at the seam) ──
-  // bronze_events freshness now reads the Iceberg Bronze SoR (collector_events), NOT PG.
+  // ── Lakehouse targets (Trino: Iceberg Bronze + Silver, brand-scoped at the seam) ──
+  // bronze_events freshness reads the Iceberg Bronze SoR (the ADR-0010 connect lift view), NOT PG.
   if (silver !== null) {
     // Bronze (Iceberg) freshness.
     try {
@@ -128,8 +128,8 @@ export async function freshnessCheck(
     try {
       const sr = await silver.scopedQuery<{ latest: string | null }>(
         brandId,
-        // BRONZE_COLLECTOR_PREDICATE is Bronze-only (`connector` exists on brain_bronze.events,
-        // not on Silver views) — under BRONZE_SOURCE=events it broke this read for every brand.
+        // BRONZE_COLLECTOR_PREDICATE is Bronze-only and now a constant no-op TRUE (ADR-0010:
+        // the single-lane connect lift view) — still never applied to Silver views.
         `SELECT MAX(updated_at) AS latest FROM brain_serving.mv_silver_order_state WHERE ${BRAND_PREDICATE}`,
       );
       const raw = sr[0]?.latest ?? null;

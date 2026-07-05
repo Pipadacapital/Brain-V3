@@ -2,8 +2,8 @@
  * getRecentEvents — bounded recent-rows read for the Tracking Center Event Explorer
  * (D-2 allowed exception).
  *
- * Selects the latest N Bronze rows from the Iceberg collector_events catalog via the
- * brand-isolated withSilverBrand seam. This is a bounded row-read of the raw collected-event
+ * Selects the latest N Bronze rows over Trino from the ADR-0010 connect lift view
+ * (collector_events_connect_lifted) via the brand-isolated withSilverBrand seam. This is a bounded row-read of the raw collected-event
  * feed — NOT a metric computation (like get-recent-activity). It lets a non-technical
  * stakeholder watch data arrive. Honest-empty (rows:[]) when StarRocks isn't wired.
  *

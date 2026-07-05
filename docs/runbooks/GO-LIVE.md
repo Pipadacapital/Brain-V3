@@ -221,8 +221,9 @@ Wiring facts you need for the JSON values:
 (AUD-COST-016: the ONE warehouse root; Bronze/Silver/Gold are namespaces),
 `CHECKPOINT_LOCATION=s3a://<warehouse_bucket_name>/_checkpoints` (the Spark
 jobs IRSA policy covers the `_checkpoints/` prefix), leave `S3_ENDPOINT` UNSET
-(real S3 + IRSA — a set value means MinIO-style static-key addressing),
-`BRONZE_SOURCE` is already `events` in the chart values (see step 12).
+(real S3 + IRSA — a set value means MinIO-style static-key addressing). There is
+no `BRONZE_SOURCE` env anymore — Bronze landing is connect-only (ADR-0010, see
+step 12).
 
 **Iceberg catalog DB (AUD-COST-012 — REST/JDBC on Aurora, NOT Glue):** Aurora is
 private-only; run once from inside the VPC (e.g. `kubectl run psql --rm -it --image=postgres:16 -- bash`)
@@ -301,18 +302,22 @@ views are replaceable/droppable with no data impact.
 
 ## 12. App tier + Bronze cutover + refresh crons (AUD-COST-013)
 
-`BRONZE_SOURCE=events` is already the deployed posture — set explicitly in
-`infra/helm/{core,stream-worker}/values.yaml` env and defaulted in the
-`cronworkflows` sparkV4 templates (the code default is `legacy`, rollback-only;
-never remove the explicit env or reads split-brain).
+Bronze landing is connect-only (ADR-0010, cutover executed 2026-07-05): the
+`BRONZE_SOURCE`/`BRONZE_LANDING` envs no longer exist — nothing to set on
+core/stream-worker or the sparkV4 templates. Enable the `infra/helm/kafka-connect`
+chart (the always-on landing writer); `sparkBronze` in `cronworkflows` is
+maintenance-only (bronze-maintenance / raw-retention / erasure — there is no
+bronze-landing cron).
 
 ```bash
 argocd app sync core-prod                       # runs the migration PreSync Job first (step 11)
 argocd app sync web-prod collector-prod stream-worker-prod
-argocd app sync cronworkflows-prod              # CronWorkflows: bronze-landing (*/15), bronze-maintenance,
+# Bronze landing writer (ADR-0010): deploy the infra/helm/kafka-connect chart
+# (fill worker.bootstrapServers etc. per its values.yaml; add an ArgoCD app for it
+# alongside the app tier if not already declared).
+argocd app sync cronworkflows-prod              # CronWorkflows: bronze-maintenance,
                                                 # v4-silver, v4-gold, v4-maintenance (weekly, AUD-COST-013), connector crons
 # Seed the medallion once instead of waiting for the schedules:
-argo submit -n argo --from cronworkflow/bronze-landing --wait
 argo submit -n argo --from cronworkflow/v4-silver --wait
 argo submit -n argo --from cronworkflow/v4-gold --wait
 ```
@@ -322,9 +327,11 @@ behind the `production` Environment). The B3 fail-closed templates refuse to
 render an unpinned image, and the strict placeholder gate refuses an unfilled
 promotion — both failing loud is the designed behavior.
 
-**Rollback:** `argocd app rollback <app>`; Bronze cutover rollback =
-`BRONZE_SOURCE=legacy` on core/stream-worker (values change + sync) — Bronze
-`brain_bronze.events` keeps landing either way (no event loss).
+**Rollback:** `argocd app rollback <app>`. Bronze landing rollback is NOT an env
+flip anymore (the Spark landing code is deleted): `git revert` the ADR-0010
+removal commits + redeploy, then replay the Kafka topics into the restored Spark
+sink — loss-free only within the 7-day topic retention window (see
+`docs/runbooks/adr-0010-kafka-connect-bronze.md`).
 
 ## 13. Smoke checks (the acceptance gate)
 
@@ -335,9 +342,9 @@ In order — each proves the layer below it:
 2. **Collector accepts (2xx):**
    `curl -si https://px.<domain>/v1/events -H 'content-type: application/json' -d '<pixel envelope>'`
    → 2xx (accept-before-validate spool; anything else is an event-loss bug).
-3. **Event lands in Bronze:** after the next bronze-landing run (≤15 min or the
-   manual `argo submit` above):
-   `SELECT count(*) FROM iceberg.brain_bronze.events WHERE ingest_date = current_date` (Trino) — must include your test event.
+3. **Event lands in Bronze:** within ~1 min (the Kafka Connect sink commits every
+   30s — ADR-0010):
+   `SELECT count(*) FROM iceberg.brain_bronze.collector_events_connect` (Trino) — must include your test event.
 4. **mv_* views serve:**
    `SELECT * FROM iceberg.brain_serving.mv_gold_revenue_ledger LIMIT 1` — a
    result set (honest-empty on a cold brand is a PASS; a 5xx/table-not-found is

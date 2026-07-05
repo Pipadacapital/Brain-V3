@@ -37,7 +37,7 @@ SOURCES it cannot get from Iceberg (read via JDBC, exactly as dbt does cross-cat
   - hashed-email → brain_id            → PG ops.silver_identity_link (the Neo4j export, PG operational store)
 Both are small dimension reads; the order/recognition logic itself is pure over Iceberg Bronze.
 
-Run via run-silver-orders.sh (mirrors run-bronze-parity.sh — Iceberg + PG JDBC package).
+Run via run-silver-orders.sh (one-shot Spark container — Iceberg + PG JDBC package).
 """
 from __future__ import annotations  # Python 3.8 on the Spark image.
 

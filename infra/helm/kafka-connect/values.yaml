@@ -1,10 +1,9 @@
 # brain-kafka-connect — the ADR-0010 Bronze landing writer.
 #
-# MUTUALLY EXCLUSIVE with cronworkflows sparkBronze: when this chart is enabled, set
-# sparkBronze.enabled=false in the SAME release train (two writers must never share a table; the
-# Connect sink writes its own collector_events_connect / <lane>_raw_connect tables regardless, but
-# running both doubles landing compute). Cutover/rollback: docs/runbooks/adr-0010-kafka-connect-bronze.md.
-# ADR-0010 CUT OVER 2026-07-05: this chart IS the Bronze landing writer (sparkBronze.enabled=false).
+# This chart is the SOLE Bronze landing writer (collector_events_connect + the <lane>_raw_connect
+# tables). The cronworkflows sparkBronze block now runs ONLY bronze-maintenance (compaction/
+# snapshot-expiry) — the Spark-SS landing path was removed 2026-07-05 (rollback = git revert).
+# See docs/runbooks/adr-0010-kafka-connect-bronze.md.
 enabled: true
 
 image:

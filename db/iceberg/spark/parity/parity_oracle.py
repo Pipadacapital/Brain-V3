@@ -61,7 +61,8 @@ from pyspark.sql.utils import AnalysisException
 
 from mart_registry import MARTS, MartSpec, resolve_mart
 
-# ── Iceberg (NEW side) catalog wiring — identical to ../bronze_materialize.build_spark ────────────
+# ── Iceberg (NEW side) catalog wiring — identical to ../iceberg_base.build_spark (the fleet's
+#    canonical REST-catalog factory; ADR-0010 removed the Spark-SS Bronze landing twin) ────────────
 CATALOG = os.environ.get("ICEBERG_CATALOG", "rest")
 ICEBERG_REST_URI = os.environ.get("ICEBERG_REST_URI", "http://iceberg-rest:8181")
 # Each medallion layer is its own warehouse bucket (provisioned by AREA A/B): brain-silver / brain-gold.
@@ -105,7 +106,7 @@ BRAND_ID = os.environ.get("PARITY_BRAND_ID", "").strip() or None
 def build_spark() -> SparkSession:
     """Spark session with the Iceberg REST catalog + MinIO S3 wiring.
 
-    Mirrors ../bronze_materialize.build_spark exactly. The warehouse here is set per-layer at table-read
+    Mirrors ../iceberg_base.build_spark's catalog wiring. The warehouse here is set per-layer at table-read
     time via `spark.read` is NOT enough for a REST catalog (the warehouse is a catalog-level property),
     so we register the catalog with the GOLD warehouse by default and rely on the REST catalog resolving
     each namespace's own metadata location (the REST catalog is the source of truth for table locations;

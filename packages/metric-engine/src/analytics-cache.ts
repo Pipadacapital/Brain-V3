@@ -39,11 +39,11 @@
 // a tagged token on write and reconstruct them on read — keeping the round-trip type-preserving.
 const BIGINT_TAG = '__brain_bigint__';
 
-export function bigintReplacer(_key: string, value: unknown): unknown {
+function bigintReplacer(_key: string, value: unknown): unknown {
   return typeof value === 'bigint' ? { [BIGINT_TAG]: value.toString() } : value;
 }
 
-export function bigintReviver(_key: string, value: unknown): unknown {
+function bigintReviver(_key: string, value: unknown): unknown {
   if (
     value !== null &&
     typeof value === 'object' &&

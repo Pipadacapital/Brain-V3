@@ -36,12 +36,15 @@ import {
 } from '@brain/metric-engine';
 import { DbAuditWriter } from '@brain/audit';
 
-import { assertArgon2Params, AuthService } from './modules/workspace-access/internal/application/auth.service.js';
-import { WorkspaceService } from './modules/workspace-access/internal/application/workspace.service.js';
-import { BrandService } from './modules/workspace-access/internal/application/brand.service.js';
-import { OnboardingService } from './modules/workspace-access/internal/application/onboarding.service.js';
-import { InviteService } from './modules/workspace-access/internal/application/invite.service.js';
-import { RateLimiter } from './modules/workspace-access/internal/infrastructure/rate-limiter.js';
+import {
+  assertArgon2Params,
+  AuthService,
+  WorkspaceService,
+  BrandService,
+  OnboardingService,
+  InviteService,
+  RateLimiter,
+} from './modules/workspace-access/index.js';
 import {
   ContactPiiVaultRepository,
   ContactPiiVaultService,
@@ -64,17 +67,20 @@ import { initObservability, initSentry, createLogger } from '@brain/observabilit
 /** Structured logger for core's lifecycle/error logs (request logs go through Fastify's pino). */
 const log = createLogger({ serviceName: 'core' });
 import { jtiFromJwt, csrfTokenForSession, csrfTokenMatches } from './modules/frontend-api/internal/csrf.js';
-import { NotificationServiceImpl } from './modules/notification/internal/notification.service.impl.js';
-import { createEmailAdapter } from './modules/notification/internal/ses-adapter.js';
-import { createCapiAdapter } from './modules/notification/internal/capi-adapter.js';
-import { createCapiCredsPort } from './modules/notification/internal/compliance/capi-creds.adapter.js';
-import { CapiPassbackService } from './modules/notification/internal/capi-passback.service.js';
-import { startCapiPassback } from './modules/notification/internal/capi-passback.orchestrator.js';
-import { fetchFinalizedPurchaseCandidatesScoped } from './modules/notification/internal/capi-source.query.js';
-import { CanContactEngine } from './modules/notification/internal/compliance/can-contact.engine.js';
-import { FunctionSaltPort } from './modules/notification/internal/compliance/salt.adapter.js';
-import { PgSuppressionQuery } from './modules/notification/internal/compliance/suppression.query.js';
-import { StubDltRegistry, StubNcprRegistry } from './modules/notification/internal/compliance/stubs.js';
+import {
+  NotificationServiceImpl,
+  createEmailAdapter,
+  createCapiAdapter,
+  createCapiCredsPort,
+  CapiPassbackService,
+  startCapiPassback,
+  fetchFinalizedPurchaseCandidatesScoped,
+  CanContactEngine,
+  FunctionSaltPort,
+  PgSuppressionQuery,
+  StubDltRegistry,
+  StubNcprRegistry,
+} from './modules/notification/index.js';
 
 // ── Connector infrastructure (global primitives; route wiring lives in bootstrap/) ──
 import { PgConnectorInstanceRepository } from './modules/connector/sources/storefront/shopify/infrastructure/repositories/PgConnectorInstanceRepository.js';

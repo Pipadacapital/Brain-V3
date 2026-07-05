@@ -13,20 +13,23 @@ import type pg from 'pg';
 import type { SilverPool, ServingCacheReader } from '@brain/metric-engine';
 import type { AuditWriter } from '@brain/audit';
 
-import type { AuthService } from '../modules/workspace-access/internal/application/auth.service.js';
-import type { WorkspaceService } from '../modules/workspace-access/internal/application/workspace.service.js';
-import type { BrandService } from '../modules/workspace-access/internal/application/brand.service.js';
-import type { OnboardingService } from '../modules/workspace-access/internal/application/onboarding.service.js';
-import type { InviteService } from '../modules/workspace-access/internal/application/invite.service.js';
-import { registerAuthRoutes } from '../modules/workspace-access/internal/interfaces/rest/auth.routes.js';
-import { validateSessionPreHandler } from '../modules/workspace-access/internal/interfaces/rest/auth.routes.js';
-import type { RateLimiter } from '../modules/workspace-access/internal/infrastructure/rate-limiter.js';
-import { registerWorkspaceRoutes } from '../modules/workspace-access/internal/interfaces/rest/workspace.routes.js';
-import { registerBrandRoutes } from '../modules/workspace-access/internal/interfaces/rest/brand.routes.js';
-import { registerMemberRoutes } from '../modules/workspace-access/internal/interfaces/rest/member.routes.js';
-import { registerBffRoutes } from '../modules/frontend-api/internal/bff.routes.js';
-import { registerDevRoutes } from '../modules/notification/internal/dev.routes.js';
-import { registerConsentRoutes } from '../modules/notification/internal/compliance/consent.routes.js';
+import type {
+  AuthService,
+  WorkspaceService,
+  BrandService,
+  OnboardingService,
+  InviteService,
+  RateLimiter,
+} from '../modules/workspace-access/index.js';
+import {
+  registerAuthRoutes,
+  validateSessionPreHandler,
+  registerWorkspaceRoutes,
+  registerBrandRoutes,
+  registerMemberRoutes,
+} from '../modules/workspace-access/index.js';
+import { registerBffRoutes } from '../modules/frontend-api/index.js';
+import { registerDevRoutes, registerConsentRoutes } from '../modules/notification/index.js';
 import type { ContactPiiVaultService } from '../modules/identity/index.js';
 import type { Neo4jIdentityReader } from '../modules/identity/internal/infrastructure/neo4j-identity-reader.js';
 

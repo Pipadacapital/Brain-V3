@@ -24,7 +24,7 @@
 import type { DbPool, QueryContext } from '@brain/db';
 
 /** The closed set of human actions on a recommendation (mirrors the 0082 CHECK constraint). */
-export const RECOMMENDATION_ACTIONS = [
+const RECOMMENDATION_ACTIONS = [
   'served',
   'accepted',
   'dismissed',

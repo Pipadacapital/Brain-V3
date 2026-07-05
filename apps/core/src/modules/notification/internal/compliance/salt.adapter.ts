@@ -1,33 +1,8 @@
 /**
- * EnvSaltPort — core-side per-brand salt adapter for the compliance gate.
- *
- * Mirrors the webhook getSaltHex pattern in main.ts (env var
- * IDENTITY_SALT_<BRAND_UUID_NO_DASHES>, a 64-hex / 32-byte value). HARD-CRASHES on a
- * missing or wrong-length salt (D-2) — the gate treats a throw here as a stop-the-world
- * crash, never a silent allow. In prod this is replaced by a KMS-backed adapter behind
- * the same SaltPort with zero engine change.
+ * Salt adapters for the compliance gate — thin implementations of the SaltPort seam.
  */
 
-import { resolveSaltHex } from '@brain/identity-core';
 import type { SaltPort } from './ports.js';
-
-export class EnvSaltPort implements SaltPort {
-  async saltHexForBrand(brandId: string): Promise<string> {
-    // Shared resolution order via @brain/identity-core (same as the worker
-    // SaltProvider + core main.ts salt sites): explicit IDENTITY_SALT_<brand>
-    // env → else dev-only deterministic per-brand salt → else prod env value.
-    // The D-2 hard-crash guard below is UNCHANGED and stays the single crash
-    // point: prod still refuses a missing/wrong-length salt; dev never trips it.
-    const salt = resolveSaltHex(brandId);
-    if (!salt || salt.length !== 64) {
-      throw new Error(
-        `[can_contact] salt for brand ${brandId} is missing or wrong length ` +
-          `(expected 64 hex chars) — refusing to hash with empty/default salt (D-2)`,
-      );
-    }
-    return salt;
-  }
-}
 
 /**
  * FunctionSaltPort — wraps an existing async salt-fetch function (e.g. the

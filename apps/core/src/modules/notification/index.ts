@@ -16,18 +16,32 @@ export type {
   CanContactResult,
 } from './service.js';
 export { NotificationServiceImpl } from './internal/notification.service.impl.js';
-export { createEmailAdapter, DevEmailAdapter, SesEmailAdapter } from './internal/ses-adapter.js';
+export { createEmailAdapter } from './internal/ses-adapter.js';
 
 // D13 compliance gate — the can_contact() engine + write path (brand-scoped callers).
 export {
-  buildCanContactEngine,
   CanContactEngine,
-  ConsentWriter,
   PgSuppressionQuery,
   StubDltRegistry,
   StubNcprRegistry,
-  EnvSaltPort,
   FunctionSaltPort,
-  evaluateSendWindow,
 } from './internal/compliance/index.js';
+
+// CAPI passback surface (composition root wires these; see main.ts).
+export { createCapiAdapter } from './internal/capi-adapter.js';
+export { createCapiCredsPort } from './internal/compliance/capi-creds.adapter.js';
+export { CapiPassbackService } from './internal/capi-passback.service.js';
+export { startCapiPassback } from './internal/capi-passback.orchestrator.js';
+export { fetchFinalizedPurchaseCandidatesScoped } from './internal/capi-source.query.js';
+
+// Route registrars (mounted by bootstrap/registerWorkspaceAccess.ts).
+export { registerDevRoutes } from './internal/dev.routes.js';
+export { registerConsentRoutes } from './internal/compliance/consent.routes.js';
+
+/**
+ * @public AUD-CODE-003 (open): the pending-window flush handler is the deferred DND-window
+ * seam — the queue side is LIVE (can-contact.engine emits `queue_pending_window`, send-log
+ * persists status='pending_window'); this handler awaits its scheduler wiring. Deleting it
+ * would orphan the live queue path.
+ */
 export { PendingWindowFlushHandler } from './internal/pending-window.handler.js';

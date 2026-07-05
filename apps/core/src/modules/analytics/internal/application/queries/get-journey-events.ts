@@ -75,12 +75,12 @@ interface JourneyEventsCursor {
   sn: string;
 }
 
-export function encodeJourneyEventsCursor(sequenceNumber: string): string {
+function encodeJourneyEventsCursor(sequenceNumber: string): string {
   const payload: JourneyEventsCursor = { v: 1, sn: sequenceNumber };
   return Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
 }
 
-export function decodeJourneyEventsCursor(cursor: string): JourneyEventsCursor | null {
+function decodeJourneyEventsCursor(cursor: string): JourneyEventsCursor | null {
   try {
     const parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as unknown;
     if (

@@ -47,7 +47,7 @@ export const NIL_BRAIN_ID = '00000000-0000-0000-0000-000000000000';
  * The inverse compensation kind each Command MUST carry (the reversibility invariant). A decision
  * whose `compensation.kind` does not match this map is NOT reversible and is rejected.
  */
-export const INVERSE_KIND: Record<IdentityCommand, CompensationKind> = {
+const INVERSE_KIND: Record<IdentityCommand, CompensationKind> = {
   mint: 'tombstone_brain_id',
   link: 'unlink_identifiers',
   merge: 'unmerge',

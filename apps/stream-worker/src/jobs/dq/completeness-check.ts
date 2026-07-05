@@ -32,7 +32,7 @@ interface CompletenessTarget {
  * ad_spend_ledger was dropped (ad spend is the Bronze-sourced silver_marketing_spend). Both are now
  * dbt/Bronze build invariants, not PG completeness checks (see bronzeCompleteness below). This list is
  * intentionally empty — a future operational PG fact would be added here. */
-export const COMPLETENESS_TARGETS: readonly CompletenessTarget[] = [] as const;
+const COMPLETENESS_TARGETS: readonly CompletenessTarget[] = [] as const;
 
 /** Required (NOT NULL) Bronze columns checked against the Iceberg SoR. */
 const BRONZE_REQUIRED_COLUMNS = ['event_type', 'occurred_at'] as const;

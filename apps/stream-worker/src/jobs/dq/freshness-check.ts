@@ -23,7 +23,7 @@ import { log } from "../../log.js";
 const NIL_UUID = '00000000-0000-0000-0000-000000000000';
 
 /** Freshness SLA per target (max age in minutes). Frozen config — no model. */
-export const FRESHNESS_SLA_MINUTES: Readonly<Record<string, number>> = {
+const FRESHNESS_SLA_MINUTES: Readonly<Record<string, number>> = {
   bronze_events: 60,
   connector_sync_status: 1440, // 24h — connectors sync on a slower cadence
   'silver.order_state': 120,

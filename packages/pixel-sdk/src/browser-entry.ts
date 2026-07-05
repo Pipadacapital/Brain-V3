@@ -235,7 +235,7 @@ function wireAutoInstrumentation(pixel: Pixel, isDesktop: boolean): void {
   });
 }
 
-export function boot(): Pixel | undefined {
+function boot(): Pixel | undefined {
   const bootstrap = window.__brain;
   if (!bootstrap || !bootstrap.install_token) {
     // No snippet bootstrap — nothing to do (do not throw in the page context).

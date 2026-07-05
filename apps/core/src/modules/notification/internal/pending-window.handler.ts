@@ -51,6 +51,11 @@ export interface FlushResult {
   stillQueued: number;
 }
 
+/**
+ * @public AUD-CODE-003 (open audit item): the deferred DND-window flush seam. The queue side is
+ * LIVE (can-contact.engine emits `queue_pending_window`; send-log persists status='pending_window');
+ * this handler awaits its scheduler wiring — deleting it would orphan the live queue path.
+ */
 export class PendingWindowFlushHandler {
   constructor(private readonly deps: PendingWindowFlushDeps) {}
 

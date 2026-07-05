@@ -39,13 +39,13 @@ const TRINO_USER = process.env['TRINO_USER'] ?? 'brain';
  * directly through the iceberg catalog; it exposes the event_id/brand_id/event_type columns the
  * pollers below filter on.
  */
-export const BRONZE_TABLE = 'iceberg.brain_bronze.collector_events_connect_lifted';
+const BRONZE_TABLE = 'iceberg.brain_bronze.collector_events_connect_lifted';
 
 // The running Connect sink consumes the env-PREFIXED topic; the local-prod stack uses `prod.`
 // (the kafka-connect compose service's collector connector reads prod.collector.event.v1). Default
 // to that so the suites exercise the LIVE sink without a manual override; set COLLECTOR_TOPIC for
 // other envs.
-export const COLLECTOR_TOPIC = process.env['COLLECTOR_TOPIC'] ?? 'prod.collector.event.v1';
+const COLLECTOR_TOPIC = process.env['COLLECTOR_TOPIC'] ?? 'prod.collector.event.v1';
 export const KAFKA_BROKERS = (process.env['KAFKA_BROKERS'] ?? 'localhost:9092').split(',');
 
 /**
@@ -164,18 +164,4 @@ export async function pollIcebergBronzeCount(
     if (Date.now() >= deadline) return last;
     await new Promise((r) => setTimeout(r, interval));
   }
-}
-
-/**
- * Convenience: poll until at least one (brand, eventId) row is visible. Returns true if it landed.
- * Use for "this exact event reached Bronze" assertions. NOTE (ADR-0010): Bronze is APPEND-ONLY —
- * a re-delivered event lands as an ADDITIONAL row (dedup is Silver's job), so this checks >= 1.
- */
-export async function waitForBronzeEvent(
-  pool: BronzePool,
-  brandId: string,
-  eventId: string,
-  timeoutMs = 120_000,
-): Promise<boolean> {
-  return (await pollIcebergBronzeCount(pool, { brandId, eventId }, { min: 1, timeoutMs })) >= 1;
 }

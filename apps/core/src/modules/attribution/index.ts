@@ -18,21 +18,12 @@
  * BACK from the order, never inferred (D-5).
  */
 
-import {
-  getJourneyFirstTouchMix,
-  getJourneyStitchRate,
-  getJourneyTimeline,
-} from '../analytics/index.js';
 import type {
   JourneyFirstTouchMixResult,
   JourneyStitchRateResult,
   JourneyTimelineResult,
 } from '../analytics/index.js';
 
-export {
-  describeTouchpointLayer,
-  TOUCHPOINT_LAYER,
-} from './internal/touchpoint-layer.js';
 export type { TouchpointLayerDescriptor } from './internal/touchpoint-layer.js';
 
 /**
@@ -43,7 +34,6 @@ export type { TouchpointLayerDescriptor } from './internal/touchpoint-layer.js';
  * neutralized no-ops, its read-backs target the serving MV) so import paths + the deterministic math are
  * preserved. The metric engine remains the SOLE math layer (Tier-0 deterministic).
  */
-export { AttributionCreditWriter } from './internal/credit-writer.js';
 export type {
   WriteCreditParams,
   WriteClawbackParams,
@@ -58,17 +48,6 @@ export type {
  */
 export { reconcileAttribution, reconcileDataDrivenAttribution } from './internal/reconcile-attribution.js';
 export type { ReconcileResult, ReconcileDeps } from './internal/reconcile-attribution.js';
-
-/**
- * The journey read contract this bounded context owns over `silver.touchpoint`.
- * Phase 5 Attribution consumes these reads; the implementations are the analytics
- * sole-read-path use-cases over the metric-engine Silver seam (I-ST01).
- */
-export const journeyReads = {
-  firstTouchMix: getJourneyFirstTouchMix,
-  stitchRate: getJourneyStitchRate,
-  timeline: getJourneyTimeline,
-} as const;
 
 export type {
   JourneyFirstTouchMixResult,

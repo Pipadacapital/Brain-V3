@@ -199,5 +199,3 @@ export function buildShiprocketResourceFetcher(args: {
       throw new Error(`[ingestion-backfill] shiprocket resource "${resource}" has no fetcher here`);
   }
 }
-
-export { ShiprocketShipmentLifecycleFetcher, parseCursor, buildCursor };

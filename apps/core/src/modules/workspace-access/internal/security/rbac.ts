@@ -53,26 +53,3 @@ export function requireRole(minimum: RoleCode) {
     }
   };
 }
-
-/**
- * Assert tenant membership. Verifies the request's workspaceId matches
- * the resource's organization_id (cross-tenant guard).
- */
-export function assertWorkspaceMembership(
-  auth: AuthenticatedRequest,
-  organizationId: string,
-): void {
-  if (auth.workspaceId !== organizationId) {
-    throw new RbacError('FORBIDDEN', 'Not a member of this workspace.');
-  }
-}
-
-export class RbacError extends Error {
-  constructor(
-    public readonly code: string,
-    message: string,
-  ) {
-    super(message);
-    this.name = 'RbacError';
-  }
-}

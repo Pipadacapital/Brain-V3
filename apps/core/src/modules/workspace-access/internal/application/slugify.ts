@@ -25,7 +25,7 @@ function slugifyBase(name: string): string {
 }
 
 /** A short collision-resistant suffix (6 hex chars from a UUID). */
-export function slugSuffix(): string {
+function slugSuffix(): string {
   return randomUUID().replace(/-/g, '').slice(-6);
 }
 

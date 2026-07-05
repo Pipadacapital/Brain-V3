@@ -30,7 +30,6 @@ export type {
 export {
   recordRecommendationAction,
   isRecommendationAction,
-  RECOMMENDATION_ACTIONS,
   RecommendationNotFoundError,
   InvalidRecommendationActionError,
 } from './internal/application/record-recommendation-action.js';

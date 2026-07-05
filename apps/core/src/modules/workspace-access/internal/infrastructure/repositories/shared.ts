@@ -1,17 +1,11 @@
 /**
  * workspace-access infrastructure — shared repository helpers.
  *
- * Cursor pagination helper + PageResult type shared across the per-aggregate
- * repository modules in this directory.
+ * Cursor pagination helpers shared across the per-aggregate repository modules
+ * in this directory.
  */
 
 // ── Cursor pagination helper ──────────────────────────────────────────────────
-
-export interface PageResult<T> {
-  items: T[];
-  nextCursor: string | null;
-  hasMore: boolean;
-}
 
 export function encodeCursor(id: string): string {
   return Buffer.from(id).toString('base64url');

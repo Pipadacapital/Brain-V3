@@ -94,7 +94,7 @@ export type ShopifyCallbackQuery = z.infer<typeof ShopifyCallbackQuerySchema>;
 
 // ── Connector Status ──────────────────────────────────────────────────────────
 
-export const ConnectorSyncStatusSchema = z.object({
+const ConnectorSyncStatusSchema = z.object({
   state: z.enum(['connected', 'syncing', 'waiting_for_data', 'error']),
   last_sync_at: z.string().datetime({ offset: true }).nullable(),
   last_error: z.string().nullable(),

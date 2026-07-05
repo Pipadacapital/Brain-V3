@@ -23,7 +23,7 @@ export interface EmailAdapter {
 }
 
 /** Development adapter: logs to console only (no network call). */
-export class DevEmailAdapter implements EmailAdapter {
+class DevEmailAdapter implements EmailAdapter {
   async send(payload: EmailPayload): Promise<{ messageId: string }> {
     log.info('', { detail: {
             to: payload.to.replace(/(.{1}).+@/, '$1***@'),
@@ -42,7 +42,7 @@ export class DevEmailAdapter implements EmailAdapter {
  * Credentials loaded from AWS Secrets Manager (I-S09).
  * Only instantiated in production; dev uses DevEmailAdapter.
  */
-export class SesEmailAdapter implements EmailAdapter {
+class SesEmailAdapter implements EmailAdapter {
   constructor(
     private readonly fromAddress: string,
     private readonly region: string = 'ap-south-1',

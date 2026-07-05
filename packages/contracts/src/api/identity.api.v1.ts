@@ -149,7 +149,7 @@ export type CustomerList = z.infer<typeof CustomerListSchema>;
  * One order on a customer's profile (the Orders sub-tab — formerly count-only). Money is bigint MINOR
  * units as a string (I-S07; BigInt-safe over JSON) paired with its sibling currency_code — never a float.
  */
-export const Customer360OrderSchema = z.object({
+const Customer360OrderSchema = z.object({
   order_id: z.string(),
   lifecycle_state: z.string(),
   is_terminal: z.boolean(),
@@ -158,7 +158,6 @@ export const Customer360OrderSchema = z.object({
   first_event_at: z.string().nullable(),
   state_effective_at: z.string().nullable(),
 });
-export type Customer360Order = z.infer<typeof Customer360OrderSchema>;
 
 export const Customer360Schema = z.discriminatedUnion('state', [
   z.object({

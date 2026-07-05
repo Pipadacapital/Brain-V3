@@ -11,7 +11,7 @@
  * `BffDeps` contract (deps + shared pre-handlers/helpers) that the plugins consume.
  */
 
-import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import type { FastifyRequest, FastifyReply } from 'fastify';
 import type { DbPool } from '@brain/db';
 import type { Pool as PgPool } from 'pg';
 import type { SilverPool, ServingCacheReader } from '@brain/metric-engine';
@@ -44,7 +44,6 @@ export type CookieReply = FastifyReply & {
 
 export const COOKIE_NAME = 'brain_session';
 export const CSRF_COOKIE_NAME = 'brain_csrf';
-export const CSRF_HEADER_NAME = 'x-csrf-token';
 export const ACCESS_TOKEN_EXPIRY_SECS = 7 * 24 * 60 * 60; // 7 days — matches the session cookie maxAge (user decision 2026-07-06; keep in lockstep with auth/shared.ts)
 
 /**
@@ -82,6 +81,3 @@ export interface BffDeps {
   /** Composes the foundation-health signals (pixel/commerce/sync/freshness/DQ) for a brand. */
   gatherFoundationSignals: (brandId: string, requestId: string) => Promise<FoundationSignals>;
 }
-
-/** A BFF route plugin: registers only its own routes against the shared deps bundle. */
-export type BffRoutePlugin = (fastify: FastifyInstance, deps: BffDeps) => void;

@@ -21,6 +21,7 @@ import { WebhookPipeline, type WebhookPipelineDeps } from './WebhookPipeline.js'
 import type { WebhookIdentityReader } from './IWebhookStrategy.js';
 import { ShopifyWebhookStrategy } from '../strategies/ShopifyWebhookStrategy.js';
 import { resolveBrandOAuthAppCreds } from '../../oauth-app-creds.js';
+import { getDefinition } from '../../catalog/index.js';
 import { RazorpayWebhookStrategy } from '../strategies/RazorpayWebhookStrategy.js';
 import { ShopfloWebhookStrategy } from '../strategies/ShopfloWebhookStrategy.js';
 import { WooCommerceWebhookStrategy } from '../strategies/WooCommerceWebhookStrategy.js';
@@ -61,10 +62,14 @@ export function registerAllWebhookRoutes(
   };
 
   // ── Shopify HMAC secret resolver (CRIT-2) ─────────────────────────────────
-  // Shopify signs webhooks with the app `client_secret` (BYO per-brand app → Brain's app fallback),
-  // NOT a per-connector webhook_secret the OAuth connect flow never stored. Resolve the brand from the
-  // shop domain (SECURITY DEFINER resolver, RLS-bypassing — brand unknown pre-auth), then the brand's
-  // app client_secret. Fail-closed: any miss returns '' → HMAC_INVALID (no spoofed events).
+  // Shopify signs webhooks with the app `client_secret` (BYO per-brand app → Brain's app fallback,
+  // UNLESS the catalog says byoAppRequired — then the env app is refused), NOT a per-connector
+  // webhook_secret the OAuth connect flow never stored. Resolve the brand from the shop domain
+  // (SECURITY DEFINER resolver, RLS-bypassing — brand unknown pre-auth), then the brand's app
+  // client_secret. Fail-closed: any miss returns '' → HMAC_INVALID (no spoofed events).
+  const shopifyDef = getDefinition('shopify');
+  const shopifyRequiresBrandCreds = shopifyDef?.byoAppRequired ?? false;
+
   const shopifyHmacSecretResolver =
     deps.shopifyHmacSecretResolver ??
     (async (shopDomain: string): Promise<string> => {
@@ -81,17 +86,25 @@ export function registerAllWebhookRoutes(
         return '';
       }
       if (!brandId) return '';
-      let envClientSecret = '';
-      try {
-        // Brain's app secret (env in dev; ARN-resolved value in prod). May be unset for pure-BYO setups.
-        envClientSecret = await deps.secretsManager.getShopifyClientSecret();
-      } catch {
-        /* no Brain app secret configured — rely on the brand's own stored app creds below */
-      }
-      const creds = await resolveBrandOAuthAppCreds(deps.secretsManager, 'shopify', brandId, {
-        clientId: process.env['SHOPIFY_CLIENT_ID'] ?? '',
-        clientSecret: envClientSecret,
-      });
+
+      // BYO-required (Shopify): env fallback is FORBIDDEN — its secret fetch is skipped entirely.
+      // If the brand has no stored app secret, return '' → HMAC_INVALID (existing installs on the
+      // env app are handled by the boot-time reconnect migration; see Task 10). Fail-closed.
+      const envFallback = shopifyRequiresBrandCreds
+        ? null
+        : {
+            clientId: process.env['SHOPIFY_CLIENT_ID'] ?? '',
+            // Brain's app secret (env in dev; ARN-resolved value in prod). May be unset for pure-BYO setups.
+            clientSecret: await deps.secretsManager.getShopifyClientSecret().catch(() => ''),
+          };
+
+      const creds = await resolveBrandOAuthAppCreds(
+        deps.secretsManager,
+        'shopify',
+        brandId,
+        envFallback,
+        { requireBrandCreds: shopifyRequiresBrandCreds },
+      );
       return creds?.clientSecret ?? '';
     });
 

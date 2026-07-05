@@ -83,7 +83,8 @@ ENV_FILE="$ROOT/.env.${APP_ENV}"
 # collector_events_connect; raw lanes = the per-provider *_raw_connect tables); otherwise the
 # unified brain_bronze.events written by the Spark-SS dev sink. Explicit BRONZE_SOURCE always wins.
 # Rollback = BRONZE_SOURCE=legacy (or =events with the Spark sink running).
-if [ "${BRONZE_LANDING:-spark}" = "connect" ]; then
+# ADR-0010 CUT OVER 2026-07-05: default landing writer is now `connect`.
+if [ "${BRONZE_LANDING:-connect}" = "connect" ]; then
   export BRONZE_SOURCE="${BRONZE_SOURCE:-connect}"
 else
   export BRONZE_SOURCE="${BRONZE_SOURCE:-events}"

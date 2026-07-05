@@ -4,7 +4,8 @@
 # sparkBronze.enabled=false in the SAME release train (two writers must never share a table; the
 # Connect sink writes its own collector_events_connect / <lane>_raw_connect tables regardless, but
 # running both doubles landing compute). Cutover/rollback: docs/runbooks/adr-0010-kafka-connect-bronze.md.
-enabled: false
+# ADR-0010 CUT OVER 2026-07-05: this chart IS the Bronze landing writer (sparkBronze.enabled=false).
+enabled: true
 
 image:
   repository: confluentinc/cp-kafka-connect

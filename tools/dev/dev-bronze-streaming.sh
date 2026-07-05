@@ -38,16 +38,15 @@
 #         SPARK_DRIVER_MEMORY, SPARK_EXECUTOR_MEMORY, SPARK_OFFHEAP_SIZE, TOPIC_ENV_PREFIX, LANE overridable.
 set -euo pipefail
 
-# ── ADR-0010 BRONZE LANDING WRITER SWITCH ──────────────────────────────────────────────────────────
-# BRONZE_LANDING=spark  (default) → this script runs the Spark-SS sink (parallel-run/bake posture:
-#                                   the compose kafka-connect Iceberg sink ALSO lands the same topics
-#                                   into its own tables, so the two writers never share a table).
-# BRONZE_LANDING=connect          → the Kafka Connect Iceberg sink (compose `kafka-connect`) is the
-#                                   SOLE Bronze landing writer; this script exits without starting
-#                                   the ~7g Spark container (the entire point of the migration).
+# ── ADR-0010 BRONZE LANDING WRITER SWITCH — CUT OVER 2026-07-05 (default now `connect`) ───────────
+# BRONZE_LANDING=connect (default) → the Kafka Connect Iceberg sink (compose `kafka-connect`) is the
+#                                    SOLE Bronze landing writer; this script exits without starting
+#                                    the ~7g Spark container (the entire point of the migration).
+# BRONZE_LANDING=spark             → ROLLBACK/parallel-run: run the Spark-SS sink (its checkpoint is
+#                                    preserved; loss-free only within the 7-day topic retention).
 # Guarded HERE (not in dev-up.sh) so every launch path — dev-up step 5, `pnpm dev`, and a manual
 # `pnpm dev:bronze-sink` — honors the flag. Cutover/rollback: docs/runbooks/adr-0010-kafka-connect-bronze.md.
-if [ "${BRONZE_LANDING:-spark}" = "connect" ]; then
+if [ "${BRONZE_LANDING:-connect}" = "connect" ]; then
   echo "BRONZE_LANDING=connect — Kafka Connect (compose kafka-connect) is the Bronze landing writer;"
   echo "not starting the host Spark streaming sink. Set BRONZE_LANDING=spark to run it (parallel/rollback)."
   exit 0

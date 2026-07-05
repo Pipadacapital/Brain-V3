@@ -1,24 +1,27 @@
 /**
  * bronze.e2e.test.ts — Bronze landing / dedup / tenant-scoping against the Iceberg SoR.
  *
- * ICEBERG-BRONZE: the stream-worker no longer writes Bronze to PostgreSQL (data_plane.bronze_events
- * dropped — migration 0070). The SOLE Bronze writer is the Spark sink → Iceberg
- * `brain_bronze.collector_events`, read via the StarRocks external catalog. These tests produce
- * raw-JSON collector envelopes to the topic and assert the Spark sink's Bronze contract end-to-end:
+ * ICEBERG-BRONZE (ADR-0010): the stream-worker no longer writes Bronze to PostgreSQL
+ * (data_plane.bronze_events dropped — migration 0070). The SOLE Bronze writer is the Kafka Connect
+ * Iceberg sink (the compose `kafka-connect` service) → `brain_bronze.collector_events_connect`,
+ * read over Trino via the lift view `collector_events_connect_lifted`. These tests produce raw-JSON
+ * collector envelopes to the topic and assert the Connect sink's Bronze contract end-to-end:
  *
- *   1. Landing:   a produced event becomes a Bronze row.
- *   2. Dedup:     the same (brand_id, event_id) delivered twice → exactly ONE row (Spark MERGE
- *                 WHEN NOT MATCHED — the append-only idempotency invariant I-E02, the Iceberg
- *                 equivalent of the old Redis-NX + PG-PK backstop).
- *   3. Isolation: tenant scoping is PREDICATE-BASED at the read seam (every read filters
- *                 `brand_id = ?`, mirroring metric-engine withSilverBrand / dq silver-reader) — a
- *                 brand_B-scoped read returns 0 rows for a brand_A event; brand_A → 1. (This replaces
- *                 the old PG-RLS isolation control; there is no PG RLS on the lakehouse.)
+ *   1. Landing:     a produced event becomes a Bronze row.
+ *   2. Append-only: the same (brand_id, event_id) delivered twice (two offsets) → TWO Bronze rows.
+ *                   Bronze has NO dedup under ADR-0010; the effectively-once collapse to one row per
+ *                   (brand_id, event_id) is the Silver admission MERGE (silver_collector_event.py) —
+ *                   proven in bronze-dedup-effectively-once.live.test.ts.
+ *   3. Isolation:   tenant scoping is PREDICATE-BASED at the read seam (every read filters
+ *                   `brand_id = ?`, mirroring metric-engine withSilverBrand / dq silver-reader) — a
+ *                   brand_B-scoped read returns 0 rows for a brand_A event; brand_A → 1. (This
+ *                   replaces the old PG-RLS isolation control; there is no PG RLS on the lakehouse.)
  *
- * Uses a SERVER_TRUSTED event type (order.live.v1) so these write/dedup/scoping mechanics are exercised
- * without the pixel-lane R2/R3 gate — that gate is covered end-to-end by ingest-hardening.e2e.test.ts.
+ * Uses a SERVER_TRUSTED event type (order.live.v1) so these write/scoping mechanics are exercised
+ * without the pixel-lane R2/R3 gate — that gate is covered end-to-end by ingest-hardening.e2e.test.ts
+ * (and under ADR-0010 it lives in the Silver admission, not in front of Bronze).
  *
- * REQUIRES the `lakehouse` docker profile (Redpanda + Spark sink + Iceberg REST + MinIO + StarRocks).
+ * REQUIRES the `lakehouse` docker profile (Kafka + kafka-connect + Iceberg REST + MinIO + Trino).
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'node:crypto';
@@ -76,37 +79,37 @@ afterAll(async () => {
   await sr?.end?.().catch(() => {});
 });
 
-describe('E2E: produce event → Spark sink → Iceberg Bronze row', () => {
+describe('E2E: produce event → Kafka Connect sink → Iceberg Bronze row', () => {
   it('SKIP_IF_NO_LAKEHOUSE', () => {
     if (!infraUp) console.warn('[bronze.e2e] lakehouse unavailable — PENDING.');
     expect(true).toBe(true);
   });
 
-  it('a produced event lands as exactly one Bronze row (read via StarRocks)', async () => {
+  it('a produced event lands as exactly one Bronze row (read over Trino via the lift view)', async () => {
     if (!infraUp) return;
     const eventId = randomUUID();
     await produceCollectorEvent(producer, makeEnvelope(eventId, BRAND_A));
-    const count = await pollIcebergBronzeCount(sr, { brandId: BRAND_A, eventId }, { min: 1, timeoutMs: 60_000 });
+    // Connect sink commit interval is ~30s — tolerate 30-60s+ land latency (ADR-0010).
+    const count = await pollIcebergBronzeCount(sr, { brandId: BRAND_A, eventId }, { min: 1, timeoutMs: 120_000 });
     expect(count).toBe(1);
-  }, 75_000);
+  }, 150_000);
 });
 
-describe('Dedup/replay: same (brand_id, event_id) delivered twice → exactly one row (I-E02)', () => {
-  it('Spark MERGE WHEN NOT MATCHED collapses the re-delivery to one Bronze row', async () => {
+describe('Append-only (ADR-0010): same (brand_id, event_id) delivered twice → TWO Bronze rows', () => {
+  it('the re-delivery APPENDS a second row — Bronze has no dedup; Silver owns effectively-once', async () => {
     if (!infraUp) return;
     const eventId = randomUUID();
     const env = makeEnvelope(eventId, BRAND_A);
-    // Deliver twice (same brand_id + event_id) — the idempotency key.
+    // Deliver twice (same brand_id + event_id — the BUSINESS idempotency key, two Kafka offsets).
     await produceCollectorEvent(producer, env);
     await produceCollectorEvent(producer, env);
 
-    // Wait for the row to land, then settle one more Spark trigger cycle and assert it never doubled.
-    const landed = await pollIcebergBronzeCount(sr, { brandId: BRAND_A, eventId }, { min: 1, timeoutMs: 60_000 });
-    expect(landed).toBeGreaterThanOrEqual(1);
-    await new Promise((r) => setTimeout(r, 14_000)); // ~1 extra trigger cycle for a possible 2nd-batch insert
-    const settled = await pollIcebergBronzeCount(sr, { brandId: BRAND_A, eventId }, { min: 1, timeoutMs: 5_000 });
-    expect(settled).toBe(1); // exactly one — MERGE deduped the replay
-  }, 90_000);
+    // Both copies MUST land: Bronze is the verbatim broker history under the Connect sink.
+    // The collapse to exactly one row per (brand_id, event_id) happens at the Silver admission
+    // gate (silver_collector_event.py window+MERGE) — see bronze-dedup-effectively-once.live.test.ts.
+    const settled = await pollIcebergBronzeCount(sr, { brandId: BRAND_A, eventId }, { min: 2, timeoutMs: 150_000 });
+    expect(settled).toBe(2); // both deliveries landed — append-only, no Bronze-side dedup
+  }, 180_000);
 });
 
 describe('Isolation: read-seam tenant scoping (brand_id predicate, not PG RLS)', () => {
@@ -115,12 +118,12 @@ describe('Isolation: read-seam tenant scoping (brand_id predicate, not PG RLS)',
     const eventId = randomUUID();
     await produceCollectorEvent(producer, makeEnvelope(eventId, BRAND_A));
 
-    // Positive control: brand_A sees its own row.
-    const correctBrand = await pollIcebergBronzeCount(sr, { brandId: BRAND_A, eventId }, { min: 1, timeoutMs: 60_000 });
+    // Positive control: brand_A sees its own row (tolerate the Connect sink's ~30s commit).
+    const correctBrand = await pollIcebergBronzeCount(sr, { brandId: BRAND_A, eventId }, { min: 1, timeoutMs: 120_000 });
     expect(correctBrand).toBe(1);
 
     // Negative control: the same event_id under a brand_B-scoped predicate → 0 rows (read-seam isolation).
     const wrongBrand = await pollIcebergBronzeCount(sr, { brandId: BRAND_B, eventId }, { min: 1, timeoutMs: 3_000 });
     expect(wrongBrand).toBe(0);
-  }, 75_000);
+  }, 150_000);
 });

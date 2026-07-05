@@ -1,8 +1,9 @@
-# Spark Bronze materializer image (ADR-0002 Slice 3).
+# Spark medallion jobs image (ADR-0002 Slice 3; ADR-0010 Connect-era scope).
 #
-# The Bronze writer for the Iceberg flip: a Spark Structured Streaming job that reads
-# collector.event.v1 and MERGEs into the Iceberg Bronze table. Also carries the parity oracle
-# (bronze_parity_check.py) and the inspector (validate_bronze.py).
+# ADR-0010: Bronze LANDING is the Kafka Connect Iceberg sink — the Spark-SS landing jobs (and the
+# PG⇄Iceberg parity oracle/inspector that read them) are REMOVED. This image carries the Bronze
+# MAINTENANCE jobs (compaction/snapshot-expiry, raw retention, erasure) plus the V4 Silver/Gold
+# transform marts the Argo CronWorkflows spark-submit.
 #
 # Jars are pre-fetched at BUILD time into /opt/spark/jars so the runtime image needs NO Maven
 # access (B3: reproducible, network-isolated runtime). Pin the image by digest in the deploy
@@ -22,9 +23,10 @@ ARG HADOOP_AWS_VERSION=3.3.4
 ARG SCALA=2.12
 
 WORKDIR /opt/brain
-# Bronze writer/oracle/maintenance/inspector + the shared Iceberg base and the Silver/Gold
-# provisioner + medallion maintenance (V4 Phase 0, additive — the Silver/Gold seam jobs reuse).
-COPY bronze_materialize.py bronze_parity_check.py bronze_maintenance.py validate_bronze.py \
+# Bronze maintenance/retention/erasure + the shared Iceberg base and the Silver/Gold provisioner +
+# medallion maintenance. (ADR-0010: the Spark-SS landing/oracle/inspector modules are removed —
+# Bronze landing is the Kafka Connect Iceberg sink, deployed outside this image.)
+COPY bronze_maintenance.py bronze_raw_retention.py erasure_raw_delete.py \
      iceberg_base.py provision_silver_gold.py medallion_maintenance.py job_log.py /opt/brain/
 
 # V4 Spark Silver/Gold MART jobs + run scripts + the shared bounded-retry helper. Additive: the image
@@ -51,7 +53,7 @@ RUN set -eux; \
 
 USER spark
 
-# Default: stream collector.event.v1 → Iceberg Bronze. Override TRIGGER_MODE=availableNow for the
-# periodic CronWorkflow shape, or the entrypoint script for the parity oracle.
-ENV TRIGGER_MODE=continuous
-ENTRYPOINT ["/opt/spark/bin/spark-submit", "--master", "local[*]", "/opt/brain/bronze_materialize.py"]
+# Default: Bronze maintenance (compaction + snapshot expiry). Landing is the Kafka Connect Iceberg
+# sink now (ADR-0010) — there is no streaming default. The Argo CronWorkflows always pass an explicit
+# script path, so this default only serves a bare `docker run`.
+ENTRYPOINT ["/opt/spark/bin/spark-submit", "--master", "local[*]", "/opt/brain/bronze_maintenance.py"]

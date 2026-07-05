@@ -4,7 +4,7 @@
 # Builds the three orders-group Spark Silver marts into Iceberg brain_silver, reading Iceberg Bronze
 # (rest.brain_bronze.collector_events) and the small PG dimension reads (brand horizons, identity link
 # — brain_ops now lives in PG schema `ops`). ADDITIVE + idempotent + re-runnable; touches NO existing
-# read path, dbt model, or app code. Mirrors run-bronze-parity.sh / run-provision-silver-gold.sh.
+# read path, dbt model, or app code. Mirrors run-provision-silver-gold.sh.
 #
 # Dependency order: silver_order_state + silver_order_line are independent (both fold Bronze);
 # silver_product aggregates the Iceberg silver_order_line, so it runs LAST.

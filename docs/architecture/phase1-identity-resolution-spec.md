@@ -119,7 +119,7 @@ perpetually one cycle stale. Document the ordering dependency in `tools/dev/v4-r
 Spark is the sole compute. All marts live in `db/iceberg/spark/{silver,gold}/`. Serving reads only
 `brain_serving.mv_*` Trino views (`db/trino/views/`).
 
-### 2.1 MODULE — Bronze raw landing (`db/iceberg/spark/silver/.../bronze_raw_landing.py` family)
+### 2.1 MODULE — Bronze raw landing (`bronze_raw_landing.py` family at the time of writing — since replaced by the Kafka Connect sink, ADR-0010)
 
 - **Purpose:** durable, exactly-once landing of Kafka events into append-only Iceberg Bronze.
 - **Inputs:** Kafka topics (KRaft), prefixed by `NODE_ENV` (`dev.*` / `prod.*`).

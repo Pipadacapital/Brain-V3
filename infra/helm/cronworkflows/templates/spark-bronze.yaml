@@ -1,24 +1,19 @@
 {{- /*
-Spark Bronze materializer + maintenance (Iceberg is the SOLE Bronze system-of-record).
+Spark Bronze MAINTENANCE (Iceberg is the SOLE Bronze system-of-record).
 
-MEDALLION REALIGNMENT: the PG data_plane.bronze_events table was DROPPED (migration 0070) — the Iceberg
-flip is complete, so the former dual-sink + PG⇄Iceberg parity oracle (bronze-parity / bronze_parity_check.py)
-are RETIRED (there is no PG side left to reconcile). The Spark sink is the only Bronze writer.
+ADR-0010: Bronze LANDING is the Kafka Connect Iceberg sink — the infra/helm/kafka-connect chart is
+the sole landing writer. The former bronze-landing CronWorkflow (bronze_landing.py, the Spark-SS
+unified sink) was REMOVED 2026-07-05 along with the whole Spark-SS landing path (rollback = git
+revert); there is no CHECKPOINT_LOCATION / STARTING_OFFSETS wiring left — Connect keeps offsets in
+the Iceberg snapshots + its own topics.
 
-Two CronWorkflows (Spark image, spark-submit), distinct from the generic node-image .Values.jobs loop:
-  - bronze-landing (bronze_landing.py — the UNIFIED sink): TRIGGER_MODE=availableNow drains ALL Bronze
-    topics — the collector + backfill lanes AND the nine connector *.raw.v1 lanes (COLLECTOR_TOPIC +
-    BACKFILL_TOPIC + TOPIC_ENV_PREFIX, from the env secret) → ONE raw table brain_bronze.events, MERGE
-    WHEN NOT MATCHED on a per-lane dedup_key (idempotent, I-E02). Replaces the old two sinks
-    (bronze_materialize → collector_events + the unscheduled bronze_raw_landing → 9 *_raw tables); this
-    cron NEWLY lands the 9 raw lanes in prod. availableNow drains then exits (Forbid + idempotent = a
-    missed/retried run is safe). A long-lived TRIGGER_MODE=continuous Deployment is the real-time
-    alternative. NOTE: use a FRESH s3a CHECKPOINT_LOCATION (new query plan/topics/group) + a one-off
-    STARTING_OFFSETS=earliest to backfill events, then latest steady-state.
-  - bronze-maintenance: small-file compaction + 24-month snapshot-expiry TTL (Slice 7).
+This template renders ONE CronWorkflow (Spark image, spark-submit), distinct from the generic
+node-image .Values.jobs loop:
+  - bronze-maintenance: small-file compaction + 24-month snapshot-expiry TTL (Slice 7) over the
+    Bronze tables — including the Connect-written collector_events_connect / <lane>_raw_connect.
 
-GATED OFF by default (.Values.sparkBronze.enabled=false): flipping it on needs the CI-built Spark image
-pinned by digest (B3, fail-closed below) + a cluster — the same external gate as the dbt-runner crons.
+Gated by .Values.sparkBronze.enabled — which now gates ONLY maintenance (enabled: true in defaults;
+maintenance must run regardless of who lands Bronze).
 
 Image MUST be pinned by digest (B3) — same fail-closed rule as the generic template.
 */ -}}
@@ -48,60 +43,6 @@ Image MUST be pinned by digest (B3) — same fail-closed rule as the generic tem
   {{- $lp = "local://" -}}
   {{- $submitFlags = printf "--master %s --deploy-mode cluster --conf spark.kubernetes.container.image=%s --conf spark.kubernetes.namespace=%s --conf spark.kubernetes.authenticate.driver.serviceAccountName=%s --conf spark.driver.memory=%s --conf spark.executor.instances=%s --conf spark.executor.cores=%s --conf spark.executor.memory=%s --conf spark.dynamicAllocation.enabled=true --conf spark.dynamicAllocation.shuffleTracking.enabled=true --conf spark.dynamicAllocation.minExecutors=%s --conf spark.dynamicAllocation.maxExecutors=%s" $k.apiServer $ref $ns $k.serviceAccountName $dm $k.executor.instances $k.executor.cores $k.executor.memory $k.executor.minExecutors $k.executor.maxExecutors -}}
 {{- end -}}
----
-apiVersion: argoproj.io/v1alpha1
-kind: CronWorkflow
-metadata:
-  name: bronze-landing
-  labels:
-    {{- include "brain.labels" . | nindent 4 }}
-    brain.io/job: bronze-landing
-spec:
-  schedule: {{ .Values.sparkBronze.landingSchedule | quote }}
-  timezone: {{ $tz | quote }}
-  concurrencyPolicy: Forbid            # never overlap a landing run with itself (offset safety)
-  startingDeadlineSeconds: {{ .Values.defaults.startingDeadlineSeconds }}
-  successfulJobsHistoryLimit: {{ .Values.defaults.successfulJobsHistoryLimit }}
-  failedJobsHistoryLimit: {{ .Values.defaults.failedJobsHistoryLimit }}
-  workflowSpec:
-    serviceAccountName: {{ $sa }}      # IRSA: S3 (per-brand bronze prefix) + Glue catalog access (NN-5)
-    entrypoint: run
-    {{- /* AUD-PROD-006: pin the Spark cron pods to the batch pool (values-prod). */}}
-    {{- with .Values.sparkBronze.nodeSelector }}
-    nodeSelector:
-      {{- toYaml . | nindent 6 }}
-    {{- end }}
-    {{- with .Values.sparkBronze.tolerations }}
-    tolerations:
-      {{- toYaml . | nindent 6 }}
-    {{- end }}
-    activeDeadlineSeconds: {{ .Values.sparkBronze.activeDeadlineSeconds }}
-    podGC:
-      strategy: OnWorkflowSuccess
-    templates:
-      - name: run
-        retryStrategy:
-          limit: {{ .Values.defaults.backoffLimit | quote }}
-          retryPolicy: OnError
-        container:
-          image: {{ $ref | quote }}
-          imagePullPolicy: {{ $img.pullPolicy }}
-          command: ["/bin/bash", "-c"]
-          args:
-            - |
-              set -euo pipefail
-              PFX="{{ $lp }}"   # "" (local[*]) or "local://" (k8s cluster — driver reads the app from the SAME image)
-              exec /opt/spark/bin/spark-submit {{ $submitFlags }} "${PFX}/opt/brain/bronze_landing.py"
-          env:
-            - { name: TRIGGER_MODE, value: "availableNow" }
-            {{- toYaml .Values.sparkBronze.env | nindent 12 }}
-          {{- if $envFrom }}
-          envFrom:
-            - secretRef:
-                name: {{ $envFrom }}    # KAFKA_BROKERS, ICEBERG_REST_URI/Glue, CHECKPOINT_LOCATION (s3a), AWS_*
-          {{- end }}
-          resources:
-            {{- toYaml .Values.sparkBronze.resources | nindent 12 }}
 ---
 apiVersion: argoproj.io/v1alpha1
 kind: CronWorkflow
@@ -151,7 +92,9 @@ spec:
               exec /opt/spark/bin/spark-submit {{ $submitFlags }} "${PFX}/opt/brain/bronze_maintenance.py"
           env:
             - { name: MODE, value: "maintain" }
-            {{- toYaml .Values.sparkBronze.env | nindent 12 }}
+            {{- with .Values.sparkBronze.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           {{- if $envFrom }}
           envFrom:
             - secretRef:

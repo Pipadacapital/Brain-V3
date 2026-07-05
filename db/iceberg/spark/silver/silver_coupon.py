@@ -7,7 +7,7 @@ mart (brain_silver.silver_coupon), via an idempotent MERGE on the model PK (bran
 mirrors silver_return.py (latest-state fold of a connector-derived canonical event) — for COUPONS, the
 discount catalogue surface that was structurally starved end-to-end before WOO-3 (no mapper, no admit-list
 entry, no mart). The WooCommerce connector now emits coupon.upsert.v1 server-trusted (see the gate sets in
-bronze_materialize.SERVER_TRUSTED_BRONZE / silver_collector_event.SERVER_TRUSTED).
+silver_collector_event.SERVER_TRUSTED — the sole gate set under ADR-0010).
 
 SOURCE  : brain_silver.silver_collector_event WHERE event_type = 'coupon.upsert.v1'
           Emitted by @brain/woocommerce-mapper resources.ts::mapWooCouponToDraft (WooCouponUpsertProperties):

@@ -8,8 +8,9 @@ streamWorkerImage:
   tag: ""              # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
   digest: ""
 
-# spark-bronze image — Iceberg Bronze sink + maintenance crons. Also reused by the V4 Spark
-# silver/gold/mv-refresh crons (.sparkV4.image — CI promotes both digests build-once from staging).
+# spark image — bronze-maintenance cron + reused by the V4 Spark silver/gold/mv-refresh crons
+# (.sparkV4.image — CI promotes both digests build-once from staging). Bronze LANDING is the
+# kafka-connect chart (ADR-0010) — the Spark landing cron was removed 2026-07-05.
 sparkBronze:
   image:
     repository: REPLACE_WITH_ECR_REGISTRY/brain-spark-bronze-prod
@@ -17,8 +18,7 @@ sparkBronze:
     digest: ""
   # AUD-PROD-006: Spark cron pods → the batch Karpenter pool (t4g.xlarge Spot).
   # A Spot/consolidation bounce mid-run is replay-safe: Forbid + Argo retry +
-  # idempotent MERGE (per-lane dedup_key) — the next run re-drains from the
-  # committed Kafka offsets, no event loss.
+  # idempotent maintenance (compaction/snapshot-expiry re-runs are no-ops).
   nodeSelector:
     brain.platform/pool: batch
 

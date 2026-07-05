@@ -28,23 +28,23 @@ docker compose --profile core --profile ai up -d
 #    wait until healthy:
 docker compose --profile core --profile ai ps
 
-# 4. Bronze streaming sink — host Spark process; lands collector + connector events into Iceberg Bronze
-nohup bash tools/dev/dev-bronze-streaming.sh > /tmp/bronze-sink.log 2>&1 &
+# (Bronze landing needs no step of its own: the `kafka-connect` compose service — the sole
+#  Bronze landing writer, ADR-0010 — came up with the infra in step 3.)
 
-# 5. Bootstrap LocalStack Secrets Manager + KMS (per-brand keyring/secrets)
+# 4. Bootstrap LocalStack Secrets Manager + KMS (per-brand keyring/secrets)
 pnpm bootstrap
 
-# 6. One-shot medallion refresh — builds Silver → Gold + the Trino serving views so dashboards render
+# 5. One-shot medallion refresh — builds Silver → Gold + the Trino serving views so dashboards render
 ONESHOT=1 APP_ENV=local-prod pnpm dev:v4-refresh
 
-# 7. The apps (core + web + collector + stream-worker) — stays in the foreground
+# 6. The apps (core + web + collector + stream-worker) — stays in the foreground
 APP_ENV=local-prod turbo run dev \
   --filter=@brain/core --filter=@brain/web --filter=@brain/collector --filter=@brain/stream-worker
 ```
 
-**Why db → migrate → bronze (not bronze first):** the Bronze sink's collector lane reads PG
-(`pixel.pixel_installation`) over JDBC for the `install_token → brand` lookup. On an un-migrated DB that
-relation doesn't exist and the sink crash-loops. Migrating before the sink makes cold start deterministic.
+**Why db → migrate → infra:** migrations must exist before anything reads PG; kept deterministic
+even though the Bronze landing writer (kafka-connect) never touches PG — the R2/R3 gate lives in
+Silver.
 
 ## Ongoing / background services
 
@@ -63,12 +63,11 @@ PIXEL_HOSTNAME=events.yourdomain.com pnpm dev:pixel-named-tunnel   # STABLE URL;
 | Command | What it does |
 |---|---|
 | `pnpm dev:up` | all steps above, one command (`tools/dev/dev-up.sh`) |
-| `pnpm dev` | infra (`core`+`ai`) + Bronze sink + all 4 apps |
+| `pnpm dev` | infra (`core`+`ai`, incl. the kafka-connect Bronze landing) + all 4 apps |
 | `pnpm dev:core` | infra + **core + web** only |
 | `pnpm dev:ingest` | infra + **collector + stream-worker** only |
 | `pnpm dev:full` | infra with `core` + `full-obs` + `debug` + `ai` profiles |
 | `pnpm dev:v4-refresh` | medallion refresh loop (`ONESHOT=1` for a single pass) |
-| `pnpm dev:bronze-sink` | just the host Bronze sink |
 | `pnpm bootstrap` | LocalStack Secrets Manager + KMS seed |
 | `pnpm migrate` / `migrate:down` | apply / roll back DB migrations |
 | `pnpm down` | `docker compose down` (stop infra, keep data) |
@@ -79,7 +78,7 @@ PIXEL_HOSTNAME=events.yourdomain.com pnpm dev:pixel-named-tunnel   # STABLE URL;
 docker compose --profile core --profile ai ps     # all services healthy?
 curl -s localhost:3001/health                       # core
 curl -s localhost:8787/healthz                      # collector (pixel ingest)
-pgrep -f combined_bronze_sinks.py                   # Bronze sink alive (host process)
+curl -s localhost:8083/connectors | head -c 200     # Bronze landing writer (kafka-connect) responding
 pgrep -f v4-refresh                                 # refresh loop alive (host process)
 ```
 
@@ -117,9 +116,8 @@ the `tsx watch` process — a watch-triggered reload alone won't re-read the env
 ## Teardown
 
 ```bash
-pnpm down                            # stop infra (keeps volumes/data)
+pnpm down                            # stop infra incl. the kafka-connect Bronze landing (keeps volumes/data)
 docker compose down -v               # full reset — nukes volumes
-pkill -f combined_bronze_sinks.py    # stop the host Bronze sink
 pkill -f v4-refresh-loop             # stop the refresh loop
 pkill -f cloudflared                 # stop the pixel tunnel
 ```
@@ -130,8 +128,9 @@ pkill -f cloudflared                 # stop the pixel tunnel
   until you re-run `pnpm bootstrap` and reconnect each connector once. Also re-run `pnpm migrate`.
 - **Quick pixel tunnel dropped:** its `*.trycloudflare.com` URL changes on every restart → restart core +
   reinstall the pixel. Use the **named tunnel** for a stable hostname (no reinstall churn).
-- **Host processes ≠ containers:** the Bronze sink and the refresh loop run on the host, not in Docker —
-  `docker compose ps` won't show them. Check with `pgrep -f combined_bronze_sinks.py` / `pgrep -f v4-refresh`.
+- **Host processes ≠ containers:** the refresh loop runs on the host, not in Docker —
+  `docker compose ps` won't show it. Check with `pgrep -f v4-refresh`. (The Bronze landing writer
+  IS a container now — `kafka-connect`, ADR-0010.)
 - **`brain_app` login after a fresh DB:** if core/stream-worker report `password auth failed for brain_app`,
   re-run the role grant (`ALTER ROLE brain_app LOGIN`).
 

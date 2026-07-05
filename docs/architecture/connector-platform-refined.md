@@ -32,7 +32,8 @@ ARN lands in Postgres — NN-2). This boundary is respected today and must stay 
 
 **V4 note:** CLAUDE.md's target is that connectors land **raw, pre-normalized** payloads into Bronze
 and **Spark-Silver owns normalization**. Today the TS mappers normalize *pre-Bronze* (the live lane
-emits canonical `CollectorEventV1`). The Spark raw-lane (`bronze_raw_landing.py`, 9 `*.raw.v1` lanes)
+emits canonical `CollectorEventV1`). The raw-lane lander (`bronze_raw_landing.py` at the time of
+this review — since replaced by the Kafka Connect sink, ADR-0010, landing `<lane>_raw_connect`)
 is built and waiting, but **no TS producer emits onto the raw lanes yet** — see GAP G1.
 
 ---
@@ -68,7 +69,8 @@ These are confirmed BUILT with file evidence. Treat as done.
   6 `IWebhookStrategy` providers.
 - **Polling** — 8 stream-worker repull jobs (shopify/ga4/meta/google-ads/woo/razorpay/gokwik/shiprocket).
 - **Batch/historical** — `RequestConnectorBackfillCommand` + `runResumableBackfill` + `NoLoss.ts` DLQ.
-- **Streaming (pixel)** — `apps/collector` → Kafka → Spark-SS `bronze_raw_landing.py`.
+- **Streaming (pixel)** — `apps/collector` → Kafka → Bronze landing (Spark-SS
+  `bronze_raw_landing.py` then; replaced by the Kafka Connect sink, ADR-0010).
 
 ### Auth / Secrets / OAuth lifecycle (strongest domain)
 - **Declarative auth** — `ConnectorAuthField.secret` drives `splitConnectorCredentials`.
@@ -118,7 +120,8 @@ gap surfaces a stakeholder-visible UI on its own.
 ### HIGH priority
 
 **G1 — Raw-lane Event-Envelope producer (V4 verbatim `*.raw.v1`)** · L · ships_ui: no
-The Spark raw-lane (`db/iceberg/spark/bronze_raw_landing.py`, 9 lanes) is built but **no TS producer
+The raw-lane lander (`db/iceberg/spark/bronze_raw_landing.py` then; now the Kafka Connect sink,
+ADR-0010 — 9 lanes → `<lane>_raw_connect`) is built but **no TS producer
 emits onto `*.raw.v1`**. Build a small util that wraps each verbatim provider record in
 `{brand_id (server-trusted from DB row), source, resource, trace_id/correlation_id, payload:<original-bytes>}`
 and produces to the matching `*.raw.v1` topic. Wire into `apps/stream-worker/src/jobs/*-repull/run.ts`

@@ -1,5 +1,9 @@
 # Meta Ads Connector — Verification & Reimplementation Plan
 
+> **Writer note (ADR-0010, 2026-07-05):** `bronze_materialize.py` referenced below was removed —
+> Bronze is landed verbatim by the Kafka Connect sink with NO Bronze-side gate; the
+> `SERVER_TRUSTED` admit set now lives only in `silver_collector_event.py` (one edit, not two).
+
 **Brand verified:** Bodd Active (`brand_id 1a6adb32-eb0d-41f9-8409-dc423240e444`)
 **Date:** 2026-06-27
 **Verdict:** `major_gaps` — working but spend-shallow vs the `ad.insight` spec. Extend, do not rebuild.

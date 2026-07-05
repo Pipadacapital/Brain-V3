@@ -1,5 +1,10 @@
 # Shopify Connector — Correctness Verification Report (Bodd Active)
 
+> **Writer note (ADR-0010, 2026-07-05):** `bronze_materialize.py` referenced below was removed —
+> Bronze is landed verbatim by the Kafka Connect sink with NO Bronze-side gate; the
+> `SERVER_TRUSTED` admit set (and the pixel-lane join) now lives only in
+> `silver_collector_event.py` (one edit, not two).
+
 ## 1. Bottom line
 
 **Mostly correct, but NOT "running properly" — the live pipeline is frozen and several revenue-truth paths are broken.** The dashboards for Bodd Active (`boddactive-com.myshopify.com`, brand `1a6adb32-…`) DO render real data because the **connect-time backfill** landed 813 orders that flowed cleanly Bronze→Silver→Gold→serving (refreshed today, 2026-06-28 09:49). The foundations are genuinely well-built: HMAC-first verification, brand_id from the DB row (never header/body), deterministic uuidV5 event_ids + Bronze MERGE idempotency, and money as bigint minor-units + sibling `currency_code` with integer-only arithmetic. **However**, live ingestion is **deadlocked** on a stuck `connector_sync_status='syncing'` row with no reaper (frozen 13.5h+), the **live webhook lane is non-functional** (HMAC keyed off a `webhook_secret` the connect flow never stores, and webhook subscriptions are never registered at all), **COD revenue is silently understated** (recognition still reads the retired `gokwik.awb_status.v1`), and **four canonical resource events** (refunds/products/customers/fulfillments) are dropped at the Bronze gate. So: orders display correctly today, but any order state change since 06-27 19:46 (cancellation, refund, COD delivery/RTO) will never reach Brain.

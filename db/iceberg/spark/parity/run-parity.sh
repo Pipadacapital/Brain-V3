@@ -11,7 +11,7 @@
 #   dbt (RETIRED)                — the legacy dbt brain_gold/brain_silver base table (DROPPED in 6b →
 #                                  StarRocks-sourced marts SKIP). PG-sourced marts still read PG.
 #
-# Mirrors ../run-bronze-parity.sh: a one-shot Spark container in Redpanda's network namespace so the
+# One-shot Spark container in the Kafka container's network namespace (the standard run-*.sh shape) so the
 # iceberg-rest / starrocks / postgres / minio service DNS resolves. Requires the lakehouse profile
 # (iceberg-rest + minio) AND core (starrocks) + ingest (redpanda) up.
 #

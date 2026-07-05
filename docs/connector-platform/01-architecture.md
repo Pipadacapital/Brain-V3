@@ -47,10 +47,11 @@ The connector platform is **not a service** — it is a bounded context split ac
    └──────────────┬───────────────────────────────┬────────────────────┘
                   │                                │
    ┌──────────────▼──────────────┐   ┌─────────────▼─────────────────────┐
-   │   apps/stream-worker (Node)  │   │  db/iceberg/spark (PySpark sink)   │
-   │  repull/backfill RUNNERS:    │   │  bronze_materialize.py             │
-   │   shopify-repull, meta-…,    │   │  → Iceberg Bronze (sole SoR)       │
-   │   gokwik-…, razorpay-…  (8)  │   └─────────────┬─────────────────────┘
+   │   apps/stream-worker (Node)  │   │  Bronze landing sink               │
+   │  repull/backfill RUNNERS:    │   │  (then: bronze_materialize.py;     │
+   │   shopify-repull, meta-…,    │   │   now: Kafka Connect — ADR-0010)   │
+   │   gokwik-…, razorpay-…  (8)  │   │  → Iceberg Bronze (sole SoR)       │
+   │                              │   └─────────────┬─────────────────────┘
    │  consumers: Bronze bridge,   │                 │
    │   ledger, identity-bridge,   │   ┌─────────────▼─────────────────────┐
    │   consent-suppressor, DLQ    │   │  StarRocks (OLAP) + dbt            │
@@ -274,7 +275,7 @@ The connector platform's only job in the medallion is to **land canonical events
 
 ### 7.1 EXISTS
 
-- Iceberg-native, append-only, format-v2, zstd, `PARTITIONED BY (bucket(16, brand_id), days(occurred_at))` — verified `db/iceberg/spark/bronze_materialize.py` `ensure_table` DDL.
+- Iceberg-native, append-only, format-v2, zstd, `PARTITIONED BY (bucket(16, brand_id), days(occurred_at))` — verified `db/iceberg/spark/bronze_materialize.py` `ensure_table` DDL *(that Spark sink has since been replaced by the Kafka Connect sink, ADR-0010 — new landing tables are `collector_events_connect` / `<lane>_raw_connect`)*.
 - **[Idempotency]** `MERGE … WHEN NOT MATCHED THEN INSERT` on `event_id` — strict append-only dedup.
 - Two-phase cold-start-safe streaming sink (`availableNow` drain → `processingTime` continuous).
 - Admission gating replicated in the sink: `SERVER_TRUSTED_BRONZE` set, pixel R2 `install_token→brand` inner-join, brand-mismatch quarantine, R3 consent.

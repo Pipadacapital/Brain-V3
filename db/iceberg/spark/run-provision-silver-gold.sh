@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # run-provision-silver-gold.sh — Brain V4 Phase 0 (Area B): provision the Iceberg brain_silver +
 # brain_gold namespaces against the local lakehouse (compose `lakehouse` profile must be up:
-# iceberg-rest + minio). Mirrors run-bronze-spike.sh.
+# iceberg-rest + minio). One-shot docker-run Spark shape (the standard run-*.sh pattern here).
 #
 # Spins a one-shot Spark container on the compose network, pulls the Iceberg jars, and spark-submits
 # provision_silver_gold.py — which CREATEs the Silver/Gold namespaces + one canonical empty table in
@@ -23,9 +23,9 @@ set -euo pipefail
 SPARK_IMAGE="${SPARK_IMAGE:-apache/spark:3.5.3}"
 ICEBERG_VERSION="${ICEBERG_VERSION:-1.9.2}"
 SCALA="2.12"
-# Join Redpanda's network namespace so service-name DNS (iceberg-rest, minio) resolves — the same
-# netns trick run-bronze-spike.sh uses (no broker traffic is needed here, but it puts us on the
-# compose network with the right DNS without a dedicated --network flag).
+# Join the Kafka container's network namespace so service-name DNS (iceberg-rest, minio) resolves —
+# the standard netns trick the run-*.sh scripts here use (no broker traffic is needed for this job,
+# but it puts us on the compose network with the right DNS without a dedicated --network flag).
 REDPANDA_CONTAINER="${REDPANDA_CONTAINER:-brainv3-kafka-1}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 

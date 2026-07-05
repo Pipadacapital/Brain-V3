@@ -1,23 +1,22 @@
 """
 iceberg_base.py — the shared Spark + Iceberg-REST + MinIO foundation (Brain V4 Phase 0, Area B).
 
-This is the ADDITIVE, factored-out base that lets ANY Spark job (Bronze, and now the new Silver
-and Gold jobs) talk to the SAME local lakehouse (Iceberg REST catalog over MinIO S3) with one
-identical catalog config. It is the seam Phase 1+ Silver and Phase 2+ Gold jobs reuse so the
-Iceberg-REST/MinIO wiring lives in exactly ONE place.
+This is the base that lets ANY Spark job talk to the SAME local lakehouse (Iceberg REST catalog
+over MinIO S3) with one identical catalog config. It is the seam every Silver/Gold job — plus the
+Bronze maintenance/retention/erasure jobs — reuses, so the Iceberg-REST/MinIO wiring lives in
+exactly ONE place.
 
-Why a separate module (non-breaking): `bronze_materialize.build_spark` already encodes this exact
-catalog config, but it is bound to the Bronze appName and lives next to the Bronze streaming logic.
-Re-deriving the catalog config here (rather than importing build_spark) keeps Bronze untouched —
-this file imports NOTHING from bronze_materialize, so adding/changing it can never break the proven
-Bronze path. `bronze_materialize.build_spark` stays the canonical Bronze factory; new Silver/Gold
-jobs call `iceberg_base.build_spark(...)`.
+History: this module was factored out (ADDITIVE, non-breaking) from the Spark-SS Bronze landing
+job's session factory, which encoded this exact catalog config. Under ADR-0010 the Bronze writer is
+the Kafka Connect Iceberg sink and the Spark-SS landing modules are DELETED — so `iceberg_base.
+build_spark(...)` is now the ONE canonical Spark session factory for the whole fleet.
 
-Parity of config with bronze_materialize.build_spark (intentional — same catalog, same warehouse):
+Config carried over from the retired Bronze landing factory (intentional — same catalog, same
+warehouse, so the sweep to this factory changed nothing at the catalog level):
   - REST catalog (org.apache.iceberg.spark.SparkCatalog, type=rest) at ICEBERG_REST_URI
   - S3FileIO over MinIO (path-style, brain/brainbrain creds, us-east-1)
-  - the deprecated-offset-fetching flag (harmless for batch; matches the Bronze session so a job that
-    ALSO reads Kafka — e.g. a future streaming Silver — behaves identically)
+  - the deprecated-offset-fetching flag (harmless for batch; kept so a job that ALSO reads Kafka —
+    e.g. a future streaming Silver — behaves exactly like the proven retired sink did)
 
 Local substrate note: the single local Iceberg REST catalog (`rest`) has one physical warehouse
 (s3://brain-bronze/ in compose), but Iceberg NAMESPACES are logical — brain_silver and brain_gold
@@ -47,9 +46,9 @@ GOLD_NAMESPACE = os.environ.get("GOLD_NAMESPACE", "brain_gold")
 
 
 def spark_perf_configs() -> "dict[str, str]":
-    """Production-grade, LOCAL-MODE Spark tuning shared by EVERY Brain session — the Silver/Gold batch
-    jobs (via build_spark below) and the two Bronze streaming sinks (which duplicate this dict, for the
-    Bronze-path isolation this module guarantees; keep them in sync).
+    """Production-grade, LOCAL-MODE Spark tuning shared by EVERY Brain session — all jobs build their
+    session via build_spark below. (The retired Spark-SS Bronze streaming sinks used to duplicate this
+    dict; they are gone under ADR-0010, so this is the single copy.)
 
     These all take effect in-session via SparkSession.builder.config(). Driver-JVM GC is deliberately
     NOT set here: in local mode the driver JVM is already running by the time Python builds the session,
@@ -96,8 +95,8 @@ def spark_perf_configs() -> "dict[str, str]":
 
 
 def build_spark(app_name: str = "brain-iceberg") -> SparkSession:
-    """A SparkSession wired to the local Iceberg REST catalog over MinIO — the SAME catalog config
-    as bronze_materialize.build_spark, factored out so Silver/Gold jobs share one definition.
+    """A SparkSession wired to the local Iceberg REST catalog over MinIO — the fleet's ONE canonical
+    session factory (ADR-0010: the retired Spark-SS Bronze landing factory it was factored from is gone).
 
     All wiring is env-overridable; dev defaults target the compose service names (iceberg-rest:8181,
     minio:9000). Pass a job-specific app_name for log/UI attribution.

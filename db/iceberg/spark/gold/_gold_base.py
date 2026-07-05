@@ -7,7 +7,7 @@ campaign_performance).
 These ten Gold marts have NO dbt predecessor (parity status=NEW — the matrix §3/4 GAP products). Each job
 READS Iceberg brain_silver.<entity> (built in Phase 1/1b) and idempotently MERGEs into Iceberg
 brain_gold.<mart> on the mart PK — the SAME append-only-on-no-match MERGE discipline as
-bronze_materialize.py / _silver_base.py (write.upsert.enabled=false) plus an explicit WHEN MATCHED UPDATE
+_silver_base.py (write.upsert.enabled=false) plus an explicit WHEN MATCHED UPDATE
 so a re-run over a growing Silver carries the latest rollup. ADDITIVE / dual-run / non-breaking: it
 repoints NO reader, changes NO dbt model or app code, and writes ONLY into brain_gold.<these marts>.
 

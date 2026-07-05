@@ -18,11 +18,12 @@ export const ORDER_LIVE_V1_EVENT_NAME = 'order.live.v1' as const;
 export const PRODUCT_UPSERT_V1_EVENT_NAME = 'product.upsert.v1' as const;
 
 /** Customer upsert event name — SHARED with @brain/shopify-mapper (one customer.upsert.v1 grain).
- *  Already admitted on BOTH SERVER_TRUSTED sets (silver_collector_event.py / bronze_materialize.py). */
+ *  Already admitted on the SERVER_TRUSTED set of the Silver admission gate
+ *  (silver_collector_event.py, ADR-0010 — Bronze is ungated append-only). */
 export const CUSTOMER_UPSERT_V1_EVENT_NAME = 'customer.upsert.v1' as const;
 
 /** Refund recorded event name — SHARED with @brain/shopify-mapper (one refund.recorded.v1 grain).
- *  Already admitted on BOTH SERVER_TRUSTED sets + consumed by silver_refund.py. */
+ *  Already admitted on the Silver admission gate's SERVER_TRUSTED set + consumed by silver_refund.py. */
 export const REFUND_RECORDED_V1_EVENT_NAME = 'refund.recorded.v1' as const;
 
 /** Coupon upsert event name — NEW canonical grain (no Shopify equivalent yet).

@@ -9,7 +9,11 @@
 > below is still accurate and Bronze is now Iceberg sole-SoR. To stand up + refresh the local medallion
 > today use `pnpm dev:up` + `tools/dev/v4-refresh-loop.sh` (Spark Silver→Gold→`mv` SYNC refresh) — **not**
 > the `dbt` / `StarRocks` steps in the Slice sections below. Read those sections for catalog/object-store
-> wiring only.
+> wiring only. **Further (ADR-0010, 2026-07-05):** the Spark-SS Bronze landing this runbook exercised
+> (`bronze_materialize.py`, `run-bronze-spike.sh`) is REMOVED — Bronze landing is the always-on
+> `kafka-connect` compose service. Wherever a slice says "run the spike to materialize into Iceberg",
+> today you just produce to Kafka and the Connect sink lands it (~30s commit interval), into
+> `brain_bronze.collector_events_connect` / `<lane>_raw_connect`.
 
 The local stand-in for the production Bronze substrate (AWS Glue + S3). Used to develop and
 verify the Iceberg Bronze flip (ADR-0002) without AWS. **Optional infra** — not part of the
@@ -79,7 +83,8 @@ read the live Redpanda topic, MERGE into `brain_bronze.collector_events` (idempo
 
 ```bash
 pnpm dev:lakehouse                       # ensure iceberg-rest + minio are up
-db/iceberg/spark/run-bronze-spike.sh     # one-shot Spark container, trigger=availableNow (drains + exits)
+db/iceberg/spark/run-bronze-spike.sh     # (HISTORICAL — script removed with ADR-0010; today: produce to
+                                         #  Kafka and the kafka-connect sink lands it within ~30s)
 ```
 
 The runner joins Redpanda's network namespace (`--network container:brainv3-redpanda-1`) so the
@@ -108,9 +113,11 @@ idempotency key is what must match). Verified locally: real brand `124e6af5` sho
 Iceberg, delta 0**; the oracle also correctly CLOSED the gate on a 1-event divergence (a test
 fixture), proving drift detection.
 
-**Job modes** (`db/iceberg/spark/bronze_materialize.py`): `TRIGGER_MODE=availableNow` (default —
-drain+exit, the periodic CronWorkflow shape) vs `continuous` (long-lived stream, the post-cutover
-real-time shape). Prod sets a durable `CHECKPOINT_LOCATION=s3a://…`.
+**Job modes** (`db/iceberg/spark/bronze_materialize.py` — HISTORICAL, removed with ADR-0010):
+`TRIGGER_MODE=availableNow` (default — drain+exit, the periodic CronWorkflow shape) vs `continuous`
+(long-lived stream, the post-cutover real-time shape). Prod set a durable
+`CHECKPOINT_LOCATION=s3a://…`. Today's landing writer (kafka-connect) is always-on with no
+checkpoint — offsets live in the Iceberg snapshot metadata.
 
 **Deploy** (`docs/audit`/B3): image `db/iceberg/spark/Dockerfile` (jars baked in) → ECR; CronWorkflows
 in `infra/helm/cronworkflows/templates/spark-bronze.yaml`, **gated off** by `sparkBronze.enabled`
@@ -149,7 +156,8 @@ path (POST /collect → pixel consumer → PG bronze, AND Spark → Iceberg):
 
 ```bash
 node tools/pixel-fixture/seed-touchpoints.mjs   # uses brand 124e6af5 + its install_token + consent
-db/iceberg/spark/run-bronze-spike.sh            # pull them into Iceberg
+db/iceberg/spark/run-bronze-spike.sh            # (HISTORICAL — removed with ADR-0010; the Connect
+                                                #  sink lands the produced events itself, ~30s)
 ```
 
 Verified: `page.viewed`/`cart.viewed`/`cart.item_added` land in PG `bronze_events` AND Iceberg
@@ -203,7 +211,8 @@ REAL ingest path (one inject → both sinks: PG via the bridge, Iceberg via Spar
 
 ```bash
 node tools/seed/seed-line-item-order.mjs        # order.live.v1 + properties.line_items → dev.collector.event.v1
-db/iceberg/spark/run-bronze-spike.sh            # materialize it into Iceberg
+db/iceberg/spark/run-bronze-spike.sh            # (HISTORICAL — removed with ADR-0010; the Connect
+                                                #  sink lands it itself, ~30s)
 docker exec brainv3-starrocks-1 mysql -h127.0.0.1 -P9030 -uroot \
   -e "REFRESH EXTERNAL TABLE brain_bronze_local.brain_bronze.collector_events;"
 cd db/dbt

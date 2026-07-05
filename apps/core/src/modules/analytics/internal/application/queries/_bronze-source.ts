@@ -1,13 +1,18 @@
 /**
- * _bronze-source.ts — shared helper for the operational-read Bronze source (ADR-0002 Slice 5).
+ * _bronze-source.ts — shared helper for the operational-read Bronze source (ADR-0010).
  *
- * Operational reads (data/tracking health, recent events, orders) read raw Bronze events. The PG
- * bronze_events table has been RETIRED (dropped in db/migrations/0070) — Iceberg is now the SOLE
- * Bronze source: collector_events in the Iceberg Bronze namespace, read over TRINO (Brain V4 —
- * StarRocks removed). The Iceberg path goes through the metric-engine withSilverBrand seam, which
- * injects the tenant predicate at ${BRAND_PREDICATE} — so a query cannot omit brand isolation (the
- * SAME mechanism the Silver reads use; verified non-inert by the isolation-fuzz mutation test). When
- * the serving tier isn't wired (srPool absent), the reads return an honest no_data shape.
+ * Operational reads (data/tracking health, recent events, orders) read raw Bronze events. Under
+ * ADR-0010 the Kafka Connect Iceberg sink is the ONLY Bronze landing writer: the collector lane
+ * lands in `iceberg.brain_bronze.collector_events_connect` (truly raw — payload + kafka coords only),
+ * and these column-shaped reads go through the Trino LIFT VIEW
+ * `iceberg.brain_bronze.collector_events_connect_lifted` (exposes event_id/brand_id/event_type/
+ * occurred_at/ingested_at/correlation_id/payload). Bronze is APPEND-ONLY — dedup lives in Silver
+ * (silver_collector_event MERGE on brand_id/event_id). Historical rows in the retired
+ * brain_bronze.events / collector_events tables still exist as DATA but are NOT served here.
+ * The read path goes through the metric-engine withSilverBrand seam, which injects the tenant
+ * predicate at ${BRAND_PREDICATE} — so a query cannot omit brand isolation (the SAME mechanism the
+ * Silver reads use; verified non-inert by the isolation-fuzz mutation test). When the serving tier
+ * isn't wired (srPool absent), the reads return an honest no_data shape.
  */
 
 import type { EngineDeps, SilverPool } from '@brain/metric-engine';
@@ -19,33 +24,17 @@ export interface BronzeReadDeps extends EngineDeps {
 }
 
 /**
- * The fully-qualified Iceberg Bronze table over Trino (Brain V4 — StarRocks removed). Trino's default
- * catalog is 'iceberg'.
- *
- * BRONZE_SOURCE switch — ONE env flips this reader:
- *   BRONZE_SOURCE=legacy (default) → iceberg.brain_bronze.collector_events (bronze_materialize.py).
- *   BRONZE_SOURCE=events           → iceberg.brain_bronze.events, filtered to the collector lane
- *                                    (the unified bronze_landing.py Spark-SS sink).
- *   BRONZE_SOURCE=connect          → iceberg.brain_bronze.collector_events_connect_lifted — the
- *                                    Trino lift view over the ADR-0010 Kafka Connect collector
- *                                    table (which is truly-raw: payload + kafka coords only; the
- *                                    view lifts brand_id/event_type/occurred_at/ingested_at so the
- *                                    column-shaped queries here work unchanged).
- * Rollback = set BRONZE_SOURCE back to the previous writer's value.
+ * The Bronze collector source over Trino (default catalog 'iceberg'): the ADR-0010 lift view over
+ * the Kafka Connect collector table. CONSTANT — the legacy BRONZE_SOURCE env switch is REMOVED
+ * (connect is the only writer; there is nothing to roll back to).
  */
-const BRONZE_SOURCE = (process.env['BRONZE_SOURCE'] ?? 'legacy').toLowerCase();
-export const ICEBERG_BRONZE =
-  BRONZE_SOURCE === 'events'
-    ? 'iceberg.brain_bronze.events'
-    : BRONZE_SOURCE === 'connect'
-      ? 'iceberg.brain_bronze.collector_events_connect_lifted'
-      : 'iceberg.brain_bronze.collector_events';
+export const ICEBERG_BRONZE = 'iceberg.brain_bronze.collector_events_connect_lifted';
 /**
- * Predicate that keeps ONLY the collector lane when reading the unified events table (which co-locates
- * the raw connector lanes); a no-op (`TRUE`) against the single-lane collector_events /
- * collector_events_connect tables. Append to a Bronze WHERE as `AND ${BRONZE_COLLECTOR_PREDICATE}`.
+ * Collector-lane predicate — the lift view is SINGLE-LANE (collector only), so this is a constant
+ * no-op `TRUE`. Kept as an export so the callers' `AND ${BRONZE_COLLECTOR_PREDICATE}` SQL shape
+ * stays uniform (`WHERE TRUE AND brand_id = ?`).
  */
-export const BRONZE_COLLECTOR_PREDICATE = BRONZE_SOURCE === 'events' ? "connector = 'collector'" : 'TRUE';
+export const BRONZE_COLLECTOR_PREDICATE = 'TRUE';
 
 /**
  * True when the Trino serving pool is wired (the only Bronze source now). Guards srPool presence so

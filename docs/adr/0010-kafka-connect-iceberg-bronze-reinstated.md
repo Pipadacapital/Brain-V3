@@ -69,3 +69,27 @@ known trade-offs on the record (below).
 - Known watchpoint: the Connect coordinator is one more concurrent writer against the SQLite-backed
   REST catalog (CATALOG_CLIENTS=1 serialization — see iceberg-catalog-sqlite-lock memory); watched
   during bake for `database table is locked` errors.
+
+## Decommission executed (2026-07-05)
+
+The cutover ran and the Spark landing path is now **removed from the codebase** — this closes
+decision 6's "retired at cutover" clause:
+
+- **Cutover done**: Kafka Connect is the sole Bronze landing writer everywhere (compose
+  `kafka-connect` service locally; `infra/helm/kafka-connect` chart in prod, `sparkBronze` reduced
+  to maintenance-only). Silver was re-baselined once (`FULL_REFRESH=1` on `silver_collector_event`,
+  69,524 rows, history intact) and the medallion refresh runs green under connect.
+- **Spark landing code REMOVED**: `bronze_landing.py`, `bronze_materialize.py`,
+  `bronze_raw_landing.py`, `combined_bronze_sinks.py`, their tests/run scripts, and
+  `tools/dev/dev-bronze-streaming.sh` are deleted; the `BRONZE_SOURCE` / `BRONZE_LANDING` switches
+  are gone (there is no `spark`/`legacy`/`events` posture to flip to). Spark keeps ONLY Bronze
+  maintenance/retention/erasure (`bronze_maintenance.py`, `bronze_raw_retention.py`,
+  `erasure_raw_delete.py`) — per CLAUDE.md, Spark is now the sole TRANSFORM compute.
+- **Rollback is no longer an env flip.** It is: `git revert` of the removal commits + redeploy,
+  then replay the Kafka topics into the restored Spark sink — loss-free only within the **7-day
+  topic retention window**. Silver needs one `FULL_REFRESH=1` per re-pointed job after any
+  roll-back/forward (idempotent MERGEs make the rescan safe).
+- **Legacy tables retained as history** — no data dropped: `brain_bronze.events`,
+  `brain_bronze.collector_events`, and the Spark-written `brain_bronze.*_raw` tables stay
+  read-only. Any future drop is a separate, deliberate decision after the retention/erasure
+  posture is confirmed for them.

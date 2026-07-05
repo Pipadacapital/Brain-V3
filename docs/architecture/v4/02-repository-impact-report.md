@@ -109,7 +109,7 @@
 ## 4. Data / compute / serving layers
 
 ### `db/iceberg/spark` — **KEEP + EXTEND** (net-new Silver/Gold)
-- **KEEP:** `bronze_materialize.py` (idempotent MERGE INSERT-only, append-only/replayable, the one conformant medallion hop), `validate_bronze.py`, `bronze_maintenance.py` (compaction + 24-month snapshot TTL + crypto-shred), `bronze_parity_check.py`. Backfill lane consumed; server-trusted/ledger-only admission sets mirror stream-worker.
+- **KEEP:** `bronze_materialize.py` (idempotent MERGE INSERT-only, append-only/replayable, the one conformant medallion hop — *later replaced by the Kafka Connect sink and removed, ADR-0010*), `validate_bronze.py`, `bronze_maintenance.py` (compaction + 24-month snapshot TTL + crypto-shred), `bronze_parity_check.py`. Backfill lane consumed; server-trusted/ledger-only admission sets mirror stream-worker.
 - **EXTEND (net-new, the core of the migration):** add **Spark Silver** jobs (1:1 for ~9 `silver_*` dbt models + journey-stitch/identity) and **Spark Gold** jobs (1:1 for ~11 `gold_*` + metric-engine/attribution compute) writing **Iceberg Gold**.
 
 ### `db/dbt` (entire layer, ~30–31 models) — **DEPRECATE → REMOVE** ⚠️

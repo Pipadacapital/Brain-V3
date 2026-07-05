@@ -14,9 +14,9 @@
 #   - STALE-SAFE: a lock whose recorded holder pid is dead is reclaimed immediately (covers hard kills
 #     AND the `exec docker run` scripts, whose EXIT trap never fires — exec preserves the pid, so the
 #     lock stays correctly "held" for the job's lifetime and is reclaimed after it exits).
-#   - The STREAMING sinks must NOT source this file (tools/dev/dev-bronze-streaming.sh, and
-#     run-bronze-raw-landing.sh guards on TRIGGER_MODE=continuous) — a never-ending job holding the
-#     batch lock would starve every batch job.
+#   - A never-ending STREAMING job must NOT source this file — it would starve every batch job.
+#     (Moot today: ADR-0010 removed the Spark streaming Bronze sinks — the Bronze writer is the Kafka
+#     Connect Iceberg sink, which runs outside these scripts — so every remaining run-*.sh is batch.)
 #   - BRAIN_SPARK_LOCK_DISABLE=1 bypasses entirely (CI runners with no shared host, debugging).
 #
 # Usage (immediately after `set -euo pipefail`):

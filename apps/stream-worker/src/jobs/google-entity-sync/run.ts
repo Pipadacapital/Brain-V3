@@ -15,13 +15,16 @@
  *   - Emits on the SAME collector.event.v1 live lane (NO new topic/envelope). ad.entity.updated is
  *     connector-derived (no install_token / no consent) → it MUST ride the SERVER_TRUSTED lane,
  *     exactly like spend.live.v1, or the pixel-lane install_token join silently drops it.
- *     >>> Admission slice must add the literal "ad.entity.updated" to the SERVER_TRUSTED sets in
- *         bronze_materialize.py + silver_collector_event.py (byte-identical). <<<
+ *     >>> Admission slice must add the literal "ad.entity.updated" to the SERVER_TRUSTED set in
+ *         the Silver admission gate (silver_collector_event.py, ADR-0010 — Bronze is ungated
+ *         append-only under the Kafka Connect sink). <<<
  *
  * Idempotency (deterministic event_id): uuid5(brandId:platform:level:entityId:syncDate:ad.entity.updated).
- *   - The syncDate (UTC day) bucket means intra-day re-runs DEDUP in the Bronze MERGE (idempotent),
- *     while a NEW day produces a fresh row → silver_campaign's latest-by-occurred_at picks up status/
- *     name changes (a constant per-grain id would let MERGE drop every update — wrong for an SCD).
+ *   - The syncDate (UTC day) bucket means intra-day re-runs DEDUP in the Silver admission MERGE on
+ *     (brand_id, event_id) (ADR-0010: Bronze is append-only — re-runs land extra Bronze rows; Silver
+ *     collapses them), while a NEW day produces a fresh row → silver_campaign's latest-by-occurred_at
+ *     picks up status/name changes (a constant per-grain id would let MERGE drop every update — wrong
+ *     for an SCD).
  *   - occurred_at = entity_updated_at = the sync timestamp.
  *   - This event_id scheme + payload shape MUST MATCH Meta's entity-sync (the shared lane).
  *

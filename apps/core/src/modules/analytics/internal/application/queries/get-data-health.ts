@@ -7,8 +7,9 @@
  *   - syncState:   connector_sync_status.state (latest row by last_sync_at)
  *   - lastSyncAt:  connector_sync_status.last_sync_at (latest)
  *
- * BRONZE SOURCE (ADR-0002 Slice 5): the PG bronze_events table is RETIRED — Iceberg is the SOLE
- * source. Reads collector_events from the StarRocks external Iceberg catalog through the
+ * BRONZE SOURCE (ADR-0010): the PG bronze_events table is RETIRED — Iceberg is the SOLE source.
+ * Reads the Kafka Connect collector lane over Trino via the lift view
+ * (collector_events_connect_lifted) through the
  * withSilverBrand seam (brand predicate injected at ${BRAND_PREDICATE} — the SAME isolation
  * mechanism the metric-engine Silver reads use; a caller cannot forget the predicate).
  * connector_sync_status is NOT a Bronze table — it stays on Postgres.
@@ -42,7 +43,8 @@ export type DataHealthResult =
 const VOLUME_WINDOW_DAYS = 30;
 
 /** The Iceberg Bronze table over Trino (Brain V4 — StarRocks removed); Trino's default catalog is `iceberg`. */
-// ICEBERG_BRONZE + the collector predicate come from the shared _bronze-source (UNIFIED-BRONZE switch).
+// ICEBERG_BRONZE + the (constant TRUE) collector predicate come from the shared _bronze-source
+// (ADR-0010 — the BRONZE_SOURCE switch is removed; the connect lift view is the only source).
 
 export interface DataHealthDeps extends EngineDeps {
   /** StarRocks pool — required to read the Iceberg Bronze catalog. Absent → honest no_data. */

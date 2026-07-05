@@ -1,11 +1,12 @@
 """
-silver_collector_event.py — Brain V4 / ADR-0006 P2: the ADMISSION GATE moved into Spark Silver.
+silver_collector_event.py — Brain V4 / ADR-0006 P2 / ADR-0010: the ADMISSION GATE lives in Spark Silver.
 
-Under ADR-0006 the Kafka Connect Iceberg sink writes the collector topic to a TRULY RAW Bronze table
-(brain_bronze.collector_events_raw) — no R2/R3 gate, no canonicalization. This job is the gate the Spark
-Bronze sink (bronze_materialize.py gate_and_map) used to apply, lifted to Silver:
+Under ADR-0010 the Kafka Connect Iceberg sink is THE Bronze writer: the collector topic lands in the
+TRULY RAW table brain_bronze.collector_events_connect (verbatim envelope `payload` + kafka coordinates
+only) — no R2/R3 gate, no canonicalization, no dedup. This job is the gate the retired Spark Bronze
+sink's gate_and_map used to apply, lifted to Silver:
 
-  brain_bronze.collector_events_raw  →  [R2 tenant + R3 consent gate + lane split + dedup]  →  brain_silver.silver_collector_event
+  brain_bronze.collector_events_connect  →  [envelope-scalar lift + R2 tenant + R3 consent gate + lane split + dedup]  →  brain_silver.silver_collector_event
 
 `silver_collector_event` has the SAME column contract as the old (Spark-sink-written) Bronze
 `collector_events` table (event_id/brand_id/occurred_at/ingested_at/schema_name/schema_version/
@@ -13,10 +14,10 @@ event_type/correlation_id/partition_key/payload/…), so EVERY downstream Silver
 brain_bronze.collector_events → brain_silver.silver_collector_event with NO other change (they read
 `payload` via get_json_object exactly as before).
 
-WHY a reconstructed `payload`: the Connect JsonConverter exploded the envelope into typed/struct columns
-(properties + consent_flags are STRUCTs, there is no verbatim JSON string). Downstream readers do
-get_json_object(payload,'$.properties.X'), so we rebuild payload = to_json(struct(all raw cols)) — a
-faithful re-serialization of the envelope, restoring the `payload`-is-the-full-envelope contract.
+PAYLOAD contract: the ADR-0010 collector connector uses the StringConverter + HoistField, so the Bronze
+`payload` column IS the verbatim full envelope JSON — no struct explosion, no re-serialization needed.
+The envelope scalars the gate needs (event_id/brand_id/occurred_at/ingested_at/…) are lifted from that
+JSON in-Spark (build()), and downstream readers keep doing get_json_object(payload,'$.properties.X').
 
 GATE (faithful port of gate_and_map — Iceberg parity with the PG/Spark admission set):
   - malformed drop: event_id / brand_id / occurred_at NULL → never written.
@@ -44,7 +45,7 @@ original:
   - R2 claimed brand_id ≠ install-derived brand_id → stage='dq' (reason='brand_mismatch').
 LEDGER_ONLY (settlement.live.v1) is an INTENTIONAL routing exclusion (consumed by the ledger bridge, never a
 Bronze/Silver collector row) — NOT a data-quality reject — so it is excluded as before and NOT quarantined.
-The reconstructed `payload` envelope is already hashed-PII-safe (the collector boundary hashes identifiers),
+The `payload` envelope is already hashed-PII-safe (the collector boundary hashes identifiers),
 so it is threaded into the quarantine row for replay — no raw PII crosses this gate.
 """
 from __future__ import annotations
@@ -58,7 +59,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pyspark.sql import DataFrame, SparkSession  # noqa: E402
 from pyspark.sql.functions import (  # noqa: E402
-    coalesce, col, concat, concat_ws, current_timestamp, get_json_object, lit, row_number, struct, to_json, to_timestamp, when,
+    coalesce, col, concat, concat_ws, current_timestamp, get_json_object, lit, row_number, to_timestamp, when,
 )
 from pyspark.sql.window import Window  # noqa: E402
 
@@ -67,38 +68,24 @@ from job_log import emit_job_log  # noqa: E402
 from _silver_technical import write_quarantine, write_consent_rejected, event_category_udf  # noqa: E402
 
 BRONZE_NAMESPACE = os.environ.get("BRONZE_NAMESPACE", "brain_bronze")
-# V4 REPOINT: the Kafka-Connect Iceberg sink that wrote `collector_events_raw` was RETIRED (Spark-SS is
-# the sole Bronze landing). The live collector lane now lands in `collector_events` (bronze_materialize.py),
-# whose `payload` column already IS the full envelope JSON. Reading the retired `_raw` table froze the
-# entire Silver tier at the Kafka-Connect cut-over date (new orders/pixels/spend never reached Silver).
-RAW_TABLE = f"{CATALOG}.{BRONZE_NAMESPACE}.{os.environ.get('COLLECTOR_BRONZE_TABLE', 'collector_events')}"
-# UNIFIED-BRONZE CUTOVER (bronze_landing.py): the two split sinks are being unified into ONE raw table
-# brain_bronze.events. This job IS the R2/R3 gate — under the "pure-raw Bronze" decision the gate lives
-# HERE (not in landing), so it reads the UNGATED collector rows and admits exactly the set it always did.
-# ONE env flips every Bronze reader (see _raw_normalize.bronze_source_table):
-#   BRONZE_SOURCE=legacy (default) → read the legacy single-lane collector_events (current behavior).
-#   BRONZE_SOURCE=events           → read brain_bronze.events WHERE connector='collector'.
-# Default is legacy so the running pipeline is unaffected until the sink itself is switched to
-# bronze_landing (dev/prod wiring). Rollback = set BRONZE_SOURCE=legacy.
-BRONZE_SOURCE = os.environ.get("BRONZE_SOURCE", "legacy").lower()
-EVENTS_TABLE = f"{CATALOG}.{BRONZE_NAMESPACE}.events"
-COLLECTOR_CONNECTOR = "collector"
 # ADR-0010 (Kafka Connect Iceberg sink REINSTATED as the Bronze landing writer — cost decision): the
 # collector lane lands in `collector_events_connect` as VERBATIM envelope `payload` + kafka
 # coordinates ONLY — no lifted envelope scalars (truly-raw Bronze) and NO Bronze-side dedup (the sink
-# is append-only; the (brand_id, event_id) window+MERGE in _process_window IS the dedup SoR).
-#   BRONZE_SOURCE=connect → read collector_events_connect, lifting the envelope scalars in-Spark
-#                           (see build()) so the gate below stays byte-identical to the other modes.
+# is append-only; the (brand_id, event_id) window+MERGE in _process_window IS the dedup SoR). This is
+# the ONLY source: the retired Spark-SS landing paths (the legacy single-lane collector_events and the
+# unified brain_bronze.events) have no live writer and are retained purely as history. The envelope
+# scalars the gate + incremental watermark need are lifted from the payload JSON in-Spark (see build()).
 CONNECT_TABLE = f"{CATALOG}.{BRONZE_NAMESPACE}.{os.environ.get('COLLECTOR_CONNECT_TABLE', 'collector_events_connect')}"
 TARGET = f"{CATALOG}.{SILVER_NAMESPACE}.silver_collector_event"
 
-# Lane policy — MUST stay in lockstep with bronze_materialize.py (the same constants, same meaning).
+# Lane policy — this file is the SOLE owner of these sets under ADR-0010 (the retired Spark Bronze
+# sink carried a byte-identical twin; gate_admission_guard_test.py now guards admission coverage here).
 SERVER_TRUSTED = {
     "order.live.v1", "order.backfill.v1", "spend.live.v1", "shopflo.checkout_abandoned.v1",
     "gokwik.rto_predict.v1", "shiprocket.shipment_status.v1",
     # SR-4: shiprocket.return_status.v1 is the SEPARATE return canonical (brand server-derived via the
     # webhook pipeline — MT-1; no install_token/consent → server-trusted lane). Kept BYTE-IDENTICAL with
-    # bronze_materialize.SERVER_TRUSTED_BRONZE. It is NOT the shipment lane, so a return is never folded
+    # the retired Bronze-landing gate twin (pre-ADR-0010). It is NOT the shipment lane, so a return is never folded
     # as a forward shipment status (the false-delivery bug SR-4 fixes).
     "shiprocket.return_status.v1",
     # GoKwik webhook-first canonical events (brand server-derived from gokwik_appid via the
@@ -113,31 +100,31 @@ SERVER_TRUSTED = {
     # SILENTLY DROPPED by the R2 join on a null install_token, starving silver_refund / silver_fulfillment /
     # silver_product_variant / silver_inventory_level (all of which read THIS gated keystone). They take the
     # SAME lane as order.live.v1 (server-derived, no pixel signal). Kept BYTE-IDENTICAL with
-    # bronze_materialize.SERVER_TRUSTED_BRONZE.
+    # the retired Bronze-landing gate twin (pre-ADR-0010).
     "product.upsert.v1", "customer.upsert.v1", "refund.recorded.v1", "fulfillment.recorded.v1",
     # WOO-3: coupon.upsert.v1 is the NEW canonical coupon grain (no Shopify peer). The WooCommerce
     # connector emits it server-derived (brand_id from the resolved connector row, MT-1 — NEVER the API
     # response) with NO install_token / consent signal, so — exactly like the CRIT-4 resource events — it
     # MUST take the server-trusted lane or the PIXEL-lane R2 install_token join would SILENTLY DROP it and
-    # starve silver_coupon. Kept BYTE-IDENTICAL with bronze_materialize.SERVER_TRUSTED_BRONZE.
+    # starve silver_coupon. Kept BYTE-IDENTICAL with the retired Bronze-landing gate twin (pre-ADR-0010).
     "coupon.upsert.v1",
     # AD-1: ad.entity.updated is the SHARED Meta+Google entity-metadata canonical (campaign/adset/ad
     # name/status/objective/advertising_channel_type), emitted by meta-entity-sync / google-entity-sync on
     # the SAME live collector lane as spend.live.v1 — connector-derived (brand_id server-derived from the
     # resolved connector row, MT-1; NO install_token / consent). Without server-trust the PIXEL-lane R2 join
     # SILENTLY DROPS it (tenant_unresolved) and starves silver_campaign's authoritative dim. BYTE-IDENTICAL
-    # with bronze_materialize.SERVER_TRUSTED_BRONZE.
+    # with the retired Bronze-landing gate twin (pre-ADR-0010).
     "ad.entity.updated",
     # SHOPFLO lifecycle: the NEW Shopflo checkout-funnel canonicals (webhook-first; brand_id server-derived
     # from the resolved connector row via the webhook pipeline — MT-1; NO install_token / consent). Like
     # checkout.abandoned.v1 they MUST take the server-trusted lane or the PIXEL-lane R2 join would drop them
-    # and starve silver_checkout_signal. Kept BYTE-IDENTICAL with bronze_materialize.SERVER_TRUSTED_BRONZE.
+    # and starve silver_checkout_signal. Kept BYTE-IDENTICAL with the retired Bronze-landing gate twin (pre-ADR-0010).
     "shopflo.checkout_started.v1", "shopflo.checkout_step.v1", "shopflo.checkout_completed.v1",
 }
 LEDGER_ONLY = {"settlement.live.v1"}
 
 # Postgres pixel_installation — install_token → brand_id for R2. Superuser read (cross-brand, RLS-bypass
-# ETL posture), mirroring bronze_materialize.load_pixel_installations + resolve_brand_by_install_token.
+# ETL posture), mirroring the retired Bronze sink's load_pixel_installations + resolve_brand_by_install_token.
 PG_JDBC_URL = os.environ.get("BRONZE_PG_JDBC_URL", "jdbc:postgresql://postgres:5432/brain")
 PG_USER = os.environ.get("BRONZE_PG_USER", "brain")
 PG_PASSWORD = os.environ.get("BRONZE_PG_PASSWORD", "brain")
@@ -182,10 +169,10 @@ def _process_window(spark: SparkSession, raw: DataFrame, installs: DataFrame) ->
     `installs` is loaded once by the caller and broadcast here (it's small + constant across batches)."""
     from pyspark.sql.functions import broadcast  # local import keeps the module import surface minimal
 
-    # bronze_materialize's `collector_events.payload` IS the verbatim full envelope JSON, so the
+    # `payload` IS the verbatim full envelope JSON (the Connect sink lands it untouched), so the
     # downstream get_json_object('$.properties.X') readers work unchanged — no struct reconstruction.
-    # The flat envelope fields come straight off the materialized columns; install_token + the R3
-    # consent signal are parsed out of the payload (collector_events has no struct properties/consent cols).
+    # The flat envelope fields come off the in-Spark lift in build(); install_token + the R3
+    # consent signal are parsed out of the payload (there are no struct properties/consent columns).
     selected = raw.select(
         col("event_id").cast("string").alias("event_id"),
         col("brand_id").cast("string").alias("claimed_brand_id"),
@@ -358,32 +345,23 @@ def build(spark: SparkSession):
     }.items():
         spark.conf.set(_k, _v)
 
-    # BRONZE SOURCE: `events` = the unified brain_bronze.events (collector lane ONLY — the raw
-    # connector lanes carry provider-API payloads with no envelope, which the gate/parse below can't
-    # map); `connect` = the ADR-0010 Kafka Connect table (below); else the legacy single-lane
-    # collector_events. The gate + envelope-parse downstream is byte-identical in every mode.
-    if BRONZE_SOURCE == "events":
-        raw_all = spark.table(EVENTS_TABLE).where(col("connector") == lit(COLLECTOR_CONNECTOR))
-    elif BRONZE_SOURCE == "connect":
-        # ADR-0010: the Connect sink lands ONLY {payload, kafka_*} (truly-raw Bronze). Lift the
-        # envelope scalars the gate + incremental watermark need from the payload JSON — the SAME
-        # fields bronze_landing/bronze_materialize lifted at write time, so downstream semantics are
-        # unchanged. received_at has no per-row arrival stamp under this writer; the envelope
-        # ingested_at is the ingest clock (the coalesce in _process_window keeps current_timestamp()
-        # as the last resort for rows missing it).
-        _p = col("payload")
-        raw_all = spark.table(CONNECT_TABLE).select(
-            get_json_object(_p, "$.event_id").alias("event_id"),
-            get_json_object(_p, "$.brand_id").alias("brand_id"),
-            get_json_object(_p, "$.event_name").alias("event_type"),
-            to_timestamp(get_json_object(_p, "$.occurred_at")).alias("occurred_at"),
-            to_timestamp(get_json_object(_p, "$.ingested_at")).alias("ingested_at"),
-            to_timestamp(get_json_object(_p, "$.ingested_at")).alias("received_at"),
-            get_json_object(_p, "$.correlation_id").alias("correlation_id"),
-            _p.cast("string").alias("payload"),
-        )
-    else:
-        raw_all = spark.table(RAW_TABLE)
+    # BRONZE SOURCE (ADR-0010 — the ONLY source): the Connect sink lands ONLY {payload, kafka_*}
+    # (truly-raw Bronze). Lift the envelope scalars the gate + incremental watermark need from the
+    # payload JSON — the SAME fields the retired Spark-SS landing sinks lifted at write time, so
+    # downstream semantics are unchanged. received_at has no per-row arrival stamp under this writer;
+    # the envelope ingested_at is the ingest clock (the coalesce in _process_window keeps
+    # current_timestamp() as the last resort for rows missing it).
+    _p = col("payload")
+    raw_all = spark.table(CONNECT_TABLE).select(
+        get_json_object(_p, "$.event_id").alias("event_id"),
+        get_json_object(_p, "$.brand_id").alias("brand_id"),
+        get_json_object(_p, "$.event_name").alias("event_type"),
+        to_timestamp(get_json_object(_p, "$.occurred_at")).alias("occurred_at"),
+        to_timestamp(get_json_object(_p, "$.ingested_at")).alias("ingested_at"),
+        to_timestamp(get_json_object(_p, "$.ingested_at")).alias("received_at"),
+        get_json_object(_p, "$.correlation_id").alias("correlation_id"),
+        _p.cast("string").alias("payload"),
+    )
 
     # ── INCREMENTAL WATERMARK ───────────────────────────────────────────────────────────────────────
     # Process only Bronze rows newer than what Silver already has (minus a small overlap; the MERGE

@@ -109,8 +109,8 @@ spec:
               done
           env:
             - { name: SPARK_MAX_RETRIES, value: {{ .Values.sparkV4.sparkMaxRetries | quote }} }
-            # UNIFIED-BRONZE: silver jobs read the unified brain_bronze.events (bronze_landing). Rollback = legacy.
-            - { name: BRONZE_SOURCE, value: {{ .Values.sparkV4.bronzeSource | default "events" | quote }} }
+            # ADR-0010: the silver jobs read the Kafka Connect Bronze tables (collector_events_connect
+            # + <lane>_raw_connect) — fixed, no BRONZE_SOURCE switch (rollback = git revert).
             {{- toYaml .Values.sparkV4.env | nindent 12 }}
             {{- if eq $mode "k8s" }}
             {{- toYaml .Values.sparkV4.k8s.env | nindent 12 }}  {{/* cluster-scale tuning knobs (spark_perf_configs reads these) */}}
@@ -183,8 +183,8 @@ spec:
               done
           env:
             - { name: SPARK_MAX_RETRIES, value: {{ .Values.sparkV4.sparkMaxRetries | quote }} }
-            # UNIFIED-BRONZE: silver jobs read the unified brain_bronze.events (bronze_landing). Rollback = legacy.
-            - { name: BRONZE_SOURCE, value: {{ .Values.sparkV4.bronzeSource | default "events" | quote }} }
+            # ADR-0010: the gold jobs' Silver inputs derive from the Kafka Connect Bronze tables —
+            # fixed, no BRONZE_SOURCE switch (rollback = git revert).
             {{- toYaml .Values.sparkV4.env | nindent 12 }}
             {{- if eq $mode "k8s" }}
             {{- toYaml .Values.sparkV4.k8s.env | nindent 12 }}  {{/* cluster-scale tuning knobs (spark_perf_configs reads these) */}}

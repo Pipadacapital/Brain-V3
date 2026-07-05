@@ -493,21 +493,35 @@ def build(spark: SparkSession):
         partitioned_by="bucket(256, brand_id), days(occurred_at)",
     )
 
-    # Skip-guard: the meta/google spend raw lanes are EMPTY until an ad connector syncs + the V4 raw-lane
-    # producer (G1) lands payload-schema records. With no source rows in EITHER lane there is nothing to
-    # normalize; return cleanly instead of failing on the legacy struct columns build_meta/build_google
-    # still read. Full payload-JSON normalize is tracked as connector-platform G1.
-    if (rn.read_bronze(spark, CATALOG, BRONZE_NAMESPACE, "meta_spend_raw", "meta").limit(1).count() == 0
-            and rn.read_bronze(spark, CATALOG, BRONZE_NAMESPACE, "google_spend_raw", "google").limit(1).count() == 0):
+    # PER-LANE skip-guard (ADR-0010): each spend lane's Connect table is auto-created on ITS OWN first
+    # record, so meta and google must be guarded INDEPENDENTLY — under the old joint guard, one live
+    # lane would send the other (still-empty / not-yet-created) lane into build_meta/build_google, whose
+    # struct-column select dies on the empty-lane placeholder frame read_bronze returns. A lane with no
+    # source rows contributes nothing; BOTH empty → return cleanly. Full payload-JSON normalize is G1.
+    meta_empty = rn.read_bronze(spark, CATALOG, BRONZE_NAMESPACE, "meta_spend_raw", "meta").limit(1).count() == 0
+    google_empty = rn.read_bronze(spark, CATALOG, BRONZE_NAMESPACE, "google_spend_raw", "google").limit(1).count() == 0
+    if meta_empty and google_empty:
         print(f"[silver-ad-spend-normalize] {RAW_META_TABLE} + {RAW_GOOGLE_TABLE} both empty — skipping (awaiting ad-connector data / G1)", flush=True)
         return TARGET, 0
 
-    meta_good, meta_rejects = build_meta(spark)
-    google_good, google_rejects = build_google(spark)
-    union = meta_good.unionByName(google_good)
+    goods, rejects = [], []
+    if not meta_empty:
+        meta_good, meta_rejects = build_meta(spark)
+        goods.append(meta_good)
+        rejects.append(meta_rejects)
+    if not google_empty:
+        google_good, google_rejects = build_google(spark)
+        goods.append(google_good)
+        rejects.append(google_rejects)
+    union = goods[0]
+    for _g in goods[1:]:
+        union = union.unionByName(_g)
 
     # Stage-1: route the formerly silently-dropped rows to silver_quarantine (observable + replayable).
-    write_quarantine(spark, meta_rejects.unionByName(google_rejects), stage="dq")
+    all_rejects = rejects[0]
+    for _r in rejects[1:]:
+        all_rejects = all_rejects.unionByName(_r)
+    write_quarantine(spark, all_rejects, stage="dq")
 
     # ADR-0010: the append-only Connect Bronze can carry redelivered duplicates — collapse to one row
     # per (brand_id, event_id) or the MERGE below aborts on a source-cardinality violation.

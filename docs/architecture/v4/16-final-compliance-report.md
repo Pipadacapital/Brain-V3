@@ -27,7 +27,7 @@ The drift is **one root inversion**, not diffuse defects. The fix is a **Spark-f
 | # | V4 Principle | Verdict | Evidence |
 |---|--------------|:-------:|----------|
 | 1 | Spark is the ONLY computation engine | ❌ **VIOLATED** | Spark builds Bronze only (4 jobs); Silver/Gold computed by dbt (~30 models) + TS metric-engine (~73 files) + app jobs. Zero Spark Silver/Gold jobs. |
-| 2 | Bronze owns raw truth | ✅ **CONFORMANT** | `bronze_materialize.py` idempotent MERGE INSERT-only on `(brand_id,event_id)`; PG `bronze_events` dropped (0070). |
+| 2 | Bronze owns raw truth | ✅ **CONFORMANT** | `bronze_materialize.py` idempotent MERGE INSERT-only on `(brand_id,event_id)` *(writer since replaced by the Kafka Connect sink, ADR-0010)*; PG `bronze_events` dropped (0070). |
 | 3 | Silver owns canonical truth | ⚠️ **PARTIAL** | Silver well-modeled (per-entity, brand_id-leading, minor-units+currency, additive/deterministic, ADR-0004) **but built by dbt+TS, stored in StarRocks.** Canonical gaps: payment, settlement, campaign, journey-entity, identity_alias. |
 | 4 | Gold owns business truth | ❌ **VIOLATED** | Gold computed by dbt+TS, stored in StarRocks base tables (+ residual PG ledgers), not Iceberg. |
 | 5 | StarRocks owns serving ONLY (`mv_*`) | ❌ **VIOLATED** | StarRocks owns Gold base tables; **zero `mv_*` views.** One-way `Iceberg→dbt→StarRocks` codified. |

@@ -55,8 +55,9 @@ const SUPERUSER_DB_URL =
   'postgres://brain:brain@localhost:5432/brain';
 const REDIS_URL = process.env['REDIS_URL'] ?? 'redis://localhost:6379';
 const KAFKA_BROKERS = (process.env['KAFKA_BROKERS'] ?? 'localhost:9092').split(',');
-// The running Spark sink consumes the env-PREFIXED topics; the local-prod stack uses `prod.`
-// (verified: brain-bronze-sink BACKFILL_TOPIC=prod.collector.order.backfill.v1) — default to it.
+// The running Kafka Connect Bronze sink (ADR-0010: the compose kafka-connect service, connector
+// iceberg-bronze-collector) consumes the env-PREFIXED topics — its `topics` list includes
+// prod.collector.order.backfill.v1 alongside prod.collector.event.v1 — default to `prod.`.
 const ENV = process.env['APP_ENV'] ?? 'prod';
 const BACKFILL_TOPIC = `${ENV}.${ORDER_BACKFILL_V1_TOPIC_SUFFIX}`;
 const LIVE_TOPIC = process.env['COLLECTOR_TOPIC'] ?? `${ENV}.collector.event.v1`;

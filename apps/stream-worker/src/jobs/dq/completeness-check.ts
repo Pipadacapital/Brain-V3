@@ -5,7 +5,7 @@
  * PG money ledgers (realized_revenue_ledger, ad_spend_ledger) have been dropped — their analytical
  * facts now live in Bronze/Silver, so completeness is a dbt/Bronze build invariant. The only PG
  * completeness target list (COMPLETENESS_TARGETS) is therefore empty; the live check covers the
- * Iceberg Bronze SoR (collector_events: event_type, occurred_at) via bronzeCompleteness.
+ * Iceberg Bronze SoR (the ADR-0010 connect lift view: event_type, occurred_at) via bronzeCompleteness.
  *
  * Zero-tolerance (max_null_rate = 0): any null → D (breached), perfect → A+.
  * A table with no rows → A+ (vacuously complete) but observed='no_rows' for honesty —
@@ -37,7 +37,7 @@ export const COMPLETENESS_TARGETS: readonly CompletenessTarget[] = [] as const;
 /** Required (NOT NULL) Bronze columns checked against the Iceberg SoR. */
 const BRONZE_REQUIRED_COLUMNS = ['event_type', 'occurred_at'] as const;
 
-/** Completeness of the Iceberg Bronze SoR (collector_events) via StarRocks, brand-scoped at the seam. */
+/** Completeness of the Iceberg Bronze SoR (the ADR-0010 connect lift view) over Trino, brand-scoped at the seam. */
 async function bronzeCompleteness(silver: SilverReader, brandId: string): Promise<DqCheckRow> {
   const nullPredicate = BRONZE_REQUIRED_COLUMNS.map((c) => `${c} IS NULL`).join(' OR ');
   const r = await silver.scopedQuery<{ total: string | number; bad: string | number }>(

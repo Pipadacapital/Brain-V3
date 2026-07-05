@@ -5,7 +5,7 @@ Spark Silver jobs (GROUP: payment, settlement, campaign, journey-entity, identit
 These five entities have NO dbt predecessor (parity status=NEW). Each job reads raw Iceberg Bronze
 (rest.brain_bronze.collector_events) for the relevant event_name(s), folds the would-be staging
 transform inline, and idempotently MERGEs into rest.brain_silver.<entity> on the entity PK — the SAME
-append-only-on-no-match MERGE discipline as bronze_materialize.py (write.upsert.enabled=false) plus an
+append-only-on-no-match MERGE discipline the retired Spark Bronze sink established (write.upsert.enabled=false) plus an
 explicit WHEN MATCHED UPDATE so a re-pull of the same key carries the latest-ingested version.
 
 WHY a thin shared module (non-breaking): the Bronze→Silver READ wiring + the canonical

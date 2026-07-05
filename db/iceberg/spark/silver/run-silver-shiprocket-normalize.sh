@@ -36,7 +36,6 @@ docker run --rm \
   -e ICEBERG_REST_URI="${ICEBERG_REST_URI:-http://iceberg-rest:8181}" \
   -e ICEBERG_WAREHOUSE="${ICEBERG_WAREHOUSE:-s3://brain-bronze/}" \
   -e BRONZE_NAMESPACE="${BRONZE_NAMESPACE:-brain_bronze}" \
-  -e BRONZE_SOURCE="${BRONZE_SOURCE:-legacy}" \
   -e SILVER_NAMESPACE="${SILVER_NAMESPACE:-brain_silver}" \
   -e TARGET_TABLE="${TARGET_TABLE:-silver_collector_event_shiprocket_shadow}" \
   -e SHIPROCKET_RECORD_KEY="${SHIPROCKET_RECORD_KEY:-shipment}" \

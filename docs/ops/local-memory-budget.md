@@ -22,15 +22,14 @@ transform job (~5 GB) = ~25 GB overflowed the VM and the kernel OOM-killed Trino
 ## Lever 2 — per-container caps (defense-in-depth; stop any one runaway)
 
 Hard caps set **above** real steady usage (they cap runaway, they don't throttle
-normal operation). Compose services use `mem_limit`; the Bronze sink and the
-transient transform jobs are `docker run --memory` (they are host-launched, not
-compose services). **Every running container is bounded** — nothing is left
-unbounded anymore.
+normal operation). Compose services use `mem_limit`; the transient transform jobs
+are `docker run --memory` (they are host-launched, not compose services). **Every
+running container is bounded** — nothing is left unbounded anymore.
 
 | Service | Cap | Internal heap |
 |---|---|---|
 | trino | 7g | jvm.config `MaxRAMPercentage=70` → ~4.9g |
-| bronze sink (host `docker run` via `tools/dev/dev-bronze-streaming.sh` → `bronze_landing.py`, the ONE unified landing — the old spark-bronze-sink / spark-bronze-raw-sink compose services are REMOVED) | 7g (`SPARK_CONTAINER_MEMORY`) | `--driver-memory 4g` + offHeap 512m; `--oom-score-adj -600` (`SINK_OOM_SCORE_ADJ`) — ingest-critical, protected (AUD-LOCAL-003) |
+| kafka-connect (compose service — the sole Bronze landing writer, ADR-0010; the old 7g host Spark sink `bronze_landing.py` / `dev-bronze-streaming.sh` is REMOVED, cutover 2026-07-05) | 2g (`mem_limit`) | `KAFKA_HEAP_OPTS -Xms256M -Xmx1G`; `oom_score_adj: -600` — ingest-critical, protected (AUD-LOCAL-003) |
 | Spark transform jobs (ephemeral `docker run` via `db/iceberg/spark/run-*.sh`) | 7g (`SPARK_CONTAINER_MEMORY`) | `--driver-memory 4g`; `--oom-score-adj +100` (`SPARK_CONTAINER_OOM_SCORE_ADJ`) — retried by the loop, deliberately die FIRST (AUD-LOCAL-003) |
 | minio | 5g | `GOMEMLIMIT=4500MiB` (soft GC ceiling) |
 | kafka (KRaft) | 2.5g | `KAFKA_HEAP_OPTS -Xmx1G -Xms1G` (pinned; == image default — pairs 1G heap with the 2.5g limit) |
@@ -64,21 +63,21 @@ All 35 transform run scripts now pass `--driver-memory "${SPARK_DRIVER_MEMORY:-4
 `--memory "${SPARK_CONTAINER_MEMORY:-7g}"` container cap (PR #342). Tune for a
 one-off heavy run with `SPARK_DRIVER_MEMORY=6g pnpm dev:v4-refresh`.
 
-The Bronze sink additionally persists its streaming checkpoint on the named volume
-`brain-bronze-checkpoint` and auto-restarts on any exit, so an OOM resumes from the
-committed offsets instead of re-draining the full Kafka retention (the old
-OOM→restart→re-drain amplification loop).
+The Bronze landing writer (kafka-connect, ADR-0010) has no Spark checkpoint at all:
+its consumed offsets are stored IN the Iceberg snapshot metadata (commit
+coordination), so any restart/OOM resumes from the committed offsets — the old
+OOM→restart→re-drain amplification loop cannot occur.
 
 ## Peak-load math (32 GB VM)
 
-Steady (no refresh), realistic usage: trino ~5g + bronze sink ~4.5g + minio ~4.4g +
-kafka ~1.1g + neo4j ~1g + small services ~1.5g ≈ **~17.5 GB**. During a refresh the
+Steady (no refresh), realistic usage: trino ~5g + kafka-connect ~1.2g + minio ~4.4g +
+kafka ~1.1g + neo4j ~1g + small services ~1.5g ≈ **~14 GB**. During a refresh the
 loop runs its transforms strictly sequentially, so ONE transform job adds ~5 GB →
-**~22.5 GB**, leaving ~9 GB headroom on a 32 GB VM. Sum of all hard caps (compose
-~18.7g + sink 7g + one transform 7g ≈ 32.7g) intentionally exceeds realistic usage —
-caps exist to kill a single runaway before it creates VM-wide pressure, not to add
-up to the VM size. The sink's 4g heap was sized for cold-start backlog drain; if you
-ever need to claw back room, drop it to 2g in steady state.
+**~19 GB**, leaving ~13 GB headroom on a 32 GB VM. Sum of all hard caps (compose
+~20.7g incl. kafka-connect 2g + one transform 7g ≈ 27.7g) intentionally exceeds
+realistic usage — caps exist to kill a single runaway before it creates VM-wide
+pressure, not to add up to the VM size. (Net swing of the ADR-0010 cutover: −7g
+host Spark sink, +2g kafka-connect.)
 
 ## Incremental processing — the grain-safety rule (correctness, not just memory)
 
@@ -108,5 +107,5 @@ reprocess each entity's FULL history. That's a separate, careful enhancement —
    with no 137 = JVM heap OOM (Lever 3).
 2. Container-kill → check `docker stats` for the VM total vs sum of usage; raise the
    VM or the offending cap.
-3. Heap OOM → raise that process's heap (`SPARK_DRIVER_MEMORY`, the sink
-   `--driver-memory`, or trino `db/trino/jvm.config`).
+3. Heap OOM → raise that process's heap (`SPARK_DRIVER_MEMORY`, the kafka-connect
+   `KAFKA_HEAP_OPTS`, or trino `db/trino/jvm.config`).

@@ -99,65 +99,82 @@ A breached threshold makes `k6 run` exit non-zero, so these scripts are CI/gate-
 
 ## Operator post-run assertions (k6 cannot read these — run them yourself)
 
-k6 only sees HTTP. The asynchronous drainer → Kafka → Spark-SS → Iceberg Bronze pipeline and the
-JVM heap of Spark/Trino are **out of band**. After each soak, run these.
+k6 only sees HTTP. The asynchronous drainer → Kafka → Kafka Connect Iceberg sink → Bronze pipeline
+(ADR-0010: the Connect sink is the SOLE Bronze writer; Bronze is **append-only**, no dedup — the
+effectively-once dedup lives in Silver, see `DEDUP-GUARANTEE.md`) and the JVM heap of Connect/Trino
+are **out of band**. After each soak, run these.
 
-### 1. Soak-count — Bronze count == events_sent (no event loss)
+### 1. Soak-count — Bronze count >= events_sent (no event loss)
 
 `ingest.js` prints `events_sent` (a 200-ACK == a durable spool commit, so this is the truth set) and
 echoes the query below. **Record the UTC start time of the run.** Then in Trino:
 
 ```sql
--- Must equal the events_sent printed by k6 (allow only for events still in flight if you query
--- before the pipeline drains — re-query until stable).
+-- ADR-0010: Bronze is APPEND-ONLY under the Connect sink, so re-deliveries land as EXTRA rows —
+-- bronze_count >= events_sent means no loss (allow for events still in flight if you query before
+-- the sink's ~30s commit drains — re-query until stable). A count ABOVE events_sent is duplicates
+-- from at-least-once delivery — fine at Bronze; Silver collapses them.
 SELECT count(*) AS bronze_count
-FROM iceberg.brain_bronze.collector_events
+FROM iceberg.brain_bronze.collector_events_connect_lifted
 WHERE brand_id = '<BRAND_ID>'
   AND ingested_at >= TIMESTAMP '<test-start-utc>';   -- e.g. 2026-06-30 12:00:00
 ```
 
-If `bronze_count < events_sent`, inspect the quarantine/DLQ lanes
-(`prod.collector.event.v1.quarantine`, `…dlq`) — the usual cause is an `install_token` that does
-not resolve to a `pixel.pixel_installation` row (R2) or absent `consent_flags` (R3).
-
-### 2. Streaming lag — Kafka-ts → Bronze land time < 30s
-
-The Bronze table carries ingestion-metadata columns set by the Spark sink: `kafka_timestamp`
-(broker record time) and `written_at` (wall-clock at the Iceberg MERGE). Their delta is the true
-land latency:
+If `bronze_count < events_sent`, inspect the Connect sink (`docker logs kafka-connect`, connector
+status via the Connect REST API) — under ADR-0010 the R2 install-token / R3 consent gate runs at
+SILVER admission (`silver_collector_event.py` → `silver_quarantine`), not in front of Bronze, so a
+missing Bronze row is a sink/broker problem, never a gate rejection. The business-level
+no-double-count assertion is on Silver (after a refresh pass — `ONESHOT=1 pnpm dev:v4-refresh`):
 
 ```sql
-SELECT
-  max(date_diff('second', kafka_timestamp, written_at)) AS max_land_lag_s,
-  approx_percentile(date_diff('second', kafka_timestamp, written_at), 0.95) AS p95_land_lag_s
-FROM iceberg.brain_bronze.collector_events
-WHERE brand_id = '<BRAND_ID>'
-  AND written_at >= TIMESTAMP '<test-start-utc>';
--- PASS: p95_land_lag_s < 30  (and max within a small multiple — watch for a long tail under ramp).
+-- Effectively-once per business event: one Silver row per (brand_id, event_id).
+SELECT count(*) AS dupes
+FROM (SELECT event_id FROM iceberg.brain_silver.silver_collector_event
+      WHERE brand_id = '<BRAND_ID>' GROUP BY event_id HAVING count(*) > 1);
+-- PASS: dupes = 0.
+```
+
+### 2. Streaming lag — Kafka-ts → Bronze land time bounded by the commit interval
+
+The raw Connect table (`collector_events_connect`) carries `kafka_timestamp` (broker record time),
+but the Connect sink writes no per-row wall-clock (`written_at` was a Spark-sink column — gone).
+Land latency under the Connect sink is bounded by its **~30s Iceberg commit interval**; verify the
+commit cadence held under load via the Iceberg snapshots metadata table:
+
+```sql
+SELECT committed_at,
+       date_diff('second',
+                 lag(committed_at) OVER (ORDER BY committed_at),
+                 committed_at) AS commit_gap_s
+FROM iceberg.brain_bronze."collector_events_connect$snapshots"
+ORDER BY committed_at DESC
+LIMIT 20;
+-- PASS: steady commit_gap_s ≈ 30 through the run window — a growing gap means the sink is falling
+-- behind; effective land latency (kafka_timestamp → next commit) should stay ≤ ~60s.
 ```
 
 Cross-check the consumer side in Prometheus (Kafka JMX exporter — see the SLO/dashboard wiring):
 
 ```promql
-# Spark-SS sink consumer lag on the collector topic should drain toward 0 after ramp-down.
+# Connect sink consumer lag on the collector topic should drain toward 0 after ramp-down.
 max(kafka_consumergroup_lag{topic="prod.collector.event.v1"})
 ```
 
-### 3. Zero-OOM — no Spark or Trino OutOfMemory during the run
+### 3. Zero-OOM — no Kafka Connect or Trino OutOfMemory during the run
 
 Trino is the **sole serving engine** and has been OOM-killed under refresh before (bounded heap fix:
-`jvm.config` RAMPercentage 70 + `mem_limit 7g` + `restart:unless-stopped`). Confirm nothing
-restarted or OOM'd during the soak:
+`jvm.config` RAMPercentage 70 + `mem_limit 7g` + `restart:unless-stopped`). The Connect sink is the
+sole Bronze writer. Confirm neither restarted or OOM'd during the soak:
 
 ```sh
 # No container should show a restart bump or OOMKilled during the window.
-docker ps --format '{{.Names}}\t{{.Status}}' | grep -E 'trino|spark'
-docker inspect trino  --format '{{.RestartCount}} {{.State.OOMKilled}}'
-docker inspect <spark-sink-container> --format '{{.RestartCount}} {{.State.OOMKilled}}'
+docker ps --format '{{.Names}}\t{{.Status}}' | grep -E 'trino|kafka-connect'
+docker inspect trino         --format '{{.RestartCount}} {{.State.OOMKilled}}'
+docker inspect kafka-connect --format '{{.RestartCount}} {{.State.OOMKilled}}'
 
 # Grep the logs for the smoking gun.
 docker logs trino 2>&1 | grep -iE 'OutOfMemory|GC overhead|Query exceeded.*memory' || echo "trino: clean"
-docker logs <spark-sink-container> 2>&1 | grep -iE 'OutOfMemoryError|java.lang.OutOfMemory' || echo "spark: clean"
+docker logs kafka-connect 2>&1 | grep -iE 'OutOfMemoryError|java.lang.OutOfMemory' || echo "kafka-connect: clean"
 ```
 
 Prometheus heap watch (if JVM metrics are scraped):

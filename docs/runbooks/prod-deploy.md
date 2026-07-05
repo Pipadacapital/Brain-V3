@@ -187,7 +187,7 @@ replay-and-recount in `DEDUP-GUARANTEE.md`: produce a batch, force a re-delivery
 
 | Name | Referenced for | Status |
 | --- | --- | --- |
-| `tools/dev/dev-bronze-streaming.sh` | host combined-bronze wrapper | not in repo; combined Bronze landing is the two compose services `spark-bronze-sink` + `spark-bronze-raw-sink` (see local-dev runbook) |
+| `tools/dev/dev-bronze-streaming.sh` | host combined-bronze wrapper | not in repo; Bronze landing is the compose `kafka-connect` service / `infra/helm/kafka-connect` chart (ADR-0010, cutover 2026-07-05 — see local-dev runbook) |
 | Strimzi `Kafka` CR / operator manifests | prod Kafka broker | not in repo (only doc comments); to-be-created |
 | Karpenter NodePool / EC2NodeClass / IRSA | data-plane autoscaling | not in repo; to-be-created |
 | `pgbouncer-prod` ArgoCD Application | RDS connection pooling | chart exists, prod Application missing; to-be-created |

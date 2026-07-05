@@ -16,7 +16,7 @@
 | dbt is REMOVED | dbt is the de-facto compute engine: **~31 models** under `db/dbt/models` (9 `silver_*`, 11 `gold_*`/`feature_*`, 6 staging, 2 intermediate, 2 snapshots), **live in prod** via the dbt-runner image driven by Argo CronWorkflows (`infra/helm/cronworkflows/values.yaml:138` recognition-refresh, `:178` attribution-gold-refresh). | ❌ Violated |
 | Gold lives in Iceberg | All Gold materialized as **StarRocks tables** in `brain_gold` (`db/dbt/dbt_project.yml:18` `marts: { +materialized: table }`; `gold_customer_360.sql:12` `schema='brain_gold', materialized='incremental'`). | ❌ Violated (see report 09) |
 | Business truth computed by Spark | CM2/LTV/attribution/realized-revenue computed in **TypeScript** — `@brain/metric-engine` (73 files) + `@brain/attribution-writer` (which `INSERT`s `brain_gold.gold_attribution_credit`, `packages/attribution-writer/src/index.ts:96,346`), driven by core jobs (`attribution-reconcile.ts`). | ❌ Violated |
-| Bronze raw, append-only, replayable | `bronze_materialize.py` does idempotent `MERGE ... ON (brand_id, event_id) WHEN NOT MATCHED THEN INSERT` only — no UPDATE/DELETE. | ✅ Conformant |
+| Bronze raw, append-only, replayable | `bronze_materialize.py` does idempotent `MERGE ... ON (brand_id, event_id) WHEN NOT MATCHED THEN INSERT` only — no UPDATE/DELETE. *(Writer since replaced by the Kafka Connect sink, ADR-0010.)* | ✅ Conformant |
 
 **Root cause:** the platform codifies *the inverse* of V4 as policy — `db/starrocks/external_iceberg_catalog.sql:3`: *"ADR-002: one-way Iceberg → dbt → StarRocks → Analytics API."* V4 demands Iceberg → **Spark** → Iceberg Gold → StarRocks **mv_* serving only**.
 
@@ -26,7 +26,7 @@
 
 | Spark job | Path | Function | Disposition |
 |---|---|---|---|
-| Bronze materialize | `db/iceberg/spark/bronze_materialize.py` | Redpanda → idempotent `MERGE (brand_id,event_id)` into Iceberg Bronze; consumes both live topic **and** `order.backfill.v1` (lines 41-45) so backfill reaches Bronze (no event loss). | ✅ KEEP — the one fully-conformant medallion hop |
+| Bronze materialize | `db/iceberg/spark/bronze_materialize.py` | Redpanda → idempotent `MERGE (brand_id,event_id)` into Iceberg Bronze; consumes both live topic **and** `order.backfill.v1` (lines 41-45) so backfill reaches Bronze (no event loss). | ✅ KEEP — the one fully-conformant medallion hop *(later replaced by the Kafka Connect sink and removed, ADR-0010)* |
 | Bronze validate | `db/iceberg/spark/validate_bronze.py` | Schema/admission validation at the Bronze boundary | ✅ KEEP |
 | Bronze maintenance | `db/iceberg/spark/bronze_maintenance.py` | Small-file compaction + snapshot-expiry TTL + crypto-shred erasure | ✅ KEEP |
 | Bronze parity | `db/iceberg/spark/bronze_parity_check.py` | Bronze count/sum parity oracle | ✅ KEEP |
@@ -129,7 +129,7 @@ V4's flow names per-source topics (pixel.events, shopify.orders, … identity.ev
 | Aspect | V4 expectation | Reality (evidence) | Assessment |
 |---|---|---|---|
 | Event ingress topic | Per-source topics | **Unified** `${env}.collector.event.v1` carrying all source events with an `event_name` discriminant (`kafka-producer.ts`, `bronzeBridges.ts:37-61`) | Topology differs; functionally feeds Bronze correctly |
-| Backfill lane | (unspecified) | `order.backfill.v1` consumed by the Bronze sink (`bronze_materialize.py:41-45`) — backfill reaches Bronze, no event loss | ✅ Conformant intent |
+| Backfill lane | (unspecified) | `order.backfill.v1` consumed by the Bronze sink (`bronze_materialize.py:41-45` at audit time — sink since replaced by Kafka Connect, ADR-0010) — backfill reaches Bronze, no event loss | ✅ Conformant intent |
 | Control-plane events | (n/a — operational) | Separate `m1` domain topics (`user.registered.v1`, etc.) | ✅ Operational, not analytical |
 | Event naming | `dot.lower` | `order.live.v1`, `shopflo.checkout_abandoned.v1`, `gokwik.awb_status.v1`, `shiprocket.shipment_status.v1` (`bronzeBridges.ts:37-61`) | ✅ Conformant |
 | Partition key = tenant key | Tenant-keyed | `buildPartitionKey(brandId,eventId) = "${brandId}:${eventId}"` (`packages/events/src/index.ts:144`) | ✅ Conformant |

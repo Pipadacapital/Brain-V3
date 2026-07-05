@@ -14,8 +14,8 @@
 # MIGRATION NOTE (from the old core/ingest/observe/lakehouse model):
 #   • ingest (kafka+apicurio+inits) was FOLDED INTO core — the event path is now part of the
 #     default stack, so `--profile core` alone brings up the broker + schema registry.
-#   • lakehouse (the spark-bronze-sink / spark-bronze-raw-sink containers) was REMOVED — the
-#     combined Bronze sink now runs on the HOST (see db/iceberg/spark), not as a compose service.
+#   • lakehouse (the spark-bronze-sink / spark-bronze-raw-sink containers) was REMOVED — Bronze
+#     landing is the in-compose `kafka-connect` Iceberg sink service (ADR-0010, core profile).
 #   • observe was SPLIT: prometheus+grafana → core (base metrics always on); tempo+loki+otel →
 #     full-obs; the jmx/kafka exporters → debug.
 #   • litellm moved core → ai (opt-in).
@@ -251,8 +251,8 @@ services:
   # RENAMED redpanda → kafka (blueprint §4.3): the service key, its DNS name, and every in-compose
   # reference (depends_on, `network_mode: service:kafka`, the kafka-init topic bootstrap) now say
   # `kafka`. The EXTERNAL advertised host alias is `brain-kafka-ext`. NOTE: the previous container-side
-  # spark sinks that shared this netns (spark-bronze-sink / spark-bronze-raw-sink) were REMOVED — the
-  # combined Bronze sink now runs on the HOST; only kafka-init still shares this broker's netns.
+  # spark sinks that shared this netns (spark-bronze-sink / spark-bronze-raw-sink) were REMOVED —
+  # kafka-init and the kafka-connect Bronze landing writer (ADR-0010) share this broker's netns now.
   #
   # Dual listeners:
   #   • PLAINTEXT 9092  advertised localhost:9092       — host + same-netns clients (kafka-init)
@@ -374,7 +374,7 @@ services:
           mk "$$PFX.collector.order.backfill.v1"   12 2592000000
           mk "$$PFX.collector.event.v1.dlq"        12 2592000000
           mk "$$PFX.collector.event.v1.quarantine" 12 2592000000
-          # 9 connector raw lanes (Spark-SS Bronze landing — bronze_raw_landing.py)
+          # 9 connector raw lanes (Kafka Connect Iceberg sink raw lanes — ADR-0010)
           for LANE in shopify.orders woocommerce.orders meta.spend google.spend \
                       ga4.rows shiprocket.shipments gokwik.events shopflo.checkout \
                       razorpay.settlement; do
@@ -402,8 +402,8 @@ services:
   # ────────────────────────────────────────────────────────────────────────────
   # Kafka Connect — the Bronze landing writer (ADR-0010, reinstating ADR-0006 D1).
   # ────────────────────────────────────────────────────────────────────────────
-  # Replaces the host-run Spark Structured Streaming Bronze landing (dev-bronze-streaming.sh /
-  # bronze_landing.py) as the Kafka→Iceberg writer: ~1G-heap JVM instead of a 7g Spark container
+  # Replaced the host-run Spark Structured Streaming Bronze landing (dev-bronze-streaming.sh /
+  # bronze_landing.py — removed 2026-07-05) as the Kafka→Iceberg writer: ~1G-heap JVM instead of a 7g Spark container
   # (cost decision — see docs/adr/0010). APACHE connector (org.apache.iceberg:iceberg-kafka-connect
   # 1.9.2 — version-locked to the Iceberg runtime/REST fixture; the Tabular fork is archived).
   # Exactly-once = the sink's commit coordination over the `control-iceberg` topic (offsets are
@@ -423,7 +423,7 @@ services:
     # Budget (docs/ops/local-memory-budget.md): 1G heap + JVM overhead + 10 connector tasks ⇒ 2g cap.
     # Net local swing vs the retired host Spark sink: −7g Spark container, +2g here.
     mem_limit: 2g
-    oom_score_adj: -600   # Bronze landing writer — inherits the old bronze-sink protection slot
+    oom_score_adj: -600   # Bronze landing writer — protected from the host OOM killer (no-event-loss)
     depends_on:
       kafka:
         condition: service_healthy
@@ -639,11 +639,10 @@ services:
 
   # ────────────────────────────────────────────────────────────────────────────
   # NOTE: the container-side Bronze sinks (spark-bronze-sink + spark-bronze-raw-sink) were REMOVED
-  # here (blueprint §4.3 / Deliverable B). Their combined replacement — the continuous Spark
-  # Structured Streaming Bronze landing (collector.event.v1 + the nine connector *.raw.v1 lanes →
-  # Iceberg Bronze) — now runs on the HOST via spark-submit (see db/iceberg/spark). It bootstraps to
-  # the broker over the host-mapped PLAINTEXT listener (localhost:9092) instead of sharing the
-  # broker's container netns. The now-orphaned `brain-spark-ivy` / `brain-spark-checkpoint` named
+  # here (blueprint §4.3 / Deliverable B), and the host-run Spark Structured Streaming replacement
+  # was ALSO removed (ADR-0010, 2026-07-05). Bronze landing — collector.event.v1 + the nine
+  # connector *.raw.v1 lanes → Iceberg Bronze — is the `kafka-connect` service above; it is the
+  # SOLE landing writer. The now-orphaned `brain-spark-ivy` / `brain-spark-checkpoint` named
   # volumes were dropped from the `volumes:` block below.
   # ────────────────────────────────────────────────────────────────────────────
 
@@ -894,8 +893,8 @@ services:
 
 volumes:
   # NOTE: brain-spark-checkpoint / brain-spark-ivy were REMOVED with the spark-bronze-sink /
-  # spark-bronze-raw-sink services — the host-run Spark Bronze landing owns its own checkpoint/ivy
-  # dirs on the host, not these compose-named volumes.
+  # spark-bronze-raw-sink services. The kafka-connect Bronze landing writer (ADR-0010) needs no
+  # Spark checkpoint volume — offsets live in the Iceberg snapshots + Connect's own topics.
   # Holds the prometheus jmx_exporter javaagent jar shared between jmx-exporter-init and the broker.
   jmx-agent:
   # Caches the Apache Iceberg Kafka Connect plugin zip extraction (~160MB download) across restarts.

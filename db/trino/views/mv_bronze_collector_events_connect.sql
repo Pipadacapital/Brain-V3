@@ -5,7 +5,9 @@
 -- events tables). The operational Bronze readers (get-data-health / get-tracking-health /
 -- get-recent-events via _bronze-source.ts, and the stream-worker DQ silver-reader) select
 -- brand_id / event_type / occurred_at / ingested_at as real columns — this view lifts them at
--- query time so those readers work unchanged under BRONZE_SOURCE=connect.
+-- query time so those readers work unchanged under BRONZE_SOURCE=connect. A `connector` dimension
+-- (G1) is derived from the kafka topic name (`brain.<connector>.…` → segment 2), aligning this
+-- lane with the per-lane *_raw_connect tables for cross-lane operational queries.
 --
 -- Trino dialect notes (see trino-serving-type-drift memory/PRs): ISO-8601 varchar → timestamp MUST
 -- go through from_iso8601_timestamp (a bare CAST fails); CAST back to timestamp(6) keeps the
@@ -25,5 +27,6 @@ SELECT
   payload,
   kafka_topic,
   kafka_partition,
-  kafka_offset
+  kafka_offset,
+  split_part(kafka_topic, '.', 2) AS connector
 FROM iceberg.brain_bronze.collector_events_connect

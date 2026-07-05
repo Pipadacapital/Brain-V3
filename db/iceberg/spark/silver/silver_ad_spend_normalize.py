@@ -497,11 +497,12 @@ def build(spark: SparkSession):
     # record, so meta and google must be guarded INDEPENDENTLY — under the old joint guard, one live
     # lane would send the other (still-empty / not-yet-created) lane into build_meta/build_google, whose
     # struct-column select dies on the empty-lane placeholder frame read_bronze returns. A lane with no
-    # source rows contributes nothing; BOTH empty → return cleanly. Full payload-JSON normalize is G1.
+    # source rows contributes nothing; BOTH empty → empty-lane skip: each *_raw_connect table
+    # auto-creates on its lane's first record (ADR-0010), so return cleanly until then.
     meta_empty = rn.read_bronze(spark, CATALOG, BRONZE_NAMESPACE, "meta_spend_raw", "meta").limit(1).count() == 0
     google_empty = rn.read_bronze(spark, CATALOG, BRONZE_NAMESPACE, "google_spend_raw", "google").limit(1).count() == 0
     if meta_empty and google_empty:
-        print(f"[silver-ad-spend-normalize] {RAW_META_TABLE} + {RAW_GOOGLE_TABLE} both empty — skipping (awaiting ad-connector data / G1)", flush=True)
+        print(f"[silver-ad-spend-normalize] {rn.connect_source_table(CATALOG, BRONZE_NAMESPACE, 'meta_spend_raw')} + {rn.connect_source_table(CATALOG, BRONZE_NAMESPACE, 'google_spend_raw')} both empty — skipping (empty lanes; tables auto-create on first record, ADR-0010)", flush=True)
         return TARGET, 0
 
     goods, rejects = [], []

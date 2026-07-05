@@ -19,6 +19,10 @@ THE FOLDED TRANSFORM CHAIN (dbt → Spark, inlined here so this one job reproduc
                                    deterministic channel CASE ladder, referrer_host extraction.
   silver_touchpoint.sql          — LEFT JOIN the deterministic cart-stitch map (read-back, never
                                    inferred — D-5), + the 400-day TTL/partition-window guard.
+  G5 cross-source composite     — additive flag-only LEFT JOIN to brain_silver.silver_order_state:
+                                   a pixel purchase-class touchpoint that names the SAME connector
+                                   order ($.properties.order_id) within 60s is flagged is_composite +
+                                   composite_order_key (see COMPOSITE_ORDER_JOIN; no row removal).
 
 GRAIN: exactly 1 row per (brand_id, brain_anon_id, touch_seq) — every touch in journey order.
 NO MONEY: touchpoints are not monetary — there is NO money column in this mart (dbt asserts the same).
@@ -86,6 +90,8 @@ BRONZE_NAMESPACE = os.environ.get("BRONZE_NAMESPACE", "brain_bronze")
 _SILVER_NS = os.environ.get("SILVER_NAMESPACE", "brain_silver")
 BRONZE_TABLE = f"{CATALOG}.{_SILVER_NS}.silver_collector_event"
 TABLE_NAME = "silver_touchpoint"
+# G5 cross-source composite: the connector order spine (grain: exactly 1 row/(brand_id, order_id)).
+ORDER_STATE_TABLE = f"{CATALOG}.{_SILVER_NS}.silver_order_state"
 
 # CURRENT-side cart-stitch read — over PG JDBC now (brain_ops moved to PG schema `ops`; PG is the
 # operational-only store). Superuser RLS-bypass ETL read.
@@ -144,9 +150,39 @@ _COLUMNS = """
           stitched_brain_id string,
           is_synthetic      boolean,
           is_composite      boolean,
+          composite_order_key string,
           session_id_raw    string,
           updated_at        timestamp NOT NULL
 """.strip("\n")
+
+# ── G5 CROSS-SOURCE COMPOSITE DEDUP (additive, flag-only — the pre-declared PR #338 follow-up) ─────
+# Module-level constants so composite_dedup_guard_test.py can assert the rule's invariants without a
+# SparkSession (gate_admission_guard_test.py style).
+#
+# The transaction-class event rlike — ONE definition shared by BOTH composite rules (the same-source
+# lag() rule inside sessionized_sql AND the cross-source order join below), so the two classes can
+# never drift apart.
+TRANSACTION_EVENT_RLIKE = (
+    "(^order[._]|order_placed|purchase|checkout.completed|payment.(succeeded|captured))"
+)
+# Cross-source match window (seconds), symmetric around the connector order-state timestamp.
+COMPOSITE_ORDER_WINDOW_SECONDS = 60
+# Cross-source composite (G5): a pixel purchase touchpoint matched to the SAME connector order within
+# 60s is flagged (is_composite=true + composite_order_key), keeping the connector's revenue truth in
+# silver_order_state and the pixel's attribution signals here. LEFT JOIN = flag-only: NO row removal,
+# no touch_seq change, and no fan-out (silver_order_state grain is exactly 1 row/(brand_id, order_id)).
+# NO amount-only fallback: pixel purchase-class touchpoints carry NO revenue and NO checkout_token —
+# the ONLY order reference is the explicit $.properties.order_id (order-confirmation auto-detect), so
+# the ONLY accepted match key is (brand_id [tenant isolation], order_id, ≤60s window). An amount-based
+# guess would be ambiguous matching, which is worse than no flag.
+COMPOSITE_ORDER_JOIN = f"""
+        left join order_state_one o
+          on t.brand_id = o.brand_id
+         and t.tp_order_id = o.order_id
+         and lower(coalesce(t.event_type, '')) rlike '{TRANSACTION_EVENT_RLIKE}'
+         and abs(unix_timestamp(t.occurred_at)
+                 - unix_timestamp(coalesce(o.state_effective_at, o.first_event_at))) <= {COMPOSITE_ORDER_WINDOW_SECONDS}
+"""
 
 
 def _murmur3_x86_32(data: bytes, seed: int) -> int:
@@ -229,12 +265,17 @@ def _read_stitch(spark: SparkSession):
         return None
 
 
-def _fold_and_merge(spark: SparkSession, fqtn: str, stitch_join: str, stitched_order: str, stitched_brain: str) -> None:
+def _fold_and_merge(
+    spark: SparkSession, fqtn: str, stitch_join: str, stitched_order: str, stitched_brain: str,
+    order_join: str, composite_flag: str, composite_key: str,
+) -> None:
     """Run the touchpoint sessionization fold + idempotent MERGE over whatever `bronze_events` view is
     CURRENTLY registered. For ENTITY-INCREMENTAL the caller registers it as one hash-bucket of the
     visitors (brand_id, brain_anon_id) that have NEW touchpoint events, carrying each visitor's FULL
     history — so sessionization (session_seq / touch_seq / first-last) is complete and never mis-split.
-    The murmur UDF + the stitch_one view are registered ONCE by build() (bucket-independent)."""
+    The murmur UDF + the stitch_one/order_state_one views are registered ONCE by build()
+    (bucket-independent); order_join/composite_flag/composite_key carry the G5 cross-source composite
+    rule (or its null fallback when silver_order_state is unavailable)."""
     # ── stg_touchpoint_events: type payload.properties.* (carrying pj for replay), Stage-1 gate, dedup ──
     # The typed `source` projection — carries pj so the Stage-1 gate can quarantine a replayable original.
     source_sql = f"""
@@ -265,6 +306,7 @@ def _fold_and_merge(spark: SparkSession, fqtn: str, stitch_join: str, stitched_o
             get_json_object(pj, '$.properties.product_handle')      as product_handle,
             get_json_object(pj, '$.properties.collection_handle')   as collection_handle,
             get_json_object(pj, '$.properties.query')               as search_query,
+            get_json_object(pj, '$.properties.order_id')            as tp_order_id,
             case when get_json_object(pj, '$.properties._synthetic') = 'true'
                  then true else false end                           as is_synthetic
         from raw
@@ -317,7 +359,7 @@ def _fold_and_merge(spark: SparkSession, fqtn: str, stitch_join: str, stitched_o
             utm_source, utm_medium, utm_campaign, utm_term, utm_content,
             fbclid, gclid, ttclid, msclkid, gbraid, wbraid, dclid,
             referrer, landing_path, page_type, product_handle, collection_handle,
-            search_query, is_synthetic
+            search_query, tp_order_id, is_synthetic
         from (
             select *,
                 row_number() over (
@@ -331,7 +373,7 @@ def _fold_and_merge(spark: SparkSession, fqtn: str, stitch_join: str, stitched_o
     ).createOrReplaceTempView("stg_touchpoint_events")
 
     # ── int_touchpoint_sessionized: 30-min sessionization + channel ladder + first/last + referrer_host ──
-    sessionized_sql = """
+    sessionized_sql = f"""
         with boundaries as (
             select *,
                 lag(occurred_at) over (
@@ -388,13 +430,14 @@ def _fold_and_merge(spark: SparkSession, fqtn: str, stitch_join: str, stitched_o
                 utm_source, utm_medium, utm_campaign, utm_term, utm_content,
                 fbclid, gclid, ttclid, msclkid, gbraid, wbraid, dclid,
                 referrer, landing_path, page_type, product_handle, collection_handle,
-                search_query, is_synthetic,
+                search_query, tp_order_id, is_synthetic,
                 -- COMPOSITE DEDUP (additive flag, no row removal / no touch_seq change): a transaction-type
                 -- touchpoint that fires within 60s AFTER an earlier SAME-type touchpoint for the same visitor
                 -- is a near-duplicate (SPA re-render / retry / pixel double-fire) — mark it collapsible.
                 -- Consumers can filter is_composite; existing columns stay byte-identical (parity-neutral).
+                -- The class rlike is the shared TRANSACTION_EVENT_RLIKE (same class as the G5 cross-source join).
                 case
-                    when lower(coalesce(event_type, '')) rlike '(^order[._]|order_placed|purchase|checkout.completed|payment.(succeeded|captured))'
+                    when lower(coalesce(event_type, '')) rlike '{TRANSACTION_EVENT_RLIKE}'
                      and lag(occurred_at) over (
                            partition by brand_id, brain_anon_id, event_type order by occurred_at asc, event_id asc
                          ) is not null
@@ -417,13 +460,17 @@ def _fold_and_merge(spark: SparkSession, fqtn: str, stitch_join: str, stitched_o
                 else regexp_replace(referrer, '^[a-zA-Z]+://([^/]+).*$', '$1')
             end as referrer_host,
             landing_path, page_type, product_handle, collection_handle, search_query, is_synthetic,
-            is_composite
+            is_composite, tp_order_id
         from ordered
     """
     spark.sql(sessionized_sql).createOrReplaceTempView("int_touchpoint_sessionized")
 
     # stitch_one is registered ONCE by build() (bucket-independent); stitch_join/stitched_* are params.
-    # ── silver_touchpoint: the stitch join + the 400-day TTL/partition-window guard ──
+    # ── silver_touchpoint: the stitch join + the G5 cross-source composite join + the 400-day TTL guard ──
+    # Cross-source composite (G5): a pixel purchase touchpoint matched to the SAME connector order within
+    # 60s is flagged (is_composite widened, composite_order_key carries the connector order_id), keeping
+    # the connector's revenue truth in silver_order_state and the pixel's attribution signals here.
+    # NO amount-only fallback (pixel carries no revenue — ambiguous matching is worse than no flag).
     final_sql = f"""
         select
             t.brand_id, t.brain_anon_id, t.touch_seq, t.session_key, t.session_seq,
@@ -434,10 +481,14 @@ def _fold_and_merge(spark: SparkSession, fqtn: str, stitch_join: str, stitched_o
             t.search_query,
             {stitched_order} as stitched_order_id,
             {stitched_brain} as stitched_brain_id,
-            t.is_synthetic, t.is_composite, t.session_id_raw,
+            t.is_synthetic,
+            {composite_flag} as is_composite,
+            {composite_key} as composite_order_key,
+            t.session_id_raw,
             current_timestamp() as updated_at
         from int_touchpoint_sessionized t
         {stitch_join}
+        {order_join}
         where t.occurred_at is not null
           and t.occurred_at >= current_timestamp() - interval 400 day
     """
@@ -497,6 +548,27 @@ def build(spark: SparkSession) -> str:
     else:
         stitch_join, stitched_order, stitched_brain = "", "cast(null as string)", "cast(null as string)"
 
+    # ── G5 cross-source composite: register order_state_one ONCE (bucket-independent, mirrors the
+    # stitch_one pattern). silver_order_state grain is already exactly 1 row/(brand_id, order_id), so no
+    # dedup fold is needed and the LEFT JOIN can never fan out. Deliberately NO money/amount columns are
+    # read from the order spine: there is NO amount-only fallback — see COMPOSITE_ORDER_JOIN.
+    try:
+        spark.read.table(ORDER_STATE_TABLE).selectExpr(
+            "brand_id", "order_id", "state_effective_at", "first_event_at"
+        ).createOrReplaceTempView("order_state_one")
+        order_join = COMPOSITE_ORDER_JOIN
+        composite_flag = "(t.is_composite OR o.order_id IS NOT NULL)"
+        composite_key = "o.order_id"
+    except Exception as exc:  # noqa: BLE001 — mart absent (cold-start ordering) → same-source flag only
+        print(
+            f"[silver_touchpoint] silver_order_state unavailable ({exc}); "
+            "cross-source composite → same-source only, composite_order_key → null",
+            flush=True,
+        )
+        order_join = ""
+        composite_flag = "t.is_composite"
+        composite_key = "cast(null as string)"
+
     bronze_all = spark.read.table(BRONZE_TABLE)
     tp_evt = col("event_type").isin(*_TP_TYPES)
     anon = get_json_object(col("payload"), "$.properties.brain_anon_id")
@@ -541,7 +613,10 @@ def build(spark: SparkSession) -> str:
             (abs_(hash_(col("_anon"))) % lit(n_buckets)) == lit(b)
         )
         bucket.drop("_anon").createOrReplaceTempView("bronze_events")
-        _fold_and_merge(spark, fqtn, stitch_join, stitched_order, stitched_brain)
+        _fold_and_merge(
+            spark, fqtn, stitch_join, stitched_order, stitched_brain,
+            order_join, composite_flag, composite_key,
+        )
 
     affected_anons.unpersist()
     write_job_watermark(spark, TABLE_NAME, new_wm)  # advance ONLY after all buckets merged

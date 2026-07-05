@@ -110,6 +110,11 @@ jobs:
   # brain_silver.), any dbt invocation, permanent feature precompute (feature_customer_daily
   # / brain_feature write), and Gold/Silver reads not via mv_* / rest-Iceberg.
   # See tools/lint/v4-naming-guard.sh (--selftest proves the rules; runs first).
+  # Also runs the serving PII-projection guard (ADR-0007 D6: PII never reaches
+  # serving) — fails if any Trino serving view (db/trino/views/*.sql) PROJECTS
+  # a raw-PII column name (email/phone/first_name/last_name/full_name/address);
+  # hashed/derived forms (email_sha256, *_hash, hashed_*, has_*, email_domain)
+  # are allowed. See tools/lint/serving-pii-guard.sh (self-test runs first).
   # ─────────────────────────────────────────────────────────────────────────
   v4-naming-guard:
     name: Brain V4 Naming Guard (no dbt / retired DBs)
@@ -122,6 +127,10 @@ jobs:
         run: tools/lint/v4-naming-guard.sh --selftest
       - name: Run the V4 naming guard over the tree
         run: tools/lint/v4-naming-guard.sh
+      - name: Self-test the serving PII-projection guard (proves catch + allowlist)
+        run: tools/lint/serving-pii-guard-test.sh
+      - name: Run the serving PII-projection guard over db/trino/views (ADR-0007 D6)
+        run: tools/lint/serving-pii-guard.sh
 
   # ─────────────────────────────────────────────────────────────────────────
   # Prod placeholder guard (AUD-COST-007) — renders every prod chart

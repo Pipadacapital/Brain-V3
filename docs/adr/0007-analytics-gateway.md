@@ -64,7 +64,7 @@ Tenant-isolation invariants are enforced in the consumer, not the callers: every
 
 ### D3 — On a miss, known metrics route to **Trino-over-Iceberg** (the StarRocks route, replaced by Trino) — never to ad-hoc.
 
-`packages/metric-engine/src/query-route.ts` is the routing authority. `routeKnownMetric(cacheHit)` returns the `KnownMetricRoute` union — `cache_hit` on a hit, otherwise the serving route (the enum member is historically named `starrocks_serving`; under V4 that route resolves to the `brain_serving.mv_*` **Trino views over Iceberg**, StarRocks having been replaced by Trino). The return **type** makes it impossible for a known metric to return `trino_adhoc`:
+`packages/metric-engine/src/query-route.ts` is the routing authority. `routeKnownMetric(cacheHit)` returns the `KnownMetricRoute` union — `cache_hit` on a hit, otherwise the serving route `trino_serving` (renamed from the historical `starrocks_serving` as this ADR's follow-up refactor; under V4 that route resolves to the `brain_serving.mv_*` **Trino views over Iceberg**, StarRocks having been replaced by Trino). The return **type** makes it impossible for a known metric to return `trino_adhoc`:
 
 - `trino_adhoc` is **additive, read-only, operator/explicit-exploration only** — it is registered in the enum (so references are greppable) but is **never** a valid outcome of `routeKnownMetric`.
 - AI/model-originated SQL → Trino is **disabled by policy**: `routeAiAdHocTrino` unconditionally throws `NotImplementedYet` (registered, not silently absent, so enabling it is a deliberate reviewed change). Covered by `packages/metric-engine/src/trino-routing.test.ts`.
@@ -105,7 +105,7 @@ This ADR is **documentation only**:
 
 - **+** One named seam for every analytics consumer (dashboards, AI, mobile, partner). Reviews can point at "the Analytics Gateway" instead of re-deriving the path. The "Gold is never hit directly", "`brand_id`-first", and "deterministic-first" invariants now have a documented home.
 - **+** Future serving work (a distributed stampede guard, a new consumer surface, an SLA dashboard) has a stable contract to extend rather than reinvent.
-- **−** A naming debt is recorded, not paid: the `query-route.ts` enum member `starrocks_serving` is a historical name that now means "the `brain_serving.mv_*` Trino views over Iceberg." Renaming it is a follow-up refactor (touches the enum + tests), intentionally out of scope for this docs-only ADR.
+- **−** ~~A naming debt is recorded, not paid: the `query-route.ts` enum member `starrocks_serving` is a historical name that now means "the `brain_serving.mv_*` Trino views over Iceberg." Renaming it is a follow-up refactor (touches the enum + tests), intentionally out of scope for this docs-only ADR.~~ **PAID (follow-up executed):** the enum member is now `trino_serving` (rename touched only the enum + its docstrings + `trino-routing.test.ts`; the value was never persisted or exported beyond the package, so no alias was needed).
 
 ## References (real paths, grep-confirmed)
 

@@ -178,6 +178,27 @@ _GOLD_MARTS: List[GoldMartSpec] = [
         grain="brand_channel_path",
     ),
     GoldMartSpec(
+        name="journey_events",
+        phase="bi",
+        module="gold_journey_events.py",
+        # Spec gap G4 (re-ratified): the ADDITIVE versioned event-sourced journey ledger. One row per
+        # (brand_id, touchpoint_id, data_version) — every touchpoint re-keyed onto the resolved
+        # brain_id; identity merges append data_version+1 copies (never rewrite history). The registry
+        # is 1-spec-per-TABLE, so the merge re-versioning COMPANION job
+        # gold_journey_events_reversion.py (run-gold-journey-reversion.sh — sorts AFTER the
+        # construction script in the loop glob) writes this SAME table and carries no separate spec.
+        pk=["brand_id", "touchpoint_id", "data_version"],
+        mv_name="brain_serving.mv_journey_events_current",
+        reads_from=["silver_touchpoint", "silver_identity_map", "silver_order_state"],
+        money_columns=[
+            # revenue truth is the CONNECTOR ORDER — stamped ONLY on composite transaction rows
+            # (silver_order_state.order_value_minor); NULL everywhere else. bigint minor + sibling code.
+            MoneyColumn("revenue_minor"),
+        ],
+        enabled=True,
+        grain="brand_touchpoint_version",
+    ),
+    GoldMartSpec(
         name="gold_marketing_attribution",
         phase="bi",
         module="gold_marketing_attribution.py",

@@ -101,3 +101,67 @@ describe('storeBrandOAuthAppCreds', () => {
     );
   });
 });
+
+describe('resolveBrandOAuthClientId — requireBrandCreds', () => {
+  beforeEach(() => {
+    process.env['DATABASE_URL'] ??= 'postgres://brain:brain@localhost:5432/brain';
+    resetAllConfigCaches();
+  });
+
+  it('returns undefined when no brand bundle and requireBrandCreds: true — env is NOT consulted', async () => {
+    const prev = process.env['SHOPIFY_CLIENT_ID'];
+    process.env['SHOPIFY_CLIENT_ID'] = 'env-fallback-id';
+    try {
+      const sm = mockSecrets(null);
+      const r = await resolveBrandOAuthClientId(sm, 'shopify', BRAND, { requireBrandCreds: true });
+      expect(r).toBeUndefined();
+    } finally {
+      if (prev === undefined) delete process.env['SHOPIFY_CLIENT_ID'];
+      else process.env['SHOPIFY_CLIENT_ID'] = prev;
+    }
+  });
+
+  it('still returns the brand client_id when present, even with requireBrandCreds: true', async () => {
+    const sm = mockSecrets({ client_id: 'brand-id', client_secret: 's' });
+    const r = await resolveBrandOAuthClientId(sm, 'shopify', BRAND, { requireBrandCreds: true });
+    expect(r).toBe('brand-id');
+  });
+});
+
+describe('resolveBrandOAuthAppCreds — requireBrandCreds', () => {
+  it('returns null when no brand bundle and requireBrandCreds: true — envFallback is ignored', async () => {
+    const sm = mockSecrets(null);
+    const r = await resolveBrandOAuthAppCreds(
+      sm,
+      'shopify',
+      BRAND,
+      { clientId: 'env-id', clientSecret: 'env-secret' },
+      { requireBrandCreds: true },
+    );
+    expect(r).toBeNull();
+  });
+
+  it('returns brand bundle when present, even with requireBrandCreds: true', async () => {
+    const sm = mockSecrets({ client_id: 'brand-id', client_secret: 'brand-secret' });
+    const r = await resolveBrandOAuthAppCreds(
+      sm,
+      'shopify',
+      BRAND,
+      { clientId: 'env-id', clientSecret: 'env-secret' },
+      { requireBrandCreds: true },
+    );
+    expect(r).toEqual({ clientId: 'brand-id', clientSecret: 'brand-secret' });
+  });
+
+  it('returns null on a partial brand bundle with requireBrandCreds: true (no env fallback)', async () => {
+    const sm = mockSecrets({ client_id: 'brand-id' });
+    const r = await resolveBrandOAuthAppCreds(
+      sm,
+      'shopify',
+      BRAND,
+      { clientId: 'env-id', clientSecret: 'env-secret' },
+      { requireBrandCreds: true },
+    );
+    expect(r).toBeNull();
+  });
+});

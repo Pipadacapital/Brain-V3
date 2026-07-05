@@ -8,23 +8,17 @@ razorpay lane, PCI card.* fields) transiently land UN-hashed in the raw Bronze t
 
 This job enforces that posture, the mandatory D4 mitigation (gates the prod flip; needs Security-Reviewer
 sign-off): for every raw Bronze table — the *_raw_connect lanes the ADR-0010 Kafka Connect Iceberg sink
-writes today, PLUS the retained historical tables (collector_events_raw, the legacy per-connector *_raw,
-and the raw connector lanes of the retired unified brain_bronze.events) — it
-  1. DELETEs rows whose ingest time (written_at) is older than RAW_RETENTION_HOURS (default 168h = 7
+writes today — it
+  1. DELETEs rows whose ingest time is older than RAW_RETENTION_HOURS (default 168h = 7
      days) — snapshot expiry alone never removes rows from CURRENT table state, and
   2. expires Iceberg snapshots older than the same window (so the deleted rows are not recoverable
      via time-travel and the superseded files are freed),
 so raw PII does not persist beyond the buffer window. Idempotent; run on a cron (Argo) in prod and on
 the daily guard-file cadence inside tools/dev/v4-refresh-loop.sh locally (AUD-PERF-003).
 
-On the unified events table the row TTL applies ONLY to the raw connector lanes (connector <>
-'collector'): the collector lane is the system-of-record event stream ("Bronze is source of truth /
-no event loss"); its consent gate + quarantine live in Silver (silver_collector_event /
-silver_consent_rejected).
-
 RTBF: this is the retention half. The erasure half (a subject's right-to-be-forgotten DELETE across the
-raw tables) is handled by the existing erase tooling extended to the raw namespace — see the cutover
-runbook (docs/runbooks/adr-0006-cutover-and-prod.md).
+raw tables AND the payload-path predicate erasure on collector_events_connect) is
+erasure_raw_delete.py — see the cutover runbook (docs/runbooks/adr-0006-cutover-and-prod.md).
 """
 from __future__ import annotations
 
@@ -46,21 +40,17 @@ RAW_RETENTION_HOURS = int(os.environ.get("RAW_RETENTION_HOURS", "168"))  # 7 day
 # be admitted into Silver before its raw rows may age out).
 RAW_ROW_TTL = os.environ.get("RAW_ROW_TTL", "1") == "1"
 
-# Every RAW Bronze table, BOTH generations. Add a lane here when its Connect connector ships.
-# These hold raw provider payloads incl. transient un-hashed PII / PCI.
+# Every RAW Bronze table — the *_raw_connect lanes the ADR-0010 Kafka Connect Iceberg sink writes.
+# Add a lane here when its Connect connector ships. These hold raw provider payloads incl. transient
+# un-hashed PII / PCI. Each table is auto-created on the lane's FIRST record, so a not-yet-existing
+# table is simply skipped by the _exists guard below and joins the sweep once its first record lands.
+# Legacy tables (brain_bronze.events, collector_events, collector_events_raw + the 9 per-connector *_raw) were dropped 2026-07-05 (unify-bronze-decommission Step 3 executed).
 #
-#   • the *_raw_connect lanes — what the ADR-0010 Kafka Connect Iceberg sink writes TODAY. Each is
-#     auto-created on the lane's FIRST record, so a not-yet-existing table is simply skipped by the
-#     _exists guard below and joins the sweep once its first record lands. The D4 7-day raw-PII
-#     retention applies to them exactly as it did to the legacy tables.
-#   • the RETAINED historical tables (collector_events_raw + the legacy per-connector *_raw), written
-#     by the retired ADR-0006 sink / Spark-SS landing jobs — kept as history until a separate
-#     data-retirement decision, so their raw PII must keep aging out too.
-#
-# NOTE: collector_events_connect (the ADR-0010 collector lane) is DELIBERATELY NOT here — like the
-# collector lane of the unified events table below, it is the system-of-record event stream ("Bronze
-# is source of truth / no event loss"; a FULL_REFRESH of silver_collector_event re-reads its full
-# history) and its envelope payload is hashed-PII-safe at the collector boundary.
+# NOTE: collector_events_connect (the ADR-0010 collector lane) is DELIBERATELY NOT here — it is the
+# system-of-record event stream ("Bronze is source of truth / no event loss"; a FULL_REFRESH of
+# silver_collector_event re-reads its full history) and its envelope payload is hashed-PII-safe at
+# the collector boundary. Its per-subject RTBF path is the payload-path predicate erasure in
+# erasure_raw_delete.py (PAYLOAD_PATH_TABLES) — NOT a row TTL.
 RAW_TABLES = [
     # ── ADR-0010 Connect-written lanes (live writers) ──
     "shopify_orders_raw_connect",
@@ -72,32 +62,14 @@ RAW_TABLES = [
     "gokwik_events_raw_connect",
     "shopflo_checkout_raw_connect",
     "razorpay_settlement_raw_connect",
-    # ── retained historical tables (no live writer; data-retirement pending) ──
-    "collector_events_raw",
-    "shopify_orders_raw",
-    "woocommerce_orders_raw",
-    "meta_spend_raw",
-    "google_spend_raw",
-    "ga4_rows_raw",
-    "shiprocket_shipments_raw",
-    "gokwik_events_raw",
-    "shopflo_checkout_raw",
-    "razorpay_settlement_raw",
 ]
 
-# UNIFIED-BRONZE (AUD-PERF-003): the retired Spark-SS unified landing job landed the nine connector raw
-# lanes into ONE table brain_bronze.events with a `connector` discriminator (RETAINED as history under
-# ADR-0010; no live writer). Its row TTL is restricted to the raw connector lanes — the collector lane
-# (connector='collector') is the durable event stream and is NEVER deleted.
-UNIFIED_EVENTS_TABLE = os.environ.get("BRONZE_EVENTS_TABLE", "events")
-UNIFIED_EVENTS_ROW_PREDICATE = "connector <> 'collector'"
-
-# Candidate ingest-time columns for the row-TTL cutoff, in preference order. The legacy *_raw tables and
-# the unified events table carry written_at NOT NULL (stamped by the retired Spark-SS landing jobs). The
-# ADR-0010 Connect-written *_raw_connect tables carry NO written_at and NO kafka_timestamp (only the
+# Candidate ingest-time columns for the row-TTL cutoff, in preference order. The ADR-0010
+# Connect-written *_raw_connect tables carry NO written_at and NO kafka_timestamp (only the
 # collector connector inserts a timestamp field) — their ingest clock is the raw envelope's `fetched_at`
 # (a STRING; the predicate CASTs, unparseable → NULL → row kept, the safe direction). A table with NONE
-# of these is loudly skipped (WARN) rather than mis-aged.
+# of these is loudly skipped (WARN) rather than mis-aged. (written_at was the dropped legacy tables'
+# stamp; kept first for any straggler with a lifted ingest column.)
 _TTL_COLUMNS = ("written_at", "kafka_timestamp", "fetched_at", "received_at")
 
 
@@ -140,8 +112,9 @@ def _delete_expired_rows(spark: SparkSession, fq: str, extra_predicate: str = ""
 def main() -> None:
     spark = build_spark("bronze-raw-retention")
     spark.sparkContext.setLogLevel("WARN")
-    # (table, extra row-TTL predicate) — the unified events table restricts the TTL to raw connector lanes.
-    targets = [(t, "") for t in RAW_TABLES] + [(UNIFIED_EVENTS_TABLE, UNIFIED_EVENTS_ROW_PREDICATE)]
+    # (table, extra row-TTL predicate) — no per-table restrictions since the unified events table
+    # (whose collector lane was TTL-exempt) was dropped with the legacy generation.
+    targets = [(t, "") for t in RAW_TABLES]
     for t, extra in targets:
         fq = f"{CATALOG}.{BRONZE_NAMESPACE}.{t}"
         if not _exists(spark, t):

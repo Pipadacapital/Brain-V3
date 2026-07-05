@@ -5,8 +5,8 @@ The Kafka Connect Iceberg sink IS the sole Bronze landing writer. The host Spark
 `BRONZE_SOURCE` switches were REMOVED at the 2026-07-05 decommission (see the ADR's
 "Decommission executed" section) — there is no env-flip posture anymore. Connect writes
 `brain_bronze.collector_events_connect` + the nine `brain_bronze.<lane>_raw_connect`; the
-legacy Spark-written tables (`brain_bronze.events`, `collector_events`, `*_raw`) are retained
-read-only as history.
+legacy Spark-written tables (`brain_bronze.events`, `collector_events`, `*_raw`) were DROPPED
+on 2026-07-05 (unify-bronze-decommission Step 3 executed).
 
 ## Phase 1 — parallel run (bake, both writers on) — HISTORICAL
 
@@ -84,6 +84,19 @@ history:
 - **Lane tables are lazy**: a lane's `brain_bronze.<lane>_raw_connect` table is auto-created by
   the sink on that lane's FIRST record — until then the table does not exist, and the Silver
   raw-normalize jobs skip it cleanly (expected, not a failure).
+- **RTBF / erasure posture**: per-subject erasure is `erasure_raw_delete.py` — column-equality
+  DELETEs on the `*_raw_connect` lanes (`RAW_TABLE_IDENTIFIER_COLS`), and PAYLOAD-PATH PREDICATE
+  DELETEs on `collector_events_connect` (`PAYLOAD_PATH_TABLES`): the table is payload-only (no
+  lifted identifier columns), so the subject predicates are `get_json_object(payload, …)` reads
+  on the envelope's identifier paths (`$.properties.brain_anon_id` / `$.properties.device_id` /
+  the pre-hashed `hashed_customer_email|phone` fields), tenant-scoped on the envelope's
+  `$.brand_id`. Iceberg DELETE is a copy-on-write/positional delete — rows leave current table
+  state immediately, but the pre-delete snapshots still hold them until
+  `bronze_maintenance.py` `expire_snapshots` ages them out: **erasure is physically complete
+  after snapshot expiry** (same posture as the D4 raw window). The 7-day row TTL
+  (`bronze_raw_retention.py`) covers only the `*_raw_connect` lanes — `collector_events_connect`
+  is the system-of-record stream and is never row-TTL'd. Guard:
+  `python3 db/iceberg/spark/erasure_payload_path_guard_test.py`.
 - **Known failure modes**: (1) required-column NPE if a connector is ever pointed at a
   Spark-written table — Connect tables are always its own `*_connect` tables; (2) SQLite catalog
   lock contention (`database table is locked`) — CATALOG_CLIENTS=1 serializes, watch during bake;

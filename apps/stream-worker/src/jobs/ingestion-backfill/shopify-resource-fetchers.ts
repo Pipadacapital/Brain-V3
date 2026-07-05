@@ -41,7 +41,7 @@ import { log } from '../../log.js';
 
 const DEFAULT_API_VERSION = '2025-07';
 const REQUEST_TIMEOUT_MS = 20_000;
-export const SHOPIFY_AUTH_ERROR = 'SHOPIFY_AUTH_ERROR';
+const SHOPIFY_AUTH_ERROR = 'SHOPIFY_AUTH_ERROR';
 
 /** Shared since_id REST reader for a Shopify Admin list endpoint. NEVER logs the token (I-S09). */
 class ShopifyRestReader {

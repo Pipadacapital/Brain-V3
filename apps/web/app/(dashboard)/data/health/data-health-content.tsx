@@ -4,14 +4,18 @@
  * DataHealthContent — client view for ingestion + connector-sync health.
  *
  * Surfaces (kpi-dashboard-design §data/integration health):
- *   - Event-volume-over-time (bronze ingestion) as a bar chart.
- *   - Data freshness: last ingest as relative time + an honest live-vs-stale verdict
- *     computed from lastIngestAt (NOT trusting the raw connector state alone).
- *   - Connector sync state badge + last-sync relative time.
+ *   - Event-volume-over-time (bronze ingestion) as a bar chart, labeled plainly.
+ *   - Data freshness: last data received as relative time + an honest live-vs-stale
+ *     verdict computed from lastIngestAt (NOT trusting the raw connector state alone).
+ *   - Sync status table with StatusPill + last successful sync relative time.
+ *   - Every metric title carries a plain-language "?" tooltip (MetricTitle).
  *   - Honest empty / loading / error states — never fabricates 0 or a confident
  *     "connected" over stale data.
  *
- * Mirrors the Phase-1 revenue page structure (header → KPI tiles → chart card → detail).
+ * HONESTY NOTE: the data-health endpoint returns ONE roll-up (eventVolume,
+ * lastIngestAt, syncState, lastSyncAt) — it is NOT per-connector and carries no
+ * error message. The sync table therefore renders the single source the payload
+ * describes; per-connector cards would require an API change (out of scope).
  */
 
 import { Activity, Database, RefreshCw, Clock } from 'lucide-react';
@@ -22,12 +26,18 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
 import { EmptyState } from '@/components/ui/empty-state';
 import { KpiTile } from '@/components/analytics/kpi-tile';
-import { DataHealthVolumeChart } from '@/components/analytics/data-health-volume-chart';
+import { MetricTitle } from '@/components/ui/metric-title';
+import { StatusPill, type StatusPillStatus } from '@/components/ui/status-pill';
 import {
-  FreshnessBadge,
-  SyncStateBadge,
-  freshnessFromIngest,
-} from '@/components/analytics/data-health-sync-status';
+  Table,
+  TableHeader,
+  TableBody,
+  TableHead,
+  TableRow,
+  TableCell,
+} from '@/components/ui/table';
+import { DataHealthVolumeChart } from '@/components/analytics/data-health-volume-chart';
+import { freshnessFromIngest, type FreshnessVerdict } from '@/components/analytics/data-health-sync-status';
 import {
   formatRelativeTime,
   formatAbsoluteTime,
@@ -38,10 +48,41 @@ function PageHeader() {
   return (
     <PageHeaderPrimitive
       title="Data Health"
-      description="Ingestion volume, freshness, and connector sync status."
+      description="How fresh your data is, how much is arriving each day, and whether your sources are syncing."
     />
   );
 }
+
+/** Freshness verdict → StatusPill (glyph + label, never colour-only). */
+const FRESHNESS_PILL: Record<FreshnessVerdict, { status: StatusPillStatus; label: string }> = {
+  live: { status: 'healthy', label: 'Healthy' },
+  lagging: { status: 'waiting', label: 'Falling behind' },
+  stale: { status: 'error', label: 'Stalled' },
+  unknown: { status: 'waiting', label: 'No data yet' },
+};
+
+/** Connector sync state → StatusPill (glyph + label, never colour-only). */
+function syncPill(state: string | null): { status: StatusPillStatus; label: string } {
+  switch (state) {
+    case 'connected':
+      return { status: 'healthy', label: 'Connected' };
+    case 'syncing':
+      return { status: 'waiting', label: 'Syncing' };
+    case 'waiting_for_data':
+      return { status: 'waiting', label: 'Waiting for data' };
+    case 'error':
+      return { status: 'error', label: 'Error' };
+    case null:
+    case undefined:
+      return { status: 'waiting', label: 'No source connected' };
+    default:
+      // Unknown state string from the backend — show it, never hide it.
+      return { status: 'waiting', label: state };
+  }
+}
+
+const FRESHNESS_HELP =
+  'How long since the last data point from this source. Healthy means data is arriving as expected.';
 
 export function DataHealthContent() {
   const { data, isLoading, error, refetch } = useDataHealth();
@@ -62,14 +103,14 @@ export function DataHealthContent() {
       <div className="space-y-6">
         <PageHeader />
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-          <KpiTile label="Last Ingest" value={null} isLoading />
-          <KpiTile label="Connector" value={null} isLoading />
-          <KpiTile label="Last Sync" value={null} isLoading />
+          <KpiTile label="Last data received" value={null} isLoading />
+          <KpiTile label="Sync status" value={null} isLoading />
+          <KpiTile label="Last successful sync" value={null} isLoading />
         </div>
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">
-              Ingestion Volume
+              Events received per day
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -89,7 +130,7 @@ export function DataHealthContent() {
           <CardContent className="pt-6">
             <EmptyState
               title="No data health signals yet"
-              description="Once a connector is linked and events begin ingesting, freshness and volume will appear here."
+              description="Once a data source is connected and events begin arriving, freshness and volume will appear here."
               icon={<Database className="h-8 w-8" />}
             />
           </CardContent>
@@ -102,6 +143,8 @@ export function DataHealthContent() {
   const { eventVolume, lastIngestAt, syncState, lastSyncAt } = data;
 
   const freshness = freshnessFromIngest(lastIngestAt);
+  const freshnessPill = FRESHNESS_PILL[freshness.verdict];
+  const sync = syncPill(syncState);
   const lastIngestRelative = formatRelativeTime(lastIngestAt);
   const lastSyncRelative = formatRelativeTime(lastSyncAt);
 
@@ -109,14 +152,14 @@ export function DataHealthContent() {
     <div className="space-y-6">
       <PageHeader />
 
-      {/* Status tiles — freshness verdict + connector state (icon+label, never colour-only) */}
+      {/* Status tiles — freshness verdict + connector state (glyph+label, never colour-only) */}
       <section aria-label="Data health status">
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-          <Card className="p-5" role="region" aria-label={`Last ingest: ${lastIngestRelative}`}>
+          <Card className="p-5" role="region" aria-label={`Last data received: ${lastIngestRelative}`}>
             <CardContent className="p-0 space-y-2">
               <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide flex items-center gap-1.5">
                 <Clock className="h-3.5 w-3.5" aria-hidden="true" />
-                Last Ingest
+                <MetricTitle label="Last data received" help={FRESHNESS_HELP} />
               </p>
               <p
                 className="text-2xl font-bold text-foreground leading-tight"
@@ -124,28 +167,34 @@ export function DataHealthContent() {
               >
                 {lastIngestRelative}
               </p>
-              <FreshnessBadge verdict={freshness.verdict} />
+              <StatusPill status={freshnessPill.status} label={freshnessPill.label} />
             </CardContent>
           </Card>
 
-          <Card className="p-5" role="region" aria-label={`Connector state: ${syncState ?? 'no connector'}`}>
+          <Card className="p-5" role="region" aria-label={`Sync status: ${sync.label}`}>
             <CardContent className="p-0 space-y-2">
               <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide flex items-center gap-1.5">
                 <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
-                Connector
+                <MetricTitle
+                  label="Sync status"
+                  help="Whether Brain can currently pull data from your connected source."
+                />
               </p>
               <div className="pt-1">
-                <SyncStateBadge state={syncState} />
+                <StatusPill status={sync.status} label={sync.label} />
               </div>
-              <p className="text-xs text-muted-foreground">Connector sync state</p>
+              <p className="text-xs text-muted-foreground">Connection to your data source</p>
             </CardContent>
           </Card>
 
-          <Card className="p-5" role="region" aria-label={`Last sync: ${lastSyncRelative}`}>
+          <Card className="p-5" role="region" aria-label={`Last successful sync: ${lastSyncRelative}`}>
             <CardContent className="p-0 space-y-2">
               <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide flex items-center gap-1.5">
                 <Clock className="h-3.5 w-3.5" aria-hidden="true" />
-                Last Sync
+                <MetricTitle
+                  label="Last successful sync"
+                  help="When Brain last completed a successful check-in with your connected source."
+                />
               </p>
               <p
                 className="text-2xl font-bold text-foreground leading-tight"
@@ -153,7 +202,6 @@ export function DataHealthContent() {
               >
                 {lastSyncRelative}
               </p>
-              <p className="text-xs text-muted-foreground">Connector handshake</p>
             </CardContent>
           </Card>
         </div>
@@ -163,10 +211,50 @@ export function DataHealthContent() {
       {(freshness.verdict === 'lagging' || freshness.verdict === 'stale') && (
         <Alert variant="warning" icon={<Clock className="size-4" />}>
           {freshness.verdict === 'stale'
-            ? `Ingestion is stale — the last event arrived ${lastIngestRelative}. Numbers across analytics may be out of date even if the connector reads "${syncState ?? 'connected'}".`
-            : `Ingestion is lagging — the last event arrived ${lastIngestRelative}. Recent figures may be incomplete.`}
+            ? `Data has stopped arriving — the last data point came in ${lastIngestRelative}. Numbers across analytics may be out of date even if the source shows as "${sync.label}".`
+            : `Data is falling behind — the last data point came in ${lastIngestRelative}. Recent figures may be incomplete.`}
         </Alert>
       )}
+
+      {/* Sync status table — the ONE source the endpoint describes (it is not per-connector) */}
+      <section aria-label="Sync status by source">
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">
+              <MetricTitle
+                label="Sync status by source"
+                help="Each connected source, whether it is syncing right now, and when it last completed a sync."
+              />
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <Table aria-label="Sync status by source">
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Source</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Last received</TableHead>
+                  <TableHead>Last successful sync</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                <TableRow data-testid="sync-status-row">
+                  <TableCell className="font-medium text-foreground">Connected source</TableCell>
+                  <TableCell>
+                    <StatusPill status={sync.status} label={sync.label} />
+                  </TableCell>
+                  <TableCell title={formatAbsoluteTime(lastIngestAt)}>{lastIngestRelative}</TableCell>
+                  <TableCell title={formatAbsoluteTime(lastSyncAt)}>{lastSyncRelative}</TableCell>
+                </TableRow>
+              </TableBody>
+            </Table>
+            <p className="mt-2 text-xs text-muted-foreground">
+              Health is reported for your data feed as a whole — per-source breakdowns are not
+              available yet.
+            </p>
+          </CardContent>
+        </Card>
+      </section>
 
       {/* Event volume over time */}
       <section aria-label="Event ingestion volume">
@@ -174,10 +262,10 @@ export function DataHealthContent() {
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
               <Activity className="h-4 w-4" aria-hidden="true" />
-              Ingestion Volume
-              <span className="text-xs font-normal text-muted-foreground/70">
-                — bronze events, last 30 days
-              </span>
+              <MetricTitle
+                label="Events received per day"
+                help="How many events arrived from your sources each day over the last 30 days."
+              />
             </CardTitle>
           </CardHeader>
           <CardContent>

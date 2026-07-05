@@ -46,7 +46,7 @@ function placeholderFor(f: ConnectorAuthFieldDto): string {
 }
 
 /** Map ONE server auth field (catalog SoR) → the form's CredentialField shape. */
-export function authFieldToCredentialField(f: ConnectorAuthFieldDto): CredentialField {
+function authFieldToCredentialField(f: ConnectorAuthFieldDto): CredentialField {
   return {
     key: f.key,
     label: f.label,

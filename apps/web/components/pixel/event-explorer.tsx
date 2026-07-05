@@ -1,149 +1,205 @@
 'use client';
 
 /**
- * EventExplorer — recent PIXEL events feed, so a non-technical stakeholder can watch data arrive
- * through their pixel: event type, time, ANONYMIZED ids, and the event's PII-safe details.
+ * EventExplorer — recent PIXEL events table, so a non-technical stakeholder can watch data
+ * arrive through their pixel: relative time, HUMAN event name (via eventLabel — the raw
+ * internal code is never rendered as a label), and the page/product when captured.
  *
- * PIXEL-ONLY: the BFF returns ONLY events received through the pixel (browser events via /collect).
- * Server-trusted connector events (orders, spend, logistics, settlements) are NEVER shown here.
+ * PIXEL-ONLY: the BFF returns ONLY events received through the pixel (browser events via
+ * /collect). Server-trusted connector events (orders, spend, logistics) are NEVER shown here.
  *
- * PII: the BFF returns only type/time + anonymized ids (brain_anon_id / hashed_session_id) and a
- * PII-redacted `details` map. This component truncates ids further and NEVER renders a raw identifier.
+ * PII: the BFF returns only type/time + anonymized ids and a PII-redacted `details` map.
+ * Raw values appear only inside the collapsed "Technical details" JSON per row.
  *
- * A11y: list with role="list"; event types distinguished by icon + text label, never colour alone;
- * consent shown as a labelled StatusBadge; details as a labelled definition list; honest states.
+ * A11y: semantic <table>; event types distinguished by icon + text label, never colour
+ * alone; the expand toggle is a real button with aria-expanded; honest empty state.
  */
 
 import * as React from 'react';
-import {
-  Eye, Package, LayoutGrid, Search, PackagePlus, PackageMinus, ShoppingCart, CreditCard,
-  ListChecks, Truck, CheckCircle2, XCircle, Ticket, FileText, ShoppingBag, MousePointerClick,
-  MousePointer, MoveVertical, LogIn, UserPlus, Fingerprint, Activity, RefreshCw,
-} from 'lucide-react';
+import { Activity, ChevronDown, ChevronRight, RefreshCw } from 'lucide-react';
 import { SectionCard } from '@/components/ui/section-card';
 import { StatusBadge } from '@/components/ui/status-badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { EmptyState } from '@/components/ui/empty-state';
 import { ErrorCard } from '@/components/ui/error-card';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import {
+  Table,
+  TableHeader,
+  TableBody,
+  TableHead,
+  TableRow,
+  TableCell,
+} from '@/components/ui/table';
 import { useRecentEvents } from '@/lib/hooks/use-tracking-health';
 import { formatRelativeTime } from '@/components/analytics/data-health-relative-time';
+import { eventLabel } from '@/lib/event-labels';
 import type { AnalyticsRecentEventRow } from '@/lib/api/types';
 
-/** Pixel-event taxonomy → human label + icon (mirrors packages/pixel-sdk + the universal capture script). */
-const EVENT_CONFIG: Record<string, { label: string; icon: React.ElementType }> = {
-  'page.viewed': { label: 'Page viewed', icon: Eye },
-  'product.viewed': { label: 'Product viewed', icon: Package },
-  'collection.viewed': { label: 'Collection viewed', icon: LayoutGrid },
-  'search.submitted': { label: 'Search', icon: Search },
-  'cart.item_added': { label: 'Item added to cart', icon: PackagePlus },
-  'cart.item_removed': { label: 'Item removed from cart', icon: PackageMinus },
-  'cart.updated': { label: 'Cart updated', icon: ShoppingCart },
-  'cart.viewed': { label: 'Cart viewed', icon: ShoppingCart },
-  'checkout.started': { label: 'Checkout started', icon: CreditCard },
-  'checkout.step_viewed': { label: 'Checkout step', icon: ListChecks },
-  'checkout.shipping_selected': { label: 'Shipping selected', icon: Truck },
-  'payment.initiated': { label: 'Payment initiated', icon: CreditCard },
-  'payment.succeeded': { label: 'Payment succeeded', icon: CheckCircle2 },
-  'payment.failed': { label: 'Payment failed', icon: XCircle },
-  'coupon.applied': { label: 'Coupon applied', icon: Ticket },
-  'form.submitted': { label: 'Form submitted', icon: FileText },
-  'order.placed': { label: 'Order placed', icon: ShoppingBag },
-  'rage.click': { label: 'Rage click', icon: MousePointerClick },
-  'dead.click': { label: 'Dead click', icon: MousePointer },
-  'element.clicked': { label: 'Element clicked', icon: MousePointer },
-  'scroll.depth': { label: 'Scroll depth', icon: MoveVertical },
-  'user.logged_in': { label: 'Logged in', icon: LogIn },
-  'user.signed_up': { label: 'Signed up', icon: UserPlus },
-  'identify': { label: 'Identified', icon: Fingerprint },
-};
+/** Max rows shown (the BFF caps at 50 server-side). */
+const MAX_EVENTS = 50;
 
-function configFor(eventType: string) {
-  return EVENT_CONFIG[eventType] ?? { label: eventType, icon: Activity };
-}
-
-/** Truncate an anonymized id for display (not PII, but keep it compact). */
-function shortId(id: string | null): string {
-  if (!id) return '—';
-  return id.length > 10 ? `${id.slice(0, 8)}…` : id;
-}
-
-/** 'product_id' / 'utm.source' → 'product id' / 'utm source' for a readable detail label. */
-function humanizeKey(key: string): string {
-  return key.replace(/[._]/g, ' ');
+/**
+ * Pull the page or product context out of the PII-safe details map, when the event
+ * captured one. Keys mirror the pixel's flattened properties (path/url/product…).
+ * Honest: returns null when nothing was captured — the cell renders "—".
+ */
+function pageOrProduct(details: Record<string, string>): string | null {
+  return (
+    details['product_name'] ??
+    details['product.name'] ??
+    details['name'] ??
+    details['product_id'] ??
+    details['product.id'] ??
+    details['path'] ??
+    details['page.path'] ??
+    details['page_path'] ??
+    details['url'] ??
+    details['page.url'] ??
+    null
+  );
 }
 
 function EventRow({ row }: { row: AnalyticsRecentEventRow }) {
-  const cfg = configFor(row.event_type);
-  const Icon = cfg.icon;
+  const [expanded, setExpanded] = React.useState(false);
+  const { label, Icon } = eventLabel(row.event_type);
   const relTime = formatRelativeTime(row.occurred_at);
-  const anon = shortId(row.anon_id);
-  const consentLabel = row.has_consent ? 'consent' : 'no consent';
-  const detailEntries = Object.entries(row.details ?? {});
+  const context = pageOrProduct(row.details ?? {});
+  const detailsId = `event-technical-${row.event_id}`;
+
+  // The full raw record — shown ONLY inside the collapsed "Technical details" drawer.
+  const technical = JSON.stringify(
+    {
+      event_id: row.event_id,
+      event_type: row.event_type,
+      occurred_at: row.occurred_at,
+      anon_id: row.anon_id,
+      session_id: row.session_id,
+      has_consent: row.has_consent,
+      details: row.details,
+    },
+    null,
+    2,
+  );
 
   return (
-    <li
-      className="flex items-start gap-3 py-3"
-      aria-label={`${cfg.label} — ${relTime}, anonymous id ${anon}, ${consentLabel}`}
-    >
-      <span
-        className="flex size-8 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground"
-        aria-hidden="true"
-      >
-        <Icon className="size-4" />
-      </span>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-baseline justify-between gap-2">
-          <p className="truncate text-sm font-medium text-foreground">{cfg.label}</p>
-          <time className="shrink-0 text-xs tabular-nums text-muted-foreground" dateTime={row.occurred_at}>
-            {relTime}
-          </time>
-        </div>
-        <div className="mt-1 flex flex-wrap items-center gap-2">
-          <span className="truncate font-mono text-xs text-muted-foreground">{row.event_type}</span>
-          <span className="truncate font-mono text-xs text-muted-foreground">anon: {anon}</span>
+    <>
+      <TableRow data-testid={`event-row-${row.event_id}`}>
+        <TableCell className="whitespace-nowrap text-muted-foreground">
+          <time dateTime={row.occurred_at}>{relTime}</time>
+        </TableCell>
+        <TableCell>
+          <span className="flex items-center gap-2">
+            <Icon className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+            <span className="font-medium text-foreground">{label}</span>
+          </span>
+        </TableCell>
+        <TableCell className="max-w-[16rem]">
+          {context ? (
+            <span className="block truncate text-muted-foreground" title={context}>
+              {context}
+            </span>
+          ) : (
+            <span className="text-muted-foreground/50">—</span>
+          )}
+        </TableCell>
+        <TableCell>
           <StatusBadge tone={row.has_consent ? 'success' : 'neutral'} hideDot={!row.has_consent}>
-            {consentLabel}
+            {row.has_consent ? 'Consented' : 'No consent'}
           </StatusBadge>
-        </div>
-        {detailEntries.length > 0 && (
-          <dl
-            className="mt-2 flex flex-wrap gap-x-4 gap-y-1 rounded-md bg-muted/50 px-2.5 py-1.5"
-            aria-label={`${cfg.label} details`}
+        </TableCell>
+        <TableCell className="text-right">
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            aria-expanded={expanded}
+            aria-controls={detailsId}
+            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
-            {detailEntries.map(([key, value]) => (
-              <div key={key} className="flex min-w-0 items-baseline gap-1.5">
-                <dt className="shrink-0 text-xs capitalize text-muted-foreground">{humanizeKey(key)}</dt>
-                <dd className="min-w-0 truncate font-mono text-xs text-foreground" title={value}>
-                  {value}
-                </dd>
-              </div>
-            ))}
-          </dl>
-        )}
-      </div>
-    </li>
+            {expanded ? (
+              <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
+            ) : (
+              <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
+            )}
+            Technical details
+          </button>
+        </TableCell>
+      </TableRow>
+      {expanded && (
+        <TableRow className="hover:bg-transparent">
+          <TableCell colSpan={5} className="bg-muted/40" id={detailsId}>
+            <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all rounded-md p-2 font-mono text-xs text-muted-foreground">
+              {technical}
+            </pre>
+          </TableCell>
+        </TableRow>
+      )}
+    </>
   );
 }
 
 export function EventExplorer() {
-  const { data, isLoading, error, refetch, isFetching } = useRecentEvents(20);
+  const { data, isLoading, error, refetch, isFetching } = useRecentEvents(MAX_EVENTS);
+  const [typeFilter, setTypeFilter] = React.useState<string>('all');
+
+  const rows = React.useMemo(() => data?.rows ?? [], [data]);
+
+  // Distinct event types present in the feed → human-named filter options.
+  const typeOptions = React.useMemo(() => {
+    const seen = new Set<string>();
+    const options: { value: string; label: string }[] = [];
+    for (const row of rows) {
+      if (seen.has(row.event_type)) continue;
+      seen.add(row.event_type);
+      options.push({ value: row.event_type, label: eventLabel(row.event_type).label });
+    }
+    options.sort((a, b) => a.label.localeCompare(b.label));
+    return options;
+  }, [rows]);
+
+  const visibleRows =
+    typeFilter === 'all' ? rows : rows.filter((row) => row.event_type === typeFilter);
 
   return (
     <SectionCard
       title={
         <span className="flex items-center gap-2">
           <Activity className="size-4 text-muted-foreground" aria-hidden="true" />
-          Pixel events
+          Recent events
           {isFetching && (
             <RefreshCw className="size-3.5 animate-spin text-muted-foreground" aria-hidden="true" />
           )}
         </span>
       }
-      description="Events received through your pixel — type, time, anonymized ids, and the full captured context (UTMs, click ids like gclid/fbclid, device, referrer, landing path, …). Updates live. Connector data (orders, spend) is not shown here. No raw personal data is shown."
+      description="Events received through your pixel, newest first. Updates live. Connector data (orders, ad spend) is not shown here, and no raw personal data is ever shown."
+      actions={
+        typeOptions.length > 0 ? (
+          <Select value={typeFilter} onValueChange={setTypeFilter}>
+            <SelectTrigger className="h-9 w-52" aria-label="Filter by event type">
+              <SelectValue placeholder="All event types" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All event types</SelectItem>
+              {typeOptions.map((opt) => (
+                <SelectItem key={opt.value} value={opt.value}>
+                  {opt.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        ) : undefined
+      }
+      flush
       data-testid="event-explorer"
     >
       {isLoading ? (
-        <div className="space-y-3" aria-busy="true" aria-label="Pixel events — loading">
+        <div className="space-y-3 p-5" aria-busy="true" aria-label="Recent events — loading">
           {Array.from({ length: 5 }).map((_, i) => (
             <div key={i} className="flex items-center gap-3">
               <Skeleton className="size-8 shrink-0 rounded-full" />
@@ -155,20 +211,46 @@ export function EventExplorer() {
           ))}
         </div>
       ) : error ? (
-        <ErrorCard error={error} retry={refetch} />
-      ) : (data?.rows.length ?? 0) === 0 ? (
-        <EmptyState
-          title="No pixel events yet"
-          description="Events will appear here as visitors browse your site with the pixel installed."
-          icon={<Activity />}
-          compact
-        />
+        <div className="p-5">
+          <ErrorCard error={error} retry={refetch} />
+        </div>
+      ) : rows.length === 0 ? (
+        <div className="p-5">
+          <EmptyState
+            title="No pixel events yet"
+            description="Events will appear here as visitors browse your site with the pixel installed."
+            icon={<Activity />}
+            compact
+          />
+        </div>
+      ) : visibleRows.length === 0 ? (
+        <div className="p-5">
+          <EmptyState
+            title="No events of this type"
+            description="No recent event matches this filter — try another event type."
+            icon={<Activity />}
+            compact
+          />
+        </div>
       ) : (
-        <ul role="list" aria-label="Recent pixel events" className="divide-y divide-border">
-          {data!.rows.map((row) => (
-            <EventRow key={row.event_id} row={row} />
-          ))}
-        </ul>
+        <Table aria-label="Recent pixel events">
+          <TableHeader>
+            <TableRow>
+              <TableHead>Time</TableHead>
+              <TableHead>Event</TableHead>
+              <TableHead>Page / product</TableHead>
+              <TableHead>Consent</TableHead>
+              <TableHead>
+                <span className="sr-only">Technical details</span>
+              </TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {visibleRows.map((row) => (
+              <EventRow key={row.event_id} row={row} />
+            ))}
+          </TableBody>
+        </Table>
       )}
     </SectionCard>
   );

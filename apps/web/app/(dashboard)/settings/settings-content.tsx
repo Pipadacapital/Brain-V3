@@ -76,7 +76,7 @@ export function SettingsContent() {
           href: '/settings/connectors',
           title: 'Data Connectors',
           description:
-            'Connect Shopify, ad platforms, and payment sources. View connection status, sync health, and run a backfill.',
+            'Connect Shopify, ad platforms, and payment sources. View connection status, sync health, and import past data.',
           icon: Plug,
         },
         {
@@ -120,7 +120,7 @@ export function SettingsContent() {
           href: '/settings/consent',
           title: 'Consent & Compliance',
           description:
-            'Consent coverage, the marketing suppression count, the 9–9 IST send window, and the can_contact() gate.',
+            'Consent coverage, how many customers are excluded from marketing, and the 9am–9pm IST send window.',
           icon: ShieldCheck,
         },
       ],
@@ -147,7 +147,7 @@ export function SettingsContent() {
           href: '/data/quality',
           title: 'Data Quality',
           description:
-            'DQ letter grades, freshness-SLA status, coverage, and the effective-confidence trust gate.',
+            'Data-quality letter grades, freshness status, coverage, and the overall trust level of your numbers.',
           icon: Gauge,
           meta: (
             <FreshnessBadge
@@ -174,7 +174,7 @@ export function SettingsContent() {
           href: '/ml',
           title: 'Models',
           description:
-            'The model registry, lifecycle state, and the inference-serving status for churn/LTV predictions.',
+            'The prediction models behind churn and lifetime-value scores, and which one is live.',
           icon: BrainCircuit,
         },
       ],
@@ -198,29 +198,29 @@ export function SettingsContent() {
       metrics={[
         {
           name: 'Last ingest',
-          definition: 'When the most recent event was landed into Bronze for this brand.',
+          definition: 'When the most recent event from your sources arrived in Brain.',
           howComputed:
-            'Max event timestamp from the Bronze ingestion feed (useDataHealth → lastIngestAt). Older than 1h is toned stale; missing is shown honestly as unknown.',
+            'The timestamp of the newest event received. Older than an hour is marked stale; missing is shown honestly as unknown.',
         },
         {
           name: 'Sync status',
           definition: 'Whether each connector is actively syncing and when it last completed.',
-          howComputed: 'Per-connector sync state + last-sync time from the connector registry.',
+          howComputed: 'Per-connector sync state and last-sync time, read live.',
         },
         {
           name: 'DQ grade & trust gate',
           definition:
-            'Letter grades (A+→D) across freshness, completeness, schema validity, and reconciliation, plus the effective-confidence trust tier.',
-          howComputed: 'Computed by the metric-engine data-quality summary over the Gold/Silver marts.',
+            'Letter grades (A+→D) for how fresh, complete, valid, and consistent your data is, plus an overall trust level.',
+          howComputed: 'Calculated automatically from checks that run over your data on every refresh.',
         },
       ]}
-      refreshCadence="Connection status and ingestion freshness are live (polled ~every minute). DQ grades refresh on the Silver→Gold medallion cadence (~every 15 min). Billing reflects the latest closed period."
+      refreshCadence="Connection status and ingestion freshness are live (checked about every minute). Data-quality grades refresh roughly every 15 minutes. Billing reflects the latest closed period."
       sources={[
-        'Connector registry (sync state, backfill)',
-        'Bronze ingestion feed (lastIngestAt)',
-        'metric-engine data-quality summary',
+        'Your connected sources (sync state)',
+        'Incoming event feed',
+        'Automatic data-quality checks',
         'Billing periods / invoices',
-        'ML model registry',
+        'Prediction model registry',
       ]}
     />
   );

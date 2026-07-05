@@ -17,6 +17,7 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { ShoppingCart, ArrowRight } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { MetricTitle } from '@/components/ui/metric-title';
 import { PageHeader } from '@/components/ui/page-header';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -76,12 +77,15 @@ function RecoveryBar({ data }: { data: AbandonedHasData }) {
     <Card>
       <CardHeader className="pb-2">
         <CardTitle className="text-sm font-medium text-muted-foreground">
-          Cart outcome ({num(data.cart_sessions)} cart sessions)
+          <MetricTitle
+            label={`Cart outcomes (${num(data.cart_sessions)} carts)`}
+            help="Of the visits where something was added to a cart, how many ended in a purchase versus none."
+          />
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-2">
         <div className="flex items-center justify-between text-sm">
-          <span className="text-foreground">Recovered (converted)</span>
+          <span className="text-foreground">Went on to buy</span>
           <span className="text-muted-foreground tabular-nums">
             {num(data.converted_sessions)}
             {data.recovery_rate_pct !== null && <span className="ml-2 text-foreground">{data.recovery_rate_pct}%</span>}
@@ -91,7 +95,7 @@ function RecoveryBar({ data }: { data: AbandonedHasData }) {
           <div className="h-full bg-foreground/70" style={{ width: `${recovered}%` }} />
         </div>
         <div className="flex items-center justify-between text-sm pt-1">
-          <span className="text-foreground">Abandoned</span>
+          <span className="text-foreground">Left without buying</span>
           <span className="text-muted-foreground tabular-nums">
             {num(data.abandoned_sessions)}
             {data.abandonment_rate_pct !== null && <span className="ml-2">{data.abandonment_rate_pct}%</span>}
@@ -112,7 +116,7 @@ export function AbandonedCartContent() {
     <div className="space-y-8">
       <PageHeader
         title="Abandoned Cart"
-        description="Of the storefront sessions that added to cart, how many went on to purchase versus abandoned — captured by the Brain Pixel and stitched to orders in the Silver tier."
+        description="Of the visits where something was added to a cart, how many went on to purchase versus left without buying — captured by the Brain Pixel and matched to orders."
         meta={
           <span
             className="inline-flex items-center gap-1 rounded-md border border-border bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"
@@ -143,16 +147,23 @@ function AbandonedCartData({ data }: { data: AbandonedHasData }) {
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-        <KpiTile label="Cart sessions" value={num(data.cart_sessions)} sublabel={`${data.from} → ${data.to}`} />
+        <KpiTile
+          label="Abandoned carts"
+          help="Carts where items were added but no purchase was completed."
+          value={num(data.abandoned_sessions)}
+          sublabel={`${data.from} → ${data.to}`}
+        />
         <KpiTile
           label="Abandonment rate"
-          value={data.abandonment_rate_pct !== null ? `${data.abandonment_rate_pct}%` : '—'}
-          sublabel="carts with no order"
+          help="Of all carts started, the share that were left without a purchase."
+          value={data.abandonment_rate_pct !== null ? `${data.abandonment_rate_pct}%` : null}
+          sublabel="carts left without buying"
         />
         <KpiTile
           label="Recovery rate"
-          value={data.recovery_rate_pct !== null ? `${data.recovery_rate_pct}%` : '—'}
-          sublabel="carts that converted"
+          help="Of all carts started, the share that went on to a completed purchase."
+          value={data.recovery_rate_pct !== null ? `${data.recovery_rate_pct}%` : null}
+          sublabel="carts that ended in a purchase"
         />
       </div>
 

@@ -29,10 +29,10 @@ const NIL_UUID = '00000000-0000-0000-0000-000000000000';
 const QUARANTINE_ACTIONS = ['pixel.brand_mismatch'] as const;
 
 /** Frozen SLA: max tolerated schema-validity failure rate (0.1% — matches the Sprint-0 DQ_CHECKS). */
-export const MAX_VALIDITY_FAILURE_RATE = 0.001;
+const MAX_VALIDITY_FAILURE_RATE = 0.001;
 
 /** Trailing window for the validity-rate measurement. */
-export const VALIDITY_WINDOW_HOURS = 24;
+const VALIDITY_WINDOW_HOURS = 24;
 
 export async function schemaValidityCheck(
   pool: Pool,

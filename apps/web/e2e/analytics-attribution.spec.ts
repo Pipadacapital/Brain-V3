@@ -49,12 +49,14 @@ test.describe('Attribution surface (Phase 5)', () => {
     await page.goto('/analytics/attribution');
     await expect(page).toHaveURL(/\/analytics\/attribution/);
 
-    // ── Page heading + Silver-tier provenance label ──
+    // ── Page heading + data-provenance label ──
     await expect(page.getByRole('heading', { name: 'Attribution', exact: true })).toBeVisible({
       timeout: 10_000,
     });
     await expect(page.getByTestId('attribution-silver-label')).toBeVisible();
-    await expect(page.getByTestId('attribution-silver-label')).toContainText('Silver tier');
+    await expect(page.getByTestId('attribution-silver-label')).toContainText(
+      'Calculated from your order and marketing data',
+    );
 
     // ── Controls: model selector (default position-based) + date-range control ──
     await expect(page.getByTestId('attribution-model-selector')).toBeVisible({ timeout: 15_000 });
@@ -88,7 +90,7 @@ test.describe('Attribution surface (Phase 5)', () => {
       'aria-checked',
       'true',
     );
-    await expect(page.getByTestId('attribution-model-rule')).toContainText('1/N');
+    await expect(page.getByTestId('attribution-model-rule')).toContainText('equal share');
     await expect(page.getByTestId('attribution-model-selector')).toBeVisible();
 
     // ── Date-range switch drives the query without crashing ──

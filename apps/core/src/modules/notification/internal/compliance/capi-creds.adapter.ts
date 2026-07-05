@@ -1,7 +1,7 @@
 /**
  * CAPI credentials adapter (Phase 6, Track B) — the CapiCredsPort seam impl.
  *
- * Mirrors EnvSaltPort / the SaltPort pattern: a thin adapter behind the port the
+ * Mirrors the SaltPort adapter pattern (FunctionSaltPort): a thin adapter behind the port the
  * passback service depends on. The credential VALUE is NEVER logged — only the
  * Secrets Manager ARN ref is dereferenced at send time in prod.
  *
@@ -22,7 +22,7 @@ import type { CapiCreds, CapiCredsPort } from './ports.js';
  * passback adapter therefore resolves to the DevCapiAdapter (would_send_dev), never
  * sending. Used in every non-prod environment and whenever the prod resolver is absent.
  */
-export class DevCapiCredsPort implements CapiCredsPort {
+class DevCapiCredsPort implements CapiCredsPort {
   async getCreds(_brandId: string): Promise<CapiCreds | null> {
     return null;
   }

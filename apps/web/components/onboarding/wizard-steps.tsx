@@ -13,7 +13,7 @@ import { cn } from '@/lib/utils';
  * stepper, promote it to packages/ui. Flagged in followups.
  */
 
-export const ONBOARDING_STEPS = ['Set up your brand', 'Connect your store', 'You’re ready'] as const;
+const ONBOARDING_STEPS = ['Set up your brand', 'Connect your store', 'You’re ready'] as const;
 
 export interface WizardStepsProps {
   /** 1-based index of the current step. */

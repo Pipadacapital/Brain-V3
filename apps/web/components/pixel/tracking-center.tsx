@@ -17,7 +17,8 @@
 import * as React from 'react';
 import { Activity, Download, ListTree } from 'lucide-react';
 import { PageHeader } from '@/components/ui/page-header';
-import { StatusBadge, type StatusTone } from '@/components/ui/status-badge';
+import { StatusPill, type StatusPillStatus } from '@/components/ui/status-pill';
+import { Tooltip } from '@/components/ui/tooltip';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { usePixelHealth } from '@/lib/hooks/use-pixel';
 import { useTrackingHealth } from '@/lib/hooks/use-tracking-health';
@@ -27,15 +28,22 @@ import { FirstPartyHost } from './first-party-host';
 import { TrackingHealthPanel } from './tracking-health-panel';
 import { EventExplorer } from './event-explorer';
 
+/** Green "Receiving events" only when a real event landed within the last 5 minutes. */
+const RECEIVING_WINDOW_MS = 5 * 60 * 1000;
+
 /**
- * Derive ONE honest header status. Real Bronze data flowing wins; otherwise we fall
- * back to the pixel_status state. Unknown ⇒ neutral (never a fake success).
+ * Derive ONE honest header status. A real event within the last 5 minutes ⇒ green
+ * "Receiving events"; otherwise the richer install states, always honest — an
+ * installed-but-quiet pixel is "waiting", never a fake green.
  */
-function useHeaderStatus(): { tone: StatusTone; label: string; pulse: boolean } {
+function useHeaderStatus(): { status: StatusPillStatus; label: string } {
   const { data: pixelHealth } = usePixelHealth();
   const { data: tracking } = useTrackingHealth({ livePoll: false });
 
   if (tracking?.state === 'has_data') {
+    const lastTs = tracking.lastEventAt ? new Date(tracking.lastEventAt).getTime() : NaN;
+    const receivingNow = !Number.isNaN(lastTs) && Date.now() - lastTs <= RECEIVING_WINDOW_MS;
+
     // Roll-up the honest client-side delivery signal: if the pixel dropped any events
     // client-side (pixel.dropped sum > 0), surface it as a warning rather than a flat
     // green — never hide real client-side loss behind "Receiving events".
@@ -46,21 +54,24 @@ function useHeaderStatus(): { tone: StatusTone; label: string; pulse: boolean } 
       clientDropped = 0n;
     }
     if (clientDropped > 0n) {
-      return { tone: 'warning', label: 'Receiving — some client-side drops', pulse: false };
+      return { status: 'waiting', label: 'Receiving — some events lost in the browser' };
     }
-    return { tone: 'success', label: 'Receiving events', pulse: false };
+    if (receivingNow) {
+      return { status: 'healthy', label: 'Receiving events' };
+    }
+    return { status: 'waiting', label: 'Waiting for events' };
   }
   switch (pixelHealth?.state) {
     case 'connected':
-      return { tone: 'success', label: 'Connected', pulse: false };
+      return { status: 'waiting', label: 'Connected — waiting for events' };
     case 'syncing':
-      return { tone: 'info', label: 'Waiting for first event', pulse: true };
+      return { status: 'waiting', label: 'Waiting for your first event' };
     case 'waiting_for_data':
-      return { tone: 'info', label: 'Installed — no data yet', pulse: true };
+      return { status: 'waiting', label: 'Installed — no events yet' };
     case 'error':
-      return { tone: 'destructive', label: 'Verification failed', pulse: false };
+      return { status: 'error', label: 'Verification failed' };
     default:
-      return { tone: 'neutral', label: 'Not installed', pulse: false };
+      return { status: 'waiting', label: 'Not installed yet' };
   }
 }
 
@@ -74,9 +85,9 @@ export function TrackingCenter() {
         title="Tracking Center"
         description="Install the Brain Pixel, verify it’s live, and watch your first-party events arrive in real time."
         meta={
-          <StatusBadge tone={status.tone} pulse={status.pulse}>
-            {status.label}
-          </StatusBadge>
+          <Tooltip content="Whether your storefront is sending data to Brain right now.">
+            <StatusPill status={status.status} label={status.label} data-testid="tracking-center-status" />
+          </Tooltip>
         }
       />
 

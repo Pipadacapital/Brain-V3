@@ -58,7 +58,7 @@ export function SettlementsContent() {
     <div className="space-y-6">
       <PageHeader
         title="Settlements"
-        description="Net-of-fees realized revenue from Razorpay settlement reconciliation."
+        description="What Razorpay actually paid out to you — your revenue after processing fees, taxes, reserves, and reversals."
       />
 
       {isLoading && <SettlementsSkeleton />}
@@ -108,19 +108,22 @@ function SettlementsData({ data }: { data: SettlementsHasData }) {
       <section aria-label="Settlement totals">
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <KpiTile
-            label="Gross Recognized"
+            label="Gross Revenue"
+            help="The full payment amount collected from customers, before any deductions."
             value={gross}
             sublabel="before fees"
             data-testid="settlement-kpi-gross"
           />
           <KpiTile
-            label="Total Fees"
+            label="Total Deductions"
+            help="Everything taken out before payout — processing fees, tax on fees, money held in reserve, and refunds or chargebacks."
             value={`− ${totalFees}`}
             sublabel="fees, tax, reserve & reversals"
             data-testid="settlement-kpi-fees"
           />
           <KpiTile
             label="Net Settled"
+            help="The amount actually paid into your account after all deductions."
             value={net}
             sublabel="after fees"
             data-testid="settlement-kpi-net"

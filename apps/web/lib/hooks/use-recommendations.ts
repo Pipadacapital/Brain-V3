@@ -11,7 +11,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { recommendationApi } from '@/lib/api/client';
 import type { RecommendationActionKind } from '@/lib/api/types';
 
-export const RECOMMENDATIONS_QUERY_KEY = ['recommendations'] as const;
+const RECOMMENDATIONS_QUERY_KEY = ['recommendations'] as const;
 
 /** useRecommendations — the active brand's open recommendations (honest no_data / has_data). */
 export function useRecommendations() {

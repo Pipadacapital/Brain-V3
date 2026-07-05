@@ -4,8 +4,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { workspaceApi, brandApi, onboardingApi } from '@/lib/api/client';
 import type { ProvisionOnboardingRequest } from '@/lib/api/types';
 
-export const WORKSPACE_QUERY_KEY = ['workspace'] as const;
-export const BRAND_QUERY_KEY = ['brand'] as const;
+const WORKSPACE_QUERY_KEY = ['workspace'] as const;
+const BRAND_QUERY_KEY = ['brand'] as const;
 
 export function useWorkspaceList() {
   return useQuery({

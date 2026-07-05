@@ -150,7 +150,7 @@ export function SettlementsWaterfall({
   // 1) Gross — full bar from 0.
   steps.push({
     key: 'gross',
-    label: 'Gross Recognized',
+    label: 'Gross Revenue',
     kind: 'credit',
     signedMinor: grossMinor,
     runningMinor: grossMinor,

@@ -14,6 +14,7 @@
 import * as React from 'react';
 import { TrendingUp, TrendingDown, Minus } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
+import { MetricTitle } from '@/components/ui/metric-title';
 import { Skeleton } from '@/components/ui/skeleton';
 import { cn } from '@/lib/utils';
 
@@ -21,6 +22,10 @@ export type DeltaDirection = 'up' | 'down' | 'flat';
 
 export interface KpiTileProps {
   label: string;
+  /** ONE plain-language sentence shown in a "?" tooltip next to the label (via MetricTitle). */
+  help?: string;
+  /** Marks the number as calculated from partial data (adds an "Estimated" badge). */
+  estimated?: boolean;
   /** Pre-formatted value string — e.g. "₹25,43,258.75" or "3,892" or "4.2%" */
   value: string | null;
   /** Optional: pre-formatted delta string — e.g. "+12.3%" */
@@ -37,6 +42,8 @@ export interface KpiTileProps {
 
 export function KpiTile({
   label,
+  help,
+  estimated = false,
   value,
   delta,
   deltaDirection,
@@ -96,7 +103,7 @@ export function KpiTile({
     >
       <CardContent className="p-0 space-y-1">
         <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          {label}
+          {help ? <MetricTitle label={label} help={help} estimated={estimated} /> : label}
         </p>
 
         {value === null ? (

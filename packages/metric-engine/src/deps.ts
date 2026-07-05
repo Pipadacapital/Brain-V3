@@ -29,7 +29,7 @@ export interface EngineDeps {
 }
 
 /** Default NOBYPASSRLS role the RLS policies are written `TO` (migration 0001_init). */
-export const DEFAULT_APP_ROLE = 'brain_app';
+const DEFAULT_APP_ROLE = 'brain_app';
 
 /** Bare SQL identifier — the role name is interpolated into SET LOCAL ROLE. */
 const IDENT_RE = /^[a-z_][a-z0-9_]*$/i;

@@ -94,10 +94,3 @@ export function gatingCategoryForPurpose(p: ContactPurpose): ConsentCategory {
   if (p === 'advertising') return 'advertising';
   return 'marketing';
 }
-
-/**
- * The consent category gating a channel. Retained for backward-compatibility with
- * the marketing/messaging path (marketing category = the lawful basis for commercial
- * communication). New code should use `gatingCategoryForPurpose(purpose)`.
- */
-export const GATING_CATEGORY: ConsentCategory = 'marketing';

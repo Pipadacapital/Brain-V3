@@ -67,7 +67,6 @@ export type {
 // re-exported here so the core wiring keeps importing them via the identity barrel.
 export {
   DevVaultKeyProvider,
-  UnwiredProdVaultKeyProvider,
   KmsVaultKeyProvider,
   AwsKmsDecryptAdapter,
   AwsKmsEncryptAdapter,
@@ -75,4 +74,10 @@ export {
   DevBrandSaltProvider,
   BrandCryptoProvisioner,
 } from '@brain/pii-vault';
+/**
+ * @public PR #284 deferred seam (honest DISABLED-throw): the default-closed guard for the
+ * unwired prod KMS path — it throws rather than encrypt/decrypt with a non-KMS key. Kept
+ * exported so the prod wiring can drop it in without reopening the identity barrel.
+ */
+export { UnwiredProdVaultKeyProvider } from '@brain/pii-vault';
 export type { VaultKeyProvider, KmsDecryptPort, KmsEncryptPort, BrandSaltSource } from '@brain/pii-vault';

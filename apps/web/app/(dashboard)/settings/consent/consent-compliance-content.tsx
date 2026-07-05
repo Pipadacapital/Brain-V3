@@ -159,7 +159,7 @@ export function ConsentComplianceContent() {
       {/* 3 — Send-window config (read-only, server-enforced) */}
       <Panel
         title="Send window"
-        description="The permitted 9am–9pm IST commercial-message window — server-enforced at the queue."
+        description="The permitted 9am–9pm IST window for commercial messages — enforced automatically, before anything sends."
         testId="consent-window-panel"
       >
         {window.isLoading && <PanelSkeleton />}

@@ -4,12 +4,14 @@
  * DataQualityContent — Phase-7 Data Quality surface (BFF / metric-engine read only).
  *
  * Surfaces (requirement §5 / arch §3):
- *   - The trust verdict banner: "Estimated — excluded from billing/MMM" when the gate
- *     marks the metric Estimated/Untrusted; a quiet "Trusted" confirmation otherwise.
- *   - effective_confidence = min(cost_confidence, attribution_confidence) as a headline tile.
+ *   - The trust verdict banner: plain-language "Estimated — not counted for billing"
+ *     when the gate marks the metric Estimated/Untrusted; a quiet confirmation otherwise.
+ *   - effective_confidence (displayed as "Data Trust Score" — display rename only, the
+ *     API field is unchanged) as a headline tile with a plain sentence per grade band.
  *   - dq_grade coverage (the success metric) — graded / expected (category,target) pairs.
- *   - Freshness-SLA status (green / at-risk / breached) — icon + label, never colour-only.
+ *   - Freshness status (on time / falling behind / too old) — icon + label, never colour-only.
  *   - Per-category × per-table grade matrix (semantic <table>, screen-reader readable).
+ *   - Every metric title carries a plain-language "?" tooltip (MetricTitle).
  *   - Honest empty / loading / error states. Relates to the Data Health surface.
  *
  * INVARIANT: this view NEVER queries dq_check_result or StarRocks — it reads ONLY the
@@ -24,12 +26,33 @@ import { PageHeader as PageHeaderPrimitive } from '@/components/ui/page-header';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
 import { EmptyState } from '@/components/ui/empty-state';
+import { MetricTitle } from '@/components/ui/metric-title';
 import {
   DqTrustBanner,
   FreshnessSlaBadge,
 } from '@/components/analytics/dq-status';
 import { DqGradeMatrix } from '@/components/analytics/dq-grade-matrix';
 import { useDataQualitySummary } from '@/lib/hooks/use-analytics';
+import type { DqLetterGrade } from '@/lib/api/types';
+
+/**
+ * Plain-language sentence per grade band — an honest mapping of the existing
+ * A+/A/B/C/D grades the metric-engine computes (display only, never derived here).
+ */
+function gradeSentence(grade: DqLetterGrade): string {
+  switch (grade) {
+    case 'A+':
+    case 'A':
+      return 'Your data is complete and trustworthy.';
+    case 'B':
+      return 'Most data is complete; some metrics are estimates.';
+    case 'C':
+      return 'Significant data gaps exist; numbers should be treated as directional.';
+    case 'D':
+    default:
+      return 'Large parts of your data are missing or unverified; treat these numbers with caution.';
+  }
+}
 
 function PageHeader() {
   return (
@@ -37,8 +60,9 @@ function PageHeader() {
       title="Data Quality"
       description={
         <>
-          Per-table check grades, freshness-SLA status, coverage, and the
-          effective-confidence gate that governs billing and MMM eligibility.{' '}
+          How much you can trust your numbers: check results for every table, data
+          freshness, and the trust score that decides when your figures are reliable
+          enough to bill against and model on.{' '}
           <Link
             href="/data/health"
             className="text-foreground underline underline-offset-2 hover:no-underline"
@@ -89,7 +113,7 @@ export function DataQualityContent() {
           <CardContent className="pt-6">
             <EmptyState
               title="No data-quality grades yet"
-              description="Once a connector is linked and ingestion begins, the freshness, completeness, schema-validity and reconciliation checks will run and grades will appear here."
+              description="Once a data source is connected and events begin arriving, the freshness, completeness, format and reconciliation checks will run and grades will appear here."
               icon={<ShieldCheck className="h-8 w-8" />}
               action={
                 <Link
@@ -121,18 +145,21 @@ export function DataQualityContent() {
       {/* The gate verdict — the headline honest signal */}
       <DqTrustBanner tier={gate.tier} effectiveConfidence={effectiveConfidence} />
 
-      {/* Headline tiles — effective confidence, freshness-SLA, coverage */}
+      {/* Headline tiles — trust score, freshness, coverage */}
       <section aria-label="Data quality summary">
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <Card
             className="p-5"
             role="region"
-            aria-label={`Effective confidence: grade ${effectiveConfidence}, ${gate.tier}`}
+            aria-label={`Data Trust Score: grade ${effectiveConfidence}, ${gate.tier}`}
           >
             <CardContent className="p-0 space-y-2">
               <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide flex items-center gap-1.5">
                 <Gauge className="h-3.5 w-3.5" aria-hidden="true" />
-                Effective Confidence
+                <MetricTitle
+                  label="Data Trust Score"
+                  help="Based on how many events pass validation and identity matching."
+                />
               </p>
               <p
                 className="text-3xl font-bold text-foreground leading-tight tabular-nums"
@@ -141,7 +168,7 @@ export function DataQualityContent() {
                 {effectiveConfidence}
               </p>
               <p className="text-xs text-muted-foreground">
-                min(cost, attribution) confidence
+                {gradeSentence(effectiveConfidence)}
               </p>
             </CardContent>
           </Card>
@@ -149,18 +176,21 @@ export function DataQualityContent() {
           <Card
             className="p-5"
             role="region"
-            aria-label={`Freshness SLA status: ${freshnessSla.replace('_', ' ')}`}
+            aria-label={`Data freshness: ${freshnessSla.replace('_', ' ')}`}
           >
             <CardContent className="p-0 space-y-2">
               <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide flex items-center gap-1.5">
                 <Activity className="h-3.5 w-3.5" aria-hidden="true" />
-                Freshness SLA
+                <MetricTitle
+                  label="Data freshness"
+                  help="Whether the newest data in each table is as recent as Brain promises it to be."
+                />
               </p>
               <div className="pt-1">
                 <FreshnessSlaBadge status={freshnessSla} />
               </div>
               <p className="text-xs text-muted-foreground">
-                Latest-row age vs the per-table SLA
+                How recent the newest data is versus our target
               </p>
             </CardContent>
           </Card>
@@ -168,12 +198,15 @@ export function DataQualityContent() {
           <Card
             className="p-5"
             role="region"
-            aria-label={`Grade coverage: ${coverage.graded} of ${coverage.expected} checks graded, ${coveragePct} percent`}
+            aria-label={`Checks completed: ${coverage.graded} of ${coverage.expected} checks graded, ${coveragePct} percent`}
           >
             <CardContent className="p-0 space-y-2">
               <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide flex items-center gap-1.5">
                 <Layers className="h-3.5 w-3.5" aria-hidden="true" />
-                Grade Coverage
+                <MetricTitle
+                  label="Checks completed"
+                  help="How many of the planned data-quality checks have produced a result."
+                />
               </p>
               <p
                 className="text-3xl font-bold text-foreground leading-tight tabular-nums"
@@ -182,7 +215,7 @@ export function DataQualityContent() {
                 {coveragePct}%
               </p>
               <p className="text-xs text-muted-foreground">
-                {coverage.graded} of {coverage.expected} checks graded
+                {coverage.graded} of {coverage.expected} checks completed
               </p>
             </CardContent>
           </Card>

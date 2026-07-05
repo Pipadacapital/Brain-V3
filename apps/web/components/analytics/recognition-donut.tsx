@@ -30,15 +30,15 @@ interface RecognitionDonutProps {
 }
 
 const CHART_CONFIG: ChartConfig = {
-  provisional: { label: 'Provisional', color: 'hsl(var(--chart-4))' },
+  provisional: { label: 'Pending', color: 'hsl(var(--chart-4))' },
   settling: { label: 'Settling', color: 'hsl(var(--chart-2))' },
-  finalized: { label: 'Finalized', color: 'hsl(var(--chart-3))' },
+  finalized: { label: 'Confirmed', color: 'hsl(var(--chart-3))' },
 };
 
 const LABEL_ICONS: Record<string, string> = {
   provisional: 'P',
   settling: 'S',
-  finalized: 'F',
+  finalized: 'C',
 };
 
 // Detect reduced-motion preference
@@ -52,7 +52,7 @@ export function RecognitionDonut({ data, isLoading, className }: RecognitionDonu
 
   if (isLoading) {
     return (
-      <div className={className} aria-busy="true" aria-label="Recognition breakdown — loading">
+      <div className={className} aria-busy="true" aria-label="Revenue status — loading">
         <Skeleton className="h-64 w-full rounded-lg" />
       </div>
     );
@@ -62,8 +62,8 @@ export function RecognitionDonut({ data, isLoading, className }: RecognitionDonu
     return (
       <div className={className}>
         <EmptyState
-          title="No recognition data yet"
-          description="Recognition states will appear once ledger data is available."
+          title="No revenue status data yet"
+          description="Once orders start flowing, you'll see how much revenue is pending, settling, or confirmed."
           icon={<BarChart3 className="h-8 w-8" />}
         />
       </div>
@@ -94,11 +94,11 @@ export function RecognitionDonut({ data, isLoading, className }: RecognitionDonu
 
   // Screen-reader fallback table
   const srTable = (
-    <table className="sr-only" aria-label="Recognition breakdown data table">
-      <caption>Revenue recognition breakdown</caption>
+    <table className="sr-only" aria-label="Revenue status data table">
+      <caption>Where your revenue stands</caption>
       <thead>
         <tr>
-          <th scope="col">State</th>
+          <th scope="col">Status</th>
           <th scope="col">Amount</th>
           <th scope="col">Orders</th>
         </tr>
@@ -122,7 +122,7 @@ export function RecognitionDonut({ data, isLoading, className }: RecognitionDonu
       <ChartContainer
         config={CHART_CONFIG}
         className="h-64 w-full"
-        aria-label="Revenue recognition state donut chart — provisional, settling, finalized"
+        aria-label="Revenue status donut chart — pending, settling, confirmed"
       >
         <ResponsiveContainer width="100%" height="100%">
           <PieChart>
@@ -135,7 +135,7 @@ export function RecognitionDonut({ data, isLoading, className }: RecognitionDonu
               innerRadius="55%"
               outerRadius="75%"
               isAnimationActive={!reducedMotion}
-              aria-label="Recognition state distribution"
+              aria-label="Revenue status distribution"
             >
               {chartData.map((entry) => (
                 <Cell

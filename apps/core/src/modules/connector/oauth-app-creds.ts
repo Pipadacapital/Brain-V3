@@ -39,7 +39,7 @@ function appSecretName(provider: OAuthProvider, brandId: string): string {
 }
 
 /** The app-level (env) client_id for a provider — the back-compat fallback when a brand has no own app. */
-export function envClientId(provider: OAuthProvider): string | undefined {
+function envClientId(provider: OAuthProvider): string | undefined {
   const cfg = loadCoreConfig();
   switch (provider) {
     case 'shopify':
@@ -85,20 +85,6 @@ export async function storeBrandOAuthAppCreds(
     { connectorType: appConnectorType(provider) },
     { client_id: creds.clientId, client_secret: creds.clientSecret },
   );
-}
-
-/** True if the brand has its own stored OAuth app creds for this provider. */
-export async function hasBrandOAuthAppCreds(
-  secretsManager: ISecretsManager,
-  provider: OAuthProvider,
-  brandId: string,
-): Promise<boolean> {
-  try {
-    const bundle = await secretsManager.getSecret(appSecretName(provider, brandId));
-    return Boolean(bundle?.['client_id'] && bundle?.['client_secret']);
-  } catch {
-    return false;
-  }
 }
 
 /**

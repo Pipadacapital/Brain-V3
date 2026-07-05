@@ -37,13 +37,3 @@ export function useSessionRole(): RoleCode {
   const cached = queryClient.getQueryData<AuthMeCache>(AUTH_QUERY_KEY);
   return toRoleCode(cached?.auth?.role);
 }
-
-/**
- * Returns the current user's app_user id from the session cache.
- * Used to hide self-action buttons in the members table.
- */
-export function useSessionUserId(): string | null {
-  const queryClient = useQueryClient();
-  const cached = queryClient.getQueryData<AuthMeCache>(AUTH_QUERY_KEY);
-  return cached?.user?.id ?? null;
-}

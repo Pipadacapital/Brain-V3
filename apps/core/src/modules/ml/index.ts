@@ -19,13 +19,9 @@ export type { ModelDto, ListModelsDeps } from './internal/application/queries/li
 export {
   promoteModel,
   isModelStage,
-  MODEL_STAGES,
   ModelNotFoundError,
   InvalidModelStageError,
   EvalGateError,
-  runEvalGate,
-  DEFAULT_EVAL_BASELINES,
-  EVAL_GATE_METRIC_FLOORS,
 } from './internal/application/promote-model.js';
 export type {
   ModelStage,

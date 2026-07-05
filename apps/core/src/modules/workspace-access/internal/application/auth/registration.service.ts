@@ -15,7 +15,7 @@ import argon2 from 'argon2';
 
 import type { DbPool, DbClient, QueryContext } from '@brain/db';
 import type { AuditWriter } from '@brain/audit';
-import type { NotificationService } from '../../../../notification/service.js';
+import type { NotificationService } from '../../../../notification/index.js';
 
 import type { AppUser } from '../../domain/auth/entities.js';
 import { AppUserRepository } from '../../infrastructure/repositories/app-user.repository.js';

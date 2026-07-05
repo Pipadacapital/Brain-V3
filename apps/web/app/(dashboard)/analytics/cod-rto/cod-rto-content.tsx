@@ -124,7 +124,7 @@ function RtoSection() {
         {data?.state === 'has_data' && data.data_source === 'synthetic' && (
           <SyntheticBadge
             data-testid="cod-rto-synthetic-badge"
-            reason="GoKwik AWB lifecycle is synthetic in dev (real shape, synthetic source). Real partner sandbox is a platform follow-up."
+            reason="These shipment outcomes come from sample data used during setup — they are replaced once live GoKwik tracking connects."
           />
         )}
       </div>
@@ -137,7 +137,7 @@ function RtoSection() {
           testId="cod-rto-empty"
           icon={<Truck className="h-8 w-8" />}
           title="No RTO data yet"
-          description="Connect GoKwik to track return-to-origin by pincode. RTO rate appears once AWB shipments reach a terminal state (delivered or returned)."
+          description="Connect GoKwik to track return-to-origin by pincode. RTO rate appears once shipments finish their journey (delivered or returned)."
           cta="Connect GoKwik"
         />
       )}
@@ -147,19 +147,22 @@ function RtoSection() {
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <KpiTile
               label="Overall RTO Rate"
+              help="Of shipments that finished their journey, the share that came back undelivered — lower is better."
               value={data.overall_rto_rate_pct === null ? null : `${data.overall_rto_rate_pct}%`}
-              sublabel="returned ÷ terminal shipments"
+              sublabel="returned ÷ completed shipments"
               lowerIsBetter
               data-testid="cod-rto-kpi-overall"
             />
             <KpiTile
               label="RTO Shipments"
+              help="Shipments that could not be delivered and came back to you."
               value={Number(BigInt(data.total_rto)).toLocaleString('en-IN')}
-              sublabel="terminal returns"
+              sublabel="returned to origin"
               data-testid="cod-rto-kpi-rto-count"
             />
             <KpiTile
-              label="Terminal Shipments"
+              label="Completed Shipments"
+              help="Shipments whose journey has finished — either delivered or returned."
               value={Number(BigInt(data.total_terminal)).toLocaleString('en-IN')}
               sublabel="delivered or returned"
               data-testid="cod-rto-kpi-terminal-count"
@@ -193,7 +196,7 @@ function CodMixSection() {
         {/* CoD ledger is fed by the synthetic GoKwik AWB consumer in dev. */}
         <SyntheticBadge
           data-testid="cod-mix-synthetic-badge"
-          reason="CoD CM2 derives from the GoKwik AWB terminal-state ledger, synthetic in dev. Settlement/fees + EMI/loyalty are synthetic-only. Real partner sandbox is a platform follow-up."
+          reason="These cash-on-delivery figures come from sample data used during setup — they are replaced once live GoKwik data connects."
         />
       </div>
 
@@ -205,7 +208,7 @@ function CodMixSection() {
           testId="cod-mix-empty"
           icon={<Wallet className="h-8 w-8" />}
           title="No CoD data yet"
-          description="Connect GoKwik to see CoD-vs-prepaid mix and CoD CM2 (cash-on-delivery contribution after RTO clawback)."
+          description="Connect GoKwik to see your cash-on-delivery vs prepaid mix, and what CoD really earns after undelivered orders are taken back out."
           cta="Connect GoKwik"
         />
       )}
@@ -224,26 +227,30 @@ function CodMixData({ data }: { data: CodMixHasData }) {
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <KpiTile
           label="CoD Delivered"
+          help="Cash-on-delivery revenue counted only once the order was actually delivered."
           value={formatMoneyDisplay(data.cod_delivered_minor, ccy)}
-          sublabel="recognized on delivery"
+          sublabel="counted on delivery"
           data-testid="cod-mix-kpi-delivered"
         />
         <KpiTile
-          label="RTO Clawback"
+          label="RTO Reversals"
+          help="CoD revenue taken back out because the shipment came back undelivered."
           value={`− ${formatMoneyDisplay(data.cod_rto_clawback_minor, ccy)}`}
           sublabel="reversed on return"
           data-testid="cod-mix-kpi-clawback"
         />
         <KpiTile
-          label="CoD CM2 (Net)"
+          label="CoD Net"
+          help="What cash-on-delivery actually earned after undelivered orders were taken back out."
           value={formatMoneyDisplay(data.cod_net_minor, ccy)}
-          sublabel="after RTO leakage"
+          sublabel="after RTO losses"
           data-testid="cod-mix-kpi-net"
         />
         <KpiTile
           label="CoD Share"
+          help="How much of your confirmed revenue came from cash-on-delivery orders."
           value={data.cod_share_pct === null ? null : `${data.cod_share_pct}%`}
-          sublabel="of recognized revenue"
+          sublabel="of confirmed revenue"
           data-testid="cod-mix-kpi-share"
         />
       </div>
@@ -252,7 +259,7 @@ function CodMixData({ data }: { data: CodMixHasData }) {
         <CardHeader className="pb-2">
           <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
             <Minus className="h-4 w-4" aria-hidden="true" />
-            Recognized revenue mix
+            Confirmed revenue mix
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -291,7 +298,7 @@ function CheckoutFunnelSection() {
           testId="checkout-funnel-empty"
           icon={<ShoppingBag className="h-8 w-8" />}
           title="No checkout data yet"
-          description="Connect Shopflo and configure the checkout_abandoned webhook to see your abandoned-checkout funnel and discount leakage."
+          description="Connect Shopflo and turn on its abandoned-checkout updates to see your abandoned-checkout funnel and discount leakage."
           cta="Connect Shopflo"
         />
       )}
@@ -310,20 +317,23 @@ function CheckoutFunnelData({ data }: { data: CheckoutFunnelHasData }) {
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <KpiTile
           label="Checkouts Abandoned"
+          help="How many shoppers started checkout but left without paying."
           value={Number(BigInt(data.abandoned_count)).toLocaleString('en-IN')}
           sublabel="last 30 days"
           data-testid="checkout-funnel-kpi-abandoned"
         />
         <KpiTile
           label="Discount Applied"
+          help="Abandoned checkouts where the shopper had already applied a discount code."
           value={Number(BigInt(data.discount_applied_count)).toLocaleString('en-IN')}
           sublabel="abandoned with a discount"
           data-testid="checkout-funnel-kpi-discount"
         />
         <KpiTile
           label="Cart Value at Risk"
+          help="The total value of the carts left behind — sales you could still recover."
           value={formatMoneyDisplay(data.abandoned_value_minor, ccy)}
-          sublabel="recoverable GMV"
+          sublabel="value you could still recover"
           data-testid="checkout-funnel-kpi-value"
         />
       </div>
@@ -387,18 +397,21 @@ function RtoRiskData({ data }: { data: RtoRiskHasData }) {
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <KpiTile
           label="Orders Scored"
+          help="Orders that received a delivery-risk prediction at checkout."
           value={orders.toLocaleString('en-IN')}
           sublabel="last 30 days"
           data-testid="rto-risk-kpi-orders"
         />
         <KpiTile
           label="High Risk"
+          help="Orders predicted most likely to come back undelivered."
           value={high.toLocaleString('en-IN')}
           sublabel="latest prediction per order"
           data-testid="rto-risk-kpi-high"
         />
         <KpiTile
           label="High-Risk Share"
+          help="The share of scored orders that were flagged high risk."
           value={`${highPct}%`}
           sublabel="of scored orders"
           data-testid="rto-risk-kpi-high-share"

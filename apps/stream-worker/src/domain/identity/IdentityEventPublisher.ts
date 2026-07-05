@@ -45,8 +45,8 @@ import {
 /** The enabled deterministic matcher's id (mirrors IDENTITY_MATCHER_REGISTRY in @brain/contracts). */
 export const DETERMINISTIC_MATCHER_ID = 'deterministic-union-find' as const;
 /** Deterministic certainty: an exact strong-key match scores the integer 100, band 'exact'. */
-export const DETERMINISTIC_SCORE = 100 as const;
-export const DETERMINISTIC_BAND = 'exact' as const;
+const DETERMINISTIC_SCORE = 100 as const;
+const DETERMINISTIC_BAND = 'exact' as const;
 
 /**
  * A prepared identity event — the wire payload + the topic-selecting `eventName` + a deterministic

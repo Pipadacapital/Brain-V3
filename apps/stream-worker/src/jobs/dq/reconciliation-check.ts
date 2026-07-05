@@ -26,7 +26,7 @@ import { BRAND_PREDICATE, BRONZE_COLLECTOR_PREDICATE, ICEBERG_BRONZE, type Silve
 import { log } from "../../log.js";
 
 /** Frozen reconciliation tolerance: max tolerated |bronze - silver| order-count delta. */
-export const MAX_ROW_DELTA = 100;
+const MAX_ROW_DELTA = 100;
 
 export async function reconciliationCheck(
   _pool: Pool,

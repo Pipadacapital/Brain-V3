@@ -3,8 +3,8 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { connectorsApi } from '@/lib/api/client';
 
-export const CONNECTORS_QUERY_KEY = ['connectors'] as const;
-export const MARKETPLACE_QUERY_KEY = ['connectors', 'marketplace'] as const;
+const CONNECTORS_QUERY_KEY = ['connectors'] as const;
+const MARKETPLACE_QUERY_KEY = ['connectors', 'marketplace'] as const;
 
 export function useConnectorList() {
   return useQuery({
@@ -22,15 +22,6 @@ export function useMarketplace() {
   return useQuery({
     queryKey: MARKETPLACE_QUERY_KEY,
     queryFn: () => connectorsApi.getMarketplace(),
-  });
-}
-
-export function useConnectorStatus(connectorId: string) {
-  return useQuery({
-    queryKey: [...CONNECTORS_QUERY_KEY, connectorId, 'status'],
-    queryFn: () => connectorsApi.getStatus(connectorId),
-    enabled: !!connectorId,
-    refetchInterval: 30_000, // poll every 30s for live status
   });
 }
 

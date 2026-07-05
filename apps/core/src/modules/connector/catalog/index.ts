@@ -15,7 +15,6 @@
  */
 export { CONNECTOR_CATALOG } from './registry.js';
 export type { ConnectorDefinition, ConnectorCategory, ConnectMethod, ConnectorAuthField, CredentialConnectSpec } from './registry.js';
-export { mapHealthToSafety, HEALTH_TO_SAFETY } from './healthSafety.js';
 export type { HealthState, SafetyRating } from './healthSafety.js';
 
 import { CONNECTOR_CATALOG } from './registry.js';

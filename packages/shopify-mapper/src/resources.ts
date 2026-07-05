@@ -20,7 +20,7 @@
 
 import type { CanonicalEventDraft } from '@brain/connector-core';
 import { hashIdentifier, normalizePhone } from '@brain/identity-core';
-import { decimalStringToMinor, tryDecimalToMinor } from './index.js';
+import { tryDecimalToMinor } from './index.js';
 
 // ── Canonical event names for the new resources ───────────────────────────────
 // Sourced from the leaf ./event-names.ts (cycle-safe). Imported for local use in
@@ -388,6 +388,3 @@ export function mapFulfillmentToDraft(
     ],
   };
 }
-
-// Re-export the strict money helper so the resources module is self-contained for callers.
-export { decimalStringToMinor };

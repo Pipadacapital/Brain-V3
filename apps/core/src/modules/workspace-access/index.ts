@@ -8,9 +8,9 @@
  */
 
 export { AuthService, AuthError, assertArgon2Params } from './internal/application/auth.service.js';
-export { WorkspaceService, WorkspaceError } from './internal/application/workspace.service.js';
-export { BrandService, BrandError } from './internal/application/brand.service.js';
-export { InviteService, InviteError } from './internal/application/invite.service.js';
+export { WorkspaceService } from './internal/application/workspace.service.js';
+export { BrandService } from './internal/application/brand.service.js';
+export { InviteService } from './internal/application/invite.service.js';
 export { OnboardingService, OnboardingError } from './internal/application/onboarding.service.js';
 
 export { registerAuthRoutes, validateSessionPreHandler } from './internal/interfaces/rest/auth.routes.js';

@@ -238,19 +238,21 @@ export function SpendContent() {
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-2 lg:grid-cols-4">
               <KpiTile
                 label="Blended ROAS"
+                help="Return on ad spend — for every unit of currency spent on ads, how much confirmed revenue came back."
                 value={roasValue}
                 isLoading={roasLoading}
                 sublabel={
                   primaryRoas && primaryRoas.roas_ratio == null
-                    ? 'no spend in window'
+                    ? 'no ad spend in this window yet'
                     : multiCurrency && blendedRoas != null
                       ? `≈ blended in ${roasHasData?.primary_currency ?? 'primary'} (approx)`
-                      : 'realized ÷ spend'
+                      : 'revenue ÷ ad spend'
                 }
                 data-testid="spend-kpi-roas"
               />
               <KpiTile
                 label="Total Spend"
+                help="Everything you spent across Meta and Google ads in the selected period."
                 value={totalSpendValue}
                 isLoading={spendLoading}
                 sublabel={`${range.from} → ${range.to}`}
@@ -259,6 +261,7 @@ export function SpendContent() {
               />
               <KpiTile
                 label="Meta Spend"
+                help="What you spent on Meta (Facebook and Instagram) ads in the selected period."
                 value={metaSpendValue}
                 isLoading={spendLoading}
                 lowerIsBetter
@@ -266,6 +269,7 @@ export function SpendContent() {
               />
               <KpiTile
                 label="Google Spend"
+                help="What you spent on Google ads in the selected period."
                 value={googleSpendValue}
                 isLoading={spendLoading}
                 lowerIsBetter
@@ -326,7 +330,7 @@ export function SpendContent() {
                   </div>
                 ) : roasData?.state === 'no_data' || roasRows.length === 0 ? (
                   <p className="text-sm text-muted-foreground italic" role="status">
-                    No spend in this window — ROAS has no denominator yet.
+                    No ad spend in this window yet, so ROAS can&apos;t be calculated.
                   </p>
                 ) : (
                   <table className="w-full text-sm" aria-label="Blended ROAS by currency detail">
@@ -336,7 +340,7 @@ export function SpendContent() {
                           Currency
                         </th>
                         <th scope="col" className="text-right font-medium text-muted-foreground pb-2">
-                          Realized Revenue
+                          Confirmed Revenue
                         </th>
                         <th scope="col" className="text-right font-medium text-muted-foreground pb-2">
                           Ad Spend
@@ -362,7 +366,9 @@ export function SpendContent() {
                               {row.roas_ratio != null ? (
                                 `${row.roas_ratio}x`
                               ) : (
-                                <span className="text-muted-foreground italic">n/a</span>
+                                <span className="text-muted-foreground italic" title="Not enough data yet">
+                                  —
+                                </span>
                               )}
                             </td>
                           </tr>
@@ -384,7 +390,7 @@ function SpendHeader() {
   return (
     <PageHeader
       title="Ad Spend & ROAS"
-      description="Meta & Google ad spend over time, with blended return on ad spend — last 35 days."
+      description="Meta & Google ad spend over time, with your blended return on ad spend."
     />
   );
 }

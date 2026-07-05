@@ -85,17 +85,17 @@ const SLA_META: Record<
 > = {
   green: {
     icon: CheckCircle2,
-    label: 'Within SLA',
+    label: 'On time',
     cls: 'bg-status-green-50 text-status-green-700',
   },
   at_risk: {
     icon: AlertTriangle,
-    label: 'At risk',
+    label: 'Falling behind',
     cls: 'bg-status-amber-50 text-status-amber-700',
   },
   breached: {
     icon: XCircle,
-    label: 'Breached',
+    label: 'Too old',
     cls: 'bg-status-red-50 text-status-red-700',
   },
 };
@@ -116,7 +116,7 @@ export function FreshnessSlaBadge({ status, className }: FreshnessSlaBadgeProps)
   return (
     <span
       role="status"
-      aria-label={`Freshness SLA: ${m.label}`}
+      aria-label={`Data freshness: ${m.label}`}
       className={cn(
         'inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold',
         m.cls,
@@ -157,8 +157,8 @@ export function DqTrustBanner({ tier, effectiveConfidence, className }: DqTrustB
         <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
         <span>
           <strong className="font-semibold">Trusted (grade {effectiveConfidence}).</strong>{' '}
-          These figures are reliable enough to bill against, feed your marketing-mix model, and
-          power your recommendations.
+          These numbers are reliable enough to bill against, feed your long-term marketing
+          analysis, and power your recommendations.
         </span>
       </div>
     );
@@ -183,10 +183,10 @@ export function DqTrustBanner({ tier, effectiveConfidence, className }: DqTrustB
           {isUntrusted ? 'Not yet reliable' : 'Estimated'} (grade {effectiveConfidence})
         </strong>{' '}
         {isUntrusted
-          ? "— there isn't enough verified data to rely on these figures yet."
-          : '— treat these as an estimate, not verified totals.'}{' '}
-        They won&apos;t be billed against or fed into your marketing-mix model, and higher-risk
-        recommendations stay paused until your data quality improves.
+          ? "— there isn't enough verified data to rely on these numbers yet."
+          : '— treat these numbers as estimates, not verified totals.'}{' '}
+        They won&apos;t count toward billing or your long-term marketing analysis, and
+        higher-risk recommendations stay paused until your data quality improves.
       </span>
     </div>
   );

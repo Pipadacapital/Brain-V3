@@ -53,7 +53,7 @@ export function CheckoutContent() {
     <div className="space-y-8">
       <PageHeader
         title="Checkout"
-        description="Where checkouts convert — and where they leak. The Shopflo checkout-step funnel, plus abandonment reasons and device mix as those marts come online."
+        description="Where checkouts convert — and where they leak. The Shopflo checkout-step funnel, plus abandonment reasons and device mix as those breakdowns become available."
       />
 
       <CheckoutFunnelSection />
@@ -89,7 +89,7 @@ function CheckoutFunnelSection() {
             <div>
               <p className="font-medium text-foreground">No checkout data yet</p>
               <p className="text-sm text-muted-foreground mt-1 max-w-md">
-                Connect Shopflo and configure the checkout_abandoned webhook to see your
+                Connect Shopflo and turn on its abandoned-checkout updates to see your
                 checkout-step funnel and discount leakage.
               </p>
             </div>
@@ -115,20 +115,23 @@ function CheckoutFunnelData({ data }: { data: CheckoutFunnelHasData }) {
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <KpiTile
           label="Checkouts Abandoned"
+          help="How many shoppers started checkout but left without paying."
           value={Number(BigInt(data.abandoned_count)).toLocaleString('en-IN')}
           sublabel="last 30 days"
           data-testid="checkout-funnel-kpi-abandoned"
         />
         <KpiTile
           label="Discount Applied"
+          help="Abandoned checkouts where the shopper had already applied a discount code."
           value={Number(BigInt(data.discount_applied_count)).toLocaleString('en-IN')}
           sublabel="abandoned with a discount"
           data-testid="checkout-funnel-kpi-discount"
         />
         <KpiTile
           label="Cart Value at Risk"
+          help="The total value of the carts left behind — sales you could still recover."
           value={formatMoneyDisplay(data.abandoned_value_minor, ccy)}
-          sublabel="recoverable GMV"
+          sublabel="value you could still recover"
           data-testid="checkout-funnel-kpi-value"
         />
       </div>
@@ -163,9 +166,9 @@ function AbandonmentReasonsSection() {
         <CardContent className="py-4">
           <EmptyState
             title="Abandonment reasons aren't broken out yet"
-            description="Why checkouts drop — payment failure, shipping cost, RTO-risk decline, coupon error — needs a dedicated Gold mart over the Shopflo checkout signal. It isn't built yet, so we show nothing rather than a fabricated split."
+            description="Why checkouts drop — payment failure, shipping cost, delivery-risk decline, coupon error — is a breakdown we haven't built yet, so we show nothing rather than a made-up split."
             icon={<MessageSquareWarning className="h-8 w-8" />}
-            hint="Unlocks when the checkout-reason Gold mart lands."
+            hint="Coming in a future update."
             compact
           />
         </CardContent>
@@ -186,9 +189,9 @@ function DeviceBreakdownSection() {
         <CardContent className="py-4">
           <EmptyState
             title="Device & browser mix isn't broken out yet"
-            description="Checkout conversion by device class and browser needs a dedicated Gold mart over the pixel/checkout signal. It isn't built yet, so we show nothing rather than an empty chart."
+            description="Checkout conversion by device and browser is a breakdown we haven't built yet, so we show nothing rather than an empty chart."
             icon={<MonitorSmartphone className="h-8 w-8" />}
-            hint="Unlocks when the checkout device-mix Gold mart lands."
+            hint="Coming in a future update."
             compact
           />
         </CardContent>

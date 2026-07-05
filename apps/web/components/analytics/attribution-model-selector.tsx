@@ -33,13 +33,18 @@ interface ModelOption {
 }
 
 const MODELS: ModelOption[] = [
-  { value: 'position_based', label: 'Position-based', rule: '40% first · 40% last · 20% middle (default)' },
-  { value: 'data_driven', label: 'Data-driven', rule: 'Markov: credit by each channel’s modeled contribution to conversion' },
-  { value: 'time_decay', label: 'Time-decay', rule: 'Recency-weighted: credit halves every step back from conversion' },
-  { value: 'linear', label: 'Linear', rule: 'Even credit (1/N) across every touch' },
-  { value: 'first_touch', label: 'First-touch', rule: '100% credit to the first touch' },
-  { value: 'last_touch', label: 'Last-touch', rule: '100% credit to the last touch' },
+  { value: 'position_based', label: 'Position-based', rule: '40% of the credit to the first touch, 40% to the last, 20% shared in between (default)' },
+  { value: 'data_driven', label: 'Data-driven', rule: 'Learned from your own data: channels earn credit by how much they actually drive purchases' },
+  { value: 'time_decay', label: 'Time-decay', rule: 'Touches closer to the purchase earn more credit' },
+  { value: 'linear', label: 'Linear', rule: 'Every touch gets an equal share of the credit' },
+  { value: 'first_touch', label: 'First-touch', rule: 'All credit to the first touch that brought the customer' },
+  { value: 'last_touch', label: 'Last-touch', rule: 'All credit to the last touch before the purchase' },
 ];
+
+/** Human display name for an attribution model id (e.g. position_based → "Position-based"). */
+export function attributionModelLabel(model: AttributionModel): string {
+  return MODELS.find((m) => m.value === model)?.label ?? model.replace(/_/g, ' ');
+}
 
 interface AttributionModelSelectorProps {
   model: AttributionModel;

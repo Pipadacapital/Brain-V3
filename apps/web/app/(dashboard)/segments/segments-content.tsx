@@ -353,14 +353,14 @@ const EXPLAINER = {
   sections: [
     {
       heading: 'How the preview count works',
-      body: 'The live count is your brand’s addressable customer base (gold_customer_360). Brain stores a segment as its RULE, not a frozen member list — the conditions are applied when the segment is evaluated, so the preview is an honest order-of-magnitude, never a fabricated narrowed number.',
+      body: 'The live count is your brand’s reachable customer base. Brain stores a segment as its RULE, not a frozen member list — the conditions are applied each time the segment is used, so the preview is an honest size estimate, never a made-up narrowed number.',
     },
     {
       heading: 'Where segments live',
-      body: 'A saved segment is operational state in PostgreSQL (ops.saved_segment), brand-isolated by row-level security. The rule tree is re-evaluated at run time against the Silver/Gold serving spine.',
+      body: 'A saved segment is stored securely and privately for your brand. Its rules are re-applied against your latest customer data every time it is used, so it never goes stale.',
     },
   ],
-  sources: ['ops.saved_segment', 'gold_customer_360'],
+  sources: ['Your saved segments', 'Customer 360 profiles'],
 };
 
 export function SegmentsContent() {
@@ -590,15 +590,15 @@ export function SegmentsContent() {
                     of {formatCount(preview.total_customers)}
                   </span>
                 </div>
-                <p className="text-xs text-muted-foreground">addressable customers</p>
+                <p className="text-xs text-muted-foreground">reachable customers</p>
               </div>
             )}
           </div>
 
           <p className="mt-4 border-t border-border pt-3 text-xs leading-relaxed text-muted-foreground">
-            This is your addressable base. Brain stores the segment as a rule and applies your
-            conditions when the segment is evaluated — so the saved segment narrows to the matching
-            customers at run time.
+            This is your reachable customer base. Brain stores the segment as a rule and applies
+            your conditions each time the segment is used — so the saved segment narrows to the
+            matching customers at that moment.
           </p>
 
           <div className="mt-4 flex flex-col gap-2">

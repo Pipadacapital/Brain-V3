@@ -25,6 +25,7 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { ShoppingCart, ArrowRight, Send } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { MetricTitle } from '@/components/ui/metric-title';
 import { PageHeader } from '@/components/ui/page-header';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -107,7 +108,10 @@ function OutcomeTable({ data }: { data: AbandonedHasData }) {
     <Card>
       <CardHeader className="flex flex-row items-center justify-between gap-3 pb-2">
         <CardTitle className="text-sm font-medium text-muted-foreground">
-          Cart outcome breakdown
+          <MetricTitle
+            label="Cart outcome breakdown"
+            help="Of the visits where something was added to a cart, how many ended in a purchase versus none."
+          />
         </CardTitle>
         <SendReminderButton />
       </CardHeader>
@@ -122,17 +126,17 @@ function OutcomeTable({ data }: { data: AbandonedHasData }) {
           </TableHeader>
           <TableBody>
             <TableRow>
-              <TableCell className="font-medium">All cart sessions</TableCell>
+              <TableCell className="font-medium">All carts started</TableCell>
               <TableCell numeric>{num(data.cart_sessions)}</TableCell>
               <TableCell numeric>100%</TableCell>
             </TableRow>
             <TableRow>
-              <TableCell>Recovered (converted)</TableCell>
+              <TableCell>Went on to buy</TableCell>
               <TableCell numeric>{num(data.converted_sessions)}</TableCell>
               <TableCell numeric>{data.recovery_rate_pct !== null ? `${data.recovery_rate_pct}%` : '—'}</TableCell>
             </TableRow>
             <TableRow>
-              <TableCell>Abandoned</TableCell>
+              <TableCell>Left without buying</TableCell>
               <TableCell numeric>{num(data.abandoned_sessions)}</TableCell>
               <TableCell numeric>{data.abandonment_rate_pct !== null ? `${data.abandonment_rate_pct}%` : '—'}</TableCell>
             </TableRow>
@@ -148,16 +152,23 @@ function CartAbandonmentData({ data }: { data: AbandonedHasData }) {
     <div className="space-y-4">
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <KpiTile
+          label="Abandoned carts"
+          help="Carts where items were added but no purchase was completed."
+          value={num(data.abandoned_sessions)}
+          sublabel={`${data.from} → ${data.to}`}
+        />
+        <KpiTile
           label="Recovery rate"
+          help="Of all carts started, the share that went on to a completed purchase."
           value={data.recovery_rate_pct !== null ? `${data.recovery_rate_pct}%` : null}
-          sublabel="carts that converted to an order"
+          sublabel="carts that ended in a purchase"
         />
         <KpiTile
           label="Abandonment rate"
+          help="Of all carts started, the share that were left without a purchase."
           value={data.abandonment_rate_pct !== null ? `${data.abandonment_rate_pct}%` : null}
-          sublabel="carts with no order"
+          sublabel="carts left without buying"
         />
-        <KpiTile label="Cart sessions" value={num(data.cart_sessions)} sublabel={`${data.from} → ${data.to}`} />
       </div>
 
       <OutcomeTable data={data} />
@@ -175,7 +186,7 @@ export function CartAbandonmentContent() {
     <div className="space-y-8">
       <PageHeader
         title="Cart Abandonment"
-        description="Of the storefront sessions that added to cart, how many recovered (purchased) versus abandoned — captured by the Brain Pixel and stitched to orders in the Gold abandoned-cart mart."
+        description="Of the visits where something was added to a cart, how many went on to purchase versus left without buying — captured by the Brain Pixel and matched to orders."
         meta={
           <span
             className="inline-flex items-center gap-1 rounded-md border border-border bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"

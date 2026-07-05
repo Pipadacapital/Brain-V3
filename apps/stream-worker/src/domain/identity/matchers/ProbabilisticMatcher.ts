@@ -33,13 +33,13 @@ import type {
 export const PROBABILISTIC_MATCHER_ID = 'probabilistic-fellegi-sunter';
 
 /** The rule version this matcher stamps on its verdicts (mirrors the descriptor `version`). */
-export const PROBABILISTIC_RULE_VERSION = 'v1-fellegi-sunter';
+const PROBABILISTIC_RULE_VERSION = 'v1-fellegi-sunter';
 
 /**
  * The WEAK signal types this matcher links on — and ONLY these. A strong/medium identifier is
  * never inspected here, so a probabilistic match can never act as (or escalate to) a merge key.
  */
-export const WEAK_SIGNAL_TYPES = [
+const WEAK_SIGNAL_TYPES = [
   'device_fingerprint',
   'cookie_id',
   'session_id',

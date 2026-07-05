@@ -20,7 +20,7 @@
  */
 import type { Pool } from 'pg';
 
-export const LEADER_LOCK_INGEST_SCHEDULER = 910_001;
+// 910_001 was LEADER_LOCK_INGEST_SCHEDULER (loop retired) — keep the key reserved, do not reuse.
 export const LEADER_LOCK_SYNC_CLAIMER = 910_002;
 export const LEADER_LOCK_DQ_CHECKS = 910_003;
 

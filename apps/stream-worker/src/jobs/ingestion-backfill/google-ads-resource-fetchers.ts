@@ -83,7 +83,7 @@ export function buildGoogleAdsResourceFetcher(
  * GoogleAdsSpendFetcher — date-window backfill of daily spend via GAQL SearchStream. One framework
  * page == one date-window chunk (all three GAQL levels), walked from the anchor back toward floorAt.
  */
-export class GoogleAdsSpendFetcher implements IResourcePageFetcher {
+class GoogleAdsSpendFetcher implements IResourcePageFetcher {
   private readonly client: GoogleAdsSearchStreamClient;
   private authed = false;
 

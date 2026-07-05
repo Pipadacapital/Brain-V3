@@ -6,17 +6,20 @@ import { onboardToDashboard } from '../helpers/onboard';
  *
  * Routes under test:
  *   /identity/customer-360  — Brain-ID lookup form + honest result region (empty / not_found / data)
- *   /identity/merge-review  — pending merge queue (honest "No pending merges" when clear)
- *   /identity/pii-vault     — vault coverage counts (honest-0, never fabricated)
+ *   /identity?tab=merge-review — pending merge queue (honest "All good!" empty state when clear;
+ *     the old /identity/merge-review route permanently redirects here)
+ *   /identity?tab=pii-vault    — vault coverage counts (honest-0, never fabricated;
+ *     the old /identity/pii-vault route permanently redirects here)
  *   /settings/consent       — default-closed consent posture: suppression / coverage / window / gate
  *
  * Selectors grounded by reading the real components:
  *   - customer-360-content.tsx : role="search" form, <label> "Brain ID", "Look up" button
  *     (disabled when empty), EmptyState (data-testid="empty-state") for both the pre-submit
  *     prompt and the not_found state.
- *   - merge-review-content.tsx : heading "Merge Review", EmptyState "No pending merges".
- *   - pii-vault-content.tsx    : heading "PII Vault", coverage cards (no empty-state union;
- *     counts render as honest 0 for a fresh brand).
+ *   - identity-content.tsx : h1 "Identity" (TabShell/PageHeader), merge-review EmptyState
+ *     "All good! No customer merges need your attention.", pii-vault cards
+ *     "Profile completeness" / "Contact details on file" (counts render as honest 0 for a
+ *     fresh brand) + the "No PII deletion requests." EmptyState.
  *   - consent-compliance-content.tsx + send-window-card.tsx : per-panel <section> testids and
  *     the fail-closed/has-data unions; the send window is read-only (server-enforced).
  *
@@ -82,28 +85,37 @@ test.describe('identity-compliance', () => {
 
   test('[edge] merge-review shows the honest empty queue for a fresh brand', async ({ page }) => {
     await onboardToDashboard(page, 'idc_merge');
-    await gotoRoute(page, '/identity/merge-review');
+    // The old route permanently redirects into the consolidated Identity tab.
+    await page.goto('/identity/merge-review');
+    await expect(page).toHaveURL(/\/identity\?tab=merge-review/);
 
-    await expect(page.getByRole('heading', { name: 'Merge Review', level: 1 })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Identity', level: 1 })).toBeVisible();
 
-    // Fresh brand → resolver flagged nothing → honest "No pending merges" EmptyState.
-    // (Scope the empty-state heading; a bare `ul li` also matches the nav sidebar list.)
-    await expect(page.getByRole('heading', { name: 'No pending merges' })).toBeVisible();
+    // Fresh brand → resolver flagged nothing → honest plain-language EmptyState.
+    await expect(
+      page.getByRole('heading', { name: 'All good! No customer merges need your attention.' }),
+    ).toBeVisible();
   });
 
   // ---- PII vault -------------------------------------------------------------------
 
   test('[positive] pii-vault renders coverage with honest counts', async ({ page }) => {
     await onboardToDashboard(page, 'idc_vault');
-    await gotoRoute(page, '/identity/pii-vault');
+    // The old route permanently redirects into the consolidated Identity tab.
+    await page.goto('/identity/pii-vault');
+    await expect(page).toHaveURL(/\/identity\?tab=pii-vault/);
 
-    await expect(page.getByRole('heading', { name: 'PII Vault', level: 1 })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Identity', level: 1 })).toBeVisible();
 
     // The coverage card always renders once data loads; a fresh brand shows honest 0%/0 — we
     // assert the labelled regions render rather than a specific number (tolerate dev variance).
-    await expect(page.getByRole('heading', { name: 'Coverage' })).toBeVisible();
-    await expect(page.getByRole('heading', { name: 'Vaulted identifiers' })).toBeVisible();
-    await expect(page.getByText('of resolved customers have at least one vaulted identifier')).toBeVisible();
+    await expect(page.getByText('Profile completeness')).toBeVisible();
+    await expect(page.getByText('Contact details on file')).toBeVisible();
+    await expect(
+      page.getByText('of customers have an email or phone number securely on file'),
+    ).toBeVisible();
+    // Deletion requests: a fresh brand has none → the honest EmptyState.
+    await expect(page.getByText('No PII deletion requests.')).toBeVisible();
   });
 
   // ---- Consent / compliance --------------------------------------------------------

@@ -51,7 +51,7 @@ export interface AuditCheckpointResult {
  * the privileged read-all escape via `SET app.role = 'audit_reader'` (the established GUC pattern,
  * contact_pii/0017) on a dedicated session — without it, RLS would scope these reads to a (here
  * unset) brand and the WORM anchor would silently see an empty chain. */
-export async function readAuditHead(pool: pg.Pool): Promise<AuditChainHead> {
+async function readAuditHead(pool: pg.Pool): Promise<AuditChainHead> {
   const client = await pool.connect();
   try {
     // Session-scoped (the connection is released right after) — grants the cross-brand chain walk.
@@ -109,7 +109,7 @@ export async function writeAuditCheckpoint(
 }
 
 /** S3 Object-Lock sink — lazy-imports @aws-sdk/client-s3 (only when a bucket is configured). */
-export function createS3CheckpointSink(bucket: string, region?: string): CheckpointSink {
+function createS3CheckpointSink(bucket: string, region?: string): CheckpointSink {
   return {
     async readLatestHash(): Promise<string | null> {
       const { S3Client, ListObjectsV2Command, GetObjectCommand } = await import('@aws-sdk/client-s3');

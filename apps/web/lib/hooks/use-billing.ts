@@ -11,7 +11,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { billingApi } from '@/lib/api/client';
 
-export const BILLING_QUERY_KEY = ['billing'] as const;
+const BILLING_QUERY_KEY = ['billing'] as const;
 
 /** useBillingPeriods — the active brand's sealed billing periods (honest no_data / has_data). */
 export function useBillingPeriods() {

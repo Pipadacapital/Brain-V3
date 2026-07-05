@@ -70,7 +70,7 @@ function FunnelBars({
       <EmptyState
         icon={<Workflow className="h-6 w-6" />}
         title="No storefront views yet"
-        description="The views → add-to-cart → purchase funnel appears once pixel views flow through ingest for this product."
+        description="The views → add-to-cart → purchase funnel appears once the Brain Pixel records views for this product."
       />
     );
   }
@@ -169,7 +169,7 @@ export function ProductDetailContent({ productId }: { productId: string }) {
         <EmptyState
           icon={<Package className="h-6 w-6" />}
           title="Product not found"
-          description={`No performance row for product ${productId} for this brand yet. Products appear here once their views and orders flow through ingest into the Gold tier.`}
+          description={`We haven't recorded any activity for product ${productId} yet. It appears here once its views and orders start flowing in.`}
         />
       </div>
     );
@@ -194,17 +194,36 @@ export function ProductDetailContent({ productId }: { productId: string }) {
         aria-label="Product performance summary"
         className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5"
       >
-        <KpiTile label="Views" value={formatCount(d.views)} data-testid="product-kpi-views" />
-        <KpiTile label="Add to cart" value={formatCount(d.add_to_cart)} sublabel={`${pct(d.add_to_cart_rate)} of views`} data-testid="product-kpi-atc" />
-        <KpiTile label="Purchases" value={formatCount(d.purchases)} sublabel={`${pct(d.purchase_rate)} of views`} data-testid="product-kpi-purchases" />
+        <KpiTile
+          label="Views"
+          help="How many times shoppers viewed this product's page."
+          value={formatCount(d.views)}
+          data-testid="product-kpi-views"
+        />
+        <KpiTile
+          label="Add to cart"
+          help="How many times shoppers added this product to their cart."
+          value={formatCount(d.add_to_cart)}
+          sublabel={`${pct(d.add_to_cart_rate)} of views`}
+          data-testid="product-kpi-atc"
+        />
+        <KpiTile
+          label="Purchases"
+          help="How many times this product was bought."
+          value={formatCount(d.purchases)}
+          sublabel={`${pct(d.purchase_rate)} of views`}
+          data-testid="product-kpi-purchases"
+        />
         <KpiTile
           label="Revenue"
+          help="Total money from purchases of this product."
           value={hasRevenue ? formatMoneyDisplay(d.revenue_minor, ccy) : null}
           sublabel={hasRevenue ? ccy : 'no purchases yet'}
           data-testid="product-kpi-revenue"
         />
         <KpiTile
           label="Returns"
+          help="How many purchases of this product were returned."
           value={formatCount(d.return_count)}
           sublabel={d.return_rate === null ? 'no purchases yet' : `${pct(d.return_rate)} of purchases`}
           data-testid="product-kpi-returns"
@@ -268,7 +287,12 @@ export function ProductDetailContent({ productId }: { productId: string }) {
                   <tr>
                     <th className="px-4 py-2 font-medium">Partner product</th>
                     <th className="px-4 py-2 text-right font-medium">Co-purchases</th>
-                    <th className="px-4 py-2 text-right font-medium">Support</th>
+                    <th
+                      className="px-4 py-2 text-right font-medium"
+                      title="The share of orders containing this product that also contained the partner product."
+                    >
+                      Bought together %
+                    </th>
                   </tr>
                 </thead>
                 <tbody>

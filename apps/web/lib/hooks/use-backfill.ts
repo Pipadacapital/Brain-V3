@@ -24,7 +24,7 @@ import { backfillApi, BffApiError } from '@/lib/api/client';
 import type { BackfillJobProgress } from '@brain/contracts';
 
 /** Query key factory — stable per connectorId. */
-export function backfillProgressKey(connectorId: string) {
+function backfillProgressKey(connectorId: string) {
   return ['connectors', connectorId, 'backfill-progress'] as const;
 }
 

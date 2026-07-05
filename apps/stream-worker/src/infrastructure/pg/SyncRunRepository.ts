@@ -35,7 +35,6 @@ const NIL_UUID = '00000000-0000-0000-0000-000000000000';
 // ── Public types ──────────────────────────────────────────────────────────────
 
 export type RunType = 'backfill' | 'repull' | 'webhook';
-export type RunStatus = 'started' | 'succeeded' | 'failed';
 
 export interface StartRunParams {
   /** run_id pre-allocated by the caller so it can be threaded through to closeRun. */

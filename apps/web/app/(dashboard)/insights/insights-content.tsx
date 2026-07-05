@@ -174,7 +174,7 @@ export function InsightsContent() {
           </span>
         }
         title="Insights & Copilot"
-        description="What changed, why, and what to do — computed from your lakehouse, never guessed."
+        description="What changed, why, and what to do — calculated from your own data, never guessed."
       />
 
       {/* Daily briefing */}
@@ -190,7 +190,7 @@ export function InsightsContent() {
             {briefing?.data_source === 'synthetic' && (
               <SyntheticBadge
                 data-testid="insights-synthetic-badge"
-                reason="This briefing is computed from synthetic demo data seeded into the Gold marts (real shape, synthetic source). Connect a live source to replace it — this is never live data."
+                reason="This briefing is calculated from sample demo data, not your live sales. Connect a live source to replace it."
               />
             )}
             {/* FRESHNESS GUARD: if the gold marts haven't been rebuilt within the SLO (e.g. the dbt
@@ -201,7 +201,7 @@ export function InsightsContent() {
                 hideDot
                 role="status"
                 data-testid="insights-stale-badge"
-                title={briefing.as_of ? `Marts last refreshed ${new Date(briefing.as_of).toLocaleString()}` : 'Mart refresh is overdue'}
+                title={briefing.as_of ? `Data last refreshed ${new Date(briefing.as_of).toLocaleString()}` : 'A data refresh is overdue'}
               >
                 <AlertTriangle className="h-3 w-3" aria-hidden="true" />
                 Data may be stale
@@ -241,23 +241,27 @@ export function InsightsContent() {
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
           <KpiTile
             label="Opportunities"
+            help="Chances to gain revenue that Brain has spotted in your data."
             value={hasData ? String(briefing?.counts.opportunities ?? 0) : null}
             isLoading={isLoading}
           />
           <KpiTile
             label="Risks"
+            help="Issues that could cost you revenue if left unaddressed — lower is better."
             value={hasData ? String(briefing?.counts.risks ?? 0) : null}
             isLoading={isLoading}
             lowerIsBetter
           />
           <KpiTile
             label="Est. revenue impact"
+            help="Roughly how much money the current opportunities and risks add up to over 30 days."
             value={totalImpact}
             isLoading={isLoading}
             sublabel="recoverable + at-risk (30d)"
           />
           <KpiTile
             label="Trends tracked"
+            help="Ongoing patterns in your numbers that Brain is watching."
             value={hasData ? String(briefing?.counts.trends ?? 0) : null}
             isLoading={isLoading}
           />
@@ -268,7 +272,7 @@ export function InsightsContent() {
       <Card>
         <CardHeader>
           <CardTitle>Revenue trend</CardTitle>
-          <CardDescription>Realized vs provisional, the signal behind the briefing.</CardDescription>
+          <CardDescription>Confirmed vs still-settling revenue — the signal behind the briefing.</CardDescription>
         </CardHeader>
         <CardContent>
           <TrendChart data={revenue} isLoading={revenueLoading} grain="day" />

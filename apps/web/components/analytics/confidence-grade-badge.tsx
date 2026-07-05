@@ -35,21 +35,21 @@ const GRADE_META: Record<
     icon: ShieldCheck,
     cls: 'bg-status-green-50 text-status-green-700 border-status-green-200',
     explain:
-      'Deterministically stitched journey, every credited touch on a deterministic channel (click-id or UTM medium). Confidence 1.000.',
+      'Every step of the customer’s journey was fully tracked, so this credit is reliable.',
   },
   partial: {
     label: 'Partial',
     icon: Shield,
     cls: 'bg-status-amber-50 text-status-amber-700 border-status-amber-200',
     explain:
-      'Stitched journey, but at least one credited touch is the cookieless / direct residual. Confidence 0.700 — rendered as estimated.',
+      'Some steps of the journey were direct or untracked visits, so treat this credit as an estimate.',
   },
   weak: {
     label: 'Weak',
     icon: ShieldAlert,
     cls: 'bg-status-red-50 text-status-red-700 border-status-red-200',
     explain:
-      'Unstitched or synthetic-enriched coverage (the dev-thin path). Confidence 0.400 — treat as estimated.',
+      'Most of this journey couldn’t be tracked, so treat this credit as a rough estimate.',
   },
 };
 
@@ -69,7 +69,7 @@ export function ConfidenceGradeBadge({
   return (
     <span
       role="status"
-      aria-label={`Attribution confidence: ${meta.label}. ${meta.explain}`}
+      aria-label={`Data trust: ${meta.label}. ${meta.explain}`}
       title={meta.explain}
       data-testid={testId}
       className={cn(

@@ -76,7 +76,7 @@ const HEALTH_CONFIG: Record<HealthState, { icon: React.ElementType; label: strin
   RateLimited: { icon: Gauge, label: 'Rate limited', tone: 'warning' },
   Failed: { icon: XCircle, label: 'Failed', tone: 'destructive' },
   Disconnected: { icon: Plug, label: 'Disconnected', tone: 'neutral' },
-  TokenExpired: { icon: Key, label: 'Token expired', tone: 'destructive' },
+  TokenExpired: { icon: Key, label: 'Reconnect needed — login expired', tone: 'destructive' },
   Disabled: { icon: Ban, label: 'Disabled', tone: 'neutral' },
 };
 
@@ -156,10 +156,9 @@ function TileStatusIndicator({ tile, instance }: { tile: MarketplaceTile; instan
 
 // ── Per-provider credential field sets (server catalog = single SoR) ──────────
 // credentialFieldsFor() is a no-fallback shim (returns []); the marketplace renders from the
-// server-supplied tile.auth_fields. Re-exported for any sibling that needs the pure functions.
+// server-supplied tile.auth_fields.
 import { credentialFieldsFor as _credentialFieldsFor, authFieldsToCredentialFields } from './credential-fields';
 export type { CredentialField } from './credential-fields';
-export { credentialFieldsFor } from './credential-fields';
 
 const credentialFieldsFor = _credentialFieldsFor;
 
@@ -349,7 +348,7 @@ function ConnectorTile({
               if (data.webhook) setWebhookSetup(data.webhook);
               const description =
                 tile.id === 'gokwik' || tile.id === 'shopflo'
-                  ? 'Data will appear here as it syncs. CoD/RTO uses synthetic dev data until a partner sandbox is available.'
+                  ? 'Data will appear here as it syncs. CoD/RTO shows sample data until live courier tracking is available.'
                   : tile.id === 'shiprocket'
                     ? 'Shipment data syncs automatically. Finish the webhook setup below to get real-time delivery & RTO updates.'
                     : 'Settlement data will appear once Razorpay sends settlements.';

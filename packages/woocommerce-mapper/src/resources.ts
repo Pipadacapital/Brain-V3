@@ -25,7 +25,6 @@ import type { CanonicalEventDraft } from '@brain/connector-core';
 import { hashIdentifier, normalizePhone } from '@brain/identity-core';
 import {
   tryDecimalToMinor,
-  decimalStringToMinor,
   mapWooOrderToEvent,
   type WooOrderShape,
   type WooRefund,
@@ -588,6 +587,3 @@ export function mapWooOrderToDraft(
     ],
   };
 }
-
-// Re-export the strict money helper so the resources module is self-contained for callers.
-export { decimalStringToMinor };

@@ -65,7 +65,7 @@ export interface CapiSourceRow {
 }
 
 /** Deterministic Meta event_id — the dedup key (architecture §3.3). */
-export function capiEventId(
+function capiEventId(
   brandId: string,
   orderId: string,
   ledgerEventId: string,

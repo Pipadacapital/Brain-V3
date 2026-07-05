@@ -218,12 +218,12 @@ export function CampaignsContent() {
           {
             heading: 'How credit is assigned',
             body:
-              'Each campaign is credited from the Gold attribution credit ledger over your Silver touchpoints under the model you pick (first / last / linear / position / time-decay / data-driven). The campaign roll-up is brand-wide; the over-time chart honors the date range.',
+              'Each campaign is credited from your customers’ actual journeys under the model you pick (first / last / linear / position / time-decay / data-driven). The campaign roll-up covers all time; the over-time chart honors the date range.',
           },
           {
             heading: 'ROAS',
             body:
-              'ROAS = attributed revenue ÷ ad spend, same-currency only. It reads n/a when a campaign has no spend — we never fabricate an infinite or zero return.',
+              'ROAS = attributed revenue ÷ ad spend, within the same currency only. It shows a dash when a campaign has no spend — we never make up an infinite or zero return.',
           },
           {
             heading: 'Compare',
@@ -233,7 +233,7 @@ export function CampaignsContent() {
           {
             heading: 'Not measured yet',
             body:
-              'Creative-level and demographic breakdowns need marts that do not exist yet, so they render an honest empty — not a fabricated zero.',
+              'Creative-level and demographic breakdowns are not built yet, so they show an honest empty — not a made-up zero.',
           },
         ],
         metrics: [
@@ -241,17 +241,17 @@ export function CampaignsContent() {
             name: 'Attributed revenue (per campaign)',
             definition: 'Revenue credited to each campaign under the selected model.',
             howComputed:
-              'Gold attribution credit ledger over Silver touchpoints carrying utm_campaign; deterministic, switchable model.',
+              'Calculated from the customer journeys that carried this campaign’s tag — the same journeys always give the same answer.',
           },
           {
             name: 'Campaign ROAS',
             definition: 'Return on ad spend per campaign.',
             howComputed:
-              'Attributed revenue ÷ ad spend, same-currency only; honest n/a when spend = 0. Money in bigint minor units.',
+              'Attributed revenue ÷ ad spend, within the same currency only; shows a dash when spend is zero.',
           },
         ],
-        refreshCadence: 'Campaign attribution + spend refresh on the Gold loop.',
-        sources: ['Gold attribution credit ledger', 'Gold ad-spend timeseries'],
+        refreshCadence: 'Campaign attribution and spend refresh on the regular analytics cycle.',
+        sources: ['Your customer journeys and orders', 'Meta and Google ad accounts'],
       }}
     >
       {/* ── 1. Controls: model selector (wired) + date range ── */}
@@ -293,7 +293,7 @@ export function CampaignsContent() {
                 compact
                 icon={<Megaphone />}
                 title="No per-campaign attribution yet"
-                description="Campaign-level credit appears once journeys carry a campaign (utm_campaign) and the attribution credit ledger is populated for this model. We don't fabricate campaign rows."
+                description="Campaign-level credit appears once your customer journeys carry campaign tags (from your ad links) and revenue has been attributed under this model. We don't make up campaign rows."
                 action={
                   <Link href="/settings/pixel">
                     <Button variant="outline" size="sm">
@@ -412,16 +412,19 @@ export function CampaignsContent() {
                           <div className="grid grid-cols-3 gap-2">
                             <KpiTile
                               label="Attributed"
+                              help="Revenue credited to this campaign under the selected model."
                               value={formatMoneyDisplay(row.attributed_revenue_minor, ccy)}
                             />
                             <KpiTile
                               label="Spend"
+                              help="What you spent on this campaign."
                               value={formatMoneyDisplay(row.spend_minor, ccy)}
                             />
                             <KpiTile
                               label="ROAS"
+                              help="Return on ad spend — attributed revenue divided by what this campaign cost."
                               value={row.roas_ratio != null ? `${row.roas_ratio}×` : null}
-                              sublabel={row.roas_ratio == null ? 'no spend' : undefined}
+                              sublabel={row.roas_ratio == null ? 'no spend recorded' : undefined}
                             />
                           </div>
                         </div>
@@ -453,11 +456,11 @@ export function CampaignsContent() {
               compact
               icon={<ImageIcon />}
               title="No creative-level data yet"
-              description="Per-creative attributed revenue and ROAS need a creative mart we haven't built yet. When the ad connectors land creative-grain spend and the attribution ledger credits it, this fills in — until then we show nothing rather than a fabricated zero."
+              description="Per-creative attributed revenue and ROAS aren't built yet. Once your ad connectors share creative-level spend and revenue is credited to it, this fills in — until then we show nothing rather than a made-up zero."
               hint={
                 <span className="inline-flex items-center gap-1.5">
                   <Layers className="size-3" aria-hidden="true" />
-                  Unlocks with a creative-grain Gold mart
+                  Coming in a future update
                 </span>
               }
             />
@@ -476,11 +479,11 @@ export function CampaignsContent() {
               compact
               icon={<Users />}
               title="No demographic data yet"
-              description="Age / gender / geo breakdowns need a demographic mart we haven't built yet. We never infer or fabricate demographics — this stays empty until a real source lands."
+              description="Age / gender / location breakdowns aren't built yet. We never guess or invent demographics — this stays empty until a real source lands."
               hint={
                 <span className="inline-flex items-center gap-1.5">
                   <Layers className="size-3" aria-hidden="true" />
-                  Unlocks with a demographic Gold mart
+                  Coming in a future update
                 </span>
               }
             />

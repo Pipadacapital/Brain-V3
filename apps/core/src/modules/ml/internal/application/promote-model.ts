@@ -21,7 +21,7 @@ import { loadCoreConfig } from '@brain/config';
 import type { ModelDto } from './queries/list-models.js';
 
 /** The closed set of stages a model can be promoted/demoted to (mirrors the 0083 CHECK). */
-export const MODEL_STAGES = ['training', 'staging', 'production', 'archived'] as const;
+const MODEL_STAGES = ['training', 'staging', 'production', 'archived'] as const;
 export type ModelStage = (typeof MODEL_STAGES)[number];
 
 export function isModelStage(v: unknown): v is ModelStage {

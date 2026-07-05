@@ -64,8 +64,13 @@ known trade-offs on the record (below).
   accepted price; CLAUDE.md's "Spark is the SOLE compute" invariant is amended to "sole TRANSFORM
   compute — Bronze landing is Kafka Connect (ADR-0010)".
 - The 5-min-default commit interval class of freshness regression is bounded at 30s by config.
-- `brain_bronze.events` remains for history/rollback until Phase 8 decommission (which now also
-  covers `bronze_landing.py` itself once the bake + D4 sign-off pass).
+- `brain_bronze.events` remained for history/rollback until the decommission (dropped 2026-07-05
+  with the rest of the legacy generation — see "Decommission executed" below).
+- RTBF on the payload-only collector SoR is CLOSED: `collector_events_connect` carries no lifted
+  identifier columns, so `erasure_raw_delete.py` erases it via PAYLOAD-PATH PREDICATE DELETEs
+  (`get_json_object(payload, …)` on the envelope's subject-identifier paths, tenant-scoped on the
+  envelope `$.brand_id`); the pre-delete Iceberg snapshots age out via `bronze_maintenance.py`
+  `expire_snapshots`, after which erasure is physically complete (the D4 posture).
 - Known watchpoint: the Connect coordinator is one more concurrent writer against the SQLite-backed
   REST catalog (CATALOG_CLIENTS=1 serialization — see iceberg-catalog-sqlite-lock memory); watched
   during bake for `database table is locked` errors.
@@ -89,7 +94,11 @@ decision 6's "retired at cutover" clause:
   then replay the Kafka topics into the restored Spark sink — loss-free only within the **7-day
   topic retention window**. Silver needs one `FULL_REFRESH=1` per re-pointed job after any
   roll-back/forward (idempotent MERGEs make the rescan safe).
-- **Legacy tables retained as history** — no data dropped: `brain_bronze.events`,
-  `brain_bronze.collector_events`, and the Spark-written `brain_bronze.*_raw` tables stay
-  read-only. Any future drop is a separate, deliberate decision after the retention/erasure
-  posture is confirmed for them.
+- **Legacy tables DROPPED (2026-07-05)** — `brain_bronze.events`, `brain_bronze.collector_events`,
+  `collector_events_raw`, and the Spark-written `brain_bronze.*_raw` tables were dropped
+  (unify-bronze-decommission Step 3 executed). The GDPR jobs cover only the Connect generation:
+  `bronze_raw_retention.py` row-TTLs the `*_raw_connect` lanes (D4 window), and
+  `erasure_raw_delete.py` handles per-subject RTBF — column-equality on the `*_raw_connect` lanes
+  plus payload-path predicate erasure on `collector_events_connect` (see Consequences above;
+  erasure is complete after snapshot expiry). Invariants are pinned by
+  `db/iceberg/spark/erasure_payload_path_guard_test.py`.

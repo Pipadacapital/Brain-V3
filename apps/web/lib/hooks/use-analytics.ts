@@ -510,6 +510,24 @@ export function useJourneyTimeline(orderId?: string | null) {
 }
 
 /**
+ * useJourneyEvents — one PAGE of the versioned journey LEDGER for a resolved customer
+ * (mv_journey_events_current), newest-first. Keyset-paginated: pass the previous page's
+ * next_cursor to fetch the next (older) page; the queryKey includes the cursor so each page
+ * caches independently. Disabled until a brainId is provided (no fabricated empty query).
+ * @param brainId - The resolved customer's brain_id (or null/undefined to skip).
+ * @param cursor  - Opaque next_cursor from the previous page (null = first page).
+ */
+export function useJourneyEvents(brainId?: string | null, cursor?: string | null) {
+  return useQuery({
+    queryKey: [...ANALYTICS_QUERY_KEY, 'journey-events', brainId ?? null, cursor ?? null],
+    queryFn: () =>
+      analyticsApi.getJourneyEvents({ brainId: brainId as string, cursor: cursor ?? null }),
+    enabled: Boolean(brainId && brainId.trim().length > 0),
+    staleTime: 5 * 60_000,
+  });
+}
+
+/**
  * useShipmentOutcomes — delivered/RTO/other + RTO% (overall, by courier, by pincode) over a range,
  * from the multi-source silver_shipment mart (GoKwik AWB + Shiprocket). Slice 2 (logistics).
  */

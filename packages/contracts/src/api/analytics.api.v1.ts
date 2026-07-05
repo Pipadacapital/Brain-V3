@@ -250,6 +250,41 @@ export const JourneyTimelineSchema = z.discriminatedUnion('state', [
 ]);
 export type JourneyTimeline = z.infer<typeof JourneyTimelineSchema>;
 
+// ── #7b GET /v1/analytics/journey/events — versioned journey ledger (current projection) ──
+// @see apps/core/.../analytics/.../get-journey-events.ts
+// One customer's resolved-identity timeline from brain_serving.mv_journey_events_current
+// (is_current=true over iceberg.brain_gold.journey_events). Keyed by brain_id (the RESOLVED
+// customer, not brain_anon_id), newest-first, keyset-paginated (opaque next_cursor).
+// MONEY: revenue_minor is bigint minor-units-as-string (I-S07), non-null ONLY on composite rows.
+
+export const JourneyEventDtoSchema = z.object({
+  touchpoint_id: z.string(),
+  sequence_number: MinorUnitsSchema, // bigint → string (ledger position — NOT money)
+  occurred_at: z.string(),
+  event_category: z.string().nullable(),
+  event_type: z.string(),
+  channel: z.string().nullable(),
+  campaign: z.string().nullable(),
+  revenue_minor: MinorUnitsSchema.nullable(), // bigint minor units (I-S07); composite rows only
+  currency_code: z.string().nullable(), // sibling of revenue_minor — never blended
+  is_composite: z.boolean(),
+  identity_confidence: z.number().nullable(), // 0..1 double — NOT money
+  data_version: z.number(),
+});
+export type JourneyEventDto = z.infer<typeof JourneyEventDtoSchema>;
+
+export const JourneyEventsLedgerSchema = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('no_data') }),
+  z.object({
+    state: z.literal('has_data'),
+    brain_id: z.string(),
+    events: z.array(JourneyEventDtoSchema),
+    next_cursor: z.string().nullable(), // opaque keyset cursor; null = last page
+    data_source: DataSourceSchema,
+  }),
+]);
+export type JourneyEventsLedger = z.infer<typeof JourneyEventsLedgerSchema>;
+
 // ── #8 GET /v1/analytics/journey/stitch-rate ──────────────────────────────────
 // @see apps/core/.../analytics/.../get-journey-stitch-rate.ts:21-31 (NO money column)
 

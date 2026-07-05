@@ -208,6 +208,12 @@ export type {
 export { computeJourneyPaths } from './journey-paths.js';
 export type { JourneyPathsResult, JourneyPathRow, JourneyPathLink } from './journey-paths.js';
 
+// Versioned journey-ledger CURRENT projection (mv_journey_events_current over
+// iceberg.brain_gold.journey_events) — the resolved-identity per-customer timeline,
+// keyset-paginated newest-first. Money = bigint minor string ONLY on composite rows.
+export { computeJourneyEventsCurrent } from './journey-events.js';
+export type { JourneyEventsPage, JourneyEventRow, JourneyEventsParams } from './journey-events.js';
+
 // Phase 5 Attribution (feat-attribution-ledger) — the credit-ledger WRITER + readers.
 // All Tier-0 deterministic (no model/prompt/dbt macro — I-E03/E04). Money signed BIGINT.
 export {

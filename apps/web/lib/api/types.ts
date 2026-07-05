@@ -24,6 +24,8 @@ export type {
   JourneyFirstTouchMix as AnalyticsJourneyFirstTouchMixResponse,
   TimelineTouchDto as JourneyTouchpointRow,
   JourneyTimeline as AnalyticsJourneyTimelineResponse,
+  JourneyEventDto as JourneyLedgerEventRow,
+  JourneyEventsLedger as AnalyticsJourneyEventsResponse,
   JourneyStitchRate as AnalyticsJourneyStitchRateResponse,
   ShipmentOutcomes as AnalyticsShipmentOutcomesResponse,
   CourierOutcomeDto as ShipmentCourierRow,

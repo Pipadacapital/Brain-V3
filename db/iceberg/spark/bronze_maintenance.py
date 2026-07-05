@@ -4,10 +4,10 @@ bronze_maintenance.py — Iceberg Bronze maintenance (ADR-0002 Slice 7; ADR-0010
 Under ADR-0010 the Bronze writer is the Kafka Connect Iceberg sink: the collector lane lands in
 brain_bronze.collector_events_connect and each of the 9 connector raw lanes lands in its own
 brain_bronze.<lane>_raw_connect table (auto-created on the lane's FIRST record). The retired Spark-SS
-landing tables (brain_bronze.events, collector_events, the legacy *_raw) are RETAINED as history until
-a separate data-retirement decision. This job maintains BOTH generations: in "maintain" mode it sweeps
-EVERY table in the Bronze namespace (SHOW TABLES) — so a *_raw_connect table created after this job
-last shipped is covered automatically — unless BRONZE_TABLE pins a single table for a one-off run.
+landing tables (brain_bronze.events, collector_events, the legacy *_raw) were DROPPED 2026-07-05
+(unify-bronze-decommission Step 3 executed). In "maintain" mode this job sweeps EVERY table in the
+Bronze namespace (SHOW TABLES) — so a *_raw_connect table created after this job last shipped is
+covered automatically — unless BRONZE_TABLE pins a single table for a one-off run.
 
 Two modes (MODE env):
 
@@ -19,7 +19,8 @@ Two modes (MODE env):
        data/manifest files only they referenced (the rolling retention guarantee).
 
   "erase" (ERASE_BRAND_ID set) — RIGHT-TO-ERASURE / crypto-shred companion (D13, I-S05). Targets the
-    ONE table BRONZE_TABLE selects (default: the retained historical `events`); per-subject erasure
+    ONE table BRONZE_TABLE selects (default: `collector_events_connect`, the live Bronze SoR — the
+    legacy `events` table was dropped 2026-07-05); per-subject erasure
     across the *_raw / *_raw_connect lanes is erasure_raw_delete.py. After a brand's per-brand DEK is
     destroyed (crypto-shred makes the ciphertext unreadable), this PHYSICALLY removes that brand's
     rows from the open Bronze Parquet so no plaintext-derivable bytes remain:
@@ -50,7 +51,7 @@ from iceberg_base import CATALOG, build_spark  # noqa: E402
 
 NAMESPACE = os.environ.get("BRONZE_NAMESPACE", "brain_bronze")
 
-_TABLE_NAME = os.environ.get("BRONZE_TABLE", "events")
+_TABLE_NAME = os.environ.get("BRONZE_TABLE", "collector_events_connect")
 TABLE = f"{CATALOG}.{NAMESPACE}.{_TABLE_NAME}"
 QUALIFIED = f"{NAMESPACE}.{_TABLE_NAME}"  # what the system procedures expect (within the catalog)
 MODE = os.environ.get("MODE", "maintain")

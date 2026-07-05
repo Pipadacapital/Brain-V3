@@ -2,10 +2,15 @@
 > Connect Iceberg sink (`collector_events_connect` + the per-lane `*_raw_connect` tables) and the
 > Spark-SS landing path this document decommissions was removed AT THE CODE LEVEL (bronze_landing /
 > bronze_raw_landing / bronze_materialize / combined_bronze_sinks + their run scripts, tests, and the
-> PG⇄Iceberg parity oracle are deleted; `BRONZE_SOURCE` no longer exists). The legacy Iceberg tables
-> (`brain_bronze.events`, `collector_events`, the per-connector `*_raw`) are **RETAINED as history**
-> until a separate data-retirement decision — nothing below should be executed as written. Kept only
-> as the historical record of the (never-run) unified-events decommission plan.
+> PG⇄Iceberg parity oracle are deleted; `BRONZE_SOURCE` no longer exists).
+>
+> **Data retirement EXECUTED 2026-07-05 (user-confirmed, later the same day):** all 11 legacy tables
+> DROPPED via Trino — `brain_bronze.events` (69,774 rows) and `collector_events` (69,024 rows), both
+> fully folded into `brain_silver.silver_collector_event` before the drop, plus the nine per-connector
+> `*_raw` tables (all 0 rows). `brain_bronze` now carries ONLY the Connect generation. Raw replay of
+> pre-cutover events is no longer possible (Kafka retention had already aged them out); the durable
+> gated history lives in Silver per ADR-0006 D4. Kept only as the historical record of the
+> (never-run) unified-events decommission plan.
 
 # Phase 8 — Unified-Bronze decommission (RUN AFTER BAKE, NOT before)
 

@@ -54,6 +54,7 @@ import { TabShell } from '@/components/ui/tab-shell';
 import { FreshnessBadge } from '@/components/ui/freshness-badge';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { TouchpointTimeline } from '@/components/analytics/touchpoint-timeline';
+import { JourneyLedger } from '@/components/analytics/journey-ledger';
 import { humanize } from '@/lib/format/humanize';
 import { formatMoneyDisplay } from '@/lib/format/money-display';
 import { useCustomer360, useEraseCustomer, useUnmergeCustomer } from '@/lib/hooks/use-identity';
@@ -122,6 +123,11 @@ export function CustomerProfileContent({ brainId }: { brainId: string }) {
             howComputed: 'Identity control-plane links + merges (BFF /v1/identity/customer).',
           },
           {
+            name: 'Journey ledger',
+            definition: 'This customer’s resolved journey events (newest first), incl. transaction revenue on composite rows.',
+            howComputed: 'Versioned Gold ledger journey_events (current versions only) via mv_journey_events_current — identity merges re-version events onto the canonical customer.',
+          },
+          {
             name: 'Journey',
             definition: 'Ordered touchpoints from first visit to a purchase, for a chosen order.',
             howComputed: 'silver_touchpoint via useJourneyTimeline — per ORDER (the grain that exists today).',
@@ -143,7 +149,7 @@ export function CustomerProfileContent({ brainId }: { brainId: string }) {
           },
         ],
         refreshCadence: 'Profile + score are read live from the BFF on open. Segment marts refresh on the Gold loop (the score’s “scored on” timestamp is shown).',
-        sources: ['BFF /v1/identity/customer', 'gold_customer_scores (RFM/churn)', 'silver_touchpoint (journey)'],
+        sources: ['BFF /v1/identity/customer', 'gold_customer_scores (RFM/churn)', 'mv_journey_events_current (journey ledger)', 'silver_touchpoint (journey)'],
       }}
     >
       <div aria-live="polite" aria-busy={isLoading || isFetching}>
@@ -419,8 +425,15 @@ export function CustomerProfileContent({ brainId }: { brainId: string }) {
               </SectionCard>
             </TabsContent>
 
-            {/* ── Journey (per-order trace) ────────────────────────────────── */}
+            {/* ── Journey (ledger + per-order trace) ───────────────────────── */}
             <TabsContent value="journey" className="space-y-4">
+              <SectionCard
+                title="Journey ledger — this customer's resolved timeline"
+                description="Every journey event owned by this resolved identity (newest first), from the versioned Gold ledger — identity merges re-version events onto the canonical customer, so this is always the post-merge truth."
+              >
+                <JourneyLedger brainId={found.customer.brain_id} />
+              </SectionCard>
+
               <SectionCard
                 title="Journey — visit → purchase (per order)"
                 description="Enter one of this customer’s order IDs to trace its deterministically-stitched touchpoints."

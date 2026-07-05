@@ -74,7 +74,7 @@ from iceberg_base import CATALOG, SILVER_NAMESPACE, build_spark, create_iceberg_
 from job_log import emit_job_log  # noqa: E402
 import _raw_normalize as rn
 from _raw_normalize import major_decimal_to_minor, micros_to_minor, to_count_string  # consolidated primitives (ADR-0006)  # noqa: E402  (SHARED ports — uuid_shaped reused; never re-implemented here)
-from _silver_technical import write_quarantine  # noqa: E402  (Stage-1 quarantine sink — replaces silent drop)
+from _silver_technical import write_quarantine, event_category_udf  # noqa: E402  (Stage-1 quarantine sink — replaces silent drop)
 
 BRONZE_NAMESPACE = os.environ.get("BRONZE_NAMESPACE", "brain_bronze")
 RAW_META_TABLE = f"{CATALOG}.{BRONZE_NAMESPACE}.meta_spend_raw"
@@ -96,8 +96,12 @@ COLUMNS_SQL = """
   schema_name       string  NOT NULL,
   schema_version    int     NOT NULL,
   event_type        string  NOT NULL,
+  event_category    string,
   correlation_id    string,
   partition_key     string  NOT NULL,
+  anonymous_id      string,
+  device_id         string,
+  silver_version    int,
   payload           string  NOT NULL
 """
 
@@ -246,8 +250,9 @@ def _spend_rejects(canon: DataFrame, platform: str, payload_col) -> DataFrame:
 
 
 def _collector_event_select(canon: DataFrame, payload_col) -> DataFrame:
-    """Project a per-platform canonical DataFrame onto the silver_collector_event 10-column contract.
+    """Project a per-platform canonical DataFrame onto the silver_collector_event 14-column contract.
     Identical output schema for both platforms → unionByName is safe (payload is a single JSON STRING)."""
+    _event_category = event_category_udf()  # SAME SoT as the keystone collector gate (Gap A port)
     return canon.select(
         col("event_id"),
         col("brand_id"),
@@ -256,8 +261,12 @@ def _collector_event_select(canon: DataFrame, payload_col) -> DataFrame:
         lit("brain.collector.event.v1").alias("schema_name"),
         lit(1).alias("schema_version"),
         lit("spend.live.v1").alias("event_type"),
+        _event_category(lit("spend.live.v1")).alias("event_category"),
         lit(None).cast("string").alias("correlation_id"),
         col("brand_id").alias("partition_key"),
+        lit(None).cast("string").alias("anonymous_id"),  # pixel-only identifiers — connector-derived rows have none
+        lit(None).cast("string").alias("device_id"),
+        lit(1).alias("silver_version"),  # seed; bumped only on a REAL payload change by the MERGE below
         payload_col.alias("payload"),
     )
 
@@ -532,7 +541,21 @@ def build(spark: SparkSession):
         f"""
         MERGE INTO {TARGET} t USING _ad_spend_canon s
         ON t.brand_id = s.brand_id AND t.event_id = s.event_id
-        WHEN MATCHED THEN UPDATE SET *
+        -- Keystone-mirrored idempotency (silver_collector_event.py Gap C): overwrite only on a REAL
+        -- payload change; bump silver_version (coalesce so pre-widening 10-col rows start from 1, never NULL+1).
+        WHEN MATCHED AND s.payload <> t.payload THEN UPDATE SET
+          occurred_at = s.occurred_at, ingested_at = s.ingested_at,
+          schema_name = s.schema_name, schema_version = s.schema_version,
+          event_type = s.event_type, event_category = s.event_category,
+          correlation_id = s.correlation_id, partition_key = s.partition_key,
+          anonymous_id = s.anonymous_id, device_id = s.device_id,
+          payload = s.payload,
+          silver_version = coalesce(t.silver_version, 1) + 1
+        -- One-time widen-backfill: pre-widening 10-col rows (payload unchanged, so the clause above
+        -- no-ops forever) get the ALTER-ADDed columns populated WITHOUT counting it as a revision.
+        WHEN MATCHED AND t.silver_version IS NULL THEN UPDATE SET
+          event_category = s.event_category, anonymous_id = s.anonymous_id,
+          device_id = s.device_id, silver_version = 1
         WHEN NOT MATCHED THEN INSERT *
         """
     )

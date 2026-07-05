@@ -59,7 +59,7 @@ docker run --rm \
     --driver-memory "${SPARK_DRIVER_MEMORY:-4g}" \
     --packages "${PACKAGES}" \
     --conf spark.jars.ivy=/root/.ivy2 \
-    --py-files /opt/spark-src/iceberg_base.py,/opt/spark-src/job_log.py,/opt/spark-src/silver/_raw_normalize.py \
+    --py-files /opt/spark-src/iceberg_base.py,/opt/spark-src/job_log.py,/opt/spark-src/silver/_raw_normalize.py,/opt/spark-src/silver/_silver_technical.py \
     "/opt/spark-src/silver/silver_razorpay_normalize.py"
 
 echo ""

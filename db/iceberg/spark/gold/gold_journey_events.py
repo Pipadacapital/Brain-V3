@@ -29,6 +29,19 @@ semi-join, so a changed brand's FULL timeline is restaged and sequence_number st
     touch_seq) — the resolved-identity timeline position;
   - identity_confidence = max(confidence) of the is_current=true brain_silver.silver_identity_map
     rows for (brand_id, brain_id); LEFT JOIN — NULL when unmapped/anonymous;
+  - AS-OF identity (DG-2, ADDITIVE v1): brain_id_asof / identity_confidence_asof = the
+    POINT-IN-TIME resolution of the touchpoint AT occurred_at, from the bi-temporal
+    silver_identity_map effective intervals. The canonical interval-covering predicate is the SAME
+    one _snap_as_of/snap_identity_link prove: effective_from <= occurred_at AND (effective_to IS
+    NULL OR occurred_at < effective_to). v1 SCOPE (deliberate, tractable): map rows are matched on
+    (brand_id, brain_id = the row's CURRENT resolved brain_id) — i.e. "did the identity this
+    touchpoint resolves to TODAY already own a covering interval when the event occurred?". If yes,
+    brain_id_asof = that interval's brain_id and identity_confidence_asof = max(confidence) across
+    the covering rows (multiple identifier types → deterministic max tiebreak). If NO interval
+    covers occurred_at, BOTH stay NULL — honest: the event predates the identity (or the row is
+    anonymous_/unmapped, which never appears in the map). v2 EXTENSION (not built here): walk the
+    replaced_by_brain_id chain BACKWARDS so an event that occurred while a since-merged DEAD id
+    owned the identifier resolves to that historical dead id instead of NULL;
   - event_category derives from event_type via the SAME categorization Silver uses —
     _silver_technical.event_category (the SoT mapping), registered as a Spark UDF;
   - REVENUE TRUTH IS THE CONNECTOR ORDER: touchpoints carry NO revenue. revenue_minor/currency_code
@@ -104,6 +117,8 @@ _COLUMNS = """
           product_handles     array<string>,
           attribution_signals map<string,string>,
           identity_confidence double,
+          brain_id_asof       string,
+          identity_confidence_asof double,
           is_composite        boolean,
           composite_order_key string,
           ingested_at         timestamp,
@@ -145,6 +160,26 @@ def _register_identity_confidence_view(spark: SparkSession) -> None:
             "SELECT cast(null AS string) AS brand_id, cast(null AS string) AS brain_id, "
             "cast(null AS double) AS identity_confidence WHERE 1 = 0"
         ).createOrReplaceTempView("_je_identity_conf")
+
+
+def _register_identity_asof_view(spark: SparkSession) -> None:
+    """_je_identity_asof = the FULL bi-temporal interval rows of silver_identity_map (current AND
+    superseded), for the DG-2 point-in-time (AS-OF) resolution — the interval-covering join against
+    occurred_at happens in _build_sql. Empty view when the map is absent so the AS-OF columns
+    degrade to NULL (pre-identity-export environments)."""
+    if silver_exists(spark, "silver_identity_map"):
+        spark.sql(
+            f"""
+            SELECT brand_id, brain_id, confidence, effective_from, effective_to
+            FROM {CATALOG}.{SILVER_NS}.silver_identity_map
+            """
+        ).createOrReplaceTempView("_je_identity_asof")
+    else:
+        spark.sql(
+            "SELECT cast(null AS string) AS brand_id, cast(null AS string) AS brain_id, "
+            "cast(null AS double) AS confidence, cast(null AS timestamp) AS effective_from, "
+            "cast(null AS timestamp) AS effective_to WHERE 1 = 0"
+        ).createOrReplaceTempView("_je_identity_asof")
 
 
 def _register_order_view(spark: SparkSession) -> None:
@@ -204,6 +239,23 @@ def _build_sql(fqtn: str) -> str:
             SELECT brand_id, touchpoint_id, ingested_at
             FROM {fqtn}
             WHERE data_version = 1
+        ),
+        asof AS (  -- DG-2 POINT-IN-TIME identity: the map interval that covered occurred_at.
+            -- v1 scope (see module docstring): intervals of the CURRENT resolved brain_id only —
+            -- no backwards replaced_by_brain_id chain walk (that is the v2 extension). The
+            -- interval-covering predicate is the canonical AS-OF shape (_snap_as_of semantics).
+            SELECT
+                e2.brand_id,
+                e2.touchpoint_id,
+                max(m.brain_id) AS brain_id_asof,               -- all covering rows share e2.brain_id (v1 join key)
+                max(m.confidence) AS identity_confidence_asof   -- multiple identifier types → deterministic max tiebreak
+            FROM e e2
+            JOIN _je_identity_asof m
+              ON m.brand_id = e2.brand_id
+             AND m.brain_id = e2.brain_id
+             AND m.effective_from <= e2.occurred_at
+             AND (m.effective_to IS NULL OR e2.occurred_at < m.effective_to)
+            GROUP BY e2.brand_id, e2.touchpoint_id
         )
         SELECT
             e.brand_id,
@@ -242,6 +294,10 @@ def _build_sql(fqtn: str) -> str:
                 (k, v) -> v IS NOT NULL AND v <> ''
             ) AS attribution_signals,
             c.identity_confidence,
+            -- DG-2 AS-OF columns: NULL when no map interval covered occurred_at (the event predates
+            -- the identity, or the row is anonymous_/unmapped) — honest point-in-time resolution.
+            af.brain_id_asof,
+            af.identity_confidence_asof,
             e.is_composite,
             e.composite_order_key,
             coalesce(p.ingested_at, current_timestamp()) AS ingested_at,
@@ -252,6 +308,8 @@ def _build_sql(fqtn: str) -> str:
         LEFT JOIN _je_order o
             ON o.brand_id = e.brand_id AND e.is_composite = true
            AND o.order_id = e.composite_order_key
+        LEFT JOIN asof af
+            ON af.brand_id = e.brand_id AND af.touchpoint_id = e.touchpoint_id
         LEFT JOIN existing x
             ON x.brand_id = e.brand_id AND x.touchpoint_id = e.touchpoint_id
         LEFT JOIN first_ingest p
@@ -282,6 +340,7 @@ def build(spark: SparkSession):
     spark.udf.register("brain_event_category", event_category, StringType())
 
     _register_identity_confidence_view(spark)
+    _register_identity_asof_view(spark)
     _register_order_view(spark)
 
     staged = spark.sql(_build_sql(fqtn))

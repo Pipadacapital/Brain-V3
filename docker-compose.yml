@@ -315,6 +315,9 @@ services:
       - "9092:9092"   # Kafka API (PLAINTEXT listener)
       - "19092:19092" # Kafka API (EXTERNAL listener — for kind/k8s pods)
       - "9404:9404"   # Prometheus JMX exporter (kafka_* broker metrics; scraped by prometheus)
+      # Published HERE because kafka-connect shares this netns (network_mode: service:kafka):
+      - "8083:8083"   # Kafka Connect REST (register/inspect the Iceberg sink connectors)
+      - "9405:9405"   # Prometheus JMX exporter for the Connect worker (kafka_connect_* metrics)
     healthcheck:
       # No Redpanda admin API (9644) on Kafka; probe the broker via the Kafka CLI.
       # KAFKA_OPTS= clears the broker's -javaagent JMX exporter for the probe — otherwise the CLI's
@@ -388,7 +391,139 @@ services:
             mk "$$PFX.brain.$$E" 12 604800000
           done
         done
+        # Iceberg sink commit-coordination control topic (ADR-0010). ONE topic for the whole Connect
+        # cluster (not per-PFX): the coordinator serializes Iceberg commits through it (KIP-447-style
+        # coordination — this, NOT worker `exactly.once.support` [source-only], is the sink's EOS seam).
+        # Auto-create is OFF broker-wide, so it must exist before the first connector starts.
+        mk "control-iceberg" 1 604800000
         echo 'Kafka topics ready'
+    restart: "no"
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Kafka Connect — the Bronze landing writer (ADR-0010, reinstating ADR-0006 D1).
+  # ────────────────────────────────────────────────────────────────────────────
+  # Replaces the host-run Spark Structured Streaming Bronze landing (dev-bronze-streaming.sh /
+  # bronze_landing.py) as the Kafka→Iceberg writer: ~1G-heap JVM instead of a 7g Spark container
+  # (cost decision — see docs/adr/0010). APACHE connector (org.apache.iceberg:iceberg-kafka-connect
+  # 1.9.2 — version-locked to the Iceberg runtime/REST fixture; the Tabular fork is archived).
+  # Exactly-once = the sink's commit coordination over the `control-iceberg` topic (offsets are
+  # stored IN the Iceberg snapshot metadata) — NOT worker `exactly.once.support` (source-only).
+  # Bronze is APPEND-ONLY under this writer (no MERGE): business dedup lives in Silver
+  # (silver_collector_event window+MERGE on (brand_id,event_id)), per ADR-0006 D2.
+  kafka-connect:
+    image: confluentinc/cp-kafka-connect:7.6.1
+    profiles: ["core"]
+    # root so the runtime plugin install can write the /opt/connect-plugins volume (the image's
+    # default appuser cannot mkdir there); Connect's run script is root-safe.
+    user: root
+    # Same netns trick as the old spark sinks — resolves the broker's localhost:9092 advertised
+    # PLAINTEXT listener while keeping compose-DNS for iceberg-rest/minio. REST :8083 and the JMX
+    # exporter :9405 are therefore published on the `kafka` service's ports.
+    network_mode: "service:kafka"
+    # Budget (docs/ops/local-memory-budget.md): 1G heap + JVM overhead + 10 connector tasks ⇒ 2g cap.
+    # Net local swing vs the retired host Spark sink: −7g Spark container, +2g here.
+    mem_limit: 2g
+    oom_score_adj: -600   # Bronze landing writer — inherits the old bronze-sink protection slot
+    depends_on:
+      kafka:
+        condition: service_healthy
+      iceberg-rest:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      # javaagent jar must be on the shared volume before the JVM starts (same gotcha as the broker:
+      # a missing jar aborts the JVM with "Error opening zip file or JAR manifest missing").
+      jmx-exporter-init:
+        condition: service_completed_successfully
+    environment:
+      # Pin the worker heap (cp default is -Xmx2G — would collide with the 2g cgroup).
+      KAFKA_HEAP_OPTS: "-Xms256M -Xmx1G"
+      # kafka_connect_* worker/task metrics on :9405 (scraped by prometheus's kafka-connect-jmx job).
+      KAFKA_OPTS: "-javaagent:/opt/jmx_exporter/jmx_prometheus_javaagent.jar=9405:/etc/jmx-exporter/kafka-connect-jmx-exporter.yml"
+      CONNECT_BOOTSTRAP_SERVERS: "localhost:9092"
+      CONNECT_REST_ADVERTISED_HOST_NAME: "kafka"
+      CONNECT_REST_PORT: "8083"
+      CONNECT_GROUP_ID: "brain-bronze-connect"
+      CONNECT_CONFIG_STORAGE_TOPIC: "_connect-configs"
+      CONNECT_OFFSET_STORAGE_TOPIC: "_connect-offsets"
+      CONNECT_STATUS_STORAGE_TOPIC: "_connect-status"
+      CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: "1"
+      CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: "1"
+      CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: "1"
+      # Worker-level defaults; the collector connector overrides value.converter to StringConverter
+      # (raw payload preserved verbatim), the 9 raw lanes keep schemaless JsonConverter (exploded
+      # envelope — the struct schema the P4 silver normalize jobs read).
+      CONNECT_KEY_CONVERTER: "org.apache.kafka.connect.storage.StringConverter"
+      CONNECT_VALUE_CONVERTER: "org.apache.kafka.connect.json.JsonConverter"
+      CONNECT_VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
+      CONNECT_PLUGIN_PATH: "/usr/share/java,/usr/share/confluent-hub-components,/opt/connect-plugins"
+      # APACHE Iceberg Kafka Connect runtime — version-locked to the stack's Iceberg 1.9.2
+      # (iceberg-rest fixture + iceberg-spark-runtime). connector.class =
+      # org.apache.iceberg.connect.IcebergSinkConnector (NOT io.tabular.* — that fork is archived).
+      ICEBERG_CONNECT_VERSION: "1.9.2"
+    # Resolve the Iceberg connect plugin at runtime (cached in the volume), mirroring the retired
+    # 2026-06 setup (build-time bakes are unreliable behind Maven/CDNs).
+    command:
+      - bash
+      - -c
+      - |
+        set -e
+        # Plugin must be a DIRECT child of a plugin.path entry (with lib/*.jar) for Connect to scan
+        # it. The cp image ships no `unzip`, but DOES ship `jar` (JDK image) — extract with that.
+        # Confluent-Hub zip layout: iceberg-iceberg-kafka-connect-<ver>/{lib,manifest.json,...}.
+        PLUGIN_DIR=/opt/connect-plugins/iceberg-iceberg-kafka-connect-$${ICEBERG_CONNECT_VERSION}
+        if [ ! -f "$$PLUGIN_DIR/manifest.json" ]; then
+          echo "Downloading Apache Iceberg Kafka Connect runtime $${ICEBERG_CONNECT_VERSION}..."
+          curl -fsSL -o /tmp/iceberg-connect.zip \
+            "https://hub-downloads.confluent.io/api/plugins/iceberg/iceberg-kafka-connect/versions/$${ICEBERG_CONNECT_VERSION}/iceberg-iceberg-kafka-connect-$${ICEBERG_CONNECT_VERSION}.zip"
+          ( cd /opt/connect-plugins && jar xf /tmp/iceberg-connect.zip ) && rm -f /tmp/iceberg-connect.zip
+          echo "Iceberg connect plugin installed ($$(ls $$PLUGIN_DIR/lib/*.jar | wc -l) jars)."
+        fi
+        exec /etc/confluent/docker/run
+    volumes:
+      - brain-connect-plugins:/opt/connect-plugins
+      - jmx-agent:/opt/jmx_exporter:ro
+      - ./infra/observe/kafka-connect-jmx-exporter.yml:/etc/jmx-exporter/kafka-connect-jmx-exporter.yml:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8083/connectors >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 40          # first boot downloads a ~160MB plugin zip before the REST API opens
+      start_period: 120s
+    restart: unless-stopped
+
+  # Registers every Iceberg sink connector config in infra/kafka-connect/ (idempotent: 201 created /
+  # 409 already-exists both pass). To apply a CHANGED config, `curl -X PUT` the inner "config" object
+  # to /connectors/<name>/config (see docs/runbooks/adr-0010-kafka-connect-bronze.md) — this one-shot
+  # only creates.
+  kafka-connect-init:
+    image: curlimages/curl:8.8.0
+    profiles: ["core"]
+    mem_limit: 128m         # one-shot init — bound-everything rule (spec §A2)
+    oom_score_adj: 500
+    depends_on:
+      kafka-connect:
+        condition: service_healthy
+    volumes:
+      - ./infra/kafka-connect:/config:ro
+    entrypoint:
+      - sh
+      - -c
+      - |
+        set -e
+        echo 'Registering Iceberg sink connectors (kafka:8083)...'
+        fail=0
+        for f in /config/iceberg-bronze-*.json; do
+          name=$$(basename "$$f" .json)
+          code=$$(curl -s -o /tmp/resp -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+            --data @"$$f" http://kafka:8083/connectors)
+          if [ "$$code" = "201" ] || [ "$$code" = "409" ]; then
+            echo "  $$name: OK (HTTP $$code)"
+          else
+            echo "  $$name: FAILED (HTTP $$code)"; cat /tmp/resp; echo; fail=1
+          fi
+        done
+        exit $$fail
     restart: "no"
 
   # Apicurio — schema registry for the event path (FULL_TRANSITIVE compatibility enforced globally).
@@ -763,6 +898,8 @@ volumes:
   # dirs on the host, not these compose-named volumes.
   # Holds the prometheus jmx_exporter javaagent jar shared between jmx-exporter-init and the broker.
   jmx-agent:
+  # Caches the Apache Iceberg Kafka Connect plugin zip extraction (~160MB download) across restarts.
+  brain-connect-plugins:
   # Persists the Iceberg REST JDBC (SQLite) catalog — namespace→table pointers — across iceberg-rest
   # restarts so a crash/restart never wipes brain_silver/brain_gold from the catalog (data is in MinIO).
   iceberg-catalog:

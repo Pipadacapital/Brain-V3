@@ -39,7 +39,16 @@ scrape_configs:
       - targets: ['host.docker.internal:9404']  # Kafka broker JMX-exporter agent (local dev)
 
   # Consumer-group LAG is not a broker JMX metric — sourced from the danielqsj/kafka_exporter
-  # companion, which exposes kafka_consumergroup_lag / kafka_topic_*. Drives BrainConsumerLagHigh.
+  # companion, which exposes kafka_consumergroup_lag / kafka_topic_*. Drives BrainConsumerLagHigh
+  # (and, post-ADR-0010, covers the Iceberg sink's `connect-iceberg-bronze-*` consumer groups).
   - job_name: 'kafka-exporter'
     static_configs:
       - targets: ['host.docker.internal:9308']  # kafka_exporter (local dev)
+
+  # Kafka Connect Bronze landing worker (ADR-0010) — jmx_exporter agent on the kafka-connect
+  # compose service (port published via the `kafka` service; shared netns). Config:
+  # kafka-connect-jmx-exporter.yml → kafka_connect_* worker/task metrics, incl. the
+  # kafka_connect_connector_task_status{status=} gauge driving BronzeConnectTaskFailed.
+  - job_name: 'kafka-connect-jmx'
+    static_configs:
+      - targets: ['host.docker.internal:9405']  # Connect worker JMX-exporter agent (local dev)

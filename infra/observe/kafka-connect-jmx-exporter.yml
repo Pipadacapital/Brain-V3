@@ -1,0 +1,34 @@
+# JMX → Prometheus mapping for the Kafka Connect Bronze landing worker (ADR-0010).
+# Attached as a javaagent on :9405 (see the kafka-connect compose service; port published on the
+# `kafka` service because Connect shares its netns). Scraped by the 'kafka-connect-jmx' job in
+# infra/observe/prometheus.yml. brain-slo.rules.yml's BronzeConnectTaskFailed alert reads the
+# task-status series below; Bronze ingest lag continues to come from kafka-exporter's
+# kafka_consumergroup_lag (the sink's consumer groups are `connect-iceberg-bronze-*`).
+lowercaseOutputName: true
+lowercaseOutputLabelNames: true
+rules:
+  # Connector/task STATUS (a string MBean attribute) → labeled gauge, constant value 1.
+  # Alert shape: kafka_connect_connector_task_status{status="failed"} == 1.
+  - pattern: 'kafka.connect<type=connector-task-metrics, connector=(.+), task=(\d+)><>status: ([a-z-]+)'
+    name: kafka_connect_connector_task_status
+    value: 1
+    labels:
+      connector: "$1"
+      task: "$2"
+      status: "$3"
+  # Per-task sink throughput/latency (records read/sent, put-batch time).
+  - pattern: 'kafka.connect<type=sink-task-metrics, connector=(.+), task=(\d+)>([^:]+)'
+    name: kafka_connect_sink_task_$3
+    labels:
+      connector: "$1"
+      task: "$2"
+  - pattern: 'kafka.connect<type=connector-task-metrics, connector=(.+), task=(\d+)>([^:]+)'
+    name: kafka_connect_connector_task_$3
+    labels:
+      connector: "$1"
+      task: "$2"
+  # Worker totals (connector/task counts, startup failures) + rebalance health.
+  - pattern: 'kafka.connect<type=connect-worker-metrics>([^:]+)'
+    name: kafka_connect_worker_$1
+  - pattern: 'kafka.connect<type=connect-worker-rebalance-metrics>([^:]+)'
+    name: kafka_connect_worker_rebalance_$1

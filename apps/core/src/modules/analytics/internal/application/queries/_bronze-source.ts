@@ -22,19 +22,28 @@ export interface BronzeReadDeps extends EngineDeps {
  * The fully-qualified Iceberg Bronze table over Trino (Brain V4 — StarRocks removed). Trino's default
  * catalog is 'iceberg'.
  *
- * UNIFIED-BRONZE cutover (bronze_landing.py): the split Bronze tables are unified into one
- * `brain_bronze.events` (a `connector` discriminator + verbatim payload). ONE env flips this reader:
- *   BRONZE_SOURCE=legacy (default) → iceberg.brain_bronze.collector_events (current behavior).
- *   BRONZE_SOURCE=events           → iceberg.brain_bronze.events, filtered to the collector lane.
- * Default legacy so nothing changes until the sink is switched to bronze_landing. Rollback = legacy.
+ * BRONZE_SOURCE switch — ONE env flips this reader:
+ *   BRONZE_SOURCE=legacy (default) → iceberg.brain_bronze.collector_events (bronze_materialize.py).
+ *   BRONZE_SOURCE=events           → iceberg.brain_bronze.events, filtered to the collector lane
+ *                                    (the unified bronze_landing.py Spark-SS sink).
+ *   BRONZE_SOURCE=connect          → iceberg.brain_bronze.collector_events_connect_lifted — the
+ *                                    Trino lift view over the ADR-0010 Kafka Connect collector
+ *                                    table (which is truly-raw: payload + kafka coords only; the
+ *                                    view lifts brand_id/event_type/occurred_at/ingested_at so the
+ *                                    column-shaped queries here work unchanged).
+ * Rollback = set BRONZE_SOURCE back to the previous writer's value.
  */
 const BRONZE_SOURCE = (process.env['BRONZE_SOURCE'] ?? 'legacy').toLowerCase();
 export const ICEBERG_BRONZE =
-  BRONZE_SOURCE === 'events' ? 'iceberg.brain_bronze.events' : 'iceberg.brain_bronze.collector_events';
+  BRONZE_SOURCE === 'events'
+    ? 'iceberg.brain_bronze.events'
+    : BRONZE_SOURCE === 'connect'
+      ? 'iceberg.brain_bronze.collector_events_connect_lifted'
+      : 'iceberg.brain_bronze.collector_events';
 /**
  * Predicate that keeps ONLY the collector lane when reading the unified events table (which co-locates
- * the raw connector lanes); a no-op (`TRUE`) against the legacy single-lane collector_events. Append to
- * a Bronze WHERE as `AND ${BRONZE_COLLECTOR_PREDICATE}`.
+ * the raw connector lanes); a no-op (`TRUE`) against the single-lane collector_events /
+ * collector_events_connect tables. Append to a Bronze WHERE as `AND ${BRONZE_COLLECTOR_PREDICATE}`.
  */
 export const BRONZE_COLLECTOR_PREDICATE = BRONZE_SOURCE === 'events' ? "connector = 'collector'" : 'TRUE';
 

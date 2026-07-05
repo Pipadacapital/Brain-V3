@@ -229,6 +229,9 @@ def build(spark: SparkSession):
         envelope.alias("payload"),
     ).withColumn("partition_key", col("brand_id"))
 
+    # ADR-0010: the append-only Connect Bronze can carry redelivered duplicates — collapse to one row
+    # per (brand_id, event_id) or the MERGE below aborts on a source-cardinality violation.
+    out = rn.dedupe_latest(out, ["brand_id", "event_id"], "ingested_at")
     out.createOrReplaceTempView("_woo_canon")
     spark.sql(
         f"""
@@ -246,9 +249,11 @@ def _load_salts(spark: SparkSession):
     """(brand_id, salt_hex) for the PII hash. Dev-derivable; prod reads the KMS-unwrapped per-brand salt.
     Mirrors the SoR the connector used so the hash matches. Override SALT_QUERY for the exact prod fn."""
     url = os.environ.get("BRONZE_PG_JDBC_URL", "jdbc:postgresql://postgres:5432/brain")
-    query = os.environ.get(
-        "SALT_QUERY",
-        "SELECT id::text AS brand_id, encode(sha256(('brain-dev-identity-salt-v1||'||lower(id::text))::bytea),'hex') AS salt_hex FROM tenancy.brand",
+    # NOT a get-with-default: the run scripts export SALT_QUERY="" (empty), and an empty env var
+    # must still fall back to the dev-derivable salt query — an empty JDBC `query` option aborts the
+    # read ("Option `query` can not be empty"; surfaced by the first ADR-0010 connect-mode run).
+    query = os.environ.get("SALT_QUERY") or (
+        "SELECT id::text AS brand_id, encode(sha256(('brain-dev-identity-salt-v1||'||lower(id::text))::bytea),'hex') AS salt_hex FROM tenancy.brand"
     )
     return (
         spark.read.format("jdbc").option("url", url)

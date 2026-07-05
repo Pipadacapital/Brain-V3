@@ -1,0 +1,29 @@
+{{- if .Values.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-kafka-connect
+  labels:
+    app.kubernetes.io/name: kafka-connect
+    app.kubernetes.io/part-of: brain
+spec:
+  selector:
+    app.kubernetes.io/name: kafka-connect
+  ports:
+    - name: rest
+      port: 8083
+      targetPort: rest
+---
+{{- if .Values.serviceAccount.create }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Values.serviceAccount.name | default (printf "%s-kafka-connect" .Release.Name) }}
+  labels:
+    app.kubernetes.io/name: kafka-connect
+    app.kubernetes.io/part-of: brain
+  {{- with .Values.serviceAccount.annotations }}
+  annotations: {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}
+{{- end }}

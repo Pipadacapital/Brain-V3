@@ -29,18 +29,29 @@ import re
 from datetime import datetime, timezone
 
 
-# ── UNIFIED-BRONZE cutover switch (bronze_landing.py) ────────────────────────────────────────────────
-# The nine per-provider *_raw Bronze tables are being unified into ONE raw table brain_bronze.events
-# (a `connector` discriminator + verbatim payload). ONE env flips every raw-normalize reader:
+# ── BRONZE-SOURCE switch (bronze_landing.py unification / ADR-0010 Kafka Connect writer) ─────────────
+# ONE env flips every raw-normalize reader:
 #   BRONZE_SOURCE=legacy (default) → read the legacy per-provider *_raw table (current behavior).
-#   BRONZE_SOURCE=events           → read brain_bronze.events filtered to this connector.
-# Default is legacy so nothing changes until the sink itself is switched to bronze_landing (dev/prod
-# wiring). Rollback = set BRONZE_SOURCE=legacy. The unified events table carries the SAME raw
-# payload/coords the *_raw tables did, plus the `connector` column used for the filter.
+#   BRONZE_SOURCE=events           → read the unified brain_bronze.events filtered to this connector
+#                                    (the bronze_landing.py Spark-SS sink; G1 payload-parse pending).
+#   BRONZE_SOURCE=connect          → the per-provider `<lane>_raw_connect` tables: the ADR-0010 Kafka
+#                                    Connect Iceberg sink writes each raw lane to its OWN FRESH table
+#                                    with the EXPLODED envelope schema (schemaless JsonConverter) these
+#                                    jobs' struct-column reads were originally built against. Fresh
+#                                    tables (not the legacy *_raw) because the Spark-written *_raw
+#                                    schemas carry required (NOT NULL) columns — dedup_key/payload —
+#                                    that an exploded Connect record can't satisfy (verified live: the
+#                                    Parquet writer NPEs on the required-column null).
+# Rollback = set BRONZE_SOURCE back. The unified events table carries the SAME raw payload/coords the
+# *_raw tables did, plus the `connector` column used for the filter.
 def bronze_source_table(catalog, namespace, legacy_table):
-    """FQTN of the raw source — brain_bronze.events under BRONZE_SOURCE=events, else the legacy *_raw."""
-    if os.environ.get("BRONZE_SOURCE", "legacy").lower() == "events":
+    """FQTN of the raw source — brain_bronze.events under BRONZE_SOURCE=events, the Connect-written
+    `<legacy>_connect` table under BRONZE_SOURCE=connect, else the legacy per-provider *_raw."""
+    mode = os.environ.get("BRONZE_SOURCE", "legacy").lower()
+    if mode == "events":
         return f"{catalog}.{namespace}.events"
+    if mode == "connect":
+        return f"{catalog}.{namespace}.{legacy_table}_connect"
     return f"{catalog}.{namespace}.{legacy_table}"
 
 
@@ -53,6 +64,21 @@ def read_bronze(spark, catalog, namespace, legacy_table, connector):
     if "connector" in df.columns:
         df = df.where(col("connector") == connector)
     return df
+
+
+def dedupe_latest(df, keys, order_col):
+    """Keep exactly ONE row per key tuple (latest `order_col` wins, NULLs last).
+
+    REQUIRED under the ADR-0010 append-only Connect Bronze: the Iceberg sink has no MERGE, so a
+    webhook redelivery / provider re-pull / topic replay lands DUPLICATE raw rows, and a Spark MERGE
+    whose source carries duplicate join keys aborts with a cardinality violation. Applied to every
+    normalize job's canonical frame just before its MERGE — a no-op when the batch is already unique
+    (the bronze_raw_landing/legacy path), so it is safe under every BRONZE_SOURCE mode."""
+    from pyspark.sql.functions import col, row_number  # noqa: E402 — lazy (keeps pure ports Spark-free)
+    from pyspark.sql.window import Window  # noqa: E402
+
+    w = Window.partitionBy(*keys).orderBy(col(order_col).desc_nulls_last())
+    return df.withColumn("_rn", row_number().over(w)).where(col("_rn") == 1).drop("_rn")
 
 
 # ── Money (I-S07, integer-only, never float) ─────────────────────────────────────────────────────────

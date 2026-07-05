@@ -16,9 +16,15 @@
 
 import { z } from 'zod';
 
-// UNIFIED-BRONZE cutover: table name flips with BRONZE_SOURCE (scaffold config; no live queries yet).
+// Bronze source flips with BRONZE_SOURCE (scaffold config; no live queries yet): `events` = the
+// unified Spark-SS table; `connect` = the ADR-0010 Kafka Connect lift view; else legacy.
 const BRONZE_SOURCE = (process.env['BRONZE_SOURCE'] ?? 'legacy').toLowerCase();
-const BRONZE_TABLE = BRONZE_SOURCE === 'events' ? 'brain_bronze.events' : 'brain_bronze.collector_events';
+const BRONZE_TABLE =
+  BRONZE_SOURCE === 'events'
+    ? 'brain_bronze.events'
+    : BRONZE_SOURCE === 'connect'
+      ? 'brain_bronze.collector_events_connect_lifted'
+      : 'brain_bronze.collector_events';
 
 // ---------------------------------------------------------------------------
 // DQ Category declarations (Zod schema — single source of truth)

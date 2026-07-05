@@ -509,6 +509,9 @@ def build(spark: SparkSession):
     # Stage-1: route the formerly silently-dropped rows to silver_quarantine (observable + replayable).
     write_quarantine(spark, meta_rejects.unionByName(google_rejects), stage="dq")
 
+    # ADR-0010: the append-only Connect Bronze can carry redelivered duplicates — collapse to one row
+    # per (brand_id, event_id) or the MERGE below aborts on a source-cardinality violation.
+    union = rn.dedupe_latest(union, ["brand_id", "event_id"], "ingested_at")
     union.createOrReplaceTempView("_ad_spend_canon")
     spark.sql(
         f"""

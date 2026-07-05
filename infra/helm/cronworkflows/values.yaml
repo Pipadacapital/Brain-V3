@@ -52,6 +52,11 @@ defaults:
 # PG⇄Iceberg parity oracle. Flip `enabled: true` per env only when ready to start the migration;
 # turn off to instantly stop the dual-sink. See db/iceberg/spark/ + docs/adr/0002-*.
 sparkBronze:
+  # ADR-0010: the Kafka Connect Iceberg sink (infra/helm/kafka-connect) REPLACES this landing
+  # CronWorkflow. Enable EXACTLY ONE of the two — at cutover set enabled:false HERE and
+  # enabled:true in the kafka-connect chart in the SAME release train (rollback = flip both back).
+  # bronze-maintenance (compaction/snapshot-expiry) stays enabled either way — it maintains the
+  # Connect-written tables too. See docs/runbooks/adr-0010-kafka-connect-bronze.md.
   # ENABLED. CORRECTION: the sink runs spark-submit --master local[*] in a SINGLE Argo Workflow pod
   # (see templates/spark-bronze.yaml + the Dockerfile ENTRYPOINT) — it needs NO Spark Operator and NO
   # dedicated cluster, just a pod sized for the driver (resources below give 4Gi; driverMemory 3g). The

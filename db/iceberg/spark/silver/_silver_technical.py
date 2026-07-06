@@ -399,10 +399,42 @@ def event_category(event_type):
     _behaviour_prefixes = ("page.", "product.", "collection.", "cart.", "session.", "scroll.",
                            "element.", "search.", "form.", "user.")   # user.* = pixel account funnel (login/signup)
     _behaviour_exact = {"dead.click", "rage.click", "exit_intent", "video", "identify",
+                        "pixel.identify.v1",                           # SPEC A.1.1 (WA-07): identity bridge, same bucket as legacy identify
                         "coupon.applied", "download", "share"}         # pixel singletons (coupon.upsert.v1 → other above)
     if et in _behaviour_exact or et.startswith(_behaviour_prefixes) or "checkout" in et:
         return "behaviour"                                                     # browser + checkout-funnel signals
     return "other"
+
+
+# ======================================================================================================
+# IDENTIFY CONSENT-DENIED  — pure port (SPEC A.1.2 / AMD-04: the denied-VALUE drop for identify events).
+# ======================================================================================================
+# The pre-existing R3 gate is PRESENCE-only (consent_flags ABSENT → silver_consent_rejected); a denied
+# VALUE (`analytics:false`, or the WA-07 envelope's consent_state='denied') passed. AMD-04 (BINDING)
+# adds the strictly-stronger denied-VALUE drop for IDENTIFY events specifically — an identify is a
+# deliberate identity-capture act, so a denied consent VALUE must keep it out of Silver (and therefore
+# out of the identity graph). Non-identify behavioural events are NOT value-gated here (unchanged
+# posture: consent VALUES gate downstream marketing/CAPI use, not behavioural capture).
+IDENTIFY_EVENT_TYPES = ("identify", "pixel.identify.v1")
+
+
+def identify_consent_denied(event_type, consent_state, analytics_flag):
+    """True ⇒ this event is an IDENTIFY whose consent VALUE denies identity capture → consent_rejected.
+
+    Pure/testable (no Spark). Inputs are the raw get_json_object strings:
+      consent_state  — $.properties.consent_state of the WA-07 pixel.identify.v1 envelope
+                       ('granted'|'denied'; anything present-but-not-'granted' is FAIL-CLOSED denied).
+      analytics_flag — $.consent_flags.analytics of the collector envelope ('true'/'false' strings).
+    Absent both signals → NOT denied here (the presence-only R3 gate already quarantined
+    consent_flags-absent pixel rows before this check runs)."""
+    if event_type not in IDENTIFY_EVENT_TYPES:
+        return False
+    if consent_state is not None:
+        # WA-07 envelope: only the literal 'granted' passes — fail-closed on any other value.
+        return str(consent_state).strip().lower() != "granted"
+    if analytics_flag is not None and str(analytics_flag).strip().lower() == "false":
+        return True  # legacy identify carrying an explicit analytics:false consent VALUE
+    return False
 
 
 # ======================================================================================================
@@ -489,6 +521,16 @@ def event_category_udf():
     from pyspark.sql.functions import udf
     from pyspark.sql.types import StringType
     return udf(event_category, StringType())
+
+
+def identify_consent_denied_udf():
+    """Spark UDF(event_type, consent_state, analytics_flag) → boolean (identify_consent_denied port).
+
+    SPEC A.1.2 (AMD-04): the denied-VALUE drop for identify events — applied by the
+    silver_collector_event gate alongside the presence-only R3 quarantine. Non-PII, deterministic."""
+    from pyspark.sql.functions import udf
+    from pyspark.sql.types import BooleanType
+    return udf(identify_consent_denied, BooleanType())
 
 
 def dq_violations_udf(*, now_ms=None, max_skew_ms=DEFAULT_SKEW_MS, required_ids=None, absurd_qty=DEFAULT_ABSURD_QTY):

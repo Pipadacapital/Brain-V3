@@ -100,6 +100,13 @@ export interface WebhookPipelineDeps {
   regionCode?: string;
   /** MEDALLION REALIGNMENT (Epic 3 / ADR-0004): Neo4j identity reader for GDPR redact side-effects. */
   identityReader?: WebhookIdentityReader;
+  /**
+   * SPEC: A.1.4 (WA-09) — resolve the per-brand `connector.identity_fields` flag (the AMD-01
+   * interop dual-write gate). Injected from the composition root as a platform-flags
+   * FlagService read. OPTIONAL + FAIL-CLOSED: absent or throwing → false → the mappers emit
+   * today's envelope byte-identical (§0.5 default-OFF non-negotiable).
+   */
+  isIdentityFieldsEnabled?: (brandId: string) => Promise<boolean>;
 }
 
 // ── Route config per provider ─────────────────────────────────────────────────
@@ -350,6 +357,18 @@ export class WebhookPipeline {
         });
       }
 
+      // SPEC: A.1.4 (WA-09) — per-brand connector.identity_fields flag read (AMD-01 dual-write
+      // gate). FAIL-CLOSED: no resolver wired / Redis down / any throw → false → strategies map
+      // with the flag OFF and the envelope stays byte-identical to today.
+      let identityFieldsEnabled = false;
+      if (this.deps.isIdentityFieldsEnabled) {
+        try {
+          identityFieldsEnabled = (await this.deps.isIdentityFieldsEnabled(brandId)) === true;
+        } catch {
+          identityFieldsEnabled = false;
+        }
+      }
+
       let mapped: Awaited<ReturnType<IWebhookStrategy['payloadMap']>>;
       try {
         mapped = await this.strategy.payloadMap({
@@ -359,6 +378,7 @@ export class WebhookPipeline {
           brandId,
           saltHex,
           regionCode: this.deps.regionCode ?? 'IN',
+          identityFieldsEnabled,
           correlationId,
           requestId,
         });

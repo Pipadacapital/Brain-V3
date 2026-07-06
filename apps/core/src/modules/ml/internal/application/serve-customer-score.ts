@@ -32,8 +32,9 @@
 
 import { createHash } from 'node:crypto';
 import type { DbPool, QueryContext } from '@brain/db';
-import type { SilverPool } from '@brain/metric-engine';
-import { getCustomerScore } from '@brain/metric-engine';
+// WA-02 (SPEC: 0.5): metric-engine is fenced to the measurement tier — consume via the analytics facade.
+import type { SilverPool } from '../../../analytics/index.js';
+import { getCustomerScore } from '../../../analytics/index.js';
 
 /** The operational inference log (PG `ops` schema). DDL: db/migrations/0116_brain_ops_to_pg.sql. */
 const PREDICTION_LOG_TABLE = 'ops.ops_ml_prediction_log';

@@ -36,8 +36,11 @@
  */
 
 import { createHash } from 'node:crypto';
-import { hashToUuidShaped } from '@brain/connector-core';
+import { hashToUuidShaped, type IdentityFieldsOptions } from '@brain/connector-core';
 import { hashIdentifier, normalizePhone } from '@brain/identity-core';
+// SPEC: A.1.4 — WA-09 interop-space dual-write (AMD-01): plain-sha256 of the SAME normalized
+// values, so pixel identify hashes become joinable with connector identities.
+import { emailInteropHash, phoneInteropHash } from '@brain/identity-normalization';
 import {
   decimalStringToMinor,
   tryDecimalToMinor,
@@ -98,6 +101,10 @@ const CUSTOMER_ID_KEYS = ['customer_id', 'gokwik_customer_id', 'user_id'] as con
 const PAYMENT_ID_KEYS = ['payment_id', 'txn_id', 'transaction_id', 'razorpay_payment_id', 'pg_payment_id'] as const;
 const OCCURRED_KEYS = ['updated_at', 'event_time', 'created_at', 'timestamp'] as const;
 const STEP_KEYS = ['step', 'step_name', 'stage', 'checkout_step'] as const;
+// SPEC: A.1.4 — the checkout-SESSION key (the India-COD join key). Deliberately NARROWER than
+// CHECKOUT_ID_KEYS: no moid/merchant_order_id/order_id fallback — an order id is NOT a checkout
+// session; when the payload carries no session key, the field is honestly ABSENT.
+const CHECKOUT_SESSION_KEYS = ['checkout_session_id', 'checkout_id', 'cart_id', 'session_id'] as const;
 
 const DEFAULT_CURRENCY = 'INR';
 
@@ -153,6 +160,38 @@ function hashPhone(rec: Record<string, unknown>, saltHex: string, regionCode: st
   if (!phone) return undefined;
   const { normalized } = normalizePhone(phone, regionCode);
   return hashIdentifier(normalized, 'phone', saltHex, regionCode);
+}
+
+// SPEC: A.1.4 — INTEROP-space (AMD-01) plain-sha256 of the SAME probed raw email/phone. Raw is
+// consumed here and DROPPED exactly like the salted path. Only called when the flag is ON.
+function interopEmail(rec: Record<string, unknown>): string | undefined {
+  const email = firstField(rec, EMAIL_KEYS);
+  return email ? (emailInteropHash(email) ?? undefined) : undefined;
+}
+
+function interopPhone(rec: Record<string, unknown>, regionCode: string): string | undefined {
+  const phone = firstField(rec, PHONE_KEYS);
+  return phone ? (phoneInteropHash(phone, regionCode) ?? undefined) : undefined;
+}
+
+/**
+ * SPEC: A.1.4 — the interop/session block appended to order + checkout properties when the caller
+ * enables `connector.identity_fields`. Flag OFF (or absent) → {} → BYTE-IDENTICAL legacy envelope.
+ */
+function projectIdentityFields(
+  rec: Record<string, unknown>,
+  regionCode: string,
+  identityFields?: IdentityFieldsOptions,
+): { email_sha256?: string; phone_sha256?: string; checkout_session_id?: string } {
+  if (identityFields?.emitInteropIdentifiers !== true) return {};
+  const emailSha256 = interopEmail(rec);
+  const phoneSha256 = interopPhone(rec, regionCode);
+  const checkoutSessionId = firstField(rec, CHECKOUT_SESSION_KEYS) ?? undefined;
+  return {
+    ...(emailSha256 !== undefined ? { email_sha256: emailSha256 } : {}),
+    ...(phoneSha256 !== undefined ? { phone_sha256: phoneSha256 } : {}),
+    ...(checkoutSessionId !== undefined ? { checkout_session_id: checkoutSessionId } : {}),
+  };
 }
 
 // ── UUID utils — shared kernel util (@brain/connector-core), IDENTICAL byte layout (I-ST04) ──
@@ -252,6 +291,11 @@ export interface GokwikOrderProperties {
   hashed_customer_email?: string;
   hashed_customer_phone?: string;
   storefront_customer_id?: string;
+  // ── SPEC: A.1.4 (WA-09, AMD-01 dual-write) — interop plain-sha256 + the checkout-session join
+  // key; emitted ONLY when the caller enables the connector.identity_fields flag.
+  email_sha256?: string;
+  phone_sha256?: string;
+  checkout_session_id?: string;
   // Optional economic breakdown (all minor units, BIGINT-as-string).
   line_items?: OrderLineItem[];
   tax_total_minor?: string;
@@ -284,6 +328,11 @@ export interface GokwikCheckoutProperties {
   hashed_customer_email?: string;
   hashed_customer_phone?: string;
   storefront_customer_id?: string;
+  // ── SPEC: A.1.4 (WA-09, AMD-01 dual-write) — interop plain-sha256 + the checkout-session join
+  // key; emitted ONLY when the caller enables the connector.identity_fields flag.
+  email_sha256?: string;
+  phone_sha256?: string;
+  checkout_session_id?: string;
   occurred_at: string;
 }
 
@@ -427,6 +476,8 @@ function projectGokwikOrderDepth(record: GokwikOrderRecord): Partial<GokwikOrder
  * @param saltHex     Per-brand 64-char hex salt for PII hashing
  * @param regionCode  Brand region code (e.g. 'IN')
  * @param dataSource  'real' | 'synthetic' (DEV-HONESTY)
+ * @param identityFields SPEC: A.1.4 (WA-09) — optional dual-write knob; ABSENT = byte-identical
+ *                       pre-Wave-A output (flag connector.identity_fields OFF).
  */
 export function mapGokwikOrder(
   record: GokwikOrderRecord,
@@ -434,6 +485,7 @@ export function mapGokwikOrder(
   saltHex: string,
   regionCode: string,
   dataSource: DataSource = 'real',
+  identityFields?: IdentityFieldsOptions,
 ): MappedGokwikOrderEvent {
   const orderId = firstField(record, ORDER_ID_KEYS);
   if (!orderId) {
@@ -466,6 +518,8 @@ export function mapGokwikOrder(
     ...(hashedEmail !== undefined ? { hashed_customer_email: hashedEmail } : {}),
     ...(hashedPhone !== undefined ? { hashed_customer_phone: hashedPhone } : {}),
     ...(storefrontCustomerId !== undefined ? { storefront_customer_id: storefrontCustomerId } : {}),
+    // SPEC: A.1.4 — interop dual-write + checkout_session_id ({} when the flag is OFF).
+    ...projectIdentityFields(record, regionCode, identityFields),
     ...projectGokwikOrderDepth(record),
   };
 
@@ -499,6 +553,7 @@ export function mapGokwikCheckout(
   regionCode: string,
   kind: 'abandoned' | 'started' | 'step',
   dataSource: DataSource = 'real',
+  identityFields?: IdentityFieldsOptions,
 ): MappedGokwikCheckoutEvent {
   const checkoutId = firstField(record, CHECKOUT_ID_KEYS);
   if (!checkoutId) {
@@ -536,6 +591,8 @@ export function mapGokwikCheckout(
     ...(hashedEmail !== undefined ? { hashed_customer_email: hashedEmail } : {}),
     ...(hashedPhone !== undefined ? { hashed_customer_phone: hashedPhone } : {}),
     ...(storefrontCustomerId !== undefined ? { storefront_customer_id: storefrontCustomerId } : {}),
+    // SPEC: A.1.4 — interop dual-write + checkout_session_id ({} when the flag is OFF).
+    ...projectIdentityFields(record, regionCode, identityFields),
   };
 
   return {

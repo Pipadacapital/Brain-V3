@@ -6,14 +6,17 @@
   "main": "src/index.ts",
   "types": "src/index.ts",
   "scripts": {
-    "build": "tsc -b",
+    "build": "node tools/build-pixel-asset.mjs && tsc -b",
+    "build:asset": "node tools/build-pixel-asset.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test:unit": "vitest run"
   },
   "devDependencies": {
     "@brain/contracts": "workspace:*",
+    "esbuild": "0.28.1",
     "vitest": "^2.1.0",
-    "typescript": "^5.6.0"
+    "typescript": "^5.6.0",
+    "@brain/identity-normalization": "workspace:*"
   }
 }

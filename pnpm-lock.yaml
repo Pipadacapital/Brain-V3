@@ -59,12 +59,21 @@ importers:
       '@brain/observability':
         specifier: workspace:*
         version: link:../../packages/observability
+      '@brain/pixel-sdk':
+        specifier: workspace:*
+        version: link:../../packages/pixel-sdk
+      '@brain/platform-flags':
+        specifier: workspace:*
+        version: link:../../packages/platform-flags
       '@brain/tenant-context':
         specifier: workspace:*
         version: link:../../packages/tenant-context
       fastify:
         specifier: ^4.28.0
         version: 4.29.1
+      ioredis:
+        specifier: ^5.11.1
+        version: 5.11.1
       kafkajs:
         specifier: ^2.2.4
         version: 2.2.4
@@ -150,6 +159,9 @@ importers:
       '@brain/pixel-sdk':
         specifier: workspace:*
         version: link:../../packages/pixel-sdk
+      '@brain/platform-flags':
+        specifier: workspace:*
+        version: link:../../packages/platform-flags
       '@brain/razorpay-mapper':
         specifier: workspace:*
         version: link:../../packages/razorpay-mapper
@@ -509,11 +521,29 @@ importers:
         specifier: ^8.11.6
         version: 8.20.0
 
+  packages/domain-journey:
+    devDependencies:
+      '@types/node':
+        specifier: 25.9.3
+        version: 25.9.3
+      eslint:
+        specifier: ^9.10.0
+        version: 9.39.4(jiti@1.21.7)
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.0
+        version: 2.1.9(@types/node@25.9.3)
+
   packages/events:
     devDependencies:
       '@types/node':
         specifier: 25.9.3
         version: 25.9.3
+      vitest:
+        specifier: ^2.1.0
+        version: 2.1.9(@types/node@25.9.3)
 
   packages/ga4-mapper:
     dependencies:
@@ -539,6 +569,9 @@ importers:
       '@brain/identity-core':
         specifier: workspace:*
         version: link:../identity-core
+      '@brain/identity-normalization':
+        specifier: workspace:*
+        version: link:../identity-normalization
       '@brain/shopify-mapper':
         specifier: workspace:*
         version: link:../shopify-mapper
@@ -554,6 +587,19 @@ importers:
         version: 2.1.9(@types/node@20.19.43)
 
   packages/identity-core:
+    devDependencies:
+      '@types/node':
+        specifier: ^25.9.3
+        version: 25.9.3
+
+  packages/identity-normalization:
+    dependencies:
+      '@brain/identity-core':
+        specifier: workspace:*
+        version: link:../identity-core
+      libphonenumber-js:
+        specifier: ^1.12.10
+        version: 1.13.8
     devDependencies:
       '@types/node':
         specifier: ^25.9.3
@@ -635,6 +681,25 @@ importers:
       '@brain/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@brain/identity-normalization':
+        specifier: workspace:*
+        version: link:../identity-normalization
+      esbuild:
+        specifier: 0.28.1
+        version: 0.28.1
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.0
+        version: 2.1.9(@types/node@25.9.3)
+
+  packages/platform-flags:
+    dependencies:
+      '@brain/tenant-context':
+        specifier: workspace:*
+        version: link:../tenant-context
+    devDependencies:
       typescript:
         specifier: ^5.6.0
         version: 5.9.3
@@ -688,6 +753,9 @@ importers:
       '@brain/identity-core':
         specifier: workspace:*
         version: link:../identity-core
+      '@brain/identity-normalization':
+        specifier: workspace:*
+        version: link:../identity-normalization
       '@brain/shopify-mapper':
         specifier: workspace:*
         version: link:../shopify-mapper
@@ -710,6 +778,9 @@ importers:
       '@brain/identity-core':
         specifier: workspace:*
         version: link:../identity-core
+      '@brain/identity-normalization':
+        specifier: workspace:*
+        version: link:../identity-normalization
     devDependencies:
       '@types/node':
         specifier: ^20.0.0
@@ -723,6 +794,28 @@ importers:
 
   packages/tenant-context: {}
 
+  packages/testing-golden:
+    dependencies:
+      '@brain/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@brain/gokwik-mapper':
+        specifier: workspace:*
+        version: link:../gokwik-mapper
+      '@brain/identity-core':
+        specifier: workspace:*
+        version: link:../identity-core
+      '@brain/shiprocket-mapper':
+        specifier: workspace:*
+        version: link:../shiprocket-mapper
+      '@brain/shopify-mapper':
+        specifier: workspace:*
+        version: link:../shopify-mapper
+    devDependencies:
+      '@types/node':
+        specifier: ^25.9.3
+        version: 25.9.3
+
   packages/woocommerce-mapper:
     dependencies:
       '@brain/connector-core':
@@ -731,6 +824,9 @@ importers:
       '@brain/identity-core':
         specifier: workspace:*
         version: link:../identity-core
+      '@brain/identity-normalization':
+        specifier: workspace:*
+        version: link:../identity-normalization
       '@brain/money':
         specifier: workspace:*
         version: link:../money
@@ -3846,6 +3942,9 @@ packages:
   levn@0.4.1:
     resolution: {integrity: sha512-+bT2uH4E5LGE7h/n3evcS/sQlJXCpIp6ym8OWJ5eV6+67Dsql/LaaT7qJBAt2rzfoa/5QBGBhxDix1dMt2kQKQ==}
     engines: {node: '>= 0.8.0'}
+
+  libphonenumber-js@1.13.8:
+    resolution: {integrity: sha512-80xal1m93rADejw2pMp2MSzFhHCPLEspjHxnH2UtqI+DgAmElsbmLMiqk9niwH9NWAfjsRtaJI+qBrOEmRx9nQ==}
 
   light-my-request@5.14.0:
     resolution: {integrity: sha512-aORPWntbpH5esaYpGOOmri0OHDOe3wC5M2MQxZ9dvMLZm6DnaAn0kJlcbU9hwsQgLzmZyReKwFwwPkR+nHu5kA==}
@@ -7017,7 +7116,7 @@ snapshots:
 
   '@types/pg@8.20.0':
     dependencies:
-      '@types/node': 22.19.21
+      '@types/node': 25.9.3
       pg-protocol: 1.14.0
       pg-types: 2.2.0
 
@@ -8131,6 +8230,8 @@ snapshots:
     dependencies:
       prelude-ls: 1.2.1
       type-check: 0.4.0
+
+  libphonenumber-js@1.13.8: {}
 
   light-my-request@5.14.0:
     dependencies:

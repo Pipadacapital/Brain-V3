@@ -111,6 +111,8 @@ export class GokwikWebhookStrategy implements IWebhookStrategy {
   async payloadMap(ctx: WebhookStrategyContext): Promise<PayloadMapResult> {
     const { parsedBody, brandId, saltHex, regionCode } = ctx;
     const body = (parsedBody ?? {}) as Record<string, unknown>;
+    // SPEC: A.1.4 (WA-09) — connector.identity_fields flag (pipeline-resolved, fail-closed OFF).
+    const identityFields = { emitInteropIdentifiers: ctx.identityFieldsEnabled === true };
 
     const rawType = firstString(body, EVENT_TYPE_KEYS) ?? '';
     const t = rawType.toLowerCase().replace(/\s+/g, '_');
@@ -118,7 +120,7 @@ export class GokwikWebhookStrategy implements IWebhookStrategy {
 
     // ── Order lifecycle → order.live.v1 (state via financial_status + cancelled_at + refunds) ──────
     if (t.startsWith('order')) {
-      const mapped = mapGokwikOrder({ ...body, event_type: rawType }, brandId, saltHex, regionCode);
+      const mapped = mapGokwikOrder({ ...body, event_type: rawType }, brandId, saltHex, regionCode, 'real', identityFields);
       return this.toResult(mapped.event_id, mapped.event_name, mapped.occurred_at, mapped.properties);
     }
 
@@ -139,7 +141,7 @@ export class GokwikWebhookStrategy implements IWebhookStrategy {
       else if (t.includes('step')) kind = 'step';
       else if (t.includes('start') || t.includes('init') || t.includes('creat')) kind = 'started';
       if (kind === null) return skipResult(nowIso);
-      const mapped = mapGokwikCheckout(body, brandId, saltHex, regionCode, kind);
+      const mapped = mapGokwikCheckout(body, brandId, saltHex, regionCode, kind, 'real', identityFields);
       return this.toResult(mapped.event_id, mapped.event_name, mapped.occurred_at, mapped.properties);
     }
 

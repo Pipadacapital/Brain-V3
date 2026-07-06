@@ -22,8 +22,11 @@
  * PII: raw email/phone consumed here and DROPPED — only hashed identifiers in output (D-10/I-S02).
  */
 
-import { hashToUuidShaped } from '@brain/connector-core';
+import { hashToUuidShaped, type IdentityFieldsOptions } from '@brain/connector-core';
 import { hashIdentifier, normalizePhone } from '@brain/identity-core';
+// SPEC: A.1.4 — WA-09 interop-space dual-write (AMD-01): plain-sha256 hashes of the SAME
+// normalized values, so pixel identify hashes become joinable with connector identities.
+import { emailInteropHash, phoneInteropHash } from '@brain/identity-normalization';
 
 // ── Re-exported types used by both stream-worker (re-pull) and core (webhook) ─
 
@@ -113,6 +116,11 @@ export interface OrderProperties {
   hashed_customer_email?: string;
   hashed_customer_phone?: string;
   storefront_customer_id?: string;
+  // ── SPEC: A.1.4 (WA-09, AMD-01 dual-write) — INTEROP-space plain-sha256 identifiers,
+  // emitted ONLY when the caller passes emitInteropIdentifiers (flag connector.identity_fields).
+  // Salted fields above are unchanged; platform_customer_id = storefront_customer_id (AMD-02).
+  email_sha256?: string;
+  phone_sha256?: string;
   // ── Journey-stitch key (read BACK from note_attributes, D-5) — the anon journey id the storefront
   // pixel wrote at checkout. Carried on the order event so the LIVE/REPULL lane can write the
   // order→anon stitch map (previously only the webhook did → repull'd orders never stitched).
@@ -387,16 +395,19 @@ export function projectOrderDepth(order: ShopifyOrderShape): Partial<OrderProper
  * For BACKFILL: pass eventName='order.backfill.v1'; occurred_at = processed_at ?? created_at.
  * For LIVE:     pass eventName='order.live.v1';     occurred_at = updated_at ?? processed_at ?? created_at.
  *
- * @param order       Raw Shopify order
- * @param saltHex     Per-brand 64-char hex salt for PII hashing
- * @param regionCode  Brand region code (e.g. 'IN')
- * @param eventName   'order.backfill.v1' | 'order.live.v1'
+ * @param order          Raw Shopify order
+ * @param saltHex        Per-brand 64-char hex salt for PII hashing
+ * @param regionCode     Brand region code (e.g. 'IN')
+ * @param eventName      'order.backfill.v1' | 'order.live.v1'
+ * @param identityFields SPEC: A.1.4 (WA-09) — optional dual-write knob; ABSENT = byte-identical
+ *                       pre-Wave-A output (flag connector.identity_fields OFF).
  */
 export function mapOrderToEvent(
   order: ShopifyOrderShape,
   saltHex: string,
   regionCode: string,
   eventName: typeof ORDER_BACKFILL_V1_EVENT_NAME | typeof ORDER_LIVE_V1_EVENT_NAME,
+  identityFields?: IdentityFieldsOptions,
 ): MappedOrderEvent {
   // occurred_at: for live events use updated_at as the state's economic time (D-6 / ADR-LV-6)
   const rawOccurredAt =
@@ -414,14 +425,24 @@ export function mapOrderToEvent(
   let hashedCustomerPhone: string | undefined;
   let storefrontCustomerId: string | undefined;
 
+  // SPEC: A.1.4 — INTEROP-space dual-write (AMD-01), flag-gated by the caller. undefined when OFF.
+  let emailSha256: string | undefined;
+  let phoneSha256: string | undefined;
+
   const customer = order.customer;
   if (customer) {
     if (customer.email) {
       hashedCustomerEmail = hashIdentifier(customer.email, 'email', saltHex, regionCode);
+      if (identityFields?.emitInteropIdentifiers === true) {
+        emailSha256 = emailInteropHash(customer.email) ?? undefined;
+      }
     }
     if (customer.phone) {
       const { normalized } = normalizePhone(customer.phone, regionCode);
       hashedCustomerPhone = hashIdentifier(normalized, 'phone', saltHex, regionCode);
+      if (identityFields?.emitInteropIdentifiers === true) {
+        phoneSha256 = phoneInteropHash(customer.phone, regionCode) ?? undefined;
+      }
     }
     if (customer.id != null) {
       storefrontCustomerId = String(customer.id);
@@ -444,6 +465,9 @@ export function mapOrderToEvent(
     ...(hashedCustomerEmail !== undefined ? { hashed_customer_email: hashedCustomerEmail } : {}),
     ...(hashedCustomerPhone !== undefined ? { hashed_customer_phone: hashedCustomerPhone } : {}),
     ...(storefrontCustomerId !== undefined ? { storefront_customer_id: storefrontCustomerId } : {}),
+    // SPEC: A.1.4 — interop dual-write (present ONLY when connector.identity_fields is ON).
+    ...(emailSha256 !== undefined ? { email_sha256: emailSha256 } : {}),
+    ...(phoneSha256 !== undefined ? { phone_sha256: phoneSha256 } : {}),
     // ADDITIVE (feat-shopify-order-depth): merge the economic breakdown when the order carries it.
     ...projectOrderDepth(order),
     // Journey-stitch (D-5): carry the anon journey key read back from note_attributes, so the

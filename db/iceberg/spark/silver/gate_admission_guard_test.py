@@ -99,6 +99,9 @@ PIXEL_LANE_EVENTS = frozenset(
         "checkout.step_viewed", "checkout.shipping_selected", "payment.initiated", "payment.succeeded",
         "payment.failed", "order.placed", "purchase.completed", "coupon.applied", "form.submitted",
         "user.logged_in", "user.signed_up", "identify",
+        # SPEC A.1.1 (WA-07): the flag-gated identify envelope — pixel-emitted with install_token +
+        # consent, rides the PIXEL lane (R2/R3 + the AMD-04 denied-VALUE drop) legitimately.
+        "pixel.identify.v1",
     }
 )
 

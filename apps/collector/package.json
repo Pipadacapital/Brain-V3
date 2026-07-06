@@ -16,8 +16,11 @@
     "fastify": "^4.28.0",
     "pg": "^8.13.0",
     "kafkajs": "^2.2.4",
+    "ioredis": "^5.11.1",
     "@brain/contracts": "workspace:*",
     "@brain/events": "workspace:*",
+    "@brain/pixel-sdk": "workspace:*",
+    "@brain/platform-flags": "workspace:*",
     "@brain/observability": "workspace:*",
     "@brain/tenant-context": "workspace:*",
     "@brain/config": "workspace:*"

@@ -14,6 +14,7 @@
   "dependencies": {
     "@brain/connector-core": "workspace:*",
     "@brain/identity-core": "workspace:*",
+    "@brain/identity-normalization": "workspace:*",
     "@brain/shopify-mapper": "workspace:*"
   },
   "devDependencies": {

@@ -93,6 +93,8 @@ export class ShopfloWebhookStrategy implements IWebhookStrategy {
     const region = regionCode || 'IN';
     const nowIso = new Date().toISOString();
     const body = envelope as unknown as Record<string, unknown>;
+    // SPEC: A.1.4 (WA-09) — connector.identity_fields flag (pipeline-resolved, fail-closed OFF).
+    const identityFields = { emitInteropIdentifiers: ctx.identityFieldsEnabled === true };
 
     // ── Legacy abandoned lane → shopflo.checkout_abandoned.v1 (frozen mapper + parity-stable event_id) ──
     if (t === 'checkout_abandoned') {
@@ -122,6 +124,7 @@ export class ShopfloWebhookStrategy implements IWebhookStrategy {
         saltHex,
         region,
         'real',
+        identityFields,
       );
       return {
         eventId: bronzeEventId,
@@ -143,7 +146,7 @@ export class ShopfloWebhookStrategy implements IWebhookStrategy {
 
     // ── Order lifecycle → order.live.v1 (THE fix: Shopflo becomes an order source → Gold revenue) ──
     if (t.startsWith('order')) {
-      const mapped = mapShopfloOrder({ ...body, event_name: rawEvent }, brandId, saltHex, region);
+      const mapped = mapShopfloOrder({ ...body, event_name: rawEvent }, brandId, saltHex, region, 'real', identityFields);
       return this.toResult(mapped.event_id, mapped.event_name, mapped.occurred_at, mapped.properties);
     }
 
@@ -162,7 +165,7 @@ export class ShopfloWebhookStrategy implements IWebhookStrategy {
       else if (t.includes('step')) kind = 'step';
       else if (t.includes('start') || t.includes('init') || t.includes('creat')) kind = 'started';
       if (kind === null) return skipResult(rawEvent || 'shopflo.unknown', nowIso);
-      const mapped = mapShopfloCheckout(body, brandId, saltHex, region, kind);
+      const mapped = mapShopfloCheckout(body, brandId, saltHex, region, kind, 'real', identityFields);
       return this.toResult(mapped.event_id, mapped.event_name, mapped.occurred_at, mapped.properties);
     }
 

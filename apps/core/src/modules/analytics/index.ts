@@ -292,3 +292,32 @@ export type {
   BriefingDto,
   InsightDto,
 } from './internal/application/queries/get-insights-briefing.js';
+
+// ── Measurement-tier facade (WA-02, SPEC: 0.5) ──────────────────────────────────────────────
+// packages/metric-engine is fenced to the measurement tier (I-ST03, D-6): non-measurement core
+// modules (billing, ml, notification, recommendation, workspace-access) must NOT import the
+// engine directly — the ESLint boundary fence rejects it and points HERE. This section is the
+// SANCTIONED route: analytics (a measurement-tier module) re-exports exactly the narrow seam
+// surface those modules legitimately consume. Nothing else from the engine is re-exported —
+// in particular NOT withSilverBrand/BRAND_PREDICATE, so non-measurement modules cannot write
+// ad-hoc serving SQL; every Gold read below is a purpose-named engine function.
+//
+// SilverPool is the driver-agnostic Trino serving-pool PORT type — deps typing only; the
+// concrete adapter is injected by the composition root (apps/core/src/main.ts).
+export type { SilverPool } from '@brain/metric-engine';
+// billing — the billing meter + inspectable-bill Gold seams (D-3: money math lives in the engine).
+export { computeRealizedGmvForPeriod, computeRealizedGmvCompositionForPeriod } from '@brain/metric-engine';
+// ml — the Gold customer-score read (I-ST01: the engine is the SOLE Gold reader).
+export { getCustomerScore } from '@brain/metric-engine';
+// recommendation — the detector signal seams (RTO / realization / CM2 halves).
+export {
+  computeRtoRiskSignal,
+  computeRealizationSignal,
+  computeCm2RevenueSignal,
+  computeCm2MarketingSignal,
+} from '@brain/metric-engine';
+// workspace-access — MA-11 currency_code immutability probe (any Gold ledger rows?).
+export { brandHasRealizedLedgerRows } from '@brain/metric-engine';
+// notification — the CAPI passback SOURCE window (finalized positive-amount purchases).
+export { computeFinalizedPurchasesForWindow } from '@brain/metric-engine';
+export type { FinalizedPurchaseWindowRow } from '@brain/metric-engine';

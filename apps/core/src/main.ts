@@ -34,6 +34,8 @@ import {
   type SilverPool,
   type ServingCacheReader,
 } from '@brain/metric-engine';
+// SPEC: 0.5 — per-brand feature flags (Redis-backed, DEFAULT OFF, fail-closed).
+import { createFlagService, RedisFlagStoreAdapter, type RedisFlagClient } from '@brain/platform-flags';
 import { DbAuditWriter } from '@brain/audit';
 
 import {
@@ -448,6 +450,15 @@ export async function main(): Promise<void> {
     `[core] serving cache ${servingCacheEnabled ? 'ENABLED' : 'disabled'} (Trino serving reads, ttl=${cfg.TRINO_SERVING_CACHE_TTL_MS}ms, version=${cfg.SERVING_VERSION})`,
   );
 
+  // ── SPEC: 0.5 — per-brand platform flags (Redis-backed, DEFAULT OFF, fail-closed) ──
+  // Keys are `{brand_id}:flag:{name}` via the sanctioned tenant-context flagKey().
+  // Reuses the SINGLE shared ioredis client above (same pattern as the serving cache);
+  // ioredis satisfies the structural RedisFlagClient port at runtime — cast for the
+  // overloaded `set` signature. Redis down → every flag reads false → pre-wave behavior.
+  const flagService = createFlagService({
+    store: new RedisFlagStoreAdapter(redis as unknown as RedisFlagClient),
+  });
+
   // Create DB pool (3-GUC middleware — NN-1). assertRlsEnforcingRole (P2.3): refuse to start if
   // DATABASE_URL points at an RLS-bypassing role (the superuser footgun) — raw queries would
   // silently defeat tenant isolation.
@@ -804,6 +815,7 @@ export async function main(): Promise<void> {
     piiVaultService,
     identityReader,
     getCoreSaltHex,
+    flagService,
   });
 
   // ── CQ-2: register the connector + pixel context (HIGH-MOUNT-01) ────────────
@@ -832,6 +844,10 @@ export async function main(): Promise<void> {
     liveTopic,
     getWebhookSaltHex,
     identityReader,
+    // SPEC: A.1.4 (WA-09) — per-brand connector.identity_fields gate for the webhook mappers
+    // (AMD-01 interop dual-write). FlagService is DEFAULT-OFF + fail-closed by construction.
+    isIdentityFieldsEnabled: (brandId: string) =>
+      flagService.isFlagEnabled(brandId, 'connector.identity_fields'),
     pixelInstallationRepo,
     pixelStatusRepo,
     getOrCreateInstallation,

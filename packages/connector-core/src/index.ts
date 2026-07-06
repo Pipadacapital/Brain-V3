@@ -81,6 +81,8 @@ export type {
   CanonicalProvenance,
   CanonicalPreHashedIdentifiers,
 } from './contracts/CanonicalEvent.js';
+// SPEC: A.1.4 — WA-09 dual-write knob (connector.identity_fields flag projection)
+export type { IdentityFieldsOptions } from './contracts/IdentityFields.js';
 
 // ── Ingestion framework: manifest (resource registry) ────────────────────────────
 export {

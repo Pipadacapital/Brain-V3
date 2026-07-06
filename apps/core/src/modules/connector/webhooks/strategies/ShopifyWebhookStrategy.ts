@@ -149,6 +149,8 @@ export class ShopifyWebhookStrategy implements IWebhookStrategy {
 
   async payloadMap(ctx: WebhookStrategyContext): Promise<PayloadMapResult> {
     const { rawBody, headers, brandId, saltHex, correlationId, requestId } = ctx;
+    // SPEC: A.1.4 (WA-09) — connector.identity_fields flag (pipeline-resolved, fail-closed OFF).
+    const identityFields = { emitInteropIdentifiers: ctx.identityFieldsEnabled === true };
 
     // Canonical (slash-form) topic: Shopify's authoritative X-Shopify-Topic header when present, else the
     // route's injected x-wh-topic URL segment (underscore form reverse-mapped). See resolveTopic.
@@ -333,7 +335,7 @@ export class ShopifyWebhookStrategy implements IWebhookStrategy {
 
     const orderId = String(order.id);
     const eventId = uuidV5FromOrderLive(brandId, orderId, updatedAtUtcMs);
-    const mapped = mapOrderToEvent(order, saltHex, 'IN', ORDER_LIVE_V1_EVENT_NAME);
+    const mapped = mapOrderToEvent(order, saltHex, 'IN', ORDER_LIVE_V1_EVENT_NAME, identityFields);
 
     // HIGH (no-event-loss): NO transport replay-age gate for order webhooks. Feeding the business
     // order.updated_at into the pipeline's 5-min window rejected every Shopify retry/delay >5min

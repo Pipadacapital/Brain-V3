@@ -101,6 +101,13 @@ export interface WebhookStrategyContext {
   saltHex: string;
   /** Region code (e.g. 'IN'). */
   regionCode: string;
+  /**
+   * SPEC: A.1.4 (WA-09) — per-brand `connector.identity_fields` flag state, resolved by the
+   * pipeline (fail-closed: absent/undefined = OFF = today's envelope byte-identical). When true,
+   * strategies pass { emitInteropIdentifiers: true } to the mappers → AMD-01 interop dual-write
+   * (email_sha256 / phone_sha256) + checkout_session_id where the provider carries it.
+   */
+  identityFieldsEnabled?: boolean;
   /** Correlation ID for the request. */
   correlationId: string;
   /** Request ID for logging. */

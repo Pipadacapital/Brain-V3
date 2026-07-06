@@ -99,6 +99,38 @@ export function rateLimitKey(params: RateLimitKeyParams): string {
   return `brain:v1:rl:brand:${brandId}:resource:${resource}:w:${windowBucket}`;
 }
 
+// ── Feature-flag key (SPEC: 0.5) ──────────────────────────────────────────────
+
+export interface FlagKeyParams {
+  /** UUID of the brand (tenant key — MUST be the first key segment). */
+  brandId: string;
+  /** The flag name from the @brain/platform-flags registry (e.g. 'stitch.v2'). */
+  flag: string;
+}
+
+/**
+ * Build a per-brand feature-flag key: `{brand_id}:flag:{flag_name}`.
+ *
+ * SPEC: 0.5 — brand_id is the FIRST segment of every Redis key. The Python twin
+ * (db/iceberg/spark/_platform_flags.py) builds the identical key — keep in lockstep.
+ * Sanctioned builder per the no-raw-redis-key lint rule (NN-7).
+ *
+ * @throws {Error} If a segment is missing or contains ":" (separator injection).
+ */
+export function flagKey(params: FlagKeyParams): string {
+  const { brandId, flag } = params;
+  if (!brandId) throw new Error('[tenant-context] flagKey: brandId is required');
+  if (!flag) throw new Error('[tenant-context] flagKey: flag is required');
+  for (const [name, val] of Object.entries({ brandId, flag })) {
+    if (String(val).includes(':')) {
+      throw new Error(
+        `[tenant-context] flagKey: "${name}" must not contain ":" (would break key parsing)`,
+      );
+    }
+  }
+  return `${brandId}:flag:${flag}`;
+}
+
 // ── Session key ───────────────────────────────────────────────────────────────
 
 export interface SessionKeyParams {

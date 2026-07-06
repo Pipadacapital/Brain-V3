@@ -234,6 +234,12 @@ export {
 } from './attribution-models.js';
 export type { AttributionModelId, TouchCredit, AttributionTouch } from './attribution-models.js';
 
+// WA-02 (SPEC: 0.5) purpose-named Gold reads — replace the raw withSilverBrand/BRAND_PREDICATE
+// usage that non-measurement core modules (workspace-access, notification) used to inline.
+export { brandHasRealizedLedgerRows } from './ledger-presence.js';
+export { computeFinalizedPurchasesForWindow } from './finalized-purchases-window.js';
+export type { FinalizedPurchaseWindowRow } from './finalized-purchases-window.js';
+
 // Billing meter seam — per-period realized GMV from the lakehouse (gold), the PG-function replacement.
 export { computeRealizedGmvForPeriod } from './realized-gmv-period.js';
 export type { RealizedGmvForPeriod } from './realized-gmv-period.js';

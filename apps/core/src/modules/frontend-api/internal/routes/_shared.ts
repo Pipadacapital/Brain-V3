@@ -23,6 +23,7 @@ import type {
 import type { IdentityReader } from '../../../identity/index.js';
 import type { ContactPiiVaultService } from '../../../identity/index.js';
 import type { FoundationSignals } from '../../../analytics/index.js';
+import type { FlagService } from '@brain/platform-flags';
 
 // @fastify/cookie v11 module augmentation is not automatically applied in
 // NodeNext module resolution when the package has no `exports` field.
@@ -74,6 +75,12 @@ export interface BffDeps {
    * the brand's identities were hashed. Optional: absent → callers fall back to the dev resolver.
    */
   getCoreSaltHex?: (brandId: string) => Promise<string>;
+  /**
+   * SPEC: 0.5 — per-brand feature flags (Redis-backed, DEFAULT OFF, fail-closed).
+   * Optional: absent → the admin flag routes answer 503 and nothing reads flags
+   * (equivalent to every flag OFF — the safe pre-wave state).
+   */
+  flagService?: FlagService;
   /** Standard session validation pre-handler (NN-3). */
   sessionPreHandler: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
   /** Cookie + CSRF + session validation pre-handler used by every protected BFF route. */

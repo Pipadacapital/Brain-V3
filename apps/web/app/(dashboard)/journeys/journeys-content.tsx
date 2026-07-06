@@ -45,8 +45,16 @@ import { SyntheticBadge } from '@/components/analytics/synthetic-badge';
 import { FirstTouchMixChart } from '@/components/analytics/first-touch-mix-chart';
 import { StitchRateCard } from '@/components/analytics/stitch-rate-card';
 import { JourneyTimeline } from '@/components/analytics/journey-timeline';
+import { RecentJourneysFeed } from '@/components/analytics/recent-journeys-feed';
 import { channelMeta } from '@/components/analytics/channel-meta';
 import { eventLabel } from '@/lib/event-labels';
+import { DataWindowBadge } from '@/components/ui/data-window-badge';
+import { TableSearch, filterRows } from '@/components/ui/table-search';
+import { VerifyLink } from '@/components/ui/verify-link';
+import { plainLabel } from '@/lib/format/plain-language';
+import { formatMoneyDisplay } from '@/lib/format/money-display';
+import { relativeTime } from '@/lib/format/relative-time';
+import type { CurrencyCode } from '@brain/money';
 import {
   DateRangeFilter,
   initialRange,
@@ -58,17 +66,21 @@ import {
   useJourneyStitchRate,
   useJourneyPaths,
   useJourneyTimeline,
+  useOrdersList,
 } from '@/lib/hooks/use-analytics';
 import type {
   AnalyticsJourneyFirstTouchMixResponse,
   AnalyticsJourneyStitchRateResponse,
   AnalyticsJourneyPathsResponse,
+  AnalyticsOrdersListResponse,
   JourneyTouchpointRow,
 } from '@/lib/api/types';
 
 type FirstTouchHasData = Extract<AnalyticsJourneyFirstTouchMixResponse, { state: 'has_data' }>;
 type StitchHasData = Extract<AnalyticsJourneyStitchRateResponse, { state: 'has_data' }>;
 type PathsHasData = Extract<AnalyticsJourneyPathsResponse, { state: 'has_data' }>;
+type OrdersHasData = Extract<AnalyticsOrdersListResponse, { state: 'has_data' }>;
+type OrderPickRow = OrdersHasData['orders'][number];
 
 /** Longer windows than the default 7/30/90 — journeys accrue over months. */
 const JOURNEY_PRESETS: readonly RangePreset[] = [
@@ -120,7 +132,7 @@ const EXPLAINER = {
     },
     {
       heading: 'Pick a window or an order',
-      body: 'The date range scopes the first-touch mix and Identified-visitors sections. To trace one journey, enter an order ID in "Trace one journey" — it shows every tracked step that led to that order.',
+      body: 'The date range scopes the first-touch mix and Identified-visitors sections. To trace one journey, pick one of your recent orders in "Trace one journey" — it shows every tracked step that led to that order.',
     },
     {
       heading: 'Live vs estimated',
@@ -167,10 +179,12 @@ export function JourneysContent() {
   const stitch = stitchQ.data;
   const paths = pathsQ.data;
 
-  const synthetic =
+  // Scope the "Estimated" badge to the surface it actually describes — a synthetic paths mart
+  // must not stamp the live first-touch card as estimated (and vice-versa). Each card owns its flag.
+  const pathsSynthetic = paths?.state === 'has_data' && paths.data_source === 'synthetic';
+  const mixSynthetic =
     (mix?.state === 'has_data' && mix.data_source === 'synthetic') ||
-    (stitch?.state === 'has_data' && stitch.data_source === 'synthetic') ||
-    (paths?.state === 'has_data' && paths.data_source === 'synthetic');
+    (stitch?.state === 'has_data' && stitch.data_source === 'synthetic');
 
   return (
     <TabShell
@@ -186,6 +200,9 @@ export function JourneysContent() {
         />
       }
     >
+      {/* ── Recent journeys feed (per-visitor complete journeys, plain-language) ── */}
+      <RecentJourneysFeed />
+
       {/* ── Ranked conversion paths (gold_journey_paths aggregate) ── */}
       <SectionCard
         title={
@@ -199,7 +216,7 @@ export function JourneysContent() {
         }
         description="Each row is one channel route customers take on the way to an order — with how many bought and what share that is of everyone who took the path."
         actions={
-          synthetic ? (
+          pathsSynthetic ? (
             <SyntheticBadge
               data-testid="journey-paths-synthetic-badge"
               reason="Real tracking coverage is thin, so path data includes clearly-labelled estimated journeys. Never presented as live."
@@ -233,7 +250,7 @@ export function JourneysContent() {
         }
         description="Where journeys begin — and how many anonymous browsers we can prove belong to a known customer."
         actions={
-          synthetic ? (
+          mixSynthetic ? (
             <SyntheticBadge
               data-testid="journey-synthetic-badge"
               reason="Real tracking coverage is thin in this window, so it includes clearly-labelled estimated journeys. Never presented as live."
@@ -242,6 +259,15 @@ export function JourneysContent() {
         }
         meta={<FreshnessBadge timestamp={undefined} />}
       >
+        {/* Always state the window this card covers — "Showing D1 → D2 · N visitor journeys". */}
+        <div className="mb-3">
+          <DataWindowBadge
+            from={range.from}
+            to={range.to}
+            count={mix?.state === 'has_data' ? Number(mix.total) : undefined}
+            label="visitor journeys"
+          />
+        </div>
         {mixQ.isLoading && <MixSkeleton />}
         {!mixQ.isLoading && mixQ.error && <ErrorCard error={mixQ.error} retry={mixQ.refetch} />}
         {!mixQ.isLoading && !mixQ.error && mix?.state === 'no_data' && (
@@ -263,7 +289,7 @@ export function JourneysContent() {
             />
           </span>
         }
-        description="Enter an order ID to see the visits, ads, and actions that led up to that purchase."
+        description="Pick one of your recent orders to see the visits, ads, and actions that led up to that purchase."
         meta={<FreshnessBadge timestamp={undefined} />}
       >
         <TraceOneJourney />
@@ -301,6 +327,8 @@ function PathChips({ channels }: { channels: string[] }) {
  * conversion % is the engine's exact 2dp string (never re-divided in the client).
  */
 function RankedPathsTable({ data }: { data: PathsHasData }) {
+  const [query, setQuery] = useState('');
+
   // Rank by purchases (exact integer compare — no float math).
   const ranked = [...data.paths].sort((a, b) =>
     BigInt(b.converted_count) > BigInt(a.converted_count)
@@ -308,6 +336,12 @@ function RankedPathsTable({ data }: { data: PathsHasData }) {
       : BigInt(b.converted_count) < BigInt(a.converted_count)
         ? -1
         : 0,
+  );
+
+  // Search across the human-meaningful column: the friendly channel labels making up each path
+  // (e.g. "Meta" matches "Paid · Meta → Email"). Never exposes the raw channel code.
+  const rows = filterRows(ranked, query, (p) =>
+    p.channels.map((ch) => channelMeta(ch).label).join(' '),
   );
 
   return (
@@ -336,6 +370,19 @@ function RankedPathsTable({ data }: { data: PathsHasData }) {
         />
       </div>
 
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <TableSearch
+          value={query}
+          onChange={setQuery}
+          placeholder="Search a channel (e.g. Meta, Email)…"
+          aria-label="Search conversion paths by channel"
+        />
+        <VerifyLink
+          href="/analytics/orders"
+          label="See the orders behind these conversions"
+        />
+      </div>
+
       <Table>
         <TableHeader>
           <TableRow>
@@ -345,7 +392,14 @@ function RankedPathsTable({ data }: { data: PathsHasData }) {
           </TableRow>
         </TableHeader>
         <TableBody>
-          {ranked.map((p) => (
+          {rows.length === 0 && (
+            <TableRow>
+              <TableCell colSpan={3} className="text-sm text-muted-foreground">
+                No paths match “{query}”. Clear the search to see every conversion path.
+              </TableCell>
+            </TableRow>
+          )}
+          {rows.map((p) => (
             <TableRow key={p.path_signature}>
               <TableCell>
                 <PathChips channels={p.channels} />
@@ -411,6 +465,8 @@ function JourneyMix({ mix, stitch }: { mix: FirstTouchHasData; stitch: StitchHas
             hitPct={stitch.hit_pct}
             stitched={stitch.stitched}
             total={stitch.total}
+            href="/customers"
+            linkLabel="See the identified customers"
             data-testid="journey-kpi-stitch"
           />
         ) : (
@@ -487,56 +543,74 @@ function describeTouch(t: JourneyTouchpointRow): string {
   return `${base}${campaign}${referrer}`;
 }
 
+/** One plain-language option for the recent-orders picker — no raw code stands alone. */
+function orderPickLabel(o: OrderPickRow): string {
+  const when = relativeTime(o.occurred_at).label;
+  const amount = formatMoneyDisplay(o.amount_minor, o.currency_code as CurrencyCode);
+  const status = o.financial_status ? plainLabel(o.financial_status) : 'Order';
+  return `${status} · ${amount} · ${when} · #${o.order_id}`;
+}
+
 /**
- * TraceOneJourney — order-ID input → the shared <JourneyTimeline>, fed by the EXISTING
- * useJourneyTimeline hook (touchpoint rows mapped inline). Oldest-first: the story reads
- * top-to-bottom from first visit to purchase. Honest empty state when the order has no
- * linked session — never a fabricated step.
+ * TraceOneJourney — pick a RECENT ORDER from a plain-language dropdown → the shared
+ * <JourneyTimeline>, fed by the EXISTING useJourneyTimeline hook (which resolves the order to
+ * its stitched session, D-5). Replaces the old free-text order-ID box (a non-technical owner
+ * has no order IDs memorised) with a browsable picker of the brand's latest orders
+ * (useOrdersList). Oldest-first steps: the story reads top-to-bottom from first visit to
+ * purchase. Honest empty states when there are no orders yet, or the order has no linked
+ * session — never a fabricated step.
  */
 function TraceOneJourney() {
-  const [draft, setDraft] = useState('');
   const [orderId, setOrderId] = useState<string | null>(null);
 
-  const { data, isLoading, error, refetch } = useJourneyTimeline(orderId);
+  const ordersQ = useOrdersList(1, 25);
+  const orders: OrderPickRow[] = ordersQ.data?.state === 'has_data' ? ordersQ.data.orders : [];
 
-  const submit = (e: React.FormEvent) => {
-    e.preventDefault();
-    const v = draft.trim();
-    setOrderId(v.length > 0 ? v : null);
-  };
+  const { data, isLoading, error, refetch } = useJourneyTimeline(orderId);
 
   const hasData = data?.state === 'has_data';
 
   return (
     <div className="space-y-3" data-testid="journey-timeline-section">
-      <form onSubmit={submit} className="flex flex-wrap items-end gap-2">
+      <div className="flex flex-wrap items-end gap-2">
         <div className="flex flex-col gap-1">
-          <label htmlFor="journey-order-id" className="text-xs font-medium text-muted-foreground">
-            Enter an order ID
+          <label htmlFor="journey-order-pick" className="text-xs font-medium text-muted-foreground">
+            Pick a recent order to trace
           </label>
-          <input
-            id="journey-order-id"
-            type="text"
-            inputMode="text"
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            placeholder="e.g. 4521987654321"
-            data-testid="journey-order-input"
-            className="h-9 w-64 max-w-full rounded-md border border-border bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-          />
+          {ordersQ.isLoading ? (
+            <Skeleton className="h-9 w-72" />
+          ) : ordersQ.error ? (
+            <ErrorCard error={ordersQ.error} retry={ordersQ.refetch} />
+          ) : orders.length === 0 ? (
+            <p className="max-w-md text-sm text-muted-foreground">
+              No recent orders to trace yet — orders show up here as they come in, and each one can be
+              traced back to the visit that led to it.
+            </p>
+          ) : (
+            <select
+              id="journey-order-pick"
+              value={orderId ?? ''}
+              onChange={(e) => setOrderId(e.target.value ? e.target.value : null)}
+              data-testid="journey-order-picker"
+              className="h-9 w-72 max-w-full rounded-md border border-border bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+            >
+              <option value="">Choose a recent order…</option>
+              {orders.map((o) => (
+                <option key={o.order_id} value={o.order_id}>
+                  {orderPickLabel(o)}
+                </option>
+              ))}
+            </select>
+          )}
         </div>
-        <Button type="submit" size="sm" variant="outline" data-testid="journey-timeline-submit">
-          <Route className="mr-2 h-4 w-4" aria-hidden="true" />
-          Trace journey
-        </Button>
-      </form>
+      </div>
 
-      {orderId === null && (
+      {orderId === null && orders.length > 0 && (
         <EmptyState
           compact
           icon={<Route />}
           title="Trace a customer's journey"
-          description="Enter an order ID above to see every tracked step that led to that purchase — from first visit onwards."
+          description="Pick one of your recent orders above to see every tracked step that led to that purchase — from first visit onwards."
         />
       )}
 

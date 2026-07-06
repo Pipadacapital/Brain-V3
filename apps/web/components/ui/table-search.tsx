@@ -75,3 +75,35 @@ export function matchesQuery(query: string, ...fields: Array<string | null | und
   if (!q) return true;
   return fields.some((f) => (f ?? '').toLowerCase().includes(q));
 }
+
+/**
+ * filterRows — pure, case-insensitive substring filter over a row list. Give it the fields
+ * (keys) to search, or a string accessor that flattens the row into searchable text. An
+ * empty/whitespace query returns a shallow copy of all rows (narrows nothing, fabricates
+ * nothing). Built on matchesQuery so behaviour stays identical everywhere.
+ *
+ * @example filterRows(orders, q, ['order_name', 'customer_email'])
+ * @example filterRows(orders, q, (o) => `${o.order_name} ${o.customer_email}`)
+ */
+export function filterRows<T>(
+  rows: readonly T[],
+  query: string,
+  fields: readonly (keyof T)[] | ((row: T) => string),
+): T[] {
+  const q = query.trim();
+  if (!q) return rows.slice();
+
+  if (typeof fields === 'function') {
+    return rows.filter((row) => matchesQuery(q, fields(row)));
+  }
+
+  return rows.filter((row) =>
+    matchesQuery(
+      q,
+      ...fields.map((f) => {
+        const v = row[f];
+        return v == null ? '' : String(v);
+      }),
+    ),
+  );
+}

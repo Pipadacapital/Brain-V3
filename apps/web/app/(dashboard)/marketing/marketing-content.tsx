@@ -35,22 +35,25 @@ import { Megaphone, Target, BarChart3, Send } from 'lucide-react';
 import { TabShell } from '@/components/ui/tab-shell';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { FreshnessBadge } from '@/components/ui/freshness-badge';
+import { Alert } from '@/components/ui/alert';
 import { AttributionContent } from '../analytics/attribution/attribution-content';
 import { SpendContent } from '../analytics/spend/spend-content';
 import { ConversionFeedbackContent } from '../analytics/conversion-feedback/conversion-feedback-content';
 
 type MarketingTab = 'attribution' | 'spend' | 'conversion-feedback';
 
+// Spend & ROAS leads: it is always-live money (ad spend ÷ realized revenue), whereas
+// attribution credit depends on stitched + finalized journeys and can be honestly empty.
 const TABS: { value: MarketingTab; label: string; icon: typeof Target }[] = [
-  { value: 'attribution', label: 'Attribution', icon: Target },
   { value: 'spend', label: 'Spend & ROAS', icon: BarChart3 },
+  { value: 'attribution', label: 'Attribution', icon: Target },
   { value: 'conversion-feedback', label: 'Conversion feedback', icon: Send },
 ];
 
-/** Map the raw ?tab= value to a known sub-tab; default to attribution. */
+/** Map the raw ?tab= value to a known sub-tab; default to Spend & ROAS (live money). */
 function normalizeTab(raw: string | undefined): MarketingTab {
-  if (raw === 'spend' || raw === 'conversion-feedback') return raw;
-  return 'attribution';
+  if (raw === 'attribution' || raw === 'conversion-feedback') return raw;
+  return 'spend';
 }
 
 /** A thin freshness row above each reused surface (honest 'unknown' — no served-at exposed). */
@@ -175,14 +178,28 @@ export function MarketingContent({ initialTab }: { initialTab?: string }) {
           ))}
         </TabsList>
 
-        <TabsContent value="attribution" className="space-y-3">
-          <SectionFreshness label="Attribution & channel ROAS" />
-          <AttributionContent />
-        </TabsContent>
-
         <TabsContent value="spend" className="space-y-3">
           <SectionFreshness label="Ad spend & ROAS" />
           <SpendContent />
+        </TabsContent>
+
+        <TabsContent value="attribution" className="space-y-3">
+          <SectionFreshness label="Attribution & channel ROAS" />
+          <Alert variant="info" title="If a channel shows no attributed revenue">
+            Channel credit only appears once a customer&apos;s journey is stitched together and the
+            order is confirmed. Until then a channel can be honestly empty here — that is not a zero
+            you paid for. For money you can act on right now, use{' '}
+            <button
+              type="button"
+              onClick={() => setTab('spend')}
+              className="font-medium underline underline-offset-2"
+            >
+              Spend &amp; ROAS
+            </button>
+            , which is always live. Totals shown here always add back to your confirmed revenue
+            (attributed + unattributed = confirmed).
+          </Alert>
+          <AttributionContent />
         </TabsContent>
 
         <TabsContent value="conversion-feedback" className="space-y-3">

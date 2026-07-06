@@ -496,6 +496,22 @@ export function useJourneyPaths(params?: { limit?: number }) {
 }
 
 /**
+ * useJourneyList — one PAGE of the recent-journeys list (mv_gold_journey), newest-first by
+ * last_touch_at. Keyset-paginated: pass the previous page's next_cursor to fetch the next (older)
+ * page; the queryKey includes the cursor so each page caches independently. Shares the 'analytics'
+ * prefix → auto-invalidates on brand switch. Keeps the previous page while the next loads.
+ * @param params - Optional page size (1..100; server defaults to 25) + opaque keyset cursor.
+ */
+export function useJourneyList(params?: { limit?: number; cursor?: string | null }) {
+  return useQuery({
+    queryKey: [...ANALYTICS_QUERY_KEY, 'journey-list', params?.limit ?? null, params?.cursor ?? null],
+    queryFn: () => analyticsApi.getJourneyList({ limit: params?.limit, cursor: params?.cursor ?? null }),
+    staleTime: 5 * 60_000,
+    placeholderData: (prev) => prev,
+  });
+}
+
+/**
  * useJourneyTimeline — ordered touchpoints for one selected order.
  * Disabled until an orderId is provided (no fabricated empty query).
  * @param orderId - The order to resolve a journey timeline for (or null/undefined to skip).

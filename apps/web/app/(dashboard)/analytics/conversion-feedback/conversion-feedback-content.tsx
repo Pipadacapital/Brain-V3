@@ -29,6 +29,7 @@
  * minor→major by formatMoneyDisplay at render (no float math in the client).
  */
 
+import { useState } from 'react';
 import Link from 'next/link';
 import { ShieldCheck, FlaskConical, Send, Trash2, Target, ArrowRight } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
@@ -40,29 +41,40 @@ import { ErrorCard } from '@/components/ui/error-card';
 import { KpiTile } from '@/components/analytics/kpi-tile';
 import { CapiEventsTable } from '@/components/capi-feedback/capi-events-table';
 import { CapiDeletionsTable } from '@/components/capi-feedback/capi-deletions-table';
+import { DataWindowBadge } from '@/components/ui/data-window-badge';
+import { TableSearch, filterRows } from '@/components/ui/table-search';
+import { VerifyLink } from '@/components/ui/verify-link';
 import {
   useCapiFeedbackSummary,
   useCapiFeedbackEvents,
   useCapiFeedbackDeletions,
 } from '@/lib/hooks/use-capi-feedback';
-import type { CapiFeedbackSummaryResponse } from '@/lib/api/types';
+import type {
+  CapiFeedbackSummaryResponse,
+  CapiFeedbackEventsResponse,
+  CapiFeedbackDeletionsResponse,
+} from '@/lib/api/types';
 
 type SummaryHasData = Extract<CapiFeedbackSummaryResponse, { state: 'has_data' }>;
+type EventsHasData = Extract<CapiFeedbackEventsResponse, { state: 'has_data' }>;
+type DeletionsHasData = Extract<CapiFeedbackDeletionsResponse, { state: 'has_data' }>;
 
 /** A small section wrapper with a heading + labelled region. */
 function Panel({
   title,
   description,
   testId,
+  id,
   children,
 }: {
   title: string;
   description?: string;
   testId: string;
+  id?: string;
   children: React.ReactNode;
 }) {
   return (
-    <section aria-label={title} data-testid={testId} className="space-y-3">
+    <section id={id} aria-label={title} data-testid={testId} className="scroll-mt-24 space-y-3">
       <div>
         <h2 className="text-lg font-semibold text-foreground">{title}</h2>
         {description && <p className="text-sm text-muted-foreground">{description}</p>}
@@ -180,6 +192,77 @@ function SummaryBand({ data }: { data: SummaryHasData }) {
   );
 }
 
+/** Events table + a client-side search that narrows the already-loaded rows (never re-fetches). */
+function EventsTableWithSearch({ data }: { data: EventsHasData }) {
+  const [query, setQuery] = useState('');
+  const rows = data.events ?? [];
+  // Search across the human-meaningful columns: the event id, the plain-word status
+  // ("blocked no consent", "would send dev", "sent"), the block reason, and the value.
+  const filtered = filterRows(
+    rows,
+    query,
+    (r) =>
+      `${r.event_id_short} ${r.status.replace(/_/g, ' ')} ${r.block_reason ?? ''} ${r.currency_code} ${r.value_minor}`,
+  );
+
+  return (
+    <div className="space-y-3">
+      <div className="flex justify-end">
+        <TableSearch
+          value={query}
+          onChange={setQuery}
+          placeholder="Search by status, id, or value…"
+          aria-label="Search passback events"
+        />
+      </div>
+      {query && filtered.length === 0 ? (
+        <Card>
+          <CardContent className="py-8 text-center text-sm text-muted-foreground">
+            No passback events match “{query}”. Clear the search to see all {rows.length} recent
+            events.
+          </CardContent>
+        </Card>
+      ) : (
+        <CapiEventsTable data={{ ...data, events: filtered }} />
+      )}
+    </div>
+  );
+}
+
+/** Deletions table + a client-side search over the plain-word status column. */
+function DeletionsTableWithSearch({ data }: { data: DeletionsHasData }) {
+  const [query, setQuery] = useState('');
+  const rows = data.deletions ?? [];
+  const filtered = filterRows(
+    rows,
+    query,
+    (r) => `${r.status.replace(/_/g, ' ')} ${r.event_count}`,
+  );
+
+  return (
+    <div className="space-y-3">
+      <div className="flex justify-end">
+        <TableSearch
+          value={query}
+          onChange={setQuery}
+          placeholder="Search by status…"
+          aria-label="Search deletion requests"
+        />
+      </div>
+      {query && filtered.length === 0 ? (
+        <Card>
+          <CardContent className="py-8 text-center text-sm text-muted-foreground">
+            No deletion requests match “{query}”. Clear the search to see all {rows.length} recent
+            requests.
+          </CardContent>
+        </Card>
+      ) : (
+        <CapiDeletionsTable data={{ ...data, deletions: filtered }} />
+      )}
+    </div>
+  );
+}
+
 export function ConversionFeedbackContent() {
   const summary = useCapiFeedbackSummary();
   const events = useCapiFeedbackEvents();
@@ -187,6 +270,11 @@ export function ConversionFeedbackContent() {
 
   const summaryData = summary.data;
   const devBoundary = summaryData?.state === 'has_data' && summaryData.dev_boundary === true;
+  // The CAPI endpoints return an all-time aggregate + the most-recent log rows (no date
+  // window to filter on), so we state the window honestly as "all time" and surface the
+  // count of recent events shown — never a fabricated range.
+  const recentEventsCount =
+    events.data?.state === 'has_data' ? events.data.events.length : undefined;
 
   return (
     <div className="space-y-8">
@@ -214,6 +302,15 @@ export function ConversionFeedbackContent() {
         }
       />
 
+      {/* Honest data window — these figures are all-time; there is no date filter to apply. */}
+      <DataWindowBadge
+        from={null}
+        to={null}
+        count={recentEventsCount}
+        label="recent events"
+        data-testid="capi-data-window"
+      />
+
       {/* The dev boundary — explicit when any event is 'would_send_dev'. */}
       {devBoundary && <DevBoundaryBanner />}
 
@@ -231,7 +328,15 @@ export function ConversionFeedbackContent() {
           <NoConversionsEmpty testId="capi-summary-empty" />
         )}
         {!summary.isLoading && !summary.error && summaryData?.state === 'has_data' && (
-          <SummaryBand data={summaryData} />
+          <div className="space-y-3">
+            <SummaryBand data={summaryData} />
+            {/* Drill-through — every headline count is backed by the records on this page. */}
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
+              <span className="text-muted-foreground">See the records behind these numbers:</span>
+              <VerifyLink href="#capi-events-panel" label="Passback events" />
+              <VerifyLink href="#capi-deletions-panel" label="Deletion requests" />
+            </div>
+          </div>
         )}
       </Panel>
 
@@ -240,6 +345,7 @@ export function ConversionFeedbackContent() {
         title="Passback events"
         description="Recent conversion events evaluated for Meta passback — a blocked row proves the gate denied a non-consented send."
         testId="capi-events-panel"
+        id="capi-events-panel"
       >
         {events.isLoading && <PanelSkeleton />}
         {!events.isLoading && events.error && (
@@ -255,7 +361,7 @@ export function ConversionFeedbackContent() {
           </Card>
         )}
         {!events.isLoading && !events.error && events.data?.state === 'has_data' && (
-          <CapiEventsTable data={events.data} />
+          <EventsTableWithSearch data={events.data} />
         )}
       </Panel>
 
@@ -264,6 +370,7 @@ export function ConversionFeedbackContent() {
         title="Retroactive deletions"
         description="Deletion requests sent to Meta within 15 minutes of a customer withdrawing advertising consent."
         testId="capi-deletions-panel"
+        id="capi-deletions-panel"
       >
         {deletions.isLoading && <PanelSkeleton />}
         {!deletions.isLoading && deletions.error && (
@@ -282,7 +389,7 @@ export function ConversionFeedbackContent() {
           </Card>
         )}
         {!deletions.isLoading && !deletions.error && deletions.data?.state === 'has_data' && (
-          <CapiDeletionsTable data={deletions.data} />
+          <DeletionsTableWithSearch data={deletions.data} />
         )}
       </Panel>
 

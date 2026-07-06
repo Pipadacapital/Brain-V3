@@ -51,6 +51,8 @@ export type {
   JourneyPaths as AnalyticsJourneyPathsResponse,
   JourneyPathRowDto as JourneyPathRow,
   JourneyPathLinkDto as JourneyPathLink,
+  JourneyList as AnalyticsJourneyListResponse,
+  JourneyListRowDto as JourneyListRow,
   RepeatLatency as AnalyticsRepeatLatencyResponse,
   RepeatLatencyBucketDto as RepeatLatencyBucket,
   CohortUsers as AnalyticsCohortUsersResponse,

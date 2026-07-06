@@ -17,15 +17,30 @@ import { Button } from '@/components/ui/button';
 import { EmptyState } from '@/components/ui/empty-state';
 import { PageHeader } from '@/components/ui/page-header';
 import { StatusBadge } from '@/components/ui/status-badge';
+import { DataWindowBadge } from '@/components/ui/data-window-badge';
+import { VerifyLink } from '@/components/ui/verify-link';
+import { TableSearch, filterRows } from '@/components/ui/table-search';
 import { KpiTile } from '@/components/analytics/kpi-tile';
 import { SyntheticBadge } from '@/components/analytics/synthetic-badge';
 import { TrendChart } from '@/components/analytics/trend-chart';
 import { useInsightsBriefing, useRevenueTimeseries, ANALYTICS_QUERY_KEY } from '@/lib/hooks/use-analytics';
 import { recommendationApi } from '@/lib/api/client';
 import { formatMoneyDisplay } from '@/lib/format/money-display';
+import { plainConfidence } from '@/lib/format/plain-language';
 import type { CurrencyCode } from '@brain/money';
-import type { InsightDto, InsightKind, InsightSeverity, RecommendationActionKind } from '@/lib/api/types';
+import type { InsightConfidence, InsightDto, InsightKind, InsightSeverity, RecommendationActionKind } from '@/lib/api/types';
 import { Sparkles, AlertTriangle, Lightbulb, TrendingUp, TrendingDown, Check } from 'lucide-react';
+
+/**
+ * Plain-language confidence → visible phrase + tone + a one-line "what this means" (shown on
+ * hover via the badge title). Replaces the raw "confidence: high" code that used to reach the
+ * DOM (plain-language rule 1). Meaning is text, never colour alone.
+ */
+const CONFIDENCE_META: Record<InsightConfidence, { tone: 'success' | 'info' | 'warning'; help: string }> = {
+  high: { tone: 'success', help: 'Based on strong, complete data — safe to act on.' },
+  medium: { tone: 'info', help: 'Based on mostly complete data — likely reliable.' },
+  low: { tone: 'warning', help: 'Based on limited or still-settling data — treat as directional.' },
+};
 
 const KIND_ICON: Record<InsightKind, React.ComponentType<{ className?: string }>> = {
   risk: AlertTriangle,
@@ -105,9 +120,15 @@ function InsightCard({ insight }: { insight: InsightDto }) {
               {insight.delta_pct}%
             </span>
           )}
-          <span className="text-xs uppercase tracking-wide text-muted-foreground">
-            confidence: {insight.confidence}
-          </span>
+          {/* Plain-language confidence — "We're confident" / "Fairly confident" / "Rough estimate"
+              instead of the raw "confidence: high" code; title carries the one-line explainer. */}
+          <StatusBadge
+            tone={CONFIDENCE_META[insight.confidence].tone}
+            hideDot
+            title={CONFIDENCE_META[insight.confidence].help}
+          >
+            {plainConfidence(insight.confidence)}
+          </StatusBadge>
         </div>
 
         <div className="rounded-md bg-accent/60 px-3 py-2 text-sm">
@@ -157,12 +178,20 @@ function InsightCard({ insight }: { insight: InsightDto }) {
 export function InsightsContent() {
   const { data, isLoading, error } = useInsightsBriefing();
   const { data: revenue, isLoading: revenueLoading } = useRevenueTimeseries({ grain: 'day' });
+  const [feedQuery, setFeedQuery] = useState('');
 
   const hasData = data?.state === 'has_data';
   const briefing = hasData ? data.briefing : null;
   const insights = hasData ? data.insights : [];
   const ccy = briefing?.primary_currency ?? null;
   const totalImpact = money(briefing?.total_impact_minor ?? null, ccy);
+
+  // SEARCH: narrow the already-loaded insight feed across its human-meaningful text.
+  const filteredInsights = filterRows(
+    insights,
+    feedQuery,
+    (i) => `${i.title} ${i.why} ${i.recommended_action} ${i.kind} ${i.severity}`,
+  );
 
   return (
     <div className="space-y-6">
@@ -209,6 +238,18 @@ export function InsightsContent() {
             )}
           </CardTitle>
           {briefing && <CardDescription>{briefing.headline}</CardDescription>}
+          {/* DATE WINDOW: the briefing is computed over a fixed comparison window (server-owned,
+              not a client filter) — surface it honestly so the reader always sees the span the
+              numbers cover. */}
+          {briefing && (
+            <DataWindowBadge
+              from={briefing.window.current.from}
+              to={briefing.window.current.to}
+              count={insights.length}
+              label="insights"
+              className="pt-1"
+            />
+          )}
         </CardHeader>
         <CardContent>
           {isLoading && <p className="text-sm text-muted-foreground">Analysing your commerce…</p>}
@@ -280,14 +321,42 @@ export function InsightsContent() {
       </Card>
 
       {/* Insight feed */}
-      {hasData && insights.length > 0 && (
+      {hasData && (
         <section aria-label="Insight feed" className="space-y-3">
-          <h2 className="text-lg font-semibold text-foreground">Ranked insights</h2>
-          <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-            {insights.map((insight) => (
-              <InsightCard key={insight.id} insight={insight} />
-            ))}
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <h2 className="text-lg font-semibold text-foreground">Ranked insights</h2>
+            <div className="flex flex-wrap items-center gap-3">
+              {/* VERIFY: the impact figures summarize order records — let the reader drill through. */}
+              <VerifyLink href="/analytics/orders" label="See the orders behind these numbers" />
+              {insights.length > 0 && (
+                <TableSearch
+                  value={feedQuery}
+                  onChange={setFeedQuery}
+                  placeholder="Search insights…"
+                  aria-label="Search insights"
+                />
+              )}
+            </div>
           </div>
+
+          {insights.length === 0 ? (
+            // HONEST EMPTY: has_data but nothing ranked — say why, don't show a blank grid.
+            <EmptyState
+              title="No risks or opportunities in this window"
+              description="Brain analysed your data for this period and found nothing that needs attention right now. New insights appear here automatically as orders, spend and returns change."
+            />
+          ) : filteredInsights.length === 0 ? (
+            <EmptyState
+              title="No insights match your search"
+              description={`Nothing matches "${feedQuery}". Clear the search to see all ${insights.length} ranked insights.`}
+            />
+          ) : (
+            <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+              {filteredInsights.map((insight) => (
+                <InsightCard key={insight.id} insight={insight} />
+              ))}
+            </div>
+          )}
         </section>
       )}
     </div>

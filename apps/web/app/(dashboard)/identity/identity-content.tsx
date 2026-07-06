@@ -50,6 +50,7 @@ import {
 } from 'lucide-react';
 import { brainRef } from '@brain/contracts';
 import { humanize } from '@/lib/format/humanize';
+import { plainConfidence } from '@/lib/format/plain-language';
 import { relativeTime } from '@/lib/format/relative-time';
 import { TabShell } from '@/components/ui/tab-shell';
 import type { ExplainerPanelProps } from '@/components/ui/explainer-panel';
@@ -61,6 +62,9 @@ import { ErrorCard } from '@/components/ui/error-card';
 import { EmptyState } from '@/components/ui/empty-state';
 import { FreshnessBadge } from '@/components/ui/freshness-badge';
 import { MetricTitle } from '@/components/ui/metric-title';
+import { DataWindowBadge } from '@/components/ui/data-window-badge';
+import { VerifyLink } from '@/components/ui/verify-link';
+import { TableSearch, filterRows } from '@/components/ui/table-search';
 import { StatusPill, type StatusPillStatus } from '@/components/ui/status-pill';
 import { StitchRateCard } from '@/components/analytics/stitch-rate-card';
 import {
@@ -264,6 +268,18 @@ function MergeProfileRef({
 function MergeReviewSection() {
   const { data, isLoading, isFetching, error, refetch } = useMergeReviews();
   const resolve = useResolveMergeReview();
+  const [query, setQuery] = React.useState('');
+
+  const reviews = data?.reviews ?? [];
+  // Search across the human-meaningful fields: the plain match reason + both public refs.
+  const filtered = filterRows(
+    reviews,
+    query,
+    (r) =>
+      `${matchReason(r.trigger_reason)} ${brainRef(r.brain_id_a) ?? r.brain_id_a} ${
+        brainRef(r.brain_id_b) ?? r.brain_id_b
+      }`,
+  );
 
   return (
     <section className="space-y-4" aria-label="Merge review queue">
@@ -278,9 +294,22 @@ function MergeReviewSection() {
             separate. Nothing is merged without your decision.
           </p>
         </div>
-        {/* No server timestamp on this endpoint → honest 'unknown'. */}
-        <FreshnessBadge timestamp={undefined} prefix="Queue" />
+        <div className="flex flex-col items-end gap-1">
+          {/* Live queue — no time window on this endpoint, so state it honestly. */}
+          <DataWindowBadge from={null} to={null} count={reviews.length} label="in the queue" />
+          {/* No server timestamp on this endpoint → honest 'unknown'. */}
+          <FreshnessBadge timestamp={undefined} prefix="Queue" />
+        </div>
       </div>
+
+      {reviews.length > 0 ? (
+        <TableSearch
+          value={query}
+          onChange={setQuery}
+          placeholder="Search by match reason or profile ref…"
+          aria-label="Search the merge-review queue"
+        />
+      ) : null}
 
       <div aria-live="polite" aria-busy={isLoading || isFetching}>
         {isLoading ? (
@@ -290,15 +319,21 @@ function MergeReviewSection() {
           </div>
         ) : error ? (
           <ErrorCard error={error} retry={refetch} />
-        ) : !data || data.reviews.length === 0 ? (
+        ) : reviews.length === 0 ? (
           <EmptyState
             icon={<GitMerge className="h-6 w-6" aria-hidden="true" />}
             title="All good! No customer merges need your attention."
             description="When the system spots two profiles that might be the same person, they'll appear here for you to decide."
           />
+        ) : filtered.length === 0 ? (
+          <EmptyState
+            icon={<GitMerge className="h-6 w-6" aria-hidden="true" />}
+            title="No matches"
+            description={`Nothing in the queue matches “${query}”. Clear the search to see all ${reviews.length} pending.`}
+          />
         ) : (
           <ul className="space-y-3">
-            {data.reviews.map((r: MergeReview) => {
+            {filtered.map((r: MergeReview) => {
               const flagged = relativeTime(r.created_at);
               return (
                 <li key={r.review_id}>
@@ -501,7 +536,11 @@ function PiiVaultSection() {
           Customer emails and phone numbers are stored safely encrypted. The actual details
           never leave the vault — this page only ever shows counts.
         </p>
-        <FreshnessBadge timestamp={undefined} prefix="Coverage" />
+        <div className="flex flex-col items-end gap-1">
+          {/* Brand-wide coverage across all identified customers — no date window. */}
+          <DataWindowBadge from={null} to={null} count={data?.resolved_customers} label="customers" />
+          <FreshnessBadge timestamp={undefined} prefix="Coverage" />
+        </div>
       </div>
 
       <div aria-live="polite" aria-busy={isLoading || isFetching}>
@@ -580,6 +619,43 @@ function PiiVaultSection() {
 
 // ── Graph health ──────────────────────────────────────────────────────────────
 
+/** Trust tier → plain phrase (raw enum 'estimated'/'untrusted' never reaches the DOM). */
+const TRUST_TIER_LABEL: Record<string, string> = {
+  trusted: 'Trusted for decisions',
+  estimated: 'Use as a rough estimate',
+  untrusted: 'Not yet reliable for decisions',
+};
+
+/** Report-card ordering (A+ best → D worst) so we can name the weaker of two grades. */
+function gradeRank(g: string): number {
+  const order = ['A+', 'A', 'B', 'C', 'D'];
+  const i = order.indexOf(g.toUpperCase());
+  return i === -1 ? order.length : i;
+}
+
+/**
+ * trustInsight — ONE plain "why this grade / what raises it" sentence for the Data Trust Score.
+ * The score is the WEAKER of the cost-data and attribution-data grades, so we name the weak
+ * link and the concrete action that lifts it. No raw codes — just the report-card letter and
+ * plain English a Shopify owner understands.
+ */
+const RAISE_COST = 'Connecting complete ad-spend and product-cost data raises this.';
+const RAISE_ATTR = 'Linking more orders back to the visits that drove them raises this.';
+function trustInsight(cost: string, attribution: string): string {
+  const costRank = gradeRank(cost);
+  const attrRank = gradeRank(attribution);
+  if (attrRank > costRank) {
+    return `Held back by attribution-data quality (graded ${attribution}); your cost data is stronger at ${cost}. ${RAISE_ATTR}`;
+  }
+  if (costRank > attrRank) {
+    return `Held back by cost-data quality (graded ${cost}); your attribution data is stronger at ${attribution}. ${RAISE_COST}`;
+  }
+  // Tied — the weakest link still sets the score; both need to move to lift the grade.
+  return costRank <= 1
+    ? `Cost data and attribution data are both graded ${cost} — keeping data flowing steadily holds this grade.`
+    : `Cost data and attribution data are both graded ${cost} — the weakest link sets the score. ${RAISE_ATTR} ${RAISE_COST}`;
+}
+
 function GraphHealthSection() {
   const stitchQ = useJourneyStitchRate();
   const vaultQ = useVaultCoverage();
@@ -598,8 +674,12 @@ function GraphHealthSection() {
           How well anonymous visits connect to known customers, how complete your customer
           profiles are, and how much this data can be trusted for decisions.
         </p>
-        {/* Graph-health marts refresh on the Gold loop; no per-row served-at exposed. */}
-        <FreshnessBadge timestamp={undefined} prefix="Marts" />
+        <div className="flex flex-col items-end gap-1">
+          {/* Brand-wide aggregate over your whole history — no date window on these marts. */}
+          <DataWindowBadge from={null} to={null} />
+          {/* Graph-health marts refresh on the Gold loop; no per-row served-at exposed. */}
+          <FreshnessBadge timestamp={undefined} prefix="Marts" />
+        </div>
       </div>
 
       {isLoading ? (
@@ -620,6 +700,8 @@ function GraphHealthSection() {
               hitPct={stitch.hit_pct}
               stitched={stitch.stitched}
               total={stitch.total}
+              href="/customers"
+              linkLabel="See the identified customers"
               data-testid="identity-graph-stitch"
             />
           ) : (
@@ -669,6 +751,11 @@ function GraphHealthSection() {
                     {vault.resolved_customers.toLocaleString('en-IN')} customers have an
                     email or phone on file
                   </p>
+                  <VerifyLink
+                    href="/customers"
+                    label="See these customers"
+                    className="text-xs"
+                  />
                 </>
               ) : (
                 <p className="text-sm italic text-muted-foreground">No data yet</p>
@@ -702,12 +789,28 @@ function GraphHealthSection() {
                   <p className="text-2xl font-bold leading-tight tabular-nums text-foreground">
                     {dq.effectiveConfidence}
                   </p>
-                  <p className="text-xs capitalize text-muted-foreground">
-                    {dq.gate.tier} · decides whether this data guides spending decisions
+                  <p className="text-xs text-muted-foreground">
+                    {plainConfidence(dq.effectiveConfidence) || 'Overall grade'} ·{' '}
+                    {TRUST_TIER_LABEL[dq.gate.tier] ?? humanize(dq.gate.tier)}
                   </p>
+                  {/* Audit hint: the "why this grade / what raises it" insight line. */}
+                  <p className="text-xs text-muted-foreground">
+                    {trustInsight(dq.costConfidence, dq.attributionConfidence)}
+                  </p>
+                  <VerifyLink
+                    href="/data/quality"
+                    label="See the full quality report"
+                    className="text-xs"
+                  />
                 </>
               ) : (
-                <p className="text-sm italic text-muted-foreground">No quality grades yet</p>
+                <div className="space-y-1">
+                  <p className="text-sm italic text-muted-foreground">No quality grades yet</p>
+                  <p className="text-xs text-muted-foreground">
+                    A grade appears once Brain has enough cost and attribution data to score.
+                    Connect your ad accounts and let orders flow through to fill this in.
+                  </p>
+                </div>
               )}
             </CardContent>
           </Card>

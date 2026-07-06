@@ -35,6 +35,9 @@ import { Sparkline } from '@/components/analytics/sparkline';
 import { SyntheticBadge } from '@/components/analytics/synthetic-badge';
 import { DateRangeFilter, initialRange, type DateRange } from '@/components/ui/date-range-filter';
 import { TableSearch, matchesQuery } from '@/components/ui/table-search';
+import { DataWindowBadge } from '@/components/ui/data-window-badge';
+import { VerifyLink } from '@/components/ui/verify-link';
+import { plainLabel } from '@/lib/format/plain-language';
 import {
   useSearchBehavior,
   useFormConversion,
@@ -63,6 +66,15 @@ function normalizeTab(tab?: string): SubTabKey {
 
 function num(s: string): string {
   return Number(s).toLocaleString('en-IN');
+}
+
+/**
+ * Friendly, human-readable name for a raw storefront form id (e.g. 'newsletter_signup_footer'
+ * → 'Newsletter Signup Footer') so a merchant never sees the raw code. Reuses the shared
+ * plain-language humanizer; falls back to the raw id only if it can't be humanized.
+ */
+function formName(formId: string): string {
+  return plainLabel(formId) || formId;
 }
 
 // ── Shared honest states ──────────────────────────────────────────────────────
@@ -246,7 +258,8 @@ function SearchTab() {
       )}
       {!q.isLoading && !q.error && data?.state === 'has_data' && (
         <div className="space-y-4">
-          <div className="flex justify-end">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <DataWindowBadge from={data.from} to={data.to} count={Number(data.searches)} label="searches" />
             <DataSourceBadge source={data.data_source} />
           </div>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
@@ -268,6 +281,9 @@ function SearchTab() {
               value={num(data.journeys)}
               sublabel="distinct shoppers"
             />
+          </div>
+          <div className="flex justify-end">
+            <VerifyLink href="/analytics/behavior" label="See the storefront events behind these numbers" />
           </div>
           <SearchTrendCard data={data} />
           <TopSearchesCard
@@ -318,7 +334,8 @@ function FormsTrendCard({ data }: { data: FormHasData }) {
 
 function FormsTable({ rows }: { rows: FormHasData['forms'] }) {
   const [query, setQuery] = useState('');
-  const filtered = rows.filter((r) => matchesQuery(query, r.form_id));
+  // Search by the friendly name a merchant sees, not just the raw form id.
+  const filtered = rows.filter((r) => matchesQuery(query, formName(r.form_id), r.form_id));
   return (
     <Card data-testid="forms-per-form">
       <CardHeader className="pb-2">
@@ -356,8 +373,8 @@ function FormsTable({ rows }: { rows: FormHasData['forms'] }) {
             <tbody>
               {filtered.map((r) => (
                 <tr key={r.form_id} className="border-b border-border/50 last:border-0">
-                  <td className="py-1.5 text-foreground truncate max-w-[18rem]" title={r.form_id}>
-                    {r.form_id}
+                  <td className="py-1.5 text-foreground truncate max-w-[18rem]" title={formName(r.form_id)}>
+                    {formName(r.form_id)}
                   </td>
                   <td className="py-1.5 text-right tabular-nums">{num(r.submissions)}</td>
                   <td className="py-1.5 text-right tabular-nums">{num(r.sessions)}</td>
@@ -369,6 +386,11 @@ function FormsTable({ rows }: { rows: FormHasData['forms'] }) {
             </tbody>
           </table>
         )}
+        <p className="mt-3 text-xs text-muted-foreground">
+          What this means: each form name is a friendly version of the form&apos;s id on your storefront.
+          We record which form was used and whether it was submitted — never what a shopper typed into it.
+          &ldquo;Submission rate&rdquo; is submissions ÷ the visits that used that form.
+        </p>
       </CardContent>
     </Card>
   );
@@ -399,7 +421,8 @@ function FormsTab() {
       )}
       {!q.isLoading && !q.error && data?.state === 'has_data' && (
         <div className="space-y-4">
-          <div className="flex justify-end">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <DataWindowBadge from={data.from} to={data.to} count={Number(data.submissions)} label="submissions" />
             <DataSourceBadge source={data.data_source} />
           </div>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
@@ -427,6 +450,9 @@ function FormsTab() {
               value={num(data.payments_succeeded)}
               sublabel="same-day payments"
             />
+          </div>
+          <div className="flex justify-end">
+            <VerifyLink href="/analytics/behavior" label="See the storefront events behind these numbers" />
           </div>
           <FormsTrendCard data={data} />
           <FormsTable rows={data.forms} />

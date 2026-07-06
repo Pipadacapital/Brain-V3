@@ -16,13 +16,15 @@ import { ErrorCard } from '@/components/ui/error-card';
 import { EmptyState } from '@/components/ui/empty-state';
 import { Skeleton } from '@/components/ui/skeleton';
 import { TableSearch, matchesQuery } from '@/components/ui/table-search';
+import { DataWindowBadge } from '@/components/ui/data-window-badge';
+import { VerifyLink } from '@/components/ui/verify-link';
 import { useContributionMargin, useCostInputs, useUpsertCostInput } from '@/lib/hooks/use-analytics';
 import { MetricTitle } from '@/components/ui/metric-title';
 import { formatMoneyDisplay } from '@/lib/format/money-display';
 import type { CurrencyCode } from '@brain/money';
 
 const COST_TYPES = [
-  { value: 'cogs', label: 'COGS' },
+  { value: 'cogs', label: 'Product cost (COGS)' },
   { value: 'shipping', label: 'Shipping' },
   { value: 'packaging', label: 'Packaging' },
   { value: 'payment_fee', label: 'Payment fee' },
@@ -60,6 +62,7 @@ export function MarginContent() {
 
   const m = margin.data?.state === 'has_data' ? margin.data.margin : null;
   const ccy = (m?.currency_code ?? 'INR') as CurrencyCode;
+  const asOf = margin.data?.as_of ?? null;
 
   return (
     <div className="space-y-6">
@@ -67,6 +70,11 @@ export function MarginContent() {
         title="Margin & Costs"
         description="How much profit is left after costs (contribution margin). Enter your cost rates below to make the numbers trustworthy."
       />
+
+      {/* This is a cumulative view: every confirmed order and every ad spend up to the as-of date. */}
+      {asOf && (
+        <DataWindowBadge from={null} to={asOf} aria-label={`Showing all revenue and spend up to ${asOf}`} />
+      )}
 
       {margin.error && <ErrorCard error={margin.error} />}
 
@@ -85,32 +93,58 @@ export function MarginContent() {
           <CardContent>
             <dl className="grid grid-cols-2 gap-x-8 gap-y-2 text-sm sm:max-w-md">
               <dt className="text-muted-foreground">
-                <MetricTitle label="Net revenue" help="Money from confirmed orders after refunds and cancellations." />
+                <MetricTitle label="Net revenue" help="Money from confirmed orders after refunds and cancellations. Click Verify to see the orders behind it." />
               </dt>
-              <dd className="text-right">{formatMoneyDisplay(m.net_revenue_minor, ccy)}</dd>
+              <dd className="text-right">
+                {formatMoneyDisplay(m.net_revenue_minor, ccy)}
+                <span className="ml-2 align-middle">
+                  <VerifyLink href="/analytics/revenue" label="Verify" />
+                </span>
+              </dd>
               <dt className="text-muted-foreground">
-                <MetricTitle label="− COGS" help="Cost of goods sold — what the products themselves cost you." />
+                <MetricTitle label="− Product cost (COGS)" help="Cost of goods sold — what the products themselves cost you, applied as your entered % of revenue." />
               </dt>
               <dd className="text-right text-warning">{formatMoneyDisplay(m.cogs_minor, ccy)}</dd>
               <dt className="text-muted-foreground">
-                <MetricTitle label="− Variable costs" help="Per-order costs like shipping, packaging, and payment fees." />
+                <MetricTitle label="− Variable costs" help="Per-order costs like shipping, packaging, and payment fees, applied as your entered % of revenue." />
               </dt>
               <dd className="text-right text-warning">{formatMoneyDisplay(m.variable_cost_minor, ccy)}</dd>
               <dt className="border-t pt-2 font-medium">
-                <MetricTitle label="CM1" help="Profit after product and per-order costs, before marketing." />
+                <MetricTitle
+                  label={
+                    <span className="inline-flex items-baseline gap-1.5">
+                      Profit before marketing
+                      <span className="text-[10px] font-normal uppercase tracking-wide text-muted-foreground/70">CM1</span>
+                    </span>
+                  }
+                  help="What's left after product and per-order costs, before any ad spend. Also called CM1 (Contribution Margin 1)."
+                />
               </dt>
               <dd className="border-t pt-2 text-right font-semibold">{formatMoneyDisplay(m.cm1_minor, ccy)}</dd>
               <dt className="text-muted-foreground">
-                <MetricTitle label="− Marketing" help="What you spent on ads and marketing in the same period." />
+                <MetricTitle label="− Marketing" help="What you spent on ads and marketing over the same period. Click Verify to see the spend behind it." />
               </dt>
-              <dd className="text-right text-warning">{formatMoneyDisplay(m.marketing_minor, ccy)}</dd>
+              <dd className="text-right text-warning">
+                {formatMoneyDisplay(m.marketing_minor, ccy)}
+                <span className="ml-2 align-middle">
+                  <VerifyLink href="/analytics/spend" label="Verify" />
+                </span>
+              </dd>
               <dt className="border-t pt-2 font-medium">
-                <MetricTitle label="CM2" help="Profit left after product, per-order, and marketing costs." />
+                <MetricTitle
+                  label={
+                    <span className="inline-flex items-baseline gap-1.5">
+                      Profit after everything
+                      <span className="text-[10px] font-normal uppercase tracking-wide text-muted-foreground/70">CM2</span>
+                    </span>
+                  }
+                  help="What's left after product, per-order, and marketing costs — your true bottom line. Also called CM2 (Contribution Margin 2)."
+                />
               </dt>
               <dd className="border-t pt-2 text-right text-lg font-bold text-success">{formatMoneyDisplay(m.cm2_minor, ccy)}</dd>
             </dl>
             {m.cost_confidence === 'Insufficient' && (
-              <p className="mt-3 text-xs text-warning">Enter at least a COGS rate (what your products cost you, as a % of revenue) below to make CM2 trustworthy — it also caps your bill.</p>
+              <p className="mt-3 text-xs text-warning">Enter at least a product cost (COGS) rate — what your products cost you, as a % of revenue — below to make &ldquo;Profit after everything&rdquo; trustworthy. It also caps your bill.</p>
             )}
           </CardContent>
         </Card>
@@ -190,7 +224,7 @@ export function MarginContent() {
             );
           })()}
           {costs.data && costs.data.cost_inputs.length === 0 && (
-            <p className="text-sm text-muted-foreground">No costs entered yet. Add your COGS % above to compute true margin.</p>
+            <p className="text-sm text-muted-foreground">No costs entered yet. Add your product cost (COGS) % above to compute true margin.</p>
           )}
         </CardContent>
       </Card>

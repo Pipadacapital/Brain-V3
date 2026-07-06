@@ -17,6 +17,8 @@
  * Counts: bigint strings (BigInt-parsed); rendered with toLocaleString — no float math.
  */
 
+import Link from 'next/link';
+import { ArrowRight } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { MetricTitle } from '@/components/ui/metric-title';
 import { StatusPill } from '@/components/ui/status-pill';
@@ -29,6 +31,12 @@ interface StitchRateCardProps {
   stitched: string;
   /** bigint string — all distinct anonymous browsers (the denominator). */
   total: string;
+  /**
+   * Optional drill-through: when set, the card shows a "See who they are →" link to the identified
+   * people (e.g. /customers). Only rendered when at least one visitor has been identified.
+   */
+  href?: string;
+  linkLabel?: string;
   className?: string;
   'data-testid'?: string;
 }
@@ -43,6 +51,8 @@ export function StitchRateCard({
   hitPct,
   stitched,
   total,
+  href,
+  linkLabel = 'See who they are',
   className,
   'data-testid': testId = 'journey-stitch-rate-card',
 }: StitchRateCardProps) {
@@ -98,6 +108,15 @@ export function StitchRateCard({
           status={anyStitched ? 'healthy' : 'waiting'}
           label={anyStitched ? 'Linked to known customers' : 'No visitors identified yet'}
         />
+
+        {href && anyStitched && (
+          <Link
+            href={href}
+            className="inline-flex items-center gap-1 pt-0.5 text-xs font-medium text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
+          >
+            {linkLabel} <ArrowRight className="size-3" aria-hidden="true" />
+          </Link>
+        )}
 
         <p className="text-[11px] text-muted-foreground/80 pt-0.5">{SUBTEXT}</p>
       </CardContent>

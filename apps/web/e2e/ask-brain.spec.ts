@@ -104,7 +104,11 @@ test.describe('/ask', () => {
     if (await answer.isVisible().catch(() => false)) {
       await expect(answer.getByTestId('ask-binding')).toBeVisible();
       await expect(answer.getByTestId('ask-number')).toBeVisible();
-      await expect(answer.getByTestId('ask-provenance')).toBeVisible();
+      // Provenance (metric_id/version/snapshot) is tucked into a "Technical details" disclosure —
+      // expand it, then assert the reproducible data snapshot is surfaced.
+      const provenance = answer.getByTestId('ask-provenance');
+      await expect(provenance).toBeVisible();
+      await provenance.locator('summary').click();
       await expect(answer.getByTestId('ask-snapshot')).toBeVisible();
     }
 
